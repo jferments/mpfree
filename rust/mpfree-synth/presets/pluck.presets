@@ -1,8 +1,8 @@
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.pluck
 name = Init
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.pluck
 name = Nylon
 
@@ -15,7 +15,7 @@ string.brightness = 35
 string.pick = 45
 string.position = 20
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.pluck
 name = Steel String
 
@@ -28,7 +28,7 @@ string.brightness = 80
 string.pick = 85
 string.position = 12
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.pluck
 name = Harp
 
@@ -44,7 +44,7 @@ string.position = 30
 # Output
 output.spread = 60
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.pluck
 name = Koto
 
@@ -57,7 +57,7 @@ string.brightness = 75
 string.pick = 95
 string.position = 5
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.pluck
 name = Muted Bass
 
@@ -77,7 +77,7 @@ voice.transpose = -12
 output.level = 2
 output.spread = 0
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.pluck
 name = Marimba
 
@@ -90,7 +90,7 @@ model.release = 5000
 mallet.material = Marimba
 mallet.hardness = 45
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.pluck
 name = Vibes
 
@@ -104,7 +104,7 @@ mallet.material = Vibes
 mallet.hardness = 55
 mallet.high-damp = 30
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.pluck
 name = Bell
 
@@ -121,7 +121,7 @@ mallet.high-damp = 40
 # Output
 output.level = -2
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.pluck
 name = Glass
 
@@ -135,7 +135,7 @@ mallet.material = Glass
 mallet.hardness = 70
 mallet.strike = 35
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.pluck
 name = Kalimba
 
@@ -148,7 +148,7 @@ model.release = 2000
 mallet.material = Kalimba
 mallet.hardness = 60
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.pluck
 name = Steel Drum
 

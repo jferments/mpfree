@@ -74,7 +74,25 @@ pub const MIXER_FORMAT: &str = "mpfree-mixer 1";
 /// The synth part's first line.
 pub const SYNTH_FORMAT: &str = "mpfree-synth 1";
 /// The first line of the instruments part.
-pub const INSTRUMENTS_FORMAT: &str = "mpfree-instruments 1";
+/// Its version follows the preset format's ([`mpfree_node::preset::VERSION`]):
+/// a part of version N holds settings in that preset format's meaning, so
+/// a part from before a setting changed meaning (1: Poly's envelope times
+/// and velocity) is converted as it is read ([`mpfree_node::Node::upgrade`]).
+pub const INSTRUMENTS_FORMAT: &str = "mpfree-instruments 2";
+/// The words before the version on the first line.
+const INSTRUMENTS_WORD: &str = "mpfree-instruments";
+
+/// The version of an instruments part's first line, if this build reads
+/// it (1 to [`mpfree_node::preset::VERSION`]).
+fn instruments_version(line: &str) -> Option<u32> {
+    let v: u32 = line
+        .trim()
+        .strip_prefix(INSTRUMENTS_WORD)?
+        .trim()
+        .parse()
+        .ok()?;
+    (1..=mpfree_node::preset::VERSION).contains(&v).then_some(v)
+}
 /// The first line of the track kits part.
 pub const TRACK_KITS_FORMAT: &str = "mpfree-track-kits 1";
 
@@ -1135,7 +1153,7 @@ pub struct Loaded {
 /// round trip.
 ///
 /// ```text
-/// mpfree-instruments 1
+/// mpfree-instruments 2
 /// track 2 mpfree.fm
 /// param 0 5
 /// track 3 mpfree.keys
@@ -1192,10 +1210,11 @@ pub fn instruments_load(
     plugins: &crate::plugins::Plugins,
 ) -> Result<(Vec<Option<Loaded>>, Vec<String>), String> {
     let mut lines = text.lines().enumerate();
-    match lines.next() {
-        Some((_, l)) if l.trim() == INSTRUMENTS_FORMAT => {}
-        _ => return Err(format!("not an {INSTRUMENTS_FORMAT} part")),
-    }
+    // The preset format its settings are in.
+    let format = match lines.next().and_then(|(_, l)| instruments_version(l)) {
+        Some(v) => v,
+        None => return Err(format!("not an {INSTRUMENTS_FORMAT} part")),
+    };
     let mut notes = Vec::new();
     // A track, its node and its plugin instance (0 for an engine).
     type Made = (usize, Box<dyn Node>, u64);
@@ -1217,7 +1236,7 @@ pub fn instruments_load(
         let first = w.next();
         if !design.is_empty() && first != Some("sound") {
             if let Some(Some(m)) = open.as_mut() {
-                design_in(m, &design, rate, &mut notes);
+                design_in(m, &design, format, rate, &mut notes);
             }
             design.clear();
         }
@@ -1278,6 +1297,11 @@ pub fn instruments_load(
                 let v: f32 = w.next().and_then(|x| x.parse().ok()).ok_or_else(bad)?;
                 if let Some((_, node, _)) = o.as_mut() {
                     if v.is_finite() && node.params().iter().any(|p| p.id == id && !p.readonly) {
+                        let v = if format < mpfree_node::preset::VERSION {
+                            node.upgrade(format, id, v)
+                        } else {
+                            v
+                        };
                         node.set_param(id, v);
                     }
                 }
@@ -1303,7 +1327,7 @@ pub fn instruments_load(
     }
     if let Some(Some(m)) = open.as_mut() {
         if !design.is_empty() {
-            design_in(m, &design, rate, &mut notes);
+            design_in(m, &design, format, rate, &mut notes);
         }
     }
     if let Some(Some(m)) = open.take() {
@@ -1327,12 +1351,14 @@ pub fn instruments_load(
     Ok((slots, notes))
 }
 
-/// Puts a track's sound's design (its `sound` lines) around the engine
-/// just made: the effects and macros its preset brought. One that can't
-/// be built leaves the engine plain, said in `notes`.
+/// Puts a track's sound's design (its `sound` lines, saved in preset
+/// format `format`) around the engine just made: the effects and macros
+/// its preset brought. One that can't be built leaves the engine plain,
+/// said in `notes`.
 fn design_in(
     m: &mut (usize, Box<dyn Node>, u64),
     lines: &[(String, String)],
+    format: u32,
     rate: u32,
     notes: &mut Vec<String>,
 ) {
@@ -1345,7 +1371,7 @@ fn design_in(
         return;
     };
     let built = mpfree_instruments::Sound::new(engine, &mpfree_instruments::Design::default())
-        .and_then(|mut s| s.set_design_lines(lines).map(|()| s));
+        .and_then(|mut s| s.set_design_lines_from(lines, format).map(|()| s));
     match built {
         Ok(mut s) => {
             s.prepare_effects(rate, mpfree_node::MAX_BLOCK);
@@ -1915,6 +1941,36 @@ mod tests {
         let plain = slots[0].as_ref().unwrap().instrument.node();
         assert_eq!(plain.info().id, "mpfree.keys");
         assert!(plain.params().iter().all(|p| p.id < FX_BASE));
+    }
+
+    /// A part saved before preset format 2 holds Poly's old envelope
+    /// times and velocity share; they are converted as it is read, so the
+    /// track sounds as it did, and its sound's macros too. This build
+    /// writes version 2.
+    #[test]
+    fn an_older_instruments_part_is_converted_as_it_is_read() {
+        use mpfree_synth::params as pp;
+        let plugins = crate::plugins::Plugins::none();
+        let old = format!(
+            "mpfree-instruments 1\ntrack 2 mpfree.poly\nparam {} 100\nparam {} 300\nparam {} 60\n",
+            pp::AMP_A,
+            pp::AMP_D,
+            pp::VEL_AMP
+        );
+        let (slots, notes) = instruments_load(&old, 44_100, &plugins).unwrap();
+        assert!(notes.is_empty(), "{notes:?}");
+        let node = slots[0].as_ref().unwrap().instrument.node();
+        assert!((node.param(pp::AMP_A) - 31.877).abs() < 0.01);
+        assert_eq!(node.param(pp::AMP_D), 300.0, "decay keeps its meaning");
+        assert!((node.param(pp::VEL_AMP) - 7.957).abs() < 0.01);
+        let now = old.replace("mpfree-instruments 1", "mpfree-instruments 2");
+        let (slots, _) = instruments_load(&now, 44_100, &plugins).unwrap();
+        let node = slots[0].as_ref().unwrap().instrument.node();
+        assert_eq!(node.param(pp::AMP_A), 100.0);
+        assert_eq!(INSTRUMENTS_FORMAT, "mpfree-instruments 2");
+        assert_eq!(instruments_version("mpfree-instruments 1"), Some(1));
+        assert_eq!(instruments_version("mpfree-instruments 3"), None);
+        assert_eq!(instruments_version("mpfree-instrumentsx 2"), None);
     }
 
     /// A missing plugin, a track that isn't there or is named twice, and
