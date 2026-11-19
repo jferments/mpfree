@@ -232,6 +232,34 @@ fn high_notes_do_not_alias() {
     }
 }
 
+/// A bent phase can round up to a whole cycle (FM a hair under one, the
+/// end of a bend). On the table's last frames that read past the table and
+/// stopped the audio thread; now every table, at every warp, played at the
+/// last position across the keyboard, stays in range.
+#[test]
+fn warps_at_the_last_frame_stay_inside_the_table() {
+    for table in 0..factory().len() {
+        for mode in [1.0, 2.0, 3.0, 4.0] {
+            let mut s = Wavetable::new(RATE);
+            for o in 0..2 {
+                s.set_param(osc_id(o, TABLE), table as f32);
+                s.set_param(osc_id(o, POSITION), 100.0);
+                s.set_param(osc_id(o, WARP_MODE), mode);
+                s.set_param(osc_id(o, WARP), 100.0);
+                s.set_param(osc_id(o, OSC_LEVEL), 100.0);
+            }
+            let ev: Vec<(u64, NodeEvent)> = (0..17u64)
+                .map(|k| (k * 3_000, on(24 + 5 * k as u8, 100)))
+                .collect();
+            let (l, r) = render(&mut s, 51_000, &ev, |_| 256);
+            assert!(
+                l.iter().chain(&r).all(|x| x.is_finite() && x.abs() < 8.0),
+                "table {table}, warp {mode}"
+            );
+        }
+    }
+}
+
 #[test]
 fn a_user_table_plays_and_swaps_back() {
     let mut s = Wavetable::new(RATE);
