@@ -243,11 +243,12 @@ impl App {
                 "kit, as every track starts), or its own",
                 "instrument: Poly (subtractive), FM (six",
                 "operators), Drums (a sound on each pad), Pluck",
-                "(strings and mallets), Wavetable, then the",
-                "plugin synths in files/plugins/. It starts as",
-                "a copy of the Synth tab's sound, and the tab",
-                "then edits the track's own. The pads play the",
-                "selected track; the old sound rings out.",
+                "(strings and mallets) and the others, then",
+                "the plugin synths in files/plugins/. It",
+                "starts as a copy of the Synth tab's sound,",
+                "and the tab then edits the track's own. The",
+                "pads play the selected track; the old sound",
+                "rings out.",
             ],
             SynthItem::Scale => vec![
                 "The pads' own scale (the arp has its own).",
@@ -560,11 +561,8 @@ impl App {
         for (k, v) in s.iter() {
             let p = &mut self.synth_pads;
             let ok = match k {
-                "engine" => Engine::ALL
-                    .iter()
-                    .find(|e| e.name().eq_ignore_ascii_case(v))
-                    .map(|&e| p.engine = e)
-                    .is_some(),
+                // ("Wavetable", gone into Poly, is Poly.)
+                "engine" => Engine::from_name(v).map(|e| p.engine = e).is_some(),
                 // Looked up once the root is known.
                 "scale" => {
                     scale = Some(v);

@@ -215,11 +215,16 @@ fn poly(page: &str) -> Option<Plan> {
     use mpfree_synth::params::*;
     Some(match page {
         "Osc" => (
-            "col(row(osc-1:*, osc-2:*):*, row(mix:*, supersaw:*):230)",
+            "col(row(osc-1:*, osc-2:*):*, mix:230)",
             vec![
-                s("osc-1", "Osc 1", Source, &[OSC1_WAVE, OSC1_OCT, OSC1_PW])
-                    .labels(&[(OSC1_PW, "Pulse width")])
-                    .draw("Osc"),
+                s(
+                    "osc-1",
+                    "Osc 1",
+                    Source,
+                    &[OSC1_WAVE, OSC1_OCT, OSC1_SEMI, OSC1_FINE, OSC1_PW],
+                )
+                .labels(&[(OSC1_PW, "Pulse width")])
+                .draw("Osc"),
                 s(
                     "osc-2",
                     "Osc 2",
@@ -231,21 +236,18 @@ fn poly(page: &str) -> Option<Plan> {
                     "mix",
                     "Mix",
                     Source,
-                    &[OSC1_LEVEL, OSC2_LEVEL, SUB_LEVEL, NOISE_LEVEL],
+                    &[OSC1_LEVEL, OSC2_LEVEL, SUB_LEVEL, NOISE_LEVEL, SUB_WAVE],
                 )
                 .faders(&[OSC1_LEVEL, OSC2_LEVEL, SUB_LEVEL, NOISE_LEVEL])
                 .labels(&[(OSC1_LEVEL, "Osc 1"), (OSC2_LEVEL, "Osc 2")])
                 .note("into the filter"),
-                // Its own words, so they don't read as the unison's.
-                s("supersaw", "Supersaw", Source, &[SUPER_DETUNE, SUPER_MIX])
-                    .labels(&[(SUPER_DETUNE, "Saw detune"), (SUPER_MIX, "Side saws")])
-                    .note("seven saws, when a wave is Supersaw"),
             ],
         ),
-        // Each oscillator's Table wave, its table drawn, over what moves
-        // the positions.
-        "Table" => (
-            "col(row(table-1:*, table-2:*):*, moves:150)",
+        // The two waves with settings of their own: each oscillator's
+        // Table wave, its table drawn, with what moves the positions, and
+        // the Supersaw.
+        "Waves" => (
+            "col(row(table-1:*, table-2:*, supersaw:210):*, moves:150)",
             vec![
                 s(
                     "table-1",
@@ -279,6 +281,10 @@ fn poly(page: &str) -> Option<Plan> {
                     (LFO_POS2, "LFO to position 2"),
                 ])
                 .note("the filter envelope and LFO 1"),
+                // Its own words, so they don't read as the unison's.
+                s("supersaw", "Supersaw", Source, &[SUPER_DETUNE, SUPER_MIX])
+                    .labels(&[(SUPER_DETUNE, "Saw detune"), (SUPER_MIX, "Side saws")])
+                    .note("seven saws"),
             ],
         ),
         "Filter" => (
@@ -969,7 +975,13 @@ fn pluck(page: &str) -> Option<Plan> {
             "row(col(tuning:*, voices:*):55*, output:45*)",
             vec![
                 s("tuning", "Tuning", Voice, &[TRANSPOSE, FINE, BEND_RANGE]),
-                s("voices", "Voices", Voice, &[POLYPHONY, VEL_TONE]),
+                s(
+                    "voices",
+                    "Voices and touch",
+                    Voice,
+                    &[POLYPHONY, VEL_TONE, VELOCITY],
+                )
+                .labels(&[(VELOCITY, "Vel > level")]),
                 s(
                     "output",
                     "Output",

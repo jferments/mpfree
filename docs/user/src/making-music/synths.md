@@ -6,7 +6,7 @@ checked: 2026-11-19 95c1134d
 
 # Synths
 
-MPFree has thirteen synths built in. Put one on the pads and they become a keyboard: bass lines, chords, leads and pads, played by hand, through the arpeggiator or into a pattern.
+MPFree has twelve synths built in. Put one on the pads and they become a keyboard: bass lines, chords, leads and pads, played by hand, through the arpeggiator or into a pattern.
 
 ## Put a synth on the pads
 
@@ -17,17 +17,16 @@ Each track plays a kit or a synth, and the pads play what the selected track pla
 
 Opening the **Synth** tab changes nothing that plays: it shows the synth, and if the selected track plays a kit, the line at the bottom of the screen says how to put the synth on it. To go back to drums, tap the chip (it names the synth now) and pick a kit, or set the track's instrument back to **Kit**. While the selected track plays the synth, **PAD BANK** changes the pads' layout and **SHIFT** + the wheel their octave, not the kit.
 
-## The thirteen synths
+## The twelve synths
 
-Any of the thirteen can be a track's own instrument (see [A synth for each track](#a-synth-for-each-track)), and any track can have a different one.
+Any of the twelve can be a track's own instrument (see [A synth for each track](#a-synth-for-each-track)), and any track can have a different one.
 
 | Synth | What it is | Good for | Presets |
 |---|---|---|---|
-| **Poly** | A classic two-oscillator subtractive synth, with a sub oscillator, noise, unison, a seven-saw supersaw, Wavetable's tables and a resonant filter | Basses, leads, pads, brass, big trance-style stacks | Grit Bass, Acid, Supersaw, Dust Pad, Pluck, Brass, Sub Bass, Lead, Singing Lead, Drift Pad, Super Lead, Super Pad, Super Stab, Super Stack, Worn Brass |
+| **Poly** | A classic two-oscillator subtractive synth, with a sub oscillator, noise, unison, a seven-saw supersaw, tables of waves to sweep through and a resonant filter | Basses, leads, pads, brass, big trance-style stacks, evolving pads, vocal leads, growling basses | Grit Bass, Acid, Supersaw, Dust Pad, Pluck, Brass, Sub Bass, Lead, Singing Lead, Drift Pad, Super Lead, Super Pad, Super Stab, Super Stack, Worn Brass, Morph Pad, Vowel Lead, Sync Sweep, Digital Bell, Growl Bass, Organ, Harmonic Pluck, FM Keys |
 | **FM** | Six-operator FM, in the tradition of the 1980s digital synths | Electric pianos, bells, glassy keys, punchy basses, reedy leads | Glass Keys, Bell Tower, Rubber Bass, Drawbars, Brass Section, Log Drum, Silk Pad, Steel Pluck, Reed Lead |
 | **Drums** | A drum synth: a different synthesised drum on each pad, each with its own knobs, from the 808 kick and hats to toms, congas and bells | Electronic kits built from scratch | Boom Kit, Tight Kit, Grit Kit, Electro Kit |
-| **Pluck** | Physically modelled strings and mallets | Guitars, harps, marimbas, bells | Nylon, Steel String, Harp, Koto, Muted Bass, Marimba, Vibes, Bell, Glass, Kalimba, Steel Drum |
-| **Wavetable** | Two oscillators that sweep through stacks of waveforms | Evolving pads, vocal leads, growling basses | Morph Pad, Vowel Lead, Sync Sweep, Digital Bell, Growl Bass, Organ, Harmonic Pluck, FM Keys |
+| **Pluck** | Physically modelled strings and mallets | Guitars, harps, plucked basses, marimbas, bells | Nylon, Steel String, Harp, Koto, Muted Bass, Oud, Banjo, Upright Bass, Harpsichord, Pizzicato, Marimba, Vibes, Bell, Glass, Kalimba, Steel Drum, Glockenspiel, Xylophone, Celesta, Chimes, Music Box |
 | **Keys** | A physically modelled electric piano and clav: struck steel tines or reeds in front of their pickups, or a struck string over two pickups | Soul and jazz chords, ballads, barking stabs, tremolo keys, funk clav lines | Soft Tines, Bright Tines, Barking Tines, Bell Keys, Stage Tines, Lo-fi Tines, Phase Tines, Reed, Reed Bite, Dirty Reed, Clav, Funk Clav, Wah Clav, Muted Clav, Stab Clav and 18 more |
 | **Drawbar** | A tonewheel organ with drawbars, percussion, scanner vibrato and a rotating speaker, and a 1960s combo organ | Jazz and gospel comping, rock riffs, church chords, soft pads; garage, ska and new wave stabs | Jazz Perc, Gospel, Full Organ, Rock Drive, Ballad, Flute, Church, Reedy, Bright Perc, Hollow, Soft Bass, Combo, Combo Flute, Combo Reed, Combo Square, Combo Vibrato, Combo Garage, Combo Rotary, Combo Perc |
 | **Squelch** | A mono acid bass: one oscillator into a squelchy resonant filter, with accent and slide | Acid lines, rubbery basses, screaming leads | Acid Line, Deep Bass, Square Acid, Distorted, Rubber, Plucky, Acid Lead, Screamer |
@@ -47,7 +46,7 @@ Every track can play its own instrument: Poly on one, FM on another, a plugin sy
 
 1. Select the track.
 2. Press **MENU** on the Synth tab. The top row is named after the track: **Track 2 instrument**.
-3. Change it. It steps through **Kit** (the pads' kit, as every track starts), **Poly**, **FM**, **Drums**, **Pluck**, **Wavetable**, **Keys**, **Drawbar**, **Squelch**, **Analog**, **Strings**, **Bass**, **Wind** and **Choir**, then any plugin synths you have put in `files/plugins/` on the stick: CLAP synths and MPC plugin instruments (see [Effects](effects.md#plugins) for where to put them).
+3. Change it. It steps through **Kit** (the pads' kit, as every track starts), **Poly**, **FM**, **Drums**, **Pluck**, **Keys**, **Drawbar**, **Squelch**, **Analog**, **Strings**, **Bass**, **Wind** and **Choir**, then any plugin synths you have put in `files/plugins/` on the stick: CLAP synths and MPC plugin instruments (see [Effects](effects.md#plugins) for where to put them).
 
 {{shot: synth-instrument | Track 2's instrument set to a plugin synth, with the row's help on the right.}}
 
@@ -74,7 +73,7 @@ Coming:
 
 ## The Synth tab
 
-{{shot: synth | The Synth tab with Poly playing its Pluck preset: the presets on the left, the Osc page's sections in the middle (both oscillators with their waves drawn, the mix as faders, the supersaw's two knobs), and the Q-Links on the right.}}
+{{shot: synth | The Synth tab with Poly playing its Pluck preset: the presets on the left, the Osc page's sections in the middle (both oscillators with their waves drawn and their tuning, the mix as faders with the sub's wave above them), and the Q-Links on the right.}}
 
 - **The title** shows the preset, with **edited** under it once you change anything. Tap the preset's name to open the synth's presets in the browser (see [Trying and saving presets](#trying-and-saving-presets)). The tabs beside it are the synth's **pages**: for Poly, Osc, Filter, Env, LFO, LFO 2, Voice, Routes and Pressure. Tap a tab, or hold **SHIFT** and turn the data wheel, to change page.
 - **The sections.** Each page is split into boxes, one for each job, with the job's name at the top: **Osc 1**, **Mix**, **Filter**, **Filter envelope**, **Output** and so on. The colour says what kind of job it is, the same on every synth and effect:
@@ -92,21 +91,25 @@ Coming:
 - **The presets** are listed on the left, under the synth's name. Tap one to load it. Once you change anything, the preset is marked **edited**. The ones you saved yourself are in the browser, under **Yours**.
 - **UNDO** takes back the last knob you turned on this tab (a run of turns of one knob is one UNDO), and **SHIFT + UNDO** puts it back. Loading a preset starts the list again.
 
-**Poly's waves.** Each oscillator plays a **Saw**, **Pulse**, **Triangle**, **Sine** or **Supersaw**. They stay clean all the way up the keyboard: high notes have no harsh, out-of-tune whistle under them. **Supersaw** is seven saws a little apart in pitch, the big, shimmering sound of trance leads and pads. Two knobs in the **Supersaw** box on the Osc page shape it, for either oscillator set to Supersaw:
+**Poly's waves.** Each oscillator plays a **Saw**, **Pulse**, **Triangle**, **Sine** or **Supersaw**. They stay clean all the way up the keyboard: high notes have no harsh, out-of-tune whistle under them. **Supersaw** is seven saws a little apart in pitch, the big, shimmering sound of trance leads and pads. Two knobs in the **Supersaw** box on the **Waves** page shape it, for either oscillator set to Supersaw ("Supersaw only" while neither is):
 
 - **Saw detune** is how far apart the seven saws drift. Low settings move slowly and gently; the top of the knob gets wide and wild.
 - **Side saws** is how loud the six outer saws are against the middle one. Turned down, you mostly hear one saw; turned up, the stack.
 
 The level stays about the same whatever you set. **Super Lead**, **Super Pad**, **Super Stab** and **Super Stack** use it. Super Stack adds a wide ensemble and a bouncing delay, with its four macros on Detune, Mix, Octave and Effects.
 
-{{shot: synth-table | Poly's Table page: oscillator 1 plays the Vowels table, oscillator 2 the Harmonics table mirrored, each drawn as its stack of waves with the one it plays bright; below, what moves the positions.}}
+Both oscillators have **Octave**, **Semi** and **Fine**, and the **Sub** under the mix can be a **Square** or a rounder **Sine** (**Sub wave**; "sub is off" while the Sub is at 0).
 
-**Poly's Table wave.** Set an oscillator's **Wave** to **Table** and it plays one of Wavetable's tables: a stack of single waves that change from one to the next (see Wavetable below for what each table sounds like). The **Table** page holds both oscillators' tables:
+{{shot: synth-table | Poly's Waves page: oscillator 1 plays the Vowels table, oscillator 2 the Harmonics table mirrored, each drawn as its stack of waves with the one it plays bright; beside them the Supersaw's two knobs; below, what moves the positions.}}
 
-- **Table** picks the stack, **Position** where in it the oscillator plays, **Warp** how each wave is bent (**Bend**, **Sync**, **Mirror** or **FM**, as on Wavetable) and **Warp amt** how much. The Q-Links turn both positions and warp amounts.
+**Poly's Table wave.** Set an oscillator's **Wave** to **Table** and it plays a table: a stack of single waves that change from one to the next. There are ten: **Basic** (sine to saw to square), **Harmonics**, **Pulse**, **Sync**, **Vowels**, **Organ**, **Bits**, **Resonance**, **FM** and **Drift**. Moving the position while a note sounds is what makes the sound evolve. The **Waves** page holds both oscillators' tables:
+
+- **Table** picks the stack, **Position** where in it the oscillator plays, **Warp** how each wave is bent and **Warp amt** how much. **Bend** squeezes the wave to the front (brighter and more nasal), **Sync** repeats it up to eight times in each cycle (the tearing sync sound), **Mirror** plays it forward then back, and **FM** lets the other oscillator wobble this one. The Q-Links turn both positions and warp amounts, and the Q-Links' **Tables** set does too from any page.
 - **Moves**: the filter envelope can sweep each oscillator's position (**Env to position 1** and **2**) and the warp (**Env to warp**), harder hits can start further in (**Velocity to position**), and LFO 1 can wobble each position (**LFO to position 1** and **2**). Pad pressure and the routes can move them too (**Position**, **Warp**).
 
-A setting that does nothing says so in place: "Table wave only" while its oscillator plays another wave, "warp is off" while its Warp is Off. Everything else on Poly works with a table too: the filter, both LFOs, unison (now up to 8 copies), Age (which nudges the two oscillators' positions apart, note by note). Wavetable's presets move over to Poly in a later update.
+A setting that does nothing says so in place: "Table wave only" while its oscillator plays another wave, "warp is off" while its Warp is Off. Everything else on Poly works with a table too: the filter, both LFOs, unison (now up to 8 copies), Age (which nudges the two oscillators' positions apart, note by note). **Morph Pad**, **Vowel Lead**, **Sync Sweep**, **Digital Bell**, **Growl Bass**, **Organ**, **Harmonic Pluck** and **FM Keys** play tables, and **Table Init** is a plain start with both oscillators on one.
+
+**The Wavetable synth is part of Poly now** (since 19 November 2026). Its presets are Poly's, and anything you made with it plays on Poly with both oscillators on Table, sounding as it did: a track that played it, the pads' sound in a project, and presets you saved (they stay in **Instruments/Wavetable** on the stick; load one from there in the browser and it plays on Poly, with its effects, macros and Q-Link sets). The log says when a project's track moved to Poly.
 
 {{shot: synth-voice | Poly's Voice page: how it plays (Poly, Mono or Legato, the number of voices, the glide and Age), Unison (copies of each note, their detune and spread), the tuning and the output.}}
 
@@ -135,9 +138,9 @@ A setting that does nothing says so in place: "Table wave only" while its oscill
 
 **Age**, also on Poly's **Voice** page (Q-Link 2 there), makes each voice a little its own, as on the polysynths of the late 1970s, which had a circuit board for each voice: each note a few cents out of tune with the others, a little brighter or darker, quicker or slower, and each one drifting slowly in pitch as it plays. Notes go to the voices in turn, so the same chord sounds a little different each time you play it. At 0 (the default) every voice is the same; at 100 they differ as much as Analog's do at 100. **Worn Brass** is Brass at 80.
 
-**Drive** and **Distortion**, on the Filter page of Poly and Wavetable (Q-Links 3 and 4 there), both add grit. **Drive** pushes the sound into the filter, as on an analog synth: warm, and the filter smooths what it adds, so with the filter nearly closed you hear little of it. **Distortion** comes after the filter, so you hear its grit even with the filter almost closed (Grit Bass uses it). Both keep the sound at about the same level as you turn them up (within about 2 dB on every preset), so they add grit and thickness, not volume; turn up the synth's level for that. Pad pressure can push either one.
+**Drive** and **Distortion**, on Poly's Filter page (Q-Links 3 and 4 there), both add grit. **Drive** pushes the sound into the filter, as on an analog synth: warm, and the filter smooths what it adds, so with the filter nearly closed you hear little of it. **Distortion** comes after the filter, so you hear its grit even with the filter almost closed (Grit Bass uses it). Both keep the sound at about the same level as you turn them up (within about 2 dB on every preset), so they add grit and thickness, not volume; turn up the synth's level for that. Pad pressure can push either one.
 
-Each synth has its own pages. FM has Algo, Mod and Pressure, a page for each of its six operators and three keyboard-scaling pages; Drums has a page for each of its 16 pads, a **Kit** page, **Effects** and **Sends** (below). Poly, FM, Wavetable and Wind have a **Pressure** page (see [Pad pressure](#pad-pressure)).
+Each synth has its own pages. FM has Algo, Mod and Pressure, a page for each of its six operators and three keyboard-scaling pages; Drums has a page for each of its 16 pads, a **Kit** page, **Effects** and **Sends** (below). Poly, FM and Wind have a **Pressure** page (see [Pad pressure](#pad-pressure)).
 
 **Drums** plays a different synthesised drum on each pad: **Kick**, **808 kick**, **Snare**, **Clap**, **Closed hat**, **Open hat**, **Cymbal**, **Tom**, **Conga**, **Rim**, **Woodblock**, **Bell**, **Cowbell**, **Shaker**, **Zap** or **FM perc**, picked by **Model** on the pad's page. Each drum has its own few knobs, named for what they do on that drum, and the Q-Links take the four you reach for most on it:
 
@@ -189,24 +192,13 @@ A control that does nothing as the kit is set is faint and says why: the compres
 
 FM keeps itself clean up the keyboard: on the top notes a bright modulator and the feedback ease off just enough that their overtones don't fold back into a harsh fizz, and a Saw or Square that bends another operator hard drops its top overtones first. Changing the algorithm keeps the sound at about the same level. Every factory preset but Init comes with four macros, **Brightness**, **Detune**, **Attack** and **Decay**, and most bring a touch of reverb (Drawbars brings the rotary speaker instead, and Rubber Bass stays dry); Reed Lead plays the Triangle, Saw and Square waves. The Q-Links take Algorithm, Feedback, Transpose and Level on the Algo page; Speed, Pitch depth, Amp depth and Delay on the Mod page; and Output, Coarse, Fine and Velocity on each operator's page.
 
-**Wavetable** has two oscillators, **Osc A** and **Osc B**, each playing a **Table**: a stack of single waves that change from one to the next, such as **Basic** (sine to saw to square), **Harmonics**, **Pulse**, **Sync**, **Vowels**, **Organ**, **Bits**, **Resonance**, **FM** and **Drift**. **Position** picks where in the stack the oscillator plays, and moving it while a note sounds is what makes the sound evolve. **Warp** bends each wave before it is played: **Bend** squeezes the wave to the front (brighter and more nasal), **Sync** repeats it up to eight times in each cycle (the tearing sync sound), **Mirror** plays it forward then back, and **FM** lets the other oscillator wobble this one; **Warp amt** is how much. Its pages:
-
-- **Osc A** and **Osc B:** the table, position, warp, tuning (Osc B also has its octave) and level. The picture is the stack of waves, with the one playing lit.
-- **Mix:** a **Sub** (a sine an octave down), **Noise**, and **Unison**: several copies of each note, spread out of tune (**Detune**) and across the speakers (**Spread**).
-- **Filter:** **Cutoff**, **Resonance** and **Distortion** as on Poly, the filter envelope's **Env amount**, **Key track** and **Velocity**.
-- **Mod:** a second envelope that moves the positions (**To pos A**, **To pos B**) and the warp (**To warp**) over each note; **Vel to pos** makes harder hits start further into the table.
-- **LFO:** its rate, and how far it moves the pitch, the cutoff, both positions and the level; **Retrigger** starts it again on each note.
-- **Env**, **Voice** and **Pressure:** the volume envelope, the tuning, glide and voices, and pad pressure.
-
-The Q-Links take each oscillator's Position, Warp amt, Fine and Level on its page, and Sub, Noise, Detune and Spread on the Mix page.
-
 **Pluck** is a plucked string or a struck bar, picked by **Model** on the String page:
 
 - **String:** **Decay** is how long middle C rings (higher notes ring shorter, lower ones longer), and **Release** how fast a note you let go is damped. **Brightness** is the string's tone, **Pick** how hard and bright the pick is, and **Position** where along the string you pluck: near the end is thin and bright, towards the middle hollow.
-- **Mallet:** **Material** is **Marimba**, **Vibes**, **Bell**, **Glass**, **Kalimba** or **Steel drum**. **Hardness** is the mallet: a harder one is brighter. **Strike** is where on the bar it lands, which changes which overtones ring. **Stretch** pulls the overtones closer together or further apart, for a softer or a more clangy, metallic tone, and **High damp** makes the high overtones die away sooner.
-- **Voice:** transpose, fine tuning, bend range, how many notes can sound (**Voices**), **Vel > tone** (softer hits are darker), level, pan and **Spread** (notes spread across the speakers).
+- **Mallet:** **Material** is **Marimba**, **Vibes**, **Bell**, **Glass**, **Kalimba**, **Steel drum**, **Glockenspiel**, **Xylophone** or **Chimes**. **Hardness** is the mallet: a harder one is brighter. **Strike** is where on the bar it lands, which changes which overtones ring. **Stretch** pulls the overtones closer together or further apart, for a softer or a more clangy, metallic tone, and **High damp** makes the high overtones die away sooner.
+- **Voice:** transpose, fine tuning, bend range, how many notes can sound (**Voices**), **Vel > tone** (softer hits are darker), **Vel > level** (how much quieter your softest hit is than your hardest: 30 dB by default, 0 for every hit the same), level, pan and **Spread** (notes spread across the speakers).
 
-Playing a note that is still ringing plucks or strikes it again, on top of what sounds, as a real string or bar does. The Q-Links take Decay, Brightness, Pick and Position on the String page, Hardness, Strike, Stretch and High damp on the Mallet page.
+Every note is as loud as middle C, whatever the knobs, so a melody up high doesn't jump out and a low line doesn't disappear. Playing a note that is still ringing plucks or strikes it again, on top of what sounds, as a real string or bar does. The Q-Links take Decay, Brightness, Pick and Position on the String page, Hardness, Strike, Stretch and High damp on the Mallet page.
 
 **Keys** is an electric piano or a clav. It has five pages:
 
@@ -456,7 +448,7 @@ MPFree reads Scala tuning files, the format thousands of published tunings come 
 
 ## Pad pressure
 
-The MPC's pads sense how hard you keep pressing after the hit. On Poly, FM, Wavetable and Wind the **Pressure** page sets what that does; on Bass it is **Moves** and **Amount** on the Play page, on Choir **To swell** and **To vowel** on the Play page, and Squelch, Keys, Drawbar, Strings, Analog, Pluck and Drums don't answer it. By default on Poly, pressing harder opens the filter, so a held chord brightens as you lean into it; on Wind it blows harder, so a held note swells and opens. You choose up to four things for pressure to change, how much, and how hard you must press before it starts. On Poly, pressure can also bring in either LFO (**LFO 1 amount**, **LFO 2 amount**) or move each note across the speakers (**Pan**).
+The MPC's pads sense how hard you keep pressing after the hit. On Poly, FM and Wind the **Pressure** page sets what that does; on Bass it is **Moves** and **Amount** on the Play page, on Choir **To swell** and **To vowel** on the Play page, and Squelch, Keys, Drawbar, Strings, Analog, Pluck and Drums don't answer it. By default on Poly, pressing harder opens the filter, so a held chord brightens as you lean into it; on Wind it blows harder, so a held note swells and opens. You choose up to four things for pressure to change, how much, and how hard you must press before it starts. On Poly, pressure can also bring in either LFO (**LFO 1 amount**, **LFO 2 amount**) or move each note across the speakers (**Pan**).
 
 Clips record pad pressure too, so a recorded part plays back with the same swells: see [Pad pressure](clips.md#pad-pressure) in Clips and patterns.
 
@@ -467,4 +459,4 @@ How hard you hit a pad sets how loud the note plays, as with drums. **FULL LEVEL
 Note Repeat, Latch and the arpeggiator all play the synth too: see [Note Repeat, Latch and the arpeggiator](note-repeat-and-arp.md).
 
 > [!MPC]
-> The MPC's plugin instruments (such as its bass and electric-piano plugins) and expansions are not in MPFree. MPFree has its own thirteen synths instead, with their controls on one tab and the Q-Links following each preset, and it can host CLAP plugin synths and the MPC plugin instruments people share, such as those in the Open MPC catalog. As on the MPC, where each track plays a program, each track can play its own instrument; a track without one plays its kit (see [A kit for each track](pads.md#a-kit-for-each-track)). The scales and chords of the MPC's Pad Perform mode are replaced by the scale settings and the per-bank pad layouts here: switch layouts with the PAD BANK buttons without leaving the page you are on.
+> The MPC's plugin instruments (such as its bass and electric-piano plugins) and expansions are not in MPFree. MPFree has its own twelve synths instead, with their controls on one tab and the Q-Links following each preset, and it can host CLAP plugin synths and the MPC plugin instruments people share, such as those in the Open MPC catalog. As on the MPC, where each track plays a program, each track can play its own instrument; a track without one plays its kit (see [A kit for each track](pads.md#a-kit-for-each-track)). The scales and chords of the MPC's Pad Perform mode are replaced by the scale settings and the per-bank pad layouts here: switch layouts with the PAD BANK buttons without leaving the page you are on.

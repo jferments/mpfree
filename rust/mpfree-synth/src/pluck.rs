@@ -34,6 +34,7 @@ use crate::modal::{
 };
 use crate::params::Preset;
 use crate::pluck_params::*;
+use crate::voice::velocity_gain;
 
 /// Frames per control step.
 pub const CTRL: u64 = 16;
@@ -56,13 +57,16 @@ static INFO: NodeInfo = NodeInfo {
 };
 
 /// The materials' modes, in the Material setting's order.
-const MATERIAL_MODES: [Modes; 6] = [
+const MATERIAL_MODES: [Modes; 9] = [
     crate::modal::MARIMBA,
     crate::modal::VIBES,
     crate::modal::BELL,
     crate::modal::GLASS,
     crate::modal::KALIMBA,
     crate::modal::STEEL_DRUM,
+    crate::modal::GLOCKENSPIEL,
+    crate::modal::XYLOPHONE,
+    crate::modal::CHIMES,
 ];
 
 /// A material's modes, from the Material value.
@@ -86,17 +90,58 @@ fn loop_coef(brightness: f32, hz: f32, rate: f32) -> f32 {
     (-std::f32::consts::TAU * fc / rate).exp()
 }
 
-/// The pick: a one-pole low-pass on white noise, 0.95 (soft) to 0, from
-/// Pick (0 to 100) and the velocity's brightness.
-fn pick_coef(pick: f32, bright: f32) -> f32 {
-    let pick = (pick / 100.0 * bright).clamp(0.0, 1.0);
-    0.95 * (1.0 - pick)
+/// The pick: a one-pole low-pass on the burst of white noise. Pick (0 to
+/// 100) sets its cutoff in harmonics of the note, from 2 (a soft thumb) to
+/// 181 (a hard plectrum), so a pick sounds alike on every note; a softer
+/// note (`soft_oct`, octaves) lowers it. The pole's coefficient.
+fn pick_coef(pick: f32, soft_oct: f32, hz: f32, rate: f32) -> f32 {
+    let harmonics = (1.0 + 6.5 * (pick / 100.0).clamp(0.0, 1.0) - soft_oct).exp2();
+    let fc = (hz * harmonics).min(0.45 * rate);
+    (-std::f32::consts::TAU * fc / rate).exp()
 }
 
-/// The pick position (0 to 100) as a delay into a string `period` frames
-/// long.
-fn pick_offset(position: f32, period: usize) -> usize {
-    ((position / 100.0) * period as f32).round().max(1.0) as usize
+/// How many octaves a velocity (0 to 1) lowers the pick's cutoff, from Vel >
+/// tone (0 to 100): up to 4 at the softest note.
+fn soft_octaves(vel_tone: f32, vel: f32) -> f32 {
+    4.0 * (vel_tone / 100.0).clamp(0.0, 1.0) * (1.0 - vel).clamp(0.0, 1.0)
+}
+
+/// How much longer a velocity (0 to 1) makes the mallet's pulse than a
+/// full-velocity one, from Vel > tone (0 to 100): up to 8 times at the
+/// softest note (a softer hit stays on the bar longer, so it is darker).
+fn soft_pulse(vel_tone: f32, vel: f32) -> f32 {
+    (3.0 * (vel_tone / 100.0).clamp(0.0, 1.0) * (1.0 - vel).clamp(0.0, 1.0)).exp2()
+}
+
+/// Harmonics of a pluck's burst set to their average level: at most
+/// [`FIX_HARMONICS`], and about [`FIX_WORK`] frames of work in all.
+const FIX_HARMONICS: usize = 8;
+const FIX_WORK: usize = 16384;
+
+/// The rms of white noise of variance 1/3 through the pick's one-pole
+/// low-pass (coefficient `c`, so its autocorrelation at lag j is `c^j`)
+/// and then the comb with its tap `m` frames back (linear between frames).
+fn comb_rms(c: f32, m: f32) -> f32 {
+    let var = (1.0 / 3.0) * (1.0 - c) / (1.0 + c);
+    let k = m.floor();
+    let f = m - k;
+    let rho = |j: f32| if j <= 0.0 { 1.0 } else { c.powf(j) };
+    let e = 1.0 + (1.0 - f) * (1.0 - f) + f * f - 2.0 * (1.0 - f) * rho(k) - 2.0 * f * rho(k + 1.0)
+        + 2.0 * f * (1.0 - f) * rho(1.0);
+    (var * e.max(0.0)).sqrt()
+}
+
+/// The pick position's comb, `1 - H` with `H` the tap `m` frames back
+/// (linear between frames, as `render` reads it), at `w` radians a frame:
+/// its magnitude.
+fn comb_mag(m: f32, w: f32) -> f32 {
+    let k = m.floor();
+    let f = m - k;
+    // H = e^{-jwk} ((1 - f) + f e^{-jw})
+    let (re0, im0) = ((1.0 - f) + f * w.cos(), -f * w.sin());
+    let (c, s) = ((w * k).cos(), (-w * k).sin());
+    let (re, im) = (re0 * c - im0 * s, re0 * s + im0 * c);
+    ((1.0 - re) * (1.0 - re) + im * im).sqrt()
 }
 
 /// How long the mallet's pulse lasts on a full-velocity note `note`, in
@@ -146,13 +191,9 @@ pub fn partials(value: impl Fn(u16) -> f32, note: u8, rate: u32, out: &mut [Part
         let mag = |w: f32| (1.0 - a) / (1.0 - 2.0 * a * w.cos() + a * a).sqrt();
         let per_period = 10f32.powf(-3.0 / (decay_for(value(DECAY), hz) * hz));
         let g = (per_period / mag(TAU * hz / rate)).min(0.99999);
-        let c = pick_coef(value(PICK), 1.0);
-        // The string's length in frames, as `tune` and `pluck` work it out.
-        let w1 = TAU * hz / rate;
-        let phase_delay = (a * w1.sin()).atan2(1.0 - a * w1.cos()) / w1;
-        let period = ((rate / hz - phase_delay).max(1.5).round() as usize).max(2);
-        let m = pick_offset(value(POSITION), period).min(period);
-        let (pf, rest) = (period as f32, (period - m) as f32);
+        let c = pick_coef(value(PICK), 0.0, hz, rate);
+        // The comb's tap, a share of the string's period back.
+        let m = value(POSITION) / 100.0 * rate / hz;
         for (k, p) in out.iter_mut().take(HARMONICS).enumerate() {
             let h = (k + 1) as f32;
             let w = TAU * hz * h / rate;
@@ -160,15 +201,11 @@ pub fn partials(value: impl Fn(u16) -> f32, note: u8, rate: u32, out: &mut [Part
                 (0.0, 0.0)
             } else {
                 let pick = (1.0 - c) / (1.0 - 2.0 * c * w.cos() + c * c).sqrt();
-                // `pluck` subtracts the burst delayed by `m` frames within
-                // the one period it writes (the first `m` frames keep
-                // theirs): for a white burst, the average power of
-                // harmonic h is P + (P - m) - 2 (P - m) cos(2 pi h m / P).
-                let comb = (pf + rest - 2.0 * rest * (TAU * h * m as f32 / pf).cos())
-                    .max(0.0)
-                    .sqrt();
+                // The burst is white noise through the pick; the comb on
+                // the string's output takes out the harmonics with a node
+                // at the pick (exactly, up to the tap's interpolation).
                 let loss = (g * mag(w)).min(0.99999);
-                (pick * comb, -3.0 / (hz * loss.log10()))
+                (pick * comb_mag(m, w), -3.0 / (hz * loss.log10()))
             };
             *p = Partial {
                 ratio: h,
@@ -213,6 +250,150 @@ pub fn partials(value: impl Fn(u16) -> f32, note: u8, rate: u32, out: &mut [Part
     n
 }
 
+/// How loud a K-weighted power at `hz` counts (ITU-R BS.1770's weighting,
+/// as analog curves): its high-pass at 38 Hz and its +4 dB shelf above
+/// about 1.7 kHz.
+fn k_weight2(hz: f32) -> f32 {
+    let (f0, q) = (38.135f32, 0.5003f32);
+    let f2 = hz * hz;
+    let hp = f2 * f2 / ((f0 * f0 - f2).powi(2) + (hz * f0 / q).powi(2));
+    let fc2 = 1_682.0f32 * 1_682.0;
+    let shelf = (fc2 + 2.512 * f2) / (fc2 + f2);
+    hp * shelf
+}
+
+/// Blocks of the loudness measure (BS.1770, as the lab's): 400 ms long,
+/// every 100 ms, over the first 1.5 s of a held note.
+const BLOCKS: usize = 12;
+
+/// Adds a partial whose K-weighted power starts at `power` and falls 60 dB
+/// in `t60` seconds to each loudness block's mean power.
+fn add_partial(blocks: &mut [f32; BLOCKS], power: f32, t60: f32) {
+    // Amplitude e^(-t / tau), so power e^(-2 t / tau).
+    let tau = (t60 / std::f32::consts::LN_10 / 3.0).max(1e-6);
+    let step = (-0.2 / tau).exp();
+    let mut e = power * tau * 0.5 * (1.0 - (-0.8 / tau).exp()) / 0.4;
+    for b in blocks.iter_mut() {
+        *b += e;
+        e *= step;
+    }
+}
+
+/// The loudness of a note from its blocks, gated as BS.1770 gates: blocks
+/// 40 dB under the loudest stand in for its absolute gate (a note in the
+/// lab is about 40 dB over it), then those 10 dB under the rest's mean
+/// are left out. So a short note is heard over its first block, not
+/// averaged with the silence after it.
+fn gated(blocks: &[f32; BLOCKS]) -> f32 {
+    let top = blocks.iter().copied().fold(0.0f32, f32::max);
+    let mean_over = |gate: f32| {
+        let (sum, n) = blocks
+            .iter()
+            .filter(|&&b| b > gate)
+            .fold((0.0f32, 0u32), |(s, n), &b| (s + b, n + 1));
+        if n > 0 {
+            sum / n as f32
+        } else {
+            0.0
+        }
+    };
+    let floor = top * 1e-4;
+    mean_over((mean_over(floor) * 0.1).max(floor))
+}
+
+/// The most the voicing across the keys lifts or lowers a note, dB.
+const EVEN_DB: f32 = 9.0;
+
+/// How loud a full-velocity note at `hz` is, as the loudness measure hears
+/// a held note (K-weighted, in gated 400 ms blocks over its first 1.5 s:
+/// [`gated`]), with the values `value` gives by parameter id, in
+/// the units of a note whose power starts at 1 (a string's burst is set
+/// to the same power on every note; a mallet's modes from the pulse). The
+/// engine plays each note at the level that makes this the same as at
+/// middle C's, so the keys sound even (row L11 of the lab) whatever the
+/// knobs: higher notes ring shorter, and the weighting hears little of
+/// the lowest fundamentals.
+pub fn note_energy(value: impl Fn(u16) -> f32, hz: f32, rate: f32) -> f32 {
+    use std::f32::consts::TAU;
+    if value(MODEL) < 0.5 {
+        let hz = hz.max(MIN_HZ).min(rate * 0.25);
+        let a = loop_coef(value(BRIGHTNESS), hz, rate);
+        let mag = |w: f32| (1.0 - a) / (1.0 - 2.0 * a * w.cos() + a * a).sqrt();
+        let per_period = 10f32.powf(-3.0 / (decay_for(value(DECAY), hz) * hz));
+        let g = (per_period / mag(TAU * hz / rate)).min(0.99999);
+        let c = pick_coef(value(PICK), 0.0, hz, rate);
+        let m = value(POSITION) / 100.0 * rate / hz;
+        let top = 0.5 * rate / hz;
+        // The comb repeats every 1 / position harmonics.
+        let comb_period = 100.0 / value(POSITION).max(1.0);
+        let mut power = 0.0f32;
+        let mut blocks = [0.0f32; BLOCKS];
+        // The first 12 harmonics one by one; above, one in each quarter
+        // octave stands for the harmonics around it, and where those span
+        // the comb's notches they average out (to 2).
+        let mut h = 1.0f32;
+        while h < top {
+            let step = if h < 12.5 {
+                1.0
+            } else {
+                (h * (std::f32::consts::SQRT_2.sqrt() - 1.0)).round()
+            };
+            let w = TAU * hz * h / rate;
+            let comb2 = if step * 2.0 < comb_period {
+                comb_mag(m, w).powi(2)
+            } else {
+                2.0
+            };
+            let pick2 = (1.0 - c) * (1.0 - c) / (1.0 - 2.0 * c * w.cos() + c * c);
+            let p = pick2 * comb2 * step;
+            let loss = (g * mag(w)).min(0.99999);
+            let t60 = -3.0 / (hz * loss.log10());
+            power += p;
+            add_partial(&mut blocks, p * k_weight2(hz * h), t60);
+            h += step;
+        }
+        if power > 0.0 {
+            gated(&blocks) / power
+        } else {
+            0.0
+        }
+    } else {
+        let modes = material(value(MATERIAL));
+        let (stretch, damp, pos) = (
+            value(STRETCH) / 100.0,
+            value(HIGH_DAMP) / 100.0,
+            value(STRIKE) / 100.0,
+        );
+        let base = decay_for(value(DECAY), hz);
+        let share = mode_share(modes);
+        let t = pulse_len(value(HARDNESS), 1.0, hz, rate) / rate;
+        let mut blocks = [0.0f32; BLOCKS];
+        for (k, &(ratio, level, dr)) in modes.iter().take(MODES).enumerate() {
+            let f = hz * stretched(ratio, stretch);
+            if f >= 0.45 * rate || f <= 10.0 {
+                continue;
+            }
+            let amp = level * strike_place(k, pos) * share * pulse_spectrum(f, t);
+            add_partial(
+                &mut blocks,
+                amp * amp * k_weight2(f),
+                mode_t60(base, dr, damp),
+            );
+        }
+        gated(&blocks)
+    }
+}
+
+/// The level that evens a note at `hz` out with middle C, from their
+/// [`note_energy`]s, within [`EVEN_DB`].
+fn even_gain(energy: f32, at_c4: f32) -> f32 {
+    if energy <= 0.0 || at_c4 <= 0.0 {
+        return 1.0;
+    }
+    let lim = 10f32.powf(EVEN_DB / 20.0);
+    (at_c4 / energy).sqrt().clamp(1.0 / lim, lim)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 enum State {
     #[default]
@@ -235,6 +416,10 @@ struct Voice {
     ex: VoiceExpr,
     gain_l: f32,
     gain_r: f32,
+    /// +1 or -1: alternate voices strike the other way, so the attacks of
+    /// a chord's bars don't all peak together (one note alone sounds the
+    /// same either way).
+    sign: f32,
     kill: f32,
     kill_step: f32,
     /// Level follower, to end the voice once it is silent.
@@ -251,6 +436,14 @@ struct Voice {
     ap_c: f32,
     ap_x1: f32,
     ap_y1: f32,
+    /// The pick position (a share of the string, from the pluck) and the
+    /// comb's tap: whole frames back and the fraction past them.
+    pos: f32,
+    comb_k: usize,
+    comb_f: f32,
+    /// Frames until the comb's tap reaches the pluck in a string that was
+    /// silent before it (the tap reads silence until then).
+    quiet: u32,
     dc_x: f32,
     dc_y: f32,
     // Mallet.
@@ -280,6 +473,11 @@ pub struct Pluck {
     /// smoothing coefficient.
     exprs: NoteExprs,
     expr_c: f32,
+    /// Middle C's [`note_energy`] for the knobs now, and each note's
+    /// level to even it out with middle C ([`even_gain`]), or NaN when a
+    /// knob or the tuning moved since (worked out again at the next note).
+    c4_energy: f32,
+    evens: [f32; 128],
 }
 
 impl Pluck {
@@ -305,6 +503,8 @@ impl Pluck {
             tuning: Tuning::standard(),
             exprs: NoteExprs::new(),
             expr_c: 1.0,
+            c4_energy: f32::NAN,
+            evens: [f32::NAN; 128],
         };
         s.prepare(rate, mpfree_node::MAX_BLOCK);
         s
@@ -384,6 +584,29 @@ impl Pluck {
         }
     }
 
+    /// The level that makes `note` as loud as middle C ([`note_energy`]),
+    /// at its pitch without bend or slide; kept until a knob or the
+    /// tuning moves.
+    fn even(&mut self, note: u8) -> f32 {
+        let i = usize::from(note.min(127));
+        if self.evens[i].is_nan() {
+            let rate = self.rate as f32;
+            if self.c4_energy.is_nan() {
+                self.c4_energy = note_energy(|id| self.v(id), 261.63, rate);
+            }
+            let pitch = f32::from(note) + self.v(TRANSPOSE) + self.v(FINE) / 100.0;
+            let hz = self.tuning.hz(pitch);
+            self.evens[i] = even_gain(note_energy(|id| self.v(id), hz, rate), self.c4_energy);
+        }
+        self.evens[i]
+    }
+
+    /// Forgets the evening levels (a knob or the tuning moved).
+    fn forget_evens(&mut self) {
+        self.c4_energy = f32::NAN;
+        self.evens = [f32::NAN; 128];
+    }
+
     /// Sets a voice's filters for its pitch and gate.
     fn tune(&self, v: &mut Voice, pitch: f32) {
         let rate = self.rate as f32;
@@ -401,6 +624,11 @@ impl Pluck {
             v.ap_c = (1.0 - d) / (1.0 + d);
             let per_period = 10f32.powf(-3.0 / (self.decay_at(hz, held) * hz));
             v.g = (per_period / mag).min(0.99999);
+            // The comb's tap: the pick position's share of the note's
+            // period, so its notches land on the harmonics the string plays.
+            let m = (v.pos * rate / hz).clamp(0.0, (self.line / 2) as f32);
+            v.comb_k = m as usize;
+            v.comb_f = m - v.comb_k as f32;
         } else {
             let modes = material(self.v(MATERIAL));
             let stretch = self.v(STRETCH) / 100.0;
@@ -484,6 +712,7 @@ impl Pluck {
                     .clamp(-1.0, 1.0);
                 v.gain_l = (1.0 - pan).sqrt() * std::f32::consts::FRAC_1_SQRT_2;
                 v.gain_r = (1.0 + pan).sqrt() * std::f32::consts::FRAC_1_SQRT_2;
+                v.sign = if side < 0.0 { 1.0 } else { -1.0 };
                 let base = free * self.line;
                 self.lines[base..base + self.line].fill(0.0);
                 self.voices[free] = v;
@@ -497,29 +726,43 @@ impl Pluck {
         v.age = self.clock;
         v.frames = 0;
         v.ex.start(self.exprs.on(note));
+        v.pos = self.v(POSITION) / 100.0;
         let pitch = self.voice_pitch(note, &v.ex);
         self.tune(&mut v, pitch);
-        // Velocity: level, and brightness by Vel > tone.
-        let vt = self.v(VEL_TONE) / 100.0;
-        let bright = 1.0 - vt * (1.0 - vel);
-        let amp = 0.25 + 0.75 * vel;
+        // Velocity: the level on Velocity's square law, and the tone by
+        // Vel > tone.
+        let rate = self.rate as f32;
+        let amp = velocity_gain(velocity, self.v(VELOCITY)) * self.even(note);
+        let vt = self.v(VEL_TONE);
         if self.mallet() {
             let hz = self.tuning.hz(pitch);
-            let len = pulse_len(self.v(HARDNESS), bright, hz, self.rate as f32);
+            // A soft hit's pulse stops at half the note's period, where it
+            // still drives the fundamental at 0.8.
+            let hard = pulse_len(self.v(HARDNESS), 1.0, hz, rate);
+            let len = (hard * soft_pulse(vt, vel)).min(0.5 * rate / hz).max(hard);
             // Unit area, so the low modes sound the same at any hardness.
-            v.pulse
-                .start(len as u32, amp * std::f32::consts::FRAC_PI_2 / len * 0.42);
+            v.pulse.start(
+                len as u32,
+                v.sign * amp * std::f32::consts::FRAC_PI_2 / len * 0.42,
+            );
         } else {
-            self.pluck(slot, &v, amp, bright);
+            let hz = self.tuning.hz(pitch).max(MIN_HZ).min(rate * 0.25);
+            let c = pick_coef(self.v(PICK), soft_octaves(vt, vel), hz, rate);
+            // A string that was silent had nothing to subtract a share of
+            // a period ago, so the note starts from silence, not on a step.
+            if same.is_none() {
+                v.quiet = v.comb_k as u32 + 1;
+            }
+            self.pluck(slot, &v, hz, amp, c);
         }
         self.voices[slot] = v;
     }
 
     /// Adds a pluck's noise burst into voice `slot`'s delay line, a period
-    /// long, ending where the line is read next.
-    fn pluck(&mut self, slot: usize, v: &Voice, amp: f32, bright: f32) {
+    /// long, ending where the line is read next: white noise through the
+    /// pick's low-pass (coefficient `c`), at `amp` once through the comb.
+    fn pluck(&mut self, slot: usize, v: &Voice, hz: f32, amp: f32, c: f32) {
         let period = (v.delay.round() as usize).clamp(2, self.line - 2);
-        let c = pick_coef(self.v(PICK), bright);
         let mut lp = 0.0f32;
         let mut sum = 0.0f32;
         for i in 0..period {
@@ -528,21 +771,48 @@ impl Pluck {
             sum += lp;
         }
         let mean = sum / period as f32;
-        // Pick position: subtracting a copy delayed by that fraction of the
-        // string cancels the harmonics with a node there.
-        let m = pick_offset(self.v(POSITION), period);
-        let mut energy = 0.0f32;
-        for i in (0..period).rev() {
-            let x = self.scratch[i] - mean;
-            let d = if i >= m {
-                self.scratch[i - m] - mean
-            } else {
-                0.0
-            };
-            self.scratch[i] = x - d;
-            energy += (x - d) * (x - d);
+        for x in &mut self.scratch[..period] {
+            *x -= mean;
         }
-        let norm = amp * 0.32 / (energy / period as f32).sqrt().max(1e-6);
+        // A burst of noise gives the low harmonics random levels, so one
+        // pluck could come out 5 dB louder than the next. Set the first few
+        // to their average level (their phases stay random, and the upper
+        // harmonics stay noise): fewer for a long, low string, where more
+        // harmonics share the sound.
+        let pf = period as f32;
+        let top = ((0.45 * self.rate as f32 / hz) as usize).max(1);
+        let fix = (FIX_WORK / period).clamp(2, FIX_HARMONICS).min(top);
+        for h in 1..=fix {
+            // The string's own harmonic, which needn't be a whole number
+            // of cycles in the burst (the loop's filters hold the rest of
+            // the period).
+            let w = std::f32::consts::TAU * h as f32 * hz / self.rate as f32;
+            let (sw, cw) = w.sin_cos();
+            let (mut re, mut im) = (0.0f32, 0.0f32);
+            let (mut co, mut si) = (1.0f32, 0.0f32);
+            for &x in &self.scratch[..period] {
+                re += x * co;
+                im -= x * si;
+                (co, si) = (co * cw - si * sw, si * cw + co * sw);
+            }
+            let mag = (re * re + im * im).sqrt();
+            // White noise of variance 1/3 through the pick, on average.
+            let want = (pf / 3.0).sqrt() * (1.0 - c) / (1.0 - 2.0 * c * cw + c * c).sqrt();
+            if mag > 1e-9 {
+                let k = (want / mag - 1.0) * 2.0 / pf;
+                let (ar, ai) = (k * re, k * im);
+                let (mut co, mut si) = (1.0f32, 0.0f32);
+                for x in &mut self.scratch[..period] {
+                    *x += ar * co - ai * si;
+                    (co, si) = (co * cw - si * sw, si * cw + co * sw);
+                }
+            }
+        }
+        // The pick position's comb runs on the string's output (`render`),
+        // so its notches are exact. The level is set for what comes out of
+        // it on average (the pick's noise through the comb), not for this
+        // burst, so plucks don't differ in level by chance.
+        let norm = amp * 0.32 / comb_rms(c, v.comb_k as f32 + v.comb_f).max(1e-6);
         let base = slot * self.line;
         let mask = self.line - 1;
         for i in 0..period {
@@ -687,8 +957,24 @@ impl Pluck {
                     v.lp = (1.0 - v.a) * ap + v.a * v.lp;
                     let out = v.g * v.lp;
                     buf[v.w] = out;
+                    // The pick position's comb: less the string as it was
+                    // that share of a period ago.
+                    let at = v.w + line - v.comb_k;
+                    let tap = if v.quiet == 0 {
+                        let a = buf[at & mask];
+                        a + v.comb_f * (buf[(at - 1) & mask] - a)
+                    } else {
+                        // A fresh string: nothing there yet, then only the
+                        // first frame of the pluck.
+                        v.quiet -= 1;
+                        if v.quiet == 0 {
+                            buf[at & mask] * (1.0 - v.comb_f)
+                        } else {
+                            0.0
+                        }
+                    };
                     v.w = (v.w + 1) & mask;
-                    out
+                    out - tap
                 };
                 // A DC blocker (5 Hz) keeps an asymmetric pluck centred.
                 let dc = y - v.dc_x + 0.9993 * v.dc_y;
@@ -732,6 +1018,14 @@ impl Node for Pluck {
         }
         let old = self.values[id as usize];
         self.values[id as usize] = p.clamp(value);
+        if self.values[id as usize] != old
+            && !matches!(
+                id,
+                LEVEL | PAN | SPREAD | POLYPHONY | BEND_RANGE | VEL_TONE | VELOCITY
+            )
+        {
+            self.forget_evens();
+        }
         if id == MODEL && self.values[id as usize] != old {
             // A voice can't change model while it rings: fade them out.
             for i in 0..POOL {
@@ -766,6 +1060,7 @@ impl Node for Pluck {
 
     fn prepare(&mut self, rate: u32, _max_block: usize) {
         self.rate = rate;
+        self.forget_evens();
         self.line = ((rate as f32 / MIN_HZ) as usize + 4).next_power_of_two();
         self.lines = vec![0.0; self.line * POOL];
         self.scratch = vec![0.0; self.line];
@@ -828,6 +1123,7 @@ impl Node for Pluck {
             return;
         }
         self.tuning.clone_from(tuning);
+        self.forget_evens();
         // Every voice retunes on the next control step.
         for v in self.voices.iter_mut() {
             v.tuned = f32::NAN;

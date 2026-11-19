@@ -26,6 +26,7 @@ pub(crate) mod fft;
 pub mod import;
 pub mod params;
 pub mod table;
+pub mod to_poly;
 
 use std::sync::Arc;
 

@@ -525,6 +525,8 @@ mod tests {
     #[test]
     fn a_mallet_draws_its_modes_and_its_pulse() {
         let mut s = pluck("Marimba");
+        // A medium mallet, whatever the preset's voicing.
+        s.set_param(kp::HARDNESS, 50.0);
         let v = |id| s.param(id);
         assert!(is_mallet(&v));
         let parts = note_partials(&v);
