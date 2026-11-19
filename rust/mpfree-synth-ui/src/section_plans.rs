@@ -397,7 +397,7 @@ fn poly(page: &str) -> Option<Plan> {
                     "voices",
                     "Voices",
                     Voice,
-                    &[VOICE_MODE, POLYPHONY, GLIDE, AGE],
+                    &[VOICE_MODE, PRIORITY, POLYPHONY, GLIDE, GLIDE_MODE, AGE],
                 ),
                 // Not "Voices": the Voices section has that word.
                 s(
