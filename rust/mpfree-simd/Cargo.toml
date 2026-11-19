@@ -1,0 +1,12 @@
+[package]
+name = "mpfree-simd"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "NEON kernels for the MPC One's ARMv7 cores, in assembly, each with a plain Rust twin that is its reference; the only unsafe code the synths call"
+
+[dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+mpfree-lanes = { path = "../mpfree-lanes" }

@@ -14,6 +14,7 @@ ids! {
     OSC2_WAVE = 10, OSC2_OCT = 11, OSC2_SEMI = 12, OSC2_FINE = 13, OSC2_PW = 14, OSC2_LEVEL = 15,
     SUB_LEVEL = 16, NOISE_LEVEL = 17,
     UNISON = 20, UNISON_DETUNE = 21, UNISON_SPREAD = 22,
+    SUPER_DETUNE = 24, SUPER_MIX = 25,
     FILTER_MODE = 30, CUTOFF = 31, RESONANCE = 32, DRIVE = 33, FENV_AMOUNT = 34, KEY_TRACK = 35, VEL_CUTOFF = 36, DIST = 37,
     FENV_A = 40, FENV_D = 41, FENV_S = 42, FENV_R = 43,
     AMP_A = 50, AMP_D = 51, AMP_S = 52, AMP_R = 53, VEL_AMP = 54,
@@ -65,7 +66,7 @@ pub mod target {
 /// The highest id plus one: values live in an array indexed by id.
 pub const ID_SPACE: usize = PRESS_BASE as usize + np::FIELDS;
 
-pub const WAVES: &[&str] = &["Saw", "Pulse", "Triangle", "Sine"];
+pub const WAVES: &[&str] = &["Saw", "Pulse", "Triangle", "Sine", "Supersaw"];
 pub const FILTER_MODES: &[&str] = &["LP 24", "LP 12", "BP 12", "HP 12"];
 pub const LFO_SHAPES: &[&str] = &["Sine", "Triangle", "Saw", "Square", "S&H"];
 /// Tempo sync: off, or a cycle length in beats.
@@ -265,6 +266,28 @@ const BASE: &[ParamInfo] = &[
         Unit::Percent,
         Linear,
     ),
+    // The supersaw's seven saws (either oscillator on Supersaw): how far
+    // apart they go, and how loud the six around the note are against it.
+    p(
+        SUPER_DETUNE,
+        "Detune",
+        "Supersaw",
+        0.0,
+        100.0,
+        50.0,
+        Unit::Percent,
+        Linear,
+    ),
+    p(
+        SUPER_MIX,
+        "Mix",
+        "Supersaw",
+        0.0,
+        100.0,
+        50.0,
+        Unit::Percent,
+        Linear,
+    ),
     choice(FILTER_MODE, "Type", "Filter", FILTER_MODES, 0.0),
     p(
         CUTOFF,
@@ -331,9 +354,9 @@ const BASE: &[ParamInfo] = &[
         FENV_A,
         "Attack",
         "Filter env",
-        0.5,
+        0.1,
         10_000.0,
-        2.0,
+        0.64,
         Unit::Ms,
         Log,
     ),
@@ -363,7 +386,7 @@ const BASE: &[ParamInfo] = &[
         "Filter env",
         1.0,
         10_000.0,
-        300.0,
+        295.0,
         Unit::Ms,
         Log,
     ),
@@ -371,9 +394,9 @@ const BASE: &[ParamInfo] = &[
         AMP_A,
         "Attack",
         "Amp env",
-        0.5,
+        0.1,
         10_000.0,
-        2.0,
+        0.64,
         Unit::Ms,
         Log,
     ),
@@ -403,18 +426,20 @@ const BASE: &[ParamInfo] = &[
         "Amp env",
         1.0,
         10_000.0,
-        250.0,
+        246.0,
         Unit::Ms,
         Log,
     ),
+    // How much quieter the softest note is than the hardest, on the
+    // voice core's square-law curve.
     p(
         VEL_AMP,
         "Velocity",
         "Amp env",
         0.0,
-        100.0,
-        60.0,
-        Unit::Percent,
+        40.0,
+        8.0,
+        Unit::Db,
         Linear,
     ),
     choice(LFO_SHAPE, "Shape", "LFO", LFO_SHAPES, 0.0),

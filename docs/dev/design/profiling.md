@@ -363,6 +363,16 @@ the device needs explicit NEON code (today a nightly-only
 builds says what the flag is worth; until then, treat "+neon makes it
 faster" as unproven.
 
+The explicit NEON code is `mpfree-simd` ([NEON kernels](simd.md), 19 Nov):
+hand-written assembly kernels (stable `global_asm!` with `.fpu neon`), each
+with a plain Rust twin, chosen at run time. Its first kernel, the
+supersaw's saws, gives its twin's samples bit for bit under qemu-arm and
+runs 43 % of the twin's ARMv7 instructions on the bench's eight voices
+(`python3 tools/simd_arm_cost.py`, counted the way the next section's
+script counts the engines). The bench's "Supersaw saws: 8 voices, plain"
+and "..., NEON" cases are the device round's A/B: the kernel stays only if
+it is faster on the MPC.
+
 ## Measuring on the device
 
 **First results (round 7):** [docs/dev/perf/mpc-one-round7.md](../perf/mpc-one-round7.md).

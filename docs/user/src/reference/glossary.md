@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: docs/user/terms.toml
-checked: 2026-11-14 b76c3c7
+checked: 2026-11-19 79fc6f63
 -->
 
 # Glossary
@@ -22,7 +22,7 @@ checked: 2026-11-14 b76c3c7
 
 **Chance** — How likely a note is to play each time round, from 0 to 100 %.
 
-**Chop** — Cut a sample into slices, one per pad.
+**Chop** — Cut a sample into slices, one per pad: the Sample tab's **Slice** tool does it.
 
 **Clip** — A recorded or programmed part (a pattern, a bass line) on one track.
 
@@ -54,6 +54,8 @@ checked: 2026-11-14 b76c3c7
 
 **Layer** — One recording in a loop. The first pass is the first layer; every overdub adds another. A sampled pad's velocity layers are its different sounds for soft and hard hits.
 
+**Lock lane** — A row under a sound on the Sequencer's Steps that sets one of its settings step by step, such as its filter or a send.
+
 **Loop** — A few bars of audio that play round and round, in time, recorded by the looper.
 
 **Macro** — A knob that moves several settings at once. There are eight.
@@ -78,13 +80,17 @@ checked: 2026-11-14 b76c3c7
 
 **Pad layout** — How the pads play a synth: Chromatic, In key, or Chord pads.
 
+**Pads tab** — The tab where you put sounds on pads and set each pad's level, tuning, effects and what it plays.
+
 **Parameter lock** — A setting changed for one step only, such as a filter that opens on one hit.
 
-**Pattern** — A clip shown as a grid of steps on the Play page.
+**Pattern** — A clip shown as steps: the rows on the Play page, and the Sequencer's Steps.
+
+**Perform set** — Eight pages of action pads (loop keys, throws, mutes, scenes, macros) that can take over the pads, set up on the Pads tab.
 
 **Pin** — A hit in a warped sound fixed to a beat with the Warp tool; the sound between pins stretches to fit.
 
-**Plugin** — An effect or synth made by someone else, in the CLAP format, that MPFree can load from its stick.
+**Plugin** — An effect or synth made by someone else, in the CLAP format or as an MPC plugin, that MPFree can load from its stick.
 
 **Prefs** — MPFree's settings, opened with SHIFT + MENU.
 
@@ -104,9 +110,11 @@ checked: 2026-11-14 b76c3c7
 
 **Sequencer** — The tab after Play: the armed track's clip as steps (**Steps**) or as notes in the note editor (**Notes**). **STEP SEQ** opens it.
 
-**Skip back** — The Rec page's way to keep what had just come in, without having pressed Record. The Rec page has gone: Sample Recall's **From** set to the recorder's Source does it now.
+**Skip back** — Keeping what had just come in without having pressed Record: Sample Recall, with **From** set to the recorder's Source.
 
 **Song** — Clips laid out on a timeline on the Arrange tab, one lane per track, with the audio tracks under them.
+
+**Step inspector** — The panel on the Sequencer's Steps that shows and sets the picked step's velocity, length, chance, condition, ratchet and nudge.
 
 **Submix** — A mixer strip that groups several sounds, so one fader and one set of effects serve them all.
 

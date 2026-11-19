@@ -24,7 +24,7 @@
 "Key LP" = "SC high cut (renamed 2026-11-18)"
 
 [names]
-tabs = ["Play", "Pads", "Arrange", "Synth", "Looper", "Sample", "Mix", "Dev"]
+tabs = ["Play", "Sequencer", "Looper", "Sample", "Synth", "Arrange", "Pads", "Mix", "Dev"]
 play_views = ["All"]
 sample_pages = ["Wave", "Warp", "Chop", "Play", "Grain", "Rec"]
 overlays = ["Prefs", "the Arp panel", "the button guide", "the browser", "the list of kits"]
