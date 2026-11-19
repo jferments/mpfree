@@ -15,6 +15,12 @@ string.brightness = 35
 string.pick = 45
 string.position = 20
 
+# Voice
+voice.vel-tone = 60
+
+# Output
+output.level = 1.5
+
 mpfree-preset = 2
 engine = mpfree.pluck
 name = Steel String
@@ -27,6 +33,9 @@ model.release = 400
 string.brightness = 80
 string.pick = 85
 string.position = 12
+
+# Output
+output.level = -2.5
 
 mpfree-preset = 2
 engine = mpfree.pluck
@@ -55,7 +64,13 @@ model.release = 600
 # String
 string.brightness = 75
 string.pick = 95
-string.position = 5
+string.position = 8
+
+# Voice
+voice.vel-tone = 70
+
+# Output
+output.level = -1
 
 mpfree-preset = 2
 engine = mpfree.pluck
@@ -74,8 +89,107 @@ string.position = 25
 voice.transpose = -12
 
 # Output
+output.level = 3.5
+output.spread = 0
+
+mpfree-preset = 2
+engine = mpfree.pluck
+name = Oud
+
+# Model
+model.decay = 2200
+model.release = 300
+
+# String
+string.brightness = 50
+string.pick = 70
+string.position = 15
+
+# Voice
+voice.vel-tone = 80
+
+# Output
+output.level = 1
+
+mpfree-preset = 2
+engine = mpfree.pluck
+name = Banjo
+
+# Model
+model.decay = 1500
+model.release = 200
+
+# String
+string.brightness = 90
+string.pick = 95
+string.position = 7
+
+# Voice
+voice.vel-tone = 65
+
+# Output
+output.level = -0.5
+
+mpfree-preset = 2
+engine = mpfree.pluck
+name = Upright Bass
+
+# Model
+model.decay = 2500
+model.release = 150
+
+# String
+string.brightness = 25
+string.pick = 25
+string.position = 18
+
+# Voice
+voice.velocity = 28
+voice.transpose = -12
+
+# Output
 output.level = 2
 output.spread = 0
+
+mpfree-preset = 2
+engine = mpfree.pluck
+name = Harpsichord
+
+# Model
+model.decay = 6000
+model.release = 120
+
+# String
+string.brightness = 90
+string.pick = 80
+string.position = 10
+
+# Voice
+voice.vel-tone = 30
+voice.velocity = 12
+
+# Output
+output.level = -3.5
+output.spread = 40
+
+mpfree-preset = 2
+engine = mpfree.pluck
+name = Pizzicato
+
+# Model
+model.decay = 900
+model.release = 120
+
+# String
+string.brightness = 40
+string.pick = 35
+string.position = 30
+
+# Voice
+voice.vel-tone = 60
+
+# Output
+output.spread = 70
 
 mpfree-preset = 2
 engine = mpfree.pluck
@@ -88,7 +202,15 @@ model.release = 5000
 
 # Mallet
 mallet.material = Marimba
-mallet.hardness = 45
+mallet.hardness = 85
+mallet.high-damp = 20
+
+# Voice
+voice.vel-tone = 80
+voice.velocity = 34
+
+# Output
+output.level = -4
 
 mpfree-preset = 2
 engine = mpfree.pluck
@@ -101,8 +223,14 @@ model.release = 400
 
 # Mallet
 mallet.material = Vibes
-mallet.hardness = 55
+mallet.hardness = 80
 mallet.high-damp = 30
+
+# Voice
+voice.vel-tone = 70
+
+# Output
+output.level = -8
 
 mpfree-preset = 2
 engine = mpfree.pluck
@@ -115,11 +243,14 @@ model.release = 5000
 
 # Mallet
 mallet.material = Bell
-mallet.hardness = 80
+mallet.hardness = 85
 mallet.high-damp = 40
 
+# Voice
+voice.vel-tone = 70
+
 # Output
-output.level = -2
+output.level = -3.5
 
 mpfree-preset = 2
 engine = mpfree.pluck
@@ -135,6 +266,9 @@ mallet.material = Glass
 mallet.hardness = 70
 mallet.strike = 35
 
+# Output
+output.level = -3.5
+
 mpfree-preset = 2
 engine = mpfree.pluck
 name = Kalimba
@@ -146,7 +280,14 @@ model.release = 2000
 
 # Mallet
 mallet.material = Kalimba
-mallet.hardness = 60
+mallet.hardness = 92
+mallet.high-damp = 10
+
+# Voice
+voice.vel-tone = 100
+
+# Output
+output.level = -4.5
 
 mpfree-preset = 2
 engine = mpfree.pluck
@@ -161,3 +302,110 @@ model.release = 1500
 mallet.material = Steel drum
 mallet.hardness = 65
 mallet.stretch = 2
+
+# Output
+output.level = -2.5
+
+mpfree-preset = 2
+engine = mpfree.pluck
+name = Glockenspiel
+
+# Model
+model.model = Mallet
+model.decay = 7000
+model.release = 3000
+
+# Mallet
+mallet.material = Glockenspiel
+mallet.hardness = 90
+mallet.strike = 25
+mallet.high-damp = 20
+
+# Voice
+voice.vel-tone = 70
+
+# Output
+output.level = -7
+
+mpfree-preset = 2
+engine = mpfree.pluck
+name = Xylophone
+
+# Model
+model.model = Mallet
+model.decay = 700
+model.release = 700
+
+# Mallet
+mallet.material = Xylophone
+mallet.hardness = 92
+mallet.strike = 25
+mallet.high-damp = 0
+
+# Voice
+voice.vel-tone = 100
+voice.velocity = 34
+
+# Output
+output.level = -2.5
+
+mpfree-preset = 2
+engine = mpfree.pluck
+name = Celesta
+
+# Model
+model.model = Mallet
+model.decay = 2500
+model.release = 400
+
+# Mallet
+mallet.material = Glockenspiel
+mallet.hardness = 72
+mallet.high-damp = 45
+
+# Voice
+voice.vel-tone = 90
+
+# Output
+output.level = -3.5
+
+mpfree-preset = 2
+engine = mpfree.pluck
+name = Chimes
+
+# Model
+model.model = Mallet
+model.decay = 12000
+model.release = 5000
+
+# Mallet
+mallet.material = Chimes
+mallet.hardness = 80
+mallet.strike = 15
+
+# Output
+output.level = -6
+output.spread = 40
+
+mpfree-preset = 2
+engine = mpfree.pluck
+name = Music Box
+
+# Model
+model.model = Mallet
+model.decay = 2500
+model.release = 1500
+
+# Mallet
+mallet.material = Kalimba
+mallet.hardness = 95
+mallet.strike = 15
+mallet.high-damp = 10
+
+# Voice
+voice.vel-tone = 90
+voice.transpose = 12
+
+# Output
+output.level = -4
+output.spread = 50
