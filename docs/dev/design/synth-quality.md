@@ -38,6 +38,7 @@ Every render plays 100 silent blocks first, so parameters a preset or patch sets
 | A1 | plain patches with saw, pulse, square, drive, distortion, wavetables, FM feedback | Loudest component off the harmonics, 20 Hz to 20 kHz, against the loudest harmonic, at C5, C6 and C7 | under −60 dB | P1, F3, B10 |
 | B2 | Poly, legato C3 to C4, Glide 200 ms | Landing pitch; time to within 12 cents (99 % of the octave) against the label | within 2 cents; within 10 % | B2 |
 | P6 | Poly's amp envelope on a sine | Attack to 99 % of full level, Decay to within 1 % of Sustain, Release to 60 dB under the held level, against the labels (since 19 Nov a time means what it says; before, 99 % of a segment and Release to 1 %) | within 10 % | P6 |
+| P12 | Poly's play routes, the mod wheel at the top | A route on Pitch at 100 % against an octave up; the default route (the wheel on Vibrato at 50 %) against half a semitone each way | within 1 cent; within 5 % | P12 |
 | B9, P5 | Poly's LP24 and LP12 at 1 kHz | A C1 saw's harmonics filtered against the same saw with the filter open, against the analog prototype (`1/(1+s)^4`, `1/(1+s)^2`) where it is above −30 dB; where it is 3 dB a pole down against the label; full resonance on noise, where it peaks at 250 Hz, 1 kHz and 4 kHz | within 1 dB; within 0.1 octave; within 25 cents | B9, P5 |
 | F1 | FM, operator 2 at ratio 4 into operator 1 | Partials at 1 ± 4n of C4 against the Bessel functions |Jn(I)|, I fitted, at operator levels 60, 75 and 90 | within 0.5 dB | F1 |
 | F5 | FM, operator 6 alone | Feedback 7 against 0, LUFS | within 3 dB | F5 |
@@ -55,7 +56,7 @@ New analyses in `rust/mpfree-fxlab/src/synth.rs`, each tested on signals with kn
 
 ## Where today's synths stand (2026-11-18)
 
-Met against rows with a target (with Strings, Bass, the Keys clav and the first six factory sounds): L2 148 of 165, L3 161/165, L5 95/153, L6 164/165, L8 165/165, L11 119/165, L12 113/113; B1 2/2, B3 3/3, B4 50/50, B5 31/50, B7 50/50; K1 23/23, K3 92/92, K4 11/11, K7 5/5, K9 8/8; S7 8/8; V7 2/2; T1 9/9; A1 22/51; B2 2/2; P6 3/3; B9 3/3, P5 2/2; F1 3/3, F5 0/1, F7 0/1; D3 19/80, D5 70/80.
+Met against rows with a target (with Strings, Bass, the Keys clav and the first six factory sounds): L2 148 of 165, L3 161/165, L5 101/153 (the six tine presets that missed it meet it since the tine's rebuild, 19 Nov), L6 164/165, L8 165/165, L11 119/165, L12 113/113; B1 2/2, B3 3/3, B4 50/50, B5 31/50, B7 50/50; K1 23/23, K3 92/92, K4 11/11, K7 5/5, K9 8/8; S7 8/8; V7 2/2; T1 9/9; A1 22/51; B2 2/2; P6 3/3; P12 2/2 (19 Nov: 0.0001 cents, 0.06 %); B9 3/3, P5 2/2; F1 3/3, F5 0/1, F7 0/1; D3 19/80, D5 70/80.
 
 - **In tune and true to theory.** Every engine's plain patch is within 0.03 cents from C1 to C7, except Keys (0.55 cents at C2) and the organ (0.58 cents, its gear ratios). FM's sidebands match the Bessel functions within 0.01 dB (operator level 60, 75 and 90 give an index of 0.43, 1.57 and 5.76). Poly's LP24 is within 0.16 dB of its 4-pole prototype and LP12 within 0.8 dB, the cutoff where the label says, the resonance peak within 5.3 cents. Glide lands within 0.04 cents in 1.2 % of its time. Keys' and Pluck's decays follow their labels and laws (all 88 K3 rows), and the tremolo rates are within 0.4 %.
 - **Aliasing is the biggest gap.** Poly's saw and pulse (PolyBLEP) alias at −49 dB at C5, −44 at C6 and −37 at C7 (the saw's 13th harmonic folds to 16.9 kHz); drive and distortion make it −30 and −27 at C7. (Fixed for Poly 19 Nov, wave 2: from the voice core's tables its saw and pulse are at −78, −84 and −90 dB and its triangle −94 to −99; the antialiased drive is at −50, −45 and −38 and the distortion −45, −40 and −35, still short of −60.) Analog: −54, −48, −42. Squelch's saw meets −60 to C6, its square doesn't (−27 at C7). Wavetable's mips work: Init −72 at C7, position 100 −54. FM feedback 7 sits 13 to 17 dB under its harmonics with what is off them (aliasing or the feedback's noise; the row can't tell which).
@@ -106,15 +107,16 @@ The bar each wave 1 pull request is judged by ([Architecture and roadmap](synth-
 
 | Id | Measure | Target | Today |
 |---|---|---|---|
-| K1 | Second harmonic, velocity 127 against 40, C4 (tine and reed: the clav's velocity brightens the whole string, which L5 reads) | At least 12 dB more | 23 of 23 (12.7 to 18.3 dB) |
+| K1 | Second harmonic, velocity 127 against 40, C4 (tine and reed: the clav's velocity brightens the whole string, which L5 reads) | At least 12 dB more | 23 of 23 (12.8 to 27.1 dB; the tines 18.8 to 27.1 since their rebuild, 19 Nov, against 12.7 to 18.3) |
 | K2 | Level against velocity | V1 and V2, range 30 to 40 dB | Velocity sets the range, 32 dB from velocity 1 to 127 by default; 14 to 24 dB from 20 to 127 as measured (L6), every preset within 1.9 dB of the square law |
 | K3 | Decay against pitch | T60 within 20 % of the label (the clav's shortened by its Mute, as labelled); slope within 0.15 of the engine's law | 68 of 68 |
 | K4 | The end of a note | The clav drops by its Release drop (3 by default) ± 0.5 semitones at release; any damper sound is under the note's level | 11 of 11 clav presets, within 0.01 semitone (C5, read 10 to 50 ms after the release) |
 | K5 | Sustain pedal | V5 | No pedal |
-| K6 | Level across the keys | Loudness spread under 3 dB, C1 to C7 | 34 of 34 (0.7 to 3.0 dB, L11) |
+| K6 | Level across the keys | Loudness spread under 3 dB, C1 to C7 | 34 of 34 (0.7 to 3.0 dB, L11; the tines 0.7 to 2.3) |
 | K7 | Clav pickups | Notches where the pickup's place predicts, within 5 %: the partial over the node at least 15 dB under its neighbours, C2 | 5 of 5 clav presets on one pickup (−19.6 to −34.2 dB) |
 | K9 | Tremolo | Rate within 5 % of its label | 8 of 8 |
 | K10 | Cost | 16 tine voices and 10 clav voices under the synth line on the MPC | Device round |
+| K11 | The tine against a real tine piano | Harmonics 2 to 8 against the note, 50 and 300 ms in, over recordings of 15 keys at five velocities, rms dB: no worse than the recordings' own scatter from key to key (about 9 dB) | Init 9.1 dB, no bias (23.7 before the rebuild). Measured outside the lab, as the recordings are not ours to commit ([Electric pianos](../research/electric-piano.md#measured-tine-piano-19-nov)) |
 
 **Strings (S)**, on the Strings engine and the Ensemble effect:
 
@@ -134,13 +136,17 @@ The Ensemble effect also meets the FX method's own rows: no dip as Mix goes up (
 
 ## The NEON kernels (C3)
 
-The bar for each kernel in `mpfree-simd` ([NEON kernels](simd.md)), first the supersaw's saws (`table_sum`). N1 and N2 run on CI in the ARMv7 job; N3 is the device round's.
+The bar for each kernel in `mpfree-simd` ([NEON kernels](simd.md)): the supersaw's saws (`table_sum`, N1 to N4) and the Choir's formants (`formants4`, N5 to N7). N1, N2, N4, N5 and N6 run on CI in the ARMv7 job; N3 and N7 are the device round's.
 
 | Id | Measure | Target | Today |
 |---|---|---|---|
 | N1 | The kernel against its plain twin under qemu-arm | The same samples and phases to the bit: random calls (8 to 4,096 entries, 1 to 9 oscillators, 0 to 69 frames, writing and adding), every saw level at Poly's sizes, the bench workload, and denormals with flush-to-zero on | Met: 13 tests, 3,000 random calls |
 | N2 | ARMv7 instructions a block, eight voices' supersaw saws with their mixing (`tools/simd_arm_cost.py`) | NEON fewer than the twin | Met: 58,361 against 134,455 (43 %) |
-| N3 | Time on the MPC, the same case (`mpfree-bench`, "Supersaw saws: 8 voices, plain" and "..., NEON") | NEON's p99 block under the twin's, or the kernel is removed | Device round |
+| N4 | Poly with the kernels on and off, as ARMv7 under qemu (`mpfree-synth/tests/simd.rs`) | The same samples: every Super preset, and both oscillators on Supersaw with unison | Met |
+| N3 | Time on the MPC, the same case (`mpfree-bench`, "Supersaw saws: 8 voices, plain" and "..., NEON") | NEON's p99 block under the twin's, or the kernel is removed; and the Super presets no slower with the kernels on than with `--plain` | Device round |
+| N5 | The formant kernel against its plain twin under qemu-arm | The same samples and state to the bit: random calls (0 to 116 frames, filters 50 Hz to 0.45 of the rate, Q 0.5 to 50, signed and -0 gains, silent lanes), a voice dying away with flush-to-zero on, and the Choir workload | Met: 3,000 random calls |
+| N6 | ARMv7 instructions a block, eight Choir voices' formants with their source and mixing | NEON fewer than the twin | Met: 40,486 against 126,280 (32 %) |
+| N7 | Time on the MPC, the same case ("Choir formants: 8 voices, plain" and "..., NEON") | NEON's p99 block under the twin's, or the kernel is removed | Device round |
 
 ## Not measured yet
 

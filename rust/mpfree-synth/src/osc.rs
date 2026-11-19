@@ -165,6 +165,11 @@ impl Lv {
         }
     }
 
+    /// How far a phase shifts down to index the level.
+    pub(crate) fn shift(self) -> u32 {
+        self.shift
+    }
+
     /// Linear between the samples either side of phase `p`.
     #[inline]
     fn read(self, d: &[[f32; 2]], p: u32) -> f32 {
@@ -302,7 +307,13 @@ impl Classic {
     /// `level`, on level `lv` (for the highest saw:
     /// `level_for(dt * sup.top())`). Saw by saw, so each frame sums them in
     /// the same order whatever the block size.
-    #[inline]
+    ///
+    /// The saws run in `mpfree_simd::table_sum`: a NEON kernel on the MPC
+    /// (ARMv7 with NEON), its plain Rust twin elsewhere, the same samples
+    /// either way (`docs/dev/design/simd.md`). Kept out of line: it is one
+    /// call a voice a control step, and Poly's render loop without the saws
+    /// inside it costs 1 to 2 % less on the x86 instruction gate.
+    #[inline(never)]
     pub fn supersaw<const ADD: bool>(
         &self,
         sup: &Super,
@@ -313,22 +324,9 @@ impl Classic {
         level: f32,
     ) {
         let (d, l) = self.saw.level(lv);
-        for (k, p) in ph.iter_mut().enumerate() {
-            let (inc, g) = (increment(dt * sup.ratio[k]), sup.gain[k] * level);
-            let mut q = *p;
-            if k == 0 && !ADD {
-                for x in buf.iter_mut() {
-                    *x = 0.0 + l.read(d, q) * g;
-                    q = q.wrapping_add(inc);
-                }
-            } else {
-                for x in buf.iter_mut() {
-                    *x += l.read(d, q) * g;
-                    q = q.wrapping_add(inc);
-                }
-            }
-            *p = q;
-        }
+        let inc: [u32; SAWS] = std::array::from_fn(|k| increment(dt * sup.ratio[k]));
+        let gain: [f32; SAWS] = std::array::from_fn(|k| sup.gain[k] * level);
+        mpfree_simd::table_sum::<ADD>(d, l.shift(), buf, ph, &inc, &gain);
     }
 }
 
@@ -618,6 +616,40 @@ mod tests {
             c.supersaw::<false>(&sup, level_for(dt * sup.top()), &mut buf, &mut ph, dt, 1.0);
             let db = 20.0 * (rms(&buf) / saw).log10();
             assert!(db.abs() < 2.0, "{detune} {mix}: {db} dB");
+        }
+    }
+
+    /// The supersaw through `mpfree_simd` gives the samples of the loop it
+    /// had before, saw by saw (on the workstation the twin; under qemu-arm
+    /// the kernel matches the twin bit for bit, `mpfree-simd`'s tests).
+    #[test]
+    fn the_supersaw_gives_the_old_loops_samples() {
+        let c = classic();
+        let sup = Super::new(0.63, 0.41);
+        for (dt, add) in [(65.0 / 44_100.0, false), (1046.5 / 48_000.0, true)] {
+            let lv = level_for(dt * sup.top());
+            let (d, l) = c.saw.level(lv);
+            let fill: Vec<f32> = (0..53).map(|i| (i as f32 * 0.37).sin()).collect();
+            let start = [0.9, 0.1, 0.45, 0.0, 0.77, 0.3, 0.62].map(phase);
+            let mut want = fill.clone();
+            let mut pw = start;
+            for (k, p) in pw.iter_mut().enumerate() {
+                let (inc, g) = (increment(dt * sup.ratio[k]), sup.gain[k] * 0.8);
+                for x in want.iter_mut() {
+                    *x = if k == 0 && !add { 0.0 } else { *x } + l.read(d, *p) * g;
+                    *p = p.wrapping_add(inc);
+                }
+            }
+            let mut got = fill;
+            let mut pg = start;
+            if add {
+                c.supersaw::<true>(&sup, lv, &mut got, &mut pg, dt, 0.8);
+            } else {
+                c.supersaw::<false>(&sup, lv, &mut got, &mut pg, dt, 0.8);
+            }
+            let bits = |x: &[f32]| x.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&want), bits(&got), "add {add}");
+            assert_eq!(pw, pg);
         }
     }
 

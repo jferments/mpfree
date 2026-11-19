@@ -61,6 +61,7 @@ Proposed targets for stage 4 (ours, in brackets, until the baseline and listenin
 | P9 | Velocity | Level and cutoff follow the preset's curve within [2] dB or [0.1] octave | Even dynamics |
 | P10 | Drift (Analog) | Per-card spread as labelled at each Age; drift rate under [10] cents over [30] minutes | Alive, not out of tune |
 | P11 | Cost | 8 voices of a two-oscillator, unison-3 patch under [50] % of the synth budget; 8 voices of supersaw under [100] % | Fit the MPC |
+| P12 | Play routes | A route reaches as far as its depth says, in its target's unit: the mod wheel at the top on Pitch at 100 % within [1] cent of an octave up; the default route (the wheel on Vibrato at 50 %) within [5] % of half a semitone each way | Knobs that mean what they say |
 
 ## 5. Knobs and defaults
 
