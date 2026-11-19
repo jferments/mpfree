@@ -18,6 +18,7 @@
 
 use mpfree_node::{Ctx, Cull, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed};
 
+use crate::drum_fx::{self, KitFx};
 use crate::drum_params::*;
 use crate::dsp::{drive_sq, osc, Rng, Wave};
 use crate::params::Preset;
@@ -137,6 +138,9 @@ struct Voice {
     age: u64,
     gain_l: f32,
     gain_r: f32,
+    /// The hit's gain before pan (velocity and level), for a drum whose
+    /// hits go through its effects ([`drum_fx`]), panned after them.
+    gain: f32,
     kill: f32,
     kill_step: f32,
     // Body: up to two sines with a pitch sweep, and FM.
@@ -191,7 +195,9 @@ struct Voice {
 }
 
 impl Voice {
-    #[inline]
+    // Always inlined: it runs in the plain loop and the effects' loop, and
+    // a call per frame cost the plain kit 8 % (35,000 instructions a block).
+    #[inline(always)]
     fn tick(&mut self, rate: f32) -> f32 {
         let inv = 1.0 / rate;
         let mut out = 0.0;
@@ -467,6 +473,7 @@ fn build(
         }
     }
     let a = amp * norm;
+    v.gain = a;
     v.gain_l = a * (1.0 - pan).max(0.0).sqrt() * std::f32::consts::FRAC_1_SQRT_2;
     v.gain_r = a * (1.0 + pan).max(0.0).sqrt() * std::f32::consts::FRAC_1_SQRT_2;
     v
@@ -533,6 +540,8 @@ pub struct Drums {
     level: Smooth,
     gains: Vec<f32>,
     hits: u64,
+    /// Each drum's effects and the kit's sends ([`drum_fx`]).
+    fx: KitFx,
 }
 
 impl Drums {
@@ -550,6 +559,7 @@ impl Drums {
             level: Smooth::new(1.0),
             gains: Vec::new(),
             hits: 0,
+            fx: KitFx::new(rate),
         };
         d.prepare(rate, mpfree_node::MAX_BLOCK);
         d
@@ -557,7 +567,7 @@ impl Drums {
 
     /// Loads a factory kit: the Init kit, then the kit's values. Hits ring on.
     pub fn load_preset(&mut self, kit: &Preset) {
-        for p in PARAMS.iter() {
+        for p in drum_fx::ALL.iter() {
             if !p.readonly {
                 self.set_param(p.id, p.default);
             }
@@ -568,7 +578,7 @@ impl Drums {
     }
 
     pub fn presets() -> &'static [Preset] {
-        crate::factory::presets!("drums.presets", &INFO, &PARAMS)
+        crate::factory::presets!("drums.presets", &INFO, &drum_fx::ALL)
     }
 
     /// Hits sounding or fading.
@@ -668,6 +678,7 @@ impl Drums {
         let seed = self.rng.next_u64();
         let v = self.setup(pad, velocity, seed);
         self.voices[slot] = v;
+        self.fx.on_hit(pad, self.pv(pad, field::PAN) / 100.0);
     }
 
     /// Builds a hit of `pad` from its settings.
@@ -701,6 +712,9 @@ impl Drums {
     }
 
     fn run(&mut self, from: usize, to: usize, left: &mut [f32], right: &mut [f32]) {
+        if self.fx.engaged() {
+            return self.run_fx(from, to, left, right);
+        }
         let rate = self.rate as f32;
         for g in &mut self.gains[from..to] {
             *g = self.level.next();
@@ -721,15 +735,65 @@ impl Drums {
     }
 }
 
+impl Drums {
+    /// [`Drums::run`] with some drum's effects or a send on: a chunk at a
+    /// time, a drum's hits into its bus or straight out, then the effects
+    /// ([`drum_fx`]).
+    fn run_fx(&mut self, from: usize, to: usize, left: &mut [f32], right: &mut [f32]) {
+        let rate = self.rate as f32;
+        let mut at = from;
+        while at < to {
+            let end = (at + drum_fx::CHUNK).min(to);
+            for g in &mut self.gains[at..end] {
+                *g = self.level.next();
+            }
+            self.fx.begin_chunk(end - at);
+            for v in self.voices.iter_mut() {
+                if v.state == State::Free {
+                    continue;
+                }
+                if let Some(bus) = self.fx.bus(v.pad as usize) {
+                    for i in at..end {
+                        bus[i - at] += v.tick(rate) * self.gains[i] * v.gain;
+                        if v.state == State::Free {
+                            break;
+                        }
+                    }
+                } else {
+                    for i in at..end {
+                        let x = v.tick(rate) * self.gains[i];
+                        left[i] += x * v.gain_l;
+                        right[i] += x * v.gain_r;
+                        if v.state == State::Free {
+                            break;
+                        }
+                    }
+                }
+            }
+            self.fx
+                .end_chunk(at, &mut left[at..end], &mut right[at..end]);
+            at = end;
+        }
+    }
+
+    /// Each drum's effects and the kit's sends, for tests and pages.
+    pub fn fx(&self) -> &KitFx {
+        &self.fx
+    }
+}
+
 impl Node for Drums {
     fn info(&self) -> &'static NodeInfo {
         &INFO
     }
     fn params(&self) -> &'static [ParamInfo] {
-        &PARAMS
+        &drum_fx::ALL
     }
 
     fn set_param(&mut self, id: u16, value: f32) {
+        if drum_fx::owns(id) {
+            return self.fx.set_param(id, value);
+        }
         let Some(p) = PARAMS.iter().find(|p| p.id == id) else {
             return;
         };
@@ -746,6 +810,9 @@ impl Node for Drums {
         if id == METER_VOICES {
             return self.active_voices() as f32;
         }
+        if drum_fx::owns(id) {
+            return self.fx.param(id);
+        }
         match PARAMS.iter().find(|p| p.id == id) {
             Some(_) => self.values[id as usize],
             None => f32::NAN,
@@ -757,6 +824,7 @@ impl Node for Drums {
         self.gains = vec![0.0; max_block.max(1)];
         self.level.set_time(rate, 10.0);
         self.level.snap(self.level_target());
+        self.fx.prepare(rate);
         self.reset();
     }
 
@@ -765,10 +833,12 @@ impl Node for Drums {
             v.state = State::Free;
         }
         self.level.snap(self.level_target());
+        self.fx.reset();
     }
 
-    fn process(&mut self, _ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
+    fn process(&mut self, ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
         let len = left.len().min(right.len()).min(self.gains.len());
+        self.fx.begin(ctx);
         let mut at = 0usize;
         let mut i = 0usize;
         while at < len {
@@ -790,7 +860,7 @@ impl Node for Drums {
     }
 
     fn tail_frames(&self) -> u32 {
-        (5.2 * self.rate as f32) as u32
+        ((5.2 * self.rate as f32) as u32).saturating_add(self.fx.tail_frames())
     }
 
     fn sounding_voices(&self) -> usize {

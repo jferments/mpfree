@@ -65,7 +65,7 @@ const SC_FILTER_OFF: f32 = 20.0;
 const RMS_MS: f32 = 10.0;
 /// Where auto makeup reads the curve: a sound at a mix level (pink noise
 /// at -18 dBFS RMS), as the peak and the RMS detectors read it.
-const AUTO_REF_PEAK: f32 = -10.0;
+pub const AUTO_REF_PEAK: f32 = -10.0;
 const AUTO_REF_RMS: f32 = -14.5;
 /// FET colour at full amount (20 dB of reduction): the second and third
 /// harmonics of a steady tone, against it (-40 dB each); how fast the
@@ -331,7 +331,7 @@ static PARAMS: [ParamInfo; 15] = [
 /// dB: exactly 0 below the knee and at Ratio 1, so the compressor passes
 /// the input untouched there.
 #[inline]
-fn reduction(x: f32, t: f32, ratio: f32, knee: f32) -> f32 {
+pub fn reduction(x: f32, t: f32, ratio: f32, knee: f32) -> f32 {
     let over = x - t;
     let slope = 1.0 - 1.0 / ratio;
     if 2.0 * over < -knee {
@@ -378,7 +378,7 @@ fn covered(a: f32, b: f32, two: bool, t: f32) -> f32 {
 /// way back in the labelled time. Where the attack alone already takes
 /// longer than the release, the hold lets go at once and the attack sets
 /// the pace.
-pub(crate) fn release_tau(attack: f32, two: bool, release: f32) -> f32 {
+pub fn release_tau(attack: f32, two: bool, release: f32) -> f32 {
     let goal = 1.0 - (-1.0f32).exp();
     let (mut lo, mut hi) = (1e-6 * release, release);
     if covered(lo, attack, two, release) < goal {
