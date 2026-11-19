@@ -321,6 +321,25 @@ const WIND: &[Curated] = &[
     ),
 ];
 
+use mpfree_synth::choir_params as ech;
+
+/// Choir: the vowel and how it moves, the singers, and the swell with
+/// the ensemble.
+const CHOIR: &[Curated] = &[
+    set(
+        "Vowel",
+        [ech::VOWEL, ech::MORPH, ech::MORPH_RATE, ech::BRIGHTNESS],
+    ),
+    set(
+        "Singers",
+        [ech::SINGERS, ech::DETUNE, ech::VIBRATO, ech::BREATH],
+    ),
+    set(
+        "Swell",
+        [ech::ATTACK, ech::RELEASE, ech::ENSEMBLE, ech::WIDTH],
+    ),
+];
+
 use mpfree_synth::drum_params::{field as df, pad_id, PADS, STRIDE};
 
 /// Drums, on pad 1 ([`on_pad`] moves them): the hit, its body, its mix.
@@ -369,6 +388,7 @@ fn curated(id: &str) -> Option<&'static [Curated]> {
         "mpfree.strings" => Some(STRINGS),
         "mpfree.bass" => Some(BASS),
         "mpfree.wind" => Some(WIND),
+        "mpfree.choir" => Some(CHOIR),
         DRUMS_ID => Some(DRUMS),
         _ => None,
     }
@@ -565,12 +585,14 @@ mod tests {
     use mpfree_mod::Bindings;
     use mpfree_node::{Curve, Kind, Node, Unit};
     use mpfree_synth::{
-        Analog, Bass, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Strings, Wavetable, Wind,
+        Analog, Bass, Choir, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Strings, Wavetable,
+        Wind,
     };
 
     fn engines() -> Vec<Box<dyn Node>> {
         vec![
             Box::new(Analog::new(48_000)),
+            Box::new(Choir::new(48_000)),
             Box::new(Strings::new(48_000)),
             Box::new(Bass::new(48_000)),
             Box::new(Wind::new(48_000)),

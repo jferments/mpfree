@@ -886,6 +886,25 @@ pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
                 _ => None,
             }
         }
+        "mpfree.choir" => {
+            use mpfree_synth::choir_params as cp;
+            let mono = v(cp::MODE) >= 0.5;
+            match id {
+                cp::LINES | cp::SLOW_RATE | cp::FAST_RATE | cp::DEPTH | cp::WIDTH
+                    if v(cp::ENSEMBLE) <= 0.0 =>
+                {
+                    Some("ensemble is off")
+                }
+                cp::DETUNE if v(cp::SINGERS).round() <= 1.0 => Some("one singer"),
+                cp::START_TIME if v(cp::START) == 0.0 => Some("Start is 0"),
+                cp::MORPH_RATE if v(cp::MORPH) <= 0.0 => Some("morph is off"),
+                cp::VIB_RATE | cp::VIB_DELAY if v(cp::VIBRATO) <= 0.0 => Some("vibrato is off"),
+                cp::GLIDE if !mono => Some("Mono and Legato only"),
+                cp::VOICES if mono => Some("one voice in Mono"),
+                cp::DECAY if v(cp::SUSTAIN) >= 100.0 => Some("sustain is full"),
+                _ => None,
+            }
+        }
         "mpfree.strings" => {
             use mpfree_synth::strings_params as sp;
             match id {
