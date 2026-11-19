@@ -10,7 +10,7 @@ The method is the FX quality one ([FX quality](fx-quality.md)): each target a nu
 
 ## The report
 
-`fxlab synth [--rate HZ] [--renders] [--out DIR]` measures every keyboard engine's factory presets (Poly, Analog, Squelch, FM, Wavetable, Keys, Drawbar, Pluck: 83 presets at the baseline; Strings' 24 joined with wave 1, Drawbar's 8 combo presets, Wind's 20 and the Choir's 25 with wave 2), each engine's plain patch, Poly's voice, FM's operators and the five drum kits, and prints one row per number with its target and whether it is met, then a count by measure; it writes DIR/synth.txt. With `--renders` it also writes each preset's listening phrase (C, E and G, then a four-note chord; two octaves down for a bass) as DIR/renders/ENGINE/NN-PRESET.wav, and each kit's tour (every pad, then two bars of a beat). The report takes about 21 s in a release build on the workstation. A factory preset that brings its own effects and macros (a sound, [Presets](presets.md#factory-presets-as-files)) is measured as the pads play it, through its effects; the K rows, which measure the engine's own voicing (decay against its label, the release drop, the pickups, the tremolo), play its engine alone, since a sound's echo or reverb lengthens a decay by design.
+`fxlab synth [--rate HZ] [--engine NAME] [--renders] [--out DIR]` measures every keyboard engine's factory presets (Poly, Analog, Squelch, FM, Wavetable, Keys, Drawbar, Pluck: 83 presets at the baseline; Strings' 24 joined with wave 1, Drawbar's 8 combo presets, Wind's 20 and the Choir's 25 with wave 2), each engine's plain patch, Poly's voice, FM's operators and the five drum kits, and prints one row per number with its target and whether it is met, then a count by measure; it writes DIR/synth.txt. With `--renders` it also writes each preset's listening phrase (C, E and G, then a four-note chord; two octaves down for a bass) as DIR/renders/ENGINE/NN-PRESET.wav, and each kit's tour (every pad, then two bars of a beat). The report takes about 21 s in a release build on the workstation. A factory preset that brings its own effects and macros (a sound, [Presets](presets.md#factory-presets-as-files)) is measured as the pads play it, through its effects; the K rows, which measure the engine's own voicing (decay against its label, the release drop, the pickups, the tremolo), play its engine alone, since a sound's echo or reverb lengthens a decay by design.
 
 Every render plays 100 silent blocks first, so parameters a preset or patch sets have finished gliding, as they have when a player picks a preset and then plays (without them Poly's Decay read 19 % long: its Sustain was still gliding down). Renders run in 128-frame blocks on absolute frames, as on the MPC.
 
@@ -33,6 +33,7 @@ Every render plays 100 silent blocks first, so parameters a preset or patch sets
 | B7 | bass presets | The phrase's correlation under 120 Hz | at least 0.95 | B7 |
 | K1 | Keys presets | Second harmonic against the first at C4, velocity 127 against 40 | at least 12 dB more | K1 |
 | K3 | Keys and Pluck presets | T60 at C4 against the Decay label; the slope of log T60 against log frequency over C2 to C6 against the engine's law (−0.75 Keys, −0.5 Pluck) | within 20 %; within 0.15 | K3 |
+| U1 | Pluck's string (Steel String's pick and brightness), 16 plucks at C3, C4 and C5, each pluck's power averaged | Position 50: the even harmonics (2, 4, 6, 8) against the odd (1, 3, 5, 7); Position 20: the 5th against the 4th and 6th; the worst note | under −30 dB | Pluck brief |
 | K9 | Keys presets with tremolo | The level's modulation rate against Trem rate | within 5 % | K9 |
 | T1 | each engine's plain patch, and Drawbar's combo (its flute on the 8') | Pitch of C1, C2, C4, C6 and C7 (a Blackman-Harris peak refined by the phase it turns through in a second): the worst, cents | within 1 cent (the tonewheel organ, tuned by its gears, shown) | S6, B1 |
 | A1 | plain patches with saw, pulse, square, drive, distortion, wavetables, FM feedback, FM's waves under modulation; Drawbar's combo flute, saw reed and square reed | Loudest component off the harmonics, 20 Hz to 20 kHz, against the loudest harmonic, at C5, C6 and C7 | under −60 dB | P1, F3, B10 |
@@ -217,6 +218,24 @@ On the rows every preset meets, the Choir's 25 presets: T1 0.000 cents from C1 t
 
 **Not yet: L11** on 6 of 25 presets: Ooh Choir 4.2 dB from C2 to C6, Aah to Ee 3.9, Choir Stab 3.8, Pressure Vowels 3.6, Oh Choir 3.5 and Bright Aahs 3.4. The engine is level across the keys (Init within 0.5 dB, Solo Voice 0.2) because each section, vowel and pitch has a trim measured from its own formants; what is left is the singers beating against each other and the Ensemble's comb on vowels with few strong harmonics, so the spread moves with the singers' random starts (2.0 to 3.1 dB with other seeds).
 
+## Wave 3 targets: Pluck (stage 7)
+
+The bar for [Pluck](synths.md#pluck-mpfree-synth-pluck): the shared rows every engine meets, plus the comb (U1) and Pluck's K3, set before the work and measured before (12 presets, 19 Nov, main `e8b7918d`) and after (22 presets, the same day). Research: [Plucked strings and struck bars](../research/plucks.md#4-what-to-measure). Every Pluck row is met.
+
+| Id | Measure | Target | Before | After |
+|---|---|---|---|---|
+| U1 | Position's comb (above) | under −30 dB | −7.0 dB at Position 50 (even harmonics barely down); −5.5 dB for the 5th at Position 20 | −50.0 dB; −44.0 dB |
+| L2 | An 8-note chord at full velocity, peak | under 0 dBFS | 6 of 12 clip, up to +3.2 dBFS (the mallets and Steel Drum) | 22 of 22, −5.7 to −0.7 dBFS |
+| L1 | The phrase's loudness | shown (the engines' plucks sit at −24 to −27 LUFS) | −31.5 to −15.7 LUFS | −26.7 to −24.8 LUFS |
+| L5 | Brightness, velocity 127 against 20 | at least 0.1 octave | 6 of 12 (0.00 to 0.33) | 22 of 22 (0.11 to 0.48) |
+| L6 | Level from velocity 20 to 127; the square-law fit | range shown (research: 30 to 40 dB from 1 to 127, at least 18 from 20 to 127); within 2 dB | 6.4 to 9.8 dB; met | 18.1 to 24.5 dB (9.3 for Harpsichord, set to 12 dB on purpose, as the instrument barely has dynamics); met |
+| L11 | Single notes C1 to C7 (C1 to C3 for a bass) | under 3 dB | 3 of 12 (up to 9.0 dB) | 22 of 22 (0.8 to 2.6 dB) |
+| L12 | A 6-note chord against its notes' power sum | within 6 dB | met | met |
+| K3 | T60 at C4 against Decay; the slope against −0.5 | within 20 %; within 0.15 | met (Muted Bass +14.9 % as measured then: its label is for the note it plays, an octave down) | met (Muted Bass −9.2 %; the row reads the label at the transposed pitch since 19 Nov) |
+| B4 | A bass's first four frames at C2, the largest step | under −40 dBFS | met | met (−57.0 and −54.9 dBFS: a fresh string's comb starts from silence) |
+
+What's still open: per-pluck variation. Each pluck's noise differs, so one pluck of a key can be 1 to 2.5 dB louder than the next (it was 2.5 to 5.7 dB before the low harmonics were set to their average); the lab measures one pluck per key, so L11's numbers carry that much chance. A sitar and a tanpura (a string buzzing on a curved bridge) are not built: see the research page. The note-on cost (the harmonic fix, about 16k frames of arithmetic for a low note, and each key's level worked out once) wants a device round.
+
 ## Wave 3 targets: Drums
 
 The bar for the [Drums engine's](synths.md#drums-mpfree-synth-drums) Current voices, from [Drum synths](../research/drums.md#4-what-to-measure); the targets are the research page's proposals. Built 19 Nov. The five factory kits (80 pads) play the Current voices; every row is in the report and the ratchet but D10, which the bench measures.
@@ -257,5 +276,6 @@ Supersaw detune and phase (P2, P3), unison and table-morph steps (P4, P7), Analo
 cd rust
 cargo test --release --locked -p mpfree-fxlab --test synth -- --nocapture     # the ratchet, with the report
 cargo build --release -p mpfree-fxlab && ./target/release/fxlab synth --renders --out /tmp/synth
+./target/release/fxlab synth --engine Pluck --out /tmp/pluck                   # one engine's presets (and its own rows), in seconds
 cargo run --release -p mpfree-bench -- --afford --filter keys                 # voice costs, Keys only
 ```

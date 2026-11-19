@@ -38,7 +38,7 @@ Twelve engines when the three waves are done, five of them new or merged, and tw
 | Choir | **Choir** (new) | A buzzy source through five formant filters per voice, morphing between vowels, through the Ensemble | Wavetable's Vowels table as Poly presets | 2 |
 | Tape character | **Character** (shared part) | Per-voice offsets and slow drift, wow and flutter, a note time limit, hiss; off and bit-exact at zero | | 2 |
 | Drums | Drums (extended; the voices and each drum's effects built 19 Nov: [synths.md](synths.md#drums-mpfree-synth-drums)) | Each drum's own knobs and Q-Links, accent and per-hit variation, one-shot or gated pads, the 808 body shared with Bass (`body808.rs`), the 808 cymbal's metal bank, toms, congas, woodblocks and bells from Pluck's modal bank (`modal.rs`), five new drums; old kits keep the first voices to the bit (the kit's Voices). Each drum's own four effects (Punch, Distortion, EQ, Compressor; Jay's pick 19 Nov: [Synths](synths.md#each-drums-effects-and-the-kits-sends-drum_fx)) and the kit's delay and reverb sends | | 3 |
-| Plucks and mallets | Pluck (polished) | As built; the comb notches of Position fixed | | 3 |
+| Plucks and mallets | Pluck (polished) | As built; the comb notches of Position fixed. Built 19 Nov: the comb on the string's output, Velocity, keys evened from a loudness model, three more materials, 22 presets; a sitar's buzzing bridge left for later ([Plucked strings and struck bars](../research/plucks.md)) | | 3 |
 | Expressive leads | Poly, Analog and Bass presets | Velocity and play routes, per-note expression, note priority | | 3 |
 
 Why these choices (our reading of the research pages):
