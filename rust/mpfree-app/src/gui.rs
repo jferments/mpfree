@@ -16519,10 +16519,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     out.push(("play-synth", play_synth));
     for (name, page, qlink) in [
         ("synth", 0, (2, 12)),
-        ("synth-filter", 1, (0, -20)),
-        ("synth-lfo-2", 4, (2, 10)),
-        ("synth-voice", 5, (1, 10)),
-        ("synth-routes", 6, (0, 10)),
+        ("synth-table", 1, (0, 10)),
+        ("synth-filter", 2, (0, -20)),
+        ("synth-lfo-2", 5, (2, 10)),
+        ("synth-voice", 6, (1, 10)),
+        ("synth-routes", 7, (0, 10)),
     ] {
         let mut p = sample_player(fonts());
         p.apply(ToUi::Kit(synth_kit));
