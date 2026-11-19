@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-fx/src/mixer.rs rust/mpfree-fx/src/master.rs rust/mpfree-mixer-ui rust/mpfree-app/src/mixing.rs rust/mpfree-app/src/takes.rs
-checked: 2026-11-16 d7c844c
+checked: 2026-11-19 79fc6f63
 -->
 
 # Mixing
@@ -10,9 +10,9 @@ Every sound in MPFree, from the pads, the synth, the loop, the audio tracks and 
 
 ## Opening the mixer
 
-Tap the **Mix** tab, or press **TRACK MIX**. TRACK MIX opens it on the tracks' faders, and pressed again it takes you back to the page you were on; **SHIFT + TRACK MIX** opens it straight on the pads. The Mix tab opens the mixer as you left it. The music carries on whatever page you are on. (Next build. On the current test build the mixer opens over the page with TRACK MIX or the small sliders icon at the top right, and closes the same way.)
+Tap the **Mix** tab, or press **TRACK MIX**. TRACK MIX opens it on the tracks' faders, and pressed again it takes you back to the page you were on; **SHIFT + TRACK MIX** opens it straight on the pads. The Mix tab opens the mixer as you left it. The music carries on whatever page you are on.
 
-The tab has two looks of the same strips, switched with **Faders | Effects** at the top right: **Faders**, the strips side by side with their levels, and **Effects**, every strip's chain of effects at once (see [Every chain at once: Effects](#every-chain-at-once-effects)). The tab opens on the look you used last; TRACK MIX always opens it on Faders.
+The tab has three looks of the same strips, switched with **Faders | Effects | EQ** at the top right: **Faders**, the strips side by side with their levels, **Effects**, every strip's chain of effects at once (see [Every chain at once: Effects](#every-chain-at-once-effects)), and **EQ**, every strip's EQ curve (see [Every EQ at once: EQ](#every-eq-at-once-eq)). The tab opens on the look you used last; TRACK MIX always opens it on Faders.
 
 {{shot: mixer | The mixer, shown here with example tracks from the preview: inserts at the top of each strip, sends A to D, pan, the fader and meter, mute and solo, and where the strip goes. The master is on the right, ending in Master safety.}}
 
@@ -134,7 +134,7 @@ The last thing on the master is **Master safety**, a limiter that keeps the outp
 
 ## Coming next
 
-- **Automation lanes**: fader and knob moves recorded as smooth lanes. Today a move made while recording goes into the clip as a lock on its step (see [Knob moves while you record](clips.md#knob-moves-while-you-record)).
+- **Automation lanes**: fader and knob moves recorded as smooth lanes. Today a move made while recording goes into the clip as a lock on its step (see [Knob moves while you record](clips.md#knob-moves-while-you-record)), and you can see and change those locks step by step on a lock lane (see [Lock lanes](sequencer.md#lock-lanes)).
 
 > [!MPC]
-> The mixer covers the MPC's routing: pad channels, tracks, submixes, four send returns and the master, with sends before or after the fader and side-chain keys. The differences: the mixer opens over any page instead of being its own mode, solo keeps everything the strip feeds, and the master always ends in a safety limiter. Freeze is the MPC's track freeze, but it records a loop rather than the whole sequence and follows the song's tempo; Print is like the MPC's bounce to sample.
+> The mixer covers the MPC's routing: pad channels, tracks, submixes, four send returns and the master, with sends before or after the fader and side-chain keys. The differences: the mixer is a tab, one press of **TRACK MIX** away from any page and one more press back, solo keeps everything the strip feeds, and the master always ends in a safety limiter. Freeze is the MPC's track freeze, but it records a loop rather than the whole sequence and follows the song's tempo; Print is like the MPC's bounce to sample.

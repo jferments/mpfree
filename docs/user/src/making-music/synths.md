@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-synth rust/mpfree-synth-ui rust/mpfree-scale rust/mpfree-app/src/synth.rs rust/mpfree-app/src/app/synth_pads.rs rust/mpfree-app/src/instruments.rs rust/mpfree-mpchost rust/mpfree-mpcskin rust/mpfree-app/src/skin_page.rs
-checked: 2026-11-14 b76c3c7
+checked: 2026-11-19 79fc6f63
 -->
 
 # Synths
@@ -67,8 +67,8 @@ Every track can play its own instrument: Poly on one, FM on another, a plugin sy
 On Arrange, each track's instrument is written under its name, on the clip grid and in the Song view. Tap that line on the clip grid to go straight to the track's instrument row (see [Clips and patterns](clips.md#tracks-and-slots)).
 
 Coming:
-- The instrument's name beside each track on the Play page.
-- The voices and meters on the Synth tab's Output page show the pads' synth, not a track's own.
+- The instrument's name in the track heading over the Play page's rows (it shows only **Track 2** for now).
+- The **Voices on** meter in the Synth tab's Output section shows the pads' synth, not a track's own.
 
 ## The Synth tab
 
@@ -92,7 +92,26 @@ Coming:
 
 **Drive** and **Distortion**, on the Filter page of Poly and Wavetable (Q-Links 3 and 4 there), both add grit. **Drive** pushes the sound into the filter, as on an analog synth: warm, and the filter smooths what it adds, so with the filter nearly closed you hear little of it. **Distortion** comes after the filter, so you hear its grit even with the filter almost closed (Grit Bass uses it). Both keep the sound at about the same level as you turn them up (within about 2 dB on every preset), so they add grit and thickness, not volume; turn up the synth's level for that. Pad pressure can push either one.
 
-Each synth has its own pages. FM has Algo, Mod and Pressure, a page for each of its six operators and three keyboard-scaling pages; Drums has a page for each of its 16 pads plus a Kit page.
+Each synth has its own pages. FM has Algo, Mod and Pressure, a page for each of its six operators and three keyboard-scaling pages; Drums has a page for each of its 16 pads plus a Kit page. Poly, FM and Wavetable have a **Pressure** page (see [Pad pressure](#pad-pressure)).
+
+**Wavetable** has two oscillators, **Osc A** and **Osc B**, each playing a **Table**: a stack of single waves that change from one to the next, such as **Basic** (sine to saw to square), **Harmonics**, **Pulse**, **Sync**, **Vowels**, **Organ**, **Bits**, **Resonance**, **FM** and **Drift**. **Position** picks where in the stack the oscillator plays, and moving it while a note sounds is what makes the sound evolve. **Warp** bends each wave before it is played: **Bend** squeezes the wave to the front (brighter and more nasal), **Sync** repeats it up to eight times in each cycle (the tearing sync sound), **Mirror** plays it forward then back, and **FM** lets the other oscillator wobble this one; **Warp amt** is how much. Its pages:
+
+- **Osc A** and **Osc B:** the table, position, warp, tuning (Osc B also has its octave) and level. The picture is the stack of waves, with the one playing lit.
+- **Mix:** a **Sub** (a sine an octave down), **Noise**, and **Unison**: several copies of each note, spread out of tune (**Detune**) and across the speakers (**Spread**).
+- **Filter:** **Cutoff**, **Resonance** and **Distortion** as on Poly, the filter envelope's **Env amount**, **Key track** and **Velocity**.
+- **Mod:** a second envelope that moves the positions (**To pos A**, **To pos B**) and the warp (**To warp**) over each note; **Vel to pos** makes harder hits start further into the table.
+- **LFO:** its rate, and how far it moves the pitch, the cutoff, both positions and the level; **Retrigger** starts it again on each note.
+- **Env**, **Voice** and **Pressure:** the volume envelope, the tuning, glide and voices, and pad pressure.
+
+The Q-Links take each oscillator's Position, Warp amt, Fine and Level on its page, and Sub, Noise, Detune and Spread on the Mix page.
+
+**Pluck** is a plucked string or a struck bar, picked by **Model** on the String page:
+
+- **String:** **Decay** is how long middle C rings (higher notes ring shorter, lower ones longer), and **Release** how fast a note you let go is damped. **Brightness** is the string's tone, **Pick** how hard and bright the pick is, and **Position** where along the string you pluck: near the end is thin and bright, towards the middle hollow.
+- **Mallet:** **Material** is **Marimba**, **Vibes**, **Bell**, **Glass**, **Kalimba** or **Steel drum**. **Hardness** is the mallet: a harder one is brighter. **Strike** is where on the bar it lands, which changes which overtones ring. **Stretch** pulls the overtones closer together or further apart, for a softer or a more clangy, metallic tone, and **High damp** makes the high overtones die away sooner.
+- **Voice:** transpose, fine tuning, bend range, how many notes can sound (**Voices**), **Vel > tone** (softer hits are darker), level, pan and **Spread** (notes spread across the speakers).
+
+Playing a note that is still ringing plucks or strikes it again, on top of what sounds, as a real string or bar does. The Q-Links take Decay, Brightness, Pick and Position on the String page, Hardness, Strike, Stretch and High damp on the Mallet page.
 
 **Keys** is an electric piano or a clav. It has five pages:
 
@@ -243,7 +262,7 @@ The **Chromatic / In key** switch in the pads heading on the Synth tab flips the
 
 ## The synth's notes on the Sequencer
 
-With the synth on the pads, the pattern on the **Sequencer** tab's **Steps** (and Play's **All** view) shows the pads' notes as rows, the highest on top, like a piano roll turned to the scale: with a scale on, the rows are its notes, and the root's rows are shaded and marked **root**.
+With the synth on the pads, the pattern on the **Sequencer** tab's **Steps** (and the rows on the Play page) shows the pads' notes as rows, the highest on top, like a piano roll turned to the scale: with a scale on, the rows are its notes, and the root's rows are shaded and marked **root**.
 
 {{shot: sequencer-steps-synth | The Sequencer's Steps on a synth track in C minor: the rows are the scale's notes from C3 to C4, the roots shaded. Step 1 holds a C minor triad, with an accent, a 50 % note and a 1:2 note later on.}}
 
@@ -301,7 +320,7 @@ MPFree reads Scala tuning files, the format thousands of published tunings come 
 
 ## Pad pressure
 
-The MPC's pads sense how hard you keep pressing after the hit. Each synth's **Pressure** page sets what that does. By default on Poly, pressing harder opens the filter, so a held chord brightens as you lean into it. You choose up to four things for pressure to change, how much, and how hard you must press before it starts.
+The MPC's pads sense how hard you keep pressing after the hit. On Poly, FM and Wavetable the **Pressure** page sets what that does; on Bass it is **Moves** and **Amount** on the Play page, and Squelch, Keys, Drawbar, Strings, Analog, Pluck and Drums don't answer it. By default on Poly, pressing harder opens the filter, so a held chord brightens as you lean into it. You choose up to four things for pressure to change, how much, and how hard you must press before it starts.
 
 Clips record pad pressure too, so a recorded part plays back with the same swells: see [Pad pressure](clips.md#pad-pressure) in Clips and patterns.
 
@@ -312,4 +331,4 @@ How hard you hit a pad sets how loud the note plays, as with drums. **FULL LEVEL
 Note Repeat, Latch and the arpeggiator all play the synth too: see [Note Repeat, Latch and the arpeggiator](note-repeat-and-arp.md).
 
 > [!MPC]
-> The MPC's plugin instruments (such as its bass and electric-piano plugins) and expansions are not in MPFree. MPFree has its own five synths instead, with their controls on one tab and the Q-Links following each preset, and it can host CLAP plugin synths and the MPC plugin instruments people share, such as those in the Open MPC catalog. As on the MPC, where each track plays a program, each track can play its own instrument; a track without one plays its kit (see [A kit for each track](pads.md#a-kit-for-each-track)). The scales and chords of the MPC's Pad Perform mode are replaced by the scale settings and the per-bank pad layouts here: switch layouts with the PAD BANK buttons without leaving the page you are on.
+> The MPC's plugin instruments (such as its bass and electric-piano plugins) and expansions are not in MPFree. MPFree has its own eleven synths instead, with their controls on one tab and the Q-Links following each preset, and it can host CLAP plugin synths and the MPC plugin instruments people share, such as those in the Open MPC catalog. As on the MPC, where each track plays a program, each track can play its own instrument; a track without one plays its kit (see [A kit for each track](pads.md#a-kit-for-each-track)). The scales and chords of the MPC's Pad Perform mode are replaced by the scale settings and the per-bank pad layouts here: switch layouts with the PAD BANK buttons without leaving the page you are on.
