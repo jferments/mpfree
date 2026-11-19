@@ -23,7 +23,7 @@ Any of the eleven can be a track's own instrument (see [A synth for each track](
 
 | Synth | What it is | Good for | Presets |
 |---|---|---|---|
-| **Poly** | A classic two-oscillator subtractive synth, with a sub oscillator, noise, unison, a seven-saw supersaw and a resonant filter | Basses, leads, pads, brass, big trance-style stacks | Grit Bass, Acid, Supersaw, Dust Pad, Pluck, Brass, Sub Bass, Lead, Super Lead, Super Pad, Super Stab, Super Stack |
+| **Poly** | A classic two-oscillator subtractive synth, with a sub oscillator, noise, unison, a seven-saw supersaw and a resonant filter | Basses, leads, pads, brass, big trance-style stacks | Grit Bass, Acid, Supersaw, Dust Pad, Pluck, Brass, Sub Bass, Lead, Singing Lead, Drift Pad, Super Lead, Super Pad, Super Stab, Super Stack |
 | **FM** | Six-operator FM, in the tradition of the 1980s digital synths | Electric pianos, bells, glassy keys, punchy basses | Glass Keys, Bell Tower, Rubber Bass, Drawbars, Brass Section, Log Drum, Silk Pad, Steel Pluck |
 | **Drums** | A drum synth: a different synthesised drum on each pad | Electronic kits built from scratch | Boom Kit, Tight Kit, Grit Kit, Electro Kit |
 | **Pluck** | Physically modelled strings and mallets | Guitars, harps, marimbas, bells | Nylon, Steel String, Harp, Koto, Muted Bass, Marimba, Vibes, Bell, Glass, Kalimba, Steel Drum |
@@ -74,7 +74,7 @@ Coming:
 
 {{shot: synth | The Synth tab with Poly playing its Pluck preset: the presets on the left, the Osc page's sections in the middle (both oscillators with their waves drawn, the mix as faders, the supersaw's two knobs), and the Q-Links on the right.}}
 
-- **The title** shows the preset, with **edited** under it once you change anything. Tap the preset's name to open the synth's presets in the browser (see [Trying and saving presets](#trying-and-saving-presets)). The tabs beside it are the synth's **pages**: for Poly, Osc, Filter, Env, LFO, Voice and Pressure. Tap a tab, or hold **SHIFT** and turn the data wheel, to change page.
+- **The title** shows the preset, with **edited** under it once you change anything. Tap the preset's name to open the synth's presets in the browser (see [Trying and saving presets](#trying-and-saving-presets)). The tabs beside it are the synth's **pages**: for Poly, Osc, Filter, Env, LFO, LFO 2, Voice, Routes and Pressure. Tap a tab, or hold **SHIFT** and turn the data wheel, to change page.
 - **The sections.** Each page is split into boxes, one for each job, with the job's name at the top: **Osc 1**, **Mix**, **Filter**, **Filter envelope**, **Output** and so on. The colour says what kind of job it is, the same on every synth and effect:
   - **cyan**: what makes the sound (oscillators, wavetables, strings, drawbars)
   - **coral**: what shapes its tone (filter, drive)
@@ -100,6 +100,25 @@ The level stays about the same whatever you set. **Super Lead**, **Super Pad**, 
 {{shot: synth-voice | Poly's Voice page: how it plays (Poly, Mono or Legato, the number of voices and the glide), Unison (copies of each note, their detune and spread), the tuning and the output.}}
 
 **Poly's envelopes** (on the Env page, and the filter's on the Filter page) have times that mean what they say: an **Attack** of 100 ms reaches full level at 100 ms, and a **Release** of 1 s fades 60 dB in 1 s and stops. **Velocity to level** is how much quieter your softest hit is than your hardest, in dB (8 dB by default; 0 dB plays every hit as loud, and keys-like sounds want 30 dB or more). Presets and projects saved before 19 November 2026 load with their times and velocity converted, so they sound as they did.
+
+{{shot: synth-lfo-2 | Poly's LFO 2 page: each note's own LFO, with its shape, sync, Retrigger, rate and fade-in on the left, and how far it moves the pitch, cutoff, pulse width and level on the right.}}
+
+**LFO 2** is a second LFO on Poly, on its own page, and every note has its own. In a chord each note wobbles by itself, not all together as with the first LFO. **Fade in** brings it in slowly after each note starts: the delayed vibrato of a singer, a violin or a lead line (the lowest setting, 1 ms, is no fade). **Retrigger** starts it again with each note. Turned off, each note starts it somewhere of its own, so a pad's notes drift apart; with **Sync** on, it follows the song instead. **To pitch**, **To cutoff**, **To width** and **To level** are how far it moves each.
+
+{{shot: synth-routes | Poly's Routes page: route 1 takes the mod wheel to vibrato, as on every preset that doesn't use it for something else; routes 2 to 4 are free.}}
+
+**Routes** connect how you play to what the sound does: four of them, on Poly's **Routes** page. **From** is what moves it:
+
+- **Velocity**, how hard you hit;
+- **Pressure**, how hard you keep pressing;
+- **Tone**, a keyboard's slide or MPE tone;
+- the **Mod wheel**, a **Breath** controller or a **Foot** controller (an expression pedal);
+- **Key**, low notes one way and high notes the other, from middle C;
+- **Random**, a new value for each note.
+
+**To** is what it moves, from the same list as pressure's (Cutoff, Pitch, Level, Vibrato, Drive, Pan and the rest, with LFO 1 amount and LFO 2 amount). **Depth** is how far, either way: a negative depth on Level from Key makes high notes quieter. On **Level**, **LFO 1 amount** and **LFO 2 amount** a route sets how much gets through: at a depth of 50 %, the wheel at rest lets half the LFO through and the wheel at the top all of it. Route 1 takes the mod wheel to vibrato on every preset, so a keyboard's wheel works straight away.
+
+**Singing Lead** and **Drift Pad** show them off. Singing Lead's vibrato fades in on each note, harder hits push its drive, and a keyboard's tone opens its filter. Each of Drift Pad's notes sits at its own place across the speakers and a few cents off, its LFO 2 moves each note's tone by itself, and the mod wheel opens its filter.
 
 **Unison** is on Poly's **Voice** page: **Copies** plays up to four copies of every note, **Detune** spreads them in pitch and **Spread** across the speakers. It thickens any wave, the supersaw too, but each copy costs as much as a note.
 
@@ -333,7 +352,7 @@ MPFree reads Scala tuning files, the format thousands of published tunings come 
 
 ## Pad pressure
 
-The MPC's pads sense how hard you keep pressing after the hit. On Poly, FM and Wavetable the **Pressure** page sets what that does; on Bass it is **Moves** and **Amount** on the Play page, and Squelch, Keys, Drawbar, Strings, Analog, Pluck and Drums don't answer it. By default on Poly, pressing harder opens the filter, so a held chord brightens as you lean into it. You choose up to four things for pressure to change, how much, and how hard you must press before it starts.
+The MPC's pads sense how hard you keep pressing after the hit. On Poly, FM and Wavetable the **Pressure** page sets what that does; on Bass it is **Moves** and **Amount** on the Play page, and Squelch, Keys, Drawbar, Strings, Analog, Pluck and Drums don't answer it. By default on Poly, pressing harder opens the filter, so a held chord brightens as you lean into it. You choose up to four things for pressure to change, how much, and how hard you must press before it starts. On Poly, pressure can also bring in either LFO (**LFO 1 amount**, **LFO 2 amount**) or move each note across the speakers (**Pan**).
 
 Clips record pad pressure too, so a recorded part plays back with the same swells: see [Pad pressure](clips.md#pad-pressure) in Clips and patterns.
 

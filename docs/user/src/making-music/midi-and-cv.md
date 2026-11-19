@@ -37,7 +37,7 @@ The wheel, pressure and MPE play MPFree's own sounds: the synth and a track's ow
 
 A **sustain pedal** on your keyboard holds the notes of the armed track's sound, as on a piano: a key you let go keeps sounding until the pedal comes up, and a key you play again under the pedal plays again. A **sostenuto pedal** (the middle pedal) holds only the keys that are down when you press it. Both work on the synth, on a track's own instrument and on plugins.
 
-The **mod wheel**, a **breath controller**, an **expression pedal** (the kind with a rocker, sending CC 11) and the **soft pedal** go to the sound too. Plugins get them as MIDI. Of MPFree's own synths, **Strings** answers them all (see [Strings](synths.md#the-synth-tab)), and on **Bass** the mod wheel adds vibrato. The others don't use them yet.
+The **mod wheel**, a **breath controller**, an **expression pedal** (the kind with a rocker, sending CC 11) and the **soft pedal** go to the sound too. Plugins get them as MIDI. Of MPFree's own synths, **Strings** answers them all (see [Strings](synths.md#the-synth-tab)), on **Bass** the mod wheel adds vibrato, and **Poly**'s routes take the mod wheel, breath and foot controller to whatever you pick (the wheel adds vibrato unless a preset says otherwise; see [The Synth tab](synths.md#the-synth-tab)). The others don't use them yet.
 
 A track that plays a synth through MIDI out sends all of them to that synth as they came, on its channel.
 

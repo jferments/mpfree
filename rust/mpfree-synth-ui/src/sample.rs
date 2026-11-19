@@ -175,6 +175,17 @@ pub fn preset(name: &str) -> usize {
         .unwrap_or(0)
 }
 
+/// The Routes page's sample: breath to level (route 2) and velocity to
+/// cutoff (route 3).
+const ROUTE_EDITS: &[(u16, f32)] = &[
+    (pp::route_id(1, pp::route::SOURCE), 5.0),
+    (pp::route_id(1, pp::route::TARGET), 3.0),
+    (pp::route_id(1, pp::route::DEPTH), 60.0),
+    (pp::route_id(2, pp::route::SOURCE), 1.0),
+    (pp::route_id(2, pp::route::TARGET), 1.0),
+    (pp::route_id(2, pp::route::DEPTH), 40.0),
+];
+
 /// Every sample screen.
 pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     let scenes = [
@@ -215,12 +226,35 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
             focus: Some(pp::LFO_SYNC),
         },
         Scene {
+            name: "synth-lfo-2",
+            about: "Poly · Super Pad, LFO 2 page, edited: each note's own vibrato, \
+                    fading in over a second",
+            preset: preset("Super Pad"),
+            edits: &[
+                (pp::LFO2_RATE, 5.5),
+                (pp::LFO2_FADE, 1_000.0),
+                (pp::LFO2_PITCH, 0.3),
+                (pp::LFO2_CUTOFF, 0.25),
+            ],
+            page: "LFO 2",
+            focus: Some(pp::LFO2_FADE),
+        },
+        Scene {
             name: "synth-voice",
             about: "Poly · Acid, Voice page: mono with glide",
             preset: preset("Acid"),
             edits: &[],
             page: "Voice",
             focus: None,
+        },
+        Scene {
+            name: "synth-routes",
+            about: "Poly · Lead, Routes page, edited: breath swells the level and \
+                    velocity opens the filter, beside the wheel's vibrato",
+            preset: preset("Lead"),
+            edits: ROUTE_EDITS,
+            page: "Routes",
+            focus: Some(pp::route_id(1, pp::route::DEPTH)),
         },
     ];
     let mut out = Vec::new();
