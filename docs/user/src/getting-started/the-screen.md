@@ -71,7 +71,7 @@ On the Play page and the Sequencer tab, a bar under the tabs shows time:
 
 - **Stopped**, **Playing** or **Recording**.
 - **The position**: bar, beat and step (**9.2.03** is bar 9, beat 2, step 3).
-- **The tempo** in BPM. Tap it in time to set the tempo, as with **TAP TEMPO**, or hold a finger on it to type the tempo on the number pad.
+- **The tempo** in BPM. Tap it in time to set the tempo, as with **TAP TEMPO**, or hold a finger on it to type the tempo on the number pad (holding **TAP TEMPO** and letting go does the same).
 - **The REC chip**: what **REC** will record, such as **→ Track 1 · Pattern 1**. Tap it for the list of everything that can record (see [What REC records](../making-music/sequencer.md#what-rec-records)).
 - **Dots** that light up with each bar and beat, with a meter of the beat under them.
 - At the right end: on the Sequencer's Steps, the view switch **Steps** and **Notes**. On Play, **PADS PLAY**.
