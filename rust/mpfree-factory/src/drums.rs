@@ -52,12 +52,27 @@ fn render_pad(d: &mut Drums, pad: usize) -> Vec<f32> {
     out
 }
 
-/// The Drums synth's kits as (kit name, sounds), each sound on its pad's
-/// note on the MPC One.
+/// The Drums synth's kits the stick carries, by name: its first five.
+/// A kits file holds 16 kits at most (`kitfile::MAX_KITS`), with the free
+/// kits after these, and the synth has many more than that (it plays all
+/// of them itself), so the stick keeps the five it has always had.
+pub const ON_THE_STICK: [&str; 5] = [
+    "Init Kit",
+    "Boom Kit",
+    "Tight Kit",
+    "Grit Kit",
+    "Electro Kit",
+];
+
+/// The Drums synth's kits on the stick ([`ON_THE_STICK`]) as (kit name,
+/// sounds), each sound on its pad's note on the MPC One.
 pub fn kits() -> Vec<(String, Vec<Sound>)> {
     let mut d = Drums::new(RATE);
     let mut out = Vec::new();
-    for preset in Drums::presets() {
+    for name in ON_THE_STICK {
+        let Some(preset) = Drums::presets().iter().find(|p| p.name == name) else {
+            continue;
+        };
         d.load_preset(preset);
         let mut sounds = Vec::new();
         for pad in 0..PADS {
@@ -102,7 +117,8 @@ mod tests {
     fn every_drums_kit_renders() {
         let file = kits_file();
         let kits = kitfile::parse_kits(&file).unwrap();
-        assert_eq!(kits.len(), Drums::presets().len());
+        // Every kit named for the stick is one of the synth's.
+        assert_eq!(kits.len(), ON_THE_STICK.len());
         assert!(file.len() < kitfile::MAX_FILE, "{} bytes", file.len());
         for (name, sounds) in &kits {
             assert!(sounds.len() >= 8, "{name}: {} sounds", sounds.len());

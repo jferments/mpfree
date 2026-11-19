@@ -88,8 +88,10 @@ A first canon of 24 kits (our reading), each with a dozen or more drums: 808-sty
 
 ## What MPFree has today
 
-- **Drums** (5 kits: Init, Boom, Tight, Grit, Electro), 19 Nov, wave 3: 16 pads, sixteen models (the first eleven, and the 808 kick, Conga, Woodblock, Bell and Shaker), each drum its own knobs and Q-Links (section 5's idea), accent, per-hit variation, one-shot or gated pads, choke groups, 32 hit slots, the hit drawn on the Synth tab. The 808 kick uses Bass's body (punch and sigh measured against the paper), the hats and cymbal the cymbal paper's six squares and bands, band-limited (alias −62 dB at 1×), and the toms, congas, woodblocks and bells Pluck's modal bank. Old kits keep the first engine's voices to the bit. Measured against section 4: [Synth quality](../design/synth-quality.md#wave-3-targets-drums).
-- **Missing:** per-drum processing in the kit (wave 3's second drums thread), more kits, pressure on the pads, and the cost of 32 hits at once on the MPC (D10).
+- **Drums** (27 kits), 19 Nov, wave 3: 16 pads, sixteen models (the first eleven, and the 808 kick, Conga, Woodblock, Bell and Shaker), each drum its own knobs and Q-Links (section 5's idea), accent, per-hit variation, one-shot or gated pads, choke groups, 32 hit slots, the hit drawn on the Synth tab. The 808 kick uses Bass's body (punch and sigh measured against the paper), the hats and cymbal the cymbal paper's six squares and bands, band-limited (alias −62 dB at 1×), and the toms, congas, woodblocks and bells Pluck's modal bank. Old kits keep the first engine's voices to the bit. Measured against section 4: [Synth quality](../design/synth-quality.md#wave-3-targets-drums).
+- **Each drum's effects** (Punch, Distortion, EQ, Compressor, its Output and two sends) and the kit's Delay and Reverb; the kit's master drive or compressor is the sound's own effect slots ([Synths](../design/synths.md#each-drums-effects-and-the-kits-sends-drum_fx)).
+- **The kits:** section 6's canon of 24, all generic names: Tight Kit (the small machine) and Electro Kit from the first kits, and 22 new ones (808, Club Machine, Bright Machine, Vintage Rhythm, Eighties Punch, Miami Bass, Trap, Drill, Boom Bap, Lo-fi, House, Deep House, Techno, Minimal, Hardstyle, Drum and Bass, Amapiano, Latin Percussion, Reggaeton, Synth-pop, Industrial, FM), with Init, Boom and Grit beside them. Every pad within 6 dB of its kick ([Synths](../design/synths.md#drums-mpfree-synth-drums), The factory kits).
+- **Missing:** pressure on the pads, and the cost of 32 hits at once on the MPC (D10).
 
 ## Sources
 

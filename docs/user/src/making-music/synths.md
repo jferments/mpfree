@@ -25,7 +25,7 @@ Any of the twelve can be a track's own instrument (see [A synth for each track](
 |---|---|---|---|
 | **Poly** | A classic two-oscillator subtractive synth, with a sub oscillator, noise, unison, a seven-saw supersaw, tables of waves to sweep through and a resonant filter | Basses, leads, pads, brass, big trance-style stacks, evolving pads, vocal leads, growling basses | Grit Bass, Acid, Supersaw, Dust Pad, Pluck, Brass, Sub Bass, Lead, Singing Lead, Drift Pad, Super Lead, Super Pad, Super Stab, Super Stack, Worn Brass, Morph Pad, Vowel Lead, Sync Sweep, Digital Bell, Growl Bass, Organ, Harmonic Pluck, FM Keys, Portamento Lead, Low Note Lead, Breath Lead, Slide Lead, Unison Lead |
 | **FM** | Six-operator FM, in the tradition of the 1980s digital synths | Electric pianos, bells, glassy keys, punchy basses, reedy leads | Glass Keys, Bell Tower, Rubber Bass, Drawbars, Brass Section, Log Drum, Silk Pad, Steel Pluck, Reed Lead |
-| **Drums** | A drum synth: a different synthesised drum on each pad, each with its own knobs, from the 808 kick and hats to toms, congas and bells | Electronic kits built from scratch | Boom Kit, Tight Kit, Grit Kit, Electro Kit |
+| **Drums** | A drum synth: a different synthesised drum on each pad, each with its own knobs, from the 808 kick and hats to toms, congas and bells | Electronic kits built from scratch, in the styles of the classic drum machines and of today's genres | 808 Kit, Club Machine Kit, Bright Machine Kit, Vintage Rhythm Kit, Eighties Punch Kit, Miami Bass Kit, Trap Kit, Drill Kit, Boom Bap Kit, Lo-fi Kit, House Kit, Deep House Kit, Techno Kit, Minimal Kit, Hardstyle Kit, Drum and Bass Kit, Amapiano Kit, Latin Percussion Kit, Reggaeton Kit, Synth-pop Kit, Industrial Kit, FM Kit, Boom Kit, Tight Kit, Grit Kit, Electro Kit (see [The drum kits](#the-drum-kits)) |
 | **Pluck** | Physically modelled strings and mallets | Guitars, harps, plucked basses, marimbas, bells | Nylon, Steel String, Harp, Koto, Muted Bass, Oud, Banjo, Upright Bass, Harpsichord, Pizzicato, Marimba, Vibes, Bell, Glass, Kalimba, Steel Drum, Glockenspiel, Xylophone, Celesta, Chimes, Music Box |
 | **Keys** | A physically modelled electric piano and clav: struck steel tines or reeds in front of their pickups, or a struck string over two pickups | Soul and jazz chords, ballads, barking stabs, tremolo keys, funk clav lines | Soft Tines, Bright Tines, Barking Tines, Bell Keys, Stage Tines, Lo-fi Tines, Phase Tines, Reed, Reed Bite, Dirty Reed, Clav, Funk Clav, Wah Clav, Muted Clav, Stab Clav and 18 more |
 | **Drawbar** | A tonewheel organ with drawbars, percussion, scanner vibrato and a rotating speaker, and a 1960s combo organ | Jazz and gospel comping, rock riffs, church chords, soft pads; garage, ska and new wave stabs | Jazz Perc, Gospel, Full Organ, Rock Drive, Ballad, Flute, Church, Reedy, Bright Perc, Hollow, Soft Bass, Combo, Combo Flute, Combo Reed, Combo Square, Combo Vibrato, Combo Garage, Combo Rotary, Combo Perc |
@@ -38,7 +38,7 @@ Any of the twelve can be a track's own instrument (see [A synth for each track](
 
 Each synth also has an **Init** preset (Init Kit on Drums): a plain starting point to build your own sound.
 
-A few presets come with **effects and macros of their own**: Phase Tines and Wah Clav on Keys, Hall Strings and Space Strings on Strings, Amp Bass and Tube 808 on Bass, Hall Flute and Smoky Sax on Wind, and Hall Choir and Space Choir on Choir. See [Presets with their own effects](#presets-with-their-own-effects).
+A few presets come with **effects and macros of their own**: Phase Tines and Wah Clav on Keys, Hall Strings and Space Strings on Strings, Amp Bass and Tube 808 on Bass, Hall Flute and Smoky Sax on Wind, and Hall Choir and Space Choir on Choir. Eight drum kits bring effects for the whole kit: tape on Vintage Rhythm, tape and a compressor on Boom Bap, fewer bits and worn tape on Lo-fi, fewer bits on Industrial, and a compressor on House, Techno, Hardstyle and Drum and Bass. See [Presets with their own effects](#presets-with-their-own-effects).
 
 ## A synth for each track
 
@@ -183,6 +183,40 @@ The **Kit** page holds the kit's **Level**, its **Pad 1 note** and **Voices**. T
 The **Sends** page sets those two for the whole kit. The delay: **Time** in beats of the project's tempo, **Feedback** (how many echoes), **Tone** (darker echoes lower) and **Delay level**; its echoes bounce from left to right. The reverb is a room: **Size**, **Decay**, **Tone** (brighter higher), **Gate** (cuts the tail off after that long, for a gated drum) and **Reverb level**. The Q-Links turn the delay's Feedback and level and the reverb's Decay and level.
 
 A control that does nothing as the kit is set is faint and says why: the compressor's other controls at a ratio of 1:1, the distortion's Tone and Mix with no distortion, Mid freq with Mid at 0, and the delay or the reverb while no drum sends to it. Effects on a few drums cost the MPC very little; all four on every drum with both sends take more than the drums themselves, so use them where they count. The kit's effects are saved with it.
+
+### The drum kits
+
+Drums comes with 27 kits. Pick one as you pick any preset (tap its name on the Synth tab). In every kit the drums sit at about the same loudness against its kick, so you can play a kit straight away and mix it later; each drum alone, hit as hard as you can, stays well under the top of the meter.
+
+| Kit | The style | What's on it |
+|---|---|---|
+| **808 Kit** | The classic 1980s analog drum machine | The long round kick, the snappy snare and clap, metal hats, cowbell, congas, claves and maracas, and a low 808 for bass lines |
+| **Club Machine Kit** | The club drum machine of house and techno | A kick with a click and a punch, a noisy snare, a loud clap, bright hats, a ride and a crash, and a second kick, snare and clap to layer |
+| **Bright Machine Kit** | A bright, crisp drum machine | Short drums, a ringing snare, sharp hats, tambourine, cowbell, ride and crash |
+| **Vintage Rhythm Kit** | The early rhythm boxes | A soft round kick, a dull snare and rim, ticking hats, bongos, congas, claves, maracas, tambourine and guiro, through a little tape |
+| **Eighties Punch Kit** | 1980s pop and rock machines | A tight kick and snare, big toms and a snare in a gated room, claps, cabasa, tambourine and congas |
+| **Miami Bass Kit** | Miami bass and electro | A very long, low 808 and a short one for punch, a snappy snare and clap, quick hats, toms, cowbell, claves and a zap |
+| **Trap Kit** | Trap | A long driven 808, a hard snare and clap, hats for rolls (a tight one on pad 13), toms, a finger snap, a bell and a drop |
+| **Drill Kit** | Drill | A dark driven 808, a high crisp snare, a rim with a triplet echo, quick hats, bell and wood percussion, and a second, distorted 808 |
+| **Boom Bap Kit** | 1990s hip-hop | A thick kick and a cracking snare, both driven and darkened, dusty hats and percussion, through tape and a compressor |
+| **Lo-fi Kit** | Lo-fi hip-hop | Gentle drums with dark tops, a brushy snare and a soft bell, through fewer bits and worn tape (its hiss and crackle are part of it) |
+| **House Kit** | House | A round kick, a clap in a short room, open hats for the off-beat, a ride, congas, a rim with an echo, shaker and cowbell, through a compressor |
+| **Deep House Kit** | Deep house | A soft deep kick, a clap in a long room, warm hats, congas, a rim, woodblock and bell in a dotted echo, a ride and a sub kick |
+| **Techno Kit** | Techno | A distorted kick and a rumble kick in the room, a driven snare and clap, hard hats and ride, metal toms, a rim with an echo, a zap and an FM blip, through a compressor |
+| **Minimal Kit** | Minimal | Clicks and blips: a short kick, a thin snare, ticks, rim clicks, and FM and bell blips in a sixteenth-note echo |
+| **Hardstyle Kit** | Hardstyle | A heavily distorted kick and a long tuned one, a big clap and snare in the room, bright hats and a laser zap, through a compressor |
+| **Drum and Bass Kit** | Drum and bass | A punchy kick, a high cracking snare and a ghost snare, quick hats and ride, tight toms, through a compressor |
+| **Amapiano Kit** | Amapiano and Afro house | Log drums low to high (pads 6 to 8), a soft deep kick, a rimmy snare, a clap in the room, two shakers, congas, a rim with an echo, woodblock and an agogo bell |
+| **Latin Percussion Kit** | Latin percussion | Congas open, slapped and low (the open and the slap cut each other off), bongos, timbales, claves, cowbell, two agogo bells, maracas, guiro and a block, with a soft kick on pad 1 |
+| **Reggaeton Kit** | Reggaeton | A punchy kick and a high snare for the dembow, a long 808, timbales, rim, shaker, guiro, conga, woodblock and a zap |
+| **Synth-pop Kit** | Synth-pop | A punchy kick, a snare and clap in a gated room, synth toms that sweep down, bright hats, cowbell, a bell, tambourine and an all-noise snare |
+| **Industrial Kit** | Industrial | A distorted kick, an all-noise snare, metal hits (anvil, pipe, sheet, clang), noisy hats and cracks and a noise sweep, in a big gated room and through fewer bits |
+| **FM Kit** | FM drums | Every drum but the kick made by FM: snare, hats and cymbal, toms and a wood drum, a bell, a blip, a log drum, a zap and an FM kick |
+| **Boom Kit**, **Tight Kit**, **Grit Kit**, **Electro Kit** | MPFree's first four kits, named for their sound | Boom Kit has a long 808 on pad 14, and Grit Kit one driven hard |
+
+A kit's effects for the whole kit (tape, fewer bits, a compressor) are on its **FX 1** and **FX 2** pages, as on any preset with its own effects ([Presets with their own effects](#presets-with-their-own-effects)). Hit every pad at once as hard as you can and the kit goes over the top of the meter, as any loud kit does: the master's safety limiter catches it ([Master safety](mixing-and-effects.md#the-master-and-master-safety)).
+
+The USB stick also carries MPFree's first five kits (Init, Boom, Tight, Grit and Electro) rendered as sample kits, for the **Kits** place.
 
 **FM** builds its sound from six **operators**. Each is a simple wave at its own pitch, and each either plays out loud (a **carrier**) or bends another operator's wave (a **modulator**), which adds overtones: the louder the modulator, the brighter and more metallic the sound. **Algorithm** picks which operators bend which (the picture shows it: the bottom row plays out loud), and **Feedback** lets one operator bend itself, from a little edge to a rough buzz. Its pages:
 
