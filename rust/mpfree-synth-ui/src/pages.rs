@@ -271,11 +271,7 @@ use mpfree_synth::drum_params as dp;
 /// Drums: a page per pad, then the kit. A pad's page shows that drum's own
 /// knobs ([`dp::page_fields`]), so it is built from the values
 /// ([`drum_pages`]); this plan only names the kit's page.
-const DRUMS: &[PlanPage] = &[pg(
-    "Kit",
-    &["Kit"],
-    &[dp::LEVEL, dp::BASE_NOTE, dp::VOICES],
-)];
+const DRUMS: &[PlanPage] = &[pg("Kit", &["Kit"], &[dp::LEVEL, dp::BASE_NOTE, dp::VOICES])];
 
 /// The page that holds pad `pad`'s knobs (0 to 15), so an app can follow
 /// the last pad hit.
@@ -1007,7 +1003,11 @@ mod tests {
         }
         for (i, &n) in seen.iter().enumerate() {
             assert!(n <= 1, "{} twice", params[i].name);
-            assert!(n == 1 || dp::pad_field(params[i].id).is_some(), "{}", params[i].name);
+            assert!(
+                n == 1 || dp::pad_field(params[i].id).is_some(),
+                "{}",
+                params[i].name
+            );
         }
     }
 

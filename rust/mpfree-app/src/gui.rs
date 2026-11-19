@@ -3921,7 +3921,8 @@ impl Player {
                 return Default::default();
             };
             let sets = mpfree_synth_ui::qsets::factory(st.info, st.params);
-            let sets = mpfree_synth_ui::qsets::on_pad_values(st.info, &sets, pad, &|id| st.value(id));
+            let sets =
+                mpfree_synth_ui::qsets::on_pad_values(st.info, &sets, pad, &|id| st.value(id));
             let Some(set) = sets.first() else {
                 return Default::default();
             };

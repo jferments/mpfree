@@ -39,12 +39,24 @@ pub const DRIVE_DB: f32 = 30.0;
 pub const DRIVE_BIAS: f32 = 0.3;
 pub const DRIVE_REF: f32 = 0.25;
 
+/// `x.floor()`, the same value for every input: a positive value below
+/// 2^23 (every phase here in practice) truncates through an i32, which is
+/// its floor, instead of the library call `floorf` is on ARMv7.
+#[inline(always)]
+pub fn floor(x: f32) -> f32 {
+    if x > 0.0 && x < 8_388_608.0 {
+        x as i32 as f32
+    } else {
+        x.floor()
+    }
+}
+
 /// `sin(2 pi t)` for `t` in turns (0 to 1): an odd polynomial on the
 /// folded quarter, within 1e-4 (a ninth-order Taylor series).
 #[inline(always)]
 pub fn sin_turns(t: f32) -> f32 {
     // Fold to -0.25..0.25 turns.
-    let mut x = t - (t + 0.5).floor();
+    let mut x = t - floor(t + 0.5);
     if x > 0.25 {
         x = 0.5 - x;
     } else if x < -0.25 {
@@ -61,7 +73,7 @@ pub fn sin_turns(t: f32) -> f32 {
 #[inline(always)]
 pub fn triangle_turns(t: f32) -> f32 {
     let u = t - 0.25;
-    let u = u - u.floor();
+    let u = u - floor(u);
     4.0 * (u - 0.5).abs() - 1.0
 }
 
@@ -169,6 +181,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn floor_is_the_library_floor() {
+        for x in [
+            -3.5f32, -1.0, -0.25, 0.0, 0.25, 0.999_999, 1.0, 7.5, 1e7, 1e9,
+        ] {
+            assert_eq!(floor(x).to_bits(), x.floor().to_bits(), "{x}");
+        }
+    }
+
+    #[test]
     fn sin_turns_is_close() {
         for i in 0..1000 {
             let t = i as f32 / 1000.0;
@@ -216,7 +237,10 @@ mod tests {
             let (k, n) = drive_gains(80.0, hard);
             let lift = drive_lift(k, n, hard, DRIVE_REF);
             let quiet = drive(1e-4, k, n, hard) / 1e-4;
-            assert!(((quiet / 1.0) / lift - 1.0).abs() < 0.01, "{hard}: {quiet} {lift}");
+            assert!(
+                ((quiet / 1.0) / lift - 1.0).abs() < 0.01,
+                "{hard}: {quiet} {lift}"
+            );
             assert!(lift > 3.0, "{lift}");
         }
         assert_eq!(drive_lift(0.0, 1.0, false, 0.25), 1.0);

@@ -813,7 +813,12 @@ fn drums(page: &str, value: &dyn Fn(u16) -> f32) -> Option<Plan> {
             vec![
                 s("kit", "Kit", Source, &[]).draw("Kit"),
                 s("levels", "Levels", Voice, &[]).draw("Levels"),
-                s("out", "Output", Voice, &[LEVEL, BASE_NOTE, VOICES, METER_VOICES]),
+                s(
+                    "out",
+                    "Output",
+                    Voice,
+                    &[LEVEL, BASE_NOTE, VOICES, METER_VOICES],
+                ),
             ],
         ),
         _ => return None,

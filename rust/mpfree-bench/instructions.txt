@@ -54,8 +54,9 @@
 133926	Drawbar Init, 8 keys
 202619	Drive (Eco 2x)
 430284	Drive (HQ 4x)
-572112	Drums Boom Kit, a hit every block
-417001	Drums Init Kit, a hit every 4 blocks
+697460	Drums Boom Kit, a hit every block
+445971	Drums Init Kit, a hit every 4 blocks
+1395843	Drums Init Kit, every pad each block
 16073	Ducker (tempo)
 108120	EQ (4 bands and both cuts)
 256118	EQ (4 bands and both cuts), Freq gliding

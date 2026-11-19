@@ -2596,7 +2596,9 @@ fn drum_circuits(rows: &mut Vec<Row>, rate: u32) {
         let paper = f64::from(paper);
         let lo = ((paper * 0.98) / bin) as usize;
         let hi = ((paper * 1.02) / bin) as usize;
-        let k = (lo..=hi).max_by(|&a, &b| ps[a].total_cmp(&ps[b])).unwrap_or(lo);
+        let k = (lo..=hi)
+            .max_by(|&a, &b| ps[a].total_cmp(&ps[b]))
+            .unwrap_or(lo);
         let (a, b, c) = (ps[k - 1].ln(), ps[k].ln(), ps[k + 1].ln());
         let off = 0.5 * (a - c) / (a - 2.0 * b + c);
         let f = (k as f64 + off) * bin;
@@ -2744,8 +2746,20 @@ fn drum_circuits(rows: &mut Vec<Row>, rate: u32) {
         d.set_param(drum_params::VOICES, voices);
         let at = frames(0.3, rate);
         let ev = vec![
-            (0, NodeEvent::NoteOn { note: base, velocity: 127 }),
-            (at, NodeEvent::NoteOn { note: base + 1, velocity: 127 }),
+            (
+                0,
+                NodeEvent::NoteOn {
+                    note: base,
+                    velocity: 127,
+                },
+            ),
+            (
+                at,
+                NodeEvent::NoteOn {
+                    note: base + 1,
+                    velocity: 127,
+                },
+            ),
         ];
         let x = render(&mut d, rate, at + 4_096, &ev).mid();
         let n = 2_048;
@@ -2791,12 +2805,20 @@ fn drum_circuits(rows: &mut Vec<Row>, rate: u32) {
             let ev: Vec<Timed> = if (at..at + n).contains(&start) {
                 vec![Timed::new(
                     (start - at) as u32,
-                    NodeEvent::NoteOn { note: base, velocity: 100 },
+                    NodeEvent::NoteOn {
+                        note: base,
+                        velocity: 100,
+                    },
                 )]
             } else {
                 Vec::new()
             };
-            d.process(&Ctx::new(rate, at as u64), &ev, &mut out[at..at + n], &mut r[at..at + n]);
+            d.process(
+                &Ctx::new(rate, at as u64),
+                &ev,
+                &mut out[at..at + n],
+                &mut r[at..at + n],
+            );
             at += n;
         }
         let first = out.iter().position(|v| *v != 0.0).unwrap_or(len);

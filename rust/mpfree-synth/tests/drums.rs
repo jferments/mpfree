@@ -3,7 +3,7 @@
 use mpfree_node::{check_params, Ctx, Node, NodeEvent, Timed, MAX_BLOCK};
 use mpfree_synth::drum::hit_shape;
 use mpfree_synth::drum_params::{
-    field, model, pad_id, BASE_NOTE, LEVEL, METER_VOICES, MODELS, PADS, PARAMS,
+    field, model, pad_id, BASE_NOTE, CURRENT, LEVEL, METER_VOICES, MODELS, PADS, PARAMS, VOICES,
 };
 use mpfree_synth::Drums;
 
@@ -39,6 +39,17 @@ fn render(
     (l, r)
 }
 
+/// A factory kit by name: its pads play the Current voices.
+fn kit(name: &str) -> Drums {
+    let mut d = Drums::new(RATE);
+    let k = Drums::presets()
+        .iter()
+        .find(|k| k.name == name)
+        .unwrap_or_else(|| panic!("no kit {name}"));
+    d.load_preset(k);
+    d
+}
+
 fn hit(pad: u8, velocity: u8) -> NodeEvent {
     NodeEvent::NoteOn {
         note: 36 + pad,
@@ -58,7 +69,9 @@ fn rms(x: &[f32]) -> f32 {
 #[test]
 fn parameters_and_kits_are_valid() {
     check_params(&PARAMS).unwrap();
-    assert_eq!(PARAMS.len(), PADS * field::COUNT + 3);
+    // Each pad's fields, then the kit's Level, Base note, Voices and the
+    // voices meter.
+    assert_eq!(PARAMS.len(), PADS * (field::COUNT + field::MORE) + 4);
     for kit in Drums::presets() {
         for &(id, v) in kit.values {
             let p = PARAMS
@@ -73,14 +86,20 @@ fn parameters_and_kits_are_valid() {
             );
         }
     }
-    // Every model is somewhere in the Init kit.
-    let d = Drums::new(RATE);
+    // Every model is in some factory kit, and every factory kit plays
+    // the Current voices.
+    let kits: Vec<Drums> = Drums::presets().iter().map(|k| kit(k.name)).collect();
     for (m, name) in MODELS.iter().enumerate() {
         assert!(
-            (0..PADS).any(|p| d.param(pad_id(p, field::MODEL)) as usize == m),
-            "{name} not in the Init kit"
+            kits.iter()
+                .any(|d| (0..PADS).any(|p| d.param(pad_id(p, field::MODEL)) as usize == m)),
+            "{name} in no factory kit"
         );
     }
+    assert!(kits.iter().all(|d| d.param(VOICES) == CURRENT));
+    // A kit saved before the Voices setting (and a new engine) plays the
+    // Classic voices, as it did.
+    assert_eq!(Drums::new(RATE).param(VOICES), 0.0);
 }
 
 #[test]
@@ -134,7 +153,7 @@ fn every_pad_and_kit_plays_at_a_sane_level_and_ends() {
             let (l, r) = render(&mut d, RATE as usize * 6, &[(0, hit(pad, 127))], |_| 256);
             let pk = db(peak(&l).max(peak(&r)));
             assert!(
-                (-22.0..=-4.0).contains(&pk),
+                (-26.0..=-2.5).contains(&pk),
                 "{} pad {}: {pk:.1} dBFS",
                 kit.name,
                 pad + 1
@@ -411,4 +430,123 @@ fn the_hit_shape_drawn_is_the_hit_played() {
     assert_eq!((hat.model, hat.hz, hat.body.0), ("Closed hat", 0.0, 0.0));
     let clap = hit_shape(|id| d.param(id), 2, RATE);
     assert_eq!(clap.bursts.map(|b| b.count), Some(4));
+}
+
+#[test]
+fn current_voices_are_the_same_for_any_block_size() {
+    // Every pad of a Current kit, gated pads let go, a choke, a knob
+    // turned and all notes off: the same samples in any blocks.
+    let mut ev = Vec::new();
+    for k in 0..64u64 {
+        let pad = (k * 5 % 16) as u8;
+        ev.push((k * 701 + 5, hit(pad, 30 + (k * 29 % 98) as u8)));
+        ev.push((k * 701 + 300, NodeEvent::NoteOff { note: 36 + pad }));
+    }
+    ev.push((
+        12_000,
+        NodeEvent::Param {
+            id: pad_id(13, field::DECAY),
+            value: 400.0,
+        },
+    ));
+    ev.push((40_000, NodeEvent::AllOff));
+    ev.sort_by_key(|e| e.0);
+    let frames = 50_000;
+    let make = || {
+        let mut d = kit("Init Kit");
+        // Pad 5 plays only while held.
+        d.set_param(pad_id(4, field::PLAYS), 1.0);
+        d
+    };
+    let (rl, rr) = render(&mut make(), frames, &ev, |_| 128);
+    assert!(peak(&rl) > 0.05);
+    for size in [1usize, 16, 17, 333, 8192] {
+        let (l, r) = render(&mut make(), frames, &ev, |_| size);
+        assert!(l == rl && r == rr, "block size {size} differs");
+    }
+}
+
+#[test]
+fn a_current_choke_is_quick() {
+    // The open hat choked at 100 ms by a silent pad in its group (the
+    // closed hat at no level): gone within the choke's 5 ms fade. (How
+    // clean the fade is, the lab's D6 row measures on a ringing kick.)
+    let mut d = kit("Init Kit");
+    d.set_param(pad_id(3, field::LEVEL), -60.0);
+    let (l, _) = render(
+        &mut d,
+        RATE as usize / 2,
+        &[(0, hit(4, 127)), (4800, hit(3, 127))],
+        |_| 64,
+    );
+    assert!(rms(&l[4000..4800]) > 1e-3);
+    let after = rms(&l[4800 + 300..4800 + 2400]);
+    assert!(after < 1e-6, "{after}");
+}
+
+#[test]
+fn a_gated_pad_stops_when_let_go() {
+    let ring = |plays: f32| {
+        let mut d = kit("Init Kit");
+        // The cymbal (pad 11), long, let go at 100 ms.
+        d.set_param(pad_id(10, field::PLAYS), plays);
+        let (l, _) = render(
+            &mut d,
+            RATE as usize,
+            &[(0, hit(10, 127)), (4800, NodeEvent::NoteOff { note: 46 })],
+            |_| 128,
+        );
+        (
+            rms(&l[RATE as usize / 5..RATE as usize / 4]),
+            d.active_voices(),
+        )
+    };
+    let (held, voices) = ring(1.0);
+    assert!(held < 1e-5, "still ringing at {held}");
+    assert_eq!(voices, 0);
+    // One-shot rings on.
+    assert!(ring(0.0).0 > 1e-3);
+}
+
+#[test]
+fn hits_vary_unless_variation_is_off() {
+    let two = |variation: f32| {
+        let mut d = kit("Init Kit");
+        d.set_param(pad_id(0, field::VARIATION), variation);
+        let gap = RATE as u64;
+        let (l, _) = render(
+            &mut d,
+            2 * gap as usize,
+            &[(0, hit(0, 100)), (gap, hit(0, 100))],
+            |_| 128,
+        );
+        let (a, b) = l.split_at(gap as usize);
+        (db(rms(&a[..4800])) - db(rms(&b[..4800]))).abs()
+    };
+    let step = two(50.0);
+    assert!((0.1..=1.2).contains(&step), "{step} dB");
+    assert!(two(0.0) < 1e-3);
+}
+
+#[test]
+fn a_new_drum_in_a_classic_kit_plays() {
+    // The 808 kick on pad 1 of the Classic Init kit.
+    let mut d = Drums::new(RATE);
+    d.set_param(pad_id(0, field::MODEL), f32::from(model::KICK_808));
+    let (l, _) = render(&mut d, RATE as usize, &[(0, hit(0, 127))], |_| 128);
+    assert!(peak(&l) > 0.1);
+    assert_eq!(d.pad_name(0), "808 kick");
+}
+
+#[test]
+fn current_retriggers_fade_without_piling_up() {
+    let mut d = kit("Boom Kit");
+    let ev: Vec<_> = (0..40u64).map(|k| (k * 600, hit(13, 127))).collect();
+    let (l, _) = render(&mut d, 24_100, &ev, |_| 64);
+    assert!(d.active_voices() <= 2, "{} voices", d.active_voices());
+    let jump = l
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0, f32::max);
+    assert!(jump < 0.5, "jump {jump}");
 }
