@@ -1710,11 +1710,8 @@ impl MixerView {
                 &count.to_string(),
             );
         }
-        let (first, shown, n, outside) = self.span(l);
-        for (b, s, live) in [
-            (l.prev, "<", outside || first > 0),
-            (l.next, ">", outside || first + shown < n),
-        ] {
+        let [back, on] = self.arrows(l);
+        for (b, s, live) in [(l.prev, "<", back), (l.next, ">", on)] {
             cx.canvas
                 .fill_round_rect(b, 10, if live { t.raised } else { t.surface });
             cx.text(
@@ -1726,7 +1723,8 @@ impl MixerView {
                 s,
             );
         }
-        let page = if outside {
+        let (first, shown, n) = self.span(l);
+        let page = if self.state.view == MixView::Io && self.io.section().is_some() {
             String::new()
         } else if n == 0 {
             "none".to_string()
@@ -3089,21 +3087,30 @@ impl MixerView {
     /// What the head's page arrows and count show: the first item, how many
     /// show, how many there are, and whether an outside section has the
     /// arrows (then they are always lit and there is no count).
-    fn span(&self, l: &Layout) -> (usize, usize, usize, bool) {
+    fn span(&self, l: &Layout) -> (usize, usize, usize) {
         let n = self.state.strips.len();
         if self.state.view != MixView::Io {
             let shown = match self.look {
                 Look::Faders => self.shown(l).len(),
                 Look::Effects | Look::Eq => self.rows(l).len(),
             };
-            return (self.first, shown, n, false);
-        }
-        if self.io.section().is_some() {
-            return (0, 0, 0, true);
+            return (self.first, shown, n);
         }
         let rows = io::rows_per_page(self.io_panel(l));
         let top = self.io.top.min(n);
-        (top, rows.min(n - top), n, false)
+        (top, rows.min(n - top), n)
+    }
+
+    /// Whether the page arrows (< and >) have somewhere to go: the strips'
+    /// pages, or an open I/O section's own ([`IoSection::can_page`]).
+    fn arrows(&self, l: &Layout) -> [bool; 2] {
+        if self.state.view == MixView::Io {
+            if let Some(s) = self.io.section() {
+                return [s.can_page(-1), s.can_page(1)];
+            }
+        }
+        let (first, shown, n) = self.span(l);
+        [first > 0, first + shown < n]
     }
 
     fn io_panel(&self, l: &Layout) -> Rect {
@@ -3590,9 +3597,9 @@ impl Widget for MixerView {
                 Target::tap("view", i, v.label(), l.chips[i]).disabled_if(*v == self.state.view)
             })
             .collect();
-        let (first, shown, n, outside) = self.span(&l);
-        out.push(Target::tap("prev", 0, "<", l.prev).disabled_if(!(outside || first > 0)));
-        out.push(Target::tap("next", 0, ">", l.next).disabled_if(!(outside || first + shown < n)));
+        let [back, on] = self.arrows(&l);
+        out.push(Target::tap("prev", 0, "<", l.prev).disabled_if(!back));
+        out.push(Target::tap("next", 0, ">", l.next).disabled_if(!on));
         for (i, (h, look)) in look_halves(l.look).into_iter().zip(Look::ALL).enumerate() {
             out.push(Target::tap("look", i, look.label(), h).disabled_if(look == self.look));
         }

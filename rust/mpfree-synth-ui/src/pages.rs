@@ -347,13 +347,14 @@ const KEYS: &[PlanPage] = &[
 
 use mpfree_synth::drawbar_params as db;
 
-/// Drawbar: the drawbars, percussion with the scanner, the rotary speaker
-/// with the tone, and the voice. The Q-Links pull the upper drawbars (the
-/// 16', 5 1/3' and 8' usually stay out); the switches stay on the screen.
+/// Drawbar: the model, the drawbars and the combo's voices, percussion
+/// with the scanner, the rotary speaker with the tone, and the voice. The
+/// Q-Links pull the upper drawbars (the 16', 5 1/3' and 8' usually stay
+/// out); the switches stay on the screen.
 const DRAWBAR: &[PlanPage] = &[
     pg(
         "Drawbars",
-        &["Drawbars"],
+        &["Model", "Drawbars", "Combo"],
         &[db::DB_4, db::DB_2_23, db::DB_2, db::DB_1],
     ),
     pg("Percussion", &["Percussion", "Vibrato"], &[]),

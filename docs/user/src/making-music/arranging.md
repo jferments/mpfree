@@ -12,7 +12,7 @@ The Arrange tab turns clips into a song in three ways. You can play it live, lau
 
 A row of the clip grid is a scene. Tap a row's number on the left and every clip in that row starts on the next bar line (or the line the Record panel's **Launch** sets, see [Recording a clip](clips.md#recording-a-clip)), so the whole part of the song changes at once.
 
-{{shot: clips | The Arrange tab's clip grid, with the morph bar under it.}}
+{{shot: clips | The Arrange tab's clip grid in a jam: clips playing (a ring turning), two waiting for the next bar ("from 4.1"), Chop B recording, loop cells from the looper, and empty slots, with the morph bar under it.}}
 
 - The square button above the row numbers stops every track on the next bar line.
 - A scene can also switch which tracks are muted on its bar line, send your outside synths and drum machines a program change there, have a name, and move on by itself after some bars (to the next row, back to the first, or to a random one). Set these up on the Record panel's **Scene** tab (below). **Song → scenes** (below) also sets rows up to play one after another, and the [song list](#the-song-list) plays them in any order.
@@ -62,7 +62,7 @@ A knob you turn while morphing changes the scene the crossfader is nearer, and t
 
 The song is your clips laid out on a timeline, one lane per track. Tap **Song ›** above the clip grid to see it, and **Clips** to go back to the grid. **+ Track**, under the last track's lane, adds a track, as on the grid. With more tracks than fit, drag up or down on the names to scroll.
 
-{{shot: arrange-song | The Song view: five rows made into a song, a drum block selected, and Rec song on.}}
+{{shot: arrange-song | The Song view: seven rows made into a song (Intro, Verse, Build and on), eight tracks of blocks under the scene names, and Rec song on.}}
 
 - **Scenes → song** adds every row that has clips to the end of the song, one after another, with each scene's name above the bars where it starts.
 - **Song on** plays the song. A track plays the song wherever you have not launched a clip on it. Launch a clip and it takes that track over. Stop it and the track goes back to the song. While clips play over the song, **Back to song** shows on the grid's title line: it stops them all on the next Launch line, and every track plays the song from there.

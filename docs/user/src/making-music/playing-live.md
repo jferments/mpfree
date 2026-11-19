@@ -8,7 +8,7 @@ checked: 2026-11-19 a6fb29b2
 
 The **Play** page is MPFree's home: the place for finger drumming, making beats and live looping. Everything for a jam is on one page, so you never have to leave it while you play: press **MAIN** from anywhere to come back.
 
-{{shot: play-all-loop | The Play page in a jam: Loop 1 playing three layers along the top, the armed track's pads as rows of steps in the middle (a hat switched off shows "off"), Stutter held among the throws, the XY pad playing filter and echo, and swing, tune, filter and delay on the Q-Links.}}
+{{shot: play-all-loop | The Play page in a jam: six loops along the top (three playing, Loops 4 and 5 turned off, Loop 6 recording its first pass) and two empty, the armed track's pads as rows of steps in the middle (a hat switched off shows "off"), Stutter held among the throws, the XY pad playing filter and echo, and swing, tune, filter and delay on the Q-Links.}}
 
 From top to bottom:
 

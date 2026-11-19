@@ -99,6 +99,13 @@ pub trait IoSection: Send {
         IoReply::Ignored
     }
 
+    /// Whether the page arrows have somewhere to go that way (`d` -1 for
+    /// <, 1 for >): an arrow with nowhere to go is drawn greyed and does
+    /// nothing. A section that doesn't say keeps both lit.
+    fn can_page(&self, _d: i32) -> bool {
+        true
+    }
+
     /// Called each frame while it shows, with the time since the app
     /// started, for live values (activity lights, the clock's tempo,
     /// meters). [`IoReply::Redraw`] draws it again; anything else lets the

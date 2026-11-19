@@ -776,6 +776,106 @@ pub fn kit_project() -> (Project, Arc<SourceView>) {
     (p, view)
 }
 
+/// A full kit for the Pads tab's screen (Jay, 19 Nov 04:00Z): every pad
+/// of bank A in use, A1-A8 one-shot samples (A5 the snare), A9-A16 a mix
+/// of loops, synth voices and MIDI out to gear; banks B to F partly
+/// filled with more hits so their dots show on the bank strip; G and H
+/// empty.
+pub fn full_kit_project() -> Project {
+    use mpfree_sampler::model::PadKind;
+    let (mut p, view) = project();
+    // The loops play the whole two bars (or the first one).
+    let whole = Region::whole(p.source(view.id).expect("the loop"));
+    let mut break_pad = p.pad(PAD).cloned().expect("the loop's pad");
+    for l in &mut break_pad.layers {
+        l.region.start = whole.start;
+        l.region.end = whole.end;
+        l.region.sustain_loop = None;
+    }
+    let mut half_pad = break_pad.clone();
+    for l in &mut half_pad.layers {
+        l.region.end = whole.start + (whole.end - whole.start) / 2;
+    }
+    let hits: [(&str, f32, Option<f32>); 8] = [
+        ("Kick 58", 0.4, Some(58.0)),
+        ("Rim", 0.06, Some(1_800.0)),
+        ("Clap", 0.2, None),
+        ("Conga", 0.25, Some(220.0)),
+        ("Snare", 0.22, None),
+        ("Hat closed", 0.08, None),
+        ("Hat open", 0.35, None),
+        ("Shaker", 0.12, None),
+    ];
+    let mut one_shot = Vec::new();
+    for (name, len, tone) in hits {
+        let src = Source::new(name, RATE, 2, hit_sound(len, tone)).expect("a hit");
+        one_shot.push((name, Region::whole(&src)));
+        p.add_source(src);
+    }
+    let hit = |i: usize, name: &str| {
+        let (_, r) = &one_shot[i % one_shot.len()];
+        Pad::new(name, Layer::new(r.clone()))
+    };
+    for (i, (name, _)) in one_shot.iter().enumerate() {
+        let mut pad = hit(i, name);
+        if name.starts_with("Hat") {
+            pad.mute_group = Some(1);
+        }
+        p.set_pad(i, Some(pad), None).expect("a hit pad");
+    }
+    let looped = |name: &str, from: &Pad| {
+        let mut l = pads_tab::as_loop(from, BPM);
+        l.name = name.into();
+        l
+    };
+    let voice = |name: &str, engine: &str, note: u8| {
+        let mut v = hit(0, name);
+        v.layers.clear();
+        v.kind = PadKind::Instrument {
+            engine: engine.into(),
+            note,
+        };
+        v
+    };
+    let gear = |name: &str, port: &str, channel: u8, note: u8| {
+        let mut g = hit(0, name);
+        g.layers.clear();
+        g.kind = PadKind::MidiOut {
+            port: port.into(),
+            channel,
+            note,
+        };
+        g
+    };
+    let top = [
+        looped("Break 92", &break_pad),
+        looped("Break fill", &break_pad),
+        voice("Sub", "poly", 36),
+        voice("Rhodes", "keys", 60),
+        gear("Volca kick", "Volca Kick", 10, 36),
+        gear("Juno stab", "Juno-X", 3, 60),
+        voice("Strings", "strings", 55),
+        looped("Break half", &half_pad),
+    ];
+    for (k, pad) in top.into_iter().enumerate() {
+        p.set_pad(8 + k, Some(pad), None).expect("a top pad");
+    }
+    // Banks B to F: some pads each, from the kit's hits.
+    let names = [
+        "Kick", "Rim", "Clap", "Conga", "Snare", "Hat", "Open hat", "Shaker",
+    ];
+    for (bank, used) in [(1usize, 12usize), (2, 9), (3, 14), (4, 6), (5, 10)] {
+        let letter = (b'A' + bank as u8) as char;
+        for i in 0..used {
+            let k = (i * 5 + bank) % 16;
+            let name = format!("{} {letter}{}", names[k % names.len()], k + 1);
+            p.set_pad(bank * 16 + k, Some(hit(k, &name)), None)
+                .expect("a bank pad");
+        }
+    }
+    p
+}
+
 /// The Pads tab's Pad view on the kit, pad `pad` picked.
 pub fn pads_sample(fonts: Fonts, pad: usize) -> Result<PadsSample, String> {
     let (project, _) = kit_project();

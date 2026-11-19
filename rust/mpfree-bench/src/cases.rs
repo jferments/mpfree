@@ -1091,12 +1091,16 @@ pub fn all(rate: u32) -> Vec<Case> {
         )
     }));
     // Drawbar: the default three drawbars, all nine with leakage, chorus
-    // and the fast rotary, and the rotary off.
+    // and the fast rotary, and the rotary off; then the combo model (its
+    // divide-down bank renders only the notes heard): three footages with
+    // both voices and the vibrato, and the reed on seven footages.
     for (name, keys) in [
         ("Init", 8),
         ("Full Organ", 8),
         ("Gospel", 16),
         ("Church", 8),
+        ("Combo", 8),
+        ("Combo Reed", 8),
     ] {
         v.push(measured(|| {
             let p = Drawbar::presets()
