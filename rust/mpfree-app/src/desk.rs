@@ -694,6 +694,8 @@ impl Desk<'_> {
                 out.show(gui::ToUi::OpenIoSection(mpfree_midi_ui::CONTROLLER))
             }
             app::Effect::ScreenPicture => out.show(gui::ToUi::ScreenPicture),
+            app::Effect::XyFull => out.show(gui::ToUi::XyFull),
+            app::Effect::Reset => out.show(gui::ToUi::Reset),
             app::Effect::SynthPage(d) => out.show(gui::ToUi::SynthPage(d)),
             app::Effect::SampleWheel(d) => out.show(gui::ToUi::SampleWheel(d)),
             app::Effect::Rows(k) => out.show(gui::ToUi::Rows(k)),

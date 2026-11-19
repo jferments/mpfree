@@ -2769,6 +2769,28 @@ impl Widget for ChainView {
         self.turn(t, delta, if fine { WHEEL_STEP / 10.0 } else { WHEEL_STEP })
     }
 
+    /// SHIFT + the wheel's push on a knob, fader or slider: the setting's
+    /// own default, as a touch, a turn and a lift would set it.
+    fn reset(&mut self, t: &Target, _r: Rect) -> Option<EventKind> {
+        if !matches!(t.id, "knob" | "fader" | "slider" | "drawbar") {
+            return None;
+        }
+        let p = self.state.params.get(t.index)?;
+        if p.info.readonly {
+            return None;
+        }
+        let (addr, value) = (p.addr, p.info.clamp(p.info.default));
+        if value == p.value {
+            return None;
+        }
+        if self.state.focus != Some(addr) {
+            self.push(ChainAction::Focus(addr));
+        }
+        self.push(ChainAction::Set { addr, value });
+        self.push(ChainAction::Release(addr));
+        Some(EventKind::Select(self.actions.len()))
+    }
+
     /// A finger resting on a MIDI effect's setting puts it under the wheel
     /// (its whole row: the chips, or a card's row); elsewhere, as for any
     /// widget, the knob, fader or slider under it.

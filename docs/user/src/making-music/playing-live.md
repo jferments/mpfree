@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-sampler-ui/src/levels_panel.rs rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/play_widgets.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs
-checked: 2026-11-19 a6fb29b2
+checked: 2026-11-19 ea21a9b1
 -->
 
 # Playing live
@@ -48,6 +48,10 @@ The **XY pad** plays an effect on the whole mix under one finger. The chip at it
 **To play something else,** tap the chip. A list takes the place of the pattern: Filter + echo, then the nine effects of [XY FX](effects.md#xy-fx) (Filter, Echo, Dub echo, Wash, Crush, Flanger, Phaser, Ring mod and Gate), each saying what across and up do. Tap one and the pad plays it from then on; **Close** or the chip again leaves it as it was. With one of the nine, the effect opens when your finger lands and lets go when it lifts (an echo or the wash rings out), and the dot stays where you lifted it. The pad's label names both settings, for example "Decay 2.4 s · Amount 40 %". MPFree remembers your pick, like the other settings in Prefs.
 
 {{shot: play-xy-list | The list the XY chip opens: Filter + echo and the nine XY FX, each saying what across and up do. Wash is the pick here.}}
+
+**For a bigger pad, press SHIFT + NEXT SEQ** from any page. The XY pad takes the whole of Play under the transport bar, with the master bar and the Q-Links still beside it, so you have room for big, slow moves. It plays just as the small one does, and its chip still opens the list. Press **SHIFT + NEXT SEQ** again, or go to another page, to get the small pad back.
+
+{{shot: play-xy-full | The XY pad full screen (SHIFT + NEXT SEQ), playing Wash: decay across, brightness up.}}
 
 ## Fills
 
@@ -142,4 +146,4 @@ Swing reads **off** at 50 %, which is straight time, as it does in the transport
 While you hold **NOTE REPEAT**, or the Arp panel is open, the knobs control the repeat instead: rate, gate, swing and octaves. See [Note Repeat, Latch and the arpeggiator](note-repeat-and-arp.md).
 
 > [!MPC]
-> The MPC's XYFX mode and Pad Perform are full-screen modes, and Track Mute opens a page of its own. In MPFree, the XY pad and the throws sit on the Play page next to your pattern and loops, and TRACK MUTE only changes what the pads do, so you can perform without leaving the page you are on.
+> The MPC's XYFX mode and Pad Perform are full-screen modes, and Track Mute opens a page of its own. In MPFree, the XY pad and the throws sit on the Play page next to your pattern and loops, and TRACK MUTE only changes what the pads do, so you can perform without leaving the page you are on. When you want the XY pad big, as on the MPC, SHIFT + NEXT SEQ puts it full screen.
