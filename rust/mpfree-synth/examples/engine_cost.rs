@@ -30,7 +30,7 @@ fn main() {
         println!("{label:<28} {h:016x}  {us:7.1} us/block");
     };
     if want("fm") {
-        for p in Fm::presets().iter().filter(|p| pick(&p.name)) {
+        for p in Fm::presets().iter().filter(|p| pick(p.name)) {
             let mut s = Fm::new(RATE);
             s.load_preset(p);
             s.set_param(fm_params::POLYPHONY, 16.0);

@@ -85,10 +85,10 @@ fn init() -> Fm {
 fn preset(name: &str) -> Fm {
     let mut s = Fm::new(RATE);
     let p = Fm::presets()
-        .into_iter()
+        .iter()
         .find(|p| p.name == name)
         .unwrap_or_else(|| panic!("no preset {name}"));
-    s.load_preset(&p);
+    s.load_preset(p);
     s
 }
 

@@ -1929,13 +1929,13 @@ fn engine_presets(rate: u32) -> Vec<Preset> {
         ));
     }
     for p in Fm::presets() {
-        let mono = mode(&p.values, fm_params::VOICE_MODE);
+        let mono = mode(p.values, fm_params::VOICE_MODE);
         let name = format!("FM {}", p.name);
         v.push(Preset::new(
             name,
             rate,
             Fm::new,
-            &p.values,
+            p.values,
             Some(fm_params::POLYPHONY),
             mono,
         ));

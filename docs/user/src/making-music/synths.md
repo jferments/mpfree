@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-synth rust/mpfree-synth-ui rust/mpfree-scale rust/mpfree-app/src/synth.rs rust/mpfree-app/src/app/synth_pads.rs rust/mpfree-app/src/instruments.rs rust/mpfree-mpchost rust/mpfree-mpcskin rust/mpfree-app/src/skin_page.rs
-checked: 2026-11-19 79fc6f63
+checked: 2026-11-19 95c1134d
 -->
 
 # Synths
