@@ -1,0 +1,55 @@
+title Effects: a beat playing while a compressor, a drive, a delay and a reverb go on the drums, turned and taken off
+covers fx-add, fx-busy, comp-moves
+wait 1
+mark beat
+pad 1 100
+button STEP SEQ
+expect STEP SEQ: the pads are pad A1's steps
+pad 1 120
+pad 5 90
+pad 9 120
+pad 11 70
+pad 13 90
+button STEP SEQ
+button PLAY
+expect time: transport: Play
+wait 2
+mark add
+tap header tab Mix
+tap mixer look Effects
+tap mixer fx-add Drums + FX
+tap chain pick Compressor
+qlink 2 +4
+tap chain add + Add effect
+tap chain section Drive and colour
+tap chain pick Drive
+qlink 1 +6
+tap chain add + Add effect
+tap chain section Delay and reverb
+tap chain pick Delay
+tap chain add + Add effect
+tap chain section Delay and reverb
+tap chain pick Reverb
+qlink 4 +5
+wait 1
+mark busy
+# Four effects on the drums for ten seconds: the report's fx-busy row.
+wait 10
+expect-not underrun
+mark remove
+# A tap on a slot finds it only if the effect went on: these taps are
+# the checks that the chain holds what was added.
+tap chain slot Compressor
+tap chain slot Delay · Digital
+qlink 1 +3
+tap chain slot Drive · Soft
+tap chain remove Remove
+wait 2
+tap chain slot Reverb · Room
+tap chain remove Remove
+wait 2
+tap chain slot Delay · Digital
+wait 2
+tap chain back ‹ Back
+button STOP
+button STOP

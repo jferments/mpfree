@@ -404,6 +404,14 @@ impl Widget for MasterBar {
         true
     }
 
+    /// SHIFT + the wheel's push: the master back to 0 dB.
+    fn reset(&mut self, _t: &Target, _r: Rect) -> Option<EventKind> {
+        (self.fader_db != 0.0).then(|| {
+            self.fader_db = 0.0;
+            EventKind::Value(draw::meter_frac(0.0))
+        })
+    }
+
     /// Half a dB per detent, on the meter's scale as a drag gives it.
     fn step(&mut self, _t: &Target, delta: i32, _r: Rect) -> Option<EventKind> {
         let db = (self.fader_db + delta as f32 * MASTER_STEP_DB).clamp(-48.0, 6.0);
@@ -458,6 +466,11 @@ mod tests {
         assert_eq!(m.fader_db, 1.0);
         m.fader_db = 6.0;
         assert_eq!(m.step(t, 1, r), None, "at the top");
+        // SHIFT + the wheel's push: back to 0 dB; a card has no default.
+        assert_eq!(m.reset(t, r), Some(EventKind::Value(draw::meter_frac(0.0))));
+        assert_eq!(m.reset(t, r), None);
+        let t = &q.targets(column())[2];
+        assert_eq!(q.reset(t, column()), None);
     }
 
     #[test]

@@ -230,6 +230,45 @@ fn poly(page: &str) -> Option<Plan> {
                     .note("seven saws, when a wave is Supersaw"),
             ],
         ),
+        // Each oscillator's Table wave, its table drawn, over what moves
+        // the positions.
+        "Table" => (
+            "col(row(table-1:*, table-2:*):*, moves:150)",
+            vec![
+                s(
+                    "table-1",
+                    "Osc 1 table",
+                    Source,
+                    &[OSC1_TABLE, OSC1_WARP_MODE, OSC1_POS, OSC1_WARP],
+                )
+                .hero(&[OSC1_POS])
+                .draw("Table 1"),
+                s(
+                    "table-2",
+                    "Osc 2 table",
+                    Source,
+                    &[OSC2_TABLE, OSC2_WARP_MODE, OSC2_POS, OSC2_WARP],
+                )
+                .hero(&[OSC2_POS])
+                .draw("Table 2"),
+                s(
+                    "moves",
+                    "Moves",
+                    Motion,
+                    &[FENV_POS1, FENV_POS2, FENV_WARP, VEL_POS, LFO_POS1, LFO_POS2],
+                )
+                .main(&[FENV_POS1, FENV_POS2, FENV_WARP, VEL_POS, LFO_POS1, LFO_POS2])
+                .labels(&[
+                    (FENV_POS1, "Env to position 1"),
+                    (FENV_POS2, "Env to position 2"),
+                    (FENV_WARP, "Env to warp"),
+                    (VEL_POS, "Velocity to position"),
+                    (LFO_POS1, "LFO to position 1"),
+                    (LFO_POS2, "LFO to position 2"),
+                ])
+                .note("the filter envelope and LFO 1"),
+            ],
+        ),
         "Filter" => (
             "row(filter:52*, col(fenv:*, follow:200):48*)",
             vec![

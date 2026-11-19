@@ -3783,6 +3783,25 @@ impl Widget for MixerView {
         self.turn(t, delta, fine, r)
     }
 
+    /// SHIFT + the wheel's push: the fader to 0 dB, the pan to the middle
+    /// (as a tap on the level or the pan does), a send off.
+    fn reset(&mut self, t: &Target, r: Rect) -> Option<EventKind> {
+        let (strip, j) = self.strip_of(t, r)?;
+        let s = self.state.strip(strip)?;
+        let (id, from, to) = match t.id {
+            "fader" => (mx::VOLUME, s.volume_db, 0.0),
+            "pan" => (mx::PAN, s.pan, 0.0),
+            "send" => (mx::send(j), s.sends?.get(j)?.db, SILENT_DB),
+            _ => return None,
+        };
+        if to == from {
+            return None;
+        }
+        self.set(strip, id, to);
+        self.mark(Dirty::All);
+        Some(EventKind::Select(self.actions.len()))
+    }
+
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let before = self.actions.len();
         let changed_before = self.io_changed.len();
@@ -3992,6 +4011,40 @@ mod tests {
         let (x, y) = mid(buttons(p.buttons, 2)[0]);
         assert_eq!(ui.focus_at(x, y).unwrap().id, "mute");
         assert!(!ui.focus_steps());
+    }
+
+    /// SHIFT + the wheel's push (the button combos of 19 Nov): the fader
+    /// back to 0 dB, the pan to the middle, a send off; at its default
+    /// already, nothing.
+    #[test]
+    fn shift_and_the_push_put_a_fader_pan_or_send_back_to_its_default() {
+        let mut ui = ui(state(12));
+        let mut c = mpfree_ui::SoftCanvas::new(1280, 800);
+        ui.paint(&mut c);
+        let p = strip_parts(&ui, 0);
+        let (x, y) = mid(p.fader);
+        ui.focus_at(x, y);
+        assert_eq!(ui.focus_reset(), None, "at 0 dB already");
+        ui.focus_step(-4);
+        crate::take_actions(&mut ui);
+        assert!(ui.focus_reset().is_some());
+        let set = |strip, id, value| MixAction::Set { strip, id, value };
+        let t0 = StripId::Track(0);
+        assert_eq!(crate::take_actions(&mut ui), vec![set(t0, mx::VOLUME, 0.0)]);
+        let (x, y) = mid(p.pan);
+        ui.focus_at(x, y);
+        ui.focus_step(5);
+        crate::take_actions(&mut ui);
+        ui.focus_reset();
+        assert_eq!(crate::take_actions(&mut ui), vec![set(t0, mx::PAN, 0.0)]);
+        // Send B sits at -12 dB: off.
+        let (x, y) = mid(p.sends[1].take_left(18).1);
+        ui.focus_at(x, y);
+        ui.focus_reset();
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![set(t0, mx::send(1), SILENT_DB)]
+        );
     }
 
     #[test]

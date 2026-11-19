@@ -32,8 +32,9 @@ use mpfree_instruments::sound::has_design;
 use mpfree_instruments::{Design, Sound};
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_synth::{
-    bass_params as bp, choir_params as chp, drum_params, fm_params, wind_params as wp, Analog,
-    Bass, Choir, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset, Squelch, Strings, Wavetable, Wind,
+    bass_params as bp, choir_params as chp, drum_params, fm_params, params as pp,
+    wind_params as wp, Analog, Bass, Choir, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset, Squelch,
+    Strings, Wavetable, Wind,
 };
 
 use crate::fft::{hann_f64, power_spectrum};
@@ -1549,11 +1550,36 @@ fn alias_cases() -> Vec<AliasCase> {
             Engine::Bass,
             vec![(bp::DRIVE, 100.0)],
         ),
+        // Poly's Table wave on Basic's last frame (as Wavetable's position
+        // 100 below), plain and with the sync warp, which speeds the read.
+        (
+            "Poly table, position 100",
+            Engine::Poly,
+            vec![
+                (pp::OSC1_WAVE, pp::WAVE_TABLE as f32),
+                (pp::OSC1_POS, 100.0),
+            ],
+        ),
+        (
+            "Poly table, sync 50",
+            Engine::Poly,
+            vec![
+                (pp::OSC1_WAVE, pp::WAVE_TABLE as f32),
+                (pp::OSC1_POS, 100.0),
+                (pp::OSC1_WARP_MODE, 2.0),
+                (pp::OSC1_WARP, 50.0),
+            ],
+        ),
         ("Wavetable Init", Engine::Wavetable, vec![]),
         (
             "Wavetable position 100",
             Engine::Wavetable,
             vec![(1, 100.0)],
+        ),
+        (
+            "Wavetable sync 50",
+            Engine::Wavetable,
+            vec![(1, 100.0), (2, 2.0), (3, 50.0)],
         ),
         // The bores at their brightest: the reeds' and the jet's curves
         // make harmonics past the inner rate's Nyquist.

@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-app/src/app.rs rust/mpfree-controller docs/dev/design/layout-spec.md
-checked: 2026-11-19 f0b39161
+checked: 2026-11-19 ea21a9b1
 -->
 
 # Buttons and controls
@@ -51,7 +51,9 @@ Every button works as soon as MPFree starts, with nothing to learn: the develope
 | **SHIFT + Q-LINK** | The Q-Links go back a bank (**Q-LINK** goes forward), wherever Q-LINK steps them: see [Mode buttons](#mode-buttons). | Works |
 | **Data wheel** | On a page with settings (the menus, Prefs, the Sample tab, the Pads tab, the Synth tab, Arrange): picks a row. On the Play page, the Looper tab, the mixer and the FX chain editor: moves the outline from control to control (see [The wheel's outline](../getting-started/the-screen.md#the-wheels-outline)). It no longer changes the kit. With a finger resting on a value, turns that value instead (see [Hold and turn](../getting-started/the-screen.md#hold-and-turn)). | Works (the outline and hold and turn: need a device check) |
 | **–** and **+** | Step the picked row's value down or up. With the outline on a value, step it; on anything else, move the outline. With a finger resting on a value, step that value. | Works (the outline: needs a device check) |
+| **SHIFT + –** and **+** | With the outline on a value, or a finger resting on one, step it in smaller steps (as SHIFT + the wheel does). On the Sample tab they zoom the waveform and on the Synth tab they turn its pages, as before. | Works (new: needs a device check) |
 | **The data wheel's push** | Opens the picked row: its value is outlined and the wheel changes it. Push again to go back to picking rows. On a row that opens something, opens it. With the outline on a control, does what a tap does; on a value, lets the wheel turn it until you push again. | Works (the outline: needs a device check) |
+| **SHIFT + the data wheel's push** | Puts the outlined value, or the one under your finger, back to its default: a fader to 0 dB, a pan to the middle, a send off, the master level and a loop's level to 0 dB, an effect's knob to where it started. See [The wheel's outline](../getting-started/the-screen.md#the-wheels-outline). | Works (new: needs a device check) |
 
 **The transport lights** light as Akai's own software lights them: **PLAY** stays lit while playing. **REC** and **OVERDUB** blink while they wait for PLAY, with PLAY blinking alongside, and keep blinking while recording or overdubbing; **STOP** lets go of a looper Record or Overdub still waiting for PLAY, and the lights go dark (see [Looping](../making-music/looping.md)). **UNDO** blinks while you record, and otherwise is bright when the page you are on has something to undo and dim when it has nothing. **TAP TEMPO** blinks on the beat. The MPC One's STOP button has no light of its own.
 
@@ -117,6 +119,7 @@ The mode buttons along the top of the MPC go to the MPFree page that does the sa
 | **SHIFT + MAIN** | Switches between [Make and Perform](../making-music/playing-live.md#make-and-perform), as the MAKE or PERFORM chip on the top bar does. | Works |
 | **STEP SEQ** | The pads become steps of one sound over any page, and the Sequencer tab shows its Steps (closing the note editor): hit an empty step to put a note there, a lit one to take it off. Press it again to play the pads. Hold **STEP SEQ** and hit a pad to pick the sound. **PAD BANK** turns the pages of steps; **SHIFT + STEP SEQ** turns on Follow. Hold a step pad and turn the Q-Links to change that step, or lock its sound on the Q-Links' Sound bank; hold it and hit a later one to make the note last to there. **SHIFT** + an empty step holds it with no note, for a lock alone. With a synth on the pads, the pads are the steps of its whole line: hold **STEP SEQ** and play a pad or a chord to pick what new steps play; hold a step and turn **Q-Link 1** to move its notes, or play a keyboard to put its keys on it. See [Your first beat](../making-music/sequencer.md#the-pads-as-steps-step-seq) and [Steps on the synth](../making-music/synths.md#steps-on-the-synth). | Works (new: needs a device check) |
 | **NEXT SEQ** | The Arrange tab. | Works |
+| **SHIFT + NEXT SEQ** | The [XY pad full screen](../making-music/playing-live.md#the-xy-pad) on Play, from any page; pressed again, Play as it was. | Works (new: needs a device check) |
 | **SAMPLER** | The Sample tab. **SHIFT + SAMPLER** goes to the Looper tab; pressed again there, the pads become the [loop keys](../making-music/looping.md#the-pads-as-loop-keys), or the [Perform set](../making-music/looping.md#more-pages-the-perform-set)'s page you left it on (again: they play). | Works (Perform pages new: needs a device check) |
 | **SAMPLE EDIT** | The Sample tab's page. | Works |
 | **SHIFT + SAMPLE EDIT** | The [macros panel](../making-music/effects.md#macros), on Macros 1-4; pressed again, back to the page you were on. | Works (new: needs a device check) |

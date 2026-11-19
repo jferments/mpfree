@@ -186,6 +186,14 @@ const ROUTE_EDITS: &[(u16, f32)] = &[
     (pp::route_id(2, pp::route::DEPTH), 40.0),
 ];
 
+/// Poly's Table scene: osc 1 on Vowels, the filter envelope scanning it.
+const TABLE_EDITS: &[(u16, f32)] = &[
+    (pp::OSC1_WAVE, pp::WAVE_TABLE as f32),
+    (pp::OSC1_TABLE, 4.0),
+    (pp::OSC1_POS, 33.0),
+    (pp::FENV_POS1, 50.0),
+];
+
 /// Every sample screen.
 pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     let scenes = [
@@ -238,6 +246,15 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
             ],
             page: "LFO 2",
             focus: Some(pp::LFO2_FADE),
+        },
+        Scene {
+            name: "synth-table",
+            about: "Poly · Init, Table page, edited: osc 1 on the Vowels table a \
+                    third through, the filter envelope scanning half of it",
+            preset: preset("Init"),
+            edits: TABLE_EDITS,
+            page: "Table",
+            focus: Some(pp::OSC1_POS),
         },
         Scene {
             name: "synth-voice",
