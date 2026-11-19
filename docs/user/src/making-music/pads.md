@@ -10,7 +10,7 @@ The **Pads** tab is where you decide what each pad plays. It shows a whole bank 
 
 The [Sample tab](sampling.md) works on one pad's sound in detail (recording, trimming, chopping), and [Shaping how a pad plays](shaping-a-pad.md) covers a pad's layers, envelope, filter and effects.
 
-{{shot: pads-pad | The Pads tab: the tracks that play kits along the top, bank A of the Breaks kit on the left with A5 picked, A5's settings in the middle with Sample, Loop, Instrument and MIDI out over them, and the sounds in the kit on the right.}}
+{{shot: pads-pad | The Pads tab on a full kit: the tracks that play kits along the top, bank A of the Breaks kit on the left (one-shot samples on A1-A8; loops, synth voices and MIDI out on A9-A16) with the snare on A5 picked, the bank strip's dots showing banks A to F in use, A5's settings in the middle with Sample, Loop, Instrument and MIDI out over them, and the sounds in the kit on the right.}}
 
 ## Put a sound on a pad
 

@@ -1923,7 +1923,6 @@ impl SamplePage {
                 None => left.push(self.pad_text(kit, pad)),
             }
         }
-        let mut mapped = !roots.is_empty();
         let what = if roots.is_empty() {
             "no pad has a note to map to keys (none in its name, no clear pitch)".to_string()
         } else {
@@ -1958,21 +1957,16 @@ impl SamplePage {
                     }
                     what
                 }
-                Err(e) => {
-                    mapped = false;
-                    format!("not mapped to keys ({e:?})")
-                }
+                Err(e) => format!("not mapped to keys ({e:?})"),
             }
         };
-        // On the hint line too when nothing was mapped: nothing else on the
-        // screen changes then. A mapping shows itself on the keys.
-        if !mapped {
-            let mut told = what.clone();
-            if let Some(c) = told.get_mut(0..1) {
-                c.make_ascii_uppercase();
-            }
-            self.told.push(told);
+        // On the hint line too, mapped or not: the Pads view the button is
+        // on doesn't show the keys, so nothing else there changes.
+        let mut told = what.clone();
+        if let Some(c) = told.get_mut(0..1) {
+            c.make_ascii_uppercase();
         }
+        self.told.push(told);
         let kit = self.kit_text_of(kit);
         self.lines.push(format!("sample: {kit}: {what}"));
     }
