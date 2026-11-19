@@ -772,6 +772,41 @@ impl Source {
         "Random",
     ];
 
+    /// What the source reads now: 0 to 1, or -1 to 1 for the key and
+    /// random ([`Source::two_sided`]); 0 when off.
+    #[inline]
+    pub fn read(self, v: &Inputs, c: &Channel) -> f32 {
+        match self {
+            Source::Off => 0.0,
+            Source::Velocity => v.velocity,
+            Source::Pressure => v.pressure,
+            Source::Tone => v.tone,
+            Source::ModWheel => c.mod_wheel,
+            Source::Breath => c.breath,
+            Source::Foot => c.foot,
+            Source::Key => v.key,
+            Source::Random => v.random,
+        }
+    }
+
+    /// Whether the source goes from -1 to 1 (the key and random) rather
+    /// than from 0 to 1.
+    pub fn two_sided(self) -> bool {
+        matches!(self, Source::Key | Source::Random)
+    }
+
+    /// [`Source::read`] as 0 to 1: a two-sided source's -1 to 1 squeezed
+    /// in, for a target that needs a resting place (a swell).
+    #[inline]
+    pub fn read_unit(self, v: &Inputs, c: &Channel) -> f32 {
+        let x = self.read(v, c);
+        if self.two_sided() {
+            0.5 + 0.5 * x
+        } else {
+            x
+        }
+    }
+
     pub fn from_index(i: f32) -> Source {
         match i as i32 {
             1 => Source::Velocity,
@@ -833,9 +868,16 @@ impl Inputs {
             velocity: f32::from(velocity.min(127)) / 127.0,
             pressure: 0.0,
             tone: 0.0,
-            key: (f32::from(note.min(127)) - 60.0) / 60.0,
+            key: Inputs::key_of(note),
             random: random.clamp(-1.0, 1.0),
         }
+    }
+
+    /// The key source for `note`: 0 at C4 (60), 1 five octaves up, -1
+    /// five octaves down. A mono voice that moves to a new note without
+    /// starting again takes its new key.
+    pub fn key_of(note: u8) -> f32 {
+        (f32::from(note.min(127)) - 60.0) / 60.0
     }
 }
 
@@ -853,18 +895,10 @@ impl Route {
     /// This route's amount now, -1 to 1.
     #[inline]
     pub fn amount(&self, v: &Inputs, c: &Channel) -> f32 {
-        let s = match self.source {
-            Source::Off => return 0.0,
-            Source::Velocity => v.velocity,
-            Source::Pressure => v.pressure,
-            Source::Tone => v.tone,
-            Source::ModWheel => c.mod_wheel,
-            Source::Breath => c.breath,
-            Source::Foot => c.foot,
-            Source::Key => v.key,
-            Source::Random => v.random,
-        };
-        s * self.depth.clamp(-1.0, 1.0)
+        if self.source == Source::Off {
+            return 0.0;
+        }
+        self.source.read(v, c) * self.depth.clamp(-1.0, 1.0)
     }
 }
 
@@ -1350,6 +1384,26 @@ mod tests {
         for (i, _) in Source::NAMES.iter().enumerate() {
             assert_eq!(Source::from_index(i as f32) as usize, i);
         }
+    }
+
+    #[test]
+    fn a_two_sided_source_reads_its_middle_as_half_for_a_swell() {
+        let v = Inputs::at_start(127, 0, -1.0);
+        let c = Channel {
+            mod_wheel: 0.25,
+            ..Channel::default()
+        };
+        assert_eq!(Source::Key.read(&v, &c), -1.0);
+        assert_eq!(Source::Key.read_unit(&v, &c), 0.0);
+        assert_eq!(Source::Random.read_unit(&v, &c), 0.0);
+        assert_eq!(Source::Velocity.read_unit(&v, &c), 1.0);
+        assert_eq!(Source::ModWheel.read_unit(&v, &c), 0.25);
+        assert_eq!(Source::Off.read_unit(&v, &c), 0.0);
+        let mid = Inputs::at_start(64, 60, 0.0);
+        assert_eq!(Source::Key.read_unit(&mid, &c), 0.5);
+        assert_eq!(Inputs::key_of(120), 1.0);
+        assert!(Source::Key.two_sided() && Source::Random.two_sided());
+        assert!(!Source::Breath.two_sided());
     }
 
     // ---- output

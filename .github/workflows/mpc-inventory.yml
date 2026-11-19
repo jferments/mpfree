@@ -1286,6 +1286,9 @@ jobs:
           [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get install -y --no-install-recommends qemu-user
           cargo test --manifest-path rust/Cargo.toml --release --locked \
             --target armv7-unknown-linux-gnueabihf -p mpfree-simd
+          # Poly's supersaw presets with the kernels on and off: the same samples, end to end.
+          cargo test --manifest-path rust/Cargo.toml --release --locked \
+            --target armv7-unknown-linux-gnueabihf -p mpfree-synth --test simd
           # About 30 s: four traced runs side by side.
           rc=0
           python3 tools/simd_arm_cost.py --blocks 50 --gate > "$RUNNER_TEMP/simd-cost.txt" || rc=$?
