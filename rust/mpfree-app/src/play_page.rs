@@ -443,6 +443,15 @@ impl HeldBank {
             HeldBank::Sound => HeldBank::Step,
         }
     }
+
+    /// The bank before (SHIFT + Q-LINK).
+    pub fn prev(self) -> HeldBank {
+        match self {
+            HeldBank::Step => HeldBank::Sound,
+            HeldBank::Trig => HeldBank::Step,
+            HeldBank::Sound => HeldBank::Trig,
+        }
+    }
 }
 
 /// How a Sound bank knob reads and turns.
