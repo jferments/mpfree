@@ -106,6 +106,7 @@ Measured on the workstation (x86, one core): a full 1280×800 paint takes about 
 
 - Unit tests cover layouts, drawing (pixels inside their rectangles, anti-aliased corners), text fitting, the framebuffer's rotation, widget touches and partial redraws. CI runs them on the workstation and as 32-bit ARM under qemu.
 - `mpfree --preview DIR` draws every screen with sample data into PNG files. CI runs it for ARM under qemu. When checked on 2026-11-10, the ARM pictures matched the workstation's pixel for pixel.
+- **Screen pictures** (all four PAD BANK buttons, the button combos of 19 Nov): the screen thread paints the page again on a `SoftCanvas` (`gui::Player::screen_picture`) and packs it with `mpfree_ui::png::encode_rgb_small` (each row against the pixel to its left, then runs of repeated bytes as fixed-Huffman deflate), so a 1280 by 800 page fits the store's 1 MiB file limit; the sound loop hands it to `mpfree-store` as `files/screens/<time>.png` (`screen_picture.rs`). `mpfree_mpcskin::png::decode` reads it back in its test.
 - `mpfree --display-lists DIR` records every sample page's first two frames (the page as first drawn, then what it redraws a tick later) as display lists, one `NAME.mpdl` file per page, for `mpfree-gpu-bench`.
 
 ## Drawing on the GPU

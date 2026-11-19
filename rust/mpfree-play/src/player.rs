@@ -30,13 +30,16 @@
 //! ([`Player::erased_locks`]), trigless ones too, so the new take does not
 //! play the old take's locks.
 //!
-//! **Live erase** (ERASE held on a pad while recording, the MPC's way;
-//! sequencer roadmap S1). While the transport records, the armed track's
-//! notes of the sounds [`Player::set_erasing`] names are erased as the
-//! playhead reaches them, on every pass, with that sound's locks; they
-//! go out through [`Player::erased`] and [`Player::erased_locks`] like a
-//! replace pass's, in the take being recorded, so its undo brings them
-//! back.
+//! **Live erase** (ERASE held on a pad while the transport plays, the
+//! MPC's way; sequencer roadmap S1, and while only playing since the
+//! button combos of 19 Nov). While the transport records or plays, the
+//! armed track's notes of the sounds [`Player::set_erasing`] names are
+//! erased as the playhead reaches them, on every pass, with that sound's
+//! locks; they go out through [`Player::erased`] and
+//! [`Player::erased_locks`] like a replace pass's. While recording they
+//! are in the take being recorded; while only playing, each hold of
+//! ERASE is a take of its own, numbered from [`ERASE_TAKES`], so one undo
+//! brings back what it erased.
 //!
 //! **Chance.** A note with a chance below 100 % rolls each time it comes
 //! round. The roll is a hash of the note and the absolute frame it would
@@ -157,6 +160,11 @@ pub const ALL: u16 = u16::MAX;
 /// mode): past every track.
 pub const SONG_TRACK: u16 = MAX_TRACKS as u16;
 
+/// The first take number of live erase while only playing: its takes are
+/// numbered on their own from here (the top bit set), so they never join
+/// a recorded take (numbered from 1 by record-ons).
+pub const ERASE_TAKES: u32 = 1 << 31;
+
 /// A parameter lock replace recording erased: remove it from clip `slot`
 /// of `track`, as for [`Erased`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,8 +175,10 @@ pub struct ErasedLock {
     pub take: u32,
 }
 
-/// A note replace recording erased: remove it from clip `slot` of `track`.
-/// `take` numbers the take that erased it, as in [`crate::Taken`].
+/// A note replace recording or live erase erased: remove it from clip
+/// `slot` of `track`. `take` numbers the take that erased it, as in
+/// [`crate::Taken`], or from [`ERASE_TAKES`] for live erase while only
+/// playing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Erased {
     pub track: usize,
@@ -517,13 +527,16 @@ pub struct Player {
     /// in `replacing` is set.
     passes: [i64; MAX_TRACKS],
     /// Live erase: the sounds (a bit each, by note) whose notes on the
-    /// armed track are erased while the transport records.
+    /// armed track are erased while the transport records or plays.
     erasing: u128,
     /// The armed tracks that have had their replace pass in this take
     /// (since the last record-on), a bit each.
     replaced: u128,
     /// Record-ons so far: the number of the latest take.
     take: u32,
+    /// Live erase while only playing: the number of its latest take, from
+    /// [`ERASE_TAKES`] (each hold of ERASE starts the next).
+    erase_take: u32,
     /// Cues started that the view does not show yet.
     switches: Switches,
     started: [Started; MAX_TRACKS],
@@ -599,6 +612,9 @@ const NO_ERASED_LOCK: ErasedLock = ErasedLock {
 struct Erase {
     pass: Option<i64>,
     notes: u128,
+    /// The take what it erases joins: the take recording, or live erase's
+    /// own while only playing.
+    take: u32,
 }
 
 /// What [`Player::collect`] plays, for each of its runs.
@@ -652,6 +668,7 @@ impl Passes {
 const NO_ERASE: Erase = Erase {
     pass: None,
     notes: 0,
+    take: 0,
 };
 
 impl Erase {
@@ -698,6 +715,7 @@ impl Player {
             replaced: 0,
             erasing: 0,
             take: 0,
+            erase_take: ERASE_TAKES,
             switches: Switches::new(),
             started: [Started {
                 mute: None,
@@ -751,11 +769,16 @@ impl Player {
         self.dice_from = 0;
     }
 
-    /// Live erase: from the coming period, while the transport records,
-    /// erase the armed track's notes of these sounds (a bit each, by note:
-    /// bit 3 for note 3) as the playhead reaches them, with their sound's
-    /// locks; 0 erases nothing. Real-time safe.
+    /// Live erase: from the coming period, while the transport records or
+    /// plays, erase the armed track's notes of these sounds (a bit each, by
+    /// note: bit 3 for note 3) as the playhead reaches them, with their
+    /// sound's locks; 0 erases nothing. Going from nothing to something
+    /// starts the next live erase take, for what it erases while only
+    /// playing. Real-time safe.
     pub fn set_erasing(&mut self, notes: u128) {
+        if self.erasing == 0 && notes != 0 {
+            self.erase_take = self.erase_take.wrapping_add(1) | ERASE_TAKES;
+        }
         self.erasing = notes;
     }
 
@@ -786,6 +809,7 @@ impl Player {
             erasing,
             replaced,
             take,
+            erase_take,
             switches,
             started,
             n_started,
@@ -844,6 +868,7 @@ impl Player {
         self.erasing = *erasing;
         self.replaced = *replaced;
         self.take = *take;
+        self.erase_take = *erase_take;
         self.switches = *switches;
         self.mute_landed = *mute_landed;
         self.last = *last;
@@ -1253,7 +1278,8 @@ impl Player {
 
     /// What track `i` erases in `span`: an armed track's replace pass (the
     /// armed one's or another's, [`PlayView::set_also`]), and the armed
-    /// one's live erase while recording; nothing for a track not armed.
+    /// one's live erase while recording or playing; nothing for a track not
+    /// armed.
     #[inline(never)]
     fn erase_of(&self, view: &PlayView, span: &Span, i: usize) -> Erase {
         let bit = 1u128.checked_shl(i as u32).unwrap_or(0);
@@ -1263,10 +1289,17 @@ impl Player {
         Erase {
             pass: (self.replacing & bit != 0).then(|| self.passes[i]),
             // Live erase is the armed track's alone.
-            notes: if span.state == State::Recording && view.armed == Some(i) {
+            notes: if matches!(span.state, State::Recording | State::Playing)
+                && view.armed == Some(i)
+            {
                 self.erasing
             } else {
                 0
+            },
+            take: if span.state == State::Recording {
+                self.take
+            } else {
+                self.erase_take
             },
         }
     }
@@ -2339,7 +2372,7 @@ impl Player {
                         track: usize::from(track),
                         slot: clip.slot,
                         note: n.src,
-                        take: self.take,
+                        take: erase.take,
                     };
                     self.n_erased += 1;
                     self.stats.erased += 1;
@@ -2414,7 +2447,7 @@ impl Player {
                         track: usize::from(track),
                         slot: clip.slot,
                         lock: l.src,
-                        take: self.take,
+                        take: erase.take,
                     };
                     self.n_erased_locks += 1;
                     self.stats.erased += 1;
