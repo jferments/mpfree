@@ -22,9 +22,10 @@
 //!   pick one, copy, paste and clear it, and a Browse | Pad switch between
 //!   the browser beside them and the pad's main settings with the kit's
 //!   sounds to put on it ([`PadsAction`]).
-//! - [`chop_tab`]: the pad editor's Chop tab: slices of the pad's sound by
-//!   transients, beats, a grid, silence or by hand, split, merged and put on
-//!   pads as one undo step ([`ChopAction`]).
+//! - [`slice_tool`]: the Sample page's Slice tool: slices of the sound by
+//!   transients, beats, a grid, silence, pitch, live or by hand, split,
+//!   merged and put on pads as one undo step ([`ChopAction`]) (the Chop
+//!   page went in the one Sample page's step 3).
 //! - [`play_tab`]: the pad editor's Play tab: the layers' velocities, the
 //!   amp envelope drawn over the sound, the filter's curve and the pad's
 //!   other settings, each change a [`PlayAction`]. Its pictures are in
@@ -59,7 +60,6 @@
 
 pub mod auto_tab;
 pub mod auto_widgets;
-pub mod chop_tab;
 pub mod grain_tab;
 pub mod grain_tool;
 pub mod grain_widgets;
@@ -76,6 +76,7 @@ pub mod recall;
 pub mod recorder;
 pub mod sample;
 pub mod send;
+pub mod slice_tool;
 pub mod sound_panel;
 pub mod source;
 pub mod warp_tool;
@@ -83,10 +84,10 @@ pub mod wave_tab;
 pub mod widgets;
 
 pub use auto_tab::{AutoAction, AutoState, AutoTab};
-pub use chop_tab::{ChopAction, ChopState, ChopTab};
 pub use mpfree_analysis::note_name;
 pub use pads_tab::{PadsAction, PadsState, PadsTab};
 pub use play_tab::{PlayAction, PlayState, PlayTab};
 pub use rec_tab::RecSettings;
+pub use slice_tool::{ChopAction, ChopState, SliceTool};
 pub use source::{PyramidPeaks, SourceView};
 pub use wave_tab::{Mark, Snap, WaveAction, WaveState, WaveTab};

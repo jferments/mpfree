@@ -252,7 +252,7 @@ fn look(mut ui: Ui, l: crate::Look) -> Ui {
 
 /// The song's EQs shaped as a user would (the EQ look's sample): a kick
 /// EQ added, the bass's and the lead's and the master's set.
-fn shape_eqs(m: &mut Mixer) {
+pub fn shape_eqs(m: &mut Mixer) {
     use mpfree_fx::ids::eq as q;
     let t = StripId::Track;
     m.chain_mut(t(0)).unwrap().push(Box::new(Eq::new()));

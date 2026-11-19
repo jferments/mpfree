@@ -486,7 +486,7 @@ impl Session {
 
     // ------------------------------------------------------------ the screen
 
-    /// The page the screen shows ("Play", "Sample · Chop", ...).
+    /// The page the screen shows ("Play", "Sample · Play", ...).
     pub fn page(&self) -> String {
         self.screen.page().to_string()
     }

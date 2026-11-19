@@ -61,7 +61,7 @@ Tracks, Pads, Inputs and Submixes work on Effects as on Faders, and **< >** page
 
 ## Every EQ at once: EQ
 
-{{shot: mixer-eq | The EQ look: each track's EQ as its curve, a dot for each band, + EQ on the tracks without one; the bass's EQ is picked on band 2.}}
+{{shot: mixer-eq | The EQ look: the kick's, bass's and lead's EQs and the master's as curves, a dot for each band, where each EQ sits on the right, and + EQ on the tracks without one. The bass is the strip picked for the Q-Links.}}
 
 On **EQ** each strip of the view is a row again: its name, its EQ drawn as a curve (a dot for each band, in the band's colour), and where the EQ sits in the chain with its cuts. It shows the strip's first EQ effect; the Channel strip's EQ stage isn't shown here.
 

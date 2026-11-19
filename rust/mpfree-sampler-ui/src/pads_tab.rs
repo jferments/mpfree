@@ -64,8 +64,8 @@ use mpfree_sampler::model::{
 use mpfree_ui::widgets::{ListItem, ListView};
 use mpfree_ui::{EventKind, Ui, UiEvent};
 
-use crate::chop_tab::{bank_of, pad_text, BANK};
 use crate::play_tab::{self, stepped, value_text};
+use crate::slice_tool::{bank_of, pad_text, BANK};
 use crate::wave_tab::{default_loop, duration_text, mode_label, pad_color};
 use crate::widgets::{
     ButtonRow, KitTracks, PadBar, PadCell, PadMap, SectionChip, SectionChips, Setting, SettingList,

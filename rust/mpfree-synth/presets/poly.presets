@@ -290,3 +290,172 @@ pressure.to-1 = Vibrato
 pressure.depth-1 = 50
 pressure.to-2 = Cutoff
 pressure.depth-2 = 25
+
+mpfree-preset = 1
+engine = mpfree.poly
+name = Super Lead
+
+# Osc 1
+osc-1.wave = Supersaw
+
+# Osc 2
+osc-2.level = 0
+
+# Supersaw
+supersaw.detune = 35
+supersaw.mix = 45
+
+# Filter
+filter.cutoff = 4500
+filter.resonance = 15
+filter.env-amount = 1
+filter.key-track = 40
+
+# Filter env
+filter-env.decay = 600
+filter-env.sustain = 45
+
+# Amp env
+amp-env.attack = 3
+amp-env.release = 250
+
+# LFO
+lfo.rate = 5.5
+lfo.to-pitch = 0.1
+
+# Voice
+voice.mode = Legato
+voice.glide = 60
+voice.bend-range = 12
+
+# Pressure
+pressure.to-1 = Vibrato
+pressure.depth-1 = 40
+pressure.to-2 = Cutoff
+pressure.depth-2 = 25
+
+mpfree-preset = 1
+engine = mpfree.poly
+name = Super Pad
+
+# Osc 1
+osc-1.wave = Supersaw
+
+# Osc 2
+osc-2.octave = -1
+osc-2.fine = 0
+osc-2.level = 40
+
+# Supersaw
+supersaw.detune = 60
+supersaw.mix = 70
+
+# Filter
+filter.type = LP 12
+filter.cutoff = 1600
+filter.resonance = 10
+filter.env-amount = 1.4
+
+# Filter env
+filter-env.attack = 1500
+filter-env.decay = 2500
+filter-env.sustain = 55
+filter-env.release = 1500
+
+# Amp env
+amp-env.attack = 700
+amp-env.release = 1600
+
+# Output
+output.level = -2
+
+# Pressure
+pressure.to-1 = Cutoff
+pressure.depth-1 = 30
+
+mpfree-preset = 1
+engine = mpfree.poly
+name = Super Stab
+
+# Osc 1
+osc-1.wave = Supersaw
+
+# Osc 2
+osc-2.wave = Pulse
+osc-2.octave = 1
+osc-2.fine = 0
+osc-2.level = 30
+
+# Supersaw
+supersaw.detune = 50
+supersaw.mix = 55
+
+# Filter
+filter.resonance = 20
+filter.cutoff = 900
+filter.env-amount = 3.5
+
+# Filter env
+filter-env.decay = 260
+filter-env.sustain = 0
+
+# Amp env
+amp-env.decay = 380
+amp-env.sustain = 0
+amp-env.release = 180
+
+mpfree-preset = 1
+engine = mpfree.poly
+name = Super Stack
+fx.1 = mpfree.fx.ensemble
+fx.2 = mpfree.fx.delay
+macro.1 = Detune
+macro.1.map = supersaw.detune 20 80
+macro.2 = Mix
+macro.2.map = supersaw.mix 20 80
+macro.3 = Octave
+macro.3.map = osc-2.level 0 70
+macro.4 = Effects
+macro.4.map = fx-1.mix 0 70
+macro.4.map = fx-2.mix 0 30
+
+# Macros
+macros.detune = 50
+macros.mix = 50
+macros.octave = 50
+macros.effects = 50
+
+# Osc 1
+osc-1.wave = Supersaw
+
+# Osc 2
+osc-2.wave = Supersaw
+osc-2.octave = 1
+osc-2.fine = 0
+osc-2.level = 35
+
+# Supersaw
+supersaw.detune = 50
+supersaw.mix = 50
+
+# Filter
+filter.type = LP 12
+filter.cutoff = 7000
+filter.resonance = 10
+filter.env-amount = 0.6
+
+# Amp env
+amp-env.attack = 5
+amp-env.release = 500
+
+# Output
+output.level = -3
+
+# FX 1: the ensemble's width
+fx-1.mix = 35
+
+# FX 2: a dotted eighth, bouncing
+fx-2.sync = 1/8D
+fx-2.feedback = 30
+fx-2.ping-pong = 1
+fx-2.mix = 15
