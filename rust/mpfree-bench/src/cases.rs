@@ -34,7 +34,7 @@ use mpfree_synth::params::{
 };
 use mpfree_synth::wavetable::params as wt;
 use mpfree_synth::{
-    Analog, Bass, Choir, Drawbar, Drums, Keys, Pluck, Poly, Squelch, Strings, Wavetable, Wind,
+    Analog, Bass, Choir, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Strings, Wavetable, Wind,
 };
 use mpfree_track::{Instrument, Sum, TrackHost};
 use mpfree_transport::time::{Swing, PPQ};
@@ -480,6 +480,48 @@ fn drums(name: &str, rate: u32, kit: &str, every: u64) -> Case {
                     },
                 ));
             }
+            l.fill(0.0);
+            r.fill(0.0);
+            d.process(&Ctx::new(rate, b * l.len() as u64), &events, l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// The drum synth's per-drum effects (`mpfree_synth::drum_fx`, D10): every
+/// pad of the Init Kit ringing 2 s, one pad hit each block in turn so all
+/// 16 sound at once (with the retriggers fading), each pad with `fx` (its
+/// effects' fields and values) and, with `sends`, both kit sends.
+fn drums_fx(name: &str, rate: u32, fx: &[(u16, f32)], sends: bool) -> Case {
+    use mpfree_synth::drum_fx::{field as f, fx_id};
+    use mpfree_synth::drum_params::{field as df, pad_id};
+    let mut d = Drums::new(rate);
+    d.prepare(rate, MAX_BLOCK);
+    for pad in 0..16 {
+        d.set_param(pad_id(pad, df::DECAY), 2000.0);
+        for &(field, v) in fx {
+            d.set_param(fx_id(pad, field), v);
+        }
+        if sends {
+            d.set_param(fx_id(pad, f::DELAY_SEND), 20.0);
+            d.set_param(fx_id(pad, f::REVERB_SEND), 30.0);
+        }
+    }
+    let mut seed = Lcg(23);
+    let mut events: Vec<Timed> = Vec::with_capacity(1);
+    Case {
+        name: name.to_string(),
+        module: "synth",
+        what: "16 pads ringing, one hit a block",
+        block: Box::new(move |b, l, r| {
+            events.clear();
+            events.push(Timed::new(
+                0,
+                NodeEvent::NoteOn {
+                    note: 36 + (b % 16) as u8,
+                    velocity: 60 + (seed.next() >> 25) as u8 % 68,
+                },
+            ));
             l.fill(0.0);
             r.fill(0.0);
             d.process(&Ctx::new(rate, b * l.len() as u64), &events, l, r);
@@ -1023,6 +1065,46 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| {
         drums("Drums Boom Kit, a hit every block", rate, "Boom Kit", 1)
     }));
+    {
+        use mpfree_synth::drum_fx::field as f;
+        let two = [(f::PUNCH, 40.0), (f::RATIO, 4.0), (f::THRESHOLD, -30.0)];
+        let four = [
+            (f::PUNCH, 40.0),
+            (f::DISTORTION, 18.0),
+            (f::LOW, 3.0),
+            (f::MID, -4.0),
+            (f::HIGH, 3.0),
+            (f::RATIO, 4.0),
+            (f::THRESHOLD, -30.0),
+        ];
+        v.push(measured(|| {
+            drums_fx("Drums, 16 pads ringing, no effects", rate, &[], false)
+        }));
+        v.push(measured(|| {
+            drums_fx(
+                "Drums, 16 pads ringing, Punch and Compressor on each",
+                rate,
+                &two,
+                false,
+            )
+        }));
+        v.push(measured(|| {
+            drums_fx(
+                "Drums, 16 pads ringing, all four effects on each",
+                rate,
+                &four,
+                false,
+            )
+        }));
+        v.push(measured(|| {
+            drums_fx(
+                "Drums, 16 pads ringing, all four effects and both sends",
+                rate,
+                &four,
+                true,
+            )
+        }));
+    }
     for (name, voices) in [
         ("Steel String", 8),
         ("Harp", 16),
@@ -1292,6 +1374,21 @@ pub fn all(rate: u32) -> Vec<Case> {
                     (OSC2_LEVEL, 60.0),
                     (UNISON, unison),
                 ],
+                voices,
+            )
+        }));
+    }
+    // FM: a six-operator keys sound, a brass with feedback 7, and a lead
+    // whose operators play the triangle, saw and square (the waves' loop).
+    for (name, voices) in [("Glass Keys", 8), ("Brass Section", 16), ("Reed Lead", 8)] {
+        let p = Fm::presets().iter().find(|p| p.name == name).expect(name);
+        v.push(measured(|| {
+            chords(
+                format!("FM {name}, {voices} voices"),
+                rate,
+                Box::new(Fm::new(rate)),
+                p.values,
+                Some(mpfree_synth::fm_params::POLYPHONY),
                 voices,
             )
         }));
@@ -2007,13 +2104,13 @@ fn engine_presets(rate: u32) -> Vec<Preset> {
         ));
     }
     for p in Fm::presets() {
-        let mono = mode(&p.values, fm_params::VOICE_MODE);
+        let mono = mode(p.values, fm_params::VOICE_MODE);
         let name = format!("FM {}", p.name);
         v.push(Preset::new(
             name,
             rate,
             Fm::new,
-            &p.values,
+            p.values,
             Some(fm_params::POLYPHONY),
             mono,
         ));

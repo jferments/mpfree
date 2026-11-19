@@ -183,7 +183,7 @@ fn synth(engine: &str, preset: Option<&str>) -> Result<Synth, Box<dyn Error>> {
         }
         "fm" => {
             let presets = Fm::presets();
-            let all: Vec<String> = presets.iter().map(|p| p.name.clone()).collect();
+            let all: Vec<String> = presets.iter().map(|p| p.name.to_string()).collect();
             let i = pick(&all, preset, "Glass Keys")?;
             let mut n = Fm::new(RATE);
             n.load_preset(&presets[i]);
