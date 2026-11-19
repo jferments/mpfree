@@ -775,15 +775,31 @@ mod tests {
         // The first fields' names as the first engine gave them: files
         // and MIDI Learn name them so.
         let first = [
-            "Model", "Tune", "Decay", "Tone", "Snap", "Noise", "Sweep", "Sweep time", "Drive",
-            "Level", "Pan", "Vel > tone", "Vel > level", "Choke",
+            "Model",
+            "Tune",
+            "Decay",
+            "Tone",
+            "Snap",
+            "Noise",
+            "Sweep",
+            "Sweep time",
+            "Drive",
+            "Level",
+            "Pan",
+            "Vel > tone",
+            "Vel > level",
+            "Choke",
         ];
         for (f, want) in first.iter().enumerate() {
             assert_eq!(info_name(f as u16), *want);
         }
         let mut names = std::collections::HashSet::new();
         for k in 0..PER_PAD {
-            assert!(names.insert(info_name(field_at(k))), "{}", info_name(field_at(k)));
+            assert!(
+                names.insert(info_name(field_at(k))),
+                "{}",
+                info_name(field_at(k))
+            );
         }
     }
 
@@ -793,7 +809,11 @@ mod tests {
             let n = SHARED.len() + knobs(m).len();
             assert!(n <= 16, "{}: {n}", MODELS[m as usize]);
             for q in qlinks(m) {
-                assert!(knobs(m).iter().any(|(f, _)| *f == q), "{} {q}", MODELS[m as usize]);
+                assert!(
+                    knobs(m).iter().any(|(f, _)| *f == q),
+                    "{} {q}",
+                    MODELS[m as usize]
+                );
             }
             for (f, _) in knobs(m) {
                 assert!(!SHARED.contains(f));

@@ -34,11 +34,11 @@ mod current;
 use mpfree_node::{Ctx, Cull, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed};
 
 pub use self::classic::sin_turns;
+use self::classic::State;
+pub use self::classic::METAL;
 pub use self::current::{
     bessel_j, cymbal_bands, metal_bank, metal_hz, BP_HIGH, BP_LOW, CTRL, METAL_WIDTH,
 };
-pub use self::classic::METAL;
-use self::classic::State;
 use crate::drum_params::*;
 use crate::dsp::Rng;
 use crate::params::Preset;
@@ -313,7 +313,12 @@ impl Drums {
 
     /// Fades out every sounding hit `which` picks: Classic ones over
     /// `classic_ms`, Current ones over `current_ms`.
-    fn kill_where(&mut self, classic_ms: f32, current_ms: f32, mut which: impl FnMut(&Slot) -> bool) {
+    fn kill_where(
+        &mut self,
+        classic_ms: f32,
+        current_ms: f32,
+        mut which: impl FnMut(&Slot) -> bool,
+    ) {
         let rate = self.rate as f32;
         for v in self.voices.iter_mut() {
             if v.state() == State::On && which(v) {

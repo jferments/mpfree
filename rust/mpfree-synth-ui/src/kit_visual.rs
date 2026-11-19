@@ -455,7 +455,10 @@ mod tests {
         assert!((k.hz - 48.0).abs() < 0.01 && k.sweep.0 > 3.0, "{k:?}");
         // A tom is its head's modes: a body with a pitch, no noise.
         let tom = pad_hit(&|id| d.param(id), 6);
-        assert!(tom.hz > 100.0 && tom.body.0 > 0.0 && tom.noise.0 == 0.0, "{tom:?}");
+        assert!(
+            tom.hz > 100.0 && tom.body.0 > 0.0 && tom.noise.0 == 0.0,
+            "{tom:?}"
+        );
         // The clap draws as many bursts as its Claps knob.
         d.set_param(pad_id(2, f::BURSTS), 6.0);
         let clap = pad_hit(&|id| d.param(id), 2);

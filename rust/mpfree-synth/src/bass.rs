@@ -55,8 +55,8 @@ use std::f32::consts::PI;
 use mpfree_node::{Ctl, Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Tuning};
 
 use crate::bass_params::*;
-pub use crate::body808::{drive_gains, drive_shape, sin_turns};
 use crate::body808::{drive, pitch_semis, triangle_turns, PUNCH_S, PUNCH_SEMIS};
+pub use crate::body808::{drive_gains, drive_shape, sin_turns};
 use crate::dsp::Rng;
 use crate::params::Preset;
 use crate::voice::{velocity_gain, Adsr, Glide, NoteStack, Priority};

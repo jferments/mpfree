@@ -41,6 +41,10 @@ pub const BP_LOW: f32 = 3440.0;
 pub const BP_HIGH: f32 = 7100.0;
 /// A hit at full velocity with full accent is this much louder, dB.
 const ACCENT_DB: f32 = 4.0;
+/// Every Current hit's output, against the levels the drums are tuned
+/// at: 2 dB down, so the punchier attacks keep about 3 dB of headroom on
+/// a pad alone while a kit plays about as loud as its Classic voices.
+const OUT: f32 = 0.794_328_2;
 /// Membrane modes (a struck circular head): the zeros of the Bessel
 /// functions, as (m, zero), in rising order. Ratios are zero / 2.405.
 const MEMBRANE: [(u32, f32); 8] = [
@@ -596,7 +600,7 @@ impl Voice {
                     v.hp_out[0] = Out::Hp;
                     v.band_lvl[0] = 1.0;
                     v.env_mul[0] = t60(decay * decay_share(0.0, lift), rate);
-                    norm = if m == CLOSED_HAT { 7.0 } else { 4.4 };
+                    norm = if m == CLOSED_HAT { 6.6 } else { 4.4 };
                 }
                 v.click_lvl = snap * 0.25 * bite * bite;
                 click_hp(&mut v, 5000.0 * bright);
@@ -652,7 +656,10 @@ impl Voice {
                 v.modal_mul = t60(base, rate);
                 let hard = (0.25 + 0.75 * tone) * bite;
                 let len = stick_len(hard, if conga { 0.003 } else { 0.004 }, f0, rate);
-                v.stick.start(len as u32, std::f32::consts::FRAC_PI_2 / len / total.max(0.3));
+                v.stick.start(
+                    len as u32,
+                    std::f32::consts::FRAC_PI_2 / len / total.max(0.3),
+                );
                 v.bend = g(field::SWEEP) * (0.3 + 0.7 * vel * vel);
                 v.bend_frames = g(field::SWEEP_TIME) * 0.001 * rate;
                 v.f0 = f0;
@@ -702,7 +709,10 @@ impl Voice {
                 v.modal_mul = t60(base, rate);
                 let hard = (0.3 + 0.7 * tone) * bite;
                 let len = stick_len(hard, 0.0012, f0, rate);
-                v.stick.start(len as u32, std::f32::consts::FRAC_PI_2 / len / total.max(0.3));
+                v.stick.start(
+                    len as u32,
+                    std::f32::consts::FRAC_PI_2 / len / total.max(0.3),
+                );
                 v.f0 = f0;
                 v.click_lvl = snap * 0.4 * bite * bite;
                 click_hp(&mut v, 3000.0 * bright);
@@ -805,7 +815,7 @@ impl Voice {
         if v.drive == 1 {
             v.drive_in *= norm;
         }
-        v.gain = amp * norm;
+        v.gain = amp * norm * OUT;
         v.pan(g(field::PAN) / 100.0);
         v
     }
@@ -857,6 +867,7 @@ impl Voice {
             if self.modal && self.bend > 0.0 {
                 self.retune(self.frames as f32, rate);
             }
+            self.flush();
         }
         if self.body_on {
             let inc = self.inc;
@@ -868,7 +879,7 @@ impl Voice {
             let mut s = if self.fm_index > 0.0 {
                 self.fm_ph += inc * self.fm_ratio;
                 if self.fm_ph >= 1.0 {
-                    self.fm_ph -= self.fm_ph.floor();
+                    self.fm_ph -= body808::floor(self.fm_ph);
                 }
                 let ix = self.fm_index * (0.15 + 0.85 * self.fm_env);
                 self.fm_env *= self.fm_mul;
@@ -884,7 +895,7 @@ impl Voice {
             if self.lvl_b > 0.0 {
                 self.ph_b += inc * self.ratio_b;
                 if self.ph_b >= 1.0 {
-                    self.ph_b -= self.ph_b.floor();
+                    self.ph_b -= body808::floor(self.ph_b);
                 }
                 b += self.lvl_b * sin_turns(self.ph_b) * self.body_b;
                 self.body_b *= self.body_b_mul;
@@ -970,8 +981,12 @@ impl Voice {
         match self.drive {
             0 => {}
             1 => {
-                out = drive_n(out * self.drive_in, self.drive_gain, self.drive_sq, self.drive_amt)
-                    / self.drive_in
+                out = drive_n(
+                    out * self.drive_in,
+                    self.drive_gain,
+                    self.drive_sq,
+                    self.drive_amt,
+                ) / self.drive_in
             }
             _ => {
                 let r = body808::DRIVE_REF * self.drive_in;
@@ -990,6 +1005,33 @@ impl Voice {
             self.state = State::Free;
         }
         out
+    }
+
+    /// Lands each part's envelope that has fallen out of hearing (under
+    /// -400 dB) on zero, so it never reaches the processor's slow tiny
+    /// numbers: a cowbell's 30 ms attack band, say, under its 2 s ring.
+    fn flush(&mut self) {
+        const TINY: f32 = 1e-20;
+        let snap = |x: &mut f32| {
+            if x.abs() < TINY {
+                *x = 0.0;
+            }
+        };
+        for e in self.env.iter_mut() {
+            snap(e);
+        }
+        for x in [
+            &mut self.body,
+            &mut self.body_b,
+            &mut self.fm_env,
+            &mut self.burst,
+            &mut self.tail,
+            &mut self.lp,
+            &mut self.bead,
+            &mut self.modal_env,
+        ] {
+            snap(x);
+        }
     }
 
     /// About how loud the hit is now: its parts' envelopes times their
@@ -1069,9 +1111,7 @@ impl Voice {
             Pitch::Drop808 {
                 sigh, sigh_frames, ..
             } => (sigh, (-4.605_17 / sigh_frames.max(1.0)).exp()),
-            Pitch::Flat if self.modal => {
-                (self.bend, (-4.605_17 / self.bend_frames.max(1.0)).exp())
-            }
+            Pitch::Flat if self.modal => (self.bend, (-4.605_17 / self.bend_frames.max(1.0)).exp()),
             Pitch::Flat => (0.0, 1.0),
         };
         let bursts = self.clap.then(|| {
@@ -1093,13 +1133,21 @@ impl Voice {
         };
         super::HitShape {
             model: self.model(),
-            hz: if self.body_on || self.modal { self.f0 } else { 0.0 },
+            hz: if self.body_on || self.modal {
+                self.f0
+            } else {
+                0.0
+            },
             body: (body, body_mul),
             noise: (noise, noise_mul),
             click: (self.click_lvl, self.click_mul),
             sweep: (sweep, sweep_mul),
             bursts,
-            drive: if self.drive > 0 { self.drive_amt.max(0.01) } else { 0.0 },
+            drive: if self.drive > 0 {
+                self.drive_amt.max(0.01)
+            } else {
+                0.0
+            },
         }
     }
 }

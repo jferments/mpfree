@@ -731,11 +731,19 @@ mod tests {
             params: [Some(strike), Some(df::TUNE), None, None],
         };
         let on3 = &on_pad(info, &[set], 2)[0];
-        assert_eq!(on3.params[..2], [Some(pad_id(2, df::STRIKE)), Some(pad_id(2, df::TUNE))]);
+        assert_eq!(
+            on3.params[..2],
+            [Some(pad_id(2, df::STRIKE)), Some(pad_id(2, df::TUNE))]
+        );
         // A Current kit's Hit set turns each drum's own four: the 808 kick
         // on pad 14 of the Init kit.
         let mut init = Drums::new(48_000);
-        init.load_preset(Drums::presets().iter().find(|k| k.name == "Init Kit").unwrap());
+        init.load_preset(
+            Drums::presets()
+                .iter()
+                .find(|k| k.name == "Init Kit")
+                .unwrap(),
+        );
         let own = on_pad_values(info, &sets, 13, &|id| init.param(id));
         assert_eq!(
             own[0].params,
