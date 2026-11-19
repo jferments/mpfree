@@ -109,16 +109,16 @@
 249183	Pluck Harp, 16 voices
 127636	Pluck Marimba, 8 voices
 163789	Pluck Steel String, 8 voices
-48397	Poly Acid, 8 voices
+52361	Poly Acid, 8 voices
 201662	Poly Brass, 8 voices
 288782	Poly Drift Pad, 8 voices
 374389	Poly Dust Pad, 8 voices
-57376	Poly Grit Bass, 8 voices
+62162	Poly Grit Bass, 8 voices
 606162	Poly Init, 16 voices, unison 4
 191750	Poly Init, 8 voices
-52602	Poly Lead, 8 voices
+58020	Poly Lead, 8 voices
 209421	Poly Pluck, 8 voices
-64126	Poly Singing Lead, 8 voices
+67748	Poly Singing Lead, 8 voices
 30818	Poly Sub Bass, 8 voices
 45781	Poly Super Lead, 8 voices
 279340	Poly Super Pad, 8 voices

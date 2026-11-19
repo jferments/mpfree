@@ -85,7 +85,7 @@ The bar each wave 1 pull request is judged by ([Architecture and roadmap](synth-
 | V5 | Sustain pedal (K5) | A note let go with the pedal down sounds until the pedal comes up, then releases; a key struck again under the pedal restarts its note; the same through the host's fallback for an engine that doesn't hear the pedal | No pedal |
 | V6 | Note priority and legato | Last, low and high each pick the right note as keys go down and up; legato with retrigger off never restarts the envelopes | Last note only |
 | V7 | Glide by rate | Covers an octave in the time its rate gives, within 10 %; lands within 2 cents (B2) | Time only |
-| V8 | DC (L3) | Under −60 dBFS | 8 presets over |
+| V8 | DC (L3) | Under −60 dBFS | 8 presets over. Poly met (19 Nov: the output's DC blocker while drive or distortion sounds; Lead from −44 dBFS, Grit Bass from −63 and Acid from −70 to the floor) |
 | V9 | An 8-note chord at full velocity (L2) | Under 0 dBFS | 17 presets clip |
 
 **Bass (B)**, on the Bass engine's plain patch and presets:
