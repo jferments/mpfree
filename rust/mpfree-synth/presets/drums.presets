@@ -301,3 +301,3701 @@ pad-16.pan = 25
 
 # Kit
 kit.voices = Current
+
+mpfree-preset = 2
+engine = mpfree.drums
+name = 808 Kit
+
+# 808-style: the long round kick, the snappy snare and clap, the metal hats, cowbell, congas, claves and maracas, and a low 808 for bass lines.
+
+# Pad 1: the kick, long and round
+pad-1.model = 808 kick
+pad-1.decay = 1400
+pad-1.tone = 35
+pad-1.snap = 45
+pad-1.sweep = 3.28
+pad-1.sweep-time = 300
+pad-1.drive = 15
+pad-1.level = 0.5
+pad-1.vel-tone = 60
+
+# Pad 2: snare
+pad-2.tune = -1
+pad-2.decay = 180
+pad-2.tone = 35
+pad-2.snap = 25
+pad-2.noise = 55
+pad-2.level = 0.5
+pad-2.ring = 40
+
+# Pad 3: clap
+pad-3.decay = 380
+pad-3.tone = 45
+pad-3.snap = 40
+pad-3.level = -3.5
+pad-3.burst-gap = 9
+pad-3.room = 45
+
+# Pad 4: closed hat
+pad-4.decay = 55
+pad-4.tone = 55
+pad-4.snap = 15
+pad-4.noise = 10
+pad-4.level = 1
+
+# Pad 5: open hat
+pad-5.decay = 520
+pad-5.tone = 55
+pad-5.snap = 15
+pad-5.noise = 10
+pad-5.level = 0.5
+
+# Pad 6: tom, low
+pad-6.tune = -7
+pad-6.decay = 550
+pad-6.tone = 20
+pad-6.snap = 10
+pad-6.sweep = 3
+pad-6.sweep-time = 150
+pad-6.level = -3
+pad-6.vel-tone = 60
+pad-6.strike = 15
+
+# Pad 7: tom, mid
+pad-7.tune = -2
+pad-7.decay = 500
+pad-7.tone = 20
+pad-7.snap = 10
+pad-7.sweep = 3
+pad-7.sweep-time = 150
+pad-7.level = -2.5
+pad-7.vel-tone = 60
+pad-7.strike = 15
+
+# Pad 8: tom, high
+pad-8.tune = 3
+pad-8.decay = 450
+pad-8.tone = 20
+pad-8.snap = 10
+pad-8.sweep = 3
+pad-8.sweep-time = 150
+pad-8.level = -2
+pad-8.vel-tone = 60
+pad-8.strike = 15
+
+# Pad 9: rimshot
+pad-9.decay = 40
+pad-9.snap = 45
+pad-9.noise = 10
+pad-9.level = 1.5
+
+# Pad 10: cowbell
+pad-10.decay = 380
+pad-10.snap = 20
+pad-10.level = -3.5
+
+# Pad 11: cymbal
+pad-11.decay = 2600
+pad-11.tone = 55
+pad-11.snap = 20
+pad-11.noise = 20
+pad-11.level = -4
+
+# Pad 12: high conga
+pad-12.model = Conga
+pad-12.tune = 7
+pad-12.decay = 220
+pad-12.tone = 35
+pad-12.snap = 10
+pad-12.sweep = 0
+pad-12.sweep-time = 60
+pad-12.level = -1.5
+pad-12.pan = -20
+pad-12.vel-tone = 60
+pad-12.strike = 15
+
+# Pad 13: low conga
+pad-13.model = Conga
+pad-13.decay = 280
+pad-13.tone = 35
+pad-13.snap = 10
+pad-13.sweep-time = 60
+pad-13.level = -2
+pad-13.pan = -35
+pad-13.vel-tone = 60
+pad-13.strike = 15
+
+# Pad 14: claves
+pad-14.model = Woodblock
+pad-14.tune = 19
+pad-14.decay = 60
+pad-14.tone = 75
+pad-14.snap = 10
+pad-14.drive = 0
+pad-14.level = 2
+pad-14.pan = 20
+pad-14.vel-tone = 60
+pad-14.strike = 50
+
+# Pad 15: maracas
+pad-15.model = Shaker
+pad-15.tune = 0
+pad-15.decay = 60
+pad-15.tone = 70
+pad-15.level = 1.5
+pad-15.pan = 30
+pad-15.grain = 30
+pad-15.attack = 2
+
+# Pad 16: the low 808, for bass lines
+pad-16.model = 808 kick
+pad-16.tune = -5
+pad-16.decay = 2600
+pad-16.tone = 25
+pad-16.snap = 25
+pad-16.sweep = 3.28
+pad-16.sweep-time = 300
+pad-16.drive = 30
+pad-16.level = -1.5
+pad-16.pan = 0
+pad-16.vel-tone = 60
+
+# Kit
+kit.voices = Current
+
+mpfree-preset = 2
+engine = mpfree.drums
+name = Club Machine Kit
+
+# Club drum-machine style: a kick with a click and a punch, a noisy snare, a loud clap, bright hats, a ride and a crash, and second kick, snare and clap to layer.
+
+# Pad 1: the kick, clicky and punchy
+pad-1.decay = 480
+pad-1.tone = 35
+pad-1.snap = 70
+pad-1.sweep = 30
+pad-1.sweep-time = 30
+pad-1.drive = 20
+pad-1.vel-tone = 60
+pad-1-effects.punch = 25
+pad-1-effects.output = -3
+
+# Pad 2: snare
+pad-2.tune = 2
+pad-2.decay = 230
+pad-2.tone = 65
+pad-2.snap = 60
+pad-2.noise = 72
+pad-2.drive = 10
+pad-2.level = -0.5
+pad-2.ring = 35
+
+# Pad 3: clap
+pad-3.tone = 60
+pad-3.snap = 70
+pad-3.burst-gap = 8
+pad-3.room = 30
+pad-3-effects.output = -1.5
+pad-3-effects.reverb-send = 15
+
+# Pad 4: closed hat
+pad-4.decay = 75
+pad-4.tone = 75
+pad-4.noise = 40
+pad-4.level = -2.5
+pad-4.spread = 70
+
+# Pad 5: open hat
+pad-5.decay = 600
+pad-5.tone = 75
+pad-5.noise = 40
+pad-5.level = -3
+pad-5.spread = 70
+
+# Pad 6: tom, low
+pad-6.decay = 420
+pad-6.tone = 55
+pad-6.snap = 40
+pad-6.sweep = 6
+pad-6.sweep-time = 90
+pad-6.level = -0.5
+pad-6.vel-tone = 60
+pad-6.strike = 35
+
+# Pad 7: tom, mid
+pad-7.decay = 380
+pad-7.tone = 55
+pad-7.snap = 40
+pad-7.sweep = 6
+pad-7.sweep-time = 90
+pad-7.vel-tone = 60
+pad-7.strike = 35
+
+# Pad 8: tom, high
+pad-8.decay = 340
+pad-8.tone = 55
+pad-8.snap = 40
+pad-8.sweep = 6
+pad-8.sweep-time = 90
+pad-8.vel-tone = 60
+pad-8.strike = 35
+
+# Pad 9: rimshot
+pad-9.decay = 45
+pad-9.tone = 70
+pad-9.snap = 60
+pad-9.noise = 15
+pad-9.level = 1.5
+
+# Pad 10: ride
+pad-10.model = Cymbal
+pad-10.decay = 2600
+pad-10.tone = 85
+pad-10.snap = 45
+pad-10.noise = 15
+pad-10.level = 0.5
+pad-10.pan = -15
+pad-10.spread = 80
+
+# Pad 11: crash
+pad-11.decay = 3000
+pad-11.tone = 65
+pad-11.snap = 25
+pad-11.noise = 60
+pad-11.level = -5
+pad-11.spread = 60
+
+# Pad 12: a shorter, harder kick
+pad-12.model = Kick
+pad-12.tune = 2
+pad-12.decay = 280
+pad-12.tone = 45
+pad-12.snap = 90
+pad-12.sweep-time = 20
+pad-12.drive = 40
+pad-12.level = -1.5
+pad-12.vel-tone = 60
+
+# Pad 13: a tight snare
+pad-13.model = Snare
+pad-13.tune = 4
+pad-13.decay = 150
+pad-13.tone = 80
+pad-13.snap = 70
+pad-13.noise = 85
+pad-13.level = 0.5
+pad-13.pan = 0
+pad-13.ring = 25
+
+# Pad 14: a dry clap
+pad-14.model = Clap
+pad-14.decay = 300
+pad-14.tone = 70
+pad-14.snap = 60
+pad-14.drive = 0
+pad-14.level = -3
+pad-14.bursts = 3
+pad-14.burst-gap = 7
+pad-14.room = 40
+
+# Pad 15: shaker
+pad-15.model = Shaker
+pad-15.tune = 0
+pad-15.decay = 110
+pad-15.tone = 65
+pad-15.pan = 20
+pad-15.grain = 40
+pad-15.attack = 4
+
+# Pad 16: cowbell
+pad-16.model = Cowbell
+pad-16.tune = 0
+pad-16.decay = 300
+pad-16.tone = 55
+pad-16.snap = 30
+pad-16.noise = 0
+pad-16.level = -3
+pad-16.pan = -20
+
+# Sends
+sends.reverb-size = 35
+sends.reverb-decay = 700
+
+# Kit
+kit.voices = Current
+
+mpfree-preset = 2
+engine = mpfree.drums
+name = Bright Machine Kit
+
+# Bright drum-machine style: crisp short drums, a ringing snare, sharp hats, tambourine, cowbell, ride and crash.
+
+# Pad 1: the kick, short and tight
+pad-1.tune = 1
+pad-1.decay = 330
+pad-1.tone = 20
+pad-1.snap = 60
+pad-1.sweep = 18
+pad-1.sweep-time = 25
+pad-1.drive = 5
+pad-1.level = -0.5
+pad-1.vel-tone = 60
+
+# Pad 2: snare, bright
+pad-2.tune = 3
+pad-2.decay = 210
+pad-2.tone = 85
+pad-2.snap = 60
+pad-2.noise = 62
+pad-2.level = -1.5
+pad-2.ring = 60
+
+# Pad 3: clap
+pad-3.tone = 75
+pad-3.snap = 45
+pad-3.level = -3.5
+pad-3.bursts = 3
+pad-3.burst-gap = 12
+
+# Pad 4: closed hat
+pad-4.decay = 55
+pad-4.tone = 88
+pad-4.snap = 25
+pad-4.noise = 50
+pad-4.level = -4
+pad-4.spread = 75
+
+# Pad 5: open hat
+pad-5.decay = 420
+pad-5.tone = 88
+pad-5.snap = 25
+pad-5.noise = 50
+pad-5.level = -5.5
+pad-5.spread = 75
+
+# Pad 6: tom, low
+pad-6.tune = -3
+pad-6.decay = 380
+pad-6.tone = 65
+pad-6.snap = 45
+pad-6.sweep = 2
+pad-6.sweep-time = 80
+pad-6.level = -0.5
+pad-6.vel-tone = 60
+pad-6.strike = 40
+
+# Pad 7: tom, mid
+pad-7.tune = 2
+pad-7.decay = 340
+pad-7.tone = 65
+pad-7.snap = 45
+pad-7.sweep = 2
+pad-7.sweep-time = 80
+pad-7.vel-tone = 60
+pad-7.strike = 40
+
+# Pad 8: tom, high
+pad-8.tune = 7
+pad-8.decay = 300
+pad-8.tone = 65
+pad-8.snap = 45
+pad-8.sweep = 2
+pad-8.sweep-time = 80
+pad-8.vel-tone = 60
+pad-8.strike = 40
+
+# Pad 9: rimshot
+pad-9.tune = 2
+pad-9.decay = 45
+pad-9.tone = 80
+pad-9.snap = 70
+pad-9.noise = 10
+pad-9.level = 0.5
+
+# Pad 10: cowbell
+pad-10.tune = 2
+pad-10.decay = 320
+pad-10.tone = 65
+
+# Pad 11: crash
+pad-11.decay = 2200
+pad-11.tone = 80
+pad-11.noise = 55
+pad-11.level = -4
+pad-11.spread = 60
+
+# Pad 12: ride
+pad-12.model = Cymbal
+pad-12.decay = 2600
+pad-12.tone = 92
+pad-12.snap = 50
+pad-12.noise = 10
+pad-12.level = 1
+pad-12.pan = -15
+pad-12.spread = 85
+
+# Pad 13: tambourine
+pad-13.model = Shaker
+pad-13.tune = 5
+pad-13.decay = 260
+pad-13.tone = 90
+pad-13.level = -6
+pad-13.pan = 25
+pad-13.grain = 85
+pad-13.attack = 1
+
+# Pad 14: a ringing rim snare
+pad-14.model = Snare
+pad-14.tune = 5
+pad-14.decay = 180
+pad-14.tone = 90
+pad-14.snap = 70
+pad-14.noise = 45
+pad-14.drive = 0
+pad-14.level = -1.5
+pad-14.ring = 80
+
+# Pad 15: a tighter kick
+pad-15.model = Kick
+pad-15.decay = 220
+pad-15.tone = 25
+pad-15.snap = 75
+pad-15.sweep = 20
+pad-15.sweep-time = 18
+pad-15.drive = 10
+pad-15.level = -0.5
+pad-15.vel-tone = 60
+
+# Pad 16: woodblock
+pad-16.model = Woodblock
+pad-16.tune = 7
+pad-16.decay = 90
+pad-16.tone = 75
+pad-16.snap = 20
+pad-16.level = 1
+pad-16.vel-tone = 60
+pad-16.strike = 40
+
+# Kit
+kit.voices = Current
+
+mpfree-preset = 2
+engine = mpfree.drums
+name = Vintage Rhythm Kit
+fx.1 = mpfree.fx.character
+
+# Early rhythm-box style: a soft round kick, a dull snare and rim, ticking hats, bongos, congas, claves, maracas, tambourine and guiro, through a little tape.
+
+# Pad 1: the kick, soft and round
+pad-1.tune = 2
+pad-1.decay = 300
+pad-1.tone = 5
+pad-1.snap = 10
+pad-1.sweep = 6
+pad-1.sweep-time = 30
+pad-1.drive = 0
+pad-1.level = -0.5
+pad-1.vel-tone = 60
+
+# Pad 2: snare, dull
+pad-2.decay = 140
+pad-2.tone = 30
+pad-2.snap = 10
+pad-2.noise = 40
+pad-2.ring = 70
+
+# Pad 3: rimshot
+pad-3.model = Rim
+pad-3.decay = 30
+pad-3.snap = 30
+pad-3.noise = 5
+pad-3.level = 3
+
+# Pad 4: hat
+pad-4.decay = 45
+pad-4.tone = 45
+pad-4.snap = 5
+pad-4.noise = 60
+pad-4.level = -5
+pad-4.spread = 40
+
+# Pad 5: metal beat
+pad-5.decay = 280
+pad-5.tone = 50
+pad-5.snap = 5
+pad-5.noise = 25
+pad-5.level = -1.5
+pad-5.spread = 35
+
+# Pad 6: conga
+pad-6.model = Conga
+pad-6.decay = 260
+pad-6.tone = 25
+pad-6.snap = 5
+pad-6.sweep = 0
+pad-6.level = -2.5
+pad-6.vel-tone = 60
+pad-6.strike = 25
+
+# Pad 7: bongo, low
+pad-7.model = Conga
+pad-7.tune = 5
+pad-7.decay = 170
+pad-7.tone = 30
+pad-7.snap = 5
+pad-7.sweep = 0
+pad-7.level = -1
+pad-7.vel-tone = 60
+pad-7.strike = 25
+
+# Pad 8: bongo, high
+pad-8.model = Conga
+pad-8.tune = 10
+pad-8.decay = 140
+pad-8.tone = 30
+pad-8.snap = 5
+pad-8.sweep = 0
+pad-8.vel-tone = 60
+pad-8.strike = 25
+
+# Pad 9: claves
+pad-9.model = Woodblock
+pad-9.tune = 17
+pad-9.decay = 70
+pad-9.snap = 5
+pad-9.level = 0.5
+pad-9.pan = 20
+pad-9.vel-tone = 60
+pad-9.strike = 50
+
+# Pad 10: cowbell
+pad-10.tune = -2
+pad-10.decay = 240
+pad-10.tone = 35
+pad-10.snap = 10
+pad-10.level = -4
+
+# Pad 11: cymbal
+pad-11.decay = 1500
+pad-11.tone = 40
+pad-11.snap = 5
+pad-11.noise = 50
+pad-11.level = -6
+pad-11.spread = 40
+
+# Pad 12: maracas
+pad-12.model = Shaker
+pad-12.decay = 70
+pad-12.tone = 55
+pad-12.level = 1
+pad-12.pan = 25
+pad-12.grain = 40
+pad-12.attack = 3
+
+# Pad 13: tambourine
+pad-13.model = Shaker
+pad-13.tune = 3
+pad-13.decay = 300
+pad-13.tone = 80
+pad-13.level = -5.5
+pad-13.pan = -25
+pad-13.grain = 90
+pad-13.attack = 2
+
+# Pad 14: guiro
+pad-14.model = Shaker
+pad-14.tune = -5
+pad-14.decay = 220
+pad-14.tone = 40
+pad-14.drive = 0
+pad-14.level = 2.5
+pad-14.pan = 15
+pad-14.grain = 100
+pad-14.attack = 40
+
+# Pad 15: bell
+pad-15.model = Bell
+pad-15.tune = 0
+pad-15.decay = 500
+pad-15.tone = 40
+pad-15.snap = 5
+pad-15.level = -0.5
+pad-15.vel-tone = 50
+
+# Pad 16: tom
+pad-16.model = Tom
+pad-16.tune = 0
+pad-16.decay = 300
+pad-16.tone = 20
+pad-16.snap = 5
+pad-16.sweep-time = 60
+pad-16.level = -2.5
+pad-16.pan = 0
+pad-16.vel-tone = 60
+pad-16.strike = 20
+
+# Kit effects
+fx-1.mode = Tape
+fx-1.amount = 35
+
+# Kit
+kit.voices = Current
+
+mpfree-preset = 2
+engine = mpfree.drums
+name = Eighties Punch Kit
+
+# Eighties drum-machine style, punchy: a tight kick and snare with Punch, big toms and snare in a gated room, claps, cabasa, tambourine and congas.
+
+# Pad 1: the kick, punchy
+pad-1.tune = 3
+pad-1.decay = 280
+pad-1.snap = 75
+pad-1.sweep = 14
+pad-1.sweep-time = 22
+pad-1.vel-tone = 60
+pad-1-effects.punch = 40
+pad-1-effects.low = 3
+pad-1-effects.output = -6.5
+
+# Pad 2: snare, in the gated room
+pad-2.tune = 1
+pad-2.decay = 260
+pad-2.snap = 60
+pad-2.noise = 50
+pad-2.ring = 65
+pad-2-effects.punch = 30
+pad-2-effects.output = -4.5
+pad-2-effects.reverb-send = 35
+
+# Pad 3: clap
+pad-3.decay = 260
+pad-3.tone = 55
+pad-3.snap = 55
+pad-3.burst-gap = 11
+pad-3.room = 20
+pad-3-effects.reverb-send = 20
+
+# Pad 4: closed hat
+pad-4.decay = 55
+pad-4.tone = 70
+pad-4.snap = 25
+pad-4.noise = 65
+pad-4.level = -5.5
+pad-4.spread = 60
+
+# Pad 5: open hat
+pad-5.decay = 550
+pad-5.tone = 70
+pad-5.snap = 25
+pad-5.noise = 65
+pad-5.level = -7.5
+pad-5.spread = 60
+
+# Pad 6: tom, low
+pad-6.tune = -6
+pad-6.decay = 600
+pad-6.tone = 55
+pad-6.sweep = 4
+pad-6.sweep-time = 150
+pad-6.vel-tone = 60
+pad-6.strike = 40
+pad-6-effects.output = -1
+pad-6-effects.reverb-send = 25
+
+# Pad 7: tom, mid
+pad-7.tune = -1
+pad-7.decay = 550
+pad-7.tone = 55
+pad-7.sweep = 4
+pad-7.sweep-time = 150
+pad-7.vel-tone = 60
+pad-7.strike = 40
+pad-7-effects.output = -0.5
+pad-7-effects.reverb-send = 25
+
+# Pad 8: tom, high
+pad-8.tune = 4
+pad-8.decay = 500
+pad-8.tone = 55
+pad-8.sweep = 4
+pad-8.sweep-time = 150
+pad-8.vel-tone = 60
+pad-8.strike = 40
+pad-8-effects.output = -0.5
+pad-8-effects.reverb-send = 25
+
+# Pad 9: rimshot
+pad-9.decay = 45
+pad-9.tone = 55
+pad-9.level = 1
+
+# Pad 10: cowbell
+pad-10.decay = 330
+pad-10.tone = 55
+
+# Pad 11: crash
+pad-11.decay = 2500
+pad-11.tone = 65
+pad-11.noise = 70
+pad-11.level = -6.5
+pad-11.spread = 60
+
+# Pad 12: ride
+pad-12.model = Cymbal
+pad-12.decay = 2800
+pad-12.tone = 75
+pad-12.snap = 40
+pad-12.noise = 25
+pad-12.level = -1.5
+pad-12.pan = -15
+pad-12.spread = 70
+
+# Pad 13: cabasa
+pad-13.model = Shaker
+pad-13.decay = 90
+pad-13.tone = 75
+pad-13.level = -1
+pad-13.grain = 60
+pad-13.attack = 3
+
+# Pad 14: tambourine
+pad-14.model = Shaker
+pad-14.tune = 3
+pad-14.decay = 350
+pad-14.tone = 85
+pad-14.drive = 0
+pad-14.level = -6
+pad-14.pan = -20
+pad-14.grain = 90
+pad-14.attack = 1
+
+# Pad 15: conga
+pad-15.model = Conga
+pad-15.tune = 0
+pad-15.decay = 300
+pad-15.tone = 55
+pad-15.snap = 35
+pad-15.sweep = 1
+pad-15.sweep-time = 60
+pad-15.level = -0.5
+pad-15.pan = -25
+pad-15.vel-tone = 60
+pad-15.strike = 35
+
+# Pad 16: conga, high
+pad-16.model = Conga
+pad-16.tune = 5
+pad-16.decay = 250
+pad-16.tone = 55
+pad-16.snap = 35
+pad-16.sweep = 1
+pad-16.sweep-time = 60
+pad-16.level = 0
+pad-16.pan = 25
+pad-16.vel-tone = 60
+pad-16.strike = 35
+
+# Sends
+sends.reverb-size = 70
+sends.reverb-decay = 1500
+sends.reverb-tone = 55
+sends.reverb-gate = 250
+
+# Kit
+kit.voices = Current
+
+mpfree-preset = 2
+engine = mpfree.drums
+name = Miami Bass Kit
+
+# Miami bass: a very long, low 808, a short 808 for punch, a snappy snare and clap, quick hats, 808 toms, cowbell, claves and a zap.
+
+# Pad 1: the kick, very long and low
+pad-1.model = 808 kick
+pad-1.tune = -3
+pad-1.decay = 3200
+pad-1.snap = 50
+pad-1.sweep = 3.28
+pad-1.sweep-time = 300
+pad-1.drive = 35
+pad-1.level = -1.5
+pad-1.vel-tone = 60
+
+# Pad 2: snare
+pad-2.tune = 2
+pad-2.decay = 160
+pad-2.tone = 45
+pad-2.snap = 35
+pad-2.noise = 70
+pad-2.ring = 40
+
+# Pad 3: clap
+pad-3.decay = 450
+pad-3.snap = 40
+pad-3.level = -2.5
+pad-3.room = 50
+
+# Pad 4: closed hat
+pad-4.decay = 45
+pad-4.snap = 15
+pad-4.noise = 10
+pad-4.level = 2
+
+# Pad 5: open hat
+pad-5.decay = 350
+pad-5.snap = 15
+pad-5.noise = 10
+pad-5.level = 1
+
+# Pad 6: 808-style tom, low
+pad-6.tune = -7
+pad-6.decay = 600
+pad-6.tone = 20
+pad-6.snap = 10
+pad-6.sweep = 4
+pad-6.sweep-time = 150
+pad-6.level = -4
+pad-6.vel-tone = 60
+pad-6.strike = 15
+
+# Pad 7: 808-style tom, mid
+pad-7.tune = -2
+pad-7.decay = 550
+pad-7.tone = 20
+pad-7.snap = 10
+pad-7.sweep = 4
+pad-7.sweep-time = 150
+pad-7.level = -3.5
+pad-7.vel-tone = 60
+pad-7.strike = 15
+
+# Pad 8: 808-style tom, high
+pad-8.tune = 3
+pad-8.decay = 500
+pad-8.tone = 20
+pad-8.snap = 10
+pad-8.sweep = 4
+pad-8.sweep-time = 150
+pad-8.level = -3
+pad-8.vel-tone = 60
+pad-8.strike = 15
+
+# Pad 9: rimshot
+pad-9.decay = 35
+pad-9.tone = 65
+pad-9.noise = 10
+pad-9.level = 1.5
+
+# Pad 10: cowbell
+pad-10.decay = 450
+pad-10.level = -4.5
+
+# Pad 11: cymbal
+pad-11.decay = 2500
+pad-11.tone = 55
+pad-11.noise = 20
+pad-11.level = -5
+
+# Pad 12: zap
+pad-12.tune = -5
+pad-12.decay = 250
+pad-12.tone = 40
+pad-12.sweep = 30
+pad-12.sweep-time = 30
+pad-12.level = -1.5
+pad-12.vel-tone = 50
+
+# Pad 13: a short 808, for punch
+pad-13.model = 808 kick
+pad-13.decay = 600
+pad-13.tone = 40
+pad-13.snap = 70
+pad-13.sweep = 3.28
+pad-13.sweep-time = 300
+pad-13.drive = 20
+pad-13.level = -1
+pad-13.pan = 0
+pad-13.vel-tone = 60
+
+# Pad 14: the lowest boom
+pad-14.model = 808 kick
+pad-14.tune = -7
+pad-14.decay = 3500
+pad-14.snap = 30
+pad-14.sweep = 3.28
+pad-14.sweep-time = 300
+pad-14.drive = 50
+pad-14.level = -4
+pad-14.vel-tone = 60
+
+# Pad 15: claves
+pad-15.model = Woodblock
+pad-15.tune = 19
+pad-15.decay = 60
+pad-15.snap = 10
+pad-15.level = 1.5
+pad-15.pan = 20
+pad-15.vel-tone = 60
+pad-15.strike = 50
+
+# Pad 16: maracas
+pad-16.model = Shaker
+pad-16.tune = 0
+pad-16.decay = 60
+pad-16.level = 1
+pad-16.pan = -20
+pad-16.grain = 30
+pad-16.attack = 2
+
+# Kit
+kit.voices = Current
+
+mpfree-preset = 2
+engine = mpfree.drums
+name = Trap Kit
+
+# Trap: a long driven 808, a hard snare and clap with a little room, hats for rolls (a tight one on pad 13), 808 toms, a finger snap, a bell perc and a drop.
+
+# Pad 1: the 808, long
+pad-1.model = 808 kick
+pad-1.tune = -2
+pad-1.decay = 3000
+pad-1.tone = 40
+pad-1.snap = 60
+pad-1.sweep = 3.28
+pad-1.sweep-time = 300
+pad-1.drive = 40
+pad-1.level = -2
+pad-1.vel-tone = 60
+
+# Pad 2: snare
+pad-2.tune = 3
+pad-2.decay = 240
+pad-2.tone = 70
+pad-2.snap = 60
+pad-2.noise = 75
+pad-2.drive = 20
+pad-2-effects.output = -2.5
+pad-2-effects.reverb-send = 15
+
+# Pad 3: clap
+pad-3.decay = 420
+pad-3.tone = 65
+pad-3.snap = 75
+pad-3.bursts = 3
+pad-3.burst-gap = 9
+pad-3.room = 45
+pad-3-effects.output = -4.5
+pad-3-effects.reverb-send = 20
+
+# Pad 4: closed hat, for rolls
+pad-4.decay = 45
+pad-4.tone = 80
+pad-4.snap = 20
+pad-4.noise = 35
+pad-4.level = -0.5
+pad-4.vel-level = 85
+pad-4.spread = 70
+
+# Pad 5: open hat
+pad-5.decay = 350
+pad-5.tone = 80
+pad-5.snap = 20
+pad-5.noise = 35
+pad-5.level = -2.5
+pad-5.spread = 70
+
+# Pad 6: 808-style tom, low
+pad-6.decay = 500
+pad-6.tone = 25
+pad-6.snap = 10
+pad-6.sweep = 5
+pad-6.sweep-time = 120
+pad-6.level = -3.5
+pad-6.vel-tone = 60
+pad-6.strike = 15
+
+# Pad 7: 808-style tom, mid
+pad-7.decay = 450
+pad-7.tone = 25
+pad-7.snap = 10
+pad-7.sweep = 5
+pad-7.sweep-time = 120
+pad-7.level = -3.5
+pad-7.vel-tone = 60
+pad-7.strike = 15
+
+# Pad 8: 808-style tom, high
+pad-8.decay = 400
+pad-8.tone = 25
+pad-8.snap = 10
+pad-8.sweep = 5
+pad-8.sweep-time = 120
+pad-8.level = -3
+pad-8.vel-tone = 60
+pad-8.strike = 15
+
+# Pad 9: rimshot
+pad-9.tune = 3
+pad-9.decay = 50
+pad-9.tone = 70
+pad-9.snap = 60
+
+# Pad 10: a punchy kick, to layer
+pad-10.model = Kick
+pad-10.decay = 250
+pad-10.tone = 40
+pad-10.snap = 85
+pad-10.sweep = 30
+pad-10.sweep-time = 20
+pad-10.drive = 30
+pad-10.level = -2
+pad-10.pan = 0
+pad-10.vel-tone = 60
+
+# Pad 11: crash
+pad-11.decay = 2800
+pad-11.tone = 70
+pad-11.level = -4
+
+# Pad 12: finger snap
+pad-12.model = Clap
+pad-12.decay = 200
+pad-12.tone = 85
+pad-12.snap = 90
+pad-12.level = 1
+pad-12.pan = 15
+pad-12.bursts = 1
+pad-12.room = 30
+
+# Pad 13: a tight hat, for fast rolls
+pad-13.model = Closed hat
+pad-13.tune = 4
+pad-13.decay = 25
+pad-13.tone = 90
+pad-13.snap = 30
+pad-13.noise = 30
+pad-13.level = 2
+pad-13.pan = -15
+pad-13.vel-level = 85
+pad-13.choke = 1
+pad-13.spread = 75
+
+# Pad 14: a distorted 808
+pad-14.model = 808 kick
+pad-14.tune = -5
+pad-14.decay = 2200
+pad-14.tone = 60
+pad-14.snap = 50
+pad-14.sweep = 3.28
+pad-14.sweep-time = 300
+pad-14.drive = 75
+pad-14.level = -4.5
+pad-14.vel-tone = 60
+
+# Pad 15: bell perc
+pad-15.model = FM perc
+pad-15.tune = 12
+pad-15.decay = 300
+pad-15.tone = 40
+pad-15.noise = 0
+pad-15.sweep = 0
+pad-15.sweep-time = 80
+pad-15.level = -1
+pad-15.vel-tone = 50
+pad-15.ratio = 3.5
+
+# Pad 16: a drop
+pad-16.model = Zap
+pad-16.tune = 0
+pad-16.decay = 600
+pad-16.tone = 30
+pad-16.noise = 20
+pad-16.sweep = 24
+pad-16.sweep-time = 200
+pad-16.level = -3
+pad-16.pan = 0
+pad-16.vel-tone = 50
+
+# Sends
+sends.reverb-decay = 900
+
+# Kit
+kit.voices = Current
+
+mpfree-preset = 2
+engine = mpfree.drums
+name = Drill Kit
+
+# Drill: a dark, driven 808, a high crisp snare, a rim in a room with a triplet echo, quick hats, bell and wood percs, and a second, distorted 808.
+
+# Pad 1: the 808, dark and driven
+pad-1.model = 808 kick
+pad-1.tune = -4
+pad-1.decay = 2500
+pad-1.tone = 50
+pad-1.snap = 55
+pad-1.sweep = 3.28
+pad-1.sweep-time = 300
+pad-1.drive = 50
+pad-1.level = -2.5
+pad-1.vel-tone = 60
+
+# Pad 2: snare, high and crisp
+pad-2.tune = 5
+pad-2.decay = 180
+pad-2.tone = 75
+pad-2.snap = 75
+pad-2.noise = 80
+pad-2.ring = 30
+pad-2-effects.output = -1.5
+pad-2-effects.reverb-send = 20
+
+# Pad 3: clap
+pad-3.decay = 200
+pad-3.tone = 70
+pad-3.snap = 85
+pad-3.level = 0.5
+pad-3.bursts = 2
+pad-3.burst-gap = 6
+pad-3.room = 30
+
+# Pad 4: closed hat
+pad-4.decay = 40
+pad-4.tone = 85
+pad-4.snap = 20
+pad-4.noise = 25
+pad-4.level = 1.5
+pad-4.spread = 65
+
+# Pad 5: open hat
+pad-5.decay = 300
+pad-5.tone = 85
+pad-5.noise = 25
+pad-5.level = 0
+pad-5.spread = 65
+
+# Pad 6: rim, with a room and an echo
+pad-6.model = Rim
+pad-6.tune = 2
+pad-6.decay = 50
+pad-6.tone = 70
+pad-6.snap = 55
+pad-6.noise = 30
+pad-6.pan = -20
+pad-6-effects.output = -0.5
+pad-6-effects.delay-send = 15
+pad-6-effects.reverb-send = 30
+
+# Pad 7: perc
+pad-7.model = FM perc
+pad-7.tune = 7
+pad-7.decay = 180
+pad-7.tone = 35
+pad-7.noise = 0
+pad-7.sweep = 0
+pad-7.sweep-time = 40
+pad-7.level = -0.5
+pad-7.pan = 20
+pad-7.vel-tone = 50
+pad-7.ratio = 2
+
+# Pad 8: woodblock
+pad-8.model = Woodblock
+pad-8.decay = 100
+pad-8.tone = 60
+pad-8.snap = 20
+pad-8.pan = -15
+pad-8.vel-tone = 60
+pad-8.strike = 40
+
+# Pad 9: a kick, to layer
+pad-9.model = Kick
+pad-9.tune = 1
+pad-9.decay = 250
+pad-9.tone = 40
+pad-9.snap = 80
+pad-9.sweep = 20
+pad-9.sweep-time = 20
+pad-9.drive = 30
+pad-9.level = -2.5
+pad-9.vel-tone = 60
+
+# Pad 10: bell, for a melody
+pad-10.model = Bell
+pad-10.tune = 12
+pad-10.decay = 600
+pad-10.tone = 60
+pad-10.snap = 10
+pad-10.level = -0.5
+pad-10.pan = 0
+pad-10.vel-tone = 50
+
+# Pad 11: crash
+pad-11.decay = 2000
+pad-11.tone = 70
+pad-11.level = -4
+
+# Pad 12: a tight hat
+pad-12.model = Closed hat
+pad-12.tune = 7
+pad-12.decay = 25
+pad-12.tone = 90
+pad-12.snap = 30
+pad-12.noise = 25
+pad-12.level = 4
+pad-12.pan = -15
+pad-12.choke = 1
+pad-12.spread = 70
+
+# Pad 13: a higher snare
+pad-13.model = Snare
+pad-13.tune = 8
+pad-13.decay = 120
+pad-13.tone = 85
+pad-13.snap = 70
+pad-13.noise = 90
+pad-13.level = -0.5
+pad-13.pan = 0
+pad-13.ring = 20
+
+# Pad 14: a low, distorted 808
+pad-14.model = 808 kick
+pad-14.tune = -9
+pad-14.decay = 3000
+pad-14.tone = 60
+pad-14.snap = 40
+pad-14.sweep = 3.28
+pad-14.sweep-time = 300
+pad-14.drive = 80
+pad-14.level = -5
+pad-14.vel-tone = 60
+
+# Pad 15: tom
+pad-15.model = Tom
+pad-15.tune = -2
+pad-15.decay = 400
+pad-15.tone = 40
+pad-15.snap = 20
+pad-15.sweep = 6
+pad-15.sweep-time = 100
+pad-15.level = -2
+pad-15.vel-tone = 60
+
+# Pad 16: a fall
+pad-16.model = Zap
+pad-16.tune = 7
+pad-16.decay = 300
+pad-16.tone = 30
+pad-16.noise = 10
+pad-16.sweep = 12
+pad-16.sweep-time = 300
+pad-16.level = -2
+pad-16.pan = 0
+pad-16.vel-tone = 50
+
+# Sends
+sends.delay-time = 1/8T
+sends.delay-tone = 4000
+sends.reverb-size = 50
+sends.reverb-decay = 1200
+
+# Kit
+kit.voices = Current
+
+mpfree-preset = 2
+engine = mpfree.drums
+name = Boom Bap Kit
+fx.1 = mpfree.fx.character
+fx.2 = mpfree.fx.compressor
+
+# Boom bap, driven and dusty: a thick kick and a cracking snare, both distorted and darkened, dusty hats and percussion, through tape and a bus compressor.
+
+# Pad 1: the kick, thick
+pad-1.tune = -1
+pad-1.decay = 400
+pad-1.tone = 45
+pad-1.snap = 55
+pad-1.sweep = 10
+pad-1.sweep-time = 30
+pad-1.drive = 40
+pad-1.vel-tone = 60
+pad-1-effects.distortion = 6
+pad-1-effects.dist-tone = -30
+pad-1-effects.low = 2
+pad-1-effects.output = -4
+
+# Pad 2: snare, cracking
+pad-2.tune = -2
+pad-2.decay = 260
+pad-2.tone = 45
+pad-2.snap = 55
+pad-2.drive = 35
+pad-2.ring = 60
+pad-2-effects.distortion = 4
+pad-2-effects.dist-tone = -40
+pad-2-effects.output = -1.5
+pad-2-effects.reverb-send = 12
+
+# Pad 3: clap
+pad-3.decay = 320
+pad-3.tone = 45
+pad-3.snap = 35
+pad-3.drive = 25
+pad-3.level = -1.5
+pad-3.burst-gap = 12
+
+# Pad 4: closed hat, dusty
+pad-4.decay = 60
+pad-4.tone = 45
+pad-4.noise = 70
+pad-4.drive = 30
+pad-4.level = -4.5
+
+# Pad 5: open hat
+pad-5.decay = 420
+pad-5.tone = 45
+pad-5.noise = 70
+pad-5.drive = 30
+pad-5.level = -6
+
+# Pad 6: tom, low
+pad-6.tune = -6
+pad-6.decay = 350
+pad-6.tone = 45
+pad-6.snap = 35
+pad-6.sweep = 3
+pad-6.sweep-time = 80
+pad-6.level = -1.5
+pad-6.vel-tone = 60
+pad-6.strike = 35
+
+# Pad 7: tom, mid
+pad-7.tune = -2
+pad-7.decay = 320
+pad-7.tone = 45
+pad-7.snap = 35
+pad-7.sweep = 3
+pad-7.sweep-time = 80
+pad-7.level = -1
+pad-7.vel-tone = 60
+pad-7.strike = 35
+
+# Pad 8: tom, high
+pad-8.tune = 2
+pad-8.decay = 300
+pad-8.tone = 45
+pad-8.snap = 35
+pad-8.sweep = 3
+pad-8.sweep-time = 80
+pad-8.vel-tone = 60
+pad-8.strike = 35
+
+# Pad 9: rimshot
+pad-9.decay = 50
+pad-9.tone = 50
+pad-9.snap = 55
+pad-9.noise = 30
+pad-9.drive = 30
+pad-9.level = 1
+
+# Pad 10: a heavier kick
+pad-10.model = Kick
+pad-10.tune = -3
+pad-10.decay = 550
+pad-10.tone = 55
+pad-10.snap = 40
+pad-10.sweep = 8
+pad-10.sweep-time = 40
+pad-10.drive = 60
+pad-10.level = -3.5
+pad-10.pan = 0
+pad-10.vel-tone = 60
+
+# Pad 11: cymbal
+pad-11.tone = 45
+pad-11.noise = 60
+pad-11.drive = 30
+pad-11.level = -4.5
+
+# Pad 12: a dustier snare
+pad-12.model = Snare
+pad-12.decay = 200
+pad-12.tone = 35
+pad-12.snap = 40
+pad-12.noise = 75
+pad-12.drive = 50
+pad-12.level = -1
+pad-12.ring = 45
+
+# Pad 13: shaker
+pad-13.model = Shaker
+pad-13.decay = 140
+pad-13.tone = 45
+pad-13.level = -0.5
+pad-13.grain = 60
+pad-13.attack = 6
+
+# Pad 14: conga
+pad-14.model = Conga
+pad-14.tune = -2
+pad-14.decay = 260
+pad-14.tone = 40
+pad-14.snap = 30
+pad-14.sweep = 1
+pad-14.drive = 0
+pad-14.level = -0.5
+pad-14.pan = -20
+pad-14.vel-tone = 60
+pad-14.strike = 35
+
+# Pad 15: cowbell
+pad-15.model = Cowbell
+pad-15.tune = -3
+pad-15.decay = 280
+pad-15.tone = 35
+pad-15.snap = 20
+pad-15.noise = 0
+pad-15.drive = 20
+pad-15.level = -3
+
+# Pad 16: woodblock
+pad-16.model = Woodblock
+pad-16.tune = 2
+pad-16.decay = 90
+pad-16.tone = 45
+pad-16.snap = 20
+pad-16.level = 2.5
+pad-16.pan = 25
+pad-16.vel-tone = 60
+pad-16.strike = 35
+
+# Sends
+sends.reverb-size = 30
+sends.reverb-decay = 600
+
+# Kit effects
+fx-1.mode = Tape
+fx-1.amount = 45
+fx-2.threshold = -9
+fx-2.ratio = 2.5
+fx-2.release = 120
+fx-2.style = Bus
+fx-2.detect = RMS
+
+# Kit
+kit.voices = Current
+
+mpfree-preset = 2
+engine = mpfree.drums
+name = Lo-fi Kit
+fx.1 = mpfree.fx.crush
+fx.2 = mpfree.fx.lofi
+
+# Lo-fi, soft and bit-reduced: gentle drums with dark tops, a brushy snare and a soft bell, through fewer bits and a worn tape.
+
+# Pad 1: the kick, soft
+pad-1.decay = 350
+pad-1.tone = 15
+pad-1.snap = 20
+pad-1.sweep = 8
+pad-1.sweep-time = 30
+pad-1.vel-tone = 60
+
+# Pad 2: snare, soft
+pad-2.tune = -1
+pad-2.tone = 30
+pad-2.snap = 20
+pad-2.noise = 45
+pad-2.level = -2
+pad-2.ring = 60
+
+# Pad 3: clap, soft
+pad-3.decay = 280
+pad-3.tone = 35
+pad-3.snap = 30
+pad-3.room = 30
+
+# Pad 4: closed hat, dark
+pad-4.decay = 55
+pad-4.tone = 35
+pad-4.snap = 10
+pad-4.noise = 60
+pad-4.level = -4.5
+
+# Pad 5: open hat, dark
+pad-5.decay = 380
+pad-5.tone = 35
+pad-5.snap = 10
+pad-5.noise = 60
+pad-5.level = -5
+
+# Pad 6: tom, low
+pad-6.decay = 380
+pad-6.tone = 25
+pad-6.snap = 10
+pad-6.sweep = 2
+pad-6.sweep-time = 80
+pad-6.level = -2.5
+pad-6.vel-tone = 60
+pad-6.strike = 25
+
+# Pad 7: tom, mid
+pad-7.decay = 340
+pad-7.tone = 25
+pad-7.snap = 10
+pad-7.sweep = 2
+pad-7.sweep-time = 80
+pad-7.level = -2.5
+pad-7.vel-tone = 60
+pad-7.strike = 25
+
+# Pad 8: tom, high
+pad-8.decay = 300
+pad-8.tone = 25
+pad-8.snap = 10
+pad-8.sweep = 2
+pad-8.sweep-time = 80
+pad-8.level = -2
+pad-8.vel-tone = 60
+pad-8.strike = 25
+
+# Pad 9: rim
+pad-9.decay = 40
+pad-9.tone = 40
+pad-9.snap = 30
+pad-9.noise = 10
+pad-9.level = 0.5
+
+# Pad 10: shaker, low
+pad-10.model = Shaker
+pad-10.tune = -5
+pad-10.decay = 200
+pad-10.tone = 40
+pad-10.level = -1
+pad-10.grain = 40
+pad-10.attack = 3
+
+# Pad 11: cymbal, dark
+pad-11.decay = 1600
+pad-11.tone = 35
+pad-11.level = -6.5
+
+# Pad 12: conga
+pad-12.model = Conga
+pad-12.decay = 260
+pad-12.tone = 30
+pad-12.snap = 10
+pad-12.sweep = 1
+pad-12.sweep-time = 60
+pad-12.level = -2.5
+pad-12.pan = 20
+pad-12.vel-tone = 60
+
+# Pad 13: woodblock
+pad-13.model = Woodblock
+pad-13.decay = 120
+pad-13.tone = 40
+pad-13.snap = 5
+pad-13.level = -1.5
+pad-13.pan = -15
+pad-13.vel-tone = 60
+pad-13.strike = 35
+
+# Pad 14: a softer, longer kick
+pad-14.decay = 600
+pad-14.tone = 10
+pad-14.snap = 10
+pad-14.sweep = 6
+pad-14.sweep-time = 40
+pad-14.drive = 0
+pad-14.level = -1
+pad-14.vel-tone = 60
+
+# Pad 15: a soft bell
+pad-15.model = Bell
+pad-15.tune = 0
+pad-15.decay = 900
+pad-15.tone = 30
+pad-15.snap = 0
+pad-15.level = -2
+pad-15.vel-tone = 50
+pad-15.strike = 40
+
+# Pad 16: a brushy snare
+pad-16.model = Snare
+pad-16.tune = 0
+pad-16.decay = 300
+pad-16.tone = 25
+pad-16.snap = 5
+pad-16.noise = 85
+pad-16.level = -1.5
+pad-16.pan = -10
+pad-16.ring = 20
+
+# Kit effects
+fx-1.bits = 10
+fx-1.rate = 22050
+fx-1.filters = After
+fx-2.amount = 40
+fx-2.wow = 10
+fx-2.flutter = 10
+fx-2.crackle = 20
+fx-2.noise = 10
+fx-2.high-cut = 9000
+
+# Kit
+kit.voices = Current
+
+mpfree-preset = 2
+engine = mpfree.drums
+name = House Kit
+fx.1 = mpfree.fx.compressor
+
+# House: a round kick, a clap with a short room, open hats for the off-beat, a ride, congas, a rim with an echo, shaker and cowbell.
+
+# Pad 1: the kick
+pad-1.snap = 55
+pad-1.sweep = 28
+pad-1.sweep-time = 35
+pad-1.drive = 15
+pad-1.vel-tone = 60
+pad-1-effects.punch = 20
+pad-1-effects.output = -2.5
+
+# Pad 2: snare
+pad-2.tune = 2
+pad-2.decay = 200
+pad-2.tone = 60
+pad-2.snap = 55
+pad-2.noise = 65
+pad-2.level = -0.5
+pad-2.ring = 40
+
+# Pad 3: clap
+pad-3.decay = 350
+pad-3.tone = 55
+pad-3.burst-gap = 9
+pad-3.room = 40
+pad-3-effects.output = -4
+pad-3-effects.reverb-send = 18
+
+# Pad 4: closed hat
+pad-4.tone = 70
+pad-4.snap = 25
+pad-4.noise = 45
+pad-4.level = -3.5
+pad-4.spread = 65
+
+# Pad 5: open hat, for the off-beat
+pad-5.decay = 260
+pad-5.tone = 70
+pad-5.snap = 25
+pad-5.noise = 45
+pad-5.level = -3.5
+pad-5.spread = 65
+
+# Pad 6: conga, low
+pad-6.model = Conga
+pad-6.tune = -3
+pad-6.decay = 300
+pad-6.tone = 45
+pad-6.snap = 25
+pad-6.sweep = 1
+pad-6.level = -1.5
+pad-6.pan = -25
+pad-6.vel-tone = 60
+
+# Pad 7: conga, high
+pad-7.model = Conga
+pad-7.tune = 4
+pad-7.decay = 240
+pad-7.tone = 45
+pad-7.snap = 25
+pad-7.sweep = 1
+pad-7.level = -1
+pad-7.pan = -5
+pad-7.vel-tone = 60
+
+# Pad 8: tom
+pad-8.decay = 380
+pad-8.tone = 50
+pad-8.snap = 35
+pad-8.sweep = 5
+pad-8.sweep-time = 90
+pad-8.level = -1
+pad-8.pan = 15
+pad-8.vel-tone = 60
+pad-8.strike = 35
+
+# Pad 9: rim, with an echo
+pad-9.decay = 45
+pad-9.tone = 65
+pad-9.snap = 55
+pad-9.noise = 15
+pad-9-effects.output = 1
+pad-9-effects.delay-send = 20
+
+# Pad 10: ride
+pad-10.model = Cymbal
+pad-10.decay = 2500
+pad-10.tone = 85
+pad-10.snap = 45
+pad-10.noise = 15
+pad-10.level = 0
+pad-10.pan = -15
+pad-10.spread = 80
+
+# Pad 11: crash
+pad-11.decay = 2800
+pad-11.tone = 65
+pad-11.noise = 55
+pad-11.level = -5
+
+# Pad 12: shaker
+pad-12.model = Shaker
+pad-12.decay = 100
+pad-12.tone = 65
+pad-12.level = -0.5
+pad-12.pan = 20
+pad-12.grain = 45
+pad-12.attack = 4
+
+# Pad 13: cowbell
+pad-13.model = Cowbell
+pad-13.decay = 300
+pad-13.tone = 55
+pad-13.snap = 30
+pad-13.level = -3.5
+pad-13.pan = -20
+
+# Pad 14: a deeper kick
+pad-14.tune = -2
+pad-14.decay = 650
+pad-14.snap = 40
+pad-14.sweep = 24
+pad-14.sweep-time = 45
+pad-14.drive = 10
+pad-14.level = -2
+pad-14.vel-tone = 60
+
+# Pad 15: a dry, tight clap
+pad-15.model = Clap
+pad-15.decay = 260
+pad-15.tone = 65
+pad-15.snap = 60
+pad-15.level = -2
+pad-15.bursts = 5
+pad-15.burst-gap = 7
+pad-15.room = 25
+
+# Pad 16: a stab perc
+pad-16.model = FM perc
+pad-16.decay = 220
+pad-16.tone = 25
+pad-16.noise = 0
+pad-16.sweep-time = 60
+pad-16.level = 0
+pad-16.pan = 0
+pad-16.vel-tone = 50
+pad-16.ratio = 2
+
+# Sends
+sends.delay-time = 1/8D
+sends.delay-tone = 5000
+sends.reverb-size = 40
+sends.reverb-decay = 900
+
+# Kit effects
+fx-1.threshold = -9
+fx-1.ratio = 2
+fx-1.release = 100
+fx-1.style = Bus
+fx-1.detect = RMS
+
+# Kit
+kit.voices = Current
+
+mpfree-preset = 2
+engine = mpfree.drums
+name = Deep House Kit
+
+# Deep house: a soft deep kick, a clap in a long room, warm hats, congas, a rim, woodblock and bell in a dotted echo, a ride and a sub kick.
+
+# Pad 1: the kick, soft and deep
+pad-1.tune = -1
+pad-1.decay = 600
+pad-1.tone = 15
+pad-1.snap = 30
+pad-1.sweep = 20
+pad-1.sweep-time = 40
+pad-1.drive = 5
+pad-1.level = 0.5
+pad-1.vel-tone = 60
+
+# Pad 2: snare, soft and rimmy
+pad-2.tune = 3
+pad-2.decay = 180
+pad-2.tone = 45
+pad-2.snap = 30
+pad-2.noise = 40
+pad-2.ring = 70
+
+# Pad 3: clap, in a long room
+pad-3.decay = 600
+pad-3.tone = 45
+pad-3.snap = 45
+pad-3.burst-gap = 11
+pad-3.room = 60
+pad-3-effects.output = -3
+pad-3-effects.reverb-send = 30
+
+# Pad 4: closed hat, warm
+pad-4.decay = 65
+pad-4.tone = 50
+pad-4.snap = 15
+pad-4.noise = 55
+pad-4.level = -4.5
+pad-4.spread = 55
+
+# Pad 5: open hat
+pad-5.decay = 300
+pad-5.tone = 50
+pad-5.snap = 15
+pad-5.noise = 55
+pad-5.level = -5
+pad-5.spread = 55
+
+# Pad 6: conga, low
+pad-6.model = Conga
+pad-6.tune = -3
+pad-6.decay = 320
+pad-6.tone = 35
+pad-6.snap = 15
+pad-6.sweep = 1
+pad-6.level = -0.5
+pad-6.pan = -25
+pad-6.vel-tone = 60
+
+# Pad 7: conga, high
+pad-7.model = Conga
+pad-7.tune = 4
+pad-7.decay = 260
+pad-7.tone = 35
+pad-7.snap = 15
+pad-7.sweep = 1
+pad-7.pan = -5
+pad-7.vel-tone = 60
+
+# Pad 8: woodblock, with an echo
+pad-8.model = Woodblock
+pad-8.tune = 3
+pad-8.decay = 100
+pad-8.tone = 45
+pad-8.snap = 10
+pad-8.pan = 15
+pad-8.vel-tone = 60
+pad-8.strike = 40
+pad-8-effects.output = 2.5
+pad-8-effects.delay-send = 25
+
+# Pad 9: rim, with an echo
+pad-9.decay = 45
+pad-9.tone = 50
+pad-9.snap = 45
+pad-9.noise = 10
+pad-9-effects.output = 1.5
+pad-9-effects.delay-send = 30
+
+# Pad 10: shaker
+pad-10.model = Shaker
+pad-10.decay = 120
+pad-10.tone = 55
+pad-10.level = 0.5
+pad-10.pan = 20
+pad-10.attack = 6
+
+# Pad 11: ride
+pad-11.decay = 2400
+pad-11.tone = 70
+pad-11.noise = 20
+pad-11.level = -2
+pad-11.pan = -15
+pad-11.spread = 75
+
+# Pad 12: bell, with an echo
+pad-12.model = Bell
+pad-12.tune = 5
+pad-12.decay = 700
+pad-12.tone = 40
+pad-12.snap = 5
+pad-12.pan = 10
+pad-12.vel-tone = 50
+pad-12.strike = 35
+pad-12-effects.output = 0.5
+pad-12-effects.delay-send = 25
+
+# Pad 13: a tuned perc
+pad-13.tone = 20
+pad-13.sweep = 3
+pad-13.sweep-time = 40
+pad-13.level = 2.5
+pad-13.pan = -10
+pad-13.vel-tone = 50
+pad-13.ratio = 1
+
+# Pad 14: a sub kick
+pad-14.decay = 900
+pad-14.tone = 5
+pad-14.snap = 15
+pad-14.sweep = 16
+pad-14.sweep-time = 50
+pad-14.drive = 0
+pad-14.level = -1
+pad-14.vel-tone = 60
+
+# Pad 15: tom
+pad-15.model = Tom
+pad-15.tune = -4
+pad-15.decay = 450
+pad-15.tone = 30
+pad-15.snap = 15
+pad-15.sweep = 3
+pad-15.sweep-time = 100
+pad-15.level = -1
+pad-15.vel-tone = 60
+pad-15.strike = 25
+
+# Pad 16: crash
+pad-16.model = Cymbal
+pad-16.tune = 0
+pad-16.decay = 2600
+pad-16.tone = 55
+pad-16.snap = 30
+pad-16.noise = 50
+pad-16.level = -4.5
+pad-16.pan = 25
+
+# Sends
+sends.delay-time = 1/8D
+sends.delay-feedback = 45
+sends.delay-tone = 3000
+sends.reverb-size = 60
+sends.reverb-decay = 1800
+sends.reverb-tone = 40
+
+# Kit
+kit.voices = Current
+
+mpfree-preset = 2
+engine = mpfree.drums
+name = Techno Kit
+fx.1 = mpfree.fx.compressor
+
+# Techno, hard and driven: a distorted kick and a rumble kick in the reverb, a driven snare and clap, hard hats and ride, metal toms, a rim with an echo, zap and FM perc, glued by a bus compressor.
+
+# Pad 1: the kick, hard and driven
+pad-1.tune = -1
+pad-1.decay = 550
+pad-1.tone = 60
+pad-1.snap = 60
+pad-1.sweep = 30
+pad-1.sweep-time = 30
+pad-1.drive = 70
+pad-1.vel-tone = 60
+pad-1-effects.punch = 20
+pad-1-effects.distortion = 10
+pad-1-effects.dist-tone = -30
+pad-1-effects.output = -4
+
+# Pad 2: snare, driven
+pad-2.tune = 2
+pad-2.snap = 60
+pad-2.noise = 80
+pad-2.drive = 50
+pad-2.level = -1.5
+pad-2.ring = 30
+
+# Pad 3: clap
+pad-3.decay = 350
+pad-3.tone = 55
+pad-3.snap = 60
+pad-3.drive = 40
+pad-3.burst-gap = 9
+pad-3.room = 40
+pad-3-effects.output = -1
+pad-3-effects.reverb-send = 20
+
+# Pad 4: closed hat
+pad-4.decay = 40
+pad-4.tone = 70
+pad-4.noise = 50
+pad-4.drive = 30
+pad-4.level = -1
+pad-4.spread = 70
+
+# Pad 5: open hat
+pad-5.decay = 260
+pad-5.tone = 70
+pad-5.noise = 50
+pad-5.drive = 30
+pad-5.level = -3.5
+pad-5.spread = 70
+
+# Pad 6: tom, low
+pad-6.tune = -7
+pad-6.decay = 300
+pad-6.tone = 70
+pad-6.snap = 50
+pad-6.sweep = 8
+pad-6.vel-tone = 60
+pad-6.strike = 50
+
+# Pad 7: tom, mid
+pad-7.tune = -2
+pad-7.decay = 280
+pad-7.tone = 70
+pad-7.snap = 50
+pad-7.sweep = 8
+pad-7.level = 0.5
+pad-7.vel-tone = 60
+pad-7.strike = 50
+
+# Pad 8: tom, high
+pad-8.tune = 3
+pad-8.decay = 260
+pad-8.tone = 70
+pad-8.snap = 50
+pad-8.sweep = 8
+pad-8.level = 0.5
+pad-8.vel-tone = 60
+pad-8.strike = 50
+
+# Pad 9: rim, with an echo
+pad-9.decay = 40
+pad-9.snap = 60
+pad-9.noise = 25
+pad-9.drive = 40
+pad-9-effects.output = 1.5
+pad-9-effects.delay-send = 25
+
+# Pad 10: ride
+pad-10.model = Cymbal
+pad-10.decay = 1600
+pad-10.tone = 85
+pad-10.snap = 40
+pad-10.noise = 25
+pad-10.drive = 20
+pad-10.level = 0.5
+pad-10.pan = -15
+pad-10.spread = 90
+
+# Pad 11: crash
+pad-11.decay = 2600
+pad-11.tone = 65
+pad-11.noise = 65
+pad-11.drive = 30
+pad-11.level = -5
+
+# Pad 12: zap
+pad-12.decay = 200
+pad-12.tone = 60
+pad-12.noise = 30
+pad-12.drive = 50
+pad-12.level = -2.5
+pad-12.vel-tone = 50
+
+# Pad 13: FM perc
+pad-13.tune = 5
+pad-13.decay = 160
+pad-13.tone = 60
+pad-13.noise = 20
+pad-13.sweep = 12
+pad-13.sweep-time = 30
+pad-13.level = 1.5
+pad-13.vel-tone = 50
+pad-13.ratio = 3
+
+# Pad 14: a rumble kick, in the reverb
+pad-14.tune = -1
+pad-14.decay = 900
+pad-14.tone = 40
+pad-14.snap = 30
+pad-14.sweep = 24
+pad-14.sweep-time = 40
+pad-14.drive = 50
+pad-14.vel-tone = 60
+pad-14-effects.distortion = 6
+pad-14-effects.output = -3.5
+pad-14-effects.reverb-send = 45
+
+# Pad 15: shaker
+pad-15.model = Shaker
+pad-15.tune = 0
+pad-15.decay = 110
+pad-15.tone = 70
+pad-15.pan = 20
+pad-15.grain = 40
+pad-15.attack = 5
+
+# Pad 16: cowbell, driven
+pad-16.model = Cowbell
+pad-16.tune = -5
+pad-16.decay = 250
+pad-16.tone = 40
+pad-16.snap = 30
+pad-16.noise = 20
+pad-16.drive = 40
+pad-16.level = -2
+pad-16.pan = -20
+
+# Sends
+sends.delay-time = 1/8D
+sends.delay-feedback = 35
+sends.delay-tone = 4000
+sends.reverb-size = 55
+sends.reverb-decay = 1500
+sends.reverb-tone = 45
+
+# Kit effects
+fx-1.threshold = -9
+fx-1.ratio = 3
+fx-1.release = 80
+fx-1.style = Bus
+fx-1.detect = RMS
+
+# Kit
+kit.voices = Current
+
+mpfree-preset = 2
+engine = mpfree.drums
+name = Minimal Kit
+
+# Minimal: clicks and blips. A short kick, a thin snare, ticks, rim clicks, FM and bell blips in a sixteenth echo.
+
+# Pad 1: the kick, short
+pad-1.decay = 220
+pad-1.tone = 10
+pad-1.snap = 70
+pad-1.sweep-time = 15
+pad-1.drive = 5
+pad-1.vel-tone = 60
+
+# Pad 2: snare, thin
+pad-2.tune = 6
+pad-2.decay = 120
+pad-2.tone = 70
+pad-2.snap = 60
+pad-2.noise = 55
+pad-2.level = 1
+pad-2.ring = 20
+
+# Pad 3: clap, tiny
+pad-3.decay = 140
+pad-3.tone = 70
+pad-3.snap = 70
+pad-3.level = 2
+pad-3.bursts = 2
+pad-3.burst-gap = 5
+pad-3.room = 15
+
+# Pad 4: a tick
+pad-4.decay = 30
+pad-4.tone = 90
+pad-4.snap = 40
+pad-4.noise = 50
+pad-4.level = -3.5
+pad-4.spread = 80
+
+# Pad 5: open hat
+pad-5.decay = 160
+pad-5.tone = 85
+pad-5.noise = 40
+pad-5.level = -2.5
+pad-5.spread = 80
+
+# Pad 6: blip, low
+pad-6.model = FM perc
+pad-6.tune = 12
+pad-6.decay = 60
+pad-6.tone = 20
+pad-6.noise = 0
+pad-6.sweep = 0
+pad-6.sweep-time = 20
+pad-6.pan = -20
+pad-6.vel-tone = 50
+pad-6.ratio = 2
+pad-6-effects.output = 2.5
+pad-6-effects.delay-send = 25
+
+# Pad 7: blip, high
+pad-7.model = FM perc
+pad-7.tune = 19
+pad-7.decay = 50
+pad-7.tone = 25
+pad-7.noise = 0
+pad-7.sweep = 0
+pad-7.sweep-time = 15
+pad-7.pan = 20
+pad-7.vel-tone = 50
+pad-7.ratio = 3.5
+pad-7-effects.output = 4
+pad-7-effects.delay-send = 25
+
+# Pad 8: blip
+pad-8.model = Zap
+pad-8.tune = 24
+pad-8.decay = 40
+pad-8.tone = 10
+pad-8.noise = 0
+pad-8.sweep = 12
+pad-8.sweep-time = 5
+pad-8.level = 4.5
+pad-8.pan = 0
+pad-8.vel-tone = 50
+
+# Pad 9: click
+pad-9.decay = 20
+pad-9.tone = 90
+pad-9.snap = 80
+pad-9.noise = 10
+pad-9.level = 1
+
+# Pad 10: tick
+pad-10.model = Woodblock
+pad-10.tune = 12
+pad-10.decay = 30
+pad-10.tone = 80
+pad-10.level = 3.5
+pad-10.pan = -15
+pad-10.vel-tone = 60
+pad-10.strike = 50
+
+# Pad 11: shaker, short
+pad-11.model = Shaker
+pad-11.decay = 40
+pad-11.tone = 75
+pad-11.level = 2
+pad-11.pan = 15
+pad-11.grain = 30
+pad-11.attack = 1
+
+# Pad 12: conga, short
+pad-12.model = Conga
+pad-12.tune = 5
+pad-12.decay = 120
+pad-12.tone = 60
+pad-12.sweep = 0
+pad-12.sweep-time = 60
+pad-12.level = 0.5
+pad-12.pan = -25
+pad-12.vel-tone = 60
+pad-12.strike = 40
+
+# Pad 13: bell blip
+pad-13.model = Bell
+pad-13.tune = 12
+pad-13.decay = 150
+pad-13.snap = 10
+pad-13.pan = 25
+pad-13.vel-tone = 50
+pad-13.strike = 40
+pad-13-effects.output = 2
+pad-13-effects.delay-send = 30
+
+# Pad 14: a sub click
+pad-14.tune = -2
+pad-14.decay = 350
+pad-14.tone = 0
+pad-14.snap = 40
+pad-14.sweep-time = 20
+pad-14.drive = 0
+pad-14.level = -1
+pad-14.vel-tone = 60
+
+# Pad 15: a thin ride
+pad-15.model = Cymbal
+pad-15.tune = 0
+pad-15.decay = 900
+pad-15.tone = 90
+pad-15.snap = 40
+pad-15.noise = 20
+pad-15.level = 0.5
+pad-15.pan = -15
+pad-15.spread = 90
+
+# Pad 16: a noisy click
+pad-16.model = Rim
+pad-16.tune = 7
+pad-16.decay = 25
+pad-16.tone = 80
+pad-16.snap = 60
+pad-16.noise = 60
+pad-16.level = 2
+pad-16.pan = 10
+
+# Sends
+sends.delay-time = 1/16
+sends.delay-feedback = 40
+sends.delay-tone = 5000
+sends.reverb-size = 30
+sends.reverb-decay = 600
+
+# Kit
+kit.voices = Current
+
+mpfree-preset = 2
+engine = mpfree.drums
+name = Hardstyle Kit
+fx.1 = mpfree.fx.compressor
+
+# Hardstyle: a heavily distorted, punched kick and a long tuned one, a big clap and snare in the room, bright hats, a laser zap, glued by a bus compressor.
+
+# Pad 1: the kick, distorted
+pad-1.decay = 700
+pad-1.tone = 90
+pad-1.snap = 80
+pad-1.sweep = 36
+pad-1.sweep-time = 50
+pad-1.drive = 100
+pad-1.vel-tone = 60
+pad-1-effects.punch = 40
+pad-1-effects.distortion = 18
+pad-1-effects.dist-tone = 20
+pad-1-effects.output = -4.5
+
+# Pad 2: snare
+pad-2.tune = 3
+pad-2.decay = 250
+pad-2.tone = 70
+pad-2.snap = 70
+pad-2.noise = 80
+pad-2.drive = 40
+pad-2.ring = 40
+pad-2-effects.output = -1.5
+pad-2-effects.reverb-send = 20
+
+# Pad 3: clap, big
+pad-3.decay = 450
+pad-3.tone = 60
+pad-3.snap = 55
+pad-3.drive = 30
+pad-3.burst-gap = 9
+pad-3.room = 50
+pad-3-effects.output = -2.5
+pad-3-effects.reverb-send = 30
+
+# Pad 4: closed hat
+pad-4.decay = 50
+pad-4.tone = 85
+pad-4.noise = 45
+pad-4.spread = 75
+
+# Pad 5: open hat
+pad-5.decay = 300
+pad-5.tone = 85
+pad-5.noise = 45
+pad-5.level = -3
+pad-5.spread = 75
+
+# Pad 6: tom, low
+pad-6.tone = 60
+pad-6.snap = 50
+pad-6.level = -0.5
+pad-6.vel-tone = 60
+pad-6.strike = 45
+
+# Pad 7: tom, mid
+pad-7.decay = 420
+pad-7.tone = 60
+pad-7.snap = 50
+pad-7.vel-tone = 60
+pad-7.strike = 45
+
+# Pad 8: tom, high
+pad-8.decay = 400
+pad-8.tone = 60
+pad-8.snap = 50
+pad-8.vel-tone = 60
+pad-8.strike = 45
+
+# Pad 9: rimshot
+pad-9.tone = 70
+pad-9.level = 0.5
+
+# Pad 10: ride
+pad-10.model = Cymbal
+pad-10.decay = 1800
+pad-10.tone = 85
+pad-10.noise = 30
+pad-10.level = -0.5
+pad-10.pan = -15
+pad-10.spread = 85
+
+# Pad 11: crash
+pad-11.decay = 3000
+pad-11.tone = 70
+pad-11.noise = 65
+pad-11.level = -5
+
+# Pad 12: laser
+pad-12.tune = 12
+pad-12.decay = 300
+pad-12.tone = 70
+pad-12.noise = 10
+pad-12.sweep-time = 80
+pad-12.drive = 30
+pad-12.level = -2
+pad-12.vel-tone = 50
+
+# Pad 13: FM perc
+pad-13.decay = 200
+pad-13.tone = 70
+pad-13.sweep = 12
+pad-13.sweep-time = 30
+pad-13.level = 1
+pad-13.vel-tone = 50
+pad-13.ratio = 2
+
+# Pad 14: a clean punch kick
+pad-14.decay = 400
+pad-14.tone = 50
+pad-14.snap = 90
+pad-14.sweep = 36
+pad-14.sweep-time = 30
+pad-14.drive = 50
+pad-14.level = -2
+pad-14.vel-tone = 60
+
+# Pad 15: shaker
+pad-15.model = Shaker
+pad-15.tune = 0
+pad-15.decay = 120
+pad-15.level = -0.5
+pad-15.pan = 20
+pad-15.grain = 40
+pad-15.attack = 5
+
+# Pad 16: a long tuned kick
+pad-16.model = Kick
+pad-16.tune = -2
+pad-16.decay = 1200
+pad-16.tone = 100
+pad-16.snap = 60
+pad-16.sweep = 30
+pad-16.sweep-time = 60
+pad-16.drive = 90
+pad-16.level = 0
+pad-16.pan = 0
+pad-16.vel-tone = 60
+pad-16-effects.distortion = 12
+pad-16-effects.output = -5.5
+
+# Sends
+sends.reverb-size = 70
+sends.reverb-decay = 2000
+
+# Kit effects
+fx-1.threshold = -9
+fx-1.ratio = 3
+fx-1.release = 80
+fx-1.style = Bus
+fx-1.detect = RMS
+
+# Kit
+kit.voices = Current
+
+mpfree-preset = 2
+engine = mpfree.drums
+name = Drum and Bass Kit
+fx.1 = mpfree.fx.compressor
+
+# Drum and bass, tight and breaks-style: a punchy kick and a high cracking snare, a ghost snare, quick hats and ride, tight toms, squashed by a bus compressor.
+
+# Pad 1: the kick, tight
+pad-1.tune = 3
+pad-1.decay = 250
+pad-1.tone = 35
+pad-1.snap = 80
+pad-1.sweep = 20
+pad-1.sweep-time = 18
+pad-1.drive = 20
+pad-1.vel-tone = 60
+pad-1-effects.punch = 40
+pad-1-effects.output = -3.5
+
+# Pad 2: snare, high and cracking
+pad-2.tune = 6
+pad-2.decay = 200
+pad-2.tone = 75
+pad-2.snap = 80
+pad-2.noise = 65
+pad-2.drive = 15
+pad-2.ring = 70
+pad-2-effects.punch = 40
+pad-2-effects.output = -5
+pad-2-effects.reverb-send = 15
+
+# Pad 3: clap
+pad-3.tone = 65
+pad-3.snap = 55
+pad-3.level = -3
+pad-3.bursts = 3
+pad-3.burst-gap = 8
+pad-3.room = 45
+
+# Pad 4: closed hat
+pad-4.decay = 45
+pad-4.tone = 80
+pad-4.noise = 55
+pad-4.level = -3.5
+pad-4.spread = 70
+
+# Pad 5: open hat
+pad-5.decay = 300
+pad-5.tone = 80
+pad-5.noise = 55
+pad-5.level = -4.5
+pad-5.spread = 70
+
+# Pad 6: tom, low
+pad-6.tune = -2
+pad-6.decay = 320
+pad-6.tone = 50
+pad-6.snap = 40
+pad-6.sweep = 4
+pad-6.vel-tone = 60
+pad-6.strike = 40
+
+# Pad 7: tom, mid
+pad-7.tune = 3
+pad-7.decay = 290
+pad-7.tone = 50
+pad-7.snap = 40
+pad-7.sweep = 4
+pad-7.level = 0.5
+pad-7.vel-tone = 60
+pad-7.strike = 40
+
+# Pad 8: tom, high
+pad-8.tune = 8
+pad-8.decay = 260
+pad-8.tone = 50
+pad-8.snap = 40
+pad-8.sweep = 4
+pad-8.level = 0.5
+pad-8.vel-tone = 60
+pad-8.strike = 40
+
+# Pad 9: rimshot
+pad-9.decay = 40
+pad-9.tone = 70
+pad-9.snap = 65
+pad-9.level = 1.5
+
+# Pad 10: ride
+pad-10.model = Cymbal
+pad-10.decay = 2200
+pad-10.tone = 85
+pad-10.snap = 45
+pad-10.noise = 30
+pad-10.level = 0
+pad-10.pan = -15
+pad-10.spread = 80
+
+# Pad 11: crash
+pad-11.decay = 2600
+pad-11.tone = 70
+pad-11.noise = 60
+pad-11.level = -4.5
+
+# Pad 12: a ghost snare
+pad-12.model = Snare
+pad-12.tune = 4
+pad-12.decay = 140
+pad-12.tone = 65
+pad-12.snap = 50
+pad-12.noise = 55
+pad-12.level = 1.5
+
+# Pad 13: a second kick, for rolling
+pad-13.model = Kick
+pad-13.decay = 350
+pad-13.tone = 30
+pad-13.snap = 60
+pad-13.sweep = 16
+pad-13.sweep-time = 25
+pad-13.drive = 10
+pad-13.level = -1
+pad-13.pan = 0
+pad-13.vel-tone = 60
+
+# Pad 14: shaker
+pad-14.model = Shaker
+pad-14.tune = 0
+pad-14.decay = 120
+pad-14.tone = 70
+pad-14.drive = 0
+pad-14.level = -0.5
+pad-14.pan = 20
+pad-14.grain = 45
+pad-14.attack = 5
+
+# Pad 15: a low hit
+pad-15.model = Zap
+pad-15.tune = -5
+pad-15.decay = 300
+pad-15.tone = 50
+pad-15.noise = 10
+pad-15.sweep = 24
+pad-15.sweep-time = 60
+pad-15.drive = 20
+pad-15.level = -1.5
+pad-15.vel-tone = 50
+
+# Pad 16: FM perc
+pad-16.model = FM perc
+pad-16.tune = 7
+pad-16.decay = 150
+pad-16.tone = 40
+pad-16.noise = 0
+pad-16.sweep = 5
+pad-16.sweep-time = 30
+pad-16.level = 1.5
+pad-16.pan = 0
+pad-16.vel-tone = 50
+pad-16.ratio = 2
+
+# Sends
+sends.reverb-size = 40
+
+# Kit effects
+fx-1.threshold = -9
+fx-1.ratio = 3
+fx-1.release = 60
+fx-1.style = Bus
+fx-1.detect = RMS
+
+# Kit
+kit.voices = Current
+
+mpfree-preset = 2
+engine = mpfree.drums
+name = Amapiano Kit
+
+# Afro and amapiano: log drums low to high, a soft deep kick, a rimmy snare, a clap in the room, two shakers, congas, a rim with an echo, woodblock and an agogo bell.
+
+# Pad 1: the kick, soft and deep
+pad-1.decay = 500
+pad-1.tone = 15
+pad-1.snap = 25
+pad-1.sweep = 18
+pad-1.sweep-time = 40
+pad-1.drive = 5
+pad-1.level = 0.5
+pad-1.vel-tone = 60
+
+# Pad 2: snare, rimmy
+pad-2.tune = 4
+pad-2.decay = 160
+pad-2.snap = 40
+pad-2.noise = 45
+pad-2.level = 1
+pad-2.ring = 60
+
+# Pad 3: clap, in the room
+pad-3.decay = 420
+pad-3.tone = 55
+pad-3.snap = 55
+pad-3.room = 45
+pad-3-effects.output = -1
+pad-3-effects.reverb-send = 25
+
+# Pad 4: closed hat
+pad-4.decay = 55
+pad-4.tone = 70
+pad-4.snap = 20
+pad-4.noise = 45
+
+# Pad 5: open hat
+pad-5.decay = 280
+pad-5.tone = 70
+pad-5.snap = 20
+pad-5.noise = 45
+pad-5.level = -3
+
+# Pad 6: log drum, low
+pad-6.model = FM perc
+pad-6.tune = -17
+pad-6.decay = 600
+pad-6.tone = 30
+pad-6.noise = 0
+pad-6.sweep = 7
+pad-6.level = 0.5
+pad-6.pan = 0
+pad-6.vel-tone = 50
+pad-6.ratio = 1
+
+# Pad 7: log drum, mid
+pad-7.model = FM perc
+pad-7.tune = -12
+pad-7.decay = 550
+pad-7.tone = 30
+pad-7.noise = 0
+pad-7.sweep = 7
+pad-7.level = 0.5
+pad-7.pan = 0
+pad-7.vel-tone = 50
+pad-7.ratio = 1
+
+# Pad 8: log drum, high
+pad-8.model = FM perc
+pad-8.tune = -7
+pad-8.decay = 500
+pad-8.tone = 30
+pad-8.noise = 0
+pad-8.sweep = 7
+pad-8.level = 0.5
+pad-8.pan = 0
+pad-8.vel-tone = 50
+pad-8.ratio = 1
+
+# Pad 9: rim, with an echo
+pad-9.decay = 45
+pad-9-effects.output = 1.5
+pad-9-effects.delay-send = 25
+
+# Pad 10: woodblock
+pad-10.model = Woodblock
+pad-10.tune = 3
+pad-10.decay = 90
+pad-10.tone = 55
+pad-10.snap = 15
+pad-10.level = 1.5
+pad-10.vel-tone = 60
+pad-10.strike = 40
+
+# Pad 11: ride
+pad-11.decay = 2000
+pad-11.tone = 75
+pad-11.noise = 25
+pad-11.level = -1.5
+pad-11.pan = -15
+pad-11.spread = 75
+
+# Pad 12: conga, low
+pad-12.model = Conga
+pad-12.tune = -3
+pad-12.decay = 280
+pad-12.tone = 45
+pad-12.snap = 25
+pad-12.sweep = 1
+pad-12.sweep-time = 60
+pad-12.level = -0.5
+pad-12.pan = -25
+pad-12.vel-tone = 60
+
+# Pad 13: conga, high
+pad-13.model = Conga
+pad-13.tune = 4
+pad-13.decay = 230
+pad-13.tone = 45
+pad-13.snap = 25
+pad-13.sweep = 1
+pad-13.sweep-time = 60
+pad-13.pan = 25
+pad-13.vel-tone = 60
+
+# Pad 14: shaker
+pad-14.model = Shaker
+pad-14.tune = 0
+pad-14.decay = 140
+pad-14.tone = 60
+pad-14.drive = 0
+pad-14.level = 0.5
+pad-14.pan = 20
+pad-14.grain = 55
+pad-14.attack = 8
+
+# Pad 15: shaker, accent
+pad-15.model = Shaker
+pad-15.decay = 80
+pad-15.tone = 70
+pad-15.level = -0.5
+pad-15.pan = -20
+pad-15.grain = 45
+pad-15.attack = 4
+
+# Pad 16: agogo bell
+pad-16.model = Bell
+pad-16.tune = 7
+pad-16.decay = 350
+pad-16.tone = 55
+pad-16.snap = 15
+pad-16.level = 1.5
+pad-16.pan = 15
+pad-16.vel-tone = 50
+pad-16.strike = 25
+
+# Sends
+sends.delay-time = 1/8D
+sends.delay-tone = 4000
+sends.reverb-size = 50
+sends.reverb-decay = 1300
+
+# Kit
+kit.voices = Current
+
+mpfree-preset = 2
+engine = mpfree.drums
+name = Latin Percussion Kit
+
+# Latin percussion: congas open, slapped and low (the open and slap cut each other), bongos, timbales, claves, cowbell, two agogo bells, maracas, guiro and a block, with a soft kick on pad 1.
+
+# Pad 1: the kick, soft
+pad-1.decay = 380
+pad-1.tone = 20
+pad-1.snap = 35
+pad-1.sweep = 16
+pad-1.sweep-time = 35
+pad-1.drive = 0
+pad-1.vel-tone = 60
+
+# Pad 2: conga, open
+pad-2.model = Conga
+pad-2.decay = 350
+pad-2.snap = 20
+pad-2.sweep = 1
+pad-2.sweep-time = 60
+pad-2.level = -1
+pad-2.pan = -10
+pad-2.vel-tone = 60
+pad-2.choke = 2
+
+# Pad 3: conga, slap
+pad-3.model = Conga
+pad-3.decay = 130
+pad-3.tone = 80
+pad-3.snap = 85
+pad-3.sweep-time = 60
+pad-3.level = -0.5
+pad-3.pan = -10
+pad-3.vel-tone = 60
+pad-3.choke = 2
+pad-3.strike = 60
+
+# Pad 4: tumba, low
+pad-4.model = Conga
+pad-4.tune = -5
+pad-4.decay = 400
+pad-4.tone = 50
+pad-4.snap = 20
+pad-4.sweep = 1
+pad-4.sweep-time = 70
+pad-4.level = -1.5
+pad-4.pan = -30
+pad-4.vel-tone = 60
+pad-4.choke = Off
+
+# Pad 5: bongo, high
+pad-5.model = Conga
+pad-5.tune = 10
+pad-5.decay = 150
+pad-5.tone = 70
+pad-5.snap = 35
+pad-5.sweep-time = 60
+pad-5.level = 1
+pad-5.pan = 20
+pad-5.vel-tone = 60
+pad-5.choke = Off
+pad-5.strike = 35
+
+# Pad 6: bongo, low
+pad-6.model = Conga
+pad-6.tune = 5
+pad-6.decay = 180
+pad-6.tone = 65
+pad-6.sweep = 0
+pad-6.pan = 10
+pad-6.vel-tone = 60
+pad-6.strike = 35
+
+# Pad 7: timbale, high
+pad-7.tune = 14
+pad-7.decay = 500
+pad-7.tone = 85
+pad-7.snap = 60
+pad-7.sweep = 0
+pad-7.level = -1
+pad-7.pan = 25
+pad-7.vel-tone = 60
+pad-7.strike = 75
+
+# Pad 8: timbale, low
+pad-8.tune = 9
+pad-8.decay = 600
+pad-8.tone = 80
+pad-8.snap = 55
+pad-8.sweep = 0
+pad-8.level = -1
+pad-8.pan = 35
+pad-8.vel-tone = 60
+pad-8.strike = 70
+
+# Pad 9: claves
+pad-9.model = Woodblock
+pad-9.tune = 17
+pad-9.decay = 70
+pad-9.tone = 65
+pad-9.snap = 10
+pad-9.level = 2.5
+pad-9.vel-tone = 60
+pad-9.strike = 50
+
+# Pad 10: cowbell
+pad-10.tune = -3
+pad-10.decay = 300
+pad-10.tone = 40
+pad-10.snap = 40
+pad-10.noise = 10
+
+# Pad 11: agogo, high
+pad-11.model = Bell
+pad-11.tune = 5
+pad-11.decay = 400
+pad-11.snap = 20
+pad-11.level = 1.5
+pad-11.pan = -20
+pad-11.vel-tone = 50
+pad-11.strike = 25
+
+# Pad 12: agogo, low
+pad-12.model = Bell
+pad-12.decay = 450
+pad-12.tone = 60
+pad-12.level = 1
+pad-12.pan = -25
+pad-12.vel-tone = 50
+pad-12.strike = 25
+
+# Pad 13: maracas
+pad-13.model = Shaker
+pad-13.decay = 70
+pad-13.tone = 65
+pad-13.level = 1
+pad-13.pan = 15
+pad-13.grain = 40
+pad-13.attack = 2
+
+# Pad 14: guiro
+pad-14.model = Shaker
+pad-14.decay = 220
+pad-14.tone = 45
+pad-14.drive = 0
+pad-14.level = 3.5
+pad-14.pan = -15
+pad-14.grain = 100
+pad-14.attack = 45
+
+# Pad 15: a low block
+pad-15.model = Woodblock
+pad-15.tune = 0
+pad-15.decay = 110
+pad-15.tone = 55
+pad-15.snap = 15
+pad-15.level = 0.5
+pad-15.pan = 20
+pad-15.vel-tone = 60
+pad-15.strike = 40
+
+# Pad 16: cymbal
+pad-16.model = Cymbal
+pad-16.tune = 0
+pad-16.decay = 2200
+pad-16.tone = 65
+pad-16.snap = 30
+pad-16.noise = 50
+pad-16.level = -4
+pad-16.pan = 30
+
+# Kit
+kit.voices = Current
+
+mpfree-preset = 2
+engine = mpfree.drums
+name = Reggaeton Kit
+
+# Reggaeton: a punchy kick and a high dembow snare, a long 808, timbales, a rim, shaker and guiro, conga, woodblock and a zap.
+
+# Pad 1: the kick, punchy
+pad-1.decay = 350
+pad-1.tone = 35
+pad-1.snap = 60
+pad-1.sweep-time = 30
+pad-1.drive = 25
+pad-1.level = -0.5
+pad-1.vel-tone = 60
+
+# Pad 2: snare, high
+pad-2.tune = 4
+pad-2.decay = 160
+pad-2.tone = 70
+pad-2.snap = 70
+pad-2.noise = 65
+pad-2.ring = 40
+pad-2-effects.output = 0.5
+pad-2-effects.reverb-send = 10
+
+# Pad 3: clap
+pad-3.decay = 280
+pad-3.tone = 60
+pad-3.snap = 65
+pad-3.level = -1
+pad-3.bursts = 3
+pad-3.burst-gap = 8
+pad-3.room = 25
+
+# Pad 4: closed hat
+pad-4.decay = 50
+pad-4.tone = 75
+pad-4.snap = 25
+pad-4.noise = 40
+
+# Pad 5: open hat
+pad-5.decay = 300
+pad-5.tone = 75
+pad-5.snap = 25
+pad-5.noise = 40
+pad-5.level = -2.5
+
+# Pad 6: timbale, low
+pad-6.tune = 2
+pad-6.decay = 350
+pad-6.tone = 70
+pad-6.snap = 50
+pad-6.sweep = 2
+pad-6.vel-tone = 60
+pad-6.strike = 60
+
+# Pad 7: timbale, mid
+pad-7.tune = 7
+pad-7.decay = 330
+pad-7.tone = 70
+pad-7.snap = 50
+pad-7.sweep = 2
+pad-7.vel-tone = 60
+pad-7.strike = 60
+
+# Pad 8: timbale, high
+pad-8.tune = 12
+pad-8.decay = 310
+pad-8.tone = 70
+pad-8.snap = 50
+pad-8.sweep = 2
+pad-8.vel-tone = 60
+pad-8.strike = 60
+
+# Pad 9: rimshot
+pad-9.tune = 3
+pad-9.decay = 45
+pad-9.tone = 70
+pad-9.snap = 60
+pad-9.noise = 15
+pad-9.level = 1
+
+# Pad 10: a long 808
+pad-10.model = 808 kick
+pad-10.tune = -3
+pad-10.decay = 1800
+pad-10.tone = 40
+pad-10.snap = 45
+pad-10.sweep = 3.28
+pad-10.sweep-time = 300
+pad-10.drive = 30
+pad-10.level = -1.5
+pad-10.pan = 0
+pad-10.vel-tone = 60
+
+# Pad 11: crash
+pad-11.decay = 2400
+pad-11.tone = 70
+pad-11.noise = 50
+pad-11.level = -4
+
+# Pad 12: shaker
+pad-12.model = Shaker
+pad-12.decay = 90
+pad-12.tone = 65
+pad-12.pan = 20
+pad-12.grain = 45
+pad-12.attack = 3
+
+# Pad 13: guiro
+pad-13.model = Shaker
+pad-13.tune = -2
+pad-13.decay = 200
+pad-13.tone = 45
+pad-13.level = 3
+pad-13.pan = -20
+pad-13.grain = 100
+pad-13.attack = 40
+
+# Pad 14: conga
+pad-14.model = Conga
+pad-14.tune = 2
+pad-14.decay = 250
+pad-14.tone = 55
+pad-14.snap = 30
+pad-14.sweep = 1
+pad-14.drive = 0
+pad-14.level = -0.5
+pad-14.pan = -15
+pad-14.vel-tone = 60
+pad-14.strike = 35
+
+# Pad 15: woodblock
+pad-15.model = Woodblock
+pad-15.tune = 5
+pad-15.decay = 90
+pad-15.tone = 60
+pad-15.snap = 15
+pad-15.level = 1.5
+pad-15.pan = 15
+pad-15.vel-tone = 60
+pad-15.strike = 40
+
+# Pad 16: zap
+pad-16.model = Zap
+pad-16.tune = 0
+pad-16.decay = 250
+pad-16.tone = 40
+pad-16.noise = 10
+pad-16.sweep = 24
+pad-16.sweep-time = 40
+pad-16.level = -1
+pad-16.pan = 0
+pad-16.vel-tone = 50
+
+# Sends
+sends.reverb-size = 40
+
+# Kit
+kit.voices = Current
+
+mpfree-preset = 2
+engine = mpfree.drums
+name = Synth-pop Kit
+
+# Synth-pop: a punchy kick, a snare and clap in a gated room, synth toms that sweep down, bright hats, cowbell, a bell, tambourine and an all-noise snare.
+
+# Pad 1: the kick
+pad-1.tune = 1
+pad-1.decay = 350
+pad-1.snap = 65
+pad-1.sweep = 30
+pad-1.sweep-time = 25
+pad-1.level = 0.5
+pad-1.vel-tone = 60
+
+# Pad 2: snare, in the gated room
+pad-2.tune = 2
+pad-2.decay = 250
+pad-2.tone = 60
+pad-2.snap = 55
+pad-2.noise = 70
+pad-2.ring = 55
+pad-2-effects.output = -1
+pad-2-effects.reverb-send = 30
+
+# Pad 3: clap
+pad-3.tone = 60
+pad-3.snap = 60
+pad-3.room = 30
+pad-3-effects.output = -0.5
+pad-3-effects.reverb-send = 25
+
+# Pad 4: closed hat
+pad-4.decay = 55
+pad-4.tone = 80
+pad-4.snap = 25
+pad-4.noise = 45
+pad-4.spread = 70
+
+# Pad 5: open hat
+pad-5.decay = 400
+pad-5.tone = 80
+pad-5.noise = 45
+pad-5.level = -3.5
+pad-5.spread = 70
+
+# Pad 6: synth tom, low
+pad-6.model = Zap
+pad-6.tune = -2
+pad-6.decay = 500
+pad-6.tone = 20
+pad-6.noise = 30
+pad-6.sweep = 12
+pad-6.sweep-time = 200
+pad-6.vel-tone = 50
+pad-6-effects.output = -1
+pad-6-effects.reverb-send = 20
+
+# Pad 7: synth tom, mid
+pad-7.model = Zap
+pad-7.tune = 3
+pad-7.decay = 450
+pad-7.tone = 20
+pad-7.noise = 30
+pad-7.sweep = 12
+pad-7.sweep-time = 200
+pad-7.vel-tone = 50
+pad-7-effects.output = -1
+pad-7-effects.reverb-send = 20
+
+# Pad 8: synth tom, high
+pad-8.model = Zap
+pad-8.tune = 8
+pad-8.decay = 400
+pad-8.tone = 20
+pad-8.noise = 30
+pad-8.sweep = 12
+pad-8.sweep-time = 200
+pad-8.vel-tone = 50
+pad-8-effects.output = -1
+pad-8-effects.reverb-send = 20
+
+# Pad 9: rimshot
+pad-9.decay = 45
+pad-9.tone = 70
+pad-9.snap = 60
+pad-9.noise = 15
+pad-9.level = 1.5
+
+# Pad 10: cowbell
+pad-10.tune = 2
+pad-10.decay = 300
+pad-10.tone = 60
+
+# Pad 11: crash
+pad-11.decay = 2400
+pad-11.tone = 75
+pad-11.noise = 50
+
+# Pad 12: bell
+pad-12.model = FM perc
+pad-12.tune = 12
+pad-12.decay = 600
+pad-12.tone = 30
+pad-12.sweep = 0
+pad-12.sweep-time = 300
+pad-12.level = -0.5
+pad-12.pan = 15
+pad-12.vel-tone = 50
+pad-12.ratio = 3.5
+
+# Pad 13: tambourine
+pad-13.model = Shaker
+pad-13.tune = 4
+pad-13.decay = 280
+pad-13.tone = 88
+pad-13.level = -5.5
+pad-13.pan = -20
+pad-13.grain = 85
+pad-13.attack = 1
+
+# Pad 14: woodblock
+pad-14.model = Woodblock
+pad-14.tune = 5
+pad-14.decay = 90
+pad-14.tone = 70
+pad-14.drive = 0
+pad-14.level = 2.5
+pad-14.pan = 20
+pad-14.vel-tone = 60
+pad-14.strike = 40
+
+# Pad 15: an all-noise snare
+pad-15.decay = 220
+pad-15.tone = 50
+pad-15.snap = 40
+pad-15.noise = 100
+pad-15.level = -0.5
+pad-15.ring = 0
+
+# Pad 16: tom
+pad-16.model = Tom
+pad-16.tune = -3
+pad-16.decay = 450
+pad-16.tone = 55
+pad-16.snap = 30
+pad-16.sweep = 3
+pad-16.sweep-time = 120
+pad-16.level = -0.5
+pad-16.pan = 0
+pad-16.vel-tone = 60
+pad-16.strike = 35
+
+# Sends
+sends.reverb-size = 60
+sends.reverb-decay = 1200
+sends.reverb-tone = 60
+sends.reverb-gate = 200
+
+# Kit
+kit.voices = Current
+
+mpfree-preset = 2
+engine = mpfree.drums
+name = Industrial Kit
+fx.1 = mpfree.fx.crush
+
+# Industrial, metal and noise: a distorted kick, an all-noise snare, metal hits (anvil, pipe, sheet, clang), noisy hats and cracks, a noise sweep, in a big gated room and through fewer bits.
+
+# Pad 1: the kick, distorted
+pad-1.tune = -2
+pad-1.tone = 80
+pad-1.snap = 70
+pad-1.sweep = 20
+pad-1.sweep-time = 25
+pad-1.drive = 90
+pad-1.vel-tone = 60
+pad-1-effects.distortion = 12
+pad-1-effects.dist-tone = -20
+pad-1-effects.output = -4.5
+
+# Pad 2: snare, all noise
+pad-2.decay = 300
+pad-2.tone = 40
+pad-2.noise = 100
+pad-2.drive = 80
+pad-2.ring = 30
+pad-2-effects.distortion = 10
+pad-2-effects.output = -2
+pad-2-effects.reverb-send = 25
+
+# Pad 3: clap
+pad-3.decay = 400
+pad-3.tone = 40
+pad-3.drive = 60
+pad-3.level = -0.5
+pad-3.bursts = 5
+pad-3.burst-gap = 12
+pad-3.room = 60
+
+# Pad 4: closed hat, noise
+pad-4.decay = 45
+pad-4.tone = 50
+pad-4.snap = 40
+pad-4.noise = 80
+pad-4.drive = 50
+pad-4.level = -1
+pad-4.spread = 80
+
+# Pad 5: open hat, noise
+pad-5.decay = 350
+pad-5.tone = 50
+pad-5.noise = 75
+pad-5.drive = 50
+pad-5.level = -3
+pad-5.spread = 80
+
+# Pad 6: anvil
+pad-6.model = Bell
+pad-6.decay = 800
+pad-6.tone = 100
+pad-6.snap = 60
+pad-6.pan = -25
+pad-6.vel-tone = 50
+pad-6.strike = 80
+pad-6-effects.output = 1.5
+pad-6-effects.reverb-send = 20
+
+# Pad 7: metal
+pad-7.model = Cowbell
+pad-7.tune = -12
+pad-7.decay = 500
+pad-7.tone = 30
+pad-7.snap = 50
+pad-7.noise = 60
+pad-7.drive = 70
+pad-7.level = -2
+
+# Pad 8: sheet metal
+pad-8.model = Cymbal
+pad-8.tune = -12
+pad-8.decay = 900
+pad-8.tone = 30
+pad-8.snap = 50
+pad-8.noise = 30
+pad-8.drive = 40
+pad-8.level = -3.5
+pad-8.spread = 100
+
+# Pad 9: a noise crack
+pad-9.tone = 40
+pad-9.snap = 70
+pad-9.noise = 100
+pad-9.drive = 80
+pad-9.level = -1.5
+
+# Pad 10: metal
+pad-10.model = FM perc
+pad-10.decay = 500
+pad-10.tone = 90
+pad-10.noise = 30
+pad-10.sweep-time = 300
+pad-10.level = 4
+pad-10.vel-tone = 50
+pad-10.ratio = 3.5
+
+# Pad 11: crash
+pad-11.decay = 2500
+pad-11.tone = 55
+pad-11.noise = 70
+pad-11.drive = 40
+pad-11.level = -2.5
+pad-11.spread = 90
+
+# Pad 12: a noise sweep
+pad-12.tune = -5
+pad-12.decay = 400
+pad-12.tone = 60
+pad-12.noise = 80
+pad-12.sweep = 48
+pad-12.sweep-time = 100
+pad-12.drive = 50
+pad-12.level = -3
+pad-12.vel-tone = 50
+
+# Pad 13: pipe
+pad-13.model = Tom
+pad-13.tune = -10
+pad-13.decay = 400
+pad-13.tone = 100
+pad-13.snap = 70
+pad-13.sweep-time = 60
+pad-13.vel-tone = 60
+pad-13.strike = 70
+pad-13-effects.output = 1
+pad-13-effects.reverb-send = 20
+
+# Pad 14: a low thud
+pad-14.tune = -5
+pad-14.decay = 600
+pad-14.tone = 50
+pad-14.snap = 50
+pad-14.sweep-time = 40
+pad-14.drive = 70
+pad-14.level = -3
+pad-14.vel-tone = 60
+
+# Pad 15: clang
+pad-15.model = Bell
+pad-15.tune = 12
+pad-15.decay = 200
+pad-15.tone = 100
+pad-15.level = 6
+pad-15.pan = 25
+pad-15.vel-tone = 50
+pad-15.strike = 90
+
+# Pad 16: a gated noise snare
+pad-16.model = Snare
+pad-16.tune = -3
+pad-16.decay = 200
+pad-16.tone = 25
+pad-16.snap = 70
+pad-16.noise = 100
+pad-16.drive = 100
+pad-16.level = -0.5
+pad-16.pan = 0
+pad-16.ring = 10
+
+# Sends
+sends.reverb-size = 80
+sends.reverb-decay = 2500
+sends.reverb-tone = 35
+sends.reverb-gate = 300
+
+# Kit effects
+fx-1.bits = 12
+fx-1.rate = 22050
+fx-1.mix = 60
+
+# Kit
+kit.voices = Current
+
+mpfree-preset = 2
+engine = mpfree.drums
+name = FM Kit
+
+# FM: every drum but the kick made by frequency modulation. Snare, hats and cymbal from bright, noisy ratios, toms and a wood drum from the classic recipes, a bell, a blip, a log drum, a zap and an FM kick.
+
+# Pad 1: the kick, a swept sine
+pad-1.decay = 400
+pad-1.tone = 10
+pad-1.snap = 50
+pad-1.sweep = 30
+pad-1.sweep-time = 30
+pad-1.level = 1
+pad-1.vel-tone = 60
+
+# Pad 2: snare
+pad-2.model = FM perc
+pad-2.tune = -2
+pad-2.tone = 40
+pad-2.noise = 70
+pad-2.sweep = 5
+pad-2.sweep-time = 40
+pad-2.level = 1
+pad-2.vel-tone = 50
+
+# Pad 3: clap
+pad-3.decay = 280
+pad-3.tone = 60
+pad-3.snap = 60
+pad-3.level = -0.5
+
+# Pad 4: closed hat
+pad-4.model = FM perc
+pad-4.tune = 24
+pad-4.decay = 50
+pad-4.tone = 100
+pad-4.noise = 60
+pad-4.sweep-time = 50
+pad-4.level = 6
+pad-4.vel-tone = 50
+pad-4.ratio = 3.5
+
+# Pad 5: open hat
+pad-5.model = FM perc
+pad-5.tune = 24
+pad-5.decay = 400
+pad-5.tone = 100
+pad-5.noise = 60
+pad-5.sweep-time = 400
+pad-5.level = 0
+pad-5.vel-tone = 50
+pad-5.ratio = 3.5
+
+# Pad 6: tom, low
+pad-6.model = FM perc
+pad-6.tune = -10
+pad-6.decay = 400
+pad-6.tone = 20
+pad-6.noise = 0
+pad-6.sweep = 5
+pad-6.sweep-time = 200
+pad-6.vel-tone = 50
+
+# Pad 7: tom, mid
+pad-7.model = FM perc
+pad-7.tune = -5
+pad-7.decay = 380
+pad-7.tone = 20
+pad-7.noise = 0
+pad-7.sweep = 5
+pad-7.sweep-time = 200
+pad-7.vel-tone = 50
+
+# Pad 8: tom, high
+pad-8.model = FM perc
+pad-8.tune = 0
+pad-8.tone = 20
+pad-8.noise = 0
+pad-8.sweep = 5
+pad-8.sweep-time = 200
+pad-8.vel-tone = 50
+
+# Pad 9: wood drum
+pad-9.model = FM perc
+pad-9.tune = 5
+pad-9.decay = 120
+pad-9.tone = 100
+pad-9.noise = 0
+pad-9.sweep-time = 15
+pad-9.level = 2.5
+pad-9.vel-tone = 50
+pad-9.ratio = 0.69
+
+# Pad 10: cowbell
+pad-10.model = FM perc
+pad-10.tune = 12
+pad-10.decay = 300
+pad-10.tone = 40
+pad-10.sweep-time = 200
+pad-10.level = 0.5
+pad-10.vel-tone = 50
+pad-10.ratio = 1.48
+
+# Pad 11: cymbal
+pad-11.model = FM perc
+pad-11.tune = 19
+pad-11.tone = 100
+pad-11.noise = 50
+pad-11.sweep-time = 1000
+pad-11.level = -1
+pad-11.vel-tone = 50
+pad-11.ratio = 7.1
+
+# Pad 12: bell
+pad-12.model = FM perc
+pad-12.tune = 12
+pad-12.decay = 1200
+pad-12.tone = 30
+pad-12.sweep = 0
+pad-12.sweep-time = 600
+pad-12.level = -1
+pad-12.pan = -15
+pad-12.vel-tone = 50
+pad-12.ratio = 3.5
+
+# Pad 13: blip
+pad-13.tune = 24
+pad-13.decay = 60
+pad-13.tone = 15
+pad-13.sweep-time = 20
+pad-13.level = 4
+pad-13.vel-tone = 50
+pad-13.ratio = 2
+
+# Pad 14: an FM kick
+pad-14.model = FM perc
+pad-14.tune = -24
+pad-14.decay = 450
+pad-14.tone = 10
+pad-14.sweep = 24
+pad-14.sweep-time = 30
+pad-14.drive = 0
+pad-14.level = -0.5
+pad-14.vel-tone = 50
+pad-14.ratio = 0.5
+
+# Pad 15: log drum
+pad-15.model = FM perc
+pad-15.tune = -12
+pad-15.decay = 500
+pad-15.tone = 25
+pad-15.noise = 0
+pad-15.sweep = 7
+pad-15.sweep-time = 60
+pad-15.level = 1.5
+pad-15.vel-tone = 50
+pad-15.ratio = 1
+
+# Pad 16: zap
+pad-16.model = FM perc
+pad-16.tune = 0
+pad-16.decay = 300
+pad-16.tone = 80
+pad-16.noise = 0
+pad-16.sweep = 36
+pad-16.sweep-time = 120
+pad-16.level = 0
+pad-16.pan = -10
+pad-16.vel-tone = 50
+pad-16.ratio = 0.5
+
+# Kit
+kit.voices = Current

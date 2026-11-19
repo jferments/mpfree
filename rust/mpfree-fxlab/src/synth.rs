@@ -34,9 +34,9 @@ use mpfree_instruments::sound::has_design;
 use mpfree_instruments::{Design, Sound};
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_synth::{
-    bass_params as bp, choir_params as chp, drum_params, fm_params, params as pp,
-    pluck_params as up, wind_params as wp, Analog, Bass, Choir, Drawbar, Drums, Fm, Keys, Pluck,
-    Poly, Preset, Squelch, Strings, Wavetable, Wind,
+    analog_params as an, bass_params as bp, choir_params as chp, drum_params, fm_params,
+    params as pp, pluck_params as up, wind_params as wp, Analog, Bass, Choir, Drawbar, Drums, Fm,
+    Keys, Pluck, Poly, Preset, Squelch, Strings, Wavetable, Wind,
 };
 
 use crate::fft::{hann_f64, power_spectrum};
@@ -438,9 +438,8 @@ pub fn kits() -> Vec<String> {
 /// apart, then two bars of a plain beat (kick, snare, closed hat) at
 /// 100 BPM.
 pub fn kit_tour(kit: usize, rate: u32) -> Stereo {
-    let mut d = Drums::new(rate);
-    d.load_preset(&Drums::presets()[kit]);
-    let base = d.param(drum_params::BASE_NOTE) as u8;
+    let mut d = kit_node(kit, rate);
+    let base = kit_base(kit, rate);
     let mut notes: Vec<(u8, u8, f64, f64)> = (0..16u8)
         .map(|p| (base + p, 110, f64::from(p) / 3.0, 0.05))
         .collect();
@@ -459,7 +458,31 @@ pub fn kit_tour(kit: usize, rate: u32) -> Stereo {
         }
     }
     let len = frames(start + 32.0 * step + 1.5, rate);
-    render(&mut d, rate, len, &score(rate, &notes))
+    render(d.as_mut(), rate, len, &score(rate, &notes))
+}
+
+/// Drum kit `kit` as the pads play it: through its master effects (the
+/// preset's `fx.N` lines, as `mpfree_instruments::Sound`) where it has
+/// them, else the plain kit.
+fn kit_node(kit: usize, rate: u32) -> Box<dyn Node> {
+    let p = &Drums::presets()[kit];
+    let mut d = Drums::new(rate);
+    d.load_preset(p);
+    if !has_design(p.text) {
+        return Box::new(d);
+    }
+    let mut s = Sound::new(Box::new(d), &Design::default()).expect("a plain sound builds");
+    s.prepare_effects(rate, mpfree_node::MAX_BLOCK);
+    s.load_text(p.text)
+        .expect("every factory kit loads (mpfree-instruments' tests)");
+    Box::new(s)
+}
+
+/// Drum kit `kit`'s first pad's note.
+fn kit_base(kit: usize, rate: u32) -> u8 {
+    let mut d = Drums::new(rate);
+    d.load_preset(&Drums::presets()[kit]);
+    d.param(drum_params::BASE_NOTE) as u8
 }
 
 /// A note's frequency in twelve-tone equal temperament, A4 = 440 Hz.
@@ -874,6 +897,7 @@ pub fn report(rate: u32) -> Vec<Row> {
     glide(&mut rows, rate);
     envelopes(&mut rows, rate);
     routes(&mut rows, rate);
+    leads(&mut rows, rate);
     character(&mut rows, rate);
     filters(&mut rows, rate);
     fm(&mut rows, rate);
@@ -1958,6 +1982,210 @@ fn routes(rows: &mut Vec<Row>, rate: u32) {
     );
 }
 
+/// The lead rows (wave 3) on Poly, Analog and Bass:
+///
+/// - E1: which held key a one-voice engine plays. C3 held, then G3 from
+///   0.3 s: with Low priority C3 goes on sounding, with High G3 takes over
+///   (Poly in Mono, Analog in Unison on one card, Bass).
+/// - E2: Poly's glide by rate, legato from C3: an octave in 300 ms, so a
+///   fifth in 175; the time to within 12 cents against 99 % of that (the
+///   last 12 cents of an octave, 1.7 % of a fifth), and where it lands.
+/// - E3: a note's own slide, +2 semitones sent 50 ms into C4 with G4 held
+///   too (Bass plays C4 alone): the slid note against D4, and the other
+///   against G4.
+/// - E4: Analog's vibrato from the mod wheel at the top (Wheel vibrato 50
+///   cents) and from full pressure (Press to Vibrato, Pressure 100), on a
+///   triangle: half the pitch's swing against 50 cents.
+fn leads(rows: &mut Vec<Row>, rate: u32) {
+    use mpfree_node::{Ctl, Expr};
+    let make = |e: Engine| -> Box<dyn Node> {
+        match e {
+            Engine::Poly => poly_sine(rate),
+            _ => e.plain(rate),
+        }
+    };
+    let (c3, g3) = (48u8, 55u8);
+    // (name, engine, its Priority id, the settings that make it play one note)
+    type Mono<'a> = (&'a str, Engine, u16, &'a [(u16, f32)]);
+    let one: [Mono; 3] = [
+        (
+            "Poly mono",
+            Engine::Poly,
+            pp::PRIORITY,
+            &[(pp::VOICE_MODE, 1.0)],
+        ),
+        (
+            "Analog unison",
+            Engine::Analog,
+            an::PRIORITY,
+            &[(an::VOICE_MODE, an::UNISON), (an::POLYPHONY, 1.0)],
+        ),
+        ("Bass", Engine::Bass, bp::PRIORITY, &[]),
+    ];
+    for (name, e, prio_id, set) in one {
+        for (prio, label, want) in [(1.0, "Low", c3), (2.0, "High", g3)] {
+            let mut n = make(e);
+            for &(id, v) in set {
+                n.set_param(id, v);
+            }
+            n.set_param(prio_id, prio);
+            let s = score(rate, &[(c3, 100, 0.0, 3.0), (g3, 100, 0.3, 2.7)]);
+            let x = render(n.as_mut(), rate, frames(3.0, rate), &s).mid();
+            let err = freq_near(&x, rate, hz(want), frames(0.6, rate))
+                .map_or(1200.0, |f| cents(f, hz(want)).abs());
+            put(
+                rows,
+                "E1",
+                &format!("priority[{name}, {label}]"),
+                "pitch_err_cents",
+                err,
+                Better::Lower,
+                Some(1.0),
+                0.1,
+            );
+        }
+    }
+
+    for (label, semis, secs) in [("an octave", 12u8, 0.3), ("a fifth", 7, 0.175)] {
+        let mut n = poly_sine(rate);
+        n.set_param(pp::VOICE_MODE, 2.0);
+        n.set_param(pp::GLIDE_MODE, 1.0);
+        n.set_param(pp::GLIDE, 300.0);
+        let s = score(rate, &[(c3, 100, 0.0, 1.5), (c3 + semis, 100, 0.5, 1.0)]);
+        let track = pitch_track(&render(n.as_mut(), rate, frames(1.5, rate), &s).mid(), rate);
+        let target = hz(c3 + semis);
+        let land: Vec<f64> = track
+            .iter()
+            .filter(|(t, _)| (1.0..1.3).contains(t))
+            .map(|(_, f)| cents(*f, target))
+            .collect();
+        let land = land.iter().sum::<f64>() / land.len().max(1) as f64;
+        let arrived = track
+            .iter()
+            .rposition(|(t, f)| *t < 1.4 && cents(*f, target).abs() > 12.0)
+            .map_or(0.5, |i| track[i].0);
+        let due = secs * (1.0 - 12.0 / (100.0 * f64::from(semis)));
+        let subject = format!("glide[Poly rate, {label}: an octave in 300 ms]");
+        put(
+            rows,
+            "E2",
+            &subject,
+            "land_cents",
+            land.abs(),
+            Better::Lower,
+            Some(2.0),
+            0.2,
+        );
+        put(
+            rows,
+            "E2",
+            &subject,
+            "time_err_pct",
+            ((arrived - 0.5) - due) / due * 100.0,
+            Better::Near(0.0),
+            Some(10.0),
+            1.0,
+        );
+    }
+
+    let (c4, g4) = (60u8, 67u8);
+    for (name, e) in [
+        ("Poly", Engine::Poly),
+        ("Analog", Engine::Analog),
+        ("Bass", Engine::Bass),
+    ] {
+        let mut n = make(e);
+        let both = e != Engine::Bass;
+        let mut notes = vec![(c4, 100, 0.0, 3.0)];
+        if both {
+            notes.push((g4, 100, 0.0, 3.0));
+        }
+        let mut s = score(rate, &notes);
+        s.push((
+            frames(0.05, rate),
+            NodeEvent::Expression {
+                note: c4,
+                kind: Expr::Slide,
+                value: 2.0,
+            },
+        ));
+        s.sort_by_key(|(f, _)| *f);
+        let x = render(n.as_mut(), rate, frames(3.0, rate), &s).mid();
+        let at = |note: u8| {
+            freq_near(&x, rate, hz(note), frames(0.5, rate))
+                .map_or(1200.0, |f| cents(f, hz(note)).abs())
+        };
+        put(
+            rows,
+            "E3",
+            &format!("slide[{name}, C4 up 2]"),
+            "pitch_err_cents",
+            at(c4 + 2),
+            Better::Lower,
+            Some(1.0),
+            0.1,
+        );
+        if both {
+            put(
+                rows,
+                "E3",
+                &format!("slide[{name}, G4 left be]"),
+                "pitch_err_cents",
+                at(g4),
+                Better::Lower,
+                Some(1.0),
+                0.1,
+            );
+        }
+    }
+
+    for (label, set, ev) in [
+        (
+            "the wheel at the top",
+            &[][..],
+            NodeEvent::Control {
+                ctl: Ctl::ModWheel,
+                value: 1.0,
+            },
+        ),
+        (
+            "full pressure, Pressure 100",
+            &[(an::PRESS_TO, an::PRESS_VIBRATO), (an::PRESSURE, 100.0)][..],
+            NodeEvent::Pressure {
+                note: 69,
+                value: 127,
+            },
+        ),
+    ] {
+        let mut n = Engine::Analog.plain(rate);
+        n.set_param(an::OSC1_WAVE, an::TRIANGLE);
+        for &(id, v) in set {
+            n.set_param(id, v);
+        }
+        let mut s = score(rate, &[(69, 100, 0.0, 2.5)]);
+        s.push((frames(0.01, rate), ev));
+        s.sort_by_key(|(f, _)| *f);
+        let x = render(n.as_mut(), rate, frames(2.5, rate), &s).mid();
+        let c: Vec<f64> = pitch_track(&x, rate)
+            .iter()
+            .filter(|(t, _)| (0.5..1.5).contains(t))
+            .map(|(_, f)| cents(*f, hz(69)))
+            .collect();
+        let hi = c.iter().copied().fold(f64::MIN, f64::max);
+        let lo = c.iter().copied().fold(f64::MAX, f64::min);
+        put(
+            rows,
+            "E4",
+            &format!("vibrato[Analog, {label}]"),
+            "depth_err_pct",
+            ((hi - lo) / 2.0 - 50.0) / 50.0 * 100.0,
+            Better::Near(0.0),
+            Some(5.0),
+            1.0,
+        );
+    }
+}
+
 fn character(rows: &mut Vec<Row>, rate: u32) {
     // P10: Age's spread as labelled. Sixteen A4s in turn on Poly's plain
     // sine take the sixteen voice cards: at Age 100 their tuning spreads
@@ -2411,12 +2639,12 @@ fn fm_harmonic(n: &dyn Node) -> (bool, f64) {
 fn drums(rows: &mut Vec<Row>, rate: u32) {
     use drum_params::{field, kind, model_of, pad_id, Kind, PADS};
     for (ki, kit) in Drums::presets().iter().enumerate() {
-        let make = || {
+        let make = || kit_node(ki, rate);
+        let probe = {
             let mut d = Drums::new(rate);
-            d.load_preset(&Drums::presets()[ki]);
+            d.load_preset(kit);
             d
         };
-        let probe = make();
         let base = probe.param(drum_params::BASE_NOTE) as u8;
         let mut kick_level = None;
         for pad in 0..PADS {
@@ -2425,10 +2653,7 @@ fn drums(rows: &mut Vec<Row>, rate: u32) {
             let label_ms = f64::from(probe.param(pad_id(pad, field::DECAY)));
             let secs = (label_ms * 0.0013 + 0.4).min(7.0);
             let key = base + pad as u8;
-            let hit = |vel: u8| {
-                let mut d = make();
-                note(&mut d, rate, key, vel, 0.05, secs).mid()
-            };
+            let hit = |vel: u8| note(make().as_mut(), rate, key, vel, 0.05, secs).mid();
             let loud = hit(127);
             let soft = hit(40);
             let subject = format!("Drums[{}, pad {} {model}]", kit.name, pad + 1);
@@ -2553,7 +2778,7 @@ fn drums(rows: &mut Vec<Row>, rate: u32) {
                 ),
                 (gap + frames(0.05, rate), NodeEvent::NoteOff { note: key }),
             ];
-            let two = render(&mut d, rate, 2 * gap, &ev).mid();
+            let two = render(d.as_mut(), rate, 2 * gap, &ev).mid();
             let step = (level_db(&two[gap..], rate) - level_db(&two[..gap], rate)).abs();
             put(
                 rows,
@@ -2604,7 +2829,7 @@ fn drums(rows: &mut Vec<Row>, rate: u32) {
                 ));
             }
         }
-        let all = render(&mut d, rate, frames(1.0, rate), &ev);
+        let all = render(d.as_mut(), rate, frames(1.0, rate), &ev);
         let peak = all
             .left
             .iter()

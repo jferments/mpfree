@@ -993,7 +993,10 @@ pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
                 an::LFO_PW | an::PM_PW if !pulse(an::OSC1_WAVE) && !pulse(an::OSC2_WAVE) => {
                     Some("no pulse wave")
                 }
-                an::UNI_DETUNE if v(an::VOICE_MODE) < 0.5 => Some("Unison only"),
+                an::UNI_DETUNE | an::PRIORITY | an::LEGATO if v(an::VOICE_MODE) < 0.5 => {
+                    Some("Unison only")
+                }
+                an::PRESSURE if v(an::PRESS_TO).round() == an::PRESS_OFF => Some("pressure is off"),
                 an::F_DECAY if v(an::F_SUSTAIN) >= 100.0 => Some("sustain is full"),
                 an::A_DECAY if v(an::A_SUSTAIN) >= 100.0 => Some("sustain is full"),
                 _ => None,
@@ -1007,6 +1010,8 @@ pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
                 pp::OSC1_PW if poly && v(pp::OSC1_WAVE).round() != 1.0 => Some("pulse only"),
                 pp::OSC2_PW if poly && v(pp::OSC2_WAVE).round() != 1.0 => Some("pulse only"),
                 pp::SUB_WAVE if poly && v(pp::SUB_LEVEL) <= 0.0 => Some("sub is off"),
+                pp::PRIORITY if poly && v(pp::VOICE_MODE) < 0.5 => Some("Mono and Legato only"),
+                pp::GLIDE_MODE if poly && v(pp::GLIDE) <= 0.0 => Some("glide is off"),
                 pp::UNISON_DETUNE | pp::UNISON_SPREAD if poly && v(pp::UNISON) <= 1.0 => {
                     Some("one copy")
                 }
