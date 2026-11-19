@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-midi rust/mpfree-midi-ui/src/learn.rs rust/mpfree-midi-ui/src/port_page.rs rust/mpfree-app/src/midi_in.rs rust/mpfree-app/src/midi_out.rs rust/mpfree-app/src/cv_out.rs
-checked: 2026-11-16 08282af
+checked: 2026-11-19 79fc6f63
 -->
 
 # Playing other gear: MIDI, sync and CV
@@ -37,7 +37,7 @@ The wheel, pressure and MPE play MPFree's own sounds: the synth and a track's ow
 
 A **sustain pedal** on your keyboard holds the notes of the armed track's sound, as on a piano: a key you let go keeps sounding until the pedal comes up, and a key you play again under the pedal plays again. A **sostenuto pedal** (the middle pedal) holds only the keys that are down when you press it. Both work on the synth, on a track's own instrument and on plugins.
 
-The **mod wheel**, a **breath controller**, an **expression pedal** (the kind with a rocker, sending CC 11) and the **soft pedal** go to the sound too. Plugins get them as MIDI. MPFree's own synths don't use them yet; the new synths will.
+The **mod wheel**, a **breath controller**, an **expression pedal** (the kind with a rocker, sending CC 11) and the **soft pedal** go to the sound too. Plugins get them as MIDI. Of MPFree's own synths, **Strings** answers them all (see [Strings](synths.md#the-synth-tab)), and on **Bass** the mod wheel adds vibrato. The others don't use them yet.
 
 A track that plays a synth through MIDI out sends all of them to that synth as they came, on its channel.
 
@@ -50,7 +50,7 @@ So that no note hangs, a pedal that is down comes up on the track it was holding
 The I/O view's **Routing** section shows where each source's MIDI goes, on one grid. Down the side are your ports (the 5-pin **MIDI in** and each USB device), **The pads**, and the tracks. Across the top: **Armed track**, **Tracks by channel**, **Learn**, each MIDI out port and **CV out**. A square with a green bar plays something in MPFree; a blue bar sends something out. **+** means a tap sets it up, and **—** means nothing can go there (a tap says why). A small number in a square's corner counts its [blocks](#blocks-on-a-route).
 
 - **Tracks by channel** sends one channel of a port to one track, whichever track is armed. Tap a port's square and pick the channel and the track on the card below the grid (with – and +, or Q-Links 1 and 2). **+ Route** adds another, **Remove route** takes the picked one away. Two routes from the same channel to two tracks play both, to layer sounds. On a track that plays a kit, each key hits the pad that sends its note, and the pad plays as it would from the pads: its sound, its [synth voice or its note out to your gear](pads.md#what-a-pad-plays-sample-loop-instrument-midi-out). For example: a drum machine on **MIDI IN**, channel 10, plays **Drums**, while a keyboard on channel 1 plays **Bass** and you work on another track with the pads.
-- Notes a route takes go only to its track, never to the armed track as well, so nothing plays twice. The rest of the port's notes go to the armed track, as before.
+- Notes a route takes go only to its track, never to the armed track as well, so nothing plays twice. The rest of the port's notes go to the armed track.
 - A track played by a route plays where its clips play: its own sound, its synth or drum machine through MIDI out, and its CV outputs. With a drum kit, each key hits the pad that sends its note, in any bank. Only the armed track's notes go through the arpeggiator. A route's track records when you arm it too (SHIFT and a tap on its row in the REC chip's list, see [Record several tracks at once](sequencer.md#record-several-tracks-at-once)); otherwise it only plays, and [Capture](clips.md#capture-keep-what-you-just-played) keeps what a route played and puts it in the route's track.
 - **Armed track** and **Learn** are the port's **Input** (Both, Plays tracks or Learn only), the same setting as on its row in the MIDI section. Turning both off isn't allowed: turn the other on first. A port set to **Learn only** still plays its routes.
 - A track's square under a port is its **Plays on**, as in the MIDI section: tap it to play that track on that port, and pick the channel on the card.
@@ -87,7 +87,7 @@ Blocks belong to the song and are saved with it, with their routes.
 **Thru** sends what comes in on a port straight out of another, as it came: play a synth on **MIDI OUT** from a USB keyboard, with MPFree in between. A port's square under a MIDI out port is its thru.
 
 - Tap the square: every channel of that port goes thru. On the card, pick one channel instead with – and + (or Q-Link 1), and **+ Route** adds another channel. **Remove route** takes the picked one away. The square then reads, say, *thru · ch 10 only*.
-- The channels that go thru play nothing inside MPFree: not the armed track. The rest of the port's notes play the armed track, as before. A route to a track on the same channel plays as well, so you can layer the synth with a sound in MPFree.
+- The channels that go thru play nothing inside MPFree: not the armed track. The rest of the port's notes play the armed track. A route to a track on the same channel plays as well, so you can layer the synth with a sound in MPFree.
 - Notes, aftertouch, pitch bend, controllers and program changes go thru. Clock never does (each port's **Clock out**, under Sync, sends MPFree's own), and neither does SysEx, nor anything the port is set to ignore on its page. A knob you taught with [MIDI Learn](#midi-learn) moves its value and doesn't go thru.
 - Thru leaves when the armed track's notes would (a few milliseconds after the key), and sends only while **Send MIDI and CV out** is on in Prefs. Until then its square says *MIDI out is off*. Pressing **STOP** while stopped, the Monitor's **Send note-offs**, or the port page's **All notes off** ends the notes it left on.
 - A USB device's own output is **—**: its messages never go back to it. **MIDI in** to **MIDI out** is two pieces of gear, so that one is fine. If the gear on **MIDI OUT** sends what it receives back to **MIDI IN** (its own thru or echo), thru from **MIDI in** makes a loop: turn that off on the gear.
@@ -265,7 +265,7 @@ Anywhere else SHIFT + a touch keeps its own job, such as SHIFT + drag on an audi
 
 1. Open the effect in the chain editor and touch the knob.
 2. Tap **Learn** in the **Modulate** row under the page. It now reads **Turn a Q-Link**, and the line under the knob's name says it is learning.
-3. Move the control on your keyboard. From now on it turns that knob, as far up and down as the knob goes. (Turn a Q-Link instead, and the Q-Link learns it, as before.)
+3. Move the control on your keyboard. From now on it turns that knob, as far up and down as the knob goes. (Turn a Q-Link instead, and the Q-Link learns it.)
 
 The move that teaches a control doesn't play a note, and neither does a learned control. Teach a control again and it moves to the new value.
 
