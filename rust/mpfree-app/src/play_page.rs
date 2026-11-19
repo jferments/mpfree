@@ -65,6 +65,10 @@ pub const PADS: &str = "pads";
 pub const STEPS: &str = "steps";
 pub const THROWS: &str = "throws";
 pub const XY: &str = "xy";
+/// The page with the XY pad full screen, under the transport card and
+/// beside the master bar and the Q-Links (SHIFT + NEXT SEQ, the button
+/// combos Joshi approved on 19 Nov 2026, as the MPC's XYFX).
+pub const XY_FULL_PAGE: &str = "Play · XY";
 pub const TIMING: &str = "play-timing";
 /// The step inspector under the pattern on Beats, in the throws' place
 /// while a step is held or picked (sequencer mockup A).
@@ -185,6 +189,11 @@ pub fn frame(body: &str) -> String {
         "col(header:60, row(col({TRANSPORT}:{TRANSPORT_H}, {body}):*, \
              {MASTER}:{MASTER_WIDTH}, {QLINKS}:{COLUMN_WIDTH}):*, hint:26)"
     )
+}
+
+/// The layout of [`XY_FULL_PAGE`]: the XY pad takes the whole view.
+pub fn xy_full_layout() -> String {
+    frame(&format!("{XY}:*"))
 }
 
 /// A layout written for the old Play page, `col(header:60, BODY, hint:26)`,

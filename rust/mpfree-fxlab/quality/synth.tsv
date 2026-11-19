@@ -1996,6 +1996,12 @@ synth/alias[Poly saw, distortion 24 dB, C7]/worst_alias_db	-34.792
 synth/alias[Poly saw, drive 24 dB, C5]/worst_alias_db	-50.3994
 synth/alias[Poly saw, drive 24 dB, C6]/worst_alias_db	-44.5046
 synth/alias[Poly saw, drive 24 dB, C7]/worst_alias_db	-38.0216
+synth/alias[Poly table, position 100, C5]/worst_alias_db	-65.363
+synth/alias[Poly table, position 100, C6]/worst_alias_db	-60.2528
+synth/alias[Poly table, position 100, C7]/worst_alias_db	-54.0363
+synth/alias[Poly table, sync 50, C5]/worst_alias_db	-44.9837
+synth/alias[Poly table, sync 50, C6]/worst_alias_db	-39.0481
+synth/alias[Poly table, sync 50, C7]/worst_alias_db	-32.7709
 synth/alias[Poly triangle, C5]/worst_alias_db	-94.4156
 synth/alias[Poly triangle, C6]/worst_alias_db	-99.3602
 synth/alias[Poly triangle, C7]/worst_alias_db	-94.8609
@@ -2020,6 +2026,9 @@ synth/alias[Wavetable Init, C7]/worst_alias_db	-71.5456
 synth/alias[Wavetable position 100, C5]/worst_alias_db	-65.3551
 synth/alias[Wavetable position 100, C6]/worst_alias_db	-60.1726
 synth/alias[Wavetable position 100, C7]/worst_alias_db	-54.0125
+synth/alias[Wavetable sync 50, C5]/worst_alias_db	-45.0101
+synth/alias[Wavetable sync 50, C6]/worst_alias_db	-39.0463
+synth/alias[Wavetable sync 50, C7]/worst_alias_db	-32.7709
 synth/alias[Wind clarinet, tone 100, C5]/worst_alias_db	-93.9959
 synth/alias[Wind clarinet, tone 100, C6]/worst_alias_db	-85.7263
 synth/alias[Wind clarinet, tone 100, C7]/worst_alias_db	-83.1472
