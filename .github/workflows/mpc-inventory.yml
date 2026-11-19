@@ -1276,6 +1276,23 @@ jobs:
           print("PASS: ARMv7 ELF32 EABI5 hard-float and GLIBC <=2.39")
           PY
           echo "No executables uploaded or run on MPC by CI."
+      - name: NEON kernels against their plain twins, as ARMv7 under qemu (mpfree-simd; do not deploy)
+        # docs/dev/design/simd.md: each kernel gives its twin's samples to the bit, and runs fewer
+        # ARMv7 instructions than its twin; the device round's timing decides whether it stays.
+        env:
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_RUNNER: qemu-arm -L /usr/arm-linux-gnueabihf
+        run: |
+          [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get install -y --no-install-recommends qemu-user
+          cargo test --manifest-path rust/Cargo.toml --release --locked \
+            --target armv7-unknown-linux-gnueabihf -p mpfree-simd
+          # About 30 s: four traced runs side by side.
+          rc=0
+          python3 tools/simd_arm_cost.py --blocks 50 --gate > "$RUNNER_TEMP/simd-cost.txt" || rc=$?
+          cat "$RUNNER_TEMP/simd-cost.txt"
+          { echo '### NEON kernels: ARMv7 instructions per block under qemu'; echo '```'
+            cat "$RUNNER_TEMP/simd-cost.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
       - name: Build and check the static screen log program for the kexec test boot (do not deploy)
         env:
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc

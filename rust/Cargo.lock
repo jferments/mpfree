@@ -867,6 +867,7 @@ dependencies = [
  "mpfree-prof",
  "mpfree-sampler",
  "mpfree-seq",
+ "mpfree-simd",
  "mpfree-synth",
  "mpfree-track",
  "mpfree-transport",
@@ -1298,6 +1299,14 @@ name = "mpfree-session"
 version = "0.1.0"
 dependencies = [
  "mpfree-headless",
+]
+
+[[package]]
+name = "mpfree-simd"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "mpfree-lanes",
 ]
 
 [[package]]
