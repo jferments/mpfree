@@ -34,8 +34,9 @@ use mpfree_instruments::sound::has_design;
 use mpfree_instruments::{Design, Sound};
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_synth::{
-    bass_params as bp, choir_params as chp, drum_params, params as pp, wind_params as wp, Analog,
-    Bass, Choir, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset, Squelch, Strings, Wavetable, Wind,
+    bass_params as bp, choir_params as chp, drum_params, fm_params, params as pp,
+    wind_params as wp, Analog, Bass, Choir, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset, Squelch,
+    Strings, Wavetable, Wind,
 };
 
 use crate::fft::{hann_f64, power_spectrum};
@@ -114,7 +115,7 @@ impl Engine {
             Engine::Poly => names(Poly::presets()),
             Engine::Analog => names(Analog::presets()),
             Engine::Squelch => names(Squelch::presets()),
-            Engine::Fm => Fm::presets().into_iter().map(|p| p.name).collect(),
+            Engine::Fm => names(Fm::presets()),
             Engine::Wavetable => names(Wavetable::presets()),
             Engine::Keys => names(Keys::presets()),
             Engine::Drawbar => names(Drawbar::presets()),
@@ -142,14 +143,13 @@ impl Engine {
         Box::new(s)
     }
 
-    /// Factory preset `preset`'s text (None for FM, whose presets are
-    /// built in code).
+    /// Factory preset `preset`'s text.
     fn text(self, preset: usize) -> Option<&'static str> {
         let p = match self {
             Engine::Poly => Poly::presets(),
             Engine::Analog => Analog::presets(),
             Engine::Squelch => Squelch::presets(),
-            Engine::Fm => return None,
+            Engine::Fm => Fm::presets(),
             Engine::Wavetable => Wavetable::presets(),
             Engine::Keys => Keys::presets(),
             Engine::Drawbar => Drawbar::presets(),
@@ -1633,11 +1633,41 @@ fn alias_cases() -> Vec<AliasCase> {
             Engine::Drawbar,
             vec![(80, 1.0), (81, 0.0), (83, 1.0)],
         ),
-        // Algorithm 32, operator 6 alone with full feedback.
+        // Algorithm 32, operator 6 alone with full feedback: at full level
+        // the loop is rough and noisy (as on the DX7), so most of what this
+        // finds off the harmonics is the noise, not aliasing.
         (
             "FM feedback 7",
             Engine::Fm,
             vec![(0, 32.0), (1, 7.0), (40, 0.0), (200, 99.0)],
+        ),
+        // Feedback 5 at full level: the strongest steady, saw-like
+        // feedback, where folding back is what the row finds.
+        (
+            "FM feedback 5",
+            Engine::Fm,
+            vec![(0, 32.0), (1, 5.0), (40, 0.0), (200, 99.0)],
+        ),
+        // Operator 1 playing the saw, modulated by operator 2's sine
+        // (algorithm 1): each of the saw's harmonics is modulated as many
+        // times over as its number.
+        (
+            "FM saw by a sine",
+            Engine::Fm,
+            vec![
+                (fm_params::op_id(1, fm_params::op::WAVE), 2.0),
+                (fm_params::op_id(2, fm_params::op::LEVEL), 80.0),
+            ],
+        ),
+        // A sine modulated by a square at full level: the square's steps
+        // swing the phase fastest of all.
+        (
+            "FM sine by a square",
+            Engine::Fm,
+            vec![
+                (fm_params::op_id(2, fm_params::op::WAVE), 3.0),
+                (fm_params::op_id(2, fm_params::op::LEVEL), 99.0),
+            ],
         ),
     ]
 }
@@ -2232,27 +2262,118 @@ fn fm(rows: &mut Vec<Row>, rate: u32) {
         0.2,
     );
 
-    // F7: one preset under every algorithm.
+    // F7: each preset's engine (its effects left out) under every
+    // algorithm. The target is the research's, for one preset (Glass Keys);
+    // the others are shown: where carriers share a frequency they add or
+    // cancel by algorithm, and a modulator turned carrier changes the
+    // brightness, which loudness weighs.
     let names = Engine::Fm.presets();
-    let glass = names.iter().position(|n| n == "Glass Keys").unwrap_or(0);
-    let mut louds = Vec::new();
-    for algo in 1..=32 {
-        let mut n = Engine::Fm.make(glass, rate);
-        n.set_param(0, algo as f32);
-        louds.push(lufs(&note(n.as_mut(), rate, key, 100, 1.0, 1.5)));
+    for (i, name) in names.iter().enumerate() {
+        let one = name == "Glass Keys";
+        let mut louds = Vec::new();
+        for algo in 1..=32 {
+            let mut n = Engine::Fm.engine_with(i, rate);
+            n.set_param(0, algo as f32);
+            louds.push(lufs(&note(n.as_mut(), rate, key, 100, 1.0, 1.5)));
+        }
+        let spread = louds.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+            - louds.iter().copied().fold(f64::INFINITY, f64::min);
+        put(
+            rows,
+            "F7",
+            &format!("fm[{name}, algorithms 1 to 32]"),
+            "level_spread_db",
+            spread,
+            if one { Better::Lower } else { Better::Info },
+            one.then_some(3.0),
+            0.3,
+        );
     }
-    let spread = louds.iter().copied().fold(f64::NEG_INFINITY, f64::max)
-        - louds.iter().copied().fold(f64::INFINITY, f64::min);
-    put(
-        rows,
-        "F7",
-        &format!("fm[{}, algorithms 1 to 32]", names[glass]),
-        "level_spread_db",
-        spread,
-        Better::Lower,
-        Some(3.0),
-        0.3,
-    );
+
+    for (i, name) in names.iter().enumerate() {
+        // F3: each preset's engine at C6 and C7 at its brightest (every
+        // operator's envelope held at its first level, so a short note
+        // doesn't smear its partials), what is off its harmonics against
+        // the loudest harmonic, with the operators' detune and the LFO's
+        // vibrato set to 0 (they move partials off the harmonics by a few
+        // cents) and the fundamental an octave down where an operator runs
+        // at ratio 0.5.
+        // A preset with partials off the harmonic series by design (a
+        // bell's 3.5 and 1.41) is shown only: the row can't tell its
+        // partials from aliasing.
+        let (harmonic, base) = fm_harmonic(Engine::Fm.engine_with(i, rate).as_ref());
+        for (k, label, target) in [(84u8, "C6", -60.0), (96, "C7", -50.0)] {
+            let mut n = Engine::Fm.engine_with(i, rate);
+            for o in 1..=6 {
+                let id = |f| fm_params::op_id(o, f);
+                n.set_param(id(fm_params::op::DETUNE), 0.0);
+                // Held at its first level: the sound at its brightest.
+                let peak = n.param(id(fm_params::op::L1));
+                n.set_param(id(fm_params::op::L2), peak);
+                n.set_param(id(fm_params::op::L3), peak);
+            }
+            n.set_param(fm_params::LFO_PMD, 0.0);
+            let x = note(n.as_mut(), rate, k, 100, 2.0, 2.0).mid();
+            let from = frames(0.3, rate);
+            let f0 = freq_near(&x, rate, hz(k) * base, from).unwrap_or(hz(k) * base);
+            put(
+                rows,
+                "F3",
+                &format!("fm[{name}, {label}]"),
+                "worst_alias_db",
+                alias_db(&x, rate, f0, from),
+                if harmonic {
+                    Better::Lower
+                } else {
+                    Better::Info
+                },
+                harmonic.then_some(target),
+                1.0,
+            );
+        }
+        // F8: brightness at each velocity step (20, 40, 64, 100, 127), the
+        // centroid of the first 370 ms as L5 reads it; the smallest step,
+        // octaves. A preset whose tone doesn't follow velocity is shown.
+        let tone = |v: u8| {
+            let mut n = Engine::Fm.engine_with(i, rate);
+            centroid(
+                &note(n.as_mut(), rate, key, v, 1.0, 1.5).mid()[..16_384],
+                rate,
+            )
+        };
+        let c: Vec<f64> = [20u8, 40, 64, 100, 127].iter().map(|&v| tone(v)).collect();
+        let step = c
+            .windows(2)
+            .map(|w| (w[1] / w[0]).log2())
+            .fold(f64::INFINITY, f64::min);
+        let uses = (c[4] / c[0]).log2() >= 0.1;
+        put(
+            rows,
+            "F8",
+            &format!("fm[{name}]"),
+            "vel_tone_min_step_oct",
+            step,
+            if uses { Better::Higher } else { Better::Info },
+            uses.then_some(0.0),
+            0.01,
+        );
+    }
+}
+
+/// Whether every operator that sounds in `n` (an FM engine) runs at a whole
+/// ratio or 0.5, so its partials sit on a harmonic series; and that
+/// series' fundamental against the note (0.5 when an operator runs at 0.5).
+fn fm_harmonic(n: &dyn Node) -> (bool, f64) {
+    use fm_params::{op, op_id};
+    let mut base = 1.0;
+    let harmonic = (1..=6).all(|o| {
+        let on = n.param(op_id(o, op::ON)) >= 0.5 && n.param(op_id(o, op::LEVEL)) > 0.0;
+        if on && n.param(op_id(o, op::COARSE)) < 0.5 {
+            base = 0.5;
+        }
+        !on || (n.param(op_id(o, op::MODE)) < 0.5 && n.param(op_id(o, op::FINE)) == 0.0)
+    });
+    (harmonic, base)
 }
 
 // ---------------------------------------------------------------------------

@@ -107,6 +107,9 @@ pub(super) struct Voice {
     pub(super) pad: u8,
     pub(super) choke: u8,
     pub(super) age: u64,
+    /// The hit's gain before pan (velocity and level), for a drum whose
+    /// hits go through its effects ([`crate::drum_fx`]), panned after them.
+    pub(super) gain: f32,
     pub(super) gain_l: f32,
     pub(super) gain_r: f32,
     pub(super) kill: f32,
@@ -163,7 +166,9 @@ pub(super) struct Voice {
 }
 
 impl Voice {
-    #[inline]
+    // Always inlined: it runs in the plain loop and the effects' loop, and
+    // a call per frame cost the plain kit 8 % (35,000 instructions a block).
+    #[inline(always)]
     pub(super) fn tick(&mut self, rate: f32) -> f32 {
         let inv = 1.0 / rate;
         let mut out = 0.0;
@@ -439,6 +444,7 @@ pub(super) fn build(
         }
     }
     let a = amp * norm;
+    v.gain = a;
     v.gain_l = a * (1.0 - pan).max(0.0).sqrt() * std::f32::consts::FRAC_1_SQRT_2;
     v.gain_r = a * (1.0 + pan).max(0.0).sqrt() * std::f32::consts::FRAC_1_SQRT_2;
     v

@@ -691,7 +691,9 @@ const fn pad_param(pad: usize, f: u16) -> ParamInfo {
 
 /// Fields per pad, both ranges.
 const PER_PAD: usize = field::COUNT + field::MORE;
-const N_PARAMS: usize = PADS * PER_PAD + KIT.len();
+/// How many parameters the voices have (the effects' come after them in
+/// [`crate::drum_fx::ALL`]).
+pub const N_PARAMS: usize = PADS * PER_PAD + KIT.len();
 
 /// The field at place `k` of a pad's list (the first fields, then the
 /// newer ones).
@@ -718,9 +720,16 @@ const fn build() -> [ParamInfo; N_PARAMS] {
     out
 }
 
-/// Every parameter: Pad 1 to Pad 16 (each its first fields, then the
-/// newer ones), then Kit.
-pub static PARAMS: [ParamInfo; N_PARAMS] = build();
+/// Every voice parameter, as a constant ([`crate::drum_fx::ALL`] adds the
+/// effects' after it). Read only by [`PARAMS`] and `drum_fx::ALL`, both
+/// statics built once, so its size is never copied at run time.
+#[allow(clippy::large_const_arrays)]
+pub(crate) const TABLE: [ParamInfo; N_PARAMS] = build();
+
+/// Every voice parameter: Pad 1 to Pad 16 (each its first fields, then the
+/// newer ones), then Kit. [`crate::Drums`] has the effects' too
+/// ([`crate::drum_fx::ALL`]).
+pub static PARAMS: [ParamInfo; N_PARAMS] = TABLE;
 
 /// Each id's place in [`PARAMS`], or `u16::MAX` for an id Drums lacks.
 pub static INDEX: [u16; ID_SPACE] = {

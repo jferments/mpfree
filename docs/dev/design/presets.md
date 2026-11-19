@@ -87,7 +87,7 @@ macros.brightness = 35
 
 ## Factory presets as files
 
-The engines' factory presets are preset files built into the program, one file an engine in `rust/mpfree-synth/presets/` (`keys.presets`, `bass.presets` and so on; FM's presets are still built in code). A file is the presets' blocks one after the other, each a preset in the format above, so a factory preset is written, reviewed and checked like any other file:
+The engines' factory presets are preset files built into the program, one file an engine in `rust/mpfree-synth/presets/` (`keys.presets`, `bass.presets`, `fm.presets` and so on). A file is the presets' blocks one after the other, each a preset in the format above, so a factory preset is written, reviewed and checked like any other file:
 
 ```text
 mpfree-preset = 1
@@ -120,7 +120,7 @@ tone.bell = 25
 
 ## Not yet
 
-- **More factory sounds.** Six factory presets bring effects and macros so far; the rest of each engine's presets get theirs with each wave's preset work. Send hints, the category and the play lines (section 5's table) come with the preset browser (roadmap row 9, [Architecture](synth-architecture.md#7-roadmap)). FM's presets are still built in code.
+- **More factory sounds.** Every FM preset but Init brings four macros (Brightness, Detune, Attack, Decay) and all of those but Rubber Bass an effect (synth library wave 2, 19 Nov), and seven presets of other engines bring effects and macros so far; the rest of each engine's presets get theirs with each wave's preset work. Send hints, the category and the play lines (section 5's table) come with the preset browser (roadmap row 9, [Architecture](synth-architecture.md#7-roadmap)).
 
 - A Wavetable sound on a user table (one made from a sample) saves the table choice "User" but not the table itself; the preset will name the table's file once the library holds it.
 - Plugins: a CLAP plugin's own state chunk is not saved in a sound preset yet. A plugin's own presets (its factory and user files, listed and loaded through CLAP) are the plugin's, not this format: see [Plugins](plugins.md#in-the-app).

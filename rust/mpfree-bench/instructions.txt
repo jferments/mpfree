@@ -57,12 +57,19 @@
 697460	Drums Boom Kit, a hit every block
 445971	Drums Init Kit, a hit every 4 blocks
 1395843	Drums Init Kit, every pad each block
+761965	Drums, 16 pads ringing, Punch and Compressor on each
+1284955	Drums, 16 pads ringing, all four effects and both sends
+1004174	Drums, 16 pads ringing, all four effects on each
+571325	Drums, 16 pads ringing, no effects
 16073	Ducker (tempo)
 108120	EQ (4 bands and both cuts)
 256118	EQ (4 bands and both cuts), Freq gliding
 188280	EQ (4 bands and both cuts), HQ 2x
 137727	Ensemble (3 lines)
 173444	Ensemble (4 lines)
+785477	FM Brass Section, 16 voices
+562570	FM Glass Keys, 8 voices
+643879	FM Reed Lead, 8 voices
 64907	Flanger
 92618	Flanger, through zero
 53403	Frequency shifter

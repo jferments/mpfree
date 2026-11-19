@@ -151,12 +151,14 @@ const POLY: &[PlanPage] = &[
 
 use mpfree_synth::fm_params::{self as fp, op, op_id};
 
-/// FM: the algorithm and voice, the modulation (pitch envelope and LFO), a
+/// FM: the algorithm and voice with the six operators' On switches (as
+/// the DX7's operator buttons), the modulation (pitch envelope and LFO), a
 /// page per operator, and the operators' keyboard scaling two to a page.
 const FM: &[PlanPage] = &[
-    pg(
+    pg_with(
         "Algo",
         &["Algo", "Voice", "Output"],
+        &FM_ONS,
         &[fp::ALGORITHM, fp::FEEDBACK, fp::TRANSPOSE, fp::LEVEL],
     ),
     pg(
@@ -184,6 +186,17 @@ const FM: &[PlanPage] = &[
     pg("Kbd 3-4", &["Op 3 kbd", "Op 4 kbd"], &[]),
     pg("Kbd 5-6", &["Op 5 kbd", "Op 6 kbd"], &[]),
 ];
+
+/// The six operators' On switches, on the Algo page.
+const FM_ONS: [u16; 6] = {
+    let mut q = [0u16; 6];
+    let mut n = 0;
+    while n < 6 {
+        q[n] = op_id(n + 1, op::ON);
+        n += 1;
+    }
+    q
+};
 
 /// An operator page's Q-Links: output level, coarse, fine and velocity.
 const FM_OP_Q: [[u16; 4]; 6] = {
@@ -268,10 +281,60 @@ const WT: &[PlanPage] = &[
 
 use mpfree_synth::drum_params as dp;
 
-/// Drums: a page per pad, then the kit. A pad's page shows that drum's own
-/// knobs ([`dp::page_fields`]), so it is built from the values
-/// ([`drum_pages`]); this plan only names the kit's page.
-const DRUMS: &[PlanPage] = &[pg("Kit", &["Kit"], &[dp::LEVEL, dp::BASE_NOTE, dp::VOICES])];
+use mpfree_synth::drum_fx::{field as xf, fx_id, kit as xk};
+
+/// A drum's effects page's Q-Links: Punch, Distortion and its two sends.
+const fn drum_fx_q(n: usize) -> [u16; 4] {
+    [
+        fx_id(n, xf::PUNCH),
+        fx_id(n, xf::DISTORTION),
+        fx_id(n, xf::DELAY_SEND),
+        fx_id(n, xf::REVERB_SEND),
+    ]
+}
+const DRUM_FX_Q: [[u16; 4]; 16] = {
+    let mut q = [[0u16; 4]; 16];
+    let mut n = 0;
+    while n < 16 {
+        q[n] = drum_fx_q(n);
+        n += 1;
+    }
+    q
+};
+
+/// Drums: a page per pad, the kit, then each pad's effects (shown under
+/// one tab, [`DRUM_FX_TAB`], for the pad shown last) and the kit's sends.
+/// A pad's page shows that drum's own knobs ([`dp::page_fields`]), so it is
+/// built from the values ([`drum_pages`]); this plan names the pages after.
+const DRUMS: &[PlanPage] = &[
+    pg("Kit", &["Kit"], &[dp::LEVEL, dp::BASE_NOTE, dp::VOICES]),
+    pg("Pad 1 effects", &["Pad 1 effects"], &DRUM_FX_Q[0]),
+    pg("Pad 2 effects", &["Pad 2 effects"], &DRUM_FX_Q[1]),
+    pg("Pad 3 effects", &["Pad 3 effects"], &DRUM_FX_Q[2]),
+    pg("Pad 4 effects", &["Pad 4 effects"], &DRUM_FX_Q[3]),
+    pg("Pad 5 effects", &["Pad 5 effects"], &DRUM_FX_Q[4]),
+    pg("Pad 6 effects", &["Pad 6 effects"], &DRUM_FX_Q[5]),
+    pg("Pad 7 effects", &["Pad 7 effects"], &DRUM_FX_Q[6]),
+    pg("Pad 8 effects", &["Pad 8 effects"], &DRUM_FX_Q[7]),
+    pg("Pad 9 effects", &["Pad 9 effects"], &DRUM_FX_Q[8]),
+    pg("Pad 10 effects", &["Pad 10 effects"], &DRUM_FX_Q[9]),
+    pg("Pad 11 effects", &["Pad 11 effects"], &DRUM_FX_Q[10]),
+    pg("Pad 12 effects", &["Pad 12 effects"], &DRUM_FX_Q[11]),
+    pg("Pad 13 effects", &["Pad 13 effects"], &DRUM_FX_Q[12]),
+    pg("Pad 14 effects", &["Pad 14 effects"], &DRUM_FX_Q[13]),
+    pg("Pad 15 effects", &["Pad 15 effects"], &DRUM_FX_Q[14]),
+    pg("Pad 16 effects", &["Pad 16 effects"], &DRUM_FX_Q[15]),
+    pg(
+        "Sends",
+        &["Sends"],
+        &[
+            xk::DELAY_FEEDBACK,
+            xk::DELAY_LEVEL,
+            xk::REVERB_DECAY,
+            xk::REVERB_LEVEL,
+        ],
+    ),
+];
 
 /// The page that holds pad `pad`'s knobs (0 to 15), so an app can follow
 /// the last pad hit.
@@ -309,6 +372,50 @@ fn drum_pages(params: &[ParamInfo], value: &dyn Fn(u16) -> f32, placed: &mut [bo
             }
         })
         .collect()
+}
+
+/// Drums' Kit page, after the pads' own.
+pub const DRUM_KIT_PAGE: usize = 16;
+
+/// The page of pad `pad`'s effects (0 to 15), after the Kit page.
+pub fn drum_fx_page(pad: usize) -> usize {
+    DRUM_KIT_PAGE + 1 + pad.min(15)
+}
+
+/// The tab every drum's effects page shows under: one tab, not sixteen,
+/// that shows the effects of the pad shown last.
+pub const DRUM_FX_TAB: &str = "Effects";
+
+/// The page to show when pad `pad` is hit while Drums' page `shown` is on
+/// screen: that pad's effects while a pad's effects show, else its own
+/// page (so the Synth tab edits the pad hit last).
+pub fn drum_follow(shown: usize, pad: usize) -> usize {
+    if (drum_fx_page(0)..=drum_fx_page(15)).contains(&shown) {
+        drum_fx_page(pad)
+    } else {
+        drum_page(pad)
+    }
+}
+
+/// Pages that share one tab: for a page called `name`, the tab's name and
+/// the pad it is for (a drum's effects page: "Pad 3 effects" shows under
+/// "Effects", for pad 2 counting from 0). None for a page with its own tab.
+pub fn shared_tab(name: &str) -> Option<(&'static str, usize)> {
+    let n: usize = name
+        .strip_prefix("Pad ")?
+        .strip_suffix(" effects")?
+        .parse()
+        .ok()?;
+    (1..=16).contains(&n).then_some((DRUM_FX_TAB, n - 1))
+}
+
+/// The pad a page is about (0 to 15): a drum's own page or its effects.
+pub fn page_pad(name: &str) -> Option<usize> {
+    if let Some((_, pad)) = shared_tab(name) {
+        return Some(pad);
+    }
+    let n: usize = name.strip_prefix("Pad ")?.parse().ok()?;
+    (1..=16).contains(&n).then(|| n - 1)
 }
 
 use mpfree_synth::pluck_params as kp;
@@ -921,8 +1028,18 @@ mod tests {
             seen.iter().all(|&n| n == 1),
             "every parameter on exactly one page"
         );
+        // The Algo page holds the six operators' On switches; each operator
+        // page has its wave in their place.
+        let on: Vec<&str> = pages[0]
+            .params
+            .iter()
+            .filter(|&&i| params[i].name == "On")
+            .map(|&i| params[i].group)
+            .collect();
+        assert_eq!(on, ["Op 1", "Op 2", "Op 3", "Op 4", "Op 5", "Op 6"]);
         for p in &pages[3..9] {
             assert_eq!(p.params.len(), 16);
+            assert!(p.params.iter().any(|&i| params[i].name == "Wave"));
             let q: Vec<&str> = qlink_targets(p, params)
                 .iter()
                 .map(|&i| params[i].name)
@@ -949,6 +1066,8 @@ mod tests {
         let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
         let mut want: Vec<String> = (1..=16).map(|n| format!("Pad {n}")).collect();
         want.push("Kit".into());
+        want.extend((1..=16).map(|n| format!("Pad {n} effects")));
+        want.push("Sends".into());
         assert_eq!(names, want);
         shown_once(&pages, params);
         for (n, p) in pages[..16].iter().enumerate() {
@@ -963,6 +1082,32 @@ mod tests {
                 assert!(tile_label(&p.name, &params[i]).len() <= 20);
             }
         }
+        assert_eq!(names[DRUM_KIT_PAGE], "Kit");
+        for (n, p) in pages[17..33].iter().enumerate() {
+            assert_eq!(drum_fx_page(n), 17 + n);
+            assert_eq!(p.params.len(), 16, "{}", p.name);
+            assert_eq!(shared_tab(&p.name), Some((DRUM_FX_TAB, n)));
+            assert_eq!(page_pad(&p.name), Some(n));
+            let q: Vec<&str> = qlink_targets(p, params)
+                .iter()
+                .map(|&i| params[i].name)
+                .collect();
+            assert_eq!(q, ["Punch", "Distortion", "Delay send", "Reverb send"]);
+            for &i in &p.params {
+                assert!(tile_label(&p.name, &params[i]).len() <= 20);
+            }
+        }
+        // A hit follows to its pad's effects while effects show, else to
+        // its own page.
+        assert_eq!(drum_follow(drum_fx_page(2), 9), drum_fx_page(9));
+        assert_eq!(drum_follow(3, 9), drum_page(9));
+        assert_eq!(drum_follow(DRUM_KIT_PAGE, 9), drum_page(9));
+        assert_eq!(drum_follow(33, 9), drum_page(9));
+        assert_eq!(names[33], "Sends");
+        assert_eq!(pages[33].params.len(), 9);
+        assert_eq!(shared_tab("Pad 3"), None);
+        assert_eq!(page_pad("Pad 3"), Some(2));
+        assert_eq!(page_pad("Kit"), None);
         let kit: Vec<&str> = pages[16].params.iter().map(|&i| params[i].name).collect();
         assert_eq!(kit, ["Level", "Pad 1 note", "Voices", "Hits on"]);
         // A Current kit: each pad that drum's own knobs and Q-Links.

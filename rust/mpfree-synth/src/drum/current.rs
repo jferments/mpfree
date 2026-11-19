@@ -856,8 +856,9 @@ impl Voice {
         }
     }
 
-    /// One frame.
-    #[inline]
+    /// One frame. Always inlined: `Drums::run` and `run_fx` call it from
+    /// three loops, and a call a frame costs more than the copies.
+    #[inline(always)]
     pub(super) fn tick(&mut self, rate: f32) -> f32 {
         let mut out = 0.0;
         if self.frames.is_multiple_of(CTRL) && self.frames > 0 {
