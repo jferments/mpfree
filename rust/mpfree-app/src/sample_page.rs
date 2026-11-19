@@ -6889,7 +6889,7 @@ impl SamplePage {
                         state: c.state,
                         live: c.live,
                     };
-                    tab.set_cloud(ui, st, c.grains().len(), now);
+                    tab.set_cloud(ui, st, c.grains(), now);
                 }
                 self.cloud_shown = busy;
             }

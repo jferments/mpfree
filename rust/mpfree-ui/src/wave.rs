@@ -328,6 +328,8 @@ const LANE_GAP: i32 = 2;
 const TAP_SLOP: i32 = 8;
 /// Width of the strip redrawn round a playhead.
 const PLAYHEAD_W: i32 = 2;
+/// A grain's mark's width ([`Waveform::set_grains`]).
+const GRAIN_W: i32 = 4;
 
 fn marker_color(t: &Theme, k: MarkerKind) -> Color {
     match k {
@@ -362,6 +364,10 @@ pub struct Waveform {
     region: Option<(u64, u64)>,
     loop_span: Option<(u64, u64)>,
     window: Option<GrainSpan>,
+    /// The grains playing now: each one's frame and its window's level
+    /// (0 to 1), drawn over the wave in the window's colour
+    /// ([`Waveform::set_grains`]).
+    grains: Vec<(u64, f32)>,
     fades: (u64, u64),
     beats: Option<Beats>,
     /// The wave drawn as it plays ([`Waveform::set_bend`]).
@@ -409,6 +415,7 @@ impl Waveform {
             region: None,
             loop_span: None,
             window: None,
+            grains: Vec::new(),
             fades: (0, 0),
             beats: None,
             bend: Vec::new(),
@@ -498,6 +505,21 @@ impl Waveform {
             self.window = window;
             self.changed();
         }
+    }
+
+    /// The grains playing now, each at its frame with its window's level
+    /// (0 to 1): a mark over the wave for each, taller and brighter as its
+    /// window opens. Empty: none.
+    pub fn set_grains(&mut self, grains: Vec<(u64, f32)>) {
+        if self.grains != grains {
+            self.grains = grains;
+            self.changed();
+        }
+    }
+
+    /// The grains drawn ([`Waveform::set_grains`]).
+    pub fn grains(&self) -> &[(u64, f32)] {
+        &self.grains
     }
 
     /// Fade-in and fade-out lengths in frames, drawn from the region's ends.
@@ -853,6 +875,27 @@ impl Widget for Waveform {
             if x >= x0 && x < x1 {
                 cx.canvas
                     .fill_rect(Rect::new(x - 1, wave.bottom() - 8, 2, 8), tick);
+            }
+        }
+
+        // The grains playing: a mark round the wave's middle for each, as
+        // tall and as bright as its window is open.
+        if !self.grains.is_empty() {
+            let c = self.window.map_or(t.warn, |w| w.color);
+            let mid = wave.y + wave.h / 2;
+            for &(f, level) in &self.grains {
+                let x = self.x_in(wave, f as f64).round() as i32;
+                if x < x0 || x + GRAIN_W > x1 {
+                    continue;
+                }
+                let level = level.clamp(0.0, 1.0);
+                let h = (6.0 + (wave.h - 12) as f32 * 0.8 * level).round() as i32;
+                let alpha = (90.0 + 165.0 * level).round() as u8;
+                cx.canvas.fill_round_rect(
+                    Rect::new(x - GRAIN_W / 2, mid - h / 2, GRAIN_W, h),
+                    GRAIN_W / 2,
+                    c.with_alpha(alpha),
+                );
             }
         }
 
