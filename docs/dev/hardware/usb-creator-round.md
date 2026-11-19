@@ -1,6 +1,6 @@
 # The USB creator round: a new musician's install, from developer mode off
 
-**Status:** runbook, 2026-11-16. Not run yet: every block that touches the MPC waits for the owner's go. Run it from `main` once the pull request that adds this page has merged. **Scope:** the reference MPC One (Gen 1) on MPC OS 3.10.1, as the [3.10.1 device round](firmware-3.10.1-qualification.md) of 2026-11-16 left it: developer mode on and locked to the owner's key (its Q2), MPFree's boot hook installed.
+**Status:** runbook, 2026-11-16. Not run yet: every block that touches the MPC waits for the owner's go. Run it from `main` once the pull request that adds this page has merged. **Scope:** the reference MPC One (Gen 1) on MPC OS 3.10.1, as the [3.10.1 device round](firmware-3.10.1-qualification.md) of 2026-11-16 and the [second 3.10.1 round](firmware-3.10.1-round-2.md) of 2026-11-19 leave it: developer mode on and not locked (the 18 Nov notes record it unlocked, and the second round leaves its lock out), MPFree's boot hook installed.
 
 The USB creator's earlier rounds made sticks on Linux, installed the boot hook with one tap and backed the MPC up, but always from a lab MPC: developer mode was already on, and the last round installed the hook over SSH. This round follows a new musician's path from the start, with the window's own steps and nothing else: the MPC with no hook and developer mode off, a new stick made in the window, developer mode switched on, the stick put in, one tap. Since 2026-11-16 the setup script ends by switching developer mode off with Akai's own off script ([decision 10](../design/usb-creator.md#the-owners-decisions-2026-11-15), [developer mode afterwards](../design/usb-creator.md#developer-mode-afterwards)), so the round also shows whether the boot hook survives that, and whether developer mode stays off.
 
@@ -64,7 +64,7 @@ cd /home/jesse/code/mpfree-hardware-survey && git fetch origin main:refs/remotes
 cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run status-before -- bash tools/mpc-one/collect-over-ssh.sh --devmode-status && python3 tools/mpc-one/results.py run hook-report-before -- bash tools/mpc-one/collect-over-ssh.sh --hook-report
 ```
 
-- **Expect `LOCKED: only your key gets in`**, and a hook report listing the hook's three files with `MPFree's stick in now: no`.
+- **Expect `OPEN: a login with no key and no password gets in`** (developer mode has been unlocked since 16 Nov; `LOCKED: only your key gets in` is fine too), and a hook report listing the hook's three files with `MPFree's stick in now: no`.
 - **If it stops with `could not read the running system's state` and `Connection refused` above it,** developer mode is off already. Switch it on in the menu (SHIFT + MENU > Developer) and run C1 again. It then ends `OPEN`, which is fine for C2: C3 closes it again.
 - **If it stops with `did not show the host key recorded`,** run the 3.10.1 round's [Q1](firmware-3.10.1-qualification.md) first, then C1 again.
 
@@ -77,7 +77,7 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 - **Passes when** it ends `RESULT: the hook is gone.` From now on a power-on starts Akai's system, stick in or not.
 - **Undo:** C5's tap puts main's hook back. Without the tap, the 3.10.1 round's Q7b-ssh (`--hook-install`) does, over developer mode's SSH.
 
-**Block C3: developer mode off, the way Akai's menu does it** (**state-changing, Akai's own switch**: per Akai's files it deletes `/data/ssh`, with C1's lock and your key in it, and `/data/root`, then restarts the MPC; nothing of MPFree's is on the MPC now). As far as the records show, the switch hasn't been used on this MPC since 3.10.1 went on.
+**Block C3: developer mode off, the way Akai's menu does it** (**state-changing, Akai's own switch**: per Akai's files it deletes `/data/ssh`, with developer mode's SSH settings in it (and the lock, if C1 showed one), and `/data/root`, then restarts the MPC; nothing of MPFree's is on the MPC now). As far as the records show, the switch hasn't been used on this MPC since 3.10.1 went on.
 
 1. Hold **SHIFT** and press **MENU**, choose **Developer**, and switch developer mode off.
 2. Note what the MPC does: whether it restarts by itself, and after how long. Wait for Akai's app.

@@ -192,6 +192,23 @@ fn drums_process_never_allocates() {
 }
 
 #[test]
+fn drums_current_voices_never_allocate() {
+    // A factory kit: the Current voices, gated pads, variation and accent.
+    let mut s = Drums::new(48_000);
+    let kit = Drums::presets()
+        .iter()
+        .find(|k| k.name == "Init Kit")
+        .unwrap();
+    s.load_preset(kit);
+    let params = s.params();
+    assert_eq!(
+        exercise(&mut s, params, 48_000),
+        0,
+        "Drums::process (Current voices) allocated"
+    );
+}
+
+#[test]
 fn pluck_process_never_allocates() {
     let mut s = Pluck::new(48_000);
     let params = s.params();

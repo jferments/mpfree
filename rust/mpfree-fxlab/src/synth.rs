@@ -20,8 +20,10 @@
 //!   prototype and where its resonance peaks.
 //! - **FM**: a pair's sidebands against the Bessel functions, feedback and
 //!   the level across algorithms.
-//! - **Drums**: each kit's pads, decay against the label, tone against
-//!   velocity, level against the kick, a repeated hit.
+//! - **Drums**: each kit's pads, decay against the label, tone and the
+//!   attack against velocity, level against the kick, a repeated hit; the
+//!   808 kick and the metal bank against their circuit papers, the metal's
+//!   aliasing, a choke's fade and where a hit starts.
 //!
 //! Cost per voice is the bench's (`mpfree-bench --afford`), not a ratchet
 //! row. Desktop only; nothing here runs on the MPC.
@@ -905,6 +907,13 @@ impl Engine {
             .into_iter()
             .find(|e| e.name().eq_ignore_ascii_case(name))
     }
+}
+
+/// The drum rows alone, as [`report`] measures them.
+pub fn drum_report(rate: u32) -> Vec<Row> {
+    let mut rows = Vec::new();
+    drums(&mut rows, rate);
+    rows
 }
 
 /// The rows as text, one a line.
@@ -2400,7 +2409,7 @@ fn fm_harmonic(n: &dyn Node) -> (bool, f64) {
 // Drums.
 
 fn drums(rows: &mut Vec<Row>, rate: u32) {
-    use drum_params::{field, pad_id, PADS};
+    use drum_params::{field, kind, model_of, pad_id, Kind, PADS};
     for (ki, kit) in Drums::presets().iter().enumerate() {
         let make = || {
             let mut d = Drums::new(rate);
@@ -2412,6 +2421,7 @@ fn drums(rows: &mut Vec<Row>, rate: u32) {
         let mut kick_level = None;
         for pad in 0..PADS {
             let model = probe.pad_name(pad);
+            let m = model_of(probe.param(pad_id(pad, field::MODEL)));
             let label_ms = f64::from(probe.param(pad_id(pad, field::DECAY)));
             let secs = (label_ms * 0.0013 + 0.4).min(7.0);
             let key = base + pad as u8;
@@ -2457,9 +2467,57 @@ fn drums(rows: &mut Vec<Row>, rate: u32) {
                 Some(0.1),
                 0.03,
             );
-            // D7: level against the kit's first kick.
+            // D3: and the tone never darkens as velocity rises: the
+            // smallest step in centroid over velocities 20, 40, 64, 90
+            // and 127, octaves.
+            let c = |x: &[f64]| centroid(&x[..4_096], rate);
+            let cs = [c(&hit(20)), c_lo, c(&hit(64)), c(&hit(90)), c_hi];
+            let least = cs
+                .windows(2)
+                .map(|w| {
+                    if w[0] > 0.0 && w[1] > 0.0 {
+                        (w[1] / w[0]).log2()
+                    } else {
+                        0.0
+                    }
+                })
+                .fold(f64::INFINITY, f64::min);
+            put(
+                rows,
+                "D3",
+                &subject,
+                "vel_tone_least_step_oct",
+                least,
+                Better::Higher,
+                Some(0.0),
+                0.01,
+            );
+            // D3: the attack transient, velocity 127 against 40: the
+            // first 10 ms above 2 kHz.
+            put(
+                rows,
+                "D3",
+                &subject,
+                "attack_rise_db",
+                attack_db(&loud, rate) - attack_db(&soft, rate),
+                Better::Higher,
+                Some(6.0),
+                0.5,
+            );
+            // D7: a pad alone at full velocity doesn't clip.
+            put(
+                rows,
+                "D7",
+                &subject,
+                "peak_dbfs",
+                db20(loud.iter().fold(0.0f64, |a, v| a.max(v.abs()))),
+                Better::Lower,
+                Some(0.0),
+                0.5,
+            );
+            // D7: level against the kit's first kick (either kind).
             let lv = level_db(&loud, rate);
-            if kick_level.is_none() && model == "Kick" {
+            if kick_level.is_none() && kind(m) == Kind::Kick {
                 kick_level = Some(lv);
             }
             if let Some(k) = kick_level {
@@ -2469,9 +2527,9 @@ fn drums(rows: &mut Vec<Row>, rate: u32) {
                     &subject,
                     "level_vs_kick_db",
                     lv - k,
-                    Better::Info,
-                    None,
-                    0.0,
+                    Better::Near(0.0),
+                    Some(6.0),
+                    0.5,
                 );
             }
             // D4: the same hit twice, the second's level against the first.
@@ -2496,18 +2554,454 @@ fn drums(rows: &mut Vec<Row>, rate: u32) {
                 (gap + frames(0.05, rate), NodeEvent::NoteOff { note: key }),
             ];
             let two = render(&mut d, rate, 2 * gap, &ev).mid();
+            let step = (level_db(&two[gap..], rate) - level_db(&two[..gap], rate)).abs();
             put(
                 rows,
                 "D4",
                 &subject,
                 "repeat_db",
-                level_db(&two[gap..], rate) - level_db(&two[..gap], rate),
-                Better::Info,
-                None,
-                0.0,
+                step,
+                Better::Near(0.6),
+                Some(0.4),
+                0.1,
             );
+            // D4: and its pitch, on a kick (a steady body to measure).
+            if kind(m) == Kind::Kick && model == "Kick" {
+                let pitch = |x: &[f64]| {
+                    let t = pitch_track(x, rate);
+                    let late: Vec<f64> = t
+                        .iter()
+                        .filter(|(at, _)| *at > 0.2 && *at < 0.4)
+                        .map(|p| p.1)
+                        .collect();
+                    late.iter().sum::<f64>() / late.len().max(1) as f64
+                };
+                let c = cents(pitch(&two[gap..]), pitch(&two[..gap])).abs();
+                put(
+                    rows,
+                    "D4",
+                    &subject,
+                    "repeat_cents",
+                    c,
+                    Better::Near(3.0),
+                    Some(2.0),
+                    0.2,
+                );
+            }
+        }
+        // D7: every pad at once, twice (32 hits), at full velocity: the
+        // kit's peak.
+        let mut d = make();
+        let mut ev = Vec::new();
+        for (at, vel) in [(0usize, 127u8), (frames(0.004, rate), 127)] {
+            for pad in 0..PADS as u8 {
+                ev.push((
+                    at,
+                    NodeEvent::NoteOn {
+                        note: base + pad,
+                        velocity: vel,
+                    },
+                ));
+            }
+        }
+        let all = render(&mut d, rate, frames(1.0, rate), &ev);
+        let peak = all
+            .left
+            .iter()
+            .chain(&all.right)
+            .fold(0.0f64, |a, v| a.max(v.abs()));
+        put(
+            rows,
+            "D7",
+            &format!("Drums[{}, 32 hits at once]", kit.name),
+            "peak_dbfs",
+            db20(peak),
+            Better::Info,
+            None,
+            0.0,
+        );
+    }
+    drum_circuits(rows, rate);
+}
+
+/// A hit's attack transient, dB: the energy of its first 10 ms above
+/// 2 kHz.
+fn attack_db(x: &[f64], rate: u32) -> f64 {
+    let n = frames(0.01, rate);
+    let lp = low_pass(&x[..4_096], 2_000.0, rate);
+    let e: f64 = x[..n].iter().zip(&lp).map(|(a, b)| (a - b) * (a - b)).sum();
+    db10(e.max(1e-30))
+}
+
+/// The Init kit with the Current voices and pad `pad` set by `set`
+/// (field, value), accent off, for the circuit rows.
+fn drum_patch(rate: u32, pad: usize, set: &[(u16, f32)]) -> Drums {
+    use drum_params::{field, pad_id};
+    let mut d = Drums::new(rate);
+    let init = Drums::presets()
+        .iter()
+        .find(|k| k.name == "Init Kit")
+        .unwrap_or(&Drums::presets()[0]);
+    d.load_preset(init);
+    d.set_param(drum_params::VOICES, drum_params::CURRENT);
+    d.set_param(pad_id(pad, field::ACCENT), 0.0);
+    d.set_param(pad_id(pad, field::VARIATION), 0.0);
+    for &(f, v) in set {
+        d.set_param(pad_id(pad, f), v);
+    }
+    d
+}
+
+/// The drum rows measured against the circuit papers and the engine's own
+/// promises: the 808 kick (D1), the metal bank (D2, D9), a choke's fade
+/// (D6) and where a hit starts (D8).
+fn drum_circuits(rows: &mut Vec<Row>, rate: u32) {
+    use drum_params::{field, model, pad_id};
+    use mpfree_synth::drum;
+    let base = 36u8;
+
+    // D1: the 808 kick at Tune 0, Sigh 3.28 st over 300 ms, Punch 50, no
+    // drive, Decay 800 ms, against the circuit as we read Werner, Abel and
+    // Smith (DAFx 2014): the pitch falls from 58 Hz to 48 Hz over the first
+    // 300 ms (their Fig. 11).
+    let pad = 13;
+    let mut d = drum_patch(
+        rate,
+        pad,
+        &[
+            (field::MODEL, f32::from(model::KICK_808)),
+            (field::TUNE, 0.0),
+            (field::DECAY, 800.0),
+            (field::TONE, 100.0),
+            (field::SNAP, 50.0),
+            (field::SWEEP, 3.28),
+            (field::SWEEP_TIME, 300.0),
+            (field::DRIVE, 0.0),
+        ],
+    );
+    let x = note(&mut d, rate, base + pad as u8, 127, 0.05, 1.6).mid();
+    let track = pitch_track(&x, rate);
+    let model_hz = |t: f64| {
+        let semis = if t < 0.3 {
+            3.28 * (1.0 - t / 0.3).powi(3)
+        } else {
+            0.0
+        };
+        48.0 * (semis / 12.0).exp2()
+    };
+    let err_at = |from: f64, to: f64| {
+        track
+            .iter()
+            .filter(|(t, _)| *t >= from && *t < to)
+            .map(|&(t, f)| ((f - model_hz(t)) / model_hz(t) * 100.0).abs())
+            .fold(0.0f64, f64::max)
+    };
+    let subject = "Drums[808 kick, Tune 0, Sigh 3.28 st in 300 ms]";
+    put(
+        rows,
+        "D1",
+        subject,
+        "sigh_start_err_pct",
+        err_at(0.01, 0.06),
+        Better::Lower,
+        Some(5.0),
+        0.3,
+    );
+    put(
+        rows,
+        "D1",
+        subject,
+        "settled_err_pct",
+        err_at(0.3, 0.7),
+        Better::Lower,
+        Some(5.0),
+        0.3,
+    );
+    let e = env_db(&x, rate, 5.0, 1.0);
+    let top = e.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let last = e.iter().rposition(|&v| v > top - 60.0).unwrap_or(0) as f64;
+    put(
+        rows,
+        "D1",
+        subject,
+        "decay_err_pct",
+        ((last - 800.0) / 800.0 * 100.0).abs(),
+        Better::Lower,
+        Some(5.0),
+        0.5,
+    );
+
+    // D2: the metal bank's six frequencies, found in its spectrum, against
+    // the cymbal paper (Werner, Abel and Smith, ICMC-SMC 2014), and the
+    // cymbal's band-pass centres as the voice sets them.
+    const N: usize = 65_536;
+    let bank: Vec<f64> = drum::metal_bank(50.0, rate as f32, N, 7)
+        .into_iter()
+        .map(f64::from)
+        .collect();
+    let ps = windowed_power(&bank, &blackman_harris(N));
+    let bin = f64::from(rate) / N as f64;
+    let mut worst = 0.0f64;
+    for &paper in &drum::METAL {
+        let paper = f64::from(paper);
+        let lo = ((paper * 0.98) / bin) as usize;
+        let hi = ((paper * 1.02) / bin) as usize;
+        let k = (lo..=hi)
+            .max_by(|&a, &b| ps[a].total_cmp(&ps[b]))
+            .unwrap_or(lo);
+        let (a, b, c) = (ps[k - 1].ln(), ps[k].ln(), ps[k + 1].ln());
+        let off = 0.5 * (a - c) / (a - 2.0 * b + c);
+        let f = (k as f64 + off) * bin;
+        worst = worst.max(((f - paper) / paper * 100.0).abs());
+    }
+    put(
+        rows,
+        "D2",
+        "Drums[metal bank, Spread 50]",
+        "freq_err_pct",
+        worst,
+        Better::Lower,
+        Some(0.5),
+        0.05,
+    );
+    let [lo, hi] = drum::cymbal_bands(0.5, 1.0, 1.0);
+    let band_err = ((f64::from(lo) - 3440.0) / 3440.0)
+        .abs()
+        .max(((f64::from(hi) - 7100.0) / 7100.0).abs())
+        * 100.0;
+    put(
+        rows,
+        "D2",
+        "Drums[cymbal bands, Tone 50]",
+        "centre_err_pct",
+        band_err,
+        Better::Lower,
+        Some(5.0),
+        0.1,
+    );
+
+    // D9: the bank's worst alias at 1× (band-limited squares, as played),
+    // and for comparison plain squares at 1× and at 4× (the paper's way)
+    // brought down to the rate.
+    let freqs: Vec<f64> = drum::metal_hz(50.0, 1.0)
+        .iter()
+        .map(|&f| f64::from(f))
+        .collect();
+    let width = f64::from(drum::METAL_WIDTH);
+    let naive = |over: usize| -> Vec<f64> {
+        let r = f64::from(rate) * over as f64;
+        let n = N * over + 512;
+        let mut out = vec![0.0; n];
+        for (k, &f) in freqs.iter().enumerate() {
+            let mut ph = 0.13 * k as f64;
+            for o in out.iter_mut() {
+                *o += if ph < width { 1.0 } else { -1.0 };
+                ph += f / r;
+                ph -= ph.floor();
+            }
+        }
+        if over == 1 {
+            out.truncate(N);
+            return out;
+        }
+        // A windowed-sinc low-pass at 0.45 of the rate, then every
+        // `over`th frame.
+        let taps = 255;
+        let fc = 0.45 / over as f64;
+        let h: Vec<f64> = (0..taps)
+            .map(|i| {
+                let m = i as f64 - (taps - 1) as f64 / 2.0;
+                let sinc = if m == 0.0 {
+                    2.0 * fc
+                } else {
+                    (TAU * fc * m).sin() / (PI * m)
+                };
+                sinc * (0.42 - 0.5 * (TAU * i as f64 / (taps - 1) as f64).cos()
+                    + 0.08 * (2.0 * TAU * i as f64 / (taps - 1) as f64).cos())
+            })
+            .collect();
+        (0..N)
+            .map(|j| {
+                let at = j * over;
+                h.iter()
+                    .enumerate()
+                    .map(|(i, c)| c * out.get(at + i).copied().unwrap_or(0.0))
+                    .sum()
+            })
+            .collect()
+    };
+    let bank_alias = |x: &[f64]| -> f64 {
+        let ps = windowed_power(x, &blackman_harris(N));
+        let guard = 8.0;
+        let (mut harm, mut other) = (0.0f64, 0.0f64);
+        for (k, &p) in ps.iter().enumerate() {
+            let f = k as f64 * bin;
+            if !(20.0..=20_000.0).contains(&f) {
+                continue;
+            }
+            let on = freqs.iter().any(|&f0| {
+                let h = (f / f0).round().max(1.0);
+                ((f - h * f0) / bin).abs() <= guard
+            });
+            if on {
+                harm = harm.max(p);
+            } else {
+                other = other.max(p);
+            }
+        }
+        floor(db10(other / harm.max(1e-300)))
+    };
+    put(
+        rows,
+        "D9",
+        "Drums[metal bank, band-limited squares at 1x]",
+        "alias_db",
+        bank_alias(&bank),
+        Better::Lower,
+        Some(-60.0),
+        1.0,
+    );
+    for (what, over) in [("plain squares at 1x", 1usize), ("plain squares at 4x", 4)] {
+        put(
+            rows,
+            "D9",
+            &format!("Drums[metal bank, {what}]"),
+            "alias_db",
+            bank_alias(&naive(over)),
+            Better::Info,
+            None,
+            0.0,
+        );
+    }
+
+    // D6: a ringing 808 kick choked by a silent pad in its group, with
+    // each voice set: the energy above 4 kHz in the 20 ms from the choke
+    // against the kick's level there.
+    for (what, voices) in [("Current", drum_params::CURRENT), ("Classic", 0.0)] {
+        let kick = 0;
+        let mut d = drum_patch(
+            rate,
+            kick,
+            &[
+                (field::MODEL, f32::from(model::KICK)),
+                (field::DECAY, 1500.0),
+                (field::SNAP, 0.0),
+                (field::NOISE, 0.0),
+                (field::DRIVE, 0.0),
+                (field::CHOKE, 1.0),
+            ],
+        );
+        d.set_param(pad_id(1, field::CHOKE), 1.0);
+        d.set_param(pad_id(1, field::LEVEL), -60.0);
+        d.set_param(drum_params::VOICES, voices);
+        let at = frames(0.3, rate);
+        let ev = vec![
+            (
+                0,
+                NodeEvent::NoteOn {
+                    note: base,
+                    velocity: 127,
+                },
+            ),
+            (
+                at,
+                NodeEvent::NoteOn {
+                    note: base + 1,
+                    velocity: 127,
+                },
+            ),
+        ];
+        let x = render(&mut d, rate, at + 4_096, &ev).mid();
+        let n = 2_048;
+        let w = &x[at - n / 2..at + n / 2];
+        let ps = windowed_power(w, &blackman_harris(n));
+        let b = f64::from(rate) / n as f64;
+        let high: f64 = ps
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| *k as f64 * b >= 4_000.0)
+            .map(|(_, p)| p)
+            .sum();
+        let all: f64 = ps.iter().sum();
+        put(
+            rows,
+            "D6",
+            &format!("Drums[a kick choked, {what}]"),
+            "step_db",
+            floor(db10(high / all.max(1e-300))),
+            if what == "Current" {
+                Better::Lower
+            } else {
+                Better::Info
+            },
+            (what == "Current").then_some(-60.0),
+            1.0,
+        );
+    }
+
+    // D8: a hit starts on its frame at any block size, the same samples.
+    let mut want: Option<Vec<f32>> = None;
+    let mut late = 0usize;
+    let mut differ = 0.0f64;
+    for block in [1usize, 7, 64, 128, 1000] {
+        let mut d = drum_patch(rate, 0, &[]);
+        let start = 1_003usize;
+        let len = 6_000;
+        let mut out = vec![0.0f32; len];
+        let mut r = vec![0.0f32; len];
+        let mut at = 0;
+        while at < len {
+            let n = block.min(len - at);
+            let ev: Vec<Timed> = if (at..at + n).contains(&start) {
+                vec![Timed::new(
+                    (start - at) as u32,
+                    NodeEvent::NoteOn {
+                        note: base,
+                        velocity: 100,
+                    },
+                )]
+            } else {
+                Vec::new()
+            };
+            d.process(
+                &Ctx::new(rate, at as u64),
+                &ev,
+                &mut out[at..at + n],
+                &mut r[at..at + n],
+            );
+            at += n;
+        }
+        let first = out.iter().position(|v| *v != 0.0).unwrap_or(len);
+        late = late.max(first.abs_diff(start));
+        match &want {
+            None => want = Some(out),
+            Some(w) => {
+                for (a, b) in w.iter().zip(&out) {
+                    differ = differ.max(f64::from((a - b).abs()));
+                }
+            }
         }
     }
+    put(
+        rows,
+        "D8",
+        "Drums[a hit at frame 1003, blocks of 1 to 1000]",
+        "start_err_frames",
+        late as f64,
+        Better::Lower,
+        Some(0.0),
+        0.0,
+    );
+    put(
+        rows,
+        "D8",
+        "Drums[a hit at frame 1003, blocks of 1 to 1000]",
+        "max_diff",
+        differ,
+        Better::Lower,
+        Some(0.0),
+        0.0,
+    );
 }
 
 // ---------------------------------------------------------------------------
