@@ -134,13 +134,17 @@ The Ensemble effect also meets the FX method's own rows: no dip as Mix goes up (
 
 ## The NEON kernels (C3)
 
-The bar for each kernel in `mpfree-simd` ([NEON kernels](simd.md)), first the supersaw's saws (`table_sum`). N1 and N2 run on CI in the ARMv7 job; N3 is the device round's.
+The bar for each kernel in `mpfree-simd` ([NEON kernels](simd.md)): the supersaw's saws (`table_sum`, N1 to N4) and the Choir's formants (`formants4`, N5 to N7). N1, N2, N4, N5 and N6 run on CI in the ARMv7 job; N3 and N7 are the device round's.
 
 | Id | Measure | Target | Today |
 |---|---|---|---|
 | N1 | The kernel against its plain twin under qemu-arm | The same samples and phases to the bit: random calls (8 to 4,096 entries, 1 to 9 oscillators, 0 to 69 frames, writing and adding), every saw level at Poly's sizes, the bench workload, and denormals with flush-to-zero on | Met: 13 tests, 3,000 random calls |
 | N2 | ARMv7 instructions a block, eight voices' supersaw saws with their mixing (`tools/simd_arm_cost.py`) | NEON fewer than the twin | Met: 58,361 against 134,455 (43 %) |
-| N3 | Time on the MPC, the same case (`mpfree-bench`, "Supersaw saws: 8 voices, plain" and "..., NEON") | NEON's p99 block under the twin's, or the kernel is removed | Device round |
+| N4 | Poly with the kernels on and off, as ARMv7 under qemu (`mpfree-synth/tests/simd.rs`) | The same samples: every Super preset, and both oscillators on Supersaw with unison | Met |
+| N3 | Time on the MPC, the same case (`mpfree-bench`, "Supersaw saws: 8 voices, plain" and "..., NEON") | NEON's p99 block under the twin's, or the kernel is removed; and the Super presets no slower with the kernels on than with `--plain` | Device round |
+| N5 | The formant kernel against its plain twin under qemu-arm | The same samples and state to the bit: random calls (0 to 116 frames, filters 50 Hz to 0.45 of the rate, Q 0.5 to 50, signed and -0 gains, silent lanes), a voice dying away with flush-to-zero on, and the Choir workload | Met: 3,000 random calls |
+| N6 | ARMv7 instructions a block, eight Choir voices' formants with their source and mixing | NEON fewer than the twin | Met: 40,486 against 126,280 (32 %) |
+| N7 | Time on the MPC, the same case ("Choir formants: 8 voices, plain" and "..., NEON") | NEON's p99 block under the twin's, or the kernel is removed | Device round |
 
 ## Not measured yet
 
