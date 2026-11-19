@@ -1654,7 +1654,6 @@ impl Synth {
                     Engine::Strings => &mut self.strings,
                     Engine::Bass => &mut self.bass,
                     Engine::Wind => &mut self.wind,
-                    Engine::Wind => &mut self.wind,
                 };
                 node.process(&ctx, &self.events[k][first..e[k]], sl, sr);
                 if !sl.iter().chain(sr.iter()).all(|s| s.is_finite()) {
