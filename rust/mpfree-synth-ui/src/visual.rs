@@ -26,7 +26,8 @@ impl<F: Fn(u16) -> f32> Values for F {
 fn wave(shape: f32, t: f32, pw: f32) -> f32 {
     let t = t.rem_euclid(1.0);
     match shape.round() as i32 {
-        0 => 1.0 - 2.0 * t,
+        // The supersaw draws as its middle saw.
+        0 | 4 => 1.0 - 2.0 * t,
         1 => {
             if t < pw {
                 1.0

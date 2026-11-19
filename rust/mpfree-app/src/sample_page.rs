@@ -2,13 +2,14 @@
 //! player's kits. It has the Pads tab (the kit's pads on a compact map, to
 //! pick one, copy, paste or clear it, set it up and put the kit's sounds on
 //! it), the Wave tab (Start, End, the loop, the fades and the region's
-//! settings, and the tools strip's Grain tool: the grain window on the
-//! wave and every grain setting), the Chop tab (slices by transients,
-//! beats, a grid, silence or by hand, put on the kit's pads) and the Play
-//! tab (the layers' velocities, the amp envelope, the filter, voices, mute
-//! group, pressure). The Wave page's recorder row records (one-page step
-//! 2; the Rec tab went in step 2f, part 4). The pad bar's tabs switch
-//! between them.
+//! settings, and the tools strip's Slice, Grain and Warp tools: Slice cuts
+//! the sound by transients, beats, a grid, silence, pitch, live or by hand
+//! and puts the slices on the kit's pads, Grain shows the grain window on
+//! the wave and every grain setting) and the Play tab (the layers'
+//! velocities, the amp envelope, the filter, voices, mute group,
+//! pressure). The Wave page's recorder row records (one-page step
+//! 2; the Rec tab went in step 2f, part 4; the Chop tab in step 3, as the
+//! Slice tool). The pad bar's tabs switch between them.
 //!
 //! - The screen thread owns every kit's project, handed over by
 //!   `sampler::Player::take_projects` when the kits are loaded.
@@ -89,7 +90,6 @@ use mpfree_sampler::{sound_file, wav};
 use mpfree_sampler_ui::auto_tab::{
     self, AutoAction, AutoSettings, AutoState, AutoTab, Onto, Running,
 };
-use mpfree_sampler_ui::chop_tab::{self, ChopAction, ChopState, ChopTab};
 use mpfree_sampler_ui::grain_tab::{self, CloudNow};
 use mpfree_sampler_ui::pads_tab::{self, PadsAction, PadsState, PadsTab};
 use mpfree_sampler_ui::play_tab::{self, PlayAction, PlayState, PlayTab, SceneAction};
@@ -100,6 +100,7 @@ use mpfree_sampler_ui::recorder::{
     self, KeepView, MonitorView, Plays, RecorderAction, RecorderView, KEEP_NOT_YET, LINE_ONLY,
 };
 use mpfree_sampler_ui::send;
+use mpfree_sampler_ui::slice_tool::{self, ChopAction};
 use mpfree_sampler_ui::source::{cache_file, SourceView};
 use mpfree_sampler_ui::wave_tab::{
     self, duration_text, mode_label, Tool, WaveAction, WaveState, WaveTab,
@@ -118,8 +119,6 @@ use mpfree_fx::{CapturePoint, StripId};
 
 /// The Wave tab's page.
 pub const PAGE: &str = "Sample";
-/// The Chop tab's page.
-pub const CHOP_PAGE: &str = "Sample · Chop";
 /// The Play tab's page.
 pub const PLAY_PAGE: &str = "Sample · Play";
 /// The Pads tab: the pads, the pad's settings and the kit's sounds.
@@ -147,18 +146,17 @@ const TAG_RECALL: u8 = 1;
 pub const EMPTY_PAGE: &str = "Sample · no sound";
 pub const EMPTY: &str = "sample-empty";
 pub const EMPTY_LAYOUT: &str = "col(header:60, sample-empty:*, hint:26)";
-/// The pad editor's widgets all start with this (the Chop tab's with
-/// `smp-chop-`, the Play tab's with `smp-play-`).
+/// The pad editor's widgets all start with this (the Play tab's with
+/// `smp-play-`).
 pub const PREFIX: &str = "smp-";
 /// The editors whose pad bar's title names the pad and its sound.
-const NAMED_BARS: [&str; 3] = [wave_tab::BAR, chop_tab::BAR, play_tab::BAR];
+const NAMED_BARS: [&str; 2] = [wave_tab::BAR, play_tab::BAR];
 /// The text keyboard's keys for a pad's name and its sound's.
 pub const NAME_PAD: &str = "pad";
 pub const NAME_SOUND: &str = "sound";
 /// The most characters a name typed may have (one from a file may be
 /// longer, until shortened).
 pub const NAME_MAX: usize = 32;
-const CHOP_PREFIX: &str = "smp-chop-";
 const PLAY_PREFIX: &str = "smp-play-";
 const PADS_PREFIX: &str = "smp-pads-";
 const AUTO_PREFIX: &str = "smp-auto-";
@@ -177,7 +175,7 @@ struct Gesture {
 }
 
 enum Before {
-    /// A layer's region on the Wave (any tool), Warp or Chop tab.
+    /// A layer's region on the Wave page (any tool).
     Region {
         layer: usize,
         region: Box<Region>,
@@ -203,7 +201,6 @@ pub enum Editor {
     /// one of the Sample tab's.
     Pads,
     Wave,
-    Chop,
     Play,
     /// The recorder's Auto-sample mode (its Source, REC opening it).
     Auto,
@@ -670,9 +667,6 @@ pub struct SamplePage {
     editor: Editor,
     /// The Sample tab's editor, kept while the Pads tab shows.
     sample_editor: Editor,
-    /// The Chop tab, added the first time it is opened.
-    chop: Option<ChopTab>,
-    chop_state: Option<ChopState>,
     /// The Play tab, added the first time it is opened.
     play: Option<PlayTab>,
     play_state: Option<PlayState>,
@@ -823,7 +817,7 @@ pub struct SamplePage {
     /// Hits and lifts for the audio thread (Flatten), and live chop's
     /// stop.
     hits: Vec<FromUi>,
-    /// Live chop on the Chop tab, while it runs.
+    /// Live chop with the Slice tool, while it runs.
     live: Option<LiveRun>,
     /// The cuts the sampler has marked so far (from the playheads).
     marks_seen: u64,
@@ -876,7 +870,7 @@ pub struct SamplePage {
     sending_take: Option<(usize, usize)>,
     /// A tap on the wave holds the take shown (Gate, Loop, Granular).
     take_held: Option<usize>,
-    /// The app can write files (Put on Files on the Chop tab).
+    /// The app can write files (Put on Files with the Slice tool).
     files: bool,
     /// Pads exported, for the app to write.
     exports: Vec<export::Export>,
@@ -884,8 +878,8 @@ pub struct SamplePage {
     wanted_kit: Option<usize>,
     /// Put on New kit (sampler R4.6) as the app offers it: Ok with the
     /// empty kit the slices would go on, for a new track, or Err saying
-    /// why not now. None until the app says, and then the Chop tab has no
-    /// New kit.
+    /// why not now. None until the app says, and then the Slice tool has
+    /// no New kit.
     new_kit: Option<Result<usize, String>>,
     /// A chop to a new kit just made, for the app to put on a new track
     /// ([`SamplePage::take_new_kit_track`]).
@@ -932,8 +926,6 @@ impl SamplePage {
             state: None,
             editor: Editor::Wave,
             sample_editor: Editor::Wave,
-            chop: None,
-            chop_state: None,
             play: None,
             play_state: None,
             velocity: None,
@@ -1353,9 +1345,11 @@ impl SamplePage {
         self.projects.get(kit)
     }
 
+    /// The Slice tool and the sound it chops, with the Wave page built.
     #[cfg(test)]
-    pub fn chop(&self) -> Option<(&ChopTab, &ChopState)> {
-        self.chop.as_ref().zip(self.chop_state.as_ref())
+    pub fn slice(&self) -> Option<(&slice_tool::SliceTool, &slice_tool::ChopState)> {
+        let cs = self.state.as_ref()?.chop.as_deref()?;
+        Some((self.tab.as_ref()?.slice(), cs))
     }
 
     /// A pad let go: the Pads tab's map stops lighting it.
@@ -1475,6 +1469,11 @@ impl SamplePage {
         self.page() == PAGE && self.tool() == Tool::Grain
     }
 
+    /// The Wave page shows with the Slice tool.
+    pub fn slice_tool(&self) -> bool {
+        self.page() == PAGE && self.tool() == Tool::Slice
+    }
+
     #[cfg(test)]
     pub fn editor(&self) -> Editor {
         self.editor
@@ -1489,7 +1488,6 @@ impl SamplePage {
                 (Some(_), Some(_)) => PADS_PAGE,
                 _ => EMPTY_PAGE,
             },
-            Editor::Chop if self.chop_state.is_some() && self.chop.is_some() => CHOP_PAGE,
             Editor::Play if self.play_state.is_some() && self.play.is_some() => PLAY_PAGE,
             Editor::Auto if self.auto_state.is_some() && self.auto.is_some() => AUTO_PAGE,
             Editor::Wave if self.state.is_some() && self.tab.is_some() => PAGE,
@@ -1513,7 +1511,6 @@ impl SamplePage {
     fn list(&self) -> Option<&'static str> {
         Some(match self.page() {
             PAGE => wave_tab::REGION,
-            CHOP_PAGE => chop_tab::LIST,
             PLAY_PAGE => play_tab::LIST,
             AUTO_PAGE => auto_tab::LIST,
             PADS_PAGE => pads_tab::LIST,
@@ -1552,11 +1549,11 @@ impl SamplePage {
     /// row picked, as a tap on its arrow, for the GUI to hand on. None on
     /// the pages whose wheel already stepped the row picked (Play, Grain,
     /// Rec, Auto, the Pads tab): [`SamplePage::wheel`] does it there, one
-    /// undo step a turn. The Wave, Warp and Chop pages' wheel zoomed, so
-    /// their rows step here.
+    /// undo step a turn. The Wave page's wheel zooms (with any tool), so
+    /// its rows step here.
     pub fn step_row(&mut self, ui: &mut Ui, delta: i32) -> Option<UiEvent> {
         let name = match self.page() {
-            PAGE | CHOP_PAGE => self.list()?,
+            PAGE => self.list()?,
             _ => return None,
         };
         let index = ui.get::<SettingList>(name)?.selected;
@@ -1623,20 +1620,10 @@ impl SamplePage {
             },
             (None, _) => {}
         }
-        self.chop_state = None;
-        if self.editor == Editor::Chop {
-            self.refresh_chop(ui, bank);
-        }
-        // Another tab, pad or region: live chop stops.
-        let stopped = match (self.chop.as_mut(), self.chop_state.as_ref()) {
-            (Some(tab), Some(st)) if self.editor == Editor::Chop => {
-                tab.take_stop(st).is_some() || !tab.live()
-            }
-            _ => true,
-        };
-        if stopped && self.live.is_some() {
-            self.stop_live("stopped");
-        }
+        // The Slice tool waits for its sound's pitch, and keeps a chop
+        // that changed.
+        self.keep_chop();
+        self.stop_live_if_left();
         self.play_state = None;
         match self.editor {
             Editor::Play => self.refresh_play(ui, bank),
@@ -1685,58 +1672,28 @@ impl SamplePage {
         if let Some(tab) = self.tab.as_ref() {
             tab.set_playheads(ui, &[]);
         }
-        if let Some(tab) = self.chop.as_ref() {
-            tab.set_playheads(ui, &[]);
-        }
     }
 
-    fn refresh_chop(&mut self, ui: &mut Ui, bank: Option<char>) {
-        let Some(st) = self.state.as_ref() else {
-            return;
-        };
-        let Some(project) = self.projects.get(self.kit) else {
-            return;
-        };
-        self.chop_state = ChopState::from_project(project, st.pad, st.layer, st.source.clone());
-        let new_kit = self
-            .new_kit
-            .as_ref()
-            .map(|r| r.as_ref().map(|_| ()).map_err(Clone::clone));
-        if let Some(cs) = self.chop_state.as_mut() {
-            cs.files = self.files;
-            cs.new_kit = new_kit;
-        }
-        let Some(cs) = self.chop_state.as_ref() else {
-            return;
-        };
-        match self.chop.as_mut() {
-            Some(tab) => {
-                tab.bank = bank;
-                tab.update(ui, cs);
+    /// Live chop stops once the Wave page no longer shows the Slice tool
+    /// live on its pad and region (another tab, tool, pad or region, or a
+    /// change on the panel): the sound stops and the log says so.
+    fn stop_live_if_left(&mut self) {
+        let stopped = match (self.tab.as_mut(), self.state.as_ref()) {
+            (Some(tab), Some(st)) if self.editor == Editor::Wave => {
+                tab.take_stop(st).is_some() || !tab.slice().live()
             }
-            None => match ChopTab::add(ui, CHOP_PAGE, cs) {
-                Ok(mut tab) => {
-                    tab.bank = bank;
-                    tab.update(ui, cs);
-                    self.chop = Some(tab);
-                }
-                Err(e) => {
-                    self.lines.push(format!("sample: no Chop page ({e})"));
-                    self.chop_state = None;
-                }
-            },
+            _ => true,
+        };
+        if stopped && self.live.is_some() {
+            self.stop_live("stopped");
         }
-        // Pitch waiting for the sound's pitch: the worker follows it. Once
-        // it has, the tab's chop is new, and kept.
-        self.follow_chop_pitch();
-        self.keep_chop();
     }
 
-    /// The Chop tab waits for its sound's pitch (Pitch picked,
-    /// `ChopTab::wants_pitch`): the analysis worker follows it, and the
+    /// The Slice tool waits for its sound's pitch (Pitch picked,
+    /// `WaveTab::wants_pitch`): the analysis worker follows it, and the
     /// page shows the view with it when it lands (`Views::take_done`).
     fn follow_chop_pitch(&mut self) {
-        let (Some(tab), Some(st)) = (self.chop.as_ref(), self.chop_state.as_ref()) else {
+        let (Some(tab), Some(st)) = (self.tab.as_ref(), self.state.as_ref()) else {
             return;
         };
         if !tab.wants_pitch(st) {
@@ -1855,10 +1812,19 @@ impl SamplePage {
         }?;
         // A grain size synced to the tempo is the project's.
         st.bpm = self.warps.tempo();
+        // Put on Files and New kit, as the app offers them.
+        if let Some(cs) = st.chop.as_mut() {
+            let cs = Arc::make_mut(cs);
+            cs.files = self.files;
+            cs.new_kit = self
+                .new_kit
+                .as_ref()
+                .map(|r| r.as_ref().map(|_| ()).map_err(Clone::clone));
+        }
         Some(st)
     }
 
-    /// The layer the Wave, Warp, Chop and Grain tabs edit: the one picked
+    /// The layer the Wave page's tools edit: the one picked
     /// on the Play tab's layer map for the pad shown, else the first.
     fn layer(&self) -> usize {
         if self.shown_take().is_some() {
@@ -2073,8 +2039,8 @@ impl SamplePage {
         }
         self.answered = false;
         self.event_on(ui, ev, out);
-        // A tap on a Q-Link card the wheel can't move to (the Chop tab's):
-        // what the card is for.
+        // A tap on a Q-Link card the wheel can't move to: what the card is
+        // for.
         if let Some((label, focused)) = card {
             if !self.answered
                 && self.told.is_empty()
@@ -2104,20 +2070,6 @@ impl SamplePage {
         if ev.widget == send::SEND {
             if let EventKind::Tab(i) = ev.kind {
                 self.press_send(ui, i, out);
-            }
-            return;
-        }
-        if ev.widget.starts_with(CHOP_PREFIX) {
-            let (Some(tab), Some(st)) = (self.chop.as_mut(), self.chop_state.as_ref()) else {
-                return;
-            };
-            let a = tab.action(ui, ev, st);
-            if let Some(note) = tab.take_note() {
-                self.told.push(note);
-            }
-            self.keep_chop();
-            if let Some(a) = self.took(a) {
-                self.act_chop(ui, a, out);
             }
             return;
         }
@@ -2160,6 +2112,10 @@ impl SamplePage {
             return;
         };
         let a = tab.action(ui, ev, st);
+        // The Slice tool's cuts changed: kept. Another tool picked: live
+        // chop stops.
+        self.keep_chop();
+        self.stop_live_if_left();
         if let Some(a) = self.took(a) {
             self.act(ui, a, out);
         }
@@ -2200,16 +2156,7 @@ impl SamplePage {
                 }
                 send::show(ui, true, self.sending.is_some());
             }
-            send::CHOP_TO_PADS if self.editor == Editor::Chop => {
-                // The Chop tab's own Chop to pads.
-                let (Some(tab), Some(st)) = (self.chop.as_mut(), self.chop_state.as_ref()) else {
-                    return;
-                };
-                if let Some(a) = tab.press(ui, st, chop_tab::Button::ToPads) {
-                    self.act_chop(ui, a, out);
-                }
-            }
-            send::CHOP_TO_PADS => self.open_editor(ui, Editor::Chop),
+            send::CHOP_TO_PADS => self.chop_to_pads(ui, out),
             _ => {}
         }
     }
@@ -2242,11 +2189,32 @@ impl SamplePage {
         ));
     }
 
-    /// Opens the editor's tab `i` (Wave, Chop or Play).
+    /// Chop to pads beside the bar: with the Slice tool on the Wave page,
+    /// its own Chop to pads; otherwise the Wave page with the Slice tool,
+    /// where the slices are cut first.
+    fn chop_to_pads(&mut self, ui: &mut Ui, out: &mut Vec<FromUi>) {
+        if self.editor != Editor::Wave {
+            self.open_editor(ui, Editor::Wave);
+        }
+        let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) else {
+            return;
+        };
+        if tab.tool() != Tool::Slice {
+            tab.set_tool(ui, st, Tool::Slice);
+            self.keep_chop();
+            return;
+        }
+        let a = tab.press_slice(ui, st, slice_tool::Button::ToPads);
+        self.keep_chop();
+        if let Some(a) = a {
+            self.act(ui, a, out);
+        }
+    }
+
+    /// Opens the editor's tab `i` (Wave or Play).
     fn open(&mut self, ui: &mut Ui, i: usize) {
         let editor = match i {
             wave_tab::TAB => Editor::Wave,
-            chop_tab::TAB => Editor::Chop,
             play_tab::TAB => Editor::Play,
             _ => return,
         };
@@ -2349,12 +2317,12 @@ impl SamplePage {
         }
     }
 
-    /// Keeps the Chop tab's slices for its sound once they change
-    /// (`ChopTab::take_kept`): not an undo step, but saved with the
-    /// project, so they are there when the tab comes back to the sound.
+    /// Keeps the Slice tool's slices for its sound once they change
+    /// (`WaveTab::take_kept`): not an undo step, but saved with the
+    /// project, so they are there when the tool comes back to the sound.
     fn keep_chop(&mut self) {
         self.follow_chop_pitch();
-        let (Some(tab), Some(st)) = (self.chop.as_mut(), self.chop_state.as_mut()) else {
+        let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_mut()) else {
             return;
         };
         let Some((mode, cuts)) = tab.take_kept(st) else {
@@ -2371,7 +2339,9 @@ impl SamplePage {
             ChopSet::from_markers(KEPT_CHOP, source, mode, cuts).and_then(|c| project.keep_chop(c));
         match kept {
             Ok(()) => {
-                st.kept = project.kept_chop(id).cloned();
+                if let Some(cs) = st.chop.as_mut() {
+                    Arc::make_mut(cs).kept = project.kept_chop(id).cloned();
+                }
                 // The work is unsaved; the audio thread's view is the same.
                 self.edits += 1;
                 self.unsaved = true;
@@ -2384,7 +2354,6 @@ impl SamplePage {
 
     fn act_chop(&mut self, ui: &mut Ui, a: ChopAction, out: &mut Vec<FromUi>) {
         match &a {
-            ChopAction::Tab(i) => self.open(ui, *i),
             &ChopAction::Live {
                 pad,
                 layer,
@@ -2589,7 +2558,7 @@ impl SamplePage {
         std::mem::take(&mut self.exports)
     }
 
-    /// The app can write files: the Chop tab offers Put on Files. Off until
+    /// The app can write files: the Slice tool offers Put on Files. Off until
     /// it says so (the app has a library), so nothing is exported that
     /// would go nowhere.
     pub fn set_files(&mut self, ui: &mut Ui, on: bool) {
@@ -2602,7 +2571,7 @@ impl SamplePage {
     /// What Put on New kit would do now (sampler R4.6), as the app works
     /// it out: Ok with the empty kit the slices would go on, for a new
     /// track, or Err saying why not (no empty kit left, no room for a
-    /// track). The Chop tab offers New kit once the app says.
+    /// track). The Slice tool offers New kit once the app says.
     pub fn set_new_kit(&mut self, ui: &mut Ui, new_kit: Result<usize, String>) {
         if self.new_kit.as_ref() != Some(&new_kit) {
             self.new_kit = Some(new_kit);
@@ -2880,8 +2849,9 @@ impl SamplePage {
 
     /// Q-Link `knob` (0-3) turned by `ticks` detents; `fine` (SHIFT held)
     /// turns finer. On Wave they move Start, End, Loop start and Loop end
-    /// (one frame a detent with SHIFT); on Chop the slice, its start, the
-    /// setting and the first pad; on Play the open section's four rows;
+    /// (one frame a detent with SHIFT); with the Slice tool the setting,
+    /// the slice, its start and the first pad; on Play the open section's
+    /// four rows;
     /// with the Grain tool position, size, density and pitch (with SHIFT
     /// the sprays, and size and density finer).
     pub fn qlink(&mut self, ui: &mut Ui, knob: usize, ticks: i32, fine: bool) {
@@ -2904,17 +2874,13 @@ impl SamplePage {
             }
             return;
         }
-        if self.editor == Editor::Chop {
-            if let (Some(tab), Some(st)) = (self.chop.as_mut(), self.chop_state.as_ref()) {
-                tab.qlink(ui, st, knob, ticks, fine);
-            }
-            self.keep_chop();
-            return;
-        }
         let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) else {
             return;
         };
-        if let Some(a) = tab.qlink(ui, st, knob, ticks, fine) {
+        let a = tab.qlink(ui, st, knob, ticks, fine);
+        self.keep_chop();
+        self.stop_live_if_left();
+        if let Some(a) = a {
             self.act(ui, a, &mut Vec::new());
         }
     }
@@ -3144,7 +3110,7 @@ impl SamplePage {
     }
 
     /// The data wheel: zoom round the marker last moved or the slice picked
-    /// (Wave, Chop), or change the row picked (Play, Grain).
+    /// (Wave, Slice), or change the row picked (Play, Grain).
     pub fn wheel(&mut self, ui: &mut Ui, delta: i32) {
         if self.page() == PADS_PAGE {
             self.turned();
@@ -3167,16 +3133,11 @@ impl SamplePage {
                     self.act_play(ui, a, &mut Vec::new());
                 }
             }
-            Editor::Chop => {
-                if let (Some(tab), Some(st)) = (self.chop.as_mut(), self.chop_state.as_ref()) {
-                    tab.wheel(ui, st, delta);
-                }
-                self.keep_chop();
-            }
             Editor::Wave => {
                 if let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) {
                     tab.wheel(ui, st, delta);
                 }
+                self.keep_chop();
             }
             Editor::Auto => {
                 if let (Some(tab), Some(st)) = (self.auto.as_mut(), self.auto_state.as_ref()) {
@@ -3258,6 +3219,8 @@ impl SamplePage {
             // A faint mark touched (which tool moves it), or the wave
             // while a take draws into it.
             WaveAction::Say(text) => self.told.push(text),
+            // The Slice tool: a slice heard, live chop, Chop to pads.
+            WaveAction::Chop(a) => self.act_chop(ui, a, out),
         }
     }
 
@@ -4237,13 +4200,13 @@ impl SamplePage {
         ));
     }
 
-    /// Whether the Chop tab chops live (its hint says how).
+    /// Whether the Slice tool chops live (its hint says how).
     pub fn chop_live_method(&self) -> bool {
-        self.page() == CHOP_PAGE
+        self.slice_tool()
             && self
-                .chop
+                .tab
                 .as_ref()
-                .is_some_and(|t| t.method() == mpfree_sampler_ui::chop_tab::Method::Live)
+                .is_some_and(|t| t.slice().method() == slice_tool::Method::Live)
     }
 
     /// Whether UNDO has something to take back in the playing kit (for
@@ -6529,11 +6492,6 @@ impl SamplePage {
                     tab.set_playheads(ui, &frames);
                 }
             }
-            Editor::Chop => {
-                if let Some(tab) = self.chop.as_ref() {
-                    tab.set_playheads(ui, &frames);
-                }
-            }
             // The Play and Pads tabs (and Auto-sample) draw no playheads.
             Editor::Play | Editor::Pads | Editor::Auto => {}
         }
@@ -6541,7 +6499,7 @@ impl SamplePage {
     }
 
     /// Live chop's cuts and its end, from the playheads: the cuts made
-    /// since the last go onto the Chop tab; the sound over (it was heard
+    /// since the last go onto the Slice tool; the sound over (it was heard
     /// marking, and isn't now) ends it.
     fn live_heads(&mut self, ui: &mut Ui, heads: &Playheads) {
         self.marks_seen = heads.marks_made;
@@ -6557,8 +6515,8 @@ impl SamplePage {
         run.seen = heads.marks_made;
         run.heard |= heads.marking;
         let ended = run.heard && !heads.marking;
-        if let (Some(tab), Some(st)) = (self.chop.as_mut(), self.chop_state.as_ref()) {
-            if self.editor == Editor::Chop {
+        if let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) {
+            if self.editor == Editor::Wave {
                 run.kept += tab.live_marks(ui, st, &marks);
                 if ended {
                     tab.live_ended(ui, st);
@@ -7400,6 +7358,17 @@ impl SamplePage {
             }
             WaveAction::Normalize { layer, .. } => {
                 self.normalize_take(ui, i, layer);
+                None
+            }
+            // A slice of the take heard, as a slice of a pad is.
+            WaveAction::Chop(a @ ChopAction::Audition { .. }) => {
+                self.act_chop(ui, a, out);
+                None
+            }
+            // The take's slices go on pads once the take is on a pad (the
+            // tool says so before it gets here).
+            WaveAction::Chop(_) => {
+                self.told.push(TAKE_ON_A_PAD_FIRST.to_string());
                 None
             }
             a @ (WaveAction::Tab(_)

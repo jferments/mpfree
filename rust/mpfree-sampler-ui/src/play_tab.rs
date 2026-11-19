@@ -80,11 +80,11 @@ use mpfree_ui::layout;
 use mpfree_ui::wave::{Marker, MarkerKind, WaveView, Waveform};
 use mpfree_ui::{Color, EventKind, Rect, Ui, UiEvent};
 
-use crate::chop_tab::pad_text;
 use crate::keys_widgets::{KeyZones, Zone};
 use crate::pads_tab::{sound_region, Sound};
 use crate::panel::{self, Control, Item, Look, Panel};
 use crate::play_widgets::{EnvelopeView, FilterCurve, LayerBar, LayerMap, MotionView};
+use crate::slice_tool::pad_text;
 use crate::source::SourceView;
 use crate::wave_tab::{self, duration_text, mode_label, pad_color, TABS};
 use crate::widgets::{KnobCard, PadBar, SectionChip, SectionChips, Setting, SettingList};
@@ -135,7 +135,7 @@ pub fn layout(s: Section, keys: bool) -> String {
 pub const KEY_VELOCITY: u8 = 100;
 
 /// The tab's place in [`TABS`].
-pub const TAB: usize = 2;
+pub const TAB: usize = 1;
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str = "Tap a section for its controls · drag a layer's edges for its velocities · drag the envelope's points and the \
@@ -2605,7 +2605,7 @@ fn faint_why(st: &PlayState, row: Row) -> Option<&'static str> {
         | Row::SliceTo
             if slices(p) < 2 =>
         {
-            Some("The pad isn't sliced: chop it on the Chop tab with Put on at 1 pad")
+            Some("The pad isn't sliced: chop it with the Slice tool, Put on at 1 pad")
         }
         _ => None,
     }

@@ -22,7 +22,7 @@
 //! across each control step.
 
 pub mod factory;
-mod fft;
+pub(crate) mod fft;
 pub mod import;
 pub mod params;
 pub mod table;
