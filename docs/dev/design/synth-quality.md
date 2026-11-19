@@ -140,7 +140,8 @@ The bar for each kernel in `mpfree-simd` ([NEON kernels](simd.md)), first the su
 |---|---|---|---|
 | N1 | The kernel against its plain twin under qemu-arm | The same samples and phases to the bit: random calls (8 to 4,096 entries, 1 to 9 oscillators, 0 to 69 frames, writing and adding), every saw level at Poly's sizes, the bench workload, and denormals with flush-to-zero on | Met: 13 tests, 3,000 random calls |
 | N2 | ARMv7 instructions a block, eight voices' supersaw saws with their mixing (`tools/simd_arm_cost.py`) | NEON fewer than the twin | Met: 58,361 against 134,455 (43 %) |
-| N3 | Time on the MPC, the same case (`mpfree-bench`, "Supersaw saws: 8 voices, plain" and "..., NEON") | NEON's p99 block under the twin's, or the kernel is removed | Device round |
+| N4 | Poly with the kernels on and off, as ARMv7 under qemu (`mpfree-synth/tests/simd.rs`) | The same samples: every Super preset, and both oscillators on Supersaw with unison | Met |
+| N3 | Time on the MPC, the same case (`mpfree-bench`, "Supersaw saws: 8 voices, plain" and "..., NEON") | NEON's p99 block under the twin's, or the kernel is removed; and the Super presets no slower with the kernels on than with `--plain` | Device round |
 
 ## Not measured yet
 

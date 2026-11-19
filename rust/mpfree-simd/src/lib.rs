@@ -92,6 +92,15 @@ pub fn enabled() -> bool {
 /// Asked of Linux once (`getauxval(AT_HWCAP)`); false on anything but an
 /// ARMv7 Linux build.
 pub fn neon_available() -> bool {
+    // Elsewhere this is false at compile time, so the dispatch folds away
+    // and an engine's loop is the twin's alone.
+    if !cfg!(all(
+        target_arch = "arm",
+        target_endian = "little",
+        target_os = "linux"
+    )) {
+        return false;
+    }
     // 0: not asked yet, 1: no, 2: yes.
     static NEON: AtomicU8 = AtomicU8::new(0);
     match NEON.load(Ordering::Relaxed) {

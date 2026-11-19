@@ -4,7 +4,7 @@ checked: 2026-11-19 79fc6f63
 -->
 # NEON kernels (`mpfree-simd`)
 
-**Status:** built 2026-11-19 (the synth architecture's CPU work C3, first part): the crate, its first kernel (the supersaw's saws) with its plain Rust twin, the bit-for-bit check under qemu-arm, the ARMv7 instruction count and the bench cases that time both. **No engine uses it yet**: Poly's supersaw moves onto it in the next pull request, once `osc.rs` (PR #652) is on main. **Nothing here has run on the MPC**: whether the kernel stays is the device round's call.
+**Status:** built 2026-11-19 (the synth architecture's CPU work C3): the crate, its first kernel (the supersaw's saws) with its plain Rust twin, the bit-for-bit check under qemu-arm, the ARMv7 instruction count and the bench cases that time both (PR #658); Poly's supersaw runs on it, the bench's `--plain` turns the kernels off, and the Dev page says which code runs (the next pull request). **Nothing here has run on the MPC**: whether the kernel stays is the device round's call.
 
 The decision this builds is in [Synth architecture, NEON (lever 6)](synth-architecture.md#neon-lever-6-the-decision), and why the compiler can't do it for us in [Profiling, NEON](profiling.md#neon).
 
@@ -24,11 +24,11 @@ The MPC One's Cortex-A17 cores have NEON, four `f32` lanes an instruction, and t
 2. the processor has NEON, asked of Linux once with `getauxval(AT_HWCAP)` (bit 12, `HWCAP_NEON`); the MPC's cores and qemu-arm both say yes;
 3. the kernels are on: `mpfree_simd::set_enabled` (on by default), for the device A/B and as a way out if a kernel ever misbehaves.
 
-`path()` says which runs now and `status()` says why in a few words ("NEON", "plain Rust: NEON turned off", "plain Rust: this processor has no NEON", "plain Rust: not an ARMv7 build"), for the Dev page when an engine uses it. `table_sum_on` runs a chosen path and says which ran, for the bench and the tests. A call that asked for NEON on a processor with it but ran the twin because its table didn't fit is counted (`fallbacks()`), so a fallback is never silent; it stays 0 unless a caller is wrong.
+`path()` says which runs now and `status()` says why in a few words ("NEON", "plain Rust: NEON turned off", "plain Rust: this processor has no NEON", "plain Rust: not an ARMv7 build"). The Dev page's **NEON kernels** row shows it, as the audio thread starts (with the Denormals row), green for NEON and amber for an ARM build without it; `mpfree-bench` prints it at the top of its run, and `mpfree-bench --plain` turns the kernels off for the whole run (any mode), for the device A/B. `table_sum_on` runs a chosen path and says which ran, for the bench and the tests. A call that asked for NEON on a processor with it but ran the twin because its table didn't fit is counted (`fallbacks()`), so a fallback is never silent; it stays 0 unless a caller is wrong.
 
 ## The first kernel: several oscillators reading one table
 
-`table_sum::<ADD>(table, shift, buf, ph, inc, gain)` adds oscillators that read one level of a band-limited wave into `buf`: the supersaw's seven saws, which Poly reads through `osc.rs`'s `Classic::supersaw` (agreed with the synth library thread on 19 Nov).
+`table_sum::<ADD>(table, shift, buf, ph, inc, gain)` adds oscillators that read one level of a band-limited wave into `buf`: the supersaw's seven saws. Poly reads them through `osc.rs`'s `Classic::supersaw`, which works out each saw's increment and gain and makes this one call (the shape agreed with the synth library thread on 19 Nov); its old saw-by-saw loop is the twin, so the workstation's samples and cost are unchanged.
 
 - **The table** is one level of `osc.rs`'s `Waveset`: each entry a sample and its step to the next one, the step scaled to the phase bits below the index. Its length is 2^(32 − shift), so the top bits of a 32-bit phase index it.
 - **Oscillator k** starts at `ph[k]`, moves `inc[k]` a frame and wraps; its sample is `a + step × (p & mask)` for the entry `[a, step]` at `p >> shift`, times `gain[k]`. There are as many oscillators as the shortest slice, so seven saws, or a voice's 4 × 7 with unison, are one call.
@@ -53,6 +53,7 @@ The frames after the last whole group of four, and calls with fewer than four, g
 - Every level of a real band-limited saw at Poly's sizes (seven saws, 16 frames), and the bench's whole workload for 200 blocks.
 - Values so small that their products are denormal, at the smallest and largest tables and with gains near zero, with flush-to-zero on: the same samples. With it off, that test fails, as it should.
 - A table whose length isn't a power of two runs the twin and is counted.
+- Poly end to end (`mpfree-synth/tests/simd.rs`, run as ARMv7 in the same CI step): every Super preset, and both oscillators on Supersaw with three unison copies (so the second oscillator adds to the first), played for two seconds in uneven blocks with the kernels on and then off: the same samples, and no call fell back. `osc.rs`'s own test checks `Classic::supersaw` against its old loop.
 
 To be sure the check bites, the kernel was changed by one instruction (a fused `VFMA` in place of the `VMLA` that reads the table, a difference of one rounding): four of the tests failed.
 
@@ -72,7 +73,7 @@ The bench's workload (`mpfree_simd::workload::Supersaw`) plays what Poly gives t
 
 ## The rule: a kernel stays only if it wins
 
-The device round runs `mpfree-bench` on the MPC as it does today; the two "Supersaw saws" cases are its A/B. The kernel stays if its p99 block is under the twin's; if not, it is removed and the twin stays (`synth-quality.md`, row N3). Once Poly uses it, the same round compares the whole "Poly Supersaw" case with the kernels on and off. The ask is in the synth library's device asks (project files, `synth-library/device-round-asks.md`).
+The device round runs `mpfree-bench` on the MPC as it does today; the two "Supersaw saws" cases are its A/B. The kernel stays if its p99 block is under the twin's; if not, it is removed and the twin stays (`synth-quality.md`, row N3). The same round runs the bench again with `--plain` and compares the Supersaw presets' cases (`--compare`), the whole of Poly with the kernel and without. The ask is Ask 5 in the synth library's device asks (project files, `synth-library/device-round-asks.md`).
 
 If the kernel wins by little, the next things to try are two groups of four frames a round (so the loads of one overlap the arithmetic of the other) and working the addresses out in core registers beside the NEON work.
 
