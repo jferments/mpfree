@@ -421,6 +421,179 @@ synth/Bass[Wide Detune]/small_speaker_db	-4.9942
 synth/Bass[Wide Detune]/start_step_dbfs	-123.6074
 synth/Bass[Wide Detune]/vel_curve_err_db	0.0472
 synth/Bass[Wide Detune]/vel_tone_oct	0.2399
+synth/Choir[Aah Choir]/chord6_vs_power_db	-0.1409
+synth/Choir[Aah Choir]/chord8_peak_dbfs	-5.9609
+synth/Choir[Aah Choir]/dc_dbfs	-140
+synth/Choir[Aah Choir]/key_spread_db	1.45
+synth/Choir[Aah Choir]/mono_loss_db	1.2349
+synth/Choir[Aah Choir]/vel_curve_err_db	0.2884
+synth/Choir[Aah Choir]/vel_tone_oct	0.508
+synth/Choir[Aah to Ee]/chord6_vs_power_db	1.1554
+synth/Choir[Aah to Ee]/chord8_peak_dbfs	-5.3185
+synth/Choir[Aah to Ee]/dc_dbfs	-131.8451
+synth/Choir[Aah to Ee]/key_spread_db	3.9397
+synth/Choir[Aah to Ee]/mono_loss_db	1.2408
+synth/Choir[Aah to Ee]/vel_curve_err_db	0.1348
+synth/Choir[Aah to Ee]/vel_tone_oct	0.2801
+synth/Choir[Big Choir]/chord6_vs_power_db	0.127
+synth/Choir[Big Choir]/chord8_peak_dbfs	-6.1902
+synth/Choir[Big Choir]/dc_dbfs	-140
+synth/Choir[Big Choir]/key_spread_db	0.4051
+synth/Choir[Big Choir]/mono_loss_db	1.5676
+synth/Choir[Big Choir]/vel_curve_err_db	0.2968
+synth/Choir[Big Choir]/vel_tone_oct	0.3635
+synth/Choir[Bright Aahs]/chord6_vs_power_db	0.4667
+synth/Choir[Bright Aahs]/chord8_peak_dbfs	-4.4542
+synth/Choir[Bright Aahs]/dc_dbfs	-136.9178
+synth/Choir[Bright Aahs]/key_spread_db	3.4468
+synth/Choir[Bright Aahs]/mono_loss_db	0.8967
+synth/Choir[Bright Aahs]/vel_curve_err_db	0.07
+synth/Choir[Bright Aahs]/vel_tone_oct	0.1424
+synth/Choir[Choir Stab]/chord6_vs_power_db	-2.5283
+synth/Choir[Choir Stab]/chord8_peak_dbfs	-8.0991
+synth/Choir[Choir Stab]/dc_dbfs	-122.0888
+synth/Choir[Choir Stab]/key_spread_db	3.8445
+synth/Choir[Choir Stab]/mono_loss_db	0.9508
+synth/Choir[Choir Stab]/vel_curve_err_db	0.2721
+synth/Choir[Choir Stab]/vel_tone_oct	0.6659
+synth/Choir[Choir Swell]/chord6_vs_power_db	-0.2149
+synth/Choir[Choir Swell]/chord8_peak_dbfs	-8.454
+synth/Choir[Choir Swell]/dc_dbfs	-140
+synth/Choir[Choir Swell]/key_spread_db	0.84
+synth/Choir[Choir Swell]/mono_loss_db	1.097
+synth/Choir[Choir Swell]/vel_curve_err_db	0.2878
+synth/Choir[Choir Swell]/vel_tone_oct	0.2951
+synth/Choir[Dry Choir]/chord6_vs_power_db	-0.0102
+synth/Choir[Dry Choir]/chord8_peak_dbfs	-8.7932
+synth/Choir[Dry Choir]/dc_dbfs	-140
+synth/Choir[Dry Choir]/key_spread_db	0.786
+synth/Choir[Dry Choir]/mono_loss_db	0
+synth/Choir[Dry Choir]/vel_curve_err_db	0.1783
+synth/Choir[Dry Choir]/vel_tone_oct	0.2515
+synth/Choir[Eh Pad]/chord6_vs_power_db	0.8147
+synth/Choir[Eh Pad]/chord8_peak_dbfs	-5.8252
+synth/Choir[Eh Pad]/dc_dbfs	-137.4483
+synth/Choir[Eh Pad]/key_spread_db	1.4559
+synth/Choir[Eh Pad]/mono_loss_db	1.0336
+synth/Choir[Eh Pad]/vel_curve_err_db	0.3687
+synth/Choir[Eh Pad]/vel_tone_oct	0.7841
+synth/Choir[Hall Choir]/chord6_vs_power_db	-0.3304
+synth/Choir[Hall Choir]/chord8_peak_dbfs	-6.4148
+synth/Choir[Hall Choir]/dc_dbfs	-140
+synth/Choir[Hall Choir]/key_spread_db	1.4669
+synth/Choir[Hall Choir]/mono_loss_db	0.9767
+synth/Choir[Hall Choir]/vel_curve_err_db	0.2919
+synth/Choir[Hall Choir]/vel_tone_oct	0.3371
+synth/Choir[Init]/chord6_vs_power_db	-0.3269
+synth/Choir[Init]/chord8_peak_dbfs	-6.4766
+synth/Choir[Init]/dc_dbfs	-137.4469
+synth/Choir[Init]/key_spread_db	0.4445
+synth/Choir[Init]/mono_loss_db	1.2856
+synth/Choir[Init]/vel_curve_err_db	0.2074
+synth/Choir[Init]/vel_tone_oct	0.124
+synth/Choir[Low Chant]/chord6_vs_power_db	-1.931
+synth/Choir[Low Chant]/chord8_peak_dbfs	-5.9314
+synth/Choir[Low Chant]/dc_dbfs	-132.1724
+synth/Choir[Low Chant]/key_spread_db	1.5339
+synth/Choir[Low Chant]/mono_loss_db	0.6741
+synth/Choir[Low Chant]/vel_curve_err_db	0.1123
+synth/Choir[Low Chant]/vel_tone_oct	0.1814
+synth/Choir[Men's Choir]/chord6_vs_power_db	-0.1878
+synth/Choir[Men's Choir]/chord8_peak_dbfs	-6.5414
+synth/Choir[Men's Choir]/dc_dbfs	-140
+synth/Choir[Men's Choir]/key_spread_db	0.9454
+synth/Choir[Men's Choir]/mono_loss_db	0.8066
+synth/Choir[Men's Choir]/vel_curve_err_db	0.3503
+synth/Choir[Men's Choir]/vel_tone_oct	0.7975
+synth/Choir[Oh Choir]/chord6_vs_power_db	1.5411
+synth/Choir[Oh Choir]/chord8_peak_dbfs	-4.1657
+synth/Choir[Oh Choir]/dc_dbfs	-140
+synth/Choir[Oh Choir]/key_spread_db	3.4825
+synth/Choir[Oh Choir]/mono_loss_db	1.0147
+synth/Choir[Oh Choir]/vel_curve_err_db	0.2009
+synth/Choir[Oh Choir]/vel_tone_oct	0.3929
+synth/Choir[Ooh Choir]/chord6_vs_power_db	2.0407
+synth/Choir[Ooh Choir]/chord8_peak_dbfs	-4.8638
+synth/Choir[Ooh Choir]/dc_dbfs	-132.5123
+synth/Choir[Ooh Choir]/key_spread_db	4.153
+synth/Choir[Ooh Choir]/mono_loss_db	1.3501
+synth/Choir[Ooh Choir]/vel_curve_err_db	0.3031
+synth/Choir[Ooh Choir]/vel_tone_oct	0.3257
+synth/Choir[Ooh to Aah]/chord6_vs_power_db	0.4342
+synth/Choir[Ooh to Aah]/chord8_peak_dbfs	-6.1472
+synth/Choir[Ooh to Aah]/dc_dbfs	-127.5958
+synth/Choir[Ooh to Aah]/key_spread_db	2.3465
+synth/Choir[Ooh to Aah]/mono_loss_db	1.0076
+synth/Choir[Ooh to Aah]/vel_curve_err_db	0.2608
+synth/Choir[Ooh to Aah]/vel_tone_oct	0.3086
+synth/Choir[Pressure Vowels]/chord6_vs_power_db	1.862
+synth/Choir[Pressure Vowels]/chord8_peak_dbfs	-7.0185
+synth/Choir[Pressure Vowels]/dc_dbfs	-131.1497
+synth/Choir[Pressure Vowels]/key_spread_db	3.5945
+synth/Choir[Pressure Vowels]/mono_loss_db	0.8953
+synth/Choir[Pressure Vowels]/vel_curve_err_db	0.0275
+synth/Choir[Pressure Vowels]/vel_tone_oct	0.3262
+synth/Choir[Soft Oohs]/chord6_vs_power_db	0.6078
+synth/Choir[Soft Oohs]/chord8_peak_dbfs	-4.7458
+synth/Choir[Soft Oohs]/dc_dbfs	-128.6471
+synth/Choir[Soft Oohs]/key_spread_db	2.8893
+synth/Choir[Soft Oohs]/mono_loss_db	1.2809
+synth/Choir[Soft Oohs]/vel_curve_err_db	0.2121
+synth/Choir[Soft Oohs]/vel_tone_oct	0.2618
+synth/Choir[Solo Voice]/chord8_peak_dbfs	-17.2604
+synth/Choir[Solo Voice]/dc_dbfs	-140
+synth/Choir[Solo Voice]/key_spread_db	0.1849
+synth/Choir[Solo Voice]/mono_loss_db	0.0001
+synth/Choir[Solo Voice]/vel_curve_err_db	0.1866
+synth/Choir[Solo Voice]/vel_tone_oct	0.113
+synth/Choir[Sopranos]/chord6_vs_power_db	-0.1123
+synth/Choir[Sopranos]/chord8_peak_dbfs	-5.4211
+synth/Choir[Sopranos]/dc_dbfs	-140
+synth/Choir[Sopranos]/key_spread_db	1.1599
+synth/Choir[Sopranos]/mono_loss_db	1.0032
+synth/Choir[Sopranos]/vel_curve_err_db	0.154
+synth/Choir[Sopranos]/vel_tone_oct	0.1567
+synth/Choir[Space Choir]/chord6_vs_power_db	0.2122
+synth/Choir[Space Choir]/chord8_peak_dbfs	-10.845
+synth/Choir[Space Choir]/dc_dbfs	-139.9054
+synth/Choir[Space Choir]/key_spread_db	1.0883
+synth/Choir[Space Choir]/mono_loss_db	1.2207
+synth/Choir[Space Choir]/vel_curve_err_db	0.0516
+synth/Choir[Space Choir]/vel_tone_oct	0.3639
+synth/Choir[Straight Trebles]/chord6_vs_power_db	0.433
+synth/Choir[Straight Trebles]/chord8_peak_dbfs	-6.0847
+synth/Choir[Straight Trebles]/dc_dbfs	-136.2431
+synth/Choir[Straight Trebles]/key_spread_db	2.4012
+synth/Choir[Straight Trebles]/mono_loss_db	0.9432
+synth/Choir[Straight Trebles]/vel_curve_err_db	0.3079
+synth/Choir[Straight Trebles]/vel_tone_oct	0.2975
+synth/Choir[Vowel Lead]/chord8_peak_dbfs	-13.0506
+synth/Choir[Vowel Lead]/dc_dbfs	-138.1971
+synth/Choir[Vowel Lead]/key_spread_db	1.4237
+synth/Choir[Vowel Lead]/mono_loss_db	0.2881
+synth/Choir[Vowel Lead]/vel_curve_err_db	0.6798
+synth/Choir[Vowel Lead]/vel_tone_oct	1.1724
+synth/Choir[Vowel Pad]/chord6_vs_power_db	0.8393
+synth/Choir[Vowel Pad]/chord8_peak_dbfs	-6.416
+synth/Choir[Vowel Pad]/dc_dbfs	-134.5714
+synth/Choir[Vowel Pad]/key_spread_db	1.6847
+synth/Choir[Vowel Pad]/mono_loss_db	1.0414
+synth/Choir[Vowel Pad]/vel_curve_err_db	0.3489
+synth/Choir[Vowel Pad]/vel_tone_oct	0.5758
+synth/Choir[Wah Voices]/chord6_vs_power_db	-0.5083
+synth/Choir[Wah Voices]/chord8_peak_dbfs	-4.9138
+synth/Choir[Wah Voices]/dc_dbfs	-104.1209
+synth/Choir[Wah Voices]/key_spread_db	1.5971
+synth/Choir[Wah Voices]/mono_loss_db	1.1109
+synth/Choir[Wah Voices]/vel_curve_err_db	0.2292
+synth/Choir[Wah Voices]/vel_tone_oct	0.5659
+synth/Choir[Whisper Choir]/chord6_vs_power_db	0.2515
+synth/Choir[Whisper Choir]/chord8_peak_dbfs	-3.376
+synth/Choir[Whisper Choir]/dc_dbfs	-140
+synth/Choir[Whisper Choir]/key_spread_db	0.9427
+synth/Choir[Whisper Choir]/mono_loss_db	0.9252
+synth/Choir[Whisper Choir]/vel_curve_err_db	0.249
+synth/Choir[Whisper Choir]/vel_tone_oct	0.2741
 synth/Drawbar[Ballad]/chord6_vs_power_db	1.8669
 synth/Drawbar[Ballad]/chord8_peak_dbfs	-1.1276
 synth/Drawbar[Ballad]/dc_dbfs	-118.3727
@@ -1924,6 +2097,12 @@ synth/alias[Bass saw, C7]/worst_alias_db	-80.3619
 synth/alias[Bass saw, drive 100, C5]/worst_alias_db	-63.7368
 synth/alias[Bass saw, drive 100, C6]/worst_alias_db	-58.8032
 synth/alias[Bass saw, drive 100, C7]/worst_alias_db	-53.9799
+synth/alias[Choir aah, C5]/worst_alias_db	-99.3365
+synth/alias[Choir aah, C6]/worst_alias_db	-99.3509
+synth/alias[Choir aah, C7]/worst_alias_db	-94.8581
+synth/alias[Choir ee, C5]/worst_alias_db	-94.39
+synth/alias[Choir ee, C6]/worst_alias_db	-97.8098
+synth/alias[Choir ee, C7]/worst_alias_db	-79.7705
 synth/alias[Drawbar combo flute, C5]/worst_alias_db	-94.4008
 synth/alias[Drawbar combo flute, C6]/worst_alias_db	-94.3843
 synth/alias[Drawbar combo flute, C7]/worst_alias_db	-75.991
@@ -2007,6 +2186,7 @@ synth/drift[voice core, 30 min]/rms_cents	2.0147
 synth/drop[Bass 808, C4, 12 semitones over 200 ms]/amount_err_pct	1.9177
 synth/drop[Bass 808, C4, 12 semitones over 200 ms]/settle_cents	0.0005
 synth/drop[Bass 808, C4, 12 semitones over 200 ms]/time_err_pct	0
+synth/ensemble[Choir Init, C major chord]/correlation	0.5227
 synth/env[Poly amp, attack 100 ms]/time_err_pct	-1.7687
 synth/env[Poly amp, decay 200 ms]/time_err_pct	0.4989
 synth/env[Poly amp, release 300 ms]/time_err_pct	0.0454
@@ -2021,6 +2201,21 @@ synth/fm[pair 1:4, level 60]/bessel_err_db	0.0096
 synth/fm[pair 1:4, level 75]/bessel_err_db	0.0042
 synth/fm[pair 1:4, level 90]/bessel_err_db	0.0102
 synth/footage[Drawbar combo, C4]/worst_octave_cents	0
+synth/formants[Choir Alto]/level_err_db	0.0263
+synth/formants[Choir Alto]/peak_err_pct	0.6179
+synth/formants[Choir Alto]/width_err_pct	7.5036
+synth/formants[Choir Bass]/level_err_db	0.063
+synth/formants[Choir Bass]/peak_err_pct	1.4588
+synth/formants[Choir Bass]/width_err_pct	3.2028
+synth/formants[Choir Countertenor]/level_err_db	0.0275
+synth/formants[Choir Countertenor]/peak_err_pct	0.6179
+synth/formants[Choir Countertenor]/width_err_pct	3.7294
+synth/formants[Choir Soprano]/level_err_db	0.0538
+synth/formants[Choir Soprano]/peak_err_pct	1.2616
+synth/formants[Choir Soprano]/width_err_pct	7.5036
+synth/formants[Choir Tenor]/level_err_db	0.0334
+synth/formants[Choir Tenor]/peak_err_pct	0.7668
+synth/formants[Choir Tenor]/width_err_pct	3.9901
 synth/glide[Bass rate, an octave in 300 ms]/land_cents	0.0016
 synth/glide[Bass rate, an octave in 300 ms]/time_err_pct	-0.2934
 synth/glide[Poly legato, 200 ms]/land_cents	0.0367
@@ -2029,6 +2224,9 @@ synth/glide[Poly rate, a fifth: an octave in 300 ms]/land_cents	0.0001
 synth/glide[Poly rate, a fifth: an octave in 300 ms]/time_err_pct	-1.6386
 synth/glide[Poly rate, an octave: an octave in 300 ms]/land_cents	0.0001
 synth/glide[Poly rate, an octave: an octave in 300 ms]/time_err_pct	-0.9977
+synth/morph[Choir Morph 60 at 0.15 Hz, B4]/step_db	-104.2985
+synth/morph[Choir at rest, B4]/step_db	-139.0744
+synth/morph[Choir vowel knob ooh to ee and back, B4]/step_db	-94.9688
 synth/priority[Analog unison, High]/pitch_err_cents	0.0051
 synth/priority[Analog unison, Low]/pitch_err_cents	0.0033
 synth/priority[Bass, High]/pitch_err_cents	0.0016
@@ -2037,6 +2235,7 @@ synth/priority[Poly mono, High]/pitch_err_cents	0.0001
 synth/priority[Poly mono, Low]/pitch_err_cents	0.0001
 synth/route[Poly, wheel to pitch 100 %]/pitch_err_cents	0.0001
 synth/route[Poly, wheel to vibrato 50 %]/depth_err_pct	-0.0636
+synth/singers[Choir, 8 singers, vibrato 30 cents]/mean_abs_corr	0.4462
 synth/slide[Analog, C4 up 2]/pitch_err_cents	0.0029
 synth/slide[Analog, G4 left be]/pitch_err_cents	0.0007
 synth/slide[Bass, C4 up 2]/pitch_err_cents	0.0021
@@ -2057,6 +2256,7 @@ synth/tune[Analog]/worst_cents	0.0302
 synth/tune[Bass 808, C0 to C3]/worst_cents	0.0484
 synth/tune[Bass synth, C0 to C3]/worst_cents	0.0718
 synth/tune[Bass]/worst_cents	0.0037
+synth/tune[Choir]/worst_cents	0.0003
 synth/tune[Drawbar combo]/worst_cents	0.0006
 synth/tune[Drawbar]/worst_cents	0.5768
 synth/tune[FM]/worst_cents	0.0004

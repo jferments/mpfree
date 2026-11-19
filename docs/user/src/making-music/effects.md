@@ -478,7 +478,7 @@ To have two at once, add the effect twice and pick each one's mode: a Room, then
 
 **Macros** are knobs that move several settings at once (Wash, Grit and so on). There are eight. The **Q-LINK** button steps the Q-Links through **Macros 1-4**, **Macros 5-8** and back to the page's own knobs, on the Play page, Arrange and in the chain editor; **SHIFT + Q-LINK** steps the other way.
 
-Hold a finger still on a macro's card for half a second to open the **macros panel**, where you can see all of them and set up what each one moves. Back returns to the page you were on.
+Hold a finger still on a macro's card for half a second to open the **macros panel**, where you can see all of them and set up what each one moves, or press **SHIFT + SAMPLE EDIT** on any page (as the MPC's Q-Link Edit). Back, or **SHIFT + SAMPLE EDIT** again, returns to the page you were on.
 
 {{shot: macros | The macros panel on Macros 1-4.}}
 

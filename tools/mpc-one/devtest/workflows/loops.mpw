@@ -1,0 +1,69 @@
+title Loops: a loop recorded on Play and layered, the Looper tab's tools, loops launched from Arrange
+covers looper, rec-arm, loop-tracks, looper-deck, loop-cell
+# The looper records what the pads play (Input: Pads), so it needs no
+# cable. On the MPC this window also shows what recording and playing
+# loops cost (the report's "looper" rows).
+wait 1
+mark record
+tap play-loop arm Arm
+expect rec: the loop armed
+button REC
+expect looper: Record: armed, the first pass starts on the next bar line
+button PLAY
+pad 1 120 0.3
+wait 1.7
+button REC
+expect looper: Record during the first pass: it ends on the next bar line
+wait 2
+expect looper: loop of 2 bars
+expect time: Loop 1 on Loops A, row 1, playing
+mark overdub
+button OVERDUB
+expect looper: overdub on (layer 2)
+pad 3 100
+pad 3 100
+wait 2
+button OVERDUB
+expect looper: overdub off
+wait 1
+mark looper-tab
+tap header tab Looper
+tap leditor speed Speed 2×
+expect looper: speed 2×: an octave up, half the bars
+wait 2
+tap leditor speed Speed 1×
+tap leditor reverse Reverse
+wait 2
+tap leditor reverse Reverse on
+expect looper: edit Reverse
+tap ldeck loop-mute Loop 1 speaker
+expect looper: loop 1 muted
+wait 2
+tap ldeck loop-mute Loop 1 speaker
+expect looper: loop 1 unmuted
+# A second loop from its ring: it records two bars from the next bar line.
+tap ldeck ring Loop 2 ring: record
+pad 5 100
+wait 4
+tap ldeck ring Loop 2 ring: close and play
+wait 2
+expect time: Loop 2 on Loops B, row 1, playing
+tap ldeck capture Capture last 2 bars
+expect looper: Capture: on the bar line coming, the last 2 bars become Loop 3
+wait 1
+mark arrange
+tap header tab Arrange
+tap clips pager Tracks after
+tap clips slot Loops A slot 1
+wait 4
+expect looper: loop 1 off from bar
+tap clips stop-all Stop all
+expect time: stop all
+wait 4
+tap clips scene Scene 1
+expect time: scene 1
+wait 4
+expect looper: loop 3 on from bar
+button STOP
+button STOP
+expect STOP: all sounds stopped
