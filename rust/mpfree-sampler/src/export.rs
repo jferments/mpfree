@@ -83,9 +83,16 @@ pub fn file_safe(name: &str) -> String {
 
 /// Pad `pad` of `project` as files (see the module docs), with `cuts`, the
 /// slice starts in its layer `layer`'s sound (inside its region, as the
-/// Chop tab has them; none for an unchopped pad).
+/// Slice tool has them; none for an unchopped pad).
 pub fn pad(project: &Project, pad: usize, layer: usize, cuts: &[u64]) -> Result<Export, String> {
     let p = project.pad(pad).ok_or("the pad has no sound")?;
+    sound(project, p, layer, cuts)
+}
+
+/// As [`pad`], for `p`, a pad's settings and sounds that needn't be on a
+/// pad: a take kept on the Sample page (the one Sample page's step 3b).
+/// Its sounds must be `project`'s.
+pub fn sound(project: &Project, p: &Pad, layer: usize, cuts: &[u64]) -> Result<Export, String> {
     let chopped = p.layers.get(layer).ok_or("the pad has no such layer")?;
     let region = chopped.region.clone();
     let main = project

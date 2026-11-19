@@ -204,8 +204,16 @@ pub fn envelopes(v: &impl Values) -> [Vec<(f32, f32)>; 2] {
 /// Two cycles of the LFO's shape. Sample and hold shows a fixed pattern of
 /// steps, as an example of what it does.
 pub fn lfo(v: &impl Values) -> Vec<(f32, f32)> {
+    lfo_shape(v.get(p::LFO_SHAPE).round() as i32)
+}
+
+/// [`lfo`] for LFO 2.
+pub fn lfo2(v: &impl Values) -> Vec<(f32, f32)> {
+    lfo_shape(v.get(p::LFO2_SHAPE).round() as i32)
+}
+
+fn lfo_shape(shape: i32) -> Vec<(f32, f32)> {
     const HELD: [f32; 8] = [0.4, -0.7, 0.9, -0.2, 0.6, -0.9, 0.1, -0.5];
-    let shape = v.get(p::LFO_SHAPE).round() as i32;
     (0..=POINTS)
         .map(|i| {
             let x = i as f32 / POINTS as f32;
@@ -238,15 +246,25 @@ pub fn lfo(v: &impl Values) -> Vec<(f32, f32)> {
 
 /// The LFO card's caption: its shape and its rate (synced or free).
 pub fn lfo_caption(v: &impl Values) -> String {
+    lfo_caption_of(v, [p::LFO_SHAPE, p::LFO_SYNC, p::LFO_RATE])
+}
+
+/// [`lfo_caption`] for LFO 2.
+pub fn lfo2_caption(v: &impl Values) -> String {
+    lfo_caption_of(v, [p::LFO2_SHAPE, p::LFO2_SYNC, p::LFO2_RATE])
+}
+
+/// An LFO's caption from its shape, sync and rate settings.
+fn lfo_caption_of(v: &impl Values, [shape, sync, rate]: [u16; 3]) -> String {
     let shape = p::LFO_SHAPES
-        .get(v.get(p::LFO_SHAPE).round() as usize)
+        .get(v.get(shape).round() as usize)
         .copied()
         .unwrap_or("?");
-    let sync = v.get(p::LFO_SYNC).round() as usize;
+    let sync = v.get(sync).round() as usize;
     if sync > 0 && sync < p::LFO_SYNCS.len() {
         format!("{} · {}", shape.to_lowercase(), p::LFO_SYNCS[sync])
     } else {
-        let hz = v.get(p::LFO_RATE);
+        let hz = v.get(rate);
         format!(
             "{} · {} Hz",
             shape.to_lowercase(),

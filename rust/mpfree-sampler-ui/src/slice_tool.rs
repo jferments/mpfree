@@ -46,8 +46,10 @@
 //!   pad. The **wheel** zooms round the slice picked.
 //!
 //! A take kept on the page (one-page step 2b) is sliced as a pad is and a
-//! tap plays its slice; Put on waits until it is on a pad
-//! ([`crate::send::TAKE_FIRST`]), and so does Live, which plays a pad.
+//! tap plays its slice; its slices go on pads straight from the page (step
+//! 3b, [`ChopAction::apply_take`]), from the first empty pads from A1, and
+//! the take leaves the page with them. Live waits until it is on a pad,
+//! since it plays a pad.
 //!
 //! The project keeps the cuts for the sound as the tool last left them
 //! ([`SliceTool::take_kept`], `Project::keep_chop`), outside undo: trying
@@ -66,13 +68,13 @@ use mpfree_analysis::{
     nearest_zero_crossing, note_name, previous_zero_crossing, sound_spans, SilenceSettings,
 };
 use mpfree_sampler::model::{
-    ChopMode, ChopSet, ModelError, Project, Region, SourceId, KEPT_CHOP, MAX_SLICES, PADS,
+    ChopMode, ChopSet, ModelError, Pad, Project, Region, SourceId, KEPT_CHOP, MAX_SLICES, PADS,
     SLICE_KEYS_FROM,
 };
 use mpfree_sampler::phrase::{self, Phrase};
 use mpfree_ui::wave::{Marker, MarkerKind};
 
-use crate::panel::{Control, Item, Look, Panel, Section};
+use crate::panel::{Control, Item, Look, PadCell, Panel, Section};
 use crate::source::SourceView;
 use crate::warp_tool::Card;
 use crate::wave_tab::{self, next_zero_crossing, pad_label, position_text, TAKE};
@@ -80,6 +82,8 @@ use crate::widgets::Setting;
 
 /// Pads in a bank: PAD BANK A to H each play 16 of a kit's pads.
 pub const BANK: usize = 16;
+/// The kit's banks, A to H.
+const BANKS: usize = PADS / BANK;
 /// The most slices the tool cuts: as many as a kit has pads, and as one
 /// sliced pad holds (R4).
 pub const MAX_CUT_SLICES: usize = MAX_SLICES;
@@ -95,6 +99,9 @@ pub const LIVE_TAKE: &str =
 const MIN_SLICE_MS: f64 = 10.0;
 /// The main button's height in Put on, as drawn.
 const PUT_BUTTON_H: i32 = 44;
+/// The pad map's width, and its ‹ Bank ›'s height, as drawn.
+const MAP_W: i32 = 132;
+const BANK_H: i32 = 30;
 /// How far a dragged tab looks for a zero crossing: this many frames, or
 /// eight pixels of the current zoom if that is more.
 const ZERO_RADIUS: u64 = 256;
@@ -199,11 +206,16 @@ pub enum Row {
     Split,
     Merge,
     Clear,
+    /// The pads they go on: the bank's pad map, each slice's pad in its
+    /// colour; a tap on a pad starts them there (the first one turns).
+    Pads,
+    /// The bank the pad map shows ("A1–A16"; named Map on the panel). It
+    /// turns the map alone: the pads' bank is PAD BANK's, and turning it
+    /// would take the page to another pad (`SamplePage::set_pad_page`).
+    Bank,
     /// The slices go on the pads, on one sliced pad, on notes as well, on
     /// a new kit, or into files.
     Put,
-    /// The pads they go on (the first one turns).
-    Pads,
     /// A phrase of the slices in time as well (for a sound with a tempo,
     /// with Put on at Pads, One pad or New kit).
     Phrase,
@@ -212,7 +224,7 @@ pub enum Row {
 
 impl Row {
     /// The panel's order, which the wheel walks.
-    pub const ALL: [Row; 11] = [
+    pub const ALL: [Row; 12] = [
         Row::Method,
         Row::Snap,
         Row::Amount,
@@ -220,8 +232,9 @@ impl Row {
         Row::Split,
         Row::Merge,
         Row::Clear,
-        Row::Put,
         Row::Pads,
+        Row::Bank,
+        Row::Put,
         Row::Phrase,
         Row::Chop,
     ];
@@ -327,6 +340,32 @@ pub struct ChopState {
     /// empty kit and a new track can take the slices, or Err saying why
     /// not now (no empty kit left, no room for a track).
     pub new_kit: Option<Result<(), String>>,
+    /// What each of the kit's pads plays of the chopped sound, by pad
+    /// (None: another sound, or none): so the tool knows a slice that is
+    /// on a pad already ([`SliceTool::slice_pad`]).
+    pub plays: Vec<Option<Plays>>,
+}
+
+/// What a pad plays of the chopped sound ([`ChopState::plays`]): its first
+/// layer's span and cuts, and whether it plays notes (a keygroup, as Put
+/// on Keys makes them).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Plays {
+    pub start: u64,
+    pub end: u64,
+    pub cuts: Vec<u64>,
+    pub keys: bool,
+}
+
+/// Where a slice lands, for the lane under the wave
+/// ([`SliceTool::lands`]): its span, what the lane says (its pad, "A3"),
+/// and whether the pad plays it already.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Land {
+    pub start: u64,
+    pub end: u64,
+    pub text: String,
+    pub on: bool,
 }
 
 impl ChopState {
@@ -382,6 +421,18 @@ impl ChopState {
             files: false,
             kept,
             new_kit: None,
+            plays: (0..PADS)
+                .map(|i| {
+                    let pd = p.pad(i)?;
+                    let r = &pd.layers.first()?.region;
+                    (r.source == s.id()).then(|| Plays {
+                        start: r.start,
+                        end: r.end,
+                        cuts: r.cuts().collect(),
+                        keys: pd.keys.is_some(),
+                    })
+                })
+                .collect(),
         })
     }
 
@@ -476,8 +527,29 @@ impl ChopAction {
     /// Applies [`ChopAction::ToPads`] to the project (one undo step) and
     /// returns the pads it filled; other actions change nothing here.
     pub fn apply(&self, p: &mut Project) -> Result<Range<usize>, ModelError> {
+        let ChopAction::ToPads { pad, .. } = self else {
+            return Ok(0..0);
+        };
+        let template = p.pad(*pad).ok_or(ModelError::BadPad)?.clone();
+        self.place(p, &template)
+    }
+
+    /// Applies a [`ChopAction::ToPads`] made on take `index` kept on the
+    /// page (its pad [`TAKE`]; the one Sample page's step 3b): the slices
+    /// are made from the take as [`ChopAction::apply`] makes them from a
+    /// pad, and the take goes from the page with them, all one undo step
+    /// ([`Project::chop_take`]). Returns the pads it filled.
+    pub fn apply_take(&self, p: &mut Project, index: usize) -> Result<Range<usize>, ModelError> {
+        if !matches!(self, ChopAction::ToPads { .. }) {
+            return Ok(0..0);
+        }
+        p.chop_take(index, |p, take| self.place(p, take))
+    }
+
+    /// The slices on the pads, each made from `made_from` (the chopped pad
+    /// or take), one undo step.
+    fn place(&self, p: &mut Project, made_from: &Pad) -> Result<Range<usize>, ModelError> {
         let ChopAction::ToPads {
-            pad,
             layer,
             to_pad,
             keys_from,
@@ -487,12 +559,7 @@ impl ChopAction {
         else {
             return Ok(0..0);
         };
-        let mut template = p.pad(*pad).ok_or(ModelError::BadPad)?.clone();
-        if *layer >= template.layers.len() {
-            return Err(ModelError::BadPad);
-        }
-        // The chopped layer's settings carry over: make it the first.
-        template.layers.swap(0, *layer);
+        let template = Self::template(made_from, *layer)?;
         let (c, first, count) = self.slices(p)?;
         if *one_pad {
             p.chop_to_one_pad(c, first, count, *to_pad, Some(&template))?;
@@ -511,17 +578,38 @@ impl ChopAction {
     /// makes them, and the sound added to it, as one undo step of `to`.
     /// `from` doesn't change. Returns the pads it filled.
     pub fn apply_to(&self, from: &Project, to: &mut Project) -> Result<Range<usize>, ModelError> {
-        let ChopAction::ToPads {
-            pad, layer, to_pad, ..
-        } = self
-        else {
+        let ChopAction::ToPads { pad, .. } = self else {
             return Ok(0..0);
         };
-        let mut template = from.pad(*pad).ok_or(ModelError::BadPad)?.clone();
-        if *layer >= template.layers.len() {
-            return Err(ModelError::BadPad);
-        }
-        template.layers.swap(0, *layer);
+        let made_from = from.pad(*pad).ok_or(ModelError::BadPad)?;
+        self.place_in(from, made_from, to)
+    }
+
+    /// As [`ChopAction::apply_to`], for take `index` kept on `from`'s page:
+    /// the slices made from the take. `from` doesn't change; the app lets
+    /// the take go there ([`Project::remove_take`]).
+    pub fn apply_take_to(
+        &self,
+        from: &Project,
+        index: usize,
+        to: &mut Project,
+    ) -> Result<Range<usize>, ModelError> {
+        let made_from = from.take(index).ok_or(ModelError::BadTake)?;
+        self.place_in(from, made_from, to)
+    }
+
+    /// The slices on `to`'s pads, made from `made_from` of `from`, with the
+    /// sound added to `to`: one undo step of `to`.
+    fn place_in(
+        &self,
+        from: &Project,
+        made_from: &Pad,
+        to: &mut Project,
+    ) -> Result<Range<usize>, ModelError> {
+        let ChopAction::ToPads { layer, to_pad, .. } = self else {
+            return Ok(0..0);
+        };
+        let template = Self::template(made_from, *layer)?;
         let (c, first, count) = self.slices(from)?;
         let s = from.source(c.source).ok_or(ModelError::UnknownSource)?;
         to.chop_to_pads_of(s, c, first, count, *to_pad, Some(&template))?;
@@ -541,6 +629,17 @@ impl ChopAction {
         };
         let (c, first, count) = self.slices(p)?;
         phrase::phrase(&c, first, count, *frames_per_beat).map(Some)
+    }
+
+    /// What each slice's pad is made from: `made_from` with the chopped
+    /// layer first, so its settings carry over.
+    fn template(made_from: &Pad, layer: usize) -> Result<Pad, ModelError> {
+        let mut t = made_from.clone();
+        if layer >= t.layers.len() {
+            return Err(ModelError::BadPad);
+        }
+        t.layers.swap(0, layer);
+        Ok(t)
     }
 
     /// The chop a [`ChopAction::ToPads`] makes, and which of its slices
@@ -622,6 +721,9 @@ pub struct SliceTool {
     /// again replaces those slices); otherwise the first run of empty pads
     /// after the chopped one.
     first_pad: Option<(usize, usize)>,
+    /// The bank the pad map shows, for the chopped pad named, once its
+    /// arrows have turned it; otherwise the bank the slices start in.
+    map_bank: Option<(usize, usize)>,
     /// Put on: the pads; one sliced pad; also notes from
     /// [`SLICE_KEYS_FROM`], as keygroups of a note each, the pads then
     /// playing those notes; a new kit; or files.
@@ -663,6 +765,7 @@ impl Default for SliceTool {
             cuts: Vec::new(),
             selected: 0,
             first_pad: None,
+            map_bank: None,
             put: Put::Pads,
             phrase: false,
             made_for: None,
@@ -807,6 +910,133 @@ impl SliceTool {
                 .unwrap_or_else(|| after.clamp(room.start, last)),
         };
         Some(first..first + n)
+    }
+
+    /// The pad that plays slice `k` now, as Put on put it there: on Pads
+    /// or Keys, the pad it lands on when that pad plays just the slice (a
+    /// keygroup for Keys); on One pad, that pad when it plays these slices.
+    /// None before the slices are put on, once they are cut again, and on
+    /// New kit or Files (not this kit's pads). The Sound section follows
+    /// it (the one Sample page's step 3b).
+    pub fn slice_pad(&self, st: &ChopState, k: usize) -> Option<usize> {
+        let b = self.bounds(st);
+        let n = b.len() - 1;
+        if k >= n {
+            return None;
+        }
+        let r = self.pads(st)?;
+        let plays = |pad: usize| st.plays.get(pad).and_then(Option::as_ref);
+        match self.put(st) {
+            put @ (Put::Pads | Put::Keys) => {
+                let pad = r.start + k;
+                plays(pad)
+                    .filter(|p| {
+                        (p.start, p.end) == (b[k], b[k + 1])
+                            && p.cuts.is_empty()
+                            && p.keys == (put == Put::Keys)
+                    })
+                    .map(|_| pad)
+            }
+            Put::OnePad => plays(r.start)
+                .filter(|p| (p.start, p.end) == (b[0], b[n]) && p.cuts[..] == b[1..n])
+                .map(|_| r.start),
+            Put::NewKit | Put::Files => None,
+        }
+    }
+
+    /// Every slice is on the pad Put on puts it on, as it is cut now
+    /// ([`SliceTool::slice_pad`]), and no phrase is asked for: Chop to
+    /// would change nothing.
+    fn all_on(&self, st: &ChopState) -> bool {
+        !self.phrase_on(st) && (0..self.slices()).all(|k| self.slice_pad(st, k).is_some())
+    }
+
+    /// Where each slice lands, for the lane under the wave: its pad ("A3";
+    /// on One pad, the pad and the slice's number, "A5 · 3"; on a new kit,
+    /// its pads from A1), and whether that pad plays it already. Empty when
+    /// they go into files or don't fit.
+    pub fn lands(&self, st: &ChopState) -> Vec<Land> {
+        let Some(r) = self.pads(st).filter(|_| self.put(st) != Put::Files) else {
+            return Vec::new();
+        };
+        let b = self.bounds(st);
+        (0..b.len() - 1)
+            .map(|k| Land {
+                start: b[k],
+                end: b[k + 1],
+                text: match self.put(st) {
+                    Put::OnePad => format!("{} · {}", pad_text(self.bank, r.start), k + 1),
+                    Put::NewKit => pad_label(r.start + k),
+                    _ => pad_text(self.bank, r.start + k),
+                },
+                on: self.slice_pad(st, k).is_some(),
+            })
+            .collect()
+    }
+
+    /// The bank the pad map shows: the one its arrows turned to, else the
+    /// one the slices start in (the chopped pad's, when they don't fit).
+    pub fn bank_shown(&self, st: &ChopState) -> usize {
+        let own = self
+            .pads(st)
+            .map_or(st.pad.min(PADS - 1), |r| r.start)
+            .min(PADS - 1)
+            / BANK;
+        self.map_bank
+            .filter(|&(pad, _)| pad == st.pad)
+            .map_or(own, |(_, b)| b.min(BANKS - 1))
+    }
+
+    /// Why the pad map does nothing now, or None.
+    fn map_why(&self, st: &ChopState) -> Option<&'static str> {
+        match self.put(st) {
+            Put::NewKit => Some("On a new kit the slices start on A1"),
+            Put::Files => Some("Files go on no pad"),
+            _ if self.pads(st).is_none() => Some("The slices don't fit on the pads: fewer slices"),
+            _ => None,
+        }
+    }
+
+    /// The pad map's sixteen pads, pad 1 of the bank shown first: each
+    /// slice's pad numbered in its colour, the picked one outlined; the
+    /// pads with a sound raised. On One pad, the one pad. On New kit, the
+    /// new kit's pads from A1 (none has a sound yet), the map drawn faint.
+    pub fn map_cells(&self, st: &ChopState) -> Vec<PadCell> {
+        let first = self.bank_shown(st) * BANK;
+        let new_kit = self.put(st) == Put::NewKit;
+        let lands = self.pads(st).filter(|_| self.put(st) != Put::Files);
+        let n = self.slices();
+        let used = |pad: usize| !new_kit && st.used(pad);
+        (first..first + BANK)
+            .map(|pad| {
+                let k = lands
+                    .as_ref()
+                    .filter(|r| r.contains(&pad))
+                    .map(|r| pad - r.start);
+                match (k, self.put(st)) {
+                    (Some(_), Put::OnePad) => PadCell {
+                        text: if n == 1 {
+                            "1".into()
+                        } else {
+                            format!("1–{n}")
+                        },
+                        tint: Some(self.selected),
+                        used: used(pad),
+                        picked: true,
+                    },
+                    (Some(k), _) => PadCell {
+                        text: (k + 1).to_string(),
+                        tint: Some(k),
+                        used: used(pad),
+                        picked: k == self.selected,
+                    },
+                    (None, _) => PadCell {
+                        used: used(pad),
+                        ..PadCell::default()
+                    },
+                }
+            })
+            .collect()
     }
 
     /// The pads Chop to pads fills that have a sound already.
@@ -1139,7 +1369,14 @@ impl SliceTool {
             Button::Merge => Some("One slice: nothing to merge".to_string()),
             Button::Clear if n > 1 => None,
             Button::Clear => Some("One slice: nothing to clear".to_string()),
-            Button::ToPads if take => Some(crate::send::TAKE_FIRST.to_string()),
+            // Each slice on its pad already: chopping again would change
+            // nothing but put back the settings those pads were given since
+            // (the Sound section edits them). A phrase can still be asked
+            // for again.
+            Button::ToPads if self.all_on(st) => Some(format!(
+                "The slices are on {} already: move a cut to chop again",
+                self.pads(st).map_or_else(String::new, |r| self.range_text(&r))
+            )),
             Button::ToPads if self.put(st) == Put::NewKit => match (&st.new_kit, self.pads(st)) {
                 (Some(Err(why)), _) => Some(why.clone()),
                 (_, None) => Some(format!("A kit has {PADS} pads: fewer slices")),
@@ -1164,12 +1401,12 @@ impl SliceTool {
     pub fn put_note(&self, st: &ChopState) -> String {
         let replaced = self.replaced(st);
         match (self.pads(st).is_some(), replaced.len()) {
-            _ if st.pad == TAKE => "the take: on a pad first".into(),
             (true, _) if self.put(st) == Put::NewKit => match &st.new_kit {
                 Some(Ok(())) => "on a new track".into(),
                 _ => "not now".into(),
             },
             _ if self.put(st) == Put::Files => "as files".into(),
+            _ if self.all_on(st) => "on their pads".into(),
             (false, _) => format!("{} slices: more than the kit's {PADS} pads", self.slices()),
             (true, 0) => "no pad replaced".into(),
             (true, 1..=3) => {
@@ -1209,20 +1446,17 @@ impl SliceTool {
                     self.method == Method::Manual,
                     "Manual chops have no setting: pick another Method",
                 ),
-                Row::Pads => Control::new(Look::Chip).faint_because(
-                    self.put(st) == Put::NewKit || self.pads(st).is_none(),
-                    if self.put(st) == Put::NewKit {
-                        "On a new kit the slices start on A1"
-                    } else {
-                        "The slices don't fit on the pads: fewer slices"
-                    },
-                ),
+                Row::Pads => Control::new(Look::Pads(self.map_cells(st)))
+                    .faint_because(self.map_why(st).is_some(), self.map_why(st).unwrap_or("")),
+                Row::Bank => Control::new(Look::Chip)
+                    .faint_because(self.map_why(st).is_some(), self.map_why(st).unwrap_or("")),
                 Row::Phrase => Control::new(Look::Toggle(self.phrase_on(st)))
                     .faint_because(!self.phrase_can(st), self.phrase_why(st).unwrap_or("")),
-                Row::Put => Control::new(Look::Choice {
+                Row::Put => Control::new(Look::Grid {
                     options: puts.iter().map(|p| p.label().to_string()).collect(),
                     on: puts.iter().position(|p| *p == self.put(st)).unwrap_or(0),
                     off: Vec::new(),
+                    cols: 2,
                 }),
                 Row::Split | Row::Merge | Row::Clear | Row::Chop => {
                     let b = row.button().unwrap_or(Button::Split);
@@ -1271,14 +1505,18 @@ impl SliceTool {
                     ],
                 )
                 .note(&slices),
+                // As drawn: the bank's pad map over its ‹ Bank ›, beside
+                // the places, Phrase and the main button.
                 Section::new(
                     "Put on",
                     420,
-                    vec![
-                        vec![it(Row::Put)],
-                        vec![it(Row::Pads).labelled(), it(Row::Phrase).labelled()],
-                        vec![it(Row::Chop).high(PUT_BUTTON_H)],
-                    ],
+                    vec![vec![
+                        it(Row::Pads).wide(MAP_W),
+                        it(Row::Bank).under().high(BANK_H),
+                        it(Row::Put),
+                        it(Row::Phrase).under(),
+                        it(Row::Chop).under().high(PUT_BUTTON_H),
+                    ]],
                 )
                 .note(&self.put_note(st)),
             ],
@@ -1396,6 +1634,13 @@ impl SliceTool {
                         None => "Too many".into(),
                     },
                 ),
+                // Named by the pads it shows, not "Bank B": it turns the
+                // map alone, never the pads' bank (PAD BANK's), so the two
+                // can't be taken for one setting.
+                Row::Bank => row("Map", {
+                    let b = (b'A' + self.bank_shown(st) as u8) as char;
+                    format!("{b}1–{b}16")
+                }),
                 Row::Phrase => row(
                     "Phrase",
                     if self.phrase_on(st) { "On" } else { "Off" }.into(),
@@ -1649,6 +1894,11 @@ impl SliceTool {
                 self.selected = (self.selected as i32 + d).clamp(0, self.cuts.len() as i32) as usize
             }
             Row::Pads => self.turn_first_pad(st, d),
+            // Round the banks, as Method and Put on go round theirs.
+            Row::Bank => {
+                let b = (self.bank_shown(st) as i32 + d).rem_euclid(BANKS as i32) as usize;
+                self.map_bank = Some((st.pad, b));
+            }
             Row::Phrase => match self.phrase_why(st) {
                 None => self.phrase ^= d % 2 != 0,
                 Some(why) => self.note = Some(why.into()),
@@ -1712,6 +1962,33 @@ impl SliceTool {
         let room = st.room();
         let last = (room.end - p.len()) as i32;
         let first = (p.start as i32 + delta).clamp(room.start as i32, last) as usize;
+        self.first_pad = Some((st.pad, first));
+        // The map follows the slices to their bank.
+        self.map_bank = None;
+    }
+
+    /// A pad of the map tapped (`col`, its place in the bank shown): the
+    /// slices start there (on One pad, that pad takes them), as far on as
+    /// they fit. Says why when the map is faint.
+    pub fn cell(&mut self, st: &ChopState, col: usize) {
+        if let Some(why) = self.map_why(st) {
+            self.note = Some(why.to_string());
+            return;
+        }
+        let Some(p) = self.pads(st) else { return };
+        let room = st.room();
+        let pad = (self.bank_shown(st) * BANK + col.min(BANK - 1)).min(room.end - 1);
+        let last = room.end - p.len();
+        let first = pad.clamp(room.start, last);
+        if first == p.start {
+            // Nothing to move: say where they go, so the tap isn't lost.
+            let at = pad_text(self.bank, first);
+            self.note = Some(match self.put(st) {
+                Put::OnePad => format!("The slices go on {at} already"),
+                _ => format!("Slice 1 lands on {at} already"),
+            });
+            return;
+        }
         self.first_pad = Some((st.pad, first));
     }
 

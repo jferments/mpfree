@@ -989,10 +989,11 @@ fn the_sound_section_turns_the_pad_as_the_play_page_does() {
 /// under the wave is Input, whose steps are the recorder's, and the
 /// region's settings come back when it stops.
 /// One-page step 2b: a take kept on the page shows as a new take ("Take 3 ·
-/// new", which of how many), with no pad of its own, and only Send to pad
-/// is lit (a take goes onto a pad before it is chopped).
+/// new", which of how many), with no pad of its own; Send to pad and Chop
+/// to pads are both lit (step 3b: a take's slices go on pads from the
+/// page).
 #[test]
-fn a_take_kept_on_the_page_shows_as_new_with_only_send_to_pad() {
+fn a_take_kept_on_the_page_shows_as_new_with_send_and_chop_lit() {
     use mpfree_sampler_ui::send;
     use mpfree_sampler_ui::widgets::ButtonRow;
     let mut s = sample();
@@ -1010,8 +1011,7 @@ fn a_take_kept_on_the_page_shows_as_new_with_only_send_to_pad() {
     assert!(bar.subtitle.ends_with(" · take 2 of 2"), "{}", bar.subtitle);
     send::show_take(&mut s.ui, false);
     let b = s.ui.get::<ButtonRow>(send::SEND).unwrap();
-    assert_eq!(b.enabled, [true, false]);
-    assert_eq!(b.why[1], send::TAKE_FIRST);
+    assert_eq!(b.enabled, [true, true], "a take's slices go on pads too");
     send::show_take(&mut s.ui, true);
     let b = s.ui.get::<ButtonRow>(send::SEND).unwrap();
     assert_eq!(b.labels[0], send::SENDING);
