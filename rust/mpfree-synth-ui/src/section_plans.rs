@@ -326,6 +326,15 @@ fn voice_page(voices: &[u16], tuning: &[u16], output: &[u16]) -> Plan {
 
 fn fm(page: &str) -> Option<Plan> {
     use mpfree_synth::fm_params::*;
+    // The six operators' On switches sit on the Algo page.
+    const OPS_ON: [u16; 6] = [
+        op_id(1, op::ON),
+        op_id(2, op::ON),
+        op_id(3, op::ON),
+        op_id(4, op::ON),
+        op_id(5, op::ON),
+        op_id(6, op::ON),
+    ];
     if let Some(n) = page
         .strip_prefix("Op ")
         .and_then(|n| n.parse::<usize>().ok())
@@ -350,15 +359,21 @@ fn fm(page: &str) -> Option<Plan> {
                     .draw(&format!("Op {n} env")),
                 s(
                     "freq",
-                    "Frequency",
+                    "Oscillator",
                     Source,
-                    &[o(op::MODE), o(op::COARSE), o(op::FINE), o(op::DETUNE)],
+                    &[
+                        o(op::WAVE),
+                        o(op::MODE),
+                        o(op::COARSE),
+                        o(op::FINE),
+                        o(op::DETUNE),
+                    ],
                 ),
                 s(
                     "out",
                     "Output",
                     Voice,
-                    &[o(op::ON), o(op::LEVEL), o(op::VEL_SENS), o(op::AMS)],
+                    &[o(op::LEVEL), o(op::VEL_SENS), o(op::AMS)],
                 ),
                 s("algo", "Algorithm", Source, &[]).draw("Algorithm"),
             ],
@@ -411,7 +426,7 @@ fn fm(page: &str) -> Option<Plan> {
     }
     Some(match page {
         "Algo" => (
-            "row(algo:52*, col(levels:180, voice:*):48*)",
+            "row(col(algo:*, ops:170):52*, col(levels:180, voice:*):48*)",
             vec![
                 s(
                     "algo",
@@ -420,6 +435,14 @@ fn fm(page: &str) -> Option<Plan> {
                     &[ALGORITHM, FEEDBACK, OSC_SYNC],
                 )
                 .draw("Algorithm"),
+                s("ops", "Operators", Source, &OPS_ON).labels(&[
+                    (OPS_ON[0], "Op 1 on"),
+                    (OPS_ON[1], "Op 2 on"),
+                    (OPS_ON[2], "Op 3 on"),
+                    (OPS_ON[3], "Op 4 on"),
+                    (OPS_ON[4], "Op 5 on"),
+                    (OPS_ON[5], "Op 6 on"),
+                ]),
                 s("levels", "Levels", Voice, &[]).draw("Levels"),
                 s(
                     "voice",

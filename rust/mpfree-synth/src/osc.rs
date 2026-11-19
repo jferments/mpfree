@@ -81,7 +81,7 @@ pub struct Waveset {
 
 impl Waveset {
     /// From each harmonic's sine and cosine amplitudes (`amp(k)`, k from 1).
-    fn build(amp: impl Fn(usize) -> (f64, f64)) -> Waveset {
+    pub(crate) fn build(amp: impl Fn(usize) -> (f64, f64)) -> Waveset {
         let mut data = Vec::new();
         let (mut off, mut lens) = ([0; LEVELS], [0; LEVELS]);
         for (i, &h) in LEVEL_HARMONICS.iter().enumerate() {
@@ -127,8 +127,33 @@ impl Waveset {
         l.read(d, p)
     }
 
-    fn bytes(&self) -> usize {
+    /// Level `lv`, ready to read many times ([`Read::at`]): for a caller
+    /// that stays on one level for a while, as an FM operator does across
+    /// a control step.
+    #[inline]
+    pub fn reader(&self, lv: usize) -> Read<'_> {
+        let (d, lv) = self.level(lv);
+        Read { d, lv }
+    }
+
+    pub(crate) fn bytes(&self) -> usize {
         self.data.len() * 8
+    }
+}
+
+/// One level of a [`Waveset`] ([`Waveset::reader`]).
+#[derive(Clone, Copy)]
+pub struct Read<'a> {
+    d: &'a [[f32; 2]],
+    lv: Lv,
+}
+
+impl Read<'_> {
+    /// One sample at phase `p` ([`phase`]): the same load and multiply-add
+    /// as [`Waveset::at`].
+    #[inline]
+    pub fn at(self, p: u32) -> f32 {
+        self.lv.read(self.d, p)
     }
 }
 
@@ -493,6 +518,18 @@ mod tests {
         assert_eq!(phase(-0.25), 3 << 30);
         assert_eq!(increment(0.25), 1 << 30);
         assert_eq!(increment(f32::NAN), 0);
+    }
+
+    #[test]
+    fn a_reader_reads_what_at_reads() {
+        let c = classic();
+        for lv in 0..LEVELS {
+            let r = c.saw.reader(lv);
+            for k in 0..1000u32 {
+                let p = k.wrapping_mul(0x9E37_79B9);
+                assert_eq!(r.at(p).to_bits(), c.saw.at(lv, p).to_bits());
+            }
+        }
     }
 
     #[test]

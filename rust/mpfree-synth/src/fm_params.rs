@@ -83,8 +83,9 @@ pub mod op {
     pub const L_CURVE: u16 = 19;
     pub const R_CURVE: u16 = 20;
     pub const ON: u16 = 21;
+    pub const WAVE: u16 = 22;
     /// Fields per operator.
-    pub const FIELDS: usize = 22;
+    pub const FIELDS: usize = 23;
 }
 
 /// The id of field `field` of operator `n` (1 to 6, as on the DX7).
@@ -99,6 +100,9 @@ pub const VOICE_MODES: &[&str] = &["Poly", "Mono"];
 pub const LFO_WAVES: &[&str] = &["Triangle", "Saw down", "Saw up", "Square", "Sine", "S&H"];
 pub const OP_MODES: &[&str] = &["Ratio", "Fixed"];
 pub const CURVES: &[&str] = &["-Lin", "-Exp", "+Exp", "+Lin"];
+/// An operator's wave ([`crate::fm`]): the sine, as on the DX7, or one of
+/// four more, each as loud as the sine.
+pub const OP_WAVES: &[&str] = &["Sine", "Triangle", "Saw", "Square", "Half sine"];
 
 const fn p(
     id: u16,
@@ -226,6 +230,7 @@ const OP_FIELDS: [ParamInfo; op::FIELDS] = [
     p(op::L_CURVE, "L curve", "", 0.0, 3.0, 0.0, Choice(CURVES)),
     p(op::R_CURVE, "R curve", "", 0.0, 3.0, 0.0, Choice(CURVES)),
     p(op::ON, "On", "", 0.0, 1.0, 1.0, Toggle),
+    p(op::WAVE, "Wave", "", 0.0, 4.0, 0.0, Choice(OP_WAVES)),
 ];
 
 /// Each operator's sound (frequency, level, envelope) and its keyboard
