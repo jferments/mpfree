@@ -1,0 +1,342 @@
+mpfree-preset = 2
+engine = mpfree.wind
+name = Init
+
+mpfree-preset = 2
+engine = mpfree.wind
+name = Warm Clarinet
+
+# Instrument
+instrument.tone = 40
+instrument.noise = 10
+
+# Vibrato
+vibrato.vibrato = 0
+
+mpfree-preset = 2
+engine = mpfree.wind
+name = Jazz Clarinet
+
+# Instrument
+instrument.reed = 35
+instrument.tone = 60
+
+# Vibrato
+vibrato.vibrato = 30
+vibrato.rate = 5.5
+vibrato.delay = 250
+
+# Play
+play.glide = 30
+
+mpfree-preset = 2
+engine = mpfree.wind
+name = Dark Clarinet
+
+# Instrument
+instrument.reed = 60
+instrument.tone = 20
+instrument.noise = 8
+
+# Vibrato
+vibrato.vibrato = 10
+
+mpfree-preset = 2
+engine = mpfree.wind
+name = Tenor Sax
+
+# Instrument
+instrument.model = Sax
+instrument.reed = 55
+instrument.tone = 55
+instrument.noise = 20
+
+# Vibrato
+vibrato.vibrato = 25
+vibrato.rate = 5.2
+vibrato.delay = 300
+
+# Breath
+breath.tongue = 45
+
+mpfree-preset = 2
+engine = mpfree.wind
+name = Breathy Sax
+
+# Instrument
+instrument.model = Sax
+instrument.reed = 30
+instrument.tone = 50
+instrument.noise = 50
+
+# Vibrato
+vibrato.vibrato = 30
+vibrato.rate = 4.5
+
+# Breath
+breath.attack = 60
+
+mpfree-preset = 2
+engine = mpfree.wind
+name = Growl Sax
+
+# Instrument
+instrument.model = Sax
+instrument.reed = 80
+instrument.tone = 75
+instrument.noise = 25
+instrument.growl = 45
+
+# Vibrato
+vibrato.vibrato = 15
+
+mpfree-preset = 2
+engine = mpfree.wind
+name = Soprano Sax
+
+# Instrument
+instrument.model = Sax
+instrument.reed = 50
+instrument.tone = 65
+instrument.noise = 15
+
+# Vibrato
+vibrato.vibrato = 35
+vibrato.rate = 6
+vibrato.delay = 200
+
+mpfree-preset = 2
+engine = mpfree.wind
+name = Concert Flute
+
+# Instrument
+instrument.model = Flute
+instrument.noise = 20
+
+# Vibrato
+vibrato.vibrato = 35
+vibrato.delay = 200
+
+# Breath
+breath.tongue = 40
+
+mpfree-preset = 2
+engine = mpfree.wind
+name = Breathy Flute
+
+# Instrument
+instrument.model = Flute
+instrument.edge = 70
+instrument.tone = 40
+instrument.noise = 55
+
+# Vibrato
+vibrato.vibrato = 25
+
+# Breath
+breath.attack = 60
+
+mpfree-preset = 2
+engine = mpfree.wind
+name = Pan Pipes
+
+# Instrument
+instrument.model = Flute
+instrument.edge = 25
+instrument.tone = 30
+instrument.noise = 40
+
+# Vibrato
+vibrato.vibrato = 0
+
+# Breath
+breath.tongue = 60
+breath.attack = 15
+breath.release = 150
+
+mpfree-preset = 2
+engine = mpfree.wind
+name = Recorder
+
+# Instrument
+instrument.model = Flute
+instrument.edge = 85
+instrument.tone = 40
+instrument.noise = 12
+
+# Vibrato
+vibrato.vibrato = 0
+
+# Breath
+breath.tongue = 55
+
+mpfree-preset = 2
+engine = mpfree.wind
+name = Ocarina
+
+# Instrument
+instrument.model = Flute
+instrument.edge = 30
+instrument.tone = 0
+instrument.noise = 15
+
+# Vibrato
+vibrato.vibrato = 15
+vibrato.rate = 5.5
+
+mpfree-preset = 2
+engine = mpfree.wind
+name = Bamboo Flute
+
+# Instrument
+instrument.model = Flute
+instrument.edge = 50
+instrument.tone = 35
+instrument.noise = 60
+
+# Vibrato
+vibrato.vibrato = 20
+vibrato.rate = 4
+
+# Play
+play.glide = 60
+
+mpfree-preset = 2
+engine = mpfree.wind
+name = Reed Section
+
+# Instrument
+instrument.model = Sax
+instrument.noise = 15
+
+# Vibrato
+vibrato.vibrato = 20
+
+# Play
+play.voices = 6
+play.spread = 60
+
+mpfree-preset = 2
+engine = mpfree.wind
+name = Flute Choir
+
+# Instrument
+instrument.model = Flute
+instrument.noise = 20
+
+# Vibrato
+vibrato.vibrato = 25
+
+# Play
+play.voices = 4
+play.spread = 50
+
+mpfree-preset = 2
+engine = mpfree.wind
+name = Wind Controller Sax
+
+# Instrument
+instrument.model = Sax
+instrument.breath = 100
+instrument.tone = 50
+instrument.noise = 20
+
+# Vibrato
+vibrato.vibrato = 10
+
+# Breath
+breath.breath-from = Breath ctrl
+breath.attack = 5
+breath.release = 30
+
+mpfree-preset = 2
+engine = mpfree.wind
+name = Pressure Swell
+
+# Instrument
+instrument.tone = 45
+
+# Breath
+breath.sustain = 40
+
+# Pressure
+pressure.depth-1 = 100
+
+mpfree-preset = 2
+engine = mpfree.wind
+name = Hall Flute
+fx.1 = mpfree.fx.room
+macro.1 = Breath
+macro.1.map = instrument.breath 40 100
+macro.2 = Vibrato
+macro.2.map = vibrato.vibrato 0 80
+macro.3 = Tone
+macro.3.map = instrument.tone 0 100
+macro.4 = Noise
+macro.4.map = instrument.noise 0 80
+
+# Macros
+macros.breath = 75
+macros.vibrato = 40
+macros.tone = 50
+macros.noise = 30
+
+# Instrument
+instrument.model = Flute
+instrument.noise = 24
+
+# Vibrato
+vibrato.vibrato = 32
+vibrato.delay = 200
+
+# Breath
+breath.tongue = 40
+
+# FX 1: a hall
+fx-1.pre-delay = 25
+fx-1.size = 85
+fx-1.decay = 2600
+fx-1.early = 45
+fx-1.low-cut = 200
+fx-1.mix = 28
+
+mpfree-preset = 2
+engine = mpfree.wind
+name = Smoky Sax
+fx.1 = mpfree.fx.room
+macro.1 = Breath
+macro.1.map = instrument.breath 40 100
+macro.2 = Vibrato
+macro.2.map = vibrato.vibrato 0 80
+macro.3 = Tone
+macro.3.map = instrument.tone 0 100
+macro.4 = Noise
+macro.4.map = instrument.noise 0 80
+
+# Macros
+macros.breath = 75
+macros.vibrato = 40
+macros.tone = 55
+macros.noise = 40
+
+# Instrument
+instrument.model = Sax
+instrument.reed = 45
+instrument.tone = 55
+instrument.noise = 32
+
+# Vibrato
+vibrato.vibrato = 32
+vibrato.rate = 5
+vibrato.delay = 300
+
+# Breath
+breath.tongue = 40
+
+# FX 1: a small club room
+fx-1.pre-delay = 10
+fx-1.size = 45
+fx-1.decay = 1100
+fx-1.early = 60
+fx-1.low-cut = 150
+fx-1.mix = 22

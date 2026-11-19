@@ -835,11 +835,11 @@ fn every_sample_takes_its_colours_from_the_theme() {
 }
 
 #[test]
-fn keys_drawbar_squelch_analog_and_bass_draw_inside_their_sections() {
+fn the_instrument_engines_draw_inside_their_sections() {
     // Each page's drawings, and the sections that open another page.
     type Pages<'a> = &'a [(&'a str, &'a [&'a str])];
     type Links<'a> = &'a [(&'a str, &'a str, &'a str)];
-    let engines: [(&str, Pages, Links); 7] = [
+    let engines: [(&str, Pages, Links); 8] = [
         (
             "synth-keys-strike",
             &[
@@ -919,6 +919,16 @@ fn keys_drawbar_squelch_analog_and_bass_draw_inside_their_sections() {
             ],
             &[],
         ),
+        (
+            "synth-wind",
+            &[
+                ("Instrument", &["Mouthpiece", "Tone"]),
+                ("Breath", &["Level", "Breath"]),
+                ("Play", &[]),
+                ("Pressure", &["Pressure", "Voices"]),
+            ],
+            &[],
+        ),
     ];
     for (name, pages, links) in engines {
         let mut s = sample(name);
@@ -953,8 +963,8 @@ fn keys_drawbar_squelch_analog_and_bass_draw_inside_their_sections() {
 }
 
 #[test]
-fn keys_drawbar_squelch_analog_strings_and_bass_headings_fit() {
-    use mpfree_synth::{Analog, Bass, Drawbar, Keys, Preset, Squelch, Strings};
+fn the_instrument_engines_headings_fit() {
+    use mpfree_synth::{Analog, Bass, Drawbar, Keys, Preset, Squelch, Strings, Wind};
     /// Every factory preset, then every parameter on its own at its
     /// minimum and maximum (each choice at each of its values).
     fn each<N: Node>(
@@ -1041,6 +1051,12 @@ fn keys_drawbar_squelch_analog_strings_and_bass_headings_fit() {
         Bass::load_preset,
         &mut check,
     );
+    each(
+        || Wind::new(48_000),
+        Wind::presets(),
+        Wind::load_preset,
+        &mut check,
+    );
     // The longest captions each drawing can have.
     use mpfree_synth::{analog_params as an, drawbar_params as db, keys_params as kp};
     let mut keys = Keys::new(48_000);
@@ -1103,6 +1119,21 @@ fn keys_drawbar_squelch_analog_strings_and_bass_headings_fit() {
         }
     }
     check(&bass, "longest");
+    let mut wind = Wind::new(48_000);
+    {
+        use mpfree_synth::wind_params as wn;
+        for (id, v) in [
+            (wn::MODEL, wn::FLUTE),
+            (wn::EDGE, 100.0),
+            (wn::BREATH_FROM, wn::FROM_FOOT),
+            (wn::TONGUE, 100.0),
+            (wn::BREATH, 100.0),
+            (wn::TONE, 100.0),
+        ] {
+            wind.set_param(id, v);
+        }
+    }
+    check(&wind, "longest");
     let list: Vec<String> = misfits
         .iter()
         .map(|(what, preset)| format!("{what} ({preset})"))

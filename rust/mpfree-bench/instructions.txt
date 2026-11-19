@@ -181,3 +181,7 @@
 362861	Wavetable Organ, 8 voices
 553843	Wavetable Sync Sweep, 8 voices
 60600	Wavetable Vowel Lead, 8 voices
+143226	Wind Concert Flute, a line
+144174	Wind Growl Sax, a line
+121431	Wind Init, a line
+607688	Wind Reed Section, 6 voices
