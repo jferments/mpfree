@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-fx rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-notefx rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/plugins.rs rust/mpfree-plughost/src/rack.rs rust/mpfree-mpchost rust/mpfree-fx/src/perform.rs rust/mpfree-fx/src/xyfx.rs rust/mpfree-fx/src/picker.rs rust/mpfree-chain-ui/src/picker.rs
-checked: 2026-11-18 1a0b4bde
+checked: 2026-11-19 79fc6f63
 -->
 
 # Effects
@@ -90,7 +90,7 @@ Open a track's chain in the chain editor (its strip's **+ FX**, or an effect in 
 
 - **NOTES**, the track's MIDI effects and its **Arp**, in the order the notes go through them, top to bottom. Each row has its name, a line on how it is set, and its **ON** switch. Four rows show at a time; **‹ ›** on the NOTES line scroll through more. The line says how many MIDI effects the track has out of 8.
 - **Plays on**, between the groups, says where the track's notes go: **Its own sound**, or a MIDI out port and channel. Tap it to change that in the mixer's I/O view, in the MIDI section's **Tracks out** (see [Playing a synth from a track](midi-and-cv.md#playing-a-synth-from-a-track)).
-- **SOUND**, the effects on the track's sound, as before.
+- **SOUND**, the effects on the track's sound.
 
 **+ MIDI effect** opens the thirteen MIDI effects as tiles, each with what it does. Tap one to add it, just above the arp, with its page open. **Cancel** closes the tiles.
 
@@ -523,8 +523,11 @@ A plugin's settings are saved with your project. If you open the project on a st
 
 ## Coming next
 
-- **Automation lanes**: knob moves recorded as smooth lanes. Today a move made while recording goes into the clip as a lock on its step (see [Knob moves while you record](clips.md#knob-moves-while-you-record)).
-- **Perform FX from the pads**: effects played by hitting pads.
+- **Automation lanes**: knob moves recorded as smooth lanes. Today a move made while recording goes into the clip as a lock on its step (see [Knob moves while you record](clips.md#knob-moves-while-you-record)), shown on a [lock lane](sequencer.md#lock-lanes).
+- **The XY FX touch pad** on the effect's own page (above).
+- **An MPC plugin effect's own screen** in the chain editor.
+
+Effects you play from the pads are already here: page B of the Perform set puts the eight throws on pads 1 to 8 (see [More pages: the Perform set](looping.md#more-pages-the-perform-set)).
 
 > [!MPC]
 > MPFree's effects open in the chain editor over the mixer rather than in a separate insert window. Effects with a delay of their own, such as Pitch correct, are lined up with the rest of the mix automatically, so nothing drifts out of time.
