@@ -61,7 +61,7 @@ Each tab is drawn here as MPFree draws it, with sample music in it. The chapter 
 
 {{shot: clips | The Arrange tab's Clips grid mid-jam: eight tracks across the top (kits, synths and a loop track), scenes down the side, clips playing, waiting for the bar and recording, empty slots to fill, the Record settings on the right, and the scene morph along the bottom.}}
 
-{{shot: pads-pad | The Pads tab: the tracks with kits, the kit's 16 pads in the picked bank, the picked pad's settings in the middle, and the kit's sounds on the right.}}
+{{shot: pads-pad | The Pads tab: the tracks with kits, the kit's 16 pads in the picked bank (each labelled with what it is: a sample, a loop, a synth voice or MIDI out), the banks along the top with a dot for each pad in use, the picked pad's settings in the middle, and the kit's sounds on the right.}}
 
 {{shot: mixer | The Mix tab on Faders: a strip for each track, with its effects, sends, pan, fader, mute, solo and output, and the master strip on the right.}}
 

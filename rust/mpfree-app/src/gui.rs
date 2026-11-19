@@ -13961,6 +13961,63 @@ fn pads_types(fonts: Fonts) -> Player {
     )
 }
 
+/// The Pads tab on a full kit ([`mpfree_sampler_ui::sample::full_kit_project`]):
+/// A1-A8 one-shot samples, A9-A16 loops, synth voices and MIDI out to a
+/// Volca Kick and a Juno-X, banks B to F partly filled; A5's snare picked,
+/// with a compressor on its channel.
+#[inline(never)]
+fn pads_full(fonts: Fonts) -> Player {
+    use mpfree_sampler_ui::pads_tab;
+    use mpfree_sampler_ui::sample::{full_kit_project, PAD, RATE};
+    let mut p = sample_player(fonts);
+    let port = |name: &str| mpfree_midi_ui::PortLive {
+        name: name.into(),
+        kind: "USB".into(),
+        about: "USB".into(),
+        has_in: false,
+        has_out: true,
+        sending: true,
+        last_in: None,
+        clock_measured: None,
+    };
+    let mut m = mpfree_midi_ui::IoModel::default();
+    m.live.built.notes_out = true;
+    m.live.ports = vec![port("Volca Kick"), port("Juno-X")];
+    p.apply(ToUi::IoModel(std::sync::Arc::new(std::sync::Mutex::new(m))));
+    let project = full_kit_project();
+    let mut kits = p.kits.clone();
+    kits[0].name = "Breaks".to_string();
+    kits[0].pads = (0..16)
+        .map(|i| project.pad(i).map(|pad| pad.name.clone()))
+        .collect();
+    p.apply(ToUi::Kits(kits));
+    p.apply(ToUi::SampleKits {
+        projects: vec![project],
+        rate: RATE,
+    });
+    open_pads(&mut p);
+    p.on_event(UiEvent {
+        widget: pads_tab::MAP.into(),
+        kind: EventKind::Select(PAD),
+    });
+    p.apply(ToUi::PadFx(
+        (0..crate::mixing::PADS)
+            .map(|i| {
+                let fx = if i == PAD {
+                    vec!["Compressor".to_string()]
+                } else {
+                    Vec::new()
+                };
+                (0, i, fx)
+            })
+            .collect(),
+    ));
+    sample_kit_tracks(&mut p);
+    let _ = p.take_actions();
+    p.tick(30.0);
+    p
+}
+
 /// Play's rows with a pad of each type (the redesign's board 2): kit 1
 /// on track 1, swiped down to A5-A10. A5 loops "Break 92", A6 is a Poly
 /// voice, A8 sends to a Volca Kick, and A7, A9 and A10 are empty.
@@ -14330,6 +14387,19 @@ fn sample_looper(fonts: Fonts) -> Result<Player, String> {
 /// [`sample_looper`] with loop `picked` picked (an empty one shows What
 /// you played: the last bars heard, and Capture over the last two).
 fn sample_looper_picking(fonts: Fonts, picked: usize) -> Result<Player, String> {
+    looper_screen(fonts, picked, false)
+}
+
+/// The Looper tab mid-jam, for the "looper" screen (Jay, 19 Nov 02:45Z):
+/// loop 1 picked with its layers, the busy looper's loops beside it (three
+/// playing, two muted, one recording, two empty), and the song playing.
+/// The tests keep [`sample_looper`]'s two loops.
+fn sample_looper_jam(fonts: Fonts) -> Result<Player, String> {
+    looper_screen(fonts, 0, true)
+}
+
+/// [`sample_looper_picking`], or with `jam` [`sample_looper_jam`].
+fn looper_screen(fonts: Fonts, picked: usize, jam: bool) -> Result<Player, String> {
     use crate::looping::{LoopHost, PERIOD};
     use mpfree_looper::{Command as L, Phase};
     use mpfree_transport::{Block, Command as T, Transport};
@@ -14374,9 +14444,8 @@ fn sample_looper_picking(fonts: Fonts, picked: usize) -> Result<Player, String> 
     }
     // Loop 1 and its layers, as the Play page's previews have them.
     let (wave, view) = recorded_loop();
-    // Loop 1 picked: the whole jam (three playing, two muted, one
-    // recording, two empty).
-    let mut v = if picked == 0 {
+    // The jam: three playing, two muted, one recording, two empty.
+    let mut v = if jam {
         busy_loops().clone()
     } else {
         let mut v = view.clone();
@@ -14404,7 +14473,7 @@ fn sample_looper_picking(fonts: Fonts, picked: usize) -> Result<Player, String> 
         v.layers = [None; mpfree_looper::MAX_LAYERS];
         v.capture_into = Some((picked, 2));
     }
-    if picked == 0 {
+    if jam {
         // The jam is running: bar 9 at the Play page's 92 BPM.
         p.apply(ToUi::Transport(TransportInfo {
             state: mpfree_transport::State::Playing,
@@ -16197,7 +16266,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("arrange-song-tracks sample: {e}"),
     }
-    match sample_looper(fonts()) {
+    match sample_looper_jam(fonts()) {
         Ok(p) => out.push(("looper", p)),
         Err(e) => eprintln!("looper sample: {e}"),
     }
@@ -16473,42 +16542,9 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         t.symbols = true;
     }
     out.push(("sample-name-symbols", symbols));
-    // The Pads tab's Pad view: A5 copied onto A2, A5 picked again.
-    let mut pads = sample_sampler(fonts());
-    open_pads(&mut pads);
-    pads.on_event(UiEvent {
-        widget: mpfree_sampler_ui::pads_tab::BUTTONS.into(),
-        kind: EventKind::Tab(0),
-    });
-    pads.on_event(UiEvent {
-        widget: mpfree_sampler_ui::pads_tab::MAP.into(),
-        kind: EventKind::Select(1),
-    });
-    pads.on_event(UiEvent {
-        widget: mpfree_sampler_ui::pads_tab::BUTTONS.into(),
-        kind: EventKind::Tab(1),
-    });
-    pads.on_event(UiEvent {
-        widget: mpfree_sampler_ui::pads_tab::MAP.into(),
-        kind: EventKind::Select(mpfree_sampler_ui::sample::PAD),
-    });
-    // The pad channels' effects as the mixer sends them: a compressor
-    // on A5's.
-    pads.apply(ToUi::PadFx(
-        (0..crate::mixing::PADS)
-            .map(|i| {
-                let fx = if i == mpfree_sampler_ui::sample::PAD {
-                    vec!["Compressor".to_string()]
-                } else {
-                    Vec::new()
-                };
-                (0, i, fx)
-            })
-            .collect(),
-    ));
-    sample_kit_tracks(&mut pads);
-    pads.take_actions();
-    out.push(("pads-pad", pads));
+    // The Pads tab's Pad view on a full kit (Jay, 19 Nov 04:00Z): bank A
+    // all in use, banks B to F partly, A5's snare picked.
+    out.push(("pads-pad", pads_full(fonts())));
     // A pad of each type (the redesign's board 6): A5 a loop, A11 a Poly
     // voice, A13 MIDI out to a Volca Kick, picked.
     out.push(("pads-types", pads_types(fonts())));
@@ -16964,6 +17000,9 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         use mpfree_sampler_ui::{pads_tab, play_tab};
         open_pads(&mut mapped);
         ev(&mut mapped, pads_tab::BUTTONS, EventKind::Tab(3));
+        // What it did, said on the hint line, has been read.
+        mapped.tick(30.0);
+        let _ = mapped.take_actions();
         open_sample(&mut mapped, sample_page::Editor::Play);
         play_row(&mut mapped, play_tab::Row::Keys);
         let held = mapped.ui.rect_of(play_tab::KEYS).and_then(|r| {
@@ -17009,6 +17048,9 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         use mpfree_sampler_ui::widgets::SettingList;
         open_pads(&mut faded);
         ev(&mut faded, pads_tab::BUTTONS, EventKind::Tab(3));
+        // What it did, said on the hint line, has been read.
+        faded.tick(30.0);
+        let _ = faded.take_actions();
         open_sample(&mut faded, sample_page::Editor::Play);
         let index = play_row(&mut faded, Row::KeyFade);
         if let Some(list) = faded.ui.get_mut::<SettingList>(LIST) {
@@ -31272,9 +31314,15 @@ mod tests {
             "{:?}",
             events_log(&p)
         );
+        // The Pads view doesn't show the keys, so the hint line says it.
+        let told = p.told.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+        assert!(told.starts_with("Mapped to keys: 4 pads"), "{told}");
         let (sent, _) = views(p.take_actions());
         assert_eq!(sent.len(), 1);
         p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        // Read: the hint is back.
+        p.tick(30.0);
+        let _ = p.take_actions();
         // The Sample tab's Play tab shows the kit's keyboard on its Pitch
         // section, with its own hint.
         open_sample(&mut p, sample_page::Editor::Play);
