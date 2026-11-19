@@ -32,8 +32,8 @@ use mpfree_instruments::sound::has_design;
 use mpfree_instruments::{Design, Sound};
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_synth::{
-    bass_params as bp, choir_params as chp, drum_params, fm_params, wind_params as wp, Analog, Bass,
-    Choir, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset, Squelch, Strings, Wavetable, Wind,
+    bass_params as bp, choir_params as chp, drum_params, fm_params, wind_params as wp, Analog,
+    Bass, Choir, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset, Squelch, Strings, Wavetable, Wind,
 };
 
 use crate::fft::{hann_f64, power_spectrum};
