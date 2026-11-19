@@ -239,6 +239,12 @@ leaves it off, to see what an engine's own flushing misses (the sampler's
 "ringing on silence" row below is that check). `--count` leaves it off:
 callgrind doesn't model the mode, and counts the same either way.
 
+`--plain` (any mode) turns the NEON kernels off (`mpfree-simd`), so every
+engine runs their plain Rust twins: run the bench with and without it on
+the MPC and `--compare` the two reports for the kernels' A/B. The run's
+header says which code the kernels run as ("NEON kernels: NEON" on the
+MPC). See [NEON kernels](simd.md).
+
 On the desktop, the biggest holders are the looper (about 33 MB for 60 s of
 stereo, 11 MB of it the 30 s Capture keeps; the app's Prefs "Loop memory"
 default of 5 minutes is about 120 MB, and 20 minutes about 448 MB, all locked
@@ -369,8 +375,10 @@ with a plain Rust twin, chosen at run time. Its first kernel, the
 supersaw's saws, gives its twin's samples bit for bit under qemu-arm and
 runs 43 % of the twin's ARMv7 instructions on the bench's eight voices
 (`python3 tools/simd_arm_cost.py`, counted the way the next section's
-script counts the engines). The bench's "Supersaw saws: 8 voices, plain"
-and "..., NEON" cases are the device round's A/B: the kernel stays only if
+script counts the engines). Its second, the Choir's five formant filters
+for four voices at once, runs 32 % of its twin's on eight voices. The
+bench's "Supersaw saws: 8 voices" and "Choir formants: 8 voices" cases,
+each plain and NEON, are the device round's A/Bs: a kernel stays only if
 it is faster on the MPC.
 
 ## Measuring on the device

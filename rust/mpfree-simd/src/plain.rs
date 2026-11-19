@@ -49,3 +49,24 @@ pub fn table_sum<const ADD: bool>(
         *p = q;
     }
 }
+
+/// The twin of [`crate::formants4`]: frame by frame, lane by lane, formant
+/// by formant (see there for what it computes).
+pub fn formants4(src: &[[f32; 4]], out: &mut [[f32; 4]], f: &mut crate::Formants4) {
+    for (e, y) in src.iter().zip(out.iter_mut()) {
+        for lane in 0..4 {
+            let e = e[lane];
+            let mut acc = 0.0f32;
+            for k in 0..crate::FORMANTS {
+                let (s1, s2) = (f.s1[k][lane], f.s2[k][lane]);
+                let v3 = e - s2;
+                let v1 = f.a1[k][lane] * s1 + f.a2[k][lane] * v3;
+                let v2 = s2 + f.a2[k][lane] * s1 + f.a3[k][lane] * v3;
+                f.s1[k][lane] = 2.0 * v1 - s1;
+                f.s2[k][lane] = 2.0 * v2 - s2;
+                acc += f.g[k][lane] * v1;
+            }
+            y[lane] = acc;
+        }
+    }
+}

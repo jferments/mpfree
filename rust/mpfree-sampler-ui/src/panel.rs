@@ -59,6 +59,33 @@ pub enum Look {
     Primary(String),
     /// A slider with its handle at `pos` (0 to 1): a crossfader.
     Slider { pos: f32 },
+    /// As [`Look::Choice`], the buttons in a grid `cols` wide, row by row
+    /// (Put on's places, as the mockup draws them).
+    Grid {
+        options: Vec<String>,
+        on: usize,
+        off: Vec<usize>,
+        cols: usize,
+    },
+    /// A bank's sixteen pads, pad 1 first, drawn four by four from the
+    /// bottom row (pads 1 to 4) up, as the MPC's pads are: Put on's pad
+    /// map. A tap on a pad is [`EventKind::Cell`] with the row and the
+    /// pad's place in the bank.
+    Pads(Vec<PadCell>),
+}
+
+/// One pad of a [`Look::Pads`] map.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PadCell {
+    /// What it says (a slice's number), drawn on its colour.
+    pub text: String,
+    /// The colour of the slice landing on it: the theme's series colour
+    /// this many along ([`mpfree_ui::Theme::track`]); None: no slice.
+    pub tint: Option<usize>,
+    /// It has a sound already (drawn raised when no slice lands on it).
+    pub used: bool,
+    /// The slice picked lands on it (outlined).
+    pub picked: bool,
 }
 
 /// One row's control: its look, and whether it does anything now (a faint
@@ -242,6 +269,12 @@ const KNOB_H: i32 = LABEL_H + 5 + KNOB_D + 5 + KNOB_VALUE_H;
 const PRIMARY_H: i32 = 84;
 /// A slider's handle.
 const HANDLE_D: i32 = 22;
+/// A grid's buttons, and between them.
+const GRID_H: i32 = 32;
+const GRID_GAP: i32 = 6;
+/// A pad map's pads, and between them.
+const CELL_H: i32 = 28;
+const CELL_GAP: i32 = 4;
 /// A switch.
 const SWITCH_W: i32 = 46;
 const SWITCH_H: i32 = 27;
@@ -322,6 +355,11 @@ fn item_h(look: &Look, it: &Item) -> i32 {
         Look::Toggle(_) => SWITCH_H,
         _ if it.height > 0 => it.height + name,
         Look::Primary(_) => PRIMARY_H + name,
+        Look::Grid { options, cols, .. } => {
+            let rows = options.len().div_ceil((*cols).max(1)).max(1) as i32;
+            rows * GRID_H + (rows - 1) * GRID_GAP + name
+        }
+        Look::Pads(_) => 4 * CELL_H + 3 * CELL_GAP + name,
         _ => CTRL_H + name,
     }
 }
@@ -342,6 +380,39 @@ fn slots(line: &[Item]) -> Vec<Vec<Item>> {
 /// enough that the paint's fitting rarely has to shrink it.
 fn est_w(s: &str) -> i32 {
     (s.chars().count() as f32 * 7.6).round() as i32 + 14
+}
+
+/// The buttons of a grid of `n` options `cols` wide in `r`, row by row.
+fn grid_rects(r: Rect, n: usize, cols: usize) -> Vec<Rect> {
+    let cols = cols.max(1) as i32;
+    let w = (r.w - GRID_GAP * (cols - 1)) / cols;
+    (0..n as i32)
+        .map(|i| {
+            let (row, col) = (i / cols, i % cols);
+            Rect::new(
+                r.x + col * (w + GRID_GAP),
+                r.y + row * (GRID_H + GRID_GAP),
+                w,
+                GRID_H,
+            )
+        })
+        .collect()
+}
+
+/// A pad map's pads in `r`, pad 1 first: the bottom row is pads 1 to 4.
+pub fn cell_rects(r: Rect) -> Vec<Rect> {
+    let w = (r.w - 3 * CELL_GAP) / 4;
+    (0..16)
+        .map(|i| {
+            let (row, col) = (3 - i / 4, i % 4);
+            Rect::new(
+                r.x + col * (w + CELL_GAP),
+                r.y + row * (CELL_H + CELL_GAP),
+                w,
+                CELL_H,
+            )
+        })
+        .collect()
 }
 
 /// The buttons of a choice of `options` across `r`: each as wide as its
@@ -488,6 +559,10 @@ impl Panel {
                         };
                         let options = match l {
                             Look::Choice { options, .. } => option_rects(control, options),
+                            Look::Grid { options, cols, .. } => {
+                                grid_rects(control, options.len(), *cols)
+                            }
+                            Look::Pads(_) => cell_rects(control),
                             _ => Vec::new(),
                         };
                         out.push(Placed {
@@ -588,7 +663,7 @@ pub fn touch(
             });
             Some(EventKind::Select(k))
         }
-        Look::Choice { on, off, .. } => {
+        Look::Choice { on, off, .. } | Look::Grid { on, off, .. } => {
             let i = p.options.iter().position(|o| o.contains(x, y));
             match i {
                 Some(i) if i != *on && !off.contains(&i) => Some(EventKind::Step {
@@ -598,6 +673,10 @@ pub fn touch(
                 _ => Some(EventKind::Select(k)),
             }
         }
+        Look::Pads(_) => match p.options.iter().position(|o| o.contains(x, y)) {
+            Some(col) => Some(EventKind::Cell { row: k, col }),
+            None => Some(EventKind::Select(k)),
+        },
         Look::Chip | Look::Stepper => {
             let (less, mid, more) = p.arrows(&c.look);
             if less.contains(x, y) {
@@ -665,7 +744,10 @@ pub fn targets(
                         .disabled_if(c.faint || *pos >= 1.0),
                 );
             }
-            Look::Choice { options, on, off } => {
+            Look::Choice { options, on, off }
+            | Look::Grid {
+                options, on, off, ..
+            } => {
                 for (i, (o, rect)) in options.iter().zip(&p.options).enumerate() {
                     out.push(
                         Target::tap("choice", k * 16 + i, format!("{name}: {o}"), *rect)
@@ -686,6 +768,14 @@ pub fn targets(
             }
             Look::Button(text) | Look::Primary(text) => {
                 out.push(Target::tap("button", k, text.clone(), p.control).disabled_if(c.faint));
+            }
+            Look::Pads(_) => {
+                for (i, rect) in p.options.iter().enumerate() {
+                    out.push(
+                        Target::tap("pad", k * 16 + i, format!("{name}: pad {}", i + 1), *rect)
+                            .disabled_if(c.faint),
+                    );
+                }
             }
             Look::Slider { pos } => {
                 // Dragged right from the middle; a handle at the right
@@ -880,6 +970,12 @@ pub fn paint(
                 options,
                 on: k,
                 off,
+            }
+            | Look::Grid {
+                options,
+                on: k,
+                off,
+                ..
             } => {
                 if p.control != p.rect {
                     cx.text(FontId::Sans, 13.0, label, Align::Left, dim, name);
@@ -972,6 +1068,39 @@ pub fn paint(
                     fg,
                     text,
                 );
+            }
+            Look::Pads(cells) => {
+                if p.control != p.rect {
+                    cx.text(FontId::Sans, 13.0, label, Align::Left, dim, name);
+                }
+                for (cell, b) in cells.iter().zip(&p.options) {
+                    match cell.tint {
+                        Some(k) => {
+                            let tint = t.track[k % t.track.len()];
+                            let tint = if c.faint {
+                                tint.mix(t.surface, 0.6)
+                            } else {
+                                tint
+                            };
+                            cx.canvas.fill_round_rect(*b, 5, tint);
+                            let px = fit(cx, FontId::Bold, 11.0, 9.0, &cell.text, b.w - 4);
+                            cx.text(FontId::Bold, px, *b, Align::Center, t.bg, &cell.text);
+                        }
+                        None => {
+                            let fill = if cell.used {
+                                ctrl
+                            } else {
+                                t.bg.mix(t.surface, 0.5)
+                            };
+                            cx.canvas.fill_round_rect(*b, 5, fill);
+                            cx.canvas.stroke_round_rect(*b, 5, 1, t.outline);
+                        }
+                    }
+                    if cell.picked && !c.faint {
+                        cx.canvas
+                            .stroke_round_rect(b.inset(-2), 6, 2, Color::rgb(0xFFFFFF));
+                    }
+                }
             }
             Look::Slider { pos } => {
                 if p.control != p.rect {
