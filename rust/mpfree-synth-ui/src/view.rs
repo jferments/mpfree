@@ -35,7 +35,7 @@
 use crate::fm_visual as fv;
 use crate::format::{amount_text, value_text};
 use crate::kit_visual as kv;
-use crate::pages::{plan, qlink_targets, Page};
+use crate::pages::{plan_values, qlink_targets, Page};
 use crate::section_view::{Control, Kind, SectionBox, SectionView};
 use crate::sections::{arrange, Arrangement, Section};
 use crate::visual;
@@ -314,7 +314,7 @@ impl SynthPanel {
     /// change made outside the panel. Keeps the page when the node is the same.
     pub fn load(&mut self, ui: &mut Ui, state: SynthState) -> Result<(), String> {
         let same = self.state.info.id == state.info.id && !self.pages.is_empty();
-        self.pages = plan(state.info, state.params);
+        self.pages = plan_values(state.info, state.params, &state.values);
         if !same {
             self.page = 0;
             self.focus = None;
@@ -334,7 +334,7 @@ impl SynthPanel {
             qlinks: Vec::new(),
         };
         let page = self.pages.get(self.page).unwrap_or(&empty);
-        self.arrangement = arrange(self.state.info, self.state.params, page);
+        self.arrangement = arrange(self.state.info, self.state.params, &self.state.values, page);
     }
 
     /// Each sounding voice's pressure, 0 to 1, for the Pressure page's live
@@ -527,6 +527,12 @@ impl SynthPanel {
 
     fn set(&mut self, ui: &mut Ui, i: usize, v: f32) -> Option<SynthAction> {
         let set = self.state.set(i, v);
+        if set.is_some() && relays_out(self.state.info, self.state.params[i].id) {
+            // A drum's model or the kit's voices pick the page's knobs.
+            self.pages = plan_values(self.state.info, self.state.params, &self.state.values);
+            self.page = self.page.min(self.pages.len().saturating_sub(1));
+            self.arrange();
+        }
         self.refresh(ui);
         set.map(|value| SynthAction::Set {
             id: self.state.params[i].id,
@@ -814,6 +820,14 @@ fn control(st: &SynthState, sec: &Section, i: usize, qlink: Option<usize>, dim: 
     }
 }
 
+/// Whether changing parameter `id` changes which knobs the pages show: a
+/// Drums pad's model, or the kit's Voices.
+pub fn relays_out(info: &NodeInfo, id: u16) -> bool {
+    use mpfree_synth::drum_params as dp;
+    info.id == "mpfree.drums"
+        && (id == dp::VOICES || dp::pad_field(id).is_some_and(|(_, f)| f == dp::field::MODEL))
+}
+
 /// Why parameter `i` does nothing as the sound is set (a pulse width with
 /// no pulse wave, a unison detune in poly mode), if it doesn't.
 pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
@@ -835,6 +849,12 @@ pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
         }
     }
     match st.info.id {
+        "mpfree.drums" => {
+            use mpfree_synth::drum_params as dp;
+            let (pad, f) = dp::pad_field(id)?;
+            let m = dp::model_of(v(dp::pad_id(pad, dp::field::MODEL)));
+            dp::idle_reason(m, v(dp::VOICES) >= 0.5, f)
+        }
         "mpfree.wind" => {
             use mpfree_synth::wind_params as wn;
             let flute = v(wn::MODEL).round() == wn::FLUTE;
