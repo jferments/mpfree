@@ -50,6 +50,8 @@ Every render plays 100 silent blocks first, so parameters a preset or patch sets
 | D5 | every pad | Time to 60 dB under the loudest 5 ms against the Decay label | within 10 % | D5 |
 | D7 | every pad | Level against the kit's first kick | shown | D7 |
 
+The drums' own effects (wave 3, 19 Nov) are measured in `rust/mpfree-synth/tests/drum_fx.rs`, not in fxlab, since no factory kit uses them yet: Punch and Sustain move a hit's front and tail by 3 dB or more at any level (within 1 dB between a hit at 0 and at −12 dB), Distortion keeps the peak within 3 dB while the crest falls, the EQ's bands and the Compressor do what their labels say, and Distortion's aliasing is held at its measured numbers (101 Hz under −95 dB at 24 dB of drive, 997 Hz under −50 dB; [Synths](synths.md#each-drums-effects-and-the-kits-sends-drum_fx)). D10, the cost, is the instruction gate's four "Drums, 16 pads ringing" cases.
+
 New analyses in `rust/mpfree-fxlab/src/synth.rs`, each tested on signals with known answers (`cargo test -p mpfree-fxlab --lib synth`): the frequency read (a sine 0.07 % off reads within 0.01 cent at C1, C4 and C7), the alias read (a band-limited saw under −85 dB, a naive one above −40 dB), the Bessel functions and the square-law fit.
 
 ## The ratchet

@@ -336,7 +336,10 @@ const CHOIR: &[Curated] = &[
 
 use mpfree_synth::drum_params::{field as df, pad_id, PADS, STRIDE};
 
-/// Drums, on pad 1 ([`on_pad`] moves them): the hit, its body, its mix.
+use mpfree_synth::drum_fx::{self, field as xf, fx_id};
+
+/// Drums, on pad 1 ([`on_pad`] moves them): the hit, its body, its mix,
+/// its effects.
 const DRUMS: &[Curated] = &[
     set(
         "Hit",
@@ -365,7 +368,21 @@ const DRUMS: &[Curated] = &[
             pad_id(0, df::VEL_LEVEL),
         ],
     ),
+    set(
+        "Effects",
+        [
+            fx_id(0, xf::PUNCH),
+            fx_id(0, xf::DISTORTION),
+            fx_id(0, xf::DELAY_SEND),
+            fx_id(0, xf::REVERB_SEND),
+        ],
+    ),
 ];
+
+/// Whether `id` is one of pad 1's effects (which move with the pad).
+fn pad1_fx(id: u16) -> bool {
+    (drum_fx::BASE..drum_fx::BASE + drum_fx::STRIDE).contains(&id)
+}
 
 const DRUMS_ID: &str = "mpfree.drums";
 
@@ -421,9 +438,17 @@ pub fn on_pad(info: &NodeInfo, sets: &[QSet], pad: usize) -> Vec<QSet> {
     sets.iter()
         .map(|s| QSet {
             name: s.name.clone(),
-            params: s
-                .params
-                .map(|p| p.map(|id| if id < STRIDE { pad_id(pad, id) } else { id })),
+            params: s.params.map(|p| {
+                p.map(|id| {
+                    if id < STRIDE {
+                        pad_id(pad, id)
+                    } else if pad1_fx(id) {
+                        fx_id(pad, id - drum_fx::BASE)
+                    } else {
+                        id
+                    }
+                })
+            }),
         })
         .collect()
 }
@@ -434,6 +459,8 @@ pub fn on_pad(info: &NodeInfo, sets: &[QSet], pad: usize) -> Vec<QSet> {
 pub fn pad_relative(info: &NodeInfo, id: u16) -> u16 {
     if info.id == DRUMS_ID && usize::from(id) < PADS * usize::from(STRIDE) {
         id % STRIDE
+    } else if info.id == DRUMS_ID && (drum_fx::BASE..drum_fx::KIT).contains(&id) {
+        drum_fx::BASE + (id - drum_fx::BASE) % drum_fx::STRIDE
     } else {
         id
     }
@@ -695,6 +722,18 @@ mod tests {
             pad_relative(info, mpfree_synth::drum_params::BASE_NOTE),
             mpfree_synth::drum_params::BASE_NOTE
         );
+        // A drum's effects follow the pad too; the kit's sends stay put.
+        assert_eq!(sets[3].name, "Effects");
+        assert_eq!(
+            on_pad(info, &sets, 5)[3].params[0],
+            Some(fx_id(5, xf::PUNCH))
+        );
+        assert_eq!(
+            pad_relative(info, fx_id(8, xf::REVERB_SEND)),
+            fx_id(0, xf::REVERB_SEND)
+        );
+        let send = mpfree_synth::drum_fx::kit::REVERB_LEVEL;
+        assert_eq!(pad_relative(info, send), send);
         // Other engines' ids never move.
         let p = Poly::new(48_000);
         assert_eq!(pad_relative(p.info(), 5), 5);
