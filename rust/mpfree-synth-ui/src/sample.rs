@@ -417,6 +417,8 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
          "analog", "Poly Brass", "Filter"),
         ("synth-analog-voice", "Analog · Worn Cards, Voice page: each voice card's own tuning at its Age",
          "analog", "Worn Cards", "Voice"),
+        ("synth-analog-mod", "Analog · Poly Brass, Mod page: the LFO, poly-mod, and what pressure and the mod wheel move",
+         "analog", "Poly Brass", "Mod"),
         ("synth-bass", "Bass · Rubber Bass, Source page: the saw with its sub, locked over the sub's cycle",
          "bass", "Rubber Bass", "Source"),
         ("synth-bass-808", "Bass · Long 808, Shape page: the pitch drop landing on the note, and the amp",
