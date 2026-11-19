@@ -40,7 +40,7 @@ algo.algorithm = 5
 algo.feedback = 4
 
 # Output
-output.level = -11
+output.level = -10
 
 # Op 1
 op-1.rate-1 = 96
@@ -315,6 +315,10 @@ op-2.level-3 = 90
 op-2.output = 90
 op-2.velocity = 5
 
+# Op 2 kbd
+op-2-kbd.r-depth = 60
+op-2-kbd.r-curve = -Exp
+
 # Op 3
 op-3.rate-2 = 85
 op-3.rate-3 = 50
@@ -323,6 +327,10 @@ op-3.level-2 = 70
 op-3.level-3 = 30
 op-3.output = 70
 op-3.velocity = 3
+
+# Op 3 kbd
+op-3-kbd.r-depth = 60
+op-3-kbd.r-curve = -Exp
 
 # Op 4
 op-4.rate-2 = 40
