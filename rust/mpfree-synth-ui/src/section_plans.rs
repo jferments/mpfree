@@ -432,6 +432,15 @@ fn voice_page(voices: &[u16], tuning: &[u16], output: &[u16]) -> Plan {
 
 fn fm(page: &str) -> Option<Plan> {
     use mpfree_synth::fm_params::*;
+    // The six operators' On switches sit on the Algo page.
+    const OPS_ON: [u16; 6] = [
+        op_id(1, op::ON),
+        op_id(2, op::ON),
+        op_id(3, op::ON),
+        op_id(4, op::ON),
+        op_id(5, op::ON),
+        op_id(6, op::ON),
+    ];
     if let Some(n) = page
         .strip_prefix("Op ")
         .and_then(|n| n.parse::<usize>().ok())
@@ -456,15 +465,21 @@ fn fm(page: &str) -> Option<Plan> {
                     .draw(&format!("Op {n} env")),
                 s(
                     "freq",
-                    "Frequency",
+                    "Oscillator",
                     Source,
-                    &[o(op::MODE), o(op::COARSE), o(op::FINE), o(op::DETUNE)],
+                    &[
+                        o(op::WAVE),
+                        o(op::MODE),
+                        o(op::COARSE),
+                        o(op::FINE),
+                        o(op::DETUNE),
+                    ],
                 ),
                 s(
                     "out",
                     "Output",
                     Voice,
-                    &[o(op::ON), o(op::LEVEL), o(op::VEL_SENS), o(op::AMS)],
+                    &[o(op::LEVEL), o(op::VEL_SENS), o(op::AMS)],
                 ),
                 s("algo", "Algorithm", Source, &[]).draw("Algorithm"),
             ],
@@ -517,7 +532,7 @@ fn fm(page: &str) -> Option<Plan> {
     }
     Some(match page {
         "Algo" => (
-            "row(algo:52*, col(levels:180, voice:*):48*)",
+            "row(col(algo:*, ops:170):52*, col(levels:180, voice:*):48*)",
             vec![
                 s(
                     "algo",
@@ -526,6 +541,14 @@ fn fm(page: &str) -> Option<Plan> {
                     &[ALGORITHM, FEEDBACK, OSC_SYNC],
                 )
                 .draw("Algorithm"),
+                s("ops", "Operators", Source, &OPS_ON).labels(&[
+                    (OPS_ON[0], "Op 1 on"),
+                    (OPS_ON[1], "Op 2 on"),
+                    (OPS_ON[2], "Op 3 on"),
+                    (OPS_ON[3], "Op 4 on"),
+                    (OPS_ON[4], "Op 5 on"),
+                    (OPS_ON[5], "Op 6 on"),
+                ]),
                 s("levels", "Levels", Voice, &[]).draw("Levels"),
                 s(
                     "voice",
@@ -753,7 +776,106 @@ fn drums(page: &str) -> Option<Plan> {
             ],
         ));
     }
+    if let Some(p) = page
+        .strip_prefix("Pad ")
+        .and_then(|r| r.strip_suffix(" effects"))
+        .and_then(|n| n.parse::<usize>().ok())
+        .filter(|n| (1..=PADS).contains(n))
+        .map(|n| n - 1)
+    {
+        use mpfree_synth::drum_fx::{field as x, fx_id};
+        let id = |k: u16| fx_id(p, k);
+        return Some((
+            "col(row(kit:3*, punch:2*, dist:3*):45*, row(eq:4*, comp:4*, out:3*):55*)",
+            vec![
+                s("kit", "Kit", Source, &[]).draw("Kit"),
+                s("punch", "Punch", Shape, &[id(x::PUNCH), id(x::SUSTAIN)]).hero(&[id(x::PUNCH)]),
+                s(
+                    "dist",
+                    "Distortion",
+                    Tone,
+                    &[id(x::DISTORTION), id(x::DIST_TONE), id(x::DIST_MIX)],
+                )
+                .hero(&[id(x::DISTORTION)])
+                .labels(&[(id(x::DIST_TONE), "Tone"), (id(x::DIST_MIX), "Mix")]),
+                s(
+                    "eq",
+                    "EQ",
+                    Tone,
+                    &[id(x::LOW), id(x::MID), id(x::MID_FREQ), id(x::HIGH)],
+                )
+                .trim(&[id(x::MID_FREQ)]),
+                s(
+                    "comp",
+                    "Compressor",
+                    Shape,
+                    &[
+                        id(x::THRESHOLD),
+                        id(x::RATIO),
+                        id(x::COMP_ATTACK),
+                        id(x::COMP_RELEASE),
+                    ],
+                )
+                .main(&[id(x::THRESHOLD), id(x::RATIO)])
+                .labels(&[
+                    (id(x::COMP_ATTACK), "Attack"),
+                    (id(x::COMP_RELEASE), "Release"),
+                ]),
+                s(
+                    "out",
+                    "Output and sends",
+                    Voice,
+                    &[id(x::OUTPUT), id(x::DELAY_SEND), id(x::REVERB_SEND)],
+                )
+                .labels(&[(id(x::DELAY_SEND), "Delay"), (id(x::REVERB_SEND), "Reverb")])
+                .link("Sends"),
+            ],
+        ));
+    }
     Some(match page {
+        "Sends" => {
+            use mpfree_synth::drum_fx::kit as k;
+            (
+                "row(delay:4*, reverb:5*)",
+                vec![
+                    s(
+                        "delay",
+                        "Delay",
+                        Motion,
+                        &[
+                            k::DELAY_TIME,
+                            k::DELAY_FEEDBACK,
+                            k::DELAY_TONE,
+                            k::DELAY_LEVEL,
+                        ],
+                    )
+                    .labels(&[
+                        (k::DELAY_TIME, "Time"),
+                        (k::DELAY_FEEDBACK, "Feedback"),
+                        (k::DELAY_TONE, "Tone"),
+                    ]),
+                    s(
+                        "reverb",
+                        "Reverb",
+                        Motion,
+                        &[
+                            k::REVERB_SIZE,
+                            k::REVERB_DECAY,
+                            k::REVERB_TONE,
+                            k::REVERB_GATE,
+                            k::REVERB_LEVEL,
+                        ],
+                    )
+                    .main(&[k::REVERB_DECAY])
+                    .labels(&[
+                        (k::REVERB_SIZE, "Size"),
+                        (k::REVERB_DECAY, "Decay"),
+                        (k::REVERB_TONE, "Tone"),
+                        (k::REVERB_GATE, "Gate"),
+                    ]),
+                ],
+            )
+        }
         "Kit" => (
             "col(kit:*, row(levels:*, out:*):240)",
             vec![

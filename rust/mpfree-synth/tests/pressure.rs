@@ -93,7 +93,7 @@ fn poly_peaks(p: &pp::Preset, edit: impl Fn(&mut Poly)) -> (f32, f32) {
     (run(None), run(Some(127)))
 }
 
-fn fm_peaks(p: &fp::FmPreset, edit: impl Fn(&mut Fm)) -> (f32, f32) {
+fn fm_peaks(p: &pp::Preset, edit: impl Fn(&mut Fm)) -> (f32, f32) {
     let run = |value| {
         let mut s = Fm::new(RATE);
         s.load_preset(p);
@@ -122,7 +122,7 @@ fn every_preset_stays_in_range_at_full_pressure() {
         );
     }
     for p in Fm::presets() {
-        let (rest, full) = fm_peaks(&p, |_| {});
+        let (rest, full) = fm_peaks(p, |_| {});
         assert!(
             (-30.0..=-1.0).contains(&rest) && (-30.0..=-1.0).contains(&full),
             "FM {}: {rest:.1} / {full:.1} dBFS",
@@ -168,8 +168,8 @@ fn a_level_slot_is_a_swell_never_a_boost() {
             if t as u8 != fp::target::LEVEL {
                 continue;
             }
-            let (_, with) = fm_peaks(&p, |_| {});
-            let (_, without) = fm_peaks(&p, |s| s.set_param(fp::press_target(n), 0.0));
+            let (_, with) = fm_peaks(p, |_| {});
+            let (_, without) = fm_peaks(p, |s| s.set_param(fp::press_target(n), 0.0));
             assert!(
                 with <= without + 0.05,
                 "FM {}: {with:.2} with the swell, {without:.2} without",
@@ -197,11 +197,11 @@ fn plucks_and_mallets_ignore_pressure() {
         "Pluck"
     );
     for name in ["Steel Pluck", "Log Drum"] {
-        let p = Fm::presets().into_iter().find(|p| p.name == name).unwrap();
+        let p = Fm::presets().iter().find(|p| p.name == name).unwrap();
         let mut a = Fm::new(RATE);
-        a.load_preset(&p);
+        a.load_preset(p);
         let mut b = Fm::new(RATE);
-        b.load_preset(&p);
+        b.load_preset(p);
         let ra = render(&mut a, 48_000, &chord_events(&[60], None), |_| 64);
         let rb = render(&mut b, 48_000, &chord_events(&[60], Some(127)), |_| 64);
         assert_eq!(ra, rb, "{name}");
@@ -234,15 +234,12 @@ fn off_plays_the_preset_as_designed() {
         render(&mut off, 48_000, &ev, |_| 128),
         render(&mut none, 48_000, &ev, |_| 128)
     );
-    let p = Fm::presets()
-        .into_iter()
-        .find(|p| p.name == "Silk Pad")
-        .unwrap();
+    let p = Fm::presets().iter().find(|p| p.name == "Silk Pad").unwrap();
     let mut off = Fm::new(RATE);
-    off.load_preset(&p);
+    off.load_preset(p);
     off.set_param(fp::PRESS_MODE, 2.0);
     let mut none = Fm::new(RATE);
-    none.load_preset(&p);
+    none.load_preset(p);
     for n in 0..4 {
         none.set_param(fp::press_target(n), 0.0);
     }
@@ -433,7 +430,7 @@ fn highest_mode_swells_the_whole_chord() {
 #[test]
 fn fm_brightness_brightens_without_getting_louder() {
     let p = Fm::presets()
-        .into_iter()
+        .iter()
         .find(|p| p.name == "Brass Section")
         .unwrap();
     let only_bright = |s: &mut Fm| {
@@ -442,7 +439,7 @@ fn fm_brightness_brightens_without_getting_louder() {
     };
     let run = |value| {
         let mut s = Fm::new(RATE);
-        s.load_preset(&p);
+        s.load_preset(p);
         only_bright(&mut s);
         render(&mut s, 72_000, &chord_events(&[60], value), |_| 256).0
     };
