@@ -839,7 +839,7 @@ fn keys_drawbar_squelch_analog_and_bass_draw_inside_their_sections() {
     // Each page's drawings, and the sections that open another page.
     type Pages<'a> = &'a [(&'a str, &'a [&'a str])];
     type Links<'a> = &'a [(&'a str, &'a str, &'a str)];
-    let engines: [(&str, Pages, Links); 6] = [
+    let engines: [(&str, Pages, Links); 7] = [
         (
             "synth-keys-strike",
             &[
@@ -864,6 +864,19 @@ fn keys_drawbar_squelch_analog_and_bass_draw_inside_their_sections() {
         ),
         (
             "synth-drawbar",
+            &[
+                ("Drawbars", &["Wave", "Percussion"]),
+                ("Percussion", &["Percussion"]),
+                ("Rotary", &["Rotor"]),
+                ("Voice", &[]),
+            ],
+            &[
+                ("Drawbars", "perc", "Percussion"),
+                ("Drawbars", "rotary", "Rotary"),
+            ],
+        ),
+        (
+            "synth-drawbar-combo",
             &[
                 ("Drawbars", &["Wave", "Percussion"]),
                 ("Percussion", &["Percussion"]),

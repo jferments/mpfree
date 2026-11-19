@@ -806,8 +806,13 @@ fn drawbar(page: &str) -> Option<Plan> {
     ];
     Some(match page {
         "Drawbars" => (
-            "row(bars:66*, col(wave:200, perc:*, rotary:*):34*)",
+            "row(bars:*, col(model:150, voices:*):206, col(wave:190, perc:*, rotary:*):282)",
             vec![
+                s("model", "Model", Source, &[MODEL]),
+                s("voices", "Voices", Tone, &[FLUTE, REED, REED_WAVE])
+                    .faders(&[FLUTE, REED])
+                    .drawbars()
+                    .labels(&[(REED_WAVE, "Reed wave")]),
                 s("bars", "Drawbars", Source, &bars)
                     .faders(&bars)
                     .drawbars()
@@ -837,7 +842,8 @@ fn drawbar(page: &str) -> Option<Plan> {
                     (PERC_VOL, "Volume"),
                 ])
                 .draw("Percussion"),
-                s("vib", "Vibrato and chorus", Motion, &[VIBRATO, SCANNER]),
+                s("vib", "Vibrato and chorus", Motion, &[VIBRATO, SCANNER])
+                    .labels(&[(SCANNER, "Rate")]),
             ],
         ),
         "Rotary" => (
@@ -846,12 +852,7 @@ fn drawbar(page: &str) -> Option<Plan> {
                 s("rotary", "Rotary speaker", Motion, &[ROTARY, SPEED, SPREAD])
                     .labels(&[(ROTARY, "On")])
                     .draw("Rotor"),
-                s(
-                    "tone",
-                    "Tone wheels",
-                    Tone,
-                    &[WHEELS, DRIVE, TONE, CLICK, LEAKAGE],
-                ),
+                s("tone", "Tone", Tone, &[WHEELS, DRIVE, TONE, CLICK, LEAKAGE]),
             ],
         ),
         "Voice" => (
