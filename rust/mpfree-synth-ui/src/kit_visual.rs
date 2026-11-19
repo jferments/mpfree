@@ -43,17 +43,22 @@ pub fn model_tag(model: &str) -> &'static str {
         "Cowbell" => "CB",
         "Cymbal" => "CY",
         "Zap" => "ZP",
+        "808 kick" => "8K",
+        "Conga" => "CG",
+        "Woodblock" => "WB",
+        "Bell" => "BL",
+        "Shaker" => "SH",
         _ => "FM",
     }
 }
 
-/// What a model is made of, for its colour: 0 a tuned body (kick, tom,
-/// zap, FM perc), 1 noise over a body (snare, clap, rim), 2 metal (the
-/// hats, cymbal, cowbell).
+/// What a model is made of, for its colour: 0 a tuned body (kick, 808
+/// kick, tom, conga, woodblock, zap, FM perc), 1 noise over a body (snare,
+/// clap, rim, shaker), 2 metal (the hats, cymbal, cowbell, bell).
 pub fn model_family(model: &str) -> usize {
     match model {
-        "Snare" | "Clap" | "Rim" => 1,
-        "Closed hat" | "Open hat" | "Cymbal" | "Cowbell" => 2,
+        "Snare" | "Clap" | "Rim" | "Shaker" => 1,
+        "Closed hat" | "Open hat" | "Cymbal" | "Cowbell" | "Bell" => 2,
         _ => 0,
     }
 }
@@ -98,20 +103,20 @@ pub fn hit_window(s: &HitShape) -> f32 {
             secs = secs.max(t60(mul));
         }
     }
-    if let Some((bursts, _)) = s.bursts {
-        secs = secs.max(bursts.last().copied().unwrap_or(0.0) + 0.02);
+    if let Some(b) = s.bursts {
+        secs = secs.max(b.starts().last().copied().unwrap_or(0.0) + 0.02);
     }
     secs.clamp(0.05, 5.0)
 }
 
-/// The noise part's envelope at `t`: a clap's bursts over a third of its
-/// tail, as the engine plays them.
+/// The noise part's envelope at `t`: a clap's bursts over its tail, as
+/// the engine plays them.
 fn noise_env(s: &HitShape, t: f32) -> f32 {
     let tail = left(s.noise.1, t);
     match s.bursts {
-        Some((bursts, mul)) => {
-            let since = bursts.iter().rev().find(|&&b| b <= t).map(|&b| t - b);
-            tail * 0.35 + since.map_or(0.0, |d| left(mul, d))
+        Some(b) => {
+            let since = b.starts().iter().rev().find(|&&x| x <= t).map(|&x| t - x);
+            tail * b.tail + since.map_or(0.0, |d| left(b.mul, d))
         }
         None => tail,
     }
@@ -121,7 +126,7 @@ fn noise_env(s: &HitShape, t: f32) -> f32 {
 /// bursts) and the click, each at its level against the loudest part (in
 /// the mix, before the filters). Empty for a part the hit doesn't have.
 pub fn hit_parts(s: &HitShape, secs: f32) -> [Vec<(f32, f32)>; 3] {
-    let noise_top = if s.bursts.is_some() { 1.35 } else { 1.0 };
+    let noise_top = s.bursts.map_or(1.0, |b| 1.0 + b.tail);
     let top = s.body.0.max(s.noise.0 * noise_top).max(s.click.0);
     let curve = |lvl: f32, env: &dyn Fn(f32) -> f32| -> Vec<(f32, f32)> {
         if lvl <= 0.0 || top <= 0.0 {
@@ -400,7 +405,10 @@ mod tests {
 
     #[test]
     fn the_kick_falls_and_sweeps_as_its_knobs_say() {
+        // The Classic voices (the Init kit's pads as the first engine
+        // played them).
         let mut d = drums("Init Kit");
+        d.set_param(mpfree_synth::drum_params::VOICES, 0.0);
         d.set_param(pad_id(0, field::NOISE), 50.0);
         let s = pad_hit(&|id| d.param(id), 0);
         let [body, noise, click] = hit_parts(&s, hit_window(&s));
@@ -433,6 +441,32 @@ mod tests {
             .filter(|w| w[1].1 > w[0].1 && w[1].1 >= w[2].1)
             .count();
         assert_eq!(peaks + 1, 4, "the first burst starts at the hit");
+    }
+
+    #[test]
+    fn the_current_drums_draw_as_they_play() {
+        use mpfree_synth::drum_params::{field as f, VOICES};
+        let mut d = drums("Init Kit");
+        assert_eq!(d.param(VOICES), 1.0);
+        // The 808 kick: its body settles at 48 Hz, its punch and sigh drawn
+        // as its sweep.
+        let k = pad_hit(&|id| d.param(id), 13);
+        assert_eq!(k.model, "808 kick");
+        assert!((k.hz - 48.0).abs() < 0.01 && k.sweep.0 > 3.0, "{k:?}");
+        // A tom is its head's modes: a body with a pitch, no noise.
+        let tom = pad_hit(&|id| d.param(id), 6);
+        assert!(
+            tom.hz > 100.0 && tom.body.0 > 0.0 && tom.noise.0 == 0.0,
+            "{tom:?}"
+        );
+        // The clap draws as many bursts as its Claps knob.
+        d.set_param(pad_id(2, f::BURSTS), 6.0);
+        let clap = pad_hit(&|id| d.param(id), 2);
+        assert_eq!(clap.bursts.map(|b| b.starts().len()), Some(6));
+        let secs = hit_window(&clap);
+        for p in hit_parts(&clap, secs) {
+            assert!(in_box(&p));
+        }
     }
 
     #[test]

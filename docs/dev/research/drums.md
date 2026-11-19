@@ -88,8 +88,8 @@ A first canon of 24 kits (our reading), each with a dozen or more drums: 808-sty
 
 ## What MPFree has today
 
-- **Drums** (5 kits: Init, Boom, Tight, Grit, Electro): 16 pads, eleven models (Kick, Snare, Clap, Closed hat, Open hat, Tom, Rim, Cowbell, Cymbal, Zap, FM perc), the same fourteen knobs on every pad, choke groups, 32 hit slots, the hit drawn on the Synth tab. Hats use six square oscillators against noise.
-- **Missing:** per-drum knob sets, per-drum processing in the kit, accent and hit variation, more kits, the 808 circuit behaviours measured against the papers.
+- **Drums** (5 kits: Init, Boom, Tight, Grit, Electro), 19 Nov, wave 3: 16 pads, sixteen models (the first eleven, and the 808 kick, Conga, Woodblock, Bell and Shaker), each drum its own knobs and Q-Links (section 5's idea), accent, per-hit variation, one-shot or gated pads, choke groups, 32 hit slots, the hit drawn on the Synth tab. The 808 kick uses Bass's body (punch and sigh measured against the paper), the hats and cymbal the cymbal paper's six squares and bands, band-limited (alias −62 dB at 1×), and the toms, congas, woodblocks and bells Pluck's modal bank. Old kits keep the first engine's voices to the bit. Measured against section 4: [Synth quality](../design/synth-quality.md#wave-3-targets-drums).
+- **Missing:** per-drum processing in the kit (wave 3's second drums thread), more kits, pressure on the pads, and the cost of 32 hits at once on the MPC (D10).
 
 ## Sources
 

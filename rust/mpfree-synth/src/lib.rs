@@ -77,6 +77,7 @@ pub mod analog_params;
 pub mod bank;
 pub mod bass;
 pub mod bass_params;
+pub mod body808;
 pub mod character;
 pub mod choir;
 pub mod choir_params;
