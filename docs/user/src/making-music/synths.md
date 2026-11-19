@@ -402,7 +402,7 @@ MPFree reads Scala tuning files, the format thousands of published tunings come 
 
 ## Pad pressure
 
-The MPC's pads sense how hard you keep pressing after the hit. On Poly, FM and Wind the **Pressure** page sets what that does; on Bass it is **Moves** and **Amount** on the Play page, on Choir **To swell** and **To vowel** on the Play page, and Squelch, Keys, Drawbar, Strings, Analog, Pluck and Drums don't answer it. By default on Poly, pressing harder opens the filter, so a held chord brightens as you lean into it; on Wind it blows harder, so a held note swells and opens. You choose up to four things for pressure to change, how much, and how hard you must press before it starts. On Poly, pressure can also bring in either LFO (**LFO 1 amount**, **LFO 2 amount**) or move each note across the speakers (**Pan**).
+The MPC's pads sense how hard you keep pressing after the hit. On Poly, FM and Wind the **Pressure** page sets what that does; on Bass it is **Moves** and **Amount** on the Play page, on Analog **Press to** and **Pressure** on the Mod page, on Choir **To swell** and **To vowel** on the Play page, and Squelch, Keys, Drawbar, Strings, Pluck and Drums don't answer it. By default on Poly, pressing harder opens the filter, so a held chord brightens as you lean into it; on Wind it blows harder, so a held note swells and opens. You choose up to four things for pressure to change, how much, and how hard you must press before it starts. On Poly, pressure can also bring in either LFO (**LFO 1 amount**, **LFO 2 amount**) or move each note across the speakers (**Pan**).
 
 Clips record pad pressure too, so a recorded part plays back with the same swells: see [Pad pressure](clips.md#pad-pressure) in Clips and patterns.
 
