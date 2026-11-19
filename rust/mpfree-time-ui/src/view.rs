@@ -599,20 +599,31 @@ impl TakeRow {
             "capture"
         } else if self.edited {
             "edit"
+        } else if self.number & mpfree_play::ERASE_TAKES != 0 {
+            // ERASE + a pad while only playing (live erase's own takes).
+            "erase"
         } else {
             "take"
         }
     }
 
+    /// Its number as shown: live erase's takes count from 1 too, without
+    /// the top bit their numbers carry (`mpfree_play::ERASE_TAKES`).
+    pub fn shown(&self) -> u32 {
+        self.number & !mpfree_play::ERASE_TAKES
+    }
+
     /// What Undo and Redo name it: "take 3", "capture 2", "edit 5",
-    /// "new track 9", or "move 7 · row 3" for a row.
+    /// "erase 1" (live erase while playing), "new track 9", or "move 7 ·
+    /// row 3" for a row.
     pub fn short(&self) -> String {
+        let n = self.shown();
         match (self.new_track, self.dropped) {
             (Some(t), _) => format!("new track {}", t + 1),
             (None, Some(ClipDrop::RowMoved { from, .. } | ClipDrop::RowCopied { from, .. })) => {
-                format!("{} {} · row {}", self.word(), self.number, from + 1)
+                format!("{} {n} · row {}", self.word(), from + 1)
             }
-            _ => format!("{} {}", self.word(), self.number),
+            _ => format!("{} {n}", self.word()),
         }
     }
 }
@@ -3106,36 +3117,36 @@ pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
             | SongChange::Resized { track, .. }
             | SongChange::Deleted { track, .. }
             | SongChange::Unique { track, .. },
-        ) => return format!("{word} {} · {}", row.number, st.track_name(track)),
+        ) => return format!("{word} {} · {}", row.shown(), st.track_name(track)),
         Some(SongChange::SectionMoved { at } | SongChange::SectionCopied { at }) => {
             let name = st
                 .markers
                 .iter()
                 .find(|m| m.0 == at)
                 .map_or("section", |m| m.1.as_str());
-            return format!("{word} {} · {name}", row.number);
+            return format!("{word} {} · {name}", row.shown());
         }
         Some(SongChange::Tempo { at }) => {
             let bar = st.transport.meter.bar_ticks().max(1);
-            return format!("{word} {} · bar {}", row.number, at.div_euclid(bar) + 1);
+            return format!("{word} {} · bar {}", row.shown(), at.div_euclid(bar) + 1);
         }
         Some(SongChange::Scenes { .. } | SongChange::List | SongChange::ListToSong { .. })
         | None => {}
     }
     if let Some(r) = row.scene {
-        return format!("{word} {} · row {}", row.number, r + 1);
+        return format!("{word} {} · row {}", row.shown(), r + 1);
     }
     match (row.at, row.dropped) {
         (Some((track, slot)), _) => format!(
             "{word} {} · {} / {}",
-            row.number,
+            row.shown(),
             st.track_name(track),
             slot + 1
         ),
         (None, Some(ClipDrop::RowMoved { from, .. } | ClipDrop::RowCopied { from, .. })) => {
-            format!("{word} {} · row {}", row.number, from + 1)
+            format!("{word} {} · row {}", row.shown(), from + 1)
         }
-        (None, _) => format!("{word} {}", row.number),
+        (None, _) => format!("{word} {}", row.shown()),
     }
 }
 
@@ -7217,6 +7228,11 @@ mod tests {
         );
         assert_eq!(current, Some(2));
         assert_eq!(items[2].detail, "+2");
+        // ERASE + a pad while playing: live erase's own take, counted
+        // from 1 ("erase 1"), not by its top-bit number.
+        let erase = row(mpfree_play::ERASE_TAKES + 1);
+        assert_eq!(erase.short(), "erase 1");
+        assert_eq!(take_title(&st, &erase), "Erase 1 · Stab / 1");
         st.done[1].erased = 5;
         assert_eq!(take_items(&st).0[2].detail, "+2 −5");
         // A capture that made a clip.

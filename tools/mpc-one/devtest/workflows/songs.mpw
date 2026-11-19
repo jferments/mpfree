@@ -1,0 +1,118 @@
+title Songs: the three demo songs opened, played through their scenes, performed, edited, saved and opened again
+covers mute-queue, reload-on-the-bar, sample-r3-kit-per-track
+needs demo-songs
+# The demo songs are put in the run's own library (RAM only on the MPC)
+# before the first step; each is a full arrangement with several kits and
+# synth tracks, so these windows are the round's realistic song load.
+wait 2
+mark night-market-open
+button BROWSE
+tap browser place Projects
+tap browser row Night Market
+tap browser row Night Market
+wait 1
+expect project: Night Market is in
+mark night-market-play
+tap header tab Arrange
+tap clips scene Scene 1
+tap transport play Play
+wait 10.43
+tap clips scene Scene 2
+wait 10.43
+mark night-market-perform
+button SHIFT + MAIN
+button TRACK MUTE
+pad 2 100
+wait 5.22
+pad 2 100
+wait 5.22
+button TRACK MUTE
+expect muted on the next bar
+expect plays on the next bar
+button SHIFT + MAIN
+mark night-market-save
+tap record row-more Tempo ›
+button SHIFT + BROWSE
+wait 1
+expect project: saved Night Market
+button STOP
+button STOP
+mark glass-garden-open
+button BROWSE
+tap browser place Projects
+tap browser row Glass Garden
+tap browser row Glass Garden
+wait 1
+expect project: Glass Garden is in
+mark glass-garden-play
+tap header tab Arrange
+tap clips scene Scene 1
+tap transport play Play
+wait 7.74
+tap clips scene Scene 2
+wait 7.74
+mark glass-garden-perform
+button SHIFT + MAIN
+button TRACK MUTE
+pad 2 100
+wait 3.87
+pad 2 100
+wait 3.87
+button TRACK MUTE
+expect muted on the next bar
+expect plays on the next bar
+button SHIFT + MAIN
+mark glass-garden-save
+tap record row-more Tempo ›
+button SHIFT + BROWSE
+wait 1
+expect project: saved Glass Garden
+button STOP
+button STOP
+mark tidal-suite-open
+button BROWSE
+tap browser place Projects
+tap browser row Tidal Suite
+tap browser row Tidal Suite
+wait 1
+expect project: Tidal Suite is in
+mark tidal-suite-play
+tap header tab Arrange
+tap clips scene Scene 1
+tap transport play Play
+wait 12.63
+tap clips scene Scene 2
+wait 12.63
+mark tidal-suite-perform
+button SHIFT + MAIN
+button TRACK MUTE
+pad 2 100
+wait 6.32
+pad 2 100
+wait 6.32
+button TRACK MUTE
+expect muted on the next bar
+expect plays on the next bar
+button SHIFT + MAIN
+mark tidal-suite-save
+tap record row-more Tempo ›
+button SHIFT + BROWSE
+wait 1
+expect project: saved Tidal Suite
+button STOP
+button STOP
+mark reopen
+button BROWSE
+tap browser place Projects
+tap browser row Night Market
+tap browser row Night Market
+wait 1
+expect project: Night Market is in
+# Opened again: the tempo as saved, a step up from the song's 92.
+expect tempo 93.0 BPM
+tap header tab Arrange
+tap clips scene Scene 1
+tap transport play Play
+wait 5
+button STOP
+button STOP

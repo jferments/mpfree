@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-ui/src/widgets.rs rust/mpfree-ui/src/qlink.rs rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/gui.rs
-checked: 2026-11-19 f0b39161
+checked: 2026-11-19 ea21a9b1
 -->
 
 # The screen
@@ -71,7 +71,7 @@ On the Play page and the Sequencer tab, a bar under the tabs shows time:
 
 - **Stopped**, **Playing** or **Recording**.
 - **The position**: bar, beat and step (**9.2.03** is bar 9, beat 2, step 3).
-- **The tempo** in BPM. Tap it in time to set the tempo, as with **TAP TEMPO**, or hold a finger on it to type the tempo on the number pad.
+- **The tempo** in BPM. Tap it in time to set the tempo, as with **TAP TEMPO**, or hold a finger on it to type the tempo on the number pad (holding **TAP TEMPO** and letting go does the same).
 - **The REC chip**: what **REC** will record, such as **→ Track 1 · Pattern 1**. Tap it for the list of everything that can record (see [What REC records](../making-music/sequencer.md#what-rec-records)).
 - **Dots** that light up with each bar and beat, with a meter of the beat under them.
 - At the right end: on the Sequencer's Steps, the view switch **Steps** and **Notes**. On Play, **PADS PLAY**.
@@ -141,7 +141,8 @@ On the Play page, the Looper tab, the mixer and the FX chain editor, the data wh
 
 - **Tap a control** and an outline appears on it. **Turn the wheel** and the outline moves to the next control, left to right and top to bottom through that part of the screen, then on into the next part. On Play and the Looper tab you can also just turn the wheel: the outline starts on the first control.
 - **Push the wheel** to press the control the outline is on, as a tap would. On a throw, the push holds it on until you push again.
-- **On a value** (a fader, a pan, a send, a Q-Link card, the master level, an effect's knob), the push grabs it: the outline gets thicker and the wheel turns the value. Push again to let go, and the wheel moves the outline again. **–** and **+** step an outlined value without the push.
+- **On a value** (a fader, a pan, a send, a Q-Link card, the master level, an effect's knob), the push grabs it: the outline gets thicker and the wheel turns the value. Push again to let go, and the wheel moves the outline again. **–** and **+** step an outlined value without the push, and **SHIFT + – / +** in smaller steps.
+- **SHIFT + push** puts the outlined value back to its default: a fader to 0 dB, a pan to the middle, a send off, the master level and a loop's level to 0 dB, and an effect's knob to where it started. The hint line says so. Q-Link cards and the Synth tab's knobs don't have one yet.
 - **In the chain editor**, push on the picked effect to pick it up: the wheel (or **–** and **+**) moves it up or down the chain, and a push puts it down.
 - Some values can't be turned with the wheel yet (the XY pad, the Looper tab's trims); the hint line says to drag them.
 - On the mixer and the chain editor, the wheel keeps its old job (the selected strip's volume, the first knob) until you tap a control. Changing page, or tapping an empty spot, takes the outline away.
@@ -156,7 +157,7 @@ On every page, **rest a finger on anything with a value and turn the data wheel*
 - **A tap is still a tap.** If you don't turn the wheel, the touch does what it always did. Once you have turned it, lifting your finger presses nothing: a value you can type doesn't open the number pad, and a macro card held still doesn't open the macros panel if you turned the wheel first.
 - **Dragging** a value and turning the wheel both move it. Dragging a list scrolls it and gives the wheel back.
 - **Two fingers:** the wheel turns the one you put down last. Lift it and the wheel goes back to the first.
-- **The push** does nothing while your finger is down, so a slip of the thumb can't press anything.
+- **The push** does nothing while your finger is down, so a slip of the thumb can't press anything. **SHIFT + push** puts the value under your finger back to its default, and **SHIFT + – / +** step it finer.
 - **Undo:** on the Sample and Pads tabs a whole hold is one UNDO. On the Synth tab and the mixer, turns of one control less than a moment apart are one UNDO.
 
 ## Undo
