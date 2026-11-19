@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-app/src/main.rs rust/mpfree-app/src/power.rs tools/mpc-one/offline-kexec-stick.py tools/mpc-one/hook-install.sh
-checked: 2026-11-17 ba1daa45
+checked: 2026-11-19 a6fb29b2
 -->
 
 # Before you start
@@ -49,10 +49,10 @@ Tap a button, or turn the data wheel to it and push the wheel.
 
 ## What works today
 
-MPFree is being built quickly and changes every week. Pages in this manual carry a banner when what they describe is still changing or not built yet:
+MPFree is being built quickly and changes every week. Everything in this manual is on the version named on its [first page](../index.md), and the screens in it are drawn by that version of MPFree itself. Pages in this manual carry a banner when what they describe is still changing or not built yet:
 
 - **Changing:** it works, but the screen or the controls may look different in a newer version.
 - **Planned:** it isn't built yet. The page says what is coming.
 
 > [!MPC]
-> MPFree is not an update to the MPC software, and it can't open MPC projects (`.xpj` files) or expansions yet. It is a different instrument that runs on the same hardware, so some buttons do new jobs. The boxes like this one point out each difference; the [Coming from an MPC](../reference/coming-from-an-mpc.md) appendix lists them all in one place.
+> MPFree is not an update to the MPC software, and it can't open MPC projects (`.xpj` files) or expansions. Your kits, keygroups and patterns can come across, though: see [Moving your beats from the MPC](../making-music/moving-from-the-mpc.md). It is a different instrument that runs on the same hardware, so some buttons do new jobs. The boxes like this one point out each difference; the [Coming from an MPC](../reference/coming-from-an-mpc.md) appendix lists them all in one place.
