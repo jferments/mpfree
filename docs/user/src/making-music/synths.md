@@ -25,7 +25,7 @@ Any of the thirteen can be a track's own instrument (see [A synth for each track
 |---|---|---|---|
 | **Poly** | A classic two-oscillator subtractive synth, with a sub oscillator, noise, unison, a seven-saw supersaw, Wavetable's tables and a resonant filter | Basses, leads, pads, brass, big trance-style stacks | Grit Bass, Acid, Supersaw, Dust Pad, Pluck, Brass, Sub Bass, Lead, Singing Lead, Drift Pad, Super Lead, Super Pad, Super Stab, Super Stack, Worn Brass |
 | **FM** | Six-operator FM, in the tradition of the 1980s digital synths | Electric pianos, bells, glassy keys, punchy basses, reedy leads | Glass Keys, Bell Tower, Rubber Bass, Drawbars, Brass Section, Log Drum, Silk Pad, Steel Pluck, Reed Lead |
-| **Drums** | A drum synth: a different synthesised drum on each pad | Electronic kits built from scratch | Boom Kit, Tight Kit, Grit Kit, Electro Kit |
+| **Drums** | A drum synth: a different synthesised drum on each pad, each with its own knobs, from the 808 kick and hats to toms, congas and bells | Electronic kits built from scratch | Boom Kit, Tight Kit, Grit Kit, Electro Kit |
 | **Pluck** | Physically modelled strings and mallets | Guitars, harps, marimbas, bells | Nylon, Steel String, Harp, Koto, Muted Bass, Marimba, Vibes, Bell, Glass, Kalimba, Steel Drum |
 | **Wavetable** | Two oscillators that sweep through stacks of waveforms | Evolving pads, vocal leads, growling basses | Morph Pad, Vowel Lead, Sync Sweep, Digital Bell, Growl Bass, Organ, Harmonic Pluck, FM Keys |
 | **Keys** | A physically modelled electric piano and clav: struck steel tines or reeds in front of their pickups, or a struck string over two pickups | Soul and jazz chords, ballads, barking stabs, tremolo keys, funk clav lines | Soft Tines, Bright Tines, Barking Tines, Bell Keys, Stage Tines, Lo-fi Tines, Phase Tines, Reed, Reed Bite, Dirty Reed, Clav, Funk Clav, Wah Clav, Muted Clav, Stab Clav and 18 more |
@@ -138,6 +138,34 @@ A setting that does nothing says so in place: "Table wave only" while its oscill
 **Drive** and **Distortion**, on the Filter page of Poly and Wavetable (Q-Links 3 and 4 there), both add grit. **Drive** pushes the sound into the filter, as on an analog synth: warm, and the filter smooths what it adds, so with the filter nearly closed you hear little of it. **Distortion** comes after the filter, so you hear its grit even with the filter almost closed (Grit Bass uses it). Both keep the sound at about the same level as you turn them up (within about 2 dB on every preset), so they add grit and thickness, not volume; turn up the synth's level for that. Pad pressure can push either one.
 
 Each synth has its own pages. FM has Algo, Mod and Pressure, a page for each of its six operators and three keyboard-scaling pages; Drums has a page for each of its 16 pads, a **Kit** page, **Effects** and **Sends** (below). Poly, FM, Wavetable and Wind have a **Pressure** page (see [Pad pressure](#pad-pressure)).
+
+**Drums** plays a different synthesised drum on each pad: **Kick**, **808 kick**, **Snare**, **Clap**, **Closed hat**, **Open hat**, **Cymbal**, **Tom**, **Conga**, **Rim**, **Woodblock**, **Bell**, **Cowbell**, **Shaker**, **Zap** or **FM perc**, picked by **Model** on the pad's page. Each drum has its own few knobs, named for what they do on that drum, and the Q-Links take the four you reach for most on it:
+
+| Drum | Its knobs | Q-Links |
+|---|---|---|
+| Kick | Tune, Decay, Sweep and Sweep time (the pitch's drop at the start), Click, Tone, Drive | Tune, Decay, Sweep, Click |
+| 808 kick | Tune, Decay, Tone, Punch (the jump in pitch on the hit), Sigh and Sigh time (the slow settle onto the note after it), Drive | Tune, Decay, Tone, Drive |
+| Snare | Tune, Decay, Tone, Snappy (the wires), Ring (the head's overtones), Click, Drive | Tune, Decay, Tone, Snappy |
+| Clap | Tone, Decay, Claps (how many hands), Gap (between them), Room, Sharp, Drive | Tone, Decay, Gap, Room |
+| Closed hat, Open hat, Cymbal | Tune, Decay, Tone, Noise (against the metal), Spread (how far apart the six metal tones sit), Click, Drive | Tune, Decay, Tone, Noise (Spread on a cymbal) |
+| Tom, Conga | Tune, Decay, Tone (how hard the stick or hand), Strike (centre to edge), Bend and Bend time (the head's pitch dropping after a hard hit), Click (Slap on a conga) | Tune, Decay, Tone, Bend |
+| Woodblock, Bell | Tune, Decay, Tone, Strike, Click | Tune, Decay, Tone, Click |
+| Rim, Cowbell | Tune, Decay, Tone, Click, Noise, Drive | Tune, Decay, Tone, Click |
+| Zap | Tune, Decay, Sweep, Sweep time, Tone, Noise, Drive | Tune, Decay, Sweep, Sweep time |
+| FM perc | Tune, Decay, Tone, Ratio, Sweep, Sweep time, Noise | Tune, Decay, Tone, Ratio |
+| Shaker | Tune, Decay, Attack (how slowly it swells in), Tone, Grain (single beads against a hiss) | Decay, Attack, Tone, Grain |
+
+Every drum also has these, in the **Feel** and **Mix** boxes:
+
+- **Level**, **Pan** and **Choke**: pads in the same choke group cut each other off, as a closed hat cuts the open hat.
+- **Vel > level** and **Vel > tone**: how much quieter, and how much darker and softer, a gentle hit is than a hard one. A hard hit is brighter and snappier, not just louder.
+- **Accent**: how much harder your hardest hits land (they start above about velocity 90).
+- **Variation**: how much each hit differs from the last, in level, pitch, tone and length, so a roll or Note Repeat doesn't sound like a machine gun. At 0 every hit at one velocity is the same.
+- **Plays**: **One-shot** (the drum rings out however short your hit) or **While held** (it stops soon after you let go of the pad, for choked cymbals and short hats you play with your finger).
+
+**Decay** means what it says: a decay of 400 ms has the drum 60 dB down at 400 ms, whatever the drum and however hard you hit.
+
+The **Kit** page holds the kit's **Level**, its **Pad 1 note** and **Voices**. The factory kits play the **Current** voices, which have everything above. A kit you saved before this update plays **Classic**: exactly the drums it always had, with the same fourteen knobs on every pad. Switch it to Current to give it the new drums' sound and knobs; Accent, Variation and Plays are faint on a Classic kit ("kit voices are Classic"). The newer drums (808 kick, Conga, Woodblock, Bell, Shaker) play their own sound in either.
 
 **Drums' effects.** Every drum in the kit has the same four effects of its own, each off until you turn it up, and its own sends to the kit's delay and reverb. The **Effects** tab shows the effects of the pad you hit or looked at last (the kit's picture rings it); hit another pad, or tap it in the picture, to see that drum's. The Q-Links turn **Punch**, **Distortion** and the two sends.
 
