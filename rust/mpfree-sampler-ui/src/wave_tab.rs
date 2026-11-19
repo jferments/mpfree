@@ -41,7 +41,8 @@ use std::sync::Arc;
 
 use mpfree_analysis::{nearest_zero_crossing, previous_zero_crossing};
 use mpfree_sampler::model::{
-    ChannelPick, Fade, Loop, LoopMode, ModelError, PlayMode, Project, Region, SourceId, WARP_BPM,
+    ChannelPick, ChopMode, Fade, Loop, LoopMode, ModelError, PlayMode, Project, Region, SourceId,
+    WARP_BPM,
 };
 use mpfree_ui::layout;
 use mpfree_ui::numpad::NumberAsk;
@@ -54,6 +55,7 @@ use crate::grain_tab::{self, CloudNow};
 use crate::grain_tool::{self, GrainPart};
 use crate::panel::{Control, Item, Look, Panel, Section};
 use crate::play_tab::{PlayAction, PlayState};
+use crate::slice_tool::{self, ChopAction, ChopState, SliceTool};
 use crate::sound_panel::{self, SoundPanel};
 use crate::source::SourceView;
 use crate::warp_tool::{self, Tapped, WarpTool};
@@ -87,10 +89,11 @@ pub const LAYOUT: &str = "col(header:60, row(smp-bar:*, smp-send:330):60, \
 /// Grain left them on 18 Nov 2026 too: it is a tool on this page
 /// ([`Tool::Grain`]), and so did Warp ([`Tool::Warp`]). So did Rec (the one
 /// Sample page's step 2f, part 4): its controls are the recorder row's, its
-/// Input section's and Sample Recall's.
-pub const TABS: [&str; 3] = ["Wave", "Chop", "Play"];
+/// Input section's and Sample Recall's. So did Chop (step 3): it is the
+/// Slice tool ([`Tool::Slice`]).
+pub const TABS: [&str; 2] = ["Wave", "Play"];
 /// The tabs built so far; the others are drawn faint.
-pub const BUILT: [&str; 3] = ["Wave", "Chop", "Play"];
+pub const BUILT: [&str; 2] = ["Wave", "Play"];
 /// The Wave tab's place in [`TABS`].
 pub const TAB: usize = 0;
 
@@ -119,15 +122,13 @@ const GESTURE_BASE: u64 = 0x5741_5645_0000_0000;
 /// marks are bright, the panel's first section and the Q-Links; while REC
 /// is on, the recorder's Input section and its Q-Links win.
 ///
-/// Trim is the page as the Wave page was. A tool not built on the page yet
-/// opens its old page instead ([`Tool::page`]), so every button does
-/// something and the app stays whole while the tools move in.
+/// Trim is the page as the Wave page was.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tool {
     /// Start, End, the loop and the fades.
     #[default]
     Trim,
-    /// The cuts and where they land (the Chop page's for now).
+    /// The cuts and where they land ([`crate::slice_tool`]).
     Slice,
     /// Hits and pins ([`crate::warp_tool`]).
     Warp,
@@ -139,6 +140,11 @@ impl Tool {
     /// The strip's order.
     pub const ALL: [Tool; 4] = [Tool::Trim, Tool::Slice, Tool::Warp, Tool::Grain];
 
+    /// Its place on the strip ([`TOOLS`]): what a tap on it carries.
+    pub fn index(self) -> usize {
+        Tool::ALL.iter().position(|t| *t == self).unwrap_or(0)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Tool::Trim => "Trim",
@@ -148,22 +154,13 @@ impl Tool {
         }
     }
 
-    /// The old page (its place in [`TABS`]) a tool not built on the page
-    /// yet opens; None for a tool on the page.
-    pub fn page(self) -> Option<usize> {
-        match self {
-            Tool::Trim => None,
-            Tool::Slice => Some(crate::chop_tab::TAB),
-            Tool::Warp | Tool::Grain => None,
-        }
-    }
-
     /// The hint line the app shows under the page with this tool.
     pub fn hint(self) -> &'static str {
         match self {
             Tool::Grain => GRAIN_HINT,
             Tool::Warp => WARP_HINT,
-            _ => HINT,
+            Tool::Slice => slice_tool::HINT,
+            Tool::Trim => HINT,
         }
     }
 }
@@ -176,6 +173,15 @@ pub const GRAIN_HINT: &str = "Drag GRAIN to move where grains start, SIZE for th
 pub const WARP_HINT: &str =
     "Tap a hit to pin it to the grid · drag a pin's tab along the beats · Pin hits pins \
                              them all · Q-Link 1 picks a pin, 2 nudges it · SHIFT + - / + zoom";
+
+/// The Slice tool's rows each Q-Link card lights when picked: the
+/// method's setting, the slice, (its start has no row), the pads.
+const SLICE_CARD_ROWS: [Option<slice_tool::Row>; 4] = [
+    Some(slice_tool::Row::Amount),
+    Some(slice_tool::Row::Slice),
+    None,
+    Some(slice_tool::Row::Pads),
+];
 
 /// Why the tools are faint while a take records (the mockup's "tools wait
 /// for the take").
@@ -282,6 +288,10 @@ pub struct WaveState {
     /// The project's tempo, for a grain size synced to it (120 until the
     /// app says).
     pub bpm: f64,
+    /// What the Slice tool chops ([`ChopState`]): the same layer, with
+    /// the kit's pads that have a sound and the chop kept for the sound.
+    /// The app says where Put on may go (files, a new kit).
+    pub chop: Option<Arc<ChopState>>,
 }
 
 impl WaveState {
@@ -293,7 +303,9 @@ impl WaveState {
         layer: usize,
         source: Arc<SourceView>,
     ) -> Option<WaveState> {
-        Self::of_sound(p, pad, p.pad(pad)?, layer, source)
+        let mut st = Self::of_sound(p, pad, p.pad(pad)?, layer, source.clone())?;
+        st.chop = ChopState::from_project(p, pad, layer, source).map(Arc::new);
+        Some(st)
     }
 
     /// Layer `layer` of take `index` kept on the page (one-page step 2b),
@@ -304,7 +316,8 @@ impl WaveState {
         layer: usize,
         source: Arc<SourceView>,
     ) -> Option<WaveState> {
-        let mut st = Self::of_sound(p, TAKE, p.take(index)?, layer, source)?;
+        let mut st = Self::of_sound(p, TAKE, p.take(index)?, layer, source.clone())?;
+        st.chop = ChopState::of_take(p, index, layer, source).map(Arc::new);
         st.take = Some(TakeShown {
             index,
             of: p.takes().len(),
@@ -335,6 +348,7 @@ impl WaveState {
             source,
             take: None,
             bpm: 120.0,
+            chop: None,
         })
     }
 
@@ -398,6 +412,9 @@ pub enum WaveAction {
     Rec(RecorderAction),
     /// Say this on the hint line (why a touch did nothing).
     Say(String),
+    /// The Slice tool asked to hear a slice, to put the slices on pads,
+    /// to export them or to chop live ([`crate::slice_tool`]).
+    Chop(ChopAction),
 }
 
 /// The key a typed Warp tempo comes back with ([`NumberAsk::key`]).
@@ -706,6 +723,9 @@ pub struct WaveTab {
     /// The wave as drawn ([`warp_tool::bend`]: as it plays with the Warp
     /// tool, else empty), to put playheads where they are drawn.
     bend: Vec<(f64, f64)>,
+    /// The Slice tool's chop: its method, cuts, slice picked and where
+    /// the slices go.
+    slice: SliceTool,
 }
 
 impl WaveTab {
@@ -758,6 +778,7 @@ impl WaveTab {
             live: None,
             warp: WarpTool::default(),
             bend: Vec::new(),
+            slice: SliceTool::default(),
         };
         tab.update(ui, st);
         Ok(tab)
@@ -773,11 +794,13 @@ impl WaveTab {
     }
 
     /// Picks tool `tool` (the app's way in: SAMPLE EDIT, a device check,
-    /// the old Warp page's way in). A tool not on the page yet stays where
-    /// it is.
+    /// Chop to pads).
     pub fn set_tool(&mut self, ui: &mut Ui, st: &WaveState, tool: Tool) {
-        if tool.page().is_some() || tool == self.tool {
+        if tool == self.tool {
             return;
+        }
+        if self.tool == Tool::Slice {
+            self.slice.leave();
         }
         self.tool = tool;
         self.gesture = None;
@@ -796,6 +819,75 @@ impl WaveTab {
     /// The Warp tool's settings and pin picked.
     pub fn warp(&self) -> &WarpTool {
         &self.warp
+    }
+
+    /// The Slice tool's chop: its method, cuts and slice picked.
+    pub fn slice(&self) -> &SliceTool {
+        &self.slice
+    }
+
+    /// The chop to keep for the sound once the Slice tool has changed it
+    /// ([`SliceTool::take_kept`]); the app keeps it in the project. None
+    /// with another tool: the Slice tool only follows the sound while it is
+    /// picked, so what it holds then is nothing to keep.
+    pub fn take_kept(&mut self, st: &WaveState) -> Option<(ChopMode, Vec<u64>)> {
+        if self.tool != Tool::Slice {
+            return None;
+        }
+        let cs = st.chop.as_deref()?;
+        self.slice.take_kept(cs)
+    }
+
+    /// Whether the Slice tool waits for the sound's pitch to be followed
+    /// ([`SliceTool::wants_pitch`]).
+    pub fn wants_pitch(&self, st: &WaveState) -> bool {
+        self.tool == Tool::Slice
+            && st
+                .chop
+                .as_deref()
+                .is_some_and(|cs| self.slice.wants_pitch(cs))
+    }
+
+    /// Live chop stopped here (another pad or region, or a change on the
+    /// panel): the [`ChopAction::Live`] that tells the app, once.
+    pub fn take_stop(&mut self, st: &WaveState) -> Option<ChopAction> {
+        let cs = st.chop.as_deref()?;
+        self.slice.take_stop(cs)
+    }
+
+    /// Live chop's cuts, where the sound was at each pad played
+    /// ([`SliceTool::live_marks`]), shown at once. Returns how many were
+    /// kept.
+    pub fn live_marks(&mut self, ui: &mut Ui, st: &WaveState, marks: &[u64]) -> usize {
+        let Some(cs) = st.chop.clone() else {
+            return 0;
+        };
+        let kept = self.slice.live_marks(&cs, marks);
+        if kept > 0 {
+            self.show_slice(ui, st);
+        }
+        kept
+    }
+
+    /// The sound live chop played ended: Start again starts a new take.
+    pub fn live_ended(&mut self, ui: &mut Ui, st: &WaveState) {
+        if self.slice.live_ended() {
+            self.show_slice(ui, st);
+        }
+    }
+
+    /// Presses the Slice tool's button `b` (as a tap on it would): Chop
+    /// to pads beside the bar presses its main button.
+    pub fn press_slice(
+        &mut self,
+        ui: &mut Ui,
+        st: &WaveState,
+        b: slice_tool::Button,
+    ) -> Option<WaveAction> {
+        let cs = st.chop.clone()?;
+        let px = self.px(ui);
+        let a = self.slice.press(&cs, b, px);
+        self.slice_done(ui, st, a)
     }
 
     /// A Process runs and has got this far (0 to 1), or none runs: the
@@ -1087,6 +1179,10 @@ impl WaveTab {
             w.set_fades(u64::from(r.fade_in.frames), u64::from(r.fade_out.frames));
         }
         self.warp.follow(st);
+        self.slice.bank = self.bank;
+        if let (Tool::Slice, Some(cs)) = (self.tool, st.chop.as_deref()) {
+            self.slice.follow(cs);
+        }
         self.show_wave(ui, st);
         if let Some(o) = ui.get_mut::<WaveOverview>(OVERVIEW).filter(|_| !live) {
             o.set_peaks(Some(src.peaks.clone()));
@@ -1141,6 +1237,12 @@ impl WaveTab {
         if let (Tool::Grain, Some(s)) = (self.tool, span.as_ref()) {
             all.extend(grain_tool::markers(s));
         }
+        // The Slice tool's cuts in place of the region's marks: slice 1
+        // starts at Start and the last ends at END.
+        let chop = st.chop.as_deref().filter(|_| self.tool == Tool::Slice);
+        if let Some(cs) = chop {
+            all = self.slice.markers(cs);
+        }
         let t = ui.theme.clone();
         all.extend(self.warp.markers(st, bend, warp, t.warn, t.text));
         let hits: Vec<u64> = self.warp.hits_of(st).iter().map(|&h| drawn(h)).collect();
@@ -1149,7 +1251,11 @@ impl WaveTab {
         } else {
             st.beats()
         };
-        let lp = r.sustain_loop.map(|l| (drawn(l.start), drawn(l.end)));
+        // The slice picked is shaded where the loop is with the others.
+        let lp = match chop {
+            Some(cs) => Some(self.slice.picked(cs)),
+            None => r.sustain_loop.map(|l| (drawn(l.start), drawn(l.end))),
+        };
         if let Some(w) = ui.get_mut::<Waveform>(WAVE) {
             w.set_bend(self.bend.clone());
             w.set_markers(all);
@@ -1206,6 +1312,22 @@ impl WaveTab {
         }
         if self.tool == Tool::Warp {
             self.show_warp_cards(ui, st);
+            return;
+        }
+        if let (Tool::Slice, Some(cs)) = (self.tool, st.chop.as_deref()) {
+            let row = self.slice_row(ui);
+            for (k, c) in self.slice.cards(cs).into_iter().enumerate() {
+                let Some(card) = ui.get_mut::<KnobCard>(QLINKS[k]) else {
+                    continue;
+                };
+                card.label = c.label;
+                card.value = c.value;
+                card.sub = c.sub;
+                card.pos = c.pos;
+                card.enabled = c.enabled;
+                card.why = c.why;
+                card.focused = row.is_some() && SLICE_CARD_ROWS[k] == row;
+            }
             return;
         }
         let (r, src) = (&st.region, &st.source);
@@ -1365,6 +1487,23 @@ impl WaveTab {
             }
             return;
         }
+        if let (Tool::Slice, Some(cs)) = (self.tool, st.chop.as_deref()) {
+            let (rows, controls, panel) = self.slice.section(cs);
+            let n = rows.len();
+            if let Some(list) = ui.get_mut::<SettingList>(REGION) {
+                list.right = self.slice.put_note(cs);
+                list.rows = rows;
+                list.controls = controls;
+                list.panel = Some(panel);
+                list.typed = Vec::new();
+                list.buttons = slice_tool::Button::ALL
+                    .iter()
+                    .map(|b| b.row().index())
+                    .collect();
+                list.selected = list.selected.min(n - 1);
+            }
+            return;
+        }
         if self.tool == Tool::Grain {
             let (rows, controls, panel) =
                 grain_tool::section(&st.region, self.grain_part, &self.grain_note(st));
@@ -1501,6 +1640,7 @@ impl WaveTab {
         let round = match (self.tool, self.warp.selected()) {
             (Tool::Warp, Some(i)) => format!("pin {}", i + 1),
             (Tool::Warp, None) => "middle".to_string(),
+            (Tool::Slice, _) => format!("slice {}", self.slice.selected() + 1),
             _ => self.focus.label().to_lowercase(),
         };
         if let Some(card) = ui.get_mut::<InfoCard>(WHEEL) {
@@ -1552,14 +1692,38 @@ impl WaveTab {
             (BAR, EventKind::Tab(i)) => Some(WaveAction::Tab(*i)),
             (TOOLS, EventKind::Tab(i)) => {
                 let tool = *Tool::ALL.get(*i)?;
-                match tool.page() {
-                    // Not on the page yet: its old page.
-                    Some(page) => Some(WaveAction::Tab(page)),
-                    None => {
-                        self.set_tool(ui, st, tool);
-                        None
-                    }
+                self.set_tool(ui, st, tool);
+                None
+            }
+            (WAVE, EventKind::Marker { index, frame }) if self.tool == Tool::Slice => {
+                let cs = st.chop.clone()?;
+                let px = self.px(ui);
+                let at = self.slice.dragged(&cs, *index, *frame, px);
+                // The widget moved the tab with the finger; put it where
+                // the cut really is.
+                if let (Some(w), Some(f)) = (ui.get_mut::<Waveform>(WAVE), at) {
+                    w.set_marker_frame(*index, f);
                 }
+                self.slice_done(ui, st, None)
+            }
+            (WAVE, EventKind::Frame(f)) if self.tool == Tool::Slice => {
+                let cs = st.chop.clone()?;
+                let a = self.slice.tap(&cs, *f);
+                self.slice_done(ui, st, a)
+            }
+            (REGION, EventKind::Step { index, delta }) if self.tool == Tool::Slice => {
+                let cs = st.chop.clone()?;
+                let row = *slice_tool::Row::ALL.get(*index)?;
+                let stop = self.slice.step(&cs, row, *delta);
+                self.slice_done(ui, st, stop)
+            }
+            (REGION, EventKind::Tab(index)) if self.tool == Tool::Slice => {
+                let b = slice_tool::Row::ALL.get(*index)?.button()?;
+                self.press_slice(ui, st, b)
+            }
+            (REGION, EventKind::Select(_)) if self.tool == Tool::Slice => {
+                self.show_cards(ui, st);
+                None
             }
             (WAVE, EventKind::Marker { index, frame }) if self.tool == Tool::Warp => {
                 self.warp_marker(ui, st, *index, *frame)
@@ -1668,6 +1832,11 @@ impl WaveTab {
                     layer: st.layer,
                 })
             }
+            (name, EventKind::Select(_)) if QLINKS.contains(&name) && self.tool == Tool::Slice => {
+                let k = QLINKS.iter().position(|q| *q == name)?;
+                self.pick_slice_row(ui, st, k);
+                None
+            }
             (name, EventKind::Select(_)) if QLINKS.contains(&name) && self.tool == Tool::Warp => {
                 let k = QLINKS.iter().position(|q| *q == name)?;
                 self.pick_warp_row(ui, st, k);
@@ -1704,6 +1873,16 @@ impl WaveTab {
     ) -> Option<WaveAction> {
         if self.rec.recording {
             return recorder::qlink_action(knob, delta, fine).map(WaveAction::Rec);
+        }
+        if self.tool == Tool::Slice {
+            let cs = st.chop.clone()?;
+            self.pick_slice_row(ui, st, knob);
+            if delta == 0 {
+                return None;
+            }
+            let px = self.px(ui);
+            self.slice.qlink(&cs, knob, delta, fine, px);
+            return self.slice_done(ui, st, None);
         }
         if self.tool == Tool::Warp {
             self.pick_warp_row(ui, st, knob);
@@ -1784,6 +1963,10 @@ impl WaveTab {
         }
         let width = self.wave_w;
         let at = match self.tool {
+            Tool::Slice => st.chop.as_deref().map(|cs| {
+                let (a, b) = self.slice.picked(cs);
+                a + (b - a) / 2
+            }),
             Tool::Grain => Some(grain_tool::span(&st.region, st.rate, st.bpm, None).at),
             Tool::Warp => self
                 .warp
@@ -1807,6 +1990,58 @@ impl WaveTab {
         if self.tool == Tool::Warp {
             self.show_warp_cards(ui, st);
         }
+    }
+
+    /// Frames a pixel at the zoom shown.
+    fn px(&self, ui: &Ui) -> f64 {
+        self.view(ui).map_or(1.0, |v| v.frames_per_px)
+    }
+
+    /// Shows what the Slice tool's chop changed: the cuts and the slice
+    /// picked on the wave, the section, the cards and the wheel's card.
+    fn show_slice(&mut self, ui: &mut Ui, st: &WaveState) {
+        self.show_wave(ui, st);
+        if !self.rec.recording {
+            self.show_list(ui, st);
+            self.show_cards(ui, st);
+        }
+        self.update_wheel(ui, st);
+    }
+
+    /// After a Slice tool touch: shows it, and hands the app what it asks
+    /// for, or else why it changed nothing.
+    fn slice_done(
+        &mut self,
+        ui: &mut Ui,
+        st: &WaveState,
+        a: Option<ChopAction>,
+    ) -> Option<WaveAction> {
+        self.show_slice(ui, st);
+        let note = self.slice.take_note();
+        match (a, note) {
+            (Some(a), _) => Some(WaveAction::Chop(a)),
+            (None, Some(why)) => Some(WaveAction::Say(why)),
+            (None, None) => None,
+        }
+    }
+
+    /// The Slice tool's row picked on the panel.
+    fn slice_row(&self, ui: &Ui) -> Option<slice_tool::Row> {
+        let i = ui.get::<SettingList>(REGION)?.selected;
+        slice_tool::Row::ALL.get(i).copied()
+    }
+
+    /// Q-Link `knob`'s row picked on the Slice section (the method's
+    /// setting, the slice, the slice for its start, the pads), and its
+    /// card lit.
+    fn pick_slice_row(&self, ui: &mut Ui, st: &WaveState, knob: usize) {
+        let Some(row) = SLICE_CARD_ROWS.get(knob).copied().flatten() else {
+            return;
+        };
+        if let Some(list) = ui.get_mut::<SettingList>(REGION) {
+            list.selected = row.index();
+        }
+        self.show_cards(ui, st);
     }
 
     /// Shows what the Warp tool's own settings change: the pins (the one
@@ -2253,7 +2488,7 @@ fn markers_order(r: &Region) -> Vec<Mark> {
 
 /// The region's markers ([`markers_order`]), then a sliced region's cuts
 /// (R4), each at the start of its slice, numbered from 2: the Slice
-/// tool's, so faint lines with no tab (they move on the Chop tab).
+/// tool's, so faint lines with no tab (they move with the Slice tool).
 fn markers(r: &Region) -> Vec<Marker> {
     let mut all: Vec<Marker> = markers_order(r)
         .into_iter()

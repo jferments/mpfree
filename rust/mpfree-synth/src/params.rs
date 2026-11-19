@@ -14,6 +14,7 @@ ids! {
     OSC2_WAVE = 10, OSC2_OCT = 11, OSC2_SEMI = 12, OSC2_FINE = 13, OSC2_PW = 14, OSC2_LEVEL = 15,
     SUB_LEVEL = 16, NOISE_LEVEL = 17,
     UNISON = 20, UNISON_DETUNE = 21, UNISON_SPREAD = 22,
+    SUPER_DETUNE = 24, SUPER_MIX = 25,
     FILTER_MODE = 30, CUTOFF = 31, RESONANCE = 32, DRIVE = 33, FENV_AMOUNT = 34, KEY_TRACK = 35, VEL_CUTOFF = 36, DIST = 37,
     FENV_A = 40, FENV_D = 41, FENV_S = 42, FENV_R = 43,
     AMP_A = 50, AMP_D = 51, AMP_S = 52, AMP_R = 53, VEL_AMP = 54,
@@ -65,7 +66,7 @@ pub mod target {
 /// The highest id plus one: values live in an array indexed by id.
 pub const ID_SPACE: usize = PRESS_BASE as usize + np::FIELDS;
 
-pub const WAVES: &[&str] = &["Saw", "Pulse", "Triangle", "Sine"];
+pub const WAVES: &[&str] = &["Saw", "Pulse", "Triangle", "Sine", "Supersaw"];
 pub const FILTER_MODES: &[&str] = &["LP 24", "LP 12", "BP 12", "HP 12"];
 pub const LFO_SHAPES: &[&str] = &["Sine", "Triangle", "Saw", "Square", "S&H"];
 /// Tempo sync: off, or a cycle length in beats.
@@ -262,6 +263,28 @@ const BASE: &[ParamInfo] = &[
         0.0,
         100.0,
         60.0,
+        Unit::Percent,
+        Linear,
+    ),
+    // The supersaw's seven saws (either oscillator on Supersaw): how far
+    // apart they go, and how loud the six around the note are against it.
+    p(
+        SUPER_DETUNE,
+        "Detune",
+        "Supersaw",
+        0.0,
+        100.0,
+        50.0,
+        Unit::Percent,
+        Linear,
+    ),
+    p(
+        SUPER_MIX,
+        "Mix",
+        "Supersaw",
+        0.0,
+        100.0,
+        50.0,
         Unit::Percent,
         Linear,
     ),

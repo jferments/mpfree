@@ -1491,6 +1491,7 @@ fn alias_cases() -> Vec<AliasCase> {
     vec![
         ("Poly saw", Engine::Poly, vec![]),
         ("Poly pulse", Engine::Poly, vec![(0, 1.0)]),
+        ("Poly triangle", Engine::Poly, vec![(0, 2.0)]),
         ("Poly saw, drive 24 dB", Engine::Poly, vec![(33, 24.0)]),
         ("Poly saw, distortion 24 dB", Engine::Poly, vec![(37, 24.0)]),
         ("Analog saw", Engine::Analog, vec![]),

@@ -4,8 +4,9 @@
 //!
 //! - **Send to pad:** the next pad hit gets a copy of the pad picked, its
 //!   sound and every edit (one undo step). A second press calls it off.
-//! - **Chop to pads:** the Chop tab, where the sound is cut and its slices
-//!   go onto pads; on the Chop tab it is the tab's own Chop to pads.
+//! - **Chop to pads:** the Wave page's Slice tool, where the sound is cut
+//!   and its slices go onto pads; with the Slice tool it is the tool's own
+//!   Chop to pads.
 //!
 //! With a take kept on the Wave page (one-page step 2b), Send to pad puts
 //! the take itself on the pad hit (it leaves the page, one undo step);

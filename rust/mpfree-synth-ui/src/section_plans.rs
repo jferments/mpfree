@@ -201,7 +201,7 @@ fn poly(page: &str) -> Option<Plan> {
     use mpfree_synth::params::*;
     Some(match page {
         "Osc" => (
-            "col(row(osc-1:*, osc-2:*):*, row(mix:*, unison:*):230)",
+            "col(row(osc-1:*, osc-2:*):*, row(mix:*, supersaw:*):230)",
             vec![
                 s("osc-1", "Osc 1", Source, &[OSC1_WAVE, OSC1_OCT, OSC1_PW])
                     .labels(&[(OSC1_PW, "Pulse width")])
@@ -222,13 +222,10 @@ fn poly(page: &str) -> Option<Plan> {
                 .faders(&[OSC1_LEVEL, OSC2_LEVEL, SUB_LEVEL, NOISE_LEVEL])
                 .labels(&[(OSC1_LEVEL, "Osc 1"), (OSC2_LEVEL, "Osc 2")])
                 .note("into the filter"),
-                s(
-                    "unison",
-                    "Unison",
-                    Voice,
-                    &[UNISON, UNISON_DETUNE, UNISON_SPREAD],
-                )
-                .labels(&[(UNISON, "Voices")]),
+                // Its own words, so they don't read as the unison's.
+                s("supersaw", "Supersaw", Source, &[SUPER_DETUNE, SUPER_MIX])
+                    .labels(&[(SUPER_DETUNE, "Saw detune"), (SUPER_MIX, "Side saws")])
+                    .note("seven saws, when a wave is Supersaw"),
             ],
         ),
         "Filter" => (
@@ -293,10 +290,22 @@ fn poly(page: &str) -> Option<Plan> {
                 ]),
             ],
         ),
-        "Voice" => voice_page(
-            &[VOICE_MODE, POLYPHONY, GLIDE],
-            &[BEND_RANGE, PRESS_VIB_RATE],
-            &[LEVEL, PAN, METER_VOICES],
+        "Voice" => (
+            "row(col(voices:*, unison:*):55*, col(tuning:*, output:*):45*)",
+            vec![
+                s("voices", "Voices", Voice, &[VOICE_MODE, POLYPHONY, GLIDE]),
+                // Not "Voices": the Voices section has that word.
+                s(
+                    "unison",
+                    "Unison",
+                    Voice,
+                    &[UNISON, UNISON_DETUNE, UNISON_SPREAD],
+                )
+                .labels(&[(UNISON, "Copies")])
+                .note("of each note"),
+                s("tuning", "Tuning", Voice, &[BEND_RANGE, PRESS_VIB_RATE]),
+                s("output", "Output", Voice, &[LEVEL, PAN, METER_VOICES]),
+            ],
         ),
         "Pressure" => pressure(PRESS_BASE),
         _ => return None,

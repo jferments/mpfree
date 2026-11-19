@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-seq/src/scenes.rs rust/mpfree-seq/src/arrange.rs rust/mpfree-perform rust/mpfree-time-ui/src/song.rs rust/mpfree-time-ui/src/widgets.rs rust/mpfree-time-ui/src/list.rs
-checked: 2026-11-14 b76c3c7
+checked: 2026-11-19 79fc6f63
 -->
 
 # Arranging a song
@@ -147,6 +147,4 @@ A scene's length is its follow action's bars if it has one, else its longest cli
 
 ## Coming
 
-- Moving, stretching and copying blocks by touch, and naming the places in the song.
-- Undo for changes to the song.
-- Playing the morph's rows back from the song. The song plays the crossfader's moves, between whichever two rows are picked.
+- Naming a section on the ruler yourself, and adding a section marker without a scene. For now a section takes its name from the scene that went into the song there.

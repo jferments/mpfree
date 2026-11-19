@@ -38,7 +38,7 @@ use std::time::Instant;
 use mpfree_sampler::dsp::Ahdsr;
 use mpfree_sampler::engine::{
     CloudState, Engine, EngineView, Event, GrainView, LaneConfig, LaneSetup, LaneStats, PadField,
-    PadOut, MAX_GRAINS,
+    PadOut, MAX_GRAINS, TAKE_PAD,
 };
 use mpfree_sampler::model::{
     GrainParams, Layer, Pad, PadKind, PlayMode, PressureRoute, PressureTarget, Project, Region,
@@ -982,8 +982,11 @@ impl Player {
 
     /// Plays source frames `start..end` of pad `pad`'s layer `layer` once,
     /// from the next render, as the pad made from that slice will play it
-    /// (a tap on the Chop page), on kit `kit`; returns whether it went to
-    /// the engine.
+    /// (a tap on a slice with the Slice tool), on kit `kit`; returns
+    /// whether it went to the engine. Pad [`wave_tab::TAKE`] is the take the
+    /// Sample page shows.
+    ///
+    /// [`wave_tab::TAKE`]: mpfree_sampler_ui::wave_tab::TAKE
     pub fn audition(
         &mut self,
         kit: usize,
@@ -993,7 +996,12 @@ impl Player {
         end: u64,
         velocity: u8,
     ) -> bool {
-        if pad >= PADS || layer > usize::from(u8::MAX) {
+        let pad = match pad {
+            mpfree_sampler_ui::wave_tab::TAKE => TAKE_PAD,
+            p if p < PADS => p as u8,
+            _ => return false,
+        };
+        if layer > usize::from(u8::MAX) {
             return false;
         }
         let clip = |f: u64| u32::try_from(f).unwrap_or(u32::MAX);
@@ -1003,7 +1011,7 @@ impl Player {
                 kit,
                 0,
                 Event::Audition {
-                    pad: pad as u8,
+                    pad,
                     layer: layer as u8,
                     start: clip(start),
                     end: clip(end),
