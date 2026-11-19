@@ -127,6 +127,7 @@
 319975	Poly Super Stab, 8 voices
 394062	Poly Super Stack, 8 voices
 341789	Poly Supersaw, 8 voices
+243190	Poly Worn Brass, 8 voices
 12921	Ring mod
 145867	Room reverb
 108213	Rotary

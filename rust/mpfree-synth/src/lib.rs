@@ -71,6 +71,7 @@ pub mod analog_params;
 pub mod bank;
 pub mod bass;
 pub mod bass_params;
+pub mod character;
 pub mod drawbar;
 pub mod drawbar_params;
 pub mod drum;

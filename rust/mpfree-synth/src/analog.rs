@@ -45,13 +45,16 @@ use std::f32::consts::PI;
 use mpfree_node::{Ctx, Cull, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Tuning};
 
 use crate::analog_params::*;
+use crate::character::{
+    Cards, Drift, AGE_CUT_OCT, AGE_LEVEL_DB, AGE_PW, AGE_TIME, AGE_TUNE_CENTS, DRIFT_CENTS,
+};
 use crate::dsp::{lfo_value, LfoShape, Rng};
 use crate::params::Preset;
 
 /// Frames per control step.
 pub const CTRL: u64 = 16;
-/// Voice cards.
-pub const CARDS: usize = 16;
+/// Voice cards (the voice core's, `character`).
+pub use crate::character::CARDS;
 /// Keys remembered while held, for Unison's return to a held key.
 const HELD: usize = 16;
 
@@ -87,16 +90,6 @@ const SVF_DAMP_MIN: f32 = 0.06;
 const SVF_SQUASH: f32 = 0.1;
 /// The attack's asymptote against its peak (CEM3310: 6.5 V and 5 V).
 const ATTACK_TARGET: f32 = 1.3;
-/// Age's spreads at 100, each the standard deviation of a card's fixed
-/// offset (our reading of "+/- 5-10 cents per voice").
-const AGE_TUNE_CENTS: f32 = 4.0;
-const AGE_CUT_OCT: f32 = 0.084;
-const AGE_TIME: f32 = 0.08;
-const AGE_PW: f32 = 0.025;
-const AGE_LEVEL_DB: f32 = 0.5;
-/// Drift at Age 100: its rms in cents and how slowly it wanders.
-const DRIFT_CENTS: f32 = 2.0;
-const DRIFT_TAU_S: f32 = 5.0;
 /// The oscillators into the filter at Drive 0, and how far Drive 100
 /// raises that (octaves of gain); the filter's output is scaled back.
 const IN_GAIN: f32 = 0.5;
@@ -682,35 +675,10 @@ impl Chorus {
     }
 }
 
-/// A unit normal draw (three uniforms summed, scaled).
-fn normal(rng: &mut Rng) -> f32 {
-    (rng.unit() + rng.unit() + rng.unit() - 1.5) * 2.0
-}
-
-/// One unit-normal draw per card, clamped to ±2.5.
-fn draw_cards(rng: &mut Rng) -> [f32; CARDS] {
-    let mut a = [0.0; CARDS];
-    for v in &mut a {
-        *v = normal(rng).clamp(-2.5, 2.5);
-    }
-    a
-}
-
-/// The cards' fixed offsets (unit normals: osc 1 and osc 2 tuning, cutoff,
-/// times, pulse width, level), the same in every instance, and the
-/// generator after them (for the drift's start).
-fn spread_and_rng() -> ([[f32; CARDS]; 6], Rng) {
-    let mut rng = Rng::new(0xA1A1_0C4D);
-    let spread = std::array::from_fn(|_| draw_cards(&mut rng));
-    (spread, rng)
-}
-
 /// Each card's fixed detune in cents, oscillator 1 and 2, at **Age** `age`
 /// (0 to 100), drift left out. For the Synth tab's picture.
 pub fn card_cents(age: f32) -> [(f32, f32); CARDS] {
-    let ([t1, t2, ..], _) = spread_and_rng();
-    let a = AGE_TUNE_CENTS * (age / 100.0).clamp(0.0, 1.0);
-    std::array::from_fn(|c| (a * t1[c], a * t2[c]))
+    Cards::cents(age)
 }
 
 /// The envelope's attack at `t` (0 to 1 of the attack time): an RC charge
@@ -762,18 +730,9 @@ pub struct Analog {
     uni_note: u8,
     /// Each card's fixed offsets, as unit normals: tuning of each
     /// oscillator, cutoff, envelope times, pulse width, level.
-    off_tune1: [f32; CARDS],
-    off_tune2: [f32; CARDS],
-    off_cut: [f32; CARDS],
-    off_time: [f32; CARDS],
-    off_pw: [f32; CARDS],
-    off_level: [f32; CARDS],
-    /// Each oscillator's drift (unit rms) and its step's factors.
-    drift1: [f32; CARDS],
-    drift2: [f32; CARDS],
-    drift_keep: f32,
-    drift_new: f32,
-    drift_rng: Rng,
+    cards: Cards,
+    /// Each oscillator's drift (unit rms).
+    drift: Drift,
     /// Each card's envelope coefficients (filter, amp) with its time
     /// offset.
     fco: [EnvCoefs; CARDS],
@@ -809,10 +768,8 @@ impl Analog {
         for p in PARAMS {
             values[p.id as usize] = p.default;
         }
-        let (spread, mut rng) = spread_and_rng();
-        let [off_tune1, off_tune2, off_cut, off_time, off_pw, off_level] = spread;
-        let drift1 = draw_cards(&mut rng);
-        let drift2 = draw_cards(&mut rng);
+        let (cards, mut rng) = Cards::draw();
+        let drift = Drift::new(&mut rng);
         let mut s = Analog {
             rate: rate.max(1),
             values,
@@ -822,17 +779,8 @@ impl Analog {
             held: [0; HELD],
             n_held: 0,
             uni_note: 60,
-            off_tune1,
-            off_tune2,
-            off_cut,
-            off_time,
-            off_pw,
-            off_level,
-            drift1,
-            drift2,
-            drift_keep: 1.0,
-            drift_new: 0.0,
-            drift_rng: Rng::new(0xD21F_7001),
+            cards,
+            drift,
             fco: [EnvCoefs::default(); CARDS],
             aco: [EnvCoefs::default(); CARDS],
             cut_co: EnvCoefs::default(),
@@ -971,7 +919,7 @@ impl Analog {
             1.0 - (-4.6 / n).exp()
         };
         for c in 0..CARDS {
-            let k = (AGE_TIME * age * self.off_time[c]).exp();
+            let k = (AGE_TIME * age * self.cards.time[c]).exp();
             self.fco[c] = EnvCoefs {
                 attack: attack(self.v(F_ATTACK) * k),
                 decay: fall(self.v(F_DECAY) * k),
@@ -1269,12 +1217,7 @@ impl Analog {
 
         // Drift: each oscillator a slow random walk (unit rms).
         let age = self.v(AGE) / 100.0;
-        for c in 0..CARDS {
-            self.drift1[c] =
-                self.drift1[c] * self.drift_keep + self.drift_new * normal(&mut self.drift_rng);
-            self.drift2[c] =
-                self.drift2[c] * self.drift_keep + self.drift_new * normal(&mut self.drift_rng);
-        }
+        self.drift.step();
 
         let transpose = self.v(TRANSPOSE);
         let bend = self.bend.value * self.v(BEND_RANGE);
@@ -1360,14 +1303,16 @@ impl Analog {
                 v.hz = if hz.is_finite() { hz } else { 0.0 };
                 v.hz_key = key;
             }
-            let t1 = AGE_TUNE_CENTS * age * self.off_tune1[c] + DRIFT_CENTS * age * self.drift1[c];
-            let t2 = AGE_TUNE_CENTS * age * self.off_tune2[c] + DRIFT_CENTS * age * self.drift2[c];
+            let t1 =
+                AGE_TUNE_CENTS * age * self.cards.tune1[c] + DRIFT_CENTS * age * self.drift.d1[c];
+            let t2 =
+                AGE_TUNE_CENTS * age * self.cards.tune2[c] + DRIFT_CENTS * age * self.drift.d2[c];
             let cents = fine + v.uni * uni;
             let semis1 = (cents + t1) / 100.0 + pm_env_pitch * fe;
             let to1 = (v.hz * oct1 * exp2_fast(semis1 / 12.0) / fs).clamp(0.0, 0.45);
             let to2 = (v.hz * exp2_fast((semis2 + (cents + t2 + fine2) / 100.0) / 12.0) / fs)
                 .clamp(0.0, 0.45);
-            let pwo = AGE_PW * age * self.off_pw[c];
+            let pwo = AGE_PW * age * self.cards.pw[c];
             let p1 = (pw1 + pwo + pm_env_pw * fe).clamp(0.05, 0.95);
             let p2 = (pw2 - pwo).clamp(0.05, 0.95);
             if fresh {
@@ -1387,7 +1332,7 @@ impl Analog {
             v.dpw2 = (p2 - v.pw2) / per;
             let velf = 1.0 - vf + vf * v.vel;
             let oct = cut_oct
-                + AGE_CUT_OCT * age * self.off_cut[c]
+                + AGE_CUT_OCT * age * self.cards.cut[c]
                 + env_oct * fe * velf
                 + kt * (key - 60.0) / 12.0
                 + pm_env_cut * fe;
@@ -1398,7 +1343,7 @@ impl Analog {
             }
             v.g_to = g;
             v.dg = (g - v.g) / per;
-            let level = exp2_fast(AGE_LEVEL_DB * age * self.off_level[c] / 6.02);
+            let level = exp2_fast(AGE_LEVEL_DB * age * self.cards.level[c] / 6.02);
             let gain = ae * (1.0 - va + va * v.vel) * level * out;
             v.vca_to = gain;
             v.dvca = (gain - v.vca) / per;
@@ -1551,9 +1496,7 @@ impl Node for Analog {
         self.chorus.post_r.set(CH_POST_HZ, r);
         self.chorus.follow_k = (-1.0 / (CH_FOLLOW_S * r)).exp();
         self.chorus.max_delay = (CH_BUF - 4) as f32;
-        let dt = CTRL as f32 / r;
-        self.drift_keep = (-dt / DRIFT_TAU_S).exp();
-        self.drift_new = (1.0 - self.drift_keep * self.drift_keep).sqrt();
+        self.drift.set_step(CTRL as f32 / r);
         self.dc_a = (-std::f32::consts::TAU * DC_HZ / r).exp();
         self.update_times();
         self.reset();
