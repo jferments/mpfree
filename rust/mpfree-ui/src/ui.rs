@@ -424,6 +424,15 @@ pub trait Widget: Any + Send {
         self.step(t, delta, r)
     }
 
+    /// SHIFT + the data wheel's push on control `t`, outlined or under a
+    /// finger (the button combos of 19 Nov): its value back to its
+    /// default (0 dB, the pan in the middle, an effect setting's own
+    /// default), said as [`Widget::touch`] would. None where the control
+    /// has no default, or is at it already.
+    fn reset(&mut self, _t: &Target, _r: Rect) -> Option<EventKind> {
+        None
+    }
+
     /// Where control `t` is now listed, after [`Widget::step`] moved it:
     /// the `index` its target has in the next [`Widget::targets`], so the
     /// wheel's outline goes with it. Most controls stay where they are.
@@ -1027,6 +1036,16 @@ impl Ui {
     /// ([`Widget::step`]): what it said, as a touch would. The outline goes
     /// with a control the turn moved ([`Widget::focus_index`]).
     pub fn focus_step(&mut self, delta: i32) -> Option<UiEvent> {
+        self.focus_turn(delta, false)
+    }
+
+    /// SHIFT + - / + on the outlined control: as [`Ui::focus_step`], in the
+    /// finer steps SHIFT gives a held control ([`Widget::held_step`]).
+    pub fn focus_step_fine(&mut self, delta: i32) -> Option<UiEvent> {
+        self.focus_turn(delta, true)
+    }
+
+    fn focus_turn(&mut self, delta: i32, fine: bool) -> Option<UiEvent> {
         let (wi, t) = self.focus_slot()?;
         let r = self.pages[self.current]
             .slots
@@ -1037,12 +1056,47 @@ impl Ui {
         if !w.steps(&t) {
             return None;
         }
-        let kind = w.step(&t, delta, r)?;
+        let kind = if fine {
+            w.held_step(&t, delta, true, r)?
+        } else {
+            w.step(&t, delta, r)?
+        };
         *dirty = true;
         let index = w.focus_index(&t);
         if let Some(f) = self.focus.as_mut().filter(|f| f.index != index) {
             f.index = index;
         }
+        Some(UiEvent {
+            widget: name.clone(),
+            kind,
+        })
+    }
+
+    /// SHIFT + the wheel's push on the outlined control: back to its
+    /// default ([`Widget::reset`]), what it said, as a touch would.
+    pub fn focus_reset(&mut self) -> Option<UiEvent> {
+        let (wi, t) = self.focus_slot()?;
+        self.reset_on(wi, &t)
+    }
+
+    /// SHIFT + the wheel's push with a finger resting on a control (the
+    /// newest, [`Ui::held_step`]'s): back to its default.
+    pub fn held_reset(&mut self) -> Option<UiEvent> {
+        let h = self.held.last_mut()?;
+        h.turned = true;
+        let (wi, t) = (h.widget, h.target.clone());
+        self.reset_on(wi, &t)
+    }
+
+    fn reset_on(&mut self, wi: usize, t: &Target) -> Option<UiEvent> {
+        let r = self.pages[self.current]
+            .slots
+            .iter()
+            .find(|(w, _)| *w == wi)?
+            .1;
+        let (name, w, dirty) = &mut self.widgets[wi];
+        let kind = w.reset(t, r)?;
+        *dirty = true;
         Some(UiEvent {
             widget: name.clone(),
             kind,
@@ -1507,6 +1561,13 @@ mod tests {
         fn held_step(&mut self, t: &Target, delta: i32, fine: bool, r: Rect) -> Option<EventKind> {
             self.step(t, if fine { delta * 100 } else { delta }, r)
         }
+
+        fn reset(&mut self, _t: &Target, _r: Rect) -> Option<EventKind> {
+            (self.value != 0).then(|| {
+                self.value = 0;
+                EventKind::Value(0.0)
+            })
+        }
     }
 
     fn knobs_ui() -> Ui {
@@ -1562,6 +1623,37 @@ mod tests {
         ui.touch(1, Touch::Up, 50, 50);
         ui.touch(WHEEL_FINGER, Touch::Down, 50, 150);
         assert!(!ui.holding(), "the wheel's own push is no finger");
+    }
+
+    /// SHIFT + - / + step the outlined control as SHIFT + the wheel does on
+    /// a held one, and SHIFT + the push puts the outlined or held control
+    /// back to its default; a widget with no default says nothing (the
+    /// button combos of 19 Nov).
+    #[test]
+    fn shift_steps_finer_and_the_push_puts_a_value_back_to_its_default() {
+        let mut ui = knobs_ui();
+        assert_eq!(ui.focus_reset(), None, "no outline");
+        ui.focus_move(1);
+        ui.focus_step(2);
+        assert_eq!(ui.focus_step_fine(1).unwrap().kind, EventKind::Value(102.0));
+        let ev = ui.focus_reset().unwrap();
+        assert_eq!((ev.widget.as_str(), ev.kind), ("a", EventKind::Value(0.0)));
+        assert_eq!(ui.focus_reset(), None, "at its default");
+        // A finger on b: the held control, not the outline.
+        ui.touch(1, Touch::Down, 300, 100);
+        ui.held_step(3, false);
+        let ev = ui.held_reset().unwrap();
+        assert_eq!((ev.widget.as_str(), ev.kind), ("b", EventKind::Value(0.0)));
+        assert_eq!(
+            ui.touch(1, Touch::Up, 300, 100),
+            None,
+            "the reset makes the lift no tap"
+        );
+        assert_eq!(ui.held_reset(), None, "no finger");
+        // The square's sliders have no default.
+        let mut sq = square_ui();
+        sq.focus_move(1);
+        assert_eq!(sq.focus_reset(), None);
     }
 
     #[test]
