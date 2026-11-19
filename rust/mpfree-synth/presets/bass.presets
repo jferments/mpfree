@@ -1,8 +1,8 @@
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Init
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Round Mono
 
@@ -12,7 +12,7 @@ filter.resonance = 10
 filter.env-amount = 30
 filter.filter-decay = 400
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Pluck Bass
 
@@ -26,7 +26,7 @@ filter.filter-decay = 180
 amp.decay = 400
 amp.sustain = 30
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Resonant Sweep
 
@@ -36,7 +36,7 @@ filter.resonance = 65
 filter.env-amount = 80
 filter.filter-decay = 600
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Square Sub
 
@@ -49,7 +49,7 @@ source.sub-mode = Square -2 oct
 filter.cutoff = 900
 filter.env-amount = 25
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Rubber Bass
 
@@ -62,7 +62,7 @@ filter.filter-decay = 1200
 # Play
 play.glide = 80
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Funk Bass
 
@@ -76,7 +76,7 @@ filter.filter-decay = 120
 amp.decay = 300
 amp.sustain = 60
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Synth Pop
 
@@ -93,7 +93,7 @@ amp.decay = 350
 amp.sustain = 0
 amp.release = 60
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Power Bass
 
@@ -107,7 +107,7 @@ filter.cutoff = 1200
 # Output
 output.drive = 35
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Fat Saw
 
@@ -124,7 +124,7 @@ amp.vel-tone = 50
 # Output
 output.drive = 30
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Thin Pulse
 
@@ -137,7 +137,7 @@ source.sub = 0
 filter.cutoff = 1800
 filter.env-amount = 20
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Soft Triangle
 
@@ -150,7 +150,7 @@ filter.cutoff = 4000
 filter.resonance = 0
 filter.env-amount = 0
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Noisy Bass
 
@@ -162,7 +162,7 @@ filter.cutoff = 900
 filter.resonance = 30
 filter.env-amount = 50
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Glide Bass
 
@@ -174,7 +174,7 @@ filter.resonance = 30
 play.glide = 150
 play.glide-on = Always
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Low Note Lines
 
@@ -188,7 +188,7 @@ play.glide = 0
 play.priority = Low
 play.retrigger = On
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Growl Press
 
@@ -202,7 +202,7 @@ output.drive = 20
 pressure.press-to = Drive
 pressure.pressure = 80
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Press Wah
 
@@ -215,7 +215,7 @@ filter.env-amount = 20
 pressure.press-to = Cutoff
 pressure.pressure = 70
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Sub Sine
 
@@ -229,7 +229,7 @@ source.sub = 0
 # Output
 output.drive = 0
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Sub Triangle
 
@@ -243,7 +243,7 @@ source.sub = 0
 # Output
 output.drive = 0
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = 808
 
@@ -269,7 +269,7 @@ play.glide = 80
 output.drive = 40
 output.tone = 4000
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Long 808
 
@@ -295,7 +295,7 @@ play.glide = 80
 output.drive = 35
 output.tone = 4000
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Distorted 808
 
@@ -322,7 +322,7 @@ output.drive = 90
 output.drive-mode = Hard
 output.tone = 3000
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = 808 Slide
 
@@ -348,7 +348,7 @@ play.glide = 120
 output.drive = 40
 output.tone = 4000
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = 808 Kick Bass
 
@@ -373,7 +373,7 @@ amp.release = 300
 output.drive = 45
 output.tone = 4000
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Short 808
 
@@ -398,7 +398,7 @@ amp.release = 150
 output.drive = 35
 output.tone = 4000
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = 808 Vibrato
 
@@ -427,7 +427,7 @@ output.tone = 4000
 pressure.press-to = Vibrato
 pressure.pressure = 80
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Reese
 
@@ -443,7 +443,7 @@ filter.cutoff = 2500
 filter.resonance = 10
 filter.env-amount = 0
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Dark Reese
 
@@ -460,7 +460,7 @@ filter.cutoff = 700
 filter.resonance = 20
 filter.env-amount = 0
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Wide Detune
 
@@ -476,7 +476,7 @@ source.detune = 60
 filter.cutoff = 3000
 filter.env-amount = 0
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Soft Reese
 
@@ -496,7 +496,7 @@ filter.env-amount = 0
 # Output
 output.drive = 30
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Growl Reese
 
@@ -516,7 +516,7 @@ filter.filter-drive = 70
 # Output
 output.drive = 40
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Reese Sweep
 
@@ -533,7 +533,7 @@ filter.resonance = 40
 filter.env-amount = 70
 filter.filter-decay = 1500
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Amp Bass
 fx.1 = mpfree.fx.amp
@@ -580,7 +580,7 @@ fx-1.cab = 1x15 bass
 fx-1.depth = 7
 fx-1.level = -5
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.bass
 name = Tube 808
 fx.1 = mpfree.fx.drive

@@ -1,8 +1,8 @@
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.analog
 name = Init
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.analog
 name = Poly Brass
 
@@ -31,7 +31,7 @@ voice.age = 40
 # Output
 output.level = -1
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.analog
 name = Warm Pad
 
@@ -60,7 +60,7 @@ voice.chorus = Slow
 # Output
 output.level = 2
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.analog
 name = Sync Lead
 
@@ -91,7 +91,7 @@ voice.glide = 40
 # Output
 output.level = -2
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.analog
 name = Chorus Strings
 
@@ -118,7 +118,7 @@ voice.chorus = Fast
 # Output
 output.level = 3
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.analog
 name = Square Keys
 
@@ -142,7 +142,7 @@ envelopes.a-release = 420
 # Voice
 voice.chorus = Slow
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.analog
 name = Clang Bell
 
@@ -168,7 +168,7 @@ mod.pmod-osc-2 = 45
 # Voice
 voice.age = 15
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.analog
 name = Unison Bass
 
@@ -197,7 +197,7 @@ voice.detune = 25
 # Output
 output.level = -3
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.analog
 name = Slow Sweep
 
@@ -221,7 +221,7 @@ mod.lfo-cutoff = 45
 # Voice
 voice.chorus = Slow
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.analog
 name = Hollow Pulse
 
@@ -245,7 +245,7 @@ mod.lfo-pw = 25
 # Voice
 voice.chorus = Vibe
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.analog
 name = Worn Cards
 

@@ -3,7 +3,7 @@
 //! and a later MPFree still loads it.
 //!
 //! ```text
-//! mpfree-preset = 1
+//! mpfree-preset = 2
 //! engine = mpfree.poly
 //! name = Dust Pad
 //! tags = pad, warm
@@ -31,6 +31,16 @@
 //!   owners' lines such as the Q-Link sets (`qset`). A file from a newer
 //!   format, or for another engine, is refused with a reason.
 //! - Blank lines and lines starting with `#` are skipped.
+//! - **When a setting changes meaning**, the format's version goes up and
+//!   the engine converts a value saved in an older one
+//!   ([`Node::upgrade`]), so an old sound plays as it did. A preset read
+//!   from an older format keeps its old values until it is upgraded
+//!   ([`Preset::upgrade`]), and writes its own format back, so nothing is
+//!   read twice in two meanings. The versions:
+//!   - 1: the first.
+//!   - 2 (19 Nov 2026): Poly's envelopes moved onto the voice core, whose
+//!     times mean what they say, and its velocity became a range in dB;
+//!     Poly converts its attacks, releases and velocity from format 1.
 
 use std::fmt;
 
@@ -38,8 +48,9 @@ use crate::{Curve, Node, NodeInfo, ParamInfo};
 
 /// The first line's key.
 pub const FORMAT: &str = "mpfree-preset";
-/// The format this build writes; it reads this and older ones.
-pub const VERSION: u32 = 1;
+/// The format this build writes; it reads this and older ones (the
+/// versions are listed in the module's docs).
+pub const VERSION: u32 = 2;
 /// A preset file's extension.
 pub const EXT: &str = "preset";
 /// The largest preset text read.
@@ -63,6 +74,9 @@ pub struct Preset {
     /// Lines this format doesn't read itself, in file order: other owners'
     /// (`qset`) and settings this build doesn't have.
     pub extra: Vec<(String, String)>,
+    /// The format its values are in: the file's, until [`Preset::upgrade`]
+    /// makes it [`VERSION`]; a captured preset's is [`VERSION`].
+    pub format: u32,
 }
 
 /// Why a text is not a preset this build can load.
@@ -113,12 +127,28 @@ impl Preset {
                 .map(|p| (p.id, node.param(p.id)))
                 .collect(),
             extra: Vec::new(),
+            format: VERSION,
         }
     }
 
-    /// Sets every setting of `node` from the preset: its value, or its
-    /// default when the preset doesn't have it, clamped to its range.
-    /// Sounding notes carry on, as with a factory preset.
+    /// Puts the values in this build's meaning, as `node` (the engine the
+    /// preset is for) converts them from the preset's format
+    /// ([`Node::upgrade`]). Does nothing to a preset already in
+    /// [`VERSION`].
+    pub fn upgrade(&mut self, node: &dyn Node) {
+        if self.format >= VERSION {
+            return;
+        }
+        for (id, v) in &mut self.values {
+            *v = node.upgrade(self.format, *id, *v);
+        }
+        self.format = VERSION;
+    }
+
+    /// Sets every setting of `node` from the preset: its value (in this
+    /// build's meaning, [`Preset::upgrade`]), or its default when the
+    /// preset doesn't have it, clamped to its range. Sounding notes carry
+    /// on, as with a factory preset.
     pub fn apply(&self, node: &mut dyn Node) -> Result<(), Error> {
         let info = node.info();
         if self.engine != info.id {
@@ -137,6 +167,11 @@ impl Preset {
                 .rev()
                 .find(|(id, _)| *id == p.id)
                 .map_or(p.default, |&(_, v)| v);
+            let v = if self.format < VERSION {
+                node.upgrade(self.format, p.id, v)
+            } else {
+                v
+            };
             node.set_param(p.id, p.clamp(v));
         }
         Ok(())
@@ -151,11 +186,12 @@ impl Preset {
             .map(|&(_, v)| v)
     }
 
-    /// The preset as text, with `params` the engine's parameters.
+    /// The preset as text, with `params` the engine's parameters, in its
+    /// own format (so an old preset not upgraded keeps its meaning).
     pub fn to_text(&self, params: &[ParamInfo]) -> String {
         let keys = Keys::new(params);
         let mut s = String::new();
-        s.push_str(&format!("{FORMAT} = {VERSION}\n"));
+        s.push_str(&format!("{FORMAT} = {}\n", self.format));
         s.push_str(&format!("engine = {}\n", one_line(&self.engine)));
         s.push_str(&format!("name = {}\n", clean_name(&self.name)));
         let tags = clean_tags(self.tags.iter().map(String::as_str));
@@ -194,14 +230,14 @@ impl Preset {
             return Err(Error::TooBig);
         }
         let mut lines = text.lines().filter_map(split_line);
-        match lines.next() {
+        let format = match lines.next() {
             Some((FORMAT, v)) => match v.parse::<u32>() {
                 Ok(v) if v > VERSION => return Err(Error::Newer(v)),
-                Ok(_) => {}
+                Ok(v) => v,
                 Err(_) => return Err(Error::NotAPreset),
             },
             _ => return Err(Error::NotAPreset),
-        }
+        };
         let keys = Keys::new(params);
         let mut engine = None;
         let mut preset = Preset {
@@ -210,6 +246,7 @@ impl Preset {
             tags: Vec::new(),
             values: Vec::new(),
             extra: Vec::new(),
+            format,
         };
         for (key, value) in lines {
             match key {
@@ -489,6 +526,7 @@ mod tests {
             tags: vec!["pad".to_string()],
             values: values.to_vec(),
             extra: Vec::new(),
+            format: VERSION,
         }
     }
 
@@ -531,7 +569,7 @@ mod tests {
         ]);
         let text = p.to_text(PARAMS);
         assert!(
-            text.starts_with("mpfree-preset = 1\nengine = test.plugin\nname = Test\ntags = pad\n")
+            text.starts_with("mpfree-preset = 2\nengine = test.plugin\nname = Test\ntags = pad\n")
         );
         assert!(
             text.contains("\n# Osc 1\nosc-1.wave = 8\nosc-1.sync = on\n"),
@@ -601,8 +639,8 @@ mod tests {
         assert_eq!(parse("engine = test.plugin\n"), Err(Error::NotAPreset));
         assert_eq!(parse("mpfree-preset = one\n"), Err(Error::NotAPreset));
         assert_eq!(
-            parse("mpfree-preset = 2\nengine = test.plugin\n"),
-            Err(Error::Newer(2))
+            parse("mpfree-preset = 3\nengine = test.plugin\n"),
+            Err(Error::Newer(3))
         );
         assert_eq!(parse("mpfree-preset = 1\nname = x\n"), Err(Error::NoEngine));
         assert_eq!(
@@ -623,6 +661,67 @@ mod tests {
         );
         assert_eq!(engine_of("engine = mpfree.fm\n"), None);
         assert!(Error::Newer(2).to_string().contains("newer MPFree"));
+    }
+
+    /// A node whose Cutoff (3) meant half as much before format 2.
+    struct Halved([f32; 13]);
+
+    impl Node for Halved {
+        fn info(&self) -> &'static NodeInfo {
+            &INFO
+        }
+        fn params(&self) -> &'static [ParamInfo] {
+            PARAMS
+        }
+        fn set_param(&mut self, id: u16, value: f32) {
+            self.0[usize::from(id)] = value;
+        }
+        fn param(&self, id: u16) -> f32 {
+            self.0[usize::from(id)]
+        }
+        fn prepare(&mut self, _rate: u32, _max_block: usize) {}
+        fn reset(&mut self) {}
+        fn process(&mut self, _: &crate::Ctx, _: &[crate::Timed], _: &mut [f32], _: &mut [f32]) {}
+        fn upgrade(&self, format: u32, id: u16, value: f32) -> f32 {
+            if format < 2 && id == 3 {
+                value * 0.5
+            } else {
+                value
+            }
+        }
+    }
+
+    #[test]
+    fn an_older_format_is_converted_once_by_the_engine() {
+        let old =
+            "mpfree-preset = 1\nengine = test.plugin\nfilter.cutoff = 8\namp-env.attack = 4\n";
+        let mut p = Preset::parse(old, &INFO, PARAMS).unwrap();
+        assert_eq!((p.format, p.value(3)), (1, Some(8.0)), "read as saved");
+        // Written back unconverted, it keeps its own format and meaning.
+        assert!(p.to_text(PARAMS).starts_with("mpfree-preset = 1\n"));
+        // Applied, the engine converts it.
+        let mut node = Halved([0.0; 13]);
+        p.apply(&mut node).unwrap();
+        assert_eq!((node.param(3), node.param(5)), (4.0, 4.0));
+        // Upgraded: converted once, in this build's format from then on.
+        p.upgrade(&node);
+        assert_eq!(
+            (p.format, p.value(3), p.value(5)),
+            (VERSION, Some(4.0), Some(4.0))
+        );
+        p.upgrade(&node);
+        assert_eq!(p.value(3), Some(4.0), "never twice");
+        let mut again = Halved([0.0; 13]);
+        p.apply(&mut again).unwrap();
+        assert_eq!(again.param(3), 4.0);
+        assert!(p.to_text(PARAMS).starts_with("mpfree-preset = 2\n"));
+        // A preset in this format is taken as it is.
+        let new = "mpfree-preset = 2\nengine = test.plugin\nfilter.cutoff = 8\n";
+        let mut p = Preset::parse(new, &INFO, PARAMS).unwrap();
+        p.upgrade(&node);
+        assert_eq!(p.value(3), Some(8.0));
+        // A captured preset is in this format.
+        assert_eq!(Preset::capture(&node, "x", &[]).format, VERSION);
     }
 
     #[test]
