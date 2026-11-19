@@ -1,4 +1,4 @@
-//! The drawn visuals of Keys, Drawbar, Squelch, Analog and Strings, worked
+//! The drawn visuals of the instrument engines, worked
 //! out from their values with the engines' own formulas
 //! ([`mpfree_synth::keys`], [`mpfree_synth::drawbar`],
 //! [`mpfree_synth::squelch`], [`mpfree_synth::analog`],
@@ -21,6 +21,11 @@
 //! - Bass ([`mpfree_synth::bass`]): the oscillators with the sub and the
 //!   fifth over the sub's cycle, the ladder's response at rest and at the
 //!   envelope's peak, the pitch drop, and a sine through the drive.
+//! - Wind ([`mpfree_synth::wind`]): the mouthpiece (the air through the
+//!   reed against the pressure across it, or the flute's jet against its
+//!   deflection) with where the breath sets it, the bore's tone at middle C
+//!   for a full and a soft breath, the level against the breath, and the
+//!   breath over a held note.
 //!
 //! Points are in a unit box, as in [`crate::visual`]: x from 0 to 1 left to
 //! right, y from 0 (bottom) to 1 (top).
@@ -35,7 +40,8 @@ use mpfree_synth::drawbar_params as db;
 use mpfree_synth::keys_params as kp;
 use mpfree_synth::squelch_params as sq;
 use mpfree_synth::strings_params as stp;
-use mpfree_synth::{analog, bass, choir, drawbar, keys, squelch, strings};
+use mpfree_synth::wind_params as wnp;
+use mpfree_synth::{analog, bass, choir, drawbar, keys, squelch, strings, wind};
 use mpfree_ui::Color;
 use std::f32::consts::{PI, TAU};
 
@@ -373,8 +379,15 @@ pub fn drawbar_family(bar: usize) -> usize {
 
 /// One cycle of the 16' (two of the 8'): the drawbars' sines added at
 /// their levels (with percussion on, the 1' is silent, as on the organ),
-/// scaled to fit. Flat when every drawbar is in.
+/// or on the combo its flute and reed ([`drawbar::combo_wave`]), scaled
+/// to fit. Flat when every drawbar (or both voices) is in.
 pub fn drawbar_wave(v: &impl Values) -> Pts {
+    if v.get(db::MODEL) >= 0.5 {
+        let raw: Vec<f32> = (0..=POINTS)
+            .map(|i| drawbar::combo_wave(|id| v.get(id), i as f32 / POINTS as f32))
+            .collect();
+        return fit_wave(&raw);
+    }
     let perc = v.get(db::PERC) >= 0.5;
     let parts: Vec<(f32, f32)> = db::DRAWBARS
         .iter()
@@ -397,6 +410,11 @@ pub fn drawbar_wave(v: &impl Values) -> Pts {
     let raw: Vec<f32> = (0..=POINTS)
         .map(|i| sum(i as f32 / POINTS as f32))
         .collect();
+    fit_wave(&raw)
+}
+
+/// A wave's points scaled to fit the card, flat when it is silent.
+fn fit_wave(raw: &[f32]) -> Pts {
     let peak = raw.iter().fold(0.0f32, |m, y| m.max(y.abs()));
     raw.iter()
         .enumerate()
@@ -1153,6 +1171,104 @@ pub fn bass_drive(v: &impl Values) -> [Pts; 2] {
     ]
 }
 
+// ------------------------------------------------------------ Wind
+
+/// The mouthpiece's curve and where a full breath sets it (the dot, 0 to
+/// 1 across): a reed's air against the pressure across it (0 to 1 high),
+/// or the flute's jet against its deflection (centred on the midline).
+pub fn wind_mouthpiece(v: &impl Values) -> (Pts, f32) {
+    let (y, dot) = wind::mouthpiece_curve(|id| v.get(id), POINTS + 1);
+    let flute = v.get(wnp::MODEL).round() == wnp::FLUTE;
+    let pts = y
+        .into_iter()
+        .enumerate()
+        .map(|(i, y)| {
+            let y = if flute {
+                0.5 + 0.42 * y
+            } else {
+                0.05 + 0.85 * y
+            };
+            (i as f32 / POINTS as f32, y)
+        })
+        .collect();
+    (pts, dot)
+}
+
+/// The Mouthpiece card's caption: "medium reed", "edge centred", "edge
+/// 60 % off centre".
+pub fn wind_mouthpiece_caption(v: &impl Values) -> String {
+    if v.get(wnp::MODEL).round() == wnp::FLUTE {
+        let edge = v.get(wnp::EDGE);
+        if edge < 5.0 {
+            "edge centred".into()
+        } else {
+            format!("edge {edge:.0} % off centre")
+        }
+    } else {
+        let reed = v.get(wnp::REED);
+        let hard = if reed < 34.0 {
+            "soft"
+        } else if reed < 67.0 {
+            "medium"
+        } else {
+            "hard"
+        };
+        format!("{hard} reed")
+    }
+}
+
+/// The bore's tone at middle C: its loss filter at a full breath (at
+/// Breath) and at a quarter of it (the dashed line), with the full
+/// breath's corner in Hz.
+pub fn wind_tone(v: &impl Values) -> ([Pts; 2], f32) {
+    let b = (v.get(wnp::BREATH) * 0.01).clamp(0.0, 1.0);
+    let full = wind::tone_corner(|id| v.get(id), b);
+    let soft = wind::tone_corner(|id| v.get(id), 0.25 * b);
+    let curve = |fc: f32| response(|hz| wind::tone_gain(fc, hz));
+    ([curve(full), curve(soft)], full)
+}
+
+/// The Level card's range: dB below full breath at its bottom.
+pub const WIND_LEVEL_DB: f32 = 48.0;
+
+/// The level against the breath, none to full (Soft to hard's law), on a
+/// card that shows `WIND_LEVEL_DB` below full.
+pub fn wind_level(v: &impl Values) -> Pts {
+    let range = v.get(wnp::VELOCITY);
+    (0..=POINTS)
+        .map(|i| {
+            let b = i as f32 / POINTS as f32;
+            (b, level_y(wind::breath_level(b, range), WIND_LEVEL_DB))
+        })
+        .collect()
+}
+
+/// The breath over a held note at full velocity: the shape over a note,
+/// scaled by Breath.
+pub fn wind_breath(v: &impl Values) -> Pts {
+    let b = (v.get(wnp::BREATH) * 0.01).clamp(0.0, 1.0);
+    crate::visual::envelope(
+        v.get(wnp::ATTACK),
+        v.get(wnp::DECAY),
+        v.get(wnp::SUSTAIN) * 0.01,
+        v.get(wnp::RELEASE),
+    )
+    .into_iter()
+    .map(|(x, y)| (x, 0.05 + 0.9 * y * b))
+    .collect()
+}
+
+/// The Breath card's caption: where the breath comes from, and the tongue.
+pub fn wind_breath_caption(v: &impl Values) -> String {
+    let from = pick(wnp::BREATH_FROMS, v.get(wnp::BREATH_FROM)).to_lowercase();
+    let tongue = v.get(wnp::TONGUE);
+    if tongue > 0.0 {
+        format!("from {from} · tongue {tongue:.0} %")
+    } else {
+        format!("from {from}")
+    }
+}
+
 /// Whether this module draws the engine with this id.
 pub fn draws(id: &str) -> bool {
     matches!(
@@ -1163,6 +1279,7 @@ pub fn draws(id: &str) -> bool {
             | "mpfree.analog"
             | "mpfree.strings"
             | "mpfree.bass"
+            | "mpfree.wind"
             | "mpfree.choir"
     )
 }
@@ -1177,6 +1294,7 @@ pub fn cards(id: &str, v: &impl Values, page: &str) -> Vec<(Card, &'static str)>
         "mpfree.analog" => analog_cards_strip(v),
         "mpfree.strings" => strings_cards(v),
         "mpfree.bass" => bass_cards(v),
+        "mpfree.wind" => wind_cards(v),
         "mpfree.choir" => choir_cards(v),
         _ => Vec::new(),
     };
@@ -1538,6 +1656,60 @@ fn strings_cards(v: &impl Values) -> Vec<(Card, &'static str)> {
     ]
 }
 
+/// Wind: the mouthpiece and the tone (Instrument), the level against the
+/// breath and the breath over a note (Breath).
+fn wind_cards(v: &impl Values) -> Vec<(Card, &'static str)> {
+    let (blue, green, amber) = (QLINK_COLORS[0], QLINK_COLORS[1], QLINK_COLORS[2]);
+    let (mouth, dot) = wind_mouthpiece(v);
+    let flute = v.get(wnp::MODEL).round() == wnp::FLUTE;
+    let ([full, soft], corner) = wind_tone(v);
+    vec![
+        (
+            Card {
+                title: "Mouthpiece".into(),
+                caption: wind_mouthpiece_caption(v),
+                traces: vec![trace(mouth, amber, 2.5, !flute, false)],
+                midline: flute,
+                dot: Some(dot),
+                ..Card::default()
+            },
+            "Instrument",
+        ),
+        (
+            Card {
+                title: "Tone".into(),
+                caption: format!("{} at middle C", hz_text(corner)),
+                traces: vec![
+                    trace(full, blue, 2.5, true, false),
+                    trace(soft, TEXT_DIM, 1.5, false, true),
+                ],
+                grid: freq_grid(),
+                dot: Some(freq_x(corner)),
+                ..Card::default()
+            },
+            "Instrument",
+        ),
+        (
+            Card {
+                title: "Level".into(),
+                caption: format!("{:.0} dB soft to hard", v.get(wnp::VELOCITY)),
+                traces: vec![trace(wind_level(v), green, 2.5, true, false)],
+                ..Card::default()
+            },
+            "Breath",
+        ),
+        (
+            Card {
+                title: "Breath".into(),
+                caption: wind_breath_caption(v),
+                traces: vec![trace(wind_breath(v), green, 2.5, true, false)],
+                ..Card::default()
+            },
+            "Breath",
+        ),
+    ]
+}
+
 /// Bass: the oscillators (Source), the filter (Filter), the drop
 /// (Shape) and the drive (Output).
 fn bass_cards(v: &impl Values) -> Vec<(Card, &'static str)> {
@@ -1848,6 +2020,41 @@ mod tests {
         let w = drawbar_wave(&only8);
         assert!((w[0].1 - 0.5).abs() < 1e-3);
         assert!((w[POINTS / 8].1 - 0.95).abs() < 0.01, "{:?}", w[POINTS / 8]);
+        // The combo: the flute alone at 8' is near a sine; both voices in
+        // draw flat; a square reed draws its flat tops.
+        let combo = |flute: f32, reed: f32, wave: f32| {
+            move |id: u16| match id {
+                db::MODEL => db::COMBO,
+                db::DB_8 => 8.0,
+                db::FLUTE => flute,
+                db::REED => reed,
+                db::REED_WAVE => wave,
+                _ => 0.0,
+            }
+        };
+        let w = drawbar_wave(&combo(8.0, 0.0, db::SAW));
+        assert!(in_box(&w));
+        // The flute's phase follows the saw's (low, then high): it peaks
+        // 0.79 of the way through each of the 8''s cycles, which start
+        // half a cycle on from the 16''s.
+        let top = w
+            .iter()
+            .fold((0.0f32, 0.0f32), |m, p| if p.1 > m.1 { *p } else { m });
+        let peak = 0.5 + 1.0 / 12f32.sqrt();
+        let at = (peak - 0.5) / 2.0;
+        assert!(
+            (top.0 - at).abs() < 0.01 || (top.0 - at - 0.5).abs() < 0.01,
+            "{top:?}"
+        );
+        assert!(drawbar_wave(&combo(0.0, 0.0, db::SAW))
+            .iter()
+            .all(|p| (p.1 - 0.5).abs() < 1e-6));
+        let sq = drawbar_wave(&combo(0.0, 8.0, db::SQUARE));
+        let flat = sq
+            .windows(2)
+            .filter(|p| (p[1].1 - p[0].1).abs() < 1e-6)
+            .count();
+        assert!(flat > POINTS * 9 / 10, "{flat}");
         // Percussion off draws nothing; slow falls slower than fast.
         assert!(drawbar_perc(&only8).is_empty());
         let perc = |slow: f32| {

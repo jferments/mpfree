@@ -62,16 +62,17 @@ use mpfree_fx::Ensemble;
 use mpfree_node::pedal::Pedals;
 use mpfree_node::{Ctl, Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Tuning};
 
-use crate::dsp::{poly_blep4, Rng};
+use crate::bank::{Bank, Shape};
+use crate::dsp::Rng;
 use crate::params::Preset;
 use crate::strings_params::*;
 use crate::voice::{velocity_gain, Adsr, Stage};
 
-/// Frames per control step.
-pub const CTRL: u64 = 16;
+/// Frames per control step: the bank's.
+pub const CTRL: u64 = crate::bank::STEP as u64;
 const STEP: usize = CTRL as usize;
 /// Notes in the bank, and keys.
-pub const NOTES: usize = 128;
+pub const NOTES: usize = crate::bank::NOTES;
 /// The footages' offsets in semitones: 16', 8', 4'.
 pub const FOOTAGES: [i32; 3] = [-12, 0, 12];
 /// The buses into the output: one key of the default registers peaks
@@ -139,12 +140,6 @@ const SOFT_OCTAVES: f32 = -0.5;
 /// Bow noise at 100 % against a key's level, and its band.
 const NOISE_GAIN: f32 = 0.35;
 const NOISE_HZ: f32 = 3_200.0;
-/// An oscillator above this share of the rate is silent.
-const TOP: f64 = 0.45;
-const INV_24: f32 = 1.0 / 16_777_216.0;
-const INV_32: f32 = 1.0 / 4_294_967_296.0;
-/// A locked note's phase against twice the octave below's: half a cycle.
-const LOCK_OFFSET: u32 = 1 << 31;
 /// How long the ensemble runs on after the last note is gone, ms: longer
 /// than its longest line, so what is skipped after it is silence.
 const QUIET_MS: f32 = 100.0;
@@ -507,20 +502,8 @@ pub struct Strings {
     n_gated: usize,
     pedals: Pedals,
     shared: Adsr,
-    // The bank: each note's step, its phase at frame 0, and its step as a
-    // share of a cycle; the phase of each oscillator heard.
-    inc: [u32; NOTES],
-    base: [u32; NOTES],
-    dt: [f32; NOTES],
-    phase: [u32; NOTES],
-    /// Each bus's level of each oscillator, its step per frame and its
-    /// level at the step's end.
-    amp: [[f32; NOTES]; BUSES],
-    damp: [[f32; NOTES]; BUSES],
-    target: [[f32; NOTES]; BUSES],
-    heard: [u8; NOTES],
-    n_heard: usize,
-    is_heard: [bool; NOTES],
+    /// The bank, its six buses the footages' dark and bright halves.
+    bank: Bank<BUSES>,
     /// The bend applied to the bank and the one asked for, semitones.
     bend: f32,
     bend_to: f32,
@@ -567,16 +550,7 @@ impl Strings {
             n_gated: 0,
             pedals: Pedals::new(),
             shared: Adsr::default(),
-            inc: [0; NOTES],
-            base: [0; NOTES],
-            dt: [0.0; NOTES],
-            phase: [0; NOTES],
-            amp: [[0.0; NOTES]; BUSES],
-            damp: [[0.0; NOTES]; BUSES],
-            target: [[0.0; NOTES]; BUSES],
-            heard: [0; NOTES],
-            n_heard: 0,
-            is_heard: [false; NOTES],
+            bank: Bank::new(),
             bend: 0.0,
             bend_to: 0.0,
             sections: [section; 6],
@@ -623,20 +597,17 @@ impl Strings {
 
     /// Oscillators of the bank heard now.
     pub fn oscillators_heard(&self) -> usize {
-        self.n_heard
+        self.bank.heard()
     }
 
     /// Whether note `n`'s phase is locked to the note an octave below.
     pub fn locked(&self, n: usize) -> bool {
-        (12..NOTES).contains(&n)
-            && self.inc[n] != 0
-            && self.inc[n] == self.inc[n - 12].wrapping_mul(2)
-            && self.base[n] == self.base[n - 12].wrapping_mul(2).wrapping_add(LOCK_OFFSET)
+        self.bank.locked(n)
     }
 
     /// Note `n`'s frequency in the bank, Hz (0 when silent).
     pub fn bank_hz(&self, n: usize) -> f64 {
-        f64::from(self.inc[n]) / 4_294_967_296.0 * f64::from(self.rate)
+        self.bank.hz(n)
     }
 
     fn v(&self, id: u16) -> f32 {
@@ -714,44 +685,14 @@ impl Strings {
     /// each oscillator going on from where it is now (`frame`). A note
     /// whose pitch is twice the one an octave below locks to it.
     fn retune(&mut self, frame: u64) {
-        let now = frame as u32;
-        let r = f64::from(self.rate);
         let shift = self.v(FINE) / 100.0 + self.bend;
-        let mut hz = [0f64; NOTES];
-        for (n, h) in hz.iter_mut().enumerate() {
-            *h = f64::from(self.tuning.hz(n as f32 + shift));
-        }
-        for n in 0..NOTES {
-            let at = self.base[n].wrapping_add(self.inc[n].wrapping_mul(now));
-            let below = if n >= 12 { self.inc[n - 12] } else { 0 };
-            let pure = n >= 12 && below != 0 && (hz[n] / (2.0 * hz[n - 12]) - 1.0).abs() < 1e-5;
-            if hz[n] >= r * TOP {
-                self.inc[n] = 0;
-                self.base[n] = at;
-            } else if pure && below < 1 << 31 {
-                // Divided down: exactly twice the octave below, locked.
-                self.inc[n] = below * 2;
-                self.base[n] = self.base[n - 12].wrapping_mul(2).wrapping_add(LOCK_OFFSET);
-            } else {
-                self.inc[n] = (hz[n] / r * 4_294_967_296.0).round() as u32;
-                self.base[n] = at.wrapping_sub(self.inc[n].wrapping_mul(now));
-            }
-            self.dt[n] = self.inc[n] as f32 * INV_32;
-            if self.is_heard[n] {
-                // A heard oscillator goes on from its own phase.
-                let p = self.base[n].wrapping_add(self.inc[n].wrapping_mul(now));
-                self.phase[n] = p;
-            }
-        }
+        self.bank.retune(&self.tuning, shift, self.rate, frame);
     }
 
     /// Fresh random phases, one per pitch class: the notes above follow
     /// from them when the octaves lock.
     fn new_phases(&mut self) {
-        let mut rng = Rng::new(0x51A7);
-        for b in self.base.iter_mut() {
-            *b = rng.next_u64() as u32;
-        }
+        self.bank.new_phases(0x51A7);
     }
 
     fn update_filters(&mut self, frame_rate: f32) {
@@ -924,13 +865,7 @@ impl Strings {
             }
         }
         // Last step's targets are where the levels are now.
-        for i in 0..self.n_heard {
-            let o = usize::from(self.heard[i]);
-            for b in 0..BUSES {
-                self.amp[b][o] = self.target[b][o];
-                self.target[b][o] = 0.0;
-            }
-        }
+        self.bank.begin_step();
         // Each key's level onto its notes.
         let mut power = 0.0f32;
         let mut i = 0;
@@ -958,43 +893,17 @@ impl Strings {
                     o -= 12;
                     fold = FOLD_GAIN;
                 }
-                if used[f] && (0..NOTES as i32).contains(&o) && self.inc[o as usize] != 0 {
+                if used[f] && (0..NOTES as i32).contains(&o) && self.bank.sounds(o as usize) {
                     let o = o as usize;
-                    self.target[2 * f][o] += gd * fold;
-                    self.target[2 * f + 1][o] += gb * fold;
-                    if !self.is_heard[o] {
-                        self.is_heard[o] = true;
-                        self.heard[self.n_heard] = o as u8;
-                        self.n_heard += 1;
-                        let now = frame as u32;
-                        self.phase[o] = self.base[o].wrapping_add(self.inc[o].wrapping_mul(now));
-                        for b in 0..BUSES {
-                            self.amp[b][o] = 0.0;
-                        }
-                    }
+                    self.bank.add_pair(2 * f, o, gd * fold, gb * fold, frame);
                 }
             }
             i += 1;
         }
         // Ramps for the step; an oscillator silent at both ends is dropped.
-        let inv = 1.0 / CTRL as f32;
-        let mut i = 0;
-        while i < self.n_heard {
-            let o = usize::from(self.heard[i]);
-            let mut any = false;
-            for b in 0..BUSES {
-                self.damp[b][o] = (self.target[b][o] - self.amp[b][o]) * inv;
-                any |= self.target[b][o] != 0.0 || self.amp[b][o] != 0.0;
-            }
-            if !any {
-                self.is_heard[o] = false;
-                self.n_heard -= 1;
-                self.heard[i] = self.heard[self.n_heard];
-                continue;
-            }
-            i += 1;
-        }
+        self.bank.end_step();
         // The registers' levels and filters.
+        let inv = 1.0 / CTRL as f32;
         let r = self.rate as f32;
         self.update_filters(r);
         let mix: f32 = REGISTERS
@@ -1025,32 +934,7 @@ impl Strings {
     /// Renders the first `n` frames of `mono` (one control step at most).
     fn render(&mut self, n: usize, mono: &mut [f32; STEP]) {
         let mut bus = [[0.0f32; STEP]; BUSES];
-        let mut wave = [0.0f32; STEP];
-        for i in 0..self.n_heard {
-            let o = usize::from(self.heard[i]);
-            let inc = self.inc[o];
-            let dt = self.dt[o];
-            let mut p = self.phase[o];
-            for w in wave.iter_mut().take(n) {
-                let t = (p >> 8) as f32 * INV_24;
-                p = p.wrapping_add(inc);
-                *w = t + t - 1.0 - poly_blep4(t, dt);
-            }
-            self.phase[o] = p;
-            // Most notes feed two or four of the six buses: only those.
-            for b in 0..BUSES {
-                let mut a = self.amp[b][o];
-                let d = self.damp[b][o];
-                if a == 0.0 && d == 0.0 {
-                    continue;
-                }
-                for (x, w) in bus[b].iter_mut().zip(&wave).take(n) {
-                    *x += w * a;
-                    a += d;
-                }
-                self.amp[b][o] = a;
-            }
-        }
+        self.bank.render(n, &mut bus, &[Shape::Saw; BUSES]);
         let mut out = [0.0f32; STEP];
         for (s, v) in self.sections.iter_mut().zip(VOICING.iter()) {
             if s.gain == 0.0 && s.dgain == 0.0 {
@@ -1088,7 +972,8 @@ impl Strings {
             }
             let end = next.min(i + (CTRL - abs % CTRL) as usize);
             let n = end - i;
-            if self.n_live == 0 && self.n_heard == 0 && self.noise == 0.0 && self.dnoise == 0.0 {
+            if self.n_live == 0 && self.bank.heard() == 0 && self.noise == 0.0 && self.dnoise == 0.0
+            {
                 if self.quiet as f32 >= QUIET_MS * 0.001 * self.rate as f32 {
                     i = end;
                     continue;
@@ -1168,11 +1053,7 @@ impl Node for Strings {
         self.n_gated = 0;
         self.pedals.reset();
         self.shared.clear();
-        self.amp = [[0.0; NOTES]; BUSES];
-        self.damp = [[0.0; NOTES]; BUSES];
-        self.target = [[0.0; NOTES]; BUSES];
-        self.is_heard = [false; NOTES];
-        self.n_heard = 0;
+        self.bank.clear();
         self.bend = 0.0;
         self.bend_to = 0.0;
         self.soft = false;

@@ -22,6 +22,7 @@ fn every_node() -> Vec<Box<dyn Node>> {
     nodes.push(Box::new(mpfree_synth::Squelch::new(r)));
     nodes.push(Box::new(mpfree_synth::Strings::new(r)));
     nodes.push(Box::new(mpfree_synth::Bass::new(r)));
+    nodes.push(Box::new(mpfree_synth::Wind::new(r)));
     nodes.push(Box::new(mpfree_synth::Choir::new(r)));
     nodes
 }

@@ -819,8 +819,9 @@ impl MonitorSection {
         (out, newer)
     }
 
-    /// Scrolls the list by `d` lines (positive: back to older ones).
-    fn scroll(&mut self, d: i32) -> IoReply {
+    /// The lines the list shows, newest first, the one at its top now and
+    /// the last that can be at its top; `None` with nothing to list.
+    fn place(&self) -> Option<(Vec<u64>, usize, usize)> {
         let m = self.model.lock().unwrap_or_else(|e| e.into_inner());
         let list: Vec<u64> = m
             .monitor
@@ -830,13 +831,21 @@ impl MonitorSection {
             .collect();
         drop(m);
         if list.is_empty() {
-            return IoReply::Handled;
+            return None;
         }
         let at = match self.anchor {
             None => 0,
             Some(a) => list.iter().position(|&n| n <= a).unwrap_or(list.len() - 1),
         };
         let last = list.len().saturating_sub(self.fit.get().max(1));
+        Some((list, at, last))
+    }
+
+    /// Scrolls the list by `d` lines (positive: back to older ones).
+    fn scroll(&mut self, d: i32) -> IoReply {
+        let Some((list, at, last)) = self.place() else {
+            return IoReply::Handled;
+        };
         let to = (at as i64 + d as i64).clamp(0, last as i64) as usize;
         let anchor = if to == 0 && !self.held {
             None
@@ -1537,6 +1546,15 @@ impl IoSection for MonitorSection {
             IoInput::Page(d) => self.scroll(d * self.fit.get() as i32),
             IoInput::Step(_) => IoReply::Ignored,
         }
+    }
+
+    /// On the list: < while older lines are scrolled to, > while there
+    /// are older ones to scroll to. Now has no pages.
+    fn can_page(&self, d: i32) -> bool {
+        !self.now_shows()
+            && self
+                .place()
+                .is_some_and(|(_, at, last)| if d < 0 { at > 0 } else { at < last })
     }
 
     fn tick(&mut self, now: Duration) -> IoReply {

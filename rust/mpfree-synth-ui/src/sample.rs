@@ -9,7 +9,7 @@ use mpfree_synth::params as pp;
 use mpfree_synth::params::Preset;
 use mpfree_synth::wavetable::params as wtp;
 use mpfree_synth::Wavetable;
-use mpfree_synth::{Analog, Bass, Choir, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch};
+use mpfree_synth::{Analog, Bass, Choir, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Wind};
 use mpfree_ui::qlink::QLinkColumn;
 use mpfree_ui::widgets::{Chip, Header, Label};
 use mpfree_ui::{Align, Color, Fonts, Theme, Tone, Ui};
@@ -357,6 +357,8 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
          "drawbar", "Jazz Perc", "Drawbars"),
         ("synth-drawbar-rotary", "Drawbar · Gospel, Rotary page: the horn and the drum spinning up to Fast",
          "drawbar", "Gospel", "Rotary"),
+        ("synth-drawbar-combo", "Drawbar · Combo Square, Drawbars page: the combo model, its flute and square reed, and the wave they add up to",
+         "drawbar", "Combo Square", "Drawbars"),
         ("synth-squelch", "Squelch · Acid Line, Synth page: the saw, the filter at rest and at the envelope's peak",
          "squelch", "Acid Line", "Synth"),
         ("synth-squelch-play", "Squelch · Acid Line, Play page: the cutoff's sweep for a plain note and an accented one",
@@ -369,6 +371,10 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
          "bass", "Rubber Bass", "Source"),
         ("synth-bass-808", "Bass · Long 808, Shape page: the pitch drop landing on the note, and the amp",
          "bass", "Long 808", "Shape"),
+        ("synth-wind", "Wind · Tenor Sax, Instrument page: the air through the reed, the breath on its falling side, and the tone",
+         "wind", "Tenor Sax", "Instrument"),
+        ("synth-wind-flute", "Wind · Concert Flute, Breath page: where the breath comes from, and its shape over a note",
+         "wind", "Concert Flute", "Breath"),
         ("synth-choir", "Choir · Vowel Pad, Choir page: the vowel's five formants, the singers and the vowel moving",
          "choir", "Vowel Pad", "Choir"),
         ("synth-choir-shape", "Choir · Solo Voice, Shape page: the swell, and the singer's vibrato coming in late",
@@ -432,6 +438,7 @@ fn inst_scene(
             preset,
         )?,
         "bass" => loaded(Bass::new(RATE), Bass::presets(), Bass::load_preset, preset)?,
+        "wind" => loaded(Wind::new(RATE), Wind::presets(), Wind::load_preset, preset)?,
         "choir" => loaded(
             Choir::new(RATE),
             Choir::presets(),

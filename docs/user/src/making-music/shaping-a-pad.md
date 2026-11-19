@@ -6,15 +6,15 @@ checked: 2026-11-18 ec8cb82
 
 # Shaping how a pad plays
 
-Once a sound is on a pad (see [Sampling](sampling.md)), the Sample tab's **Play** page, the Wave page's **Grain** tool, and the effects on the pad's mixer channel, decide what happens when you hit it: how loud and how bright, which other pads it stops or brings in, whether it plays as grains, and which effects it goes through. The Wave page's **Sound** section shows the Play page's envelope, filter, pitch and movement controls four at a time, beside the wave. The last part of this chapter turns a whole kit into a keyboard instrument.
+Once a sound is on a pad (see [Sampling](sampling.md)), the Pads tab's **Edit pad** page, the Sample page's **Grain** tool, and the effects on the pad's mixer channel, decide what happens when you hit it: how loud and how bright, which other pads it stops or brings in, whether it plays as grains, and which effects it goes through. The Sample page's **Sound** section shows Edit pad's envelope, filter, pitch and movement controls four at a time, beside the wave. The last part of this chapter turns a whole kit into a keyboard instrument.
 
-As everywhere on the Sample tab, **hit a pad** to pick the one you are shaping.
+## Edit pad: layers, envelope and filter
 
-## Play: layers, envelope and filter
+**To open Edit pad,** pick a pad on the [Pads tab](pads.md) and tap **Edit pad**, the last row of the pad's settings ("layers, keys, scenes, slices ›"), or press **PROG EDIT** there. **‹ Pads** at the top right of the page, the Pads tab at the top, or **PROG EDIT** again take you back to the pads. **Hit a pad** to edit that one instead. An Instrument or MIDI out pad, and a pad with no sound, have no layers: their Edit pad row is faint, and a tap on it says why.
 
-{{shot: sample-play | The Play page on its Amp section: the volume envelope drawn across the page over the sound, and under it the Level and Envelope knobs beside the scenes.}}
+{{shot: pads-edit | Edit pad on its Amp section: the volume envelope drawn across the page over the sound, and under it the Level and Envelope knobs beside the scenes. ‹ Pads at the top goes back to the pads.}}
 
-The **Play** page shapes how the picked pad sounds each time you hit it:
+**Edit pad** shapes how the picked pad sounds each time you hit it:
 
 - **Layers:** different sounds for soft and hard hits. Drag a layer's edges to set its velocity range.
 - **Envelope:** how the volume rises and falls: **attack**, **hold**, **decay**, **sustain** and **release**. Drag the points on the drawing, or use the Q-Links.
@@ -53,14 +53,14 @@ The **Filter** selector steps through the types:
 - **Vowel**: two narrow peaks where a voice has them, so the sound "says" a vowel. Cutoff picks the vowel: from 200 Hz and below it says "oo", then "oh", "ah" and "eh", up to "ee" from 5 kHz, sliding smoothly between them, and the Cutoff's value names the vowel ("1.00 kHz · ah"). Resonance makes the peaks narrower and more nasal. Sweep the Cutoff with the filter envelope or the LFO and a pad talks: "oo-ah" on each hit. It works best on rich sounds (pads, saws, choirs, breaks); a pure tone right on a peak comes out louder.
 - **Comb**: the sound plus an echo of itself one cycle of the Cutoff later, over and over, so the pad rings at a pitch: the Cutoff's note, with its overtones. The Cutoff's value names the note ("220 Hz · A3"), so you can tune the ring to your song's key. Resonance is how long it rings: low, a metallic tint; turned right up, a hit rings on like a plucked string for about a second (longer on low notes), even after the sample itself has ended. Sweep the Cutoff with the filter envelope for a zap or a flanged hit. Noise and full sounds keep about their level; a tone right on the comb's note comes out louder. Hitting another pad of the same mute group, or the same pad again at Polyphony 1, stops the ringing.
 
-{{shot: sample-play-ladder | The Filter section with the Ladder: a 1 kHz cutoff, Resonance at 70 %, so the curve peaks at the cutoff, and 12 dB of Drive.}}
+{{shot: pads-edit-ladder | The Filter section with the Ladder: a 1 kHz cutoff, Resonance at 70 %, so the curve peaks at the cutoff, and 12 dB of Drive.}}
 
 > [!MPC]
 > The MPC offers many more filter models. MPFree keeps a smaller set and measures each one in its quality lab against the analog filter it follows.
 
 ### Layers: more than one sound on a pad
 
-{{shot: sample-play-layers | The Layers section: a second layer added for the hard hits, picked, turned down 3 dB and panned left; a hit at 100 lands on it.}}
+{{shot: pads-edit-layers | The Layers section: a second layer added for the hard hits, picked, turned down 3 dB and panned left; a hit at 100 lands on it.}}
 
 A pad can hold up to 16 sounds, its **layers**: soft and hard hits of a snare, a kick with a click on top, round robins that take turns.
 
@@ -73,9 +73,9 @@ Each add, remove and change is one step for **UNDO**.
 
 ### Pads that stop, play or hold others
 
-{{shot: sample-play-links | The Play page's Pad section with Also plays picked: hits on A1 and A3 put them on it, so a hit on A5 plays all three, and A5 latches.}}
+{{shot: pads-edit-links | Edit pad's Pad section with Also plays picked: hits on A1 and A3 put them on it, so a hit on A5 plays all three, and A5 latches.}}
 
-Three controls of the Play page's **Pad** section set how a pad works with the others, and with your hands:
+Three controls of Edit pad's **Pad** section set how a pad works with the others, and with your hands:
 
 - **Stops:** the pads this one cuts off when you hit it. It works one way: the closed hi-hat stops the open one, and the open one leaves the closed one alone. (A **mute group** cuts both ways.)
 - **Also plays:** the pads that play whenever you hit this one, at the same strength, as the MPC's Simultaneous Play does: a kick with its own sub, a stab with a noise burst, a chord from three pads. Each plays as a hit on it would, with its own layers, stops and latch, and lets go when you let go of this pad. The pads it plays don't play their own Also plays pads in turn. While the pads play notes or 16 Levels, Also plays does nothing.
@@ -98,7 +98,7 @@ Up to two semitones up, clean and Vintage sound exactly the same: what folds bac
 
 ### Movement: an LFO and a pitch envelope
 
-{{shot: sample-play-movement | The Movement section: a sine LFO on the pitch at 5 Hz, a vibrato, and a pitch envelope that starts an octave up and drops back over 200 ms.}}
+{{shot: pads-edit-movement | The Movement section: a sine LFO on the pitch at 5 Hz, a vibrato, and a pitch envelope that starts an octave up and drops back over 200 ms.}}
 
 The **Movement** section makes a pad move while it plays, the way the LFO and the pitch envelope of a hardware sampler do. Its picture draws two cycles of the LFO's wave beside the pitch envelope, and says what each does. Both start off.
 
@@ -118,7 +118,7 @@ A pad that keeps its pitch (warped to the tempo, or played as grains) doesn't fo
 
 ### Scenes: mangle, morph and go back
 
-{{shot: sample-play-scenes | The scenes on the Play page: A and B stored, the crossfader 40 % of the way to B.}}
+{{shot: pads-edit-scenes | The scenes on Edit pad: A and B stored, the crossfader 40 % of the way to B.}}
 
 The **Scenes** group, on the right of the **Play** page's panel on every section, holds two **scenes** of the whole kit, as on the Octatrack:
 
@@ -189,7 +189,7 @@ The preset that is on stays lit, and the line at the top right says what it does
 
 **Stereo spread** places each grain somewhere between left and right. At 100 % the cloud is wide, yet it keeps its level and still sounds full when played in mono.
 
-**Every layer its own cloud.** The Grain tool (and the rest of the Wave page, with every tool) works on the layer picked on the Play page's layer map, and the top line says which ("· layer 2"). So a pad can play its sound plainly on soft hits and as a cloud on hard ones.
+**Every layer its own cloud.** The Grain tool (and the rest of the Sample page, with every tool) works on the layer picked on Edit pad's layer map, and the top line says which ("· layer 2"). So a pad can play its sound plainly on soft hits and as a cloud on hard ones.
 
 ## Effects on one pad, or on the whole kit
 
@@ -204,13 +204,13 @@ The effects belong to the pad's place in the kit, not to its sound: put another 
 
 A kit's pads can play notes instead of their own sounds, so a bank of sampled notes plays like a keyboard instrument. A pad that plays notes is a *keygroup*: it covers a range of keys and plays its sound higher or lower for each key away from its root note.
 
-**Map to keys**, under the pads on the Pads tab, does this for the whole bank at once. MPFree finds each pad's note: from its keygroup if it is one already, else from a note in its name ("Pluck C3", "Bass_F#1"), else from the pitch it hears in the sound. It then spreads the pads over the keyboard, each one reaching halfway to its neighbours, and the pads play notes from the C at or below the lowest. A pad with no note to find is left as it was. One UNDO takes the whole mapping back.
+**Map to keys**, under the pads on the Pads tab, does this for the whole bank at once. MPFree finds each pad's note: from its keygroup if it is one already, else from a note in its name ("Pluck C3", "Bass_F#1"), else from the pitch it hears in the sound. It then spreads the pads over the keyboard, each one reaching halfway to its neighbours, and the pads play notes from the C at or below the lowest. A pad with no note to find is left as it was. The hint line says what it did: how many pads it mapped and over which notes, or that no pad had a note to find. One UNDO takes the whole mapping back.
 
 Notes are named with middle C as C4. Some libraries call middle C "C3"; when a name and the pitch MPFree hears are the same note, it uses the octave it hears.
 
-{{shot: sample-keys-mapped | The Play page's keyboard after Map to keys: five keygroups, with pad A5's zone picked.}}
+{{shot: pads-edit-keys-mapped | Edit pad's keyboard after Map to keys: five keygroups, with pad A5's zone picked.}}
 
-While the pad is a keygroup, or the pads play notes, the Play page's Pitch and Pad sections show a keyboard across the page:
+While the pad is a keygroup, or the pads play notes, Edit pad's Pitch and Pad sections show a keyboard across the page:
 
 - Each keygroup is a bar over the keys it plays, in its pad's colour, with a dot on its root.
 - Tap a bar to pick its pad. Drag the picked pad's ends to set its lowest and highest keys, and its dot to move the root.
@@ -228,7 +228,7 @@ Where one zone ends and the next begins, the sound can switch at a hard edge or 
 
 The keyboard and the layer map draw each fade as a curve at the ends of its bar.
 
-{{shot: sample-keys-crossfade | Key fade at 4 notes: the zones that met now overlap and blend over four keys.}}
+{{shot: pads-edit-keys-crossfade | Key fade at 4 notes: the zones that met now overlap and blend over four keys.}}
 
 ### One note at a time: Mono, Legato and Glide
 
@@ -241,7 +241,7 @@ A bass line or a lead plays one note at a time, sliding from note to note. The P
 
 They work on a pad's keys, from MIDI or with the pads playing notes. A hit on the pad itself plays as before, and while Keys is off the four say so. A warped sound and a sliced pad keep their pitch, and a grain layer slides with its own Glide (the Grain tool's Keys part). The Pitch chip says **mono** or **legato** while Mono is on.
 
-{{shot: sample-play-mono | The Pitch section of a pad with keys: Mono and Legato on, and a 200 ms glide on held keys.}}
+{{shot: pads-edit-mono | The Pitch section of a pad with keys: Mono and Legato on, and a 200 ms glide on held keys.}}
 
 > [!MPC]
 > On an MPC a keygroup instrument is a program type of its own. In MPFree keygroups are pads of an ordinary kit, so any kit can become one with Map to keys.
