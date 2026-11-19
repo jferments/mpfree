@@ -1,5 +1,6 @@
-//! The tonewheel organ's parameters; its factory presets are in
-//! `presets/drawbar.presets` ([`crate::factory::read`]).
+//! The organ's parameters, for both models (the tonewheel organ and the
+//! combo organ); its factory presets are in `presets/drawbar.presets`
+//! ([`crate::factory::read`]).
 
 use mpfree_node::{Curve, ParamInfo, Unit};
 
@@ -16,10 +17,11 @@ ids! {
     TRANSPOSE = 50, FINE = 51,
     LEVEL = 60, PAN = 61,
     METER_KEYS = 70,
+    MODEL = 80, FLUTE = 81, REED = 82, REED_WAVE = 83,
 }
 
 /// The highest id plus one: values live in an array indexed by id.
-pub const ID_SPACE: usize = 71;
+pub const ID_SPACE: usize = 84;
 
 /// The drawbars in order, as on the organ: their ids, names and
 /// semitones from the note.
@@ -36,6 +38,19 @@ pub const DRAWBARS: [(u16, &str, i32); 9] = [
 ];
 
 pub const ON_OFF: &[&str] = &["Off", "On"];
+/// Tonewheel: 91 always-turning wheels, as the electromechanical organs.
+/// Combo: the transistor combo organs of the 1960s, every note divided
+/// down from twelve top-octave oscillators (the bank Strings plays), each
+/// drawbar's notes heard through a flute voice (a near sine) and a reed
+/// voice (bright and thin).
+pub const MODELS: &[&str] = &["Tonewheel", "Combo"];
+pub const TONEWHEEL: f32 = 0.0;
+pub const COMBO: f32 = 1.0;
+/// The combo's reed: the dividers' sawtooth (thin and cutting), or their
+/// square (hollow and rough).
+pub const REED_WAVES: &[&str] = &["Saw", "Square"];
+pub const SAW: f32 = 0.0;
+pub const SQUARE: f32 = 1.0;
 /// The percussion's harmonic: the octave (4') or the twelfth (2 2/3').
 pub const PERC_HARMS: &[&str] = &["Second", "Third"];
 pub const PERC_DECAYS: &[&str] = &["Fast", "Slow"];
@@ -137,6 +152,7 @@ const fn bar(id: u16, name: &'static str, default: f32) -> ParamInfo {
 use Curve::{Linear, Stepped};
 
 pub static PARAMS: &[ParamInfo] = &[
+    choice(MODEL, "Model", "Model", MODELS, TONEWHEEL),
     bar(DB_16, "16'", 8.0),
     bar(DB_5_13, "5 1/3'", 8.0),
     bar(DB_8, "8'", 8.0),
@@ -146,6 +162,12 @@ pub static PARAMS: &[ParamInfo] = &[
     bar(DB_1_35, "1 3/5'", 0.0),
     bar(DB_1_13, "1 1/3'", 0.0),
     bar(DB_1, "1'", 0.0),
+    // The combo's two voices, drawbars as on its panel: how much of the
+    // flute (a near sine) and of the reed (bright) every drawbar's notes
+    // are heard through. Both at 0 is silence.
+    p(FLUTE, "Flute", "Combo", 0.0, 8.0, 6.0, Unit::None, Stepped),
+    p(REED, "Reed", "Combo", 0.0, 8.0, 8.0, Unit::None, Stepped),
+    choice(REED_WAVE, "Reed wave", "Combo", REED_WAVES, SAW),
     choice(PERC, "Percussion", "Percussion", ON_OFF, 0.0),
     choice(PERC_HARM, "Perc harm", "Percussion", PERC_HARMS, 1.0),
     choice(PERC_DECAY, "Perc decay", "Percussion", PERC_DECAYS, FAST),

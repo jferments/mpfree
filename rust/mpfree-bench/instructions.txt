@@ -44,6 +44,8 @@
 58964	De-esser
 70889	Delay
 129473	Drawbar Church, 8 keys
+182403	Drawbar Combo Reed, 8 keys
+154496	Drawbar Combo, 8 keys
 173856	Drawbar Full Organ, 8 keys
 167152	Drawbar Gospel, 16 keys
 133926	Drawbar Init, 8 keys

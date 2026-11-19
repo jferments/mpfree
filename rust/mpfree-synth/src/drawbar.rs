@@ -1,5 +1,10 @@
-//! Drawbar: a tonewheel organ and its rotary speaker, built from the
-//! sources in `docs/dev/research/tonewheel-organ.md`.
+//! Drawbar: an organ and its rotary speaker, in two models. **Tonewheel**
+//! is the electromechanical organ, built from the sources in
+//! `docs/dev/research/tonewheel-organ.md`; **Combo** is the transistor
+//! combo organ of the 1960s, from `docs/dev/research/organ-wind-choir.md`.
+//! Everything below is the tonewheel's unless it says Combo; the keys, the
+//! drawbars, the click, the percussion, drive, tone and the speaker serve
+//! both.
 //!
 //! - **The wheels.** 91 wheels turn all the time, tuned from the organ's
 //!   twelve gear ratios ([`gear_hz`]), whose small offsets from equal
@@ -32,6 +37,23 @@
 //!   (Doppler), its level (and the horn's treble) following where it
 //!   faces, one cabinet reflection, the horn's unmodulated leakage, and
 //!   each rotor's own speeds and inertia (**Speed** Stop, Slow, Fast).
+//! - **Combo.** Every note divided down from twelve top-octave
+//!   oscillators: the shared bank ([`Bank`]) that Strings plays, octaves
+//!   locked, each note a sawtooth as each divider's own filter makes it.
+//!   Each drawbar takes its note from the bank (anything above B7 folds
+//!   down by octaves) and sends it to two voices, as the combo's own two
+//!   drawbars do: **Flute**, the saw integrated twice into a near sine of
+//!   the same shape at every pitch (the designer's aim, "a good sine shape
+//!   across the whole keyboard"), and **Reed**, the saw (or the dividers'
+//!   square, **Reed wave**) through a fixed voicing filter that thins and
+//!   brightens it. All three shapes start in step with the saw, so a
+//!   note's flute and reed add. Each voice follows the keyboard a little
+//!   (`combo_follow`) so one note sounds about as loud anywhere. The
+//!   voices' filters run on two buses, so their cost does not grow with
+//!   keys. Its vibrato is a smooth one, the whole bank
+//!   swinging in pitch as when the master oscillators are swept: **Vibrato**
+//!   V1 to V3 swing it 10, 20 or 30 cents either way at **Scanner** Hz, C1
+//!   to C3 mix the dry sound back. A change of model crosses over in 10 ms.
 //!
 //! Velocity, pressure, bend and slides are ignored, as on the organ.
 //! Contacts, percussion, the rotors' speeds and retuning run at a control
@@ -51,12 +73,13 @@ use std::sync::OnceLock;
 
 use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Tuning};
 
+use crate::bank::{Bank, Shape};
 use crate::drawbar_params::*;
 use crate::dsp::Rng;
 use crate::params::Preset;
 
-/// Frames per control step.
-pub const CTRL: u64 = 16;
+/// Frames per control step: the bank's.
+pub const CTRL: u64 = crate::bank::STEP as u64;
 /// Tonewheels.
 pub const N_WHEELS: usize = 91;
 /// Wheel 1's note (C, 32.7 Hz): wheel `w` (from 0) is MIDI note 24 + `w`.
@@ -135,6 +158,54 @@ const HORN_DARK_HZ: f32 = 3000.0;
 const HORN_LEAK: f32 = 0.15;
 const REFLECT: f32 = 0.3;
 const REFLECT_S: f32 = 0.0011;
+
+/// The combo's top note for a footage (B7): a footage above it folds back
+/// down by octaves, as the top-octave dividers end there (as in Strings).
+pub const COMBO_TOP: i32 = 107;
+/// The combo's buses in the bank: the flute and, the bus after it, the
+/// reed (a key feeds them as a pair).
+const FLUTE_BUS: usize = 0;
+const REED_BUS: usize = 1;
+/// Control steps a change of model takes to cross over (10 ms at 48 kHz).
+const MODEL_STEPS: f32 = 30.0;
+/// The combo's voicing, our reading of "sine-like" and "bright, sawtooth-
+/// like" (no circuit values are published): the flute through a gentle
+/// top cut (it also keeps the near sine's highest harmonics from folding
+/// back), the reed thinned below, given a nasal peak and cut above as a
+/// small amplifier does.
+const FLUTE_TOP_HZ: f32 = 9_000.0;
+const REED_LOW_HZ: f32 = 200.0;
+const REED_PEAK_HZ: f32 = 1_600.0;
+const REED_PEAK_Q: f32 = 0.9;
+const REED_PEAK_DB: f32 = 5.0;
+const REED_TOP_HZ: f32 = 6_500.0;
+const REED_TOP_Q: f32 = 0.8;
+/// Each voice's level for a drawbar at 8, into the mono sum.
+const COMBO_FLUTE: f32 = 0.063;
+const COMBO_REED: f32 = 0.063;
+/// The square reed against the saw: a square of the same swing carries
+/// about 4 dB more, so it is trimmed to sit level with the saw at C4.
+const SQUARE_TRIM: f32 = 0.63;
+/// The combo's keyboard level scaling, dB a semitone from C4 (MIDI 60):
+/// the flute lifted below C4 and eased above C5, the reed (thinned below
+/// and lifted by its peak above) tilted the other way, so one note sounds
+/// about as loud from C2 to C6. Held beyond `FOLLOW_LO` and `FOLLOW_HI`.
+const FLUTE_LIFT_DB: f32 = 0.1;
+const FLUTE_EASE_DB: f32 = 0.1;
+const REED_TILT_DB: f32 = 0.2;
+const FOLLOW_LO: f32 = 24.0;
+const FOLLOW_HI: f32 = 96.0;
+/// The combo vibrato's swing for V1, V2 and V3 (and C1 to C3), cents
+/// either way (our estimate: the originals' depth trims are not
+/// documented).
+pub const COMBO_VIB_CENTS: [f32; 3] = [10.0, 20.0, 30.0];
+/// The combo vibrato's delay line: it holds the widest swing at the
+/// slowest rate (30 cents at the Scanner's 4 Hz, 134 frames either way)
+/// up to 192 kHz.
+const CVIB_LEN: usize = 512;
+/// The combo vibrato's shortest delay, frames: the four-point read needs
+/// two written frames ahead of it.
+const CVIB_MIN: f32 = 2.0;
 
 static INFO: NodeInfo = NodeInfo {
     id: "mpfree.drawbar",
@@ -309,18 +380,70 @@ struct Key {
     /// same as a set (with both percussion harmonics).
     wheels: [u8; 9],
     reach: Bits,
+    /// The bank note each drawbar takes on the combo.
+    notes: [u8; 9],
     contacts: [Contact; 9],
 }
 
-/// The wheels a key's nine drawbars reach, and the same as a set.
-fn key_wheels(note: u8, transpose: i32) -> ([u8; 9], Bits) {
+/// The wheels a key's nine drawbars reach, the same as a set, and the
+/// bank notes they take on the combo.
+fn key_wheels(note: u8, transpose: i32) -> ([u8; 9], Bits, [u8; 9]) {
     let n = (i32::from(note) + transpose).clamp(0, 127);
     let wheels: [u8; 9] = std::array::from_fn(|b| wheel_for(n, b) as u8);
     let mut reach = Bits::default();
     for &w in &wheels {
         reach.set(usize::from(w));
     }
-    (wheels, reach)
+    let notes = std::array::from_fn(|b| combo_note(n, b) as u8);
+    (wheels, reach, notes)
+}
+
+/// The bank note drawbar `bar` takes for `note` on the combo: its
+/// footage, folded down by octaves above [`COMBO_TOP`] and up below the
+/// bank.
+pub fn combo_note(note: i32, bar: usize) -> usize {
+    let mut m = note + DRAWBARS[bar].2;
+    while m > COMBO_TOP {
+        m -= 12;
+    }
+    while m < 0 {
+        m += 12;
+    }
+    m as usize
+}
+
+/// The combo's wave `t` of the way through one cycle of the 16' (two of
+/// the 8') for the values `v`, before the voicing: each drawbar's flute
+/// and reed at their levels, the 16''s octaves half a cycle on as its
+/// dividers leave them (the other footages run free on the organ; here
+/// they start with the 16'). With percussion on, the 1' is silent, as on
+/// the tonewheel. For the Synth tab's picture.
+pub fn combo_wave(v: impl Fn(u16) -> f32, t: f32) -> f32 {
+    let flute = bar_level(v(FLUTE)) * COMBO_FLUTE;
+    let (shape, trim) = if v(REED_WAVE) >= 0.5 {
+        (Shape::Square, SQUARE_TRIM)
+    } else {
+        (Shape::Saw, 1.0)
+    };
+    let reed = bar_level(v(REED)) * COMBO_REED * trim;
+    let perc = v(PERC) >= 0.5;
+    let mut y = 0.0;
+    for (b, &(id, _, semis)) in DRAWBARS.iter().enumerate() {
+        let l = bar_level(v(id));
+        if l == 0.0 || (perc && b == 8) {
+            continue;
+        }
+        let from16 = semis + 12;
+        let lock = if from16 > 0 && from16 % 12 == 0 {
+            0.5
+        } else {
+            0.0
+        };
+        let p = ((from16 as f32 / 12.0).exp2() * t + lock).fract();
+        y +=
+            l * (flute * crate::bank::naive(Shape::Cubic, p) + reed * crate::bank::naive(shape, p));
+    }
+    y
 }
 
 /// A set of wheels, one bit each, in 32-bit words (cheap on the MPC's
@@ -393,6 +516,47 @@ impl Biquad {
             s1: 0.0,
             s2: 0.0,
         }
+    }
+
+    /// A cookbook section from its numerator and denominator.
+    fn from(b: [f32; 3], a: [f32; 3]) -> Biquad {
+        Biquad {
+            b0: b[0] / a[0],
+            b1: b[1] / a[0],
+            b2: b[2] / a[0],
+            a1: a[1] / a[0],
+            a2: a[2] / a[0],
+            s1: 0.0,
+            s2: 0.0,
+        }
+    }
+
+    /// The cookbook low-pass or high-pass with its Q.
+    fn pass(hz: f32, q: f32, rate: f32, high: bool) -> Biquad {
+        let (sn, cs) = (TAU * hz.min(rate * 0.45) / rate).sin_cos();
+        let al = sn / (2.0 * q);
+        let b = if high {
+            [(1.0 + cs) / 2.0, -(1.0 + cs), (1.0 + cs) / 2.0]
+        } else {
+            [(1.0 - cs) / 2.0, 1.0 - cs, (1.0 - cs) / 2.0]
+        };
+        Biquad::from(b, [1.0 + al, -2.0 * cs, 1.0 - al])
+    }
+
+    /// The cookbook peak, `db` at `hz`.
+    fn peak(hz: f32, q: f32, db: f32, rate: f32) -> Biquad {
+        let (sn, cs) = (TAU * hz.min(rate * 0.45) / rate).sin_cos();
+        let a = 10f32.powf(db / 40.0);
+        let al = sn / (2.0 * q);
+        Biquad::from(
+            [1.0 + al * a, -2.0 * cs, 1.0 - al * a],
+            [1.0 + al / a, -2.0 * cs, 1.0 - al / a],
+        )
+    }
+
+    fn clear(&mut self) {
+        self.s1 = 0.0;
+        self.s2 = 0.0;
     }
 
     #[inline]
@@ -627,6 +791,34 @@ pub struct Drawbar {
     /// Frames the speaker, delay lines and filters still ring after the
     /// last wheel goes quiet.
     ring: u32,
+    /// The combo: the bank (its buses the flute and the reed), how much of
+    /// the combo is heard against the wheels now and at the step's end,
+    /// with its change per frame, and each voice's level per drawbar at 8.
+    bank: Bank<2>,
+    mix: f32,
+    mix_end: f32,
+    dmix: f32,
+    flute_gain: f32,
+    reed_gain: f32,
+    /// Each bank note's level on the flute and on the reed: the keyboard's
+    /// level scaling.
+    follow: [[f32; crate::bank::NOTES]; 2],
+    flute_lp: Biquad,
+    reed_hp: Biquad,
+    reed_peak: Biquad,
+    reed_lp: Biquad,
+    /// The combo vibrato: its delay line and write point, its LFO's phase
+    /// and step, and its swing (frames either way, gliding; the delay
+    /// swings from `CVIB_MIN` to `CVIB_MIN` plus twice it, so the centre
+    /// moves with the depth and a chorus combs no lower than it must).
+    cvib: [f32; CVIB_LEN],
+    cvib_w: usize,
+    cvib_ph: u32,
+    cvib_inc: u32,
+    cvib_amp: Smooth,
+    /// Whether the combo was sounding (its share above 0) at the last
+    /// render: its line is fed only then, and cleared when it comes back.
+    cvib_live: bool,
 }
 
 impl Drawbar {
@@ -710,6 +902,23 @@ impl Drawbar {
             tuning: Tuning::standard(),
             bus: [0.0; CTRL as usize],
             ring: 0,
+            bank: Bank::new(),
+            mix: 0.0,
+            mix_end: 0.0,
+            dmix: 0.0,
+            flute_gain: 0.0,
+            reed_gain: 0.0,
+            follow: combo_follow(),
+            flute_lp: Biquad::default(),
+            reed_hp: Biquad::default(),
+            reed_peak: Biquad::default(),
+            reed_lp: Biquad::default(),
+            cvib: [0.0; CVIB_LEN],
+            cvib_w: 0,
+            cvib_ph: 0,
+            cvib_inc: 0,
+            cvib_amp: Smooth::new(0.0),
+            cvib_live: false,
         };
         s.prepare(rate, mpfree_node::MAX_BLOCK);
         s
@@ -747,8 +956,23 @@ impl Drawbar {
         if self.n_keys > 0 {
             self.n_keys
         } else {
-            usize::from(self.n_live > 0 || self.ring > 0)
+            usize::from(self.n_live > 0 || self.bank.heard() > 0 || self.ring > 0)
         }
+    }
+
+    /// Notes of the combo's bank heard now.
+    pub fn bank_notes_heard(&self) -> usize {
+        self.bank.heard()
+    }
+
+    /// Note `n`'s frequency in the combo's bank, Hz.
+    pub fn bank_hz(&self, n: usize) -> f64 {
+        self.bank.hz(n)
+    }
+
+    /// Whether note `n` of the combo's bank is locked to the octave below.
+    pub fn bank_locked(&self, n: usize) -> bool {
+        self.bank.locked(n)
     }
 
     /// The horn's and the drum's speeds now, in turns per second.
@@ -797,7 +1021,43 @@ impl Drawbar {
     /// No key down or letting go, and no wheel heard: a change can jump
     /// rather than glide, so loading a preset never starts with a swell.
     fn quiet(&self) -> bool {
-        self.n_keys == 0 && self.n_live == 0
+        self.n_keys == 0 && self.n_live == 0 && self.bank.heard() == 0
+    }
+
+    fn combo_on(&self) -> bool {
+        self.v(MODEL) >= 0.5
+    }
+
+    /// The model: heard at once when nothing sounds, else crossed over
+    /// in [`MODEL_STEPS`] control steps.
+    fn update_model(&mut self) {
+        if self.quiet() {
+            let to = if self.combo_on() { 1.0 } else { 0.0 };
+            self.mix = to;
+            self.mix_end = to;
+            self.dmix = 0.0;
+        }
+    }
+
+    /// The combo vibrato's swing and rate for **Vibrato** and **Scanner**:
+    /// the delay's swing, in frames, that bends the pitch by the depth's
+    /// cents either way at that rate.
+    fn update_combo_vib(&mut self) {
+        let mode = self.v(VIBRATO) as usize;
+        let cents = if mode == 0 {
+            0.0
+        } else {
+            COMBO_VIB_CENTS[(mode - 1) % 3]
+        };
+        let hz = self.v(SCANNER);
+        let r = self.rate as f32;
+        let ratio = (cents / 1200.0).exp2() - 1.0;
+        let widest = (CVIB_LEN as f32 - CVIB_MIN - 4.0) * 0.5;
+        self.cvib_amp.target = (ratio * r / (TAU * hz)).min(widest);
+        if self.quiet() {
+            self.cvib_amp.snap(self.cvib_amp.target);
+        }
+        self.cvib_inc = (f64::from(hz) / f64::from(r) * 4_294_967_296.0) as u32;
     }
 
     fn update_out(&mut self) {
@@ -869,6 +1129,13 @@ impl Drawbar {
         for (b, g) in self.bar_gain.iter_mut().enumerate() {
             *g = bar_level(self.values[DRAWBARS[b].0 as usize]);
         }
+        self.flute_gain = bar_level(self.v(FLUTE)) * COMBO_FLUTE;
+        let trim = if self.v(REED_WAVE) >= 0.5 {
+            SQUARE_TRIM
+        } else {
+            1.0
+        };
+        self.reed_gain = bar_level(self.v(REED)) * COMBO_REED * trim;
         // -40 dB at 40 %, -26 dB at 100 %.
         self.leak = (self.v(LEAKAGE) / 100.0).powf(1.75) * LEAK_MAX;
     }
@@ -877,7 +1144,7 @@ impl Drawbar {
     fn rekey(&mut self) {
         let t = self.v(TRANSPOSE) as i32;
         for k in self.keys[..self.n_keys].iter_mut() {
-            (k.wheels, k.reach) = key_wheels(k.note, t);
+            (k.wheels, k.reach, k.notes) = key_wheels(k.note, t);
         }
     }
 
@@ -915,6 +1182,9 @@ impl Drawbar {
             self.rc[w] = turn.cos() as f32;
             self.rs[w] = turn.sin() as f32;
         }
+        // The combo's bank: the project's tuning as it is, and Fine.
+        self.bank
+            .retune(&self.tuning, self.v(FINE) / 100.0, self.rate, self.clock);
     }
 
     /// A contact from `from` to `to` timed for **Click**: how long it
@@ -972,7 +1242,7 @@ impl Drawbar {
             }
         };
         let old = self.keys[idx];
-        let (wheels, reach) = key_wheels(note, self.v(TRANSPOSE) as i32);
+        let (wheels, reach, notes) = key_wheels(note, self.v(TRANSPOSE) as i32);
         let mut k = Key {
             note,
             down: true,
@@ -980,6 +1250,7 @@ impl Drawbar {
             t: 0,
             wheels,
             reach,
+            notes,
             contacts: [Contact::default(); 9],
         };
         for b in 0..9 {
@@ -1037,6 +1308,21 @@ impl Drawbar {
     /// One control step: contacts and percussion become each wheel's level
     /// for the step, leakage is added, the rotors and the horn's treble move.
     fn control(&mut self, frame: u64) {
+        // The model's crossover: the combo's share at the step's end (the
+        // wheels have the rest).
+        self.mix = self.mix_end;
+        let to = if self.combo_on() { 1.0 } else { 0.0 };
+        if self.mix_end != to {
+            let d = 1.0 / MODEL_STEPS;
+            self.mix_end = if to > self.mix_end {
+                (self.mix_end + d).min(1.0)
+            } else {
+                (self.mix_end - d).max(0.0)
+            };
+        }
+        self.dmix = (self.mix_end - self.mix) / CTRL as f32;
+        let (wg, cg) = (1.0 - self.mix_end, self.mix_end);
+        self.bank.begin_step();
         let mut target = [0.0f32; N_WHEELS];
         // The wheels the keys reach.
         let mut touched = Bits::default();
@@ -1087,8 +1373,13 @@ impl Drawbar {
             }
             touched = touched.or(k.reach);
             k.t = k.t.saturating_add(1);
+            if cg > 0.0 {
+                let notes = k.notes;
+                self.combo_key(&notes, &levels, &g, perc_bar, perc_amp, cg, frame);
+            }
             i += 1;
         }
+        self.bank.end_step();
         self.perc *= self.perc_fall;
         if self.perc < 1e-4 {
             self.perc = 0.0;
@@ -1104,7 +1395,11 @@ impl Drawbar {
                 touched.set(w + 48);
             });
         }
-        if self.n_keys > 0 || self.n_live > 0 {
+        // On the combo alone the wheels only fade out.
+        if wg == 0.0 {
+            touched = Bits::default();
+        }
+        if self.n_keys > 0 || self.n_live > 0 || self.bank.heard() > 0 {
             self.ring = self.tail_frames();
         } else {
             self.ring = self.ring.saturating_sub(CTRL as u32);
@@ -1120,7 +1415,7 @@ impl Drawbar {
         let now = frame as u32;
         let mut heard = Bits::default();
         touched.or(self.heard).each(|w| {
-            let t = target[w] * OUT_GAIN;
+            let t = target[w] * OUT_GAIN * wg;
             // Land on silence (a ramp down ends within rounding of it).
             if self.amp[w].abs() < 1e-7 {
                 self.amp[w] = 0.0;
@@ -1186,8 +1481,71 @@ impl Drawbar {
                 *x = 0.0;
             }
         }
-        for b in [&mut self.lp1, &mut self.lp2, &mut self.hp1, &mut self.hp2] {
+        for b in [
+            &mut self.lp1,
+            &mut self.lp2,
+            &mut self.hp1,
+            &mut self.hp2,
+            &mut self.flute_lp,
+            &mut self.reed_hp,
+            &mut self.reed_peak,
+            &mut self.reed_lp,
+        ] {
             b.flush();
+        }
+    }
+
+    /// One key's notes onto the combo's bank for this step: each drawbar's
+    /// level (`levels`, its contact `g`) on its note, through the flute
+    /// and the reed, and the percussion through the flute; `cg` is the
+    /// combo's share.
+    #[allow(clippy::too_many_arguments)]
+    fn combo_key(
+        &mut self,
+        notes: &[u8; 9],
+        levels: &[f32; 9],
+        g: &[f32; 9],
+        perc_bar: usize,
+        perc_amp: f32,
+        cg: f32,
+        frame: u64,
+    ) {
+        let (fl, rl) = (self.flute_gain * cg, self.reed_gain * cg);
+        if fl > 0.0 || rl > 0.0 {
+            for b in 0..9 {
+                let l = levels[b] * g[b];
+                let n = usize::from(notes[b]);
+                if l == 0.0 || !self.bank.sounds(n) {
+                    continue;
+                }
+                let (f, r) = (l * fl * self.follow[0][n], l * rl * self.follow[1][n]);
+                self.bank.add_pair(FLUTE_BUS, n, f, r, frame);
+            }
+        }
+        let l = perc_amp * g[8];
+        let n = usize::from(notes[perc_bar]);
+        if l > 0.0 && self.bank.sounds(n) {
+            let p = l * COMBO_FLUTE * cg * self.follow[0][n];
+            self.bank.add(FLUTE_BUS, n, p, frame);
+        }
+    }
+
+    /// The combo's voices for the next `n` frames, added into the bus.
+    #[inline(never)]
+    fn combo(&mut self, n: usize) {
+        let mut buses = [[0.0f32; CTRL as usize]; 2];
+        let reed = if self.v(REED_WAVE) >= 0.5 {
+            Shape::Square
+        } else {
+            Shape::Saw
+        };
+        self.bank.render(n, &mut buses, &[Shape::Cubic, reed]);
+        for k in 0..n {
+            let f = self.flute_lp.run(buses[FLUTE_BUS][k]);
+            let r = self
+                .reed_lp
+                .run(self.reed_peak.run(self.reed_hp.run(buses[REED_BUS][k])));
+            self.bus[k] += f + r;
         }
     }
 
@@ -1195,6 +1553,14 @@ impl Drawbar {
         let n = to - from;
         let r = self.rate as f32;
         let scan = self.v(SCANNER) / r;
+        // The combo's line is fed only while the combo has a share, so the
+        // tonewheel alone pays nothing for it; coming back, it starts from
+        // silence rather than replaying an old note.
+        let live = self.mix > 0.0 || self.mix_end > 0.0;
+        if live && !self.cvib_live {
+            self.cvib.fill(0.0);
+        }
+        self.cvib_live = live;
         if self.n_live == 0 && self.ring == 0 {
             // Silent, and the tail has rung out: only the scanner and the
             // rotors keep turning.
@@ -1208,10 +1574,18 @@ impl Drawbar {
             }
             self.vib_w = (self.vib_w + n) & (VIB_LEN - 1);
             self.rot_w = (self.rot_w + n) & (ROT_LEN - 1);
+            self.cvib_w = (self.cvib_w + n) & (CVIB_LEN - 1);
+            self.cvib_ph = self
+                .cvib_ph
+                .wrapping_add(self.cvib_inc.wrapping_mul(n as u32));
+            self.mix += self.dmix * n as f32;
             self.clock += n as u64;
             return;
         }
         self.wheels(n);
+        if self.mix > 0.0 || self.mix_end > 0.0 || self.bank.heard() > 0 {
+            self.combo(n);
+        }
         let mode = self.v(VIBRATO) as usize;
         let chorus = mode >= 4;
         // Settled smoothers are read once, not stepped every frame.
@@ -1229,22 +1603,42 @@ impl Drawbar {
             // The scanner. The line is always fed and the scanner always
             // turns, so switching it on mid-note picks up cleanly.
             self.vib[self.vib_w] = dry;
+            if live {
+                self.cvib[self.cvib_w] = dry;
+            }
             let mut x = dry;
+            let m = self.mix;
             if mode > 0 {
-                let tri = 1.0 - (2.0 * self.vib_phase - 1.0).abs();
-                let pos = tri * 7.999;
-                let ti = (floor_small(pos) as usize).min(7);
-                let f = pos - ti as f32;
-                let a = read_linear(&self.vib, self.vib_w, self.term_d[ti]) * self.term_g[ti];
-                let b =
-                    read_linear(&self.vib, self.vib_w, self.term_d[ti + 1]) * self.term_g[ti + 1];
-                let wet = a + (b - a) * f;
-                self.vib_lp += (wet - self.vib_lp) * self.vib_lp_a;
-                x = if chorus {
-                    0.6 * (dry + self.vib_lp)
-                } else {
-                    self.vib_lp
-                };
+                if m < 1.0 {
+                    let tri = 1.0 - (2.0 * self.vib_phase - 1.0).abs();
+                    let pos = tri * 7.999;
+                    let ti = (floor_small(pos) as usize).min(7);
+                    let f = pos - ti as f32;
+                    let a = read_linear(&self.vib, self.vib_w, self.term_d[ti]) * self.term_g[ti];
+                    let b = read_linear(&self.vib, self.vib_w, self.term_d[ti + 1])
+                        * self.term_g[ti + 1];
+                    let wet = a + (b - a) * f;
+                    self.vib_lp += (wet - self.vib_lp) * self.vib_lp_a;
+                    x = if chorus {
+                        0.6 * (dry + self.vib_lp)
+                    } else {
+                        self.vib_lp
+                    };
+                }
+                if m > 0.0 {
+                    // The combo's vibrato: the line read through a delay
+                    // swung by a sine, so the whole bank bends evenly.
+                    let a = self.cvib_amp.next();
+                    let d = CVIB_MIN + a + a * sine(self.table, self.cvib_ph);
+                    let wet = read_hermite(&self.cvib, self.cvib_w, d);
+                    let xc = if chorus { 0.6 * (dry + wet) } else { wet };
+                    x = if m >= 1.0 { xc } else { x + (xc - x) * m };
+                }
+            }
+            if live {
+                self.mix += self.dmix;
+                self.cvib_w = (self.cvib_w + 1) & (CVIB_LEN - 1);
+                self.cvib_ph = self.cvib_ph.wrapping_add(self.cvib_inc);
             }
             self.vib_w = (self.vib_w + 1) & (VIB_LEN - 1);
             self.vib_phase += scan;
@@ -1300,6 +1694,12 @@ impl Drawbar {
             }
             left[from + k] += l * gl;
             right[from + k] += rr * gr;
+        }
+        if !live {
+            self.cvib_w = (self.cvib_w + n) & (CVIB_LEN - 1);
+            self.cvib_ph = self
+                .cvib_ph
+                .wrapping_add(self.cvib_inc.wrapping_mul(n as u32));
         }
         self.clock += n as u64;
     }
@@ -1394,6 +1794,20 @@ fn drive_curve(u: f32) -> f32 {
     u / (1.0 + u * u).sqrt()
 }
 
+/// The combo's keyboard level scaling: each bank note's level on the flute
+/// and on the reed.
+fn combo_follow() -> [[f32; crate::bank::NOTES]; 2] {
+    let mut f = [[1.0; crate::bank::NOTES]; 2];
+    for n in 0..crate::bank::NOTES {
+        let k = (n as f32).clamp(FOLLOW_LO, FOLLOW_HI);
+        let flute = FLUTE_LIFT_DB * (60.0 - k).max(0.0) - FLUTE_EASE_DB * (k - 72.0).max(0.0);
+        let reed = REED_TILT_DB * (60.0 - k);
+        f[FLUTE_BUS][n] = 10f32.powf(flute / 20.0);
+        f[REED_BUS][n] = 10f32.powf(reed / 20.0);
+    }
+    f
+}
+
 impl Node for Drawbar {
     fn info(&self) -> &'static NodeInfo {
         &INFO
@@ -1415,10 +1829,16 @@ impl Node for Drawbar {
             TONE => self.update_tone(),
             DRIVE => self.update_drive(),
             PERC_DECAY => self.update_perc(),
-            VIBRATO => self.update_scanner(),
+            VIBRATO => {
+                self.update_scanner();
+                self.update_combo_vib();
+            }
             SPREAD => self.update_mics(),
             SPEED => self.update_speed(),
             ROTARY => self.update_rotary(),
+            MODEL => self.update_model(),
+            FLUTE | REED | REED_WAVE => self.update_bars(),
+            SCANNER => self.update_combo_vib(),
             FINE | WHEELS => self.retune(),
             TRANSPOSE => self.rekey(),
             LEAKAGE | DB_16 | DB_5_13 | DB_8 | DB_4 | DB_2_23 | DB_2 | DB_1_35 | DB_1_13 | DB_1 => {
@@ -1461,6 +1881,12 @@ impl Node for Drawbar {
         self.drum_depth = DRUM_R / SOUND_MS * r;
         self.reflect_d = REFLECT_S * r;
         self.leak_d = (2.0 + self.horn_depth).round() as usize;
+        let q = std::f32::consts::FRAC_1_SQRT_2;
+        self.flute_lp = Biquad::pass(FLUTE_TOP_HZ, q, r, false);
+        self.reed_hp = Biquad::pass(REED_LOW_HZ, q, r, true);
+        self.reed_peak = Biquad::peak(REED_PEAK_HZ, REED_PEAK_Q, REED_PEAK_DB, r);
+        self.reed_lp = Biquad::pass(REED_TOP_HZ, REED_TOP_Q, r, false);
+        self.cvib_amp.set_time(rate, 20.0);
         let dt = CTRL as f32 / r;
         let share = |tau: f32| 1.0 - (-dt / tau).exp();
         self.horn_up = share(HORN_UP_S);
@@ -1488,6 +1914,9 @@ impl Node for Drawbar {
             *p = rng.next_u64() as u32;
         }
         self.rng = Rng::new(0x0D2A);
+        // The combo's bank: silent, its own phases.
+        self.bank.clear();
+        self.bank.new_phases(0xC0B0);
         self.retune();
         self.update_bars();
         self.update_out();
@@ -1524,6 +1953,23 @@ impl Node for Drawbar {
         self.horn_a = [self.horn_bright; 2];
         self.bus = [0.0; CTRL as usize];
         self.ring = 0;
+        let to = if self.combo_on() { 1.0 } else { 0.0 };
+        self.mix = to;
+        self.mix_end = to;
+        self.dmix = 0.0;
+        for b in [
+            &mut self.flute_lp,
+            &mut self.reed_hp,
+            &mut self.reed_peak,
+            &mut self.reed_lp,
+        ] {
+            b.clear();
+        }
+        self.cvib = [0.0; CVIB_LEN];
+        self.cvib_w = 0;
+        self.cvib_ph = 0;
+        self.update_combo_vib();
+        self.cvib_amp.snap(self.cvib_amp.target);
     }
 
     fn process(&mut self, ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {

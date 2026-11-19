@@ -372,8 +372,15 @@ pub fn drawbar_family(bar: usize) -> usize {
 
 /// One cycle of the 16' (two of the 8'): the drawbars' sines added at
 /// their levels (with percussion on, the 1' is silent, as on the organ),
-/// scaled to fit. Flat when every drawbar is in.
+/// or on the combo its flute and reed ([`drawbar::combo_wave`]), scaled
+/// to fit. Flat when every drawbar (or both voices) is in.
 pub fn drawbar_wave(v: &impl Values) -> Pts {
+    if v.get(db::MODEL) >= 0.5 {
+        let raw: Vec<f32> = (0..=POINTS)
+            .map(|i| drawbar::combo_wave(|id| v.get(id), i as f32 / POINTS as f32))
+            .collect();
+        return fit_wave(&raw);
+    }
     let perc = v.get(db::PERC) >= 0.5;
     let parts: Vec<(f32, f32)> = db::DRAWBARS
         .iter()
@@ -396,6 +403,11 @@ pub fn drawbar_wave(v: &impl Values) -> Pts {
     let raw: Vec<f32> = (0..=POINTS)
         .map(|i| sum(i as f32 / POINTS as f32))
         .collect();
+    fit_wave(&raw)
+}
+
+/// A wave's points scaled to fit the card, flat when it is silent.
+fn fit_wave(raw: &[f32]) -> Pts {
     let peak = raw.iter().fold(0.0f32, |m, y| m.max(y.abs()));
     raw.iter()
         .enumerate()
@@ -1691,6 +1703,41 @@ mod tests {
         let w = drawbar_wave(&only8);
         assert!((w[0].1 - 0.5).abs() < 1e-3);
         assert!((w[POINTS / 8].1 - 0.95).abs() < 0.01, "{:?}", w[POINTS / 8]);
+        // The combo: the flute alone at 8' is near a sine; both voices in
+        // draw flat; a square reed draws its flat tops.
+        let combo = |flute: f32, reed: f32, wave: f32| {
+            move |id: u16| match id {
+                db::MODEL => db::COMBO,
+                db::DB_8 => 8.0,
+                db::FLUTE => flute,
+                db::REED => reed,
+                db::REED_WAVE => wave,
+                _ => 0.0,
+            }
+        };
+        let w = drawbar_wave(&combo(8.0, 0.0, db::SAW));
+        assert!(in_box(&w));
+        // The flute's phase follows the saw's (low, then high): it peaks
+        // 0.79 of the way through each of the 8''s cycles, which start
+        // half a cycle on from the 16''s.
+        let top = w
+            .iter()
+            .fold((0.0f32, 0.0f32), |m, p| if p.1 > m.1 { *p } else { m });
+        let peak = 0.5 + 1.0 / 12f32.sqrt();
+        let at = (peak - 0.5) / 2.0;
+        assert!(
+            (top.0 - at).abs() < 0.01 || (top.0 - at - 0.5).abs() < 0.01,
+            "{top:?}"
+        );
+        assert!(drawbar_wave(&combo(0.0, 0.0, db::SAW))
+            .iter()
+            .all(|p| (p.1 - 0.5).abs() < 1e-6));
+        let sq = drawbar_wave(&combo(0.0, 8.0, db::SQUARE));
+        let flat = sq
+            .windows(2)
+            .filter(|p| (p[1].1 - p[0].1).abs() < 1e-6)
+            .count();
+        assert!(flat > POINTS * 9 / 10, "{flat}");
         // Percussion off draws nothing; slow falls slower than fast.
         assert!(drawbar_perc(&only8).is_empty());
         let perc = |slow: f32| {

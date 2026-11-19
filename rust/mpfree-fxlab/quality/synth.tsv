@@ -406,6 +406,62 @@ synth/Drawbar[Church]/key_spread_db	1.1729
 synth/Drawbar[Church]/mono_loss_db	0
 synth/Drawbar[Church]/vel_curve_err_db	0
 synth/Drawbar[Church]/vel_tone_oct	0
+synth/Drawbar[Combo Flute]/chord6_vs_power_db	1.0329
+synth/Drawbar[Combo Flute]/chord8_peak_dbfs	-3.8193
+synth/Drawbar[Combo Flute]/dc_dbfs	-140
+synth/Drawbar[Combo Flute]/key_spread_db	0.6666
+synth/Drawbar[Combo Flute]/mono_loss_db	0
+synth/Drawbar[Combo Flute]/vel_curve_err_db	0
+synth/Drawbar[Combo Flute]/vel_tone_oct	0
+synth/Drawbar[Combo Garage]/chord6_vs_power_db	-0.3119
+synth/Drawbar[Combo Garage]/chord8_peak_dbfs	-8.6459
+synth/Drawbar[Combo Garage]/dc_dbfs	-140
+synth/Drawbar[Combo Garage]/key_spread_db	0.9771
+synth/Drawbar[Combo Garage]/mono_loss_db	0
+synth/Drawbar[Combo Garage]/vel_curve_err_db	0
+synth/Drawbar[Combo Garage]/vel_tone_oct	0
+synth/Drawbar[Combo Perc]/chord6_vs_power_db	0.373
+synth/Drawbar[Combo Perc]/chord8_peak_dbfs	-1.1989
+synth/Drawbar[Combo Perc]/dc_dbfs	-140
+synth/Drawbar[Combo Perc]/key_spread_db	0.8702
+synth/Drawbar[Combo Perc]/mono_loss_db	0
+synth/Drawbar[Combo Perc]/vel_curve_err_db	0
+synth/Drawbar[Combo Perc]/vel_tone_oct	0
+synth/Drawbar[Combo Reed]/chord6_vs_power_db	2.1733
+synth/Drawbar[Combo Reed]/chord8_peak_dbfs	-0.8171
+synth/Drawbar[Combo Reed]/dc_dbfs	-140
+synth/Drawbar[Combo Reed]/key_spread_db	2.6086
+synth/Drawbar[Combo Reed]/mono_loss_db	0
+synth/Drawbar[Combo Reed]/vel_curve_err_db	0
+synth/Drawbar[Combo Reed]/vel_tone_oct	0
+synth/Drawbar[Combo Rotary]/chord6_vs_power_db	1.826
+synth/Drawbar[Combo Rotary]/chord8_peak_dbfs	-2.771
+synth/Drawbar[Combo Rotary]/dc_dbfs	-121.2648
+synth/Drawbar[Combo Rotary]/key_spread_db	2.3276
+synth/Drawbar[Combo Rotary]/mono_loss_db	0.546
+synth/Drawbar[Combo Rotary]/vel_curve_err_db	0
+synth/Drawbar[Combo Rotary]/vel_tone_oct	0
+synth/Drawbar[Combo Square]/chord6_vs_power_db	2.1122
+synth/Drawbar[Combo Square]/chord8_peak_dbfs	-3.7119
+synth/Drawbar[Combo Square]/dc_dbfs	-140
+synth/Drawbar[Combo Square]/key_spread_db	2.3257
+synth/Drawbar[Combo Square]/mono_loss_db	0
+synth/Drawbar[Combo Square]/vel_curve_err_db	0
+synth/Drawbar[Combo Square]/vel_tone_oct	0
+synth/Drawbar[Combo Vibrato]/chord6_vs_power_db	1.2027
+synth/Drawbar[Combo Vibrato]/chord8_peak_dbfs	-3.8134
+synth/Drawbar[Combo Vibrato]/dc_dbfs	-140
+synth/Drawbar[Combo Vibrato]/key_spread_db	1.3247
+synth/Drawbar[Combo Vibrato]/mono_loss_db	0
+synth/Drawbar[Combo Vibrato]/vel_curve_err_db	0
+synth/Drawbar[Combo Vibrato]/vel_tone_oct	0
+synth/Drawbar[Combo]/chord6_vs_power_db	1.7036
+synth/Drawbar[Combo]/chord8_peak_dbfs	-1.1466
+synth/Drawbar[Combo]/dc_dbfs	-140
+synth/Drawbar[Combo]/key_spread_db	2.0511
+synth/Drawbar[Combo]/mono_loss_db	0
+synth/Drawbar[Combo]/vel_curve_err_db	0
+synth/Drawbar[Combo]/vel_tone_oct	0
 synth/Drawbar[Flute]/chord6_vs_power_db	-0.0118
 synth/Drawbar[Flute]/chord8_peak_dbfs	-3.3194
 synth/Drawbar[Flute]/dc_dbfs	-124.5149
@@ -1608,6 +1664,15 @@ synth/alias[Bass saw, C7]/worst_alias_db	-80.3619
 synth/alias[Bass saw, drive 100, C5]/worst_alias_db	-63.7368
 synth/alias[Bass saw, drive 100, C6]/worst_alias_db	-58.8032
 synth/alias[Bass saw, drive 100, C7]/worst_alias_db	-53.9799
+synth/alias[Drawbar combo flute, C5]/worst_alias_db	-94.4008
+synth/alias[Drawbar combo flute, C6]/worst_alias_db	-94.3843
+synth/alias[Drawbar combo flute, C7]/worst_alias_db	-75.991
+synth/alias[Drawbar combo reed saw, C5]/worst_alias_db	-87.2502
+synth/alias[Drawbar combo reed saw, C6]/worst_alias_db	-84.127
+synth/alias[Drawbar combo reed saw, C7]/worst_alias_db	-78.717
+synth/alias[Drawbar combo reed square, C5]/worst_alias_db	-87.4857
+synth/alias[Drawbar combo reed square, C6]/worst_alias_db	-84.3494
+synth/alias[Drawbar combo reed square, C7]/worst_alias_db	-79.9651
 synth/alias[FM feedback 7, C5]/worst_alias_db	-17.2883
 synth/alias[FM feedback 7, C6]/worst_alias_db	-15.7111
 synth/alias[FM feedback 7, C7]/worst_alias_db	-12.5776
@@ -1663,6 +1728,7 @@ synth/fm[feedback 7 against 0]/level_db	3.5016
 synth/fm[pair 1:4, level 60]/bessel_err_db	0.0096
 synth/fm[pair 1:4, level 75]/bessel_err_db	0.0042
 synth/fm[pair 1:4, level 90]/bessel_err_db	0.0102
+synth/footage[Drawbar combo, C4]/worst_octave_cents	0
 synth/glide[Bass rate, an octave in 300 ms]/land_cents	0.0016
 synth/glide[Bass rate, an octave in 300 ms]/time_err_pct	-0.2934
 synth/glide[Poly legato, 200 ms]/land_cents	0.0367
@@ -1681,6 +1747,7 @@ synth/tune[Analog]/worst_cents	0.0302
 synth/tune[Bass 808, C0 to C3]/worst_cents	0.0484
 synth/tune[Bass synth, C0 to C3]/worst_cents	0.0718
 synth/tune[Bass]/worst_cents	0.0037
+synth/tune[Drawbar combo]/worst_cents	0.0006
 synth/tune[Drawbar]/worst_cents	0.5768
 synth/tune[FM]/worst_cents	0.0004
 synth/tune[Keys]/worst_cents	0.5494

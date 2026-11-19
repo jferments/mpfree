@@ -836,6 +836,7 @@ pub fn report(rate: u32) -> Vec<Row> {
     fm(&mut rows, rate);
     drums(&mut rows, rate);
     strings(&mut rows, rate);
+    combo(&mut rows, rate);
     bass(&mut rows, rate);
     rows
 }
@@ -1518,6 +1519,23 @@ fn alias_cases() -> Vec<AliasCase> {
             "Strings violin",
             Engine::Strings,
             vec![(0, 100.0), (1, 0.0)],
+        ),
+        // Drawbar's combo model on its 8': the flute alone, then the reed
+        // alone as a saw and as a square.
+        (
+            "Drawbar combo flute",
+            Engine::Drawbar,
+            vec![(80, 1.0), (82, 0.0)],
+        ),
+        (
+            "Drawbar combo reed saw",
+            Engine::Drawbar,
+            vec![(80, 1.0), (81, 0.0)],
+        ),
+        (
+            "Drawbar combo reed square",
+            Engine::Drawbar,
+            vec![(80, 1.0), (81, 0.0), (83, 1.0)],
         ),
         // Algorithm 32, operator 6 alone with full feedback.
         (
@@ -2213,6 +2231,89 @@ fn strings(rows: &mut Vec<Row>, rate: u32) {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Drawbar's combo model.
+
+/// Drawbar's plain patch as the combo, its flute alone on the drawbars
+/// given (`(drawbar id, position)`; the plain patch's 8' unless set).
+fn combo_flute(rate: u32, bars: &[(u16, f32)]) -> Box<dyn Node> {
+    let mut n = Engine::Drawbar.plain(rate);
+    n.set_param(80, 1.0);
+    n.set_param(82, 0.0);
+    for &(id, v) in bars {
+        n.set_param(id, v);
+    }
+    n
+}
+
+/// T1 for the combo (its notes are the project's tuning, not gears), and
+/// O6: each octave footage of C4 (16', 4', 2' and 1') against its 8', the
+/// worst error in cents from an exact octave, as one divided-down top
+/// octave makes them.
+fn combo(rows: &mut Vec<Row>, rate: u32) {
+    let mut worst = (0.0f64, 0u8);
+    for k in [24u8, 36, 60, 84, 96] {
+        let s = note(combo_flute(rate, &[]).as_mut(), rate, k, 100, 2.0, 2.0);
+        let c =
+            freq_near(&s.mid(), rate, hz(k), frames(0.4, rate)).map_or(100.0, |f| cents(f, hz(k)));
+        if c.abs() > worst.0.abs() {
+            worst = (c, k);
+        }
+    }
+    put(
+        rows,
+        "T1",
+        "tune[Drawbar combo]",
+        "worst_cents",
+        worst.0.abs(),
+        Better::Lower,
+        Some(1.0),
+        0.05,
+    );
+    put(
+        rows,
+        "T1",
+        "tune[Drawbar combo]",
+        "worst_note",
+        f64::from(worst.1),
+        Better::Info,
+        None,
+        0.0,
+    );
+    let key = 60u8;
+    // The drawbars' ids: 16' 0, 8' 2, 4' 3, 2' 5, 1' 8.
+    let alone = |bar: u16, octaves: i32| {
+        let mut set = vec![(2u16, 0.0f32)];
+        set.push((bar, 8.0));
+        let s = note(combo_flute(rate, &set).as_mut(), rate, key, 100, 2.0, 2.0);
+        let want = hz(key) * 2f64.powi(octaves);
+        freq_near(&s.mid(), rate, want, frames(0.4, rate)).unwrap_or(0.0)
+    };
+    let eight = alone(2, 0);
+    let mut err = 0.0f64;
+    for (bar, octaves) in [(0u16, -1i32), (3, 1), (5, 2), (8, 3)] {
+        let f = alone(bar, octaves);
+        let c = if f > 0.0 && eight > 0.0 {
+            cents(f, eight * 2f64.powi(octaves))
+        } else {
+            100.0
+        };
+        if c.abs() > err.abs() {
+            err = c;
+        }
+    }
+    put(
+        rows,
+        "O6",
+        "footage[Drawbar combo, C4]",
+        "worst_octave_cents",
+        err.abs(),
+        Better::Lower,
+        Some(0.1),
+        0.01,
+    );
 }
 
 // ---------------------------------------------------------------------------
