@@ -957,6 +957,39 @@ impl DcBlock {
         self.x1 = 0.0;
         self.y1 = 0.0;
     }
+
+    /// Blocks the DC of what was added to `out` on top of `under` (what
+    /// `out` held before), and leaves `under` in it as it was: for an
+    /// engine that adds its voices into a buffer it doesn't own. It doesn't
+    /// let go of its state itself: the engine calls [`DcBlock::settle`] at
+    /// fixed frames (each control step), so where a block or an event cuts
+    /// a run never changes the output.
+    pub fn run_added(&mut self, out: &mut [f32], under: &[f32]) {
+        let (mut x1, mut y1, r) = (self.x1, self.y1, self.r);
+        for (o, &u) in out.iter_mut().zip(under) {
+            let x = *o - u;
+            y1 = x - x1 + r * y1;
+            x1 = x;
+            *o = u + y1;
+        }
+        self.x1 = x1;
+        self.y1 = y1;
+    }
+
+    /// Lets go of the state below about -400 dB, as [`DcBlock::tick`]
+    /// does each frame, so silence after [`DcBlock::run_added`] becomes
+    /// exact and never runs on denormals.
+    pub fn settle(&mut self) {
+        if self.y1.abs() < 1e-20 {
+            self.y1 = 0.0;
+        }
+    }
+
+    /// Whether it holds nothing: after silence it has let go of its state,
+    /// so it can be left out until sound comes again.
+    pub fn rests(&self) -> bool {
+        self.x1 == 0.0 && self.y1 == 0.0
+    }
 }
 
 #[cfg(test)]
@@ -1432,6 +1465,45 @@ mod tests {
         // Silence in, exact silence out once the state has let go.
         let mut z = vec![0.0f32; rate as usize * 30];
         d.run(&mut z);
+        assert_eq!(*z.last().unwrap(), 0.0);
+    }
+
+    #[test]
+    fn the_dc_blocker_takes_only_what_was_added_to_a_buffer() {
+        let rate = 44_100;
+        let n = rate as usize;
+        // Something else's sound already in the buffer, and an offset sine
+        // added on top: the offset goes, the rest stays.
+        let under: Vec<f32> = (0..n).map(|i| 0.25 * (i as f32 * 0.01).sin()).collect();
+        let added: Vec<f32> = (0..n)
+            .map(|i| 0.3 + 0.5 * (std::f32::consts::TAU * 220.0 * i as f32 / rate as f32).sin())
+            .collect();
+        let mut buf: Vec<f32> = under.iter().zip(&added).map(|(u, a)| u + a).collect();
+        let (mut d, mut alone) = (DcBlock::new(rate, 5.0), DcBlock::new(rate, 5.0));
+        for (b, u) in buf.chunks_mut(16).zip(under.chunks(16)) {
+            d.run_added(b, u);
+        }
+        let mut want = added.clone();
+        alone.run(&mut want);
+        let worst = (n / 2..n)
+            .map(|i| (buf[i] - under[i] - want[i]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(worst < 1e-5, "{worst}");
+        let mean = buf[n / 2..]
+            .iter()
+            .zip(&under[n / 2..])
+            .map(|(b, u)| b - u)
+            .sum::<f32>()
+            / (n / 2) as f32;
+        assert!(mean.abs() < 1e-3, "{mean}");
+        // It lets go after silence, so it rests and stays exact.
+        let mut z = vec![0.0f32; n * 30];
+        let quiet = vec![0.0f32; n * 30];
+        for (b, u) in z.chunks_mut(16).zip(quiet.chunks(16)) {
+            d.settle();
+            d.run_added(b, u);
+        }
+        assert!(d.rests());
         assert_eq!(*z.last().unwrap(), 0.0);
     }
 }
