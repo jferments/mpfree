@@ -318,7 +318,7 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     }
     out.push(drum_scene(
         "synth-drums-kick",
-        "Drums · Init Kit, Pad 1: the kick (Q-Links: tune, decay, tone, snap)",
+        "Drums · Init Kit, Pad 1: the kick (Q-Links: tune, decay, sweep, click)",
         "Init Kit",
         0,
         &[],
@@ -326,7 +326,7 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     )?);
     out.push(drum_scene(
         "synth-drums-boom",
-        "Drums · Boom Kit, Pad 14 edited: a long, driven 808-style boom",
+        "Drums · Boom Kit, Pad 14 edited: the 808 kick, long and driven (Q-Links: tune, decay, tone, drive)",
         "Boom Kit",
         13,
         &[(

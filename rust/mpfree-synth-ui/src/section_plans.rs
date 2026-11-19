@@ -133,13 +133,25 @@ fn build(params: &[ParamInfo], spec: &str, list: Vec<S>) -> Arrangement {
     }
 }
 
-/// The engine's plan for page `page`, if it has one.
-pub fn plan(info: &NodeInfo, params: &[ParamInfo], page: &str) -> Option<Arrangement> {
+/// The engine's plan for page `page`, if it has one, with the node's
+/// values (in `params` order: Drums' pad pages follow the pad's model).
+pub fn plan(
+    info: &NodeInfo,
+    params: &[ParamInfo],
+    values: &[f32],
+    page: &str,
+) -> Option<Arrangement> {
+    let value = |id: u16| {
+        params
+            .iter()
+            .position(|p| p.id == id)
+            .map_or(0.0, |i| values.get(i).copied().unwrap_or(params[i].default))
+    };
     let (spec, list) = match info.id {
         "mpfree.poly" => poly(page)?,
         "mpfree.fm" => fm(page)?,
         "mpfree.wavetable" => wavetable(page)?,
-        "mpfree.drums" => drums(page)?,
+        "mpfree.drums" => drums(page, &value)?,
         "mpfree.pluck" => pluck(page)?,
         "mpfree.keys" => keys(page)?,
         "mpfree.drawbar" => drawbar(page)?,
@@ -728,8 +740,10 @@ fn wavetable(page: &str) -> Option<Plan> {
     })
 }
 
-fn drums(page: &str) -> Option<Plan> {
-    use mpfree_synth::drum_params::{field as f, pad_id, BASE_NOTE, LEVEL, METER_VOICES, PADS};
+fn drums(page: &str, value: &dyn Fn(u16) -> f32) -> Option<Plan> {
+    use mpfree_synth::drum_params::{
+        self as dp, field as f, pad_id, BASE_NOTE, LEVEL, METER_VOICES, PADS, VOICES,
+    };
     if let Some(p) = page
         .strip_prefix("Pad ")
         .and_then(|n| n.parse::<usize>().ok())
@@ -737,41 +751,87 @@ fn drums(page: &str) -> Option<Plan> {
         .map(|n| n - 1)
     {
         let id = |k: u16| pad_id(p, k);
+        let m = dp::model_of(value(id(f::MODEL)));
+        let current = value(VOICES) >= 0.5;
+        if !current && m < dp::model::FIRST {
+            // A Classic kit's first-engine drum: its fourteen, as always.
+            return Some((
+                "row(col(kit:150, sound:*):50*, col(body:*, mix:*):50*)",
+                vec![
+                    s("kit", "Kit", Source, &[]).draw("Kit").link("Kit"),
+                    s(
+                        "sound",
+                        "Sound",
+                        Source,
+                        &[
+                            id(f::MODEL),
+                            id(f::TUNE),
+                            id(f::DECAY),
+                            id(f::TONE),
+                            id(f::SNAP),
+                        ],
+                    )
+                    .draw("Hit"),
+                    s(
+                        "body",
+                        "Noise and sweep",
+                        Tone,
+                        &[id(f::NOISE), id(f::SWEEP), id(f::SWEEP_TIME), id(f::DRIVE)],
+                    )
+                    .draw("Sweep"),
+                    s(
+                        "mix",
+                        "Mix",
+                        Voice,
+                        &[
+                            id(f::CHOKE),
+                            id(f::LEVEL),
+                            id(f::PAN),
+                            id(f::VEL_TONE),
+                            id(f::VEL_LEVEL),
+                        ],
+                    ),
+                ],
+            ));
+        }
+        // Any other drum: the model and the four its Q-Links turn, the rest
+        // of its own knobs, then how it sits in the kit and plays. Each knob
+        // named as that drum calls it ("Punch" on the 808).
+        let q = dp::qlinks(m);
+        let mut sound = vec![id(f::MODEL)];
+        sound.extend(q.iter().map(|&k| id(k)));
+        let shape: Vec<u16> = dp::knobs(m)
+            .iter()
+            .filter(|(k, _)| !q.contains(k))
+            .map(|&(k, _)| id(k))
+            .collect();
+        let labels: Vec<(u16, &str)> = dp::knobs(m).iter().map(|&(k, l)| (id(k), l)).collect();
+        let bends = dp::knobs(m).iter().any(|&(k, _)| k == f::SWEEP);
+        let shape = s("body", "Shape", Tone, &shape).labels(&labels);
         return Some((
-            "row(col(kit:150, sound:*):50*, col(body:*, mix:*):50*)",
+            "row(col(kit:150, sound:*, feel:150):50*, col(body:*, mix:300):50*)",
             vec![
                 s("kit", "Kit", Source, &[]).draw("Kit").link("Kit"),
+                s("sound", "Sound", Source, &sound)
+                    .labels(&labels)
+                    .draw("Hit"),
                 s(
-                    "sound",
-                    "Sound",
-                    Source,
+                    "feel",
+                    "Feel",
+                    Motion,
                     &[
-                        id(f::MODEL),
-                        id(f::TUNE),
-                        id(f::DECAY),
-                        id(f::TONE),
-                        id(f::SNAP),
+                        id(f::VEL_LEVEL),
+                        id(f::VEL_TONE),
+                        id(f::ACCENT),
+                        id(f::VARIATION),
                     ],
-                )
-                .draw("Hit"),
-                s(
-                    "body",
-                    "Noise and sweep",
-                    Tone,
-                    &[id(f::NOISE), id(f::SWEEP), id(f::SWEEP_TIME), id(f::DRIVE)],
-                )
-                .draw("Sweep"),
+                ),
+                if bends { shape.draw("Sweep") } else { shape },
                 s(
                     "mix",
                     "Mix",
                     Voice,
-                    &[
-                        id(f::CHOKE),
-                        id(f::LEVEL),
-                        id(f::PAN),
-                        id(f::VEL_TONE),
-                        id(f::VEL_LEVEL),
-                    ],
+                    &[id(f::LEVEL), id(f::PAN), id(f::CHOKE), id(f::PLAYS)],
                 ),
             ],
         ));
@@ -881,7 +941,12 @@ fn drums(page: &str) -> Option<Plan> {
             vec![
                 s("kit", "Kit", Source, &[]).draw("Kit"),
                 s("levels", "Levels", Voice, &[]).draw("Levels"),
-                s("out", "Output", Voice, &[LEVEL, BASE_NOTE, METER_VOICES]),
+                s(
+                    "out",
+                    "Output",
+                    Voice,
+                    &[LEVEL, BASE_NOTE, VOICES, METER_VOICES],
+                ),
             ],
         ),
         _ => return None,
