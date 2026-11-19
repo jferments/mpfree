@@ -1,6 +1,6 @@
-//! Poly's supersaw, and the divide-down bank of Strings and Drawbar's combo
-//! organ, through `mpfree_simd`: the same samples with the NEON kernels on
-//! and off. On the workstation both are the plain twin; as
+//! Poly's supersaw, the divide-down bank of Strings and Drawbar's combo
+//! organ, and the Choir's formants, through `mpfree_simd`: the same
+//! samples with the NEON kernels on and off. On the workstation both are the plain twin; as
 //! ARMv7 under qemu-arm (CI's `rust-arm` job runs these) the first is the
 //! NEON kernels, so this checks whole sounds, end to end, bit for bit
 //! (docs/dev/design/simd.md).
@@ -11,7 +11,7 @@
 
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_synth::params::*;
-use mpfree_synth::{Drawbar, Poly, Strings};
+use mpfree_synth::{Choir, Drawbar, Poly, Strings};
 
 const RATE: u32 = 44_100;
 
@@ -176,6 +176,28 @@ fn strings_and_the_combo_organ_sound_the_same_with_the_kernels_off() {
         played += 1;
     }
     assert!(played >= 4, "{played}");
+}
+
+/// Every Choir preset: four-note chords sung through the five formants,
+/// four voices a vector. Flush-to-zero is on, as on the app's sound
+/// threads: NEON always flushes denormals, so without it a filter dying
+/// through them could differ from the twin under 1e-38 (it doesn't today:
+/// the Choir lets its voices go first).
+#[test]
+fn the_choir_presets_sound_the_same_with_the_kernel_off() {
+    assert!(mpfree_lanes::fpu::flush_to_zero());
+    let mut played = 0;
+    for p in Choir::presets() {
+        let (kernel, plain) = both_of(|| Box::new(Choir::new(RATE)), p.values);
+        assert!(kernel.iter().any(|&b| b != 0), "Choir {} is silent", p.name);
+        assert!(
+            kernel == plain,
+            "Choir {}: the kernel's samples differ",
+            p.name
+        );
+        played += 1;
+    }
+    assert!(played >= 20, "{played}");
 }
 
 #[test]
