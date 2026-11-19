@@ -42,17 +42,31 @@
 
 use std::f32::consts::PI;
 
-use mpfree_node::{Ctx, Cull, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Tuning};
+use mpfree_node::{
+    Ctl, Ctx, Cull, Expr, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Tuning,
+};
 
 use crate::analog_params::*;
 use crate::character::{
     Cards, Drift, AGE_CUT_OCT, AGE_LEVEL_DB, AGE_PW, AGE_TIME, AGE_TUNE_CENTS, DRIFT_CENTS,
 };
 use crate::dsp::{lfo_value, LfoShape, Rng};
+use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
 use crate::params::Preset;
+use crate::voice::Priority;
 
 /// Frames per control step.
 pub const CTRL: u64 = 16;
+/// Pressure on the cutoff at full pressure and Pressure 100, in octaves.
+const PRESS_CUT_OCT: f32 = 2.0;
+/// Pressure on vibrato at full pressure and Pressure 100: the LFO on the
+/// pitch, in cents.
+const PRESS_VIB_CENTS: f32 = 50.0;
+/// A note's own tone (per-note expression, 0 to 1) on its cutoff at 1, in
+/// octaves.
+const TONE_CUT_OCT: f32 = 2.0;
+/// How fast a note's pressure and the mod wheel follow (63 % in this).
+const PRESS_MS: f32 = 10.0;
 /// Voice cards (the voice core's, `character`).
 pub use crate::character::CARDS;
 /// Keys remembered while held, for Unison's return to a held key.
@@ -417,6 +431,11 @@ struct Voice {
     dvca: f32,
     /// Given up under load: its amp envelope falls 40 dB in [`CULL_MS`].
     cut: bool,
+    /// The note's pressure (0 to 1), following what was sent.
+    press: f32,
+    press_to: f32,
+    /// The note's own slide and tone (per-note expression).
+    ex: VoiceExpr,
 }
 
 impl Voice {
@@ -760,6 +779,14 @@ pub struct Analog {
     quiet: u32,
     idle: bool,
     tuning: Tuning,
+    /// Each key's slide and tone for its next note.
+    exprs: NoteExprs,
+    expr_c: f32,
+    /// The mod wheel (0 to 1), following what was sent, and the share of
+    /// the way it and a pressure cover each control step.
+    wheel: f32,
+    wheel_to: f32,
+    press_c: f32,
 }
 
 impl Analog {
@@ -804,6 +831,11 @@ impl Analog {
             quiet: 0,
             idle: true,
             tuning: Tuning::default(),
+            exprs: NoteExprs::new(),
+            expr_c: 1.0,
+            wheel: 0.0,
+            wheel_to: 0.0,
+            press_c: 1.0,
         };
         // Each oscillator starts somewhere different in its cycle.
         let mut ph = Rng::new(0x000F_F5E7);
@@ -959,6 +991,17 @@ impl Analog {
         }
     }
 
+    /// The held key Unison plays, by Priority (the newest for Last, as
+    /// before Priority was a setting).
+    fn held_pick(&self) -> Option<u8> {
+        let held = &self.held[..self.n_held];
+        match Priority::from_index(self.v(PRIORITY)) {
+            Priority::Last => held.last().copied(),
+            Priority::Low => held.iter().min().copied(),
+            Priority::High => held.iter().max().copied(),
+        }
+    }
+
     fn cards(&self) -> usize {
         (self.v(POLYPHONY) as usize).clamp(1, CARDS)
     }
@@ -983,6 +1026,9 @@ impl Analog {
         }
         v.played = true;
         v.cut = false;
+        v.press = 0.0;
+        v.press_to = 0.0;
+        v.ex.start(self.exprs.on(note));
         v.fenv.gate_on();
         v.aenv.gate_on();
     }
@@ -1039,9 +1085,22 @@ impl Analog {
             // The LFO's delay starts again with a fresh phrase.
             self.lfo_fade = if self.v(LFO_DELAY) > 0.0 { 0.0 } else { 1.0 };
         }
+        let was_held = self.n_held > 0;
         self.push(note);
         let vel = f32::from(velocity) / 127.0;
         if self.v(VOICE_MODE) >= UNISON {
+            // The key Priority picks sounds; another is only remembered,
+            // for when keys come up.
+            if self.held_pick() != Some(note) {
+                return;
+            }
+            let held_on = self.voices.iter().any(|v| v.state == HELD_KEY);
+            if self.v(LEGATO) >= 0.5 && was_held && held_on {
+                // Legato: the cards move to the new key, gliding if set,
+                // without starting the envelopes again.
+                self.retarget(note);
+                return;
+            }
             self.uni_note = note;
             let n = self.cards();
             for c in 0..n {
@@ -1060,25 +1119,16 @@ impl Analog {
     }
 
     fn note_off(&mut self, note: u8) {
+        self.exprs.off(note);
         self.remove(note);
         if self.v(VOICE_MODE) >= UNISON {
             if note != self.uni_note {
                 return;
             }
-            if self.n_held > 0 {
-                // Back to the key still held, gliding if set.
-                let back = self.held[self.n_held - 1];
-                self.uni_note = back;
-                let glide = self.v(GLIDE) > 0.0;
-                for v in self.voices.iter_mut().filter(|v| v.state == HELD_KEY) {
-                    v.note = back;
-                    v.target = f32::from(back);
-                    if glide {
-                        v.gliding = true;
-                    } else {
-                        v.pitch = v.target;
-                    }
-                }
+            if let Some(back) = self.held_pick() {
+                // Back to the key still held that Priority picks, gliding
+                // if set.
+                self.retarget(back);
                 return;
             }
         }
@@ -1092,7 +1142,26 @@ impl Analog {
         }
     }
 
+    /// Unison's held cards move to `note` without a new start, gliding if
+    /// Glide is set, taking that key's slide and tone.
+    fn retarget(&mut self, note: u8) {
+        self.uni_note = note;
+        let glide = self.v(GLIDE) > 0.0;
+        let ex = self.exprs.on(note);
+        for v in self.voices.iter_mut().filter(|v| v.state == HELD_KEY) {
+            v.note = note;
+            v.target = f32::from(note);
+            v.ex.retarget(ex);
+            if glide {
+                v.gliding = true;
+            } else {
+                v.pitch = v.target;
+            }
+        }
+    }
+
     fn all_off(&mut self) {
+        self.exprs.clear();
         self.n_held = 0;
         for v in self.voices.iter_mut() {
             if v.state == HELD_KEY {
@@ -1123,9 +1192,36 @@ impl Analog {
             }
             NodeEvent::AllOff => self.all_off(),
             NodeEvent::Param { id, value } => self.set_param(id, value),
-            NodeEvent::Pressure { .. } | NodeEvent::Expression { .. } => {}
-            // The pedals are held by the host for this engine (`Node::hears`).
-            NodeEvent::Control { .. } => {}
+            NodeEvent::Pressure { note, value } => {
+                let p = f32::from(value.min(127)) / 127.0;
+                for v in self.voices.iter_mut() {
+                    if v.state == HELD_KEY && v.note == note {
+                        v.press_to = p;
+                    }
+                }
+            }
+            NodeEvent::Expression { note, kind, value } => {
+                let Some(value) = self.exprs.set(note, kind, value) else {
+                    return;
+                };
+                if kind == Expr::Release {
+                    return;
+                }
+                for v in self.voices.iter_mut() {
+                    if v.state == HELD_KEY && v.note == note {
+                        v.ex.aim(kind, value);
+                    }
+                }
+            }
+            // The mod wheel adds vibrato; the pedals are held by the host
+            // for this engine (`Node::hears`).
+            NodeEvent::Control { ctl, value } => {
+                if ctl == Ctl::ModWheel {
+                    if let Some(v) = Ctl::clamp(value) {
+                        self.wheel_to = v;
+                    }
+                }
+            }
         }
     }
 
@@ -1213,7 +1309,30 @@ impl Analog {
             };
         }
         let shape = LfoShape::from_index(self.v(LFO_WAVE));
-        let lfo = lfo_value(shape, self.lfo_phase, self.lfo_held) * self.lfo_fade;
+        let lfo_raw = lfo_value(shape, self.lfo_phase, self.lfo_held);
+        let lfo = lfo_raw * self.lfo_fade;
+        // The mod wheel's vibrato (the LFO without its delay, since the
+        // wheel is raised on purpose), and what pressure moves.
+        if self.wheel != self.wheel_to {
+            self.wheel += (self.wheel_to - self.wheel) * self.press_c;
+            if (self.wheel_to - self.wheel).abs() < 1e-5 {
+                self.wheel = self.wheel_to;
+            }
+        }
+        let wheel_cents = self.v(WHEEL_VIB) * self.wheel * lfo_raw;
+        let press_to = self.v(PRESS_TO).round();
+        let press_amt = self.v(PRESSURE) / 100.0;
+        let press_cut = if press_to == PRESS_CUTOFF {
+            press_amt * PRESS_CUT_OCT
+        } else {
+            0.0
+        };
+        let press_vib = if press_to == PRESS_VIBRATO {
+            press_amt * PRESS_VIB_CENTS * lfo_raw
+        } else {
+            0.0
+        };
+        let (press_c, expr_c) = (self.press_c, self.expr_c);
 
         // Drift: each oscillator a slow random walk (unit rms).
         let age = self.v(AGE) / 100.0;
@@ -1290,6 +1409,13 @@ impl Analog {
                 continue;
             }
             sounding += 1;
+            if v.press != v.press_to {
+                v.press += (v.press_to - v.press) * press_c;
+                if (v.press_to - v.press).abs() < 1e-5 {
+                    v.press = v.press_to;
+                }
+            }
+            v.ex.step(expr_c);
             if v.gliding {
                 v.pitch += (v.target - v.pitch) * glide_a;
                 if (v.target - v.pitch).abs() < 1e-3 {
@@ -1297,7 +1423,7 @@ impl Analog {
                     v.gliding = false;
                 }
             }
-            let key = v.pitch + transpose + bend;
+            let key = v.pitch + transpose + bend + v.ex.slide;
             if key != v.hz_key {
                 let hz = self.tuning.hz(key);
                 v.hz = if hz.is_finite() { hz } else { 0.0 };
@@ -1307,7 +1433,7 @@ impl Analog {
                 AGE_TUNE_CENTS * age * self.cards.tune1[c] + DRIFT_CENTS * age * self.drift.d1[c];
             let t2 =
                 AGE_TUNE_CENTS * age * self.cards.tune2[c] + DRIFT_CENTS * age * self.drift.d2[c];
-            let cents = fine + v.uni * uni;
+            let cents = fine + v.uni * uni + wheel_cents + press_vib * v.press;
             let semis1 = (cents + t1) / 100.0 + pm_env_pitch * fe;
             let to1 = (v.hz * oct1 * exp2_fast(semis1 / 12.0) / fs).clamp(0.0, 0.45);
             let to2 = (v.hz * exp2_fast((semis2 + (cents + t2 + fine2) / 100.0) / 12.0) / fs)
@@ -1335,7 +1461,9 @@ impl Analog {
                 + AGE_CUT_OCT * age * self.cards.cut[c]
                 + env_oct * fe * velf
                 + kt * (key - 60.0) / 12.0
-                + pm_env_cut * fe;
+                + pm_env_cut * fe
+                + press_cut * v.press
+                + TONE_CUT_OCT * v.ex.tone;
             let fc = exp2_fast(oct).clamp(16.0, fmax);
             let g = (PI * fc / fs).tan();
             if fresh {
@@ -1497,6 +1625,9 @@ impl Node for Analog {
         self.chorus.follow_k = (-1.0 / (CH_FOLLOW_S * r)).exp();
         self.chorus.max_delay = (CH_BUF - 4) as f32;
         self.drift.set_step(CTRL as f32 / r);
+        let ctrl_hz = r / CTRL as f32;
+        self.expr_c = expr_coef(ctrl_hz);
+        self.press_c = 1.0 - (-1.0 / (PRESS_MS * 0.001 * ctrl_hz).max(1.0)).exp();
         self.dc_a = (-std::f32::consts::TAU * DC_HZ / r).exp();
         self.update_times();
         self.reset();
@@ -1504,6 +1635,9 @@ impl Node for Analog {
 
     fn reset(&mut self) {
         self.n_held = 0;
+        self.exprs.clear();
+        self.wheel = 0.0;
+        self.wheel_to = 0.0;
         for v in self.voices.iter_mut() {
             v.silence();
             v.played = false;

@@ -755,3 +755,141 @@ fn print_preset_levels() {
         );
     }
 }
+
+/// Sends `events` at frame `at` in one 16-frame block.
+fn send(s: &mut Analog, at: u64, events: &[NodeEvent]) {
+    let evs: Vec<Timed> = events.iter().map(|&e| Timed::new(0, e)).collect();
+    s.process(&Ctx::new(RATE, at), &evs, &mut [0.0; 16], &mut [0.0; 16]);
+}
+
+#[test]
+fn unison_plays_the_key_priority_picks() {
+    // C3 then G3 held: Last and High play G3, Low stays on C3; letting go
+    // of the one that plays goes to the other.
+    for (prio, want, back) in [(0.0, 55u8, 48u8), (1.0, 48, 55), (2.0, 55, 48)] {
+        let mut s = plain();
+        s.set_param(VOICE_MODE, UNISON);
+        s.set_param(POLYPHONY, 2.0);
+        s.set_param(PRIORITY, prio);
+        send(&mut s, 0, &[on(48, 100)]);
+        send(&mut s, 16, &[on(55, 100)]);
+        assert_eq!(s.card_note(0), Some(want), "priority {prio}");
+        assert_eq!(s.card_note(1), Some(want), "priority {prio}");
+        send(&mut s, 32, &[off(want)]);
+        assert_eq!(s.card_note(0), Some(back), "priority {prio}, back");
+    }
+}
+
+#[test]
+fn unison_legato_moves_without_a_new_attack() {
+    let attack_peak = |legato: f32| {
+        let mut s = plain();
+        s.set_param(VOICE_MODE, UNISON);
+        s.set_param(POLYPHONY, 1.0);
+        s.set_param(LEGATO, legato);
+        s.set_param(A_ATTACK, 1.0);
+        s.set_param(A_DECAY, 20.0);
+        s.set_param(A_SUSTAIN, 30.0);
+        render(&mut s, 9600, &[(0, on(48, 100))], |_| 64);
+        let (l, _) = render_at(&mut s, RATE, 4800, &[(0, on(55, 100))], |_| 64);
+        (peak(&l[..2400]), s.card_note(0))
+    };
+    let (with, note) = attack_peak(1.0);
+    let (without, _) = attack_peak(0.0);
+    assert_eq!(note, Some(55));
+    assert!(
+        db(without) - db(with) > 6.0,
+        "a legato key keeps the sustain level: {with} against a new attack's {without}"
+    );
+}
+
+#[test]
+fn the_mod_wheel_adds_vibrato_and_pressure_moves_its_note() {
+    // Wheel vibrato 50 cents (the default) with the wheel up: the pitch
+    // swings about 50 cents each way over an LFO cycle; at rest, none.
+    let swing = |wheel: f32| {
+        let mut s = plain();
+        s.set_param(LFO_RATE, 5.0);
+        send(
+            &mut s,
+            0,
+            &[
+                on(60, 100),
+                NodeEvent::Control {
+                    ctl: mpfree_node::Ctl::ModWheel,
+                    value: wheel,
+                },
+            ],
+        );
+        let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+        let mut f = 16;
+        for _ in 0..(RATE as u64 / 16) {
+            run(&mut s, f, 16);
+            f += 16;
+            let c = cents(s.card_hz(0), hz(60.0));
+            lo = lo.min(c);
+            hi = hi.max(c);
+        }
+        (hi - lo) / 2.0
+    };
+    assert!(swing(0.0) < 0.01, "no wheel, no vibrato: {}", swing(0.0));
+    let up = swing(1.0);
+    assert!((up - 50.0).abs() < 2.0, "wheel up: ±{up} cents");
+
+    // Pressure to the cutoff: full pressure at 100 opens one note's cutoff
+    // two octaves, the other note's not at all.
+    let mut s = plain();
+    s.set_param(CUTOFF, 500.0);
+    s.set_param(ENV_AMT, 0.0);
+    s.set_param(PRESS_TO, PRESS_CUTOFF);
+    s.set_param(PRESSURE, 100.0);
+    send(&mut s, 0, &[on(60, 100), on(64, 100)]);
+    run(&mut s, 16, 1600);
+    let before = [s.card_cutoff(0), s.card_cutoff(1)];
+    send(
+        &mut s,
+        1616,
+        &[NodeEvent::Pressure {
+            note: 60,
+            value: 127,
+        }],
+    );
+    run(&mut s, 1632, 4800);
+    let oct = (s.card_cutoff(0) / before[0]).log2();
+    assert!((oct - 2.0).abs() < 0.02, "pressure opened {oct} octaves");
+    assert!((s.card_cutoff(1) / before[1] - 1.0).abs() < 1e-4);
+}
+
+#[test]
+fn a_notes_own_slide_and_tone_move_only_that_note() {
+    let mut s = plain();
+    s.set_param(CUTOFF, 500.0);
+    s.set_param(ENV_AMT, 0.0);
+    send(&mut s, 0, &[on(60, 100), on(67, 100)]);
+    run(&mut s, 16, 1600);
+    let cut = s.card_cutoff(0);
+    send(
+        &mut s,
+        1616,
+        &[
+            NodeEvent::Expression {
+                note: 60,
+                kind: mpfree_node::Expr::Slide,
+                value: 2.0,
+            },
+            NodeEvent::Expression {
+                note: 60,
+                kind: mpfree_node::Expr::Tone,
+                value: 0.5,
+            },
+        ],
+    );
+    run(&mut s, 1632, 4800);
+    assert!(cents(s.card_hz(0), hz(62.0)).abs() < 0.5, "slid a tone up");
+    assert!(
+        cents(s.card_hz(1), hz(67.0)).abs() < 0.5,
+        "the other note stays"
+    );
+    let oct = (s.card_cutoff(0) / cut).log2();
+    assert!((oct - 1.0).abs() < 0.02, "tone 0.5 opens an octave: {oct}");
+}

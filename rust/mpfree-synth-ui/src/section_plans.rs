@@ -1044,7 +1044,7 @@ fn analog(page: &str) -> Option<Plan> {
             )
         }
         "Mod" => (
-            "row(lfo:*, pm:*)",
+            "row(lfo:*, col(pm:*, play:*))",
             vec![
                 s(
                     "lfo",
@@ -1076,6 +1076,15 @@ fn analog(page: &str) -> Option<Plan> {
                     (PM_CUTOFF, "Cutoff"),
                 ])
                 .note("each voice bends its own Osc 1"),
+                // Each note's pressure, and the mod wheel's vibrato on top
+                // of the LFO's.
+                s(
+                    "play",
+                    "Pressure and wheel",
+                    Motion,
+                    &[PRESS_TO, PRESSURE, WHEEL_VIB],
+                )
+                .labels(&[(PRESS_TO, "Pressure to"), (PRESSURE, "Amount")]),
             ],
         ),
         "Voice" => (
@@ -1088,7 +1097,7 @@ fn analog(page: &str) -> Option<Plan> {
                     "voices",
                     "Voices",
                     Voice,
-                    &[VOICE_MODE, POLYPHONY, GLIDE, UNI_DETUNE],
+                    &[VOICE_MODE, POLYPHONY, GLIDE, UNI_DETUNE, PRIORITY, LEGATO],
                 )
                 .labels(&[(UNI_DETUNE, "Detune")]),
                 s("tuning", "Tuning", Voice, &[TRANSPOSE, BEND_RANGE, FINE]),
