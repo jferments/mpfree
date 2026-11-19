@@ -2340,6 +2340,8 @@ impl SamplePage {
             return Ok(());
         }
         if let Some(why) = self.edit_pad_why() {
+            self.lines
+                .push(format!("sample: Edit pad not opened: {why}"));
             return Err(why);
         }
         self.open_editor(ui, Editor::Play);
@@ -2432,6 +2434,18 @@ impl SamplePage {
             return;
         }
         if editor != self.editor {
+            // Edit pad opening or closing on the Pads tab: logged, so the
+            // device checks can see it (one-page step 6d).
+            match (self.editor, editor) {
+                (Editor::Pads, Editor::Play) => self.lines.push(format!(
+                    "sample: Edit pad on pad {}",
+                    self.pad_text(self.kit, self.pad)
+                )),
+                (Editor::Play, Editor::Pads) => self
+                    .lines
+                    .push("sample: Edit pad closed: the pads again".to_string()),
+                _ => {}
+            }
             self.lift();
             self.editor = editor;
             self.refresh(ui);
