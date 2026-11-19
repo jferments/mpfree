@@ -1024,3 +1024,218 @@ output.level = 1.9
 pressure.to-1 = Warp
 pressure.depth-1 = 35
 pressure.depth-2 = 25
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = Portamento Lead
+
+# Osc 1
+osc-1.wave = Saw
+
+# Osc 2
+osc-2.wave = Saw
+osc-2.fine = 7
+osc-2.level = 60
+
+# Filter
+filter.cutoff = 2200
+filter.resonance = 20
+filter.env-amount = 1
+filter.key-track = 40
+filter.velocity = 1
+
+# Filter env
+filter-env.decay = 600
+filter-env.sustain = 40
+
+# Amp env
+amp-env.attack = 3
+amp-env.release = 220
+
+# Voice
+voice.mode = Legato
+voice.glide = 250
+voice.glide-mode = Rate
+
+# Output
+output.level = 0
+
+# Routes
+routes.from-2 = Velocity
+routes.to-2 = Cutoff
+routes.depth-2 = 30
+
+# Pressure
+pressure.to-1 = Vibrato
+pressure.depth-1 = 40
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = Low Note Lead
+
+# Osc 1
+osc-1.wave = Pulse
+osc-1.width = 40
+
+# Osc 2
+osc-2.octave = -1
+osc-2.level = 50
+
+# Mix
+mix.sub = 20
+
+# Filter
+filter.cutoff = 900
+filter.resonance = 35
+filter.env-amount = 2
+filter.key-track = 50
+filter.velocity = 1.5
+
+# Filter env
+filter-env.decay = 300
+filter-env.sustain = 30
+
+# Amp env
+amp-env.attack = 2
+amp-env.release = 120
+
+# Voice
+voice.mode = Mono
+voice.priority = Low
+voice.glide = 50
+
+# Output
+output.level = 0
+
+# Pressure
+pressure.to-1 = Cutoff
+pressure.depth-1 = 30
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = Breath Lead
+
+# Osc 1
+osc-1.wave = Saw
+
+# Osc 2
+osc-2.wave = Triangle
+osc-2.octave = 1
+osc-2.level = 30
+
+# Mix
+mix.noise = 8
+
+# Filter
+filter.cutoff = 1500
+filter.resonance = 15
+filter.key-track = 50
+filter.env-amount = 0.6
+
+# Amp env
+amp-env.attack = 25
+amp-env.release = 150
+
+# LFO 2
+lfo-2.rate = 5.2
+lfo-2.fade-in = 500
+lfo-2.to-pitch = 0.15
+
+# Voice
+voice.mode = Legato
+voice.glide = 40
+
+# Output
+output.level = 0
+
+# Routes
+routes.from-2 = Breath
+routes.to-2 = Cutoff
+routes.depth-2 = 50
+
+# Pressure
+pressure.to-1 = Cutoff
+pressure.depth-1 = 40
+pressure.to-2 = Vibrato
+pressure.depth-2 = 25
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = Slide Lead
+
+# Osc 1
+osc-1.wave = Saw
+
+# Osc 2
+osc-2.wave = Pulse
+osc-2.width = 30
+osc-2.fine = -6
+osc-2.level = 50
+
+# Filter
+filter.cutoff = 1300
+filter.resonance = 25
+filter.env-amount = 1.2
+filter.key-track = 40
+filter.velocity = 1
+
+# Filter env
+filter-env.decay = 500
+filter-env.sustain = 40
+
+# Amp env
+amp-env.attack = 4
+amp-env.release = 250
+
+# Output
+output.level = -1.5
+
+# Routes
+routes.from-2 = Tone
+routes.to-2 = Cutoff
+routes.depth-2 = 50
+
+# Pressure
+pressure.to-1 = Vibrato
+pressure.depth-1 = 35
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = Unison Lead
+
+# Osc 1
+osc-1.wave = Saw
+
+# Osc 2
+osc-2.level = 0
+
+# Unison
+unison.unison = 4
+unison.detune = 20
+unison.spread = 70
+
+# Filter
+filter.cutoff = 3000
+filter.resonance = 10
+filter.env-amount = 0.8
+filter.key-track = 40
+
+# Filter env
+filter-env.decay = 700
+filter-env.sustain = 50
+
+# Amp env
+amp-env.attack = 3
+amp-env.release = 200
+
+# Voice
+voice.mode = Mono
+voice.priority = High
+voice.glide = 30
+
+# Output
+output.level = 0
+
+# Pressure
+pressure.to-1 = Vibrato
+pressure.depth-1 = 30

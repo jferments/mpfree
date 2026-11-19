@@ -627,3 +627,50 @@ output.tone = 4021
 fx-1.mode = Tube
 fx-1.drive = 12
 fx-1.output = -4
+
+mpfree-preset = 2
+engine = mpfree.bass
+name = Rate Glide Bass
+
+# Filter
+filter.cutoff = 900
+filter.resonance = 35
+filter.env-amount = 40
+filter.filter-decay = 250
+
+# Play
+play.glide = 200
+play.glide-mode = Rate
+play.glide-on = Always
+play.priority = High
+
+# Pressure
+pressure.press-to = Cutoff
+pressure.pressure = 50
+
+mpfree-preset = 2
+engine = mpfree.bass
+name = High Note Lead
+
+# Source
+source.octave = 1
+source.wave = Pulse
+source.pulse-width = 35
+source.sub = 0
+
+# Filter
+filter.cutoff = 2000
+filter.resonance = 25
+filter.env-amount = 30
+filter.filter-decay = 400
+
+# Output
+output.drive = 25
+
+# Play
+play.glide = 60
+play.priority = High
+
+# Pressure
+pressure.press-to = Vibrato
+pressure.pressure = 60
