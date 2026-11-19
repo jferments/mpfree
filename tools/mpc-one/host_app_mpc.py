@@ -107,8 +107,8 @@ _spec.loader.exec_module(checks)
 
 PROGRAM_BUILT = os.path.join(REPO_ROOT, "rust", "target", "armv7-unknown-linux-gnueabihf", "release", "mpfree")
 # The largest program file the host tools copy to the MPC's RAM (/run is a tmpfs of about 400 MB there). The
-# static pad player keeps its symbols for backtraces: 16.0 MB on 19 Nov 2026 (12 MB of it code), so this is
-# no longer 16 MiB, which it was about to pass. The code's own limit is another matter: past 16 MiB of
+# static pad player keeps its symbols for backtraces: 16.9 MB at main on 19 Nov 2026 (12.6 MB of it code), past
+# the 16 MiB this limit used to be. The code's own limit is another matter: past 16 MiB of
 # code, binutils 2.42 links a static ARM program that faults at start (docs/dev/guides/mpfree-app.md).
 PROGRAM_MAX = 64 << 20
 KIT_MAX = 48 << 20
