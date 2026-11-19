@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-time-ui/src/editor.rs rust/mpfree-seq/src/notes.rs rust/mpfree-app/src/time.rs
-checked: 2026-11-19 a6fb29b2
+checked: 2026-11-19 f0b39161
 -->
 
 # Editing notes
@@ -53,7 +53,7 @@ With the snap off, or finer than 1/32, the tracker uses 1/16 steps, and its titl
 
 ## Timing Correct
 
-Timing Correct pulls notes toward the beat, so a part played a little loose sits in time. Tap **TC sel.** and it corrects the picked notes; with none picked the button reads **TC all** and corrects every note. Its settings are the first rows of the Edit options beside the roll. Tap a row and turn the data wheel to change it:
+Timing Correct pulls notes toward the beat, so a part played a little loose sits in time. Tap **TC sel.** and it corrects the picked notes; with none picked the button reads **TC all** and corrects every note. The MPC's **TC** button gets you here from any page: it opens the note editor on the track you are on, and pressed again it corrects, as **TC sel.** or **TC all** would. Its settings are the first rows of the Edit options beside the roll. Tap a row and turn the data wheel to change it:
 
 - **Correct**: what moves. **Start** moves each note's start onto the grid. **End** moves its end. **Length** makes its length a whole number of grid steps. **Legato** holds each note until the next one starts.
 - **Division**: the grid, from a whole bar to 1/64, with triplets.
@@ -76,5 +76,5 @@ The Euclidean fill spreads a number of hits as evenly as they go over a number o
 Each turn of Hits, Steps or Rotate writes the pattern straight away, repeated through the whole clip. Steps that keep a hit keep their notes as they were; new hits are a step long and as loud as the sound's first note. Other sounds stay as they are. A pattern of 12 steps on a 16-step clip runs on into the next bar, for a part that drifts against the others. A run of turns is one take, so one **UNDO** puts the row back as it was.
 
 > [!MPC]
-> This is the MPC's Grid View, List Edit and Timing Correct in one place. TC here corrects notes already recorded. To correct notes as you record them, set **Quantise** on the Record tab (see [Recording a clip](clips.md#recording-a-clip)). The tracker and the Euclidean fill aren't on the MPC: the fill is like the Euclidean mode of Elektron's Digitakt.
+> This is the MPC's Grid View, List Edit and Timing Correct in one place. TC here corrects notes already recorded, and the **TC** button opens it as on the MPC. To correct notes as you record them, set **Quantise** on the Record tab (see [Recording a clip](clips.md#recording-a-clip)), or press **SHIFT + TC**, the MPC's TC On/Off. The tracker and the Euclidean fill aren't on the MPC: the fill is like the Euclidean mode of Elektron's Digitakt.
 

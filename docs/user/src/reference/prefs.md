@@ -12,7 +12,7 @@ checked: 2026-11-19 79fc6f63
 
 | Row | What it does |
 |---|---|
-| **Pad velocity curve** | How hard you must hit a pad for a loud note. **Soft:** loud notes come easily. **Hard:** more of the pad's travel stays below the top, for more dynamics. **Linear** plays the pad's own value. FULL LEVEL and Half Level override it. |
+| **Pad velocity curve** | How hard you must hit a pad for a loud note. **Soft:** loud notes come easily. **Hard:** more of the pad's travel stays below the top, for more dynamics. **Linear** plays the pad's own value. FULL LEVEL and Half Level override it, as does the level you set by holding FULL LEVEL and hitting a pad. |
 | **Latch keeps pads** | With Latch on, pads keep repeating after you let go. **Replace:** a fresh press starts a new set. **Toggle:** each press adds or removes that pad. |
 | **Audio buffer** | How much sound is queued ahead of the speakers. 3 periods is what the factory software uses; 2 plays about 3 ms sooner after a hit, with more risk of clicks. Changing it restarts the sound. When a busy bar is more than MPFree can make in time, it lets the quietest notes go (one already fading out first) rather than click; the Console says how many. |
 | **Find the buttons again** | Runs the button guide, which asks you to press MENU, NOTE REPEAT, TAP TEMPO, – and +, REC, OVERDUB, UNDO and PLAY START one at a time, so MPFree learns them. |
