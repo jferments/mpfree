@@ -44,8 +44,8 @@
 //!   core's [`Lfo`]) moves the breath and the pitch, in each model's own
 //!   mix; the mod wheel adds to its depth.
 //! - **Playing.** One voice by default (**Voices** up to 8). With one
-//!   voice, a key over a held key slurs to it (the breath carries on) or is
-//!   tongued again (**Legato**), gliding by **Glide** (time or rate, the
+//!   voice, a key over a held key slurs to it (the breath carries on,
+//!   gliding to the new key's velocity) or is tongued again (**Legato**), gliding by **Glide** (time or rate, the
 //!   voice core's [`Glide`]) and never faster than 10 ms; **Priority**
 //!   last, low or high ([`NoteStack`]). With more, each note takes a voice
 //!   ([`Voices`]), stolen voices fading over 3 ms, and each plays at
@@ -97,6 +97,10 @@ const MIN_MOVE_MS: f32 = 10.0;
 const TONGUE_MS: f32 = 18.0;
 /// How much the puff adds to the breath at Tongue 100 (half again).
 const TONGUE_BREATH: f32 = 0.5;
+/// A slurred key's velocity becomes the breath over this time constant,
+/// as a player's breath swells or eases into the next note: no new attack,
+/// and no step in the level.
+const SLUR_BREATH_MS: f32 = 25.0;
 /// A bore's priming at the start of a note from silence, as a share of
 /// the mouth pressure, and the more Tongue 100 adds; each bore scales it
 /// by its own `prime` (ours: at 0.25 the clarinet starts at its full
@@ -520,7 +524,11 @@ impl Ap {
 #[derive(Clone, Copy, Debug)]
 struct Voice {
     note: u8,
+    /// The velocity the breath aims for: the note's, or a slurred key's.
     velocity: u8,
+    /// The velocity breath now, 0 to 1: set at a tongued start, moving
+    /// toward `velocity` on a slur.
+    vel_now: f32,
     /// The pitch, gliding (notes), before bend, vibrato and pressure.
     pitch: f32,
     env: Adsr,
@@ -576,6 +584,7 @@ impl Voice {
         Voice {
             note: 60,
             velocity: 100,
+            vel_now: 100.0 / 127.0,
             pitch: 60.0,
             env: Adsr::default(),
             press: Pressure::new(),
@@ -812,6 +821,7 @@ impl Wind {
         let v = &mut self.v[i];
         v.note = note;
         v.velocity = velocity;
+        v.vel_now = f32::from(velocity) / 127.0;
         v.pitch = glide_from.unwrap_or(target);
         v.env.clear();
         v.env.gate_on();
@@ -949,6 +959,7 @@ impl Wind {
             let v = &mut self.v[l];
             v.note = pick;
             v.velocity = velocity;
+            v.vel_now = f32::from(velocity) / 127.0;
             v.env.gate_on();
             v.press.start();
             v.press.set(self.pressure[usize::from(pick & 0x7F)]);
@@ -969,7 +980,10 @@ impl Wind {
         self.set_pans();
     }
 
-    /// A slur or tongued move to another held key.
+    /// A slur or tongued move to another held key. Either way the key's
+    /// velocity becomes the breath (from the pads it is the only way to
+    /// blow harder or softer): tongued at once, slurred gliding there
+    /// ([`SLUR_BREATH_MS`]).
     fn move_to(&mut self, note: u8, velocity: u8) {
         let tongued = self.val(LEGATO) >= 0.5;
         let raw = self.pressure[usize::from(note & 0x7F)];
@@ -977,8 +991,9 @@ impl Wind {
         let v = &mut self.v[l];
         v.note = note;
         v.press.set(raw);
+        v.velocity = velocity;
         if tongued {
-            v.velocity = velocity;
+            v.vel_now = f32::from(velocity) / 127.0;
             v.env.gate_on();
             v.tongue = 1.0;
         }
@@ -1068,7 +1083,7 @@ impl Wind {
             1 if self.heard[0] => self.chan.breath,
             2 if self.heard[1] => self.chan.mod_wheel,
             3 if self.heard[2] => self.chan.foot,
-            _ => f32::from(v.velocity) / 127.0,
+            _ => v.vel_now,
         };
         s * self.val(BREATH) * 0.01
     }
@@ -1100,6 +1115,7 @@ impl Wind {
             self.chan.mod_wheel
         };
         let tongue_k = (-1.0 / (TONGUE_MS * 0.001 * sps)).exp();
+        let slur_k = 1.0 - (-1.0 / (SLUR_BREATH_MS * 0.001 * sps)).exp();
         let growl_inc = GROWL_HZ / sps;
         let reed = REED_SOFT + (REED_HARD - REED_SOFT) * self.val(REED) * 0.01;
         let range = self.val(VELOCITY);
@@ -1159,6 +1175,7 @@ impl Wind {
                 + to[target::VIBRATO as usize] * bore.vib_breath / bore.vib_semis.max(0.05))
             .min(0.5);
             v.tongue *= tongue_k;
+            v.vel_now += (f32::from(v.velocity) / 127.0 - v.vel_now) * slur_k;
             v.growl += growl_inc;
             v.growl -= v.growl.floor();
 
@@ -1419,10 +1436,11 @@ impl Wind {
 }
 
 /// A delay line read `d` samples back (at least 2; the last sample
-/// written is 1 back) with cubic Lagrange interpolation.
+/// written is 1 back) with cubic Lagrange interpolation. A delay ramped
+/// down to 2 can land a rounding error under it, so it is held at 2.
 #[inline(always)]
 fn lagrange(line: &[f32], w: usize, mask: usize, d: f32) -> f32 {
-    let k = d - 1.0;
+    let k = (d - 1.0).max(1.0);
     let j = k as usize;
     let t = k - j as f32;
     let at = |back: usize| line[w.wrapping_sub(1 + back) & mask];

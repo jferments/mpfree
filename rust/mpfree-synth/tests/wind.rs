@@ -404,6 +404,68 @@ fn a_slur_keeps_the_breath_and_a_tongue_attacks_again() {
     }
 }
 
+/// From the pads the velocity is the breath, so a slurred key's velocity
+/// becomes the breath too: a legato phrase can swell or ease. It glides
+/// there (no new attack, no step), and a controller, once it has moved,
+/// keeps the breath whatever the keys' velocities.
+#[test]
+fn a_slur_takes_its_keys_velocity_as_the_breath() {
+    for model in [CLARINET, SAX, FLUTE] {
+        let mut w = steady(model);
+        w.set_param(TONGUE, 0.0);
+        w.set_param(LEGATO, SLUR);
+        let x = render(
+            &mut w,
+            at(1400.0),
+            &[(0, on(60, 50)), (ms(600.0), on(62, 120))],
+        );
+        let soft = rms(&x[at(450.0)..at(590.0)]);
+        let hard = rms(&x[at(1000.0)..at(1400.0)]);
+        assert!(
+            db(hard) - db(soft) > 6.0,
+            "model {model}: {} dB to {} dB",
+            db(soft),
+            db(hard)
+        );
+        // It glides: 5 ms windows never jump by more than 3 dB.
+        let win = at(5.0);
+        let mut last = rms(&x[at(590.0)..at(590.0) + win]);
+        for i in (at(595.0)..at(700.0)).step_by(win) {
+            let now = rms(&x[i..i + win]);
+            assert!(
+                (db(now) - db(last)).abs() < 3.0,
+                "model {model}: a step at {} ms: {} to {}",
+                i as f32 / 48.0,
+                db(last),
+                db(now)
+            );
+            last = now;
+        }
+        assert_eq!(w.sounding_voices(), 1);
+    }
+    // A breath controller that has moved keeps the breath.
+    let mut w = steady(SAX);
+    w.set_param(BREATH_FROM, FROM_BREATH);
+    w.set_param(LEGATO, SLUR);
+    let x = render(
+        &mut w,
+        at(1400.0),
+        &[
+            (0, ctl(Ctl::Breath, 0.5)),
+            (ms(1.0), on(60, 30)),
+            (ms(600.0), on(62, 127)),
+        ],
+    );
+    let before = rms(&x[at(450.0)..at(590.0)]);
+    let after = rms(&x[at(1000.0)..at(1400.0)]);
+    assert!(
+        (db(after) - db(before)).abs() < 1.5,
+        "the controller's breath: {} dB to {} dB",
+        db(before),
+        db(after)
+    );
+}
+
 #[test]
 fn priority_picks_the_held_key() {
     for (prio, want) in [(0.0, 64u8), (1.0, 55), (2.0, 64)] {
