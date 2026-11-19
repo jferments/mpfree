@@ -19,7 +19,7 @@ The stick:
 |---|---|---|
 | 1 | `mpfree-test-root` (`mpfree-test-root-off` while the stick is set to remove MPFree) | Akai's root filesystem with MPFree's changes, a fresh ext2 sized to fit (about 470 MB); the hook mounts it read-only |
 | 2 | `mpfree-test-log` | ext2, 32 MiB, `MPFREE-LOG` |
-| 3 | `mpfree-test-kits` | ext2, `MPFREE-KITS`: `kits.bin`, MPFree's own kits rendered from the Drums synth, then the [free CC0 kits](#the-free-cc0-kits-as-built) when the programs folder has them (a release's does) |
+| 3 | `mpfree-test-kits` | ext2, `MPFREE-KITS`: `kits.bin`, MPFree's own kits rendered from the Drums synth (its first five, `mpfree_factory::drums::ON_THE_STICK`: the synth has 27, more than the kits file's 16), then the [free CC0 kits](#the-free-cc0-kits-as-built) when the programs folder has them (a release's does) |
 | 5 | `mpfree-setup` | FAT32, 128 MiB, label `MPFREE` (Akai mounts it at `/media/MPFREE`): the setup files, and with `--dev-tools` the developer tools under `mpfree-dev/`. Placed after partition 3, before 1 GiB |
 | 4 | `mpfree-test-data` | From 1 GiB to the end. On a new stick its first MiB is zeroed and starts with `MPFREE-FORMAT-ME <token>`; the token is also in partition 1's `/etc/mpfree-test/format-token`, and `setup-format.sh` makes the ext4 (`MPFREE-DATA`) with Akai's own `mke2fs` at the first start, only when both match. A stick that already has an MPFree partition 4 (name, start at 1 GiB, ext4 label) keeps it |
 

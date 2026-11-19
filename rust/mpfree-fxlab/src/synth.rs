@@ -438,9 +438,8 @@ pub fn kits() -> Vec<String> {
 /// apart, then two bars of a plain beat (kick, snare, closed hat) at
 /// 100 BPM.
 pub fn kit_tour(kit: usize, rate: u32) -> Stereo {
-    let mut d = Drums::new(rate);
-    d.load_preset(&Drums::presets()[kit]);
-    let base = d.param(drum_params::BASE_NOTE) as u8;
+    let mut d = kit_node(kit, rate);
+    let base = kit_base(kit, rate);
     let mut notes: Vec<(u8, u8, f64, f64)> = (0..16u8)
         .map(|p| (base + p, 110, f64::from(p) / 3.0, 0.05))
         .collect();
@@ -459,7 +458,31 @@ pub fn kit_tour(kit: usize, rate: u32) -> Stereo {
         }
     }
     let len = frames(start + 32.0 * step + 1.5, rate);
-    render(&mut d, rate, len, &score(rate, &notes))
+    render(d.as_mut(), rate, len, &score(rate, &notes))
+}
+
+/// Drum kit `kit` as the pads play it: through its master effects (the
+/// preset's `fx.N` lines, as `mpfree_instruments::Sound`) where it has
+/// them, else the plain kit.
+fn kit_node(kit: usize, rate: u32) -> Box<dyn Node> {
+    let p = &Drums::presets()[kit];
+    let mut d = Drums::new(rate);
+    d.load_preset(p);
+    if !has_design(p.text) {
+        return Box::new(d);
+    }
+    let mut s = Sound::new(Box::new(d), &Design::default()).expect("a plain sound builds");
+    s.prepare_effects(rate, mpfree_node::MAX_BLOCK);
+    s.load_text(p.text)
+        .expect("every factory kit loads (mpfree-instruments' tests)");
+    Box::new(s)
+}
+
+/// Drum kit `kit`'s first pad's note.
+fn kit_base(kit: usize, rate: u32) -> u8 {
+    let mut d = Drums::new(rate);
+    d.load_preset(&Drums::presets()[kit]);
+    d.param(drum_params::BASE_NOTE) as u8
 }
 
 /// A note's frequency in twelve-tone equal temperament, A4 = 440 Hz.
@@ -2616,12 +2639,12 @@ fn fm_harmonic(n: &dyn Node) -> (bool, f64) {
 fn drums(rows: &mut Vec<Row>, rate: u32) {
     use drum_params::{field, kind, model_of, pad_id, Kind, PADS};
     for (ki, kit) in Drums::presets().iter().enumerate() {
-        let make = || {
+        let make = || kit_node(ki, rate);
+        let probe = {
             let mut d = Drums::new(rate);
-            d.load_preset(&Drums::presets()[ki]);
+            d.load_preset(kit);
             d
         };
-        let probe = make();
         let base = probe.param(drum_params::BASE_NOTE) as u8;
         let mut kick_level = None;
         for pad in 0..PADS {
@@ -2630,10 +2653,7 @@ fn drums(rows: &mut Vec<Row>, rate: u32) {
             let label_ms = f64::from(probe.param(pad_id(pad, field::DECAY)));
             let secs = (label_ms * 0.0013 + 0.4).min(7.0);
             let key = base + pad as u8;
-            let hit = |vel: u8| {
-                let mut d = make();
-                note(&mut d, rate, key, vel, 0.05, secs).mid()
-            };
+            let hit = |vel: u8| note(make().as_mut(), rate, key, vel, 0.05, secs).mid();
             let loud = hit(127);
             let soft = hit(40);
             let subject = format!("Drums[{}, pad {} {model}]", kit.name, pad + 1);
@@ -2758,7 +2778,7 @@ fn drums(rows: &mut Vec<Row>, rate: u32) {
                 ),
                 (gap + frames(0.05, rate), NodeEvent::NoteOff { note: key }),
             ];
-            let two = render(&mut d, rate, 2 * gap, &ev).mid();
+            let two = render(d.as_mut(), rate, 2 * gap, &ev).mid();
             let step = (level_db(&two[gap..], rate) - level_db(&two[..gap], rate)).abs();
             put(
                 rows,
@@ -2809,7 +2829,7 @@ fn drums(rows: &mut Vec<Row>, rate: u32) {
                 ));
             }
         }
-        let all = render(&mut d, rate, frames(1.0, rate), &ev);
+        let all = render(d.as_mut(), rate, frames(1.0, rate), &ev);
         let peak = all
             .left
             .iter()
