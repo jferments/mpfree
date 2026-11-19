@@ -282,6 +282,10 @@ struct LevelsUi {
 const XY_LIST_HINT: &str =
     "Tap what the XY pad plays   ·   the chip or Close: close   ·   a view: close";
 
+/// The hint while the XY pad is full screen (SHIFT + NEXT SEQ).
+const XY_FULL_HINT: &str =
+    "The XY pad full screen: drag to play the effect   ·   the chip: what it plays   ·   SHIFT + NEXT SEQ: back";
+
 /// The hint while the REC chip's target list is open.
 /// The REC chip names the armed tracks one by one up to this many
 /// characters ("Drums + Bass + Keys"), else "Drums + 2 tracks".
@@ -1096,6 +1100,12 @@ pub enum ToUi {
     /// All four PAD BANK buttons: a picture of the screen as it is, sent
     /// back as [`FromUi::ScreenPicture`] to be saved.
     ScreenPicture,
+    /// SHIFT + NEXT SEQ: the XY pad full screen on Play, or back to Play's
+    /// view from it.
+    XyFull,
+    /// SHIFT + the wheel's push: the control under a finger, or else the
+    /// outlined one, back to its default.
+    Reset,
     /// The tempo follows an outside clock arriving on this port ("MIDI
     /// In"), or none does: the bar's tempo chip (layout spec, section 4d).
     ClockFrom(Option<String>),
@@ -1305,6 +1315,9 @@ pub enum ToUi {
     /// The touchscreen has something to read (touch_bell.rs): the screen
     /// thread reads it on this pass.
     TouchBell,
+    /// A scripted run's tap (script.rs): the screen thread finds the
+    /// control on the page and touches it as a finger would.
+    ScriptTap(ScriptTap),
     Quit,
     /// The project's Perform set, at the start and when a project opens
     /// (`opened`: its UNDO history starts again), and after each edit: the
@@ -2007,6 +2020,15 @@ pub struct Player {
     /// Actions that came from something other than a touch (a page change
     /// letting go of a pad, the wheel in the workspace), for the audio thread.
     outbox: Vec<FromUi>,
+    /// A scripted run's taps waiting for the page they need, each with when
+    /// it was first tried ([`Player::script_taps_due`]).
+    script_taps: VecDeque<(ScriptTap, Option<Instant>)>,
+    /// A scripted long press: where, and the seconds until it lets go.
+    script_hold: Option<(i32, i32, f32)>,
+    /// Every line the screen said, in order (the events log keeps the
+    /// last few): the smoke session's workflow scripts read it.
+    #[cfg(test)]
+    pub said_all: Vec<String>,
     /// The Q-Link column's values last handed to the audio thread
     /// ([`Player::qlink_values_changed`]).
     qlink_sent: [Option<u8>; 4],
@@ -2093,6 +2115,9 @@ pub struct Player {
     /// The XY pad's list (what it plays) is open in place of Play's view
     /// ([`crate::xy_list`]).
     xy_list: bool,
+    /// The XY pad full screen in place of Play's view (SHIFT + NEXT SEQ,
+    /// [`play_page::XY_FULL_PAGE`]).
+    xy_full: bool,
     /// The Pads tab's Perform view: the project's Perform set
     /// ([`crate::perform_tab`]).
     perform: crate::perform_tab::PerformTab,
@@ -2234,6 +2259,8 @@ impl Player {
             &play_page::frame(&format!("{}:*", crate::xy_list::XY_LIST)),
         )
         .expect("the XY pad's list");
+        ui.add_page(play_page::XY_FULL_PAGE, &play_page::xy_full_layout())
+            .expect("the XY pad full screen");
         let debug = DebugPages::add(&mut ui).expect("debug layouts");
         ui.add_page("Console", SYSLOG_LAYOUT)
             .expect("console layout");
@@ -2359,6 +2386,7 @@ impl Player {
             arm_page: None,
             rec_list: false,
             xy_list: false,
+            xy_full: false,
             perform: crate::perform_tab::PerformTab::default(),
             throw_strips: vec![("Master".to_string(), mpfree_fx::StripId::Master)],
             play_own: PlayView::All,
@@ -2456,6 +2484,10 @@ impl Player {
             chip_why: Vec::new(),
             fingers: Vec::new(),
             outbox: Vec::new(),
+            script_taps: VecDeque::new(),
+            script_hold: None,
+            #[cfg(test)]
+            said_all: Vec::new(),
             qlink_sent: [None; 4],
             time_page,
             time: TimeState::default(),
@@ -4321,10 +4353,11 @@ impl Player {
         if v != self.play.view {
             println!("play view: {}", v.name());
         }
-        // A view picked closes the REC chip's target list and the XY
-        // pad's list.
+        // A view picked closes the REC chip's target list, the XY pad's
+        // list and the XY pad full screen.
         self.rec_list = false;
         self.xy_list = false;
+        self.xy_full = false;
         self.play.view = v;
         if v != PlayView::Beats {
             self.play.selected = None;
@@ -4502,6 +4535,18 @@ impl Player {
             l.picked = picked;
         }
         if self.play_frame() {
+            self.show_view(self.view);
+        }
+        self.refresh_hint();
+    }
+
+    /// SHIFT + NEXT SEQ (the app has shown Play first): the XY pad full
+    /// screen in place of Play's view, or back to the view from it.
+    fn toggle_xy_full(&mut self) {
+        self.xy_full = !self.xy_full && self.view == View::Play;
+        self.xy_list = false;
+        self.rec_list = false;
+        if self.view == View::Play {
             self.show_view(self.view);
         }
         self.refresh_hint();
@@ -5077,6 +5122,8 @@ impl Player {
                 crate::rec_list::REC_PAGE
             } else if self.xy_list && self.view == View::Play {
                 crate::xy_list::XY_PAGE
+            } else if self.xy_full && self.view == View::Play {
+                play_page::XY_FULL_PAGE
             } else {
                 self.play
                     .view
@@ -5791,6 +5838,8 @@ impl Player {
             REC_LIST_HINT.to_string()
         } else if self.ready && self.view == View::Play && self.xy_list {
             XY_LIST_HINT.to_string()
+        } else if self.ready && self.view == View::Play && self.xy_full {
+            XY_FULL_HINT.to_string()
         } else if self.ready && self.rec.ready.is_some() {
             rec_ready_hint(&self.rec_chip())
         } else if self.status.copy
@@ -6422,7 +6471,7 @@ impl Player {
         // adds that row's lane.
         if self.lane_list {
             match n {
-                Nav::Turn(d) | Nav::Step(d) => {
+                Nav::Turn(d) | Nav::Step(d) | Nav::Fine(d) => {
                     if let Some(l) = self.ui.get_mut::<ListView>("lanes") {
                         let last = l.items.len().saturating_sub(1) as i64;
                         l.selected = (l.selected as i64 + i64::from(d)).clamp(0, last) as usize;
@@ -6448,16 +6497,26 @@ impl Player {
             match n {
                 Nav::Turn(d) => return self.apply(ToUi::ChainWheel(d)),
                 Nav::Push => return self.apply(ToUi::ChainPush),
-                Nav::Step(_) => {}
+                Nav::Step(_) | Nav::Fine(_) => {}
             }
         }
         match n {
-            Nav::Turn(d) | Nav::Step(d) if self.ui.focus_grabbed() && self.wheel_moves() => {
+            Nav::Turn(d) | Nav::Step(d) | Nav::Fine(d)
+                if self.ui.focus_grabbed() && self.wheel_moves() =>
+            {
                 self.nav_step(d)
             }
             Nav::Turn(d) if self.ui.focus_grabbed() && self.wheel_turns() => self.nav_step(d),
             Nav::Step(d) if self.wheel_turns() => self.nav_step(d),
-            Nav::Turn(d) | Nav::Step(d) => {
+            // SHIFT + - / +: the finer steps SHIFT gives a held control.
+            Nav::Fine(d) if self.wheel_turns() => {
+                if let Some(ev) = self.ui.focus_step_fine(d) {
+                    if let Some(a) = self.on_event(ev) {
+                        self.outbox.push(a);
+                    }
+                }
+            }
+            Nav::Turn(d) | Nav::Step(d) | Nav::Fine(d) => {
                 self.nav_let_go();
                 self.ui.focus_move(d);
             }
@@ -6505,6 +6564,47 @@ impl Player {
                 self.outbox.push(a);
             }
         }
+    }
+
+    /// SHIFT + the wheel's push ([`ToUi::Reset`]): the control a finger
+    /// rests on, or else the outlined one, back to its default (0 dB, the
+    /// pan in the middle, an effect setting's own default); the hint line
+    /// says what happened, or why nothing did.
+    fn reset_value(&mut self) {
+        let held = self.ui.held();
+        let (ev, name) = if let Some(h) = &held {
+            self.held_used();
+            (self.ui.held_reset(), h.target.label.clone())
+        } else if self.outline_here()
+            && !(self.view == View::Chain && mpfree_chain_ui::chain_picking(&self.ui))
+        {
+            let Some(f) = self.ui.focused() else {
+                self.tell(
+                    "SHIFT + push: pick a value with the wheel first, or rest a finger on one",
+                );
+                return;
+            };
+            (self.ui.focus_reset(), f.target.label)
+        } else {
+            return;
+        };
+        let Some(ev) = ev else {
+            self.tell(&format!(
+                "SHIFT + push: {name} is at its default already, or has none"
+            ));
+            return;
+        };
+        if let Some(a) = self.on_event(ev) {
+            self.outbox.push(a);
+        }
+        let now = match &held {
+            Some(h) => self.held_value(h),
+            None => self.ui.focused().map(|f| f.target.label),
+        };
+        self.tell(&format!(
+            "{}   ·   back to its default (SHIFT + push)",
+            now.unwrap_or(name).trim_end_matches(HELD_TOLD)
+        ));
     }
 
     /// A touch made by the wheel's push, at the outlined control's middle.
@@ -7855,6 +7955,8 @@ impl Player {
                 let png = self.screen_picture();
                 self.outbox.push(FromUi::ScreenPicture(png));
             }
+            ToUi::XyFull => self.toggle_xy_full(),
+            ToUi::Reset => self.reset_value(),
             ToUi::ClockFrom(port) => {
                 if self.clock_from != port {
                     self.clock_from = port;
@@ -8432,6 +8534,7 @@ impl Player {
                 }
             }
             ToUi::PowerPress => self.power_press(),
+            ToUi::ScriptTap(t) => self.script_taps.push_back((t, None)),
             ToUi::TouchBell | ToUi::Quit => {}
             ToUi::PerformSet { set, opened } => {
                 self.perform.set_set(*set, opened);
@@ -8757,6 +8860,8 @@ impl Player {
             if let Some(e) = self.ui.get_mut::<LogPanel>("events") {
                 e.push(&l, Tone::Dim);
             }
+            #[cfg(test)]
+            self.said_all.push(l);
         }
         let _ = io::stdout().flush();
     }
@@ -9895,6 +10000,8 @@ impl Player {
     fn say(&mut self, l: String) {
         println!("{l}");
         let _ = io::stdout().flush();
+        #[cfg(test)]
+        self.said_all.push(l.clone());
         if let Some(e) = self.ui.get_mut::<LogPanel>("events") {
             e.push(&l, Tone::Dim);
         }
@@ -10526,6 +10633,7 @@ impl Player {
         }
         if v != View::Play {
             self.xy_list = false;
+            self.xy_full = false;
         }
         let followed = self.play_follows(v);
         let page = match v {
@@ -10539,6 +10647,7 @@ impl Player {
                 crate::rec_list::REC_PAGE.to_string()
             }
             View::Play if self.xy_list && self.ready => crate::xy_list::XY_PAGE.to_string(),
+            View::Play if self.xy_full && self.ready => play_page::XY_FULL_PAGE.to_string(),
             View::Play | View::Sequencer => self
                 .play
                 .view
@@ -11030,12 +11139,7 @@ impl Player {
         let Some(h) = self.ui.held() else {
             return;
         };
-        if let Some(f) = self.ui.held_finger() {
-            self.chain_page.lifted(f);
-            if self.tempo_press.is_some_and(|p| p.0 == f) {
-                self.tempo_press = None;
-            }
-        }
+        self.held_used();
         if h.widget == synth_view::TILES {
             // The tile is the selected one since the finger came down.
             self.ui.held_turned();
@@ -11056,6 +11160,17 @@ impl Player {
         }
         if let Some(text) = self.held_value(&h) {
             self.tell(&text);
+        }
+    }
+
+    /// The held finger's touch is the wheel's now: a macro card's long
+    /// press or the tempo's tap ends, as if the finger had lifted.
+    fn held_used(&mut self) {
+        if let Some(f) = self.ui.held_finger() {
+            self.chain_page.lifted(f);
+            if self.tempo_press.is_some_and(|p| p.0 == f) {
+                self.tempo_press = None;
+            }
         }
     }
 
@@ -12231,6 +12346,7 @@ impl Player {
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
         self.power_tick(dt);
+        self.script_hold_tick(dt);
         self.guard_tick(dt);
         // UNDO held: the page's undo history.
         if let Some(held) = self.undo_held {
@@ -12705,6 +12821,10 @@ pub fn spawn(
             let mut procs: Option<(mpfree_prof::procs::ProcTable, Instant)> = None;
             // The CPU by engine page: the audio loop's numbers every 250 ms.
             let mut engines_at: Option<Instant> = None;
+            // A frame was drawn since the last look at the scripted taps
+            // (a scripted run, script.rs): the page's controls are where
+            // the screen shows them.
+            let mut fresh_frame = true;
             let mut quit = false;
             while !quit {
                 cost.wake();
@@ -12722,6 +12842,12 @@ pub fn spawn(
                 }
                 while let Ok(m) = rx.try_recv() {
                     quit |= take(&mut player, m);
+                }
+                if player.script_taps_waiting() && (fresh_frame || !player.ui.needs_paint()) {
+                    fresh_frame = false;
+                    for line in player.script_taps_due(Instant::now()) {
+                        println!("{line}");
+                    }
                 }
                 send_actions(&mut player, &tx);
                 if touch.is_none() && touch_tried.is_none_or(|t| t.elapsed() >= TOUCH_RETRY) {
@@ -12876,6 +13002,7 @@ pub fn spawn(
                     }
                 };
                 let t2 = Instant::now();
+                fresh_frame = true;
                 pace.drawn(t2);
                 let ms = (t2 - t0).as_secs_f64() * 1e3;
                 report.frames += 1;
@@ -12898,6 +13025,131 @@ pub fn spawn(
             };
             report
         })
+}
+
+/// A scripted run's tap (script.rs): the control by its widget, id and
+/// label (empty: the first of its kind), and the script's line, for the log.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScriptTap {
+    pub widget: String,
+    pub id: String,
+    pub label: String,
+    pub line: usize,
+}
+
+/// The finger a scripted run touches with (one no panel reports).
+const SCRIPT_FINGER: u64 = 0x5C21_7000;
+/// How long a scripted tap waits for its control to be on the page (the
+/// page a tap before it leads to is drawn first) before the run says it
+/// is missing.
+const SCRIPT_TAP_WAIT: Duration = Duration::from_millis(1500);
+/// A scripted long press, as the smoke tests' (eight ticks of 1/8 s).
+const SCRIPT_HOLD_S: f32 = 1.0;
+
+impl Player {
+    /// The scripted taps whose control is on the page now, touched as a
+    /// finger would (a tap; a drag the way the control says; a long press,
+    /// let go a second later in [`Player::tick`]), their actions queued for
+    /// the audio thread. A tap whose control isn't there after
+    /// [`SCRIPT_TAP_WAIT`] is dropped. Returns the lines for the log: what
+    /// was touched, or what was missing and what the page has instead.
+    /// Call it when the page is drawn as it is now.
+    pub fn script_taps_due(&mut self, now: Instant) -> Vec<String> {
+        let mut said = Vec::new();
+        while let Some((tap, first)) = self.script_taps.pop_front() {
+            let targets = self.ui.targets();
+            let found = targets.iter().find(|o| {
+                o.widget == tap.widget
+                    && o.target.id == tap.id
+                    && (tap.label.is_empty() || o.target.label == tap.label)
+            });
+            let Some(found) = found else {
+                let first = first.unwrap_or(now);
+                if now.duration_since(first) < SCRIPT_TAP_WAIT {
+                    self.script_taps.push_front((tap, Some(first)));
+                    break;
+                }
+                let mut have: Vec<String> = targets
+                    .iter()
+                    .filter(|o| o.widget == tap.widget || o.target.id == tap.id)
+                    .map(|o| format!("{}/{} \"{}\"", o.widget, o.target.id, o.target.label))
+                    .collect();
+                if have.is_empty() {
+                    have = targets
+                        .iter()
+                        .take(12)
+                        .map(|o| format!("{}/{} \"{}\"", o.widget, o.target.id, o.target.label))
+                        .collect();
+                }
+                said.push(format!(
+                    "script: line {}: no control {}/{} \"{}\" on {}; it has {}",
+                    tap.line,
+                    tap.widget,
+                    tap.id,
+                    tap.label,
+                    self.ui.page(),
+                    have.join(", ")
+                ));
+                continue;
+            };
+            let t = found.target.clone();
+            let (x, y) = t.centre();
+            let mut acts = Vec::new();
+            acts.extend(self.touch(SCRIPT_FINGER, Touch::Down, x, y));
+            match t.gesture {
+                Gesture::Tap => acts.extend(self.touch(SCRIPT_FINGER, Touch::Up, x, y)),
+                Gesture::Drag => {
+                    let (dx, dy) = t.towards;
+                    for k in 1..=6 {
+                        acts.extend(self.touch(
+                            SCRIPT_FINGER,
+                            Touch::Move,
+                            x + dx * k / 6,
+                            y + dy * k / 6,
+                        ));
+                    }
+                    acts.extend(self.touch(SCRIPT_FINGER, Touch::Up, x + dx, y + dy));
+                }
+                Gesture::Hold => self.script_hold = Some((x, y, SCRIPT_HOLD_S)),
+            }
+            for a in acts {
+                self.saw_action(&a);
+                self.outbox.push(a);
+            }
+            said.push(format!(
+                "script: line {}: touched {}/{} \"{}\" on {}",
+                tap.line,
+                found.widget,
+                t.id,
+                t.label,
+                self.ui.page()
+            ));
+            // The next tap waits for the page this one leads to.
+            break;
+        }
+        said
+    }
+
+    /// Scripted taps still waiting.
+    pub fn script_taps_waiting(&self) -> bool {
+        !self.script_taps.is_empty() || self.script_hold.is_some()
+    }
+
+    fn script_hold_tick(&mut self, dt: f32) {
+        let Some((x, y, left)) = self.script_hold else {
+            return;
+        };
+        let left = left - dt.max(0.0);
+        if left > 0.0 {
+            self.script_hold = Some((x, y, left));
+            return;
+        }
+        self.script_hold = None;
+        if let Some(a) = self.touch(SCRIPT_FINGER, Touch::Up, x, y) {
+            self.saw_action(&a);
+            self.outbox.push(a);
+        }
+    }
 }
 
 /// The touch status on the Touch lab: the reader's line, and how the screen
@@ -13993,6 +14245,8 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::TypeTempo => p.apply(ToUi::TypeTempo),
             Effect::ControllerSettings => p.apply(ToUi::OpenIoSection(mpfree_midi_ui::CONTROLLER)),
             Effect::ScreenPicture => p.apply(ToUi::ScreenPicture),
+            Effect::XyFull => p.apply(ToUi::XyFull),
+            Effect::Reset => p.apply(ToUi::Reset),
             // The time engine's and the mod panels': no screen of their own.
             Effect::RecordQuantiseToggle
             | Effect::PlayBack
@@ -15288,6 +15542,13 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     xy.refresh_play();
     xy.toggle_xy_list();
     out.push(("play-xy-list", xy));
+    // The XY pad full screen (SHIFT + NEXT SEQ, the button combos of
+    // 19 Nov), Wash picked.
+    let mut full = sample_player(fonts());
+    full.play.set_xy_effect(Some(3));
+    full.refresh_play();
+    full.toggle_xy_full();
+    out.push(("play-xy-full", full));
     // The list of kits over the page (Jay's card, 13 Nov 14:57Z), opened
     // from what the pads play or the Pads tab's Kit.
     let mut kits = sample_player(fonts());
@@ -16604,14 +16865,38 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         play_synth.apply(ToUi::PadDown { pad, velocity: v });
     }
     out.push(("play-synth", play_synth));
-    for (name, page, qlink) in [
-        ("synth", 0, (2, 12)),
-        ("synth-filter", 1, (0, -20)),
-        ("synth-lfo-2", 4, (2, 10)),
-        ("synth-voice", 5, (1, 10)),
-        ("synth-routes", 6, (0, 10)),
+    // The Table page with both oscillators on tables: Vowels a third
+    // through, the filter envelope scanning it, and Harmonics mirrored.
+    let table: &[(u16, f32)] = {
+        use mpfree_synth::params as pp;
+        &[
+            (pp::OSC1_WAVE, pp::WAVE_TABLE as f32),
+            (pp::OSC1_TABLE, 4.0),
+            (pp::OSC1_POS, 35.0),
+            (pp::OSC2_WAVE, pp::WAVE_TABLE as f32),
+            (pp::OSC2_TABLE, 1.0),
+            (pp::OSC2_LEVEL, 70.0),
+            (pp::OSC2_WARP_MODE, 3.0),
+            (pp::OSC2_WARP, 40.0),
+            (pp::FENV_POS1, 40.0),
+        ]
+    };
+    for (name, page, qlink, edits) in [
+        ("synth", 0, (2, 12), &[][..]),
+        ("synth-table", 1, (0, 10), table),
+        ("synth-filter", 2, (0, -20), &[]),
+        ("synth-lfo-2", 5, (2, 10), &[]),
+        ("synth-voice", 6, (1, 10), &[]),
+        ("synth-routes", 7, (0, 10), &[]),
     ] {
         let mut p = sample_player(fonts());
+        if !edits.is_empty() {
+            let mut s = crate::synth::Synth::new(44_100);
+            for &(id, v) in edits {
+                s.set(id, v);
+            }
+            p.apply(ToUi::Synth(s.state()));
+        }
         p.apply(ToUi::Kit(synth_kit));
         p.apply(ToUi::Show(View::Synth));
         p.apply(ToUi::SynthPage(page));
@@ -26761,6 +27046,95 @@ mod tests {
         assert!(png.len() < mpfree_store::MAX_FILE, "{} bytes", png.len());
         let pic = mpfree_mpcskin::png::decode(&png).unwrap();
         assert_eq!((pic.w, pic.h), (1280, 800));
+    }
+
+    /// SHIFT + - / + step the outlined fader finer, and SHIFT + the push
+    /// puts it back to 0 dB (the button combos of 19 Nov); the hint line
+    /// says so, and says why when it is there already.
+    #[test]
+    fn shift_minus_plus_and_shift_push_on_the_mixers_outline() {
+        use mpfree_mixer_ui::{MixAction, MixState, MixView, MIXER_PAGE};
+        let mut p = sample_player(Fonts::embedded());
+        p.apply(ToUi::Show(View::Mixer));
+        let mut m = mpfree_mixer_ui::sample::song_mixer();
+        let st = MixState::from_mixer(&mut m, MixView::Tracks, &mpfree_mixer_ui::sample::name);
+        p.apply(ToUi::Mixer(Box::new(st)));
+        assert_eq!(p.page(), MIXER_PAGE);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.take_actions();
+        let fader =
+            p.ui.targets()
+                .into_iter()
+                .find(|t| t.target.id == "fader")
+                .unwrap()
+                .target;
+        let (x, y) = fader.centre();
+        p.ui.focus_at(x, y);
+        let level = |acts: Vec<FromUi>| match acts.as_slice() {
+            [FromUi::Mixer(MixAction::Set { value, .. })] => *value,
+            _ => panic!("{acts:?}"),
+        };
+        p.apply(ToUi::Nav(Nav::Step(-1)));
+        let coarse = level(p.take_actions());
+        p.apply(ToUi::Nav(Nav::Fine(1)));
+        let fine = level(p.take_actions());
+        assert!(
+            coarse < fine && fine < 0.0,
+            "a finer step back up: {coarse} {fine}"
+        );
+        p.apply(ToUi::Reset);
+        assert_eq!(level(p.take_actions()), 0.0);
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(
+            hint.ends_with("back to its default (SHIFT + push)"),
+            "{hint}"
+        );
+        p.apply(ToUi::Reset);
+        assert!(p.take_actions().is_empty());
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains("at its default already"), "{hint}");
+    }
+
+    /// SHIFT + NEXT SEQ: the XY pad takes Play's whole view and plays as
+    /// it does there; its chip still opens the list, which comes back to
+    /// the full screen; SHIFT + NEXT SEQ again, or another tab, goes back.
+    #[test]
+    fn shift_next_seq_puts_the_xy_pad_full_screen() {
+        let mut p = sample_play(Fonts::embedded(), PlayView::All);
+        p.take_actions();
+        let small = p.ui.rect_of(play_page::XY).unwrap();
+        let home = p.page().to_string();
+        p.apply(ToUi::XyFull);
+        assert_eq!(p.page(), play_page::XY_FULL_PAGE);
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.starts_with("The XY pad full screen"), "{hint}");
+        let xy = p.ui.rect_of(play_page::XY).unwrap();
+        assert!(xy.w > 2 * small.w && xy.h > 3 * small.h, "{xy:?}");
+        let down = p.touch(6, Touch::Down, xy.x + xy.w / 2, xy.bottom() - 40);
+        assert!(
+            matches!(down, Some(FromUi::PlayFx(PlayFx::Xy { x, down: true, .. })) if (x - 0.5).abs() < 0.02),
+            "{down:?}"
+        );
+        p.touch(6, Touch::Up, xy.x + xy.w / 2, xy.bottom() - 40);
+        // The chip: the list, and a pick comes back to the full screen.
+        let tap = |p: &mut Player, x: i32, y: i32| {
+            let down = p.touch(7, Touch::Down, x, y);
+            p.touch(7, Touch::Up, x, y);
+            down
+        };
+        tap(&mut p, xy.x + 30, xy.y + 14);
+        assert_eq!(p.page(), crate::xy_list::XY_PAGE);
+        p.on_event(UiEvent {
+            widget: crate::xy_list::XY_LIST.into(),
+            kind: EventKind::Tab(3),
+        });
+        assert_eq!(p.page(), play_page::XY_FULL_PAGE);
+        p.apply(ToUi::XyFull);
+        assert_eq!(p.page(), home);
+        p.apply(ToUi::XyFull);
+        p.show_view(View::Mixer);
+        p.show_view(View::Play);
+        assert_eq!(p.page(), home, "another tab closes it");
     }
 
     #[test]
