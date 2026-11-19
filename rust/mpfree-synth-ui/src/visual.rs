@@ -50,35 +50,36 @@ fn wave(shape: f32, t: f32, pw: f32) -> f32 {
 /// pitch relative to oscillator 1. Each is scaled by its level. Empty when
 /// the oscillator's level is zero.
 pub fn oscillators(v: &impl Values) -> [Vec<(f32, f32)>; 2] {
-    let o1 = (
-        v.get(p::OSC1_WAVE),
-        v.get(p::OSC1_PW) / 100.0,
-        v.get(p::OSC1_LEVEL) / 100.0,
-        v.get(p::OSC1_OCT),
-    );
-    let o2 = (
-        v.get(p::OSC2_WAVE),
-        v.get(p::OSC2_PW) / 100.0,
-        v.get(p::OSC2_LEVEL) / 100.0,
-    );
-    let semis =
-        12.0 * (v.get(p::OSC2_OCT) - o1.3) + v.get(p::OSC2_SEMI) + v.get(p::OSC2_FINE) / 100.0;
+    let semis = 12.0 * (v.get(p::OSC2_OCT) - v.get(p::OSC1_OCT))
+        + v.get(p::OSC2_SEMI)
+        + v.get(p::OSC2_FINE) / 100.0;
     let ratio = 2f32.powf(semis / 12.0).clamp(1.0 / 16.0, 16.0);
-    let trace = |shape: f32, pw: f32, level: f32, cycles: f32| -> Vec<(f32, f32)> {
+    let trace = |o: usize, cycles: f32| -> Vec<(f32, f32)> {
+        let [wave_id, pw_id, level_id] = [
+            [p::OSC1_WAVE, p::OSC1_PW, p::OSC1_LEVEL],
+            [p::OSC2_WAVE, p::OSC2_PW, p::OSC2_LEVEL],
+        ][o];
+        let level = v.get(level_id) / 100.0;
         if level <= 0.0 {
             return Vec::new();
         }
+        let shape = v.get(wave_id);
+        let pw = v.get(pw_id) / 100.0;
+        // The Table wave draws the frame its knobs read.
+        let table = (shape.round() as u8 == p::WAVE_TABLE)
+            .then(|| crate::wt_visual::shape(v, crate::wt_visual::Ids::poly(o)));
         (0..=POINTS)
             .map(|i| {
                 let x = i as f32 / POINTS as f32;
-                (x, 0.5 + 0.45 * level * wave(shape, x * cycles, pw))
+                let y = match &table {
+                    Some(f) => f(x * cycles),
+                    None => wave(shape, x * cycles, pw),
+                };
+                (x, 0.5 + 0.45 * level * y)
             })
             .collect()
     };
-    [
-        trace(o1.0, o1.1, o1.2, 2.0),
-        trace(o2.0, o2.1, o2.2, 2.0 * ratio),
-    ]
+    [trace(0, 2.0), trace(1, 2.0 * ratio)]
 }
 
 /// The lowest and highest frequency the filter view shows (log scale).
@@ -278,18 +279,23 @@ fn lfo_caption_of(v: &impl Values, [shape, sync, rate]: [u16; 3]) -> String {
 }
 
 /// The oscillator card's caption, such as "saw + pulse".
+/// A Table wave says its table ("vowels + saw").
 pub fn osc_caption(v: &impl Values) -> String {
-    let name = |id: u16| {
+    let name = |o: usize| {
+        let w = v.get([p::OSC1_WAVE, p::OSC2_WAVE][o]).round();
+        if w as u8 == p::WAVE_TABLE {
+            return crate::wt_visual::table_name(v, crate::wt_visual::Ids::poly(o)).to_lowercase();
+        }
         p::WAVES
-            .get(v.get(id).round() as usize)
+            .get(w as usize)
             .copied()
             .unwrap_or("?")
             .to_lowercase()
     };
     match (v.get(p::OSC1_LEVEL) > 0.0, v.get(p::OSC2_LEVEL) > 0.0) {
-        (true, true) => format!("{} + {}", name(p::OSC1_WAVE), name(p::OSC2_WAVE)),
-        (true, false) => name(p::OSC1_WAVE),
-        (false, true) => name(p::OSC2_WAVE),
+        (true, true) => format!("{} + {}", name(0), name(1)),
+        (true, false) => name(0),
+        (false, true) => name(1),
         (false, false) => "off".to_string(),
     }
 }
