@@ -755,6 +755,7 @@ impl Desk<'_> {
             app::Effect::PlayView(v) => out.show(gui::ToUi::PlayView(v)),
             app::Effect::ArrangeView(v) => out.show(gui::ToUi::ArrangeView(v)),
             app::Effect::SampleEditor(e) => out.show(gui::ToUi::SampleEditor(e)),
+            app::Effect::EditPad => out.show(gui::ToUi::EditPad),
             app::Effect::Browse(k) => out.show(gui::ToUi::Browse(k)),
             app::Effect::Fill(on) => time.set_fill(on, 0),
             app::Effect::Metronome { on, db } => {

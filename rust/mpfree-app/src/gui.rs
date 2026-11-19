@@ -1130,6 +1130,9 @@ pub enum ToUi {
     ArrangeView(Option<bool>),
     /// SAMPLE EDIT: the Sample tab's editor to open.
     SampleEditor(sample_page::Editor),
+    /// PROG EDIT on the Pads tab: Edit pad on the pad picked, or back to
+    /// the pads from it.
+    EditPad,
     /// The data folder's library, for the Pads tab's browser, with its
     /// Recent and Favourites from the store (sent once at start, with
     /// --data).
@@ -2590,6 +2593,25 @@ impl Player {
         let acts = self.perform.qlink(k, ticks, self.status.shift, &names);
         self.perform_acts(acts);
         self.refresh_history();
+    }
+
+    /// PROG EDIT on the Pads tab: Edit pad on the pad picked, or from Edit
+    /// pad back to the pads (the one Sample page's step 6b, as the MPC's
+    /// PROG EDIT opens its Track Edit). From the Perform view, Edit pad on
+    /// the kit's pad picked. A pad with no layers says why instead.
+    fn toggle_edit_pad(&mut self) {
+        if !self.ready || self.view != View::Pads {
+            return;
+        }
+        if self.perform.shown {
+            self.perform_view(false);
+        }
+        let before = self.sample.page();
+        match self.sample.toggle_edit_pad(&mut self.ui) {
+            Ok(()) => self.sample_after(before),
+            Err(why) => self.tell(&why),
+        }
+        self.refresh_hint();
     }
 
     /// The Pads tab shows the Perform set (`on`) or the kit's pads: the
@@ -5664,7 +5686,7 @@ impl Player {
             SHIFT_CLIPS_HINT.to_string()
         } else if self.status.shift
             && self.ready
-            && self.view == View::Sample
+            && self.view == View::Pads
             && self.sample.page() == sample_page::PLAY_PAGE
         {
             SHIFT_SAMPLE_LEARN_HINT.to_string()
@@ -5853,19 +5875,24 @@ impl Player {
                      Q-Links 1-4: {}   ·   {ROWS_HINT}",
                             self.sample.pads_qlinks_text())
                 }
-                View::Pads => format!("Pick a drum kit on Play to see its pads here   ·   {stop}"),
-                View::Sample if self.sample.play_takes_pads(&self.ui) => {
+                // Edit pad (the one Sample page's step 6b): the Sample
+                // tab's Play page, under the Pads tab.
+                View::Pads if self.sample.play_takes_pads(&self.ui) => {
                     "Hit pads to add them to the row picked or take them out   ·   Wheel: the next pad   ·   \
                      tap another row when done   ·   UNDO: undo".to_string()
                 }
-                View::Sample if self.sample.page() == sample_page::PLAY_PAGE && self.sample.play_keys_shown() => {
+                View::Pads if self.sample.page() == sample_page::PLAY_PAGE && self.sample.play_keys_shown() => {
                     format!("Press keys to hear the kit   ·   drag the zone edges and root   ·   \
                      Q-Links 1-4: {}   ·   {ROWS_HINT}", self.sample.play_qlinks_text())
                 }
-                View::Sample if self.sample.page() == sample_page::PLAY_PAGE => {
+                View::Pads if self.sample.page() == sample_page::PLAY_PAGE => {
                     format!("Hit a pad: its velocity shows on the layers   ·   tap a section for its controls   ·   \
                      Q-Links 1-4: {}   ·   {ROWS_HINT}", self.sample.play_qlinks_text())
                 }
+                View::Pads if self.sample.edit_pad_on() => {
+                    format!("Hit a pad with a sound to edit it   ·   PROG EDIT or ‹ Pads: back to the pads   ·   {stop}")
+                }
+                View::Pads => format!("Pick a drum kit on Play to see its pads here   ·   {stop}"),
                 View::Sample if self.sample.page() == sample_page::AUTO_PAGE => {
                     format!("Start samples the Synth tab's patch or your gear onto the pads named   ·   {ROWS_HINT}")
                 }
@@ -7292,7 +7319,7 @@ impl Player {
                 }
                 // The Sample page edits the pad hit last, and the Play
                 // page's Tune and Decay turn it.
-                let shown = self.view == View::Sample;
+                let shown = self.view.sampler();
                 self.sample.press(&mut self.ui, pad, velocity, shown);
                 self.levels_hit(cell, pad, true);
                 // Load to pad or Send to pad may have put a sound on it.
@@ -7515,10 +7542,11 @@ impl Player {
             ToUi::PreviewBack(p) => drop(p),
             ToUi::SampleEditor(e) => {
                 self.sample.open_editor(&mut self.ui, e);
-                if self.ready && self.view == View::Sample {
-                    self.show_view(View::Sample);
+                if self.ready && self.view.sampler() {
+                    self.show_view(self.view);
                 }
             }
+            ToUi::EditPad => self.toggle_edit_pad(),
             ToUi::LooperQLink(k, ticks) => {
                 if self.view == View::Looper {
                     self.looper_qlink(k, ticks);
@@ -8569,7 +8597,7 @@ impl Player {
             self.sample_keys = keys;
             self.sample_live = live;
             self.sample_qlinks = qlinks;
-            if self.view == View::Sample {
+            if self.view.sampler() {
                 self.refresh_hint();
             }
         }
@@ -9602,7 +9630,7 @@ impl Player {
         }
     }
 
-    /// Pads the Sample tab's Slice tool exported (Put on Files): each
+    /// Pads the Sample tab's Slice tool exported (Put on Library): each
     /// written into a folder of its own in Samples / Exports on a thread of
     /// its own (a long sound's files are many megabytes).
     fn save_pad_exports(&mut self) {
@@ -11205,6 +11233,12 @@ impl Player {
                 });
                 self.sample.start_auto(&mut self.ui, plan, node);
             }
+            // Edit pad's Chop to pads: the Sample tab, with the Slice tool.
+            if self.sample.take_to_sample_tab() {
+                if let Some(tab) = View::Sample.tab_index(self.settings.debug_mode) {
+                    self.outbox.push(FromUi::Tab(tab));
+                }
+            }
             self.sample_after(before);
             self.print_sample_lines();
             return None;
@@ -11221,6 +11255,15 @@ impl Player {
         }
         match (ev.widget.as_str(), ev.kind.clone()) {
             ("header", EventKind::Tab(i)) => {
+                // The Pads tab tapped on Edit pad: back to the pads, which
+                // show when the app shows the tab again.
+                if self.view == View::Pads
+                    && View::Pads.tab_index(self.settings.debug_mode) == Some(i)
+                    && self.sample.edit_pad_on()
+                {
+                    self.sample
+                        .open_editor(&mut self.ui, sample_page::Editor::Pads);
+                }
                 // The header moved its own highlight; the page follows when the app says.
                 self.mark_tab();
                 Some(FromUi::Tab(i))
@@ -13757,6 +13800,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::PlayView(v) => p.apply(ToUi::PlayView(v)),
             Effect::ArrangeView(v) => p.apply(ToUi::ArrangeView(v)),
             Effect::SampleEditor(e) => p.apply(ToUi::SampleEditor(e)),
+            Effect::EditPad => p.apply(ToUi::EditPad),
             Effect::Browse(k) => p.apply(ToUi::Browse(k)),
             Effect::SaveProject => p.ask_save(),
             Effect::PerformSet { set, opened } => p.apply(ToUi::PerformSet { set, opened }),
@@ -13948,8 +13992,12 @@ fn busy_sounds(p: &mut Player) {
 /// The pad player on the Sample page: kit 1's pad 5 holds the sampler UI's
 /// made-up drum loop ("Break 92", trimmed, looping, with fades), and a voice
 /// is playing it. Kit 1's other pads are empty here.
-/// The Pads tab, as a tap on its tab would show it.
+/// The Pads tab's pads, as a tap on its tab would show them (from Edit
+/// pad too: a tap on the tab goes back to the pads).
 pub fn open_pads(p: &mut Player) {
+    if p.view == View::Pads && p.sample.edit_pad_on() {
+        p.sample.open_editor(&mut p.ui, sample_page::Editor::Pads);
+    }
     p.apply(ToUi::Show(View::Pads));
 }
 
@@ -14197,10 +14245,27 @@ fn pads_typed(fonts: Fonts, picks: &[(usize, mpfree_sampler_ui::pads_tab::PadTyp
     p
 }
 
-/// The Sample tab on `editor`, as SAMPLE EDIT or a tap on its bar would.
+/// The Sample tab on `editor`, as SAMPLE EDIT would.
+#[cfg(test)]
 pub fn open_sample(p: &mut Player, editor: sample_page::Editor) {
     p.apply(ToUi::Show(View::Sample));
     p.apply(ToUi::SampleEditor(editor));
+}
+
+/// Edit pad on the pad picked, as a musician opens it: the Pads tab, then
+/// a tap on its pad list's Edit pad row.
+pub fn edit_pad(p: &mut Player) {
+    use mpfree_sampler_ui::pads_tab::{PadType, Row, LIST};
+    p.apply(ToUi::Show(View::Pads));
+    let index = PadType::Sample
+        .rows()
+        .iter()
+        .position(|r| *r == Row::EditPad)
+        .expect("a sample pad's list has Edit pad");
+    p.on_event(UiEvent {
+        widget: LIST.into(),
+        kind: EventKind::Tab(index),
+    });
 }
 
 /// Opens the Sample tab's Play section that holds `row` (a tap on its
@@ -16629,10 +16694,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // the Amp section), the filter turned on from the Filter section's
     // list, then back on Amp.
     let mut play = sample_sampler(fonts());
-    play.on_event(UiEvent {
-        widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-        kind: EventKind::Tab(mpfree_sampler_ui::play_tab::TAB),
-    });
+    edit_pad(&mut play);
     play.apply(ToUi::PadDown {
         pad: mpfree_sampler_ui::sample::PAD,
         velocity: 100,
@@ -16661,16 +16723,13 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         kind: EventKind::Tab(1),
     });
     play.take_actions();
-    out.push(("sample-play", play));
+    out.push(("pads-edit", play));
     // The Layers section: a layer added (the upper half of the velocities),
     // picked, turned down 3 dB and panned left, a hit at 100 on it.
     {
         use mpfree_sampler_ui::play_tab::{Row, LIST};
         let mut layers = sample_sampler(fonts());
-        layers.on_event(UiEvent {
-            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-            kind: EventKind::Tab(mpfree_sampler_ui::play_tab::TAB),
-        });
+        edit_pad(&mut layers);
         layers.on_event(UiEvent {
             widget: LIST.into(),
             kind: EventKind::Tab(Row::AddLayer.place()),
@@ -16689,17 +16748,14 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         });
         layers.apply(ToUi::PadUp(mpfree_sampler_ui::sample::PAD));
         layers.take_actions();
-        out.push(("sample-play-layers", layers));
+        out.push(("pads-edit-layers", layers));
     }
     // The scene strip: A stored, the pad turned down, B stored, and the
     // crossfader 40 % of the way to B.
     {
         use mpfree_sampler_ui::play_tab::{Row, LIST, SCENES, SECTIONS};
         let mut scenes = sample_sampler(fonts());
-        scenes.on_event(UiEvent {
-            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-            kind: EventKind::Tab(mpfree_sampler_ui::play_tab::TAB),
-        });
+        edit_pad(&mut scenes);
         let tap = |p: &mut Player, widget: &str, kind: EventKind| {
             p.on_event(UiEvent {
                 widget: widget.into(),
@@ -16723,7 +16779,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         tap(&mut scenes, SCENES, EventKind::Tab(1));
         tap(&mut scenes, SCENES, EventKind::Value(0.4));
         scenes.take_actions();
-        out.push(("sample-play-scenes", scenes));
+        out.push(("pads-edit-scenes", scenes));
     }
     // The Grain tool on the same pad, set to play grains: the engine's own
     // cloud 1.5 s after a hit, as the audio thread sends it. Then its
@@ -16950,10 +17006,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         use mpfree_sampler_ui::play_tab::{Row, LIST};
         use mpfree_sampler_ui::widgets::SettingList;
         let mut keys = sample_sampler(fonts());
-        keys.on_event(UiEvent {
-            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-            kind: EventKind::Tab(mpfree_sampler_ui::play_tab::TAB),
-        });
+        edit_pad(&mut keys);
         for (row, delta) in [(Row::Keys, 1), (Row::LowKey, 36), (Row::HighKey, -43)] {
             let index = play_row(&mut keys, row);
             keys.on_event(UiEvent {
@@ -16976,7 +17029,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             kind: EventKind::Select(index),
         });
         keys.take_actions();
-        out.push(("sample-play-keys", keys));
+        out.push(("pads-edit-keys", keys));
     }
     // A bank mapped to keys on the Pads tab: five pads named by their
     // notes, one keygroup instrument; the Play tab's keyboard with A5's
@@ -17011,7 +17064,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         // What it did, said on the hint line, has been read.
         mapped.tick(30.0);
         let _ = mapped.take_actions();
-        open_sample(&mut mapped, sample_page::Editor::Play);
+        edit_pad(&mut mapped);
         play_row(&mut mapped, play_tab::Row::Keys);
         let held = mapped.ui.rect_of(play_tab::KEYS).and_then(|r| {
             mapped
@@ -17023,7 +17076,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             mapped.touch(3, Touch::Down, x, y);
         }
         mapped.take_actions();
-        out.push(("sample-keys-mapped", mapped));
+        out.push(("pads-edit-keys-mapped", mapped));
     }
     // The same instrument with Key fade at 4 notes: the zones that met now
     // overlap by 4 and crossfade, the Key fade row picked.
@@ -17059,7 +17112,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         // What it did, said on the hint line, has been read.
         faded.tick(30.0);
         let _ = faded.take_actions();
-        open_sample(&mut faded, sample_page::Editor::Play);
+        edit_pad(&mut faded);
         let index = play_row(&mut faded, Row::KeyFade);
         if let Some(list) = faded.ui.get_mut::<SettingList>(LIST) {
             list.selected = index;
@@ -17068,18 +17121,15 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         ev(&mut faded, LIST, EventKind::Step { index, delta: 4 });
         faded.apply(ToUi::SampleLift);
         faded.take_actions();
-        out.push(("sample-keys-crossfade", faded));
+        out.push(("pads-edit-keys-crossfade", faded));
     }
     // The Play tab with Also plays picked: hits on A1 and A3 added them,
     // and the pad latches.
     {
-        use mpfree_sampler_ui::play_tab::{self, Row, LIST};
+        use mpfree_sampler_ui::play_tab::{Row, LIST};
         use mpfree_sampler_ui::widgets::SettingList;
         let mut links = sample_sampler(fonts());
-        links.on_event(UiEvent {
-            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-            kind: EventKind::Tab(play_tab::TAB),
-        });
+        edit_pad(&mut links);
         for (row, step) in [(Row::Latch, 1), (Row::Links, 0)] {
             let index = play_row(&mut links, row);
             if let Some(list) = links.ui.get_mut::<SettingList>(LIST) {
@@ -17100,7 +17150,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             links.apply(ToUi::PadUp(pad));
         }
         links.take_actions();
-        out.push(("sample-play-links", links));
+        out.push(("pads-edit-links", links));
     }
     // The Play tab's Slices on a pad sliced in 8 (R4 part 5): slice 3
     // picked, up 5 semitones and filtered.
@@ -17127,10 +17177,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             projects: vec![project],
             rate: mpfree_sampler_ui::sample::RATE,
         });
-        sliced.on_event(UiEvent {
-            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-            kind: EventKind::Tab(play_tab::TAB),
-        });
+        edit_pad(&mut sliced);
         let i = Section::ALL
             .iter()
             .position(|s| *s == Section::Slices)
@@ -17144,17 +17191,14 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             kind: EventKind::Marker { index: 2, frame: 0 },
         });
         sliced.take_actions();
-        out.push(("sample-play-slices", sliced));
+        out.push(("pads-edit-slices", sliced));
     }
     // The Play tab with the pads playing 16 Levels of the pad, by tune.
     {
         use mpfree_sampler_ui::play_tab::{Row, LIST};
         use mpfree_sampler_ui::widgets::SettingList;
         let mut levels = sample_sampler(fonts());
-        levels.on_event(UiEvent {
-            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-            kind: EventKind::Tab(mpfree_sampler_ui::play_tab::TAB),
-        });
+        edit_pad(&mut levels);
         for (row, delta) in [(Row::PadsPlay, -1), (Row::LevelsBy, 1)] {
             let index = play_row(&mut levels, row);
             levels.on_event(UiEvent {
@@ -17171,7 +17215,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             kind: EventKind::Select(index),
         });
         levels.take_actions();
-        out.push(("sample-play-levels", levels));
+        out.push(("pads-edit-levels", levels));
     }
     // The Movement section: a sine LFO on the pitch at 5 Hz (a vibrato),
     // and a pitch envelope that starts an octave up and drops back over
@@ -17179,10 +17223,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     {
         use mpfree_sampler_ui::play_tab::{Row, LIST};
         let mut moving = sample_sampler(fonts());
-        moving.on_event(UiEvent {
-            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-            kind: EventKind::Tab(mpfree_sampler_ui::play_tab::TAB),
-        });
+        edit_pad(&mut moving);
         for (row, delta) in [(Row::LfoTo, 1), (Row::PitchEnv, 12), (Row::PitchDecay, 1)] {
             let index = play_row(&mut moving, row);
             moving.on_event(UiEvent {
@@ -17192,17 +17233,14 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             moving.apply(ToUi::SampleLift);
         }
         moving.take_actions();
-        out.push(("sample-play-movement", moving));
+        out.push(("pads-edit-movement", moving));
     }
     // The Pitch section of a pad with keys played one note at a time:
     // Mono and Legato on, a 200 ms glide on held keys (sampler R5.5).
     {
         use mpfree_sampler_ui::play_tab::{Row, LIST};
         let mut mono = sample_sampler(fonts());
-        mono.on_event(UiEvent {
-            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-            kind: EventKind::Tab(mpfree_sampler_ui::play_tab::TAB),
-        });
+        edit_pad(&mut mono);
         for (row, delta) in [
             (Row::Keys, 1),
             (Row::Mono, 1),
@@ -17218,7 +17256,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             mono.apply(ToUi::SampleLift);
         }
         mono.take_actions();
-        out.push(("sample-play-mono", mono));
+        out.push(("pads-edit-mono", mono));
     }
     // The Filter section's Ladder, resonant and driven 12 dB (sampler
     // R5.6): Filter steps Off, LP2, LP4, HP2, HP4, BP2, BP4, Notch2, Notch4,
@@ -17226,10 +17264,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     {
         use mpfree_sampler_ui::play_tab::{Row, LIST};
         let mut ladder = sample_sampler(fonts());
-        ladder.on_event(UiEvent {
-            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-            kind: EventKind::Tab(mpfree_sampler_ui::play_tab::TAB),
-        });
+        edit_pad(&mut ladder);
         for (row, delta) in [
             (Row::Filter, 9),
             (Row::Cutoff, -3),
@@ -17244,7 +17279,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             ladder.apply(ToUi::SampleLift);
         }
         ladder.take_actions();
-        out.push(("sample-play-ladder", ladder));
+        out.push(("pads-edit-ladder", ladder));
     }
     // 16 LEVEL on Play: the 16 Levels panel, by tune, pad 12 held.
     {
@@ -18321,12 +18356,25 @@ mod tests {
         assert_eq!(p.play_view(), PlayView::All, "one view: nothing to step");
         let mut p = sample_sampler(Fonts::embedded());
         assert_eq!(p.page(), sample_page::PAGE);
-        p.apply(ToUi::SampleEditor(sample_page::Editor::Play));
-        assert_eq!(p.page(), sample_page::PLAY_PAGE, "the page follows at once");
         p.apply(ToUi::SampleEditor(sample_page::Editor::Wave));
+        assert_eq!(p.page(), sample_page::PAGE, "the page follows at once");
+        // Edit pad, asked for while the Sample tab shows, waits for the
+        // Pads tab: the Sample tab keeps its page.
+        p.apply(ToUi::SampleEditor(sample_page::Editor::Play));
         assert_eq!(p.page(), sample_page::PAGE);
+        p.apply(ToUi::SampleEditor(sample_page::Editor::Pads));
         // PROG EDIT, as the audio loop sends it with a kit on the pads.
         p.apply(ToUi::Show(View::Pads));
+        assert_eq!(p.page(), sample_page::PADS_PAGE);
+        // PROG EDIT again, on the Pads tab: Edit pad on the pad picked
+        // (the one Sample page's step 6b), and again: back to the pads.
+        p.apply(ToUi::EditPad);
+        assert_eq!(p.page(), sample_page::PLAY_PAGE);
+        assert_eq!(
+            p.sample.play().unwrap().1.pad,
+            mpfree_sampler_ui::sample::PAD
+        );
+        p.apply(ToUi::EditPad);
         assert_eq!(p.page(), sample_page::PADS_PAGE);
     }
 
@@ -19791,7 +19839,7 @@ mod tests {
         };
         let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
         // The Play page's Tune knob.
-        open_sample(&mut p, sample_page::Editor::Play);
+        edit_pad(&mut p);
         let index = play_row(&mut p, play_tab::Row::Tune);
         p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
         p.take_actions();
@@ -24883,10 +24931,10 @@ mod tests {
             });
         };
         pick_tool(&mut p, mpfree_sampler_ui::wave_tab::Tool::Slice);
-        // Files is offered only once the app has a library to write them
+        // Library is offered only once the app has a library to write them
         // in.
         put_on(&mut p, -1);
-        assert_ne!(p.sample.slice().unwrap().0.put_text(), "Files");
+        assert_ne!(p.sample.slice().unwrap().0.put_text(), "Library");
         put_on(&mut p, 1);
         let root = std::env::temp_dir().join(format!("mpfree-export-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -24895,7 +24943,7 @@ mod tests {
         p.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), "");
         p.take_actions();
         put_on(&mut p, -1);
-        assert_eq!(p.sample.slice().unwrap().0.put_text(), "Files");
+        assert_eq!(p.sample.slice().unwrap().0.put_text(), "Library");
         let n = p.sample.slice().unwrap().0.slices();
         let export = |p: &mut Player| {
             p.on_event(UiEvent {
@@ -25875,11 +25923,7 @@ mod tests {
                 kind,
             });
         };
-        ev(
-            &mut p,
-            mpfree_sampler_ui::wave_tab::BAR,
-            EventKind::Tab(mpfree_sampler_ui::play_tab::TAB),
-        );
+        edit_pad(&mut p);
         let level = play_row(&mut p, Row::Level);
         let turn_down = |p: &mut Player| {
             p.on_event(UiEvent {
@@ -26120,7 +26164,7 @@ mod tests {
         assert!(p.sample.slice_tool());
     }
 
-    /// One-page step 3b: Put on Files on a take kept on the page exports the
+    /// One-page step 3b: Put on Library on a take kept on the page exports the
     /// take and its slices as a pad's are, and the take stays on the page.
     #[test]
     fn put_on_files_exports_a_take_kept_on_the_page_and_its_slices() {
@@ -26158,7 +26202,7 @@ mod tests {
             step(&mut p, Row::Amount, -1);
         }
         step(&mut p, Row::Put, -1);
-        assert_eq!(p.sample.slice().unwrap().0.put_text(), "Files");
+        assert_eq!(p.sample.slice().unwrap().0.put_text(), "Library");
         p.take_actions();
         p.on_event(UiEvent {
             widget: wave_tab::REGION.into(),
@@ -26789,7 +26833,7 @@ mod tests {
         assert!((0..4).all(|i| view.has_pad(i)) && !view.has_pad(pad));
         p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
         // On Play, A2 is picked by its hit; Pads play turns the pads back to their sounds.
-        tap(&mut p, mpfree_sampler_ui::wave_tab::BAR, play_tab::TAB);
+        edit_pad(&mut p);
         p.apply(ToUi::PadDown {
             pad: 1,
             velocity: 100,
@@ -27022,10 +27066,7 @@ mod tests {
         use mpfree_sampler_ui::play_tab::{self, Row};
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
-        p.on_event(UiEvent {
-            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-            kind: EventKind::Tab(play_tab::TAB),
-        });
+        edit_pad(&mut p);
         p.take_actions();
         let step = |p: &mut Player, row: Row, delta: i32| {
             let index = play_row(p, row);
@@ -27265,7 +27306,7 @@ mod tests {
 
     #[test]
     fn key_fade_is_the_kits_and_vel_fade_the_pads_each_one_undo_step() {
-        use mpfree_sampler_ui::play_tab::{self, Row, LIST};
+        use mpfree_sampler_ui::play_tab::{Row, LIST};
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
         let ev = |p: &mut Player, widget: &str, kind: EventKind| {
@@ -27279,11 +27320,7 @@ mod tests {
             ev(p, LIST, EventKind::Step { index, delta });
             p.apply(ToUi::SampleLift);
         };
-        ev(
-            &mut p,
-            mpfree_sampler_ui::wave_tab::BAR,
-            EventKind::Tab(play_tab::TAB),
-        );
+        edit_pad(&mut p);
         let settings = |p: &Player| p.sample.project(0).unwrap().pad(pad).unwrap().clone();
         // No keygroup yet: Key fade has nothing to fade.
         step(&mut p, Row::KeyFade, 1);
@@ -27360,20 +27397,14 @@ mod tests {
         let text = shown(&p, 1);
         assert_ne!(text, "—");
         // The Play page says the same.
-        p.on_event(UiEvent {
-            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-            kind: EventKind::Tab(play_tab::TAB),
-        });
+        edit_pad(&mut p);
         let k = play_row(&mut p, Row::Tune);
         assert_eq!(
             p.ui.get::<SettingList>(play_tab::LIST).unwrap().rows[k].value,
             text
         );
-        // Back on the Wave page, one undo takes the whole run back.
-        p.on_event(UiEvent {
-            widget: play_tab::BAR.into(),
-            kind: EventKind::Tab(mpfree_sampler_ui::wave_tab::TAB),
-        });
+        // Back on the Sample page, one undo takes the whole run back.
+        p.apply(ToUi::Show(View::Sample));
         assert_eq!(p.page(), sample_page::PAGE);
         p.apply(ToUi::SampleUndo(false));
         assert_eq!(tune(&p), before);
@@ -27382,7 +27413,7 @@ mod tests {
 
     #[test]
     fn hits_on_pads_edit_stops_and_also_plays_and_latch_is_a_row() {
-        use mpfree_sampler_ui::play_tab::{self, Row, LIST};
+        use mpfree_sampler_ui::play_tab::{Row, LIST};
         use mpfree_sampler_ui::widgets::SettingList;
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
@@ -27392,11 +27423,7 @@ mod tests {
                 kind,
             })
         };
-        ev(
-            &mut p,
-            mpfree_sampler_ui::wave_tab::BAR,
-            EventKind::Tab(play_tab::TAB),
-        );
+        edit_pad(&mut p);
         let settings = |p: &Player| p.sample.project(0).unwrap().pad(pad).unwrap().clone();
         let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
         // A tap on a row picks it, as the list does (its section opened).
@@ -27480,7 +27507,7 @@ mod tests {
             p.touch(9, Touch::Up, t.x + 5, t.y + 5);
         };
         // The pad bar's Play tab opens the Play page on the same pad.
-        tap_tab(&mut p, mpfree_sampler_ui::wave_tab::BAR, play_tab::TAB);
+        edit_pad(&mut p);
         assert_eq!(
             (p.page(), p.sample.editor()),
             (sample_page::PLAY_PAGE, sample_page::Editor::Play)
@@ -27552,13 +27579,16 @@ mod tests {
                 .last_velocity,
             Some(100)
         );
-        tap_tab(&mut p, play_tab::BAR, mpfree_sampler_ui::wave_tab::TAB);
+        // ‹ Pads: back to the pads; the Sample tab shows its own page.
+        tap_tab(&mut p, play_tab::BAR, 0);
+        assert_eq!(p.page(), sample_page::PADS_PAGE);
+        p.apply(ToUi::Show(View::Sample));
         assert_eq!(p.page(), sample_page::PAGE);
     }
 
     #[test]
     fn layers_are_added_and_removed_on_the_play_tab_one_undo_step_each() {
-        use mpfree_sampler_ui::play_tab::{self, Row, LIST};
+        use mpfree_sampler_ui::play_tab::{Row, LIST};
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
         let ev = |p: &mut Player, widget: &str, kind: EventKind| {
@@ -27567,11 +27597,7 @@ mod tests {
                 kind,
             })
         };
-        ev(
-            &mut p,
-            mpfree_sampler_ui::wave_tab::BAR,
-            EventKind::Tab(play_tab::TAB),
-        );
+        edit_pad(&mut p);
         p.take_actions();
         let layers = |p: &Player| -> Vec<(u8, u8, f32)> {
             p.sample
@@ -27650,13 +27676,13 @@ mod tests {
                 p.apply(ToUi::SampleViewBack(v));
             }
         };
-        ev(&mut p, wave_tab::BAR, EventKind::Tab(play_tab::TAB));
+        edit_pad(&mut p);
         // Add layer picks the new layer 2.
         let add = play_row(&mut p, Row::AddLayer);
         ev(&mut p, LIST, EventKind::Tab(add));
         back(&mut p);
-        // The Wave page's Grain tool, its Shape part.
-        ev(&mut p, play_tab::BAR, EventKind::Tab(wave_tab::TAB));
+        // The Sample page's Grain tool, its Shape part.
+        p.apply(ToUi::Show(View::Sample));
         let grain = Tool::ALL.iter().position(|t| *t == Tool::Grain).unwrap();
         ev(&mut p, wave_tab::TOOLS, EventKind::Tab(grain));
         assert!(p.sample.grain_tool());
@@ -27708,7 +27734,7 @@ mod tests {
             events_log(&p)
         );
         // Back on Play, picking layer 1 moves every tab to it.
-        ev(&mut p, wave_tab::BAR, EventKind::Tab(play_tab::TAB));
+        edit_pad(&mut p);
         ev(&mut p, LAYERS, EventKind::Select(0));
         ev(&mut p, play_tab::BAR, EventKind::Tab(0));
         assert!(p
@@ -28869,10 +28895,7 @@ mod tests {
         assert_eq!(row(&p).settings, before, "Starts is Auto-sample's");
         ev(&mut p, recorder::RECORDER, EventKind::Tab(0));
         assert_eq!(p.sample.editor(), sample_page::Editor::Auto);
-        assert_eq!(
-            p.ui.get::<PadBar>(auto_tab::BAR).unwrap().active,
-            wave_tab::TAB
-        );
+        assert!(p.ui.get::<PadBar>(auto_tab::BAR).unwrap().tabs.is_empty());
         assert_eq!(
             p.ui.get::<ButtonRow>(auto_tab::BUTTONS).unwrap().labels[1],
             "Wave"
@@ -30280,7 +30303,7 @@ mod tests {
             .position(|s| *s == play_tab::Section::Pitch)
             .unwrap();
         let tune = |p: &mut Player, delta: i32| {
-            ev(p, wave_tab::BAR, EventKind::Tab(play_tab::TAB));
+            edit_pad(p);
             take(p);
             ev(p, play_tab::SECTIONS, EventKind::Tab(pitch));
             let index = play_tab::Section::Pitch
@@ -30296,7 +30319,7 @@ mod tests {
                 p.apply(ToUi::Rows(RowKey::Step(delta.signum())));
             }
             p.apply(ToUi::SampleLift);
-            ev(p, play_tab::BAR, EventKind::Tab(wave_tab::TAB));
+            p.apply(ToUi::Show(View::Sample));
             take(p);
             assert!(p.sample.grain_tool(), "the Grain tool stays picked");
         };
@@ -30812,7 +30835,7 @@ mod tests {
 
     #[test]
     fn a_waiting_send_to_pad_takes_the_hit_before_the_play_tabs_stops_row() {
-        use mpfree_sampler_ui::play_tab::{self, Row, LIST};
+        use mpfree_sampler_ui::play_tab::{Row, LIST};
         use mpfree_sampler_ui::send;
         use mpfree_sampler_ui::widgets::SettingList;
         let pad = mpfree_sampler_ui::sample::PAD;
@@ -30823,11 +30846,7 @@ mod tests {
                 kind,
             })
         };
-        ev(
-            &mut p,
-            mpfree_sampler_ui::wave_tab::BAR,
-            EventKind::Tab(play_tab::TAB),
-        );
+        edit_pad(&mut p);
         let stops = play_row(&mut p, Row::Chokes);
         p.ui.get_mut::<SettingList>(LIST).unwrap().selected = stops;
         ev(&mut p, LIST, EventKind::Select(stops));
@@ -31269,6 +31288,135 @@ mod tests {
         assert_ne!(p.ui.page(), perform_tab::PAGE);
     }
 
+    /// Edit pad (the one Sample page's step 6b): the Sample tab's Play page
+    /// under the Pads tab, opened from the pad's settings or PROG EDIT;
+    /// the Pads tab, ‹ Pads or PROG EDIT go back to the pads. A pad with
+    /// no layers says why it has none. Its Chop to pads goes to the Sample
+    /// tab, with the Slice tool.
+    #[test]
+    fn edit_pad_opens_from_the_pads_tab_and_goes_back_to_the_pads() {
+        use mpfree_sampler_ui::pads_tab::{self, PadType};
+        use mpfree_sampler_ui::{play_tab, send};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        let header = |p: &mut Player, v: View| {
+            let i = v.tab_index(p.settings.debug_mode).unwrap();
+            let got = p.on_event(UiEvent {
+                widget: "header".into(),
+                kind: EventKind::Tab(i),
+            });
+            assert_eq!(got, Some(FromUi::Tab(i)));
+            // The app shows the tab again.
+            p.apply(ToUi::Show(v));
+        };
+        // The Sample tab has no Play sub-page: its bar has no switch.
+        assert!(p
+            .ui
+            .get::<mpfree_sampler_ui::widgets::PadBar>(mpfree_sampler_ui::wave_tab::BAR)
+            .unwrap()
+            .tabs
+            .is_empty());
+        // The pad list's Edit pad row: the page, under the Pads tab.
+        edit_pad(&mut p);
+        assert_eq!((p.view, p.page()), (View::Pads, sample_page::PLAY_PAGE));
+        assert_eq!(p.sample.play().unwrap().1.pad, pad);
+        assert!(
+            hint(&p).starts_with("Hit a pad: its velocity shows"),
+            "{}",
+            hint(&p)
+        );
+        let bar =
+            p.ui.get::<mpfree_sampler_ui::widgets::PadBar>(play_tab::BAR)
+                .unwrap();
+        assert_eq!(bar.back.as_deref(), Some("‹ Pads"));
+        // A hit picks that pad for it; the empty pad says how to go back.
+        p.apply(ToUi::PadDown {
+            pad: 7,
+            velocity: 100,
+        });
+        assert_eq!(p.page(), sample_page::EMPTY_PAGE);
+        assert!(
+            hint(&p).contains("PROG EDIT or ‹ Pads: back to the pads"),
+            "{}",
+            hint(&p)
+        );
+        p.apply(ToUi::PadDown { pad, velocity: 100 });
+        assert_eq!(p.page(), sample_page::PLAY_PAGE);
+        // ‹ Pads: back to the pads.
+        p.on_event(UiEvent {
+            widget: play_tab::BAR.into(),
+            kind: EventKind::Tab(0),
+        });
+        assert_eq!((p.view, p.page()), (View::Pads, sample_page::PADS_PAGE));
+        // The Pads tab tapped on Edit pad: back to the pads too.
+        p.apply(ToUi::EditPad);
+        assert_eq!(p.page(), sample_page::PLAY_PAGE);
+        header(&mut p, View::Pads);
+        assert_eq!(p.page(), sample_page::PADS_PAGE);
+        // Each tab keeps its own page: the Sample tab its page, the Pads
+        // tab Edit pad.
+        p.apply(ToUi::EditPad);
+        header(&mut p, View::Sample);
+        assert_eq!(p.page(), sample_page::PAGE);
+        header(&mut p, View::Sample);
+        assert_eq!(p.page(), sample_page::PAGE);
+        p.apply(ToUi::Show(View::Pads));
+        assert_eq!(p.page(), sample_page::PLAY_PAGE);
+        // Edit pad's Chop to pads: the Sample tab with the Slice tool,
+        // nothing chopped unseen.
+        p.take_actions();
+        p.on_event(UiEvent {
+            widget: send::SEND.into(),
+            kind: EventKind::Tab(send::CHOP_TO_PADS),
+        });
+        let tab = View::Sample.tab_index(p.settings.debug_mode).unwrap();
+        assert!(p.take_actions().contains(&FromUi::Tab(tab)));
+        assert_eq!(
+            p.page(),
+            sample_page::PLAY_PAGE,
+            "until the app shows the tab"
+        );
+        p.apply(ToUi::Show(View::Sample));
+        assert_eq!(p.page(), sample_page::PAGE);
+        assert!(p.sample.slice_tool());
+        assert_eq!(p.sample.project(0).unwrap().pad(1), None, "nothing chopped");
+        // The Pads tab shows Edit pad as it was left; PROG EDIT: the pads.
+        p.apply(ToUi::Show(View::Pads));
+        assert_eq!(p.page(), sample_page::PLAY_PAGE);
+        p.apply(ToUi::EditPad);
+        assert_eq!(p.page(), sample_page::PADS_PAGE);
+        // An Instrument pad has no layers: PROG EDIT says why.
+        p.on_event(UiEvent {
+            widget: pads_tab::MAP.into(),
+            kind: EventKind::Select(10),
+        });
+        let i = PadType::ALL
+            .iter()
+            .position(|t| *t == PadType::Instrument)
+            .unwrap();
+        p.on_event(UiEvent {
+            widget: pads_tab::TYPE.into(),
+            kind: EventKind::Tab(i),
+        });
+        p.apply(ToUi::EditPad);
+        assert_eq!(p.page(), sample_page::PADS_PAGE);
+        assert!(hint(&p).contains("is an Instrument pad"), "{}", hint(&p));
+        // The faint row, tapped or pushed, says the same.
+        let k = PadType::Instrument
+            .rows()
+            .iter()
+            .position(|r| *r == pads_tab::Row::EditPad)
+            .unwrap();
+        p.tick(30.0);
+        p.on_event(UiEvent {
+            widget: pads_tab::LIST.into(),
+            kind: EventKind::Select(k),
+        });
+        assert!(hint(&p).contains("is an Instrument pad"), "{}", hint(&p));
+        assert_eq!(p.page(), sample_page::PADS_PAGE);
+    }
+
     #[test]
     fn the_pads_tab_picks_copies_and_clears_pads_and_undo_takes_it_back() {
         use mpfree_sampler_ui::pads_tab::{self, Row};
@@ -31387,12 +31535,15 @@ mod tests {
         p.apply(ToUi::Show(View::Sample));
         assert_eq!(p.page(), sample_page::PAGE);
         assert_eq!(p.sample.state().unwrap().pad, pad);
-        p.apply(ToUi::SampleEditor(sample_page::Editor::Play));
-        assert_eq!(p.page(), sample_page::PLAY_PAGE);
-        // And back: the Pads tab on the view it had.
+        // And back: the Pads tab on the view it had, then Edit pad there;
+        // each tab keeps its own page.
         p.apply(ToUi::Show(View::Pads));
         assert_eq!(p.page(), sample_page::PADS_PAGE);
+        p.apply(ToUi::EditPad);
+        assert_eq!(p.page(), sample_page::PLAY_PAGE);
         p.apply(ToUi::Show(View::Sample));
+        assert_eq!(p.page(), sample_page::PAGE);
+        p.apply(ToUi::Show(View::Pads));
         assert_eq!(p.page(), sample_page::PLAY_PAGE);
     }
 
@@ -31462,7 +31613,7 @@ mod tests {
         let _ = p.take_actions();
         // The Sample tab's Play tab shows the kit's keyboard on its Pitch
         // section, with its own hint.
-        open_sample(&mut p, sample_page::Editor::Play);
+        edit_pad(&mut p);
         assert_eq!(p.page(), sample_page::PLAY_PAGE);
         let pitch = play_tab::Section::ALL
             .iter()
