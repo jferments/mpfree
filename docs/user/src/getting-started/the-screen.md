@@ -53,15 +53,15 @@ Each tab is drawn here as MPFree draws it, with sample music in it. The chapter 
 
 {{shot: sequencer-steps | The Sequencer tab, on Steps: the armed track's pattern with two lock lanes, your timing under it, and the step inspector for the picked step at the bottom.}}
 
-{{shot: looper | The Looper tab: the eight loops along the top, and the picked loop's three layers underneath with its overdub, speed, length and history controls.}}
+{{shot: looper | The Looper tab: the eight loops along the top (three playing, two off, one recording, two empty), and the picked loop's three layers underneath with its overdub, speed, length and history controls.}}
 
 {{shot: sample | The Sample tab: the pad bar at the top, the recorder row, the wave with its markers and tools, and the pad's mode, gain, options and sound underneath.}}
 
 {{shot: synth | The Synth tab: the synth and its presets on the left, the sound's pages along the top, and the knobs of the Osc page. The coloured tags (Q1 to Q4) show which knobs the Q-Links turn.}}
 
-{{shot: clips | The Arrange tab's Clips grid: tracks across the top, scenes down the side, the Record settings on the right, and the scene morph along the bottom.}}
+{{shot: clips | The Arrange tab's Clips grid mid-jam: eight tracks across the top (kits, synths and a loop track), scenes down the side, clips playing, waiting for the bar and recording, empty slots to fill, the Record settings on the right, and the scene morph along the bottom.}}
 
-{{shot: pads-pad | The Pads tab: the tracks with kits, the kit's 16 pads in the picked bank, the picked pad's settings in the middle, and the kit's sounds on the right.}}
+{{shot: pads-pad | The Pads tab: the tracks with kits, the kit's 16 pads in the picked bank (each labelled with what it is: a sample, a loop, a synth voice or MIDI out), the banks along the top with a dot for each pad in use, the picked pad's settings in the middle, and the kit's sounds on the right.}}
 
 {{shot: mixer | The Mix tab on Faders: a strip for each track, with its effects, sends, pan, fader, mute, solo and output, and the master strip on the right.}}
 

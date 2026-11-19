@@ -208,6 +208,7 @@ pub fn press_base(info: &NodeInfo) -> Option<u16> {
         "mpfree.poly" => Some(pp::PRESS_BASE),
         "mpfree.fm" => Some(fp::PRESS_BASE),
         "mpfree.wavetable" => Some(mpfree_synth::wavetable::params::PRESS_BASE),
+        "mpfree.wind" => Some(mpfree_synth::wind_params::PRESS_BASE),
         _ => None,
     }
 }
@@ -217,6 +218,7 @@ fn press_targets(info: &NodeInfo) -> &'static [&'static str] {
         "mpfree.poly" => sp::POLY_TARGETS,
         "mpfree.fm" => sp::FM_TARGETS,
         "mpfree.wavetable" => sp::WT_TARGETS,
+        "mpfree.wind" => sp::WIND_TARGETS,
         _ => &[],
     }
 }
@@ -833,6 +835,21 @@ pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
         }
     }
     match st.info.id {
+        "mpfree.wind" => {
+            use mpfree_synth::wind_params as wn;
+            let flute = v(wn::MODEL).round() == wn::FLUTE;
+            let one = v(wn::VOICES).round() <= 1.0;
+            match id {
+                wn::REED if flute => Some("reeds only"),
+                wn::EDGE if !flute => Some("flute only"),
+                wn::LEGATO | wn::PRIORITY | wn::GLIDE if !one => Some("one voice only"),
+                wn::GLIDE_MODE if !one => Some("one voice only"),
+                wn::GLIDE_MODE if v(wn::GLIDE) <= 0.0 => Some("glide is off"),
+                wn::SPREAD if one => Some("one voice"),
+                wn::DECAY if v(wn::SUSTAIN) >= 100.0 => Some("sustain is full"),
+                _ => None,
+            }
+        }
         "mpfree.bass" => {
             use mpfree_synth::bass_params as bp;
             let body = v(bp::BODY).round();
@@ -938,7 +955,10 @@ pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
         }
         "mpfree.drawbar" => {
             use mpfree_synth::drawbar_params as db;
+            let combo = v(db::MODEL) >= 0.5;
             match id {
+                db::FLUTE | db::REED | db::REED_WAVE if !combo => Some("combo only"),
+                db::WHEELS | db::LEAKAGE if combo => Some("tonewheel only"),
                 db::PERC_HARM | db::PERC_DECAY | db::PERC_VOL if v(db::PERC) < 0.5 => {
                     Some("percussion is off")
                 }

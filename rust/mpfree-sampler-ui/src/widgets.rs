@@ -36,6 +36,11 @@ pub struct PadBar {
     /// the button outlined while on. A tap still gives
     /// [`EventKind::Tab`] 0.
     pub switch: Option<bool>,
+    /// A chip in the switch's place that goes back (Edit pad's "‹ Pads",
+    /// the one Sample page's step 6b): raised, the label after a chevron
+    /// pointing left; a tap gives [`EventKind::Tab`] 0. Used when `tabs`
+    /// is empty and there is no `button`.
+    pub back: Option<String>,
 }
 
 const SEG_H: i32 = 40;
@@ -47,6 +52,8 @@ const BUTTON_W: i32 = 220;
 /// the bar's button.
 const KIT_W: i32 = 220;
 const KIT_GAP: i32 = 10;
+/// The width of the chip that goes back ([`PadBar::back`]).
+const BACK_W: i32 = 150;
 
 impl PadBar {
     pub fn new(tabs: &[&str]) -> PadBar {
@@ -61,6 +68,7 @@ impl PadBar {
             button: None,
             kit: None,
             switch: None,
+            back: None,
         }
     }
 
@@ -83,11 +91,25 @@ impl PadBar {
         Some(self.tabs_rect(r))
     }
 
-    /// The box holding the tabs (or the button).
+    /// The chip that goes back, when it has one (and no tabs or button).
+    pub fn back_rect(&self, r: Rect) -> Option<Rect> {
+        self.back
+            .as_ref()
+            .filter(|_| self.tabs.is_empty() && self.button.is_none())?;
+        Some(self.tabs_rect(r))
+    }
+
+    /// The box holding the tabs (or the button, or the chip that goes
+    /// back). With none of them it is only its padding, at the right, so
+    /// the title runs on to it.
     fn tabs_rect(&self, r: Rect) -> Rect {
         if self.tabs.is_empty() && self.button.is_some() {
             let h = SEG_H + 2 * SEG_PAD;
             return Rect::new(r.right() - 10 - BUTTON_W, r.y + (r.h - h) / 2, BUTTON_W, h);
+        }
+        if self.tabs.is_empty() && self.back.is_some() {
+            let h = SEG_H + 2 * SEG_PAD;
+            return Rect::new(r.right() - 10 - BACK_W, r.y + (r.h - h) / 2, BACK_W, h);
         }
         let w = self.tabs.len() as i32 * SEG_TAB_W + 2 * SEG_PAD;
         let h = SEG_H + 2 * SEG_PAD;
@@ -215,6 +237,17 @@ impl Widget for PadBar {
             cx.text(FontId::Bold, t.size_body, text, Align::Left, t.text, label);
             return;
         }
+        if let (Some(b), Some(label)) = (self.back_rect(r), self.back.as_ref()) {
+            // The chip that goes back: raised, the label centred.
+            cx.canvas.fill_round_rect(b, 12, t.raised);
+            cx.text(FontId::Bold, t.size_body, b, Align::Center, t.text, label);
+            return;
+        }
+        if self.tabs.is_empty() {
+            // No switch (the one Sample page has no sub-tabs): nothing
+            // drawn in its place.
+            return;
+        }
         cx.canvas.fill_round_rect(tabs, 12, t.bg);
         for (i, name) in self.tabs.iter().enumerate() {
             let tr = self.tab_rect(r, i);
@@ -260,6 +293,9 @@ impl Widget for PadBar {
         if let (Some(b), Some(label)) = (self.button_rect(r), self.button.as_ref()) {
             out.push(Target::tap("button", 0, label.clone(), b));
         }
+        if let (Some(b), Some(label)) = (self.back_rect(r), self.back.as_ref()) {
+            out.push(Target::tap("back", 0, label.clone(), b));
+        }
         if let (Some(k), Some(name)) = (self.kit_rect(r), self.kit.as_ref()) {
             out.push(Target::tap("kit", 0, format!("Kit {name}"), k));
         }
@@ -274,6 +310,9 @@ impl Widget for PadBar {
             return Some(EventKind::Type(0));
         }
         if self.button_rect(r).is_some_and(|b| b.contains(x, y)) {
+            return Some(EventKind::Tab(0));
+        }
+        if self.back_rect(r).is_some_and(|b| b.contains(x, y)) {
             return Some(EventKind::Tab(0));
         }
         if self.kit_rect(r).is_some_and(|k| k.contains(x, y)) {
@@ -679,6 +718,11 @@ pub struct SettingList {
     /// Pad list's Effects: no arrows, and a tap on it is a
     /// [`EventKind::Tab`] with the row's index.
     pub buttons: Vec<usize>,
+    /// Button rows drawn faint, with why each is (the Pad list's Edit pad
+    /// on a pad with no layers): a tap on one gives [`EventKind::Select`]
+    /// with the row's index, for the page to say why
+    /// ([`SettingList::why_faint`]). Only as a list.
+    pub faint: Vec<(usize, String)>,
     /// A finger on a typed value: the number pad opens when it lifts, not
     /// when the wheel turned the value while it was held.
     typing: Option<(u64, usize)>,
@@ -701,8 +745,12 @@ pub struct SettingList {
 }
 
 const SET_ROW_H: i32 = 44;
+/// The gap under each row of a settings list, in its height.
+const SET_ROW_GAP: i32 = 4;
 const SET_ARROW_W: i32 = 40;
 const SET_VALUE_W: i32 = 210;
+/// The width of a button row's button ([`SettingList::buttons`]).
+const SET_BUTTON_W: i32 = 280;
 
 impl SettingList {
     pub fn new(title: &str) -> SettingList {
@@ -714,6 +762,7 @@ impl SettingList {
             editing: false,
             typed: Vec::new(),
             buttons: Vec::new(),
+            faint: Vec::new(),
             typing: None,
             panel: None,
             controls: Vec::new(),
@@ -728,9 +777,16 @@ impl SettingList {
         self.panel.as_ref()?.control_rect(r, &self.controls, k)
     }
 
-    /// Why the panel's control for row `k` is faint, when it is and says.
+    /// Why the panel's control for row `k` is faint, when it is and says;
+    /// as a list, why its button row `k` is ([`SettingList::faint`]).
     pub fn why_faint(&self, k: usize) -> Option<&str> {
-        self.panel.as_ref()?;
+        if self.panel.is_none() {
+            return self
+                .faint
+                .iter()
+                .find(|(i, why)| *i == k && !why.is_empty())
+                .map(|(_, why)| why.as_str());
+        }
         self.controls
             .get(k)
             .filter(|c| c.faint && !c.why.is_empty())
@@ -750,6 +806,11 @@ impl SettingList {
         r.inset(14).take_top(34).1
     }
 
+    /// How many rows the body shows: the last needs no gap under it.
+    fn visible(body: Rect) -> usize {
+        ((body.h + SET_ROW_GAP) / SET_ROW_H).max(0) as usize
+    }
+
     fn first(&self, visible: usize) -> usize {
         if self.rows.len() <= visible || visible == 0 {
             return 0;
@@ -762,7 +823,7 @@ impl SettingList {
     /// Row `k`'s rectangle and its value box, if it is in view.
     pub fn row_rects(&self, r: Rect, k: usize) -> Option<(Rect, Rect)> {
         let body = SettingList::body(r);
-        let visible = (body.h / SET_ROW_H).max(0) as usize;
+        let visible = SettingList::visible(body);
         let first = self.first(visible);
         if k < first || k >= first + visible || k >= self.rows.len() {
             return None;
@@ -771,9 +832,15 @@ impl SettingList {
             body.x,
             body.y + (k - first) as i32 * SET_ROW_H,
             body.w,
-            SET_ROW_H - 4,
+            SET_ROW_H - SET_ROW_GAP,
         );
-        let vw = SET_VALUE_W.min(row.w * 3 / 5);
+        // A button (Effects, Edit pad) says what it opens: it takes more
+        // of the row.
+        let vw = if self.buttons.contains(&k) {
+            SET_BUTTON_W.min(row.w * 2 / 3)
+        } else {
+            SET_VALUE_W.min(row.w * 3 / 5)
+        };
         Some((
             row,
             Rect::new(row.right() - vw - 4, row.y + 4, vw, row.h - 8),
@@ -785,7 +852,7 @@ impl SettingList {
     fn paint_footer(&self, cx: &mut PaintCx, r: Rect, text: &str, warn: bool) {
         let t = cx.theme.clone();
         let body = SettingList::body(r);
-        let visible = (body.h / SET_ROW_H).max(0) as usize;
+        let visible = SettingList::visible(body);
         let shown = self.rows.len().min(visible) as i32;
         let px = t.size_small;
         let line_h = (px * 1.5) as i32;
@@ -865,6 +932,19 @@ impl Widget for SettingList {
                 if on { t.text } else { t.text_dim },
                 &self.rows[k].name,
             );
+            if self.buttons.contains(&k) && self.why_faint(k).is_some() {
+                // A faint button: a faint rim and label.
+                cx.canvas.stroke_round_rect(value, 8, 1, t.text_faint);
+                cx.text(
+                    FontId::Bold,
+                    t.size_body - 1.0,
+                    value.inset_xy(10, 0),
+                    Align::Center,
+                    t.text_faint,
+                    &self.rows[k].value,
+                );
+                continue;
+            }
             if self.buttons.contains(&k) {
                 // A button: raised, with a rim, and no arrows.
                 cx.canvas.fill_round_rect(value, 8, t.raised);
@@ -947,12 +1027,10 @@ impl Widget for SettingList {
                 .disabled_if(k == self.selected),
             );
             if self.buttons.contains(&k) {
-                out.push(Target::tap(
-                    "row-button",
-                    k,
-                    self.rows[k].value.clone(),
-                    value,
-                ));
+                out.push(
+                    Target::tap("row-button", k, self.rows[k].value.clone(), value)
+                        .disabled_if(self.why_faint(k).is_some()),
+                );
                 continue;
             }
             out.push(Target::tap(
@@ -1047,7 +1125,9 @@ impl Widget for SettingList {
         })?;
         let (_, value) = self.row_rects(r, k)?;
         self.selected = k;
-        if value.contains(x, y) && self.buttons.contains(&k) {
+        if value.contains(x, y) && self.buttons.contains(&k) && self.why_faint(k).is_some() {
+            Some(EventKind::Select(k))
+        } else if value.contains(x, y) && self.buttons.contains(&k) {
             Some(EventKind::Tab(k))
         } else if value.contains(x, y) && x < value.x + SET_ARROW_W {
             Some(EventKind::Step {

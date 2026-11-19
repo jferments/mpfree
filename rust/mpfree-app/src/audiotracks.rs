@@ -14,6 +14,10 @@
 //!   "+ Audio", the track panel (input, monitor, mute, solo, level and
 //!   pan), Split (at the playhead), Erase, Undo and the Q-Links. Each
 //!   answer is a line for the log; a refusal says why.
+//! - [`TrackHost::bring`] puts a sound from the Sample page on a track
+//!   (its Slice tool's Put on Audio track, the one Sample page's step 6):
+//!   the first empty track, from the playhead's bar, a region a slice, as
+//!   one undo step.
 //! - [`TrackHost::fill`] puts the lanes, the waveforms, the memory gauge
 //!   and the counters into the time engine's [`TimeState`], for the Song
 //!   view. [`TrackHost::take_changed`] says when they changed, checked a
@@ -36,7 +40,7 @@
 //! takes stay in RAM: streaming them from the stick waits for the stick
 //! speed test (rule zero: it needs Jay's go).
 
-use mpfree_audiotracks::host::{AudioHost, TakeWave, MAX_COLUMNS};
+use mpfree_audiotracks::host::{AudioHost, ImportRefused, TakeWave, MAX_COLUMNS};
 use mpfree_audiotracks::save::Saved;
 use mpfree_audiotracks::{Command, Input, Monitor, TakeInfo, MAX_TRACKS, PEAK_BLOCK};
 use mpfree_time_ui::song::{audio_blocks, take_lanes, AudioLane, MONITORS};
@@ -860,6 +864,87 @@ impl TrackHost {
         Ok(line)
     }
 
+    /// A sound from the Sample page (its Slice tool's Put on Audio track,
+    /// the one Sample page's step 6), as the MPC's Audio Track from
+    /// Samples: on the first empty audio track (else the first with
+    /// nothing from the bar on), from the bar the playhead is in (`t`), a
+    /// region a slice, as one undo step. Ok is a line for the log; Err
+    /// says why not. Call it between periods (it drops the sound's name
+    /// and cuts; the audio goes to the tracks, or to their worker).
+    pub fn bring(&mut self, s: Sound, t: &TransportInfo) -> Result<String, String> {
+        let Sound {
+            name,
+            channels,
+            audio,
+            cuts,
+            bpm,
+        } = s;
+        let tr = &self.host.tracks;
+        let refuse = |h: &mut TrackHost, audio: Vec<f32>, why: String| {
+            h.host.drop_audio(audio);
+            Err(why)
+        };
+        if (0..MAX_TRACKS).any(|t| tr.recording(t).is_some()) {
+            return refuse(
+                self,
+                audio,
+                "a sound goes on an audio track once the recording stops".into(),
+            );
+        }
+        let bar = t.meter.bar_ticks().max(1);
+        let at = t.position.div_euclid(bar) * bar;
+        let empty = |k: usize| tr.regions(k).is_empty() && !tr.armed(k);
+        let free = |k: usize| !tr.armed(k) && tr.regions(k).iter().all(|r| r.end <= at);
+        let Some(track) = (0..MAX_TRACKS)
+            .find(|&k| empty(k))
+            .or_else(|| (0..MAX_TRACKS).find(|&k| free(k)))
+        else {
+            let why = format!(
+                "every audio track has regions from bar {} on: move the playhead past them, or erase some in the Song view",
+                at / bar + 1
+            );
+            return refuse(self, audio, why);
+        };
+        let frames = audio.len() / channels.max(1);
+        let secs = frames as f64 / f64::from(self.rate);
+        let slices = 1 + cuts
+            .iter()
+            .filter(|&&c| 0 < c && (c as usize) < frames)
+            .count();
+        match self.host.import(track, at, channels, audio, cuts, bpm) {
+            Ok(_) => {
+                self.shown = self.shown.max(track + 1);
+                self.changed = true;
+                let what = match slices {
+                    1 => name,
+                    n => format!("{name}'s {n} slices"),
+                };
+                // Audio tracks play in song mode only (layout spec 4c).
+                let song = if self.active {
+                    ""
+                } else {
+                    "it plays in song mode, and "
+                };
+                Ok(format!(
+                    "{what} on audio {} from bar {}; {song}the Song view's Undo takes it off",
+                    track + 1,
+                    at / bar + 1
+                ))
+            }
+            Err(ImportRefused::Busy) => Err("another sound is still going onto its track: a moment".into()),
+            Err(ImportRefused::Streaming) => {
+                Err("the audio tracks stream from the disk: a sound can't go on them now".into())
+            }
+            Err(ImportRefused::NoTake) => Err(format!(
+                "the audio tracks hold {} takes, the most: forget some takes first",
+                mpfree_audiotracks::MAX_TAKES
+            )),
+            Err(ImportRefused::NoRoom) => Err(format!(
+                "{secs:.1} s is more than the audio tracks' memory has left: erase takes, or more memory in Prefs > Audio track memory"
+            )),
+        }
+    }
+
     /// Track `t`'s number as the screen writes it, if there is one.
     fn track_no(&self, t: usize) -> Result<usize, String> {
         if t < MAX_TRACKS {
@@ -1080,6 +1165,33 @@ fn take_name(tr: &mpfree_audiotracks::AudioTracks, take: u16) -> String {
     match mine.iter().position(|t| t.id == take) {
         Some(n) => format!("take {}", n + 1),
         None => "the take".into(),
+    }
+}
+
+/// A sound from the Sample page for an audio track ([`TrackHost::bring`]):
+/// `audio` interleaved, `channels` 1 or 2, at the tracks' rate, cut into
+/// slices at its frames `cuts` (rising), and its tempo `bpm` (0: not
+/// known), named `name`.
+#[derive(PartialEq)]
+pub struct Sound {
+    pub name: String,
+    pub channels: usize,
+    pub audio: Vec<f32>,
+    pub cuts: Vec<u64>,
+    pub bpm: f64,
+}
+
+/// Not the samples: a sound is long, and actions are logged by name.
+impl std::fmt::Debug for Sound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Sound({:?}, {} frames, {} ch, {} cuts)",
+            self.name,
+            self.audio.len() / self.channels.max(1),
+            self.channels,
+            self.cuts.len()
+        )
     }
 }
 
@@ -2010,5 +2122,116 @@ mod tests {
         let ((), calls) = crate::sys::alloc_count::calls(|| r.periods(2000));
         assert_eq!(calls, 0, "allocations or frees while playing");
         assert!(r.heard > 0.0 || r.t.position() > 3840);
+    }
+
+    /// The one Sample page's step 6: a sound from the Sample page goes on
+    /// the first empty audio track from the bar the playhead is in, a
+    /// region a slice, and its lane shows; the next waits for it, then
+    /// takes the next empty track; with none empty, the first with nothing
+    /// from the bar on; Undo takes the last off; more than the memory is
+    /// refused and says where to get more.
+    #[test]
+    fn a_sound_from_the_sample_page_goes_on_an_empty_track_from_the_playheads_bar() {
+        let mut r = Rig::new();
+        r.periods(2);
+        let sound = |name: &str, frames: usize, cuts: Vec<u64>| Sound {
+            name: name.into(),
+            channels: 1,
+            audio: (0..frames)
+                .map(|g| {
+                    (0.5 * (std::f64::consts::TAU * 441.0 * g as f64 / f64::from(RATE)).sin())
+                        as f32
+                })
+                .collect(),
+            cuts,
+            bpm: 120.0,
+        };
+        let bar = mpfree_transport::Meter::default().bar_ticks();
+        let at = |b: i64| TransportInfo {
+            position: (b - 1) * bar + 100,
+            ..Default::default()
+        };
+        let half = RATE as usize / 2;
+        let line =
+            r.h.bring(sound("Break", 2 * half, vec![half as u64]), &at(3))
+                .unwrap();
+        assert_eq!(
+            line,
+            "Break's 2 slices on audio 1 from bar 3; the Song view's Undo takes it off"
+        );
+        assert_eq!(
+            r.h.bring(sound("Hit", 100, Vec::new()), &at(3)),
+            Err("another sound is still going onto its track: a moment".into())
+        );
+        let t0 = Instant::now();
+        while r.h.host.importing().is_some() {
+            assert!(t0.elapsed() < Duration::from_secs(20), "never placed");
+            r.period();
+        }
+        let regs = r.h.host.tracks.regions(0).to_vec();
+        assert_eq!(regs.len(), 2, "{regs:?}");
+        assert_eq!(regs[0].start, 2 * bar);
+        assert_eq!(regs[1].start, regs[0].end);
+        assert!((regs[1].src - half as i64).abs() <= 1, "{regs:?}");
+        let take = r.h.host.tracks.take(regs[0].take).unwrap();
+        assert_eq!((take.bpm, take.frames, take.channels), (120.0, 2 * half, 1));
+        assert_eq!(
+            r.state().audio.iter().map(|l| l.track).collect::<Vec<_>>(),
+            [0]
+        );
+        // The next goes on the next empty track, until none is empty.
+        for k in 1..MAX_TRACKS {
+            let line = r.h.bring(sound("Hit", 4410, Vec::new()), &at(3)).unwrap();
+            assert_eq!(
+                line,
+                format!(
+                    "Hit on audio {} from bar 3; the Song view's Undo takes it off",
+                    k + 1
+                )
+            );
+            while r.h.host.importing().is_some() {
+                r.period();
+            }
+            assert_eq!(r.h.host.tracks.regions(k).len(), 1);
+        }
+        assert_eq!(r.state().audio.len(), MAX_TRACKS);
+        // None empty: the first with nothing from the bar on, else none.
+        assert_eq!(
+            r.h.bring(sound("Hit", 4410, Vec::new()), &at(1)),
+            Err("every audio track has regions from bar 1 on: move the playhead past them, or erase some in the Song view".into())
+        );
+        let line = r.h.bring(sound("Hit", 4410, Vec::new()), &at(9)).unwrap();
+        assert_eq!(
+            line,
+            "Hit on audio 1 from bar 9; the Song view's Undo takes it off"
+        );
+        while r.h.host.importing().is_some() {
+            r.period();
+        }
+        assert_eq!(r.h.host.tracks.regions(0).len(), 3);
+        // Undo takes it off again.
+        let undo = r.h.action(AudioAction::Undo, &r.info(), true);
+        assert!(undo.is_ok(), "{undo:?}");
+        r.periods(2);
+        assert_eq!(r.h.host.tracks.regions(0).len(), 2);
+        // Out of song mode it says it plays in song mode.
+        r.song = false;
+        r.periods(2);
+        let line = r.h.bring(sound("Hit", 4410, Vec::new()), &at(12)).unwrap();
+        assert_eq!(
+            line,
+            "Hit on audio 1 from bar 12; it plays in song mode, and the Song view's Undo takes it off"
+        );
+        while r.h.host.importing().is_some() {
+            r.period();
+        }
+        // More than the memory (10 s) is refused, and says where to get more.
+        let e =
+            r.h.bring(sound("Long", 12 * RATE as usize, Vec::new()), &at(20));
+        assert_eq!(
+            e,
+            Err("12.0 s is more than the audio tracks' memory has left: erase takes, or more memory in Prefs > Audio track memory".into())
+        );
+        assert_eq!(r.h.host.importing(), None);
     }
 }

@@ -35,7 +35,12 @@ the widest level whose top harmonic stays below Nyquist, taking unison
 detune and the warp's speed-up into account, so high notes don't alias:
 the worst alias of a saw at C8 is about 57 dB under the fundamental (the
 test `high_notes_do_not_alias`). Reading is linear in phase and linear
-between neighbouring frames.
+between neighbouring frames. A warped phase is always under one cycle:
+the bend's end and FM a hair under a whole cycle round up to 1 in floats,
+and on a table's last frames that read past the table and stopped the
+audio thread (fixed 19 Nov; the test
+`warps_at_the_last_frame_stay_inside_the_table` plays every table at every
+warp at the last position across the keyboard).
 
 Memory: about 49 KB per frame. The ten factory tables (176 frames) take
 8.8 MB once per process, shared by every Wavetable instance. A 16-frame

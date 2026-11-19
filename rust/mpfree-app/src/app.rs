@@ -1223,6 +1223,9 @@ pub enum Effect {
     /// has them, otherwise the Pads tab's Pad view (the audio loop knows
     /// which).
     ProgEdit,
+    /// PROG EDIT on the Pads tab: Edit pad on the pad picked, or back to
+    /// the pads from it (the screen knows which).
+    EditPad,
     /// A control for the browser while it shows (BROWSE, or the Pads
     /// tab's Browse view).
     Browse(BrowseKey),
@@ -3068,6 +3071,11 @@ impl App {
             let mut fx = vec![Effect::SampleEditor(crate::sample_page::Editor::Wave)];
             fx.extend(self.go(View::Sample));
             fx
+        } else if is(m.prog_edit) && self.view == View::Pads {
+            // PROG EDIT on the Pads tab: Edit pad on the pad picked, or
+            // back to the pads from it (the one Sample page's step 6b), as
+            // the MPC's PROG EDIT opens its Track Edit.
+            vec![Effect::EditPad]
         } else if is(m.prog_edit) {
             vec![Effect::ProgEdit]
         } else if is(m.q_link) {
@@ -6473,7 +6481,7 @@ mod tests {
         };
         // Instrument: the selected track's own sound. Kit, then Poly, FM,
         // Drums, Pluck, Wavetable, Keys, Drawbar, Squelch, Analog, Strings,
-        // Bass and the plugin synths; then back to Kit.
+        // Bass, Wind and the plugin synths; then back to Kit.
         let sound = |fx: &[Effect]| {
             fx.iter().find_map(|e| match e {
                 Effect::TrackSound { track, id } => Some((*track, *id)),
@@ -6490,7 +6498,7 @@ mod tests {
         assert_eq!(
             sound(&app.step_item(row(SynthItem::Engine), 1)),
             None,
-            "Bass is the last with no plugin synths"
+            "Wind is the last with no plugin synths"
         );
         app.plugin_synths = vec![("clap:org.example.synth", "Example Synth")];
         assert_eq!(
@@ -9028,6 +9036,11 @@ mod tests {
         assert_eq!(fx[0], Effect::SampleEditor(Editor::Wave));
         assert!(fx.contains(&Effect::Show(View::Sample)));
         assert_eq!(press(&mut app, 67), [Effect::ProgEdit]);
+        // On the Pads tab, PROG EDIT is Edit pad's, in and out (the one
+        // Sample page's step 6b): the screen knows which.
+        app.open_tab(View::Pads);
+        assert_eq!(press(&mut app, 67), [Effect::EditPad]);
+        assert_eq!(app.view(), View::Pads);
         // ERASE and SHIFT + ERASE only tell the screen while they are held
         // (ERASE + a tap deletes); they go to no page.
         let only_status = |fx: Vec<Effect>| fx.iter().all(|e| matches!(e, Effect::Status(_)));
