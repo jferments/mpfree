@@ -35,8 +35,8 @@ use mpfree_instruments::{Design, Sound};
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_synth::{
     analog_params as an, bass_params as bp, choir_params as chp, drum_params, fm_params,
-    params as pp, wind_params as wp, Analog, Bass, Choir, Drawbar, Drums, Fm, Keys, Pluck, Poly,
-    Preset, Squelch, Strings, Wavetable, Wind,
+    params as pp, pluck_params as up, wind_params as wp, Analog, Bass, Choir, Drawbar, Drums, Fm,
+    Keys, Pluck, Poly, Preset, Squelch, Strings, Wavetable, Wind,
 };
 
 use crate::fft::{hann_f64, power_spectrum};
@@ -884,7 +884,30 @@ pub fn report(rate: u32) -> Vec<Row> {
     bass(&mut rows, rate);
     wind(&mut rows, rate);
     choir(&mut rows, rate);
+    pluck(&mut rows, rate);
     rows
+}
+
+/// One engine's preset rows alone (L, B and K rows), for a quick look
+/// while working on it: `fxlab synth --engine NAME`.
+pub fn engine_report(rate: u32, e: Engine) -> Vec<Row> {
+    let mut rows = Vec::new();
+    for (i, name) in e.presets().iter().enumerate() {
+        preset_rows(&mut rows, e, i, name, rate);
+    }
+    if e == Engine::Pluck {
+        pluck(&mut rows, rate);
+    }
+    rows
+}
+
+impl Engine {
+    /// The engine called `name` (as [`Engine::name`] gives it, any case).
+    pub fn from_name(name: &str) -> Option<Engine> {
+        Engine::ALL
+            .into_iter()
+            .find(|e| e.name().eq_ignore_ascii_case(name))
+    }
 }
 
 /// The drum rows alone, as [`report`] measures them.
@@ -1362,6 +1385,12 @@ fn keys_rows(
         label *= 1.0 - 0.85 * f64::from(node.param(5)) / 100.0;
     }
     let law = if e == Engine::Keys { -0.75 } else { -0.5 };
+    // Pluck's Decay is the ring at middle C's pitch, so a preset that
+    // sounds an octave down (Transpose) rings longer at the C4 key, by
+    // its law.
+    if e == Engine::Pluck {
+        label *= 2f64.powf(f64::from(node.param(up::TRANSPOSE)) / 12.0 * law);
+    }
     let mut pts = Vec::new();
     let mut at_c4 = 0.0;
     for k in [36u8, 48, 60, 72, 84] {
@@ -3899,6 +3928,82 @@ fn choir(rows: &mut Vec<Row>, rate: u32) {
     );
 }
 
+/// U1: Position's comb. A plain string (Steel String's pick and brightness)
+/// plucked 16 times at Position 50 and 20, at C3, C4 and C5: the harmonics
+/// with a node at the pick against their neighbours, each pluck's power
+/// averaged (every pluck's noise differs), 20 ms in. At 50 the even
+/// harmonics (2, 4, 6, 8) against the odd (1, 3, 5, 7); at 20 the 5th
+/// against the 4th and 6th. The worst of the three notes.
+fn pluck(rows: &mut Vec<Row>, rate: u32) {
+    let w = blackman_harris(4_096);
+    let measure = |position: f32, key: u8| -> Vec<f64> {
+        let mut n = Engine::Pluck.plain(rate);
+        for (id, v) in [
+            (up::MODEL, 0.0),
+            (up::BRIGHTNESS, 80.0),
+            (up::PICK, 85.0),
+            (up::DECAY, 6_000.0),
+            (up::RELEASE, 10.0),
+            (up::POSITION, position),
+        ] {
+            n.set_param(id, v);
+        }
+        let gap = frames(0.3, rate);
+        let ev: Vec<(usize, NodeEvent)> = (0..16)
+            .flat_map(|i| {
+                [
+                    (
+                        i * gap,
+                        NodeEvent::NoteOn {
+                            note: key,
+                            velocity: 127,
+                        },
+                    ),
+                    (i * gap + gap / 2, NodeEvent::NoteOff { note: key }),
+                ]
+            })
+            .collect();
+        let s = render(n.as_mut(), rate, 16 * gap, &ev).mid();
+        let mut power = vec![0.0f64; 8];
+        for i in 0..16 {
+            let at = i * gap + frames(0.02, rate);
+            for (h, p) in power.iter_mut().enumerate() {
+                *p += amp_at(&s[at..at + 4_096], &w, hz(key) * (h + 1) as f64, rate).powi(2);
+            }
+        }
+        power
+    };
+    let (mut even, mut fifth) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for key in [48u8, 60, 72] {
+        let p = measure(50.0, key);
+        let e = (p[1] + p[3] + p[5] + p[7]) / 4.0;
+        let o = (p[0] + p[2] + p[4] + p[6]) / 4.0;
+        even = even.max(db10(e / o));
+        let p = measure(20.0, key);
+        fifth = fifth.max(db10(p[4] / ((p[3] + p[5]) / 2.0)));
+    }
+    put(
+        rows,
+        "U1",
+        "Pluck/position 50",
+        "even_vs_odd_db",
+        even,
+        Better::Lower,
+        Some(-30.0),
+        1.0,
+    );
+    put(
+        rows,
+        "U1",
+        "Pluck/position 20",
+        "fifth_vs_neighbours_db",
+        fifth,
+        Better::Lower,
+        Some(-30.0),
+        1.0,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3963,3 +4068,6 @@ mod tests {
         assert!(alias_db(&naive, rate, f, 4_000) > -40.0);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Pluck (synth library wave 3).

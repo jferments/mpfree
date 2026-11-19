@@ -975,7 +975,13 @@ fn pluck(page: &str) -> Option<Plan> {
             "row(col(tuning:*, voices:*):55*, output:45*)",
             vec![
                 s("tuning", "Tuning", Voice, &[TRANSPOSE, FINE, BEND_RANGE]),
-                s("voices", "Voices", Voice, &[POLYPHONY, VEL_TONE]),
+                s(
+                    "voices",
+                    "Voices and touch",
+                    Voice,
+                    &[POLYPHONY, VEL_TONE, VELOCITY],
+                )
+                .labels(&[(VELOCITY, "Vel > level")]),
                 s(
                     "output",
                     "Output",
