@@ -322,3 +322,290 @@ pub(crate) fn formants4(src: &[[f32; 4]], out: &mut [[f32; 4]], f: &mut crate::F
     unsafe { mpfree_simd_formants4_neon(src.as_ptr(), out.as_mut_ptr(), frames32, f) };
     true
 }
+
+#[repr(C)]
+struct Waves4 {
+    osc: *const crate::Osc4,
+    out: *mut [f32; 4],
+    flags: *mut u8,
+    frames: u32,
+    shape: u32,
+}
+
+extern "C" {
+    fn mpfree_simd_waves4_neon(args: *const Waves4);
+    fn mpfree_simd_mix4_neon(args: *const Mix4);
+}
+
+// A frame a round, four oscillators a vector: t from the phase's top 24
+// bits (VCVT with 24 fraction bits, exact, as the twin's `as f32` times
+// 2^-24), the wave, its store, then the lanes near a step as a 4-bit mask
+// stored as one byte a frame.
+//
+// Waves4 offsets: osc 0, out 4, flags 8, frames 12, shape 16. Osc4: ph 0,
+// inc 16, dt 32.
+global_asm!(
+    ".pushsection .text.mpfree_simd_waves4_neon,\"ax\",%progbits",
+    ".fpu neon",
+    ".arm",
+    ".p2align 4",
+    ".globl mpfree_simd_waves4_neon",
+    ".hidden mpfree_simd_waves4_neon",
+    ".type mpfree_simd_waves4_neon,%function",
+    "mpfree_simd_waves4_neon:",
+    "push {{r4-r7, lr}}",
+    "ldr r1, [r0, #0]",           // osc
+    "ldr r2, [r0, #4]",           // out
+    "ldr r3, [r0, #8]",           // flags
+    "ldr r4, [r0, #12]",          // frames, at least 1
+    "ldr r5, [r0, #16]",          // shape: 0 saw, 1 square, 2 cubic
+    "vld1.32 {{d16-d17}}, [r1]!", // q8 = p
+    "vld1.32 {{d18-d19}}, [r1]!", // q9 = inc
+    "vld1.32 {{d20-d21}}, [r1]",  // q10 = dt
+    "vmov.f32 q15, #1.0",
+    "vadd.f32 q11, q10, q10", // two = dt + dt
+    "vsub.f32 q12, q15, q11", // 1 - two
+    "vmov.f32 q13, #0.25",
+    "vcge.f32 q13, q10, q13", // dt >= 0.25: every frame flagged
+    "adr r6, 9f",
+    "vld1.32 {{d28-d29}}, [r6]", // q14 = lane bits 1, 2, 4, 8
+    "vmov.i32 q10, #0x80000000", // half a cycle (dt is done with)
+    "cmp r5, #1",
+    "beq 3f",
+    "bgt 5f",
+    // The saw: t + t - 1.
+    "2:",
+    "vshr.u32 q0, q8, #8",
+    "vcvt.f32.u32 q0, q0, #24", // t
+    "vadd.f32 q1, q0, q0",
+    "vsub.f32 q1, q1, q15", // t + t - 1
+    "vst1.32 {{d2-d3}}, [r2]!",
+    "vcgt.f32 q2, q11, q0", // t < two
+    "vcgt.f32 q3, q0, q12", // t > 1 - two
+    "vorr q2, q2, q3",
+    "vorr q2, q2, q13",
+    "vand q2, q2, q14",
+    "vpadd.i32 d4, d4, d5",
+    "vpadd.i32 d4, d4, d4",
+    "vmov.32 r7, d4[0]",
+    "strb r7, [r3], #1",
+    "vadd.i32 q8, q8, q9",
+    "subs r4, r4, #1",
+    "bne 2b",
+    "pop {{r4-r7, pc}}",
+    // The square: -1 for p < 2^31, else 1; flagged near t's step or h's.
+    "3:",
+    "vshr.u32 q0, q8, #8",
+    "vcvt.f32.u32 q0, q0, #24", // t
+    "veor q1, q8, q10",
+    "vshr.u32 q1, q1, #8",
+    "vcvt.f32.u32 q1, q1, #24", // h, half a cycle on
+    "vmvn q3, q8",
+    "vand q3, q3, q10",
+    "vorr q3, q3, q15", // 1.0 with the sign of p < 2^31
+    "vst1.32 {{d6-d7}}, [r2]!",
+    "vcgt.f32 q2, q11, q0",
+    "vcgt.f32 q3, q0, q12",
+    "vorr q2, q2, q3",
+    "vcgt.f32 q3, q11, q1",
+    "vorr q2, q2, q3",
+    "vcgt.f32 q3, q1, q12",
+    "vorr q2, q2, q3",
+    "vorr q2, q2, q13",
+    "vand q2, q2, q14",
+    "vpadd.i32 d4, d4, d5",
+    "vpadd.i32 d4, d4, d4",
+    "vmov.32 r7, d4[0]",
+    "strb r7, [r3], #1",
+    "vadd.i32 q8, q8, q9",
+    "subs r4, r4, #1",
+    "bne 3b",
+    "pop {{r4-r7, pc}}",
+    // The cubic: t (t - 0.5) (1 - t) CUBIC_SCALE, never flagged.
+    "5:",
+    "vmov.f32 q13, #0.5",
+    "movw r7, #0x46e1",
+    "movt r7, #0x41a6",
+    "vdup.32 q12, r7", // CUBIC_SCALE
+    "mov r7, #0",
+    "6:",
+    "vshr.u32 q0, q8, #8",
+    "vcvt.f32.u32 q0, q0, #24", // t
+    "vsub.f32 q1, q0, q13",     // t - 0.5
+    "vmul.f32 q1, q0, q1",      // t (t - 0.5)
+    "vsub.f32 q2, q15, q0",     // 1 - t
+    "vmul.f32 q1, q1, q2",
+    "vmul.f32 q1, q1, q12",
+    "vst1.32 {{d2-d3}}, [r2]!",
+    "strb r7, [r3], #1",
+    "vadd.i32 q8, q8, q9",
+    "subs r4, r4, #1",
+    "bne 6b",
+    "pop {{r4-r7, pc}}",
+    ".p2align 3",
+    "9:",
+    ".word 1, 2, 4, 8",
+    ".size mpfree_simd_waves4_neon, .-mpfree_simd_waves4_neon",
+    ".popsection",
+);
+
+/// [`crate::waves4`] in NEON. Returns false, having done nothing, when
+/// there is no frame to do.
+pub(crate) fn waves4(
+    shape: crate::Shape4,
+    osc: &crate::Osc4,
+    out: &mut [[f32; 4]],
+    flags: &mut [u8],
+) -> bool {
+    const _: () = assert!(core::mem::size_of::<crate::Osc4>() == 48);
+    let frames = out.len().min(flags.len());
+    let Ok(frames) = u32::try_from(frames) else {
+        return false;
+    };
+    if frames == 0 {
+        return false;
+    }
+    let args = Waves4 {
+        osc,
+        out: out.as_mut_ptr(),
+        flags: flags.as_mut_ptr(),
+        frames,
+        shape: match shape {
+            crate::Shape4::Saw => 0,
+            crate::Shape4::Square => 1,
+            crate::Shape4::Cubic => 2,
+        },
+    };
+    // SAFETY: the kernel reads the 48 bytes of `osc` (#[repr(C)], offsets
+    // checked by the size assertion and the layout test), writes `frames`
+    // rows of 16 bytes to `out` and `frames` bytes to `flags` (frames <=
+    // both lengths), and keeps the registers the calling convention asks
+    // it to; the borrows outlive the call.
+    unsafe { mpfree_simd_waves4_neon(&args) };
+    true
+}
+
+#[repr(C)]
+struct Mix4 {
+    waves: *const [f32; 4],
+    frames: u32,
+    buses: *mut [f32; crate::MIX_STEP],
+    count: u32,
+    amp: *mut [f32; 4],
+    damp: *const [f32; 4],
+}
+
+// Bus by bus, four frames a round: the four frames' products (wave times
+// level, the level stepping on after each, lane by lane as the twin), a
+// skipped oscillator's products made -0 (adding -0 leaves any sum as it
+// is, as skipping does), then the 4 x 4 block turned over (frames across
+// oscillators to oscillators across frames) so the four oscillators add
+// into the bus's four frames in lane order. A bus no oscillator is heard
+// on is left alone; a skipped oscillator's level is put back as it was.
+//
+// Mix4 offsets: waves 0, frames 4, buses 8, count 12, amp 16, damp 20.
+global_asm!(
+    ".pushsection .text.mpfree_simd_mix4_neon,\"ax\",%progbits",
+    ".fpu neon",
+    ".arm",
+    ".p2align 4",
+    ".globl mpfree_simd_mix4_neon",
+    ".hidden mpfree_simd_mix4_neon",
+    ".type mpfree_simd_mix4_neon,%function",
+    "mpfree_simd_mix4_neon:",
+    "push {{r4-r8, lr}}",
+    "ldr r1, [r0, #0]",          // waves
+    "ldr r2, [r0, #4]",          // frames: a multiple of 4, at least 4
+    "ldr r3, [r0, #8]",          // the first bus's row
+    "ldr r4, [r0, #12]",         // buses, at least 1
+    "ldr r5, [r0, #16]",         // amp
+    "ldr r6, [r0, #20]",         // damp
+    "vmov.i32 q14, #0x80000000", // -0.0
+    "1:",
+    "vld1.32 {{d16-d17}}, [r5]",  // q8 = a
+    "vld1.32 {{d18-d19}}, [r6]!", // q9 = d
+    "vceq.f32 q12, q8, #0",
+    "vceq.f32 q15, q9, #0",
+    "vand q12, q12, q15", // q12 = skipped
+    "vmvn q15, q12",
+    "vorr d30, d30, d31",
+    "vmov r7, r8, d30",
+    "orrs r7, r7, r8",
+    "beq 3f",       // no oscillator heard on this bus
+    "vmov q11, q8", // the levels as they came
+    "mov r7, r1",
+    "mov r8, r3",
+    "mov lr, r2",
+    "2:",
+    "vld1.32 {{d0-d3}}, [r7]!", // frames j, j + 1
+    "vld1.32 {{d4-d7}}, [r7]!", // frames j + 2, j + 3
+    "vmul.f32 q0, q0, q8",
+    "vadd.f32 q8, q8, q9",
+    "vmul.f32 q1, q1, q8",
+    "vadd.f32 q8, q8, q9",
+    "vmul.f32 q2, q2, q8",
+    "vadd.f32 q8, q8, q9",
+    "vmul.f32 q3, q3, q8",
+    "vadd.f32 q8, q8, q9",
+    "vbit q0, q14, q12",
+    "vbit q1, q14, q12",
+    "vbit q2, q14, q12",
+    "vbit q3, q14, q12",
+    "vtrn.32 q0, q1",
+    "vtrn.32 q2, q3",
+    "vswp d1, d4",
+    "vswp d3, d6", // q0..q3: oscillator 0..3 across the four frames
+    "vld1.32 {{d26-d27}}, [r8]",
+    "vadd.f32 q13, q13, q0",
+    "vadd.f32 q13, q13, q1",
+    "vadd.f32 q13, q13, q2",
+    "vadd.f32 q13, q13, q3",
+    "vst1.32 {{d26-d27}}, [r8]!",
+    "subs lr, lr, #4",
+    "bne 2b",
+    "vbsl q12, q11, q8", // a skipped oscillator's level as it came
+    "vst1.32 {{d24-d25}}, [r5]",
+    "3:",
+    "add r5, r5, #16",
+    "add r3, r3, #64",
+    "subs r4, r4, #1",
+    "bne 1b",
+    "pop {{r4-r8, pc}}",
+    ".size mpfree_simd_mix4_neon, .-mpfree_simd_mix4_neon",
+    ".popsection",
+);
+
+/// [`crate::mix4`] in NEON, for the whole groups of four frames: returns
+/// the frames done (0 when there is no whole group or no bus), for the
+/// twin to go on from.
+pub(crate) fn mix4(
+    waves: &[[f32; 4]],
+    amp: &mut [[f32; 4]],
+    damp: &[[f32; 4]],
+    buses: &mut [[f32; crate::MIX_STEP]],
+) -> usize {
+    let frames = waves.len().min(crate::MIX_STEP) & !3;
+    let count = amp.len().min(damp.len()).min(buses.len());
+    let Ok(count32) = u32::try_from(count) else {
+        return 0;
+    };
+    if frames == 0 || count == 0 {
+        return 0;
+    }
+    let args = Mix4 {
+        waves: waves.as_ptr(),
+        frames: frames as u32,
+        buses: buses.as_mut_ptr(),
+        count: count32,
+        amp: amp.as_mut_ptr(),
+        damp: damp.as_ptr(),
+    };
+    // SAFETY: the kernel reads `frames` rows of `waves` (frames <=
+    // waves.len()), and for each of `count` buses (count <= every slice's
+    // length) reads and writes its row's first `frames` values (frames <=
+    // MIX_STEP, the row's length) and its 16 bytes of `amp`, and reads its
+    // 16 bytes of `damp`; it keeps the registers the calling convention
+    // asks it to; the borrows outlive the call.
+    unsafe { mpfree_simd_mix4_neon(&args) };
+    frames
+}

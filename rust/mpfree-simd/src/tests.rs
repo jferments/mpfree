@@ -374,6 +374,231 @@ fn the_choir_workload_sings_at_a_sensible_level() {
     assert!(rms > 0.01 && rms < 1.0, "{rms}");
 }
 
+/// `mpfree_synth::dsp::poly_blep4` and `poly_blep`, copied: the step
+/// correction the bank adds where `waves4` flags.
+fn poly_blep(t: f32, dt: f32) -> f32 {
+    if t < dt {
+        let x = t / dt;
+        x + x - x * x - 1.0
+    } else if t > 1.0 - dt {
+        let x = (t - 1.0) / dt;
+        x * x + x + x + 1.0
+    } else {
+        0.0
+    }
+}
+
+fn poly_blep4(t: f32, dt: f32) -> f32 {
+    if dt >= 0.25 {
+        return poly_blep(t, dt);
+    }
+    let two = dt + dt;
+    if t < two {
+        let x = t / dt;
+        if x < 1.0 {
+            let x2 = x * x;
+            2.0 * (-0.5 + x * (2.0 / 3.0) - x2 * x * (1.0 / 3.0) + x2 * x2 * 0.125)
+        } else {
+            let u = 2.0 - x;
+            let u2 = u * u;
+            -2.0 * u2 * u2 * (1.0 / 24.0)
+        }
+    } else if t > 1.0 - two {
+        let x = (t - 1.0) / dt;
+        if x > -1.0 {
+            let x2 = x * x;
+            2.0 * (0.5 + x * (2.0 / 3.0) - x2 * x * (1.0 / 3.0) - x2 * x2 * 0.125)
+        } else {
+            let u = x + 2.0;
+            let u2 = u * u;
+            2.0 * u2 * u2 * (1.0 / 24.0)
+        }
+    } else {
+        0.0
+    }
+}
+
+/// Four random oscillators as the bank has them: steps from 0 (a silent
+/// note) to past a quarter of a cycle, `dt` the step's share as the bank
+/// works it out, now and then exactly 0.25.
+fn oscillators(rng: &mut Rng) -> Osc4 {
+    let mut o = Osc4::default();
+    for lane in 0..4 {
+        o.ph[lane] = match rng.below(4) {
+            0 => u32::MAX - rng.below(1 << 26),  // about to wrap
+            1 => (1 << 31) - rng.below(1 << 26), // about to cross half
+            _ => rng.next(),
+        };
+        let inc = match rng.below(8) {
+            0 => 0,
+            1 => 1 << 30, // dt exactly 0.25
+            2 => rng.next() >> 1,
+            _ => rng.next() >> (4 + rng.below(12)),
+        };
+        o.inc[lane] = inc;
+        o.dt[lane] = (f64::from(inc) / 4_294_967_296.0) as f32;
+    }
+    o
+}
+
+/// The twin's waves are the bank's shapes, and a frame it doesn't flag
+/// has no step correction: the bank's saw and square with the correction
+/// added where flagged are its old per-frame formulas exactly.
+#[test]
+fn the_wave_twin_flags_every_frame_the_step_correction_touches() {
+    let mut rng = Rng(31);
+    let mut flagged = 0;
+    for case in 0..400 {
+        let o = oscillators(&mut rng);
+        for shape in [Shape4::Saw, Shape4::Square, Shape4::Cubic] {
+            let mut w = [[0.0f32; 4]; 40];
+            let mut f = [0u8; 40];
+            plain::waves4(shape, &o, &mut w, &mut f);
+            for j in 0..40 {
+                for lane in 0..4 {
+                    let p = o.ph[lane].wrapping_add(o.inc[lane].wrapping_mul(j as u32));
+                    let dt = o.dt[lane];
+                    let t = (p >> 8) as f32 * (1.0 / 16_777_216.0);
+                    let h = (p.wrapping_add(1 << 31) >> 8) as f32 * (1.0 / 16_777_216.0);
+                    let on = f[j] >> lane & 1 == 1;
+                    flagged += usize::from(on);
+                    let ctx = format!("case {case} {shape:?} frame {j} lane {lane}");
+                    // The bank's old formulas, and the twin's wave with the
+                    // correction added only where flagged.
+                    let (old, fixed) = match shape {
+                        Shape4::Saw => {
+                            let blep = if on { poly_blep4(t, dt) } else { 0.0 };
+                            (t + t - 1.0 - poly_blep4(t, dt), w[j][lane] - blep)
+                        }
+                        Shape4::Square => {
+                            let down = if p < 1 << 31 { -1.0 } else { 1.0 };
+                            let fix = if on {
+                                down - poly_blep4(t, dt) + poly_blep4(h, dt)
+                            } else {
+                                w[j][lane]
+                            };
+                            (down - poly_blep4(t, dt) + poly_blep4(h, dt), fix)
+                        }
+                        Shape4::Cubic => {
+                            assert!(!on, "{ctx}");
+                            (t * (t - 0.5) * (1.0 - t) * CUBIC_SCALE, w[j][lane])
+                        }
+                    };
+                    assert_eq!(old.to_bits(), fixed.to_bits(), "{ctx}: {old} vs {fixed}");
+                }
+            }
+        }
+    }
+    assert!(flagged > 1000, "{flagged}");
+}
+
+#[test]
+fn the_oscillator_layout_is_the_kernels() {
+    use core::mem::{offset_of, size_of};
+    assert_eq!(offset_of!(Osc4, ph), 0);
+    assert_eq!(offset_of!(Osc4, inc), 16);
+    assert_eq!(offset_of!(Osc4, dt), 32);
+    assert_eq!(size_of::<Osc4>(), 48);
+}
+
+/// Random levels for `buses` buses: each oscillator heard on a bus or not
+/// (both 0), and now and then starting from or ramping to silence.
+fn levels(rng: &mut Rng, buses: usize) -> (Vec<[f32; 4]>, Vec<[f32; 4]>) {
+    let mut amp = vec![[0.0f32; 4]; buses];
+    let mut damp = vec![[0.0f32; 4]; buses];
+    for b in 0..buses {
+        for lane in 0..4 {
+            let (a, d) = match rng.below(6) {
+                0 | 1 => (0.0, 0.0),
+                2 => (0.0, rng.unit() * 0.01),
+                3 => (rng.unit(), 0.0),
+                _ => (rng.unit(), rng.unit() * 0.01),
+            };
+            amp[b][lane] = a;
+            damp[b][lane] = d;
+        }
+    }
+    (amp, damp)
+}
+
+/// The twin against the bank's own loop: note by note, each bus the note
+/// is heard on, frame by frame.
+#[test]
+fn the_mix_twin_is_the_banks_note_by_note_loop() {
+    let mut rng = Rng(17);
+    for _ in 0..200 {
+        let buses = 1 + rng.below(6) as usize;
+        let frames = rng.below(17) as usize;
+        let waves = rows(&mut rng, frames, 1.2);
+        let (amp, damp) = levels(&mut rng, buses);
+        let start: Vec<[f32; MIX_STEP]> = (0..buses)
+            .map(|_| std::array::from_fn(|_| rng.unit()))
+            .collect();
+        let (mut want, mut want_amp) = (start.clone(), amp.clone());
+        for lane in 0..4 {
+            for b in 0..buses {
+                let (mut a, d) = (want_amp[b][lane], damp[b][lane]);
+                if a == 0.0 && d == 0.0 {
+                    continue;
+                }
+                for j in 0..frames {
+                    want[b][j] += waves[j][lane] * a;
+                    a += d;
+                }
+                want_amp[b][lane] = a;
+            }
+        }
+        let (mut got, mut got_amp) = (start, amp);
+        plain::mix4(&waves, &mut got_amp, &damp, &mut got);
+        let bits = |x: &[[f32; MIX_STEP]]| -> Vec<u32> {
+            x.iter().flatten().map(|v| v.to_bits()).collect()
+        };
+        assert_eq!(bits(&want), bits(&got));
+        assert_eq!(row_bits(&want_amp), row_bits(&got_amp));
+    }
+}
+
+#[test]
+fn the_mix_gives_the_same_samples_for_any_frames_on_either_path() {
+    let mut rng = Rng(23);
+    for frames in 0..=MIX_STEP {
+        let waves = rows(&mut rng, frames, 1.0);
+        let (amp, damp) = levels(&mut rng, 6);
+        let start: Vec<[f32; MIX_STEP]> = (0..6)
+            .map(|_| std::array::from_fn(|_| rng.unit()))
+            .collect();
+        let (mut a, mut aa) = (start.clone(), amp.clone());
+        plain::mix4(&waves, &mut aa, &damp, &mut a);
+        for path in [Path::Plain, Path::Neon] {
+            let (mut b, mut ba) = (start.clone(), amp.clone());
+            mix4_on(path, &waves, &mut ba, &damp, &mut b);
+            let bits = |x: &[[f32; MIX_STEP]]| -> Vec<u32> {
+                x.iter().flatten().map(|v| v.to_bits()).collect()
+            };
+            assert_eq!(bits(&a), bits(&b), "{path:?} frames {frames}");
+            assert_eq!(row_bits(&aa), row_bits(&ba), "{path:?} frames {frames}");
+        }
+    }
+}
+
+#[test]
+fn the_shortest_slice_sets_how_many_buses_mix() {
+    let mut rng = Rng(29);
+    let waves = rows(&mut rng, 16, 1.0);
+    let (amp, damp) = levels(&mut rng, 4);
+    for path in [Path::Plain, Path::Neon] {
+        let mut buses = vec![[0.5f32; MIX_STEP]; 4];
+        let mut a = amp.clone();
+        mix4_on(path, &waves, &mut a[..3], &damp, &mut buses);
+        assert!(buses[3].iter().all(|&x| x == 0.5), "{path:?}");
+        assert_eq!(a[3], amp[3]);
+        let mut b = amp.clone();
+        let mut fewer = vec![[0.5f32; MIX_STEP]; 2];
+        mix4_on(path, &waves, &mut b, &damp, &mut fewer);
+        assert_eq!(b[2], amp[2]);
+    }
+}
+
 // The kernel against its twin: run on the ARMv7 build, under qemu-arm in
 // CI (`cargo test --target armv7-unknown-linux-gnueabihf -p mpfree-simd`).
 #[cfg(all(target_arch = "arm", target_endian = "little", target_os = "linux"))]
@@ -620,6 +845,96 @@ mod on_arm {
             assert_eq!(b.block(Path::Neon, lb, rb), Path::Neon);
             assert_eq!(bits(la), bits(lb));
             assert_eq!(bits(ra), bits(rb));
+        }
+    }
+
+    #[test]
+    fn the_wave_kernel_matches_its_twin_bit_for_bit() {
+        let mut rng = Rng(0xba4c);
+        for case in 0..2000 {
+            let o = oscillators(&mut rng);
+            let frames = rng.below(41) as usize;
+            for shape in [Shape4::Saw, Shape4::Square, Shape4::Cubic] {
+                let (mut wa, mut wb) =
+                    (vec![[7.0f32; 4]; frames + 2], vec![[7.0f32; 4]; frames + 2]);
+                let (mut fa, mut fb) = (vec![0xffu8; frames + 2], vec![0xffu8; frames + 2]);
+                plain::waves4(shape, &o, &mut wa[..frames], &mut fa[..frames]);
+                let took = waves4_on(Path::Neon, shape, &o, &mut wb[..frames], &mut fb);
+                assert_eq!(took == Path::Neon, frames > 0, "case {case}");
+                assert_eq!(
+                    row_bits(&wa),
+                    row_bits(&wb),
+                    "case {case} {shape:?} frames {frames}"
+                );
+                assert_eq!(fa[..frames], fb[..frames], "case {case} {shape:?} flags");
+                assert_eq!(fb[frames..], [0xff, 0xff], "case {case}: past the frames");
+            }
+        }
+    }
+
+    fn bus_bits(x: &[[f32; MIX_STEP]]) -> Vec<u32> {
+        x.iter().flatten().map(|v| v.to_bits()).collect()
+    }
+
+    #[test]
+    fn the_mix_kernel_matches_its_twin_bit_for_bit() {
+        let mut rng = Rng(0x0b05);
+        for case in 0..3000 {
+            let buses = 1 + rng.below(8) as usize;
+            let frames = rng.below(17) as usize;
+            let waves = rows(&mut rng, frames, 1.5);
+            let (mut amp, damp) = levels(&mut rng, buses);
+            if case % 4 == 0 {
+                // A skipped oscillator whose level is -0: put back as it was.
+                amp[0][1] = -0.0;
+            }
+            let mut start: Vec<[f32; MIX_STEP]> = (0..buses)
+                .map(|_| std::array::from_fn(|_| rng.unit() * 2.0))
+                .collect();
+            if case % 3 == 0 {
+                // Buses at -0 that only skipped oscillators touch stay -0.
+                start[buses - 1] = [-0.0; MIX_STEP];
+                amp[buses - 1] = [0.0, -0.0, 0.0, 0.0];
+                if case % 2 == 0 {
+                    amp[buses - 1][2] = 0.5;
+                }
+            }
+            let (mut a, mut aa) = (start.clone(), amp.clone());
+            let (mut b, mut ba) = (start, amp);
+            plain::mix4(&waves, &mut aa, &damp, &mut a);
+            let took = mix4_on(Path::Neon, &waves, &mut ba, &damp, &mut b);
+            assert_eq!(took == Path::Neon, frames >= 4, "case {case}");
+            assert_eq!(
+                bus_bits(&a),
+                bus_bits(&b),
+                "case {case}: {buses} buses, {frames} frames"
+            );
+            assert_eq!(row_bits(&aa), row_bits(&ba), "case {case}: levels");
+        }
+    }
+
+    /// Levels fading to nothing: with flush-to-zero on, the paths flush
+    /// the same products and levels.
+    #[test]
+    fn with_flush_to_zero_on_the_mix_kernel_matches_on_tiny_levels() {
+        assert!(mpfree_lanes::fpu::flush_to_zero());
+        let mut rng = Rng(5150);
+        for case in 0..500 {
+            let waves = rows(&mut rng, 16, 1.0);
+            let (mut amp, mut damp) = levels(&mut rng, 6);
+            for (a, d) in amp.iter_mut().zip(damp.iter_mut()) {
+                for lane in 0..4 {
+                    a[lane] *= 1e-37;
+                    d[lane] *= 1e-38;
+                }
+            }
+            let start = vec![[0.0f32; MIX_STEP]; 6];
+            let (mut a, mut aa) = (start.clone(), amp.clone());
+            let (mut b, mut ba) = (start, amp);
+            plain::mix4(&waves, &mut aa, &damp, &mut a);
+            mix4_on(Path::Neon, &waves, &mut ba, &damp, &mut b);
+            assert_eq!(bus_bits(&a), bus_bits(&b), "case {case}");
+            assert_eq!(row_bits(&aa), row_bits(&ba), "case {case}: levels");
         }
     }
 }

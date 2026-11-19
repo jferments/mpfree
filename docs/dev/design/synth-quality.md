@@ -150,7 +150,7 @@ The Ensemble effect also meets the FX method's own rows: no dip as Mix goes up (
 
 ## The NEON kernels (C3)
 
-The bar for each kernel in `mpfree-simd` ([NEON kernels](simd.md)): the supersaw's saws (`table_sum`, N1 to N4) and the Choir's formants (`formants4`, N5 to N7). N1, N2, N4, N5 and N6 run on CI in the ARMv7 job; N3 and N7 are the device round's.
+The bar for each kernel in `mpfree-simd` ([NEON kernels](simd.md)): the supersaw's saws (`table_sum`, N1 to N4), the Choir's formants (`formants4`, N5 to N7) and the divide-down bank (`waves4` and `mix4`, N8 to N10). N1, N2, N4, N5, N6 and N8 run on CI in the ARMv7 job; N9 is counted with `tools/inst_arm_cost.py`; N3, N7 and N10 are the device round's.
 
 | Id | Measure | Target | Today |
 |---|---|---|---|
@@ -161,6 +161,9 @@ The bar for each kernel in `mpfree-simd` ([NEON kernels](simd.md)): the supersaw
 | N5 | The formant kernel against its plain twin under qemu-arm | The same samples and state to the bit: random calls (0 to 116 frames, filters 50 Hz to 0.45 of the rate, Q 0.5 to 50, signed and -0 gains, silent lanes), a voice dying away with flush-to-zero on, and the Choir workload | Met: 3,000 random calls |
 | N6 | ARMv7 instructions a block, eight Choir voices' formants with their source and mixing | NEON fewer than the twin | Met: 40,486 against 126,280 (32 %) |
 | N7 | Time on the MPC, the same case ("Choir formants: 8 voices, plain" and "..., NEON") | NEON's p99 block under the twin's, or the kernel is removed | Device round |
+| N8 | The bank's kernels against their twins, and Strings and the combo organ with the kernels on and off, as ARMv7 under qemu | The same waves, flags, samples and levels to the bit: random calls, four notes at a time against one at a time (12-TET and 24-TET), all 26 Strings presets and the 8 Combo presets | Met |
+| N9 | ARMv7 instructions a block with the kernels on against off (`tools/inst_arm_cost.py`) | Fewer with 6 keys or more, no more with 1 | Met: Strings Init 6 keys 87 %, 49 keys 76 %, Orchestra 84 %, Combo 71 %, Combo Reed 73 %; 1 key flat |
+| N10 | Time on the MPC, the Strings and Combo cases with and without `mpfree-bench --plain` | Faster with the kernels, or they are removed | Device round |
 
 ## Wave 2 targets: Wind (stage 4)
 

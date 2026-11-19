@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Instructions per 128-frame block for Keys, Drawbar, Squelch and Analog as
-ARMv7 code (the MPC One's), counted under qemu.
+"""Instructions per 128-frame block for Keys, Drawbar, Strings, Squelch and
+Analog as ARMv7 code (the MPC One's), counted under qemu.
 
-    python3 tools/inst_arm_cost.py [--blocks N] [--jobs J] [--no-build] [CASE ...]
+    python3 tools/inst_arm_cost.py [--blocks N] [--jobs J] [--no-build] [--plain] [CASE ...]
 
 - It builds `rust/mpfree-synth/examples/inst_cost.rs` for
   armv7-unknown-linux-gnueabihf (linker arm-linux-gnueabihf-gcc, as CI's
@@ -18,6 +18,9 @@ ARMv7 code (the MPC One's), counted under qemu.
   run on the device still decides voice counts.
 - It also prints each case's output hash under qemu, which must match the
   native build's (`cargo run --release -p mpfree-synth --example inst_cost`).
+- `--plain` turns mpfree-simd's NEON kernels off (INST_COST_PLAIN=1), for
+  a case's count without them: the hash must not change
+  (docs/dev/design/simd.md).
 
 Needs qemu-user (qemu-arm), the arm-linux-gnueabihf cross toolchain and the
 Rust armv7-unknown-linux-gnueabihf target. It only builds and runs the
@@ -48,9 +51,14 @@ def build():
         env=env, check=True)
 
 
+PLAIN = False
+
+
 def run_env(case, blocks):
     env = dict(os.environ)
     env["INST_COST_BLOCKS"] = str(blocks)
+    if PLAIN:
+        env["INST_COST_PLAIN"] = "1"
     if case is not None:
         env["INST_COST_ONLY"] = case
     return env
@@ -90,14 +98,18 @@ def main():
     ap.add_argument("--blocks", type=int, default=200)
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--no-build", action="store_true")
+    ap.add_argument("--plain", action="store_true", help="NEON kernels off (mpfree-simd)")
     ap.add_argument("case", nargs="*", help="exact case names (all when none)")
     a = ap.parse_args()
+    global PLAIN
+    PLAIN = a.plain
     if a.blocks < 1:
         ap.error("--blocks must be 1 or more")
     if not a.no_build:
         build()
     names = a.case or cases()
-    print(f"ARMv7 instructions per 128-frame block ({a.blocks} blocks after 50 to warm up)")
+    print(f"ARMv7 instructions per 128-frame block ({a.blocks} blocks after 50 to warm up"
+          f"{', NEON kernels off' if a.plain else ''})")
     with concurrent.futures.ThreadPoolExecutor(max_workers=a.jobs) as pool:
         for case, per, digest in pool.map(lambda c: measure(c, a.blocks), names):
             print(f"{case:<30} {per / 1000:8.1f}k   {digest}", flush=True)
