@@ -357,6 +357,8 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
          "drawbar", "Jazz Perc", "Drawbars"),
         ("synth-drawbar-rotary", "Drawbar · Gospel, Rotary page: the horn and the drum spinning up to Fast",
          "drawbar", "Gospel", "Rotary"),
+        ("synth-drawbar-combo", "Drawbar · Combo Square, Drawbars page: the combo model, its flute and square reed, and the wave they add up to",
+         "drawbar", "Combo Square", "Drawbars"),
         ("synth-squelch", "Squelch · Acid Line, Synth page: the saw, the filter at rest and at the envelope's peak",
          "squelch", "Acid Line", "Synth"),
         ("synth-squelch-play", "Squelch · Acid Line, Play page: the cutoff's sweep for a plain note and an accented one",

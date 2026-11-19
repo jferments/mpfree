@@ -33,11 +33,11 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
 use mpfree_transport::time::TempoMap;
-use mpfree_transport::Block;
+use mpfree_transport::{Block, Tick};
 
 pub use crate::disk::DiskStats;
 use crate::disk::{Disk, FromDisk, ToDisk};
-use crate::save::Saved;
+use crate::save::{Saved, TakeFile};
 use crate::stretch::{fit_ratio, StretchJob};
 use crate::{AudioTracks, Command, Io, TakeInfo, CHUNK, IO_QUEUE, MAX_TAKES, PEAK_BLOCK};
 
@@ -213,6 +213,26 @@ pub struct AudioHost {
     /// Fits swapped in, and ones that could not be made or loaded.
     pub fits: u64,
     pub fits_failed: u64,
+    /// A sound brought in ([`AudioHost::import`]) copying in: its take,
+    /// placed once it is in, and where it is cut (kept, not freed, here).
+    importing: Option<u16>,
+    import_cuts: Vec<u64>,
+    /// Sounds brought in and placed.
+    pub imports: u64,
+}
+
+/// Why [`AudioHost::import`] could not take a sound.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImportRefused {
+    /// Another sound is still copying in.
+    Busy,
+    /// Streaming from take files: a sound would need a file of its own.
+    Streaming,
+    /// No take id is free.
+    NoTake,
+    /// Not enough audio track memory left, or the sound or track is not
+    /// one the tracks take (no frames, 3 channels, a track past the last).
+    NoRoom,
 }
 
 impl AudioHost {
@@ -282,6 +302,9 @@ impl AudioHost {
             open_errors: Vec::new(),
             fits: 0,
             fits_failed: 0,
+            importing: None,
+            import_cuts: Vec::new(),
+            imports: 0,
         }
     }
 
@@ -354,6 +377,7 @@ impl AudioHost {
     /// look after the save, the fit and the buffers.
     pub fn period(&mut self, block: &Block, map: &TempoMap, input: &[f32], out: &mut [f32]) {
         self.tracks.process(block, map, input, out);
+        self.tend_import(map);
         self.tend(block.frames as usize);
     }
 
@@ -450,6 +474,90 @@ impl AudioHost {
         }
     }
 
+    /// Bring a sound in (the one Sample page's step 6, Put on Audio
+    /// track): `audio`, interleaved, `channels` (1 or 2) at the tracks'
+    /// rate, becomes a take of its own on `track`, its frame 0 at tick
+    /// `at`, in a group of its own. It copies in over the next periods, as
+    /// a loaded take does, then plays from `at` to its end over what was
+    /// there, a region for each piece between its frames `cuts` (its
+    /// slices): one undo step ([`AudioTracks::place`]). `bpm` is its tempo
+    /// (0: not known), for Fit to tempo. Gives the take's id, or why not;
+    /// a refused sound's audio goes to the worker to drop, so this never
+    /// frees audio memory here (the cuts before are dropped here: call it
+    /// between periods).
+    pub fn import(
+        &mut self,
+        track: usize,
+        at: Tick,
+        channels: usize,
+        audio: Vec<f32>,
+        cuts: Vec<u64>,
+        bpm: f64,
+    ) -> Result<u16, ImportRefused> {
+        let refuse = |h: &mut AudioHost, audio: Vec<f32>, why| {
+            h.send(ToWorker::Drop(audio));
+            Err(why)
+        };
+        if self.importing.is_some() {
+            return refuse(self, audio, ImportRefused::Busy);
+        }
+        if self.stream.is_some() {
+            return refuse(self, audio, ImportRefused::Streaming);
+        }
+        let Some(id) = self.tracks.free_take_id() else {
+            return refuse(self, audio, ImportRefused::NoTake);
+        };
+        let group = self
+            .tracks
+            .takes()
+            .map(|t| t.group)
+            .max()
+            .map_or(0, |g| g + 1);
+        let frames = audio.len().checked_div(channels).unwrap_or(0);
+        let file = TakeFile {
+            id,
+            track,
+            group,
+            pass: 0,
+            bpm,
+            anchor: at as f64,
+            frames,
+            channels,
+            file: String::new(),
+            audio,
+        };
+        match self.tracks.load_take(file) {
+            Ok(()) => {
+                self.importing = Some(id);
+                self.import_cuts = cuts;
+                Ok(id)
+            }
+            Err(f) => refuse(self, f.audio, ImportRefused::NoRoom),
+        }
+    }
+
+    /// The take of a sound brought in that is still copying in.
+    pub fn importing(&self) -> Option<u16> {
+        self.importing
+    }
+
+    /// A sound brought in that has copied in goes on its track.
+    fn tend_import(&mut self, map: &TempoMap) {
+        let Some(id) = self.importing else {
+            return;
+        };
+        if self.tracks.take(id).is_none() {
+            // Gone (the tracks were cleared meanwhile).
+            self.importing = None;
+        } else if self.tracks.loading() == 0 {
+            self.importing = None;
+            if self.tracks.place(id, &self.import_cuts, map) {
+                self.imports += 1;
+            }
+            self.import_cuts.clear();
+        }
+    }
+
     /// Fit take `id` to `bpm` (the tempo now), keeping its pitch. False if
     /// a fit is under way, the take is not there or records, its tempo is
     /// not known or already `bpm`, or there is no worker.
@@ -543,6 +651,12 @@ impl AudioHost {
         if let Some(w) = self.wave.take() {
             self.send(ToWorker::DropWave(w));
         }
+    }
+
+    /// Audio done with, dropped on the worker (not here, on the audio
+    /// thread): a sound that could not be brought in, say.
+    pub fn drop_audio(&self, audio: Vec<f32>) {
+        self.send(ToWorker::Drop(audio));
     }
 
     /// Give back a waveform the screen is done with, to be dropped on the

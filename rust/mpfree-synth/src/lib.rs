@@ -26,8 +26,9 @@
 //! - [`Drawbar`]: a tonewheel organ, 91 free-running wheels tuned from the
 //!   organ's gears, nine drawbars with foldback, uneven key contacts (the
 //!   click), leakage, single-trigger percussion, the scanner vibrato and
-//!   chorus, drive, and a rotary speaker with horn and drum, with factory
-//!   presets.
+//!   chorus, drive, and a rotary speaker with horn and drum; and a 1960s
+//!   transistor combo organ on the Strings divide-down bank, its drawbars
+//!   sent to a near-sine flute and a bright reed; with factory presets.
 //! - [`Squelch`]: a mono acid bass, a sawtooth or its shaped square into a
 //!   four-pole diode ladder solved with zero-delay feedback, accent (louder,
 //!   and a filter sweep that builds up) and slide, with factory presets.
@@ -62,6 +63,7 @@
 
 pub mod analog;
 pub mod analog_params;
+pub mod bank;
 pub mod bass;
 pub mod bass_params;
 pub mod drawbar;

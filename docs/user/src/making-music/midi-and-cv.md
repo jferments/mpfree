@@ -425,6 +425,8 @@ CV 1 to 4 send while **Send MIDI and CV out** is on in Prefs. They haven't been 
 
 The mixer's I/O view has a **Monitor** section: tap **I/O** on the **Mix** tab and pick **Monitor** in the list on the left. It changes no setting; it shows every MIDI message going in and out of the 5-pin jacks and USB devices as it happens.
 
+{{shot: mixer-io-monitor | The Monitor: a Keystep's notes, pitch bend and mod wheel coming in, the Bass track playing out of the 5-pin jacks, the drum pads the notes hit, and the lights for each port and channel above.}}
+
 - **The lights.** Each port has a row with a light for each of the 16 channels: the upper half lights green when something comes in on that channel, the lower half blue when something goes out. The last column shows the tempo of any clock coming in or going out.
 - **The list,** newest at the top: when it happened, the port and which way (*in* or *out*, the outgoing ones in blue), the channel, the message in words (*Note on · C3 · vel 100*, *CC 1 Mod wheel · 64*, *Program 5*), where it went, and its bytes. Clock, active sensing and time code arrive many times a second, so they are counted rather than listed: one line when each starts and one when it stops. A SysEx message is one line with its length and, for well-known makers, the maker's name.
 - **Where it went.** Each line says what took its message, so nothing that arrives goes unexplained:
@@ -434,7 +436,7 @@ The mixer's I/O view has a **Monitor** section: tap **I/O** on the **Mix** tab a
   - In yellow, what nothing took: *nothing takes it* (a knob nobody learned, a pitch bend the tracks don't take from a keyboard yet), *not played: Learn only* (the port's input is Learn only), *not followed* (clock on a port the tempo isn't from), *ignored: this port's setting* (switched off under **Ignore coming in** on [the port's page](#a-ports-page)), and *ignored* for messages MPFree never reads, such as SysEx.
   - Going out: *sent by Bass* names the track that played it, *thru from Keystep 37 in* what thru passed on, *MPFree's clock* marks the clock MPFree sends, and *sent from its page* marks a port page's test note and All notes off.
 - **Picking what is listed.** The chips along the top switch each kind of message on and off (Notes, CC, Program, Bend & pressure, Clock, SysEx) and each way (In, Out). Tap a channel's light to list only that port, way and channel, or a port's name to list only that port and way; tap it again to list everything.
-- **Looking back.** Turn the data wheel (or use the page arrows) to scroll back; the list holds still while you look. Scroll back to the top and it follows again. **Hold** stops the list until you tap it again, and **Clear** empties it.
+- **Looking back.** Turn the data wheel (or use the page arrows) to scroll back; the list holds still while you look. An arrow with nowhere to go is greyed: **<** at the top of the list, **>** at its oldest line. Scroll back to the top and it follows again. **Hold** stops the list until you tap it again, and **Clear** empties it.
 - **Save log** keeps the list as it shows now (only what the chips and lights let through) in a text file on the stick's data partition, in `files/midi-logs/`, named by the date and time (`midi-log-2026-11-16-1958.txt`). The line under the screen says which file it wrote; a second save in the same minute gets `-2`, so a save never replaces a file. It is greyed when MPFree has no data partition to write to.
 
 ### Now: what each port holds this moment

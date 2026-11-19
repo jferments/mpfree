@@ -301,3 +301,256 @@ voice.transpose = -12
 
 # Output
 output.level = 3
+
+mpfree-preset = 2
+engine = mpfree.drawbar
+name = Combo
+
+# Model
+model.model = Combo
+
+# Drawbars
+drawbars.16 = 6
+drawbars.5-1-3 = 0
+drawbars.8 = 8
+drawbars.4 = 8
+drawbars.2-2-3 = 0
+drawbars.2 = 0
+drawbars.1-3-5 = 0
+drawbars.1-1-3 = 0
+drawbars.1 = 0
+
+# Combo
+combo.flute = 5
+combo.reed = 8
+
+# Vibrato
+vibrato.vibrato = V1
+vibrato.scanner = 6
+
+# Rotary
+rotary.rotary = Off
+
+mpfree-preset = 2
+engine = mpfree.drawbar
+name = Combo Flute
+
+# Model
+model.model = Combo
+
+# Drawbars
+drawbars.16 = 0
+drawbars.5-1-3 = 0
+drawbars.8 = 8
+drawbars.4 = 6
+drawbars.2-2-3 = 0
+drawbars.2 = 0
+drawbars.1-3-5 = 0
+drawbars.1-1-3 = 0
+drawbars.1 = 0
+
+# Combo
+combo.flute = 8
+combo.reed = 0
+
+# Vibrato
+vibrato.vibrato = V2
+vibrato.scanner = 6
+
+# Rotary
+rotary.rotary = Off
+
+# Output
+output.level = 2
+
+mpfree-preset = 2
+engine = mpfree.drawbar
+name = Combo Reed
+
+# Model
+model.model = Combo
+
+# Drawbars
+drawbars.16 = 8
+drawbars.5-1-3 = 0
+drawbars.8 = 8
+drawbars.4 = 8
+drawbars.2-2-3 = 6
+drawbars.2 = 6
+drawbars.1-3-5 = 6
+drawbars.1-1-3 = 6
+drawbars.1 = 0
+
+# Combo
+combo.flute = 0
+combo.reed = 8
+
+# Rotary
+rotary.rotary = Off
+
+mpfree-preset = 2
+engine = mpfree.drawbar
+name = Combo Square
+
+# Model
+model.model = Combo
+
+# Drawbars
+drawbars.16 = 0
+drawbars.5-1-3 = 0
+drawbars.8 = 8
+drawbars.4 = 8
+drawbars.2-2-3 = 6
+drawbars.2 = 0
+drawbars.1-3-5 = 0
+drawbars.1-1-3 = 0
+drawbars.1 = 0
+
+# Combo
+combo.flute = 4
+combo.reed = 8
+combo.reed-wave = Square
+
+# Vibrato
+vibrato.vibrato = V3
+vibrato.scanner = 7
+
+# Rotary
+rotary.rotary = Off
+
+# Output
+output.level = -3
+
+mpfree-preset = 2
+engine = mpfree.drawbar
+name = Combo Vibrato
+
+# Model
+model.model = Combo
+
+# Drawbars
+drawbars.16 = 0
+drawbars.5-1-3 = 0
+drawbars.8 = 8
+drawbars.4 = 8
+drawbars.2-2-3 = 0
+drawbars.2 = 0
+drawbars.1-3-5 = 0
+drawbars.1-1-3 = 0
+drawbars.1 = 0
+
+# Combo
+combo.flute = 6
+combo.reed = 6
+
+# Vibrato
+vibrato.vibrato = V3
+vibrato.scanner = 5.5
+
+# Rotary
+rotary.rotary = Off
+
+# Output
+output.level = 2
+
+mpfree-preset = 2
+engine = mpfree.drawbar
+name = Combo Garage
+
+# Model
+model.model = Combo
+
+# Drawbars
+drawbars.16 = 8
+drawbars.5-1-3 = 0
+drawbars.8 = 8
+drawbars.4 = 8
+drawbars.2-2-3 = 5
+drawbars.2 = 5
+drawbars.1-3-5 = 5
+drawbars.1-1-3 = 5
+drawbars.1 = 0
+
+# Combo
+combo.flute = 3
+combo.reed = 8
+
+# Vibrato
+vibrato.vibrato = V2
+vibrato.scanner = 6.5
+
+# Tone
+tone.drive = 45
+tone.tone = 20
+
+# Rotary
+rotary.rotary = Off
+
+# Output
+output.level = -7
+
+mpfree-preset = 2
+engine = mpfree.drawbar
+name = Combo Rotary
+
+# Model
+model.model = Combo
+
+# Drawbars
+drawbars.16 = 8
+drawbars.5-1-3 = 0
+drawbars.8 = 8
+drawbars.4 = 4
+drawbars.2-2-3 = 0
+drawbars.2 = 0
+drawbars.1-3-5 = 0
+drawbars.1-1-3 = 0
+drawbars.1 = 0
+
+# Combo
+combo.flute = 7
+combo.reed = 5
+
+# Vibrato
+vibrato.vibrato = C2
+vibrato.scanner = 6
+
+# Output
+output.level = 2
+
+mpfree-preset = 2
+engine = mpfree.drawbar
+name = Combo Perc
+
+# Model
+model.model = Combo
+
+# Drawbars
+drawbars.16 = 0
+drawbars.5-1-3 = 0
+drawbars.8 = 8
+drawbars.4 = 4
+drawbars.2-2-3 = 0
+drawbars.2 = 0
+drawbars.1-3-5 = 0
+drawbars.1-1-3 = 0
+drawbars.1 = 0
+
+# Combo
+combo.flute = 8
+combo.reed = 3
+
+# Percussion
+percussion.percussion = On
+percussion.perc-harm = Third
+percussion.perc-decay = Fast
+
+# Vibrato
+vibrato.vibrato = V1
+vibrato.scanner = 6
+
+# Rotary
+rotary.rotary = Off
+
+# Output
+output.level = 4
