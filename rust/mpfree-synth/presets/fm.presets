@@ -138,6 +138,7 @@ pressure.depth-1 = 20
 # FX 1: plate
 fx-1.decay = 1800
 fx-1.mix = 10
+fx-1.mod = 0
 
 mpfree-preset = 2
 engine = mpfree.fm
@@ -263,6 +264,7 @@ pressure.depth-1 = 20
 fx-1.pre-delay = 20
 fx-1.decay = 3500
 fx-1.mix = 15
+fx-1.mod = 0
 
 mpfree-preset = 2
 engine = mpfree.fm
@@ -598,6 +600,7 @@ pressure.depth-2 = 35
 # FX 1: plate
 fx-1.decay = 1500
 fx-1.mix = 10
+fx-1.mod = 0
 
 mpfree-preset = 2
 engine = mpfree.fm
@@ -684,6 +687,7 @@ pressure.to-1 = Off
 fx-1.size = 30
 fx-1.decay = 600
 fx-1.mix = 15
+fx-1.mod = 0
 
 mpfree-preset = 2
 engine = mpfree.fm
@@ -814,6 +818,7 @@ pressure.depth-2 = 30
 # FX 1: plate
 fx-1.decay = 4000
 fx-1.mix = 12
+fx-1.mod = 0
 
 mpfree-preset = 2
 engine = mpfree.fm
@@ -935,6 +940,7 @@ pressure.to-1 = Off
 # FX 1: plate
 fx-1.decay = 1500
 fx-1.mix = 10
+fx-1.mod = 0
 
 mpfree-preset = 2
 engine = mpfree.fm
@@ -1018,4 +1024,5 @@ op-4.coarse = 2
 op-4.velocity = 4
 # FX 1: plate
 fx-1.decay = 1500
-fx-1.mix = 10
+fx-1.mix = 7
+fx-1.mod = 0

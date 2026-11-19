@@ -2871,7 +2871,11 @@ mod tests {
             s.note_off(0, 0);
             run(&mut s, &mut frame, 2000, 128);
             assert_eq!(s.active_voices(), 0, "{engine:?}");
-            assert!(peak(&run(&mut s, &mut frame, 2, 128)) == 0.0);
+            let tail = peak(&run(&mut s, &mut frame, 2, 128));
+            assert!(
+                tail == 0.0,
+                "{engine:?}: silent once its voices end, not {tail}"
+            );
             assert_eq!(
                 s.counters(),
                 Counters {
