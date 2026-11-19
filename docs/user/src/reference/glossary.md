@@ -22,7 +22,7 @@ checked: 2026-11-14 b76c3c7
 
 **Chance** — How likely a note is to play each time round, from 0 to 100 %.
 
-**Chop** — Cut a sample into slices, one per pad.
+**Chop** — Cut a sample into slices, one per pad: the Sample tab's **Slice** tool does it.
 
 **Clip** — A recorded or programmed part (a pattern, a bass line) on one track.
 
