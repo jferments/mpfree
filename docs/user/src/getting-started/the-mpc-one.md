@@ -41,7 +41,7 @@ Along the bottom right are the buttons that control time, like the buttons on a 
 - **STOP** stops. Press it again to silence every sound still ringing.
 - **REC** records what you play.
 - **OVERDUB** records on top of what is already there, without erasing it.
-- **TAP TEMPO**: tap it in time with the music to set the tempo.
+- **TAP TEMPO**: tap it in time with the music to set the tempo. Hold it and turn the data wheel to change the tempo a BPM at a time.
 
 ## The mode buttons
 
