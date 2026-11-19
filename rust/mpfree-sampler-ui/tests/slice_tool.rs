@@ -6,6 +6,7 @@ use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::{
     ChopMode, ChopSet, Keys, PadsPlay, PlayMode, KEPT_CHOP, SLICE_KEYS_FROM,
 };
+use mpfree_sampler_ui::panel::{Look, PadCell};
 use mpfree_sampler_ui::sample::{self, slice_sample, Sample, BPM, PAD, RATE};
 use mpfree_sampler_ui::slice_tool::{self, Button, ChopAction, ChopState, Method, Row};
 use mpfree_sampler_ui::wave_tab::{self, Tool, WaveAction, WaveState, WaveTab};
@@ -118,6 +119,26 @@ fn buttons(s: &Sample) -> (Vec<String>, Vec<bool>) {
             let k = b.row().index();
             (l.rows[k].value.clone(), !l.controls[k].faint)
         })
+        .unzip()
+}
+
+/// The pad map's sixteen pads, and whether it is faint.
+fn map(s: &Sample) -> (Vec<PadCell>, bool) {
+    let l = s.ui.get::<SettingList>(wave_tab::REGION).unwrap();
+    let c = &l.controls[Row::Pads.index()];
+    match &c.look {
+        Look::Pads(cells) => (cells.clone(), c.faint),
+        look => panic!("{look:?}"),
+    }
+}
+
+/// The slices' pads on the lane under the wave, and which are lit.
+fn lane(s: &Sample) -> (Vec<String>, Vec<bool>) {
+    s.ui.get::<Waveform>(wave_tab::WAVE)
+        .unwrap()
+        .lane()
+        .iter()
+        .map(|c| (c.text.clone(), c.lit))
         .unzip()
 }
 
@@ -403,7 +424,12 @@ fn chop_to_pads_puts_each_slice_on_a_pad_in_one_undo_step() {
         e.render(a, b);
     }
     assert!(l.iter().any(|x| x.abs() > 0.01), "pad A8 sounds");
-    // Now they would be replaced; one undo takes the pads and the chop back.
+    // Now they are on their pads (step 3b: Chop to waits for a change);
+    // cut again, they would be replaced. One undo takes the pads and the
+    // chop back.
+    assert_eq!(list_right(&s), "on their pads");
+    assert!(!buttons(&s).1[3]);
+    step(&mut s, Row::Amount, 1);
     assert_eq!(list_right(&s), "replaces 4 pads");
     assert!(s.project.undo());
     assert!(s.project.pad(5).is_none() && s.project.chop_sets.is_empty());
@@ -683,6 +709,18 @@ fn phrase_on_also_gives_the_slices_in_time_for_a_clip() {
         step(&mut s, Row::Phrase, 1),
         Some(WaveAction::Say(n)) if n.contains("no tempo")
     ));
+    // Every slice is on its pad and no phrase is asked for: Chop to has
+    // nothing to do (it would only undo edits to those pads), and says so.
+    assert!(!buttons(&s).1[3]);
+    let st = s.state.clone();
+    assert_eq!(
+        s.tab.press_slice(&mut s.ui, &st, Button::ToPads),
+        Some(WaveAction::Say(
+            "The slices are on A6–B4 already: move a cut to chop again".into()
+        ))
+    );
+    // A pad on, it chops again, with no phrase.
+    qlink(&mut s, 3, 1, false);
     let a = press(&mut s, Button::ToPads).unwrap();
     assert!(matches!(a, ChopAction::ToPads { phrase: None, .. }));
     assert_eq!(a.phrase(&s.project), Ok(None));
@@ -1053,6 +1091,11 @@ fn a_changed_chop_is_kept_for_its_sound_and_comes_back() {
 /// A finger's tap on the panel's control labelled `label`; what the tab
 /// makes of it.
 fn tap_panel(s: &mut Sample, label: &str) -> Option<ChopAction> {
+    chopped(tap_says(s, label))
+}
+
+/// As [`tap_panel`], all the tab says back (a note, say).
+fn tap_says(s: &mut Sample, label: &str) -> Option<WaveAction> {
     let t =
         s.ui.targets()
             .into_iter()
@@ -1062,7 +1105,8 @@ fn tap_panel(s: &mut Sample, label: &str) -> Option<ChopAction> {
     let (x, y) = t.centre();
     let ev = s.ui.touch(5, Touch::Down, x, y)?;
     s.ui.touch(5, Touch::Up, x, y);
-    act(s, &ev)
+    let st = s.state.clone();
+    s.tab.action(&mut s.ui, &ev, &st)
 }
 
 #[test]
@@ -1233,6 +1277,16 @@ fn put_on_new_kit_chops_onto_an_empty_kit_for_a_new_track_in_one_undo_step() {
         Some(0..n),
         "the new kit's pads from A1"
     );
+    // The pad map shows them there, faint (it picks nothing), none with a
+    // sound yet; the lane names them.
+    let (cells, faint) = map(&s);
+    assert!(faint);
+    assert!(cells.iter().all(|c| !c.used));
+    assert_eq!(
+        cells.iter().map(|c| c.tint).collect::<Vec<_>>(),
+        (0..16).map(|k| (k < n).then_some(k)).collect::<Vec<_>>()
+    );
+    assert_eq!(lane(&s).0.len(), n);
     // Q-Link 4 (First pad) has nothing to move: they start on A1.
     qlink(&mut s, 3, 2, false);
     assert_eq!(s.tab.slice().pads(cs(&s.state)), Some(0..n));
@@ -1330,4 +1384,151 @@ fn put_on_new_kit_chops_onto_an_empty_kit_for_a_new_track_in_one_undo_step() {
     with_chop(&mut s.state, |c| c.new_kit = None);
     shown(&mut s);
     assert_eq!(value(&s, Row::Put), "Pads");
+}
+
+/// One-page step 3b: the lane under the wave names the pad each slice
+/// lands on, lit once that pad plays it; the pad map shows them on the
+/// bank in their colours, a tap on a pad starts them there and its arrows
+/// turn the bank. Once they are on, the Sound section follows the slice
+/// picked to its pad, until it is cut again.
+#[test]
+fn the_lane_and_the_pad_map_show_where_each_slice_lands() {
+    let mut s = chop();
+    method(&mut s, Method::Grid);
+    for _ in 0..4 {
+        step(&mut s, Row::Amount, -1);
+    }
+    let b = s.tab.slice().bounds(cs(&s.state));
+    let lands = s.tab.slice().lands(cs(&s.state));
+    let spans: Vec<(u64, u64)> = lands.iter().map(|l| (l.start, l.end)).collect();
+    assert_eq!(
+        spans,
+        b.windows(2).map(|w| (w[0], w[1])).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        lane(&s),
+        (
+            vec!["A6".into(), "A7".into(), "A8".into(), "A9".into()],
+            vec![false; 4]
+        ),
+        "the pads after A5, none playing its slice yet"
+    );
+    let (cells, faint) = map(&s);
+    assert!(!faint);
+    assert_eq!(cells.len(), 16);
+    for (pad, c) in cells.iter().enumerate() {
+        let k = (5..9).contains(&pad).then(|| pad - 5);
+        assert_eq!(c.tint, k, "pad {pad}");
+        assert_eq!(c.text, k.map_or(String::new(), |k| (k + 1).to_string()));
+        assert_eq!(c.used, pad == PAD, "pad {pad}");
+        assert_eq!(c.picked, k == Some(s.tab.slice().selected()));
+    }
+    assert_eq!(s.tab.sound_follows(&s.state), None, "not on pads yet");
+    // A tap on pad 13 starts them there.
+    tap_panel(&mut s, "Pads: pad 13");
+    assert_eq!(s.tab.slice().pads(cs(&s.state)), Some(12..16));
+    assert_eq!(lane(&s).0, ["A13", "A14", "A15", "A16"]);
+    // Tapped again, there is nothing to move: it says so.
+    assert_eq!(
+        tap_says(&mut s, "Pads: pad 13"),
+        Some(WaveAction::Say("Slice 1 lands on A13 already".into()))
+    );
+    // The arrows go round the banks, as Method's do.
+    tap_panel(&mut s, "Map ‹");
+    assert_eq!(s.tab.slice().bank_shown(cs(&s.state)), 7, "bank H");
+    tap_panel(&mut s, "Map ›");
+    // The arrows turn the map (not the pads' bank) to B1-B16, which have
+    // none; a tap on its pad 1 starts them on B1.
+    let value = |s: &Sample| {
+        s.ui.get::<SettingList>(wave_tab::REGION).unwrap().rows[Row::Bank.index()]
+            .value
+            .clone()
+    };
+    assert_eq!(value(&s), "A1–A16");
+    tap_panel(&mut s, "Map ›");
+    assert_eq!(value(&s), "B1–B16");
+    assert!(map(&s).0.iter().all(|c| c.tint.is_none() && !c.used));
+    tap_panel(&mut s, "Pads: pad 1");
+    assert_eq!(s.tab.slice().pads(cs(&s.state)), Some(16..20));
+    assert_eq!(lane(&s).0, ["B1", "B2", "B3", "B4"]);
+    assert_eq!(map(&s).0[0].tint, Some(0));
+    // Chopped there, each slice's pad plays it: the lane lights and the
+    // map shows them raised.
+    let a = press(&mut s, Button::ToPads).unwrap();
+    assert_eq!(apply(&mut s, &a), 16..20);
+    assert_eq!(lane(&s), (lane(&s).0, vec![true; 4]));
+    assert_eq!(lane(&s).0, ["B1", "B2", "B3", "B4"], "the same pads again");
+    assert!(map(&s).0[..4].iter().all(|c| c.used));
+    for k in 0..4 {
+        assert_eq!(s.tab.slice().slice_pad(cs(&s.state), k), Some(16 + k));
+    }
+    // The Sound section follows the slice picked to its pad.
+    let k = s.tab.slice().selected();
+    assert_eq!(s.tab.sound_follows(&s.state), Some((k, 16 + k)));
+    qlink(&mut s, 1, 1, false);
+    let k2 = s.tab.slice().selected();
+    assert_ne!(k, k2);
+    assert_eq!(s.tab.sound_follows(&s.state), Some((k2, 16 + k2)));
+    // Cut again, the slices from the one cut on land on pads that play
+    // something else: unlit, and the Sound section stays on the pad.
+    assert_eq!(press(&mut s, Button::Split), None);
+    let on = lane(&s).1;
+    assert_eq!(on.len(), 5);
+    assert!(on[..k2].iter().all(|&o| o), "{on:?}");
+    assert!(on[k2..].iter().all(|&o| !o), "{on:?}");
+    assert_eq!(s.tab.sound_follows(&s.state), None);
+}
+
+/// One-page step 3b: a take kept on the page is chopped onto pads straight
+/// from the page (from A1, as it has no pad), each slice made from the
+/// take; the take leaves the page with them, all in one undo step.
+#[test]
+fn a_takes_slices_go_on_pads_from_the_page_in_one_undo_step() {
+    let mut s = chop();
+    let mut take = s.project.pad(PAD).unwrap().clone();
+    take.name = "Take 1".into();
+    take.level_db = -3.0;
+    assert_eq!(s.project.add_take(take.clone()), Ok(0));
+    s.state = WaveState::of_take(&s.project, 0, 0, s.state.source.clone()).unwrap();
+    shown(&mut s);
+    assert_eq!(cs(&s.state).pad, wave_tab::TAKE);
+    method(&mut s, Method::Grid);
+    for _ in 0..4 {
+        step(&mut s, Row::Amount, -1);
+    }
+    let b = s.tab.slice().bounds(cs(&s.state));
+    assert_eq!(s.tab.slice().pads(cs(&s.state)), Some(0..4), "from A1");
+    assert_eq!(lane(&s).0, ["A1", "A2", "A3", "A4"]);
+    let (labels, on) = buttons(&s);
+    assert_eq!((labels[3].as_str(), on[3]), ("Chop to A1–A4", true));
+    let a = press(&mut s, Button::ToPads).unwrap();
+    // The take isn't a pad: apply has nothing to make them from.
+    assert!(a.apply(&mut s.project).is_err());
+    assert_eq!(a.apply_take(&mut s.project, 0), Ok(0..4));
+    assert!(s.project.takes().is_empty(), "the take left the page");
+    for k in 0..4 {
+        let pad = s.project.pad(k).unwrap();
+        assert_eq!(pad.name, format!("Take 1 {}", k + 1));
+        let r = &pad.layers[0].region;
+        assert_eq!((r.start, r.end), (b[k], b[k + 1]));
+        assert_eq!(pad.level_db, -3.0, "made from the take");
+    }
+    // One undo: the take back, the pads empty.
+    assert!(s.project.undo());
+    assert_eq!(s.project.takes().len(), 1);
+    assert_eq!(s.project.takes()[0].name, "Take 1");
+    assert!((0..4).all(|k| s.project.pad(k).is_none()));
+    assert!(s.project.pad(PAD).is_some());
+    // On a new kit: the slices made from the take there, with its sound;
+    // this kit as it was (the app lets the take go).
+    let mut to = mpfree_sampler::model::Project::new();
+    assert_eq!(a.apply_take_to(&s.project, 0, &mut to), Ok(0..4));
+    let id = take.layers[0].region.source;
+    assert!(to.source(id).is_some(), "the sound came with the slices");
+    for k in 0..4 {
+        let pad = to.pad(k).unwrap();
+        assert_eq!(pad.name, format!("Take 1 {}", k + 1));
+        assert_eq!(pad.level_db, -3.0);
+    }
+    assert_eq!(s.project.takes().len(), 1);
 }

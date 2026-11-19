@@ -17033,6 +17033,41 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         one.take_actions();
         out.push(("sample-chop-one-pad", one));
     }
+    // The Slice tool's every eighth put on pads (one-page step 3b): the
+    // lane under the wave lit, the map's pads raised, and the Sound section
+    // following slice 3 to the pad that plays it.
+    {
+        use mpfree_sampler_ui::slice_tool::Row;
+        use mpfree_sampler_ui::wave_tab::REGION as LIST;
+        use mpfree_sampler_ui::widgets::SettingList;
+        let mut on = sample_sampler(fonts());
+        on.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::TOOLS.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::wave_tab::Tool::Slice.index()),
+        });
+        let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap_or(0);
+        for (row, delta) in [(Row::Method, 1), (Row::Amount, -1)] {
+            on.on_event(UiEvent {
+                widget: LIST.into(),
+                kind: EventKind::Step {
+                    index: index(row),
+                    delta,
+                },
+            });
+        }
+        let chop = on.ui.rect_of(LIST).and_then(|r| {
+            on.ui
+                .get::<SettingList>(LIST)?
+                .control_rect(r, index(Row::Chop))
+        });
+        if let Some(t) = chop {
+            on.touch(9, Touch::Down, t.x + 5, t.y + 5);
+            on.touch(9, Touch::Up, t.x + 5, t.y + 5);
+        }
+        on.apply(ToUi::SampleQLink(1, 2));
+        on.take_actions();
+        out.push(("sample-chop-on", on));
+    }
     // The Slice tool putting every eighth on a new kit, for a new track,
     // with its phrase (R4.6).
     {
@@ -25700,6 +25735,38 @@ mod tests {
             events_log(&p)
         );
         p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        // Step 3b: the Sound section follows the slice picked (the one
+        // tapped) to the pad that plays it now, and its knobs edit that pad.
+        let sound = |p: &Player| {
+            let l =
+                p.ui.get::<SettingList>(mpfree_sampler_ui::sound_panel::SOUND)
+                    .unwrap();
+            l.panel.as_ref().unwrap().sections[0].title.clone()
+        };
+        assert_eq!(sound(&p), "Sound · slice 2 → A2");
+        let attack =
+            |p: &Player, i: usize| p.sample.project(0).unwrap().pad(i).unwrap().amp.attack_ms;
+        let (a2, a5) = (attack(&p, 1), attack(&p, pad));
+        p.on_event(UiEvent {
+            widget: mpfree_sampler_ui::sound_panel::SOUND.into(),
+            kind: EventKind::Step { index: 1, delta: 5 },
+        });
+        assert!(attack(&p, 1) > a2, "A2's attack turned");
+        assert_eq!(attack(&p, pad), a5, "A5 as it was");
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(attack(&p, 1), a2, "its own undo step");
+        loop {
+            let (sent, _) = views(p.take_actions());
+            if sent.is_empty() {
+                break;
+            }
+            for v in sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+        }
+        // Picking another slice, the section goes with it.
+        p.apply(ToUi::SampleQLink(1, 1));
+        assert_eq!(sound(&p), "Sound · slice 3 → A3");
         // UNDO takes the four pads away again, and the Play page follows.
         p.apply(ToUi::SampleUndo(false));
         assert!(p.sample.project(0).unwrap().pad(0).is_none());
@@ -25721,12 +25788,73 @@ mod tests {
         assert!(p.sample.slice_tool());
     }
 
+    /// One-page step 3b: Put on Files on a take kept on the page exports the
+    /// take and its slices as a pad's are, and the take stays on the page.
+    #[test]
+    fn put_on_files_exports_a_take_kept_on_the_page_and_its_slices() {
+        use mpfree_sampler_ui::slice_tool::Row;
+        use mpfree_sampler_ui::wave_tab;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let (mut project, _) = mpfree_sampler_ui::sample::project();
+        let mut take = project.pad(pad).unwrap().clone();
+        take.name = "Take 1".to_string();
+        project.add_take(take).unwrap();
+        p.apply(ToUi::SampleKits {
+            projects: vec![project],
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        p.apply(ToUi::PadDown { pad, velocity: 100 });
+        p.apply(ToUi::PadUp(pad));
+        settle_views(&mut p);
+        p.apply(ToUi::SamplePad(1));
+        assert_eq!(p.sample.take_shown().as_deref(), Some("Take 1"));
+        pick_tool(&mut p, wave_tab::Tool::Slice);
+        p.sample.set_files(&mut p.ui, true);
+        let step = |p: &mut Player, row: Row, delta: i32| {
+            p.on_event(UiEvent {
+                widget: wave_tab::REGION.into(),
+                kind: EventKind::Step {
+                    index: row.index(),
+                    delta,
+                },
+            });
+        };
+        step(&mut p, Row::Method, 1);
+        step(&mut p, Row::Method, 1);
+        for _ in 0..4 {
+            step(&mut p, Row::Amount, -1);
+        }
+        step(&mut p, Row::Put, -1);
+        assert_eq!(p.sample.slice().unwrap().0.put_text(), "Files");
+        p.take_actions();
+        p.on_event(UiEvent {
+            widget: wave_tab::REGION.into(),
+            kind: EventKind::Tab(Row::Chop.index()),
+        });
+        assert!(
+            events_log(&p).iter().any(|l| l
+                == "sample: Take 1 exported as 6 files: Take 1.wav with its settings and 4 slices"),
+            "{:?}",
+            events_log(&p)
+        );
+        let e = p.sample.take_exports();
+        assert_eq!((e.len(), e[0].slices, e[0].name.as_str()), (1, 4, "Take 1"));
+        assert_eq!(
+            p.sample.project(0).unwrap().takes().len(),
+            1,
+            "the take stays"
+        );
+        assert_eq!(p.sample.take_shown().as_deref(), Some("Take 1"));
+    }
+
     /// The Slice tool on a take kept on the page (one Sample page step 3):
     /// it cuts the take, keeps the cuts for its sound and plays a slice
-    /// from the take; Chop to pads waits until the take is on a pad, where
-    /// the cuts come with it.
+    /// from the take; Chop to pads puts the take's slices on pads straight
+    /// from the page (step 3b), the take going with them in one undo step;
+    /// sent to a pad instead, its cuts come with it.
     #[test]
-    fn the_slice_tool_cuts_a_take_kept_on_the_page_and_chops_it_once_on_a_pad() {
+    fn the_slice_tool_puts_a_takes_slices_on_pads_straight_from_the_page() {
         use mpfree_sampler_ui::slice_tool::Row;
         use mpfree_sampler_ui::{send, wave_tab};
         let pad = mpfree_sampler_ui::sample::PAD;
@@ -25781,17 +25909,45 @@ mod tests {
                 end: bounds[2]
             }]
         );
-        // Chop to pads waits for the take to be on a pad, and says so.
-        let before = p.sample.project(0).unwrap().pad(pad + 1).is_some();
+        // Chop to pads puts the take's four slices on the pads the tool
+        // shows (the first empty run from A1), and the take goes onto them:
+        // the page shows the pad of the slice picked (slice 2, tapped).
+        let (tab, st) = p.sample.slice().unwrap();
+        let lands = tab.pads(st).unwrap();
+        assert_eq!(lands, 0..4);
         p.on_event(UiEvent {
             widget: send::SEND.into(),
             kind: EventKind::Tab(send::CHOP_TO_PADS),
         });
-        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
-        assert!(hint.contains(send::TAKE_FIRST), "{hint}");
-        assert_eq!(p.sample.project(0).unwrap().pad(pad + 1).is_some(), before);
-        // Sent to A8, its cuts come with its sound, and Chop to pads puts
-        // the four slices on the empty pads after it.
+        let kit = p.sample.project(0).unwrap();
+        assert!(kit.takes().is_empty(), "the take left the page");
+        for (k, i) in lands.clone().enumerate() {
+            let pd = kit.pad(i).unwrap();
+            assert_eq!(pd.name, format!("Take 1 {}", k + 1));
+            let r = &pd.layers[0].region;
+            assert_eq!((r.start, r.end), (bounds[k], bounds[k + 1]));
+        }
+        assert_eq!(p.sample.take_shown(), None);
+        assert_eq!(p.sample.pad(), 1, "the pad of slice 2, A2");
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l.contains(" Take 1: chopped ")
+                    && l.ends_with("on pads A1 to A4; the take left the page")),
+            "{:?}",
+            events_log(&p)
+        );
+        // UNDO brings the take back and takes the slices off again.
+        p.apply(ToUi::SampleUndo(false));
+        let kit = p.sample.project(0).unwrap();
+        assert_eq!(kit.takes().len(), 1);
+        assert!(lands.clone().all(|i| kit.pad(i).is_none()));
+        p.apply(ToUi::PadDown { pad, velocity: 100 });
+        p.apply(ToUi::PadUp(pad));
+        p.apply(ToUi::SamplePad(1));
+        assert_eq!(p.sample.take_shown().as_deref(), Some("Take 1"));
+        // Sent to A8 instead, its cuts come with its sound, and Chop to
+        // pads puts the four slices on the empty pads after it.
         p.on_event(UiEvent {
             widget: send::SEND.into(),
             kind: EventKind::Tab(send::SEND_TO_PAD),
@@ -27745,8 +27901,8 @@ mod tests {
         );
         assert_eq!(
             p.ui.get::<ButtonRow>(send::SEND).unwrap().enabled,
-            [true, false],
-            "a take goes onto a pad before it is chopped"
+            [true, true],
+            "Send to pad and Chop to pads (step 3b: its slices go on pads from here)"
         );
         // A tap on the wave plays it on its own voice.
         ev(&mut p, wave_tab::WAVE, EventKind::Frame(0));
