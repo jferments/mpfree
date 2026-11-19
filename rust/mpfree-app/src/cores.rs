@@ -212,6 +212,27 @@ impl SoundCores {
     }
 }
 
+/// The Dev page's "NEON kernels" row: which code the synths' kernels run
+/// as (`mpfree_simd::status`), and any call that fell back to the plain
+/// twin so far.
+fn neon_row() -> (String, Tone) {
+    let status = mpfree_simd::status();
+    let tone = if mpfree_simd::path() == mpfree_simd::Path::Neon {
+        Tone::Good
+    } else if cfg!(target_arch = "arm") && mpfree_simd::enabled() {
+        Tone::Warn
+    } else {
+        Tone::Dim
+    };
+    match mpfree_simd::fallbacks() {
+        0 => (status.to_string(), tone),
+        n => (
+            format!("{status}, {n} calls fell back to plain Rust"),
+            Tone::Warn,
+        ),
+    }
+}
+
 /// The cores asked for (tests leave them out, so nothing is pinned).
 #[derive(Clone, Copy, Debug)]
 struct Pins {
@@ -640,6 +661,9 @@ impl Cores {
             c.lines.push(format!("sound cores: denormals {text}"));
             c.rows
                 .push(("Denormals".to_string(), text.to_string(), tone));
+            let (text, tone) = neon_row();
+            c.lines.push(format!("sound cores: NEON kernels: {text}"));
+            c.rows.push(("NEON kernels".to_string(), text, tone));
         }
         if mode == SoundCores::Shared {
             return c;
@@ -1153,7 +1177,36 @@ mod tests {
         // The tests' own pins leave the mode alone.
         let c = Cores::start_on(SoundCores::Three, &mut player(), &mut slot(), NONE);
         assert!(!c.rows.iter().any(|r| r.0 == "Denormals"));
+        assert!(!c.rows.iter().any(|r| r.0 == "NEON kernels"));
         assert!(!c.lane("mpfree-lane-t", None).flush_to_zero);
+    }
+
+    #[test]
+    fn the_dev_page_says_which_code_the_neon_kernels_run_as() {
+        let pins = Pins {
+            flush: true,
+            ..NONE
+        };
+        // On a thread of its own, so the test's thread keeps its mode.
+        std::thread::spawn(move || {
+            let c = Cores::start_on(SoundCores::Shared, &mut player(), &mut slot(), pins);
+            let row = c
+                .rows
+                .iter()
+                .find(|r| r.0 == "NEON kernels")
+                .expect("a row");
+            assert_eq!(row.1, mpfree_simd::status());
+            if cfg!(target_arch = "arm") {
+                // The armv7 build under qemu, as on the MPC.
+                assert_eq!(row.1, "NEON");
+                assert_eq!(row.2, Tone::Good);
+            } else {
+                assert_eq!(row.1, "plain Rust: not an ARMv7 build");
+                assert_eq!(row.2, Tone::Dim);
+            }
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]

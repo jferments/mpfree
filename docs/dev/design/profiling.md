@@ -239,6 +239,12 @@ leaves it off, to see what an engine's own flushing misses (the sampler's
 "ringing on silence" row below is that check). `--count` leaves it off:
 callgrind doesn't model the mode, and counts the same either way.
 
+`--plain` (any mode) turns the NEON kernels off (`mpfree-simd`), so every
+engine runs their plain Rust twins: run the bench with and without it on
+the MPC and `--compare` the two reports for the kernels' A/B. The run's
+header says which code the kernels run as ("NEON kernels: NEON" on the
+MPC). See [NEON kernels](simd.md).
+
 On the desktop, the biggest holders are the looper (about 33 MB for 60 s of
 stereo, 11 MB of it the 30 s Capture keeps; the app's Prefs "Loop memory"
 default of 5 minutes is about 120 MB, and 20 minutes about 448 MB, all locked
