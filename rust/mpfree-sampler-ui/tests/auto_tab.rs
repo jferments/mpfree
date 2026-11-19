@@ -157,7 +157,7 @@ fn the_default_plan_fills_a_new_kit_and_start_asks_for_it() {
     assert!(v.note.is_empty() && v.progress.is_none());
     assert_eq!(
         buttons(&s),
-        (vec!["Start".into(), "Rec".into()], vec![true, true])
+        (vec!["Start".into(), "Wave".into()], vec![true, true])
     );
     // Start hands the app the plan, named after the patch.
     let Some(AutoAction::Start(plan)) = press(&mut s, 0) else {
@@ -237,7 +237,7 @@ fn while_it_runs_the_picture_follows_and_only_cancel_answers() {
     assert_eq!(v.caption, "take 21 of 42 · F#3");
     assert_eq!(
         buttons(&s),
-        (vec!["Cancel".into(), "Rec".into()], vec![true, false])
+        (vec!["Cancel".into(), "Wave".into()], vec![true, false])
     );
     assert_eq!(press(&mut s, 0), Some(AutoAction::Cancel));
     assert_eq!(press(&mut s, 1), None);
