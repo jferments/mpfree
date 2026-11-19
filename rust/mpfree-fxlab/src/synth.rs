@@ -847,6 +847,7 @@ pub fn report(rate: u32) -> Vec<Row> {
     glide(&mut rows, rate);
     envelopes(&mut rows, rate);
     routes(&mut rows, rate);
+    character(&mut rows, rate);
     filters(&mut rows, rate);
     fm(&mut rows, rate);
     drums(&mut rows, rate);
@@ -1833,6 +1834,113 @@ fn routes(rows: &mut Vec<Row>, rate: u32) {
         Better::Near(0.0),
         Some(5.0),
         1.0,
+    );
+}
+
+fn character(rows: &mut Vec<Row>, rate: u32) {
+    // P10: Age's spread as labelled. Sixteen A4s in turn on Poly's plain
+    // sine take the sixteen voice cards: at Age 100 their tuning spreads
+    // by the cards' own offsets (4 cents a standard deviation) with the
+    // drift's 2 cents on top; at Age 0 not at all; at Age 50 by half.
+    use mpfree_synth::character::{Cards, Drift, AGE_TUNE_CENTS, CARDS, DRIFT_CENTS};
+    use mpfree_synth::params::{AGE, AMP_R};
+    let rms = |x: &[f64]| (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
+    let spread = |age: f32| {
+        let mut n = poly_sine(rate);
+        n.set_param(AMP_R, 1.0);
+        n.set_param(AGE, age);
+        let (len, gap) = (0.25, 0.05);
+        let notes: Vec<(u8, u8, f64, f64)> = (0..CARDS)
+            .map(|k| (69, 127, k as f64 * (len + gap), len))
+            .collect();
+        let x = render(
+            n.as_mut(),
+            rate,
+            frames(CARDS as f64 * (len + gap), rate),
+            &score(rate, &notes),
+        )
+        .mid();
+        let offsets: Vec<f64> = (0..CARDS)
+            .map(|k| {
+                let at = k as f64 * (len + gap);
+                let (a, b) = (frames(at + len / 4.0, rate), frames(at + len * 0.75, rate));
+                let p = pitch_track(&x[a..b], rate);
+                p.iter().map(|(_, f)| cents(*f, hz(69))).sum::<f64>() / p.len() as f64
+            })
+            .collect();
+        rms(&offsets)
+    };
+    let (cards, _) = Cards::draw();
+    let fixed: Vec<f64> = cards.tune1.iter().map(|&t| f64::from(t)).collect();
+    let label = (f64::from(AGE_TUNE_CENTS) * rms(&fixed)).hypot(f64::from(DRIFT_CENTS));
+    let (full, half, none) = (spread(100.0), spread(50.0), spread(0.0));
+    put(
+        rows,
+        "P10",
+        "character[Poly, Age 100, 16 notes]",
+        "spread_err_cents",
+        full - label,
+        Better::Near(0.0),
+        Some(1.5),
+        0.3,
+    );
+    put(
+        rows,
+        "P10",
+        "character[Poly, Age 50 against 100]",
+        "spread_ratio",
+        half / full,
+        Better::Near(0.5),
+        Some(0.15),
+        0.03,
+    );
+    put(
+        rows,
+        "P10",
+        "character[Poly, Age 0, 16 notes]",
+        "spread_cents",
+        none,
+        Better::Lower,
+        Some(0.01),
+        0.005,
+    );
+    // The drift (Poly's and Analog's): its rms, and the farthest any
+    // card's oscillator wanders from its place in 30 minutes. The walk is
+    // stepped every 0.1 s here; it is exact at any step, so this is the
+    // same walk as the engines' (one step every 16 frames) seen 10 times
+    // a second.
+    let (_, mut start) = Cards::draw();
+    let mut d = Drift::new(&mut start);
+    d.set_step(0.1);
+    let (mut sq, mut far, mut n) = (0.0f64, 0.0f64, 0usize);
+    for _ in 0..30 * 60 * 10 {
+        d.step();
+        for &x in d.d1.iter().chain(&d.d2) {
+            let c = f64::from(DRIFT_CENTS * x);
+            sq += c * c;
+            far = far.max(c.abs());
+            n += 1;
+        }
+    }
+    put(
+        rows,
+        "P10",
+        "drift[voice core, 30 min]",
+        "rms_cents",
+        (sq / n as f64).sqrt(),
+        Better::Near(f64::from(DRIFT_CENTS)),
+        Some(0.5),
+        0.1,
+    );
+    put(
+        rows,
+        "P10",
+        "drift[voice core, 30 min]",
+        "farthest_cents",
+        far,
+        Better::Lower,
+        Some(10.0),
+        0.5,
     );
 }
 

@@ -945,3 +945,84 @@ fn a_driven_sound_puts_out_no_dc_and_ends_in_exact_silence() {
     let tail = held + 3 * RATE as usize;
     assert!(l[tail..].iter().chain(&r[tail..]).all(|&v| v == 0.0));
 }
+
+/// Each of `n` A4s on a plain sine at `age`, played in turn: its pitch in
+/// cents from 440 Hz (the mean over the middle of the note).
+fn card_cents(age: f32, n: usize) -> Vec<f32> {
+    let mut s = plain_sine();
+    s.set_param(AMP_R, 1.0);
+    s.set_param(AGE, age);
+    // A quiet start while the settings above glide in.
+    let (len, gap, lead) = (RATE as usize / 4, RATE as usize / 20, RATE as usize / 4);
+    let ev: Vec<(u64, NodeEvent)> = (0..n)
+        .flat_map(|k| {
+            let at = (lead + k * (len + gap)) as u64;
+            [(at, on(69, 127)), (at + len as u64, off(69))]
+        })
+        .collect();
+    let (l, _) = render(&mut s, lead + n * (len + gap), &ev, |_| 256);
+    (0..n)
+        .map(|k| {
+            let at = lead + k * (len + gap);
+            let p = cycle_pitches(&l[at + len / 4..at + len * 3 / 4]);
+            100.0 * p.iter().sum::<f32>() / p.len() as f32
+        })
+        .collect()
+}
+
+fn rms(x: &[f32]) -> f32 {
+    (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt()
+}
+
+#[test]
+fn age_gives_each_note_a_voice_card_of_its_own() {
+    use mpfree_synth::character::{Cards, AGE_TUNE_CENTS, CARDS};
+    // At 0 every note is at the same pitch.
+    let flat = card_cents(0.0, CARDS);
+    assert!(flat.iter().all(|c| c.abs() < 0.01), "{flat:?}");
+    // At 100 notes take the cards in turn: each a few cents from the
+    // others, as its card says (its drift adds a little more).
+    let aged = card_cents(100.0, CARDS);
+    let (cards, _) = Cards::draw();
+    let fixed: Vec<f32> = cards.tune1.iter().map(|t| AGE_TUNE_CENTS * t).collect();
+    let drift: Vec<f32> = aged.iter().zip(&fixed).map(|(a, f)| a - f).collect();
+    assert!((2.0..8.0).contains(&rms(&aged)), "{aged:?}");
+    assert!(
+        rms(&drift) < 0.75 * rms(&aged),
+        "{aged:?} against {fixed:?}"
+    );
+    assert!(drift.iter().all(|d| d.abs() < 7.0), "{drift:?}");
+    // Half the Age, about half the spread.
+    let half = card_cents(50.0, CARDS);
+    let r = rms(&half) / rms(&aged);
+    assert!((0.35..0.65).contains(&r), "{r}");
+}
+
+#[test]
+fn a_sound_at_age_0_plays_as_without_it() {
+    // Age turned up and back to 0 before playing leaves nothing behind.
+    let mut a = Poly::new(RATE);
+    let mut b = Poly::new(RATE);
+    b.set_param(AGE, 70.0);
+    b.set_param(AGE, 0.0);
+    let ev = busy_events();
+    assert_eq!(
+        render(&mut a, 96_000, &ev, |_| 128),
+        render(&mut b, 96_000, &ev, |_| 128)
+    );
+}
+
+#[test]
+fn age_keeps_the_same_output_for_any_block_size() {
+    let mut a = Poly::new(RATE);
+    a.set_param(AGE, 100.0);
+    let mut b = Poly::new(RATE);
+    b.set_param(AGE, 100.0);
+    let ev = busy_events();
+    let one = render(&mut a, 96_000, &ev, |_| 4096);
+    let odd = render(&mut b, 96_000, &ev, |i| [1, 7, 33, 500, 16, 3][i % 6]);
+    assert_eq!(one, odd);
+    // And it changes the sound.
+    let mut c = Poly::new(RATE);
+    assert_ne!(one, render(&mut c, 96_000, &ev, |_| 4096));
+}
