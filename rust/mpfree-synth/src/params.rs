@@ -20,7 +20,7 @@ ids! {
     FENV_A = 40, FENV_D = 41, FENV_S = 42, FENV_R = 43,
     AMP_A = 50, AMP_D = 51, AMP_S = 52, AMP_R = 53, VEL_AMP = 54,
     LFO_SHAPE = 60, LFO_RATE = 61, LFO_SYNC = 62, LFO_PITCH = 63, LFO_CUTOFF = 64, LFO_PW = 65, LFO_AMP = 66, LFO_RETRIG = 67,
-    VOICE_MODE = 70, POLYPHONY = 71, GLIDE = 72, BEND_RANGE = 73, PRESS_VIB_RATE = 75,
+    VOICE_MODE = 70, POLYPHONY = 71, GLIDE = 72, BEND_RANGE = 73, PRESS_VIB_RATE = 75, AGE = 76,
     LEVEL = 80, PAN = 81,
     METER_VOICES = 90,
     PRESS_BASE = 100,
@@ -622,6 +622,9 @@ const BASE: &[ParamInfo] = &[
         Unit::Hz,
         Linear,
     ),
+    // Character (the voice core's): how far each voice is from the
+    // others, as on an analog poly's voice cards. 0, the default, is none.
+    p(AGE, "Age", "Voice", 0.0, 100.0, 0.0, Unit::Percent, Linear),
     p(LEVEL, "Level", "Output", -60.0, 6.0, 0.0, Unit::Db, Linear),
     p(
         PAN,

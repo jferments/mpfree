@@ -93,11 +93,11 @@ const POLY: &[PlanPage] = &[
         ],
     ),
     // Voice: unison moved here when the supersaw's knobs filled the Osc
-    // page (16 a page, one per Q-Link).
+    // page (16 a page, one per Q-Link). Age beside Glide, as on Analog's.
     pg(
         "Voice",
         &["Voice", "Unison", "Output"],
-        &[pp::GLIDE, pp::UNISON_DETUNE, pp::LEVEL, pp::PAN],
+        &[pp::GLIDE, pp::AGE, pp::UNISON_DETUNE, pp::LEVEL],
     ),
     // Routes: what the mod wheel, breath, foot, velocity and the rest move.
     // The depths are what a player tunes.

@@ -495,6 +495,32 @@ class JudgeTests(unittest.TestCase):
             "sample: pad A5's sound named Loop"))))
         self.assertFalse(got["the pad was named"])
 
+    def test_the_one_sample_pages_checks_read_its_lines(self):
+        """sample-audio-track, sample-keep-take and sample-edit-pad pass on the lines the app writes for them (the
+        app's tests pin those lines) and fail without the one that shows the step happened."""
+        audio = ("audio tracks: Break 92's 4 slices on audio 1 from bar 3; it plays in song mode, and the Song "
+                 "view's Undo takes it off")
+        got = dict((what, ok) for ok, what in self.judge("sample-audio-track", checks.Window(lines(audio))))
+        self.assertTrue(all(got.values()), got)
+        got = dict((what, ok) for ok, what in self.judge("sample-audio-track", checks.Window(lines(
+            "audio tracks: the audio tracks hold 64 takes, the most: forget some takes first"))))
+        self.assertFalse(got["the slices went on an audio track"])
+        kept = "sample: recall 10.0 s: Recall 1, 10.0 s stereo stays on the Sample page"
+        chopped = ("sample: kit 1 (Breaks) Recall 1: chopped 10.0 s into 4 slices (Grid) on pads A15 to B2; the "
+                   "take left the page")
+        got = dict((what, ok) for ok, what in self.judge("sample-keep-take", checks.Window(lines(
+            kept, chopped, midi("button 67 pressed")))))
+        self.assertTrue(all(got.values()), got)
+        got = dict((what, ok) for ok, what in self.judge("sample-keep-take", checks.Window(lines(
+            kept, "sample: chop of Recall 1 not made (TooMany)"))))
+        self.assertFalse(got["its slices went on pads"])
+        opened, closed = "sample: Edit pad on pad A5", "sample: Edit pad closed: the pads again"
+        got = dict((what, ok) for ok, what in self.judge("sample-edit-pad", checks.Window(lines(
+            opened, closed, opened, closed))))
+        self.assertTrue(all(got.values()), got)
+        got = dict((what, ok) for ok, what in self.judge("sample-edit-pad", checks.Window(lines(opened, closed))))
+        self.assertFalse(got["Edit pad opened"])
+
     def test_sample_r2_cache_needs_the_new_save_its_open_and_the_analysis_read(self):
         """sample-r2-16bit-cache passes on a save under the new name ending in r2, that project opening, and the
         analysis read from it; the analysis line from another open, or a save over the old name, doesn't."""

@@ -1322,6 +1322,13 @@ synth/Poly[Supersaw]/key_spread_db	3.4424
 synth/Poly[Supersaw]/mono_loss_db	0.7037
 synth/Poly[Supersaw]/vel_curve_err_db	0.0084
 synth/Poly[Supersaw]/vel_tone_oct	0.2118
+synth/Poly[Worn Brass]/chord6_vs_power_db	0.5684
+synth/Poly[Worn Brass]/chord8_peak_dbfs	-4.3642
+synth/Poly[Worn Brass]/dc_dbfs	-110.1087
+synth/Poly[Worn Brass]/key_spread_db	2.235
+synth/Poly[Worn Brass]/mono_loss_db	0
+synth/Poly[Worn Brass]/vel_curve_err_db	0.0112
+synth/Poly[Worn Brass]/vel_tone_oct	0.2191
 synth/Squelch[Acid Lead]/chord8_peak_dbfs	-13.9894
 synth/Squelch[Acid Lead]/dc_dbfs	-140
 synth/Squelch[Acid Lead]/key_spread_db	2.3507
@@ -1852,6 +1859,11 @@ synth/breath[Wind flute, C4, breath 1/8 to 1]/tone_steps_not_rising	0
 synth/breath[Wind sax, C4, breath 1/8 to 1]/level_steps_not_rising	0
 synth/breath[Wind sax, C4, breath 1/8 to 1]/tone_oct	0.224
 synth/breath[Wind sax, C4, breath 1/8 to 1]/tone_steps_not_rising	2
+synth/character[Poly, Age 0, 16 notes]/spread_cents	0.0001
+synth/character[Poly, Age 100, 16 notes]/spread_err_cents	0.0742
+synth/character[Poly, Age 50 against 100]/spread_ratio	0.5001
+synth/drift[voice core, 30 min]/farthest_cents	8.533
+synth/drift[voice core, 30 min]/rms_cents	2.0147
 synth/drop[Bass 808, C4, 12 semitones over 200 ms]/amount_err_pct	1.9177
 synth/drop[Bass 808, C4, 12 semitones over 200 ms]/settle_cents	0.0005
 synth/drop[Bass 808, C4, 12 semitones over 200 ms]/time_err_pct	0

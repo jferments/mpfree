@@ -130,9 +130,11 @@ The scenes are saved with the kit.
 
 ## Grain: stretch and smear
 
-{{shot: sample-grain | The Grain tool: the grain window on the wave (GRAIN where the grains start, SIZE where each one ends, the spray shaded round it), the Grain section under it, and Position, Size, Density and Pitch on the Q-Links.}}
+{{shot: sample-grain | The Grain tool playing: the grain window on the wave (GRAIN where the grains start, SIZE where each one ends, the spray shaded round it) with a mark for each of the 18 grains playing, the Grain section under it, and Position, Size, Density and Pitch on the Q-Links.}}
 
 **Granular** playback plays the sound as a cloud of tiny overlapping pieces (grains). It can freeze a moment, stretch it into a pad, or scatter it into texture. On the Wave page, tap **Grain** in the tools over the wave. The wave then shows the **grain window**: the **GRAIN** tab marks where the grains start in the sound (the **position**) and the **SIZE** tab where each one ends (their **size**). Drag GRAIN to move the position, drag SIZE to make the grains longer or shorter, or tap the wave to start the grains there. The Q-Links turn **Position**, **Size**, **Density** and **Pitch**; hold SHIFT and Q-Link 1 turns **Spray** and Q-Link 4 **Pitch spray**. The other tools' marks (Start, End and the loop) stay on the wave as grey lines with no tab: pick **Trim** to move them.
+
+While the pad plays, each grain shows on the wave as a mark where it is reading the sound, taller and brighter as it swells and fading as it dies away, so you can see the cloud scatter as you change it. The note over the Grain section says how many are playing.
 
 Under the wave, the **Grain** section takes the place of the sound's Mode, Gain and Options. The buttons along its top pick what it shows:
 

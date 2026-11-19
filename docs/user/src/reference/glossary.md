@@ -1,12 +1,12 @@
 <!--
 status: changing
 covers: docs/user/terms.toml
-checked: 2026-11-19 79fc6f63
+checked: 2026-11-19 f0b39161
 -->
 
 # Glossary
 
-**Arm** — Pick the track that records. On the Arrange tab, tap a track's name.
+**Arm** — Pick the track that records. On the Arrange tab, tap a track's name, or hold **MAIN** and hit the track's pad.
 
 **Arrange** — The tab where clips are recorded, kept as takes and launched, and laid out as a song.
 

@@ -323,6 +323,12 @@ impl Bindings {
         self.show((self.shown + 1) % n);
     }
 
+    /// Shows the bank before (before the first, the last): SHIFT + Q-LINK.
+    pub fn prev_bank(&mut self) {
+        let n = self.banks.len().max(1);
+        self.show((self.shown + n - 1) % n);
+    }
+
     pub fn banks(&self) -> &[Bank] {
         &self.banks
     }
