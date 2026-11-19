@@ -31,7 +31,9 @@ use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
 use mpfree_seq::{Clip, Lock, Note, Project as Song, Quantise, Speed, Track};
 use mpfree_synth::params::{POLYPHONY, UNISON, VOICE_MODE};
 use mpfree_synth::wavetable::params as wt;
-use mpfree_synth::{Analog, Bass, Drawbar, Drums, Keys, Pluck, Poly, Squelch, Strings, Wavetable};
+use mpfree_synth::{
+    Analog, Bass, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Strings, Wavetable,
+};
 use mpfree_track::{Instrument, Sum, TrackHost};
 use mpfree_transport::time::{Swing, PPQ};
 use mpfree_transport::{Block as TBlock, Command as T, Transport};
@@ -1207,6 +1209,20 @@ pub fn all(rate: u32) -> Vec<Case> {
             16,
         )
     }));
+    // FM: a six-operator keys sound, and a brass with feedback 7.
+    for (name, voices) in [("Glass Keys", 8), ("Brass Section", 16)] {
+        let p = Fm::presets().iter().find(|p| p.name == name).expect(name);
+        v.push(measured(|| {
+            chords(
+                format!("FM {name}, {voices} voices"),
+                rate,
+                Box::new(Fm::new(rate)),
+                p.values,
+                Some(mpfree_synth::fm_params::POLYPHONY),
+                voices,
+            )
+        }));
+    }
     v.push(measured(|| {
         sampler("Sampler, 20 pads", rate, false, SamplerPads::All)
     }));

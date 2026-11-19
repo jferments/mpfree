@@ -322,16 +322,17 @@ fn interp(pts: &[(f32, f32)], x: f32) -> f32 {
 
 // ---------------------------------------------------------------- level and feedback
 
-/// How loud an operator can get, 1.0 at full: its output level with its
-/// envelope at its highest level, before keyboard and velocity scaling.
-/// 0 for an operator switched off or at output 0.
+/// How loud an operator can get, 1.0 at full: its output level, with its
+/// keyboard scaling at middle C, and its envelope at its highest level,
+/// before velocity. 0 for an operator switched off or at output 0.
 fn op_weight(o: &OpParams) -> f32 {
     if !o.on || o.out == 0 {
         return 0.0;
     }
     let peak = o.levels.iter().copied().max().unwrap_or(0);
     let env = ((scale_level(peak) >> 1) << 6) as f32;
-    let out = (scale_level(o.out) << 5) as f32;
+    let kbd = scale_keyboard(60, o.brk, o.ld, o.rd, o.lc, o.rc);
+    let out = ((scale_level(o.out) + kbd).clamp(0, 127) << 5) as f32;
     DxEnv::gain((env + out - 4256.0).max(FLOOR))
 }
 
@@ -397,6 +398,42 @@ pub fn fb_keep(x: f32) -> f32 {
     }
     let f = t - i as f32;
     FB_KEEP[i] + (FB_KEEP[i + 1] - FB_KEEP[i]) * f
+}
+
+/// `ln` of the largest modulation index (radians) whose `n`th sideband,
+/// `n` = 1 to 24, stays 60 dB under the carrier: `J_n(I) < 0.001`, from the
+/// series' first term, `(I/2)^n / n! = 0.001` (which overstates `J_n` a
+/// little, so the limit errs on the safe side). Past 24 it grows by
+/// [`IDX_SLOPE`] a sideband.
+const IDX_LN: [f32; 24] = [
+    -6.2146, -2.4142, -1.0122, -0.2393, 0.2691, 0.6384, 0.9242, 1.1553, 1.348, 1.5128, 1.6563,
+    1.7831, 1.8966, 1.9991, 2.0926, 2.1784, 2.2577, 2.3314, 2.4001, 2.4645, 2.5252, 2.5824, 2.6366,
+    2.688,
+];
+const IDX_SLOPE: f32 = 0.7375;
+
+/// The most a modulator at `xm` of the rate can drive an operator at `xd`
+/// (as a gain, 1 at full level: a full modulator swings the phase two
+/// cycles, an index of 4π) before its sidebands fold back past Nyquist
+/// louder than 60 dB under the carrier. The first sideband to fold is the
+/// `(0.5 - xd) / xm`th; up high a bright modulator so eases off, as the
+/// feedback does ([`fb_amount`]), and at the middle of the keys nothing
+/// changes (a ratio-14 tine is left alone up to about C4).
+pub fn index_cap(xm: f32, xd: f32) -> f32 {
+    if xm <= 0.0 {
+        return f32::INFINITY;
+    }
+    let n = (0.5 - xd).max(0.0) / xm;
+    let index = if n <= 1.0 {
+        IDX_LN[0].exp() * n
+    } else if n >= 24.0 {
+        IDX_LN[23].exp() + IDX_SLOPE * (n - 24.0)
+    } else {
+        let k = n as usize;
+        let f = n - k as f32;
+        (IDX_LN[k - 1] + (IDX_LN[k] - IDX_LN[k - 1]) * f).exp()
+    };
+    index * (1.0 / (4.0 * std::f32::consts::PI))
 }
 
 /// The feedback amount for a loop at `x` of the rate, from the amount
@@ -1417,6 +1454,27 @@ impl Fm {
                 carriers_done = false;
             }
         }
+        // Modulators ease off at high notes, where their sidebands would
+        // fold back past Nyquist ([`index_cap`]): judged on each one's
+        // highest target.
+        for j in 0..6 {
+            let t = p.route.targets[j];
+            if t == 0 || ends[j] <= 0.0 {
+                continue;
+            }
+            let xd = (0..6)
+                .filter(|&k| t & (1 << k) != 0)
+                .map(|k| v.ops[k].dphase)
+                .max()
+                .unwrap_or(0) as f32
+                * (1.0 / 4_294_967_296.0);
+            let cap = index_cap(v.ops[j].dphase as f32 * (1.0 / 4_294_967_296.0), xd);
+            if ends[j] > cap {
+                ends[j] = cap;
+                let o = &mut v.ops[j];
+                o.gstep = (cap - o.g) / CTRL as f32;
+            }
+        }
         // Feedback eases off at high notes, where its harmonics would fold
         // back past Nyquist ([`fb_amount`]): judged on the loop's highest
         // operator and the feedback operator's gain.
@@ -1692,8 +1750,39 @@ impl Node for Fm {
 #[cfg(test)]
 mod tests {
     use super::{
-        carrier_trim, fb_amount, fb_keep, phase_shift, FB_CLEAN, FB_KNEE, FB_ROUGH, FB_X0,
+        carrier_trim, fb_amount, fb_keep, index_cap, phase_shift, FB_CLEAN, FB_KNEE, FB_ROUGH,
+        FB_X0,
     };
+
+    #[test]
+    fn a_modulator_eases_only_where_its_sidebands_would_fold() {
+        let c4 = 261.63 / 48_000.0;
+        // A 1:1 pair is left alone at full level up past C6.
+        for semis in [0.0f32, 12.0, 24.0] {
+            let x = c4 * 2f32.powf(semis / 12.0);
+            assert!(index_cap(x, x) >= 1.0, "1:1 at {semis}");
+        }
+        // A ratio-14 tine at C4 keeps every level a preset gives it (Glass
+        // Keys drives it at about 0.03), and is nearly gone by C7.
+        assert!(index_cap(14.0 * c4, c4) > 0.15);
+        assert!(index_cap(14.0 * 8.0 * c4, 8.0 * c4) < 1e-3);
+        // Smooth and falling as the note rises, for any ratio.
+        for ratio in [0.5f32, 1.0, 2.0, 3.5, 7.0, 14.0] {
+            let mut x = 0.0005f32;
+            let mut last = index_cap(ratio * x, x);
+            while ratio * x < 0.49 {
+                x *= 2f32.powf(1.0 / 1536.0);
+                let cap = index_cap(ratio * x, x);
+                assert!(cap <= last * 1.0001, "rises at {ratio}, {x}");
+                assert!(
+                    last - cap <= 0.02 * last + 1e-4,
+                    "jumps at {ratio}, {x}: {last} to {cap}"
+                );
+                last = cap;
+            }
+        }
+        assert_eq!(index_cap(0.0, 0.1), f32::INFINITY);
+    }
 
     #[test]
     fn feedback_is_left_alone_up_to_c5_and_when_rough() {
@@ -1722,7 +1811,10 @@ mod tests {
                 // no jumps: at most the knee's own slope.
                 assert!(q <= p + 1e-7, "{q} > {p} at {x}");
                 assert!(q >= last - 1e-7, "{q} < {last} at {p}, {x}");
-                assert!(q - last <= FB_KNEE * step + 1e-6, "{last} to {q} at {p}, {x}");
+                assert!(
+                    q - last <= FB_KNEE * step + 1e-6,
+                    "{last} to {q} at {p}, {x}"
+                );
                 if p <= c {
                     assert_eq!(q, p);
                 }
@@ -1737,7 +1829,10 @@ mod tests {
             while x < 0.45 {
                 x *= 2f32.powf(1.0 / 400.0);
                 let q = fb_amount(p, x);
-                assert!(q <= last + 1e-7 && last - q < 2.0e-3, "{last} to {q} at {p}, {x}");
+                assert!(
+                    q <= last + 1e-7 && last - q < 2.0e-3,
+                    "{last} to {q} at {p}, {x}"
+                );
                 last = q;
             }
         }
