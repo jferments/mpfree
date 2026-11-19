@@ -382,6 +382,7 @@ mod tests {
             Box::new(Analog::new(rate)),
             Box::new(Strings::new(rate)),
             Box::new(Bass::new(rate)),
+            Box::new(Choir::new(rate)),
         ];
         for n in &nodes {
             let (info, params) = (n.info(), n.params());

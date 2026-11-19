@@ -46,6 +46,11 @@
 //!   the note, a saturating four-pole ladder, drive with a low-pass after
 //!   it, note priority and glide by time or rate, with factory presets.
 //!
+//! - [`Choir`]: sung vowels, up to eight singers a note, each with their
+//!   own pitch, vibrato and drift, through five formants per voice that
+//!   morph between "oo", "oh", "ah", "eh" and "ee", and the Ensemble,
+//!   with factory presets.
+//!
 //! - [`pressure`]: what pad pressure drives in each engine. Both run it
 //!   through the shared shaper in [`mpfree_node::pressure`].
 //! - [`voice`]: the shared voice core the new engines are built on (held
@@ -64,6 +69,8 @@ pub mod analog;
 pub mod analog_params;
 pub mod bass;
 pub mod bass_params;
+pub mod choir;
+pub mod choir_params;
 pub mod drawbar;
 pub mod drawbar_params;
 pub mod drum;
@@ -91,6 +98,7 @@ pub mod wavetable;
 
 pub use analog::Analog;
 pub use bass::Bass;
+pub use choir::Choir;
 pub use drawbar::Drawbar;
 pub use drum::Drums;
 pub use fm::Fm;

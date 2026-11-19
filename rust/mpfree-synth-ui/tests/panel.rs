@@ -833,11 +833,11 @@ fn every_sample_takes_its_colours_from_the_theme() {
 }
 
 #[test]
-fn keys_drawbar_squelch_analog_and_bass_draw_inside_their_sections() {
+fn keys_drawbar_squelch_analog_bass_and_choir_draw_inside_their_sections() {
     // Each page's drawings, and the sections that open another page.
     type Pages<'a> = &'a [(&'a str, &'a [&'a str])];
     type Links<'a> = &'a [(&'a str, &'a str, &'a str)];
-    let engines: [(&str, Pages, Links); 6] = [
+    let engines: [(&str, Pages, Links); 7] = [
         (
             "synth-keys-strike",
             &[
@@ -904,6 +904,16 @@ fn keys_drawbar_squelch_analog_and_bass_draw_inside_their_sections() {
             ],
             &[],
         ),
+        (
+            "synth-choir",
+            &[
+                ("Choir", &["Vowel"]),
+                ("Shape", &["Swell", "Singers"]),
+                ("Ensemble", &["Ensemble"]),
+                ("Play", &[]),
+            ],
+            &[],
+        ),
     ];
     for (name, pages, links) in engines {
         let mut s = sample(name);
@@ -938,8 +948,8 @@ fn keys_drawbar_squelch_analog_and_bass_draw_inside_their_sections() {
 }
 
 #[test]
-fn keys_drawbar_squelch_analog_strings_and_bass_headings_fit() {
-    use mpfree_synth::{Analog, Bass, Drawbar, Keys, Preset, Squelch, Strings};
+fn keys_drawbar_squelch_analog_strings_bass_and_choir_headings_fit() {
+    use mpfree_synth::{Analog, Bass, Choir, Drawbar, Keys, Preset, Squelch, Strings};
     /// Every factory preset, then every parameter on its own at its
     /// minimum and maximum (each choice at each of its values).
     fn each<N: Node>(
@@ -1026,6 +1036,12 @@ fn keys_drawbar_squelch_analog_strings_and_bass_headings_fit() {
         Bass::load_preset,
         &mut check,
     );
+    each(
+        || Choir::new(48_000),
+        Choir::presets(),
+        Choir::load_preset,
+        &mut check,
+    );
     // The longest captions each drawing can have.
     use mpfree_synth::{analog_params as an, drawbar_params as db, keys_params as kp};
     let mut keys = Keys::new(48_000);
@@ -1088,6 +1104,23 @@ fn keys_drawbar_squelch_analog_strings_and_bass_headings_fit() {
         }
     }
     check(&bass, "longest");
+    let mut choir = Choir::new(48_000);
+    {
+        use mpfree_synth::choir_params as chp;
+        for (id, v) in [
+            (chp::SINGERS, 8.0),
+            (chp::DETUNE, 50.0),
+            (chp::VOWEL, 37.0),
+            (chp::LINES, 1.0),
+            (chp::SLOW_RATE, 2.99),
+            (chp::FAST_RATE, 11.99),
+            (chp::ATTACK, 7_999.0),
+            (chp::RELEASE, 11_999.0),
+        ] {
+            choir.set_param(id, v);
+        }
+    }
+    check(&choir, "longest");
     let list: Vec<String> = misfits
         .iter()
         .map(|(what, preset)| format!("{what} ({preset})"))

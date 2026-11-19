@@ -91,7 +91,8 @@ A first canon of 32 (our reading): gospel organ, jazz organ, rock organ with dri
 
 - **Drawbar** (12 presets): tonewheel organ and rotary speaker, never played on the MPC.
 - **Wavetable:** the Vowels factory table and the Vowel Lead preset; **FM:** Drawbars and Brass Section; **Pluck:** a waveguide string engine that a wind model could share code with.
-- **Missing:** combo and pipe organs, a wind engine, a choir engine, tape character, a breath event reaching instruments.
+- **Choir** (25 presets, 19 Nov): a buzzy source through five formant filters per voice, morphing between vowels, through the Ensemble ([Synths](../design/synths.md#choir-mpfree-synth-choir)); never played on the MPC.
+- **Missing:** combo and pipe organs, a wind engine, tape character, a breath event reaching instruments.
 
 ## Sources
 

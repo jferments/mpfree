@@ -467,6 +467,36 @@ const BASS: &[PlanPage] = &[
     ),
 ];
 
+use mpfree_synth::choir_params as ch;
+
+/// Choir: the singers and the vowel (with how it moves), the swell with
+/// the vibrato, the ensemble, then the playing. The Q-Links take what
+/// players ride: the vowel, how many singers and how far apart, the
+/// brightness; the swell's ends, the vibrato and drift; the ensemble's
+/// amount, depth, sweep and width; the glide, pressure and level.
+const CHOIR: &[PlanPage] = &[
+    pg(
+        "Choir",
+        &["Choir", "Vowel move"],
+        &[ch::VOWEL, ch::SINGERS, ch::DETUNE, ch::BRIGHTNESS],
+    ),
+    pg(
+        "Shape",
+        &["Swell", "Vibrato"],
+        &[ch::ATTACK, ch::RELEASE, ch::VIBRATO, ch::DRIFT],
+    ),
+    pg(
+        "Ensemble",
+        &["Ensemble"],
+        &[ch::ENSEMBLE, ch::DEPTH, ch::SLOW_RATE, ch::WIDTH],
+    ),
+    pg(
+        "Play",
+        &["Voice", "Pressure", "Output"],
+        &[ch::GLIDE, ch::PRESS_SWELL, ch::PRESS_VOWEL, ch::LEVEL],
+    ),
+];
+
 fn known(id: &str) -> Option<&'static [PlanPage]> {
     match id {
         "mpfree.poly" => Some(POLY),
@@ -480,6 +510,7 @@ fn known(id: &str) -> Option<&'static [PlanPage]> {
         "mpfree.analog" => Some(ANALOG),
         "mpfree.strings" => Some(STRINGS),
         "mpfree.bass" => Some(BASS),
+        "mpfree.choir" => Some(CHOIR),
         _ => None,
     }
 }

@@ -1,10 +1,10 @@
 //! The pad player's synth: MPFree's Poly, FM, Drums, Pluck, Wavetable,
-//! Keys, Drawbar, Squelch, Analog, Strings or Bass (`mpfree-synth`) on the pads, edited on the
+//! Keys, Drawbar, Squelch, Analog, Strings, Bass or Choir (`mpfree-synth`) on the pads, edited on the
 //! Synth tab
 //! (`mpfree-synth-ui`).
 //!
 //! - The kit list ends with one more entry, "Synth: Poly" (or FM, Drums,
-//!   Pluck, Wavetable, Keys, Drawbar, Squelch, Analog, Strings, Bass). Picking it, or opening the Synth tab, makes the pads play the
+//!   Pluck, Wavetable, Keys, Drawbar, Squelch, Analog, Strings, Bass, Choir). Picking it, or opening the Synth tab, makes the pads play the
 //!   synth. The Synth tab's options (MENU) pick the engine; a note still
 //!   ringing on another engine finishes its release.
 //! - Drums is a kit, not a keyboard: pad 1 plays the kit's Pad 1 note (a
@@ -12,7 +12,7 @@
 //!   whatever the scale, layout, bank or octave. The pads are named by the
 //!   sound on them ("Kick", "Closed hat"), and the Synth tab shows the page
 //!   of the pad hit last. Pluck, Wavetable, Keys, Drawbar, Squelch,
-//!   Analog, Strings and Bass play the pad layouts as Poly and FM do
+//!   Analog, Strings, Bass and Choir play the pad layouts as Poly and FM do
 //!   (Squelch and Bass one note at a time).
 //! - The pads are laid out by `mpfree_scale::pads` (owner, 2026-11-11):
 //!   with no scale, pad 1 plays C3 and each pad after it a semitone higher
@@ -50,7 +50,7 @@ use mpfree_node::{Ctl, Ctx, Cull, Node, NodeEvent, ParamInfo, Timed};
 use mpfree_synth::drum_params;
 use mpfree_synth::fm_params::FmPreset;
 use mpfree_synth::{
-    Analog, Bass, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset, Squelch, Strings, Wavetable,
+    Analog, Bass, Choir, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset, Squelch, Strings, Wavetable,
 };
 use mpfree_synth_ui::format::value_line;
 use mpfree_synth_ui::SynthState;
@@ -79,6 +79,8 @@ pub const ANALOG_START_PRESET: &str = "Init";
 pub const STRINGS_START_PRESET: &str = "Init";
 /// The bass engine's preset at the start.
 pub const BASS_START_PRESET: &str = "Init";
+/// The choir's preset at the start.
+pub const CHOIR_START_PRESET: &str = "Init";
 /// How far SHIFT + wheel moves the pads: pad 1 from C0 to C6.
 pub const MIN_OCTAVE: i32 = -3;
 pub const MAX_OCTAVE: i32 = 3;
@@ -111,7 +113,7 @@ fn black(note: u8) -> bool {
 }
 
 /// How many engines there are.
-const ENGINES: usize = 11;
+const ENGINES: usize = 12;
 
 /// The synth engines the pads can play.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -139,6 +141,8 @@ pub enum Engine {
     Strings,
     /// The one-voice bass: synth basses, 808s and reeses.
     Bass,
+    /// Sung vowels: many singers on each note, five formants, Ensemble.
+    Choir,
 }
 
 impl Engine {
@@ -154,6 +158,7 @@ impl Engine {
         Engine::Analog,
         Engine::Strings,
         Engine::Bass,
+        Engine::Choir,
     ];
 
     pub fn name(self) -> &'static str {
@@ -169,6 +174,7 @@ impl Engine {
             Engine::Analog => "Analog",
             Engine::Strings => "Strings",
             Engine::Bass => "Bass",
+            Engine::Choir => "Choir",
         }
     }
 
@@ -191,6 +197,7 @@ impl Engine {
             Engine::Analog => "mpfree.analog",
             Engine::Strings => "mpfree.strings",
             Engine::Bass => "mpfree.bass",
+            Engine::Choir => "mpfree.choir",
         }
     }
 
@@ -431,6 +438,7 @@ pub struct Synth {
     analog: Sound<Analog>,
     strings: Sound<Strings>,
     bass: Sound<Bass>,
+    choir: Sound<Choir>,
     fm_presets: Vec<FmPreset>,
     rate: u32,
     /// Note events for each engine (in [`Engine::ALL`]'s order) this period.
@@ -520,6 +528,7 @@ fn static_presets(engine: Engine) -> &'static [Preset] {
         Engine::Analog => Analog::presets(),
         Engine::Strings => Strings::presets(),
         Engine::Bass => Bass::presets(),
+        Engine::Choir => Choir::presets(),
         Engine::Poly | Engine::Fm => Poly::presets(),
     }
 }
@@ -583,6 +592,7 @@ pub fn engine_node(id: &str, rate: u32) -> Option<Box<dyn Node>> {
         "mpfree.analog" => Box::new(Analog::new(rate)),
         "mpfree.strings" => Box::new(Strings::new(rate)),
         "mpfree.bass" => Box::new(Bass::new(rate)),
+        "mpfree.choir" => Box::new(Choir::new(rate)),
         _ => return None,
     })
 }
@@ -686,6 +696,11 @@ impl Synth {
         if let Some(p) = Bass::presets().get(bass_preset) {
             bass.load_preset(p);
         }
+        let mut choir = Choir::new(rate);
+        let choir_preset = start_preset(Choir::presets(), CHOIR_START_PRESET);
+        if let Some(p) = Choir::presets().get(choir_preset) {
+            choir.load_preset(p);
+        }
         let mut fm = Fm::new(rate);
         let fm_presets = Fm::presets();
         let fm_preset = fm_presets
@@ -707,6 +722,7 @@ impl Synth {
             meters_of(&analog),
             meters_of(&strings),
             meters_of(&bass),
+            meters_of(&choir),
         ];
         let settings = PadSettings::default();
         Synth {
@@ -721,6 +737,7 @@ impl Synth {
             analog: plain(analog, rate),
             strings: plain(strings, rate),
             bass: plain(bass, rate),
+            choir: plain(choir, rate),
             fm_presets,
             rate,
             events: [[Timed::new(0, NodeEvent::AllOff); MAX_EVENTS]; ENGINES],
@@ -747,6 +764,7 @@ impl Synth {
                 analog_preset,
                 strings_preset,
                 bass_preset,
+                choir_preset,
             ],
             pads_changed: false,
             fade: 0,
@@ -787,6 +805,7 @@ impl Synth {
             Engine::Analog => &self.analog,
             Engine::Strings => &self.strings,
             Engine::Bass => &self.bass,
+            Engine::Choir => &self.choir,
         }
     }
 
@@ -803,6 +822,7 @@ impl Synth {
             Engine::Analog => &mut self.analog,
             Engine::Strings => &mut self.strings,
             Engine::Bass => &mut self.bass,
+            Engine::Choir => &mut self.choir,
         }
     }
 
@@ -945,6 +965,7 @@ impl Synth {
             Engine::Analog => self.analog.active_voices(),
             Engine::Strings => self.strings.keys_sounding(),
             Engine::Bass => self.bass.active_voices(),
+            Engine::Choir => self.choir.active_voices(),
         }
     }
 
@@ -1053,6 +1074,7 @@ impl Synth {
         self.analog.set_tuning(&t);
         self.strings.set_tuning(&t);
         self.bass.set_tuning(&t);
+        self.choir.set_tuning(&t);
         self.wt.set_tuning(&t);
     }
 
@@ -1631,6 +1653,7 @@ impl Synth {
                     Engine::Analog => &mut self.analog,
                     Engine::Strings => &mut self.strings,
                     Engine::Bass => &mut self.bass,
+                    Engine::Choir => &mut self.choir,
                 };
                 node.process(&ctx, &self.events[k][first..e[k]], sl, sr);
                 if !sl.iter().chain(sr.iter()).all(|s| s.is_finite()) {
@@ -1704,6 +1727,7 @@ impl Synth {
             Engine::Analog => self.analog.cull(),
             Engine::Strings => self.strings.cull(),
             Engine::Bass => self.bass.cull(),
+            Engine::Choir => self.choir.cull(),
         }
     }
 
@@ -1734,6 +1758,7 @@ impl Synth {
             // Every key plays, as on the string machines.
             Engine::Strings => mpfree_synth::strings::NOTES as f32,
             Engine::Bass => 1.0,
+            Engine::Choir => self.choir.param(mpfree_synth::choir_params::VOICES),
         }
     }
 
@@ -1745,6 +1770,7 @@ impl Synth {
             Engine::Poly => self.poly.pressures(out),
             Engine::Fm => self.fm.pressures(out),
             Engine::Wavetable => self.wt.pressures(out),
+            Engine::Choir => self.choir.pressures(out),
             Engine::Drums
             | Engine::Pluck
             | Engine::Keys
@@ -1851,6 +1877,7 @@ impl Synth {
             Engine::Analog => self.analog.load_preset(p),
             Engine::Strings => self.strings.load_preset(p),
             Engine::Bass => self.bass.load_preset(p),
+            Engine::Choir => self.choir.load_preset(p),
             Engine::Poly | Engine::Fm => self.poly.load_preset(p),
         }
         self.presets[e.index()] = i;
@@ -2247,6 +2274,11 @@ impl Synth {
                 n.load_preset(p);
                 values(&n)
             }
+            Engine::Choir => {
+                let mut n = Choir::new(rate);
+                n.load_preset(p);
+                values(&n)
+            }
             Engine::Poly | Engine::Fm => {
                 let mut n = Poly::new(rate);
                 n.load_preset(p);
@@ -2441,6 +2473,7 @@ mod tests {
             Engine::Analog,
             Engine::Strings,
             Engine::Bass,
+            Engine::Choir,
         ] {
             with(&mut s, |p| p.engine = engine);
             // A preset other than the first, with a value changed after.
@@ -2860,6 +2893,11 @@ mod tests {
             }
             assert!(added, "{engine:?} adds to what is there");
             assert_eq!(s.active_voices(), 1);
+            // The choir swells in over a quarter second, so it is
+            // measured once the swell is up.
+            if engine == Engine::Choir {
+                run(&mut s, &mut frame, 100, 128);
+            }
             let sound = run(&mut s, &mut frame, 40, 128);
             let p = peak(&sound);
             assert!(
@@ -3104,6 +3142,7 @@ mod tests {
         assert_eq!(Engine::from_folder("wavetable"), Some(Engine::Wavetable));
         assert_eq!(Engine::from_folder("Strings"), Some(Engine::Strings));
         assert_eq!(Engine::from_folder("bass"), Some(Engine::Bass));
+        assert_eq!(Engine::from_folder("choir"), Some(Engine::Choir));
         assert_eq!(Engine::from_folder("Favourites"), None);
         let qset = [("qset".to_string(), "31 32 - 33 Tone".to_string())];
         let (_, text) = s.save_preset("Q", &[], &qset);
