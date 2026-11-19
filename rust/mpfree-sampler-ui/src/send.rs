@@ -53,11 +53,9 @@ pub fn show(ui: &mut Ui, has_sound: bool, sending: bool) {
     }
 }
 
-/// Why Chop to pads is faint for a take kept on the page.
-pub const TAKE_FIRST: &str = "Put the take on a pad first: Send to pad, then hit a pad";
-
 /// Shows the buttons for a take kept on the page: Send to pad puts it on
-/// the pad hit; Chop to pads waits until it is on a pad.
+/// the pad hit; Chop to pads puts its slices on pads, as a pad's (the one
+/// Sample page's step 3b).
 pub fn show_take(ui: &mut Ui, sending: bool) {
     if let Some(b) = ui.get_mut::<ButtonRow>(SEND) {
         b.labels[SEND_TO_PAD] = if sending {
@@ -66,8 +64,8 @@ pub fn show_take(ui: &mut Ui, sending: bool) {
             BUTTONS[SEND_TO_PAD]
         }
         .to_string();
-        b.enabled = vec![true, false];
-        b.why = vec![String::new(), TAKE_FIRST.to_string()];
+        b.enabled = vec![true, true];
+        b.why = vec![String::new(); BUTTONS.len()];
     }
 }
 
