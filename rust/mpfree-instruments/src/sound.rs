@@ -53,7 +53,7 @@ use mpfree_node::{
     Ctl, Ctx, Cull, Curve, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Tuning, Unit,
 };
 
-use crate::preset::{id_of, key_of, Error as PresetError, Preset};
+use crate::preset::{id_of, key_of, Error as PresetError, Preset, VERSION as PRESET_VERSION};
 
 /// The first effect setting's id.
 pub const FX_BASE: u16 = 61_440;
@@ -331,15 +331,24 @@ impl<E: Node + ?Sized> Sound<E> {
         // First the engine alone, for the design (its lines are extra to
         // the engine).
         let bare = Preset::parse(text, info, engine_params).map_err(SoundError::Preset)?;
-        let parts = self.parts_from_lines(&bare.extra)?;
+        let parts = self.parts_from_lines(&bare.extra, bare.format)?;
         let mut preset = Preset::parse(text, info, parts.params).map_err(SoundError::Preset)?;
         preset.extra.retain(|(k, _)| !is_design_key(k));
+        // Settings saved in an older format, in this build's meaning (the
+        // macros' and effects' own ids are never the engine's).
+        preset.upgrade(self);
         Ok((parts, preset))
     }
 
     /// The parts the design lines among `lines` build on this engine
-    /// (lines that aren't a design's are passed over). Changes nothing.
-    fn parts_from_lines(&self, lines: &[(String, String)]) -> Result<Parts, SoundError> {
+    /// (lines that aren't a design's are passed over), with the macros'
+    /// ranges saved in preset format `format` put in this build's meaning.
+    /// Changes nothing.
+    fn parts_from_lines(
+        &self,
+        lines: &[(String, String)],
+        format: u32,
+    ) -> Result<Parts, SoundError> {
         let (info, engine_params) = (self.engine.info(), self.engine.params());
         let macro_names: Vec<(usize, &str)> = numbered(lines, "macro");
         // The effects and the macros' names give every setting a map may
@@ -362,8 +371,14 @@ impl<E: Node + ?Sized> Sound<E> {
         for (k, (n, _)) in macro_names.iter().enumerate() {
             let key = format!("macro.{n}.map");
             for (_, line) in lines.iter().filter(|(k2, _)| *k2 == key) {
-                let map = parse_map(shell.params, line)
+                let mut map = parse_map(shell.params, line)
                     .ok_or_else(|| SoundError::NoTarget(line.clone()))?;
+                if format < PRESET_VERSION {
+                    if let Some(p) = engine_params.iter().find(|p| p.id == map.target) {
+                        map.from = p.clamp(self.engine.upgrade(format, map.target, map.from));
+                        map.to = p.clamp(self.engine.upgrade(format, map.target, map.to));
+                    }
+                }
                 if design.macros[k].maps.len() >= MAX_MAPS {
                     return Err(SoundError::TooMany("settings on one macro"));
                 }
@@ -383,7 +398,18 @@ impl<E: Node + ?Sized> Sound<E> {
     /// effects start at their defaults and the macros at 0. On an error
     /// nothing changes. Allocates.
     pub fn set_design_lines(&mut self, lines: &[(String, String)]) -> Result<(), SoundError> {
-        let parts = self.parts_from_lines(lines)?;
+        self.set_design_lines_from(lines, PRESET_VERSION)
+    }
+
+    /// [`Sound::set_design_lines`] for lines saved in preset format
+    /// `format` (a project's part from before a setting changed meaning):
+    /// a macro's range on such a setting is converted ([`Node::upgrade`]).
+    pub fn set_design_lines_from(
+        &mut self,
+        lines: &[(String, String)],
+        format: u32,
+    ) -> Result<(), SoundError> {
+        let parts = self.parts_from_lines(lines, format)?;
         self.put(parts);
         Ok(())
     }
@@ -668,6 +694,10 @@ impl<E: Node + ?Sized> Node for Sound<E> {
         let mut out = self.engine.save_extras();
         out.extend(self.design_lines());
         out
+    }
+
+    fn upgrade(&self, format: u32, id: u16, value: f32) -> f32 {
+        self.engine.upgrade(format, id, value)
     }
 }
 
@@ -1232,6 +1262,35 @@ mod tests {
         assert_eq!(s.design(), Design::default());
         assert_eq!(s.params().len(), k.params().len());
         assert_eq!(s.param(kp::DECAY), k.param(kp::DECAY));
+    }
+
+    /// A preset saved before Poly's envelope times changed meaning (preset
+    /// format 1) loads converted, its macros' ranges too, so it plays as
+    /// it did; saved again, it is in this build's format and meaning.
+    #[test]
+    fn a_sound_saved_in_an_older_format_plays_as_it_did() {
+        use mpfree_synth::params as pp;
+        let poly = || -> Box<dyn Node> {
+            let mut p = mpfree_synth::Poly::new(RATE);
+            p.prepare(RATE, 128);
+            Box::new(p)
+        };
+        let old = "mpfree-preset = 1\nengine = mpfree.poly\nname = Old\n\
+                   amp-env.attack = 100\namp-env.decay = 300\n\
+                   macro.1 = Swell\nmacro.1.map = amp-env.attack 10 1000 exp\n\
+                   macros.swell = 0\n";
+        let (s, preset) = Sound::from_preset(poly(), old).unwrap();
+        assert_eq!(preset.format, PRESET_VERSION);
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-3 * b;
+        assert!(near(s.param(pp::AMP_A), 31.877), "{}", s.param(pp::AMP_A));
+        assert_eq!(s.param(pp::AMP_D), 300.0);
+        let map = s.design().macros[0].maps[0];
+        assert!(near(map.from, 3.1877) && near(map.to, 318.77), "{map:?}");
+        let again = s.to_text("Old", &[], &[]);
+        assert!(again.starts_with("mpfree-preset = 2\n"), "{again}");
+        let (back, _) = Sound::from_preset(poly(), &again).unwrap();
+        assert_eq!(back.param(pp::AMP_A), s.param(pp::AMP_A), "converted once");
+        assert_eq!(back.design(), s.design());
     }
 
     /// `set_design` keeps the engine's settings and starts the effects and

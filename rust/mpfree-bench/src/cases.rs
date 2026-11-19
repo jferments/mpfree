@@ -1002,6 +1002,12 @@ pub fn all(rate: u32) -> Vec<Case> {
             16,
         )
     }));
+    // The supersaw's saws alone, on the plain twin and (on an ARMv7 build
+    // with NEON) the NEON kernel: the device round's A/B for mpfree-simd.
+    v.push(measured(|| supersaw_saws(rate, mpfree_simd::Path::Plain)));
+    if mpfree_simd::neon_available() {
+        v.push(measured(|| supersaw_saws(rate, mpfree_simd::Path::Neon)));
+    }
     v.push(measured(|| {
         drums("Drums Init Kit, a hit every 4 blocks", rate, "Init Kit", 4)
     }));
@@ -2558,6 +2564,23 @@ fn song(rate: u32) -> Case {
 }
 
 /// Builds a case and records the bytes it holds.
+/// Eight voices' supersaws without the rest of Poly: each voice's seven
+/// saws read one band-limited saw level, once a voice per 16-frame step,
+/// as Poly calls them (`mpfree_simd::workload::Supersaw`), on `path`. The
+/// plain and NEON cases give the same samples.
+fn supersaw_saws(rate: u32, path: mpfree_simd::Path) -> Case {
+    let mut saws = mpfree_simd::workload::Supersaw::new(8, rate);
+    Case {
+        name: format!("Supersaw saws: 8 voices, {}", path.name()),
+        module: "synth",
+        what: "7 saws a voice from one table (mpfree-simd)",
+        block: Box::new(move |_, l, r| {
+            saws.block(path, l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
 fn measured(f: impl FnOnce() -> Case) -> Case {
     let (mut c, bytes) = alloc::bytes_in(f);
     c.mem_bytes = bytes;

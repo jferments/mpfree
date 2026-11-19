@@ -1,8 +1,8 @@
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Init
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Classic Strings
 
@@ -15,7 +15,7 @@ registers.cello = 35
 swell.crescendo = 300
 swell.sustain = 1800
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Bright Strings
 
@@ -30,7 +30,7 @@ tone.body = 60
 # Swell
 swell.crescendo = 150
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Cello and Viola
 
@@ -46,7 +46,7 @@ tone.brightness = 40
 swell.crescendo = 350
 swell.sustain = 2000
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Full Ensemble
 
@@ -62,7 +62,7 @@ swell.sustain = 2200
 # Ensemble
 ensemble.lines = 4
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Orchestra
 
@@ -80,7 +80,7 @@ swell.sustain = 1600
 # Output
 output.level = -2
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Brass Ensemble
 
@@ -98,7 +98,7 @@ swell.velocity = 20
 # Ensemble
 ensemble.ensemble = 60
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Slow Swell
 
@@ -111,7 +111,7 @@ registers.cello = 40
 swell.crescendo = 2500
 swell.sustain = 4000
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Staccato Strings
 
@@ -128,7 +128,7 @@ swell.crescendo = 12
 swell.sustain = 220
 swell.velocity = 18
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Swirl Strings
 
@@ -145,7 +145,7 @@ ensemble.slow-rate = 0.18
 ensemble.fast-rate = 5.9
 ensemble.depth = 140
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Dark Strings
 
@@ -161,7 +161,7 @@ tone.body = 70
 # Swell
 swell.sustain = 2500
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = High Strings
 
@@ -176,7 +176,7 @@ tone.brightness = 55
 # Swell
 swell.crescendo = 450
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Low Strings
 
@@ -193,7 +193,7 @@ tone.brightness = 60
 swell.crescendo = 250
 swell.sustain = 1200
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Paraphonic 70s
 
@@ -206,7 +206,7 @@ swell.crescendo = 500
 swell.sustain = 2000
 swell.swell = Shared
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Disco Strings
 
@@ -224,7 +224,7 @@ swell.sustain = 900
 # Ensemble
 ensemble.fast-rate = 7
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Ballad Pad
 
@@ -240,7 +240,7 @@ swell.sustain = 3500
 # Ensemble
 ensemble.depth = 80
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Lo-fi Strings
 
@@ -256,7 +256,7 @@ tone.bow-noise = 45
 ensemble.depth = 160
 ensemble.width = 60
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Wide Strings
 
@@ -269,7 +269,7 @@ ensemble.lines = 4
 ensemble.depth = 110
 ensemble.width = 100
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Mono Ensemble
 
@@ -280,7 +280,7 @@ registers.viola = 80
 # Ensemble
 ensemble.width = 0
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Dry Divider
 
@@ -291,7 +291,7 @@ registers.viola = 70
 # Ensemble
 ensemble.ensemble = 0
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Bowed
 
@@ -307,7 +307,7 @@ tone.bow-noise = 60
 swell.crescendo = 180
 swell.velocity = 20
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Horn Section
 
@@ -321,7 +321,7 @@ registers.horn = 100
 swell.crescendo = 120
 swell.sustain = 700
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Brassy Lead
 
@@ -338,7 +338,7 @@ swell.velocity = 14
 # Ensemble
 ensemble.ensemble = 40
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Vox Strings
 
@@ -355,7 +355,7 @@ tone.body = 90
 swell.crescendo = 600
 swell.sustain = 2500
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Hall Strings
 fx.1 = mpfree.fx.room
@@ -399,7 +399,7 @@ fx-1.early = 50
 fx-1.low-cut = 150
 fx-1.mix = 30
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.strings
 name = Space Strings
 fx.1 = mpfree.fx.tape_delay
