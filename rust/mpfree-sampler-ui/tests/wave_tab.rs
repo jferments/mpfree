@@ -11,7 +11,7 @@ use mpfree_sampler_ui::wave_tab::{
     self, moved, position_text, Mark, Row, Snap, WaveAction, WaveState,
 };
 use mpfree_sampler_ui::widgets::{KnobCard, PadBar, SettingList};
-use mpfree_sampler_ui::{play_tab, rec_tab, slice_tool};
+use mpfree_sampler_ui::{rec_tab, slice_tool};
 use mpfree_sampler_ui::{PyramidPeaks, SourceView};
 use mpfree_ui::wave::{Peaks, RawPeaks, Waveform};
 use mpfree_ui::{EventKind, Fonts, SoftCanvas, Touch, UiEvent};
@@ -476,28 +476,24 @@ fn snapping_to_sixteenths_needs_a_tempo() {
 }
 
 #[test]
-fn tabs_taps_and_the_sample_screens() {
+fn taps_and_the_sample_screens() {
     let mut s = sample();
     let bar = s.ui.rect_of(wave_tab::BAR).unwrap();
     let pb = s.ui.get::<PadBar>(wave_tab::BAR).unwrap();
-    let play_tab_r = pb.tab_rect(bar, play_tab::TAB);
-    assert_eq!(pb.active, wave_tab::TAB);
-    assert_eq!(
-        pb.tabs,
-        ["Wave", "Play"],
-        "the pads are the app's Pads tab, a pad's effects are in Mix (no FX tab), Slice, \
-         Grain and Warp are tools on the page (no Chop, Grain or Warp tab) and recording is \
-         the recorder row's (no Rec tab)"
+    assert!(
+        pb.tabs.is_empty() && pb.back.is_none() && pb.button.is_none(),
+        "one page, no sub-tabs: the pads are the app's Pads tab, a pad's effects are in Mix \
+         (no FX tab), Slice, Grain and Warp are tools on the page (no Chop, Grain or Warp \
+         tab), recording is the recorder row's (no Rec tab) and the pad's layers, keys, \
+         scenes and slices are the Pads tab's Edit pad (no Play tab)"
+    );
+    // The pad's name runs on to the bar's end.
+    assert!(
+        pb.name_rect(bar).right() > bar.right() - 40,
+        "{:?}",
+        pb.name_rect(bar)
     );
     let st = s.state.clone();
-    // Play opens.
-    let r = play_tab_r;
-    let ev = s.ui.touch(4, Touch::Down, r.x + 5, r.y + 5).unwrap();
-    assert_eq!(
-        s.tab.action(&mut s.ui, &ev, &st),
-        Some(WaveAction::Tab(play_tab::TAB))
-    );
-    s.ui.touch(4, Touch::Up, 0, 0);
     // A tap on the wave plays the pad.
     let w = Waveform::wave_rect(s.ui.rect_of(wave_tab::WAVE).unwrap());
     s.ui.touch(3, Touch::Down, w.x + 300, w.y + 100);

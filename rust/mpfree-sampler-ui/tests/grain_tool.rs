@@ -321,10 +321,9 @@ fn the_grain_tool_shows_the_layers_grain_settings_and_its_window_on_the_wave() {
     assert_eq!(strip.tools[strip.active], "Grain");
     let bar = s.ui.get::<PadBar>(wave_tab::BAR).unwrap();
     assert_eq!(bar.title, "Pad A5 · Break 92");
-    assert_eq!(bar.active, wave_tab::TAB, "on the Sample page itself");
     assert!(
-        !wave_tab::TABS.contains(&"Grain"),
-        "no Grain sub-tab: it is a tool on the page"
+        bar.tabs.is_empty(),
+        "no Grain sub-tab: it is a tool on the page, which has no sub-tabs"
     );
     for (row, value) in [
         (Row::Mode, "Granular"),

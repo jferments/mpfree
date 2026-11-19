@@ -462,8 +462,10 @@ mod tests {
                 "the row names the pad's effect"
             );
             // Again, with the wheel to the row and a push: the chain on its
-            // first effect this time.
-            s.wheel(8);
+            // first effect this time (the list's first row, then down to
+            // Effects, the row over Edit pad).
+            s.wheel(-9);
+            s.wheel(7);
             s.button("DATA DIAL PUSH").run_for(0.2);
             assert_eq!(s.view(), View::Chain, "the push presses the Effects button");
             let t = engine(&mut s);

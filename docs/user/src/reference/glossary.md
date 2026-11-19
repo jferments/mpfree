@@ -34,6 +34,8 @@ checked: 2026-11-19 79fc6f63
 
 **CV/gate** — Voltages that play a modular synth: CV sets the pitch or moves a value, the gate says when a note is held.
 
+**Edit pad** — The Pads tab's page for a pad's deep settings: its layers, envelope, filter, keygroup, scenes and slices. Tap Edit pad in the pad's settings, or press PROG EDIT on the Pads tab.
+
 **Envelope** — How a sound's volume rises and falls each time it plays: attack, hold, decay, sustain, release.
 
 **Euclidean fill** — Spreading a number of hits as evenly as they go over a number of steps, a quick way to write a groove.
