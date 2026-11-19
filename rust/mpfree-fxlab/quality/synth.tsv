@@ -701,9 +701,348 @@ synth/Drawbar[Soft Bass]/small_speaker_db	-12.9642
 synth/Drawbar[Soft Bass]/start_step_dbfs	-64.7036
 synth/Drawbar[Soft Bass]/vel_curve_err_db	0
 synth/Drawbar[Soft Bass]/vel_tone_oct	0
+synth/Drums[808 Kit, pad 1 808 kick]/attack_rise_db	13.7225
+synth/Drums[808 Kit, pad 1 808 kick]/decay_err_pct	-3.4286
+synth/Drums[808 Kit, pad 1 808 kick]/level_vs_kick_db	0
+synth/Drums[808 Kit, pad 1 808 kick]/peak_dbfs	-10.0303
+synth/Drums[808 Kit, pad 1 808 kick]/repeat_db	0.5693
+synth/Drums[808 Kit, pad 1 808 kick]/vel_tone_least_step_oct	0.0004
+synth/Drums[808 Kit, pad 1 808 kick]/vel_tone_oct	0.0067
+synth/Drums[808 Kit, pad 10 Cowbell]/attack_rise_db	9.4484
+synth/Drums[808 Kit, pad 10 Cowbell]/decay_err_pct	6.0526
+synth/Drums[808 Kit, pad 10 Cowbell]/level_vs_kick_db	-3.6802
+synth/Drums[808 Kit, pad 10 Cowbell]/peak_dbfs	-4.4657
+synth/Drums[808 Kit, pad 10 Cowbell]/repeat_db	0.5788
+synth/Drums[808 Kit, pad 10 Cowbell]/vel_tone_least_step_oct	0.0588
+synth/Drums[808 Kit, pad 10 Cowbell]/vel_tone_oct	0.3019
+synth/Drums[808 Kit, pad 11 Cymbal]/attack_rise_db	7.4898
+synth/Drums[808 Kit, pad 11 Cymbal]/decay_err_pct	-13.3462
+synth/Drums[808 Kit, pad 11 Cymbal]/level_vs_kick_db	-4.0067
+synth/Drums[808 Kit, pad 11 Cymbal]/peak_dbfs	-5.954
+synth/Drums[808 Kit, pad 11 Cymbal]/repeat_db	0.8853
+synth/Drums[808 Kit, pad 11 Cymbal]/vel_tone_least_step_oct	0.0849
+synth/Drums[808 Kit, pad 11 Cymbal]/vel_tone_oct	0.5601
+synth/Drums[808 Kit, pad 12 Conga]/attack_rise_db	9.7908
+synth/Drums[808 Kit, pad 12 Conga]/decay_err_pct	0
+synth/Drums[808 Kit, pad 12 Conga]/level_vs_kick_db	-3.2463
+synth/Drums[808 Kit, pad 12 Conga]/peak_dbfs	-9.3734
+synth/Drums[808 Kit, pad 12 Conga]/repeat_db	0.4884
+synth/Drums[808 Kit, pad 12 Conga]/vel_tone_least_step_oct	0.0004
+synth/Drums[808 Kit, pad 12 Conga]/vel_tone_oct	0.0308
+synth/Drums[808 Kit, pad 13 Conga]/attack_rise_db	10.5186
+synth/Drums[808 Kit, pad 13 Conga]/decay_err_pct	-1.0714
+synth/Drums[808 Kit, pad 13 Conga]/level_vs_kick_db	-3.1893
+synth/Drums[808 Kit, pad 13 Conga]/peak_dbfs	-9.7603
+synth/Drums[808 Kit, pad 13 Conga]/repeat_db	0.4852
+synth/Drums[808 Kit, pad 13 Conga]/vel_tone_least_step_oct	0.0006
+synth/Drums[808 Kit, pad 13 Conga]/vel_tone_oct	0.0439
+synth/Drums[808 Kit, pad 14 Woodblock]/attack_rise_db	7.4274
+synth/Drums[808 Kit, pad 14 Woodblock]/decay_err_pct	0
+synth/Drums[808 Kit, pad 14 Woodblock]/level_vs_kick_db	-3.7358
+synth/Drums[808 Kit, pad 14 Woodblock]/peak_dbfs	-7.5885
+synth/Drums[808 Kit, pad 14 Woodblock]/repeat_db	0.5862
+synth/Drums[808 Kit, pad 14 Woodblock]/vel_tone_least_step_oct	0
+synth/Drums[808 Kit, pad 14 Woodblock]/vel_tone_oct	0.0017
+synth/Drums[808 Kit, pad 15 Shaker]/attack_rise_db	12.9668
+synth/Drums[808 Kit, pad 15 Shaker]/decay_err_pct	1.6667
+synth/Drums[808 Kit, pad 15 Shaker]/level_vs_kick_db	-4.9382
+synth/Drums[808 Kit, pad 15 Shaker]/peak_dbfs	-4.281
+synth/Drums[808 Kit, pad 15 Shaker]/repeat_db	0.025
+synth/Drums[808 Kit, pad 15 Shaker]/vel_tone_least_step_oct	0.0687
+synth/Drums[808 Kit, pad 15 Shaker]/vel_tone_oct	0.4741
+synth/Drums[808 Kit, pad 16 808 kick]/attack_rise_db	12.2629
+synth/Drums[808 Kit, pad 16 808 kick]/decay_err_pct	-5.1538
+synth/Drums[808 Kit, pad 16 808 kick]/level_vs_kick_db	-0.8961
+synth/Drums[808 Kit, pad 16 808 kick]/peak_dbfs	-10.9778
+synth/Drums[808 Kit, pad 16 808 kick]/repeat_db	0.5605
+synth/Drums[808 Kit, pad 16 808 kick]/vel_tone_least_step_oct	0.0015
+synth/Drums[808 Kit, pad 16 808 kick]/vel_tone_oct	0.0174
+synth/Drums[808 Kit, pad 2 Snare]/attack_rise_db	12.457
+synth/Drums[808 Kit, pad 2 Snare]/decay_err_pct	-2.2222
+synth/Drums[808 Kit, pad 2 Snare]/level_vs_kick_db	-2.6711
+synth/Drums[808 Kit, pad 2 Snare]/peak_dbfs	-4.6137
+synth/Drums[808 Kit, pad 2 Snare]/repeat_db	0.478
+synth/Drums[808 Kit, pad 2 Snare]/vel_tone_least_step_oct	0.1078
+synth/Drums[808 Kit, pad 2 Snare]/vel_tone_oct	0.6266
+synth/Drums[808 Kit, pad 3 Clap]/attack_rise_db	10.3373
+synth/Drums[808 Kit, pad 3 Clap]/decay_err_pct	4.4737
+synth/Drums[808 Kit, pad 3 Clap]/level_vs_kick_db	-4.5677
+synth/Drums[808 Kit, pad 3 Clap]/peak_dbfs	-4.4507
+synth/Drums[808 Kit, pad 3 Clap]/repeat_db	1.0086
+synth/Drums[808 Kit, pad 3 Clap]/vel_tone_least_step_oct	0.0997
+synth/Drums[808 Kit, pad 3 Clap]/vel_tone_oct	0.5739
+synth/Drums[808 Kit, pad 4 Closed hat]/attack_rise_db	5.6883
+synth/Drums[808 Kit, pad 4 Closed hat]/decay_err_pct	-1.8182
+synth/Drums[808 Kit, pad 4 Closed hat]/level_vs_kick_db	-5.9638
+synth/Drums[808 Kit, pad 4 Closed hat]/peak_dbfs	-5.3348
+synth/Drums[808 Kit, pad 4 Closed hat]/repeat_db	0.4548
+synth/Drums[808 Kit, pad 4 Closed hat]/vel_tone_least_step_oct	0.1017
+synth/Drums[808 Kit, pad 4 Closed hat]/vel_tone_oct	0.6882
+synth/Drums[808 Kit, pad 5 Open hat]/attack_rise_db	5.2969
+synth/Drums[808 Kit, pad 5 Open hat]/decay_err_pct	1.1538
+synth/Drums[808 Kit, pad 5 Open hat]/level_vs_kick_db	-4.1785
+synth/Drums[808 Kit, pad 5 Open hat]/peak_dbfs	-6.1893
+synth/Drums[808 Kit, pad 5 Open hat]/repeat_db	0.2064
+synth/Drums[808 Kit, pad 5 Open hat]/vel_tone_least_step_oct	0.0992
+synth/Drums[808 Kit, pad 5 Open hat]/vel_tone_oct	0.6596
+synth/Drums[808 Kit, pad 6 Tom]/attack_rise_db	10.1485
+synth/Drums[808 Kit, pad 6 Tom]/decay_err_pct	0.3636
+synth/Drums[808 Kit, pad 6 Tom]/level_vs_kick_db	-3.1747
+synth/Drums[808 Kit, pad 6 Tom]/peak_dbfs	-11.3909
+synth/Drums[808 Kit, pad 6 Tom]/repeat_db	0.5172
+synth/Drums[808 Kit, pad 6 Tom]/vel_tone_least_step_oct	0.0046
+synth/Drums[808 Kit, pad 6 Tom]/vel_tone_oct	0.0842
+synth/Drums[808 Kit, pad 7 Tom]/attack_rise_db	10.4307
+synth/Drums[808 Kit, pad 7 Tom]/decay_err_pct	0.4
+synth/Drums[808 Kit, pad 7 Tom]/level_vs_kick_db	-2.9067
+synth/Drums[808 Kit, pad 7 Tom]/peak_dbfs	-10.9657
+synth/Drums[808 Kit, pad 7 Tom]/repeat_db	0.5081
+synth/Drums[808 Kit, pad 7 Tom]/vel_tone_least_step_oct	0.0044
+synth/Drums[808 Kit, pad 7 Tom]/vel_tone_oct	0.0792
+synth/Drums[808 Kit, pad 8 Tom]/attack_rise_db	10.5636
+synth/Drums[808 Kit, pad 8 Tom]/decay_err_pct	1.1111
+synth/Drums[808 Kit, pad 8 Tom]/level_vs_kick_db	-3.0229
+synth/Drums[808 Kit, pad 8 Tom]/peak_dbfs	-10.7692
+synth/Drums[808 Kit, pad 8 Tom]/repeat_db	0.5191
+synth/Drums[808 Kit, pad 8 Tom]/vel_tone_least_step_oct	0.0043
+synth/Drums[808 Kit, pad 8 Tom]/vel_tone_oct	0.0735
+synth/Drums[808 Kit, pad 9 Rim]/attack_rise_db	11.8923
+synth/Drums[808 Kit, pad 9 Rim]/decay_err_pct	-2.5
+synth/Drums[808 Kit, pad 9 Rim]/level_vs_kick_db	-3.7602
+synth/Drums[808 Kit, pad 9 Rim]/peak_dbfs	-4.5067
+synth/Drums[808 Kit, pad 9 Rim]/repeat_db	0.5738
+synth/Drums[808 Kit, pad 9 Rim]/vel_tone_least_step_oct	0.0246
+synth/Drums[808 Kit, pad 9 Rim]/vel_tone_oct	0.1451
 synth/Drums[808 kick, Tune 0, Sigh 3.28 st in 300 ms]/decay_err_pct	1.25
 synth/Drums[808 kick, Tune 0, Sigh 3.28 st in 300 ms]/settled_err_pct	0.0004
 synth/Drums[808 kick, Tune 0, Sigh 3.28 st in 300 ms]/sigh_start_err_pct	0.0191
+synth/Drums[Amapiano Kit, pad 1 Kick]/attack_rise_db	14.6448
+synth/Drums[Amapiano Kit, pad 1 Kick]/decay_err_pct	2
+synth/Drums[Amapiano Kit, pad 1 Kick]/level_vs_kick_db	0
+synth/Drums[Amapiano Kit, pad 1 Kick]/peak_dbfs	-10.1639
+synth/Drums[Amapiano Kit, pad 1 Kick]/repeat_cents	4.8182
+synth/Drums[Amapiano Kit, pad 1 Kick]/repeat_db	0.5595
+synth/Drums[Amapiano Kit, pad 1 Kick]/vel_tone_least_step_oct	0.0036
+synth/Drums[Amapiano Kit, pad 1 Kick]/vel_tone_oct	0.0498
+synth/Drums[Amapiano Kit, pad 10 Woodblock]/attack_rise_db	7.2966
+synth/Drums[Amapiano Kit, pad 10 Woodblock]/decay_err_pct	-1.1111
+synth/Drums[Amapiano Kit, pad 10 Woodblock]/level_vs_kick_db	-3.4731
+synth/Drums[Amapiano Kit, pad 10 Woodblock]/peak_dbfs	-7.3836
+synth/Drums[Amapiano Kit, pad 10 Woodblock]/repeat_db	1.9632
+synth/Drums[Amapiano Kit, pad 10 Woodblock]/vel_tone_least_step_oct	0
+synth/Drums[Amapiano Kit, pad 10 Woodblock]/vel_tone_oct	0.0208
+synth/Drums[Amapiano Kit, pad 11 Cymbal]/attack_rise_db	7.116
+synth/Drums[Amapiano Kit, pad 11 Cymbal]/decay_err_pct	-7.85
+synth/Drums[Amapiano Kit, pad 11 Cymbal]/level_vs_kick_db	-4.1684
+synth/Drums[Amapiano Kit, pad 11 Cymbal]/peak_dbfs	-5.4221
+synth/Drums[Amapiano Kit, pad 11 Cymbal]/repeat_db	0.9515
+synth/Drums[Amapiano Kit, pad 11 Cymbal]/vel_tone_least_step_oct	0.0927
+synth/Drums[Amapiano Kit, pad 11 Cymbal]/vel_tone_oct	0.5393
+synth/Drums[Amapiano Kit, pad 12 Conga]/attack_rise_db	10.5868
+synth/Drums[Amapiano Kit, pad 12 Conga]/decay_err_pct	-2.1429
+synth/Drums[Amapiano Kit, pad 12 Conga]/level_vs_kick_db	-3.0022
+synth/Drums[Amapiano Kit, pad 12 Conga]/peak_dbfs	-7.6056
+synth/Drums[Amapiano Kit, pad 12 Conga]/repeat_db	0.4593
+synth/Drums[Amapiano Kit, pad 12 Conga]/vel_tone_least_step_oct	0.0028
+synth/Drums[Amapiano Kit, pad 12 Conga]/vel_tone_oct	0.075
+synth/Drums[Amapiano Kit, pad 13 Conga]/attack_rise_db	10.8059
+synth/Drums[Amapiano Kit, pad 13 Conga]/decay_err_pct	0
+synth/Drums[Amapiano Kit, pad 13 Conga]/level_vs_kick_db	-3.0946
+synth/Drums[Amapiano Kit, pad 13 Conga]/peak_dbfs	-6.5126
+synth/Drums[Amapiano Kit, pad 13 Conga]/repeat_db	0.4692
+synth/Drums[Amapiano Kit, pad 13 Conga]/vel_tone_least_step_oct	0.0017
+synth/Drums[Amapiano Kit, pad 13 Conga]/vel_tone_oct	0.0639
+synth/Drums[Amapiano Kit, pad 14 Shaker]/attack_rise_db	15.1288
+synth/Drums[Amapiano Kit, pad 14 Shaker]/decay_err_pct	2.8571
+synth/Drums[Amapiano Kit, pad 14 Shaker]/level_vs_kick_db	-4.3325
+synth/Drums[Amapiano Kit, pad 14 Shaker]/peak_dbfs	-4.7224
+synth/Drums[Amapiano Kit, pad 14 Shaker]/repeat_db	0.3232
+synth/Drums[Amapiano Kit, pad 14 Shaker]/vel_tone_least_step_oct	0.0694
+synth/Drums[Amapiano Kit, pad 14 Shaker]/vel_tone_oct	0.4928
+synth/Drums[Amapiano Kit, pad 15 Shaker]/attack_rise_db	14.1019
+synth/Drums[Amapiano Kit, pad 15 Shaker]/decay_err_pct	2.5
+synth/Drums[Amapiano Kit, pad 15 Shaker]/level_vs_kick_db	-5.8711
+synth/Drums[Amapiano Kit, pad 15 Shaker]/peak_dbfs	-4.7467
+synth/Drums[Amapiano Kit, pad 15 Shaker]/repeat_db	0.5769
+synth/Drums[Amapiano Kit, pad 15 Shaker]/vel_tone_least_step_oct	0.0737
+synth/Drums[Amapiano Kit, pad 15 Shaker]/vel_tone_oct	0.4901
+synth/Drums[Amapiano Kit, pad 16 Bell]/attack_rise_db	10.3353
+synth/Drums[Amapiano Kit, pad 16 Bell]/decay_err_pct	-1.7143
+synth/Drums[Amapiano Kit, pad 16 Bell]/level_vs_kick_db	-3.5803
+synth/Drums[Amapiano Kit, pad 16 Bell]/peak_dbfs	-9.4397
+synth/Drums[Amapiano Kit, pad 16 Bell]/repeat_db	1.9496
+synth/Drums[Amapiano Kit, pad 16 Bell]/vel_tone_least_step_oct	0.0047
+synth/Drums[Amapiano Kit, pad 16 Bell]/vel_tone_oct	0.1962
+synth/Drums[Amapiano Kit, pad 2 Snare]/attack_rise_db	11.7851
+synth/Drums[Amapiano Kit, pad 2 Snare]/decay_err_pct	-6.25
+synth/Drums[Amapiano Kit, pad 2 Snare]/level_vs_kick_db	-2.3236
+synth/Drums[Amapiano Kit, pad 2 Snare]/peak_dbfs	-5.3009
+synth/Drums[Amapiano Kit, pad 2 Snare]/repeat_db	0.4684
+synth/Drums[Amapiano Kit, pad 2 Snare]/vel_tone_least_step_oct	0.1367
+synth/Drums[Amapiano Kit, pad 2 Snare]/vel_tone_oct	0.7926
+synth/Drums[Amapiano Kit, pad 3 Clap]/attack_rise_db	10.213
+synth/Drums[Amapiano Kit, pad 3 Clap]/decay_err_pct	116.4286
+synth/Drums[Amapiano Kit, pad 3 Clap]/level_vs_kick_db	-3.2192
+synth/Drums[Amapiano Kit, pad 3 Clap]/peak_dbfs	-3.3666
+synth/Drums[Amapiano Kit, pad 3 Clap]/repeat_db	0.8527
+synth/Drums[Amapiano Kit, pad 3 Clap]/vel_tone_least_step_oct	0.0938
+synth/Drums[Amapiano Kit, pad 3 Clap]/vel_tone_oct	0.5259
+synth/Drums[Amapiano Kit, pad 4 Closed hat]/attack_rise_db	9.5008
+synth/Drums[Amapiano Kit, pad 4 Closed hat]/decay_err_pct	0
+synth/Drums[Amapiano Kit, pad 4 Closed hat]/level_vs_kick_db	-4.6953
+synth/Drums[Amapiano Kit, pad 4 Closed hat]/peak_dbfs	-4.1838
+synth/Drums[Amapiano Kit, pad 4 Closed hat]/repeat_db	0.0635
+synth/Drums[Amapiano Kit, pad 4 Closed hat]/vel_tone_least_step_oct	0.1046
+synth/Drums[Amapiano Kit, pad 4 Closed hat]/vel_tone_oct	0.5966
+synth/Drums[Amapiano Kit, pad 5 Open hat]/attack_rise_db	9.491
+synth/Drums[Amapiano Kit, pad 5 Open hat]/decay_err_pct	-0.3571
+synth/Drums[Amapiano Kit, pad 5 Open hat]/level_vs_kick_db	-4.2395
+synth/Drums[Amapiano Kit, pad 5 Open hat]/peak_dbfs	-6.8577
+synth/Drums[Amapiano Kit, pad 5 Open hat]/repeat_db	0.074
+synth/Drums[Amapiano Kit, pad 5 Open hat]/vel_tone_least_step_oct	0.0939
+synth/Drums[Amapiano Kit, pad 5 Open hat]/vel_tone_oct	0.5617
+synth/Drums[Amapiano Kit, pad 6 FM perc]/attack_rise_db	15.5448
+synth/Drums[Amapiano Kit, pad 6 FM perc]/decay_err_pct	-0.1667
+synth/Drums[Amapiano Kit, pad 6 FM perc]/level_vs_kick_db	-2.932
+synth/Drums[Amapiano Kit, pad 6 FM perc]/peak_dbfs	-11.5118
+synth/Drums[Amapiano Kit, pad 6 FM perc]/repeat_db	0.542
+synth/Drums[Amapiano Kit, pad 6 FM perc]/vel_tone_least_step_oct	0.0142
+synth/Drums[Amapiano Kit, pad 6 FM perc]/vel_tone_oct	0.1882
+synth/Drums[Amapiano Kit, pad 7 FM perc]/attack_rise_db	15.5539
+synth/Drums[Amapiano Kit, pad 7 FM perc]/decay_err_pct	-0.5455
+synth/Drums[Amapiano Kit, pad 7 FM perc]/level_vs_kick_db	-3.1826
+synth/Drums[Amapiano Kit, pad 7 FM perc]/peak_dbfs	-11.5083
+synth/Drums[Amapiano Kit, pad 7 FM perc]/repeat_db	0.5378
+synth/Drums[Amapiano Kit, pad 7 FM perc]/vel_tone_least_step_oct	0.0144
+synth/Drums[Amapiano Kit, pad 7 FM perc]/vel_tone_oct	0.191
+synth/Drums[Amapiano Kit, pad 8 FM perc]/attack_rise_db	15.5999
+synth/Drums[Amapiano Kit, pad 8 FM perc]/decay_err_pct	-0.8
+synth/Drums[Amapiano Kit, pad 8 FM perc]/level_vs_kick_db	-3.1446
+synth/Drums[Amapiano Kit, pad 8 FM perc]/peak_dbfs	-11.5116
+synth/Drums[Amapiano Kit, pad 8 FM perc]/repeat_db	0.5383
+synth/Drums[Amapiano Kit, pad 8 FM perc]/vel_tone_least_step_oct	0.0146
+synth/Drums[Amapiano Kit, pad 8 FM perc]/vel_tone_oct	0.1945
+synth/Drums[Amapiano Kit, pad 9 Rim]/attack_rise_db	11.9412
+synth/Drums[Amapiano Kit, pad 9 Rim]/decay_err_pct	802.2222
+synth/Drums[Amapiano Kit, pad 9 Rim]/level_vs_kick_db	-3.6106
+synth/Drums[Amapiano Kit, pad 9 Rim]/peak_dbfs	-4.4077
+synth/Drums[Amapiano Kit, pad 9 Rim]/repeat_db	0.5672
+synth/Drums[Amapiano Kit, pad 9 Rim]/vel_tone_least_step_oct	0.0277
+synth/Drums[Amapiano Kit, pad 9 Rim]/vel_tone_oct	0.2407
+synth/Drums[Boom Bap Kit, pad 1 Kick]/attack_rise_db	11.4508
+synth/Drums[Boom Bap Kit, pad 1 Kick]/decay_err_pct	2.75
+synth/Drums[Boom Bap Kit, pad 1 Kick]/level_vs_kick_db	0
+synth/Drums[Boom Bap Kit, pad 1 Kick]/peak_dbfs	-12.2119
+synth/Drums[Boom Bap Kit, pad 1 Kick]/repeat_cents	4.8154
+synth/Drums[Boom Bap Kit, pad 1 Kick]/repeat_db	0.4475
+synth/Drums[Boom Bap Kit, pad 1 Kick]/vel_tone_least_step_oct	0.0038
+synth/Drums[Boom Bap Kit, pad 1 Kick]/vel_tone_oct	0.1253
+synth/Drums[Boom Bap Kit, pad 10 Kick]/attack_rise_db	12.5294
+synth/Drums[Boom Bap Kit, pad 10 Kick]/decay_err_pct	-0.5455
+synth/Drums[Boom Bap Kit, pad 10 Kick]/level_vs_kick_db	-1.0633
+synth/Drums[Boom Bap Kit, pad 10 Kick]/peak_dbfs	-13.6544
+synth/Drums[Boom Bap Kit, pad 10 Kick]/repeat_cents	4.7852
+synth/Drums[Boom Bap Kit, pad 10 Kick]/repeat_db	0.5356
+synth/Drums[Boom Bap Kit, pad 10 Kick]/vel_tone_least_step_oct	0.0105
+synth/Drums[Boom Bap Kit, pad 10 Kick]/vel_tone_oct	0.2896
+synth/Drums[Boom Bap Kit, pad 11 Cymbal]/attack_rise_db	8.371
+synth/Drums[Boom Bap Kit, pad 11 Cymbal]/decay_err_pct	-2.5556
+synth/Drums[Boom Bap Kit, pad 11 Cymbal]/level_vs_kick_db	-3.8478
+synth/Drums[Boom Bap Kit, pad 11 Cymbal]/peak_dbfs	-9.2985
+synth/Drums[Boom Bap Kit, pad 11 Cymbal]/repeat_db	0.626
+synth/Drums[Boom Bap Kit, pad 11 Cymbal]/vel_tone_least_step_oct	0.1025
+synth/Drums[Boom Bap Kit, pad 11 Cymbal]/vel_tone_oct	0.5675
+synth/Drums[Boom Bap Kit, pad 12 Snare]/attack_rise_db	9.9733
+synth/Drums[Boom Bap Kit, pad 12 Snare]/decay_err_pct	0
+synth/Drums[Boom Bap Kit, pad 12 Snare]/level_vs_kick_db	-2.3779
+synth/Drums[Boom Bap Kit, pad 12 Snare]/peak_dbfs	-9.5238
+synth/Drums[Boom Bap Kit, pad 12 Snare]/repeat_db	0.4619
+synth/Drums[Boom Bap Kit, pad 12 Snare]/vel_tone_least_step_oct	0.1059
+synth/Drums[Boom Bap Kit, pad 12 Snare]/vel_tone_oct	0.6174
+synth/Drums[Boom Bap Kit, pad 13 Shaker]/attack_rise_db	13.7519
+synth/Drums[Boom Bap Kit, pad 13 Shaker]/decay_err_pct	4.2857
+synth/Drums[Boom Bap Kit, pad 13 Shaker]/level_vs_kick_db	-5.5574
+synth/Drums[Boom Bap Kit, pad 13 Shaker]/peak_dbfs	-7.8176
+synth/Drums[Boom Bap Kit, pad 13 Shaker]/repeat_db	0.1362
+synth/Drums[Boom Bap Kit, pad 13 Shaker]/vel_tone_least_step_oct	0.0673
+synth/Drums[Boom Bap Kit, pad 13 Shaker]/vel_tone_oct	0.4885
+synth/Drums[Boom Bap Kit, pad 14 Conga]/attack_rise_db	9.6859
+synth/Drums[Boom Bap Kit, pad 14 Conga]/decay_err_pct	-0.7692
+synth/Drums[Boom Bap Kit, pad 14 Conga]/level_vs_kick_db	-2.9867
+synth/Drums[Boom Bap Kit, pad 14 Conga]/peak_dbfs	-8.2128
+synth/Drums[Boom Bap Kit, pad 14 Conga]/repeat_db	0.4265
+synth/Drums[Boom Bap Kit, pad 14 Conga]/vel_tone_least_step_oct	0.0032
+synth/Drums[Boom Bap Kit, pad 14 Conga]/vel_tone_oct	0.0757
+synth/Drums[Boom Bap Kit, pad 15 Cowbell]/attack_rise_db	8.7621
+synth/Drums[Boom Bap Kit, pad 15 Cowbell]/decay_err_pct	8.9286
+synth/Drums[Boom Bap Kit, pad 15 Cowbell]/level_vs_kick_db	-3.6565
+synth/Drums[Boom Bap Kit, pad 15 Cowbell]/peak_dbfs	-7.494
+synth/Drums[Boom Bap Kit, pad 15 Cowbell]/repeat_db	0.518
+synth/Drums[Boom Bap Kit, pad 15 Cowbell]/vel_tone_least_step_oct	0.0652
+synth/Drums[Boom Bap Kit, pad 15 Cowbell]/vel_tone_oct	0.345
+synth/Drums[Boom Bap Kit, pad 16 Woodblock]/attack_rise_db	6.045
+synth/Drums[Boom Bap Kit, pad 16 Woodblock]/decay_err_pct	0
+synth/Drums[Boom Bap Kit, pad 16 Woodblock]/level_vs_kick_db	-3.5116
+synth/Drums[Boom Bap Kit, pad 16 Woodblock]/peak_dbfs	-8.8787
+synth/Drums[Boom Bap Kit, pad 16 Woodblock]/repeat_db	0.4574
+synth/Drums[Boom Bap Kit, pad 16 Woodblock]/vel_tone_least_step_oct	0
+synth/Drums[Boom Bap Kit, pad 16 Woodblock]/vel_tone_oct	0.0293
+synth/Drums[Boom Bap Kit, pad 2 Snare]/attack_rise_db	9.0162
+synth/Drums[Boom Bap Kit, pad 2 Snare]/decay_err_pct	46.1538
+synth/Drums[Boom Bap Kit, pad 2 Snare]/level_vs_kick_db	-2.7095
+synth/Drums[Boom Bap Kit, pad 2 Snare]/peak_dbfs	-9.9682
+synth/Drums[Boom Bap Kit, pad 2 Snare]/repeat_db	0.5209
+synth/Drums[Boom Bap Kit, pad 2 Snare]/vel_tone_least_step_oct	0.1086
+synth/Drums[Boom Bap Kit, pad 2 Snare]/vel_tone_oct	0.543
+synth/Drums[Boom Bap Kit, pad 3 Clap]/attack_rise_db	9.2151
+synth/Drums[Boom Bap Kit, pad 3 Clap]/decay_err_pct	6.5625
+synth/Drums[Boom Bap Kit, pad 3 Clap]/level_vs_kick_db	-5.1354
+synth/Drums[Boom Bap Kit, pad 3 Clap]/peak_dbfs	-7.7113
+synth/Drums[Boom Bap Kit, pad 3 Clap]/repeat_db	0.8779
+synth/Drums[Boom Bap Kit, pad 3 Clap]/vel_tone_least_step_oct	0.072
+synth/Drums[Boom Bap Kit, pad 3 Clap]/vel_tone_oct	0.5556
+synth/Drums[Boom Bap Kit, pad 4 Closed hat]/attack_rise_db	9.0358
+synth/Drums[Boom Bap Kit, pad 4 Closed hat]/decay_err_pct	1.6667
+synth/Drums[Boom Bap Kit, pad 4 Closed hat]/level_vs_kick_db	-4.7454
+synth/Drums[Boom Bap Kit, pad 4 Closed hat]/peak_dbfs	-8.0858
+synth/Drums[Boom Bap Kit, pad 4 Closed hat]/repeat_db	0.0891
+synth/Drums[Boom Bap Kit, pad 4 Closed hat]/vel_tone_least_step_oct	0.1024
+synth/Drums[Boom Bap Kit, pad 4 Closed hat]/vel_tone_oct	0.5614
+synth/Drums[Boom Bap Kit, pad 5 Open hat]/attack_rise_db	9.1596
+synth/Drums[Boom Bap Kit, pad 5 Open hat]/decay_err_pct	2.1429
+synth/Drums[Boom Bap Kit, pad 5 Open hat]/level_vs_kick_db	-4.1758
+synth/Drums[Boom Bap Kit, pad 5 Open hat]/peak_dbfs	-9.676
+synth/Drums[Boom Bap Kit, pad 5 Open hat]/repeat_db	0.1255
+synth/Drums[Boom Bap Kit, pad 5 Open hat]/vel_tone_least_step_oct	0.0894
+synth/Drums[Boom Bap Kit, pad 5 Open hat]/vel_tone_oct	0.5218
+synth/Drums[Boom Bap Kit, pad 6 Tom]/attack_rise_db	11.0054
+synth/Drums[Boom Bap Kit, pad 6 Tom]/decay_err_pct	-0.8571
+synth/Drums[Boom Bap Kit, pad 6 Tom]/level_vs_kick_db	-3.1107
+synth/Drums[Boom Bap Kit, pad 6 Tom]/peak_dbfs	-9.6802
+synth/Drums[Boom Bap Kit, pad 6 Tom]/repeat_db	0.4155
+synth/Drums[Boom Bap Kit, pad 6 Tom]/vel_tone_least_step_oct	0.0037
+synth/Drums[Boom Bap Kit, pad 6 Tom]/vel_tone_oct	0.0576
+synth/Drums[Boom Bap Kit, pad 7 Tom]/attack_rise_db	10.7453
+synth/Drums[Boom Bap Kit, pad 7 Tom]/decay_err_pct	-0.625
+synth/Drums[Boom Bap Kit, pad 7 Tom]/level_vs_kick_db	-3.1649
+synth/Drums[Boom Bap Kit, pad 7 Tom]/peak_dbfs	-8.9828
+synth/Drums[Boom Bap Kit, pad 7 Tom]/repeat_db	0.4085
+synth/Drums[Boom Bap Kit, pad 7 Tom]/vel_tone_least_step_oct	0.0035
+synth/Drums[Boom Bap Kit, pad 7 Tom]/vel_tone_oct	0.0572
+synth/Drums[Boom Bap Kit, pad 8 Tom]/attack_rise_db	9.5422
+synth/Drums[Boom Bap Kit, pad 8 Tom]/decay_err_pct	1
+synth/Drums[Boom Bap Kit, pad 8 Tom]/level_vs_kick_db	-2.8846
+synth/Drums[Boom Bap Kit, pad 8 Tom]/peak_dbfs	-8.1378
+synth/Drums[Boom Bap Kit, pad 8 Tom]/repeat_db	0.4012
+synth/Drums[Boom Bap Kit, pad 8 Tom]/vel_tone_least_step_oct	0.0033
+synth/Drums[Boom Bap Kit, pad 8 Tom]/vel_tone_oct	0.0582
+synth/Drums[Boom Bap Kit, pad 9 Rim]/attack_rise_db	10.136
+synth/Drums[Boom Bap Kit, pad 9 Rim]/decay_err_pct	-2
+synth/Drums[Boom Bap Kit, pad 9 Rim]/level_vs_kick_db	-3.4865
+synth/Drums[Boom Bap Kit, pad 9 Rim]/peak_dbfs	-8.0715
+synth/Drums[Boom Bap Kit, pad 9 Rim]/repeat_db	0.4904
+synth/Drums[Boom Bap Kit, pad 9 Rim]/vel_tone_least_step_oct	0.0345
+synth/Drums[Boom Bap Kit, pad 9 Rim]/vel_tone_oct	0.3645
 synth/Drums[Boom Kit, pad 1 Kick]/attack_rise_db	12.5548
 synth/Drums[Boom Kit, pad 1 Kick]/decay_err_pct	0.8333
 synth/Drums[Boom Kit, pad 1 Kick]/level_vs_kick_db	0
@@ -817,6 +1156,688 @@ synth/Drums[Boom Kit, pad 9 Rim]/peak_dbfs	-5.8495
 synth/Drums[Boom Kit, pad 9 Rim]/repeat_db	0.5696
 synth/Drums[Boom Kit, pad 9 Rim]/vel_tone_least_step_oct	0.0292
 synth/Drums[Boom Kit, pad 9 Rim]/vel_tone_oct	0.2417
+synth/Drums[Bright Machine Kit, pad 1 Kick]/attack_rise_db	14.2288
+synth/Drums[Bright Machine Kit, pad 1 Kick]/decay_err_pct	1.5152
+synth/Drums[Bright Machine Kit, pad 1 Kick]/level_vs_kick_db	0
+synth/Drums[Bright Machine Kit, pad 1 Kick]/peak_dbfs	-11.2039
+synth/Drums[Bright Machine Kit, pad 1 Kick]/repeat_cents	4.7671
+synth/Drums[Bright Machine Kit, pad 1 Kick]/repeat_db	0.5508
+synth/Drums[Bright Machine Kit, pad 1 Kick]/vel_tone_least_step_oct	0.0016
+synth/Drums[Bright Machine Kit, pad 1 Kick]/vel_tone_oct	0.0519
+synth/Drums[Bright Machine Kit, pad 10 Cowbell]/attack_rise_db	9.1039
+synth/Drums[Bright Machine Kit, pad 10 Cowbell]/decay_err_pct	5
+synth/Drums[Bright Machine Kit, pad 10 Cowbell]/level_vs_kick_db	-3.0893
+synth/Drums[Bright Machine Kit, pad 10 Cowbell]/peak_dbfs	-4.2335
+synth/Drums[Bright Machine Kit, pad 10 Cowbell]/repeat_db	0.5019
+synth/Drums[Bright Machine Kit, pad 10 Cowbell]/vel_tone_least_step_oct	0.0483
+synth/Drums[Bright Machine Kit, pad 10 Cowbell]/vel_tone_oct	0.2893
+synth/Drums[Bright Machine Kit, pad 11 Cymbal]/attack_rise_db	8.5969
+synth/Drums[Bright Machine Kit, pad 11 Cymbal]/decay_err_pct	0.0455
+synth/Drums[Bright Machine Kit, pad 11 Cymbal]/level_vs_kick_db	-3.6103
+synth/Drums[Bright Machine Kit, pad 11 Cymbal]/peak_dbfs	-8.5977
+synth/Drums[Bright Machine Kit, pad 11 Cymbal]/repeat_db	0.4798
+synth/Drums[Bright Machine Kit, pad 11 Cymbal]/vel_tone_least_step_oct	0.0825
+synth/Drums[Bright Machine Kit, pad 11 Cymbal]/vel_tone_oct	0.4341
+synth/Drums[Bright Machine Kit, pad 12 Cymbal]/attack_rise_db	5.2706
+synth/Drums[Bright Machine Kit, pad 12 Cymbal]/decay_err_pct	-17.0769
+synth/Drums[Bright Machine Kit, pad 12 Cymbal]/level_vs_kick_db	-3.6855
+synth/Drums[Bright Machine Kit, pad 12 Cymbal]/peak_dbfs	-5.1765
+synth/Drums[Bright Machine Kit, pad 12 Cymbal]/repeat_db	1.0501
+synth/Drums[Bright Machine Kit, pad 12 Cymbal]/vel_tone_least_step_oct	0.0422
+synth/Drums[Bright Machine Kit, pad 12 Cymbal]/vel_tone_oct	0.1826
+synth/Drums[Bright Machine Kit, pad 13 Shaker]/attack_rise_db	12.0504
+synth/Drums[Bright Machine Kit, pad 13 Shaker]/decay_err_pct	-3.0769
+synth/Drums[Bright Machine Kit, pad 13 Shaker]/level_vs_kick_db	-4.3932
+synth/Drums[Bright Machine Kit, pad 13 Shaker]/peak_dbfs	-4.2296
+synth/Drums[Bright Machine Kit, pad 13 Shaker]/repeat_db	0.8626
+synth/Drums[Bright Machine Kit, pad 13 Shaker]/vel_tone_least_step_oct	0.0791
+synth/Drums[Bright Machine Kit, pad 13 Shaker]/vel_tone_oct	0.5373
+synth/Drums[Bright Machine Kit, pad 14 Snare]/attack_rise_db	11.6119
+synth/Drums[Bright Machine Kit, pad 14 Snare]/decay_err_pct	-4.4444
+synth/Drums[Bright Machine Kit, pad 14 Snare]/level_vs_kick_db	-2.5426
+synth/Drums[Bright Machine Kit, pad 14 Snare]/peak_dbfs	-7.2261
+synth/Drums[Bright Machine Kit, pad 14 Snare]/repeat_db	0.4533
+synth/Drums[Bright Machine Kit, pad 14 Snare]/vel_tone_least_step_oct	0.1449
+synth/Drums[Bright Machine Kit, pad 14 Snare]/vel_tone_oct	0.8409
+synth/Drums[Bright Machine Kit, pad 15 Kick]/attack_rise_db	14.9477
+synth/Drums[Bright Machine Kit, pad 15 Kick]/decay_err_pct	1.3636
+synth/Drums[Bright Machine Kit, pad 15 Kick]/level_vs_kick_db	-0.6053
+synth/Drums[Bright Machine Kit, pad 15 Kick]/peak_dbfs	-10.7261
+synth/Drums[Bright Machine Kit, pad 15 Kick]/repeat_cents	95.6462
+synth/Drums[Bright Machine Kit, pad 15 Kick]/repeat_db	0.5603
+synth/Drums[Bright Machine Kit, pad 15 Kick]/vel_tone_least_step_oct	0.0015
+synth/Drums[Bright Machine Kit, pad 15 Kick]/vel_tone_oct	0.0653
+synth/Drums[Bright Machine Kit, pad 16 Woodblock]/attack_rise_db	6.656
+synth/Drums[Bright Machine Kit, pad 16 Woodblock]/decay_err_pct	-1.1111
+synth/Drums[Bright Machine Kit, pad 16 Woodblock]/level_vs_kick_db	-3.3521
+synth/Drums[Bright Machine Kit, pad 16 Woodblock]/peak_dbfs	-7.8507
+synth/Drums[Bright Machine Kit, pad 16 Woodblock]/repeat_db	0.566
+synth/Drums[Bright Machine Kit, pad 16 Woodblock]/vel_tone_least_step_oct	0
+synth/Drums[Bright Machine Kit, pad 16 Woodblock]/vel_tone_oct	0.0223
+synth/Drums[Bright Machine Kit, pad 2 Snare]/attack_rise_db	12.0531
+synth/Drums[Bright Machine Kit, pad 2 Snare]/decay_err_pct	0.4762
+synth/Drums[Bright Machine Kit, pad 2 Snare]/level_vs_kick_db	-2.395
+synth/Drums[Bright Machine Kit, pad 2 Snare]/peak_dbfs	-6.6722
+synth/Drums[Bright Machine Kit, pad 2 Snare]/repeat_db	0.3482
+synth/Drums[Bright Machine Kit, pad 2 Snare]/vel_tone_least_step_oct	0.1135
+synth/Drums[Bright Machine Kit, pad 2 Snare]/vel_tone_oct	0.6501
+synth/Drums[Bright Machine Kit, pad 3 Clap]/attack_rise_db	10.4424
+synth/Drums[Bright Machine Kit, pad 3 Clap]/decay_err_pct	6
+synth/Drums[Bright Machine Kit, pad 3 Clap]/level_vs_kick_db	-5.4023
+synth/Drums[Bright Machine Kit, pad 3 Clap]/peak_dbfs	-6.334
+synth/Drums[Bright Machine Kit, pad 3 Clap]/repeat_db	0.3627
+synth/Drums[Bright Machine Kit, pad 3 Clap]/vel_tone_least_step_oct	0.0773
+synth/Drums[Bright Machine Kit, pad 3 Clap]/vel_tone_oct	0.4748
+synth/Drums[Bright Machine Kit, pad 4 Closed hat]/attack_rise_db	10.6065
+synth/Drums[Bright Machine Kit, pad 4 Closed hat]/decay_err_pct	-1.8182
+synth/Drums[Bright Machine Kit, pad 4 Closed hat]/level_vs_kick_db	-4.2631
+synth/Drums[Bright Machine Kit, pad 4 Closed hat]/peak_dbfs	-5.9342
+synth/Drums[Bright Machine Kit, pad 4 Closed hat]/repeat_db	1.475
+synth/Drums[Bright Machine Kit, pad 4 Closed hat]/vel_tone_least_step_oct	0.0896
+synth/Drums[Bright Machine Kit, pad 4 Closed hat]/vel_tone_oct	0.5165
+synth/Drums[Bright Machine Kit, pad 5 Open hat]/attack_rise_db	10.4365
+synth/Drums[Bright Machine Kit, pad 5 Open hat]/decay_err_pct	-0.7143
+synth/Drums[Bright Machine Kit, pad 5 Open hat]/level_vs_kick_db	-3.812
+synth/Drums[Bright Machine Kit, pad 5 Open hat]/peak_dbfs	-8.6736
+synth/Drums[Bright Machine Kit, pad 5 Open hat]/repeat_db	0.6567
+synth/Drums[Bright Machine Kit, pad 5 Open hat]/vel_tone_least_step_oct	0.0868
+synth/Drums[Bright Machine Kit, pad 5 Open hat]/vel_tone_oct	0.5407
+synth/Drums[Bright Machine Kit, pad 6 Tom]/attack_rise_db	12.3
+synth/Drums[Bright Machine Kit, pad 6 Tom]/decay_err_pct	-4.4737
+synth/Drums[Bright Machine Kit, pad 6 Tom]/level_vs_kick_db	-2.6668
+synth/Drums[Bright Machine Kit, pad 6 Tom]/peak_dbfs	-7.4331
+synth/Drums[Bright Machine Kit, pad 6 Tom]/repeat_db	0.3905
+synth/Drums[Bright Machine Kit, pad 6 Tom]/vel_tone_least_step_oct	0.0043
+synth/Drums[Bright Machine Kit, pad 6 Tom]/vel_tone_oct	0.0745
+synth/Drums[Bright Machine Kit, pad 7 Tom]/attack_rise_db	10.8288
+synth/Drums[Bright Machine Kit, pad 7 Tom]/decay_err_pct	-2.9412
+synth/Drums[Bright Machine Kit, pad 7 Tom]/level_vs_kick_db	-2.6023
+synth/Drums[Bright Machine Kit, pad 7 Tom]/peak_dbfs	-5.8207
+synth/Drums[Bright Machine Kit, pad 7 Tom]/repeat_db	0.386
+synth/Drums[Bright Machine Kit, pad 7 Tom]/vel_tone_least_step_oct	0.0037
+synth/Drums[Bright Machine Kit, pad 7 Tom]/vel_tone_oct	0.0706
+synth/Drums[Bright Machine Kit, pad 8 Tom]/attack_rise_db	10.8875
+synth/Drums[Bright Machine Kit, pad 8 Tom]/decay_err_pct	-1.3333
+synth/Drums[Bright Machine Kit, pad 8 Tom]/level_vs_kick_db	-2.6749
+synth/Drums[Bright Machine Kit, pad 8 Tom]/peak_dbfs	-4.9588
+synth/Drums[Bright Machine Kit, pad 8 Tom]/repeat_db	0.3868
+synth/Drums[Bright Machine Kit, pad 8 Tom]/vel_tone_least_step_oct	0.003
+synth/Drums[Bright Machine Kit, pad 8 Tom]/vel_tone_oct	0.0657
+synth/Drums[Bright Machine Kit, pad 9 Rim]/attack_rise_db	11.7397
+synth/Drums[Bright Machine Kit, pad 9 Rim]/decay_err_pct	-2.2222
+synth/Drums[Bright Machine Kit, pad 9 Rim]/level_vs_kick_db	-3.3768
+synth/Drums[Bright Machine Kit, pad 9 Rim]/peak_dbfs	-4.7538
+synth/Drums[Bright Machine Kit, pad 9 Rim]/repeat_db	0.5306
+synth/Drums[Bright Machine Kit, pad 9 Rim]/vel_tone_least_step_oct	0.0251
+synth/Drums[Bright Machine Kit, pad 9 Rim]/vel_tone_oct	0.1492
+synth/Drums[Club Machine Kit, pad 1 Kick]/attack_rise_db	16.8466
+synth/Drums[Club Machine Kit, pad 1 Kick]/decay_err_pct	-3.9583
+synth/Drums[Club Machine Kit, pad 1 Kick]/level_vs_kick_db	0
+synth/Drums[Club Machine Kit, pad 1 Kick]/peak_dbfs	-8.4001
+synth/Drums[Club Machine Kit, pad 1 Kick]/repeat_cents	4.8192
+synth/Drums[Club Machine Kit, pad 1 Kick]/repeat_db	0.5546
+synth/Drums[Club Machine Kit, pad 1 Kick]/vel_tone_least_step_oct	0.0046
+synth/Drums[Club Machine Kit, pad 1 Kick]/vel_tone_oct	0.1154
+synth/Drums[Club Machine Kit, pad 10 Cymbal]/attack_rise_db	6.0963
+synth/Drums[Club Machine Kit, pad 10 Cymbal]/decay_err_pct	-9.7692
+synth/Drums[Club Machine Kit, pad 10 Cymbal]/level_vs_kick_db	-3.9444
+synth/Drums[Club Machine Kit, pad 10 Cymbal]/peak_dbfs	-4.4273
+synth/Drums[Club Machine Kit, pad 10 Cymbal]/repeat_db	0.6405
+synth/Drums[Club Machine Kit, pad 10 Cymbal]/vel_tone_least_step_oct	0.0619
+synth/Drums[Club Machine Kit, pad 10 Cymbal]/vel_tone_oct	0.3213
+synth/Drums[Club Machine Kit, pad 11 Cymbal]/attack_rise_db	9.348
+synth/Drums[Club Machine Kit, pad 11 Cymbal]/decay_err_pct	-0.8
+synth/Drums[Club Machine Kit, pad 11 Cymbal]/level_vs_kick_db	-3.8797
+synth/Drums[Club Machine Kit, pad 11 Cymbal]/peak_dbfs	-7.9736
+synth/Drums[Club Machine Kit, pad 11 Cymbal]/repeat_db	0.6161
+synth/Drums[Club Machine Kit, pad 11 Cymbal]/vel_tone_least_step_oct	0.0858
+synth/Drums[Club Machine Kit, pad 11 Cymbal]/vel_tone_oct	0.4759
+synth/Drums[Club Machine Kit, pad 12 Kick]/attack_rise_db	15.9067
+synth/Drums[Club Machine Kit, pad 12 Kick]/decay_err_pct	-1.0714
+synth/Drums[Club Machine Kit, pad 12 Kick]/level_vs_kick_db	-0.7647
+synth/Drums[Club Machine Kit, pad 12 Kick]/peak_dbfs	-10.3094
+synth/Drums[Club Machine Kit, pad 12 Kick]/repeat_cents	41.2639
+synth/Drums[Club Machine Kit, pad 12 Kick]/repeat_db	0.57
+synth/Drums[Club Machine Kit, pad 12 Kick]/vel_tone_least_step_oct	0.0046
+synth/Drums[Club Machine Kit, pad 12 Kick]/vel_tone_oct	0.1558
+synth/Drums[Club Machine Kit, pad 13 Snare]/attack_rise_db	12.4343
+synth/Drums[Club Machine Kit, pad 13 Snare]/decay_err_pct	5.3333
+synth/Drums[Club Machine Kit, pad 13 Snare]/level_vs_kick_db	-2.2541
+synth/Drums[Club Machine Kit, pad 13 Snare]/peak_dbfs	-5.0594
+synth/Drums[Club Machine Kit, pad 13 Snare]/repeat_db	0.1394
+synth/Drums[Club Machine Kit, pad 13 Snare]/vel_tone_least_step_oct	0.0717
+synth/Drums[Club Machine Kit, pad 13 Snare]/vel_tone_oct	0.4586
+synth/Drums[Club Machine Kit, pad 14 Clap]/attack_rise_db	11.1452
+synth/Drums[Club Machine Kit, pad 14 Clap]/decay_err_pct	6.3333
+synth/Drums[Club Machine Kit, pad 14 Clap]/level_vs_kick_db	-5.0532
+synth/Drums[Club Machine Kit, pad 14 Clap]/peak_dbfs	-3.0874
+synth/Drums[Club Machine Kit, pad 14 Clap]/repeat_db	0.5071
+synth/Drums[Club Machine Kit, pad 14 Clap]/vel_tone_least_step_oct	0.0838
+synth/Drums[Club Machine Kit, pad 14 Clap]/vel_tone_oct	0.5378
+synth/Drums[Club Machine Kit, pad 15 Shaker]/attack_rise_db	13.8334
+synth/Drums[Club Machine Kit, pad 15 Shaker]/decay_err_pct	0
+synth/Drums[Club Machine Kit, pad 15 Shaker]/level_vs_kick_db	-4.3188
+synth/Drums[Club Machine Kit, pad 15 Shaker]/peak_dbfs	-4.2508
+synth/Drums[Club Machine Kit, pad 15 Shaker]/repeat_db	0.139
+synth/Drums[Club Machine Kit, pad 15 Shaker]/vel_tone_least_step_oct	0.0705
+synth/Drums[Club Machine Kit, pad 15 Shaker]/vel_tone_oct	0.486
+synth/Drums[Club Machine Kit, pad 16 Cowbell]/attack_rise_db	9.358
+synth/Drums[Club Machine Kit, pad 16 Cowbell]/decay_err_pct	5.3333
+synth/Drums[Club Machine Kit, pad 16 Cowbell]/level_vs_kick_db	-3.6482
+synth/Drums[Club Machine Kit, pad 16 Cowbell]/peak_dbfs	-4.1023
+synth/Drums[Club Machine Kit, pad 16 Cowbell]/repeat_db	0.5787
+synth/Drums[Club Machine Kit, pad 16 Cowbell]/vel_tone_least_step_oct	0.0553
+synth/Drums[Club Machine Kit, pad 16 Cowbell]/vel_tone_oct	0.2957
+synth/Drums[Club Machine Kit, pad 2 Snare]/attack_rise_db	12.187
+synth/Drums[Club Machine Kit, pad 2 Snare]/decay_err_pct	2.6087
+synth/Drums[Club Machine Kit, pad 2 Snare]/level_vs_kick_db	-2.4908
+synth/Drums[Club Machine Kit, pad 2 Snare]/peak_dbfs	-5.634
+synth/Drums[Club Machine Kit, pad 2 Snare]/repeat_db	0.3036
+synth/Drums[Club Machine Kit, pad 2 Snare]/vel_tone_least_step_oct	0.0858
+synth/Drums[Club Machine Kit, pad 2 Snare]/vel_tone_oct	0.5224
+synth/Drums[Club Machine Kit, pad 3 Clap]/attack_rise_db	10.647
+synth/Drums[Club Machine Kit, pad 3 Clap]/decay_err_pct	45.3333
+synth/Drums[Club Machine Kit, pad 3 Clap]/level_vs_kick_db	-5.727
+synth/Drums[Club Machine Kit, pad 3 Clap]/peak_dbfs	-4.212
+synth/Drums[Club Machine Kit, pad 3 Clap]/repeat_db	0.5179
+synth/Drums[Club Machine Kit, pad 3 Clap]/vel_tone_least_step_oct	0.0703
+synth/Drums[Club Machine Kit, pad 3 Clap]/vel_tone_oct	0.3778
+synth/Drums[Club Machine Kit, pad 4 Closed hat]/attack_rise_db	9.8411
+synth/Drums[Club Machine Kit, pad 4 Closed hat]/decay_err_pct	-1.3333
+synth/Drums[Club Machine Kit, pad 4 Closed hat]/level_vs_kick_db	-4.4933
+synth/Drums[Club Machine Kit, pad 4 Closed hat]/peak_dbfs	-5.894
+synth/Drums[Club Machine Kit, pad 4 Closed hat]/repeat_db	0.5936
+synth/Drums[Club Machine Kit, pad 4 Closed hat]/vel_tone_least_step_oct	0.1052
+synth/Drums[Club Machine Kit, pad 4 Closed hat]/vel_tone_oct	0.5987
+synth/Drums[Club Machine Kit, pad 5 Open hat]/attack_rise_db	9.7468
+synth/Drums[Club Machine Kit, pad 5 Open hat]/decay_err_pct	1.3333
+synth/Drums[Club Machine Kit, pad 5 Open hat]/level_vs_kick_db	-3.817
+synth/Drums[Club Machine Kit, pad 5 Open hat]/peak_dbfs	-8.2697
+synth/Drums[Club Machine Kit, pad 5 Open hat]/repeat_db	0.4437
+synth/Drums[Club Machine Kit, pad 5 Open hat]/vel_tone_least_step_oct	0.0968
+synth/Drums[Club Machine Kit, pad 5 Open hat]/vel_tone_oct	0.6024
+synth/Drums[Club Machine Kit, pad 6 Tom]/attack_rise_db	12.842
+synth/Drums[Club Machine Kit, pad 6 Tom]/decay_err_pct	-0.9524
+synth/Drums[Club Machine Kit, pad 6 Tom]/level_vs_kick_db	-2.7731
+synth/Drums[Club Machine Kit, pad 6 Tom]/peak_dbfs	-7.6513
+synth/Drums[Club Machine Kit, pad 6 Tom]/repeat_db	0.4071
+synth/Drums[Club Machine Kit, pad 6 Tom]/vel_tone_least_step_oct	0.0067
+synth/Drums[Club Machine Kit, pad 6 Tom]/vel_tone_oct	0.105
+synth/Drums[Club Machine Kit, pad 7 Tom]/attack_rise_db	11.7525
+synth/Drums[Club Machine Kit, pad 7 Tom]/decay_err_pct	-0.5263
+synth/Drums[Club Machine Kit, pad 7 Tom]/level_vs_kick_db	-2.7383
+synth/Drums[Club Machine Kit, pad 7 Tom]/peak_dbfs	-6.1331
+synth/Drums[Club Machine Kit, pad 7 Tom]/repeat_db	0.3998
+synth/Drums[Club Machine Kit, pad 7 Tom]/vel_tone_least_step_oct	0.0062
+synth/Drums[Club Machine Kit, pad 7 Tom]/vel_tone_oct	0.1036
+synth/Drums[Club Machine Kit, pad 8 Tom]/attack_rise_db	12.3575
+synth/Drums[Club Machine Kit, pad 8 Tom]/decay_err_pct	0.8824
+synth/Drums[Club Machine Kit, pad 8 Tom]/level_vs_kick_db	-2.7751
+synth/Drums[Club Machine Kit, pad 8 Tom]/peak_dbfs	-5.3477
+synth/Drums[Club Machine Kit, pad 8 Tom]/repeat_db	0.4013
+synth/Drums[Club Machine Kit, pad 8 Tom]/vel_tone_least_step_oct	0.0058
+synth/Drums[Club Machine Kit, pad 8 Tom]/vel_tone_oct	0.1005
+synth/Drums[Club Machine Kit, pad 9 Rim]/attack_rise_db	11.9331
+synth/Drums[Club Machine Kit, pad 9 Rim]/decay_err_pct	-2.2222
+synth/Drums[Club Machine Kit, pad 9 Rim]/level_vs_kick_db	-3.3531
+synth/Drums[Club Machine Kit, pad 9 Rim]/peak_dbfs	-3.7996
+synth/Drums[Club Machine Kit, pad 9 Rim]/repeat_db	0.5578
+synth/Drums[Club Machine Kit, pad 9 Rim]/vel_tone_least_step_oct	0.0264
+synth/Drums[Club Machine Kit, pad 9 Rim]/vel_tone_oct	0.1944
+synth/Drums[Deep House Kit, pad 1 Kick]/attack_rise_db	15.0823
+synth/Drums[Deep House Kit, pad 1 Kick]/decay_err_pct	2.1667
+synth/Drums[Deep House Kit, pad 1 Kick]/level_vs_kick_db	0
+synth/Drums[Deep House Kit, pad 1 Kick]/peak_dbfs	-10.0983
+synth/Drums[Deep House Kit, pad 1 Kick]/repeat_cents	4.8157
+synth/Drums[Deep House Kit, pad 1 Kick]/repeat_db	0.5575
+synth/Drums[Deep House Kit, pad 1 Kick]/vel_tone_least_step_oct	0.0037
+synth/Drums[Deep House Kit, pad 1 Kick]/vel_tone_oct	0.0505
+synth/Drums[Deep House Kit, pad 10 Shaker]/attack_rise_db	14.4768
+synth/Drums[Deep House Kit, pad 10 Shaker]/decay_err_pct	2.5
+synth/Drums[Deep House Kit, pad 10 Shaker]/level_vs_kick_db	-4.7392
+synth/Drums[Deep House Kit, pad 10 Shaker]/peak_dbfs	-4.4454
+synth/Drums[Deep House Kit, pad 10 Shaker]/repeat_db	0.2743
+synth/Drums[Deep House Kit, pad 10 Shaker]/vel_tone_least_step_oct	0.0689
+synth/Drums[Deep House Kit, pad 10 Shaker]/vel_tone_oct	0.4879
+synth/Drums[Deep House Kit, pad 11 Cymbal]/attack_rise_db	7.0603
+synth/Drums[Deep House Kit, pad 11 Cymbal]/decay_err_pct	-10.3333
+synth/Drums[Deep House Kit, pad 11 Cymbal]/level_vs_kick_db	-4.0033
+synth/Drums[Deep House Kit, pad 11 Cymbal]/peak_dbfs	-4.5689
+synth/Drums[Deep House Kit, pad 11 Cymbal]/repeat_db	0.9943
+synth/Drums[Deep House Kit, pad 11 Cymbal]/vel_tone_least_step_oct	0.0806
+synth/Drums[Deep House Kit, pad 11 Cymbal]/vel_tone_oct	0.4961
+synth/Drums[Deep House Kit, pad 12 Bell]/attack_rise_db	9.715
+synth/Drums[Deep House Kit, pad 12 Bell]/decay_err_pct	86.7143
+synth/Drums[Deep House Kit, pad 12 Bell]/level_vs_kick_db	-3.5432
+synth/Drums[Deep House Kit, pad 12 Bell]/peak_dbfs	-10.4082
+synth/Drums[Deep House Kit, pad 12 Bell]/repeat_db	0.4771
+synth/Drums[Deep House Kit, pad 12 Bell]/vel_tone_least_step_oct	0.0034
+synth/Drums[Deep House Kit, pad 12 Bell]/vel_tone_oct	0.1435
+synth/Drums[Deep House Kit, pad 13 FM perc]/attack_rise_db	13.6713
+synth/Drums[Deep House Kit, pad 13 FM perc]/decay_err_pct	1.6
+synth/Drums[Deep House Kit, pad 13 FM perc]/level_vs_kick_db	-3.2045
+synth/Drums[Deep House Kit, pad 13 FM perc]/peak_dbfs	-9.5506
+synth/Drums[Deep House Kit, pad 13 FM perc]/repeat_db	0.5661
+synth/Drums[Deep House Kit, pad 13 FM perc]/vel_tone_least_step_oct	0.0056
+synth/Drums[Deep House Kit, pad 13 FM perc]/vel_tone_oct	0.0707
+synth/Drums[Deep House Kit, pad 14 Kick]/attack_rise_db	13.1794
+synth/Drums[Deep House Kit, pad 14 Kick]/decay_err_pct	1.8889
+synth/Drums[Deep House Kit, pad 14 Kick]/level_vs_kick_db	-1.2131
+synth/Drums[Deep House Kit, pad 14 Kick]/peak_dbfs	-11.6351
+synth/Drums[Deep House Kit, pad 14 Kick]/repeat_cents	4.7843
+synth/Drums[Deep House Kit, pad 14 Kick]/repeat_db	0.553
+synth/Drums[Deep House Kit, pad 14 Kick]/vel_tone_least_step_oct	0.0045
+synth/Drums[Deep House Kit, pad 14 Kick]/vel_tone_oct	0.0306
+synth/Drums[Deep House Kit, pad 15 Tom]/attack_rise_db	10.8803
+synth/Drums[Deep House Kit, pad 15 Tom]/decay_err_pct	-1.3333
+synth/Drums[Deep House Kit, pad 15 Tom]/level_vs_kick_db	-3.0891
+synth/Drums[Deep House Kit, pad 15 Tom]/peak_dbfs	-9.2372
+synth/Drums[Deep House Kit, pad 15 Tom]/repeat_db	0.4911
+synth/Drums[Deep House Kit, pad 15 Tom]/vel_tone_least_step_oct	0.0037
+synth/Drums[Deep House Kit, pad 15 Tom]/vel_tone_oct	0.0694
+synth/Drums[Deep House Kit, pad 16 Cymbal]/attack_rise_db	9.1537
+synth/Drums[Deep House Kit, pad 16 Cymbal]/decay_err_pct	-4.1154
+synth/Drums[Deep House Kit, pad 16 Cymbal]/level_vs_kick_db	-4.3147
+synth/Drums[Deep House Kit, pad 16 Cymbal]/peak_dbfs	-7.8073
+synth/Drums[Deep House Kit, pad 16 Cymbal]/repeat_db	0.6278
+synth/Drums[Deep House Kit, pad 16 Cymbal]/vel_tone_least_step_oct	0.1089
+synth/Drums[Deep House Kit, pad 16 Cymbal]/vel_tone_oct	0.6142
+synth/Drums[Deep House Kit, pad 2 Snare]/attack_rise_db	11.6787
+synth/Drums[Deep House Kit, pad 2 Snare]/decay_err_pct	-6.6667
+synth/Drums[Deep House Kit, pad 2 Snare]/level_vs_kick_db	-2.8848
+synth/Drums[Deep House Kit, pad 2 Snare]/peak_dbfs	-6.0257
+synth/Drums[Deep House Kit, pad 2 Snare]/repeat_db	0.5095
+synth/Drums[Deep House Kit, pad 2 Snare]/vel_tone_least_step_oct	0.1578
+synth/Drums[Deep House Kit, pad 2 Snare]/vel_tone_oct	0.9438
+synth/Drums[Deep House Kit, pad 3 Clap]/attack_rise_db	10.4823
+synth/Drums[Deep House Kit, pad 3 Clap]/decay_err_pct	96.1667
+synth/Drums[Deep House Kit, pad 3 Clap]/level_vs_kick_db	-4.1555
+synth/Drums[Deep House Kit, pad 3 Clap]/peak_dbfs	-4.414
+synth/Drums[Deep House Kit, pad 3 Clap]/repeat_db	0.6035
+synth/Drums[Deep House Kit, pad 3 Clap]/vel_tone_least_step_oct	0.0771
+synth/Drums[Deep House Kit, pad 3 Clap]/vel_tone_oct	0.5492
+synth/Drums[Deep House Kit, pad 4 Closed hat]/attack_rise_db	10.473
+synth/Drums[Deep House Kit, pad 4 Closed hat]/decay_err_pct	0
+synth/Drums[Deep House Kit, pad 4 Closed hat]/level_vs_kick_db	-4.6173
+synth/Drums[Deep House Kit, pad 4 Closed hat]/peak_dbfs	-5.0511
+synth/Drums[Deep House Kit, pad 4 Closed hat]/repeat_db	0.3917
+synth/Drums[Deep House Kit, pad 4 Closed hat]/vel_tone_least_step_oct	0.1032
+synth/Drums[Deep House Kit, pad 4 Closed hat]/vel_tone_oct	0.5811
+synth/Drums[Deep House Kit, pad 5 Open hat]/attack_rise_db	10.4404
+synth/Drums[Deep House Kit, pad 5 Open hat]/decay_err_pct	-0.3333
+synth/Drums[Deep House Kit, pad 5 Open hat]/level_vs_kick_db	-4.2927
+synth/Drums[Deep House Kit, pad 5 Open hat]/peak_dbfs	-7.0164
+synth/Drums[Deep House Kit, pad 5 Open hat]/repeat_db	0.4194
+synth/Drums[Deep House Kit, pad 5 Open hat]/vel_tone_least_step_oct	0.0913
+synth/Drums[Deep House Kit, pad 5 Open hat]/vel_tone_oct	0.5267
+synth/Drums[Deep House Kit, pad 6 Conga]/attack_rise_db	10.5064
+synth/Drums[Deep House Kit, pad 6 Conga]/decay_err_pct	-1.5625
+synth/Drums[Deep House Kit, pad 6 Conga]/level_vs_kick_db	-2.9241
+synth/Drums[Deep House Kit, pad 6 Conga]/peak_dbfs	-7.8662
+synth/Drums[Deep House Kit, pad 6 Conga]/repeat_db	0.4867
+synth/Drums[Deep House Kit, pad 6 Conga]/vel_tone_least_step_oct	0.0029
+synth/Drums[Deep House Kit, pad 6 Conga]/vel_tone_oct	0.0826
+synth/Drums[Deep House Kit, pad 7 Conga]/attack_rise_db	10.528
+synth/Drums[Deep House Kit, pad 7 Conga]/decay_err_pct	0
+synth/Drums[Deep House Kit, pad 7 Conga]/level_vs_kick_db	-3.0215
+synth/Drums[Deep House Kit, pad 7 Conga]/peak_dbfs	-7.5158
+synth/Drums[Deep House Kit, pad 7 Conga]/repeat_db	0.4908
+synth/Drums[Deep House Kit, pad 7 Conga]/vel_tone_least_step_oct	0.0018
+synth/Drums[Deep House Kit, pad 7 Conga]/vel_tone_oct	0.0668
+synth/Drums[Deep House Kit, pad 8 Woodblock]/attack_rise_db	6.1102
+synth/Drums[Deep House Kit, pad 8 Woodblock]/decay_err_pct	345
+synth/Drums[Deep House Kit, pad 8 Woodblock]/level_vs_kick_db	-3.4415
+synth/Drums[Deep House Kit, pad 8 Woodblock]/peak_dbfs	-7.6398
+synth/Drums[Deep House Kit, pad 8 Woodblock]/repeat_db	0.5058
+synth/Drums[Deep House Kit, pad 8 Woodblock]/vel_tone_least_step_oct	0
+synth/Drums[Deep House Kit, pad 8 Woodblock]/vel_tone_oct	0.0207
+synth/Drums[Deep House Kit, pad 9 Rim]/attack_rise_db	11.8973
+synth/Drums[Deep House Kit, pad 9 Rim]/decay_err_pct	804.4444
+synth/Drums[Deep House Kit, pad 9 Rim]/level_vs_kick_db	-3.8205
+synth/Drums[Deep House Kit, pad 9 Rim]/peak_dbfs	-4.5353
+synth/Drums[Deep House Kit, pad 9 Rim]/repeat_db	0.5763
+synth/Drums[Deep House Kit, pad 9 Rim]/vel_tone_least_step_oct	0.0249
+synth/Drums[Deep House Kit, pad 9 Rim]/vel_tone_oct	0.1432
+synth/Drums[Drill Kit, pad 1 808 kick]/attack_rise_db	14.2447
+synth/Drums[Drill Kit, pad 1 808 kick]/decay_err_pct	-6
+synth/Drums[Drill Kit, pad 1 808 kick]/level_vs_kick_db	0
+synth/Drums[Drill Kit, pad 1 808 kick]/peak_dbfs	-11.3483
+synth/Drums[Drill Kit, pad 1 808 kick]/repeat_db	0.555
+synth/Drums[Drill Kit, pad 1 808 kick]/vel_tone_least_step_oct	0.0058
+synth/Drums[Drill Kit, pad 1 808 kick]/vel_tone_oct	0.0511
+synth/Drums[Drill Kit, pad 10 Bell]/attack_rise_db	9.2313
+synth/Drums[Drill Kit, pad 10 Bell]/decay_err_pct	-1.1667
+synth/Drums[Drill Kit, pad 10 Bell]/level_vs_kick_db	-3.8192
+synth/Drums[Drill Kit, pad 10 Bell]/peak_dbfs	-11.6518
+synth/Drums[Drill Kit, pad 10 Bell]/repeat_db	0.4866
+synth/Drums[Drill Kit, pad 10 Bell]/vel_tone_least_step_oct	0.0046
+synth/Drums[Drill Kit, pad 10 Bell]/vel_tone_oct	0.1859
+synth/Drums[Drill Kit, pad 11 Cymbal]/attack_rise_db	8.3385
+synth/Drums[Drill Kit, pad 11 Cymbal]/decay_err_pct	-3.35
+synth/Drums[Drill Kit, pad 11 Cymbal]/level_vs_kick_db	-4.2799
+synth/Drums[Drill Kit, pad 11 Cymbal]/peak_dbfs	-8.9787
+synth/Drums[Drill Kit, pad 11 Cymbal]/repeat_db	0.5824
+synth/Drums[Drill Kit, pad 11 Cymbal]/vel_tone_least_step_oct	0.1069
+synth/Drums[Drill Kit, pad 11 Cymbal]/vel_tone_oct	0.588
+synth/Drums[Drill Kit, pad 12 Closed hat]/attack_rise_db	9.3315
+synth/Drums[Drill Kit, pad 12 Closed hat]/decay_err_pct	0
+synth/Drums[Drill Kit, pad 12 Closed hat]/level_vs_kick_db	-4.9616
+synth/Drums[Drill Kit, pad 12 Closed hat]/peak_dbfs	-4.3985
+synth/Drums[Drill Kit, pad 12 Closed hat]/repeat_db	2.7263
+synth/Drums[Drill Kit, pad 12 Closed hat]/vel_tone_least_step_oct	0.118
+synth/Drums[Drill Kit, pad 12 Closed hat]/vel_tone_oct	0.6894
+synth/Drums[Drill Kit, pad 13 Snare]/attack_rise_db	12.3988
+synth/Drums[Drill Kit, pad 13 Snare]/decay_err_pct	5.8333
+synth/Drums[Drill Kit, pad 13 Snare]/level_vs_kick_db	-2.6167
+synth/Drums[Drill Kit, pad 13 Snare]/peak_dbfs	-5.9382
+synth/Drums[Drill Kit, pad 13 Snare]/repeat_db	0.0832
+synth/Drums[Drill Kit, pad 13 Snare]/vel_tone_least_step_oct	0.0714
+synth/Drums[Drill Kit, pad 13 Snare]/vel_tone_oct	0.4558
+synth/Drums[Drill Kit, pad 14 808 kick]/attack_rise_db	10.8232
+synth/Drums[Drill Kit, pad 14 808 kick]/decay_err_pct	-5.1
+synth/Drums[Drill Kit, pad 14 808 kick]/level_vs_kick_db	-0.9433
+synth/Drums[Drill Kit, pad 14 808 kick]/peak_dbfs	-14.0795
+synth/Drums[Drill Kit, pad 14 808 kick]/repeat_db	0.5763
+synth/Drums[Drill Kit, pad 14 808 kick]/vel_tone_least_step_oct	0.0263
+synth/Drums[Drill Kit, pad 14 808 kick]/vel_tone_oct	0.2138
+synth/Drums[Drill Kit, pad 15 Tom]/attack_rise_db	10.988
+synth/Drums[Drill Kit, pad 15 Tom]/decay_err_pct	0.25
+synth/Drums[Drill Kit, pad 15 Tom]/level_vs_kick_db	-3.07
+synth/Drums[Drill Kit, pad 15 Tom]/peak_dbfs	-9.7296
+synth/Drums[Drill Kit, pad 15 Tom]/repeat_db	0.4629
+synth/Drums[Drill Kit, pad 15 Tom]/vel_tone_least_step_oct	0.0065
+synth/Drums[Drill Kit, pad 15 Tom]/vel_tone_oct	0.1031
+synth/Drums[Drill Kit, pad 16 Zap]/attack_rise_db	13.2854
+synth/Drums[Drill Kit, pad 16 Zap]/decay_err_pct	0.6667
+synth/Drums[Drill Kit, pad 16 Zap]/level_vs_kick_db	-2.9671
+synth/Drums[Drill Kit, pad 16 Zap]/peak_dbfs	-13.9495
+synth/Drums[Drill Kit, pad 16 Zap]/repeat_db	0.5635
+synth/Drums[Drill Kit, pad 16 Zap]/vel_tone_least_step_oct	0.031
+synth/Drums[Drill Kit, pad 16 Zap]/vel_tone_oct	0.2186
+synth/Drums[Drill Kit, pad 2 Snare]/attack_rise_db	12.3581
+synth/Drums[Drill Kit, pad 2 Snare]/decay_err_pct	250
+synth/Drums[Drill Kit, pad 2 Snare]/level_vs_kick_db	-2.7807
+synth/Drums[Drill Kit, pad 2 Snare]/peak_dbfs	-7.0942
+synth/Drums[Drill Kit, pad 2 Snare]/repeat_db	0.1903
+synth/Drums[Drill Kit, pad 2 Snare]/vel_tone_least_step_oct	0.077
+synth/Drums[Drill Kit, pad 2 Snare]/vel_tone_oct	0.4792
+synth/Drums[Drill Kit, pad 3 Clap]/attack_rise_db	10.2145
+synth/Drums[Drill Kit, pad 3 Clap]/decay_err_pct	10.5
+synth/Drums[Drill Kit, pad 3 Clap]/level_vs_kick_db	-4.8323
+synth/Drums[Drill Kit, pad 3 Clap]/peak_dbfs	-4.5629
+synth/Drums[Drill Kit, pad 3 Clap]/repeat_db	0.714
+synth/Drums[Drill Kit, pad 3 Clap]/vel_tone_least_step_oct	0.0869
+synth/Drums[Drill Kit, pad 3 Clap]/vel_tone_oct	0.5319
+synth/Drums[Drill Kit, pad 4 Closed hat]/attack_rise_db	7.3967
+synth/Drums[Drill Kit, pad 4 Closed hat]/decay_err_pct	0
+synth/Drums[Drill Kit, pad 4 Closed hat]/level_vs_kick_db	-5.7929
+synth/Drums[Drill Kit, pad 4 Closed hat]/peak_dbfs	-6.4799
+synth/Drums[Drill Kit, pad 4 Closed hat]/repeat_db	0.4197
+synth/Drums[Drill Kit, pad 4 Closed hat]/vel_tone_least_step_oct	0.111
+synth/Drums[Drill Kit, pad 4 Closed hat]/vel_tone_oct	0.7116
+synth/Drums[Drill Kit, pad 5 Open hat]/attack_rise_db	7.3644
+synth/Drums[Drill Kit, pad 5 Open hat]/decay_err_pct	0.6667
+synth/Drums[Drill Kit, pad 5 Open hat]/level_vs_kick_db	-4.0728
+synth/Drums[Drill Kit, pad 5 Open hat]/peak_dbfs	-8.916
+synth/Drums[Drill Kit, pad 5 Open hat]/repeat_db	0.4449
+synth/Drums[Drill Kit, pad 5 Open hat]/vel_tone_least_step_oct	0.1079
+synth/Drums[Drill Kit, pad 5 Open hat]/vel_tone_oct	0.6489
+synth/Drums[Drill Kit, pad 6 Rim]/attack_rise_db	11.7932
+synth/Drums[Drill Kit, pad 6 Rim]/decay_err_pct	822
+synth/Drums[Drill Kit, pad 6 Rim]/level_vs_kick_db	-3.7907
+synth/Drums[Drill Kit, pad 6 Rim]/peak_dbfs	-6.2595
+synth/Drums[Drill Kit, pad 6 Rim]/repeat_db	0.4926
+synth/Drums[Drill Kit, pad 6 Rim]/vel_tone_least_step_oct	0.0662
+synth/Drums[Drill Kit, pad 6 Rim]/vel_tone_oct	0.4333
+synth/Drums[Drill Kit, pad 7 FM perc]/attack_rise_db	13.1837
+synth/Drums[Drill Kit, pad 7 FM perc]/decay_err_pct	3.8889
+synth/Drums[Drill Kit, pad 7 FM perc]/level_vs_kick_db	-3.2643
+synth/Drums[Drill Kit, pad 7 FM perc]/peak_dbfs	-12.5524
+synth/Drums[Drill Kit, pad 7 FM perc]/repeat_db	0.5786
+synth/Drums[Drill Kit, pad 7 FM perc]/vel_tone_least_step_oct	0.0171
+synth/Drums[Drill Kit, pad 7 FM perc]/vel_tone_oct	0.127
+synth/Drums[Drill Kit, pad 8 Woodblock]/attack_rise_db	6.9359
+synth/Drums[Drill Kit, pad 8 Woodblock]/decay_err_pct	-1
+synth/Drums[Drill Kit, pad 8 Woodblock]/level_vs_kick_db	-3.6403
+synth/Drums[Drill Kit, pad 8 Woodblock]/peak_dbfs	-8.9067
+synth/Drums[Drill Kit, pad 8 Woodblock]/repeat_db	0.5118
+synth/Drums[Drill Kit, pad 8 Woodblock]/vel_tone_least_step_oct	0
+synth/Drums[Drill Kit, pad 8 Woodblock]/vel_tone_oct	0.0234
+synth/Drums[Drill Kit, pad 9 Kick]/attack_rise_db	13.9538
+synth/Drums[Drill Kit, pad 9 Kick]/decay_err_pct	0.4
+synth/Drums[Drill Kit, pad 9 Kick]/level_vs_kick_db	-1.2705
+synth/Drums[Drill Kit, pad 9 Kick]/peak_dbfs	-12.5416
+synth/Drums[Drill Kit, pad 9 Kick]/repeat_cents	214.8551
+synth/Drums[Drill Kit, pad 9 Kick]/repeat_db	0.5567
+synth/Drums[Drill Kit, pad 9 Kick]/vel_tone_least_step_oct	0.0033
+synth/Drums[Drill Kit, pad 9 Kick]/vel_tone_oct	0.1231
+synth/Drums[Drum and Bass Kit, pad 1 Kick]/attack_rise_db	14.7174
+synth/Drums[Drum and Bass Kit, pad 1 Kick]/decay_err_pct	-7.6
+synth/Drums[Drum and Bass Kit, pad 1 Kick]/level_vs_kick_db	0
+synth/Drums[Drum and Bass Kit, pad 1 Kick]/peak_dbfs	-7.3389
+synth/Drums[Drum and Bass Kit, pad 1 Kick]/repeat_cents	39.3092
+synth/Drums[Drum and Bass Kit, pad 1 Kick]/repeat_db	0.5438
+synth/Drums[Drum and Bass Kit, pad 1 Kick]/vel_tone_least_step_oct	0.0026
+synth/Drums[Drum and Bass Kit, pad 1 Kick]/vel_tone_oct	0.1002
+synth/Drums[Drum and Bass Kit, pad 10 Cymbal]/attack_rise_db	6.9771
+synth/Drums[Drum and Bass Kit, pad 10 Cymbal]/decay_err_pct	-4.3636
+synth/Drums[Drum and Bass Kit, pad 10 Cymbal]/level_vs_kick_db	-4.2316
+synth/Drums[Drum and Bass Kit, pad 10 Cymbal]/peak_dbfs	-6.4844
+synth/Drums[Drum and Bass Kit, pad 10 Cymbal]/repeat_db	0.4353
+synth/Drums[Drum and Bass Kit, pad 10 Cymbal]/vel_tone_least_step_oct	0.0957
+synth/Drums[Drum and Bass Kit, pad 10 Cymbal]/vel_tone_oct	0.4801
+synth/Drums[Drum and Bass Kit, pad 11 Cymbal]/attack_rise_db	9.3551
+synth/Drums[Drum and Bass Kit, pad 11 Cymbal]/decay_err_pct	-0.9615
+synth/Drums[Drum and Bass Kit, pad 11 Cymbal]/level_vs_kick_db	-4.068
+synth/Drums[Drum and Bass Kit, pad 11 Cymbal]/peak_dbfs	-7.2536
+synth/Drums[Drum and Bass Kit, pad 11 Cymbal]/repeat_db	0.5719
+synth/Drums[Drum and Bass Kit, pad 11 Cymbal]/vel_tone_least_step_oct	0.083
+synth/Drums[Drum and Bass Kit, pad 11 Cymbal]/vel_tone_oct	0.4578
+synth/Drums[Drum and Bass Kit, pad 12 Snare]/attack_rise_db	12.0503
+synth/Drums[Drum and Bass Kit, pad 12 Snare]/decay_err_pct	-4.2857
+synth/Drums[Drum and Bass Kit, pad 12 Snare]/level_vs_kick_db	-2.5644
+synth/Drums[Drum and Bass Kit, pad 12 Snare]/peak_dbfs	-4.7734
+synth/Drums[Drum and Bass Kit, pad 12 Snare]/repeat_db	0.3692
+synth/Drums[Drum and Bass Kit, pad 12 Snare]/vel_tone_least_step_oct	0.1022
+synth/Drums[Drum and Bass Kit, pad 12 Snare]/vel_tone_oct	0.6051
+synth/Drums[Drum and Bass Kit, pad 13 Kick]/attack_rise_db	14.2581
+synth/Drums[Drum and Bass Kit, pad 13 Kick]/decay_err_pct	1.7143
+synth/Drums[Drum and Bass Kit, pad 13 Kick]/level_vs_kick_db	-1.3539
+synth/Drums[Drum and Bass Kit, pad 13 Kick]/peak_dbfs	-11.7689
+synth/Drums[Drum and Bass Kit, pad 13 Kick]/repeat_cents	4.8182
+synth/Drums[Drum and Bass Kit, pad 13 Kick]/repeat_db	0.5596
+synth/Drums[Drum and Bass Kit, pad 13 Kick]/vel_tone_least_step_oct	0.0023
+synth/Drums[Drum and Bass Kit, pad 13 Kick]/vel_tone_oct	0.0827
+synth/Drums[Drum and Bass Kit, pad 14 Shaker]/attack_rise_db	14.1616
+synth/Drums[Drum and Bass Kit, pad 14 Shaker]/decay_err_pct	1.6667
+synth/Drums[Drum and Bass Kit, pad 14 Shaker]/level_vs_kick_db	-5.0812
+synth/Drums[Drum and Bass Kit, pad 14 Shaker]/peak_dbfs	-4.0539
+synth/Drums[Drum and Bass Kit, pad 14 Shaker]/repeat_db	0.3339
+synth/Drums[Drum and Bass Kit, pad 14 Shaker]/vel_tone_least_step_oct	0.0712
+synth/Drums[Drum and Bass Kit, pad 14 Shaker]/vel_tone_oct	0.4909
+synth/Drums[Drum and Bass Kit, pad 15 Zap]/attack_rise_db	14.3701
+synth/Drums[Drum and Bass Kit, pad 15 Zap]/decay_err_pct	1.6667
+synth/Drums[Drum and Bass Kit, pad 15 Zap]/level_vs_kick_db	-3.3136
+synth/Drums[Drum and Bass Kit, pad 15 Zap]/peak_dbfs	-13.2612
+synth/Drums[Drum and Bass Kit, pad 15 Zap]/repeat_db	0.5622
+synth/Drums[Drum and Bass Kit, pad 15 Zap]/vel_tone_least_step_oct	0.0125
+synth/Drums[Drum and Bass Kit, pad 15 Zap]/vel_tone_oct	0.1424
+synth/Drums[Drum and Bass Kit, pad 16 FM perc]/attack_rise_db	12.299
+synth/Drums[Drum and Bass Kit, pad 16 FM perc]/decay_err_pct	4
+synth/Drums[Drum and Bass Kit, pad 16 FM perc]/level_vs_kick_db	-2.9997
+synth/Drums[Drum and Bass Kit, pad 16 FM perc]/peak_dbfs	-10.5512
+synth/Drums[Drum and Bass Kit, pad 16 FM perc]/repeat_db	0.5812
+synth/Drums[Drum and Bass Kit, pad 16 FM perc]/vel_tone_least_step_oct	0.0178
+synth/Drums[Drum and Bass Kit, pad 16 FM perc]/vel_tone_oct	0.1289
+synth/Drums[Drum and Bass Kit, pad 2 Snare]/attack_rise_db	11.6958
+synth/Drums[Drum and Bass Kit, pad 2 Snare]/decay_err_pct	117.5
+synth/Drums[Drum and Bass Kit, pad 2 Snare]/level_vs_kick_db	-2.4981
+synth/Drums[Drum and Bass Kit, pad 2 Snare]/peak_dbfs	-4.9753
+synth/Drums[Drum and Bass Kit, pad 2 Snare]/repeat_db	0.3374
+synth/Drums[Drum and Bass Kit, pad 2 Snare]/vel_tone_least_step_oct	0.1235
+synth/Drums[Drum and Bass Kit, pad 2 Snare]/vel_tone_oct	0.6987
+synth/Drums[Drum and Bass Kit, pad 3 Clap]/attack_rise_db	10.6273
+synth/Drums[Drum and Bass Kit, pad 3 Clap]/decay_err_pct	7.3333
+synth/Drums[Drum and Bass Kit, pad 3 Clap]/level_vs_kick_db	-5.2306
+synth/Drums[Drum and Bass Kit, pad 3 Clap]/peak_dbfs	-5.8262
+synth/Drums[Drum and Bass Kit, pad 3 Clap]/repeat_db	0.3878
+synth/Drums[Drum and Bass Kit, pad 3 Clap]/vel_tone_least_step_oct	0.084
+synth/Drums[Drum and Bass Kit, pad 3 Clap]/vel_tone_oct	0.5177
+synth/Drums[Drum and Bass Kit, pad 4 Closed hat]/attack_rise_db	10.7594
+synth/Drums[Drum and Bass Kit, pad 4 Closed hat]/decay_err_pct	-2.2222
+synth/Drums[Drum and Bass Kit, pad 4 Closed hat]/level_vs_kick_db	-5.3808
+synth/Drums[Drum and Bass Kit, pad 4 Closed hat]/peak_dbfs	-4.0815
+synth/Drums[Drum and Bass Kit, pad 4 Closed hat]/repeat_db	0.9475
+synth/Drums[Drum and Bass Kit, pad 4 Closed hat]/vel_tone_least_step_oct	0.0966
+synth/Drums[Drum and Bass Kit, pad 4 Closed hat]/vel_tone_oct	0.5435
+synth/Drums[Drum and Bass Kit, pad 5 Open hat]/attack_rise_db	10.5978
+synth/Drums[Drum and Bass Kit, pad 5 Open hat]/decay_err_pct	0.6667
+synth/Drums[Drum and Bass Kit, pad 5 Open hat]/level_vs_kick_db	-4.0347
+synth/Drums[Drum and Bass Kit, pad 5 Open hat]/peak_dbfs	-6.7541
+synth/Drums[Drum and Bass Kit, pad 5 Open hat]/repeat_db	0.5195
+synth/Drums[Drum and Bass Kit, pad 5 Open hat]/vel_tone_least_step_oct	0.0823
+synth/Drums[Drum and Bass Kit, pad 5 Open hat]/vel_tone_oct	0.533
+synth/Drums[Drum and Bass Kit, pad 6 Tom]/attack_rise_db	12.5075
+synth/Drums[Drum and Bass Kit, pad 6 Tom]/decay_err_pct	-2.1875
+synth/Drums[Drum and Bass Kit, pad 6 Tom]/level_vs_kick_db	-3.1642
+synth/Drums[Drum and Bass Kit, pad 6 Tom]/peak_dbfs	-7.0472
+synth/Drums[Drum and Bass Kit, pad 6 Tom]/repeat_db	0.9978
+synth/Drums[Drum and Bass Kit, pad 6 Tom]/vel_tone_least_step_oct	0.0039
+synth/Drums[Drum and Bass Kit, pad 6 Tom]/vel_tone_oct	0.0671
+synth/Drums[Drum and Bass Kit, pad 7 Tom]/attack_rise_db	12.5045
+synth/Drums[Drum and Bass Kit, pad 7 Tom]/decay_err_pct	-0.3448
+synth/Drums[Drum and Bass Kit, pad 7 Tom]/level_vs_kick_db	-3.1311
+synth/Drums[Drum and Bass Kit, pad 7 Tom]/peak_dbfs	-5.507
+synth/Drums[Drum and Bass Kit, pad 7 Tom]/repeat_db	1.0058
+synth/Drums[Drum and Bass Kit, pad 7 Tom]/vel_tone_least_step_oct	0.0033
+synth/Drums[Drum and Bass Kit, pad 7 Tom]/vel_tone_oct	0.0646
+synth/Drums[Drum and Bass Kit, pad 8 Tom]/attack_rise_db	12.2422
+synth/Drums[Drum and Bass Kit, pad 8 Tom]/decay_err_pct	0
+synth/Drums[Drum and Bass Kit, pad 8 Tom]/level_vs_kick_db	-3.2975
+synth/Drums[Drum and Bass Kit, pad 8 Tom]/peak_dbfs	-4.9576
+synth/Drums[Drum and Bass Kit, pad 8 Tom]/repeat_db	0.9976
+synth/Drums[Drum and Bass Kit, pad 8 Tom]/vel_tone_least_step_oct	0.0025
+synth/Drums[Drum and Bass Kit, pad 8 Tom]/vel_tone_oct	0.0612
+synth/Drums[Drum and Bass Kit, pad 9 Rim]/attack_rise_db	11.9612
+synth/Drums[Drum and Bass Kit, pad 9 Rim]/decay_err_pct	-2.5
+synth/Drums[Drum and Bass Kit, pad 9 Rim]/level_vs_kick_db	-4.2435
+synth/Drums[Drum and Bass Kit, pad 9 Rim]/peak_dbfs	-3.6651
+synth/Drums[Drum and Bass Kit, pad 9 Rim]/repeat_db	0.5446
+synth/Drums[Drum and Bass Kit, pad 9 Rim]/vel_tone_least_step_oct	0.0276
+synth/Drums[Drum and Bass Kit, pad 9 Rim]/vel_tone_oct	0.254
+synth/Drums[Eighties Punch Kit, pad 1 Kick]/attack_rise_db	13.3241
+synth/Drums[Eighties Punch Kit, pad 1 Kick]/decay_err_pct	-7.5
+synth/Drums[Eighties Punch Kit, pad 1 Kick]/level_vs_kick_db	0
+synth/Drums[Eighties Punch Kit, pad 1 Kick]/peak_dbfs	-9.5845
+synth/Drums[Eighties Punch Kit, pad 1 Kick]/repeat_cents	205.6019
+synth/Drums[Eighties Punch Kit, pad 1 Kick]/repeat_db	0.5412
+synth/Drums[Eighties Punch Kit, pad 1 Kick]/vel_tone_least_step_oct	0.0016
+synth/Drums[Eighties Punch Kit, pad 1 Kick]/vel_tone_oct	0.0479
+synth/Drums[Eighties Punch Kit, pad 10 Cowbell]/attack_rise_db	9.3566
+synth/Drums[Eighties Punch Kit, pad 10 Cowbell]/decay_err_pct	6.0606
+synth/Drums[Eighties Punch Kit, pad 10 Cowbell]/level_vs_kick_db	-3.1188
+synth/Drums[Eighties Punch Kit, pad 10 Cowbell]/peak_dbfs	-4.1017
+synth/Drums[Eighties Punch Kit, pad 10 Cowbell]/repeat_db	0.5778
+synth/Drums[Eighties Punch Kit, pad 10 Cowbell]/vel_tone_least_step_oct	0.0553
+synth/Drums[Eighties Punch Kit, pad 10 Cowbell]/vel_tone_oct	0.2957
+synth/Drums[Eighties Punch Kit, pad 11 Cymbal]/attack_rise_db	9.7108
+synth/Drums[Eighties Punch Kit, pad 11 Cymbal]/decay_err_pct	-0.28
+synth/Drums[Eighties Punch Kit, pad 11 Cymbal]/level_vs_kick_db	-4.0041
+synth/Drums[Eighties Punch Kit, pad 11 Cymbal]/peak_dbfs	-9.0036
+synth/Drums[Eighties Punch Kit, pad 11 Cymbal]/repeat_db	0.5323
+synth/Drums[Eighties Punch Kit, pad 11 Cymbal]/vel_tone_least_step_oct	0.0742
+synth/Drums[Eighties Punch Kit, pad 11 Cymbal]/vel_tone_oct	0.428
+synth/Drums[Eighties Punch Kit, pad 12 Cymbal]/attack_rise_db	7.1345
+synth/Drums[Eighties Punch Kit, pad 12 Cymbal]/decay_err_pct	-7.25
+synth/Drums[Eighties Punch Kit, pad 12 Cymbal]/level_vs_kick_db	-3.7923
+synth/Drums[Eighties Punch Kit, pad 12 Cymbal]/peak_dbfs	-6.8569
+synth/Drums[Eighties Punch Kit, pad 12 Cymbal]/repeat_db	0.5123
+synth/Drums[Eighties Punch Kit, pad 12 Cymbal]/vel_tone_least_step_oct	0.0933
+synth/Drums[Eighties Punch Kit, pad 12 Cymbal]/vel_tone_oct	0.5599
+synth/Drums[Eighties Punch Kit, pad 13 Shaker]/attack_rise_db	13.7221
+synth/Drums[Eighties Punch Kit, pad 13 Shaker]/decay_err_pct	3.3333
+synth/Drums[Eighties Punch Kit, pad 13 Shaker]/level_vs_kick_db	-4.7611
+synth/Drums[Eighties Punch Kit, pad 13 Shaker]/peak_dbfs	-4.0842
+synth/Drums[Eighties Punch Kit, pad 13 Shaker]/repeat_db	0.4046
+synth/Drums[Eighties Punch Kit, pad 13 Shaker]/vel_tone_least_step_oct	0.0719
+synth/Drums[Eighties Punch Kit, pad 13 Shaker]/vel_tone_oct	0.4935
+synth/Drums[Eighties Punch Kit, pad 14 Shaker]/attack_rise_db	12.6085
+synth/Drums[Eighties Punch Kit, pad 14 Shaker]/decay_err_pct	-2
+synth/Drums[Eighties Punch Kit, pad 14 Shaker]/level_vs_kick_db	-4.3567
+synth/Drums[Eighties Punch Kit, pad 14 Shaker]/peak_dbfs	-4.7022
+synth/Drums[Eighties Punch Kit, pad 14 Shaker]/repeat_db	0.7831
+synth/Drums[Eighties Punch Kit, pad 14 Shaker]/vel_tone_least_step_oct	0.0766
+synth/Drums[Eighties Punch Kit, pad 14 Shaker]/vel_tone_oct	0.5321
+synth/Drums[Eighties Punch Kit, pad 15 Conga]/attack_rise_db	10.7514
+synth/Drums[Eighties Punch Kit, pad 15 Conga]/decay_err_pct	-1.6667
+synth/Drums[Eighties Punch Kit, pad 15 Conga]/level_vs_kick_db	-2.5926
+synth/Drums[Eighties Punch Kit, pad 15 Conga]/peak_dbfs	-6.7056
+synth/Drums[Eighties Punch Kit, pad 15 Conga]/repeat_db	0.4431
+synth/Drums[Eighties Punch Kit, pad 15 Conga]/vel_tone_least_step_oct	0.0036
+synth/Drums[Eighties Punch Kit, pad 15 Conga]/vel_tone_oct	0.092
+synth/Drums[Eighties Punch Kit, pad 16 Conga]/attack_rise_db	10.5545
+synth/Drums[Eighties Punch Kit, pad 16 Conga]/decay_err_pct	-0.4
+synth/Drums[Eighties Punch Kit, pad 16 Conga]/level_vs_kick_db	-2.5945
+synth/Drums[Eighties Punch Kit, pad 16 Conga]/peak_dbfs	-5.8502
+synth/Drums[Eighties Punch Kit, pad 16 Conga]/repeat_db	0.4312
+synth/Drums[Eighties Punch Kit, pad 16 Conga]/vel_tone_least_step_oct	0.0022
+synth/Drums[Eighties Punch Kit, pad 16 Conga]/vel_tone_oct	0.0798
+synth/Drums[Eighties Punch Kit, pad 2 Snare]/attack_rise_db	11.9618
+synth/Drums[Eighties Punch Kit, pad 2 Snare]/decay_err_pct	26.9231
+synth/Drums[Eighties Punch Kit, pad 2 Snare]/level_vs_kick_db	-2.0624
+synth/Drums[Eighties Punch Kit, pad 2 Snare]/peak_dbfs	-4.9495
+synth/Drums[Eighties Punch Kit, pad 2 Snare]/repeat_db	0.4334
+synth/Drums[Eighties Punch Kit, pad 2 Snare]/vel_tone_least_step_oct	0.1743
+synth/Drums[Eighties Punch Kit, pad 2 Snare]/vel_tone_oct	1.0104
+synth/Drums[Eighties Punch Kit, pad 3 Clap]/attack_rise_db	9.9841
+synth/Drums[Eighties Punch Kit, pad 3 Clap]/decay_err_pct	15
+synth/Drums[Eighties Punch Kit, pad 3 Clap]/level_vs_kick_db	-5.7429
+synth/Drums[Eighties Punch Kit, pad 3 Clap]/peak_dbfs	-4.2973
+synth/Drums[Eighties Punch Kit, pad 3 Clap]/repeat_db	0.1706
+synth/Drums[Eighties Punch Kit, pad 3 Clap]/vel_tone_least_step_oct	0.0594
+synth/Drums[Eighties Punch Kit, pad 3 Clap]/vel_tone_oct	0.5621
+synth/Drums[Eighties Punch Kit, pad 4 Closed hat]/attack_rise_db	10.938
+synth/Drums[Eighties Punch Kit, pad 4 Closed hat]/decay_err_pct	-1.8182
+synth/Drums[Eighties Punch Kit, pad 4 Closed hat]/level_vs_kick_db	-4.3101
+synth/Drums[Eighties Punch Kit, pad 4 Closed hat]/peak_dbfs	-5.8535
+synth/Drums[Eighties Punch Kit, pad 4 Closed hat]/repeat_db	0.6402
+synth/Drums[Eighties Punch Kit, pad 4 Closed hat]/vel_tone_least_step_oct	0.0824
+synth/Drums[Eighties Punch Kit, pad 4 Closed hat]/vel_tone_oct	0.5096
+synth/Drums[Eighties Punch Kit, pad 5 Open hat]/attack_rise_db	10.7516
+synth/Drums[Eighties Punch Kit, pad 5 Open hat]/decay_err_pct	-0.3636
+synth/Drums[Eighties Punch Kit, pad 5 Open hat]/level_vs_kick_db	-3.9927
+synth/Drums[Eighties Punch Kit, pad 5 Open hat]/peak_dbfs	-8.8303
+synth/Drums[Eighties Punch Kit, pad 5 Open hat]/repeat_db	0.4386
+synth/Drums[Eighties Punch Kit, pad 5 Open hat]/vel_tone_least_step_oct	0.0788
+synth/Drums[Eighties Punch Kit, pad 5 Open hat]/vel_tone_oct	0.5154
+synth/Drums[Eighties Punch Kit, pad 6 Tom]/attack_rise_db	12.023
+synth/Drums[Eighties Punch Kit, pad 6 Tom]/decay_err_pct	-2.8333
+synth/Drums[Eighties Punch Kit, pad 6 Tom]/level_vs_kick_db	-2.8629
+synth/Drums[Eighties Punch Kit, pad 6 Tom]/peak_dbfs	-8.484
+synth/Drums[Eighties Punch Kit, pad 6 Tom]/repeat_db	0.4119
+synth/Drums[Eighties Punch Kit, pad 6 Tom]/vel_tone_least_step_oct	0.0097
+synth/Drums[Eighties Punch Kit, pad 6 Tom]/vel_tone_oct	0.1761
+synth/Drums[Eighties Punch Kit, pad 7 Tom]/attack_rise_db	10.9993
+synth/Drums[Eighties Punch Kit, pad 7 Tom]/decay_err_pct	-1.4545
+synth/Drums[Eighties Punch Kit, pad 7 Tom]/level_vs_kick_db	-2.8003
+synth/Drums[Eighties Punch Kit, pad 7 Tom]/peak_dbfs	-7.6855
+synth/Drums[Eighties Punch Kit, pad 7 Tom]/repeat_db	0.399
+synth/Drums[Eighties Punch Kit, pad 7 Tom]/vel_tone_least_step_oct	0.0105
+synth/Drums[Eighties Punch Kit, pad 7 Tom]/vel_tone_oct	0.169
+synth/Drums[Eighties Punch Kit, pad 8 Tom]/attack_rise_db	12.0818
+synth/Drums[Eighties Punch Kit, pad 8 Tom]/decay_err_pct	-0.8
+synth/Drums[Eighties Punch Kit, pad 8 Tom]/level_vs_kick_db	-2.8872
+synth/Drums[Eighties Punch Kit, pad 8 Tom]/peak_dbfs	-6.9469
+synth/Drums[Eighties Punch Kit, pad 8 Tom]/repeat_db	0.4389
+synth/Drums[Eighties Punch Kit, pad 8 Tom]/vel_tone_least_step_oct	0.0086
+synth/Drums[Eighties Punch Kit, pad 8 Tom]/vel_tone_oct	0.169
+synth/Drums[Eighties Punch Kit, pad 9 Rim]/attack_rise_db	11.9412
+synth/Drums[Eighties Punch Kit, pad 9 Rim]/decay_err_pct	-2.2222
+synth/Drums[Eighties Punch Kit, pad 9 Rim]/level_vs_kick_db	-3.3979
+synth/Drums[Eighties Punch Kit, pad 9 Rim]/peak_dbfs	-4.9617
+synth/Drums[Eighties Punch Kit, pad 9 Rim]/repeat_db	0.5696
+synth/Drums[Eighties Punch Kit, pad 9 Rim]/vel_tone_least_step_oct	0.0274
+synth/Drums[Eighties Punch Kit, pad 9 Rim]/vel_tone_oct	0.2349
 synth/Drums[Electro Kit, pad 1 Kick]/attack_rise_db	15.2059
 synth/Drums[Electro Kit, pad 1 Kick]/decay_err_pct	0.2632
 synth/Drums[Electro Kit, pad 1 Kick]/level_vs_kick_db	0
@@ -931,6 +1952,119 @@ synth/Drums[Electro Kit, pad 9 Rim]/peak_dbfs	-5.8495
 synth/Drums[Electro Kit, pad 9 Rim]/repeat_db	0.5696
 synth/Drums[Electro Kit, pad 9 Rim]/vel_tone_least_step_oct	0.0292
 synth/Drums[Electro Kit, pad 9 Rim]/vel_tone_oct	0.2417
+synth/Drums[FM Kit, pad 1 Kick]/attack_rise_db	16.3453
+synth/Drums[FM Kit, pad 1 Kick]/decay_err_pct	2.5
+synth/Drums[FM Kit, pad 1 Kick]/level_vs_kick_db	0
+synth/Drums[FM Kit, pad 1 Kick]/peak_dbfs	-8.9458
+synth/Drums[FM Kit, pad 1 Kick]/repeat_cents	4.819
+synth/Drums[FM Kit, pad 1 Kick]/repeat_db	0.5577
+synth/Drums[FM Kit, pad 1 Kick]/vel_tone_least_step_oct	0.0027
+synth/Drums[FM Kit, pad 1 Kick]/vel_tone_oct	0.032
+synth/Drums[FM Kit, pad 10 FM perc]/attack_rise_db	12.7006
+synth/Drums[FM Kit, pad 10 FM perc]/decay_err_pct	-0.6667
+synth/Drums[FM Kit, pad 10 FM perc]/level_vs_kick_db	-2.9054
+synth/Drums[FM Kit, pad 10 FM perc]/peak_dbfs	-11.5617
+synth/Drums[FM Kit, pad 10 FM perc]/repeat_db	0.564
+synth/Drums[FM Kit, pad 10 FM perc]/vel_tone_least_step_oct	0.118
+synth/Drums[FM Kit, pad 10 FM perc]/vel_tone_oct	0.8895
+synth/Drums[FM Kit, pad 11 FM perc]/attack_rise_db	11.0664
+synth/Drums[FM Kit, pad 11 FM perc]/decay_err_pct	0.1111
+synth/Drums[FM Kit, pad 11 FM perc]/level_vs_kick_db	-2.8901
+synth/Drums[FM Kit, pad 11 FM perc]/peak_dbfs	-12.0084
+synth/Drums[FM Kit, pad 11 FM perc]/repeat_db	0.5387
+synth/Drums[FM Kit, pad 11 FM perc]/vel_tone_least_step_oct	-0.321
+synth/Drums[FM Kit, pad 11 FM perc]/vel_tone_oct	0.1025
+synth/Drums[FM Kit, pad 12 FM perc]/attack_rise_db	10.6741
+synth/Drums[FM Kit, pad 12 FM perc]/decay_err_pct	0.5833
+synth/Drums[FM Kit, pad 12 FM perc]/level_vs_kick_db	-3.0502
+synth/Drums[FM Kit, pad 12 FM perc]/peak_dbfs	-12.9984
+synth/Drums[FM Kit, pad 12 FM perc]/repeat_db	0.5567
+synth/Drums[FM Kit, pad 12 FM perc]/vel_tone_least_step_oct	0.3843
+synth/Drums[FM Kit, pad 12 FM perc]/vel_tone_oct	1.4541
+synth/Drums[FM Kit, pad 13 FM perc]/attack_rise_db	10.5372
+synth/Drums[FM Kit, pad 13 FM perc]/decay_err_pct	0
+synth/Drums[FM Kit, pad 13 FM perc]/level_vs_kick_db	-2.8587
+synth/Drums[FM Kit, pad 13 FM perc]/peak_dbfs	-8.2196
+synth/Drums[FM Kit, pad 13 FM perc]/repeat_db	0.594
+synth/Drums[FM Kit, pad 13 FM perc]/vel_tone_least_step_oct	0.0059
+synth/Drums[FM Kit, pad 13 FM perc]/vel_tone_oct	0.0501
+synth/Drums[FM Kit, pad 14 FM perc]/attack_rise_db	11.3742
+synth/Drums[FM Kit, pad 14 FM perc]/decay_err_pct	0.8889
+synth/Drums[FM Kit, pad 14 FM perc]/level_vs_kick_db	-3.215
+synth/Drums[FM Kit, pad 14 FM perc]/peak_dbfs	-12.5596
+synth/Drums[FM Kit, pad 14 FM perc]/repeat_db	0.5729
+synth/Drums[FM Kit, pad 14 FM perc]/vel_tone_least_step_oct	-0.0013
+synth/Drums[FM Kit, pad 14 FM perc]/vel_tone_oct	-0.0023
+synth/Drums[FM Kit, pad 15 FM perc]/attack_rise_db	15.1918
+synth/Drums[FM Kit, pad 15 FM perc]/decay_err_pct	2
+synth/Drums[FM Kit, pad 15 FM perc]/level_vs_kick_db	-2.9623
+synth/Drums[FM Kit, pad 15 FM perc]/peak_dbfs	-10.5143
+synth/Drums[FM Kit, pad 15 FM perc]/repeat_db	0.5401
+synth/Drums[FM Kit, pad 15 FM perc]/vel_tone_least_step_oct	0.0108
+synth/Drums[FM Kit, pad 15 FM perc]/vel_tone_oct	0.1408
+synth/Drums[FM Kit, pad 16 FM perc]/attack_rise_db	12.0608
+synth/Drums[FM Kit, pad 16 FM perc]/decay_err_pct	-1.3333
+synth/Drums[FM Kit, pad 16 FM perc]/level_vs_kick_db	-3.2573
+synth/Drums[FM Kit, pad 16 FM perc]/peak_dbfs	-12.0591
+synth/Drums[FM Kit, pad 16 FM perc]/repeat_db	0.5557
+synth/Drums[FM Kit, pad 16 FM perc]/vel_tone_least_step_oct	0.0523
+synth/Drums[FM Kit, pad 16 FM perc]/vel_tone_oct	0.6414
+synth/Drums[FM Kit, pad 2 FM perc]/attack_rise_db	14.784
+synth/Drums[FM Kit, pad 2 FM perc]/decay_err_pct	0.4545
+synth/Drums[FM Kit, pad 2 FM perc]/level_vs_kick_db	-2.95
+synth/Drums[FM Kit, pad 2 FM perc]/peak_dbfs	-10.1543
+synth/Drums[FM Kit, pad 2 FM perc]/repeat_db	0.5633
+synth/Drums[FM Kit, pad 2 FM perc]/vel_tone_least_step_oct	0.0126
+synth/Drums[FM Kit, pad 2 FM perc]/vel_tone_oct	0.1435
+synth/Drums[FM Kit, pad 3 Clap]/attack_rise_db	10.1344
+synth/Drums[FM Kit, pad 3 Clap]/decay_err_pct	5.3571
+synth/Drums[FM Kit, pad 3 Clap]/level_vs_kick_db	-4.2478
+synth/Drums[FM Kit, pad 3 Clap]/peak_dbfs	-3.216
+synth/Drums[FM Kit, pad 3 Clap]/repeat_db	0.7424
+synth/Drums[FM Kit, pad 3 Clap]/vel_tone_least_step_oct	0.0936
+synth/Drums[FM Kit, pad 3 Clap]/vel_tone_oct	0.521
+synth/Drums[FM Kit, pad 4 FM perc]/attack_rise_db	10.3776
+synth/Drums[FM Kit, pad 4 FM perc]/decay_err_pct	0
+synth/Drums[FM Kit, pad 4 FM perc]/level_vs_kick_db	-2.9502
+synth/Drums[FM Kit, pad 4 FM perc]/peak_dbfs	-5.4154
+synth/Drums[FM Kit, pad 4 FM perc]/repeat_db	0.6822
+synth/Drums[FM Kit, pad 4 FM perc]/vel_tone_least_step_oct	0.3509
+synth/Drums[FM Kit, pad 4 FM perc]/vel_tone_oct	1.3607
+synth/Drums[FM Kit, pad 5 FM perc]/attack_rise_db	10.463
+synth/Drums[FM Kit, pad 5 FM perc]/decay_err_pct	0
+synth/Drums[FM Kit, pad 5 FM perc]/level_vs_kick_db	-2.8819
+synth/Drums[FM Kit, pad 5 FM perc]/peak_dbfs	-11.0103
+synth/Drums[FM Kit, pad 5 FM perc]/repeat_db	0.6253
+synth/Drums[FM Kit, pad 5 FM perc]/vel_tone_least_step_oct	0.3379
+synth/Drums[FM Kit, pad 5 FM perc]/vel_tone_oct	1.1473
+synth/Drums[FM Kit, pad 6 FM perc]/attack_rise_db	15.3894
+synth/Drums[FM Kit, pad 6 FM perc]/decay_err_pct	-0.5
+synth/Drums[FM Kit, pad 6 FM perc]/level_vs_kick_db	-3.0356
+synth/Drums[FM Kit, pad 6 FM perc]/peak_dbfs	-12.1161
+synth/Drums[FM Kit, pad 6 FM perc]/repeat_db	0.5695
+synth/Drums[FM Kit, pad 6 FM perc]/vel_tone_least_step_oct	0.0347
+synth/Drums[FM Kit, pad 6 FM perc]/vel_tone_oct	0.3659
+synth/Drums[FM Kit, pad 7 FM perc]/attack_rise_db	14.7667
+synth/Drums[FM Kit, pad 7 FM perc]/decay_err_pct	1.3158
+synth/Drums[FM Kit, pad 7 FM perc]/level_vs_kick_db	-3.0287
+synth/Drums[FM Kit, pad 7 FM perc]/peak_dbfs	-12.0225
+synth/Drums[FM Kit, pad 7 FM perc]/repeat_db	0.5559
+synth/Drums[FM Kit, pad 7 FM perc]/vel_tone_least_step_oct	0.035
+synth/Drums[FM Kit, pad 7 FM perc]/vel_tone_oct	0.3688
+synth/Drums[FM Kit, pad 8 FM perc]/attack_rise_db	14.6724
+synth/Drums[FM Kit, pad 8 FM perc]/decay_err_pct	1.1429
+synth/Drums[FM Kit, pad 8 FM perc]/level_vs_kick_db	-3.08
+synth/Drums[FM Kit, pad 8 FM perc]/peak_dbfs	-12.0376
+synth/Drums[FM Kit, pad 8 FM perc]/repeat_db	0.5707
+synth/Drums[FM Kit, pad 8 FM perc]/vel_tone_least_step_oct	0.0356
+synth/Drums[FM Kit, pad 8 FM perc]/vel_tone_oct	0.3737
+synth/Drums[FM Kit, pad 9 FM perc]/attack_rise_db	14.2136
+synth/Drums[FM Kit, pad 9 FM perc]/decay_err_pct	-1.6667
+synth/Drums[FM Kit, pad 9 FM perc]/level_vs_kick_db	-3.0961
+synth/Drums[FM Kit, pad 9 FM perc]/peak_dbfs	-9.538
+synth/Drums[FM Kit, pad 9 FM perc]/repeat_db	0.5745
+synth/Drums[FM Kit, pad 9 FM perc]/vel_tone_least_step_oct	0.0064
+synth/Drums[FM Kit, pad 9 FM perc]/vel_tone_oct	0.181
 synth/Drums[Grit Kit, pad 1 Kick]/attack_rise_db	11.1471
 synth/Drums[Grit Kit, pad 1 Kick]/decay_err_pct	0
 synth/Drums[Grit Kit, pad 1 Kick]/level_vs_kick_db	0
@@ -1044,6 +2178,349 @@ synth/Drums[Grit Kit, pad 9 Rim]/peak_dbfs	-8.8495
 synth/Drums[Grit Kit, pad 9 Rim]/repeat_db	0.5696
 synth/Drums[Grit Kit, pad 9 Rim]/vel_tone_least_step_oct	0.0292
 synth/Drums[Grit Kit, pad 9 Rim]/vel_tone_oct	0.2417
+synth/Drums[Hardstyle Kit, pad 1 Kick]/attack_rise_db	4.3924
+synth/Drums[Hardstyle Kit, pad 1 Kick]/decay_err_pct	8.2857
+synth/Drums[Hardstyle Kit, pad 1 Kick]/level_vs_kick_db	0
+synth/Drums[Hardstyle Kit, pad 1 Kick]/peak_dbfs	-13.5309
+synth/Drums[Hardstyle Kit, pad 1 Kick]/repeat_cents	4.8177
+synth/Drums[Hardstyle Kit, pad 1 Kick]/repeat_db	0.0003
+synth/Drums[Hardstyle Kit, pad 1 Kick]/vel_tone_least_step_oct	0.114
+synth/Drums[Hardstyle Kit, pad 1 Kick]/vel_tone_oct	0.8703
+synth/Drums[Hardstyle Kit, pad 10 Cymbal]/attack_rise_db	6.6916
+synth/Drums[Hardstyle Kit, pad 10 Cymbal]/decay_err_pct	-4.5556
+synth/Drums[Hardstyle Kit, pad 10 Cymbal]/level_vs_kick_db	-4.4146
+synth/Drums[Hardstyle Kit, pad 10 Cymbal]/peak_dbfs	-7.0691
+synth/Drums[Hardstyle Kit, pad 10 Cymbal]/repeat_db	0.83
+synth/Drums[Hardstyle Kit, pad 10 Cymbal]/vel_tone_least_step_oct	0.0978
+synth/Drums[Hardstyle Kit, pad 10 Cymbal]/vel_tone_oct	0.4891
+synth/Drums[Hardstyle Kit, pad 11 Cymbal]/attack_rise_db	9.5089
+synth/Drums[Hardstyle Kit, pad 11 Cymbal]/decay_err_pct	-0.7667
+synth/Drums[Hardstyle Kit, pad 11 Cymbal]/level_vs_kick_db	-3.7225
+synth/Drums[Hardstyle Kit, pad 11 Cymbal]/peak_dbfs	-7.2249
+synth/Drums[Hardstyle Kit, pad 11 Cymbal]/repeat_db	0.6163
+synth/Drums[Hardstyle Kit, pad 11 Cymbal]/vel_tone_least_step_oct	0.0775
+synth/Drums[Hardstyle Kit, pad 11 Cymbal]/vel_tone_oct	0.4337
+synth/Drums[Hardstyle Kit, pad 12 Zap]/attack_rise_db	12.4445
+synth/Drums[Hardstyle Kit, pad 12 Zap]/decay_err_pct	-0.3333
+synth/Drums[Hardstyle Kit, pad 12 Zap]/level_vs_kick_db	-2.9012
+synth/Drums[Hardstyle Kit, pad 12 Zap]/peak_dbfs	-13.5417
+synth/Drums[Hardstyle Kit, pad 12 Zap]/repeat_db	0.5663
+synth/Drums[Hardstyle Kit, pad 12 Zap]/vel_tone_least_step_oct	0.0316
+synth/Drums[Hardstyle Kit, pad 12 Zap]/vel_tone_oct	0.2739
+synth/Drums[Hardstyle Kit, pad 13 FM perc]/attack_rise_db	13.4779
+synth/Drums[Hardstyle Kit, pad 13 FM perc]/decay_err_pct	3.5
+synth/Drums[Hardstyle Kit, pad 13 FM perc]/level_vs_kick_db	-3.1514
+synth/Drums[Hardstyle Kit, pad 13 FM perc]/peak_dbfs	-11.0866
+synth/Drums[Hardstyle Kit, pad 13 FM perc]/repeat_db	0.5754
+synth/Drums[Hardstyle Kit, pad 13 FM perc]/vel_tone_least_step_oct	0.0328
+synth/Drums[Hardstyle Kit, pad 13 FM perc]/vel_tone_oct	0.2678
+synth/Drums[Hardstyle Kit, pad 14 Kick]/attack_rise_db	15.9631
+synth/Drums[Hardstyle Kit, pad 14 Kick]/decay_err_pct	0.25
+synth/Drums[Hardstyle Kit, pad 14 Kick]/level_vs_kick_db	-0.8507
+synth/Drums[Hardstyle Kit, pad 14 Kick]/peak_dbfs	-11.1698
+synth/Drums[Hardstyle Kit, pad 14 Kick]/repeat_cents	4.7848
+synth/Drums[Hardstyle Kit, pad 14 Kick]/repeat_db	0.5705
+synth/Drums[Hardstyle Kit, pad 14 Kick]/vel_tone_least_step_oct	0.0082
+synth/Drums[Hardstyle Kit, pad 14 Kick]/vel_tone_oct	0.2195
+synth/Drums[Hardstyle Kit, pad 15 Shaker]/attack_rise_db	14.1053
+synth/Drums[Hardstyle Kit, pad 15 Shaker]/decay_err_pct	1.6667
+synth/Drums[Hardstyle Kit, pad 15 Shaker]/level_vs_kick_db	-4.8416
+synth/Drums[Hardstyle Kit, pad 15 Shaker]/peak_dbfs	-4.1079
+synth/Drums[Hardstyle Kit, pad 15 Shaker]/repeat_db	0.3389
+synth/Drums[Hardstyle Kit, pad 15 Shaker]/vel_tone_least_step_oct	0.0718
+synth/Drums[Hardstyle Kit, pad 15 Shaker]/vel_tone_oct	0.4899
+synth/Drums[Hardstyle Kit, pad 16 Kick]/attack_rise_db	9.9791
+synth/Drums[Hardstyle Kit, pad 16 Kick]/decay_err_pct	6
+synth/Drums[Hardstyle Kit, pad 16 Kick]/level_vs_kick_db	-1.0246
+synth/Drums[Hardstyle Kit, pad 16 Kick]/peak_dbfs	-14.5309
+synth/Drums[Hardstyle Kit, pad 16 Kick]/repeat_cents	4.8026
+synth/Drums[Hardstyle Kit, pad 16 Kick]/repeat_db	0.009
+synth/Drums[Hardstyle Kit, pad 16 Kick]/vel_tone_least_step_oct	0.0744
+synth/Drums[Hardstyle Kit, pad 16 Kick]/vel_tone_oct	0.876
+synth/Drums[Hardstyle Kit, pad 2 Snare]/attack_rise_db	10.6425
+synth/Drums[Hardstyle Kit, pad 2 Snare]/decay_err_pct	188.4
+synth/Drums[Hardstyle Kit, pad 2 Snare]/level_vs_kick_db	-2.4985
+synth/Drums[Hardstyle Kit, pad 2 Snare]/peak_dbfs	-8.2183
+synth/Drums[Hardstyle Kit, pad 2 Snare]/repeat_db	0.4184
+synth/Drums[Hardstyle Kit, pad 2 Snare]/vel_tone_least_step_oct	0.0921
+synth/Drums[Hardstyle Kit, pad 2 Snare]/vel_tone_oct	0.5504
+synth/Drums[Hardstyle Kit, pad 3 Clap]/attack_rise_db	9.3556
+synth/Drums[Hardstyle Kit, pad 3 Clap]/decay_err_pct	118.2222
+synth/Drums[Hardstyle Kit, pad 3 Clap]/level_vs_kick_db	-3.494
+synth/Drums[Hardstyle Kit, pad 3 Clap]/peak_dbfs	-4.5137
+synth/Drums[Hardstyle Kit, pad 3 Clap]/repeat_db	0.3774
+synth/Drums[Hardstyle Kit, pad 3 Clap]/vel_tone_least_step_oct	0.0898
+synth/Drums[Hardstyle Kit, pad 3 Clap]/vel_tone_oct	0.5328
+synth/Drums[Hardstyle Kit, pad 4 Closed hat]/attack_rise_db	10.3678
+synth/Drums[Hardstyle Kit, pad 4 Closed hat]/decay_err_pct	-2
+synth/Drums[Hardstyle Kit, pad 4 Closed hat]/level_vs_kick_db	-4.709
+synth/Drums[Hardstyle Kit, pad 4 Closed hat]/peak_dbfs	-4.3291
+synth/Drums[Hardstyle Kit, pad 4 Closed hat]/repeat_db	1.3314
+synth/Drums[Hardstyle Kit, pad 4 Closed hat]/vel_tone_least_step_oct	0.0998
+synth/Drums[Hardstyle Kit, pad 4 Closed hat]/vel_tone_oct	0.5463
+synth/Drums[Hardstyle Kit, pad 5 Open hat]/attack_rise_db	10.2137
+synth/Drums[Hardstyle Kit, pad 5 Open hat]/decay_err_pct	-1.6667
+synth/Drums[Hardstyle Kit, pad 5 Open hat]/level_vs_kick_db	-3.8438
+synth/Drums[Hardstyle Kit, pad 5 Open hat]/peak_dbfs	-7.1567
+synth/Drums[Hardstyle Kit, pad 5 Open hat]/repeat_db	0.6586
+synth/Drums[Hardstyle Kit, pad 5 Open hat]/vel_tone_least_step_oct	0.0932
+synth/Drums[Hardstyle Kit, pad 5 Open hat]/vel_tone_oct	0.5572
+synth/Drums[Hardstyle Kit, pad 6 Tom]/attack_rise_db	13.5896
+synth/Drums[Hardstyle Kit, pad 6 Tom]/decay_err_pct	-1.5556
+synth/Drums[Hardstyle Kit, pad 6 Tom]/level_vs_kick_db	-3.1089
+synth/Drums[Hardstyle Kit, pad 6 Tom]/peak_dbfs	-5.941
+synth/Drums[Hardstyle Kit, pad 6 Tom]/repeat_db	0.3776
+synth/Drums[Hardstyle Kit, pad 6 Tom]/vel_tone_least_step_oct	0.0073
+synth/Drums[Hardstyle Kit, pad 6 Tom]/vel_tone_oct	0.1244
+synth/Drums[Hardstyle Kit, pad 7 Tom]/attack_rise_db	13.1758
+synth/Drums[Hardstyle Kit, pad 7 Tom]/decay_err_pct	-0.4762
+synth/Drums[Hardstyle Kit, pad 7 Tom]/level_vs_kick_db	-2.9419
+synth/Drums[Hardstyle Kit, pad 7 Tom]/peak_dbfs	-4.5222
+synth/Drums[Hardstyle Kit, pad 7 Tom]/repeat_db	0.4099
+synth/Drums[Hardstyle Kit, pad 7 Tom]/vel_tone_least_step_oct	0.0066
+synth/Drums[Hardstyle Kit, pad 7 Tom]/vel_tone_oct	0.123
+synth/Drums[Hardstyle Kit, pad 8 Tom]/attack_rise_db	12.721
+synth/Drums[Hardstyle Kit, pad 8 Tom]/decay_err_pct	1
+synth/Drums[Hardstyle Kit, pad 8 Tom]/level_vs_kick_db	-2.935
+synth/Drums[Hardstyle Kit, pad 8 Tom]/peak_dbfs	-4.1135
+synth/Drums[Hardstyle Kit, pad 8 Tom]/repeat_db	0.3885
+synth/Drums[Hardstyle Kit, pad 8 Tom]/vel_tone_least_step_oct	0.0057
+synth/Drums[Hardstyle Kit, pad 8 Tom]/vel_tone_oct	0.1205
+synth/Drums[Hardstyle Kit, pad 9 Rim]/attack_rise_db	11.9596
+synth/Drums[Hardstyle Kit, pad 9 Rim]/decay_err_pct	-3.3333
+synth/Drums[Hardstyle Kit, pad 9 Rim]/level_vs_kick_db	-3.3535
+synth/Drums[Hardstyle Kit, pad 9 Rim]/peak_dbfs	-5.2753
+synth/Drums[Hardstyle Kit, pad 9 Rim]/repeat_db	0.5644
+synth/Drums[Hardstyle Kit, pad 9 Rim]/vel_tone_least_step_oct	0.0297
+synth/Drums[Hardstyle Kit, pad 9 Rim]/vel_tone_oct	0.2541
+synth/Drums[House Kit, pad 1 Kick]/attack_rise_db	16.7271
+synth/Drums[House Kit, pad 1 Kick]/decay_err_pct	-2.4444
+synth/Drums[House Kit, pad 1 Kick]/level_vs_kick_db	0
+synth/Drums[House Kit, pad 1 Kick]/peak_dbfs	-9.2571
+synth/Drums[House Kit, pad 1 Kick]/repeat_cents	4.8191
+synth/Drums[House Kit, pad 1 Kick]/repeat_db	0.5543
+synth/Drums[House Kit, pad 1 Kick]/vel_tone_least_step_oct	0.0054
+synth/Drums[House Kit, pad 1 Kick]/vel_tone_oct	0.1033
+synth/Drums[House Kit, pad 10 Cymbal]/attack_rise_db	6.0959
+synth/Drums[House Kit, pad 10 Cymbal]/decay_err_pct	-12
+synth/Drums[House Kit, pad 10 Cymbal]/level_vs_kick_db	-4.1977
+synth/Drums[House Kit, pad 10 Cymbal]/peak_dbfs	-4.9284
+synth/Drums[House Kit, pad 10 Cymbal]/repeat_db	0.6401
+synth/Drums[House Kit, pad 10 Cymbal]/vel_tone_least_step_oct	0.0619
+synth/Drums[House Kit, pad 10 Cymbal]/vel_tone_oct	0.3206
+synth/Drums[House Kit, pad 11 Cymbal]/attack_rise_db	9.277
+synth/Drums[House Kit, pad 11 Cymbal]/decay_err_pct	-0.9286
+synth/Drums[House Kit, pad 11 Cymbal]/level_vs_kick_db	-4.1172
+synth/Drums[House Kit, pad 11 Cymbal]/peak_dbfs	-8.2539
+synth/Drums[House Kit, pad 11 Cymbal]/repeat_db	0.611
+synth/Drums[House Kit, pad 11 Cymbal]/vel_tone_least_step_oct	0.0932
+synth/Drums[House Kit, pad 11 Cymbal]/vel_tone_oct	0.5135
+synth/Drums[House Kit, pad 12 Shaker]/attack_rise_db	13.9497
+synth/Drums[House Kit, pad 12 Shaker]/decay_err_pct	2
+synth/Drums[House Kit, pad 12 Shaker]/level_vs_kick_db	-4.8953
+synth/Drums[House Kit, pad 12 Shaker]/peak_dbfs	-4.7094
+synth/Drums[House Kit, pad 12 Shaker]/repeat_db	0.1727
+synth/Drums[House Kit, pad 12 Shaker]/vel_tone_least_step_oct	0.0703
+synth/Drums[House Kit, pad 12 Shaker]/vel_tone_oct	0.4868
+synth/Drums[House Kit, pad 13 Cowbell]/attack_rise_db	9.358
+synth/Drums[House Kit, pad 13 Cowbell]/decay_err_pct	5.3333
+synth/Drums[House Kit, pad 13 Cowbell]/level_vs_kick_db	-3.8825
+synth/Drums[House Kit, pad 13 Cowbell]/peak_dbfs	-4.6023
+synth/Drums[House Kit, pad 13 Cowbell]/repeat_db	0.5787
+synth/Drums[House Kit, pad 13 Cowbell]/vel_tone_least_step_oct	0.0553
+synth/Drums[House Kit, pad 13 Cowbell]/vel_tone_oct	0.2957
+synth/Drums[House Kit, pad 14 Kick]/attack_rise_db	16.099
+synth/Drums[House Kit, pad 14 Kick]/decay_err_pct	2.1538
+synth/Drums[House Kit, pad 14 Kick]/level_vs_kick_db	-1.1831
+synth/Drums[House Kit, pad 14 Kick]/peak_dbfs	-12.4331
+synth/Drums[House Kit, pad 14 Kick]/repeat_cents	4.8016
+synth/Drums[House Kit, pad 14 Kick]/repeat_db	0.5557
+synth/Drums[House Kit, pad 14 Kick]/vel_tone_least_step_oct	0.0063
+synth/Drums[House Kit, pad 14 Kick]/vel_tone_oct	0.0798
+synth/Drums[House Kit, pad 15 Clap]/attack_rise_db	11.1853
+synth/Drums[House Kit, pad 15 Clap]/decay_err_pct	8.0769
+synth/Drums[House Kit, pad 15 Clap]/level_vs_kick_db	-5.7315
+synth/Drums[House Kit, pad 15 Clap]/peak_dbfs	-3.1653
+synth/Drums[House Kit, pad 15 Clap]/repeat_db	0.6621
+synth/Drums[House Kit, pad 15 Clap]/vel_tone_least_step_oct	0.0951
+synth/Drums[House Kit, pad 15 Clap]/vel_tone_oct	0.6309
+synth/Drums[House Kit, pad 16 FM perc]/attack_rise_db	10.3106
+synth/Drums[House Kit, pad 16 FM perc]/decay_err_pct	5
+synth/Drums[House Kit, pad 16 FM perc]/level_vs_kick_db	-3.1982
+synth/Drums[House Kit, pad 16 FM perc]/peak_dbfs	-12.0503
+synth/Drums[House Kit, pad 16 FM perc]/repeat_db	0.5851
+synth/Drums[House Kit, pad 16 FM perc]/vel_tone_least_step_oct	0.0156
+synth/Drums[House Kit, pad 16 FM perc]/vel_tone_oct	0.116
+synth/Drums[House Kit, pad 2 Snare]/attack_rise_db	12.2863
+synth/Drums[House Kit, pad 2 Snare]/decay_err_pct	1.5
+synth/Drums[House Kit, pad 2 Snare]/level_vs_kick_db	-2.7848
+synth/Drums[House Kit, pad 2 Snare]/peak_dbfs	-5.5111
+synth/Drums[House Kit, pad 2 Snare]/repeat_db	0.3326
+synth/Drums[House Kit, pad 2 Snare]/vel_tone_least_step_oct	0.0925
+synth/Drums[House Kit, pad 2 Snare]/vel_tone_oct	0.5556
+synth/Drums[House Kit, pad 3 Clap]/attack_rise_db	10.216
+synth/Drums[House Kit, pad 3 Clap]/decay_err_pct	74.8571
+synth/Drums[House Kit, pad 3 Clap]/level_vs_kick_db	-5.5577
+synth/Drums[House Kit, pad 3 Clap]/peak_dbfs	-4.8648
+synth/Drums[House Kit, pad 3 Clap]/repeat_db	0.4502
+synth/Drums[House Kit, pad 3 Clap]/vel_tone_least_step_oct	0.0966
+synth/Drums[House Kit, pad 3 Clap]/vel_tone_oct	0.5306
+synth/Drums[House Kit, pad 4 Closed hat]/attack_rise_db	9.8611
+synth/Drums[House Kit, pad 4 Closed hat]/decay_err_pct	-1.4286
+synth/Drums[House Kit, pad 4 Closed hat]/level_vs_kick_db	-4.5949
+synth/Drums[House Kit, pad 4 Closed hat]/peak_dbfs	-6.6869
+synth/Drums[House Kit, pad 4 Closed hat]/repeat_db	0.2382
+synth/Drums[House Kit, pad 4 Closed hat]/vel_tone_least_step_oct	0.1004
+synth/Drums[House Kit, pad 4 Closed hat]/vel_tone_oct	0.5627
+synth/Drums[House Kit, pad 5 Open hat]/attack_rise_db	9.69
+synth/Drums[House Kit, pad 5 Open hat]/decay_err_pct	1.1538
+synth/Drums[House Kit, pad 5 Open hat]/level_vs_kick_db	-4.1995
+synth/Drums[House Kit, pad 5 Open hat]/peak_dbfs	-8.5148
+synth/Drums[House Kit, pad 5 Open hat]/repeat_db	0.329
+synth/Drums[House Kit, pad 5 Open hat]/vel_tone_least_step_oct	0.0954
+synth/Drums[House Kit, pad 5 Open hat]/vel_tone_oct	0.55
+synth/Drums[House Kit, pad 6 Conga]/attack_rise_db	10.6098
+synth/Drums[House Kit, pad 6 Conga]/decay_err_pct	-1.6667
+synth/Drums[House Kit, pad 6 Conga]/level_vs_kick_db	-3.3531
+synth/Drums[House Kit, pad 6 Conga]/peak_dbfs	-8.5924
+synth/Drums[House Kit, pad 6 Conga]/repeat_db	0.4586
+synth/Drums[House Kit, pad 6 Conga]/vel_tone_least_step_oct	0.0029
+synth/Drums[House Kit, pad 6 Conga]/vel_tone_oct	0.0799
+synth/Drums[House Kit, pad 7 Conga]/attack_rise_db	10.8168
+synth/Drums[House Kit, pad 7 Conga]/decay_err_pct	0
+synth/Drums[House Kit, pad 7 Conga]/level_vs_kick_db	-3.4138
+synth/Drums[House Kit, pad 7 Conga]/peak_dbfs	-7.4394
+synth/Drums[House Kit, pad 7 Conga]/repeat_db	0.4692
+synth/Drums[House Kit, pad 7 Conga]/vel_tone_least_step_oct	0.0017
+synth/Drums[House Kit, pad 7 Conga]/vel_tone_oct	0.0662
+synth/Drums[House Kit, pad 8 Tom]/attack_rise_db	12.4229
+synth/Drums[House Kit, pad 8 Tom]/decay_err_pct	0.5263
+synth/Drums[House Kit, pad 8 Tom]/level_vs_kick_db	-3.0117
+synth/Drums[House Kit, pad 8 Tom]/peak_dbfs	-6.995
+synth/Drums[House Kit, pad 8 Tom]/repeat_db	1.0067
+synth/Drums[House Kit, pad 8 Tom]/vel_tone_least_step_oct	0.0051
+synth/Drums[House Kit, pad 8 Tom]/vel_tone_oct	0.097
+synth/Drums[House Kit, pad 9 Rim]/attack_rise_db	11.9261
+synth/Drums[House Kit, pad 9 Rim]/decay_err_pct	797.7778
+synth/Drums[House Kit, pad 9 Rim]/level_vs_kick_db	-3.5946
+synth/Drums[House Kit, pad 9 Rim]/peak_dbfs	-4.5518
+synth/Drums[House Kit, pad 9 Rim]/repeat_db	0.5644
+synth/Drums[House Kit, pad 9 Rim]/vel_tone_least_step_oct	0.0262
+synth/Drums[House Kit, pad 9 Rim]/vel_tone_oct	0.1904
+synth/Drums[Industrial Kit, pad 1 Kick]/attack_rise_db	7.5944
+synth/Drums[Industrial Kit, pad 1 Kick]/decay_err_pct	4
+synth/Drums[Industrial Kit, pad 1 Kick]/level_vs_kick_db	0
+synth/Drums[Industrial Kit, pad 1 Kick]/peak_dbfs	-12.9605
+synth/Drums[Industrial Kit, pad 1 Kick]/repeat_cents	1026.8152
+synth/Drums[Industrial Kit, pad 1 Kick]/repeat_db	0.032
+synth/Drums[Industrial Kit, pad 1 Kick]/vel_tone_least_step_oct	0.0296
+synth/Drums[Industrial Kit, pad 1 Kick]/vel_tone_oct	0.6096
+synth/Drums[Industrial Kit, pad 10 FM perc]/attack_rise_db	6.8386
+synth/Drums[Industrial Kit, pad 10 FM perc]/decay_err_pct	5.4
+synth/Drums[Industrial Kit, pad 10 FM perc]/level_vs_kick_db	-2.7379
+synth/Drums[Industrial Kit, pad 10 FM perc]/peak_dbfs	-7.7625
+synth/Drums[Industrial Kit, pad 10 FM perc]/repeat_db	0.5727
+synth/Drums[Industrial Kit, pad 10 FM perc]/vel_tone_least_step_oct	0.2833
+synth/Drums[Industrial Kit, pad 10 FM perc]/vel_tone_oct	1.1276
+synth/Drums[Industrial Kit, pad 11 Cymbal]/attack_rise_db	8.4469
+synth/Drums[Industrial Kit, pad 11 Cymbal]/decay_err_pct	0.56
+synth/Drums[Industrial Kit, pad 11 Cymbal]/level_vs_kick_db	-4.0325
+synth/Drums[Industrial Kit, pad 11 Cymbal]/peak_dbfs	-8.4321
+synth/Drums[Industrial Kit, pad 11 Cymbal]/repeat_db	0.6041
+synth/Drums[Industrial Kit, pad 11 Cymbal]/vel_tone_least_step_oct	0.0706
+synth/Drums[Industrial Kit, pad 11 Cymbal]/vel_tone_oct	0.2737
+synth/Drums[Industrial Kit, pad 12 Zap]/attack_rise_db	12.4075
+synth/Drums[Industrial Kit, pad 12 Zap]/decay_err_pct	-4.75
+synth/Drums[Industrial Kit, pad 12 Zap]/level_vs_kick_db	-2.7754
+synth/Drums[Industrial Kit, pad 12 Zap]/peak_dbfs	-13.3775
+synth/Drums[Industrial Kit, pad 12 Zap]/repeat_db	0.5607
+synth/Drums[Industrial Kit, pad 12 Zap]/vel_tone_least_step_oct	0.0053
+synth/Drums[Industrial Kit, pad 12 Zap]/vel_tone_oct	0.1614
+synth/Drums[Industrial Kit, pad 13 Tom]/attack_rise_db	14.3861
+synth/Drums[Industrial Kit, pad 13 Tom]/decay_err_pct	-4.75
+synth/Drums[Industrial Kit, pad 13 Tom]/level_vs_kick_db	-2.9845
+synth/Drums[Industrial Kit, pad 13 Tom]/peak_dbfs	-6.3559
+synth/Drums[Industrial Kit, pad 13 Tom]/repeat_db	0.6058
+synth/Drums[Industrial Kit, pad 13 Tom]/vel_tone_least_step_oct	0.0091
+synth/Drums[Industrial Kit, pad 13 Tom]/vel_tone_oct	0.2518
+synth/Drums[Industrial Kit, pad 14 Kick]/attack_rise_db	12.591
+synth/Drums[Industrial Kit, pad 14 Kick]/decay_err_pct	-2.1667
+synth/Drums[Industrial Kit, pad 14 Kick]/level_vs_kick_db	-0.9957
+synth/Drums[Industrial Kit, pad 14 Kick]/peak_dbfs	-13.5978
+synth/Drums[Industrial Kit, pad 14 Kick]/repeat_cents	4.9163
+synth/Drums[Industrial Kit, pad 14 Kick]/repeat_db	0.5716
+synth/Drums[Industrial Kit, pad 14 Kick]/vel_tone_least_step_oct	0.0117
+synth/Drums[Industrial Kit, pad 14 Kick]/vel_tone_oct	0.3281
+synth/Drums[Industrial Kit, pad 15 Bell]/attack_rise_db	7.9036
+synth/Drums[Industrial Kit, pad 15 Bell]/decay_err_pct	-3.5
+synth/Drums[Industrial Kit, pad 15 Bell]/level_vs_kick_db	-4.412
+synth/Drums[Industrial Kit, pad 15 Bell]/peak_dbfs	-9.1086
+synth/Drums[Industrial Kit, pad 15 Bell]/repeat_db	0.5504
+synth/Drums[Industrial Kit, pad 15 Bell]/vel_tone_least_step_oct	0.0031
+synth/Drums[Industrial Kit, pad 15 Bell]/vel_tone_oct	0.1555
+synth/Drums[Industrial Kit, pad 16 Snare]/attack_rise_db	6.7027
+synth/Drums[Industrial Kit, pad 16 Snare]/decay_err_pct	-1
+synth/Drums[Industrial Kit, pad 16 Snare]/level_vs_kick_db	-2.2694
+synth/Drums[Industrial Kit, pad 16 Snare]/peak_dbfs	-7.7899
+synth/Drums[Industrial Kit, pad 16 Snare]/repeat_db	0.9493
+synth/Drums[Industrial Kit, pad 16 Snare]/vel_tone_least_step_oct	0.1012
+synth/Drums[Industrial Kit, pad 16 Snare]/vel_tone_oct	0.6767
+synth/Drums[Industrial Kit, pad 2 Snare]/attack_rise_db	5.3926
+synth/Drums[Industrial Kit, pad 2 Snare]/decay_err_pct	51.6667
+synth/Drums[Industrial Kit, pad 2 Snare]/level_vs_kick_db	-2.6149
+synth/Drums[Industrial Kit, pad 2 Snare]/peak_dbfs	-8.9268
+synth/Drums[Industrial Kit, pad 2 Snare]/repeat_db	0.5292
+synth/Drums[Industrial Kit, pad 2 Snare]/vel_tone_least_step_oct	0.1304
+synth/Drums[Industrial Kit, pad 2 Snare]/vel_tone_oct	0.8419
+synth/Drums[Industrial Kit, pad 3 Clap]/attack_rise_db	7.3773
+synth/Drums[Industrial Kit, pad 3 Clap]/decay_err_pct	6.25
+synth/Drums[Industrial Kit, pad 3 Clap]/level_vs_kick_db	-3.0451
+synth/Drums[Industrial Kit, pad 3 Clap]/peak_dbfs	-6.6786
+synth/Drums[Industrial Kit, pad 3 Clap]/repeat_db	1.3028
+synth/Drums[Industrial Kit, pad 3 Clap]/vel_tone_least_step_oct	0.1018
+synth/Drums[Industrial Kit, pad 3 Clap]/vel_tone_oct	0.7494
+synth/Drums[Industrial Kit, pad 4 Closed hat]/attack_rise_db	11.1199
+synth/Drums[Industrial Kit, pad 4 Closed hat]/decay_err_pct	4.4444
+synth/Drums[Industrial Kit, pad 4 Closed hat]/level_vs_kick_db	-4.6599
+synth/Drums[Industrial Kit, pad 4 Closed hat]/peak_dbfs	-5.2445
+synth/Drums[Industrial Kit, pad 4 Closed hat]/repeat_db	0.0937
+synth/Drums[Industrial Kit, pad 4 Closed hat]/vel_tone_least_step_oct	0.0558
+synth/Drums[Industrial Kit, pad 4 Closed hat]/vel_tone_oct	0.2015
+synth/Drums[Industrial Kit, pad 5 Open hat]/attack_rise_db	10.9195
+synth/Drums[Industrial Kit, pad 5 Open hat]/decay_err_pct	4
+synth/Drums[Industrial Kit, pad 5 Open hat]/level_vs_kick_db	-3.8468
+synth/Drums[Industrial Kit, pad 5 Open hat]/peak_dbfs	-8.9971
+synth/Drums[Industrial Kit, pad 5 Open hat]/repeat_db	0.3365
+synth/Drums[Industrial Kit, pad 5 Open hat]/vel_tone_least_step_oct	0.0466
+synth/Drums[Industrial Kit, pad 5 Open hat]/vel_tone_oct	0.1777
+synth/Drums[Industrial Kit, pad 6 Bell]/attack_rise_db	9.1682
+synth/Drums[Industrial Kit, pad 6 Bell]/decay_err_pct	-5.625
+synth/Drums[Industrial Kit, pad 6 Bell]/level_vs_kick_db	-3.6272
+synth/Drums[Industrial Kit, pad 6 Bell]/peak_dbfs	-9.8149
+synth/Drums[Industrial Kit, pad 6 Bell]/repeat_db	0.517
+synth/Drums[Industrial Kit, pad 6 Bell]/vel_tone_least_step_oct	0.0632
+synth/Drums[Industrial Kit, pad 6 Bell]/vel_tone_oct	0.2483
+synth/Drums[Industrial Kit, pad 7 Cowbell]/attack_rise_db	8.4275
+synth/Drums[Industrial Kit, pad 7 Cowbell]/decay_err_pct	7.8
+synth/Drums[Industrial Kit, pad 7 Cowbell]/level_vs_kick_db	-3.3713
+synth/Drums[Industrial Kit, pad 7 Cowbell]/peak_dbfs	-9.7556
+synth/Drums[Industrial Kit, pad 7 Cowbell]/repeat_db	0.5986
+synth/Drums[Industrial Kit, pad 7 Cowbell]/vel_tone_least_step_oct	0.0751
+synth/Drums[Industrial Kit, pad 7 Cowbell]/vel_tone_oct	0.4127
+synth/Drums[Industrial Kit, pad 8 Cymbal]/attack_rise_db	7.1165
+synth/Drums[Industrial Kit, pad 8 Cymbal]/decay_err_pct	-18.7778
+synth/Drums[Industrial Kit, pad 8 Cymbal]/level_vs_kick_db	-3.7906
+synth/Drums[Industrial Kit, pad 8 Cymbal]/peak_dbfs	-8.0276
+synth/Drums[Industrial Kit, pad 8 Cymbal]/repeat_db	0.9917
+synth/Drums[Industrial Kit, pad 8 Cymbal]/vel_tone_least_step_oct	0.1035
+synth/Drums[Industrial Kit, pad 8 Cymbal]/vel_tone_oct	0.9285
+synth/Drums[Industrial Kit, pad 9 Rim]/attack_rise_db	7.9526
+synth/Drums[Industrial Kit, pad 9 Rim]/decay_err_pct	5
+synth/Drums[Industrial Kit, pad 9 Rim]/level_vs_kick_db	-3.2723
+synth/Drums[Industrial Kit, pad 9 Rim]/peak_dbfs	-10.0375
+synth/Drums[Industrial Kit, pad 9 Rim]/repeat_db	0.5622
+synth/Drums[Industrial Kit, pad 9 Rim]/vel_tone_least_step_oct	0.094
+synth/Drums[Industrial Kit, pad 9 Rim]/vel_tone_oct	1.1725
 synth/Drums[Init Kit, pad 1 Kick]/attack_rise_db	13.908
 synth/Drums[Init Kit, pad 1 Kick]/decay_err_pct	2
 synth/Drums[Init Kit, pad 1 Kick]/level_vs_kick_db	0
@@ -1157,6 +2634,799 @@ synth/Drums[Init Kit, pad 9 Rim]/peak_dbfs	-5.8495
 synth/Drums[Init Kit, pad 9 Rim]/repeat_db	0.5696
 synth/Drums[Init Kit, pad 9 Rim]/vel_tone_least_step_oct	0.0292
 synth/Drums[Init Kit, pad 9 Rim]/vel_tone_oct	0.2417
+synth/Drums[Latin Percussion Kit, pad 1 Kick]/attack_rise_db	13.8873
+synth/Drums[Latin Percussion Kit, pad 1 Kick]/decay_err_pct	1.0526
+synth/Drums[Latin Percussion Kit, pad 1 Kick]/level_vs_kick_db	0
+synth/Drums[Latin Percussion Kit, pad 1 Kick]/peak_dbfs	-10.7649
+synth/Drums[Latin Percussion Kit, pad 1 Kick]/repeat_cents	4.8192
+synth/Drums[Latin Percussion Kit, pad 1 Kick]/repeat_db	0.5507
+synth/Drums[Latin Percussion Kit, pad 1 Kick]/vel_tone_least_step_oct	0.0029
+synth/Drums[Latin Percussion Kit, pad 1 Kick]/vel_tone_oct	0.0588
+synth/Drums[Latin Percussion Kit, pad 10 Cowbell]/attack_rise_db	9.8563
+synth/Drums[Latin Percussion Kit, pad 10 Cowbell]/decay_err_pct	5.6667
+synth/Drums[Latin Percussion Kit, pad 10 Cowbell]/level_vs_kick_db	-3.2082
+synth/Drums[Latin Percussion Kit, pad 10 Cowbell]/peak_dbfs	-4.7074
+synth/Drums[Latin Percussion Kit, pad 10 Cowbell]/repeat_db	0.5066
+synth/Drums[Latin Percussion Kit, pad 10 Cowbell]/vel_tone_least_step_oct	0.0641
+synth/Drums[Latin Percussion Kit, pad 10 Cowbell]/vel_tone_oct	0.332
+synth/Drums[Latin Percussion Kit, pad 11 Bell]/attack_rise_db	10.159
+synth/Drums[Latin Percussion Kit, pad 11 Bell]/decay_err_pct	-2
+synth/Drums[Latin Percussion Kit, pad 11 Bell]/level_vs_kick_db	-3.2388
+synth/Drums[Latin Percussion Kit, pad 11 Bell]/peak_dbfs	-9.7773
+synth/Drums[Latin Percussion Kit, pad 11 Bell]/repeat_db	0.4903
+synth/Drums[Latin Percussion Kit, pad 11 Bell]/vel_tone_least_step_oct	0.0049
+synth/Drums[Latin Percussion Kit, pad 11 Bell]/vel_tone_oct	0.2212
+synth/Drums[Latin Percussion Kit, pad 12 Bell]/attack_rise_db	9.891
+synth/Drums[Latin Percussion Kit, pad 12 Bell]/decay_err_pct	-2
+synth/Drums[Latin Percussion Kit, pad 12 Bell]/level_vs_kick_db	-3.5431
+synth/Drums[Latin Percussion Kit, pad 12 Bell]/peak_dbfs	-10.3154
+synth/Drums[Latin Percussion Kit, pad 12 Bell]/repeat_db	0.4901
+synth/Drums[Latin Percussion Kit, pad 12 Bell]/vel_tone_least_step_oct	0.0288
+synth/Drums[Latin Percussion Kit, pad 12 Bell]/vel_tone_oct	0.2136
+synth/Drums[Latin Percussion Kit, pad 13 Shaker]/attack_rise_db	12.9942
+synth/Drums[Latin Percussion Kit, pad 13 Shaker]/decay_err_pct	0
+synth/Drums[Latin Percussion Kit, pad 13 Shaker]/level_vs_kick_db	-4.4278
+synth/Drums[Latin Percussion Kit, pad 13 Shaker]/peak_dbfs	-3.827
+synth/Drums[Latin Percussion Kit, pad 13 Shaker]/repeat_db	0.0696
+synth/Drums[Latin Percussion Kit, pad 13 Shaker]/vel_tone_least_step_oct	0.0692
+synth/Drums[Latin Percussion Kit, pad 13 Shaker]/vel_tone_oct	0.4783
+synth/Drums[Latin Percussion Kit, pad 14 Shaker]/attack_rise_db	22.1548
+synth/Drums[Latin Percussion Kit, pad 14 Shaker]/decay_err_pct	11.3636
+synth/Drums[Latin Percussion Kit, pad 14 Shaker]/level_vs_kick_db	-4.2222
+synth/Drums[Latin Percussion Kit, pad 14 Shaker]/peak_dbfs	-5.3162
+synth/Drums[Latin Percussion Kit, pad 14 Shaker]/repeat_db	1.6926
+synth/Drums[Latin Percussion Kit, pad 14 Shaker]/vel_tone_least_step_oct	0.0489
+synth/Drums[Latin Percussion Kit, pad 14 Shaker]/vel_tone_oct	0.4212
+synth/Drums[Latin Percussion Kit, pad 15 Woodblock]/attack_rise_db	7.5956
+synth/Drums[Latin Percussion Kit, pad 15 Woodblock]/decay_err_pct	-0.9091
+synth/Drums[Latin Percussion Kit, pad 15 Woodblock]/level_vs_kick_db	-3.1269
+synth/Drums[Latin Percussion Kit, pad 15 Woodblock]/peak_dbfs	-7.9714
+synth/Drums[Latin Percussion Kit, pad 15 Woodblock]/repeat_db	1.9697
+synth/Drums[Latin Percussion Kit, pad 15 Woodblock]/vel_tone_least_step_oct	0
+synth/Drums[Latin Percussion Kit, pad 15 Woodblock]/vel_tone_oct	0.027
+synth/Drums[Latin Percussion Kit, pad 16 Cymbal]/attack_rise_db	9.021
+synth/Drums[Latin Percussion Kit, pad 16 Cymbal]/decay_err_pct	-2.1364
+synth/Drums[Latin Percussion Kit, pad 16 Cymbal]/level_vs_kick_db	-3.801
+synth/Drums[Latin Percussion Kit, pad 16 Cymbal]/peak_dbfs	-7.9203
+synth/Drums[Latin Percussion Kit, pad 16 Cymbal]/repeat_db	0.5555
+synth/Drums[Latin Percussion Kit, pad 16 Cymbal]/vel_tone_least_step_oct	0.0998
+synth/Drums[Latin Percussion Kit, pad 16 Cymbal]/vel_tone_oct	0.5501
+synth/Drums[Latin Percussion Kit, pad 2 Conga]/attack_rise_db	10.5385
+synth/Drums[Latin Percussion Kit, pad 2 Conga]/decay_err_pct	-1.1429
+synth/Drums[Latin Percussion Kit, pad 2 Conga]/level_vs_kick_db	-2.7945
+synth/Drums[Latin Percussion Kit, pad 2 Conga]/peak_dbfs	-7.9614
+synth/Drums[Latin Percussion Kit, pad 2 Conga]/repeat_db	0.4452
+synth/Drums[Latin Percussion Kit, pad 2 Conga]/vel_tone_least_step_oct	0.003
+synth/Drums[Latin Percussion Kit, pad 2 Conga]/vel_tone_oct	0.0932
+synth/Drums[Latin Percussion Kit, pad 3 Conga]/attack_rise_db	12.3786
+synth/Drums[Latin Percussion Kit, pad 3 Conga]/decay_err_pct	-6.9231
+synth/Drums[Latin Percussion Kit, pad 3 Conga]/level_vs_kick_db	-4.7799
+synth/Drums[Latin Percussion Kit, pad 3 Conga]/peak_dbfs	-3.8879
+synth/Drums[Latin Percussion Kit, pad 3 Conga]/repeat_db	0.5018
+synth/Drums[Latin Percussion Kit, pad 3 Conga]/vel_tone_least_step_oct	0.0055
+synth/Drums[Latin Percussion Kit, pad 3 Conga]/vel_tone_oct	0.094
+synth/Drums[Latin Percussion Kit, pad 4 Conga]/attack_rise_db	9.8283
+synth/Drums[Latin Percussion Kit, pad 4 Conga]/decay_err_pct	-1.5
+synth/Drums[Latin Percussion Kit, pad 4 Conga]/level_vs_kick_db	-3.0044
+synth/Drums[Latin Percussion Kit, pad 4 Conga]/peak_dbfs	-8.6582
+synth/Drums[Latin Percussion Kit, pad 4 Conga]/repeat_db	0.4381
+synth/Drums[Latin Percussion Kit, pad 4 Conga]/vel_tone_least_step_oct	0.0037
+synth/Drums[Latin Percussion Kit, pad 4 Conga]/vel_tone_oct	0.1037
+synth/Drums[Latin Percussion Kit, pad 5 Conga]/attack_rise_db	8.6501
+synth/Drums[Latin Percussion Kit, pad 5 Conga]/decay_err_pct	-2.6667
+synth/Drums[Latin Percussion Kit, pad 5 Conga]/level_vs_kick_db	-4.0595
+synth/Drums[Latin Percussion Kit, pad 5 Conga]/peak_dbfs	-5.2828
+synth/Drums[Latin Percussion Kit, pad 5 Conga]/repeat_db	0.4741
+synth/Drums[Latin Percussion Kit, pad 5 Conga]/vel_tone_least_step_oct	0.0013
+synth/Drums[Latin Percussion Kit, pad 5 Conga]/vel_tone_oct	0.0485
+synth/Drums[Latin Percussion Kit, pad 6 Conga]/attack_rise_db	10.6962
+synth/Drums[Latin Percussion Kit, pad 6 Conga]/decay_err_pct	-1.6667
+synth/Drums[Latin Percussion Kit, pad 6 Conga]/level_vs_kick_db	-2.7912
+synth/Drums[Latin Percussion Kit, pad 6 Conga]/peak_dbfs	-5.5024
+synth/Drums[Latin Percussion Kit, pad 6 Conga]/repeat_db	1.9607
+synth/Drums[Latin Percussion Kit, pad 6 Conga]/vel_tone_least_step_oct	0.0018
+synth/Drums[Latin Percussion Kit, pad 6 Conga]/vel_tone_oct	0.0562
+synth/Drums[Latin Percussion Kit, pad 7 Tom]/attack_rise_db	11.4219
+synth/Drums[Latin Percussion Kit, pad 7 Tom]/decay_err_pct	-6.4
+synth/Drums[Latin Percussion Kit, pad 7 Tom]/level_vs_kick_db	-5.3274
+synth/Drums[Latin Percussion Kit, pad 7 Tom]/peak_dbfs	-4.0416
+synth/Drums[Latin Percussion Kit, pad 7 Tom]/repeat_db	0.4969
+synth/Drums[Latin Percussion Kit, pad 7 Tom]/vel_tone_least_step_oct	0.0056
+synth/Drums[Latin Percussion Kit, pad 7 Tom]/vel_tone_oct	0.2431
+synth/Drums[Latin Percussion Kit, pad 8 Tom]/attack_rise_db	12.2306
+synth/Drums[Latin Percussion Kit, pad 8 Tom]/decay_err_pct	-6.3333
+synth/Drums[Latin Percussion Kit, pad 8 Tom]/level_vs_kick_db	-4.5388
+synth/Drums[Latin Percussion Kit, pad 8 Tom]/peak_dbfs	-4.8566
+synth/Drums[Latin Percussion Kit, pad 8 Tom]/repeat_db	0.5077
+synth/Drums[Latin Percussion Kit, pad 8 Tom]/vel_tone_least_step_oct	0.0082
+synth/Drums[Latin Percussion Kit, pad 8 Tom]/vel_tone_oct	0.2447
+synth/Drums[Latin Percussion Kit, pad 9 Woodblock]/attack_rise_db	6.7743
+synth/Drums[Latin Percussion Kit, pad 9 Woodblock]/decay_err_pct	0
+synth/Drums[Latin Percussion Kit, pad 9 Woodblock]/level_vs_kick_db	-3.1244
+synth/Drums[Latin Percussion Kit, pad 9 Woodblock]/peak_dbfs	-7.4353
+synth/Drums[Latin Percussion Kit, pad 9 Woodblock]/repeat_db	0.5362
+synth/Drums[Latin Percussion Kit, pad 9 Woodblock]/vel_tone_least_step_oct	0
+synth/Drums[Latin Percussion Kit, pad 9 Woodblock]/vel_tone_oct	0.0024
+synth/Drums[Lo-fi Kit, pad 1 Kick]/attack_rise_db	11.1306
+synth/Drums[Lo-fi Kit, pad 1 Kick]/decay_err_pct	139.7143
+synth/Drums[Lo-fi Kit, pad 1 Kick]/level_vs_kick_db	0
+synth/Drums[Lo-fi Kit, pad 1 Kick]/peak_dbfs	-10.1909
+synth/Drums[Lo-fi Kit, pad 1 Kick]/repeat_cents	64.5457
+synth/Drums[Lo-fi Kit, pad 1 Kick]/repeat_db	0.5482
+synth/Drums[Lo-fi Kit, pad 1 Kick]/vel_tone_least_step_oct	-0.0048
+synth/Drums[Lo-fi Kit, pad 1 Kick]/vel_tone_oct	0.0374
+synth/Drums[Lo-fi Kit, pad 10 Shaker]/attack_rise_db	14.3848
+synth/Drums[Lo-fi Kit, pad 10 Shaker]/decay_err_pct	119
+synth/Drums[Lo-fi Kit, pad 10 Shaker]/level_vs_kick_db	-4.4335
+synth/Drums[Lo-fi Kit, pad 10 Shaker]/peak_dbfs	-8.356
+synth/Drums[Lo-fi Kit, pad 10 Shaker]/repeat_db	0.0022
+synth/Drums[Lo-fi Kit, pad 10 Shaker]/vel_tone_least_step_oct	0.0561
+synth/Drums[Lo-fi Kit, pad 10 Shaker]/vel_tone_oct	0.4287
+synth/Drums[Lo-fi Kit, pad 11 Cymbal]/attack_rise_db	8.1206
+synth/Drums[Lo-fi Kit, pad 11 Cymbal]/decay_err_pct	-25.375
+synth/Drums[Lo-fi Kit, pad 11 Cymbal]/level_vs_kick_db	-4.294
+synth/Drums[Lo-fi Kit, pad 11 Cymbal]/peak_dbfs	-7.9621
+synth/Drums[Lo-fi Kit, pad 11 Cymbal]/repeat_db	1.1337
+synth/Drums[Lo-fi Kit, pad 11 Cymbal]/vel_tone_least_step_oct	0.0967
+synth/Drums[Lo-fi Kit, pad 11 Cymbal]/vel_tone_oct	0.538
+synth/Drums[Lo-fi Kit, pad 12 Conga]/attack_rise_db	7.0002
+synth/Drums[Lo-fi Kit, pad 12 Conga]/decay_err_pct	68.4615
+synth/Drums[Lo-fi Kit, pad 12 Conga]/level_vs_kick_db	-3.2515
+synth/Drums[Lo-fi Kit, pad 12 Conga]/peak_dbfs	-10.9854
+synth/Drums[Lo-fi Kit, pad 12 Conga]/repeat_db	0.4998
+synth/Drums[Lo-fi Kit, pad 12 Conga]/vel_tone_least_step_oct	0.0009
+synth/Drums[Lo-fi Kit, pad 12 Conga]/vel_tone_oct	0.0961
+synth/Drums[Lo-fi Kit, pad 13 Woodblock]/attack_rise_db	7.1257
+synth/Drums[Lo-fi Kit, pad 13 Woodblock]/decay_err_pct	265
+synth/Drums[Lo-fi Kit, pad 13 Woodblock]/level_vs_kick_db	-3.6868
+synth/Drums[Lo-fi Kit, pad 13 Woodblock]/peak_dbfs	-9.5323
+synth/Drums[Lo-fi Kit, pad 13 Woodblock]/repeat_db	0.4975
+synth/Drums[Lo-fi Kit, pad 13 Woodblock]/vel_tone_least_step_oct	-0.0007
+synth/Drums[Lo-fi Kit, pad 13 Woodblock]/vel_tone_oct	0.0965
+synth/Drums[Lo-fi Kit, pad 14 Kick]/attack_rise_db	11.5304
+synth/Drums[Lo-fi Kit, pad 14 Kick]/decay_err_pct	39.8333
+synth/Drums[Lo-fi Kit, pad 14 Kick]/level_vs_kick_db	-1.1744
+synth/Drums[Lo-fi Kit, pad 14 Kick]/peak_dbfs	-12.0803
+synth/Drums[Lo-fi Kit, pad 14 Kick]/repeat_cents	553.1066
+synth/Drums[Lo-fi Kit, pad 14 Kick]/repeat_db	0.5433
+synth/Drums[Lo-fi Kit, pad 14 Kick]/vel_tone_least_step_oct	-0.0083
+synth/Drums[Lo-fi Kit, pad 14 Kick]/vel_tone_oct	0.017
+synth/Drums[Lo-fi Kit, pad 15 Bell]/attack_rise_db	9.2107
+synth/Drums[Lo-fi Kit, pad 15 Bell]/decay_err_pct	-6.7778
+synth/Drums[Lo-fi Kit, pad 15 Bell]/level_vs_kick_db	-3.5726
+synth/Drums[Lo-fi Kit, pad 15 Bell]/peak_dbfs	-11.9499
+synth/Drums[Lo-fi Kit, pad 15 Bell]/repeat_db	0.4812
+synth/Drums[Lo-fi Kit, pad 15 Bell]/vel_tone_least_step_oct	0.0032
+synth/Drums[Lo-fi Kit, pad 15 Bell]/vel_tone_oct	0.1479
+synth/Drums[Lo-fi Kit, pad 16 Snare]/attack_rise_db	11.5422
+synth/Drums[Lo-fi Kit, pad 16 Snare]/decay_err_pct	162
+synth/Drums[Lo-fi Kit, pad 16 Snare]/level_vs_kick_db	-2.385
+synth/Drums[Lo-fi Kit, pad 16 Snare]/peak_dbfs	-8.267
+synth/Drums[Lo-fi Kit, pad 16 Snare]/repeat_db	0.5028
+synth/Drums[Lo-fi Kit, pad 16 Snare]/vel_tone_least_step_oct	0.0932
+synth/Drums[Lo-fi Kit, pad 16 Snare]/vel_tone_oct	0.5414
+synth/Drums[Lo-fi Kit, pad 2 Snare]/attack_rise_db	10.6041
+synth/Drums[Lo-fi Kit, pad 2 Snare]/decay_err_pct	99.0909
+synth/Drums[Lo-fi Kit, pad 2 Snare]/level_vs_kick_db	-2.7134
+synth/Drums[Lo-fi Kit, pad 2 Snare]/peak_dbfs	-9.1756
+synth/Drums[Lo-fi Kit, pad 2 Snare]/repeat_db	0.5162
+synth/Drums[Lo-fi Kit, pad 2 Snare]/vel_tone_least_step_oct	0.1452
+synth/Drums[Lo-fi Kit, pad 2 Snare]/vel_tone_oct	0.8318
+synth/Drums[Lo-fi Kit, pad 3 Clap]/attack_rise_db	10.761
+synth/Drums[Lo-fi Kit, pad 3 Clap]/decay_err_pct	56.4286
+synth/Drums[Lo-fi Kit, pad 3 Clap]/level_vs_kick_db	-3.157
+synth/Drums[Lo-fi Kit, pad 3 Clap]/peak_dbfs	-5.3475
+synth/Drums[Lo-fi Kit, pad 3 Clap]/repeat_db	1.359
+synth/Drums[Lo-fi Kit, pad 3 Clap]/vel_tone_least_step_oct	0.0935
+synth/Drums[Lo-fi Kit, pad 3 Clap]/vel_tone_oct	0.5747
+synth/Drums[Lo-fi Kit, pad 4 Closed hat]/attack_rise_db	9.5061
+synth/Drums[Lo-fi Kit, pad 4 Closed hat]/decay_err_pct	480
+synth/Drums[Lo-fi Kit, pad 4 Closed hat]/level_vs_kick_db	-5.7858
+synth/Drums[Lo-fi Kit, pad 4 Closed hat]/peak_dbfs	-6.5416
+synth/Drums[Lo-fi Kit, pad 4 Closed hat]/repeat_db	0.4349
+synth/Drums[Lo-fi Kit, pad 4 Closed hat]/vel_tone_least_step_oct	0.089
+synth/Drums[Lo-fi Kit, pad 4 Closed hat]/vel_tone_oct	0.4965
+synth/Drums[Lo-fi Kit, pad 5 Open hat]/attack_rise_db	9.3836
+synth/Drums[Lo-fi Kit, pad 5 Open hat]/decay_err_pct	120.7895
+synth/Drums[Lo-fi Kit, pad 5 Open hat]/level_vs_kick_db	-4.432
+synth/Drums[Lo-fi Kit, pad 5 Open hat]/peak_dbfs	-7.442
+synth/Drums[Lo-fi Kit, pad 5 Open hat]/repeat_db	0.1435
+synth/Drums[Lo-fi Kit, pad 5 Open hat]/vel_tone_least_step_oct	0.0974
+synth/Drums[Lo-fi Kit, pad 5 Open hat]/vel_tone_oct	0.509
+synth/Drums[Lo-fi Kit, pad 6 Tom]/attack_rise_db	6.6052
+synth/Drums[Lo-fi Kit, pad 6 Tom]/decay_err_pct	120.7895
+synth/Drums[Lo-fi Kit, pad 6 Tom]/level_vs_kick_db	-3.1559
+synth/Drums[Lo-fi Kit, pad 6 Tom]/peak_dbfs	-12.4866
+synth/Drums[Lo-fi Kit, pad 6 Tom]/repeat_db	0.4902
+synth/Drums[Lo-fi Kit, pad 6 Tom]/vel_tone_least_step_oct	0.0022
+synth/Drums[Lo-fi Kit, pad 6 Tom]/vel_tone_oct	0.0771
+synth/Drums[Lo-fi Kit, pad 7 Tom]/attack_rise_db	7.1182
+synth/Drums[Lo-fi Kit, pad 7 Tom]/decay_err_pct	146.4706
+synth/Drums[Lo-fi Kit, pad 7 Tom]/level_vs_kick_db	-3.263
+synth/Drums[Lo-fi Kit, pad 7 Tom]/peak_dbfs	-12.0995
+synth/Drums[Lo-fi Kit, pad 7 Tom]/repeat_db	0.491
+synth/Drums[Lo-fi Kit, pad 7 Tom]/vel_tone_least_step_oct	0.0028
+synth/Drums[Lo-fi Kit, pad 7 Tom]/vel_tone_oct	0.0709
+synth/Drums[Lo-fi Kit, pad 8 Tom]/attack_rise_db	8.2191
+synth/Drums[Lo-fi Kit, pad 8 Tom]/decay_err_pct	162
+synth/Drums[Lo-fi Kit, pad 8 Tom]/level_vs_kick_db	-3.0094
+synth/Drums[Lo-fi Kit, pad 8 Tom]/peak_dbfs	-11.5404
+synth/Drums[Lo-fi Kit, pad 8 Tom]/repeat_db	0.4966
+synth/Drums[Lo-fi Kit, pad 8 Tom]/vel_tone_least_step_oct	0.0013
+synth/Drums[Lo-fi Kit, pad 8 Tom]/vel_tone_oct	0.0654
+synth/Drums[Lo-fi Kit, pad 9 Rim]/attack_rise_db	10.9901
+synth/Drums[Lo-fi Kit, pad 9 Rim]/decay_err_pct	695
+synth/Drums[Lo-fi Kit, pad 9 Rim]/level_vs_kick_db	-3.4764
+synth/Drums[Lo-fi Kit, pad 9 Rim]/peak_dbfs	-6.9285
+synth/Drums[Lo-fi Kit, pad 9 Rim]/repeat_db	0.5499
+synth/Drums[Lo-fi Kit, pad 9 Rim]/vel_tone_least_step_oct	0.0395
+synth/Drums[Lo-fi Kit, pad 9 Rim]/vel_tone_oct	0.1963
+synth/Drums[Miami Bass Kit, pad 1 808 kick]/attack_rise_db	14.9213
+synth/Drums[Miami Bass Kit, pad 1 808 kick]/decay_err_pct	-5.5
+synth/Drums[Miami Bass Kit, pad 1 808 kick]/level_vs_kick_db	0
+synth/Drums[Miami Bass Kit, pad 1 808 kick]/peak_dbfs	-10.6291
+synth/Drums[Miami Bass Kit, pad 1 808 kick]/repeat_db	0.55
+synth/Drums[Miami Bass Kit, pad 1 808 kick]/vel_tone_least_step_oct	0.0024
+synth/Drums[Miami Bass Kit, pad 1 808 kick]/vel_tone_oct	0.0235
+synth/Drums[Miami Bass Kit, pad 10 Cowbell]/attack_rise_db	9.4686
+synth/Drums[Miami Bass Kit, pad 10 Cowbell]/decay_err_pct	6
+synth/Drums[Miami Bass Kit, pad 10 Cowbell]/level_vs_kick_db	-3.634
+synth/Drums[Miami Bass Kit, pad 10 Cowbell]/peak_dbfs	-5.4168
+synth/Drums[Miami Bass Kit, pad 10 Cowbell]/repeat_db	0.5803
+synth/Drums[Miami Bass Kit, pad 10 Cowbell]/vel_tone_least_step_oct	0.0589
+synth/Drums[Miami Bass Kit, pad 10 Cowbell]/vel_tone_oct	0.302
+synth/Drums[Miami Bass Kit, pad 11 Cymbal]/attack_rise_db	7.4881
+synth/Drums[Miami Bass Kit, pad 11 Cymbal]/decay_err_pct	-13.12
+synth/Drums[Miami Bass Kit, pad 11 Cymbal]/level_vs_kick_db	-4.1111
+synth/Drums[Miami Bass Kit, pad 11 Cymbal]/peak_dbfs	-6.9893
+synth/Drums[Miami Bass Kit, pad 11 Cymbal]/repeat_db	0.8776
+synth/Drums[Miami Bass Kit, pad 11 Cymbal]/vel_tone_least_step_oct	0.0849
+synth/Drums[Miami Bass Kit, pad 11 Cymbal]/vel_tone_oct	0.56
+synth/Drums[Miami Bass Kit, pad 12 Zap]/attack_rise_db	14.8097
+synth/Drums[Miami Bass Kit, pad 12 Zap]/decay_err_pct	1.6
+synth/Drums[Miami Bass Kit, pad 12 Zap]/level_vs_kick_db	-2.6704
+synth/Drums[Miami Bass Kit, pad 12 Zap]/peak_dbfs	-13.607
+synth/Drums[Miami Bass Kit, pad 12 Zap]/repeat_db	0.5676
+synth/Drums[Miami Bass Kit, pad 12 Zap]/vel_tone_least_step_oct	0.0052
+synth/Drums[Miami Bass Kit, pad 12 Zap]/vel_tone_oct	0.0862
+synth/Drums[Miami Bass Kit, pad 13 808 kick]/attack_rise_db	15.148
+synth/Drums[Miami Bass Kit, pad 13 808 kick]/decay_err_pct	-3.6667
+synth/Drums[Miami Bass Kit, pad 13 808 kick]/level_vs_kick_db	-0.8909
+synth/Drums[Miami Bass Kit, pad 13 808 kick]/peak_dbfs	-11.5959
+synth/Drums[Miami Bass Kit, pad 13 808 kick]/repeat_db	0.5576
+synth/Drums[Miami Bass Kit, pad 13 808 kick]/vel_tone_least_step_oct	0.0003
+synth/Drums[Miami Bass Kit, pad 13 808 kick]/vel_tone_oct	0.0054
+synth/Drums[Miami Bass Kit, pad 14 808 kick]/attack_rise_db	12.6274
+synth/Drums[Miami Bass Kit, pad 14 808 kick]/decay_err_pct	-6.1143
+synth/Drums[Miami Bass Kit, pad 14 808 kick]/level_vs_kick_db	-1.1374
+synth/Drums[Miami Bass Kit, pad 14 808 kick]/peak_dbfs	-12.8592
+synth/Drums[Miami Bass Kit, pad 14 808 kick]/repeat_db	0.5557
+synth/Drums[Miami Bass Kit, pad 14 808 kick]/vel_tone_least_step_oct	0.0056
+synth/Drums[Miami Bass Kit, pad 14 808 kick]/vel_tone_oct	0.0536
+synth/Drums[Miami Bass Kit, pad 15 Woodblock]/attack_rise_db	7.4274
+synth/Drums[Miami Bass Kit, pad 15 Woodblock]/decay_err_pct	0
+synth/Drums[Miami Bass Kit, pad 15 Woodblock]/level_vs_kick_db	-3.3172
+synth/Drums[Miami Bass Kit, pad 15 Woodblock]/peak_dbfs	-8.0885
+synth/Drums[Miami Bass Kit, pad 15 Woodblock]/repeat_db	0.5862
+synth/Drums[Miami Bass Kit, pad 15 Woodblock]/vel_tone_least_step_oct	0
+synth/Drums[Miami Bass Kit, pad 15 Woodblock]/vel_tone_oct	0.0017
+synth/Drums[Miami Bass Kit, pad 16 Shaker]/attack_rise_db	12.9668
+synth/Drums[Miami Bass Kit, pad 16 Shaker]/decay_err_pct	1.6667
+synth/Drums[Miami Bass Kit, pad 16 Shaker]/level_vs_kick_db	-4.4626
+synth/Drums[Miami Bass Kit, pad 16 Shaker]/peak_dbfs	-4.7239
+synth/Drums[Miami Bass Kit, pad 16 Shaker]/repeat_db	0.025
+synth/Drums[Miami Bass Kit, pad 16 Shaker]/vel_tone_least_step_oct	0.0687
+synth/Drums[Miami Bass Kit, pad 16 Shaker]/vel_tone_oct	0.4741
+synth/Drums[Miami Bass Kit, pad 2 Snare]/attack_rise_db	12.4877
+synth/Drums[Miami Bass Kit, pad 2 Snare]/decay_err_pct	1.25
+synth/Drums[Miami Bass Kit, pad 2 Snare]/level_vs_kick_db	-2.1751
+synth/Drums[Miami Bass Kit, pad 2 Snare]/peak_dbfs	-5.0084
+synth/Drums[Miami Bass Kit, pad 2 Snare]/repeat_db	0.3497
+synth/Drums[Miami Bass Kit, pad 2 Snare]/vel_tone_least_step_oct	0.0853
+synth/Drums[Miami Bass Kit, pad 2 Snare]/vel_tone_oct	0.5292
+synth/Drums[Miami Bass Kit, pad 3 Clap]/attack_rise_db	10.2743
+synth/Drums[Miami Bass Kit, pad 3 Clap]/decay_err_pct	2.4444
+synth/Drums[Miami Bass Kit, pad 3 Clap]/level_vs_kick_db	-2.655
+synth/Drums[Miami Bass Kit, pad 3 Clap]/peak_dbfs	-5.0803
+synth/Drums[Miami Bass Kit, pad 3 Clap]/repeat_db	0.9665
+synth/Drums[Miami Bass Kit, pad 3 Clap]/vel_tone_least_step_oct	0.0972
+synth/Drums[Miami Bass Kit, pad 3 Clap]/vel_tone_oct	0.5614
+synth/Drums[Miami Bass Kit, pad 4 Closed hat]/attack_rise_db	5.5012
+synth/Drums[Miami Bass Kit, pad 4 Closed hat]/decay_err_pct	0
+synth/Drums[Miami Bass Kit, pad 4 Closed hat]/level_vs_kick_db	-5.4857
+synth/Drums[Miami Bass Kit, pad 4 Closed hat]/peak_dbfs	-3.7164
+synth/Drums[Miami Bass Kit, pad 4 Closed hat]/repeat_db	0.5227
+synth/Drums[Miami Bass Kit, pad 4 Closed hat]/vel_tone_least_step_oct	0.099
+synth/Drums[Miami Bass Kit, pad 4 Closed hat]/vel_tone_oct	0.6975
+synth/Drums[Miami Bass Kit, pad 5 Open hat]/attack_rise_db	5.0649
+synth/Drums[Miami Bass Kit, pad 5 Open hat]/decay_err_pct	3.4286
+synth/Drums[Miami Bass Kit, pad 5 Open hat]/level_vs_kick_db	-3.9076
+synth/Drums[Miami Bass Kit, pad 5 Open hat]/peak_dbfs	-6.7599
+synth/Drums[Miami Bass Kit, pad 5 Open hat]/repeat_db	0.2272
+synth/Drums[Miami Bass Kit, pad 5 Open hat]/vel_tone_least_step_oct	0.0986
+synth/Drums[Miami Bass Kit, pad 5 Open hat]/vel_tone_oct	0.664
+synth/Drums[Miami Bass Kit, pad 6 Tom]/attack_rise_db	10.4355
+synth/Drums[Miami Bass Kit, pad 6 Tom]/decay_err_pct	1
+synth/Drums[Miami Bass Kit, pad 6 Tom]/level_vs_kick_db	-3.1005
+synth/Drums[Miami Bass Kit, pad 6 Tom]/peak_dbfs	-12.4153
+synth/Drums[Miami Bass Kit, pad 6 Tom]/repeat_db	0.5071
+synth/Drums[Miami Bass Kit, pad 6 Tom]/vel_tone_least_step_oct	0.0059
+synth/Drums[Miami Bass Kit, pad 6 Tom]/vel_tone_oct	0.103
+synth/Drums[Miami Bass Kit, pad 7 Tom]/attack_rise_db	10.4191
+synth/Drums[Miami Bass Kit, pad 7 Tom]/decay_err_pct	0.3636
+synth/Drums[Miami Bass Kit, pad 7 Tom]/level_vs_kick_db	-2.9596
+synth/Drums[Miami Bass Kit, pad 7 Tom]/peak_dbfs	-11.9765
+synth/Drums[Miami Bass Kit, pad 7 Tom]/repeat_db	0.4986
+synth/Drums[Miami Bass Kit, pad 7 Tom]/vel_tone_least_step_oct	0.0057
+synth/Drums[Miami Bass Kit, pad 7 Tom]/vel_tone_oct	0.0981
+synth/Drums[Miami Bass Kit, pad 8 Tom]/attack_rise_db	11.5319
+synth/Drums[Miami Bass Kit, pad 8 Tom]/decay_err_pct	1.8
+synth/Drums[Miami Bass Kit, pad 8 Tom]/level_vs_kick_db	-2.7542
+synth/Drums[Miami Bass Kit, pad 8 Tom]/peak_dbfs	-11.8057
+synth/Drums[Miami Bass Kit, pad 8 Tom]/repeat_db	0.5171
+synth/Drums[Miami Bass Kit, pad 8 Tom]/vel_tone_least_step_oct	0.0056
+synth/Drums[Miami Bass Kit, pad 8 Tom]/vel_tone_oct	0.0916
+synth/Drums[Miami Bass Kit, pad 9 Rim]/attack_rise_db	11.897
+synth/Drums[Miami Bass Kit, pad 9 Rim]/decay_err_pct	-2.8571
+synth/Drums[Miami Bass Kit, pad 9 Rim]/level_vs_kick_db	-3.4043
+synth/Drums[Miami Bass Kit, pad 9 Rim]/peak_dbfs	-4.2801
+synth/Drums[Miami Bass Kit, pad 9 Rim]/repeat_db	0.5661
+synth/Drums[Miami Bass Kit, pad 9 Rim]/vel_tone_least_step_oct	0.0243
+synth/Drums[Miami Bass Kit, pad 9 Rim]/vel_tone_oct	0.1457
+synth/Drums[Minimal Kit, pad 1 Kick]/attack_rise_db	14.449
+synth/Drums[Minimal Kit, pad 1 Kick]/decay_err_pct	2.2727
+synth/Drums[Minimal Kit, pad 1 Kick]/level_vs_kick_db	0
+synth/Drums[Minimal Kit, pad 1 Kick]/peak_dbfs	-10.5417
+synth/Drums[Minimal Kit, pad 1 Kick]/repeat_cents	6.2185
+synth/Drums[Minimal Kit, pad 1 Kick]/repeat_db	0.5614
+synth/Drums[Minimal Kit, pad 1 Kick]/vel_tone_least_step_oct	0.0005
+synth/Drums[Minimal Kit, pad 1 Kick]/vel_tone_oct	0.019
+synth/Drums[Minimal Kit, pad 10 Woodblock]/attack_rise_db	7.8499
+synth/Drums[Minimal Kit, pad 10 Woodblock]/decay_err_pct	0
+synth/Drums[Minimal Kit, pad 10 Woodblock]/level_vs_kick_db	-3.5904
+synth/Drums[Minimal Kit, pad 10 Woodblock]/peak_dbfs	-5.8591
+synth/Drums[Minimal Kit, pad 10 Woodblock]/repeat_db	0.5654
+synth/Drums[Minimal Kit, pad 10 Woodblock]/vel_tone_least_step_oct	0
+synth/Drums[Minimal Kit, pad 10 Woodblock]/vel_tone_oct	0.0029
+synth/Drums[Minimal Kit, pad 11 Shaker]/attack_rise_db	12.6217
+synth/Drums[Minimal Kit, pad 11 Shaker]/decay_err_pct	0
+synth/Drums[Minimal Kit, pad 11 Shaker]/level_vs_kick_db	-4.8896
+synth/Drums[Minimal Kit, pad 11 Shaker]/peak_dbfs	-5.0116
+synth/Drums[Minimal Kit, pad 11 Shaker]/repeat_db	0.1407
+synth/Drums[Minimal Kit, pad 11 Shaker]/vel_tone_least_step_oct	0.068
+synth/Drums[Minimal Kit, pad 11 Shaker]/vel_tone_oct	0.4845
+synth/Drums[Minimal Kit, pad 12 Conga]/attack_rise_db	9.9771
+synth/Drums[Minimal Kit, pad 12 Conga]/decay_err_pct	-2.5
+synth/Drums[Minimal Kit, pad 12 Conga]/level_vs_kick_db	-3.2393
+synth/Drums[Minimal Kit, pad 12 Conga]/peak_dbfs	-6.4819
+synth/Drums[Minimal Kit, pad 12 Conga]/repeat_db	0.4432
+synth/Drums[Minimal Kit, pad 12 Conga]/vel_tone_least_step_oct	0.0016
+synth/Drums[Minimal Kit, pad 12 Conga]/vel_tone_oct	0.0472
+synth/Drums[Minimal Kit, pad 13 Bell]/attack_rise_db	8.3911
+synth/Drums[Minimal Kit, pad 13 Bell]/decay_err_pct	270.6667
+synth/Drums[Minimal Kit, pad 13 Bell]/level_vs_kick_db	-3.7867
+synth/Drums[Minimal Kit, pad 13 Bell]/peak_dbfs	-10.5821
+synth/Drums[Minimal Kit, pad 13 Bell]/repeat_db	0.4962
+synth/Drums[Minimal Kit, pad 13 Bell]/vel_tone_least_step_oct	0.001
+synth/Drums[Minimal Kit, pad 13 Bell]/vel_tone_oct	0.0471
+synth/Drums[Minimal Kit, pad 14 Kick]/attack_rise_db	12.8461
+synth/Drums[Minimal Kit, pad 14 Kick]/decay_err_pct	-0.2857
+synth/Drums[Minimal Kit, pad 14 Kick]/level_vs_kick_db	-1.088
+synth/Drums[Minimal Kit, pad 14 Kick]/peak_dbfs	-12.0194
+synth/Drums[Minimal Kit, pad 14 Kick]/repeat_cents	4.8023
+synth/Drums[Minimal Kit, pad 14 Kick]/repeat_db	0.5566
+synth/Drums[Minimal Kit, pad 14 Kick]/vel_tone_least_step_oct	0.0002
+synth/Drums[Minimal Kit, pad 14 Kick]/vel_tone_oct	0.0014
+synth/Drums[Minimal Kit, pad 15 Cymbal]/attack_rise_db	5.6276
+synth/Drums[Minimal Kit, pad 15 Cymbal]/decay_err_pct	-7.1111
+synth/Drums[Minimal Kit, pad 15 Cymbal]/level_vs_kick_db	-4.2722
+synth/Drums[Minimal Kit, pad 15 Cymbal]/peak_dbfs	-7.015
+synth/Drums[Minimal Kit, pad 15 Cymbal]/repeat_db	0.485
+synth/Drums[Minimal Kit, pad 15 Cymbal]/vel_tone_least_step_oct	0.0772
+synth/Drums[Minimal Kit, pad 15 Cymbal]/vel_tone_oct	0.3489
+synth/Drums[Minimal Kit, pad 16 Rim]/attack_rise_db	11.5371
+synth/Drums[Minimal Kit, pad 16 Rim]/decay_err_pct	-4
+synth/Drums[Minimal Kit, pad 16 Rim]/level_vs_kick_db	-3.8909
+synth/Drums[Minimal Kit, pad 16 Rim]/peak_dbfs	-4.8467
+synth/Drums[Minimal Kit, pad 16 Rim]/repeat_db	0.2926
+synth/Drums[Minimal Kit, pad 16 Rim]/vel_tone_least_step_oct	0.0452
+synth/Drums[Minimal Kit, pad 16 Rim]/vel_tone_oct	0.7883
+synth/Drums[Minimal Kit, pad 2 Snare]/attack_rise_db	12.1365
+synth/Drums[Minimal Kit, pad 2 Snare]/decay_err_pct	-0.8333
+synth/Drums[Minimal Kit, pad 2 Snare]/level_vs_kick_db	-2.8212
+synth/Drums[Minimal Kit, pad 2 Snare]/peak_dbfs	-5.1145
+synth/Drums[Minimal Kit, pad 2 Snare]/repeat_db	0.2782
+synth/Drums[Minimal Kit, pad 2 Snare]/vel_tone_least_step_oct	0.0743
+synth/Drums[Minimal Kit, pad 2 Snare]/vel_tone_oct	0.4762
+synth/Drums[Minimal Kit, pad 3 Clap]/attack_rise_db	11.041
+synth/Drums[Minimal Kit, pad 3 Clap]/decay_err_pct	10
+synth/Drums[Minimal Kit, pad 3 Clap]/level_vs_kick_db	-5.5556
+synth/Drums[Minimal Kit, pad 3 Clap]/peak_dbfs	-3.7849
+synth/Drums[Minimal Kit, pad 3 Clap]/repeat_db	2.5446
+synth/Drums[Minimal Kit, pad 3 Clap]/vel_tone_least_step_oct	0.0852
+synth/Drums[Minimal Kit, pad 3 Clap]/vel_tone_oct	0.5258
+synth/Drums[Minimal Kit, pad 4 Closed hat]/attack_rise_db	10.8291
+synth/Drums[Minimal Kit, pad 4 Closed hat]/decay_err_pct	-3.3333
+synth/Drums[Minimal Kit, pad 4 Closed hat]/level_vs_kick_db	-5.9382
+synth/Drums[Minimal Kit, pad 4 Closed hat]/peak_dbfs	-4.6992
+synth/Drums[Minimal Kit, pad 4 Closed hat]/repeat_db	1.6485
+synth/Drums[Minimal Kit, pad 4 Closed hat]/vel_tone_least_step_oct	0.0957
+synth/Drums[Minimal Kit, pad 4 Closed hat]/vel_tone_oct	0.5442
+synth/Drums[Minimal Kit, pad 5 Open hat]/attack_rise_db	9.8377
+synth/Drums[Minimal Kit, pad 5 Open hat]/decay_err_pct	1.25
+synth/Drums[Minimal Kit, pad 5 Open hat]/level_vs_kick_db	-4.0798
+synth/Drums[Minimal Kit, pad 5 Open hat]/peak_dbfs	-7.783
+synth/Drums[Minimal Kit, pad 5 Open hat]/repeat_db	0.6194
+synth/Drums[Minimal Kit, pad 5 Open hat]/vel_tone_least_step_oct	0.102
+synth/Drums[Minimal Kit, pad 5 Open hat]/vel_tone_oct	0.5848
+synth/Drums[Minimal Kit, pad 6 FM perc]/attack_rise_db	10.9558
+synth/Drums[Minimal Kit, pad 6 FM perc]/decay_err_pct	586.6667
+synth/Drums[Minimal Kit, pad 6 FM perc]/level_vs_kick_db	-3.0871
+synth/Drums[Minimal Kit, pad 6 FM perc]/peak_dbfs	-9.6386
+synth/Drums[Minimal Kit, pad 6 FM perc]/repeat_db	0.6003
+synth/Drums[Minimal Kit, pad 6 FM perc]/vel_tone_least_step_oct	0.0084
+synth/Drums[Minimal Kit, pad 6 FM perc]/vel_tone_oct	0.0673
+synth/Drums[Minimal Kit, pad 7 FM perc]/attack_rise_db	11.5062
+synth/Drums[Minimal Kit, pad 7 FM perc]/decay_err_pct	716
+synth/Drums[Minimal Kit, pad 7 FM perc]/level_vs_kick_db	-3.2608
+synth/Drums[Minimal Kit, pad 7 FM perc]/peak_dbfs	-8.4183
+synth/Drums[Minimal Kit, pad 7 FM perc]/repeat_db	0.5868
+synth/Drums[Minimal Kit, pad 7 FM perc]/vel_tone_least_step_oct	0.0363
+synth/Drums[Minimal Kit, pad 7 FM perc]/vel_tone_oct	0.3603
+synth/Drums[Minimal Kit, pad 8 Zap]/attack_rise_db	11.5179
+synth/Drums[Minimal Kit, pad 8 Zap]/decay_err_pct	0
+synth/Drums[Minimal Kit, pad 8 Zap]/level_vs_kick_db	-3.2093
+synth/Drums[Minimal Kit, pad 8 Zap]/peak_dbfs	-7.9591
+synth/Drums[Minimal Kit, pad 8 Zap]/repeat_db	0.5849
+synth/Drums[Minimal Kit, pad 8 Zap]/vel_tone_least_step_oct	0.0003
+synth/Drums[Minimal Kit, pad 8 Zap]/vel_tone_oct	0.0112
+synth/Drums[Minimal Kit, pad 9 Rim]/attack_rise_db	12.0284
+synth/Drums[Minimal Kit, pad 9 Rim]/decay_err_pct	-5
+synth/Drums[Minimal Kit, pad 9 Rim]/level_vs_kick_db	-5.8334
+synth/Drums[Minimal Kit, pad 9 Rim]/peak_dbfs	-3.6318
+synth/Drums[Minimal Kit, pad 9 Rim]/repeat_db	0.4606
+synth/Drums[Minimal Kit, pad 9 Rim]/vel_tone_least_step_oct	0.0239
+synth/Drums[Minimal Kit, pad 9 Rim]/vel_tone_oct	0.1533
+synth/Drums[Reggaeton Kit, pad 1 Kick]/attack_rise_db	15.7554
+synth/Drums[Reggaeton Kit, pad 1 Kick]/decay_err_pct	-0.2857
+synth/Drums[Reggaeton Kit, pad 1 Kick]/level_vs_kick_db	0
+synth/Drums[Reggaeton Kit, pad 1 Kick]/peak_dbfs	-10.659
+synth/Drums[Reggaeton Kit, pad 1 Kick]/repeat_cents	4.8195
+synth/Drums[Reggaeton Kit, pad 1 Kick]/repeat_db	0.5636
+synth/Drums[Reggaeton Kit, pad 1 Kick]/vel_tone_least_step_oct	0.0043
+synth/Drums[Reggaeton Kit, pad 1 Kick]/vel_tone_oct	0.1155
+synth/Drums[Reggaeton Kit, pad 10 808 kick]/attack_rise_db	14.3302
+synth/Drums[Reggaeton Kit, pad 10 808 kick]/decay_err_pct	-5
+synth/Drums[Reggaeton Kit, pad 10 808 kick]/level_vs_kick_db	-1.3017
+synth/Drums[Reggaeton Kit, pad 10 808 kick]/peak_dbfs	-11.0097
+synth/Drums[Reggaeton Kit, pad 10 808 kick]/repeat_db	0.5507
+synth/Drums[Reggaeton Kit, pad 10 808 kick]/vel_tone_least_step_oct	0.0015
+synth/Drums[Reggaeton Kit, pad 10 808 kick]/vel_tone_oct	0.0163
+synth/Drums[Reggaeton Kit, pad 11 Cymbal]/attack_rise_db	8.9289
+synth/Drums[Reggaeton Kit, pad 11 Cymbal]/decay_err_pct	-0.625
+synth/Drums[Reggaeton Kit, pad 11 Cymbal]/level_vs_kick_db	-4.1927
+synth/Drums[Reggaeton Kit, pad 11 Cymbal]/peak_dbfs	-7.7555
+synth/Drums[Reggaeton Kit, pad 11 Cymbal]/repeat_db	0.5427
+synth/Drums[Reggaeton Kit, pad 11 Cymbal]/vel_tone_least_step_oct	0.0962
+synth/Drums[Reggaeton Kit, pad 11 Cymbal]/vel_tone_oct	0.52
+synth/Drums[Reggaeton Kit, pad 12 Shaker]/attack_rise_db	13.5591
+synth/Drums[Reggaeton Kit, pad 12 Shaker]/decay_err_pct	3.3333
+synth/Drums[Reggaeton Kit, pad 12 Shaker]/level_vs_kick_db	-4.6283
+synth/Drums[Reggaeton Kit, pad 12 Shaker]/peak_dbfs	-4.0471
+synth/Drums[Reggaeton Kit, pad 12 Shaker]/repeat_db	0.0994
+synth/Drums[Reggaeton Kit, pad 12 Shaker]/vel_tone_least_step_oct	0.0702
+synth/Drums[Reggaeton Kit, pad 12 Shaker]/vel_tone_oct	0.4848
+synth/Drums[Reggaeton Kit, pad 13 Shaker]/attack_rise_db	21.8143
+synth/Drums[Reggaeton Kit, pad 13 Shaker]/decay_err_pct	9.5
+synth/Drums[Reggaeton Kit, pad 13 Shaker]/level_vs_kick_db	-4.6294
+synth/Drums[Reggaeton Kit, pad 13 Shaker]/peak_dbfs	-4.8359
+synth/Drums[Reggaeton Kit, pad 13 Shaker]/repeat_db	1.544
+synth/Drums[Reggaeton Kit, pad 13 Shaker]/vel_tone_least_step_oct	0.0505
+synth/Drums[Reggaeton Kit, pad 13 Shaker]/vel_tone_oct	0.4472
+synth/Drums[Reggaeton Kit, pad 14 Conga]/attack_rise_db	10.1841
+synth/Drums[Reggaeton Kit, pad 14 Conga]/decay_err_pct	-0.8
+synth/Drums[Reggaeton Kit, pad 14 Conga]/level_vs_kick_db	-3.353
+synth/Drums[Reggaeton Kit, pad 14 Conga]/peak_dbfs	-6.8078
+synth/Drums[Reggaeton Kit, pad 14 Conga]/repeat_db	0.434
+synth/Drums[Reggaeton Kit, pad 14 Conga]/vel_tone_least_step_oct	0.0029
+synth/Drums[Reggaeton Kit, pad 14 Conga]/vel_tone_oct	0.0796
+synth/Drums[Reggaeton Kit, pad 15 Woodblock]/attack_rise_db	6.9211
+synth/Drums[Reggaeton Kit, pad 15 Woodblock]/decay_err_pct	-1.1111
+synth/Drums[Reggaeton Kit, pad 15 Woodblock]/level_vs_kick_db	-3.5241
+synth/Drums[Reggaeton Kit, pad 15 Woodblock]/peak_dbfs	-7.5066
+synth/Drums[Reggaeton Kit, pad 15 Woodblock]/repeat_db	0.5139
+synth/Drums[Reggaeton Kit, pad 15 Woodblock]/vel_tone_least_step_oct	0
+synth/Drums[Reggaeton Kit, pad 15 Woodblock]/vel_tone_oct	0.0214
+synth/Drums[Reggaeton Kit, pad 16 Zap]/attack_rise_db	14.2487
+synth/Drums[Reggaeton Kit, pad 16 Zap]/decay_err_pct	-0.4
+synth/Drums[Reggaeton Kit, pad 16 Zap]/level_vs_kick_db	-3.0981
+synth/Drums[Reggaeton Kit, pad 16 Zap]/peak_dbfs	-12.8714
+synth/Drums[Reggaeton Kit, pad 16 Zap]/repeat_db	0.5573
+synth/Drums[Reggaeton Kit, pad 16 Zap]/vel_tone_least_step_oct	0.0064
+synth/Drums[Reggaeton Kit, pad 16 Zap]/vel_tone_oct	0.0927
+synth/Drums[Reggaeton Kit, pad 2 Snare]/attack_rise_db	12.2263
+synth/Drums[Reggaeton Kit, pad 2 Snare]/decay_err_pct	164.375
+synth/Drums[Reggaeton Kit, pad 2 Snare]/level_vs_kick_db	-2.5504
+synth/Drums[Reggaeton Kit, pad 2 Snare]/peak_dbfs	-5.4769
+synth/Drums[Reggaeton Kit, pad 2 Snare]/repeat_db	0.2823
+synth/Drums[Reggaeton Kit, pad 2 Snare]/vel_tone_least_step_oct	0.0881
+synth/Drums[Reggaeton Kit, pad 2 Snare]/vel_tone_oct	0.5347
+synth/Drums[Reggaeton Kit, pad 3 Clap]/attack_rise_db	10.6346
+synth/Drums[Reggaeton Kit, pad 3 Clap]/decay_err_pct	8.9286
+synth/Drums[Reggaeton Kit, pad 3 Clap]/level_vs_kick_db	-5.7634
+synth/Drums[Reggaeton Kit, pad 3 Clap]/peak_dbfs	-5.6365
+synth/Drums[Reggaeton Kit, pad 3 Clap]/repeat_db	0.7664
+synth/Drums[Reggaeton Kit, pad 3 Clap]/vel_tone_least_step_oct	0.0823
+synth/Drums[Reggaeton Kit, pad 3 Clap]/vel_tone_oct	0.4978
+synth/Drums[Reggaeton Kit, pad 4 Closed hat]/attack_rise_db	9.1391
+synth/Drums[Reggaeton Kit, pad 4 Closed hat]/decay_err_pct	0
+synth/Drums[Reggaeton Kit, pad 4 Closed hat]/level_vs_kick_db	-5.691
+synth/Drums[Reggaeton Kit, pad 4 Closed hat]/peak_dbfs	-3.6894
+synth/Drums[Reggaeton Kit, pad 4 Closed hat]/repeat_db	0.1187
+synth/Drums[Reggaeton Kit, pad 4 Closed hat]/vel_tone_least_step_oct	0.1087
+synth/Drums[Reggaeton Kit, pad 4 Closed hat]/vel_tone_oct	0.6229
+synth/Drums[Reggaeton Kit, pad 5 Open hat]/attack_rise_db	9.1516
+synth/Drums[Reggaeton Kit, pad 5 Open hat]/decay_err_pct	0.6667
+synth/Drums[Reggaeton Kit, pad 5 Open hat]/level_vs_kick_db	-4.2011
+synth/Drums[Reggaeton Kit, pad 5 Open hat]/peak_dbfs	-7.6021
+synth/Drums[Reggaeton Kit, pad 5 Open hat]/repeat_db	0.1026
+synth/Drums[Reggaeton Kit, pad 5 Open hat]/vel_tone_least_step_oct	0.0969
+synth/Drums[Reggaeton Kit, pad 5 Open hat]/vel_tone_oct	0.5806
+synth/Drums[Reggaeton Kit, pad 6 Tom]/attack_rise_db	11.9791
+synth/Drums[Reggaeton Kit, pad 6 Tom]/decay_err_pct	-4.5714
+synth/Drums[Reggaeton Kit, pad 6 Tom]/level_vs_kick_db	-3.468
+synth/Drums[Reggaeton Kit, pad 6 Tom]/peak_dbfs	-5.0439
+synth/Drums[Reggaeton Kit, pad 6 Tom]/repeat_db	0.4106
+synth/Drums[Reggaeton Kit, pad 6 Tom]/vel_tone_least_step_oct	0.0061
+synth/Drums[Reggaeton Kit, pad 6 Tom]/vel_tone_oct	0.1186
+synth/Drums[Reggaeton Kit, pad 7 Tom]/attack_rise_db	11.9161
+synth/Drums[Reggaeton Kit, pad 7 Tom]/decay_err_pct	-3.3333
+synth/Drums[Reggaeton Kit, pad 7 Tom]/level_vs_kick_db	-3.2906
+synth/Drums[Reggaeton Kit, pad 7 Tom]/peak_dbfs	-4.0733
+synth/Drums[Reggaeton Kit, pad 7 Tom]/repeat_db	0.413
+synth/Drums[Reggaeton Kit, pad 7 Tom]/vel_tone_least_step_oct	0.0048
+synth/Drums[Reggaeton Kit, pad 7 Tom]/vel_tone_oct	0.1158
+synth/Drums[Reggaeton Kit, pad 8 Tom]/attack_rise_db	11.545
+synth/Drums[Reggaeton Kit, pad 8 Tom]/decay_err_pct	-2.9032
+synth/Drums[Reggaeton Kit, pad 8 Tom]/level_vs_kick_db	-3.7589
+synth/Drums[Reggaeton Kit, pad 8 Tom]/peak_dbfs	-3.6186
+synth/Drums[Reggaeton Kit, pad 8 Tom]/repeat_db	0.4115
+synth/Drums[Reggaeton Kit, pad 8 Tom]/vel_tone_least_step_oct	0.0032
+synth/Drums[Reggaeton Kit, pad 8 Tom]/vel_tone_oct	0.1109
+synth/Drums[Reggaeton Kit, pad 9 Rim]/attack_rise_db	11.6593
+synth/Drums[Reggaeton Kit, pad 9 Rim]/decay_err_pct	-2.2222
+synth/Drums[Reggaeton Kit, pad 9 Rim]/level_vs_kick_db	-3.7522
+synth/Drums[Reggaeton Kit, pad 9 Rim]/peak_dbfs	-4.916
+synth/Drums[Reggaeton Kit, pad 9 Rim]/repeat_db	0.5416
+synth/Drums[Reggaeton Kit, pad 9 Rim]/vel_tone_least_step_oct	0.0263
+synth/Drums[Reggaeton Kit, pad 9 Rim]/vel_tone_oct	0.1815
+synth/Drums[Synth-pop Kit, pad 1 Kick]/attack_rise_db	16.8547
+synth/Drums[Synth-pop Kit, pad 1 Kick]/decay_err_pct	0.8571
+synth/Drums[Synth-pop Kit, pad 1 Kick]/level_vs_kick_db	0
+synth/Drums[Synth-pop Kit, pad 1 Kick]/peak_dbfs	-8.6291
+synth/Drums[Synth-pop Kit, pad 1 Kick]/repeat_cents	4.7676
+synth/Drums[Synth-pop Kit, pad 1 Kick]/repeat_db	0.554
+synth/Drums[Synth-pop Kit, pad 1 Kick]/vel_tone_least_step_oct	0.003
+synth/Drums[Synth-pop Kit, pad 1 Kick]/vel_tone_oct	0.0867
+synth/Drums[Synth-pop Kit, pad 10 Cowbell]/attack_rise_db	9.1934
+synth/Drums[Synth-pop Kit, pad 10 Cowbell]/decay_err_pct	5
+synth/Drums[Synth-pop Kit, pad 10 Cowbell]/level_vs_kick_db	-4.2643
+synth/Drums[Synth-pop Kit, pad 10 Cowbell]/peak_dbfs	-4.1696
+synth/Drums[Synth-pop Kit, pad 10 Cowbell]/repeat_db	0.5126
+synth/Drums[Synth-pop Kit, pad 10 Cowbell]/vel_tone_least_step_oct	0.0517
+synth/Drums[Synth-pop Kit, pad 10 Cowbell]/vel_tone_oct	0.2876
+synth/Drums[Synth-pop Kit, pad 11 Cymbal]/attack_rise_db	8.7873
+synth/Drums[Synth-pop Kit, pad 11 Cymbal]/decay_err_pct	-0.625
+synth/Drums[Synth-pop Kit, pad 11 Cymbal]/level_vs_kick_db	-3.9712
+synth/Drums[Synth-pop Kit, pad 11 Cymbal]/peak_dbfs	-7.0955
+synth/Drums[Synth-pop Kit, pad 11 Cymbal]/repeat_db	0.532
+synth/Drums[Synth-pop Kit, pad 11 Cymbal]/vel_tone_least_step_oct	0.0924
+synth/Drums[Synth-pop Kit, pad 11 Cymbal]/vel_tone_oct	0.4885
+synth/Drums[Synth-pop Kit, pad 12 FM perc]/attack_rise_db	10.8826
+synth/Drums[Synth-pop Kit, pad 12 FM perc]/decay_err_pct	0.5
+synth/Drums[Synth-pop Kit, pad 12 FM perc]/level_vs_kick_db	-2.9955
+synth/Drums[Synth-pop Kit, pad 12 FM perc]/peak_dbfs	-12.4995
+synth/Drums[Synth-pop Kit, pad 12 FM perc]/repeat_db	0.5547
+synth/Drums[Synth-pop Kit, pad 12 FM perc]/vel_tone_least_step_oct	0.3274
+synth/Drums[Synth-pop Kit, pad 12 FM perc]/vel_tone_oct	1.4079
+synth/Drums[Synth-pop Kit, pad 13 Shaker]/attack_rise_db	12.3579
+synth/Drums[Synth-pop Kit, pad 13 Shaker]/decay_err_pct	-1.0714
+synth/Drums[Synth-pop Kit, pad 13 Shaker]/level_vs_kick_db	-5.0252
+synth/Drums[Synth-pop Kit, pad 13 Shaker]/peak_dbfs	-3.9185
+synth/Drums[Synth-pop Kit, pad 13 Shaker]/repeat_db	0.8668
+synth/Drums[Synth-pop Kit, pad 13 Shaker]/vel_tone_least_step_oct	0.0783
+synth/Drums[Synth-pop Kit, pad 13 Shaker]/vel_tone_oct	0.5347
+synth/Drums[Synth-pop Kit, pad 14 Woodblock]/attack_rise_db	6.5824
+synth/Drums[Synth-pop Kit, pad 14 Woodblock]/decay_err_pct	-1.1111
+synth/Drums[Synth-pop Kit, pad 14 Woodblock]/level_vs_kick_db	-3.3057
+synth/Drums[Synth-pop Kit, pad 14 Woodblock]/peak_dbfs	-6.5454
+synth/Drums[Synth-pop Kit, pad 14 Woodblock]/repeat_db	0.5445
+synth/Drums[Synth-pop Kit, pad 14 Woodblock]/vel_tone_least_step_oct	0
+synth/Drums[Synth-pop Kit, pad 14 Woodblock]/vel_tone_oct	0.0234
+synth/Drums[Synth-pop Kit, pad 15 Snare]/attack_rise_db	12.7694
+synth/Drums[Synth-pop Kit, pad 15 Snare]/decay_err_pct	6.3636
+synth/Drums[Synth-pop Kit, pad 15 Snare]/level_vs_kick_db	-2.4911
+synth/Drums[Synth-pop Kit, pad 15 Snare]/peak_dbfs	-4.9874
+synth/Drums[Synth-pop Kit, pad 15 Snare]/repeat_db	0.1955
+synth/Drums[Synth-pop Kit, pad 15 Snare]/vel_tone_least_step_oct	0.0663
+synth/Drums[Synth-pop Kit, pad 15 Snare]/vel_tone_oct	0.4438
+synth/Drums[Synth-pop Kit, pad 16 Tom]/attack_rise_db	11.5893
+synth/Drums[Synth-pop Kit, pad 16 Tom]/decay_err_pct	-2.4444
+synth/Drums[Synth-pop Kit, pad 16 Tom]/level_vs_kick_db	-3.1707
+synth/Drums[Synth-pop Kit, pad 16 Tom]/peak_dbfs	-7.9611
+synth/Drums[Synth-pop Kit, pad 16 Tom]/repeat_db	0.4111
+synth/Drums[Synth-pop Kit, pad 16 Tom]/vel_tone_least_step_oct	0.0058
+synth/Drums[Synth-pop Kit, pad 16 Tom]/vel_tone_oct	0.0992
+synth/Drums[Synth-pop Kit, pad 2 Snare]/attack_rise_db	12.2818
+synth/Drums[Synth-pop Kit, pad 2 Snare]/decay_err_pct	19.2
+synth/Drums[Synth-pop Kit, pad 2 Snare]/level_vs_kick_db	-2.7569
+synth/Drums[Synth-pop Kit, pad 2 Snare]/peak_dbfs	-5.6931
+synth/Drums[Synth-pop Kit, pad 2 Snare]/repeat_db	0.3347
+synth/Drums[Synth-pop Kit, pad 2 Snare]/vel_tone_least_step_oct	0.0995
+synth/Drums[Synth-pop Kit, pad 2 Snare]/vel_tone_oct	0.5858
+synth/Drums[Synth-pop Kit, pad 3 Clap]/attack_rise_db	10.095
+synth/Drums[Synth-pop Kit, pad 3 Clap]/decay_err_pct	6.3333
+synth/Drums[Synth-pop Kit, pad 3 Clap]/level_vs_kick_db	-4.7622
+synth/Drums[Synth-pop Kit, pad 3 Clap]/peak_dbfs	-3.4711
+synth/Drums[Synth-pop Kit, pad 3 Clap]/repeat_db	0.8035
+synth/Drums[Synth-pop Kit, pad 3 Clap]/vel_tone_least_step_oct	0.0863
+synth/Drums[Synth-pop Kit, pad 3 Clap]/vel_tone_oct	0.4943
+synth/Drums[Synth-pop Kit, pad 4 Closed hat]/attack_rise_db	10.2902
+synth/Drums[Synth-pop Kit, pad 4 Closed hat]/decay_err_pct	-1.8182
+synth/Drums[Synth-pop Kit, pad 4 Closed hat]/level_vs_kick_db	-4.6188
+synth/Drums[Synth-pop Kit, pad 4 Closed hat]/peak_dbfs	-4.3982
+synth/Drums[Synth-pop Kit, pad 4 Closed hat]/repeat_db	0.8687
+synth/Drums[Synth-pop Kit, pad 4 Closed hat]/vel_tone_least_step_oct	0.1035
+synth/Drums[Synth-pop Kit, pad 4 Closed hat]/vel_tone_oct	0.572
+synth/Drums[Synth-pop Kit, pad 5 Open hat]/attack_rise_db	10.2078
+synth/Drums[Synth-pop Kit, pad 5 Open hat]/decay_err_pct	-1.75
+synth/Drums[Synth-pop Kit, pad 5 Open hat]/level_vs_kick_db	-4.1471
+synth/Drums[Synth-pop Kit, pad 5 Open hat]/peak_dbfs	-7.2684
+synth/Drums[Synth-pop Kit, pad 5 Open hat]/repeat_db	0.5065
+synth/Drums[Synth-pop Kit, pad 5 Open hat]/vel_tone_least_step_oct	0.0907
+synth/Drums[Synth-pop Kit, pad 5 Open hat]/vel_tone_oct	0.5696
+synth/Drums[Synth-pop Kit, pad 6 Zap]/attack_rise_db	13.2084
+synth/Drums[Synth-pop Kit, pad 6 Zap]/decay_err_pct	0.8
+synth/Drums[Synth-pop Kit, pad 6 Zap]/level_vs_kick_db	-2.8818
+synth/Drums[Synth-pop Kit, pad 6 Zap]/peak_dbfs	-12.6767
+synth/Drums[Synth-pop Kit, pad 6 Zap]/repeat_db	0.5538
+synth/Drums[Synth-pop Kit, pad 6 Zap]/vel_tone_least_step_oct	0.0139
+synth/Drums[Synth-pop Kit, pad 6 Zap]/vel_tone_oct	0.1082
+synth/Drums[Synth-pop Kit, pad 7 Zap]/attack_rise_db	13.0226
+synth/Drums[Synth-pop Kit, pad 7 Zap]/decay_err_pct	0
+synth/Drums[Synth-pop Kit, pad 7 Zap]/level_vs_kick_db	-2.9639
+synth/Drums[Synth-pop Kit, pad 7 Zap]/peak_dbfs	-12.5529
+synth/Drums[Synth-pop Kit, pad 7 Zap]/repeat_db	0.5651
+synth/Drums[Synth-pop Kit, pad 7 Zap]/vel_tone_least_step_oct	0.0146
+synth/Drums[Synth-pop Kit, pad 7 Zap]/vel_tone_oct	0.119
+synth/Drums[Synth-pop Kit, pad 8 Zap]/attack_rise_db	12.9319
+synth/Drums[Synth-pop Kit, pad 8 Zap]/decay_err_pct	0.75
+synth/Drums[Synth-pop Kit, pad 8 Zap]/level_vs_kick_db	-3.1538
+synth/Drums[Synth-pop Kit, pad 8 Zap]/peak_dbfs	-12.543
+synth/Drums[Synth-pop Kit, pad 8 Zap]/repeat_db	0.5533
+synth/Drums[Synth-pop Kit, pad 8 Zap]/vel_tone_least_step_oct	0.0186
+synth/Drums[Synth-pop Kit, pad 8 Zap]/vel_tone_oct	0.1374
+synth/Drums[Synth-pop Kit, pad 9 Rim]/attack_rise_db	11.9331
+synth/Drums[Synth-pop Kit, pad 9 Rim]/decay_err_pct	-2.2222
+synth/Drums[Synth-pop Kit, pad 9 Rim]/level_vs_kick_db	-3.651
+synth/Drums[Synth-pop Kit, pad 9 Rim]/peak_dbfs	-3.7996
+synth/Drums[Synth-pop Kit, pad 9 Rim]/repeat_db	0.5578
+synth/Drums[Synth-pop Kit, pad 9 Rim]/vel_tone_least_step_oct	0.0264
+synth/Drums[Synth-pop Kit, pad 9 Rim]/vel_tone_oct	0.1944
+synth/Drums[Techno Kit, pad 1 Kick]/attack_rise_db	10.3551
+synth/Drums[Techno Kit, pad 1 Kick]/decay_err_pct	2.5455
+synth/Drums[Techno Kit, pad 1 Kick]/level_vs_kick_db	0
+synth/Drums[Techno Kit, pad 1 Kick]/peak_dbfs	-12.9568
+synth/Drums[Techno Kit, pad 1 Kick]/repeat_cents	4.8156
+synth/Drums[Techno Kit, pad 1 Kick]/repeat_db	0.088
+synth/Drums[Techno Kit, pad 1 Kick]/vel_tone_least_step_oct	0.0173
+synth/Drums[Techno Kit, pad 1 Kick]/vel_tone_oct	0.432
+synth/Drums[Techno Kit, pad 10 Cymbal]/attack_rise_db	6.2776
+synth/Drums[Techno Kit, pad 10 Cymbal]/decay_err_pct	-5.75
+synth/Drums[Techno Kit, pad 10 Cymbal]/level_vs_kick_db	-3.9722
+synth/Drums[Techno Kit, pad 10 Cymbal]/peak_dbfs	-6.7603
+synth/Drums[Techno Kit, pad 10 Cymbal]/repeat_db	0.5226
+synth/Drums[Techno Kit, pad 10 Cymbal]/vel_tone_least_step_oct	0.09
+synth/Drums[Techno Kit, pad 10 Cymbal]/vel_tone_oct	0.4624
+synth/Drums[Techno Kit, pad 11 Cymbal]/attack_rise_db	8.86
+synth/Drums[Techno Kit, pad 11 Cymbal]/decay_err_pct	0
+synth/Drums[Techno Kit, pad 11 Cymbal]/level_vs_kick_db	-4.1035
+synth/Drums[Techno Kit, pad 11 Cymbal]/peak_dbfs	-9.1655
+synth/Drums[Techno Kit, pad 11 Cymbal]/repeat_db	0.5923
+synth/Drums[Techno Kit, pad 11 Cymbal]/vel_tone_least_step_oct	0.0803
+synth/Drums[Techno Kit, pad 11 Cymbal]/vel_tone_oct	0.4445
+synth/Drums[Techno Kit, pad 12 Zap]/attack_rise_db	12.2259
+synth/Drums[Techno Kit, pad 12 Zap]/decay_err_pct	-2.5
+synth/Drums[Techno Kit, pad 12 Zap]/level_vs_kick_db	-3.2436
+synth/Drums[Techno Kit, pad 12 Zap]/peak_dbfs	-13.367
+synth/Drums[Techno Kit, pad 12 Zap]/repeat_db	0.5695
+synth/Drums[Techno Kit, pad 12 Zap]/vel_tone_least_step_oct	0.0004
+synth/Drums[Techno Kit, pad 12 Zap]/vel_tone_oct	0.0953
+synth/Drums[Techno Kit, pad 13 FM perc]/attack_rise_db	10.9222
+synth/Drums[Techno Kit, pad 13 FM perc]/decay_err_pct	0.625
+synth/Drums[Techno Kit, pad 13 FM perc]/level_vs_kick_db	-3.4055
+synth/Drums[Techno Kit, pad 13 FM perc]/peak_dbfs	-10.3188
+synth/Drums[Techno Kit, pad 13 FM perc]/repeat_db	0.5766
+synth/Drums[Techno Kit, pad 13 FM perc]/vel_tone_least_step_oct	0.1094
+synth/Drums[Techno Kit, pad 13 FM perc]/vel_tone_oct	0.8167
+synth/Drums[Techno Kit, pad 14 Kick]/attack_rise_db	13.5636
+synth/Drums[Techno Kit, pad 14 Kick]/decay_err_pct	36.8889
+synth/Drums[Techno Kit, pad 14 Kick]/level_vs_kick_db	-1.4034
+synth/Drums[Techno Kit, pad 14 Kick]/peak_dbfs	-13.5563
+synth/Drums[Techno Kit, pad 14 Kick]/repeat_cents	7.4416
+synth/Drums[Techno Kit, pad 14 Kick]/repeat_db	0.4833
+synth/Drums[Techno Kit, pad 14 Kick]/vel_tone_least_step_oct	0.0079
+synth/Drums[Techno Kit, pad 14 Kick]/vel_tone_oct	0.3154
+synth/Drums[Techno Kit, pad 15 Shaker]/attack_rise_db	14.1838
+synth/Drums[Techno Kit, pad 15 Shaker]/decay_err_pct	1.8182
+synth/Drums[Techno Kit, pad 15 Shaker]/level_vs_kick_db	-5.0654
+synth/Drums[Techno Kit, pad 15 Shaker]/peak_dbfs	-4.0074
+synth/Drums[Techno Kit, pad 15 Shaker]/repeat_db	0.3078
+synth/Drums[Techno Kit, pad 15 Shaker]/vel_tone_least_step_oct	0.0711
+synth/Drums[Techno Kit, pad 15 Shaker]/vel_tone_oct	0.4872
+synth/Drums[Techno Kit, pad 16 Cowbell]/attack_rise_db	8.8059
+synth/Drums[Techno Kit, pad 16 Cowbell]/decay_err_pct	7.2
+synth/Drums[Techno Kit, pad 16 Cowbell]/level_vs_kick_db	-3.6929
+synth/Drums[Techno Kit, pad 16 Cowbell]/peak_dbfs	-6.8216
+synth/Drums[Techno Kit, pad 16 Cowbell]/repeat_db	0.6214
+synth/Drums[Techno Kit, pad 16 Cowbell]/vel_tone_least_step_oct	0.0649
+synth/Drums[Techno Kit, pad 16 Cowbell]/vel_tone_oct	0.3315
+synth/Drums[Techno Kit, pad 2 Snare]/attack_rise_db	10.264
+synth/Drums[Techno Kit, pad 2 Snare]/decay_err_pct	3.1818
+synth/Drums[Techno Kit, pad 2 Snare]/level_vs_kick_db	-2.8868
+synth/Drums[Techno Kit, pad 2 Snare]/peak_dbfs	-8.5048
+synth/Drums[Techno Kit, pad 2 Snare]/repeat_db	0.4255
+synth/Drums[Techno Kit, pad 2 Snare]/vel_tone_least_step_oct	0.0819
+synth/Drums[Techno Kit, pad 2 Snare]/vel_tone_oct	0.5038
+synth/Drums[Techno Kit, pad 3 Clap]/attack_rise_db	8.8593
+synth/Drums[Techno Kit, pad 3 Clap]/decay_err_pct	143.1429
+synth/Drums[Techno Kit, pad 3 Clap]/level_vs_kick_db	-3.3322
+synth/Drums[Techno Kit, pad 3 Clap]/peak_dbfs	-4.7245
+synth/Drums[Techno Kit, pad 3 Clap]/repeat_db	0.4947
+synth/Drums[Techno Kit, pad 3 Clap]/vel_tone_least_step_oct	0.0935
+synth/Drums[Techno Kit, pad 3 Clap]/vel_tone_oct	0.5379
+synth/Drums[Techno Kit, pad 4 Closed hat]/attack_rise_db	9.5936
+synth/Drums[Techno Kit, pad 4 Closed hat]/decay_err_pct	0
+synth/Drums[Techno Kit, pad 4 Closed hat]/level_vs_kick_db	-4.5693
+synth/Drums[Techno Kit, pad 4 Closed hat]/peak_dbfs	-5.5078
+synth/Drums[Techno Kit, pad 4 Closed hat]/repeat_db	0.4814
+synth/Drums[Techno Kit, pad 4 Closed hat]/vel_tone_least_step_oct	0.1072
+synth/Drums[Techno Kit, pad 4 Closed hat]/vel_tone_oct	0.6123
+synth/Drums[Techno Kit, pad 5 Open hat]/attack_rise_db	9.419
+synth/Drums[Techno Kit, pad 5 Open hat]/decay_err_pct	1.1538
+synth/Drums[Techno Kit, pad 5 Open hat]/level_vs_kick_db	-4.1143
+synth/Drums[Techno Kit, pad 5 Open hat]/peak_dbfs	-9.1236
+synth/Drums[Techno Kit, pad 5 Open hat]/repeat_db	0.3842
+synth/Drums[Techno Kit, pad 5 Open hat]/vel_tone_least_step_oct	0.0889
+synth/Drums[Techno Kit, pad 5 Open hat]/vel_tone_oct	0.5464
+synth/Drums[Techno Kit, pad 6 Tom]/attack_rise_db	14.1197
+synth/Drums[Techno Kit, pad 6 Tom]/decay_err_pct	-1.6667
+synth/Drums[Techno Kit, pad 6 Tom]/level_vs_kick_db	-3.1838
+synth/Drums[Techno Kit, pad 6 Tom]/peak_dbfs	-5.6831
+synth/Drums[Techno Kit, pad 6 Tom]/repeat_db	0.4219
+synth/Drums[Techno Kit, pad 6 Tom]/vel_tone_least_step_oct	0.0068
+synth/Drums[Techno Kit, pad 6 Tom]/vel_tone_oct	0.1023
+synth/Drums[Techno Kit, pad 7 Tom]/attack_rise_db	12.8709
+synth/Drums[Techno Kit, pad 7 Tom]/decay_err_pct	-1.4286
+synth/Drums[Techno Kit, pad 7 Tom]/level_vs_kick_db	-3.0837
+synth/Drums[Techno Kit, pad 7 Tom]/peak_dbfs	-4.1312
+synth/Drums[Techno Kit, pad 7 Tom]/repeat_db	0.4184
+synth/Drums[Techno Kit, pad 7 Tom]/vel_tone_least_step_oct	0.0063
+synth/Drums[Techno Kit, pad 7 Tom]/vel_tone_oct	0.1001
+synth/Drums[Techno Kit, pad 8 Tom]/attack_rise_db	13.3711
+synth/Drums[Techno Kit, pad 8 Tom]/decay_err_pct	0.3846
+synth/Drums[Techno Kit, pad 8 Tom]/level_vs_kick_db	-3.1556
+synth/Drums[Techno Kit, pad 8 Tom]/peak_dbfs	-3.436
+synth/Drums[Techno Kit, pad 8 Tom]/repeat_db	0.4362
+synth/Drums[Techno Kit, pad 8 Tom]/vel_tone_least_step_oct	0.0057
+synth/Drums[Techno Kit, pad 8 Tom]/vel_tone_oct	0.098
+synth/Drums[Techno Kit, pad 9 Rim]/attack_rise_db	10.3095
+synth/Drums[Techno Kit, pad 9 Rim]/decay_err_pct	907.5
+synth/Drums[Techno Kit, pad 9 Rim]/level_vs_kick_db	-3.7035
+synth/Drums[Techno Kit, pad 9 Rim]/peak_dbfs	-5.6583
+synth/Drums[Techno Kit, pad 9 Rim]/repeat_db	0.5617
+synth/Drums[Techno Kit, pad 9 Rim]/vel_tone_least_step_oct	0.0349
+synth/Drums[Techno Kit, pad 9 Rim]/vel_tone_oct	0.3547
 synth/Drums[Tight Kit, pad 1 Kick]/attack_rise_db	13.7697
 synth/Drums[Tight Kit, pad 1 Kick]/decay_err_pct	-0.3571
 synth/Drums[Tight Kit, pad 1 Kick]/level_vs_kick_db	0
@@ -1271,6 +3541,232 @@ synth/Drums[Tight Kit, pad 9 Rim]/peak_dbfs	-5.9367
 synth/Drums[Tight Kit, pad 9 Rim]/repeat_db	0.5652
 synth/Drums[Tight Kit, pad 9 Rim]/vel_tone_least_step_oct	0.0272
 synth/Drums[Tight Kit, pad 9 Rim]/vel_tone_oct	0.2408
+synth/Drums[Trap Kit, pad 1 808 kick]/attack_rise_db	14.1663
+synth/Drums[Trap Kit, pad 1 808 kick]/decay_err_pct	-6.1
+synth/Drums[Trap Kit, pad 1 808 kick]/level_vs_kick_db	0
+synth/Drums[Trap Kit, pad 1 808 kick]/peak_dbfs	-10.9431
+synth/Drums[Trap Kit, pad 1 808 kick]/repeat_db	0.5594
+synth/Drums[Trap Kit, pad 1 808 kick]/vel_tone_least_step_oct	0.0033
+synth/Drums[Trap Kit, pad 1 808 kick]/vel_tone_oct	0.0304
+synth/Drums[Trap Kit, pad 10 Kick]/attack_rise_db	15.9629
+synth/Drums[Trap Kit, pad 10 Kick]/decay_err_pct	-0.4
+synth/Drums[Trap Kit, pad 10 Kick]/level_vs_kick_db	-0.5627
+synth/Drums[Trap Kit, pad 10 Kick]/peak_dbfs	-11.0319
+synth/Drums[Trap Kit, pad 10 Kick]/repeat_cents	41.3124
+synth/Drums[Trap Kit, pad 10 Kick]/repeat_db	0.5667
+synth/Drums[Trap Kit, pad 10 Kick]/vel_tone_least_step_oct	0.0037
+synth/Drums[Trap Kit, pad 10 Kick]/vel_tone_oct	0.1246
+synth/Drums[Trap Kit, pad 11 Cymbal]/attack_rise_db	8.3424
+synth/Drums[Trap Kit, pad 11 Cymbal]/decay_err_pct	-2.8929
+synth/Drums[Trap Kit, pad 11 Cymbal]/level_vs_kick_db	-3.8969
+synth/Drums[Trap Kit, pad 11 Cymbal]/peak_dbfs	-8.5816
+synth/Drums[Trap Kit, pad 11 Cymbal]/repeat_db	0.5953
+synth/Drums[Trap Kit, pad 11 Cymbal]/vel_tone_least_step_oct	0.1076
+synth/Drums[Trap Kit, pad 11 Cymbal]/vel_tone_oct	0.5917
+synth/Drums[Trap Kit, pad 12 Clap]/attack_rise_db	10.6337
+synth/Drums[Trap Kit, pad 12 Clap]/decay_err_pct	12
+synth/Drums[Trap Kit, pad 12 Clap]/level_vs_kick_db	-5.6663
+synth/Drums[Trap Kit, pad 12 Clap]/peak_dbfs	-4.16
+synth/Drums[Trap Kit, pad 12 Clap]/repeat_db	1.3651
+synth/Drums[Trap Kit, pad 12 Clap]/vel_tone_least_step_oct	0.0832
+synth/Drums[Trap Kit, pad 12 Clap]/vel_tone_oct	0.5234
+synth/Drums[Trap Kit, pad 13 Closed hat]/attack_rise_db	13.381
+synth/Drums[Trap Kit, pad 13 Closed hat]/decay_err_pct	0
+synth/Drums[Trap Kit, pad 13 Closed hat]/level_vs_kick_db	-5.7174
+synth/Drums[Trap Kit, pad 13 Closed hat]/peak_dbfs	-5.7666
+synth/Drums[Trap Kit, pad 13 Closed hat]/repeat_db	2.3263
+synth/Drums[Trap Kit, pad 13 Closed hat]/vel_tone_least_step_oct	0.1245
+synth/Drums[Trap Kit, pad 13 Closed hat]/vel_tone_oct	0.6994
+synth/Drums[Trap Kit, pad 14 808 kick]/attack_rise_db	12.9361
+synth/Drums[Trap Kit, pad 14 808 kick]/decay_err_pct	-5.7273
+synth/Drums[Trap Kit, pad 14 808 kick]/level_vs_kick_db	-0.833
+synth/Drums[Trap Kit, pad 14 808 kick]/peak_dbfs	-13.5393
+synth/Drums[Trap Kit, pad 14 808 kick]/repeat_db	0.5727
+synth/Drums[Trap Kit, pad 14 808 kick]/vel_tone_least_step_oct	0.0183
+synth/Drums[Trap Kit, pad 14 808 kick]/vel_tone_oct	0.1719
+synth/Drums[Trap Kit, pad 15 FM perc]/attack_rise_db	10.465
+synth/Drums[Trap Kit, pad 15 FM perc]/decay_err_pct	0
+synth/Drums[Trap Kit, pad 15 FM perc]/level_vs_kick_db	-2.6992
+synth/Drums[Trap Kit, pad 15 FM perc]/peak_dbfs	-12.9969
+synth/Drums[Trap Kit, pad 15 FM perc]/repeat_db	0.5594
+synth/Drums[Trap Kit, pad 15 FM perc]/vel_tone_least_step_oct	0.1582
+synth/Drums[Trap Kit, pad 15 FM perc]/vel_tone_oct	1.017
+synth/Drums[Trap Kit, pad 16 Zap]/attack_rise_db	14.5547
+synth/Drums[Trap Kit, pad 16 Zap]/decay_err_pct	0.1667
+synth/Drums[Trap Kit, pad 16 Zap]/level_vs_kick_db	-2.8651
+synth/Drums[Trap Kit, pad 16 Zap]/peak_dbfs	-14.543
+synth/Drums[Trap Kit, pad 16 Zap]/repeat_db	0.5538
+synth/Drums[Trap Kit, pad 16 Zap]/vel_tone_least_step_oct	0.0396
+synth/Drums[Trap Kit, pad 16 Zap]/vel_tone_oct	0.2687
+synth/Drums[Trap Kit, pad 2 Snare]/attack_rise_db	11.7495
+synth/Drums[Trap Kit, pad 2 Snare]/decay_err_pct	141.25
+synth/Drums[Trap Kit, pad 2 Snare]/level_vs_kick_db	-2.4949
+synth/Drums[Trap Kit, pad 2 Snare]/peak_dbfs	-8.2823
+synth/Drums[Trap Kit, pad 2 Snare]/repeat_db	0.3554
+synth/Drums[Trap Kit, pad 2 Snare]/vel_tone_least_step_oct	0.1027
+synth/Drums[Trap Kit, pad 2 Snare]/vel_tone_oct	0.6034
+synth/Drums[Trap Kit, pad 3 Clap]/attack_rise_db	10.4222
+synth/Drums[Trap Kit, pad 3 Clap]/decay_err_pct	56.1905
+synth/Drums[Trap Kit, pad 3 Clap]/level_vs_kick_db	-5.0728
+synth/Drums[Trap Kit, pad 3 Clap]/peak_dbfs	-5.2378
+synth/Drums[Trap Kit, pad 3 Clap]/repeat_db	0.1462
+synth/Drums[Trap Kit, pad 3 Clap]/vel_tone_least_step_oct	0.0866
+synth/Drums[Trap Kit, pad 3 Clap]/vel_tone_oct	0.5314
+synth/Drums[Trap Kit, pad 4 Closed hat]/attack_rise_db	13.4234
+synth/Drums[Trap Kit, pad 4 Closed hat]/decay_err_pct	-2.2222
+synth/Drums[Trap Kit, pad 4 Closed hat]/level_vs_kick_db	-4.3119
+synth/Drums[Trap Kit, pad 4 Closed hat]/peak_dbfs	-5.46
+synth/Drums[Trap Kit, pad 4 Closed hat]/repeat_db	0.8675
+synth/Drums[Trap Kit, pad 4 Closed hat]/vel_tone_least_step_oct	0.1195
+synth/Drums[Trap Kit, pad 4 Closed hat]/vel_tone_oct	0.6616
+synth/Drums[Trap Kit, pad 5 Open hat]/attack_rise_db	9.4285
+synth/Drums[Trap Kit, pad 5 Open hat]/decay_err_pct	0.2857
+synth/Drums[Trap Kit, pad 5 Open hat]/level_vs_kick_db	-3.6493
+synth/Drums[Trap Kit, pad 5 Open hat]/peak_dbfs	-8.2768
+synth/Drums[Trap Kit, pad 5 Open hat]/repeat_db	0.5404
+synth/Drums[Trap Kit, pad 5 Open hat]/vel_tone_least_step_oct	0.1007
+synth/Drums[Trap Kit, pad 5 Open hat]/vel_tone_oct	0.6223
+synth/Drums[Trap Kit, pad 6 Tom]/attack_rise_db	11.2522
+synth/Drums[Trap Kit, pad 6 Tom]/decay_err_pct	1
+synth/Drums[Trap Kit, pad 6 Tom]/level_vs_kick_db	-2.749
+synth/Drums[Trap Kit, pad 6 Tom]/peak_dbfs	-11.8894
+synth/Drums[Trap Kit, pad 6 Tom]/repeat_db	0.5059
+synth/Drums[Trap Kit, pad 6 Tom]/vel_tone_least_step_oct	0.0055
+synth/Drums[Trap Kit, pad 6 Tom]/vel_tone_oct	0.0923
+synth/Drums[Trap Kit, pad 7 Tom]/attack_rise_db	9.9036
+synth/Drums[Trap Kit, pad 7 Tom]/decay_err_pct	1.5556
+synth/Drums[Trap Kit, pad 7 Tom]/level_vs_kick_db	-2.9337
+synth/Drums[Trap Kit, pad 7 Tom]/peak_dbfs	-11.9083
+synth/Drums[Trap Kit, pad 7 Tom]/repeat_db	0.5033
+synth/Drums[Trap Kit, pad 7 Tom]/vel_tone_least_step_oct	0.0055
+synth/Drums[Trap Kit, pad 7 Tom]/vel_tone_oct	0.0884
+synth/Drums[Trap Kit, pad 8 Tom]/attack_rise_db	11.8249
+synth/Drums[Trap Kit, pad 8 Tom]/decay_err_pct	2.25
+synth/Drums[Trap Kit, pad 8 Tom]/level_vs_kick_db	-2.6332
+synth/Drums[Trap Kit, pad 8 Tom]/peak_dbfs	-11.7382
+synth/Drums[Trap Kit, pad 8 Tom]/repeat_db	0.5068
+synth/Drums[Trap Kit, pad 8 Tom]/vel_tone_least_step_oct	0.0054
+synth/Drums[Trap Kit, pad 8 Tom]/vel_tone_oct	0.0832
+synth/Drums[Trap Kit, pad 9 Rim]/attack_rise_db	11.6816
+synth/Drums[Trap Kit, pad 9 Rim]/decay_err_pct	-2
+synth/Drums[Trap Kit, pad 9 Rim]/level_vs_kick_db	-3.0636
+synth/Drums[Trap Kit, pad 9 Rim]/peak_dbfs	-5.6766
+synth/Drums[Trap Kit, pad 9 Rim]/repeat_db	0.5395
+synth/Drums[Trap Kit, pad 9 Rim]/vel_tone_least_step_oct	0.0283
+synth/Drums[Trap Kit, pad 9 Rim]/vel_tone_oct	0.2312
+synth/Drums[Vintage Rhythm Kit, pad 1 Kick]/attack_rise_db	11.4858
+synth/Drums[Vintage Rhythm Kit, pad 1 Kick]/decay_err_pct	1
+synth/Drums[Vintage Rhythm Kit, pad 1 Kick]/level_vs_kick_db	0
+synth/Drums[Vintage Rhythm Kit, pad 1 Kick]/peak_dbfs	-11.6011
+synth/Drums[Vintage Rhythm Kit, pad 1 Kick]/repeat_cents	91.812
+synth/Drums[Vintage Rhythm Kit, pad 1 Kick]/repeat_db	0.5391
+synth/Drums[Vintage Rhythm Kit, pad 1 Kick]/vel_tone_least_step_oct	0.0007
+synth/Drums[Vintage Rhythm Kit, pad 1 Kick]/vel_tone_oct	0.009
+synth/Drums[Vintage Rhythm Kit, pad 10 Cowbell]/attack_rise_db	9.2641
+synth/Drums[Vintage Rhythm Kit, pad 10 Cowbell]/decay_err_pct	7.9167
+synth/Drums[Vintage Rhythm Kit, pad 10 Cowbell]/level_vs_kick_db	-3.45
+synth/Drums[Vintage Rhythm Kit, pad 10 Cowbell]/peak_dbfs	-6.9455
+synth/Drums[Vintage Rhythm Kit, pad 10 Cowbell]/repeat_db	0.5135
+synth/Drums[Vintage Rhythm Kit, pad 10 Cowbell]/vel_tone_least_step_oct	0.0652
+synth/Drums[Vintage Rhythm Kit, pad 10 Cowbell]/vel_tone_oct	0.3454
+synth/Drums[Vintage Rhythm Kit, pad 11 Cymbal]/attack_rise_db	9.0244
+synth/Drums[Vintage Rhythm Kit, pad 11 Cymbal]/decay_err_pct	-7.5333
+synth/Drums[Vintage Rhythm Kit, pad 11 Cymbal]/level_vs_kick_db	-4.3556
+synth/Drums[Vintage Rhythm Kit, pad 11 Cymbal]/peak_dbfs	-9.5516
+synth/Drums[Vintage Rhythm Kit, pad 11 Cymbal]/repeat_db	0.5074
+synth/Drums[Vintage Rhythm Kit, pad 11 Cymbal]/vel_tone_least_step_oct	0.118
+synth/Drums[Vintage Rhythm Kit, pad 11 Cymbal]/vel_tone_oct	0.6816
+synth/Drums[Vintage Rhythm Kit, pad 12 Shaker]/attack_rise_db	13.0581
+synth/Drums[Vintage Rhythm Kit, pad 12 Shaker]/decay_err_pct	2.8571
+synth/Drums[Vintage Rhythm Kit, pad 12 Shaker]/level_vs_kick_db	-4.9212
+synth/Drums[Vintage Rhythm Kit, pad 12 Shaker]/peak_dbfs	-7.6676
+synth/Drums[Vintage Rhythm Kit, pad 12 Shaker]/repeat_db	0.026
+synth/Drums[Vintage Rhythm Kit, pad 12 Shaker]/vel_tone_least_step_oct	0.069
+synth/Drums[Vintage Rhythm Kit, pad 12 Shaker]/vel_tone_oct	0.4813
+synth/Drums[Vintage Rhythm Kit, pad 13 Shaker]/attack_rise_db	12.1137
+synth/Drums[Vintage Rhythm Kit, pad 13 Shaker]/decay_err_pct	-0.3333
+synth/Drums[Vintage Rhythm Kit, pad 13 Shaker]/level_vs_kick_db	-4.6621
+synth/Drums[Vintage Rhythm Kit, pad 13 Shaker]/peak_dbfs	-6.6011
+synth/Drums[Vintage Rhythm Kit, pad 13 Shaker]/repeat_db	0.6712
+synth/Drums[Vintage Rhythm Kit, pad 13 Shaker]/vel_tone_least_step_oct	0.0762
+synth/Drums[Vintage Rhythm Kit, pad 13 Shaker]/vel_tone_oct	0.533
+synth/Drums[Vintage Rhythm Kit, pad 14 Shaker]/attack_rise_db	22.3708
+synth/Drums[Vintage Rhythm Kit, pad 14 Shaker]/decay_err_pct	11.3636
+synth/Drums[Vintage Rhythm Kit, pad 14 Shaker]/level_vs_kick_db	-4.591
+synth/Drums[Vintage Rhythm Kit, pad 14 Shaker]/peak_dbfs	-7.9829
+synth/Drums[Vintage Rhythm Kit, pad 14 Shaker]/repeat_db	1.5725
+synth/Drums[Vintage Rhythm Kit, pad 14 Shaker]/vel_tone_least_step_oct	0.0436
+synth/Drums[Vintage Rhythm Kit, pad 14 Shaker]/vel_tone_oct	0.389
+synth/Drums[Vintage Rhythm Kit, pad 15 Bell]/attack_rise_db	9.7023
+synth/Drums[Vintage Rhythm Kit, pad 15 Bell]/decay_err_pct	-1
+synth/Drums[Vintage Rhythm Kit, pad 15 Bell]/level_vs_kick_db	-3.7092
+synth/Drums[Vintage Rhythm Kit, pad 15 Bell]/peak_dbfs	-12.0709
+synth/Drums[Vintage Rhythm Kit, pad 15 Bell]/repeat_db	0.4788
+synth/Drums[Vintage Rhythm Kit, pad 15 Bell]/vel_tone_least_step_oct	0.0128
+synth/Drums[Vintage Rhythm Kit, pad 15 Bell]/vel_tone_oct	0.1688
+synth/Drums[Vintage Rhythm Kit, pad 16 Tom]/attack_rise_db	9.0005
+synth/Drums[Vintage Rhythm Kit, pad 16 Tom]/decay_err_pct	-0.3333
+synth/Drums[Vintage Rhythm Kit, pad 16 Tom]/level_vs_kick_db	-2.9319
+synth/Drums[Vintage Rhythm Kit, pad 16 Tom]/peak_dbfs	-11.4682
+synth/Drums[Vintage Rhythm Kit, pad 16 Tom]/repeat_db	0.4927
+synth/Drums[Vintage Rhythm Kit, pad 16 Tom]/vel_tone_least_step_oct	0.0005
+synth/Drums[Vintage Rhythm Kit, pad 16 Tom]/vel_tone_oct	0.0173
+synth/Drums[Vintage Rhythm Kit, pad 2 Snare]/attack_rise_db	11.3239
+synth/Drums[Vintage Rhythm Kit, pad 2 Snare]/decay_err_pct	-8.5714
+synth/Drums[Vintage Rhythm Kit, pad 2 Snare]/level_vs_kick_db	-2.3726
+synth/Drums[Vintage Rhythm Kit, pad 2 Snare]/peak_dbfs	-7.4209
+synth/Drums[Vintage Rhythm Kit, pad 2 Snare]/repeat_db	0.4936
+synth/Drums[Vintage Rhythm Kit, pad 2 Snare]/vel_tone_least_step_oct	0.1614
+synth/Drums[Vintage Rhythm Kit, pad 2 Snare]/vel_tone_oct	0.9601
+synth/Drums[Vintage Rhythm Kit, pad 3 Rim]/attack_rise_db	10.8994
+synth/Drums[Vintage Rhythm Kit, pad 3 Rim]/decay_err_pct	-3.3333
+synth/Drums[Vintage Rhythm Kit, pad 3 Rim]/level_vs_kick_db	-3.2612
+synth/Drums[Vintage Rhythm Kit, pad 3 Rim]/peak_dbfs	-6.3283
+synth/Drums[Vintage Rhythm Kit, pad 3 Rim]/repeat_db	0.4944
+synth/Drums[Vintage Rhythm Kit, pad 3 Rim]/vel_tone_least_step_oct	0.0233
+synth/Drums[Vintage Rhythm Kit, pad 3 Rim]/vel_tone_oct	0.1109
+synth/Drums[Vintage Rhythm Kit, pad 4 Closed hat]/attack_rise_db	10.2447
+synth/Drums[Vintage Rhythm Kit, pad 4 Closed hat]/decay_err_pct	0
+synth/Drums[Vintage Rhythm Kit, pad 4 Closed hat]/level_vs_kick_db	-5.6896
+synth/Drums[Vintage Rhythm Kit, pad 4 Closed hat]/peak_dbfs	-8.1581
+synth/Drums[Vintage Rhythm Kit, pad 4 Closed hat]/repeat_db	0.0484
+synth/Drums[Vintage Rhythm Kit, pad 4 Closed hat]/vel_tone_least_step_oct	0.1015
+synth/Drums[Vintage Rhythm Kit, pad 4 Closed hat]/vel_tone_oct	0.5976
+synth/Drums[Vintage Rhythm Kit, pad 5 Open hat]/attack_rise_db	7.2076
+synth/Drums[Vintage Rhythm Kit, pad 5 Open hat]/decay_err_pct	-0.3571
+synth/Drums[Vintage Rhythm Kit, pad 5 Open hat]/level_vs_kick_db	-4.2159
+synth/Drums[Vintage Rhythm Kit, pad 5 Open hat]/peak_dbfs	-8.8537
+synth/Drums[Vintage Rhythm Kit, pad 5 Open hat]/repeat_db	1.098
+synth/Drums[Vintage Rhythm Kit, pad 5 Open hat]/vel_tone_least_step_oct	0.12
+synth/Drums[Vintage Rhythm Kit, pad 5 Open hat]/vel_tone_oct	0.7179
+synth/Drums[Vintage Rhythm Kit, pad 6 Conga]/attack_rise_db	8.8192
+synth/Drums[Vintage Rhythm Kit, pad 6 Conga]/decay_err_pct	-1.5385
+synth/Drums[Vintage Rhythm Kit, pad 6 Conga]/level_vs_kick_db	-3.1626
+synth/Drums[Vintage Rhythm Kit, pad 6 Conga]/peak_dbfs	-10.594
+synth/Drums[Vintage Rhythm Kit, pad 6 Conga]/repeat_db	0.7137
+synth/Drums[Vintage Rhythm Kit, pad 6 Conga]/vel_tone_least_step_oct	0.0016
+synth/Drums[Vintage Rhythm Kit, pad 6 Conga]/vel_tone_oct	0.0495
+synth/Drums[Vintage Rhythm Kit, pad 7 Conga]/attack_rise_db	9.478
+synth/Drums[Vintage Rhythm Kit, pad 7 Conga]/decay_err_pct	0.5882
+synth/Drums[Vintage Rhythm Kit, pad 7 Conga]/level_vs_kick_db	-3.2131
+synth/Drums[Vintage Rhythm Kit, pad 7 Conga]/peak_dbfs	-9.7682
+synth/Drums[Vintage Rhythm Kit, pad 7 Conga]/repeat_db	0.4833
+synth/Drums[Vintage Rhythm Kit, pad 7 Conga]/vel_tone_least_step_oct	0.0008
+synth/Drums[Vintage Rhythm Kit, pad 7 Conga]/vel_tone_oct	0.0326
+synth/Drums[Vintage Rhythm Kit, pad 8 Conga]/attack_rise_db	8.2533
+synth/Drums[Vintage Rhythm Kit, pad 8 Conga]/decay_err_pct	0.7143
+synth/Drums[Vintage Rhythm Kit, pad 8 Conga]/level_vs_kick_db	-3.0634
+synth/Drums[Vintage Rhythm Kit, pad 8 Conga]/peak_dbfs	-9.3597
+synth/Drums[Vintage Rhythm Kit, pad 8 Conga]/repeat_db	0.4741
+synth/Drums[Vintage Rhythm Kit, pad 8 Conga]/vel_tone_least_step_oct	0.0007
+synth/Drums[Vintage Rhythm Kit, pad 8 Conga]/vel_tone_oct	0.0243
+synth/Drums[Vintage Rhythm Kit, pad 9 Woodblock]/attack_rise_db	7.2961
+synth/Drums[Vintage Rhythm Kit, pad 9 Woodblock]/decay_err_pct	0
+synth/Drums[Vintage Rhythm Kit, pad 9 Woodblock]/level_vs_kick_db	-3.6812
+synth/Drums[Vintage Rhythm Kit, pad 9 Woodblock]/peak_dbfs	-10.0568
+synth/Drums[Vintage Rhythm Kit, pad 9 Woodblock]/repeat_db	0.486
+synth/Drums[Vintage Rhythm Kit, pad 9 Woodblock]/vel_tone_least_step_oct	0
+synth/Drums[Vintage Rhythm Kit, pad 9 Woodblock]/vel_tone_oct	0.0015
 synth/Drums[a hit at frame 1003, blocks of 1 to 1000]/max_diff	0
 synth/Drums[a hit at frame 1003, blocks of 1 to 1000]/start_err_frames	0
 synth/Drums[a kick choked, Current]/step_db	-87.4405

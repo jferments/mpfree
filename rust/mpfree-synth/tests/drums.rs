@@ -74,7 +74,8 @@ fn parameters_and_kits_are_valid() {
     assert_eq!(PARAMS.len(), PADS * (field::COUNT + field::MORE) + 4);
     for kit in Drums::presets() {
         for &(id, v) in kit.values {
-            let p = PARAMS
+            // The voices' settings, or the drums' effects and sends.
+            let p = mpfree_synth::drum_fx::ALL
                 .iter()
                 .find(|p| p.id == id)
                 .unwrap_or_else(|| panic!("{}: no param {id}", kit.name));
@@ -482,6 +483,28 @@ fn a_current_choke_is_quick() {
     assert!(rms(&l[4000..4800]) > 1e-3);
     let after = rms(&l[4800 + 300..4800 + 2400]);
     assert!(after < 1e-6, "{after}");
+}
+
+#[test]
+fn a_hard_click_ends_with_its_hit() {
+    // A click louder than 1 (Click at 100, a full-velocity hit with its
+    // accent) once kept its hit alive for ever, at a level under hearing:
+    // every Current drum with a click ends with its sound.
+    for m in [
+        model::TOM,
+        model::RIM,
+        model::CONGA,
+        model::KICK,
+        model::WOODBLOCK,
+    ] {
+        let mut d = kit("Init Kit");
+        d.set_param(pad_id(6, field::MODEL), f32::from(m));
+        d.set_param(pad_id(6, field::DECAY), 300.0);
+        d.set_param(pad_id(6, field::SNAP), 100.0);
+        d.set_param(pad_id(6, field::ACCENT), 100.0);
+        render(&mut d, RATE as usize * 2, &[(0, hit(6, 127))], |_| 256);
+        assert_eq!(d.active_voices(), 0, "{}", MODELS[usize::from(m)]);
+    }
 }
 
 #[test]
