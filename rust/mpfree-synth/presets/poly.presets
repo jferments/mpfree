@@ -293,6 +293,120 @@ pressure.depth-2 = 25
 
 mpfree-preset = 2
 engine = mpfree.poly
+name = Singing Lead
+
+# Osc 1
+osc-1.wave = Pulse
+osc-1.width = 50
+
+# Osc 2
+osc-2.octave = 1
+osc-2.fine = 5
+osc-2.level = 45
+
+# Mix
+mix.sub = 30
+
+# Filter
+filter.cutoff = 1500
+filter.resonance = 30
+filter.drive = 6
+filter.env-amount = 1.4
+filter.key-track = 30
+filter.velocity = 1
+
+# Filter env
+filter-env.decay = 450
+filter-env.sustain = 45
+
+# Amp env
+amp-env.attack = 4
+amp-env.release = 180
+
+# LFO 2
+lfo-2.rate = 5.6
+lfo-2.fade-in = 700
+lfo-2.to-pitch = 0.25
+
+# Voice
+voice.mode = Legato
+voice.glide = 60
+voice.bend-range = 7
+
+# Output
+output.level = 2.4
+
+# Routes
+routes.from-2 = Tone
+routes.to-2 = Cutoff
+routes.depth-2 = 40
+routes.from-3 = Velocity
+routes.to-3 = Drive
+routes.depth-3 = 25
+routes.from-4 = Key
+routes.to-4 = Level
+routes.depth-4 = -12
+
+# Pressure
+pressure.to-1 = Cutoff
+pressure.depth-1 = 25
+pressure.to-2 = Vibrato
+pressure.depth-2 = 40
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = Drift Pad
+
+# Osc 1
+osc-1.width = 50
+
+# Osc 2
+osc-2.wave = Pulse
+osc-2.fine = 6
+osc-2.level = 75
+
+# Filter
+filter.cutoff = 1300
+filter.resonance = 20
+filter.env-amount = 0.8
+
+# Filter env
+filter-env.attack = 400
+filter-env.decay = 2500
+filter-env.sustain = 60
+filter-env.release = 1500
+
+# Amp env
+amp-env.attack = 450
+amp-env.decay = 1500
+amp-env.sustain = 90
+amp-env.release = 1500
+
+# LFO 2
+lfo-2.shape = Triangle
+lfo-2.rate = 0.35
+lfo-2.retrigger = 0
+lfo-2.to-cutoff = 0.5
+lfo-2.to-width = 15
+
+# Output
+output.level = -3.6
+
+# Routes
+routes.to-1 = Cutoff
+routes.depth-1 = 30
+routes.from-2 = Random
+routes.to-2 = Pan
+routes.depth-2 = 60
+routes.from-3 = Random
+routes.to-3 = Pitch
+routes.depth-3 = 0.6
+routes.from-4 = Key
+routes.to-4 = Level
+routes.depth-4 = -20
+
+mpfree-preset = 2
+engine = mpfree.poly
 name = Super Lead
 
 # Osc 1

@@ -81,12 +81,35 @@ const POLY: &[PlanPage] = &[
     pg("Filter", &["Filter", "Filter env"], &[]),
     pg("Env", &["Amp env"], &[]),
     pg("LFO", &["LFO"], &[]),
+    // LFO 2, each note's own: its rate, its fade-in and its two main sends.
+    pg(
+        "LFO 2",
+        &["LFO 2"],
+        &[
+            pp::LFO2_RATE,
+            pp::LFO2_FADE,
+            pp::LFO2_PITCH,
+            pp::LFO2_CUTOFF,
+        ],
+    ),
     // Voice: unison moved here when the supersaw's knobs filled the Osc
     // page (16 a page, one per Q-Link).
     pg(
         "Voice",
         &["Voice", "Unison", "Output"],
         &[pp::GLIDE, pp::UNISON_DETUNE, pp::LEVEL, pp::PAN],
+    ),
+    // Routes: what the mod wheel, breath, foot, velocity and the rest move.
+    // The depths are what a player tunes.
+    pg(
+        "Routes",
+        &["Routes"],
+        &[
+            pp::route_id(0, pp::route::DEPTH),
+            pp::route_id(1, pp::route::DEPTH),
+            pp::route_id(2, pp::route::DEPTH),
+            pp::route_id(3, pp::route::DEPTH),
+        ],
     ),
     // Pressure: the threshold, where it's full, and the first two slots'
     // depths are what a player tunes while playing.
@@ -715,15 +738,31 @@ mod tests {
     fn poly_has_its_own_pages_and_every_param_once() {
         let pages = plan(&POLY_INFO, PARAMS);
         let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["Osc", "Filter", "Env", "LFO", "Voice", "Pressure"]);
+        assert_eq!(
+            names,
+            ["Osc", "Filter", "Env", "LFO", "LFO 2", "Voice", "Routes", "Pressure"]
+        );
         every_param_once(&pages, PARAMS.len());
         // Pressure: the 8 shaper settings and 4 slots fill one page.
-        assert_eq!(pages[5].params.len(), 16);
-        let q: Vec<&str> = qlink_targets(&pages[5], PARAMS)
+        assert_eq!(pages[7].params.len(), 16);
+        let q: Vec<&str> = qlink_targets(&pages[7], PARAMS)
             .iter()
             .map(|&i| PARAMS[i].name)
             .collect();
         assert_eq!(q, ["Threshold", "Full at", "Depth 1", "Depth 2"]);
+        // Routes: four routes of three, the Q-Links on their depths.
+        assert_eq!(pages[6].params.len(), 12);
+        let q: Vec<&str> = qlink_targets(&pages[6], PARAMS)
+            .iter()
+            .map(|&i| PARAMS[i].name)
+            .collect();
+        assert_eq!(q, ["Depth 1", "Depth 2", "Depth 3", "Depth 4"]);
+        // LFO 2: its rate, fade-in and two sends.
+        let q: Vec<&str> = qlink_targets(&pages[4], PARAMS)
+            .iter()
+            .map(|&i| PARAMS[i].name)
+            .collect();
+        assert_eq!(q, ["Rate", "Fade in", "To pitch", "To cutoff"]);
         // The Q-Links turn the filter page's first four knobs, not its Type:
         // both kinds of grit side by side (Jay after live test 3).
         let q: Vec<&str> = qlink_targets(&pages[1], PARAMS)

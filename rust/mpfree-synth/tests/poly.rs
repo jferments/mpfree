@@ -649,3 +649,277 @@ fn the_softest_note_is_the_velocity_range_below_the_hardest() {
     let half = level(127, 24.0) - level(64, 24.0);
     assert!((half - 8.15).abs() < 0.2, "{half:.2}");
 }
+
+// ---- play routes and LFO 2 ----
+
+fn ctl(ctl: mpfree_node::Ctl, value: f32) -> NodeEvent {
+    NodeEvent::Control { ctl, value }
+}
+
+/// Sets route `n` to `source` ([`mpfree_synth::voice::Source`]'s index),
+/// `target` ([`target`]) and `depth` (%).
+fn route(s: &mut Poly, n: usize, source: f32, target: u8, depth: f32) {
+    s.set_param(route_id(n, route::SOURCE), source);
+    s.set_param(route_id(n, route::TARGET), f32::from(target));
+    s.set_param(route_id(n, route::DEPTH), depth);
+}
+
+/// Each cycle's pitch in semitones from A4, from the rising zero
+/// crossings (placed between samples).
+fn cycle_pitches(x: &[f32]) -> Vec<f32> {
+    let ups: Vec<f32> = x
+        .windows(2)
+        .enumerate()
+        .filter(|(_, w)| w[0] < 0.0 && w[1] >= 0.0)
+        .map(|(i, w)| i as f32 + w[0] / (w[0] - w[1]))
+        .collect();
+    ups.windows(2)
+        .map(|w| 12.0 * (RATE as f32 / (w[1] - w[0]) / 440.0).log2())
+        .collect()
+}
+
+fn spread(x: &[f32]) -> f32 {
+    let lo = x.iter().fold(f32::MAX, |m, &v| m.min(v));
+    let hi = x.iter().fold(f32::MIN, |m, &v| m.max(v));
+    hi - lo
+}
+
+use mpfree_node::Ctl;
+
+const SRC_VELOCITY: f32 = 1.0;
+const SRC_TONE: f32 = 3.0;
+const SRC_WHEEL: f32 = 4.0;
+const SRC_BREATH: f32 = 5.0;
+const SRC_RANDOM: f32 = 8.0;
+
+#[test]
+fn the_mod_wheel_brings_in_vibrato_by_default() {
+    // Route 1 sends the wheel to vibrato, half a semitone at the top, at
+    // Vib rate. With the wheel down nothing moves.
+    let vibrato = |wheel: f32| {
+        let mut s = plain_sine();
+        let (l, _) = render(
+            &mut s,
+            RATE as usize,
+            &[(0, ctl(Ctl::ModWheel, wheel)), (0, on(69, 127))],
+            |_| 256,
+        );
+        spread(&cycle_pitches(&l[RATE as usize / 2..]))
+    };
+    assert!(vibrato(0.0) < 0.02, "{:.3}", vibrato(0.0));
+    let full = vibrato(1.0);
+    assert!((full - 1.0).abs() < 0.1, "±0.5 semitone: {full:.3}");
+    let half = vibrato(0.5);
+    assert!((half - 0.5).abs() < 0.07, "±0.25 semitone: {half:.3}");
+}
+
+#[test]
+fn a_sound_plays_the_same_with_its_routes_until_a_controller_moves() {
+    // The default route (the wheel to vibrato) changes nothing until the
+    // wheel moves: every preset sounds as it did before routes, to the bit.
+    let mut a = Poly::new(RATE);
+    let mut b = Poly::new(RATE);
+    b.set_param(route_id(0, route::SOURCE), 0.0);
+    let ev = busy_events();
+    assert_eq!(
+        render(&mut a, 96_000, &ev, |_| 128),
+        render(&mut b, 96_000, &ev, |_| 128)
+    );
+}
+
+/// How bright a sound is: its first difference's level against its own.
+fn brightness(x: &[f32]) -> f32 {
+    let rms = |v: &mut dyn Iterator<Item = f32>| {
+        let (s, n) = v.fold((0.0f64, 0usize), |(s, n), x| (s + f64::from(x * x), n + 1));
+        (s / n.max(1) as f64).sqrt() as f32
+    };
+    let d = rms(&mut x.windows(2).map(|w| w[1] - w[0]));
+    d / rms(&mut x.iter().copied()).max(1e-9)
+}
+
+#[test]
+fn a_route_from_velocity_opens_the_filter() {
+    let bright = |velocity: u8| {
+        let mut s = Poly::new(RATE);
+        s.set_param(CUTOFF, 400.0);
+        s.set_param(FENV_AMOUNT, 0.0);
+        s.set_param(VEL_AMP, 0.0);
+        route(&mut s, 1, SRC_VELOCITY, target::CUTOFF, 75.0);
+        let (l, _) = render(&mut s, 24_000, &[(0, on(48, velocity))], |_| 128);
+        brightness(&l[4_800..])
+    };
+    let (soft, hard) = (bright(20), bright(127));
+    assert!(hard > 2.0 * soft, "soft {soft:.4}, hard {hard:.4}");
+}
+
+#[test]
+fn a_route_from_the_notes_own_tone_opens_the_filter() {
+    // MPE's Y (a note's tone) does nothing on Poly until a route takes it.
+    let bright = |tone: f32| {
+        let mut s = Poly::new(RATE);
+        s.set_param(CUTOFF, 400.0);
+        s.set_param(FENV_AMOUNT, 0.0);
+        route(&mut s, 1, SRC_TONE, target::CUTOFF, 75.0);
+        let ev = [
+            (
+                0,
+                NodeEvent::Expression {
+                    note: 48,
+                    kind: mpfree_node::Expr::Tone,
+                    value: tone,
+                },
+            ),
+            (0, on(48, 100)),
+        ];
+        let (l, _) = render(&mut s, 24_000, &ev, |_| 128);
+        brightness(&l[4_800..])
+    };
+    assert!(bright(1.0) > 2.0 * bright(0.0));
+}
+
+#[test]
+fn breath_on_level_is_a_swell_never_a_boost() {
+    // Breath to Level at 100 %: 24 dB down with no breath, the sound's own
+    // level at full breath, never louder.
+    let level = |breath: Option<f32>| {
+        let mut s = plain_sine();
+        s.set_param(AMP_A, 0.1);
+        if breath.is_some() {
+            route(&mut s, 0, SRC_BREATH, target::LEVEL, 100.0);
+        }
+        let mut ev = vec![(0, on(81, 127))];
+        if let Some(b) = breath {
+            ev.insert(0, (0, ctl(Ctl::Breath, b)));
+        }
+        let (l, _) = render(&mut s, 9_600, &ev, |_| 64);
+        20.0 * peak(&l[4_800..]).log10()
+    };
+    let plain = level(None);
+    let none = level(Some(0.0));
+    let full = level(Some(1.0));
+    assert!((plain - none - 24.0).abs() < 0.3, "{plain:.2} {none:.2}");
+    assert!((full - plain).abs() < 0.05, "{full:.2} {plain:.2}");
+    assert!(full <= plain + 0.01);
+}
+
+#[test]
+fn random_to_pan_puts_each_note_somewhere_of_its_own() {
+    let mut s = plain_sine();
+    route(&mut s, 0, SRC_RANDOM, target::PAN, 100.0);
+    s.set_param(AMP_R, 1.0);
+    let step = 4_800u64;
+    let ev: Vec<(u64, NodeEvent)> = (0..12)
+        .flat_map(|k| [(k * step, on(81, 127)), (k * step + step / 2, off(81))])
+        .collect();
+    let (l, r) = render(&mut s, (12 * step) as usize, &ev, |_| 128);
+    let sides: Vec<f32> = (0..12)
+        .map(|k| {
+            let a = (k * step) as usize + 480;
+            let (pl, pr) = (peak(&l[a..a + 960]), peak(&r[a..a + 960]));
+            (pr - pl) / (pr + pl)
+        })
+        .collect();
+    assert!(sides.iter().any(|&x| x < -0.2), "{sides:?}");
+    assert!(sides.iter().any(|&x| x > 0.2), "{sides:?}");
+    // With no route the note sits in the middle.
+    let mut c = plain_sine();
+    route(&mut c, 0, 0.0, 0, 0.0);
+    let (l, r) = render(&mut c, 9_600, &[(0, on(81, 127))], |_| 128);
+    assert_eq!(l, r);
+}
+
+#[test]
+fn the_wheel_on_lfo_1_amount_brings_the_lfo_in() {
+    // LFO 1 set to a semitone of vibrato, and the wheel on LFO 1 amount at
+    // 100 %: none with the wheel down, all of it at the top.
+    let vibrato = |wheel: f32| {
+        let mut s = plain_sine();
+        s.set_param(LFO_PITCH, 1.0);
+        s.set_param(LFO_RATE, 6.0);
+        route(&mut s, 0, SRC_WHEEL, target::LFO1_AMOUNT, 100.0);
+        let (l, _) = render(
+            &mut s,
+            RATE as usize,
+            &[(0, ctl(Ctl::ModWheel, wheel)), (0, on(69, 127))],
+            |_| 256,
+        );
+        spread(&cycle_pitches(&l[RATE as usize / 2..]))
+    };
+    assert!(vibrato(0.0) < 0.02, "{:.3}", vibrato(0.0));
+    assert!((vibrato(1.0) - 2.0).abs() < 0.15, "{:.3}", vibrato(1.0));
+}
+
+#[test]
+fn lfo_2_starts_with_each_note_and_fades_in() {
+    // A square LFO 2 on level at 4 Hz: full for the first 125 ms of each
+    // note, then silent for 125 ms, wherever the note starts.
+    let mut s = plain_sine();
+    s.set_param(AMP_A, 0.1);
+    s.set_param(LFO2_SHAPE, 3.0);
+    s.set_param(LFO2_RATE, 4.0);
+    s.set_param(LFO2_AMP, 100.0);
+    let ms = |t: f32| (t * RATE as f32 / 1000.0) as usize;
+    let start = ms(333.0);
+    let (l, _) = render(
+        &mut s,
+        start + ms(400.0),
+        &[(start as u64, on(81, 127))],
+        |_| 100,
+    );
+    let at = |t: f32| peak(&l[start + ms(t)..start + ms(t + 10.0)]);
+    assert!(at(50.0) > 0.1, "{}", at(50.0));
+    assert!(at(180.0) < 1e-3, "{}", at(180.0));
+    assert!(at(300.0) > 0.1, "{}", at(300.0));
+
+    // With a fade in of 400 ms, a sine on pitch starts still and grows.
+    let mut s = plain_sine();
+    s.set_param(LFO2_RATE, 5.0);
+    s.set_param(LFO2_PITCH, 1.0);
+    s.set_param(LFO2_FADE, 400.0);
+    let (l, _) = render(&mut s, ms(1_200.0), &[(0, on(69, 127))], |_| 128);
+    // (Past the note's first few milliseconds, where the attack's edge
+    // makes crossings of its own.)
+    let early = spread(&cycle_pitches(&l[ms(20.0)..ms(100.0)]));
+    let late = spread(&cycle_pitches(&l[ms(500.0)..ms(1_200.0)]));
+    assert!(early < 0.5, "a quarter in at most by 100 ms: {early:.3}");
+    assert!((late - 2.0).abs() < 0.15, "{late:.3}");
+}
+
+#[test]
+fn routes_and_lfo_2_keep_the_same_output_for_any_block_size() {
+    let set = |s: &mut Poly| {
+        route(s, 1, SRC_RANDOM, target::PAN, 60.0);
+        route(s, 2, SRC_BREATH, target::LEVEL, 50.0);
+        s.set_param(LFO2_PW, 20.0);
+        s.set_param(LFO2_SYNC, 6.0);
+        s.set_param(LFO2_RETRIG, 0.0);
+        s.set_param(OSC1_WAVE, 1.0);
+    };
+    let mut ev = busy_events();
+    ev.push((1_000, ctl(Ctl::ModWheel, 0.7)));
+    ev.push((20_000, ctl(Ctl::Breath, 0.4)));
+    ev.push((40_000, ctl(Ctl::Breath, 1.0)));
+    ev.sort_by_key(|e| e.0);
+    let mut a = Poly::new(RATE);
+    set(&mut a);
+    let mut b = Poly::new(RATE);
+    set(&mut b);
+    let one = render(&mut a, 96_000, &ev, |_| 4096);
+    let odd = render(&mut b, 96_000, &ev, |i| [1, 7, 33, 500, 16, 3][i % 6]);
+    assert_eq!(one, odd);
+}
+
+#[test]
+fn the_wheel_on_pitch_at_100_percent_is_an_octave_up() {
+    let mut s = plain_sine();
+    route(&mut s, 0, SRC_WHEEL, target::PITCH, 100.0);
+    let (l, _) = render(
+        &mut s,
+        RATE as usize,
+        &[(0, ctl(Ctl::ModWheel, 1.0)), (0, on(69, 127))],
+        |_| 256,
+    );
+    let p = cycle_pitches(&l[RATE as usize / 2..]);
+    let mean = p.iter().sum::<f32>() / p.len() as f32;
+    assert!((mean - 12.0).abs() < 0.01, "{mean}");
+}

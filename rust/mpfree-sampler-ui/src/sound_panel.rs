@@ -57,6 +57,9 @@ pub const GRAIN_ROWS: [grain_tab::Row; 4] = grain_tab::QLINK_ROWS;
 /// Why the Grain part's controls are faint.
 pub const NOT_GRAINS: &str = "This sound doesn't play as grains: set Mode to Granular";
 
+/// Why they are faint while the section follows a slice to its pad.
+pub const SLICE_GRAINS: &str = "A slice's grains are set on its own pad: hit the pad";
+
 impl Part {
     pub const ALL: [Part; 5] = [
         Part::Amp,
@@ -233,6 +236,12 @@ impl SoundPanel {
     }
 
     /// The Grain part's settings and controls.
+    /// Whether the section shows a slice's own pad (the Slice tool's slice
+    /// picked, [`PlayState::slice`]) rather than the sound the page edits.
+    fn follows_slice(&self) -> bool {
+        self.shown.as_ref().is_some_and(|s| s.slice.is_some())
+    }
+
     fn grain_controls(&self) -> Vec<(Setting, Control)> {
         GRAIN_ROWS
             .iter()
@@ -261,7 +270,14 @@ impl SoundPanel {
                     steps: 100,
                     bipolar: row == grain_tab::Row::Pitch,
                 })
-                .faint_because(r.mode != PlayMode::Granular, NOT_GRAINS);
+                .faint_because(
+                    r.mode != PlayMode::Granular || self.follows_slice(),
+                    if self.follows_slice() {
+                        SLICE_GRAINS
+                    } else {
+                        NOT_GRAINS
+                    },
+                );
                 (
                     Setting {
                         name: row.short().into(),
@@ -328,13 +344,23 @@ impl SoundPanel {
         let note = self
             .shown
             .as_ref()
-            .map_or(String::new(), |st| match &st.take {
-                Some(name) => name.clone(),
-                None => format!("pad {}", crate::wave_tab::pad_label(st.pad)),
+            .map_or(String::new(), |st| match (&st.take, st.slice) {
+                (Some(name), _) => name.clone(),
+                (None, Some(_)) => "what the pad plays".into(),
+                (None, None) => format!("pad {}", crate::wave_tab::pad_label(st.pad)),
             });
+        // Following a slice to its pad, as drawn: "Sound · slice 3 → A3".
+        let title = match self.shown.as_ref().and_then(|st| Some((st.slice?, st.pad))) {
+            Some((k, pad)) => format!(
+                "Sound · slice {} → {}",
+                k + 1,
+                crate::wave_tab::pad_label(pad)
+            ),
+            None => "Sound".into(),
+        };
         let panel = Panel {
             sections: vec![
-                Section::new("Sound", WIDTH, vec![vec![Item::new(PARTS_ROW)], items]).note(&note),
+                Section::new(&title, WIDTH, vec![vec![Item::new(PARTS_ROW)], items]).note(&note),
             ],
         };
         if let Some(list) = ui.get_mut::<SettingList>(SOUND) {

@@ -827,6 +827,10 @@ pub struct PlayState {
     /// A take kept on the page, by name (its pad is
     /// [`crate::wave_tab::TAKE`]): the Wave page's Sound section edits it.
     pub take: Option<String>,
+    /// The slice of the Slice tool's chop this pad plays, from 0: the Wave
+    /// page's Sound section follows the slice picked to the pad it is on
+    /// (the one Sample page's step 3b; [`crate::wave_tab::WaveTab::sound_follows`]).
+    pub slice: Option<usize>,
 }
 
 impl PlayState {
@@ -907,6 +911,7 @@ impl PlayState {
                 .collect(),
             bpm: 120.0,
             take: None,
+            slice: None,
         })
     }
 
