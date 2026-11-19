@@ -115,12 +115,16 @@
 201662	Poly Brass, 8 voices
 374389	Poly Dust Pad, 8 voices
 57376	Poly Grit Bass, 8 voices
-658315	Poly Init, 16 voices, unison 4
+606162	Poly Init, 16 voices, unison 4
 191750	Poly Init, 8 voices
 52602	Poly Lead, 8 voices
 209421	Poly Pluck, 8 voices
-33542	Poly Sub Bass, 8 voices
-374672	Poly Supersaw, 8 voices
+30818	Poly Sub Bass, 8 voices
+45781	Poly Super Lead, 8 voices
+279340	Poly Super Pad, 8 voices
+319975	Poly Super Stab, 8 voices
+394062	Poly Super Stack, 8 voices
+341789	Poly Supersaw, 8 voices
 12921	Ring mod
 145867	Room reverb
 108213	Rotary

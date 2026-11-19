@@ -65,25 +65,28 @@ const fn pg_with(
 use mpfree_synth::params as pp;
 
 const POLY: &[PlanPage] = &[
-    // Osc: the detune, the second oscillator's level, the sub and the unison
-    // spread are what players reach for; octaves and waves are set once.
+    // Osc: the detune, the second oscillator's level, the sub and the
+    // supersaw's detune are what players reach for; octaves and waves are
+    // set once.
     pg(
         "Osc",
-        &["Osc 1", "Osc 2", "Mix", "Unison"],
+        &["Osc 1", "Osc 2", "Mix", "Supersaw"],
         &[
             pp::OSC2_FINE,
             pp::OSC2_LEVEL,
             pp::SUB_LEVEL,
-            pp::UNISON_DETUNE,
+            pp::SUPER_DETUNE,
         ],
     ),
     pg("Filter", &["Filter", "Filter env"], &[]),
     pg("Env", &["Amp env"], &[]),
     pg("LFO", &["LFO"], &[]),
+    // Voice: unison moved here when the supersaw's knobs filled the Osc
+    // page (16 a page, one per Q-Link).
     pg(
         "Voice",
-        &["Voice", "Output"],
-        &[pp::GLIDE, pp::BEND_RANGE, pp::LEVEL, pp::PAN],
+        &["Voice", "Unison", "Output"],
+        &[pp::GLIDE, pp::UNISON_DETUNE, pp::LEVEL, pp::PAN],
     ),
     // Pressure: the threshold, where it's full, and the first two slots'
     // depths are what a player tunes while playing.

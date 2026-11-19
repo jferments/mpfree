@@ -1,5 +1,7 @@
-//! Poly: a subtractive synth. Two band-limited oscillators per voice with
-//! up to four unison stacks, a sub oscillator and noise, a drive stage
+//! Poly: a subtractive synth. Two oscillators per voice, saw, pulse,
+//! triangle, sine or a seven-saw supersaw read from band-limited tables
+//! ([`crate::osc`]), with up to four unison stacks, a sub oscillator and
+//! noise, a drive stage
 //! into a ladder or state-variable filter and a distortion stage after it,
 //! two ADSR envelopes, a tempo-syncable LFO, poly, mono and legato modes
 //! with glide.
@@ -22,6 +24,7 @@ use mpfree_node::{
 
 use crate::dsp::*;
 use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
+use crate::osc::{self, Classic, Shape, Super, SAWS};
 use crate::params::*;
 use crate::pressure::{swell_gain, Depths, Slot};
 
@@ -64,12 +67,24 @@ struct Voice {
     /// Current and target pitch in (fractional) notes, for glide.
     pitch: f32,
     target: f32,
-    ph1: [f32; UNISON_MAX],
-    ph2: [f32; UNISON_MAX],
+    /// Phases as 32-bit fractions of a cycle ([`osc::phase`]); the sub's
+    /// is a plain 0 to 1.
+    ph1: [u32; UNISON_MAX],
+    ph2: [u32; UNISON_MAX],
     ph_sub: f32,
-    /// Per-stack phase increments and pan gains, set each control step.
+    /// Each stack's supersaw phases, for either oscillator on Supersaw.
+    ss1: [[u32; SAWS]; UNISON_MAX],
+    ss2: [[u32; SAWS]; UNISON_MAX],
+    /// Each stack's table level ([`osc::level_for`]), set with the phase
+    /// increments.
+    lv1: [u8; UNISON_MAX],
+    lv2: [u8; UNISON_MAX],
+    /// Per-stack phase increments and pan gains, set each control step:
+    /// in cycles a sample, and as the tables read them.
     dt1: [f32; UNISON_MAX],
     dt2: [f32; UNISON_MAX],
+    di1: [u32; UNISON_MAX],
+    di2: [u32; UNISON_MAX],
     dt_sub: f32,
     pan_l: [f32; UNISON_MAX],
     pan_r: [f32; UNISON_MAX],
@@ -88,6 +103,9 @@ struct Voice {
     drive_amt: f32,
     /// Keeps the driven voice at its undriven level (dsp::DriveLevel).
     drive_level: DriveLevel,
+    /// The drive's and the distortion's antialiasing memory, each side.
+    drive_aa: [DriveAa; 2],
+    dist_aa: [DriveAa; 2],
     /// The distortion after the filter, as the drive (pressure can move
     /// it too), with its own level keeper.
     dist_gain: f32,
@@ -105,7 +123,7 @@ struct Voice {
     /// The inputs the phase increments and the filter coefficients were
     /// last worked out from (bit patterns), so a control step whose inputs
     /// have not moved skips the work: the numbers would come out the same.
-    pitch_key: [u32; 6],
+    pitch_key: [u32; 8],
     coef_key: [u32; 3],
 }
 
@@ -121,11 +139,17 @@ impl Voice {
             age: 0,
             pitch: 60.0,
             target: 60.0,
-            ph1: [0.0; UNISON_MAX],
-            ph2: [0.0; UNISON_MAX],
+            ph1: [0; UNISON_MAX],
+            ph2: [0; UNISON_MAX],
             ph_sub: 0.0,
+            ss1: [[0; SAWS]; UNISON_MAX],
+            ss2: [[0; SAWS]; UNISON_MAX],
+            lv1: [0; UNISON_MAX],
+            lv2: [0; UNISON_MAX],
             dt1: [0.0; UNISON_MAX],
             dt2: [0.0; UNISON_MAX],
+            di1: [0; UNISON_MAX],
+            di2: [0; UNISON_MAX],
             dt_sub: 0.0,
             pan_l: [1.0; UNISON_MAX],
             pan_r: [1.0; UNISON_MAX],
@@ -140,6 +164,8 @@ impl Voice {
             drive_gain: 1.0,
             drive_amt: 0.0,
             drive_level: DriveLevel::new(),
+            drive_aa: [DriveAa::default(); 2],
+            dist_aa: [DriveAa::default(); 2],
             dist_gain: 1.0,
             dist_amt: 0.0,
             dist_level: DriveLevel::new(),
@@ -150,7 +176,7 @@ impl Voice {
             ex: VoiceExpr::default(),
             kill_gain: 1.0,
             kill_step: 0.0,
-            pitch_key: [NO_KEY; 6],
+            pitch_key: [NO_KEY; 8],
             coef_key: [NO_KEY; 3],
         }
     }
@@ -197,11 +223,18 @@ struct Shared {
     wave1: u8,
     wave2: u8,
     unison: usize,
+    /// Each oscillator's highest saw against the note: the supersaw's top
+    /// ratio on Supersaw, else 1 ([`osc::level_for`]).
+    tops: [f32; 2],
 }
 
 pub struct Poly {
     rate: u32,
     values: [f32; ID_SPACE],
+    /// The oscillators' tables, built before the first note.
+    tables: &'static Classic,
+    /// The supersaw's ratios and gains, from its two knobs.
+    sup: Super,
     voices: [Voice; POOL],
     sm: Smoothed,
     sh: Shared,
@@ -278,6 +311,8 @@ impl Poly {
         let mut s = Poly {
             rate,
             values,
+            tables: osc::classic(),
+            sup: Super::new(v(SUPER_DETUNE) / 100.0, v(SUPER_MIX) / 100.0),
             voices: [Voice::new(); POOL],
             sm,
             sh: Shared::default(),
@@ -561,8 +596,21 @@ impl Poly {
         v.fenv.gate_on();
         if unison > 1 {
             for u in 0..unison {
-                v.ph1[u] = self.rng.unit();
-                v.ph2[u] = self.rng.unit();
+                v.ph1[u] = osc::phase(self.rng.unit());
+                v.ph2[u] = osc::phase(self.rng.unit());
+            }
+        }
+        // The supersaw's saws run free, as on the original: each starts
+        // somewhere of its own, so a chord doesn't open on one big edge.
+        let (w1, w2) = (
+            self.values[OSC1_WAVE as usize],
+            self.values[OSC2_WAVE as usize],
+        );
+        for (wave, ss) in [(w1, &mut v.ss1), (w2, &mut v.ss2)] {
+            if Shape::from_index(wave) == Shape::Supersaw {
+                for p in ss[..unison].iter_mut().flatten() {
+                    *p = osc::phase(self.rng.unit());
+                }
             }
         }
         self.voice_control(slot);
@@ -580,8 +628,8 @@ impl Poly {
 
     /// Clears a slot's state for a new note.
     fn fresh(v: &mut Voice) {
-        v.ph1 = [0.0; UNISON_MAX];
-        v.ph2 = [0.0; UNISON_MAX];
+        v.ph1 = [0; UNISON_MAX];
+        v.ph2 = [0; UNISON_MAX];
         v.ph_sub = 0.0;
         v.amp.clear();
         v.fenv.clear();
@@ -591,6 +639,8 @@ impl Poly {
         v.kill_gain = 1.0;
         v.drive_level.clear();
         v.dist_level.clear();
+        v.drive_aa = [DriveAa::default(); 2];
+        v.dist_aa = [DriveAa::default(); 2];
     }
 
     /// Fades out one sounding voice: the quietest releasing one, else the
@@ -768,6 +818,14 @@ impl Poly {
         s.mode = self.values[FILTER_MODE as usize] as u8;
         s.wave1 = self.values[OSC1_WAVE as usize] as u8;
         s.wave2 = self.values[OSC2_WAVE as usize] as u8;
+        let top = self.sup.top();
+        s.tops = [s.wave1, s.wave2].map(|w| {
+            if Shape::from_index(f32::from(w)) == Shape::Supersaw {
+                top
+            } else {
+                1.0
+            }
+        });
         s.unison = (self.values[UNISON as usize] as usize).clamp(1, UNISON_MAX);
 
         // Pressure: the chord (Highest mode) aims before the voices step.
@@ -887,6 +945,8 @@ impl Poly {
         let pans = self.pans;
         let expr_c = self.expr_c;
         let tuning = &self.tuning;
+        // A supersaw's level is set by its highest saw.
+        let tops = self.sh.tops;
 
         let v = &mut self.voices[i];
         let p = v.pv;
@@ -909,6 +969,8 @@ impl Poly {
             detune.to_bits(),
             unison as u32,
             rate_bits,
+            tops[0].to_bits(),
+            tops[1].to_bits(),
         ];
         if !same_key(&v.pitch_key, &pitch_key) {
             for u in 0..unison {
@@ -920,6 +982,10 @@ impl Poly {
                 let cents = pos * detune;
                 v.dt1[u] = (tuning.hz(base + o1 + cents) / rate).min(0.45);
                 v.dt2[u] = (tuning.hz(base + o2 - cents * 0.7) / rate).min(0.45);
+                v.di1[u] = osc::increment(v.dt1[u]);
+                v.di2[u] = osc::increment(v.dt2[u]);
+                v.lv1[u] = osc::level_near(usize::from(v.lv1[u]), v.dt1[u] * tops[0]) as u8;
+                v.lv2[u] = osc::level_near(usize::from(v.lv2[u]), v.dt2[u] * tops[1]) as u8;
             }
             v.dt_sub = (tuning.hz(base + o1 - 12.0) / rate).min(0.45);
             v.pitch_key = pitch_key;
@@ -973,6 +1039,7 @@ impl Poly {
             v.drive_level.step(CTRL, rate_bits)
         } else {
             v.drive_level.clear();
+            v.drive_aa = [DriveAa::default(); 2];
             1.0
         };
         if v.dist_amt > 0.0 {
@@ -980,6 +1047,7 @@ impl Poly {
         } else if dist_was > 0.0 {
             // Off: nothing more is summed, so one clear does.
             v.dist_level.clear();
+            v.dist_aa = [DriveAa::default(); 2];
         }
         let gain = norm * vg * trem * swell * level;
         v.gain_inc = (gain - v.gain) / CTRL as f32;
@@ -995,8 +1063,9 @@ impl Poly {
     /// passes just make each choice once per step instead of once a frame.
     fn render(&mut self, from: usize, to: usize, left: &mut [f32], right: &mut [f32]) {
         let s = self.sh;
-        let w1 = Wave::from_index(f32::from(s.wave1));
-        let w2 = Wave::from_index(f32::from(s.wave2));
+        let w1 = Shape::from_index(f32::from(s.wave1));
+        let w2 = Shape::from_index(f32::from(s.wave2));
+        let (tab, sup) = (self.tables, &self.sup);
         let mode = FilterMode::from_index(f32::from(s.mode));
         // Silent sources are skipped (their phases wait).
         let (use1, use2) = (s.lvl1 != 0.0, s.lvl2 != 0.0);
@@ -1052,7 +1121,9 @@ impl Poly {
                 .iter()
                 .zip(&v.pan_r[..s.unison])
                 .all(|(x, y)| x.to_bits() == y.to_bits())
-                && v.filt[0].same_as(&v.filt[1]);
+                && v.filt[0].same_as(&v.filt[1])
+                && v.drive_aa[0].same_as(&v.drive_aa[1])
+                && v.dist_aa[0].same_as(&v.dist_aa[1]);
             // Each stack: a = 0 + osc1 * level1 + osc2 * level2, then
             // left = 0 + a * pan for the first stack and += for the rest.
             // (Left starts at +0 and never becomes -0, so adding a silent
@@ -1065,13 +1136,30 @@ impl Poly {
                 if !use1 && !use2 {
                     break;
                 }
+                let (l1, l2) = (usize::from(v.lv1[u]), usize::from(v.lv2[u]));
                 if use1 {
-                    osc_set(w1, a, &mut v.ph1[u], v.dt1[u], v.pw1, s.lvl1);
-                    if use2 {
-                        osc_add(w2, a, &mut v.ph2[u], v.dt2[u], v.pw2, s.lvl2);
+                    if w1 == Shape::Supersaw {
+                        tab.supersaw::<false>(sup, l1, a, &mut v.ss1[u], v.dt1[u], s.lvl1);
+                    } else {
+                        tab.run::<false>(w1, l1, a, &mut v.ph1[u], v.di1[u], v.pw1, s.lvl1);
                     }
-                } else {
-                    osc_set(w2, a, &mut v.ph2[u], v.dt2[u], v.pw2, s.lvl2);
+                }
+                if use2 {
+                    let add = use1;
+                    match (w2 == Shape::Supersaw, add) {
+                        (true, true) => {
+                            tab.supersaw::<true>(sup, l2, a, &mut v.ss2[u], v.dt2[u], s.lvl2)
+                        }
+                        (true, false) => {
+                            tab.supersaw::<false>(sup, l2, a, &mut v.ss2[u], v.dt2[u], s.lvl2)
+                        }
+                        (false, true) => {
+                            tab.run::<true>(w2, l2, a, &mut v.ph2[u], v.di2[u], v.pw2, s.lvl2)
+                        }
+                        (false, false) => {
+                            tab.run::<false>(w2, l2, a, &mut v.ph2[u], v.di2[u], v.pw2, s.lvl2)
+                        }
+                    }
                 }
                 let (pl, pr) = (v.pan_l[u], v.pan_r[u]);
                 mix_stack(u == 0, l, a, pl);
@@ -1108,18 +1196,27 @@ impl Poly {
             } else {
                 (1.0, 1.0)
             };
-            drive_run_level(l, dk, dn, v.drive_amt, &mut v.drive_level);
+            drive_run_level_aa(
+                l,
+                dk,
+                dn,
+                v.drive_amt,
+                &mut v.drive_level,
+                &mut v.drive_aa[0],
+            );
             v.filt[0].run(mode, &v.coefs, l);
             let dist = if v.dist_amt > 0.0 {
                 let lv = mix_level(s.unison, [s.lvl1, s.lvl2], v.sub, v.noise);
                 let (ek, en) = drive_scales(v.dist_gain, lv);
-                drive_run_level(l, ek, en, v.dist_amt, &mut v.dist_level);
+                drive_run_level_aa(l, ek, en, v.dist_amt, &mut v.dist_level, &mut v.dist_aa[0]);
                 Some((ek, en))
             } else {
                 None
             };
             if mono {
                 v.filt[1] = v.filt[0];
+                v.drive_aa[1] = v.drive_aa[0];
+                v.dist_aa[1] = v.dist_aa[0];
                 for j in 0..end {
                     left[from + j] += l[j] * g[j] * s.out_l;
                     right[from + j] += l[j] * g[j] * s.out_r;
@@ -1130,10 +1227,10 @@ impl Poly {
                         *rj += cj;
                     }
                 }
-                drive_run_n(r, dk, dn, v.drive_amt);
+                drive_run_aa(r, dk, dn, v.drive_amt, &mut v.drive_aa[1]);
                 v.filt[1].run(mode, &v.coefs, r);
                 if let Some((ek, en)) = dist {
-                    drive_run_n(r, ek, en, v.dist_amt);
+                    drive_run_aa(r, ek, en, v.dist_amt, &mut v.dist_aa[1]);
                 }
                 for j in 0..end {
                     left[from + j] += l[j] * g[j] * s.out_l;
@@ -1182,6 +1279,9 @@ impl Node for Poly {
         }
         if id >= PRESS_BASE {
             self.update_pressure();
+        }
+        if id == SUPER_DETUNE || id == SUPER_MIX {
+            self.sup = Super::new(self.v(SUPER_DETUNE) / 100.0, self.v(SUPER_MIX) / 100.0);
         }
         if id == VOICE_MODE {
             self.all_off();
@@ -1265,7 +1365,7 @@ impl Node for Poly {
         self.tuning.clone_from(tuning);
         // Every voice works its pitch out again on its next control step.
         for v in &mut self.voices {
-            v.pitch_key = [NO_KEY; 6];
+            v.pitch_key = [NO_KEY; 8];
         }
     }
 

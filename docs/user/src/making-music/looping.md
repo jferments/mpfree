@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-looper rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/loop_row.rs rust/mpfree-app/src/looper_deck.rs rust/mpfree-app/src/looper_tab.rs rust/mpfree-app/src/looping.rs rust/mpfree-seq/src/loops.rs
-checked: 2026-11-18 d6973f7
+checked: 2026-11-19 79fc6f63
 -->
 
 # Recording loops
@@ -75,7 +75,7 @@ The **speaker** under a ring mutes the loop without picking it: it is kept and k
 
 Every loop plays at once, in time with the song, but only one records at a time: starting to record in one loop ends the recording in the others. The pads can do all of this too: see [The pads as loop keys](#the-pads-as-loop-keys).
 
-Over the loops, the song's clock (a dot a beat, the bar and beat, the tempo), **Capture** ("Capture last 2 bars", below) and the loop memory every loop shares ("1:42 of 5 min").
+Over the loops: whether the song is stopped or playing and its tempo, **Pads as loop keys** (see [The pads as loop keys](#the-pads-as-loop-keys)), **Capture** ("Capture last 2 bars", below) and the loop memory every loop shares ("37 s of 5 min").
 
 ### The picked loop
 
@@ -253,7 +253,7 @@ Tap the history chips between Undo and Redo to open a list of everything you did
 
 Every loop you record also shows on the **Arrange** tab's Clips grid, on a **Loop track**: a column named **Loops A**, **Loops B** and so on, with a little wave and what it records under the name (**Pads**, for the pads and the synth). A loop's cell is named after it ("Loop 2") and shows the loop's wave and its length; while it plays, the wave lights up to where the loop is, and it turns red with **overdub** while you add a layer. The grid's title, **Loops 4 of 8 · memory 38 %**, says how many of the eight loops hold something and how much of the loop memory they use. A loop's cell launches, stops and plays in scenes like any clip, on the bar line:
 
-- **A loop you record lands on a Loop track with nothing playing**, in the row of the scene playing (row 1 if none), and keeps playing. When every Loop track already plays a loop, MPFree adds one, so loops you record one after another still play together, as before.
+- **A loop you record lands on a Loop track with nothing playing**, in the row of the scene playing (row 1 if none), and keeps playing. When every Loop track already plays a loop, MPFree adds one, so loops you record one after another still play together.
 - **One loop plays per Loop track**, as one clip plays per track; loops on different Loop tracks play together. Tap another loop's cell on the same Loop track and the one playing goes quiet on the next bar line as the new one comes in, both on the bar line exactly.
 - **Scenes, Stop all and TRACK MUTE work on loops too.** A scene plays the loops in its row, and a Loop track with nothing in that row stops. Stop all stops every loop on the next bar line. A muted Loop track's loop goes quiet at once, or on the launch line when the mute waits (in Perform; see [Muting tracks and pads](playing-live.md#muting-tracks-and-pads)).
 - **A loop that isn't playing keeps its place** in the song: launch it again and it comes back in step.
@@ -264,7 +264,7 @@ Every loop you record also shows on the **Arrange** tab's Clips grid, on a **Loo
   - **Into another row of its own Loop track**, both rows play the same loop. A scene change from one of those rows to the other keeps the loop playing without a break.
   - **Onto an empty cell of another Loop track**, it becomes a new loop with a copy of every layer and its mix. The cell says **copying in** for a moment, then shows the wave. The copy stays quiet until you tap its cell, so you can change it on the Looper tab while the first one plays. It takes one of the eight loops and room in the loop memory, and says so when there isn't any. **UNDO** on the Looper tab, with the copy picked, takes its layers back; once they are all gone, its cell empties.
 
-A project saved before Loop tracks opens with each of its loops on a Loop track of its own, in row 1, all playing as they did. A project saved with Loop tracks opens with nothing launched, as its clips do: tap a loop's cell, or its scene, to play it.
+A project opens with nothing launched, as its clips do: tap a loop's cell, or its scene, to play it.
 
 ### Recording a loop into a cell
 
@@ -274,7 +274,7 @@ A project saved before Loop tracks opens with each of its loops on a Loop track 
 4. Press **REC**: the cell says **Ready**. Press **PLAY** if the music is stopped; the loop starts on the next bar line. The cell says **REC** while it records.
 5. Press **REC** again: the loop closes on the next bar line and plays in that cell. If another loop was playing on that Loop track, it stops, since one loop plays per Loop track.
 
-With a cell armed, **OVERDUB** adds a layer to the loop that Loop track is playing. Tap the armed cell again, or arm the notes (a track's Arm pill, the Sequencer tab), to let go of it. When all eight loops hold something, or the loop memory is nearly full, the tap and REC say so: clear a loop on the Looper tab first. A new project starts with no Loop track; the first loop you record makes Loops A, as before.
+With a cell armed, **OVERDUB** adds a layer to the loop that Loop track is playing. Tap the armed cell again, or arm the notes (a track's Arm pill, the Sequencer tab), to let go of it. When all eight loops hold something, or the loop memory is nearly full, the tap and REC say so: clear a loop on the Looper tab first. A new project starts with no Loop track; the first loop you record makes Loops A.
 
 ### Loops in the song
 

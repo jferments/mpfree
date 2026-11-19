@@ -52,6 +52,9 @@
 //! - [`voice`]: the shared voice core the new engines are built on (held
 //!   notes and priority, voice stealing, glide by time or rate, envelopes
 //!   whose times mean what they say, velocity, play routes, a DC blocker).
+//! - [`osc`]: its oscillators, the classic waves read from band-limited
+//!   tables (nothing folds back at any pitch), the pulse as two saws and
+//!   the supersaw.
 //!
 //! The design and roadmap are in `docs/dev/design/synths.md`. Every synth keeps
 //! the node rules: no allocation, lock or panic in `process`, and the same
@@ -75,6 +78,7 @@ pub mod fm;
 pub mod fm_params;
 pub mod keys;
 pub mod keys_params;
+pub mod osc;
 pub mod params;
 pub mod pluck;
 pub mod pluck_params;

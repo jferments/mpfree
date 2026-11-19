@@ -125,6 +125,48 @@ fn a_take_plays_on_its_own_voice_and_lets_go() {
     assert_eq!((e.pad_voices(0), e.pad_voices(TAKE_PAD)), (1, 0));
 }
 
+#[test]
+fn a_slice_of_the_take_plays_on_the_takes_voice() {
+    // The Slice tool's tap on a slice of a take kept on the page.
+    let p = with_take();
+    let mut e = Engine::new(RATE, 16);
+    let slice = Event::Audition {
+        pad: TAKE_PAD,
+        layer: 0,
+        start: 2_000,
+        end: 4_000,
+        velocity: 100,
+    };
+    // A view without the take: nothing plays.
+    e.set_view(view(&p, None));
+    e.apply(slice);
+    assert_eq!(e.active_voices(), 0);
+    e.set_view(view(&p, Some(0)));
+    // A layer the take doesn't have plays nothing either.
+    e.apply(Event::Audition {
+        pad: TAKE_PAD,
+        layer: 1,
+        start: 2_000,
+        end: 4_000,
+        velocity: 100,
+    });
+    assert_eq!(e.active_voices(), 0);
+    e.apply(slice);
+    assert_eq!(e.pad_voices(TAKE_PAD), 1);
+    assert_eq!(e.pad_voices(0), 0, "pad A1 isn't hit");
+    assert!(e
+        .playheads()
+        .all(|(pad, layer, at)| (pad, layer) == (TAKE_PAD, 0) && (2_000..4_000).contains(&at)));
+    assert!(energy(&mut e, 4) > 0.0);
+    // Tapped again, its own voice ends first: one plays.
+    e.apply(slice);
+    assert_eq!(e.pad_voices(TAKE_PAD), 1);
+    // Let go (the take's lift), it ends.
+    e.apply(Event::TakeOff);
+    energy(&mut e, 20);
+    assert_eq!(e.active_voices(), 0);
+}
+
 /// A PadOut keeping kit 1's pads A1 and the last pad (127), where kit 0's
 /// take would land if a take had a pad number (128, or 255 with the
 /// tables' `kit × 128 + pad`), and nothing else.

@@ -882,7 +882,14 @@ pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
                 pp::OSC1_PW if poly && v(pp::OSC1_WAVE).round() != 1.0 => Some("pulse only"),
                 pp::OSC2_PW if poly && v(pp::OSC2_WAVE).round() != 1.0 => Some("pulse only"),
                 pp::UNISON_DETUNE | pp::UNISON_SPREAD if poly && v(pp::UNISON) <= 1.0 => {
-                    Some("one voice")
+                    Some("one copy")
+                }
+                pp::SUPER_DETUNE | pp::SUPER_MIX
+                    if poly
+                        && v(pp::OSC1_WAVE).round() != 4.0
+                        && v(pp::OSC2_WAVE).round() != 4.0 =>
+                {
+                    Some("Supersaw only")
                 }
                 wp::UNISON_DETUNE | wp::UNISON_SPREAD if !poly && v(wp::UNISON) <= 1.0 => {
                     Some("one voice")
