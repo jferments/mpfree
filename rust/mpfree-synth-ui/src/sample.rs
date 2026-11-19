@@ -249,11 +249,11 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         },
         Scene {
             name: "synth-table",
-            about: "Poly · Init, Table page, edited: osc 1 on the Vowels table a \
+            about: "Poly · Init, Waves page, edited: osc 1 on the Vowels table a \
                     third through, the filter envelope scanning half of it",
             preset: preset("Init"),
             edits: TABLE_EDITS,
-            page: "Table",
+            page: "Waves",
             focus: Some(pp::OSC1_POS),
         },
         Scene {

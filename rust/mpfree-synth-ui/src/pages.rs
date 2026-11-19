@@ -66,24 +66,24 @@ use mpfree_synth::params as pp;
 
 const POLY: &[PlanPage] = &[
     // Osc: the detune, the second oscillator's level, the sub and the
-    // supersaw's detune are what players reach for; octaves and waves are
-    // set once.
+    // noise are what players reach for; octaves and waves are set once.
     pg(
         "Osc",
-        &["Osc 1", "Osc 2", "Mix", "Supersaw"],
+        &["Osc 1", "Osc 2", "Mix"],
         &[
             pp::OSC2_FINE,
             pp::OSC2_LEVEL,
             pp::SUB_LEVEL,
-            pp::SUPER_DETUNE,
+            pp::NOISE_LEVEL,
         ],
     ),
-    // Table: each oscillator's Table wave (its table, warp, position and
-    // warp amount) and what moves the positions and warps. The positions
-    // and warps are what players turn.
+    // Waves: the settings of the two waves that have their own, Table
+    // (each oscillator's table, warp, position and warp amount, and what
+    // moves the positions and warps) and Supersaw. The positions and warps
+    // are what players turn.
     pg_with(
-        "Table",
-        &[],
+        "Waves",
+        &["Supersaw"],
         &[
             pp::OSC1_TABLE,
             pp::OSC1_WARP_MODE,
@@ -783,7 +783,7 @@ mod tests {
         let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
             names,
-            ["Osc", "Table", "Filter", "Env", "LFO", "LFO 2", "Voice", "Routes", "Pressure"]
+            ["Osc", "Waves", "Filter", "Env", "LFO", "LFO 2", "Voice", "Routes", "Pressure"]
         );
         every_param_once(&pages, PARAMS.len());
         // Pressure: the 8 shaper settings and 4 slots fill one page.
@@ -822,10 +822,10 @@ mod tests {
             .iter()
             .map(|&i| PARAMS[i].name)
             .collect();
-        assert_eq!(osc, ["Fine", "Level", "Sub", "Detune"]);
-        // Table: both oscillators' tables and what moves them, the Q-Links
-        // on the positions and warps.
-        assert_eq!(pages[1].params.len(), 14);
+        assert_eq!(osc, ["Fine", "Level", "Sub", "Noise"]);
+        // Waves: both oscillators' tables and what moves them, and the
+        // supersaw's two, the Q-Links on the positions and warps.
+        assert_eq!(pages[1].params.len(), 16);
         let q: Vec<&str> = qlink_targets(&pages[1], PARAMS)
             .iter()
             .map(|&i| PARAMS[i].name)

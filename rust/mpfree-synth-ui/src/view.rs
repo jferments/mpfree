@@ -705,8 +705,14 @@ impl SynthPanel {
                 .filter(|t| *t != page.name && self.pages.iter().any(|p| &p.name == t))
                 .map(|t| link(&t));
             let mut why = None;
-            for &i in &sec.params {
-                let reason = inactive(st, i);
+            // Off for one reason all through: the reason alone ("one copy").
+            let reasons: Vec<_> = sec.params.iter().map(|&i| inactive(st, i)).collect();
+            if let Some(&Some(r)) = reasons.first() {
+                if reasons.len() > 1 && reasons.iter().all(|&x| x == Some(r)) {
+                    why = Some(r.to_string());
+                }
+            }
+            for (&i, &reason) in sec.params.iter().zip(&reasons) {
                 if why.is_none() {
                     why = reason.map(|r| format!("{} · {r}", sec.label(i, &st.params[i])));
                 }
@@ -913,6 +919,7 @@ pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
             match id {
                 pp::OSC1_PW if poly && v(pp::OSC1_WAVE).round() != 1.0 => Some("pulse only"),
                 pp::OSC2_PW if poly && v(pp::OSC2_WAVE).round() != 1.0 => Some("pulse only"),
+                pp::SUB_WAVE if poly && v(pp::SUB_LEVEL) <= 0.0 => Some("sub is off"),
                 pp::UNISON_DETUNE | pp::UNISON_SPREAD if poly && v(pp::UNISON) <= 1.0 => {
                     Some("one copy")
                 }
@@ -1259,10 +1266,10 @@ fn poly_cards(st: &SynthState, page: &str) -> Strip {
         let title = c.title.clone();
         s.push(c, &title);
     }
-    // Each oscillator's table, for the Table page's boxes.
-    if page == "Table" {
+    // Each oscillator's table, for the Waves page's boxes.
+    if page == "Waves" {
         for o in 0..2 {
-            s.push(table_card(&v, o), "Table");
+            s.push(table_card(&v, o), "Waves");
         }
     }
     s
