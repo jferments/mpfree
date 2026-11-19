@@ -56,6 +56,62 @@ def check_links(files, errors):
                 errors.append(f"{f}: broken link {target}")
 
 
+def slug(heading):
+    """The anchor mdBook gives a heading: lowercased, spaces to hyphens,
+    only letters, digits, hyphens and underscores kept."""
+    out = []
+    for ch in heading.strip().lower():
+        if ch.isalnum() or ch in "-_":
+            out.append(ch)
+        elif ch.isspace():
+            out.append("-")
+    return "".join(out)
+
+
+def anchors(path):
+    """The heading anchors of the manual page at `path`, as mdBook makes them
+    (a repeated heading gets -1, -2 ...)."""
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        text = FENCE.sub("", fh.read())
+    seen, out = {}, set()
+    for m in re.finditer(r"^#{1,6}\s+(.+?)\s*#*\s*$", text, re.M):
+        heading = re.sub(r"[*_`]|\[([^]]*)\]\([^)]*\)", lambda x: x.group(1) or "", m.group(1))
+        base = slug(heading)
+        n = seen.get(base, 0)
+        seen[base] = n + 1
+        out.add(base if n == 0 else f"{base}-{n}")
+    return out
+
+
+def check_anchors(files, errors):
+    """Links between manual pages that name a heading (page.md#heading, or
+    #heading on the same page) must name one the page has: the PDF build
+    stops on a missing one."""
+    manual = "docs/user/src/"
+    cache = {}
+    for f in files:
+        if not f.startswith(manual):
+            continue
+        with open(os.path.join(ROOT, f), encoding="utf-8", errors="replace") as fh:
+            text = FENCE.sub("", fh.read())
+        text = re.sub(r"`[^`\n]*`", "", text)
+        for m in re.finditer(r"\]\(([^)\s]+)\)", text):
+            target = m.group(1)
+            if re.match(r"^[a-z]+:", target) or "#" not in target:
+                continue
+            path, frag = target.split("#", 1)
+            full = os.path.normpath(os.path.join(ROOT, os.path.dirname(f), path)) if path \
+                else os.path.join(ROOT, f)
+            if not full.endswith(".md") or not os.path.exists(full):
+                continue
+            if not os.path.relpath(full, ROOT).startswith(manual):
+                continue
+            if full not in cache:
+                cache[full] = anchors(full)
+            if frag not in cache[full]:
+                errors.append(f"{f}: link {target} names no heading on that page")
+
+
 def linked_from(index, folder):
     with open(os.path.join(ROOT, index), encoding="utf-8") as fh:
         text = fh.read()
@@ -166,6 +222,7 @@ def main():
     errors, warnings = [], []
     files = tracked_md()
     check_links(files, errors)
+    check_anchors(files, errors)
     check_layout(files, errors)
     check_manual(errors, warnings, a.shots)
     for w in warnings:
