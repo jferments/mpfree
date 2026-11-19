@@ -34,10 +34,14 @@ use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
 use crate::osc::{self, Classic, Shape, Super, SAWS};
 use crate::params::*;
 use crate::pressure::{lfo_gate, swell_gain, Depths, Slot};
-use crate::voice::{routed, Adsr, Channel, Inputs, Lfo, Route, Source, VelCurve};
+use crate::voice::{routed, Adsr, Channel, DcBlock, Inputs, Lfo, Route, Source, VelCurve};
 
 /// Frames per control step.
 pub const CTRL: u64 = 16;
+
+/// The DC blocker's corner: low enough to leave the lowest notes alone
+/// (under 0.1 dB at 32 Hz, C1).
+const DC_HZ: f32 = 5.0;
 /// The most frames one render pass covers (one control step).
 const SEG: usize = CTRL as usize;
 /// The most notes sounding at once (the Voices parameter's top).
@@ -313,6 +317,16 @@ pub struct Poly {
     step_beats: Option<f64>,
     /// Work buffers for one render pass (each frame written before read).
     scratch: Scratch,
+    /// The output's DC blocker, and whether it runs: from when a voice
+    /// with drive or distortion (whose asymmetry makes DC) sounds, until
+    /// every voice has ended and the blocker has let go. A sound without
+    /// them never runs it, so it plays and costs as it did.
+    dc_l: DcBlock,
+    dc_r: DcBlock,
+    dc_live: bool,
+    /// Whether pressure, or a route, can add drive or distortion.
+    press_grit: bool,
+    route_grit: bool,
     /// Notes that did not fit anywhere (should stay 0).
     pub dropped: u64,
 }
@@ -324,6 +338,10 @@ struct Scratch {
     left: [f32; SEG],
     right: [f32; SEG],
     extra: [f32; SEG],
+    /// What the output held before the voices added to it, while the DC
+    /// blocker runs.
+    mix_l: [f32; SEG],
+    mix_r: [f32; SEG],
 }
 
 impl Default for Poly {
@@ -400,7 +418,14 @@ impl Poly {
                 left: [0.0; SEG],
                 right: [0.0; SEG],
                 extra: [0.0; SEG],
+                mix_l: [0.0; SEG],
+                mix_r: [0.0; SEG],
             },
+            dc_l: DcBlock::new(rate, DC_HZ),
+            dc_r: DcBlock::new(rate, DC_HZ),
+            dc_live: false,
+            press_grit: false,
+            route_grit: false,
             dropped: 0,
         };
         s.prepare(rate, mpfree_node::MAX_BLOCK);
@@ -469,6 +494,8 @@ impl Poly {
         self.press_more = [target::LFO1_AMOUNT, target::LFO2_AMOUNT, target::PAN]
             .iter()
             .any(|&t| self.depths.get(t) != 0.0);
+        self.press_grit =
+            self.depths.get(target::DRIVE) != 0.0 || self.depths.get(target::DIST) != 0.0;
     }
 
     /// Reads the play routes from the values.
@@ -493,6 +520,10 @@ impl Poly {
             .routes
             .iter()
             .any(|r| live(r) && r.target == target::LFO_RATE);
+        self.route_grit = self
+            .routes
+            .iter()
+            .any(|r| live(r) && (r.target == target::DRIVE || r.target == target::DIST));
     }
 
     /// Sets every voice's LFO 2 from the values (and the tempo, when it is
@@ -1065,6 +1096,27 @@ impl Poly {
                 self.voice_control(i);
             }
         }
+
+        // The DC blocker: on while a voice sounds with drive or distortion
+        // (set, or added now by pressure or a route), off once every voice
+        // has ended and it has let go. A sound without them only pays for
+        // this test.
+        let driven = self.sh.drive_amt > 0.0
+            || self.sh.dist_amt > 0.0
+            || (self.press_grit && top > 0.0)
+            || (self.route_grit && self.routes_live);
+        if driven || self.dc_live {
+            // It lets go of what is left of its state here, at fixed frames,
+            // so the output is the same however blocks are cut.
+            self.dc_l.settle();
+            self.dc_r.settle();
+            let any = self.voices.iter().any(|v| v.state != State::Free);
+            if driven && any {
+                self.dc_live = true;
+            } else if !any && self.dc_l.rests() && self.dc_r.rests() {
+                self.dc_live = false;
+            }
+        }
     }
 
     /// The routes' amount on the LFO's rate (-1 to 1, 2 octaves at 1):
@@ -1365,7 +1417,16 @@ impl Poly {
             left: l,
             right: r,
             extra: c,
+            mix_l: ml,
+            mix_r: mr,
         } = &mut self.scratch;
+        // While the DC blocker runs, what the buffers held before is kept
+        // aside, so it takes Poly's sound and nothing else.
+        let dc = self.dc_live;
+        if dc {
+            ml[..n].copy_from_slice(&left[from..to]);
+            mr[..n].copy_from_slice(&right[from..to]);
+        }
         for v in &mut self.voices {
             if v.state == State::Free {
                 continue;
@@ -1524,6 +1585,10 @@ impl Poly {
                     right[from + j] += r[j] * g[j] * s.out_r;
                 }
             }
+        }
+        if dc {
+            self.dc_l.run_added(&mut left[from..to], &ml[..n]);
+            self.dc_r.run_added(&mut right[from..to], &mr[..n]);
         }
     }
 }
@@ -1735,6 +1800,9 @@ impl Node for Poly {
 
     fn prepare(&mut self, rate: u32, _max_block: usize) {
         self.rate = rate.max(8_000);
+        self.dc_l = DcBlock::new(self.rate, DC_HZ);
+        self.dc_r = DcBlock::new(self.rate, DC_HZ);
+        self.dc_live = false;
         self.update_envs();
         self.update_pressure();
         self.update_routes();
@@ -1758,6 +1826,9 @@ impl Node for Poly {
         self.vib_phase = 0.0;
         self.chord.clear();
         self.meter_voices = 0.0;
+        self.dc_l.reset();
+        self.dc_r.reset();
+        self.dc_live = false;
         self.control(&Ctx::new(self.rate, 0), 0);
     }
 

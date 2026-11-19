@@ -10,7 +10,7 @@ The method is the FX quality one ([FX quality](fx-quality.md)): each target a nu
 
 ## The report
 
-`fxlab synth [--rate HZ] [--renders] [--out DIR]` measures every keyboard engine's factory presets (Poly, Analog, Squelch, FM, Wavetable, Keys, Drawbar, Pluck: 83 presets at the baseline; Strings' 24 joined with wave 1), each engine's plain patch, Poly's voice, FM's operators and the five drum kits, and prints one row per number with its target and whether it is met, then a count by measure; it writes DIR/synth.txt. With `--renders` it also writes each preset's listening phrase (C, E and G, then a four-note chord; two octaves down for a bass) as DIR/renders/ENGINE/NN-PRESET.wav, and each kit's tour (every pad, then two bars of a beat). The report takes about 21 s in a release build on the workstation. A factory preset that brings its own effects and macros (a sound, [Presets](presets.md#factory-presets-as-files)) is measured as the pads play it, through its effects; the K rows, which measure the engine's own voicing (decay against its label, the release drop, the pickups, the tremolo), play its engine alone, since a sound's echo or reverb lengthens a decay by design.
+`fxlab synth [--rate HZ] [--renders] [--out DIR]` measures every keyboard engine's factory presets (Poly, Analog, Squelch, FM, Wavetable, Keys, Drawbar, Pluck: 83 presets at the baseline; Strings' 24 joined with wave 1, Drawbar's 8 combo presets with wave 2), each engine's plain patch, Poly's voice, FM's operators and the five drum kits, and prints one row per number with its target and whether it is met, then a count by measure; it writes DIR/synth.txt. With `--renders` it also writes each preset's listening phrase (C, E and G, then a four-note chord; two octaves down for a bass) as DIR/renders/ENGINE/NN-PRESET.wav, and each kit's tour (every pad, then two bars of a beat). The report takes about 21 s in a release build on the workstation. A factory preset that brings its own effects and macros (a sound, [Presets](presets.md#factory-presets-as-files)) is measured as the pads play it, through its effects; the K rows, which measure the engine's own voicing (decay against its label, the release drop, the pickups, the tremolo), play its engine alone, since a sound's echo or reverb lengthens a decay by design.
 
 Every render plays 100 silent blocks first, so parameters a preset or patch sets have finished gliding, as they have when a player picks a preset and then plays (without them Poly's Decay read 19 % long: its Sustain was still gliding down). Renders run in 128-frame blocks on absolute frames, as on the MPC.
 
@@ -34,8 +34,9 @@ Every render plays 100 silent blocks first, so parameters a preset or patch sets
 | K1 | Keys presets | Second harmonic against the first at C4, velocity 127 against 40 | at least 12 dB more | K1 |
 | K3 | Keys and Pluck presets | T60 at C4 against the Decay label; the slope of log T60 against log frequency over C2 to C6 against the engine's law (−0.75 Keys, −0.5 Pluck) | within 20 %; within 0.15 | K3 |
 | K9 | Keys presets with tremolo | The level's modulation rate against Trem rate | within 5 % | K9 |
-| T1 | each engine's plain patch | Pitch of C1, C2, C4, C6 and C7 (a Blackman-Harris peak refined by the phase it turns through in a second): the worst, cents | within 1 cent (the organ, tuned by its gears, shown) | S6, B1 |
-| A1 | plain patches with saw, pulse, square, drive, distortion, wavetables, FM feedback | Loudest component off the harmonics, 20 Hz to 20 kHz, against the loudest harmonic, at C5, C6 and C7 | under −60 dB | P1, F3, B10 |
+| T1 | each engine's plain patch, and Drawbar's combo (its flute on the 8') | Pitch of C1, C2, C4, C6 and C7 (a Blackman-Harris peak refined by the phase it turns through in a second): the worst, cents | within 1 cent (the tonewheel organ, tuned by its gears, shown) | S6, B1 |
+| A1 | plain patches with saw, pulse, square, drive, distortion, wavetables, FM feedback; Drawbar's combo flute, saw reed and square reed | Loudest component off the harmonics, 20 Hz to 20 kHz, against the loudest harmonic, at C5, C6 and C7 | under −60 dB | P1, F3, B10 |
+| O6 | Drawbar's combo, its flute on one footage of C4 at a time | The 16', 4', 2' and 1' against the 8': the worst, cents from an exact octave | within 0.1 cent | O6 |
 | B2 | Poly, legato C3 to C4, Glide 200 ms | Landing pitch; time to within 12 cents (99 % of the octave) against the label | within 2 cents; within 10 % | B2 |
 | P6 | Poly's amp envelope on a sine | Attack to 99 % of full level, Decay to within 1 % of Sustain, Release to 60 dB under the held level, against the labels (since 19 Nov a time means what it says; before, 99 % of a segment and Release to 1 %) | within 10 % | P6 |
 | P12 | Poly's play routes, the mod wheel at the top | A route on Pitch at 100 % against an octave up; the default route (the wheel on Vibrato at 50 %) against half a semitone each way | within 1 cent; within 5 % | P12 |
@@ -52,13 +53,13 @@ New analyses in `rust/mpfree-fxlab/src/synth.rs`, each tested on signals with kn
 
 ## The ratchet
 
-`tests/synth.rs` runs the whole report and compares every row that has a better direction (896 of them) with `rust/mpfree-fxlab/quality/synth.tsv`, as the FX ratchet does: a number worse than recorded by more than its tolerance, a new row, or a recorded row no longer measured fails it. It renders every preset many times, so it runs in release only (ignored in a debug build) as its own CI step, about 21 s. A change that improves numbers records them with `MPFREE_QUALITY_BLESS=1 cargo test --release --locked -p mpfree-fxlab --test synth`; one made worse on purpose is blessed the same way and explained in its pull request. Adding a preset adds rows, so a preset pull request blesses too.
+`tests/synth.rs` runs the whole report and compares every row that has a better direction (1,755 of them on 19 Nov) with `rust/mpfree-fxlab/quality/synth.tsv`, as the FX ratchet does: a number worse than recorded by more than its tolerance, a new row, or a recorded row no longer measured fails it. It renders every preset many times, so it runs in release only (ignored in a debug build) as its own CI step, about 21 s. A change that improves numbers records them with `MPFREE_QUALITY_BLESS=1 cargo test --release --locked -p mpfree-fxlab --test synth`; one made worse on purpose is blessed the same way and explained in its pull request. Adding a preset adds rows, so a preset pull request blesses too.
 
 ## Where today's synths stand (2026-11-18)
 
-Met against rows with a target (with Strings, Bass, the Keys clav and the first six factory sounds): L2 148 of 165, L3 161/165, L5 101/153 (the six tine presets that missed it meet it since the tine's rebuild, 19 Nov), L6 164/165, L8 165/165, L11 119/165, L12 113/113; B1 2/2, B3 3/3, B4 50/50, B5 31/50, B7 50/50; K1 23/23, K3 92/92, K4 11/11, K7 5/5, K9 8/8; S7 8/8; V7 2/2; T1 9/9; A1 22/51; B2 2/2; P6 3/3; P12 2/2 (19 Nov: 0.0001 cents, 0.06 %); B9 3/3, P5 2/2; F1 3/3, F5 0/1, F7 0/1; D3 19/80, D5 70/80.
+Met against rows with a target (with Strings, Bass, the Keys clav, the first six factory sounds and, 19 Nov, Poly's new presets and Drawbar's combo): L2 162 of 179, L3 175/179, L5 107/159 (the six tine presets that missed it meet it since the tine's rebuild, 19 Nov), L6 178/179, L8 179/179, L11 129/179, L12 125/125; B1 2/2, B3 3/3, B4 50/50, B5 31/50, B7 50/50; K1 23/23, K3 92/92, K4 11/11, K7 5/5, K9 8/8; S7 8/8; V7 2/2; T1 10/10; A1 40/63; O6 1/1; B2 2/2; P6 3/3; P12 2/2 (19 Nov: 0.0001 cents, 0.06 %); B9 3/3, P5 2/2; F1 3/3, F5 0/1, F7 0/1; D3 19/80, D5 70/80.
 
-- **In tune and true to theory.** Every engine's plain patch is within 0.03 cents from C1 to C7, except Keys (0.55 cents at C2) and the organ (0.58 cents, its gear ratios). FM's sidebands match the Bessel functions within 0.01 dB (operator level 60, 75 and 90 give an index of 0.43, 1.57 and 5.76). Poly's LP24 is within 0.16 dB of its 4-pole prototype and LP12 within 0.8 dB, the cutoff where the label says, the resonance peak within 5.3 cents. Glide lands within 0.04 cents in 1.2 % of its time. Keys' and Pluck's decays follow their labels and laws (all 88 K3 rows), and the tremolo rates are within 0.4 %.
+- **In tune and true to theory.** Every engine's plain patch is within 0.03 cents from C1 to C7, except Keys (0.55 cents at C2) and the tonewheel organ (0.58 cents, its gear ratios); Drawbar's combo is within 0.0006 cents, its octaves exact (O6). FM's sidebands match the Bessel functions within 0.01 dB (operator level 60, 75 and 90 give an index of 0.43, 1.57 and 5.76). Poly's LP24 is within 0.16 dB of its 4-pole prototype and LP12 within 0.8 dB, the cutoff where the label says, the resonance peak within 5.3 cents. Glide lands within 0.04 cents in 1.2 % of its time. Keys' and Pluck's decays follow their labels and laws (all 88 K3 rows), and the tremolo rates are within 0.4 %.
 - **Aliasing is the biggest gap.** Poly's saw and pulse (PolyBLEP) alias at −49 dB at C5, −44 at C6 and −37 at C7 (the saw's 13th harmonic folds to 16.9 kHz); drive and distortion make it −30 and −27 at C7. (Fixed for Poly 19 Nov, wave 2: from the voice core's tables its saw and pulse are at −78, −84 and −90 dB and its triangle −94 to −99; the antialiased drive is at −50, −45 and −38 and the distortion −45, −40 and −35, still short of −60.) Analog: −54, −48, −42. Squelch's saw meets −60 to C6, its square doesn't (−27 at C7). Wavetable's mips work: Init −72 at C7, position 100 −54. FM feedback 7 sits 13 to 17 dB under its harmonics with what is off them (aliasing or the feedback's noise; the row can't tell which).
 - **Velocity is narrow.** From velocity 20 to 127 Poly's level moves 7 to 8 dB, Analog's 2 to 8, Pluck's 6 to 10 and Keys' 12 to 22, against the 30 to 40 dB the research proposes; the curve's shape is fine (81 of 83 within 2 dB of a square law). Tone follows velocity on 32 of 71 presets; on the drums only snares, claps and FM perc brighten (19 of 80 pads).
 - **Levels.** 17 presets clip an 8-note chord at full velocity (up to +3.2 dB: Pluck's mallets and Steel Drum, Poly Init +2.0, FM Init +1.9). Single notes across the keys stay within 3 dB on only 25 of 83 presets (Pluck's strings up to 9 dB). DC is above −60 dBFS on 8 presets: FM's 1:1 pairs (Glass Keys −38.5 dBFS: a 1:1 pair puts a sideband at 0 Hz), the reeds (Reed Bite −45.6) and Poly Lead (−45.1). Every preset keeps its loudness within 3 dB in mono.
@@ -85,7 +86,7 @@ The bar each wave 1 pull request is judged by ([Architecture and roadmap](synth-
 | V5 | Sustain pedal (K5) | A note let go with the pedal down sounds until the pedal comes up, then releases; a key struck again under the pedal restarts its note; the same through the host's fallback for an engine that doesn't hear the pedal | No pedal |
 | V6 | Note priority and legato | Last, low and high each pick the right note as keys go down and up; legato with retrigger off never restarts the envelopes | Last note only |
 | V7 | Glide by rate | Covers an octave in the time its rate gives, within 10 %; lands within 2 cents (B2) | Time only |
-| V8 | DC (L3) | Under −60 dBFS | 8 presets over |
+| V8 | DC (L3) | Under −60 dBFS | 8 presets over. Poly met (19 Nov: the output's DC blocker while drive or distortion sounds; Lead from −44 dBFS, Grit Bass from −63 and Acid from −70 to the floor) |
 | V9 | An 8-note chord at full velocity (L2) | Under 0 dBFS | 17 presets clip |
 
 **Bass (B)**, on the Bass engine's plain patch and presets:
@@ -132,6 +133,18 @@ The bar each wave 1 pull request is judged by ([Architecture and roadmap](synth-
 | S8 | Aliasing | Worst alias under −60 dB at C7 | Met: −65.5 dB at worst (Violin) |
 | S9 | Chords | A 6-note chord within 6 dB of its notes' power sum (L12) | Met: −0.55 to +1.61 dB over the 26 presets |
 
+Drawbar's combo model (19 Nov), against the [organ targets](../research/organ-wind-choir.md#4-what-to-measure) and the rows every preset gets:
+
+| Id | Measure | Target | Today |
+|---|---|---|---|
+| O5 | Cost against keys held | Flat within 10 % from 1 to 49 keys | Not met, by design (as S5): the bank renders the notes heard. Workstation, instructions a block: 154k for Combo with 8 keys (three footages, both voices), 182k for Combo Reed with 8 (seven footages). MPC: device round |
+| O6 | Combo footages | Octaves exact, within 0.1 cent | Met: 0 cents (the 16', 4', 2' and 1' of C4 against its 8') |
+| T1 | Tuning | Within 1 cent | Met: 0.0006 cents from C1 to C7 |
+| A1 | Aliasing | Under −60 dB at C5, C6 and C7 | Met: −76 dB at worst (the flute at C7); the saw reed −78.7 dB, the square −80 dB |
+| L11 | One note across the keys | Under 3 dB from C2 to C6 | Met on all 8 presets: 0.7 to 2.6 dB |
+| L12 | Chords | A 6-note chord within 6 dB of its notes' power sum | Met: −0.3 to +2.2 dB |
+| L2 | Headroom | An 8-note chord at full velocity under 0 dBFS | Met: −0.8 dBFS at worst (Combo Reed) |
+
 The Ensemble effect also meets the FX method's own rows: no dip as Mix goes up (within −1 to +1.5 LU of the dry), no zipper over 3 dB on any control, and no cut-off tail ([FX quality](fx-quality.md#delay), D6, D7 and D12). Built 18 Nov: in the `modulation` class it meets all of them (mix dip -0.33 LU, no bump; every control's click at least 60 dB under the tone; on insert within ±0.4 LU at the defaults and every preset).
 
 ## The NEON kernels (C3)
@@ -150,7 +163,7 @@ The bar for each kernel in `mpfree-simd` ([NEON kernels](simd.md)): the supersaw
 
 ## Not measured yet
 
-Supersaw detune and phase (P2, P3), unison and table-morph steps (P4, P7), drift (P10), the 808 kick and metal bank against their papers (D1, D2, D9), chokes and retriggers (D6), sustain-pedal behaviour (K5: there is no pedal event yet), piano partials (K8), FM envelope rates and banks (F4, F6), organs, winds and choirs (O: no engines yet), and cost on the MPC. Each joins the report when stage 3 or 4 builds or changes what it measures.
+Supersaw detune and phase (P2, P3), unison and table-morph steps (P4, P7), drift (P10), the 808 kick and metal bank against their papers (D1, D2, D9), chokes and retriggers (D6), sustain-pedal behaviour (K5: there is no pedal event yet), piano partials (K8), FM envelope rates and banks (F4, F6), winds, choirs and tape (O1 to O4, O7, O8 and O10: no engines yet), attack noises (O9), and cost on the MPC. Each joins the report when stage 3 or 4 builds or changes what it measures.
 
 ## Running it
 

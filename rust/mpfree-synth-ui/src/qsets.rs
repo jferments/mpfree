@@ -213,13 +213,15 @@ const KEYS: &[Curated] = &[
 
 use mpfree_synth::drawbar_params as eb;
 
-/// Drawbar: the drawbars in two sets (low and high), the tone, and the
-/// rest of what turns (the switches stay on the screen).
+/// Drawbar: the drawbars in two sets (low and high), the tone, the rest
+/// of what turns (the switches stay on the screen), and the combo's
+/// voices with its main footages.
 const DRAWBAR: &[Curated] = &[
     set("Low bars", [eb::DB_16, eb::DB_5_13, eb::DB_8, eb::DB_4]),
     set("High bars", [eb::DB_2_23, eb::DB_2, eb::DB_1_35, eb::DB_1]),
     set("Tone", [eb::DRIVE, eb::TONE, eb::CLICK, eb::LEAKAGE]),
     set("Play", [eb::SCANNER, eb::SPREAD, eb::FINE, eb::LEVEL]),
+    set("Combo", [eb::FLUTE, eb::REED, eb::DB_8, eb::DB_4]),
 ];
 
 use mpfree_synth::squelch_params as es;

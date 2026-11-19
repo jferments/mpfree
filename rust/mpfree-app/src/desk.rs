@@ -501,6 +501,13 @@ impl Desk<'_> {
             gui::FromUi::SamplePhrase(clip) => match time.put_clip(*clip) {
                 Ok(line) | Err(line) => out.note(&format!("time: {line}")),
             },
+            // Put on Audio track (the one Sample page's step 6): where it
+            // went, or why not, said in place of the hint.
+            gui::FromUi::SampleToAudio(s) => {
+                let (Ok(line) | Err(line)) = tracks.bring(*s, &time.info());
+                out.note(&format!("audio tracks: {line}"));
+                out.show(gui::ToUi::Tell(line));
+            }
             gui::FromUi::LoopLayer { id, command } => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Layer(id, command)))
             }
