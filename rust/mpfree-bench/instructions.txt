@@ -25,6 +25,9 @@
 120120	Character (Iron)
 97075	Character (Soften)
 149818	Character (Tape)
+618597	Choir Big Choir, 8 keys
+212507	Choir Init, 1 keys
+358682	Choir Init, 6 keys
 99180	Chorus (2 voices)
 147067	Chorus (4 voices)
 991771	Cloud reverb (Cloud)
@@ -130,6 +133,7 @@
 319975	Poly Super Stab, 8 voices
 394062	Poly Super Stack, 8 voices
 341789	Poly Supersaw, 8 voices
+243190	Poly Worn Brass, 8 voices
 12921	Ring mod
 145867	Room reverb
 108213	Rotary

@@ -33,6 +33,10 @@
 //! - [`formants4`]: five band-pass formant filters (zero-delay state
 //!   variable filters) for four voices at once, summed: the Choir's
 //!   formants, one voice a lane.
+//! - [`waves4`] and [`mix4`]: the divide-down bank (`mpfree_synth::bank`)
+//!   four notes at a time, one a lane: their waves without the step
+//!   correction (the bank adds it where the kernel flags), then mixed into
+//!   the buses along each bus's level ramps.
 //!
 //! # Choosing the code that runs
 //!
@@ -271,6 +275,118 @@ pub fn formants4_on(want: Path, src: &[[f32; 4]], out: &mut [[f32; 4]], f: &mut 
     }
     let _ = want;
     plain::formants4(src, out, f);
+    Path::Plain
+}
+
+/// A wave of [`waves4`]: the divide-down bank's shapes
+/// (`mpfree_synth::bank::Shape`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shape4 {
+    /// `t + t - 1`, a step at the cycle's end.
+    Saw,
+    /// -1 for the first half cycle, 1 for the second, a step at each.
+    Square,
+    /// `t (t - 1/2) (1 - t)` times [`CUBIC_SCALE`]: no step.
+    Cubic,
+}
+
+/// The cubic's scale in [`waves4`] (the bank's: a peak of 1).
+pub const CUBIC_SCALE: f32 = 20.784_609;
+
+/// Four oscillators, one a lane: each one's 32-bit phase, its step a
+/// frame, and that step as a share of a cycle. The layout is the
+/// kernel's: `#[repr(C)]`, the fields in this order.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Osc4 {
+    pub ph: [u32; 4],
+    pub inc: [u32; 4],
+    pub dt: [f32; 4],
+}
+
+/// Four oscillators' waves without their step correction, one a lane:
+/// `out[j][lane]` at frame `j`, the phase moving on by `inc` a frame from
+/// `ph` (which is left as it is). With `t = (p >> 8) as f32 / 2^24`:
+///
+/// - [`Shape4::Saw`]: `t + t - 1`;
+/// - [`Shape4::Square`]: -1 while `p < 2^31`, else 1;
+/// - [`Shape4::Cubic`]: `t * (t - 0.5) * (1 - t) * CUBIC_SCALE`.
+///
+/// `flags[j]` gets bit `lane` set where the four-point step correction
+/// (`mpfree_synth::dsp::poly_blep4`) may not be zero, so the caller adds it
+/// there and only there: for the saw where `dt >= 0.25`, `t < 2 dt` or
+/// `t > 1 - 2 dt`; for the square the same for `t` or for `h`, the phase
+/// half a cycle on; never for the cubic. As many frames as the shorter of
+/// `out` and `flags`.
+pub fn waves4(shape: Shape4, osc: &Osc4, out: &mut [[f32; 4]], flags: &mut [u8]) {
+    waves4_on(path(), shape, osc, out, flags);
+}
+
+/// [`waves4`] on a chosen path (NEON only where [`neon_available`]);
+/// returns the path that ran.
+pub fn waves4_on(
+    want: Path,
+    shape: Shape4,
+    osc: &Osc4,
+    out: &mut [[f32; 4]],
+    flags: &mut [u8],
+) -> Path {
+    #[cfg(all(target_arch = "arm", target_endian = "little", target_os = "linux"))]
+    if want == Path::Neon && neon_available() && neon::waves4(shape, osc, out, flags) {
+        return Path::Neon;
+    }
+    let _ = want;
+    plain::waves4(shape, osc, out, flags);
+    Path::Plain
+}
+
+/// Frames a [`mix4`] call takes at most, and each bus row's length: one
+/// control step of the bank.
+pub const MIX_STEP: usize = 16;
+
+/// Adds four oscillators' waves (`waves[j][lane]`, one oscillator a lane)
+/// into buses, each along its own level ramps: for bus `b` and frame `j`,
+/// oscillator by oscillator in lane order,
+///
+/// ```text
+/// buses[b][j] += waves[j][lane] * a;  a += d
+/// ```
+///
+/// with `a` starting at `amp[b][lane]`, `d` = `damp[b][lane]`, and `a`'s
+/// end left in `amp`. An oscillator whose `a` and `d` are both zero on a
+/// bus is skipped there (the bank's "not heard on this bus"). As many
+/// buses as the shortest of `amp`, `damp` and `buses`, and as many frames
+/// as `waves` holds, up to [`MIX_STEP`]. The NEON kernel gives the same
+/// samples and levels to the bit for finite waves and levels.
+pub fn mix4(
+    waves: &[[f32; 4]],
+    amp: &mut [[f32; 4]],
+    damp: &[[f32; 4]],
+    buses: &mut [[f32; MIX_STEP]],
+) {
+    mix4_on(path(), waves, amp, damp, buses);
+}
+
+/// [`mix4`] on a chosen path (NEON only where [`neon_available`]);
+/// returns the path that ran (the frames after the last whole group of
+/// four always run as the twin).
+pub fn mix4_on(
+    want: Path,
+    waves: &[[f32; 4]],
+    amp: &mut [[f32; 4]],
+    damp: &[[f32; 4]],
+    buses: &mut [[f32; MIX_STEP]],
+) -> Path {
+    #[cfg(all(target_arch = "arm", target_endian = "little", target_os = "linux"))]
+    if want == Path::Neon && neon_available() {
+        let done = neon::mix4(waves, amp, damp, buses);
+        if done > 0 {
+            plain::mix4_from(done, waves, amp, damp, buses);
+            return Path::Neon;
+        }
+    }
+    let _ = want;
+    plain::mix4(waves, amp, damp, buses);
     Path::Plain
 }
 

@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-seq rust/mpfree-play rust/mpfree-capture rust/mpfree-time-ui/src/view.rs rust/mpfree-time-ui/src/widgets.rs rust/mpfree-transport
-checked: 2026-11-19 79fc6f63
+checked: 2026-11-19 f0b39161
 -->
 
 # Clips and patterns
@@ -59,11 +59,11 @@ Set up the recording in the Record panel, beside the grid:
 
 - **Armed:** the track that records.
 - **Mode:** **Replace** records over what's there; **Overdub** adds to it. The **OVERDUB** button switches this too.
-- **Count-in:** a count before recording starts, so you can come in on time.
+- **Count-in:** a count before recording starts, so you can come in on time. **SHIFT + OVERDUB** turns it off and back on from any page.
 - **Loop:** plays the same bars round and round while you record, so you can keep trying a part. It counts in bars from bar 1.
 - **Tempo:** the song's tempo, in BPM.
 - **Pressure:** whether the armed track records how hard you press the pads while they're held (**Recorded**, the setting for a new track, or **Off**).
-- **Quantise:** puts each note you record on the nearest line of a grid, from **1/4** to **1/32** with triplets, as the MPC's Timing Correct does while recording. **Off** (the setting for a new track) keeps the notes exactly as you played them. It belongs to the armed track, so drums can go in on 1/16 while the bass keeps its feel. The clip's own **Quantise** (see [Clip settings](#clip-settings)) still moves the notes as they play, and you can change that later; this one moves them for good, so they sit on the steps on the Sequencer and in the note editor.
+- **Quantise:** puts each note you record on the nearest line of a grid, from **1/4** to **1/32** with triplets, as the MPC's Timing Correct does while recording. **Off** (the setting for a new track) keeps the notes exactly as you played them. It belongs to the armed track, so drums can go in on 1/16 while the bass keeps its feel. The clip's own **Quantise** (see [Clip settings](#clip-settings)) still moves the notes as they play, and you can change that later; this one moves them for good, so they sit on the steps on the Sequencer and in the note editor. **SHIFT + TC** turns it off, and on again at the grid it had (1/16 the first time), for the track you are on.
 - **Launch:** when a clip you tap, a stop or a scene starts while the music plays: on the next bar line (**1 bar**, the setting for a new project), the next **2**, **4** or **8** bars for a big change, the next **1/2** to **1/16** note for a quick one, or **at once**. The transport bar shows it as **Launch 1 bar**. A clip with a Launch of its own on the Clip tab (below) keeps it; a scene's clips all start together on this one. Change it while something waits and that still starts where it was going to.
 - **Transpose:** shifts every note the armed track plays, live, without changing its clips: **as written**, or up to 24 semitones either way (**+5 st**). A track set to transpose in key shows **+3 in key** and steps through its scale. Its notes already sounding keep their pitch; the next ones move. 16 Levels' Transpose sets it from the pads (see [Transpose](playing-live.md#transpose)). Only a track that plays notes (the synth, or its own instrument) has it; a kit's track shows **–**.
 - **Follows:** **On** and this track moves with whichever track you transpose from the pads, so a bass and its chords change key together. **Off** (the setting for a new track) keeps its own.
@@ -77,6 +77,8 @@ Then press **REC** and **PLAY**, play, and press **STOP**. The new notes go into
 ### Erasing while you record
 
 Hit a wrong note? Keep recording, hold **ERASE** and hold that pad: its hits come out of the clip as the playhead passes them, on every pass, and the pad makes no sound while you hold it. The other pads play on. Let go of the pad, or of **ERASE**, and it stops. It erases on the armed track only, and the hits it took out are part of the take, so **UNDO** brings them back with it. With **STEP SEQ** on, **ERASE** and a pad clears that step instead.
+
+It works the same while the music only plays, without recording: hold **ERASE** and the pad for as long as you want its hits gone. Each time you hold **ERASE** is one **UNDO** step ("Erase 1"). With the music stopped, **ERASE** and a pad takes all of that pad's notes out of the clip at once, also one **UNDO** step.
 
 ### Knob moves while you record
 

@@ -573,3 +573,42 @@ fx-2.sync = 1/8D
 fx-2.feedback = 30
 fx-2.ping-pong = 1
 fx-2.mix = 15
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = Worn Brass
+
+# Osc 2
+osc-2.fine = 4
+osc-2.level = 85
+
+# Filter
+filter.cutoff = 600
+filter.resonance = 12
+filter.env-amount = 2.8
+filter.key-track = 40
+filter.velocity = 0.8
+
+# Filter env
+filter-env.attack = 45
+filter-env.decay = 700
+filter-env.sustain = 40
+filter-env.release = 350
+
+# Amp env
+amp-env.attack = 15
+amp-env.sustain = 90
+amp-env.release = 300
+
+# Voice: each note on a card of its own, as on an old poly that hasn't
+# been calibrated in a while
+voice.age = 80
+
+# Output
+output.level = -1
+
+# Pressure
+pressure.to-1 = Level
+pressure.depth-1 = 30
+pressure.to-2 = Cutoff
+pressure.depth-2 = 37.5

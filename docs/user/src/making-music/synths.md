@@ -6,7 +6,7 @@ checked: 2026-11-19 95c1134d
 
 # Synths
 
-MPFree has twelve synths built in. Put one on the pads and they become a keyboard: bass lines, chords, leads and pads, played by hand, through the arpeggiator or into a pattern.
+MPFree has thirteen synths built in. Put one on the pads and they become a keyboard: bass lines, chords, leads and pads, played by hand, through the arpeggiator or into a pattern.
 
 ## Put a synth on the pads
 
@@ -17,13 +17,13 @@ Each track plays a kit or a synth, and the pads play what the selected track pla
 
 Opening the **Synth** tab changes nothing that plays: it shows the synth, and if the selected track plays a kit, the line at the bottom of the screen says how to put the synth on it. To go back to drums, tap the chip (it names the synth now) and pick a kit, or set the track's instrument back to **Kit**. While the selected track plays the synth, **PAD BANK** changes the pads' layout and **SHIFT** + the wheel their octave, not the kit.
 
-## The twelve synths
+## The thirteen synths
 
-Any of the twelve can be a track's own instrument (see [A synth for each track](#a-synth-for-each-track)), and any track can have a different one.
+Any of the thirteen can be a track's own instrument (see [A synth for each track](#a-synth-for-each-track)), and any track can have a different one.
 
 | Synth | What it is | Good for | Presets |
 |---|---|---|---|
-| **Poly** | A classic two-oscillator subtractive synth, with a sub oscillator, noise, unison, a seven-saw supersaw and a resonant filter | Basses, leads, pads, brass, big trance-style stacks | Grit Bass, Acid, Supersaw, Dust Pad, Pluck, Brass, Sub Bass, Lead, Singing Lead, Drift Pad, Super Lead, Super Pad, Super Stab, Super Stack |
+| **Poly** | A classic two-oscillator subtractive synth, with a sub oscillator, noise, unison, a seven-saw supersaw and a resonant filter | Basses, leads, pads, brass, big trance-style stacks | Grit Bass, Acid, Supersaw, Dust Pad, Pluck, Brass, Sub Bass, Lead, Singing Lead, Drift Pad, Super Lead, Super Pad, Super Stab, Super Stack, Worn Brass |
 | **FM** | Six-operator FM, in the tradition of the 1980s digital synths | Electric pianos, bells, glassy keys, punchy basses, reedy leads | Glass Keys, Bell Tower, Rubber Bass, Drawbars, Brass Section, Log Drum, Silk Pad, Steel Pluck, Reed Lead |
 | **Drums** | A drum synth: a different synthesised drum on each pad | Electronic kits built from scratch | Boom Kit, Tight Kit, Grit Kit, Electro Kit |
 | **Pluck** | Physically modelled strings and mallets | Guitars, harps, marimbas, bells | Nylon, Steel String, Harp, Koto, Muted Bass, Marimba, Vibes, Bell, Glass, Kalimba, Steel Drum |
@@ -35,10 +35,11 @@ Any of the twelve can be a track's own instrument (see [A synth for each track](
 | **Strings** | A string machine, like the string ensembles of the 1970s: every key you hold sounds, through violin, viola, cello, contrabass, horn and trumpet sounds, with its own swirling ensemble | Lush string pads and chords, disco and synth-pop strings, slow swells, brassy stabs | Classic Strings, Bright Strings, Cello and Viola, Full Ensemble, Orchestra, Brass Ensemble, Slow Swell, Staccato Strings, Swirl Strings, Dark Strings, High Strings, Low Strings, Paraphonic 70s, Disco Strings, Ballad Pad, Lo-fi Strings, Wide Strings, Mono Ensemble, Dry Divider, Bowed, Horn Section, Brassy Lead, Vox Strings, Hall Strings, Space Strings |
 | **Bass** | A bass synth that plays one note at a time, with three bodies: a synth bass with a sub locked under it, an 808 that drops onto the note, and a reese of two oscillators beating against each other | Synth and funk bass lines, 808s for trap and hip-hop, drum and bass reeses, gliding lines | Round Mono, Pluck Bass, Resonant Sweep, Square Sub, Rubber Bass, Funk Bass, Synth Pop, Power Bass, Fat Saw, Thin Pulse, Soft Triangle, Noisy Bass, Glide Bass, Low Note Lines, Growl Press, Press Wah, Sub Sine, Sub Triangle, 808, Long 808, Distorted 808, 808 Slide, 808 Kick Bass, Short 808, 808 Vibrato, Reese, Dark Reese, Wide Detune, Soft Reese, Growl Reese, Reese Sweep, Amp Bass, Tube 808 |
 | **Wind** | A blown instrument played by the breath: a clarinet, a sax or a flute, each a tube that a reed or a stream of air sets ringing | Sax and clarinet lines, breathy flute melodies, soft reed and flute sections, playing from a breath controller | Warm Clarinet, Jazz Clarinet, Dark Clarinet, Tenor Sax, Breathy Sax, Growl Sax, Soprano Sax, Concert Flute, Breathy Flute, Pan Pipes, Recorder, Ocarina, Bamboo Flute, Reed Section, Flute Choir, Wind Controller Sax, Pressure Swell, Hall Flute, Smoky Sax |
+| **Choir** | A choir singing "ooh", "oh", "aah", "eh" or "ee": up to eight singers on every note, each a little apart in pitch and with their own vibrato, and the vowel can move while a note sounds | Choir pads and swells, film and gospel chords, vowel pads, choir stabs, a solo voice | Aah Choir, Ooh Choir, Oh Choir, Eh Pad, Soft Oohs, Bright Aahs, Men's Choir, Sopranos, Straight Trebles, Low Chant, Choir Swell, Vowel Pad, Wah Voices, Ooh to Aah, Aah to Ee, Pressure Vowels, Choir Stab, Whisper Choir, Big Choir, Dry Choir, Solo Voice, Vowel Lead, Hall Choir, Space Choir |
 
 Each synth also has an **Init** preset (Init Kit on Drums): a plain starting point to build your own sound.
 
-A few presets come with **effects and macros of their own**: Phase Tines and Wah Clav on Keys, Hall Strings and Space Strings on Strings, Amp Bass and Tube 808 on Bass, and Hall Flute and Smoky Sax on Wind. See [Presets with their own effects](#presets-with-their-own-effects).
+A few presets come with **effects and macros of their own**: Phase Tines and Wah Clav on Keys, Hall Strings and Space Strings on Strings, Amp Bass and Tube 808 on Bass, Hall Flute and Smoky Sax on Wind, and Hall Choir and Space Choir on Choir. See [Presets with their own effects](#presets-with-their-own-effects).
 
 ## A synth for each track
 
@@ -46,7 +47,7 @@ Every track can play its own instrument: Poly on one, FM on another, a plugin sy
 
 1. Select the track.
 2. Press **MENU** on the Synth tab. The top row is named after the track: **Track 2 instrument**.
-3. Change it. It steps through **Kit** (the pads' kit, as every track starts), **Poly**, **FM**, **Drums**, **Pluck**, **Wavetable**, **Keys**, **Drawbar**, **Squelch**, **Analog**, **Strings**, **Bass** and **Wind**, then any plugin synths you have put in `files/plugins/` on the stick: CLAP synths and MPC plugin instruments (see [Effects](effects.md#plugins) for where to put them).
+3. Change it. It steps through **Kit** (the pads' kit, as every track starts), **Poly**, **FM**, **Drums**, **Pluck**, **Wavetable**, **Keys**, **Drawbar**, **Squelch**, **Analog**, **Strings**, **Bass**, **Wind** and **Choir**, then any plugin synths you have put in `files/plugins/` on the stick: CLAP synths and MPC plugin instruments (see [Effects](effects.md#plugins) for where to put them).
 
 {{shot: synth-instrument | Track 2's instrument set to a plugin synth, with the row's help on the right.}}
 
@@ -98,7 +99,7 @@ Coming:
 
 The level stays about the same whatever you set. **Super Lead**, **Super Pad**, **Super Stab** and **Super Stack** use it. Super Stack adds a wide ensemble and a bouncing delay, with its four macros on Detune, Mix, Octave and Effects.
 
-{{shot: synth-voice | Poly's Voice page: how it plays (Poly, Mono or Legato, the number of voices and the glide), Unison (copies of each note, their detune and spread), the tuning and the output.}}
+{{shot: synth-voice | Poly's Voice page: how it plays (Poly, Mono or Legato, the number of voices, the glide and Age), Unison (copies of each note, their detune and spread), the tuning and the output.}}
 
 **Poly's envelopes** (on the Env page, and the filter's on the Filter page) have times that mean what they say: an **Attack** of 100 ms reaches full level at 100 ms, and a **Release** of 1 s fades 60 dB in 1 s and stops. **Velocity to level** is how much quieter your softest hit is than your hardest, in dB (8 dB by default; 0 dB plays every hit as loud, and keys-like sounds want 30 dB or more). Presets and projects saved before 19 November 2026 load with their times and velocity converted, so they sound as they did.
 
@@ -122,6 +123,8 @@ The level stays about the same whatever you set. **Super Lead**, **Super Pad**, 
 **Singing Lead** and **Drift Pad** show them off. Singing Lead's vibrato fades in on each note, harder hits push its drive, and a keyboard's tone opens its filter. Each of Drift Pad's notes sits at its own place across the speakers and a few cents off, its LFO 2 moves each note's tone by itself, and the mod wheel opens its filter.
 
 **Unison** is on Poly's **Voice** page: **Copies** plays up to four copies of every note, **Detune** spreads them in pitch and **Spread** across the speakers. It thickens any wave, the supersaw too, but each copy costs as much as a note.
+
+**Age**, also on Poly's **Voice** page (Q-Link 2 there), makes each voice a little its own, as on the polysynths of the late 1970s, which had a circuit board for each voice: each note a few cents out of tune with the others, a little brighter or darker, quicker or slower, and each one drifting slowly in pitch as it plays. Notes go to the voices in turn, so the same chord sounds a little different each time you play it. At 0 (the default) every voice is the same; at 100 they differ as much as Analog's do at 100. **Worn Brass** is Brass at 80.
 
 **Drive** and **Distortion**, on the Filter page of Poly and Wavetable (Q-Links 3 and 4 there), both add grit. **Drive** pushes the sound into the filter, as on an analog synth: warm, and the filter smooths what it adds, so with the filter nearly closed you hear little of it. **Distortion** comes after the filter, so you hear its grit even with the filter almost closed (Grit Bass uses it). Both keep the sound at about the same level as you turn them up (within about 2 dB on every preset), so they add grit and thickness, not volume; turn up the synth's level for that. Pad pressure can push either one.
 
@@ -259,6 +262,17 @@ Its pictures: the **Mouthpiece** (how much air gets through the reed as the play
 
 The Q-Links take Breath, Vibrato, Tone and Noise on the Instrument page; Tongue, Attack, Sustain and Release on the Breath page; and Glide, Bend range, Level and Spread on the Play page. **Hall Flute** and **Smoky Sax** add a hall and four macros: Breath, Vibrato, Tone and Noise. A Wind track stops working a tenth of a second after its last note has died away, so it takes almost none of the MPC's power until you play it.
 
+**Choir** sings. Every note is a few singers singing a vowel, each a little apart in pitch and wavering on their own, through the built-in **Ensemble**, so a chord sounds like a section and not one voice. It plays up to eight notes at once (**Voices** on the Play page, up to 16). Hit harder and a note is louder and brighter, as a singer sings brighter when singing louder. Every vowel is about as loud as the next, and so is every note from the bottom of the keyboard to the top. It has four pages:
+
+- **Choir:** **Vowel** moves smoothly through **Ooh** (0), **Oh**, **Aah** (50, the default), **Eh** and **Ee** (100), and every blend between; **Brightness** makes the voices darker or brighter without making them louder. The picture is the vowel as the voices sing it on middle C: the peaks are what makes it sound like that vowel. Under **Singers**: **Section** (**Bass**, **Tenor**, **Countertenor**, **Alto**, **Soprano**, or **Mixed**, where low notes are sung by basses and high notes by sopranos, with tenors and altos between), **Singers** (how many sing each note, 1 to 8), **Detune** (how far apart their pitches are), **Breath** (breath in the voice, up to a whisper) and **Octave**. Under **Vowel move**: **Start** makes each note start further along the vowels and open into the vowel over **Start time** (below 0 an "aah" opens from an "ooh"), and **Morph** swings the vowel slowly to either side, at **Morph rate**.
+- **Shape:** the **Swell**: attack, decay, sustain and release as faders, **Velocity to level** (how much quieter a soft hit is) and **Velocity to tone** (how much darker). Under **Vibrato**: **Depth**, **Rate**, **Delay** (how long after the note starts it comes in) and **Drift** (the small, slow wavering of a real singer's pitch). Each singer has their own vibrato, a little faster or slower and deeper or shallower than the next. The pictures are the swell, and each singer's pitch over the first seconds of a note.
+- **Ensemble:** as on Strings: **Amount** (0 is dry), **Lines**, **Width**, and the two wobbles, **Slow rate**, **Fast rate** and **Depth**. The picture shows the lines moving over one slow cycle.
+- **Play:** **Mode** (**Poly**; **Mono**, one note at a time; **Legato**, one note at a time where a pad pressed while another is held moves the voice there without starting it again), **Voices** and **Glide** (in Mono and Legato); transpose, fine tuning and bend range; pad pressure: **To swell** (a note you don't press is quieter, and pressing brings it up to full) and **To vowel** (pressing moves the vowel, towards Ee above 0 or towards Ooh below); **Level** and how many notes are sounding.
+
+The Q-Links take Vowel, Singers, Detune and Brightness on the Choir page; Attack, Release, Depth and Drift on the Shape page; Amount, Depth, Slow rate and Width on the Ensemble page; and Glide, To swell, To vowel and Level on the Play page. Controls that do nothing are drawn faint and say why: the ensemble's with Amount at 0, Detune with one singer, Start time with Start at 0, Morph rate with Morph off, the vibrato's with Depth at 0, Glide in Poly. A Choir track stops working a tenth of a second after its last note has died away, so it takes almost none of the MPC's power until you play it.
+
+From a keyboard on MIDI in, Choir answers the sustain and sostenuto pedals, the soft pedal (6 dB quieter and darker), the mod wheel (more vibrato) and a breath controller or expression pedal (volume). See [Pedals and the mod wheel](midi-and-cv.md#pedals-and-the-mod-wheel).
+
 The Synth tab takes its colours from the theme picked in **Prefs > Appearance**, like the rest of MPFree: the sections' colours, the curves and the boxes in the pictures all change with it. The Q-Links keep their own four colours under every theme.
 
 {{shot: synth-fm | The FM synth: the algorithm diagram shows which operators modulate which, and the levels show the six operators.}}
@@ -393,7 +407,7 @@ MPFree reads Scala tuning files, the format thousands of published tunings come 
 
 ## Pad pressure
 
-The MPC's pads sense how hard you keep pressing after the hit. On Poly, FM, Wavetable and Wind the **Pressure** page sets what that does; on Bass it is **Moves** and **Amount** on the Play page, and Squelch, Keys, Drawbar, Strings, Analog, Pluck and Drums don't answer it. By default on Poly, pressing harder opens the filter, so a held chord brightens as you lean into it; on Wind it blows harder, so a held note swells and opens. You choose up to four things for pressure to change, how much, and how hard you must press before it starts. On Poly, pressure can also bring in either LFO (**LFO 1 amount**, **LFO 2 amount**) or move each note across the speakers (**Pan**).
+The MPC's pads sense how hard you keep pressing after the hit. On Poly, FM, Wavetable and Wind the **Pressure** page sets what that does; on Bass it is **Moves** and **Amount** on the Play page, on Choir **To swell** and **To vowel** on the Play page, and Squelch, Keys, Drawbar, Strings, Analog, Pluck and Drums don't answer it. By default on Poly, pressing harder opens the filter, so a held chord brightens as you lean into it; on Wind it blows harder, so a held note swells and opens. You choose up to four things for pressure to change, how much, and how hard you must press before it starts. On Poly, pressure can also bring in either LFO (**LFO 1 amount**, **LFO 2 amount**) or move each note across the speakers (**Pan**).
 
 Clips record pad pressure too, so a recorded part plays back with the same swells: see [Pad pressure](clips.md#pad-pressure) in Clips and patterns.
 
@@ -404,4 +418,4 @@ How hard you hit a pad sets how loud the note plays, as with drums. **FULL LEVEL
 Note Repeat, Latch and the arpeggiator all play the synth too: see [Note Repeat, Latch and the arpeggiator](note-repeat-and-arp.md).
 
 > [!MPC]
-> The MPC's plugin instruments (such as its bass and electric-piano plugins) and expansions are not in MPFree. MPFree has its own twelve synths instead, with their controls on one tab and the Q-Links following each preset, and it can host CLAP plugin synths and the MPC plugin instruments people share, such as those in the Open MPC catalog. As on the MPC, where each track plays a program, each track can play its own instrument; a track without one plays its kit (see [A kit for each track](pads.md#a-kit-for-each-track)). The scales and chords of the MPC's Pad Perform mode are replaced by the scale settings and the per-bank pad layouts here: switch layouts with the PAD BANK buttons without leaving the page you are on.
+> The MPC's plugin instruments (such as its bass and electric-piano plugins) and expansions are not in MPFree. MPFree has its own thirteen synths instead, with their controls on one tab and the Q-Links following each preset, and it can host CLAP plugin synths and the MPC plugin instruments people share, such as those in the Open MPC catalog. As on the MPC, where each track plays a program, each track can play its own instrument; a track without one plays its kit (see [A kit for each track](pads.md#a-kit-for-each-track)). The scales and chords of the MPC's Pad Perform mode are replaced by the scale settings and the per-bank pad layouts here: switch layouts with the PAD BANK buttons without leaving the page you are on.

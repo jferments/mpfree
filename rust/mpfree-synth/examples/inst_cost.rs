@@ -1,5 +1,5 @@
-//! Runs the bench's Keys, Drawbar, Squelch and Analog cases (and Poly
-//! Init with 8 voices, for scale) on their own,
+//! Runs the bench's Keys, Drawbar, Strings, Squelch and Analog cases (and
+//! Poly Init with 8 voices, for scale) on their own,
 //! for counting their instructions as ARMv7 code under qemu, where the
 //! whole bench (with Wavetable's start-up tables) would take hours.
 //!
@@ -8,6 +8,8 @@
 //! accents and slides, from the same seeds) at the MPC's period, 128
 //! frames at 44.1 kHz: 50 blocks to warm up, then `INST_COST_BLOCKS`
 //! (200 by default). `INST_COST_ONLY` keeps the case of that exact name.
+//! `INST_COST_PLAIN=1` turns `mpfree_simd`'s NEON kernels off, so a case's
+//! count with and without them can be compared (the hash stays the same).
 //! It prints a hash of each case's output, so a change can be checked for
 //! the same sound to the bit.
 //!
@@ -19,7 +21,9 @@
 //! does all of it.
 
 use mpfree_node::{Ctx, Node, NodeEvent, Timed, MAX_BLOCK};
-use mpfree_synth::{analog_params, keys_params, params, Analog, Drawbar, Keys, Poly, Squelch};
+use mpfree_synth::{
+    analog_params, keys_params, params, Analog, Drawbar, Keys, Poly, Squelch, Strings,
+};
 
 const RATE: u32 = 44_100;
 const FRAMES: usize = 128;
@@ -110,6 +114,8 @@ fn cases() -> Vec<(String, Box<dyn Fn() -> Case>)> {
         ("Full Organ", 8),
         ("Gospel", 16),
         ("Church", 8),
+        ("Combo", 8),
+        ("Combo Reed", 8),
     ] {
         let label = format!("Drawbar {name}, {keys} keys");
         let l = label.clone();
@@ -120,6 +126,24 @@ fn cases() -> Vec<(String, Box<dyn Fn() -> Case>)> {
                     l.clone(),
                     Box::new(Drawbar::new(RATE)),
                     values(Drawbar::presets(), name),
+                    None,
+                    Play::Chords(keys),
+                )
+            }),
+        ));
+    }
+    // Strings and the combo organ above: the divide-down bank, on the NEON
+    // kernels where they run.
+    for (name, keys) in [("Init", 1), ("Init", 6), ("Init", 49), ("Orchestra", 6)] {
+        let label = format!("Strings {name}, {keys} keys");
+        let l = label.clone();
+        v.push((
+            label,
+            Box::new(move || {
+                case(
+                    l.clone(),
+                    Box::new(Strings::new(RATE)),
+                    values(Strings::presets(), name),
                     None,
                     Play::Chords(keys),
                 )
@@ -277,6 +301,9 @@ fn run(c: &mut Case, blocks: u64) -> u64 {
 }
 
 fn main() {
+    if std::env::var("INST_COST_PLAIN").as_deref() == Ok("1") {
+        mpfree_simd::set_enabled(false);
+    }
     let only = std::env::var("INST_COST_ONLY").ok();
     let blocks: u64 = std::env::var("INST_COST_BLOCKS")
         .ok()

@@ -1403,6 +1403,16 @@ impl Panels {
         app.open_macros()
     }
 
+    /// SHIFT + SAMPLE EDIT (the MPC's Q-Link Edit): the macros panel on
+    /// Macros 1-4 over the page, or, on it, back to the page it opened
+    /// over.
+    pub fn toggle_macros(&mut self, app: &mut App, mix: &mut MixHost) -> Vec<Effect> {
+        if app.view() == View::Macros {
+            return app.close_macros(self.over_mix);
+        }
+        self.open_macros(app, mix, 0)
+    }
+
     /// A chain editor action (a touch, or a Q-Link on its knobs).
     /// `show` takes what the screen needs past the next state (a learn).
     pub fn chain(

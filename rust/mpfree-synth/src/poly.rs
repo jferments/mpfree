@@ -9,6 +9,12 @@
 //! voice core's velocity curve (a range in dB), a
 //! tempo-syncable LFO, poly, mono and legato modes with glide.
 //!
+//! **Age** is the voice core's Character ([`crate::character`]), Analog's
+//! voice cards: notes take sixteen cards in turn, each with its own small
+//! offsets of both oscillators' tuning, the cutoff, the envelopes' times,
+//! the pulse widths and the level, and each card's oscillators drift
+//! slowly. At 0, the default, none of it runs.
+//!
 //! Before preset format 2 the envelopes' attack reached full level at a
 //! third of its label and the velocity was a percentage; [`upgrade`]
 //! converts a sound saved then so it plays as it did.
@@ -29,6 +35,9 @@ use mpfree_node::{
     PressureCoefs, PressureMode, PressureShape, Smooth, Timed, Tuning,
 };
 
+use crate::character::{
+    Cards, Drift, AGE_CUT_OCT, AGE_LEVEL_DB, AGE_PW, AGE_TIME, AGE_TUNE_CENTS, CARDS, DRIFT_CENTS,
+};
 use crate::dsp::*;
 use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
 use crate::osc::{self, Classic, Shape, Super, SAWS};
@@ -135,6 +144,8 @@ struct Voice {
     inp: Inputs,
     /// Its own LFO (LFO 2).
     lfo2: Lfo,
+    /// The voice card its note took ([`crate::character`]).
+    card: u8,
     kill_gain: f32,
     kill_step: f32,
     /// The inputs the phase increments and the filter coefficients were
@@ -194,6 +205,7 @@ impl Voice {
             ex: VoiceExpr::default(),
             inp: Inputs::default(),
             lfo2: Lfo::new(0x1F02_0000 + i as u64),
+            card: 0,
             kill_gain: 1.0,
             kill_step: 0.0,
             pitch_key: [NO_KEY; 8],
@@ -327,6 +339,13 @@ pub struct Poly {
     /// Whether pressure, or a route, can add drive or distortion.
     press_grit: bool,
     route_grit: bool,
+    /// Character: the voice cards, each card's oscillators drifting, the
+    /// card the next note takes, and Age (0 to 1). At 0 none of it runs
+    /// (the drift stands still), so a sound plays and costs as it did.
+    cards: Cards,
+    drift: Drift,
+    next_card: u8,
+    age: f32,
     /// Notes that did not fit anywhere (should stay 0).
     pub dropped: u64,
 }
@@ -372,6 +391,8 @@ impl Poly {
             out_r: Smooth::new(1.0),
             bend: Smooth::new(0.0),
         };
+        let (cards, mut start) = Cards::draw();
+        let drift = Drift::new(&mut start);
         let mut s = Poly {
             rate,
             values,
@@ -426,6 +447,10 @@ impl Poly {
             dc_live: false,
             press_grit: false,
             route_grit: false,
+            cards,
+            drift,
+            next_card: 0,
+            age: 0.0,
             dropped: 0,
         };
         s.prepare(rate, mpfree_node::MAX_BLOCK);
@@ -591,7 +616,16 @@ impl Poly {
         self.sm.out_r.target = lvl * (1.0 + pan).sqrt();
     }
 
+    /// Every voice's envelopes from the values.
     fn update_envs(&mut self) {
+        for i in 0..POOL {
+            self.set_envs(i);
+        }
+    }
+
+    /// Voice `i`'s envelopes from the values: with Age up, its card's
+    /// times (each a few percent longer or shorter).
+    fn set_envs(&mut self, i: usize) {
         let fr = self.rate as f32;
         let cr = self.ctrl_rate();
         let (aa, ad, as_, ar) = (
@@ -606,9 +640,24 @@ impl Poly {
             self.v(FENV_S) / 100.0,
             self.v(FENV_R),
         );
-        for v in &mut self.voices {
-            v.amp.set(aa, ad, as_, ar, fr);
-            v.fenv.set(fa, fd, fs, frl, cr);
+        let v = &mut self.voices[i];
+        let k = if self.age > 0.0 {
+            (AGE_TIME * self.age * self.cards.time[usize::from(v.card)]).exp()
+        } else {
+            1.0
+        };
+        v.amp.set(aa * k, ad * k, as_, ar * k, fr);
+        v.fenv.set(fa * k, fd * k, fs, frl * k, cr);
+    }
+
+    /// Voice `i` takes the next voice card, as notes did on the old
+    /// instruments, so a repeated chord lands on different cards; with
+    /// Age up, its envelopes take the card's times.
+    fn take_card(&mut self, i: usize) {
+        self.voices[i].card = self.next_card;
+        self.next_card = (self.next_card + 1) % CARDS as u8;
+        if self.age > 0.0 {
+            self.set_envs(i);
         }
     }
 
@@ -701,6 +750,9 @@ impl Poly {
             v.state = State::On;
             v.age = self.clock;
             self.last_pitch = f32::from(note);
+            if !legato {
+                self.take_card(0);
+            }
             self.voice_control(0);
             if fresh {
                 Self::snap_gain(&mut self.voices[0]);
@@ -780,6 +832,11 @@ impl Poly {
                     *p = osc::phase(self.rng.unit());
                 }
             }
+        }
+        // The same note again keeps its voice's card, as it kept the card
+        // on the old instruments.
+        if fresh {
+            self.take_card(slot);
         }
         self.voice_control(slot);
         if fresh {
@@ -1043,6 +1100,11 @@ impl Poly {
                 }
             }
         }
+        // Each card's oscillators wander, while Age is up.
+        if self.age > 0.0 {
+            self.drift.step();
+        }
+
         // Whether a route does anything this step: one from a note's own
         // source always does; one from a controller only while it is off
         // its rest, or on a swell (which dips at rest).
@@ -1134,16 +1196,16 @@ impl Poly {
 
     /// Pitch, filter and gains for one voice from the current control values.
     fn voice_control(&mut self, i: usize) {
-        if self.routes_live || self.press_more || self.lfo2_on {
+        if self.routes_live || self.press_more || self.lfo2_on || self.age > 0.0 {
             self.voice_control_as::<true>(i);
         } else {
             self.voice_control_as::<false>(i);
         }
     }
 
-    /// `voice_control`, with (`MORE`) or without the play routes, LFO 2 and
-    /// pressure's newer targets: without them it is Poly's plain path, and
-    /// costs what it did before they came.
+    /// `voice_control`, with (`MORE`) or without the play routes, LFO 2,
+    /// pressure's newer targets and Age: without them it is Poly's plain
+    /// path, and costs what it did before they came.
     fn voice_control_as<const MORE: bool>(&mut self, i: usize) {
         let rate = self.rate as f32;
         let lfo = self.sh.lfo;
@@ -1208,6 +1270,21 @@ impl Poly {
             } else {
                 None
             },
+            card: (self.age > 0.0).then(|| {
+                let (a, c, cs) = (self.age, usize::from(self.voices[i].card), &self.cards);
+                let cents = |fixed: f32, drift: f32| {
+                    (AGE_TUNE_CENTS * a * fixed + DRIFT_CENTS * a * drift) / 100.0
+                };
+                Card {
+                    osc: [
+                        cents(cs.tune1[c], self.drift.d1[c]),
+                        cents(cs.tune2[c], self.drift.d2[c]),
+                    ],
+                    oct: AGE_CUT_OCT * a * cs.cut[c],
+                    skew: AGE_PW * a * cs.pw[c],
+                    gain: exp2(AGE_LEVEL_DB * a * cs.level[c] * (1.0 / 6.020_6)),
+                }
+            }),
         });
         let cutoff = self.sm.cutoff.value;
         let res = self.sm.res.value;
@@ -1244,6 +1321,11 @@ impl Poly {
             more_in.as_ref().map(|mi| more(v, mi))
         } else {
             None
+        };
+        // Age: each oscillator's card tuning (the sub follows oscillator 1).
+        let (o1, o2) = match m.as_ref().and_then(|m| m.osc) {
+            Some([t1, t2]) => (o1 + t1, o2 + t2),
+            None => (o1, o2),
         };
         let mut base = v.pitch + bend + vib;
         if v.ex.slide != 0.0 {
@@ -1309,8 +1391,14 @@ impl Poly {
         if let Some(m) = &m {
             pw_p += m.width;
         }
-        v.pw1 = (pw1 + pw_p).clamp(0.05, 0.95);
-        v.pw2 = (pw2 + pw_p).clamp(0.05, 0.95);
+        // Age: the card's width offset, one way on oscillator 1 and the
+        // other on 2, as Analog's.
+        let (pw_p1, pw_p2) = match &m {
+            Some(m) => (pw_p + m.skew, pw_p - m.skew),
+            None => (pw_p, pw_p),
+        };
+        v.pw1 = (pw1 + pw_p1).clamp(0.05, 0.95);
+        v.pw2 = (pw2 + pw_p2).clamp(0.05, 0.95);
         let fe = v.fenv.next();
         let mut oct = cutoff
             + fe * fenv_amt
@@ -1593,9 +1681,9 @@ impl Poly {
     }
 }
 
-/// What the play routes, LFO 2 and pressure's newer targets (LFO 1 and 2
-/// amount, Pan) do to one voice this control step, beside what Poly did
-/// before them.
+/// What the play routes, LFO 2, pressure's newer targets (LFO 1 and 2
+/// amount, Pan) and Age do to one voice this control step, beside what
+/// Poly did before them.
 #[derive(Clone, Copy, Debug)]
 struct More {
     /// Semitones on the pitch.
@@ -1614,11 +1702,27 @@ struct More {
     pan: f32,
     /// LFO 1's tremolo through its amount (in place of the plain one).
     trem: f32,
-    /// A gain: the routes' swells and LFO 2's tremolo.
+    /// A gain: the routes' swells, LFO 2's tremolo and Age's card level.
+    gain: f32,
+    /// Age: semitones on each oscillator, and the card's width offset
+    /// (added on oscillator 1, taken off 2).
+    osc: Option<[f32; 2]>,
+    skew: f32,
+}
+
+/// One voice's card offsets at the current Age, its drift in its tuning.
+#[derive(Clone, Copy, Debug)]
+struct Card {
+    /// Semitones on each oscillator.
+    osc: [f32; 2],
+    /// Octaves on the cutoff.
+    oct: f32,
+    /// On the pulse widths (0 to 1).
+    skew: f32,
     gain: f32,
 }
 
-/// What [`more`] reads that every voice shares.
+/// What [`more`] reads: what every voice shares, and the voice's card.
 #[derive(Clone, Copy, Debug)]
 struct MoreIn {
     routes: [Route; ROUTES],
@@ -1635,6 +1739,8 @@ struct MoreIn {
     lfo2: Option<[f32; 4]>,
     /// The song's position, for a synced LFO 2 that doesn't retrigger.
     follow2: Option<f64>,
+    /// This voice's card, while Age is up.
+    card: Option<Card>,
 }
 
 /// One voice's [`More`]: the routes' amounts on each target (their
@@ -1684,6 +1790,8 @@ fn more(v: &mut Voice, m: &MoreIn) -> More {
         pan: (p * d.get(target::PAN) + at(target::PAN)).clamp(-1.0, 1.0),
         trem: 1.0 - l1_level * (0.5 - 0.5 * m.lfo) * g1,
         gain: level,
+        osc: None,
+        skew: 0.0,
     };
     if let Some([to_pitch, to_width, to_cut, to_level]) = m.lfo2 {
         if let Some(b) = m.follow2 {
@@ -1694,6 +1802,12 @@ fn more(v: &mut Voice, m: &MoreIn) -> More {
         out.width += x * to_width;
         out.oct += x * to_cut;
         out.gain *= 1.0 - to_level * (0.5 - 0.5 * x);
+    }
+    if let Some(c) = &m.card {
+        out.osc = Some(c.osc);
+        out.oct += c.oct;
+        out.skew = c.skew;
+        out.gain *= c.gain;
     }
     out
 }
@@ -1785,6 +1899,10 @@ impl Node for Poly {
         if id == VEL_AMP {
             self.vel = VelCurve::new(self.v(VEL_AMP));
         }
+        if id == AGE {
+            self.age = self.v(AGE) / 100.0;
+            self.update_envs();
+        }
         if id == VOICE_MODE {
             self.all_off();
         }
@@ -1803,6 +1921,7 @@ impl Node for Poly {
         self.dc_l = DcBlock::new(self.rate, DC_HZ);
         self.dc_r = DcBlock::new(self.rate, DC_HZ);
         self.dc_live = false;
+        self.drift.set_step(CTRL as f32 / self.rate as f32);
         self.update_envs();
         self.update_pressure();
         self.update_routes();
@@ -1829,6 +1948,7 @@ impl Node for Poly {
         self.dc_l.reset();
         self.dc_r.reset();
         self.dc_live = false;
+        self.next_card = 0;
         self.control(&Ctx::new(self.rate, 0), 0);
     }
 

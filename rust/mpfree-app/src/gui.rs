@@ -193,10 +193,32 @@ const LANES_GEAR_LINE: &str = "Another CC: any control of the gear, by number.";
 
 const CONSOLE_HINT: &str =
     "Switch the MPC off with its power switch to return to the stock firmware";
+/// FULL LEVEL held (the MPC's own level): what a hit does.
+pub const FULL_HOLD_HINT: &str = "FULL LEVEL held: hit a pad as hard as every hit should play   ·   let go with no hit: Full Level on or off";
+
+/// COPY held over the kit's pads (the MPC's COPY and, with SHIFT, Delete).
+pub const COPY_PADS_HINT: &str = "COPY held: hit the pad to copy, then the pads it goes to   ·   SHIFT + COPY held: hit a pad to empty it   ·   UNDO takes it back";
+
+/// MAIN held (the MPC's hold MAIN): the pads pick a track, of the 16 in
+/// `bank` (A = 0: tracks 1-16); `tracks` is how many there are.
+pub fn main_hold_hint(bank: usize, tracks: usize) -> String {
+    let first = bank * 16 + 1;
+    let last = (bank * 16 + 16).min(tracks.max(first));
+    let more = if tracks > 16 {
+        "   ·   PAD BANK: the next 16"
+    } else {
+        ""
+    };
+    format!("MAIN held: hit a pad to pick that track (tracks {first}-{last}, the white pad is the one picked){more}   ·   a quick press still goes to its page")
+}
+
+/// TAP TEMPO held: the wheel turns the tempo; held alone, it is typed.
+pub const TAP_HOLD_HINT: &str = "TAP TEMPO held: turn the wheel for the tempo, 1 BPM a detent (SHIFT: 0.1)   ·   hold it and let go: type the tempo";
+
 /// The hint line while ERASE is held (Jay after live test 3: ERASE + a
-/// tap deletes what is tapped).
+/// tap deletes what is tapped; a pad, its notes, since 19 Nov).
 pub const ERASE_HINT: &str = "ERASE held: tap a clip (Arrange), a step or a lane's name (Play), a layer or a ring (Looper) to delete it   ·   \
-                              UNDO brings it back";
+                              a pad: its notes out of the armed track's clip   ·   UNDO brings it back";
 /// The Q-Link column's title while its cards turn the arp (NOTE REPEAT
 /// held or latched, or the Arp panel open).
 const ARP_QLINKS: &str = "Q-Links · Arp";
@@ -1053,6 +1075,27 @@ pub enum ToUi {
     Learning(Option<String>),
     /// Q-LINK: the Q-Link column's next bank.
     QLinkBank,
+    /// SHIFT + Q-LINK: the Q-Link column's previous bank.
+    QLinkBankBack,
+    /// COPY held and kit pads hit on the MPC: kit pad `from` copied onto
+    /// kit pad `to` of the armed track's kit, one undo step.
+    PadCopy {
+        from: u8,
+        to: u8,
+    },
+    /// SHIFT + COPY held and a kit pad hit: that pad emptied.
+    PadClear(u8),
+    /// SHIFT + a kit pad on the MPC: pad `cell` of the bank shown picked,
+    /// as a hit picks it, with nothing played or lit.
+    PadPick(usize),
+    /// TAP TEMPO held alone and let go: the tempo's number pad.
+    TypeTempo,
+    /// SHIFT + PROG EDIT: the mixer's I/O view on the section titled so
+    /// ("Controller"); the I/O view as left when there is none.
+    OpenIoSection(&'static str),
+    /// All four PAD BANK buttons: a picture of the screen as it is, sent
+    /// back as [`FromUi::ScreenPicture`] to be saved.
+    ScreenPicture,
     /// The tempo follows an outside clock arriving on this port ("MIDI
     /// In"), or none does: the bar's tempo chip (layout spec, section 4d).
     ClockFrom(Option<String>),
@@ -1653,6 +1696,9 @@ pub enum FromUi {
     /// Open the mixer's I/O view on the section already picked (the tempo
     /// chip: Sync); it never closes it.
     OpenIo,
+    /// The screen as a PNG file ([`ToUi::ScreenPicture`]), to save in the
+    /// data folder; or why there is none.
+    ScreenPicture(Result<Vec<u8>, String>),
     /// A touch on the chain editor, or a Q-Link turned while its knobs
     /// show (`modpanels::ChainHost::action`).
     Chain(ChainAction),
@@ -2284,6 +2330,10 @@ impl Player {
             steps: None,
             erase: false,
             copy: false,
+            half_level: 64,
+            main_held: None,
+            full_held: false,
+            tap_held: false,
         };
         let mut p = Player {
             save_sent: None,
@@ -4204,10 +4254,12 @@ impl Player {
 
     /// Q-LINK: the column's next bank where it has macro banks (Play, the
     /// chain editor, the macros panel).
-    fn next_qlink_bank(&mut self) {
+    /// Q-LINK: the Q-Link column's next bank; SHIFT + Q-LINK (`back`),
+    /// the one before, as on the MPC.
+    fn step_qlink_bank(&mut self, back: bool) {
         if self.view == View::Looper {
             // Loops 1-4, loops 5-8, the picked loop.
-            let bank = self.looper_page.next_bank(&mut self.ui);
+            let bank = self.looper_page.next_bank(&mut self.ui, back);
             println!("q-link bank: {}", bank.name());
             self.refresh_hint();
             return;
@@ -4220,7 +4272,11 @@ impl Player {
         if play && self.play.held.is_some() {
             // The step pads held: Q-LINK steps through their Step, Trig
             // and Sound banks.
-            self.play.bank = self.play.bank.next();
+            self.play.bank = if back {
+                self.play.bank.prev()
+            } else {
+                self.play.bank.next()
+            };
             println!("q-link bank: {}", self.play.held_bank().name());
             self.refresh_play();
             self.refresh_qlinks();
@@ -4240,7 +4296,7 @@ impl Player {
             self.refresh_hint();
             return;
         }
-        if let Some(Turned::Macro(a)) = self.chain_page.next_bank(self.view) {
+        if let Some(Turned::Macro(a)) = self.chain_page.next_bank(self.view, back) {
             self.outbox.push(FromUi::Macros(a));
         }
         println!("q-link bank: {}", self.chain_page.cards(&self.ui.theme).0);
@@ -5492,8 +5548,11 @@ impl Player {
         // 14:57Z).
         self.level_chip = None;
         let level = match self.status.pad_level {
-            PadLevel::Full => Some("Full level"),
-            PadLevel::Half => Some("Half level"),
+            PadLevel::Full => Some("Full level".to_string()),
+            PadLevel::Half if self.status.half_level != crate::app::HALF_LEVEL => {
+                Some(format!("Level {}", self.status.half_level))
+            }
+            PadLevel::Half => Some("Half level".to_string()),
             PadLevel::Off => None,
         };
         if let Some(text) = level {
@@ -5675,6 +5734,18 @@ impl Player {
             LANES_HINT.to_string()
         } else if let Some(name) = &self.learning {
             learning_hint(name)
+        } else if let Some(bank) = self.status.main_held.filter(|_| self.ready) {
+            main_hold_hint(bank, self.time.tracks.len())
+        } else if self.status.full_held && self.ready {
+            FULL_HOLD_HINT.to_string()
+        } else if self.status.tap_held && self.ready {
+            TAP_HOLD_HINT.to_string()
+        } else if self.status.copy
+            && self.ready
+            && self.status.steps.is_none()
+            && self.view != View::Arrange
+        {
+            COPY_PADS_HINT.to_string()
         } else if self.status.shift
             && self.ready
             && matches!(self.view, View::Prefs | View::Options)
@@ -7103,6 +7174,49 @@ impl Player {
         None
     }
 
+    /// SHIFT + kit pad `cell` on the MPC: that pad of the bank shown is
+    /// picked, as [`ToUi::PadDown`] picks it (the Sample and Pads tabs,
+    /// the drum synth's page, the Play page's Q-Links), but nothing is lit,
+    /// played or edited by its velocity.
+    fn pick_pad_quietly(&mut self, cell: usize) {
+        let pad = self.kit_pad(cell);
+        let synth_plays = self.kits.get(self.kit).is_some_and(|k| k.synth.is_some());
+        if let Some(p) = self
+            .synth
+            .as_mut()
+            .filter(|p| synth_plays && p.state.info.id == "mpfree.drums")
+        {
+            let page = mpfree_synth_ui::pages::drum_page(pad);
+            if p.page() != page {
+                p.show_page(&mut self.ui, page);
+            }
+        }
+        self.sample.pick_quietly(pad);
+        self.sample_names();
+        self.sample_changed();
+        if self.play.last_pad != pad {
+            self.play.last_pad = pad;
+            self.refresh_qlinks();
+        }
+    }
+
+    /// The screen as it is now, painted again into a picture and made a
+    /// PNG file (all four PAD BANK buttons, the MPC's screenshot).
+    pub fn screen_picture(&mut self) -> Result<Vec<u8>, String> {
+        let (w, h) = self.ui.size();
+        let mut canvas = mpfree_ui::SoftCanvas::new(w, h);
+        self.ui.paint(&mut canvas);
+        let png = mpfree_ui::png::encode_rgb_small(w as u32, h as u32, &canvas.to_rgb());
+        if png.len() > mpfree_store::MAX_FILE {
+            return Err(format!(
+                "the picture is {} KB, over the {} KB a file can be",
+                png.len() / 1024,
+                mpfree_store::MAX_FILE / 1024
+            ));
+        }
+        Ok(png)
+    }
+
     /// The number pad for the tempo (a long press on Play's BPM).
     fn type_tempo(&mut self) {
         self.open_numpad(
@@ -7715,7 +7829,32 @@ impl Player {
                     self.refresh_hint();
                 }
             }
-            ToUi::QLinkBank => self.next_qlink_bank(),
+            ToUi::QLinkBank => self.step_qlink_bank(false),
+            ToUi::QLinkBankBack => self.step_qlink_bank(true),
+            ToUi::PadCopy { from, to } => {
+                let line = self
+                    .sample
+                    .copy_pad(&mut self.ui, usize::from(from), usize::from(to));
+                self.tell(&line);
+            }
+            ToUi::PadClear(pad) => {
+                let line = self.sample.clear_pad(&mut self.ui, usize::from(pad));
+                self.tell(&line);
+            }
+            ToUi::PadPick(cell) => self.pick_pad_quietly(cell),
+            ToUi::TypeTempo => {
+                self.show_view(self.view);
+                self.type_tempo();
+            }
+            ToUi::OpenIoSection(title) => {
+                if !self.open_io_section(title) {
+                    self.outbox.push(FromUi::OpenIo);
+                }
+            }
+            ToUi::ScreenPicture => {
+                let png = self.screen_picture();
+                self.outbox.push(FromUi::ScreenPicture(png));
+            }
             ToUi::ClockFrom(port) => {
                 if self.clock_from != port {
                     self.clock_from = port;
@@ -12918,6 +13057,10 @@ pub fn sample_player(fonts: Fonts) -> Player {
         steps: None,
         erase: false,
         copy: false,
+        half_level: 64,
+        main_held: None,
+        full_held: false,
+        tap_held: false,
     }));
     for (pad, v) in [(0usize, 112u8), (5, 87), (10, 64)] {
         p.apply(ToUi::PadDown { pad, velocity: v });
@@ -13516,6 +13659,10 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
         steps: None,
         erase: false,
         copy: false,
+        half_level: 64,
+        main_held: None,
+        full_held: false,
+        tap_held: false,
     }));
     match v {
         PlayView::All => sample_busy_loops(&mut p),
@@ -13839,6 +13986,18 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::ChainWheel(d) => p.apply(ToUi::ChainWheel(d)),
             Effect::ChainPush => p.apply(ToUi::ChainPush),
             Effect::QLinkBank => p.apply(ToUi::QLinkBank),
+            Effect::QLinkBankBack => p.apply(ToUi::QLinkBankBack),
+            Effect::PadCopy { from, to } => p.apply(ToUi::PadCopy { from, to }),
+            Effect::PadClear { pad } => p.apply(ToUi::PadClear(pad)),
+            Effect::PadPick { slot } => p.apply(ToUi::PadPick(usize::from(slot))),
+            Effect::TypeTempo => p.apply(ToUi::TypeTempo),
+            Effect::ControllerSettings => p.apply(ToUi::OpenIoSection(mpfree_midi_ui::CONTROLLER)),
+            Effect::ScreenPicture => p.apply(ToUi::ScreenPicture),
+            // The time engine's and the mod panels': no screen of their own.
+            Effect::RecordQuantiseToggle
+            | Effect::PlayBack
+            | Effect::CountInToggle
+            | Effect::MacrosPanel => {}
         }
     }
 }
@@ -16435,6 +16594,10 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         steps: None,
         erase: false,
         copy: false,
+        half_level: 64,
+        main_held: None,
+        full_held: false,
+        tap_held: false,
     }));
     play_synth.apply(ToUi::Kit(synth_kit));
     for (pad, v) in [(0usize, 96u8), (4, 90), (7, 101)] {
@@ -16481,6 +16644,10 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         steps: None,
         erase: false,
         copy: false,
+        half_level: 64,
+        main_held: None,
+        full_held: false,
+        tap_held: false,
     }));
     chords.apply(ToUi::KitChanged {
         kit: synth_kit,
@@ -17625,6 +17792,66 @@ mod tests {
     use mpfree_touch::mt::InputEvent;
     use std::io::ErrorKind;
 
+    /// The held buttons' lines: hold MAIN (the pads pick a track), hold
+    /// FULL LEVEL (a hit sets the level), COPY over the kit's pads; and
+    /// the level chip names the level a hit with FULL LEVEL held set.
+    #[test]
+    fn held_buttons_say_what_a_pad_does_and_the_chip_names_the_level() {
+        let mut p = sample_player(Fonts::embedded());
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        let chips = |p: &Player| {
+            p.ui.get::<Header>("header")
+                .unwrap()
+                .chips
+                .iter()
+                .map(|c| c.text.clone())
+                .collect::<Vec<_>>()
+        };
+        p.apply(ToUi::Status(Status {
+            main_held: Some(1),
+            ..p.status.clone()
+        }));
+        assert!(
+            hint(&p).starts_with("MAIN held: hit a pad to pick that track (tracks 17-"),
+            "{}",
+            hint(&p)
+        );
+        p.apply(ToUi::Status(Status {
+            main_held: None,
+            full_held: true,
+            ..p.status.clone()
+        }));
+        assert_eq!(hint(&p), FULL_HOLD_HINT);
+        p.apply(ToUi::Status(Status {
+            full_held: false,
+            copy: true,
+            ..p.status.clone()
+        }));
+        assert_eq!(hint(&p), COPY_PADS_HINT);
+        p.apply(ToUi::Status(Status {
+            copy: false,
+            tap_held: true,
+            ..p.status.clone()
+        }));
+        assert_eq!(hint(&p), TAP_HOLD_HINT);
+        p.apply(ToUi::Status(Status {
+            tap_held: false,
+            pad_level: PadLevel::Half,
+            half_level: 92,
+            ..p.status.clone()
+        }));
+        assert!(chips(&p).iter().any(|c| c == "Level 92"), "{:?}", chips(&p));
+        p.apply(ToUi::Status(Status {
+            half_level: 64,
+            ..p.status.clone()
+        }));
+        assert!(
+            chips(&p).iter().any(|c| c == "Half level"),
+            "{:?}",
+            chips(&p)
+        );
+    }
+
     /// Under each track's name on Arrange: what it plays ("Kit" until it
     /// has its own instrument), kept as the time engine's news comes in;
     /// a tap on that line asks for the track's instrument.
@@ -18718,6 +18945,16 @@ mod tests {
             "{acts:?}"
         );
         let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint(&p).contains("Q-Links: Loops 1-4"), "{}", hint(&p));
+        // SHIFT + Q-LINK from Loops 1-4: back round to the picked loop,
+        // and Q-LINK on to Loops 1-4 again.
+        p.apply(ToUi::QLinkBankBack);
+        assert!(
+            hint(&p).contains("Q-Links: the picked loop"),
+            "{}",
+            hint(&p)
+        );
+        p.apply(ToUi::QLinkBank);
         assert!(hint(&p).contains("Q-Links: Loops 1-4"), "{}", hint(&p));
         // Q-LINK twice: the picked loop. Q2 turns the bass's level, Q1
         // how much each overdub keeps of the old layers.
@@ -22439,7 +22676,7 @@ mod tests {
         let owner = Owner::Insert(DRUMS, song.drums.uid(1).unwrap());
         let tone = ParamAddr::new(owner, mpfree_fx::ids::drive::TONE);
         // Macros 1-4 shown, Tone learned on Q-Link 4 (the chain editor's).
-        p.chain_page.next_bank(View::Chain);
+        p.chain_page.next_bank(View::Chain, false);
         p.chain_page.learn(tone);
         assert_eq!(p.chain_page.turn(3, 1, false), Some(Turned::Learned));
         assert_eq!(p.chain_page.bind.card(3).target, Some(tone));
@@ -26450,6 +26687,80 @@ mod tests {
             (8..12).all(|i| kit.pad(i).is_some()) && kit.pad(12).is_none(),
             "chopped onto A9 to A12"
         );
+    }
+
+    /// COPY held and pads hit on the MPC (the MPC's COPY): the first pad's
+    /// sound and edits go onto the next, one UNDO; SHIFT + COPY and a pad
+    /// (the MPC's Delete) empties it, one UNDO; an empty pad has nothing
+    /// to copy and says so.
+    #[test]
+    fn copy_and_shift_copy_on_the_mpc_copy_and_empty_kit_pads() {
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let to = 9;
+        assert!(p.sample.project(0).unwrap().pad(to).is_none());
+        let name = p.sample.project(0).unwrap().pad(pad).unwrap().name.clone();
+        p.apply(ToUi::PadCopy {
+            from: pad as u8,
+            to: to as u8,
+        });
+        let kit = p.sample.project(0).unwrap();
+        assert_eq!(kit.pad(to).map(|d| d.name.clone()), Some(name.clone()));
+        p.apply(ToUi::SampleUndo(false));
+        assert!(p.sample.project(0).unwrap().pad(to).is_none(), "UNDO");
+        // From an empty pad: nothing, and it says so.
+        p.apply(ToUi::PadCopy {
+            from: 12,
+            to: to as u8,
+        });
+        assert!(p.sample.project(0).unwrap().pad(to).is_none());
+        // SHIFT + COPY: the pad emptied, and UNDO brings it back.
+        p.apply(ToUi::PadClear(pad as u8));
+        assert!(p.sample.project(0).unwrap().pad(pad).is_none());
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(
+            p.sample
+                .project(0)
+                .unwrap()
+                .pad(pad)
+                .map(|d| d.name.clone()),
+            Some(name)
+        );
+    }
+
+    /// SHIFT + a pad on the MPC picks it for the Sample tab and the Play
+    /// page's Q-Links, as a hit does, with nothing lit; TAP TEMPO held
+    /// alone types the tempo; SHIFT + PROG EDIT opens the I/O view (on
+    /// Controller when the MIDI sections are there); all four PAD BANK
+    /// buttons make a picture of the screen small enough to keep.
+    #[test]
+    fn shift_pad_tap_tempo_prog_edit_and_the_screen_picture_on_the_screen() {
+        let mut p = sample_sampler(Fonts::embedded());
+        let before = p.sample.pad();
+        let cell = (before + 3) % 16;
+        p.apply(ToUi::PadPick(cell));
+        assert_eq!(p.sample.pad(), p.kit_pad(cell));
+        assert_eq!(p.play.last_pad, p.kit_pad(cell));
+        let lit =
+            p.ui.get::<MiniPads>(play_page::PADS)
+                .and_then(|m| m.grid.pads.get(cell))
+                .is_some_and(|pad| pad.held || pad.level > 0.0);
+        assert!(!lit, "nothing lit");
+        p.apply(ToUi::TypeTempo);
+        assert!(p.typing.as_ref().is_some_and(|t| t.to == TypeTo::Tempo));
+        p.close_numpad();
+        p.take_actions();
+        p.apply(ToUi::OpenIoSection(mpfree_midi_ui::CONTROLLER));
+        assert!(p.take_actions().contains(&FromUi::OpenIo));
+        p.apply(ToUi::ScreenPicture);
+        let png = p.take_actions().into_iter().find_map(|a| match a {
+            FromUi::ScreenPicture(png) => Some(png),
+            _ => None,
+        });
+        let png = png.expect("a picture").expect("small enough");
+        assert!(png.len() < mpfree_store::MAX_FILE, "{} bytes", png.len());
+        let pic = mpfree_mpcskin::png::decode(&png).unwrap();
+        assert_eq!((pic.w, pic.h), (1280, 800));
     }
 
     #[test]
@@ -31402,6 +31713,21 @@ mod tests {
         p.apply(ToUi::EditPad);
         assert_eq!(p.page(), sample_page::PADS_PAGE);
         assert!(hint(&p).contains("is an Instrument pad"), "{}", hint(&p));
+        // The log says each time it opened, closed or said why not (the
+        // sample-edit-pad device check reads it).
+        let log = events_log(&p);
+        let count = |line: &str| log.iter().filter(|l| l.as_str() == line).count();
+        assert!(count("sample: Edit pad on pad A5") >= 3, "{log:?}");
+        assert!(
+            count("sample: Edit pad closed: the pads again") >= 3,
+            "{log:?}"
+        );
+        assert!(
+            log.iter()
+                .any(|l| l.starts_with("sample: Edit pad not opened: ")
+                    && l.contains("is an Instrument pad")),
+            "{log:?}"
+        );
         // The faint row, tapped or pushed, says the same.
         let k = PadType::Instrument
             .rows()
@@ -32062,6 +32388,10 @@ mod tests {
             steps: None,
             erase: false,
             copy: false,
+            half_level: 64,
+            main_held: None,
+            full_held: false,
+            tap_held: false,
         };
         p.apply(ToUi::Status(s.clone()));
         assert_eq!(p.ui.get::<Label>("hint").unwrap().text, SHIFT_HINT);

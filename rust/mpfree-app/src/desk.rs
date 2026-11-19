@@ -592,6 +592,7 @@ impl Desk<'_> {
             | gui::FromUi::Preview(_)
             | gui::FromUi::PreviewStop
             | gui::FromUi::SaveBrowserLists(_)
+            | gui::FromUi::ScreenPicture(_)
             | gui::FromUi::PluginsChanged
             | gui::FromUi::SampleView(_)
             | gui::FromUi::SampleInput(_)
@@ -632,6 +633,7 @@ impl Desk<'_> {
             app,
             mix,
             time,
+            panels,
             looper,
             tracks,
             card,
@@ -660,6 +662,38 @@ impl Desk<'_> {
             app::Effect::ChainWheel(d) => out.show(gui::ToUi::ChainWheel(d)),
             app::Effect::ChainPush => out.show(gui::ToUi::ChainPush),
             app::Effect::QLinkBank => out.show(gui::ToUi::QLinkBank),
+            app::Effect::QLinkBankBack => out.show(gui::ToUi::QLinkBankBack),
+            app::Effect::PadCopy { from, to } => out.show(gui::ToUi::PadCopy { from, to }),
+            app::Effect::PadClear { pad } => out.show(gui::ToUi::PadClear(pad)),
+            // SHIFT + TC: the armed track's Quantise while recording.
+            app::Effect::RecordQuantiseToggle => {
+                let line = time
+                    .toggle_record_quantise()
+                    .unwrap_or_else(|e| format!("SHIFT + TC: {e}"));
+                out.note(&format!("time: {line}"));
+                out.show(gui::ToUi::Tell(line));
+            }
+            app::Effect::PlayBack => {
+                let line = time
+                    .play_back()
+                    .unwrap_or_else(|e| format!("SHIFT + PLAY: {e}"));
+                out.note(&format!("time: {line}"));
+                out.show(gui::ToUi::Tell(line));
+            }
+            app::Effect::CountInToggle => {
+                let line = time
+                    .toggle_count_in()
+                    .unwrap_or_else(|e| format!("SHIFT + OVERDUB: {e}"));
+                out.note(&format!("time: {line}"));
+                out.show(gui::ToUi::Tell(line));
+            }
+            app::Effect::MacrosPanel => later.extend(panels.toggle_macros(app, mix)),
+            app::Effect::PadPick { slot } => out.show(gui::ToUi::PadPick(usize::from(slot))),
+            app::Effect::TypeTempo => out.show(gui::ToUi::TypeTempo),
+            app::Effect::ControllerSettings => {
+                out.show(gui::ToUi::OpenIoSection(mpfree_midi_ui::CONTROLLER))
+            }
+            app::Effect::ScreenPicture => out.show(gui::ToUi::ScreenPicture),
             app::Effect::SynthPage(d) => out.show(gui::ToUi::SynthPage(d)),
             app::Effect::SampleWheel(d) => out.show(gui::ToUi::SampleWheel(d)),
             app::Effect::Rows(k) => out.show(gui::ToUi::Rows(k)),

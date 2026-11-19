@@ -253,6 +253,15 @@ impl LoopBank {
         }
     }
 
+    /// The bank before (SHIFT + Q-LINK).
+    pub fn prev(self) -> LoopBank {
+        match self {
+            LoopBank::First => LoopBank::Picked,
+            LoopBank::Second => LoopBank::First,
+            LoopBank::Picked => LoopBank::Second,
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             LoopBank::First => "Loops 1-4",
@@ -428,9 +437,13 @@ impl LooperPage {
         self.bank
     }
 
-    /// Q-LINK: the next bank.
-    pub fn next_bank(&mut self, ui: &mut Ui) -> LoopBank {
-        self.bank = self.bank.next();
+    /// Q-LINK: the next bank (SHIFT + Q-LINK, `back`: the one before).
+    pub fn next_bank(&mut self, ui: &mut Ui, back: bool) -> LoopBank {
+        self.bank = if back {
+            self.bank.prev()
+        } else {
+            self.bank.next()
+        };
         let v = self.view.clone();
         self.refresh_qlinks(ui, &v);
         self.bank
@@ -2082,9 +2095,9 @@ mod tests {
         // An empty loop has no level to turn.
         assert_eq!(page.qlink(&mut ui, 2, 1, false), None);
         // Q-LINK: loops 5 to 8, then the picked loop.
-        assert_eq!(page.next_bank(&mut ui), LoopBank::Second);
+        assert_eq!(page.next_bank(&mut ui, false), LoopBank::Second);
         assert_eq!(card(&ui, 0).0, "Loop 5");
-        assert_eq!(page.next_bank(&mut ui), LoopBank::Picked);
+        assert_eq!(page.next_bank(&mut ui, false), LoopBank::Picked);
         page.pick_layer(&mut ui, 1);
         assert_eq!(ui.get::<LoopEditor>(EDITOR).unwrap().picked, 1);
         assert_eq!(card(&ui, 0), ("Feedback".to_string(), "100 %".to_string()));
@@ -2125,7 +2138,7 @@ mod tests {
         assert_eq!(card(&ui, 2).1, "L 6");
         assert_eq!(page.layer_info(1).map(|l| l.id), Some(11));
         // And round to loops 1 to 4.
-        assert_eq!(page.next_bank(&mut ui), LoopBank::First);
+        assert_eq!(page.next_bank(&mut ui, false), LoopBank::First);
     }
 
     #[test]
@@ -2133,8 +2146,8 @@ mod tests {
         let (mut ui, mut page) = page();
         let v = two_loops();
         page.update(&mut ui, &v, &Settings::default());
-        page.next_bank(&mut ui);
-        page.next_bank(&mut ui);
+        page.next_bank(&mut ui, false);
+        page.next_bank(&mut ui, false);
         page.pick_layer(&mut ui, 0);
         page.qlink(&mut ui, 1, 2, false);
         let turned = 10f32.powf(1.0 / 20.0);
