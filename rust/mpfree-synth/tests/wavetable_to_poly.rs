@@ -301,3 +301,56 @@ fn a_saved_wavetable_preset_becomes_a_poly_preset() {
     assert_eq!(preset_to_poly(&poly), poly);
     assert_eq!(poly_id(wp::OSC_B + wp::OSC_LEVEL), Some(pp::OSC2_LEVEL));
 }
+
+#[test]
+fn a_sounds_effects_and_macros_come_along() {
+    use mpfree_node::preset::{key_of, VERSION};
+    let w = Wavetable::new(RATE);
+    let wk = |id: u16| key_of(w.params(), id).unwrap();
+    let pk = |id: u16| key_of(pp::PARAMS, id).unwrap();
+    // Every setting of the Wavetable synth's has a place in Poly.
+    assert!(w
+        .params()
+        .iter()
+        .all(|p| p.readonly || poly_id(p.id).is_some()));
+    let mut saved = Preset::capture(&w, "Mine", &[]);
+    // An effect's setting and a macro's position (ids no engine has).
+    saved.values.push((2_000, 0.25));
+    saved.values.push((3_000, 0.5));
+    saved.extra = vec![
+        ("fx.1".into(), "mpfree.chorus".into()),
+        ("macro.1".into(), "Bright".into()),
+        (
+            "macro.1.map".into(),
+            format!("{} 10 80 exp", wk(wp::POSITION)),
+        ),
+        ("macro.1.map".into(), format!("{} 0 6", wk(wp::LEVEL))),
+        ("macro.1.map".into(), format!("{} 0 100", wk(wp::VEL_AMP))),
+        ("macro.1.map".into(), "fx-1.mix 0 1".into()),
+    ];
+    let p = preset_to_poly(&saved);
+    assert_eq!(p.format, VERSION);
+    assert!(p.values.contains(&(2_000, 0.25)) && p.values.contains(&(3_000, 0.5)));
+    let maps: Vec<&str> = p
+        .extra
+        .iter()
+        .filter(|(k, _)| k == "macro.1.map")
+        .map(|(_, v)| v.as_str())
+        .collect();
+    let vel = mpfree_synth::poly::upgrade(1, pp::VEL_AMP, 100.0);
+    assert_eq!(
+        maps,
+        [
+            format!("{} 10 80 exp", pk(pp::OSC1_POS)),
+            format!(
+                "{} {} {}",
+                pk(pp::LEVEL),
+                to_poly::GAIN_DB,
+                6.0 + to_poly::GAIN_DB
+            ),
+            format!("{} 0 {vel}", pk(pp::VEL_AMP)),
+            "fx-1.mix 0 1".to_string(),
+        ]
+    );
+    assert_eq!(&p.extra[..2], &saved.extra[..2]);
+}

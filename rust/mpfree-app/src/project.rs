@@ -1336,6 +1336,28 @@ pub fn instruments_load(
     let slots = made
         .into_iter()
         .map(|(track, node, instance)| {
+            // The Wavetable synth went into Poly (19 Nov): its sound, read
+            // as it was saved, plays on Poly.
+            let node = if node.info().id == crate::synth::WAVETABLE {
+                match crate::synth::as_poly(node) {
+                    Ok(n) => {
+                        notes.push(format!(
+                            "project: track {}'s Wavetable sound plays on Poly now (the Wavetable synth is part of Poly)",
+                            track + 1
+                        ));
+                        n
+                    }
+                    Err(e) => {
+                        notes.push(format!(
+                            "project: track {}'s Wavetable sound didn't move to Poly ({e}); the track plays the kit",
+                            track + 1
+                        ));
+                        return None;
+                    }
+                }
+            } else {
+                node
+            };
             let held = crate::instruments::Held {
                 id: node.info().id,
                 name: node.info().name,
@@ -1477,7 +1499,9 @@ pub fn synth_parse(text: &str) -> Result<(mpfree_store::Settings, Vec<(Engine, S
     }
     let mut options = String::new();
     let mut sounds: Vec<(Engine, String)> = Vec::new();
-    // None: options; Some(Some(i)): sound i; Some(None): an unknown section.
+    let mut wavetable: Option<String> = None;
+    // None: options; Some(Some(i)): sound i (usize::MAX: the Wavetable
+    // synth's); Some(None): an unknown section.
     let mut at: Option<Option<usize>> = None;
     for line in lines {
         if let Some(head) = line
@@ -1493,6 +1517,10 @@ pub fn synth_parse(text: &str) -> Result<(mpfree_store::Settings, Vec<(Engine, S
                         sounds.push((e, String::new()));
                         Some(Some(sounds.len() - 1))
                     }
+                    None if name == "Wavetable" => {
+                        wavetable = Some(String::new());
+                        Some(Some(usize::MAX))
+                    }
                     None => Some(None),
                 }
             } else {
@@ -1505,6 +1533,12 @@ pub fn synth_parse(text: &str) -> Result<(mpfree_store::Settings, Vec<(Engine, S
                 options.push_str(line);
                 options.push('\n');
             }
+            Some(Some(usize::MAX)) => {
+                if let Some(w) = wavetable.as_mut() {
+                    w.push_str(line);
+                    w.push('\n');
+                }
+            }
             Some(Some(i)) => {
                 sounds[i].1.push_str(line);
                 sounds[i].1.push('\n');
@@ -1512,7 +1546,18 @@ pub fn synth_parse(text: &str) -> Result<(mpfree_store::Settings, Vec<(Engine, S
             Some(None) => {}
         }
     }
-    Ok((mpfree_store::Settings::parse(&options), sounds))
+    let settings = mpfree_store::Settings::parse(&options);
+    // The Wavetable synth went into Poly (19 Nov): where the pads played
+    // it, its sound is Poly's now (it loads as Poly's, synth::poly_text);
+    // otherwise Poly keeps its own.
+    let on_pads = settings
+        .iter()
+        .any(|(k, v)| k == "engine" && v.eq_ignore_ascii_case("Wavetable"));
+    if let Some(text) = wavetable.filter(|_| on_pads) {
+        sounds.retain(|(e, _)| *e != Engine::Poly);
+        sounds.push((Engine::Poly, text));
+    }
+    Ok((settings, sounds))
 }
 
 #[cfg(test)]
@@ -1973,6 +2018,52 @@ mod tests {
         assert_eq!(instruments_version("mpfree-instrumentsx 2"), None);
     }
 
+    /// A track that played the Wavetable synth (gone into Poly on 19 Nov)
+    /// opens on Poly: its settings converted, its effects and macros kept,
+    /// and a line says so.
+    #[test]
+    fn a_wavetable_track_opens_on_poly() {
+        use mpfree_instruments::sound::FX_BASE;
+        use mpfree_synth::params as pp;
+        use mpfree_synth::wavetable::params as wp;
+        use mpfree_synth::wavetable::to_poly::poly_value;
+        let plugins = crate::plugins::Plugins::none();
+        let text = format!(
+            "{INSTRUMENTS_FORMAT}\ntrack 2 mpfree.wavetable\n\
+             sound fx.1 = mpfree.fx.ensemble\n\
+             param {} 1\nparam {} 40\nparam {} 900\nparam {} -3\n",
+            wp::OSC_B + wp::TABLE,
+            wp::POSITION,
+            wp::CUTOFF,
+            wp::LEVEL,
+        );
+        let (slots, notes) = instruments_load(&text, 44_100, &plugins).unwrap();
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("track 2's Wavetable sound plays on Poly"));
+        let slot = slots[0].as_ref().unwrap();
+        assert_eq!(slot.held.id, "mpfree.poly");
+        let node = slot.instrument.node();
+        assert_eq!(node.info().id, "mpfree.poly");
+        assert_eq!(node.param(pp::OSC1_WAVE), f32::from(pp::WAVE_TABLE));
+        assert_eq!(node.param(pp::OSC2_TABLE), 1.0);
+        assert_eq!(node.param(pp::OSC1_POS), 40.0);
+        assert_eq!(node.param(pp::CUTOFF), 900.0);
+        assert_eq!(
+            node.param(pp::LEVEL),
+            poly_value(wp::LEVEL, -3.0).unwrap().1
+        );
+        assert!(
+            node.params().iter().any(|p| p.id >= FX_BASE),
+            "the effect came along"
+        );
+        // Without a design it is the bare engine, as a Poly track is.
+        let bare = text.replace("sound fx.1 = mpfree.fx.ensemble\n", "");
+        let (slots, _) = instruments_load(&bare, 44_100, &plugins).unwrap();
+        let node = slots[0].as_ref().unwrap().instrument.node();
+        assert!(node.params().iter().all(|p| p.id < FX_BASE));
+        assert_eq!(node.param(pp::OSC1_POS), 40.0);
+    }
+
     /// A missing plugin, a track that isn't there or is named twice, and
     /// an engine this build hasn't got are each left out and said; the
     /// rest still open.
@@ -2422,5 +2513,43 @@ mod tests {
         assert!(other.set_sounds(&s).is_empty());
         assert_eq!(other.sounds(), sounds);
         assert!(synth_parse("nope").is_err());
+    }
+
+    /// A project from before the Wavetable synth went into Poly: where the
+    /// pads played it, its sound comes back as Poly's (and the pads play
+    /// Poly); otherwise Poly keeps its own.
+    #[test]
+    fn the_pads_wavetable_sound_comes_back_on_poly() {
+        use mpfree_synth::wavetable::params as wp;
+        let synth = crate::synth::Synth::new(44_100);
+        let mut wt = mpfree_synth::Wavetable::new(44_100);
+        wt.set_param(wp::POSITION, 55.0);
+        let wt_text =
+            mpfree_node::preset::Preset::capture(&wt, "Old Pad", &[]).to_text(wt.params());
+        let mut opts = mpfree_store::Settings::default();
+        opts.set_str("engine", "Wavetable");
+        let sounds = synth.sounds();
+        let text = format!("{}[sound Wavetable]\n{wt_text}", synth_text(&opts, &sounds));
+        let (o, s) = synth_parse(&text).unwrap();
+        let poly: Vec<&String> = s
+            .iter()
+            .filter(|(e, _)| *e == Engine::Poly)
+            .map(|(_, t)| t)
+            .collect();
+        assert_eq!(poly, [&wt_text], "the Wavetable sound is Poly's");
+        let mut other = crate::synth::Synth::new(44_100);
+        assert!(other.set_sounds(&s).is_empty());
+        let mut want = crate::synth::Synth::new(44_100);
+        let _ = want.set_sounds(&[(
+            Engine::Poly,
+            crate::synth::poly_text(&wt_text).unwrap().into_owned(),
+        )]);
+        assert_eq!(other.sounds(), want.sounds());
+        assert_eq!(o.get_str("engine"), Some("Wavetable"));
+        // Played elsewhere, Poly keeps its own.
+        opts.set_str("engine", "fm");
+        let text = format!("{}[sound Wavetable]\n{wt_text}", synth_text(&opts, &sounds));
+        let (_, s) = synth_parse(&text).unwrap();
+        assert_eq!(s, sounds);
     }
 }

@@ -6866,8 +6866,8 @@ mod tests {
             })
         };
         // Instrument: the selected track's own sound. Kit, then Poly, FM,
-        // Drums, Pluck, Wavetable, Keys, Drawbar, Squelch, Analog, Strings,
-        // Bass, Wind and the plugin synths; then back to Kit.
+        // Drums, Pluck, Keys, Drawbar, Squelch, Analog, Strings, Bass, Wind
+        // and the plugin synths; then back to Kit.
         let sound = |fx: &[Effect]| {
             fx.iter().find_map(|e| match e {
                 Effect::TrackSound { track, id } => Some((*track, *id)),

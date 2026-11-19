@@ -24,7 +24,7 @@
 //! its default, so route 1 gives the sound the mod wheel's vibrato, as on
 //! every Poly sound.
 
-use mpfree_node::preset::{Preset, VERSION};
+use mpfree_node::preset::{id_of, key_of, Preset, VERSION};
 use mpfree_node::{pressure as np, Node};
 
 use super::params as wp;
@@ -122,6 +122,22 @@ pub fn poly_target(t: f32) -> f32 {
     POLY_TARGETS.iter().position(|&n| n == name).unwrap_or(0) as f32
 }
 
+/// A Wavetable setting's value as Poly's: Poly's id for it and the value
+/// in Poly's meaning (the envelopes' times and velocity converted, a
+/// pressure target by name, the output level up by [`GAIN_DB`], past
+/// Poly's top where it is loud). None where Poly has no place for it.
+pub fn poly_value(id: u16, v: f32) -> Option<(u16, f32)> {
+    let p = poly_id(id)?;
+    if (wp::PRESS_BASE..wp::PRESS_BASE + np::FIELDS as u16).contains(&id) {
+        let k = id - wp::PRESS_BASE;
+        let target = (0..np::SLOTS).any(|n| np::field::target(n) == k);
+        return Some((p, if target { poly_target(v) } else { v }));
+    }
+    // (+ 0.0: a velocity of none converts to -0 dB.)
+    let v = crate::poly::upgrade(1, p, v) + 0.0;
+    Some((p, if p == pp::LEVEL { v + GAIN_DB } else { v }))
+}
+
 /// A Wavetable sound as Poly's settings.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Converted {
@@ -143,20 +159,13 @@ pub fn to_poly(get: impl Fn(u16) -> f32) -> Converted {
     poly.set_param(pp::OSC1_WAVE, f32::from(pp::WAVE_TABLE));
     poly.set_param(pp::OSC2_WAVE, f32::from(pp::WAVE_TABLE));
     poly.set_param(pp::SUB_WAVE, 1.0);
-    for &(w, p) in SAME {
-        // (+ 0.0: a velocity of none converts to -0 dB.)
-        poly.set_param(p, crate::poly::upgrade(1, p, get(w)) + 0.0);
-    }
-    for k in 0..np::FIELDS as u16 {
-        let v = get(wp::PRESS_BASE + k);
-        let is_target = (0..np::SLOTS).any(|n| np::field::target(n) == k);
-        poly.set_param(
-            pp::PRESS_BASE + k,
-            if is_target { poly_target(v) } else { v },
-        );
+    let press = (0..np::FIELDS as u16).map(|k| wp::PRESS_BASE + k);
+    for w in SAME.iter().map(|&(w, _)| w).chain(press) {
+        if let Some((p, v)) = poly_value(w, get(w)) {
+            poly.set_param(p, v);
+        }
     }
     let want = get(wp::LEVEL) + GAIN_DB;
-    poly.set_param(pp::LEVEL, want);
     let short_db = (want - poly.param(pp::LEVEL)).max(0.0);
     Converted {
         values: poly
@@ -176,9 +185,12 @@ pub fn node_to_poly(node: &Wavetable) -> Converted {
 
 /// A saved Wavetable preset (a file, or a track's sound) as a Poly preset:
 /// the same name and tags, Poly's settings, and the Q-Link sets' ids moved
-/// to Poly's (a knob Poly has no place for is left blank). Lines other
-/// owners wrote stay as they were. A preset for another engine comes back
-/// as it is.
+/// to Poly's (a knob Poly has no place for is left blank). A sound's own
+/// settings (its effects' and macros', whose ids are never an engine's)
+/// stay as they were, and each macro's map moves to Poly's setting with
+/// its range in Poly's meaning (a map onto a setting Poly has no place for
+/// goes). Lines other owners wrote stay as they were. A preset for another
+/// engine comes back as it is.
 pub fn preset_to_poly(p: &Preset) -> Preset {
     if p.engine != "mpfree.wavetable" {
         return p.clone();
@@ -189,22 +201,59 @@ pub fn preset_to_poly(p: &Preset) -> Preset {
     for &(id, v) in &from.values {
         wt.set_param(id, v);
     }
-    let c = node_to_poly(&wt);
+    let engine = |id: u16| wt.params().iter().any(|q| q.id == id);
+    let mut values = node_to_poly(&wt).values;
+    values.extend(from.values.iter().filter(|&&(id, _)| !engine(id)));
     Preset {
         engine: "mpfree.poly".to_string(),
         name: p.name.clone(),
         tags: p.tags.clone(),
-        values: c.values,
+        values,
         extra: p
             .extra
             .iter()
-            .map(|(k, v)| match k.as_str() {
-                "qset" => (k.clone(), qset_to_poly(v)),
-                _ => (k.clone(), v.clone()),
+            .filter_map(|(k, v)| match k.as_str() {
+                "qset" => Some((k.clone(), qset_to_poly(v))),
+                _ if k.starts_with("macro.") && k.ends_with(".map") => {
+                    map_to_poly(v, p.format, &wt).map(|m| (k.clone(), m))
+                }
+                _ => Some((k.clone(), v.clone())),
             })
             .collect(),
         format: VERSION,
     }
+}
+
+/// A macro's map line ("osc-a.position 0 80 exp": the setting's key, the
+/// range, the curve) saved in preset format `format` as Poly's; a map onto
+/// an effect's setting stays as it is. None where Poly has no place for
+/// the setting.
+fn map_to_poly(line: &str, format: u32, wt: &Wavetable) -> Option<String> {
+    let mut w = line.split_whitespace();
+    let key = w.next()?;
+    let Some(id) = id_of(wt.params(), key) else {
+        return Some(line.to_string());
+    };
+    let (from, to) = (
+        w.next()?.parse::<f32>().ok()?,
+        w.next()?.parse::<f32>().ok()?,
+    );
+    // An older format's range in this build's meaning, then in Poly's.
+    let poly = |v: f32| {
+        let v = if format < VERSION {
+            wt.upgrade(format, id, v)
+        } else {
+            v
+        };
+        poly_value(id, v)
+    };
+    let ((p, from), (_, to)) = (poly(from)?, poly(to)?);
+    let mut out = format!("{} {from} {to}", key_of(pp::PARAMS, p)?);
+    for rest in w {
+        out.push(' ');
+        out.push_str(rest);
+    }
+    Some(out)
 }
 
 /// A Q-Link set line ("31 32 34 33 Tone": four ids or `-`, then its name)
