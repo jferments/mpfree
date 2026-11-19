@@ -94,6 +94,7 @@ pub mod squelch;
 pub mod squelch_params;
 pub mod strings;
 pub mod strings_params;
+pub(crate) mod table_osc;
 pub mod voice;
 pub mod wavetable;
 pub mod wind;
