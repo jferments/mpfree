@@ -31402,6 +31402,21 @@ mod tests {
         p.apply(ToUi::EditPad);
         assert_eq!(p.page(), sample_page::PADS_PAGE);
         assert!(hint(&p).contains("is an Instrument pad"), "{}", hint(&p));
+        // The log says each time it opened, closed or said why not (the
+        // sample-edit-pad device check reads it).
+        let log = events_log(&p);
+        let count = |line: &str| log.iter().filter(|l| l.as_str() == line).count();
+        assert!(count("sample: Edit pad on pad A5") >= 3, "{log:?}");
+        assert!(
+            count("sample: Edit pad closed: the pads again") >= 3,
+            "{log:?}"
+        );
+        assert!(
+            log.iter()
+                .any(|l| l.starts_with("sample: Edit pad not opened: ")
+                    && l.contains("is an Instrument pad")),
+            "{log:?}"
+        );
         // The faint row, tapped or pushed, says the same.
         let k = PadType::Instrument
             .rows()
