@@ -404,24 +404,120 @@ fn voicing_moves_from_the_octave_to_a_pure_tone() {
     assert!(off < -25.0, "off centre: 2nd harmonic {off:.1} dB");
 }
 
+/// The strongest component of `x` from `lo` to `hi` times `f0`, against
+/// `f0`'s, dB.
+fn band_db(x: &[f32], f0: f32, lo: f32, hi: f32) -> f32 {
+    let mut best = 0.0f32;
+    let mut r = lo;
+    while r <= hi {
+        best = best.max(tone(x, f0 * r));
+        r += 0.01;
+    }
+    db(best) - db(tone(x, f0))
+}
+
+/// A tine's bending modes in the first 25 ms of `note` at `vel`, with the
+/// pickup kept nearly straight (off centre, no bark) so all above the note
+/// is the tine's own: the bell's level and the third mode's (the tick),
+/// dB against the note.
+fn tine_modes(note: u8, vel: u8, set: &[(u16, f32)]) -> (f32, f32) {
+    let mut s = Keys::new(RATE);
+    s.set_param(VOICING, 100.0);
+    s.set_param(BARK, 0.0);
+    s.set_param(KEY_NOISE, 0.0);
+    for &(id, v) in set {
+        s.set_param(id, v);
+    }
+    let (l, _) = render(&mut s, 1200, &[(0, on(note, vel))], |_| 128);
+    let f = hz(f32::from(note));
+    // The modes' ratios fall in the top octaves.
+    let (bell, tick) = if note >= 84 {
+        ((5.8, 7.0), (16.0, 19.0))
+    } else {
+        ((6.6, 8.0), (16.0, 21.0))
+    };
+    let t = if f * tick.1 < 0.45 * RATE as f32 {
+        band_db(&l, f, tick.0, tick.1)
+    } else {
+        f32::NAN
+    };
+    (band_db(&l, f, bell.0, bell.1), t)
+}
+
 #[test]
 fn a_harder_hammer_rings_the_bell() {
-    let bell = |hard: f32| {
-        let mut s = Keys::new(RATE);
-        s.set_param(HARDNESS, hard);
-        s.set_param(VEL_TONE, 0.0);
-        s.set_param(VOICING, 100.0);
-        s.set_param(BARK, 0.0);
-        s.set_param(KEY_NOISE, 0.0);
-        let (l, _) = render(&mut s, 2400, &[(0, on(60, 127))], |_| 128);
-        let x = &l[..1200];
-        db(tone(x, hz(60.0) * 7.11)) - db(tone(x, hz(60.0)))
-    };
-    let (soft, hard) = (bell(0.0), bell(100.0));
+    // Up to 6 dB each way on the bell (here about 10 between the ends), and
+    // 10 dB each way more on the tick above it (about 30).
+    let soft = tine_modes(60, 127, &[(HARDNESS, 0.0)]);
+    let hard = tine_modes(60, 127, &[(HARDNESS, 100.0)]);
     assert!(
-        hard > soft + 12.0,
-        "bell: hard {hard:.1} dB, soft {soft:.1} dB"
+        hard.0 > soft.0 + 7.0,
+        "bell: hard {:.1} dB, soft {:.1} dB",
+        hard.0,
+        soft.0
     );
+    assert!(
+        hard.1 > soft.1 + 22.0,
+        "tick: hard {:.1} dB, soft {:.1} dB",
+        hard.1,
+        soft.1
+    );
+}
+
+#[test]
+fn the_bell_sits_where_measured() {
+    // The measured tine piano: the bell about 30 dB under the note on a
+    // hard hit through the middle, a few dB less on a soft one, falling
+    // away over C6.
+    let c4 = tine_modes(60, 127, &[]).0;
+    let soft = tine_modes(60, 30, &[]).0;
+    let f2 = tine_modes(41, 127, &[]).0;
+    let g6 = tine_modes(91, 127, &[]).0;
+    assert!((-33.0..-26.0).contains(&c4), "C4 bell {c4:.1} dB");
+    assert!((-34.0..-26.0).contains(&f2), "F2 bell {f2:.1} dB");
+    assert!(
+        (2.0..8.0).contains(&(c4 - soft)),
+        "C4 bell: hard {c4:.1} dB, soft {soft:.1} dB"
+    );
+    assert!(g6 < c4 - 10.0, "G6 bell {g6:.1} dB against C4's {c4:.1}");
+}
+
+#[test]
+fn bark_changes_the_colour_not_the_level() {
+    // Middle C at full velocity, 50 to 300 ms in: its level, and its 2nd
+    // harmonic against the note.
+    let run = |bark: f32| {
+        let mut s = Keys::new(RATE);
+        s.set_param(BARK, bark);
+        s.set_param(KEY_NOISE, 0.0);
+        let (l, _) = render(&mut s, 14_400, &[(0, on(60, 127))], |_| 128);
+        let x = &l[2400..14_400];
+        let f = hz(60.0);
+        (db(rms(x)), db(tone(x, 2.0 * f)) - db(tone(x, f)))
+    };
+    let (clean, barking) = (run(0.0), run(100.0));
+    assert!(
+        (clean.0 - barking.0).abs() < 3.0,
+        "level: Bark 0 {:.1} dB, Bark 100 {:.1} dB",
+        clean.0,
+        barking.0
+    );
+    assert!(
+        barking.1 > clean.1 + 30.0,
+        "2nd harmonic: Bark 0 {:.1} dB, Bark 100 {:.1} dB",
+        clean.1,
+        barking.1
+    );
+}
+
+#[test]
+fn a_soft_tine_is_round_and_a_hard_one_growls() {
+    // As measured: the softest hits nearly pure, the hardest with the
+    // octave over the note.
+    let soft = harmonic_db(&mut Keys::new(RATE), 30, 2.0);
+    let hard = harmonic_db(&mut Keys::new(RATE), 127, 2.0);
+    assert!(soft < -15.0, "soft: 2nd harmonic {soft:.1} dB");
+    assert!(hard > 0.0, "hard: 2nd harmonic {hard:.1} dB");
 }
 
 #[test]

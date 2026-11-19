@@ -210,6 +210,8 @@ Started 19 Nov with Poly's oscillators from the tables, the supersaw (a wave of 
 
 Poly and Wavetable merged with classic waves from tables (the aliasing fix), the supersaw, a second LFO and routes; FM's macros, shapes, DC and level fixes and less feedback aliasing; Drawbar's combo model; the Wind and Choir engines; Character; their presets.
 
+Keys' tines, from wave 1's listening (no side picked on the two tine cases): rebuilt 19 Nov against recordings of a real tine piano ([synths.md](synths.md#keys-mpfree-synth-keys)): the measured bell and tick, the pickup driven by velocity over the measured range, notes ringing as long as measured, a phase rotator for loud chords, the tine presets retuned and the key curve refitted. Its blind A/B renders go on the wave 2 listening page.
+
 **Wave 3: drums, plucks and leads**
 
 Drums' own knobs, effects per drum, accent and variation, the shared 808 body; Pluck's fixes; expressive lead presets.

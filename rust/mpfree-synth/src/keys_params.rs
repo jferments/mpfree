@@ -109,14 +109,15 @@ use Curve::{Linear, Log, Stepped};
 pub static PARAMS: &[ParamInfo] = &[
     choice(MODEL, "Model", "Model", MODELS, 0.0),
     // The time a held middle C takes to fall 60 dB; higher notes ring
-    // shorter, lower ones longer.
+    // shorter, lower ones longer. 12 s by default: tine pianos measured
+    // 11 s and 19 s (the reed and clav presets set their own).
     p(
         DECAY,
         "Decay",
         "Model",
         500.0,
         20000.0,
-        8000.0,
+        12000.0,
         Unit::Ms,
         Log,
     ),
