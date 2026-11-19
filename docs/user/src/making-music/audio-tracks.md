@@ -23,6 +23,8 @@ They live on the Arrange tab's **Song** view, under the clip lanes. Audio tracks
 
 The take shows as a **region**: a block in the track's colour with its waveform. While a track records, a red block grows from where it started.
 
+**A sound from the Sample tab.** A sample can go on an audio track too: on the Sample tab's **Slice** tool, set **Put on** to **Audio track** and tap **To audio track**. It goes on the first empty track from the bar the playhead is in, each slice a region of its own (see [Audio track: the slices on the song](sampling.md#audio-track-the-slices-on-the-song)). **Undo** here takes it off.
+
 ## The lanes
 
 On the left of each audio lane are:

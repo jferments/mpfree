@@ -955,7 +955,10 @@ pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
         }
         "mpfree.drawbar" => {
             use mpfree_synth::drawbar_params as db;
+            let combo = v(db::MODEL) >= 0.5;
             match id {
+                db::FLUTE | db::REED | db::REED_WAVE if !combo => Some("combo only"),
+                db::WHEELS | db::LEAKAGE if combo => Some("tonewheel only"),
                 db::PERC_HARM | db::PERC_DECAY | db::PERC_VOL if v(db::PERC) < 0.5 => {
                     Some("percussion is off")
                 }
