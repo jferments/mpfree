@@ -151,12 +151,14 @@ const POLY: &[PlanPage] = &[
 
 use mpfree_synth::fm_params::{self as fp, op, op_id};
 
-/// FM: the algorithm and voice, the modulation (pitch envelope and LFO), a
+/// FM: the algorithm and voice with the six operators' On switches (as
+/// the DX7's operator buttons), the modulation (pitch envelope and LFO), a
 /// page per operator, and the operators' keyboard scaling two to a page.
 const FM: &[PlanPage] = &[
-    pg(
+    pg_with(
         "Algo",
         &["Algo", "Voice", "Output"],
+        &FM_ONS,
         &[fp::ALGORITHM, fp::FEEDBACK, fp::TRANSPOSE, fp::LEVEL],
     ),
     pg(
@@ -184,6 +186,17 @@ const FM: &[PlanPage] = &[
     pg("Kbd 3-4", &["Op 3 kbd", "Op 4 kbd"], &[]),
     pg("Kbd 5-6", &["Op 5 kbd", "Op 6 kbd"], &[]),
 ];
+
+/// The six operators' On switches, on the Algo page.
+const FM_ONS: [u16; 6] = {
+    let mut q = [0u16; 6];
+    let mut n = 0;
+    while n < 6 {
+        q[n] = op_id(n + 1, op::ON);
+        n += 1;
+    }
+    q
+};
 
 /// An operator page's Q-Links: output level, coarse, fine and velocity.
 const FM_OP_Q: [[u16; 4]; 6] = {
@@ -1000,8 +1013,18 @@ mod tests {
             seen.iter().all(|&n| n == 1),
             "every parameter on exactly one page"
         );
+        // The Algo page holds the six operators' On switches; each operator
+        // page has its wave in their place.
+        let on: Vec<&str> = pages[0]
+            .params
+            .iter()
+            .filter(|&&i| params[i].name == "On")
+            .map(|&i| params[i].group)
+            .collect();
+        assert_eq!(on, ["Op 1", "Op 2", "Op 3", "Op 4", "Op 5", "Op 6"]);
         for p in &pages[3..9] {
             assert_eq!(p.params.len(), 16);
+            assert!(p.params.iter().any(|&i| params[i].name == "Wave"));
             let q: Vec<&str> = qlink_targets(p, params)
                 .iter()
                 .map(|&i| params[i].name)

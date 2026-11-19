@@ -1743,8 +1743,13 @@ fn fm_cards(st: &SynthState, page: &str) -> Strip {
             let l = fv::algorithm_layout(st.value(fp::ALGORITHM) as usize);
             let carrier = l.carriers & (1 << (n - 1)) != 0;
             let caption = if fv::op_sounds(&v, n) {
+                // A wave other than the sine is named: "modulates 1 · saw".
+                let wave = match fp::OP_WAVES.get(v(fp::op_id(n, fp::op::WAVE)) as usize) {
+                    Some(w) if *w != fp::OP_WAVES[0] => format!(" · {}", w.to_lowercase()),
+                    _ => String::new(),
+                };
                 format!(
-                    "{} · output {}",
+                    "{}{wave} · output {}",
                     fv::op_role(&l, n),
                     v(fp::op_id(n, fp::op::LEVEL)).round()
                 )

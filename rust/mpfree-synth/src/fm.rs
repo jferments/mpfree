@@ -1,9 +1,10 @@
 //! FM: a six-operator FM synth in the DX7's mould.
 //!
-//! - **Operators.** Six sine operators, each with a frequency (a ratio of
-//!   the note, or a fixed frequency), an output level, a four-rate,
-//!   four-level envelope, velocity sensitivity, keyboard level and rate
-//!   scaling, and amplitude modulation from the LFO.
+//! - **Operators.** Six operators, each with a wave (the DX7's sine, or a
+//!   triangle, saw, square or half sine, [`OP_WAVES`]), a frequency (a
+//!   ratio of the note, or a fixed frequency), an output level, a
+//!   four-rate, four-level envelope, velocity sensitivity, keyboard level
+//!   and rate scaling, and amplitude modulation from the LFO.
 //! - **Algorithms.** The DX7's 32 ways of wiring them ([`ALGORITHMS`]), with
 //!   feedback (0 to 7) on one operator or, for algorithms 4 and 6, around a
 //!   loop of two or three.
@@ -35,7 +36,10 @@ use mpfree_node::{
 use crate::dsp::{same_key, Rng};
 use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
 use crate::fm_params::*;
+use crate::osc::{classic, level_for, level_near, Classic, Read, Waveset};
+use crate::params::Preset;
 use crate::pressure::{swell_gain, Depths, Slot};
+use crate::voice::DcBlock;
 
 /// Frames per control step.
 pub const CTRL: u64 = 16;
@@ -44,10 +48,188 @@ pub const MAX_POLY: usize = 16;
 /// Voice slots: the notes plus room for stolen voices to fade out.
 pub const POOL: usize = MAX_POLY + 4;
 const KILL_MS: f32 = 3.0;
-/// Output of one carrier at full level, about -12 dBFS. A voice with more
-/// carriers is scaled by 1/sqrt(carriers), so its loudness stays about the
-/// same when the algorithm changes.
+/// Output of one carrier at full level, about -12 dBFS (before the Level
+/// setting, -9 dB by default). A voice with more carriers is brought back to
+/// its loudest carrier's power ([`carrier_trim`]), so its loudness stays
+/// about the same when the algorithm changes.
 const VOICE_GAIN: f32 = 0.25;
+/// The DC blocker's corner: the feedback and 1:1 pairs make DC.
+const DC_HZ: f32 = 5.0;
+
+/// The triangle's and the saw's gain to play as loud as the sine (the
+/// classic tables peak at 1: their power is a third, the sine's a half).
+const TRI_SAW_GAIN: f32 = 1.224_744_9;
+/// The square's (two saws, peaking at 1: its power is 1).
+const SQUARE_GAIN: f32 = std::f32::consts::FRAC_1_SQRT_2;
+/// Half a cycle, as a phase.
+const HALF: u32 = 0x8000_0000;
+
+/// The half sine: the sine's top half, then nothing, the one operator wave
+/// the classic tables ([`classic`]) don't hold. Its DC is taken out and it
+/// starts where it crosses zero rising (a twentieth of a cycle into the
+/// sine), so a note starts from silence as the sine's does, and it plays
+/// as loud as the sine. Built on the first call (allocates, about 160 KB):
+/// [`Fm::new`] calls it, off the audio thread.
+fn half_sine() -> &'static Waveset {
+    static TABLE: std::sync::OnceLock<Waveset> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        use std::f64::consts::PI;
+        // max(sin x, 0) = 1/pi + (sin x)/2 - (2/pi) sum over even k of
+        // cos(kx) / (k^2 - 1); the table leaves out the 1/pi.
+        let raw = |k: usize| -> (f64, f64) {
+            match k {
+                1 => (0.5, 0.0),
+                _ if k.is_multiple_of(2) => (0.0, -2.0 / (PI * (k * k - 1) as f64)),
+                _ => (0.0, 0.0),
+            }
+        };
+        // Read from where sin x = 1/pi: each harmonic turned by k times it.
+        let start = (1.0 / PI).asin() / (2.0 * PI);
+        let at = move |k: usize| {
+            let (s, c) = raw(k);
+            let (st, ct) = (2.0 * PI * k as f64 * start).sin_cos();
+            (s * ct - c * st, c * ct + s * st)
+        };
+        // The sine's power (a half) over the harmonics the top level keeps.
+        let power: f64 = (1..=512)
+            .map(|k| {
+                let (s, c) = at(k);
+                (s * s + c * c) / 2.0
+            })
+            .sum();
+        let g = (0.5 / power).sqrt();
+        Waveset::build(move |k| {
+            let (s, c) = at(k);
+            (s * g, c * g)
+        })
+    })
+}
+
+/// How an operator reads its wave over one run of frames: the sine table,
+/// one level of a classic table at a phase offset and gain, or the square
+/// (the saw half a cycle on, less the saw).
+#[derive(Clone, Copy)]
+enum OpWave<'a> {
+    Sine,
+    One(Read<'a>, u32, f32),
+    Square(Read<'a>, f32),
+}
+
+impl<'a> OpWave<'a> {
+    /// Wave `wave` ([`OP_WAVES`]) on level `lv` ([`level_for`]). Each
+    /// starts at zero rising, as the sine does: the triangle and the saw
+    /// are read a quarter and half a cycle on.
+    fn new(wave: u8, lv: usize, c: &'a Classic, half: &'a Waveset) -> OpWave<'a> {
+        match wave {
+            1 => OpWave::One(c.triangle.reader(lv), 0x4000_0000, TRI_SAW_GAIN),
+            2 => OpWave::One(c.saw.reader(lv), HALF, TRI_SAW_GAIN),
+            3 => OpWave::Square(c.saw.reader(lv), SQUARE_GAIN),
+            4 => OpWave::One(half.reader(lv), 0, 1.0),
+            _ => OpWave::Sine,
+        }
+    }
+
+    #[inline(always)]
+    fn at(self, tab: &[f32; SIN_N + 1], p: u32) -> f32 {
+        match self {
+            OpWave::Sine => Fm::sin(tab, p),
+            OpWave::One(r, off, g) => r.at(p.wrapping_add(off)) * g,
+            OpWave::Square(r, g) => (r.at(p.wrapping_add(HALF)) - r.at(p)) * g,
+        }
+    }
+}
+
+/// Each wave's steepest slope in cycles of output a cycle of phase, as
+/// (part that grows with its harmonics, part that doesn't): the saw's and
+/// the square's steps steepen with every harmonic a level keeps; the
+/// sine's, the triangle's and the half sine's slopes are fixed. With the
+/// gains that make each as loud as the sine.
+const WAVE_SLOPE: [(f32, f32); 5] = [
+    (0.0, std::f32::consts::TAU),
+    (0.0, 4.0 * TRI_SAW_GAIN),
+    (4.0 * TRI_SAW_GAIN, 0.0),
+    (4.0 * SQUARE_GAIN, 0.0),
+    (0.0, 11.52),
+];
+
+/// The table levels of a voice's operators that play a wave other than
+/// the sine, for this control step. A modulator swings its target's phase
+/// 2g cycles at gain g, so its target's frequency moves by up to
+/// 2g x (its steepest slope) a sample; by Carson's rule the target's
+/// sidebands reach that far plus the modulator's top harmonic.
+///
+/// - **A shaped modulator** keeps no more harmonics than leave its
+///   fastest target's sidebands under Nyquist, with room for the second
+///   order (twice the spread): a saw's or square's steps swing faster
+///   with each harmonic kept, so it keeps fewer as its gain rises and the
+///   note climbs, down to its fundamental.
+/// - **A shaped operator that is modulated** (or fed back) reads the
+///   level for its fastest moment, its own frequency plus that swing and
+///   step, since each of its harmonics is modulated as many times over as
+///   its number.
+///
+/// The sine needs none of this: its sidebands are the modulator easing's
+/// ([`index_cap`]).
+fn shaped_levels(v: &mut Voice, ops: &[OpParams; 6], r: Route, ends: &[f32; 6]) {
+    let xs: [f32; 6] = std::array::from_fn(|k| v.ops[k].dphase as f32 * (1.0 / 4_294_967_296.0));
+    let gs: [f32; 6] = std::array::from_fn(|k| v.ops[k].g.max(ends[k]));
+    // Each operator's harmonics as a modulator (its own band limit, or
+    // fewer), and how fast it swings a target's phase at gain 1.
+    let mut harm = [1.0f32; 6];
+    let mut swing = [0.0f32; 6];
+    for j in 0..6 {
+        let w = usize::from(ops[j].wave.min(4));
+        let (per_h, fixed) = WAVE_SLOPE[w];
+        let xm = xs[j];
+        if w != 0 && xm > 0.0 {
+            let mut h = 0.5 / xm;
+            let t = r.targets[j];
+            if t != 0 && gs[j] > 0.0 {
+                let xd = (0..6)
+                    .filter(|&k| t & (1 << k) != 0)
+                    .map(|k| xs[k])
+                    .fold(0.0, f32::max);
+                // Twice Carson's spread (its swing and its top harmonic,
+                // where the second-order sidebands reach) stays under
+                // Nyquist above its fastest target.
+                let room = 0.5 - xd - 4.0 * fixed * gs[j] * xm;
+                h = h.min(room / ((2.0 + 4.0 * per_h * gs[j]) * xm));
+            }
+            harm[j] = h.clamp(1.0, 512.0);
+        }
+        swing[j] = 2.0 * (fixed + per_h * harm[j]) * xm;
+    }
+    for k in 0..6 {
+        if ops[k].wave == 0 {
+            continue;
+        }
+        let mut dt = xs[k];
+        let mut step = 0.0f32;
+        for j in 0..6 {
+            if r.targets[j] & (1 << k) != 0 && gs[j] > 0.0 {
+                dt += gs[j] * swing[j];
+                step = step.max(harm[j] * xs[j]);
+            }
+        }
+        if k == r.fb_to && v.fb_scale > 0.0 {
+            // The feedback's input, its last two outputs scaled, swings
+            // the phase up to twice their gain.
+            let f = r.fb_from;
+            dt += 2.0 * gs[f] * v.fb_scale * swing[f];
+            step = step.max(harm[f] * xs[f]);
+        }
+        // As a modulator it keeps `harm` harmonics at most: a level keeps
+        // those whose frequency stays under half the rate.
+        let dt = (dt + step).max(0.5 / harm[k] * if ops[k].wave == 0 { 0.0 } else { 1.0 });
+        v.lv[k] = level_near(usize::from(v.lv[k]), dt) as u8;
+    }
+}
+
+/// The per-frame gain that fades the DC blocker's tail out in about 3 ms
+/// once no voice sounds.
+fn drain_coef(rate: u32) -> f32 {
+    (-1.0 / (0.003 * rate.max(8_000) as f32)).exp()
+}
 /// The DX7's envelope rates are defined at this sample rate.
 const EG_RATE: f32 = 44_100.0;
 
@@ -309,6 +491,140 @@ fn interp(pts: &[(f32, f32)], x: f32) -> f32 {
     pts[pts.len() - 1].1
 }
 
+// ---------------------------------------------------------------- level and feedback
+
+/// How loud an operator can get, 1.0 at full: its output level, with its
+/// keyboard scaling at middle C, and its envelope at its highest level,
+/// before velocity. 0 for an operator switched off or at output 0.
+fn op_weight(o: &OpParams) -> f32 {
+    if !o.on || o.out == 0 {
+        return 0.0;
+    }
+    let peak = o.levels.iter().copied().max().unwrap_or(0);
+    let env = ((scale_level(peak) >> 1) << 6) as f32;
+    let kbd = scale_keyboard(60, o.brk, o.ld, o.rd, o.lc, o.rc);
+    let out = ((scale_level(o.out) + kbd).clamp(0, 127) << 5) as f32;
+    DxEnv::gain((env + out - 4256.0).max(FLOOR))
+}
+
+/// The level match across algorithms: the gain that brings the carriers'
+/// summed power back to the loudest carrier's. One carrier, or several at
+/// the same level, play as before (1, or 1/sqrt(carriers)); carriers at
+/// different levels no longer drop the voice by the ones that add little.
+/// So the loudest carrier sets the voice's level and the others its
+/// balance, whichever algorithm makes them carriers.
+pub fn carrier_trim(weights: &[f32; 6], carriers: u8) -> f32 {
+    let (mut sum, mut top) = (0.0f32, 0.0f32);
+    for (j, &w) in weights.iter().enumerate() {
+        if carriers & (1 << j) != 0 {
+            sum += w * w;
+            top = top.max(w);
+        }
+    }
+    if sum > 0.0 {
+        top / sum.sqrt()
+    } else {
+        1.0
+    }
+}
+
+/// The feedback amount (feedback scale times the operator's gain) at
+/// feedback 5 with the operator at full level: the strongest feedback
+/// that is still a steady, saw-like tone. Above it (feedback 6 and 7
+/// near full level) the loop turns rough and noisy, as on the DX7.
+const FB_CLEAN: f32 = 0.125;
+/// The operator frequency (a fraction of the rate) up to which feedback
+/// is left as it is: about C5 at 48 kHz for a ratio-1 operator.
+const FB_X0: f32 = 0.011;
+/// The feedback amount where the loop turns rough (about feedback 6 with
+/// the operator two thirds up). From here on it is noise and whine more
+/// than harmonics, as on the DX7, and is left as it is at every note.
+const FB_ROUGH: f32 = 0.165;
+/// How steeply the feedback climbs from the clean limit back to
+/// [`FB_ROUGH`] at high notes: settings just past the clean limit stay
+/// near it, and only those close to rough climb. It eases in over the
+/// first [`FB_KNEE_IN`] of the easing, so nothing jumps as notes rise past
+/// C5.
+const FB_KNEE: f32 = 7.0;
+const FB_KNEE_IN: f32 = 0.1;
+/// How much of [`FB_CLEAN`] stays clean, at half-octave steps of the
+/// operator's frequency from [`FB_X0`]: the most feedback whose harmonics
+/// past Nyquist fold back at least 67 dB under the loudest, as measured on
+/// the loop itself (`docs/dev/design/synths.md`, FM). Past the last step
+/// nothing stays clean.
+const FB_KEEP: [f32; 12] = [
+    1.0, 0.9304, 0.8584, 0.7536, 0.652, 0.5168, 0.36, 0.2176, 0.136, 0.0536, 0.0008, 0.0,
+];
+
+/// The share of [`FB_CLEAN`] that stays clean for a loop whose highest
+/// operator runs at `x` of the rate.
+pub fn fb_keep(x: f32) -> f32 {
+    if x <= FB_X0 {
+        return 1.0;
+    }
+    let t = 2.0 * (x / FB_X0).log2();
+    let i = t as usize;
+    if i + 1 >= FB_KEEP.len() {
+        return 0.0;
+    }
+    let f = t - i as f32;
+    FB_KEEP[i] + (FB_KEEP[i + 1] - FB_KEEP[i]) * f
+}
+
+/// `ln` of the largest modulation index (radians) whose `n`th sideband,
+/// `n` = 1 to 24, stays 60 dB under the carrier: `J_n(I) < 0.001`, from the
+/// series' first term, `(I/2)^n / n! = 0.001` (which overstates `J_n` a
+/// little, so the limit errs on the safe side). Past 24 it grows by
+/// [`IDX_SLOPE`] a sideband.
+const IDX_LN: [f32; 24] = [
+    -6.2146, -2.4142, -1.0122, -0.2393, 0.2691, 0.6384, 0.9242, 1.1553, 1.348, 1.5128, 1.6563,
+    1.7831, 1.8966, 1.9991, 2.0926, 2.1784, 2.2577, 2.3314, 2.4001, 2.4645, 2.5252, 2.5824, 2.6366,
+    2.688,
+];
+const IDX_SLOPE: f32 = 0.7375;
+
+/// The most a modulator at `xm` of the rate can drive an operator at `xd`
+/// (as a gain, 1 at full level: a full modulator swings the phase two
+/// cycles, an index of 4π) before its sidebands fold back past Nyquist
+/// louder than 60 dB under the carrier. The first sideband to fold is the
+/// `(0.5 - xd) / xm`th; up high a bright modulator so eases off, as the
+/// feedback does ([`fb_amount`]), and at the middle of the keys nothing
+/// changes (a ratio-14 tine is left alone up to about C4).
+pub fn index_cap(xm: f32, xd: f32) -> f32 {
+    if xm <= 0.0 {
+        return f32::INFINITY;
+    }
+    let n = (0.5 - xd).max(0.0) / xm;
+    let index = if n <= 1.0 {
+        IDX_LN[0].exp() * n
+    } else if n >= 24.0 {
+        IDX_LN[23].exp() + IDX_SLOPE * (n - 24.0)
+    } else {
+        let k = n as usize;
+        let f = n - k as f32;
+        (IDX_LN[k - 1] + (IDX_LN[k] - IDX_LN[k - 1]) * f).exp()
+    };
+    index * (1.0 / (4.0 * std::f32::consts::PI))
+}
+
+/// The feedback amount for a loop at `x` of the rate, from the amount
+/// `p` the settings ask for: as asked up to C5, and at higher notes as
+/// asked up to what stays clean there ([`fb_keep`]). Past that it holds
+/// near the clean limit and climbs steeply back to [`FB_ROUGH`], so a
+/// rough setting stays rough (and as the DX7 plays it) and a feedback
+/// swept by pressure never jumps.
+pub fn fb_amount(p: f32, x: f32) -> f32 {
+    let keep = fb_keep(x);
+    let c = FB_CLEAN * keep;
+    if keep >= 1.0 || p <= c || p >= FB_ROUGH {
+        p
+    } else {
+        let span = FB_ROUGH - c;
+        let knee = 1.0 + (FB_KNEE - 1.0) * ((1.0 - keep) / FB_KNEE_IN).min(1.0);
+        c + span * ((p - c) / span).powf(knee)
+    }
+}
+
 // ---------------------------------------------------------------- envelopes
 
 /// Full level (output 99, envelope level 99) on the envelope's scale of
@@ -543,6 +859,14 @@ struct Voice {
     ops: [OpState; 6],
     /// The feedback path's last two outputs.
     fb: [f32; 2],
+    /// Each operator's wave level ([`level_for`]: the most harmonics that
+    /// stay under Nyquist; the sine needs none), and its gain limit as a
+    /// modulator ([`index_cap`]) with what that was worked out from (its
+    /// increment and its fastest target's). Kept beside the operators, so
+    /// the audio loop's state stays as small as it was.
+    lv: [u8; 6],
+    cap: [f32; 6],
+    cap_key: [u64; 6],
     peg: PitchEnv,
     press: Pressure,
     /// The pressure this voice uses, 0 to 1: its own, the chord's or none.
@@ -564,6 +888,9 @@ impl Voice {
             age: 0,
             ops: [OpState::default(); 6],
             fb: [0.0; 2],
+            lv: [0; 6],
+            cap: [0.0; 6],
+            cap_key: [0; 6],
             peg: PitchEnv::default(),
             press: Pressure::new(),
             pv: 0.0,
@@ -598,6 +925,7 @@ struct OpParams {
     lc: u8,
     rc: u8,
     on: bool,
+    wave: u8,
 }
 
 /// Settings every voice shares, read when a parameter changes.
@@ -620,6 +948,8 @@ struct Patch {
     poly: usize,
     mono: bool,
     bend_range: f32,
+    /// Whether any operator plays a wave other than the sine.
+    shaped: bool,
 }
 
 pub struct Fm {
@@ -628,6 +958,9 @@ pub struct Fm {
     patch: Patch,
     voices: [Voice; POOL],
     sine: Box<[f32; SIN_N + 1]>,
+    /// The other waves' tables ([`OpWave`]).
+    classic: &'static Classic,
+    half: &'static Waveset,
     rng: Rng,
     lfo_phase: f32,
     lfo_held: f32,
@@ -643,6 +976,14 @@ pub struct Fm {
     chord: PressureChord,
     bend: Smooth,
     out: Smooth,
+    /// The output's DC blocker (FM is mono: one for both sides) and its
+    /// last output. Once no voice sounds, what is left in it fades out
+    /// (`dc_fade`, by `dc_drain` a frame, about 3 ms) and it lets go.
+    dc: DcBlock,
+    dc_last: f32,
+    dc_fade: f32,
+    dc_drain: f32,
+    idle: bool,
     stack: [u8; MAX_POLY],
     stack_len: usize,
     clock: u64,
@@ -706,6 +1047,8 @@ impl Fm {
             patch: Patch::default(),
             voices: [Voice::new(); POOL],
             sine,
+            classic: classic(),
+            half: half_sine(),
             rng: Rng::new(0x00F3_D7E5),
             lfo_phase: 0.0,
             lfo_held: 0.0,
@@ -717,6 +1060,11 @@ impl Fm {
             chord: PressureChord::default(),
             bend: Smooth::new(0.0),
             out: Smooth::new(1.0),
+            dc: DcBlock::new(rate, DC_HZ),
+            dc_last: 0.0,
+            dc_fade: 1.0,
+            dc_drain: drain_coef(rate),
+            idle: true,
             stack: [0; MAX_POLY],
             stack_len: 0,
             clock: 0,
@@ -731,9 +1079,15 @@ impl Fm {
         s
     }
 
-    /// Loads a preset: defaults, then its values. Sounding notes carry on.
-    pub fn load_preset(&mut self, preset: &FmPreset) {
-        self.load_values(&preset.values);
+    /// Loads a factory preset: defaults, then its values. Sounding notes
+    /// carry on.
+    pub fn load_preset(&mut self, preset: &Preset) {
+        self.load_values(preset.values);
+    }
+
+    /// Loads a DX7 voice ([`crate::dx7`]) the same way.
+    pub fn load_voice(&mut self, voice: &crate::dx7::Dx7Voice) {
+        self.load_values(&voice.values);
     }
 
     /// Defaults, then `values` (a DX7 voice, a preset).
@@ -753,8 +1107,9 @@ impl Fm {
         self.read_patch();
     }
 
-    pub fn presets() -> Vec<FmPreset> {
-        presets()
+    /// The factory presets, read once from `presets/fm.presets`.
+    pub fn presets() -> &'static [Preset] {
+        crate::factory::presets!("fm.presets", &INFO, &PARAMS)
     }
 
     /// Voices sounding or fading.
@@ -837,11 +1192,12 @@ impl Fm {
                 lc: u(f(op::L_CURVE)),
                 rc: u(f(op::R_CURVE)),
                 on: self.v(f(op::ON)) >= 0.5,
+                wave: u(f(op::WAVE)).min(4),
             };
         }
         let lvl = self.v(LEVEL);
         let route = Route::new(self.v(ALGORITHM) as usize);
-        let trim = 1.0 / (route.carriers.count_ones().max(1) as f32).sqrt();
+        let trim = carrier_trim(&ops.map(|o| op_weight(&o)), route.carriers);
         self.out.target = if lvl <= -60.0 {
             0.0
         } else {
@@ -869,6 +1225,7 @@ impl Fm {
             poly: (self.v(POLYPHONY) as usize).clamp(1, MAX_POLY),
             mono: self.v(VOICE_MODE) >= 0.5,
             bend_range: self.v(BEND_RANGE),
+            shaped: ops.iter().any(|o| o.wave != 0),
         };
     }
 
@@ -879,6 +1236,14 @@ impl Fm {
             self.note_off(note);
             return;
         }
+        if self.dc_fade < 1.0 {
+            // A note after silence: what was left in the blocker (fading,
+            // far under hearing) goes, and the new note plays in full.
+            self.dc.reset();
+            self.dc_last = 0.0;
+            self.dc_fade = 1.0;
+        }
+        self.idle = false;
         self.clock += 1;
         if self.stack_len == 0 {
             self.lfo_time = 0.0;
@@ -1103,6 +1468,15 @@ impl Fm {
     // ---- control rate ----
 
     fn control(&mut self) {
+        // Once every voice has ended, the blocker's tail fades out, and
+        // under -120 dB it lets go, so a silent engine puts out exact zeros.
+        self.idle = self.voices.iter().all(|v| v.state == State::Free);
+        if self.idle && (self.dc_last * self.dc_fade).abs() < 1e-6 {
+            self.dc.reset();
+            self.dc_last = 0.0;
+            // Nothing to fade: kept off the denormals.
+            self.dc_fade = 0.0;
+        }
         let secs = CTRL as f32 / self.rate as f32;
         self.bend.next();
         self.out.next();
@@ -1215,6 +1589,8 @@ impl Fm {
         let fb = (f32::from(p.fb.min(7)) + press * d.get(target::FEEDBACK) * 7.0).clamp(0.0, 7.0);
         v.fb_scale = if fb <= 0.0 { 0.0 } else { (fb - 8.0).exp2() };
         let mut carriers_done = true;
+        // Each operator's gain at the end of this step.
+        let mut ends = [0.0f32; 6];
         let mut bent = pitch + bend;
         if v.ex.slide != 0.0 {
             bent += v.ex.slide;
@@ -1264,10 +1640,62 @@ impl Fm {
                 0.0
             };
             o.gstep = (target - o.g) / CTRL as f32;
+            ends[j] = target;
             // A carrier is done once it is near silent (-80 dB) and not climbing.
             if carrier && q.on && (target > 1e-4 || !o.env.falling()) {
                 carriers_done = false;
             }
+        }
+        // Modulators ease off at high notes, where their sidebands would
+        // fold back past Nyquist ([`index_cap`]): judged on each one's
+        // highest target.
+        for j in 0..6 {
+            let t = p.route.targets[j];
+            if t == 0 || ends[j] <= 0.0 {
+                continue;
+            }
+            let xd = (0..6)
+                .filter(|&k| t & (1 << k) != 0)
+                .map(|k| v.ops[k].dphase)
+                .max()
+                .unwrap_or(0);
+            // A held note keeps its increments, and so its limit: worked
+            // out again only when either moves (an increment is under
+            // 2^31, so the key's top bit marks it as worked out).
+            let key = u64::from(v.ops[j].dphase | 0x8000_0000) << 32 | u64::from(xd);
+            if v.cap_key[j] != key {
+                v.cap[j] = index_cap(
+                    v.ops[j].dphase as f32 * (1.0 / 4_294_967_296.0),
+                    xd as f32 * (1.0 / 4_294_967_296.0),
+                );
+                v.cap_key[j] = key;
+            }
+            let cap = v.cap[j];
+            if ends[j] > cap {
+                ends[j] = cap;
+                let o = &mut v.ops[j];
+                o.gstep = (cap - o.g) / CTRL as f32;
+            }
+        }
+        // Feedback eases off at high notes, where its harmonics would fold
+        // back past Nyquist ([`fb_amount`]): judged on the loop's highest
+        // operator and the feedback operator's gain.
+        if v.fb_scale > 0.0 {
+            let r = p.route;
+            let (lo, hi) = (r.fb_from.min(r.fb_to), r.fb_from.max(r.fb_to));
+            let top = v.ops[lo..=hi].iter().map(|o| o.dphase).max().unwrap_or(0);
+            let x = top as f32 * (1.0 / 4_294_967_296.0);
+            let g = ends[r.fb_from];
+            if g > 0.0 && x > FB_X0 {
+                v.fb_scale = fb_amount(v.fb_scale * g, x) / g;
+            }
+        }
+        // A wave other than the sine keeps its harmonics under Nyquist
+        // through the modulation, by Carson's rule (a modulated tone
+        // spreads about as far as its fastest swing plus its modulator's
+        // top harmonic): see [`shaped_levels`].
+        if p.shaped {
+            shaped_levels(v, &p.ops, p.route, &ends);
         }
         if v.state == State::Release && carriers_done {
             // Every carrier has finished its release (or is near silent):
@@ -1291,10 +1719,16 @@ impl Fm {
         a + (tab[i + 1] - a) * f
     }
 
-    fn render(&mut self, from: usize, to: usize, left: &mut [f32], right: &mut [f32]) {
+    /// Every voice's frames for `buf` (one control step at most), added
+    /// to it before the DC blocker. `SHAPED`: some operator plays a wave
+    /// other than the sine ([`OpWave`]).
+    #[inline(always)]
+    fn render_voices<const SHAPED: bool>(&mut self, buf: &mut [f32]) {
         let r = self.patch.route;
+        let ops = &self.patch.ops;
         let gain = VOICE_GAIN * self.out.value;
         let tab = &*self.sine;
+        let (classic, half) = (self.classic, self.half);
         for v in &mut self.voices {
             if v.state == State::Free {
                 continue;
@@ -1314,7 +1748,18 @@ impl Fm {
                     Live::Check
                 };
             }
-            for k in from..to {
+            let waves: [OpWave; 6] = if SHAPED {
+                std::array::from_fn(|j| {
+                    // Its own band limit at least, before a control step
+                    // has worked out its level ([`shaped_levels`]).
+                    let own = level_for(v.ops[j].dphase as f32 * (1.0 / 4_294_967_296.0));
+                    let lv = usize::from(v.lv[j]).max(own);
+                    OpWave::new(ops[j].wave, lv, classic, half)
+                })
+            } else {
+                [OpWave::Sine; 6]
+            };
+            for x in buf.iter_mut() {
                 let mut m = [0f32; 6];
                 let mut out = 0.0;
                 let fb_in = (v.fb[0] + v.fb[1]) * v.fb_scale;
@@ -1330,7 +1775,13 @@ impl Fm {
                         Live::Check => !(o.g == 0.0 && o.gstep == 0.0),
                     };
                     let y = if sounds {
-                        Self::sin(tab, o.phase.wrapping_add(phase_shift(input))) * o.g
+                        let ph = o.phase.wrapping_add(phase_shift(input));
+                        let w = if SHAPED {
+                            waves[j].at(tab, ph)
+                        } else {
+                            Self::sin(tab, ph)
+                        };
+                        w * o.g
                     } else {
                         0.0
                     };
@@ -1361,11 +1812,41 @@ impl Fm {
                     }
                     g *= v.kill_gain;
                 }
-                left[k] += out * g;
-                right[k] += out * g;
+                *x += out * g;
                 if v.state == State::Free {
                     break;
                 }
+            }
+        }
+    }
+
+    /// Renders frames `from` to `to` (at most one control step) and adds
+    /// them, through the DC blocker, to `left` and `right`.
+    fn render(&mut self, from: usize, to: usize, left: &mut [f32], right: &mut [f32]) {
+        let n = to - from;
+        debug_assert!(n <= CTRL as usize);
+        let mut buf = [0.0f32; CTRL as usize];
+        // A patch of sines alone (every DX7 voice) takes the sine's own
+        // loop, with no choice of wave per sample.
+        if self.patch.shaped {
+            self.render_voices::<true>(&mut buf[..n]);
+        } else {
+            self.render_voices::<false>(&mut buf[..n]);
+        }
+        if self.idle {
+            for (k, &x) in buf[..n].iter().enumerate() {
+                self.dc_last = self.dc.tick(x);
+                self.dc_fade *= self.dc_drain;
+                let y = self.dc_last * self.dc_fade;
+                left[from + k] += y;
+                right[from + k] += y;
+            }
+        } else {
+            for (k, &x) in buf[..n].iter().enumerate() {
+                let y = self.dc.tick(x);
+                left[from + k] += y;
+                right[from + k] += y;
+                self.dc_last = y;
             }
         }
     }
@@ -1409,7 +1890,12 @@ impl Node for Fm {
     }
 
     fn prepare(&mut self, rate: u32, _max_block: usize) {
+        let old = self.rate;
         self.rate = rate.max(8_000);
+        if self.rate != old {
+            self.dc = DcBlock::new(self.rate, DC_HZ);
+            self.dc_drain = drain_coef(self.rate);
+        }
         let cr = self.rate / CTRL as u32;
         self.bend.set_time(cr, 4.0);
         self.expr_c = expr_coef(cr as f32);
@@ -1429,6 +1915,10 @@ impl Node for Fm {
         self.chord.clear();
         self.meter_voices = 0.0;
         self.bend.snap(0.0);
+        self.dc.reset();
+        self.dc_last = 0.0;
+        self.dc_fade = 1.0;
+        self.idle = true;
         let rate = self.rate;
         self.prepare(rate, mpfree_node::MAX_BLOCK);
     }
@@ -1501,7 +1991,176 @@ impl Node for Fm {
 
 #[cfg(test)]
 mod tests {
-    use super::phase_shift;
+    use super::{
+        carrier_trim, fb_amount, fb_keep, index_cap, phase_shift, Fm, OpWave, FB_CLEAN, FB_KNEE,
+        FB_ROUGH, FB_X0,
+    };
+
+    #[test]
+    fn every_wave_starts_at_zero_rising_as_loud_as_the_sine_in_its_shape() {
+        use std::f32::consts::{FRAC_1_PI, TAU};
+        let fm = Fm::new(48_000);
+        let tab = &*fm.sine;
+        let start = FRAC_1_PI.asin() / TAU;
+        // Each wave's plain shape, and where it steps (left out of the
+        // comparison: the tables smooth a step over a few samples).
+        type Shape = (fn(f32) -> f32, &'static [f32]);
+        let shapes: [Shape; 5] = [
+            (|p| (TAU * p).sin(), &[]),
+            (
+                |p| {
+                    1.224_745
+                        * if p < 0.25 {
+                            4.0 * p
+                        } else if p < 0.75 {
+                            2.0 - 4.0 * p
+                        } else {
+                            4.0 * p - 4.0
+                        }
+                },
+                &[],
+            ),
+            (
+                |p| 1.224_745 * if p < 0.5 { 2.0 * p } else { 2.0 * p - 2.0 },
+                &[0.5],
+            ),
+            (
+                |p| std::f32::consts::FRAC_1_SQRT_2 * if p < 0.5 { 1.0 } else { -1.0 },
+                &[0.0, 0.5],
+            ),
+            (
+                |p| {
+                    let a = FRAC_1_PI.asin() / TAU;
+                    1.833_7 * ((TAU * (p + a)).sin().max(0.0) - FRAC_1_PI)
+                },
+                &[],
+            ),
+        ];
+        assert!(start > 0.05 && start < 0.052);
+        for (w, (shape, steps)) in shapes.iter().enumerate() {
+            let ow = OpWave::new(w as u8, 0, fm.classic, fm.half);
+            let (y0, y1) = (ow.at(tab, 0), ow.at(tab, 1 << 24));
+            assert!(y0.abs() < 0.02 && y1 > y0, "wave {w}: {y0} then {y1}");
+            let n = 4096;
+            let mut power = 0.0;
+            for i in 0..n {
+                let p = i as f32 / n as f32;
+                let y = ow.at(tab, (p * 4_294_967_296.0) as u32);
+                power += y * y / n as f32;
+                let near = steps
+                    .iter()
+                    .any(|&e| (p - e).abs() < 0.01 || (p - e - 1.0).abs() < 0.01);
+                if !near {
+                    let want = shape(p);
+                    assert!((y - want).abs() < 0.03, "wave {w} at {p}: {y} vs {want}");
+                }
+            }
+            assert!((power - 0.5).abs() < 0.005, "wave {w}: power {power}");
+        }
+    }
+
+    #[test]
+    fn a_modulator_eases_only_where_its_sidebands_would_fold() {
+        let c4 = 261.63 / 48_000.0;
+        // A 1:1 pair is left alone at full level up past C6.
+        for semis in [0.0f32, 12.0, 24.0] {
+            let x = c4 * 2f32.powf(semis / 12.0);
+            assert!(index_cap(x, x) >= 1.0, "1:1 at {semis}");
+        }
+        // A ratio-14 tine at C4 keeps every level a preset gives it (Glass
+        // Keys drives it at about 0.03), and is nearly gone by C7.
+        assert!(index_cap(14.0 * c4, c4) > 0.15);
+        assert!(index_cap(14.0 * 8.0 * c4, 8.0 * c4) < 1e-3);
+        // Smooth and falling as the note rises, for any ratio.
+        for ratio in [0.5f32, 1.0, 2.0, 3.5, 7.0, 14.0] {
+            let mut x = 0.0005f32;
+            let mut last = index_cap(ratio * x, x);
+            while ratio * x < 0.49 {
+                x *= 2f32.powf(1.0 / 1536.0);
+                let cap = index_cap(ratio * x, x);
+                assert!(cap <= last * 1.0001, "rises at {ratio}, {x}");
+                assert!(
+                    last - cap <= 0.02 * last + 1e-4,
+                    "jumps at {ratio}, {x}: {last} to {cap}"
+                );
+                last = cap;
+            }
+        }
+        assert_eq!(index_cap(0.0, 0.1), f32::INFINITY);
+    }
+
+    #[test]
+    fn feedback_is_left_alone_up_to_c5_and_when_rough() {
+        for k in 0..=100 {
+            let p = 0.5 * k as f32 / 100.0;
+            assert_eq!(fb_amount(p, FB_X0), p);
+            assert_eq!(fb_amount(p, 0.001), p);
+        }
+        for x in [0.02f32, 0.05, 0.1, 0.2, 0.4] {
+            for p in [FB_ROUGH, 0.25, 0.5] {
+                assert_eq!(fb_amount(p, x), p, "{p} at {x}");
+            }
+        }
+    }
+
+    #[test]
+    fn feedback_eases_smoothly_at_high_notes() {
+        for x in [0.012f32, 0.02, 0.044, 0.1, 0.2, 0.4] {
+            let c = FB_CLEAN * fb_keep(x);
+            let mut last = 0.0;
+            let step = 0.5 / 2000.0;
+            for k in 0..=2000 {
+                let p = step * k as f32;
+                let q = fb_amount(p, x);
+                // Never more than asked, never less as more is asked, and
+                // no jumps: at most the knee's own slope.
+                assert!(q <= p + 1e-7, "{q} > {p} at {x}");
+                assert!(q >= last - 1e-7, "{q} < {last} at {p}, {x}");
+                assert!(
+                    q - last <= FB_KNEE * step + 1e-6,
+                    "{last} to {q} at {p}, {x}"
+                );
+                if p <= c {
+                    assert_eq!(q, p);
+                }
+                last = q;
+            }
+        }
+        // Nor as the note rises, from below C5 to past the top.
+        for k in 0..=50 {
+            let p = FB_ROUGH * k as f32 / 50.0;
+            let mut x = 0.005f32;
+            let mut last = fb_amount(p, x);
+            while x < 0.45 {
+                x *= 2f32.powf(1.0 / 400.0);
+                let q = fb_amount(p, x);
+                assert!(
+                    q <= last + 1e-7 && last - q < 2.0e-3,
+                    "{last} to {q} at {p}, {x}"
+                );
+                last = q;
+            }
+        }
+        // Feedback 5 at full level at C7 (48 kHz) holds near the clean limit.
+        let x = 2093.0 / 48_000.0;
+        let c = FB_CLEAN * fb_keep(x);
+        assert!(c < 0.1 && fb_amount(FB_CLEAN, x) < c * 1.02);
+        assert!(fb_keep(0.5) == 0.0 && fb_keep(FB_X0) == 1.0);
+    }
+
+    #[test]
+    fn the_loudest_carrier_sets_the_level() {
+        let w = |a: [f32; 6]| a;
+        assert_eq!(carrier_trim(&w([0.5, 0.0, 0.0, 0.0, 0.0, 0.0]), 0b1), 1.0);
+        let even = carrier_trim(&w([0.7; 6]), 0b11_1111);
+        assert!((even - 1.0 / 6f32.sqrt()).abs() < 1e-6);
+        // A quiet second carrier barely lowers the loud one.
+        let t = carrier_trim(&w([1.0, 0.1, 0.0, 0.0, 0.0, 0.0]), 0b11);
+        assert!((t - 1.0 / 1.01f32.sqrt()).abs() < 1e-6);
+        // Only carriers count, and none at all leaves the voice as it is.
+        assert_eq!(carrier_trim(&w([1.0, 1.0, 0.0, 0.0, 0.0, 0.0]), 0b01), 1.0);
+        assert_eq!(carrier_trim(&w([0.0; 6]), 0b11), 1.0);
+    }
 
     #[test]
     fn the_phase_shift_matches_the_i64_conversion_for_every_input() {
