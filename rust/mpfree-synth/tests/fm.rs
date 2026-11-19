@@ -544,7 +544,7 @@ fn parameters_and_presets_are_valid() {
     check_params(s.params()).unwrap();
     assert!(s.params().iter().all(|p| (p.id as usize) < ID_SPACE));
     for preset in Fm::presets() {
-        for &(id, v) in &preset.values {
+        for &(id, v) in preset.values {
             let p = info(id).unwrap_or_else(|| panic!("{}: unknown id {id}", preset.name));
             assert_eq!(
                 p.clamp(v),
@@ -563,7 +563,7 @@ fn parameters_and_presets_are_valid() {
 fn every_preset_plays_at_a_sane_level_and_ends() {
     for preset in Fm::presets() {
         let mut s = Fm::new(RATE);
-        s.load_preset(&preset);
+        s.load_preset(preset);
         let ev = [
             (0, on(48, 110)),
             (0, on(55, 110)),
@@ -598,7 +598,7 @@ fn a_dx7_bank_loads_and_plays() {
     assert_eq!(back.len(), 32, "a bank always holds 32 voices");
     for (k, v) in back.iter().take(voices.len()).enumerate() {
         let mut s = Fm::new(RATE);
-        s.load_preset(&v.preset());
+        s.load_voice(v);
         let (l, _) = render(&mut s, 8820, &[(0, on(60, 100))], |_| 128);
         assert!(
             peak(&l) > 0.01 && l.iter().all(|x| x.is_finite()),
@@ -667,7 +667,7 @@ fn knobs_turned_one_at_a_time_play_as_a_preset_with_the_same_values() {
     let mut audible = 0;
     for preset in Fm::presets() {
         let mut turned = Fm::new(RATE);
-        turned.load_preset(&preset);
+        turned.load_preset(preset);
         let knobs: Vec<(u16, f32, f32)> = turned
             .params()
             .iter()

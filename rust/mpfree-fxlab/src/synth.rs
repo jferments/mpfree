@@ -106,7 +106,7 @@ impl Engine {
             Engine::Poly => names(Poly::presets()),
             Engine::Analog => names(Analog::presets()),
             Engine::Squelch => names(Squelch::presets()),
-            Engine::Fm => Fm::presets().into_iter().map(|p| p.name).collect(),
+            Engine::Fm => names(Fm::presets()),
             Engine::Wavetable => names(Wavetable::presets()),
             Engine::Keys => names(Keys::presets()),
             Engine::Drawbar => names(Drawbar::presets()),
@@ -132,14 +132,13 @@ impl Engine {
         Box::new(s)
     }
 
-    /// Factory preset `preset`'s text (None for FM, whose presets are
-    /// built in code).
+    /// Factory preset `preset`'s text.
     fn text(self, preset: usize) -> Option<&'static str> {
         let p = match self {
             Engine::Poly => Poly::presets(),
             Engine::Analog => Analog::presets(),
             Engine::Squelch => Squelch::presets(),
-            Engine::Fm => return None,
+            Engine::Fm => Fm::presets(),
             Engine::Wavetable => Wavetable::presets(),
             Engine::Keys => Keys::presets(),
             Engine::Drawbar => Drawbar::presets(),

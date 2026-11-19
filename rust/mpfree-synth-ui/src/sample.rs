@@ -484,7 +484,7 @@ fn fm_scene(
     for &(id, v) in edits {
         node.set_param(id, v);
     }
-    let names = presets.iter().map(|p| p.name.clone()).collect();
+    let names = presets.iter().map(|p| p.name.to_string()).collect();
     let mut st = SynthState::from_node(&node, "Keys", Color::rgb(0x6EA8FE), names, Some(i));
     st.edited = !edits.is_empty();
     if page == "Pressure" {

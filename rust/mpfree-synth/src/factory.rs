@@ -140,6 +140,10 @@ mod tests {
                 Box::new(crate::Bass::new(r)),
                 include_str!("../presets/bass.presets"),
             ),
+            (
+                Box::new(crate::Fm::new(r)),
+                include_str!("../presets/fm.presets"),
+            ),
         ];
         for (node, text) in engines {
             let name = node.info().name;
