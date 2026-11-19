@@ -29,7 +29,9 @@ use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::*;
 use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
 use mpfree_seq::{Clip, Lock, Note, Project as Song, Quantise, Speed, Track};
-use mpfree_synth::params::{POLYPHONY, UNISON, VOICE_MODE};
+use mpfree_synth::params::{
+    OSC1_LEVEL, OSC1_WAVE, OSC2_LEVEL, OSC2_WAVE, POLYPHONY, UNISON, VOICE_MODE, WAVE_TABLE,
+};
 use mpfree_synth::wavetable::params as wt;
 use mpfree_synth::{
     Analog, Bass, Choir, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Strings, Wavetable, Wind,
@@ -1273,6 +1275,27 @@ pub fn all(rate: u32) -> Vec<Case> {
             16,
         )
     }));
+    // Poly's Table wave, as the Wavetable cases above play it: both
+    // oscillators on the Basic table.
+    for (name, unison, voices) in [
+        ("Poly Table, 8 voices, both osc, unison 4", 4.0, 8),
+        ("Poly Table, 16 voices, both osc, unison 8", 8.0, 16),
+    ] {
+        v.push(measured(|| {
+            synth(
+                name.to_string(),
+                rate,
+                &[
+                    (OSC1_WAVE, WAVE_TABLE as f32),
+                    (OSC2_WAVE, WAVE_TABLE as f32),
+                    (OSC1_LEVEL, 100.0),
+                    (OSC2_LEVEL, 60.0),
+                    (UNISON, unison),
+                ],
+                voices,
+            )
+        }));
+    }
     // FM: a six-operator keys sound, a brass with feedback 7, and a lead
     // whose operators play the triangle, saw and square (the waves' loop).
     for (name, voices) in [("Glass Keys", 8), ("Brass Section", 16), ("Reed Lead", 8)] {

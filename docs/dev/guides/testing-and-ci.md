@@ -244,6 +244,15 @@ touchscreen, using the list of controls each widget gives
   stems and MIDI file are read back and checked against the song. The
   pattern legend for writing more songs is on `hits` in `songs.rs`.
 
+- **Workflow scripts** (`smoke/scripts.rs`) play the files in
+  `tools/mpc-one/devtest/workflows/` (a beat from scratch, loops, every
+  synth, effects, the demo songs, the Sample page, a heavy load) in the
+  test session, on the same timing as the MPC, where a device round plays
+  the same files in the real app (`mpfree play --script`). Each file's
+  `expect` lines are checked here on every pull request, so a workflow
+  that would fail on the MPC fails in CI first. The format and how to add
+  one: [the automated device suite](../hardware/device-suite.md).
+
 - **Device phases** (`smoke/phases.rs`) check, without the MPC, what the
   device run used to ask Jay to try by hand (his rule of 15 Nov: automate
   every check the smoke tests can do, and ask only about what a round

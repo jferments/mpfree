@@ -38,9 +38,9 @@
 //! **Laid out for speed.** The values the per-sample loops touch are kept
 //! in rows of four voices ([`LANES`]): each formant's filter state and
 //! coefficients, each singer's phase, the tilt and the gains. The
-//! formants run as one plain function, [`formants4`], that a NEON kernel
-//! in `mpfree-simd` twins to the bit (`synth-architecture.md`, section
-//! 3). Notes, swells, vibrato, the vowel and the gains move at a
+//! formants run as one function, [`formants4`]: `mpfree-simd`'s NEON
+//! kernel on the MPC, its plain Rust twin elsewhere, the same samples to
+//! the bit (`simd.md`). Notes, swells, vibrato, the vowel and the gains move at a
 //! control step of [`CTRL`] frames aligned to the absolute frame, the
 //! gains ramping across the step, so the output does not depend on how
 //! the host cuts blocks. Rows with no voice are skipped, and a tenth of a
@@ -615,40 +615,18 @@ fn sin_turns(t: f32) -> f32 {
 
 // ------------------------------------------------------------- rows
 
-/// Four voices' formant filters, side by side as `[formant][lane]`: each
-/// a zero-delay state-variable band-pass (Simper's, from `a1`, `a2`, `a3`,
-/// set at control rate) with its state (`s1`, `s2`) and its signed gain
-/// (`g`).
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Formants4 {
-    pub s1: [[f32; LANES]; FORMANTS],
-    pub s2: [[f32; LANES]; FORMANTS],
-    pub a1: [[f32; LANES]; FORMANTS],
-    pub a2: [[f32; LANES]; FORMANTS],
-    pub a3: [[f32; LANES]; FORMANTS],
-    pub g: [[f32; LANES]; FORMANTS],
-}
+/// Four voices' formant filters, side by side as `[formant][lane]` (each
+/// a zero-delay state-variable band-pass, Simper's, with its state and
+/// signed gain), and the function that runs four voices' sources through
+/// their five formants, frame by frame. Both live in `mpfree-simd`, the
+/// function as a NEON kernel where NEON runs and as its plain Rust twin
+/// elsewhere, the same samples to the bit (`docs/dev/design/simd.md`).
+/// The engine's loop was the twin's model: every step a plain multiply
+/// or add in a fixed order with no branch on a value.
+pub use mpfree_simd::{formants4, Formants4};
 
-/// Four voices' sources through their five formants, frame by frame:
-/// `out[i][l]` is the sum, formant 0 first, of each formant's band-pass of
-/// `src[i][l]` times its gain. Every step a plain multiply or add in a
-/// fixed order with no branch on a value, so a NEON kernel doing the same
-/// steps a lane gives the same bits (the `mpfree-simd` twin).
-pub fn formants4(src: &[[f32; LANES]], out: &mut [[f32; LANES]], f: &mut Formants4) {
-    for (e, y) in src.iter().zip(out.iter_mut()) {
-        *y = [0.0; LANES];
-        for k in 0..FORMANTS {
-            for l in 0..LANES {
-                let v3 = e[l] - f.s2[k][l];
-                let v1 = f.a1[k][l] * f.s1[k][l] + f.a2[k][l] * v3;
-                let v2 = f.s2[k][l] + f.a2[k][l] * f.s1[k][l] + f.a3[k][l] * v3;
-                f.s1[k][l] = 2.0 * v1 - f.s1[k][l];
-                f.s2[k][l] = 2.0 * v2 - f.s2[k][l];
-                y[l] += f.g[k][l] * v1;
-            }
-        }
-    }
-}
+// The kernel's shape is the engine's.
+const _: () = assert!(FORMANTS == mpfree_simd::FORMANTS && LANES == 4);
 
 /// Four voices' per-sample values, side by side: `[formant][lane]` and
 /// `[singer][lane]`.

@@ -1,0 +1,68 @@
+title A beat from scratch: steps on the pads, a recorded take, mutes on the bar
+covers rec-arm, step-pads, step-hold, step-speed, track-mute, mute-queue, live-erase
+wait 1.5
+mark steps
+pad 1 100
+button STEP SEQ
+expect STEP SEQ: the pads are pad A1's steps
+pad 1 110
+pad 5 60
+pad 9 110
+pad 13 60
+expect steps: new clip Pattern 1 in Track 1, step 1 of pad 1 on
+expect steps: step 13 of pad 1 on
+button PLAY
+wait 2
+pad 5 100
+button-down ERASE
+pad 9 100
+button-up ERASE
+expect steps: step 5 of pad 1 off
+expect steps: step 9 of pad 1 erased
+wait 1
+pad-down 1 100
+qlink 1 +3
+button Q-LINK
+pad-up 1
+button STEP SEQ
+expect STEP SEQ: the pads play again
+wait 2
+button STOP
+button STOP
+expect STOP: transport stopped
+expect STOP: all sounds stopped
+mark take
+button REC
+expect rec: ready, PLAY records Track 1
+button PLAY
+expect time: transport: Record
+pad 2 100
+wait 0.5
+pad 3 90
+wait 0.5
+pad 2 100
+wait 3
+button STOP
+button PLAY
+wait 4
+button STOP
+mark mutes
+button PLAY
+button SHIFT + MAIN
+expect Perform: mutes land on the bar
+button MAIN
+button TRACK MUTE
+expect TRACK MUTE · bank A: pads 1-8 mute tracks 1-8
+pad 1 100
+expect track mute: Track 1 muted on the next bar
+wait 4
+expect time: track mute: at
+pad 1 100
+expect track mute: Track 1 plays on the next bar
+wait 4
+button TRACK MUTE
+expect TRACK MUTE: the pads play again
+button SHIFT + MAIN
+expect Make: mutes and deletes act at once
+button STOP
+button STOP

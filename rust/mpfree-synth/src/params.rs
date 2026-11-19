@@ -5,6 +5,7 @@ use mpfree_node::{pressure as np, Curve, ParamInfo, Unit};
 
 use crate::pressure::POLY_TARGETS;
 use crate::voice::Source;
+use crate::wavetable::params::{TABLE_NAMES, WARP_MODES};
 
 macro_rules! ids {
     ($($name:ident = $v:expr),* $(,)?) => { $(pub const $name: u16 = $v;)* };
@@ -12,14 +13,18 @@ macro_rules! ids {
 
 ids! {
     OSC1_WAVE = 0, OSC1_OCT = 1, OSC1_PW = 2, OSC1_LEVEL = 3,
+    OSC1_TABLE = 4, OSC1_POS = 5, OSC1_WARP_MODE = 6, OSC1_WARP = 7,
     OSC2_WAVE = 10, OSC2_OCT = 11, OSC2_SEMI = 12, OSC2_FINE = 13, OSC2_PW = 14, OSC2_LEVEL = 15,
     SUB_LEVEL = 16, NOISE_LEVEL = 17,
     UNISON = 20, UNISON_DETUNE = 21, UNISON_SPREAD = 22,
     SUPER_DETUNE = 24, SUPER_MIX = 25,
+    OSC2_TABLE = 26, OSC2_POS = 27, OSC2_WARP_MODE = 28, OSC2_WARP = 29,
     FILTER_MODE = 30, CUTOFF = 31, RESONANCE = 32, DRIVE = 33, FENV_AMOUNT = 34, KEY_TRACK = 35, VEL_CUTOFF = 36, DIST = 37,
     FENV_A = 40, FENV_D = 41, FENV_S = 42, FENV_R = 43,
+    FENV_POS1 = 44, FENV_POS2 = 45, VEL_POS = 46, FENV_WARP = 47,
     AMP_A = 50, AMP_D = 51, AMP_S = 52, AMP_R = 53, VEL_AMP = 54,
     LFO_SHAPE = 60, LFO_RATE = 61, LFO_SYNC = 62, LFO_PITCH = 63, LFO_CUTOFF = 64, LFO_PW = 65, LFO_AMP = 66, LFO_RETRIG = 67,
+    LFO_POS1 = 68, LFO_POS2 = 69,
     VOICE_MODE = 70, POLYPHONY = 71, GLIDE = 72, BEND_RANGE = 73, PRESS_VIB_RATE = 75, AGE = 76,
     LEVEL = 80, PAN = 81,
     METER_VOICES = 90,
@@ -91,12 +96,24 @@ pub mod target {
     pub const LFO1_AMOUNT: u8 = 12;
     pub const LFO2_AMOUNT: u8 = 13;
     pub const PAN: u8 = 14;
+    pub const POSITION: u8 = 15;
+    pub const WARP: u8 = 16;
 }
+
+/// Each oscillator's Table settings ([`WAVE_TABLE`]): the table, the
+/// position through it, the warp and its amount, by oscillator (0 or 1).
+pub const TABLE_IDS: [[u16; 4]; 2] = [
+    [OSC1_TABLE, OSC1_POS, OSC1_WARP_MODE, OSC1_WARP],
+    [OSC2_TABLE, OSC2_POS, OSC2_WARP_MODE, OSC2_WARP],
+];
 
 /// The highest id plus one: values live in an array indexed by id.
 pub const ID_SPACE: usize = ROUTE_BASE as usize + 3 * ROUTES;
 
-pub const WAVES: &[&str] = &["Saw", "Pulse", "Triangle", "Sine", "Supersaw"];
+pub const WAVES: &[&str] = &["Saw", "Pulse", "Triangle", "Sine", "Supersaw", "Table"];
+/// The Wave menu's Table: the oscillator reads a wavetable (Wavetable's
+/// tables, [`crate::wavetable::factory`], or one loaded into it).
+pub const WAVE_TABLE: u8 = 5;
 pub const FILTER_MODES: &[&str] = &["LP 24", "LP 12", "BP 12", "HP 12"];
 pub const LFO_SHAPES: &[&str] = &["Sine", "Triangle", "Saw", "Square", "S&H"];
 /// Tempo sync: off, or a cycle length in beats.
@@ -195,6 +212,29 @@ const BASE: &[ParamInfo] = &[
         Unit::Percent,
         Linear,
     ),
+    // Its Table wave: which table, where through it, and the warp.
+    choice(OSC1_TABLE, "Table", "Osc 1", TABLE_NAMES, 0.0),
+    p(
+        OSC1_POS,
+        "Position",
+        "Osc 1",
+        0.0,
+        100.0,
+        0.0,
+        Unit::Percent,
+        Linear,
+    ),
+    choice(OSC1_WARP_MODE, "Warp", "Osc 1", WARP_MODES, 0.0),
+    p(
+        OSC1_WARP,
+        "Warp amt",
+        "Osc 1",
+        0.0,
+        100.0,
+        0.0,
+        Unit::Percent,
+        Linear,
+    ),
     choice(OSC2_WAVE, "Wave", "Osc 2", WAVES, 0.0),
     p(
         OSC2_OCT,
@@ -246,6 +286,29 @@ const BASE: &[ParamInfo] = &[
         Unit::Percent,
         Linear,
     ),
+    // Its Table wave: which table, where through it, and the warp.
+    choice(OSC2_TABLE, "Table", "Osc 2", TABLE_NAMES, 0.0),
+    p(
+        OSC2_POS,
+        "Position",
+        "Osc 2",
+        0.0,
+        100.0,
+        0.0,
+        Unit::Percent,
+        Linear,
+    ),
+    choice(OSC2_WARP_MODE, "Warp", "Osc 2", WARP_MODES, 0.0),
+    p(
+        OSC2_WARP,
+        "Warp amt",
+        "Osc 2",
+        0.0,
+        100.0,
+        0.0,
+        Unit::Percent,
+        Linear,
+    ),
     p(
         SUB_LEVEL,
         "Sub",
@@ -271,7 +334,7 @@ const BASE: &[ParamInfo] = &[
         "Unison",
         "Unison",
         1.0,
-        4.0,
+        8.0,
         1.0,
         Unit::None,
         Stepped,
@@ -420,6 +483,47 @@ const BASE: &[ParamInfo] = &[
         Unit::Ms,
         Log,
     ),
+    // What the filter envelope and velocity do to a Table wave.
+    p(
+        FENV_POS1,
+        "To position 1",
+        "Filter env",
+        -100.0,
+        100.0,
+        0.0,
+        Unit::Percent,
+        Linear,
+    ),
+    p(
+        FENV_POS2,
+        "To position 2",
+        "Filter env",
+        -100.0,
+        100.0,
+        0.0,
+        Unit::Percent,
+        Linear,
+    ),
+    p(
+        FENV_WARP,
+        "To warp",
+        "Filter env",
+        -100.0,
+        100.0,
+        0.0,
+        Unit::Percent,
+        Linear,
+    ),
+    p(
+        VEL_POS,
+        "Vel to position",
+        "Filter env",
+        -100.0,
+        100.0,
+        0.0,
+        Unit::Percent,
+        Linear,
+    ),
     p(
         AMP_A,
         "Attack",
@@ -508,6 +612,27 @@ const BASE: &[ParamInfo] = &[
     p(
         LFO_AMP,
         "To level",
+        "LFO",
+        0.0,
+        100.0,
+        0.0,
+        Unit::Percent,
+        Linear,
+    ),
+    // A sweep up a Table wave from its position.
+    p(
+        LFO_POS1,
+        "To position 1",
+        "LFO",
+        0.0,
+        100.0,
+        0.0,
+        Unit::Percent,
+        Linear,
+    ),
+    p(
+        LFO_POS2,
+        "To position 2",
         "LFO",
         0.0,
         100.0,
