@@ -37,7 +37,7 @@ Twelve engines when the three waves are done, five of them new or merged, and tw
 | Wind | **Wind** (new, one voice or up to 8 for chords, built 19 Nov: [synths.md](synths.md#wind-mpfree-synth-wind)) | A waveguide bore excited by a reed or jet curve, driven by breath (velocity, pad pressure, or a breath controller, mod wheel or foot pedal): a clarinet (a cylinder closed by a reed), a sax (a cone: the reed between two lines in parallel) and a flute (a jet across an edge). Not built: brass (a lip valve whose resonance must track the note is a second loop to tune and keep stable; [research](../research/wind.md#3-algorithms)), double reeds, register keys and overblowing | FM and subtractive winds as FM and Poly presets | 2 |
 | Choir | **Choir** (new) | A buzzy source through five formant filters per voice, morphing between vowels, through the Ensemble | Wavetable's Vowels table as Poly presets | 2 |
 | Tape character | **Character** (shared part) | Per-voice offsets and slow drift, wow and flutter, a note time limit, hiss; off and bit-exact at zero | | 2 |
-| Drums | Drums (extended) | As built, plus each drum's own knobs, each drum's own two effects in a kit, accent and per-hit variation, the 808 body shared with Bass, toms and congas from Pluck's modal bank | | 3 |
+| Drums | Drums (extended) | As built, plus each drum's own knobs, each drum's own two effects in a kit, accent and per-hit variation, the 808 body shared with Bass, toms and congas from Pluck's modal bank (a shared part since 19 Nov: `modal.rs`) | | 3 |
 | Plucks and mallets | Pluck (polished) | As built; the comb notches of Position fixed | | 3 |
 | Expressive leads | Poly, Analog and Bass presets | Velocity and play routes, per-note expression, note priority | | 3 |
 
