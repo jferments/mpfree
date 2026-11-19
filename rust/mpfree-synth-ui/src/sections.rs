@@ -235,8 +235,8 @@ impl Arrangement {
 /// The sections of a page: the engine's plan for it, else a section per
 /// parameter group. A parameter of the page that the plan leaves out goes
 /// in a last section, so nothing is lost.
-pub fn arrange(info: &NodeInfo, params: &[ParamInfo], page: &Page) -> Arrangement {
-    let mut a = crate::section_plans::plan(info, params, &page.name)
+pub fn arrange(info: &NodeInfo, params: &[ParamInfo], values: &[f32], page: &Page) -> Arrangement {
+    let mut a = crate::section_plans::plan(info, params, values, &page.name)
         .unwrap_or_else(|| by_group(params, page));
     // Parameters the node lacks were dropped by the plan; drop empty
     // sections too (a drawing alone keeps one).
@@ -387,8 +387,9 @@ mod tests {
         ];
         for n in &nodes {
             let (info, params) = (n.info(), n.params());
+            let defaults: Vec<f32> = params.iter().map(|p| p.default).collect();
             for page in crate::pages::plan(info, params) {
-                let a = arrange(info, params, &page);
+                let a = arrange(info, params, &defaults, &page);
                 let lost: Vec<&str> = a
                     .sections
                     .iter()

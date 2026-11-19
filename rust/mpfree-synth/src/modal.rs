@@ -223,8 +223,10 @@ impl<const N: usize> ModalBank<N> {
         self.y2 = [0.0; N];
     }
 
-    /// One frame: drives every mode with `x` and returns their sum.
-    #[inline]
+    /// One frame: drives every mode with `x` and returns their sum. Always
+    /// inlined: Pluck and Drums both call it, and with two callers the
+    /// compiler stopped inlining it into Pluck (Marimba +5.6 %).
+    #[inline(always)]
     pub fn tick(&mut self, x: f32) -> f32 {
         let mut s = 0.0;
         for k in 0..self.n {
@@ -262,8 +264,9 @@ impl Pulse {
         self.at < self.len
     }
 
-    /// Its next frame (0 once it has ended).
-    #[inline]
+    /// Its next frame (0 once it has ended). Always inlined, as
+    /// [`ModalBank::tick`].
+    #[inline(always)]
     pub fn next(&mut self) -> f32 {
         if self.at < self.len {
             let t = (self.at as f32 + 0.5) / self.len as f32;
