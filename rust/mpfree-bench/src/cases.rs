@@ -1008,6 +1008,11 @@ pub fn all(rate: u32) -> Vec<Case> {
     if mpfree_simd::neon_available() {
         v.push(measured(|| supersaw_saws(rate, mpfree_simd::Path::Neon)));
     }
+    // The Choir's formant filters alone, the same way.
+    v.push(measured(|| choir_formants(rate, mpfree_simd::Path::Plain)));
+    if mpfree_simd::neon_available() {
+        v.push(measured(|| choir_formants(rate, mpfree_simd::Path::Neon)));
+    }
     v.push(measured(|| {
         drums("Drums Init Kit, a hit every 4 blocks", rate, "Init Kit", 4)
     }));
@@ -2572,6 +2577,24 @@ fn supersaw_saws(rate: u32, path: mpfree_simd::Path) -> Case {
         what: "7 saws a voice from one table (mpfree-simd)",
         block: Box::new(move |_, l, r| {
             saws.block(path, l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// Eight Choir voices' formants: two groups of four voices, each voice a
+/// buzz through its vowel's five formant filters, once a group per
+/// 16-frame step, as the Choir calls them
+/// (`mpfree_simd::workload::Formants`), on `path`. The plain and NEON
+/// cases give the same samples.
+fn choir_formants(rate: u32, path: mpfree_simd::Path) -> Case {
+    let mut voices = mpfree_simd::workload::Formants::new(8, rate);
+    Case {
+        name: format!("Choir formants: 8 voices, {}", path.name()),
+        module: "synth",
+        what: "5 formant filters a voice, 4 voices a vector (mpfree-simd)",
+        block: Box::new(move |_, l, r| {
+            voices.block(path, l, r);
         }),
         mem_bytes: 0,
     }
