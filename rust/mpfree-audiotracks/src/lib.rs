@@ -19,6 +19,10 @@
 //!   track in place of what was there (a swipe across a take lane). Split,
 //!   move, erase, gain and fades edit regions. Undo and Redo walk one
 //!   history of every edit and recording, for all tracks.
+//! - **Sounds brought in.** A sound from elsewhere (the Sample page's Put
+//!   on Audio track) loads as a take of its own and goes on its track as
+//!   one undo step, a region a slice ([`AudioTracks::place`],
+//!   [`host::AudioHost::import`]).
 //! - **No clicks.** Every region fades in over [`FADE`] frames from its
 //!   start and plays on [`FADE`] frames past its end fading out (equal
 //!   power), so two regions that meet crossfade there: a punch in or out,
@@ -1376,6 +1380,62 @@ impl AudioTracks {
         self.h_redo = 0;
         self.replan = true;
         true
+    }
+
+    /// Play take `take` on its track from its anchor to its end, over what
+    /// was there, cut at its frames `cuts` (rising; ones outside it are
+    /// left out): a region a piece, one undo step. A sound brought in with
+    /// its slices ([`host::AudioHost::import`]): each slice is a region of
+    /// its own to move, erase or turn up. Applies at once (not queued), so
+    /// call it between periods, as the host does. False, counted as
+    /// refused and changing nothing, if the take is not there, records or
+    /// copies in still, or the pieces don't fit on the track.
+    pub fn place(&mut self, take: u16, cuts: &[u64], map: &TempoMap) -> bool {
+        let Some(tk) = self
+            .takes
+            .get(take as usize)
+            .filter(|t| t.live && !t.recording && !t.loading)
+            .copied()
+        else {
+            self.refuse();
+            return false;
+        };
+        let (rate, a, frames) = (self.rate, tk.anchor, tk.frames as u64);
+        let tick = move |f: u64| tick_after(map, a, f as f64, rate);
+        let ends = cuts
+            .iter()
+            .filter(|&&c| 0 < c && c < frames)
+            .map(|&c| tick(c).round() as Tick)
+            .chain(std::iter::once(tick(frames).floor() as Tick));
+        let before = self.stats.refused;
+        self.edit(
+            tk.track as usize,
+            |t, m, rate| {
+                let mut start = a.ceil() as Tick;
+                let mut placed = false;
+                for end in ends {
+                    if end <= start {
+                        continue;
+                    }
+                    let r = Region {
+                        start,
+                        end,
+                        take,
+                        src: frames_from(m, a, start as f64, rate).round() as i64,
+                        gain: 1.0,
+                        fade_in: 0,
+                        fade_out: 0,
+                    };
+                    if !t.put(m, rate, r) {
+                        return false;
+                    }
+                    (start, placed) = (end, true);
+                }
+                placed
+            },
+            map,
+        );
+        self.stats.refused == before
     }
 
     /// Takes still copying in.

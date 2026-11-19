@@ -1703,6 +1703,10 @@ pub enum FromUi {
     /// A phrase chopped on the Sample page, for the armed track's first
     /// empty slot ([`crate::time::TimeHost::put_clip`]).
     SamplePhrase(Box<mpfree_seq::Clip>),
+    /// The Slice tool's Put on Audio track (the one Sample page's step 6):
+    /// a sound for an audio track
+    /// ([`crate::audiotracks::TrackHost::bring`]).
+    SampleToAudio(Box<crate::audiotracks::Sound>),
     /// Save on the Touch page: keep this tuning in the store.
     SaveTouch(Tuning),
     /// A MIDI file BROWSE loaded, read: its tracks as clips from the armed
@@ -8602,6 +8606,10 @@ impl Player {
                 println!("sample: phrase {:?} found no room on its way to the clips; the pads have the slices", clip.name);
                 let _ = io::stdout().flush();
             }
+            FromUi::SampleToAudio(s) => self.say(format!(
+                "sample: {} not put on an audio track (the sound loop was busy): try again",
+                s.name
+            )),
             FromUi::MidiFile(m) => {
                 self.say(format!(
                     "MIDI file {}: not loaded (the sound loop was busy): load it again",
@@ -17098,6 +17106,30 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         new.take_actions();
         out.push(("sample-chop-new-kit", new));
+    }
+    // The Slice tool putting every eighth on an audio track in a row (the
+    // one Sample page's step 6): the map grey, To audio track.
+    {
+        use mpfree_sampler_ui::slice_tool::Row;
+        use mpfree_sampler_ui::wave_tab::REGION as LIST;
+        let (mut audio, _) = sample_sampler_with_empty_kit(fonts());
+        sample_pattern(&mut audio, 0);
+        audio.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::TOOLS.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::wave_tab::Tool::Slice.index()),
+        });
+        let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap_or(0);
+        for (row, delta) in [(Row::Method, 1), (Row::Amount, -1), (Row::Put, 4i32)] {
+            audio.on_event(UiEvent {
+                widget: LIST.into(),
+                kind: EventKind::Step {
+                    index: index(row),
+                    delta,
+                },
+            });
+        }
+        audio.take_actions();
+        out.push(("sample-chop-audio", audio));
     }
     // Live chop on the same pad: Start pressed, the break playing halfway,
     // and four pads hit so far.
@@ -25847,6 +25879,111 @@ mod tests {
             1,
             "the take stays"
         );
+        assert_eq!(p.sample.take_shown().as_deref(), Some("Take 1"));
+    }
+
+    /// The one Sample page's step 6: Put on Audio track sends the sound the
+    /// slices span (of the pad, then of a take kept on the page) to the
+    /// sound loop, cut where the slices are, with its tempo; the pads and
+    /// the page stay as they are.
+    #[test]
+    fn put_on_audio_track_sends_the_slices_sound_for_an_audio_track() {
+        use mpfree_sampler_ui::slice_tool::Row;
+        use mpfree_sampler_ui::wave_tab;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let (mut project, _) = mpfree_sampler_ui::sample::project();
+        let mut take = project.pad(pad).unwrap().clone();
+        take.name = "Take 1".to_string();
+        project.add_take(take).unwrap();
+        p.apply(ToUi::SampleKits {
+            projects: vec![project],
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        p.apply(ToUi::PadDown { pad, velocity: 100 });
+        p.apply(ToUi::PadUp(pad));
+        settle_views(&mut p);
+        pick_tool(&mut p, wave_tab::Tool::Slice);
+        let step = |p: &mut Player, row: Row, delta: i32| {
+            p.on_event(UiEvent {
+                widget: wave_tab::REGION.into(),
+                kind: EventKind::Step {
+                    index: row.index(),
+                    delta,
+                },
+            });
+        };
+        let put_on = |p: &mut Player| -> Box<crate::audiotracks::Sound> {
+            use mpfree_sampler_ui::slice_tool::Method;
+            for _ in 0..Method::ALL.len() {
+                if p.sample.slice().unwrap().0.method() == Method::Grid {
+                    break;
+                }
+                step(p, Row::Method, 1);
+            }
+            for _ in 0..4 {
+                step(p, Row::Amount, -1);
+            }
+            // Round the places to Audio track.
+            for _ in 0..6 {
+                if p.sample.slice().unwrap().0.put_text() == "Audio track" {
+                    break;
+                }
+                step(p, Row::Put, -1);
+            }
+            assert_eq!(p.sample.slice().unwrap().0.put_text(), "Audio track");
+            p.take_actions();
+            p.on_event(UiEvent {
+                widget: wave_tab::REGION.into(),
+                kind: EventKind::Tab(Row::Chop.index()),
+            });
+            let mut sent: Vec<_> = p
+                .take_actions()
+                .into_iter()
+                .filter_map(|a| match a {
+                    FromUi::SampleToAudio(s) => Some(s),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(sent.len(), 1);
+            sent.remove(0)
+        };
+        let check = |p: &Player, s: &crate::audiotracks::Sound, name: &str| {
+            let (tool, cs) = p.sample.slice().unwrap();
+            let b = tool.bounds(cs);
+            let n = b.len() - 1;
+            assert!(n > 1);
+            let project = p.sample.project(0).unwrap();
+            let src = project.source(cs.source.id).unwrap();
+            let ch = usize::from(src.channels());
+            assert_eq!((s.name.as_str(), s.channels), (name, ch));
+            let want = src
+                .data()
+                .f32s(b[0] as usize * ch..b[n] as usize * ch)
+                .unwrap();
+            assert!(s.audio[..] == want[..], "the sound between the ends");
+            let cuts: Vec<u64> = b[1..n].iter().map(|c| c - b[0]).collect();
+            assert_eq!(s.cuts, cuts);
+            assert!(
+                (s.bpm - mpfree_sampler_ui::sample::BPM).abs() < 0.01,
+                "{}",
+                s.bpm
+            );
+        };
+        let before = p.sample.project(0).unwrap().history();
+        let s = put_on(&mut p);
+        check(&p, &s, "Break 92");
+        assert_eq!(
+            p.sample.project(0).unwrap().history(),
+            before,
+            "no pad changes"
+        );
+        // A take kept on the page: its sound, and the take stays.
+        p.apply(ToUi::SamplePad(1));
+        assert_eq!(p.sample.take_shown().as_deref(), Some("Take 1"));
+        let s = put_on(&mut p);
+        check(&p, &s, "Take 1");
+        assert_eq!(p.sample.project(0).unwrap().takes().len(), 1);
         assert_eq!(p.sample.take_shown().as_deref(), Some("Take 1"));
     }
 
