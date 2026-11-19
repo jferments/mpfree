@@ -76,6 +76,10 @@ pub struct TransportLights {
 /// SHIFT + NOTE REPEAT does.
 pub const DOUBLE_PRESS_SECONDS: f64 = 0.4;
 
+/// TAP TEMPO held this long with no wheel turn opens the tempo's number
+/// pad as it is let go (a tap is far shorter).
+pub const TAP_HOLD_SECONDS: f64 = 0.6;
+
 /// The pages, in the order of the header's tabs, then the ones without a tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
@@ -381,6 +385,14 @@ struct MainHold {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FullHold {
     shift: bool,
+    used: bool,
+}
+
+/// TAP TEMPO held: since when (`at`, seconds into the session), and
+/// whether the wheel turned the tempo (then the let-go opens nothing).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TapHold {
+    at: f64,
     used: bool,
 }
 
@@ -990,6 +1002,8 @@ pub struct Status {
     pub main_held: Option<usize>,
     /// FULL LEVEL held: a pad hit sets the level every hit plays at.
     pub full_held: bool,
+    /// TAP TEMPO held: the wheel turns the tempo.
+    pub tap_held: bool,
 }
 
 /// What Sample Recall is asked (sampler R5 part 2, sampler decision 3).
@@ -1141,6 +1155,29 @@ pub enum Effect {
     /// SHIFT + TC (the MPC's TC On/Off): the armed track's Quantise while
     /// recording, off, or back to the grid it had (1/16 the first time).
     RecordQuantiseToggle,
+    /// SHIFT + a kit pad: pad `slot` of the bank shown is picked for the
+    /// Sample and Pads tabs and the Q-Links, as a hit picks it, and plays
+    /// nothing.
+    PadPick {
+        slot: u8,
+    },
+    /// SHIFT + PLAY: play again from where PLAY last started the
+    /// transport (while it plays, a jump back there).
+    PlayBack,
+    /// SHIFT + OVERDUB: the count-in off, or back to the bars it had (1
+    /// bar the first time).
+    CountInToggle,
+    /// SHIFT + SAMPLE EDIT (the MPC's Q-Link Edit): the macros panel on
+    /// Macros 1-4, or back from it.
+    MacrosPanel,
+    /// SHIFT + PROG EDIT (the MPC's MIDI Control settings): the mixer's
+    /// I/O view on its Controller section, where controller mode is set up.
+    ControllerSettings,
+    /// TAP TEMPO held alone and let go: the tempo's number pad.
+    TypeTempo,
+    /// All four PAD BANK buttons held (the MPC's screenshot): a picture of
+    /// the screen, saved in the data folder.
+    ScreenPicture,
     /// SHIFT + wheel, or SHIFT + - / +, on the Synth page: the next or
     /// previous page.
     SynthPage(i32),
@@ -1372,6 +1409,12 @@ pub struct App {
     copy_from: Option<u8>,
     /// SHIFT was held as COPY went down: each pad hit is emptied.
     copy_clears: bool,
+    /// TAP TEMPO held: the wheel turns the tempo; held alone, the number
+    /// pad opens as it is let go.
+    tap_hold: Option<TapHold>,
+    /// The PAD BANK buttons held, a bit each (A = bit 0): all four
+    /// together save a picture of the screen, as on the MPC.
+    banks_down: u8,
     /// The Perform set is on the pads (SHIFT + SAMPLER on the Looper tab,
     /// or the Looper's Pads switch), on the Looper tab and Play.
     loop_keys: bool,
@@ -1639,6 +1682,8 @@ impl App {
             full_hold: None,
             copy_from: None,
             copy_clears: false,
+            tap_hold: None,
+            banks_down: 0,
             loop_keys: false,
             perform_set: crate::perform_pads::PerformSet::default(),
             perform_bank: 0,
@@ -2859,6 +2904,56 @@ impl App {
         })
     }
 
+    /// Pad `slot` (0 to 15) hit with SHIFT held over the kit's pads: it is
+    /// picked, as a hit picks it (the Sample and Pads tabs, STEP SEQ's next
+    /// sound, the Q-Links), and plays nothing, so a pad is picked in the
+    /// middle of a song without being heard. None when the hit isn't
+    /// SHIFT's (the pad plays as ever).
+    pub fn pick_pad_quietly(&mut self, slot: usize) -> Option<Vec<Effect>> {
+        if !self.shift || self.erase_held || !self.pads_play_kit() || slot >= 16 {
+            return None;
+        }
+        self.step_pad_played(slot);
+        let name = kit_pad_name(self.kit_pad(slot));
+        Some(vec![
+            Effect::PadPick { slot: slot as u8 },
+            Effect::Tell(format!(
+                "SHIFT + pad: pad {name} picked, not played   ·   hit it to hear it"
+            )),
+        ])
+    }
+
+    /// TAP TEMPO held and the wheel turned `delta` detents: the tempo by 1
+    /// BPM a detent, 0.1 with SHIFT, as the tempo chip's number pad would
+    /// set it.
+    fn tempo_step(&mut self, delta: i32) -> Vec<Effect> {
+        if let Some(h) = self.tap_hold.as_mut() {
+            h.used = true;
+        }
+        let step = if self.shift { 0.1 } else { 1.0 };
+        let bpm = ((self.settings.bpm + f64::from(delta) * step) * 10.0).round() / 10.0;
+        let bpm = bpm.clamp(30.0, 300.0);
+        vec![
+            Effect::Time(TimeAction::Transport(Command::SetTempo(bpm))),
+            Effect::Tell(format!(
+                "Tempo {bpm:.1} BPM   ·   TAP TEMPO held: the wheel, 1 BPM a detent (SHIFT: 0.1)"
+            )),
+        ]
+    }
+
+    /// TAP TEMPO let go at `t`: held alone for a while, the tempo's number
+    /// pad; after a wheel turn, or a tap, nothing more.
+    fn tap_up(&mut self, t: f64) -> Vec<Effect> {
+        let Some(h) = self.tap_hold.take() else {
+            return Vec::new();
+        };
+        let mut fx = vec![self.status()];
+        if !h.used && t - h.at >= TAP_HOLD_SECONDS {
+            fx.push(Effect::TypeTempo);
+        }
+        fx
+    }
+
     /// A tap on the header's Full level or Half level chip: the pads play
     /// as hit again (Jay's card, 13 Nov 14:57Z).
     pub fn pad_level_off(&mut self) -> Vec<Effect> {
@@ -2887,6 +2982,7 @@ impl App {
             half_level: self.settings.half_level,
             main_held: self.main_hold.map(|h| h.bank),
             full_held: self.full_hold.is_some(),
+            tap_held: self.tap_hold.is_some(),
         })
     }
 
@@ -2963,6 +3059,12 @@ impl App {
             if Some(note) == self.map.main {
                 fx.extend(self.main_up());
             }
+            if Some(note) == self.map.tap_tempo {
+                fx.extend(self.tap_up(t));
+            }
+            if let Some(k) = self.map.bank_of(note) {
+                self.banks_down &= !(1 << k);
+            }
             return fx;
         }
         if self.view == View::Guide {
@@ -2971,6 +3073,15 @@ impl App {
         if note == button::COPY {
             // COPY: STEP SEQ's steps and pages (step_pads.rs).
             return self.copy_button(true);
+        }
+        if let Some(k) = self.map.bank_of(note) {
+            // All four PAD BANK buttons held (the MPC's way): a picture of
+            // the screen. The first three did their own jobs as they went
+            // down; the fourth does only this.
+            self.banks_down |= 1 << k;
+            if self.banks_down == 0b1111 {
+                return vec![Effect::ScreenPicture];
+            }
         }
         let shift = self.shift;
         if self.recall_open {
@@ -3030,6 +3141,12 @@ impl App {
                 // Stopped already: the transport goes back to bar 1.
                 fx.push(Effect::Time(TimeAction::Transport(Command::Stop)));
             }
+        } else if note == button::PLAY && shift && !self.browsing() && self.rec.ready.is_none() {
+            // SHIFT + PLAY: from where PLAY last started, again (the MPC's
+            // Play from the last start point); while playing, a jump back.
+            fx.extend(self.fill_off());
+            self.arps.engine_at_mut(self.track).resume();
+            fx.push(Effect::PlayBack);
         } else if note == button::PLAY && self.browsing() {
             // On the Pads tab's browser PLAY hears the sound picked (as in
             // the browser); PLAY START still starts the transport.
@@ -3111,6 +3228,9 @@ impl App {
             } else {
                 Effect::PadRec(held)
             });
+        } else if shift && Some(note) == self.map.overdub {
+            // SHIFT + OVERDUB: the count-in off or on (the MPC's Count In).
+            fx.push(Effect::CountInToggle);
         } else if Some(note) == self.map.overdub {
             fx.push(Effect::Rec(crate::rec_arm::Press::Overdub));
         } else if !shift && Some(note) == self.map.undo && self.rec.pad.is_some_and(|p| p.recording)
@@ -3169,6 +3289,10 @@ impl App {
             // only on purpose (Jay, 22:12Z); the press is no tempo tap.
             fx.extend(self.toggle(View::Console));
         } else if Some(note) == self.map.tap_tempo {
+            // A tap, and held, the wheel turns the tempo; held alone, the
+            // number pad as it is let go ([`App::tap_up`]).
+            self.tap_hold = Some(TapHold { at: t, used: false });
+            fx.push(self.status());
             fx.extend(self.tap(t));
         } else if let Some(k) = self.map.bank_of(note).filter(|_| self.main_hold.is_some()) {
             // MAIN held: PAD BANK picks which 16 tracks the pads are (A:
@@ -3312,10 +3436,18 @@ impl App {
             } else {
                 self.go(if shift { View::Looper } else { View::Sample })
             }
+        } else if is(m.sample_edit) && shift {
+            // SHIFT + SAMPLE EDIT: the macros panel (the MPC's Q-Link
+            // Edit), or back from it.
+            vec![Effect::MacrosPanel]
         } else if is(m.sample_edit) {
             let mut fx = vec![Effect::SampleEditor(crate::sample_page::Editor::Wave)];
             fx.extend(self.go(View::Sample));
             fx
+        } else if is(m.prog_edit) && shift {
+            // SHIFT + PROG EDIT: controller mode's settings, the I/O view's
+            // Controller section (the MPC's MIDI Control).
+            vec![Effect::ControllerSettings]
         } else if is(m.prog_edit) && self.view == View::Pads {
             // PROG EDIT on the Pads tab: Edit pad on the pad picked, or
             // back to the pads from it (the one Sample page's step 6b), as
@@ -3585,6 +3717,10 @@ impl App {
     /// The data wheel: rows in a menu or on a page with rows, the outline
     /// on the pages [`outlined`] names ([`Nav`]), each other page's own job.
     pub fn wheel(&mut self, delta: i32) -> Vec<Effect> {
+        if self.tap_hold.is_some() {
+            // TAP TEMPO held: the wheel is the tempo.
+            return self.tempo_step(delta);
+        }
         if self.wheel_to_held() {
             // A finger on a control: the wheel turns it (SHIFT: finer).
             return vec![Effect::Held {
@@ -5657,6 +5793,124 @@ mod tests {
         assert!(app.main_pick(0).is_empty(), "MAIN let go");
         // A quick press: Play.
         assert!(click(&mut app, button::MAIN).contains(&Effect::Show(View::Play)));
+    }
+
+    /// SHIFT + a kit pad picks it without playing it (STEP SEQ's next
+    /// sound too); without SHIFT, or with the pads not on the kit, the pad
+    /// plays as ever.
+    #[test]
+    fn shift_and_a_pad_picks_it_without_playing_it() {
+        let mut app = ready();
+        assert!(app.pick_pad_quietly(3).is_none(), "SHIFT isn't held");
+        app.button(button::SHIFT, true, 0.0);
+        let fx = app.pick_pad_quietly(3).unwrap();
+        assert_eq!(fx[0], Effect::PadPick { slot: 3 });
+        assert!(matches!(&fx[1], Effect::Tell(t) if t.contains("pad A4 picked, not played")));
+        app.button(button::ERASE, true, 0.0);
+        assert!(
+            app.pick_pad_quietly(4).is_none(),
+            "SHIFT + ERASE is kept free"
+        );
+        app.button(button::ERASE, false, 0.0);
+        app.button(button::SHIFT, false, 0.0);
+        // STEP SEQ held takes the pad picked last as its sound.
+        app.button(button::STEP_SEQ, true, 0.0);
+        assert_eq!(app.step_pads().map(|p| p.sound), Some(3));
+    }
+
+    /// SHIFT + PLAY plays from where PLAY last started; SHIFT + OVERDUB
+    /// turns the count-in off or on; SHIFT + SAMPLE EDIT is the macros
+    /// panel and SHIFT + PROG EDIT controller mode's settings. Without
+    /// SHIFT each does what it did.
+    #[test]
+    fn the_shift_layers_of_play_overdub_sample_edit_and_prog_edit() {
+        let mut app = ready();
+        app.open_tab(View::Play);
+        let shifted = |app: &mut App, note: u8| held(app, button::SHIFT, |a| press(a, note));
+        assert!(shifted(&mut app, button::PLAY).contains(&Effect::PlayBack));
+        assert!(press(&mut app, button::PLAY)
+            .contains(&Effect::Time(TimeAction::Transport(Command::Play))));
+        let overdub = app.map.overdub.unwrap();
+        assert_eq!(shifted(&mut app, overdub), [Effect::CountInToggle]);
+        assert_eq!(
+            press(&mut app, overdub),
+            [Effect::Rec(crate::rec_arm::Press::Overdub)]
+        );
+        assert_eq!(
+            shifted(&mut app, button::SAMPLE_EDIT),
+            [Effect::MacrosPanel]
+        );
+        assert!(press(&mut app, button::SAMPLE_EDIT)
+            .contains(&Effect::SampleEditor(crate::sample_page::Editor::Wave)));
+        assert_eq!(
+            shifted(&mut app, button::PROG_EDIT),
+            [Effect::ControllerSettings]
+        );
+    }
+
+    /// TAP TEMPO held: the wheel turns the tempo 1 BPM a detent (SHIFT:
+    /// 0.1) and the let-go opens nothing; held alone for a while, the
+    /// number pad opens as it is let go; a tap opens nothing.
+    #[test]
+    fn tap_tempo_held_turns_the_tempo_with_the_wheel_or_types_it() {
+        let mut app = ready();
+        let bpm = app.settings.bpm;
+        app.button(button::TAP_TEMPO, true, 10.0);
+        assert!(app.status_now().tap_held);
+        let fx = app.wheel(2);
+        assert_eq!(
+            fx[0],
+            Effect::Time(TimeAction::Transport(Command::SetTempo(bpm + 2.0)))
+        );
+        assert!(matches!(&fx[1], Effect::Tell(t) if t.contains("TAP TEMPO held")));
+        app.button(button::SHIFT, true, 10.1);
+        assert_eq!(
+            app.wheel(-3)[0],
+            Effect::Time(TimeAction::Transport(Command::SetTempo(
+                ((bpm - 0.3) * 10.0).round() / 10.0
+            )))
+        );
+        app.button(button::SHIFT, false, 10.2);
+        let fx = app.button(button::TAP_TEMPO, false, 11.0);
+        assert!(!fx.contains(&Effect::TypeTempo), "the wheel turned it");
+        assert!(!app.status_now().tap_held);
+        // Held alone: the number pad.
+        app.button(button::TAP_TEMPO, true, 20.0);
+        assert!(app
+            .button(button::TAP_TEMPO, false, 20.0 + TAP_HOLD_SECONDS)
+            .contains(&Effect::TypeTempo));
+        // A tap: nothing more.
+        app.button(button::TAP_TEMPO, true, 30.0);
+        assert!(!app
+            .button(button::TAP_TEMPO, false, 30.1)
+            .contains(&Effect::TypeTempo));
+    }
+
+    /// All four PAD BANK buttons held take a screen picture (the MPC's
+    /// screenshot): the fourth does only that, and again while the other
+    /// three stay down; one PAD BANK alone is a bank again.
+    #[test]
+    fn all_four_pad_banks_take_a_screen_picture() {
+        let mut app = ready();
+        for k in 0..3 {
+            let fx = app.button(button::PAD_BANK[k], true, 0.0);
+            assert!(!fx.contains(&Effect::ScreenPicture), "{fx:?}");
+        }
+        assert_eq!(
+            app.button(button::PAD_BANK[3], true, 0.0),
+            [Effect::ScreenPicture]
+        );
+        app.button(button::PAD_BANK[3], false, 0.0);
+        assert_eq!(
+            app.button(button::PAD_BANK[3], true, 0.0),
+            [Effect::ScreenPicture]
+        );
+        for k in 0..4 {
+            app.button(button::PAD_BANK[k], false, 0.0);
+        }
+        assert!(!app
+            .button(button::PAD_BANK[3], true, 0.0)
+            .contains(&Effect::ScreenPicture));
     }
 
     /// COPY held over the kit's pads (the MPC's COPY): the first pad hit
