@@ -31,7 +31,9 @@ use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
 use mpfree_seq::{Clip, Lock, Note, Project as Song, Quantise, Speed, Track};
 use mpfree_synth::params::{POLYPHONY, UNISON, VOICE_MODE};
 use mpfree_synth::wavetable::params as wt;
-use mpfree_synth::{Analog, Bass, Drawbar, Drums, Keys, Pluck, Poly, Squelch, Strings, Wavetable};
+use mpfree_synth::{
+    Analog, Bass, Choir, Drawbar, Drums, Keys, Pluck, Poly, Squelch, Strings, Wavetable,
+};
 use mpfree_track::{Instrument, Sum, TrackHost};
 use mpfree_transport::time::{Swing, PPQ};
 use mpfree_transport::{Block as TBlock, Command as T, Transport};
@@ -1125,6 +1127,24 @@ pub fn all(rate: u32) -> Vec<Case> {
             )
         }));
     }
+    // Choir: one note and a six-note chord of three singers each (O10),
+    // and the big choir's eight notes of eight singers.
+    for (name, keys) in [("Init", 1), ("Init", 6), ("Big Choir", 8)] {
+        v.push(measured(|| {
+            let p = Choir::presets()
+                .iter()
+                .find(|p| p.name == name)
+                .unwrap_or_else(|| panic!("choir preset {name}"));
+            chords(
+                format!("Choir {name}, {keys} keys"),
+                rate,
+                Box::new(Choir::new(rate)),
+                p.values,
+                Some(mpfree_synth::choir_params::VOICES),
+                keys,
+            )
+        }));
+    }
     // Squelch: the classic line, the square, and the drive on top.
     for name in ["Acid Line", "Square Acid", "Distorted"] {
         v.push(measured(|| {
@@ -1975,6 +1995,17 @@ fn engine_presets(rate: u32) -> Vec<Preset> {
             p.values,
             Some(pluck_params::POLYPHONY),
             false,
+        ));
+    }
+    for p in Choir::presets() {
+        let mono = mode(p.values, mpfree_synth::choir_params::MODE);
+        v.push(Preset::new(
+            format!("Choir {}", p.name),
+            rate,
+            Choir::new,
+            p.values,
+            Some(mpfree_synth::choir_params::VOICES),
+            mono,
         ));
     }
     v

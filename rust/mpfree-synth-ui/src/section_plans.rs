@@ -147,6 +147,7 @@ pub fn plan(info: &NodeInfo, params: &[ParamInfo], page: &str) -> Option<Arrange
         "mpfree.analog" => analog(page)?,
         "mpfree.strings" => strings(page)?,
         "mpfree.bass" => bass(page)?,
+        "mpfree.choir" => choir(page)?,
         _ => return None,
     };
     Some(build(params, spec, list))
@@ -1040,6 +1041,88 @@ fn strings(page: &str) -> Option<Plan> {
             vec![
                 s("tuning", "Tuning", Voice, &[TRANSPOSE, FINE, BEND_RANGE]),
                 s("output", "Output", Voice, &[LEVEL, METER_KEYS]),
+            ],
+        ),
+        _ => return None,
+    })
+}
+
+fn choir(page: &str) -> Option<Plan> {
+    use mpfree_synth::choir_params::*;
+    Some(match page {
+        "Choir" => (
+            "row(vowel:*, col(singers:*, move:190):*)",
+            vec![
+                s("vowel", "Vowel", Tone, &[VOWEL, BRIGHTNESS])
+                    .hero(&[VOWEL])
+                    .draw("Vowel"),
+                s(
+                    "singers",
+                    "Singers",
+                    Source,
+                    &[SECTION, SINGERS, DETUNE, BREATH, OCTAVE],
+                )
+                .note("how many sing each note, how far apart"),
+                s(
+                    "move",
+                    "Vowel move",
+                    Motion,
+                    &[START, START_TIME, MORPH, MORPH_RATE],
+                )
+                .note("a note opens from another vowel, or the vowel swings"),
+            ],
+        ),
+        "Shape" => {
+            let a = [ATTACK, DECAY, SUSTAIN, RELEASE];
+            (
+                "row(swell:*, vib:*)",
+                vec![
+                    s(
+                        "swell",
+                        "Swell",
+                        Shape,
+                        &[ATTACK, DECAY, SUSTAIN, RELEASE, VELOCITY, VEL_TONE],
+                    )
+                    .faders(&a)
+                    .labels(&adsr_labels(a))
+                    .labels(&[
+                        (VELOCITY, "Velocity to level"),
+                        (VEL_TONE, "Velocity to tone"),
+                    ])
+                    .draw("Swell"),
+                    s(
+                        "vib",
+                        "Vibrato",
+                        Motion,
+                        &[VIBRATO, VIB_RATE, VIB_DELAY, DRIFT],
+                    )
+                    .labels(&[(VIBRATO, "Depth"), (VIB_RATE, "Rate"), (VIB_DELAY, "Delay")])
+                    .draw("Singers")
+                    .note("each singer their own"),
+                ],
+            )
+        }
+        "Ensemble" => (
+            "row(ens:*, sweeps:*)",
+            vec![
+                s("ens", "Ensemble", Motion, &[ENSEMBLE, LINES, WIDTH])
+                    .hero(&[ENSEMBLE])
+                    .labels(&[(ENSEMBLE, "Amount")])
+                    .draw("Ensemble"),
+                s("sweeps", "Sweeps", Motion, &[SLOW_RATE, FAST_RATE, DEPTH])
+                    .note("the lines' slow and fast wobble"),
+            ],
+        ),
+        "Play" => (
+            "col(row(notes:*, tuning:*):*, row(pressure:*, output:*):*)",
+            vec![
+                s("notes", "Notes", Voice, &[MODE, VOICES, GLIDE])
+                    .labels(&[(GLIDE, "Glide")])
+                    .note("Mono and Legato sing one note"),
+                s("tuning", "Tuning", Voice, &[TRANSPOSE, FINE, BEND_RANGE]),
+                s("pressure", "Pressure", Motion, &[PRESS_SWELL, PRESS_VOWEL])
+                    .labels(&[(PRESS_SWELL, "To swell"), (PRESS_VOWEL, "To vowel")]),
+                s("output", "Output", Voice, &[LEVEL, METER_NOTES]),
             ],
         ),
         _ => return None,

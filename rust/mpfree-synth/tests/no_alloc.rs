@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use mpfree_synth::wavetable::table::{Table, FRAME};
 use mpfree_synth::{
-    Analog, Bass, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Strings, Wavetable, PARAMS,
+    Analog, Bass, Choir, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Strings, Wavetable, PARAMS,
 };
 
 struct Counting;
@@ -273,6 +273,27 @@ fn strings_process_never_allocates() {
             exercise(&mut s, params, 48_000),
             0,
             "Strings::process (swell {swell}) allocated"
+        );
+    }
+}
+
+#[test]
+fn choir_process_never_allocates() {
+    use mpfree_synth::choir_params::*;
+    for (mode, section, singers) in [(POLY, MIXED, 8.0), (LEGATO, SOPRANO, 3.0)] {
+        let mut s = Choir::new(48_000);
+        s.set_param(MODE, mode);
+        s.set_param(SECTION, section);
+        s.set_param(SINGERS, singers);
+        s.set_param(MORPH, 60.0);
+        s.set_param(BREATH, 40.0);
+        s.set_param(GLIDE, 80.0);
+        s.set_param(PRESS_VOWEL, 50.0);
+        let params = s.params();
+        assert_eq!(
+            exercise(&mut s, params, 48_000),
+            0,
+            "Choir::process (mode {mode}) allocated"
         );
     }
 }

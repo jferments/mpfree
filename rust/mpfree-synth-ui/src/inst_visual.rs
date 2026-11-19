@@ -30,11 +30,12 @@ use crate::visual::{freq_x, Values, DB_BOTTOM, DB_TOP, F_HI, F_LO, POINTS};
 use crate::widgets::{Card, Trace, QLINK_COLORS, TEXT, TEXT_DIM, TEXT_FAINT};
 use mpfree_synth::analog_params as an;
 use mpfree_synth::bass_params as bsp;
+use mpfree_synth::choir_params as chp;
 use mpfree_synth::drawbar_params as db;
 use mpfree_synth::keys_params as kp;
 use mpfree_synth::squelch_params as sq;
 use mpfree_synth::strings_params as stp;
-use mpfree_synth::{analog, bass, drawbar, keys, squelch, strings};
+use mpfree_synth::{analog, bass, choir, drawbar, keys, squelch, strings};
 use mpfree_ui::Color;
 use std::f32::consts::{PI, TAU};
 
@@ -868,6 +869,159 @@ pub fn strings_ensemble(v: &impl Values) -> Vec<Pts> {
         .collect()
 }
 
+// ------------------------------------------------------------ Choir
+
+/// The vowel as set, sung at middle C, on the filter cards' scale.
+pub fn choir_vowel(v: &impl Values) -> Pts {
+    response(choir::vowel_response(|id| v.get(id)))
+}
+
+/// The Vowel card's caption: the vowel and the section ("aah · alto",
+/// "oh > aah · mixed"), and whether it swings.
+pub fn choir_vowel_caption(v: &impl Values) -> String {
+    let vowel = chp::vowel_name(v.get(chp::VOWEL)).to_lowercase();
+    let section = pick(chp::SECTIONS, v.get(chp::SECTION)).to_lowercase();
+    if v.get(chp::MORPH) > 0.0 {
+        format!("{vowel} · {section} · swinging")
+    } else {
+        format!("{vowel} · {section}")
+    }
+}
+
+/// When the Swell card's note is let go, and the card's span, seconds:
+/// the attack and decay and a little more, then the release.
+pub fn choir_swell_secs(v: &impl Values) -> (f32, f32) {
+    let held = (0.0013 * (v.get(chp::ATTACK) + v.get(chp::DECAY) * 0.5)).max(0.25);
+    (held, held + (0.0014 * v.get(chp::RELEASE)).max(0.1))
+}
+
+/// A held note's level over the Swell card's span, 60 dB from top to
+/// bottom.
+pub fn choir_swell(v: &impl Values) -> Pts {
+    let (held, secs) = choir_swell_secs(v);
+    choir::swell_curve(|id| v.get(id), held, secs, POINTS + 1)
+        .into_iter()
+        .enumerate()
+        .map(|(i, l)| (i as f32 / POINTS as f32, level_y(l, 60.0)))
+        .collect()
+}
+
+/// The Singers card's span, seconds.
+const SINGER_SECS: f32 = 2.0;
+
+/// Each singer's pitch over two seconds of a held note, the card's middle
+/// the note, its edges the widest any singer goes (at least 30 cents).
+pub fn choir_singers(v: &impl Values) -> Vec<Pts> {
+    let lines = choir::singer_lines(|id| v.get(id), SINGER_SECS, POINTS + 1);
+    let top = lines
+        .iter()
+        .flatten()
+        .fold(30.0f32, |m, c| m.max(c.abs() * 1.1));
+    lines
+        .into_iter()
+        .map(|line| {
+            line.into_iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    (
+                        i as f32 / POINTS as f32,
+                        (0.5 + 0.45 * c / top).clamp(0.0, 1.0),
+                    )
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// The ensemble's lines over one slow cycle; none with it off.
+pub fn choir_ensemble(v: &impl Values) -> Vec<Pts> {
+    choir::ensemble_lines(|id| v.get(id), POINTS + 1)
+        .into_iter()
+        .map(|line| {
+            line.into_iter()
+                .enumerate()
+                .map(|(i, d)| (i as f32 / POINTS as f32, (0.5 + 0.45 * d).clamp(0.0, 1.0)))
+                .collect()
+        })
+        .collect()
+}
+
+/// Choir: the vowel (Choir), the singers' pitches and the swell (Shape),
+/// the ensemble (Ensemble).
+fn choir_cards(v: &impl Values) -> Vec<(Card, &'static str)> {
+    let (blue, green, amber) = (QLINK_COLORS[0], QLINK_COLORS[1], QLINK_COLORS[2]);
+    let (held, secs) = choir_swell_secs(v);
+    let singers = (v.get(chp::SINGERS).round() as usize).clamp(1, 8);
+    let singers_caption = if singers == 1 {
+        "1 singer".to_string()
+    } else {
+        format!("{singers} singers · detune {:.0} cents", v.get(chp::DETUNE))
+    };
+    let lines = choir_ensemble(v);
+    let ens_caption = if lines.is_empty() {
+        "off".to_string()
+    } else {
+        format!(
+            "{} lines · slow {:.2} Hz · fast {:.2} Hz",
+            lines.len(),
+            v.get(chp::SLOW_RATE),
+            v.get(chp::FAST_RATE)
+        )
+    };
+    let colors = [blue, green, amber, TEXT];
+    vec![
+        (
+            Card {
+                title: "Vowel".into(),
+                caption: choir_vowel_caption(v),
+                traces: vec![trace(choir_vowel(v), blue, 2.5, true, false)],
+                grid: freq_grid(),
+                ..Card::default()
+            },
+            "Choir",
+        ),
+        (
+            Card {
+                title: "Singers".into(),
+                caption: singers_caption,
+                traces: choir_singers(v)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, p)| trace(p, colors[i % colors.len()], 1.5, false, false))
+                    .collect(),
+                midline: true,
+                grid: kv::time_grid(SINGER_SECS),
+                ..Card::default()
+            },
+            "Shape",
+        ),
+        (
+            Card {
+                title: "Swell".into(),
+                caption: format!("let go at {}", kv::secs_text(held)),
+                traces: vec![trace(choir_swell(v), green, 2.5, true, false)],
+                grid: kv::time_grid(secs),
+                ..Card::default()
+            },
+            "Shape",
+        ),
+        (
+            Card {
+                title: "Ensemble".into(),
+                caption: ens_caption,
+                traces: lines
+                    .into_iter()
+                    .zip(colors)
+                    .map(|(p, c)| bright(p, c))
+                    .collect(),
+                midline: true,
+                ..Card::default()
+            },
+            "Ensemble",
+        ),
+    ]
+}
+
 // ------------------------------------------------------------ Bass
 
 /// One cycle of the sub (the oscillator four times, with the sub and the
@@ -993,6 +1147,7 @@ pub fn draws(id: &str) -> bool {
             | "mpfree.analog"
             | "mpfree.strings"
             | "mpfree.bass"
+            | "mpfree.choir"
     )
 }
 
@@ -1006,6 +1161,7 @@ pub fn cards(id: &str, v: &impl Values, page: &str) -> Vec<(Card, &'static str)>
         "mpfree.analog" => analog_cards_strip(v),
         "mpfree.strings" => strings_cards(v),
         "mpfree.bass" => bass_cards(v),
+        "mpfree.choir" => choir_cards(v),
         _ => Vec::new(),
     };
     for (c, home) in &mut cards {
@@ -1446,7 +1602,7 @@ fn bass_cards(v: &impl Values) -> Vec<(Card, &'static str)> {
 mod tests {
     use super::*;
     use mpfree_node::{Node, ParamInfo};
-    use mpfree_synth::{Analog, Drawbar, Keys, Squelch, Strings};
+    use mpfree_synth::{Analog, Choir, Drawbar, Keys, Squelch, Strings};
 
     fn in_box(pts: &[(f32, f32)]) -> bool {
         pts.iter().all(|&(x, y)| {
@@ -1481,12 +1637,13 @@ mod tests {
 
     #[test]
     fn every_card_stays_in_its_box_with_its_dot_and_bars() {
-        let mut nodes: [(Box<dyn Node>, &[mpfree_synth::Preset]); 5] = [
+        let mut nodes: [(Box<dyn Node>, &[mpfree_synth::Preset]); 6] = [
             (Box::new(Keys::new(48_000)), Keys::presets()),
             (Box::new(Drawbar::new(48_000)), Drawbar::presets()),
             (Box::new(Squelch::new(48_000)), Squelch::presets()),
             (Box::new(Analog::new(48_000)), Analog::presets()),
             (Box::new(Strings::new(48_000)), Strings::presets()),
+            (Box::new(Choir::new(48_000)), Choir::presets()),
         ];
         for (node, presets) in &mut nodes {
             let id = node.info().id;

@@ -10,7 +10,7 @@ The method is the FX quality one ([FX quality](fx-quality.md)): each target a nu
 
 ## The report
 
-`fxlab synth [--rate HZ] [--renders] [--out DIR]` measures every keyboard engine's factory presets (Poly, Analog, Squelch, FM, Wavetable, Keys, Drawbar, Pluck: 83 presets at the baseline; Strings' 24 joined with wave 1), each engine's plain patch, Poly's voice, FM's operators and the five drum kits, and prints one row per number with its target and whether it is met, then a count by measure; it writes DIR/synth.txt. With `--renders` it also writes each preset's listening phrase (C, E and G, then a four-note chord; two octaves down for a bass) as DIR/renders/ENGINE/NN-PRESET.wav, and each kit's tour (every pad, then two bars of a beat). The report takes about 21 s in a release build on the workstation. A factory preset that brings its own effects and macros (a sound, [Presets](presets.md#factory-presets-as-files)) is measured as the pads play it, through its effects; the K rows, which measure the engine's own voicing (decay against its label, the release drop, the pickups, the tremolo), play its engine alone, since a sound's echo or reverb lengthens a decay by design.
+`fxlab synth [--rate HZ] [--renders] [--out DIR]` measures every keyboard engine's factory presets (Poly, Analog, Squelch, FM, Wavetable, Keys, Drawbar, Pluck: 83 presets at the baseline; Strings' 24 joined with wave 1, the Choir's 25 with wave 2), each engine's plain patch, Poly's voice, FM's operators and the five drum kits, and prints one row per number with its target and whether it is met, then a count by measure; it writes DIR/synth.txt. With `--renders` it also writes each preset's listening phrase (C, E and G, then a four-note chord; two octaves down for a bass) as DIR/renders/ENGINE/NN-PRESET.wav, and each kit's tour (every pad, then two bars of a beat). The report takes about 21 s in a release build on the workstation. A factory preset that brings its own effects and macros (a sound, [Presets](presets.md#factory-presets-as-files)) is measured as the pads play it, through its effects; the K rows, which measure the engine's own voicing (decay against its label, the release drop, the pickups, the tremolo), play its engine alone, since a sound's echo or reverb lengthens a decay by design.
 
 Every render plays 100 silent blocks first, so parameters a preset or patch sets have finished gliding, as they have when a player picks a preset and then plays (without them Poly's Decay read 19 % long: its Sustain was still gliding down). Renders run in 128-frame blocks on absolute frames, as on the MPC.
 
@@ -51,7 +51,7 @@ New analyses in `rust/mpfree-fxlab/src/synth.rs`, each tested on signals with kn
 
 ## The ratchet
 
-`tests/synth.rs` runs the whole report and compares every row that has a better direction (896 of them) with `rust/mpfree-fxlab/quality/synth.tsv`, as the FX ratchet does: a number worse than recorded by more than its tolerance, a new row, or a recorded row no longer measured fails it. It renders every preset many times, so it runs in release only (ignored in a debug build) as its own CI step, about 21 s. A change that improves numbers records them with `MPFREE_QUALITY_BLESS=1 cargo test --release --locked -p mpfree-fxlab --test synth`; one made worse on purpose is blessed the same way and explained in its pull request. Adding a preset adds rows, so a preset pull request blesses too.
+`tests/synth.rs` runs the whole report and compares every row that has a better direction (1,873 of them on 19 Nov, with the Choir) with `rust/mpfree-fxlab/quality/synth.tsv`, as the FX ratchet does: a number worse than recorded by more than its tolerance, a new row, or a recorded row no longer measured fails it. It renders every preset many times, so it runs in release only (ignored in a debug build) as its own CI step, about 21 s. A change that improves numbers records them with `MPFREE_QUALITY_BLESS=1 cargo test --release --locked -p mpfree-fxlab --test synth`; one made worse on purpose is blessed the same way and explained in its pull request. Adding a preset adds rows, so a preset pull request blesses too.
 
 ## Where today's synths stand (2026-11-18)
 
@@ -142,9 +142,24 @@ The bar for each kernel in `mpfree-simd` ([NEON kernels](simd.md)), first the su
 | N2 | ARMv7 instructions a block, eight voices' supersaw saws with their mixing (`tools/simd_arm_cost.py`) | NEON fewer than the twin | Met: 58,361 against 134,455 (43 %) |
 | N3 | Time on the MPC, the same case (`mpfree-bench`, "Supersaw saws: 8 voices, plain" and "..., NEON") | NEON's p99 block under the twin's, or the kernel is removed | Device round |
 
+## Wave 2 targets: Choir
+
+The Choir's bar ([Synths](synths.md#choir-mpfree-synth-choir)); the ids are the research page's ([Organs, winds, choirs and tape](../research/organ-wind-choir.md#4-what-to-measure)). Built 19 Nov; every row below is in the report and the ratchet but O10, which is the device's.
+
+| Id | Measure | Target | Today |
+|---|---|---|---|
+| O1 | Formants: each of the five filters' peak and half-power width against the vowel table, for each section at ooh, oh, aah, eh and ee (the engine's own filters, read at C2) | Peaks within 5 %, widths within 20 % | Met for all five sections: peaks within 1.5 %, widths within 7.5 %, levels within 0.07 dB |
+| O2 | Vowel morph: the most energy between the harmonics of a B4, against the loudest harmonic (the B4 is tuned a little so a step at every control step, each 16 frames, would land between its harmonics), at rest, turning the Vowel knob from ooh to ee and back over 3 s, and with Morph 60 at 0.15 Hz | No step above −60 dB | Met: −139, −95 and −104 dB |
+| O8 | Singers: the mean correlation of eight singers' pitch movement over 2 s with vibrato 30 cents; stereo: correlation of the Init sound holding C major over two octaves | Singers under 0.5; stereo 0.2 to 0.6 | Met: 0.45; 0.52 |
+| O10 | Cost: a 6-note chord of 4 singers each | Under 50 % of the synth budget on the MPC | Device round. Workstation, instructions a block: Init (3 singers) 213k for one key, most of it the Ensemble, 359k for 6; Big Choir (8 singers) 619k for 8 keys |
+
+On the rows every preset meets, the Choir's 25 presets: T1 0.000 cents from C1 to C7 on the plain patch; A1 −99 to −80 dB (the worst ee at C7); L2 every 8-note chord at full velocity under −3.3 dBFS; L3 DC under −104 dBFS; L5 0.11 to 1.17 octaves (Solo Voice needed Brightness 75: an alto's aah at the test note barely brightens with velocity, a tenor's moves 0.87 octave); L6 13 to 18 dB from velocity 20 to 127, within 0.7 dB of the square law; L8 under 1.6 dB; L12 within 2.6 dB on the 23 poly presets; L1 −25.9 to −22.6 LUFS (Choir Stab −28.1, short by design).
+
+**Not yet: L11** on 6 of 25 presets: Ooh Choir 4.2 dB from C2 to C6, Aah to Ee 3.9, Choir Stab 3.8, Pressure Vowels 3.6, Oh Choir 3.5 and Bright Aahs 3.4. The engine is level across the keys (Init within 0.5 dB, Solo Voice 0.2) because each section, vowel and pitch has a trim measured from its own formants; what is left is the singers beating against each other and the Ensemble's comb on vowels with few strong harmonics, so the spread moves with the singers' random starts (2.0 to 3.1 dB with other seeds).
+
 ## Not measured yet
 
-Supersaw detune and phase (P2, P3), unison and table-morph steps (P4, P7), drift (P10), the 808 kick and metal bank against their papers (D1, D2, D9), chokes and retriggers (D6), sustain-pedal behaviour (K5: there is no pedal event yet), piano partials (K8), FM envelope rates and banks (F4, F6), organs, winds and choirs (O: no engines yet), and cost on the MPC. Each joins the report when stage 3 or 4 builds or changes what it measures.
+Supersaw detune and phase (P2, P3), unison and table-morph steps (P4, P7), drift (P10), the 808 kick and metal bank against their papers (D1, D2, D9), chokes and retriggers (D6), sustain-pedal behaviour (K5: there is no pedal event yet), piano partials (K8), FM envelope rates and banks (F4, F6), organs and winds (O3 to O7 and O9: no engines yet), the Choir's cost on the MPC (O10), and cost on the MPC. Each joins the report when stage 3 or 4 builds or changes what it measures.
 
 ## Running it
 
