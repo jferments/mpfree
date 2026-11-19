@@ -1,9 +1,10 @@
 //! FM: a six-operator FM synth in the DX7's mould.
 //!
-//! - **Operators.** Six sine operators, each with a frequency (a ratio of
-//!   the note, or a fixed frequency), an output level, a four-rate,
-//!   four-level envelope, velocity sensitivity, keyboard level and rate
-//!   scaling, and amplitude modulation from the LFO.
+//! - **Operators.** Six operators, each with a wave (the DX7's sine, or a
+//!   triangle, saw, square or half sine, [`OP_WAVES`]), a frequency (a
+//!   ratio of the note, or a fixed frequency), an output level, a
+//!   four-rate, four-level envelope, velocity sensitivity, keyboard level
+//!   and rate scaling, and amplitude modulation from the LFO.
 //! - **Algorithms.** The DX7's 32 ways of wiring them ([`ALGORITHMS`]), with
 //!   feedback (0 to 7) on one operator or, for algorithms 4 and 6, around a
 //!   loop of two or three.
@@ -35,6 +36,7 @@ use mpfree_node::{
 use crate::dsp::{same_key, Rng};
 use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
 use crate::fm_params::*;
+use crate::osc::{classic, level_for, level_near, Classic, Read, Waveset};
 use crate::params::Preset;
 use crate::pressure::{swell_gain, Depths, Slot};
 use crate::voice::DcBlock;
@@ -47,12 +49,181 @@ pub const MAX_POLY: usize = 16;
 pub const POOL: usize = MAX_POLY + 4;
 const KILL_MS: f32 = 3.0;
 /// Output of one carrier at full level, about -12 dBFS (before the Level
-/// setting, -3 dB by default). A voice with more carriers is brought back to
+/// setting, -9 dB by default). A voice with more carriers is brought back to
 /// its loudest carrier's power ([`carrier_trim`]), so its loudness stays
 /// about the same when the algorithm changes.
 const VOICE_GAIN: f32 = 0.25;
 /// The DC blocker's corner: the feedback and 1:1 pairs make DC.
 const DC_HZ: f32 = 5.0;
+
+/// The triangle's and the saw's gain to play as loud as the sine (the
+/// classic tables peak at 1: their power is a third, the sine's a half).
+const TRI_SAW_GAIN: f32 = 1.224_744_9;
+/// The square's (two saws, peaking at 1: its power is 1).
+const SQUARE_GAIN: f32 = std::f32::consts::FRAC_1_SQRT_2;
+/// Half a cycle, as a phase.
+const HALF: u32 = 0x8000_0000;
+
+/// The half sine: the sine's top half, then nothing, the one operator wave
+/// the classic tables ([`classic`]) don't hold. Its DC is taken out and it
+/// starts where it crosses zero rising (a twentieth of a cycle into the
+/// sine), so a note starts from silence as the sine's does, and it plays
+/// as loud as the sine. Built on the first call (allocates, about 160 KB):
+/// [`Fm::new`] calls it, off the audio thread.
+fn half_sine() -> &'static Waveset {
+    static TABLE: std::sync::OnceLock<Waveset> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        use std::f64::consts::PI;
+        // max(sin x, 0) = 1/pi + (sin x)/2 - (2/pi) sum over even k of
+        // cos(kx) / (k^2 - 1); the table leaves out the 1/pi.
+        let raw = |k: usize| -> (f64, f64) {
+            match k {
+                1 => (0.5, 0.0),
+                _ if k % 2 == 0 => (0.0, -2.0 / (PI * (k * k - 1) as f64)),
+                _ => (0.0, 0.0),
+            }
+        };
+        // Read from where sin x = 1/pi: each harmonic turned by k times it.
+        let start = (1.0 / PI).asin() / (2.0 * PI);
+        let at = move |k: usize| {
+            let (s, c) = raw(k);
+            let (st, ct) = (2.0 * PI * k as f64 * start).sin_cos();
+            (s * ct - c * st, c * ct + s * st)
+        };
+        // The sine's power (a half) over the harmonics the top level keeps.
+        let power: f64 = (1..=512)
+            .map(|k| {
+                let (s, c) = at(k);
+                (s * s + c * c) / 2.0
+            })
+            .sum();
+        let g = (0.5 / power).sqrt();
+        Waveset::build(move |k| {
+            let (s, c) = at(k);
+            (s * g, c * g)
+        })
+    })
+}
+
+/// How an operator reads its wave over one run of frames: the sine table,
+/// one level of a classic table at a phase offset and gain, or the square
+/// (the saw half a cycle on, less the saw).
+#[derive(Clone, Copy)]
+enum OpWave<'a> {
+    Sine,
+    One(Read<'a>, u32, f32),
+    Square(Read<'a>, f32),
+}
+
+impl<'a> OpWave<'a> {
+    /// Wave `wave` ([`OP_WAVES`]) on level `lv` ([`level_for`]). Each
+    /// starts at zero rising, as the sine does: the triangle and the saw
+    /// are read a quarter and half a cycle on.
+    fn new(wave: u8, lv: usize, c: &'a Classic, half: &'a Waveset) -> OpWave<'a> {
+        match wave {
+            1 => OpWave::One(c.triangle.reader(lv), 0x4000_0000, TRI_SAW_GAIN),
+            2 => OpWave::One(c.saw.reader(lv), HALF, TRI_SAW_GAIN),
+            3 => OpWave::Square(c.saw.reader(lv), SQUARE_GAIN),
+            4 => OpWave::One(half.reader(lv), 0, 1.0),
+            _ => OpWave::Sine,
+        }
+    }
+
+    #[inline(always)]
+    fn at(self, tab: &[f32; SIN_N + 1], p: u32) -> f32 {
+        match self {
+            OpWave::Sine => Fm::sin(tab, p),
+            OpWave::One(r, off, g) => r.at(p.wrapping_add(off)) * g,
+            OpWave::Square(r, g) => (r.at(p.wrapping_add(HALF)) - r.at(p)) * g,
+        }
+    }
+}
+
+/// Each wave's steepest slope in cycles of output a cycle of phase, as
+/// (part that grows with its harmonics, part that doesn't): the saw's and
+/// the square's steps steepen with every harmonic a level keeps; the
+/// sine's, the triangle's and the half sine's slopes are fixed. With the
+/// gains that make each as loud as the sine.
+const WAVE_SLOPE: [(f32, f32); 5] = [
+    (0.0, std::f32::consts::TAU),
+    (0.0, 4.0 * TRI_SAW_GAIN),
+    (4.0 * TRI_SAW_GAIN, 0.0),
+    (4.0 * SQUARE_GAIN, 0.0),
+    (0.0, 11.52),
+];
+
+/// The table levels of a voice's operators that play a wave other than
+/// the sine, for this control step. A modulator swings its target's phase
+/// 2g cycles at gain g, so its target's frequency moves by up to
+/// 2g x (its steepest slope) a sample; by Carson's rule the target's
+/// sidebands reach that far plus the modulator's top harmonic.
+///
+/// - **A shaped modulator** keeps no more harmonics than leave its
+///   fastest target's sidebands under Nyquist, with room for the second
+///   order (twice the spread): a saw's or square's steps swing faster
+///   with each harmonic kept, so it keeps fewer as its gain rises and the
+///   note climbs, down to its fundamental.
+/// - **A shaped operator that is modulated** (or fed back) reads the
+///   level for its fastest moment, its own frequency plus that swing and
+///   step, since each of its harmonics is modulated as many times over as
+///   its number.
+///
+/// The sine needs none of this: its sidebands are the modulator easing's
+/// ([`index_cap`]).
+fn shaped_levels(v: &mut Voice, ops: &[OpParams; 6], r: Route, ends: &[f32; 6]) {
+    let xs: [f32; 6] = std::array::from_fn(|k| v.ops[k].dphase as f32 * (1.0 / 4_294_967_296.0));
+    let gs: [f32; 6] = std::array::from_fn(|k| v.ops[k].g.max(ends[k]));
+    // Each operator's harmonics as a modulator (its own band limit, or
+    // fewer), and how fast it swings a target's phase at gain 1.
+    let mut harm = [1.0f32; 6];
+    let mut swing = [0.0f32; 6];
+    for j in 0..6 {
+        let w = usize::from(ops[j].wave.min(4));
+        let (per_h, fixed) = WAVE_SLOPE[w];
+        let xm = xs[j];
+        if w != 0 && xm > 0.0 {
+            let mut h = 0.5 / xm;
+            let t = r.targets[j];
+            if t != 0 && gs[j] > 0.0 {
+                let xd = (0..6)
+                    .filter(|&k| t & (1 << k) != 0)
+                    .map(|k| xs[k])
+                    .fold(0.0, f32::max);
+                // Twice Carson's spread (its swing and its top harmonic,
+                // where the second-order sidebands reach) stays under
+                // Nyquist above its fastest target.
+                let room = 0.5 - xd - 4.0 * fixed * gs[j] * xm;
+                h = h.min(room / ((2.0 + 4.0 * per_h * gs[j]) * xm));
+            }
+            harm[j] = h.clamp(1.0, 512.0);
+        }
+        swing[j] = 2.0 * (fixed + per_h * harm[j]) * xm;
+    }
+    for k in 0..6 {
+        if ops[k].wave == 0 {
+            continue;
+        }
+        let mut dt = xs[k];
+        let mut step = 0.0f32;
+        for j in 0..6 {
+            if r.targets[j] & (1 << k) != 0 && gs[j] > 0.0 {
+                dt += gs[j] * swing[j];
+                step = step.max(harm[j] * xs[j]);
+            }
+        }
+        if k == r.fb_to && v.fb_scale > 0.0 {
+            // The feedback's input, its last two outputs scaled, swings
+            // the phase up to twice their gain.
+            let f = r.fb_from;
+            dt += 2.0 * gs[f] * v.fb_scale * swing[f];
+            step = step.max(harm[f] * xs[f]);
+        }
+        // As a modulator it keeps `harm` harmonics at most: a level keeps
+        // those whose frequency stays under half the rate.
+        let dt = (dt + step).max(0.5 / harm[k] * if ops[k].wave == 0 { 0.0 } else { 1.0 });
+        v.lv[k] = level_near(usize::from(v.lv[k]), dt) as u8;
+    }
+}
 
 /// The per-frame gain that fades the DC blocker's tail out in about 3 ms
 /// once no voice sounds.
@@ -688,6 +859,14 @@ struct Voice {
     ops: [OpState; 6],
     /// The feedback path's last two outputs.
     fb: [f32; 2],
+    /// Each operator's wave level ([`level_for`]: the most harmonics that
+    /// stay under Nyquist; the sine needs none), and its gain limit as a
+    /// modulator ([`index_cap`]) with what that was worked out from (its
+    /// increment and its fastest target's). Kept beside the operators, so
+    /// the audio loop's state stays as small as it was.
+    lv: [u8; 6],
+    cap: [f32; 6],
+    cap_key: [u64; 6],
     peg: PitchEnv,
     press: Pressure,
     /// The pressure this voice uses, 0 to 1: its own, the chord's or none.
@@ -709,6 +888,9 @@ impl Voice {
             age: 0,
             ops: [OpState::default(); 6],
             fb: [0.0; 2],
+            lv: [0; 6],
+            cap: [0.0; 6],
+            cap_key: [0; 6],
             peg: PitchEnv::default(),
             press: Pressure::new(),
             pv: 0.0,
@@ -743,6 +925,7 @@ struct OpParams {
     lc: u8,
     rc: u8,
     on: bool,
+    wave: u8,
 }
 
 /// Settings every voice shares, read when a parameter changes.
@@ -765,6 +948,8 @@ struct Patch {
     poly: usize,
     mono: bool,
     bend_range: f32,
+    /// Whether any operator plays a wave other than the sine.
+    shaped: bool,
 }
 
 pub struct Fm {
@@ -773,6 +958,9 @@ pub struct Fm {
     patch: Patch,
     voices: [Voice; POOL],
     sine: Box<[f32; SIN_N + 1]>,
+    /// The other waves' tables ([`OpWave`]).
+    classic: &'static Classic,
+    half: &'static Waveset,
     rng: Rng,
     lfo_phase: f32,
     lfo_held: f32,
@@ -859,6 +1047,8 @@ impl Fm {
             patch: Patch::default(),
             voices: [Voice::new(); POOL],
             sine,
+            classic: classic(),
+            half: half_sine(),
             rng: Rng::new(0x00F3_D7E5),
             lfo_phase: 0.0,
             lfo_held: 0.0,
@@ -1002,6 +1192,7 @@ impl Fm {
                 lc: u(f(op::L_CURVE)),
                 rc: u(f(op::R_CURVE)),
                 on: self.v(f(op::ON)) >= 0.5,
+                wave: u(f(op::WAVE)).min(4),
             };
         }
         let lvl = self.v(LEVEL);
@@ -1034,6 +1225,7 @@ impl Fm {
             poly: (self.v(POLYPHONY) as usize).clamp(1, MAX_POLY),
             mono: self.v(VOICE_MODE) >= 0.5,
             bend_range: self.v(BEND_RANGE),
+            shaped: ops.iter().any(|o| o.wave != 0),
         };
     }
 
@@ -1466,9 +1658,19 @@ impl Fm {
                 .filter(|&k| t & (1 << k) != 0)
                 .map(|k| v.ops[k].dphase)
                 .max()
-                .unwrap_or(0) as f32
-                * (1.0 / 4_294_967_296.0);
-            let cap = index_cap(v.ops[j].dphase as f32 * (1.0 / 4_294_967_296.0), xd);
+                .unwrap_or(0);
+            // A held note keeps its increments, and so its limit: worked
+            // out again only when either moves (an increment is under
+            // 2^31, so the key's top bit marks it as worked out).
+            let key = u64::from(v.ops[j].dphase | 0x8000_0000) << 32 | u64::from(xd);
+            if v.cap_key[j] != key {
+                v.cap[j] = index_cap(
+                    v.ops[j].dphase as f32 * (1.0 / 4_294_967_296.0),
+                    xd as f32 * (1.0 / 4_294_967_296.0),
+                );
+                v.cap_key[j] = key;
+            }
+            let cap = v.cap[j];
             if ends[j] > cap {
                 ends[j] = cap;
                 let o = &mut v.ops[j];
@@ -1487,6 +1689,13 @@ impl Fm {
             if g > 0.0 && x > FB_X0 {
                 v.fb_scale = fb_amount(v.fb_scale * g, x) / g;
             }
+        }
+        // A wave other than the sine keeps its harmonics under Nyquist
+        // through the modulation, by Carson's rule (a modulated tone
+        // spreads about as far as its fastest swing plus its modulator's
+        // top harmonic): see [`shaped_levels`].
+        if p.shaped {
+            shaped_levels(v, &p.ops, p.route, &ends);
         }
         if v.state == State::Release && carriers_done {
             // Every carrier has finished its release (or is near silent):
@@ -1510,15 +1719,16 @@ impl Fm {
         a + (tab[i + 1] - a) * f
     }
 
-    /// Renders frames `from` to `to` (at most one control step) and adds
-    /// them, through the DC blocker, to `left` and `right`.
-    fn render(&mut self, from: usize, to: usize, left: &mut [f32], right: &mut [f32]) {
+    /// Every voice's frames for `buf` (one control step at most), added
+    /// to it before the DC blocker. `SHAPED`: some operator plays a wave
+    /// other than the sine ([`OpWave`]).
+    #[inline(always)]
+    fn render_voices<const SHAPED: bool>(&mut self, buf: &mut [f32]) {
         let r = self.patch.route;
+        let ops = &self.patch.ops;
         let gain = VOICE_GAIN * self.out.value;
         let tab = &*self.sine;
-        let n = to - from;
-        debug_assert!(n <= CTRL as usize);
-        let mut buf = [0.0f32; CTRL as usize];
+        let (classic, half) = (self.classic, self.half);
         for v in &mut self.voices {
             if v.state == State::Free {
                 continue;
@@ -1538,7 +1748,18 @@ impl Fm {
                     Live::Check
                 };
             }
-            for x in &mut buf[..n] {
+            let waves: [OpWave; 6] = if SHAPED {
+                std::array::from_fn(|j| {
+                    // Its own band limit at least, before a control step
+                    // has worked out its level ([`shaped_levels`]).
+                    let own = level_for(v.ops[j].dphase as f32 * (1.0 / 4_294_967_296.0));
+                    let lv = usize::from(v.lv[j]).max(own);
+                    OpWave::new(ops[j].wave, lv, classic, half)
+                })
+            } else {
+                [OpWave::Sine; 6]
+            };
+            for x in buf.iter_mut() {
                 let mut m = [0f32; 6];
                 let mut out = 0.0;
                 let fb_in = (v.fb[0] + v.fb[1]) * v.fb_scale;
@@ -1554,7 +1775,13 @@ impl Fm {
                         Live::Check => !(o.g == 0.0 && o.gstep == 0.0),
                     };
                     let y = if sounds {
-                        Self::sin(tab, o.phase.wrapping_add(phase_shift(input))) * o.g
+                        let ph = o.phase.wrapping_add(phase_shift(input));
+                        let w = if SHAPED {
+                            waves[j].at(tab, ph)
+                        } else {
+                            Self::sin(tab, ph)
+                        };
+                        w * o.g
                     } else {
                         0.0
                     };
@@ -1590,6 +1817,21 @@ impl Fm {
                     break;
                 }
             }
+        }
+    }
+
+    /// Renders frames `from` to `to` (at most one control step) and adds
+    /// them, through the DC blocker, to `left` and `right`.
+    fn render(&mut self, from: usize, to: usize, left: &mut [f32], right: &mut [f32]) {
+        let n = to - from;
+        debug_assert!(n <= CTRL as usize);
+        let mut buf = [0.0f32; CTRL as usize];
+        // A patch of sines alone (every DX7 voice) takes the sine's own
+        // loop, with no choice of wave per sample.
+        if self.patch.shaped {
+            self.render_voices::<true>(&mut buf[..n]);
+        } else {
+            self.render_voices::<false>(&mut buf[..n]);
         }
         if self.idle {
             for (k, &x) in buf[..n].iter().enumerate() {
@@ -1750,9 +1992,71 @@ impl Node for Fm {
 #[cfg(test)]
 mod tests {
     use super::{
-        carrier_trim, fb_amount, fb_keep, index_cap, phase_shift, FB_CLEAN, FB_KNEE, FB_ROUGH,
-        FB_X0,
+        carrier_trim, fb_amount, fb_keep, index_cap, phase_shift, Fm, OpWave, FB_CLEAN, FB_KNEE,
+        FB_ROUGH, FB_X0,
     };
+
+    #[test]
+    fn every_wave_starts_at_zero_rising_as_loud_as_the_sine_in_its_shape() {
+        use std::f32::consts::{FRAC_1_PI, TAU};
+        let fm = Fm::new(48_000);
+        let tab = &*fm.sine;
+        let start = FRAC_1_PI.asin() / TAU;
+        // Each wave's plain shape, and where it steps (left out of the
+        // comparison: the tables smooth a step over a few samples).
+        let shapes: [(fn(f32) -> f32, &[f32]); 5] = [
+            (|p| (TAU * p).sin(), &[]),
+            (
+                |p| {
+                    1.224_745
+                        * if p < 0.25 {
+                            4.0 * p
+                        } else if p < 0.75 {
+                            2.0 - 4.0 * p
+                        } else {
+                            4.0 * p - 4.0
+                        }
+                },
+                &[],
+            ),
+            (
+                |p| 1.224_745 * if p < 0.5 { 2.0 * p } else { 2.0 * p - 2.0 },
+                &[0.5],
+            ),
+            (
+                |p| std::f32::consts::FRAC_1_SQRT_2 * if p < 0.5 { 1.0 } else { -1.0 },
+                &[0.0, 0.5],
+            ),
+            (
+                |p| {
+                    let a = FRAC_1_PI.asin() / TAU;
+                    1.833_7 * ((TAU * (p + a)).sin().max(0.0) - FRAC_1_PI)
+                },
+                &[],
+            ),
+        ];
+        assert!(start > 0.05 && start < 0.052);
+        for (w, (shape, steps)) in shapes.iter().enumerate() {
+            let ow = OpWave::new(w as u8, 0, fm.classic, fm.half);
+            let (y0, y1) = (ow.at(tab, 0), ow.at(tab, 1 << 24));
+            assert!(y0.abs() < 0.02 && y1 > y0, "wave {w}: {y0} then {y1}");
+            let n = 4096;
+            let mut power = 0.0;
+            for i in 0..n {
+                let p = i as f32 / n as f32;
+                let y = ow.at(tab, (p * 4_294_967_296.0) as u32);
+                power += y * y / n as f32;
+                let near = steps
+                    .iter()
+                    .any(|&e| (p - e).abs() < 0.01 || (p - e - 1.0).abs() < 0.01);
+                if !near {
+                    let want = shape(p);
+                    assert!((y - want).abs() < 0.03, "wave {w} at {p}: {y} vs {want}");
+                }
+            }
+            assert!((power - 0.5).abs() < 0.005, "wave {w}: power {power}");
+        }
+    }
 
     #[test]
     fn a_modulator_eases_only_where_its_sidebands_would_fold() {

@@ -53,13 +53,7 @@ fn preset(name: &str) -> dx7::Dx7Voice {
         .unwrap_or_else(|| panic!("no preset {name}"))
 }
 
-fn part_from(
-    name: &'static str,
-    p: &dx7::Dx7Voice,
-    gain: f32,
-    pan: f32,
-    bars: (u32, u32),
-) -> Part {
+fn part_from(name: &'static str, p: &dx7::Dx7Voice, gain: f32, pan: f32, bars: (u32, u32)) -> Part {
     let mut synth = Fm::new(RATE);
     synth.load_voice(p);
     Part {

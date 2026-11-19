@@ -32,7 +32,7 @@ Twelve engines when the three waves are done, five of them new or merged, and tw
 | Ensemble | **Ensemble** (new, in `mpfree-fx`) | Three bucket-brigade lines, each moved by a slow and a fast LFO 120° apart (0.66 and 6.25 Hz), or four lines in the later Roland pattern; the line is Analog's chorus line | | 1 |
 | Poly and wavetable | **Poly** (Wavetable folded in) | Per oscillator: Classic (from tables), Table (today's Wavetable) or Supersaw (seven saws on the detune curve and mix); the ladder and state-variable filters as today; a second LFO | | 2 |
 | Vintage poly | Analog (as built) | Voice cards that differ and drift, the OTA filter, the bucket-brigade chorus | | |
-| FM | FM (fixed) | As built, plus macros, a few operator shapes besides the sine, DC blocking, level matching across algorithms, and feedback that aliases less at high notes | | 2 |
+| FM | FM (fixed, built 19 Nov: [synths.md](synths.md#fm-mpfree-synth-fm)) | As built, plus macros on every preset, four operator waves besides the sine (triangle, saw, square, half sine) kept clean under modulation, a DC blocker, the level matched across algorithms (to the loudest carrier), feedback and bright modulators that ease off at high notes, and a Reed Lead on the new waves; every FM lab row meets its target or says why not ([Synth quality](synth-quality.md)) | | 2 |
 | Organ | Drawbar (+ a Combo model) | Tonewheel (built); combo organ from the Strings bank with flute and reed voice filters | Pipe organ later | 2 |
 | Wind | **Wind** (new) | A waveguide bore excited by a reed or jet curve, driven by breath (pressure or the breath controller) | FM and subtractive winds as FM and Poly presets | 2 |
 | Choir | **Choir** (new) | A buzzy source through five formant filters per voice, morphing between vowels, through the Ensemble | Wavetable's Vowels table as Poly presets | 2 |
@@ -204,7 +204,7 @@ Three waves, each finished end to end: engine work, then presets, then the check
 
 **Wave 2: Poly with tables, FM, organ, wind and choir** (next week)
 
-Started 19 Nov with Poly's oscillators from the tables, the supersaw (a wave of either oscillator, with Saw detune and Side saws; four presets) and the antialiased drive. Unison moved to Poly's Voice page to make room on the Osc page. Order from here: Poly on the voice core (envelopes, velocity, a second LFO, play routes), FM's fixes, another pass on the Keys tines (from wave 1's listening), Drawbar's combo model, Wind, Choir, Character, then Wavetable folded into Poly.
+Started 19 Nov with Poly's oscillators from the tables, the supersaw (a wave of either oscillator, with Saw detune and Side saws; four presets) and the antialiased drive. Unison moved to Poly's Voice page to make room on the Osc page. FM's fixes are built (19 Nov): its waves, macros, DC blocker, level match and high-note easing ([synths.md](synths.md#fm-mpfree-synth-fm)). Order from here: Poly on the voice core (envelopes, velocity, a second LFO, play routes), another pass on the Keys tines (from wave 1's listening), Drawbar's combo model, Wind, Choir, Character, then Wavetable folded into Poly.
 
 Poly and Wavetable merged with classic waves from tables (the aliasing fix), the supersaw, a second LFO and routes; FM's macros, shapes, DC and level fixes and less feedback aliasing; Drawbar's combo model; the Wind and Choir engines; Character; their presets.
 

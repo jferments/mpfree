@@ -85,8 +85,9 @@ A first canon of 40 (our reading): FM electric pianos (bright, soft, bell-tine, 
 
 ## What MPFree has today
 
-- **FM** (`mpfree-synth`, 9 presets, 1 to 16 voices): six operators, 32 algorithms, DX7-style envelopes and scaling, an LFO and pitch envelope, pressure through the shared shaper, .syx bank import and export, and the algorithm pages with drawn envelopes and scaling. It plays on the pads.
-- **Missing:** a macro layer, operator shapes other than the sine, a modern preset canon beyond the 9, effects saved in presets, cost measured on the MPC.
+- **FM** (`mpfree-synth`, 10 presets, 1 to 16 voices): six operators, 32 algorithms, DX7-style envelopes and scaling, an LFO and pitch envelope, pressure through the shared shaper, .syx bank import and export, and the algorithm pages with drawn envelopes and scaling. It plays on the pads.
+- **Since wave 2 (19 Nov):** operator waves besides the sine (triangle, saw, square, half sine, each as loud as the sine and kept clean under modulation), four macros on every preset but Init (Brightness, Detune, Attack, Decay) with a light effect saved in the preset, a DC blocker, the level matched across algorithms to the loudest carrier, feedback and bright modulators that ease off on high notes, velocity brightening every preset that uses it, and a Reed Lead on the new waves. F1, F3, F7 and F8 are met; F5 is not, by design (see [Synth quality](../design/synth-quality.md#wave-2-targets-fm)). Details in [Synths](../design/synths.md#fm-mpfree-synth-fm).
+- **Missing:** a modern preset canon beyond the 10 (the synth library's later stages), the Harmonics and Feedback macros, cost measured on the MPC.
 
 ## Sources
 

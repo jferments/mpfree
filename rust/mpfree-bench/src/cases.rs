@@ -1209,8 +1209,9 @@ pub fn all(rate: u32) -> Vec<Case> {
             16,
         )
     }));
-    // FM: a six-operator keys sound, and a brass with feedback 7.
-    for (name, voices) in [("Glass Keys", 8), ("Brass Section", 16)] {
+    // FM: a six-operator keys sound, a brass with feedback 7, and a lead
+    // whose operators play the triangle, saw and square (the waves' loop).
+    for (name, voices) in [("Glass Keys", 8), ("Brass Section", 16), ("Reed Lead", 8)] {
         let p = Fm::presets().iter().find(|p| p.name == name).expect(name);
         v.push(measured(|| {
             chords(
