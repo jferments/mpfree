@@ -301,7 +301,7 @@ The **Hall**, **Cloud** and **Echoes** reverbs are the large ones. The **Hall** 
 
 ### The EQ's page
 
-{{shot: chain-mixer-drums-eq | The EQ on the drum bus: its curve with a dot for each band and the cuts, band 2 picked in the panel underneath.}}
+{{shot: chain-eq | The EQ on the drum bus: its curve with a dot for each band and the cuts, band 2 picked in the panel underneath.}}
 
 The EQ's page in the chain editor is a graph of what the EQ does, from 20 Hz on the left to 20 kHz on the right and from -18 to +18 dB, with a dot for each band (numbered 1 to 8) and for the low and high cuts (**LC**, **HC**). The white line is what you hear; each band's shape is shaded in its colour.
 

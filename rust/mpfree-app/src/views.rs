@@ -9,7 +9,7 @@
 //! id (a hash of its audio), so the same sound in another kit, or a kit
 //! loaded again, is never analysed twice while it stays loaded.
 //!
-//! A sound's pitch over time (for the Chop tab's Pitch method) is followed
+//! A sound's pitch over time (for the Slice tool's Pitch method) is followed
 //! only when asked for ([`Views::follow_pitch`]), on the same worker, and
 //! lands in the sound's view the same way.
 
@@ -166,7 +166,7 @@ impl Inner {
     }
 
     /// Follows the pitch of `s` (rate and mono mix) on the worker, once,
-    /// for the Chop tab's Pitch method: the view with it lands on a later
+    /// for the Slice tool's Pitch method: the view with it lands on a later
     /// [`Views::take_done`]. Nothing while the sound has no mono mix yet
     /// (asked again when it has), or once it is followed or asked for.
     pub fn follow_pitch(&mut self, s: &Source) {
