@@ -5516,6 +5516,7 @@ mod tests {
         // (frame, track, event): Tracks 2 and 3 armed, Track 4 not.
         let keys = [
             (BAR + 2000, 1, on(5)),
+            (BAR + 4500, 1, Event::Pressure { note: 5, value: 40 }),
             (BAR + 6000, 1, Event::NoteOff { note: 5 }),
             (BAR + 3000, 2, on(7)),
             (BAR + 9000, 2, Event::NoteOff { note: 7 }),
@@ -5547,6 +5548,12 @@ mod tests {
             notes(&h, 3).is_empty(),
             "a track that isn't armed only plays"
         );
+        // Pressure on another armed track isn't recorded yet: counted with
+        // the pressure values lost, and said on the status line.
+        assert_eq!(h.touch_dropped(), 1);
+        let line = h.describe();
+        assert!(line.contains("1 pressure values lost"), "{line}");
+        assert!(!line.contains("left out of a take"), "{line}");
         let st = h.state();
         assert_eq!(st.done.len(), 1, "one take");
         assert_eq!(st.done[0].added, 3);
@@ -5577,6 +5584,11 @@ mod tests {
         assert_eq!(h.control.also_full(), 1);
         run(&mut h, &mut pads, BAR, &[]);
         assert_eq!(h.info().state, State::Recording);
+        let line = h.describe();
+        assert!(
+            line.contains("1 armed tracks left out of a take with no room for a clip"),
+            "{line}"
+        );
     }
 
     /// Keys a route plays on tracks that aren't armed go into CAPTURE's

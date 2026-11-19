@@ -503,7 +503,8 @@ impl TimeControl {
         self.also() | main
     }
 
-    /// Other armed tracks a take found with nothing to record into.
+    /// Other armed tracks a take found with nothing to record into. The
+    /// status line says it ([`TimeControl::describe`]); tests read it here.
     #[allow(dead_code)]
     pub fn also_full(&self) -> u64 {
         self.also_full
@@ -4552,6 +4553,14 @@ impl TimeControl {
             c.dropped + self.dropped(),
             c.touch_dropped + self.touch_lost
         );
+        // Several armed tracks (rec-arm.md "Several tracks"): a track a take
+        // left out for want of room.
+        if self.also_full > 0 {
+            line.push_str(&format!(
+                "; {} armed tracks left out of a take with no room for a clip",
+                self.also_full
+            ));
+        }
         // The fallbacks between the halves, when there are any.
         let lost = c.lost + self.lost();
         if lost + c.behind + c.kept + c.refused + c.missed > 0 {
