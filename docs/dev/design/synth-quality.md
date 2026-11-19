@@ -201,6 +201,8 @@ What a lead line needs from the engines that play one note at a time (Poly in Mo
 | E3 | A note's slide: C4 slid up 2 semitones plays D4, and a G4 held beside it doesn't move | Within 1 cent | Met on Poly, Analog and Bass (0.003 cents at worst; Bass plays one note, so it has no G4 row) |
 | E4 | Analog's vibrato: the mod wheel at the top, and full pad pressure with Press to on Vibrato and Pressure 100, swing the pitch as far as labelled (50 cents) | Within 5 % | Met: both 1.1 % under |
 
+`cargo run --release -p mpfree-synth --example lead_demo [DIR]` renders the ten leads on one phrase that shows each of these (a legato line, a long note with pressure, its own slide and tone and the mod wheel, a two-octave leap, then two keys played over a held one), a WAV each.
+
 ## Not measured yet
 
 Supersaw detune and phase (P2, P3), unison and table-morph steps (P4, P7), Analog's own spread at each Age (P10 measures Poly's, with the same cards and drift), the 808 kick and metal bank against their papers (D1, D2, D9), chokes and retriggers (D6), sustain-pedal behaviour (K5: there is no pedal event yet), piano partials (K8), FM envelope rates and banks (F4, F6), tape (O7: no engine yet; Wind's O3 and O4 and the Choir's O1, O2 and O8 are in the report), attack noises (O9), the Choir's cost on the MPC (O10), and cost on the MPC. Each joins the report when stage 3 or 4 builds or changes what it measures.
