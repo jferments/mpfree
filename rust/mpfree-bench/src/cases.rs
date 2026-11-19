@@ -34,7 +34,7 @@ use mpfree_synth::params::{
 };
 use mpfree_synth::wavetable::params as wt;
 use mpfree_synth::{
-    Analog, Bass, Choir, Drawbar, Drums, Keys, Pluck, Poly, Squelch, Strings, Wavetable, Wind,
+    Analog, Bass, Choir, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Strings, Wavetable, Wind,
 };
 use mpfree_track::{Instrument, Sum, TrackHost};
 use mpfree_transport::time::{Swing, PPQ};
@@ -1378,6 +1378,21 @@ pub fn all(rate: u32) -> Vec<Case> {
             )
         }));
     }
+    // FM: a six-operator keys sound, a brass with feedback 7, and a lead
+    // whose operators play the triangle, saw and square (the waves' loop).
+    for (name, voices) in [("Glass Keys", 8), ("Brass Section", 16), ("Reed Lead", 8)] {
+        let p = Fm::presets().iter().find(|p| p.name == name).expect(name);
+        v.push(measured(|| {
+            chords(
+                format!("FM {name}, {voices} voices"),
+                rate,
+                Box::new(Fm::new(rate)),
+                p.values,
+                Some(mpfree_synth::fm_params::POLYPHONY),
+                voices,
+            )
+        }));
+    }
     v.push(measured(|| {
         sampler("Sampler, 20 pads", rate, false, SamplerPads::All)
     }));
@@ -2089,13 +2104,13 @@ fn engine_presets(rate: u32) -> Vec<Preset> {
         ));
     }
     for p in Fm::presets() {
-        let mono = mode(&p.values, fm_params::VOICE_MODE);
+        let mono = mode(p.values, fm_params::VOICE_MODE);
         let name = format!("FM {}", p.name);
         v.push(Preset::new(
             name,
             rate,
             Fm::new,
-            &p.values,
+            p.values,
             Some(fm_params::POLYPHONY),
             mono,
         ));

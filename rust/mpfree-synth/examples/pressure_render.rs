@@ -75,8 +75,8 @@ fn make_poly(name: &str) -> Box<dyn Node> {
 fn make_fm(name: &str) -> Box<dyn Node> {
     let mut s = Fm::new(RATE);
     s.load_preset(
-        &Fm::presets()
-            .into_iter()
+        Fm::presets()
+            .iter()
             .find(|p| p.name == name)
             .unwrap_or_else(|| panic!("no FM preset {name}")),
     );

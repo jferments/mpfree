@@ -85,10 +85,10 @@ fn init() -> Fm {
 fn preset(name: &str) -> Fm {
     let mut s = Fm::new(RATE);
     let p = Fm::presets()
-        .into_iter()
+        .iter()
         .find(|p| p.name == name)
         .unwrap_or_else(|| panic!("no preset {name}"));
-    s.load_preset(&p);
+    s.load_preset(p);
     s
 }
 
@@ -214,16 +214,26 @@ fn plays_the_right_pitch() {
 }
 
 #[test]
-fn the_init_voice_peaks_near_minus_12_dbfs() {
-    let mut s = init();
-    let (l, r) = render(
-        &mut s,
-        RATE as usize,
-        &[(0, on(60, 127)), (22_050, off(60))],
-        |_| 128,
-    );
-    let d = db(peak(&l).max(peak(&r)));
-    assert!((-16.0..=-8.0).contains(&d), "peak {d:.1} dBFS");
+fn the_init_voice_peaks_near_minus_12_dbfs_at_level_0_and_9_db_under_by_default() {
+    let peak_at = |level: Option<f32>| {
+        let mut s = init();
+        if let Some(v) = level {
+            s.set_param(LEVEL, v);
+        }
+        let (l, r) = render(
+            &mut s,
+            RATE as usize,
+            &[(0, on(60, 127)), (22_050, off(60))],
+            |_| 128,
+        );
+        db(peak(&l).max(peak(&r)))
+    };
+    // One full carrier is about -12 dBFS before the Level setting.
+    let d = peak_at(Some(0.0));
+    assert!((-16.0..=-8.0).contains(&d), "peak {d:.1} dBFS at Level 0");
+    // Level is -9 dB by default (Init and DX7 imports).
+    let d = peak_at(None);
+    assert!((-25.0..=-17.0).contains(&d), "peak {d:.1} dBFS by default");
 }
 
 #[test]
@@ -544,7 +554,7 @@ fn parameters_and_presets_are_valid() {
     check_params(s.params()).unwrap();
     assert!(s.params().iter().all(|p| (p.id as usize) < ID_SPACE));
     for preset in Fm::presets() {
-        for &(id, v) in &preset.values {
+        for &(id, v) in preset.values {
             let p = info(id).unwrap_or_else(|| panic!("{}: unknown id {id}", preset.name));
             assert_eq!(
                 p.clamp(v),
@@ -563,7 +573,7 @@ fn parameters_and_presets_are_valid() {
 fn every_preset_plays_at_a_sane_level_and_ends() {
     for preset in Fm::presets() {
         let mut s = Fm::new(RATE);
-        s.load_preset(&preset);
+        s.load_preset(preset);
         let ev = [
             (0, on(48, 110)),
             (0, on(55, 110)),
@@ -598,7 +608,7 @@ fn a_dx7_bank_loads_and_plays() {
     assert_eq!(back.len(), 32, "a bank always holds 32 voices");
     for (k, v) in back.iter().take(voices.len()).enumerate() {
         let mut s = Fm::new(RATE);
-        s.load_preset(&v.preset());
+        s.load_voice(v);
         let (l, _) = render(&mut s, 8820, &[(0, on(60, 100))], |_| 128);
         assert!(
             peak(&l) > 0.01 && l.iter().all(|x| x.is_finite()),
@@ -667,7 +677,7 @@ fn knobs_turned_one_at_a_time_play_as_a_preset_with_the_same_values() {
     let mut audible = 0;
     for preset in Fm::presets() {
         let mut turned = Fm::new(RATE);
-        turned.load_preset(&preset);
+        turned.load_preset(preset);
         let knobs: Vec<(u16, f32, f32)> = turned
             .params()
             .iter()
@@ -703,4 +713,150 @@ fn knobs_turned_one_at_a_time_play_as_a_preset_with_the_same_values() {
         }
     }
     assert!(audible >= 3, "only {audible} audible runs");
+}
+
+/// Energy at `hz` in a Hann-windowed DFT.
+fn bin(x: &[f32], hz: f64) -> f64 {
+    let n = x.len();
+    let w = std::f64::consts::TAU * hz / RATE as f64;
+    let (dc, ds) = (w.cos(), w.sin());
+    let (mut c, mut s) = (1.0f64, 0.0f64);
+    let (mut re, mut im) = (0.0, 0.0);
+    for (i, &v) in x.iter().enumerate() {
+        let h = 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / n as f64).cos();
+        re += f64::from(v) * h * c;
+        im += f64::from(v) * h * s;
+        let nc = c * dc - s * ds;
+        s = c * ds + s * dc;
+        c = nc;
+    }
+    re * re + im * im
+}
+
+/// `s` holding `note`: the steady part.
+fn held(mut s: Fm, note: u8) -> Vec<f32> {
+    let (l, _) = render(&mut s, 8_192 + 4_800, &[(0, on(note, 127))], |_| 128);
+    l[4_800..].to_vec()
+}
+
+/// Operator 1 alone playing wave `wave` at `note`, held.
+fn one_wave(wave: f32, note: u8) -> Vec<f32> {
+    let mut s = init();
+    s.set_param(op_id(1, op::WAVE), wave);
+    held(s, note)
+}
+
+/// The loudest fold of a held note at `note`, in dB under its loudest
+/// harmonic. Folds of components past Nyquist (and the tables' images)
+/// land at n * f0 folded into 0 to Nyquist: each fold clear of a real
+/// harmonic is probed. A sine reads about -62 dB at C6 and C7 here (the
+/// probe's own floor).
+fn worst_fold(x: &[f32], note: u8) -> f64 {
+    let nyq = RATE as f64 / 2.0;
+    let f0 = 440.0 * 2f64.powf((f64::from(note) - 69.0) / 12.0);
+    let loudest = (1..40)
+        .filter(|&h| f64::from(h) * f0 < nyq)
+        .map(|h| bin(x, f64::from(h) * f0))
+        .fold(0.0, f64::max);
+    let mut worst = 0.0f64;
+    for n in 2..600 {
+        let f = (n as f64 * f0) % RATE as f64;
+        let f = if f > nyq { RATE as f64 - f } else { f };
+        let h = (f / f0).round();
+        if n as f64 * f0 <= nyq
+            || (f - h * f0).abs() < 4.0 * RATE as f64 / x.len() as f64
+            || f < 20.0
+        {
+            continue;
+        }
+        worst = worst.max(bin(x, f));
+    }
+    10.0 * (worst / loudest).log10()
+}
+
+fn rms(x: &[f32]) -> f32 {
+    (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt()
+}
+
+#[test]
+fn every_wave_plays_about_as_loud_as_the_sine() {
+    let sine = rms(&one_wave(0.0, 48));
+    for (w, name) in OP_WAVES.iter().enumerate().skip(1) {
+        let d = db(rms(&one_wave(w as f32, 48))) - db(sine);
+        assert!(d.abs() < 0.5, "{name}: {d:.2} dB from the sine");
+    }
+}
+
+#[test]
+fn every_wave_keeps_to_its_harmonics_high_up() {
+    for (w, name) in OP_WAVES.iter().enumerate() {
+        for note in [84u8, 96, 103] {
+            let db = worst_fold(&one_wave(w as f32, note), note);
+            assert!(db < -60.0, "{name} note {note}: fold at {db:.1} dB");
+        }
+    }
+}
+
+#[test]
+fn modulated_waves_stay_clean_high_up() {
+    // Operator 2 modulating operator 1 (algorithm 1): a shaped carrier, a
+    // shaped modulator, both, from a little modulation to the most.
+    for (carrier, modulator, level) in [
+        (2.0, 0.0, 70.0),
+        (0.0, 2.0, 85.0),
+        (0.0, 3.0, 99.0),
+        (1.0, 3.0, 70.0),
+        (4.0, 4.0, 85.0),
+        (2.0, 2.0, 99.0),
+    ] {
+        for note in [60u8, 84, 96] {
+            let mut s = init();
+            s.set_param(op_id(1, op::WAVE), carrier);
+            s.set_param(op_id(2, op::WAVE), modulator);
+            s.set_param(op_id(2, op::LEVEL), level);
+            let db = worst_fold(&held(s, note), note);
+            let (c, m) = (OP_WAVES[carrier as usize], OP_WAVES[modulator as usize]);
+            assert!(
+                db < -60.0,
+                "{c} by {m} at output {level}, note {note}: fold at {db:.1} dB"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_patch_of_sines_plays_the_same_in_the_waves_loop() {
+    // Operator 3 plays a saw at no level: the patch takes the loop that
+    // chooses a wave per operator, and must sound exactly as before.
+    let ev = busy_events();
+    for name in ["Init", "Glass Keys", "Brass Section"] {
+        let mut a = preset(name);
+        let mut b = preset(name);
+        let silent = (1..=6)
+            .find(|&n| b.param(op_id(n, op::LEVEL)) == 0.0)
+            .unwrap_or(6);
+        b.set_param(op_id(silent, op::WAVE), 2.0);
+        if b.param(op_id(silent, op::LEVEL)) != 0.0 {
+            b.set_param(op_id(silent, op::ON), 0.0);
+            a.set_param(op_id(silent, op::ON), 0.0);
+        }
+        let x = render(&mut a, 40_000, &ev, |i| 37 + i % 200);
+        let y = render(&mut b, 40_000, &ev, |i| 37 + i % 200);
+        assert!(x == y, "{name}: the waves loop changed the sines");
+    }
+}
+
+#[test]
+fn a_shaped_modulator_changes_the_tone() {
+    // Operator 2 modulating operator 1 (algorithm 1), as a sine and as a
+    // square: the square's odd harmonics make more of the spectrum.
+    let tone = |wave: f32| {
+        let mut s = init();
+        s.set_param(op_id(2, op::LEVEL), 70.0);
+        s.set_param(op_id(2, op::WAVE), wave);
+        let (l, _) = render(&mut s, 12_000, &[(0, on(48, 100))], |_| 128);
+        brightness(&l[4_000..])
+    };
+    let (sine, square) = (tone(0.0), tone(3.0));
+    assert!(square > sine * 1.5, "sine {sine} square {square}");
 }
