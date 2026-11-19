@@ -1291,6 +1291,9 @@ pub enum ToUi {
     /// The touchscreen has something to read (touch_bell.rs): the screen
     /// thread reads it on this pass.
     TouchBell,
+    /// A scripted run's tap (script.rs): the screen thread finds the
+    /// control on the page and touches it as a finger would.
+    ScriptTap(ScriptTap),
     Quit,
     /// The project's Perform set, at the start and when a project opens
     /// (`opened`: its UNDO history starts again), and after each edit: the
@@ -1990,6 +1993,15 @@ pub struct Player {
     /// Actions that came from something other than a touch (a page change
     /// letting go of a pad, the wheel in the workspace), for the audio thread.
     outbox: Vec<FromUi>,
+    /// A scripted run's taps waiting for the page they need, each with when
+    /// it was first tried ([`Player::script_taps_due`]).
+    script_taps: VecDeque<(ScriptTap, Option<Instant>)>,
+    /// A scripted long press: where, and the seconds until it lets go.
+    script_hold: Option<(i32, i32, f32)>,
+    /// Every line the screen said, in order (the events log keeps the
+    /// last few): the smoke session's workflow scripts read it.
+    #[cfg(test)]
+    pub said_all: Vec<String>,
     /// The Q-Link column's values last handed to the audio thread
     /// ([`Player::qlink_values_changed`]).
     qlink_sent: [Option<u8>; 4],
@@ -2438,6 +2450,10 @@ impl Player {
             chip_why: Vec::new(),
             fingers: Vec::new(),
             outbox: Vec::new(),
+            script_taps: VecDeque::new(),
+            script_hold: None,
+            #[cfg(test)]
+            said_all: Vec::new(),
             qlink_sent: [None; 4],
             time_page,
             time: TimeState::default(),
@@ -8355,6 +8371,7 @@ impl Player {
                 }
             }
             ToUi::PowerPress => self.power_press(),
+            ToUi::ScriptTap(t) => self.script_taps.push_back((t, None)),
             ToUi::TouchBell | ToUi::Quit => {}
             ToUi::PerformSet { set, opened } => {
                 self.perform.set_set(*set, opened);
@@ -8680,6 +8697,8 @@ impl Player {
             if let Some(e) = self.ui.get_mut::<LogPanel>("events") {
                 e.push(&l, Tone::Dim);
             }
+            #[cfg(test)]
+            self.said_all.push(l);
         }
         let _ = io::stdout().flush();
     }
@@ -9818,6 +9837,8 @@ impl Player {
     fn say(&mut self, l: String) {
         println!("{l}");
         let _ = io::stdout().flush();
+        #[cfg(test)]
+        self.said_all.push(l.clone());
         if let Some(e) = self.ui.get_mut::<LogPanel>("events") {
             e.push(&l, Tone::Dim);
         }
@@ -12154,6 +12175,7 @@ impl Player {
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
         self.power_tick(dt);
+        self.script_hold_tick(dt);
         self.guard_tick(dt);
         // UNDO held: the page's undo history.
         if let Some(held) = self.undo_held {
@@ -12628,6 +12650,10 @@ pub fn spawn(
             let mut procs: Option<(mpfree_prof::procs::ProcTable, Instant)> = None;
             // The CPU by engine page: the audio loop's numbers every 250 ms.
             let mut engines_at: Option<Instant> = None;
+            // A frame was drawn since the last look at the scripted taps
+            // (a scripted run, script.rs): the page's controls are where
+            // the screen shows them.
+            let mut fresh_frame = true;
             let mut quit = false;
             while !quit {
                 cost.wake();
@@ -12645,6 +12671,12 @@ pub fn spawn(
                 }
                 while let Ok(m) = rx.try_recv() {
                     quit |= take(&mut player, m);
+                }
+                if player.script_taps_waiting() && (fresh_frame || !player.ui.needs_paint()) {
+                    fresh_frame = false;
+                    for line in player.script_taps_due(Instant::now()) {
+                        println!("{line}");
+                    }
                 }
                 send_actions(&mut player, &tx);
                 if touch.is_none() && touch_tried.is_none_or(|t| t.elapsed() >= TOUCH_RETRY) {
@@ -12799,6 +12831,7 @@ pub fn spawn(
                     }
                 };
                 let t2 = Instant::now();
+                fresh_frame = true;
                 pace.drawn(t2);
                 let ms = (t2 - t0).as_secs_f64() * 1e3;
                 report.frames += 1;
@@ -12821,6 +12854,131 @@ pub fn spawn(
             };
             report
         })
+}
+
+/// A scripted run's tap (script.rs): the control by its widget, id and
+/// label (empty: the first of its kind), and the script's line, for the log.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScriptTap {
+    pub widget: String,
+    pub id: String,
+    pub label: String,
+    pub line: usize,
+}
+
+/// The finger a scripted run touches with (one no panel reports).
+const SCRIPT_FINGER: u64 = 0x5C21_7000;
+/// How long a scripted tap waits for its control to be on the page (the
+/// page a tap before it leads to is drawn first) before the run says it
+/// is missing.
+const SCRIPT_TAP_WAIT: Duration = Duration::from_millis(1500);
+/// A scripted long press, as the smoke tests' (eight ticks of 1/8 s).
+const SCRIPT_HOLD_S: f32 = 1.0;
+
+impl Player {
+    /// The scripted taps whose control is on the page now, touched as a
+    /// finger would (a tap; a drag the way the control says; a long press,
+    /// let go a second later in [`Player::tick`]), their actions queued for
+    /// the audio thread. A tap whose control isn't there after
+    /// [`SCRIPT_TAP_WAIT`] is dropped. Returns the lines for the log: what
+    /// was touched, or what was missing and what the page has instead.
+    /// Call it when the page is drawn as it is now.
+    pub fn script_taps_due(&mut self, now: Instant) -> Vec<String> {
+        let mut said = Vec::new();
+        while let Some((tap, first)) = self.script_taps.pop_front() {
+            let targets = self.ui.targets();
+            let found = targets.iter().find(|o| {
+                o.widget == tap.widget
+                    && o.target.id == tap.id
+                    && (tap.label.is_empty() || o.target.label == tap.label)
+            });
+            let Some(found) = found else {
+                let first = first.unwrap_or(now);
+                if now.duration_since(first) < SCRIPT_TAP_WAIT {
+                    self.script_taps.push_front((tap, Some(first)));
+                    break;
+                }
+                let mut have: Vec<String> = targets
+                    .iter()
+                    .filter(|o| o.widget == tap.widget || o.target.id == tap.id)
+                    .map(|o| format!("{}/{} \"{}\"", o.widget, o.target.id, o.target.label))
+                    .collect();
+                if have.is_empty() {
+                    have = targets
+                        .iter()
+                        .take(12)
+                        .map(|o| format!("{}/{} \"{}\"", o.widget, o.target.id, o.target.label))
+                        .collect();
+                }
+                said.push(format!(
+                    "script: line {}: no control {}/{} \"{}\" on {}; it has {}",
+                    tap.line,
+                    tap.widget,
+                    tap.id,
+                    tap.label,
+                    self.ui.page(),
+                    have.join(", ")
+                ));
+                continue;
+            };
+            let t = found.target.clone();
+            let (x, y) = t.centre();
+            let mut acts = Vec::new();
+            acts.extend(self.touch(SCRIPT_FINGER, Touch::Down, x, y));
+            match t.gesture {
+                Gesture::Tap => acts.extend(self.touch(SCRIPT_FINGER, Touch::Up, x, y)),
+                Gesture::Drag => {
+                    let (dx, dy) = t.towards;
+                    for k in 1..=6 {
+                        acts.extend(self.touch(
+                            SCRIPT_FINGER,
+                            Touch::Move,
+                            x + dx * k / 6,
+                            y + dy * k / 6,
+                        ));
+                    }
+                    acts.extend(self.touch(SCRIPT_FINGER, Touch::Up, x + dx, y + dy));
+                }
+                Gesture::Hold => self.script_hold = Some((x, y, SCRIPT_HOLD_S)),
+            }
+            for a in acts {
+                self.saw_action(&a);
+                self.outbox.push(a);
+            }
+            said.push(format!(
+                "script: line {}: touched {}/{} \"{}\" on {}",
+                tap.line,
+                found.widget,
+                t.id,
+                t.label,
+                self.ui.page()
+            ));
+            // The next tap waits for the page this one leads to.
+            break;
+        }
+        said
+    }
+
+    /// Scripted taps still waiting.
+    pub fn script_taps_waiting(&self) -> bool {
+        !self.script_taps.is_empty() || self.script_hold.is_some()
+    }
+
+    fn script_hold_tick(&mut self, dt: f32) {
+        let Some((x, y, left)) = self.script_hold else {
+            return;
+        };
+        let left = left - dt.max(0.0);
+        if left > 0.0 {
+            self.script_hold = Some((x, y, left));
+            return;
+        }
+        self.script_hold = None;
+        if let Some(a) = self.touch(SCRIPT_FINGER, Touch::Up, x, y) {
+            self.saw_action(&a);
+            self.outbox.push(a);
+        }
+    }
 }
 
 /// The touch status on the Touch lab: the reader's line, and how the screen
