@@ -168,7 +168,7 @@ The Q-Links take the pulse widths and detune on the Osc page, the filter's four 
 
 The Q-Links take four registers on the Registers page (Violin, Viola, Cello and Contrabass), Brightness, Crescendo, Sustain and Bow noise on the Tone page, Amount, Depth, Slow rate and Width on the Ensemble page, and Transpose, Fine, Bend range and Level on the Voice page. A Strings track with no keys held stops working after a tenth of a second, so it takes almost none of the MPC's power until you play it.
 
-Coming: the sustain and soft pedals, the mod wheel (vibrato) and a foot pedal (volume) from a keyboard on MIDI in. Strings already answers them; the MIDI in side is still to come.
+From a keyboard on MIDI in, Strings answers the sustain and sostenuto pedals, the soft pedal (6 dB quieter and a little darker), the mod wheel (vibrato, from the ensemble's fast wobble) and a breath controller or expression pedal (volume). See [Pedals and the mod wheel](midi-and-cv.md#pedals-and-the-mod-wheel).
 
 **Bass** plays one note at a time, for bass lines. **Body** on the Source page picks one of three sounds:
 
