@@ -53,6 +53,25 @@ pub enum Shape {
     /// the third 29 dB), the same shape at every pitch. Its first
     /// harmonic is 1.006.
     Cubic,
+    // Each shape's first harmonic is in step with the saw's (the square
+    // low for the first half cycle, the cubic turned over), so voices
+    // mixed from one note add rather than cancel.
+}
+
+/// One cycle of `shape` at phase `t` (0 to 1) as the bank plays it, but
+/// without the step correction: for pictures.
+pub fn naive(shape: Shape, t: f32) -> f32 {
+    match shape {
+        Shape::Saw => t + t - 1.0,
+        Shape::Square => {
+            if t < 0.5 {
+                -1.0
+            } else {
+                1.0
+            }
+        }
+        Shape::Cubic => t * (t - 0.5) * (1.0 - t) * CUBIC_SCALE,
+    }
 }
 
 impl Shape {
@@ -206,6 +225,22 @@ impl<const B: usize> Bank<B> {
     #[inline]
     pub fn add(&mut self, bus: usize, n: usize, gain: f32, frame: u64) {
         self.target[bus][n] += gain;
+        self.hear(n, frame);
+    }
+
+    /// As [`add`](Self::add), `a` on bus `bus` and `b` on the bus after it
+    /// (a pair of buses one note feeds, looked up once).
+    #[inline]
+    pub fn add_pair(&mut self, bus: usize, n: usize, a: f32, b: f32, frame: u64) {
+        self.target[bus][n] += a;
+        self.target[bus + 1][n] += b;
+        self.hear(n, frame);
+    }
+
+    /// Note `n` joins the notes heard this step, from silence at its own
+    /// phase, if it isn't one already.
+    #[inline]
+    fn hear(&mut self, n: usize, frame: u64) {
         if !self.is_heard[n] {
             self.is_heard[n] = true;
             self.heard[self.n_heard] = n as u8;
@@ -243,61 +278,102 @@ impl<const B: usize> Bank<B> {
     /// Adds the first `n` frames (one control step at most) of every
     /// oscillator heard into the buses, bus `b` taking `shapes[b]`.
     pub fn render(&mut self, n: usize, bus: &mut [[f32; STEP]; B], shapes: &[Shape; B]) {
+        if shapes.iter().all(|&s| s == shapes[0]) {
+            self.render_one(n, bus, shapes[0]);
+            return;
+        }
         let mut waves = [[0.0f32; STEP]; 3];
+        let index = shapes.map(Shape::index);
         for i in 0..self.n_heard {
             let o = usize::from(self.heard[i]);
-            let inc = self.inc[o];
-            let dt = self.dt[o];
-            let p0 = self.phase[o];
             // The shapes some bus hears this step.
             let mut want = [false; 3];
             for b in 0..B {
                 if self.amp[b][o] != 0.0 || self.damp[b][o] != 0.0 {
-                    want[shapes[b].index()] = true;
+                    want[index[b]] = true;
                 }
             }
-            if want[0] {
-                let mut p = p0;
-                for w in waves[0].iter_mut().take(n) {
+            for (k, &shape) in [Shape::Saw, Shape::Square, Shape::Cubic].iter().enumerate() {
+                if want[k] {
+                    self.wave(o, shape, &mut waves[k], n);
+                }
+            }
+            self.phase[o] = self.phase[o].wrapping_add(self.inc[o].wrapping_mul(n as u32));
+            // Most notes feed few of the buses: only those.
+            for b in 0..B {
+                let wave = &waves[index[b]];
+                self.mix_into(&mut bus[b], b, o, wave, n);
+            }
+        }
+    }
+
+    /// [`render`](Self::render) when every bus takes one shape (Strings):
+    /// one wave a note.
+    fn render_one(&mut self, n: usize, bus: &mut [[f32; STEP]; B], shape: Shape) {
+        let mut wave = [0.0f32; STEP];
+        for i in 0..self.n_heard {
+            let o = usize::from(self.heard[i]);
+            self.wave(o, shape, &mut wave, n);
+            self.phase[o] = self.phase[o].wrapping_add(self.inc[o].wrapping_mul(n as u32));
+            for (b, out) in bus.iter_mut().enumerate() {
+                self.mix_into(out, b, o, &wave, n);
+            }
+        }
+    }
+
+    /// The first `n` frames of oscillator `o` as `shape`, from its phase.
+    #[inline(always)]
+    fn wave(&self, o: usize, shape: Shape, w: &mut [f32; STEP], n: usize) {
+        let (inc, dt) = (self.inc[o], self.dt[o]);
+        let mut p = self.phase[o];
+        match shape {
+            Shape::Saw => {
+                for w in w.iter_mut().take(n) {
                     let t = (p >> 8) as f32 * INV_24;
                     p = p.wrapping_add(inc);
                     *w = t + t - 1.0 - poly_blep4(t, dt);
                 }
             }
-            if want[1] {
-                let mut p = p0;
-                for w in waves[1].iter_mut().take(n) {
+            Shape::Square => {
+                for w in w.iter_mut().take(n) {
                     let t = (p >> 8) as f32 * INV_24;
                     let h = (p.wrapping_add(LOCK_OFFSET) >> 8) as f32 * INV_24;
-                    let up = if p < LOCK_OFFSET { 1.0 } else { -1.0 };
+                    let down = if p < LOCK_OFFSET { -1.0 } else { 1.0 };
                     p = p.wrapping_add(inc);
-                    *w = up + poly_blep4(t, dt) - poly_blep4(h, dt);
+                    *w = down - poly_blep4(t, dt) + poly_blep4(h, dt);
                 }
             }
-            if want[2] {
-                let mut p = p0;
-                for w in waves[2].iter_mut().take(n) {
+            Shape::Cubic => {
+                for w in w.iter_mut().take(n) {
                     let t = (p >> 8) as f32 * INV_24;
                     p = p.wrapping_add(inc);
-                    *w = t * (t - 0.5) * (t - 1.0) * CUBIC_SCALE;
+                    *w = t * (t - 0.5) * (1.0 - t) * CUBIC_SCALE;
                 }
-            }
-            self.phase[o] = p0.wrapping_add(inc.wrapping_mul(n as u32));
-            // Most notes feed few of the buses: only those.
-            for b in 0..B {
-                let mut a = self.amp[b][o];
-                let d = self.damp[b][o];
-                if a == 0.0 && d == 0.0 {
-                    continue;
-                }
-                let wave = &waves[shapes[b].index()];
-                for (x, w) in bus[b].iter_mut().zip(wave).take(n) {
-                    *x += w * a;
-                    a += d;
-                }
-                self.amp[b][o] = a;
             }
         }
+    }
+
+    /// Oscillator `o`'s `wave` into bus `b`'s `out` along its level's ramp,
+    /// if it is heard on that bus at all.
+    #[inline(always)]
+    fn mix_into(
+        &mut self,
+        out: &mut [f32; STEP],
+        b: usize,
+        o: usize,
+        wave: &[f32; STEP],
+        n: usize,
+    ) {
+        let mut a = self.amp[b][o];
+        let d = self.damp[b][o];
+        if a == 0.0 && d == 0.0 {
+            return;
+        }
+        for (x, w) in out.iter_mut().zip(wave).take(n) {
+            *x += w * a;
+            a += d;
+        }
+        self.amp[b][o] = a;
     }
 }
 
