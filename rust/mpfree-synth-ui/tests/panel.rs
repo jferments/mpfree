@@ -493,9 +493,11 @@ fn a_section_opens_the_page_it_links_to() {
     assert!(section(&s.ui, "fenv").0.link.is_none());
     // SHIFT + wheel steps through the pages and wraps.
     let mut r = rig("Grit Bass");
-    r.page("LFO");
+    r.page("LFO 2");
     r.panel.step_page(&mut r.ui, 1);
     assert_eq!(page_name(&r.panel), "Voice");
+    r.panel.step_page(&mut r.ui, 1);
+    assert_eq!(page_name(&r.panel), "Routes");
     r.panel.step_page(&mut r.ui, 1);
     assert_eq!(page_name(&r.panel), "Pressure");
     r.panel.step_page(&mut r.ui, 1);
@@ -1128,4 +1130,44 @@ fn the_instrument_engines_headings_fit() {
         "headings that don't fit:\n{}",
         list.join("\n")
     );
+}
+
+#[test]
+fn the_routes_page_reads_each_depth_in_its_targets_unit() {
+    let mut r = rig("Grit Bass");
+    r.page("Routes");
+    let titles: Vec<String> = view(&r.ui)
+        .sections
+        .iter()
+        .map(|s| s.title.clone())
+        .collect();
+    assert_eq!(titles, ["Route 1", "Route 2", "Route 3", "Route 4"]);
+    // Route 1 sends the wheel to vibrato: 50 % is half a semitone.
+    let (s1, _) = section(&r.ui, "route-1");
+    let depth = s1.controls.iter().find(|c| c.label == "Depth 1").unwrap();
+    assert_eq!((depth.value.as_str(), depth.unit.as_str()), ("+0.5", "st"));
+    assert!(!depth.dim);
+    // Route 2 is off: its target and depth do nothing, and say why.
+    let (s2, _) = section(&r.ui, "route-2");
+    assert!(s2.controls.iter().filter(|c| c.dim).count() == 2);
+    assert_eq!(s2.note, "To 2 · no source");
+    // Every label on the page is its own.
+    let mut labels: Vec<String> = view(&r.ui)
+        .sections
+        .iter()
+        .flat_map(|s| s.controls.iter().map(|c| c.label.clone()))
+        .collect();
+    let n = labels.len();
+    labels.sort();
+    labels.dedup();
+    assert_eq!(labels.len(), n);
+}
+
+#[test]
+fn the_lfo_2_page_draws_lfo_2() {
+    let mut r = rig("Grit Bass");
+    r.page("LFO 2");
+    assert_eq!(titles(&r.ui), ["LFO 2"]);
+    let (lfo, _) = section(&r.ui, "lfo-2");
+    assert_eq!(lfo.title, "LFO 2");
 }

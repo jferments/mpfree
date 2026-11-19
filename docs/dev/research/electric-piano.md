@@ -1,6 +1,6 @@
 # Electric pianos: what the research says, and open source to learn from
 
-**Status:** research, 2026-11-14. Feeds the [Keys engine](../design/synths.md#keys-mpfree-synth-keys). Nothing here has run on the MPC.
+**Status:** research, 2026-11-14; the tine measured against recordings 2026-11-19. Feeds the [Keys engine](../design/synths.md#keys-mpfree-synth-keys). Nothing here has run on the MPC.
 
 The owner asked for electric pianos researched from papers and journals before they were built, because they are hard to get right. This page collects what the measurements and models in the literature say about the two classic designs (a struck steel tine beside a magnetic pickup, and a struck steel reed in an electrostatic pickup), what that means for a real-time engine on the MPC One, and which open-source projects are worth studying. Where a point comes from a source it is linked; where it is our own reading it says so.
 
@@ -50,14 +50,24 @@ Shear measured Q factors on a tine piano: 949 at E-flat 2 (77.8 Hz), 731 at E-fl
 - No two strikes are identical: OpenWurli adds a small per-mode frequency jitter "to avoid digital coherence"; real instruments are also voiced key by key.
 - Beating and two-stage decay, which matter on acoustic pianos, are modelled cheaply with pairs of slightly mistuned two-pole resonators on the few partials where they are audible ([Bank et al., "Accurate and efficient modeling of beating and two-stage decay"](https://scispace.com/pdf/accurate-and-efficient-modeling-of-beating-and-two-stage-1xcli5evy4.pdf); [Bank, thesis](https://home.mit.bme.hu/~bank/thesis/)).
 
+### Measured tine piano (19 Nov)
+
+To find why wave 1's tines fell short in blind listening (neither side picked on the two tine cases), the Keys tine was measured against recordings of a real one: [jRhodes3d](https://github.com/sfzinstruments/jlearman.jRhodes3d), a 1977 tine stage piano recorded from its harp connector, every fourth white key from F1 to C7, five velocity layers, unlooped notes up to 25 s. Its samples are CC BY-NC, so they were used only to measure, in a scratch folder, and are not in this repository; nothing here plays them. Its author recorded it with a treble boost, a low-mid scoop and plenty of bark on the hard layers, and levelled the layers about 3 dB apart: it is one bright instrument, so it sets the shape of the sound (harmonics against the note, the bell, the decay), not absolute levels. Our own measurements (heterodyne envelopes of each harmonic, a search for the bending modes away from the harmonics, a fit of the pickup's swing to each layer's harmonics):
+
+- **The pickup.** On the hardest hits the second and third harmonics stood level with the note or above it (+3 to +10 dB through the middle), on the softest 5 to 30 dB under. A Lorentzian flux fitted to each layer's harmonics gave its swing; across the layers that set how far velocity drives the pickup (40 dB from velocity 1 to 127 at Vel > tone 60) and how the swing falls up the keyboard, as 1/(1+(f/280 Hz)²). The old Keys tine drove its pickup about four times too gently on hard hits and had half that range of tone.
+- **The bell.** The second bending mode sat 7.15 times the note in the bass, 7.35 to 7.38 through the middle and 6.3 at the top (not a fixed 7.11); the third 20.6 in the bass to 17.5 from C5, 15 to 20 dB under the bell. The bell was about 33 dB under the note on soft hits and 26 dB under on hard ones from F1 to F4, falling away over C6 (-46 dB at G6), and rang 0.55 to 2 s through the middle. The old Keys bell was 25 to 45 dB too quiet through the middle and top, too loud in the low bass, and died about three times too fast.
+- **The decay.** Middle C's octave rang 11 and 19 s (T60); the old default Decay was 8 s.
+
+With those in the model and its defaults (see the [Keys design](../design/synths.md#keys-mpfree-synth-keys)), harmonics 2 to 8 against the note at 50 and 300 ms are 9.1 dB rms from the recordings over all 75 notes, with no bias; they were 23.7 dB. What is left is about the recorded instrument's own unevenness from key to key.
+
 ## What the Keys engine takes from this
 
 | Finding | In Keys |
 |---|---|
-| Motion nearly sinusoidal, upper modes only in the attack | Per voice: the fundamental plus the 7.11 and 20.25 bending modes (tine), with short decays |
+| Motion nearly sinusoidal, upper modes only in the attack | Per voice: the fundamental plus the two bending modes (tine) at the ratios, levels and decays measured on the recordings above, kicked by the hit |
 | Pickup = non-linear curve, then its change | `flux(u) = 1/(1+u²)` (tine) or `capacitance(y) = 1/(1-y)` (reed), then the sample-to-sample difference, divided by the note's angular frequency |
 | Centred = octave, off centre = pure, between = bark | **Voicing** moves the rest point from the field's axis to its inflection (1/√3, the straightest point) |
-| Low tines swing wider and bark sooner | The swing grows as (261.6 Hz / f)^0.5, limited to 0.5 to 1.6 |
+| Low tines swing wider and bark sooner | Reed: the swing grows as (261.6 Hz / f)^0.5, limited to 0.5 to 1.6; tine: as measured, 1/(1+(f/280 Hz)²), and the hit's velocity drives it over about 40 dB |
 | Pickup intermodulates the modes | Falls out of putting the sum of the modes through the curve |
 | Sustain about T60 ∝ f^-0.75 | `decay_for` uses that slope, Decay sets middle C |
 | Contact shorter when harder | Half-sine contact of 0.4 to 4.5 ms at full velocity, scaled by v^-0.47, never over half the period |

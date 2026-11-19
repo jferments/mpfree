@@ -9,10 +9,14 @@
 //! and plays at the preset's level at full pressure; with a negative depth
 //! pressing ducks it. So pressure on level never pushes a patch past the
 //! level it was designed at. Deliberate grit goes through Drive.
+//!
+//! Poly's play routes ([`crate::params::route`]) reach the same targets
+//! with the same depths, from the mod wheel, breath, a foot controller,
+//! velocity, the key, the note's tone or a random value.
 
 use mpfree_node::Unit;
 
-/// Poly's targets, by slot target index.
+/// Poly's targets, by slot or route target index.
 pub const POLY_TARGETS: &[&str] = &[
     "Off",
     "Cutoff",
@@ -26,6 +30,9 @@ pub const POLY_TARGETS: &[&str] = &[
     "Sub",
     "Noise",
     "Distortion",
+    "LFO 1 amount",
+    "LFO 2 amount",
+    "Pan",
 ];
 /// FM's targets, by slot target index.
 pub const FM_TARGETS: &[&str] = &[
@@ -64,6 +71,10 @@ pub const WIND_TARGETS: &[&str] = &[
 /// - Level: a 24 dB swell. Drive and Distortion: 24 dB more.
 /// - Vibrato 1 semitone deep. Pitch 12 semitones. LFO rate 2 octaves (4 times
 ///   as fast); the LFO is shared, so it follows the highest pressure.
+/// - LFO 1 amount and LFO 2 amount (Poly): how much of what the LFO's
+///   own sends are set to gets through, as a swell: with a positive depth
+///   none at rest and all of it at full; with a negative depth pressing
+///   takes it away ([`lfo_gate`]). Pan: from the middle to one side.
 /// - Position (Wavetable): the whole table. Warp (Wavetable): the whole
 ///   warp amount.
 /// - Brightness (FM): 24 output-level steps (18 dB) on every modulator.
@@ -80,9 +91,8 @@ pub fn full_scale(target: &str) -> Option<(f32, Unit)> {
         "Pitch" => (12.0, Unit::Semitones),
         "Drive" | "Distortion" => (24.0, Unit::Db),
         "Width" => (45.0, Unit::Percent),
-        "Sub" | "Noise" | "Tremolo" | "Position" | "Warp" | "Breath" | "Growl" => {
-            (100.0, Unit::Percent)
-        }
+        "Sub" | "Noise" | "Tremolo" | "Position" | "Warp" | "LFO 1 amount" | "LFO 2 amount"
+        | "Pan" | "Breath" | "Growl" => (100.0, Unit::Percent),
         "Tone" => (2.0, Unit::Octaves),
         "Brightness" => (24.0, Unit::None),
         "Feedback" => (7.0, Unit::None),
@@ -110,6 +120,20 @@ pub fn swell_gain(d: f32, p: f32) -> f32 {
     (-2.763_102 * dip).exp()
 }
 
+/// How much of an LFO's sends get through for depth `d` (-1 to 1) at `p`
+/// (0 to 1): a swell, as [`swell_gain`] but straight. With a positive
+/// depth `1 - d` at rest and all at full; with a negative one all at rest
+/// and `1 + d` at full. 1 with no depth.
+#[inline]
+pub fn lfo_gate(d: f32, p: f32) -> f32 {
+    let d = d.clamp(-1.0, 1.0);
+    if d >= 0.0 {
+        1.0 - d * (1.0 - p)
+    } else {
+        1.0 + d * p
+    }
+}
+
 /// One slot, read from the parameters: its target index and depth, -1 to 1.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Slot {
@@ -121,7 +145,7 @@ pub struct Slot {
 /// target (two slots on one target add up).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Depths {
-    pub by_target: [f32; 12],
+    pub by_target: [f32; 16],
     /// Any slot sends pressure somewhere.
     pub any: bool,
 }
@@ -159,7 +183,7 @@ mod tests {
         {
             assert!(full_scale(t).is_some(), "{t}");
         }
-        assert!(POLY_TARGETS.len() <= 12 && FM_TARGETS.len() <= 12 && WT_TARGETS.len() <= 12);
+        assert!(POLY_TARGETS.len() <= 16 && FM_TARGETS.len() <= 16 && WT_TARGETS.len() <= 16);
         assert_eq!(amount("Cutoff", 37.5), Some((1.5, Unit::Octaves)));
         assert!((depth_for("Level", 9.0) - 37.5).abs() < 1e-4);
     }
@@ -176,5 +200,16 @@ mod tests {
         let d = 9.0 / 24.0;
         assert!((20.0 * swell_gain(d, 0.0).log10() + 9.0).abs() < 0.01);
         assert_eq!(swell_gain(d, 1.0), 1.0);
+    }
+
+    #[test]
+    fn an_lfo_gate_opens_with_a_positive_depth_and_closes_with_a_negative_one() {
+        assert_eq!(lfo_gate(0.0, 0.3), 1.0);
+        assert_eq!(lfo_gate(1.0, 0.0), 0.0);
+        assert_eq!(lfo_gate(1.0, 1.0), 1.0);
+        assert_eq!(lfo_gate(0.5, 0.0), 0.5);
+        assert_eq!(lfo_gate(-1.0, 0.0), 1.0);
+        assert_eq!(lfo_gate(-1.0, 1.0), 0.0);
+        assert_eq!(lfo_gate(-0.25, 1.0), 0.75);
     }
 }

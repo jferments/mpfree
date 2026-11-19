@@ -13,6 +13,10 @@
 //! mpfree-bench --soak [--blocks N] [--filter TEXT]
 //! ```
 //!
+//! Any mode takes `--plain`: the NEON kernels (`mpfree-simd`) off, so every
+//! engine runs their plain Rust twins, for the device round's A/B (the same
+//! samples, timed both ways).
+//!
 //! - On the desktop it prints each case's mean, p99 and worst block. With
 //!   `--calibration` (a file `--calibrate` printed on the MPC) it adds an
 //!   estimate for the MPC and a verdict against the module's budget.
@@ -101,6 +105,7 @@ struct Options {
     afford: bool,
     starts: bool,
     keep_denormals: bool,
+    plain: bool,
     lanes: bool,
     lane_cores: Option<(usize, usize)>,
     count: bool,
@@ -121,6 +126,7 @@ fn options() -> Result<Options, String> {
         afford: false,
         starts: false,
         keep_denormals: false,
+        plain: false,
         lanes: false,
         lane_cores: None,
         count: false,
@@ -141,6 +147,7 @@ fn options() -> Result<Options, String> {
             "--afford" => o.afford = true,
             "--starts" => o.starts = true,
             "--keep-denormals" => o.keep_denormals = true,
+            "--plain" => o.plain = true,
             "--lanes" => o.lanes = true,
             "--count" => o.count = true,
             "--soak" => o.soak = true,
@@ -830,9 +837,13 @@ fn main() -> ExitCode {
                        mpfree-bench --lanes [--lane-cores A,B] [--quick] [--json FILE]\n       \
                        mpfree-bench --count [--blocks N] [--filter TEXT]\n       \
                        mpfree-bench --soak [--blocks N] [--filter TEXT]");
+            eprintln!("       any mode: --plain runs the NEON kernels' plain twins (mpfree-simd)");
             return ExitCode::from(if e.is_empty() { 0 } else { 1 });
         }
     };
+    if o.plain {
+        mpfree_simd::set_enabled(false);
+    }
     if let Some((a, b)) = &o.compare {
         return match compare(a, b) {
             Ok(text) => {
@@ -920,6 +931,11 @@ fn main() -> ExitCode {
     if !alloc::installed() {
         println!("(allocation counting is off)");
     }
+    println!(
+        "NEON kernels: {}{}",
+        mpfree_simd::status(),
+        if o.plain { " (--plain)" } else { "" }
+    );
     match (&model, on_device) {
         (_, true) => println!("Measured on this ARM machine: these are its own numbers, no estimate."),
         (Some((m, from)), false) => {
