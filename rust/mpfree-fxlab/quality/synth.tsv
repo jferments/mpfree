@@ -1580,6 +1580,128 @@ synth/Wavetable[Vowel Lead]/key_spread_db	3.8497
 synth/Wavetable[Vowel Lead]/mono_loss_db	0
 synth/Wavetable[Vowel Lead]/vel_curve_err_db	0.7308
 synth/Wavetable[Vowel Lead]/vel_tone_oct	0.1621
+synth/Wind[Bamboo Flute]/chord8_peak_dbfs	-5.2563
+synth/Wind[Bamboo Flute]/dc_dbfs	-90.5873
+synth/Wind[Bamboo Flute]/key_spread_db	1.2186
+synth/Wind[Bamboo Flute]/mono_loss_db	0
+synth/Wind[Bamboo Flute]/vel_curve_err_db	0.0474
+synth/Wind[Bamboo Flute]/vel_tone_oct	0.4591
+synth/Wind[Breathy Flute]/chord8_peak_dbfs	-4.7199
+synth/Wind[Breathy Flute]/dc_dbfs	-87.991
+synth/Wind[Breathy Flute]/key_spread_db	1.1748
+synth/Wind[Breathy Flute]/mono_loss_db	0
+synth/Wind[Breathy Flute]/vel_curve_err_db	0.082
+synth/Wind[Breathy Flute]/vel_tone_oct	0.4401
+synth/Wind[Breathy Sax]/chord8_peak_dbfs	-8.2347
+synth/Wind[Breathy Sax]/dc_dbfs	-95.5115
+synth/Wind[Breathy Sax]/key_spread_db	1.4303
+synth/Wind[Breathy Sax]/mono_loss_db	0
+synth/Wind[Breathy Sax]/vel_curve_err_db	0.2151
+synth/Wind[Breathy Sax]/vel_tone_oct	0.1044
+synth/Wind[Concert Flute]/chord8_peak_dbfs	-4.3119
+synth/Wind[Concert Flute]/dc_dbfs	-86.7866
+synth/Wind[Concert Flute]/key_spread_db	1.1474
+synth/Wind[Concert Flute]/mono_loss_db	0
+synth/Wind[Concert Flute]/vel_curve_err_db	0.0231
+synth/Wind[Concert Flute]/vel_tone_oct	0.5177
+synth/Wind[Dark Clarinet]/chord8_peak_dbfs	-7.1574
+synth/Wind[Dark Clarinet]/dc_dbfs	-98.136
+synth/Wind[Dark Clarinet]/key_spread_db	1.4168
+synth/Wind[Dark Clarinet]/mono_loss_db	0
+synth/Wind[Dark Clarinet]/vel_curve_err_db	0.2123
+synth/Wind[Dark Clarinet]/vel_tone_oct	0.1432
+synth/Wind[Flute Choir]/chord6_vs_power_db	-1.7311
+synth/Wind[Flute Choir]/chord8_peak_dbfs	-1.1488
+synth/Wind[Flute Choir]/dc_dbfs	-82.549
+synth/Wind[Flute Choir]/key_spread_db	1.1328
+synth/Wind[Flute Choir]/mono_loss_db	0.7026
+synth/Wind[Flute Choir]/vel_curve_err_db	0.0678
+synth/Wind[Flute Choir]/vel_tone_oct	0.5166
+synth/Wind[Growl Sax]/chord8_peak_dbfs	-5.3343
+synth/Wind[Growl Sax]/dc_dbfs	-90.2272
+synth/Wind[Growl Sax]/key_spread_db	1.1406
+synth/Wind[Growl Sax]/mono_loss_db	0
+synth/Wind[Growl Sax]/vel_curve_err_db	0.1207
+synth/Wind[Growl Sax]/vel_tone_oct	0.3498
+synth/Wind[Hall Flute]/chord8_peak_dbfs	-2.9388
+synth/Wind[Hall Flute]/dc_dbfs	-87.7825
+synth/Wind[Hall Flute]/key_spread_db	1.9957
+synth/Wind[Hall Flute]/mono_loss_db	0.1714
+synth/Wind[Hall Flute]/vel_curve_err_db	0.0204
+synth/Wind[Hall Flute]/vel_tone_oct	0.4885
+synth/Wind[Init]/chord8_peak_dbfs	-6.2587
+synth/Wind[Init]/dc_dbfs	-98.468
+synth/Wind[Init]/key_spread_db	1.1364
+synth/Wind[Init]/mono_loss_db	0
+synth/Wind[Init]/vel_curve_err_db	0.0518
+synth/Wind[Init]/vel_tone_oct	0.5857
+synth/Wind[Jazz Clarinet]/chord8_peak_dbfs	-5.9744
+synth/Wind[Jazz Clarinet]/dc_dbfs	-99.9827
+synth/Wind[Jazz Clarinet]/key_spread_db	1.0311
+synth/Wind[Jazz Clarinet]/mono_loss_db	0
+synth/Wind[Jazz Clarinet]/vel_curve_err_db	0.0878
+synth/Wind[Jazz Clarinet]/vel_tone_oct	0.7367
+synth/Wind[Ocarina]/chord8_peak_dbfs	-6.7915
+synth/Wind[Ocarina]/dc_dbfs	-99.6957
+synth/Wind[Ocarina]/key_spread_db	1.4336
+synth/Wind[Ocarina]/mono_loss_db	0
+synth/Wind[Ocarina]/vel_curve_err_db	0.7592
+synth/Wind[Ocarina]/vel_tone_oct	0.2509
+synth/Wind[Pan Pipes]/chord8_peak_dbfs	-5.2569
+synth/Wind[Pan Pipes]/dc_dbfs	-97.745
+synth/Wind[Pan Pipes]/key_spread_db	1.258
+synth/Wind[Pan Pipes]/mono_loss_db	0
+synth/Wind[Pan Pipes]/vel_curve_err_db	0.1036
+synth/Wind[Pan Pipes]/vel_tone_oct	0.4945
+synth/Wind[Pressure Swell]/chord8_peak_dbfs	-8.0792
+synth/Wind[Pressure Swell]/dc_dbfs	-98.4417
+synth/Wind[Pressure Swell]/key_spread_db	1.4528
+synth/Wind[Pressure Swell]/mono_loss_db	0
+synth/Wind[Pressure Swell]/vel_curve_err_db	0.2389
+synth/Wind[Pressure Swell]/vel_tone_oct	0.1529
+synth/Wind[Recorder]/chord8_peak_dbfs	-4.3089
+synth/Wind[Recorder]/dc_dbfs	-88.0936
+synth/Wind[Recorder]/key_spread_db	1.1473
+synth/Wind[Recorder]/mono_loss_db	0
+synth/Wind[Recorder]/vel_curve_err_db	0.0692
+synth/Wind[Recorder]/vel_tone_oct	0.4015
+synth/Wind[Reed Section]/chord6_vs_power_db	-0.828
+synth/Wind[Reed Section]/chord8_peak_dbfs	-5.0623
+synth/Wind[Reed Section]/dc_dbfs	-95.68
+synth/Wind[Reed Section]/key_spread_db	1.3665
+synth/Wind[Reed Section]/mono_loss_db	1.0029
+synth/Wind[Reed Section]/vel_curve_err_db	0.1216
+synth/Wind[Reed Section]/vel_tone_oct	0.1255
+synth/Wind[Smoky Sax]/chord8_peak_dbfs	-7.2604
+synth/Wind[Smoky Sax]/dc_dbfs	-96.0768
+synth/Wind[Smoky Sax]/key_spread_db	1.5946
+synth/Wind[Smoky Sax]/mono_loss_db	0.1382
+synth/Wind[Smoky Sax]/vel_curve_err_db	0.0322
+synth/Wind[Smoky Sax]/vel_tone_oct	0.152
+synth/Wind[Soprano Sax]/chord8_peak_dbfs	-7.2402
+synth/Wind[Soprano Sax]/dc_dbfs	-94.9047
+synth/Wind[Soprano Sax]/key_spread_db	1.2725
+synth/Wind[Soprano Sax]/mono_loss_db	0
+synth/Wind[Soprano Sax]/vel_curve_err_db	0.1602
+synth/Wind[Soprano Sax]/vel_tone_oct	0.2634
+synth/Wind[Tenor Sax]/chord8_peak_dbfs	-7.5589
+synth/Wind[Tenor Sax]/dc_dbfs	-95.3175
+synth/Wind[Tenor Sax]/key_spread_db	1.2928
+synth/Wind[Tenor Sax]/mono_loss_db	0
+synth/Wind[Tenor Sax]/vel_curve_err_db	0.1219
+synth/Wind[Tenor Sax]/vel_tone_oct	0.1925
+synth/Wind[Warm Clarinet]/chord8_peak_dbfs	-6.626
+synth/Wind[Warm Clarinet]/dc_dbfs	-97.6447
+synth/Wind[Warm Clarinet]/key_spread_db	1.2606
+synth/Wind[Warm Clarinet]/mono_loss_db	0
+synth/Wind[Warm Clarinet]/vel_curve_err_db	0.2199
+synth/Wind[Warm Clarinet]/vel_tone_oct	0.3997
+synth/Wind[Wind Controller Sax]/chord8_peak_dbfs	-2.0451
+synth/Wind[Wind Controller Sax]/dc_dbfs	-90.2519
+synth/Wind[Wind Controller Sax]/key_spread_db	1.4545
+synth/Wind[Wind Controller Sax]/mono_loss_db	0
+synth/Wind[Wind Controller Sax]/vel_curve_err_db	0.1092
+synth/Wind[Wind Controller Sax]/vel_tone_oct	0.1658
 synth/alias[Analog saw, C5]/worst_alias_db	-53.7821
 synth/alias[Analog saw, C6]/worst_alias_db	-48.1622
 synth/alias[Analog saw, C7]/worst_alias_db	-41.8279
@@ -1634,6 +1756,24 @@ synth/alias[Wavetable Init, C7]/worst_alias_db	-71.5456
 synth/alias[Wavetable position 100, C5]/worst_alias_db	-65.3551
 synth/alias[Wavetable position 100, C6]/worst_alias_db	-60.1726
 synth/alias[Wavetable position 100, C7]/worst_alias_db	-54.0125
+synth/alias[Wind clarinet, tone 100, C5]/worst_alias_db	-93.9959
+synth/alias[Wind clarinet, tone 100, C6]/worst_alias_db	-85.7263
+synth/alias[Wind clarinet, tone 100, C7]/worst_alias_db	-83.1472
+synth/alias[Wind flute, edge and tone 100, C5]/worst_alias_db	-94.0765
+synth/alias[Wind flute, edge and tone 100, C6]/worst_alias_db	-98.0657
+synth/alias[Wind flute, edge and tone 100, C7]/worst_alias_db	-70.7428
+synth/alias[Wind sax, reed and tone 100, C5]/worst_alias_db	-94.4567
+synth/alias[Wind sax, reed and tone 100, C6]/worst_alias_db	-79.1624
+synth/alias[Wind sax, reed and tone 100, C7]/worst_alias_db	-64.5008
+synth/breath[Wind clarinet, C4, breath 1/8 to 1]/level_steps_not_rising	0
+synth/breath[Wind clarinet, C4, breath 1/8 to 1]/tone_oct	0.6771
+synth/breath[Wind clarinet, C4, breath 1/8 to 1]/tone_steps_not_rising	0
+synth/breath[Wind flute, C4, breath 1/8 to 1]/level_steps_not_rising	0
+synth/breath[Wind flute, C4, breath 1/8 to 1]/tone_oct	0.5726
+synth/breath[Wind flute, C4, breath 1/8 to 1]/tone_steps_not_rising	0
+synth/breath[Wind sax, C4, breath 1/8 to 1]/level_steps_not_rising	0
+synth/breath[Wind sax, C4, breath 1/8 to 1]/tone_oct	0.224
+synth/breath[Wind sax, C4, breath 1/8 to 1]/tone_steps_not_rising	2
 synth/drop[Bass 808, C4, 12 semitones over 200 ms]/amount_err_pct	1.9177
 synth/drop[Bass 808, C4, 12 semitones over 200 ms]/settle_cents	0.0005
 synth/drop[Bass 808, C4, 12 semitones over 200 ms]/time_err_pct	0
@@ -1654,6 +1794,9 @@ synth/glide[Bass rate, an octave in 300 ms]/land_cents	0.0016
 synth/glide[Bass rate, an octave in 300 ms]/time_err_pct	-0.2934
 synth/glide[Poly legato, 200 ms]/land_cents	0.0367
 synth/glide[Poly legato, 200 ms]/time_err_pct	-1.2201
+synth/speak[Wind clarinet, C4, velocity 127]/speak_ms	21
+synth/speak[Wind flute, C4, velocity 127]/speak_ms	30
+synth/speak[Wind sax, C4, velocity 127]/speak_ms	25
 synth/swell[Strings per key, crescendo 1500 ms]/time_err_pct	-2.325
 synth/swell[Strings per key, crescendo 400 ms]/time_err_pct	-2.2336
 synth/swell[Strings per key, sustain 1500 ms]/time_err_pct	0.0605
@@ -1674,3 +1817,7 @@ synth/tune[Poly]/worst_cents	0.0004
 synth/tune[Squelch]/worst_cents	0.0323
 synth/tune[Strings]/worst_cents	0.0006
 synth/tune[Wavetable]/worst_cents	0.0302
+synth/tune[Wind clarinet, C2 to C6, velocity 30 to 127]/worst_cents	0.0896
+synth/tune[Wind flute, C2 to C6, velocity 30 to 127]/worst_cents	0.1686
+synth/tune[Wind sax, C2 to C6, velocity 30 to 127]/worst_cents	0.0347
+synth/tune[Wind]/worst_cents	0.1273

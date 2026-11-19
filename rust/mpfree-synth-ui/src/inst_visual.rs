@@ -1,4 +1,4 @@
-//! The drawn visuals of Keys, Drawbar, Squelch, Analog and Strings, worked
+//! The drawn visuals of the instrument engines, worked
 //! out from their values with the engines' own formulas
 //! ([`mpfree_synth::keys`], [`mpfree_synth::drawbar`],
 //! [`mpfree_synth::squelch`], [`mpfree_synth::analog`],
@@ -21,6 +21,11 @@
 //! - Bass ([`mpfree_synth::bass`]): the oscillators with the sub and the
 //!   fifth over the sub's cycle, the ladder's response at rest and at the
 //!   envelope's peak, the pitch drop, and a sine through the drive.
+//! - Wind ([`mpfree_synth::wind`]): the mouthpiece (the air through the
+//!   reed against the pressure across it, or the flute's jet against its
+//!   deflection) with where the breath sets it, the bore's tone at middle C
+//!   for a full and a soft breath, the level against the breath, and the
+//!   breath over a held note.
 //!
 //! Points are in a unit box, as in [`crate::visual`]: x from 0 to 1 left to
 //! right, y from 0 (bottom) to 1 (top).
@@ -34,7 +39,8 @@ use mpfree_synth::drawbar_params as db;
 use mpfree_synth::keys_params as kp;
 use mpfree_synth::squelch_params as sq;
 use mpfree_synth::strings_params as stp;
-use mpfree_synth::{analog, bass, drawbar, keys, squelch, strings};
+use mpfree_synth::wind_params as wnp;
+use mpfree_synth::{analog, bass, drawbar, keys, squelch, strings, wind};
 use mpfree_ui::Color;
 use std::f32::consts::{PI, TAU};
 
@@ -983,6 +989,104 @@ pub fn bass_drive(v: &impl Values) -> [Pts; 2] {
     ]
 }
 
+// ------------------------------------------------------------ Wind
+
+/// The mouthpiece's curve and where a full breath sets it (the dot, 0 to
+/// 1 across): a reed's air against the pressure across it (0 to 1 high),
+/// or the flute's jet against its deflection (centred on the midline).
+pub fn wind_mouthpiece(v: &impl Values) -> (Pts, f32) {
+    let (y, dot) = wind::mouthpiece_curve(|id| v.get(id), POINTS + 1);
+    let flute = v.get(wnp::MODEL).round() == wnp::FLUTE;
+    let pts = y
+        .into_iter()
+        .enumerate()
+        .map(|(i, y)| {
+            let y = if flute {
+                0.5 + 0.42 * y
+            } else {
+                0.05 + 0.85 * y
+            };
+            (i as f32 / POINTS as f32, y)
+        })
+        .collect();
+    (pts, dot)
+}
+
+/// The Mouthpiece card's caption: "medium reed", "edge centred", "edge
+/// 60 % off centre".
+pub fn wind_mouthpiece_caption(v: &impl Values) -> String {
+    if v.get(wnp::MODEL).round() == wnp::FLUTE {
+        let edge = v.get(wnp::EDGE);
+        if edge < 5.0 {
+            "edge centred".into()
+        } else {
+            format!("edge {edge:.0} % off centre")
+        }
+    } else {
+        let reed = v.get(wnp::REED);
+        let hard = if reed < 34.0 {
+            "soft"
+        } else if reed < 67.0 {
+            "medium"
+        } else {
+            "hard"
+        };
+        format!("{hard} reed")
+    }
+}
+
+/// The bore's tone at middle C: its loss filter at a full breath (at
+/// Breath) and at a quarter of it (the dashed line), with the full
+/// breath's corner in Hz.
+pub fn wind_tone(v: &impl Values) -> ([Pts; 2], f32) {
+    let b = (v.get(wnp::BREATH) * 0.01).clamp(0.0, 1.0);
+    let full = wind::tone_corner(|id| v.get(id), b);
+    let soft = wind::tone_corner(|id| v.get(id), 0.25 * b);
+    let curve = |fc: f32| response(|hz| wind::tone_gain(fc, hz));
+    ([curve(full), curve(soft)], full)
+}
+
+/// The Level card's range: dB below full breath at its bottom.
+pub const WIND_LEVEL_DB: f32 = 48.0;
+
+/// The level against the breath, none to full (Soft to hard's law), on a
+/// card that shows `WIND_LEVEL_DB` below full.
+pub fn wind_level(v: &impl Values) -> Pts {
+    let range = v.get(wnp::VELOCITY);
+    (0..=POINTS)
+        .map(|i| {
+            let b = i as f32 / POINTS as f32;
+            (b, level_y(wind::breath_level(b, range), WIND_LEVEL_DB))
+        })
+        .collect()
+}
+
+/// The breath over a held note at full velocity: the shape over a note,
+/// scaled by Breath.
+pub fn wind_breath(v: &impl Values) -> Pts {
+    let b = (v.get(wnp::BREATH) * 0.01).clamp(0.0, 1.0);
+    crate::visual::envelope(
+        v.get(wnp::ATTACK),
+        v.get(wnp::DECAY),
+        v.get(wnp::SUSTAIN) * 0.01,
+        v.get(wnp::RELEASE),
+    )
+    .into_iter()
+    .map(|(x, y)| (x, 0.05 + 0.9 * y * b))
+    .collect()
+}
+
+/// The Breath card's caption: where the breath comes from, and the tongue.
+pub fn wind_breath_caption(v: &impl Values) -> String {
+    let from = pick(wnp::BREATH_FROMS, v.get(wnp::BREATH_FROM)).to_lowercase();
+    let tongue = v.get(wnp::TONGUE);
+    if tongue > 0.0 {
+        format!("from {from} · tongue {tongue:.0} %")
+    } else {
+        format!("from {from}")
+    }
+}
+
 /// Whether this module draws the engine with this id.
 pub fn draws(id: &str) -> bool {
     matches!(
@@ -993,6 +1097,7 @@ pub fn draws(id: &str) -> bool {
             | "mpfree.analog"
             | "mpfree.strings"
             | "mpfree.bass"
+            | "mpfree.wind"
     )
 }
 
@@ -1006,6 +1111,7 @@ pub fn cards(id: &str, v: &impl Values, page: &str) -> Vec<(Card, &'static str)>
         "mpfree.analog" => analog_cards_strip(v),
         "mpfree.strings" => strings_cards(v),
         "mpfree.bass" => bass_cards(v),
+        "mpfree.wind" => wind_cards(v),
         _ => Vec::new(),
     };
     for (c, home) in &mut cards {
@@ -1362,6 +1468,60 @@ fn strings_cards(v: &impl Values) -> Vec<(Card, &'static str)> {
                 ..Card::default()
             },
             "Ensemble",
+        ),
+    ]
+}
+
+/// Wind: the mouthpiece and the tone (Instrument), the level against the
+/// breath and the breath over a note (Breath).
+fn wind_cards(v: &impl Values) -> Vec<(Card, &'static str)> {
+    let (blue, green, amber) = (QLINK_COLORS[0], QLINK_COLORS[1], QLINK_COLORS[2]);
+    let (mouth, dot) = wind_mouthpiece(v);
+    let flute = v.get(wnp::MODEL).round() == wnp::FLUTE;
+    let ([full, soft], corner) = wind_tone(v);
+    vec![
+        (
+            Card {
+                title: "Mouthpiece".into(),
+                caption: wind_mouthpiece_caption(v),
+                traces: vec![trace(mouth, amber, 2.5, !flute, false)],
+                midline: flute,
+                dot: Some(dot),
+                ..Card::default()
+            },
+            "Instrument",
+        ),
+        (
+            Card {
+                title: "Tone".into(),
+                caption: format!("{} at middle C", hz_text(corner)),
+                traces: vec![
+                    trace(full, blue, 2.5, true, false),
+                    trace(soft, TEXT_DIM, 1.5, false, true),
+                ],
+                grid: freq_grid(),
+                dot: Some(freq_x(corner)),
+                ..Card::default()
+            },
+            "Instrument",
+        ),
+        (
+            Card {
+                title: "Level".into(),
+                caption: format!("{:.0} dB soft to hard", v.get(wnp::VELOCITY)),
+                traces: vec![trace(wind_level(v), green, 2.5, true, false)],
+                ..Card::default()
+            },
+            "Breath",
+        ),
+        (
+            Card {
+                title: "Breath".into(),
+                caption: wind_breath_caption(v),
+                traces: vec![trace(wind_breath(v), green, 2.5, true, false)],
+                ..Card::default()
+            },
+            "Breath",
         ),
     ]
 }

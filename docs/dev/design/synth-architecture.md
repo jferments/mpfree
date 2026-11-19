@@ -34,7 +34,7 @@ Twelve engines when the three waves are done, five of them new or merged, and tw
 | Vintage poly | Analog (as built) | Voice cards that differ and drift, the OTA filter, the bucket-brigade chorus | | |
 | FM | FM (fixed) | As built, plus macros, a few operator shapes besides the sine, DC blocking, level matching across algorithms, and feedback that aliases less at high notes | | 2 |
 | Organ | Drawbar (+ a Combo model) | Tonewheel (built); combo organ from the Strings bank with flute and reed voice filters | Pipe organ later | 2 |
-| Wind | **Wind** (new) | A waveguide bore excited by a reed or jet curve, driven by breath (pressure or the breath controller) | FM and subtractive winds as FM and Poly presets | 2 |
+| Wind | **Wind** (new, one voice or up to 8 for chords, built 19 Nov: [synths.md](synths.md#wind-mpfree-synth-wind)) | A waveguide bore excited by a reed or jet curve, driven by breath (velocity, pad pressure, or a breath controller, mod wheel or foot pedal): a clarinet (a cylinder closed by a reed), a sax (a cone: the reed between two lines in parallel) and a flute (a jet across an edge). Not built: brass (a lip valve whose resonance must track the note is a second loop to tune and keep stable; [research](../research/wind.md#3-algorithms)), double reeds, register keys and overblowing | FM and subtractive winds as FM and Poly presets | 2 |
 | Choir | **Choir** (new) | A buzzy source through five formant filters per voice, morphing between vowels, through the Ensemble | Wavetable's Vowels table as Poly presets | 2 |
 | Tape character | **Character** (shared part) | Per-voice offsets and slow drift, wow and flutter, a note time limit, hiss; off and bit-exact at zero | | 2 |
 | Drums | Drums (extended) | As built, plus each drum's own knobs, each drum's own two effects in a kit, accent and per-hit variation, the 808 body shared with Bass, toms and congas from Pluck's modal bank | | 3 |
@@ -79,7 +79,7 @@ Rules every part keeps, as the node interface asks: no allocation, lock or panic
 
 ### Voices per engine
 
-As accepted in the plan: Poly, Analog and Wavetable 8 by default and up to 16; FM 16; Keys 16; Strings and the organs every key; Bass, Squelch and Wind 1 (Wind may get a few for chords); Choir 8; Drums 32 hits. Each default waits for the device's per-voice cost (ask 1 of the device round), and "new engines must come with device numbers before they are turned on by default" ([Profiling](profiling.md#budgets-agreed-with-jay-2026-11-11)).
+As accepted in the plan: Poly, Analog and Wavetable 8 by default and up to 16; FM 16; Keys 16; Strings and the organs every key; Bass, Squelch and Wind 1 (Wind takes up to 8 for chords, as built); Choir 8; Drums 32 hits. Each default waits for the device's per-voice cost (ask 1 of the device round), and "new engines must come with device numbers before they are turned on by default" ([Profiling](profiling.md#budgets-agreed-with-jay-2026-11-11)).
 
 ### Synth tracks on every sound core
 
@@ -210,6 +210,8 @@ Started 19 Nov with Poly's oscillators from the tables, the supersaw (a wave of 
 
 Poly and Wavetable merged with classic waves from tables (the aliasing fix), the supersaw, a second LFO and routes; FM's macros, shapes, DC and level fixes and less feedback aliasing; Drawbar's combo model; the Wind and Choir engines; Character; their presets.
 
+- **Wind**, built 19 Nov ([synths.md](synths.md#wind-mpfree-synth-wind), [research](../research/wind.md)): the clarinet, sax and flute bores, breath from velocity, pressure or a controller, 20 presets (two of them sounds with the Room and macros), its own Synth tab pages. O4, T1, A1, L2, L3, L5, L6, L8, L11 and L12 met on every row; O3 on 11 of 12 (the sax's brightness at its softest breaths; [Synth quality](synth-quality.md#wave-2-targets-wind-stage-4)). Brass is left for later.
+
 **Wave 3: drums, plucks and leads**
 
 Drums' own knobs, effects per drum, accent and variation, the shared 808 body; Pluck's fixes; expressive lead presets.
@@ -228,7 +230,7 @@ Drums' own knobs, effects per drum, accent and variation, the shared 808 body; P
 
 ## Sources
 
-- The research pages: [Bass](../research/bass.md), [Keys](../research/keys.md), [String machines](../research/string-machine.md), [Poly and wavetable](../research/poly-synth.md), [FM](../research/fm.md), [Organs, winds, choirs and tape](../research/organ-wind-choir.md), [Drums](../research/drums.md), [What every type shares](../research/synth-topics.md), with their sources
+- The research pages: [Bass](../research/bass.md), [Keys](../research/keys.md), [String machines](../research/string-machine.md), [Poly and wavetable](../research/poly-synth.md), [FM](../research/fm.md), [Organs, winds, choirs and tape](../research/organ-wind-choir.md), [Wind instruments](../research/wind.md), [Drums](../research/drums.md), [What every type shares](../research/synth-topics.md), with their sources
 - The baseline: [Synth quality](synth-quality.md); the bench's voice costs (`mpfree-bench --afford`)
 - MPFree design pages: [Synths](synths.md), [Presets](presets.md), [Track host](track-host.md), [Concurrency](concurrency.md), [Profiling](profiling.md), [Modulation](modulation.md), [Wavetable](wavetable.md), [Layout spec](layout-spec.md)
 - J. Parker, V. Zavalishin, E. Le Bivic, "Reducing the aliasing of nonlinear waveshaping using continuous-time convolution", DAFx 2016: https://dafx.de/paper-archive/details/vem_XXF5qBbfiWOH2RVVAA
