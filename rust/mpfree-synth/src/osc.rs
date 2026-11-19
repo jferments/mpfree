@@ -251,9 +251,10 @@ impl Classic {
     /// into each frame of `buf`, from phase `t` with increment `dt` (both
     /// [`phase`]s) on level `lv` ([`level_for`]), advancing the phase. `pw`
     /// is the pulse's width (0 to 1). The supersaw is
-    /// [`Classic::supersaw`]; here it plays one saw.
+    /// [`Classic::supersaw`]; here it plays one saw. Always inlined, so
+    /// each call site makes its choice of wave once and loops on it.
     #[allow(clippy::too_many_arguments)]
-    #[inline]
+    #[inline(always)]
     pub fn run<const ADD: bool>(
         &self,
         shape: Shape,

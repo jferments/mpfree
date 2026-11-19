@@ -38,6 +38,7 @@ use crate::dsp::*;
 use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
 use crate::params::{Preset, LFO_SYNC_BEATS};
 use crate::pressure::{swell_gain, Depths, Slot};
+use crate::table_osc::{Run, Warp};
 use params::*;
 use table::Table;
 
@@ -67,144 +68,6 @@ enum State {
     On,
     Release,
     Kill,
-}
-
-/// The highest phase a warp reads from.
-const UNDER_ONE: f32 = 0.999_999;
-
-/// How an oscillator bends its phase this control step.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-enum Warp {
-    #[default]
-    Off,
-    /// Phase distortion: the knee at `k`, slopes `a` before it, `b` after.
-    Bend {
-        k: f32,
-        a: f32,
-        b: f32,
-    },
-    Sync {
-        ratio: f32,
-    },
-    Mirror {
-        amt: f32,
-    },
-    Fm {
-        index: f32,
-    },
-}
-
-impl Warp {
-    fn new(mode: u8, amt: f32) -> Warp {
-        let amt = amt.clamp(0.0, 1.0);
-        match mode {
-            1 => {
-                let k = 0.5 - 0.48 * amt;
-                Warp::Bend {
-                    k,
-                    a: 0.5 / k,
-                    b: 0.5 / (1.0 - k),
-                }
-            }
-            2 => Warp::Sync {
-                ratio: 1.0 + 7.0 * amt,
-            },
-            3 => Warp::Mirror { amt },
-            4 => Warp::Fm { index: amt * 0.5 },
-            _ => Warp::Off,
-        }
-    }
-
-    /// How many times faster the table is read, for the mip level.
-    fn speed(self) -> f32 {
-        match self {
-            Warp::Bend { a, .. } => a,
-            Warp::Sync { ratio } => ratio,
-            Warp::Mirror { amt } if amt > 0.0 => 2.0,
-            Warp::Fm { index } => 1.0 + 8.0 * index,
-            _ => 1.0,
-        }
-    }
-
-    /// The phase read from, given the running phase and the other
-    /// oscillator's last sample (for FM): under 1, always. The bend's end
-    /// and FM a hair under a whole cycle round up to 1 in floats, and a
-    /// read there would pass its frame (and the table, on its last frame),
-    /// so those two are held just under it, as the mirror always was.
-    #[inline]
-    fn apply(self, p: f32, other: f32) -> f32 {
-        match self {
-            Warp::Off => p,
-            Warp::Bend { k, a, b } => {
-                if p < k {
-                    p * a
-                } else {
-                    (0.5 + (p - k) * b).min(UNDER_ONE)
-                }
-            }
-            Warp::Sync { ratio } => (p * ratio).fract(),
-            Warp::Mirror { amt } => {
-                let m = 1.0 - (1.0 - 2.0 * p).abs();
-                (p + (m - p) * amt).clamp(0.0, UNDER_ONE)
-            }
-            Warp::Fm { index } => {
-                let x = p + index * other;
-                (x - x.floor()).min(UNDER_ONE)
-            }
-        }
-    }
-}
-
-/// Where an oscillator reads during one control step: two neighbouring
-/// frames of its level and the crossfade between them, ramped per frame.
-/// A fast sweep that crosses a frame inside a step extrapolates past the
-/// pair for the rest of that step (16 frames), which is inaudible.
-#[derive(Clone, Copy, Debug, Default)]
-struct Run {
-    off0: usize,
-    off1: usize,
-    t: f32,
-    t_inc: f32,
-    len: f32,
-}
-
-impl Run {
-    /// A run on `level` of `tab` from frame position `from` to `to`.
-    fn new(tab: &Table, level: usize, from: f32, to: f32) -> Run {
-        let lv = &tab.levels()[level];
-        let len = lv.len as f32;
-        let last = tab.frames() - 1;
-        if last == 0 {
-            return Run {
-                len,
-                ..Run::default()
-            };
-        }
-        let (from, to) = (from.clamp(0.0, last as f32), to.clamp(0.0, last as f32));
-        let f0 = (from.min(to) as usize).min(last - 1);
-        let st = lv.stride();
-        Run {
-            off0: f0 * st,
-            off1: (f0 + 1) * st,
-            t: from - f0 as f32,
-            t_inc: (to - from) / CTRL as f32,
-            len,
-        }
-    }
-
-    /// One sample at phase `ph` (0 to 1): linear in phase, then between
-    /// the two frames.
-    #[inline]
-    fn read(&self, d: &[f32], ph: f32) -> f32 {
-        let x = ph * self.len;
-        let i = x as usize;
-        let fr = x - i as f32;
-        let (a0, a1) = (d[self.off0 + i], d[self.off0 + i + 1]);
-        let (b0, b1) = (d[self.off1 + i], d[self.off1 + i + 1]);
-        let s0 = a0 + (a1 - a0) * fr;
-        let s1 = b0 + (b1 - b0) * fr;
-        s0 + (s1 - s0) * self.t
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1413,27 +1276,5 @@ mod tests {
                 assert!(info(id).is_some(), "{}: id {id}", preset.name);
             }
         }
-    }
-
-    #[test]
-    fn warps_stay_in_the_cycle() {
-        for mode in 0..5u8 {
-            for amt in [0.0, 0.3, 1.0] {
-                let w = Warp::new(mode, amt);
-                for k in 0..1000 {
-                    let p = k as f32 / 1000.0;
-                    let q = w.apply(p, (k as f32 * 0.37).sin());
-                    assert!((0.0..1.0).contains(&q), "mode {mode} amt {amt} p {p}: {q}");
-                }
-            }
-        }
-        assert_eq!(Warp::new(1, 0.0).apply(0.3, 0.0), 0.3);
-        // Where floats round up to a whole cycle: the bend's end, and FM
-        // pulling a phase of 0 a hair below it.
-        let end = 1.0 - f32::EPSILON / 2.0;
-        for amt in [0.0, 0.5, 1.0] {
-            assert!(Warp::new(1, amt).apply(end, 0.0) < 1.0, "bend {amt}");
-        }
-        assert!(Warp::new(4, 1.0).apply(0.0, -1e-9) < 1.0);
     }
 }

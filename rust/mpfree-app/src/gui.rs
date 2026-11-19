@@ -16865,14 +16865,38 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         play_synth.apply(ToUi::PadDown { pad, velocity: v });
     }
     out.push(("play-synth", play_synth));
-    for (name, page, qlink) in [
-        ("synth", 0, (2, 12)),
-        ("synth-filter", 1, (0, -20)),
-        ("synth-lfo-2", 4, (2, 10)),
-        ("synth-voice", 5, (1, 10)),
-        ("synth-routes", 6, (0, 10)),
+    // The Table page with both oscillators on tables: Vowels a third
+    // through, the filter envelope scanning it, and Harmonics mirrored.
+    let table: &[(u16, f32)] = {
+        use mpfree_synth::params as pp;
+        &[
+            (pp::OSC1_WAVE, pp::WAVE_TABLE as f32),
+            (pp::OSC1_TABLE, 4.0),
+            (pp::OSC1_POS, 35.0),
+            (pp::OSC2_WAVE, pp::WAVE_TABLE as f32),
+            (pp::OSC2_TABLE, 1.0),
+            (pp::OSC2_LEVEL, 70.0),
+            (pp::OSC2_WARP_MODE, 3.0),
+            (pp::OSC2_WARP, 40.0),
+            (pp::FENV_POS1, 40.0),
+        ]
+    };
+    for (name, page, qlink, edits) in [
+        ("synth", 0, (2, 12), &[][..]),
+        ("synth-table", 1, (0, 10), table),
+        ("synth-filter", 2, (0, -20), &[]),
+        ("synth-lfo-2", 5, (2, 10), &[]),
+        ("synth-voice", 6, (1, 10), &[]),
+        ("synth-routes", 7, (0, 10), &[]),
     ] {
         let mut p = sample_player(fonts());
+        if !edits.is_empty() {
+            let mut s = crate::synth::Synth::new(44_100);
+            for &(id, v) in edits {
+                s.set(id, v);
+            }
+            p.apply(ToUi::Synth(s.state()));
+        }
         p.apply(ToUi::Kit(synth_kit));
         p.apply(ToUi::Show(View::Synth));
         p.apply(ToUi::SynthPage(page));
