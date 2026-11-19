@@ -218,6 +218,8 @@ Keys' tines, from wave 1's listening (no side picked on the two tine cases): reb
 
 Drums' own knobs, effects per drum, accent and variation, the shared 808 body; Pluck's fixes; expressive lead presets.
 
+- **Expressive leads**, built 19 Nov ([synths.md](synths.md#poly-mpfree-synth), [targets E1 to E4](synth-quality.md#wave-3-targets-expressive-leads-stage-7)): **Priority** (Last, Low, High) and glide by **Rate** on Poly's Mono and Legato; Priority and **Legato** in Analog's Unison, with pad pressure (to the cutoff or a vibrato) and the mod wheel's vibrato; each note's slide and tone on Analog and Bass; ten lead presets. Every older sound renders as it did.
+
 **The CPU work, alongside the waves**
 
 | # | Pull request | When |
