@@ -488,6 +488,41 @@ fn drums(name: &str, rate: u32, kit: &str, every: u64) -> Case {
     }
 }
 
+/// The drum synth with a factory kit, every pad hit at once each block:
+/// 16 hits starting and the 16 before them fading, 32 sounding (D10).
+fn drums_all(name: &str, rate: u32, kit: &str) -> Case {
+    let mut d = Drums::new(rate);
+    d.prepare(rate, MAX_BLOCK);
+    let k = Drums::presets()
+        .iter()
+        .find(|k| k.name == kit)
+        .unwrap_or_else(|| panic!("kit {kit}"));
+    d.load_preset(k);
+    let mut seed = Lcg(23);
+    let mut events: Vec<Timed> = Vec::with_capacity(16);
+    Case {
+        name: name.to_string(),
+        module: "synth",
+        what: "every pad each block, 32 hits sounding",
+        block: Box::new(move |b, l, r| {
+            events.clear();
+            for pad in 0..16u8 {
+                events.push(Timed::new(
+                    0,
+                    NodeEvent::NoteOn {
+                        note: 36 + pad,
+                        velocity: 40 + (seed.next() >> 25) as u8 % 88,
+                    },
+                ));
+            }
+            l.fill(0.0);
+            r.fill(0.0);
+            d.process(&Ctx::new(rate, b * l.len() as u64), &events, l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
 /// The drum synth's per-drum effects (`mpfree_synth::drum_fx`, D10): every
 /// pad of the Init Kit ringing 2 s, one pad hit each block in turn so all
 /// 16 sound at once (with the retriggers fading), each pad with `fx` (its
@@ -1064,6 +1099,9 @@ pub fn all(rate: u32) -> Vec<Case> {
     }));
     v.push(measured(|| {
         drums("Drums Boom Kit, a hit every block", rate, "Boom Kit", 1)
+    }));
+    v.push(measured(|| {
+        drums_all("Drums Init Kit, every pad each block", rate, "Init Kit")
     }));
     {
         use mpfree_synth::drum_fx::field as f;

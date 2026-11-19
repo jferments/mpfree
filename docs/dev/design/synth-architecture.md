@@ -37,7 +37,7 @@ Twelve engines when the three waves are done, five of them new or merged, and tw
 | Wind | **Wind** (new, one voice or up to 8 for chords, built 19 Nov: [synths.md](synths.md#wind-mpfree-synth-wind)) | A waveguide bore excited by a reed or jet curve, driven by breath (velocity, pad pressure, or a breath controller, mod wheel or foot pedal): a clarinet (a cylinder closed by a reed), a sax (a cone: the reed between two lines in parallel) and a flute (a jet across an edge). Not built: brass (a lip valve whose resonance must track the note is a second loop to tune and keep stable; [research](../research/wind.md#3-algorithms)), double reeds, register keys and overblowing | FM and subtractive winds as FM and Poly presets | 2 |
 | Choir | **Choir** (new) | A buzzy source through five formant filters per voice, morphing between vowels, through the Ensemble | Wavetable's Vowels table as Poly presets | 2 |
 | Tape character | **Character** (shared part) | Per-voice offsets and slow drift, wow and flutter, a note time limit, hiss; off and bit-exact at zero | | 2 |
-| Drums | Drums (extended) | As built, plus each drum's own knobs, each drum's own four effects (Punch, Distortion, EQ, Compressor; Jay's pick 19 Nov, built: [Synths](synths.md#each-drums-effects-and-the-kits-sends-drum_fx)) and the kit's delay and reverb sends, accent and per-hit variation, the 808 body shared with Bass, toms and congas from Pluck's modal bank (a shared part since 19 Nov: `modal.rs`) | | 3 |
+| Drums | Drums (extended; the voices and each drum's effects built 19 Nov: [synths.md](synths.md#drums-mpfree-synth-drums)) | Each drum's own knobs and Q-Links, accent and per-hit variation, one-shot or gated pads, the 808 body shared with Bass (`body808.rs`), the 808 cymbal's metal bank, toms, congas, woodblocks and bells from Pluck's modal bank (`modal.rs`), five new drums; old kits keep the first voices to the bit (the kit's Voices). Each drum's own four effects (Punch, Distortion, EQ, Compressor; Jay's pick 19 Nov: [Synths](synths.md#each-drums-effects-and-the-kits-sends-drum_fx)) and the kit's delay and reverb sends | | 3 |
 | Plucks and mallets | Pluck (polished) | As built; the comb notches of Position fixed. Built 19 Nov: the comb on the string's output, Velocity, keys evened from a loudness model, three more materials, 22 presets; a sitar's buzzing bridge left for later ([Plucked strings and struck bars](../research/plucks.md)) | | 3 |
 | Expressive leads | Poly, Analog and Bass presets | Velocity and play routes, per-note expression, note priority | | 3 |
 
@@ -219,6 +219,8 @@ Keys' tines, from wave 1's listening (no side picked on the two tine cases): reb
 **Wave 3: drums, plucks and leads**
 
 Drums' own knobs, effects per drum, accent and variation, the shared 808 body; Pluck's fixes; expressive lead presets.
+
+**The drums' voices are built** (19 Nov, [Synths](synths.md#drums-mpfree-synth-drums)): each drum its own knobs and Q-Links, the 808 kick on Bass's body, the 808 cymbal's six squares band-limited, toms, congas, woodblocks and bells on Pluck's modal bank, velocity and accent to tone, per-hit variation, gated pads, 5 ms chokes; the factory kits revoiced, and old kits play their first voices to the bit. D1 to D9 met, or said why not ([Synth quality](synth-quality.md#wave-3-targets-drums)); D10, 32 hits at once, is not met yet, as it wasn't with the first voices.
 
 **The CPU work, alongside the waves**
 

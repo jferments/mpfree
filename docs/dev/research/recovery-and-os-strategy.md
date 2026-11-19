@@ -116,8 +116,11 @@ kernel interface changes (ACVA, ILI2117, DRM); a possible future downgrade
 lock.
 
 Policy:
-- **Reference unit stays on 3.6.0** with updates off until the new version's
-  update scripts have been read and the read-only surveys re-run.
+- **The reference unit runs MPC OS 3.10.1, and all MPFree work targets it**
+  (the owner, 19 Nov 2026). It was updated on 15 Nov 2026, after 3.10.1's
+  update scripts had been read and the read-only surveys re-run; the earlier
+  rule that it stays on 3.6.0 is withdrawn. A later Akai update still needs
+  the owner's go, and the same reading and surveys first.
 - **Every MPFree release carries a firmware allowlist** (version, kernel
   string, rootfs/unit hashes). On anything else it refuses and leaves stock
   running.
