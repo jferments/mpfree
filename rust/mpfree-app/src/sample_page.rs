@@ -1154,6 +1154,17 @@ impl SamplePage {
         self.pick(pad);
     }
 
+    /// SHIFT + a pad on the MPC: pad `pad` is picked, as a hit picks it,
+    /// but nothing plays, lights or takes the hit (no live chop cut, no
+    /// Load to pad or Send to pad).
+    pub fn pick_quietly(&mut self, pad: usize) {
+        if self.live.is_some() {
+            return;
+        }
+        let pad = self.played(pad);
+        self.pick(pad);
+    }
+
     /// Pad `pad` was hit at `velocity`. With the Play tab on screen
     /// (`shown`) at its Stops or Also plays row, and no Load to pad or
     /// Send to pad waiting for a hit, the pad goes into that set or out of
