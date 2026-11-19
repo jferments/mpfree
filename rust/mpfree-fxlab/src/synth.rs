@@ -1915,7 +1915,9 @@ fn leads(rows: &mut Vec<Row>, rate: u32) {
         }
     };
     let (c3, g3) = (48u8, 55u8);
-    let one: [(&str, Engine, u16, &[(u16, f32)]); 3] = [
+    // (name, engine, its Priority id, the settings that make it play one note)
+    type Mono<'a> = (&'a str, Engine, u16, &'a [(u16, f32)]);
+    let one: [Mono; 3] = [
         (
             "Poly mono",
             Engine::Poly,
