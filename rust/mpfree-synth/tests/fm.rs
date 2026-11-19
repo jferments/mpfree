@@ -214,16 +214,26 @@ fn plays_the_right_pitch() {
 }
 
 #[test]
-fn the_init_voice_peaks_near_minus_12_dbfs() {
-    let mut s = init();
-    let (l, r) = render(
-        &mut s,
-        RATE as usize,
-        &[(0, on(60, 127)), (22_050, off(60))],
-        |_| 128,
-    );
-    let d = db(peak(&l).max(peak(&r)));
-    assert!((-16.0..=-8.0).contains(&d), "peak {d:.1} dBFS");
+fn the_init_voice_peaks_near_minus_12_dbfs_at_level_0_and_9_db_under_by_default() {
+    let peak_at = |level: Option<f32>| {
+        let mut s = init();
+        if let Some(v) = level {
+            s.set_param(LEVEL, v);
+        }
+        let (l, r) = render(
+            &mut s,
+            RATE as usize,
+            &[(0, on(60, 127)), (22_050, off(60))],
+            |_| 128,
+        );
+        db(peak(&l).max(peak(&r)))
+    };
+    // One full carrier is about -12 dBFS before the Level setting.
+    let d = peak_at(Some(0.0));
+    assert!((-16.0..=-8.0).contains(&d), "peak {d:.1} dBFS at Level 0");
+    // Level is -9 dB by default (Init and DX7 imports).
+    let d = peak_at(None);
+    assert!((-25.0..=-17.0).contains(&d), "peak {d:.1} dBFS by default");
 }
 
 #[test]

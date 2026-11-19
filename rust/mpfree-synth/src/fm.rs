@@ -53,6 +53,12 @@ const KILL_MS: f32 = 3.0;
 const VOICE_GAIN: f32 = 0.25;
 /// The DC blocker's corner: the feedback and 1:1 pairs make DC.
 const DC_HZ: f32 = 5.0;
+
+/// The per-frame gain that fades the DC blocker's tail out in about 3 ms
+/// once no voice sounds.
+fn drain_coef(rate: u32) -> f32 {
+    (-1.0 / (0.003 * rate.max(8_000) as f32)).exp()
+}
 /// The DX7's envelope rates are defined at this sample rate.
 const EG_RATE: f32 = 44_100.0;
 
@@ -358,13 +364,24 @@ const FB_CLEAN: f32 = 0.125;
 /// The operator frequency (a fraction of the rate) up to which feedback
 /// is left as it is: about C5 at 48 kHz for a ratio-1 operator.
 const FB_X0: f32 = 0.011;
-/// How much of the feedback is kept, at half-octave steps of the operator's
-/// frequency from [`FB_X0`]: at feedback 5 and full level, the most whose
-/// harmonics past Nyquist fold back at least 63 dB under the loudest, as
-/// measured on the loop itself (`docs/dev/design/synths.md`, FM). Past the
-/// last step nothing stays clean.
+/// The feedback amount where the loop turns rough (about feedback 6 with
+/// the operator two thirds up). From here on it is noise and whine more
+/// than harmonics, as on the DX7, and is left as it is at every note.
+const FB_ROUGH: f32 = 0.165;
+/// How steeply the feedback climbs from the clean limit back to
+/// [`FB_ROUGH`] at high notes: settings just past the clean limit stay
+/// near it, and only those close to rough climb. It eases in over the
+/// first [`FB_KNEE_IN`] of the easing, so nothing jumps as notes rise past
+/// C5.
+const FB_KNEE: f32 = 7.0;
+const FB_KNEE_IN: f32 = 0.1;
+/// How much of [`FB_CLEAN`] stays clean, at half-octave steps of the
+/// operator's frequency from [`FB_X0`]: the most feedback whose harmonics
+/// past Nyquist fold back at least 67 dB under the loudest, as measured on
+/// the loop itself (`docs/dev/design/synths.md`, FM). Past the last step
+/// nothing stays clean.
 const FB_KEEP: [f32; 12] = [
-    1.0, 0.9696, 0.8984, 0.7936, 0.6904, 0.5528, 0.392, 0.2448, 0.1584, 0.068, 0.0016, 0.0,
+    1.0, 0.9304, 0.8584, 0.7536, 0.652, 0.5168, 0.36, 0.2176, 0.136, 0.0536, 0.0008, 0.0,
 ];
 
 /// The share of [`FB_CLEAN`] that stays clean for a loop whose highest
@@ -383,18 +400,20 @@ pub fn fb_keep(x: f32) -> f32 {
 }
 
 /// The feedback amount for a loop at `x` of the rate, from the amount
-/// `p` the settings ask for: as asked up to C5, then, at higher notes, no
-/// more than stays clean ([`fb_keep`]). A rough setting (above
-/// [`FB_CLEAN`]) is eased by the same share, so it stays rough rather
-/// than turning into a clean saw.
+/// `p` the settings ask for: as asked up to C5, and at higher notes as
+/// asked up to what stays clean there ([`fb_keep`]). Past that it holds
+/// near the clean limit and climbs steeply back to [`FB_ROUGH`], so a
+/// rough setting stays rough (and as the DX7 plays it) and a feedback
+/// swept by pressure never jumps.
 pub fn fb_amount(p: f32, x: f32) -> f32 {
     let keep = fb_keep(x);
-    if keep >= 1.0 {
+    let c = FB_CLEAN * keep;
+    if keep >= 1.0 || p <= c || p >= FB_ROUGH {
         p
-    } else if p >= FB_CLEAN {
-        p * keep
     } else {
-        p.min(FB_CLEAN * keep)
+        let span = FB_ROUGH - c;
+        let knee = 1.0 + (FB_KNEE - 1.0) * ((1.0 - keep) / FB_KNEE_IN).min(1.0);
+        c + span * ((p - c) / span).powf(knee)
     }
 }
 
@@ -733,9 +752,13 @@ pub struct Fm {
     bend: Smooth,
     out: Smooth,
     /// The output's DC blocker (FM is mono: one for both sides) and its
-    /// last output.
+    /// last output. Once no voice sounds, what is left in it fades out
+    /// (`dc_fade`, by `dc_drain` a frame, about 3 ms) and it lets go.
     dc: DcBlock,
     dc_last: f32,
+    dc_fade: f32,
+    dc_drain: f32,
+    idle: bool,
     stack: [u8; MAX_POLY],
     stack_len: usize,
     clock: u64,
@@ -812,6 +835,9 @@ impl Fm {
             out: Smooth::new(1.0),
             dc: DcBlock::new(rate, DC_HZ),
             dc_last: 0.0,
+            dc_fade: 1.0,
+            dc_drain: drain_coef(rate),
+            idle: true,
             stack: [0; MAX_POLY],
             stack_len: 0,
             clock: 0,
@@ -981,6 +1007,14 @@ impl Fm {
             self.note_off(note);
             return;
         }
+        if self.dc_fade < 1.0 {
+            // A note after silence: what was left in the blocker (fading,
+            // far under hearing) goes, and the new note plays in full.
+            self.dc.reset();
+            self.dc_last = 0.0;
+            self.dc_fade = 1.0;
+        }
+        self.idle = false;
         self.clock += 1;
         if self.stack_len == 0 {
             self.lfo_time = 0.0;
@@ -1205,11 +1239,14 @@ impl Fm {
     // ---- control rate ----
 
     fn control(&mut self) {
-        // Once every voice has ended and the blocker's tail is under
-        // -120 dB, it lets go, so a silent engine puts out exact zeros.
-        if self.dc_last.abs() < 1e-6 && self.voices.iter().all(|v| v.state == State::Free) {
+        // Once every voice has ended, the blocker's tail fades out, and
+        // under -120 dB it lets go, so a silent engine puts out exact zeros.
+        self.idle = self.voices.iter().all(|v| v.state == State::Free);
+        if self.idle && (self.dc_last * self.dc_fade).abs() < 1e-6 {
             self.dc.reset();
             self.dc_last = 0.0;
+            // Nothing to fade: kept off the denormals.
+            self.dc_fade = 0.0;
         }
         let secs = CTRL as f32 / self.rate as f32;
         self.bend.next();
@@ -1496,11 +1533,21 @@ impl Fm {
                 }
             }
         }
-        for (k, &x) in buf[..n].iter().enumerate() {
-            let y = self.dc.tick(x);
-            left[from + k] += y;
-            right[from + k] += y;
-            self.dc_last = y;
+        if self.idle {
+            for (k, &x) in buf[..n].iter().enumerate() {
+                self.dc_last = self.dc.tick(x);
+                self.dc_fade *= self.dc_drain;
+                let y = self.dc_last * self.dc_fade;
+                left[from + k] += y;
+                right[from + k] += y;
+            }
+        } else {
+            for (k, &x) in buf[..n].iter().enumerate() {
+                let y = self.dc.tick(x);
+                left[from + k] += y;
+                right[from + k] += y;
+                self.dc_last = y;
+            }
         }
     }
 }
@@ -1547,6 +1594,7 @@ impl Node for Fm {
         self.rate = rate.max(8_000);
         if self.rate != old {
             self.dc = DcBlock::new(self.rate, DC_HZ);
+            self.dc_drain = drain_coef(self.rate);
         }
         let cr = self.rate / CTRL as u32;
         self.bend.set_time(cr, 4.0);
@@ -1569,6 +1617,8 @@ impl Node for Fm {
         self.bend.snap(0.0);
         self.dc.reset();
         self.dc_last = 0.0;
+        self.dc_fade = 1.0;
+        self.idle = true;
         let rate = self.rate;
         self.prepare(rate, mpfree_node::MAX_BLOCK);
     }
@@ -1641,7 +1691,76 @@ impl Node for Fm {
 
 #[cfg(test)]
 mod tests {
-    use super::phase_shift;
+    use super::{
+        carrier_trim, fb_amount, fb_keep, phase_shift, FB_CLEAN, FB_KNEE, FB_ROUGH, FB_X0,
+    };
+
+    #[test]
+    fn feedback_is_left_alone_up_to_c5_and_when_rough() {
+        for k in 0..=100 {
+            let p = 0.5 * k as f32 / 100.0;
+            assert_eq!(fb_amount(p, FB_X0), p);
+            assert_eq!(fb_amount(p, 0.001), p);
+        }
+        for x in [0.02f32, 0.05, 0.1, 0.2, 0.4] {
+            for p in [FB_ROUGH, 0.25, 0.5] {
+                assert_eq!(fb_amount(p, x), p, "{p} at {x}");
+            }
+        }
+    }
+
+    #[test]
+    fn feedback_eases_smoothly_at_high_notes() {
+        for x in [0.012f32, 0.02, 0.044, 0.1, 0.2, 0.4] {
+            let c = FB_CLEAN * fb_keep(x);
+            let mut last = 0.0;
+            let step = 0.5 / 2000.0;
+            for k in 0..=2000 {
+                let p = step * k as f32;
+                let q = fb_amount(p, x);
+                // Never more than asked, never less as more is asked, and
+                // no jumps: at most the knee's own slope.
+                assert!(q <= p + 1e-7, "{q} > {p} at {x}");
+                assert!(q >= last - 1e-7, "{q} < {last} at {p}, {x}");
+                assert!(q - last <= FB_KNEE * step + 1e-6, "{last} to {q} at {p}, {x}");
+                if p <= c {
+                    assert_eq!(q, p);
+                }
+                last = q;
+            }
+        }
+        // Nor as the note rises, from below C5 to past the top.
+        for k in 0..=50 {
+            let p = FB_ROUGH * k as f32 / 50.0;
+            let mut x = 0.005f32;
+            let mut last = fb_amount(p, x);
+            while x < 0.45 {
+                x *= 2f32.powf(1.0 / 400.0);
+                let q = fb_amount(p, x);
+                assert!(q <= last + 1e-7 && last - q < 2.0e-3, "{last} to {q} at {p}, {x}");
+                last = q;
+            }
+        }
+        // Feedback 5 at full level at C7 (48 kHz) holds near the clean limit.
+        let x = 2093.0 / 48_000.0;
+        let c = FB_CLEAN * fb_keep(x);
+        assert!(c < 0.1 && fb_amount(FB_CLEAN, x) < c * 1.02);
+        assert!(fb_keep(0.5) == 0.0 && fb_keep(FB_X0) == 1.0);
+    }
+
+    #[test]
+    fn the_loudest_carrier_sets_the_level() {
+        let w = |a: [f32; 6]| a;
+        assert_eq!(carrier_trim(&w([0.5, 0.0, 0.0, 0.0, 0.0, 0.0]), 0b1), 1.0);
+        let even = carrier_trim(&w([0.7; 6]), 0b11_1111);
+        assert!((even - 1.0 / 6f32.sqrt()).abs() < 1e-6);
+        // A quiet second carrier barely lowers the loud one.
+        let t = carrier_trim(&w([1.0, 0.1, 0.0, 0.0, 0.0, 0.0]), 0b11);
+        assert!((t - 1.0 / 1.01f32.sqrt()).abs() < 1e-6);
+        // Only carriers count, and none at all leaves the voice as it is.
+        assert_eq!(carrier_trim(&w([1.0, 1.0, 0.0, 0.0, 0.0, 0.0]), 0b01), 1.0);
+        assert_eq!(carrier_trim(&w([0.0; 6]), 0b11), 1.0);
+    }
 
     #[test]
     fn the_phase_shift_matches_the_i64_conversion_for_every_input() {
