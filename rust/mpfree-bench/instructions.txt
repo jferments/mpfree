@@ -7,7 +7,7 @@
 319648	Amp (Crunch)
 341579	Amp (Lead, Gain 10)
 265396	Analog Init, 8 voices
-202601	Analog Poly Brass, 8 voices
+203488	Analog Poly Brass, 8 voices
 320632	Analog Warm Pad, 8 voices
 465556	Analog Worn Cards, 16 voices
 65498	Bass Distorted 808, a line
@@ -25,6 +25,9 @@
 120120	Character (Iron)
 97075	Character (Soften)
 149818	Character (Tape)
+618597	Choir Big Choir, 8 keys
+212507	Choir Init, 1 keys
+358682	Choir Init, 6 keys
 99180	Chorus (2 voices)
 147067	Chorus (4 voices)
 991771	Cloud reverb (Cloud)
@@ -97,7 +100,7 @@
 92010	Multi filter (ladder)
 95212	Multi-tap delay
 149907	Multiband compressor
-406695	Pad synths: 16 Instrument pads of Poly, a hit each per 0.5 s
+423088	Pad synths: 16 Instrument pads of Poly, a hit each per 0.5 s
 212533	Perform FX, 7 pads held (pitch drop, gate, sweeps, crush, riser, echo)
 61602	Perform FX, a wash throw held
 3388	Perform FX, idle
@@ -111,23 +114,25 @@
 249183	Pluck Harp, 16 voices
 127636	Pluck Marimba, 8 voices
 163789	Pluck Steel String, 8 voices
-52361	Poly Acid, 8 voices
-201662	Poly Brass, 8 voices
-288782	Poly Drift Pad, 8 voices
-374389	Poly Dust Pad, 8 voices
-62162	Poly Grit Bass, 8 voices
-606162	Poly Init, 16 voices, unison 4
-191750	Poly Init, 8 voices
-58020	Poly Lead, 8 voices
-209421	Poly Pluck, 8 voices
-67748	Poly Singing Lead, 8 voices
-30818	Poly Sub Bass, 8 voices
-45781	Poly Super Lead, 8 voices
-279340	Poly Super Pad, 8 voices
-319975	Poly Super Stab, 8 voices
-394062	Poly Super Stack, 8 voices
-341789	Poly Supersaw, 8 voices
-243190	Poly Worn Brass, 8 voices
+52446	Poly Acid, 8 voices
+210895	Poly Brass, 8 voices
+294239	Poly Drift Pad, 8 voices
+355569	Poly Dust Pad, 8 voices
+62675	Poly Grit Bass, 8 voices
+595812	Poly Init, 16 voices, unison 4
+193565	Poly Init, 8 voices
+58186	Poly Lead, 8 voices
+208324	Poly Pluck, 8 voices
+68637	Poly Singing Lead, 8 voices
+31730	Poly Sub Bass, 8 voices
+47093	Poly Super Lead, 8 voices
+284882	Poly Super Pad, 8 voices
+327444	Poly Super Stab, 8 voices
+401599	Poly Super Stack, 8 voices
+335435	Poly Supersaw, 8 voices
+1698302	Poly Table, 16 voices, both osc, unison 8
+664789	Poly Table, 8 voices, both osc, unison 4
+246021	Poly Worn Brass, 8 voices
 12921	Ring mod
 145867	Room reverb
 108213	Rotary
@@ -167,7 +172,7 @@
 15539	Time: recording 3 armed tracks, 8 clips
 8882	Time: transport, 8 clips, arp
 55989	Track host alone, 16 tracks, 8 events each per block
-406148	Track host, 4 Poly tracks of 4 voices
+412590	Track host, 4 Poly tracks of 4 voices
 27052	Transient shaper
 11340	Tremolo
 32159	Tuner

@@ -30,6 +30,12 @@ the first waits for you to press Enter:
      its own main thread to core 3 and its lane workers to core 2, and prints
      "not pinned (reason)" and runs unpinned if a pin is refused; writes
      nothing). Their output, and the JSON, go into this report.
+  5. The default build only, two more runs for the device round's asks:
+     `mpfree-bench --starts` (16 notes started in one block on every preset:
+     what a note costs as it starts; writes nothing) and
+     `mpfree-bench --plain --json default-plain.json` (every engine again
+     with the NEON kernels off, their plain Rust twins instead: the NEON
+     keep-or-drop A/B, read by devtest_report.py against default.json).
   6. Only with --before COMMIT=PATH (once for each): builds of earlier
      commits, made the default build's way, so a change's cost on the MPC
      can be read against the commit before it. Each is checked in step 1 and
@@ -81,6 +87,12 @@ RUNS = (
     ("--afford", 600),
     ("--lanes --lane-cores 3,2", 1200),
 )
+# The default build's own runs after RUNS (the device round's asks): note starts, and every engine with the
+# NEON kernels off for the A/B against its --json.
+DEFAULT_RUNS = (
+    ("--starts", 600),
+    ("--plain --json @@BUILD@@-plain.json", 1200),
+)
 # An earlier commit's build (--before): it names its files on the MPC, so its label is only a short commit
 # hash. It runs the reference kernels and every engine; --afford and --lanes are the two builds' own.
 BEFORE_LABEL = re.compile(r"^[0-9a-f]{7,12}$")
@@ -98,7 +110,7 @@ PREPARE = r"""R=''
 umask 077
 d="$R/run/mpfree-bench"
 [ -d "$d" ] || mkdir "$d" || exit 1
-rm -f "$d/default" "$d/default.part" "$d/a17" "$d/a17.part" "$d/default.json" "$d/a17.json"@@BEFORE@@
+rm -f "$d/default" "$d/default.part" "$d/a17" "$d/a17.part" "$d/default.json" "$d/a17.json" "$d/default-plain.json"@@BEFORE@@
 """
 RECEIVE = r"""R=''; umask 077; cat > "$R/run/mpfree-bench/@@BUILD@@.part" && chmod 700 "$R/run/mpfree-bench/@@BUILD@@.part" && mv "$R/run/mpfree-bench/@@BUILD@@.part" "$R/run/mpfree-bench/@@BUILD@@" """
 HASH = r"""R=''
@@ -110,7 +122,7 @@ p='@@BUILD@@'
 exec "$R/run/mpfree-bench/$p" @@ARGS@@
 """
 JSON = r"""R=''
-cat "$R/run/mpfree-bench/@@BUILD@@.json" 2>/dev/null || echo "(no JSON file)"
+cat "$R/run/mpfree-bench/@@FILE@@.json" 2>/dev/null || echo "(no JSON file)"
 """
 
 
@@ -218,17 +230,22 @@ def main(argv):
         out.say("  (for a clean run; whichever was running starts again at the end)")
         for n, (name, _, _) in enumerate(programs, start=4):
             out.say(f"\n[{n}/{total}] The {name} build: the reference kernels, every engine, then one core vs two (only computes)")
-            answer = app.ready(out, "Takes about 10 to 15 minutes; the MPC can stay as it is.")
+            extra = DEFAULT_RUNS if name == "default" else ()
+            answer = app.ready(out, "Takes about " + ("15 to 25" if extra else "10 to 15")
+                               + " minutes; the MPC can stay as it is.")
             if answer == "quit":
                 raise Stop("stopped by you")
             if answer == "skip":
                 continue
-            for run_args, timeout in RUNS:
+            for run_args, timeout in RUNS + extra:
                 rc, _ = app.stream(mpc, kexec.fill(RUN, BUILD=name, ARGS=kexec.fill(run_args, BUILD=name)),
                                      timeout, out)
                 if rc != 0:
-                    raise Stop(f"{name} {run_args.split()[0]} ended with exit code {rc}")
+                    label = " ".join(a for a in run_args.split() if a.startswith("--"))
+                    raise Stop(f"{name} {label} ended with exit code {rc}")
             show_json(mpc, out, name)
+            if extra:
+                show_json(mpc, out, f"{name}-plain")
         if before:
             out.say(f"\n[{total}/{total}] The earlier builds, " + ", ".join(n for n, _, _ in before)
                     + ": the reference kernels and every engine (only computes)")
@@ -257,7 +274,7 @@ def main(argv):
 
 def show_json(mpc, out, name):
     """A build's JSON report, from the MPC's RAM into this report."""
-    rc, text = mpc.run(kexec.fill(JSON, BUILD=name), test=True)
+    rc, text = mpc.run(kexec.fill(JSON, FILE=name), test=True)
     out.say(f"  ----- {name}.json -----")
     for line in text.splitlines():
         out.say(f"  {line}")

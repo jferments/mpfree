@@ -1089,6 +1089,60 @@ mod tests {
         assert!((m.morph - 0.64).abs() < 1e-6);
     }
 
+    /// SHIFT + the wheel's push (the button combos of 19 Nov): a knob
+    /// goes back to its setting's own default, as a touch, a turn and a
+    /// lift would set it; at its default already, nothing.
+    #[test]
+    fn shift_and_the_push_put_a_knob_back_to_its_default() {
+        let mut song = Song::new();
+        let st = song.chain_state(DRUMS, 1, 0, None);
+        let mut ui = screen(Fonts::embedded(), &mut song, Place::Mixer, Some(st), None).unwrap();
+        let mut c = mpfree_ui::SoftCanvas::new(1280, 800);
+        ui.paint(&mut c);
+        let r = ui.rect_of(crate::CHAIN).unwrap();
+        let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
+        let params = v.state().params.clone();
+        let k = (0..params.len())
+            .find(|&k| {
+                let p = &params[k];
+                v.control_rect(r, k).is_some()
+                    && !p.info.readonly
+                    && p.info.clamp(p.info.default) != p.value
+            })
+            .expect("a knob away from its default");
+        let kr = v.control_rect(r, k).unwrap();
+        let t = ui.focus_at(kr.x + kr.w / 2, kr.y + kr.h / 2).unwrap();
+        assert_eq!(t.index, k);
+        assert!(ui.focus_reset().is_some());
+        let addr = params[k].addr;
+        let value = params[k].info.clamp(params[k].info.default);
+        let acts = crate::take_chain_actions(&mut ui);
+        assert_eq!(
+            acts[acts.len() - 2..],
+            [ChainAction::Set { addr, value }, ChainAction::Release(addr)]
+        );
+        // One at its default says nothing.
+        if let Some(d) = (0..params.len()).find(|&d| {
+            let p = &params[d];
+            v_rect(&ui, r, d) && !p.info.readonly && p.info.clamp(p.info.default) == p.value
+        }) {
+            let dr = ui
+                .get::<ChainView>(crate::CHAIN)
+                .unwrap()
+                .control_rect(r, d)
+                .unwrap();
+            ui.focus_at(dr.x + dr.w / 2, dr.y + dr.h / 2);
+            assert_eq!(ui.focus_reset(), None);
+        }
+    }
+
+    fn v_rect(ui: &Ui, r: Rect, k: usize) -> bool {
+        ui.get::<ChainView>(crate::CHAIN)
+            .unwrap()
+            .control_rect(r, k)
+            .is_some()
+    }
+
     #[test]
     fn the_data_wheel_turns_a_knob_as_a_finger_would() {
         let mut song = Song::new();

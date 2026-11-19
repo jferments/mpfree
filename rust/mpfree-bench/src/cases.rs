@@ -29,10 +29,12 @@ use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::*;
 use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
 use mpfree_seq::{Clip, Lock, Note, Project as Song, Quantise, Speed, Track};
-use mpfree_synth::params::{POLYPHONY, UNISON, VOICE_MODE};
+use mpfree_synth::params::{
+    OSC1_LEVEL, OSC1_WAVE, OSC2_LEVEL, OSC2_WAVE, POLYPHONY, UNISON, VOICE_MODE, WAVE_TABLE,
+};
 use mpfree_synth::wavetable::params as wt;
 use mpfree_synth::{
-    Analog, Bass, Drawbar, Drums, Keys, Pluck, Poly, Squelch, Strings, Wavetable, Wind,
+    Analog, Bass, Choir, Drawbar, Drums, Keys, Pluck, Poly, Squelch, Strings, Wavetable, Wind,
 };
 use mpfree_track::{Instrument, Sum, TrackHost};
 use mpfree_transport::time::{Swing, PPQ};
@@ -1136,6 +1138,24 @@ pub fn all(rate: u32) -> Vec<Case> {
             )
         }));
     }
+    // Choir: one note and a six-note chord of three singers each (O10),
+    // and the big choir's eight notes of eight singers.
+    for (name, keys) in [("Init", 1), ("Init", 6), ("Big Choir", 8)] {
+        v.push(measured(|| {
+            let p = Choir::presets()
+                .iter()
+                .find(|p| p.name == name)
+                .unwrap_or_else(|| panic!("choir preset {name}"));
+            chords(
+                format!("Choir {name}, {keys} keys"),
+                rate,
+                Box::new(Choir::new(rate)),
+                p.values,
+                Some(mpfree_synth::choir_params::VOICES),
+                keys,
+            )
+        }));
+    }
     // Squelch: the classic line, the square, and the drive on top.
     for name in ["Acid Line", "Square Acid", "Distorted"] {
         v.push(measured(|| {
@@ -1255,6 +1275,27 @@ pub fn all(rate: u32) -> Vec<Case> {
             16,
         )
     }));
+    // Poly's Table wave, as the Wavetable cases above play it: both
+    // oscillators on the Basic table.
+    for (name, unison, voices) in [
+        ("Poly Table, 8 voices, both osc, unison 4", 4.0, 8),
+        ("Poly Table, 16 voices, both osc, unison 8", 8.0, 16),
+    ] {
+        v.push(measured(|| {
+            synth(
+                name.to_string(),
+                rate,
+                &[
+                    (OSC1_WAVE, WAVE_TABLE as f32),
+                    (OSC2_WAVE, WAVE_TABLE as f32),
+                    (OSC1_LEVEL, 100.0),
+                    (OSC2_LEVEL, 60.0),
+                    (UNISON, unison),
+                ],
+                voices,
+            )
+        }));
+    }
     v.push(measured(|| {
         sampler("Sampler, 20 pads", rate, false, SamplerPads::All)
     }));
@@ -2029,6 +2070,17 @@ fn engine_presets(rate: u32) -> Vec<Preset> {
             p.values,
             Some(pluck_params::POLYPHONY),
             false,
+        ));
+    }
+    for p in Choir::presets() {
+        let mono = mode(p.values, mpfree_synth::choir_params::MODE);
+        v.push(Preset::new(
+            format!("Choir {}", p.name),
+            rate,
+            Choir::new,
+            p.values,
+            Some(mpfree_synth::choir_params::VOICES),
+            mono,
         ));
     }
     v
