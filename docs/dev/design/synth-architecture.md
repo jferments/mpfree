@@ -38,7 +38,7 @@ Twelve engines when the three waves are done, five of them new or merged, and tw
 | Choir | **Choir** (new) | A buzzy source through five formant filters per voice, morphing between vowels, through the Ensemble | Wavetable's Vowels table as Poly presets | 2 |
 | Tape character | **Character** (shared part) | Per-voice offsets and slow drift, wow and flutter, a note time limit, hiss; off and bit-exact at zero | | 2 |
 | Drums | Drums (extended) | As built, plus each drum's own knobs, each drum's own two effects in a kit, accent and per-hit variation, the 808 body shared with Bass, toms and congas from Pluck's modal bank (a shared part since 19 Nov: `modal.rs`) | | 3 |
-| Plucks and mallets | Pluck (polished) | As built; the comb notches of Position fixed | | 3 |
+| Plucks and mallets | Pluck (polished) | As built; the comb notches of Position fixed. Built 19 Nov: the comb on the string's output, Velocity, keys evened from a loudness model, three more materials, 22 presets; a sitar's buzzing bridge left for later ([Plucked strings and struck bars](../research/plucks.md)) | | 3 |
 | Expressive leads | Poly, Analog and Bass presets | Velocity and play routes, per-note expression, note priority | | 3 |
 
 Why these choices (our reading of the research pages):

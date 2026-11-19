@@ -110,10 +110,10 @@
 74424	Pitch correct
 71972	Pitch shifter
 155797	Plate reverb
-307019	Pluck Bell, 16 voices
-249183	Pluck Harp, 16 voices
-127636	Pluck Marimba, 8 voices
-163789	Pluck Steel String, 8 voices
+307601	Pluck Bell, 16 voices
+277522	Pluck Harp, 16 voices
+128065	Pluck Marimba, 8 voices
+181173	Pluck Steel String, 8 voices
 52446	Poly Acid, 8 voices
 210895	Poly Brass, 8 voices
 294239	Poly Drift Pad, 8 voices
