@@ -1174,6 +1174,13 @@ synth/Poly[Brass]/key_spread_db	2.2952
 synth/Poly[Brass]/mono_loss_db	0
 synth/Poly[Brass]/vel_curve_err_db	0.0173
 synth/Poly[Brass]/vel_tone_oct	0.2549
+synth/Poly[Drift Pad]/chord6_vs_power_db	-0.2021
+synth/Poly[Drift Pad]/chord8_peak_dbfs	-3.9702
+synth/Poly[Drift Pad]/dc_dbfs	-129.495
+synth/Poly[Drift Pad]/key_spread_db	2.0724
+synth/Poly[Drift Pad]/mono_loss_db	0.095
+synth/Poly[Drift Pad]/vel_curve_err_db	0.0079
+synth/Poly[Drift Pad]/vel_tone_oct	0.2391
 synth/Poly[Dust Pad]/chord6_vs_power_db	0.0262
 synth/Poly[Dust Pad]/chord8_peak_dbfs	-10.1473
 synth/Poly[Dust Pad]/dc_dbfs	-111.011
@@ -1210,6 +1217,12 @@ synth/Poly[Pluck]/key_spread_db	7.5256
 synth/Poly[Pluck]/mono_loss_db	0
 synth/Poly[Pluck]/vel_curve_err_db	0.0065
 synth/Poly[Pluck]/vel_tone_oct	0.5798
+synth/Poly[Singing Lead]/chord8_peak_dbfs	-13.7958
+synth/Poly[Singing Lead]/dc_dbfs	-100.0207
+synth/Poly[Singing Lead]/key_spread_db	2.4082
+synth/Poly[Singing Lead]/mono_loss_db	0
+synth/Poly[Singing Lead]/vel_curve_err_db	0.0187
+synth/Poly[Singing Lead]/vel_tone_oct	0.1713
 synth/Poly[Sub Bass]/chord8_peak_dbfs	-15.6617
 synth/Poly[Sub Bass]/dc_dbfs	-81.354
 synth/Poly[Sub Bass]/key_spread_db	13.4343
@@ -1654,6 +1667,8 @@ synth/glide[Bass rate, an octave in 300 ms]/land_cents	0.0016
 synth/glide[Bass rate, an octave in 300 ms]/time_err_pct	-0.2934
 synth/glide[Poly legato, 200 ms]/land_cents	0.0367
 synth/glide[Poly legato, 200 ms]/time_err_pct	-1.2201
+synth/route[Poly, wheel to pitch 100 %]/pitch_err_cents	0.0001
+synth/route[Poly, wheel to vibrato 50 %]/depth_err_pct	-0.0636
 synth/swell[Strings per key, crescendo 1500 ms]/time_err_pct	-2.325
 synth/swell[Strings per key, crescendo 400 ms]/time_err_pct	-2.2336
 synth/swell[Strings per key, sustain 1500 ms]/time_err_pct	0.0605

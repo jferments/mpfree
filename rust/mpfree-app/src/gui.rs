@@ -16046,7 +16046,9 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     for (name, page, qlink) in [
         ("synth", 0, (2, 12)),
         ("synth-filter", 1, (0, -20)),
-        ("synth-voice", 4, (1, 10)),
+        ("synth-lfo-2", 4, (2, 10)),
+        ("synth-voice", 5, (1, 10)),
+        ("synth-routes", 6, (0, 10)),
     ] {
         let mut p = sample_player(fonts());
         p.apply(ToUi::Kit(synth_kit));
