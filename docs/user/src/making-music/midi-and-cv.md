@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-midi rust/mpfree-midi-ui/src/learn.rs rust/mpfree-midi-ui/src/port_page.rs rust/mpfree-app/src/midi_in.rs rust/mpfree-app/src/midi_out.rs rust/mpfree-app/src/cv_out.rs
-checked: 2026-11-19 79fc6f63
+checked: 2026-11-19 f0b39161
 -->
 
 # Playing other gear: MIDI, sync and CV
@@ -165,9 +165,9 @@ Its settings are in the mixer's I/O view, in the **Controller** section:
 While it is on:
 
 - The pads light blue, brighter while held. **PAD BANK** picks their bank: A to D, and SHIFT or a second press for E to H.
-- **Q-LINK** steps the Q-Links to the next four: 1-4, 5-8, 9-12, 13-16, then 1-4 again.
+- **Q-LINK** steps the Q-Links to the next four: 1-4, 5-8, 9-12, 13-16, then 1-4 again. **SHIFT + Q-LINK** steps back.
 - The Q-Links send their CCs on every page, and the Q-Link column shows them: the name of what each moves and the value it sent last. A Q-Link turned up or down moves its value from 0 to 127. Each starts at 0, because MPFree can't know where your gear's control is.
-- **FULL LEVEL** and **HALF LEVEL** still set how hard the pads play.
+- **FULL LEVEL** and Half Level (**SHIFT + FULL LEVEL**) still set how hard the pads play.
 - STEP SEQ, TRACK MUTE and 16 LEVEL wait: the pads are the controller's.
 - In the top bar, a chip says so: *Controller → Juno-X · ch 3 · A* (the port, the channel and the pads' bank), or why nothing goes (*Controller: MIDI out is off in Prefs*). A tap on the chip turns controller mode off.
 

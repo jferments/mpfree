@@ -503,6 +503,9 @@ pub struct TimeHost {
     pub click_gain: f32,
     /// The device the transport follows, for what is said while it waits.
     leader: Option<String>,
+    /// Each track's Quantise grid before SHIFT + TC turned it off (0:
+    /// none yet), so SHIFT + TC turns the same one back on.
+    quantise_was: Vec<u32>,
 }
 
 /// A step's parameter lock (`value`) or its end (`None`), `offset` frames
@@ -512,6 +515,9 @@ pub type LockOut = (u32, mpfree_play::mpfree_param::ParamAddr, Option<f32>);
 /// A move lane's value, `offset` frames into the period (a lane's end
 /// comes as a [`LockOut`] unlock).
 pub type LaneOut = (u32, mpfree_play::mpfree_param::ParamAddr, f32);
+
+/// The grid SHIFT + TC turns Quantise on at the first time: 1/16.
+pub const QUANTISE_ON: u32 = 240;
 
 /// Locks kept for the mixer in one period (more are dropped).
 const MAX_LOCKS: usize = 256;
@@ -551,6 +557,7 @@ impl TimeHost {
             metronome: false,
             click_gain: click_gain(CLICK_DB),
             leader: None,
+            quantise_was: vec![0; mpfree_seq::MAX_TRACKS],
         };
         host.audio.receive();
         Ok(host)
@@ -590,6 +597,45 @@ impl TimeHost {
     /// follow), if any.
     pub fn armed(&self) -> Option<usize> {
         self.control.armed()
+    }
+
+    /// SHIFT + TC (the MPC's TC On/Off): the armed track's Quantise while
+    /// recording turns off, or back on at the grid it had (1/16 the first
+    /// time), as the Record tab's Quantise row sets it. What to say.
+    pub fn toggle_record_quantise(&mut self) -> Result<String, String> {
+        let t = self.armed().ok_or("pick a track first")?;
+        let track = self
+            .control
+            .project
+            .tracks
+            .get(t)
+            .ok_or_else(|| format!("no track {}", t + 1))?;
+        let name = track.name.clone();
+        let grid = match track.record_quantise {
+            Some(g) => {
+                if let Some(w) = self.quantise_was.get_mut(t) {
+                    *w = g;
+                }
+                None
+            }
+            None => Some(
+                self.quantise_was
+                    .get(t)
+                    .copied()
+                    .filter(|&g| g > 0)
+                    .unwrap_or(QUANTISE_ON),
+            ),
+        };
+        self.act(TimeAction::RecordQuantise { track: t, grid })?;
+        Ok(match grid {
+            Some(g) => format!(
+                "Quantise on: {name} records each note on the nearest {}   ·   SHIFT + TC: off",
+                mpfree_time_ui::view::grid_name(g)
+            ),
+            None => {
+                format!("Quantise off: {name} records the notes as played   ·   SHIFT + TC: on")
+            }
+        })
     }
 
     /// The other armed tracks, a bit each, without the armed one
@@ -5356,6 +5402,30 @@ mod tests {
         let at = |frames: u64| frames as f64 * 960.0 * 2.0 / f64::from(RATE);
         assert!((lane.value_at(at(BAR)).unwrap() - 0.5).abs() < 1e-3);
         assert!((lane.value_at(at(2 * BAR - 1500)).unwrap() - 1.0).abs() < 1e-3);
+    }
+
+    /// SHIFT + TC (the MPC's TC On/Off): the armed track's Quantise while
+    /// recording turns on at 1/16, off, and back on at the grid it had.
+    #[test]
+    fn shift_tc_turns_the_armed_tracks_quantise_off_and_back_on() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let line = h.toggle_record_quantise().unwrap();
+        assert!(line.starts_with("Quantise on: Track 1"), "{line}");
+        assert_eq!(h.state().tracks[0].record_quantise, Some(QUANTISE_ON));
+        h.act(TimeAction::RecordQuantise {
+            track: 0,
+            grid: Some(120),
+        })
+        .unwrap();
+        let line = h.toggle_record_quantise().unwrap();
+        assert!(line.starts_with("Quantise off: Track 1"), "{line}");
+        assert_eq!(h.state().tracks[0].record_quantise, None);
+        h.toggle_record_quantise().unwrap();
+        assert_eq!(
+            h.state().tracks[0].record_quantise,
+            Some(120),
+            "the grid it had"
+        );
     }
 
     /// The note editor on the focused clip: Edit opens it; Timing Correct

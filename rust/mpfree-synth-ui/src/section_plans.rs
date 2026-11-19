@@ -347,7 +347,14 @@ fn poly(page: &str) -> Option<Plan> {
         "Voice" => (
             "row(col(voices:*, unison:*):55*, col(tuning:*, output:*):45*)",
             vec![
-                s("voices", "Voices", Voice, &[VOICE_MODE, POLYPHONY, GLIDE]),
+                // Age: how far each voice is from the others (the voice
+                // core's cards, as on Analog).
+                s(
+                    "voices",
+                    "Voices",
+                    Voice,
+                    &[VOICE_MODE, POLYPHONY, GLIDE, AGE],
+                ),
                 // Not "Voices": the Voices section has that word.
                 s(
                     "unison",

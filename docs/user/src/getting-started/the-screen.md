@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-ui/src/widgets.rs rust/mpfree-ui/src/qlink.rs rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/gui.rs
-checked: 2026-11-19 a6fb29b2
+checked: 2026-11-19 f0b39161
 -->
 
 # The screen
@@ -32,7 +32,7 @@ A ninth tab, **Dev**, shows only when **Show developer tools** is on in [Prefs](
 | Chip | Shows | A tap |
 |---|---|---|
 | **MAKE** or **PERFORM** | Which way MPFree answers your hands (see [Make and Perform](../making-music/playing-live.md#make-and-perform)). Always there, at the left of the chips. | Switches, as **SHIFT + MAIN** does. |
-| **Full level** or **Half level** | Every pad hit plays at full (or half) level, however hard you play. | Turns that level off, as pressing **FULL LEVEL** again would. |
+| **Full level**, **Half level** or **Level 92** | Every pad hit plays at full (or half) level, however hard you play, or at the level you set by holding **FULL LEVEL** and hitting a pad. | Turns that level off, as pressing **FULL LEVEL** again would. |
 | **Pads: steps · Kick** | **STEP SEQ** has made the pads the steps of a sound (with a synth, the synth and the note new steps play: **Pads: steps · Poly · C3 + G3**). | Gives the pads back, as **STEP SEQ** again would. See [The pads as steps](../making-music/sequencer.md#the-pads-as-steps-step-seq). |
 | **Pads: Perform B** | The pads are a page of the Perform set (throws, mutes, scenes). | Gives the pads back. See [The Perform set](../making-music/looping.md#more-pages-the-perform-set). |
 | **16 Levels · tune** | **16 LEVEL** has spread one sound over the pads. | Says how to turn it off. See [16 Levels](../making-music/playing-live.md#16-levels). |
