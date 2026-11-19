@@ -8,8 +8,8 @@ use mpfree_instruments::sound::has_design;
 use mpfree_instruments::{Design, Designed, Sound};
 use mpfree_node::Node;
 use mpfree_synth::{
-    Analog, Bass, Choir, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset, Squelch, Strings, Wavetable,
-    Wind,
+    Analog, Bass, Choir, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset, Squelch, Strings,
+    Wavetable, Wind,
 };
 
 const RATE: u32 = 48_000;
