@@ -410,5 +410,5 @@ fn the_hit_shape_drawn_is_the_hit_played() {
     let hat = hit_shape(|id| d.param(id), 3, RATE);
     assert_eq!((hat.model, hat.hz, hat.body.0), ("Closed hat", 0.0, 0.0));
     let clap = hit_shape(|id| d.param(id), 2, RATE);
-    assert_eq!(clap.bursts.map(|b| b.0.len()), Some(4));
+    assert_eq!(clap.bursts.map(|b| b.count), Some(4));
 }

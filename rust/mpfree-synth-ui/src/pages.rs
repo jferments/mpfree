@@ -242,52 +242,53 @@ const WT: &[PlanPage] = &[
     ),
 ];
 
-use mpfree_synth::drum_params::{field as df, pad_id, BASE_NOTE, LEVEL as DRUM_LEVEL};
+use mpfree_synth::drum_params as dp;
 
-/// The drum synth's Q-Links on pad `n`'s page: tune, decay, tone, snap.
-const fn drum_q(n: usize) -> [u16; 4] {
-    [
-        pad_id(n, df::TUNE),
-        pad_id(n, df::DECAY),
-        pad_id(n, df::TONE),
-        pad_id(n, df::SNAP),
-    ]
-}
-const DRUM_Q: [[u16; 4]; 16] = {
-    let mut q = [[0u16; 4]; 16];
-    let mut n = 0;
-    while n < 16 {
-        q[n] = drum_q(n);
-        n += 1;
-    }
-    q
-};
-
-/// Drums: a page per pad (its 14 knobs), then the kit.
-const DRUMS: &[PlanPage] = &[
-    pg("Pad 1", &["Pad 1"], &DRUM_Q[0]),
-    pg("Pad 2", &["Pad 2"], &DRUM_Q[1]),
-    pg("Pad 3", &["Pad 3"], &DRUM_Q[2]),
-    pg("Pad 4", &["Pad 4"], &DRUM_Q[3]),
-    pg("Pad 5", &["Pad 5"], &DRUM_Q[4]),
-    pg("Pad 6", &["Pad 6"], &DRUM_Q[5]),
-    pg("Pad 7", &["Pad 7"], &DRUM_Q[6]),
-    pg("Pad 8", &["Pad 8"], &DRUM_Q[7]),
-    pg("Pad 9", &["Pad 9"], &DRUM_Q[8]),
-    pg("Pad 10", &["Pad 10"], &DRUM_Q[9]),
-    pg("Pad 11", &["Pad 11"], &DRUM_Q[10]),
-    pg("Pad 12", &["Pad 12"], &DRUM_Q[11]),
-    pg("Pad 13", &["Pad 13"], &DRUM_Q[12]),
-    pg("Pad 14", &["Pad 14"], &DRUM_Q[13]),
-    pg("Pad 15", &["Pad 15"], &DRUM_Q[14]),
-    pg("Pad 16", &["Pad 16"], &DRUM_Q[15]),
-    pg("Kit", &["Kit"], &[DRUM_LEVEL, BASE_NOTE]),
-];
+/// Drums: a page per pad, then the kit. A pad's page shows that drum's own
+/// knobs ([`dp::page_fields`]), so it is built from the values
+/// ([`drum_pages`]); this plan only names the kit's page.
+const DRUMS: &[PlanPage] = &[pg(
+    "Kit",
+    &["Kit"],
+    &[dp::LEVEL, dp::BASE_NOTE, dp::VOICES],
+)];
 
 /// The page that holds pad `pad`'s knobs (0 to 15), so an app can follow
 /// the last pad hit.
 pub fn drum_page(pad: usize) -> usize {
     pad.min(15)
+}
+
+/// Drums' pad pages for the values `value` gives by id: each pad's model
+/// and the kit's Voices pick its knobs and its Q-Links. Every pad's
+/// parameter counts as placed, shown or not: one the drum doesn't use has
+/// no page until it does.
+fn drum_pages(params: &[ParamInfo], value: &dyn Fn(u16) -> f32, placed: &mut [bool]) -> Vec<Page> {
+    let at = |id: u16| params.iter().position(|p| p.id == id);
+    for (i, p) in params.iter().enumerate() {
+        if dp::pad_field(p.id).is_some() {
+            placed[i] = true;
+        }
+    }
+    let current = value(dp::VOICES) >= 0.5;
+    (0..dp::PADS)
+        .map(|pad| {
+            let m = dp::model_of(value(dp::pad_id(pad, dp::field::MODEL)));
+            let params: Vec<usize> = dp::page_fields(m, current)
+                .into_iter()
+                .filter_map(|f| at(dp::pad_id(pad, f)))
+                .collect();
+            let qlinks = dp::page_qlinks(m, current)
+                .into_iter()
+                .filter_map(|f| at(dp::pad_id(pad, f)))
+                .collect();
+            Page {
+                name: format!("Pad {}", pad + 1),
+                params,
+                qlinks,
+            }
+        })
+        .collect()
 }
 
 use mpfree_synth::pluck_params as kp;
@@ -546,10 +547,18 @@ fn known(id: &str) -> Option<&'static [PlanPage]> {
     }
 }
 
-/// The pages for a node. Every parameter is on exactly one page. A node's
-/// macros (group [`MACROS`]) come first, then the engine's own plan; a
-/// group the plan doesn't name goes on generic pages after it.
+/// The pages for a node at its parameters' defaults ([`plan_values`]).
 pub fn plan(info: &NodeInfo, params: &[ParamInfo]) -> Vec<Page> {
+    let defaults: Vec<f32> = params.iter().map(|p| p.default).collect();
+    plan_values(info, params, &defaults)
+}
+
+/// The pages for a node with its values (in `params` order). Every
+/// parameter is on exactly one page, except a Drums pad's that its drum
+/// doesn't use ([`drum_pages`]). A node's macros (group [`MACROS`]) come
+/// first, then the engine's own plan; a group the plan doesn't name goes
+/// on generic pages after it.
+pub fn plan_values(info: &NodeInfo, params: &[ParamInfo], values: &[f32]) -> Vec<Page> {
     let mut placed = vec![false; params.len()];
     let mut pages = Vec::new();
     let macros: Vec<usize> = (0..params.len())
@@ -572,6 +581,15 @@ pub fn plan(info: &NodeInfo, params: &[ParamInfo]) -> Vec<Page> {
                 Vec::new()
             },
         });
+    }
+    if info.id == "mpfree.drums" {
+        let value = |id: u16| {
+            params
+                .iter()
+                .position(|p| p.id == id)
+                .map_or(0.0, |i| values.get(i).copied().unwrap_or(params[i].default))
+        };
+        pages.extend(drum_pages(params, &value, &mut placed));
     }
     if let Some(plan) = known(info.id) {
         for PlanPage {
@@ -853,14 +871,16 @@ mod tests {
     #[test]
     fn drums_get_a_page_per_pad_and_the_kit() {
         use mpfree_node::Node;
-        let d = mpfree_synth::Drums::new(48_000);
+        let mut d = mpfree_synth::Drums::new(48_000);
         let params = d.params();
+        // A Classic kit (the engine's own defaults): each pad its first
+        // fourteen, as before.
         let pages = plan(d.info(), params);
         let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
         let mut want: Vec<String> = (1..=16).map(|n| format!("Pad {n}")).collect();
         want.push("Kit".into());
         assert_eq!(names, want);
-        every_param_once(&pages, params.len());
+        shown_once(&pages, params);
         for (n, p) in pages[..16].iter().enumerate() {
             assert_eq!(p.params.len(), 14);
             let q: Vec<&str> = qlink_targets(p, params)
@@ -872,6 +892,48 @@ mod tests {
             for &i in &p.params {
                 assert!(tile_label(&p.name, &params[i]).len() <= 20);
             }
+        }
+        let kit: Vec<&str> = pages[16].params.iter().map(|&i| params[i].name).collect();
+        assert_eq!(kit, ["Level", "Pad 1 note", "Voices", "Hits on"]);
+        // A Current kit: each pad that drum's own knobs and Q-Links.
+        let init = mpfree_synth::Drums::presets()
+            .iter()
+            .find(|k| k.name == "Init Kit")
+            .unwrap();
+        d.load_preset(init);
+        let values: Vec<f32> = params.iter().map(|p| d.param(p.id)).collect();
+        let pages = plan_values(d.info(), params, &values);
+        shown_once(&pages, params);
+        let q = |pad: usize| -> Vec<u16> {
+            qlink_targets(&pages[pad], params)
+                .iter()
+                .map(|&i| dp::pad_field(params[i].id).unwrap().1)
+                .collect()
+        };
+        use dp::field::*;
+        assert_eq!(q(0), [TUNE, DECAY, SWEEP, SNAP], "the kick");
+        assert_eq!(q(13), [TUNE, DECAY, TONE, DRIVE], "the 808 kick");
+        assert_eq!(q(2), [TONE, DECAY, BURST_GAP, ROOM], "the clap");
+        for (pad, p) in pages[..16].iter().enumerate() {
+            let m = dp::model_of(d.param(dp::pad_id(pad, MODEL)));
+            assert_eq!(p.params.len(), dp::SHARED.len() + dp::knobs(m).len());
+            assert!(p.params.len() <= MAX_TILES);
+        }
+    }
+
+    /// No parameter on two pages, and every one on a page but a drum
+    /// pad's that its drum doesn't show.
+    fn shown_once(pages: &[Page], params: &[ParamInfo]) {
+        let mut seen = vec![0; params.len()];
+        for p in pages {
+            assert!(!p.params.is_empty() && p.params.len() <= MAX_TILES);
+            for &i in &p.params {
+                seen[i] += 1;
+            }
+        }
+        for (i, &n) in seen.iter().enumerate() {
+            assert!(n <= 1, "{} twice", params[i].name);
+            assert!(n == 1 || dp::pad_field(params[i].id).is_some(), "{}", params[i].name);
         }
     }
 
