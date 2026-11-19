@@ -175,6 +175,17 @@ The bar for the [Wind engine](synths.md#wind-mpfree-synth-wind), from [Organs, w
 | O4 | Tuning, C2 to C6 at velocities 30, 100 and 127, each bore | Within 3 cents | Met: clarinet 0.09 cents, sax 0.03, flute 0.17 |
 | Cost | What a voice costs (no wind row in the survey; reported, as B11 is) | Reported | Workstation, a sixteenth-note line, instructions a block: Wind Init 121k, Growl Sax 144k, Concert Flute 143k; Reed Section, 6 voices on chords, 608k. MPC: device round |
 
+## Wave 3 targets: expressive leads (stage 7)
+
+What a lead line needs from the engines that play one note at a time (Poly in Mono and Legato, Analog in Unison, Bass): the right held key sounding, a glide timed as labelled, and each note's own expression. Measured by `leads()` in the lab. The ten lead presets (Portamento Lead, Low Note Lead, Breath Lead, Slide Lead and Unison Lead on Poly; Solo Lead, Glide Lead and Fat Lead on Analog; Rate Glide Bass and High Note Lead on Bass) also meet L2, L3, L5, L6 and L8, and L11 on two of them (the other eight spread 3.3 to 5.2 dB across the keys, as most leads do).
+
+| Id | Measure | Target | Today |
+|---|---|---|---|
+| E1 | Priority: hold C3 and add G3 300 ms later; at 0.6 s, Low still plays C3 and High has moved to G3 | Within 1 cent | Met on Poly mono, Analog unison and Bass, both ways (0.005 cents at worst) |
+| E2 | Poly's glide by **Rate** at 300 ms an octave: an octave and a fifth up from C3 land, and take 12/12 and 7/12 of 300 ms | Land within 2 cents; time within 10 % | Met: both land exactly, 1.0 % and 1.6 % quick |
+| E3 | A note's slide: C4 slid up 2 semitones plays D4, and a G4 held beside it doesn't move | Within 1 cent | Met on Poly, Analog and Bass (0.003 cents at worst; Bass plays one note, so it has no G4 row) |
+| E4 | Analog's vibrato: the mod wheel at the top, and full pad pressure with Press to on Vibrato and Pressure 100, swing the pitch as far as labelled (50 cents) | Within 5 % | Met: both 1.1 % under |
+
 ## Not measured yet
 
 Supersaw detune and phase (P2, P3), unison and table-morph steps (P4, P7), Analog's own spread at each Age (P10 measures Poly's, with the same cards and drift), the 808 kick and metal bank against their papers (D1, D2, D9), chokes and retriggers (D6), sustain-pedal behaviour (K5: there is no pedal event yet), piano partials (K8), FM envelope rates and banks (F4, F6), choirs and tape (O1, O2, O7, O8 and O10: no engines yet; Wind's O3 and O4 are in the report), attack noises (O9), and cost on the MPC. Each joins the report when stage 3 or 4 builds or changes what it measures.
