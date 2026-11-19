@@ -111,6 +111,18 @@ stabs, and a sung tone turned into a 16-frame table and scanned by the LFO.
 It prints each stem's level per bar and the lead's table position per beat,
 and checks the ending is silent and nothing clips.
 
+## In Poly
+
+Since 19 Nov (wave 2 of the synth library) Poly plays these tables too:
+either of its oscillators can take the **Table** wave, with the same
+tables, positions and warps ([Synths](synths.md#poly-mpfree-synth)). Both
+engines read through the voice core's table oscillator
+(`mpfree-synth/src/table_osc.rs`: the warps and the frame-by-frame read
+moved there from this module); Poly's read runs on its 32-bit phase and
+costs about a third less a block than this synth's. The Wavetable synth
+stays until its presets, tracks and user sounds load as Poly (part B of
+the fold), then goes.
+
 ## Next
 
 - The Sample tab: "Make a wavetable" from a pad's sample, then pick it in

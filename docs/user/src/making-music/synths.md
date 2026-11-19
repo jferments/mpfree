@@ -23,7 +23,7 @@ Any of the twelve can be a track's own instrument (see [A synth for each track](
 
 | Synth | What it is | Good for | Presets |
 |---|---|---|---|
-| **Poly** | A classic two-oscillator subtractive synth, with a sub oscillator, noise, unison, a seven-saw supersaw and a resonant filter | Basses, leads, pads, brass, big trance-style stacks | Grit Bass, Acid, Supersaw, Dust Pad, Pluck, Brass, Sub Bass, Lead, Singing Lead, Drift Pad, Super Lead, Super Pad, Super Stab, Super Stack, Worn Brass |
+| **Poly** | A classic two-oscillator subtractive synth, with a sub oscillator, noise, unison, a seven-saw supersaw, Wavetable's tables and a resonant filter | Basses, leads, pads, brass, big trance-style stacks | Grit Bass, Acid, Supersaw, Dust Pad, Pluck, Brass, Sub Bass, Lead, Singing Lead, Drift Pad, Super Lead, Super Pad, Super Stab, Super Stack, Worn Brass |
 | **FM** | Six-operator FM, in the tradition of the 1980s digital synths | Electric pianos, bells, glassy keys, punchy basses | Glass Keys, Bell Tower, Rubber Bass, Drawbars, Brass Section, Log Drum, Silk Pad, Steel Pluck |
 | **Drums** | A drum synth: a different synthesised drum on each pad | Electronic kits built from scratch | Boom Kit, Tight Kit, Grit Kit, Electro Kit |
 | **Pluck** | Physically modelled strings and mallets | Guitars, harps, marimbas, bells | Nylon, Steel String, Harp, Koto, Muted Bass, Marimba, Vibes, Bell, Glass, Kalimba, Steel Drum |
@@ -98,6 +98,15 @@ Coming:
 
 The level stays about the same whatever you set. **Super Lead**, **Super Pad**, **Super Stab** and **Super Stack** use it. Super Stack adds a wide ensemble and a bouncing delay, with its four macros on Detune, Mix, Octave and Effects.
 
+{{shot: synth-table | Poly's Table page: oscillator 1 plays the Vowels table, oscillator 2 the Harmonics table mirrored, each drawn as its stack of waves with the one it plays bright; below, what moves the positions.}}
+
+**Poly's Table wave.** Set an oscillator's **Wave** to **Table** and it plays one of Wavetable's tables: a stack of single waves that change from one to the next (see Wavetable below for what each table sounds like). The **Table** page holds both oscillators' tables:
+
+- **Table** picks the stack, **Position** where in it the oscillator plays, **Warp** how each wave is bent (**Bend**, **Sync**, **Mirror** or **FM**, as on Wavetable) and **Warp amt** how much. The Q-Links turn both positions and warp amounts.
+- **Moves**: the filter envelope can sweep each oscillator's position (**Env to position 1** and **2**) and the warp (**Env to warp**), harder hits can start further in (**Velocity to position**), and LFO 1 can wobble each position (**LFO to position 1** and **2**). Pad pressure and the routes can move them too (**Position**, **Warp**).
+
+A setting that does nothing says so in place: "Table wave only" while its oscillator plays another wave, "warp is off" while its Warp is Off. Everything else on Poly works with a table too: the filter, both LFOs, unison (now up to 8 copies), Age (which nudges the two oscillators' positions apart, note by note). Wavetable's presets move over to Poly in a later update.
+
 {{shot: synth-voice | Poly's Voice page: how it plays (Poly, Mono or Legato, the number of voices, the glide and Age), Unison (copies of each note, their detune and spread), the tuning and the output.}}
 
 **Poly's envelopes** (on the Env page, and the filter's on the Filter page) have times that mean what they say: an **Attack** of 100 ms reaches full level at 100 ms, and a **Release** of 1 s fades 60 dB in 1 s and stops. **Velocity to level** is how much quieter your softest hit is than your hardest, in dB (8 dB by default; 0 dB plays every hit as loud, and keys-like sounds want 30 dB or more). Presets and projects saved before 19 November 2026 load with their times and velocity converted, so they sound as they did.
@@ -121,7 +130,7 @@ The level stays about the same whatever you set. **Super Lead**, **Super Pad**, 
 
 **Singing Lead** and **Drift Pad** show them off. Singing Lead's vibrato fades in on each note, harder hits push its drive, and a keyboard's tone opens its filter. Each of Drift Pad's notes sits at its own place across the speakers and a few cents off, its LFO 2 moves each note's tone by itself, and the mod wheel opens its filter.
 
-**Unison** is on Poly's **Voice** page: **Copies** plays up to four copies of every note, **Detune** spreads them in pitch and **Spread** across the speakers. It thickens any wave, the supersaw too, but each copy costs as much as a note.
+**Unison** is on Poly's **Voice** page: **Copies** plays up to eight copies of every note, **Detune** spreads them in pitch and **Spread** across the speakers. It thickens any wave, the supersaw too, but each copy costs as much as a note.
 
 **Age**, also on Poly's **Voice** page (Q-Link 2 there), makes each voice a little its own, as on the polysynths of the late 1970s, which had a circuit board for each voice: each note a few cents out of tune with the others, a little brighter or darker, quicker or slower, and each one drifting slowly in pitch as it plays. Notes go to the voices in turn, so the same chord sounds a little different each time you play it. At 0 (the default) every voice is the same; at 100 they differ as much as Analog's do at 100. **Worn Brass** is Brass at 80.
 
