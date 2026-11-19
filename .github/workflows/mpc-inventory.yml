@@ -54,6 +54,7 @@ jobs:
       - name: Validate shell syntax
         run: |
           bash -n tools/mpc-one/collect-over-ssh.sh
+          bash -n tools/mpc-one/check-stick-backup.sh
           bash -n tools/mpc-one/offline-akai-updater.sh
           bash -n tools/mpc-one/offline-rootfs-survey.sh
           sh -n tools/mpc-one/read-only-kexec-preflight.sh

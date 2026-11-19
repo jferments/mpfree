@@ -150,6 +150,16 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 - **Stop if** partition 4 starts anywhere but 1024 MiB or isn't `MPFREE-DATA ext4`: Q6 would then start partition 4 afresh. Send the results instead.
 - `no MPFree stick found among the USB disks` or `more than one MPFree stick is in`: put in only the round's stick, and run Q6a again.
 
+Not sure which stick is the round's? This checks the one that is in, and the backup on it (read-only on the stick; sudo asks for your password; it copies the backup into a new `~/mpfree-work/stick-check-<UTC>/`, about 7.3 GiB, and compares it with Q4's; about 20 minutes):
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run stick-check -- bash tools/mpc-one/check-stick-backup.sh
+```
+
+- **Go on when** it ends `RESULT: this is the round's stick.`
+- `RESULT: NOT the stick the round's notes name (...), but its backup is intact and this MPC's`: this stick can be the round's too. Say so before Q6.
+- Any other `RESULT` says what it found and what to do. One with `NOT` means not this stick: put in another and run it again.
+
 **Block Q6: the USB creator writes the stick** (**erases the stick's partitions 1, 2, 3 and 5 and its partition table**, keeps partition 4; the stick in the workstation; sudo; about 5 minutes):
 
 ```bash
@@ -420,6 +430,7 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 | Block | Changes | Undo |
 |---|---|---|
 | Q0, Q0b, Q0c, Q0d, G1, Q6, Q8e | New folders under `~/mpfree-work` (Q6's `creator-stick-<UTC>` record among them) and `~/mpfree-results` (Q8e's `devtest-report.md` in it), build output in the clone | Delete them |
+| Q6a's stick check (only if run) | A new `~/mpfree-work/stick-check-<UTC>/` with the stick's backup in it, kept only when `~/mpfree-backups` has no copy of that backup; nothing on the stick | Delete the folder its `RESULT` line names |
 | G1a | `cargo-zigbuild` in `~/.cargo/bin`, zig in `~/.local/share/mpfree-zig` | `cargo uninstall cargo-zigbuild && rm -r /home/jesse/.local/share/mpfree-zig` |
 | Q6 | The stick's partitions 1, 2, 3 and 5 and its partition table | Q6 again from an earlier commit; partition 4 stays |
 | Q6b | Nothing if both plugins were there; else the missing one on partition 4 | `stick-plugin.py remove`, as in Q6b |
