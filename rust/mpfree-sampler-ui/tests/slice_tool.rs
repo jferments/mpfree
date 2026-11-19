@@ -1386,6 +1386,92 @@ fn put_on_new_kit_chops_onto_an_empty_kit_for_a_new_track_in_one_undo_step() {
     assert_eq!(value(&s, Row::Put), "Pads");
 }
 
+/// The one Sample page's step 6: Put on Audio track, where the app has
+/// audio tracks, after New kit. The slices go on no pad, so the pad map,
+/// its chip, First pad and Phrase are faint and say why, the lane is
+/// empty, and the main button asks the app to put them on an audio track
+/// in a row, the chop as it is.
+#[test]
+fn put_on_audio_track_puts_the_slices_in_a_row_on_no_pad() {
+    let mut s = chop();
+    let value = |s: &Sample, row: Row| {
+        s.ui.get::<SettingList>(wave_tab::REGION).unwrap().rows[row.index()]
+            .value
+            .clone()
+    };
+    // Until the app offers it, Put on has no Audio track.
+    for _ in 0..3 {
+        step(&mut s, Row::Put, 1);
+        assert_ne!(value(&s, Row::Put), "Audio track");
+    }
+    // Offered, it comes after New kit, as drawn.
+    with_chop(&mut s.state, |c| {
+        c.new_kit = Some(Ok(()));
+        c.audio = true;
+    });
+    shown(&mut s);
+    assert_eq!(value(&s, Row::Put), "Pads");
+    for _ in 0..4 {
+        step(&mut s, Row::Put, 1);
+    }
+    assert_eq!(value(&s, Row::Put), "Audio track");
+    method(&mut s, Method::Grid);
+    for _ in 0..4 {
+        step(&mut s, Row::Amount, -1);
+    }
+    let n = s.tab.slice().slices();
+    assert!(n > 1);
+    let b = s.tab.slice().bounds(cs(&s.state));
+    let no_pad = "An audio track plays the slices in a row: no pad";
+    // No pad: the map is faint and empty, its chip too, the lane names no
+    // pad, and Pads says None.
+    let (cells, faint) = map(&s);
+    assert!(faint);
+    assert!(cells.iter().all(|c| c.tint.is_none()));
+    let l = s.ui.get::<SettingList>(wave_tab::REGION).unwrap();
+    assert_eq!(l.controls[Row::Pads.index()].why, no_pad);
+    assert_eq!(l.controls[Row::Bank.index()].why, no_pad);
+    assert!(lane(&s).0.is_empty());
+    assert_eq!(value(&s, Row::Pads), "None");
+    assert!(s.tab.slice().replaced(cs(&s.state)).is_empty());
+    // A tap on the map does nothing here; the app's hint line says why.
+    assert_eq!(tap_says(&mut s, "Pads: pad 1"), None);
+    let l = s.ui.get::<SettingList>(wave_tab::REGION).unwrap();
+    assert_eq!(l.why_faint(Row::Pads.index()), Some(no_pad));
+    // Q-Link 4 (First pad) has no pad to move.
+    let q4 = s.ui.get::<KnobCard>(wave_tab::QLINKS[3]).unwrap();
+    assert!(!q4.enabled && q4.why == no_pad);
+    // An audio track plays the slices in time: no phrase.
+    step(&mut s, Row::Phrase, 1);
+    let l = s.ui.get::<SettingList>(wave_tab::REGION).unwrap();
+    assert!(l.controls[Row::Phrase.index()].faint);
+    assert_eq!(
+        l.controls[Row::Phrase.index()].why,
+        "Phrase is for pads: on an audio track the slices already play one after another"
+    );
+    assert_eq!(list_right(&s), "a region each, from the playhead's bar");
+    let (labels, enabled) = buttons(&s);
+    assert_eq!((labels[3].as_str(), enabled[3]), ("To audio track", true));
+    // The main button: the slices' bounds of the pad's layer, by name.
+    let a = press(&mut s, Button::ToPads);
+    assert_eq!(
+        a,
+        Some(ChopAction::ToAudio {
+            pad: PAD,
+            layer: 0,
+            name: "Break 92".into(),
+            bounds: b.clone(),
+        })
+    );
+    // Nothing changed here: it can go again (on another bar, say).
+    assert_eq!(s.tab.slice().bounds(cs(&s.state)), b);
+    assert!(press(&mut s, Button::ToPads).is_some());
+    // No longer offered, Put on is back on Pads.
+    with_chop(&mut s.state, |c| c.audio = false);
+    shown(&mut s);
+    assert_eq!(value(&s, Row::Put), "Pads");
+}
+
 /// One-page step 3b: the lane under the wave names the pad each slice
 /// lands on, lit once that pad plays it; the pad map shows them on the
 /// bank in their colours, a tap on a pad starts them there and its arrows
