@@ -1222,6 +1222,8 @@ mod tests {
     /// BROWSE > Projects > Export, then Start on its panel (with
     /// `untick`'s boxes unticked first): the export runs in fast mode and
     /// says how it went. Returns that line and the folder in Recordings.
+    /// Export from the browser, with the panel's buttons in `untick`
+    /// pressed first (a tick taken off, or "Track" for stems by track).
     fn export(s: &mut Session, untick: &[&str], within: f64) -> (String, std::path::PathBuf) {
         if s.app.view() != crate::app::View::Browser {
             s.button("BROWSE");
@@ -1271,8 +1273,9 @@ mod tests {
             open(s, song.name);
             assert!(!s.time.song_on());
             let played_from = s.hits.played.len();
-            // The first pass and a replay for each of the five tracks.
-            let (line, dir) = export(s, &[], 900.0);
+            // Stems by track (the default is by channel): the first pass
+            // and a replay for each of the five tracks.
+            let (line, dir) = export(s, &["Track"], 900.0);
             assert!(
                 line.starts_with("export: Exported ") && line.contains("a MIDI file"),
                 "{line}"

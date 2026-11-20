@@ -917,8 +917,11 @@ fn export_asks_the_app_and_its_panel_takes_the_screen() {
         ExportRange::Bars(10),
         "the wheel sets the bars"
     );
-    // Ticks, stems by channel and a format, then Start (the push).
+    // Ticks, stems by channel (the default; by track and back) and a
+    // format, then Start (the push).
     b.input(Input::Export(ExportInput::Midi));
+    assert_eq!(b.screen().export.unwrap().by, StemsBy::Channel);
+    b.input(Input::Export(ExportInput::ByTrack));
     assert_eq!(b.screen().export.unwrap().by, StemsBy::Track);
     b.input(Input::Export(ExportInput::ByChannel));
     b.input(Input::Export(ExportInput::Fewer));

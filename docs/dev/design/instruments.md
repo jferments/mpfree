@@ -291,3 +291,14 @@ The plan's step 7: "MIDI in and scripts play instruments. A MIDI input or a Rhai
 
 - **A route that names an instrument.** A route in the Routing section names a track, and a track plays any instrument (step 4's sends, step 6's free places), so a keyboard on a route already reaches any instrument through a track that plays it, and its takes have a track to go to. A route naming an instrument with no track would play it live but leave REC nothing to record into; it waits until the recording plan covers routes.
 - **Scripts.** They wait on the scripting mode (a separate `mpfree-script` program sending step lines, on Jay's list after device round 2). When it comes, a script is a player like the keys: unrouted, it plays what the pads play (7b's `KeysOnPads` path); its events carry a source of their own for the recorder (rule 4).
+
+## Step 8: layers, who plays what, mute and solo scopes, stems
+
+The plan's step 8: "Layers, who plays what, mute and solo scopes, stems." Rule 7: "Muting a track stops its notes; muting an instrument silences its sound. Soloing a track lets only its notes through to the instruments; soloing an instrument lets only its sound through. Stems export per instrument by default; rendering one track alone through a shared instrument is a separate choice."
+
+- **Mute and solo scopes hold already.** TRACK MUTE and a track's solo act in the time engine (`TimeHost::mute_or_solo`): they stop a track's notes, so a track playing a shared instrument goes quiet while the others go on. The mixer's mute and solo act on a strip, and each instrument has its own (steps 4d and 6), so they act on its sound. A track that plays another's instrument has no strip of its own to mute by mistake (`MixHost::track_strip_shown`).
+
+### 8a as built (stems per instrument by default)
+
+- The export panel's **Stems by** starts on **Channel** (`mpfree_browser_ui::export::StemsBy`'s default; a choice made in the panel is still kept for the next export). Each instrument sounds on a channel of its own, a kit's on its drum channel, the shared synth's on Synth, a track's own synth and a synth picked for the pads on theirs, so these stems are one per instrument, from one pass, and add up to the mix. **Track** stays the separate choice that renders each track alone through a shared instrument, replaying the range.
+- **Tests:** mpfree-browser-ui's `stems_by_track_or_channel_say_how_many_passes` and `export_asks_the_app_and_its_panel_takes_the_screen`; `smoke::song_workflows::tests::night_market_exports_its_arrangement_as_mixdown_stems_and_midi` now picks Track.
