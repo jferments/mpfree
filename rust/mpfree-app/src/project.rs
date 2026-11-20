@@ -194,6 +194,10 @@ pub struct Opening {
     /// Every track not in it (all of them for New, or a project saved
     /// before the part) plays kit 1.
     pub track_kits: Vec<(usize, Option<usize>)>,
+    /// The tracks that play another track's own instrument (step 4): the
+    /// track and the instrument's track, from 0. The loop sets them once
+    /// the instruments are in.
+    pub sends: Vec<(usize, usize)>,
     /// The project's instruments: the audio loop takes it in place of its
     /// own, which comes back in the box to be freed on the screen thread.
     pub instrument_list: InstrumentList,
@@ -375,33 +379,57 @@ fn own_ids(list: &mut InstrumentList, held: u128, format: u32, notes: &mut Vec<S
 }
 
 /// What the tracks play, from the track kits part's picks: a kit as it
-/// is, and an instrument by its id, which is the shared synth (None) when
-/// the list has it. A track whose instrument the list hasn't got is left
-/// out, so it plays kit 1, and said.
+/// is, and an instrument by its id: the shared synth (None in the first
+/// list), or another track's own instrument (step 4), a send in the
+/// second list (the track and the instrument's track). A track whose
+/// instrument the list hasn't got, or that points at its own, is left
+/// out, so it plays its kit, and said.
+#[allow(clippy::type_complexity)]
 fn tracks_play(
     picks: Vec<(usize, TrackPick)>,
     list: &InstrumentList,
     notes: &mut Vec<String>,
-) -> Vec<(usize, Option<usize>)> {
+) -> (Vec<(usize, Option<usize>)>, Vec<(usize, usize)>) {
     let mut out = Vec::with_capacity(picks.len());
+    let mut sends = Vec::new();
     for (track, pick) in picks {
         match pick {
             TrackPick::Kit(k) => out.push((track, Some(k))),
             TrackPick::Instrument(id) => match list.kind(id) {
                 Some(Kind::SharedSynth) => out.push((track, None)),
-                Some(Kind::Own { track: of }) => notes.push(format!(
-                    "project: track {} plays kit 1 (its instrument {id} is track {}'s own)",
-                    track + 1,
-                    of + 1
+                Some(Kind::Own { track: of }) if of != track => sends.push((track, of)),
+                Some(Kind::Own { .. }) => notes.push(format!(
+                    "project: track {} plays its own instrument {id} (it said it plays it from another track)",
+                    track + 1
                 )),
                 None => notes.push(format!(
-                    "project: track {} plays kit 1 (its instrument {id} isn't in the project's list)",
+                    "project: track {} plays its kit (its instrument {id} isn't in the project's list)",
                     track + 1
                 )),
             },
         }
     }
-    out
+    (out, sends)
+}
+
+/// The track kits part with the sends (step 4): [`TrackKits::text`]'s
+/// lines, then `track 6 instrument 2` for each track that plays another
+/// track's own instrument, by that instrument's id in `list`.
+///
+/// [`TrackKits::text`]: crate::sampler::TrackKits::text
+pub fn track_kits_text(
+    kits: &crate::sampler::TrackKits,
+    inst: &crate::instruments::Instruments,
+    list: &InstrumentList,
+) -> String {
+    use std::fmt::Write as _;
+    let mut s = kits.text();
+    for t in 0..crate::instruments::TRACKS {
+        if let Some(id) = inst.send(t).and_then(|o| list.own_of(o)) {
+            let _ = writeln!(s, "track {} instrument {id}", t + 1);
+        }
+    }
+    s
 }
 
 /// Reads the loop's parts of `snap` and builds what is costly here (the
@@ -499,14 +527,14 @@ pub fn opening(
         .filter(|l| l.track < crate::instrument_list::TRACKS)
         .fold(0u128, |bits, l| bits | 1 << l.track);
     own_ids(&mut instrument_list, held, format, &mut notes);
-    let track_kits = match snap.part(TRACK_KITS).map(track_kits_parse) {
-        None => Vec::new(),
+    let (track_kits, sends) = match snap.part(TRACK_KITS).map(track_kits_parse) {
+        None => (Vec::new(), Vec::new()),
         Some(Ok(picks)) => tracks_play(picks, &instrument_list, &mut notes),
         Some(Err(e)) => {
             notes.push(format!(
                 "project: what the tracks play wasn't opened ({e}); they play kit 1"
             ));
-            Vec::new()
+            (Vec::new(), Vec::new())
         }
     };
     Opening {
@@ -519,6 +547,7 @@ pub fn opening(
         perform: snap.part(PERFORM).map(str::to_string),
         instruments,
         track_kits,
+        sends,
         instrument_list,
         pads: snap.part(PADS).map(str::to_string),
         notes,
@@ -2451,8 +2480,8 @@ mod tests {
         assert!(instrument_notes(&again).is_empty(), "{:?}", again.notes);
     }
 
-    /// A track pointing at an instrument the list hasn't got plays kit 1,
-    /// said; the others keep theirs. Each version of the track kits part
+    /// A track pointing at an instrument the list hasn't got plays its kit
+    /// (kit 1 here), said; the others keep theirs. Each version of the track kits part
     /// has its own word for the shared synth: a part mixing them doesn't
     /// read, said, and every track plays kit 1.
     #[test]
@@ -2469,7 +2498,7 @@ mod tests {
         assert_eq!(o.track_kits, [(2, None)]);
         assert_eq!(
             instrument_notes(&o),
-            ["project: track 2 plays kit 1 (its instrument 5 isn't in the project's list)"]
+            ["project: track 2 plays its kit (its instrument 5 isn't in the project's list)"]
         );
         for kits in [
             format!("{TRACK_KITS_FORMAT}\ntrack 3 synth\n"),
@@ -2577,6 +2606,49 @@ mod tests {
         instruments_text(&inst)
     }
 
+    /// Step 4: a track that plays another track's own instrument is saved
+    /// in the track kits part by that instrument's id, beside its kit, and
+    /// comes back as a send. A send to an instrument that wasn't made
+    /// plays the kit, said.
+    #[test]
+    fn a_track_that_plays_another_tracks_instrument_is_kept_and_comes_back() {
+        use crate::instruments::{make, Instruments};
+        use crate::synth::Engine;
+        let (rate, plugins) = (44_100, crate::plugins::Plugins::none());
+        let synth = crate::synth::Synth::new(rate);
+        let mut inst = Instruments::new(rate, PERIOD);
+        let (id, extras, values) = synth.sound_of(Engine::Fm);
+        let made = make(&plugins, id, &extras, &values, rate, PERIOD).unwrap();
+        let pads = synth.pads_for(Engine::Fm);
+        assert!(inst.put(1, made, pads, &synth.tuning_now()).is_ok());
+        inst.set_send(5, Some(1)).unwrap();
+        let mut list = InstrumentList::new();
+        list.follow(inst.held_tracks());
+        let mut kits = crate::sampler::TrackKits::new(4);
+        kits.set(5, 2);
+        let text = track_kits_text(&kits, &inst, &list);
+        assert_eq!(
+            text,
+            format!("{TRACK_KITS_FORMAT}\ntrack 6 kit 3\ntrack 6 instrument 2\n")
+        );
+        let mut c = collected(text.clone(), list.text());
+        c.instruments = instruments_text(&inst);
+        let o = opening(&snapshot(&c, Vec::new()), rate, "x", &plugins);
+        assert_eq!(o.track_kits, [(5, Some(2))], "its kit stays under it");
+        assert_eq!(o.sends, [(5, 1)]);
+        assert!(instrument_notes(&o).is_empty(), "{:?}", o.notes);
+        // The instrument's sound missing: its id goes, and the send with it.
+        let c = collected(text, list.text());
+        let o = opening(&snapshot(&c, Vec::new()), rate, "x", &plugins);
+        assert!(o.sends.is_empty());
+        assert!(
+            o.notes.iter().any(|n| n
+                == "project: track 6 plays its kit (its instrument 2 isn't in the project's list)"),
+            "{:?}",
+            o.notes
+        );
+    }
+
     /// Step 2b: the tracks' own instruments join the list. In a project
     /// saved before instruments had ids they get the next ids in track
     /// order, saying nothing; saved again the list names each one's
@@ -2614,12 +2686,13 @@ mod tests {
     /// A newer project whose list and instruments part disagree: a track's
     /// instrument with no id gets the next one, an id whose track has no
     /// instrument is gone, and each is said. A track pointed at another
-    /// track's own instrument plays kit 1, said.
+    /// track's own instrument plays it (step 4), and one pointed at its own
+    /// plays that, said.
     #[test]
     fn a_list_that_disagrees_with_the_instruments_part_is_put_right_and_said() {
         let none = &crate::plugins::Plugins::none();
         let mut c = collected(
-            format!("{TRACK_KITS_FORMAT}\ntrack 7 instrument 5\n"),
+            format!("{TRACK_KITS_FORMAT}\ntrack 7 instrument 5\ntrack 2 instrument 5\n"),
             "mpfree-instrument-list 1\nnext 9\ninstrument 1 shared-synth\n\
              instrument 5 own track 2\ninstrument 6 own track 6\n"
                 .to_string(),
@@ -2633,12 +2706,13 @@ mod tests {
             (id(5), id(9), None)
         );
         assert!(o.track_kits.is_empty());
+        assert_eq!(o.sends, [(6, 1)], "track 7 plays track 2's");
         assert_eq!(
             instrument_notes(&o),
             [
                 "project: instrument 6 (track 6's own) isn't there, so it is gone from the list",
                 "project: track 4's own instrument had no id in the list; it is instrument 9 now",
-                "project: track 7 plays kit 1 (its instrument 5 is track 2's own)",
+                "project: track 2 plays its own instrument 5 (it said it plays it from another track)",
             ]
         );
     }

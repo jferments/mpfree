@@ -115,6 +115,17 @@ impl TrackPresets {
         self.new_sound(track);
     }
 
+    /// Track `to` has a copy of track `from`'s sound (step 4c, Duplicate):
+    /// it plays the same preset, by name, and a try on it is over.
+    pub fn copy(&mut self, from: usize, to: usize) {
+        let (index, own) = (self.index(from), self.own(from).map(str::to_string));
+        self.new_sound(to);
+        if let (Some(i), Some(o)) = (self.index.get_mut(to), self.own.get_mut(to)) {
+            *i = index;
+            *o = own;
+        }
+    }
+
     /// Track `track` has another sound that isn't a preset: no name, and a
     /// try on it is over.
     pub fn new_sound(&mut self, track: usize) {

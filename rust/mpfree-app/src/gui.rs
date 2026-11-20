@@ -799,6 +799,33 @@ pub struct Timing {
 /// What each track plays as its own instrument (None: the kit).
 pub type TrackSounds = [Option<crate::instruments::Held>; crate::instruments::TRACKS];
 
+/// The track whose instrument each track plays though it has none of its
+/// own (instrument redesign step 4; None: it plays its kit).
+pub type TrackSends = [Option<u8>; crate::instruments::TRACKS];
+
+/// The instrument track `t` plays, from `sounds` and `sends`: its own
+/// (with None), or another track's (with that track).
+fn played(
+    sounds: &TrackSounds,
+    sends: &TrackSends,
+    t: usize,
+) -> Option<(crate::instruments::Held, Option<usize>)> {
+    if let Some(h) = sounds.get(t).copied().flatten() {
+        return Some((h, None));
+    }
+    let o = usize::from(sends.get(t).copied().flatten()?);
+    sounds.get(o).copied().flatten().map(|h| (h, Some(o)))
+}
+
+/// An instrument's name as track `t` shows it: its own's ("FM"), or
+/// another track's ("Track 3's FM").
+fn played_name(h: crate::instruments::Held, from: Option<usize>) -> String {
+    match from {
+        Some(o) => crate::app::sent_name(o, h.name),
+        None => h.name.to_string(),
+    }
+}
+
 /// What a pad mute says on a track that plays kit `kit` (counted from
 /// 0, and not kit 1): its pads play through the track's channel, which
 /// has the mute. `what` starts the line ("steps", "pad mute").
@@ -828,24 +855,26 @@ pub fn no_pad_mutes(what: &str, kit: Option<usize>, page: usize) -> Option<Strin
 }
 
 /// Writes what each track plays under its name: its own instrument's
-/// name, else what it plays of the list of kits (`kits`): "Kit" (kit
-/// 1), "Kit 2" and on, or "Synth"; a Loop track's input ("Pads", for the
-/// pads and the synth). And which tracks play notes, so transpose moves
-/// them (`TrackInfo::melodic`): one with its own instrument (not the drum
-/// engine), or one that plays the synth while it plays notes
-/// (`synth_notes`).
+/// name, or another track's ("Track 3's FM", `sends`), else what it plays
+/// of the list of kits (`kits`): "Kit" (kit 1), "Kit 2" and on, or
+/// "Synth"; a Loop track's input ("Pads", for the pads and the synth).
+/// And which tracks play notes, so transpose moves them
+/// (`TrackInfo::melodic`): one with an instrument (not the drum engine),
+/// or one that plays the synth while it plays notes (`synth_notes`).
 fn fill_sounds(
     st: &mut TimeState,
     sounds: &TrackSounds,
+    sends: &TrackSends,
     kits: &crate::sampler::TrackKits,
     synth_notes: bool,
 ) {
     use std::borrow::Cow;
     for (i, t) in st.tracks.iter_mut().enumerate() {
-        let own = sounds.get(i).copied().flatten();
-        let name: Cow<str> = match (t.loops, own) {
+        let played = played(sounds, sends, i);
+        let own = played.map(|(h, _)| h);
+        let name: Cow<str> = match (t.loops, played) {
             (Some(input), _) => input.short().into(),
-            (None, Some(h)) => h.name.into(),
+            (None, Some((h, from))) => played_name(h, from).into(),
             (None, None) if kits.plays_synth(i) => "Synth".into(),
             (None, None) => match kits.entry(i) {
                 0 => "Kit".into(),
@@ -925,6 +954,9 @@ pub enum ToUi {
     /// What each track plays as its own instrument (None: the kit), for
     /// the line under its name on Arrange. Sent when it changes.
     TrackSounds(Box<TrackSounds>),
+    /// The track whose instrument each track plays though it has none of
+    /// its own (step 4), when it changes.
+    TrackSends(Box<TrackSends>),
     /// What each track plays of the list of kits, when it changes.
     TrackKits(Box<crate::sampler::TrackKits>),
     /// An open done: the engines it replaced, to free here.
@@ -1939,6 +1971,9 @@ pub struct Player {
     /// What each track plays ([`ToUi::TrackSounds`]), written under its
     /// name on Arrange.
     track_sounds: TrackSounds,
+    /// The tracks that play another track's instrument
+    /// ([`ToUi::TrackSends`]).
+    track_sends: TrackSends,
     /// What each track without its own instrument plays
     /// ([`ToUi::TrackKits`]), written under its name too.
     track_kits: crate::sampler::TrackKits,
@@ -2478,6 +2513,7 @@ impl Player {
             plugin_page: crate::plugin_page::PluginPage::new(),
             plugins_hinted: false,
             track_sounds: [None; crate::instruments::TRACKS],
+            track_sends: [None; crate::instruments::TRACKS],
             track_kits: crate::sampler::TrackKits::default(),
             held_synth: None,
             start_checked: false,
@@ -2619,9 +2655,9 @@ impl Player {
             }
             let armed = self.time.armed == Some(t);
             let clips = info.slots.iter().any(Option::is_some);
-            let own = self.track_sounds.get(t).copied().flatten();
+            let own = played(&self.track_sounds, &self.track_sends, t);
             let (kit, color, enabled) = match (own, self.track_kits.kit_of(t)) {
-                (Some(h), _) => (format!("{}, no kit", h.name), None, false),
+                (Some((h, from)), _) => (format!("{}, no kit", played_name(h, from)), None, false),
                 (None, None) => ("synth, no kit".to_string(), None, false),
                 (None, Some(k)) => match self.kits.get(k) {
                     Some(v) => (v.name.clone(), Some(Color::from_pad(v.colour)), true),
@@ -3173,7 +3209,7 @@ impl Player {
         let armed = self.time.armed;
         let shared: Vec<usize> = (0..self.time.tracks.len())
             .filter(|&t| Some(t) != armed && self.track_kits.kit_of(t) == Some(self.kit))
-            .filter(|&t| self.track_sounds.get(t).copied().flatten().is_none())
+            .filter(|&t| played(&self.track_sounds, &self.track_sends, t).is_none())
             .filter(|&t| {
                 self.time
                     .tracks
@@ -3252,7 +3288,13 @@ impl Player {
     /// Record tab and on 16 Levels' Transpose.
     fn refill_sounds(&mut self) {
         let synth = self.synth_plays_notes();
-        fill_sounds(&mut self.time, &self.track_sounds, &self.track_kits, synth);
+        fill_sounds(
+            &mut self.time,
+            &self.track_sounds,
+            &self.track_sends,
+            &self.track_kits,
+            synth,
+        );
         self.time_page.update(&mut self.ui, &self.time);
         if self.levels.transpose {
             self.refresh_levels();
@@ -3384,10 +3426,11 @@ impl Player {
     fn synth_tab_on_kit(&self) -> Option<(usize, &'static str)> {
         let track = self.time.armed.unwrap_or(0);
         let state = &self.synth.as_ref()?.state;
-        // The tab shows the selected track's own instrument (named for its
-        // track, main.rs's synth_tab) or the shared synth ("Pads").
+        // The tab shows the selected track's own instrument, or the one it
+        // plays of another track's (named for its track, main.rs's
+        // synth_tab), or the shared synth ("Pads").
         let own =
-            self.track_sounds.get(track).copied().flatten().is_some() || state.track != "Pads";
+            played(&self.track_sounds, &self.track_sends, track).is_some() || state.track != "Pads";
         let synth_kit = self.kits.get(self.kit).is_some_and(|k| k.synth.is_some());
         (!own && !synth_kit).then_some((track, state.info.name))
     }
@@ -4013,13 +4056,8 @@ impl Player {
         let Some(p) = self.synth.as_ref() else {
             return false;
         };
-        match self
-            .track_sounds
-            .get(self.play.steps.track)
-            .copied()
-            .flatten()
-        {
-            Some(h) => h.id == p.state.info.id,
+        match played(&self.track_sounds, &self.track_sends, self.play.steps.track) {
+            Some((h, _)) => h.id == p.state.info.id,
             None => self.kits.get(self.kit).is_some_and(|k| k.synth.is_some()),
         }
     }
@@ -8173,6 +8211,12 @@ impl Player {
                 self.refresh_kit_tracks();
                 self.refresh_synth_button();
             }
+            ToUi::TrackSends(s) => {
+                self.track_sends = *s;
+                self.refill_sounds();
+                self.refresh_kit_tracks();
+                self.refresh_synth_button();
+            }
             ToUi::PadsFocus(f) => {
                 self.pads_focus = f;
                 self.refresh_synth_button();
@@ -8630,7 +8674,13 @@ impl Player {
                     self.seen_takes = seen;
                 }
                 let synth = self.synth_plays_notes();
-                fill_sounds(&mut st, &self.track_sounds, &self.track_kits, synth);
+                fill_sounds(
+                    &mut st,
+                    &self.track_sounds,
+                    &self.track_sends,
+                    &self.track_kits,
+                    synth,
+                );
                 st.loops = loops_info(&self.looper);
                 // The bar's REC chip is the screen's own (refresh_play).
                 st.chips = std::mem::take(&mut self.time.chips);
@@ -14487,6 +14537,8 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::SavePatterns(_)
             | Effect::SynthPads(_)
             | Effect::TrackSound { .. }
+            | Effect::TrackSend { .. }
+            | Effect::TrackCopy { .. }
             | Effect::SynthOnTrack(_)
             | Effect::ProgEdit
             | Effect::Metronome { .. }

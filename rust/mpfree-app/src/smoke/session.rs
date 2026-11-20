@@ -219,6 +219,10 @@ pub struct Session {
     pub track_kits: crate::sampler::TrackKits,
     /// The project's instruments, as main.rs keeps them.
     pub instrument_list: crate::instrument_list::InstrumentList,
+    /// The tracks' own instruments and sends the screen was last told of,
+    /// as main.rs keeps them.
+    sounds_shown: gui::TrackSounds,
+    sends_shown: gui::TrackSends,
     /// The time engine's REDOs seen so far, as player_session keeps them.
     redos_seen: u64,
     /// Messages for the screen that found it gone (none expected).
@@ -366,6 +370,8 @@ impl Session {
             synth_on: false,
             track_kits: crate::sampler::TrackKits::new(n),
             instrument_list: crate::instrument_list::InstrumentList::new(),
+            sounds_shown: [None; crate::instruments::TRACKS],
+            sends_shown: [None; crate::instruments::TRACKS],
             redos_seen: 0,
             quit: false,
             kits: n,
@@ -607,6 +613,22 @@ impl Session {
         self.control(crate::play_page::TRANSPORT, "pads", "")
             .map(|c| c.target.label)
             .unwrap_or_default()
+    }
+
+    /// Track `track` gets its own instrument, a copy of the synth's sound
+    /// for `engine`, as the builder thread would put it in (the session
+    /// builds none itself), and the app hears of it.
+    pub fn give_own(&mut self, track: usize, engine: crate::synth::Engine) -> &mut Session {
+        let (id, extras, values) = self.synth.sound_of(engine);
+        let plugins = crate::plugins::Plugins::none();
+        let made = crate::instruments::make(&plugins, id, &extras, &values, RATE, PERIOD)
+            .expect("an engine's copy");
+        let pads = self.synth.pads_for(engine);
+        let tuning = self.synth.tuning_now();
+        assert!(self.mix.instruments.put(track, made, pads, &tuning).is_ok());
+        let held = self.mix.instruments.held(track);
+        self.app.set_track_sound(track, held);
+        self
     }
 
     /// Picks the synth from the list of kits (its last row) for the armed
@@ -1197,6 +1219,10 @@ impl Session {
             self.out.note(&format!("time: {line}"));
         }
         self.app.set_track_count(self.time.track_count());
+        // Knob owners, as main.rs.
+        let ranks = crate::track_ranks(self.time.project());
+        self.mix.instruments.set_ranks(&ranks);
+        self.synth.set_ranks(&ranks);
         // A track UNDO took away sets its kit aside, and REDO gives it back
         // (as player_session).
         let (redos, can_redo) = self.time.redos();
@@ -1208,6 +1234,18 @@ impl Session {
         {
             self.out
                 .show(ToUi::TrackKits(Box::new(self.track_kits.clone())));
+        }
+        // What each track plays of the instruments, as main.rs tells the
+        // screen (it does so a few times a second; here each period).
+        let sounds: gui::TrackSounds = std::array::from_fn(|t| self.mix.instruments.held(t));
+        if sounds != self.sounds_shown {
+            self.sounds_shown = sounds;
+            self.out.show(ToUi::TrackSounds(Box::new(sounds)));
+        }
+        let sends = crate::sends_now(&self.mix.instruments);
+        if sends != self.sends_shown {
+            self.sends_shown = sends;
+            self.out.show(ToUi::TrackSends(Box::new(sends)));
         }
         let (loop_rec, loop_dub) = self.looper.recording();
         let info = self.time.info();
@@ -1359,7 +1397,7 @@ impl Session {
         // mixer's Loop track. It reads the loops for a save and lets an
         // open's clears land.
         let (mut pl, mut pr) = ([0f32; PERIOD], [0f32; PERIOD]);
-        let homes = self.track_kits.homes(|t| !self.mix.instruments.holds(t));
+        let homes = self.track_kits.homes(|t| !self.mix.instruments.plays(t));
         let pads = crate::pads_instrument(&self.app, &self.mix, &self.track_kits, false);
         let said = crate::loop_input(
             &mut self.looper,
@@ -1621,7 +1659,11 @@ impl Session {
             arp: self.app.arp_part(),
             perform: self.app.perform_set().text(),
             instruments: crate::project::instruments_text(&self.mix.instruments),
-            track_kits: self.track_kits.text(),
+            track_kits: crate::project::track_kits_text(
+                &self.track_kits,
+                &self.mix.instruments,
+                &self.instrument_list,
+            ),
             instrument_list: self.instrument_list.text(),
             pads: self.app.pads_part(),
             loops,
@@ -1684,6 +1726,14 @@ impl Session {
             self.out.show(ToUi::Synth(self.synth.state()));
             o.synth = Some((options, sounds));
         }
+        // The sends, as main.rs sets them (the session builds no own
+        // instruments, so only those to instruments already here play).
+        self.mix.instruments.clear_sends();
+        for line in crate::open_sends(&mut self.mix.instruments, &o.sends) {
+            self.out.note(&line);
+        }
+        self.app
+            .set_track_sends(&crate::sends_now(&self.mix.instruments));
         // What each track plays, as main.rs takes it.
         self.track_kits = crate::sampler::TrackKits::new(self.kits);
         for &(track, kit) in &o.track_kits {
@@ -1706,6 +1756,7 @@ impl Session {
             self.out.note(&line);
         }
         self.fx.extend(fx);
+        self.app.forget_copies();
         let (notes, fx) = self.app.open_pads(o.pads.as_deref());
         for line in notes {
             self.out.note(&line);
@@ -1782,9 +1833,10 @@ impl Session {
             // The Synth tab's preset picker, as main.rs.
             FromUi::Preset(ask) => {
                 let track = self.app.track();
-                if !self.mix.instruments.holds(track) && ask.changes_sound() {
+                if !self.mix.instruments.plays(track) && ask.changes_sound() {
                     self.synth_turns.clear();
                 }
+                let track = crate::instrument_track(&self.mix.instruments, track);
                 self.presets
                     .act(ask, track, &mut self.synth, &mut self.mix, &mut self.out);
             }
@@ -2039,7 +2091,7 @@ impl Session {
                     Effect::Show(v) => {
                         if v == View::Synth
                             && !self.kit_to.map_or(self.synth_on, |k| k == self.kits)
-                            && !self.mix.instruments.holds(self.app.track())
+                            && !self.mix.instruments.plays(self.app.track())
                         {
                             self.out
                                 .show(ToUi::Tell(crate::synth_tab_hint(self.app.track())));
@@ -2100,6 +2152,24 @@ impl Session {
                     // A track's own instrument is built beside the audio
                     // thread, which the session leaves out: the track keeps
                     // what it had, and the screen hears so.
+                    // As main.rs: Kit takes the track's own instrument out
+                    // (or ends its send), and the tracks that played it
+                    // play their kits again.
+                    Effect::TrackSound { track, id: None } => {
+                        let senders = self.mix.instruments.senders(track);
+                        if self.mix.instruments.take_out(track) {
+                            self.out
+                                .note(&format!("track {}: plays the kit", track + 1));
+                            if let Some(s) = crate::sends_ended(senders, track) {
+                                self.out.note(&s);
+                                self.out.show(ToUi::Tell(s));
+                            }
+                        }
+                        let held = self.mix.instruments.held(track);
+                        self.app.set_track_sound(track, held);
+                        self.app
+                            .set_track_sends(&crate::sends_now(&self.mix.instruments));
+                    }
                     Effect::TrackSound { track, .. } => {
                         self.out.note(&format!(
                             "track {}: own instruments are not built in the test session",
@@ -2107,6 +2177,51 @@ impl Session {
                         ));
                         let held = self.mix.instruments.held(track);
                         self.app.set_track_sound(track, held);
+                    }
+                    // As main.rs (step 4).
+                    Effect::TrackSend { track, to } => {
+                        let (lines, tell) = crate::send_track(&mut self.mix.instruments, track, to);
+                        for line in &lines {
+                            self.out.note(line);
+                        }
+                        if let Some(s) = tell {
+                            self.out.show(ToUi::Tell(s));
+                        }
+                        let held = self.mix.instruments.held(track);
+                        self.app.set_track_sound(track, held);
+                        self.app
+                            .set_track_sends(&crate::sends_now(&self.mix.instruments));
+                    }
+                    // As main.rs (step 4c), the copy made at once, as the
+                    // builder thread would.
+                    Effect::TrackCopy { track, from } => {
+                        let name = self
+                            .mix
+                            .instruments
+                            .held(from)
+                            .map_or("instrument", |h| h.name);
+                        if let Some((id, (extras, values))) =
+                            crate::sound_of_track(&self.mix.instruments, from)
+                        {
+                            let plugins = crate::plugins::Plugins::none();
+                            let made = crate::instruments::make(
+                                &plugins, id, &extras, &values, RATE, PERIOD,
+                            )
+                            .expect("a copy of an engine");
+                            let engine = crate::synth::Engine::from_node_id(id)
+                                .unwrap_or(crate::synth::Engine::Poly);
+                            let pads = self.synth.pads_for(engine);
+                            let tuning = self.synth.tuning_now();
+                            if self.mix.instruments.put(track, made, pads, &tuning).is_ok() {
+                                let s = crate::copied_note(track, from, name);
+                                self.out.note(&s);
+                                self.out.show(ToUi::Tell(s));
+                            }
+                        }
+                        let held = self.mix.instruments.held(track);
+                        self.app.set_track_sound(track, held);
+                        self.app
+                            .set_track_sends(&crate::sends_now(&self.mix.instruments));
                     }
                     other => panic!("the desk handed back {other:?}"),
                 }

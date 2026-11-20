@@ -98,6 +98,8 @@ A **lock** makes one step play its sound differently: tuned up, shorter, darker 
 
 Hold a step and press **ERASE** to take its locks off and keep its note.
 
+When two tracks play the same instrument (the synth, or one track's instrument that another plays: see [Share one between tracks](synths.md#a-synth-for-each-track)) and both lock the same knob, one of them moves it at a time: the track you made first. The other track's locks wait and play once the first track's stop, the knob gliding over to them (a switch such as a waveform changes at once). Turning the knob yourself always wins: while you turn it and for half a second after, the locks wait, then the knob goes back to them.
+
 ### Lock lanes
 
 A **lock lane** shows one setting step by step, under its sound, like a row of its own: the sound's tune, decay, filter, level or slice (on a sliced pad), or the track's volume, pan or sends. Every setting the pattern already locks has a lane, so locks you recorded live show up.
