@@ -540,6 +540,41 @@ impl ClipProgram {
     }
 }
 
+/// What a clip's notes stand for (the instrument redesign's step 5c):
+/// pad hits or MIDI notes. A note's number is a pad's (a kit's pad, 1 to
+/// 128 as 0 to 127, or a pad of the synth's layout) in a clip of hits,
+/// which every clip was until step 5c and every kit's still is, and a
+/// pitch in a clip of notes, which a take on an instrument that plays
+/// notes makes. An old clip of hits on a synth stays hits and plays
+/// through the pads' layout as it always did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Holds {
+    /// Pad hits (the default, and every clip saved before step 5c).
+    #[default]
+    Hits,
+    /// MIDI notes: each note's number is its pitch.
+    Notes,
+}
+
+impl Holds {
+    /// The word a saved clip's `holds` line has.
+    pub fn word(self) -> &'static str {
+        match self {
+            Holds::Hits => "hits",
+            Holds::Notes => "notes",
+        }
+    }
+
+    /// [`Holds::word`] read back; None for a word this build doesn't know.
+    pub fn from_word(word: &str) -> Option<Holds> {
+        match word {
+            "hits" => Some(Holds::Hits),
+            "notes" => Some(Holds::Notes),
+            _ => None,
+        }
+    }
+}
+
 /// The order a clip plays its steps in (sequencer S6, the Deluge's and
 /// the Hapax's play direction): its 1/16 steps ([`DIRECTION_STEP`] clip
 /// ticks), each step's notes and locks moving with it, their place within
@@ -868,6 +903,8 @@ pub struct Clip {
     /// Mutate (sequencer S6, [`mutate`]): what Restore puts back and each
     /// Mutate varies. None until it is mutated, and again once restored.
     pub original: Option<Box<Original>>,
+    /// Whether its notes are pad hits or MIDI notes (step 5c).
+    pub holds: Holds,
 }
 
 /// A clip's settings that are not its notes: how fast it plays, its own
@@ -1024,6 +1061,7 @@ impl Clip {
             program: None,
             direction: Direction::Forward,
             original: None,
+            holds: Holds::Hits,
         }
     }
 
