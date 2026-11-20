@@ -232,6 +232,8 @@ pub struct Session {
     /// The name of the instrument the host's pads player plays, as the
     /// screen last heard it (step 6, as main.rs).
     pads_host_shown: Option<&'static str>,
+    /// Who plays the Synth tab's instrument, as last shown (step 8b).
+    who_shown: Option<String>,
     /// The time engine's REDOs seen so far, as player_session keeps them.
     redos_seen: u64,
     /// Messages for the screen that found it gone (none expected).
@@ -387,6 +389,7 @@ impl Session {
             instrument_list: crate::instrument_list::InstrumentList::new(),
             sounds_shown: [None; crate::instruments::HOLDERS],
             pads_host_shown: None,
+            who_shown: None,
             sends_shown: [None; crate::instruments::TRACKS],
             plan_shown: None,
             redos_seen: 0,
@@ -1279,6 +1282,20 @@ impl Session {
         if host_name != self.pads_host_shown {
             self.pads_host_shown = host_name;
             self.out.show(ToUi::PadsHost(host_name));
+        }
+        // Who plays the Synth tab's instrument (step 8b), as main.rs.
+        if self.app.view() == crate::app::View::Synth {
+            let who = crate::who_plays(
+                &self.app,
+                &self.mix.instruments,
+                &self.track_kits,
+                &self.time.project().tracks,
+                self.synth.engine_name(),
+            );
+            if who != self.who_shown {
+                self.who_shown.clone_from(&who);
+                self.out.show(ToUi::WhoPlays(who));
+            }
         }
         let t = self.t();
         // A loop key held for a second clears its loop, as player_session.

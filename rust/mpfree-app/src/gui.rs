@@ -1214,6 +1214,10 @@ pub enum ToUi {
     /// pads player (step 6: a synth picked in the list of synths), or None,
     /// when it changes.
     PadsHost(Option<&'static str>),
+    /// Who plays the instrument the Synth tab shows, when more than one
+    /// does ("Poly: the pads, Track 2, Track 4", step 8b), for its hint
+    /// line; None: only the pads or one track. Sent when it changes.
+    WhoPlays(Option<String>),
     /// Where REC would record the pads' synth (the recording plan,
     /// `desk::rec_plan`), when it changes: the REC chip names it.
     RecPlan(Option<crate::app::RecPlan>),
@@ -2007,6 +2011,8 @@ pub struct Player {
     /// The instrument the pads play by the host's pads player
     /// ([`ToUi::PadsHost`], step 6): "FM".
     pads_host: Option<&'static str>,
+    /// Who plays the Synth tab's instrument ([`ToUi::WhoPlays`]).
+    who_plays: Option<String>,
     /// Where REC would record the pads' synth ([`ToUi::RecPlan`]): the REC
     /// chip names it before you press.
     rec_plan: Option<crate::app::RecPlan>,
@@ -2576,6 +2582,7 @@ impl Player {
             pads_focus: crate::app::PadFocus::Track,
             pads_chip: None,
             pads_host: None,
+            who_plays: None,
             rec_plan: None,
             synth: None,
             synth_pick: None,
@@ -6430,6 +6437,11 @@ impl Player {
                                        self.synth.as_ref().map_or("The plugin", |p| p.state.info.name)),
                 View::Synth if self.synth_pick.is_some() => format!("Tap a synth: the pads play it now   ·   \
                                         Keep: the pads keep it   ·   Cancel: what they played   ·   No track changes   ·   {stop}"),
+                // Once a track plays it too, who plays it (step 8b).
+                View::Synth if self.pads_picked().is_some() && self.who_plays.is_some() => {
+                    format!("{}   ·   Follow track: the button   ·   Q-Links 1-4: the marked knobs   ·   {stop}",
+                            self.who_plays.as_deref().unwrap_or_default())
+                }
                 View::Synth if self.pads_picked().is_some() => {
                     let name = self.pads_picked().unwrap_or("the synth");
                     format!("The pads play {name} on every track; no track changes   ·   REC: {name} on a free track   ·   \
@@ -6445,9 +6457,11 @@ impl Player {
                     format!("Track {}'s instrument is a kit   ·   Play {name} on the pads: hear it   ·   \
                              Q-Links 1-4: the marked knobs   ·   {stop}", track + 1)
                 }
-                View::Synth => format!("Pads play {}   ·   Q-Links 1-4: the marked knobs   ·   Wheel: pick a knob   ·   \
+                // Who plays it, when more than the pads do (step 8b).
+                View::Synth => format!("{}   ·   Q-Links 1-4: the marked knobs   ·   Wheel: pick a knob   ·   \
                                         - / +, or push the wheel and turn: change it   ·   SHIFT + wheel: page   ·   {stop}",
-                                       self.synth.as_ref().map_or("the synth", |p| p.state.info.name)),
+                                       self.who_plays.clone().unwrap_or_else(|| format!("Pads play {}",
+                                           self.synth.as_ref().map_or("the synth", |p| p.state.info.name)))),
                 // REC on the Wave page (one-page step 2a): a pad take, so
                 // REC, STOP and UNDO end it or throw it away (the music
                 // plays on); the Q-Links turn the Input's Gain, Threshold,
@@ -8511,11 +8525,16 @@ impl Player {
                 self.refresh_pads_play();
                 self.refresh_chips();
             }
+            ToUi::WhoPlays(who) => {
+                self.who_plays = who;
+                self.refresh_hint();
+            }
             ToUi::PadsHost(name) => {
                 self.pads_host = name;
                 self.refresh_synth_button();
                 self.refresh_pads_play();
                 self.refresh_chips();
+                self.refresh_hint();
             }
             ToUi::RecPlan(p) => {
                 self.rec_plan = p;

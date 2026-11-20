@@ -302,3 +302,10 @@ The plan's step 8: "Layers, who plays what, mute and solo scopes, stems." Rule 7
 
 - The export panel's **Stems by** starts on **Channel** (`mpfree_browser_ui::export::StemsBy`'s default; a choice made in the panel is still kept for the next export). Each instrument sounds on a channel of its own, a kit's on its drum channel, the shared synth's on Synth, a track's own synth and a synth picked for the pads on theirs, so these stems are one per instrument, from one pass, and add up to the mix. **Track** stays the separate choice that renders each track alone through a shared instrument, replaying the range.
 - **Tests:** mpfree-browser-ui's `stems_by_track_or_channel_say_how_many_passes` and `export_asks_the_app_and_its_panel_takes_the_screen`; `smoke::song_workflows::tests::night_market_exports_its_arrangement_as_mixdown_stems_and_midi` now picks Track.
+
+### 8b as built (who plays what, on the Synth tab)
+
+- **Rule 13**, "when you look, not everywhere": the Synth tab's hint line starts with who plays the synth it shows once more than one does, "FM: the pads, Track 2" or "Poly: the pads, Bass, Keys, 2 more" (tracks by their names, four at most, then how many more). With only the pads or one track it reads as before ("Pads play Poly", "The pads play FM on every track ...").
+- **Who** (`who_plays` in `main.rs`, mirrored by the smoke session): for an instrument the host holds, its own track, the tracks that send to it (`Instruments::senders`) and the pads (by the host's pads player, or following a track that plays it); for the shared synth, the tracks on the Synth kit and the pads while chosen for it or following such a track. Worked out a few times a second while the Synth tab shows, sent when it changes (`ToUi::WhoPlays`).
+- **Test:** `smoke::workflows::tests::the_synth_tab_says_who_plays_its_synth` (FM picked for the pads: the pads alone; REC points Track 2 at it: "FM: the pads, Track 2").
+- **Still to come in step 8:** "Track 2 → Poly → Synth channel" on a track's side, the pads' bank once banks point at instruments (6c), and layers (a player plus a short list of instruments it also plays), which need a place on the screen first.

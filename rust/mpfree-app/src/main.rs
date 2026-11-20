@@ -4581,6 +4581,72 @@ fn tab_who(app: &app::App, own: &instruments::Instruments) -> usize {
     }
 }
 
+/// Who plays the instrument the Synth tab shows (the instrument
+/// redesign's rule 13, "Poly: the pads, Track 2, Track 4", step 8b):
+/// None while only the pads, or only the selected track, play it, which
+/// the hint line already says. Tracks by their names, the first four,
+/// then how many more. Allocates only when called; the loop calls it a
+/// few times a second and sends it when it changes.
+fn who_plays(
+    app: &app::App,
+    own: &instruments::Instruments,
+    kits: &sampler::TrackKits,
+    names: &[mpfree_seq::Track],
+    synth_name: &str,
+) -> Option<String> {
+    let shown = instrument_track(own, tab_who(app, own));
+    let (name, tracks, pads) = match own.held(shown) {
+        // An instrument the host holds: its own track's, then those that
+        // send to it; the pads by their player or by following the track.
+        Some(h) => {
+            let mut bits = own.senders(shown);
+            if shown < instruments::TRACKS {
+                bits |= 1 << shown;
+            }
+            let pads = own.pads_play_at() == Some(shown)
+                || (app.pads_focus() == app::PadFocus::Track
+                    && own.owner(app.track()) == Some(shown));
+            (h.name, bits, pads)
+        }
+        // The shared synth: the tracks on the Synth kit; the pads while
+        // chosen for it or following such a track.
+        None => {
+            let bits = (0..instruments::TRACKS)
+                .filter(|&t| !own.plays(t) && kits.plays_synth(t))
+                .fold(0u128, |b, t| b | 1 << t);
+            let pads = app.pads_chose_synth()
+                || (app.pads_focus() == app::PadFocus::Track
+                    && !own.plays(app.track())
+                    && kits.plays_synth(app.track()));
+            (synth_name, bits, pads)
+        }
+    };
+    let count = tracks.count_ones() as usize + usize::from(pads);
+    if count < 2 {
+        return None;
+    }
+    let track_name = |t: usize| {
+        names
+            .get(t)
+            .map(|n| n.name.trim())
+            .filter(|n| !n.is_empty())
+            .map_or_else(|| format!("Track {}", t + 1), str::to_string)
+    };
+    let mut who: Vec<String> = Vec::new();
+    if pads {
+        who.push("the pads".to_string());
+    }
+    let listed: Vec<usize> = (0..instruments::TRACKS)
+        .filter(|&t| tracks >> t & 1 == 1)
+        .collect();
+    let room = 4 - who.len();
+    who.extend(listed.iter().take(room).map(|&t| track_name(t)));
+    if listed.len() > room {
+        who.push(format!("{} more", listed.len() - room));
+    }
+    Some(format!("{name}: {}", who.join(", ")))
+}
+
 /// What the pads play on their own, before the arp and the recorder,
 /// while the armed track plays something else (app/pads_focus.rs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -6709,6 +6775,10 @@ fn player_session(
     // The name of the instrument the host's pads player plays, as the
     // screen last heard it (step 6).
     let mut pads_host_shown: Option<&'static str> = None;
+    // Who plays the Synth tab's instrument, as last shown (step 8b), and
+    // when to look again.
+    let mut who_shown: Option<String> = None;
+    let mut who_at = 0.0f64;
     let mut preview_held: [Option<PadsPreview>; 16] = [None; 16];
     // The list of instruments changed since the app last had it (step 6).
     let mut list_changed = true;
@@ -9894,6 +9964,22 @@ fn player_session(
         if host_name != pads_host_shown {
             pads_host_shown = host_name;
             out.show(gui::ToUi::PadsHost(host_name));
+        }
+        // Who plays the Synth tab's instrument (step 8b), a few times a
+        // second while the tab shows.
+        if app.view() == app::View::Synth && mt >= who_at {
+            who_at = mt + 0.25;
+            let who = who_plays(
+                &app,
+                &mix.instruments,
+                &track_kits,
+                &time.project().tracks,
+                synth.engine_name(),
+            );
+            if who != who_shown {
+                who_shown.clone_from(&who);
+                out.show(gui::ToUi::WhoPlays(who));
+            }
         }
         let playing_kit = if synth_on { synth_kit } else { player.kit() };
         let mut kit_switched = false;

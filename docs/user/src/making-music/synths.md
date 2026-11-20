@@ -41,6 +41,8 @@ Tap the synth's card at the top left of the **Synth** tab (its name, the track a
 - **It has its own mixer channel**, named for who plays it: **FM · Pads**.
 - **The pads keep it whichever track you select**, as with Play Poly on the pads: **Pads: FM** at the top of the screen says so, and tapping it, or **Follow track** under the card, gives the pads back to the track.
 - **The Synth tab shows it** while the pads play it, so you can pick its presets and turn its knobs. The line under its name reads **Pads, no track**.
+- **The line at the bottom of the Synth tab says who plays it** once more than the pads do: **FM: the pads, Track 2**. It works the same for any synth on the tab, such as **Poly: the pads, Bass, Keys**.
+- **A keyboard plays it too**, each key its own note (see [Playing MPFree from a keyboard](midi-and-cv.md#playing-mpfree-from-a-keyboard)).
 - **REC records it on a free track**, as above: the REC chip names the track first (**REC → Track 2 · FM**). That track then plays the same FM, heard on the FM's channel, and its parts are notes.
 - **A synth you try and leave goes away** once nothing plays it (not the pads, not a track), and the line at the bottom of the screen says so.
 - **Up to 16 synths at once.** The synths picked for the pads and the tracks' own synths count together; with 16 loaded, a tap says there is no room.

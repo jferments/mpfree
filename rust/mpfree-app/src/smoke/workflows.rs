@@ -2017,6 +2017,39 @@ mod tests {
         });
     }
 
+    /// Who plays what (the instrument redesign's rule 13, step 8b): the
+    /// Synth tab's hint line names everyone that plays the synth it shows,
+    /// once more than the pads do. FM picked for the pads, then REC points
+    /// Track 2 at it: "FM: the pads, Track 2".
+    #[test]
+    fn the_synth_tab_says_who_plays_its_synth() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("header", "tab", "Synth").settle();
+            s.press("synth-inst", "card", "").settle();
+            s.press("synth-pick", "synth", "FM").run_periods(4).settle();
+            s.press("synth-pick", "keep", "").run_periods(2).settle();
+            // The tab's word about Track 1's kit fades first.
+            s.run_for(crate::gui::TELL_SECONDS as f64 + 0.5).settle();
+            assert!(
+                s.hint().starts_with("The pads play FM"),
+                "only the pads: {}",
+                s.hint()
+            );
+            s.button("REC").settle();
+            s.run_periods(4).settle();
+            assert_eq!(s.mix.instruments.send(1), Some(crate::instruments::free(0)));
+            // STOP: not ready; Track 2 keeps FM.
+            s.button("STOP").settle();
+            s.run_for(crate::gui::TELL_SECONDS as f64 + 0.5).settle();
+            assert!(
+                s.hint().starts_with("FM: the pads, Track 2"),
+                "{}",
+                s.hint()
+            );
+        });
+    }
+
     /// A keyboard plays what the pads play (the instrument redesign's step
     /// 7b): a synth picked in the list, then the shared synth chosen for
     /// them, each key its own note, while Track 1's kit hears none of it. A
