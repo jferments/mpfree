@@ -1042,6 +1042,132 @@ pub const SCAN_FRAMES: u64 = 1 << 18;
 /// loudest so far: as loud is a tie, and a tie keeps the earlier.
 const LOUDER: f64 = 1.000_001;
 
+/// A summary value's distance at most from the sound's own: half of
+/// 1/32767 (its 16-bit rounding), and a little for the float arithmetic.
+const SUMMARY_SLACK: f32 = 0.5 / 32767.0 + 1e-6;
+
+/// What a search for a region's loudest frame reads ([`Region::peak`],
+/// [`Region::peak_from`]): the frames it plays and the channels it plays.
+struct PeakSearch {
+    start: usize,
+    end: usize,
+    channels: usize,
+    pick: ChannelPick,
+}
+
+impl PeakSearch {
+    fn new(r: &Region, source: &Source) -> PeakSearch {
+        let channels = usize::from(source.channels()).max(1);
+        let end = (r.end as usize).min(source.frames() as usize);
+        let pick = if channels == 2 {
+            r.channels
+        } else {
+            ChannelPick::Left
+        };
+        PeakSearch {
+            start: (r.start as usize).min(end),
+            end,
+            channels,
+            pick,
+        }
+    }
+
+    /// The loudest frame from frame `a` to frame `b`, read where it is.
+    fn read(&self, data: &Pcm, a: usize, b: usize) -> f32 {
+        let (i, j) = (a * self.channels, b * self.channels);
+        match data {
+            Pcm::F32(d) => self.loudest(&d[i..j]),
+            Pcm::I16(d) => self.loudest(&d[i..j]),
+        }
+    }
+
+    /// The loudest frame of `s` (whole frames). Unscaled, then scaled
+    /// once: the scale is a power of two, so the same value as scaling
+    /// each sample.
+    fn loudest<S: Sample>(&self, s: &[S]) -> f32 {
+        let abs = |x: &S| x.raw().abs();
+        let m = match (self.channels, self.pick) {
+            (2, ChannelPick::Stereo) => s.iter().map(abs).fold(0.0, f32::max),
+            (2, ChannelPick::MonoSum) => s
+                .chunks_exact(2)
+                .map(|f| (0.5 * (f[0].raw() + f[1].raw())).abs())
+                .fold(0.0, f32::max),
+            (2, ChannelPick::Right) => s.iter().skip(1).step_by(2).map(abs).fold(0.0, f32::max),
+            (ch, _) => s.iter().step_by(ch).map(abs).fold(0.0, f32::max),
+        };
+        m * S::SCALE
+    }
+
+    /// The most the loudest frame of block `block` of level `level` could
+    /// be, on the channels played, from the summary: its lowest and
+    /// highest sample and the summary's slack. Infinite for a block past
+    /// full scale (held as full scale), 0 for a silent one of a 16-bit
+    /// sound (its summary's silence is exact: no 16-bit sample but 0
+    /// rounds to 0).
+    fn most(
+        &self,
+        data: &Pcm,
+        summary: &mpfree_analysis::PeakPyramid,
+        level: usize,
+        block: usize,
+    ) -> f32 {
+        let l = summary.range(level, block, 0);
+        let r = summary.range(level, block, 1);
+        let (sides, (lo, hi)) = match (self.channels, self.pick) {
+            (2, ChannelPick::Stereo) => ([l, r], (l.0.min(r.0), l.1.max(r.1))),
+            (2, ChannelPick::MonoSum) => ([l, r], (0.5 * (l.0 + r.0), 0.5 * (l.1 + r.1))),
+            (2, ChannelPick::Right) => ([r, r], r),
+            _ => ([l, l], l),
+        };
+        if sides.iter().any(|&(lo, hi)| lo <= -1.0 || hi >= 1.0) {
+            return f32::INFINITY;
+        }
+        if data.is_16_bit() && sides.iter().all(|&(lo, hi)| lo == 0.0 && hi == 0.0) {
+            return 0.0;
+        }
+        lo.abs().max(hi.abs()) + SUMMARY_SLACK
+    }
+
+    /// Block `block` of level `level`, where the region plays it, unless
+    /// it could not be louder than `best`: down through its four smaller
+    /// blocks, the one that could be loudest first, to the sound itself at
+    /// level 0. `best` becomes the loudest frame found.
+    fn descend(
+        &self,
+        data: &Pcm,
+        summary: &mpfree_analysis::PeakPyramid,
+        level: usize,
+        block: usize,
+        best: &mut f32,
+    ) {
+        let bf = mpfree_analysis::PeakPyramid::block_frames(level);
+        let (a, b) = (
+            (block * bf).max(self.start),
+            ((block + 1) * bf).min(self.end),
+        );
+        if a >= b || self.most(data, summary, level, block) <= *best {
+            return;
+        }
+        if level == 0 {
+            *best = best.max(self.read(data, a, b));
+            return;
+        }
+        debug_assert_eq!(
+            bf,
+            4 * mpfree_analysis::PeakPyramid::block_frames(level - 1)
+        );
+        let mut kids = [0, 1, 2, 3].map(|k| {
+            let kid = block * 4 + k;
+            (kid, self.most(data, summary, level - 1, kid))
+        });
+        // Stable: of two that could be as loud, the earlier first.
+        kids.sort_by(|x, y| y.1.total_cmp(&x.1));
+        for (kid, _) in kids {
+            self.descend(data, summary, level - 1, kid, best);
+        }
+    }
+}
+
 /// What a search for a region's loudest grain reads: the frames it plays,
 /// the grain's length in frames and the channels it plays.
 struct GrainSearch {
@@ -1363,29 +1489,76 @@ impl Region {
     /// sides in Stereo, one side's for Left or Right, |(left + right) / 2|
     /// for Mono sum. Before its gain, fades and envelope; 0 for silence or
     /// a region outside the sound. What Normalize brings to 0 dBFS.
+    ///
+    /// Reads every frame of the region once, where it is, with no copy
+    /// and nothing allocated: quick for a region of up to
+    /// [`SCAN_FRAMES`]. A longer one is searched in its sound's loudness
+    /// summary ([`Region::peak_from`]), which gives the same value
+    /// (sampler plan, phase 1 step 5).
     pub fn peak(&self, source: &Source) -> f32 {
-        let ch = usize::from(source.channels()).max(1);
-        let (start, end) = (
-            self.start as usize,
-            (self.end as usize).min(source.frames() as usize),
-        );
-        let Some(frames) = source.data().f32s(start * ch..end.max(start) * ch) else {
-            return 0.0;
-        };
-        let pick = if ch == 2 {
-            self.channels
-        } else {
-            ChannelPick::Left
-        };
-        frames
-            .chunks_exact(ch)
-            .map(|f| match pick {
-                ChannelPick::Stereo => f[0].abs().max(f[1].abs()),
-                ChannelPick::MonoSum => (0.5 * (f[0] + f[1])).abs(),
-                ChannelPick::Left => f[0].abs(),
-                ChannelPick::Right => f[1].abs(),
+        let s = PeakSearch::new(self, source);
+        s.read(source.data(), s.start, s.end)
+    }
+
+    /// [`Region::peak`] for a long region, from its sound's loudness
+    /// summary (`summary`, the peak pyramid of `source`): the same value,
+    /// to the bit, reading the sound only where its loudest frame could
+    /// be. The summary holds each stretch's lowest and highest sample to
+    /// within half of 1/32767, so each stretch has a most its loudest
+    /// frame could be. The stretch of 4096 frames that could be loudest
+    /// is read first, down through its smaller stretches (1024, 256, 64
+    /// frames) to the sound itself, the one that could be loudest first;
+    /// then every other stretch is passed over unless it could still be
+    /// louder than the loudest frame found. In Stereo, Left and Right that
+    /// is a few stretches of 64 frames; in Mono sum, where the two sides
+    /// can cancel and the summary gives only an upper limit, the loudest
+    /// stretches are read until no other could beat them, which on a sound
+    /// whose sides cancel can be all of it.
+    ///
+    /// Copies nothing and allocates nothing (the recursion is four levels
+    /// deep): on a 25-minute take, about 32 000 summary values and a few
+    /// hundred frames, where [`Region::peak`] reads 66 million frames. A
+    /// stretch past full scale, which the summary holds only as full scale,
+    /// is always read; so is one the summary can't tell from silence while
+    /// nothing louder is found yet (but for a 16-bit sound, where the
+    /// summary's silence is exact). None when `summary` is not the summary
+    /// of `source`.
+    pub fn peak_from(
+        &self,
+        source: &Source,
+        summary: &mpfree_analysis::PeakPyramid,
+    ) -> Option<f32> {
+        use mpfree_analysis::{peaks::LEVELS, PeakPyramid};
+        let s = PeakSearch::new(self, source);
+        if summary.frames() != source.frames() || summary.channels() != s.channels {
+            return None;
+        }
+        if s.start >= s.end {
+            return Some(0.0);
+        }
+        let data = source.data();
+        let top = LEVELS - 1;
+        let bf = PeakPyramid::block_frames(top);
+        let blocks = s.start / bf..(s.end - 1) / bf + 1;
+        let most = |b: usize| s.most(data, summary, top, b);
+        // The stretch that could be loudest first: of two that could be as
+        // loud, the earlier.
+        let first = blocks
+            .clone()
+            .fold(None::<(usize, f32)>, |a, b| {
+                let m = most(b);
+                match a {
+                    Some((_, am)) if am >= m => a,
+                    _ => Some((b, m)),
+                }
             })
-            .fold(0.0, f32::max)
+            .map_or(blocks.start, |(b, _)| b);
+        let mut best = 0.0f32;
+        s.descend(data, summary, top, first, &mut best);
+        for b in blocks.filter(|&b| b != first) {
+            s.descend(data, summary, top, b, &mut best);
+        }
+        Some(best)
     }
 
     /// Where its loudest grain is, as a grain position (0 to 1 across it):
