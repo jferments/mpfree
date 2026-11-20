@@ -126,6 +126,32 @@ Capture (Looper tab step 4a, `Command::Capture(bars)`) turns the last bars playe
 - **Calling it off.** Capture again, Undo, Clear or Forget while it waits or copies calls it off and gives the memory back. Other commands to that loop wait until it plays. `Status::capturing` is `Some(0.0)` while it waits for its line, then the copy's progress, 0 to 1.
 - **For the screen.** `capture_take(bars)` says what a Capture into the selected loop would take now (none: nothing yet), `heard_lines(out)` gives the newest run's bar lines (tick and frame) and `heard_at()` the frame after the last one heard, for **What you played**.
 
+## A beat's warning before the bar
+
+Jay's device notes (20 Nov): a tap on an empty ring seemed to start at once, so a loop could land before he was ready. The engine always waited for the next bar line, but that line could be a few milliseconds away.
+
+- **The lead.** `Command::Record` on an empty loop sets `Loop::just_armed`; at the start of the next period `Looper::process` notes, while the song plays (`State::Playing | Recording`), the tap's song tick and the tick `LEAD_BEATS` (1) beats after it (`Loop::tap_lead`). `Loop::starts_on` lets no bar line strictly between the two start the first pass (`Starts::Bar` and resamples), so a tap in the last beat before a line starts on the line after. A line on the tap's own tick still starts it (the song starting with the tap). Armed while stopped or counting in there is no lead: the loop starts on the bar PLAY starts on, as REC and PLAY together always did (SHIFT + Arm too). A stop, locate, transport loop or panic forgets the lead (`Loop::marker`).
+- **The countdown.** `Status::starts_on` is the bar line (song tick) the armed loop starts on while the song plays: the first bar line after the tap, or the one after the lead. The Looper tab's ring (`LooperPage::refresh_deck`) says the bar ("13", "REC on bar"), and in the last bar before it the beats left ("3", "beats to REC"; "1", "beat to REC"). Play's loop row draws the same channels.
+- **Tests:** `a_tap_in_the_last_beat_waits_for_the_bar_after`, `a_tap_with_a_beat_to_spare_starts_on_the_next_bar`, `a_loop_armed_while_stopped_starts_with_play` (tests/looper.rs), `a_waiting_loop_counts_the_beats_in_its_last_bar` (looper_page.rs).
+
+## Length: Pattern
+
+The Looper tab's Length has **Pattern** first, the app's default (20 Nov): a new loop is as long as the pattern playing, so it fits the beat. The engine never sees it; the app sends `Command::SetBars(Some(PATTERN_BARS))` (0, looping.rs), and `LoopHost::command` turns that into `SetBars(pattern_bars)` and keeps `LoopHost::match_pattern`. Any other Length lets go of it.
+
+- **The pattern's length.** `pattern_bars` in main.rs: the longest clip playing (`TimeHost::now_playing(t).song_len`) on a notes track (a Loop track's cells are loops, not patterns), rounded up to whole bars. The pad player tells `LoopHost::set_pattern_bars` every 32 periods; while Pattern is on and the picked loop is empty (not capturing), its bars follow it. Nothing playing, or longer than `PATTERN_MAX_BARS` (32): `SetBars(None)`, free (and so Tempo from the first loop works with Pattern too).
+- **Record** on an empty loop with Pattern on sends the bars first, so a loop picked and tapped in the same period has them.
+- **Capture** takes the Length's bars, so with Pattern it takes the pattern's length.
+- `LooperView::match_pattern` and `pattern_bars` let the tab light Pattern. Test: `length_pattern_follows_the_pattern_playing` (looping.rs).
+
+## Listen: a loop on its own while stopped
+
+Jay's device notes (20 Nov): a play button to hear a loop or a layer while main playback is stopped.
+
+- **`Looper::listen(n, layer)`** plays loop `n` alone from its first frame, round and round, while the song is stopped: the whole loop as heard (`Loop::heard_gains`: its layers' levels, pans, mutes, solos and Fade old), or with `layer` (a layer id) that layer alone at its level and pan, even when muted (`Loop::listen_gains`). It goes through the loop's level, at the speed it was recorded (a print made for another tempo is not used). Refused (false) while the song plays, or for a loop that isn't playing (empty, armed, recording, overdubbing) or is merging.
+- **`Looper::play_listen`**, each period after the commands: `Loop::render_layers_at` (the render a bounce and a merge use, with Listen's gains) a `RUN` of frames at a time into a stack buffer, faded in over `FADE` frames and added to the output. It stops at once if the loop changes under it (empties, records, merges, the layer goes), and fades out over `FADE` frames when the song starts or on `Looper::stop_listening`. No allocation. `Looper::listening` gives the loop, the layer and the position, 0 to 1.
+- **In the app.** `LoopAction::Listen(Some(layer))` (the header's Listen: `Some(None)`; a lane's ▶: `Some(Some(id))`) goes to `LoopHost::listen`, which toggles (the same again stops), and says what it did or why not on the hint line. `LooperView::listening` lights the button (Stop) or the lane's ▶, and moves the editor's playhead. While the music plays both are faint, and a tap says Listen plays while the music is stopped.
+- **Tests:** `listen_plays_a_loop_or_a_layer_alone_while_the_song_is_stopped` (tests/looper.rs), `listen_plays_the_picked_loop_while_stopped` (looping.rs), `listen_plays_the_loop_or_a_layer_while_the_music_is_stopped` (gui.rs).
+
 ## When I play: starting on your note
 
 Starts: When I play (Looper tab step 4b, `Command::SetStarts(Starts::Play)`, per loop like After recording): an armed loop waits for your first note instead of the next bar line.
@@ -192,11 +218,13 @@ looper.load(2, file);                       // into an empty loop; take_loaded(2
 looper.copy_layer(0, id, 1, false);         // a layer of loop 1 moves to loop 2 (true: a copy)
 looper.launch(2, false, Some(4 * 3_840));   // loop 3 off from bar 5's line (Loop tracks); None: at once
 looper.capture_take(4);                     // what Capture(4) into the selected loop would take now
+looper.listen(1, None);                     // stopped: loop 2 plays on its own (Some(id): one layer)
+looper.stop_listening();                    // fades out
 looper.command(Command::Capture(4));        // the last 4 bars heard become the selected (empty) loop
 ```
 
 - `Command`: `Record`, `Overdub`, `Undo`, `Redo`, `Clear` (Undo brings it back), `Forget` (Clear with no undo), `Mute(bool)`, `Solo(bool)`, `SetOverdubs(Overdubs)`, `SetBars(Option<u32>)`, `SetAfter(After)`, `SetFadeOld(f32)` ([How it plays](#how-it-plays)), `SetLatency(u32)`, `SetLevel(f32)` (0 to 2), `Edit(Edit)` ([Edits](#edits)), `Merge` ([Merge](#merge)), `Resample` ([Bounce and resample](#bounce-and-resample)), `Fit` ([Fit](#fit)), `Capture(u32)` and `NewInput` ([Capture](#capture-what-was-heard)). Commands apply at the start of the next period.
-- `Status` also has `seam` (the seam fade in frames), `merging` (a merge's progress, 0 to 1, while it renders), `resampling` (armed or recording a resample), `after`, `fade_old`, `version` (moves on whenever the layers' sound changes), `printed`, `fitting`, `loading`, `copying` and `capturing`.
+- `Status` also has `starts_on` ([A beat's warning before the bar](#a-beats-warning-before-the-bar)), `seam` (the seam fade in frames), `merging` (a merge's progress, 0 to 1, while it renders), `resampling` (armed or recording a resample), `after`, `fade_old`, `version` (moves on whenever the layers' sound changes), `printed`, `fitting`, `loading`, `copying` and `capturing`.
 - `history()` and `loop_history(n)`: [The history](#the-history).
 - `LayerCommand`, sent with a layer's id: `Level(f32)` (0 to 2), `Pan(f32)` (-1 to 1), `Mute(bool)`, `Solo(bool)`, `Delete`. Deleting the overdub being recorded throws it away, as Undo does. A command for a layer that is not there is counted in `Stats::no_layer`.
 - `LayerInfo` (`layer_info(k)`, in play order, the first pass first): `id`, `level`, `pan`, `muted`, `solo`, `audible` (not muted, not left out by a solo), `recording` and `faded` (Fade old's turn-down; the layer plays at `level * faded`).
