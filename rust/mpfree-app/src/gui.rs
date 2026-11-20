@@ -19291,7 +19291,7 @@ mod tests {
                 .map(|x| centre_of(x.1))
                 .unwrap()
         };
-        let (line, loops, four) = (ctl(Ctl::Source(1)), ctl(Ctl::Source(2)), ctl(Ctl::Bars(3)));
+        let (line, loops, four) = (ctl(Ctl::Source(1)), ctl(Ctl::Source(2)), ctl(Ctl::Bars(4)));
         assert_eq!(tap(&mut p, line), Some(FromUi::LoopRecordLoops(false)));
         assert_eq!(
             p.take_actions(),

@@ -1407,7 +1407,7 @@ mod looper {
             // The Looper tab's options: Tempo from the first loop (the
             // setting the MENU row steps).
             s.app.settings.loop_tempo = true;
-            let free = at(&mut s, "leditor", "bars", 0);
+            let free = at(&mut s, "leditor", "bars", 1);
             assert_eq!(free.label, "Free");
             s.press_target(&free).run_for(0.1);
             assert_eq!(s.time.info().state, mpfree_transport::State::Stopped);
@@ -1456,7 +1456,7 @@ mod looper {
             let starts = at(&mut s, "leditor", "starts", 1);
             assert_eq!(starts.label, "When I play");
             s.press_target(&starts).run_for(0.1);
-            let one = at(&mut s, "leditor", "bars", 1);
+            let one = at(&mut s, "leditor", "bars", 2);
             s.press_target(&one).run_for(0.1);
             s.button("REC").run_for(0.1);
             assert!(
@@ -1505,7 +1505,7 @@ mod looper {
             s.press_target(&ring).run_for(0.1);
             let starts = at(&mut s, "leditor", "starts", 1);
             s.press_target(&starts).run_for(0.1);
-            let one = at(&mut s, "leditor", "bars", 1);
+            let one = at(&mut s, "leditor", "bars", 2);
             s.press_target(&one).run_for(0.1);
             let l2 = |s: &Session| s.looper.looper.loop_status(1).unwrap();
             assert!(l2(&s).listening, "{:?}", l2(&s));

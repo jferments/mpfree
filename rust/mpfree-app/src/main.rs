@@ -5439,6 +5439,21 @@ fn shifted<'a>(notes: &'a [u8], shift: &Shift, buf: &'a mut [u8; MAX_PAD_NOTES])
     &buf[..n]
 }
 
+/// The length of the pattern playing, in whole bars, for the looper's
+/// Length: Pattern: the longest clip playing on a notes track (a Loop
+/// track's cells are loops, not patterns), rounded up. None when nothing
+/// plays.
+fn pattern_bars(time: &time::TimeHost) -> Option<u32> {
+    let bar = time.info().meter.bar_ticks().max(1) as f64;
+    let tracks = &time.project().tracks;
+    (0..tracks.len())
+        .filter(|&t| !tracks[t].is_loops())
+        .filter_map(|t| time.now_playing(t))
+        .filter(|p| p.song_len > 0.0)
+        .map(|p| (p.song_len / bar - 1e-6).ceil().max(1.0) as u32)
+        .max()
+}
+
 /// The looper's presses and settings, and the line input switched on or
 /// off (opening the capture device; a failure leaves it off and says why).
 fn looper_action(
@@ -9653,6 +9668,11 @@ fn player_session(
         }
         if let Some(line) = looper.take_pads_as(&pads_l, &pads_r, how) {
             out.note(&line);
+        }
+        // Length: Pattern follows the pattern playing, a few times a
+        // second (it changes with a launch or an edit of a clip's length).
+        if i % 32 == 0 {
+            looper.set_pattern_bars(pattern_bars(&time));
         }
         // The loop, for its track; the line input comes with it. First
         // the Loop tracks' launches, so a loop goes on or off on its bar
