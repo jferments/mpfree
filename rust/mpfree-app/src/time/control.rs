@@ -1004,11 +1004,11 @@ impl TimeControl {
     /// makes none of the changes that went: an edit goes in whole or not
     /// at all, and the compiled view brings it).
     fn in_place(&mut self, track: usize, slot: usize, edit: &Edit) -> bool {
-        let held = self
+        let (notes, locks) = self
             .project
             .clip(track, slot)
-            .map_or(0, |c| c.notes.len() + c.locks.len());
-        if !InPlace::fits(edit, held)
+            .map_or((0, 0), |c| (c.notes.len(), c.locks.len()));
+        if !InPlace::fits(edit, notes, locks)
             || self.song
             || self.unsent.is_some()
             || self.armed != Some(track)

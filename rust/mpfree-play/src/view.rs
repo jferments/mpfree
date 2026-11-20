@@ -336,7 +336,8 @@ impl ClipView {
     /// Whether every one of `changes`, made in order, would go in: each
     /// erase finds its note or lock (in the view, or added by a change
     /// before it, and not erased by one), and each add finds room. Changes
-    /// nothing. Costs the changes times the clip's notes and locks.
+    /// nothing. Costs the note changes times the clip's notes and the lock
+    /// changes times its locks.
     fn fits(&self, changes: &[InPlace]) -> bool {
         let (mut notes, mut locks) = (self.notes.len(), self.locks.len());
         for (i, c) in changes.iter().enumerate() {
@@ -553,23 +554,34 @@ pub enum InPlace {
 /// The most changes one step edit makes in place; a bigger one (a whole
 /// page erased or copied) compiles.
 pub const MAX_IN_PLACE: usize = 64;
-/// The most work a step edit made in place may cost the audio half: its
-/// changes times the clip's notes and locks, each change a search and a
-/// move of the ones after it. A bigger one compiles.
+/// The most work a step edit made in place may cost the audio half: each
+/// change a search and a move of the ones after it, in the view's notes
+/// for a note and in its locks for a lock, which it keeps apart. A bigger
+/// one compiles.
 pub const IN_PLACE_WORK: usize = 8192;
 
 impl InPlace {
-    /// Whether step edit `edit` to a clip holding `held` notes and locks
-    /// may go in place rather than compile: it only adds and erases notes
-    /// and locks (no length, moves or pressure), at most
-    /// [`MAX_IN_PLACE`] of them, for at most [`IN_PLACE_WORK`].
-    pub fn fits(edit: &Edit, held: usize) -> bool {
+    /// Whether step edit `edit` to a clip holding `notes` notes and
+    /// `locks` locks may go in place rather than compile: it only adds and
+    /// erases notes and locks (no length, moves or pressure), at most
+    /// [`MAX_IN_PLACE`] of them, for at most [`IN_PLACE_WORK`] (its note
+    /// changes times the notes, and its lock changes times the locks, so a
+    /// lock turned on a long clip goes in place: refactor B3).
+    pub fn fits(edit: &Edit, notes: usize, locks: usize) -> bool {
         let n = InPlace::count(edit);
         edit.length.is_none()
             && edit.moves.is_none()
             && edit.touch.is_empty()
             && n <= MAX_IN_PLACE
-            && n * held.max(1) <= IN_PLACE_WORK
+            && InPlace::work(edit, notes, locks) <= IN_PLACE_WORK
+    }
+
+    /// What `edit` costs the audio half in place, in notes and locks
+    /// searched and moved ([`InPlace::fits`]).
+    pub fn work(edit: &Edit, notes: usize, locks: usize) -> usize {
+        let note_changes = edit.erase.len() + edit.add.len();
+        let lock_changes = edit.erase_locks.len() + edit.add_locks.len();
+        note_changes * notes.max(1) + lock_changes * locks.max(1)
     }
 
     /// How many changes `edit` makes in place.
@@ -1103,7 +1115,7 @@ impl PlayView {
     /// would, whole or not at all (step sequencer refactor A3). False,
     /// with the view as it was, when any change would not go in (no room,
     /// or what it erases is not there); then compile instead. Real-time
-    /// safe: costs the changes times the clip's notes and locks.
+    /// safe: costs [`InPlace::work`].
     pub fn edit_in_place(&mut self, track: usize, slot: usize, changes: &[InPlace]) -> bool {
         let shown = self.shown(track, slot);
         if !shown.iter().flatten().all(|c| c.fits(changes)) {
@@ -1650,6 +1662,50 @@ mod tests {
         );
         // A slot the view doesn't play needs nothing.
         assert!(v.edit_in_place(0, 5, &half));
+    }
+
+    /// What a step edit costs in place counts its note changes against the
+    /// clip's notes and its lock changes against its locks, which the view
+    /// keeps apart (refactor B3): a lock turned on a long clip goes in
+    /// place, two notes on it compile, and so do locks on a clip full of
+    /// them.
+    #[test]
+    fn a_lock_change_costs_the_locks_and_a_note_change_the_notes() {
+        let note = Note::new(0, 10, 36, 100);
+        let lock = Lock::new(0, None, RelAddr::new(mpfree_param::OnTrack::Inst, 3), 0.5);
+        let tap = Edit {
+            add: vec![note],
+            ..Edit::default()
+        };
+        let detent = Edit {
+            erase_locks: vec![lock],
+            add_locks: vec![Lock { value: 0.6, ..lock }],
+            ..Edit::default()
+        };
+        let two = Edit {
+            add: vec![note; 2],
+            ..Edit::default()
+        };
+        let full = IN_PLACE_WORK;
+        assert!(InPlace::fits(&tap, full, 0));
+        assert!(!InPlace::fits(&tap, full + 1, 0));
+        assert!(!InPlace::fits(&two, full, 0));
+        assert_eq!(InPlace::work(&detent, full, 1), 2);
+        assert!(InPlace::fits(&detent, full, 1));
+        assert!(InPlace::fits(&detent, 0, full / 2));
+        assert!(!InPlace::fits(&detent, 0, full / 2 + 1));
+        // Nothing past the most changes, however small the clip.
+        let many = Edit {
+            add: vec![note; MAX_IN_PLACE + 1],
+            ..Edit::default()
+        };
+        assert!(!InPlace::fits(&many, 0, 0));
+        // Nor the length, which moves every note.
+        let length = Edit {
+            length: Some((960, 1920)),
+            ..Edit::default()
+        };
+        assert!(!InPlace::fits(&length, 0, 0));
     }
 
     #[test]

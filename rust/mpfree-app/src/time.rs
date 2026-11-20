@@ -2141,6 +2141,63 @@ mod tests {
         assert_eq!(*h.audio.view, fresh);
     }
 
+    /// A lock turned on a long clip goes in place: its changes cost the
+    /// clip's locks, not its notes (refactor B3), so each Q-Link detent
+    /// needs no compile. Two steps' notes changed on the same clip are past
+    /// the work allowed in place, and compile.
+    #[test]
+    fn a_lock_turned_on_a_long_clip_goes_in_place() {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_seq::steps::Change;
+        use mpfree_seq::Note;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut clip = Clip::new("long", 128 * STEP_TICKS);
+        // 64 notes on each of 128 steps: as many as a note change in
+        // place may search.
+        clip.notes = (0..128)
+            .flat_map(|i| (0..64).map(move |n| Note::new(i * STEP_TICKS, 100, n, 100)))
+            .collect();
+        assert_eq!(clip.notes.len(), mpfree_play::IN_PLACE_WORK);
+        h.control.project.tracks[0].slots[0] = Some(clip);
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        let ways = |h: &TimeHost| {
+            (
+                h.control.costs.steps_in_place,
+                h.control.costs.steps_compiled,
+            )
+        };
+        let compiles = h.control.costs.compiles;
+        let tune = RelAddr::new(OnTrack::Pad(2), 2);
+        for (i, value) in [300.0, 320.0, 340.0].into_iter().enumerate() {
+            h.step_action(StepAction::Lock {
+                pad: 2,
+                steps: 1 << 4,
+                addr: tune,
+                value: Some(value),
+            })
+            .unwrap();
+            run(&mut h, &mut pads, BAR / 2 + (i as u64 + 1) * BAR / 8, &[]);
+        }
+        assert_eq!(ways(&h), (3, 0), "each detent in place");
+        assert_eq!(h.control.costs.compiles, compiles, "nothing compiled");
+        assert_eq!(h.audio.counts().missed, 0);
+        assert_eq!(
+            *h.audio.view,
+            h.control.view().unwrap(),
+            "the view in place is what a compile gives"
+        );
+        h.step_action(StepAction::ChangeSteps {
+            pad: 2,
+            steps: (1 << 4) | (1 << 8),
+            change: Change::Velocity(60),
+        })
+        .unwrap();
+        assert_eq!(ways(&h), (3, 1), "two steps' notes");
+    }
+
     /// A change the view can't make in place (here, a note it erases that
     /// the project changed behind its back) asks for one compile, which brings it and
     /// the changes after it; the status line counts it.

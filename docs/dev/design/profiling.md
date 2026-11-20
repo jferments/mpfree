@@ -230,8 +230,11 @@ with `--quick`) at 128 frames and 44.1 kHz:
   functions, so a change to the edit, the in-place rule or the grid moves
   these counts. First desktop numbers (17:00Z, 20 Nov), means: a tap 16 µs
   for the edit, 25 µs until it plays (in place); a detent 11 µs for the
-  edit, 3.7 ms until it plays (every detent compiles, since even one change
-  to a full clip is past `IN_PLACE_WORK`); the grid rebuilt 0.39 ms. These
+  edit, 3.7 ms until it plays (every detent compiled, since the in-place
+  rule counted a lock change against the clip's notes too); the grid
+  rebuilt 0.39 ms. Refactor B3 counts a lock change against the locks
+  alone (`InPlace::work`), so a detent goes in place: 12 µs until it plays
+  (callgrind: 58.0 million instructions a detent down to 0.39 million). These
   are the control half's, which may allocate, so `--check-allocs` leaves
   the module out and the golden check skips it (no sound); there is no
   budget line for it. Today the control half runs on the audio thread

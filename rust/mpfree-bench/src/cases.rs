@@ -3226,9 +3226,9 @@ fn step_view(song: &mut Song, launches: &[Launch]) -> PlayView {
 /// (`Grid::toggle`, `Grid::lock_steps`) and made to the clip and the takes
 /// (`Takes::edit`, one undo). With `plays`, also what the audio half does
 /// to play it: the edit made to its view in place when it fits
-/// (`InPlace::fits`: a tap does), else the view compiled again (a detent
-/// does: its changes times the 8,193 notes and locks held are past
-/// `IN_PLACE_WORK`). What the
+/// (`InPlace::fits`: a tap's one note change costs the clip's 8,192 notes,
+/// a detent's two lock changes only its locks; before refactor B3 the
+/// detent counted the notes too and compiled the view again). What the
 /// screen and the step pads show is the grid rebuilt ([`step_grid`]).
 fn step_edit(touch: StepTouch, plays: bool) -> Case {
     use mpfree_play::{InPlace, Takes, MAX_IN_PLACE};
@@ -3259,7 +3259,7 @@ fn step_edit(touch: StepTouch, plays: bool) -> Case {
                 "a held step's lock turned a detent: worked out and joined to the turn's take"
             }
             (StepTouch::Detent, true) => {
-                "as the detent's edit, then the view compiled again (too big to go in place)"
+                "as the detent's edit, then made to the playing view in place"
             }
         },
         block: Box::new(move |b, l, r| {
@@ -3284,9 +3284,11 @@ fn step_edit(touch: StepTouch, plays: bool) -> Case {
             };
             takes.edit(&mut song, 0, 0, &edit, join).expect("the edit");
             if plays {
-                let held = song.clip(0, 0).map_or(0, |c| c.notes.len() + c.locks.len());
+                let (notes, locks) = song
+                    .clip(0, 0)
+                    .map_or((0, 0), |c| (c.notes.len(), c.locks.len()));
                 let n = InPlace::count(&edit);
-                if InPlace::fits(&edit, held) {
+                if InPlace::fits(&edit, notes, locks) {
                     for (slot, c) in changes.iter_mut().zip(InPlace::all(&edit)) {
                         *slot = c;
                     }
@@ -4940,7 +4942,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tap_goes_in_place_and_a_detent_compiles_on_a_full_clip() {
+    fn a_tap_and_a_detent_go_in_place_on_a_full_clip() {
         // A tap: out, in, out, in: the view follows the clip, in place.
         let mut tap = measured(|| step_edit(StepTouch::Tap, true));
         let (l, r) = run(&mut tap, 4);
@@ -4950,11 +4952,10 @@ mod tests {
         // The tap's edit alone leaves the view as it was.
         let (l, r) = run(&mut measured(|| step_edit(StepTouch::Tap, false)), 3);
         assert_eq!((l[0], r[0], l[1], r[1]), (8_191.0, 8_192.0, 0.0, 0.0));
-        // A detent compiles, as in the app: on a full clip even the first
-        // (a lock added: one change, with 8,193 held) is past the work
-        // allowed in place, and each after it is two changes.
+        // A detent goes in place too, as in the app: its lock changes cost
+        // the clip's one lock, not its 8,192 notes (refactor B3).
         let (l, r) = run(&mut measured(|| step_edit(StepTouch::Detent, true)), 5);
-        assert_eq!((l[0], r[0], l[1], r[1]), (8_193.0, 8_193.0, 0.0, 5.0));
+        assert_eq!((l[0], r[0], l[1], r[1]), (8_193.0, 8_193.0, 5.0, 0.0));
         // One take a turn.
         let mut d = step_edit(StepTouch::Detent, false);
         run(&mut d, 64);
