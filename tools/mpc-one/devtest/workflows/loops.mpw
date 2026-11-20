@@ -48,7 +48,9 @@ wait 4
 tap ldeck ring Loop 2 ring: close and play
 wait 2
 expect time: Loop 2 on Loops B, row 1, playing
-tap ldeck capture Capture last 2 bars
+button-down SHIFT
+button REC
+button-up SHIFT
 expect looper: Capture: on the bar line coming, the last 2 bars become Loop 3
 wait 1
 mark arrange

@@ -242,6 +242,10 @@ pub enum LoopAction {
     /// STOP with the transport stopped: an overdub waiting for PLAY is
     /// let go and an armed loop disarmed ([`LoopHost::stop_waiting`]).
     StopWaiting,
+    /// Listen: Some(None) plays the picked loop alone while the song is
+    /// stopped, Some(Some(id)) one of its layers ([`LayerInfo::id`]);
+    /// asked again, or None, it stops ([`LoopHost::listen`]).
+    Listen(Option<Option<u8>>),
     /// The undo history: back `n` steps (below 0) or forward (above 0).
     Steps(i32),
     /// Loop `n`'s mute turned over without picking it, or the picked
@@ -1078,6 +1082,9 @@ pub struct LooperView {
     /// Length: Pattern is picked ([`PATTERN_BARS`]): a new loop takes the
     /// length of the pattern playing.
     pub match_pattern: bool,
+    /// Listen plays: the loop, its layer (None: the whole loop) and
+    /// where it has got to, 0 to 1 ([`LoopHost::listen`]).
+    pub listening: Option<(usize, Option<u8>, f32)>,
     /// The pattern's length in bars as last told
     /// ([`LoopHost::set_pattern_bars`]); None: no pattern plays.
     pub pattern_bars: Option<u32>,
@@ -1111,6 +1118,7 @@ impl Default for LooperView {
             free_tempo: false,
             match_pattern: false,
             pattern_bars: None,
+            listening: None,
         }
     }
 }
@@ -1156,6 +1164,8 @@ pub struct LoopHost {
     pub match_pattern: bool,
     /// The pattern's length in bars ([`LoopHost::set_pattern_bars`]).
     pattern_bars: Option<u32>,
+    /// The song was rolling (not stopped) in the last period.
+    last_rolling: bool,
     input: Vec<f32>,
     out: Vec<f32>,
     last: Status,
@@ -1530,6 +1540,7 @@ impl LoopHost {
             tempos_refused: 0,
             match_pattern: false,
             pattern_bars: None,
+            last_rolling: false,
             input: vec![0.0; 2 * PERIOD],
             out: vec![0.0; 2 * PERIOD],
             last,
@@ -2539,6 +2550,10 @@ impl LoopHost {
         left: &mut [f32; PERIOD],
         right: &mut [f32; PERIOD],
     ) -> (f32, Option<String>) {
+        self.last_rolling = block
+            .spans()
+            .iter()
+            .any(|s| s.state != mpfree_transport::State::Stopped);
         let note = self.record(block);
         let mut peak = 0f32;
         let mut over = false;
@@ -2967,6 +2982,7 @@ impl LoopHost {
             free_tempo: self.free_tempo,
             match_pattern: self.match_pattern,
             pattern_bars: self.pattern_bars,
+            listening: self.looper.listening(),
         }
     }
 
@@ -3214,6 +3230,45 @@ impl LoopHost {
 
     /// Record from `s` (the pads or the line input): Capture forgets what
     /// it heard from the other.
+    /// Listen: `what` Some(None) plays the picked loop alone, round and
+    /// round from its start, while the song is stopped; Some(Some(id))
+    /// one of its layers, even a muted one. The same again, or None,
+    /// stops it; PLAY stops it too. The line says what it did, or why
+    /// not.
+    pub fn listen(&mut self, what: Option<Option<u8>>) -> String {
+        let n = self.picked;
+        let now = self.looper.listening();
+        let Some(layer) = what else {
+            self.looper.stop_listening();
+            return "Listen: stopped".to_string();
+        };
+        if now.is_some_and(|(m, l, _)| m == n && l == layer) {
+            self.looper.stop_listening();
+            return "Listen: stopped".to_string();
+        }
+        let s = self.looper.status();
+        let name = match layer {
+            None => format!("Loop {}", n + 1),
+            Some(_) => format!("Loop {}'s layer", n + 1),
+        };
+        if self.looper.listen(n, layer) {
+            return format!("Listen: {name} plays on its own (again or PLAY: stop)");
+        }
+        match s.phase {
+            Phase::Empty | Phase::Armed => {
+                format!("Listen: Loop {} has nothing to play yet", n + 1)
+            }
+            Phase::Recording | Phase::Overdubbing => {
+                format!("Listen: Loop {} is recording", n + 1)
+            }
+            Phase::Playing if self.last_rolling => {
+                "Listen plays while the music is stopped: you hear the loops with it now"
+                    .to_string()
+            }
+            Phase::Playing => format!("Listen: {name} is busy (merging): try again in a moment"),
+        }
+    }
+
     /// The length of the pattern playing, in bars (the longest clip that
     /// plays, rounded up to whole bars; None when nothing plays, or past
     /// [`PATTERN_MAX_BARS`]). With Length: Pattern the picked loop, while
@@ -3499,6 +3554,39 @@ mod tests {
 
     /// A layer's speaker: the mute goes to the layer by its id, the log
     /// names it, and the next view shows it muted and not heard.
+    /// Listen: refused while the music plays or the loop is empty; with
+    /// the music stopped it plays the picked loop, and asked again stops.
+    #[test]
+    fn listen_plays_the_picked_loop_while_stopped() {
+        let mut h = LoopHost::new(44_100, 8);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        assert!(h.listen(Some(None)).contains("nothing to play"));
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::SetLatency(0));
+        h.command(Command::Record);
+        t.command(0, T::Play);
+        let mut run = |h: &mut LoopHost, t: &mut Transport, periods: u64| {
+            for _ in 0..periods {
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.1; PERIOD], [0.1; PERIOD]);
+                h.take_pads(&l, &r);
+                h.period(&b, &mut l, &mut r);
+            }
+        };
+        run(&mut h, &mut t, 800);
+        assert_eq!(h.looper.status().phase, Phase::Playing);
+        assert!(h.listen(Some(None)).contains("while the music is stopped"));
+        let f = t.frame();
+        t.command(f, T::Stop);
+        run(&mut h, &mut t, 4);
+        assert!(h.listen(Some(None)).contains("Loop 1 plays on its own"));
+        run(&mut h, &mut t, 4);
+        assert_eq!(h.view(120.0).listening.map(|l| (l.0, l.1)), Some((0, None)));
+        assert!(h.listen(Some(None)).contains("stopped"));
+        assert_eq!(h.view(120.0).listening, None);
+    }
+
     /// Length: Pattern (the default): an empty loop follows the pattern
     /// playing, a tap records exactly that many bars, and picking another
     /// Length lets go of it.

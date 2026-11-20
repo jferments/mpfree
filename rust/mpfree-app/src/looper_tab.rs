@@ -57,8 +57,11 @@ pub const LOOP_COLOURS: [Color; 8] = [
 /// under the lanes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ctl {
-    /// The header: the input chip (a tap changes the input), Send, Clear.
+    /// The deck's Records from chip (a tap changes the input).
     Input,
+    /// The header's Listen: the picked loop alone while the music is
+    /// stopped (again: stop).
+    Listen,
     Send,
     Clear,
     /// A loop that plays.
@@ -78,7 +81,7 @@ pub enum Ctl {
     /// An empty loop: Records from (0 Pads, 1 Line in, 2 Loops).
     Source(u8),
     Monitor,
-    /// Length: 0 Free, then 1, 2, 4 and 8 bars.
+    /// Length: 0 Pattern, 1 Free, then 2 to 5: 1, 2, 4 and 8 bars.
     Bars(u8),
     /// Starts: 0 On the bar, 1 When I play.
     Starts(u8),
@@ -140,6 +143,9 @@ pub enum LoopAct {
     Layer(usize),
     /// A control of layer `k` (play order).
     LayerCmd(usize, LayerCommand),
+    /// Layer `k`'s ▶ (play order): that layer alone while the music is
+    /// stopped (again: stop).
+    LayerListen(usize),
     /// One of the panel's controls tapped.
     Strip(Ctl),
     /// A control drawn faint (it can't work now) was tapped: the screen
@@ -339,6 +345,8 @@ pub fn level_text(level: f32) -> String {
 /// One layer's lane.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayerRow {
+    /// Listen plays this layer alone now.
+    pub listening: bool,
     /// "Drums", "Layer 2".
     pub name: String,
     /// "dub 5 · -2.0 dB", "first · at 49 %", "dub 3 · muted".
@@ -370,6 +378,7 @@ impl Default for LayerRow {
             pan: 0.0,
             faded: 1.0,
             recording: false,
+            listening: false,
         }
     }
 }
@@ -503,7 +512,8 @@ pub const SEND_SHOW: usize = 3;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EditorParts {
     pub head: Rect,
-    pub input: Rect,
+    /// Listen, left of Send.
+    pub listen: Rect,
     pub send: Rect,
     pub clear: Rect,
     pub ruler: Rect,
@@ -519,6 +529,8 @@ pub struct EditorParts {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LaneParts {
     pub head: Rect,
+    /// ▶: the layer alone while the music is stopped.
+    pub listen: Rect,
     pub solo: Rect,
     pub wave: Rect,
     pub delete: Rect,
@@ -548,7 +560,7 @@ struct EditorLook {
     title: String,
     sub: String,
     colour: Color,
-    input: (String, u8),
+    listen: (bool, bool),
     has_sound: bool,
     wave: Option<usize>,
     bars: usize,
@@ -575,9 +587,9 @@ pub struct LoopEditor {
     /// "Loops A · Verse · 4 bars · 6 layers", "empty · records the pads".
     pub sub: String,
     pub colour: Color,
-    /// The input chip: what the loop records from ("Pads", "Line in") and
-    /// its level now, 0 to 1 along the meter.
-    pub input: (String, f32),
+    /// Listen: whether it can play now (the loop has sound and the music
+    /// is stopped), and whether it plays the whole loop now (lit: Stop).
+    pub listen: (bool, bool),
     /// Send and Clear work: the loop has sound.
     pub has_sound: bool,
     pub wave: Option<Arc<LoopWave>>,
@@ -633,7 +645,7 @@ impl Default for LoopEditor {
             title: String::new(),
             sub: String::new(),
             colour: LOOP_COLOURS[0],
-            input: (String::new(), 0.0),
+            listen: (false, false),
             has_sound: false,
             wave: None,
             position: None,
@@ -669,7 +681,7 @@ pub const LANE_H: i32 = 60;
 const LANE_GAP: i32 = 4;
 const LANES_SHOWN: usize = 4;
 /// A lane's head: its speaker, name, tag and S.
-const LANE_HEAD: i32 = 160;
+const LANE_HEAD: i32 = 196;
 /// The undo history's rows: a fingertip tall, as the lanes.
 const STEP_H: i32 = 56;
 const STEP_GAP: i32 = 4;
@@ -683,7 +695,7 @@ impl LoopEditor {
         let head = Rect::new(r.x + 12, r.y + 8, r.w - 24, 36);
         let clear = Rect::new(head.right() - 88, head.y + 1, 88, 34);
         let send = Rect::new(clear.x - 8 - 80, head.y + 1, 80, 34);
-        let input = Rect::new(send.x - 8 - 128, head.y + 1, 128, 34);
+        let listen = Rect::new(send.x - 8 - 112, head.y + 1, 112, 34);
         let strip = Rect::new(
             r.x + 12,
             r.bottom() - 10 - (18 + CTRL_H),
@@ -703,7 +715,7 @@ impl LoopEditor {
         let ruler = Rect::new(wave_x, r.y + 50, lanes.right() - wave_x, 18);
         EditorParts {
             head,
-            input,
+            listen,
             send,
             clear,
             ruler,
@@ -742,10 +754,12 @@ impl LoopEditor {
     pub fn lane_parts(rr: Rect) -> LaneParts {
         let head = Rect::new(rr.x, rr.y, LANE_HEAD, rr.h);
         let solo = Rect::new(head.right() - 42, rr.y + (rr.h - 36) / 2, 34, 36);
+        let listen = Rect::new(solo.x - 40, solo.y, 34, 36);
         let wave = Rect::new(rr.x + LANE_HEAD + 8, rr.y, rr.w - LANE_HEAD - 8, rr.h);
         let delete = Rect::new(wave.right() - 44, rr.y + (rr.h - 36) / 2, 36, 36);
         LaneParts {
             head,
+            listen,
             solo,
             wave,
             delete,
@@ -934,16 +948,10 @@ impl LoopEditor {
             Strip::Records {
                 monitor, starts, ..
             } => {
+                // Records from is over the loops (the deck's header), for
+                // every loop; here, how this one records.
                 let x = s.x;
-                for (i, l) in ["Pads", "Line in", "Loops"].iter().enumerate() {
-                    out.push((
-                        Ctl::Source(i as u8),
-                        Rect::new(x + 3 + i as i32 * 86, y + 3, 82, CTRL_H - 6),
-                        l.to_string(),
-                        true,
-                    ));
-                }
-                let mut x2 = x + 270;
+                let mut x2 = x;
                 if let Some(on) = monitor {
                     out.push((
                         Ctl::Monitor,
@@ -951,8 +959,8 @@ impl LoopEditor {
                         format!("Monitor {}", if *on { "on" } else { "off" }),
                         true,
                     ));
+                    x2 += 100;
                 }
-                x2 += 90;
                 for (i, l) in ["Pattern", "Free", "1", "2", "4", "8 bars"]
                     .iter()
                     .enumerate()
@@ -1127,10 +1135,7 @@ impl LoopEditor {
             title: self.title.clone(),
             sub: self.sub.clone(),
             colour: self.colour,
-            input: (
-                self.input.0.clone(),
-                (self.input.1.clamp(0.0, 1.0) * 5.0) as u8,
-            ),
+            listen: self.listen,
             has_sound: self.has_sound,
             wave: self.wave.as_ref().map(|w| Arc::as_ptr(w) as usize),
             bars: self.bars,
@@ -1166,6 +1171,54 @@ impl LoopEditor {
 // ------------------------------------------------------------- painting
 
 /// A button: raised (or lit), its label centred, faint when it can't work.
+/// A play triangle, `h` pixels tall, its left edge at `x` and centred on
+/// `y` (the UI font has no ▶).
+pub(crate) fn play_icon(cx: &mut PaintCx, x: f32, y: f32, h: f32, c: Color) {
+    let w = h * 0.87;
+    let bbox = Rect::new(
+        x as i32 - 2,
+        (y - h / 2.0) as i32 - 2,
+        w as i32 + 4,
+        h as i32 + 4,
+    );
+    let mut s = Shape::new(bbox);
+    let rows = (h * 2.0) as i32;
+    for i in 0..=rows {
+        let f = i as f32 / rows as f32;
+        let yy = y - h / 2.0 + f * h;
+        let len = w * (1.0 - (2.0 * f - 1.0).abs());
+        s.segment((x, yy), (x + len.max(0.5), yy), 1.2);
+    }
+    s.draw(cx.canvas, c);
+}
+
+/// Listen's button: ▶ Listen, or Stop lit while it plays.
+fn listen_button(cx: &mut PaintCx, b: Rect, works: bool, on: bool) {
+    let t = cx.theme.clone();
+    cx.canvas
+        .fill_round_rect(b, 10, if on { t.accent } else { t.raised });
+    let ink = if on { t.on_accent } else { t.button_ink(works) };
+    let label = if on { "Stop" } else { "Listen" };
+    let lw = cx.measure(FontId::Bold, 14.0, label);
+    let total = 12 + 8 + lw;
+    let x0 = b.x + (b.w - total) / 2;
+    let cy = b.y as f32 + b.h as f32 / 2.0;
+    if on {
+        cx.canvas
+            .fill_rect(Rect::new(x0, cy as i32 - 5, 11, 11), ink);
+    } else {
+        play_icon(cx, x0 as f32 + 1.0, cy, 12.0, ink);
+    }
+    cx.text(
+        FontId::Bold,
+        14.0,
+        Rect::new(x0 + 20, b.y, lw + 2, b.h),
+        Align::Left,
+        ink,
+        label,
+    );
+}
+
 fn button(cx: &mut PaintCx, b: Rect, label: &str, on: bool, lit: bool, px: f32) {
     let t = cx.theme.clone();
     cx.canvas
@@ -1305,7 +1358,7 @@ impl LoopEditor {
             t.text,
             &self.title,
         );
-        let sub_w = (p.input.x - 12 - (h.x + 32 + nw + 16)).max(0);
+        let sub_w = (p.listen.x - 12 - (h.x + 32 + nw + 16)).max(0);
         cx.text(
             FontId::Sans,
             14.0,
@@ -1314,35 +1367,9 @@ impl LoopEditor {
             t.text_dim,
             &self.sub,
         );
-        // The input with its meter: five bars, lit to the level.
-        cx.canvas.fill_round_rect(p.input, 10, t.raised);
-        let (word, level) = &self.input;
-        let ww = cx.measure(FontId::Bold, 14.0, word);
-        let total = ww + 10 + 5 * 8;
-        let x0 = p.input.x + (p.input.w - total) / 2;
-        cx.text(
-            FontId::Bold,
-            14.0,
-            Rect::new(x0, p.input.y, ww + 2, p.input.h),
-            Align::Left,
-            t.text,
-            word,
-        );
-        let lit = (level.clamp(0.0, 1.0) * 5.0).round() as i32;
-        for k in 0..5 {
-            let bh = 8 + k * 3;
-            let b = Rect::new(x0 + ww + 10 + k * 8, p.input.y + 25 - bh, 6, bh);
-            let c = if k < lit {
-                if k == 4 {
-                    t.bad
-                } else {
-                    t.good
-                }
-            } else {
-                t.outline
-            };
-            cx.canvas.fill_round_rect(b, 2, c);
-        }
+        // Listen: the loop alone while the music is stopped.
+        let (works, on) = self.listen;
+        listen_button(cx, p.listen, works || on, on);
         button(cx, p.send, "Send", self.has_sound, self.send_open, 14.0);
         let ink = if self.has_sound {
             t.bad
@@ -1440,7 +1467,7 @@ impl LoopEditor {
             if l.muted { t.bad } else { t.text_dim },
             l.muted,
         );
-        let name_w = p.solo.x - (p.head.x + 40) - 4;
+        let name_w = p.listen.x - (p.head.x + 40) - 4;
         cx.text(
             FontId::Bold,
             16.0,
@@ -1452,11 +1479,34 @@ impl LoopEditor {
         cx.text(
             FontId::Sans,
             12.0,
-            Rect::new(p.head.x + 14, top + 26, p.solo.x - p.head.x - 18, 18),
+            Rect::new(p.head.x + 14, top + 26, p.listen.x - p.head.x - 18, 18),
             Align::Left,
             if l.recording { t.warn } else { t.text_dim },
             &l.tag,
         );
+        // ▶: this layer alone while the music is stopped (lit while it
+        // plays; faint while the music plays).
+        cx.canvas
+            .fill_round_rect(p.listen, 8, if l.listening { t.accent } else { t.raised });
+        let ink = if l.listening {
+            t.on_accent
+        } else {
+            t.button_ink(self.listen.0)
+        };
+        let cy = p.listen.y as f32 + p.listen.h as f32 / 2.0;
+        if l.listening {
+            let c = p.listen.x + p.listen.w / 2;
+            cx.canvas
+                .fill_rect(Rect::new(c - 5, cy as i32 - 5, 10, 10), ink);
+        } else {
+            play_icon(
+                cx,
+                (p.listen.x + p.listen.w / 2) as f32 - 4.0,
+                cy,
+                12.0,
+                ink,
+            );
+        }
         cx.canvas
             .fill_round_rect(p.solo, 8, if l.solo { t.accent } else { t.raised });
         cx.text(
@@ -1857,21 +1907,12 @@ impl LoopEditor {
                     .fill_rect(Rect::new(first_div, s.y + 2, 1, s.h - 4), t.outline);
             }
             Strip::Records {
-                source,
                 monitor,
                 bars,
                 starts,
                 then,
+                ..
             } => {
-                group_label(cx, s.x, s.y, "RECORDS FROM");
-                let src: Vec<(Rect, &str, bool)> = ctls
-                    .iter()
-                    .filter_map(|c| match c.0 {
-                        Ctl::Source(i) => Some((c.1, c.2.as_str(), i == *source)),
-                        _ => None,
-                    })
-                    .collect();
-                segments(cx, &src);
                 if let (Some(on), Some(m)) = (monitor, rect(Ctl::Monitor)) {
                     group_label(cx, m.x, s.y, "MONITOR");
                     let sw = Rect::new(m.x, m.y + (m.h - 34) / 2, 62, 34);
@@ -1889,8 +1930,10 @@ impl LoopEditor {
                     })
                     .collect();
                 if let Some(first) = len.first() {
-                    cx.canvas
-                        .fill_rect(Rect::new(first.0.x - 18, s.y + 2, 1, s.h - 4), t.outline);
+                    if first.0.x - 18 > s.x {
+                        cx.canvas
+                            .fill_rect(Rect::new(first.0.x - 18, s.y + 2, 1, s.h - 4), t.outline);
+                    }
                     group_label(cx, first.0.x - 3, s.y, "LENGTH");
                 }
                 segments(cx, &len);
@@ -1998,7 +2041,17 @@ impl Widget for LoopEditor {
     fn targets(&self, r: Rect) -> Vec<Target> {
         let p = LoopEditor::parts(r);
         let mut out = vec![
-            Target::tap("input", 0, format!("Input: {}", self.input.0), p.input),
+            Target::tap(
+                "listen",
+                0,
+                if self.listen.1 {
+                    "Stop listening"
+                } else {
+                    "Listen"
+                },
+                p.listen,
+            )
+            .disabled_if(!self.listen.0 && !self.listen.1),
             Target::tap("send", 0, "Send", p.send).disabled_if(!self.has_sound),
             Target::tap("clear", 0, "Clear", p.clear).disabled_if(!self.has_sound),
         ];
@@ -2019,7 +2072,7 @@ impl Widget for LoopEditor {
                 Ctl::Bars(i) => Target::tap("bars", i as usize, label, b),
                 Ctl::Starts(i) => Target::tap("starts", i as usize, label, b),
                 Ctl::Then(i) => Target::tap("then", i as usize, label, b),
-                Ctl::Input | Ctl::Send | Ctl::Clear => continue,
+                Ctl::Input | Ctl::Listen | Ctl::Send | Ctl::Clear => continue,
             };
             let chosen = match (&self.strip, c) {
                 (Strip::Records { source, .. }, Ctl::Source(i)) => *source == i,
@@ -2078,8 +2131,12 @@ impl Widget for LoopEditor {
                 "layer-mute",
                 k,
                 format!("{name} speaker"),
-                Rect::new(lp.head.x, lp.head.y, lp.solo.x - lp.head.x - 2, lp.head.h),
+                Rect::new(lp.head.x, lp.head.y, lp.listen.x - lp.head.x - 2, lp.head.h),
             ));
+            out.push(
+                Target::tap("layer-listen", k, format!("{name} listen"), lp.listen)
+                    .disabled_if(!self.listen.0 && !self.layers[k].listening),
+            );
             out.push(Target::tap("layer-solo", k, format!("{name} S"), lp.solo));
             if k == self.picked && !self.layers[k].recording {
                 out.push(Target::tap(
@@ -2174,8 +2231,13 @@ impl Widget for LoopEditor {
         match phase {
             Touch::Down => {
                 // The header.
-                if p.input.contains(x, y) {
-                    self.acts.push(LoopAct::Strip(Ctl::Input));
+                if p.listen.contains(x, y) {
+                    let (works, on) = self.listen;
+                    self.acts.push(if works || on {
+                        LoopAct::Strip(Ctl::Listen)
+                    } else {
+                        LoopAct::Faint(Ctl::Listen)
+                    });
                     return Some(EventKind::Tab(0));
                 }
                 if p.send.contains(x, y) {
@@ -2278,7 +2340,13 @@ impl Widget for LoopEditor {
                     .find(|(_, rr)| rr.contains(x, y))?;
                 let l = self.layers[k].clone();
                 let lp = LoopEditor::lane_parts(rr);
-                let act = if lp.solo.inset(-3).contains(x, y) {
+                let act = if lp.listen.inset(-3).contains(x, y) {
+                    if self.listen.0 || l.listening {
+                        LoopAct::LayerListen(k)
+                    } else {
+                        LoopAct::Faint(Ctl::Listen)
+                    }
+                } else if lp.solo.inset(-3).contains(x, y) {
                     LoopAct::LayerCmd(k, LayerCommand::Solo(!l.solo))
                 } else if lp.head.contains(x, y) {
                     LoopAct::LayerCmd(k, LayerCommand::Mute(!l.muted))

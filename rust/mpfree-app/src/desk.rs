@@ -564,6 +564,9 @@ impl Desk<'_> {
             gui::FromUi::LoopCommand(c) => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Command(c)))
             }
+            gui::FromUi::LoopListen(what) => {
+                fx.push(app::Effect::Looper(looping::LoopAction::Listen(what)))
+            }
             gui::FromUi::LoopSteps(n) => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Steps(n)))
             }
