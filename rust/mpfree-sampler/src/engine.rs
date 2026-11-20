@@ -124,8 +124,16 @@ pub const STEAL_FRAMES: u16 = 32;
 /// How long the step is smoothed over when an edit moves a loop behind a
 /// playing voice and it jumps into the loop ([`Engine::edit_view`]).
 pub const JUMP_FRAMES: u16 = 64;
-/// Events that can wait for the next render.
+/// Events that can wait for the next render. A let-go is never refused:
+/// past this it waits aside ([`Engine::schedule_for`]).
 pub const MAX_EVENTS: usize = 256;
+/// The places each kit has for let-gos the queue had no room for: one for
+/// each pad number's let-go ([`Event::NoteOff`]), one for each key's
+/// ([`Event::KeyOff`]) and one for its take's ([`Event::TakeOff`]). The
+/// engine has one more, for all notes off.
+const LET_GO_PLACES: usize = 2 * 256 + 1;
+/// A let-go place with nothing waiting in it.
+const NOT_DUE: u32 = u32::MAX;
 /// The most kits one engine plays ([`Engine::with_kits`]): one for each of
 /// the sequencer's 128 tracks.
 pub const MAX_KITS: usize = 128;
@@ -1015,6 +1023,63 @@ pub enum Event {
     /// While live chop is on: a cut where the audition is now, to the
     /// frame. Nothing plays.
     Mark,
+}
+
+impl Event {
+    /// Whether it lets go of something held (a pad, a key, the take, or
+    /// all of them), which the queue never refuses.
+    pub fn lets_go(&self) -> bool {
+        matches!(
+            self,
+            Event::NoteOff { .. } | Event::KeyOff { .. } | Event::TakeOff | Event::AllOff
+        )
+    }
+
+    /// Whether it starts a sound (a pad, a key, the take or an audition).
+    pub fn is_hit(&self) -> bool {
+        matches!(
+            self,
+            Event::NoteOn { .. }
+                | Event::Key { .. }
+                | Event::TakeOn { .. }
+                | Event::Audition { .. }
+        )
+    }
+
+    /// The place in its kit's [`LET_GO_PLACES`] a let-go waits in when the
+    /// queue is full, or a hit's matching let-go does. None for all notes
+    /// off (the engine's own place) and everything else.
+    fn let_go_place(&self) -> Option<usize> {
+        match *self {
+            Event::NoteOff { pad } | Event::NoteOn { pad, .. } => Some(usize::from(pad)),
+            Event::KeyOff { note } | Event::Key { note, .. } => Some(256 + usize::from(note)),
+            Event::TakeOff | Event::TakeOn { .. } => Some(512),
+            _ => None,
+        }
+    }
+
+    /// The let-go waiting in place `place` of a kit's [`LET_GO_PLACES`].
+    fn let_go_at(place: usize) -> Event {
+        match place {
+            0..=255 => Event::NoteOff { pad: place as u8 },
+            256..=511 => Event::KeyOff {
+                note: (place - 256) as u8,
+            },
+            _ => Event::TakeOff,
+        }
+    }
+
+    /// What a pressure or live value sets (kind, pad, setting), where a
+    /// newer value for the same takes its place when the queue is full.
+    /// None for every other event.
+    fn value_key(&self) -> Option<(u8, u8, u8)> {
+        match *self {
+            Event::Pressure { pad, .. } => Some((0, pad, 0)),
+            Event::PadLive { pad, field, .. } => Some((1, pad, field as u8)),
+            Event::ProgramLive { field, .. } => Some((2, 0, field as u8)),
+            _ => None,
+        }
+    }
 }
 
 /// The cuts live chop keeps for reading ([`Engine::mark`]).
@@ -1939,7 +2004,16 @@ impl mpfree_lanes::Job for Carrier {
 pub struct Stats {
     pub hits: u64,
     pub steals: u64,
+    /// Events the full queue refused (never a let-go).
     pub dropped_events: u64,
+    /// Of those, hits: a pad, key, take or audition that didn't play.
+    pub refused_hits: u64,
+    /// Pressure and live values the full queue merged into a newer value
+    /// for the same pad and setting, to make room.
+    pub merged_values: u64,
+    /// Let-gos the full queue had no room for, kept aside to land on their
+    /// frame (or with the same place's next let-go, if one comes first).
+    pub late_let_gos: u64,
     pub peak_voices: usize,
     /// Grains refused because the grain budget was full.
     pub skipped_grains: u64,
@@ -1966,6 +2040,16 @@ pub struct Engine {
     lane: Option<Lane<Carrier>>,
     /// (frame offset, kit, event).
     events: Vec<(u32, u8, Event)>,
+    /// Let-gos the queue had no room for, each in its own place
+    /// ([`LET_GO_PLACES`] a kit, then the one for all notes off) with the
+    /// frame offset it lands on; [`NOT_DUE`] where none waits.
+    late_due: Vec<u32>,
+    /// The places in `late_due` with a let-go waiting, in no order.
+    late: Vec<u32>,
+    /// No pressure or live value in the queue has a newer one for the same
+    /// pad and setting behind it, so none can make room
+    /// ([`Engine::make_room`]). Cleared when one goes in.
+    nothing_to_merge: bool,
     /// Each pad's turn for Cycle (see [`TURNS`]), [`PADS`] a kit.
     cycle: Vec<u32>,
     /// [`Engine::victim`]'s count of each kit's pads' held voices, all 0
@@ -2061,6 +2145,9 @@ impl Engine {
             },
             lane: None,
             events: Vec::with_capacity(MAX_EVENTS),
+            late_due: vec![NOT_DUE; kits * LET_GO_PLACES + 1],
+            late: Vec::with_capacity(kits * LET_GO_PLACES + 1),
+            nothing_to_merge: false,
             cycle: vec![0; PADS * kits],
             held: vec![0; PADS * kits],
             last_key: vec![None; PADS * kits],
@@ -2396,6 +2483,25 @@ impl Engine {
         self.pool.iter().filter(|(v, _)| v.active).count()
     }
 
+    /// The voices a let-go would release now: a Gate, Loop or Grains sound
+    /// whose pad, key or take is held (not latched, not fading out). Every
+    /// kit's; the lane's share counts only while it is here.
+    pub fn held_voices(&self) -> usize {
+        self.pool
+            .iter()
+            .filter(|(v, _)| {
+                v.active
+                    && v.held
+                    && !v.latch
+                    && v.kill_left == 0
+                    && matches!(
+                        v.mode,
+                        Some(PlayMode::Gate | PlayMode::Loop | PlayMode::Granular)
+                    )
+            })
+            .count()
+    }
+
     /// Load shedding: the voice here this engine would give up first, the
     /// least audible one ([`Cull::audibility`]) by how loud it has been
     /// lately. Voices already fading and auditions are left be, and so are
@@ -2571,7 +2677,7 @@ impl Engine {
 
     /// Queues an event `offset` frames into the next render (later renders if
     /// the offset is past its end). Events at the same offset keep their order.
-    /// Returns false, and counts it, if the queue is full. For kit 0.
+    /// For kit 0; see [`Engine::schedule_for`] for a full queue.
     pub fn schedule(&mut self, offset: u32, ev: Event) -> bool {
         self.schedule_for(0, offset, ev)
     }
@@ -2579,17 +2685,170 @@ impl Engine {
     /// [`Engine::schedule`] for kit `kit`: its pads, its live settings. One
     /// queue holds every kit's events, in the order they come. Returns
     /// false for a kit out of range, which is not counted.
+    ///
+    /// The queue holds [`MAX_EVENTS`]. When it is full, a pressure or live
+    /// value whose pad and setting already has one waiting merges with it
+    /// (the newer value stays), and any event takes the place of a value
+    /// that has a newer one for its pad and setting behind it; both are
+    /// counted ([`Stats::merged_values`]). A let-go ([`Event::lets_go`]) is
+    /// never refused: with no place to take, it waits aside, in a place of
+    /// its own for each pad, key and take of each kit, and lands on its
+    /// frame after the events queued for that frame, as it would from the
+    /// queue (counted, [`Stats::late_let_gos`]). Two let-gos waiting in the
+    /// same place land together, on the later one's frame, so a hit between
+    /// them is let go of late, never left playing. A hit queued for the
+    /// frame a let-go waiting aside lands on moves one frame later, so it
+    /// still comes after it. Anything else is refused: false, counted
+    /// ([`Stats::dropped_events`], hits also [`Stats::refused_hits`]).
+    /// Never allocates.
     pub fn schedule_for(&mut self, kit: usize, offset: u32, ev: Event) -> bool {
         if kit >= self.views.len() {
             return false;
         }
-        if self.events.len() >= MAX_EVENTS {
-            self.stats.dropped_events += 1;
-            return false;
+        let mut offset = offset;
+        if !self.late.is_empty() && ev.is_hit() {
+            offset = self.after_late(kit, offset, ev);
         }
+        let key = ev.value_key();
+        if self.events.len() >= MAX_EVENTS {
+            if let Some(key) = key {
+                if self.merge_value(kit, key, offset, ev) {
+                    return true;
+                }
+            }
+            if !self.make_room() {
+                if ev.lets_go() {
+                    self.wait_late(kit, offset, ev);
+                    return true;
+                }
+                self.stats.dropped_events += 1;
+                if ev.is_hit() {
+                    self.stats.refused_hits += 1;
+                }
+                return false;
+            }
+        }
+        self.queue(kit, offset, ev);
+        if key.is_some() {
+            self.nothing_to_merge = false;
+        }
+        true
+    }
+
+    /// Puts an event in the queue, after those at the same offset.
+    fn queue(&mut self, kit: usize, offset: u32, ev: Event) {
         let i = self.events.partition_point(|(o, _, _)| *o <= offset);
         self.events.insert(i, (offset, kit as u8, ev));
+    }
+
+    /// Where kit `kit`'s hit `ev` at `offset` goes: one frame later if a
+    /// let-go waiting aside for its pad, key or take (or all notes off)
+    /// lands on that frame, as it came first.
+    fn after_late(&self, kit: usize, offset: u32, ev: Event) -> u32 {
+        let own = ev
+            .let_go_place()
+            .map_or(NOT_DUE, |p| self.late_due[kit * LET_GO_PLACES + p]);
+        let all = self.late_due[self.late_due.len() - 1];
+        if own == offset || all == offset {
+            offset.saturating_add(1).min(NOT_DUE - 1)
+        } else {
+            offset
+        }
+    }
+
+    /// The full queue's newest value for kit `kit`'s `key` merges with the
+    /// value `ev` at `offset`: the newer of the two stays. False if there is
+    /// none waiting.
+    fn merge_value(&mut self, kit: usize, key: (u8, u8, u8), offset: u32, ev: Event) -> bool {
+        let kit8 = kit as u8;
+        let Some(j) = self
+            .events
+            .iter()
+            .rposition(|&(_, k, e)| k == kit8 && e.value_key() == Some(key))
+        else {
+            return false;
+        };
+        if self.events[j].0 <= offset {
+            self.events.remove(j);
+            self.queue(kit, offset, ev);
+        }
+        self.stats.merged_values += 1;
         true
+    }
+
+    /// Makes room in the queue by dropping a pressure or live value that a
+    /// newer one for the same pad and setting comes after (counted). False
+    /// if there is none.
+    fn make_room(&mut self) -> bool {
+        if self.nothing_to_merge {
+            return false;
+        }
+        let n = self.events.len();
+        for i in 0..n {
+            let (_, kit, e) = self.events[i];
+            let Some(key) = e.value_key() else {
+                continue;
+            };
+            if self.events[i + 1..]
+                .iter()
+                .any(|&(_, k, e)| k == kit && e.value_key() == Some(key))
+            {
+                self.events.remove(i);
+                self.stats.merged_values += 1;
+                return true;
+            }
+        }
+        self.nothing_to_merge = true;
+        false
+    }
+
+    /// Kit `kit`'s let-go `ev` at `offset` waits aside, in its place: with
+    /// one already there, the two land together on the later frame.
+    fn wait_late(&mut self, kit: usize, offset: u32, ev: Event) {
+        let i = match ev.let_go_place() {
+            Some(p) => kit * LET_GO_PLACES + p,
+            None => self.late_due.len() - 1, // all notes off
+        };
+        let due = offset.min(NOT_DUE - 1);
+        let d = &mut self.late_due[i];
+        if *d == NOT_DUE {
+            *d = due;
+            self.late.push(i as u32);
+        } else {
+            *d = (*d).max(due);
+        }
+        self.stats.late_let_gos += 1;
+    }
+
+    /// Lands the let-gos waiting aside that are due by frame `at` of the
+    /// render; returns the frame the next one is due on (`n` if none is due
+    /// in this render).
+    fn land_late(&mut self, at: u32, n: u32) -> u32 {
+        let mut next = n;
+        let mut k = 0;
+        while k < self.late.len() {
+            let i = self.late[k] as usize;
+            let due = self.late_due[i];
+            if due > at {
+                next = next.min(due);
+                k += 1;
+                continue;
+            }
+            self.late_due[i] = NOT_DUE;
+            self.late.swap_remove(k);
+            if i == self.late_due.len() - 1 {
+                self.apply_for(0, Event::AllOff);
+            } else {
+                let ev = Event::let_go_at(i % LET_GO_PLACES);
+                self.apply_for(i / LET_GO_PLACES, ev);
+            }
+        }
+        next
+    }
+
+    /// How many let-gos wait aside now ([`Engine::schedule_for`]).
+    pub fn late_waiting(&self) -> usize {
+        self.late.len()
     }
 
     /// Applies an event now (before the next rendered frame). For kit 0.
@@ -2820,12 +3079,17 @@ impl Engine {
 
     /// The hard stop: every voice and its grains go idle at once, without a
     /// fade, the master effect's grains stop and forget what they hold, and
-    /// the events waiting are dropped. [`Event::AllOff`] releases instead;
-    /// this is for a reset or a panic, where a click is fine. The live
-    /// settings, the tape and the view stay. Never allocates. Split, a share
-    /// still away on the lane (late) stops as it comes back.
+    /// the events waiting are dropped (let-gos waiting aside too).
+    /// [`Event::AllOff`] releases instead; this is for a reset or a panic,
+    /// where a click is fine. The live settings, the tape and the view
+    /// stay. Never allocates. Split, a share still away on the lane (late)
+    /// stops as it comes back.
     pub fn stop_all(&mut self) {
         self.events.clear();
+        for &i in &self.late {
+            self.late_due[i as usize] = NOT_DUE;
+        }
+        self.late.clear();
         silence(&mut self.pool.a);
         match self.pool.b.as_deref_mut() {
             Some(b) => silence(b),
@@ -4104,6 +4368,9 @@ impl Engine {
                     self.apply_for(usize::from(kit), ev);
                 }
                 next = self.events.get(applied).map_or(n, |&(o, _, _)| o.min(n));
+                if !self.late.is_empty() {
+                    next = next.min(self.land_late(at, n));
+                }
             }
             if self.pool.split {
                 next = next.min(at + LANE_BLOCK as u32);
@@ -4168,6 +4435,10 @@ impl Engine {
         self.events.drain(..applied);
         for e in &mut self.events {
             e.0 = e.0.saturating_sub(n);
+        }
+        for &i in &self.late {
+            let d = &mut self.late_due[i as usize];
+            *d = d.saturating_sub(n);
         }
     }
 }

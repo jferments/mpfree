@@ -13556,6 +13556,8 @@ pub fn sample_player(fonts: Fonts) -> Player {
             steals: 0,
             given_up: 0,
             dropped: 0,
+            late_let_gos: 0,
+            merged_values: 0,
             peak_grains: 0,
         },
     }));
@@ -16447,6 +16449,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                 steals: 2,
                 given_up: 0,
                 dropped: 0,
+                late_let_gos: 0,
+                merged_values: 0,
                 peak_grains: 48,
             },
             ..Timing::default()
