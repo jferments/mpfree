@@ -192,7 +192,7 @@ impl Instrument {
     }
 }
 
-/// Why Records from: Pads' instrument records silence while the pads play
+/// Why Records from: Pads records silence while the pads play
 /// MIDI out.
 pub const PADS_ON_MIDI_OUT: &str = "the pads play MIDI out, which sounds outside mpfree";
 
@@ -201,8 +201,8 @@ pub const PADS_ON_MIDI_OUT: &str = "the pads play MIDI out, which sounds outside
 fn source_words(s: LoopSource, pads: Option<Instrument>) -> String {
     match (s, pads) {
         (LoopSource::Pads, Some(Instrument::MidiOut)) => format!("silence ({PADS_ON_MIDI_OUT})"),
-        (LoopSource::Pads, Some(i)) => format!("the pads' instrument ({})", i.name()),
-        (LoopSource::Pads, None) => "the pads' instrument".to_string(),
+        (LoopSource::Pads, Some(i)) => format!("the pads ({})", i.name()),
+        (LoopSource::Pads, None) => "the pads".to_string(),
         (LoopSource::Line, _) => "the line input".to_string(),
         (LoopSource::Mix(mpfree_fx::StripId::Master), _) => "the master".to_string(),
         (LoopSource::Mix(m), _) => crate::mixing::name(m),
@@ -212,7 +212,7 @@ fn source_words(s: LoopSource, pads: Option<Instrument>) -> String {
 /// Where the looper records from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LoopSource {
-    /// The pads' instrument: what the pads play ([`Instrument`]), on the
+    /// The pads: what the pads play ([`Instrument`]), on the
     /// channel it plays into, after that channel's effects and fader
     /// ([`crate::mixing::MixHost::instrument_strip`]). So a pattern on
     /// another instrument stays out; clips on the same one are heard with
@@ -237,7 +237,7 @@ impl LoopSource {
 
     pub fn name(self) -> &'static str {
         match self {
-            LoopSource::Pads => "Pads' instrument",
+            LoopSource::Pads => "Pads",
             LoopSource::Line => "Line input",
             LoopSource::Mix(_) => "A mix (Looper tab)",
         }
@@ -1238,7 +1238,7 @@ pub struct LoopHost {
     pads_latency: u32,
     /// Why the pads are recorded dry, when they are.
     pads_dry: Option<&'static str>,
-    /// The instrument Records from: Pads' instrument takes, held with
+    /// The instrument Records from: Pads takes, held with
     /// `source` through a take (None for another source, or before the
     /// app first said what the pads play).
     pads: Option<Instrument>,
@@ -2636,7 +2636,7 @@ impl LoopHost {
     }
 
     /// What the pads play now (`main.rs`, `pads_instrument`), told each
-    /// period: Records from: Pads' instrument records it, from the next
+    /// period: Records from: Pads records it, from the next
     /// take if one records now ([`LoopHost::settle`]).
     pub fn follow_pads(&mut self, now: Instrument) -> Option<(String, bool)> {
         self.pads_now = Some(now);
@@ -2742,7 +2742,7 @@ impl LoopHost {
     }
 
     /// The sound of what it records from for this period, as the mixer
-    /// had it: the pads' instrument or a mix
+    /// had it: the pads or a mix
     /// ([`crate::mixing::MixHost::loop_take`]), `latency` frames late after
     /// the period it lags; or silence, with why it can't be had (never
     /// another sound in its place). A line for the log when that changes
@@ -2772,10 +2772,14 @@ impl LoopHost {
         let line = match (dry, taking) {
             (Some(why), true) => {
                 self.dropouts += 1;
-                format!("looper: the take records silence from here, {what} can't be had: {why}")
+                format!(
+                    "looper: the take records silence from here, {what} can't be recorded: {why}"
+                )
             }
             (None, true) => format!("looper: the take hears {what} again"),
-            (Some(why), false) => format!("looper: records silence, {what} can't be had: {why}"),
+            (Some(why), false) => {
+                format!("looper: records silence, {what} can't be recorded: {why}")
+            }
             (None, false) => format!("looper: hears {what} again"),
         };
         Some((line, taking))
@@ -4696,7 +4700,7 @@ mod tests {
         let said = |s: &str| Some((s.to_string(), false));
         assert_eq!(
             h.take_pads_as(&z, &z, Err(why)),
-            said("looper: records silence, the pads' instrument can't be had: the Loop track goes to a submix")
+            said("looper: records silence, the pads can't be recorded: the Loop track goes to a submix")
         );
         assert_eq!(h.take_pads_as(&z, &z, Err(why)), None);
         assert_eq!(h.looper.status().phase, Phase::Playing);
@@ -4712,7 +4716,7 @@ mod tests {
         assert_eq!(h.looper.status().latency, 0);
         assert_eq!(
             h.take_pads_as(&z, &z, Ok(0)),
-            said("looper: hears the pads' instrument again")
+            said("looper: hears the pads again")
         );
         assert_eq!(h.refuse(Command::Overdub), None);
         assert_eq!(h.dropouts, 0, "no take recorded then");
@@ -4762,10 +4766,7 @@ mod tests {
         let mut b = Block::new();
         assert_eq!(
             h.follow_pads(Instrument::Kit(0)),
-            Some((
-                "looper: records the pads' instrument (Kit 1)".to_string(),
-                false
-            ))
+            Some(("looper: records the pads (Kit 1)".to_string(), false))
         );
         assert_eq!(h.follow_pads(Instrument::Kit(0)), None, "said once");
         h.command(Command::SetBars(Some(1)));
@@ -4784,8 +4785,8 @@ mod tests {
         }
         assert_eq!(h.looper.status().phase, Phase::Recording);
         // Play on the pads mid-take: the take keeps Kit 1.
-        let held = "looper: this take keeps recording the pads' instrument (Kit 1); \
-                    the pads' instrument (the synth) from the next take";
+        let held = "looper: this take keeps recording the pads (Kit 1); \
+                    the pads (the synth) from the next take";
         assert_eq!(
             h.follow_pads(Instrument::Synth),
             Some((held.to_string(), true))
@@ -4814,8 +4815,8 @@ mod tests {
         assert_eq!(
             period(&mut h, Err(why)),
             Some((
-                "looper: the take records silence from here, the pads' instrument (Kit 1) \
-                 can't be had: that strip isn't in the mix"
+                "looper: the take records silence from here, the pads (Kit 1) \
+                 can't be recorded: that strip isn't in the mix"
                     .to_string(),
                 true
             ))
@@ -4825,7 +4826,7 @@ mod tests {
         assert_eq!(
             period(&mut h, Ok(0)),
             Some((
-                "looper: the take hears the pads' instrument (Kit 1) again".to_string(),
+                "looper: the take hears the pads (Kit 1) again".to_string(),
                 true
             ))
         );
@@ -4838,8 +4839,7 @@ mod tests {
         assert_eq!(
             h.follow_pads(Instrument::Synth),
             Some((
-                "looper: records the pads' instrument (the synth), What you played starts again"
-                    .to_string(),
+                "looper: records the pads (the synth), What you played starts again".to_string(),
                 false
             ))
         );
@@ -4853,7 +4853,7 @@ mod tests {
         assert_eq!(h.takes_from(), (LoopSource::Line, None));
     }
 
-    /// The pads' instrument named in the log, silence on MIDI out (said
+    /// The pads named in the log, silence on MIDI out (said
     /// once, not again as a mix lost), and nothing while another source
     /// records.
     #[test]
@@ -4861,7 +4861,7 @@ mod tests {
         let mut h = LoopHost::new(44_100, 8);
         assert_eq!(
             h.follow_pads(Instrument::Own(2)).map(|s| s.0).as_deref(),
-            Some("looper: records the pads' instrument (Track 3's own instrument)")
+            Some("looper: records the pads (Track 3's own instrument)")
         );
         assert_eq!(
             h.follow_pads(Instrument::MidiOut).map(|s| s.0).as_deref(),
@@ -4893,7 +4893,7 @@ mod tests {
         assert_eq!(
             h.take_pads_as(&z, &z, Err(why)).map(|s| s.0),
             Some(format!(
-                "looper: records silence, {name} can't be had: {why}"
+                "looper: records silence, {name} can't be recorded: {why}"
             ))
         );
         assert_eq!(

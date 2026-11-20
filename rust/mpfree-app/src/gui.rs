@@ -17025,7 +17025,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         Err(e) => eprintln!("looper sample: {e}"),
     }
     // A take holds its source (the design review of 20 Nov, point 6):
-    // Loop 6 records the pads' instrument, the master was picked while it
+    // Loop 6 records the pads, the master was picked while it
     // records, so the chip says "This take" with the pick as the next
     // take's, and the hint says so.
     match sample_looper_jam(fonts()) {
@@ -17036,7 +17036,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             v.taking_from = Some(LoopSource::Pads);
             p.apply(ToUi::Looper(Box::new(v)));
             p.apply(ToUi::Tell(
-                "looper: this take keeps recording the pads' instrument (Kit 1); the master from the next take"
+                "looper: this take keeps recording the pads (Kit 1); the master from the next take"
                     .into(),
             ));
             out.push(("looper-this-take", p));
@@ -17067,7 +17067,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             v.source = crate::looping::LoopSource::Mix(mpfree_fx::StripId::Master);
             p.apply(ToUi::Looper(Box::new(v)));
             p.apply(ToUi::Tell(
-                "looper: the take records silence from here, the master can't be had: the Loop \
+                "looper: the take records silence from here, the master can't be recorded: the Loop \
                  track sends to Return A, so the loop would record its own echoes: turn that send down"
                     .into(),
             ));

@@ -2677,7 +2677,7 @@ fn erase_held_steps(
 /// What the pads play: the one place in the app that answers it, as an
 /// instrument, never a track (Jay, 20 Nov: "Instruments generate sound.
 /// Tracks organize and record performances. The pads are controllers that
-/// play instruments."). The looper's Records from: Pads' instrument
+/// play instruments."). The looper's Records from: Pads
 /// records it; the mixer says where it sounds
 /// ([`mixing::MixHost::instrument_strip`]). Play on the pads (the Synth
 /// tab, app/pads_preview.rs) puts the shared synth on them whatever the
