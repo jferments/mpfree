@@ -1295,6 +1295,10 @@ pub struct OptionList {
     pub buttons: Vec<OptionButton>,
     /// What the list says with no rows ("nothing here" to begin with).
     pub empty: String,
+    /// A Back button at the left of the title line ("‹ Back"), for a
+    /// finger to leave the list as MENU does (Jay's device notes, 20 Nov
+    /// 2026); a tap gives `Tab(OPTION_BACK)`. Not drawn with tabs.
+    pub back: Option<String>,
     pub selected: usize,
     /// The selected row is open for the wheel: its value box is outlined
     /// and its arrows lit, until the wheel's push sets it.
@@ -1355,6 +1359,8 @@ const NARROW_ARROW_W: i32 = 22;
 const OPTION_DRAG_PX: i32 = 12;
 /// A tab of the title line, but the last (which takes the rest).
 pub const OPTION_TAB_W: i32 = 84;
+/// The event a tap on [`OptionList::back`] gives: `Tab(OPTION_BACK)`.
+pub const OPTION_BACK: usize = usize::MAX;
 
 impl OptionList {
     pub fn new(title: &str) -> OptionList {
@@ -1367,6 +1373,7 @@ impl OptionList {
             rows: Vec::new(),
             buttons: Vec::new(),
             empty: "nothing here".to_string(),
+            back: None,
             selected: 0,
             editing: false,
             top: std::cell::Cell::new(0),
@@ -1497,6 +1504,15 @@ impl OptionList {
         Some(Rect::new(x, r.y, w.max(0), OptionList::inside(r).y - r.y))
     }
 
+    /// The Back button on the title line, from near the panel's top edge
+    /// to the first row (a fingertip's height), when there is one.
+    pub fn back_rect(&self, r: Rect) -> Option<Rect> {
+        let label = self.back.as_ref().filter(|_| self.tabs.is_empty())?;
+        let w = (label.chars().count() as i32 * 11 + 44).max(96);
+        let bottom = OptionList::inside(r).y - 4;
+        Some(Rect::new(r.x + 8, r.y + 4, w, bottom - r.y - 4))
+    }
+
     /// The row draws narrow (see [`OptionList`]).
     pub fn narrow(row: Rect) -> bool {
         row.w < NARROW_ROW_W
@@ -1515,7 +1531,46 @@ impl OptionList {
 impl Widget for OptionList {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        if self.tabs.is_empty() {
+        if let Some(b) = self.back_rect(r) {
+            // ‹ Back, then the title after it.
+            cx.panel(r);
+            cx.canvas.fill_round_rect(b, 10, t.raised);
+            cx.canvas.stroke_round_rect(b, 10, 1, t.outline);
+            let label = self.back.as_deref().unwrap_or_default();
+            cx.text(
+                FontId::Bold,
+                t.size_small + 1.0,
+                b.inset_xy(12, 0),
+                Align::Left,
+                t.text,
+                &format!("‹  {label}"),
+            );
+            let head = r.inset(t.pad).take_top(26).0;
+            let line = Rect::new(
+                b.right() + 14,
+                head.y,
+                head.right() - b.right() - 14,
+                head.h,
+            );
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                line,
+                Align::Left,
+                t.text_dim,
+                &self.title.to_uppercase(),
+            );
+            if !self.right.is_empty() {
+                cx.text(
+                    FontId::Sans,
+                    t.size_small,
+                    line,
+                    Align::Right,
+                    t.text_dim,
+                    &self.right,
+                );
+            }
+        } else if self.tabs.is_empty() {
             cx.titled_panel(r, &self.title, &self.right);
         } else {
             // The title line as tabs: as the title is drawn, the lit one
@@ -1645,6 +1700,14 @@ impl Widget for OptionList {
 
     fn targets(&self, r: Rect) -> Vec<Target> {
         let mut out = Vec::new();
+        if let Some(b) = self.back_rect(r) {
+            out.push(Target::tap(
+                "back",
+                OPTION_BACK,
+                self.back.clone().unwrap_or_default(),
+                b,
+            ));
+        }
         for (k, name) in self.tabs.iter().enumerate() {
             if let Some(tr) = self.tab_rect(r, k) {
                 out.push(Target::tap("tab", k, name.clone(), tr).disabled_if(k == self.tab));
@@ -1725,6 +1788,9 @@ impl Widget for OptionList {
                 self.selected = g.row;
                 return Some(EventKind::Select(g.row));
             }
+        }
+        if self.back_rect(r).is_some_and(|b| b.contains(x, y)) {
+            return Some(EventKind::Tab(OPTION_BACK));
         }
         if let Some(k) =
             (0..self.tabs.len()).find(|&k| self.tab_rect(r, k).is_some_and(|tr| tr.contains(x, y)))

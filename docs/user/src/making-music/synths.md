@@ -45,7 +45,7 @@ A few presets come with **effects and macros of their own**: Phase Tines and Wah
 Every track can play its own instrument: Poly on one, FM on another, a plugin synth on a third, while the rest play the kit. The selected track is the one on the **Armed** row of the Record panel (see [Clips and patterns](clips.md#recording-a-clip)).
 
 1. Select the track.
-2. Press **MENU** on the Synth tab. The top row is named after the track: **Track 2 instrument**.
+2. Open the Synth tab's options: press **MENU**, or tap the gear at the right end of the title bar. The top row is named after the track: **Track 2 instrument**.
 3. Change it. It steps through **Kit** (the pads' kit, as every track starts), **Poly**, **FM**, **Drums**, **Pluck**, **Keys**, **Drawbar**, **Squelch**, **Analog**, **Strings**, **Bass**, **Wind** and **Choir**, then any plugin synths you have put in `files/plugins/` on the stick: CLAP synths and MPC plugin instruments (see [Effects](effects.md#plugins) for where to put them).
 
 {{shot: synth-instrument | Track 2's instrument set to a plugin synth, with the row's help on the right.}}
@@ -75,6 +75,7 @@ Coming:
 
 {{shot: synth | The Synth tab with Poly playing its Pluck preset: the presets on the left, the Osc page's sections in the middle (both oscillators with their waves drawn and their tuning, the mix as faders with the sub's wave above them), and the Q-Links on the right.}}
 
+- **The gear** at the right end of the title bar opens the Synth tab's options (the scale, pad layout, tuning, note repeat and the rest), as **MENU** does. **‹ Back** at the top left of the options, or **MENU**, goes back to the synth.
 - **The title** shows the preset, with **edited** under it once you change anything. Tap the preset's name to open the synth's presets in the browser (see [Trying and saving presets](#trying-and-saving-presets)). The tabs beside it are the synth's **pages**: for Poly, Osc, Filter, Env, LFO, LFO 2, Voice, Routes and Pressure. Tap a tab, or hold **SHIFT** and turn the data wheel, to change page.
 - **The sections.** Each page is split into boxes, one for each job, with the job's name at the top: **Osc 1**, **Mix**, **Filter**, **Filter envelope**, **Output** and so on. The colour says what kind of job it is, the same on every synth and effect:
   - **cyan**: what makes the sound (oscillators, wavetables, strings, drawbars)

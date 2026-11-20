@@ -573,6 +573,8 @@ impl Desk<'_> {
             // back to it once the picker closes (presets.rs).
             gui::FromUi::PresetPicker(true) => fx.extend(app.open_browser()),
             gui::FromUi::PresetPicker(false) => fx.extend(app.close_browser()),
+            // The Synth tab's gear and the options' Back: what MENU does.
+            gui::FromUi::OptionsButton => fx.extend(app.options_button()),
             // The audio loop's own: named one by one, so a new action has
             // to be given a home here or there.
             a @ (gui::FromUi::Pad { .. }

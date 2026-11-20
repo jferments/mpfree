@@ -468,7 +468,7 @@ fn now_utc() -> u64 {
 }
 
 const OPTIONS_HINT: &str =
-    "Wheel or tap: pick a row   ·   push the wheel, - / + or the arrows: change it   ·   MENU: close";
+    "Wheel or tap: pick a row   ·   push the wheel, - / + or the arrows: change it   ·   Back or MENU: close";
 /// A menu row the wheel's push opened.
 /// The wheel on a page with rows (`app::RowKey`), for the hint lines.
 const ROWS_HINT: &str = "Wheel: pick a row   ·   - / +, or push the wheel and turn: change it";
@@ -479,7 +479,7 @@ const HELD_TOLD: &str = " · the wheel turns it while you hold";
 use mpfree_ui::WHEEL_FINGER;
 /// What the wheel does on the pages with its outline ([`outlined`]).
 const WHEEL_HINT: &str = "Wheel: control to control   ·   push: press it";
-const OPTIONS_EDIT_HINT: &str = "Wheel: change it   ·   push the wheel: set it   ·   - / + or the arrows: change it   ·   MENU: close";
+const OPTIONS_EDIT_HINT: &str = "Wheel: change it   ·   push the wheel: set it   ·   - / + or the arrows: change it   ·   Back or MENU: close";
 const GUIDE_HINT: &str = "STOP: skip this button   ·   The pads still play while the guide is open";
 const LOADING_HINT: &str = "Tap the screen for the console";
 
@@ -1444,6 +1444,9 @@ pub enum FromUi {
     /// opens over the page for the preset picker (true), or goes back to
     /// the page once the picker closes (false) (presets.rs).
     PresetPicker(bool),
+    /// The Synth tab's gear: its options, as MENU opens them; on the
+    /// options, their Back button: back to the page.
+    OptionsButton,
     /// The preset picker on the Synth tab's sound: try, load, put back or
     /// save a preset (presets.rs).
     Preset(crate::presets::Ask),
@@ -2224,7 +2227,10 @@ impl Player {
         ui.add("midi", LogPanel::new("MIDI in and out", true, 300));
         ui.add("events", LogPanel::new("Events", false, 200));
         ui.add("syslog", LogPanel::new("Console", true, CONSOLE_BACKLOG));
-        ui.add("options", OptionList::new("Options"));
+        // ‹ Back on the title line: what MENU does (Jay's device notes, 20 Nov).
+        let mut options = OptionList::new("Options");
+        options.back = Some("Back".to_string());
+        ui.add("options", options);
         ui.add("help", Card::new("About this setting"));
         ui.add(NUMPAD, mpfree_ui::numpad::NumPad::default());
         ui.add(TEXTPAD, mpfree_ui::textpad::TextPad::default());
@@ -10604,6 +10610,7 @@ impl Player {
                 | FromUi::PadBank(_)
                 | FromUi::PadsBrowse
                 | FromUi::PresetPicker(_)
+                | FromUi::OptionsButton
                 | FromUi::Preview(_)
                 | FromUi::PreviewStop
                 | FromUi::SaveBrowserLists(_)
@@ -11468,10 +11475,11 @@ impl Player {
             let a = p.event(&mut self.ui, &ev);
             // The page or a value changed: the Q-Link column follows.
             self.refresh_qlinks();
-            if a == Some(SynthAction::OpenPresets) {
-                return self.open_presets();
+            match a {
+                Some(SynthAction::OpenPresets) => return self.open_presets(),
+                Some(SynthAction::Options) => return Some(FromUi::OptionsButton),
+                _ => return a.map(FromUi::Synth),
             }
-            return a.map(FromUi::Synth);
         }
         // The Pads tab's Kit: the list of kits over the page.
         if ev.widget == mpfree_sampler_ui::pads_tab::BAR
@@ -12203,6 +12211,9 @@ impl Player {
             }
             (play_page::SYNTH_PADS_HEAD, EventKind::Tab(i)) => {
                 Some(FromUi::PadsLayout { in_key: i == 1 })
+            }
+            ("options", EventKind::Tab(mpfree_ui::widgets::OPTION_BACK)) => {
+                Some(FromUi::OptionsButton)
             }
             ("options", EventKind::Select(i)) => Some(FromUi::MenuSelect(i)),
             ("options", EventKind::Step { index, delta }) => Some(FromUi::MenuStep(index, delta)),
@@ -33034,6 +33045,43 @@ mod tests {
                 .map(|m| &m.grid)
                 .unwrap();
         assert!(!g.pads[3].held && g.pads[3].level == 1.0);
+    }
+
+    /// The Synth tab's gear opens its options, as MENU does, and the
+    /// options' Back goes back (Jay's device notes, 20 Nov 2026: the
+    /// options on screen, not only on MENU).
+    #[test]
+    fn the_synth_tabs_gear_opens_its_options_and_back_closes_them() {
+        let mut p = sample_player(Fonts::embedded());
+        p.apply(ToUi::Show(View::Synth));
+        let tap = |p: &mut Player, r: mpfree_ui::Rect| {
+            let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
+            let a = p.touch(3, Touch::Down, x, y);
+            let b = p.touch(3, Touch::Up, x, y);
+            a.or(b)
+        };
+        let mut a = sample_app();
+        apply_effects(&mut p, a.open_tab(View::Synth));
+        // The gear: the options, as MENU; their Back: back.
+        let title = p.ui.rect_of(synth_view::TITLE).unwrap();
+        let gear =
+            p.ui.get::<mpfree_synth_ui::widgets::TitleBar>(synth_view::TITLE)
+                .unwrap()
+                .gear_rect(title)
+                .expect("the gear");
+        assert_eq!(tap(&mut p, gear), Some(FromUi::OptionsButton));
+        apply_effects(&mut p, a.options_button());
+        assert_eq!(p.page(), "Options");
+        let opts = p.ui.rect_of("options").unwrap();
+        let back =
+            p.ui.get::<OptionList>("options")
+                .unwrap()
+                .back_rect(opts)
+                .expect("Back");
+        assert!(back.h >= 40, "{back:?}");
+        assert_eq!(tap(&mut p, back), Some(FromUi::OptionsButton));
+        apply_effects(&mut p, a.options_button());
+        assert_eq!(p.page(), "Synth");
     }
 
     #[test]
