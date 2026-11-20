@@ -191,10 +191,10 @@ mod looper {
 
     /// The loop records what it records from as heard, with its effects,
     /// and the pad lands where it was played though the mix comes a
-    /// period late. Pads' instrument is the Drums channel (its inserts
+    /// period late. Pads is the Drums channel (its inserts
     /// and fader): the echo of the Play page's delay on the Drums sounds
     /// on Return A, outside it, so it stays out (20 Nov, the design
-    /// review: the pads' instrument, never the whole mix). Records from:
+    /// review: the pads, never the whole mix). Records from:
     /// Master records the echo too (the final round of 16 Nov: the echo
     /// was heard but not recorded).
     #[test]

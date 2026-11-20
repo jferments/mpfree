@@ -2024,7 +2024,7 @@ impl MixHost {
     }
 
     /// The channel instrument `i` plays into, for the looper's Records
-    /// from: Pads' instrument, so it records what the pads play and not
+    /// from: Pads, so it records what the pads play and not
     /// the whole mix (Jay, 20 Nov: a pattern on another instrument stays
     /// out). The app says which instrument (`main.rs`, `pads_instrument`);
     /// this only says where it sounds. A track's own instrument: that
@@ -3481,7 +3481,7 @@ mod tests {
         assert_eq!(take(&mut h), None);
     }
 
-    /// The looper's Pads' instrument: the channel each instrument plays
+    /// The looper's Pads: the channel each instrument plays
     /// into, whichever track the pads were on.
     #[test]
     fn the_instrument_strip_is_where_the_pads_instrument_sounds() {

@@ -1885,7 +1885,7 @@ mod tests {
     /// The design review's test across the Looper and the Synth tab (20
     /// Nov, second review): a drum pattern plays on Track 1, Play on the
     /// pads puts the shared synth on the pads, and the looper records from
-    /// Pads' instrument while REC records the pads' notes as MIDI into
+    /// Pads while REC records the pads' notes as MIDI into
     /// another track that plays the same synth. The loop takes the synth's
     /// channel from the arm to the end of the take, never the drums', and
     /// neither instrument changes: Track 1 keeps its kit and its clip, the

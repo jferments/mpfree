@@ -120,7 +120,7 @@ pub struct Channel {
     pub level: f32,
     /// How loud it plays now, 0 to 1 along the level bar.
     pub meter: f32,
-    /// Under an empty ring: what it records from ("Pads' instrument", "Line in"), or
+    /// Under an empty ring: what it records from ("Pads", "Line in"), or
     /// that UNDO brings back the loop cleared.
     pub foot: String,
     /// Soloed: the S beside the speaker lit.
@@ -159,7 +159,7 @@ pub struct DeckHead {
     pub memory: (String, f32),
     /// The pads are the loop keys (SHIFT + SAMPLER): the Pads switch lit.
     pub pads: bool,
-    /// Records from: what every loop records ("Pads' instrument", "Line
+    /// Records from: what every loop records ("Pads", "Line
     /// in", "Loops") and its level now, 0 to 1 along the meter. While a
     /// take holds another source than the one picked, the take's.
     pub input: (String, f32),
