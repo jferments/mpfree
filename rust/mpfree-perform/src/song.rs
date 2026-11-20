@@ -27,6 +27,21 @@
 //! recording is turned off), so the song does not change under the player
 //! while recording.
 //!
+//! **Room.** The song holds at most [`MAX_PLACEMENTS`] blocks, and
+//! [`SongRecorder::finish`] refuses a recording that would not fit, so
+//! the recorder keeps within it as it goes. The host says how many blocks
+//! the song has ([`SongRecorder::song_blocks`]); [`SongRecorder::worst`]
+//! counts the most the song would hold if the recording went in now: the
+//! song's blocks, each block heard (and the one each track has open), and
+//! one more for each stretch it records over, where a block of the song
+//! may be cut in two. Before the cues of a line switch anything, and
+//! before a new pass after a jump, it counts what they could add; if that
+//! wouldn't fit, recording stops on every track at that line (the pass
+//! ends there and it disarms), so it never ends halfway through a scene
+//! change, and what it recorded always goes in. The host takes the stop
+//! once ([`SongRecorder::take_full`]) to say so, and a warning the first
+//! time the count reaches 90 % ([`SongRecorder::take_warning`]).
+//!
 //! The host calls [`SongRecorder::period`] after each period with the
 //! transport's block and the cues the player started in it. In the pad
 //! player that is `TimeHost`'s period, which runs in the audio loop until
@@ -36,7 +51,7 @@
 //! allocate, like any edit there today.
 
 use mpfree_play::{Launch, Started};
-use mpfree_seq::arrange::MorphRows;
+use mpfree_seq::arrange::{MorphRows, MAX_PLACEMENTS};
 use mpfree_seq::mpfree_moves::Kind;
 use mpfree_seq::{ModelError, Placement, Project, MAX_TRACKS};
 use mpfree_transport::{Block, State, Tick};
@@ -94,6 +109,16 @@ pub struct SongRecorder {
     morph_moved: bool,
     pass: Option<Pass>,
     done: Vec<Pass>,
+    /// The most blocks the song may hold ([`MAX_PLACEMENTS`]).
+    limit: usize,
+    /// The song's blocks, as the host last said.
+    song: usize,
+    /// Where recording stopped for room, until the host takes it.
+    full: Option<Tick>,
+    /// The count that reached 90 %, until the host takes it; and whether
+    /// it did since the recorder was armed.
+    warning: Option<usize>,
+    warned: bool,
 }
 
 impl Default for SongRecorder {
@@ -110,6 +135,11 @@ impl Default for SongRecorder {
             morph_moved: false,
             pass: None,
             done: Vec::new(),
+            limit: MAX_PLACEMENTS,
+            song: 0,
+            full: None,
+            warning: None,
+            warned: false,
         }
     }
 }
@@ -156,6 +186,9 @@ impl SongRecorder {
             }
             self.morph = morph;
             self.rows = rows;
+            self.song = project.arrangement.placements.len();
+            self.full = None;
+            self.warned = false;
         }
         if !on {
             if let Some(at) = self.next {
@@ -164,6 +197,80 @@ impl SongRecorder {
             self.next = None;
         }
         self.armed = on;
+    }
+
+    /// How many blocks the song has now: the host says before each period
+    /// (an edit in the Song view can change it while recording).
+    pub fn song_blocks(&mut self, n: usize) {
+        self.song = n;
+    }
+
+    /// The most blocks the song would hold if what is recorded so far went
+    /// in now: see the module notes.
+    pub fn worst(&self) -> usize {
+        let kept: usize = self
+            .done
+            .iter()
+            .chain(self.pass.as_ref())
+            .map(|p| p.heard.len() + p.owned.len())
+            .sum();
+        let open = self.heard_from.iter().filter(|h| h.is_some()).count()
+            + self.owned_from.iter().filter(|o| o.is_some()).count();
+        self.song + kept + open
+    }
+
+    /// The most blocks the song may hold.
+    pub fn limit(&self) -> usize {
+        self.limit
+    }
+
+    /// Where recording stopped because the song would have been full
+    /// (every track at that line), once.
+    pub fn take_full(&mut self) -> Option<Tick> {
+        self.full.take()
+    }
+
+    /// The count of blocks, once, the first time it reaches 90 % of the
+    /// limit while armed.
+    pub fn take_warning(&mut self) -> Option<usize> {
+        self.warning.take()
+    }
+
+    /// Whether `more` blocks fit; if not, recording stops at `at` on every
+    /// track. Warns the first time the count with them reaches 90 %.
+    fn room(&mut self, more: usize, at: Tick) -> bool {
+        let need = self.worst() + more;
+        if need > self.limit {
+            self.end_pass(at);
+            self.next = None;
+            self.armed = false;
+            self.full = Some(at);
+            return false;
+        }
+        if !self.warned && need * 10 >= self.limit * 9 {
+            self.warned = true;
+            self.warning = Some(need);
+        }
+        true
+    }
+
+    /// What a new pass from here could add: each track playing takes its
+    /// stretch over (a block of the song may be cut) and, heard, a block.
+    fn pass_needs(&self) -> usize {
+        (0..MAX_TRACKS)
+            .filter(|&t| self.playing[t].is_some())
+            .map(|t| 1 + usize::from(!self.muted[t]))
+            .sum()
+    }
+
+    /// What the cues starting at `at` could add: a block for each clip
+    /// started, and a stretch taken over where the track had none.
+    fn line_needs(&self, started: &[Started], at: Tick) -> usize {
+        started
+            .iter()
+            .filter(|s| s.at == at && s.slot.is_some() && s.track < MAX_TRACKS)
+            .map(|s| 1 + usize::from(self.owned_from[s.track].is_none()))
+            .sum()
     }
 
     /// After each period: the transport's `block` and the cues the player
@@ -186,13 +293,35 @@ impl SongRecorder {
                 Some(at) if at != ticks.start => {
                     // A locate or a loop jump: a new pass where it lands.
                     self.end_pass(at);
+                    if !self.room(self.pass_needs(), at) {
+                        return;
+                    }
                     self.begin_pass(ticks.start);
                 }
-                None => self.begin_pass(ticks.start),
+                None => {
+                    if !self.room(self.pass_needs(), ticks.start) {
+                        return;
+                    }
+                    self.begin_pass(ticks.start);
+                }
                 Some(_) => {}
             }
-            for st in started.iter().filter(|s| ticks.contains(&s.at)) {
-                self.switch(st);
+            // Line by line, in time order: all of a line's cues, or (no
+            // room) none of them.
+            let mut from = ticks.start;
+            while let Some(at) = started
+                .iter()
+                .map(|s| s.at)
+                .filter(|&at| at >= from && at < ticks.end)
+                .min()
+            {
+                if !self.room(self.line_needs(started, at), at) {
+                    return;
+                }
+                for st in started.iter().filter(|s| s.at == at) {
+                    self.switch(st);
+                }
+                from = at + 1;
             }
             self.next = Some(ticks.end);
         }

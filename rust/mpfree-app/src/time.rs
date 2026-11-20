@@ -5158,6 +5158,118 @@ mod tests {
         assert!(h.mute_wait().is_none());
     }
 
+    /// Song → scenes on a song in the exact set (plan D7): the rows,
+    /// launched from the first, give the same notes on the same frames as
+    /// the song, at several period sizes. The drums' four-bar block carries
+    /// on over both section edges (bars 3 and 7), so its copies are turned
+    /// round to where it had got to.
+    #[test]
+    fn a_song_in_the_exact_set_plays_the_same_from_its_rows() {
+        use mpfree_seq::arrange::Placement;
+        use mpfree_seq::Note;
+        for period in [7u32, 128, 1000] {
+            let by = |h: &mut TimeHost, pads: &mut Fake, to: u64| {
+                while pads.frame < to {
+                    h.period(period, pads);
+                    pads.frame += u64::from(period);
+                }
+            };
+            let mut h = TimeHost::new(RATE, 120.0).unwrap();
+            let mut four = Clip::new("four", 4 * 3840);
+            four.notes = (0..16)
+                .map(|k| Note::new(k * 960, 100, 40 + k as u8, 100))
+                .collect();
+            let mut eighths = Clip::new("eighths", 3840);
+            eighths.notes = (0..8)
+                .map(|k| Note::new(k * 480, 200, 70 + k as u8, 90))
+                .collect();
+            let p = &mut h.control.project;
+            p.tracks[0].slots[2] = Some(four);
+            p.tracks[1].slots[0] = Some(eighths);
+            let s = &mut p.arrangement;
+            s.place(Placement::linked(0, 2, 0, 8 * 3840)).unwrap();
+            s.place(Placement::linked(1, 0, 2 * 3840, 4 * 3840))
+                .unwrap();
+            // The song, in song mode from bar 1.
+            let mut heard = Fake::default();
+            h.act(TimeAction::SongMode(true)).unwrap();
+            h.command(Command::Play);
+            by(&mut h, &mut heard, 8 * BAR + 1000);
+            assert_eq!(heard.hits.len(), 16 * 2 + 8 * 4, "period {period}");
+            // Into rows 4 to 6 (rows 1 and 3 hold the clips), exactly.
+            let said = h.act(TimeAction::SongToScenes).unwrap();
+            assert_eq!(
+                said,
+                "song → scenes: rows 4 to 6, exact (UNDO takes it back)"
+            );
+            // The rows alone, from the first, in a fresh host.
+            let mut r = TimeHost::new(RATE, 120.0).unwrap();
+            r.control.project = h.control.project.clone();
+            r.control.project.arrangement = Default::default();
+            let mut rows = Fake::default();
+            r.act(TimeAction::LaunchScene(3)).unwrap();
+            r.command(Command::Play);
+            by(&mut r, &mut rows, 8 * BAR + 1000);
+            assert_eq!(rows.hits, heard.hits, "period {period}");
+            assert_eq!(rows.releases, heard.releases, "period {period}");
+            assert_eq!((h.dropped(), r.dropped()), (0, 0));
+        }
+    }
+
+    /// Scenes → song carries the scenes' mutes from row to row and ends a
+    /// one-shot's block with its pass: the song plays the same notes on the
+    /// same frames as the rows launched from the first.
+    #[test]
+    fn scenes_to_song_plays_what_the_rows_played_mutes_and_one_shots_too() {
+        use mpfree_seq::{Follow, FollowAction, Note};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let beats = |pad: u8| {
+            let mut c = Clip::new("beats", 3840);
+            c.notes = (0..4)
+                .map(|k| Note::new(k * 960, 100, pad + k as u8, 100))
+                .collect();
+            c
+        };
+        let p = &mut h.control.project;
+        for row in 0..3 {
+            p.tracks[0].slots[row] = Some(beats(10 + 10 * row as u8));
+            p.tracks[1].slots[row] = Some(beats(50 + 10 * row as u8));
+        }
+        // Row 1: a one-shot on the drums, the bass muted, for 2 bars.
+        // Row 2 leaves the mutes (the bass stays muted); row 3 unmutes.
+        p.tracks[0].slots[0].as_mut().unwrap().once = true;
+        let next = |bars| Some(Follow::after(bars, FollowAction::Next));
+        let s = p.scene_mut(0).unwrap();
+        s.mutes = Some(0b10);
+        s.follow = next(2);
+        p.scene_mut(1).unwrap().follow = next(1);
+        let s = p.scene_mut(2).unwrap();
+        s.mutes = Some(0);
+        s.follow = Some(Follow::after(1, FollowAction::Stop));
+        let mut song = TimeHost::new(RATE, 120.0).unwrap();
+        song.control.project = h.control.project.clone();
+        // The rows, from the first.
+        let mut live = Fake::default();
+        h.act(TimeAction::LaunchScene(0)).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut live, 4 * BAR + 1000, &[]);
+        let pads: Vec<usize> = live.hits.iter().map(|h| h.1).collect();
+        assert_eq!(
+            pads,
+            [10, 11, 12, 13, 20, 21, 22, 23, 30, 70, 31, 71, 32, 72, 33, 73]
+        );
+        // The song they make.
+        let said = song.act(TimeAction::ScenesToSong).unwrap();
+        assert_eq!(said, "scenes → song: 3 rows from bar 1, exact");
+        song.act(TimeAction::SongMode(true)).unwrap();
+        let mut played = Fake::default();
+        song.command(Command::Play);
+        run(&mut song, &mut played, 4 * BAR + 1000, &[]);
+        assert_eq!(played.hits, live.hits);
+        assert_eq!(played.releases, live.releases);
+        assert_eq!((h.dropped(), song.dropped()), (0, 0));
+    }
+
     /// Two one-bar rows become a song (Scenes → song), which plays in song
     /// mode; a clip launched on track 1 takes it over, and the song plays
     /// on there after it stops. The song goes back into rows (Song →
@@ -5180,7 +5292,7 @@ mod tests {
         // Row 6 has a clip too: three rows, bars 1, 2 and 3.
         assert_eq!(
             h.act(TimeAction::ScenesToSong).unwrap(),
-            "scenes → song: 3 rows from bar 1"
+            "scenes → song: 3 rows from bar 1, exact"
         );
         let st = h.state();
         assert_eq!(st.placements.len(), 5);
@@ -5204,15 +5316,40 @@ mod tests {
             assert!(f.abs_diff(at) <= 23 && *p == pad, "{hits:?}");
         }
         // Back into rows: the first run of three empty rows is 3 to 5.
+        let before = h.control.project.clone();
+        let takes = h.state().done.len();
         assert_eq!(
             h.act(TimeAction::SongToScenes).unwrap(),
-            "song → scenes: rows 3 to 5"
+            "song → scenes: rows 3 to 5, exact (UNDO takes it back)"
         );
         let p = &h.control.project;
         assert_eq!(p.tracks[0].slots[2], p.tracks[0].slots[0]);
         assert_eq!(p.tracks[1].slots[3], p.tracks[1].slots[1]);
         assert_eq!(p.tracks[0].slots[4], p.tracks[0].slots[5]);
         assert_eq!(p.scene(3).unwrap().name, "Drop");
+        // One edit: UNDO gives the project back exactly, REDO the rows.
+        let after = p.clone();
+        let st = h.state();
+        assert_eq!(st.done.len(), takes + 1);
+        assert_eq!(st.done.last().unwrap().rows, Some((2, 4)));
+        let said = h.act(TimeAction::Undo).unwrap();
+        assert!(said.ends_with(" · rows 3 to 5"), "{said}");
+        assert!(said.starts_with("undo: song → scenes "), "{said}");
+        assert_eq!(h.control.project, before);
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(h.control.project, after);
+        // Refused (too few empty rows left in a run): nothing changes, and
+        // there is nothing new to undo.
+        let mut full = h.control.project.clone();
+        for row in 6..mpfree_seq::SLOTS {
+            full.scene_mut(row).unwrap().name = format!("Taken {row}");
+        }
+        h.control.project = full.clone();
+        let takes = h.state().done.len();
+        assert!(h.act(TimeAction::SongToScenes).is_err());
+        assert_eq!(h.control.project, full);
+        assert_eq!(h.state().done.len(), takes);
+        h.control.project = after;
         // A placement made unique keeps its clip when the slot changes.
         h.act(TimeAction::SelectPlacement(Some(0))).unwrap();
         assert_eq!(h.state().selected, Some(0));
@@ -5248,6 +5385,68 @@ mod tests {
         // says so rather than doing nothing quietly.
         let e = h.act(TimeAction::Audio(AudioAction::Split(r))).unwrap_err();
         assert!(e.contains("not wired yet"), "{e}");
+    }
+
+    /// Rec song with the song nearly full: it warns, then stops on every
+    /// track at the line that wouldn't fit, says so, and keeps what it
+    /// recorded.
+    #[test]
+    fn rec_song_stops_on_a_line_the_song_has_no_room_for() {
+        use mpfree_seq::arrange::{Placement, MAX_PLACEMENTS};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let one_bar = |note: u8| {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, note, 100)];
+            c
+        };
+        let p = &mut h.control.project;
+        for (t, base) in [(0, 4), (1, 30)] {
+            p.tracks[t].slots[0] = Some(one_bar(base));
+            p.tracks[t].slots[1] = Some(one_bar(base + 1));
+        }
+        // Room for the pass (a block and a stretch on each track) and one
+        // block more: row 2's two don't fit.
+        for k in 0..MAX_PLACEMENTS - 5 {
+            p.arrangement
+                .placements
+                .push(Placement::linked(2, 0, (1000 + k as i64) * 3840, 3840));
+        }
+        h.act(TimeAction::LaunchScene(0)).unwrap();
+        h.act(TimeAction::RecSong(true)).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        h.act(TimeAction::LaunchScene(1)).unwrap();
+        run(&mut h, &mut pads, 2 * BAR, &[]);
+        let note = h.take_later_note().unwrap();
+        assert!(
+            note.starts_with("rec song: the song is 99% full (4095 of 4096 blocks)"),
+            "{note}"
+        );
+        assert!(
+            note.contains(
+                "rec song: the song is full (4096 blocks), so recording stopped on every \
+                 track at bar 2; what it recorded is kept"
+            ),
+            "{note}"
+        );
+        assert!(
+            note.ends_with("rec song: 2 placements and 0 morph points into the song"),
+            "{note}"
+        );
+        let st = h.state();
+        assert!(!st.song_rec, "Rec song is off");
+        let mine: Vec<(usize, Tick, Tick)> = st
+            .placements
+            .iter()
+            .filter(|p| p.track < 2)
+            .map(|p| (p.track, p.start, p.start + p.length))
+            .collect();
+        assert_eq!(mine, [(0, 0, 3840), (1, 0, 3840)]);
+        assert_eq!(st.placements.len(), MAX_PLACEMENTS - 3);
+        // Row 2 plays on: only the recording stopped.
+        let row2 = |h: &&(u64, usize, u8)| (h.1 == 5 || h.1 == 31) && h.0 < 2 * BAR;
+        assert_eq!(pads.hits.iter().filter(row2).count(), 2);
     }
 
     /// Rec song on, row 1 then row 2 launched on the grid, STOP: the song
@@ -5569,7 +5768,7 @@ mod tests {
         h.command(Command::Stop);
         run(&mut h, &mut pads, 6 * BAR, &[]);
         let said = h.act(TimeAction::ListToSong).unwrap();
-        assert_eq!(said, "list → song: 2 steps from bar 1");
+        assert_eq!(said, "list → song: 2 steps from bar 1, exact");
         let song = &h.control.project.arrangement;
         assert_eq!(song.markers.len(), 2);
         assert_eq!(song.end(), 3 * 3840);

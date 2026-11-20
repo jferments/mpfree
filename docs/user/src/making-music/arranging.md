@@ -64,9 +64,10 @@ The song is your clips laid out on a timeline, one lane per track. Tap **Song �
 
 {{shot: arrange-song | The Song view: seven rows made into a song (Intro, Verse, Build and on), eight tracks of blocks under the scene names, and Rec song on.}}
 
-- **Scenes → song** adds every row that has clips to the end of the song, one after another, with each scene's name above the bars where it starts.
+- **Scenes → song** adds every row that has clips to the end of the song, one after another, with each scene's name above the bars where it starts. A scene's mutes carry on into the rows after it, as they do when the rows play, so a track a scene muted has no blocks until a scene unmutes it. A one-shot clip's block ends after its one pass.
 - **Song on** plays the song. A track plays the song wherever you have not launched a clip on it. Launch a clip and it takes that track over. Stop it and the track goes back to the song. While clips play over the song, **Back to song** shows on the grid's title line: it stops them all on the next Launch line, and every track plays the song from there.
-- **Song → scenes** goes the other way. It cuts the song into its parts and puts each part into empty rows, set to play one after another. It never writes over a row that has clips, or one you have set up without clips (a name, mutes, a follow action, morph values or a program change).
+- **Song → scenes** goes the other way. It cuts the song into its parts and puts each part into empty rows, set to play one after another. It never writes over a row that has clips, or one you have set up without clips (a name, mutes, a follow action, morph values or a program change). A part that starts partway into a block gets its clip turned round to start there, so launching the first row plays what the song played. **UNDO** takes the whole thing back in one go, and **SHIFT + UNDO** puts it back.
+- Every conversion tells you whether it came out **exact**. When something can't carry over, the message names it, with the track and the bar: a part off the bar line, a stretch of silence, the song's tempo changes or morph moves, a note held over a row change, a clip that plays in Random order or has notes with a chance (a copy rolls them its own way), or, going into the song, a scene's program changes, a clip's own follow action or a legato clip.
 - Hold **SHIFT** and turn the wheel to scroll through the bars. Tap a block to select it. It is picked when you lift your finger, because you can also drag it.
 - Under each track's name is what it plays: its kit (**Kit** for kit 1, then **Kit 2** and on: see [A kit for each track](pads.md#a-kit-for-each-track)), **Synth**, or its own instrument (see [A synth for each track](synths.md#a-synth-for-each-track)).
 - **Loop tracks** have lanes too, and Song on plays their loops' blocks as it plays clips (see [Loops in the song](looping.md#loops-in-the-song)).
@@ -122,7 +123,7 @@ The song list plays scenes one after another, each so many times: "Intro × 2, V
 - After the last step everything stops, unless **Loop the list** is on: then it starts again from the top.
 - Launch a scene yourself, stop all, or tap **Back to song**, and the list stops leading; what plays carries on.
 - **Remove** takes the picked step out (in Perform, hold it for half a second). Every change to the list is undoable with **UNDO**.
-- **List → song** writes the whole list onto the end of the timeline, each step's clips for its bars, with the scene's name above where it starts, so you can carry on in the Song view.
+- **List → song** writes the whole list onto the end of the timeline, each step's clips for its bars, with the scene's name above where it starts, so you can carry on in the Song view. Mutes carry from step to step and a one-shot ends after its pass, as with Scenes → song, and the message says whether it came out exact.
 
 A scene's length is its follow action's bars if it has one, else its longest clip, rounded up to whole bars. Moving a row on the grid takes the list's steps with it.
 
@@ -139,6 +140,7 @@ A scene's length is its follow action's bars if it has one, else its longest cli
 - The morph crossfader's moves are recorded too, with the two rows it was between. If you leave the crossfader still for a moment, the song holds it there until your next move.
 - A track you didn't touch keeps what the song already had there. Where you launched a clip, it records over the song, like recording over tape.
 - With the loop on, each time round records over the last.
+- A song holds up to 4,096 blocks. When a recording gets to 90 % of that, the message line warns you. If a launch would take it past the limit, Rec song stops recording on every track on that launch line (never halfway through a scene change) and turns off, the message says so, and everything recorded up to there goes into the song. The music plays on.
 - Rec song records which clips played, not new notes. To record notes, use **REC** on a clip (see [Clips and patterns](clips.md)).
 - **In Perform, REC brings Rec song with it**: each take you record (a clip or a loop) also records the grid into the song for as long as it lasts, and the REC chip says "+ Rec song". To leave it out of a take, tap the REC chip and turn off **Rec song with REC**; it's back for the take after. Rec song turned on by hand stays on as usual (see [Make and Perform](playing-live.md#make-and-perform)).
 

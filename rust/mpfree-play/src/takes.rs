@@ -40,6 +40,12 @@
 //! became, as long as nothing else changed the song in between (live to
 //! song, say); otherwise they leave it alone.
 //!
+//! Song → scenes fills rows: clips in their cells and each row's scene
+//! (its name and follow action). [`Takes::rows_edit`] keeps every cell and
+//! scene it changed, before and after, as one edit, so UNDO empties the
+//! rows again and redo fills them, cell by cell and scene by scene, as
+//! long as each is as the edit left it.
+//!
 //! A recorded note's pad pressure goes in with it ([`Takes::add_touched`]):
 //! into the clip's pressure first, which only ever grows, so undo and
 //! redo of the note need not touch it.
@@ -76,8 +82,8 @@ use mpfree_seq::arrange::Arrangement;
 use mpfree_seq::mpfree_moves::{Kind, Map, Point, Target};
 use mpfree_seq::steps::{Edit, MovesEdit};
 use mpfree_seq::{
-    touch_room, Clip, ClipSettings, DestId, Lock, ModelError, Note, Project, SceneSettings, Touch,
-    TouchPoint, Track, MAX_TRACKS,
+    touch_room, Clip, ClipSettings, DestId, Lock, ModelError, Note, Project, Scene, SceneSettings,
+    Touch, TouchPoint, Track, MAX_TRACKS, SLOTS,
 };
 use mpfree_transport::time::Tick;
 
@@ -243,6 +249,10 @@ pub struct Take {
     /// A scene's name, mutes or follow action changed
     /// ([`Takes::set_scene`]).
     pub scene: Option<Box<SceneEdit>>,
+    /// Whole rows changed at once ([`Takes::rows_edit`]: Song → scenes):
+    /// their scenes, before and after. The clips are in `made` and
+    /// `removed`.
+    pub rows: Option<Box<RowsEdit>>,
 }
 
 /// Why a take put a whole clip in place of another ([`Take::replaced`]).
@@ -264,6 +274,41 @@ pub struct SceneEdit {
     pub after: SceneSettings,
 }
 
+/// Rows changed as one edit ([`Takes::rows_edit`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RowsEdit {
+    /// The rows it changed, in order.
+    pub rows: Vec<usize>,
+    /// The scenes it changed, as (row, before, after), whole: a plain
+    /// row's scene is `Scene::default()`.
+    pub scenes: Vec<(usize, Scene, Scene)>,
+}
+
+/// Row `row`'s whole scene (a plain one past the last).
+fn whole_scene(project: &Project, row: usize) -> Scene {
+    project.scene(row).cloned().unwrap_or_default()
+}
+
+/// Give row `row` the scene `s`, whole, leaving no plain rows at the end
+/// of the project's scenes. Nothing past the last row.
+fn put_whole_scene(project: &mut Project, row: usize, s: &Scene) {
+    if let Some(at) = project.scene_mut(row) {
+        at.clone_from(s);
+    }
+    drop_plain_scenes(project);
+}
+
+/// Take the plain scenes off the end of the project's scenes.
+fn drop_plain_scenes(project: &mut Project) {
+    while project
+        .scenes
+        .last()
+        .is_some_and(|s| *s == Scene::default())
+    {
+        project.scenes.pop();
+    }
+}
+
 /// Row `row`'s settings (a plain row's are empty).
 fn scene_settings(project: &Project, row: usize) -> SceneSettings {
     project
@@ -281,13 +326,7 @@ fn put_scene(project: &mut Project, row: usize, s: &SceneSettings) -> Result<(),
         .scene_mut(row)
         .ok_or(ModelError::BadScene)?
         .set_settings(s)?;
-    while project
-        .scenes
-        .last()
-        .is_some_and(|s| *s == mpfree_seq::Scene::default())
-    {
-        project.scenes.pop();
-    }
+    drop_plain_scenes(project);
     Ok(())
 }
 
@@ -906,6 +945,60 @@ impl Takes {
         Ok(number)
     }
 
+    /// Song → scenes, made by the caller: `before` is the project as it
+    /// was and `project` as it is now, with the same tracks. Every cell
+    /// and scene that changed, in any row, goes into one edit of its own:
+    /// a clip put in an empty cell goes in `made`, a clip taken out in
+    /// `removed`, a clip changed in both, and each row's scene before and
+    /// after. Undo takes each new clip out and puts back the one that was
+    /// there, and gives each row its scene back while it has the one the
+    /// edit gave it; redo the same way. The edit's number, or the latest
+    /// edit's when nothing changed (no take then).
+    pub fn rows_edit(&mut self, before: &Project, project: &Project) -> u32 {
+        let mut made = Vec::new();
+        let mut removed = Vec::new();
+        let mut rows = Vec::new();
+        let mut scenes = Vec::new();
+        for row in 0..SLOTS {
+            let mut changed = false;
+            for track in 0..project.tracks.len() {
+                let (was, now) = (before.clip(track, row), project.clip(track, row));
+                if was == now {
+                    continue;
+                }
+                changed = true;
+                if let Some(c) = was {
+                    removed.push((track, row, c.clone()));
+                }
+                if let Some(c) = now {
+                    made.push((track, row, c.clone()));
+                }
+            }
+            let (was, now) = (whole_scene(before, row), whole_scene(project, row));
+            if was != now {
+                changed = true;
+                scenes.push((row, was, now));
+            }
+            if changed {
+                rows.push(row);
+            }
+        }
+        if rows.is_empty() {
+            return self.edits;
+        }
+        self.edits += 1;
+        let number = self.edits;
+        self.push(Take {
+            number,
+            edited: true,
+            made,
+            removed,
+            rows: Some(Box::new(RowsEdit { rows, scenes })),
+            ..Take::default()
+        });
+        number
+    }
+
     /// CAPTURE into a clip that holds notes already (the one that was
     /// playing): add `notes` to clip `slot` of `track`, as a take of its
     /// own, with their pressure: each note's `touch` names its run in
@@ -1145,6 +1238,13 @@ impl Takes {
                 let _ = put_scene(project, e.row, &e.before);
             }
         }
+        if let Some(e) = take.rows.as_deref() {
+            for (row, was, now) in e.scenes.iter().rev() {
+                if whole_scene(project, *row) == *now {
+                    put_whole_scene(project, *row, was);
+                }
+            }
+        }
         if let Some((index, kept)) = &mut take.track_added {
             // Kept as it is now (its name, its clips), for redo.
             if project.tracks.len() == *index + 1 {
@@ -1194,6 +1294,13 @@ impl Takes {
         if let Some(e) = take.scene.as_deref() {
             if scene_settings(project, e.row) == e.before {
                 let _ = put_scene(project, e.row, &e.after);
+            }
+        }
+        if let Some(e) = take.rows.as_deref() {
+            for (row, was, now) in &e.scenes {
+                if whole_scene(project, *row) == *was {
+                    put_whole_scene(project, *row, now);
+                }
             }
         }
         for (track, slot, note) in &take.erased {
@@ -1679,6 +1786,50 @@ mod tests {
             t.set_scene(&mut p, mpfree_seq::SCENES, named, None),
             Err(ModelError::BadScene)
         );
+    }
+
+    /// Song → scenes as one edit: every cell and scene it changed, so
+    /// undo gives back the project exactly and redo the filled rows; a
+    /// change of nothing is no take; a scene changed since is left alone.
+    #[test]
+    fn rows_filled_at_once_are_one_edit_and_undo_gives_the_project_back() {
+        use mpfree_seq::{Follow, FollowAction};
+        let mut p = project();
+        p.tracks.push(Track::new("u", 1));
+        p.tracks[1].slots[3] = Some(Clip::new("old", 3840));
+        p.scene_mut(1).unwrap().name = "Verse".into();
+        let mut t = Takes::default();
+        let before = p.clone();
+        assert_eq!(t.rows_edit(&before, &p), 0, "nothing changed");
+        assert!(t.done().is_empty());
+        // Two rows filled, one clip changed, one taken out.
+        for row in [4, 5] {
+            p.tracks[0].slots[row] = Some(Clip::new("a", 3840 * 2));
+            p.tracks[1].slots[row] = Some(Clip::new("b", 3840));
+            let s = p.scene_mut(row).unwrap();
+            s.name = format!("Part {row}");
+            s.follow = Some(Follow::after(2, FollowAction::Next));
+        }
+        p.tracks[0].slots[0] = Some(Clip::new("c2", 3840));
+        p.tracks[1].slots[3] = None;
+        let after = p.clone();
+        let n = t.rows_edit(&before, &p);
+        assert_eq!(n, 1);
+        let e = t.done()[0].rows.as_deref().unwrap();
+        assert_eq!(e.rows, [0, 3, 4, 5]);
+        assert_eq!(e.scenes.len(), 2);
+        assert_eq!(t.undo(&mut p), Some(n));
+        assert_eq!(p, before, "undo gives the project back");
+        assert_eq!(p.scenes.len(), 2, "the plain rows at the end go");
+        assert_eq!(t.redo(&mut p), Some(n));
+        assert_eq!(p, after, "redo fills the rows again");
+        // A scene changed since stays as it is; the rest goes back.
+        p.scene_mut(5).unwrap().name = "Mine".into();
+        t.undo(&mut p);
+        assert_eq!(p.scene(5).unwrap().name, "Mine");
+        assert_eq!(whole_scene(&p, 4), Scene::default());
+        assert!(p.tracks[0].slots[4].is_none() && p.tracks[1].slots[5].is_none());
+        assert_eq!(p.tracks[1].slots[3], before.tracks[1].slots[3]);
     }
 
     /// Reload clip: the saved state goes in as an edit of its own; undo

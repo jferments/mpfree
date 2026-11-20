@@ -31,7 +31,9 @@ use mpfree_play::{
     ClipDrop, Cue, Includes, Launch, MuteCue, MuteLanded, PlayView, SongChange, Started, Takes,
 };
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
-use mpfree_seq::arrange::{list_spans, list_to_song, scene_length, scenes_to_song, song_to_scenes};
+use mpfree_seq::arrange::{
+    list_spans, list_to_song, scene_length, scenes_to_song, song_to_scenes, Difference,
+};
 use mpfree_seq::loops::{self, LoopNow, LoopPlan};
 use mpfree_seq::mpfree_moves::{Kind, MoveLog};
 use mpfree_seq::scenes::{MAX_LIST_STEPS, MAX_TIMES};
@@ -41,9 +43,9 @@ use mpfree_seq::{Clip, LaunchGrid, ModelError, Project, TouchPoint, LOOPS, MAX_T
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::list::ListRow;
 use mpfree_time_ui::view::{
-    bars_label, card_rows, clips_after, grid_name, scene_rows, AudioAction, EditInfo, FollowNext,
-    MorphInfo, MuteWait, RegionId, TakeRow, TempoEdit, TimeAction, TimeState, TransportInfo,
-    SCENE_NAME,
+    bars_label, card_rows, clips_after, grid_name, rows_named, scene_rows, AudioAction, EditInfo,
+    FollowNext, MorphInfo, MuteWait, RegionId, TakeRow, TempoEdit, TimeAction, TimeState,
+    TransportInfo, SCENE_NAME,
 };
 use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_transport::{Block, Command, State};
@@ -715,9 +717,30 @@ impl TimeControl {
             self.pending = pending;
             self.changed = true;
         }
-        // Live to song follows the transport and the cues that started.
+        // Live to song follows the transport and the cues that started,
+        // within the song's room.
         let song_was = self.song_rec.recording();
+        self.song_rec
+            .song_blocks(self.project.arrangement.placements.len());
         self.song_rec.period(&self.block, &self.started);
+        if let Some(used) = self.song_rec.take_warning() {
+            let limit = self.song_rec.limit();
+            self.note_later(format!(
+                "rec song: the song is {}% full ({used} of {limit} blocks); \
+                 recording stops on a launch line before it fills",
+                used * 100 / limit.max(1)
+            ));
+        }
+        if let Some(at) = self.song_rec.take_full() {
+            let bar = self.info.meter.bar_ticks().max(1);
+            self.note_later(format!(
+                "rec song: the song is full ({} blocks), so recording stopped on \
+                 every track at bar {}; what it recorded is kept",
+                self.song_rec.limit(),
+                at.div_euclid(bar) + 1
+            ));
+            self.changed = true;
+        }
         // Cues that started on a bar line become the tracks' launches: the
         // view is compiled again.
         let mut compile = std::mem::take(&mut self.compile_asked) | thrown;
@@ -1300,6 +1323,9 @@ impl TimeControl {
                 )
             }
             None => {}
+        }
+        if let Some((first, last)) = r.rows {
+            return format!("{} · {}", r.short(), rows_named(first, last));
         }
         if let Some(row) = r.scene {
             return format!("{} · scene {}", r.short(), row + 1);
@@ -2685,7 +2711,8 @@ impl TimeControl {
                 Ok(line)
             }
             TimeAction::SongToScenes => {
-                // The rows change, not the song: no undo.
+                // The rows change, not the song: one edit of whole rows,
+                // which UNDO takes back.
                 let bar = info.meter.bar_ticks();
                 let before = self.project.clone();
                 let line = match self.edit_song(a, bar) {
@@ -2700,6 +2727,8 @@ impl TimeControl {
                     self.compile()?;
                     return Err(e);
                 }
+                self.takes.rows_edit(&before, &self.project);
+                self.changed = true;
                 Ok(line)
             }
             TimeAction::ListTimes { .. }
@@ -3225,20 +3254,21 @@ impl TimeControl {
                 let at = (end + bar - 1) / bar.max(1) * bar;
                 let add = scenes_to_song(&self.project, &rows, at)
                     .map_err(|e| format!("scenes → song: {e:?}"))?;
+                let (how, which) = differences_said(&self.project, &add.differences, bar);
                 // New placements shift the indices.
                 self.selected = None;
                 let song = &mut self.project.arrangement;
-                for p in add.placements {
+                for p in add.song.placements {
                     song.place(p).map_err(|e| format!("scenes → song: {e:?}"))?;
                 }
-                for m in add.markers {
+                for m in add.song.markers {
                     song.mark(m.at, &m.name)
                         .map_err(|e| format!("scenes → song: {e:?}"))?;
                 }
                 self.section = None;
                 Ok((
                     format!(
-                        "scenes → song: {} rows from bar {}",
+                        "scenes → song: {} rows from bar {}, {how}{which}",
                         rows.len(),
                         at / bar.max(1) + 1
                     ),
@@ -3246,17 +3276,20 @@ impl TimeControl {
                 ))
             }
             TimeAction::SongToScenes => match song_to_scenes(&mut self.project, bar) {
-                Ok(rows) if rows.is_empty() => {
+                Ok(done) if done.rows.is_empty() => {
                     Ok(("song → scenes: the song is empty".into(), None))
                 }
-                Ok(rows) => Ok((
-                    format!(
-                        "song → scenes: rows {} to {}",
-                        rows[0] + 1,
-                        rows[rows.len() - 1] + 1
-                    ),
-                    None,
-                )),
+                Ok(done) => {
+                    let (how, which) = differences_said(&self.project, &done.differences, bar);
+                    let rows = &done.rows;
+                    Ok((
+                        format!(
+                            "song → scenes: {}, {how} (UNDO takes it back){which}",
+                            rows_named(rows[0], rows[rows.len() - 1])
+                        ),
+                        None,
+                    ))
+                }
                 Err(ModelError::NoRoom) => {
                     Err("song → scenes: not enough empty rows in a run".into())
                 }
@@ -3381,18 +3414,22 @@ impl TimeControl {
                 let at = (end + bar - 1) / bar.max(1) * bar;
                 let add = list_to_song(&self.project, at, bar)
                     .map_err(|e| format!("list → song: {e:?}"))?;
+                let (how, which) = differences_said(&self.project, &add.differences, bar);
                 self.selected = None;
                 self.section = None;
                 let song = &mut self.project.arrangement;
-                for p in add.placements {
+                for p in add.song.placements {
                     song.place(p).map_err(|e| format!("list → song: {e:?}"))?;
                 }
-                for m in add.markers {
+                for m in add.song.markers {
                     song.mark(m.at, &m.name)
                         .map_err(|e| format!("list → song: {e:?}"))?;
                 }
                 Ok((
-                    format!("list → song: {n} steps from bar {}", at / bar.max(1) + 1),
+                    format!(
+                        "list → song: {n} steps from bar {}, {how}{which}",
+                        at / bar.max(1) + 1
+                    ),
                     Some(SongChange::ListToSong { steps: n }),
                 ))
             }
@@ -4796,4 +4833,21 @@ fn moves_over(gestures: &[mpfree_seq::mpfree_moves::Gesture], from: f64, to: f64
             _ => false,
         })
         .count()
+}
+
+/// How a conversion played out, for its log line (plan D7): "exact", or
+/// how many differences and each in words ("2 differences" and ": Bass,
+/// bar 9: a note held over the row change is cut there; …").
+fn differences_said(project: &Project, d: &[Difference], bar: Tick) -> (String, String) {
+    match d.len() {
+        0 => ("exact".into(), String::new()),
+        n => {
+            let each: Vec<String> = d.iter().map(|d| d.said(project, bar)).collect();
+            let s = if n == 1 { "" } else { "s" };
+            (
+                format!("{n} difference{s}"),
+                format!(": {}", each.join("; ")),
+            )
+        }
+    }
 }
