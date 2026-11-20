@@ -125,7 +125,11 @@ mod tests {
             let mut l = lab("open");
             for song in songs::all() {
                 open(&mut l.s, song.name);
-                assert_eq!(l.s.time.project(), &song.clips, "{}", song.name);
+                // As written, its tracks with the lasting ids an open
+                // gives them.
+                let mut written = song.clips.clone();
+                written.give_track_ids();
+                assert_eq!(l.s.time.project(), &written, "{}", song.name);
                 assert_eq!(l.s.app.settings.bpm, song.tempo, "{}", song.name);
                 l.s.run_for(0.1);
                 assert_eq!(l.s.time.info().swing, song.swing, "{}", song.name);
@@ -480,6 +484,118 @@ mod tests {
                     song.name
                 );
             }
+        });
+    }
+
+    /// Instrument redesign step 2a, through the whole session. A song's
+    /// project as the build before instruments had ids saved it (no
+    /// format line, no list of instruments, `track 2 synth` in the track
+    /// kits part's version 1) opens from BROWSE with track 2 on the synth
+    /// and track 3 on kit 2, and plays its notes. Saved with SHIFT +
+    /// BROWSE it is format 2, lists the synth as instrument 1 and points
+    /// track 2 at it by that id. After New project, opened again, every
+    /// track plays what it played, and the song plays the same notes.
+    #[test]
+    fn a_project_from_before_instrument_ids_opens_saves_and_plays_the_same() {
+        on_big_stack(|| {
+            use crate::instrument_list::InstrumentList;
+            use crate::project::{FORMAT_KEY, INSTRUMENT_LIST, TRACK_KITS};
+            let mut l = lab("instrument-ids");
+            let s = &mut l.s;
+            let song = songs::all().into_iter().next().expect("a song");
+            assert!(
+                song.clips.tracks.len() >= 3,
+                "{} has three tracks",
+                song.name
+            );
+            let lib = s.library.clone().expect("a library");
+            let loc = |name: &str| {
+                mpfree_library::Loc::top(mpfree_library::Place::Projects)
+                    .join(name)
+                    .expect("a project's place")
+            };
+            let mut old = lib.open_project(&loc(song.name)).expect("the song opens");
+            old.meta.extra.retain(|(k, _)| k != FORMAT_KEY);
+            old.parts
+                .retain(|(o, _)| o != INSTRUMENT_LIST && o != TRACK_KITS);
+            old.parts.push((
+                TRACK_KITS.to_string(),
+                "mpfree-track-kits 1\ntrack 2 synth\ntrack 3 kit 2\n".to_string(),
+            ));
+            let name = "Before ids";
+            lib.save_project(&loc(name), &old, 10).expect("saved");
+
+            // What the song plays: each note's track, pad and velocity over
+            // its first two bars, from scene 1 launched.
+            let notes = |s: &mut Session| {
+                let t0 = s.t();
+                launch(s, 0);
+                s.run_for(3.0 * bar(&song));
+                s.button("STOP").run_for(0.2);
+                let first = first_note_after(s, t0);
+                let end = first + 2.0 * bar(&song) - 0.05;
+                s.hits
+                    .played
+                    .iter()
+                    .filter(|p| p.at >= first && p.at < end)
+                    .map(|p| (p.track, p.note, p.velocity))
+                    .collect::<Vec<_>>()
+            };
+
+            open(s, name);
+            assert!(s.track_kits.plays_synth(1), "track 2 plays the synth");
+            assert_eq!(s.track_kits.kit_of(2), Some(1), "track 3 plays kit 2");
+            assert_eq!(s.instrument_list, InstrumentList::new());
+            let kits = s.track_kits.clone();
+            // Step 2c: its tracks have lasting ids now, 1, 2, 3 ...
+            let track_ids = |s: &Session| -> Vec<u32> {
+                s.time.project().tracks.iter().map(|t| t.id.0).collect()
+            };
+            let ids = track_ids(s);
+            assert_eq!(ids, (1..=ids.len() as u32).collect::<Vec<_>>());
+            let played = notes(s);
+            assert!(!played.is_empty(), "the song played");
+            assert!(
+                !s.lines
+                    .iter()
+                    .any(|l| l.contains("instrument") || l.contains("format")),
+                "nothing to say about an old project: {:?}",
+                s.lines
+            );
+
+            s.button_with("SHIFT", "BROWSE");
+            let saved = format!("project: saved {name}");
+            assert!(s.until_said(&saved, 5.0), "{saved}: {:?}", s.said());
+            let snap = lib.open_project(&loc(name)).expect("it opens");
+            assert!(snap
+                .meta
+                .extra
+                .contains(&(FORMAT_KEY.to_string(), "2".to_string())));
+            assert_eq!(
+                snap.part(INSTRUMENT_LIST),
+                Some("mpfree-instrument-list 1\nnext 2\ninstrument 1 shared-synth\n")
+            );
+            assert_eq!(
+                snap.part(TRACK_KITS),
+                Some("mpfree-track-kits 2\ntrack 2 instrument 1\ntrack 3 kit 2\n")
+            );
+            let clips = snap.part(crate::project::CLIPS).expect("the clips");
+            assert!(clips.contains(&format!("nexttrack {}\n", ids.len() + 1)));
+
+            s.button("BROWSE");
+            s.press("browser", "place", "Projects");
+            s.press("browser", "button", "New project");
+            s.run_for(0.3);
+            assert!(
+                !s.track_kits.plays_synth(1),
+                "New project: track 2 on kit 1"
+            );
+
+            open(s, name);
+            assert_eq!(s.track_kits, kits, "every track plays what it played");
+            assert_eq!(track_ids(s), ids, "every track keeps its id");
+            assert_eq!(s.instrument_list, InstrumentList::new());
+            assert_eq!(notes(s), played, "the same notes");
         });
     }
 
