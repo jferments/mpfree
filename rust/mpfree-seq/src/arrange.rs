@@ -15,11 +15,19 @@
 //! - [`scenes_to_song`]: rows one after another, each as long as
 //!   [`scene_length`] (its follow's bars, else its longest clip in whole
 //!   bars), as linked placements, a marker on each named after the scene.
+//!   The scenes' mutes carry from row to row as they do when the rows
+//!   play (a muted track's clip is left out), and a one-shot clip's block
+//!   ends with its pass.
 //! - [`song_to_scenes`]: each section of the song (between the places
 //!   anything starts or ends, and the markers) becomes a row in a run of
-//!   empty rows, its clips copied in, chained by follow actions (Next after
-//!   the section's bars; the last one stops), so launching the first row
-//!   plays the song.
+//!   empty rows, chained by follow actions (Next after the section's
+//!   bars; the last one stops), so launching the first row plays the
+//!   song. Each clip is copied turned round to where the section starts
+//!   in it ([`turned`]), without the one-shot, legato and follow action a
+//!   song block ignores, so the row plays as the block did.
+//!
+//! Every conversion is exact or says how it is not (plan D7): each way
+//! the result plays differently is a [`Difference`], by track and bar.
 //!
 //! The Song view's drags (Jay, 14 Nov: drag and drop) edit it in place:
 //! [`Arrangement::move_placement`] moves or copies a placement along its
@@ -36,10 +44,13 @@
 //! Plain values checked by [`Arrangement::check`]; `mpfree-play` plays
 //! them (song mode) and `mpfree-perform` records into them (T11).
 
-use crate::mpfree_moves::{Kind, Map, Moves, Target};
+use crate::mpfree_moves::{Kind, Map, Moves, Point, Target};
 use crate::mpfree_param::ParamAddr;
 use crate::scenes::SongList;
-use crate::{Clip, Follow, FollowAction, ModelError, Project, Scene, Track, SCENES, SLOTS};
+use crate::{
+    Clip, Cond, Direction, Follow, FollowAction, Join, ModelError, Project, Scene, Track,
+    MAX_TRACKS, SCENES, SLOTS,
+};
 use mpfree_transport::time::{
     valid_bpm, MapError, Segment, TempoMap, Tick, MAX_SEGMENTS, MIN_SPAN_TICKS,
 };
@@ -696,32 +707,69 @@ pub fn scene_length(project: &Project, row: usize, bar: Tick) -> Tick {
 }
 
 /// Rows one after another from `at`, each for its length in song ticks,
-/// as linked placements with a marker each: see the module notes.
+/// as linked placements with a marker each: see the module notes. The
+/// scenes' mutes carry from row to row from none (a track a scene muted
+/// gets no blocks until a scene unmutes it), and a one-shot clip's block
+/// ends with its pass. What it can't carry is in the differences: a
+/// scene's program changes, a clip's own follow action, and a legato
+/// clip that would take over a clip playing on its track.
 pub fn scenes_to_song(
     project: &Project,
     rows: &[(usize, Tick)],
     at: Tick,
-) -> Result<Arrangement, ModelError> {
+) -> Result<ToSong, ModelError> {
     let mut song = Arrangement::default();
+    let mut differences = Vec::new();
+    let mut muted = [false; MAX_TRACKS];
+    // Where each track's last block ends: a clip still plays there (a
+    // muted one too, silent).
+    let mut ends: Vec<Option<Tick>> = vec![None; project.tracks.len()];
     let mut t = at;
     for &(row, length) in rows {
         if row >= SCENES || length <= 0 {
             return Err(ModelError::BadPlacement);
         }
-        for (track, tr) in project.tracks.iter().enumerate() {
-            if tr.slots[row].is_some() {
-                song.place(Placement::linked(track, row, t, length))?;
+        let scene = project.scene(row);
+        if let Some(s) = scene {
+            for (track, m) in muted.iter_mut().enumerate() {
+                if let Some(now) = s.mutes_track(track) {
+                    *m = now;
+                }
+            }
+            if !s.programs.is_empty() {
+                differences.push(Difference::song(t, Differs::SceneProgram));
             }
         }
-        let name = project
-            .scene(row)
+        for (track, tr) in project.tracks.iter().enumerate() {
+            let Some(clip) = tr.slots[row].as_ref() else {
+                continue;
+            };
+            let mut len = length;
+            if clip.once {
+                // Its pass, as `mpfree_perform::once_end` ends it.
+                let pass = clip.speed.to_song(clip.length as f64).max(1.0);
+                len = len.min(pass.round() as Tick);
+            }
+            if clip.follow.is_some() {
+                differences.push(Difference::on(track, t, Differs::ClipFollow));
+            }
+            if clip.legato && ends[track] == Some(t) {
+                differences.push(Difference::on(track, t, Differs::Legato));
+            }
+            ends[track] = Some(t + len);
+            if muted.get(track).copied().unwrap_or(false) {
+                continue;
+            }
+            song.place(Placement::linked(track, row, t, len))?;
+        }
+        let name = scene
             .map(|s| s.name.clone())
             .filter(|n| !n.is_empty())
             .unwrap_or_else(|| format!("Scene {}", row + 1));
         song.mark(t, &name)?;
         t += length;
     }
-    Ok(song)
+    Ok(ToSong { song, differences })
 }
 
 /// Each step of the song list: where it starts, from tick 0, and how
@@ -746,8 +794,9 @@ pub fn list_spans(project: &Project, bar: Tick) -> Vec<(Tick, Tick)> {
 /// List → song: the song list laid on the timeline from song tick `at`,
 /// each step its scene's clips for its span (a clip shorter than the span
 /// repeats), with the scene's name above where it starts, as
-/// [`scenes_to_song`] lays rows. The caller adds it to the song.
-pub fn list_to_song(project: &Project, at: Tick, bar: Tick) -> Result<Arrangement, ModelError> {
+/// [`scenes_to_song`] lays rows (mutes carried from step to step, a
+/// one-shot's block ending with its pass). The caller adds it to the song.
+pub fn list_to_song(project: &Project, at: Tick, bar: Tick) -> Result<ToSong, ModelError> {
     let rows: Vec<(usize, Tick)> = project
         .arrangement
         .list
@@ -790,27 +839,34 @@ pub fn sections(project: &Project) -> Vec<(Tick, Tick, Vec<Option<usize>>)> {
 }
 
 /// Each section of the song into a row: see the module notes. Uses the
-/// first run of empty rows ([`Project::row_empty`]) long enough; returns
-/// the rows, or `NoRoom` (and changes nothing) when there is none.
-pub fn song_to_scenes(project: &mut Project, bar: Tick) -> Result<Vec<usize>, ModelError> {
+/// first run of empty rows ([`Project::row_empty`]) long enough, and sets
+/// every field of each row's scene; returns the rows and the ways they
+/// play differently from the song, or `NoRoom` (and changes nothing) when
+/// there is no such run.
+pub fn song_to_scenes(project: &mut Project, bar: Tick) -> Result<ToScenes, ModelError> {
     let bar = bar.max(1);
     let parts = sections(project);
     if parts.is_empty() {
-        return Ok(Vec::new());
+        return Ok(ToScenes::default());
     }
     let n = parts.len();
     let first = (0..SCENES.saturating_sub(n - 1))
         .find(|&r| (r..r + n).all(|k| project.row_empty(k)))
         .ok_or(ModelError::NoRoom)?;
+    let mut differences = song_differences(project, &parts, bar);
     let mut p = project.clone();
     for (k, (a, b, playing)) in parts.iter().enumerate() {
         let row = first + k;
         for (track, at) in playing.iter().enumerate() {
             let Some(i) = at else { continue };
+            let block = &project.arrangement.placements[*i];
             // A placement of an emptied slot plays nothing: nothing to copy.
-            if let Some(clip) = project.arrangement.placements[*i].clip(&project.tracks) {
-                p.tracks[track].slots[row] = Some(clip.clone());
-            }
+            let Some(clip) = block.clip(&project.tracks) else {
+                continue;
+            };
+            let (copy, why) = section_copy(block, clip, *a);
+            differences.extend(why.into_iter().map(|w| Difference::on(track, *a, w)));
+            p.tracks[track].slots[row] = Some(copy);
         }
         let bars = ((b - a + bar - 1) / bar).clamp(1, i64::from(crate::scenes::MAX_FOLLOW_BARS));
         let name = project
@@ -835,7 +891,349 @@ pub fn song_to_scenes(project: &mut Project, bar: Tick) -> Result<Vec<usize>, Mo
     }
     p.check()?;
     *project = p;
-    Ok((first..first + n).collect())
+    differences.sort_by_key(|d| (d.at, d.track.map_or(0, |t| t + 1)));
+    Ok(ToScenes {
+        rows: (first..first + n).collect(),
+        differences,
+    })
+}
+
+/// What Song → scenes did ([`song_to_scenes`]): the rows it filled, in
+/// order, and how they play differently from the song (none: exact).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ToScenes {
+    pub rows: Vec<usize>,
+    pub differences: Vec<Difference>,
+}
+
+/// What Scenes → song and List → song make ([`scenes_to_song`],
+/// [`list_to_song`]): the blocks and markers to add to the song, and how
+/// they play differently from the rows (none: exact).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ToSong {
+    pub song: Arrangement,
+    pub differences: Vec<Difference>,
+}
+
+/// One way a conversion plays differently from what it was made from
+/// (plan D7): what, where (a song tick: the song's for Song → scenes, the
+/// new blocks' for Scenes → song and List → song) and on which track
+/// (None: the whole song).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Difference {
+    pub track: Option<usize>,
+    pub at: Tick,
+    pub what: Differs,
+}
+
+/// What a [`Difference`] is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Differs {
+    /// Song → scenes: a section starts or ends off a bar line, and the
+    /// rows change on bar lines.
+    OffBar,
+    /// Song → scenes: a section longer than a follow's most bars
+    /// ([`crate::scenes::MAX_FOLLOW_BARS`]): its row moves on after that.
+    TooLong,
+    /// Song → scenes: a stretch of silence this long, which the rows
+    /// leave out (before the first section too: the rows start when
+    /// launched).
+    Silence { length: Tick },
+    /// Song → scenes: the song's tempo points; the rows play at the
+    /// project's tempo.
+    Tempo,
+    /// Song → scenes: the song's own lanes (the morph's moves and rows);
+    /// the rows don't play them.
+    Morph,
+    /// Song → scenes: the clip plays in Random order, which a copy in
+    /// another slot rolls its own way.
+    Random,
+    /// Song → scenes: the clip has notes with a chance below 100 %, which
+    /// a copy in another slot rolls its own way.
+    Chance,
+    /// Song → scenes: the clip plays Reverse or Ping-pong and its row
+    /// starts it from partway in, where its direction starts again.
+    Direction,
+    /// Song → scenes: the clip has conditions that count passes or follow
+    /// the last result (A:B, 1ST, PRE, NEI), and its row starts it again
+    /// from partway in, where they count again.
+    Conditions,
+    /// Song → scenes: a Loop track's cell from partway in: its loop
+    /// starts again from its top.
+    LoopCell,
+    /// Song → scenes: the section starts between two of the clip's own
+    /// ticks (at its speed): the copy turns round to the nearest.
+    BetweenTicks,
+    /// Song → scenes: the block carries on into the section, and its row
+    /// sends the clip's program change again.
+    Program,
+    /// Song → scenes: a note held over the section's start (or tied into
+    /// a note on it), which the row change cuts there.
+    HeldNote,
+    /// Scenes → song, List → song: the scene's program changes, which the
+    /// song doesn't send.
+    SceneProgram,
+    /// Scenes → song, List → song: the clip's own follow action, which
+    /// the song leaves out (the clip plays on for the row).
+    ClipFollow,
+    /// Scenes → song, List → song: a legato clip after a clip on its
+    /// track: the song starts it from its top instead of the other's
+    /// place.
+    Legato,
+}
+
+impl Difference {
+    fn song(at: Tick, what: Differs) -> Difference {
+        Difference {
+            track: None,
+            at,
+            what,
+        }
+    }
+
+    fn on(track: usize, at: Tick, what: Differs) -> Difference {
+        Difference {
+            track: Some(track),
+            at,
+            what,
+        }
+    }
+
+    /// In a musician's words, with bars of `bar` ticks: "Bass, bar 9: a
+    /// note held over the row change is cut there".
+    pub fn said(&self, project: &Project, bar: Tick) -> String {
+        let bar = bar.max(1);
+        let bars = |t: Tick| {
+            if t % bar != 0 {
+                format!("{:.1} bars", t as f64 / bar as f64)
+            } else if t == bar {
+                "1 bar".to_string()
+            } else {
+                format!("{} bars", t / bar)
+            }
+        };
+        let what = match self.what {
+            Differs::OffBar => {
+                "a part starts or ends off a bar line; the rows change on bar lines".into()
+            }
+            Differs::TooLong => format!(
+                "a part is longer than {} bars; its row moves on after that",
+                crate::scenes::MAX_FOLLOW_BARS
+            ),
+            Differs::Silence { length } => format!("{} of silence left out", bars(length)),
+            Differs::Tempo => {
+                "the song's tempo changes; the rows play at the project's tempo".into()
+            }
+            Differs::Morph => "the song's morph moves; the rows don't play them".into(),
+            Differs::Random => "plays in Random order; the copy rolls its own order".into(),
+            Differs::Chance => "notes with a chance; the copy rolls them its own way".into(),
+            Differs::Direction => "its play direction starts again here".into(),
+            Differs::Conditions => {
+                "its A:B, 1ST, PRE and NEI conditions count again from here".into()
+            }
+            Differs::LoopCell => "its loop starts again from the top here".into(),
+            Differs::BetweenTicks => {
+                "starts between two of the clip's ticks; the copy starts on the nearest".into()
+            }
+            Differs::Program => "its program change is sent again here".into(),
+            Differs::HeldNote => "a note held over the row change is cut there".into(),
+            Differs::SceneProgram => "the scene's program changes aren't in the song".into(),
+            Differs::ClipFollow => "the clip's follow action isn't in the song; it plays on".into(),
+            Differs::Legato => "the clip is legato; the song starts it from its top".into(),
+        };
+        let at = format!("bar {}", self.at.div_euclid(bar) + 1);
+        match self.track {
+            Some(t) => {
+                let name = project
+                    .tracks
+                    .get(t)
+                    .map_or_else(|| format!("Track {}", t + 1), |t| t.name.clone());
+                format!("{name}, {at}: {what}")
+            }
+            None => format!("{at}: {what}"),
+        }
+    }
+}
+
+/// The ways Song → scenes can't follow the whole song (`parts` are its
+/// sections): silences, sections off the bar lines or too long, tempo
+/// points and the song's own lanes.
+fn song_differences(
+    project: &Project,
+    parts: &[(Tick, Tick, Vec<Option<usize>>)],
+    bar: Tick,
+) -> Vec<Difference> {
+    let song = &project.arrangement;
+    let mut out = Vec::new();
+    let mut last = 0;
+    for (a, b, _) in parts {
+        if *a > last {
+            out.push(Difference::song(
+                last,
+                Differs::Silence { length: a - last },
+            ));
+        }
+        if a % bar != 0 || b % bar != 0 {
+            out.push(Difference::song(*a, Differs::OffBar));
+        }
+        if b - a > Tick::from(crate::scenes::MAX_FOLLOW_BARS) * bar {
+            out.push(Difference::song(*a, Differs::TooLong));
+        }
+        last = *b;
+    }
+    if let Some(t) = song.tempo.first() {
+        out.push(Difference::song(t.at, Differs::Tempo));
+    }
+    if !song.lanes.is_empty() || !song.morphs.is_empty() {
+        let at = song.morphs.first().map_or(0, |m| m.at);
+        out.push(Difference::song(at, Differs::Morph));
+    }
+    out
+}
+
+/// The copy of `block`'s `clip` for a row from song tick `a` (inside the
+/// block): turned round to where the block has got to there, without the
+/// one-shot, legato and follow action the song ignores, and the ways it
+/// plays differently from the block.
+fn section_copy(block: &Placement, clip: &Clip, a: Tick) -> (Clip, Vec<Differs>) {
+    let len = clip.length.max(1);
+    let into = clip.speed.to_clip((a - block.start) as f64);
+    let by = (block.offset + into.round() as Tick).rem_euclid(len);
+    // The block carries on into the section: its row starts it again.
+    let carried = a > block.start;
+    let mut why = Vec::new();
+    if clip.direction == Direction::Random {
+        why.push(Differs::Random);
+    }
+    if clip.notes.iter().any(|n| n.chance < 100) {
+        why.push(Differs::Chance);
+    }
+    if by != 0 || carried {
+        if into.fract() != 0.0 {
+            why.push(Differs::BetweenTicks);
+        }
+        if clip.looped.is_some() {
+            why.push(Differs::LoopCell);
+        }
+        let direction = match clip.direction {
+            Direction::Forward | Direction::Random => false,
+            Direction::Reverse => by != 0,
+            Direction::PingPong => true,
+        };
+        if direction {
+            why.push(Differs::Direction);
+        }
+        let counts = |c: Cond| matches!(c, Cond::Every { .. } | Cond::First | Cond::NotFirst);
+        let follows = |c: Cond| matches!(c, Cond::Pre | Cond::NotPre | Cond::Nei | Cond::NotNei);
+        if clip
+            .notes
+            .iter()
+            .any(|n| counts(n.cond) || (carried && follows(n.cond)))
+        {
+            why.push(Differs::Conditions);
+        }
+        if carried && clip.program.is_some() {
+            why.push(Differs::Program);
+        }
+        if carried && held_over(block, clip, a) {
+            why.push(Differs::HeldNote);
+        }
+    }
+    let mut copy = turned(clip, by);
+    copy.once = false;
+    copy.legato = false;
+    copy.follow = None;
+    (copy, why)
+}
+
+/// Whether a note of `block`'s `clip` that played sounds over song tick
+/// `a` (swing aside), or one tied or slid into on `a` joins one before.
+fn held_over(block: &Placement, clip: &Clip, a: Tick) -> bool {
+    let origin = block.origin(clip) as f64;
+    let pass = clip.speed.to_song(clip.length.max(1) as f64);
+    let a = a as f64;
+    clip.notes.iter().any(|n| {
+        let t = clip.speed.to_song(n.tick as f64);
+        // Its last start before `a`, and on `a`.
+        let k = ((a - origin - t) / pass).ceil() - 1.0;
+        let before = origin + k * pass + t;
+        let on = before + pass;
+        let held = before >= block.start as f64 && before + clip.speed.to_song(n.len as f64) > a;
+        held || (n.join != Join::Attack && (on - a).abs() < 0.5)
+    })
+}
+
+/// `clip` turned round by `by` of its ticks: what played from its tick
+/// `by` plays from its top, so launched it plays as it played from `by`.
+/// Its notes, locks and moves turn (and those it was mutated from); its
+/// pressure goes with its notes as it is. A ramp of a move cut at `by`
+/// gets a point on each side of the cut, on its line.
+pub fn turned(clip: &Clip, by: Tick) -> Clip {
+    let len = clip.length.max(1);
+    let by = by.rem_euclid(len);
+    let mut c = clip.clone();
+    if by == 0 {
+        return c;
+    }
+    let turn = |t: Tick, len: Tick| (t - by).rem_euclid(len);
+    for n in &mut c.notes {
+        n.tick = turn(n.tick, len);
+    }
+    for l in &mut c.locks {
+        l.tick = turn(l.tick, len);
+    }
+    c.moves = turned_moves(&clip.moves, by, len);
+    if let Some(o) = c.original.as_mut() {
+        let olen = o.length.max(1);
+        for n in &mut o.notes {
+            n.tick = turn(n.tick, olen);
+        }
+        for l in &mut o.locks {
+            l.tick = turn(l.tick, olen);
+        }
+        o.moves = turned_moves(&o.moves, by.rem_euclid(olen), olen);
+    }
+    c
+}
+
+/// `moves` of a clip `len` ticks long, turned round by `by` (0 < by < len).
+fn turned_moves(moves: &Moves, by: Tick, len: Tick) -> Moves {
+    let mut out = Moves::new();
+    let (by, len) = (by as u32, len.max(1) as u32);
+    for lane in moves.lanes() {
+        let mut points: Vec<Point> = lane
+            .points
+            .iter()
+            .map(|p| Point {
+                tick: (p.tick + len - by) % len,
+                ..*p
+            })
+            .collect();
+        // A ramp gliding over `by` (from a point before it to one after,
+        // in the same pass): the turned lane can't glide over its end, so
+        // it ends on the tick before the cut and starts again on it.
+        let i = lane.points.partition_point(|p| p.tick < by);
+        let gliding = i > 0
+            && lane.points[i - 1].kind == Kind::Ramp
+            && lane
+                .points
+                .get(i)
+                .is_some_and(|q| q.tick > by && q.kind != Kind::End);
+        if gliding {
+            if let Some(u) = lane.state_at(f64::from(by)) {
+                points.push(Point::ramp(0, u));
+            }
+            if lane.points[i - 1].tick + 1 < by {
+                if let Some(u) = lane.state_at(f64::from(by - 1)) {
+                    points.push(Point::ramp(len - 1, u));
+                }
+            }
+        }
+        points.sort_by_key(|p| p.tick);
+        // Room was checked when the clip's lanes were made.
+        let _ = out.restore(lane.target, lane.map, 0, len, &points);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1072,7 +1470,7 @@ mod tests {
             list_spans(&p, BAR),
             vec![(0, 2 * BAR), (2 * BAR, 2 * BAR), (4 * BAR, 3 * BAR)]
         );
-        let song = list_to_song(&p, 8 * BAR, BAR).unwrap();
+        let song = list_to_song(&p, 8 * BAR, BAR).unwrap().song;
         let blocks: Vec<(usize, Tick, Tick)> = song
             .placements
             .iter()
@@ -1107,7 +1505,9 @@ mod tests {
         p.scene_mut(1).unwrap().follow = Some(Follow::after(4, FollowAction::Next));
         assert_eq!(scene_length(&p, 0, BAR), BAR);
         assert_eq!(scene_length(&p, 1, BAR), 4 * BAR, "its follow's bars");
-        let song = scenes_to_song(&p, &[(0, BAR), (1, 4 * BAR), (0, BAR)], 0).unwrap();
+        let song = scenes_to_song(&p, &[(0, BAR), (1, 4 * BAR), (0, BAR)], 0)
+            .unwrap()
+            .song;
         assert_eq!(song.placements.len(), 6);
         assert_eq!(song.end(), 6 * BAR);
         let names: Vec<_> = song
@@ -1123,7 +1523,7 @@ mod tests {
         assert_eq!(p.check(), Ok(()));
         // Back: three sections into rows 2, 3 and 4, chained.
         assert_eq!(sections(&p).len(), 3);
-        let rows = song_to_scenes(&mut p, BAR).unwrap();
+        let rows = song_to_scenes(&mut p, BAR).unwrap().rows;
         assert_eq!(rows, vec![2, 3, 4]);
         let s = |r: usize| p.scene(r).unwrap();
         assert_eq!(s(2).follow, Some(Follow::after(1, FollowAction::Next)));
@@ -1135,12 +1535,18 @@ mod tests {
         p.tracks[0].slots[13] = Some(Clip::new("x", BAR));
         p.tracks[0].slots[8] = Some(Clip::new("x", BAR));
         let before = p.clone();
-        assert_eq!(song_to_scenes(&mut p, BAR), Ok(vec![5, 6, 7]));
+        assert_eq!(
+            song_to_scenes(&mut p, BAR).map(|c| c.rows),
+            Ok(vec![5, 6, 7])
+        );
         let mut q = before;
         q.tracks[0].slots[6] = Some(Clip::new("x", BAR));
         q.tracks[0].slots[11] = Some(Clip::new("x", BAR));
         let again = q.clone();
-        assert_eq!(song_to_scenes(&mut q, BAR), Err(ModelError::NoRoom));
+        assert_eq!(
+            song_to_scenes(&mut q, BAR).map(|c| c.rows),
+            Err(ModelError::NoRoom)
+        );
         assert_eq!(q, again, "nothing changed");
     }
 
@@ -1151,7 +1557,9 @@ mod tests {
     fn song_to_scenes_never_takes_a_row_set_up_without_clips() {
         use crate::mpfree_param::{Owner, ParamAddr};
         let mut p = project();
-        p.arrangement = scenes_to_song(&p, &[(0, BAR), (1, 2 * BAR)], 0).unwrap();
+        p.arrangement = scenes_to_song(&p, &[(0, BAR), (1, 2 * BAR)], 0)
+            .unwrap()
+            .song;
         assert_eq!(sections(&p).len(), 2);
         assert!(p.row_empty(2) && !p.row_empty(0), "no clip, a plain scene");
         p.scene_mut(2).unwrap().name = "Intro".into();
@@ -1172,11 +1580,289 @@ mod tests {
         }
         // Rows 2 to 6 are set up and 8 is named: the first run of two
         // empty rows is 9 and 10 (7 alone is too short).
-        assert_eq!(song_to_scenes(&mut p, BAR), Ok(vec![9, 10]));
+        assert_eq!(song_to_scenes(&mut p, BAR).map(|c| c.rows), Ok(vec![9, 10]));
         assert_eq!(p.scene(2).unwrap().name, "Intro", "left as it was");
         assert_eq!(p.scene(3).unwrap().mutes, Some(0));
         assert!(p.scene(5).unwrap().values.len() == 1);
         assert_eq!(p.scene(6).unwrap().program(1), Some(pc));
+    }
+
+    /// A clip turned round: notes and locks by their ticks, a move's
+    /// ramp cut at the turn ending and starting again on its line, and
+    /// what it was mutated from turned with it.
+    #[test]
+    fn a_clip_turns_round_to_play_from_partway_in() {
+        use crate::mpfree_param::{OnTrack, RelAddr};
+        use crate::Note;
+        let mut c = Clip::new("c", 4 * BAR);
+        c.notes = (0..4)
+            .map(|k| Note::new(k * BAR, 100, 10 + k as u8, 100))
+            .collect();
+        c.locks.push(crate::Lock::new(
+            3 * BAR,
+            Some(13),
+            RelAddr::new(OnTrack::Inst, 1),
+            0.5,
+        ));
+        let lane = MORPH_LANE;
+        let map = Map::linear(0.0, 1.0);
+        let len = (4 * BAR) as u32;
+        // A ramp from 0.0 on bar 2 to 1.0 on bar 4 glides over bar 3.
+        let pts = [
+            Point::ramp(BAR as u32, 0.0),
+            Point::step(3 * BAR as u32, 1.0),
+        ];
+        c.moves.restore(lane, map, 0, len, &pts).unwrap();
+        c.original = Some(Box::new(crate::Original {
+            length: 4 * BAR,
+            notes: c.notes.clone(),
+            locks: vec![],
+            moves: Moves::new(),
+            variation: 1,
+        }));
+        assert_eq!(turned(&c, 0), c);
+        let t = turned(&c, 2 * BAR);
+        let ticks: Vec<(Tick, u8)> = t.notes.iter().map(|n| (n.tick, n.note)).collect();
+        assert_eq!(ticks, [(2 * BAR, 10), (3 * BAR, 11), (0, 12), (BAR, 13)]);
+        assert_eq!(t.locks[0].tick, BAR);
+        let o = t.original.as_ref().unwrap();
+        assert_eq!(o.notes[2].tick, 0, "its original turns too");
+        let lane_of = |c: &Clip| c.moves.lane(lane).unwrap().clone();
+        let (before, after) = (lane_of(&c), lane_of(&t));
+        // The same value wherever it plays, but the tick before the turn.
+        for k in 0..len / 64 {
+            let at = f64::from(k * 64);
+            let from = (at + 2.0 * BAR as f64) % f64::from(len);
+            if from as u32 == 2 * BAR as u32 - 1 {
+                continue;
+            }
+            let (a, b) = (after.state_at(at), before.state_at(from));
+            assert!(
+                a.zip(b).map_or(a == b, |(a, b)| (a - b).abs() < 1e-4),
+                "tick {at}: {a:?} {b:?}"
+            );
+        }
+        assert_eq!(after.state_at(0.0), Some(0.5), "it glides on from the turn");
+        assert_eq!(t.check(), Ok(()));
+    }
+
+    /// Song → scenes from a song in the exact set: a section that starts
+    /// halfway into a four-bar block gets the clip turned round to there;
+    /// the copies leave off one-shot, legato and follow; nothing differs.
+    #[test]
+    fn song_to_scenes_turns_each_clip_to_where_its_section_starts() {
+        use crate::Note;
+        let mut p = project();
+        let mut four = Clip::new("four", 4 * BAR);
+        four.notes = (0..4)
+            .map(|k| Note::new(k * BAR, 100, 10 + k as u8, 100))
+            .collect();
+        four.once = true;
+        four.legato = true;
+        four.follow = Some(Follow::after(2, FollowAction::Stop));
+        p.tracks[0].slots[2] = Some(four);
+        let s = &mut p.arrangement;
+        // Drums: the four-bar clip for 8 bars; bass joins on bar 3.
+        s.place(Placement::linked(0, 2, 0, 8 * BAR)).unwrap();
+        s.place(Placement::linked(1, 0, 2 * BAR, 6 * BAR)).unwrap();
+        let done = song_to_scenes(&mut p, BAR).unwrap();
+        assert_eq!(done.rows, [3, 4]);
+        assert_eq!(done.differences, [], "exact");
+        let copy = p.tracks[0].slots[4].as_ref().unwrap();
+        let ticks: Vec<(Tick, u8)> = copy.notes.iter().map(|n| (n.tick, n.note)).collect();
+        assert_eq!(ticks, [(2 * BAR, 10), (3 * BAR, 11), (0, 12), (BAR, 13)]);
+        assert!(!copy.once && !copy.legato && copy.follow.is_none());
+        let first = p.tracks[0].slots[3].as_ref().unwrap();
+        assert_eq!(first.notes[0].tick, 0, "the first row's starts at its top");
+        assert_eq!(p.tracks[1].slots[4].as_ref().unwrap().name, "a");
+        assert_eq!(
+            p.scene(4).unwrap().follow,
+            Some(Follow::after(6, FollowAction::Stop))
+        );
+    }
+
+    /// Outside the exact set Song → scenes still converts, and names each
+    /// difference by track and bar.
+    #[test]
+    fn song_to_scenes_names_each_difference_by_track_and_bar() {
+        use crate::{ClipProgram, Note, Speed};
+        // A song of one four-bar block on drums from `start` for 8 bars,
+        // with the bass joining on bar 3 (so drums carry on into it).
+        let song = |clip: Clip, start: Tick| {
+            let mut p = project();
+            p.tracks[0].slots[2] = Some(clip);
+            let s = &mut p.arrangement;
+            s.place(Placement::linked(0, 2, start, 8 * BAR)).unwrap();
+            s.place(Placement::linked(1, 0, start + 2 * BAR, 6 * BAR))
+                .unwrap();
+            p
+        };
+        let four = || {
+            let mut c = Clip::new("four", 4 * BAR);
+            c.notes = (0..4).map(|k| Note::new(k * BAR, 100, 10, 100)).collect();
+            c
+        };
+        let diffs = |mut p: Project| -> Vec<(Option<usize>, Tick, Differs)> {
+            song_to_scenes(&mut p, BAR)
+                .unwrap()
+                .differences
+                .iter()
+                .map(|d| (d.track, d.at, d.what))
+                .collect()
+        };
+        let on_drums = |what| vec![(Some(0), 2 * BAR, what)];
+        // Random: every copy (the first row's too).
+        let mut c = four();
+        c.direction = Direction::Random;
+        assert_eq!(
+            diffs(song(c, 0)),
+            [
+                (Some(0), 0, Differs::Random),
+                (Some(0), 2 * BAR, Differs::Random)
+            ]
+        );
+        let mut c = four();
+        c.notes[1].chance = 50;
+        assert_eq!(diffs(song(c, 0)).len(), 2, "chance: each copy");
+        // From partway in.
+        let mut c = four();
+        c.direction = Direction::Reverse;
+        assert_eq!(diffs(song(c, 0)), on_drums(Differs::Direction));
+        let mut c = four();
+        c.notes[2].cond = Cond::Every { a: 1, b: 2 };
+        assert_eq!(diffs(song(c, 0)), on_drums(Differs::Conditions));
+        let mut c = four();
+        c.notes[2].cond = Cond::Pre;
+        assert_eq!(diffs(song(c, 0)), on_drums(Differs::Conditions));
+        let mut c = four();
+        c.program = Some(ClipProgram {
+            program: 4,
+            bank: None,
+        });
+        assert_eq!(diffs(song(c, 0)), on_drums(Differs::Program));
+        // A note on bar 2 held for two bars, over bar 3.
+        let mut c = four();
+        c.notes[1].len = 2 * BAR;
+        assert_eq!(diffs(song(c, 0)), on_drums(Differs::HeldNote));
+        let mut c = four();
+        c.notes[2].join = Join::Tie;
+        assert_eq!(diffs(song(c, 0)), on_drums(Differs::HeldNote), "a tie");
+        let mut p = song(four(), 0);
+        let mut loops = Track::new_loops("loops", 2);
+        loops.slots[2] = Some(Clip::new_loop(0, 4 * BAR));
+        p.tracks[0] = loops;
+        assert_eq!(diffs(p), on_drums(Differs::LoopCell));
+        // At 3/4 speed, a section 2 bars and a tick in is 5,760.75 of the
+        // clip's ticks in: between two of them (and off the bar line).
+        let mut c = four();
+        c.speed = Speed::new(3, 4).unwrap();
+        let mut p = song(c, 0);
+        p.arrangement.placements[1].start = 2 * BAR + 1;
+        p.arrangement.placements[1].length = 6 * BAR - 1;
+        let d = diffs(p);
+        assert!(
+            d.contains(&(Some(0), 2 * BAR + 1, Differs::BetweenTicks)),
+            "{d:?}"
+        );
+        assert!(d.contains(&(None, 0, Differs::OffBar)), "{d:?}");
+        // The whole song: a lead-in and a gap of silence, a tempo point,
+        // the morph's lane.
+        let mut p = song(four(), BAR);
+        p.arrangement
+            .place(Placement::linked(1, 0, 11 * BAR, BAR))
+            .unwrap();
+        p.arrangement.set_tempo(4 * BAR, 100.0, None).unwrap();
+        let rows = [MorphRows { at: 0, a: 0, b: 1 }];
+        p.arrangement
+            .put_morph(&[(0.0, 0.5, Kind::Ramp)], &rows, 0, BAR)
+            .unwrap();
+        assert_eq!(
+            diffs(p),
+            [
+                (None, 0, Differs::Silence { length: BAR }),
+                (None, 0, Differs::Morph),
+                (None, 4 * BAR, Differs::Tempo),
+                (None, 9 * BAR, Differs::Silence { length: 2 * BAR }),
+            ]
+        );
+        // Longer than a follow's most bars.
+        let mut p = project();
+        p.arrangement
+            .place(Placement::linked(0, 0, 0, 1000 * BAR))
+            .unwrap();
+        assert_eq!(diffs(p), [(None, 0, Differs::TooLong)]);
+        // In words.
+        let p = project();
+        let d = Difference::on(1, 8 * BAR, Differs::HeldNote);
+        assert_eq!(
+            d.said(&p, BAR),
+            "bass, bar 9: a note held over the row change is cut there"
+        );
+        let d = Difference::song(0, Differs::Silence { length: 2 * BAR });
+        assert_eq!(d.said(&p, BAR), "bar 1: 2 bars of silence left out");
+    }
+
+    /// Scenes → song carries the scenes' mutes from row to row (a muted
+    /// track gets no block), ends a one-shot's block with its pass, and
+    /// names what it can't carry: a scene's program changes, a clip's
+    /// follow action and a legato clip after another.
+    #[test]
+    fn scenes_to_song_carries_mutes_and_one_shots_and_names_the_rest() {
+        let mut p = project();
+        for r in 2..5 {
+            p.tracks[0].slots[r] = Some(Clip::new("d", BAR));
+            p.tracks[1].slots[r] = Some(Clip::new("b", BAR));
+        }
+        // Row 2 mutes the bass; row 3 leaves the mutes; row 4 unmutes.
+        p.scene_mut(2).unwrap().mutes = Some(0b10);
+        p.scene_mut(4).unwrap().mutes = Some(0);
+        let pc = crate::ClipProgram {
+            program: 3,
+            bank: None,
+        };
+        p.scene_mut(4).unwrap().set_program(0, Some(pc)).unwrap();
+        // A one-shot of one bar in a 4-bar row; a follow; a legato clip
+        // after the drums' row-3 clip.
+        let d = |r: usize, p: &mut Project| p.tracks[0].slots[r].as_mut().unwrap().clone();
+        let mut once = d(2, &mut p);
+        once.once = true;
+        p.tracks[0].slots[2] = Some(once);
+        p.tracks[0].slots[3].as_mut().unwrap().follow = Some(Follow::after(1, FollowAction::Stop));
+        p.tracks[0].slots[4].as_mut().unwrap().legato = true;
+        let done = scenes_to_song(&p, &[(2, 4 * BAR), (3, BAR), (4, BAR)], 0).unwrap();
+        let blocks: Vec<(usize, usize, Tick, Tick)> = done
+            .song
+            .placements
+            .iter()
+            .map(|b| (b.track, b.slot().unwrap(), b.start, b.length))
+            .collect();
+        assert_eq!(
+            blocks,
+            [
+                (0, 2, 0, BAR),
+                (0, 3, 4 * BAR, BAR),
+                (0, 4, 5 * BAR, BAR),
+                (1, 4, 5 * BAR, BAR),
+            ]
+        );
+        let what: Vec<(Option<usize>, Tick, Differs)> = done
+            .differences
+            .iter()
+            .map(|d| (d.track, d.at, d.what))
+            .collect();
+        assert_eq!(
+            what,
+            [
+                (Some(0), 4 * BAR, Differs::ClipFollow),
+                (None, 5 * BAR, Differs::SceneProgram),
+                (Some(0), 5 * BAR, Differs::Legato),
+            ]
+        );
+        // After a one-shot that ended, a legato clip has nothing to take
+        // over.
+        let rows = [(2, 4 * BAR), (4, BAR)];
+        let done = scenes_to_song(&p, &rows, 0).unwrap();
+        assert!(!done.differences.iter().any(|d| d.what == Differs::Legato));
     }
 
     #[test]
