@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-app/src/main.rs rust/mpfree-app/src/power.rs tools/mpc-one/offline-kexec-stick.py tools/mpc-one/hook-install.sh
-checked: 2026-11-19 a6fb29b2
+checked: 2026-11-20 35029e9d
 -->
 
 # Before you start

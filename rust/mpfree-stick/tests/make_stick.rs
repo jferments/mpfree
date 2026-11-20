@@ -215,11 +215,23 @@ fn makes_a_stick_the_hook_takes() {
         .notes
         .iter()
         .any(|n| n.starts_with("download helper: none (no mpfree-fetch")));
+    // Nor a plugin process.
+    assert!(root
+        .lookup("/etc/mpfree-test/mpfree-plughost")
+        .unwrap()
+        .is_none());
+    assert!(made.notes.iter().any(|n| n.starts_with(
+        "plugin process: none (no mpfree-plughost in the programs folder): plugins run in the pad player itself"
+    )));
     // No placeholder is left anywhere.
+    let optional = [
+        "/etc/mpfree-test/mpfree-fetch",
+        "/etc/mpfree-test/mpfree-plughost",
+    ];
     for path in r
         .files
         .keys()
-        .filter(|p| !r.only_with_ssh.contains(p) && *p != "/etc/mpfree-test/mpfree-fetch")
+        .filter(|p| !r.only_with_ssh.contains(p) && !optional.contains(&p.as_str()))
     {
         let text = read(&root, path);
         for v in r.placeholders.values() {
@@ -348,6 +360,79 @@ fn the_download_helper_goes_beside_the_pad_player() {
         .notes
         .iter()
         .any(|n| n.starts_with("download helper: mpfree-fetch (")));
+}
+
+#[test]
+fn the_plugin_process_goes_beside_the_pad_player() {
+    let t = tmp("plughost");
+    let upd = update_file(&t.0);
+    let src = stick::open_update(&upd, &t.0, true, &mut |_| {}).unwrap();
+    // From a programs folder: checked as the download helper is, and only
+    // when it is there.
+    let dir = t.0.join("programs");
+    std::fs::create_dir_all(&dir).unwrap();
+    let progs = programs();
+    for (name, b) in
+        stick::PROGRAM_FILES
+            .iter()
+            .zip([&progs.pad_player, &progs.screen_log, &progs.startup])
+    {
+        std::fs::write(dir.join(name), b).unwrap();
+    }
+    assert!(stick::Programs::from_dir(&dir).unwrap().plughost.is_none());
+    for (bad, why) in [
+        (
+            progs.pad_player.clone(),
+            "not linked dynamically for the MPC's loader (it loads plugins",
+        ),
+        (
+            dynamic_arm_program("GLIBC_2.43"),
+            "built against glibc 2.43, newer than the MPC's 2.39",
+        ),
+        (b"#!/bin/sh\n".to_vec(), "not a program for the MPC"),
+    ] {
+        std::fs::write(dir.join(stick::PLUGHOST_FILE), bad).unwrap();
+        let e = stick::Programs::from_dir(&dir).err().unwrap().to_string();
+        assert!(
+            e.contains(why) && e.contains("mpfree-plughost") && e.contains("cargo zigbuild"),
+            "{e}"
+        );
+    }
+    let mut plughost = dynamic_arm_program("GLIBC_2.34");
+    plughost.extend_from_slice(b"the plugin process");
+    let helper = dynamic_arm_program("GLIBC_2.34");
+    std::fs::write(dir.join(stick::PLUGHOST_FILE), &plughost).unwrap();
+    std::fs::write(dir.join(stick::FETCH_FILE), &helper).unwrap();
+    let progs = stick::Programs::from_dir(&dir).unwrap();
+    assert_eq!(progs.plughost.as_deref(), Some(&plughost[..]));
+    let b = Build {
+        source: &src,
+        programs: &progs,
+        kits: b"k",
+        ssh: None,
+        dev: None,
+        creator: "test",
+        choices: Default::default(),
+    };
+    let out = t.0.join("stick.img");
+    let made = stick::build_image(&b, &out, &mut |_| {}).unwrap();
+    let img = File::open(&out).unwrap();
+    let table = gpt::read(&img).unwrap();
+    let root = part_fs(&img, table.part(1).unwrap());
+    // Beside the pad player, where the app looks for it.
+    assert_eq!(read(&root, "/etc/mpfree-test/mpfree-plughost"), plughost);
+    assert_eq!(read(&root, "/etc/mpfree-test/mpfree-fetch"), helper);
+    let node = root
+        .lookup("/etc/mpfree-test/mpfree-plughost")
+        .unwrap()
+        .unwrap();
+    assert_eq!(node.perm(), 0o755);
+    let note = format!(
+        "plugin process: mpfree-plughost ({} bytes, sha256 {}): each plugin runs in it",
+        plughost.len(),
+        update::hex(&Sha256::digest(&plughost))
+    );
+    assert!(made.notes.contains(&note), "{:?}", made.notes);
 }
 
 #[test]

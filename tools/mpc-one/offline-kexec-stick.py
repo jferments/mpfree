@@ -210,6 +210,17 @@ Optional inputs:
                         --locked --target armv7-unknown-linux-gnueabihf.2.34 \
                         -p mpfree-mpcstore --bin mpfree-fetch
                       Without it the Plugins place installs from zips only
+  --plughost FILE     with --app: mpfree-plughost, the process each plugin
+                      runs in, beside the pad player (/etc/mpfree-test/).
+                      A plugin is a library built against the MPC's own
+                      C library, which the static pad player can't safely
+                      load (device round 2, 20 Nov), so this one is linked
+                      DYNAMICALLY too, like --fetch:
+                      cargo zigbuild --manifest-path rust/Cargo.toml --release \
+                        --locked --target armv7-unknown-linux-gnueabihf.2.34 \
+                        -p mpfree-plughost --bin mpfree-plughost
+                      Without it plugins run in the pad player itself, which
+                      can't run most of them
   --dev-tools DIR     with --app: developer tools for Akai's system, on
                       partition 3 under /mpfree-dev (see above)
   --akai-app          start Akai's app at power-on instead (see above); not
@@ -283,6 +294,10 @@ SCREEN_LOG_MAX = 16 << 20
 # can't open libcurl: mpfree-mpcstore's fetch.rs), so it must not ask for a newer glibc than the MPC's.
 FETCH_PROGRAM = "/etc/mpfree-test/mpfree-fetch"
 FETCH_MAX_GLIBC = (2, 39)
+# --plughost: the process each plugin runs in, beside the pad player, where the app looks for it
+# (mpfree-app's plugins.rs). Dynamic like --fetch: a plugin needs the MPC's own C library, and the static pad
+# player loading one crashed on the MPC (device round 2) and under qemu.
+PLUGHOST_PROGRAM = "/etc/mpfree-test/mpfree-plughost"
 SAFE = re.compile(r"^[A-Za-z0-9@._+/=-]+$")
 SAFE_UNIT = re.compile(r"^[A-Za-z0-9@._\\-]+$")
 
@@ -1563,9 +1578,10 @@ def static_arm_program(path):
     return data
 
 
-def dynamic_arm_program(path, max_glibc=FETCH_MAX_GLIBC):
+def dynamic_arm_program(path, max_glibc=FETCH_MAX_GLIBC, why="it opens libcurl", option="--fetch"):
     """The file's bytes, checked to be a dynamically linked ARM EABI5 hard-float executable for the MPC's loader
-    that asks for no glibc newer than max_glibc."""
+    that asks for no glibc newer than max_glibc. `why` says why it must not be static; `option` names the
+    option whose help shows how to build it."""
     with open(path, "rb") as fh:
         data = fh.read(SCREEN_LOG_MAX + 1)
     problem = None
@@ -1587,12 +1603,12 @@ def dynamic_arm_program(path, max_glibc=FETCH_MAX_GLIBC):
         elif heads is None:
             problem = "its program headers run past the end"
         elif interp != [b"/lib/ld-linux-armhf.so.3"]:
-            problem = "not linked dynamically for the MPC's loader (it must not be static: it opens libcurl)"
+            problem = f"not linked dynamically for the MPC's loader (it must not be static: {why})"
         elif needs and max(needs) > max_glibc:
             problem = (f"built against glibc {'.'.join(map(str, max(needs)))}, newer than the MPC's "
                        f"{'.'.join(map(str, max_glibc))}")
     if problem:
-        raise Stop(f"{path} is {problem}; build it with cargo zigbuild as --fetch's help says")
+        raise Stop(f"{path} is {problem}; build it with cargo zigbuild as {option}'s help says")
     return data
 
 
@@ -1606,6 +1622,19 @@ def fetch_input(args):
     if not os.path.isfile(path):
         raise Stop(f"missing {path}: build mpfree-fetch first")
     return path, dynamic_arm_program(path)
+
+
+def plughost_input(args):
+    """--plughost: (path, bytes) of the plugin process, or (None, None)."""
+    if not args.plughost:
+        return None, None
+    if not args.app:
+        raise Stop("--plughost needs --app: it is the pad player's plugin process")
+    path = os.path.realpath(args.plughost)
+    if not os.path.isfile(path):
+        raise Stop(f"missing {path}: build mpfree-plughost first")
+    return path, dynamic_arm_program(path, why="it loads plugins built for the MPC's C library",
+                                     option="--plughost")
 
 
 def own_kernel_input(args):
@@ -2033,7 +2062,7 @@ def chain_kexec_check(img, scratch):
 
 def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation, splash=(None, None, None),
                  app=None, kits_uuid=None, data_uuid=None, akai_app=False, kexec_files=None, softreboot=None,
-                 app_user=False, chain=False, fetch=None, own_kernel=None):
+                 app_user=False, chain=False, fetch=None, own_kernel=None, plughost=None):
     """Change the copy with debugfs -w, then read every change back. Returns the root-account note.
 
     With `app` (the pad player's bytes), `kits_uuid` (partition 3) and `data_uuid` (partition 4), the
@@ -2051,6 +2080,7 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
     is installed, listed in SOFTREBOOT_DIR's SHA256SUMS with KEXEC_DIR's files, and Akai's KEXEC_PROGRAM is
     left in place (not stubbed). Without it, nothing here differs from a build before --chain.
     With `fetch` (only with `app`), FETCH_PROGRAM is the Plugins place's download helper.
+    With `plughost` (only with `app`), PLUGHOST_PROGRAM is the process each plugin runs in.
     With `own_kernel` (only with `chain`; own_kernel_input's dict), KEXEC_DIR/zImage is MPFree's own kernel (a
     file, not the link to the image's), its modules go under OWN_MODULES_DIR, OWN_BUILD_INFO says which kernel
     it is and OWN_MODPROBE keeps udev from loading the eMMC and SD card modules. Without it, nothing here
@@ -2059,6 +2089,8 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
         raise Stop("--app-user needs --app: it changes who the pad player runs as")
     if fetch is not None and app is None:
         raise Stop("--fetch needs --app: it is the pad player's download helper")
+    if plughost is not None and app is None:
+        raise Stop("--plughost needs --app: it is the pad player's plugin process")
     if chain and not (kexec_files and softreboot and softreboot[2]):
         raise Stop("--chain needs the kexec-file route and the stick's own kernel and device tree")
     if own_kernel and not chain:
@@ -2088,6 +2120,7 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
         raise Stop(f"the image has no folder {OWN_MODULES_DIR} for our kernel's modules")
     splash_program, font_name, font = splash
     extra = len(splash_program or b"") + len(font or b"") + len(app or b"") + len(fetch or b"") + \
+        len(plughost or b"") + \
         (own_kernel_bytes(own_kernel) if own_kernel else 0)
     free_bytes, free_inodes = img.free()
     if free_bytes < len(screen_log) + extra + (4 << 20) or \
@@ -2168,6 +2201,8 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
             APP_UNIT.format(after=" mpfree-test-splash.service" if splash_program else ""), 0o644)
     if fetch is not None:
         add(FETCH_PROGRAM, fetch, 0o755)
+    if plughost is not None:
+        add(PLUGHOST_PROGRAM, plughost, 0o755)
     if app is not None:
         add(POWER_FILES[0], POWER_SCRIPT.format(request=POWER_REQUEST), 0o755)
         add(POWER_FILES[1], POWER_PATH_UNIT.format(request=POWER_REQUEST), 0o644)
@@ -2412,6 +2447,9 @@ def main(argv):
     ap.add_argument("--fetch", metavar="FILE",
                     help="with --app: mpfree-fetch, the Plugins place's download helper (dynamic ARM, glibc 2.39 "
                          "or older; see above), beside the pad player")
+    ap.add_argument("--plughost", metavar="FILE",
+                    help="with --app: mpfree-plughost, the process each plugin runs in (dynamic ARM, glibc 2.39 "
+                         "or older; see above), beside the pad player")
     ap.add_argument("--dev-tools", metavar="DIR",
                     help="with --app: a folder of developer tools for Akai's system, copied to partition 3 under "
                          "/mpfree-dev (see above)")
@@ -2460,6 +2498,7 @@ def main(argv):
     splash = splash_inputs(args)
     app_path, app, kits_path, kits = app_inputs(args, work)
     fetch_path, fetch = fetch_input(args)
+    plughost_path, plughost = plughost_input(args)
     dev = dev_tools_input(args)
     own = own_kernel_input(args)
 
@@ -2647,12 +2686,20 @@ def main(argv):
                                                                   screen_log, rotation, splash, app, kits_uuid,
                                                                   data_uuid, args.akai_app, kexec_files,
                                                                   (release, args.preload_module, kexec_file_cmdline),
-                                                                  args.app_user, args.chain, fetch, own)
+                                                                  args.app_user, args.chain, fetch, own,
+                                                                  plughost)
         if fetch:
             OUT.say(f"download helper: {fetch_path} ({len(fetch)} bytes, sha256 {hashlib.sha256(fetch).hexdigest()}, "
                     f"dynamic ARM EABI5 hard-float), at {FETCH_PROGRAM}: the Plugins place downloads through it")
         elif app:
             OUT.say("download helper: none (no --fetch): the Plugins place installs from zips on the stick only")
+        if plughost:
+            OUT.say(f"plugin process: {plughost_path} ({len(plughost)} bytes, sha256 "
+                    f"{hashlib.sha256(plughost).hexdigest()}, dynamic ARM EABI5 hard-float), at {PLUGHOST_PROGRAM}: "
+                    "each plugin runs in it")
+        elif app:
+            OUT.say("plugin process: none (no --plughost): plugins run in the pad player itself, which can't run "
+                    "most of them")
         if args.app_user:
             OUT.say(f"  {APP_USER} is in the groups: {' '.join(app_user_groups(img, scratch))}"
                     + ("" if "systemd-journal" in app_user_groups(img, scratch) else

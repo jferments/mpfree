@@ -11,7 +11,7 @@ MPC OS 3.10.1 loads third-party instruments and effects: Linux shared libraries 
 
 MPFree never bundles these plugins. People pick the ones they want: BROWSE's Plugins place downloads and installs them from the catalog, or from zips copied to the stick ([Installing MPC plugins](mpc-plugin-store.md)), or they copy folders to `files/plugins/` by hand (Jay, 15 Nov). Hosting a binary the user installed puts no licence duty on MPFree.
 
-On the MPC, the device round's `mpc-plugin` check plays [SYN] Mono Voice ([device checks](../hardware/device-checks.md)); `tools/mpc-one/stick-plugin.py add mono-voice` puts the pinned release on the stick for it.
+On the MPC, the device round's `mpc-plugin` check plays [SYN] Mono Voice ([device checks](../hardware/device-checks.md)); `tools/mpc-one/stick-plugin.py add mono-voice` puts the pinned release on the stick for it. In device round 2 (19 Nov) it never played: the static pad player, serving as its own plugin process, crashed loading it at every start. The stick now carries a dynamically linked `mpfree-plughost` for that ([plugins](plugins.md#in-the-app)).
 
 ## Finding plugins
 
@@ -50,7 +50,7 @@ What the host answers a plugin: version 2400, sample rate, block size, the time 
 
 - [`mpfree-mpchost-testplug`](../../../rust/mpfree-mpchost-testplug) is one `.so` that is MPFree's Delay or Squelch made into an MPC plugin by `mpfree-mpcplug`, picked by the name of the folder it is loaded from (it asks the host for its folder while it is being made). [`tests/host.rs`](../../../rust/mpfree-mpchost/tests/host.rs) loads it in-process: an effect and an instrument sound the same as the engine run in-process, sample for sample; state and programs cross instances; the audio thread never allocates.
 - [`mpfree-plughost/tests/mpc.rs`](../../../rust/mpfree-plughost/tests/mpc.rs) does the same through a real plugin process from catalog-style folders, checks the rack finds `VST2 Plugins/` and release folders, and refuses a folder holding a different plugin.
-- **Real catalog plugins.** [`tools/mpc-plugins/catalog-check.sh`](../../../tools/mpc-plugins/catalog-check.sh) downloads the releases pinned in [`catalog-check.txt`](../../../tools/mpc-plugins/catalog-check.txt) (checked against their SHA-256, cached, never committed), builds `mpfree-plughost` and `rack_check` for ARMv7 and runs them under qemu-arm. Each plugin must play two seconds, give finite sound, and hand its state to a second copy. The five are all MIT: Density2 and Tidal Verb (effects), [SYN] Mono Voice, [SYN] Modal Voice and Dub Force Siren (instruments). All pass (15 Nov). CI runs this on every pull request; it takes about a minute.
+- **Real catalog plugins.** [`tools/mpc-plugins/catalog-check.sh`](../../../tools/mpc-plugins/catalog-check.sh) downloads the releases pinned in [`catalog-check.txt`](../../../tools/mpc-plugins/catalog-check.txt) (checked against their SHA-256, cached, never committed), builds `mpfree-plughost` and `rack_check` for ARMv7 and runs them under qemu-arm. Each plugin must play two seconds, give finite sound, and hand its state to a second copy. The five are all MIT: Density2 and Tidal Verb (effects), [SYN] Mono Voice, [SYN] Modal Voice and Dub Force Siren (instruments). All pass (15 Nov). CI runs this on every pull request; it takes about a minute. Its `mpfree-plughost` is linked dynamically, as on the stick since 20 Nov; the static app serving as the plugin process fails three of the five there ([plugins](plugins.md#in-the-app)).
 
 ## What the catalog needs
 
