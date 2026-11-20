@@ -11,22 +11,38 @@
 //! so something that named an old instrument can't reach a new one by
 //! mistake.
 //!
-//! Step 2a: the list holds one instrument, the shared synth (the pads'
-//! synth, which tracks on the Synth kit play), as instrument 1 in every
-//! project. Its sound stays in the synth part: the list says what an
-//! instrument is, not how it sounds now or whether it is playing (the
-//! shared synth's running engine is `synth::Synth`, in the audio loop).
-//! The tracks' own instruments join the list in step 2b, and tracks get
-//! lasting ids in step 2c.
+//! - **Step 2a:** the shared synth (the pads' synth, which tracks on the
+//!   Synth kit play) is instrument 1 in every project. Its sound stays in
+//!   the synth part.
+//! - **Step 2b:** each track's own instrument (`instruments.rs`) has an id
+//!   too, from the moment it goes into a track that had none until it is
+//!   taken out. A new sound or preset loaded into it keeps the id; taken
+//!   out, its id is never given again. Its sound stays in the instruments
+//!   part, which still names it by its track: a track has one at most, so
+//!   the list says which id is which track's ([`Kind::Own`]).
+//! - Step 2c gives tracks lasting ids.
 //!
-//! A list is made and read on the screen thread (`project::opening`),
-//! moved into the audio loop whole as a project opens, and the loop's old
-//! one goes back to be freed there: the loop never makes or frees one.
+//! The list says what an instrument is, not how it sounds now or whether
+//! it is playing: the running engines are `synth::Synth` and the track
+//! host's slots, in the audio loop.
+//!
+//! **Threads.** A list is made and read on the screen thread
+//! (`project::opening`), moved into the audio loop whole as a project
+//! opens, and the loop's old one goes back to be freed there. Its storage
+//! is fixed (an id for each track), so the loop gives and takes ids
+//! ([`InstrumentList::follow`]) without allocating; only its text, for a
+//! save, allocates, as every part's does.
 
 use std::fmt;
 
 /// The instrument list part's first line.
 pub const FORMAT: &str = "mpfree-instrument-list 1";
+
+/// The tracks that can have their own instrument.
+pub const TRACKS: usize = crate::instruments::TRACKS;
+
+// A bit for each track in `follow`.
+const _: () = assert!(TRACKS <= u128::BITS as usize);
 
 /// An instrument's lasting number in its project, from 1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -54,32 +70,17 @@ pub enum Kind {
     /// The pads' synth, whichever engine the Synth tab plays. Its sound is
     /// the project's synth part, and it sounds on the Synth strip.
     SharedSynth,
-}
-
-impl Kind {
-    fn word(self) -> &'static str {
-        match self {
-            Kind::SharedSynth => "shared-synth",
-        }
-    }
-
-    fn from_word(w: &str) -> Option<Kind> {
-        [Kind::SharedSynth].into_iter().find(|k| k.word() == w)
-    }
-}
-
-/// One instrument of the list: its id and what it is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Listed {
-    id: InstrumentId,
-    kind: Kind,
+    /// Track `track`'s own instrument (from 0): its sound is that track's
+    /// block of the instruments part, and it sounds on the track's channel.
+    Own { track: usize },
 }
 
 /// The project's instruments, each with its lasting id, and the number
-/// the next one will get.
+/// the next one will get. The shared synth is always instrument 1.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstrumentList {
-    listed: Vec<Listed>,
+    /// Track `t`'s own instrument's id (0: it has none).
+    own: [u32; TRACKS],
     /// The id the next instrument gets: past every id the project ever
     /// gave, so none is given twice.
     next: u32,
@@ -93,83 +94,146 @@ impl Default for InstrumentList {
 
 impl InstrumentList {
     /// A new project's list, and an old project's (saved before
-    /// instruments had ids): the shared synth as instrument 1.
+    /// instruments had ids) before its tracks' own instruments get theirs:
+    /// the shared synth as instrument 1.
     pub fn new() -> InstrumentList {
         InstrumentList {
-            listed: vec![Listed {
-                id: InstrumentId::SHARED_SYNTH,
-                kind: Kind::SharedSynth,
-            }],
+            own: [0; TRACKS],
             next: 2,
         }
     }
 
     /// What instrument `id` is, or None if the list hasn't got it.
     pub fn kind(&self, id: InstrumentId) -> Option<Kind> {
-        self.listed.iter().find(|l| l.id == id).map(|l| l.kind)
+        if id == InstrumentId::SHARED_SYNTH {
+            return Some(Kind::SharedSynth);
+        }
+        let track = self.own.iter().position(|&o| o == id.0)?;
+        Some(Kind::Own { track })
     }
 
-    /// The list as its part's text:
+    /// The id of track `track`'s own instrument, if it has one.
+    pub fn own_of(&self, track: usize) -> Option<InstrumentId> {
+        self.own
+            .get(track)
+            .and_then(|&o| InstrumentId::from_number(o))
+    }
+
+    /// The tracks with an own instrument now (`held`, a bit each:
+    /// `Instruments::held_tracks`): one that has just got its first gets
+    /// the next id, one whose instrument was taken out loses its id for
+    /// good, and one that still has one keeps its id, whatever sound went
+    /// into it. True if any changed. Never allocates.
+    pub fn follow(&mut self, held: u128) -> bool {
+        let mut changed = false;
+        for (t, o) in self.own.iter_mut().enumerate() {
+            match (held >> t & 1 == 1, *o) {
+                (true, 0) => {
+                    *o = self.next;
+                    self.next = self.next.saturating_add(1);
+                    changed = true;
+                }
+                (false, id) if id != 0 => {
+                    *o = 0;
+                    changed = true;
+                }
+                _ => {}
+            }
+        }
+        changed
+    }
+
+    /// The list as its part's text, by id:
     ///
     /// ```text
     /// mpfree-instrument-list 1
-    /// next 2
+    /// next 4
     /// instrument 1 shared-synth
+    /// instrument 2 own track 3
+    /// instrument 3 own track 5
     /// ```
+    ///
+    /// Tracks are numbered from 1, as the screen shows them.
     pub fn text(&self) -> String {
         use std::fmt::Write as _;
-        let mut s = format!("{FORMAT}\nnext {}\n", self.next);
-        for l in &self.listed {
-            let _ = writeln!(s, "instrument {} {}", l.id, l.kind.word());
+        let mut s = format!(
+            "{FORMAT}\nnext {}\ninstrument {} shared-synth\n",
+            self.next,
+            InstrumentId::SHARED_SYNTH
+        );
+        let mut own: Vec<(u32, usize)> = (0..TRACKS)
+            .filter(|&t| self.own[t] != 0)
+            .map(|t| (self.own[t], t))
+            .collect();
+        own.sort_unstable();
+        for (id, t) in own {
+            let _ = writeln!(s, "instrument {id} own track {}", t + 1);
         }
         s
     }
 
     /// Reads a list part ([`InstrumentList::text`]). Refuses a part with
-    /// a line it can't read, an id given twice or not below `next`, or
-    /// without the shared synth as instrument 1 (the opener then says so
-    /// and gives the new project's list).
+    /// a line it can't read, an id or a track given twice, an id not below
+    /// `next`, or without the shared synth as instrument 1 (the opener
+    /// then says so and gives the new project's list).
     pub fn parse(text: &str) -> Result<InstrumentList, String> {
         let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
         if lines.next() != Some(FORMAT) {
             return Err(format!("not a {FORMAT} part"));
         }
-        let (mut listed, mut next) = (Vec::<Listed>::new(), None);
+        let mut list = InstrumentList::new();
+        let (mut next, mut synth, mut ids) = (None, false, Vec::new());
         for line in lines {
             let w: Vec<&str> = line.split_whitespace().collect();
-            match w.as_slice() {
+            let id = |n: &str| n.parse().ok().and_then(InstrumentId::from_number);
+            let track = |n: &str| {
+                n.parse::<usize>()
+                    .ok()
+                    .filter(|&n| (1..=TRACKS).contains(&n))
+            };
+            let id = match w.as_slice() {
                 ["next", n] if next.is_none() => match n.parse::<u32>() {
-                    Ok(n) if n >= 2 => next = Some(n),
-                    _ => return Err(format!("can't read \"{line}\"")),
-                },
-                ["instrument", n, kind] => {
-                    let id = n.parse().ok().and_then(InstrumentId::from_number);
-                    let (Some(id), Some(kind)) = (id, Kind::from_word(kind)) else {
-                        return Err(format!("can't read \"{line}\""));
-                    };
-                    if listed.iter().any(|l| l.id == id) {
-                        return Err(format!("instrument {id} is listed twice"));
+                    Ok(n) if n >= 2 => {
+                        next = Some(n);
+                        continue;
                     }
-                    listed.push(Listed { id, kind });
+                    _ => None,
+                },
+                ["instrument", n, "shared-synth"] if !synth => {
+                    synth = true;
+                    id(n).filter(|&i| i == InstrumentId::SHARED_SYNTH)
                 }
-                _ => return Err(format!("can't read \"{line}\"")),
+                ["instrument", n, "own", "track", t] => match (id(n), track(t)) {
+                    (Some(i), Some(t)) if i != InstrumentId::SHARED_SYNTH => {
+                        if list.own[t - 1] != 0 {
+                            return Err(format!("track {t} has two instruments of its own"));
+                        }
+                        list.own[t - 1] = i.0;
+                        Some(i)
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+            let Some(id) = id else {
+                return Err(format!("can't read \"{line}\""));
+            };
+            if ids.contains(&id) {
+                return Err(format!("instrument {id} is listed twice"));
             }
+            ids.push(id);
         }
         let Some(next) = next else {
             return Err("no \"next\" line".to_string());
         };
-        if let Some(l) = listed.iter().find(|l| l.id.0 >= next) {
-            return Err(format!("instrument {} isn't below next ({next})", l.id));
-        }
-        let synths: Vec<InstrumentId> = listed
-            .iter()
-            .filter(|l| l.kind == Kind::SharedSynth)
-            .map(|l| l.id)
-            .collect();
-        if synths != [InstrumentId::SHARED_SYNTH] {
+        if !synth {
             return Err("the shared synth isn't instrument 1".to_string());
         }
-        Ok(InstrumentList { listed, next })
+        if let Some(id) = ids.iter().find(|i| i.0 >= next) {
+            return Err(format!("instrument {id} isn't below next ({next})"));
+        }
+        list.next = next;
+        Ok(list)
     }
 }
 
@@ -184,6 +248,7 @@ mod tests {
         let l = InstrumentList::new();
         assert_eq!(l.kind(InstrumentId::SHARED_SYNTH), Some(Kind::SharedSynth));
         assert_eq!(l.kind(InstrumentId(2)), None);
+        assert_eq!(l.own_of(0), None);
         assert_eq!(
             l.text(),
             "mpfree-instrument-list 1\nnext 2\ninstrument 1 shared-synth\n"
@@ -196,36 +261,84 @@ mod tests {
         );
     }
 
+    /// Step 2b: a track's own instrument gets the next id when it goes
+    /// into a track that had none, keeps it while the track has one (a new
+    /// sound in its place is the same instrument), and loses it for good
+    /// when taken out: a new one gets a new id, never an old one.
+    #[test]
+    fn a_tracks_own_instrument_keeps_its_id_and_ids_are_never_given_twice() {
+        let mut l = InstrumentList::new();
+        assert!(!l.follow(0));
+        assert!(l.follow(1 << 2 | 1 << 4));
+        assert_eq!(
+            (l.own_of(2), l.own_of(4)),
+            (Some(InstrumentId(2)), Some(InstrumentId(3)))
+        );
+        assert_eq!(l.kind(InstrumentId(3)), Some(Kind::Own { track: 4 }));
+        assert!(
+            !l.follow(1 << 2 | 1 << 4),
+            "the same tracks: nothing changes"
+        );
+        assert!(l.follow(1 << 4), "track 3's taken out");
+        assert_eq!((l.own_of(2), l.kind(InstrumentId(2))), (None, None));
+        assert!(l.follow(1 << 2 | 1 << 4), "and a new one put in");
+        assert_eq!(l.own_of(2), Some(InstrumentId(4)), "a new id, not 2 again");
+        assert_eq!(l.own_of(4), Some(InstrumentId(3)));
+        assert!(l.follow(1 << 2 | 1 << 4 | 1 << 127));
+        assert_eq!(l.own_of(127), Some(InstrumentId(5)));
+        assert_eq!(
+            l.text(),
+            "mpfree-instrument-list 1\nnext 6\ninstrument 1 shared-synth\n\
+             instrument 3 own track 5\ninstrument 4 own track 3\ninstrument 5 own track 128\n"
+        );
+        assert_eq!(InstrumentList::parse(&l.text()), Ok(l));
+    }
+
     /// The counter is kept: a list whose project once gave out higher ids
     /// comes back with the same next number, so none is given twice.
     #[test]
     fn the_next_id_is_kept_through_the_text() {
         let text = "mpfree-instrument-list 1\nnext 7\ninstrument 1 shared-synth\n";
-        let l = InstrumentList::parse(text).expect("reads");
-        assert_eq!(l.next, 7);
+        let mut l = InstrumentList::parse(text).expect("reads");
         assert_eq!(l.text(), text);
+        assert!(l.follow(1));
+        assert_eq!(l.own_of(0), Some(InstrumentId(7)));
     }
 
     /// A part that doesn't hold together is refused, with why.
     #[test]
     fn a_list_that_does_not_hold_together_is_refused() {
         let refused = |body: &str| InstrumentList::parse(&format!("{FORMAT}\n{body}")).unwrap_err();
+        let synth = "instrument 1 shared-synth\n";
         assert!(InstrumentList::parse("mpfree-instrument-list 2\nnext 2\n").is_err());
-        assert!(refused("instrument 1 shared-synth\n").contains("next"));
-        assert!(refused("next 2\nnext 3\ninstrument 1 shared-synth\n").contains("can't read"));
-        assert!(refused("next 1\ninstrument 1 shared-synth\n").contains("can't read"));
+        assert!(refused(synth).contains("next"));
+        assert!(refused(&format!("next 2\nnext 3\n{synth}")).contains("can't read"));
+        assert!(refused(&format!("next 1\n{synth}")).contains("can't read"));
         assert!(refused("next 3\n").contains("shared synth"));
-        assert!(refused("next 3\ninstrument 2 shared-synth\n").contains("shared synth"));
+        assert!(refused("next 3\ninstrument 2 shared-synth\n").contains("can't read"));
         assert!(refused("next 2\ninstrument 0 shared-synth\n").contains("can't read"));
         assert!(refused("next 2\ninstrument 1 kazoo\n").contains("can't read"));
+        assert!(refused(&format!("next 3\n{synth}{synth}")).contains("can't read"));
         assert!(
-            refused("next 3\ninstrument 1 shared-synth\ninstrument 1 shared-synth\n")
-                .contains("twice")
+            refused(&format!("next 2\n{synth}instrument 2 own track 1\n")).contains("below next")
         );
         assert!(
-            refused("next 2\ninstrument 1 shared-synth\ninstrument 2 shared-synth\n")
-                .contains("below next")
+            refused(&format!("next 9\n{synth}instrument 1 own track 1\n")).contains("can't read")
         );
-        assert!(refused("next 2\ninstrument 1 shared-synth\nhello\n").contains("can't read"));
+        assert!(
+            refused(&format!("next 9\n{synth}instrument 2 own track 0\n")).contains("can't read")
+        );
+        assert!(
+            refused(&format!("next 9\n{synth}instrument 2 own track 129\n")).contains("can't read")
+        );
+        assert!(refused(&format!(
+            "next 9\n{synth}instrument 2 own track 3\ninstrument 3 own track 3\n"
+        ))
+        .contains("two instruments"));
+        assert!(refused(&format!(
+            "next 9\n{synth}instrument 2 own track 3\ninstrument 2 own track 4\n"
+        ))
+        .contains("twice"));
+        assert!(refused(&format!("next 2\n{synth}hello\n")).contains("can't read"));
     }
 }

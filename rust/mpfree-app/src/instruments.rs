@@ -272,6 +272,17 @@ impl Instruments {
             .is_some_and(|h| h.id != crate::synth::Engine::Drums.node_id())
     }
 
+    /// The tracks that play their own instrument, one bit each (not one
+    /// only ringing out an old one): what the project's list of
+    /// instruments follows (`InstrumentList::follow`). Never allocates.
+    pub fn held_tracks(&self) -> u128 {
+        self.slot_of
+            .iter()
+            .enumerate()
+            .filter(|&(_, &s)| s != NO_SLOT)
+            .fold(0, |bits, (t, _)| bits | 1 << t)
+    }
+
     /// How many tracks play their own instrument.
     pub fn count(&self) -> usize {
         self.slot_of.iter().filter(|&&s| s != NO_SLOT).count()
@@ -1142,6 +1153,36 @@ mod tests {
         assert_eq!(put(&mut i, TRACKS), Err(Refused::NoTrack));
     }
 
+    /// The project's list of instruments follows the tracks' own (step 2b
+    /// of the instrument redesign): a track's instrument keeps its id
+    /// through a new sound in its place, and one taken out and put in
+    /// again is a new instrument with a new id.
+    #[test]
+    fn the_list_of_instruments_follows_the_tracks_own() {
+        use crate::instrument_list::{InstrumentId, InstrumentList};
+        let mut i = Instruments::new(RATE, BLOCK);
+        let mut list = InstrumentList::new();
+        put(&mut i, 3).unwrap();
+        put(&mut i, 9).unwrap();
+        assert_eq!(i.held_tracks(), 1 << 3 | 1 << 9);
+        assert!(list.follow(i.held_tracks()));
+        let (three, nine) = (list.own_of(3), list.own_of(9));
+        assert_eq!(
+            (three, nine),
+            (InstrumentId::from_number(2), InstrumentId::from_number(3))
+        );
+        put(&mut i, 3).unwrap();
+        assert!(!list.follow(i.held_tracks()), "a new sound in its place");
+        assert_eq!(list.own_of(3), three);
+        assert!(i.take_out(3));
+        assert!(list.follow(i.held_tracks()));
+        assert_eq!(list.own_of(3), None);
+        put(&mut i, 3).unwrap();
+        assert!(list.follow(i.held_tracks()));
+        assert_eq!(list.own_of(3), InstrumentId::from_number(4));
+        assert_eq!(list.own_of(9), nine);
+    }
+
     #[test]
     fn sixteen_tracks_at_once_have_their_own_and_a_track_set_to_the_kit_frees_a_place() {
         let mut i = Instruments::new(RATE, BLOCK);
@@ -1183,6 +1224,8 @@ mod tests {
             0,
             "its channel shows while it rings out"
         );
+        assert_eq!(i.held_tracks() & 1 << freed, 0, "but it holds none");
+        assert_eq!(i.held_tracks().count_ones() as usize, i.count());
         let mut t = tracks();
         i.render(&Ctx::new(RATE, 0), BLOCK, &mut t);
         assert_eq!(level(&t, i.channel(next)), 0.5);
