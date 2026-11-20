@@ -163,6 +163,27 @@ impl PeakPyramid {
         self.frames
     }
 
+    /// Frames in each block of level `level` (0 is the finest, 64 frames;
+    /// each level is 4 times coarser, up to [`LEVELS`] - 1).
+    pub fn block_frames(level: usize) -> usize {
+        BASE_BLOCK * FACTOR.pow(level.min(LEVELS - 1) as u32)
+    }
+
+    /// Blocks at level `level` (the last may be short).
+    pub fn blocks(&self, level: usize) -> usize {
+        self.levels[level.min(LEVELS - 1)].len() / self.channels
+    }
+
+    /// The RMS of block `block` of level `level` on channel `ch`: of the
+    /// [`PeakPyramid::block_frames`] frames from `block` times that, to
+    /// the summary's 16-bit rounding. 0 past the end. Reads one value.
+    pub fn rms(&self, level: usize, block: usize, ch: usize) -> f32 {
+        let cells = &self.levels[level.min(LEVELS - 1)];
+        cells
+            .get(block * self.channels + ch.min(self.channels - 1))
+            .map_or(0.0, |c| uq(c.rms))
+    }
+
     /// Bytes held in memory by the summary.
     pub fn memory_bytes(&self) -> usize {
         self.levels
@@ -448,6 +469,36 @@ mod tests {
             "{}",
             out[0].rms
         );
+    }
+
+    /// Each block's loudness on each side, at every level: what the
+    /// sampler's grain start searches ([`PeakPyramid::rms`]).
+    #[test]
+    fn a_blocks_rms_is_its_frames_rms_at_every_level() {
+        // Left a half-scale square wave, right silent but for frames
+        // 4096 to 8191 at a quarter.
+        let frames = 20_000;
+        let mut d = Vec::with_capacity(frames * 2);
+        for i in 0..frames {
+            d.push(if (i / 7) % 2 == 0 { 0.5 } else { -0.5 });
+            d.push(if (4096..8192).contains(&i) { 0.25 } else { 0.0 });
+        }
+        let p = PeakPyramid::build(&d, 2).unwrap();
+        let tol = 1.0 / 32767.0 + 1e-6;
+        for level in 0..LEVELS {
+            let n = PeakPyramid::block_frames(level);
+            assert_eq!(n, 64 << (2 * level));
+            assert_eq!(p.blocks(level), frames.div_ceil(n));
+            assert!((p.rms(level, 0, 0) - 0.5).abs() < tol, "level {level}");
+            // A block wholly inside the right side's quarter, and one wholly before it.
+            assert!(
+                (p.rms(level, 4096 / n, 1) - 0.25).abs() < tol,
+                "level {level}"
+            );
+            assert_eq!(p.rms(level, 4096 / n - 1, 1), 0.0, "level {level}");
+            // Past the end: nothing.
+            assert_eq!(p.rms(level, p.blocks(level), 0), 0.0);
+        }
     }
 
     #[test]
