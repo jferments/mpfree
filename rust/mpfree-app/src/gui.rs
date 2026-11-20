@@ -468,7 +468,7 @@ fn now_utc() -> u64 {
 }
 
 const OPTIONS_HINT: &str =
-    "Wheel or tap: pick a row   ·   push the wheel, - / + or the arrows: change it   ·   MENU: close";
+    "Wheel or tap: pick a row   ·   push the wheel, - / + or the arrows: change it   ·   Back or MENU: close";
 /// A menu row the wheel's push opened.
 /// The wheel on a page with rows (`app::RowKey`), for the hint lines.
 const ROWS_HINT: &str = "Wheel: pick a row   ·   - / +, or push the wheel and turn: change it";
@@ -479,7 +479,7 @@ const HELD_TOLD: &str = " · the wheel turns it while you hold";
 use mpfree_ui::WHEEL_FINGER;
 /// What the wheel does on the pages with its outline ([`outlined`]).
 const WHEEL_HINT: &str = "Wheel: control to control   ·   push: press it";
-const OPTIONS_EDIT_HINT: &str = "Wheel: change it   ·   push the wheel: set it   ·   - / + or the arrows: change it   ·   MENU: close";
+const OPTIONS_EDIT_HINT: &str = "Wheel: change it   ·   push the wheel: set it   ·   - / + or the arrows: change it   ·   Back or MENU: close";
 const GUIDE_HINT: &str = "STOP: skip this button   ·   The pads still play while the guide is open";
 const LOADING_HINT: &str = "Tap the screen for the console";
 
@@ -1166,6 +1166,9 @@ pub enum ToUi {
     SynthWheel(i32),
     /// On the Synth page: the next or previous page.
     SynthPage(i32),
+    /// The pads play the shared synth while the armed track keeps its kit
+    /// (true), or its instrument again (app/pads_preview.rs).
+    PadsPreview(bool),
     /// The kits' sampler projects, for the Sample tab (once, after
     /// loading), and the rate to build their engine views for.
     SampleKits {
@@ -1444,6 +1447,11 @@ pub enum FromUi {
     /// opens over the page for the preset picker (true), or goes back to
     /// the page once the picker closes (false) (presets.rs).
     PresetPicker(bool),
+    /// The Synth tab's gear: its options, as MENU opens them; on the
+    /// options, their Back button: back to the page.
+    OptionsButton,
+    /// The Synth tab's Play on the pads button (app/pads_preview.rs).
+    PlayOnPads,
     /// The preset picker on the Synth tab's sound: try, load, put back or
     /// save a preset (presets.rs).
     Preset(crate::presets::Ask),
@@ -1899,6 +1907,9 @@ pub struct Player {
     /// timed step there is none, so the step's own lines go there.
     console_from_lines: bool,
     console_backlog: VecDeque<String>,
+    /// The pads play the shared synth while the armed track keeps its
+    /// kit (Play on the pads).
+    pads_preview: bool,
     /// The Synth page, once the synth's state has come.
     synth: Option<SynthPanel>,
     /// The Sample page and the kits' projects it edits (the Pads tab's
@@ -2237,7 +2248,10 @@ impl Player {
         ui.add("midi", LogPanel::new("MIDI in and out", true, 300));
         ui.add("events", LogPanel::new("Events", false, 200));
         ui.add("syslog", LogPanel::new("Console", true, CONSOLE_BACKLOG));
-        ui.add("options", OptionList::new("Options"));
+        // ‹ Back on the title line: what MENU does (Jay's device notes, 20 Nov).
+        let mut options = OptionList::new("Options");
+        options.back = Some("Back".to_string());
+        ui.add("options", options);
         ui.add("help", Card::new("About this setting"));
         ui.add(NUMPAD, mpfree_ui::numpad::NumPad::default());
         ui.add(TEXTPAD, mpfree_ui::textpad::TextPad::default());
@@ -2447,6 +2461,7 @@ impl Player {
             console_from_lines: timed,
             console_backlog: VecDeque::new(),
             touch_page: None,
+            pads_preview: false,
             synth: None,
             sample,
             browser: None,
@@ -3293,10 +3308,15 @@ impl Player {
                 bar = PadsBar {
                     title: format!("Pads · Bank {}", crate::app::bank_letter(s.bank)),
                     synth: switch(Some(s)),
+                    play: None,
+                    playing: false,
                 };
             }
         }
         if let Some(b) = self.ui.get::<PadsBar>(play_page::SYNTH_PADS_HEAD) {
+            // Play on the pads is refresh_synth_button's.
+            bar.play = b.play.clone();
+            bar.playing = b.playing;
             if *b != bar {
                 if let Some(b) = self.ui.get_mut::<PadsBar>(play_page::SYNTH_PADS_HEAD) {
                     *b = bar;
@@ -3328,6 +3348,56 @@ impl Player {
             }
             self.play.pads = pads;
             self.refresh_play();
+        }
+        self.refresh_synth_button();
+    }
+
+    /// While the selected track's instrument is a kit, so the pads don't
+    /// play the synth the Synth tab shows (app/pads_preview.rs): the track
+    /// and the synth's name.
+    fn synth_tab_on_kit(&self) -> Option<(usize, &'static str)> {
+        let track = self.time.armed.unwrap_or(0);
+        let state = &self.synth.as_ref()?.state;
+        // The tab shows the selected track's own instrument (named for its
+        // track, main.rs's synth_tab) or the shared synth ("Pads").
+        let own =
+            self.track_sounds.get(track).copied().flatten().is_some() || state.track != "Pads";
+        let synth_kit = self.kits.get(self.kit).is_some_and(|k| k.synth.is_some());
+        (!own && !synth_kit).then_some((track, state.info.name))
+    }
+
+    /// The Synth tab's Play on the pads button, under the instrument card:
+    /// shown while the selected track's instrument is a kit; while the
+    /// synth is on the pads it gives them back to the track's kit.
+    fn refresh_synth_button(&mut self) {
+        let on_kit = self.synth_tab_on_kit();
+        let playing = self.pads_preview && on_kit.is_some();
+        let play = on_kit.map(|(track, name)| {
+            if playing {
+                (
+                    format!("Back to Track {}'s kit", track + 1),
+                    format!("The pads play {name} now"),
+                )
+            } else {
+                (
+                    format!("Play {name} on the pads"),
+                    format!("Track {} keeps its kit", track + 1),
+                )
+            }
+        });
+        let changed = self
+            .ui
+            .get::<PadsBar>(play_page::SYNTH_PADS_HEAD)
+            .is_some_and(|b| b.play != play || b.playing != playing);
+        if changed {
+            if let Some(b) = self.ui.get_mut::<PadsBar>(play_page::SYNTH_PADS_HEAD) {
+                b.play = play;
+                b.playing = playing;
+            }
+            // The hint line says what the pads play.
+            if self.view == View::Synth {
+                self.refresh_hint();
+            }
         }
     }
 
@@ -5989,6 +6059,16 @@ impl Player {
                 View::Synth if self.skin_showing() => format!("{}'s own screen   ·   tap a control: pick it   ·   Wheel: pick one, push and turn: change it   ·   \
                                         Q-Links 1-4: the skin's knobs   ·   MPFree page: MPFree's own page   ·   {stop}",
                                        self.synth.as_ref().map_or("The plugin", |p| p.state.info.name)),
+                View::Synth if self.pads_preview && self.synth_tab_on_kit().is_some() => {
+                    let (track, name) = self.synth_tab_on_kit().unwrap_or((0, "the synth"));
+                    format!("The pads play {name}; Track {} keeps its kit   ·   REC: {name} on an empty track   ·   \
+                             Back to Track {}'s kit: the button   ·   Q-Links 1-4: the marked knobs   ·   {stop}", track + 1, track + 1)
+                }
+                View::Synth if self.synth_tab_on_kit().is_some() => {
+                    let (track, name) = self.synth_tab_on_kit().unwrap_or((0, "the synth"));
+                    format!("Track {}'s instrument is a kit   ·   Play {name} on the pads: hear it   ·   \
+                             Q-Links 1-4: the marked knobs   ·   {stop}", track + 1)
+                }
                 View::Synth => format!("Pads play {}   ·   Q-Links 1-4: the marked knobs   ·   Wheel: pick a knob   ·   \
                                         - / +, or push the wheel and turn: change it   ·   SHIFT + wheel: page   ·   {stop}",
                                        self.synth.as_ref().map_or("the synth", |p| p.state.info.name)),
@@ -8041,6 +8121,11 @@ impl Player {
                 self.track_sounds = *s;
                 self.refill_sounds();
                 self.refresh_kit_tracks();
+                self.refresh_synth_button();
+            }
+            ToUi::PadsPreview(on) => {
+                self.pads_preview = on;
+                self.refresh_synth_button();
             }
             ToUi::TrackKits(k) => {
                 self.track_kits = *k;
@@ -8193,6 +8278,7 @@ impl Player {
                     },
                 }
                 self.skin_follow();
+                self.refresh_synth_button();
                 self.refresh_qlinks();
             }
             ToUi::PluginFolders(folders) => {
@@ -8499,6 +8585,8 @@ impl Player {
                 self.time = *st;
                 self.name_io_tracks();
                 self.kit_track_armed();
+                // Another track armed: the Play on the pads button follows.
+                self.refresh_synth_button();
                 self.refresh_kit_tracks();
                 self.play.track = self.track_look();
                 if self.levels.transpose {
@@ -8817,6 +8905,11 @@ impl Player {
         if self.ready && self.view.sampler() && self.touch_page.is_none() {
             self.show_view(self.view);
         }
+        // Another pad picked (new kits, a pad stepped): the Pads tab's hint
+        // names what the Q-Links turn on it.
+        if self.view.sampler() {
+            self.refresh_hint();
+        }
         // The Play tab's Pads play row, an undo or another kit may have
         // turned 16 Levels on or off.
         self.refresh_levels();
@@ -8891,7 +8984,13 @@ impl Player {
                 self.refresh_rec_chip();
             }
         }
-        let qlinks = self.sample.play_qlinks_text();
+        // What the Q-Links turn: Edit pad's section's, and the Pads tab's
+        // for the type of the pad picked (a tap on the map picks another).
+        let qlinks = format!(
+            "{} | {}",
+            self.sample.play_qlinks_text(),
+            self.sample.pads_qlinks_text()
+        );
         let live = self.sample.chop_live_method();
         if keys != self.sample_keys || live != self.sample_live || qlinks != self.sample_qlinks {
             self.sample_keys = keys;
@@ -10635,6 +10734,8 @@ impl Player {
                 | FromUi::PadBank(_)
                 | FromUi::PadsBrowse
                 | FromUi::PresetPicker(_)
+                | FromUi::OptionsButton
+                | FromUi::PlayOnPads
                 | FromUi::Preview(_)
                 | FromUi::PreviewStop
                 | FromUi::SaveBrowserLists(_)
@@ -11499,10 +11600,11 @@ impl Player {
             let a = p.event(&mut self.ui, &ev);
             // The page or a value changed: the Q-Link column follows.
             self.refresh_qlinks();
-            if a == Some(SynthAction::OpenPresets) {
-                return self.open_presets();
+            match a {
+                Some(SynthAction::OpenPresets) => return self.open_presets(),
+                Some(SynthAction::Options) => return Some(FromUi::OptionsButton),
+                _ => return a.map(FromUi::Synth),
             }
-            return a.map(FromUi::Synth);
         }
         // The Pads tab's Kit: the list of kits over the page.
         if ev.widget == mpfree_sampler_ui::pads_tab::BAR
@@ -12232,8 +12334,14 @@ impl Player {
             ("header", EventKind::Select(mpfree_ui::widgets::FOLDER_ICON)) => {
                 Some(FromUi::FolderIcon)
             }
+            (play_page::SYNTH_PADS_HEAD, EventKind::Tab(play_page::PLAY_TAP)) => {
+                Some(FromUi::PlayOnPads)
+            }
             (play_page::SYNTH_PADS_HEAD, EventKind::Tab(i)) => {
                 Some(FromUi::PadsLayout { in_key: i == 1 })
+            }
+            ("options", EventKind::Tab(mpfree_ui::widgets::OPTION_BACK)) => {
+                Some(FromUi::OptionsButton)
             }
             ("options", EventKind::Select(i)) => Some(FromUi::MenuSelect(i)),
             ("options", EventKind::Step { index, delta }) => Some(FromUi::MenuStep(index, delta)),
@@ -14298,6 +14406,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::Browse(k) => p.apply(ToUi::Browse(k)),
             Effect::SaveProject => p.ask_save(),
             Effect::PerformSet { set, opened } => p.apply(ToUi::PerformSet { set, opened }),
+            Effect::PadsPreview(on) => p.apply(ToUi::PadsPreview(on)),
             Effect::Light(..)
             | Effect::StopSounds
             | Effect::Audio(_)
@@ -14312,6 +14421,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::SavePatterns(_)
             | Effect::SynthPads(_)
             | Effect::TrackSound { .. }
+            | Effect::SynthOnTrack(_)
             | Effect::ProgEdit
             | Effect::Metronome { .. }
             | Effect::Fill(_)
@@ -17173,6 +17283,21 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }
     own.apply(ToUi::Show(View::Synth));
     out.push(("synth-track", own));
+    // Play on the pads (app/pads_preview.rs): track 1 plays its kit, so the
+    // pads heading is the button; then pressed, the synth on the pads.
+    let mut on_kit = sample_player(fonts());
+    let mut a = sample_app();
+    apply_effects(&mut on_kit, a.open_tab(View::Synth));
+    out.push(("synth-on-kit", on_kit));
+    let mut trying = sample_player(fonts());
+    let mut a = sample_app();
+    let mut fx = a.open_tab(View::Synth);
+    fx.extend(a.toggle_pads_preview());
+    apply_effects(&mut trying, fx);
+    for (pad, v) in [(0, 100), (4, 90)] {
+        trying.apply(ToUi::PadDown { pad, velocity: v });
+    }
+    out.push(("synth-pads-preview", trying));
     // The mixer with two tracks playing their own instruments: Poly on
     // track 1 in the Drums strip, named "Track 1" for it, and FM on track 2
     // in its own channel after Synth, Loop and Audio.
@@ -30286,19 +30411,19 @@ mod tests {
         use mpfree_sampler::model::PADS;
         use mpfree_sampler_ui::rec_tab;
         use mpfree_sampler_ui::recall;
-        use mpfree_sampler_ui::recorder::{self, Recorder};
+        use mpfree_sampler_ui::recorder::{self, KeepCard};
         use mpfree_sampler_ui::sample::{feed_input, PAD, RATE};
         let mut p = sample_sampler(Fonts::embedded());
         open_sample(&mut p, sample_page::Editor::Wave);
-        let keep = |p: &Player| {
-            p.ui.get::<Recorder>(recorder::RECORDER)
-                .unwrap()
-                .view
-                .keep
-                .clone()
-        };
+        let keep = |p: &Player| p.ui.get::<KeepCard>(recorder::KEEP).unwrap().view.clone();
+        // Over the wave's right end, beside the overview (Jay's device
+        // notes, 20 Nov 2026), no longer on the recorder row.
         let card = |p: &Player| {
-            let r = Recorder::keep_rect(p.ui.rect_of(recorder::RECORDER).unwrap());
+            let r = p.ui.rect_of(recorder::KEEP).unwrap();
+            let wave = p.ui.rect_of(mpfree_sampler_ui::wave_tab::WAVE).unwrap();
+            let row = p.ui.rect_of(recorder::RECORDER).unwrap();
+            assert!(r.y >= row.bottom() && r.bottom() <= wave.y, "{r:?}");
+            assert_eq!(r.right(), wave.right());
             (r.x + r.w / 2, r.y + r.h / 2)
         };
         // The audio loop's answer to the card's asks, with no take
@@ -30345,10 +30470,19 @@ mod tests {
         feed_input(&mut feed, 20.0, 0.4, true);
         p.tick(0.033);
         let k = keep(&p);
+        // Its line names the bars, as the Looper's Capture does.
         assert_eq!(
             (k.title.as_str(), k.line.as_str(), k.ready),
-            ("Keep last 4 bars", "what just played, as a new take", true)
+            ("Keep last 4 bars", "bars 4 to 7, as a new take", true)
         );
+        // And its picture is what a tap keeps: the drum loop fed, its
+        // hits and the quiet between them.
+        let wave = p.ui.get::<KeepCard>(recorder::KEEP).unwrap().wave.clone();
+        assert_eq!(wave.len(), recorder::KEEP_COLUMNS);
+        let (lo, hi) = wave
+            .iter()
+            .fold((f32::MAX, 0.0f32), |(a, b), v| (a.min(*v), b.max(*v)));
+        assert!(hi > 0.1 && hi <= 1.0 && lo < hi / 2.0, "{wave:?}");
         // A tap: a new take on the page, no pad filled, one undo step.
         let before = pads(&p);
         tap(&mut p);
@@ -30379,7 +30513,7 @@ mod tests {
         });
         p.tick(0.033);
         let next = crate::app::kit_pad_name(PAD + 1);
-        assert_eq!(keep(&p).line, format!("what just played, onto {next}"));
+        assert_eq!(keep(&p).line, format!("bars 4 to 7, onto {next}"));
         tap(&mut p);
         assert_eq!(takes(&p), 0);
         assert!(p.sample.project(0).unwrap().pad(PAD + 1).is_some());
@@ -31945,6 +32079,74 @@ mod tests {
         );
     }
 
+    /// The Pads tab's hint names what the Q-Links turn on the pad picked,
+    /// however it was picked or changed: a hit on the MPC's pads, or a
+    /// whole new set of kits, follows to the pad picked then.
+    #[test]
+    fn the_pads_tabs_hint_follows_the_pad_picked() {
+        use mpfree_sampler_ui::pads_tab::{self, PadType};
+        let mut p = sample_sampler(Fonts::embedded());
+        open_pads(&mut p);
+        let _ = p.take_actions();
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        p.on_event(UiEvent {
+            widget: pads_tab::MAP.into(),
+            kind: EventKind::Select(10),
+        });
+        let midi = PadType::ALL.iter().position(|t| *t == PadType::MidiOut);
+        p.on_event(UiEvent {
+            widget: pads_tab::TYPE.into(),
+            kind: EventKind::Tab(midi.unwrap()),
+        });
+        p.tick(30.0);
+        assert!(
+            hint(&p).contains("Q-Links 1-4: note, channel"),
+            "{}",
+            hint(&p)
+        );
+        // A hit on A5, a Sample pad, on the MPC's pads.
+        let a5 = mpfree_sampler_ui::sample::PAD;
+        p.apply(ToUi::PadDown {
+            pad: a5,
+            velocity: 100,
+        });
+        p.apply(ToUi::PadUp(a5));
+        p.tick(30.0);
+        assert!(
+            hint(&p).contains("Q-Links 1-4: level, pan, tune, voices"),
+            "{}",
+            hint(&p)
+        );
+        // Taps on the map: A11 again (MIDI out), then A5 (a Sample pad).
+        for (pad, want) in [
+            (10, "Q-Links 1-4: note, channel"),
+            (a5, "Q-Links 1-4: level, pan, tune, voices"),
+            (10, "Q-Links 1-4: note, channel"),
+        ] {
+            p.on_event(UiEvent {
+                widget: pads_tab::MAP.into(),
+                kind: EventKind::Select(pad),
+            });
+            assert!(hint(&p).contains(want), "{} (want {want})", hint(&p));
+        }
+        // A new set of kits: the pad picked then (the next with a sound),
+        // whatever its type.
+        p.apply(ToUi::SampleKits {
+            projects: vec![mpfree_sampler_ui::sample::full_kit_project()],
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        p.tick(30.0);
+        let project = p.sample.project(0).unwrap();
+        let picked = PadType::of(project.pad(p.sample.pad()).unwrap());
+        let want = match picked {
+            PadType::Instrument => "Q-Links 1-4: note, engine",
+            PadType::MidiOut => "Q-Links 1-4: note, channel, port",
+            PadType::Loop => "Q-Links 1-4: level, pan, tune, tempo",
+            PadType::Sample => "Q-Links 1-4: level, pan, tune, voices",
+        };
+        assert!(hint(&p).contains(want), "{} (want {want})", hint(&p));
+    }
+
     /// The Pads tab's type switch (the redesign's step 6b): the MIDI
     /// outputs plugged in are there to pick and follow as they come and
     /// go, a pad made MIDI out says in place why its port would send
@@ -33219,6 +33421,110 @@ mod tests {
                 .map(|m| &m.grid)
                 .unwrap();
         assert!(!g.pads[3].held && g.pads[3].level == 1.0);
+    }
+
+    /// The Synth tab's gear opens its options, as MENU does, and the
+    /// options' Back goes back (Jay's device notes, 20 Nov 2026: the
+    /// options on screen, not only on MENU).
+    #[test]
+    fn the_synth_tabs_gear_opens_its_options_and_back_closes_them() {
+        let mut p = sample_player(Fonts::embedded());
+        p.apply(ToUi::Show(View::Synth));
+        let tap = |p: &mut Player, r: mpfree_ui::Rect| {
+            let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
+            let a = p.touch(3, Touch::Down, x, y);
+            let b = p.touch(3, Touch::Up, x, y);
+            a.or(b)
+        };
+        let mut a = sample_app();
+        apply_effects(&mut p, a.open_tab(View::Synth));
+        // The gear: the options, as MENU; their Back: back.
+        let title = p.ui.rect_of(synth_view::TITLE).unwrap();
+        let gear =
+            p.ui.get::<mpfree_synth_ui::widgets::TitleBar>(synth_view::TITLE)
+                .unwrap()
+                .gear_rect(title)
+                .expect("the gear");
+        assert_eq!(tap(&mut p, gear), Some(FromUi::OptionsButton));
+        apply_effects(&mut p, a.options_button());
+        assert_eq!(p.page(), "Options");
+        let opts = p.ui.rect_of("options").unwrap();
+        let back =
+            p.ui.get::<OptionList>("options")
+                .unwrap()
+                .back_rect(opts)
+                .expect("Back");
+        assert!(back.h >= 40, "{back:?}");
+        assert_eq!(tap(&mut p, back), Some(FromUi::OptionsButton));
+        apply_effects(&mut p, a.options_button());
+        assert_eq!(p.page(), "Synth");
+    }
+
+    /// Play on the pads (step 1 of the instrument redesign): on a track
+    /// whose instrument is a kit, the button under the synth's card puts
+    /// the synth on the pads and the track keeps its kit; again, the kit.
+    /// While the synth is the track's own, there is no button.
+    #[test]
+    fn play_on_the_pads_hears_the_synth_while_the_track_keeps_its_kit() {
+        let mut p = sample_player(Fonts::embedded());
+        let mut a = sample_app();
+        apply_effects(&mut p, a.open_tab(View::Synth));
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        let bar = |p: &Player| {
+            p.ui.get::<PadsBar>(play_page::SYNTH_PADS_HEAD)
+                .unwrap()
+                .clone()
+        };
+        let tap = |p: &mut Player, r: mpfree_ui::Rect| {
+            let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
+            let a = p.touch(3, Touch::Down, x, y);
+            let b = p.touch(3, Touch::Up, x, y);
+            a.or(b)
+        };
+        // Track 1's instrument is a kit: the button, a fingertip's.
+        let b = bar(&p);
+        assert_eq!(
+            b.play,
+            Some((
+                "Play Poly on the pads".to_string(),
+                "Track 1 keeps its kit".to_string()
+            ))
+        );
+        assert!(!b.playing);
+        assert!(
+            hint(&p).starts_with("Track 1's instrument is a kit"),
+            "{}",
+            hint(&p)
+        );
+        let head = p.ui.rect_of(play_page::SYNTH_PADS_HEAD).unwrap();
+        assert!(head.h >= 44, "{head:?}");
+        assert_eq!(tap(&mut p, head), Some(FromUi::PlayOnPads));
+        // On: the button gives the pads back.
+        apply_effects(&mut p, a.toggle_pads_preview());
+        let b = bar(&p);
+        assert!(b.playing);
+        assert_eq!(
+            b.play.as_ref().map(|(w, _)| w.as_str()),
+            Some("Back to Track 1's kit")
+        );
+        assert!(
+            hint(&p).starts_with("The pads play Poly; Track 1 keeps its kit"),
+            "{}",
+            hint(&p)
+        );
+        assert_eq!(tap(&mut p, head), Some(FromUi::PlayOnPads));
+        // Off: the button again.
+        apply_effects(&mut p, a.toggle_pads_preview());
+        let b = bar(&p);
+        assert!(!b.playing);
+        assert_eq!(
+            b.play.as_ref().map(|(w, _)| w.as_str()),
+            Some("Play Poly on the pads")
+        );
+        // The synth kit on the pads: no button, the pads heading again.
+        p.apply(ToUi::Kit(sample_kits().len()));
+        assert_eq!(bar(&p).play, None);
+        assert!(hint(&p).starts_with("Pads play Poly"), "{}", hint(&p));
     }
 
     #[test]

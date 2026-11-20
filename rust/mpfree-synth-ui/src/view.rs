@@ -158,6 +158,9 @@ pub enum SynthAction {
     /// presets (the app opens the browser's preset picker; nothing goes to
     /// the synth).
     OpenPresets,
+    /// The gear at the right of the title bar: the Synth options, as MENU
+    /// opens them.
+    Options,
 }
 
 pub struct SynthPanel {
@@ -605,6 +608,7 @@ impl SynthPanel {
                 self.show_page(ui, page);
                 None
             }
+            (TITLE, EventKind::Select(crate::widgets::GEAR)) => Some(SynthAction::Options),
             (TITLE, EventKind::Select(_)) => Some(SynthAction::OpenPresets),
             (TILES, EventKind::Tab(n)) => {
                 let want = self.links.get(*n)?.clone();
@@ -689,6 +693,7 @@ impl SynthPanel {
             // The name opens the engine's presets (Jay, 18 Nov); a plugin
             // lists its own in the side list.
             w.opens = is_engine(st.info.id);
+            w.gear = true;
             w.swatch = st.color;
             let edited = if st.edited { " · edited" } else { "" };
             (w.title, w.subtitle) = match &preset {

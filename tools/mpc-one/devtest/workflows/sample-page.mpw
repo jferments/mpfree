@@ -70,7 +70,7 @@ pad 1 100 2
 mark recall
 # The last bars the master played become a new sound: on the MPC this keeps
 # what the pads just played; the tests' session keeps no master and says so.
-tap smp-recorder keep Keep last 4 bars
+tap smp-keep keep Keep last 4 bars
 wait 2
 mark undo
 button UNDO

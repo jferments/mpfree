@@ -918,7 +918,7 @@ CHECKS = (
         "the one Sample page's steps 2c and 3b (#612, #662): the Keep card keeps the master's last bars as a take "
         "that stays on the page, and its slices go on pads straight from it, in one UNDO step", "hands",
         ["1. On Play with kit 1, with the transport stopped, play a few pads for about 10 seconds.",
-         "2. Tap the Sample tab, then Keep last 4 bars at the right of the recorder row: a take opens on the",
+         "2. Tap the Sample tab, then Keep last 4 bars over the right end of the wave: a take opens on the",
          "   page, its wave what you just played.",
          "3. Tap Slice over the wave, set Method to Grid and Slices to 4, and check Put on says Pads. Tap the big",
          "   Chop to button: the take leaves the page and its four slices are on the empty pads it named.",
