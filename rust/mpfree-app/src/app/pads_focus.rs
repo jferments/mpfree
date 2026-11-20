@@ -44,7 +44,9 @@
 //! choice (point A): REC records there or nowhere, and says why. What is
 //! recorded always plays what was heard, and no clip already recorded
 //! changes. With the loop armed the pads keep the synth: the loop records
-//! what is heard.
+//! what is heard. Where REC will record is the recording plan
+//! ([`RecPlan`], `desk::rec_plan`, step 5b): the REC chip names it before
+//! you press ("REC → Track 2 · Poly"), and REC acts on the same plan.
 //!
 //! **The arp** (point C): the arp plays through the selected track, so
 //! while the pads have the synth over a track that plays something else,
@@ -177,6 +179,32 @@ pub enum SynthTake {
     /// Nowhere, and nothing changes: every track is set up and the
     /// project holds no more.
     Full,
+}
+
+/// The recording plan (the redesign's step 5b): where REC will record the
+/// pads' synth, worked out each time something changes so the REC chip
+/// names it before you press, and by REC itself, so the chip and REC
+/// can't disagree (`desk.rs`, `rec_plan`). None of it changes anything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecPlan {
+    pub take: SynthTake,
+    /// The pads' synth's name ("Poly").
+    pub synth: &'static str,
+}
+
+impl RecPlan {
+    /// The REC chip's words after the arrow: "Track 2 · Poly", "New track
+    /// · Poly", "Track 1 · not free" (pinned to a track that can't take
+    /// it), "No free track · Poly". `name` gives a track's name ("Bass"
+    /// for one you named).
+    pub fn chip(self, name: impl Fn(usize) -> String) -> String {
+        match self.take {
+            SynthTake::On(t) => format!("{} · {}", name(t), self.synth),
+            SynthTake::New => format!("New track · {}", self.synth),
+            SynthTake::Pinned { track, .. } => format!("{} · not free", name(track)),
+            SynthTake::Full => format!("No free track · {}", self.synth),
+        }
+    }
 }
 
 /// Where REC records the pads' synth: the armed track when nobody set it

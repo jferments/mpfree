@@ -223,6 +223,8 @@ pub struct Session {
     /// as main.rs keeps them.
     sounds_shown: gui::TrackSounds,
     sends_shown: gui::TrackSends,
+    /// Where REC would record the pads' synth, as the screen last heard it.
+    plan_shown: Option<crate::app::RecPlan>,
     /// The time engine's REDOs seen so far, as player_session keeps them.
     redos_seen: u64,
     /// Messages for the screen that found it gone (none expected).
@@ -372,6 +374,7 @@ impl Session {
             instrument_list: crate::instrument_list::InstrumentList::new(),
             sounds_shown: [None; crate::instruments::TRACKS],
             sends_shown: [None; crate::instruments::TRACKS],
+            plan_shown: None,
             redos_seen: 0,
             quit: false,
             kits: n,
@@ -1246,6 +1249,11 @@ impl Session {
         if sends != self.sends_shown {
             self.sends_shown = sends;
             self.out.show(ToUi::TrackSends(Box::new(sends)));
+        }
+        let plan = crate::desk::rec_plan(&self.app, &self.time, &self.mix);
+        if plan != self.plan_shown {
+            self.plan_shown = plan;
+            self.out.show(ToUi::RecPlan(plan));
         }
         let (loop_rec, loop_dub) = self.looper.recording();
         let info = self.time.info();

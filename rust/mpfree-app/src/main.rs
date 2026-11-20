@@ -6266,6 +6266,9 @@ fn player_session(
     // its name on Arrange).
     let mut sounds_shown: gui::TrackSounds = [None; instruments::TRACKS];
     let mut sends_shown: gui::TrackSends = [None; instruments::TRACKS];
+    // Where REC would record the pads' synth, as the REC chip last named it
+    // (the recording plan, `desk::rec_plan`).
+    let mut plan_shown: Option<app::RecPlan> = None;
     let mut kits_shown = sampler::TrackKits::default();
     // Each sounding voice's pressure, for the Synth tab's Pressure page.
     let mut synth_pressures = [0f32; 16];
@@ -10891,6 +10894,11 @@ fn player_session(
             if sends != sends_shown {
                 sends_shown = sends;
                 out.show(gui::ToUi::TrackSends(Box::new(sends)));
+            }
+            let plan = desk::rec_plan(&app, &time, &mix);
+            if plan != plan_shown {
+                plan_shown = plan;
+                out.show(gui::ToUi::RecPlan(plan));
             }
             if track_kits != kits_shown {
                 kits_shown = track_kits.clone();

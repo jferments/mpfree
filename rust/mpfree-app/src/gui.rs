@@ -1201,6 +1201,9 @@ pub enum ToUi {
     /// What the pads play: the selected track's instrument, or the synth
     /// chosen for them (app/pads_focus.rs).
     PadsFocus(crate::app::PadFocus),
+    /// Where REC would record the pads' synth (the recording plan,
+    /// `desk::rec_plan`), when it changes: the REC chip names it.
+    RecPlan(Option<crate::app::RecPlan>),
     /// The kits' sampler projects, for the Sample tab (once, after
     /// loading), and the rate to build their engine views for.
     SampleKits {
@@ -1981,6 +1984,9 @@ pub struct Player {
     pads_focus: crate::app::PadFocus,
     /// The "Pads: Poly" chip's place: a tap is Follow track.
     pads_chip: Option<usize>,
+    /// Where REC would record the pads' synth ([`ToUi::RecPlan`]): the REC
+    /// chip names it before you press.
+    rec_plan: Option<crate::app::RecPlan>,
     /// The Synth page, once the synth's state has come.
     synth: Option<SynthPanel>,
     /// The Sample page and the kits' projects it edits (the Pads tab's
@@ -2540,6 +2546,7 @@ impl Player {
             touch_page: None,
             pads_focus: crate::app::PadFocus::Track,
             pads_chip: None,
+            rec_plan: None,
             synth: None,
             sample,
             browser: None,
@@ -5177,7 +5184,9 @@ impl Player {
                 pinned: false,
             };
         }
-        let tracks = self.armed_tracks_name();
+        // While the pads have a synth the armed track doesn't play, REC
+        // records it where the recording plan says, alone.
+        let tracks = self.armed_tracks_name().filter(|_| self.rec_plan.is_none());
         let mut chip = if let Some(names) = tracks {
             // Several tracks (SHIFT + a track's row): "Drums + Bass + Keys",
             // "Drums + 2 tracks" when it doesn't fit; with the loop too,
@@ -5229,12 +5238,7 @@ impl Player {
         if self.time.also == 0 || !self.rec.armed(Target::Notes) {
             return None;
         }
-        let name = |t: usize| {
-            self.time
-                .tracks
-                .get(t)
-                .map_or_else(|| format!("Track {}", t + 1), |tr| tr.name.clone())
-        };
+        let name = |t: usize| self.track_name(t);
         let others: Vec<String> = (0..self.time.tracks.len().min(128))
             .filter(|&t| t != main && self.time.also & (1u128 << t) != 0)
             .map(name)
@@ -5258,13 +5262,34 @@ impl Player {
         })
     }
 
+    /// Track `t`'s name (0 based), as Arrange shows it: "Track 3", or the
+    /// name you gave it.
+    fn track_name(&self, t: usize) -> String {
+        self.time
+            .tracks
+            .get(t)
+            .map_or_else(|| format!("Track {}", t + 1), |tr| tr.name.clone())
+    }
+
     /// One target's part of the REC chip.
     fn rec_chip_of(&self, t: crate::rec_arm::Target) -> play_widgets::RecChip {
         use crate::rec_arm::Target;
         use mpfree_looper::Phase;
         use play_widgets::{RecChip, RecState};
         match t {
-            Target::Notes => self.play.notes_rec_chip(self.rec.ready),
+            Target::Notes => {
+                let chip = self.play.notes_rec_chip(self.rec.ready);
+                // The pads' synth, before you press: where REC will record
+                // it ("Track 2 · Poly", "New track · Poly", "Track 1 · not
+                // free"). A take ready or going is on its track already.
+                match self.rec_plan {
+                    Some(plan) if chip.state == RecState::Armed => RecChip {
+                        what: plan.chip(|t| self.track_name(t)),
+                        ..chip
+                    },
+                    _ => chip,
+                }
+            }
             Target::Loop => {
                 let phase = self.looper.status.phase;
                 RecChip {
@@ -8379,6 +8404,10 @@ impl Player {
                 self.refresh_synth_button();
                 self.refresh_pads_play();
                 self.refresh_chips();
+            }
+            ToUi::RecPlan(p) => {
+                self.rec_plan = p;
+                self.refresh_rec_chip();
             }
             ToUi::TrackKits(k) => {
                 self.track_kits = *k;

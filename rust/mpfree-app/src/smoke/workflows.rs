@@ -1777,6 +1777,13 @@ mod tests {
     fn play_on_the_pads_tries_poly_and_rec_records_it_without_touching_the_drums() {
         use crate::rec_arm::Take;
         use mpfree_transport::State;
+        fn rec_chip(s: &Session) -> String {
+            s.screen
+                .ui
+                .get::<crate::play_widgets::PlayTransport>(crate::play_page::TRANSPORT)
+                .and_then(|t| t.look.rec.as_ref().map(|c| c.line()))
+                .expect("the REC chip")
+        }
         fn record(s: &mut Session, pads: &[usize]) {
             s.button("PLAY");
             let end = s.t() + 5.0;
@@ -1840,11 +1847,16 @@ mod tests {
                 "no pad reached the kit or a track"
             );
             assert_eq!(s.time.project().tracks[0], drums, "the drum clip unchanged");
+            // The REC chip names where REC will record Poly before you
+            // press (step 5b): Track 2, the first track nobody set up.
+            s.run_periods(1).settle();
+            assert_eq!(rec_chip(&s), "REC → Track 2 · Poly");
             // REC: Track 2 gets the shared synth (the Synth kit, no copy)
             // and the take waits for PLAY there.
             s.button("REC").settle();
             s.run_periods(2).settle();
             assert_eq!(s.app.track(), 1, "{:?}", s.said());
+            assert_eq!(rec_chip(&s), "READY · PLAY starts → Track 2 · new clip");
             assert!(s.track_kits.plays_synth(1) && s.synth_on);
             assert_eq!(s.app.track_sound(1), None, "no instrument of its own");
             assert!(!s.mix.instruments.holds(1), "no second synth");

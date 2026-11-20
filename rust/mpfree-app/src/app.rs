@@ -39,7 +39,7 @@ mod synth_pads;
 pub use arp::{built_in_patterns, mode_label, ArpItem, ArpView, LiveMap, WorkspaceView};
 pub use mapper::{Code, MapView, Mark};
 use mpfree_arp::scale::pads::Pad as PadNotes;
-pub use pads_focus::{synth_track, PadFocus, SynthTake};
+pub use pads_focus::{synth_track, PadFocus, RecPlan, SynthTake};
 pub use step_pads::StepPads;
 pub use synth_pads::{sent_name, SynthItem};
 
@@ -7465,6 +7465,35 @@ mod tests {
         let loops = Track::new_loops("Track 7", 0);
         p.tracks[6] = loops;
         assert_eq!(unfit(&p, 6, free), Some("is a Loop track"));
+    }
+
+    /// The recording plan's words on the REC chip (step 5b): where REC
+    /// will record the pads' synth, by the track's name, before you press.
+    #[test]
+    fn the_rec_chip_names_where_rec_will_record_the_pads_synth() {
+        let name = |t: usize| {
+            if t == 1 {
+                "Bass".to_string()
+            } else {
+                format!("Track {}", t + 1)
+            }
+        };
+        let plan = |take| RecPlan {
+            take,
+            synth: "Poly",
+        };
+        assert_eq!(plan(SynthTake::On(2)).chip(name), "Track 3 · Poly");
+        assert_eq!(plan(SynthTake::On(1)).chip(name), "Bass · Poly");
+        assert_eq!(plan(SynthTake::New).chip(name), "New track · Poly");
+        assert_eq!(
+            plan(SynthTake::Pinned {
+                track: 0,
+                why: "has clips"
+            })
+            .chip(name),
+            "Track 1 · not free"
+        );
+        assert_eq!(plan(SynthTake::Full).chip(name), "No free track · Poly");
     }
 
     /// The arp and the synth chosen for the pads (the design review of 20
