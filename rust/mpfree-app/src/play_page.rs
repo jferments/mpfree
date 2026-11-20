@@ -75,6 +75,9 @@ pub const TIMING: &str = "play-timing";
 pub const INSPECTOR: &str = "step-inspector";
 /// The pads heading on the Synth tab, over its presets: always the synth.
 pub const SYNTH_PADS_HEAD: &str = "synth-pads-head";
+/// Its height: a fingertip's, since it is the Play on the pads button while
+/// the selected track's instrument is a kit ([`PadsBar::play`]).
+pub const SYNTH_PADS_HEAD_H: i32 = 48;
 
 /// The Sequencer's switch: Steps (Beats' pages) and Notes (the note
 /// editor).
@@ -230,7 +233,7 @@ pub fn synth_with_pads(layout: &str) -> String {
     );
     layout.replacen(
         slot,
-        &format!("col({SYNTH_PADS_HEAD}:30, {presets}:*):*"),
+        &format!("col({SYNTH_PADS_HEAD}:{SYNTH_PADS_HEAD_H}, {presets}:*):*"),
         1,
     )
 }
@@ -249,12 +252,22 @@ pub struct SynthPads {
 /// The pads panel's heading line: what the pads play, and while the synth
 /// has them, the Chromatic | In key switch. A tap on a half gives `Tab(0)`
 /// (Chromatic) or `Tab(1)` (In key).
+///
+/// On the Synth tab, while the selected track's instrument is a kit, the
+/// bar is the **Play on the pads** button instead ([`PadsBar::play`]; Jay's
+/// device notes, 20 Nov 2026): a tap anywhere on it gives `Tab(PLAY_TAP)`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PadsBar {
     /// "PADS · BANK A · BOOM BAP", "SYNTH · BANK B · C3 TO D#4".
     pub title: String,
     pub synth: Option<SynthPads>,
+    /// "Play Poly on the pads", with its second line ("Track 1's
+    /// instrument is a kit"): the bar is that button.
+    pub play: Option<(String, String)>,
 }
+
+/// The event a tap on [`PadsBar::play`] gives.
+pub const PLAY_TAP: usize = 2;
 
 /// The switch's halves, in tap order.
 pub const LAYOUT_SWITCH: [&str; 2] = ["Chromatic", "In key"];
@@ -281,6 +294,41 @@ impl Widget for PadsBar {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         cx.canvas.fill_rect(r, t.bg);
+        if let Some((what, why)) = &self.play {
+            // The button: the accent, a play triangle, two lines.
+            cx.canvas.fill_round_rect(r, t.radius, t.accent);
+            let (tx, ty) = ((r.x + 18) as f32, (r.y + r.h / 2) as f32);
+            let mut tri = mpfree_ui::Shape::new(r);
+            tri.polyline(
+                &[
+                    (tx, ty - 7.0),
+                    (tx + 11.0, ty),
+                    (tx, ty + 7.0),
+                    (tx, ty - 7.0),
+                ],
+                2.5,
+            );
+            tri.draw(cx.canvas, t.on_accent);
+            let words = Rect::new(r.x + 40, r.y + 4, r.w - 44, r.h - 8);
+            let (top, bottom) = words.take_top(words.h * 11 / 20);
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                top,
+                Align::Left,
+                t.on_accent,
+                what,
+            );
+            cx.text(
+                FontId::Sans,
+                t.size_small - 3.0,
+                bottom,
+                Align::Left,
+                t.on_accent,
+                why,
+            );
+            return;
+        }
         let line = r.inset_xy(4, 0);
         let Some(s) = self.synth else {
             cx.text(
@@ -343,6 +391,9 @@ impl Widget for PadsBar {
     }
 
     fn targets(&self, r: Rect) -> Vec<mpfree_ui::Target> {
+        if let Some((what, _)) = &self.play {
+            return vec![mpfree_ui::Target::tap("play", PLAY_TAP, what.clone(), r)];
+        }
         if self.synth.is_none() {
             return Vec::new();
         }
@@ -354,9 +405,13 @@ impl Widget for PadsBar {
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
-        if phase != Touch::Down || self.synth.is_none() {
+        if phase != Touch::Down {
             return None;
         }
+        if self.play.is_some() {
+            return Some(EventKind::Tab(PLAY_TAP));
+        }
+        self.synth?;
         PadsBar::halves(r)
             .iter()
             .position(|h| h.contains(x, y))
@@ -3812,7 +3867,11 @@ mod tests {
         use mpfree_synth_ui::view::{INST, LAYOUT, PRESETS};
         let spec = synth_with_pads(LAYOUT);
         let (head, presets) = (rect(&spec, SYNTH_PADS_HEAD), rect(&spec, PRESETS));
-        assert_eq!((head.x, head.w, head.h), (presets.x, 220, 30), "{spec}");
+        assert_eq!(
+            (head.x, head.w, head.h),
+            (presets.x, 220, SYNTH_PADS_HEAD_H),
+            "{spec}"
+        );
         assert_eq!(
             head.y,
             rect(&spec, INST).bottom() + 12,
@@ -3827,6 +3886,7 @@ mod tests {
         let mut bar = PadsBar {
             title: "Synth · Bank A".into(),
             synth: None,
+            play: None,
         };
         let [chromatic, in_key] = PadsBar::halves(r);
         assert_eq!(

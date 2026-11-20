@@ -1706,7 +1706,7 @@ mod tests {
             s.press("header", "tab", "Synth");
             assert_eq!(s.view(), View::Synth);
             assert!(!s.synth_on, "opening the tab leaves the track on its kit");
-            assert!(s.hint().contains("pick Synth"), "{}", s.hint());
+            assert!(s.hint().contains("Play on the pads"), "{}", s.hint());
             s.pick_synth();
             assert!(s.synth_on, "picked, the pads play the synth");
             assert!(s.track_kits.plays_synth(s.app.track()), "the armed track's");

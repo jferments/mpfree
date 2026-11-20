@@ -358,15 +358,6 @@ impl App {
         vec![Effect::SynthPads(self.synth_pads)]
     }
 
-    /// The Instrument row's choices for a track: Kit (None), the built-in
-    /// engines, then the plugin synths, as (node id, name).
-    fn sound_choices(&self) -> Vec<Option<(&'static str, &'static str)>> {
-        std::iter::once(None)
-            .chain(Engine::ALL.iter().map(|e| Some((e.node_id(), e.name()))))
-            .chain(self.plugin_synths.iter().map(|&p| Some(p)))
-            .collect()
-    }
-
     /// The Instrument row's value: what the selected track plays.
     fn engine_text(&self) -> String {
         match self.track_sound(self.track) {
@@ -378,41 +369,14 @@ impl App {
     /// The Instrument row stepped by `d`: the selected track's sound, Kit first,
     /// then the engines and the plugin synths.
     fn step_track_sound(&mut self, d: i32) -> Vec<Effect> {
-        let choices = self.sound_choices();
+        let len = self.sound_choices().len() as i32;
         let now = self.track_sound(self.track).map(|h| h.id);
-        let at = choices
+        let at = self
+            .sound_choices()
             .iter()
             .position(|c| c.map(|c| c.0) == now)
-            .unwrap_or(0);
-        let to = (at as i32 + d).clamp(0, choices.len() as i32 - 1) as usize;
-        if to == at {
-            return Vec::new();
-        }
-        let pick = choices[to];
-        // A track on the kit takes a place only while one is free.
-        let others = self.track_sounds.iter().flatten().count();
-        if now.is_none() && others >= crate::instruments::SLOTS {
-            return vec![Effect::Tell(format!(
-                "Track {} plays the kit: {} tracks already have their own instrument, the most at once. Set one of them to Kit first",
-                self.track + 1,
-                crate::instruments::SLOTS
-            ))];
-        }
-        let track = self.track;
-        // The project keeps each track's instrument: unsaved work.
-        self.project_edit = true;
-        self.set_track_sound(
-            track,
-            pick.map(|(id, name)| crate::instruments::Held {
-                id,
-                name,
-                instance: 0,
-            }),
-        );
-        vec![Effect::TrackSound {
-            track,
-            id: pick.map(|c| c.0),
-        }]
+            .unwrap_or(0) as i32;
+        self.put_track_sound((at + d).clamp(0, len - 1) as usize)
     }
 
     /// A tap on track `track`'s sound line on Arrange: the Synth tab's
