@@ -4050,6 +4050,18 @@ impl App {
         fx
     }
 
+    /// An on-screen button that does what MENU does: the Synth tab's gear
+    /// opens its options, and the options' Back goes back to the page.
+    pub fn options_button(&mut self) -> Vec<Effect> {
+        match self.view {
+            View::Prefs if self.prefs_section != PrefsSection::Main => self.leave_prefs_section(),
+            View::Prefs => self.toggle(View::Prefs),
+            View::System => self.show(View::Prefs),
+            View::Pattern => Vec::new(),
+            _ => self.toggle(View::Options),
+        }
+    }
+
     fn toggle(&mut self, v: View) -> Vec<Effect> {
         if self.view == v {
             let back = if self.back == v {
@@ -7158,6 +7170,28 @@ mod tests {
         assert!(fx.contains(&Effect::Show(View::Synth)), "{fx:?}");
         press(&mut app, MENU);
         assert_eq!(app.view(), View::Synth);
+    }
+
+    /// The Synth tab's gear opens its options, as MENU does, and the
+    /// options' Back goes back to the tab; Back in Prefs closes it.
+    #[test]
+    fn the_gear_and_back_do_what_menu_does() {
+        let mut app = ready();
+        app.open_tab(View::Synth);
+        let fx = app.options_button();
+        assert_eq!(app.view(), View::Options);
+        assert!(
+            fx.iter()
+                .any(|e| matches!(e, Effect::Menu(m) if m.title == "Synth options")),
+            "{fx:?}"
+        );
+        app.options_button();
+        assert_eq!(app.view(), View::Synth);
+        app.button(MENU, true, 0.0);
+        app.button(MENU, false, 0.0);
+        assert_eq!(app.view(), View::Options);
+        app.options_button();
+        assert_eq!(app.view(), View::Synth, "MENU's way in, Back's way out");
     }
 
     #[test]

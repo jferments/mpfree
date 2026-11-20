@@ -121,6 +121,10 @@ pub struct TitleBar {
     /// preset's name opens the engine's presets, as an effect's does):
     /// drawn raised, outlined, with a down arrow.
     pub opens: bool,
+    /// A gear button at the right end, after the tabs: the page's options,
+    /// as MENU opens them (Jay's device notes, 20 Nov 2026: the Synth
+    /// options on screen, not only on the MENU button).
+    pub gear: bool,
 }
 
 /// Width of one page tab.
@@ -132,6 +136,9 @@ const NAME_PAD: i32 = 12;
 /// Below this width a tab gets a smaller font and a width by its name.
 const NARROW_TAB: i32 = 70;
 
+/// The gear button's side ([`TitleBar::gear`]): a fingertip's target.
+pub const GEAR_W: i32 = 44;
+
 impl TitleBar {
     pub fn new() -> TitleBar {
         TitleBar {
@@ -142,7 +149,21 @@ impl TitleBar {
             tabs: Vec::new(),
             active: 0,
             opens: false,
+            gear: false,
         }
+    }
+
+    /// The gear button, at the right end of the bar ([`TitleBar::gear`]).
+    pub fn gear_rect(&self, r: Rect) -> Option<Rect> {
+        self.gear.then(|| {
+            let inner = r.inset_xy(8, 0);
+            Rect::new(
+                inner.right() - GEAR_W,
+                r.y + (r.h - GEAR_W) / 2,
+                GEAR_W,
+                GEAR_W,
+            )
+        })
     }
 
     /// Where the swatch ends and the name starts, and the name's room up
@@ -180,7 +201,10 @@ impl TitleBar {
 
     /// The pill that holds the tabs, at the right of the bar.
     pub fn tabs_rect(&self, r: Rect) -> Rect {
-        let inner = r.inset_xy(10, 8);
+        let mut inner = r.inset_xy(10, 8);
+        if let Some(g) = self.gear_rect(r) {
+            inner.w = (g.x - 10 - inner.x).max(0);
+        }
         let w = (TAB_W * self.tabs.len() as i32 + 8).min(inner.w * 2 / 3);
         inner.take_right(w).0
     }
@@ -273,6 +297,9 @@ impl Widget for TitleBar {
             t.text_dim,
             &self.subtitle,
         );
+        if let Some(g) = self.gear_rect(r) {
+            paint_gear(cx, g);
+        }
         if self.tabs.is_empty() {
             return;
         }
@@ -312,7 +339,11 @@ impl Widget for TitleBar {
                 self.name_rect(r),
             )
         });
+        let gear = self
+            .gear_rect(r)
+            .map(|g| Target::tap("gear", 0, "Options", g));
         name.into_iter()
+            .chain(gear)
             .chain(
                 (0..self.tabs.len())
                     // The page shown: a tap shows nothing new.
@@ -331,10 +362,47 @@ impl Widget for TitleBar {
         if self.opens && self.name_rect(r).contains(x, y) {
             return Some(EventKind::Select(0));
         }
+        if self.gear_rect(r).is_some_and(|g| g.contains(x, y)) {
+            return Some(EventKind::Select(GEAR));
+        }
         let i = (0..self.tabs.len()).find(|&i| self.tab_rect(r, i).contains(x, y))?;
         self.active = i;
         Some(EventKind::Tab(i))
     }
+}
+
+/// The event a tap on the gear sends: `EventKind::Select(GEAR)` (the
+/// name's is `Select(0)`).
+pub const GEAR: usize = 1;
+
+/// A gear on a raised button in `b`: the options.
+pub fn paint_gear(cx: &mut PaintCx, b: Rect) {
+    let t = cx.theme.clone();
+    cx.canvas.fill_round_rect(b, 10, t.raised);
+    cx.canvas.stroke_round_rect(b, 10, 1, t.outline);
+    let (cx0, cy0) = ((b.x + b.w / 2) as f32, (b.y + b.h / 2) as f32);
+    // Eight teeth round a ring.
+    for k in 0..8 {
+        let a = k as f32 * std::f32::consts::FRAC_PI_4;
+        let (s, c) = a.sin_cos();
+        crate::draw::stroke(
+            cx.canvas,
+            b,
+            &[
+                (cx0 + c * 6.5, cy0 + s * 6.5),
+                (cx0 + c * 10.0, cy0 + s * 10.0),
+            ],
+            2.6,
+            t.text,
+        );
+    }
+    let ring: Vec<(f32, f32)> = (0..=16)
+        .map(|k| {
+            let a = k as f32 * std::f32::consts::PI / 8.0;
+            (cx0 + a.cos() * 6.0, cy0 + a.sin() * 6.0)
+        })
+        .collect();
+    crate::draw::stroke(cx.canvas, b, &ring, 2.2, t.text);
 }
 
 // ---------------------------------------------------------------- visuals
