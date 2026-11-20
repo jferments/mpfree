@@ -1,10 +1,10 @@
 <!--
-covers: rust/mpfree-app/src/instrument_list.rs rust/mpfree-app/src/project.rs rust/mpfree-app/src/app/pads_preview.rs
+covers: rust/mpfree-app/src/instrument_list.rs rust/mpfree-app/src/project.rs rust/mpfree-app/src/app/pads_preview.rs rust/mpfree-seq/src/lib.rs rust/mpfree-seq/src/save.rs
 checked: 2026-11-20 c5b97009
 -->
 # Instruments apart from tracks
 
-**Status:** step 1 on main (Play on the pads, #722, train 124, 20 Nov 2026); step 2a built (the shared synth as instrument 1 of the project's list, project format 2, `rust/mpfree-app/src/instrument_list.rs`, 20 Nov 2026); step 2b built (the tracks' own instruments in the list, 20 Nov 2026). Jay approved the plan and its five answers on 20 Nov 2026 (11:16 UTC). The plan, its rules and the reviews it went through: "Instruments, pads and tracks: the redesign" (https://claude.ai/artifact/A2iE1bDqPxk2uSJABCgTJg). Nothing here has run on the MPC One yet.
+**Status:** step 1 on main (Play on the pads, #722, train 124, 20 Nov 2026); step 2a built (the shared synth as instrument 1 of the project's list, project format 2, `rust/mpfree-app/src/instrument_list.rs`, 20 Nov 2026); step 2b built (the tracks' own instruments in the list, 20 Nov 2026); step 2c built (tracks get lasting ids, `rust/mpfree-seq`, 20 Nov 2026). Jay approved the plan and its five answers on 20 Nov 2026 (11:16 UTC). The plan, its rules and the reviews it went through: "Instruments, pads and tracks: the redesign" (https://claude.ai/artifact/A2iE1bDqPxk2uSJABCgTJg). Nothing here has run on the MPC One yet.
 
 ## The model
 
@@ -32,7 +32,7 @@ The step goes in three slices, each proven with the shared Poly before the next:
 
 - **2a (built):** the shared synth becomes instrument 1 of the project's list, and tracks on it point at it by that id. It saves, loads and plays exactly as before.
 - **2b (built):** the tracks' own instruments join the list, each with its own id.
-- **2c:** tracks get lasting ids too, so knob owners (step 4) and anything else that must survive moving tracks has something steady to point at.
+- **2c (built):** tracks get lasting ids too, so knob owners (step 4) and anything else that must survive moving tracks has something steady to point at.
 
 ### 2a as built
 
@@ -72,3 +72,11 @@ What plays is unchanged: the track kits a project opens with are the same as bef
 - **Their sounds stay where they were**, in the instruments part, named by track (`track 2 mpfree.fm`): a track has one at most, so the list's track tells which block is which instrument. When step 4 lets tracks send to instruments, the blocks move to ids.
 - **On open** (`project::own_ids`): every track the instruments part gave an instrument keeps the id the list gives it, or gets the next one. In a project with no format line (saved before instruments had ids) that is every one, in track order, and nothing is said. In a newer one, a track's instrument with no id in the list, and an id whose track has no instrument (not in the part, or it couldn't be made), are each said, and the list is put right. A track in the track kits part pointed at a track's own instrument plays kit 1, said: tracks can't point at another track's instrument until step 4.
 - **Tests:** `instrument_list::tests::a_tracks_own_instrument_keeps_its_id_and_ids_are_never_given_twice`, `the_next_id_is_kept_through_the_text`; `instruments::tests::the_list_of_instruments_follows_the_tracks_own` (with real instruments: a new sound keeps the id, out and in again is a new id); `project::tests::the_tracks_own_instruments_get_ids_that_come_back` (an old project's FM on track 2 and Poly on track 4 become instruments 2 and 3, saved and opened again), `a_list_that_disagrees_with_the_instruments_part_is_put_right_and_said`.
+
+### 2c as built
+
+- **`mpfree_seq::TrackId`** on every `Track` (`Track::id`), and `Project::next_track`, the id the next track gets. `TrackId::NONE` (0) is a track with none yet: one just made with `Track::new`, or read from a project saved before tracks had ids.
+- **Given in one place each.** `Project::give_track_id` gives a track going in the next id (or keeps its own if no other track has it), never allocating: `Takes::add_track_as` (ADD TRACK, Rec's new track, a Loop track) and `loops::place` (a Loop track a recording makes). `Project::give_track_ids` gives every track without one, or sharing an earlier track's, the next id in track order: `TimeHost::with_project` calls it, so every track in the time engine has one. The take keeps the track with its id, so UNDO takes it away and REDO brings back the same track; a track added after the UNDO gets the next id, never its.
+- **Saved in the clips part:** `nexttrack <n>` before the tracks and `id <n>` after each track's name. An older build skips both lines. A project without them gets 1, 2, 3 ... as it opens, saying nothing; one that has `nexttrack` but a track without an id, or two sharing one, gets new ones for those, said (`project::opening`).
+- **Nothing reads them yet.** Tracks can't be moved or deleted from the middle today (UNDO takes away only the last added), so a track's place still names it, and the list of instruments, the track kits and the instruments part keep naming tracks by place. Step 4's knob owners are the first to use the ids (their priority), and anything that lets tracks move will switch those parts to ids as it goes in. `Project::track_with(id)` finds a track by its id.
+- **Tests:** `mpfree_seq` `track_id_tests::tracks_get_lasting_ids_that_are_never_given_twice`, `save::track_id_tests::track_ids_and_the_next_id_come_back`; `mpfree_play` `takes::tests::an_added_track_has_a_lasting_id_that_undo_and_redo_keep`; `project::tests::tracks_get_lasting_ids_as_a_project_opens`; the whole-session test above also checks that an old song's tracks get 1, 2, 3 ... and keep them through a save and an open.

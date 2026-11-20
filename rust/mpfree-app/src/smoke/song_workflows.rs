@@ -125,7 +125,11 @@ mod tests {
             let mut l = lab("open");
             for song in songs::all() {
                 open(&mut l.s, song.name);
-                assert_eq!(l.s.time.project(), &song.clips, "{}", song.name);
+                // As written, its tracks with the lasting ids an open
+                // gives them.
+                let mut written = song.clips.clone();
+                written.give_track_ids();
+                assert_eq!(l.s.time.project(), &written, "{}", song.name);
                 assert_eq!(l.s.app.settings.bpm, song.tempo, "{}", song.name);
                 l.s.run_for(0.1);
                 assert_eq!(l.s.time.info().swing, song.swing, "{}", song.name);
@@ -543,6 +547,12 @@ mod tests {
             assert_eq!(s.track_kits.kit_of(2), Some(1), "track 3 plays kit 2");
             assert_eq!(s.instrument_list, InstrumentList::new());
             let kits = s.track_kits.clone();
+            // Step 2c: its tracks have lasting ids now, 1, 2, 3 ...
+            let track_ids = |s: &Session| -> Vec<u32> {
+                s.time.project().tracks.iter().map(|t| t.id.0).collect()
+            };
+            let ids = track_ids(s);
+            assert_eq!(ids, (1..=ids.len() as u32).collect::<Vec<_>>());
             let played = notes(s);
             assert!(!played.is_empty(), "the song played");
             assert!(
@@ -569,6 +579,8 @@ mod tests {
                 snap.part(TRACK_KITS),
                 Some("mpfree-track-kits 2\ntrack 2 instrument 1\ntrack 3 kit 2\n")
             );
+            let clips = snap.part(crate::project::CLIPS).expect("the clips");
+            assert!(clips.contains(&format!("nexttrack {}\n", ids.len() + 1)));
 
             s.button("BROWSE");
             s.press("browser", "place", "Projects");
@@ -581,6 +593,7 @@ mod tests {
 
             open(s, name);
             assert_eq!(s.track_kits, kits, "every track plays what it played");
+            assert_eq!(track_ids(s), ids, "every track keeps its id");
             assert_eq!(s.instrument_list, InstrumentList::new());
             assert_eq!(notes(s), played, "the same notes");
         });

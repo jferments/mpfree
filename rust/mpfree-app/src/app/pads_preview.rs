@@ -62,13 +62,15 @@ pub fn unfit(
     // name must be this track's own default, "Track 2" for the second: a
     // track renamed "Track 99" is set up (the design review of 20 Nov's
     // second pass). A track after a deleted one keeps its old name and so
-    // counts as set up too, the safe way, until tracks get lasting ids
-    // (the redesign's step 2). Never allocates.
+    // counts as set up too, the safe way: tracks can't be deleted from
+    // the middle yet, and when they can, the track's lasting id (step 2c)
+    // is the way to tell. Never allocates (an empty name allocates
+    // nothing).
     let named = k
         .name
         .strip_prefix("Track ")
         .is_some_and(|n| !n.starts_with(['0', '+']) && n.parse::<usize>() == Ok(t + 1));
-    if !named || *k != Track::new(&k.name, k.dest) {
+    if !named || !k.same_settings(&Track::new("", k.dest)) {
         return Some("has settings of its own");
     }
     app_side(t)
