@@ -709,8 +709,9 @@ pub struct Settings {
     pub loop_monitor: bool,
     /// What the looper records: the pads (the default) or the line input.
     pub loop_source: LoopSource,
-    /// Bars in the looper's next first pass (None, the default: free,
-    /// until STOP or Record again).
+    /// Bars in the looper's next first pass: the pattern's length
+    /// (`Some(PATTERN_BARS)`, the default: looping.rs), None for free
+    /// (until STOP or Record again), or a number of bars.
     pub loop_bars: Option<u32>,
     /// Input latency the looper makes up for, in frames; estimated from
     /// the audio buffer until set by hand.
@@ -779,11 +780,12 @@ pub const EXPORT_RATES: [u32; 2] = [44_100, 48_000];
 pub const METRONOME_DBS: [i8; 6] = [-36, -30, -24, -18, -12, -6];
 
 impl Settings {
-    /// The latency the looper makes up for: none for the pads, which are
-    /// in time with the transport.
+    /// The latency the looper makes up for: none for the pads or a mix,
+    /// which are in time with the transport (the host makes up the mix's
+    /// own).
     pub fn loop_latency_now(&self) -> u32 {
         match self.loop_source {
-            LoopSource::Pads => 0,
+            LoopSource::Pads | LoopSource::Mix(_) => 0,
             LoopSource::Line => self.loop_latency,
         }
     }
@@ -807,7 +809,7 @@ impl Default for Settings {
             loop_monitor: false,
             loop_source: LoopSource::Pads,
             // REC + PLAY records until STOP, as on the MPC (Jay, 16 Nov).
-            loop_bars: None,
+            loop_bars: Some(crate::looping::PATTERN_BARS),
             loop_latency: crate::looping::estimated_latency(3),
             loop_latency_set: false,
             loop_level_db: 0.0,
@@ -4420,6 +4422,17 @@ impl App {
         fx
     }
 
+    /// Records from (the Looper tab's picker): a mix, the master or one
+    /// strip (a track or a submix), as `mixing::MixHost::loop_take` takes it.
+    pub fn loop_mix(&mut self, strip: mpfree_fx::StripId) -> Vec<Effect> {
+        let mut fx = self.set_loop_source(LoopSource::Mix(strip));
+        if !fx.is_empty() {
+            self.save_dirty = true;
+            fx.push(Effect::Settings(self.settings.clone()));
+        }
+        fx
+    }
+
     /// Record from `source`, with the latency that goes with it.
     fn set_loop_source(&mut self, source: LoopSource) -> Vec<Effect> {
         if source == self.settings.loop_source {
@@ -4825,7 +4838,9 @@ impl App {
                 "What the looper records: the pads and the",
                 "synth (before the click), or the line input.",
                 "Turning Line input on picks it; recording",
-                "the pads opens nothing.",
+                "the pads opens nothing. A mix (the master,",
+                "a track or a submix) is picked on the",
+                "Looper tab, under Records from.",
             ],
             Item::LoopMonitor => vec![
                 "Hear the line input through the outputs,",
@@ -4833,10 +4848,11 @@ impl App {
                 "the instrument another way.",
             ],
             Item::LoopBars => vec![
-                "How long the looper's first pass is: free",
-                "(until STOP, or the bar line after Record",
-                "again) or 1, 2, 4 or 8 bars. STOP keeps what",
-                "you played, to the next bar line.",
+                "How long the looper's first pass is: the",
+                "pattern's length (the longest clip playing),",
+                "free (until STOP, or the bar line after",
+                "Record again) or 1, 2, 4 or 8 bars. STOP",
+                "keeps what you played, to the next bar line.",
             ],
             Item::LoopLatency => vec![
                 "How late your playing reaches the looper and",
@@ -5327,7 +5343,14 @@ impl App {
                 }
             }
             Item::LoopBars => {
-                const BARS: [Option<u32>; 5] = [Some(1), Some(2), Some(4), Some(8), None];
+                const BARS: [Option<u32>; 6] = [
+                    Some(crate::looping::PATTERN_BARS),
+                    Some(1),
+                    Some(2),
+                    Some(4),
+                    Some(8),
+                    None,
+                ];
                 s.loop_bars = cycle(&BARS, s.loop_bars, d);
                 fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetBars(
                     s.loop_bars,
@@ -6499,21 +6522,21 @@ mod tests {
             Some(Effect::Menu(m)) => m.rows[at].1.clone(),
             _ => panic!("{fx:?}"),
         };
-        assert_eq!(app.item_text(Item::LoopMemory).1, "5 min, 120 MB");
+        assert_eq!(app.item_text(Item::LoopMemory).1, "5 min, 131 MB");
         let fx = app.step_item(at, 1);
-        assert_eq!(value(&fx), "10 min, 230 MB (next start)");
+        assert_eq!(value(&fx), "10 min, 240 MB (next start)");
         assert!(fx.contains(&Effect::Note(
             "loop memory: 10 min from the next start (now 5 min)".into()
         )));
-        assert_eq!(value(&app.step_item(at, 1)), "20 min, 448 MB (next start)");
-        assert_eq!(value(&app.step_item(at, 1)), "20 min, 448 MB (next start)");
+        assert_eq!(value(&app.step_item(at, 1)), "20 min, 458 MB (next start)");
+        assert_eq!(value(&app.step_item(at, 1)), "20 min, 458 MB (next start)");
         for _ in 0..5 {
             app.step_item(at, -1);
         }
         assert_eq!(app.settings.loop_memory, LoopMemory::Min1);
         assert_eq!(
             app.item_text(Item::LoopMemory).1,
-            "1 min, 33 MB (next start)"
+            "1 min, 44 MB (next start)"
         );
         // Kept as minutes; the next start makes it and says no more.
         let kept = app.app_settings();
@@ -6523,7 +6546,7 @@ mod tests {
         assert_eq!(next.settings.loop_memory, LoopMemory::Min1);
         assert!(notes[0].contains(", loop memory 1 min,"), "{notes:?}");
         next.set_loop_memory_now(LoopMemory::Min1);
-        assert_eq!(next.item_text(Item::LoopMemory).1, "1 min, 33 MB");
+        assert_eq!(next.item_text(Item::LoopMemory).1, "1 min, 44 MB");
         // A size it doesn't offer is left out, and the default stays.
         let mut odd = mpfree_store::Settings::default();
         odd.set_i64("loop-memory", 7);
@@ -8015,6 +8038,18 @@ mod tests {
                 .all(|e| !matches!(e, Effect::Looper(_))),
             "already the pads"
         );
+        // A mix, picked on the Looper tab: in time, so no latency; Prefs
+        // says so, and steps back to the pads or the line input from it.
+        let strip = mpfree_fx::StripId::Bus(2);
+        let fx = app.loop_mix(strip);
+        assert!(
+            fx.contains(&source(LoopSource::Mix(strip))) && fx.contains(&latency(0)),
+            "{fx:?}"
+        );
+        assert!(app.loop_mix(strip).is_empty(), "already that mix");
+        assert_eq!(app.item_text(Item::LoopSource).1, "A mix (Looper tab)");
+        let fx = app.step_item(0, 1);
+        assert!(fx.contains(&source(LoopSource::Line)), "{fx:?}");
     }
 
     #[test]

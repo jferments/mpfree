@@ -291,3 +291,38 @@ fn the_period_size_changes_nothing() {
         assert_eq!(go(period), a, "period {period}");
     }
 }
+
+#[test]
+fn capture_to_takes_bars_ending_on_any_bar_line_still_kept() {
+    // Bar 9, beat 2: bars 3 to 5 (ending on bar 6's line, tick 5 bars),
+    // long gone from "the last bars", are still kept.
+    let mut r = played(64, 8 * BAR + 6_000);
+    let end = 5 * BAR_TICKS;
+    let t = r.l.capture_take_to(end, 3).expect("kept");
+    assert_eq!(
+        (t.bars, t.origin, t.ticks),
+        (3, 2 * BAR_TICKS, 3 * BAR_TICKS)
+    );
+    r.cmd(L::CaptureTo(end, 3));
+    r.run(r.frame + 64);
+    assert!(r.l.status().capturing.is_some(), "copying in");
+    r.until_playing(2 * BAR);
+    let s = r.l.status();
+    assert_eq!(
+        (s.frames, s.ticks, s.origin),
+        (3 * BAR as usize, 3 * BAR_TICKS, 2 * BAR_TICKS)
+    );
+    let a = r.layer();
+    for (j, x) in a[..a.len() - FADE].iter().enumerate() {
+        assert_eq!(*x, heard(2 * BAR + j as u64), "frame {j}");
+    }
+    // A bar line never heard (or no longer kept) is refused.
+    r.cmd(L::Clear);
+    r.run(r.frame + 2 * FADE as u64);
+    assert_eq!(r.l.capture_take_to(BAR_TICKS / 2, 1), None);
+    let refused = r.l.stats().refused;
+    r.cmd(L::CaptureTo(BAR_TICKS / 2, 1));
+    r.run(r.frame + 64);
+    assert_eq!(r.l.status().capturing, None);
+    assert_eq!(r.l.stats().refused, refused + 1);
+}
