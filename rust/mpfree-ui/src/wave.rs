@@ -1173,6 +1173,9 @@ pub struct WaveOverview {
     /// The frames the waveform shows.
     shown: (f64, f64),
     region: Option<(u64, u64)>,
+    /// A few words in its top right corner ("1.0× · start"): what the
+    /// zoom is, where the page has no card for it.
+    label: String,
 }
 
 impl Default for WaveOverview {
@@ -1187,7 +1190,19 @@ impl WaveOverview {
             peaks: None,
             shown: (0.0, 0.0),
             region: None,
+            label: String::new(),
         }
+    }
+
+    /// The words in its top right corner (empty: none).
+    pub fn set_label(&mut self, label: &str) {
+        if self.label != label {
+            self.label = label.to_string();
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        &self.label
     }
 
     pub fn set_peaks(&mut self, peaks: Option<Arc<dyn Peaks>>) {
@@ -1260,6 +1275,19 @@ impl Widget for WaveOverview {
         );
         cx.canvas.fill_round_rect(b, 6, t.accent.with_alpha(40));
         cx.canvas.stroke_round_rect(b, 6, 2, t.accent);
+        if !self.label.is_empty() {
+            let w = cx.measure(FontId::Sans, 11.0, &self.label) + 12;
+            let tag = Rect::new(r.right() - w - 4, r.y + 4, w, 16);
+            cx.canvas.fill_round_rect(tag, 6, t.surface.with_alpha(220));
+            cx.text(
+                FontId::Sans,
+                11.0,
+                tag,
+                Align::Center,
+                t.text_dim,
+                &self.label,
+            );
+        }
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
