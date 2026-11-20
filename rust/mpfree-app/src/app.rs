@@ -7328,6 +7328,18 @@ mod tests {
         p.tracks[1].record_quantise = Some(96);
         assert_eq!(unfit(&p, 0, free), Some("has settings of its own"));
         assert_eq!(unfit(&p, 1, free), Some("has settings of its own"));
+        // Renamed to look like a default name: still set up. Only the
+        // track's own default ("Track 6" for the sixth) is free.
+        for name in ["Track 99", "Track 06", "Track +6", "Track 5", "Track 6 "] {
+            p.tracks[5].name = name.into();
+            assert_eq!(
+                unfit(&p, 5, free),
+                Some("has settings of its own"),
+                "{name}"
+            );
+        }
+        p.tracks[5].name = "Track 6".into();
+        assert_eq!(unfit(&p, 5, free), None);
         // What the app holds: a kit picked on track 4, mixer settings on 5.
         let app_side = |t: usize| match t {
             3 => Some("has a kit or a MIDI output picked"),
