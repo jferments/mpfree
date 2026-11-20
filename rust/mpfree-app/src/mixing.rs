@@ -16,14 +16,14 @@
 //!   limiter at -0.3 dBFS) takes the place of the clip at full scale.
 //! - The metronome goes on after the mixer, as before: never recorded or
 //!   limited (it keeps itself within ±1).
-//! - What the looper records from the pads ([`MixHost::pads_wet`]): the
-//!   pads and the synth as they are heard, with their tracks' effects and
-//!   faders and what the send returns add: the master's input, without the
-//!   Loop track, the Audio track and the line input. It comes a period late
-//!   (the looper runs before the mixer), and the looper makes that up. When
-//!   one of those three can't be taken out (it goes to a submix, or a
-//!   plugin's latency puts it out of step), the looper records the drums
-//!   and the synth as the engines make them, dry, and says why.
+//! - What the looper records from the pads ([`MixHost::pads_strip`],
+//!   [`MixHost::loop_take`]): the strip of what the pads play, after its
+//!   effects and fader, so a pattern on another track stays out. It comes
+//!   a period late (the looper runs before the mixer), and the looper
+//!   makes that up. When the strip can't be had, the looper records the
+//!   drums and the synth as the engines make them, dry, and says why.
+//!   [`MixHost::pads_wet`] (the master's input without the Loop track,
+//!   the Audio track and the line input) is the pads as they were before.
 //!
 //! The Play page's effects are inserts from the start ([`PlayFx`]): a DJ
 //! filter on the Drums and Loop tracks (the Filter Q-Links), a 1/8 dotted
@@ -1987,9 +1987,36 @@ impl MixHost {
         Ok(latency)
     }
 
+    /// The strip the pads sound on while they play track `t`, for the
+    /// looper's Records from: Pads, so it records what the pads play and
+    /// not the whole mix (Jay, 20 Nov: a pattern on another track stays
+    /// out). `own`: the track holds an instrument of its own, which plays
+    /// into its channel. Otherwise its entry in the kits, `kit` (None: the
+    /// shared synth, on the Synth strip): kit 1, and a kit no track homes,
+    /// on Drums (through the pad channels); another kit in the channel of
+    /// the first track that plays it (`homes`,
+    /// [`crate::sampler::TrackKits::homes`]), as [`Pads`] and export's
+    /// stems find them. A pattern that plays the same instrument shares
+    /// its strip, so it is heard there too.
+    pub fn pads_strip(&self, own: bool, t: usize, kit: Option<usize>, homes: &[u8]) -> StripId {
+        StripId::Track(if own {
+            self.track_channel(t)
+        } else {
+            match kit {
+                None => SYNTH,
+                Some(k) => match homes.get(k).copied().unwrap_or(0) {
+                    0 => DRUMS,
+                    h => self.track_channel(usize::from(h) - 1),
+                },
+            }
+        })
+    }
+
     /// What the looper records into `left` and `right` this period, and its
     /// latency, as [`MixHost::pads_wet`] says them: `from` None is the
-    /// pads ([`MixHost::pads_wet`]); the master is all its input but the
+    /// master's input less the loops ([`MixHost::pads_wet`], where the
+    /// capture point rests with Line in picked; the pads are their strip,
+    /// [`MixHost::pads_strip`]); the master is all its input but the
     /// Loop track (the audio tracks and the line input stay in, before
     /// the master's effects and fader, as the pads are); any other strip,
     /// a track or a submix, is what it sends on, after its fader. Never the
@@ -3207,6 +3234,33 @@ mod tests {
         // The Loop track on a submix: it can't be taken out.
         let (_, why) = go(true, true);
         assert_eq!(why, Some("the Loop track goes to a submix"));
+    }
+
+    /// The looper's Pads: the strip of what the pads play, by what the
+    /// track on them plays.
+    #[test]
+    fn the_pads_strip_is_where_the_track_on_the_pads_sounds() {
+        let h = MixHost::new(RATE, -6.0, -6.0);
+        // Kit 1 (and a kit no track homes) through the pad channels to
+        // Drums; the shared synth on Synth.
+        assert_eq!(
+            h.pads_strip(false, 0, Some(0), &[0, 0]),
+            StripId::Track(DRUMS)
+        );
+        assert_eq!(
+            h.pads_strip(false, 3, Some(1), &[0, 0]),
+            StripId::Track(DRUMS)
+        );
+        assert_eq!(h.pads_strip(false, 2, None, &[0, 0]), StripId::Track(SYNTH));
+        // Kit 2 homed on track 3: its channel, whichever track plays it.
+        let home = StripId::Track(h.track_channel(2));
+        assert_eq!(h.pads_strip(false, 5, Some(1), &[0, 3]), home);
+        // A track's own instrument: its own channel.
+        assert_eq!(
+            h.pads_strip(true, 4, Some(0), &[0, 0]),
+            StripId::Track(h.track_channel(4))
+        );
+        assert_eq!(name(StripId::Track(h.track_channel(4))), "Track 5");
     }
 
     /// The looper's mix choices: a track after its fader (the loop and

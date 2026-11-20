@@ -160,9 +160,11 @@ pub fn bars_words(first: i64, bars: u32) -> String {
 /// Where the looper records from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LoopSource {
-    /// The pad player's own sound (kits, grains and the synth) after the
-    /// master level, before the click and the loop. Opens nothing, and
-    /// needs no latency made up.
+    /// What the pads play: the strip of the armed track's instrument or
+    /// kit, after its effects and fader
+    /// ([`crate::mixing::MixHost::pads_strip`]), so a pattern on another
+    /// track stays out; one on the same instrument is heard with it.
+    /// Opens nothing, and is heard in time like a mix.
     #[default]
     Pads,
     /// The MPC's line input (Prefs, Line input).
@@ -1173,6 +1175,10 @@ pub struct LoopHost {
     pads_latency: u32,
     /// Why the pads are recorded dry, when they are.
     pads_dry: Option<&'static str>,
+    /// The strip Records from: Pads takes ([`LoopHost::pads_from`]): None
+    /// while the source isn't the pads, Some(None) while they play MIDI
+    /// out (silence).
+    pads_strip: Option<Option<mpfree_fx::StripId>>,
     /// The latency the looper was last given.
     latency_set: u32,
     /// Whether the looper was last told to listen by ear (the line input)
@@ -1571,6 +1577,7 @@ impl LoopHost {
             pads_r: [0.0; PERIOD],
             pads_latency: 0,
             pads_dry: None,
+            pads_strip: None,
             latency_set: 0,
             by_ear_set: false,
             played_at: None,
@@ -2553,6 +2560,28 @@ impl LoopHost {
         self.pads_latency = 0;
     }
 
+    /// The strip Records from: Pads takes this period: what the pads play
+    /// (`Some(Some(strip))`, [`crate::mixing::MixHost::pads_strip`]), MIDI
+    /// out (`Some(None)`: silence), or None while the source is another.
+    /// A line for the log when it changes (a track picked, a kit or an
+    /// instrument given to it), so what the loop hears is never a guess.
+    pub fn pads_from(&mut self, strip: Option<Option<mpfree_fx::StripId>>) -> Option<String> {
+        if strip == self.pads_strip {
+            return None;
+        }
+        self.pads_strip = strip;
+        match strip? {
+            Some(s) => Some(format!(
+                "looper: Pads records {}, what the pads play",
+                crate::mixing::name(s)
+            )),
+            None => Some(
+                "looper: Pads records silence: the pads play MIDI out, which sounds outside mpfree"
+                    .to_string(),
+            ),
+        }
+    }
+
     /// The pads' sound for this period as the app records it: wet from the
     /// mixer, `latency` frames late after the period it lags
     /// ([`crate::mixing::MixHost::pads_wet`]), or dry from the engines, in
@@ -2573,6 +2602,10 @@ impl LoopHost {
             return None;
         }
         self.pads_dry = dry;
+        // The pads on MIDI out: silence, said by `pads_from`.
+        if self.pads_strip == Some(None) && dry.is_some() {
+            return None;
+        }
         let mix = matches!(self.source, LoopSource::Mix(_));
         Some(match (dry, mix) {
             (None, false) => "looper: records the pads with their effects again".to_string(),
@@ -4516,6 +4549,28 @@ mod tests {
 
     /// Records from a mix (a strip or the master) the same way: in time,
     /// the mix's latency made up; its trouble is said as a mix's.
+    #[test]
+    fn pads_says_which_strip_it_records_and_silence_on_midi_out() {
+        use mpfree_fx::StripId;
+        let mut h = LoopHost::new(44_100, 8);
+        let drums = Some(Some(StripId::Track(crate::mixing::DRUMS)));
+        assert_eq!(
+            h.pads_from(drums).as_deref(),
+            Some("looper: Pads records Drums, what the pads play")
+        );
+        assert_eq!(h.pads_from(drums), None, "said once");
+        let synth = Some(Some(StripId::Track(crate::mixing::SYNTH)));
+        assert_eq!(
+            h.pads_from(synth).as_deref(),
+            Some("looper: Pads records Synth, what the pads play")
+        );
+        assert!(h.pads_from(Some(None)).unwrap().contains("silence"));
+        // Silence on MIDI out isn't said again as the pads recorded dry.
+        let z = [0f32; PERIOD];
+        assert_eq!(h.take_pads_as(&z, &z, Err("the pads play MIDI out")), None);
+        assert_eq!(h.pads_from(None), None, "another source: nothing to say");
+    }
+
     #[test]
     fn a_mix_is_recorded_in_time_like_the_pads() {
         let strip = mpfree_fx::StripId::Bus(0);
