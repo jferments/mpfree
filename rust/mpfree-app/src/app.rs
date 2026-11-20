@@ -41,7 +41,7 @@ pub use mapper::{Code, MapView, Mark};
 use mpfree_arp::scale::pads::Pad as PadNotes;
 pub use pads_focus::{synth_track, PadFocus, SynthTake};
 pub use step_pads::StepPads;
-pub use synth_pads::SynthItem;
+pub use synth_pads::{sent_name, SynthItem};
 
 use crate::cores::SoundCores;
 use crate::looping::{LoopAction, LoopMemory, LoopSource};
@@ -1115,6 +1115,12 @@ pub enum Effect {
         track: usize,
         id: Option<&'static str>,
     },
+    /// The Instrument row: track `track` plays track `to`'s instrument
+    /// (instrument redesign step 4), its own instrument taken out first.
+    TrackSend {
+        track: usize,
+        to: usize,
+    },
     /// What the pads play changed: the synth the Synth tab shows,
     /// whichever track is selected, or the selected track's instrument
     /// again (app/pads_focus.rs).
@@ -1536,6 +1542,10 @@ pub struct App {
     /// the audio loop last said ([`App::set_track_sound`]); the Synth tab's
     /// Instrument row shows and sets the armed track's.
     track_sounds: [Option<crate::instruments::Held>; mpfree_seq::MAX_TRACKS],
+    /// The track whose instrument each track plays though it has none of
+    /// its own (step 4), as the audio loop last said
+    /// ([`App::set_track_sends`]).
+    track_sends: [Option<u8>; mpfree_seq::MAX_TRACKS],
     /// The plugin synths found (node id, name), offered on the Instrument row
     /// after the built-in engines.
     pub plugin_synths: Vec<(&'static str, &'static str)>,
@@ -1748,6 +1758,7 @@ impl App {
             scale_pick: 0,
             synth_pads: Default::default(),
             track_sounds: [None; mpfree_seq::MAX_TRACKS],
+            track_sends: [None; mpfree_seq::MAX_TRACKS],
             plugin_synths: Vec::new(),
             pad_scale_pick: 0,
             pad_scale_root: 0,
@@ -7488,6 +7499,73 @@ mod tests {
         assert!(app.generating());
         assert!(app.arp_ends_pads_synth().is_empty());
         assert!(app.pads_chose_synth());
+    }
+
+    /// Step 4: the Instrument row offers the other tracks' own
+    /// instruments right after Kit ("Track 3's FM"): a pick plays that one
+    /// from the selected track, and Kit gives it its kit back. A track
+    /// that has its own and picks another's gives up its own, and the
+    /// tracks that played it play their kits.
+    #[test]
+    fn the_instrument_row_plays_another_tracks_instrument() {
+        use crate::instruments::Held;
+        use crate::synth::Engine;
+        let mut app = ready();
+        app.open_tab(View::Synth);
+        press(&mut app, MENU);
+        let row = synth_pads::SYNTH_OPTIONS
+            .iter()
+            .position(|&i| i == Item::Synth(SynthItem::Engine))
+            .unwrap();
+        let send = |fx: &[Effect]| {
+            fx.iter().find_map(|e| match e {
+                Effect::TrackSend { track, to } => Some((*track, *to)),
+                _ => None,
+            })
+        };
+        let fm = Held {
+            id: Engine::Fm.node_id(),
+            name: "FM",
+            instance: 0,
+        };
+        app.set_track_sound(2, Some(fm));
+        app.set_track(4);
+        let _ = app.take_project_edit();
+        let fx = app.step_item(row, 1);
+        assert_eq!(send(&fx), Some((4, 2)));
+        assert_eq!(
+            app.synth_item_text(SynthItem::Engine),
+            ("Track 5 instrument", "Track 3's FM".to_string())
+        );
+        assert_eq!(app.track_send(4), Some(2));
+        assert!(app.track_plays_instrument(4) && app.take_project_edit());
+        // On past it, a new instrument of its own: Poly first.
+        let fx = app.step_item(row, 1);
+        assert!(fx.iter().any(|e| matches!(
+            e,
+            Effect::TrackSound { track: 4, id: Some(id) } if *id == Engine::Poly.node_id()
+        )));
+        assert_eq!(app.track_send(4), None);
+        // Kit again, past Track 3's FM.
+        app.step_item(row, -1);
+        app.step_item(row, -1);
+        assert_eq!(app.synth_item_text(SynthItem::Engine).1, "Kit");
+        assert!(!app.track_plays_instrument(4));
+        // Track 3 isn't offered its own; picking track 5's instead gives
+        // its own up, and track 2, which played track 3's, plays its kit.
+        app.set_track_sound(4, Some(fm));
+        app.set_track_sends(&std::array::from_fn(|t| (t == 1).then_some(2)));
+        app.set_track(2);
+        app.step_item(row, -1);
+        assert_eq!(
+            app.track_send(1),
+            Some(2),
+            "a new sound in it keeps track 2 on it"
+        );
+        let fx = app.step_item(row, -1);
+        assert_eq!(send(&fx), Some((2, 4)), "Kit, Track 5's FM, Poly, FM ...");
+        assert_eq!(app.track_sound(2), None);
+        assert_eq!((app.track_send(1), app.track_send(2)), (None, Some(4)));
     }
 
     #[test]

@@ -650,6 +650,90 @@ mod tests {
         });
     }
 
+    /// Instrument redesign step 4: a track plays another track's own
+    /// instrument. In Night Market, Track 2 (Perc) gets its own Poly; with
+    /// Track 3 (Bass) selected, the Synth tab's Instrument row offers
+    /// "Track 2's Poly" right after Kit. Picked, Track 3 plays it (said,
+    /// and Arrange names it), the project keeps it by the instrument's
+    /// id, and it comes back after New project. Kit on Track 2 takes its
+    /// Poly out, and Track 3 plays its kit again, said.
+    #[test]
+    fn a_track_plays_another_tracks_instrument_and_the_project_keeps_it() {
+        on_big_stack(|| {
+            use crate::gui::FromUi;
+            use mpfree_time_ui::TimeAction;
+            let mut l = lab("send");
+            let s = &mut l.s;
+            let name = "Night Market";
+            let lib = s.library.clone().expect("a library");
+            let loc = mpfree_library::Loc::top(mpfree_library::Place::Projects)
+                .join(name)
+                .expect("a project's place");
+            open(s, name);
+            s.give_own(1, crate::synth::Engine::Poly);
+            let pick = |s: &mut Session, track: usize, d: i32| {
+                s.route(FromUi::Time(TimeAction::Arm(Some(track))));
+                s.run_for(0.05);
+                assert_eq!(s.app.track(), track);
+                s.press("header", "tab", "Synth").settle();
+                s.button("MENU").settle();
+                assert_eq!(s.view(), crate::app::View::Options);
+                s.route(FromUi::MenuStep(0, d));
+                s.run_for(0.05);
+                s.button("MENU").settle();
+            };
+            pick(s, 2, 1);
+            assert_eq!(s.mix.instruments.owner(2), Some(1), "{:?}", s.said());
+            assert_eq!(s.app.track_send(2), Some(1));
+            assert!(
+                s.lines.iter().any(|l| l == "track 3: plays Track 2's Poly"),
+                "{:?}",
+                s.said()
+            );
+            s.press("header", "tab", "Arrange").settle();
+            let sounds: Vec<&str> = s.screen.time.tracks[1..3]
+                .iter()
+                .map(|t| t.sound.as_str())
+                .collect();
+            assert_eq!(sounds, ["Poly", "Track 2's Poly"]);
+
+            s.button_with("SHIFT", "BROWSE");
+            let saved = format!("project: saved {name}");
+            assert!(s.until_said(&saved, 5.0), "{saved}: {:?}", s.said());
+            let id = s
+                .instrument_list
+                .own_of(1)
+                .expect("Track 2's Poly has an id");
+            let snap = lib.open_project(&loc).expect("it opens");
+            let kits = snap.part(crate::project::TRACK_KITS).unwrap_or_default();
+            assert!(
+                kits.lines()
+                    .any(|l| l == format!("track 3 instrument {id}")),
+                "{kits}"
+            );
+
+            s.button("BROWSE");
+            s.press("browser", "place", "Projects");
+            s.press("browser", "button", "New project");
+            s.run_for(0.3);
+            assert_eq!(s.mix.instruments.send(2), None, "New: no sends");
+            assert_eq!(s.app.track_send(2), None);
+            open(s, name);
+            assert_eq!(s.mix.instruments.send(2), Some(1), "{:?}", s.said());
+            assert_eq!(s.app.track_send(2), Some(1));
+
+            // Kit on Track 2: its Poly goes, and Track 3 with it.
+            pick(s, 1, -1);
+            assert!(!s.mix.instruments.holds(1));
+            assert_eq!(s.mix.instruments.send(2), None);
+            assert_eq!(s.app.track_send(2), None);
+            let gone = "Track 3 plays its kit again: Track 2's instrument is gone";
+            assert!(s.lines.iter().any(|l| l == gone), "{:?}", s.said());
+            s.press("header", "tab", "Arrange").settle();
+            assert_ne!(s.screen.time.tracks[2].sound, "Track 2's Poly");
+        });
+    }
+
     // ------------------------------------------------------- performing
 
     /// Night Market in song mode (Song on Arrange, Play song, then Play): every

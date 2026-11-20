@@ -29,6 +29,18 @@
 //!   changed. The arp's notes, once the app has given it a layout, are MIDI
 //!   notes already and go in as they are. The host counts each note, so a
 //!   clip and a held pad on the same note never cut each other short.
+//! - **Sends** (instrument redesign step 4): a track with no instrument
+//!   of its own can play another track's ([`Instruments::set_send`]), so
+//!   several tracks share one. Its notes, pads, pedals, wheel and locks go
+//!   to that instrument, whose sound stays in its own track's channel.
+//!   Each track's notes are remembered apart, so a note ends where it
+//!   started even after the send moved, and a send that moves or ends
+//!   first ends the notes the track left sounding there. Taking an
+//!   instrument out ends every send to it (its id is gone for good); a
+//!   new sound in it keeps them (the id stays). [`Instruments::holds`],
+//!   [`Instruments::held`] and [`Instruments::node`] are about the track's
+//!   own instrument; [`Instruments::owner`] and [`Instruments::plays`] say
+//!   what it plays.
 //! - **Putting one in** allocates nowhere here: the builder thread
 //!   (`control.rs`) makes the [`Instrument`] (a copy of a synth engine's
 //!   sound, or a plugin synth in its own process) and the audio loop puts it
@@ -87,7 +99,11 @@ pub const HOST_SLOTS: usize = 2 * SLOTS;
 /// No slot (in [`Instruments::slot_of`]).
 const NO_SLOT: u8 = u8::MAX;
 
+/// No send (in [`Instruments::sends`]).
+const NO_SEND: u8 = u8::MAX;
+
 const _: () = assert!(HOST_SLOTS < NO_SLOT as usize);
+const _: () = assert!(TRACKS <= NO_SEND as usize);
 // `in_use` has a bit for each track.
 const _: () = assert!(TRACKS <= u128::BITS as usize);
 // Each track has its own mixer track after the shared ones.
@@ -122,6 +138,19 @@ pub enum Refused {
     /// The old instrument can't be retired yet (the instruments waiting to
     /// be dropped fill their list): try again in a moment.
     Busy,
+}
+
+/// Why [`Instruments::set_send`] refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SendRefused {
+    /// No such track.
+    NoTrack,
+    /// The track plays its own instrument: take it out first.
+    HasOwn,
+    /// The track it would play has no instrument of its own.
+    NothingThere,
+    /// A track can't send to itself.
+    Itself,
 }
 
 /// The notes one pad started on a slot.
@@ -159,8 +188,6 @@ struct Slot {
     held: Option<Held>,
     /// Pad `p` plays these notes.
     pads: [Pad; PADS],
-    /// The notes each pad started and hasn't ended yet.
-    started: [Started; PADS],
     /// The slot's counts when it was lent to its track.
     base: SlotStats,
 }
@@ -173,7 +200,6 @@ impl Default for Slot {
             pads: std::array::from_fn(|p| {
                 Pad::single(mpfree_arp::scale::pads::BASE_NOTE + p as i16)
             }),
-            started: [Started::default(); PADS],
             base: SlotStats::default(),
         }
     }
@@ -197,6 +223,17 @@ pub struct Instruments {
     /// Track 1's mixer channel: Drums, or its old own channel for a
     /// project saved with settings there ([`Instruments::set_first_channel`]).
     first: usize,
+    /// The track whose instrument track `t` plays though it has none of
+    /// its own ([`NO_SEND`]: none, it plays the pads).
+    sends: [u8; TRACKS],
+    /// The notes each track's pads started and haven't ended yet, by the
+    /// track that played them (not the slot), so two tracks on one
+    /// instrument each end their own.
+    started: Box<[[Started; PADS]; TRACKS]>,
+    /// The notes each track holds by number (a keyboard, the arp with a
+    /// layout), one bit each, so a send that moves ends them where they
+    /// sound.
+    keys: Box<[u128; TRACKS]>,
 }
 
 /// The key of track `track`'s parameter `id` in the lock table.
@@ -220,6 +257,9 @@ impl Instruments {
             cut: 0,
             locks: crate::locks::Under::new(),
             first: crate::mixing::track_channel(0),
+            sends: [NO_SEND; TRACKS],
+            started: Box::new([[Started::default(); PADS]; TRACKS]),
+            keys: Box::new([0; TRACKS]),
         }
     }
 
@@ -255,20 +295,134 @@ impl Instruments {
         }
     }
 
-    /// What track `track` plays (None: the pads).
+    /// Track `track`'s own instrument (None: it has none; it may still
+    /// play another track's, [`Instruments::owner`]).
     pub fn held(&self, track: usize) -> Option<Held> {
         self.slots[self.slot(track)?].held
     }
 
-    /// Whether track `track` plays its own instrument.
+    /// Whether track `track` has its own instrument.
     pub fn holds(&self, track: usize) -> bool {
         self.slot(track).is_some()
     }
 
-    /// Track `track`'s own instrument plays notes (not the Drums engine's
-    /// sounds), so it transposes (sequencer S4).
+    /// The track whose instrument track `track` plays: itself while it
+    /// has its own, else the one it sends to. None: it plays the pads.
+    pub fn owner(&self, track: usize) -> Option<usize> {
+        if self.holds(track) {
+            return Some(track);
+        }
+        let to = usize::from(*self.sends.get(track)?);
+        self.holds(to).then_some(to)
+    }
+
+    /// Whether track `track` plays an instrument here: its own or another
+    /// track's (else it plays the pads).
+    pub fn plays(&self, track: usize) -> bool {
+        self.owner(track).is_some()
+    }
+
+    /// The track whose instrument track `track` plays though it has none
+    /// of its own.
+    pub fn send(&self, track: usize) -> Option<usize> {
+        match self.sends.get(track) {
+            Some(&to) if to != NO_SEND => Some(usize::from(to)),
+            _ => None,
+        }
+    }
+
+    /// The tracks that play track `owner`'s instrument, one bit each.
+    pub fn senders(&self, owner: usize) -> u128 {
+        self.sends
+            .iter()
+            .enumerate()
+            .filter(|&(_, &to)| usize::from(to) == owner)
+            .fold(0, |bits, (t, _)| bits | 1 << t)
+    }
+
+    /// The slot track `track`'s notes go to: its own instrument's, else
+    /// the one it sends to.
+    fn play_slot(&self, track: usize) -> Option<usize> {
+        self.slot(self.owner(track)?)
+    }
+
+    /// Track `track` plays track `to`'s instrument from now on (None:
+    /// the pads again). The notes it left sounding on the old one end
+    /// first. Refused while the track has its own instrument, and when
+    /// `to` has none. Never allocates.
+    pub fn set_send(&mut self, track: usize, to: Option<usize>) -> Result<(), SendRefused> {
+        if track >= TRACKS || to.is_some_and(|t| t >= TRACKS) {
+            return Err(SendRefused::NoTrack);
+        }
+        if self.send(track) == to {
+            return Ok(());
+        }
+        if let Some(to) = to {
+            if self.holds(track) {
+                return Err(SendRefused::HasOwn);
+            }
+            if to == track {
+                return Err(SendRefused::Itself);
+            }
+            if !self.holds(to) {
+                return Err(SendRefused::NothingThere);
+            }
+        }
+        self.end_notes(track, 0);
+        self.sends[track] = to.map_or(NO_SEND, |t| t as u8);
+        Ok(())
+    }
+
+    /// Every send ends (a project opens with its own), each track's notes
+    /// on the instrument it played ending first.
+    pub fn clear_sends(&mut self) {
+        for t in 0..TRACKS {
+            if self.sends[t] != NO_SEND {
+                self.end_notes(t, 0);
+                self.sends[t] = NO_SEND;
+            }
+        }
+    }
+
+    /// Ends the notes track `track` holds on the instrument it plays, its
+    /// pads' and its keys', `offset` frames into the next block.
+    fn end_notes(&mut self, track: usize, offset: u32) {
+        if track >= TRACKS {
+            return;
+        }
+        let started = std::mem::replace(&mut self.started[track], [Started::default(); PADS]);
+        let keys = std::mem::take(&mut self.keys[track]);
+        let Some(s) = self.play_slot(track) else {
+            return;
+        };
+        for st in &started {
+            for &n in st.notes() {
+                self.host.note_off(s, offset, n);
+            }
+        }
+        for n in (0..128u8).filter(|&n| keys >> n & 1 == 1) {
+            self.host.note_off(s, offset, n);
+        }
+    }
+
+    /// Forgets the notes held on track `owner`'s instrument, its own and
+    /// those of the tracks that send to it (its instrument went or was
+    /// silenced).
+    fn forget_notes(&mut self, owner: usize) {
+        for t in 0..TRACKS {
+            if t == owner || usize::from(self.sends[t]) == owner {
+                self.started[t] = [Started::default(); PADS];
+                self.keys[t] = 0;
+            }
+        }
+    }
+
+    /// Track `track`'s instrument (its own or the one it sends to) plays
+    /// notes (not the Drums engine's sounds), so it transposes (sequencer
+    /// S4).
     pub fn plays_notes(&self, track: usize) -> bool {
-        self.held(track)
+        self.owner(track)
+            .and_then(|o| self.held(o))
             .is_some_and(|h| h.id != crate::synth::Engine::Drums.node_id())
     }
 
@@ -370,6 +524,11 @@ impl Instruments {
         self.cut += u64::from(cuts);
         self.host.set_tuning(s, tuning);
         if lend {
+            // A track that played another's instrument plays its own now.
+            if self.send(track).is_some() {
+                self.end_notes(track, 0);
+                self.sends[track] = NO_SEND;
+            }
             self.host.route(s, Some(self.channel(track)));
             self.slots[s].track = Some(track);
             self.slots[s].base = self.host.stats(s);
@@ -378,7 +537,8 @@ impl Instruments {
         let slot = &mut self.slots[s];
         slot.held = Some(held);
         slot.pads = pads;
-        slot.started = [Started::default(); PADS];
+        // The tracks that send to it play the new one (the id stays).
+        self.forget_notes(track);
         // The new instrument starts from its own sound: the old one's
         // locks are forgotten.
         let t = track as u32;
@@ -386,13 +546,16 @@ impl Instruments {
         Ok(())
     }
 
-    /// Takes track `track`'s instrument out, so it plays the pads again.
-    /// The instrument rings out into the track's channel, and its slot is
+    /// Takes track `track`'s instrument out, so it plays the pads again,
+    /// and so do the tracks that sent to it ([`Instruments::senders`]
+    /// before says which). A track that only sends stops sending. The
+    /// instrument rings out into the track's channel, and its slot is
     /// free once it is quiet. False if it can't be retired yet (an older
     /// one still rings out there and the list to drop is full): the track
     /// keeps it. Never allocates.
     pub fn take_out(&mut self, track: usize) -> bool {
         let Some(s) = self.slot(track) else {
+            let _ = self.set_send(track, None);
             return true;
         };
         let cuts = self.host.ringing(s);
@@ -401,9 +564,15 @@ impl Instruments {
             return false;
         }
         self.cut += u64::from(cuts);
-        let slot = &mut self.slots[s];
-        slot.held = None;
-        slot.started = [Started::default(); PADS];
+        self.slots[s].held = None;
+        self.forget_notes(track);
+        for to in self
+            .sends
+            .iter_mut()
+            .filter(|to| usize::from(**to) == track)
+        {
+            *to = NO_SEND;
+        }
         self.slot_of[track] = NO_SLOT;
         let t = track as u32;
         self.locks.forget(|k| k >> 16 == t, |_, _| {});
@@ -418,11 +587,11 @@ impl Instruments {
         }
     }
 
-    /// The pad of track `track`'s own instrument that plays `note` alone
-    /// (its pad map's), for a MIDI file's notes (`midi_file.rs`): None if
-    /// the track holds no instrument, Some(None) if no pad does.
+    /// The pad of the instrument track `track` plays that plays `note`
+    /// alone (its pad map's), for a MIDI file's notes (`midi_file.rs`):
+    /// None if the track plays none, Some(None) if no pad does.
     pub fn pad_of_note(&self, track: usize, note: u8) -> Option<Option<u8>> {
-        let s = self.slot(track)?;
+        let s = self.play_slot(track)?;
         Some(
             self.slots[s]
                 .pads
@@ -440,9 +609,9 @@ impl Instruments {
 
     /// Pad `pad` down on track `track`, `offset` frames into the next
     /// block, its notes moved by the track's live transpose (sequencer S4,
-    /// `shift`). False if the track holds no instrument (it plays the
-    /// pads). Its note-off and pressure reach the notes it started,
-    /// whatever the shift is by then.
+    /// `shift`), on the instrument it plays. False if it plays none (it
+    /// plays the pads). Its note-off and pressure reach the notes it
+    /// started, whatever the shift or the send is by then.
     pub fn pad_on_shifted(
         &mut self,
         track: usize,
@@ -451,15 +620,14 @@ impl Instruments {
         offset: u32,
         shift: &Shift,
     ) -> bool {
-        let Some(s) = self.slot(track) else {
+        let Some(s) = self.play_slot(track) else {
             return false;
         };
-        let slot = &mut self.slots[s];
-        let Some(p) = slot.pads.get(pad) else {
+        let Some(p) = self.slots[s].pads.get(pad) else {
             return true;
         };
         let started = Started::of(p, shift);
-        slot.started[pad] = started;
+        self.started[track][pad] = started;
         for &n in started.notes() {
             self.host.note_on(s, offset, n, velocity.max(1));
         }
@@ -468,10 +636,10 @@ impl Instruments {
 
     /// Pad `pad` up on track `track`: ends the notes it started.
     pub fn pad_off(&mut self, track: usize, pad: usize, offset: u32) -> bool {
-        let Some(s) = self.slot(track) else {
+        let Some(s) = self.play_slot(track) else {
             return false;
         };
-        let Some(st) = self.slots[s].started.get_mut(pad).map(std::mem::take) else {
+        let Some(st) = self.started[track].get_mut(pad).map(std::mem::take) else {
             return true;
         };
         for &n in st.notes() {
@@ -482,10 +650,10 @@ impl Instruments {
 
     /// A clip's or the pad's pressure on pad `pad`'s notes (0 to 127).
     pub fn pad_pressure(&mut self, track: usize, pad: usize, value: u8, offset: u32) -> bool {
-        let Some(s) = self.slot(track) else {
+        let Some(s) = self.play_slot(track) else {
             return false;
         };
-        let Some(st) = self.slots[s].started.get(pad).copied() else {
+        let Some(st) = self.started[track].get(pad).copied() else {
             return true;
         };
         for &note in st.notes() {
@@ -495,19 +663,26 @@ impl Instruments {
         true
     }
 
-    /// A MIDI note on track `track` (the arp's, with a layout).
+    /// A MIDI note on track `track` (the arp's, with a layout; a
+    /// keyboard's), on the instrument it plays.
     pub fn note_on(&mut self, track: usize, note: u8, velocity: u8, offset: u32) -> bool {
-        let Some(s) = self.slot(track) else {
+        let Some(s) = self.play_slot(track) else {
             return false;
         };
+        if note < 128 {
+            self.keys[track] |= 1 << note;
+        }
         self.host.note_on(s, offset, note, velocity.max(1));
         true
     }
 
     pub fn note_off(&mut self, track: usize, note: u8, offset: u32) -> bool {
-        let Some(s) = self.slot(track) else {
+        let Some(s) = self.play_slot(track) else {
             return false;
         };
+        if note < 128 {
+            self.keys[track] &= !(1 << note);
+        }
         self.host.note_off(s, offset, note);
         true
     }
@@ -515,7 +690,7 @@ impl Instruments {
     /// A keyboard's pressure on note `note` of track `track`'s instrument,
     /// while it holds the note.
     pub fn note_pressure(&mut self, track: usize, note: u8, value: u8) -> bool {
-        let Some(s) = self.slot(track) else {
+        let Some(s) = self.play_slot(track) else {
             return false;
         };
         if self.host.holds_note(s, note) {
@@ -535,7 +710,7 @@ impl Instruments {
         value: f32,
         offset: u32,
     ) -> bool {
-        let Some(s) = self.slot(track) else {
+        let Some(s) = self.play_slot(track) else {
             return false;
         };
         self.host.control(s, offset, ctl, value);
@@ -545,7 +720,7 @@ impl Instruments {
     /// A keyboard's pitch wheel on track `track`'s instrument, -1 to 1 of
     /// its bend range.
     pub fn bend(&mut self, track: usize, value: f32) -> bool {
-        let Some(s) = self.slot(track) else {
+        let Some(s) = self.play_slot(track) else {
             return false;
         };
         if value.is_finite() {
@@ -564,7 +739,7 @@ impl Instruments {
         kind: mpfree_node::Expr,
         value: f32,
     ) -> bool {
-        let Some(s) = self.slot(track) else {
+        let Some(s) = self.play_slot(track) else {
             return false;
         };
         if self.host.holds_note(s, note) {
@@ -576,26 +751,34 @@ impl Instruments {
         true
     }
 
-    /// A parameter of track `track`'s instrument (the Synth tab's knobs),
-    /// from the next block's first frame.
+    /// A parameter of the instrument track `track` plays (the Synth
+    /// tab's knobs), from the next block's first frame.
     pub fn param(&mut self, track: usize, id: u16, value: f32) -> bool {
+        let Some(owner) = self.owner(track) else {
+            return false;
+        };
         // Under a clip's lock, the turn is what its end comes back to.
-        self.locks.set(lock_key(track, id), value);
-        self.slot(track)
+        self.locks.set(lock_key(owner, id), value);
+        self.slot(owner)
             .is_some_and(|s| self.host.param(s, 0, id, value))
     }
 
-    /// A clip's lock on parameter `id` of track `track`'s instrument
-    /// (`Owner::Inst`): `Some` sets it on its frame, `offset` frames into
-    /// the next block, `None` puts back the value under it (the sound's
-    /// own, or the last turn on the Synth tab). False when the track has
-    /// no instrument, the instrument has no such parameter (or it is a
-    /// meter), or the table is full.
+    /// A clip's lock on parameter `id` of the instrument track `track`
+    /// plays (`Owner::Inst`): `Some` sets it on its frame, `offset` frames
+    /// into the next block, `None` puts back the value under it (the
+    /// sound's own, or the last turn on the Synth tab). Kept by the
+    /// instrument's track, so two tracks on one instrument share the
+    /// value under a knob (which of them moves it is step 4's knob
+    /// owners). False when the track plays no instrument, the instrument
+    /// has no such parameter (or it is a meter), or the table is full.
     pub fn lock(&mut self, track: usize, id: u16, value: Option<f32>, offset: u32) -> bool {
-        let Some(s) = self.slot(track) else {
+        let Some(owner) = self.owner(track) else {
             return false;
         };
-        let key = lock_key(track, id);
+        let Some(s) = self.slot(owner) else {
+            return false;
+        };
+        let key = lock_key(owner, id);
         let Some(value) = value else {
             if let Some(under) = self.locks.unlock(key) {
                 self.host.param(s, offset, id, under);
@@ -620,29 +803,36 @@ impl Instruments {
         self.host.instrument(self.slot(track)?).map(|i| i.node())
     }
 
-    /// Every note on track `track` ends (a panic, a track muted).
+    /// Every note on track `track` ends (a panic, a track muted): on its
+    /// own instrument every note, the sending tracks' too; on one it
+    /// sends to only its own notes.
     pub fn all_off(&mut self, track: usize) {
         if let Some(s) = self.slot(track) {
-            self.slots[s].started = [Started::default(); PADS];
+            self.forget_notes(track);
             self.host.event(s, Timed::new(0, NodeEvent::AllOff));
+        } else {
+            self.end_notes(track, 0);
         }
     }
 
     /// Every note on every track ends with its release (the transport
     /// stopped, a panic to every track).
     pub fn all_off_every(&mut self) {
-        for s in &mut self.slots {
-            s.started = [Started::default(); PADS];
-        }
+        self.forget_every_note();
         self.host.all_off();
     }
 
     /// STOP: every slot's notes end and fade out (`mpfree-track`).
     pub fn stop(&mut self) {
-        for s in &mut self.slots {
-            s.started = [Started::default(); PADS];
-        }
+        self.forget_every_note();
         self.host.stop();
+    }
+
+    fn forget_every_note(&mut self) {
+        for row in self.started.iter_mut() {
+            *row = [Started::default(); PADS];
+        }
+        self.keys.fill(0);
     }
 
     /// The tuning for track `track`'s instrument, from the next block (the
@@ -745,6 +935,11 @@ impl Instruments {
                 st.dropped,
                 st.resets
             ));
+        }
+        for t in (0..TRACKS).filter(|&t| !self.holds(t)) {
+            if let Some(o) = self.owner(t) {
+                parts.push(format!("track {} plays track {}'s", t + 1, o + 1));
+            }
         }
         if parts.is_empty() && self.refused == 0 && self.cut == 0 {
             return None;
@@ -960,6 +1155,228 @@ mod tests {
         let mut t = tracks();
         i.render(&Ctx::new(RATE, BLOCK as u64), BLOCK, &mut t);
         assert_eq!(level(&t, first_track() + 1), 0.0, "let go with it");
+    }
+
+    fn chromatic_from(base: i16) -> [Pad; PADS] {
+        std::array::from_fn(|p| Pad::single(base + p as i16))
+    }
+
+    fn render_levels(i: &mut Instruments) -> Tracks {
+        let mut t = tracks();
+        i.render(&Ctx::new(RATE, 0), BLOCK, &mut t);
+        t
+    }
+
+    /// Step 4: a track with no instrument of its own plays another
+    /// track's, whose sound stays in that track's channel; it has no
+    /// instrument and no channel of its own for it.
+    #[test]
+    fn a_track_plays_another_tracks_instrument_into_that_tracks_channel() {
+        let mut i = Instruments::new(RATE, BLOCK);
+        i.put(2, hum(), chromatic_from(60), &Tuning::standard())
+            .unwrap();
+        assert_eq!(i.set_send(5, Some(2)), Ok(()));
+        assert_eq!(
+            (i.owner(5), i.send(5), i.plays(5)),
+            (Some(2), Some(2), true)
+        );
+        assert_eq!((i.holds(5), i.held(5)), (false, None), "none of its own");
+        assert_eq!(i.senders(2), 1 << 5);
+        assert_eq!(i.in_use(), 1 << 2, "no channel of its own");
+        assert!(i.plays_notes(5));
+        assert_eq!(i.pad_of_note(5, 63), Some(Some(3)));
+        assert!(i.pad_on(5, 0, 100, 0));
+        let t = render_levels(&mut i);
+        assert_eq!(level(&t, first_track() + 2), 0.5);
+        assert_eq!(level(&t, first_track() + 5), 0.0);
+        assert!(i.pad_off(5, 0, 0));
+        let t = render_levels(&mut i);
+        assert_eq!(level(&t, first_track() + 2), 0.0);
+        assert_eq!(i.stats(2).stray_offs, 0);
+        assert!(i.describe().unwrap().contains("track 6 plays track 3's"));
+        // Back to the pads.
+        assert_eq!(i.set_send(5, None), Ok(()));
+        assert!(!i.plays(5) && !i.pad_on(5, 0, 100, 0));
+    }
+
+    #[test]
+    fn a_send_is_refused_where_it_cant_play() {
+        let mut i = Instruments::new(RATE, BLOCK);
+        i.put(2, hum(), chromatic_from(60), &Tuning::standard())
+            .unwrap();
+        i.put(3, hum(), chromatic_from(60), &Tuning::standard())
+            .unwrap();
+        assert_eq!(i.set_send(2, Some(3)), Err(SendRefused::HasOwn));
+        assert_eq!(i.set_send(5, Some(5)), Err(SendRefused::Itself));
+        assert_eq!(i.set_send(5, Some(7)), Err(SendRefused::NothingThere));
+        assert_eq!(i.set_send(TRACKS, Some(2)), Err(SendRefused::NoTrack));
+        assert_eq!(i.set_send(5, Some(TRACKS)), Err(SendRefused::NoTrack));
+        // No chains: a track that sends has no instrument to send to.
+        i.set_send(5, Some(2)).unwrap();
+        assert_eq!(i.set_send(6, Some(5)), Err(SendRefused::NothingThere));
+        assert_eq!(i.send(6), None);
+    }
+
+    /// Two tracks on one instrument each end their own notes, even on the
+    /// same pad moved apart by their transposes.
+    #[test]
+    fn two_tracks_on_one_instrument_each_end_their_own_notes() {
+        let mut i = Instruments::new(RATE, BLOCK);
+        i.put(2, hum(), chromatic_from(60), &Tuning::standard())
+            .unwrap();
+        i.set_send(5, Some(2)).unwrap();
+        i.pad_on(2, 0, 100, 0);
+        i.pad_on_shifted(5, 0, 100, 0, &Shift::semitones(12));
+        i.pad_off(2, 0, 0);
+        let t = render_levels(&mut i);
+        assert_eq!(
+            level(&t, first_track() + 2),
+            0.5,
+            "track 6's 72 still sounds"
+        );
+        i.pad_off(5, 0, 0);
+        let t = render_levels(&mut i);
+        assert_eq!(level(&t, first_track() + 2), 0.0);
+        assert_eq!(i.stats(2).stray_offs, 0);
+    }
+
+    /// A send that moves ends the notes the track left sounding where they
+    /// started; their note-offs later reach nothing.
+    #[test]
+    fn a_send_that_moves_ends_its_notes_where_they_started() {
+        let mut i = Instruments::new(RATE, BLOCK);
+        i.put(1, hum(), chromatic_from(60), &Tuning::standard())
+            .unwrap();
+        i.put(2, hum(), chromatic_from(60), &Tuning::standard())
+            .unwrap();
+        i.set_send(5, Some(1)).unwrap();
+        i.pad_on(5, 0, 100, 0);
+        i.note_on(5, 70, 100, 0);
+        let t = render_levels(&mut i);
+        assert_eq!(level(&t, first_track() + 1), 0.5);
+        i.set_send(5, Some(2)).unwrap();
+        let t = render_levels(&mut i);
+        assert_eq!(level(&t, first_track() + 1), 0.0, "pad and key ended there");
+        i.pad_off(5, 0, 0);
+        i.note_off(5, 70, 0);
+        let t = render_levels(&mut i);
+        assert_eq!(level(&t, first_track() + 2), 0.0);
+        assert_eq!(i.stats(1).stray_offs, 0);
+        // The key's note-off is a stray on track 3's (it never had it),
+        // which the host counts; the pad's reached nothing.
+        assert_eq!(i.stats(2).stray_offs, 1);
+    }
+
+    /// A new sound in an instrument keeps its sends (its id stays);
+    /// taking it out ends them (its id is gone), and the tracks play the
+    /// pads again.
+    #[test]
+    fn a_new_sound_keeps_the_sends_and_taking_it_out_ends_them() {
+        let mut i = Instruments::new(RATE, BLOCK);
+        i.put(2, hum(), chromatic_from(60), &Tuning::standard())
+            .unwrap();
+        i.set_send(5, Some(2)).unwrap();
+        i.set_send(6, Some(2)).unwrap();
+        i.put(2, hum(), chromatic_from(48), &Tuning::standard())
+            .unwrap();
+        assert_eq!((i.owner(5), i.owner(6)), (Some(2), Some(2)));
+        assert!(i.take_out(2));
+        assert_eq!((i.send(5), i.send(6), i.senders(2)), (None, None, 0));
+        assert!(!i.pad_on(5, 0, 100, 0), "the pads again");
+        // A track that only sends is taken out by ending its send.
+        i.put(3, hum(), chromatic_from(60), &Tuning::standard())
+            .unwrap();
+        i.set_send(7, Some(3)).unwrap();
+        assert!(i.take_out(7));
+        assert_eq!((i.send(7), i.owner(3)), (None, Some(3)));
+    }
+
+    /// A track that sends and is given its own instrument plays that, and
+    /// its notes on the one it sent to end.
+    #[test]
+    fn a_track_given_its_own_instrument_stops_sending() {
+        let mut i = Instruments::new(RATE, BLOCK);
+        i.put(2, hum(), chromatic_from(60), &Tuning::standard())
+            .unwrap();
+        i.set_send(5, Some(2)).unwrap();
+        i.pad_on(5, 0, 100, 0);
+        i.put(5, hum(), chromatic_from(60), &Tuning::standard())
+            .unwrap();
+        assert_eq!((i.send(5), i.owner(5), i.senders(2)), (None, Some(5), 0));
+        let t = render_levels(&mut i);
+        assert_eq!(level(&t, first_track() + 2), 0.0, "its note there ended");
+        assert_eq!(level(&t, first_track() + 5), 0.0, "nothing held on its own");
+    }
+
+    /// A panic on a track that sends ends only its own notes; on the
+    /// instrument's own track, every note on it.
+    #[test]
+    fn a_panic_on_a_sending_track_ends_only_its_notes() {
+        let mut i = Instruments::new(RATE, BLOCK);
+        i.put(2, hum(), chromatic_from(60), &Tuning::standard())
+            .unwrap();
+        i.set_send(5, Some(2)).unwrap();
+        i.pad_on(2, 0, 100, 0);
+        i.pad_on(5, 4, 100, 0);
+        i.all_off(5);
+        let t = render_levels(&mut i);
+        assert_eq!(
+            level(&t, first_track() + 2),
+            0.5,
+            "track 3's own note plays on"
+        );
+        i.pad_on(5, 4, 100, 0);
+        i.all_off(2);
+        let t = render_levels(&mut i);
+        assert_eq!(level(&t, first_track() + 2), 0.0);
+        i.pad_off(5, 4, 0);
+        assert_eq!(i.stats(2).stray_offs, 0, "its note was forgotten");
+    }
+
+    /// A lock from a track that sends plays on the instrument it plays,
+    /// and the value under it is the instrument's, whichever track's
+    /// lock ends it; a turn by hand from either track is that value.
+    #[test]
+    fn a_lock_from_a_sending_track_moves_the_instrument_it_plays() {
+        let synth = crate::synth::Synth::new(RATE);
+        let (id, extras, values) = synth.sound_of(crate::synth::Engine::Poly);
+        let plugins = crate::plugins::Plugins::none();
+        let inst = make(&plugins, id, &extras, &values, RATE, BLOCK).expect("made");
+        let mut i = Instruments::new(RATE, BLOCK);
+        let pads = synth.pads_for(crate::synth::Engine::Poly);
+        i.put(1, inst, pads, &Tuning::standard()).unwrap();
+        i.set_send(4, Some(1)).unwrap();
+        let node = i.node(1).unwrap();
+        let p = *node
+            .params()
+            .iter()
+            .find(|p| !p.readonly && p.max > p.min && p.curve == mpfree_node::Curve::Linear)
+            .unwrap();
+        let own = node.param(p.id);
+        let locked = if own < (p.min + p.max) / 2.0 {
+            p.max
+        } else {
+            p.min
+        };
+        let render = |i: &mut Instruments| {
+            let mut t = tracks();
+            i.render(&Ctx::new(RATE, 0), BLOCK, &mut t);
+        };
+        assert!(i.lock(4, p.id, Some(locked), 0));
+        assert!(i.lock(1, p.id, Some(locked), 0), "the same knob");
+        render(&mut i);
+        assert_eq!(i.node(1).unwrap().param(p.id), locked);
+        assert!(i.lock(1, p.id, None, 0));
+        render(&mut i);
+        assert_eq!(i.node(1).unwrap().param(p.id), own, "the sound's own value");
+        let mid = (p.min + p.max) / 2.0;
+        assert!(
+            i.param(4, p.id, mid),
+            "the Synth tab of the track that sends"
+        );
+        render(&mut i);
+        assert_eq!(i.node(1).unwrap().param(p.id), mid);
+        assert!(i.node(4).is_none(), "no node of its own");
     }
 
     #[test]

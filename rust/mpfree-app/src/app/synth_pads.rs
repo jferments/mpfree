@@ -71,6 +71,24 @@ const BANK_KEYS: [&str; BANKS] = [
     "bank-a", "bank-b", "bank-c", "bank-d", "bank-e", "bank-f", "bank-g", "bank-h",
 ];
 
+/// One of the Instrument row's choices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SoundChoice {
+    /// The track's kit (or the synth, as its pick in the list of kits).
+    Kit,
+    /// An instrument of its own: an engine or a plugin synth (node id,
+    /// name).
+    Sound(&'static str, &'static str),
+    /// Another track's own instrument, played from this track (step 4).
+    Track(usize),
+}
+
+/// Track `owner`'s instrument `name` as a track that plays it names it,
+/// on the Synth tab and under the track on Arrange: "Track 3's FM".
+pub fn sent_name(owner: usize, name: &str) -> String {
+    format!("Track {}'s {name}", owner + 1)
+}
+
 fn layout_key(l: PadLayout) -> &'static str {
     match l {
         PadLayout::Chromatic => "chromatic",
@@ -358,49 +376,101 @@ impl App {
         vec![Effect::SynthPads(self.synth_pads)]
     }
 
-    /// The Instrument row's choices for a track: Kit (None), the built-in
-    /// engines, then the plugin synths, as (node id, name).
-    fn sound_choices(&self) -> Vec<Option<(&'static str, &'static str)>> {
-        std::iter::once(None)
-            .chain(Engine::ALL.iter().map(|e| Some((e.node_id(), e.name()))))
-            .chain(self.plugin_synths.iter().map(|&p| Some(p)))
+    /// The Instrument row's choices for a track: Kit, the other tracks'
+    /// own instruments (step 4: a track can play another track's, so the
+    /// project's instruments come before new ones), then a new one of its
+    /// own: the built-in engines and the plugin synths.
+    fn sound_choices(&self) -> Vec<SoundChoice> {
+        std::iter::once(SoundChoice::Kit)
+            .chain(
+                (0..mpfree_seq::MAX_TRACKS)
+                    .filter(|&t| t != self.track && self.track_sound(t).is_some())
+                    .map(SoundChoice::Track),
+            )
+            .chain(
+                Engine::ALL
+                    .iter()
+                    .map(|e| SoundChoice::Sound(e.node_id(), e.name())),
+            )
+            .chain(
+                self.plugin_synths
+                    .iter()
+                    .map(|&(id, name)| SoundChoice::Sound(id, name)),
+            )
             .collect()
+    }
+
+    /// Where the selected track is on the Instrument row's choices.
+    fn sound_choice_now(&self, choices: &[SoundChoice]) -> usize {
+        let now = match (self.track_send(self.track), self.track_sound(self.track)) {
+            (Some(o), _) => SoundChoice::Track(o),
+            (None, Some(h)) => SoundChoice::Sound(h.id, h.name),
+            (None, None) => SoundChoice::Kit,
+        };
+        choices
+            .iter()
+            .position(|c| match (*c, now) {
+                (SoundChoice::Sound(a, _), SoundChoice::Sound(b, _)) => a == b,
+                (c, now) => c == now,
+            })
+            .unwrap_or(0)
     }
 
     /// The Instrument row's value: what the selected track plays.
     fn engine_text(&self) -> String {
-        match self.track_sound(self.track) {
-            Some(h) => h.name.to_string(),
-            None => "Kit".to_string(),
+        match (self.track_send(self.track), self.track_sound(self.track)) {
+            (Some(o), _) => self.sent_name(o),
+            (None, Some(h)) => h.name.to_string(),
+            (None, None) => "Kit".to_string(),
         }
+    }
+
+    /// Track `owner`'s instrument as a track that plays it names it:
+    /// "Track 3's FM".
+    pub fn sent_name(&self, owner: usize) -> String {
+        sent_name(
+            owner,
+            self.track_sound(owner).map_or("instrument", |h| h.name),
+        )
     }
 
     /// The Instrument row stepped by `d`: the selected track's sound, Kit first,
     /// then the engines and the plugin synths.
     fn step_track_sound(&mut self, d: i32) -> Vec<Effect> {
         let choices = self.sound_choices();
-        let now = self.track_sound(self.track).map(|h| h.id);
-        let at = choices
-            .iter()
-            .position(|c| c.map(|c| c.0) == now)
-            .unwrap_or(0);
+        let at = self.sound_choice_now(&choices);
         let to = (at as i32 + d).clamp(0, choices.len() as i32 - 1) as usize;
         if to == at {
             return Vec::new();
         }
-        let pick = choices[to];
-        // A track on the kit takes a place only while one is free.
+        let track = self.track;
+        let pick = match choices[to] {
+            SoundChoice::Kit => None,
+            SoundChoice::Sound(id, name) => Some((id, name)),
+            SoundChoice::Track(owner) => return self.send_track_to(owner),
+        };
+        // A track with no instrument of its own takes a place only while
+        // one is free.
         let others = self.track_sounds.iter().flatten().count();
-        if now.is_none() && others >= crate::instruments::SLOTS {
+        if pick.is_some()
+            && self.track_sound(track).is_none()
+            && others >= crate::instruments::SLOTS
+        {
             return vec![Effect::Tell(format!(
                 "Track {} plays the kit: {} tracks already have their own instrument, the most at once. Set one of them to Kit first",
                 self.track + 1,
                 crate::instruments::SLOTS
             ))];
         }
-        let track = self.track;
         // The project keeps each track's instrument: unsaved work.
         self.project_edit = true;
+        match pick {
+            // Its own goes, and the tracks that played it play their kits.
+            None => self.end_sends(track),
+            // A new sound in its own keeps the tracks that play it (the
+            // instrument keeps its id).
+            Some(_) => self.track_sends[track] = None,
+        }
         self.set_track_sound(
             track,
             pick.map(|(id, name)| crate::instruments::Held {
@@ -413,6 +483,31 @@ impl App {
             track,
             id: pick.map(|c| c.0),
         }]
+    }
+
+    /// The Instrument row's pick of track `owner`'s instrument for the
+    /// selected track (step 4): its own instrument goes, and the tracks
+    /// that played that play their kits again (the loop says so).
+    fn send_track_to(&mut self, owner: usize) -> Vec<Effect> {
+        let track = self.track;
+        self.project_edit = true;
+        if self.track_sound(track).is_some() {
+            self.set_track_sound(track, None);
+            self.end_sends(track);
+        }
+        self.track_sends[track] = Some(owner as u8);
+        vec![Effect::TrackSend { track, to: owner }]
+    }
+
+    /// The selected track's send ends, as it gets its own instrument or the
+    /// kit again; so do the sends to its own instrument, if it goes.
+    fn end_sends(&mut self, track: usize) {
+        self.track_sends[track] = None;
+        for s in self.track_sends.iter_mut() {
+            if s.is_some_and(|o| usize::from(o) == track) {
+                *s = None;
+            }
+        }
     }
 
     /// A tap on track `track`'s sound line on Arrange: the Synth tab's
@@ -431,9 +526,32 @@ impl App {
         fx
     }
 
-    /// What track `track` plays as its own instrument (None: the kit).
+    /// What track `track` plays as its own instrument (None: the kit, or
+    /// another track's instrument, [`App::track_send`]).
     pub fn track_sound(&self, track: usize) -> Option<crate::instruments::Held> {
         self.track_sounds.get(track).copied().flatten()
+    }
+
+    /// The track whose instrument track `track` plays though it has none of
+    /// its own (step 4).
+    pub fn track_send(&self, track: usize) -> Option<usize> {
+        self.track_sends
+            .get(track)
+            .copied()
+            .flatten()
+            .map(usize::from)
+    }
+
+    /// Whether track `track` plays an instrument rather than its kit: its
+    /// own, or another track's.
+    pub fn track_plays_instrument(&self, track: usize) -> bool {
+        self.track_sound(track).is_some() || self.track_send(track).is_some()
+    }
+
+    /// Each track's send as the audio loop has it now
+    /// (`Instruments::send`).
+    pub fn set_track_sends(&mut self, sends: &[Option<u8>; mpfree_seq::MAX_TRACKS]) {
+        self.track_sends = *sends;
     }
 
     /// Track `track`'s own instrument as the audio loop has it now.
