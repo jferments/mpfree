@@ -11013,6 +11013,14 @@ impl Player {
                     Tone::Warn,
                 ));
             }
+            let seats = self.sample.seat_fallbacks();
+            if seats > 0 {
+                memory.push((
+                    "Sampler: grains left at the first frame (no summary)".to_string(),
+                    format!("{seats}×"),
+                    Tone::Warn,
+                ));
+            }
             DebugPages::set_engines(&mut self.ui, &snap, memory, rows);
         }
     }
@@ -31311,6 +31319,132 @@ mod tests {
     /// finger, - and + and the Q-Links do them on the MPC: each step writes
     /// the log line its check looks for, and each check's last step leaves
     /// the pad as it found it, so the next one starts the same.
+    /// Sampler plan, phase 1 step 1: a long take turned to grains before
+    /// its loudness summary is worked out plays its grains from its first
+    /// frame at once, with nothing long done on the screen, and moves to
+    /// its loudest grain when the summary comes: not under a playing
+    /// cloud, never once Position is touched, and in the switch's undo
+    /// step.
+    #[test]
+    fn a_long_take_turned_to_grains_moves_to_its_loudest_grain_when_its_summary_comes() {
+        use mpfree_sampler::model::{Layer, Pad, PlayMode, Project, Region, Source, SCAN_FRAMES};
+        use mpfree_sampler_ui::wave_tab::Tool;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let rate = mpfree_sampler_ui::sample::RATE;
+        // 12 s, soft but for 0.2 s at 9 s.
+        let n = 2 * SCAN_FRAMES as usize;
+        let data: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / rate as f32;
+                let a = if (9.0..9.2).contains(&t) { 0.8 } else { 0.02 };
+                a * (t * 220.0 * std::f32::consts::TAU).sin()
+            })
+            .collect();
+        let source = Source::new("Long take", rate, 1, data).unwrap();
+        let mut project = Project::new();
+        project.add_source(source.clone());
+        let mut r = Region::whole(&source);
+        r.mode = PlayMode::OneShot;
+        project
+            .set_pad(pad, Some(Pad::new("Long take", Layer::new(r))), None)
+            .unwrap();
+        let start = |hold: bool| {
+            let mut p = sample_player(Fonts::embedded());
+            p.sample.hold_views(hold);
+            let mut kits = p.kits.clone();
+            kits[0].name = "Takes".to_string();
+            kits[0].pads = (0..16)
+                .map(|i| (i == pad).then(|| "Long take".to_string()))
+                .collect();
+            p.apply(ToUi::Kits(kits));
+            p.apply(ToUi::SampleKits {
+                projects: vec![project.clone()],
+                rate,
+            });
+            p.apply(ToUi::PadDown { pad, velocity: 100 });
+            p.apply(ToUi::PadUp(pad));
+            p.apply(ToUi::Show(View::Sample));
+            p
+        };
+        let region = |p: &Player| {
+            p.sample.project(0).unwrap().pad(pad).unwrap().layers[0]
+                .region
+                .clone()
+        };
+        let secs = |p: &Player| f64::from(region(p).grain.position) * n as f64 / f64::from(rate);
+        let heads = |on: bool| {
+            let mut h = Playheads {
+                kit: 0,
+                len: u8::from(on),
+                ..Playheads::default()
+            };
+            h.pad[0] = pad as u8;
+            h.frame[0] = 1000;
+            ToUi::SamplePlayheads(h)
+        };
+        let waiting = "sample: kit 1 (Takes) pad A5 plays its grains from its first frame \
+                       until its sound's loudness summary is worked out";
+
+        // The summary not there yet: from the first frame, at once.
+        let mut p = start(true);
+        pick_tool(&mut p, Tool::Grain);
+        assert_eq!(region(&p).mode, PlayMode::Granular);
+        assert_eq!(region(&p).grain.position, 0.0);
+        assert!(
+            events_log(&p).iter().any(|l| l == waiting),
+            "{:?}",
+            events_log(&p)
+        );
+        // Its cloud playing when the summary comes: it waits for silence.
+        p.apply(heads(true));
+        p.sample.hold_views(false);
+        settle_views(&mut p);
+        p.tick(0.0);
+        assert_eq!(region(&p).grain.position, 0.0, "not under a playing cloud");
+        p.apply(heads(false));
+        p.tick(0.0);
+        assert!((8.98..9.2).contains(&secs(&p)), "{} s", secs(&p));
+        assert!(
+            events_log(&p).iter().any(|l| l.starts_with(
+                "sample: kit 1 (Takes) pad A5 plays its grains from its loudest grain now, at 7"
+            )),
+            "{:?}",
+            events_log(&p)
+        );
+        // The move is part of the switch's undo step.
+        p.apply(ToUi::SampleLift);
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(region(&p).mode, PlayMode::OneShot);
+        assert_eq!(region(&p).grain.position, 0.0);
+        assert_eq!(p.sample.seat_fallbacks(), 0);
+
+        // Position turned before the summary comes: it stays where it was put.
+        let mut p = start(true);
+        pick_tool(&mut p, Tool::Grain);
+        p.apply(ToUi::SampleQLink(0, 4));
+        p.apply(ToUi::SampleLift);
+        let put = region(&p).grain.position;
+        assert!(put > 0.0);
+        p.sample.hold_views(false);
+        settle_views(&mut p);
+        p.tick(0.0);
+        assert_eq!(region(&p).grain.position, put);
+
+        // The summary already there: the loudest grain at once.
+        let mut p = start(false);
+        settle_views(&mut p);
+        pick_tool(&mut p, Tool::Grain);
+        assert!((8.98..9.2).contains(&secs(&p)), "{} s", secs(&p));
+        assert!(!events_log(&p).iter().any(|l| l == waiting));
+        // To the Position row's 0.1 % step while that is under a quarter of
+        // the grain (12 ms here); on a 25-minute take it is 1.5 s, which
+        // would miss an 80 ms loud spot, so the spot stays exact there.
+        let mut long = region(&p);
+        assert_eq!(sample_page::seat_step(0.123_456, &long, rate), 0.123);
+        long.end = 25 * 60 * u64::from(rate);
+        assert_eq!(sample_page::seat_step(0.123_456, &long, rate), 0.123_456);
+    }
+
     #[test]
     fn the_grain_tools_device_checks_log_what_they_set_and_end_where_they_began() {
         use crate::app::RowKey;

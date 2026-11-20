@@ -1032,6 +1032,153 @@ pub(crate) fn through(
     }
 }
 
+/// Regions up to this many frames (about 6 s at 44.1 kHz) are searched for
+/// their loudest grain frame by frame ([`Region::loudest_grain`]): about a
+/// millisecond on the MPC. Longer ones are searched in their sound's
+/// loudness summary ([`Region::loudest_grain_from`]).
+pub const SCAN_FRAMES: u64 = 1 << 18;
+
+/// How much more energy a later stretch needs to count as louder than the
+/// loudest so far: as loud is a tie, and a tie keeps the earlier.
+const LOUDER: f64 = 1.000_001;
+
+/// What a search for a region's loudest grain reads: the frames it plays,
+/// the grain's length in frames and the channels it plays.
+struct GrainSearch {
+    start: usize,
+    end: usize,
+    grain: usize,
+    channels: usize,
+    pick: ChannelPick,
+}
+
+impl GrainSearch {
+    /// None when there is nothing to search: a grain of no frames, or a
+    /// region no longer than a grain (or outside the sound).
+    fn new(r: &Region, source: &Source, grain_ms: f32) -> Option<GrainSearch> {
+        let channels = usize::from(source.channels()).max(1);
+        let (start, end) = (
+            r.start as usize,
+            (r.end as usize).min(source.frames() as usize),
+        );
+        let grain = ((f64::from(grain_ms.max(1.0)) * f64::from(source.rate())) / 1000.0) as usize;
+        if grain == 0 || end.saturating_sub(start) <= grain {
+            return None;
+        }
+        let pick = if channels == 2 {
+            r.channels
+        } else {
+            ChannelPick::Left
+        };
+        Some(GrainSearch {
+            start,
+            end,
+            grain,
+            channels,
+            pick,
+        })
+    }
+
+    /// Frame `f`'s energy on the channels played.
+    #[inline]
+    fn power(&self, data: &Pcm, f: usize) -> f64 {
+        let i = f * self.channels;
+        let v = if self.channels == 2 {
+            let (l, r) = (data.get(i), data.get(i + 1));
+            match self.pick {
+                ChannelPick::Stereo => 0.5 * (l * l + r * r),
+                ChannelPick::MonoSum => (0.5 * (l + r)).powi(2),
+                ChannelPick::Left => l * l,
+                ChannelPick::Right => r * r,
+            }
+        } else {
+            let x = data.get(i);
+            x * x
+        };
+        f64::from(v)
+    }
+
+    fn energy(&self, data: &Pcm, a: usize, b: usize) -> f64 {
+        (a..b).map(|f| self.power(data, f)).sum()
+    }
+
+    /// The grain-long stretch with the most energy among those starting at
+    /// `from`, `from + hop` and on that end by `to`: its first frame and
+    /// its energy. None when none fits. Each frame is read about twice
+    /// (as the stretch slides on, what it gains and what it leaves), where
+    /// it is, with nothing allocated.
+    fn loudest(&self, data: &Pcm, from: usize, to: usize, hop: usize) -> Option<(usize, f64)> {
+        let (g, hop) = (self.grain, hop.max(1));
+        if from + g > to {
+            return None;
+        }
+        let mut e = self.energy(data, from, from + g);
+        let (mut best, mut best_at) = (e, from);
+        let mut at = from;
+        while at + hop + g <= to {
+            e += self.energy(data, at + g, at + g + hop) - self.energy(data, at, at + hop);
+            at += hop;
+            if e > best * LOUDER {
+                best = e;
+                best_at = at;
+            }
+        }
+        Some((best_at, best))
+    }
+
+    /// A stretch found as a grain position: 0 for none, or for silence.
+    fn position(&self, found: Option<(usize, f64)>) -> f32 {
+        match found {
+            Some((at, e)) if e > 0.0 => {
+                ((at - self.start) as f64 / (self.end - self.start) as f64) as f32
+            }
+            _ => 0.0,
+        }
+    }
+}
+
+/// The loudest few stretches of a sound's summary that don't overlap
+/// ([`Region::loudest_grain_from`]), held in a fixed array: their first
+/// block and energy, an empty place at -1.
+struct Top {
+    spots: [(usize, f64); 8],
+    /// The least energy kept, so most stretches are passed over at one
+    /// comparison.
+    floor: f64,
+}
+
+impl Default for Top {
+    fn default() -> Top {
+        Top {
+            spots: [(0, -1.0); 8],
+            floor: -1.0,
+        }
+    }
+}
+
+impl Top {
+    /// Keeps the stretch of `nb` blocks from block `b` if it is louder
+    /// than the least kept: in place of a kept one it overlaps when louder
+    /// than that one, else in place of the least.
+    fn offer(&mut self, b: usize, e: f64, nb: usize) {
+        if e <= self.floor {
+            return;
+        }
+        if let Some(i) = self
+            .spots
+            .iter()
+            .position(|&(sb, se)| se >= 0.0 && sb.abs_diff(b) < nb)
+        {
+            if e > self.spots[i].1 {
+                self.spots[i] = (b, e);
+            }
+        } else if let Some(least) = self.spots.iter_mut().min_by(|x, y| x.1.total_cmp(&y.1)) {
+            *least = (b, e);
+        }
+        self.floor = self.spots.iter().map(|s| s.1).fold(f64::INFINITY, f64::min);
+    }
+}
+
 /// A recipe on part of a source. The source's audio is never changed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Region {
@@ -1251,57 +1398,100 @@ impl Region {
     /// 2026: "Granular synth is barely audible"): a frozen cloud at
     /// position 0 replays the sound's first 80 ms, which on a take or a
     /// phrase is often a breath, a count-in or silence.
+    ///
+    /// Reads every frame of the region where it is, about twice, with no
+    /// copy and nothing allocated: quick for a region of up to
+    /// [`SCAN_FRAMES`]. A longer one is searched in its sound's loudness
+    /// summary ([`Region::loudest_grain_from`]), so a long take never
+    /// holds up the screen (sampler plan, phase 1 step 1).
     pub fn loudest_grain(&self, source: &Source, grain_ms: f32) -> f32 {
-        let ch = usize::from(source.channels()).max(1);
-        let (start, end) = (
-            self.start as usize,
-            (self.end as usize).min(source.frames() as usize),
-        );
-        let len = end.saturating_sub(start);
-        let grain = ((f64::from(grain_ms.max(1.0)) * f64::from(source.rate())) / 1000.0) as usize;
-        if grain == 0 || len <= grain {
-            return 0.0;
-        }
-        let Some(frames) = source.data().f32s(start * ch..end * ch) else {
+        let Some(s) = GrainSearch::new(self, source, grain_ms) else {
             return 0.0;
         };
-        let pick = if ch == 2 {
-            self.channels
-        } else {
-            ChannelPick::Left
-        };
-        let power: Vec<f64> = frames
-            .chunks_exact(ch)
-            .map(|f| {
-                let v = match pick {
-                    ChannelPick::Stereo => 0.5 * (f[0] * f[0] + f[1] * f[1]),
-                    ChannelPick::MonoSum => (0.5 * (f[0] + f[1])).powi(2),
-                    ChannelPick::Left => f[0] * f[0],
-                    ChannelPick::Right => f[1] * f[1],
-                };
-                f64::from(v)
-            })
-            .collect();
-        // Running sums: the energy of each grain-long stretch in O(n).
-        let mut sum = vec![0.0f64; power.len() + 1];
-        for (i, p) in power.iter().enumerate() {
-            sum[i + 1] = sum[i] + p;
+        let found = s.loudest(source.data(), s.start, s.end, (s.grain / 4).max(1));
+        s.position(found)
+    }
+
+    /// [`Region::loudest_grain`] for a long region, from its sound's
+    /// loudness summary (`summary`, the peak pyramid of `source`): the
+    /// stretches of whole summary blocks with the most energy first (a
+    /// block of 256 to 4096 frames, at most an eighth of a grain), then
+    /// around the best few of them the sound itself, an eighth of a grain
+    /// at a time, ready to the frame. In Stereo, Left and Right the
+    /// summary's loudness is the sound's, to its 16-bit rounding; in Mono
+    /// sum, where the two sides can cancel, it is only an upper limit, so
+    /// the pick is the loudest of those few as measured from the sound.
+    ///
+    /// Reads one summary value per block per side and a few grains of the
+    /// sound, allocating nothing: about a million reads for a 25-minute
+    /// take, where [`Region::loudest_grain`] would read 67 million frames.
+    /// A sound too quiet for the summary's 16-bit rounding reads as
+    /// silence (0). None when `summary` is not the summary of `source`.
+    pub fn loudest_grain_from(
+        &self,
+        source: &Source,
+        grain_ms: f32,
+        summary: &mpfree_analysis::PeakPyramid,
+    ) -> Option<f32> {
+        use mpfree_analysis::PeakPyramid;
+        let channels = usize::from(source.channels()).max(1);
+        if summary.frames() != source.frames() || summary.channels() != channels {
+            return None;
         }
-        let hop = (grain / 4).max(1);
-        let (mut best, mut best_at) = (0.0f64, 0usize);
-        let mut at = 0;
-        while at + grain <= power.len() {
-            let e = sum[at + grain] - sum[at];
-            if e > best * 1.000_001 {
-                best = e;
-                best_at = at;
+        let Some(s) = GrainSearch::new(self, source, grain_ms) else {
+            return Some(0.0);
+        };
+        // The coarsest level that puts at least 8 blocks in a grain.
+        let level = (0..mpfree_analysis::peaks::LEVELS)
+            .rev()
+            .find(|&l| PeakPyramid::block_frames(l) * 8 <= s.grain)
+            .unwrap_or(0);
+        let bf = PeakPyramid::block_frames(level);
+        // Whole blocks inside the region only: a block the region cuts
+        // holds sound it doesn't play.
+        let (b0, b1) = (s.start.div_ceil(bf), s.end / bf);
+        let nb = ((s.grain + bf / 2) / bf).max(1);
+        if b1 < b0 + nb {
+            return Some(self.loudest_grain(source, grain_ms));
+        }
+        let energy = |b: usize| -> f64 {
+            let sq = |ch: usize| f64::from(summary.rms(level, b, ch)).powi(2);
+            let mean = match (s.channels, s.pick) {
+                (2, ChannelPick::Stereo | ChannelPick::MonoSum) => 0.5 * (sq(0) + sq(1)),
+                (2, ChannelPick::Right) => sq(1),
+                _ => sq(0),
+            };
+            mean * bf as f64
+        };
+        // The window slides a block at a time; the loudest few that don't
+        // overlap are kept, in a fixed array.
+        let mut top = Top::default();
+        let mut e: f64 = (b0..b0 + nb).map(energy).sum();
+        let mut b = b0;
+        loop {
+            top.offer(b, e, nb);
+            if b + nb >= b1 {
+                break;
             }
-            at += hop;
+            e += energy(b + nb) - energy(b);
+            b += 1;
         }
-        if best <= 0.0 {
-            return 0.0;
+        let mut spots = top.spots;
+        // In order along the sound: of two as loud, the earlier, as the
+        // frame-by-frame search picks.
+        spots.sort_unstable_by_key(|&(b, _)| b);
+        let hop = (s.grain / 8).max(1);
+        let mut best: Option<(usize, f64)> = None;
+        for &(b, _) in spots.iter().filter(|(_, e)| *e > 0.0) {
+            let from = (b * bf).saturating_sub(bf).max(s.start);
+            let to = ((b + nb + 1) * bf).min(s.end);
+            if let Some((at, e)) = s.loudest(source.data(), from, to, hop) {
+                if best.is_none_or(|(_, be)| e > be * LOUDER) {
+                    best = Some((at, e));
+                }
+            }
         }
-        (best_at as f64 / len as f64) as f32
+        Some(s.position(best))
     }
 
     /// Its slice boundaries inside it (the ones a trim left outside are
