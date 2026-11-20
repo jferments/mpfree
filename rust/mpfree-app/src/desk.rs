@@ -1133,6 +1133,7 @@ pub fn throw_strips(mix: &mixing::MixHost, time: &time::TimeHost) -> gui::ToUi {
         &mix.mixer,
         mix.own_channels_in_use(),
         &crate::export::track_names(time),
+        &|s| mix.own_instrument_on(s),
     ))
 }
 

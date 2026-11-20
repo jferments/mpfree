@@ -519,11 +519,11 @@ fn own_instrument(sound_cores: cores::SoundCores) {
     );
     assert!(rig.peak > 0.01, "silent: peak {}", rig.peak);
     // Track 1's own instrument plays into the Drums strip (R3 part 4b),
-    // which says so; no own channel shows.
+    // which is named for it (step 4d); no own channel shows.
     rig.mix.show(Some(mpfree_mixer_ui::MixView::Tracks));
     let st = rig.mix.poll_state(std::time::Instant::now()).unwrap();
     let names: Vec<&str> = st.strips.iter().map(|v| v.name.as_str()).collect();
-    assert_eq!(names, vec![mixing::TRACK_1, "Synth", "Loop", "Audio"]);
+    assert_eq!(names, vec!["Poly \u{b7} Track 1", "Synth", "Loop", "Audio"]);
     assert_eq!(st.strips[0].id, mpfree_fx::StripId::Track(mixing::DRUMS));
     assert!(st.strips[0].peak[0] > 0.0, "{:?}", st.strips[0].peak);
     // On two cores the lane played it every period (late ones allowed, as
