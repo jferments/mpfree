@@ -1196,8 +1196,15 @@ pub struct StepGrid {
     pub add_lane: bool,
     /// A gear lane's mod rows, open over the pattern (LFO to CC).
     pub rows_open: Option<LaneRows>,
+    /// The Sequencer's Steps: a step's tap waits for the finger to lift,
+    /// so a finger held on it can pick it instead ([`StepGrid::press`],
+    /// [`StepGrid::picked_press`]).
+    pub hold_picks: bool,
     /// The finger on a scale row's name, and its pad, until it lifts.
     sounding: Option<(u64, usize)>,
+    /// A finger down on a step while [`StepGrid::hold_picks`], until it
+    /// lifts or swipes.
+    press: Option<StepPress>,
     /// A finger on Play's rows: a tap until it moves, then a swipe.
     swipe: Option<Swipe>,
     /// A finger on a lock's cell: a tap until it moves, then it turns.
@@ -1239,6 +1246,16 @@ pub struct BankHead {
     pub follow: bool,
     /// The first of the bank's rows shown (a swipe moves it).
     pub top: usize,
+}
+
+/// A finger down on a step of the Sequencer's Steps: its step, and
+/// whether holding it picked the step (its lift then taps nothing).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StepPress {
+    finger: u64,
+    row: usize,
+    col: usize,
+    picked: bool,
 }
 
 /// A finger on Play's rows: where it went down, the top row then, the
@@ -2685,10 +2702,35 @@ impl Widget for StepGrid {
             if self.drag.as_ref().is_some_and(|d| d.finger == f) {
                 return self.drag_on(phase, y);
             }
-            if self.swipes(r) {
-                return self.swipe_on(f, phase, y, r);
+            let press = self.press.filter(|p| p.finger == f);
+            if press.is_some() && matches!(phase, Touch::Up | Touch::Cancel) {
+                self.press = None;
             }
-            return None;
+            if self.swipes(r) {
+                if press.is_some_and(|p| p.picked) {
+                    // Held to pick: the lift taps nothing.
+                    if let Some(s) = self.swipe.as_mut().filter(|s| s.finger == f) {
+                        s.tap = None;
+                    }
+                }
+                let ev = self.swipe_on(f, phase, y, r);
+                // A swipe is no hold.
+                if self
+                    .swipe
+                    .as_ref()
+                    .is_some_and(|s| s.finger == f && s.swiping)
+                {
+                    self.press = None;
+                }
+                return ev;
+            }
+            return match press {
+                Some(p) if phase == Touch::Up && !p.picked => Some(EventKind::Cell {
+                    row: p.row,
+                    col: p.col,
+                }),
+                _ => None,
+            };
         }
         if self.bank.is_some() {
             if let Some(i) = BankLayout::of(r).at(x, y) {
@@ -2716,6 +2758,18 @@ impl Widget for StepGrid {
                 return None;
             }
         }
+        if let (true, Some(EventKind::Cell { row, col })) = (self.hold_picks, tap.clone()) {
+            // A step's tap waits for the lift, so a hold can pick it.
+            self.press = Some(StepPress {
+                finger: f,
+                row,
+                col,
+                picked: false,
+            });
+            if !self.swipes(r) {
+                return None;
+            }
+        }
         if !self.swipes(r) || matches!(tap, Some(EventKind::Pad { .. })) {
             return tap;
         }
@@ -2738,6 +2792,23 @@ impl Widget for StepGrid {
 }
 
 impl StepGrid {
+    /// A finger down on a step and not yet lifted, swiped or picked:
+    /// (finger, the lane's pad, the step on the page). The app times it
+    /// and, held long enough, picks the step ([`Self::picked_press`]).
+    pub fn press(&self) -> Option<(u64, usize, usize)> {
+        self.press
+            .filter(|p| !p.picked)
+            .map(|p| (p.finger, p.row, p.col))
+    }
+
+    /// The step under `finger` was picked by holding it: its lift taps
+    /// nothing.
+    pub fn picked_press(&mut self, finger: u64) {
+        if let Some(p) = self.press.as_mut().filter(|p| p.finger == finger) {
+            p.picked = true;
+        }
+    }
+
     /// The mod rows' parts, while open: a panel over the pattern's steps
     /// at the top of the card, a row each, + LFO at its foot.
     fn rows_geom(&self, r: Rect) -> Option<RowsGeom> {
@@ -4397,6 +4468,42 @@ mod tests {
         assert_eq!(geom.mute_hit(0).bottom(), geom.mute_hit(1).y);
         let b = geom.mute_button(0);
         assert!(m.contains(b.x, b.y) && m.contains(b.right() - 1, b.bottom() - 1));
+    }
+
+    /// The Sequencer's Steps (`hold_picks`): a step's tap waits for the
+    /// finger to lift, so the app can pick the step while it rests there
+    /// ([`StepGrid::press`]); a step picked that way taps nothing on the
+    /// lift. Play's rows tap on the finger down, as before.
+    #[test]
+    fn on_the_sequencers_steps_a_step_taps_on_the_lift_unless_held_to_pick() {
+        let mut g = StepGrid {
+            steps: 16,
+            hold_picks: true,
+            ..Default::default()
+        };
+        g.lanes = (0..16).rev().map(|p| lane(p, &[0; 16])).collect();
+        let r = Rect::new(0, 0, 998, 360);
+        let c = g.geom(r).cell(2, 5);
+        let (x, y) = (c.x + 3, c.y + 3);
+        let cell = Some(EventKind::Cell { row: 10, col: 5 });
+        // A quick tap: nothing on the down, the tap on the lift.
+        assert_eq!(g.touch(1, Touch::Down, x, y, r), None);
+        assert_eq!(g.press(), Some((1, 10, 5)));
+        assert_eq!(g.touch(1, Touch::Up, x, y, r), cell);
+        assert_eq!(g.press(), None);
+        // Held and picked: the lift taps nothing.
+        g.touch(2, Touch::Down, x, y, r);
+        g.picked_press(2);
+        assert_eq!(g.press(), None, "picked once");
+        assert_eq!(g.touch(2, Touch::Up, x, y, r), None);
+        // A cancelled touch taps nothing either.
+        g.touch(3, Touch::Down, x, y, r);
+        assert_eq!(g.touch(3, Touch::Cancel, x, y, r), None);
+        assert_eq!(g.press(), None);
+        // Play's rows: the tap on the down.
+        g.hold_picks = false;
+        assert_eq!(g.touch(4, Touch::Down, x, y, r), cell);
+        assert_eq!(g.press(), None);
     }
 
     #[test]
