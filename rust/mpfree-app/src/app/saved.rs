@@ -359,6 +359,12 @@ impl App {
         notes
     }
 
+    /// Something the project keeps changed outside the app's own rows (a
+    /// new track's own synth, step 4c): the work counts as unsaved.
+    pub fn mark_project_edit(&mut self) {
+        self.project_edit = true;
+    }
+
     /// True once after a control changed something the project keeps (a
     /// Synth tab option, the arp): the screen counts the work as unsaved.
     /// Load and New aren't edits.

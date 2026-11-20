@@ -7542,6 +7542,20 @@ fn player_session(
                     let track = instrument_track(&mix.instruments, app.track());
                     track_presets.act(ask, track, &mut synth, &mut mix, out);
                 }
+                // The preset picker's New track (step 4c): the new track's
+                // own synth, made as a preset's sound; it goes in once made.
+                gui::FromUi::NewTrackSound {
+                    track,
+                    engine,
+                    give,
+                } => {
+                    if let Some(held) =
+                        track_presets.give(track, &engine, give, &synth, &mut mix, out)
+                    {
+                        app.set_track_sound(track, Some(held));
+                        app.mark_project_edit();
+                    }
+                }
                 // A plugin synth's own preset: loaded into the running
                 // plugin on the builder thread (the plugin's own code
                 // reads the file); the news comes back below.

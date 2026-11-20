@@ -599,6 +599,7 @@ impl Desk<'_> {
             | gui::FromUi::SaveTouch(_)
             | gui::FromUi::Synth(_)
             | gui::FromUi::Preset(_)
+            | gui::FromUi::NewTrackSound { .. }
             | gui::FromUi::SkinValues
             | gui::FromUi::Slice { .. }
             | gui::FromUi::SampleLiveChop { .. }

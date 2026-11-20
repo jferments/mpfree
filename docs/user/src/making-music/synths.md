@@ -386,6 +386,7 @@ Tap the preset's name above the page (it has a small ▾ beside it) and the brow
 - **Factory** lists the presets that come with the synth, the same as the list on the Synth tab. **Yours** lists the ones you saved. **Recent** and **Favourites** show only this synth's presets. Press **–** or **+** to move between them, or tap one on the left.
 - **Turn the data wheel** and each preset plays as you reach it: play the pads to hear it.
 - **Push the wheel**, or tap **Load**, to keep the preset you're on. You're back on the Synth tab with it.
+- **New track** makes a new track with a synth of its own playing the preset you're on, and selects it, so you can record it straight away. The sound you were trying goes back where it was. With 16 tracks already playing an instrument of their own, the most at once, the line along the bottom says so and the new track plays its kit.
 - **Cancel** or **BROWSE** puts back the sound you had when you opened the browser, with your changes, and takes you back to the Synth tab.
 - **Save preset** saves the sound you have now in **Yours**. The keyboard opens with the preset's name in it: change it, then tap **Done**. If you already have a preset with that name, MPFree asks before replacing it, and the old one goes to the Trash. The presets that come with the synth are never changed. The title then shows the name you saved it as.
 

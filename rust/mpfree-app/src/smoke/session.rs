@@ -283,7 +283,7 @@ pub struct Session {
     synth_turns: undo::Turns<u16>,
     /// The presets the tracks' own synths play, and the preset picker's
     /// try (presets.rs), as main.rs keeps them.
-    presets: crate::presets::TrackPresets,
+    pub presets: crate::presets::TrackPresets,
     mix_turns: crate::mixturns::MixTurns,
     turns_told: (bool, bool),
     /// The library the browser saves projects into (`with_library`).
@@ -1839,6 +1839,30 @@ impl Session {
                 let track = crate::instrument_track(&self.mix.instruments, track);
                 self.presets
                     .act(ask, track, &mut self.synth, &mut self.mix, &mut self.out);
+            }
+            // As main.rs (step 4c).
+            FromUi::NewTrackSound {
+                track,
+                engine,
+                give,
+            } => {
+                let made = self.presets.give(
+                    track,
+                    &engine,
+                    give,
+                    &self.synth,
+                    &mut self.mix,
+                    &mut self.out,
+                );
+                if let Some(held) = made {
+                    self.app.set_track_sound(track, Some(held));
+                    self.app.mark_project_edit();
+                    // What main.rs's loop does with what the builder made,
+                    // on its next period.
+                    while self.mix.poll_instruments().is_some() {}
+                    self.app
+                        .set_track_sound(track, self.mix.instruments.held(track));
+                }
             }
             FromUi::Synth(mpfree_synth_ui::SynthAction::Preset(k)) => {
                 self.synth_turns.clear();
