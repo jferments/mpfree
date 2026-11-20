@@ -1700,6 +1700,9 @@ pub enum FromUi {
     /// Records from: a mix, the master or one strip
     /// ([`crate::looping::LoopSource::Mix`]).
     LoopMix(mpfree_fx::StripId),
+    /// What you played's window moved or resized
+    /// ([`crate::looping::LoopAction::CaptureSpan`]).
+    LoopCaptureSpan(Option<i64>, u32),
     /// Records from's choices opened: the mixer's strips, to name its
     /// mixes ([`ToUi::ThrowStrips`] answers).
     LoopMixesWanted,
@@ -5323,6 +5326,7 @@ impl Player {
                 LoopAct::Solo(n) => out.push(FromUi::LoopSolo(n)),
                 LoopAct::PadKeys => out.push(FromUi::LoopKeys),
                 LoopAct::Capture => out.push(FromUi::LoopCapture),
+                LoopAct::CaptureSpan(end, bars) => out.push(FromUi::LoopCaptureSpan(end, bars)),
                 LoopAct::Clear(n) => {
                     out.push(FromUi::LoopPick(n));
                     out.push(FromUi::LoopCommand(C::Clear));
@@ -16863,6 +16867,25 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // their bar lines, and Capture over the last two.
     match sample_looper_picking(fonts(), 4) {
         Ok(p) => out.push(("looper-empty", p)),
+        Err(e) => eprintln!("looper sample: {e}"),
+    }
+    // What you played's window over three times a 2-bar pattern, moved
+    // back a bar from the newest bar line: its grips, the dashed line at
+    // each repeat, and the button saying so.
+    match sample_looper_picking(fonts(), 4) {
+        Ok(mut p) => {
+            let mut v = p.looper.clone();
+            let h = &mut v.heard;
+            (h.unit, h.pattern) = (2, true);
+            let n = h.n_lines;
+            if n >= 8 {
+                let (a, b) = (h.lines[n - 8], h.lines[n - 2]);
+                h.take = Some((a.1, b.1, a.0, 6));
+                v.capture_into = Some((4, 6));
+            }
+            p.apply(ToUi::Looper(Box::new(v)));
+            out.push(("looper-window", p));
+        }
         Err(e) => eprintln!("looper sample: {e}"),
     }
     // Loop 5 armed to start when you play (Starts: When I play), the song

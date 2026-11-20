@@ -245,9 +245,9 @@ the MPC and `--compare` the two reports for the kernels' A/B. The run's
 header says which code the kernels run as ("NEON kernels: NEON" on the
 MPC). See [NEON kernels](simd.md).
 
-On the desktop, the biggest holders are the looper (about 33 MB for 60 s of
-stereo, 11 MB of it the 30 s Capture keeps; the app's Prefs "Loop memory"
-default of 5 minutes is about 120 MB, and 20 minutes about 448 MB, all locked
+On the desktop, the biggest holders are the looper (about 44 MB for 60 s of
+stereo, 21 MB of it the 60 s Capture keeps; the app's Prefs "Loop memory"
+default of 5 minutes is about 131 MB, and 20 minutes about 458 MB, all locked
 in RAM), the Cloud reverb (9.4 MB per instance), the master grain effect and
 Grains FX (about 2.7 MB each) and the delay (1.4 MB). The CPU budget is per
 period; memory is per instance, so an engine that is cheap to run can still

@@ -16,11 +16,13 @@ use mpfree_transport::{Block, State};
 
 use crate::{FADE, LOAD_SPEED};
 
-/// Seconds of input the looper keeps for Capture.
-pub const HEARD_SECONDS: u32 = 30;
+/// Seconds of input the looper keeps for Capture: room for three times
+/// a 4-bar pattern at 60 BPM, or 30 bars at 120.
+pub const HEARD_SECONDS: u32 = 60;
 
-/// Bar lines kept: more than the longest capture (8 bars) needs.
-const LINES: usize = 32;
+/// Bar lines kept: more than the seconds kept hold at any tempo a
+/// capture is played at (63 bars of 4/4 is 60 s at 252 BPM).
+const LINES: usize = 64;
 
 /// Frames a take leaves spare at the old end of what is kept, for the
 /// periods between its bar line and the copy reading its first frames.
@@ -177,6 +179,17 @@ impl Heard {
     fn line(&self, i: u64) -> Option<Line> {
         (i < self.n_lines && self.n_lines - i <= LINES as u64)
             .then(|| self.lines[(i % LINES as u64) as usize])
+    }
+
+    /// The bar line on song tick `tick` in the newest run (the song as it
+    /// last played on unbroken), counted as [`Heard::lines`] counts.
+    pub fn line_at(&self, tick: Tick) -> Option<u64> {
+        let newest = self.line(self.n_lines.checked_sub(1)?)?;
+        (0..self.n_lines.min(LINES as u64))
+            .map(|k| self.n_lines - 1 - k)
+            .map_while(|i| self.line(i).filter(|l| l.run == newest.run).map(|l| (i, l)))
+            .find(|(_, l)| l.tick == tick)
+            .map(|(i, _)| i)
     }
 
     /// The song plays and is in a bar's last beat: a Capture waits for

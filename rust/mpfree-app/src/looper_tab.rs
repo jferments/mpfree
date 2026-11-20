@@ -139,6 +139,10 @@ pub enum LoopAct {
     /// Capture (the deck's, What you played's): the last bars heard
     /// become a loop.
     Capture,
+    /// What you played's window moved or resized: the bars Capture takes,
+    /// ending on the bar line that starts bar `.0` (None: the newest, so
+    /// it keeps up), `.1` of them.
+    CaptureSpan(Option<i64>, u32),
     /// Show layer `k` (play order) on the Q-Links: it is picked.
     Layer(usize),
     /// A control of layer `k` (play order).
@@ -479,17 +483,116 @@ pub struct EmptyLook {
     /// its button's words ("Capture bars 10 and 11"); None when there is
     /// nothing to take.
     pub take: Option<(f32, f32, String)>,
+    /// The bars it takes: the first one's number and how many.
+    pub window: Option<(i64, u32)>,
+    /// The bars the window grows and shrinks by (the pattern's length,
+    /// `pattern` true; or the Length's bars; or 1).
+    pub unit: u32,
+    pub pattern: bool,
 }
 
-/// What you played's Capture button, over the bars it takes, in the
-/// lanes' space `lanes`.
-pub fn empty_capture_rect(lanes: Rect, e: &EmptyLook) -> Option<Rect> {
-    let (a, b, _) = e.take.as_ref()?;
+impl EmptyLook {
+    /// Where bar `bar` starts on the wave (0 to 1), if its line shows; the
+    /// bar after the newest line ends at "now".
+    fn bar_x(&self, bar: i64) -> Option<f32> {
+        let newest = self.bars.last()?.0;
+        if bar == newest + 1 {
+            return Some(1.0);
+        }
+        self.bars.iter().find(|b| b.0 == bar).map(|b| b.1)
+    }
+
+    /// The button's words for a window of `bars` from bar `first`, with
+    /// how many patterns it holds.
+    fn words(&self, first: i64, bars: u32) -> String {
+        capture_words(first, bars, self.unit, self.pattern)
+    }
+}
+
+/// What you played's button for `bars` from bar `first`: "Capture bars 5
+/// to 10", and "· 3 × pattern" when it holds whole patterns of `unit`
+/// bars, more than one.
+pub fn capture_words(first: i64, bars: u32, unit: u32, pattern: bool) -> String {
+    let w = format!("Capture {}", crate::looping::bars_words(first, bars));
+    let unit = unit.max(1);
+    match (pattern, bars / unit) {
+        (true, k) if k > 1 && bars.is_multiple_of(unit) => format!("{w} · {k} × pattern"),
+        _ => w,
+    }
+}
+
+/// A finger on What you played's window: what it holds (the window, or
+/// one of its ends), where it went down, the window then and as it is now
+/// (first bar and bars), and whether it went down on the button.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WindowDrag {
+    finger: u64,
+    grip: Grip,
+    x0: i32,
+    from: (i64, u32),
+    now: (i64, u32),
+    button: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Grip {
+    Move,
+    Start,
+    End,
+}
+
+/// How near (pixels) to the window's end a finger takes that end.
+const GRIP_REACH: i32 = 22;
+
+/// The Capture button for a window from `a` to `b` (0 to 1) with its
+/// words `label`: centred over it, as wide as its words need.
+fn capture_button(lanes: Rect, a: f32, b: f32, label: &str) -> Rect {
     let w = empty_wave_rect(lanes);
     let mid = w.x + ((a + b) / 2.0 * w.w as f32) as i32;
-    let bw = 250.min(w.w);
+    let bw = ((60.0 + 8.6 * label.chars().count() as f32) as i32)
+        .max(200)
+        .min(w.w);
     let x = (mid - bw / 2).clamp(w.x, w.right() - bw);
-    Some(Rect::new(x, w.y + w.h / 2 - 22, bw, 44))
+    Rect::new(x, w.y + w.h / 2 - 22, bw, 44)
+}
+
+/// What you played's window from `a` to `b` (0 to 1): the wave's height
+/// over the bars it takes.
+fn window_rect(lanes: Rect, a: f32, b: f32) -> Rect {
+    let w = empty_wave_rect(lanes);
+    let at = |f: f32| w.x + (f.clamp(0.0, 1.0) * w.w as f32) as i32;
+    Rect::new(at(a), w.y, (at(b) - at(a)).max(1), w.h)
+}
+
+/// The window `from` (first bar, bars) after a finger on `grip` moved
+/// `steps` bars: moved, it keeps its bars; an end moved, it grows or
+/// shrinks by whole units (the pattern), the other end staying. Always
+/// whole bars that have been played and still show: from the oldest bar
+/// line to the newest.
+fn window_after(e: &EmptyLook, grip: Grip, from: (i64, u32), steps: i64) -> (i64, u32) {
+    let (Some(oldest), Some(newest)) = (e.bars.first().map(|b| b.0), e.bars.last().map(|b| b.0))
+    else {
+        return from;
+    };
+    let unit = i64::from(e.unit.max(1));
+    let (first, bars) = (from.0, i64::from(from.1));
+    let units = |n: i64| (n as f32 / unit as f32).round().max(1.0) as i64;
+    let (f, n) = match grip {
+        Grip::Move => ((first + steps).min(newest - bars).max(oldest), bars),
+        Grip::Start => {
+            let end = (first + bars).min(newest);
+            let k = units(bars - steps).min((end - oldest) / unit);
+            (end - k * unit, k * unit)
+        }
+        Grip::End => {
+            let k = units(bars + steps).min((newest - first) / unit);
+            (first, k * unit)
+        }
+    };
+    if n < 1 || f < oldest || f + n > newest + 1 {
+        return from;
+    }
+    (f, n as u32)
 }
 
 /// Where What you played draws the input, in the lanes' space.
@@ -585,6 +688,7 @@ struct EditorLook {
     trim: Option<i64>,
     trimming: Option<(i64, i64)>,
     nudging: Option<i32>,
+    window: Option<(i64, u32)>,
     feedback_held: bool,
     drag: Option<(usize, Rect, String, Option<DropSpot>)>,
     ready: Option<usize>,
@@ -632,6 +736,8 @@ pub struct LoopEditor {
     /// A finger on the ruler: where it went down and the 1/16 notes it
     /// has moved.
     nudging: Option<(u64, i32, i32)>,
+    /// A finger on What you played's window (moving or resizing it).
+    window_drag: Option<WindowDrag>,
     /// A finger on the Feedback knob: where it went down and the value
     /// then.
     feedback: Option<(u64, i32, f32)>,
@@ -678,6 +784,7 @@ impl Default for LoopEditor {
             mixes: vec!["Master".to_string()],
             trimming: None,
             nudging: None,
+            window_drag: None,
             feedback: None,
             history: None,
             history_top: None,
@@ -1282,6 +1389,7 @@ impl LoopEditor {
             trim: self.trim_ticks,
             trimming: self.trimming.map(|t| (t.2, t.3)),
             nudging: self.nudging.map(|n| n.2),
+            window: self.window_drag.map(|d| d.now),
             feedback_held: self.feedback.is_some(),
             drag: self
                 .drag()
@@ -1744,6 +1852,55 @@ impl LoopEditor {
         }
     }
 
+    /// What you played's window as it shows: where a finger has it while
+    /// it is moved or resized, else what Capture takes now.
+    fn shown_take(&self) -> Option<(f32, f32, String)> {
+        let e = self.empty.as_ref()?;
+        match self.window_drag {
+            Some(d) => {
+                let (first, bars) = d.now;
+                let a = e.bar_x(first)?;
+                let b = e.bar_x(first + i64::from(bars))?;
+                Some((a, b, e.words(first, bars)))
+            }
+            None => e.take.clone(),
+        }
+    }
+
+    /// The window's edges, with grips to take them by (above the button,
+    /// where a finger finds them), and a line where each repeat of the
+    /// pattern starts inside it.
+    fn paint_window(&self, cx: &mut PaintCx, lanes: Rect, e: &EmptyLook, a: f32, b: f32) {
+        let t = cx.theme.clone();
+        let r = window_rect(lanes, a, b);
+        let w = empty_wave_rect(lanes);
+        let at = |f: f32| w.x + (f.clamp(0.0, 1.0) * w.w as f32) as i32;
+        let window = self.window_drag.map(|d| d.now).or(e.window);
+        if let Some((first, bars)) = window.filter(|_| e.unit > 1) {
+            let unit = i64::from(e.unit);
+            let mut k = unit;
+            while k < i64::from(bars) {
+                if let Some(x) = e.bar_x(first + k) {
+                    let x = at(x);
+                    let mut y = r.y;
+                    while y < r.bottom() {
+                        cx.canvas
+                            .fill_rect(Rect::new(x - 1, y, 2, 6.min(r.bottom() - y)), t.accent);
+                        y += 10;
+                    }
+                }
+                k += unit;
+            }
+        }
+        for x in [r.x, r.right() - 2] {
+            cx.canvas.fill_rect(Rect::new(x, r.y, 2, r.h), t.accent);
+        }
+        for x in [r.x - 5, r.right() - 7] {
+            cx.canvas
+                .fill_round_rect(Rect::new(x, r.y + 14, 12, 34), 6, t.accent);
+        }
+    }
+
     fn paint_empty(&self, cx: &mut PaintCx, lanes: Rect, e: &EmptyLook) {
         let t = cx.theme.clone();
         cx.canvas
@@ -1757,10 +1914,11 @@ impl LoopEditor {
             t.text_dim,
             &e.title,
         );
-        // What Capture takes, behind the input.
+        // What Capture takes (its window), behind the input.
         let w = empty_wave_rect(lanes);
         let at = |f: f32| w.x + (f.clamp(0.0, 1.0) * w.w as f32) as i32;
-        if let Some((a, b, _)) = &e.take {
+        let shown = self.shown_take();
+        if let Some((a, b, _)) = &shown {
             let (a, b) = (at(*a), at(*b));
             cx.canvas.fill_rect(
                 Rect::new(a, w.y, (b - a).max(1), w.h),
@@ -1793,8 +1951,12 @@ impl LoopEditor {
                 self.colour.mix(t.surface, 0.2),
             );
         }
-        if let Some(b) = empty_capture_rect(lanes, e) {
-            let label = e.take.as_ref().map_or("", |t| t.2.as_str());
+        if let Some((a, b, _)) = &shown {
+            self.paint_window(cx, lanes, e, *a, *b);
+        }
+        if let Some((a, b, label)) = &shown {
+            let b = capture_button(lanes, *a, *b, label);
+            let label = label.as_str();
             cx.canvas.fill_round_rect(b, 10, t.accent);
             let tw = cx.measure(FontId::Bold, 15.0, label);
             let icon_x = b.x + (b.w - tw - 26) / 2;
@@ -2248,8 +2410,9 @@ impl Widget for LoopEditor {
         }
         if self.layers.is_empty() {
             if let Some(e) = &self.empty {
-                if let (Some(b), Some((_, _, label))) = (empty_capture_rect(p.lanes, e), &e.take) {
-                    out.push(Target::tap("capture", 0, label.clone(), b));
+                if let Some((a, b, label)) = self.shown_take().filter(|_| e.take.is_some()) {
+                    let b = capture_button(p.lanes, a, b, &label);
+                    out.push(Target::tap("capture", 0, label, b));
                 }
             }
             return out;
@@ -2458,11 +2621,35 @@ impl Widget for LoopEditor {
                     return None;
                 }
                 if self.layers.is_empty() {
-                    let capture = self
-                        .empty
-                        .as_ref()
-                        .and_then(|e| empty_capture_rect(p.lanes, e));
-                    if capture.is_some_and(|b| b.contains(x, y)) {
+                    // What you played's window: its button captures (on
+                    // the finger's lift, if it didn't move); a finger on
+                    // it moves it, and one by an end resizes it.
+                    let e = self.empty.as_ref()?;
+                    let (a, b, label) = e.take.clone()?;
+                    let win = window_rect(p.lanes, a, b);
+                    let on_button = capture_button(p.lanes, a, b, &label).contains(x, y);
+                    let in_wave = y >= win.y && y < win.bottom();
+                    let grip = if on_button {
+                        Some(Grip::Move)
+                    } else if in_wave && (x - win.x).abs() <= GRIP_REACH {
+                        Some(Grip::Start)
+                    } else if in_wave && (x - win.right()).abs() <= GRIP_REACH {
+                        Some(Grip::End)
+                    } else if win.contains(x, y) {
+                        Some(Grip::Move)
+                    } else {
+                        None
+                    };
+                    if let (Some(grip), Some(from)) = (grip, e.window) {
+                        self.window_drag = Some(WindowDrag {
+                            finger,
+                            grip,
+                            x0: x,
+                            from,
+                            now: from,
+                            button: on_button,
+                        });
+                    } else if on_button {
                         self.acts.push(LoopAct::Capture);
                         return Some(EventKind::Tab(4));
                     }
@@ -2545,6 +2732,21 @@ impl Widget for LoopEditor {
                 self.acts.push(LoopAct::Feedback(v));
                 Some(EventKind::Value(v))
             }
+            Touch::Move if self.window_drag.is_some_and(|d| d.finger == finger) => {
+                let d = self.window_drag?;
+                let e = self.empty.as_ref()?;
+                let w = empty_wave_rect(p.lanes);
+                let (first, last) = (e.bars.first()?, e.bars.last()?);
+                let lines = e.bars.len().checked_sub(1).filter(|&n| n > 0)? as f32;
+                let px = ((last.1 - first.1) / lines * w.w as f32).max(1.0);
+                let steps = ((x - d.x0) as f32 / px).round() as i64;
+                let now = window_after(e, d.grip, d.from, steps);
+                if now == d.now {
+                    return None;
+                }
+                self.window_drag = Some(WindowDrag { now, ..d });
+                Some(EventKind::Value(now.1 as f32))
+            }
             Touch::Move if self.trimming.is_some_and(|t| t.0 == finger) => {
                 let (f, is_end, from, to) = self.trimming?;
                 let ticks = self.trim_ticks.filter(|&t| t > 0)?;
@@ -2614,6 +2816,26 @@ impl Widget for LoopEditor {
             Touch::Up | Touch::Cancel => {
                 if self.feedback.is_some_and(|f| f.0 == finger) {
                     self.feedback = None;
+                    return None;
+                }
+                if let Some(d) = self.window_drag.filter(|d| d.finger == finger) {
+                    self.window_drag = None;
+                    if phase == Touch::Cancel {
+                        return None;
+                    }
+                    if d.now != d.from {
+                        let newest = self.empty.as_ref().and_then(|e| e.bars.last()).map(|b| b.0);
+                        let end = d.now.0 + i64::from(d.now.1);
+                        self.acts.push(LoopAct::CaptureSpan(
+                            (Some(end) != newest).then_some(end),
+                            d.now.1,
+                        ));
+                        return Some(EventKind::Value(d.now.1 as f32));
+                    }
+                    if d.button {
+                        self.acts.push(LoopAct::Capture);
+                        return Some(EventKind::Tab(4));
+                    }
                     return None;
                 }
                 if let Some(q) = self.press.filter(|q| q.finger == finger) {
@@ -2960,6 +3182,69 @@ mod tests {
         e.empty.as_mut().unwrap().take = None;
         assert!(!e.targets(r).iter().any(|t| t.id == "capture"));
         ui.paint(&mut mpfree_ui::SoftCanvas::new(1280, 800));
+    }
+
+    /// What you played's window: a finger in it moves it by whole bars,
+    /// one by an end grows or shrinks it by whole patterns, never past
+    /// the bars played; let go, Capture is asked to take that; at the
+    /// newest bar line it keeps up (None). The button still captures.
+    #[test]
+    fn the_capture_window_moves_and_resizes_by_the_pattern() {
+        let mut ui = page_of(EDITOR, editor(0));
+        let r = ui.rect_of(EDITOR).unwrap();
+        let lanes = LoopEditor::parts(r).lanes;
+        let x_of = |bar: i64| (bar - 4) as f32 / 9.0;
+        let look = EmptyLook {
+            title: "WHAT YOU PLAYED · PADS".into(),
+            bars: (5..=12).map(|b| (b, x_of(b))).collect(),
+            take: Some((x_of(9), x_of(11), "Capture bars 9 and 10".into())),
+            window: Some((9, 2)),
+            unit: 2,
+            pattern: true,
+            ..EmptyLook::default()
+        };
+        ui.get_mut::<LoopEditor>(EDITOR).unwrap().empty = Some(look.clone());
+        let win = window_rect(lanes, x_of(9), x_of(11));
+        let w = empty_wave_rect(lanes);
+        let bar = (w.w as f32 / 9.0) as i32;
+        let drag = |ui: &mut Ui, x: i32, y: i32, dx: i32| {
+            ui.touch(1, Touch::Down, x, y);
+            ui.touch(1, Touch::Move, x + dx / 2, y);
+            ui.touch(1, Touch::Move, x + dx, y);
+            ui.touch(1, Touch::Up, x + dx, y);
+        };
+        // Moved two bars back (by its top, clear of the button).
+        let top = win.y + 6;
+        drag(&mut ui, win.x + win.w / 2, top, -2 * bar);
+        assert_eq!(acts(&mut ui), vec![LoopAct::CaptureSpan(Some(9), 2)]);
+        // Its start pulled back two bars: a pattern more, bars 7 to 10.
+        drag(&mut ui, win.x, top, -2 * bar);
+        assert_eq!(acts(&mut ui), vec![LoopAct::CaptureSpan(Some(11), 4)]);
+        // Its end can't go past the bars played (bar 12 is still playing).
+        drag(&mut ui, win.right(), top, 3 * bar);
+        assert_eq!(acts(&mut ui), vec![], "no whole pattern more to take");
+        // Moved up to the newest bar line: it keeps up.
+        drag(&mut ui, win.x + win.w / 2, top, 3 * bar);
+        assert_eq!(acts(&mut ui), vec![LoopAct::CaptureSpan(None, 2)]);
+        // While a finger has it, it shows where, with its patterns.
+        let e = ui.get_mut::<LoopEditor>(EDITOR).unwrap();
+        e.window_drag = Some(WindowDrag {
+            finger: 9,
+            grip: Grip::Start,
+            x0: 0,
+            from: (9, 2),
+            now: (5, 6),
+            button: false,
+        });
+        let shown = e.shown_take().unwrap();
+        assert_eq!(shown.2, "Capture bars 5 to 10 · 3 × pattern");
+        assert_eq!((shown.0, shown.1), (x_of(5), x_of(11)));
+        ui.paint(&mut mpfree_ui::SoftCanvas::new(1280, 800));
+        ui.get_mut::<LoopEditor>(EDITOR).unwrap().window_drag = None;
+        // A tap on the button, unmoved, captures.
+        let b = capture_button(lanes, x_of(9), x_of(11), "Capture bars 9 and 10");
+        tap(&mut ui, b.x + b.w / 2, b.y + b.h / 2);
+        assert_eq!(acts(&mut ui), vec![LoopAct::Capture]);
     }
 
     #[test]
