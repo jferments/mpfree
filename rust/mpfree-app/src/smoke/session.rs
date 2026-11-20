@@ -141,11 +141,15 @@ impl time::Pads for Hits {
         ));
         false
     }
-    fn live(&mut self, o: &mpfree_play::Out) -> Option<mpfree_play::Event> {
+    // A live note records as its pad, and its notes are the pad's number:
+    // the session doesn't tell the time engine which tracks play notes
+    // (`TimeHost::set_notes_tracks`), so its takes stay pad hits.
+    fn live(&mut self, o: &mpfree_play::Out) -> time::Heard {
         use crate::midi_out::{kit_notes, NoteIs};
         use mpfree_play::Event;
+        use time::Heard;
         if self.quiet(o) {
-            return None;
+            return Heard::NONE;
         }
         self.note(o);
         // As main.rs's pads: the MIDI file gets what MIDI Out would.
@@ -158,13 +162,13 @@ impl time::Pads for Hits {
             Event::NoteOn { note, velocity } => {
                 self.on.push((usize::from(note), velocity));
                 self.queued.push((usize::from(note), velocity, o.offset));
-                Some(o.event)
+                Heard::pad(o.event)
             }
             Event::NoteOff { note } => {
                 self.released.push((usize::from(note), o.offset));
-                Some(o.event)
+                Heard::pad(o.event)
             }
-            _ => None,
+            _ => Heard::NONE,
         }
     }
 }
@@ -223,6 +227,8 @@ pub struct Session {
     /// as main.rs keeps them.
     sounds_shown: gui::TrackSounds,
     sends_shown: gui::TrackSends,
+    /// Where REC would record the pads' synth, as the screen last heard it.
+    plan_shown: Option<crate::app::RecPlan>,
     /// The time engine's REDOs seen so far, as player_session keeps them.
     redos_seen: u64,
     /// Messages for the screen that found it gone (none expected).
@@ -283,7 +289,7 @@ pub struct Session {
     synth_turns: undo::Turns<u16>,
     /// The presets the tracks' own synths play, and the preset picker's
     /// try (presets.rs), as main.rs keeps them.
-    presets: crate::presets::TrackPresets,
+    pub presets: crate::presets::TrackPresets,
     mix_turns: crate::mixturns::MixTurns,
     turns_told: (bool, bool),
     /// The library the browser saves projects into (`with_library`).
@@ -372,6 +378,7 @@ impl Session {
             instrument_list: crate::instrument_list::InstrumentList::new(),
             sounds_shown: [None; crate::instruments::TRACKS],
             sends_shown: [None; crate::instruments::TRACKS],
+            plan_shown: None,
             redos_seen: 0,
             quit: false,
             kits: n,
@@ -1247,6 +1254,11 @@ impl Session {
             self.sends_shown = sends;
             self.out.show(ToUi::TrackSends(Box::new(sends)));
         }
+        let plan = crate::desk::rec_plan(&self.app, &self.time, &self.mix);
+        if plan != self.plan_shown {
+            self.plan_shown = plan;
+            self.out.show(ToUi::RecPlan(plan));
+        }
         let (loop_rec, loop_dub) = self.looper.recording();
         let info = self.time.info();
         let lights = self.app.transport_lights(
@@ -1839,6 +1851,30 @@ impl Session {
                 let track = crate::instrument_track(&self.mix.instruments, track);
                 self.presets
                     .act(ask, track, &mut self.synth, &mut self.mix, &mut self.out);
+            }
+            // As main.rs (step 4c).
+            FromUi::NewTrackSound {
+                track,
+                engine,
+                give,
+            } => {
+                let made = self.presets.give(
+                    track,
+                    &engine,
+                    give,
+                    &self.synth,
+                    &mut self.mix,
+                    &mut self.out,
+                );
+                if let Some(held) = made {
+                    self.app.set_track_sound(track, Some(held));
+                    self.app.mark_project_edit();
+                    // What main.rs's loop does with what the builder made,
+                    // on its next period.
+                    while self.mix.poll_instruments().is_some() {}
+                    self.app
+                        .set_track_sound(track, self.mix.instruments.held(track));
+                }
             }
             FromUi::Synth(mpfree_synth_ui::SynthAction::Preset(k)) => {
                 self.synth_turns.clear();

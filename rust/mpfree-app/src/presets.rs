@@ -46,6 +46,15 @@ pub enum Ask {
     Saved(String),
 }
 
+/// A preset for a new track's own synth (New instrument track, the
+/// instrument redesign's step 4c): one of the engine's own, or the
+/// musician's file's `text` (read on the screen's side), named `name`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Give {
+    Factory(usize),
+    Text { name: String, text: String },
+}
+
 impl Ask {
     /// Whether it changes the song's sound for good (an edit to save).
     pub fn edits(&self) -> bool {
@@ -113,6 +122,83 @@ impl TrackPresets {
             *i = index;
         }
         self.new_sound(track);
+    }
+
+    /// New instrument track (step 4c): track `track`, just added, gets a
+    /// synth of its own, the engine whose preset folder is `folder`,
+    /// playing `give`; the builder makes it as a preset's sound. Returns
+    /// what it will play, for the app; None, with the reason said, when it
+    /// can't (not an engine, a preset that doesn't read, the track has an
+    /// instrument already, or all 16 places are taken).
+    pub fn give(
+        &mut self,
+        track: usize,
+        folder: &str,
+        give: Give,
+        synth: &synth::Synth,
+        mix: &mut mixing::MixHost,
+        out: &mut Out,
+    ) -> Option<instruments::Held> {
+        let t = track + 1;
+        let Some(engine) = synth::Engine::from_folder(folder) else {
+            tell(
+                out,
+                format!("Track {t} plays its kit: {folder} isn't one of MPFree's synths"),
+            );
+            return None;
+        };
+        if mix.instruments.plays(track) {
+            tell(
+                out,
+                format!("Track {t} plays an instrument already: the new sound isn't put on it"),
+            );
+            return None;
+        }
+        if !mix.instruments.has_room(track) {
+            tell(out, crate::full_note(track, engine.name()));
+            return None;
+        }
+        let (name, sound, index, own) = match give {
+            Give::Factory(i) => match synth.preset_values(engine, i) {
+                Some((name, extras, values)) => (name, (extras, values), Some(i), None),
+                None => {
+                    tell(
+                        out,
+                        format!(
+                            "Track {t} plays its kit: {} has no preset {}",
+                            engine.name(),
+                            i + 1
+                        ),
+                    );
+                    return None;
+                }
+            },
+            Give::Text { name, text } => match synth.text_sound(engine, folder, &text) {
+                Ok((_, extras, values)) => (name.clone(), (extras, values), None, Some(name)),
+                Err(e) => {
+                    tell(
+                        out,
+                        format!("Track {t} plays its kit: {name} doesn't play here: {e}"),
+                    );
+                    return None;
+                }
+            },
+        };
+        self.new_sound(track);
+        self.make(track, engine.node_id(), sound, synth, mix);
+        if let (Some(i), Some(o)) = (self.index.get_mut(track), self.own.get_mut(track)) {
+            *i = index;
+            *o = own;
+        }
+        tell(
+            out,
+            format!("Track {t}: its own {}, playing {name}", engine.name()),
+        );
+        Some(instruments::Held {
+            id: engine.node_id(),
+            name: engine.name(),
+            instance: 0,
+        })
     }
 
     /// Track `to` has a copy of track `from`'s sound (step 4c, Duplicate):
@@ -489,20 +575,8 @@ impl Picker {
     /// Reads a file of the musician's on its own thread, to try (or load)
     /// once read ([`Picker::poll`]). A newer one replaces it.
     pub fn read(&mut self, path: PathBuf, folder: String, name: String, load: bool) {
-        let (tx, rx) = mpsc::channel();
-        let spawned = std::thread::Builder::new()
-            .name("mpfree-preset".into())
-            .spawn({
-                let tx = tx.clone();
-                move || {
-                    let _ = tx.send(read_text(&path));
-                }
-            });
-        if let Err(e) = spawned {
-            let _ = tx.send(Err(format!("not read ({e})")));
-        }
         self.reading = Some(Reading {
-            rx,
+            rx: read_in_background(path),
             folder,
             name,
             load,
@@ -527,6 +601,24 @@ impl Picker {
             Err(e) => Err(format!("{name} wasn't read: {e}")),
         })
     }
+}
+
+/// Reads preset file `path` on a thread of its own: its text (or why
+/// not) comes on the receiver (New track).
+pub fn read_in_background(path: PathBuf) -> Receiver<Result<String, String>> {
+    let (tx, rx) = mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("mpfree-preset".into())
+        .spawn({
+            let tx = tx.clone();
+            move || {
+                let _ = tx.send(read_text(&path));
+            }
+        });
+    if let Err(e) = spawned {
+        let _ = tx.send(Err(format!("not read ({e})")));
+    }
+    rx
 }
 
 /// A preset file's text, refused past the library's most.
@@ -695,6 +787,108 @@ mod tests {
         // The track plays the kit again: no name.
         p.set_index(0, None);
         assert_eq!(p.own(0), None);
+    }
+
+    #[test]
+    fn a_new_track_gets_its_own_synth_playing_the_sound_picked() {
+        let synth = synth::Synth::new(RATE);
+        let mut mix = mixing::MixHost::new(RATE, -6.0, -6.0);
+        let mut p = TrackPresets::default();
+        let (mut out, rx) = out();
+        let poly = synth::Engine::Poly;
+        let told = |rx: &Receiver<gui::ToUi>, what: &str| {
+            shown(rx)
+                .iter()
+                .any(|m| matches!(m, gui::ToUi::Tell(t) if t.contains(what)))
+        };
+
+        // One of the engine's own: track 3 gets a Poly playing preset 4.
+        let held = p.give(2, "Poly", Give::Factory(3), &synth, &mut mix, &mut out);
+        assert_eq!(held.map(|h| (h.id, h.name)), Some((poly.node_id(), "Poly")));
+        assert!(land(&mut mix));
+        let (name, _, values) = synth.preset_values(poly, 3).unwrap();
+        assert_eq!(track_values(&mix, 2), settable(poly, &values));
+        assert_eq!((p.index(2), p.own(2)), (Some(3), None));
+        assert!(told(&rx, &format!("Track 3: its own Poly, playing {name}")));
+
+        // One of the musician's, by its text: named by it.
+        let fm = synth::Engine::Fm;
+        let (_, fx, fv) = synth.preset_values(fm, 1).unwrap();
+        let (folder, text) = synth.copy_text(fm, &fx, &fv, "Bell").unwrap();
+        let bell = Give::Text {
+            name: "Bell".into(),
+            text,
+        };
+        assert!(p
+            .give(4, folder, bell, &synth, &mut mix, &mut out)
+            .is_some());
+        assert!(land(&mut mix));
+        assert_eq!(mix.instruments.held(4).map(|h| h.id), Some(fm.node_id()));
+        assert_eq!((p.index(4), p.own(4)), (None, Some("Bell")));
+
+        // Refused, each saying why, and nothing is built.
+        let refused = |p: &mut TrackPresets,
+                       mix: &mut mixing::MixHost,
+                       out: &mut Out,
+                       track,
+                       folder: &str,
+                       give| {
+            let held = p.give(track, folder, give, &synth, mix, out);
+            held.is_none() && !land(mix)
+        };
+        assert!(refused(
+            &mut p,
+            &mut mix,
+            &mut out,
+            2,
+            "Poly",
+            Give::Factory(1)
+        ));
+        assert!(told(&rx, "Track 3 plays an instrument already"));
+        assert!(refused(
+            &mut p,
+            &mut mix,
+            &mut out,
+            5,
+            "Samples",
+            Give::Factory(1)
+        ));
+        assert!(told(&rx, "Samples isn't one of MPFree's synths"));
+        assert!(refused(
+            &mut p,
+            &mut mix,
+            &mut out,
+            5,
+            "Poly",
+            Give::Factory(999)
+        ));
+        assert!(told(&rx, "Poly has no preset 1000"));
+        let junk = Give::Text {
+            name: "Junk".into(),
+            text: "not a sound".into(),
+        };
+        assert!(refused(&mut p, &mut mix, &mut out, 5, "FM", junk));
+        assert!(told(&rx, "Junk doesn't play here"));
+        assert!(!mix.instruments.holds(5));
+
+        // With every place taken, the next track is told how to make room.
+        let mut t = 5;
+        while mix.instruments.count() < instruments::SLOTS {
+            assert!(p
+                .give(t, "Poly", Give::Factory(0), &synth, &mut mix, &mut out)
+                .is_some());
+            assert!(land(&mut mix));
+            t += 1;
+        }
+        assert!(refused(
+            &mut p,
+            &mut mix,
+            &mut out,
+            t,
+            "Poly",
+            Give::Factory(0)
+        ));
+        assert!(told(&rx, "the most at once"));
     }
 
     #[test]

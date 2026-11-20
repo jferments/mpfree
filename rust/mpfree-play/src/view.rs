@@ -235,6 +235,10 @@ pub(crate) struct ClipView {
     /// The steps its direction moves ([`Clip::direction_steps`]); 0 when
     /// it plays forward ([`crate::steps`]).
     pub steps: u32,
+    /// Its notes are pitches, not pads ([`Clip::holds`], the instrument
+    /// redesign's step 5c): its note events say so ([`crate::Out::notes`]).
+    /// In the stamp, so a frozen strip thaws when a clip changes kind.
+    pub holds_notes: bool,
 }
 
 impl ClipView {
@@ -795,6 +799,7 @@ impl PlayView {
                 program: None,
                 direction: Direction::Forward,
                 steps: 0,
+                holds_notes: false,
             };
             // Recorded moves land here in place too: keep it as they would.
             song.stamp = stamp_of(&song);
@@ -1247,6 +1252,7 @@ pub(crate) fn view_of(
         program: clip.program,
         direction: clip.direction,
         steps: clip.direction_steps().unwrap_or(0),
+        holds_notes: clip.holds == mpfree_seq::Holds::Notes,
     };
     view.notes = clip.notes.iter().map(|n| view.note_view(n)).collect();
     view.notes.sort_by(|a, b| a.local.total_cmp(&b.local));
@@ -1330,6 +1336,7 @@ fn stamp_of(v: &ClipView) -> u64 {
         v.swing,
         v.direction,
         v.steps,
+        v.holds_notes,
     ));
     let notes = v.notes.iter().map(debug_hash);
     let locks = v.locks.iter().map(debug_hash);
@@ -1363,6 +1370,9 @@ pub struct NowPlaying {
     /// False for a clip that plays its steps in random order (S6): it
     /// never comes round the same, so it has no loop to freeze.
     pub repeats: bool,
+    /// The clip holds notes, not pad hits ([`mpfree_seq::Holds`]): what a
+    /// take into it records (the instrument redesign's step 5c).
+    pub holds_notes: bool,
 }
 
 /// A cue carried out on the audio thread that the view does not show yet.

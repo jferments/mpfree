@@ -39,7 +39,7 @@ mod synth_pads;
 pub use arp::{built_in_patterns, mode_label, ArpItem, ArpView, LiveMap, WorkspaceView};
 pub use mapper::{Code, MapView, Mark};
 use mpfree_arp::scale::pads::Pad as PadNotes;
-pub use pads_focus::{synth_track, PadFocus, SynthTake};
+pub use pads_focus::{synth_track, PadFocus, RecPlan, SynthTake};
 pub use step_pads::StepPads;
 pub use synth_pads::{sent_name, SynthItem};
 
@@ -1623,6 +1623,12 @@ pub struct App {
     /// ([`App::set_pad_layout`]): the pads then feed the arp the layout's
     /// notes, and its events carry notes rather than pad slots.
     pad_layout: Option<[PadNotes; 16]>,
+    /// The selected track's own synth's pad map while it plays notes
+    /// ([`App::set_arp_layout`], the instrument redesign's step 5d): the
+    /// pads then press its notes into the track's arp, which works in
+    /// notes, as with the synth's layout; everything else about the pads
+    /// stays as on a kit.
+    arp_layout: Option<[PadNotes; 16]>,
     /// What the pads play: the selected track's instrument, or one chosen
     /// for them ([`App::pads_focus`]).
     pads_focus: PadFocus,
@@ -1799,6 +1805,7 @@ impl App {
             held: false,
             outline: false,
             pad_layout: None,
+            arp_layout: None,
             pads_focus: PadFocus::Track,
             synth_tracks: 0,
             configured: 0,
@@ -2269,7 +2276,7 @@ impl App {
     }
 
     pub fn pressure(&mut self, slot: usize, value: u8) {
-        if self.pad_layout.is_none() {
+        if self.press_layout().is_none() {
             let pad = self.kit_pad(slot) as u8;
             self.arps.engine_at_mut(self.track).pressure(pad, value);
             return;
@@ -2293,7 +2300,7 @@ impl App {
     /// Pads the engine keeps playing (held, or latched). With a pad layout:
     /// a pad any of whose notes is held or latched.
     pub fn active(&self, slot: usize) -> bool {
-        match &self.pad_layout {
+        match self.press_layout() {
             None => self
                 .arps
                 .engine_at(self.track)
@@ -5687,6 +5694,44 @@ mod tests {
         assert!(!app.arp_plays_notes());
     }
 
+    /// Step 5d: a track's own synth's pad map makes the pads press its
+    /// notes into the track's arp, as the synth's layout does, while
+    /// everything else about the pads stays as on a kit; held pads are let
+    /// go when it comes or goes, and the synth's layout, when on, wins.
+    #[test]
+    fn an_own_synths_pad_map_presses_its_notes_into_the_arp() {
+        use mpfree_arp::scale::pads::{layout, PadLayout, PadSetup};
+        let mut app = ready();
+        let pads = layout(&PadSetup {
+            layout: PadLayout::Chromatic,
+            ..PadSetup::default()
+        });
+        app.pad_down(3, 100);
+        assert_eq!(notes(&mut app, 64), [3]);
+        app.set_arp_layout(Some(pads));
+        assert!(app.eng().active().is_empty(), "the held pad let go");
+        notes(&mut app, 64);
+        assert!(!app.arp_plays_notes(), "the pads still play as on a kit");
+        app.pad_down(3, 100);
+        let mut heard = notes(&mut app, 64);
+        heard.sort_unstable();
+        let mut want = pads[3].notes().to_vec();
+        want.sort_unstable();
+        assert_eq!(heard, want, "pad 4's notes");
+        assert!(app.live_map().plays_notes());
+        assert_eq!(app.pad_of_note(pads[3].notes()[0]), Some(3));
+        app.pad_up(3);
+        assert!(app.eng().active().is_empty());
+        // Gone again: pad numbers, held pads let go.
+        app.pad_down(5, 100);
+        notes(&mut app, 64);
+        app.set_arp_layout(None);
+        assert!(app.eng().active().is_empty());
+        notes(&mut app, 64);
+        app.pad_down(3, 100);
+        assert_eq!(notes(&mut app, 64), [3]);
+    }
+
     #[test]
     fn keys_play_notes_and_share_holds_with_pads() {
         use mpfree_arp::scale::pads::{layout, PadLayout, PadSetup};
@@ -7465,6 +7510,35 @@ mod tests {
         let loops = Track::new_loops("Track 7", 0);
         p.tracks[6] = loops;
         assert_eq!(unfit(&p, 6, free), Some("is a Loop track"));
+    }
+
+    /// The recording plan's words on the REC chip (step 5b): where REC
+    /// will record the pads' synth, by the track's name, before you press.
+    #[test]
+    fn the_rec_chip_names_where_rec_will_record_the_pads_synth() {
+        let name = |t: usize| {
+            if t == 1 {
+                "Bass".to_string()
+            } else {
+                format!("Track {}", t + 1)
+            }
+        };
+        let plan = |take| RecPlan {
+            take,
+            synth: "Poly",
+        };
+        assert_eq!(plan(SynthTake::On(2)).chip(name), "Track 3 · Poly");
+        assert_eq!(plan(SynthTake::On(1)).chip(name), "Bass · Poly");
+        assert_eq!(plan(SynthTake::New).chip(name), "New track · Poly");
+        assert_eq!(
+            plan(SynthTake::Pinned {
+                track: 0,
+                why: "has clips"
+            })
+            .chip(name),
+            "Track 1 · not free"
+        );
+        assert_eq!(plan(SynthTake::Full).chip(name), "No free track · Poly");
     }
 
     /// The arp and the synth chosen for the pads (the design review of 20

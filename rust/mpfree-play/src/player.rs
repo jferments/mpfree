@@ -254,7 +254,16 @@ pub struct Out {
     /// The destination ([`ALL`] for every one).
     pub dest: DestId,
     pub event: Event,
+    /// The event's note is a pitch, from a clip of notes
+    /// ([`mpfree_seq::Holds::Notes`], the instrument redesign's step 5c),
+    /// not a pad. False for a clip of pad hits, the live pads and every
+    /// event that isn't a note's.
+    pub notes: bool,
 }
+
+// Out fills the room tables' fixed lists (`room`): it took the kind of
+// note at 40 bytes, and grows no further unnoticed.
+const _: () = assert!(std::mem::size_of::<Out>() <= 40);
 
 /// Where the player's events go: the host maps each destination to the
 /// sampler, the arp, MIDI out ... Events arrive in frame order.
@@ -309,6 +318,8 @@ struct Sounding {
     track: u16,
     dest: DestId,
     note: u8,
+    /// Its note is a pitch (a clip of notes, [`Out::notes`]).
+    notes: bool,
     off: Tick,
     /// Start order, to break ties.
     seq: u64,
@@ -323,6 +334,8 @@ struct Start {
     track: u16,
     dest: DestId,
     note: u8,
+    /// Its note is a pitch (a clip of notes, [`Out::notes`]).
+    notes: bool,
     velocity: u8,
     off: Tick,
     /// Percent; below 100 the note rolls with `key`.
@@ -365,6 +378,7 @@ struct Touching {
     track: u16,
     dest: DestId,
     note: u8,
+    notes: bool,
     slot: usize,
     /// The note's start as played, and its clip's speed.
     base: Tick,
@@ -379,6 +393,7 @@ const NO_TOUCHING: Touching = Touching {
     track: 0,
     dest: 0,
     note: 0,
+    notes: false,
     slot: 0,
     base: 0,
     speed: Speed::NORMAL,
@@ -395,6 +410,7 @@ struct Hit {
     track: u16,
     dest: DestId,
     note: u8,
+    notes: bool,
     velocity: u8,
     off: Tick,
 }
@@ -404,6 +420,7 @@ const NO_HIT: Hit = Hit {
     track: 0,
     dest: 0,
     note: 0,
+    notes: false,
     velocity: 0,
     off: 0,
 };
@@ -493,6 +510,7 @@ const NO_SOUND: Sounding = Sounding {
     track: 0,
     dest: 0,
     note: 0,
+    notes: false,
     off: 0,
     seq: 0,
     from: 0,
@@ -502,6 +520,7 @@ const NO_START: Start = Start {
     track: 0,
     dest: 0,
     note: 0,
+    notes: false,
     velocity: 0,
     off: 0,
     chance: 100,
@@ -1019,6 +1038,7 @@ impl Player {
             stamp: clip.stamp,
             muted: self.muted(view, track),
             repeats,
+            holds_notes: clip.holds_notes,
         })
     }
 
@@ -1093,6 +1113,7 @@ impl Player {
                     track: ALL,
                     dest: ALL,
                     event: Event::AllOff,
+                    notes: false,
                 });
             }
             _ => {}
@@ -1111,6 +1132,7 @@ impl Player {
                 track: s.track,
                 dest: s.dest,
                 event: Event::NoteOff { note: s.note },
+                notes: s.notes,
             });
         }
         self.n_sounding = 0;
@@ -1218,6 +1240,7 @@ impl Player {
                         program: p.program,
                         bank: p.bank,
                     },
+                    notes: false,
                 });
             }
             if s.reset || s.scene || !s.plays {
@@ -1233,18 +1256,19 @@ impl Player {
                 self.ratchet(i);
             }
             let (offset, frame) = place(span, s.tick);
-            if let Some(j) = self.find(s.track, s.dest, s.note) {
+            if let Some(j) = self.find(s.track, s.dest, s.note, s.notes) {
                 out.send(Out {
                     offset,
                     frame,
                     track: s.track,
                     dest: s.dest,
                     event: Event::NoteOff { note: s.note },
+                    notes: s.notes,
                 });
                 self.remove(j);
             }
             // The old note's pressure ends with it.
-            self.stop_touch(s.track, s.dest, s.note);
+            self.stop_touch(s.track, s.dest, s.note, s.notes);
             if self.n_sounding == MAX_ACTIVE {
                 self.stats.dropped += 1;
                 continue;
@@ -1267,11 +1291,13 @@ impl Player {
                     note: s.note,
                     velocity: s.velocity,
                 },
+                notes: s.notes,
             });
             self.sounding[self.n_sounding] = Sounding {
                 track: s.track,
                 dest: s.dest,
                 note: s.note,
+                notes: s.notes,
                 off: s.off,
                 seq: self.seq,
                 from: s.tick,
@@ -1706,13 +1732,16 @@ impl Player {
     /// starts, so the two overlap and a legato synth glides.
     fn join(&mut self, s: &Start) -> bool {
         let mut tied = false;
+        // Notes of the other kind (pads against pitches) never join.
         let notes = self.sounding[..self.n_sounding]
             .iter_mut()
+            .filter(|x| x.notes == s.notes)
             .map(|x| (x.track, x.dest, x.note, x.from, &mut x.off));
         // A ratchet's hits from before the tie's tick that this span hasn't
         // played yet count as sounding, as they would at a shorter period.
         let hits = self.hits[..self.n_hits]
             .iter_mut()
+            .filter(|h| h.notes == s.notes)
             .map(|h| (h.track, h.dest, h.note, h.tick, &mut h.off));
         for (track, dest, note, from, off) in notes.chain(hits) {
             if track != s.track || dest != s.dest || *off < s.tick || from >= s.tick {
@@ -1755,6 +1784,7 @@ impl Player {
                 track: s.track,
                 dest: s.dest,
                 note: s.note,
+                notes: s.notes,
                 velocity: mpfree_seq::ramped(s.velocity, s.ramp, h as u8, s.ratchet),
                 off: at(h + 1).max(tick + 1).min(cut),
             });
@@ -1814,13 +1844,14 @@ impl Player {
             self.n_hits -= 1;
             self.end_until(view, h.tick, first, span, out);
             let (offset, frame) = place(span, h.tick);
-            if let Some(j) = self.find(h.track, h.dest, h.note) {
+            if let Some(j) = self.find(h.track, h.dest, h.note, h.notes) {
                 out.send(Out {
                     offset,
                     frame,
                     track: h.track,
                     dest: h.dest,
                     event: Event::NoteOff { note: h.note },
+                    notes: h.notes,
                 });
                 self.remove(j);
             }
@@ -1837,11 +1868,13 @@ impl Player {
                     note: h.note,
                     velocity: h.velocity,
                 },
+                notes: h.notes,
             });
             self.sounding[self.n_sounding] = Sounding {
                 track: h.track,
                 dest: h.dest,
                 note: h.note,
+                notes: h.notes,
                 off: h.off,
                 seq: self.seq,
                 from: h.tick,
@@ -1893,6 +1926,7 @@ impl Player {
             track: l.track,
             dest: l.dest,
             event,
+            notes: false,
         };
         match l.kind {
             LockKind::Step => {
@@ -1985,6 +2019,7 @@ impl Player {
                         track: h.track,
                         dest: h.dest,
                         event: Event::Unlock { addr },
+                        notes: false,
                     });
                 }
                 // Under a step's lock: when it ends, the parameter is free.
@@ -2027,6 +2062,7 @@ impl Player {
                             addr: h.addr,
                             value,
                         },
+                        notes: false,
                     });
                     self.stats.lanes += 1;
                     (h.lane, h.value, h.under) = (true, value, None);
@@ -2039,6 +2075,7 @@ impl Player {
                     track: h.track,
                     dest: h.dest,
                     event: Event::Unlock { addr: h.addr },
+                    notes: false,
                 }),
             }
         }
@@ -2423,6 +2460,7 @@ impl Player {
                 track,
                 dest,
                 note: n.note,
+                notes: clip.holds_notes,
                 velocity: n.velocity,
                 off,
                 chance: n.src.chance,
@@ -2539,6 +2577,7 @@ impl Player {
                 track: s.track,
                 dest: s.dest,
                 event: Event::NoteOff { note: s.note },
+                notes: s.notes,
             });
             self.remove(i);
         }
@@ -2558,6 +2597,7 @@ impl Player {
             track: s.track,
             dest: s.dest,
             note: s.note,
+            notes: s.notes,
             slot: s.slot,
             base: s.tick,
             speed: s.speed,
@@ -2598,6 +2638,7 @@ impl Player {
                 note: t.note,
                 value: p.value.min(127),
             },
+            notes: t.notes,
         });
         self.stats.pressure += 1;
         let next = t.next + 1;
@@ -2621,12 +2662,12 @@ impl Player {
         self.n_touching -= 1;
     }
 
-    /// A note on `track`, `dest` and `note` starts: the pressure of the one
-    /// before it ends.
-    fn stop_touch(&mut self, track: u16, dest: DestId, note: u8) {
+    /// A note on `track`, `dest` and `note` (a pitch with `notes`)
+    /// starts: the pressure of the one before it ends.
+    fn stop_touch(&mut self, track: u16, dest: DestId, note: u8, notes: bool) {
         if let Some(k) = self.touching[..self.n_touching]
             .iter()
-            .position(|t| (t.track, t.dest, t.note) == (track, dest, note))
+            .position(|t| (t.track, t.dest, t.note, t.notes) == (track, dest, note, notes))
         {
             self.drop_touch(k);
         }
@@ -2655,10 +2696,12 @@ impl Player {
         self.n_touching
     }
 
-    fn find(&self, track: u16, dest: DestId, note: u8) -> Option<usize> {
+    /// The sounding note on `track`, `dest` and `note`, of its kind (a
+    /// pitch with `notes`, else a pad).
+    fn find(&self, track: u16, dest: DestId, note: u8, notes: bool) -> Option<usize> {
         self.sounding[..self.n_sounding]
             .iter()
-            .position(|s| s.track == track && s.dest == dest && s.note == note)
+            .position(|s| s.track == track && s.dest == dest && s.note == note && s.notes == notes)
     }
 
     /// Remove keeping the start order.

@@ -1777,6 +1777,13 @@ mod tests {
     fn play_on_the_pads_tries_poly_and_rec_records_it_without_touching_the_drums() {
         use crate::rec_arm::Take;
         use mpfree_transport::State;
+        fn rec_chip(s: &Session) -> String {
+            s.screen
+                .ui
+                .get::<crate::play_widgets::PlayTransport>(crate::play_page::TRANSPORT)
+                .and_then(|t| t.look.rec.as_ref().map(|c| c.line()))
+                .expect("the REC chip")
+        }
         fn record(s: &mut Session, pads: &[usize]) {
             s.button("PLAY");
             let end = s.t() + 5.0;
@@ -1840,11 +1847,16 @@ mod tests {
                 "no pad reached the kit or a track"
             );
             assert_eq!(s.time.project().tracks[0], drums, "the drum clip unchanged");
+            // The REC chip names where REC will record Poly before you
+            // press (step 5b): Track 2, the first track nobody set up.
+            s.run_periods(1).settle();
+            assert_eq!(rec_chip(&s), "REC → Track 2 · Poly");
             // REC: Track 2 gets the shared synth (the Synth kit, no copy)
             // and the take waits for PLAY there.
             s.button("REC").settle();
             s.run_periods(2).settle();
             assert_eq!(s.app.track(), 1, "{:?}", s.said());
+            assert_eq!(rec_chip(&s), "READY · PLAY starts → Track 2 · new clip");
             assert!(s.track_kits.plays_synth(1) && s.synth_on);
             assert_eq!(s.app.track_sound(1), None, "no instrument of its own");
             assert!(!s.mix.instruments.holds(1), "no second synth");
@@ -4214,6 +4226,52 @@ mod tests {
             let t = s.t();
             s.pad(0, 100, 0.05);
             assert!(ons(&s, 0)[a1..].iter().any(|&a| (a - t).abs() < 0.01));
+        });
+    }
+
+    /// The preset picker's New track (instrument redesign
+    /// step 4c): the sound tried goes back, a new track is added and armed,
+    /// and it gets a synth of its own playing the preset picked.
+    #[test]
+    fn new_track_with_this_sound_gives_a_new_track_its_own_synth() {
+        use mpfree_synth_ui::view as synth_view;
+        on_big_stack(|| {
+            let dir =
+                std::env::temp_dir().join(format!("mpfree-sound-track-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("a scratch folder");
+            let mut s = Session::with_library(&dir);
+            s.press("header", "tab", "Synth");
+            let before = s.synth.values();
+            let tracks = s.screen.time.tracks.len();
+            let name = s
+                .control(synth_view::TITLE, "name", "")
+                .expect("the preset's name opens the engine's presets")
+                .target;
+            s.press_target(&name);
+            assert_eq!(s.view(), View::Browser);
+            s.wheel(1);
+            assert!(s.synth.trying_preset());
+            s.press("browser", "button", "New track");
+            // The pads' synth has its sound back, and the Synth tab shows.
+            assert!(!s.synth.trying_preset());
+            assert_eq!(s.synth.values(), before);
+            assert_eq!(s.view(), View::Synth);
+            let t = tracks + 1;
+            let given = format!("Track {t}: its own Poly, playing ");
+            let wall = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !s.lines.iter().any(|l| l.starts_with(&given)) {
+                assert!(std::time::Instant::now() < wall, "{:?}", s.lines);
+                s.run_for(0.05);
+            }
+            assert_eq!(s.screen.time.tracks.len(), t);
+            assert_eq!(s.screen.time.armed, Some(tracks));
+            assert_eq!(s.mix.instruments.held(tracks).map(|h| h.name), Some("Poly"));
+            assert!(
+                s.presets.index(tracks).is_some(),
+                "named by the engine's preset"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
         });
     }
 

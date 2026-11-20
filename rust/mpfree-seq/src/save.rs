@@ -27,6 +27,7 @@
 //! once
 //! program 4 bank 2
 //! direction pingpong
+//! holds notes
 //! touch 0:10 50:40
 //! note 0 240 36 100 100 - 1 0 2
 //! note 240 240 38 90 100 - 4 0 0 ramp:-40 slide
@@ -73,6 +74,12 @@
 //! A clip's `direction` line is its play direction (sequencer S6:
 //! `reverse`, `pingpong` or `random`; none for forward); an older build
 //! skips it, and a word it doesn't know, and plays the clip forward.
+//!
+//! A clip's `holds notes` line says its notes are MIDI notes, each
+//! number a pitch (the instrument redesign's step 5c, [`crate::Holds`]);
+//! a clip without it holds pad hits, as every clip saved before did. An
+//! older build skips it, and a word it doesn't know, and plays the notes
+//! as pads.
 //!
 //! A mutated clip's `original` lines (sequencer S6, [`crate::mutate`])
 //! are the clip as it was before its first Mutate, which Restore puts
@@ -255,6 +262,9 @@ fn clip_body(s: &mut String, c: &Clip) {
     }
     if c.direction != crate::Direction::Forward {
         let _ = writeln!(s, "direction {}", c.direction.word());
+    }
+    if c.holds != crate::Holds::Hits {
+        let _ = writeln!(s, "holds {}", c.holds.word());
     }
     // Pressure first: the notes name runs of it. Only what the notes and
     // the original's notes name is written, each run renumbered (B4a):
@@ -655,6 +665,11 @@ pub fn from_text(text: &str) -> Result<Project, String> {
             ("direction", At::Clip(c, _)) => {
                 let word = w.next().ok_or_else(|| bad("direction"))?;
                 c.direction = crate::Direction::from_word(word).unwrap_or_default();
+            }
+            // A newer build's kind of notes plays as pad hits here.
+            ("holds", At::Clip(c, _)) => {
+                let word = w.next().ok_or_else(|| bad("holds"))?;
+                c.holds = crate::Holds::from_word(word).unwrap_or_default();
             }
             ("launch", At::Top) => p.launch = launch(&mut w).ok_or_else(|| bad("launch"))?,
             ("touch", At::Clip(c, _)) => {
@@ -1131,6 +1146,7 @@ mod tests {
             bank: Some(300),
         });
         c.direction = crate::Direction::PingPong;
+        c.holds = crate::Holds::Notes;
         let pts: Vec<TouchPoint> = (0..150)
             .map(|k| TouchPoint {
                 at: k * 3,
@@ -1407,6 +1423,46 @@ mod tests {
             let t = text.replace("program 4 bank 300", bad);
             assert!(from_text(&t).is_err(), "{bad}");
         }
+    }
+
+    /// What a clip's notes stand for (step 5c): `holds notes` reads back;
+    /// none is hits, as every clip saved before, and so is a newer build's
+    /// word; a clip of hits writes no line, so its text is as before; a
+    /// line with no word refuses the part.
+    #[test]
+    fn a_clip_of_notes_reads_back_and_one_of_hits_saves_as_before() {
+        use crate::Holds;
+        let text = to_text(&full());
+        assert!(text.contains("direction pingpong\nholds notes\n"), "{text}");
+        let holds = |t: &str| {
+            from_text(t).unwrap().tracks[0].slots[0]
+                .as_ref()
+                .unwrap()
+                .holds
+        };
+        assert_eq!(holds(&text), Holds::Notes);
+        let hits = text.replace("holds notes\n", "");
+        assert_eq!(holds(&hits), Holds::Hits);
+        assert_eq!(
+            holds(&text.replace("holds notes", "holds hits")),
+            Holds::Hits
+        );
+        assert_eq!(
+            holds(&text.replace("holds notes", "holds chords")),
+            Holds::Hits,
+            "a newer build's word"
+        );
+        assert_eq!(to_text(&from_text(&hits).unwrap()), hits, "hits: no line");
+        assert!(from_text(&text.replace("holds notes", "holds")).is_err());
+        // Every other clip holds hits.
+        let p = from_text(&text).unwrap();
+        let notes = p
+            .tracks
+            .iter()
+            .flat_map(|t| t.slots.iter().flatten())
+            .filter(|c| c.holds == Holds::Notes)
+            .count();
+        assert_eq!(notes, 1);
     }
 
     /// A clip's play direction (S6): read back; none is forward, and so

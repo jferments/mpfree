@@ -295,6 +295,37 @@ impl Instruments {
         }
     }
 
+    /// The mixer strip track `track`'s own instrument sounds on, None if
+    /// it has none. The track host keeps where each slot feeds, so this is
+    /// the instrument's, not worked out from the track (the instrument
+    /// redesign's step 4d): a slot is routed once, when it is lent
+    /// ([`Instruments::put`], today the track's channel), and keeps that
+    /// strip while its instrument plays, a new sound in it too.
+    pub fn strip(&self, track: usize) -> Option<usize> {
+        self.host.track_of(self.slot(track)?)
+    }
+
+    /// The mixer strip track `track` is heard on while it plays an
+    /// instrument: its own instrument's, or that of the track whose
+    /// instrument it plays (step 4a). None while it plays the pads (a kit,
+    /// the synth). A clip's "this track's strip" goes there
+    /// (`time::strips`).
+    pub fn heard_on(&self, track: usize) -> Option<usize> {
+        self.strip(self.owner(track)?)
+    }
+
+    /// The track whose own instrument sounds on mixer strip `strip`, and
+    /// that instrument (one ringing out for a track that has none now
+    /// doesn't count). Never allocates.
+    pub fn on_strip(&self, strip: usize) -> Option<(usize, Held)> {
+        (0..HOST_SLOTS).find_map(|s| {
+            let t = self.slots[s].track?;
+            let own = self.slot(t) == Some(s) && self.host.track_of(s) == Some(strip);
+            own.then_some(())?;
+            Some((t, self.slots[s].held?))
+        })
+    }
+
     /// Track `track`'s own instrument (None: it has none; it may still
     /// play another track's, [`Instruments::owner`]).
     pub fn held(&self, track: usize) -> Option<Held> {
@@ -424,6 +455,14 @@ impl Instruments {
         self.owner(track)
             .and_then(|o| self.held(o))
             .is_some_and(|h| h.id != crate::synth::Engine::Drums.node_id())
+    }
+
+    /// The tracks that play notes ([`Instruments::plays_notes`]), one bit
+    /// each: where a new take holds notes (step 5c). Never allocates.
+    pub fn note_tracks(&self) -> u128 {
+        (0..TRACKS.min(128))
+            .filter(|&t| self.plays_notes(t))
+            .fold(0, |bits, t| bits | 1 << t)
     }
 
     /// The tracks that play their own instrument, one bit each (not one
@@ -587,6 +626,22 @@ impl Instruments {
         }
     }
 
+    /// The notes pad `pad` plays on the instrument track `track` plays (its
+    /// pad map's, as written): none if the track plays none, or past the
+    /// pads.
+    pub fn pad_notes(&self, track: usize, pad: usize) -> &[u8] {
+        self.play_slot(track)
+            .and_then(|s| self.slots[s].pads.get(pad))
+            .map_or(&[], Pad::notes)
+    }
+
+    /// The pad map of the instrument track `track` plays (its own or
+    /// another track's): what its pads press into the track's arp while it
+    /// plays notes (step 5d). None if it plays none.
+    pub fn pad_map(&self, track: usize) -> Option<[Pad; PADS]> {
+        self.play_slot(track).map(|s| self.slots[s].pads)
+    }
+
     /// The pad of the instrument track `track` plays that plays `note`
     /// alone (its pad map's), for a MIDI file's notes (`midi_file.rs`):
     /// None if the track plays none, Some(None) if no pad does.
@@ -690,14 +745,28 @@ impl Instruments {
     /// A keyboard's pressure on note `note` of track `track`'s instrument,
     /// while it holds the note.
     pub fn note_pressure(&mut self, track: usize, note: u8, value: u8) -> bool {
+        self.note_pressure_at(track, note, value, 0)
+    }
+
+    /// [`Instruments::note_pressure`] `offset` frames into the next block
+    /// (a clip's recorded pressure on a note it plays by number).
+    pub fn note_pressure_at(&mut self, track: usize, note: u8, value: u8, offset: u32) -> bool {
         let Some(s) = self.play_slot(track) else {
             return false;
         };
         if self.host.holds_note(s, note) {
             self.host
-                .event(s, Timed::new(0, NodeEvent::Pressure { note, value }));
+                .event(s, Timed::new(offset, NodeEvent::Pressure { note, value }));
         }
         true
+    }
+
+    /// Whether the instrument track `track` plays holds note `note` (a
+    /// note-on not yet ended, from whichever track or the pads).
+    #[cfg(test)]
+    pub fn holds_note(&self, track: usize, note: u8) -> bool {
+        self.play_slot(track)
+            .is_some_and(|s| self.host.holds_note(s, note))
     }
 
     /// A controller (a pedal, the mod wheel, breath) for track `track`'s
@@ -978,7 +1047,8 @@ impl Instruments {
                 parts.push(format!("track {} plays track {}'s", t + 1, o + 1));
             }
         }
-        if parts.is_empty() && self.refused == 0 && self.cut == 0 {
+        let locks = self.locks.describe();
+        if parts.is_empty() && self.refused == 0 && self.cut == 0 && locks.is_none() {
             return None;
         }
         if self.refused > 0 {
@@ -988,6 +1058,7 @@ impl Instruments {
             let s = if self.cut == 1 { "" } else { "s" };
             parts.push(format!("{} ring-out{s} cut short", self.cut));
         }
+        parts.extend(locks);
         Some(parts.join(", "))
     }
 }
@@ -1234,6 +1305,24 @@ mod tests {
         // Back to the pads.
         assert_eq!(i.set_send(5, None), Ok(()));
         assert!(!i.plays(5) && !i.pad_on(5, 0, 100, 0));
+    }
+
+    /// Where a track is heard while it plays an instrument, for a clip's
+    /// "this track's strip" (time/strips.rs): its own instrument's strip,
+    /// or that of the instrument it plays; nowhere of this table's while
+    /// it plays the pads.
+    #[test]
+    fn a_track_is_heard_where_the_instrument_it_plays_sounds() {
+        let mut i = Instruments::new(RATE, BLOCK);
+        i.put(2, hum(), chromatic_from(60), &Tuning::standard())
+            .unwrap();
+        assert_eq!(i.set_send(5, Some(2)), Ok(()));
+        let three = i.strip(2).expect("track 3's strip");
+        assert_eq!(three, first_track() + 2);
+        assert_eq!((i.heard_on(2), i.heard_on(5)), (Some(three), Some(three)));
+        assert_eq!(i.heard_on(4), None, "on the pads");
+        assert_eq!(i.set_send(5, None), Ok(()));
+        assert_eq!(i.heard_on(5), None);
     }
 
     #[test]

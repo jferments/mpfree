@@ -93,12 +93,16 @@ pub const fn track_channel(t: usize) -> usize {
     }
 }
 
-/// The Drums strip's name while track 1's own instrument plays there,
-/// like every other track's own channel ("Track 2"): the strip is named
-/// for what track 1 plays. Kit 1's pads, from whichever track plays them,
-/// still sound there too (the manual's mixer page says so); the strip's
-/// name has no room for both words.
-pub const TRACK_1: &str = "Track 1";
+/// A track channel's name while the track's own instrument plays there
+/// (the instrument redesign's step 4d, Jay's rule: name by instrument):
+/// the instrument first, then the track, "FM · Track 3", so a name cut
+/// short on a strip still says what plays. Track 1's is the Drums strip,
+/// "Poly · Track 1" while its own instrument plays there; kit 1's pads,
+/// from whichever track plays them, still sound there too (the manual's
+/// mixer page says so), and the strip's name has no room for both.
+pub fn instrument_channel_name(instrument: &str, track: &str) -> String {
+    format!("{instrument} \u{b7} {track}")
+}
 /// The name of track 1's old own channel, in a project saved with
 /// settings on it ([`MixHost::old_first`]).
 pub const OLD_TRACK_1: &str = "Track 1 (old)";
@@ -406,19 +410,19 @@ struct Waiting {
 /// The strips a Perform pad's throw can play on, named as the Mix tab
 /// names them: the master, the engines' tracks, each track's own channel
 /// in use (named after its track, as the stems are), and the submixes.
-pub fn throw_strips(mixer: &Mixer, in_use: u128, tracks: &[String]) -> Vec<(String, StripId)> {
+pub fn throw_strips(
+    mixer: &Mixer,
+    in_use: u128,
+    tracks: &[String],
+    own: &dyn Fn(StripId) -> Option<(usize, &'static str)>,
+) -> Vec<(String, StripId)> {
     let mut out = vec![(name(StripId::Master), StripId::Master)];
     let mut subs = Vec::new();
     for s in mixer.strips() {
         match s {
-            StripId::Track(t) if t < TRACKS => out.push((name(s), s)),
+            StripId::Track(t) if t < TRACKS => out.push((track_strip_name(s, tracks, own), s)),
             StripId::Track(t) if t - TRACKS < 128 && in_use & (1 << (t - TRACKS)) != 0 => {
-                let named = tracks
-                    .get(t - TRACKS)
-                    .filter(|n| !n.trim().is_empty())
-                    .cloned()
-                    .unwrap_or_else(|| name(s));
-                out.push((named, s));
+                out.push((track_strip_name(s, tracks, own), s));
             }
             StripId::Bus(_) => subs.push((name(s), s)),
             _ => {}
@@ -426,6 +430,40 @@ pub fn throw_strips(mixer: &Mixer, in_use: u128, tracks: &[String]) -> Vec<(Stri
     }
     out.extend(subs);
     out
+}
+
+/// A track strip's name in the lists other screens pick from (Perform's
+/// On, the Looper's Records from, export's stems): a track's own
+/// instrument's channel as [`instrument_channel_name`] has it, with the
+/// track's own name when it has one; another track's channel by that
+/// name; the engines' strips as [`name`] has them.
+pub fn track_strip_name(
+    s: StripId,
+    tracks: &[String],
+    own: &dyn Fn(StripId) -> Option<(usize, &'static str)>,
+) -> String {
+    let track_name = |t: usize| {
+        tracks
+            .get(t)
+            .filter(|n| !n.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| own_track_label(s, t))
+    };
+    match (own(s), s) {
+        (Some((t, instrument)), _) => instrument_channel_name(instrument, &track_name(t)),
+        (None, StripId::Track(t)) if t >= TRACKS => track_name(t - TRACKS),
+        (None, s) => name(s),
+    }
+}
+
+/// Track `t`'s part of its own instrument's channel name: "Track 3", and
+/// track 1's old own channel ([`MixHost::old_first`]) as [`OLD_TRACK_1`].
+fn own_track_label(s: StripId, t: usize) -> String {
+    if s == StripId::Track(TRACKS) {
+        OLD_TRACK_1.into()
+    } else {
+        format!("Track {}", t + 1)
+    }
 }
 
 /// The performance effects a throw holds.
@@ -2037,7 +2075,12 @@ impl MixHost {
     pub fn instrument_strip(&self, i: crate::looping::Instrument, homes: &[u8]) -> Option<StripId> {
         use crate::looping::Instrument;
         Some(StripId::Track(match i {
-            Instrument::Own(t) => self.track_channel(t),
+            // Where its instrument's slot feeds (step 4d); the track's
+            // channel while it has none yet.
+            Instrument::Own(t) => self
+                .instruments
+                .strip(t)
+                .unwrap_or_else(|| self.track_channel(t)),
             Instrument::Synth => SYNTH,
             Instrument::Kit(k) => match homes.get(k).copied().unwrap_or(0) {
                 0 => DRUMS,
@@ -2399,9 +2442,27 @@ impl MixHost {
                 .all(|p| self.mixer.param(s, p.id) == p.default)
     }
 
-    /// A strip's name on the panel: a lent pad channel by its pad and kit.
+    /// A strip's name on the panel: a lent pad channel by its pad and kit,
+    /// a track's own instrument's channel by the instrument
+    /// ([`instrument_channel_name`]).
     pub fn strip_name(&self, s: StripId) -> String {
-        strip_name(&self.pad_channels, s)
+        match self.own_instrument_on(s) {
+            Some((t, instrument)) => instrument_channel_name(instrument, &own_track_label(s, t)),
+            None => strip_name(&self.pad_channels, s),
+        }
+    }
+
+    /// The track whose own instrument plays on strip `s`, and the
+    /// instrument's name (step 4d), from where the instrument's slot feeds
+    /// ([`Instruments::on_strip`]): today track 1's on the Drums strip (or
+    /// its old own channel), any other's on its own channel. None for a
+    /// strip no track's own instrument plays on (a kit's, the engines'
+    /// others).
+    pub fn own_instrument_on(&self, s: StripId) -> Option<(usize, &'static str)> {
+        let StripId::Track(c) = s else {
+            return None;
+        };
+        self.instruments.on_strip(c).map(|(t, h)| (t, h.name))
     }
 
     /// The project's mixer part (`project::mixer_text_lent`), once the
@@ -2712,10 +2773,15 @@ impl MixHost {
         }
         self.state_at = Some(now);
         // Tracks' own channels show only while in use (an instrument or a
-        // kit plays there); the others aren't read. Track 1's is Drums,
-        // named "Track 1" while its own instrument plays there.
+        // kit plays there); the others aren't read. A track's own
+        // instrument's channel is named for it, track 1's on Drums too.
         let used = self.own_channels_in_use();
-        let first_own = self.instruments.channel(0) == DRUMS && self.instruments.holds(0);
+        let own: Vec<(StripId, String)> = self
+            .mixer
+            .strips()
+            .filter(|s| matches!(s, StripId::Track(_)))
+            .filter_map(|s| self.own_instrument_on(s).map(|_| (s, self.strip_name(s))))
+            .collect();
         let ch = &self.pad_channels;
         // Lent pad channels show while lent.
         let shown = |s: StripId| match s {
@@ -2723,9 +2789,9 @@ impl MixHost {
             StripId::Pad(p) if p >= PADS => ch.holder(s).is_some(),
             _ => true,
         };
-        let named = |s: StripId| match s {
-            StripId::Track(DRUMS) if first_own => TRACK_1.to_string(),
-            s => strip_name(ch, s),
+        let named = |s: StripId| match own.iter().find(|(o, _)| *o == s) {
+            Some((_, n)) => n.clone(),
+            None => strip_name(ch, s),
         };
         let mut st = MixState::from_mixer_where(&mut self.mixer, view, &named, &shown);
         st.counts[0] = TRACKS + used.count_ones() as usize;
@@ -3104,6 +3170,72 @@ mod tests {
         assert_eq!(h.own_channels_in_use(), 0);
         assert!(!h.track_strips().contains(&StripId::Track(TRACKS)));
         assert!(!h.old_first());
+    }
+
+    /// A track's own instrument's channel is named for the instrument
+    /// (step 4d), track 1's on the Drums strip too: on the Mix tab, in the
+    /// chain editor and in the lists other screens pick from.
+    #[test]
+    fn an_instruments_channel_is_named_for_it() {
+        use crate::synth::Engine;
+        let synth = crate::synth::Synth::new(RATE);
+        let mut h = MixHost::new(RATE, -6.0, -6.0);
+        for (t, e) in [(0, Engine::Poly), (2, Engine::Fm)] {
+            assert!(h.build_instrument(crate::instrument_job(&synth, t, e.node_id(), None)));
+            assert!(h.poll_instruments().is_some());
+        }
+        let fm = StripId::Track(track_channel(2));
+        // Where each sounds is its slot's: the holder's channel when lent.
+        assert_eq!(h.instruments.strip(0), Some(DRUMS));
+        assert_eq!(h.instruments.strip(2), Some(track_channel(2)));
+        assert_eq!(h.instruments.strip(1), None);
+        let looper = |h: &MixHost, i| h.instrument_strip(i, &[]);
+        assert_eq!(looper(&h, crate::looping::Instrument::Own(2)), Some(fm));
+        assert_eq!(
+            h.own_instrument_on(StripId::Track(DRUMS)),
+            Some((0, "Poly"))
+        );
+        assert_eq!(h.own_instrument_on(fm), Some((2, "FM")));
+        assert_eq!(h.own_instrument_on(StripId::Track(SYNTH)), None);
+        assert_eq!(h.strip_name(StripId::Track(DRUMS)), "Poly \u{b7} Track 1");
+        assert_eq!(h.strip_name(fm), "FM \u{b7} Track 3");
+        assert_eq!(h.strip_name(StripId::Track(SYNTH)), "Synth");
+        h.show(Some(mpfree_mixer_ui::MixView::Tracks));
+        let st = h.poll_state(Instant::now()).unwrap();
+        let shown: Vec<&str> = st.strips.iter().map(|v| v.name.as_str()).collect();
+        assert_eq!(
+            shown,
+            [
+                "Poly \u{b7} Track 1",
+                "Synth",
+                "Loop",
+                "Audio",
+                "FM \u{b7} Track 3"
+            ]
+        );
+        // Perform's On and the Looper's Records from: the track's own name
+        // when it has one.
+        let names = [String::new(), String::new(), "Bass".to_string()];
+        let own = |s| h.own_instrument_on(s);
+        let strips = throw_strips(&h.mixer, h.own_channels_in_use(), &names, &own);
+        let named: Vec<&str> = strips.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            named[..6],
+            [
+                "Master",
+                "Poly \u{b7} Track 1",
+                "Synth",
+                "Loop",
+                "Audio",
+                "FM \u{b7} Bass"
+            ]
+        );
+        // A new sound in track 3 keeps its strip, named for the new one.
+        let poly = crate::instrument_job(&synth, 2, Engine::Poly.node_id(), None);
+        assert!(h.build_instrument(poly));
+        assert!(h.poll_instruments().is_some());
+        assert_eq!(h.instruments.strip(2), Some(track_channel(2)));
+        assert_eq!(h.strip_name(fm), "Poly \u{b7} Track 3");
     }
 
     /// A project saved with settings on track 1's old own channel opens
@@ -4114,7 +4246,7 @@ mod tests {
     fn a_throw_plays_on_the_master_a_track_or_a_submix() {
         let h = MixHost::new(RATE, 0.0, 0.0);
         let names = ["Breaks".to_string(), "Keys".to_string()];
-        let strips = throw_strips(&h.mixer, 0b10, &names);
+        let strips = throw_strips(&h.mixer, 0b10, &names, &|_| None);
         let named: Vec<&str> = strips.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(
             named[..6],

@@ -92,6 +92,7 @@ fn run(lanes: usize) {
                     note: 60,
                     velocity: 90,
                 },
+                notes: false,
             });
         }
         if p % 17 == 0 {
@@ -101,6 +102,7 @@ fn run(lanes: usize) {
                 track: 0,
                 dest: (p % 3) as u16,
                 event: Event::NoteOff { note: 60 },
+                notes: false,
             });
         }
         if p % 5 == 0 {
@@ -138,6 +140,7 @@ fn run(lanes: usize) {
                 track: ALL,
                 dest: ALL,
                 event: Event::AllOff,
+                notes: false,
             });
         }
         if p == 2500 {
