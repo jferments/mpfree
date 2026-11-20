@@ -2,6 +2,10 @@
 //! Nov 2026: "Grain could also be in the waveform editing page"): how the
 //! sound plays as a grain cloud, on the one wave.
 //!
+//! - **Picking Grain plays the sound as grains**: on a sound in another
+//!   mode the tool sets Granular, one undo step (Jay's device notes, 20
+//!   Nov 2026: the Grain tool is granular; there's no separate mode to
+//!   find). The Trim tool's Mode puts it back.
 //! - **The grain window** on the wave: a band from where grains start,
 //!   one grain long, over the band the spray scatters their starts in.
 //!   Its tabs drag it: **GRAIN** moves where grains start (the position),
@@ -10,7 +14,7 @@
 //! - **The Grain section**, the panel's first, holds the Grain page's
 //!   settings a part at a time: a switch along its top (Grains, Shape,
 //!   Filter, Keys, LFO, Envelope, Presets) and the part's controls under
-//!   it ([`GrainPart`]). Shape holds the play mode, the grain mode and
+//!   it ([`GrainPart`]). Shape holds the grain mode and
 //!   **Quality** (Clean, Tape, Lo-fi). A grain mode shows only the rows it
 //!   uses, as the Grain page did ([`Row::used_in`]).
 //! - **Q-Links 1 to 4** turn Position, Size, Density and Pitch, as on the
@@ -37,7 +41,7 @@ pub enum GrainPart {
     /// shape and level.
     #[default]
     Grains,
-    /// The play mode, the grain mode, Quality, and the spray's shape,
+    /// The grain mode, Quality, and the spray's shape,
     /// pitch quantise and tempo sync.
     Shape,
     /// A filter on each grain.
@@ -97,11 +101,7 @@ impl GrainPart {
                 (Row::SprayShape, true),
             ]],
             GrainPart::Shape => &[
-                &[
-                    (Row::Mode, true),
-                    (Row::GrainMode, true),
-                    (Row::Quality, true),
-                ],
+                &[(Row::GrainMode, true), (Row::Quality, true)],
                 &[(Row::Shape, true), (Row::Quantise, true), (Row::Sync, true)],
             ],
             GrainPart::Filter => &[&[
