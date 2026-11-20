@@ -117,6 +117,9 @@ pub const KEEP_HOLD: f32 = 0.6;
 /// How long a finger holds a button that deletes or clears in Perform
 /// before it acts (Perform's guard, sequencer decision 5), seconds.
 pub const GUARD_HOLD: f32 = 0.5;
+/// How long a finger rests on a step of the Sequencer's Steps before it
+/// picks the step for the inspector instead of tapping it, seconds.
+pub const STEP_HOLD: f32 = 0.4;
 /// What the hint line says when such a button is touched in Perform.
 pub const GUARD_HINT: &str = "Hold to delete";
 
@@ -2087,6 +2090,10 @@ pub struct Player {
     /// and a finger whose hold has acted (the rest of its touch is its
     /// own).
     guard_press: Option<GuardPress>,
+    /// A finger resting on a step of the Sequencer's Steps: (finger, the
+    /// lane's pad, the step on the page, seconds held), for
+    /// [`Self::step_hold_tick`].
+    step_hold: Option<(u64, usize, usize, f32)>,
     guard_done: Option<u64>,
     /// The finger whose SHIFT + touch armed MIDI Learn: it does nothing
     /// else until it lifts.
@@ -2374,6 +2381,7 @@ impl Player {
             tempo_press: None,
             keep_press: None,
             guard_press: None,
+            step_hold: None,
             guard_done: None,
             learn_finger: None,
             learning: None,
@@ -5031,6 +5039,7 @@ impl Player {
             g.bank.clone_from(&old.bank);
             (g.top, g.add_lane) = (old.top, old.add_lane);
             g.rows_open.clone_from(&old.rows_open);
+            g.hold_picks = old.hold_picks;
         }
         self.refresh_lock_knobs();
         self.play.fill_steps(&mut g);
@@ -5051,6 +5060,7 @@ impl Player {
                     && old.bank == g.bank
                     && (old.top, old.add_lane) == (g.top, g.add_lane)
                     && old.rows_open == g.rows_open
+                    && old.hold_picks == g.hold_picks
             });
         if !same {
             if let Some(w) = self.ui.get_mut::<StepGrid>(play_page::STEPS) {
@@ -5067,6 +5077,7 @@ impl Player {
                 w.bank = g.bank;
                 (w.top, w.add_lane) = (g.top, g.add_lane);
                 w.rows_open = g.rows_open;
+                w.hold_picks = g.hold_picks;
             }
         }
         if self.lane_list {
@@ -5903,7 +5914,7 @@ impl Player {
                 // The All view: the armed track's pads as rows (the Play,
                 // Pads and Sequencer redesign's board 1).
                 View::Play if self.play.on_play_rows() => format!(
-                    "Tap a step: on or off (kept)   ·   ERASE + a step: delete   ·   a name: mute   ·   \
+                    "Tap a step: in or out   ·   a name: mute   ·   \
                      A–H: the bank   ·   swipe: the 16 pads   ·   ‹ {} ›: next track   ·   a loop's ring: its next step",
                     self.play.track.name
                 ),
@@ -5915,12 +5926,12 @@ impl Player {
                 }
                 // A kit's Steps: + Lane and the lock lanes (the redesign's
                 // step 5).
-                View::Sequencer if !self.play.pitched() => format!("Tap a step: on or off   ·   a lit step: pick it   ·   \
+                View::Sequencer if !self.play.pitched() => format!("Tap a step: in or out   ·   hold a step: edit it   ·   \
                                             + Lane: a lock lane   ·   a lock lane's step: tap it, then drag   ·   \
                                             STEP SEQ: steps on the pads   ·   PAD BANK: bank   ·   {stop}"),
                 // A synth's scale rows: the lock lanes go under them
                 // (step 5b, board 4).
-                View::Sequencer => format!("Tap a step: on or off   ·   a lit step: pick it   ·   Notes: the clip's notes   ·   \
+                View::Sequencer => format!("Tap a step: in or out   ·   hold a step: edit it   ·   Notes: the clip's notes   ·   \
                                             + Lane: a lock lane   ·   STEP SEQ: steps on the pads   ·   PAD BANK: bank   ·   \
                                             MENU: options   ·   {stop}"),
                 View::Arrange if self.time.list_view => time_view::LIST_HINT.to_string(),
@@ -11279,6 +11290,42 @@ impl Player {
         true
     }
 
+    /// A finger held on a step of the Sequencer's Steps, from `tick`:
+    /// after [`STEP_HOLD`] still down, the step is picked for the
+    /// inspector and the Q-Links, as holding a step pad does, and the
+    /// finger's lift taps nothing (a quick tap puts a step in or takes it
+    /// out; Jay's device run, 20 Nov 2026).
+    fn step_hold_tick(&mut self, dt: f32) {
+        let press = self
+            .ui
+            .get::<StepGrid>(play_page::STEPS)
+            .and_then(StepGrid::press);
+        let Some((finger, row, col)) = press else {
+            self.step_hold = None;
+            return;
+        };
+        let held = match self.step_hold {
+            Some((f, r, c, t)) if (f, r, c) == (finger, row, col) => t + dt.max(0.0),
+            _ => 0.0,
+        };
+        if held < STEP_HOLD {
+            self.step_hold = Some((finger, row, col, held));
+            return;
+        }
+        self.step_hold = None;
+        if !self.play.pick_step(row, col) {
+            // An empty step: nothing to pick, so the lift puts a note
+            // there as usual (and this hold is not timed again).
+            self.step_hold = Some((finger, row, col, f32::NEG_INFINITY));
+            return;
+        }
+        if let Some(g) = self.ui.get_mut::<StepGrid>(play_page::STEPS) {
+            g.picked_press(finger);
+        }
+        self.refresh_play();
+        self.refresh_qlinks();
+    }
+
     /// The guard's hold, from `tick`: the fill crosses the button, and
     /// once it is across the button is pressed, as a tap would.
     fn guard_tick(&mut self, dt: f32) {
@@ -12353,6 +12400,7 @@ impl Player {
         self.power_tick(dt);
         self.script_hold_tick(dt);
         self.guard_tick(dt);
+        self.step_hold_tick(dt);
         // UNDO held: the page's undo history.
         if let Some(held) = self.undo_held {
             let held = held + dt.max(0.0);
@@ -32868,7 +32916,7 @@ mod tests {
             .get::<Label>("hint")
             .unwrap()
             .text
-            .starts_with("Tap a step: on or off"));
+            .starts_with("Tap a step: in or out"));
         // TRACK MUTE: the hint says what the pads are now, on any page.
         let tracks = p.time.tracks.len();
         for (keys, bank, hint) in [
