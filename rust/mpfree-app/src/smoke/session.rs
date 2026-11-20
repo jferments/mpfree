@@ -556,6 +556,19 @@ impl Session {
         self.press_target(&c.target)
     }
 
+    /// Rest a finger on the control `widget/id` labelled `label` for a
+    /// second before lifting it, whatever its gesture (a step held on the
+    /// Sequencer's Steps picks it), then let the session run a few
+    /// periods. Panics when it is not there.
+    pub fn hold_press(&mut self, widget: &str, id: &str, label: &str) -> &mut Session {
+        let mut t = self
+            .control(widget, id, label)
+            .unwrap_or_else(|| panic!("no {widget}/{id} \"{label}\" on {}", self.page()))
+            .target;
+        t.gesture = mpfree_ui::Gesture::Hold;
+        self.press_target(&t)
+    }
+
     /// Press `t` as a finger would, and let the session run a few periods.
     /// Opens the list of kits as a musician would: what the pads play on
     /// Play's transport, or from any other page the Pads tab's Kit (the

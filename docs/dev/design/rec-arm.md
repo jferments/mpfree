@@ -43,7 +43,7 @@ With the notes armed (`RecArm::press`):
 | Press | Stopped | Playing | Recording or counting in |
 | --- | --- | --- | --- |
 | REC | Ready (again: not ready); PLAY then records, after the count-in | Punch in, replacing | Punch out; the music plays on |
-| OVERDUB | Ready to add (again: not ready) | Punch in, adding | Switch between replacing and adding |
+| OVERDUB | Ready to add (again: not ready) | Punch in, adding | Replacing: switch to adding. Adding: punch out, as REC (never adding to replacing, which would start a replace pass mid-take; Jay's device run, 20 Nov 2026) |
 | PLAY / PLAY START while ready | Records (PLAY START from bar 1) | | |
 | STOP while ready | Not ready (and STOP's own job) | | |
 
