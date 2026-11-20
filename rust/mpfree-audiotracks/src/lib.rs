@@ -154,6 +154,11 @@ pub enum Command {
     Arm(usize, bool),
     /// What the track's next recording takes.
     SetInput(usize, Input),
+    /// The track records from inside (Some: how late the host's block for
+    /// it is, in frames) or the line input (None): the instrument
+    /// redesign's step 9. A track recording from inside takes its block in
+    /// stereo, never plays it through, and can't change while it records.
+    SetInside(usize, Option<u32>),
     SetMonitor(usize, Monitor),
     /// The track's level, 0 to 2 (1 is as recorded).
     SetLevel(usize, f32),
@@ -468,6 +473,11 @@ struct Track {
     /// Gains (left, right) at the end of the last period, for the ramp.
     gains: [f32; 2],
     buf: Vec<f32>,
+    /// Records from inside, not the line input (the instrument redesign's
+    /// step 9): the host's block for it ([`AudioTracks::inside_input`]),
+    /// as late as this many frames, which a take makes up in place of the
+    /// line input's latency. It is never heard through the track.
+    inside: Option<u32>,
 }
 
 impl Track {
@@ -487,6 +497,7 @@ impl Track {
             blocked: false,
             gains: [1.0, 1.0],
             buf: vec![0.0; 2 * MAX_PERIOD as usize],
+            inside: None,
         }
     }
 
@@ -634,7 +645,14 @@ pub struct AudioTracks {
     /// Frames since the last planning round, and whether one is due now.
     plan_wait: usize,
     replan: bool,
+    /// Each track's block from inside (step 9), stereo interleaved,
+    /// [`MAX_PERIOD`] frames a track, which the host fills before
+    /// [`AudioTracks::process`].
+    inside: Box<[f32]>,
 }
+
+/// One track's room in [`AudioTracks::inside_input`].
+const INSIDE: usize = 2 * MAX_PERIOD as usize;
 
 impl AudioTracks {
     /// Audio tracks at `rate` with memory for `seconds` of stereo audio
@@ -681,7 +699,21 @@ impl AudioTracks {
             loop_range: None,
             plan_wait: 0,
             replan: false,
+            inside: vec![0.0; MAX_TRACKS * INSIDE].into_boxed_slice(),
         }
+    }
+
+    /// Where the host puts track `t`'s block from inside before each
+    /// [`AudioTracks::process`] (stereo interleaved, as the line input),
+    /// while the track records from inside (step 9). None past the last
+    /// track. Real-time safe.
+    pub fn inside_input(&mut self, t: usize) -> Option<&mut [f32]> {
+        self.inside.get_mut(t * INSIDE..(t + 1) * INSIDE)
+    }
+
+    /// Whether track `t` records from inside (step 9).
+    pub fn records_inside(&self, t: usize) -> bool {
+        self.tracks.get(t).is_some_and(|tr| tr.inside.is_some())
     }
 
     /// Only track `only` is heard (None: every track, as their mutes and
@@ -952,6 +984,9 @@ impl AudioTracks {
                 }
             }
             Command::SetInput(t, i) if ok_track(t) => self.tracks[t].input = i,
+            Command::SetInside(t, lat) if ok_track(t) && self.tracks[t].rec.is_none() => {
+                self.tracks[t].inside = lat.map(|l| l.min(MAX_PERIOD * 8));
+            }
             Command::SetMonitor(t, m) if ok_track(t) => self.tracks[t].monitor = m,
             Command::SetLevel(t, l) if ok_track(t) && l.is_finite() => {
                 self.tracks[t].level = l.clamp(0.0, 2.0)
@@ -1527,8 +1562,13 @@ impl AudioTracks {
             self.tracks[t].blocked = true;
             return;
         };
-        let lat_ticks = mpfree_transport::time::ticks_in(f64::from(self.latency), bpm, self.rate);
-        let ch = self.tracks[t].input.channels();
+        let lat = self.tracks[t].inside.unwrap_or(self.latency);
+        let lat_ticks = mpfree_transport::time::ticks_in(f64::from(lat), bpm, self.rate);
+        // From inside: the mix in stereo.
+        let ch = match self.tracks[t].inside {
+            Some(_) => 2,
+            None => self.tracks[t].input.channels(),
+        };
         self.takes[id] = Take {
             live: true,
             track: t as u8,
@@ -1576,7 +1616,8 @@ impl AudioTracks {
         // Go on writing the input that belongs before the punch out (the
         // latency), and a crossfade's worth more, so the end can fade into
         // what follows.
-        let stop_at = g + u64::from(self.latency) + FADE as u64;
+        let lat = self.tracks[t].inside.unwrap_or(self.latency);
+        let stop_at = g + u64::from(lat) + FADE as u64;
         if self.takes[id].recording && !self.takes[id].cut_short && stop_at > g {
             self.tracks[t].tail = Some(Tail {
                 take: rec.take,
@@ -1712,6 +1753,9 @@ impl AudioTracks {
         }
         let markers = block.markers();
         let mut m = 0;
+        // Each track's block from inside, lent to the runs (no allocation:
+        // an empty box stands in meanwhile).
+        let inside = std::mem::take(&mut self.inside);
         for span in block.spans() {
             let span_len = span.len as usize;
             let mut i = 0;
@@ -1739,10 +1783,12 @@ impl AudioTracks {
                     off,
                     end - i,
                     &input[2 * off..2 * (off + end - i)],
+                    &inside,
                 );
                 i = end;
             }
         }
+        self.inside = inside;
         while m < markers.len() {
             self.marker(map, markers[m].mark, markers[m].frame);
             m += 1;
@@ -2033,13 +2079,28 @@ impl AudioTracks {
         }
     }
 
-    fn run(&mut self, map: &TempoMap, span: &Span, f: u64, off: usize, len: usize, input: &[f32]) {
+    #[allow(clippy::too_many_arguments)]
+    fn run(
+        &mut self,
+        map: &TempoMap,
+        span: &Span,
+        f: u64,
+        off: usize,
+        len: usize,
+        line: &[f32],
+        inside: &[f32],
+    ) {
         let recording_state = span.state == State::Recording;
         let rolling = matches!(span.state, State::Playing | State::Recording);
         let tick0 = span.tick_at(f);
         self.at_tick = span.tick_at(f + len as u64);
         self.at_bpm = span.bpm;
         for t in 0..MAX_TRACKS {
+            // What this track records: its block from inside, or the line.
+            let input = match self.tracks[t].inside {
+                Some(_) => &inside[t * INSIDE + 2 * off..t * INSIDE + 2 * (off + len)],
+                None => line,
+            };
             let want = self.active && recording_state && self.tracks[t].armed;
             if !want {
                 // A recording cut short waits for the next punch in.
@@ -2092,11 +2153,14 @@ impl AudioTracks {
                 }
             }
             let tr = &self.tracks[t];
-            let hear_input = match tr.monitor {
-                Monitor::Off => false,
-                Monitor::In => true,
-                Monitor::Auto => tr.armed && (span.state != State::Playing || !self.active),
-            };
+            // A track recording from inside never plays it through: it is
+            // heard where it comes from already.
+            let hear_input = tr.inside.is_none()
+                && match tr.monitor {
+                    Monitor::Off => false,
+                    Monitor::In => true,
+                    Monitor::Auto => tr.armed && (span.state != State::Playing || !self.active),
+                };
             if rolling && self.active && tr.rec.is_none() {
                 self.play(t, map, span, tick0, off, len);
             }
