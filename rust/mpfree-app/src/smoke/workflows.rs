@@ -430,7 +430,7 @@ mod tests {
                 s.control("chain", "strips-pick", "").is_some(),
                 "the returns"
             );
-            s.press("chain", "strips-back", "Back").run_for(0.2);
+            s.press("chain", "strips-back", "‹ Back").run_for(0.2);
             assert_eq!(engine(&mut s).title, "Synth FX");
             s.press("chain", "back", "").run_for(0.1);
             assert_eq!(s.view(), View::Mixer);
