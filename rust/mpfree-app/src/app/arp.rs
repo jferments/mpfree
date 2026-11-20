@@ -1338,6 +1338,11 @@ impl App {
         if track == self.track {
             return Vec::new();
         }
+        // The pads follow the selected track: its instrument again (the
+        // design's question 1, the MPC's way until Jay says otherwise).
+        let back = self.end_pads_preview(|_| {
+            format!("Track {} selected: the pads play its instrument", track + 1)
+        });
         if self.pad_layout.is_some() {
             for slot in 0..16 {
                 self.release_pad(slot);
@@ -1360,6 +1365,10 @@ impl App {
         self.track_ui[self.track] = self.current_ui();
         self.track = track;
         let mut fx = self.take_ui(self.track_ui[track]);
+        if !back.is_empty() {
+            // Only after the Play on the pads button, from the screen.
+            fx.splice(0..0, back);
+        }
         fx.push(Effect::Note(format!(
             "arp: track {} ({})",
             track + 1,

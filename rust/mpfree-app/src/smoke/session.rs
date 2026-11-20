@@ -227,6 +227,12 @@ pub struct Session {
     /// The pads pressed as TRACK MUTE's keys, so their release is theirs
     /// too.
     mute_pressed: [bool; 16],
+    /// Play on the pads, as main.rs keeps it: the pads play the shared
+    /// synth while the armed track keeps its kit, the pads held on it, and
+    /// every hit it played (pad, velocity).
+    preview_on: bool,
+    preview_held: [bool; 16],
+    pub previewed: Vec<(usize, u8)>,
     /// Loop pads' hits waiting for the launch line (sampler R5.3b), as
     /// player_session keeps them: the pads pressed but not yet sounded,
     /// how many found the table full, and how many STOP dropped.
@@ -359,6 +365,9 @@ impl Session {
             kits: n,
             step_keys: crate::step_keys::StepKeys::default(),
             mute_pressed: [false; 16],
+            preview_on: false,
+            preview_held: [false; 16],
+            previewed: Vec::new(),
             awaiting: [false; 16],
             waits_full: 0,
             stop_dropped: 0,
@@ -1011,6 +1020,21 @@ impl Session {
             let kits = &self.track_kits;
             let line = crate::transpose_pad(pad, &mut self.time, &self.synth, kits, own);
             self.out.note(&line);
+            return;
+        }
+        // Play on the pads, as main.rs: the synth plays the hit, before the
+        // arp and the recorder; the armed track keeps its kit.
+        if down && pad < 16 && self.preview_on {
+            let v = self.app.velocity(velocity);
+            self.synth.note_on(pad, v, 0);
+            self.preview_held[pad] = true;
+            self.previewed.push((pad, v));
+            self.out.show(ToUi::PadDown { pad, velocity: v });
+            return;
+        }
+        if !down && pad < 16 && std::mem::take(&mut self.preview_held[pad]) {
+            self.synth.note_off(pad, 0);
+            self.out.show(ToUi::PadUp(pad));
             return;
         }
         if !down && pad < 16 && std::mem::take(&mut self.mute_pressed[pad]) {
@@ -1913,6 +1937,9 @@ impl Session {
     /// The app's effects: the control side's through the desk, the rest as
     /// the audio loop takes them.
     fn effects(&mut self) {
+        // What REC leaves alone under Play on the pads, as main.rs: kits
+        // picked (the session has no MIDI out).
+        self.app.set_configured(self.track_kits.picked());
         for _ in 0..8 {
             if self.fx.is_empty() {
                 return;
@@ -1958,6 +1985,28 @@ impl Session {
                         }
                     }
                     Effect::StopSounds => self.synth.stop(),
+                    // Play on the pads, as main.rs: a pad still held ends
+                    // its synth note now; its let-go is taken quietly.
+                    Effect::PadsPreview(on) => {
+                        if !on {
+                            for pad in (0..16).filter(|&p| self.preview_held[p]) {
+                                self.synth.note_off(pad, 0);
+                            }
+                        }
+                        self.preview_on = on && !self.synth_on;
+                        self.out.show(ToUi::PadsPreview(self.preview_on));
+                    }
+                    // REC under Play on the pads, as main.rs: the track
+                    // plays the same synth from now on, as a pick of Synth.
+                    Effect::SynthOnTrack(t) => {
+                        if self.track_kits.set(t, self.track_kits.synth()) {
+                            self.out
+                                .show(ToUi::TrackKits(Box::new(self.track_kits.clone())));
+                        }
+                        if t == self.app.track() {
+                            self.kit_to = Some(self.track_kits.synth());
+                        }
+                    }
                     // As main.rs: opening a page changes what no track plays.
                     Effect::Show(v) => {
                         if v == View::Synth
@@ -2042,6 +2091,14 @@ impl Session {
     /// A kit (or the synth) picked this period for the armed track, or
     /// the pads following the armed track, as main.rs takes it.
     fn change_kit(&mut self) {
+        // As main.rs: a kit picked while the pads played the synth by Play
+        // on the pads gives them back to the track; so does the arp.
+        if self.kit_to.is_some() && self.app.pads_preview() {
+            let fx = self.app.toggle_pads_preview();
+            self.fx.extend(fx);
+        }
+        let fx = self.app.arp_ends_pads_preview();
+        self.fx.extend(fx);
         let Some(k) = self.kit_to.take() else { return };
         let playing = if self.synth_on { self.kits } else { self.kit };
         if k == playing {

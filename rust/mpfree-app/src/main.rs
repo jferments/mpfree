@@ -5728,7 +5728,7 @@ fn synth_status(synth: &synth::Synth, time: &RenderTime) -> String {
 /// plays a kit: opening the tab leaves what the track plays alone.
 fn synth_tab_hint(track: usize) -> String {
     format!(
-        "Track {} plays a kit: pick Synth in the list of kits (Kit on the Pads tab, or SHIFT + wheel on Play) to play the synth on it",
+        "Track {}'s instrument is a kit: tap Play on the pads under the synth's name to hear the synth, or pick Synth in the list of kits to put it on the track",
         track + 1
     )
 }
@@ -5901,6 +5901,11 @@ fn player_session(
     let n = drum_kits + 1;
     // Whether the armed track plays the synth: the pads play it then.
     let mut synth_on = false;
+    // Play on the pads (app/pads_preview.rs): the pads play the synth
+    // while the armed track keeps its kit; nothing records them. The pads
+    // a hit started there, so their let-go ends it there.
+    let mut preview_on = false;
+    let mut preview_held = [false; 16];
     // What each track plays: a kit, the Grains kit or the synth (kit 1 on
     // every track until a pick). The pads play the armed track's; each
     // track's clips play its own.
@@ -8235,6 +8240,39 @@ fn player_session(
                     let own = &mix.instruments;
                     out.note(&transpose_pad(pad, &mut time, &synth, &track_kits, own));
                 }
+                // Play on the pads: the synth plays the hit, before the arp
+                // and the recorder; the armed track keeps its kit.
+                Some(ControlEvent::PadDown { pad, velocity })
+                    if (pad as usize) < 16 && preview_on =>
+                {
+                    let pad = pad as usize;
+                    let v = app.velocity(velocity);
+                    synth.note_on(pad, v, 0);
+                    preview_held[pad] = true;
+                    out.show(gui::ToUi::PadDown { pad, velocity: v });
+                    if mute_shown.is_none() {
+                        ports.send(
+                            false,
+                            &akai::pad_colour(pad as u8, akai::hit_colour(rest[pad])),
+                        )?;
+                    }
+                }
+                Some(ControlEvent::PadUp { pad })
+                    if (pad as usize) < 16 && preview_held[pad as usize] =>
+                {
+                    let pad = pad as usize;
+                    preview_held[pad] = false;
+                    synth.note_off(pad, 0);
+                    out.show(gui::ToUi::PadUp(pad));
+                    if mute_shown.is_none() {
+                        ports.send(false, &akai::pad_colour(pad as u8, rest[pad]))?;
+                    }
+                }
+                Some(ControlEvent::PadPressure { pad, pressure })
+                    if (pad as usize) < 16 && preview_held[pad as usize] =>
+                {
+                    synth.pressure(pad as usize, pressure);
+                }
                 Some(ControlEvent::PadUp { pad })
                     if (pad as usize) < 16 && mute_pressed[pad as usize] =>
                 {
@@ -8511,6 +8549,9 @@ fn player_session(
                     .filter(|e| !matches!(e, app::Effect::Note(_))),
             );
         }
+        // What REC must leave alone while the pads play the synth by Play
+        // on the pads (app/pads_preview.rs): kits and MIDI outputs picked.
+        app.set_configured(track_kits.picked() | midi_out.routed());
         let mut stop = false;
         let mut later = Vec::new();
         for e in fx.drain(..) {
@@ -8672,6 +8713,46 @@ fn player_session(
                         }
                     }
                 },
+                // Play on the pads: the synth's colours on the pads, or the
+                // kit's again; a pad still held ends its synth note now,
+                // and its let-go is taken quietly (below).
+                app::Effect::PadsPreview(on) => {
+                    if !on {
+                        for pad in (0..16).filter(|&p| preview_held[p]) {
+                            synth.note_off(pad, 0);
+                        }
+                    }
+                    preview_on = on && !synth_on;
+                    rest = if preview_on {
+                        synth.pad_colours()
+                    } else if synth_on {
+                        rest
+                    } else {
+                        sound_colours(
+                            player.page_sounds(player.kit(), app.pad_page()),
+                            player.kit(),
+                        )
+                    };
+                    if mute_shown.is_none() {
+                        ports.send_batch(
+                            out,
+                            false,
+                            "the pads' colours",
+                            &as_slices(&pad_colours(&rest)),
+                        )?;
+                    }
+                    out.show(gui::ToUi::PadsPreview(preview_on));
+                }
+                // REC while the pads play the synth (desk::rec_synth): the
+                // track plays the same synth from now on, as a pick of
+                // Synth in the list of kits; the selected one takes it at
+                // once, another once it is armed (its kit follows).
+                app::Effect::SynthOnTrack(t) => {
+                    track_kits.set(t, track_kits.synth());
+                    if t == app.track() {
+                        kit_to = Some(track_kits.synth());
+                    }
+                }
                 app::Effect::StopSounds => {
                     player.stop_all();
                     synth.stop();
@@ -8792,6 +8873,14 @@ fn player_session(
                 app.set_pad_layout(Some(synth.pad_layout()));
             }
         }
+        // A kit picked (or a project opened) while the synth was on the
+        // pads by Play on the pads: the pads play the track's kit again.
+        if kit_to.is_some() && app.pads_preview() {
+            fx.extend(app.toggle_pads_preview());
+        }
+        // The arp came on (NOTE REPEAT, Latch, the Arp panel): it plays the
+        // track's instrument, so Play on the pads ends.
+        fx.extend(app.arp_ends_pads_preview());
         let playing_kit = if synth_on { synth_kit } else { player.kit() };
         if let Some(k) = kit_to.filter(|&k| k != playing_kit) {
             used[k] = true;
