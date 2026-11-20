@@ -22,6 +22,10 @@ pub struct Aim {
     pub taps: u32,
 }
 
+/// The fewest frames a span needs for grains to read it: a grain voice on
+/// a shorter one makes no grains ([`GrainSource::grows`]).
+pub const MIN_SPAN: i64 = 8;
+
 /// Audio a grain can read. Frames are absolute; [`GrainSource::span`] says
 /// which ones are readable now. Reads outside the span return 0.
 pub trait GrainSource {
@@ -98,6 +102,14 @@ pub trait GrainSource {
     fn next_hit(&self, from: f64, to: f64) -> Option<f64> {
         let _ = (from, to);
         None
+    }
+
+    /// Whether the span can still grow, as a live buffer's does while it
+    /// fills. A grain voice on a span under [`MIN_SPAN`] frames waits for
+    /// one that can; on one that can't (a sample, the default), it stops
+    /// making grains, as nothing it could make would sound.
+    fn grows(&self) -> bool {
+        false
     }
 }
 
@@ -461,6 +473,10 @@ impl LiveBuffer {
 impl GrainSource for LiveBuffer {
     fn rate(&self) -> u32 {
         self.rate
+    }
+    /// It fills from empty, and frozen it can be let go again.
+    fn grows(&self) -> bool {
+        true
     }
     fn channels(&self) -> usize {
         self.channels

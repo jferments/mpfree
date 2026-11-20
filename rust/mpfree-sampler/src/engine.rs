@@ -82,7 +82,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use mpfree_grain::{Budget, GrainFx, GrainSource, GrainVoice};
+use mpfree_grain::{Budget, GrainFx, GrainSource, GrainVoice, MIN_SPAN};
 pub use mpfree_grain::{GrainView, MAX_GRAINS};
 
 /// A layer's cloud as it plays now ([`Engine::cloud_of`]), for drawing it.
@@ -4546,6 +4546,13 @@ fn grains<C: GrainSource>(
     sl: &mut [f32],
     sr: &mut [f32],
 ) {
+    // A sound too short to read makes no grains, however long the pad is
+    // held: the voice ends at once (silent: it never made a sound).
+    let (start, end) = clip.span();
+    if end - start < MIN_SPAN {
+        v.active = false;
+        return;
+    }
     let mut at = 0;
     while at < left.len() && v.active {
         let n = (left.len() - at).min(sl.len());

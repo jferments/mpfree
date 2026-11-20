@@ -1608,3 +1608,109 @@ fn grains_fading_under_a_hit_keep_their_window() {
     let d = shape_split(&src, p, 24_048, 0.0, 1.0);
     assert!(d < 0.01, "{d}");
 }
+
+#[test]
+fn a_sound_too_short_to_read_stops_and_a_filling_buffer_waits() {
+    // Six frames: no grain could ever read it, so the voice ends at once
+    // (it used to keep trying for as long as the pad was held).
+    let data = vec![0.5f32; 6];
+    let src = Clip::new(&data, 1, RATE).unwrap();
+    const { assert!(MIN_SPAN > 6) };
+    let mut v = GrainVoice::new(RATE, 3);
+    v.set_params(Params::default());
+    v.start();
+    let mut budget = Budget::new(256);
+    let (l, _) = run(&mut v, &src, &mut budget, 0, 1_280, 128);
+    assert!(!v.is_active(), "the voice ends");
+    assert!(l.iter().all(|&x| x == 0.0));
+    assert_eq!(v.stats().skipped, 0);
+
+    // A live buffer starts empty and fills: the voice waits, then plays.
+    let mut buf = LiveBuffer::new(1, RATE, 48_000).unwrap();
+    let mut v = GrainVoice::new(RATE, 3);
+    v.set_params(Params {
+        size_ms: 20.0,
+        density: 100.0,
+        ..Params::default()
+    });
+    v.start();
+    run(&mut v, &buf, &mut budget, 0, 1_280, 128);
+    assert!(v.is_active(), "it waits for audio");
+    assert_eq!(v.stats().spawned, 0);
+    buf.write(&vec![0.5f32; 24_000]);
+    let (l, _) = run(&mut v, &buf, &mut budget, 1_280, 4_800, 128);
+    assert!(v.stats().spawned > 0);
+    assert!(l.iter().any(|&x| x != 0.0));
+}
+
+/// The grains a still cloud of `p` has after a second over `data`, as
+/// positions 0 to 1 across the sound.
+fn grain_places(data: &[f32], p: Params) -> Vec<GrainView> {
+    let src = Clip::new(data, 1, RATE).unwrap();
+    let mut v = GrainVoice::new(RATE, 11);
+    v.set_params(p);
+    v.start();
+    run(&mut v, &src, &mut Budget::new(256), 0, 48_000, 128);
+    let mut out = [GrainView::default(); MAX_GRAINS];
+    let n = v.grains(&mut out);
+    assert!(n > 4, "{n} grains");
+    out[..n].to_vec()
+}
+
+#[test]
+fn a_still_cloud_at_the_far_right_plays_the_end_of_the_sound() {
+    let data = vec![0.5f32; 96_000];
+    // 50 ms grains are 2,400 frames of the 96,000: 2.5 % of the sound,
+    // twice that an octave up.
+    let far = Params {
+        position: 1.0,
+        size_ms: 50.0,
+        density: 200.0,
+        ..Params::default()
+    };
+    for (pitch, reverse, reach) in [
+        (0.0, 0.0, 0.026),
+        (12.0, 0.0, 0.051),
+        (0.0, 1.0, 0.026),
+        (12.0, 1.0, 0.051),
+    ] {
+        let p = Params {
+            pitch,
+            reverse,
+            ..far
+        };
+        for g in grain_places(&data, p) {
+            assert_eq!(g.reverse, reverse > 0.0);
+            assert!(
+                g.position >= 1.0 - reach && g.position <= 1.0,
+                "pitch {pitch} reverse {reverse}: a grain at {}",
+                g.position
+            );
+        }
+    }
+    // The playhead is at the far right too.
+    let src = Clip::new(&data, 1, RATE).unwrap();
+    let mut v = GrainVoice::new(RATE, 11);
+    v.set_params(far);
+    v.start();
+    run(&mut v, &src, &mut Budget::new(256), 0, 1_280, 128);
+    assert_eq!(v.playhead(), 1.0);
+
+    // Spray past the end turns back from it rather than reading the
+    // sound's start.
+    let sprayed = Params { spray: 0.5, ..far };
+    let places = grain_places(&data, sprayed);
+    assert!(places.iter().all(|g| g.position >= 0.7), "{places:?}");
+    assert!(
+        places.iter().any(|g| g.position < 0.9),
+        "the spray spreads them"
+    );
+
+    // A scanning cloud still goes round: from the far right on to the start.
+    let mut v = GrainVoice::new(RATE, 11);
+    v.set_params(Params { scan: 1.0, ..far });
+    v.start();
+    run(&mut v, &src, &mut Budget::new(256), 0, 9_600, 128);
+    let at = v.playhead();
+    assert!(at > 0.05 && at < 0.15, "{at}");
+}
