@@ -334,6 +334,21 @@ const ALL: u8 = LINE;
 /// track's notes and chords on the step pads). No note has this number.
 pub const LINE: u8 = 255;
 
+/// What a step grid shows of a clip, all pages ([`Grid::shown`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Shown {
+    /// Every pad's row (0 to 15), then any other note the clip holds in
+    /// the order its notes first come, with its steps (None: empty); and
+    /// [`LINE`] last, each step's notes as one.
+    pub rows: Vec<(u8, Vec<Option<Step>>)>,
+    /// The same rows' locks: how many each step holds (its row's own and
+    /// the whole step's), for the step pads' lock colour.
+    pub locks: Vec<(u8, Vec<usize>)>,
+    /// Each row's own locks: row, step, parameter and value, for the
+    /// Q-Links' cards of a held step.
+    pub lock_values: Vec<(u8, usize, RelAddr, f32)>,
+}
+
 /// The most steps a Euclidean pattern spans: four pages.
 pub const MAX_EUCLID_STEPS: u8 = 64;
 
@@ -469,6 +484,39 @@ impl Grid {
             .collect();
         out.sort_by_key(|(nudge, n)| (*nudge, n.len, n.velocity, n.chance));
         out.into_iter().map(|(_, n)| n).collect()
+    }
+
+    /// What a step grid shows of `clip`, all pages: what the Play page's
+    /// pattern and the step pads draw, built again whenever the clip
+    /// changes (the refactor's B1 times it on an 8,192-note clip).
+    pub fn shown(self, clip: &Clip) -> Shown {
+        let mut pitches: Vec<u8> = (0..16).collect();
+        for n in &clip.notes {
+            if !pitches.contains(&n.note) {
+                pitches.push(n.note);
+            }
+        }
+        Shown {
+            locks: pitches
+                .iter()
+                .map(|&p| (p, self.lock_row(clip, p)))
+                .chain(std::iter::once((LINE, self.lock_line(clip))))
+                .collect(),
+            // A whole step's lock (a chord's) is the line's.
+            lock_values: clip
+                .locks
+                .iter()
+                .map(|l| {
+                    let row = l.sound.unwrap_or(LINE);
+                    (row, self.place(clip.length, l.tick).0, l.addr, l.value)
+                })
+                .collect(),
+            rows: pitches
+                .into_iter()
+                .map(|p| (p, self.row(clip, p)))
+                .chain(std::iter::once((LINE, self.line(clip))))
+                .collect(),
+        }
     }
 
     /// Every step of sound `pitch` in `clip`, all pages: None where a step
@@ -1353,6 +1401,25 @@ mod tests {
             .map(|&(tick, note)| Note::new(tick, 60, note, 100))
             .collect();
         c
+    }
+
+    #[test]
+    fn the_grid_shown_has_every_pad_then_other_notes_then_the_line() {
+        let g = Grid::new(240).unwrap();
+        // Notes on pad 3 and on note 40 (not a pad), and a whole-step lock.
+        let mut c = clip(BAR, &[(0, 40), (240, 3), (480, 40)]);
+        let addr = RelAddr::new(mpfree_param::OnTrack::Inst, 2);
+        c.locks = vec![Lock::new(240, None, addr, 0.5)];
+        let shown = g.shown(&c);
+        let rows: Vec<u8> = shown.rows.iter().map(|r| r.0).collect();
+        let want: Vec<u8> = (0..16).chain([40, LINE]).collect();
+        assert_eq!(rows, want);
+        assert_eq!(shown.rows[16].1, g.row(&c, 40));
+        assert_eq!(shown.rows[17].1, g.line(&c));
+        // A whole step's lock counts on every row and shows on the line.
+        assert_eq!(shown.locks.len(), 18);
+        assert!(shown.locks.iter().all(|(_, row)| row[1] == 1));
+        assert_eq!(shown.lock_values, vec![(LINE, 1, addr, 0.5)]);
     }
 
     #[test]

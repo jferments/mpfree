@@ -52,6 +52,19 @@ class ParseDump(unittest.TestCase):
         self.assertIsNone(instr_gate.parse_dump(other))
 
 
+class Listed(unittest.TestCase):
+    def test_each_case_is_divided_by_the_blocks_it_counted(self):
+        out = ("counting 200 blocks per case\n"
+               "Cloud reverb (Plate, Eco)\t200\n"
+               "Steps: a tap, 8,192 notes: the edit\t20\n"
+               "\n")
+        self.assertEqual(instr_gate.listed(out, 200),
+                         {"Cloud reverb (Plate, Eco)": 200, "Steps: a tap, 8,192 notes: the edit": 20})
+
+    def test_a_bare_name_counted_every_block(self):
+        self.assertEqual(instr_gate.listed("counting 50 blocks per case\nDelay\n", 50), {"Delay": 50})
+
+
 class Compare(unittest.TestCase):
     def test_a_rise_past_the_tolerance_fails_and_a_small_one_does_not(self):
         rows, rises = instr_gate.compare({"a": 1000, "b": 1000}, {"a": 1051, "b": 1049}, 5.0)

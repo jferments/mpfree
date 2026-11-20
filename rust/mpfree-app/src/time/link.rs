@@ -19,8 +19,8 @@
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 
 use mpfree_notefx::{Chain, Slot};
-pub use mpfree_play::InPlace;
 use mpfree_play::{Event, MuteLanded, PlayView, Rec, Started};
+pub use mpfree_play::{InPlace, MAX_IN_PLACE};
 use mpfree_seq::mpfree_moves::{Input, Kind};
 use mpfree_seq::{DestId, TouchPoint, MAX_TRACKS};
 use mpfree_time_ui::view::TransportInfo;
@@ -138,10 +138,6 @@ impl Tracks {
             .is_some_and(|t| self.set[t].record_touch)
     }
 }
-
-/// The most changes one step edit sends to be made in place; a bigger one
-/// (a whole page erased or copied) compiles.
-pub const MAX_IN_PLACE: usize = 64;
 
 /// From the control half.
 pub enum ToAudio {

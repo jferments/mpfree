@@ -27,6 +27,7 @@ use std::ops::Range;
 use mpfree_param::RelAddr;
 use mpfree_seq::arrange::SONG_LANE_LEN;
 use mpfree_seq::mpfree_moves::{Kind, Map, Moves, Target};
+use mpfree_seq::steps::Edit;
 use mpfree_seq::{
     touch_fits, Clip, ClipProgram, DestId, Direction, LaunchGrid, Lock, ModelError, Note, Project,
     Quantise, Source, Speed, Touch, TouchPoint, MAX_LOCKS, MAX_NOTES, MAX_TRACKS, SLOTS,
@@ -547,6 +548,45 @@ pub enum InPlace {
     EraseNote(Note),
     AddLock(Lock),
     EraseLock(Lock),
+}
+
+/// The most changes one step edit makes in place; a bigger one (a whole
+/// page erased or copied) compiles.
+pub const MAX_IN_PLACE: usize = 64;
+/// The most work a step edit made in place may cost the audio half: its
+/// changes times the clip's notes and locks, each change a search and a
+/// move of the ones after it. A bigger one compiles.
+pub const IN_PLACE_WORK: usize = 8192;
+
+impl InPlace {
+    /// Whether step edit `edit` to a clip holding `held` notes and locks
+    /// may go in place rather than compile: it only adds and erases notes
+    /// and locks (no length, moves or pressure), at most
+    /// [`MAX_IN_PLACE`] of them, for at most [`IN_PLACE_WORK`].
+    pub fn fits(edit: &Edit, held: usize) -> bool {
+        let n = InPlace::count(edit);
+        edit.length.is_none()
+            && edit.moves.is_none()
+            && edit.touch.is_empty()
+            && n <= MAX_IN_PLACE
+            && n * held.max(1) <= IN_PLACE_WORK
+    }
+
+    /// How many changes `edit` makes in place.
+    pub fn count(edit: &Edit) -> usize {
+        edit.erase.len() + edit.add.len() + edit.erase_locks.len() + edit.add_locks.len()
+    }
+
+    /// `edit`'s changes in the order the clip took them
+    /// (`mpfree_seq::Clip::apply`: the notes erased, the locks erased, the
+    /// notes added, the locks added), so the view holds them in the order
+    /// a compile would.
+    pub fn all(edit: &Edit) -> impl Iterator<Item = InPlace> + '_ {
+        (edit.erase.iter().map(|&n| InPlace::EraseNote(n)))
+            .chain(edit.erase_locks.iter().map(|&l| InPlace::EraseLock(l)))
+            .chain(edit.add.iter().map(|&n| InPlace::AddNote(n)))
+            .chain(edit.add_locks.iter().map(|&l| InPlace::AddLock(l)))
+    }
 }
 
 /// The project compiled for playback. Build it on the control thread; the

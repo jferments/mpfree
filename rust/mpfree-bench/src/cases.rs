@@ -1989,6 +1989,12 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| time(rate, 8, true)));
     v.push(measured(|| time_ahead(rate, 8, 4)));
     v.push(measured(|| time_record(rate, 8, 3)));
+    v.push(measured(|| time_dense(rate)));
+    v.push(measured(|| step_edit(StepTouch::Tap, false)));
+    v.push(measured(|| step_edit(StepTouch::Tap, true)));
+    v.push(measured(|| step_edit(StepTouch::Detent, false)));
+    v.push(measured(|| step_edit(StepTouch::Detent, true)));
+    v.push(measured(step_grid));
     v.push(measured(|| live_arps(rate, 4)));
     v.push(measured(|| live_arps(rate, 16)));
     v.push(measured(|| looper(rate, 60)));
@@ -3148,6 +3154,261 @@ fn time_record(rate: u32, tracks: usize, armed: usize) -> Case {
             l.fill(0.0);
             r.fill(0.0);
             l[0] = (sink.notes + taken) as f32;
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// The module of the step-edit cases: the time engine's control half,
+/// which builds and edits (and may allocate), not the audio path. Today it
+/// runs on the audio thread too (time-threads.md, step 3), so its blocks
+/// are what a touch costs there; it has no budget line of its own, and
+/// `--check-allocs` leaves it out.
+pub const CONTROL: &str = "control";
+
+/// A step on the step cases' grid: a sixteenth (the app's `STEP_TICKS`).
+const STEP: i64 = 240;
+/// Rows of the step cases' clip.
+const STEP_ROWS: u8 = 64;
+/// Steps of the step cases' clip: 8 bars of sixteenths.
+const STEP_COUNT: i64 = 128;
+/// Room the app sets aside for recording and step edits in place in the
+/// armed track's playing clip (`mpfree-app`'s `RECORD_ROOM`).
+const STEP_ROOM: usize = 1_024;
+
+/// What a step-edit case does each block (refactor B1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StepTouch {
+    /// A tap on a step: its note comes out, and next block goes back in.
+    Tap,
+    /// A Q-Link turned on a held step: a detent each block, 64 a turn,
+    /// one take a turn.
+    Detent,
+}
+
+/// The step cases' song: one track with a full clip, 8,192 notes (the most
+/// a clip holds), a note on every one of its 128 steps in each of its 64
+/// rows, launched and armed.
+fn step_song() -> (Song, Vec<Launch>) {
+    let mut song = Song::new();
+    let mut t = Track::new("t", 0);
+    let mut c = Clip::new("c", STEP_COUNT * STEP);
+    c.notes = (0..STEP_COUNT)
+        .flat_map(|k| (0..STEP_ROWS).map(move |p| Note::new(k * STEP, STEP - 40, p, 100)))
+        .collect();
+    t.slots[0] = Some(c);
+    song.tracks.push(t);
+    let launch = Launch {
+        track: 0,
+        slot: 0,
+        origin: 0,
+        start: 0,
+    };
+    (song, vec![launch])
+}
+
+/// The view the app compiles after a step edit: the armed track's clip
+/// with room to edit in place (`TimeControl::compile`).
+fn step_view(song: &mut Song, launches: &[Launch]) -> PlayView {
+    if let Some(Some(c)) = song.tracks[0].slots.get_mut(0) {
+        c.notes.reserve(STEP_ROOM);
+        c.locks.reserve(STEP_ROOM);
+    }
+    let mut v = PlayView::compile(song, launches).expect("view");
+    v.set_armed(Some(0));
+    v.make_room(STEP_ROOM, STEP_ROOM);
+    v
+}
+
+/// A step edit on the Play page's pattern, a touch a block, on the full
+/// clip of [`step_song`] while it plays (refactor B1), as
+/// `TimeControl::step_action` makes it: the edit worked out on the grid
+/// (`Grid::toggle`, `Grid::lock_steps`) and made to the clip and the takes
+/// (`Takes::edit`, one undo). With `plays`, also what the audio half does
+/// to play it: the edit made to its view in place when it fits
+/// (`InPlace::fits`: a tap does), else the view compiled again (a detent
+/// does: its changes times the 8,193 notes and locks held are past
+/// `IN_PLACE_WORK`). What the
+/// screen and the step pads show is the grid rebuilt ([`step_grid`]).
+fn step_edit(touch: StepTouch, plays: bool) -> Case {
+    use mpfree_play::{InPlace, Takes, MAX_IN_PLACE};
+    use mpfree_seq::steps::{lock_key_steps, Grid};
+    let (mut song, launches) = step_song();
+    let mut view = step_view(&mut song, &launches);
+    let mut takes = Takes::default();
+    let grid = Grid::new(STEP).expect("a sixteenth");
+    let addr = RelAddr::new(OnTrack::Inst, 3);
+    let mut changes = [InPlace::EraseNote(Note::new(0, 1, 0, 1)); MAX_IN_PLACE];
+    let (mut in_place, mut compiled) = (0u64, 0u64);
+    Case {
+        name: format!(
+            "Steps: {}, 8,192 notes: {}",
+            match touch {
+                StepTouch::Tap => "a tap",
+                StepTouch::Detent => "a lock detent",
+            },
+            if plays { "until it plays" } else { "the edit" }
+        ),
+        module: CONTROL,
+        what: match (touch, plays) {
+            (StepTouch::Tap, false) => {
+                "a step's note out, then back in: worked out and made to the clip and the takes"
+            }
+            (StepTouch::Tap, true) => "as the tap's edit, then made to the playing view in place",
+            (StepTouch::Detent, false) => {
+                "a held step's lock turned a detent: worked out and joined to the turn's take"
+            }
+            (StepTouch::Detent, true) => {
+                "as the detent's edit, then the view compiled again (too big to go in place)"
+            }
+        },
+        block: Box::new(move |b, l, r| {
+            let clip = song.clip(0, 0).expect("the clip");
+            let (edit, join) = match touch {
+                // Each step of each row in turn, out on one block and back
+                // in on the next.
+                StepTouch::Tap => {
+                    let k = b / 2;
+                    let pitch = (k % u64::from(STEP_ROWS)) as u8;
+                    let step = (k * 7 % STEP_COUNT as u64) as usize;
+                    (grid.toggle(clip, pitch, step, 100), None)
+                }
+                StepTouch::Detent => {
+                    let (sound, step) = (Some(5), 9usize);
+                    let value = (b % 64) as f32 / 64.0;
+                    (
+                        grid.lock_steps(clip, sound, &[step], addr, Some(value)),
+                        Some(lock_key_steps(sound, 1 << step, addr)),
+                    )
+                }
+            };
+            takes.edit(&mut song, 0, 0, &edit, join).expect("the edit");
+            if plays {
+                let held = song.clip(0, 0).map_or(0, |c| c.notes.len() + c.locks.len());
+                let n = InPlace::count(&edit);
+                if InPlace::fits(&edit, held) {
+                    for (slot, c) in changes.iter_mut().zip(InPlace::all(&edit)) {
+                        *slot = c;
+                    }
+                    assert!(view.edit_in_place(0, 0, &changes[..n]), "in place");
+                    in_place += 1;
+                } else {
+                    view = step_view(&mut song, &launches);
+                    compiled += 1;
+                }
+            }
+            // What the clip and the view hold, and how the edits went.
+            l.fill(0.0);
+            r.fill(0.0);
+            let notes = song.clip(0, 0).map_or(0, |c| c.notes.len() + c.locks.len());
+            l[0] = notes as f32;
+            r[0] = (view.notes() + view.locks()) as f32;
+            l[1] = in_place as f32;
+            r[1] = compiled as f32;
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// The grid the Play page's pattern and the step pads show, built again
+/// after an edit (`Grid::shown`, what `TimeControl::steps` hands the
+/// screen), a block each, on the full clip of [`step_song`] (refactor B1).
+/// With [`step_edit`], the third of a touch's three times: until the
+/// screen and the pads show it.
+fn step_grid() -> Case {
+    use mpfree_seq::steps::Grid;
+    let (song, _) = step_song();
+    let grid = Grid::new(STEP).expect("a sixteenth");
+    Case {
+        name: "Steps: the grid rebuilt, 8,192 notes in 64 rows".to_string(),
+        module: CONTROL,
+        what: "every row's steps, lock counts and lock values, for the screen and the step pads",
+        block: Box::new(move |_, l, r| {
+            let clip = song.clip(0, 0).expect("the clip");
+            let shown = grid.shown(clip);
+            l.fill(0.0);
+            r.fill(0.0);
+            l[0] = shown
+                .rows
+                .iter()
+                .map(|(_, row)| row.iter().flatten().count())
+                .sum::<usize>() as f32;
+            r[0] = shown.rows.len() as f32;
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// The time engine at its densest (refactor B1): 16 tracks playing 2-bar
+/// clips of 16ths, each step a 3-note chord ratcheted 4 times with 8
+/// parameter locks (7 of the instrument's, one of the strip's, each step
+/// a new value), the transport looping 4 bars at 128 BPM through the
+/// per-track arps, none of them on, as the pad player runs them.
+fn time_dense(rate: u32) -> Case {
+    let ppq = i64::from(PPQ);
+    let mut song = Song::new();
+    let mut launches = Vec::new();
+    for i in 0..16usize {
+        let mut t = Track::new("t", i as u16);
+        let mut c = Clip::new("c", 8 * ppq);
+        c.notes = (0..32i64)
+            .flat_map(|k| {
+                (0..3i64).map(move |n| Note {
+                    ratchet: 4,
+                    ..Note::new(
+                        k * ppq / 4,
+                        ppq / 4 - 10,
+                        (36 + 12 * (i as i64 % 3) + n * 4 + k % 5) as u8,
+                        100,
+                    )
+                })
+            })
+            .collect();
+        c.locks = (0..32i64)
+            .flat_map(|k| {
+                (0..8u16).map(move |p| {
+                    let addr = if p < 7 {
+                        RelAddr::new(OnTrack::Inst, p)
+                    } else {
+                        RelAddr::new(OnTrack::Strip, 0)
+                    };
+                    Lock::new(
+                        k * ppq / 4,
+                        None,
+                        addr,
+                        ((k + i64::from(p)) % 8) as f32 / 8.0,
+                    )
+                })
+            })
+            .collect();
+        t.slots[0] = Some(c);
+        song.tracks.push(t);
+        launches.push(Launch {
+            track: i,
+            slot: 0,
+            origin: 0,
+            start: 0,
+        });
+    }
+    let view = PlayView::compile(&song, &launches).expect("view");
+    let mut t = Transport::new(rate, 128.0).expect("transport");
+    t.command(0, T::SetLoop(Some((0, 16 * ppq))));
+    t.command(0, T::Play);
+    let mut arps = Box::new(TrackArps::new(rate, 128.0));
+    let mut sink = TimeSink { notes: 0 };
+    let mut player = Player::new();
+    let mut block = TBlock::new();
+    Case {
+        name: "Time: 16 tracks of ratchets, 8 locks a step".to_string(),
+        module: "time",
+        what: "16ths with 3-note chords ratcheted 4 times and 8 locks a step on 16 tracks",
+        block: Box::new(move |_, l, r| {
+            t.process(l.len() as u32, &mut block);
+            player.process(&view, &block, &mut arps.through_sink());
+            arps.finish(&block, &mut sink);
+            l.fill(0.0);
+            r.fill(0.0);
+            l[0] = sink.notes as f32;
         }),
         mem_bytes: 0,
     }
@@ -4676,6 +4937,43 @@ mod tests {
                 "{n} grains asked, {mean:.1} alive"
             );
         }
+    }
+
+    #[test]
+    fn a_tap_goes_in_place_and_a_detent_compiles_on_a_full_clip() {
+        // A tap: out, in, out, in: the view follows the clip, in place.
+        let mut tap = measured(|| step_edit(StepTouch::Tap, true));
+        let (l, r) = run(&mut tap, 4);
+        assert_eq!((l[0], r[0], l[1], r[1]), (8_192.0, 8_192.0, 4.0, 0.0));
+        let (l, r) = run(&mut measured(|| step_edit(StepTouch::Tap, true)), 3);
+        assert_eq!((l[0], r[0]), (8_191.0, 8_191.0));
+        // The tap's edit alone leaves the view as it was.
+        let (l, r) = run(&mut measured(|| step_edit(StepTouch::Tap, false)), 3);
+        assert_eq!((l[0], r[0], l[1], r[1]), (8_191.0, 8_192.0, 0.0, 0.0));
+        // A detent compiles, as in the app: on a full clip even the first
+        // (a lock added: one change, with 8,193 held) is past the work
+        // allowed in place, and each after it is two changes.
+        let (l, r) = run(&mut measured(|| step_edit(StepTouch::Detent, true)), 5);
+        assert_eq!((l[0], r[0], l[1], r[1]), (8_193.0, 8_193.0, 0.0, 5.0));
+        // One take a turn.
+        let mut d = step_edit(StepTouch::Detent, false);
+        run(&mut d, 64);
+    }
+
+    #[test]
+    fn the_grid_case_shows_every_step_of_the_full_clip() {
+        let (l, r) = run(&mut measured(step_grid), 1);
+        // 64 rows of 128 steps, and the whole line's 128.
+        assert_eq!((l[0], r[0]), (8_320.0, 65.0));
+    }
+
+    #[test]
+    fn the_dense_case_plays_every_ratchet() {
+        let mut c = measured(|| time_dense(44_100));
+        let (l, _) = run(&mut c, 1_000);
+        // 2.9 s at 128 BPM is about 6 beats: 16 tracks x 4 steps x 3
+        // notes x 4 ratchets, on and off, plus 8 locks a step.
+        assert!(l[0] > 6_000.0, "{}", l[0]);
     }
 
     #[test]

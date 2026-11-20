@@ -24,7 +24,9 @@
 //!   verdicts follow `budget::judge`: an engine on its p99.9 block, the whole
 //!   period on its worst.
 //! - `--check-allocs` exits with status 2 if any engine allocated inside a
-//!   block (the counting allocator is installed in this program).
+//!   block (the counting allocator is installed in this program). The
+//!   step-edit cases (module `control`, refactor B1) are the time engine's
+//!   control half, which may allocate, so they are left out.
 //! - `--calibrate` times the reference kernels and prints a calibration file.
 //! - `--compare A.json B.json` puts two `--json` reports side by side, case
 //!   by case: B's p99 and worst as a share of A's (the default and the
@@ -197,16 +199,25 @@ fn count(o: &Options) {
         {
             continue;
         }
-        for b in 0..50 {
+        // A step edit costs far more a block than an engine (a detent
+        // compiles a full clip), and costs the same every block, so the
+        // step cases count a tenth of the blocks after a short warm-up;
+        // the listing tells the gate how many each case counted.
+        let (warm, n) = if c.module == cases::CONTROL {
+            (5, (blocks / 10).max(1))
+        } else {
+            (50, blocks)
+        };
+        for b in 0..warm {
             (c.block)(b, &mut l, &mut r);
         }
         vg::zero_stats();
-        for b in 50..50 + blocks {
+        for b in warm..warm + n {
             (c.block)(b, &mut l, &mut r);
         }
         vg::dump_stats_at(&format!("{COUNT_TAG}{}", c.name));
         std::hint::black_box((&l, &r));
-        println!("{}", c.name);
+        println!("{}\t{n}", c.name);
     }
 }
 
@@ -1071,9 +1082,11 @@ fn main() -> ExitCode {
         }
         println!("Wrote {path}");
     }
+    // The step edits are the control half's, which may allocate (they show
+    // ALLOCATES all the same).
     let allocating: Vec<&str> = rows
         .iter()
-        .filter(|r| r.s.allocs > 0)
+        .filter(|r| r.s.allocs > 0 && r.module != cases::CONTROL)
         .map(|r| r.name.as_str())
         .collect();
     if o.check_allocs && !allocating.is_empty() {

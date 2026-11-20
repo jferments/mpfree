@@ -50,7 +50,7 @@ use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_transport::{Block, Command, State};
 
 use super::follow::FollowCounts;
-use super::link::{Counts, InPlace, PeriodEnd, Rx, ToAudio, ToControl, Tracks, Tx, MAX_IN_PLACE};
+use super::link::{Counts, InPlace, PeriodEnd, Rx, ToAudio, ToControl, Tracks, Tx};
 use super::{StepAction, StepClip, StepsData, LINE, NEW_CLIP_BARS, RECORD_ROOM, STEP_TICKS};
 
 /// The clip settings card's join keys for its takes, a row each (see
@@ -123,11 +123,6 @@ impl Landed<'_> {
         m || (self.soloing && !s)
     }
 }
-
-/// The most work a step edit made in place may cost the audio half: its
-/// changes times the clip's notes and locks, each change a search and a
-/// move of the ones after it. A bigger one compiles.
-const IN_PLACE_WORK: usize = 8192;
 
 /// What compiles and step edits cost the thread the control half runs on
 /// (today the audio thread), for the status line: the device's numbers
@@ -961,20 +956,15 @@ impl TimeControl {
     /// makes none of the changes that went: an edit goes in whole or not
     /// at all, and the compiled view brings it).
     fn in_place(&mut self, track: usize, slot: usize, edit: &Edit) -> bool {
-        let changes =
-            edit.erase.len() + edit.add.len() + edit.erase_locks.len() + edit.add_locks.len();
         let held = self
             .project
             .clip(track, slot)
             .map_or(0, |c| c.notes.len() + c.locks.len());
-        let plain = edit.length.is_none() && edit.moves.is_none() && edit.touch.is_empty();
-        if !plain
+        if !InPlace::fits(edit, held)
             || self.song
             || self.unsent.is_some()
             || self.armed != Some(track)
             || matches!(self.info.state, State::Recording | State::CountIn)
-            || changes > MAX_IN_PLACE
-            || changes * held.max(1) > IN_PLACE_WORK
         {
             return false;
         }
@@ -992,14 +982,9 @@ impl TimeControl {
         let (Ok(t), Ok(s)) = (u16::try_from(track), u16::try_from(slot)) else {
             return false;
         };
-        // At most MAX_IN_PLACE (64), checked above.
-        let n = u8::try_from(changes).unwrap_or(u8::MAX);
-        // In the order the clip took them (`Clip::apply`), so the view
-        // holds them in the order a compile would.
-        let changes = (edit.erase.iter().map(|&n| InPlace::EraseNote(n)))
-            .chain(edit.erase_locks.iter().map(|&l| InPlace::EraseLock(l)))
-            .chain(edit.add.iter().map(|&n| InPlace::AddNote(n)))
-            .chain(edit.add_locks.iter().map(|&l| InPlace::AddLock(l)));
+        // At most MAX_IN_PLACE (64): `fits` checked it.
+        let n = u8::try_from(InPlace::count(edit)).unwrap_or(u8::MAX);
+        let changes = InPlace::all(edit);
         self.edit_id = self.edit_id.wrapping_add(1);
         let id = self.edit_id;
         for change in changes {
@@ -1380,12 +1365,6 @@ impl TimeControl {
         let grid = Grid::new(STEP_TICKS).expect("a sixteenth is a step size");
         let clip = slot.and_then(|slot| {
             let c = self.project.clip(track, slot)?;
-            let mut pitches: Vec<u8> = (0..16).collect();
-            for n in &c.notes {
-                if !pitches.contains(&n.note) {
-                    pitches.push(n.note);
-                }
-            }
             let launch = self
                 .launches
                 .iter()
@@ -1393,6 +1372,7 @@ impl TimeControl {
             let origin = launch.map(|l| l.origin);
             let order =
                 launch.and_then(|l| mpfree_play::StepOrder::of(c, track, slot, l.origin, l.start));
+            let shown = grid.shown(c);
             Some(StepClip {
                 slot,
                 name: c.name.clone(),
@@ -1401,25 +1381,9 @@ impl TimeControl {
                 song_step: c.speed.to_song(STEP_TICKS as f64),
                 origin,
                 order,
-                locks: pitches
-                    .iter()
-                    .map(|&p| (p, grid.lock_row(c, p)))
-                    .chain(std::iter::once((LINE, grid.lock_line(c))))
-                    .collect(),
-                // A whole step's lock (a chord's) is the line's.
-                lock_values: c
-                    .locks
-                    .iter()
-                    .map(|l| {
-                        let row = l.sound.unwrap_or(LINE);
-                        (row, grid.place(c.length, l.tick).0, l.addr, l.value)
-                    })
-                    .collect(),
-                rows: pitches
-                    .into_iter()
-                    .map(|p| (p, grid.row(c, p)))
-                    .chain(std::iter::once((LINE, grid.line(c))))
-                    .collect(),
+                rows: shown.rows,
+                locks: shown.locks,
+                lock_values: shown.lock_values,
             })
         });
         StepsData {
