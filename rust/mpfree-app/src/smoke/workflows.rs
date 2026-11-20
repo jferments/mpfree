@@ -2017,6 +2017,62 @@ mod tests {
         });
     }
 
+    /// A keyboard plays what the pads play (the instrument redesign's step
+    /// 7b): a synth picked in the list, then the shared synth chosen for
+    /// them, each key its own note, while Track 1's kit hears none of it. A
+    /// key held as REC points Track 2 at the same FM lets go on FM, where
+    /// it started.
+    #[test]
+    fn a_keyboard_plays_the_synth_the_pads_play_on_their_own() {
+        use crate::instruments::{free, THE_PADS};
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("header", "tab", "Synth").settle();
+            s.press("synth-inst", "card", "").settle();
+            s.press("synth-pick", "synth", "FM").run_periods(4).settle();
+            s.press("synth-pick", "keep", "").run_periods(2).settle();
+            assert_eq!(s.mix.instruments.pads_play_at(), Some(free(0)));
+            // A key plays FM by its own note, one no pad has too.
+            s.hits.played.clear();
+            s.key_edge(97, Some(100));
+            s.key_edge(61, Some(100));
+            assert_eq!(s.keys_on_the_pads(), 2);
+            assert!(s.mix.instruments.holds_note(THE_PADS, 61));
+            assert!(s.mix.instruments.holds_note(THE_PADS, 97));
+            assert!(s.hits.played.is_empty(), "Track 1's kit hears nothing");
+            s.key_edge(97, None);
+            assert!(!s.mix.instruments.holds_note(THE_PADS, 97));
+            // REC points Track 2 at the same FM; the key still held ends
+            // on FM, as it started.
+            s.button("REC").settle();
+            s.run_periods(2).settle();
+            assert_eq!(s.mix.instruments.send(1), Some(free(0)));
+            s.key_edge(61, None);
+            assert_eq!(s.keys_on_the_pads(), 0);
+            assert!(!s.mix.instruments.holds_note(THE_PADS, 61), "nothing hangs");
+            // Follow track, then the shared synth chosen for the pads: the
+            // keys play it, and still not the kit.
+            s.button("STOP").settle();
+            s.press("header", "chip", "Pads: FM")
+                .run_periods(2)
+                .settle();
+            s.route(crate::gui::FromUi::Time(mpfree_time_ui::TimeAction::Arm(
+                Some(0),
+            )));
+            s.run_periods(2).settle();
+            assert_eq!(s.app.track(), 0);
+            s.press("header", "tab", "Synth").settle();
+            s.press("synth-pads-head", "play", "").settle();
+            assert!(s.app.pads_chose_synth(), "{}", s.hint());
+            s.hits.played.clear();
+            s.key_edge(64, Some(90));
+            assert_eq!(s.keys_on_the_pads(), 1);
+            assert!(s.hits.played.is_empty(), "the kit hears nothing");
+            s.key_edge(64, None);
+            assert_eq!(s.keys_on_the_pads(), 0);
+        });
+    }
+
     /// Pad focus (the instrument redesign's step 3, the design's proof): a
     /// drum clip plays on Track 1 while the pads play Poly, chosen on the
     /// Synth tab. Selecting other tracks and tapping a row of REC's list

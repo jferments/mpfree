@@ -4591,6 +4591,133 @@ enum PadsPreview {
     Host,
 }
 
+/// A keyboard's keys while the pads play a synth on their own (the
+/// instrument redesign's step 7b): they play it too, each key its own
+/// note, before the arp and the recorder, as the pads' hits do, so "Pads:
+/// FM" names what both play. Each held key remembers where it went, so
+/// its let-go, pressure and slide reach the same synth though the pads
+/// moved on meanwhile (rule 8). Main.rs and the test session both use it.
+/// Allocates nothing.
+struct KeysOnPads {
+    held: [Option<PadsPreview>; 128],
+}
+
+impl KeysOnPads {
+    fn new() -> KeysOnPads {
+        KeysOnPads { held: [None; 128] }
+    }
+
+    /// Key `k`, while the pads play `preview` on their own (None: they
+    /// play through the armed track): true when it went to the pads'
+    /// synth, so the armed track doesn't hear it. `v` shapes a velocity as
+    /// the pads' (`App::velocity`).
+    fn key(
+        &mut self,
+        k: midi_in::Key,
+        preview: Option<PadsPreview>,
+        v: impl Fn(u8) -> u8,
+        synth: &mut synth::Synth,
+        own: &mut instruments::Instruments,
+    ) -> bool {
+        use midi_in::Key;
+        let pads = instruments::THE_PADS;
+        let at = |note: u8| usize::from(note & 0x7F);
+        match k {
+            Key::Down { note, velocity } => {
+                let Some(p) = preview else {
+                    return false;
+                };
+                // A second note-on for a key held there is ignored.
+                if self.held[at(note)].is_some() {
+                    return true;
+                }
+                let vel = v(velocity);
+                match p {
+                    PadsPreview::Host => {
+                        own.note_on(pads, note, vel, 0);
+                    }
+                    PadsPreview::Synth => synth.note_on_note(note, vel, 0),
+                }
+                self.held[at(note)] = Some(p);
+                true
+            }
+            Key::Up { note } => match self.held[at(note)].take() {
+                Some(PadsPreview::Host) => {
+                    own.note_off(pads, note, 0);
+                    true
+                }
+                Some(PadsPreview::Synth) => {
+                    synth.note_off_note(note, 0);
+                    true
+                }
+                None => false,
+            },
+            Key::Pressure { note, value } => match self.held[at(note)] {
+                Some(PadsPreview::Host) => {
+                    own.note_pressure(pads, note, value);
+                    true
+                }
+                Some(PadsPreview::Synth) => {
+                    synth.pressure_note(note, value);
+                    true
+                }
+                None => false,
+            },
+            Key::Expr { note, kind, value } => match self.held[at(note)] {
+                Some(PadsPreview::Host) => {
+                    own.note_expression(pads, note, kind, value);
+                    true
+                }
+                Some(PadsPreview::Synth) => {
+                    synth.expression_note(note, kind, value);
+                    true
+                }
+                None => false,
+            },
+            Key::Bend { value } => match preview {
+                Some(PadsPreview::Host) => {
+                    own.bend(pads, value);
+                    true
+                }
+                Some(PadsPreview::Synth) => {
+                    synth.bend(value);
+                    true
+                }
+                None => false,
+            },
+            Key::Control { ctl, value } => KeysOnPads::control(preview, ctl, value, synth, own),
+        }
+    }
+
+    /// A pedal, the mod wheel or a breath for the pads' synth (also a
+    /// pedal coming up as the pads move on): true when it went there.
+    fn control(
+        to: Option<PadsPreview>,
+        ctl: mpfree_node::Ctl,
+        value: f32,
+        synth: &mut synth::Synth,
+        own: &mut instruments::Instruments,
+    ) -> bool {
+        match to {
+            Some(PadsPreview::Host) => {
+                own.control(instruments::THE_PADS, ctl, value, 0);
+                true
+            }
+            Some(PadsPreview::Synth) => {
+                synth.control(ctl, value, 0);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// How many keys play the pads' synth now (for the tests).
+    #[cfg(test)]
+    fn held(&self) -> usize {
+        self.held.iter().filter(|h| h.is_some()).count()
+    }
+}
+
 /// A holder's name for the screen: "Track 3", or "The pads' synth" for a
 /// free place's (step 6).
 fn holder_says(holder: usize) -> String {
@@ -7184,8 +7311,13 @@ fn player_session(
     // The track the keys' expression last went to on MIDI out: when
     // another is armed, its gear's bend and pressure go back to rest.
     let mut expr_track = 0usize;
+    // And the synth the pads played on their own then (step 7b), whose
+    // pedals come up as the pads move on.
+    let mut expr_pads: Option<PadsPreview> = None;
     // The pedals the keys put down on it (`expr_track`).
     let mut pedals_down = midi_in::PedalsDown::default();
+    // Keys playing the pads' synth while the pads play it on their own.
+    let mut keys_on_pads = KeysOnPads::new();
     // The keys' expression on its gear, thinned for the recorder and the
     // move log (the MIDI plan's 3.7).
     let mut expr_rec = expr_rec::ExprRec::new();
@@ -8062,11 +8194,15 @@ fn player_session(
         // developer tools are on.
         music.set_armed(
             app.track() as u8,
-            keys_play(
-                synth_on,
-                app.keys_play_notes(),
-                mix.instruments.plays(app.track()),
-            ),
+            if pads_preview.is_some() {
+                midi_in::KeysPlay::PadsSynth
+            } else {
+                keys_play(
+                    synth_on,
+                    app.keys_play_notes(),
+                    mix.instruments.plays(app.track()),
+                )
+            },
         );
         music.feed.debug = app.settings.debug_mode;
         // Prefs' "Send MIDI and CV out" turned on or off (and its kept
@@ -8613,20 +8749,33 @@ fn player_session(
         let key_notes = app.keys_play_notes();
         let kit_keys = keys_play(synth_on, key_notes, mix.instruments.plays(armed))
             == midi_in::KeysPlay::KitPads;
-        if armed != expr_track {
+        if armed != expr_track || pads_preview != expr_pads {
             // Its gear's pedals come up with its expression; its
-            // instrument's and the synth's here, so nothing they held
-            // hangs.
+            // instrument's and the synth's here (or the pads' synth's, as
+            // the pads move on), so nothing they held hangs.
             midi_out.rest_expression(expr_track);
             cv_out.rest_expression(expr_track);
             for ctl in pedals_down.lift() {
-                if !mix.instruments.control(expr_track, ctl, 0.0, 0) {
+                let pads_had =
+                    KeysOnPads::control(expr_pads, ctl, 0.0, &mut synth, &mut mix.instruments);
+                if !pads_had && !mix.instruments.control(expr_track, ctl, 0.0, 0) {
                     synth.control(ctl, 0.0, 0);
                 }
             }
             expr_track = armed;
+            expr_pads = pads_preview;
         }
         for k in keys.drain(..) {
+            // While the pads play a synth on their own, the keys play it
+            // too, by note, and the armed track hears none of them (step
+            // 7b); a key held there lets go there.
+            let shape = |v| app.velocity(v);
+            if keys_on_pads.key(k, pads_preview, shape, &mut synth, &mut mix.instruments) {
+                if let midi_in::Key::Control { ctl, value } = k {
+                    pedals_down.key(ctl, value);
+                }
+                continue;
+            }
             // Expression out: the armed track's CV outputs, and its gear on
             // MIDI out, take the keys' wheel, pressure and MPE (the keys
             // going down and up say whose count).

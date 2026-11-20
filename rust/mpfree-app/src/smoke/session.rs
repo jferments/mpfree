@@ -250,6 +250,9 @@ pub struct Session {
     /// The pads held on the instrument the host's pads player plays (step
     /// 6), as main.rs's.
     host_held: [bool; 16],
+    /// Keys playing the pads' synth while the pads play it on their own
+    /// (step 7b, as main.rs).
+    keys_on_pads: crate::KeysOnPads,
     pub previewed: Vec<(usize, u8)>,
     /// Loop pads' hits waiting for the launch line (sampler R5.3b), as
     /// player_session keeps them: the pads pressed but not yet sounded,
@@ -394,6 +397,7 @@ impl Session {
             preview_on: false,
             preview_held: [false; 16],
             host_held: [false; 16],
+            keys_on_pads: crate::KeysOnPads::new(),
             previewed: Vec::new(),
             awaiting: [false; 16],
             waits_full: 0,
@@ -878,6 +882,22 @@ impl Session {
     /// plays the synth by note, and with step pads of the line held it
     /// goes on them.
     pub fn key_edge(&mut self, note: u8, velocity: Option<u8>) -> &mut Session {
+        // While the pads play a synth on their own, the keys play it too,
+        // as main.rs (step 7b).
+        let key = match velocity {
+            Some(velocity) => crate::midi_in::Key::Down { note, velocity },
+            None => crate::midi_in::Key::Up { note },
+        };
+        let preview = self.pads_preview();
+        let app = &self.app;
+        let shape = |v| app.velocity(v);
+        let own = &mut self.mix.instruments;
+        if self
+            .keys_on_pads
+            .key(key, preview, shape, &mut self.synth, own)
+        {
+            return self.run_periods(2);
+        }
         match velocity {
             Some(v) => self.app.key_down(note, v),
             None => self.app.key_up(note),
@@ -897,6 +917,29 @@ impl Session {
             }
         }
         self.run_periods(2)
+    }
+
+    /// What the pads play on their own, as main.rs's `pads_preview`: the
+    /// synth chosen for them while the armed track plays a kit, or the
+    /// host's pads player's instrument while the armed track doesn't play
+    /// it.
+    fn pads_preview(&self) -> Option<crate::PadsPreview> {
+        let own = &self.mix.instruments;
+        if self.preview_on {
+            Some(crate::PadsPreview::Synth)
+        } else if own
+            .pads_play_at()
+            .is_some_and(|h| own.owner(self.app.track()) != Some(h))
+        {
+            Some(crate::PadsPreview::Host)
+        } else {
+            None
+        }
+    }
+
+    /// How many keys play the pads' synth now (step 7b).
+    pub fn keys_on_the_pads(&self) -> usize {
+        self.keys_on_pads.held()
     }
 
     /// Hit a pad on the controller (down, then up after `hold` seconds).
