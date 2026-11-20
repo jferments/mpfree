@@ -232,6 +232,9 @@ pub struct Session {
     /// The name of the instrument the host's pads player plays, as the
     /// screen last heard it (step 6, as main.rs).
     pads_host_shown: Option<&'static str>,
+    /// What the screen shows the pads play, and their bank's letter (step
+    /// 6c), as main.rs.
+    pads_shown: (crate::app::PadFocus, Option<usize>),
     /// Who plays the Synth tab's instrument, as last shown (step 8b).
     who_shown: Option<String>,
     /// The time engine's REDOs seen so far, as player_session keeps them.
@@ -389,6 +392,7 @@ impl Session {
             instrument_list: crate::instrument_list::InstrumentList::new(),
             sounds_shown: [None; crate::instruments::HOLDERS],
             pads_host_shown: None,
+            pads_shown: (crate::app::PadFocus::Track, None),
             who_shown: None,
             sends_shown: [None; crate::instruments::TRACKS],
             plan_shown: None,
@@ -1283,6 +1287,18 @@ impl Session {
             self.pads_host_shown = host_name;
             self.out.show(ToUi::PadsHost(host_name));
         }
+        // What the pads play now and their bank's letter (step 6c), as
+        // main.rs.
+        let pads_now = (self.app.pads_focus(), self.app.pads_bank());
+        if pads_now != self.pads_shown {
+            if pads_now.0 != self.pads_shown.0 {
+                self.out.show(ToUi::PadsFocus(pads_now.0));
+            }
+            if pads_now.1 != self.pads_shown.1 {
+                self.out.show(ToUi::PadsBank(pads_now.1));
+            }
+            self.pads_shown = pads_now;
+        }
         // Who plays the Synth tab's instrument (step 8b), as main.rs.
         if self.app.view() == crate::app::View::Synth {
             let who = crate::who_plays(
@@ -1945,7 +1961,8 @@ impl Session {
             FromUi::Audition { .. } => {}
             // The Pads tab's strip, as main.rs turns the page.
             FromUi::PadBank(b) if b < app::KIT_PAGES && !self.synth_on => {
-                self.app.set_pad_page(b);
+                let fx = self.app.set_pad_page(b);
+                self.fx.extend(fx);
                 self.out.note(&format!(
                     "pad bank {}: pads {}-{}",
                     app::bank_letter(b),
@@ -2233,7 +2250,10 @@ impl Session {
                     Effect::StopSounds => self.synth.stop(),
                     // What the pads play, as main.rs: the screen names it;
                     // the pads follow once the kit has (change_kit).
-                    Effect::PadsFocus(f) => self.out.show(ToUi::PadsFocus(f)),
+                    Effect::PadsFocus(f) => {
+                        self.out.show(ToUi::PadsFocus(f));
+                        self.pads_shown.0 = f;
+                    }
                     // REC with the synth chosen for the pads, as main.rs:
                     // the track plays the same synth from now on, as a pick
                     // of Synth.
@@ -2274,7 +2294,7 @@ impl Session {
                         } else {
                             // The kit's page, as main.rs turns it.
                             let page = app::bank_target(self.app.pad_page(), button, shift);
-                            self.app.set_pad_page(page);
+                            later.extend(self.app.set_pad_page(page));
                             self.out.note(&format!(
                                 "pad bank {}: pads {}-{}",
                                 app::bank_letter(page),

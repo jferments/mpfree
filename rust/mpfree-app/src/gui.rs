@@ -1214,6 +1214,10 @@ pub enum ToUi {
     /// pads player (step 6: a synth picked in the list of synths), or None,
     /// when it changes.
     PadsHost(Option<&'static str>),
+    /// The bank the pads are on when it plays something of its own (step
+    /// 6c, 0 = A), for "Pads B: FM"; None: what every bank plays. Sent
+    /// when it changes.
+    PadsBank(Option<usize>),
     /// Who plays the instrument the Synth tab shows, when more than one
     /// does ("Poly: the pads, Track 2, Track 4", step 8b), for its hint
     /// line; None: only the pads or one track. Sent when it changes.
@@ -1506,6 +1510,9 @@ pub enum FromUi {
     SynthPickTap(usize),
     /// The list's Keep (true) or Cancel (false).
     SynthPickClose(bool),
+    /// The list's "Bank B only" (true) or "All banks" (false): where a tap
+    /// puts its synth (step 6c).
+    SynthPickScope(bool),
     /// The Synth tab's gear: its options, as MENU opens them; on the
     /// options, their Back button: back to the page.
     OptionsButton,
@@ -2011,6 +2018,8 @@ pub struct Player {
     /// The instrument the pads play by the host's pads player
     /// ([`ToUi::PadsHost`], step 6): "FM".
     pads_host: Option<&'static str>,
+    /// The bank whose own the pads play now ([`ToUi::PadsBank`], step 6c).
+    pads_bank: Option<usize>,
     /// Who plays the Synth tab's instrument ([`ToUi::WhoPlays`]).
     who_plays: Option<String>,
     /// Where REC would record the pads' synth ([`ToUi::RecPlan`]): the REC
@@ -2582,6 +2591,7 @@ impl Player {
             pads_focus: crate::app::PadFocus::Track,
             pads_chip: None,
             pads_host: None,
+            pads_bank: None,
             who_plays: None,
             rec_plan: None,
             synth: None,
@@ -3613,6 +3623,23 @@ impl Player {
     /// by the instrument host (step 6), whichever track is selected: its
     /// name ("FM"). None while they follow the track or have the shared
     /// synth.
+    /// "The pads play", or "Bank B plays" while the pads play bank B's
+    /// own (step 6c).
+    fn who_pads(&self) -> String {
+        match self.pads_bank {
+            Some(b) => format!("Bank {} plays", crate::app::bank_letter(b)),
+            None => "The pads play".to_string(),
+        }
+    }
+
+    /// "Pads", or "Pads B" while the pads play bank B's own (step 6c).
+    fn pads_word(&self) -> String {
+        match self.pads_bank {
+            Some(b) => format!("Pads {}", crate::app::bank_letter(b)),
+            None => "Pads".to_string(),
+        }
+    }
+
     fn pads_picked(&self) -> Option<&'static str> {
         match self.pads_focus {
             crate::app::PadFocus::Track => None,
@@ -3662,7 +3689,7 @@ impl Player {
         let play = if let Some(name) = picked {
             Some((
                 "Follow track".to_string(),
-                format!("The pads play {name} on every track"),
+                format!("{} {name} on every track", self.who_pads()),
             ))
         } else {
             on_kit.map(|(track, name)| {
@@ -3741,6 +3768,7 @@ impl Player {
                 w.choices = v.choices.clone();
                 w.now = v.now;
                 w.had = v.had;
+                w.bank = v.bank;
             }
         }
         let was = self.synth_pick.is_some();
@@ -4910,9 +4938,12 @@ impl Player {
                 .unwrap_or_else(|| self.shared_synth_name());
             return Some(play_widgets::PadsPlay::chosen(what));
         }
-        // A synth picked in the list of synths (step 6): "Pads: FM".
+        // A synth picked in the list of synths (step 6): "Pads: FM", or
+        // "Pads B: FM" on a bank with its own (6c).
         if let Some(name) = self.pads_picked() {
-            return Some(play_widgets::PadsPlay::chosen(name.to_string()));
+            let mut play = play_widgets::PadsPlay::chosen(name.to_string());
+            play.track = self.pads_word();
+            return Some(play);
         }
         let k = self.kits.get(self.kit)?;
         let what = match &k.chip {
@@ -6117,11 +6148,20 @@ impl Player {
             self.pads_picked().map(str::to_string)
         };
         if let Some(name) = chosen {
-            why.push(format!(
-                "The pads play {name} whichever track is selected: tap for Follow track"
-            ));
+            // On a bank with its own (step 6c): "Pads B: FM".
+            match self.pads_bank.map(crate::app::bank_letter) {
+                Some(b) => why.push(format!(
+                    "Bank {b} plays {name} whichever track is selected: tap for Follow track"
+                )),
+                None => why.push(format!(
+                    "The pads play {name} whichever track is selected: tap for Follow track"
+                )),
+            }
             self.pads_chip = Some(chips.len());
-            chips.push(Chip::new(format!("Pads: {name}"), Tone::Warn));
+            chips.push(Chip::new(
+                format!("{}: {name}", self.pads_word()),
+                Tone::Warn,
+            ));
         }
         // (The loop keys need no chip: the Looper tab's deck and Play's
         // loop row light their Pads switch.) Another page of the Perform
@@ -6444,8 +6484,8 @@ impl Player {
                 }
                 View::Synth if self.pads_picked().is_some() => {
                     let name = self.pads_picked().unwrap_or("the synth");
-                    format!("The pads play {name} on every track; no track changes   ·   REC: {name} on a free track   ·   \
-                             Follow track: the button   ·   Q-Links 1-4: the marked knobs   ·   {stop}")
+                    format!("{} {name} on every track; no track changes   ·   REC: {name} on a free track   ·   \
+                             Follow track: the button   ·   Q-Links 1-4: the marked knobs   ·   {stop}", self.who_pads())
                 }
                 View::Synth if self.pads_chose_synth() && self.synth_tab_on_kit().is_some() => {
                     let (track, name) = self.synth_tab_on_kit().unwrap_or((0, "the synth"));
@@ -8527,6 +8567,13 @@ impl Player {
             }
             ToUi::WhoPlays(who) => {
                 self.who_plays = who;
+                self.refresh_hint();
+            }
+            ToUi::PadsBank(b) => {
+                self.pads_bank = b;
+                self.refresh_synth_button();
+                self.refresh_pads_play();
+                self.refresh_chips();
                 self.refresh_hint();
             }
             ToUi::PadsHost(name) => {
@@ -12054,6 +12101,15 @@ impl Player {
         if ev.widget == mpfree_synth_ui::pick::PICK {
             return match ev.kind {
                 EventKind::Select(i) => Some(FromUi::SynthPickTap(i)),
+                // All banks or Bank B only (step 6c).
+                EventKind::Tab(k)
+                    if k == mpfree_synth_ui::pick::ALL_BANKS
+                        || k == mpfree_synth_ui::pick::BANK_ONLY =>
+                {
+                    Some(FromUi::SynthPickScope(
+                        k == mpfree_synth_ui::pick::BANK_ONLY,
+                    ))
+                }
                 EventKind::Tab(k) => Some(FromUi::SynthPickClose(k == mpfree_synth_ui::pick::KEEP)),
                 _ => None,
             };
@@ -17853,6 +17909,21 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     apply_effects(&mut pick, fx);
     pick.apply(ToUi::PadsHost(Some("FM")));
     out.push(("synth-pick", pick));
+    // The same list on bank B with "Bank B only" (step 6c): FM plays on
+    // bank B alone, "Pads B: FM" in the header.
+    let mut bank = sample_player(fonts());
+    let mut a = sample_app();
+    let mut fx = a.open_tab(View::Synth);
+    fx.extend(a.set_pad_page(1));
+    fx.extend(a.open_synth_pick());
+    fx.extend(a.synth_pick_scope(true));
+    fx.extend(a.pick_pads_synth(2));
+    fx.extend(a.set_instrument_list(&listed));
+    apply_effects(&mut bank, fx);
+    bank.apply(ToUi::PadPage(1));
+    bank.apply(ToUi::PadsHost(Some("FM")));
+    bank.apply(ToUi::PadsBank(a.pads_bank()));
+    out.push(("synth-pick-bank", bank));
     // The mixer with two tracks playing their own instruments: Poly on
     // track 1 in the Drums strip, named "Track 1" for it, and FM on track 2
     // in its own channel after Synth, Loop and Audio.

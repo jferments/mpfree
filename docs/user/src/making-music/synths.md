@@ -46,7 +46,8 @@ Tap the synth's card at the top left of the **Synth** tab (its name, the track a
 - **REC records it on a free track**, as above: the REC chip names the track first (**REC → Track 2 · FM**). That track then plays the same FM, heard on the FM's channel, and its parts are notes.
 - **A synth you try and leave goes away** once nothing plays it (not the pads, not a track), and the line at the bottom of the screen says so.
 - **Up to 16 synths at once.** The synths picked for the pads and the tracks' own synths count together; with 16 loaded, a tap says there is no room.
-- **The project remembers it.** Saved with FM on the pads, the project opens with FM there again.
+- **One bank only.** On a kit, the row at the top of the list offers **All banks** and **Bank B only** (it names the bank the pads are on). With **Bank B only**, the synth you tap plays on bank B alone: PAD BANK A gives the pads the track's kit again, and PAD BANK B gives them the synth. The top of the screen reads **Pads B: FM** while you are on that bank. The first tile, **Bank B follows the track**, gives that bank back to the track. **All banks** puts the next synth on every bank again. **Follow track** gives every bank back to the track.
+- **The project remembers it.** Saved with FM on the pads, or on bank B, the project opens with FM there again.
 - **Not while the arp plays the pads** (NOTE REPEAT, Latch or the Arp panel): it plays through the selected track, so let go of it first.
 
 ## The twelve synths

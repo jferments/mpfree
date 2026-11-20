@@ -2017,6 +2017,80 @@ mod tests {
         });
     }
 
+    /// Banks point at instruments (the instrument redesign's step 6c, rule
+    /// 10; the recommended answer on Jay's card, "All banks" or "Bank B
+    /// only" at the top of the list of synths). On bank B, "Bank B only"
+    /// and FM: bank B plays FM, named "Pads B: FM" in the header, while
+    /// Track 1 keeps its kit. PAD BANK A gives the pads the kit again (FM
+    /// stays, as bank B points at it) and B gives them FM; REC there
+    /// records FM on a free track, and the project's pads part keeps the
+    /// bank's line.
+    #[test]
+    fn bank_b_only_plays_fm_on_bank_b_and_the_kit_on_the_others() {
+        use crate::instruments::free;
+        fn rec_chip(s: &Session) -> String {
+            s.screen
+                .ui
+                .get::<crate::play_widgets::PlayTransport>(crate::play_page::TRANSPORT)
+                .and_then(|t| t.look.rec.as_ref().map(|c| c.line()))
+                .expect("the REC chip")
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.button("PAD BANK B/F").settle();
+            assert_eq!(s.app.pad_page(), 1);
+            s.press("header", "tab", "Synth").settle();
+            s.press("synth-inst", "card", "").settle();
+            assert!(
+                s.control("synth-pick", "all-banks", "All banks").is_some(),
+                "{}",
+                s.hint()
+            );
+            s.press("synth-pick", "bank-only", "Bank B only").settle();
+            s.press("synth-pick", "synth", "FM").run_periods(4).settle();
+            s.press("synth-pick", "keep", "").run_periods(2).settle();
+            assert_eq!(s.mix.instruments.pads_play_at(), Some(free(0)));
+            assert!(
+                s.control("header", "chip", "Pads B: FM").is_some(),
+                "{}",
+                s.hint()
+            );
+            assert_eq!(s.track_kits.kit_of(0), Some(0), "Track 1 keeps its kit");
+            s.hits.played.clear();
+            s.pad(2, 90, 0.05);
+            assert_eq!(s.previewed, [(2, s.app.velocity(90))], "FM played it");
+            assert!(s.hits.played.is_empty(), "no pad reached the kit");
+            // Bank A: Track 1's kit again; FM stays for bank B.
+            s.button("PAD BANK A/E").run_periods(2).settle();
+            assert_eq!(s.app.pad_page(), 0);
+            assert_eq!(s.mix.instruments.pads_play_at(), None);
+            assert!(s.control("header", "chip", "Pads B: FM").is_none());
+            s.previewed.clear();
+            s.pad(2, 90, 0.05);
+            assert!(s.previewed.is_empty(), "{:?}", s.previewed);
+            assert!(!s.hits.played.is_empty(), "the kit played it");
+            assert_eq!(
+                s.mix.instruments.held(free(0)).map(|h| h.name),
+                Some("FM"),
+                "FM stays for bank B"
+            );
+            // Bank B again: FM, and REC records it on Track 2.
+            s.button("PAD BANK B/F").run_periods(2).settle();
+            assert_eq!(s.mix.instruments.pads_play_at(), Some(free(0)));
+            s.run_periods(1).settle();
+            assert_eq!(rec_chip(&s), "REC → Track 2 · FM");
+            s.button("REC").settle();
+            s.run_periods(2).settle();
+            assert_eq!(s.mix.instruments.send(1), Some(free(0)), "the same FM");
+            assert_eq!(s.app.pad_page(), 1, "REC never moves the pads");
+            assert!(
+                s.app.pads_part().contains("\nbank B instrument "),
+                "{}",
+                s.app.pads_part()
+            );
+        });
+    }
+
     /// Who plays what (the instrument redesign's rule 13, step 8b): the
     /// Synth tab's hint line names everyone that plays the synth it shows,
     /// once more than the pads do. FM picked for the pads, then REC points

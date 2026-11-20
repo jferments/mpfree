@@ -6779,6 +6779,9 @@ fn player_session(
     // The name of the instrument the host's pads player plays, as the
     // screen last heard it (step 6).
     let mut pads_host_shown: Option<&'static str> = None;
+    // What the screen shows the pads play, and their bank's letter when it
+    // is the bank's own (step 6c).
+    let mut pads_shown: (app::PadFocus, Option<usize>) = (app::PadFocus::Track, None);
     // Who plays the Synth tab's instrument, as last shown (step 8b), and
     // when to look again.
     let mut who_shown: Option<String> = None;
@@ -7600,7 +7603,7 @@ fn player_session(
                 // The Pads tab's strip: the kit's bank on the pads, as PAD
                 // BANK turns it (the synth's pads have layouts, not banks).
                 gui::FromUi::PadBank(b) if b < app::KIT_PAGES && !synth_on => {
-                    app.set_pad_page(b);
+                    fx.extend(app.set_pad_page(b));
                     let kit = kit_to.unwrap_or(player.kit());
                     out.note(&pad_page_note(b, &kits[kit].name, player.sounds(kit)));
                     page_turned = true;
@@ -9794,7 +9797,10 @@ fn player_session(
                 }
                 // What the pads play changed: the screen names it; the pads
                 // follow below, once the kit has.
-                app::Effect::PadsFocus(f) => out.show(gui::ToUi::PadsFocus(f)),
+                app::Effect::PadsFocus(f) => {
+                    out.show(gui::ToUi::PadsFocus(f));
+                    pads_shown.0 = f;
+                }
                 // REC while the pads play the synth (desk::rec_synth): the
                 // track plays the same synth from now on, as a pick of
                 // Synth in the list of kits; the selected one takes it at
@@ -9877,7 +9883,7 @@ fn player_session(
                 app::Effect::Bank { button, shift } => {
                     if button < 4 {
                         let page = app::bank_target(app.pad_page(), button, shift);
-                        app.set_pad_page(page);
+                        later.extend(app.set_pad_page(page));
                         let kit = kit_to.unwrap_or(player.kit());
                         out.note(&pad_page_note(page, &kits[kit].name, player.sounds(kit)));
                         page_turned = true;
@@ -9968,6 +9974,19 @@ fn player_session(
         if host_name != pads_host_shown {
             pads_host_shown = host_name;
             out.show(gui::ToUi::PadsHost(host_name));
+        }
+        // What the pads play now and the bank whose own it is (step 6c):
+        // PAD BANK, the synth's layout coming or going, a bank's synth
+        // given its id. Nothing allocated while nothing changes.
+        let pads_now = (app.pads_focus(), app.pads_bank());
+        if pads_now != pads_shown {
+            if pads_now.0 != pads_shown.0 {
+                out.show(gui::ToUi::PadsFocus(pads_now.0));
+            }
+            if pads_now.1 != pads_shown.1 {
+                out.show(gui::ToUi::PadsBank(pads_now.1));
+            }
+            pads_shown = pads_now;
         }
         // Who plays the Synth tab's instrument (step 8b), a few times a
         // second while the tab shows.
