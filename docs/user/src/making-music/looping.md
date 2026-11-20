@@ -14,7 +14,7 @@ You play the loops on the Play page, where the loop row under the transport bar 
 
 The looper is part of the song, not a separate machine running beside it:
 
-- **It starts and ends on bar lines.** Press Record and the loop waits for the next bar line, then records until you press Record again, when it ends on the next bar line. Press **STOP** instead and it stops at once and keeps what you played: the loop runs on to the next bar line, silent after the stop (if you press STOP just after a bar line, within a sixteenth note, it ends on that bar line instead). With a set length (**First pass**, below) it ends by itself after that many bars. So the loop is always a whole number of bars, and always in time with your patterns.
+- **It starts and ends on bar lines.** Press Record and the loop waits for the next bar line, then records. You always get at least a beat to get ready: press it in the last beat before a bar line and it waits for the bar after, and the loop's ring counts down the beats in the last bar ("3 beats to REC"). It records until you press Record again, when it ends on the next bar line. Press **STOP** instead and it stops at once and keeps what you played: the loop runs on to the next bar line, silent after the stop (if you press STOP just after a bar line, within a sixteenth note, it ends on that bar line instead). With a set length (**First pass**, below) it ends by itself after that many bars. So the loop is always a whole number of bars, and always in time with your patterns.
 - **It follows the song's position.** Stop and start the transport and the loop picks up exactly where the song is. It is silent while the transport is stopped, and its playhead stops too, at the place the song will start from again (press STOP twice and it goes back to the start of the loop, with the song).
 - **The tempo is the song's tempo.** Change the tempo and a playing loop follows it and keeps its pitch. MPFree re-makes the loop at the new tempo in the background, which takes a fraction of a second; until it is ready, the loop plays faster or slower, like tape. Overdub over a loop at its new tempo and MPFree first fits the loop to that tempo, so the new layer lines up. The fit is its own step: UNDO takes back the overdub, then the fit.
 - **There are no clicks.** The end of the loop is blended into its start, and every start, stop, punch in and out, mute and undo is faded in a few milliseconds.
@@ -33,7 +33,7 @@ The MPC's own **REC**, **OVERDUB** and **UNDO** work the picked loop while the l
 
 | Button | Empty loop | Recording the first pass | Playing |
 |---|---|---|---|
-| **REC** | Waits for the next bar line (or, stopped, for PLAY), then records. Press again before it starts to cancel. | Ends the loop on the next bar line. | Starts an overdub. |
+| **REC** | Waits for the next bar line, at least a beat away (or, stopped, for PLAY), then records. Press again before it starts to cancel. | Ends the loop on the next bar line. | Starts an overdub. |
 | **OVERDUB** | Nothing. | Goes straight on into an overdub when the first pass ends. | Starts an overdub; press again to stop adding. |
 | **UNDO** | Brings back the loop you cleared, if there is one. | Throws the recording away. | Removes the newest layer (or the overdub in progress). |
 | **SHIFT + UNDO** | Nothing. | Nothing. | Brings back the last layer undone. |
@@ -54,18 +54,20 @@ The eight loops sit side by side across the top, each the same: its name and len
 
 - **Its wave runs round the ring**, and an arc fills as the loop plays, with a tick for each bar and a hand at the place it has got to. The middle says which bar is playing ("2 of 4").
 - **Its colour is what it is doing:** the loop's own colour while it plays, red while it records its first pass, amber while it overdubs, grey when muted.
-- **An empty loop is a dashed circle** with **+** in the middle and what it will record under it (**Pads**, **Line in** or **Loops**). Once you tap it, it waits for the next bar line: the circle turns red and the middle says the bar it starts on ("13, REC on bar"), or **REC on PLAY** while the music is stopped. Set to start [when you play](#start-when-you-play), it says **Play to start** until your first note.
+- **An empty loop is a dashed circle** with **+** in the middle and what it will record under it (**Pads**, **Line in** or **Loops**). Once you tap it, it waits for the next bar line, at least a beat away: the circle turns red and the middle says the bar it starts on ("13, REC on bar"), then in the last bar counts down the beats ("3 beats to REC"), or says **REC on PLAY** while the music is stopped. Set to start [when you play](#start-when-you-play), it says **Play to start** until your first note.
 
 Tap a ring and the loop does its next step, on the moment your finger lands, so a punch is where you played it:
 
 | The loop is | A tap on its ring |
 |---|---|
-| Empty | Records from the next bar line (or from PLAY), or from your first note when it [starts when you play](#start-when-you-play). |
+| Empty | Records from the next bar line at least a beat away (or from PLAY), or from your first note when it [starts when you play](#start-when-you-play). |
 | Waiting for its bar | Cancels. |
 | Recording its first pass | Ends it on the next bar line, and it plays. |
 | Playing | Starts an overdub. |
 | Overdubbing | Ends the overdub; it plays on. |
 | Muted | Lets it play again. |
+
+{{shot: looper-countdown | Loop 7 armed with the music playing, in the last bar before it starts: its ring counts the beats left.}}
 
 The ring you tap also picks that loop. To pick a loop without starting anything, tap its **name**.
 
@@ -75,21 +77,24 @@ The **speaker** under a ring mutes the loop without picking it: it is kept and k
 
 Every loop plays at once, in time with the song, but only one records at a time: starting to record in one loop ends the recording in the others. The pads can do all of this too: see [The pads as loop keys](#the-pads-as-loop-keys).
 
-Over the loops: whether the song is stopped or playing and its tempo, **Pads as loop keys** (see [The pads as loop keys](#the-pads-as-loop-keys)), **Capture** ("Capture last 2 bars", below) and the loop memory every loop shares ("37 s of 5 min").
+Over the loops: whether the song is stopped or playing and its tempo, **Pads as loop keys** (see [The pads as loop keys](#the-pads-as-loop-keys)), **Records from** (what every loop records, with a meter of how loud it is coming in; tap it to change: **Pads**, then **Line in**, then **Loops**; see [Recording a new loop](#recording-a-new-loop)) and the loop memory every loop shares ("37 s of 5 min").
 
 ### The picked loop
 
 Under the loops, the picked loop has the whole width. Its header has its colour and name, where it lives on the Clips grid with its length and layers ("Loops A · Verse · 4 bars · 6 layers"), and:
 
-- **The input** it records from, with a meter of how loud it is coming in. Tap it to change: **Pads**, then **Line in**, then **Loops**.
+- **Listen**: with the music stopped, plays the loop on its own, round and round from its start, so you can hear it without starting the song. It lights up and says **Stop** while it plays; tap it again, or press PLAY, to stop. While the music plays it is faint, since you hear the loop with everything else then.
 - **Send**: what to do with the loop (below).
 - **Clear** (outlined in red): deletes the whole loop, like holding its ring. UNDO brings it back.
 
 Under the header, a ruler of the loop's bars, then a **lane for each layer**, a fingertip tall, the newest on top. Each lane has the layer's name ("Drums", "Bass", named after what you played into it) and a tag ("dub 4 · -2.0 dB", "dub 3 · muted", "first · at 49 %"), its own wave, and:
 
 - **a tap on its name** to mute that layer (tap again to hear it),
+- **▶** to listen to that layer on its own while the music is stopped, even a muted one (it lights up while it plays; tap it again, or press PLAY, to stop),
 - **S** to solo it (hear only this layer of the loop),
 - **×** on the picked layer, to delete it. A deleted layer comes back with UNDO, like an overdub. On the loop's only layer, **×** clears the whole loop.
+
+{{shot: looper-listen | The music stopped, the Bass layer playing on its own: its ▶ is lit, and the playhead shows where Listen has got to.}}
 
 Tap a lane's wave to pick that layer. Rest a finger on a lane and turn the data wheel to set its level (SHIFT: its pan).
 
@@ -121,9 +126,9 @@ Pick an empty loop and the space under the lanes shows how it will record, and t
 
 | Setting | What it does |
 |---|---|
-| **Records from** | **Pads**: MPFree's own sound as you hear it, with the effects on its tracks and the echoes and reverbs of the sends. It leaves out the loops, the audio tracks, the line input and the metronome, and the master's own effects and Level, which the loop plays through anyway. **Line in**: the INPUTS on the back of the MPC (it opens the line input). **Loops**: all the other loops as you hear them, so you can bounce several loops into one and keep layering. |
+| **Records from** (over the loops) | **Pads**: MPFree's own sound as you hear it, with the effects on its tracks and the echoes and reverbs of the sends. It leaves out the loops, the audio tracks, the line input and the metronome, and the master's own effects and Level, which the loop plays through anyway. **Line in**: the INPUTS on the back of the MPC (it opens the line input). **Loops**: all the other loops as you hear them, so you can bounce several loops into one and keep layering. |
 | **Monitor** | With Line in: hear the input through the outputs, about 9 ms late. Leave it off if you already hear your instrument another way, such as through a mixer. |
-| **Length** | **Free** (the default): from the next bar line until you tap the ring again (it ends on the next bar line) or press STOP (it stops at once). Or 1, 2, 4 or 8 bars, and it ends by itself. With [Tempo from the first loop](#tempo-from-the-first-loop) on and the music stopped, a first loop on Free records in your own time and sets the tempo. |
+| **Length** | **Pattern** (the default): as long as the pattern playing (the longest clip playing, in whole bars), so the loop always fits the beat; with nothing playing it records as on Free. **Free**: from the next bar line until you tap the ring again (it ends on the next bar line) or press STOP (it stops at once). Or 1, 2, 4 or 8 bars, and it ends by itself. With [Tempo from the first loop](#tempo-from-the-first-loop) on and the music stopped, a first loop with no set length records in your own time and sets the tempo. |
 | **Starts** | **On the bar** (the default): the first pass starts on the next bar line, or when PLAY starts the music. **When I play**: the loop waits for you, and your first note starts it ([below](#start-when-you-play)). With **Loops** it is always on the bar. |
 | **Then** | What the loop does when its first pass ends: **Play**, or go straight into an **Overdub**. |
 
@@ -143,7 +148,7 @@ With **Starts: When I play**, tap the ring (or press REC) and the loop waits for
 
 #### Tempo from the first loop
 
-To play in your own time and have everything follow you, turn on **Tempo from the first loop** in the Looper tab's MENU. Then, with the music stopped and every loop empty, a loop on **Length: Free** doesn't wait for a bar line: tap its ring (or press REC) and it records from that moment, or, with **Starts: When I play**, from your first note. The ring says **Free** and counts the seconds.
+To play in your own time and have everything follow you, turn on **Tempo from the first loop** in the Looper tab's MENU. Then, with the music stopped and every loop empty, a loop on **Length: Free** (or **Pattern** with no pattern playing) doesn't wait for a bar line: tap its ring (or press REC) and it records from that moment, or, with **Starts: When I play**, from your first note. The ring says **Free** and counts the seconds.
 
 When you tap the ring (or press REC) again, the loop closes there and its length sets the tempo. MPFree picks the number of bars (1, 2, 4, 8 and so on) that puts the tempo between 80 and 160 BPM, so a 2.5-second riff becomes one bar at 96 BPM, and a 7-second one four bars at about 137 BPM. The music starts at that tempo just as the loop comes round, from the start of the bar it stopped in, so the loop, the sequencer and the metronome all follow it. If notes are armed and ready to record, they record from there too.
 
@@ -163,8 +168,8 @@ Press **MENU** on the Looper tab for the rarer settings as a list, with an expla
 
 The looper is always listening. While the song plays it keeps the last 30 seconds of what comes in from **Records from** (the pads, the line input or the loops), and where each bar line fell, whether you pressed Record or not. So when you play something good without recording it, it isn't lost: **Capture** turns the last bars you played into a loop.
 
-- Press **SHIFT + REC** on the Looper tab, or tap **Capture** over the loops; it says how many bars it will take ("Capture last 2 bars"). On an empty loop's page, the button over **What you played** names them ("Capture bars 10 and 11").
-- The bars go into the picked loop if it is empty, or else into the first empty loop. Its **Length** says how many: 1, 2, 4 or 8 bars, and 4 for **Free**.
+- Press **SHIFT + REC** on the Looper tab, or pick an empty loop and tap the button over **What you played**, which sits on the bars it will take and names them ("Capture bars 10 and 11"). On the Play page's loop row, **Capture** says how many it will take ("Capture last 2 bars").
+- The bars go into the picked loop if it is empty, or else into the first empty loop. Its **Length** says how many: 1, 2, 4 or 8 bars, the pattern's length for **Pattern**, and 4 for **Free** (or Pattern with nothing playing).
 - They are the last whole bars, up to the bar line you just passed. Press it in the last beat of a bar and it waits for the bar line coming, so the bar you are finishing goes in too.
 - A moment later the loop plays, in time with the song, as if you had recorded those bars: each bar plays where it belongs against the beat. Until then its ring waits in red, as a loop armed to record does, and says **Capturing** (or the bar it waits for, "13, Capture on bar"). What you played on a bar line lands on the loop's first beat, with the [latency](#latency) made up for as when you record.
 - If fewer bars were played than the Length asks, it takes fewer, halving (8, then 4, 2 and 1): only bars since you pressed PLAY count, and since **Records from** changed. Before a whole bar has gone by there is nothing to take, and Capture says so.
