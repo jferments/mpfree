@@ -25504,6 +25504,8 @@ mod tests {
         clip.add_note(mpfree_seq::Note::new(0, 240, 36, 100))
             .unwrap();
         clips.tracks[0].slots[0] = Some(clip);
+        // Its lasting id, as a project in the app has it (Arrange 1.1).
+        clips.give_clip_ids();
         let synth = crate::synth::Synth::new(44_100);
         // Loop 2 with one layer, as the looper's save gives it.
         let layer: Vec<f32> = (0..2 * 4410).map(|k| (k % 97) as f32 / 200.0).collect();

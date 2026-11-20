@@ -129,6 +129,7 @@ mod tests {
                 // gives them.
                 let mut written = song.clips.clone();
                 written.give_track_ids();
+                written.give_clip_ids();
                 assert_eq!(l.s.time.project(), &written, "{}", song.name);
                 assert_eq!(l.s.app.settings.bpm, song.tempo, "{}", song.name);
                 l.s.run_for(0.1);

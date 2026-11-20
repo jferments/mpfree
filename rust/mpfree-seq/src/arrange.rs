@@ -484,7 +484,9 @@ impl Arrangement {
     pub fn make_unique(&mut self, tracks: &[Track], i: usize) -> Result<(), ModelError> {
         let p = self.placements.get(i).ok_or(ModelError::BadPlacement)?;
         if let Source::Slot(_) = p.source {
-            let clip = p.clip(tracks).ok_or(ModelError::BadPlacement)?.clone();
+            // The song's own copy has no id until the song keeps its
+            // clips once (phase 1.3).
+            let clip = p.clip(tracks).ok_or(ModelError::BadPlacement)?.copied();
             self.placements[i].source = Source::Own(Box::new(clip));
         }
         Ok(())
@@ -548,7 +550,7 @@ impl Arrangement {
         let mut moved = p.clone();
         if track != p.track && p.slot().is_some() {
             let clip = p.clip(tracks).ok_or(ModelError::BadPlacement)?;
-            moved.source = Source::Own(Box::new(clip.clone()));
+            moved.source = Source::Own(Box::new(clip.copied()));
         }
         moved.track = track;
         moved.start = start;
@@ -866,7 +868,8 @@ pub fn song_to_scenes(project: &mut Project, bar: Tick) -> Result<ToScenes, Mode
             };
             let (copy, why) = section_copy(block, clip, *a);
             differences.extend(why.into_iter().map(|w| Difference::on(track, *a, w)));
-            p.tracks[track].slots[row] = Some(copy);
+            // A copy: a clip of its own, with a new id.
+            p.put_new_clip(track, row, copy)?;
         }
         let bars = ((b - a + bar - 1) / bar).clamp(1, i64::from(crate::scenes::MAX_FOLLOW_BARS));
         let name = project
@@ -1665,9 +1668,16 @@ mod tests {
         // Drums: the four-bar clip for 8 bars; bass joins on bar 3.
         s.place(Placement::linked(0, 2, 0, 8 * BAR)).unwrap();
         s.place(Placement::linked(1, 0, 2 * BAR, 6 * BAR)).unwrap();
+        p.give_clip_ids();
+        let had = p.next_clip;
         let done = song_to_scenes(&mut p, BAR).unwrap();
         assert_eq!(done.rows, [3, 4]);
         assert_eq!(done.differences, [], "exact");
+        // Each copy a clip of its own, with a new id (Arrange 1.1).
+        let ids: Vec<u32> = [(0, 3), (0, 4), (1, 4)]
+            .map(|(t, r)| p.clip(t, r).unwrap().id.0)
+            .to_vec();
+        assert_eq!(ids, [had, had + 1, had + 2]);
         let copy = p.tracks[0].slots[4].as_ref().unwrap();
         let ticks: Vec<(Tick, u8)> = copy.notes.iter().map(|n| (n.tick, n.note)).collect();
         assert_eq!(ticks, [(2 * BAR, 10), (3 * BAR, 11), (0, 12), (BAR, 13)]);

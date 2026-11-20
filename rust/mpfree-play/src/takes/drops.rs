@@ -126,7 +126,13 @@ impl Takes {
             ..Take::default()
         };
         match (drop, there) {
-            (ClipDrop::Copied(..), _) => take.made.push((to.0, to.1, a)),
+            // A copy is a clip of its own, with a new id; a move or a swap
+            // keeps each clip's.
+            (ClipDrop::Copied(..), _) => {
+                let mut copy = a;
+                copy.id = project.new_clip_id();
+                take.made.push((to.0, to.1, copy));
+            }
             (_, None) => {
                 take.removed.push((from.0, from.1, a.clone()));
                 take.made.push((to.0, to.1, a));
@@ -183,8 +189,14 @@ impl Takes {
                     take.made.push((t, s2, c.clone()));
                 }
                 if copy && s == from {
-                    take.made.push((t, to, c.clone()));
+                    take.made.push((t, to, c.copied()));
                 }
+            }
+        }
+        // Each copy a clip of its own, with a new id.
+        for (_, _, c) in &mut take.made {
+            if !c.id.is_given() {
+                c.id = project.new_clip_id();
             }
         }
         // The slots empty first, then filled: a row's clips move through
@@ -395,7 +407,12 @@ mod tests {
             (Some("Beat"), Some("Bass A"))
         );
         assert_eq!(takes.undo(&mut p), Some(n));
-        assert_eq!(p, project());
+        // As it began, but for the next clip id: the copy took one, and
+        // UNDO never winds it back (Arrange 1.1).
+        let mut want = project();
+        want.next_clip = p.next_clip;
+        assert!(want.next_clip > 0);
+        assert_eq!(p, want);
         // And redo does them again.
         takes.redo(&mut p);
         takes.redo(&mut p);
@@ -498,6 +515,7 @@ mod tests {
             .place(Placement::linked(1, 2, 0, 1920))
             .unwrap();
         want.arrangement.list.steps = vec![step(2), step(1)];
+        want.next_clip = p.next_clip;
         assert_eq!(p, want);
     }
 

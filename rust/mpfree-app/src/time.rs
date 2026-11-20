@@ -522,9 +522,11 @@ impl TimeHost {
     /// it has a track. Builds and compiles everything here (allocates):
     /// the app makes it on the screen thread and swaps it in.
     pub fn with_project(rate: u32, bpm: f64, mut project: Project) -> Result<TimeHost, String> {
-        // Every track has its lasting id from here on (a new project's,
-        // or one saved before tracks had ids, gets 1, 2, 3 ...).
+        // Every track and every clip has its lasting id from here on (a
+        // new project's, or one saved before they had ids, gets 1, 2, 3
+        // ...).
         project.give_track_ids();
+        project.give_clip_ids();
         project
             .check()
             .map_err(|e| format!("the clips don't hold together: {e:?}"))?;
@@ -1558,7 +1560,10 @@ mod tests {
         h.control.project.tracks[0].slots[0] = Some(Clip::new("taken", 960));
         let line = h.put_clip(clip.clone()).unwrap();
         assert_eq!(line, "phrase: 4 notes in slot 2 of Track 1");
-        assert_eq!(h.control.project.clip(0, 1), Some(&clip));
+        // A new clip, with a lasting id of its own.
+        let put = h.control.project.clip(0, 1).unwrap();
+        assert!(put.id.is_given());
+        assert_eq!(put.copied(), clip);
         assert!(h.control.launches.is_empty(), "not launched");
         // The armed track takes it.
         h.act(TimeAction::Arm(Some(2))).unwrap();
@@ -1630,8 +1635,11 @@ mod tests {
             .put_clips(vec![(0, drums.clone()), (1, bass.clone())])
             .unwrap();
         assert_eq!(line, "2 clips with 1 notes, from slot 1 of Track 1");
-        assert_eq!(h.control.project.clip(0, 0), Some(&drums));
-        assert_eq!(h.control.project.clip(1, 1), Some(&bass));
+        let put = |t, s| h.control.project.clip(t, s).map(Clip::copied);
+        assert_eq!(put(0, 0), Some(drums.clone()));
+        assert_eq!(put(1, 1), Some(bass.clone()));
+        let ids = |t, s| h.control.project.clip(t, s).unwrap().id;
+        assert!(ids(0, 0).is_given() && ids(1, 1).is_given() && ids(0, 0) != ids(1, 1));
         assert!(h.control.launches.is_empty(), "not launched");
         // One UNDO takes both.
         h.act(TimeAction::Undo).unwrap();
@@ -2458,7 +2466,10 @@ mod tests {
         assert!(h.state().done.is_empty(), "a copy is no take");
         let said = h.act(TimeAction::PasteClip { track: 1, slot: 2 }).unwrap();
         assert!(said.contains("a copy of beat in"), "{said}");
-        assert_eq!(h.control.project.clip(1, 2), Some(&beat));
+        // A copy: the same clip, but a clip of its own with its own id.
+        let pasted = h.control.project.clip(1, 2).unwrap();
+        assert_eq!(pasted.copied(), beat.copied());
+        assert_ne!(pasted.id, h.control.project.clip(0, 0).unwrap().id);
         assert_eq!(h.state().done.last().unwrap().short(), "paste 1");
         assert!(h
             .act(TimeAction::PasteClip { track: 0, slot: 0 })
@@ -5527,9 +5538,12 @@ mod tests {
             "song → scenes: rows 3 to 5, exact (UNDO takes it back)"
         );
         let p = &h.control.project;
-        assert_eq!(p.tracks[0].slots[2], p.tracks[0].slots[0]);
-        assert_eq!(p.tracks[1].slots[3], p.tracks[1].slots[1]);
-        assert_eq!(p.tracks[0].slots[4], p.tracks[0].slots[5]);
+        // Copies of the clips the song played, each with an id of its own.
+        let same = |a: (usize, usize), b: (usize, usize)| {
+            let (a, b) = (p.clip(a.0, a.1).unwrap(), p.clip(b.0, b.1).unwrap());
+            a.copied() == b.copied() && a.id != b.id
+        };
+        assert!(same((0, 2), (0, 0)) && same((1, 3), (1, 1)) && same((0, 4), (0, 5)));
         assert_eq!(p.scene(3).unwrap().name, "Drop");
         // One edit: UNDO gives the project back exactly, REDO the rows.
         let after = p.clone();
@@ -5539,7 +5553,11 @@ mod tests {
         let said = h.act(TimeAction::Undo).unwrap();
         assert!(said.ends_with(" · rows 3 to 5"), "{said}");
         assert!(said.starts_with("undo: song → scenes "), "{said}");
-        assert_eq!(h.control.project, before);
+        // As before, but for the next clip id: UNDO never winds it back.
+        assert!(h.control.project.next_clip > before.next_clip);
+        let mut want = before.clone();
+        want.next_clip = h.control.project.next_clip;
+        assert_eq!(h.control.project, want);
         h.act(TimeAction::Redo).unwrap();
         assert_eq!(h.control.project, after);
         // Refused (too few empty rows left in a run): nothing changes, and
@@ -7900,6 +7918,8 @@ mod tests {
         let read = mpfree_seq::save::from_text(&mpfree_seq::save::to_text(&p)).unwrap();
         assert_eq!(read, p);
         let mut h = TimeHost::with_project(RATE, 120.0, read).unwrap();
+        // As saved, its clip given its lasting id as it opens.
+        p.give_clip_ids();
         assert_eq!(h.project(), &p);
         assert_eq!(h.state().armed, Some(0));
         let mut pads = Fake::default();

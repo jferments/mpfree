@@ -604,13 +604,15 @@ impl Takes {
         new: Clip,
     ) -> Result<u32, ModelError> {
         new.check()?;
-        let s = slot_mut(project, track, slot).ok_or(ModelError::BadSlot)?;
-        if s.is_some() {
-            return Err(ModelError::BadSlot);
-        }
-        *s = Some(new.clone());
+        // A new clip, with a new id, kept by the take so REDO brings back
+        // the same clip.
+        let id = project.put_new_clip(track, slot, new)?;
+        let made = slot_mut(project, track, slot)
+            .and_then(|s| s.clone())
+            .filter(|c| c.id == id)
+            .ok_or(ModelError::BadSlot)?;
         let take = self.next_capture();
-        take.made.push((track, slot, new));
+        take.made.push((track, slot, made));
         Ok(take.number)
     }
 
@@ -640,11 +642,15 @@ impl Takes {
                 return Err(ModelError::BadSlot);
             }
         }
-        for (track, slot, c) in &clips {
-            *slot_mut(project, *track, *slot).expect("checked") = Some(c.clone());
+        let mut made = Vec::with_capacity(clips.len());
+        for (track, slot, c) in clips {
+            // Each a new clip, with a new id.
+            project.put_new_clip(track, slot, c).expect("checked");
+            let c = project.clip(track, slot).expect("put").clone();
+            made.push((track, slot, c));
         }
         let take = self.next_capture();
-        take.made.extend(clips);
+        take.made.extend(made);
         Ok(take.number)
     }
 
@@ -692,11 +698,9 @@ impl Takes {
         launched: bool,
     ) -> Result<u32, ModelError> {
         clip.check()?;
-        let s = slot_mut(project, track, slot).ok_or(ModelError::BadSlot)?;
-        if s.is_some() {
-            return Err(ModelError::BadSlot);
-        }
-        *s = Some(clip.clone());
+        // A new clip or a copy: a new id, kept by the take.
+        project.put_new_clip(track, slot, clip)?;
+        let clip = project.clip(track, slot).expect("put").clone();
         self.edits += 1;
         let number = self.edits;
         self.push(Take {
@@ -740,6 +744,11 @@ impl Takes {
         let s = slot_mut(project, track, slot)
             .filter(|s| s.is_some())
             .ok_or(ModelError::BadSlot)?;
+        // The same clip in another state: it keeps its id.
+        let clip = Clip {
+            id: s.as_ref().map_or(clip.id, |c| c.id),
+            ..clip
+        };
         let now = s.replace(clip.clone()).expect("checked");
         self.edits += 1;
         let number = self.edits;
@@ -1820,6 +1829,140 @@ mod tests {
 
     /// COPY + an empty slot: the copy goes in as an edit of its own, which
     /// undo takes away and redo puts back; a slot with a clip refuses it.
+    /// Arrange 1.1: a moved clip keeps its id and a copy gets a new one,
+    /// a dragged row's clips keep theirs, an undone delete brings its old
+    /// id back, and over a long run of edits, undos and redos no id is
+    /// ever given to two clips or wound back.
+    #[test]
+    fn clip_ids_last_through_moves_copies_undo_and_redo() {
+        use mpfree_seq::ClipId;
+        use std::collections::{HashMap, HashSet};
+        let mut p = Project::new();
+        for i in 0..3 {
+            p.tracks.push(Track::new(&format!("T{i}"), i));
+        }
+        p.tracks[0].slots[0] = Some(Clip::new("a", 3840));
+        p.tracks[1].slots[2] = Some(Clip::new("b", 3840));
+        assert_eq!(p.give_clip_ids(), 2);
+        let mut t = Takes::default();
+        let id = |p: &Project, tr: usize, r: usize| p.clip(tr, r).map(|c| c.id.0);
+        // A move keeps its id; a copy gets the next one.
+        t.drop_clip(&mut p, (0, 0), (2, 4), false).unwrap();
+        assert_eq!((id(&p, 0, 0), id(&p, 2, 4)), (None, Some(1)));
+        t.drop_clip(&mut p, (2, 4), (2, 5), true).unwrap();
+        assert_eq!((id(&p, 2, 4), id(&p, 2, 5)), (Some(1), Some(3)));
+        // A row dragged takes its clips' ids with it; a copied row's clips
+        // are new.
+        t.drop_row(&mut p, 2, 0, false).unwrap();
+        assert_eq!(id(&p, 1, 0), Some(2));
+        t.drop_row(&mut p, 0, 1, true).unwrap();
+        assert_eq!((id(&p, 1, 0), id(&p, 1, 1)), (Some(2), Some(4)));
+        // Pasted and new clips get the next ids, whatever they carried.
+        let copy = p.clip(1, 1).unwrap().clone();
+        t.paste_clip(&mut p, 0, 9, copy).unwrap();
+        t.new_clip(&mut p, 0, 10, Clip::new("new", 3840), false)
+            .unwrap();
+        assert_eq!((id(&p, 0, 9), id(&p, 0, 10)), (Some(5), Some(6)));
+        // A clip put in place of one (a reload, a Mutate) keeps its id.
+        t.replace_clip(&mut p, 0, 9, Clip::new("other", 1920), Replaced::Reload)
+            .unwrap();
+        assert_eq!(id(&p, 0, 9), Some(5));
+        // Deleted, then UNDO: back with its old id; REDO takes it again,
+        // and UNDO brings it back once more, the same.
+        t.remove_clip(&mut p, 1, 1).unwrap();
+        assert_eq!(id(&p, 1, 1), None);
+        t.undo(&mut p);
+        assert_eq!(id(&p, 1, 1), Some(4));
+        t.redo(&mut p);
+        t.undo(&mut p);
+        assert_eq!(id(&p, 1, 1), Some(4));
+        // Everything undone, the ids the copies took are not given again.
+        while t.undo(&mut p).is_some() {}
+        assert_eq!((id(&p, 0, 0), id(&p, 1, 2)), (Some(1), Some(2)));
+        assert_eq!(p.new_clip_id(), ClipId(7));
+
+        // A long run of everything, at random, from a fixed seed.
+        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut roll = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        t.clear();
+        let mut first_name: HashMap<ClipId, String> = p
+            .cell_clips()
+            .map(|(_, _, c)| (c.id, c.name.clone()))
+            .collect();
+        let mut made = 0;
+        for step in 0..4000 {
+            let next_before = p.next_clip;
+            let cells: Vec<(usize, usize)> = p.cell_clips().map(|(a, b, _)| (a, b)).collect();
+            let any_cell = (roll(3), roll(SLOTS));
+            let a_clip = (!cells.is_empty()).then(|| cells[roll(cells.len())]);
+            match (roll(9), a_clip) {
+                (0, _) => {
+                    made += 1;
+                    let _ = t.new_clip(
+                        &mut p,
+                        any_cell.0,
+                        any_cell.1,
+                        Clip::new(&format!("n{made}"), 960),
+                        false,
+                    );
+                }
+                (1, Some((tr, r))) => {
+                    made += 1;
+                    let mut c = p.clip(tr, r).unwrap().clone();
+                    c.name = format!("n{made}");
+                    let _ = t.paste_clip(&mut p, any_cell.0, any_cell.1, c);
+                }
+                (2, Some(from)) => {
+                    let _ = t.drop_clip(&mut p, from, any_cell, roll(2) == 0);
+                }
+                (3, _) => {
+                    let _ = t.drop_row(&mut p, roll(SLOTS), roll(SLOTS + 1), roll(2) == 0);
+                }
+                (4, Some((tr, r))) => {
+                    let _ = t.remove_clip(&mut p, tr, r);
+                }
+                (5, Some((tr, r))) => {
+                    let mut c = p.clip(tr, r).unwrap().clone();
+                    c.length = 480 * (1 + roll(8) as i64);
+                    c.id = ClipId(roll(50) as u32);
+                    let _ = t.replace_clip(&mut p, tr, r, c, Replaced::Mutate);
+                }
+                (6 | 7, _) => {
+                    t.undo(&mut p);
+                }
+                _ => {
+                    t.redo(&mut p);
+                }
+            }
+            assert!(p.next_clip >= next_before, "step {step}: wound back");
+            let mut here = HashSet::new();
+            for (tr, r, c) in p.cell_clips() {
+                assert!(c.id.is_given(), "step {step}: ({tr}, {r}) has no id");
+                assert!(c.id.0 < p.next_clip, "step {step}: past the next id");
+                assert!(here.insert(c.id), "step {step}: {:?} on two clips", c.id);
+                match first_name.get(&c.id) {
+                    // Each id stays with the clip it was given to: a name
+                    // only a paste or a new clip gives, or a copy's.
+                    Some(n) => assert_eq!(n, &c.name, "step {step}: {:?} given again", c.id),
+                    None => {
+                        assert!(c.id.0 >= next_before, "step {step}: {:?} not new", c.id);
+                        first_name.insert(c.id, c.name.clone());
+                    }
+                }
+            }
+        }
+        assert!(
+            first_name.len() > 200,
+            "a long run: {} ids",
+            first_name.len()
+        );
+    }
+
     #[test]
     fn a_pasted_clip_is_an_edit_undo_takes_away() {
         let mut p = project();
@@ -1830,12 +1973,17 @@ mod tests {
             Err(ModelError::BadSlot)
         );
         assert_eq!(t.paste_clip(&mut p, 0, 5, copy.clone()), Ok(1));
+        // The copy is a clip of its own, with a new id (Arrange 1.1).
+        let copy = Clip {
+            id: mpfree_seq::ClipId(1),
+            ..copy
+        };
         assert_eq!(p.tracks[0].slots[5].as_ref(), Some(&copy));
         assert!(t.done()[0].pasted && t.done()[0].edited);
         assert_eq!(t.undo(&mut p), Some(1));
         assert!(p.tracks[0].slots[5].is_none());
         assert_eq!(t.redo(&mut p), Some(1));
-        assert_eq!(p.tracks[0].slots[5].as_ref(), Some(&copy));
+        assert_eq!(p.tracks[0].slots[5].as_ref(), Some(&copy), "the same id");
         assert_eq!(t.paste_clip(&mut p, 0, 99, copy), Err(ModelError::BadSlot));
     }
 
@@ -1858,6 +2006,7 @@ mod tests {
         );
         assert!(t.done().is_empty(), "a refusal makes no take");
         assert_eq!(t.new_clip(&mut p, 0, 1, c.clone(), true), Ok(1));
+        c.id = mpfree_seq::ClipId(1);
         let take = &t.done()[0];
         assert!(take.edited && take.launched && !take.pasted);
         assert_eq!(p.tracks[0].slots[1].as_ref(), Some(&c));
@@ -2299,6 +2448,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(t.capture_clip(&mut p, 0, 1, c.clone()), Ok(1));
+        c.id = mpfree_seq::ClipId(1);
         assert_eq!(p.clip(0, 1), Some(&c));
         // Recorded take 1 goes on: its notes still join take 1, not the
         // capture, though both are number 1.

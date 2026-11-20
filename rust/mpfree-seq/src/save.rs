@@ -11,6 +11,8 @@
 //! mpfree-clips 1
 //! perform
 //! launch bars 2
+//! nexttrack 3
+//! nextclip 5
 //! track Drums
 //! dest 0
 //! swing 240 58
@@ -21,6 +23,7 @@
 //! transpose 5 key
 //! follows
 //! clip 0 7680 Beat 1
+//! id 3
 //! speed 1 1
 //! launch ticks 960
 //! legato
@@ -60,6 +63,12 @@
 //! list 1 4
 //! listloop
 //! ```
+//!
+//! A clip's `id` line, first in its body, is its lasting id
+//! ([`crate::ClipId`], the Arrange refactor's 1.1), and `nextclip` the
+//! id the project gives next; a clip without one has none yet (an older
+//! build's file), and the host gives it one as the project opens
+//! ([`Project::give_clip_ids`]). An older build skips both.
 //!
 //! A `tempo` line is a song's tempo point (tempo ramps): its tick, its
 //! tempo, and `ramp` when it glides to the next point. An older build
@@ -123,6 +132,9 @@ pub fn to_text(p: &Project) -> String {
     }
     if p.next_track != 0 {
         let _ = writeln!(s, "nexttrack {}", p.next_track);
+    }
+    if p.next_clip != 0 {
+        let _ = writeln!(s, "nextclip {}", p.next_clip);
     }
     for t in &p.tracks {
         let _ = writeln!(s, "track {}", one_line(&t.name));
@@ -226,6 +238,9 @@ pub fn to_text(p: &Project) -> String {
 }
 
 fn clip_body(s: &mut String, c: &Clip) {
+    if c.id.is_given() {
+        let _ = writeln!(s, "id {}", c.id.0);
+    }
     if let Some(n) = c.looped {
         let _ = writeln!(s, "loop {n}");
     }
@@ -555,6 +570,15 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 p.next_track = num(w.next())
                     .filter(|&n| n >= 1)
                     .ok_or_else(|| bad("nexttrack"))?
+            }
+            ("id", At::Clip(c, _)) => {
+                let id: u32 = num(w.next()).filter(|&n| n >= 1).ok_or_else(|| bad("id"))?;
+                c.id = crate::ClipId(id);
+            }
+            ("nextclip", At::Top) => {
+                p.next_clip = num(w.next())
+                    .filter(|&n| n >= 1)
+                    .ok_or_else(|| bad("nextclip"))?
             }
             ("swing", At::Track) => {
                 last(&mut p).swing = Some(swing(&mut w).ok_or_else(|| bad("swing"))?)
@@ -1079,6 +1103,43 @@ mod track_id_tests {
             assert!(from_text(&t).is_err(), "{bad}");
         }
         assert!(from_text(&text.replace("nexttrack 4", "nexttrack 0")).is_err());
+    }
+
+    /// Arrange 1.1: each clip's lasting id, a loop cell's too, and the
+    /// next id are kept through the text; a project saved before clips had
+    /// ids reads with none (the app gives them as it opens it); and an id
+    /// that doesn't read is refused.
+    #[test]
+    fn clip_ids_and_the_next_id_come_back() {
+        let mut p = Project::new();
+        p.tracks.push(Track::new("Drums", 0));
+        p.tracks.push(Track::new_loops("Loops", 1));
+        p.tracks[0].slots[0] = Some(Clip::new("Beat", 3840));
+        p.tracks[0].slots[2] = Some(Clip::new("Fill", 3840));
+        p.tracks[1].slots[1] = Some(Clip::new_loop(0, 3840));
+        let old = to_text(&p);
+        assert!(!old.contains("\nid ") && !old.contains("nextclip"));
+        assert_eq!(from_text(&old).unwrap(), p, "no ids, as saved");
+        assert_eq!(p.give_clip_ids(), 3);
+        p.tracks[0].slots[0] = None;
+        let text = to_text(&p);
+        assert!(text.contains("nextclip 4\n"), "{text}");
+        assert!(text.contains("clip 2 3840 Fill\nid 2\n"), "{text}");
+        assert!(
+            text.contains("clip 1 3840 Loop 1\nid 3\nloop 0\n"),
+            "{text}"
+        );
+        let back = from_text(&text).unwrap();
+        assert_eq!(back, p);
+        assert_eq!(
+            back.find_clip(crate::ClipId(3)),
+            Some(crate::ClipAt::Cell { track: 1, row: 1 })
+        );
+        for bad in ["id 0", "id x"] {
+            let t = text.replace("id 2", bad);
+            assert!(from_text(&t).is_err(), "{bad}");
+        }
+        assert!(from_text(&text.replace("nextclip 4", "nextclip 0")).is_err());
     }
 }
 

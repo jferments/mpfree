@@ -1192,7 +1192,10 @@ impl TimeControl {
                 ));
                 continue;
             };
-            t.slots[s] = Some(Clip::new(&format!("Clip {}", s + 1), length));
+            let clip = Clip::new(&format!("Clip {}", s + 1), length);
+            self.project
+                .put_new_clip(track, s, clip)
+                .map_err(|e| format!("new clip: {e:?}"))?;
             let launch = TimeAction::Launch { track, slot: s };
             (self.launches, self.cues) =
                 clips_after(&self.project, &self.launches, &self.cues, &launch, &info);
@@ -1225,7 +1228,10 @@ impl TimeControl {
                     .iter()
                     .position(Option::is_none)
                     .ok_or_else(|| format!("{} has no empty slot to record into", t.name))?;
-                t.slots[s] = Some(Clip::new(&format!("Clip {}", s + 1), length));
+                let clip = Clip::new(&format!("Clip {}", s + 1), length);
+                self.project
+                    .put_new_clip(track, s, clip)
+                    .map_err(|e| format!("new clip: {e:?}"))?;
                 (
                     s,
                     format!("new clip in slot {} of track {}", s + 1, track + 1),
@@ -2572,7 +2578,9 @@ impl TimeControl {
                 if n >= LOOPS || loops::in_cell(&self.project, into) || self.loops_seen[n].pass {
                     return Err(format!("clips: loop {} isn't free for a copy", n + 1));
                 }
-                self.project.tracks[to.0].slots[to.1] = Some(Clip::new_loop(into, len));
+                self.project
+                    .put_new_clip(to.0, to.1, Clip::new_loop(into, len))
+                    .map_err(|e| format!("clips: {e:?}"))?;
                 self.compile()?;
                 Ok(format!(
                     "clips: {was} copies into Loop {} on {}: launch it to hear it (the looper's UNDO takes it back)",
@@ -2769,7 +2777,11 @@ impl TimeControl {
                     }
                 };
                 if let Err(e) = self.compile() {
+                    // Back as it was, but for the clip ids it gave: an id
+                    // is never given twice.
+                    let next = self.project.next_clip;
                     self.project = before;
+                    self.project.next_clip = next;
                     self.compile()?;
                     return Err(e);
                 }
@@ -4548,7 +4560,7 @@ impl TimeControl {
                     };
                     let landed = match back.or_else(armed) {
                         Some((t, s)) => {
-                            project.tracks[t].slots[s] = Some(Clip::new_loop(k, is.ticks));
+                            let _ = project.put_new_clip(t, s, Clip::new_loop(k, is.ticks));
                             // One loop plays per Loop track: the one there
                             // stops as this one plays.
                             self.launches.retain(|l| l.track != t);

@@ -826,6 +826,9 @@ impl Lock {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Clip {
+    /// Its lasting id ([`ClipId`]), given by its project as it goes in;
+    /// [`ClipId::NONE`] until then.
+    pub id: ClipId,
     pub name: String,
     /// Length in the clip's own ticks.
     pub length: Tick,
@@ -1007,6 +1010,7 @@ impl Clip {
     /// An empty clip of `length` ticks at normal speed.
     pub fn new(name: &str, length: Tick) -> Clip {
         Clip {
+            id: ClipId::NONE,
             name: name.to_string(),
             length,
             speed: Speed::NORMAL,
@@ -1024,6 +1028,15 @@ impl Clip {
             program: None,
             direction: Direction::Forward,
             original: None,
+        }
+    }
+
+    /// A copy of it, with no id: a copy is a clip of its own, and gets a
+    /// new id as it goes into a project ([`Project::put_new_clip`]).
+    pub fn copied(&self) -> Clip {
+        Clip {
+            id: ClipId::NONE,
+            ..self.clone()
         }
     }
 
@@ -1228,6 +1241,37 @@ impl TrackId {
     pub fn is_given(self) -> bool {
         self != TrackId::NONE
     }
+}
+
+/// A clip's lasting number in its project (the Arrange refactor's D1):
+/// one id space for every kind of clip, note clips and Loop track cells
+/// alike. A clip keeps its id when it moves (a drag to another cell, a
+/// row dragged) and when UNDO or REDO brings it back; a copy is a clip of
+/// its own and gets a new one. A project gives each new clip the next
+/// number ([`Project::next_clip`]) and never gives one twice, so
+/// something that names a clip can't reach another clip by mistake.
+/// [`ClipId::NONE`] (0) is a clip that has none yet: one just made, or
+/// read from a project saved before clips had ids, until
+/// [`Project::give_clip_ids`]. The song's own copies of clips (made
+/// unique) get theirs when the song keeps its clips once (phase 1.3).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ClipId(pub u32);
+
+impl ClipId {
+    /// No id given yet.
+    pub const NONE: ClipId = ClipId(0);
+
+    /// Whether it is a given id (not [`ClipId::NONE`]).
+    pub fn is_given(self) -> bool {
+        self != ClipId::NONE
+    }
+}
+
+/// Where a clip is in its project ([`Project::find_clip`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipAt {
+    /// In a cell: track `track`, row `row`.
+    Cell { track: usize, row: usize },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1466,6 +1510,11 @@ pub struct Project {
     /// after one UNDO took away. 0 before any was given (a project saved
     /// before tracks had ids).
     pub next_track: u32,
+    /// The id the next clip gets ([`ClipId`]): past every id the project
+    /// ever gave, so none is given twice, even to a clip made after an
+    /// UNDO took one away. UNDO and REDO never wind it back. 0 before any
+    /// was given (a project saved before clips had ids).
+    pub next_clip: u32,
 }
 
 impl Project {
@@ -1515,6 +1564,94 @@ impl Project {
         }
         self.next_track = next;
         given
+    }
+
+    /// The next clip id, never given before: past [`Project::next_clip`]
+    /// and every id a clip of the project has. Never allocates.
+    pub fn new_clip_id(&mut self) -> ClipId {
+        let next = self
+            .next_clip
+            .max(self.highest_clip_id().saturating_add(1))
+            .max(1);
+        self.next_clip = next.saturating_add(1);
+        ClipId(next)
+    }
+
+    /// The highest id a clip in a cell has (0 for none).
+    fn highest_clip_id(&self) -> u32 {
+        self.cell_clips().map(|(_, _, c)| c.id.0).max().unwrap_or(0)
+    }
+
+    /// Every clip in a cell, as (track, row, clip), in track and row
+    /// order.
+    pub fn cell_clips(&self) -> impl Iterator<Item = (usize, usize, &Clip)> {
+        self.tracks.iter().enumerate().flat_map(|(t, tr)| {
+            tr.slots
+                .iter()
+                .enumerate()
+                .filter_map(move |(r, c)| c.as_ref().map(|c| (t, r, c)))
+        })
+    }
+
+    /// Put `clip`, a new clip or a copy, in the empty cell `row` of
+    /// `track`, with a new id ([`Project::new_clip_id`]), whatever id it
+    /// had. Its id, or `BadSlot` (changing nothing) for no such cell or one
+    /// that holds a clip.
+    pub fn put_new_clip(
+        &mut self,
+        track: usize,
+        row: usize,
+        mut clip: Clip,
+    ) -> Result<ClipId, ModelError> {
+        let free = self
+            .tracks
+            .get(track)
+            .and_then(|t| t.slots.get(row))
+            .is_some_and(Option::is_none);
+        if !free {
+            return Err(ModelError::BadSlot);
+        }
+        clip.id = self.new_clip_id();
+        let id = clip.id;
+        self.tracks[track].slots[row] = Some(clip);
+        Ok(id)
+    }
+
+    /// Gives every clip in a cell that has no id, or has one an earlier
+    /// clip has too (in track and row order), the next id; the rest keep
+    /// theirs. How many were given. A project saved before clips had ids
+    /// gets 1, 2, 3 ... in track and row order. Allocates a list of the
+    /// ids seen.
+    pub fn give_clip_ids(&mut self) -> usize {
+        let mut next = self
+            .next_clip
+            .max(self.highest_clip_id().saturating_add(1))
+            .max(1);
+        let mut seen = std::collections::HashSet::new();
+        let mut given = 0;
+        for tr in &mut self.tracks {
+            for c in tr.slots.iter_mut().flatten() {
+                if !c.id.is_given() || !seen.insert(c.id) {
+                    c.id = ClipId(next);
+                    seen.insert(c.id);
+                    next = next.saturating_add(1);
+                    given += 1;
+                }
+            }
+        }
+        self.next_clip = next;
+        given
+    }
+
+    /// Where the clip with id `id` is now. None for [`ClipId::NONE`] or
+    /// an id no clip of the project has.
+    pub fn find_clip(&self, id: ClipId) -> Option<ClipAt> {
+        if !id.is_given() {
+            return None;
+        }
+        self.cell_clips()
+            .find(|(_, _, c)| c.id == id)
+            .map(|(track, row, _)| ClipAt::Cell { track, row })
     }
 
     /// Where the track with id `id` is now.
@@ -1646,6 +1783,65 @@ mod track_id_tests {
         t.id = TrackId(40);
         q.give_track_id(&mut t);
         assert_eq!((t.id, q.next_track), (TrackId(40), 41));
+    }
+
+    /// Arrange 1.1: clips get lasting ids in track and row order, loop
+    /// cells too; a new clip or a copy gets the next one, whatever id it
+    /// carried; a clip sharing an id gets a new one; and an id is never
+    /// given twice, even after its clip is gone.
+    #[test]
+    fn clips_get_lasting_ids_that_are_never_given_twice() {
+        let mut p = Project::new();
+        p.tracks.push(Track::new("Drums", 0));
+        p.tracks.push(Track::new_loops("Loops", 1));
+        p.tracks[0].slots[3] = Some(Clip::new("b", 3840));
+        p.tracks[0].slots[1] = Some(Clip::new("a", 3840));
+        p.tracks[1].slots[0] = Some(Clip::new_loop(0, 3840));
+        assert_eq!(p.give_clip_ids(), 3);
+        let ids: Vec<(usize, usize, u32)> =
+            p.cell_clips().map(|(t, r, c)| (t, r, c.id.0)).collect();
+        assert_eq!(ids, [(0, 1, 1), (0, 3, 2), (1, 0, 3)]);
+        assert_eq!(p.next_clip, 4);
+        assert_eq!(p.give_clip_ids(), 0, "they keep theirs");
+        assert_eq!(
+            p.find_clip(ClipId(2)),
+            Some(ClipAt::Cell { track: 0, row: 3 })
+        );
+        assert_eq!(p.find_clip(ClipId::NONE), None);
+        assert_eq!(p.find_clip(ClipId(9)), None);
+        // A copy has no id until it goes in; then the next one.
+        let copy = p.clip(0, 1).unwrap().copied();
+        assert_eq!((copy.id, copy.name.as_str()), (ClipId::NONE, "a"));
+        assert_eq!(p.put_new_clip(0, 2, copy), Ok(ClipId(4)));
+        // Put in with the id of a clip there already, it still gets a new one.
+        let twin = p.clip(0, 1).unwrap().clone();
+        assert_eq!(p.put_new_clip(0, 5, twin.clone()), Ok(ClipId(5)));
+        assert_eq!(p.put_new_clip(0, 5, twin), Err(ModelError::BadSlot));
+        assert_eq!(
+            p.put_new_clip(0, SLOTS, Clip::new("x", 3840)),
+            Err(ModelError::BadSlot)
+        );
+        assert_eq!(
+            p.put_new_clip(7, 0, Clip::new("x", 3840)),
+            Err(ModelError::BadSlot)
+        );
+        assert_eq!(p.next_clip, 6, "a refusal gives none");
+        // Gone, its id is never given again.
+        p.tracks[0].slots[5] = None;
+        assert_eq!(p.new_clip_id(), ClipId(6));
+        // Two that share one (a damaged file): the later one gets a new id.
+        p.tracks[1].slots[0].as_mut().unwrap().id = ClipId(1);
+        assert_eq!(p.give_clip_ids(), 1);
+        assert_eq!(p.clip(1, 0).unwrap().id, ClipId(7));
+        assert_eq!(p.clip(0, 1).unwrap().id, ClipId(1), "the first keeps it");
+        // A clip read with a high id keeps it, and the next id moves past it.
+        let mut q = Project::new();
+        q.tracks.push(Track::new("t", 0));
+        let mut c = Clip::new("kept", 3840);
+        c.id = ClipId(40);
+        q.tracks[0].slots[0] = Some(c);
+        assert_eq!(q.give_clip_ids(), 0);
+        assert_eq!((q.next_clip, q.new_clip_id()), (41, ClipId(41)));
     }
 
     /// Two tracks with the same settings and clips match whatever their

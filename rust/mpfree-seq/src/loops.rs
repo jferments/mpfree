@@ -232,7 +232,7 @@ pub fn place(
         }
         None => return None,
     };
-    p.tracks[t].slots[row] = Some(Clip::new_loop(n, ticks));
+    p.put_new_clip(t, row, Clip::new_loop(n, ticks)).ok()?;
     Some((t, row))
 }
 
