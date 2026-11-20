@@ -46,6 +46,15 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
 pub const PERIOD: usize = 128;
+
+/// The Length setting's "Pattern", as the app sends it in
+/// `Command::SetBars(Some(PATTERN_BARS))`: a new loop takes the length of
+/// the pattern playing ([`LoopHost::set_pattern_bars`]), so it always
+/// fits the beat. The looper itself never sees it.
+pub const PATTERN_BARS: u32 = 0;
+
+/// The longest pattern Length: Pattern follows; a longer one records free.
+pub const PATTERN_MAX_BARS: u32 = 32;
 /// Frames the FIFO holds: 8 periods. More than 3 periods waiting means the
 /// input runs ahead; the oldest frames are dropped down to 2 periods.
 const FIFO: usize = 8 * PERIOD;
@@ -1066,6 +1075,12 @@ pub struct LooperView {
     /// Tempo from the first loop is on, and the song can take one now
     /// ([`LoopHost::set_tempo_from_loop`]).
     pub free_tempo: bool,
+    /// Length: Pattern is picked ([`PATTERN_BARS`]): a new loop takes the
+    /// length of the pattern playing.
+    pub match_pattern: bool,
+    /// The pattern's length in bars as last told
+    /// ([`LoopHost::set_pattern_bars`]); None: no pattern plays.
+    pub pattern_bars: Option<u32>,
 }
 
 impl Default for LooperView {
@@ -1094,6 +1109,8 @@ impl Default for LooperView {
             heard: HeardWave::default(),
             capture_into: None,
             free_tempo: false,
+            match_pattern: false,
+            pattern_bars: None,
         }
     }
 }
@@ -1134,6 +1151,11 @@ pub struct LoopHost {
     /// Tempos from a free first pass the song couldn't start at
     /// ([`LoopHost::tempo_refused`]): counted, logged and said.
     pub tempos_refused: u64,
+    /// Length: Pattern ([`PATTERN_BARS`]): an empty loop's first pass
+    /// takes the length of the pattern playing.
+    pub match_pattern: bool,
+    /// The pattern's length in bars ([`LoopHost::set_pattern_bars`]).
+    pattern_bars: Option<u32>,
     input: Vec<f32>,
     out: Vec<f32>,
     last: Status,
@@ -1506,6 +1528,8 @@ impl LoopHost {
             starts_refused: 0,
             free_tempo: false,
             tempos_refused: 0,
+            match_pattern: false,
+            pattern_bars: None,
             input: vec![0.0; 2 * PERIOD],
             out: vec![0.0; 2 * PERIOD],
             last,
@@ -1823,7 +1847,20 @@ impl LoopHost {
             .looper
             .loop_status(self.picked)
             .is_some_and(|s| s.capturing.is_some());
+        // Length: Pattern. The first pass takes the pattern's length, kept
+        // up to date by set_pattern_bars; any other Length lets go of it.
+        if let Command::SetBars(b) = c {
+            self.match_pattern = b == Some(PATTERN_BARS);
+        }
+        if self.match_pattern
+            && c == Command::Record
+            && empty
+            && self.looper.status().bars != self.pattern_bars
+        {
+            self.looper.command(Command::SetBars(self.pattern_bars));
+        }
         let c = match c {
+            Command::SetBars(Some(PATTERN_BARS)) => Command::SetBars(self.pattern_bars),
             Command::SetLatency(_) if self.source == LoopSource::Pads => {
                 Command::SetLatency(self.pads_latency)
             }
@@ -2928,6 +2965,8 @@ impl LoopHost {
             heard: self.heard_wave(),
             capture_into: self.capture_into(),
             free_tempo: self.free_tempo,
+            match_pattern: self.match_pattern,
+            pattern_bars: self.pattern_bars,
         }
     }
 
@@ -3175,6 +3214,22 @@ impl LoopHost {
 
     /// Record from `s` (the pads or the line input): Capture forgets what
     /// it heard from the other.
+    /// The length of the pattern playing, in bars (the longest clip that
+    /// plays, rounded up to whole bars; None when nothing plays, or past
+    /// [`PATTERN_MAX_BARS`]). With Length: Pattern the picked loop, while
+    /// empty, is kept at it, so a tap records exactly one pattern's worth.
+    pub fn set_pattern_bars(&mut self, bars: Option<u32>) {
+        let bars = bars.filter(|&b| (1..=PATTERN_MAX_BARS).contains(&b));
+        self.pattern_bars = bars;
+        if !self.match_pattern {
+            return;
+        }
+        let s = self.looper.status();
+        if s.phase == Phase::Empty && s.capturing.is_none() && s.bars != bars {
+            self.looper.command(Command::SetBars(bars));
+        }
+    }
+
     pub fn set_source(&mut self, s: LoopSource) {
         if s != self.source {
             self.looper.command(Command::NewInput);
@@ -3264,6 +3319,7 @@ impl LoopHost {
 
 pub fn bars_text(b: Option<u32>) -> String {
     match b {
+        Some(PATTERN_BARS) => "the pattern's length".to_string(),
         Some(1) => "1 bar".to_string(),
         Some(n) => format!("{n} bars"),
         None => "free (until STOP or Record again)".to_string(),
@@ -3443,6 +3499,50 @@ mod tests {
 
     /// A layer's speaker: the mute goes to the layer by its id, the log
     /// names it, and the next view shows it muted and not heard.
+    /// Length: Pattern (the default): an empty loop follows the pattern
+    /// playing, a tap records exactly that many bars, and picking another
+    /// Length lets go of it.
+    #[test]
+    fn length_pattern_follows_the_pattern_playing() {
+        let mut h = LoopHost::new(44_100, 8);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        let mut run = |h: &mut LoopHost, periods: u64| {
+            for _ in 0..periods {
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                h.period(&b, &mut l, &mut r);
+            }
+        };
+        assert!(h
+            .command(Command::SetBars(Some(PATTERN_BARS)))
+            .contains("first pass length"));
+        assert!(h.match_pattern);
+        // Nothing plays: free.
+        run(&mut h, 2);
+        assert_eq!(h.looper.status().bars, None);
+        h.set_pattern_bars(Some(4));
+        run(&mut h, 2);
+        assert_eq!(h.looper.status().bars, Some(4));
+        let v = h.view(120.0);
+        assert!(v.match_pattern);
+        assert_eq!(v.pattern_bars, Some(4));
+        // Too long to follow: free.
+        h.set_pattern_bars(Some(PATTERN_MAX_BARS + 1));
+        run(&mut h, 2);
+        assert_eq!(h.looper.status().bars, None);
+        h.set_pattern_bars(Some(2));
+        h.command(Command::Record);
+        run(&mut h, 2);
+        assert_eq!(h.looper.status().bars, Some(2));
+        // Another Length lets go of the pattern.
+        h.command(Command::SetBars(Some(8)));
+        h.set_pattern_bars(Some(1));
+        run(&mut h, 2);
+        assert!(!h.match_pattern);
+        assert!(!h.view(120.0).match_pattern);
+    }
+
     /// Records from the loops: Record on an empty loop resamples the
     /// others; on a loop that plays it still overdubs.
     #[test]

@@ -923,12 +923,37 @@ impl LooperPage {
                     RingState::Waiting(_) if l.listening => {
                         (0.0, 0, ("Play".to_string(), "to start".to_string()))
                     }
+                    // Armed on the bar: the bar it starts on, and in the
+                    // last bar before it a count of the beats left, so the
+                    // start never comes as a surprise.
                     RingState::Waiting(b) => (
                         0.0,
                         0,
-                        match b {
-                            Some(b) => (b.to_string(), "REC on bar".to_string()),
-                            None => ("▶".to_string(), "REC on PLAY".to_string()),
+                        match (l.starts_on.filter(|_| running), b) {
+                            (Some(at), _) => {
+                                let ppq = mpfree_transport::time::PPQ as i64;
+                                let ppq = ppq.max(1);
+                                let left = ((at - pos).max(0) + ppq - 1) / ppq;
+                                if left as usize <= beats {
+                                    let left = left.max(1);
+                                    (
+                                        left.to_string(),
+                                        if left == 1 {
+                                            "beat to REC"
+                                        } else {
+                                            "beats to REC"
+                                        }
+                                        .to_string(),
+                                    )
+                                } else {
+                                    (
+                                        (at / bar_ticks.max(1) + 1).to_string(),
+                                        "REC on bar".to_string(),
+                                    )
+                                }
+                            }
+                            (None, Some(b)) => (b.to_string(), "REC on bar".to_string()),
+                            (None, None) => ("▶".to_string(), "REC on PLAY".to_string()),
                         },
                     ),
                     // Recording free (tempo from the first loop): no bars
@@ -1200,7 +1225,13 @@ impl LooperPage {
                 source: source_index(v),
                 monitor: (!v.resample && v.source == LoopSource::Line && v.line_on)
                     .then_some(v.monitor),
-                bars: BAR_CHOICES.iter().position(|&b| b == s.bars).unwrap_or(0) as u8,
+                // Length: Pattern is the app's choice; the looper only
+                // sees the bars it stands for.
+                bars: if v.match_pattern {
+                    0
+                } else {
+                    BAR_CHOICES.iter().position(|&b| b == s.bars).unwrap_or(1) as u8
+                },
                 // A resample starts on the bar.
                 starts: match (v.resample, s.starts) {
                     (true, _) => (0, false),
@@ -1788,6 +1819,44 @@ mod tests {
     }
 
     #[test]
+    fn a_waiting_loop_counts_the_beats_in_its_last_bar() {
+        let (mut ui, mut page) = page();
+        let mut v = two_loops();
+        v.selected = 4;
+        v.loops[4].phase = Phase::Armed;
+        // Armed to start on bar 14's line (tick 13 bars in).
+        v.loops[4].starts_on = Some(13 * 4 * 960);
+        v.status = v.loops[4];
+        page.update(&mut ui, &v, &Settings::default());
+        let at = |page: &mut LooperPage, ui: &mut Ui, position| {
+            page.set_transport(
+                ui,
+                TransportInfo {
+                    state: State::Playing,
+                    position,
+                    bpm: 120.0,
+                    ..TransportInfo::default()
+                },
+            );
+            ui.get::<LoopDeck>(DECK).unwrap().channels[4].centre.clone()
+        };
+        // More than a bar away: the bar it starts on.
+        assert_eq!(
+            at(&mut page, &mut ui, 11 * 4 * 960 + 10),
+            ("14".to_string(), "REC on bar".to_string())
+        );
+        // In the last bar: the beats left.
+        assert_eq!(
+            at(&mut page, &mut ui, 12 * 4 * 960 + 10),
+            ("4".to_string(), "beats to REC".to_string())
+        );
+        assert_eq!(
+            at(&mut page, &mut ui, 12 * 4 * 960 + 3 * 960 + 10),
+            ("1".to_string(), "beat to REC".to_string())
+        );
+    }
+
+    #[test]
     fn a_waiting_loop_says_the_bar_it_starts_on() {
         let (mut ui, mut page) = page();
         let mut v = two_loops();
@@ -1823,11 +1892,11 @@ mod tests {
             Strip::Records {
                 source: 1,
                 monitor: Some(false),
-                bars: 2,
+                bars: 3,
                 starts: (0, true),
                 then: 0
             },
-            "the line in shows its monitor; 2 bars is the third length"
+            "the line in shows its monitor; 2 bars is the fourth length (after Pattern)"
         );
         // Records from the loops.
         v.resample = true;

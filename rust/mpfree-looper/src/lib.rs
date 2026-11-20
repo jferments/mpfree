@@ -181,6 +181,11 @@ pub fn free_tempo(len: usize, rate: u32, bar: Tick) -> Option<(u32, f64)> {
 /// A loop waiting for you to play ([`Starts::Play`]) by ear starts on the
 /// first input sample at or over this (-40 dB).
 pub const PLAY_LEVEL: f32 = 0.01;
+
+/// A loop armed on the bar with the song playing starts on the first bar
+/// line at least this many beats after the tap, so a tap just before a
+/// bar line gives time to get ready instead of starting at once.
+pub const LEAD_BEATS: i64 = 1;
 static SILENCE: f32 = 0.0;
 
 /// What the looper's buttons and screen ask for. Each applies to the
@@ -646,6 +651,11 @@ pub struct Status {
     /// STOP cut the first pass short: the frames of it that hold sound.
     /// The rest, to `frames`, is silent. None otherwise.
     pub cut: Option<usize>,
+    /// Armed on the bar with the song playing: the bar line (song tick)
+    /// the first pass starts on. Always at least a beat after the tap
+    /// ([`LEAD_BEATS`]), so there is time to get ready. None otherwise
+    /// (stopped: it starts on the bar PLAY starts on).
+    pub starts_on: Option<Tick>,
     /// Cleared, and Undo can bring it back ([`Command::Clear`]).
     pub kept: bool,
     /// Soloed ([`Command::Solo`]).
@@ -1581,6 +1591,15 @@ struct Loop {
     /// stays the loop's start (a pickup: the frames before it lead into
     /// the first bar) or the note is the start (the song started on it).
     pending: Option<(u64, bool)>,
+    /// Armed on the bar this period ([`Command::Record`]): the next
+    /// period's start notes whether the song was playing.
+    just_armed: bool,
+    /// Armed on the bar with the song playing: the song tick of the tap,
+    /// and the one [`LEAD_BEATS`] after it. No bar line between them
+    /// starts the first pass, so a tap just before a bar line waits for
+    /// the next one instead of starting at once (a line on the tap's own
+    /// tick, the song starting with it, still does).
+    tap_lead: Option<(f64, f64)>,
     /// The song is stopped and a note came: the host is asked to start
     /// it ([`Looper::take_start`]).
     want_start: bool,
@@ -1756,6 +1775,8 @@ impl Loop {
         by_ear: false,
         hit: None,
         pending: None,
+        just_armed: false,
+        tap_lead: None,
         want_start: false,
         rec_from: 0,
         lead: 0,
@@ -1988,6 +2009,18 @@ impl Looper {
                 0
             },
             cut: (l.len > 0 && l.cut < l.len).then_some(l.cut),
+            starts_on: (l.phase == Phase::Armed)
+                .then_some(l.tap_lead)
+                .flatten()
+                .map(|(tap, until)| {
+                    let bar = self.bar_ticks.max(1) as f64;
+                    let line = (tap / bar).ceil() * bar;
+                    (if line > tap && line < until {
+                        (until / bar).ceil() * bar
+                    } else {
+                        line
+                    }) as Tick
+                }),
             kept: self.store.has_kept(n),
             solo: l.solo,
             solo_out: l.solo_out,
@@ -2409,6 +2442,19 @@ impl Looper {
         }
         self.heard.hear(block, input, n);
         self.apply_commands();
+        // A loop armed with the song playing starts no sooner than
+        // LEAD_BEATS after the tap; armed while stopped or counting in,
+        // on the bar PLAY starts on (with the pads' pattern, SHIFT + Arm).
+        if let Some(s) = block.spans().first() {
+            let rolling = matches!(s.state, State::Playing | State::Recording);
+            let tap = s.tick_at(s.frame);
+            let until = tap + (LEAD_BEATS * s.meter.beat_ticks()) as f64;
+            for l in &mut self.loops {
+                if std::mem::take(&mut l.just_armed) && l.phase == Phase::Armed {
+                    l.tap_lead = rolling.then_some((tap, until));
+                }
+            }
+        }
         self.place_hits(block);
         self.close_free(block);
         self.tend_captures();
@@ -3588,6 +3634,8 @@ impl Loop {
                     self.phase = Phase::Armed;
                     self.ring = [0.0; 2 * FADE];
                     self.unhear();
+                    self.just_armed = true;
+                    self.tap_lead = None;
                     // A new loop plays once recorded.
                     self.on = true;
                     self.cue = None;
@@ -4664,6 +4712,17 @@ impl Loop {
         {
             self.unhear();
         }
+        // The lead counts from where the tap was in the song: once the
+        // song stops or jumps, the loop starts on the next bar line it
+        // reaches (on the bar PLAY starts on).
+        if self.phase == Phase::Armed
+            && matches!(
+                mark,
+                Mark::Stopped { .. } | Mark::Located { .. } | Mark::Looped { .. } | Mark::Panic
+            )
+        {
+            self.tap_lead = None;
+        }
         if self.phase != Phase::Recording {
             return;
         }
@@ -4746,6 +4805,13 @@ impl Loop {
     /// the loop listens again.
     fn starts_on(&mut self, span: &Span, t: Tick, f: u64) -> Option<(u64, usize)> {
         if self.starts == Starts::Bar || self.resample {
+            // Too soon after the tap: the next bar line.
+            if self
+                .tap_lead
+                .is_some_and(|(tap, until)| (t as f64) > tap && (t as f64) < until)
+            {
+                return None;
+            }
             return Some((f, 0));
         }
         let (p, pickup) = self.pending?;

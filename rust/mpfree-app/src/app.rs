@@ -707,8 +707,9 @@ pub struct Settings {
     pub loop_monitor: bool,
     /// What the looper records: the pads (the default) or the line input.
     pub loop_source: LoopSource,
-    /// Bars in the looper's next first pass (None, the default: free,
-    /// until STOP or Record again).
+    /// Bars in the looper's next first pass: the pattern's length
+    /// (`Some(PATTERN_BARS)`, the default: looping.rs), None for free
+    /// (until STOP or Record again), or a number of bars.
     pub loop_bars: Option<u32>,
     /// Input latency the looper makes up for, in frames; estimated from
     /// the audio buffer until set by hand.
@@ -805,7 +806,7 @@ impl Default for Settings {
             loop_monitor: false,
             loop_source: LoopSource::Pads,
             // REC + PLAY records until STOP, as on the MPC (Jay, 16 Nov).
-            loop_bars: None,
+            loop_bars: Some(crate::looping::PATTERN_BARS),
             loop_latency: crate::looping::estimated_latency(3),
             loop_latency_set: false,
             loop_level_db: 0.0,
@@ -4799,10 +4800,11 @@ impl App {
                 "the instrument another way.",
             ],
             Item::LoopBars => vec![
-                "How long the looper's first pass is: free",
-                "(until STOP, or the bar line after Record",
-                "again) or 1, 2, 4 or 8 bars. STOP keeps what",
-                "you played, to the next bar line.",
+                "How long the looper's first pass is: the",
+                "pattern's length (the longest clip playing),",
+                "free (until STOP, or the bar line after",
+                "Record again) or 1, 2, 4 or 8 bars. STOP",
+                "keeps what you played, to the next bar line.",
             ],
             Item::LoopLatency => vec![
                 "How late your playing reaches the looper and",
@@ -5293,7 +5295,14 @@ impl App {
                 }
             }
             Item::LoopBars => {
-                const BARS: [Option<u32>; 5] = [Some(1), Some(2), Some(4), Some(8), None];
+                const BARS: [Option<u32>; 6] = [
+                    Some(crate::looping::PATTERN_BARS),
+                    Some(1),
+                    Some(2),
+                    Some(4),
+                    Some(8),
+                    None,
+                ];
                 s.loop_bars = cycle(&BARS, s.loop_bars, d);
                 fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetBars(
                     s.loop_bars,

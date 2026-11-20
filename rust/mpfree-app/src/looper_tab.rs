@@ -101,8 +101,17 @@ pub const SPEED_CHOICES: [&str; 3] = ["½×", "1×", "2×"];
 /// Merge's width at the strip's right end.
 const MERGE_W: i32 = 100;
 
-/// The Length choices' bars (None: free).
-pub const BAR_CHOICES: [Option<u32>; 5] = [None, Some(1), Some(2), Some(4), Some(8)];
+/// The Length choices' bars: the pattern's length
+/// ([`crate::looping::PATTERN_BARS`], the default), free (None), or a
+/// number of bars.
+pub const BAR_CHOICES: [Option<u32>; 6] = [
+    Some(crate::looping::PATTERN_BARS),
+    None,
+    Some(1),
+    Some(2),
+    Some(4),
+    Some(8),
+];
 
 /// What a touch on the Looper tab asked for.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -944,9 +953,12 @@ impl LoopEditor {
                     ));
                 }
                 x2 += 90;
-                for (i, l) in ["Free", "1", "2", "4", "8 bars"].iter().enumerate() {
-                    let w = if i == 4 { 78 } else { 54 };
-                    let bx = x2 + 3 + [0, 58, 116, 174, 232][i];
+                for (i, l) in ["Pattern", "Free", "1", "2", "4", "8 bars"]
+                    .iter()
+                    .enumerate()
+                {
+                    let w = [70, 50, 36, 36, 36, 62][i];
+                    let bx = x2 + 3 + [0, 74, 128, 168, 208, 248][i];
                     out.push((
                         Ctl::Bars(i as u8),
                         Rect::new(bx, y + 3, w, CTRL_H - 6),
