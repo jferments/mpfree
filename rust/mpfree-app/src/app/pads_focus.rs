@@ -224,7 +224,7 @@ impl App {
         if self.pads_chose_synth() {
             return self.pads_follow_track();
         }
-        if self.pad_layout.is_some() || self.track_sound(self.track).is_some() {
+        if self.pad_layout.is_some() || self.track_plays_instrument(self.track) {
             return Vec::new();
         }
         if self.generating() {
@@ -334,7 +334,7 @@ impl App {
         track < 128
             && self.synth_tracks >> track & 1 == 1
             && !self.configured(track)
-            && self.track_sound(track).is_none()
+            && !self.track_plays_instrument(track)
     }
 
     /// The pads part of the project ([`PadFocus::text`]).

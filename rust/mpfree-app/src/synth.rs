@@ -507,6 +507,48 @@ impl Held {
     }
 }
 
+/// Who started a pad's notes on the shared synth (instrument redesign step
+/// 4): the pads straight on it (the synth chosen for the pads, a step's or
+/// a scale row's audition) or a track (its clip, or the pads through its
+/// arp). Each keeps its own notes, so two tracks on one pad, or a track
+/// and the pads, never end each other's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Player {
+    Pads,
+    Track(usize),
+}
+
+/// The players the synth keeps notes for: the pads, then every track.
+const PLAYERS: usize = 1 + mpfree_seq::MAX_TRACKS;
+/// Words of the bit set of players that hold a pad now.
+const PLAYER_WORDS: usize = PLAYERS.div_ceil(128);
+
+impl Player {
+    /// Its row in the synth's tables; None for a track past the last.
+    fn index(self) -> Option<usize> {
+        match self {
+            Player::Pads => Some(0),
+            Player::Track(t) if t < mpfree_seq::MAX_TRACKS => Some(1 + t),
+            Player::Track(_) => None,
+        }
+    }
+}
+
+/// The players in `set` (a bit per player), lowest first.
+fn players(set: [u128; PLAYER_WORDS]) -> impl Iterator<Item = usize> {
+    (0..PLAYER_WORDS).flat_map(move |w| {
+        let mut bits = set[w];
+        std::iter::from_fn(move || {
+            if bits == 0 {
+                return None;
+            }
+            let i = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            Some(w * 128 + i)
+        })
+    })
+}
+
 pub struct Synth {
     // Each engine as a sound ([`Sound`]): the engine, and the effects and
     // macros a preset brings (none for a factory preset yet). The engine's
@@ -537,13 +579,17 @@ pub struct Synth {
     octave: i32,
     /// The pads' notes, worked out when a setting changes.
     pads: [Pad; PADS],
-    /// The notes each pad started, so its note-off ends those notes even
-    /// after the layout or octave changed.
-    playing: [Held; PADS],
+    /// The notes each player's pads started ([`Player`]), so a pad's
+    /// note-off ends that player's notes even after the layout or octave
+    /// changed, and never another's. Made here, never on the audio thread.
+    playing: Box<[[Held; PADS]; PLAYERS]>,
+    /// The players that hold a pad now (a bit each), so a panic or a
+    /// pressure looks only at those.
+    holding: [u128; PLAYER_WORDS],
     /// How many pads hold each note now.
     holders: [u8; 128],
-    /// Each pad's last pressure, 0 to 127.
-    press: [u8; PADS],
+    /// Each player's pads' last pressure, 0 to 127.
+    press: Box<[[u8; PADS]; PLAYERS]>,
     /// The preset each engine has loaded.
     presets: [usize; ENGINES],
     /// Drums' pads' notes or names changed since the app last asked.
@@ -830,9 +876,10 @@ impl Synth {
             settings,
             octave: 0,
             pads: pads::layout(&settings.setup(0)),
-            playing: [Held::default(); PADS],
+            playing: Box::new([[Held::default(); PADS]; PLAYERS]),
+            holding: [0; PLAYER_WORDS],
             holders: [0; 128],
-            press: [0; PADS],
+            press: Box::new([[0; PADS]; PLAYERS]),
             presets: [
                 preset,
                 fm_preset,
@@ -858,7 +905,7 @@ impl Synth {
             audition: None,
             own: Default::default(),
             tuning_files: Vec::new(),
-            locks: crate::locks::Under::new(),
+            locks: crate::locks::Under::new(rate),
             pad_voices: vec![None; VOICE_TRACKS * VOICE_PADS].into_boxed_slice(),
             pad_holders: [[0; 128]; ENGINES],
         };
@@ -1367,10 +1414,14 @@ impl Synth {
         }
     }
 
-    /// Ends the notes pad `pad` started: each note's note-off goes out once
-    /// no other pad holds it.
-    fn release_pad(&mut self, pad: usize, offset: u32) {
-        let held = std::mem::take(&mut self.playing[pad]);
+    /// Ends the notes player `i` started on pad `pad`: each note's
+    /// note-off goes out once no other pad (of any player) holds it.
+    fn release_pad(&mut self, i: usize, pad: usize, offset: u32) {
+        let held = std::mem::take(&mut self.playing[i][pad]);
+        self.press[i][pad] = 0;
+        if held.len == 0 {
+            return;
+        }
         let e = self.settings.engine;
         for &note in held.notes() {
             let h = &mut self.holders[usize::from(note)];
@@ -1379,24 +1430,49 @@ impl Synth {
                 self.push(e, offset, NodeEvent::NoteOff { note });
             }
         }
+        if self.playing[i].iter().all(|h| h.len == 0) {
+            self.holding[i / 128] &= !(1u128 << (i % 128));
+        }
     }
 
-    /// Pad `pad` starts its notes, `offset` frames into the next render. A
-    /// pad already sounding ends its notes first (Note Repeat's next hit).
+    /// Every player's pads let go of their notes, with no note-offs (a
+    /// panic or a reset sends its own).
+    fn forget_pads(&mut self) {
+        for i in players(self.holding) {
+            self.playing[i] = [Held::default(); PADS];
+            self.press[i] = [0; PADS];
+        }
+        self.holding = [0; PLAYER_WORDS];
+    }
+
+    /// Pad `pad` starts its notes on the pads' own row ([`Player::Pads`]),
+    /// `offset` frames into the next render. A pad already sounding there
+    /// ends its notes first (Note Repeat's next hit).
     pub fn note_on(&mut self, pad: usize, velocity: u8, offset: u32) {
-        self.note_on_shifted(pad, velocity, offset, &Shift::NONE);
+        self.note_on_shifted(Player::Pads, pad, velocity, offset, &Shift::NONE);
     }
 
-    /// [`Synth::note_on`] with its track's live transpose (sequencer S4):
+    /// Pad `pad` starts its notes for `player` (a track's clip or the pads
+    /// through its arp), with its track's live transpose (sequencer S4):
     /// each of the pad's notes moves by `shift`, and one that falls off the
-    /// keyboard is left out. The pad remembers what it started, so its
-    /// note-off and pressure reach those notes whatever the shift is by
-    /// then.
-    pub fn note_on_shifted(&mut self, pad: usize, velocity: u8, offset: u32, shift: &Shift) {
+    /// keyboard is left out. The player's pad remembers what it started, so
+    /// its note-off and pressure reach those notes whatever the shift is by
+    /// then, and another player's hit on the same pad leaves them be.
+    pub fn note_on_shifted(
+        &mut self,
+        player: Player,
+        pad: usize,
+        velocity: u8,
+        offset: u32,
+        shift: &Shift,
+    ) {
+        let Some(i) = player.index() else {
+            return;
+        };
         if pad >= PADS || velocity == 0 {
             return;
         }
-        self.release_pad(pad, offset);
+        self.release_pad(i, pad, offset);
         let p = self.pads[pad];
         let mut held = Held::default();
         for note in p.notes().iter().filter_map(|&n| shift.apply(n)) {
@@ -1415,38 +1491,64 @@ impl Synth {
         }
         if held.len > 0 {
             self.notes += 1;
+            self.holding[i / 128] |= 1u128 << (i % 128);
         }
-        self.playing[pad] = held;
-        self.press[pad] = 0;
+        self.playing[i][pad] = held;
     }
 
-    /// Pad `pad` was let go (or its repeat ended), `offset` frames in.
+    /// Pad `pad` was let go on the pads' own row (or its repeat ended),
+    /// `offset` frames in.
     pub fn note_off(&mut self, pad: usize, offset: u32) {
-        if pad < PADS {
-            self.release_pad(pad, offset);
-            self.press[pad] = 0;
+        self.note_off_by(Player::Pads, pad, offset);
+    }
+
+    /// `player`'s pad `pad` was let go, `offset` frames in: the notes it
+    /// started end; another player's on the same pad play on.
+    pub fn note_off_by(&mut self, player: Player, pad: usize, offset: u32) {
+        if let Some(i) = player.index().filter(|_| pad < PADS) {
+            self.release_pad(i, pad, offset);
         }
     }
 
-    /// Pad pressure, 0 to 127, on every note the pad plays. A note two pads
-    /// hold takes the harder press.
+    /// The pad's own pressure, 0 to 127, on every note it holds, whoever
+    /// started them (as before step 4). A note two pads hold takes the
+    /// harder press.
     pub fn pressure(&mut self, pad: usize, value: u8) {
-        self.pressure_at(pad, value, 0);
-    }
-
-    /// [`Synth::pressure`] `offset` frames into the next render (a clip's
-    /// recorded pressure, on its frame).
-    pub fn pressure_at(&mut self, pad: usize, value: u8, offset: u32) {
-        if pad >= PADS || self.playing[pad].len == 0 {
+        if pad >= PADS {
             return;
         }
-        self.press[pad] = value.min(127);
-        let held = self.playing[pad];
+        for i in players(self.holding) {
+            if self.playing[i][pad].len > 0 {
+                self.press[i][pad] = value.min(127);
+                self.send_pressure(i, pad, 0);
+            }
+        }
+    }
+
+    /// `player`'s pressure on pad `pad`, `offset` frames into the next
+    /// render (a clip's recorded pressure, on its frame).
+    pub fn pressure_at(&mut self, player: Player, pad: usize, value: u8, offset: u32) {
+        let Some(i) = player.index() else {
+            return;
+        };
+        if pad >= PADS || self.playing[i][pad].len == 0 {
+            return;
+        }
+        self.press[i][pad] = value.min(127);
+        self.send_pressure(i, pad, offset);
+    }
+
+    /// Each note player `i`'s pad `pad` holds takes the hardest press of
+    /// the pads that hold it.
+    fn send_pressure(&mut self, i: usize, pad: usize, offset: u32) {
+        let held = self.playing[i][pad];
         for &note in held.notes() {
             let mut v = 0u8;
-            for (q, other) in self.playing.iter().enumerate() {
-                if other.notes().contains(&note) {
-                    v = v.max(self.press[q]);
+            for q in players(self.holding) {
+                for (p, other) in self.playing[q].iter().enumerate() {
+                    if other.notes().contains(&note) {
+                        v = v.max(self.press[q][p]);
+                    }
                 }
             }
             self.push(
@@ -1641,9 +1743,8 @@ impl Synth {
     /// Every note ends with its release (the pads went back to drums).
     pub fn all_off(&mut self) {
         self.push(self.settings.engine, 0, NodeEvent::AllOff);
-        self.playing = [Held::default(); PADS];
+        self.forget_pads();
         self.holders = [0; 128];
-        self.press = [0; PADS];
         // The Instrument pads' notes on the other engines end too.
         for e in Engine::ALL {
             if e != self.settings.engine && self.pad_holders[e.index()].iter().any(|&h| h > 0) {
@@ -1671,10 +1772,26 @@ impl Synth {
     /// Never allocates.
     pub fn render(&mut self, frame: u64, bpm: f64, left: &mut [f32], right: &mut [f32]) {
         let n = left.len().min(right.len());
+        // The locks that ended play now: forget them. A knob a new owner
+        // glides to, or the hand let go of, moves from the start (knob
+        // owners, locks.rs).
+        self.locks.settle();
+        let mut moved = [(0u32, 0f32); crate::locks::MAX];
+        let mut k = 0;
+        self.locks.tick(n as u32, |key, v| {
+            if k < moved.len() {
+                moved[k] = (key, v);
+                k += 1;
+            }
+        });
+        for &(key, value) in &moved[..k] {
+            if let Some(&e) = Engine::ALL.get((key >> 16) as usize) {
+                let id = (key & 0xFFFF) as u16;
+                self.push(e, 0, NodeEvent::Param { id, value });
+            }
+        }
         let len = self.len;
         self.len = [0; ENGINES];
-        // The locks that ended play now: forget them.
-        self.locks.settle();
         if n == 0 {
             return;
         }
@@ -1740,7 +1857,7 @@ impl Synth {
                 if !sl.iter().chain(sr.iter()).all(|s| s.is_finite()) {
                     node.reset();
                     if k == on {
-                        self.playing = [Held::default(); PADS];
+                        self.forget_pads();
                         self.holders = [0; 128];
                     }
                     self.resets += 1;
@@ -1766,7 +1883,7 @@ impl Synth {
                     for e in Engine::ALL {
                         self.engine_node_mut(e).reset();
                     }
-                    self.playing = [Held::default(); PADS];
+                    self.forget_pads();
                     self.holders = [0; 128];
                     self.fading = false;
                 }
@@ -1871,8 +1988,9 @@ impl Synth {
     /// [`Synth::take_pads_changed`]).
     pub fn set(&mut self, id: u16, value: f32) {
         let names = self.drum_names();
-        // Under a clip's lock, the turn is what its end comes back to.
-        self.locks.set(lock_key(self.settings.engine, id), value);
+        // Under a clip's lock, the turn is what its end comes back to, and
+        // the hand holds the knob a moment (knob owners, locks.rs).
+        self.locks.hand(lock_key(self.settings.engine, id), value);
         self.node_mut().set_param(id, value);
         if self.settings.engine == Engine::Drums && moves_drum_pads(id) {
             self.drums_moved(names);
@@ -1955,7 +2073,7 @@ impl Synth {
     /// back to.
     fn preset_under_locks(&mut self) {
         let e = self.settings.engine;
-        let mut locks = std::mem::take(&mut self.locks);
+        let mut locks = std::mem::replace(&mut self.locks, crate::locks::Under::new(0));
         let node = self.node_of(e);
         locks.reread(
             |k| k >> 16 == e.index() as u32,
@@ -1964,32 +2082,46 @@ impl Synth {
         self.locks = locks;
     }
 
-    /// A clip's lock on parameter `id` of the engine on the pads
-    /// (`Owner::Inst`): `Some` sets it on its frame, `offset` frames into
-    /// the next render, `None` puts back the value under it (the sound's
-    /// own, or the last turn by hand). False for a parameter the engine
-    /// doesn't have, a meter, Drums' pad notes and models (they move the
-    /// pads), or a full table.
-    pub fn lock(&mut self, id: u16, value: Option<f32>, offset: u32) -> bool {
+    /// Track `track`'s clip's lock on parameter `id` of the engine on
+    /// the pads (`Owner::Inst`): `Some` sets it on its frame, `offset`
+    /// frames into the next render, `None` puts back the value under it
+    /// (the sound's own, or the last turn by hand). The tracks that play
+    /// the synth share it, so one owns a knob at a time (step 4b,
+    /// locks.rs): another track's lock is kept and plays when it owns the
+    /// knob. False for a parameter the engine doesn't have, a meter,
+    /// Drums' pad notes and models (they move the pads), or a full table.
+    pub fn lock(&mut self, track: usize, id: u16, value: Option<f32>, offset: u32) -> bool {
         let e = self.settings.engine;
         let key = lock_key(e, id);
         let Some(value) = value else {
-            if let Some(under) = self.locks.unlock(key) {
-                self.push(e, offset, NodeEvent::Param { id, value: under });
+            if let Some(back) = self.locks.unlock(key, track) {
+                self.push(e, offset, NodeEvent::Param { id, value: back });
             }
             return true;
         };
-        let lockable = self
+        let smooth = match self
             .node()
             .params()
             .iter()
-            .any(|p| p.id == id && !p.readonly)
-            && !(e == Engine::Drums && moves_drum_pads(id));
-        if !lockable || !self.locks.lock(key, self.node().param(id)) {
-            return false;
+            .find(|p| p.id == id && !p.readonly)
+        {
+            Some(p) if !(e == Engine::Drums && moves_drum_pads(id)) => crate::locks::glides(p),
+            _ => return false,
+        };
+        let now = self.node().param(id);
+        match self.locks.lock(key, track, value, now, smooth) {
+            Some(true) => self.push(e, offset, NodeEvent::Param { id, value }),
+            Some(false) => {}
+            None => return false,
         }
-        self.push(e, offset, NodeEvent::Param { id, value });
         true
+    }
+
+    /// Each track's lasting id (`mpfree_seq::TrackId`, 0 for none), by
+    /// track: when two tracks on the synth lock one knob, the lowest owns
+    /// it (step 4b, locks.rs).
+    pub fn set_ranks(&mut self, ids: &[u32; crate::locks::TRACKS]) {
+        self.locks.set_ranks(ids);
     }
 
     /// How many of the engines' parameters a clip's lock holds now.
@@ -2630,12 +2762,80 @@ mod tests {
     }
 
     #[test]
+    fn two_tracks_on_one_pad_each_end_their_own_notes() {
+        let mut s = Synth::new(44_100);
+        let mut frame = 0u64;
+        let on = |note| NodeEvent::NoteOn {
+            note,
+            velocity: 100,
+        };
+        // Pad 0 is C3 (48). Track 2's clip holds it; track 5 hits it a
+        // fourth up and lets go; the pads hit it as it is.
+        s.note_on_shifted(Player::Track(2), 0, 100, 0, &Shift::NONE);
+        s.note_on_shifted(Player::Track(5), 0, 100, 1, &Shift::semitones(5));
+        s.note_on(0, 100, 2);
+        s.note_off_by(Player::Track(5), 0, 3);
+        assert_eq!(
+            queued(&s),
+            vec![on(48), on(53), on(48), NodeEvent::NoteOff { note: 53 }],
+            "track 5's let-go ends only its F3; track 2's C3 plays on"
+        );
+        run(&mut s, &mut frame, 1, 64);
+        // The pads' let-go leaves track 2's C3 held (two hold it); track
+        // 2's then ends it.
+        s.note_off(0, 0);
+        assert!(queued(&s).is_empty(), "C3 is still track 2's");
+        s.pressure_at(Player::Track(2), 0, 70, 1);
+        s.note_off_by(Player::Track(2), 0, 2);
+        assert_eq!(
+            queued(&s),
+            vec![
+                NodeEvent::Pressure {
+                    note: 48,
+                    value: 70
+                },
+                NodeEvent::NoteOff { note: 48 },
+            ]
+        );
+        // A hit again on the same player's pad ends its last first (Note
+        // Repeat), and a track past the last plays nothing.
+        run(&mut s, &mut frame, 1, 64);
+        s.note_on_shifted(Player::Track(2), 0, 90, 0, &Shift::NONE);
+        s.note_on_shifted(Player::Track(2), 0, 90, 1, &Shift::NONE);
+        s.note_on_shifted(
+            Player::Track(mpfree_seq::MAX_TRACKS),
+            0,
+            90,
+            2,
+            &Shift::NONE,
+        );
+        let q = queued(&s);
+        assert_eq!(q.len(), 3, "{q:?}");
+        assert_eq!(q[1], NodeEvent::NoteOff { note: 48 });
+        // The pad's own pressure reaches whoever holds it; a panic forgets
+        // every player's pads.
+        run(&mut s, &mut frame, 1, 64);
+        s.pressure(0, 40);
+        assert_eq!(
+            queued(&s),
+            vec![NodeEvent::Pressure {
+                note: 48,
+                value: 40
+            }]
+        );
+        s.all_off();
+        run(&mut s, &mut frame, 1, 64);
+        s.note_off_by(Player::Track(2), 0, 0);
+        assert!(queued(&s).is_empty(), "nothing held after the panic");
+    }
+
+    #[test]
     fn a_shifted_pad_starts_its_notes_moved_and_ends_them() {
         let mut s = Synth::new(44_100);
         // Pad 0 plays C3 (48): up a fourth, F3.
-        s.note_on_shifted(0, 100, 0, &Shift::semitones(5));
-        s.pressure_at(0, 60, 2);
-        s.note_off(0, 4);
+        s.note_on_shifted(Player::Track(0), 0, 100, 0, &Shift::semitones(5));
+        s.pressure_at(Player::Track(0), 0, 60, 2);
+        s.note_off_by(Player::Track(0), 0, 4);
         assert_eq!(
             queued(&s),
             vec![
@@ -2758,7 +2958,7 @@ mod tests {
         } else {
             p.min
         };
-        assert!(s.lock(p.id, Some(locked), 7));
+        assert!(s.lock(0, p.id, Some(locked), 7));
         assert_eq!(
             queued(&s),
             vec![NodeEvent::Param {
@@ -2770,10 +2970,10 @@ mod tests {
         run(&mut s, &mut frame, 1, 256);
         assert_eq!(s.value(p.id), locked);
         // Another step's lock keeps the sound's own value under it.
-        assert!(s.lock(p.id, Some(locked), 0));
+        assert!(s.lock(0, p.id, Some(locked), 0));
         run(&mut s, &mut frame, 1, 256);
         assert_eq!(s.locks_holding(), 1);
-        assert!(s.lock(p.id, None, 3));
+        assert!(s.lock(0, p.id, None, 3));
         assert_eq!(
             queued(&s),
             vec![NodeEvent::Param {
@@ -2784,11 +2984,24 @@ mod tests {
         run(&mut s, &mut frame, 1, 256);
         assert_eq!(s.value(p.id), own);
         assert_eq!(s.locks_holding(), 0);
-        // A turn on the Synth tab under a lock is what its end comes back to.
+        // A turn on the Synth tab under a lock is what its end comes back
+        // to; the hand holds the knob a moment, so the lock's end and a
+        // new lock then leave the turn as it is (knob owners, locks.rs).
         let mid = (p.min + p.max) / 2.0;
-        assert!(s.lock(p.id, Some(locked), 0));
+        assert!(s.lock(0, p.id, Some(locked), 0));
+        run(&mut s, &mut frame, 1, 256);
         s.set(p.id, mid);
-        assert!(s.lock(p.id, None, 0));
+        assert!(s.lock(0, p.id, None, 0));
+        assert!(s.lock(0, p.id, Some(locked), 0));
+        assert!(queued(&s).is_empty(), "{:?}", queued(&s));
+        run(&mut s, &mut frame, 1, 256);
+        assert_eq!(s.value(p.id), mid);
+        // Let go, the lock takes the knob back by a short glide, and its
+        // end comes back to the turn.
+        let hand = (44_100.0 * crate::locks::HAND_S) as usize;
+        run(&mut s, &mut frame, hand / 256 + 12, 256);
+        assert_eq!(s.value(p.id), locked);
+        assert!(s.lock(0, p.id, None, 0));
         assert!(queued(&s).ends_with(&[NodeEvent::Param {
             id: p.id,
             value: mid
@@ -2796,9 +3009,9 @@ mod tests {
         // A meter can't be locked, and an end with no lock sends nothing.
         run(&mut s, &mut frame, 1, 256);
         if let Some(m) = s.node().params().iter().find(|p| p.readonly) {
-            assert!(!s.lock(m.id, Some(1.0), 0));
+            assert!(!s.lock(0, m.id, Some(1.0), 0));
         }
-        assert!(s.lock(p.id, None, 0));
+        assert!(s.lock(0, p.id, None, 0));
         assert!(queued(&s).is_empty());
     }
 
