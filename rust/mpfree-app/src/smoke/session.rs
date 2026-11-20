@@ -1219,6 +1219,10 @@ impl Session {
             self.out.note(&format!("time: {line}"));
         }
         self.app.set_track_count(self.time.track_count());
+        // Knob owners, as main.rs.
+        let ranks = crate::track_ranks(self.time.project());
+        self.mix.instruments.set_ranks(&ranks);
+        self.synth.set_ranks(&ranks);
         // A track UNDO took away sets its kit aside, and REDO gives it back
         // (as player_session).
         let (redos, can_redo) = self.time.redos();

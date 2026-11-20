@@ -858,7 +858,7 @@ impl Synth {
             audition: None,
             own: Default::default(),
             tuning_files: Vec::new(),
-            locks: crate::locks::Under::new(),
+            locks: crate::locks::Under::new(rate),
             pad_voices: vec![None; VOICE_TRACKS * VOICE_PADS].into_boxed_slice(),
             pad_holders: [[0; 128]; ENGINES],
         };
@@ -1671,10 +1671,26 @@ impl Synth {
     /// Never allocates.
     pub fn render(&mut self, frame: u64, bpm: f64, left: &mut [f32], right: &mut [f32]) {
         let n = left.len().min(right.len());
+        // The locks that ended play now: forget them. A knob a new owner
+        // glides to, or the hand let go of, moves from the start (knob
+        // owners, locks.rs).
+        self.locks.settle();
+        let mut moved = [(0u32, 0f32); crate::locks::MAX];
+        let mut k = 0;
+        self.locks.tick(n as u32, |key, v| {
+            if k < moved.len() {
+                moved[k] = (key, v);
+                k += 1;
+            }
+        });
+        for &(key, value) in &moved[..k] {
+            if let Some(&e) = Engine::ALL.get((key >> 16) as usize) {
+                let id = (key & 0xFFFF) as u16;
+                self.push(e, 0, NodeEvent::Param { id, value });
+            }
+        }
         let len = self.len;
         self.len = [0; ENGINES];
-        // The locks that ended play now: forget them.
-        self.locks.settle();
         if n == 0 {
             return;
         }
@@ -1871,8 +1887,9 @@ impl Synth {
     /// [`Synth::take_pads_changed`]).
     pub fn set(&mut self, id: u16, value: f32) {
         let names = self.drum_names();
-        // Under a clip's lock, the turn is what its end comes back to.
-        self.locks.set(lock_key(self.settings.engine, id), value);
+        // Under a clip's lock, the turn is what its end comes back to, and
+        // the hand holds the knob a moment (knob owners, locks.rs).
+        self.locks.hand(lock_key(self.settings.engine, id), value);
         self.node_mut().set_param(id, value);
         if self.settings.engine == Engine::Drums && moves_drum_pads(id) {
             self.drums_moved(names);
@@ -1955,7 +1972,7 @@ impl Synth {
     /// back to.
     fn preset_under_locks(&mut self) {
         let e = self.settings.engine;
-        let mut locks = std::mem::take(&mut self.locks);
+        let mut locks = std::mem::replace(&mut self.locks, crate::locks::Under::new(0));
         let node = self.node_of(e);
         locks.reread(
             |k| k >> 16 == e.index() as u32,
@@ -1964,32 +1981,46 @@ impl Synth {
         self.locks = locks;
     }
 
-    /// A clip's lock on parameter `id` of the engine on the pads
-    /// (`Owner::Inst`): `Some` sets it on its frame, `offset` frames into
-    /// the next render, `None` puts back the value under it (the sound's
-    /// own, or the last turn by hand). False for a parameter the engine
-    /// doesn't have, a meter, Drums' pad notes and models (they move the
-    /// pads), or a full table.
-    pub fn lock(&mut self, id: u16, value: Option<f32>, offset: u32) -> bool {
+    /// Track `track`'s clip's lock on parameter `id` of the engine on
+    /// the pads (`Owner::Inst`): `Some` sets it on its frame, `offset`
+    /// frames into the next render, `None` puts back the value under it
+    /// (the sound's own, or the last turn by hand). The tracks that play
+    /// the synth share it, so one owns a knob at a time (step 4b,
+    /// locks.rs): another track's lock is kept and plays when it owns the
+    /// knob. False for a parameter the engine doesn't have, a meter,
+    /// Drums' pad notes and models (they move the pads), or a full table.
+    pub fn lock(&mut self, track: usize, id: u16, value: Option<f32>, offset: u32) -> bool {
         let e = self.settings.engine;
         let key = lock_key(e, id);
         let Some(value) = value else {
-            if let Some(under) = self.locks.unlock(key) {
-                self.push(e, offset, NodeEvent::Param { id, value: under });
+            if let Some(back) = self.locks.unlock(key, track) {
+                self.push(e, offset, NodeEvent::Param { id, value: back });
             }
             return true;
         };
-        let lockable = self
+        let smooth = match self
             .node()
             .params()
             .iter()
-            .any(|p| p.id == id && !p.readonly)
-            && !(e == Engine::Drums && moves_drum_pads(id));
-        if !lockable || !self.locks.lock(key, self.node().param(id)) {
-            return false;
+            .find(|p| p.id == id && !p.readonly)
+        {
+            Some(p) if !(e == Engine::Drums && moves_drum_pads(id)) => crate::locks::glides(p),
+            _ => return false,
+        };
+        let now = self.node().param(id);
+        match self.locks.lock(key, track, value, now, smooth) {
+            Some(true) => self.push(e, offset, NodeEvent::Param { id, value }),
+            Some(false) => {}
+            None => return false,
         }
-        self.push(e, offset, NodeEvent::Param { id, value });
         true
+    }
+
+    /// Each track's lasting id (`mpfree_seq::TrackId`, 0 for none), by
+    /// track: when two tracks on the synth lock one knob, the lowest owns
+    /// it (step 4b, locks.rs).
+    pub fn set_ranks(&mut self, ids: &[u32; crate::locks::TRACKS]) {
+        self.locks.set_ranks(ids);
     }
 
     /// How many of the engines' parameters a clip's lock holds now.
@@ -2758,7 +2789,7 @@ mod tests {
         } else {
             p.min
         };
-        assert!(s.lock(p.id, Some(locked), 7));
+        assert!(s.lock(0, p.id, Some(locked), 7));
         assert_eq!(
             queued(&s),
             vec![NodeEvent::Param {
@@ -2770,10 +2801,10 @@ mod tests {
         run(&mut s, &mut frame, 1, 256);
         assert_eq!(s.value(p.id), locked);
         // Another step's lock keeps the sound's own value under it.
-        assert!(s.lock(p.id, Some(locked), 0));
+        assert!(s.lock(0, p.id, Some(locked), 0));
         run(&mut s, &mut frame, 1, 256);
         assert_eq!(s.locks_holding(), 1);
-        assert!(s.lock(p.id, None, 3));
+        assert!(s.lock(0, p.id, None, 3));
         assert_eq!(
             queued(&s),
             vec![NodeEvent::Param {
@@ -2784,11 +2815,24 @@ mod tests {
         run(&mut s, &mut frame, 1, 256);
         assert_eq!(s.value(p.id), own);
         assert_eq!(s.locks_holding(), 0);
-        // A turn on the Synth tab under a lock is what its end comes back to.
+        // A turn on the Synth tab under a lock is what its end comes back
+        // to; the hand holds the knob a moment, so the lock's end and a
+        // new lock then leave the turn as it is (knob owners, locks.rs).
         let mid = (p.min + p.max) / 2.0;
-        assert!(s.lock(p.id, Some(locked), 0));
+        assert!(s.lock(0, p.id, Some(locked), 0));
+        run(&mut s, &mut frame, 1, 256);
         s.set(p.id, mid);
-        assert!(s.lock(p.id, None, 0));
+        assert!(s.lock(0, p.id, None, 0));
+        assert!(s.lock(0, p.id, Some(locked), 0));
+        assert!(queued(&s).is_empty(), "{:?}", queued(&s));
+        run(&mut s, &mut frame, 1, 256);
+        assert_eq!(s.value(p.id), mid);
+        // Let go, the lock takes the knob back by a short glide, and its
+        // end comes back to the turn.
+        let hand = (44_100.0 * crate::locks::HAND_S) as usize;
+        run(&mut s, &mut frame, hand / 256 + 12, 256);
+        assert_eq!(s.value(p.id), locked);
+        assert!(s.lock(0, p.id, None, 0));
         assert!(queued(&s).ends_with(&[NodeEvent::Param {
             id: p.id,
             value: mid
@@ -2796,9 +2840,9 @@ mod tests {
         // A meter can't be locked, and an end with no lock sends nothing.
         run(&mut s, &mut frame, 1, 256);
         if let Some(m) = s.node().params().iter().find(|p| p.readonly) {
-            assert!(!s.lock(m.id, Some(1.0), 0));
+            assert!(!s.lock(0, m.id, Some(1.0), 0));
         }
-        assert!(s.lock(p.id, None, 0));
+        assert!(s.lock(0, p.id, None, 0));
         assert!(queued(&s).is_empty());
     }
 

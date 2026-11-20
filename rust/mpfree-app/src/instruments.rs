@@ -255,7 +255,7 @@ impl Instruments {
             slot_of: [NO_SLOT; TRACKS],
             refused: 0,
             cut: 0,
-            locks: crate::locks::Under::new(),
+            locks: crate::locks::Under::new(rate),
             first: crate::mixing::track_channel(0),
             sends: [NO_SEND; TRACKS],
             started: Box::new([[Started::default(); PADS]; TRACKS]),
@@ -757,10 +757,18 @@ impl Instruments {
         let Some(owner) = self.owner(track) else {
             return false;
         };
-        // Under a clip's lock, the turn is what its end comes back to.
-        self.locks.set(lock_key(owner, id), value);
+        // Under a clip's lock, the turn is what its end comes back to, and
+        // the hand holds the knob a moment (knob owners, locks.rs).
+        self.locks.hand(lock_key(owner, id), value);
         self.slot(owner)
             .is_some_and(|s| self.host.param(s, 0, id, value))
+    }
+
+    /// Each track's lasting id (`mpfree_seq::TrackId`, 0 for none), by
+    /// track: when two tracks' clips lock one knob of an instrument they
+    /// share, the lowest owns it (step 4b, locks.rs).
+    pub fn set_ranks(&mut self, ids: &[u32; TRACKS]) {
+        self.locks.set_ranks(ids);
     }
 
     /// A clip's lock on parameter `id` of the instrument track `track`
@@ -768,9 +776,10 @@ impl Instruments {
     /// into the next block, `None` puts back the value under it (the
     /// sound's own, or the last turn on the Synth tab). Kept by the
     /// instrument's track, so two tracks on one instrument share the
-    /// value under a knob (which of them moves it is step 4's knob
-    /// owners). False when the track plays no instrument, the instrument
-    /// has no such parameter (or it is a meter), or the table is full.
+    /// value under a knob, and one owns it at a time (step 4b, locks.rs):
+    /// another track's lock is kept, and plays when it owns the knob.
+    /// False when the track plays no instrument, the instrument has no
+    /// such parameter (or it is a meter), or the table is full.
     pub fn lock(&mut self, track: usize, id: u16, value: Option<f32>, offset: u32) -> bool {
         let Some(owner) = self.owner(track) else {
             return false;
@@ -780,22 +789,28 @@ impl Instruments {
         };
         let key = lock_key(owner, id);
         let Some(value) = value else {
-            if let Some(under) = self.locks.unlock(key) {
-                self.host.param(s, offset, id, under);
+            if let Some(back) = self.locks.unlock(key, track) {
+                self.host.param(s, offset, id, back);
             }
             return true;
         };
-        let now = self
+        let smooth = match self
             .host
             .params(s)
             .iter()
-            .any(|p| p.id == id && !p.readonly)
-            .then(|| self.host.param_value(s, id))
-            .flatten();
-        let Some(now) = now else {
+            .find(|p| p.id == id && !p.readonly)
+        {
+            Some(p) => crate::locks::glides(p),
+            None => return false,
+        };
+        let Some(now) = self.host.param_value(s, id) else {
             return false;
         };
-        self.locks.lock(key, now) && self.host.param(s, offset, id, value)
+        match self.locks.lock(key, track, value, now, smooth) {
+            Some(true) => self.host.param(s, offset, id, value),
+            Some(false) => true,
+            None => false,
+        }
     }
 
     /// Track `track`'s instrument's node, while it holds one.
@@ -846,8 +861,16 @@ impl Instruments {
 
     /// Every slot's next `frames` frames into its track's mixer channel.
     pub fn render(&mut self, ctx: &Ctx, frames: usize, out: &mut dyn Outputs) {
-        // The locks that ended play now: forget them.
+        // The locks that ended play now: forget them. A knob a new owner
+        // glides to, or the hand let go of, moves from the block's start.
         self.locks.settle();
+        let (locks, host, slot_of) = (&mut self.locks, &mut self.host, &self.slot_of);
+        locks.tick(frames as u32, |key, value| {
+            let (track, id) = ((key >> 16) as usize, (key & 0xFFFF) as u16);
+            if let Some(&s) = slot_of.get(track).filter(|&&s| s != NO_SLOT) {
+                host.param(usize::from(s), 0, id, value);
+            }
+        });
         self.host.render(ctx, frames, out);
     }
 
@@ -1366,7 +1389,12 @@ mod tests {
         assert!(i.lock(1, p.id, Some(locked), 0), "the same knob");
         render(&mut i);
         assert_eq!(i.node(1).unwrap().param(p.id), locked);
+        // Track 2's lock ends while track 5's holds: the knob stays with
+        // track 5 (knob owners, step 4b); the last end puts it back.
         assert!(i.lock(1, p.id, None, 0));
+        render(&mut i);
+        assert_eq!(i.node(1).unwrap().param(p.id), locked);
+        assert!(i.lock(4, p.id, None, 0));
         render(&mut i);
         assert_eq!(i.node(1).unwrap().param(p.id), own, "the sound's own value");
         let mid = (p.min + p.max) / 2.0;
@@ -1377,6 +1405,56 @@ mod tests {
         render(&mut i);
         assert_eq!(i.node(1).unwrap().param(p.id), mid);
         assert!(i.node(4).is_none(), "no node of its own");
+    }
+
+    /// Step 4b: two tracks on one instrument lock one knob. The track
+    /// with the lower lasting id owns it, whichever locked first; the
+    /// other's lock is kept, not played. When the owner stops, the
+    /// other's value comes back by a short glide; the last end puts the
+    /// sound's own back.
+    #[test]
+    fn two_tracks_locking_one_knob_take_turns_by_their_lasting_ids() {
+        let synth = crate::synth::Synth::new(RATE);
+        let (id, extras, values) = synth.sound_of(crate::synth::Engine::Poly);
+        let plugins = crate::plugins::Plugins::none();
+        let inst = make(&plugins, id, &extras, &values, RATE, BLOCK).expect("made");
+        let mut i = Instruments::new(RATE, BLOCK);
+        let pads = synth.pads_for(crate::synth::Engine::Poly);
+        i.put(1, inst, pads, &Tuning::standard()).unwrap();
+        i.set_send(4, Some(1)).unwrap();
+        let mut ids = [0; TRACKS];
+        (ids[1], ids[4]) = (7, 2);
+        i.set_ranks(&ids);
+        let node = i.node(1).unwrap();
+        let p = *node
+            .params()
+            .iter()
+            .find(|p| !p.readonly && p.max > p.min && p.curve == mpfree_node::Curve::Linear)
+            .unwrap();
+        let own = node.param(p.id);
+        let (a, b) = (p.min, p.max);
+        let mut frame = 0u64;
+        let mut render = |i: &mut Instruments| {
+            let mut t = tracks();
+            i.render(&Ctx::new(RATE, frame), BLOCK, &mut t);
+            frame += BLOCK as u64;
+            i.node(1).unwrap().param(p.id)
+        };
+        assert!(i.lock(1, p.id, Some(a), 0));
+        assert!(i.lock(4, p.id, Some(b), 0), "track 5 has the lower id");
+        assert!(i.lock(1, p.id, Some(a), 0), "taken, kept");
+        assert_eq!(render(&mut i), b);
+        assert!(i.lock(4, p.id, None, 0));
+        let first = render(&mut i);
+        assert!(first < b && first > a, "a glide: {first}");
+        let blocks = (RATE as f32 * crate::locks::GLIDE_S) as usize / BLOCK + 1;
+        let mut v = first;
+        for _ in 0..blocks {
+            v = render(&mut i);
+        }
+        assert_eq!(v, a, "track 2's value");
+        assert!(i.lock(1, p.id, None, 0));
+        assert_eq!(render(&mut i), own);
     }
 
     #[test]

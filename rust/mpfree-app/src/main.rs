@@ -4588,6 +4588,16 @@ fn open_sends(own: &mut instruments::Instruments, sends: &[(usize, usize)]) -> V
     lines
 }
 
+/// Each track's lasting id by place (0 for none), for knob owners
+/// (`locks.rs`): the lowest owns a knob two tracks lock. Never allocates.
+fn track_ranks(project: &mpfree_seq::Project) -> [u32; locks::TRACKS] {
+    let mut ids = [0; locks::TRACKS];
+    for (id, t) in ids.iter_mut().zip(&project.tracks) {
+        *id = t.id.0;
+    }
+    ids
+}
+
 /// Each track's send now ([`instruments::Instruments::send`]), for the
 /// app and the screen. Never allocates.
 fn sends_now(own: &instruments::Instruments) -> gui::TrackSends {
@@ -5085,7 +5095,7 @@ impl time::Pads for SeqPads<'_> {
             }
             Owner::Inst(t) => self
                 .synth_of(u16::from(t))
-                .is_some_and(|s| s.lock(addr.param, value, offset)),
+                .is_some_and(|s| s.lock(usize::from(t), addr.param, value, offset)),
             Owner::Pad(t, pad)
                 if !self.own.plays(usize::from(t)) && !self.kits.plays_synth(usize::from(t)) =>
             {
@@ -9343,6 +9353,11 @@ fn player_session(
             out.note(&format!("time: {line}"));
         }
         app.set_track_count(time.track_count());
+        // Knob owners (step 4b): the tracks' lasting ids say which track's
+        // lock moves a knob two tracks lock.
+        let ranks = track_ranks(time.project());
+        mix.instruments.set_ranks(&ranks);
+        synth.set_ranks(&ranks);
         // A track UNDO took away sets its kit aside (its place plays kit 1
         // again, for a track added there later), and a REDO that brings it
         // back gives it its kit again, so the two go together (the screen
