@@ -1443,6 +1443,88 @@ fn live_pads_on_a_track_with_its_own_instrument_play_it() {
     );
 }
 
+/// Instrument redesign, after step 4d: track 5 plays track 3's Poly, so
+/// it is heard on track 3's strip. A lock in its clip on "this track's
+/// strip" moves that strip's volume, and lets it go there when its step
+/// ends; track 5's own strip, which nothing plays through, stays as it
+/// was. Nothing on the way allocates.
+#[test]
+fn a_lock_on_this_tracks_strip_moves_the_strip_its_instrument_sounds_on() {
+    use mpfree_fx::ids::mixer as mx;
+    use mpfree_fx::StripId;
+    use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+    use time::StepAction;
+    let mut rig = Rig::new(false);
+    let job = crate::instrument_job(&rig.synth, 2, "mpfree.poly", None);
+    assert!(rig.mix.build_instrument(job));
+    assert!(matches!(
+        rig.mix.poll_instruments(),
+        Some(mixing::Landed::Playing {
+            track: 2,
+            name: "Poly"
+        })
+    ));
+    assert_eq!(rig.mix.instruments.set_send(4, Some(2)), Ok(()));
+    let three = rig.mix.instruments.strip(2).expect("track 3's strip");
+    let five = rig.mix.track_channel(4);
+    assert_ne!(three, five);
+    // Track 5: pad 1 on steps 1 and 9, step 1 locked to -20 dB.
+    rig.time.act(TimeAction::Arm(Some(4))).unwrap();
+    for step in [0, 8] {
+        rig.time
+            .step_action(StepAction::Tap {
+                pad: 0,
+                step,
+                velocity: 100,
+            })
+            .unwrap();
+    }
+    rig.time
+        .step_action(StepAction::Lock {
+            pad: 0,
+            steps: 1,
+            addr: RelAddr::new(OnTrack::Strip, mx::VOLUME),
+            value: Some(-20.0),
+        })
+        .unwrap();
+    let volume = |rig: &Rig, t: usize| rig.mix.mixer.param(StripId::Track(t), mx::VOLUME);
+    let (was_three, was_five) = (volume(&rig, three), volume(&rig, five));
+    assert!(was_three > -20.0, "{was_three}");
+    rig.time.command(Command::Play);
+    let mut i = 0u64;
+    let mut run_to = |rig: &mut Rig, frame: u64| {
+        while i * (PERIOD as u64) < frame {
+            rig.pads(i);
+            rig.period(i);
+            i += 1;
+        }
+    };
+    // The first pass may allocate (the mod engine takes the volume on as
+    // a target the first time); the second is measured. A bar is 88,200
+    // frames at 120 BPM, a step 5,512.5.
+    run_to(&mut rig, 88_200);
+    let ((), calls) = crate::sys::alloc_count::calls(|| {
+        // Between step 1 and step 9.
+        run_to(&mut rig, 88_200 + 20_000);
+        assert_eq!(
+            volume(&rig, three),
+            -20.0,
+            "track 3's strip, where it sounds"
+        );
+        assert_eq!(volume(&rig, five), was_five, "track 5's own strip, unused");
+        // Past step 9, whose note has no lock: let go on track 3's strip.
+        run_to(&mut rig, 88_200 + 50_000);
+    });
+    assert_eq!(calls, 0, "allocations or frees on the sound path");
+    assert_eq!(volume(&rig, three), was_three);
+    assert_eq!(volume(&rig, five), was_five);
+    let c = rig.time.describe();
+    assert!(
+        c.contains("this track's strip: 2 locks went to their instrument's strip, 0 waited"),
+        "{c}"
+    );
+}
+
 /// CV out with the clip's track on CV 1 (pitch) and CV 2 (gate), a
 /// sixteenth-note clock on CV 3 and run on CV 4: the clip's notes move
 /// them while it still plays on the pads, every gate that rises falls,

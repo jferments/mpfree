@@ -305,6 +305,15 @@ impl Instruments {
         self.host.track_of(self.slot(track)?)
     }
 
+    /// The mixer strip track `track` is heard on while it plays an
+    /// instrument: its own instrument's, or that of the track whose
+    /// instrument it plays (step 4a). None while it plays the pads (a kit,
+    /// the synth). A clip's "this track's strip" goes there
+    /// (`time::strips`).
+    pub fn heard_on(&self, track: usize) -> Option<usize> {
+        self.strip(self.owner(track)?)
+    }
+
     /// The track whose own instrument sounds on mixer strip `strip`, and
     /// that instrument (one ringing out for a track that has none now
     /// doesn't count). Never allocates.
@@ -1242,6 +1251,24 @@ mod tests {
         // Back to the pads.
         assert_eq!(i.set_send(5, None), Ok(()));
         assert!(!i.plays(5) && !i.pad_on(5, 0, 100, 0));
+    }
+
+    /// Where a track is heard while it plays an instrument, for a clip's
+    /// "this track's strip" (time/strips.rs): its own instrument's strip,
+    /// or that of the instrument it plays; nowhere of this table's while
+    /// it plays the pads.
+    #[test]
+    fn a_track_is_heard_where_the_instrument_it_plays_sounds() {
+        let mut i = Instruments::new(RATE, BLOCK);
+        i.put(2, hum(), chromatic_from(60), &Tuning::standard())
+            .unwrap();
+        assert_eq!(i.set_send(5, Some(2)), Ok(()));
+        let three = i.strip(2).expect("track 3's strip");
+        assert_eq!(three, first_track() + 2);
+        assert_eq!((i.heard_on(2), i.heard_on(5)), (Some(three), Some(three)));
+        assert_eq!(i.heard_on(4), None, "on the pads");
+        assert_eq!(i.set_send(5, None), Ok(()));
+        assert_eq!(i.heard_on(5), None);
     }
 
     #[test]

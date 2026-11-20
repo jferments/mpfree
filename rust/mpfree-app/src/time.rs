@@ -68,6 +68,7 @@ mod control;
 mod follow;
 pub mod link;
 mod pad_wait;
+pub mod strips;
 
 use mpfree_play::mpfree_param::{Owner, ParamAddr, RelAddr};
 use mpfree_play::room::{self, Table};
@@ -327,6 +328,15 @@ pub trait Pads {
         let _ = (addr, value, offset);
         false
     }
+    /// The mixer track (its number among the mixer's tracks) where track
+    /// `track`'s instrument sounds, for a clip's locks on "this track's
+    /// strip" ([`strips`]): another track's instrument it plays (step 4a)
+    /// is heard on that instrument's strip. None where the host doesn't
+    /// say (a kit, the synth, MIDI out): its own strip. By default None.
+    fn sounds_on(&self, track: u16) -> Option<u8> {
+        let _ = track;
+        None
+    }
     /// A note one of the per-track arps played ([`TimeHost::period_arps`]):
     /// the pads through their track's arp, a latched arp, or a clip that
     /// plays through its arp. It is live playing, so the pad player gives
@@ -499,8 +509,11 @@ pub const QUANTISE_ON: u32 = 240;
 
 /// Locks and unlocks kept for the mixer in one period: every lock and
 /// unlock the period's table lets in (refactor A2: an unlock is never
-/// lost; mpfree_play::room).
-const MAX_LOCKS: usize = room::VALUES + room::LOCK_ENDS;
+/// lost; mpfree_play::room), and room again for the ends a lock on "this
+/// track's strip" sends on the old strip when its instrument moved
+/// ([`strips`]: one at most for each lock held, fewer than
+/// `room::LOCK_ENDS`).
+const MAX_LOCKS: usize = room::VALUES + 2 * room::LOCK_ENDS;
 /// Move values kept for the mod engine in one period: every value the
 /// period's table lets in.
 const MAX_LANES: usize = room::VALUES;
@@ -2544,9 +2557,18 @@ mod tests {
             mpfree_play::mpfree_param::ParamAddr,
             Option<f32>,
         )>,
+        /// (track, mixer track): where a track's instrument sounds
+        /// ([`Pads::sounds_on`]); a track not here, on its own strip.
+        sounds: Vec<(u16, u8)>,
     }
 
     impl Pads for Fake {
+        fn sounds_on(&self, track: u16) -> Option<u8> {
+            self.sounds
+                .iter()
+                .find(|(t, _)| *t == track)
+                .map(|&(_, s)| s)
+        }
         fn hit_at(&mut self, _track: u16, pad: usize, velocity: u8, offset: u32) -> bool {
             self.hits
                 .push((self.frame + u64::from(offset), pad, velocity));
@@ -3583,6 +3605,86 @@ mod tests {
         );
         let clip = h.control.project.tracks[2].slots[0].as_ref().unwrap();
         assert!(clip.notes.is_empty() && clip.locks.is_empty());
+    }
+
+    /// Instrument redesign, after step 4d: a clip's lock on "this track's
+    /// strip" goes where the track's instrument sounds (strips.rs). Track
+    /// 2 plays track 3's instrument, heard on track 3's strip: its lock
+    /// and the lock's end go there, and track 3's own lock on the same
+    /// control waits behind it (no lasting ids here, so by track), then
+    /// takes over. A lock on an effect of track 2's strip stays there.
+    #[test]
+    fn a_lock_on_this_tracks_strip_goes_where_its_instrument_sounds() {
+        use mpfree_play::mpfree_param::{track_strip, OnTrack, Owner, ParamAddr, RelAddr, Strip};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let vol = RelAddr::new(OnTrack::Strip, 0);
+        let fx = RelAddr::new(OnTrack::Insert(1), 2);
+        // Each track: pad 2 on steps 1 and 9, step 1 locked; step 9's note,
+        // with no lock, ends it.
+        for (track, value) in [(1, 0.25), (2, 0.75)] {
+            h.act(TimeAction::Arm(Some(track))).unwrap();
+            for step in [0, 8] {
+                h.step_action(StepAction::Tap {
+                    pad: 2,
+                    step,
+                    velocity: 100,
+                })
+                .unwrap();
+            }
+            h.step_action(StepAction::Lock {
+                pad: 2,
+                steps: 1,
+                addr: vol,
+                value: Some(value),
+            })
+            .unwrap();
+        }
+        h.act(TimeAction::Arm(Some(1))).unwrap();
+        h.step_action(StepAction::Lock {
+            pad: 2,
+            steps: 1,
+            addr: fx,
+            value: Some(0.5),
+        })
+        .unwrap();
+        let Strip::Track(three) = track_strip(2) else {
+            unreachable!()
+        };
+        let mut pads = Fake {
+            sounds: vec![(1, three)],
+            ..Fake::default()
+        };
+        h.command(Command::Play);
+        let mut out = Vec::new();
+        // Past step 9, before the clip comes round again.
+        while pads.frame < 3 * BAR / 4 {
+            h.period(PERIOD, &mut pads);
+            out.extend(h.locks().iter().map(|&(_, a, v)| (a, v)));
+            h.clear_locks();
+            pads.frame += u64::from(PERIOD);
+        }
+        let on_three = ParamAddr::new(Owner::Strip(Strip::Track(three)), 0);
+        let fx_two = fx.on(1);
+        assert_eq!(
+            out,
+            vec![
+                // Step 1: track 2's lock on track 3's strip; its effect
+                // lock on its own; track 3's own lock waits.
+                (on_three, Some(0.25)),
+                (fx_two, Some(0.5)),
+                // Step 9: track 2's end hands the control to track 3, whose
+                // end lets it go.
+                (on_three, Some(0.75)),
+                (fx_two, None),
+                (on_three, None),
+            ]
+        );
+        let c = h.control.strips;
+        assert_eq!((c.moved, c.waited, c.full), (1, 1, 0));
+        assert!(h
+            .describe()
+            .contains("this track's strip: 1 locks went to their instrument's strip, 1 waited"));
+        assert_eq!(h.dropped(), 0);
     }
 
     /// Per-track arps with track `track`'s arp playing up in sixteenths.

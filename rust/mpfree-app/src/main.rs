@@ -4924,6 +4924,18 @@ fn instrument_job(
 const MAX_LIVE_HITS: usize = 64;
 
 impl time::Pads for SeqPads<'_> {
+    /// Where track `track` is heard while it plays an instrument (its own,
+    /// or another track's, step 4a): a clip's "this track's strip" goes
+    /// there (time/strips.rs). A track on MIDI out sounds outside mpfree,
+    /// and one on the pads (a kit, the synth) on its own strip, as before.
+    fn sounds_on(&self, track: u16) -> Option<u8> {
+        if self.midi.takes(track) {
+            return None;
+        }
+        self.own
+            .heard_on(usize::from(track))
+            .and_then(|s| u8::try_from(s).ok())
+    }
     fn hit_at(&mut self, track: u16, pad: usize, velocity: u8, offset: u32) -> bool {
         let kit = self.kit_of(track);
         // A clip's note on the synth's pads moves by its track's live

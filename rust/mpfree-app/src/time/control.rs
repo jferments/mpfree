@@ -49,7 +49,7 @@ use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_transport::{Block, Command, State};
 
 use super::follow::FollowCounts;
-use super::link::{Counts, InPlace, PeriodEnd, Rx, ToAudio, ToControl, Tracks, Tx};
+use super::link::{Counts, InPlace, PeriodEnd, Rx, StripCounts, ToAudio, ToControl, Tracks, Tx};
 use super::{StepAction, StepClip, StepsData, LINE, NEW_CLIP_BARS, RECORD_ROOM, STEP_TICKS};
 
 /// The clip settings card's join keys for its takes, a row each (see
@@ -298,6 +298,8 @@ pub struct TimeControl {
     counts: Counts,
     /// What following another device's clock put right or lost.
     follow: FollowCounts,
+    /// What clips' locks on "this track's strip" did (`strips.rs`).
+    pub strips: StripCounts,
     /// Following another device's Start and Stop while it is stopped:
     /// PLAY waits for its Start (set by the host before each action).
     pub(super) clock_waits: bool,
@@ -439,6 +441,7 @@ impl TimeControl {
             info,
             counts: Counts::default(),
             follow: FollowCounts::default(),
+            strips: StripCounts::default(),
             clock_waits: false,
             block: Box::new(Block::new()),
             fresh: true,
@@ -679,6 +682,7 @@ impl TimeControl {
                     }
                 }
                 ToControl::Follow(c) => self.follow = c,
+                ToControl::Strips(c) => self.strips = c,
                 ToControl::Period(end) => self.period(end),
                 ToControl::Done(v) => drop(v),
                 ToControl::Chain(c) => drop(c),
@@ -4682,6 +4686,16 @@ impl TimeControl {
             line.push_str(&format!(
                 "; {} armed tracks left out of a take with no room for a clip",
                 self.also_full
+            ));
+        }
+        // Clips' locks on "this track's strip" on a track whose instrument
+        // sounds elsewhere (strips.rs), when there were any.
+        let st = &self.strips;
+        if st.any() {
+            line.push_str(&format!(
+                "; this track's strip: {} locks went to their instrument's strip, {} waited \
+                 for a track before them, {} stayed on the track's own strip with the table full",
+                st.moved, st.waited, st.full
             ));
         }
         // The fallbacks between the halves, when there are any.

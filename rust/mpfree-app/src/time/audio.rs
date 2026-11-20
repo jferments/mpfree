@@ -26,9 +26,11 @@ use mpfree_transport::{Block, Command, Mark, State, Transport};
 
 use super::follow::{Follow, FollowCounts, Follower};
 use super::link::{
-    Counts, InPlace, PeriodEnd, Rx, ToAudio, ToControl, Tracks, Tx, POINTS_CHUNK, TOUCH_CHUNK,
+    Counts, InPlace, PeriodEnd, Rx, StripCounts, ToAudio, ToControl, Tracks, Tx, POINTS_CHUNK,
+    TOUCH_CHUNK,
 };
 use super::pad_wait::{DuePads, PadFrom, PadWait, PadWaits};
+use super::strips::{Ev, Sent, StripLocks};
 use super::{Click, HitInfo, LaneOut, LockOut, Pads, Table, MAX_HITS, MAX_LANES, MAX_LOCKS};
 
 /// Views kept here while the queue back to the control half is full,
@@ -121,6 +123,11 @@ pub struct TimeAudio {
     /// lost, so far (`TrackArps::refused`, `TrackArps::lost`).
     arps_busy: u64,
     arps_lost: u64,
+    /// The locks on "this track's strip", with where each went: the strip
+    /// its track's instrument sounds on ([`super::strips`]).
+    strips: Box<StripLocks>,
+    /// Their counts as last sent to the control half.
+    strips_sent: StripCounts,
     tx: Tx<ToControl>,
     rx: Rx<ToAudio>,
     /// Views waiting to go back.
@@ -196,6 +203,8 @@ impl TimeAudio {
             locks_lost: 0,
             arps_busy: 0,
             arps_lost: 0,
+            strips: Box::new(StripLocks::new()),
+            strips_sent: StripCounts::default(),
             tx,
             rx,
             returns: std::array::from_fn(|_| None),
@@ -380,6 +389,49 @@ impl TimeAudio {
     pub fn clear_locks(&mut self) {
         self.locks.clear();
         self.lanes.clear();
+    }
+
+    /// A clip's lock, move value or their end on its way to the mixer's
+    /// mod engine (`MixHost::lock`, `MixHost::lane`). One on "this
+    /// track's strip" goes to the strip the track's instrument sounds on
+    /// ([`Pads::sounds_on`]), ends where it began, and waits while a track
+    /// before it in line holds the same control ([`super::strips`]). A
+    /// move sends the old strip's end first; the list has room for it
+    /// ([`super::MAX_LOCKS`]), and past that a lock is dropped and an
+    /// unlock lost, as in [`Self::lock_out`].
+    fn send_to_mixer(
+        &mut self,
+        pads: &impl Pads,
+        o: &Out,
+        addr: mpfree_play::mpfree_param::ParamAddr,
+        ev: Ev,
+    ) {
+        let (locks, lanes) = (&mut self.locks, &mut self.lanes);
+        let (dropped, lost) = (&mut self.locks_dropped, &mut self.locks_lost);
+        let set = &self.tracks.set;
+        let rank = |t: u8| set.get(usize::from(t)).map_or(0, |s| s.id);
+        let offset = o.offset;
+        let mut send = |s: Sent| match s {
+            Sent::Lock(a, v) => Self::lock_out(locks, (&mut *dropped, &mut *lost), offset, a, v),
+            Sent::Lane(a, v) => {
+                if lanes.len() < lanes.capacity() {
+                    lanes.push((offset, a, v));
+                } else {
+                    *dropped += 1;
+                }
+            }
+        };
+        let sounds_on = pads.sounds_on(o.track);
+        if !self
+            .strips
+            .take(o.track, addr, ev, sounds_on, rank, &mut send)
+        {
+            send(match ev {
+                Ev::Lock(v) => Sent::Lock(addr, Some(v)),
+                Ev::Lane(v) => Sent::Lane(addr, v),
+                Ev::End => Sent::Lock(addr, None),
+            });
+        }
     }
 
     /// A lock (`Some`) or unlock (`None`) for the mixer's mod engine. The
@@ -1105,34 +1157,18 @@ impl TimeAudio {
                 // the audio loop hands them to.
                 Event::Lock { addr, value } => {
                     if !pads.lock_at(addr, Some(value), o.offset) {
-                        Self::lock_out(
-                            &mut self.locks,
-                            (&mut self.locks_dropped, &mut self.locks_lost),
-                            o.offset,
-                            addr,
-                            Some(value),
-                        );
+                        self.send_to_mixer(&*pads, &o, addr, Ev::Lock(value));
                     }
                 }
                 Event::Unlock { addr } => {
                     if !pads.lock_at(addr, None, o.offset) {
-                        Self::lock_out(
-                            &mut self.locks,
-                            (&mut self.locks_dropped, &mut self.locks_lost),
-                            o.offset,
-                            addr,
-                            None,
-                        );
+                        self.send_to_mixer(&*pads, &o, addr, Ev::End);
                     }
                 }
                 // A move lane's value goes to the mod engine too, where any
                 // hand on the control beats it.
                 Event::Lane { addr, value } => {
-                    if self.lanes.len() < self.lanes.capacity() {
-                        self.lanes.push((o.offset, addr, value));
-                    } else {
-                        self.locks_dropped += 1;
-                    }
+                    self.send_to_mixer(&*pads, &o, addr, Ev::Lane(value))
                 }
                 // A clip's program change goes to outside gear alone
                 // (`Pads::out`, S5): the pads have no programs.
@@ -1233,6 +1269,10 @@ impl TimeAudio {
         let follow = self.follower.counts();
         if follow != self.follow_sent && self.tx.send(ToControl::Follow(follow)).is_ok() {
             self.follow_sent = follow;
+        }
+        let strips = self.strips.counts();
+        if strips != self.strips_sent && self.tx.send(ToControl::Strips(strips)).is_ok() {
+            self.strips_sent = strips;
         }
         let end = PeriodEnd {
             start_frame: self.block.start_frame,
