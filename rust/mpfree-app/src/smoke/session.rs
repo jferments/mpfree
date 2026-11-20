@@ -217,6 +217,8 @@ pub struct Session {
     pub synth_on: bool,
     /// What each track plays, as main.rs keeps it.
     pub track_kits: crate::sampler::TrackKits,
+    /// The project's instruments, as main.rs keeps them.
+    pub instrument_list: crate::instrument_list::InstrumentList,
     /// The time engine's REDOs seen so far, as player_session keeps them.
     redos_seen: u64,
     /// Messages for the screen that found it gone (none expected).
@@ -360,6 +362,7 @@ impl Session {
             kit: 0,
             synth_on: false,
             track_kits: crate::sampler::TrackKits::new(n),
+            instrument_list: crate::instrument_list::InstrumentList::new(),
             redos_seen: 0,
             quit: false,
             kits: n,
@@ -1611,6 +1614,7 @@ impl Session {
             perform: self.app.perform_set().text(),
             instruments: crate::project::instruments_text(&self.mix.instruments),
             track_kits: self.track_kits.text(),
+            instrument_list: self.instrument_list.text(),
             loops,
             audio,
         };
@@ -1682,6 +1686,7 @@ impl Session {
             }
         }
         self.kit_to = Some(self.track_kits.entry(self.app.track()));
+        std::mem::swap(&mut self.instrument_list, &mut o.instrument_list);
         let (notes, fx) = self.app.open_arp(o.arp.as_deref());
         for line in notes {
             self.out.note(&line);

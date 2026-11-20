@@ -283,14 +283,17 @@ impl TrackKits {
 
     /// The project's track kits part ([`crate::project::TRACK_KITS`]): a
     /// line for each track that plays another kit than kit 1, or the
-    /// synth, numbered from 1 as the screen shows them. Only the first
-    /// line while every track plays kit 1, so the part isn't saved.
+    /// shared synth by its id in the project's list of instruments
+    /// (`track 4 instrument 1`), numbered from 1 as the screen shows them.
+    /// Only the first line while every track plays kit 1, so the part
+    /// isn't saved.
     pub fn text(&self) -> String {
         use std::fmt::Write as _;
+        let synth = crate::instrument_list::InstrumentId::SHARED_SYNTH;
         let mut s = format!("{}\n", crate::project::TRACK_KITS_FORMAT);
         for (t, &e) in self.entries.iter().enumerate().filter(|(_, &e)| e != 0) {
             let _ = if e == self.synth {
-                writeln!(s, "track {} synth", t + 1)
+                writeln!(s, "track {} instrument {synth}", t + 1)
             } else {
                 writeln!(s, "track {} kit {}", t + 1, e + 1)
             };
@@ -1922,13 +1925,22 @@ mod tests {
         assert_eq!(
             k.text(),
             format!(
-                "{}\ntrack 2 kit 3\ntrack 3 kit 3\ntrack 5 synth\ntrack 6 kit 2\n",
+                "{}\ntrack 2 kit 3\ntrack 3 kit 3\ntrack 5 instrument 1\ntrack 6 kit 2\n",
                 crate::project::TRACK_KITS_FORMAT
             )
         );
+        use crate::project::TrackPick::{Instrument, Kit};
         assert_eq!(
             crate::project::track_kits_parse(&k.text()),
-            Ok(vec![(1, Some(2)), (2, Some(2)), (4, None), (5, Some(1))])
+            Ok(vec![
+                (1, Kit(2)),
+                (2, Kit(2)),
+                (
+                    4,
+                    Instrument(crate::instrument_list::InstrumentId::SHARED_SYNTH)
+                ),
+                (5, Kit(1))
+            ])
         );
         assert_eq!(TrackKits::new(3).text().lines().count(), 1);
     }
