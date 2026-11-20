@@ -6004,7 +6004,8 @@ fn time_state(time: &time::TimeHost, tracks: &audiotracks::TrackHost) -> mpfree_
 fn synth_status(synth: &synth::Synth, time: &RenderTime) -> String {
     let c = synth.counters();
     format!(
-        "synth: {} ({}), {}, {} notes, at most {} voices ({} set), {} notes dropped, {} resets",
+        "synth: {} ({}), {}, {} notes, at most {} voices ({} set), {} notes dropped, \
+         {} new notes or locks left out of moments too busy, {} endings lost, {} resets",
         synth.engine().name(),
         synth.preset_name(),
         time.describe(),
@@ -6012,6 +6013,8 @@ fn synth_status(synth: &synth::Synth, time: &RenderTime) -> String {
         c.peak_voices,
         synth.polyphony(),
         c.dropped,
+        c.busy,
+        c.ends_lost,
         c.resets
     )
 }
@@ -10789,7 +10792,10 @@ fn player_session(
                         dropped: c.dropped_events + app.arps.dropped(),
                         late_let_gos: c.late_let_gos,
                         merged_values: c.merged_values,
-                        ends_lost: time.ends_lost(),
+                        ends_lost: time.ends_lost()
+                            + synth.counters().ends_lost
+                            + mix.instruments.ends_lost()
+                            + midi_out.ends_lost(),
                         peak_grains: c.peak_grains,
                         window_waits: c.window_waits,
                     }

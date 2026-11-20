@@ -899,6 +899,11 @@ pub struct MidiOut {
     pad_out: Box<[Option<(OutRoute, u8)>]>,
 }
 
+/// Messages still waiting in writer `w`, for its port's room.
+fn waiting(w: &Writer) -> usize {
+    usize::try_from(w.waiting()).unwrap_or(usize::MAX)
+}
+
 /// Where glide `g` is now, `left` frames from its end.
 fn glide_at(g: &Glide) -> f32 {
     let k = g.left as f32 / g.total.max(1) as f32;
@@ -1091,7 +1096,7 @@ impl MidiOut {
     /// sent their ends.
     fn forget(&mut self, i: usize) {
         self.end_port(i, 0);
-        self.queue[i].clear();
+        self.queue[i].forget();
         if i == usize::from(DIN.0) {
             self.gear.held = [0; 16];
         }
@@ -2301,6 +2306,8 @@ impl MidiOut {
             }
             let din = i == usize::from(DIN.0);
             if q.is_empty() && !din {
+                // A new period, with what its writer still holds.
+                q.next_period(p.writer.as_ref().map_or(0, waiting));
                 continue;
             }
             // The clock went in first (`clock` runs before the notes), in
@@ -2349,7 +2356,9 @@ impl MidiOut {
                     each(m);
                 }
             }
-            q.clear();
+            // A new period: its room counts what the writer still holds,
+            // so a note-off always has a place there too (refactor A2b).
+            q.next_period(p.writer.as_ref().map_or(0, waiting));
             p.queued += queued;
             p.full += full;
         }
@@ -2489,6 +2498,12 @@ impl MidiOut {
         self.period_end(0, Instant::now() - self.lead);
     }
 
+    /// Note-offs, pedals coming up and All notes offs that found no place
+    /// in a port's queue: a bug, which must stay 0 (refactor A2b).
+    pub fn ends_lost(&self) -> u64 {
+        self.queue.iter().map(|q| q.lost()).sum()
+    }
+
     /// The run's counts, for the log at exit.
     pub fn summary(&self) -> Vec<String> {
         let mut lines = Vec::new();
@@ -2520,11 +2535,18 @@ impl MidiOut {
                 self.pacer.stats.max_late * 1000.0 / f64::from(self.rate),
             ));
         }
-        let dropped = self.router.dropped + self.queue.iter().map(|q| q.dropped).sum::<u64>();
-        if dropped > 0 {
+        if self.router.dropped > 0 {
             lines.push(format!(
-                "MIDI out: {dropped} messages dropped (more than {} for one port in one period)",
-                mpfree_midi::output::QUEUE
+                "MIDI out: {} messages dropped (no such port or track)",
+                self.router.dropped
+            ));
+        }
+        let refused: u64 = self.queue.iter().map(|q| q.refused()).sum();
+        if refused + self.ends_lost() > 0 {
+            lines.push(format!(
+                "MIDI out: {refused} new notes or values left out of moments too busy, {} \
+                 endings lost",
+                self.ends_lost()
             ));
         }
         if self.thru_unsent > 0 {
@@ -2693,6 +2715,78 @@ mod tests {
 
     fn on(note: u8, velocity: u8) -> Event {
         Event::NoteOn { note, velocity }
+    }
+
+    /// A port whose writes wait until it is let go: its writer backs up,
+    /// as on gear that takes bytes slower than they come.
+    #[derive(Clone)]
+    struct Stuck(Arc<(Mutex<bool>, std::sync::Condvar)>, Sink);
+
+    impl Write for Stuck {
+        fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+            let (lock, cv) = &*self.0;
+            let mut go = lock.lock().unwrap();
+            while !*go {
+                go = cv.wait(go).unwrap();
+            }
+            self.1.write(b)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Every note-off gets out however far behind the port's writer is
+    /// (refactor A2b): a flood of values backs it up, new values stop with
+    /// a place still kept for each owed note-off, and all of them go out.
+    #[test]
+    fn a_backed_up_port_still_takes_every_note_off() {
+        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let sink = Sink::default();
+        let mut mo = MidiOut::new(RATE, Duration::ZERO);
+        mo.open(Stuck(gate.clone(), sink.clone()), Instant::now())
+            .unwrap();
+        let m = model(&[(0, TrackOut::new(DIN_NAME, 0))]);
+        mo.sync(&m, false);
+        for n in 0..100 {
+            assert!(mo.send(&ev(0, 0, on(n, 100)), NoteIs::Note));
+        }
+        mo.period_end(PERIOD, Instant::now());
+        let cc = |v: u16| Msg::Cc {
+            ch: 0,
+            cc: 1,
+            value: (v % 128) as u8,
+        };
+        // More than the writer's thread and queue hold together (twice
+        // WIRE_QUEUE).
+        for _ in 0..40 {
+            for v in 0..256 {
+                mo.controller(DIN, cc(v));
+            }
+            mo.period_end(PERIOD, Instant::now());
+        }
+        let din = usize::from(DIN.0);
+        assert!(mo.queue[din].refused() > 0, "the writer backed up");
+        for n in 0..100 {
+            mo.send(&ev(0, 0, Event::NoteOff { note: n }), NoteIs::Note);
+        }
+        mo.period_end(PERIOD, Instant::now());
+        assert_eq!((mo.ends_lost(), mo.ports[din].full), (0, 0));
+        // Let go: everything the writer took goes out, every note-off too.
+        {
+            let (lock, cv) = &*gate;
+            *lock.lock().unwrap() = true;
+            cv.notify_all();
+        }
+        assert!(mo.close());
+        let offs = sink
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, b)| b[0] & 0xF0 == 0x80)
+            .count();
+        assert_eq!(offs, 100);
     }
 
     /// A kit track on the jacks, channel 10: its pads go out as the MPC's
