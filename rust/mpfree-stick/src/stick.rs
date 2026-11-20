@@ -84,6 +84,14 @@ pub struct Programs {
     /// libcurl itself (`mpfree_mpcstore::fetch`). Without it the stick
     /// installs plugins from zips only.
     pub fetch: Option<Vec<u8>>,
+    /// The process each plugin runs in, [`PLUGHOST_FILE`], if the folder has
+    /// it: linked dynamically like the download helper, since a plugin is a
+    /// library built against the MPC's own C library, which the static pad
+    /// player can't load safely (device round 2, 20 Nov: every start's
+    /// plugin crashed in it). The app runs it from beside itself
+    /// (mpfree-app's `plugins::program`). Without it plugins run in the pad
+    /// player itself.
+    pub plughost: Option<Vec<u8>>,
 }
 
 /// The programs' file names in a programs folder: the pad player, the log
@@ -91,6 +99,8 @@ pub struct Programs {
 pub const PROGRAM_FILES: [&str; 3] = ["mpfree", "mpfree-screen-log", "mpfree-startup"];
 /// The download helper's file name in a programs folder (optional).
 pub const FETCH_FILE: &str = "mpfree-fetch";
+/// The plugin process's file name in a programs folder (optional).
+pub const PLUGHOST_FILE: &str = "mpfree-plughost";
 /// The newest glibc the MPC One has (3.10.1 reports 2.39).
 pub const MPC_GLIBC: (u32, u32) = (2, 39);
 
@@ -98,6 +108,17 @@ pub const MPC_GLIBC: (u32, u32) = (2, 39);
 /// dynamically for the MPC's loader, asking for no glibc newer than
 /// [`MPC_GLIBC`] (cargo zigbuild for glibc 2.34 makes one).
 pub fn fetch_problem(b: &[u8]) -> Option<String> {
+    dynamic_problem(b, "it opens libcurl")
+}
+
+/// Why `b` can't be the plugin process: as [`fetch_problem`].
+pub fn plughost_problem(b: &[u8]) -> Option<String> {
+    dynamic_problem(b, "it loads plugins built against the MPC's C library")
+}
+
+/// Why `b` isn't an ARM program linked dynamically for the MPC's loader and
+/// glibc; `why` says why it must not be static.
+fn dynamic_problem(b: &[u8], why: &str) -> Option<String> {
     if !arm_elf(b) {
         return Some("not a program for the MPC (32-bit ARM)".into());
     }
@@ -119,10 +140,9 @@ pub fn fetch_problem(b: &[u8]) -> Option<String> {
         b.get(off..off + len)
     });
     if interp.map(|i| i.strip_suffix(b"\0").unwrap_or(i)) != Some(b"/lib/ld-linux-armhf.so.3") {
-        return Some(
-            "not linked dynamically for the MPC's loader (it opens libcurl, so it must not be static)"
-                .into(),
-        );
+        return Some(format!(
+            "not linked dynamically for the MPC's loader ({why}, so it must not be static)"
+        ));
     }
     let mut newest = (0, 0);
     for (i, w) in b.windows(8).enumerate() {
@@ -170,30 +190,30 @@ impl Programs {
             }
             Ok(b)
         };
-        let [pad_player, screen_log, startup] = PROGRAM_FILES;
-        let fetch = match std::fs::read(dir.join(FETCH_FILE)) {
-            Ok(b) => match fetch_problem(&b) {
-                None => Some(b),
-                Some(why) => {
-                    return Err(bad(format!(
+        // A dynamic helper, only when the folder has it.
+        let optional = |name: &str, problem: fn(&[u8]) -> Option<String>| {
+            let p = dir.join(name);
+            match std::fs::read(&p) {
+                Ok(b) => match problem(&b) {
+                    None => Ok(Some(b)),
+                    Some(why) => Err(bad(format!(
                         "{} is {why}; build it with cargo zigbuild for armv7-unknown-linux-gnueabihf.2.34",
-                        dir.join(FETCH_FILE).display()
-                    )))
-                }
-            },
-            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
-            Err(e) => {
-                return Err(io::Error::new(
-                    e.kind(),
-                    format!("{}: {e}", dir.join(FETCH_FILE).display()),
-                ))
+                        p.display()
+                    ))),
+                },
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(io::Error::new(e.kind(), format!("{}: {e}", p.display()))),
             }
         };
+        let [pad_player, screen_log, startup] = PROGRAM_FILES;
+        let fetch = optional(FETCH_FILE, fetch_problem)?;
+        let plughost = optional(PLUGHOST_FILE, plughost_problem)?;
         Ok(Programs {
             pad_player: read(pad_player)?,
             screen_log: read(screen_log)?,
             startup: read(startup)?,
             fetch,
+            plughost,
         })
     }
 }
@@ -789,6 +809,12 @@ pub fn apply<'a>(
                 Some(b) => b.clone(),
                 None => continue,
             },
+            Content::Placeholder(p) if *p == r.placeholders["plughost"] => {
+                match &programs.plughost {
+                    Some(b) => b.clone(),
+                    None => continue,
+                }
+            }
             Content::Placeholder(p) if *p == r.placeholders["kexec_dtb"] => kexec_dtb
                 .clone()
                 .ok_or_else(|| bad("kexec.dtb is only for the chain"))?,
@@ -888,6 +914,16 @@ pub fn apply<'a>(
         ),
         None => format!(
             "download helper: none (no {FETCH_FILE} in the programs folder): the Plugins place installs from zips on the stick only"
+        ),
+    });
+    notes.push(match &programs.plughost {
+        Some(b) => format!(
+            "plugin process: {PLUGHOST_FILE} ({} bytes, sha256 {}): each plugin runs in it",
+            b.len(),
+            update::hex(&Sha256::digest(b))
+        ),
+        None => format!(
+            "plugin process: none (no {PLUGHOST_FILE} in the programs folder): plugins run in the pad player itself, which can't run most of them"
         ),
     });
     if ssh.is_some() {

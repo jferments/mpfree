@@ -54,6 +54,7 @@ jobs:
       - name: Validate shell syntax
         run: |
           bash -n tools/mpc-one/collect-over-ssh.sh
+          bash -n tools/mpc-one/check-stick-backup.sh
           bash -n tools/mpc-one/offline-akai-updater.sh
           bash -n tools/mpc-one/offline-rootfs-survey.sh
           sh -n tools/mpc-one/read-only-kexec-preflight.sh
@@ -1418,18 +1419,23 @@ jobs:
         # The static pad player can't open libcurl itself (the 16 Nov run's "Insufficient randomness"), so
         # its downloads go through this helper beside it: dynamic, against glibc no newer than the MPC's 2.39
         # (this toolchain's). The device rounds build it with cargo zigbuild for glibc 2.34; releases as here.
+        # The plugin process, mpfree-plughost, is built the same way; the catalog check above runs it.
         env:
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
         run: |
           cargo build --manifest-path rust/Cargo.toml --release --locked \
-            --target armv7-unknown-linux-gnueabihf -p mpfree-mpcstore --bin mpfree-fetch
+            --target armv7-unknown-linux-gnueabihf -p mpfree-mpcstore --bin mpfree-fetch \
+            -p mpfree-plughost --bin mpfree-plughost
+          for f in rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-fetch \
+                   rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-plughost; do
+            file "$f"
+            arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI'
+            arm-linux-gnueabihf-readelf -l "$f" | grep -q 'Requesting program interpreter: /lib/ld-linux-armhf.so.3'
+            newest=$(arm-linux-gnueabihf-readelf -W --version-info "$f" | grep -o 'GLIBC_2\.[0-9]*' | sort -t. -k2 -n | tail -1)
+            echo "newest glibc asked for: $newest"
+            [ "${newest#GLIBC_2.}" -le 39 ]
+          done
           f=rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-fetch
-          file "$f"
-          arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI'
-          arm-linux-gnueabihf-readelf -l "$f" | grep -q 'Requesting program interpreter: /lib/ld-linux-armhf.so.3'
-          newest=$(arm-linux-gnueabihf-readelf -W --version-info "$f" | grep -o 'GLIBC_2\.[0-9]*' | sort -t. -k2 -n | tail -1)
-          echo "newest glibc asked for: $newest"
-          [ "${newest#GLIBC_2.}" -le 39 ]
           # It refuses anything but the catalog's sites, and says so the way the pad player reads it.
           [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get install -y --no-install-recommends qemu-user
           set +e
@@ -1439,7 +1445,7 @@ jobs:
           test "$code" = 1
           test "$said" = "failed https://example.com/x is not on the catalog's sites"
           test ! -e "$RUNNER_TEMP/never"
-          echo "PASS: dynamic ARMv7 mpfree-fetch, glibc <= 2.39; no executables uploaded or run on an MPC by CI."
+          echo "PASS: dynamic ARMv7 mpfree-fetch and mpfree-plughost, glibc <= 2.39; no executables uploaded or run on an MPC by CI."
 
       - name: Build and check the static startup screen program (do not deploy)
         env:

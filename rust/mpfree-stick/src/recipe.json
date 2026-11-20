@@ -64,6 +64,10 @@
    "mode": 493,
    "placeholder": "@FETCH@"
   },
+  "/etc/mpfree-test/mpfree-plughost": {
+   "mode": 493,
+   "placeholder": "@PLUGHOST@"
+  },
   "/etc/mpfree-test/mpfree-screen-log": {
    "mode": 493,
    "placeholder": "@SCREEN_LOG@"
@@ -223,6 +227,7 @@
   "kits_uuid": "@KITS_UUID@",
   "log_uuid": "@LOG_UUID@",
   "pad_player": "@PAD_PLAYER@",
+  "plughost": "@PLUGHOST@",
   "release": "@RELEASE@",
   "root_uuid": "@ROOT_UUID@",
   "rotation": "@ROTATION@",

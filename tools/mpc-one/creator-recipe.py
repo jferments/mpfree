@@ -3,7 +3,7 @@
 
 The creator (rust/mpfree-stick) makes the same changes to a copy of Akai's root filesystem as
 offline-kexec-stick.py does for the soft-reboot boot with the pad player as the mpfree user and MPFree's
-startup screen (--app --app-user --splash mpfree-startup --fetch, no --akai-app, no kexec files). To keep the two
+startup screen (--app --app-user --splash mpfree-startup --fetch --plughost, no --akai-app, no kexec files). To keep the two
 from drifting, this tool doesn't restate those changes: it RUNS the builder's own build_rootfs on a tiny
 fake root filesystem, with placeholders such as @LOG_UUID@ for every value that differs from stick to
 stick, and records what build_rootfs wrote (paths, modes, contents and links). The creator fills in the
@@ -60,6 +60,8 @@ SCREEN_LOG = b"@SCREEN_LOG@"
 STARTUP = b"@STARTUP@"
 # The Plugins place's download helper (--fetch): the creator writes it only when its programs folder has one.
 FETCH = b"@FETCH@"
+# The process each plugin runs in (--plughost): the creator writes it only when its programs folder has one.
+PLUGHOST = b"@PLUGHOST@"
 # Only in the developer routes.
 ROOT_UUID = "@ROOT_UUID@"
 KERNEL_SHA256 = "@KERNEL_SHA256@"
@@ -159,7 +161,7 @@ def build(b, base, name, route=(False, False, False)):
     _, stubbed, absent, links, written = b.build_rootfs(
         img, scratch, PUBKEY, host_key, LOG_UUID, SCREEN_LOG, ROTATION, app=APP, kits_uuid=KITS_UUID,
         data_uuid=DATA_UUID, kexec_files=kexec_files, softreboot=(RELEASE, (), kexec_file_cmdline),
-        app_user=True, splash=(STARTUP, None, None), chain=chain, fetch=FETCH)
+        app_user=True, splash=(STARTUP, None, None), chain=chain, fetch=FETCH, plughost=PLUGHOST)
     if absent:
         raise SystemExit(f"the fake root lacks stub programs: {absent}")
     kernel_sum = hashlib.sha256(KERNEL).hexdigest()
@@ -175,7 +177,7 @@ def build(b, base, name, route=(False, False, False)):
         if path.endswith("/SHA256SUMS"):
             sums[path] = sums_listed(data.decode())
         entry = {"mode": mode}
-        if data in (APP, SCREEN_LOG, STARTUP, HOSTKEY, FETCH, KEXEC_DTB):
+        if data in (APP, SCREEN_LOG, STARTUP, HOSTKEY, FETCH, PLUGHOST, KEXEC_DTB):
             entry["placeholder"] = data.decode().strip()
         else:
             entry["text"] = data.decode("utf-8", "strict").replace(kernel_sum, KERNEL_SHA256)
@@ -237,7 +239,7 @@ def recipe():
                              "release": RELEASE, "rotation": ROTATION, "authorized_keys": PUBKEY.strip(),
                              "host_key": HOSTKEY.decode().strip(), "pad_player": APP.decode(),
                              "screen_log": SCREEN_LOG.decode(), "startup": STARTUP.decode(),
-                             "fetch": FETCH.decode(), "root_uuid": ROOT_UUID, "kernel_sha256": KERNEL_SHA256,
+                             "fetch": FETCH.decode(), "plughost": PLUGHOST.decode(), "root_uuid": ROOT_UUID, "kernel_sha256": KERNEL_SHA256,
                              "kexec_dtb": KEXEC_DTB.decode()},
             "files": files,
             "links": link_targets,

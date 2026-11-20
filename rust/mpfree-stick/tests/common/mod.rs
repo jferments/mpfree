@@ -209,6 +209,7 @@ pub fn programs() -> Programs {
         screen_log: arm_program(b"screen log"),
         startup: arm_program(b"startup screen"),
         fetch: None,
+        plughost: None,
     }
 }
 

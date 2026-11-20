@@ -1070,6 +1070,58 @@ class KexecStickTests(unittest.TestCase):
             self.assertEqual(res.returncode, 1, res.stdout)
             self.assertIn(problem, res.stdout)
 
+    def test_plugin_process_beside_the_pad_player(self):
+        """--plughost: mpfree-plughost, dynamic (a plugin needs the MPC's own C library), at PLUGHOST_PROGRAM,
+        next to the download helper; checked as --fetch is."""
+        app = os.path.join(self.tmp, "mpfree")
+        write(app, fake_elf(), 0o755)
+        kits = self.kits_file("elsewhere", count=2)
+        helper = os.path.join(self.tmp, "mpfree-fetch")
+        write(helper, fake_helper(), 0o755)
+        plughost = os.path.join(self.tmp, "mpfree-plughost")
+        write(plughost, fake_helper(b"GLIBC_2.34") + b"PLUGHOST", 0o755)
+        res = self.build("--app", app, "--kits", kits, "--fetch", helper, "--plughost", plughost)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn(f"plugin process: {plughost} (", res.stdout)
+        self.assertIn("at /etc/mpfree-test/mpfree-plughost: each plugin runs in it", res.stdout)
+        [folder] = self.outputs()
+        root_img = os.path.join(self.tmp, "p1.img")
+        self.partition(os.path.join(self.work, folder, "stick.img"), 1, root_img)
+        for path, want in (("/etc/mpfree-test/mpfree-plughost", fake_helper(b"GLIBC_2.34") + b"PLUGHOST"),
+                           ("/etc/mpfree-test/mpfree-fetch", fake_helper())):
+            out = os.path.join(self.tmp, "back-" + os.path.basename(path))
+            run(["debugfs", "-R", f"dump {path} {out}", root_img])
+            with open(out, "rb") as fh:
+                self.assertEqual(fh.read(), want, path)
+            self.assertIn("Mode:  0755", self.dfs(root_img, f"stat {path}"))
+        bad_glibc = os.path.join(self.tmp, "new-glibc")
+        write(bad_glibc, fake_helper(b"GLIBC_2.43"), 0o755)
+        for args, problem in ((("--plughost", plughost), "--plughost needs --app"),
+                              (("--app", app, "--kits", kits, "--plughost", app),
+                               "not linked dynamically for the MPC's loader (it must not be static: it loads plugins"),
+                              (("--app", app, "--kits", kits, "--plughost", bad_glibc),
+                               "built against glibc 2.43, newer than the MPC's 2.39"),
+                              (("--app", app, "--kits", kits, "--plughost", os.path.join(self.tmp, "none")),
+                               "build mpfree-plughost first")):
+            res = self.build(*args)
+            self.assertEqual(res.returncode, 1, res.stdout)
+            self.assertIn(problem, res.stdout)
+            if "not linked" in problem or "newer" in problem:
+                self.assertIn("as --plughost's help says", res.stdout)
+
+    def test_without_a_plugin_process_the_report_says_so(self):
+        """No --plughost: nothing at PLUGHOST_PROGRAM, and the report says plugins run in the pad player."""
+        app = os.path.join(self.tmp, "mpfree")
+        write(app, fake_elf(), 0o755)
+        kits = self.kits_file("elsewhere", count=2)
+        res = self.build("--app", app, "--kits", kits)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("plugin process: none (no --plughost): plugins run in the pad player itself", res.stdout)
+        [folder] = self.outputs()
+        root_img = os.path.join(self.tmp, "p1.img")
+        self.partition(os.path.join(self.work, folder, "stick.img"), 1, root_img)
+        self.assertIn("File not found", self.dfs(root_img, "stat /etc/mpfree-test/mpfree-plughost"))
+
     def dev_tools(self):
         top = os.path.join(self.tmp, "dev")
         write(os.path.join(top, "fxprobe/fxprobe.sh"), "#!/bin/sh\necho fxprobe\n", 0o755)

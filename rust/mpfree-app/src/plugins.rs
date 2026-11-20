@@ -70,17 +70,47 @@ pub fn program(app: &Path) -> Program {
     Program::with_lead(app, &[SUBCOMMAND])
 }
 
-/// The plugins in `data/files/plugins/`, listed by `program`. None found
-/// (or no data folder): an empty rack and no lines.
-pub fn scan(program: Program, data: Option<&Path>) -> (Plugins, Vec<String>) {
-    match data {
-        Some(d) => Rack::scan(
-            program,
-            &d.join("files").join(PLUGINS_FOLDER),
-            &format!("files/{PLUGINS_FOLDER}/"),
-        ),
-        None => (Rack::none(), Vec::new()),
+/// Is this build linked statically (the device build, `+crt-static`)? A
+/// static program loads a plugin with glibc's static `dlopen`, beside a
+/// second copy of the MPC's C library: on the MPC that crashed every start's
+/// plugin (device round 2, 20 Nov), and under qemu it crashes three of the
+/// catalog's five while they play, even with the same glibc.
+pub const STATIC: bool = cfg!(target_feature = "crt-static");
+
+/// The start line that names the plugin process, before the rack's lines.
+pub fn process_line(program: &Program) -> String {
+    if program.lead.is_empty() {
+        return format!("plugins: the plugin process is {}", program.exe.display());
     }
+    let mut line = format!(
+        "plugins: the plugin process is this program ({} {SUBCOMMAND}): no {PLUGHOST} beside it",
+        program.exe.display()
+    );
+    if STATIC {
+        line.push_str(
+            "; this build is static and can't run most plugins itself, so put mpfree-plughost (linked dynamically) beside it",
+        );
+    }
+    line
+}
+
+/// The plugins in `data/files/plugins/`, listed by `program`. None found
+/// (or no data folder): an empty rack and no lines. Otherwise the first line
+/// names the plugin process ([`process_line`]).
+pub fn scan(program: Program, data: Option<&Path>) -> (Plugins, Vec<String>) {
+    let Some(d) = data else {
+        return (Rack::none(), Vec::new());
+    };
+    let first = process_line(&program);
+    let (rack, mut lines) = Rack::scan(
+        program,
+        &d.join("files").join(PLUGINS_FOLDER),
+        &format!("files/{PLUGINS_FOLDER}/"),
+    );
+    if !lines.is_empty() {
+        lines.insert(0, first);
+    }
+    (rack, lines)
 }
 
 /// The running app's own path, for [`program`].
@@ -127,6 +157,26 @@ mod tests {
     }
 
     #[test]
+    fn the_start_names_the_plugin_process_and_warns_when_a_static_app_serves() {
+        let beside = Program::new(Path::new("/etc/mpfree-test/mpfree-plughost"));
+        assert_eq!(
+            process_line(&beside),
+            "plugins: the plugin process is /etc/mpfree-test/mpfree-plughost"
+        );
+        let itself = Program::with_lead(Path::new("/etc/mpfree-test/mpfree"), &[SUBCOMMAND]);
+        let line = process_line(&itself);
+        assert!(
+            line.starts_with(
+                "plugins: the plugin process is this program (/etc/mpfree-test/mpfree plughost): \
+                 no mpfree-plughost beside it"
+            ),
+            "{line}"
+        );
+        // The workstation's tests are dynamic; the device build warns.
+        assert_eq!(line.contains("this build is static"), STATIC, "{line}");
+    }
+
+    #[test]
     fn plugins_live_in_the_data_folder_or_else_a_temp_folder_never_the_real_home() {
         let d =
             std::env::temp_dir().join(format!("mpfree-plugin-home-test-{}", std::process::id()));
@@ -157,6 +207,22 @@ mod tests {
         let (r, notes) = scan(Program::new(Path::new("/nonexistent")), Some(&d));
         assert!(r.entries().is_empty() && notes.is_empty(), "{notes:?}");
         assert!(picks(&r).is_empty());
+        // A file to list: the lines start with the plugin process, then
+        // what became of the file.
+        std::fs::write(d.join("files/plugins/broken.clap"), b"not a plugin").unwrap();
+        let (r, notes) = scan(
+            Program::new(Path::new("/nonexistent/mpfree-plughost")),
+            Some(&d),
+        );
+        assert!(r.entries().is_empty());
+        assert_eq!(
+            notes[0], "plugins: the plugin process is /nonexistent/mpfree-plughost",
+            "{notes:?}"
+        );
+        assert!(
+            notes[1..].iter().any(|l| l.contains("broken.clap")),
+            "{notes:?}"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 }
