@@ -256,31 +256,41 @@ fn clip_body(s: &mut String, c: &Clip) {
     if c.direction != crate::Direction::Forward {
         let _ = writeln!(s, "direction {}", c.direction.word());
     }
-    // Pressure first: the notes name runs of it.
-    for chunk in c.touch.chunks(TOUCH_PER_LINE) {
+    // Pressure first: the notes name runs of it. Only what the notes and
+    // the original's notes name is written, each run renumbered (B4a):
+    // values a note took out no longer names stay out of the file.
+    let originals = c.original.iter().flat_map(|o| &o.notes);
+    let keep = crate::TouchKeep::of(
+        c.touch.len(),
+        c.notes.iter().chain(originals).map(|n| n.touch),
+    );
+    let kept: Vec<TouchPoint> = keep.kept_of(&c.touch).collect();
+    for chunk in kept.chunks(TOUCH_PER_LINE) {
         s.push_str("touch");
         for p in chunk {
             let _ = write!(s, " {}:{}", p.at, p.value);
         }
         s.push('\n');
     }
-    notes_text(s, "", &c.notes);
+    notes_text(s, "", &c.notes, &keep);
     locks_text(s, "", &c.locks);
     lanes_text(s, "", &c.moves);
     // What Restore puts back (S6's mutate): after everything else, each
     // line marked, so an older build skips them all.
     if let Some(o) = &c.original {
         let _ = writeln!(s, "original {} {}", o.length, o.variation);
-        notes_text(s, "original ", &o.notes);
+        notes_text(s, "original ", &o.notes, &keep);
         locks_text(s, "original ", &o.locks);
         lanes_text(s, "original ", &o.moves);
     }
     s.push_str("end\n");
 }
 
-/// A clip's notes, a line each, every line starting with `prefix`.
-fn notes_text(s: &mut String, prefix: &str, notes: &[Note]) {
+/// A clip's notes, a line each, every line starting with `prefix`, each
+/// pressure run as `keep` renumbers it.
+fn notes_text(s: &mut String, prefix: &str, notes: &[Note], keep: &crate::TouchKeep) {
     for n in notes {
+        let touch = keep.run(n.touch);
         let _ = write!(
             s,
             "{prefix}note {} {} {} {} {} {} {} {} {}",
@@ -291,8 +301,8 @@ fn notes_text(s: &mut String, prefix: &str, notes: &[Note]) {
             n.chance,
             cond_text(n.cond),
             n.ratchet,
-            n.touch.first,
-            n.touch.len
+            touch.first,
+            touch.len
         );
         if !n.on {
             s.push_str(" off");
@@ -1437,6 +1447,60 @@ mod tests {
     /// A mutated clip keeps its original (S6), lanes and all, read back
     /// whole; an older build skips its lines and keeps the variation; a
     /// broken original refuses the part.
+    #[test]
+    fn only_the_pressure_a_note_names_is_saved() {
+        let run = |v: u8| -> Vec<TouchPoint> {
+            (0..4)
+                .map(|k| TouchPoint {
+                    at: k * 10,
+                    value: v + k as u8,
+                })
+                .collect()
+        };
+        let mut c = Clip::new("c", 3840);
+        let mut notes = Vec::new();
+        for (i, v) in [10u8, 50, 90].into_iter().enumerate() {
+            let touch = c.add_touch(&run(v)).unwrap();
+            let n = Note {
+                touch,
+                ..Note::new(i as Tick * 960, 240, 36, 100)
+            };
+            c.add_note(n).unwrap();
+            notes.push(n);
+        }
+        // The middle note taken out: its pressure stays, named by nothing.
+        c.notes.retain(|n| n.tick != 960);
+        let saved = |c: &Clip| {
+            let mut p = Project::new();
+            p.tracks.push(Track::new("Drums", 0));
+            p.tracks[0].slots[0] = Some(c.clone());
+            let text = to_text(&p);
+            let back = from_text(&text).unwrap();
+            (text, back.tracks[0].slots[0].clone().unwrap())
+        };
+        let (text, back) = saved(&c);
+        assert!(
+            text.contains("touch 0:10 10:11 20:12 30:13 0:90 10:91 20:92 30:93\n"),
+            "{text}"
+        );
+        assert_eq!(back.touch.len(), 8);
+        for (n, b) in c.notes.iter().zip(&back.notes) {
+            assert_eq!(back.touch_of(b), c.touch_of(n));
+        }
+        assert_eq!(back.notes[1].touch.first, 4, "renumbered");
+        // A note Restore would bring back keeps its pressure too.
+        c.original = Some(Box::new(crate::Original {
+            length: 3840,
+            notes: notes.clone(),
+            locks: Vec::new(),
+            moves: Moves::new(),
+            variation: 1,
+        }));
+        let (_, back) = saved(&c);
+        assert_eq!(back.touch, c.touch);
+        assert_eq!(back, c);
+    }
+
     #[test]
     fn a_mutated_clips_original_reads_back() {
         let mut p = Project::new();

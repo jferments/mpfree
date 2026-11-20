@@ -179,7 +179,10 @@ pub fn ramped(velocity: u8, ramp: i8, hit: u8, hits: u8) -> u8 {
 /// Where a note's pressure is in its clip: values `first..first + len` of
 /// [`Clip::touch`]. `len` 0 is none ([`Touch::NONE`]). A clip only ever
 /// adds pressure ([`Clip::add_touch`]), so this stays valid while notes
-/// are taken out, put back (undo) or moved.
+/// are taken out, put back (undo) or moved; saving renumbers the runs as
+/// it leaves out values no note names ([`TouchKeep`]), and so does a
+/// clip that frees them in memory (`mpfree_play::Takes::reclaim_touch`,
+/// which renumbers the notes its undo and redo hold too).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Touch {
     pub first: u32,
@@ -196,6 +199,79 @@ impl Touch {
     /// The indices in [`Clip::touch`].
     pub fn range(self) -> std::ops::Range<usize> {
         self.first as usize..self.first as usize + self.len as usize
+    }
+}
+
+/// Which of a clip's pressure values ([`Clip::touch`]) are still named,
+/// and where each goes once the rest are dropped (the refactor's B4).
+/// Notes only ever add pressure, so values a note took out (or an undone
+/// take) no longer names stay behind; saving writes only the values the
+/// notes name, and a clip filling up drops the rest in memory too.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TouchKeep {
+    /// Each value's new index, or `u32::MAX` where it is dropped.
+    to: Vec<u32>,
+    kept: usize,
+}
+
+impl TouchKeep {
+    /// What a clip holding `len` pressure values keeps of them for `runs`
+    /// (every note's [`Touch`] that is to keep its pressure). A run past
+    /// the values keeps nothing.
+    pub fn of(len: usize, runs: impl IntoIterator<Item = Touch>) -> TouchKeep {
+        let mut keep = vec![false; len];
+        for t in runs {
+            if let Some(k) = keep.get_mut(t.range()) {
+                k.fill(true);
+            }
+        }
+        let mut kept = 0;
+        let to = keep
+            .iter()
+            .map(|&k| {
+                if k {
+                    kept += 1;
+                    kept as u32 - 1
+                } else {
+                    u32::MAX
+                }
+            })
+            .collect();
+        TouchKeep { to, kept }
+    }
+
+    /// How many values it keeps.
+    pub fn kept(&self) -> usize {
+        self.kept
+    }
+
+    /// Whether it keeps every value (dropping would change nothing).
+    pub fn keeps_all(&self) -> bool {
+        self.kept == self.to.len()
+    }
+
+    /// Run `t` renumbered for the kept values; none when it isn't kept
+    /// whole.
+    pub fn run(&self, t: Touch) -> Touch {
+        if t.is_none() {
+            return Touch::NONE;
+        }
+        match self.to.get(t.range()) {
+            Some(to) if to.iter().all(|&i| i != u32::MAX) => Touch {
+                first: to[0],
+                len: t.len,
+            },
+            _ => Touch::NONE,
+        }
+    }
+
+    /// The values kept, in order.
+    pub fn kept_of<'a>(&'a self, touch: &'a [TouchPoint]) -> impl Iterator<Item = TouchPoint> + 'a {
+        touch
+            .iter()
+            .zip(&self.to)
+            .filter(|(_, &i)| i != u32::MAX)
+            .map(|(p, _)| *p)
     }
 }
 

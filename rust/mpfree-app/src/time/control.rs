@@ -19,7 +19,8 @@
 //!
 //! A step edit (a tap, a turn, a lock) that only adds and erases notes and
 //! locks of a clip playing or cued is not compiled: its changes go to the
-//! audio half, which makes them to its view in place ([`ToAudio::Edit`]).
+//! audio half, which makes them to its view in place, whole or not at all
+//! ([`ToAudio::EditPart`], [`ToAudio::EditEnd`]; refactor A3).
 
 use std::time::{Duration, Instant};
 
@@ -124,14 +125,6 @@ impl Landed<'_> {
         m || (self.soloing && !s)
     }
 }
-
-/// The most changes a step edit sends to be made in place; a bigger one
-/// (a whole page erased or copied) compiles.
-const MAX_IN_PLACE: usize = 64;
-/// The most work a step edit made in place may cost the audio half: its
-/// changes times the clip's notes and locks, each change a search and a
-/// move of the ones after it. A bigger one compiles.
-const IN_PLACE_WORK: usize = 8192;
 
 /// What compiles and step edits cost the thread the control half runs on
 /// (today the audio thread), for the status line: the device's numbers
@@ -361,6 +354,12 @@ pub struct TimeControl {
     steps_changed: bool,
     /// Recorded pressure a clip had no room for (`MAX_TOUCH_POINTS`).
     touch_lost: u64,
+    /// Clips recorded pressure went into since the recording stopped
+    /// last, to check against `TOUCH_RECLAIM_AT` once it has (B4b).
+    touch_grew: Vec<(usize, usize)>,
+    /// Pressure values no note could play again, freed so far, and how
+    /// many times (refactor B4b).
+    touch_freed: (u64, u64),
     /// What the views include: the recorded changes made so far, and the
     /// started cues applied on each track.
     pub(super) includes: Includes,
@@ -368,7 +367,11 @@ pub struct TimeControl {
     rx: Rx<ToControl>,
     /// A view the audio half's full queue handed back, sent again on the
     /// next poll unless a newer one replaces it.
-    unsent: Option<Box<PlayView>>,
+    unsent: Option<(Box<PlayView>, u32)>,
+    /// The number of the last view sent ([`ToAudio::View`]).
+    view_sent: u32,
+    /// The number of the last step edit sent in place.
+    edit_id: u32,
     /// The tracks' settings the audio half has.
     tracks_sent: Tracks,
     /// The tracks' MIDI effects the audio half has.
@@ -468,10 +471,14 @@ impl TimeControl {
             tell_every: u64::from(rate / 4),
             steps_changed: true,
             touch_lost: 0,
+            touch_grew: Vec::new(),
+            touch_freed: (0, 0),
             includes: Includes::default(),
             tx,
             rx,
             unsent: None,
+            view_sent: 0,
+            edit_id: 0,
             tracks_sent: tracks,
             note_fx_sent: Box::new([TrackFx::default(); MAX_TRACKS]),
             chains_given: [false; MAX_TRACKS],
@@ -532,12 +539,35 @@ impl TimeControl {
         })
     }
 
+    /// Fills the queue to the audio half (empty now) but for `free`
+    /// places, with messages that change nothing there: for tests of a
+    /// queue that fills.
+    #[cfg(test)]
+    pub(super) fn fill_queue_but(&mut self, free: usize) {
+        let (n, armed) = (self.tracks_sent.n, self.tracks_sent.armed);
+        for _ in 0..super::link::TO_AUDIO - free {
+            assert!(self.tx.send(ToAudio::Tracks { n, armed }).is_ok());
+        }
+    }
+
+    /// The number of the last view sent to the audio half.
+    #[cfg(test)]
+    pub(super) fn view_sent(&self) -> u32 {
+        self.view_sent
+    }
+
     /// A view for the audio half; one its full queue hands back waits for
     /// the next poll.
     fn send_view(&mut self, v: Box<PlayView>) {
+        self.view_sent = self.view_sent.wrapping_add(1);
+        self.push_view(v, self.view_sent);
+    }
+
+    /// View number `n` into the queue, or waiting for the next poll.
+    fn push_view(&mut self, v: Box<PlayView>, n: u32) {
         self.unsent = None;
-        if let Err(ToAudio::View(v)) = self.tx.send(ToAudio::View(v)) {
-            self.unsent = Some(v);
+        if let Err(ToAudio::View(v, n)) = self.tx.send(ToAudio::View(v, n)) {
+            self.unsent = Some((v, n));
         }
     }
 
@@ -640,8 +670,8 @@ impl TimeControl {
     /// period's bookkeeping. Allocates only for an edit (a compile, a
     /// started cue, a recording kept into the song).
     pub fn poll(&mut self) {
-        if let Some(v) = self.unsent.take() {
-            self.send_view(v);
+        if let Some((v, n)) = self.unsent.take() {
+            self.push_view(v, n);
         }
         self.sync_tracks();
         self.loop_at = [None; LOOPS];
@@ -666,6 +696,9 @@ impl TimeControl {
                     let done = self
                         .takes
                         .record(&mut self.project, &rec, &self.touch, &self.moves);
+                    if !self.touch.is_empty() && !self.touch_grew.contains(&rec.clip()) {
+                        self.touch_grew.push(rec.clip());
+                    }
                     self.recorded_now |= done.changed;
                     self.touch_lost += done.touch_lost as u64;
                     self.touch.clear();
@@ -743,7 +776,7 @@ impl TimeControl {
         }
         // Cues that started on a bar line become the tracks' launches: the
         // view is compiled again.
-        let mut compile = std::mem::take(&mut self.compile_asked) | thrown;
+        let mut compile = std::mem::take(&mut self.compile_asked) | thrown | self.reclaim_touch();
         for i in 0..self.started.len() {
             let st = self.started[i];
             // A Loop track's loops go on or off on the cue's bar line.
@@ -879,6 +912,43 @@ impl TimeControl {
         self.touch_lost
     }
 
+    /// Out of recording, each clip played into whose pressure is past
+    /// half its room frees the values no note can play again, its own,
+    /// its Restore's or one an undo or redo would bring back
+    /// (`Takes::reclaim_touch`, refactor B4b), so long sessions of
+    /// recording and undoing never fill it. Never while recording: a
+    /// replace pass names the notes it erases by value, pressure run and
+    /// all, as the playing view holds them. True when anything was freed:
+    /// the view is compiled again with the new numbering.
+    fn reclaim_touch(&mut self) -> bool {
+        if matches!(self.info.state, State::Recording | State::CountIn) {
+            return false;
+        }
+        let mut freed = false;
+        for (track, slot) in std::mem::take(&mut self.touch_grew) {
+            let full = self
+                .project
+                .clip(track, slot)
+                .is_some_and(|c| c.touch.len() > mpfree_play::TOUCH_RECLAIM_AT);
+            if !full {
+                continue;
+            }
+            let n = self.takes.reclaim_touch(&mut self.project, track, slot);
+            if n > 0 {
+                self.touch_freed.0 += n as u64;
+                self.touch_freed.1 += 1;
+                freed = true;
+            }
+        }
+        freed
+    }
+
+    /// Pressure values freed so far, and how many times (B4b).
+    #[cfg(test)]
+    pub(super) fn touch_freed(&self) -> (u64, u64) {
+        self.touch_freed
+    }
+
     pub(super) fn compile(&mut self) -> Result<(), String> {
         let at = Instant::now();
         // An undone capture takes its clip, and so its launch, away; an
@@ -953,23 +1023,19 @@ impl TimeControl {
     /// song's placements play clips too; while recording or counting in,
     /// when the audio half edits the view itself; a view still waiting to
     /// go; a track other than the armed one, whose clips the view has no
-    /// room in; an edit too big; or a queue that fills (the changes that
-    /// went are made, then the compiled view takes their place).
+    /// room in; an edit too big; or a queue that fills (the audio half
+    /// makes none of the changes that went: an edit goes in whole or not
+    /// at all, and the compiled view brings it).
     fn in_place(&mut self, track: usize, slot: usize, edit: &Edit) -> bool {
-        let changes =
-            edit.erase.len() + edit.add.len() + edit.erase_locks.len() + edit.add_locks.len();
-        let held = self
+        let (notes, locks) = self
             .project
             .clip(track, slot)
-            .map_or(0, |c| c.notes.len() + c.locks.len());
-        let plain = edit.length.is_none() && edit.moves.is_none() && edit.touch.is_empty();
-        if !plain
+            .map_or((0, 0), |c| (c.notes.len(), c.locks.len()));
+        if !InPlace::fits(edit, notes, locks)
             || self.song
             || self.unsent.is_some()
             || self.armed != Some(track)
             || matches!(self.info.state, State::Recording | State::CountIn)
-            || changes > MAX_IN_PLACE
-            || changes * held.max(1) > IN_PLACE_WORK
         {
             return false;
         }
@@ -987,23 +1053,24 @@ impl TimeControl {
         let (Ok(t), Ok(s)) = (u16::try_from(track), u16::try_from(slot)) else {
             return false;
         };
-        // In the order the clip took them (`Clip::apply`), so the view
-        // holds them in the order a compile would.
-        let changes = (edit.erase.iter().map(|&n| InPlace::EraseNote(n)))
-            .chain(edit.erase_locks.iter().map(|&l| InPlace::EraseLock(l)))
-            .chain(edit.add.iter().map(|&n| InPlace::AddNote(n)))
-            .chain(edit.add_locks.iter().map(|&l| InPlace::AddLock(l)));
+        // At most MAX_IN_PLACE (64): `fits` checked it.
+        let n = u8::try_from(InPlace::count(edit)).unwrap_or(u8::MAX);
+        let changes = InPlace::all(edit);
+        self.edit_id = self.edit_id.wrapping_add(1);
+        let id = self.edit_id;
         for change in changes {
-            let m = ToAudio::Edit {
-                track: t,
-                slot: s,
-                change,
-            };
-            if self.tx.send(m).is_err() {
+            if self.tx.send(ToAudio::EditPart { id, change }).is_err() {
                 return false;
             }
         }
-        true
+        let end = ToAudio::EditEnd {
+            id,
+            track: t,
+            slot: s,
+            view: self.view_sent,
+            n,
+        };
+        self.tx.send(end).is_ok()
     }
 
     /// The view of the project as it is, with what it includes and room
@@ -1372,12 +1439,6 @@ impl TimeControl {
         let grid = Grid::new(STEP_TICKS).expect("a sixteenth is a step size");
         let clip = slot.and_then(|slot| {
             let c = self.project.clip(track, slot)?;
-            let mut pitches: Vec<u8> = (0..16).collect();
-            for n in &c.notes {
-                if !pitches.contains(&n.note) {
-                    pitches.push(n.note);
-                }
-            }
             let launch = self
                 .launches
                 .iter()
@@ -1385,6 +1446,7 @@ impl TimeControl {
             let origin = launch.map(|l| l.origin);
             let order =
                 launch.and_then(|l| mpfree_play::StepOrder::of(c, track, slot, l.origin, l.start));
+            let shown = grid.shown(c, &mpfree_seq::steps::PAD_ROWS);
             Some(StepClip {
                 slot,
                 name: c.name.clone(),
@@ -1393,25 +1455,9 @@ impl TimeControl {
                 song_step: c.speed.to_song(STEP_TICKS as f64),
                 origin,
                 order,
-                locks: pitches
-                    .iter()
-                    .map(|&p| (p, grid.lock_row(c, p)))
-                    .chain(std::iter::once((LINE, grid.lock_line(c))))
-                    .collect(),
-                // A whole step's lock (a chord's) is the line's.
-                lock_values: c
-                    .locks
-                    .iter()
-                    .map(|l| {
-                        let row = l.sound.unwrap_or(LINE);
-                        (row, grid.place(c.length, l.tick).0, l.addr, l.value)
-                    })
-                    .collect(),
-                rows: pitches
-                    .into_iter()
-                    .map(|p| (p, grid.row(c, p)))
-                    .chain(std::iter::once((LINE, grid.line(c))))
-                    .collect(),
+                rows: shown.rows,
+                locks: shown.locks,
+                lock_values: shown.lock_values,
             })
         });
         StepsData {
@@ -4713,6 +4759,13 @@ impl TimeControl {
             "; {} new notes or locks left out of moments too busy, {} endings lost",
             c.busy, c.ends_lost
         ));
+        // Pressure no note could play again, freed out of recording (B4b).
+        if self.touch_freed.1 > 0 {
+            line.push_str(&format!(
+                "; {} unused pressure values freed ({} times)",
+                self.touch_freed.0, self.touch_freed.1
+            ));
+        }
         // Several armed tracks (rec-arm.md "Several tracks"): a track a take
         // left out for want of room.
         if self.also_full > 0 {

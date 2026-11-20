@@ -2141,6 +2141,63 @@ mod tests {
         assert_eq!(*h.audio.view, fresh);
     }
 
+    /// A lock turned on a long clip goes in place: its changes cost the
+    /// clip's locks, not its notes (refactor B3), so each Q-Link detent
+    /// needs no compile. Two steps' notes changed on the same clip are past
+    /// the work allowed in place, and compile.
+    #[test]
+    fn a_lock_turned_on_a_long_clip_goes_in_place() {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_seq::steps::Change;
+        use mpfree_seq::Note;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut clip = Clip::new("long", 128 * STEP_TICKS);
+        // 64 notes on each of 128 steps: as many as a note change in
+        // place may search.
+        clip.notes = (0..128)
+            .flat_map(|i| (0..64).map(move |n| Note::new(i * STEP_TICKS, 100, n, 100)))
+            .collect();
+        assert_eq!(clip.notes.len(), mpfree_play::IN_PLACE_WORK);
+        h.control.project.tracks[0].slots[0] = Some(clip);
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        let ways = |h: &TimeHost| {
+            (
+                h.control.costs.steps_in_place,
+                h.control.costs.steps_compiled,
+            )
+        };
+        let compiles = h.control.costs.compiles;
+        let tune = RelAddr::new(OnTrack::Pad(2), 2);
+        for (i, value) in [300.0, 320.0, 340.0].into_iter().enumerate() {
+            h.step_action(StepAction::Lock {
+                pad: 2,
+                steps: 1 << 4,
+                addr: tune,
+                value: Some(value),
+            })
+            .unwrap();
+            run(&mut h, &mut pads, BAR / 2 + (i as u64 + 1) * BAR / 8, &[]);
+        }
+        assert_eq!(ways(&h), (3, 0), "each detent in place");
+        assert_eq!(h.control.costs.compiles, compiles, "nothing compiled");
+        assert_eq!(h.audio.counts().missed, 0);
+        assert_eq!(
+            *h.audio.view,
+            h.control.view().unwrap(),
+            "the view in place is what a compile gives"
+        );
+        h.step_action(StepAction::ChangeSteps {
+            pad: 2,
+            steps: (1 << 4) | (1 << 8),
+            change: Change::Velocity(60),
+        })
+        .unwrap();
+        assert_eq!(ways(&h), (3, 1), "two steps' notes");
+    }
+
     /// A change the view can't make in place (here, a note it erases that
     /// the project changed behind its back) asks for one compile, which brings it and
     /// the changes after it; the status line counts it.
@@ -2185,6 +2242,75 @@ mod tests {
             "{}",
             h.describe()
         );
+    }
+
+    /// A step edit reaches what plays whole or not at all (refactor A3):
+    /// a queue that fills half way through it, or a view other than the
+    /// one it was made on, leaves the playing view as it was (not half the
+    /// edit), and the compiled view brings it.
+    #[test]
+    fn a_step_edit_reaches_the_playing_view_whole_or_not_at_all() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let tap = |step| StepAction::Tap {
+            pad: 0,
+            step,
+            velocity: 100,
+        };
+        h.step_action(tap(0)).unwrap();
+        run(&mut h, &mut pads, u64::from(PERIOD), &[]);
+        assert_eq!(*h.audio.view, h.control.view().unwrap());
+        let in_place = h.control.costs.steps_in_place;
+        // Room in the queue for one of the edit's three messages (the
+        // note out, the softer note in, the end).
+        h.audio.receive();
+        h.control.fill_queue_but(1);
+        let before = h.audio.view.clone();
+        h.control
+            .step_action(StepAction::Change {
+                pad: 0,
+                step: 0,
+                change: mpfree_seq::steps::Change::Velocity(60),
+            })
+            .unwrap();
+        h.audio.receive();
+        assert_eq!(
+            *h.audio.view, *before,
+            "not the note out without the note in"
+        );
+        assert_eq!(h.audio.counts().missed, 0, "nothing came to miss");
+        let to = pads.frame + 2 * u64::from(PERIOD);
+        run(&mut h, &mut pads, to, &[]);
+        assert_eq!(
+            *h.audio.view,
+            h.control.view().unwrap(),
+            "the compiled view brings it"
+        );
+        assert_eq!(h.audio.view_n, h.control.view_sent());
+        // Made on a view the audio half doesn't play (as when it sent the
+        // newest back to compile again): left out, and compiled.
+        h.audio.view_n = h.audio.view_n.wrapping_add(1);
+        let before = h.audio.view.clone();
+        h.control.step_action(tap(4)).unwrap();
+        assert_eq!(
+            h.control.costs.steps_in_place,
+            in_place + 1,
+            "sent in place"
+        );
+        h.audio.receive();
+        assert_eq!(*h.audio.view, *before);
+        assert_eq!(h.audio.counts().missed, 1);
+        let to = pads.frame + 2 * u64::from(PERIOD);
+        run(&mut h, &mut pads, to, &[]);
+        assert_eq!(*h.audio.view, h.control.view().unwrap());
+        assert_eq!(h.audio.view_n, h.control.view_sent());
+        // On the view it was made on, whole, with no compile.
+        let compiles = h.control.costs.compiles;
+        h.control.step_action(tap(8)).unwrap();
+        h.audio.receive();
+        assert_eq!(*h.audio.view, h.control.view().unwrap());
+        assert_eq!(h.control.costs.compiles, compiles);
+        assert_eq!(h.audio.counts().missed, 1);
     }
 
     #[test]
@@ -3105,6 +3231,84 @@ mod tests {
     /// Pad pressure while recording goes on the pad's note in the clip
     /// (the Record list's "Pressure" row is on for a new track), plays
     /// back to the pads on the next pass, and is left out with the row off.
+    /// Refactor B4b: a clip past half its pressure room frees what no
+    /// note names once the recording stops, the view is compiled again
+    /// with the new numbering, and the note still plays its pressure.
+    #[test]
+    fn unused_pressure_is_freed_once_the_recording_stops() {
+        use mpfree_seq::TouchPoint;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.command(Command::SetLoop(Some((0, 3840))));
+        h.act(TimeAction::NewClip { track: 0, slot: 0 }).unwrap();
+        // Pressure no note names, as erased notes whose takes are gone
+        // leave behind: past half the room.
+        let chunk: Vec<TouchPoint> = (0..1000)
+            .map(|k| TouchPoint {
+                at: k,
+                value: (k % 128) as u8,
+            })
+            .collect();
+        let clip = h.control.project.tracks[0].slots[0].as_mut().unwrap();
+        for _ in 0..33 {
+            clip.add_touch(&chunk).unwrap();
+        }
+        assert!(clip.touch.len() > mpfree_play::TOUCH_RECLAIM_AT);
+        h.control.compile().unwrap();
+        h.audio.receive();
+        // A note pressed harder and let up, recorded.
+        let squeeze = [(12_000u64, 40u8), (20_000, 90), (30_000, 20)];
+        while pads.frame < BAR - 1000 {
+            let end = pads.frame + u64::from(PERIOD);
+            let here = |at: u64| {
+                (pads.frame..end)
+                    .contains(&at)
+                    .then(|| (at - pads.frame) as u32)
+            };
+            if let Some(o) = here(10_000) {
+                h.pad(
+                    o,
+                    Event::NoteOn {
+                        note: 5,
+                        velocity: 100,
+                    },
+                );
+            }
+            for &(at, value) in &squeeze {
+                if let Some(o) = here(at) {
+                    h.pad_pressure(o, 5, value);
+                }
+            }
+            if let Some(o) = here(40_000) {
+                h.pad(o, Event::NoteOff { note: 5 });
+            }
+            h.period(PERIOD, &mut pads);
+            pads.frame = end;
+        }
+        assert_eq!(h.control.touch_freed(), (0, 0), "not while recording");
+        // Recording off: the next period frees the 33,000.
+        h.act(TimeAction::Transport(Command::Record)).unwrap();
+        let to = pads.frame + u64::from(PERIOD);
+        run(&mut h, &mut pads, to, &[]);
+        assert_eq!(h.control.touch_freed(), (33_000, 1));
+        let clip = h.control.project.clip(0, 0).unwrap();
+        assert_eq!(clip.touch.len(), 3);
+        let values: Vec<u8> = clip
+            .touch_of(&clip.notes[0])
+            .iter()
+            .map(|p| p.value)
+            .collect();
+        assert_eq!(values, [40, 90, 20]);
+        assert_eq!(*h.audio.view, h.control.view().unwrap(), "compiled again");
+        // It plays back, and UNDO still takes the note out.
+        pads.pressure.clear();
+        run(&mut h, &mut pads, 2 * BAR - 1000, &[]);
+        let back: Vec<(usize, u8)> = pads.pressure.iter().map(|p| (p.1, p.2)).collect();
+        assert_eq!(back, [(5, 40), (5, 90), (5, 20)]);
+        h.act(TimeAction::Undo).unwrap();
+        assert!(h.control.project.clip(0, 0).unwrap().notes.is_empty());
+    }
+
     #[test]
     fn pad_pressure_while_recording_goes_on_its_note_and_plays_back() {
         let mut h = TimeHost::new(RATE, 120.0).unwrap();
