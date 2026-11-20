@@ -31,6 +31,7 @@
 
 mod arp;
 pub mod mapper;
+mod pads_preview;
 pub mod saved;
 pub mod step_pads;
 mod synth_pads;
@@ -38,6 +39,7 @@ mod synth_pads;
 pub use arp::{built_in_patterns, mode_label, ArpItem, ArpView, LiveMap, WorkspaceView};
 pub use mapper::{Code, MapView, Mark};
 use mpfree_arp::scale::pads::Pad as PadNotes;
+pub use pads_preview::synth_track;
 pub use step_pads::StepPads;
 pub use synth_pads::SynthItem;
 
@@ -1111,6 +1113,15 @@ pub enum Effect {
         track: usize,
         id: Option<&'static str>,
     },
+    /// The pads play the synth the Synth tab shows while the selected
+    /// track keeps its kit (true), or play the track's instrument again
+    /// (app/pads_preview.rs).
+    PadsPreview(bool),
+    /// REC while the pads play the synth by Play on the pads: this track
+    /// plays the synth from now on (the Synth kit, as a pick in the list of
+    /// kits), so the take plays the one instance that was heard
+    /// (app/pads_preview.rs).
+    SynthOnTrack(usize),
     /// The mixer opened on a view, or closed (`None`): the audio thread
     /// sends the panel its state only while it is open.
     Mixer(Option<mpfree_mixer_ui::MixView>),
@@ -1589,6 +1600,9 @@ pub struct App {
     /// ([`App::set_pad_layout`]): the pads then feed the arp the layout's
     /// notes, and its events carry notes rather than pad slots.
     pad_layout: Option<[PadNotes; 16]>,
+    /// The pads play the shared synth while the selected track keeps its
+    /// kit ([`App::toggle_pads_preview`]).
+    pads_preview: bool,
     /// What each held pad pressed into the arp (kept so a layout change
     /// while a pad is down still lets go of the right notes).
     pad_pressed: [PadNotes; 16],
@@ -1754,6 +1768,7 @@ impl App {
             held: false,
             outline: false,
             pad_layout: None,
+            pads_preview: false,
             pad_pressed: [PadNotes::default(); 16],
             note_holds: [0; 128],
             keys_held: [false; 128],
@@ -2293,6 +2308,7 @@ impl App {
     /// R5.7).
     pub fn held_kit_pads(&self) -> Vec<usize> {
         if self.pad_layout.is_some()
+            || self.pads_preview
             || self.pads_are_steps()
             || self.pads_mute()
             || self.levels_on
@@ -2880,6 +2896,7 @@ impl App {
     /// set on them. COPY + a pad copies kit pads only then.
     pub fn pads_play_kit(&self) -> bool {
         !(self.pad_layout.is_some()
+            || self.pads_preview
             || self.step_pads().is_some()
             || self.levels_on
             || self.pads_mute()
@@ -3231,7 +3248,8 @@ impl App {
         } else if Some(note) == self.map.rec {
             // REC records what is armed, on every page (sequencer
             // decision 1); with an empty kit pad held, one take onto it
-            // (sampler R5.7).
+            // (sampler R5.7). With the synth on the pads by Play on the
+            // pads, the take goes where the synth plays (desk.rs).
             let held = self.held_kit_pads();
             fx.push(if held.is_empty() {
                 Effect::Rec(crate::rec_arm::Press::Rec)
@@ -7192,6 +7210,99 @@ mod tests {
         assert_eq!(app.view(), View::Options);
         app.options_button();
         assert_eq!(app.view(), View::Synth, "MENU's way in, Back's way out");
+    }
+
+    /// Play on the pads: the synth on the pads while the track keeps its
+    /// kit; the button again or another track give the pads back. REC
+    /// records the synth where it plays: a track that gets a copy of it.
+    #[test]
+    fn play_on_the_pads_keeps_the_kit_and_rec_records_the_synth_on_a_track() {
+        use crate::rec_arm::Press;
+        let mut app = ready();
+        app.open_tab(View::Synth);
+        assert!(app.pads_play_kit() && !app.pads_preview());
+        let fx = app.toggle_pads_preview();
+        assert_eq!(fx[0], Effect::PadsPreview(true), "{fx:?}");
+        assert!(
+            matches!(&fx[1], Effect::Note(n) if n.contains("Track 1 keeps its kit")),
+            "{fx:?}"
+        );
+        assert!(app.pads_preview() && !app.pads_play_kit());
+        assert!(app.held_kit_pads().is_empty(), "no pad take from the synth");
+        assert_eq!(app.track_sound(0), None, "the track still plays its kit");
+        // The button again: the kit.
+        let fx = app.toggle_pads_preview();
+        assert_eq!(
+            fx,
+            [
+                Effect::PadsPreview(false),
+                Effect::Note("The pads play Track 1's kit again".into())
+            ]
+        );
+        assert!(app.pads_play_kit());
+        // Another track: its instrument, said first.
+        app.toggle_pads_preview();
+        let fx = app.set_track(2);
+        assert_eq!(fx[0], Effect::PadsPreview(false), "{fx:?}");
+        assert!(!app.pads_preview());
+        // REC and OVERDUB press as ever; the desk sends the take where the
+        // synth plays (rec_synth).
+        app.toggle_pads_preview();
+        assert_eq!(press(&mut app, 90), [Effect::Rec(Press::Rec)]);
+        assert_eq!(press(&mut app, 91), [Effect::Rec(Press::Overdub)]);
+        assert!(app.pads_preview());
+        // The track it goes to plays the same synth (no copy), and the
+        // pads go on playing it.
+        let fx = app.rec_synth_on(4);
+        assert_eq!(
+            fx,
+            [
+                Effect::PadsPreview(false),
+                Effect::SynthOnTrack(4),
+                Effect::Note(
+                    "REC records Poly on Track 5: the track plays the same Poly as the pads".into()
+                )
+            ]
+        );
+        assert_eq!(app.track_sound(4), None, "no copy on the track");
+        assert!(!app.pads_preview());
+        // Nothing while the pads already play a synth: the track's own.
+        let poly = crate::instruments::Held {
+            id: crate::synth::Engine::Poly.node_id(),
+            name: "Poly",
+            instance: 0,
+        };
+        app.set_track_sound(2, Some(poly));
+        assert!(app.toggle_pads_preview().is_empty());
+        assert!(!app.pads_preview());
+    }
+
+    /// Where REC records the pads' synth: the selected track while it has
+    /// no clips, else the first track with none and no instrument of its
+    /// own; nowhere while every track has clips.
+    #[test]
+    fn rec_records_the_pads_synth_on_an_empty_track() {
+        use mpfree_seq::{Clip, Project, Track};
+        let mut p = Project::new();
+        for n in 0..4 {
+            p.tracks.push(Track::new(&format!("Track {}", n + 1), 0));
+        }
+        let none = |_| false;
+        assert_eq!(synth_track(&p, 2, none), Some(2), "the selected one");
+        p.tracks[2].slots[1] = Some(Clip::new("Beat", 384));
+        p.tracks[0].slots[0] = Some(Clip::new("Drums", 384));
+        assert_eq!(synth_track(&p, 2, none), Some(1), "the first empty one");
+        assert_eq!(
+            synth_track(&p, 2, |t| t == 1),
+            Some(3),
+            "not one with its own"
+        );
+        p.tracks[3].slots[3] = Some(Clip::new("Keys", 384));
+        assert_eq!(
+            synth_track(&p, 2, |t| t == 1),
+            None,
+            "nowhere: nothing changes"
+        );
     }
 
     #[test]
