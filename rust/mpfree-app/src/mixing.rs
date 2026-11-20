@@ -245,6 +245,15 @@ pub const DELAY_RETURN: usize = 0;
 const PERFORM_SLOT: usize = 0;
 /// A send this low is off.
 pub const SEND_OFF_DB: f32 = -60.0;
+/// Why the looper can't record the master while the Loop track sends to
+/// return `r`
+/// ([`MixHost::loop_take`]).
+const LOOP_SENDS_HEARD: [&str; mpfree_fx::RETURNS] = [
+    "the Loop track sends to Return A, so the loop would record its own echoes: turn that send down",
+    "the Loop track sends to Return B, so the loop would record its own echoes: turn that send down",
+    "the Loop track sends to Return C, so the loop would record its own echoes: turn that send down",
+    "the Loop track sends to Return D, so the loop would record its own echoes: turn that send down",
+];
 /// The capture point the sampler resamples from (the recorder's Source):
 /// the last of the mixer's [`CAPTURES`], so the others stay free for
 /// print, stems and the looper.
@@ -2047,6 +2056,19 @@ impl MixHost {
                 return Err("the Loop track goes to that submix");
             }
         }
+        // The master hears the send returns (they always play into it),
+        // and in them the Loop track's own sends: the loop would record its
+        // own echoes, and each overdub would add them again. Refused
+        // (silence, said) while the Loop track sends to a return.
+        if from == Some(StripId::Master) {
+            if let Some(r) = (0..mpfree_fx::RETURNS)
+                .find(|&r| self.mixer.param(StripId::Track(LOOP), mx::send(r)) > SEND_OFF_DB)
+            {
+                left.fill(0.0);
+                right.fill(0.0);
+                return Err(LOOP_SENDS_HEARD[r]);
+            }
+        }
         let moved = point != self.loop_point;
         // A strip is found again each period (cheap, and it allocates
         // nothing), so one that moves in the mixer stays the one taken.
@@ -3234,6 +3256,31 @@ mod tests {
         // The Loop track on a submix: it can't be taken out.
         let (_, why) = go(true, true);
         assert_eq!(why, Some("the Loop track goes to a submix"));
+    }
+
+    /// The master can't be recorded while the Loop track sends to a
+    /// return: the loop would record its own echoes. The Play page's "off"
+    /// send (-60 dB) is off; a track's strip or a submix never hears the
+    /// returns (they always play into the master).
+    #[test]
+    fn the_master_is_refused_while_the_loop_track_sends_to_a_return() {
+        let mut h = MixHost::new(RATE, -6.0, -6.0);
+        let (mut l, mut r) = ([1f32; PERIOD], [1f32; PERIOD]);
+        let send = mx::send(DELAY_RETURN);
+        assert_eq!(h.mixer.param(StripId::Track(LOOP), send), SEND_OFF_DB);
+        assert!(h.loop_take(Some(StripId::Master), &mut l, &mut r).is_ok());
+        h.mixer.set_now(StripId::Track(LOOP), send, -12.0);
+        let (mut l, mut r) = ([1f32; PERIOD], [1f32; PERIOD]);
+        assert_eq!(
+            h.loop_take(Some(StripId::Master), &mut l, &mut r),
+            Err(LOOP_SENDS_HEARD[DELAY_RETURN])
+        );
+        assert!(l.iter().chain(&r).all(|&x| x == 0.0), "silence");
+        assert!(LOOP_SENDS_HEARD[DELAY_RETURN].contains("Return A"));
+        assert!(h
+            .loop_take(Some(StripId::Track(SYNTH)), &mut l, &mut r)
+            .is_ok());
+        assert!(h.loop_take(Some(StripId::Bus(0)), &mut l, &mut r).is_ok());
     }
 
     /// The looper's Pads: the strip of what the pads play, by what the

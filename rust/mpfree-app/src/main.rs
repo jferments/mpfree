@@ -2674,6 +2674,26 @@ fn erase_held_steps(
     keys.erase_locks(time).map(app::Effect::Tell)
 }
 
+/// What the pads play, as the mixer strip they sound on: the one place
+/// that answers it, for the looper's Records from: Pads. Today the pads
+/// play the armed track (its own instrument, its kit or the shared synth,
+/// [`mixing::MixHost::pads_strip`]); the instrument redesign's pads focus
+/// changes this function, and the looper follows. None while they play
+/// MIDI out, which sounds outside mpfree.
+fn pads_sound(
+    app: &app::App,
+    mix: &mixing::MixHost,
+    kits: &sampler::TrackKits,
+    midi_out: &midi_out::MidiOut,
+    homes: &[u8],
+) -> Option<mpfree_fx::StripId> {
+    let t = app.track();
+    if midi_out.takes(t as u16) {
+        return None;
+    }
+    Some(mix.pads_strip(mix.instruments.holds(t), t, kits.kit_of(t), homes))
+}
+
 /// What a loop that starts when you play (the Looper tab's Starts: When I
 /// play) said: a line for the log, and whether the screen says it too
 /// (a start refused).
@@ -5470,10 +5490,17 @@ fn looper_action(
         ) => {
             vec![app::Effect::Tell(looper.command(c))]
         }
-        looping::LoopAction::Command(c) => {
-            out.note(&looper.command(c));
-            Vec::new()
-        }
+        looping::LoopAction::Command(c) => match looper.refuse(c) {
+            // The source can't be had: a take would be silence.
+            Some(why) => {
+                out.note(&format!("looper: {why}"));
+                vec![app::Effect::Tell(why)]
+            }
+            None => {
+                out.note(&looper.command(c));
+                Vec::new()
+            }
+        },
         looping::LoopAction::Steps(n) => {
             out.note(&looper.steps(n));
             Vec::new()
@@ -9669,45 +9696,35 @@ fn player_session(
         synth_time.add(synth_took);
         engines.add(engines::SYNTH, synth_took);
         // What the looper records from the pads: the strip of what they
-        // play (the armed track's instrument or kit, mixing.rs
-        // `pads_strip`), after its effects and fader, from the mix of the
-        // last period, so a pattern on another track stays out (Jay, 20
-        // Nov); silence, said, while they play MIDI out. When the strip
-        // can't be had, the drums and the synth as the engines make them,
-        // dry (counted and said, as every fallback). Either way before the
-        // master, so the Level is applied once. Records from a mix (the
-        // master or one strip) takes that from the mixer instead, or
-        // silence, said, when it can't be had.
-        let pads_track = app.track();
-        let (from_mix, pads) = match looper.source() {
-            looping::LoopSource::Mix(strip) => (Some(strip), false),
-            looping::LoopSource::Pads if midi_out.takes(pads_track as u16) => (None, true),
-            looping::LoopSource::Pads => (
-                Some(mix.pads_strip(
-                    mix.instruments.holds(pads_track),
-                    pads_track,
-                    track_kits.kit_of(pads_track),
-                    &homes,
-                )),
-                true,
-            ),
-            looping::LoopSource::Line => (None, false),
+        // play (`pads_sound`), after its effects and fader, from the mix of
+        // the last period, so a pattern on another track stays out (Jay, 20
+        // Nov); held through a take (`LoopHost::pads_from`). Records from a
+        // mix (the master or one strip) takes that from the mixer instead.
+        // Either way before the master, so the Level is applied once. A
+        // source that can't be had (or the pads on MIDI out) is silence,
+        // said, never another sound in its place, and no take starts on it
+        // (`LoopHost::refuse`).
+        let wanted = match looper.source() {
+            looping::LoopSource::Pads => {
+                Some(pads_sound(&app, &mix, &track_kits, &midi_out, &homes))
+            }
+            looping::LoopSource::Mix(_) | looping::LoopSource::Line => None,
         };
-        if let Some(line) = looper.pads_from(pads.then_some(from_mix)) {
+        if let Some(line) = looper.pads_from(wanted) {
             out.note(&line);
         }
-        let how = if pads && from_mix.is_none() {
+        let how = match looper.source() {
+            looping::LoopSource::Mix(strip) => mix.loop_take(Some(strip), &mut pads_l, &mut pads_r),
+            looping::LoopSource::Pads => match looper.pads_taken().flatten() {
+                Some(strip) => mix.loop_take(Some(strip), &mut pads_l, &mut pads_r),
+                None => Err("the pads play MIDI out, which sounds outside mpfree"),
+            },
+            // The line input is the looper's own; nothing from the mix.
+            looping::LoopSource::Line => Ok(0),
+        };
+        if how.is_err() || looper.source() == looping::LoopSource::Line {
             pads_l.fill(0.0);
             pads_r.fill(0.0);
-            Err("the pads play MIDI out, which sounds outside mpfree")
-        } else {
-            mix.loop_take(from_mix, &mut pads_l, &mut pads_r)
-        };
-        if how.is_err() && pads && from_mix.is_some() {
-            for f in 0..PERIOD {
-                pads_l[f] = drums_l[f] + synth_l[f];
-                pads_r[f] = drums_r[f] + synth_r[f];
-            }
         }
         if let Some(line) = looper.take_pads_as(&pads_l, &pads_r, how) {
             out.note(&line);

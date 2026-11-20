@@ -52,7 +52,7 @@ A round's runbook has a table of its checks: the check, why it's in this round, 
 | `wheel` | hands | The outline and the push on the real wheel (#339), and moving a Song block by wheel (#355) | wheel steps, a block moved |
 | `touch` | hands | Touch lab, Calibrate touch, two fingers, and a real drag past the 12 px lift | the Touch lab's start and end, Calibrate's result, a clip moved and a copy dropped |
 | `note-repeat` | hands | NOTE REPEAT, Latch and the arp in real time | button 11, an arp mode, Latch on and off |
-| `looper` | hands | REC + PLAY recording until STOP, STOP keeping the take, and the pads recorded with their effects (the final round's looper notes) | the loop armed, its `cut at STOP` line, no `records the pads dry` line |
+| `looper` | hands | REC + PLAY recording until STOP, STOP keeping the take, and the pads' channel recorded with its effects (since 20 Nov not the shared delay's echoes) | the loop armed, its `cut at STOP` line, no `Pads records silence` line |
 | `console` | hands | The console chord, TAP TEMPO and STOP on the real panel | a tapped tempo, STOP's silence |
 | `fx-add` | hands | Adding an effect on the Mix tab and hearing it, which live test 3 couldn't (#275, #287, #353) | the touchscreen used, no refusal line, the app kept running |
 | `eq` | hands | The parametric EQ on the real panel (#388): a dot following a finger, UNDO, and Solo band (Listen until 16 Nov) on the MPC's outputs | UNDO, its `Undid … EQ Band N` line, no underrun while it played |
