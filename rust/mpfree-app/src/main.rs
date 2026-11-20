@@ -4081,6 +4081,7 @@ fn play_routed(
         track: u16::from(track),
         dest: Default::default(),
         event,
+        notes: false,
     };
     // A key's pressure reached the CV outputs above, as the hardest key's.
     if !matches!(event, Event::Pressure { .. }) {
@@ -4207,6 +4208,7 @@ fn play_routed_pad(
                 track,
                 dest: Default::default(),
                 event,
+                notes: false,
             };
             midi.pad_to(&o, port, *channel, *note);
         }
@@ -5152,6 +5154,10 @@ impl time::Pads for SeqPads<'_> {
         if self.quiet(o) {
             return true;
         }
+        // A clip of notes (step 5c): its notes are never pads.
+        if o.notes && is_note(o.event) {
+            return self.out_note(o);
+        }
         let pad = event_pad(o.event);
         // A track that plays notes plays its pad's notes moved by its live
         // transpose (S4); a note-off goes to what its note-on sent.
@@ -5181,6 +5187,20 @@ impl time::Pads for SeqPads<'_> {
         if mpfree_play::is_gear_control(o) {
             return self.control_ahead(o);
         }
+        // A clip's note by number goes where its track's shift takes it
+        // as it starts, remembered for its end (`sounding`). Only once
+        // MIDI out will take it, so a note left for the real pass isn't
+        // counted twice.
+        if o.notes && is_note(o.event) {
+            if !self.midi.takes(o.track) {
+                return false;
+            }
+            let shift = self.note_shift(o.track);
+            return match self.sounding(o, &shift) {
+                Some(sound) => self.midi.send(&sound, midi_out::NoteIs::Note),
+                None => false,
+            };
+        }
         let shift = self.shift(o.track);
         let mut buf = [0; MAX_PAD_NOTES];
         let is = shifted_is(
@@ -5199,6 +5219,14 @@ impl time::Pads for SeqPads<'_> {
     /// pad's flash).
     fn out_sent(&mut self, o: &mpfree_play::Out) {
         if self.quiet(o) {
+            return;
+        }
+        // A clip's note by number: where it went when it went ahead.
+        if o.notes && is_note(o.event) {
+            let sound = self.went(o);
+            self.cv.send(&sound, midi_out::NoteIs::Note);
+            self.tap.send(&sound, midi_out::NoteIs::Note);
+            self.flash_note(o);
             return;
         }
         let shift = self.shift(o.track);
@@ -5222,6 +5250,15 @@ impl time::Pads for SeqPads<'_> {
         }
         self.flash(o);
     }
+}
+
+/// A note's start, end or pressure (not a panic, lock or program).
+fn is_note(e: mpfree_play::Event) -> bool {
+    use mpfree_play::Event;
+    matches!(
+        e,
+        Event::NoteOn { .. } | Event::NoteOff { .. } | Event::Pressure { .. }
+    )
 }
 
 /// The pad a clip's note event is on (0 for the rest).
@@ -5290,6 +5327,161 @@ impl SeqPads<'_> {
             .control_ahead(o.offset, addr, v, value.is_some(), lane)
     }
 
+    /// A clip's note by number (a clip of notes, step 5c), wherever its
+    /// track plays. MIDI out, CV and an export's file get the note as a
+    /// note. A track's own instrument or the synth plays it by number,
+    /// moved by the track's live transpose as it started (`sounding`, so
+    /// its end and pressure reach that note). A kit's pads answer it as
+    /// they answer MIDI in: each note is on one pad
+    /// (`mpfree_midi::profile::kit_pad_of_note`). Always taken: the pads
+    /// never read a note as a pad number.
+    fn out_note(&mut self, o: &mpfree_play::Out) -> bool {
+        use mpfree_play::Event;
+        let track = usize::from(o.track);
+        if self.plays_kit(o.track) {
+            let pad = |note| mpfree_midi::profile::kit_pad_of_note(note);
+            let event = match o.event {
+                Event::NoteOn { note, velocity } => Event::NoteOn {
+                    note: pad(note) as u8,
+                    velocity,
+                },
+                Event::NoteOff { note } => Event::NoteOff {
+                    note: pad(note) as u8,
+                },
+                Event::Pressure { note, value } => Event::Pressure {
+                    note: pad(note) as u8,
+                    value,
+                },
+                e => e,
+            };
+            let hit = mpfree_play::Out {
+                event,
+                notes: false,
+                ..*o
+            };
+            self.cv.send(&hit, midi_out::NoteIs::Kit);
+            self.tap.send(&hit, midi_out::NoteIs::Kit);
+            match event {
+                Event::NoteOn { note, velocity } => {
+                    time::Pads::hit_at(self, o.track, usize::from(note), velocity, o.offset);
+                }
+                Event::NoteOff { note } => {
+                    time::Pads::release_at(self, o.track, usize::from(note), o.offset)
+                }
+                Event::Pressure { note, value } => {
+                    time::Pads::pressure_at(self, o.track, usize::from(note), value, o.offset)
+                }
+                _ => {}
+            }
+            return true;
+        }
+        let shift = self.note_shift(o.track);
+        // Nothing sounds: it fell off the keyboard, or ended already.
+        let Some(sound) = self.sounding(o, &shift) else {
+            return true;
+        };
+        self.cv.send(&sound, midi_out::NoteIs::Note);
+        self.tap.send(&sound, midi_out::NoteIs::Note);
+        if self.midi.send(&sound, midi_out::NoteIs::Note) {
+            self.flash_note(o);
+            return true;
+        }
+        let own = self.own.plays(track);
+        match sound.event {
+            Event::NoteOn { note, velocity } => {
+                if own {
+                    self.own.note_on(track, note, velocity, o.offset);
+                } else {
+                    self.synth.note_on_note(note, velocity, o.offset);
+                }
+                self.hits += 1;
+                self.flash_note(o);
+            }
+            Event::NoteOff { note } if own => {
+                self.own.note_off(track, note, o.offset);
+            }
+            Event::NoteOff { note } => self.synth.note_off_note(note, o.offset),
+            Event::Pressure { note, value } if own => {
+                self.own.note_pressure_at(track, note, value, o.offset);
+            }
+            Event::Pressure { note, value } => self.synth.pressure_note_at(note, value, o.offset),
+            _ => {}
+        }
+        true
+    }
+
+    /// Track `track` plays a kit's sounds on the pads: not MIDI out, its
+    /// own instrument or another track's, or the synth.
+    fn plays_kit(&self, track: u16) -> bool {
+        let t = usize::from(track);
+        !self.midi.takes(track) && !self.own.plays(t) && !self.kits.plays_synth(t)
+    }
+
+    /// Track `track`'s live transpose (S4) for a clip of notes: its notes
+    /// are notes whatever the pads show, so they move, unless they go to
+    /// the Drums engine (or a kit, which never gets here).
+    fn note_shift(&self, track: u16) -> Shift {
+        let t = usize::from(track);
+        let Some(&to) = self.shifts.get(t) else {
+            return Shift::NONE;
+        };
+        let drums = if self.midi.takes(track) {
+            false
+        } else if self.own.plays(t) {
+            !self.own.plays_notes(t)
+        } else {
+            !self.synth.plays_notes()
+        };
+        if to.is_none() || drums {
+            return Shift::NONE;
+        }
+        Shift {
+            by: to.by,
+            key: self.key.filter(|_| to.in_key),
+        }
+    }
+
+    /// A clip's note by number that went out ahead (S5): where its track's
+    /// shift took it then, for the rest of what it does in its own period.
+    fn went(&self, o: &mpfree_play::Out) -> mpfree_play::Out {
+        use mpfree_play::Event;
+        let Some(held) = self.by_note.get(usize::from(o.track)) else {
+            return *o;
+        };
+        let event = match o.event {
+            Event::NoteOn { note, velocity } => Event::NoteOn {
+                note: held.went(note),
+                velocity,
+            },
+            Event::NoteOff { note } => Event::NoteOff {
+                note: held.went(note),
+            },
+            Event::Pressure { note, value } => Event::Pressure {
+                note: held.went(note),
+                value,
+            },
+            e => e,
+        };
+        mpfree_play::Out { event, ..*o }
+    }
+
+    /// A clip's note-on by number flashes the pad that plays the note in
+    /// the pads' layout, while its track's pads are the ones shown.
+    fn flash_note(&mut self, o: &mpfree_play::Out) {
+        if let mpfree_play::Event::NoteOn { note, velocity } = o.event {
+            if self.kits.entry(usize::from(o.track)) != self.shown {
+                return;
+            }
+            if let Some(f) = self
+                .live
+                .pad_of_note(note)
+                .and_then(|p| self.flashes.get_mut(p))
+            {
+                *f = velocity.max(1);
+            }
+        }
+    }
+
     /// A note-on that went out elsewhere (MIDI out, a track's own
     /// instrument) still flashes its pad.
     fn flash(&mut self, o: &mpfree_play::Out) {
@@ -5339,6 +5531,7 @@ impl SeqPads<'_> {
                     track,
                     dest: Default::default(),
                     event,
+                    notes: false,
                 };
                 self.midi.pad_to(&o, port, *channel, *note);
             }
@@ -11622,6 +11815,16 @@ mod tests {
     /// ([`SeqPads`]) with `tracks` on the Synth kit, and gives back what
     /// the synth was asked to start and end, in order.
     fn on_the_synth(tracks: &[usize], f: impl FnOnce(&mut SeqPads)) -> Vec<mpfree_node::NodeEvent> {
+        on_the_pads(tracks, &[], f)
+    }
+
+    /// [`on_the_synth`], with the tracks `own` playing their own Poly
+    /// synth (a copy of the synth's sound, as the builder thread makes).
+    fn on_the_pads(
+        tracks: &[usize],
+        own: &[usize],
+        f: impl FnOnce(&mut SeqPads),
+    ) -> Vec<mpfree_node::NodeEvent> {
         let tone: Vec<i16> = (0..2_000)
             .flat_map(|i| [((i as f32 * 0.03).sin() * 12_000.0) as i16; 2])
             .collect();
@@ -11634,6 +11837,15 @@ mod tests {
             assert!(kits.set(t, kits.synth()));
         }
         let mut mix = mixing::MixHost::new(RATE, 0.0, 6.0);
+        for &t in own {
+            let engine = synth::Engine::Poly;
+            let (id, extras, values) = synth.sound_of(engine);
+            let plugins = plugins::Plugins::none();
+            let made = instruments::make(&plugins, id, &extras, &values, RATE, PERIOD).unwrap();
+            let pads = synth.pads_for(engine);
+            let tuning = synth.tuning_now();
+            assert!(mix.instruments.put(t, made, pads, &tuning).is_ok());
+        }
         let mut midi = midi_out::MidiOut::new(RATE, MIDI_OUT_LEAD);
         let mut cv = cv_out::CvOut::new(RATE, MIDI_OUT_LEAD);
         let mut tap = export::Tap::new();
@@ -11732,6 +11944,7 @@ mod tests {
             track: 0,
             dest: 0,
             event,
+            notes: false,
         };
         let ev = on_the_synth(&[0, 1], |seq| {
             assert!(seq.hit_at(1, 3, 100, 0));
@@ -11770,6 +11983,7 @@ mod tests {
             track: 0,
             dest: 0,
             event,
+            notes: false,
         };
         let on = Event::NoteOn {
             note: 3,
@@ -11806,6 +12020,134 @@ mod tests {
         let offs = ev.iter().filter(|e| matches!(e, NoteOff { .. })).count();
         assert_eq!(2 * offs, ons, "{ev:?}");
         assert!(matches!(ev.last(), Some(NoteOff { .. })), "{ev:?}");
+    }
+
+    /// A clip's event of the kind `notes` on track `track` (step 5c).
+    fn clip_out(
+        track: u16,
+        offset: u32,
+        event: mpfree_play::Event,
+        notes: bool,
+    ) -> mpfree_play::Out {
+        mpfree_play::Out {
+            offset,
+            frame: u64::from(offset),
+            track,
+            dest: 0,
+            event,
+            notes,
+        }
+    }
+
+    /// Instrument redesign step 5c: a clip of notes plays its notes by
+    /// number on the synth, moved by its track's live transpose as each
+    /// starts, and ends the note it started though the transpose moved
+    /// in between. The same number from a clip of pad hits is a pad (pad
+    /// 61 is no pad of the synth's, so it plays nothing).
+    #[test]
+    fn a_clip_of_notes_plays_the_synth_by_note() {
+        use mpfree_node::NodeEvent::{NoteOff, NoteOn};
+        use mpfree_play::Event;
+        use time::Pads;
+        let on = Event::NoteOn {
+            note: 61,
+            velocity: 100,
+        };
+        let off = Event::NoteOff { note: 61 };
+        let ev = on_the_synth(&[0], |seq| {
+            assert!(seq.out(&clip_out(0, 0, on, true)), "taken: never a pad");
+            assert_eq!(seq.hits, 1);
+            seq.shifts[0] = mpfree_seq::Transpose::default();
+            assert!(seq.out(&clip_out(0, 10, off, true)));
+        });
+        assert_eq!(
+            ev,
+            vec![
+                NoteOn {
+                    note: 61,
+                    velocity: 100
+                },
+                NoteOff { note: 61 }
+            ]
+        );
+        let ev = on_the_synth(&[0], |seq| {
+            seq.shifts[0] = mpfree_seq::Transpose::semitones(2);
+            seq.out(&clip_out(0, 0, on, true));
+            // The transpose goes back while the note sounds.
+            seq.shifts[0] = mpfree_seq::Transpose::default();
+            seq.out(&clip_out(0, 10, off, true));
+        });
+        assert_eq!(
+            ev,
+            vec![
+                NoteOn {
+                    note: 63,
+                    velocity: 100
+                },
+                NoteOff { note: 63 }
+            ]
+        );
+        // A clip of pad hits: not taken, and pad 61 plays nothing.
+        let ev = on_the_synth(&[0], |seq| {
+            assert!(!seq.out(&clip_out(0, 0, on, false)));
+            assert!(!seq.hit_at(0, 61, 100, 0));
+        });
+        assert!(ev.is_empty(), "{ev:?}");
+    }
+
+    /// Step 5c on a track's own instrument: a clip of notes starts and
+    /// ends the note itself, not the note of the pad with its number.
+    #[test]
+    fn a_clip_of_notes_plays_a_tracks_own_instrument_by_note() {
+        use mpfree_play::Event;
+        use time::Pads;
+        on_the_pads(&[], &[1], |seq| {
+            let on = Event::NoteOn {
+                note: 50,
+                velocity: 100,
+            };
+            assert!(seq.out(&clip_out(1, 0, on, true)));
+            assert!(seq.own.holds_note(1, 50));
+            assert_eq!(seq.hits, 1);
+            let press = Event::Pressure {
+                note: 50,
+                value: 70,
+            };
+            assert!(seq.out(&clip_out(1, 5, press, true)));
+            assert!(seq.out(&clip_out(1, 10, Event::NoteOff { note: 50 }, true)));
+            assert!(!seq.own.holds_note(1, 50));
+            // Pad 3 of a clip of hits plays the pad's own note.
+            let pad = Event::NoteOn {
+                note: 3,
+                velocity: 100,
+            };
+            assert!(seq.out(&clip_out(1, 20, pad, false)));
+            assert!(!seq.own.holds_note(1, 3));
+        });
+    }
+
+    /// Step 5c on a kit: a clip's note plays the pad MIDI in would play
+    /// for it (the kick on pad A5 is note `PAD_NOTES[4]`); a note on an
+    /// empty pad plays nothing.
+    #[test]
+    fn a_clip_of_notes_plays_a_kits_pad_by_its_note() {
+        use mpfree_play::Event;
+        use time::Pads;
+        on_the_pads(&[], &[], |seq| {
+            let kick = Event::NoteOn {
+                note: mpc_one::PAD_NOTES[4],
+                velocity: 100,
+            };
+            assert!(seq.out(&clip_out(0, 0, kick, true)));
+            assert_eq!(seq.hits, 1, "the kick");
+            assert_eq!(seq.flashes[4], 100);
+            let empty = Event::NoteOn {
+                note: mpc_one::PAD_NOTES[5],
+                velocity: 100,
+            };
+            assert!(seq.out(&clip_out(0, 10, empty, true)));
+            assert_eq!(seq.hits, 1, "an empty pad");
+        });
     }
 
     fn args(s: &str) -> Vec<String> {

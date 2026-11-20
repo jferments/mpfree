@@ -1086,6 +1086,7 @@ fn live_notes_on_a_midi_out_track_go_out_and_record_as_their_pad() {
         track: 0,
         dest: 0,
         event,
+        notes: false,
     };
     let on = Event::NoteOn {
         note: 2,
@@ -1166,6 +1167,7 @@ fn a_tracks_transpose_moves_its_notes_and_a_sounding_note_ends_where_it_went() {
         track,
         dest: track,
         event,
+        notes: false,
     };
     let on = Event::NoteOn {
         note: 0,
@@ -1412,6 +1414,7 @@ fn live_pads_on_a_track_with_its_own_instrument_play_it() {
         track,
         dest: track,
         event,
+        notes: false,
     };
     let on = Event::NoteOn {
         note: 2,

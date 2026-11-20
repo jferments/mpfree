@@ -65,7 +65,7 @@ use mpfree_notefx::{Chain, Ev, Kind, Notes, Period, TrackFx, MAX_FX};
 use mpfree_seq::{DestId, MAX_TRACKS};
 use mpfree_transport::Block;
 
-use crate::arp::{ArpHost, CLIPS, EFFECTS, PADS};
+use crate::arp::{ArpHost, CLIPS, CLIP_NOTES, EFFECTS, PADS};
 use crate::player::{Event, Out, Sink, ALL};
 use crate::room::{Table, ARPS, PLAYER, ROOM};
 
@@ -375,6 +375,7 @@ impl TrackArps {
                         track,
                         dest,
                         event,
+                        notes: false,
                     },
                     ARPS,
                 );
@@ -450,6 +451,7 @@ impl TrackArps {
                     track,
                     dest,
                     event: event_of(e.kind),
+                    notes: false,
                 },
                 ARPS,
             );
@@ -490,21 +492,24 @@ impl Sink for Through<'_> {
             }
             a.fed[..used].fill(true);
         } else if t < MAX_TRACKS {
+            // A clip of notes' notes are kept apart from a clip of pad
+            // hits' in the arp, so the same number of each never meet.
+            let src = if o.notes { CLIP_NOTES } else { CLIPS };
             let into_arp = match o.event {
                 Event::NoteOn { .. } => a.through[t],
                 // Where its note went, whatever the switch says now.
-                Event::NoteOff { note } => a.arps[t].owes(CLIPS, note),
+                Event::NoteOff { note } => a.arps[t].owes(src, note),
                 Event::Pressure { .. } if a.through[t] => {
                     // The arp's repeats follow a clip's pressure, and the
                     // sound hears it too, as with the live pads.
-                    a.arps[t].input(o.offset, o.event);
+                    a.arps[t].input_from(src, o.offset, o.event);
                     a.fed[t] = true;
                     false
                 }
                 _ => false,
             };
             if into_arp {
-                a.arps[t].input(o.offset, o.event);
+                a.arps[t].input_from(src, o.offset, o.event);
                 a.fed[t] = true;
                 return;
             }

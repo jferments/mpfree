@@ -126,6 +126,7 @@ fn a_note_two_sources_hold_ends_with_the_last_of_them() {
             note: 52,
             velocity: 100,
         },
+        notes: false,
     });
     host.note_on(0, 10, 52, 90);
     run(&mut host, &mut out, &mut frame, 10, 128);
@@ -136,6 +137,7 @@ fn a_note_two_sources_hold_ends_with_the_last_of_them() {
         track: 0,
         dest: 0,
         event: Event::NoteOff { note: 52 },
+        notes: false,
     });
     let p = run(&mut host, &mut out, &mut frame, 200, 128);
     assert!(p[199][0] > 0.01, "still sounding: {}", p[199][0]);
@@ -155,6 +157,7 @@ fn a_note_two_sources_hold_ends_with_the_last_of_them() {
         track: ALL,
         dest: ALL,
         event: Event::AllOff,
+        notes: false,
     });
     let p = run(&mut host, &mut out, &mut frame, 600, 128);
     assert_eq!(p[599][0], 0.0);

@@ -1741,10 +1741,16 @@ impl Synth {
 
     /// Pressure, 0 to 127, on a note by number (while something holds it).
     pub fn pressure_note(&mut self, note: u8, value: u8) {
+        self.pressure_note_at(note, value, 0);
+    }
+
+    /// [`Synth::pressure_note`] `offset` frames into the next block (a
+    /// clip's recorded pressure on a note it plays by number).
+    pub fn pressure_note_at(&mut self, note: u8, value: u8, offset: u32) {
         if note <= 127 && self.holders[usize::from(note)] > 0 {
             self.push(
                 self.settings.engine,
-                0,
+                offset,
                 NodeEvent::Pressure {
                     note,
                     value: value.min(127),

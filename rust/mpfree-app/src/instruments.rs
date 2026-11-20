@@ -721,14 +721,28 @@ impl Instruments {
     /// A keyboard's pressure on note `note` of track `track`'s instrument,
     /// while it holds the note.
     pub fn note_pressure(&mut self, track: usize, note: u8, value: u8) -> bool {
+        self.note_pressure_at(track, note, value, 0)
+    }
+
+    /// [`Instruments::note_pressure`] `offset` frames into the next block
+    /// (a clip's recorded pressure on a note it plays by number).
+    pub fn note_pressure_at(&mut self, track: usize, note: u8, value: u8, offset: u32) -> bool {
         let Some(s) = self.play_slot(track) else {
             return false;
         };
         if self.host.holds_note(s, note) {
             self.host
-                .event(s, Timed::new(0, NodeEvent::Pressure { note, value }));
+                .event(s, Timed::new(offset, NodeEvent::Pressure { note, value }));
         }
         true
+    }
+
+    /// Whether the instrument track `track` plays holds note `note` (a
+    /// note-on not yet ended, from whichever track or the pads).
+    #[cfg(test)]
+    pub fn holds_note(&self, track: usize, note: u8) -> bool {
+        self.play_slot(track)
+            .is_some_and(|s| self.host.holds_note(s, note))
     }
 
     /// A controller (a pedal, the mod wheel, breath) for track `track`'s

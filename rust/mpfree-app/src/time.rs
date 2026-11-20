@@ -290,7 +290,10 @@ pub trait Pads {
     /// False leaves it to go on as usual (an `AllOff` should, so the pads
     /// stop too). The arps' notes, the live pads among them, go to
     /// [`Pads::live`] instead, which sees the whole event and says what
-    /// records. By default nothing is taken.
+    /// records. A clip of notes' notes ([`Out::notes`], instrument
+    /// redesign step 5c) come here too: a host with instruments takes
+    /// them, as the pad methods would read each note as a pad. By
+    /// default nothing is taken, and they play as pads.
     fn out(&mut self, o: &Out) -> bool {
         let _ = o;
         false
