@@ -2044,10 +2044,11 @@ fn pad_note_names() -> String {
         .join(", ")
 }
 
-/// How keys play the armed track: by note while the pads play notes (a
-/// synth pad layout, `key_notes`), the kit's own pads while it plays a kit
-/// (not the synth, nor an instrument of its own), else as the pad (1 to
-/// 16) the MPC gives each note.
+/// How keys play the armed track: by note while the pads press notes (a
+/// synth pad layout or the track's own synth's pad map, `key_notes`), the
+/// kit's own pads while it plays a kit (not the synth, nor an instrument of
+/// its own), else as the pad (1 to 16) the MPC gives each note (an
+/// instrument whose arp works in pads, such as the Drums engine).
 fn keys_play(synth_on: bool, key_notes: bool, own: bool) -> midi_in::KeysPlay {
     if key_notes {
         midi_in::KeysPlay::Notes
@@ -8063,7 +8064,7 @@ fn player_session(
             app.track() as u8,
             keys_play(
                 synth_on,
-                synth_on && app.arp_plays_notes(),
+                app.keys_play_notes(),
                 mix.instruments.plays(app.track()),
             ),
         );
@@ -8604,11 +8605,12 @@ fn player_session(
                 keys.push(k);
             }
         }
-        // Keys play the armed track: by note while the pads play notes (a
-        // synth pad layout); on a kit, each note the kit pad that sends it
+        // Keys play the armed track: by note while the pads press notes (a
+        // synth pad layout, or the track's own synth's pad map, step 7); on
+        // a kit, each note the kit pad that sends it
         // (`profile::kit_pad_of_note`, A1 to H16 whatever bank the pads
         // show); else as the pad the MPC gives that note.
-        let key_notes = synth_on && app.arp_plays_notes();
+        let key_notes = app.keys_play_notes();
         let kit_keys = keys_play(synth_on, key_notes, mix.instruments.plays(armed))
             == midi_in::KeysPlay::KitPads;
         if armed != expr_track {

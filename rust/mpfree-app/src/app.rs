@@ -5756,6 +5756,41 @@ mod tests {
         assert_eq!(notes(&mut app, 64), [3]);
     }
 
+    /// A keyboard plays a track's own synth by note, through its arp, as
+    /// it plays the shared synth (the instrument redesign's step 7): not
+    /// as the 16 pads the MPC gives its notes.
+    #[test]
+    fn keys_play_a_tracks_own_synth_by_note() {
+        use mpfree_arp::scale::pads::{layout, PadLayout, PadSetup};
+        let mut app = ready();
+        assert!(!app.keys_play_notes(), "a kit: keys hit its pads");
+        let pads = layout(&PadSetup {
+            layout: PadLayout::Chromatic,
+            ..PadSetup::default()
+        });
+        app.set_arp_layout(Some(pads));
+        assert!(app.keys_play_notes());
+        // A key plays its own note, one no pad has too.
+        app.key_down(97, 90);
+        app.key_down(61, 90);
+        let mut heard = notes(&mut app, 64);
+        heard.sort_unstable();
+        assert_eq!(heard, [61, 97]);
+        // A key on a kit pad's number does nothing while keys play notes.
+        assert!(app.kit_key_down(3, 100).is_empty());
+        app.key_up(97);
+        assert!(!app.eng().active().contains(97));
+        // The track goes back to a kit: the key still held lets go.
+        app.set_arp_layout(None);
+        assert!(app.eng().active().is_empty(), "nothing hangs");
+        assert!(!app.keys_play_notes());
+        app.key_down(62, 90);
+        assert!(
+            app.eng().active().is_empty(),
+            "a kit's keys hit pads instead"
+        );
+    }
+
     #[test]
     fn keys_play_notes_and_share_holds_with_pads() {
         use mpfree_arp::scale::pads::{layout, PadLayout, PadSetup};

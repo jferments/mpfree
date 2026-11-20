@@ -1106,6 +1106,14 @@ impl App {
         self.pad_layout.is_some()
     }
 
+    /// A keyboard's keys play notes into the armed track's arp: the pads
+    /// press notes there, the shared synth's layout's or the track's own
+    /// synth's (the instrument redesign's step 7). Otherwise a kit's keys
+    /// hit its pads.
+    pub fn keys_play_notes(&self) -> bool {
+        self.press_layout().is_some()
+    }
+
     /// The notes pad `slot` holds now (what it pressed, even if the layout
     /// changed since), for its pressure; none for a kit or a pad let go.
     pub fn pad_held_notes(&self, slot: usize) -> &[u8] {
@@ -1149,8 +1157,9 @@ impl App {
     }
 
     /// A key on a MIDI keyboard (MIDI In or USB) while the pads play notes
-    /// (a synth pad layout is set): it presses that note into the armed
-    /// track's arp, as a pad holding it would, so the arp, Latch and Note
+    /// (a synth pad layout is set, or the track's own synth's pad map): it
+    /// presses that note into the armed track's arp, as a pad holding it
+    /// would, so the arp, Latch and Note
     /// Repeat work from a keyboard too. Keys and pads share the hold count:
     /// a note held on both ends when both let go. A key already held is
     /// ignored. While a pattern records in Free time the pads only write
@@ -1158,7 +1167,7 @@ impl App {
     /// (main.rs, by the MPC's pad notes).
     pub fn key_down(&mut self, note: u8, velocity: u8) {
         let n = usize::from(note & 0x7F);
-        if self.pad_layout.is_none() || self.free_time_recording() || self.keys_held[n] {
+        if self.press_layout().is_none() || self.free_time_recording() || self.keys_held[n] {
             return;
         }
         self.keys_held[n] = true;
@@ -1184,7 +1193,7 @@ impl App {
     pub fn kit_key_down(&mut self, pad: u8, velocity: u8) -> Vec<Effect> {
         let pad = pad & 0x7F;
         let p = usize::from(pad);
-        if self.pad_layout.is_some() || self.keys_held[p] {
+        if self.press_layout().is_some() || self.keys_held[p] {
             return Vec::new();
         }
         if !self.free_time_recording() {
@@ -1198,7 +1207,7 @@ impl App {
     /// MPC still holds it.
     pub fn kit_key_up(&mut self, pad: u8) -> Vec<Effect> {
         let pad = pad & 0x7F;
-        if self.pad_layout.is_some() {
+        if self.press_layout().is_some() {
             return Vec::new();
         }
         if std::mem::take(&mut self.keys_held[usize::from(pad)]) {
@@ -1210,7 +1219,7 @@ impl App {
     /// A held key's pressure on kit pad `pad`, for the arp's notes on it.
     pub fn kit_key_pressure(&mut self, pad: u8, value: u8) {
         let pad = pad & 0x7F;
-        if self.pad_layout.is_none() && self.keys_held[usize::from(pad)] {
+        if self.press_layout().is_none() && self.keys_held[usize::from(pad)] {
             self.arps.engine_at_mut(self.track).pressure(pad, value);
         }
     }
