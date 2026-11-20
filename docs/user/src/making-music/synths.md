@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-synth rust/mpfree-synth-ui rust/mpfree-scale rust/mpfree-app/src/synth.rs rust/mpfree-app/src/app/synth_pads.rs rust/mpfree-app/src/instruments.rs rust/mpfree-mpchost rust/mpfree-mpcskin rust/mpfree-app/src/skin_page.rs
+covers: rust/mpfree-synth rust/mpfree-synth-ui rust/mpfree-scale rust/mpfree-app/src/synth.rs rust/mpfree-app/src/app/synth_pads.rs rust/mpfree-app/src/app/pads_preview.rs rust/mpfree-app/src/instruments.rs rust/mpfree-mpchost rust/mpfree-mpcskin rust/mpfree-app/src/skin_page.rs
 checked: 2026-11-19 95c1134d
 -->
 
@@ -16,6 +16,20 @@ Each track plays a kit or a synth, and the pads play what the selected track pla
 - Give a track its own synth: see [A synth for each track](#a-synth-for-each-track).
 
 Opening the **Synth** tab changes nothing that plays: it shows the synth, and if the selected track plays a kit, the line at the bottom of the screen says how to put the synth on it. To go back to drums, tap the chip (it names the synth now) and pick a kit, or set the track's instrument back to **Kit**. While the selected track plays the synth, **PAD BANK** changes the pads' layout and **SHIFT** + the wheel their octave, not the kit.
+
+### Try a synth on the pads
+
+To hear a synth without changing any track, open the **Synth** tab while the selected track plays a kit and tap **Play Poly on the pads**, the button under the synth's name (it names the synth the tab shows). The pads play the synth at once, and the track keeps its kit:
+
+- **Nothing changes on the track.** Its clips still play the kit, and it still plays the kit when you come back to it. The synth plays on its own **Synth** channel in the mixer.
+- **Take your time.** Pick presets, turn the knobs and play over your drums until it sounds right.
+- **The button again** (it reads **Back to Track 1's kit** now) gives the pads back to the kit.
+- **REC records the synth, not the drums.** Press **REC** (or **OVERDUB**) and the synth goes onto a free track, as if you had picked **Synth** in the list of kits for it, and the take goes there. A free track is one you haven't set up: no clips, no kit or MIDI output picked, no mixer settings, no name or settings of its own. The selected track is used if it is free (never Track 1, the drums track); otherwise the first free track, which becomes the selected track; and if none is free, a new track is added for it (**UNDO** takes it away again). So your drums and anything you set up never change. It is the same synth, not a copy: the track plays exactly the sound you shaped, and changing that sound later changes the track too. The line at the bottom of the screen says where it went. With the loop armed, REC records the loop with the synth as you hear it.
+- **A track you chose stays chosen.** If you pinned REC to a track (**Pin the arm** in the REC chip's list) and that track isn't free, REC records nothing and says why: unpin it, or press the button again to record the track's own kit. Tapping a track in the REC chip's list gives the pads back to that track, so REC records what it plays.
+- **The arp plays the track, not the try-out.** The synth plays exactly as you press the pads. Holding **NOTE REPEAT**, Latch or opening the Arp panel gives the pads back to the track's kit, and the button won't start while the arp is on. To play the synth through the arp, put it on a track (pick **Synth** in the list of kits).
+- **Selecting another track** gives the pads back to that track's instrument, and so does picking a kit.
+
+To keep the synth without recording, put it on a track: pick **Synth** in the list of kits, or give the track its own synth (below).
 
 ## The twelve synths
 
@@ -45,7 +59,7 @@ A few presets come with **effects and macros of their own**: Phase Tines and Wah
 Every track can play its own instrument: Poly on one, FM on another, a plugin synth on a third, while the rest play the kit. The selected track is the one on the **Armed** row of the Record panel (see [Clips and patterns](clips.md#recording-a-clip)).
 
 1. Select the track.
-2. Press **MENU** on the Synth tab. The top row is named after the track: **Track 2 instrument**.
+2. Open the Synth tab's options: press **MENU**, or tap the gear at the right end of the title bar. The top row is named after the track: **Track 2 instrument**.
 3. Change it. It steps through **Kit** (the pads' kit, as every track starts), **Poly**, **FM**, **Drums**, **Pluck**, **Keys**, **Drawbar**, **Squelch**, **Analog**, **Strings**, **Bass**, **Wind** and **Choir**, then any plugin synths you have put in `files/plugins/` on the stick: CLAP synths and MPC plugin instruments (see [Effects](effects.md#plugins) for where to put them).
 
 {{shot: synth-instrument | Track 2's instrument set to a plugin synth, with the row's help on the right.}}
@@ -75,6 +89,7 @@ Coming:
 
 {{shot: synth | The Synth tab with Poly playing its Pluck preset: the presets on the left, the Osc page's sections in the middle (both oscillators with their waves drawn and their tuning, the mix as faders with the sub's wave above them), and the Q-Links on the right.}}
 
+- **The gear** at the right end of the title bar opens the Synth tab's options (the scale, pad layout, tuning, note repeat and the rest), as **MENU** does. **‹ Back** at the top left of the options, or **MENU**, goes back to the synth.
 - **The title** shows the preset, with **edited** under it once you change anything. Tap the preset's name to open the synth's presets in the browser (see [Trying and saving presets](#trying-and-saving-presets)). The tabs beside it are the synth's **pages**: for Poly, Osc, Filter, Env, LFO, LFO 2, Voice, Routes and Pressure. Tap a tab, or hold **SHIFT** and turn the data wheel, to change page.
 - **The sections.** Each page is split into boxes, one for each job, with the job's name at the top: **Osc 1**, **Mix**, **Filter**, **Filter envelope**, **Output** and so on. The colour says what kind of job it is, the same on every synth and effect:
   - **cyan**: what makes the sound (oscillators, wavetables, strings, drawbars)

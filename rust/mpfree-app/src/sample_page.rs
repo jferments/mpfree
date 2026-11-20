@@ -830,6 +830,10 @@ pub struct SamplePage {
     rec_settings: rec_tab::RecSettings,
     /// The source's peaks for the recorder row's meter, a few columns.
     meter: Strip,
+    /// What Sample Recall holds, in columns, for the Keep card's picture
+    /// of what a tap keeps ([`recorder::keep_wave`]): the last 40 s in
+    /// twentieths of a second, read as it comes (none until it comes).
+    keep_strip: Option<Strip>,
     /// The line input is on (its row on the Looper tab's MENU).
     line_on: bool,
     /// What the recorder can record from (its Source), by name: the
@@ -1024,6 +1028,7 @@ impl SamplePage {
             rec_settings: rec_tab::RecSettings::default(),
             // A sixtieth of a second a column at 44.1 kHz.
             meter: Strip::new(735, 4),
+            keep_strip: None,
             line_on: false,
             rec_sources: rec_sources(),
             source: RecSource::Line,
@@ -3900,15 +3905,22 @@ impl SamplePage {
         let lands = self.lands_now(self.kit);
         let stays = self.rec_settings_now().onto == rec_tab::Onto::Stay;
         let busy = self.take.is_some() || self.pad_run.is_some() || self.flatten.is_some();
+        let bracket = r.bracket(input);
+        // Which bars, as the Looper's Capture names them (its device-notes
+        // rework, 20 Nov 2026), else "what just played".
+        let what = match bracket.as_ref().and_then(|b| b.bars) {
+            Some((a, z)) => recorder::bars_words(a, z),
+            None => "what just played".to_string(),
+        };
         let (line, ready) = if busy || self.take_waits {
             (KEEP_WAITS.to_string(), false)
-        } else if r.bracket(input).is_none() {
+        } else if bracket.is_none() {
             ("nothing has played yet".to_string(), false)
         } else if stays {
-            ("what just played, as a new take".to_string(), true)
+            (format!("{what}, as a new take"), true)
         } else if let Some(pad) = lands {
             (
-                format!("what just played, onto {}", self.pad_text(self.kit, pad)),
+                format!("{what}, onto {}", self.pad_text(self.kit, pad)),
                 true,
             )
         } else {
@@ -4117,11 +4129,29 @@ impl SamplePage {
             None => [0.0; 2],
         };
         self.feed_live(ui, dt);
+        let wave = self.keep_wave();
         let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) else {
             return;
         };
         tab.set_recorder(ui, view, st);
         tab.meter(ui, peak, dt);
+        tab.set_keep_wave(ui, wave);
+    }
+
+    /// The Keep card's picture: what a tap keeps now (as
+    /// [`Self::keep_view`] brackets it), from Sample Recall's columns,
+    /// read up to now; empty before anything has played.
+    fn keep_wave(&mut self) -> Vec<f32> {
+        use mpfree_sampler_ui::recall::{Recall, OPEN_BARS, OPEN_SECONDS};
+        let (Some(input), Some(strip)) = (self.recall.as_ref(), self.keep_strip.as_mut()) else {
+            return Vec::new();
+        };
+        strip.update(input);
+        let r = Recall::last(input, OPEN_BARS, OPEN_SECONDS, self.pad, self.pad, PADS);
+        match r.bracket(input) {
+            Some(b) => recorder::keep_wave(strip, b.start, b.end),
+            None => Vec::new(),
+        }
     }
 
     /// Whether a take is recording now (past its wait for a sound or a
@@ -6445,6 +6475,8 @@ impl SamplePage {
             seconds % 60,
             input.audio.bytes() as f64 / 1e6
         ));
+        let per = u64::from(input.rate.max(20) / 20);
+        self.keep_strip = Some(Strip::new(per, 800));
         self.recall = Some(input);
         self.sync_input(ui);
     }
