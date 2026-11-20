@@ -116,9 +116,9 @@ impl Rig {
         match a {
             SynthAction::Set { id, value } => self.node.set_param(*id, *value),
             SynthAction::Preset(i) => self.node.load_preset(&Poly::presets()[*i]),
-            // The app opens the browser's preset picker, the list of
-            // synths or the options; nothing changes here.
-            SynthAction::OpenPresets | SynthAction::OpenSynths | SynthAction::Options => {}
+            // The app opens the browser's preset picker or the options;
+            // nothing changes here.
+            SynthAction::OpenPresets | SynthAction::Options => {}
         }
     }
 
@@ -291,9 +291,6 @@ fn a_tap_on_the_presets_name_opens_the_engines_presets() {
     );
     assert_eq!(r.tap(centre(name)), vec![SynthAction::OpenPresets]);
     assert_eq!(r.tap(centre(gear)), vec![SynthAction::Options]);
-    // The instrument card: the list of synths.
-    let card = r.ui.rect_of(mpfree_synth_ui::view::INST).unwrap();
-    assert_eq!(r.tap(centre(card)), vec![SynthAction::OpenSynths]);
     r.page("Filter");
 }
 

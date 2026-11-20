@@ -573,12 +573,7 @@ impl Desk<'_> {
             // back to it once the picker closes (presets.rs).
             gui::FromUi::PresetPicker(true) => fx.extend(app.open_browser()),
             gui::FromUi::PresetPicker(false) => fx.extend(app.close_browser()),
-            // The Synth tab's list of synths and Play on the pads
-            // (app/synth_pick.rs), and its gear (the options, as MENU).
-            gui::FromUi::SynthPickOpen => fx.extend(app.open_synth_pick()),
-            gui::FromUi::SynthPickTap(i) => fx.extend(app.pick_synth(i)),
-            gui::FromUi::SynthPickClose(keep) => fx.extend(app.close_synth_pick(keep)),
-            gui::FromUi::PlayOnPads => fx.extend(app.play_synth_on_pads()),
+            // The Synth tab's gear and the options' Back: what MENU does.
             gui::FromUi::OptionsButton => fx.extend(app.options_button()),
             // The audio loop's own: named one by one, so a new action has
             // to be given a home here or there.
@@ -653,8 +648,6 @@ impl Desk<'_> {
                 out.show(gui::ToUi::Nav(app::Nav::Step(d)))
             }
             app::Effect::Mixer(v) => mix.show(v),
-            // The list of synths over the Synth tab (app/synth_pick.rs).
-            app::Effect::SynthPick(v) => out.show(gui::ToUi::SynthPick(v.map(Box::new))),
             app::Effect::MixerLast => mix.show(Some(mix.last())),
             app::Effect::MixerFaders => out.show(gui::ToUi::MixerFaders),
             // The wheel on the mixer: Q-Link 1 on a strips view, the
@@ -847,8 +840,6 @@ impl Desk<'_> {
             | app::Effect::ProgEdit
             | app::Effect::SaveProject
             | app::Effect::TrackSound { .. }
-            | app::Effect::KeepTrackSound(_)
-            | app::Effect::TrackSoundBack(_)
             | app::Effect::SixteenLevels
             | app::Effect::PadRec(_)
             | app::Effect::Bank { .. }

@@ -5728,7 +5728,7 @@ fn synth_status(synth: &synth::Synth, time: &RenderTime) -> String {
 /// plays a kit: opening the tab leaves what the track plays alone.
 fn synth_tab_hint(track: usize) -> String {
     format!(
-        "Track {}'s instrument is a kit: tap Play on the pads under the synth's name to hear the synth",
+        "Track {} plays a kit: pick Synth in the list of kits (Kit on the Pads tab, or SHIFT + wheel on Play) to play the synth on it",
         track + 1
     )
 }
@@ -5913,9 +5913,6 @@ fn player_session(
     let mut kit_follow: Option<usize> = None;
     // Each track's own instrument's preset, as last picked (instruments.rs).
     let mut track_presets = presets::TrackPresets::default();
-    // The list of synths' Cancel: a track's own sound from when the list
-    // opened (None: it played its kit), as app/synth_pick.rs asks.
-    let mut kept_sound: Option<(usize, Option<(&'static str, synth::SoundCopy)>)> = None;
     // When the Synth tab looks again at a track whose plugin just loaded a
     // preset (its values may come later).
     let mut preset_looks: Vec<(usize, Instant)> = Vec::with_capacity(8);
@@ -8673,64 +8670,6 @@ fn player_session(
                             // musician's, and a try on the old one is over.
                             track_presets.new_sound(track);
                         }
-                    }
-                },
-                // The list of synths opened: the track's sound now, for Cancel.
-                app::Effect::KeepTrackSound(track) => {
-                    let own = mix.instruments.held(track).zip(mix.instruments.node(track));
-                    kept_sound = Some((
-                        track,
-                        own.map(|(h, node)| {
-                            let values = node.params().iter().map(|p| node.param(p.id)).collect();
-                            (h.id, (node.save_extras(), values))
-                        }),
-                    ));
-                }
-                // Cancel on the list: the kept sound again, or the kit.
-                app::Effect::TrackSoundBack(track) => match kept_sound.take() {
-                    Some((t, Some((id, sound)))) if t == track => {
-                        if !mix.instruments.has_room(track) {
-                            let s = full_note(track, instrument_name(mix.plugins(), id));
-                            out.note(&s);
-                            out.show(gui::ToUi::Tell(s));
-                            app.set_track_sound(track, mix.instruments.held(track));
-                        } else if mix.build_instrument(instrument_job(
-                            &synth,
-                            track,
-                            id,
-                            Some(sound),
-                        )) {
-                            track_presets.new_sound(track);
-                            out.note(&format!("track {}: back to its sound", track + 1));
-                        } else {
-                            let s = format!(
-                                "Track {}: busy making another sound; its old sound not made, try again",
-                                track + 1
-                            );
-                            out.note(&s);
-                            out.show(gui::ToUi::Tell(s));
-                            app.set_track_sound(track, mix.instruments.held(track));
-                        }
-                    }
-                    _ => {
-                        if !mix.instruments.take_out(track) {
-                            let s = format!(
-                                "Track {}: its last sound is still ringing out; try again in a moment",
-                                track + 1
-                            );
-                            out.note(&s);
-                            out.show(gui::ToUi::Tell(s));
-                        } else {
-                            out.note(&format!("track {}: plays the kit", track + 1));
-                        }
-                        app.set_track_sound(track, mix.instruments.held(track));
-                        track_presets.set_index(track, None);
-                        out.show(gui::ToUi::Synth(synth_tab(
-                            &synth,
-                            &mix,
-                            track,
-                            &track_presets,
-                        )));
                     }
                 },
                 app::Effect::StopSounds => {
