@@ -1390,13 +1390,22 @@ jobs:
           # program itself is still run under qemu (the --preview run below).
           skip=--skip=smoke::
           [ "$FULL_ARM" = true ] && skip=
-          # Four tests at a time: the program is 32-bit, so all its tests share one 4 GiB address
-          # space, and the runners' VM has 36 CPUs. With a test per CPU it ran out of memory
-          # ("memory allocation of 1840704 bytes failed", SIGABRT) on 19 Nov, trains 117 and 118;
-          # with eight it did again on 20 Nov, train 125, while the sample screen tests ran.
+          # The program is 32-bit, so all its tests share one 4 GiB address space. Three screen
+          # tests each need 1-2 GiB on their own (measured one by one on the host, 20 Nov), so two
+          # of them at once ran out of memory ("memory allocation of 1840704 bytes failed",
+          # SIGABRT: trains 117, 118 and 125, at 8 and at 4 tests at a time). Everything else runs
+          # eight at a time without them, then the three run one after another.
+          big="gui::tests::every_sample_screen_plays_back_the_same_from_its_display_list gui::tests::no_page_redraws_while_idle gui::tests::every_sample_screen_draws"
+          big_skip=
+          for t in $big; do big_skip="$big_skip --skip $t"; done
           RUSTFLAGS= QEMU_LD_PREFIX=/usr/arm-linux-gnueabihf \
             cargo test --manifest-path rust/Cargo.toml --release --locked \
-            --target armv7-unknown-linux-gnueabihf -p mpfree-app --bin mpfree -- --test-threads=4 $skip
+            --target armv7-unknown-linux-gnueabihf -p mpfree-app --bin mpfree -- --test-threads=8 $skip $big_skip
+          for t in $big; do
+            RUSTFLAGS= QEMU_LD_PREFIX=/usr/arm-linux-gnueabihf \
+              cargo test --manifest-path rust/Cargo.toml --release --locked \
+              --target armv7-unknown-linux-gnueabihf -p mpfree-app --bin mpfree -- --test-threads=1 --exact "$t"
+          done
           # The host-only preview under qemu: draws sample screens into new PNG files, touches no device.
           # It took 110-115 s on the self-hosted runners with four mpfree jobs sharing the CPU
           # (2026-11-11) and two runs hit a 120 s limit, so the limit is 600 s; it only stops a hang.
