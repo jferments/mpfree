@@ -22,7 +22,7 @@ Each step is shown on screen with its instruction. Jay taps **Start** on the scr
 | `drag_stop` | 10 s | Drags slowly, stops a second, lifts; twice | At least 2 drags, no swipes |
 | `swipes` | 12 s | Swipes quickly left, right, up, down | At least one swipe each way |
 | `fling` | 10 s | Flicks the list up and down | At least 2 releases at swipe speed or faster |
-| `hold_centre` | 15 s | Holds the centre dot 10 s | One contact held at least 5 s; jitter recorded |
+| `hold_centre` | 15 s | Holds the centre dot 10 s | One contact held at least 5 s, timed from its Down to its Up (or the window's end while still down); jitter recorded |
 | `hold_corner` | 15 s | Holds the top-left dot 10 s | As above |
 | `pad_and_swipe` | 10 s | Holds a screen pad and swipes the page with the other hand | At least one swipe and no two-finger gesture |
 
@@ -60,5 +60,7 @@ touch-lab-exit
 Gesture kinds are `tap`, `long`, `drag-start`, `drag-end` (with `vx`, `vy`, `cancelled`), `swipe` (with `dir`, `speed`), `2f-start` and `2f-end`. Positions and speeds are in logical pixels (1280×800). `parse_line` reads any of these lines back, and skips any timestamp or unit prefix in front.
 
 ## Next
+
+**Hold timing fix (20 Nov 2026).** Jay's device round failed both hold steps with `no_hold_of_5s` after a real 10 s hold. The reader sends a Move only when a contact's place changes, so a finger held still is reported once or twice and then not again until it lifts; the recorder timed a hold from its first to its last report, which came out well under 5 s. A hold is now timed from Down to Up, and a finger still down when the window closes counts as held until then (`StepRecorder::finish_at`). The jitter numbers still come from the reports. Tests: `a_still_hold_is_timed_down_to_up`, `a_finger_still_down_when_the_window_ends_counts`.
 
 Jay runs the lab in the next round and reports how each step felt. The thresholds then get tuned from the `touch-gesture` lines, and the `GestureRouter` hook moves into `mpfree-ui` so other pages get gestures the same way.

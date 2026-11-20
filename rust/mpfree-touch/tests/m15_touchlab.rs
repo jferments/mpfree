@@ -191,6 +191,43 @@ fn a_hold_reports_jitter_in_its_line() {
 }
 
 #[test]
+fn a_still_hold_is_timed_down_to_up() {
+    // Jay's device round (20 Nov): a finger held still for 10 s failed with
+    // no_hold_of_5s. The panel reports a still finger once or twice and then
+    // nothing until the lift, so the hold must be timed Down to Up.
+    let mut r = Rig::new("hold_centre");
+    r.feed(ev(1, Phase::Down, 640.0, 400.0, 0));
+    r.feed(ev(1, Phase::Move, 641.0, 400.0, 30_000));
+    r.feed(ev(1, Phase::Up, 641.0, 400.0, 10_000_000));
+    let s = r.rec.finish();
+    assert!(s.pass, "{s:?}");
+    assert_eq!(s.hold.unwrap().duration_us, 10_000_000);
+
+    // Down and Up only: no Move at all.
+    let mut r = Rig::new("hold_corner");
+    r.feed(ev(1, Phase::Down, 50.0, 50.0, 0));
+    r.feed(ev(1, Phase::Up, 50.0, 50.0, 9_000_000));
+    let s = r.rec.finish();
+    assert!(s.pass, "{s:?}");
+    assert_eq!(s.hold.unwrap().samples, 1);
+}
+
+#[test]
+fn a_finger_still_down_when_the_window_ends_counts() {
+    let mut r = Rig::new("hold_centre");
+    r.feed(ev(1, Phase::Down, 640.0, 400.0, 2_000_000));
+    // The window ends 15 s in with the finger still on the dot.
+    let s = r.rec.finish_at(15_000_000);
+    assert!(s.pass, "{s:?}");
+    assert_eq!(s.hold.unwrap().duration_us, 13_000_000);
+    // A short press then a lift still fails, however late the window ends.
+    let mut r = Rig::new("hold_centre");
+    r.feed(ev(1, Phase::Down, 640.0, 400.0, 0));
+    r.feed(ev(1, Phase::Up, 640.0, 400.0, 1_000_000));
+    assert_eq!(r.rec.finish_at(15_000_000).note, "no_hold_of_5s");
+}
+
+#[test]
 fn journal_lines_parse_back() {
     let mut r = Rig::new("swipes");
     r.stroke(1, 640.0, 400.0, -12.0, 0.0, 20, 0, 0);

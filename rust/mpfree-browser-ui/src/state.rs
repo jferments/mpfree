@@ -669,6 +669,11 @@ pub struct Screen {
     /// The kit's pads under a sound selected, to pick and hear a pad
     /// (none in a picker, or with no kit on the pads).
     pub pad_map: Option<MapShown>,
+    /// **New project** at the foot of the places column, whatever place
+    /// shows (Jay's device round, 20 Nov: it was only in the Projects
+    /// place's head, so the browser opened on Samples had none). Not in
+    /// a picker or under the Export panel.
+    pub new_project: bool,
 }
 
 impl Screen {
@@ -708,6 +713,7 @@ impl Screen {
             kit_on: None,
             load_on: None,
             pad_map: None,
+            new_project: false,
         }
     }
 }
@@ -2845,14 +2851,10 @@ impl Browser {
                 Source::Place(Place::Trash) => vec![Button::EmptyTrash],
                 Source::Place(p) => {
                     // Projects are made by saving, so no New folder there:
-                    // New project, Save and Save as instead.
+                    // Save and Save as instead (New project is at the foot
+                    // of the places column, in every place).
                     let mut v = if p == Place::Projects {
-                        vec![
-                            Button::NewProject,
-                            Button::SaveAs,
-                            Button::Save,
-                            Button::Export,
-                        ]
+                        vec![Button::SaveAs, Button::Save, Button::Export]
                     } else if p == Place::Kits {
                         vec![Button::SaveKit, Button::NewFolder]
                     } else {
@@ -2890,6 +2892,7 @@ impl Browser {
             kit_on: self.kit_target.clone(),
             load_on: self.pad_target.clone(),
             pad_map: self.map_shown(),
+            new_project: self.pick.is_none(),
         }
     }
 

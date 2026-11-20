@@ -1209,7 +1209,12 @@ fn the_tools_strip_sits_over_the_wave_and_picks_a_tool() {
     // picked has tabs in the strip.
     let trim = labels(&s);
     assert!(trim.iter().all(|(_, tab)| *tab));
-    assert_eq!(tap(&mut s, 3), None);
+    // Grain plays the sound as grains: on this loop the tap makes it
+    // Granular, one edit (left unapplied here).
+    assert!(matches!(
+        tap(&mut s, 3),
+        Some(WaveAction::Region { region, .. }) if region.mode == PlayMode::Granular
+    ));
     assert_eq!(s.tab.tool(), Tool::Grain);
     assert_eq!(s.tab.hint(), wave_tab::GRAIN_HINT);
     let w = s.ui.get::<ToolStrip>(wave_tab::TOOLS).unwrap();
