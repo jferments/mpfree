@@ -3174,6 +3174,84 @@ mod tests {
     /// Pad pressure while recording goes on the pad's note in the clip
     /// (the Record list's "Pressure" row is on for a new track), plays
     /// back to the pads on the next pass, and is left out with the row off.
+    /// Refactor B4b: a clip past half its pressure room frees what no
+    /// note names once the recording stops, the view is compiled again
+    /// with the new numbering, and the note still plays its pressure.
+    #[test]
+    fn unused_pressure_is_freed_once_the_recording_stops() {
+        use mpfree_seq::TouchPoint;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.command(Command::SetLoop(Some((0, 3840))));
+        h.act(TimeAction::NewClip { track: 0, slot: 0 }).unwrap();
+        // Pressure no note names, as erased notes whose takes are gone
+        // leave behind: past half the room.
+        let chunk: Vec<TouchPoint> = (0..1000)
+            .map(|k| TouchPoint {
+                at: k,
+                value: (k % 128) as u8,
+            })
+            .collect();
+        let clip = h.control.project.tracks[0].slots[0].as_mut().unwrap();
+        for _ in 0..33 {
+            clip.add_touch(&chunk).unwrap();
+        }
+        assert!(clip.touch.len() > mpfree_play::TOUCH_RECLAIM_AT);
+        h.control.compile().unwrap();
+        h.audio.receive();
+        // A note pressed harder and let up, recorded.
+        let squeeze = [(12_000u64, 40u8), (20_000, 90), (30_000, 20)];
+        while pads.frame < BAR - 1000 {
+            let end = pads.frame + u64::from(PERIOD);
+            let here = |at: u64| {
+                (pads.frame..end)
+                    .contains(&at)
+                    .then(|| (at - pads.frame) as u32)
+            };
+            if let Some(o) = here(10_000) {
+                h.pad(
+                    o,
+                    Event::NoteOn {
+                        note: 5,
+                        velocity: 100,
+                    },
+                );
+            }
+            for &(at, value) in &squeeze {
+                if let Some(o) = here(at) {
+                    h.pad_pressure(o, 5, value);
+                }
+            }
+            if let Some(o) = here(40_000) {
+                h.pad(o, Event::NoteOff { note: 5 });
+            }
+            h.period(PERIOD, &mut pads);
+            pads.frame = end;
+        }
+        assert_eq!(h.control.touch_freed(), (0, 0), "not while recording");
+        // Recording off: the next period frees the 33,000.
+        h.act(TimeAction::Transport(Command::Record)).unwrap();
+        let to = pads.frame + u64::from(PERIOD);
+        run(&mut h, &mut pads, to, &[]);
+        assert_eq!(h.control.touch_freed(), (33_000, 1));
+        let clip = h.control.project.clip(0, 0).unwrap();
+        assert_eq!(clip.touch.len(), 3);
+        let values: Vec<u8> = clip
+            .touch_of(&clip.notes[0])
+            .iter()
+            .map(|p| p.value)
+            .collect();
+        assert_eq!(values, [40, 90, 20]);
+        assert_eq!(*h.audio.view, h.control.view().unwrap(), "compiled again");
+        // It plays back, and UNDO still takes the note out.
+        pads.pressure.clear();
+        run(&mut h, &mut pads, 2 * BAR - 1000, &[]);
+        let back: Vec<(usize, u8)> = pads.pressure.iter().map(|p| (p.1, p.2)).collect();
+        assert_eq!(back, [(5, 40), (5, 90), (5, 20)]);
+        h.act(TimeAction::Undo).unwrap();
+        assert!(h.control.project.clip(0, 0).unwrap().notes.is_empty());
+    }
+
     #[test]
     fn pad_pressure_while_recording_goes_on_its_note_and_plays_back() {
         let mut h = TimeHost::new(RATE, 120.0).unwrap();

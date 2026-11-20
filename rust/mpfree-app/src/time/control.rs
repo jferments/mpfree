@@ -352,6 +352,12 @@ pub struct TimeControl {
     steps_changed: bool,
     /// Recorded pressure a clip had no room for (`MAX_TOUCH_POINTS`).
     touch_lost: u64,
+    /// Clips recorded pressure went into since the recording stopped
+    /// last, to check against `TOUCH_RECLAIM_AT` once it has (B4b).
+    touch_grew: Vec<(usize, usize)>,
+    /// Pressure values no note could play again, freed so far, and how
+    /// many times (refactor B4b).
+    touch_freed: (u64, u64),
     /// What the views include: the recorded changes made so far, and the
     /// started cues applied on each track.
     pub(super) includes: Includes,
@@ -463,6 +469,8 @@ impl TimeControl {
             tell_every: u64::from(rate / 4),
             steps_changed: true,
             touch_lost: 0,
+            touch_grew: Vec::new(),
+            touch_freed: (0, 0),
             includes: Includes::default(),
             tx,
             rx,
@@ -686,6 +694,9 @@ impl TimeControl {
                     let done = self
                         .takes
                         .record(&mut self.project, &rec, &self.touch, &self.moves);
+                    if !self.touch.is_empty() && !self.touch_grew.contains(&rec.clip()) {
+                        self.touch_grew.push(rec.clip());
+                    }
                     self.recorded_now |= done.changed;
                     self.touch_lost += done.touch_lost as u64;
                     self.touch.clear();
@@ -742,7 +753,7 @@ impl TimeControl {
         self.song_rec.period(&self.block, &self.started);
         // Cues that started on a bar line become the tracks' launches: the
         // view is compiled again.
-        let mut compile = std::mem::take(&mut self.compile_asked) | thrown;
+        let mut compile = std::mem::take(&mut self.compile_asked) | thrown | self.reclaim_touch();
         for i in 0..self.started.len() {
             let st = self.started[i];
             // A Loop track's loops go on or off on the cue's bar line.
@@ -876,6 +887,43 @@ impl TimeControl {
     /// Recorded pressure a clip had no room for.
     pub fn touch_lost(&self) -> u64 {
         self.touch_lost
+    }
+
+    /// Out of recording, each clip played into whose pressure is past
+    /// half its room frees the values no note can play again, its own,
+    /// its Restore's or one an undo or redo would bring back
+    /// (`Takes::reclaim_touch`, refactor B4b), so long sessions of
+    /// recording and undoing never fill it. Never while recording: a
+    /// replace pass names the notes it erases by value, pressure run and
+    /// all, as the playing view holds them. True when anything was freed:
+    /// the view is compiled again with the new numbering.
+    fn reclaim_touch(&mut self) -> bool {
+        if matches!(self.info.state, State::Recording | State::CountIn) {
+            return false;
+        }
+        let mut freed = false;
+        for (track, slot) in std::mem::take(&mut self.touch_grew) {
+            let full = self
+                .project
+                .clip(track, slot)
+                .is_some_and(|c| c.touch.len() > mpfree_play::TOUCH_RECLAIM_AT);
+            if !full {
+                continue;
+            }
+            let n = self.takes.reclaim_touch(&mut self.project, track, slot);
+            if n > 0 {
+                self.touch_freed.0 += n as u64;
+                self.touch_freed.1 += 1;
+                freed = true;
+            }
+        }
+        freed
+    }
+
+    /// Pressure values freed so far, and how many times (B4b).
+    #[cfg(test)]
+    pub(super) fn touch_freed(&self) -> (u64, u64) {
+        self.touch_freed
     }
 
     pub(super) fn compile(&mut self) -> Result<(), String> {
@@ -4674,6 +4722,13 @@ impl TimeControl {
             "; {} new notes or locks left out of moments too busy, {} endings lost",
             c.busy, c.ends_lost
         ));
+        // Pressure no note could play again, freed out of recording (B4b).
+        if self.touch_freed.1 > 0 {
+            line.push_str(&format!(
+                "; {} unused pressure values freed ({} times)",
+                self.touch_freed.0, self.touch_freed.1
+            ));
+        }
         // Several armed tracks (rec-arm.md "Several tracks"): a track a take
         // left out for want of room.
         if self.also_full > 0 {

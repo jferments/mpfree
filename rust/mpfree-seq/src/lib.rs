@@ -180,7 +180,9 @@ pub fn ramped(velocity: u8, ramp: i8, hit: u8, hits: u8) -> u8 {
 /// [`Clip::touch`]. `len` 0 is none ([`Touch::NONE`]). A clip only ever
 /// adds pressure ([`Clip::add_touch`]), so this stays valid while notes
 /// are taken out, put back (undo) or moved; saving renumbers the runs as
-/// it leaves out values no note names ([`TouchKeep`]).
+/// it leaves out values no note names ([`TouchKeep`]), and so does a
+/// clip that frees them in memory (`mpfree_play::Takes::reclaim_touch`,
+/// which renumbers the notes its undo and redo hold too).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Touch {
     pub first: u32,

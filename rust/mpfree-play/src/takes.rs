@@ -77,7 +77,7 @@ use mpfree_seq::mpfree_moves::{Kind, Map, Point, Target};
 use mpfree_seq::steps::{Edit, MovesEdit};
 use mpfree_seq::{
     touch_room, Clip, ClipSettings, DestId, Lock, ModelError, Note, Project, SceneSettings, Touch,
-    TouchPoint, Track, MAX_TRACKS,
+    TouchKeep, TouchPoint, Track, MAX_TRACKS,
 };
 use mpfree_transport::time::Tick;
 
@@ -184,6 +184,30 @@ pub const DEFAULT_LIMIT: usize = 32;
 /// Notes and locks a recorded take has room for in each of its lists
 /// before adding one allocates.
 pub const TAKE_ROOM: usize = 256;
+
+/// Pressure values a clip may hold before [`Takes::reclaim_touch`] frees
+/// the ones nothing names any more: half its room (refactor B4b).
+pub const TOUCH_RECLAIM_AT: usize = mpfree_seq::MAX_TOUCH_POINTS / 2;
+
+/// Whether take `t` puts a clip in slot `slot` of `track`, or takes one
+/// out, or adds the track: the clip there is another one on its far
+/// side ([`Takes::reclaim_touch`]).
+fn swaps_clip(t: &Take, track: usize, slot: usize) -> bool {
+    t.made
+        .iter()
+        .chain(&t.removed)
+        .any(|(tr, sl, _)| (*tr, *sl) == (track, slot))
+        || t.track_added.as_ref().is_some_and(|(i, _)| *i == track)
+}
+
+/// Each note take `t` added to or erased from clip `slot` of `track`.
+fn notes_in(t: &mut Take, track: usize, slot: usize, f: &mut impl FnMut(&mut Note)) {
+    for (tr, sl, n) in t.added.iter_mut().chain(t.erased.iter_mut()) {
+        if (*tr, *sl) == (track, slot) {
+            f(n);
+        }
+    }
+}
 
 /// What one take changed. Each note is (track, slot, note).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -349,7 +373,8 @@ impl Takes {
     /// clip has no room for is left off the note (the second value says
     /// so); the note still goes in. The note as added. Undo and redo take
     /// the note out and put it back; its pressure stays in the clip, so
-    /// the note keeps it.
+    /// the note keeps it (even through [`Takes::reclaim_touch`], which
+    /// renumbers it).
     pub fn add_touched(
         &mut self,
         project: &mut Project,
@@ -1304,6 +1329,61 @@ impl Takes {
         &self.undone
     }
 
+    /// Free the pressure values clip `slot` of `track` holds that nothing
+    /// can play again (refactor B4b): what none of its notes names, nor
+    /// a note its Restore would bring back, nor a note an undo or redo
+    /// would put back in this clip. Every run that is kept is renumbered,
+    /// in the clip, its original and those takes, so undo and redo still
+    /// find their notes. The values freed (0: nothing to free, or no such
+    /// clip). The caller compiles the view again after.
+    ///
+    /// The takes that name this clip are the ones back to the take that
+    /// put it in its slot (or added its track), and the ones redo would
+    /// bring up to the one that would take it out or put another in:
+    /// past those, a take's notes name another clip's pressure, kept with
+    /// that clip in the take. What [`Takes::withdraw`] could put back is
+    /// forgotten: it only ever follows the edit just made, and this never
+    /// runs between the two. Allocates; for the control thread.
+    pub fn reclaim_touch(&mut self, project: &mut Project, track: usize, slot: usize) -> usize {
+        let Some(c) = clip(project, track, slot) else {
+            return 0;
+        };
+        let original = c.original.iter().flat_map(|o| &o.notes);
+        let mut runs: Vec<Touch> = c.notes.iter().chain(original).map(|n| n.touch).collect();
+        self.each_note_of(track, slot, &mut |n| runs.push(n.touch));
+        let keep = TouchKeep::of(c.touch.len(), runs);
+        if keep.keeps_all() {
+            return 0;
+        }
+        let freed = c.touch.len() - keep.kept();
+        c.touch = keep.kept_of(&c.touch).collect();
+        let original = c.original.iter_mut().flat_map(|o| o.notes.iter_mut());
+        for n in c.notes.iter_mut().chain(original) {
+            n.touch = keep.run(n.touch);
+        }
+        self.each_note_of(track, slot, &mut |n| n.touch = keep.run(n.touch));
+        self.evicted = None;
+        self.cleared.clear();
+        freed
+    }
+
+    /// Each note an undo or a redo would add to or take from clip `slot`
+    /// of `track` as it is now ([`Takes::reclaim_touch`]).
+    fn each_note_of(&mut self, track: usize, slot: usize, f: &mut impl FnMut(&mut Note)) {
+        for t in self.done.iter_mut().rev() {
+            notes_in(t, track, slot, f);
+            if swaps_clip(t, track, slot) {
+                break;
+            }
+        }
+        for t in self.undone.iter_mut().rev() {
+            if swaps_clip(t, track, slot) {
+                break;
+            }
+            notes_in(t, track, slot, f);
+        }
+    }
+
     /// Captures so far: the next one is number `captures() + 1`.
     pub fn captures(&self) -> u32 {
         self.captures
@@ -1473,6 +1553,110 @@ mod tests {
             .iter()
             .map(|n| n.tick)
             .collect()
+    }
+
+    /// Refactor B4b: freeing a clip's unused pressure keeps every value a
+    /// note, its Restore, an undo or a redo can still bring back, and
+    /// renumbers them all alike; a take naming another clip's pressure is
+    /// left as it is.
+    #[test]
+    fn reclaiming_pressure_keeps_what_undo_redo_and_restore_bring_back() {
+        let run = |v: u8| -> Vec<TouchPoint> {
+            (0..3)
+                .map(|k| TouchPoint {
+                    at: k * 5,
+                    value: v + k as u8,
+                })
+                .collect()
+        };
+        let c = |p: &mut Project| p.tracks[0].slots[0].clone().unwrap();
+        let mut p = project();
+        let mut t = Takes::default();
+        // Take 1: A, then pressure no note names (a note whose take fell
+        // off the undo list), then B. Take 2: C, and A erased.
+        let (a, _) = t.add_touched(&mut p, &taken(0, 1), &run(10)).unwrap();
+        let orphan = c(&mut p).touch.len();
+        clip(&mut p, 0, 0).unwrap().add_touch(&run(70)).unwrap();
+        let (b, _) = t.add_touched(&mut p, &taken(100, 1), &run(20)).unwrap();
+        let (cc, _) = t.add_touched(&mut p, &taken(200, 2), &run(30)).unwrap();
+        let erased = Erased {
+            track: 0,
+            slot: 0,
+            note: a,
+            take: 2,
+        };
+        assert!(t.erase(&mut p, &erased));
+        // Take 3: D, undone (redo brings it back).
+        let (d, _) = t.add_touched(&mut p, &taken(300, 3), &run(40)).unwrap();
+        assert_eq!(t.undo(&mut p), Some(3));
+        // A note only Restore would bring back.
+        let r = clip(&mut p, 0, 0).unwrap().add_touch(&run(50)).unwrap();
+        let restored = Note {
+            touch: r,
+            ..taken(400, 0).note
+        };
+        clip(&mut p, 0, 0).unwrap().original = Some(Box::new(mpfree_seq::Original {
+            length: 3840,
+            notes: vec![restored],
+            locks: Vec::new(),
+            moves: mpfree_seq::mpfree_moves::Moves::new(),
+            variation: 1,
+        }));
+        let before = c(&mut p);
+        let values = |cl: &Clip, n: &Note| cl.touch_of(n).to_vec();
+        assert_eq!(before.touch.len(), 18);
+        assert_eq!(values(&before, &b), run(20));
+
+        assert_eq!(t.reclaim_touch(&mut p, 0, 0), 3, "the orphan's three");
+        let now = c(&mut p);
+        assert_eq!(now.touch.len(), 15);
+        assert!(!now.touch.iter().any(|x| x.value >= 70), "{orphan}");
+        // What plays now plays the same.
+        assert_eq!(now.notes.len(), before.notes.len());
+        for (n, m) in now.notes.iter().zip(&before.notes) {
+            assert_eq!(values(&now, n), values(&before, m));
+        }
+        let o = &now.original.as_ref().unwrap().notes[0];
+        assert_eq!(values(&now, o), run(50), "Restore's note");
+        // Redo brings D back with its pressure; undo of take 2 brings A
+        // back and takes C out.
+        assert_eq!(t.redo(&mut p), Some(3));
+        let dn = *c(&mut p).notes.iter().find(|n| n.tick == 300).unwrap();
+        assert_eq!(values(&c(&mut p), &dn), run(40));
+        assert_eq!(t.undo(&mut p), Some(3));
+        assert_eq!(t.undo(&mut p), Some(2));
+        let now = c(&mut p);
+        let an = now.notes.iter().find(|n| n.tick == 0).unwrap();
+        assert_eq!(values(&now, an), run(10));
+        assert!(!now.notes.iter().any(|n| n.tick == 200), "C taken out");
+        assert_eq!(t.redo(&mut p), Some(2));
+        assert_eq!(t.redo(&mut p), Some(3));
+        assert_eq!(c(&mut p).notes.len(), 3, "B, C, D");
+        let _ = (cc, d);
+        // Nothing more to free.
+        assert_eq!(t.reclaim_touch(&mut p, 0, 0), 0);
+
+        // Another clip put in its place (a Mutate): the takes before it
+        // name the old clip's pressure, and stay as they are.
+        let mut new = Clip::new("new", 3840);
+        new.add_touch(&run(90)).unwrap();
+        let keep = new.add_touch(&run(100)).unwrap();
+        new.add_note(Note {
+            touch: keep,
+            ..taken(0, 0).note
+        })
+        .unwrap();
+        t.replace_clip(&mut p, 0, 0, new, Replaced::Mutate).unwrap();
+        let old_takes: Vec<Take> = t.done()[..t.done().len() - 1].to_vec();
+        assert_eq!(t.reclaim_touch(&mut p, 0, 0), 3);
+        assert_eq!(&t.done()[..t.done().len() - 1], old_takes.as_slice());
+        let now = c(&mut p);
+        assert_eq!(values(&now, &now.notes[0]), run(100));
+        // Undo puts the old clip back, and its takes still find their notes.
+        assert!(t.undo(&mut p).is_some());
+        assert!(t.undo(&mut p).is_some());
+        let old = c(&mut p);
+        assert!(!old.notes.iter().any(|n| n.tick == 300), "D out");
     }
 
     /// The clip settings card: a change is an edit of its own, a turn of
