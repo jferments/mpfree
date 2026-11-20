@@ -184,6 +184,17 @@ impl PeakPyramid {
             .map_or(0.0, |c| uq(c.rms))
     }
 
+    /// The lowest and highest sample of block `block` of level `level` on
+    /// channel `ch`, to the summary's 16-bit rounding (within half of
+    /// 1/32767 of the sound's own); a sound past full scale reads as
+    /// exactly -1 or 1. (0, 0) past the end. Reads one value.
+    pub fn range(&self, level: usize, block: usize, ch: usize) -> (f32, f32) {
+        let cells = &self.levels[level.min(LEVELS - 1)];
+        cells
+            .get(block * self.channels + ch.min(self.channels - 1))
+            .map_or((0.0, 0.0), |c| (uq(c.min), uq(c.max)))
+    }
+
     /// Bytes held in memory by the summary.
     pub fn memory_bytes(&self) -> usize {
         self.levels
@@ -498,6 +509,39 @@ mod tests {
             assert_eq!(p.rms(level, 4096 / n - 1, 1), 0.0, "level {level}");
             // Past the end: nothing.
             assert_eq!(p.rms(level, p.blocks(level), 0), 0.0);
+        }
+    }
+
+    /// Each block's lowest and highest sample on each side, at every
+    /// level, within the summary's rounding: what the sampler's Normalize
+    /// reads ([`PeakPyramid::range`]).
+    #[test]
+    fn a_blocks_range_holds_its_frames_at_every_level() {
+        // Left rises from -0.9 to 0.7 over 20 000 frames; right is silent
+        // but for one frame past full scale at 5000.
+        let frames = 20_000;
+        let mut d = Vec::with_capacity(frames * 2);
+        for i in 0..frames {
+            d.push(-0.9 + 1.6 * i as f32 / frames as f32);
+            d.push(if i == 5000 { 1.5 } else { 0.0 });
+        }
+        let p = PeakPyramid::build(&d, 2).unwrap();
+        let half = 0.5 / 32767.0 + 1e-6;
+        for level in 0..LEVELS {
+            let n = PeakPyramid::block_frames(level);
+            for b in 0..p.blocks(level) {
+                let (f0, f1) = (b * n, ((b + 1) * n).min(frames));
+                let (lo, hi) = p.range(level, b, 0);
+                assert!((lo - d[f0 * 2]).abs() < half, "level {level} block {b}");
+                assert!(
+                    (hi - d[(f1 - 1) * 2]).abs() < half,
+                    "level {level} block {b}"
+                );
+                let (lo, hi) = p.range(level, b, 1);
+                let loud = (f0..f1).contains(&5000);
+                assert_eq!((lo, hi), (0.0, if loud { 1.0 } else { 0.0 }));
+            }
+            assert_eq!(p.range(level, p.blocks(level), 0), (0.0, 0.0));
         }
     }
 
