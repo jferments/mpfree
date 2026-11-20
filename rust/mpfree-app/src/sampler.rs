@@ -134,7 +134,13 @@ const GRAIN_ROWS: [(PressureTarget, f32); 4] = [
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counters {
     pub steals: u64,
+    /// Events the engine's full queue refused, and of those the hits.
     pub dropped_events: u64,
+    pub refused_hits: u64,
+    /// Let-gos the full queue kept aside (they still land), and pressure
+    /// or knob values merged into a newer one to make room.
+    pub late_let_gos: u64,
+    pub merged_values: u64,
     pub peak_grains: usize,
     pub skipped_grains: u64,
     /// Split ([`Player::split`]): parts of periods the lane rendered half
@@ -876,41 +882,39 @@ impl Player {
     }
 
     /// [`Player::hit_at`] on kit `kit` (a clip's note on its track's kit).
+    /// Also false if the engine's queue was full and refused the hit
+    /// (counted there, [`Counters::refused_hits`]).
     pub fn hit_kit_at(&mut self, kit: usize, pad: usize, velocity: u8, offset: u32) -> bool {
         if !self.has_sound(kit, pad) {
             return false;
         }
         let velocity = engine_velocity(velocity);
-        if velocity > 0 {
-            self.engine.schedule_for(
+        velocity == 0
+            || self.engine.schedule_for(
                 kit,
                 offset,
                 Event::NoteOn {
                     pad: pad as u8,
                     velocity,
                 },
-            );
-        }
-        true
+            )
     }
 
     /// Plays `note` on the playing kit's keygroups, `offset` frames into
     /// the next render, as a key of a keyboard would (the Play tab's
-    /// keyboard). Returns false at velocity 0.
+    /// keyboard). Returns false at velocity 0, or if the engine's queue was
+    /// full and refused it (counted there).
     pub fn key_at(&mut self, note: u8, velocity: u8, offset: u32) -> bool {
         let velocity = engine_velocity(velocity);
-        if velocity == 0 {
-            return false;
-        }
-        self.engine.schedule_for(
-            self.kit,
-            offset,
-            Event::Key {
-                note: note.min(127),
-                velocity,
-            },
-        );
-        true
+        velocity > 0
+            && self.engine.schedule_for(
+                self.kit,
+                offset,
+                Event::Key {
+                    note: note.min(127),
+                    velocity,
+                },
+            )
     }
 
     /// The key `note` was let go, `offset` frames into the next render.
@@ -933,17 +937,20 @@ impl Player {
 
     /// Plays kit `kit`'s take kept on the Sample page (the one its view
     /// holds, `EngineView::build_with_take`) at full velocity (`down`), or
-    /// lets it go, `offset` frames into the next render.
-    pub fn take_at(&mut self, kit: usize, down: bool, offset: u32) {
+    /// lets it go, `offset` frames into the next render. False if the kit
+    /// is out of range, or the engine's queue was full and refused the hit
+    /// (counted there); a let-go always lands.
+    pub fn take_at(&mut self, kit: usize, down: bool, offset: u32) -> bool {
         let ev = if down {
             Event::TakeOn { velocity: 127 }
         } else {
             Event::TakeOff
         };
-        self.engine.schedule_for(kit, offset, ev);
+        self.engine.schedule_for(kit, offset, ev)
     }
 
-    /// [`Player::release_at`] on kit `kit`.
+    /// [`Player::release_at`] on kit `kit`. Always lands, even with the
+    /// engine's queue full.
     pub fn release_kit_at(&mut self, kit: usize, pad: usize, offset: u32) {
         if pad < PADS {
             self.engine
@@ -1130,6 +1137,9 @@ impl Player {
         Counters {
             steals: s.steals,
             dropped_events: s.dropped_events,
+            refused_hits: s.refused_hits,
+            late_let_gos: s.late_let_gos,
+            merged_values: s.merged_values,
             peak_grains: self.peak_grains,
             skipped_grains: s.skipped_grains,
             lane_parts: s.lane_parts,
