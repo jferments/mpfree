@@ -8775,6 +8775,11 @@ impl Player {
         if self.ready && self.view.sampler() && self.touch_page.is_none() {
             self.show_view(self.view);
         }
+        // Another pad picked (new kits, a pad stepped): the Pads tab's hint
+        // names what the Q-Links turn on it.
+        if self.view.sampler() {
+            self.refresh_hint();
+        }
         // The Play tab's Pads play row, an undo or another kit may have
         // turned 16 Levels on or off.
         self.refresh_levels();
@@ -8849,7 +8854,13 @@ impl Player {
                 self.refresh_rec_chip();
             }
         }
-        let qlinks = self.sample.play_qlinks_text();
+        // What the Q-Links turn: Edit pad's section's, and the Pads tab's
+        // for the type of the pad picked (a tap on the map picks another).
+        let qlinks = format!(
+            "{} | {}",
+            self.sample.play_qlinks_text(),
+            self.sample.pads_qlinks_text()
+        );
         let live = self.sample.chop_live_method();
         if keys != self.sample_keys || live != self.sample_live || qlinks != self.sample_qlinks {
             self.sample_keys = keys;
@@ -30013,19 +30024,19 @@ mod tests {
         use mpfree_sampler::model::PADS;
         use mpfree_sampler_ui::rec_tab;
         use mpfree_sampler_ui::recall;
-        use mpfree_sampler_ui::recorder::{self, Recorder};
+        use mpfree_sampler_ui::recorder::{self, KeepCard};
         use mpfree_sampler_ui::sample::{feed_input, PAD, RATE};
         let mut p = sample_sampler(Fonts::embedded());
         open_sample(&mut p, sample_page::Editor::Wave);
-        let keep = |p: &Player| {
-            p.ui.get::<Recorder>(recorder::RECORDER)
-                .unwrap()
-                .view
-                .keep
-                .clone()
-        };
+        let keep = |p: &Player| p.ui.get::<KeepCard>(recorder::KEEP).unwrap().view.clone();
+        // Over the wave's right end, beside the overview (Jay's device
+        // notes, 20 Nov 2026), no longer on the recorder row.
         let card = |p: &Player| {
-            let r = Recorder::keep_rect(p.ui.rect_of(recorder::RECORDER).unwrap());
+            let r = p.ui.rect_of(recorder::KEEP).unwrap();
+            let wave = p.ui.rect_of(mpfree_sampler_ui::wave_tab::WAVE).unwrap();
+            let row = p.ui.rect_of(recorder::RECORDER).unwrap();
+            assert!(r.y >= row.bottom() && r.bottom() <= wave.y, "{r:?}");
+            assert_eq!(r.right(), wave.right());
             (r.x + r.w / 2, r.y + r.h / 2)
         };
         // The audio loop's answer to the card's asks, with no take
@@ -30072,10 +30083,19 @@ mod tests {
         feed_input(&mut feed, 20.0, 0.4, true);
         p.tick(0.033);
         let k = keep(&p);
+        // Its line names the bars, as the Looper's Capture does.
         assert_eq!(
             (k.title.as_str(), k.line.as_str(), k.ready),
-            ("Keep last 4 bars", "what just played, as a new take", true)
+            ("Keep last 4 bars", "bars 4 to 7, as a new take", true)
         );
+        // And its picture is what a tap keeps: the drum loop fed, its
+        // hits and the quiet between them.
+        let wave = p.ui.get::<KeepCard>(recorder::KEEP).unwrap().wave.clone();
+        assert_eq!(wave.len(), recorder::KEEP_COLUMNS);
+        let (lo, hi) = wave
+            .iter()
+            .fold((f32::MAX, 0.0f32), |(a, b), v| (a.min(*v), b.max(*v)));
+        assert!(hi > 0.1 && hi <= 1.0 && lo < hi / 2.0, "{wave:?}");
         // A tap: a new take on the page, no pad filled, one undo step.
         let before = pads(&p);
         tap(&mut p);
@@ -30106,7 +30126,7 @@ mod tests {
         });
         p.tick(0.033);
         let next = crate::app::kit_pad_name(PAD + 1);
-        assert_eq!(keep(&p).line, format!("what just played, onto {next}"));
+        assert_eq!(keep(&p).line, format!("bars 4 to 7, onto {next}"));
         tap(&mut p);
         assert_eq!(takes(&p), 0);
         assert!(p.sample.project(0).unwrap().pad(PAD + 1).is_some());
@@ -31670,6 +31690,74 @@ mod tests {
             "{:?}",
             events_log(&p)
         );
+    }
+
+    /// The Pads tab's hint names what the Q-Links turn on the pad picked,
+    /// however it was picked or changed: a hit on the MPC's pads, or a
+    /// whole new set of kits, follows to the pad picked then.
+    #[test]
+    fn the_pads_tabs_hint_follows_the_pad_picked() {
+        use mpfree_sampler_ui::pads_tab::{self, PadType};
+        let mut p = sample_sampler(Fonts::embedded());
+        open_pads(&mut p);
+        let _ = p.take_actions();
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        p.on_event(UiEvent {
+            widget: pads_tab::MAP.into(),
+            kind: EventKind::Select(10),
+        });
+        let midi = PadType::ALL.iter().position(|t| *t == PadType::MidiOut);
+        p.on_event(UiEvent {
+            widget: pads_tab::TYPE.into(),
+            kind: EventKind::Tab(midi.unwrap()),
+        });
+        p.tick(30.0);
+        assert!(
+            hint(&p).contains("Q-Links 1-4: note, channel"),
+            "{}",
+            hint(&p)
+        );
+        // A hit on A5, a Sample pad, on the MPC's pads.
+        let a5 = mpfree_sampler_ui::sample::PAD;
+        p.apply(ToUi::PadDown {
+            pad: a5,
+            velocity: 100,
+        });
+        p.apply(ToUi::PadUp(a5));
+        p.tick(30.0);
+        assert!(
+            hint(&p).contains("Q-Links 1-4: level, pan, tune, voices"),
+            "{}",
+            hint(&p)
+        );
+        // Taps on the map: A11 again (MIDI out), then A5 (a Sample pad).
+        for (pad, want) in [
+            (10, "Q-Links 1-4: note, channel"),
+            (a5, "Q-Links 1-4: level, pan, tune, voices"),
+            (10, "Q-Links 1-4: note, channel"),
+        ] {
+            p.on_event(UiEvent {
+                widget: pads_tab::MAP.into(),
+                kind: EventKind::Select(pad),
+            });
+            assert!(hint(&p).contains(want), "{} (want {want})", hint(&p));
+        }
+        // A new set of kits: the pad picked then (the next with a sound),
+        // whatever its type.
+        p.apply(ToUi::SampleKits {
+            projects: vec![mpfree_sampler_ui::sample::full_kit_project()],
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        p.tick(30.0);
+        let project = p.sample.project(0).unwrap();
+        let picked = PadType::of(project.pad(p.sample.pad()).unwrap());
+        let want = match picked {
+            PadType::Instrument => "Q-Links 1-4: note, engine",
+            PadType::MidiOut => "Q-Links 1-4: note, channel, port",
+            PadType::Loop => "Q-Links 1-4: level, pan, tune, tempo",
+            PadType::Sample => "Q-Links 1-4: level, pan, tune, voices",
+        };
+        assert!(hint(&p).contains(want), "{} (want {want})", hint(&p));
     }
 
     /// The Pads tab's type switch (the redesign's step 6b): the MIDI
