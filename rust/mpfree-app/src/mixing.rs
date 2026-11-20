@@ -2075,7 +2075,12 @@ impl MixHost {
     pub fn instrument_strip(&self, i: crate::looping::Instrument, homes: &[u8]) -> Option<StripId> {
         use crate::looping::Instrument;
         Some(StripId::Track(match i {
-            Instrument::Own(t) => self.track_channel(t),
+            // Where its instrument's slot feeds (step 4d); the track's
+            // channel while it has none yet.
+            Instrument::Own(t) => self
+                .instruments
+                .strip(t)
+                .unwrap_or_else(|| self.track_channel(t)),
             Instrument::Synth => SYNTH,
             Instrument::Kit(k) => match homes.get(k).copied().unwrap_or(0) {
                 0 => DRUMS,
@@ -2448,21 +2453,16 @@ impl MixHost {
     }
 
     /// The track whose own instrument plays on strip `s`, and the
-    /// instrument's name (step 4d): track 1's on the Drums strip (or its
-    /// old own channel), any other's on its own channel. None for a strip
-    /// no track's own instrument plays on (a kit's, the engines' others).
+    /// instrument's name (step 4d), from where the instrument's slot feeds
+    /// ([`Instruments::on_strip`]): today track 1's on the Drums strip (or
+    /// its old own channel), any other's on its own channel. None for a
+    /// strip no track's own instrument plays on (a kit's, the engines'
+    /// others).
     pub fn own_instrument_on(&self, s: StripId) -> Option<(usize, &'static str)> {
         let StripId::Track(c) = s else {
             return None;
         };
-        let t = if c == self.instruments.channel(0) {
-            0
-        } else if c > TRACKS {
-            c - TRACKS
-        } else {
-            return None;
-        };
-        self.instruments.held(t).map(|h| (t, h.name))
+        self.instruments.on_strip(c).map(|(t, h)| (t, h.name))
     }
 
     /// The project's mixer part (`project::mixer_text_lent`), once the
@@ -3185,6 +3185,12 @@ mod tests {
             assert!(h.poll_instruments().is_some());
         }
         let fm = StripId::Track(track_channel(2));
+        // Where each sounds is its slot's: the holder's channel when lent.
+        assert_eq!(h.instruments.strip(0), Some(DRUMS));
+        assert_eq!(h.instruments.strip(2), Some(track_channel(2)));
+        assert_eq!(h.instruments.strip(1), None);
+        let looper = |h: &MixHost, i| h.instrument_strip(i, &[]);
+        assert_eq!(looper(&h, crate::looping::Instrument::Own(2)), Some(fm));
         assert_eq!(
             h.own_instrument_on(StripId::Track(DRUMS)),
             Some((0, "Poly"))
@@ -3224,6 +3230,12 @@ mod tests {
                 "FM \u{b7} Bass"
             ]
         );
+        // A new sound in track 3 keeps its strip, named for the new one.
+        let poly = crate::instrument_job(&synth, 2, Engine::Poly.node_id(), None);
+        assert!(h.build_instrument(poly));
+        assert!(h.poll_instruments().is_some());
+        assert_eq!(h.instruments.strip(2), Some(track_channel(2)));
+        assert_eq!(h.strip_name(fm), "Poly \u{b7} Track 3");
     }
 
     /// A project saved with settings on track 1's old own channel opens

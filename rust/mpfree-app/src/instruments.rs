@@ -295,6 +295,28 @@ impl Instruments {
         }
     }
 
+    /// The mixer strip track `track`'s own instrument sounds on, None if
+    /// it has none. The track host keeps where each slot feeds, so this is
+    /// the instrument's, not worked out from the track (the instrument
+    /// redesign's step 4d): a slot is routed once, when it is lent
+    /// ([`Instruments::put`], today the track's channel), and keeps that
+    /// strip while its instrument plays, a new sound in it too.
+    pub fn strip(&self, track: usize) -> Option<usize> {
+        self.host.track_of(self.slot(track)?)
+    }
+
+    /// The track whose own instrument sounds on mixer strip `strip`, and
+    /// that instrument (one ringing out for a track that has none now
+    /// doesn't count). Never allocates.
+    pub fn on_strip(&self, strip: usize) -> Option<(usize, Held)> {
+        (0..HOST_SLOTS).find_map(|s| {
+            let t = self.slots[s].track?;
+            let own = self.slot(t) == Some(s) && self.host.track_of(s) == Some(strip);
+            own.then_some(())?;
+            Some((t, self.slots[s].held?))
+        })
+    }
+
     /// Track `track`'s own instrument (None: it has none; it may still
     /// play another track's, [`Instruments::owner`]).
     pub fn held(&self, track: usize) -> Option<Held> {
