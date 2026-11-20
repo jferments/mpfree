@@ -5331,10 +5331,17 @@ impl Player {
                         out.push(FromUi::LoopLayer { id: l.id, command });
                     }
                 }
+                // Records from (the deck's header): its choices open in the
+                // lanes' place.
                 LoopAct::Strip(Ctl::Input) => {
-                    // Pads, then the line input, then the other loops.
-                    let next = (crate::looper_page::source_index(&self.looper) + 1) % 3;
-                    self.loop_source(next, &mut out);
+                    let now = crate::looper_page::source_index(&self.looper);
+                    if let Some(e) = self
+                        .ui
+                        .get_mut::<crate::looper_tab::LoopEditor>(crate::looper_tab::EDITOR)
+                    {
+                        e.toggle_sources(usize::from(now));
+                    }
+                    self.ui.invalidate();
                 }
                 LoopAct::Strip(Ctl::Source(i)) => self.loop_source(i, &mut out),
                 LoopAct::Strip(Ctl::Listen) => out.push(FromUi::LoopListen(Some(None))),
@@ -16805,6 +16812,19 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("looper sample: {e}"),
     }
+    // Records from's choices open in the lanes' place (the deck's
+    // Records from tapped), Pads lit.
+    match sample_looper_picking(fonts(), 4) {
+        Ok(mut p) => {
+            if let Some(e) =
+                p.ui.get_mut::<crate::looper_tab::LoopEditor>(crate::looper_tab::EDITOR)
+            {
+                e.toggle_sources(0);
+            }
+            out.push(("looper-sources", p));
+        }
+        Err(e) => eprintln!("looper sample: {e}"),
+    }
     // Loop 5 picked, empty: What you played, the last 8 bars heard with
     // their bar lines, and Capture over the last two.
     match sample_looper_picking(fonts(), 4) {
@@ -19118,14 +19138,33 @@ mod tests {
         p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
         p.take_actions();
         let r = p.ui.rect_of(DECK).unwrap();
-        // Records from beside it steps the input: the pads, then the line.
-        let (x, y) = centre_of(LoopDeck::input_rect(r));
-        assert_eq!(
-            p.touch(1, Touch::Down, x, y),
-            Some(FromUi::LoopRecordLoops(false))
-        );
-        p.touch(1, Touch::Up, x, y);
-        p.take_actions();
+        // Records from beside it opens its choices in the lanes' place;
+        // Line in there switches to the line input.
+        {
+            use crate::looper_tab::{LoopEditor, EDITOR};
+            let (x, y) = centre_of(LoopDeck::input_rect(r));
+            p.touch(1, Touch::Down, x, y);
+            p.touch(1, Touch::Up, x, y);
+            assert!(p.take_actions().is_empty());
+            use mpfree_ui::Widget;
+            let e = p.ui.get::<LoopEditor>(EDITOR).unwrap();
+            assert_eq!(e.sources(), Some(0), "open, Pads lit");
+            let er = p.ui.rect_of(EDITOR).unwrap();
+            let line = e
+                .targets(er)
+                .into_iter()
+                .find(|t| t.id == "source" && t.index == 1)
+                .expect("Line in");
+            assert_eq!(line.label, "Line in");
+            let (x, y) = centre_of(line.rect);
+            assert_eq!(
+                p.touch(1, Touch::Down, x, y),
+                Some(FromUi::LoopRecordLoops(false))
+            );
+            p.touch(1, Touch::Up, x, y);
+            p.take_actions();
+            assert_eq!(p.ui.get::<LoopEditor>(EDITOR).unwrap().sources(), None);
+        }
         let (x, y) = centre_of(LoopDeck::pads_rect(r));
         assert_eq!(p.touch(1, Touch::Down, x, y), Some(FromUi::LoopKeys));
         p.touch(1, Touch::Up, x, y);
