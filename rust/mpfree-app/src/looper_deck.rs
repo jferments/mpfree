@@ -43,7 +43,7 @@ const HEAD_H: i32 = 46;
 /// The header's right end kept for the memory gauge, and its buttons'
 /// widths.
 const MEMORY_W: i32 = 250;
-const CAPTURE_W: i32 = 200;
+const INPUT_W: i32 = 220;
 const PADS_W: i32 = 160;
 const SIDE: i32 = 14;
 const GAP: i32 = 8;
@@ -159,6 +159,15 @@ pub struct DeckHead {
     pub memory: (String, f32),
     /// The pads are the loop keys (SHIFT + SAMPLER): the Pads switch lit.
     pub pads: bool,
+    /// Records from: what every loop records ("Pads", "Line
+    /// in", "Loops") and its level now, 0 to 1 along the meter. While a
+    /// take holds another source than the one picked, the take's.
+    pub input: (String, f32),
+    /// While a take holds another source than the one picked: the pick,
+    /// which the next take records (the chip says "This take").
+    pub input_next: Option<String>,
+    /// Capture, for Play's loop row (the Looper tab has it on What you
+    /// played, over the bars it takes).
     pub capture: CaptureButton,
 }
 
@@ -242,21 +251,21 @@ impl LoopDeck {
         Rect::new(r.x, r.y, r.w, HEAD_H)
     }
 
-    /// The Pads switch in the header, left of Capture: the pads as loop
-    /// keys (SHIFT + SAMPLER does the same).
+    /// The Pads switch in the header, left of Records from: the pads as
+    /// loop keys (SHIFT + SAMPLER does the same).
     pub fn pads_rect(r: Rect) -> Rect {
-        let c = LoopDeck::capture_rect(r);
+        let c = LoopDeck::input_rect(r);
         Rect::new(c.x - 12 - PADS_W, c.y, PADS_W, c.h)
     }
 
-    /// Capture in the header, left of the memory gauge (SHIFT + REC does
-    /// the same on the Looper tab).
-    pub fn capture_rect(r: Rect) -> Rect {
+    /// Records from in the header, left of the memory gauge: what every
+    /// loop records, with its meter; a tap changes it.
+    pub fn input_rect(r: Rect) -> Rect {
         let h = LoopDeck::head_rect(r);
         Rect::new(
-            h.right() - 16 - MEMORY_W - CAPTURE_W,
+            h.right() - 16 - MEMORY_W - INPUT_W,
             h.y + 5,
-            CAPTURE_W,
+            INPUT_W,
             HEAD_H - 6,
         )
     }
@@ -565,32 +574,75 @@ impl LoopDeck {
             },
             "Pads as loop keys",
         );
-        // Capture: the last bars heard become a loop.
-        let cap = &self.head.capture;
-        let pill = LoopDeck::capture_rect(r).inset_xy(0, 3);
-        let (bg, fg) = if cap.lit {
-            (t.accent, t.on_accent)
-        } else if cap.works {
-            (t.raised, t.text)
-        } else {
-            (t.raised, t.text_faint)
+        // Records from: what every loop records, on one line when it fits
+        // ("Records from Line in"), else its caption over it; its meter lit
+        // to the level (five bars). While a take holds another source than
+        // the one picked, the take's under "This take", and the pick as the
+        // next take's when that fits.
+        let pill = LoopDeck::input_rect(r).inset_xy(0, 3);
+        cx.canvas.fill_round_rect(pill, 8, t.raised);
+        let (word, level) = &self.head.input;
+        let meter_w = 5 * 7;
+        let ww = cx.measure(FontId::Bold, 14.0, word);
+        let (cap, held) = match &self.head.input_next {
+            Some(next) => {
+                let both = format!("THIS TAKE · NEXT: {}", next.to_uppercase());
+                let fits = cx.measure(FontId::Bold, 10.5, &both) <= pill.w - 24;
+                (if fits { both } else { "THIS TAKE".to_string() }, true)
+            }
+            None => ("Records from".to_string(), false),
         };
-        cx.canvas.fill_round_rect(pill, 8, bg);
-        let icon = Rect::new(pill.x + 12, pill.y + pill.h / 2 - 8, 16, 16);
-        capture_icon(cx, icon, fg);
-        cx.text(
-            FontId::Bold,
-            13.0,
-            Rect::new(
-                icon.right() + 8,
-                pill.y,
-                pill.right() - icon.right() - 14,
-                pill.h,
-            ),
-            Align::Left,
-            fg,
-            &cap.label,
-        );
+        let cw = cx.measure(FontId::Sans, 12.0, &cap);
+        let one_line = !held && cw + 8 + ww + 10 + meter_w <= pill.w - 16;
+        let (mx, word_rect) = if one_line {
+            let total = cw + 8 + ww + 10 + meter_w;
+            let x0 = pill.x + ((pill.w - total) / 2).max(8);
+            cx.text(
+                FontId::Sans,
+                12.0,
+                Rect::new(x0, pill.y, cw + 2, pill.h),
+                Align::Left,
+                t.text_dim,
+                &cap,
+            );
+            (
+                x0 + cw + 8 + ww + 10,
+                Rect::new(x0 + cw + 8, pill.y, ww + 2, pill.h),
+            )
+        } else {
+            let x0 = pill.x + 12;
+            let caps = if held {
+                cap.clone()
+            } else {
+                cap.to_uppercase()
+            };
+            cx.text(
+                FontId::Bold,
+                10.5,
+                Rect::new(x0, pill.y + 3, pill.w - 24, 13),
+                Align::Left,
+                if held { t.accent } else { t.text_dim },
+                &caps,
+            );
+            let mx = pill.right() - 12 - meter_w;
+            (mx, Rect::new(x0, pill.y + 15, mx - x0 - 6, pill.h - 17))
+        };
+        cx.text(FontId::Bold, 14.0, word_rect, Align::Left, t.text, word);
+        let lit = (level.clamp(0.0, 1.0) * 5.0).round() as i32;
+        for k in 0..5 {
+            let bh = 6 + k * 3;
+            let b = Rect::new(mx + k * 7, pill.y + pill.h / 2 + 9 - bh, 5, bh);
+            let c = if k < lit {
+                if k == 4 {
+                    t.bad
+                } else {
+                    t.good
+                }
+            } else {
+                t.outline
+            };
+            cx.canvas.fill_round_rect(b, 2, c);
+        }
         // The memory every loop shares, on the right.
         let (text, full) = &self.head.memory;
         let tw = cx.measure(FontId::Sans, 12.0, text);
@@ -700,14 +752,36 @@ impl LoopDeck {
             cx.canvas.fill_round_rect(p.solo, 10, fill);
             cx.text(FontId::Bold, 15.0, p.solo, Align::Center, ink, "S");
         } else {
-            cx.text(
-                FontId::Sans,
-                13.0,
-                p.mute,
-                Align::Center,
-                t.text_dim,
-                &ch.foot,
-            );
+            // What it records from, on two lines when it doesn't fit on
+            // one ("Pads' / instrument").
+            let fits = cx.measure(FontId::Sans, 13.0, &ch.foot) <= p.mute.w - 8;
+            match ch.foot.split_once(' ').filter(|_| !fits) {
+                Some((a, b)) => {
+                    let m = p.mute;
+                    let half = m.h / 2;
+                    for (i, line) in [a, b].into_iter().enumerate() {
+                        let y = m.y + half - 17 + i as i32 * 17;
+                        cx.text(
+                            FontId::Sans,
+                            13.0,
+                            Rect::new(m.x, y, m.w, 17),
+                            Align::Center,
+                            t.text_dim,
+                            line,
+                        );
+                    }
+                }
+                None => {
+                    cx.text(
+                        FontId::Sans,
+                        13.0,
+                        p.mute,
+                        Align::Center,
+                        t.text_dim,
+                        &ch.foot,
+                    );
+                }
+            }
         }
     }
 }
@@ -786,12 +860,17 @@ impl Widget for LoopDeck {
                 LoopDeck::pads_rect(r),
             ),
             Target::tap(
-                "capture",
+                "records-from",
                 0,
-                self.head.capture.label.clone(),
-                LoopDeck::capture_rect(r),
-            )
-            .disabled_if(!self.head.capture.works && !self.head.capture.lit),
+                match &self.head.input_next {
+                    Some(next) => format!(
+                        "Records from: this take {}, the next take {next}",
+                        self.head.input.0
+                    ),
+                    None => format!("Records from: {}", self.head.input.0),
+                },
+                LoopDeck::input_rect(r),
+            ),
         ];
         for (i, ch) in self.channels.iter().enumerate() {
             let p = LoopDeck::parts(r, i, n);
@@ -885,8 +964,9 @@ impl Widget for LoopDeck {
                     self.acts.push(LoopAct::PadKeys);
                     return Some(EventKind::Toggle(0));
                 }
-                if LoopDeck::capture_rect(r).contains(x, y) {
-                    self.acts.push(LoopAct::Capture);
+                if LoopDeck::input_rect(r).contains(x, y) {
+                    self.acts
+                        .push(LoopAct::Strip(crate::looper_tab::Ctl::Input));
                     return Some(EventKind::Tab(0));
                 }
                 let i = (0..n).find(|&i| LoopDeck::parts(r, i, n).card.contains(x, y))?;
@@ -998,38 +1078,30 @@ mod tests {
         );
     }
 
-    /// Capture sits left of the memory, the Pads switch left of it; a
-    /// tap on Capture asks for it (faint too: the screen says why), and
-    /// its target is off while it has nothing to take.
+    /// Records from sits left of the memory, the Pads switch left of it,
+    /// and a tap on it changes what every loop records. (Capture is on
+    /// What you played, over the bars it takes, not up here.)
     #[test]
-    fn capture_in_the_header_asks_for_the_last_bars() {
+    fn records_from_in_the_header_changes_the_input() {
         let (mut d, r) = deck();
-        let c = LoopDeck::capture_rect(r);
+        let c = LoopDeck::input_rect(r);
         let p = LoopDeck::pads_rect(r);
         assert!(p.right() < c.x && c.right() < r.right() - MEMORY_W);
         assert!(c.h >= 40, "a fingertip tall: {c:?}");
-        let target = |d: &LoopDeck| {
-            d.targets(r)
-                .into_iter()
-                .find(|t| t.id == "capture")
-                .expect("Capture's target")
-        };
-        d.head.capture = CaptureButton {
-            label: "Capture".into(),
-            works: false,
-            lit: false,
-        };
-        assert!(!target(&d).enabled);
-        d.head.capture = CaptureButton {
-            label: "Capture last 2 bars".into(),
-            works: true,
-            lit: false,
-        };
-        let t = target(&d);
-        assert!(t.enabled && t.label == "Capture last 2 bars");
+        d.head.input = ("Line in".into(), 0.4);
+        let ts = d.targets(r);
+        let t = ts
+            .iter()
+            .find(|t| t.id == "records-from")
+            .expect("Records from");
+        assert!(t.enabled && t.label == "Records from: Line in");
+        assert!(!ts.iter().any(|t| t.id == "capture"));
         let (x, y) = (c.x + c.w / 2, c.y + c.h / 2);
         assert!(d.touch(1, Touch::Down, x, y, r).is_some());
-        assert_eq!(d.take(), vec![LoopAct::Capture]);
+        assert_eq!(
+            d.take(),
+            vec![LoopAct::Strip(crate::looper_tab::Ctl::Input)]
+        );
         d.touch(1, Touch::Up, x, y, r);
     }
 

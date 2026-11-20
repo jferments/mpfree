@@ -1342,17 +1342,27 @@ impl Session {
             feed.period_gain(self.time.block(), &l, &l, 0, self.rec_gain);
         }
         self.rec_gain.0 = self.rec_gain.1;
-        // The looper's period, as main.rs runs it: the pads as heard in the
-        // last period's mix (silence when that can't be had: the session
-        // has no dry feed), and the loop out to the mixer's Loop track. It
-        // reads the loops for a save and lets an open's clears land.
+        // The looper's period, as main.rs runs it (`crate::loop_input`):
+        // what the pads play (no MIDI out here), from the last period's
+        // mix, a take's source held to its end; and the loop out to the
+        // mixer's Loop track. It reads the loops for a save and lets an
+        // open's clears land.
         let (mut pl, mut pr) = ([0f32; PERIOD], [0f32; PERIOD]);
-        let how = self.mix.pads_wet(&mut pl, &mut pr);
-        if how.is_err() {
-            (pl, pr) = ([0f32; PERIOD], [0f32; PERIOD]);
-        }
-        if let Some(line) = self.looper.take_pads_as(&pl, &pr, how) {
+        let homes = self.track_kits.homes(|t| !self.mix.instruments.holds(t));
+        let pads = crate::pads_instrument(&self.app, &self.mix, &self.track_kits, false);
+        let said = crate::loop_input(
+            &mut self.looper,
+            &mut self.mix,
+            pads,
+            &homes,
+            &mut pl,
+            &mut pr,
+        );
+        for (line, tell) in said.into_iter().flatten() {
             self.out.note(&line);
+            if tell {
+                self.out.show(ToUi::Tell(crate::looper_says(&line)));
+            }
         }
         let (mut ll, mut lr) = ([0f32; PERIOD], [0f32; PERIOD]);
         for line in self.looper.follow_plan(&self.time.loop_plan()) {

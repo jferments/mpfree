@@ -2799,3 +2799,99 @@ fn a_merge_and_a_save_keep_what_a_replace_did() {
         assert!((a - b).abs() < 1e-5, "frame {f}: {a} then {b}");
     }
 }
+
+#[test]
+fn a_tap_in_the_last_beat_waits_for_the_bar_after() {
+    // The song plays from START (240 BPM: a bar is BAR frames, a beat a
+    // quarter of it). Tapped in the last beat before bar 2's line, the
+    // loop gives itself time and starts on bar 3's.
+    let mut r = Rig::new(8, 128);
+    r.at(START, T::Play);
+    r.run(START + BAR as u64 - 3_000, &dc(0.0));
+    r.cmd(L::Record);
+    r.run(r.frame + 128, &dc(0.0));
+    let s = r.l.status();
+    assert_eq!((s.phase, s.starts_on), (Phase::Armed, Some(2 * BAR_TICKS)));
+    r.run(START + BAR as u64 + 500, &dc(0.25));
+    assert_eq!(r.phase(0), Phase::Armed, "too soon after the tap");
+    r.run(START + 2 * BAR as u64 + 500, &dc(0.25));
+    assert_eq!(r.phase(0), Phase::Recording);
+    assert_eq!(r.l.status().origin, 2 * BAR_TICKS);
+}
+
+#[test]
+fn a_tap_with_a_beat_to_spare_starts_on_the_next_bar() {
+    let mut r = Rig::new(8, 128);
+    r.at(START, T::Play);
+    r.run(START + BAR as u64 / 2, &dc(0.0));
+    r.cmd(L::Record);
+    r.run(r.frame + 128, &dc(0.0));
+    assert_eq!(r.l.status().starts_on, Some(BAR_TICKS));
+    r.run(START + BAR as u64 + 500, &dc(0.25));
+    assert_eq!(r.phase(0), Phase::Recording);
+    assert_eq!(r.l.status().origin, BAR_TICKS);
+}
+
+#[test]
+fn a_loop_armed_while_stopped_starts_with_play() {
+    // Armed with the song stopped there is no lead: it starts on the bar
+    // PLAY starts on, as REC and PLAY together always have.
+    let mut r = Rig::new(8, 128);
+    r.cmd(L::Record);
+    r.run(500, &dc(0.0));
+    assert_eq!(r.l.status().starts_on, None);
+    r.at(START, T::Play);
+    r.run(START + 500, &dc(0.25));
+    assert_eq!((r.phase(0), r.l.status().origin), (Phase::Recording, 0));
+}
+
+#[test]
+fn listen_plays_a_loop_or_a_layer_alone_while_the_song_is_stopped() {
+    let mut r = Rig::new(8, 128);
+    record_one_bar(&mut r, &dc(0.25));
+    // Refused while the song plays.
+    assert!(!r.l.listen(0, None));
+    let stop = r.frame + 1_000;
+    r.at(stop, T::Stop);
+    r.run(stop + 2_000, &dc(0.0));
+    assert!(near(&r, r.frame - 1, [0.0, 0.0]), "silent when stopped");
+    // An empty loop has nothing to play.
+    assert!(!r.l.listen(1, None));
+    assert!(r.l.listen(0, None));
+    let from = r.frame;
+    r.run(from + 4_000, &dc(0.0));
+    assert!(r.max_step(from, from + 4_000) < 0.01, "faded in");
+    assert!(near(&r, from + 3_000, [0.25, -0.25]));
+    let (n, layer, at) = r.l.listening().unwrap();
+    assert_eq!((n, layer), (0, None));
+    assert!((at - 4_000.0 / BAR as f32).abs() < 1e-3);
+    // Round and round: past its end it starts again.
+    r.run(from + BAR as u64 + 3_000, &dc(0.0));
+    assert!(near(&r, r.frame - 1, [0.25, -0.25]));
+    // The loop muted: silent as heard, but its layer plays on its own.
+    r.cmd(L::Mute(true));
+    r.run(r.frame + 2_000, &dc(0.0));
+    let id = r.ids()[0];
+    r.layer(id, Lc::Mute(true));
+    r.run(r.frame + 128, &dc(0.0));
+    assert!(r.l.listen(0, Some(id)));
+    r.run(r.frame + 2_000, &dc(0.0));
+    assert!(
+        near(&r, r.frame - 1, [0.25, -0.25]),
+        "the layer alone, though muted"
+    );
+    // Stopping fades out.
+    r.l.stop_listening();
+    assert_eq!(r.l.listening(), None);
+    let from = r.frame;
+    r.run(from + 2_000, &dc(0.0));
+    assert!(r.max_step(from, from + 2_000) < 0.01, "faded out");
+    assert!(near(&r, r.frame - 1, [0.0, 0.0]));
+    // PLAY ends it.
+    assert!(r.l.listen(0, Some(id)));
+    r.run(r.frame + 2_000, &dc(0.0));
+    let play = r.frame;
+    r.at(play, T::Play);
+    r.run(play + 128, &dc(0.0));
+    assert_eq!(r.l.listening(), None);
+}

@@ -1882,6 +1882,136 @@ mod tests {
         });
     }
 
+    /// The design review's test across the Looper and the Synth tab (20
+    /// Nov, second review): a drum pattern plays on Track 1, Play on the
+    /// pads puts the shared synth on the pads, and the looper records from
+    /// Pads while REC records the pads' notes as MIDI into
+    /// another track that plays the same synth. The loop takes the synth's
+    /// channel from the arm to the end of the take, never the drums', and
+    /// neither instrument changes: Track 1 keeps its kit and its clip, the
+    /// new track plays the one shared synth (no copy). (The session
+    /// renders no synth, so the loop is silent here: the drums stay out of
+    /// it; the synth's sound in it is a device check.)
+    #[test]
+    fn the_looper_records_the_pads_synth_while_rec_records_its_notes_and_the_drums_play_on() {
+        use crate::looping::{Instrument, LoopSource};
+        use mpfree_fx::StripId;
+        use mpfree_looper::{Command as L, Phase};
+        use mpfree_transport::State;
+        fn record(s: &mut Session, pads: &[usize]) {
+            s.button("PLAY");
+            let end = s.t() + 5.0;
+            while s.time.info().state != State::Recording && s.t() < end {
+                s.run_periods(1);
+            }
+            assert_eq!(s.time.info().state, State::Recording);
+            for &p in pads {
+                s.pad(p, 100, 0.05);
+                s.run_for(0.1);
+            }
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            // The drums: pads 1 and 5 on Track 1's kit, recorded.
+            s.button("REC").settle();
+            record(&mut s, &[0, 4]);
+            s.button("STOP").settle();
+            let drums = s.time.project().tracks[0].clone();
+            assert!(drums.slots.iter().any(Option::is_some), "the drum pattern");
+            s.run_periods(2);
+            assert_eq!(
+                s.looper.takes_from(),
+                (LoopSource::Pads, Some(Instrument::Kit(0))),
+                "the pads play kit 1"
+            );
+            // Poly on the pads, from the Synth tab: the looper follows the
+            // instrument, not the track (still Track 1's kit).
+            s.press("header", "tab", "Synth").settle();
+            s.press("synth-pads-head", "play", "").settle();
+            assert!(s.app.pads_preview(), "{}", s.hint());
+            s.run_periods(2);
+            let synth = (LoopSource::Pads, Some(Instrument::Synth));
+            assert_eq!(s.looper.takes_from(), synth);
+            assert_eq!(
+                s.mix.instrument_strip(Instrument::Synth, &[]),
+                Some(StripId::Track(crate::mixing::SYNTH))
+            );
+            assert_eq!(s.track_kits.kit_of(0), Some(0), "Track 1 keeps its kit");
+            let from = s.said().len();
+            // REC: the notes go to a track nobody set up, which plays the
+            // same synth; the pads now play it there, the same instrument.
+            s.button("REC").settle();
+            s.run_periods(2).settle();
+            assert_eq!(s.app.track(), 1, "{:?}", s.said());
+            assert!(
+                s.track_kits.plays_synth(1),
+                "Track 2 plays the shared synth"
+            );
+            assert!(!s.mix.instruments.holds(1), "no copy of the synth");
+            assert_eq!(s.looper.takes_from(), synth, "the same instrument");
+            // A loop of two bars armed: its take starts on the bar with
+            // PLAY, while REC records the notes.
+            let _ = s.looper.command(L::SetBars(Some(2)));
+            let _ = s.looper.command(L::Record);
+            s.run_periods(2);
+            assert_eq!(s.looper.phase(), Phase::Armed);
+            record(&mut s, &[]);
+            let end = s.t() + 5.0;
+            while s.looper.phase() == Phase::Armed && s.t() < end {
+                s.run_periods(1);
+            }
+            assert_eq!(s.looper.phase(), Phase::Recording, "{:?}", s.said());
+            for p in [2, 3] {
+                s.pad(p, 100, 0.05);
+                s.run_for(0.1);
+            }
+            // While both record, the drum pattern plays on.
+            s.hits.played.clear();
+            let mut held = true;
+            while s.looper.phase() == Phase::Recording && s.t() < 30.0 {
+                s.run_periods(8);
+                held &= s.looper.takes_from() == synth;
+            }
+            assert!(held, "the take kept the synth to its end");
+            assert_eq!(s.looper.phase(), Phase::Playing);
+            assert!(
+                s.hits.played.iter().any(|p| p.track == 0),
+                "the drum pattern played while the loop recorded"
+            );
+            s.button("STOP").settle();
+            let said = &s.said()[from..];
+            assert!(
+                !said.iter().any(|l| l.starts_with("looper: records")
+                    || l.contains("this take keeps")
+                    || l.contains("records silence")),
+                "the source never moved or failed: {said:?}"
+            );
+            // The loop holds none of the drums: it took the synth's channel.
+            let st = s.looper.looper.status();
+            let layer = s.looper.looper.layer(0).expect("the take");
+            let mut x = vec![[0f32; 2]; st.frames];
+            layer.read(0, &mut x);
+            let peak = x
+                .iter()
+                .fold(0f32, |m, v| m.max(v[0].abs()).max(v[1].abs()));
+            assert!(peak < 1e-4, "no drums in the loop: {peak}");
+            // Neither instrument changed: Track 1's kit and clip, Track 2 on
+            // the shared synth with the notes REC took.
+            assert_eq!(s.time.project().tracks[0], drums, "the drum clip unchanged");
+            assert_eq!(s.track_kits.kit_of(0), Some(0));
+            assert!(s.track_kits.plays_synth(1));
+            assert!(
+                s.time.project().tracks[1]
+                    .slots
+                    .iter()
+                    .flatten()
+                    .any(|c| !c.notes.is_empty()),
+                "REC took the notes"
+            );
+        });
+    }
+
     /// Every value a button's light took on the controller while the
     /// session ran for `seconds` (`Session::sent_lights`, as main.rs sends).
     fn lights_over(s: &mut Session, note: u8, seconds: f64) -> Vec<u8> {

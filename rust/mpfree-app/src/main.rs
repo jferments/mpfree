@@ -2674,6 +2674,91 @@ fn erase_held_steps(
     keys.erase_locks(time).map(app::Effect::Tell)
 }
 
+/// What the pads play: the one place in the app that answers it, as an
+/// instrument, never a track (Jay, 20 Nov: "Instruments generate sound.
+/// Tracks organize and record performances. The pads are controllers that
+/// play instruments."). The looper's Records from: Pads
+/// records it; the mixer says where it sounds
+/// ([`mixing::MixHost::instrument_strip`]). Play on the pads (the Synth
+/// tab, app/pads_preview.rs) puts the shared synth on them whatever the
+/// track plays; otherwise the pads play the selected track's instrument:
+/// MIDI out, its own, its kit or the synth. `midi_out`: the selected
+/// track sends MIDI out. The instrument redesign's pads focus changes
+/// this function, and the looper follows.
+fn pads_instrument(
+    app: &app::App,
+    mix: &mixing::MixHost,
+    kits: &sampler::TrackKits,
+    midi_out: bool,
+) -> looping::Instrument {
+    use looping::Instrument;
+    if app.pads_preview() {
+        return Instrument::Synth;
+    }
+    let t = app.track();
+    if midi_out {
+        Instrument::MidiOut
+    } else if mix.instruments.holds(t) {
+        Instrument::Own(t)
+    } else {
+        kits.kit_of(t).map_or(Instrument::Synth, Instrument::Kit)
+    }
+}
+
+/// A looper line for the log as the screen says it: without "looper: ",
+/// from a capital ("The take records silence from here...").
+fn looper_says(line: &str) -> String {
+    let words = line.strip_prefix("looper: ").unwrap_or(line);
+    let mut c = words.chars();
+    c.next()
+        .map(|f| f.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
+}
+
+/// The looper's sound for one period from inside mpfree, from the mix of
+/// the last period, as main.rs and the test session both run it: what the
+/// pads play now (`pads`) is told first, then a take's source (held from
+/// its start, `LoopHost::settle`) is taken from the mixer: the pads'
+/// instrument's channel (`homes` say where a kit plays) or the mix picked.
+/// Either way before the master, so the Level is applied once. A source
+/// that can't be had (the pads on MIDI out, a strip gone, the master
+/// with the loop in it) is silence, said, never another sound in its
+/// place, and no take starts on it (`LoopHost::refuse`). The line input is
+/// the looper's own: nothing from the mix. Lines for the log, and whether
+/// each goes on the screen too.
+fn loop_input(
+    looper: &mut looping::LoopHost,
+    mix: &mut mixing::MixHost,
+    pads: looping::Instrument,
+    homes: &[u8],
+    left: &mut [f32; PERIOD],
+    right: &mut [f32; PERIOD],
+) -> [Option<(String, bool)>; 2] {
+    use looping::LoopSource;
+    let moved = looper.follow_pads(pads);
+    let how = match looper.takes_from() {
+        (LoopSource::Mix(strip), _) => mix.loop_take(Some(strip), left, right),
+        (LoopSource::Pads, Some(i)) => match mix.instrument_strip(i, homes) {
+            Some(strip) => mix.loop_take(Some(strip), left, right),
+            None => Err(looping::PADS_ON_MIDI_OUT),
+        },
+        // Before the pads were first told: nothing yet.
+        (LoopSource::Pads, None) => Ok(0),
+        (LoopSource::Line, _) => Ok(0),
+    };
+    if how.is_err()
+        || matches!(
+            looper.takes_from(),
+            (LoopSource::Line, _) | (LoopSource::Pads, None)
+        )
+    {
+        left.fill(0.0);
+        right.fill(0.0);
+    }
+    let took = looper.take_pads_as(left, right, how);
+    [moved, took]
+}
+
 /// What a loop that starts when you play (the Looper tab's Starts: When I
 /// play) said: a line for the log, and whether the screen says it too
 /// (a start refused).
@@ -5439,6 +5524,21 @@ fn shifted<'a>(notes: &'a [u8], shift: &Shift, buf: &'a mut [u8; MAX_PAD_NOTES])
     &buf[..n]
 }
 
+/// The length of the pattern playing, in whole bars, for the looper's
+/// Length: Pattern: the longest clip playing on a notes track (a Loop
+/// track's cells are loops, not patterns), rounded up. None when nothing
+/// plays.
+fn pattern_bars(time: &time::TimeHost) -> Option<u32> {
+    let bar = time.info().meter.bar_ticks().max(1) as f64;
+    let tracks = &time.project().tracks;
+    (0..tracks.len())
+        .filter(|&t| !tracks[t].is_loops())
+        .filter_map(|t| time.now_playing(t))
+        .filter(|p| p.song_len > 0.0)
+        .map(|p| (p.song_len / bar - 1e-6).ceil().max(1.0) as u32)
+        .max()
+}
+
 /// The looper's presses and settings, and the line input switched on or
 /// off (opening the capture device; a failure leaves it off and says why).
 fn looper_action(
@@ -5455,19 +5555,50 @@ fn looper_action(
         ) => {
             vec![app::Effect::Tell(looper.command(c))]
         }
-        looping::LoopAction::Command(c) => {
-            out.note(&looper.command(c));
-            Vec::new()
-        }
+        looping::LoopAction::Command(c) => match looper.refuse(c) {
+            // The source can't be had: a take would be silence.
+            Some(why) => {
+                out.note(&format!("looper: {why}"));
+                vec![app::Effect::Tell(why)]
+            }
+            None => {
+                out.note(&looper.command(c));
+                Vec::new()
+            }
+        },
         looping::LoopAction::Steps(n) => {
             out.note(&looper.steps(n));
             Vec::new()
         }
         looping::LoopAction::Capture => vec![app::Effect::Tell(looper.capture())],
-        looping::LoopAction::Source(s) => {
-            looper.set_source(s);
-            out.note(&format!("looper: records from {}", s.name().to_lowercase()));
+        looping::LoopAction::CaptureSpan(end, bars) => {
+            out.note(&looper.set_capture_span(end, bars));
             Vec::new()
+        }
+        looping::LoopAction::Source(s) => {
+            // A take keeps its source: the pick is the next take's, said.
+            let held = looper.set_source(s);
+            let what = match s {
+                looping::LoopSource::Mix(mpfree_fx::StripId::Master) => {
+                    "the master: all you hear but the loops".to_string()
+                }
+                looping::LoopSource::Mix(m) => {
+                    format!("{}: what it sends on, after its fader", mixing::name(m))
+                }
+                s => s.name().to_lowercase(),
+            };
+            out.note(&format!("looper: records from {what}"));
+            match held {
+                Some((line, true)) => {
+                    out.note(&line);
+                    vec![app::Effect::Tell(looper_says(&line))]
+                }
+                Some((line, false)) => {
+                    out.note(&line);
+                    Vec::new()
+                }
+                None => Vec::new(),
+            }
         }
         looping::LoopAction::Monitor(on) => {
             looper.monitor = on;
@@ -5531,6 +5662,7 @@ fn looper_action(
             ));
             Vec::new()
         }
+        looping::LoopAction::Listen(what) => vec![app::Effect::Tell(looper.listen(what))],
         looping::LoopAction::StopWaiting => {
             if let Some(line) = looper.stop_waiting() {
                 out.note(&line);
@@ -9728,20 +9860,31 @@ fn player_session(
         let synth_took = t_synth.elapsed();
         synth_time.add(synth_took);
         engines.add(engines::SYNTH, synth_took);
-        // What the looper records from the pads: as they are heard, with
-        // their effects, from the mix of the last period (the master's
-        // input without the loops: mixing.rs); when that can't be had, the
-        // drums and the synth as the engines make them, dry. Either way
-        // before the master, so the Level is applied once.
-        let how = mix.pads_wet(&mut pads_l, &mut pads_r);
-        if how.is_err() {
-            for f in 0..PERIOD {
-                pads_l[f] = drums_l[f] + synth_l[f];
-                pads_r[f] = drums_r[f] + synth_r[f];
+        // What the looper records: the channel of what the pads play, or
+        // the mix picked, from the mix of the last period, a take's source
+        // held to its end (`loop_input`).
+        let midi = midi_out.takes(app.track() as u16);
+        let pads = pads_instrument(&app, &mix, &track_kits, midi);
+        for (line, tell) in loop_input(
+            &mut looper,
+            &mut mix,
+            pads,
+            &homes,
+            &mut pads_l,
+            &mut pads_r,
+        )
+        .into_iter()
+        .flatten()
+        {
+            out.note(&line);
+            if tell {
+                out.show(gui::ToUi::Tell(looper_says(&line)));
             }
         }
-        if let Some(line) = looper.take_pads_as(&pads_l, &pads_r, how) {
-            out.note(&line);
+        // Length: Pattern follows the pattern playing, a few times a
+        // second (it changes with a launch or an edit of a clip's length).
+        if i.is_multiple_of(32) {
+            looper.set_pattern_bars(pattern_bars(&time));
         }
         // The loop, for its track; the line input comes with it. First
         // the Loop tracks' launches, so a loop goes on or off on its bar
