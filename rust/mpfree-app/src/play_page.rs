@@ -2666,6 +2666,8 @@ impl PlayPage {
 
     /// Fill the pattern panel.
     pub fn fill_steps(&self, g: &mut StepGrid) {
+        // On the Sequencer's Steps a finger held on a step picks it.
+        g.hold_picks = self.view == PlayView::Beats;
         let clip = self.steps.clip.as_ref();
         let first = clip.map_or("Pattern", |c| c.name.as_str());
         let title = if self.steps.track_name.is_empty() {
@@ -2683,7 +2685,7 @@ impl PlayPage {
         } else if clip.is_none() {
             right.push_str(" · tap a step to start one");
         } else if self.view == PlayView::Beats {
-            right.push_str(" · tap a step to edit it");
+            right.push_str(" · hold a step to edit it");
         }
         let steps = clip.map_or(PAGE, |c| c.steps.saturating_sub(self.page * PAGE).min(PAGE));
         let play = self
@@ -2841,15 +2843,16 @@ impl PlayPage {
         }
     }
 
-    /// A tap on step `col` of the page shown, on `pad`'s lane. A tap never
-    /// takes a step's settings away (the Play, Pads and Sequencer
-    /// redesign's step 3b): an empty step gets a note, and a step switched
-    /// off comes back on as it was. On Play a lit step goes off, keeping
-    /// its note, velocity, length, settings and locks. On the Sequencer's
-    /// Steps a lit step's first tap picks it (for the inspector and the
-    /// Q-Links), and a tap on the step picked switches it off or on, the
-    /// pick kept. ERASE + a tap, or the inspector's Clear, takes a step
-    /// out ([`Self::erase_step`]).
+    /// A tap on step `col` of the page shown, on `pad`'s lane: it puts a
+    /// step in or takes it out, as a hit on a step pad does (Jay's device
+    /// run, 20 Nov 2026: a tap that switched a step "off" instead of
+    /// taking it out, and a first tap that only picked it, were unclear).
+    /// An empty step gets a note; a lit step comes out with its locks, one
+    /// take (UNDO brings it back); a step switched off (by the inspector's
+    /// Off) comes back on as it was. Holding a step picks it for the
+    /// inspector and the Q-Links instead ([`Self::pick_step`]). ERASE + a
+    /// tap, or the inspector's Clear, also takes a step out
+    /// ([`Self::erase_step`]).
     pub fn tap_step(&mut self, pad: usize, col: usize) -> Option<StepAction> {
         let i = self.page * PAGE + col;
         if pad == usize::from(LINE) {
@@ -2874,7 +2877,15 @@ impl PlayPage {
             .as_ref()
             .and_then(|c| c.row(pad as u8).get(i).copied().flatten());
         match step {
-            Some(s) => self.switch_or_pick(pad, i, s.on),
+            Some(s) if !s.on => self.switch_on(pad, i),
+            Some(_) => {
+                self.let_go_of(pad, i);
+                Some(StepAction::Tap {
+                    pad: pad as u8,
+                    step: i,
+                    velocity: TAP_VELOCITY,
+                })
+            }
             None => Some(StepAction::Tap {
                 pad: pad as u8,
                 step: i,
@@ -2883,10 +2894,43 @@ impl PlayPage {
         }
     }
 
+    /// A finger held on step `col` of the page shown, on `pad`'s lane (the
+    /// Sequencer's Steps): a step with notes is picked for the inspector
+    /// and the Q-Links, as holding a step pad does. True when it was; an
+    /// empty step, or a lock lane's, is not picked (the finger's tap then
+    /// puts a note there as usual).
+    pub fn pick_step(&mut self, pad: usize, col: usize) -> bool {
+        if pad >= crate::play_widgets::LOCK_LANE {
+            return false;
+        }
+        let i = self.page * PAGE + col;
+        let lit = self
+            .steps
+            .clip
+            .as_ref()
+            .is_some_and(|c| c.row(pad as u8).get(i).copied().flatten().is_some());
+        if !lit {
+            return false;
+        }
+        self.copy_from = None;
+        self.selected = Some((pad, i));
+        if self.held.is_none() {
+            self.bank = HeldBank::Step;
+        }
+        true
+    }
+
+    /// Step `i` of `pad`'s lane comes out: the inspector lets it go.
+    fn let_go_of(&mut self, pad: usize, i: usize) {
+        if self.selected == Some((pad, i)) {
+            self.selected = None;
+            self.copy_from = None;
+        }
+    }
+
     /// A tap on step `i` of the line's lane (STEP SEQ on the synth): on
-    /// an empty step the pen goes on; a step with notes switches off or
-    /// on, or on the Sequencer's Steps is picked first, as on a sound's
-    /// lane.
+    /// an empty step the pen goes on; a step with notes comes out whole
+    /// (one switched off comes back on), as on a sound's lane.
     fn tap_line(&mut self, i: usize) -> Option<StepAction> {
         let line = usize::from(LINE);
         if let Some((from_pad, from)) = self.copy_from.take() {
@@ -2903,29 +2947,29 @@ impl PlayPage {
             .as_ref()
             .and_then(|c| c.row(LINE).get(i).copied().flatten());
         if let Some(s) = step {
-            return self.switch_or_pick(line, i, s.on);
+            if !s.on {
+                return self.switch_on(line, i);
+            }
+            self.let_go_of(line, i);
+            return Some(StepAction::ClearSteps {
+                pad: LINE,
+                from: i,
+                to: i + 1,
+            });
         }
         let pen = self.on_pads.filter(|s| s.line())?.pen;
         let (keys, n) = pen.keys(TAP_VELOCITY);
         (n > 0).then_some(StepAction::Enter { step: i, keys, n })
     }
 
-    /// A tap on step `i` of `pad`'s lane, which holds notes (`on`, or
-    /// switched off): on the Sequencer's Steps a lit step not yet picked
-    /// is picked; otherwise it switches off or back on, keeping all it
-    /// holds (`Change::On`), and shows so at once.
-    fn switch_or_pick(&mut self, pad: usize, i: usize, on: bool) -> Option<StepAction> {
-        if self.view == PlayView::Beats && on && self.selected != Some((pad, i)) {
-            self.selected = Some((pad, i));
-            if self.held.is_none() {
-                self.bank = HeldBank::Step;
-            }
-            return None;
-        }
+    /// A tap on step `i` of `pad`'s lane, switched off by the inspector's
+    /// Off: it comes back on with all it holds (`Change::On`), and shows
+    /// so at once.
+    fn switch_on(&mut self, pad: usize, i: usize) -> Option<StepAction> {
         let a = StepAction::Change {
             pad: pad as u8,
             step: i,
-            change: Change::On(!on),
+            change: Change::On(true),
         };
         self.apply_locally(a);
         Some(a)
@@ -3515,37 +3559,27 @@ mod tests {
         assert_eq!(pressure.turn(0.0, -1, false), 0.0);
     }
 
-    /// The redesign's step 3b: a tap never takes a step's settings away.
-    /// On Play a lit step switches off (kept, drawn "off", no tie), a tap
-    /// brings it back, an empty step gets a note; on the Sequencer's Steps
-    /// a lit step is picked first and the picked one switches, staying
-    /// picked; ERASE + a tap takes a step out.
+    /// Jay's device run (20 Nov 2026): a tap puts a step in or takes it
+    /// out, on Play and on the Sequencer's Steps alike, never showing
+    /// "off". Holding a step picks it for the inspector; the inspector's
+    /// Off switches it off, kept, and a tap brings it back on; ERASE + a
+    /// tap takes a step out.
     #[test]
-    fn a_tap_switches_a_step_off_and_keeps_it() {
+    fn a_tap_puts_a_step_in_or_takes_it_out_and_a_hold_picks_it() {
         let mut p = synth_page(&[(0, 0), (0, 4)]);
         p.pads.iter_mut().for_each(|i| i.pitch = None);
         let on = |p: &PlayPage, i: usize| p.steps.clip.as_ref().unwrap().row(0)[i].map(|s| s.on);
         assert!(p.on_play_rows());
+        // Play: a lit step comes out (the time engine's Tap), an empty one
+        // gets a note.
         assert_eq!(
             p.tap_step(0, 0),
-            Some(StepAction::Change {
+            Some(StepAction::Tap {
                 pad: 0,
                 step: 0,
-                change: Change::On(false)
+                velocity: TAP_VELOCITY
             })
         );
-        assert_eq!(on(&p, 0), Some(false), "shown at once");
-        let m = &marks(p.steps.clip.as_ref().unwrap().row(0), &[], 0)[0];
-        assert!(m.off && !m.tie);
-        assert_eq!(
-            p.tap_step(0, 0),
-            Some(StepAction::Change {
-                pad: 0,
-                step: 0,
-                change: Change::On(true)
-            })
-        );
-        assert_eq!(on(&p, 0), Some(true));
         assert!(matches!(
             p.tap_step(0, 1),
             Some(StepAction::Tap {
@@ -3555,29 +3589,38 @@ mod tests {
             })
         ));
 
-        // The Sequencer's Steps: a pick first, then on and off, picked.
+        // The Sequencer's Steps: the first tap on a lit step takes it out
+        // too, no pick first.
         p.view = PlayView::Beats;
         p.sequencer = true;
-        assert_eq!(p.tap_step(0, 4), None);
+        assert_eq!(
+            p.tap_step(0, 4),
+            Some(StepAction::Tap {
+                pad: 0,
+                step: 4,
+                velocity: TAP_VELOCITY
+            })
+        );
+        assert_eq!(p.selected, None);
+        // A hold picks a lit step; an empty one isn't picked.
+        assert!(!p.pick_step(0, 9));
+        assert_eq!(p.selected, None);
+        assert!(p.pick_step(0, 4));
         assert_eq!(p.selected, Some((0, 4)));
         assert_eq!(p.inspect().unwrap().on, Some(true));
+        // The inspector's Off: kept, the title says so.
         assert!(matches!(
-            p.tap_step(0, 4),
+            p.inspector_tap(InspectTap::On(false)),
             Some(StepAction::Change {
                 change: Change::On(false),
                 ..
             })
         ));
-        assert_eq!(p.selected, Some((0, 4)), "still picked");
+        assert_eq!(on(&p, 4), Some(false), "shown at once");
         let i = p.inspect().unwrap();
         assert!(i.title.ends_with("· off") && i.on == Some(false), "{i:?}");
-        assert!(matches!(
-            p.inspector_tap(InspectTap::On(true)),
-            Some(StepAction::Change {
-                change: Change::On(true),
-                ..
-            })
-        ));
+        let m = &marks(p.steps.clip.as_ref().unwrap().row(0), &[], 0)[4];
+        assert!(m.off && !m.tie);
         assert!(matches!(
             p.inspector_tap(InspectTap::Join),
             Some(StepAction::Change {
@@ -3585,9 +3628,7 @@ mod tests {
                 ..
             })
         ));
-        // A step off and not picked comes back on with one tap.
-        p.tap_step(0, 4);
-        p.selected = None;
+        // A step switched off comes back on with one tap, still picked.
         assert!(matches!(
             p.tap_step(0, 4),
             Some(StepAction::Change {
@@ -3595,6 +3636,14 @@ mod tests {
                 ..
             })
         ));
+        assert_eq!(on(&p, 4), Some(true));
+        assert_eq!(p.selected, Some((0, 4)));
+        // A tap on the step picked takes it out and lets the pick go.
+        assert!(matches!(
+            p.tap_step(0, 4),
+            Some(StepAction::Tap { step: 4, .. })
+        ));
+        assert_eq!(p.selected, None);
 
         // ERASE + a tap: the step out; nothing on an empty one.
         p.selected = Some((0, 4));

@@ -117,6 +117,9 @@ pub const KEEP_HOLD: f32 = 0.6;
 /// How long a finger holds a button that deletes or clears in Perform
 /// before it acts (Perform's guard, sequencer decision 5), seconds.
 pub const GUARD_HOLD: f32 = 0.5;
+/// How long a finger rests on a step of the Sequencer's Steps before it
+/// picks the step for the inspector instead of tapping it, seconds.
+pub const STEP_HOLD: f32 = 0.4;
 /// What the hint line says when such a button is touched in Perform.
 pub const GUARD_HINT: &str = "Hold to delete";
 
@@ -2100,6 +2103,10 @@ pub struct Player {
     /// and a finger whose hold has acted (the rest of its touch is its
     /// own).
     guard_press: Option<GuardPress>,
+    /// A finger resting on a step of the Sequencer's Steps: (finger, the
+    /// lane's pad, the step on the page, seconds held), for
+    /// [`Self::step_hold_tick`].
+    step_hold: Option<(u64, usize, usize, f32)>,
     guard_done: Option<u64>,
     /// The finger whose SHIFT + touch armed MIDI Learn: it does nothing
     /// else until it lifts.
@@ -2387,6 +2394,7 @@ impl Player {
             tempo_press: None,
             keep_press: None,
             guard_press: None,
+            step_hold: None,
             guard_done: None,
             learn_finger: None,
             learning: None,
@@ -5044,6 +5052,7 @@ impl Player {
             g.bank.clone_from(&old.bank);
             (g.top, g.add_lane) = (old.top, old.add_lane);
             g.rows_open.clone_from(&old.rows_open);
+            g.hold_picks = old.hold_picks;
         }
         self.refresh_lock_knobs();
         self.play.fill_steps(&mut g);
@@ -5064,6 +5073,7 @@ impl Player {
                     && old.bank == g.bank
                     && (old.top, old.add_lane) == (g.top, g.add_lane)
                     && old.rows_open == g.rows_open
+                    && old.hold_picks == g.hold_picks
             });
         if !same {
             if let Some(w) = self.ui.get_mut::<StepGrid>(play_page::STEPS) {
@@ -5080,6 +5090,7 @@ impl Player {
                 w.bank = g.bank;
                 (w.top, w.add_lane) = (g.top, g.add_lane);
                 w.rows_open = g.rows_open;
+                w.hold_picks = g.hold_picks;
             }
         }
         if self.lane_list {
@@ -5944,7 +5955,7 @@ impl Player {
                 // The All view: the armed track's pads as rows (the Play,
                 // Pads and Sequencer redesign's board 1).
                 View::Play if self.play.on_play_rows() => format!(
-                    "Tap a step: on or off (kept)   ·   ERASE + a step: delete   ·   a name: mute   ·   \
+                    "Tap a step: in or out   ·   a name: mute   ·   \
                      A–H: the bank   ·   swipe: the 16 pads   ·   ‹ {} ›: next track   ·   a loop's ring: its next step",
                     self.play.track.name
                 ),
@@ -5956,12 +5967,12 @@ impl Player {
                 }
                 // A kit's Steps: + Lane and the lock lanes (the redesign's
                 // step 5).
-                View::Sequencer if !self.play.pitched() => format!("Tap a step: on or off   ·   a lit step: pick it   ·   \
+                View::Sequencer if !self.play.pitched() => format!("Tap a step: in or out   ·   hold a step: edit it   ·   \
                                             + Lane: a lock lane   ·   a lock lane's step: tap it, then drag   ·   \
                                             STEP SEQ: steps on the pads   ·   PAD BANK: bank   ·   {stop}"),
                 // A synth's scale rows: the lock lanes go under them
                 // (step 5b, board 4).
-                View::Sequencer => format!("Tap a step: on or off   ·   a lit step: pick it   ·   Notes: the clip's notes   ·   \
+                View::Sequencer => format!("Tap a step: in or out   ·   hold a step: edit it   ·   Notes: the clip's notes   ·   \
                                             + Lane: a lock lane   ·   STEP SEQ: steps on the pads   ·   PAD BANK: bank   ·   \
                                             MENU: options   ·   {stop}"),
                 View::Arrange if self.time.list_view => time_view::LIST_HINT.to_string(),
@@ -7637,7 +7648,10 @@ impl Player {
             }
             ToUi::Kit(k) => {
                 self.set_kit(k);
-                self.sample.set_kit(k);
+                // The synth's entry: the Sample page keeps its kit (Jay's
+                // device notes, 20 Nov 2026).
+                let synth = self.kits.get(k).is_some_and(|v| v.synth.is_some());
+                self.sample.set_kit(k, synth);
                 self.sample.set_pad_page(self.kit_page());
                 self.sample_changed();
                 // The synth taking the pads (or giving them up) changes
@@ -11318,6 +11332,42 @@ impl Player {
         true
     }
 
+    /// A finger held on a step of the Sequencer's Steps, from `tick`:
+    /// after [`STEP_HOLD`] still down, the step is picked for the
+    /// inspector and the Q-Links, as holding a step pad does, and the
+    /// finger's lift taps nothing (a quick tap puts a step in or takes it
+    /// out; Jay's device run, 20 Nov 2026).
+    fn step_hold_tick(&mut self, dt: f32) {
+        let press = self
+            .ui
+            .get::<StepGrid>(play_page::STEPS)
+            .and_then(StepGrid::press);
+        let Some((finger, row, col)) = press else {
+            self.step_hold = None;
+            return;
+        };
+        let held = match self.step_hold {
+            Some((f, r, c, t)) if (f, r, c) == (finger, row, col) => t + dt.max(0.0),
+            _ => 0.0,
+        };
+        if held < STEP_HOLD {
+            self.step_hold = Some((finger, row, col, held));
+            return;
+        }
+        self.step_hold = None;
+        if !self.play.pick_step(row, col) {
+            // An empty step: nothing to pick, so the lift puts a note
+            // there as usual (and this hold is not timed again).
+            self.step_hold = Some((finger, row, col, f32::NEG_INFINITY));
+            return;
+        }
+        if let Some(g) = self.ui.get_mut::<StepGrid>(play_page::STEPS) {
+            g.picked_press(finger);
+        }
+        self.refresh_play();
+        self.refresh_qlinks();
+    }
+
     /// The guard's hold, from `tick`: the fill crosses the button, and
     /// once it is across the button is pressed, as a tap would.
     fn guard_tick(&mut self, dt: f32) {
@@ -12392,6 +12442,7 @@ impl Player {
         self.power_tick(dt);
         self.script_hold_tick(dt);
         self.guard_tick(dt);
+        self.step_hold_tick(dt);
         // UNDO held: the page's undo history.
         if let Some(held) = self.undo_held {
             let held = held + dt.max(0.0);
@@ -26644,19 +26695,89 @@ mod tests {
             (p.page(), p.sample.state().map(|s| s.pad)),
             (sample_page::PAGE, Some(pad))
         );
-        // Q-Link 3 is the loop start; another kit names its bank.
+        // Q-Link 3 is the loop start.
         assert!(p.ui.get::<KnobCard>(QLINKS[2]).unwrap().enabled);
+        // The synth on the pads leaves the page as it was (Jay's device
+        // notes, 20 Nov 2026: "what the pads are currently doing should
+        // NEVER prevent me from being able to access the sampler"): the
+        // same kit and pad, and pad hits (notes now) don't move it.
+        p.apply(ToUi::Kit(sample_kits().len()));
+        assert_eq!(
+            (p.page(), p.sample.state().map(|s| s.pad)),
+            (sample_page::PAGE, Some(pad))
+        );
+        assert_eq!(p.sample.edit_kit(), 0);
+        p.apply(ToUi::PadDown {
+            pad: 1,
+            velocity: 90,
+        });
+        p.apply(ToUi::PadUp(1));
+        assert_eq!(p.sample.state().map(|s| s.pad), Some(pad));
+        assert!(p.sample.load_target().is_none(), "Load has no pad to name");
+        // Back on the kit, then another kit, which names its own.
+        p.apply(ToUi::Kit(0));
+        assert_eq!(p.page(), sample_page::PAGE);
         p.apply(ToUi::Kit(1));
         assert_eq!(
             p.page(),
             sample_page::EMPTY_PAGE,
             "kit 2 has no project here"
         );
+    }
+
+    /// While the synth has the pads a tap on the wave plays the page's pad
+    /// straight on the sampler, not through the pads (which would play a
+    /// note of the synth), and the tools still edit it.
+    #[test]
+    fn with_the_synth_on_the_pads_the_wave_plays_the_kits_pad_and_edits_it() {
+        use mpfree_sampler_ui::wave_tab::WAVE;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
         p.apply(ToUi::Kit(sample_kits().len()));
-        assert_eq!(
-            p.ui.get::<Card>(sample_page::EMPTY).unwrap().heading,
-            "The pads play the synth"
+        p.take_actions();
+        assert_eq!(p.page(), sample_page::PAGE);
+        let w = p.ui.rect_of(WAVE).unwrap();
+        let tap = |p: &mut Player, f: u64| {
+            p.touch(f, Touch::Down, w.x + w.w * 3 / 4, w.y + w.h / 2);
+            p.touch(f, Touch::Up, w.x + w.w * 3 / 4, w.y + w.h / 2);
+            views(p.take_actions()).1
+        };
+        let hit = |down| FromUi::SampleHit {
+            kit: 0,
+            pad,
+            velocity: if down { play_page::TAP_VELOCITY } else { 0 },
+            down,
+        };
+        // The loop holds until the next tap, as on the pads.
+        assert_eq!(tap(&mut p, 1), vec![hit(true)]);
+        assert_eq!(tap(&mut p, 2), vec![hit(false)]);
+        // An edit lands on the kit's pad, one undo step as ever.
+        let end = p.sample.state().unwrap().region.end;
+        p.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::REGION.into(),
+            kind: EventKind::Step {
+                index: 0,
+                delta: -1,
+            },
+        });
+        assert_ne!(
+            p.sample.state().unwrap().region.mode,
+            mpfree_sampler::model::PlayMode::Loop
         );
+        assert_eq!(p.sample.state().unwrap().region.end, end);
+        assert!(!views(p.take_actions()).0.is_empty(), "a new view went");
+        // Send to pad waits for a pad hit, which plays a note now: it says
+        // so instead of waiting for nothing.
+        p.on_event(UiEvent {
+            widget: mpfree_sampler_ui::send::SEND.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::send::SEND_TO_PAD),
+        });
+        assert!(p
+            .ui
+            .get::<Label>("hint")
+            .unwrap()
+            .text
+            .starts_with("The pads play the synth"));
     }
 
     #[test]
@@ -28658,22 +28779,21 @@ mod tests {
                 delta: GrainPart::Shape.index() as i32,
             },
         );
-        for r in [G::Mode, G::Sync] {
-            let region = p.sample.project(0).unwrap().pad(pad).unwrap().layers[1]
-                .region
-                .clone();
-            let index = 1 + GrainPart::Shape
-                .rows(&region)
-                .iter()
-                .position(|x| *x == r)
-                .unwrap();
-            ev(
-                &mut p,
-                wave_tab::REGION,
-                EventKind::Step { index, delta: 1 },
-            );
-            p.apply(ToUi::SampleLift);
-        }
+        // Picking Grain made layer 2 play grains; Tempo sync locks it.
+        let region = p.sample.project(0).unwrap().pad(pad).unwrap().layers[1]
+            .region
+            .clone();
+        let index = 1 + GrainPart::Shape
+            .rows(&region)
+            .iter()
+            .position(|x| *x == G::Sync)
+            .unwrap();
+        ev(
+            &mut p,
+            wave_tab::REGION,
+            EventKind::Step { index, delta: 1 },
+        );
+        p.apply(ToUi::SampleLift);
         back(&mut p);
         let regions = |p: &Player| {
             p.sample.project(0).unwrap().pad(pad).unwrap().layers[..2]
@@ -30881,8 +31001,6 @@ mod tests {
     #[test]
     fn the_grain_tool_sets_the_grains_and_says_what_the_audio_thread_plays() {
         use mpfree_sampler::model::PlayMode;
-        use mpfree_sampler_ui::grain_tab::Row;
-        use mpfree_sampler_ui::grain_tool::GrainPart;
         use mpfree_sampler_ui::wave_tab::{self, Tool};
         use mpfree_sampler_ui::widgets::PadBar;
         let pad = mpfree_sampler_ui::sample::PAD;
@@ -30921,26 +31039,16 @@ mod tests {
                 .region
                 .clone()
         };
-        // Mode, on Shape, makes the loop play grains: one log line.
-        grain_part(&mut p, GrainPart::Shape);
-        let mode = 1 + GrainPart::Shape
-            .rows(&region(&p))
-            .iter()
-            .position(|r| *r == Row::Mode)
-            .unwrap();
-        p.on_event(UiEvent {
-            widget: wave_tab::REGION.into(),
-            kind: EventKind::Step {
-                index: mode,
-                delta: 1,
-            },
-        });
+        // Picking Grain made the loop play grains: one log line.
         p.apply(ToUi::SampleLift);
         assert_eq!(region(&p).mode, PlayMode::Granular);
         assert!(
             events_log(&p)
                 .iter()
-                .any(|l| l == "sample: kit 1 (Breaks) pad A5 Break 92: mode Loop -> Granular"),
+                // From its loudest grain, not its first frame.
+                .any(|l| l
+                    == "sample: kit 1 (Breaks) pad A5 Break 92: mode Loop -> Granular, \
+                        position 0.0 % -> 65.6 %"),
             "{:?}",
             events_log(&p)
         );
@@ -30973,14 +31081,15 @@ mod tests {
         p.apply(ToUi::SampleGrains(other));
         assert_eq!(grain_note(&p), "3 grains playing");
         // Q-Link 1 turns the position; letting go writes the line; undo takes it back.
+        let seated = region(&p).grain.position;
         p.apply(ToUi::SampleQLink(0, 4));
         p.apply(ToUi::SampleLift);
-        assert!((region(&p).grain.position - 0.02).abs() < 1e-6);
+        assert!((region(&p).grain.position - (seated + 0.02)).abs() < 1e-5);
         assert_eq!(p.sample.state().unwrap().region, region(&p));
         assert!(
             events_log(&p)
                 .iter()
-                .any(|l| l == "sample: kit 1 (Breaks) pad A5 Break 92: position 0.0 % -> 2.0 %"),
+                .any(|l| l == "sample: kit 1 (Breaks) pad A5 Break 92: position 65.6 % -> 67.6 %"),
             "{:?}",
             events_log(&p)
         );
@@ -30992,12 +31101,17 @@ mod tests {
         assert!((region(&p).grain.spray - 0.03).abs() < 1e-6);
         p.apply(ToUi::SampleUndo(false));
         p.apply(ToUi::SampleUndo(false));
-        assert_eq!(region(&p).grain.position, 0.0);
+        assert_eq!(region(&p).grain.position, seated);
+        // The mode and the position it was seated at are one undo step.
         p.apply(ToUi::SampleUndo(false));
         assert_eq!(region(&p).mode, PlayMode::Loop);
+        assert_eq!(region(&p).grain.position, 0.0);
         // Still the Grain tool: the section says how to make the loop play grains.
         assert!(p.sample.grain_tool());
-        assert_eq!(grain_note(&p), "Mode is Loop: pick Granular in Shape");
+        assert_eq!(
+            grain_note(&p),
+            "Plays as Loop: tap Grain to play it as grains"
+        );
         // Back on Trim, the box stays on the screen thread.
         pick_tool(&mut p, Tool::Trim);
         assert_eq!(p.page(), sample_page::PAGE);
@@ -31106,11 +31220,11 @@ mod tests {
                 assert!(log.contains(&line), "{line:?} not in {log:#?}");
             }
         };
-        // The Grain tool on the pad, made to play grains, as the Grains
-        // kit's pads are on the MPC.
+        // The Grain tool on the pad: picking it makes it play grains, as
+        // the Grains kit's pads are on the MPC.
         pick_tool(&mut p, Tool::Grain);
+        p.apply(ToUi::SampleLift);
         take(&mut p);
-        tap(&mut p, Row::Mode, 1);
         assert_eq!(region(&p).mode, PlayMode::Granular);
         let start = region(&p);
 
@@ -33075,7 +33189,7 @@ mod tests {
             .get::<Label>("hint")
             .unwrap()
             .text
-            .starts_with("Tap a step: on or off"));
+            .starts_with("Tap a step: in or out"));
         // TRACK MUTE: the hint says what the pads are now, on any page.
         let tracks = p.time.tracks.len();
         for (keys, bank, hint) in [

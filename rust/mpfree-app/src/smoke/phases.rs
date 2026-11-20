@@ -2171,8 +2171,8 @@ mod step_seq {
             let c = s.time.steps().clip.unwrap();
             assert_eq!(c.row(4)[0].map(|st| st.velocity), Some(90));
             assert_eq!(c.row(7)[0].map(|st| st.velocity), Some(110));
-            // Picked on Beats, the inspector names its notes.
-            s.press("steps", "step", "Line step 1");
+            // Held on Beats, the inspector names its notes.
+            s.hold_press("steps", "step", "Line step 1");
             let title = s
                 .screen
                 .ui
