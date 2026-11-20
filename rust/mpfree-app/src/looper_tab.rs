@@ -615,7 +615,7 @@ pub const SEND_SHOW: usize = 3;
 /// (the deck's Records from opens it): title and what it records. The
 /// mixes follow them, from index 3 ([`LoopEditor::set_mixes`]).
 pub const SOURCE_CHOICES: [(&str, &str); 3] = [
-    ("Pads", "what you play on the pads, as you hear it"),
+    ("Pads", "the channel of what the pads play"),
     ("Line in", "the INPUTS on the back of the MPC"),
     ("Loops", "the other loops as you hear them"),
 ];
