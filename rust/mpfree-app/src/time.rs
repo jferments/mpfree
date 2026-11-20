@@ -5204,15 +5204,40 @@ mod tests {
             assert!(f.abs_diff(at) <= 23 && *p == pad, "{hits:?}");
         }
         // Back into rows: the first run of three empty rows is 3 to 5.
+        let before = h.control.project.clone();
+        let takes = h.state().done.len();
         assert_eq!(
             h.act(TimeAction::SongToScenes).unwrap(),
-            "song → scenes: rows 3 to 5"
+            "song → scenes: rows 3 to 5 (UNDO takes it back)"
         );
         let p = &h.control.project;
         assert_eq!(p.tracks[0].slots[2], p.tracks[0].slots[0]);
         assert_eq!(p.tracks[1].slots[3], p.tracks[1].slots[1]);
         assert_eq!(p.tracks[0].slots[4], p.tracks[0].slots[5]);
         assert_eq!(p.scene(3).unwrap().name, "Drop");
+        // One edit: UNDO gives the project back exactly, REDO the rows.
+        let after = p.clone();
+        let st = h.state();
+        assert_eq!(st.done.len(), takes + 1);
+        assert_eq!(st.done.last().unwrap().rows, Some((2, 4)));
+        let said = h.act(TimeAction::Undo).unwrap();
+        assert!(said.ends_with(" · rows 3 to 5"), "{said}");
+        assert!(said.starts_with("undo: song → scenes "), "{said}");
+        assert_eq!(h.control.project, before);
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(h.control.project, after);
+        // Refused (too few empty rows left in a run): nothing changes, and
+        // there is nothing new to undo.
+        let mut full = h.control.project.clone();
+        for row in 6..mpfree_seq::SLOTS {
+            full.scene_mut(row).unwrap().name = format!("Taken {row}");
+        }
+        h.control.project = full.clone();
+        let takes = h.state().done.len();
+        assert!(h.act(TimeAction::SongToScenes).is_err());
+        assert_eq!(h.control.project, full);
+        assert_eq!(h.state().done.len(), takes);
+        h.control.project = after;
         // A placement made unique keeps its clip when the slot changes.
         h.act(TimeAction::SelectPlacement(Some(0))).unwrap();
         assert_eq!(h.state().selected, Some(0));

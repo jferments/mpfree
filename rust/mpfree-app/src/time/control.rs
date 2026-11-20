@@ -41,9 +41,9 @@ use mpfree_seq::{Clip, LaunchGrid, ModelError, Project, TouchPoint, LOOPS, MAX_T
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::list::ListRow;
 use mpfree_time_ui::view::{
-    bars_label, card_rows, clips_after, grid_name, scene_rows, AudioAction, EditInfo, FollowNext,
-    MorphInfo, MuteWait, RegionId, TakeRow, TempoEdit, TimeAction, TimeState, TransportInfo,
-    SCENE_NAME,
+    bars_label, card_rows, clips_after, grid_name, rows_named, scene_rows, AudioAction, EditInfo,
+    FollowNext, MorphInfo, MuteWait, RegionId, TakeRow, TempoEdit, TimeAction, TimeState,
+    TransportInfo, SCENE_NAME,
 };
 use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_transport::{Block, Command, State};
@@ -1300,6 +1300,9 @@ impl TimeControl {
                 )
             }
             None => {}
+        }
+        if let Some((first, last)) = r.rows {
+            return format!("{} · {}", r.short(), rows_named(first, last));
         }
         if let Some(row) = r.scene {
             return format!("{} · scene {}", r.short(), row + 1);
@@ -2685,7 +2688,8 @@ impl TimeControl {
                 Ok(line)
             }
             TimeAction::SongToScenes => {
-                // The rows change, not the song: no undo.
+                // The rows change, not the song: one edit of whole rows,
+                // which UNDO takes back.
                 let bar = info.meter.bar_ticks();
                 let before = self.project.clone();
                 let line = match self.edit_song(a, bar) {
@@ -2700,6 +2704,8 @@ impl TimeControl {
                     self.compile()?;
                     return Err(e);
                 }
+                self.takes.rows_edit(&before, &self.project);
+                self.changed = true;
                 Ok(line)
             }
             TimeAction::ListTimes { .. }
@@ -3251,9 +3257,8 @@ impl TimeControl {
                 }
                 Ok(rows) => Ok((
                     format!(
-                        "song → scenes: rows {} to {}",
-                        rows[0] + 1,
-                        rows[rows.len() - 1] + 1
+                        "song → scenes: {} (UNDO takes it back)",
+                        rows_named(rows[0], rows[rows.len() - 1])
                     ),
                     None,
                 )),

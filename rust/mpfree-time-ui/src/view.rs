@@ -513,6 +513,8 @@ pub struct TakeRow {
     /// The scene editor changed this row's scene (its name, mutes or
     /// follow action).
     pub scene: Option<usize>,
+    /// Song → scenes filled these rows, as (first, last).
+    pub rows: Option<(usize, usize)>,
 }
 
 impl TakeRow {
@@ -553,6 +555,10 @@ impl TakeRow {
             replaced: t.replaced,
             variant: t.made.first().and_then(|(_, _, c)| c.variation()),
             scene: t.scene.as_ref().map(|e| e.row),
+            rows: t
+                .rows
+                .as_ref()
+                .and_then(|e| Some((*e.rows.first()?, *e.rows.last()?))),
         }
     }
 
@@ -560,8 +566,11 @@ impl TakeRow {
     /// "settings", "reload", "mutate", "restore", for a drop "move",
     /// "swap" or "copy", and for a Song view edit "move", "copy",
     /// "length", "delete", "unique", "scenes" or "tempo", "list" for the
-    /// song list and "scene" for the scene editor.
+    /// song list, "scene" for the scene editor and "song → scenes".
     pub fn word(&self) -> &'static str {
+        if self.rows.is_some() {
+            return "song → scenes";
+        }
         if let Some(c) = self.song {
             return match c {
                 SongChange::Moved { .. } | SongChange::SectionMoved { .. } => "move",
@@ -3107,6 +3116,15 @@ pub fn bars_label(bars: i64) -> String {
     }
 }
 
+/// "row 5", or "rows 5 to 7", counted from 1.
+pub fn rows_named(first: usize, last: usize) -> String {
+    if first == last {
+        format!("row {}", first + 1)
+    } else {
+        format!("rows {} to {}", first + 1, last + 1)
+    }
+}
+
 pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
     let mut word = row.word().to_string();
     word[..1].make_ascii_uppercase();
@@ -3133,6 +3151,9 @@ pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
         Some(SongChange::Scenes { .. } | SongChange::List | SongChange::ListToSong { .. })
         | None => {}
     }
+    if row.rows.is_some() {
+        return format!("{word} {}", row.shown());
+    }
     if let Some(r) = row.scene {
         return format!("{word} {} · row {}", row.shown(), r + 1);
     }
@@ -3151,6 +3172,9 @@ pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
 }
 
 fn take_detail(st: &TimeState, row: &TakeRow) -> String {
+    if let Some((first, last)) = row.rows {
+        return rows_named(first, last);
+    }
     let cell = |(t, s): (usize, usize)| format!("{} / {}", st.track_name(t), s + 1);
     let bar = st.transport.meter.bar_ticks().max(1);
     let bar_of = |t: Tick| t.div_euclid(bar) + 1;
@@ -5742,6 +5766,7 @@ mod tests {
             replaced: None,
             variant: None,
             scene: None,
+            rows: None,
         };
         let mut st = st;
         st.done = vec![take];
@@ -7211,6 +7236,7 @@ mod tests {
             replaced: None,
             variant: None,
             scene: None,
+            rows: None,
         };
         st.done = vec![row(1), row(2)];
         st.undone = vec![row(4), row(3)];
@@ -7253,6 +7279,7 @@ mod tests {
             replaced: None,
             variant: None,
             scene: None,
+            rows: None,
         };
         let (items, _) = take_items(&st);
         assert_eq!(
@@ -7280,6 +7307,7 @@ mod tests {
             replaced: None,
             variant: None,
             scene: None,
+            rows: None,
         };
         assert_eq!(take_items(&st).0[2].title, "Edit 5 · Bass / 1");
         assert_eq!(st.done[1].short(), "edit 5");
@@ -7300,6 +7328,22 @@ mod tests {
             ("Delete 6 · Bass / 1", "clip")
         );
         assert_eq!(take_title(&st, &st.done[1]), "Delete 6 · Bass / 1");
+        // Song → scenes: one edit, named by the rows it filled.
+        st.done[1] = TakeRow {
+            number: 7,
+            deleted: false,
+            made: true,
+            rows: Some((4, 6)),
+            ..st.done[1]
+        };
+        let (items, _) = take_items(&st);
+        assert_eq!(
+            (items[2].title.as_str(), items[2].detail.as_str()),
+            ("Song → scenes 7", "rows 5 to 7")
+        );
+        assert_eq!(st.done[1].short(), "song → scenes 7");
+        st.done[1].rows = Some((2, 2));
+        assert_eq!(take_items(&st).0[2].detail, "row 3");
         assert_eq!(
             (bars_label(1), bars_label(4)),
             ("1 bar".to_string(), "4 bars".to_string())

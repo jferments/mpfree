@@ -39,7 +39,7 @@
 use crate::mpfree_moves::{Kind, Map, Moves, Target};
 use crate::mpfree_param::ParamAddr;
 use crate::scenes::SongList;
-use crate::{Clip, Follow, FollowAction, ModelError, Project, Track, SCENES, SLOTS};
+use crate::{Clip, Follow, FollowAction, ModelError, Project, Scene, Track, SCENES, SLOTS};
 use mpfree_transport::time::{
     valid_bpm, MapError, Segment, TempoMap, Tick, MAX_SEGMENTS, MIN_SPAN_TICKS,
 };
@@ -821,14 +821,17 @@ pub fn song_to_scenes(project: &mut Project, bar: Tick) -> Result<Vec<usize>, Mo
             .find(|m| m.at <= *a)
             .map(|m| m.name.clone())
             .unwrap_or_default();
-        let scene = p.scene_mut(row).ok_or(ModelError::NoRoom)?;
-        scene.name = name;
         let action = if k + 1 == n {
             FollowAction::Stop
         } else {
             FollowAction::Next
         };
-        scene.follow = Some(Follow::after(bars as u16, action));
+        // Every field of the row's scene, not only the two it sets.
+        *p.scene_mut(row).ok_or(ModelError::NoRoom)? = Scene {
+            name,
+            follow: Some(Follow::after(bars as u16, action)),
+            ..Scene::default()
+        };
     }
     p.check()?;
     *project = p;
