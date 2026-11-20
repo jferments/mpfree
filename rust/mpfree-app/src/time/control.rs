@@ -717,9 +717,30 @@ impl TimeControl {
             self.pending = pending;
             self.changed = true;
         }
-        // Live to song follows the transport and the cues that started.
+        // Live to song follows the transport and the cues that started,
+        // within the song's room.
         let song_was = self.song_rec.recording();
+        self.song_rec
+            .song_blocks(self.project.arrangement.placements.len());
         self.song_rec.period(&self.block, &self.started);
+        if let Some(used) = self.song_rec.take_warning() {
+            let limit = self.song_rec.limit();
+            self.note_later(format!(
+                "rec song: the song is {}% full ({used} of {limit} blocks); \
+                 recording stops on a launch line before it fills",
+                used * 100 / limit.max(1)
+            ));
+        }
+        if let Some(at) = self.song_rec.take_full() {
+            let bar = self.info.meter.bar_ticks().max(1);
+            self.note_later(format!(
+                "rec song: the song is full ({} blocks), so recording stopped on \
+                 every track at bar {}; what it recorded is kept",
+                self.song_rec.limit(),
+                at.div_euclid(bar) + 1
+            ));
+            self.changed = true;
+        }
         // Cues that started on a bar line become the tracks' launches: the
         // view is compiled again.
         let mut compile = std::mem::take(&mut self.compile_asked) | thrown;

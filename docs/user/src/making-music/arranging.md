@@ -140,6 +140,7 @@ A scene's length is its follow action's bars if it has one, else its longest cli
 - The morph crossfader's moves are recorded too, with the two rows it was between. If you leave the crossfader still for a moment, the song holds it there until your next move.
 - A track you didn't touch keeps what the song already had there. Where you launched a clip, it records over the song, like recording over tape.
 - With the loop on, each time round records over the last.
+- A song holds up to 4,096 blocks. When a recording gets to 90 % of that, the message line warns you. If a launch would take it past the limit, Rec song stops recording on every track on that launch line (never halfway through a scene change) and turns off, the message says so, and everything recorded up to there goes into the song. The music plays on.
 - Rec song records which clips played, not new notes. To record notes, use **REC** on a clip (see [Clips and patterns](clips.md)).
 - **In Perform, REC brings Rec song with it**: each take you record (a clip or a loop) also records the grid into the song for as long as it lasts, and the REC chip says "+ Rec song". To leave it out of a take, tap the REC chip and turn off **Rec song with REC**; it's back for the take after. Rec song turned on by hand stays on as usual (see [Make and Perform](playing-live.md#make-and-perform)).
 

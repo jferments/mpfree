@@ -7,7 +7,7 @@
 
 use mpfree_perform::{Perform, SongRecorder, When};
 use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Sink, SONG_TRACK};
-use mpfree_seq::arrange::MORPH_LANE;
+use mpfree_seq::arrange::{MAX_PLACEMENTS, MORPH_LANE};
 use mpfree_seq::mpfree_param::ParamAddr;
 use mpfree_seq::{Clip, MorphRows, Note, Placement, Project, Source, Track};
 use mpfree_transport::time::Tick;
@@ -68,6 +68,22 @@ fn jam(
     frames: u64,
     period: u32,
 ) -> (Vec<(u64, u16, Event)>, Project) {
+    let (heard, project, _) = jam_with_room(p, launches, acts, commands, frames, period);
+    (heard, project)
+}
+
+/// Where recording stopped for room, and the count it warned at.
+type Room = (Option<Tick>, Option<usize>);
+
+/// [`jam`], also saying whether the recorder stopped for room.
+fn jam_with_room(
+    p: &Project,
+    launches: &[Launch],
+    acts: &[(u64, Act)],
+    commands: &[(u64, Command)],
+    frames: u64,
+    period: u32,
+) -> (Vec<(u64, u16, Event)>, Project, Room) {
     let mut project = p.clone();
     let mut t = Transport::new(RATE, 120.0).unwrap();
     for &(f, c) in commands {
@@ -80,6 +96,7 @@ fn jam(
     let mut view = compile(&project, &launches, &cues, &perform);
     let (mut player, mut block, mut log) = (Player::new(), Block::new(), Log::default());
     let mut next = 0;
+    let (mut full, mut warning) = (None, None);
     while t.frame() < frames {
         let f = t.frame();
         let n = period.min((frames - f) as u32);
@@ -113,7 +130,10 @@ fn jam(
         }
         assert!(t.process(n, &mut block));
         player.process(&view, &block, &mut log);
+        rec.song_blocks(project.arrangement.placements.len());
         rec.period(&block, player.started());
+        full = full.or(rec.take_full());
+        warning = warning.or(rec.take_warning());
         let mut changed = false;
         for st in player.started() {
             perform.started(&mut project, st);
@@ -131,7 +151,7 @@ fn jam(
     assert_eq!(player.stats().dropped + player.stats().late_offs, 0);
     rec.arm(false, &project, &launches, 0.0, (0, 1));
     rec.finish(&mut project).unwrap();
-    (notes(log.0), project)
+    (notes(log.0), project, (full, warning))
 }
 
 /// Play the song alone (nothing launched, every track heard) with the
@@ -387,4 +407,151 @@ fn a_mute_leaves_a_gap_and_the_clip_comes_back_in_phase() {
     let heard_notes: Vec<u8> = want.iter().map(|o| o.1).collect();
     assert_eq!(heard_notes, [40, 46, 47, 40, 41, 42, 43, 44, 45, 46, 47]);
     assert_eq!(ons(&replay(&song, &commands, frames, 64)), want);
+}
+
+/// `p` with its song filled to `MAX_PLACEMENTS - room` blocks on `track`,
+/// one bar each from bar 1001, far past anything a test plays.
+fn nearly_full(mut p: Project, track: usize, room: usize) -> Project {
+    for k in 0..MAX_PLACEMENTS - room {
+        p.arrangement
+            .placements
+            .push(Placement::linked(track, 0, (1000 + k as i64) * BAR, BAR));
+    }
+    p.check().unwrap();
+    p
+}
+
+/// What `song` holds besides the filler: (track, start, end, slot).
+fn recorded(song: &Project) -> Vec<(usize, Tick, Tick, Option<usize>)> {
+    song.arrangement
+        .placements
+        .iter()
+        .filter(|b| b.start < 1000 * BAR)
+        .map(|b| (b.track, b.start, b.end(), b.slot()))
+        .collect()
+}
+
+/// Sixteen tracks switch together on one line with the song nearly full:
+/// with room for the line, it all goes in; without, recording stops on
+/// every track at that line, none of its cues half in, and what was
+/// recorded goes in, opens and plays. The count warns at 90 %.
+#[test]
+fn sixteen_tracks_on_one_line_at_the_limit_go_in_together_or_stop_together() {
+    let mut p = Project::new();
+    for t in 0..16u8 {
+        let mut tr = Track::new("t", t.into());
+        tr.slots[0] = Some(held(20 + t));
+        tr.slots[1] = Some(held(60 + t));
+        p.tracks.push(tr);
+    }
+    let launches: Vec<Launch> = (0..16).map(|t| launch(t, 0)).collect();
+    // Row 2 on bar 3, for every track.
+    let acts = [(at(BAR + 100), Act::Scene(1))];
+    let commands = [(0, Command::Play)];
+    let frames = at(4 * BAR);
+    // The pass takes 32 (a block and a stretch on each track); the line
+    // 16 more (a block each).
+    for (room, fits) in [(48, true), (47, false), (40, false)] {
+        let full = nearly_full(p.clone(), 0, room);
+        for period in [128, 1000] {
+            let (heard, song, (stopped, warned)) =
+                jam_with_room(&full, &launches, &acts, &commands, frames, period);
+            assert!(warned.is_some(), "room {room}: warned at 90 %");
+            assert!(song.arrangement.placements.len() <= MAX_PLACEMENTS);
+            let mut want: Vec<_> = (0..16)
+                .flat_map(|t| {
+                    let first = (t, 0, 2 * BAR, Some(0));
+                    let second = (t, 2 * BAR, 4 * BAR, Some(1));
+                    if fits {
+                        vec![first, second]
+                    } else {
+                        vec![first]
+                    }
+                })
+                .collect();
+            want.sort();
+            let mut got = recorded(&song);
+            got.sort();
+            assert_eq!(got, want, "room {room}, period {period}");
+            assert_eq!(stopped, (!fits).then_some(2 * BAR), "room {room}");
+            // What's kept opens again and plays what was heard up to the
+            // stop.
+            let opened = mpfree_seq::save::from_text(&mpfree_seq::save::to_text(&song)).unwrap();
+            assert_eq!(
+                opened.arrangement.placements.len(),
+                song.arrangement.placements.len()
+            );
+            let until = if fits { frames } else { at(2 * BAR) };
+            let before = |log: Vec<(u64, u16, Event)>| -> Vec<_> {
+                log.into_iter().filter(|e| e.0 < until).collect()
+            };
+            assert_eq!(
+                before(notes(replay(&opened, &commands, frames, period))),
+                before(heard),
+                "room {room}, period {period}"
+            );
+        }
+    }
+}
+
+/// A loop pass records over the last at the limit: each pass can cut a
+/// block of the song in two, so a pass that wouldn't fit isn't begun:
+/// recording stops at the jump and the first pass goes in.
+#[test]
+fn a_loop_pass_that_would_not_fit_stops_recording_at_the_jump() {
+    let commands = [
+        (0, Command::SetLoop(Some((0, 2 * BAR)))),
+        (0, Command::Play),
+    ];
+    let launches = [launch(0, 0), launch(1, 0)];
+    let frames = at(3 * BAR);
+    // A pass on two tracks takes 4; the second pass 4 more.
+    for (room, passes) in [(8, 2), (7, 1)] {
+        let full = nearly_full(project(), 2, room);
+        let (_, song, (stopped, _)) = jam_with_room(&full, &launches, &[], &commands, frames, 256);
+        // The second pass (stopped a bar in) records over the first's
+        // first bar, cutting its block in two.
+        let want = if passes == 2 {
+            vec![
+                (0, 0, BAR, Some(0)),
+                (0, BAR, 2 * BAR, Some(0)),
+                (1, 0, BAR, Some(0)),
+                (1, BAR, 2 * BAR, Some(0)),
+            ]
+        } else {
+            vec![(0, 0, 2 * BAR, Some(0)), (1, 0, 2 * BAR, Some(0))]
+        };
+        assert_eq!(recorded(&song), want, "room {room}");
+        assert_eq!(stopped, (passes == 1).then_some(2 * BAR), "room {room}");
+        assert!(song.arrangement.placements.len() <= MAX_PLACEMENTS);
+    }
+}
+
+/// The transport stopping on a scene's line, or just after it: every
+/// track's block ends at the stop, the line's clips all in or all out.
+#[test]
+fn the_transport_stopping_during_a_scene_change_keeps_every_track_alike() {
+    let p = project();
+    let launches = [launch(0, 0), launch(1, 0)];
+    let acts = [(at(BAR + 100), Act::Scene(1))];
+    for (stop, switched) in [(at(2 * BAR), false), (at(2 * BAR) + 50, true)] {
+        let commands = [(0, Command::Play), (stop, Command::Stop)];
+        for period in [7, 128, 1000] {
+            let (_, song) = jam(&p, &launches, &acts, &commands, at(3 * BAR), period);
+            let got = recorded(&song);
+            let end = (stop / TICK) as Tick;
+            let want = if switched {
+                vec![
+                    (0, 0, 2 * BAR, Some(0)),
+                    (0, 2 * BAR, end, Some(1)),
+                    (1, 0, 2 * BAR, Some(0)),
+                    (1, 2 * BAR, end, Some(1)),
+                ]
+            } else {
+                vec![(0, 0, 2 * BAR, Some(0)), (1, 0, 2 * BAR, Some(0))]
+            };
+            assert_eq!(got, want, "stop at {stop}, period {period}");
+            song.check().unwrap();
+        }
+    }
 }

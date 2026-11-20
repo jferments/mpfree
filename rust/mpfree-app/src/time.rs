@@ -5387,6 +5387,68 @@ mod tests {
         assert!(e.contains("not wired yet"), "{e}");
     }
 
+    /// Rec song with the song nearly full: it warns, then stops on every
+    /// track at the line that wouldn't fit, says so, and keeps what it
+    /// recorded.
+    #[test]
+    fn rec_song_stops_on_a_line_the_song_has_no_room_for() {
+        use mpfree_seq::arrange::{Placement, MAX_PLACEMENTS};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let one_bar = |note: u8| {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, note, 100)];
+            c
+        };
+        let p = &mut h.control.project;
+        for (t, base) in [(0, 4), (1, 30)] {
+            p.tracks[t].slots[0] = Some(one_bar(base));
+            p.tracks[t].slots[1] = Some(one_bar(base + 1));
+        }
+        // Room for the pass (a block and a stretch on each track) and one
+        // block more: row 2's two don't fit.
+        for k in 0..MAX_PLACEMENTS - 5 {
+            p.arrangement
+                .placements
+                .push(Placement::linked(2, 0, (1000 + k as i64) * 3840, 3840));
+        }
+        h.act(TimeAction::LaunchScene(0)).unwrap();
+        h.act(TimeAction::RecSong(true)).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        h.act(TimeAction::LaunchScene(1)).unwrap();
+        run(&mut h, &mut pads, 2 * BAR, &[]);
+        let note = h.take_later_note().unwrap();
+        assert!(
+            note.starts_with("rec song: the song is 99% full (4095 of 4096 blocks)"),
+            "{note}"
+        );
+        assert!(
+            note.contains(
+                "rec song: the song is full (4096 blocks), so recording stopped on every \
+                 track at bar 2; what it recorded is kept"
+            ),
+            "{note}"
+        );
+        assert!(
+            note.ends_with("rec song: 2 placements and 0 morph points into the song"),
+            "{note}"
+        );
+        let st = h.state();
+        assert!(!st.song_rec, "Rec song is off");
+        let mine: Vec<(usize, Tick, Tick)> = st
+            .placements
+            .iter()
+            .filter(|p| p.track < 2)
+            .map(|p| (p.track, p.start, p.start + p.length))
+            .collect();
+        assert_eq!(mine, [(0, 0, 3840), (1, 0, 3840)]);
+        assert_eq!(st.placements.len(), MAX_PLACEMENTS - 3);
+        // Row 2 plays on: only the recording stopped.
+        let row2 = |h: &&(u64, usize, u8)| (h.1 == 5 || h.1 == 31) && h.0 < 2 * BAR;
+        assert_eq!(pads.hits.iter().filter(row2).count(), 2);
+    }
+
     /// Rec song on, row 1 then row 2 launched on the grid, STOP: the song
     /// holds what was played, and plays it back the same in song mode.
     #[test]
