@@ -59,7 +59,7 @@ use crate::slice_tool::{self, ChopAction, ChopState, SliceTool};
 use crate::sound_panel::{self, SoundPanel};
 use crate::source::SourceView;
 use crate::warp_tool::{self, Tapped, WarpTool};
-use crate::widgets::{InfoCard, KnobCard, PadBar, Setting, SettingList, ToolStrip};
+use crate::widgets::{KnobCard, PadBar, Setting, SettingList, ToolStrip};
 use mpfree_sampler::engine::GrainView;
 
 /// Widget names the tab adds. The app's own are `header` and `hint`.
@@ -68,17 +68,18 @@ pub const OVERVIEW: &str = "smp-overview";
 pub const WAVE: &str = "smp-wave";
 pub const REGION: &str = "smp-region";
 pub const QLINKS: [&str; 4] = ["smp-q1", "smp-q2", "smp-q3", "smp-q4"];
-pub const WHEEL: &str = "smp-wheel";
 /// The tools strip over the wave ([`Tool`]).
 pub const TOOLS: &str = "smp-tools";
 
 /// The tab's page: the app's header, the pad bar, the recorder row
-/// ([`crate::recorder`]) over the tools strip, the overview and the zoom
-/// card (the one Sample page's tools, Trim, Slice, Warp and Grain), the waveform
+/// ([`crate::recorder`]) over the tools strip, the overview (with the zoom
+/// in its corner) and the Keep card ([`crate::recorder::KeepCard`], over
+/// the wave's right end since Jay's device notes of 20 Nov 2026, in the
+/// zoom card's place), the waveform
 /// across the page, the panel of settings under it with the Sound section
 /// on its right, the Q-Link cards on the right, and the app's hint line.
 pub const LAYOUT: &str = "col(header:60, row(smp-bar:*, smp-send:330):60, \
-                          row(col(smp-recorder:64, row(smp-tools:360, smp-overview:*, smp-wheel:240):56, smp-wave:*, \
+                          row(col(smp-recorder:64, row(smp-tools:360, smp-overview:*, smp-keep:340):56, smp-wave:*, \
                           row(smp-region:*, smp-sound:340):242):*, \
                           col(smp-q1, smp-q2, smp-q3, smp-q4):128):*, hint:26)";
 
@@ -758,7 +759,7 @@ impl WaveTab {
                     .on(k, "Wave"),
             );
         }
-        ui.add(WHEEL, InfoCard::new("SHIFT + - / + · zoom"));
+        ui.add(crate::recorder::KEEP, crate::recorder::KeepCard::new());
         let labels: Vec<&str> = Tool::ALL.iter().map(|t| t.label()).collect();
         ui.add(TOOLS, ToolStrip::new(&labels));
         ui.add(RECORDER, Recorder::new());
@@ -1008,6 +1009,11 @@ impl WaveTab {
             return;
         }
         let was = self.rec.recording;
+        if v.keep != self.rec.keep {
+            if let Some(w) = ui.get_mut::<crate::recorder::KeepCard>(crate::recorder::KEEP) {
+                w.view = v.keep.clone();
+            }
+        }
         self.rec = v.clone();
         if let Some(w) = ui.get_mut::<Recorder>(RECORDER) {
             w.view = v;
@@ -1016,6 +1022,17 @@ impl WaveTab {
         if was != self.rec.recording || self.rec.recording {
             self.show_list(ui, st);
             self.show_cards(ui, st);
+        }
+    }
+
+    /// The Keep card's picture of what a tap keeps
+    /// ([`crate::recorder::keep_wave`]); redrawn only when it changes.
+    pub fn set_keep_wave(&self, ui: &mut Ui, wave: Vec<f32>) {
+        use crate::recorder::{KeepCard, KEEP};
+        if ui.get::<KeepCard>(KEEP).is_some_and(|w| w.wave != wave) {
+            if let Some(w) = ui.get_mut::<KeepCard>(KEEP) {
+                w.wave = wave;
+            }
         }
     }
 
@@ -1727,8 +1744,14 @@ impl WaveTab {
             (Tool::Slice, _) => format!("slice {}", self.slice.selected() + 1),
             _ => self.focus.label().to_lowercase(),
         };
-        if let Some(card) = ui.get_mut::<InfoCard>(WHEEL) {
-            card.text = format!("{zoom:.1}× · {round}");
+        let label = format!("{zoom:.1}× · {round}");
+        if ui
+            .get::<WaveOverview>(OVERVIEW)
+            .is_some_and(|o| o.label() != label)
+        {
+            if let Some(o) = ui.get_mut::<WaveOverview>(OVERVIEW) {
+                o.set_label(&label);
+            }
         }
     }
 
@@ -1759,6 +1782,9 @@ impl WaveTab {
         }
         if ev.widget == RECORDER {
             return recorder::action(&self.rec, &ev.kind).map(WaveAction::Rec);
+        }
+        if ev.widget == recorder::KEEP {
+            return recorder::keep_action(&ev.kind).map(WaveAction::Rec);
         }
         if self.live.is_some() && (ev.widget == WAVE || ev.widget == OVERVIEW) {
             return Some(WaveAction::Say(LIVE_WHY.to_string()));
