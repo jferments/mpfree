@@ -8775,6 +8775,11 @@ impl Player {
         if self.ready && self.view.sampler() && self.touch_page.is_none() {
             self.show_view(self.view);
         }
+        // Another pad picked (new kits, a pad stepped): the Pads tab's hint
+        // names what the Q-Links turn on it.
+        if self.view.sampler() {
+            self.refresh_hint();
+        }
         // The Play tab's Pads play row, an undo or another kit may have
         // turned 16 Levels on or off.
         self.refresh_levels();
@@ -8849,7 +8854,13 @@ impl Player {
                 self.refresh_rec_chip();
             }
         }
-        let qlinks = self.sample.play_qlinks_text();
+        // What the Q-Links turn: Edit pad's section's, and the Pads tab's
+        // for the type of the pad picked (a tap on the map picks another).
+        let qlinks = format!(
+            "{} | {}",
+            self.sample.play_qlinks_text(),
+            self.sample.pads_qlinks_text()
+        );
         let live = self.sample.chop_live_method();
         if keys != self.sample_keys || live != self.sample_live || qlinks != self.sample_qlinks {
             self.sample_keys = keys;
@@ -31670,6 +31681,74 @@ mod tests {
             "{:?}",
             events_log(&p)
         );
+    }
+
+    /// The Pads tab's hint names what the Q-Links turn on the pad picked,
+    /// however it was picked or changed: a hit on the MPC's pads, or a
+    /// whole new set of kits, follows to the pad picked then.
+    #[test]
+    fn the_pads_tabs_hint_follows_the_pad_picked() {
+        use mpfree_sampler_ui::pads_tab::{self, PadType};
+        let mut p = sample_sampler(Fonts::embedded());
+        open_pads(&mut p);
+        let _ = p.take_actions();
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        p.on_event(UiEvent {
+            widget: pads_tab::MAP.into(),
+            kind: EventKind::Select(10),
+        });
+        let midi = PadType::ALL.iter().position(|t| *t == PadType::MidiOut);
+        p.on_event(UiEvent {
+            widget: pads_tab::TYPE.into(),
+            kind: EventKind::Tab(midi.unwrap()),
+        });
+        p.tick(30.0);
+        assert!(
+            hint(&p).contains("Q-Links 1-4: note, channel"),
+            "{}",
+            hint(&p)
+        );
+        // A hit on A5, a Sample pad, on the MPC's pads.
+        let a5 = mpfree_sampler_ui::sample::PAD;
+        p.apply(ToUi::PadDown {
+            pad: a5,
+            velocity: 100,
+        });
+        p.apply(ToUi::PadUp(a5));
+        p.tick(30.0);
+        assert!(
+            hint(&p).contains("Q-Links 1-4: level, pan, tune, voices"),
+            "{}",
+            hint(&p)
+        );
+        // Taps on the map: A11 again (MIDI out), then A5 (a Sample pad).
+        for (pad, want) in [
+            (10, "Q-Links 1-4: note, channel"),
+            (a5, "Q-Links 1-4: level, pan, tune, voices"),
+            (10, "Q-Links 1-4: note, channel"),
+        ] {
+            p.on_event(UiEvent {
+                widget: pads_tab::MAP.into(),
+                kind: EventKind::Select(pad),
+            });
+            assert!(hint(&p).contains(want), "{} (want {want})", hint(&p));
+        }
+        // A new set of kits: the pad picked then (the next with a sound),
+        // whatever its type.
+        p.apply(ToUi::SampleKits {
+            projects: vec![mpfree_sampler_ui::sample::full_kit_project()],
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        p.tick(30.0);
+        let project = p.sample.project(0).unwrap();
+        let picked = PadType::of(project.pad(p.sample.pad()).unwrap());
+        let want = match picked {
+            PadType::Instrument => "Q-Links 1-4: note, engine",
+            PadType::MidiOut => "Q-Links 1-4: note, channel, port",
+            PadType::Loop => "Q-Links 1-4: level, pan, tune, tempo",
+            PadType::Sample => "Q-Links 1-4: level, pan, tune, voices",
+        };
+        assert!(hint(&p).contains(want), "{} (want {want})", hint(&p));
     }
 
     /// The Pads tab's type switch (the redesign's step 6b): the MIDI
