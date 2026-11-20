@@ -82,7 +82,7 @@ mark edit-pad
 # The pad's own page (the MPC's PROG EDIT) is on the Pads tab: from its row,
 # then from PROG EDIT, back to the pads each time.
 tap header tab Pads
-tap smp-pads-list row-button layers, keys, scenes, slices ›
+tap smp-pads-list button layers, keys, scenes, slices ›
 expect sample: Edit pad on pad
 tap smp-play-bar back ‹ Pads
 expect sample: Edit pad closed: the pads again

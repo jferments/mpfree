@@ -847,6 +847,31 @@ impl SettingList {
         ))
     }
 
+    /// [`SettingList::footer`] on a panel: word-wrapped to the width,
+    /// along the bottom of the panel (whose lines start from the top, so
+    /// they leave it the room).
+    fn paint_panel_footer(&self, cx: &mut PaintCx, r: Rect, text: &str, warn: bool) {
+        let t = cx.theme.clone();
+        let px = t.size_small;
+        let line_h = (px * 1.5) as i32;
+        let inner = r.inset(14);
+        let lines = wrap_words(cx, text, px, inner.w);
+        let mut y = inner.bottom() - line_h * lines.len() as i32;
+        for l in lines {
+            if y >= inner.y {
+                cx.text(
+                    FontId::Sans,
+                    px,
+                    Rect::new(inner.x, y, inner.w, line_h),
+                    Align::Left,
+                    if warn { t.warn } else { t.text_dim },
+                    &l,
+                );
+            }
+            y += line_h;
+        }
+    }
+
     /// [`SettingList::footer`] under the last row in view, word-wrapped
     /// to the body's width: as many lines as fit.
     fn paint_footer(&self, cx: &mut PaintCx, r: Rect, text: &str, warn: bool) {
@@ -890,6 +915,27 @@ impl SettingList {
     }
 }
 
+/// `text` broken into lines no wider than `w` at `px` (a word wider
+/// than that alone on its line).
+fn wrap_words(cx: &mut PaintCx, text: &str, px: f32, w: i32) -> Vec<String> {
+    let mut line = String::new();
+    let mut lines = Vec::new();
+    for word in text.split(' ') {
+        let longer = if line.is_empty() {
+            word.to_string()
+        } else {
+            format!("{line} {word}")
+        };
+        if !line.is_empty() && cx.measure(FontId::Sans, px, &longer) > w {
+            lines.push(std::mem::replace(&mut line, word.to_string()));
+        } else {
+            line = longer;
+        }
+    }
+    lines.push(line);
+    lines
+}
+
 impl Widget for SettingList {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         if let Some(p) = &self.panel {
@@ -899,7 +945,7 @@ impl Widget for SettingList {
             } else {
                 usize::MAX
             };
-            return panel::paint(
+            panel::paint(
                 cx,
                 r,
                 p,
@@ -910,6 +956,10 @@ impl Widget for SettingList {
                 sel,
                 self.editing,
             );
+            if let Some((text, warn)) = &self.footer {
+                self.paint_panel_footer(cx, r, text, *warn);
+            }
+            return;
         }
         let t = cx.theme.clone();
         cx.titled_panel(r, &self.title, &self.right);

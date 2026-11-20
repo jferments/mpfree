@@ -40,7 +40,7 @@ You can tap steps in right on the Play page's rows, but the **Sequencer** tab sh
 
 {{shot: sequencer-steps | The Sequencer tab's Steps: the pattern, one row per pad, with your timing under it and the picked step in the step inspector at the bottom.}}
 
-**Change a step.** Tap a lit square once to pick it: the Q-Links now turn its **velocity** (how hard it plays), **length**, **nudge** (a little early or late) and **chance** (how often it plays). Tap the picked square again to switch it off without losing its settings; tap once more to bring it back. Hold **ERASE** and tap a square to take it out.
+**Change a step.** Tap a lit square to take it out (**UNDO** brings it back). To change one, hold your finger on it for a moment: it gets a white outline, and the Q-Links now turn its **velocity** (how hard it plays), **length**, **nudge** (a little early or late) and **chance** (how often it plays).
 
 **Make it longer.** Tap **+** at the top right of the pattern to double it to 32 steps (two bars). The new bar repeats the first, so change what you like in the copy.
 

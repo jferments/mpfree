@@ -343,6 +343,11 @@ fn taps_and_drags_on_the_widget() {
     tap(&mut ui, sx, sy);
     step(&mut ui, &mut b);
     assert!(b.selected_row().unwrap().favourite);
+    // New project at the foot of the places column starts one, from
+    // whichever place shows.
+    let (nx, ny) = BrowserView::new_project_point(r, &b.screen()).unwrap();
+    tap(&mut ui, nx, ny);
+    assert_eq!(step(&mut ui, &mut b), [BrowseAction::NewProject]);
     assert!(b
         .lists_text()
         .contains("favourite = Samples/Rhodes chord.wav"));
@@ -742,16 +747,15 @@ fn projects_offer_new_save_and_save_as_and_new_asks_over_unsaved_work() {
     b.go_source(src("Projects"));
     assert_eq!(
         b.screen().list_buttons,
-        [
-            Button::NewProject,
-            Button::SaveAs,
-            Button::Save,
-            Button::Export
-        ]
+        [Button::SaveAs, Button::Save, Button::Export]
     );
-    // Other places keep their own buttons.
+    // New project is at the foot of the places column, in every place
+    // (Jay's device round, 20 Nov).
+    assert!(b.screen().new_project);
+    // Other places keep their own buttons, and New project.
     b.go_source(src("Samples"));
     assert!(!b.screen().list_buttons.contains(&Button::Save));
+    assert!(b.screen().new_project);
     b.go_source(src("Projects"));
     // Save asks the app for the parts.
     b.input(Input::Button(Button::Save));
@@ -784,6 +788,7 @@ fn projects_offer_new_save_and_save_as_and_new_asks_over_unsaved_work() {
     // A picker offers none of them.
     b.open_picker(Pick::Project);
     assert_eq!(b.screen().list_buttons, [Button::Cancel]);
+    assert!(!b.screen().new_project);
     b.input(Input::Button(Button::NewProject));
     assert!(b.take_actions().is_empty());
 }
