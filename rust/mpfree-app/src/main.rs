@@ -2680,12 +2680,11 @@ fn erase_held_steps(
 /// Tracks organize and record performances. The pads are controllers that
 /// play instruments."). The looper's Records from: Pads
 /// records it; the mixer says where it sounds
-/// ([`mixing::MixHost::instrument_strip`]). Play on the pads (the Synth
-/// tab, app/pads_preview.rs) puts the shared synth on them whatever the
-/// track plays; otherwise the pads play the selected track's instrument:
-/// MIDI out, its own, its kit or the synth. `midi_out`: the selected
-/// track sends MIDI out. The instrument redesign's pads focus changes
-/// this function, and the looper follows.
+/// ([`mixing::MixHost::instrument_strip`]). The synth chosen for the
+/// pads (the Synth tab, app/pads_focus.rs) is what they play whatever the
+/// track plays; otherwise the pads follow the selected track and play its
+/// instrument: MIDI out, its own, its kit or the synth. `midi_out`: the
+/// selected track sends MIDI out.
 fn pads_instrument(
     app: &app::App,
     mix: &mixing::MixHost,
@@ -2693,7 +2692,7 @@ fn pads_instrument(
     midi_out: bool,
 ) -> looping::Instrument {
     use looping::Instrument;
-    if app.pads_preview() {
+    if app.pads_chose_synth() {
         return Instrument::Synth;
     }
     let t = app.track();
@@ -6034,9 +6033,11 @@ fn player_session(
     let n = drum_kits + 1;
     // Whether the armed track plays the synth: the pads play it then.
     let mut synth_on = false;
-    // Play on the pads (app/pads_preview.rs): the pads play the synth
-    // while the armed track keeps its kit; nothing records them. The pads
-    // a hit started there, so their let-go ends it there.
+    // The synth chosen for the pads while the armed track plays something
+    // else (app/pads_focus.rs): the pads play it on their own, before the
+    // arp and the recorder; nothing records them. While the track plays
+    // the synth, they play it through the track. The pads a hit started
+    // there, so their let-go ends it there.
     let mut preview_on = false;
     let mut preview_held = [false; 16];
     // What each track plays: a kit, the Grains kit or the synth (kit 1 on
@@ -6658,6 +6659,9 @@ fn player_session(
         parts.begin();
         let t = started.elapsed().as_secs_f64();
         let mut kit_to: Option<usize> = kit_follow.take();
+        // A kit picked in the list (or turned with SHIFT + the wheel) this
+        // period: what the pads play, so they follow the track.
+        let mut kit_picked = false;
         let mut audio_change: Option<u32> = None;
         let mut bank_lights = false;
         // PAD BANK turned the kit's page: the pads' colours follow.
@@ -6844,7 +6848,12 @@ fn player_session(
                     bank_lights = true;
                 }
                 gui::FromUi::PadBank(_) => {}
-                gui::FromUi::Kit(k) => kit_to = Some(k.min(n - 1)),
+                // A pick in the list of kits: what the pads play, so they
+                // follow the track again (app/pads_focus.rs).
+                gui::FromUi::Kit(k) => {
+                    kit_to = Some(k.min(n - 1));
+                    kit_picked = true;
+                }
                 // UNDO on the Synth tab and the mixer: their turns' history.
                 gui::FromUi::UndoHistory(on) => {
                     let (rows, now) = match on {
@@ -7242,6 +7251,12 @@ fn player_session(
                         out.note(&line);
                     }
                     fx.extend(perform_fx);
+                    // What the pads play: the project's, or the track.
+                    let (notes, pads_fx) = app.open_pads(o.pads.as_deref());
+                    for line in notes {
+                        out.note(&line);
+                    }
+                    fx.extend(pads_fx);
                     if o.clear_loops {
                         out.note(&looper.clear_all());
                     }
@@ -8381,8 +8396,8 @@ fn player_session(
                     let own = &mix.instruments;
                     out.note(&transpose_pad(pad, &mut time, &synth, &track_kits, own));
                 }
-                // Play on the pads: the synth plays the hit, before the arp
-                // and the recorder; the armed track keeps its kit.
+                // The synth chosen for the pads: it plays the hit, before
+                // the arp and the recorder; the armed track keeps its kit.
                 Some(ControlEvent::PadDown { pad, velocity })
                     if (pad as usize) < 16 && preview_on =>
                 {
@@ -8690,9 +8705,11 @@ fn player_session(
                     .filter(|e| !matches!(e, app::Effect::Note(_))),
             );
         }
-        // What REC must leave alone while the pads play the synth by Play
-        // on the pads (app/pads_preview.rs): kits and MIDI outputs picked.
+        // What REC must leave alone while the synth is chosen for the pads
+        // (app/pads_focus.rs): kits and MIDI outputs picked; and the tracks
+        // that play the synth, where REC records the pads as they are.
         app.set_configured(track_kits.picked() | midi_out.routed());
+        app.set_synth_tracks(track_kits.on_synth());
         let mut stop = false;
         let mut later = Vec::new();
         for e in fx.drain(..) {
@@ -8770,6 +8787,7 @@ fn player_session(
                     let from = kit_to.unwrap_or(player.kit());
                     let sounds = |k| player.sounds(k);
                     kit_to = Some(kit_turned(from, d, n, &user_kits, sounds, &track_kits));
+                    kit_picked = true;
                 }
                 // The Synth tab's options: the engine, the scale and the
                 // pad layouts.
@@ -8854,36 +8872,9 @@ fn player_session(
                         }
                     }
                 },
-                // Play on the pads: the synth's colours on the pads, or the
-                // kit's again; a pad still held ends its synth note now,
-                // and its let-go is taken quietly (below).
-                app::Effect::PadsPreview(on) => {
-                    if !on {
-                        for pad in (0..16).filter(|&p| preview_held[p]) {
-                            synth.note_off(pad, 0);
-                        }
-                    }
-                    preview_on = on && !synth_on;
-                    rest = if preview_on {
-                        synth.pad_colours()
-                    } else if synth_on {
-                        rest
-                    } else {
-                        sound_colours(
-                            player.page_sounds(player.kit(), app.pad_page()),
-                            player.kit(),
-                        )
-                    };
-                    if mute_shown.is_none() {
-                        ports.send_batch(
-                            out,
-                            false,
-                            "the pads' colours",
-                            &as_slices(&pad_colours(&rest)),
-                        )?;
-                    }
-                    out.show(gui::ToUi::PadsPreview(preview_on));
-                }
+                // What the pads play changed: the screen names it; the pads
+                // follow below, once the kit has.
+                app::Effect::PadsFocus(f) => out.show(gui::ToUi::PadsFocus(f)),
                 // REC while the pads play the synth (desk::rec_synth): the
                 // track plays the same synth from now on, as a pick of
                 // Synth in the list of kits; the selected one takes it at
@@ -9014,15 +9005,17 @@ fn player_session(
                 app.set_pad_layout(Some(synth.pad_layout()));
             }
         }
-        // A kit picked (or a project opened) while the synth was on the
-        // pads by Play on the pads: the pads play the track's kit again.
-        if kit_to.is_some() && app.pads_preview() {
-            fx.extend(app.toggle_pads_preview());
+        // A kit picked while the synth was chosen for the pads: what the
+        // pads play, so they follow the track again (app/pads_focus.rs).
+        if kit_picked {
+            fx.extend(app.kit_pick_follows_track());
         }
-        // The arp came on (NOTE REPEAT, Latch, the Arp panel): it plays the
-        // track's instrument, so Play on the pads ends.
-        fx.extend(app.arp_ends_pads_preview());
+        // The arp came on (NOTE REPEAT, Latch, the Arp panel) over a track
+        // that plays something else: it plays the track's instrument, so
+        // the pads follow the track.
+        fx.extend(app.arp_ends_pads_synth());
         let playing_kit = if synth_on { synth_kit } else { player.kit() };
+        let mut kit_switched = false;
         if let Some(k) = kit_to.filter(|&k| k != playing_kit) {
             used[k] = true;
             // A pick: the armed track plays it from now on. (When the pads
@@ -9063,12 +9056,16 @@ fn player_session(
                     kits[k].name,
                     kits[k].sounds.len()
                 ));
-                ports.send_batch(
-                    out,
-                    false,
-                    &format!("kit {}'s pad colours", k + 1),
-                    &as_slices(&pad_colours(&rest)),
-                )?;
+                // With the synth chosen for the pads, its colours stay
+                // (below).
+                if !app.pads_chose_synth() {
+                    ports.send_batch(
+                        out,
+                        false,
+                        &format!("kit {}'s pad colours", k + 1),
+                        &as_slices(&pad_colours(&rest)),
+                    )?;
+                }
             }
             lit = [None; 16];
             mute_shown = None;
@@ -9076,15 +9073,51 @@ fn player_session(
             app.set_pad_layout(synth_on.then(|| synth.pad_layout()));
             out.show(gui::ToUi::Kit(k));
             bank_lights = true;
+            kit_switched = true;
+        }
+        // What the pads play (app/pads_focus.rs): the synth chosen for them
+        // plays on its own while the selected track plays something else,
+        // and through the track while it plays the synth; otherwise the
+        // track's instrument. A pad still held on the synth ends its note
+        // as the pads leave it, and its let-go is taken quietly (above).
+        let preview_now = app.pads_chose_synth() && !synth_on;
+        if preview_now != preview_on || (preview_now && kit_switched) {
+            if !preview_now {
+                for pad in (0..16).filter(|&p| preview_held[p]) {
+                    synth.note_off(pad, 0);
+                }
+            }
+            preview_on = preview_now;
+            if preview_on {
+                rest = synth.pad_colours();
+            } else if !synth_on {
+                rest = sound_colours(
+                    player.page_sounds(player.kit(), app.pad_page()),
+                    player.kit(),
+                );
+            }
+            if mute_shown.is_none() {
+                ports.send_batch(
+                    out,
+                    false,
+                    "the pads' colours",
+                    &as_slices(&pad_colours(&rest)),
+                )?;
+                lit = [None; 16];
+            }
         }
         if page_turned && !synth_on {
             // The kit's next page: its sounds' colours, unless the pads
-            // are in a mode (they come back with these).
-            rest = sound_colours(
-                player.page_sounds(player.kit(), app.pad_page()),
-                player.kit(),
-            );
-            if mute_shown.is_none() {
+            // are in a mode (they come back with these) or play the synth
+            // chosen for them (they come back with these once they follow
+            // the track, above).
+            if !preview_on {
+                rest = sound_colours(
+                    player.page_sounds(player.kit(), app.pad_page()),
+                    player.kit(),
+                );
+            }
+            if mute_shown.is_none() && !preview_on {
                 ports.send_batch(
                     out,
                     false,
@@ -10078,6 +10111,7 @@ fn player_session(
                 instruments: project::instruments_text(&mix.instruments),
                 track_kits: track_kits.text(),
                 instrument_list: listed.text(),
+                pads: app.pads_part(),
                 loops,
                 audio,
             })));

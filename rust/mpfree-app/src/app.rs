@@ -31,7 +31,7 @@
 
 mod arp;
 pub mod mapper;
-mod pads_preview;
+mod pads_focus;
 pub mod saved;
 pub mod step_pads;
 mod synth_pads;
@@ -39,7 +39,7 @@ mod synth_pads;
 pub use arp::{built_in_patterns, mode_label, ArpItem, ArpView, LiveMap, WorkspaceView};
 pub use mapper::{Code, MapView, Mark};
 use mpfree_arp::scale::pads::Pad as PadNotes;
-pub use pads_preview::{synth_track, SynthTake};
+pub use pads_focus::{synth_track, PadFocus, SynthTake};
 pub use step_pads::StepPads;
 pub use synth_pads::SynthItem;
 
@@ -1115,14 +1115,13 @@ pub enum Effect {
         track: usize,
         id: Option<&'static str>,
     },
-    /// The pads play the synth the Synth tab shows while the selected
-    /// track keeps its kit (true), or play the track's instrument again
-    /// (app/pads_preview.rs).
-    PadsPreview(bool),
-    /// REC while the pads play the synth by Play on the pads: this track
-    /// plays the synth from now on (the Synth kit, as a pick in the list of
-    /// kits), so the take plays the one instance that was heard
-    /// (app/pads_preview.rs).
+    /// What the pads play changed: the synth the Synth tab shows,
+    /// whichever track is selected, or the selected track's instrument
+    /// again (app/pads_focus.rs).
+    PadsFocus(PadFocus),
+    /// REC while the synth is chosen for the pads: this track plays the
+    /// synth from now on (the Synth kit, as a pick in the list of kits), so
+    /// the take plays the one instance that was heard (app/pads_focus.rs).
     SynthOnTrack(usize),
     /// The mixer opened on a view, or closed (`None`): the audio thread
     /// sends the panel its state only while it is open.
@@ -1602,9 +1601,12 @@ pub struct App {
     /// ([`App::set_pad_layout`]): the pads then feed the arp the layout's
     /// notes, and its events carry notes rather than pad slots.
     pad_layout: Option<[PadNotes; 16]>,
-    /// The pads play the shared synth while the selected track keeps its
-    /// kit ([`App::toggle_pads_preview`]).
-    pads_preview: bool,
+    /// What the pads play: the selected track's instrument, or one chosen
+    /// for them ([`App::pads_focus`]).
+    pads_focus: PadFocus,
+    /// The tracks that play the shared synth, a bit each
+    /// ([`App::set_synth_tracks`]).
+    synth_tracks: u128,
     /// The tracks with a kit or a MIDI output picked, a bit each
     /// ([`App::set_configured`]).
     configured: u128,
@@ -1773,7 +1775,8 @@ impl App {
             held: false,
             outline: false,
             pad_layout: None,
-            pads_preview: false,
+            pads_focus: PadFocus::Track,
+            synth_tracks: 0,
             configured: 0,
             pad_pressed: [PadNotes::default(); 16],
             note_holds: [0; 128],
@@ -2314,7 +2317,7 @@ impl App {
     /// R5.7).
     pub fn held_kit_pads(&self) -> Vec<usize> {
         if self.pad_layout.is_some()
-            || self.pads_preview
+            || self.pads_chose_synth()
             || self.pads_are_steps()
             || self.pads_mute()
             || self.levels_on
@@ -2902,7 +2905,7 @@ impl App {
     /// set on them. COPY + a pad copies kit pads only then.
     pub fn pads_play_kit(&self) -> bool {
         !(self.pad_layout.is_some()
-            || self.pads_preview
+            || self.pads_chose_synth()
             || self.step_pads().is_some()
             || self.levels_on
             || self.pads_mute()
@@ -7239,52 +7242,54 @@ mod tests {
         assert_eq!(app.view(), View::Synth, "MENU's way in, Back's way out");
     }
 
-    /// Play on the pads: the synth on the pads while the track keeps its
-    /// kit; the button again or another track give the pads back. REC
-    /// records the synth where it plays: a track that gets a copy of it.
+    /// Pad focus (the instrument redesign's step 3): the synth chosen for
+    /// the pads stays whichever track is selected, until Follow track;
+    /// REC records it where it plays and never moves the pads.
     #[test]
-    fn play_on_the_pads_keeps_the_kit_and_rec_records_the_synth_on_a_track() {
+    fn the_synth_chosen_for_the_pads_stays_until_follow_track() {
         use crate::rec_arm::Press;
         let mut app = ready();
         app.open_tab(View::Synth);
-        assert!(app.pads_play_kit() && !app.pads_preview());
-        let fx = app.toggle_pads_preview();
-        assert_eq!(fx[0], Effect::PadsPreview(true), "{fx:?}");
+        assert!(app.pads_play_kit() && app.pads_focus() == PadFocus::Track);
+        let fx = app.toggle_pads_synth();
+        assert_eq!(fx[0], Effect::PadsFocus(PadFocus::SYNTH), "{fx:?}");
         assert!(
-            matches!(&fx[1], Effect::Note(n) if n.contains("Track 1 keeps its kit")),
+            matches!(&fx[1], Effect::Note(n) if n.contains("Poly on every track") && n.contains("Track 1 keeps its kit")),
             "{fx:?}"
         );
-        assert!(app.pads_preview() && !app.pads_play_kit());
+        assert!(app.pads_chose_synth() && !app.pads_play_kit());
         assert!(app.held_kit_pads().is_empty(), "no pad take from the synth");
         assert_eq!(app.track_sound(0), None, "the track still plays its kit");
-        // The button again: the kit.
-        let fx = app.toggle_pads_preview();
+        // The button again: Follow track.
+        let fx = app.toggle_pads_synth();
         assert_eq!(
             fx,
             [
-                Effect::PadsPreview(false),
-                Effect::Note("The pads play Track 1's kit again".into())
+                Effect::PadsFocus(PadFocus::Track),
+                Effect::Note("The pads follow the track: Track 1's instrument".into())
             ]
         );
         assert!(app.pads_play_kit());
-        // Another track: its instrument, said first.
-        app.toggle_pads_preview();
+        assert!(app.pads_follow_track().is_empty(), "once");
+        // Another track selected: the pads keep the synth (rule 2).
+        app.toggle_pads_synth();
         let fx = app.set_track(2);
-        assert_eq!(fx[0], Effect::PadsPreview(false), "{fx:?}");
-        assert!(!app.pads_preview());
+        assert!(
+            !fx.iter().any(|e| matches!(e, Effect::PadsFocus(_))),
+            "{fx:?}"
+        );
+        assert!(app.pads_chose_synth());
         // REC and OVERDUB press as ever; the desk sends the take where the
         // synth plays (rec_synth).
-        app.toggle_pads_preview();
         assert_eq!(press(&mut app, 90), [Effect::Rec(Press::Rec)]);
         assert_eq!(press(&mut app, 91), [Effect::Rec(Press::Overdub)]);
-        assert!(app.pads_preview());
-        // The track it goes to plays the same synth (no copy), and the
-        // pads go on playing it.
+        // The track it goes to plays the same synth (no copy), the pads
+        // keep it (rule 1), and the next press records there.
+        assert!(!app.plays_pads_synth(4));
         let fx = app.rec_synth_on(4, false);
         assert_eq!(
             fx,
             [
-                Effect::PadsPreview(false),
                 Effect::SynthOnTrack(4),
                 Effect::Note(
                     "REC records Poly on Track 5: the track plays the same Poly as the pads".into()
@@ -7292,31 +7297,74 @@ mod tests {
             ]
         );
         assert_eq!(app.track_sound(4), None, "no copy on the track");
-        assert!(!app.pads_preview());
-        app.toggle_pads_preview();
+        assert!(app.pads_chose_synth());
+        assert!(app.plays_pads_synth(4));
         assert!(matches!(
-            &app.rec_synth_on(9, true)[2],
+            &app.rec_synth_on(9, true)[1],
             Effect::Note(n) if n == "REC records Poly on a new track, Track 10: the track plays the same Poly as the pads"
         ));
-        // A row of REC's list: the musician's pick, so the pads play that
-        // track (and the preview ends, saying so).
-        app.toggle_pads_preview();
-        let fx = app.rec_list_ends_pads_preview(2);
-        assert_eq!(fx[0], Effect::PadsPreview(false), "{fx:?}");
-        assert!(
-            matches!(&fx[1], Effect::Note(n) if n.contains("Track 3 picked for REC")),
-            "{fx:?}"
-        );
-        assert!(app.rec_list_ends_pads_preview(2).is_empty(), "once");
-        // Nothing while the pads already play a synth: the track's own.
+        // What the audio loop says wins: a kit or MIDI out picked over it.
+        app.set_synth_tracks(1 << 4 | 1 << 6);
+        assert!(app.plays_pads_synth(4) && !app.plays_pads_synth(9));
+        app.set_configured(1 << 6);
+        assert!(!app.plays_pads_synth(6));
+        // A track's own instrument: the button chooses nothing while the
+        // pads follow it, and with the synth chosen they keep it there too.
         let poly = crate::instruments::Held {
             id: crate::synth::Engine::Poly.node_id(),
             name: "Poly",
             instance: 0,
         };
         app.set_track_sound(2, Some(poly));
-        assert!(app.toggle_pads_preview().is_empty());
-        assert!(!app.pads_preview());
+        assert!(!app.plays_pads_synth(2), "its own, not the pads' synth");
+        app.toggle_pads_synth();
+        assert!(app.pads_focus() == PadFocus::Track);
+        assert!(app.toggle_pads_synth().is_empty());
+        assert!(app.pads_focus() == PadFocus::Track);
+        app.set_track(0);
+        app.toggle_pads_synth();
+        app.set_track(2);
+        assert!(app.pads_chose_synth());
+    }
+
+    /// The pads part: what the pads play is saved with the project, and
+    /// a part that doesn't read is said, the pads following the track.
+    #[test]
+    fn the_pads_focus_is_saved_and_a_part_that_doesnt_read_is_said() {
+        let mut app = ready();
+        assert_eq!(app.pads_part(), "mpfree-pads 1\nplay track\n");
+        app.open_tab(View::Synth);
+        app.toggle_pads_synth();
+        let text = app.pads_part();
+        assert_eq!(text, "mpfree-pads 1\nplay instrument 1\n");
+        let mut other = ready();
+        let (notes, fx) = other.open_pads(Some(&text));
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(fx, [Effect::PadsFocus(PadFocus::SYNTH)]);
+        assert!(other.pads_chose_synth());
+        // None: New, or a project from before the part.
+        let (notes, fx) = other.open_pads(None);
+        assert!(notes.is_empty());
+        assert_eq!(fx, [Effect::PadsFocus(PadFocus::Track)]);
+        for (bad, why) in [
+            ("mpfree-pads 2\nplay track\n", "its first line is"),
+            (
+                "mpfree-pads 1\nplay instrument 2\n",
+                "instrument 2 can't be chosen",
+            ),
+            ("mpfree-pads 1\nplay instrument 0\n", "doesn't read"),
+            ("mpfree-pads 1\nplay drums\n", "doesn't read"),
+            ("mpfree-pads 1\nplay track\nplay track\n", "twice"),
+            ("mpfree-pads 1\n", "doesn't say"),
+        ] {
+            other.open_pads(Some(&text));
+            let (notes, fx) = other.open_pads(Some(bad));
+            assert!(
+                matches!(&notes[..], [n] if n.contains(why) && n.ends_with("the pads follow the track")),
+                "{bad:?}: {notes:?}"
+            );
+            assert_eq!(fx, [Effect::PadsFocus(PadFocus::Track)], "{bad:?}");
+        }
     }
 
     /// Where REC records the pads' synth (the design review of 20 Nov,
@@ -7327,7 +7375,7 @@ mod tests {
     /// is kept, or REC goes nowhere; and a full project takes nothing.
     #[test]
     fn rec_records_the_pads_synth_on_a_track_nobody_set_up() {
-        use super::pads_preview::unfit;
+        use super::pads_focus::unfit;
         use mpfree_seq::{Clip, Project, Track};
         let mut p = Project::new();
         for n in 0..6 {
@@ -7395,38 +7443,51 @@ mod tests {
         assert_eq!(unfit(&p, 6, free), Some("is a Loop track"));
     }
 
-    /// The arp and Play on the pads (the design review of 20 Nov, point
-    /// C): the try-out plays as pressed, so it won't start while the arp
-    /// plays the pads, and the arp coming on ends it; a take then never
-    /// goes through an arp the try-out didn't.
+    /// The arp and the synth chosen for the pads (the design review of 20
+    /// Nov, point C): over a track that plays a kit the pads play the
+    /// synth as pressed, so the button won't choose it while the arp plays
+    /// the pads, and the arp coming on there gives the pads back to the
+    /// track; a take then never goes through an arp the try-out didn't.
+    /// Over a track that plays the synth, the arp plays it.
     #[test]
-    fn the_arp_and_play_on_the_pads_never_play_together() {
+    fn the_arp_and_the_synth_on_the_pads_never_play_apart() {
         let mut app = ready();
         app.open_tab(View::Synth);
-        app.toggle_pads_preview();
-        assert!(app.pads_preview());
-        assert!(app.arp_ends_pads_preview().is_empty(), "no arp, no change");
+        app.toggle_pads_synth();
+        assert!(app.pads_chose_synth());
+        assert!(app.arp_ends_pads_synth().is_empty(), "no arp, no change");
         // NOTE REPEAT held: the arp plays the pads, through the track's kit.
         app.button(REPEAT, true, 0.0);
         assert!(app.generating());
-        let fx = app.arp_ends_pads_preview();
-        assert_eq!(fx[0], Effect::PadsPreview(false), "{fx:?}");
+        let fx = app.arp_ends_pads_synth();
+        assert_eq!(fx[0], Effect::PadsFocus(PadFocus::Track), "{fx:?}");
         assert!(
-            matches!(&fx[1], Effect::Note(n) if n == "The arp plays Track 1's kit: Play on the pads is off"),
+            matches!(&fx[1], Effect::Note(n) if n == "The arp plays Track 1's instrument: the pads follow the track"),
             "{fx:?}"
         );
-        assert!(!app.pads_preview() && app.pads_play_kit());
-        // Held still: the try-out won't start, and says why.
-        let fx = app.toggle_pads_preview();
+        assert!(!app.pads_chose_synth() && app.pads_play_kit());
+        // Held still: the button won't choose the synth, and says why.
+        let fx = app.toggle_pads_synth();
         assert!(
             matches!(&fx[..], [Effect::Tell(t)] if t.contains("NOTE REPEAT")),
             "{fx:?}"
         );
-        assert!(!app.pads_preview());
+        assert!(!app.pads_chose_synth());
         app.button(REPEAT, false, 0.0);
         assert!(!app.generating());
-        app.toggle_pads_preview();
-        assert!(app.pads_preview(), "the arp let go: it starts");
+        app.toggle_pads_synth();
+        assert!(app.pads_chose_synth(), "the arp let go: it chooses");
+        // The selected track plays the synth (its layout on the pads): the
+        // arp plays it, and the pads keep it.
+        use mpfree_arp::scale::pads::{layout, PadLayout, PadSetup};
+        app.set_pad_layout(Some(layout(&PadSetup {
+            layout: PadLayout::Chromatic,
+            ..PadSetup::default()
+        })));
+        app.button(REPEAT, true, 0.0);
+        assert!(app.generating());
+        assert!(app.arp_ends_pads_synth().is_empty());
+        assert!(app.pads_chose_synth());
     }
 
     #[test]
