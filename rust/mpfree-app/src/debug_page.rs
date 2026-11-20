@@ -77,6 +77,8 @@ pub struct AudioNumbers {
     pub late_let_gos: u64,
     pub merged_values: u64,
     pub peak_grains: usize,
+    /// Grain Shape turns that waited for older grains to end.
+    pub window_waits: u64,
 }
 
 /// The period: 128 frames at 44.1 kHz, in µs.
@@ -365,6 +367,15 @@ impl DebugPages {
                 "Most grains at once".to_string(),
                 a.peak_grains.to_string(),
                 Tone::Normal,
+            ),
+            (
+                "Shape turns that waited for grains to end".to_string(),
+                a.window_waits.to_string(),
+                if a.window_waits == 0 {
+                    Tone::Normal
+                } else {
+                    Tone::Warn
+                },
             ),
         ];
         if let Some(s) = ui.get_mut::<StatList>("audio") {

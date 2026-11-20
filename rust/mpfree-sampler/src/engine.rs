@@ -2483,6 +2483,14 @@ impl Engine {
         self.pool.iter().filter(|(v, _)| v.active).count()
     }
 
+    /// Grain Shape turns that waited for a window table to free, every
+    /// grain voice's and the master effect's ([`mpfree_grain::Stats::window_waits`]).
+    /// The lane's share counts while it is here.
+    pub fn window_waits(&self) -> u64 {
+        let voices: u64 = self.pool.iter().map(|(_, g)| g.stats().window_waits).sum();
+        voices + self.master.as_ref().map_or(0, |fx| fx.stats().window_waits)
+    }
+
     /// The voices a let-go would release now: a Gate, Loop or Grains sound
     /// whose pad, key or take is held (not latched, not fading out). Every
     /// kit's; the lane's share counts only while it is here.
