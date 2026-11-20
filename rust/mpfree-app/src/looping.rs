@@ -1178,6 +1178,10 @@ pub struct LoopHost {
     /// Length: Pattern ([`PATTERN_BARS`]): an empty loop's first pass
     /// takes the length of the pattern playing.
     pub match_pattern: bool,
+    /// Starts, for every empty loop: the last one picked (On the bar at
+    /// first). A loop picked, or recorded, while empty takes it, so the
+    /// choice sticks from loop to loop.
+    starts: Starts,
     /// The pattern's length in bars ([`LoopHost::set_pattern_bars`]).
     pattern_bars: Option<u32>,
     /// The song was rolling (not stopped) in the last period.
@@ -1555,6 +1559,7 @@ impl LoopHost {
             free_tempo: false,
             tempos_refused: 0,
             match_pattern: false,
+            starts: Starts::Bar,
             pattern_bars: None,
             last_rolling: false,
             input: vec![0.0; 2 * PERIOD],
@@ -1879,6 +1884,19 @@ impl LoopHost {
         if let Command::SetBars(b) = c {
             self.match_pattern = b == Some(PATTERN_BARS);
         }
+        // Starts sticks: every empty loop records as it was last set.
+        if let Command::SetStarts(w) = c {
+            self.starts = w;
+        }
+        if c == Command::Record
+            && empty
+            && self
+                .looper
+                .loop_status(self.picked)
+                .is_some_and(|s| s.starts != self.starts)
+        {
+            self.looper.command(Command::SetStarts(self.starts));
+        }
         if self.match_pattern
             && c == Command::Record
             && empty
@@ -2179,6 +2197,14 @@ impl LoopHost {
             );
         }
         self.picked = n;
+        // An empty loop takes Starts as it was last set (it shows it).
+        if self
+            .looper
+            .loop_status(n)
+            .is_some_and(|s| s.phase == Phase::Empty && s.starts != self.starts)
+        {
+            self.looper.command(Command::SetStarts(self.starts));
+        }
         format!("looper: loop {} picked ({what})", n + 1)
     }
 
@@ -3657,6 +3683,46 @@ mod tests {
         run(&mut h, 2);
         assert!(!h.match_pattern);
         assert!(!h.view(120.0).match_pattern);
+    }
+
+    /// Starts sticks from loop to loop: set on one empty loop, the next
+    /// empty loop picked shows it and records with it; a loop that has
+    /// sound keeps its own.
+    #[test]
+    fn starts_sticks_for_every_empty_loop() {
+        let mut h = LoopHost::new(44_100, 8);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        let mut run = |h: &mut LoopHost, periods: u64| {
+            for _ in 0..periods {
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                h.period(&b, &mut l, &mut r);
+            }
+        };
+        run(&mut h, 1);
+        assert_eq!(h.looper.status().starts, Starts::Bar, "on the bar at first");
+        h.command(Command::SetStarts(Starts::Play));
+        run(&mut h, 1);
+        h.select(3);
+        run(&mut h, 1);
+        assert_eq!(h.looper.status().starts, Starts::Play, "loop 4 shows it");
+        h.select(5);
+        assert!(h.command(Command::Record).contains("starts when you play"));
+        run(&mut h, 1);
+        let s = h.looper.loop_status(5).unwrap();
+        assert!(s.phase == Phase::Armed && s.listening, "{s:?}");
+        // Back to On the bar: the next one takes that.
+        h.select(6);
+        h.command(Command::SetStarts(Starts::Bar));
+        h.select(7);
+        run(&mut h, 1);
+        assert_eq!(h.looper.status().starts, Starts::Bar);
+        assert_eq!(
+            h.looper.loop_status(5).unwrap().starts,
+            Starts::Play,
+            "armed: kept"
+        );
     }
 
     /// Records from the loops: Record on an empty loop resamples the
