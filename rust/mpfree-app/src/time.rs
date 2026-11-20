@@ -2204,6 +2204,71 @@ mod tests {
         assert_eq!(ways(&h), (3, 1), "two steps' notes");
     }
 
+    /// Refactor C3: a track selected apart from the arm (picked while
+    /// REC's arm is pinned elsewhere) has room in the view for its step
+    /// edits, so a tap, a velocity change and a lock detent on its playing
+    /// clip go in place as the armed track's do: nothing compiled, nothing
+    /// missed, and the view in place is what a compile gives. The armed
+    /// track's clip keeps its room for recording.
+    #[test]
+    fn step_edits_on_a_track_selected_apart_from_the_arm_go_in_place() {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_seq::steps::Change;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        for t in [0, 2] {
+            h.control.project.tracks[t].slots[0] = Some(Clip::new("Beat", 16 * STEP_TICKS));
+            h.act(TimeAction::Launch { track: t, slot: 0 }).unwrap();
+        }
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        h.act(TimeAction::Select(2)).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 4, &[]);
+        let ways = |h: &TimeHost| {
+            (
+                h.control.costs.steps_in_place,
+                h.control.costs.steps_compiled,
+            )
+        };
+        let compiles = h.control.costs.compiles;
+        let tune = RelAddr::new(OnTrack::Pad(1), 2);
+        let edits = [
+            StepAction::Tap {
+                pad: 1,
+                step: 4,
+                velocity: 100,
+            },
+            StepAction::Change {
+                pad: 1,
+                step: 4,
+                change: Change::Velocity(60),
+            },
+            StepAction::Lock {
+                pad: 1,
+                steps: 1 << 4,
+                addr: tune,
+                value: Some(300.0),
+            },
+        ];
+        for (i, a) in edits.into_iter().enumerate() {
+            h.step_action(a).unwrap();
+            run(&mut h, &mut pads, BAR / 4 + (i as u64 + 1) * BAR / 8, &[]);
+        }
+        assert_eq!(ways(&h), (3, 0), "each edit in place");
+        assert_eq!(h.control.costs.compiles, compiles, "nothing compiled");
+        assert_eq!(h.audio.counts().missed, 0);
+        assert_eq!(*h.audio.view, h.control.view().unwrap());
+        let clip = h.project().clip(2, 0).unwrap();
+        assert_eq!((clip.notes.len(), clip.locks.len()), (1, 1));
+        assert!(h.project().clip(0, 0).unwrap().notes.is_empty());
+        // Selecting another track compiles once, for its room; selecting
+        // the armed track again needs none.
+        h.act(TimeAction::Select(3)).unwrap();
+        assert_eq!(h.control.costs.compiles, compiles + 1);
+        h.act(TimeAction::Select(0)).unwrap();
+        assert_eq!(h.control.costs.compiles, compiles + 1);
+    }
+
     /// A change the view can't make in place (here, a note it erases that
     /// the project changed behind its back) asks for one compile, which brings it and
     /// the changes after it; the status line counts it.

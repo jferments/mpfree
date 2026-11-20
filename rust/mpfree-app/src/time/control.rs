@@ -1094,8 +1094,8 @@ impl TimeControl {
     /// of the clip's length, pressure or moves; song mode, where the
     /// song's placements play clips too; while recording or counting in,
     /// when the audio half edits the view itself; a view still waiting to
-    /// go; a track other than the armed one, whose clips the view has no
-    /// room in; an edit too big; or a queue that fills (the audio half
+    /// go; a track neither armed nor selected apart from the arm, whose
+    /// clips the view has no room in; an edit too big; or a queue that fills (the audio half
     /// makes none of the changes that went: an edit goes in whole or not
     /// at all, and the compiled view brings it).
     fn in_place(&mut self, track: usize, slot: usize, edit: &Edit) -> bool {
@@ -1106,7 +1106,7 @@ impl TimeControl {
         if !InPlace::fits(edit, notes, locks)
             || self.song
             || self.unsent.is_some()
-            || self.armed != Some(track)
+            || (self.armed != Some(track) && self.track_pick != Some(track))
             || matches!(self.info.state, State::Recording | State::CountIn)
         {
             return false;
@@ -1186,6 +1186,11 @@ impl TimeControl {
         }
         v.set_includes(self.includes);
         v.make_room(RECORD_ROOM, RECORD_ROOM);
+        // The track selected apart from the arm gets the same room, so
+        // its step edits go in place too (refactor C3).
+        if let Some(t) = self.track_pick {
+            v.make_room_on(t, RECORD_ROOM, RECORD_ROOM);
+        }
         Ok(v)
     }
 
@@ -2334,9 +2339,14 @@ impl TimeControl {
                     .ok_or_else(|| format!("no track {}", t + 1))?
                     .name
                     .clone();
+                let was = self.track_pick;
                 self.set_pick(t);
-                // The steps, the note editor's clip and the pads follow;
-                // the view to play is as it was.
+                // The steps, the note editor's clip and the pads follow.
+                // A new pick compiles, so the view has room for its step
+                // edits to go in place (refactor C3).
+                if self.track_pick != was && self.track_pick.is_some() {
+                    self.compile()?;
+                }
                 self.changed = true;
                 self.steps_changed = true;
                 Ok(match self.armed.and_then(|a| self.project.tracks.get(a)) {
