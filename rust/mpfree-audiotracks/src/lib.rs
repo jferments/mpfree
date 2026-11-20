@@ -1247,6 +1247,7 @@ impl AudioTracks {
                 pan: t.pan,
                 muted: t.mute,
                 solo: t.solo,
+                from: String::new(),
                 regions: t.regions().to_vec(),
             })
             .collect();
@@ -1396,6 +1397,7 @@ impl AudioTracks {
             t.n = 0;
             t.armed = false;
             t.input = Input::Left;
+            t.inside = None;
             t.monitor = Monitor::Auto;
             t.level = 1.0;
             t.pan = 0.0;

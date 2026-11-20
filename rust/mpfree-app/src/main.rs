@@ -6378,6 +6378,10 @@ fn time_action(
     // the time engine, which keeps the selection.
     if let TimeAction::Audio(aa) = a {
         if !matches!(aa, AudioAction::Pick(_)) {
+            // What the panel's Mix offers comes from the mixer (step 9).
+            if matches!(aa, AudioAction::Mix { .. } | AudioAction::Panel(_)) {
+                tracks.offer(mix.inside_sources());
+            }
             match tracks.action(aa, &time.info(), looper.line.is_open()) {
                 Ok(line) if !line.is_empty() => out.note(&line),
                 Ok(_) => {}
@@ -10992,6 +10996,9 @@ fn player_session(
             Some(mpfree_export::Only::AudioTrack(t)) => Some(usize::from(t)),
             _ => None,
         });
+        // Tracks recording from inside the mix (step 9) take the mixer's
+        // last block for them, before they run.
+        tracks.feed_inside(&mut mix);
         tracks.period(
             time.block(),
             time.tempo_map(),
@@ -11121,7 +11128,7 @@ fn player_session(
             loops_saving = loops_held.is_none();
         }
         if audio_saving {
-            audio_held = tracks.host.take_saved();
+            audio_held = tracks.take_saved();
             audio_saving = audio_held.is_none();
         }
         if collect_now && !loops_saving && !audio_saving {

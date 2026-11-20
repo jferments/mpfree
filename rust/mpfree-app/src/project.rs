@@ -3167,6 +3167,7 @@ mod tests {
                 pan: 0.25,
                 muted: false,
                 solo: false,
+                from: String::new(),
                 regions: vec![region(0, 960, 0), region(960, 1920, 2)],
             }],
             // Take 1 has take 0's samples (one file for both); take 2 the

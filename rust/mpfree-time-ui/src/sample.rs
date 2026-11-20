@@ -1074,6 +1074,7 @@ impl AudioSession {
             color: crate::view::audio_color(track),
             armed: self.tracks.armed(track),
             input,
+            mix: None,
             level,
             volume: 1.0,
             pan: 0.0,

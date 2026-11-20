@@ -17392,6 +17392,27 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("arrange-song-panel sample: {e}"),
     }
+    // The vocal's panel recording from inside the mix (the instrument
+    // redesign's step 9, proposed in layout spec 4c): Mix picked, From
+    // FM · Pads, after its effects.
+    match mpfree_time_ui::sample::song_audio_state() {
+        Ok(mut state) => {
+            state.region = None;
+            state.audio_panel = Some(0);
+            if let Some(l) = state.audio.iter_mut().find(|l| l.track == 0) {
+                l.armed = true;
+                l.mix = Some(mpfree_time_ui::song::MixFrom {
+                    name: "FM · Pads".into(),
+                    after_effects: true,
+                });
+            }
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-song-panel-mix", p));
+        }
+        Err(e) => eprintln!("arrange-song-panel-mix sample: {e}"),
+    }
     // The vocal's take lanes open under its lane (layout spec 4c): take 2
     // plays over bars 5-8, take 1 everywhere else.
     match mpfree_time_ui::sample::song_audio_state() {
@@ -24176,6 +24197,7 @@ mod tests {
             color: time_view::audio_color(1),
             armed: false,
             input: mpfree_audiotracks::Input::Left,
+            mix: None,
             level: 0.0,
             volume: 0.5,
             pan: -0.2,
@@ -26023,6 +26045,7 @@ mod tests {
                 pan: 0.0,
                 muted: false,
                 solo: true,
+                from: String::new(),
                 regions: vec![mpfree_audiotracks::Region {
                     start: 0,
                     end: 960,

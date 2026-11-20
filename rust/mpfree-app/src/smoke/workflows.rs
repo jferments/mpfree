@@ -2106,6 +2106,139 @@ mod tests {
         });
     }
 
+    /// Recording points (the instrument redesign's step 9): an audio track
+    /// records FM, the synth the pads play, from inside the mix, by the
+    /// track panel's Mix and From, never playing it through as it records.
+    /// The take is stereo and has FM in it (the session's line input is
+    /// silent), from where the pad's note started, and the project keeps
+    /// the choice.
+    #[test]
+    fn an_audio_track_records_the_synth_the_pads_play_from_inside_the_mix() {
+        use crate::gui::FromUi;
+        use crate::instruments::free;
+        use mpfree_time_ui::view::AudioAction;
+        use mpfree_time_ui::TimeAction;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("header", "tab", "Synth").settle();
+            s.press("synth-inst", "card", "").settle();
+            s.press("synth-pick", "synth", "FM").run_periods(4).settle();
+            s.press("synth-pick", "keep", "").run_periods(2).settle();
+            assert_eq!(s.mix.instruments.pads_play_at(), Some(free(0)));
+            s.press("header", "tab", "Arrange").settle();
+            s.press("clips", "song", "Song").settle();
+            s.press("song", "button", "Play song").settle();
+            assert!(s.time.song_on());
+            let audio = |s: &mut Session, a| {
+                s.route(FromUi::Time(TimeAction::Audio(a)));
+                s.run_periods(2).settle();
+            };
+            audio(&mut s, AudioAction::Add);
+            audio(&mut s, AudioAction::Panel(0));
+            s.press("song", "panel-mix", "Mix").run_periods(2).settle();
+            assert!(s.tracks.inside(0).is_some(), "Mix picks a source");
+            // From steps round what the mix offers, to FM.
+            for _ in 0..40 {
+                if s.tracks.inside(0).is_some_and(|(_, n)| n.starts_with("FM")) {
+                    break;
+                }
+                s.press("song", "panel-from-more", "From +").settle();
+            }
+            let (from, name) = s.tracks.inside(0).expect("records from the mix");
+            let name = name.to_string();
+            assert!(name.starts_with("FM"), "{name}");
+            let fm = mpfree_fx::StripId::Track(crate::mixing::free_channel(0));
+            assert_eq!(from.strip, fm);
+            assert!(from.after_effects, "after its effects by default");
+            let shown = s.screen.time.audio[0].mix.as_ref().map(|m| m.name.clone());
+            assert_eq!(shown, Some(name));
+            s.press("song", "panel-arm", "Arm").run_periods(2).settle();
+            assert!(s.tracks.host.tracks.armed(0));
+            s.run_periods(4);
+            assert!(s.tracks.host.tracks.records_inside(0), "the engine has it");
+            // The transport records alone: REC would also point a track at
+            // FM (New track), and the session plays no track's live notes
+            // through an instrument (it models kits' hits only).
+            s.time.command(mpfree_transport::Command::Record);
+            s.run_periods(8).settle();
+            assert_eq!(s.time.info().state, mpfree_transport::State::Recording);
+            // A pad held for a second plays FM; the track records it and
+            // plays nothing of it.
+            let rate = f64::from(crate::RATE);
+            s.pad_edge(0, 110, true);
+            s.settle();
+            let hit_tick = s.time.info().position as f64;
+            let mut heard = 0.0f32;
+            for _ in 0..(rate as usize / crate::PERIOD) {
+                s.run_periods(1);
+                let out = s.tracks.host.tracks.track_out(0, crate::PERIOD);
+                heard = out.iter().fold(heard, |m, x| m.max(x.abs()));
+            }
+            s.pad_edge(0, 0, false);
+            s.settle();
+            s.run_for(1.0);
+            s.time.command(mpfree_transport::Command::Stop);
+            s.run_periods(20).settle();
+            assert_eq!(heard, 0.0, "never played through while it records");
+            let take = s
+                .tracks
+                .host
+                .tracks
+                .takes()
+                .find(|k| k.track == 0)
+                .expect("a take on audio 1");
+            assert_eq!(take.channels, 2, "stereo from inside");
+            let mut buf = vec![0.0f32; take.frames * 2];
+            let got = s
+                .tracks
+                .host
+                .tracks
+                .read_take(take.id, 0, &mut buf)
+                .unwrap();
+            let buf = &buf[..got * 2];
+            let peak = buf.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+            assert!(peak > 0.01, "FM is in the take: {peak}");
+            // FM starts where the pad's note did: within a tick or so of
+            // the hit's place in the take (the latency made up for: a
+            // period off would be 128 frames).
+            let onset = buf.chunks(2).position(|f| f[0].abs() > 1e-4).unwrap();
+            let ticks_a_frame =
+                s.time.info().bpm * f64::from(mpfree_transport::time::PPQ) / 60.0 / rate;
+            let want = (hit_tick - take.anchor) / ticks_a_frame;
+            let off = onset as f64 - want;
+            assert!(
+                (-32.0..=32.0).contains(&off),
+                "onset {onset}, the hit at {want:.0}: {off:.0} frames off"
+            );
+            // The project keeps where it records from.
+            assert!(s.tracks.host.save());
+            let mut saved = None;
+            for _ in 0..2000 {
+                s.run_periods(1);
+                saved = s.tracks.take_saved();
+                if saved.is_some() {
+                    break;
+                }
+            }
+            let saved = saved.expect("the audio tracks saved");
+            let t0 = saved.tracks.iter().find(|t| t.index == 0).unwrap();
+            let want = format!("t{}:after", crate::mixing::free_channel(0));
+            assert_eq!(t0.from, want);
+            // An input chip takes it back to the line input.
+            let left = mpfree_audiotracks::Input::Left;
+            audio(
+                &mut s,
+                AudioAction::Input {
+                    track: 0,
+                    input: left,
+                },
+            );
+            assert!(s.tracks.inside(0).is_none());
+            s.run_periods(4);
+            assert!(!s.tracks.host.tracks.records_inside(0));
+        });
+    }
+
     /// Pad focus (the instrument redesign's step 3, the design's proof): a
     /// drum clip plays on Track 1 while the pads play Poly, chosen on the
     /// Synth tab. Selecting other tracks and tapping a row of REC's list

@@ -297,6 +297,10 @@ pub const SAMPLER_CAPTURE: usize = CAPTURES - 1;
 /// below Freeze and Print's: the master's input, then the strips taken out
 /// of it ([`MixHost::pads_wet`]).
 pub const LOOP_CAPTURE: usize = SAMPLER_CAPTURE - 5;
+/// The audio tracks' capture points, [`AUDIO_CAPTURE`] + track, below the
+/// looper's: each audio track recording from inside the mix (the
+/// instrument redesign's step 9, [`MixHost::audio_take`]).
+pub const AUDIO_CAPTURE: usize = LOOP_CAPTURE - mpfree_audiotracks::MAX_TRACKS;
 /// The strips the looper's pads leave out: the loops, the audio tracks and
 /// the line input, in the order of their capture points after
 /// [`LOOP_CAPTURE`].
@@ -636,6 +640,9 @@ pub struct MixHost {
     /// master's input for the pads and the master, a strip after its
     /// fader for a mix.
     loop_point: (StripId, mpfree_fx::CapturePoint),
+    /// Where each audio track's capture point listens now
+    /// ([`MixHost::audio_take`]), None while it is free.
+    audio_points: [Option<(StripId, mpfree_fx::CapturePoint)>; mpfree_audiotracks::MAX_TRACKS],
     /// Frames each return still rings with the Loop track's sound, and the
     /// submix it went to with how long that rings ([`MixHost::loop_echo`]).
     loop_echoes: [u64; mpfree_fx::RETURNS],
@@ -894,6 +901,7 @@ impl MixHost {
             pad_solos: 0,
             mutes_sent: 0,
             loop_point: master_in,
+            audio_points: [None; mpfree_audiotracks::MAX_TRACKS],
             loop_echoes: [0; mpfree_fx::RETURNS],
             loop_bus_echo: None,
             xy_effect: None,
@@ -2274,6 +2282,89 @@ impl MixHost {
             Some(StripId::Master) => self.mix_less(1, left, right),
             Some(_) => self.mix_less(0, left, right),
         }
+    }
+
+    /// What audio track `t` records from inside the mix (the instrument
+    /// redesign's step 9): `from`'s strip as the last period left it,
+    /// before or after its effects (before its fader either way, so its
+    /// level never changes the take), into `into` interleaved stereo, and
+    /// the capture's latency (frames between the block's track inputs and
+    /// the point). `from` None frees the track's capture point. The period
+    /// the point moves is silence, as the looper's. Silence and None while
+    /// the strip isn't in the mix (a strip is found again each period, so
+    /// one that moves in the mixer stays the one taken). Real-time safe: a
+    /// copy.
+    pub fn audio_take(
+        &mut self,
+        t: usize,
+        from: Option<crate::audiotracks::Inside>,
+        into: &mut [f32],
+    ) -> Option<u32> {
+        use mpfree_fx::CapturePoint;
+        let slot = AUDIO_CAPTURE + t;
+        let was = *self.audio_points.get(t)?;
+        let point = from.map(|f| {
+            let p = if f.after_effects {
+                CapturePoint::BeforeFader
+            } else {
+                CapturePoint::BeforeInserts
+            };
+            (f.strip, p)
+        });
+        let Some(point) = point else {
+            if was.is_some() {
+                self.mixer.set_capture(slot, None);
+                self.audio_points[t] = None;
+            }
+            return None;
+        };
+        if !self.mixer.set_capture(slot, Some(point)) {
+            self.mixer.set_capture(slot, None);
+            self.audio_points[t] = None;
+            into.fill(0.0);
+            return None;
+        }
+        self.audio_points[t] = Some(point);
+        let latency = self.mixer.capture_latency(slot);
+        match self.mixer.capture(slot) {
+            Some((l, r)) if was == Some(point) => {
+                let n = l.len().min(into.len() / 2);
+                for f in 0..n {
+                    into[2 * f] = l[f];
+                    into[2 * f + 1] = r[f];
+                }
+                into[2 * n..].fill(0.0);
+            }
+            _ => into.fill(0.0),
+        }
+        latency
+    }
+
+    /// What an audio track can record from inside the mix (step 9), by
+    /// name, as the mixer panel names the strips: each instrument's
+    /// channel (a track's own or a free place's instrument by its name,
+    /// Drums, Synth, a kit's channel on a track), the Loop track, each
+    /// submix, then the master. Never the audio tracks' own strip (they
+    /// would record themselves), the line input (the panel's L, R, L+R
+    /// and ST) or a pad's channel. Allocates: for the panel's taps.
+    pub fn inside_sources(&self) -> Vec<(String, StripId)> {
+        let kit_channels: Vec<usize> = (0..mpfree_seq::MAX_TRACKS)
+            .filter(|&t| self.kit_tracks >> t & 1 == 1)
+            .map(|t| self.track_channel(t))
+            .collect();
+        self.mixer
+            .strips()
+            .filter(|&s| match s {
+                StripId::Track(c) => {
+                    matches!(c, DRUMS | SYNTH | LOOP)
+                        || self.instruments.on_strip(c).is_some()
+                        || kit_channels.contains(&c)
+                }
+                StripId::Bus(_) | StripId::Master => true,
+                _ => false,
+            })
+            .map(|s| (self.strip_name(s), s))
+            .collect()
     }
 
     /// Points the sampler's capture point at `src`, or frees it for the
@@ -3872,6 +3963,110 @@ mod tests {
         let none = RecSource::Mix(StripId::Pad(PAD_STRIPS), CapturePoint::AfterFader);
         assert!(!h.set_rec_source(none));
         assert!(h.rec_capture().is_none());
+    }
+
+    /// Step 9: an audio track takes a strip's sound from its own capture
+    /// point, before its fader either way (its level never changes the
+    /// take), silent the period the point moves; a strip not in the mix
+    /// gives silence and None; None frees the point. The sampler's point
+    /// is left alone.
+    #[test]
+    fn an_audio_track_takes_a_strip_before_its_fader() {
+        use crate::audiotracks::Inside;
+        let mut h = MixHost::new(RATE, -6.0, -6.0);
+        h.set(StripId::Pad(0), mx::VOLUME, -6.0);
+        let z = [0f32; PERIOD];
+        let mut at = 0;
+        let mut once = |h: &mut MixHost| {
+            let d = tone(110.0, 0.5, at);
+            {
+                let mut pads = h.pads();
+                let (pl, pr) = pads.pad(0, 0).unwrap();
+                pl[..PERIOD].copy_from_slice(&d);
+                pr[..PERIOD].copy_from_slice(&d);
+            }
+            let ctx = Ctx::new(RATE, at as u64);
+            let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
+            h.period(&ctx, (&z, &z), (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
+            at += PERIOD;
+        };
+        let peak = |x: &[f32]| x.iter().fold(0f32, |m, v| m.max(v.abs()));
+        for _ in 0..50 {
+            once(&mut h);
+        }
+        let mut buf = [1.0f32; 2 * PERIOD];
+        let after = Inside {
+            strip: StripId::Pad(0),
+            after_effects: true,
+        };
+        assert!(h.audio_take(2, Some(after), &mut buf).is_some());
+        assert_eq!(peak(&buf), 0.0, "silent the period it moves");
+        once(&mut h);
+        let lat = h.audio_take(2, Some(after), &mut buf).unwrap();
+        assert!(lat < RATE / 20, "{lat}");
+        let (left, right) = (
+            peak(&buf[0..].iter().step_by(2).copied().collect::<Vec<_>>()),
+            peak(&buf[1..].iter().step_by(2).copied().collect::<Vec<_>>()),
+        );
+        assert!((0.45..0.51).contains(&left), "before the fader: {left}");
+        assert!((0.45..0.51).contains(&right), "{right}");
+        // Before its effects: still the pad's sound (no effects on it).
+        let before = Inside {
+            after_effects: false,
+            ..after
+        };
+        h.audio_take(2, Some(before), &mut buf).unwrap();
+        assert_eq!(peak(&buf), 0.0, "moved again");
+        once(&mut h);
+        h.audio_take(2, Some(before), &mut buf).unwrap();
+        assert!((0.45..0.51).contains(&peak(&buf)), "before: {}", peak(&buf));
+        // A strip the mixer doesn't have.
+        let gone = Inside {
+            strip: StripId::Pad(PAD_STRIPS),
+            after_effects: true,
+        };
+        assert_eq!(h.audio_take(2, Some(gone), &mut buf), None);
+        assert_eq!(peak(&buf), 0.0);
+        assert!(h.mixer.capture(AUDIO_CAPTURE + 2).is_none());
+        // Freed; the sampler's point never moved.
+        h.audio_take(2, Some(after), &mut buf).unwrap();
+        assert!(h.mixer.capture(AUDIO_CAPTURE + 2).is_some());
+        assert_eq!(h.audio_take(2, None, &mut buf), None);
+        assert!(h.mixer.capture(AUDIO_CAPTURE + 2).is_none());
+        assert!(h.rec_capture().is_none());
+        assert_eq!(
+            h.audio_take(mpfree_audiotracks::MAX_TRACKS, Some(after), &mut buf),
+            None
+        );
+    }
+
+    /// What an audio track can record from inside the mix: the
+    /// instruments' channels, the submixes and the master, never the audio
+    /// tracks themselves, the line input or a pad's channel.
+    #[test]
+    fn the_mix_offers_instruments_submixes_and_the_master() {
+        let h = MixHost::new(RATE, -6.0, -6.0);
+        let v = h.inside_sources();
+        let strips: Vec<StripId> = v.iter().map(|x| x.1).collect();
+        for s in [
+            StripId::Track(DRUMS),
+            StripId::Track(SYNTH),
+            StripId::Track(LOOP),
+        ] {
+            assert!(strips.contains(&s), "{s:?}");
+        }
+        assert!(strips.contains(&StripId::Bus(0)));
+        assert_eq!(strips.last(), Some(&StripId::Master));
+        assert!(!strips.contains(&StripId::Track(AUDIO)));
+        assert!(!strips.contains(&LINE));
+        assert!(!strips
+            .iter()
+            .any(|s| matches!(s, StripId::Pad(_) | StripId::Return(_))));
+        let names: Vec<&str> = v.iter().map(|x| x.0.as_str()).collect();
+        assert!(
+            names.contains(&"Drums") && names.contains(&"Master"),
+            "{names:?}"
+        );
     }
 
     #[test]

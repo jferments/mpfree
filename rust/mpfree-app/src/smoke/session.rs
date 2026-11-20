@@ -1627,6 +1627,7 @@ impl Session {
             Some(mpfree_export::Only::AudioTrack(t)) => Some(usize::from(t)),
             _ => None,
         });
+        self.tracks.feed_inside(&mut self.mix);
         self.tracks.period(
             self.time.block(),
             self.time.tempo_map(),
@@ -1761,7 +1762,7 @@ impl Session {
             self.loops_saving = self.loops_held.is_none();
         }
         if self.audio_saving {
-            self.audio_held = self.tracks.host.take_saved();
+            self.audio_held = self.tracks.take_saved();
             self.audio_saving = self.audio_held.is_none();
         }
         if self.collect_now && !self.loops_saving && !self.audio_saving {
