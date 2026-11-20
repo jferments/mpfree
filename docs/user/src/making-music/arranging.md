@@ -15,7 +15,7 @@ A row of the clip grid is a scene. Tap a row's number on the left and every clip
 {{shot: clips | The Arrange tab's clip grid in a jam: clips playing (a ring turning), two waiting for the next bar ("from 4.1"), Chop B recording, loop cells from the looper, and empty slots, with the morph bar under it.}}
 
 - The square button above the row numbers stops every track on the next bar line.
-- A scene can also switch which tracks are muted on its bar line, send your outside synths and drum machines a program change there, have a name, and move on by itself after some bars (to the next row, back to the first, or to a random one). Set these up on the Record panel's **Scene** tab (below). **Song → scenes** (below) also sets rows up to play one after another, and the [song list](#the-song-list) plays them in any order.
+- A scene can also switch which tracks are muted on its bar line (a track with no clip in the row too: in song mode it plays the song until the line, and its pad and name show the mute waiting, as TRACK MUTE's do), send your outside synths and drum machines a program change there, have a name, and move on by itself after some bars (to the next row, back to the first, or to a random one). Set these up on the Record panel's **Scene** tab (below). **Song → scenes** (below) also sets rows up to play one after another, and the [song list](#the-song-list) plays them in any order.
 
 ### Setting up a scene
 

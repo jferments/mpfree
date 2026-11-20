@@ -4228,6 +4228,76 @@ mod tests {
         assert_eq!(h.dropped(), 0);
     }
 
+    /// A scene that mutes a track it gives no cue (an empty cell, nothing
+    /// launched): in song mode that track plays the song, so its mute
+    /// waits in the mute queue and lands on the scene's bar line with the
+    /// scene's cue, not at the tap. Every 16th of the song plays up to the
+    /// line and none after it, at every period size, and with the track
+    /// soloed.
+    #[test]
+    fn a_scenes_mute_on_a_track_playing_the_song_lands_on_its_line() {
+        use mpfree_seq::arrange::Placement;
+        use mpfree_seq::Note;
+        let sixteenths = |pad: u8| {
+            let mut c = Clip::new("16ths", 3840);
+            c.notes = (0..16).map(|k| Note::new(k * 240, 60, pad, 100)).collect();
+            c
+        };
+        let one_bar = |pad: u8| {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = vec![Note::new(0, 100, pad, 100)];
+            c
+        };
+        let cases = [1u32, 7, 64, 128, 1000, 4096].map(|p| (p, false));
+        for (period, solo) in cases.into_iter().chain([(128, true)]) {
+            let mut h = TimeHost::new(RATE, 120.0).unwrap();
+            let mut pads = Fake::default();
+            let by = |h: &mut TimeHost, pads: &mut Fake, to: u64| {
+                while pads.frame < to {
+                    h.period(period, pads);
+                    pads.frame += u64::from(period);
+                }
+            };
+            let p = &mut h.control.project;
+            p.tracks[0].slots[1] = Some(one_bar(9));
+            p.tracks[1].slots[2] = Some(sixteenths(30));
+            p.arrangement
+                .placements
+                .push(Placement::linked(1, 2, 0, 8 * 3840));
+            p.scene_mut(1).unwrap().mutes = Some(0b10);
+            if solo {
+                p.tracks[0].solo = true;
+                p.tracks[1].solo = true;
+            }
+            h.act(TimeAction::SongMode(true)).unwrap();
+            h.command(Command::Play);
+            by(&mut h, &mut pads, BAR / 2 + 1000);
+            assert_eq!(h.act(TimeAction::LaunchScene(1)).unwrap(), "scene 2");
+            let st = h.state();
+            assert!(!st.tracks[1].mute, "period {period}: not at the tap");
+            let q = h.mute_wait().expect("it waits in the mute queue");
+            assert_eq!(q.want, vec![(1, true, solo)], "period {period}");
+            by(&mut h, &mut pads, 2 * BAR - 1000);
+            let song: Vec<u64> = pads
+                .hits
+                .iter()
+                .filter(|h| h.1 == 30)
+                .map(|h| h.0)
+                .collect();
+            assert_eq!(song.len(), 16, "period {period}, solo {solo}: {song:?}");
+            for (k, at) in song.iter().enumerate() {
+                let want = (k as u64 * BAR) / 16;
+                assert!(at.abs_diff(want) <= 1, "period {period}: {song:?}");
+            }
+            let row: Vec<u64> = pads.hits.iter().filter(|h| h.1 == 9).map(|h| h.0).collect();
+            assert_eq!(row.len(), 1, "period {period}: {:?}", pads.hits);
+            assert!(row[0].abs_diff(BAR) <= 1, "the cue's line: {row:?}");
+            assert!(h.state().tracks[1].mute, "period {period}: muted now");
+            assert!(h.mute_wait().is_none(), "period {period}: landed");
+            assert_eq!(h.dropped(), 0);
+        }
+    }
+
     /// Loop tracks: a loop cell launched at once while stopped; while
     /// playing, the loops switch on the cue's bar line, which the plan
     /// gives for that one period. TRACK MUTE, a scene and Stop all switch
