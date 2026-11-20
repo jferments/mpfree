@@ -2744,6 +2744,38 @@ pub fn control_of(st: &PlayState, layer: usize, slice: usize, row: Row) -> Contr
     Control::new(look).faint_because(why.is_some(), why.as_deref().unwrap_or(""))
 }
 
+/// How a pad setting the Pads tab's panel shares with this page looks
+/// there, for pad `p` ([`crate::pads_tab`]): Level, Pan, Tune and
+/// Polyphony as knobs, Mute group as a stepper. The knobs light as the
+/// Q-Link cards do; None for the rows the Pads tab doesn't show.
+pub fn pad_control(p: &Pad, row: Row) -> Option<Control> {
+    let level = (p.level_db - LEVEL_RANGE_DB.0) / (LEVEL_RANGE_DB.1 - LEVEL_RANGE_DB.0);
+    let tune = (p.tune_cents + TUNE_LIMIT_CENTS) as f32 / (2 * TUNE_LIMIT_CENTS) as f32;
+    let voices = POLYPHONY
+        .iter()
+        .position(|v| *v >= p.polyphony)
+        .unwrap_or(POLYPHONY.len() - 1) as f32
+        / (POLYPHONY.len() - 1) as f32;
+    let knob = |pos: f32, steps: u32, bipolar: bool| Look::Knob {
+        pos: pos.clamp(0.0, 1.0),
+        steps,
+        bipolar,
+    };
+    let look = match row {
+        Row::Level => knob(
+            level,
+            ((LEVEL_RANGE_DB.1 - LEVEL_RANGE_DB.0) / LEVEL_STEP_DB) as u32,
+            false,
+        ),
+        Row::Pan => knob((p.pan + 1.0) / 2.0, 40, true),
+        Row::Tune => knob(tune, (2 * TUNE_LIMIT_CENTS / 100) as u32, true),
+        Row::Polyphony => knob(voices, POLYPHONY.len() as u32 - 1, false),
+        Row::MuteGroup => Look::Stepper,
+        _ => return None,
+    };
+    Some(Control::new(look))
+}
+
 /// Row `row`'s value as a list, a panel or a Q-Link card shows it, with
 /// layer `layer` and slice `slice` picked: the slice's for the Slices
 /// rows, the layer's for a layer's.

@@ -444,7 +444,7 @@ mod tests {
             s.press("header", "tab", "Pads").run_for(0.3);
             assert_eq!(s.view(), View::Pads);
             // A pad with no effects: + FX, and the picker up in Mix.
-            s.press("smp-pads-list", "row-button", "+ FX").run_for(0.2);
+            s.press("smp-pads-list", "button", "+ FX").run_for(0.2);
             assert_eq!(s.view(), View::Chain);
             let t = engine(&mut s);
             assert!(t.picking, "the picker up on the pad's empty chain");
@@ -457,8 +457,7 @@ mod tests {
             s.press("chain", "back", "").run_for(0.3);
             assert_eq!(s.view(), View::Pads);
             assert!(
-                s.control("smp-pads-list", "row-button", "Compressor")
-                    .is_some(),
+                s.control("smp-pads-list", "button", "Compressor").is_some(),
                 "the row names the pad's effect"
             );
             // Again, with the wheel to the row and a push: the chain on its
@@ -489,7 +488,7 @@ mod tests {
             s.run_for(0.2);
             assert_eq!(s.screen.sample.pad(), 20, "B5");
             assert_eq!(s.mix.pad_channels.channel(0, 20), None, "none yet");
-            s.press("smp-pads-list", "row-button", "+ FX").run_for(0.2);
+            s.press("smp-pads-list", "button", "+ FX").run_for(0.2);
             assert_eq!(s.view(), View::Chain);
             let lent = s.mix.pad_channels.channel(0, 20);
             assert_eq!(lent, Some(StripId::Pad(crate::mixing::PADS)));
@@ -501,18 +500,17 @@ mod tests {
             assert_eq!(s.view(), View::Pads);
             assert_eq!(s.mix.pad_channels.channel(0, 20), lent, "kept");
             assert!(
-                s.control("smp-pads-list", "row-button", "Compressor")
-                    .is_some(),
+                s.control("smp-pads-list", "button", "Compressor").is_some(),
                 "the row names the pad's effect"
             );
             // Taken off: plain again, and ‹ gives the channel back.
-            s.press("smp-pads-list", "row-button", "Compressor")
+            s.press("smp-pads-list", "button", "Compressor")
                 .run_for(0.2);
             assert_eq!(s.view(), View::Chain);
             s.press("chain", "remove", "Remove").run_for(0.3);
             s.press("chain", "back", "").run_for(0.3);
             assert_eq!(s.mix.pad_channels.channel(0, 20), None, "given back");
-            assert!(s.control("smp-pads-list", "row-button", "+ FX").is_some());
+            assert!(s.control("smp-pads-list", "button", "+ FX").is_some());
         });
     }
 
