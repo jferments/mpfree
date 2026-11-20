@@ -598,6 +598,31 @@ class JudgeTests(unittest.TestCase):
         self.assertEqual([ok for ok, _, _ in got], [False, False, False])
         self.assertIn("no line like", got[0][2])
 
+    def test_mpc_plugin_names_the_plugin_process(self):
+        """Round 2's start (20 Nov): the static app served as the plugin process and Mono Voice crashed while
+        loading. The first line says so; with mpfree-plughost beside the app it passes."""
+        static = lines(
+            "plugins: the plugin process is this program (/etc/mpfree-test/mpfree plughost): no mpfree-plughost "
+            "beside it; this build is static and can't run most plugins itself, so put mpfree-plughost (linked "
+            "dynamically) beside it",
+            "plugins: SYN-Mono-Voice-1.0.2/portable/timncox - VST - [SYN] Mono Voice left out: plugin process: "
+            "/run/mpfree-data/files/plugins/x: crashed while loading (signal 11)",
+            "plugins: 0 effect(s) and 0 instrument(s) in files/plugins/; each runs in its own process")
+        got = checks.judge(checks.BY_NAME["mpc-plugin"], checks.Window(static, static))
+        self.assertEqual([ok for ok, _, _ in got][:2], [False, False])
+        self.assertIn("this build is static", got[0][2])
+        beside = lines("plugins: the plugin process is /etc/mpfree-test/mpfree-plughost",
+                       "plugins: 0 effect(s) and 1 instrument(s) in files/plugins/; each runs in its own process",
+                       "track 1: plays [SYN] Mono Voice",
+                       "plugins: [SYN] Mono Voice started in its own process")
+        got = checks.judge(checks.BY_NAME["mpc-plugin"], checks.Window(beside, beside))
+        self.assertEqual([ok for ok, _, _ in got][:4], [True, True, True, True])
+        # A stick from before: no such line at all.
+        old = static[1:]
+        got = checks.judge(checks.BY_NAME["mpc-plugin"], checks.Window(old, old))
+        self.assertFalse(got[0][0])
+        self.assertIn("no line like", got[0][2])
+
     def test_mpc_plugin_install_reads_the_plugins_place_and_the_skin(self):
         """Lines as the app writes them (plugin_page.rs, main.rs, gui.rs); a direct cable with no route out."""
         window = lines(
