@@ -260,6 +260,16 @@ pub struct Out {
 /// sampler, the arp, MIDI out ... Events arrive in frame order.
 pub trait Sink {
     fn send(&mut self, out: Out);
+
+    /// Whether the player may start holding a new parameter (a step's
+    /// lock or a move's first value), whose unlock the sink must then
+    /// take: asked just before that lock is sent. A sink with a fixed
+    /// table answers by its [`crate::room::Room`], so no unlock is ever
+    /// lost; refused, the player leaves the lock out and counts it in
+    /// [`Stats::busy`]. Every other sink takes them all.
+    fn hold(&mut self) -> bool {
+        true
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -289,6 +299,9 @@ pub struct Stats {
     pub lanes: u64,
     /// Pressure values sent (`Event::Pressure`).
     pub pressure: u64,
+    /// Locks and moves left out because the sink had no room to hold
+    /// another parameter this period ([`Sink::hold`]): a moment too busy.
+    pub busy: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1896,6 +1909,10 @@ impl Player {
                         self.stats.dropped += 1;
                         return;
                     }
+                    None if !out.hold() => {
+                        self.stats.busy += 1;
+                        return;
+                    }
                     None => {
                         self.held[self.n_held] = Held {
                             track: l.track,
@@ -1932,6 +1949,10 @@ impl Player {
                     }
                     None if self.n_held == MAX_LOCKED => {
                         self.stats.dropped += 1;
+                        return;
+                    }
+                    None if !out.hold() => {
+                        self.stats.busy += 1;
                         return;
                     }
                     None => {

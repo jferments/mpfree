@@ -76,6 +76,9 @@ pub struct AudioNumbers {
     /// and pressure or knob values it merged to make room.
     pub late_let_gos: u64,
     pub merged_values: u64,
+    /// Note endings, unlocks and panics the time engine and the arps found
+    /// no room for (refactor A2): a bug, which must stay 0.
+    pub ends_lost: u64,
     pub peak_grains: usize,
     /// Grain Shape turns that waited for older grains to end.
     pub window_waits: u64,
@@ -361,6 +364,15 @@ impl DebugPages {
                     Tone::Good
                 } else {
                     Tone::Warn
+                },
+            ),
+            (
+                "Note endings lost".to_string(),
+                a.ends_lost.to_string(),
+                if a.ends_lost == 0 {
+                    Tone::Good
+                } else {
+                    Tone::Bad
                 },
             ),
             (
