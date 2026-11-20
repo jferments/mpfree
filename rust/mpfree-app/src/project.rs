@@ -19,6 +19,7 @@
 //! | `looper` | the Looper | [`loops_part`], a WAV a layer in `samples/` | [`loops_open`] on a thread, then `LoopHost::open` |
 //! | `arp` | the arps | `App::arp_part` | `App::open_arp` |
 //! | `perform` | the Perform set (`perform_pads.rs`) | `PerformSet::text` | `PerformSet::parse`, then `App::set_perform_set` |
+//! | `pads` | what the pads play (`app/pads_focus.rs`): the selected track's instrument, or one chosen for them | `App::pads_part` | `App::open_pads`; none (New, or saved before it) follows the track |
 //! | `audiotracks` | the audio tracks | [`audio_part`]: each track's settings and regions, a WAV a take in `samples/` | [`audio_open`] on a thread, then [`crate::audiotracks::TrackHost::open`] |
 //!
 //! The project's tempo is `project.txt`'s `tempo`, and its format
@@ -75,6 +76,9 @@ pub const TRACK_KITS: &str = "track-kits";
 /// The project's instruments, each with its lasting id
 /// ([`InstrumentList::text`]).
 pub const INSTRUMENT_LIST: &str = "instrument-list";
+/// What the pads play: the selected track's instrument, or one chosen for
+/// them (`App::pads_part`, the instrument redesign's step 3).
+pub const PADS: &str = "pads";
 /// The Song view's audio tracks and their takes ([`audio_part`]).
 pub const AUDIOTRACKS: &str = "audiotracks";
 
@@ -140,6 +144,9 @@ pub struct Collected {
     pub track_kits: String,
     /// The project's instruments ([`InstrumentList::text`]).
     pub instrument_list: String,
+    /// What the pads play ([`crate::app::App::pads_part`]); not saved
+    /// when empty.
+    pub pads: String,
     /// The Looper's loops with their layers' audio (read as they play:
     /// [`crate::looping::LoopHost::save`]); None when the looper couldn't
     /// save. Freed on the screen thread.
@@ -190,6 +197,9 @@ pub struct Opening {
     /// The project's instruments: the audio loop takes it in place of its
     /// own, which comes back in the box to be freed on the screen thread.
     pub instrument_list: InstrumentList,
+    /// What the pads play (the pads part); None (New, or a project saved
+    /// before it had one): they follow the selected track.
+    pub pads: Option<String>,
     /// Lines for the log: parts that didn't read.
     pub notes: Vec<String>,
     /// What it is, for the log ("Night drive", "a new project").
@@ -266,6 +276,9 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     }
     if !c.instrument_list.is_empty() {
         parts.push((INSTRUMENT_LIST.to_string(), c.instrument_list.clone()));
+    }
+    if !c.pads.is_empty() {
+        parts.push((PADS.to_string(), c.pads.clone()));
     }
     parts.extend(extra);
     Snapshot {
@@ -507,6 +520,7 @@ pub fn opening(
         instruments,
         track_kits,
         instrument_list,
+        pads: snap.part(PADS).map(str::to_string),
         notes,
         what: what.to_string(),
         clear_loops: snap.part(LOOPER).is_some(),
@@ -2319,6 +2333,7 @@ mod tests {
             instruments: format!("{INSTRUMENTS_FORMAT}\n"),
             track_kits,
             instrument_list: InstrumentList::new().text(),
+            pads: String::new(),
             loops: None,
             audio: None,
         };
@@ -2370,6 +2385,7 @@ mod tests {
             instruments: format!("{INSTRUMENTS_FORMAT}\n"),
             track_kits,
             instrument_list,
+            pads: String::new(),
             loops: None,
             audio: None,
         }
@@ -2686,6 +2702,7 @@ mod tests {
                 instruments: format!("{INSTRUMENTS_FORMAT}\n"),
                 track_kits: String::new(),
                 instrument_list: InstrumentList::new().text(),
+                pads: String::new(),
                 loops: None,
                 audio: None,
             };
@@ -2722,6 +2739,7 @@ mod tests {
             instruments: format!("{INSTRUMENTS_FORMAT}\n"),
             track_kits: String::new(),
             instrument_list: InstrumentList::new().text(),
+            pads: String::new(),
             loops: None,
             audio: None,
         };
@@ -2733,6 +2751,28 @@ mod tests {
         snap.parts.retain(|(name, _)| name != PERFORM);
         let o = opening(&snap, 44_100, "a test", &crate::plugins::Plugins::none());
         assert_eq!(o.perform, None);
+    }
+
+    /// What the pads play is saved as the pads part and comes back; a
+    /// project without it (New, or saved before it) follows the track.
+    #[test]
+    fn what_the_pads_play_is_kept_and_comes_back() {
+        let mut c = collected(String::new(), InstrumentList::new().text());
+        c.pads = crate::app::PadFocus::SYNTH.text();
+        let mut snap = snapshot(&c, Vec::new());
+        assert_eq!(snap.part(PADS), Some("mpfree-pads 1\nplay instrument 1\n"));
+        let o = opening(&snap, 44_100, "a test", &crate::plugins::Plugins::none());
+        assert_eq!(o.pads.as_deref(), Some(c.pads.as_str()));
+        snap.parts.retain(|(name, _)| name != PADS);
+        let o = opening(&snap, 44_100, "a test", &crate::plugins::Plugins::none());
+        assert_eq!(o.pads, None);
+        let o = opening(
+            &new_snapshot(&Defaults::default()),
+            44_100,
+            "a new project",
+            &crate::plugins::Plugins::none(),
+        );
+        assert_eq!(o.pads, None, "a new project follows the track");
     }
 
     /// A project saved before Drums was track 1's strip plays its clips'
@@ -2776,6 +2816,7 @@ mod tests {
                 instruments: format!("{INSTRUMENTS_FORMAT}\n"),
                 track_kits: String::new(),
                 instrument_list: InstrumentList::new().text(),
+                pads: String::new(),
                 loops: None,
                 audio: None,
             };
@@ -2856,6 +2897,7 @@ mod tests {
                 instruments: format!("{INSTRUMENTS_FORMAT}\ntrack {track} mpfree.poly\n"),
                 track_kits: String::new(),
                 instrument_list: InstrumentList::new().text(),
+                pads: String::new(),
                 loops: None,
                 audio: None,
             };
@@ -2891,6 +2933,7 @@ mod tests {
             instruments: format!("{INSTRUMENTS_FORMAT}\n"),
             track_kits: String::new(),
             instrument_list: InstrumentList::new().text(),
+            pads: String::new(),
             loops: None,
             audio: None,
         };
