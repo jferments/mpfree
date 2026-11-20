@@ -325,8 +325,8 @@ fn the_grain_tool_shows_the_layers_grain_settings_and_its_window_on_the_wave() {
         bar.tabs.is_empty(),
         "no Grain sub-tab: it is a tool on the page, which has no sub-tabs"
     );
+    assert_eq!(s.state.region.mode, PlayMode::Granular);
     for (row, value) in [
-        (Row::Mode, "Granular"),
         (Row::GrainMode, "Cloud"),
         (Row::Quality, "Clean"),
         (Row::Scan, "0.25×"),
@@ -547,7 +547,8 @@ fn the_parts_switch_opens_each_part_and_every_part_fits_the_panel() {
         let mut want: Vec<Row> = View::ALL
             .iter()
             .flat_map(|v| Row::shown(*v, m).iter().copied())
-            .filter(|r| !on_qlinks(*r))
+            // The play mode is Trim's: the Grain tool is granular.
+            .filter(|r| !on_qlinks(*r) && *r != Row::Mode)
             .collect();
         want.sort_by_key(|r| format!("{r:?}"));
         want.dedup();
@@ -565,10 +566,30 @@ fn the_parts_switch_opens_each_part_and_every_part_fits_the_panel() {
     }
 }
 
+/// Taps the Grain tool on the tools strip, as a finger would.
+fn tap_grain(s: &mut Sample) -> Option<WaveAction> {
+    let i = Tool::ALL.iter().position(|t| *t == Tool::Grain).unwrap();
+    let ev = UiEvent {
+        widget: wave_tab::TOOLS.into(),
+        kind: EventKind::Tab(i),
+    };
+    let st = s.state.clone();
+    s.tab.action(&mut s.ui, &ev, &st)
+}
+
+/// Jay's device notes (20 Nov 2026): "the grain tab should automatically
+/// be in granular mode". A layer that doesn't play grains (an undo took
+/// Granular away) says so, and a tap on Grain plays it as grains.
 #[test]
-fn a_layer_that_doesnt_play_grains_says_so_and_shapes_mode_turns_it_on() {
+fn a_layer_that_doesnt_play_grains_says_so_and_a_tap_on_grain_turns_it_on() {
     let mut s = grain(false);
-    assert_eq!(note(&s), "Mode is Loop: pick Granular in Shape");
+    assert_eq!(note(&s), "Plays as Loop: tap Grain to play it as grains");
+    assert!(
+        GrainPart::ALL
+            .iter()
+            .all(|p| !p.rows(&s.state.region).contains(&Row::Mode)),
+        "no Mode row on the Grain tool"
+    );
     // The window still shows where grains would play.
     assert!(s
         .ui
@@ -583,9 +604,10 @@ fn a_layer_that_doesnt_play_grains_says_so_and_shapes_mode_turns_it_on() {
         assert_eq!(l.why_faint(k), Some(sound_panel::NOT_GRAINS));
     }
     assert!(step(&mut s, Row::Size, 1).is_none());
-    assert_eq!(row_value(&mut s, Row::Mode), "Loop");
-    assert_eq!(s.tab.grain_part(), GrainPart::Shape);
-    step_apply(&mut s, Row::Mode, 1);
+    let steps = undo_steps(&s.project);
+    let a = tap_grain(&mut s).expect("a tap on Grain makes it granular");
+    apply(&mut s, &a);
+    assert_eq!(undo_steps(&s.project), steps + 1, "one undo step");
     assert_eq!(
         s.project.pad(PAD).unwrap().layers[0].region.mode,
         PlayMode::Granular
@@ -605,17 +627,14 @@ fn a_layer_that_doesnt_play_grains_says_so_and_shapes_mode_turns_it_on() {
         e.render(&mut l, &mut r);
     }
     assert!(e.live_grains() > 0);
-    assert!(
-        step(&mut s, Row::Mode, 1).is_none(),
-        "Granular is the last mode"
-    );
+    assert!(tap_grain(&mut s).is_none(), "already granular: nothing");
 }
 
-/// Live test 3: from a one-shot pad with no loop the Mode row stopped at
-/// Toggle, because Loop without loop points is refused. Now it gives Loop
-/// a loop, as Trim does, and goes on to Granular.
+/// From a one-shot pad with no loop, picking Grain plays it as grains at
+/// once (the Grain tool's Mode row once had to step through Gate, Toggle
+/// and Loop to get there; live test 3), and an undo puts it back.
 #[test]
-fn the_mode_row_reaches_granular_from_a_pad_with_no_loop() {
+fn picking_grain_on_a_one_shot_pad_makes_it_granular_in_one_step() {
     let mut s = grain(false);
     {
         let pad = s.project.pad(PAD).unwrap();
@@ -630,20 +649,20 @@ fn the_mode_row_reaches_granular_from_a_pad_with_no_loop() {
         };
         apply(&mut s, &a);
     }
-    assert_eq!(row_value(&mut s, Row::Mode), "One shot");
-    for want in [
-        PlayMode::Gate,
-        PlayMode::Toggle,
-        PlayMode::Loop,
-        PlayMode::Granular,
-    ] {
-        step_apply(&mut s, Row::Mode, 1);
-        let r = &s.project.pad(PAD).unwrap().layers[0].region;
-        assert_eq!(r.mode, want);
-        if want == PlayMode::Loop {
-            assert!(r.sustain_loop.is_some(), "Loop got a loop");
-        }
-    }
+    assert_eq!(
+        note(&s),
+        "Plays as One shot: tap Grain to play it as grains"
+    );
+    let a = tap_grain(&mut s).unwrap();
+    apply(&mut s, &a);
+    let r = &s.project.pad(PAD).unwrap().layers[0].region;
+    assert_eq!(r.mode, PlayMode::Granular);
+    assert!(r.sustain_loop.is_none(), "nothing else changes");
+    s.project.undo();
+    assert_eq!(
+        s.project.pad(PAD).unwrap().layers[0].region.mode,
+        PlayMode::OneShot
+    );
 }
 
 #[test]
@@ -717,8 +736,6 @@ fn arrows_step_each_row_and_a_run_of_taps_on_one_row_is_one_undo_step() {
         s.project.pad(PAD).unwrap().layers[0].region.grain.window,
         GrainWindow::Shape { shape: 1.0 }
     );
-    step_apply(&mut s, Row::Mode, -1);
-    assert_eq!(row_value(&mut s, Row::Mode), "Loop");
 }
 
 #[test]
@@ -736,10 +753,7 @@ fn a_grain_mode_starts_from_its_own_settings_and_shows_its_rows() {
     open(&mut s, GrainPart::Grains);
     assert_eq!(placed(&s), [Row::Scan, Row::Spread, Row::Level]);
     open(&mut s, GrainPart::Shape);
-    assert_eq!(
-        placed(&s),
-        [Row::Mode, Row::GrainMode, Row::Quality, Row::Shape]
-    );
+    assert_eq!(placed(&s), [Row::GrainMode, Row::Quality, Row::Shape]);
     for (row, value) in [
         (Row::Scan, "1×"),
         (Row::Size, "90 ms"),
