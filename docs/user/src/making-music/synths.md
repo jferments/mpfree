@@ -10,12 +10,23 @@ MPFree has twelve synths built in. Put one on the pads and they become a keyboar
 
 ## Put a synth on the pads
 
-Each track plays a kit or a synth, and the pads play what the selected track plays. There are two ways to put a synth on a track:
+Every track has one instrument: a kit (your drum samples) or a synth. The pads play the instrument of the track you have selected, and what you play records into that track, as on the MPC. Putting a synth on the pads means making it the selected track's instrument.
+
+The quickest way is on the **Synth** tab:
+
+- **Play it on the pads.** When the selected track's instrument is a kit, the card with the synth's name says **Not on the pads**, and the button under it reads **Play Poly on the pads** (with the synth the tab shows). One tap makes that synth the track's instrument, a copy of the sound on screen with your edits, and the pads play it at once.
+- **Pick another synth.** Tap the card with the synth's name. A list of every synth opens over the page: **Kit** first, then the twelve synths, each with a line on what it is good for, then any plugin synths. Tap one and the pads play it straight away, so you can try several in a row. **Keep** keeps the one on the pads; **Cancel** puts back what the track had when the list opened, its own sound and all. Leaving the tab, selecting another track or tapping the card again keeps the pick too.
+
+{{shot: synth-on-a-kit | The Synth tab on a track whose instrument is a kit: the card says Not on the pads, and the Play Poly on the pads button is under it.}}
+
+{{shot: synth-pick | The list of synths open on track 1, FM tried on the pads.}}
+
+The other ways:
 
 - Tap **PADS PLAY** on Play's transport bar (or **Kit** on the Pads tab) and pick the last row of the list of kits, **Synth: Poly** (or the synth it had before tracks got their own). On the Play page, holding **SHIFT** and turning the data wheel past the last kit does the same. The selected track plays the synth from then on: the pads play it whenever that track is selected, and so do the track's clips. The other tracks keep what they play.
 - Give a track its own synth: see [A synth for each track](#a-synth-for-each-track).
 
-Opening the **Synth** tab changes nothing that plays: it shows the synth, and if the selected track plays a kit, the line at the bottom of the screen says how to put the synth on it. To go back to drums, tap the chip (it names the synth now) and pick a kit, or set the track's instrument back to **Kit**. While the selected track plays the synth, **PAD BANK** changes the pads' layout and **SHIFT** + the wheel their octave, not the kit.
+Opening the **Synth** tab changes nothing that plays: it shows the synth, and if the selected track's instrument is a kit, the card and the line at the bottom of the screen say so. To go back to drums, tap the synth's name and pick **Kit**, tap the chip (it names the synth now) and pick a kit, or set the track's instrument back to **Kit**. While the selected track plays the synth, **PAD BANK** changes the pads' layout and **SHIFT** + the wheel their octave, not the kit.
 
 ## The twelve synths
 
@@ -45,7 +56,7 @@ A few presets come with **effects and macros of their own**: Phase Tines and Wah
 Every track can play its own instrument: Poly on one, FM on another, a plugin synth on a third, while the rest play the kit. The selected track is the one on the **Armed** row of the Record panel (see [Clips and patterns](clips.md#recording-a-clip)).
 
 1. Select the track.
-2. Press **MENU** on the Synth tab. The top row is named after the track: **Track 2 instrument**.
+2. On the Synth tab, tap the synth's name and pick from the list (see [Put a synth on the pads](#put-a-synth-on-the-pads)), or open the Synth tab's options: press **MENU**, or tap the gear at the right end of the title bar. Their top row is named after the track: **Track 2 instrument**.
 3. Change it. It steps through **Kit** (the pads' kit, as every track starts), **Poly**, **FM**, **Drums**, **Pluck**, **Keys**, **Drawbar**, **Squelch**, **Analog**, **Strings**, **Bass**, **Wind** and **Choir**, then any plugin synths you have put in `files/plugins/` on the stick: CLAP synths and MPC plugin instruments (see [Effects](effects.md#plugins) for where to put them).
 
 {{shot: synth-instrument | Track 2's instrument set to a plugin synth, with the row's help on the right.}}
@@ -75,6 +86,7 @@ Coming:
 
 {{shot: synth | The Synth tab with Poly playing its Pluck preset: the presets on the left, the Osc page's sections in the middle (both oscillators with their waves drawn and their tuning, the mix as faders with the sub's wave above them), and the Q-Links on the right.}}
 
+- **The gear** at the right end of the title bar opens the Synth tab's options (the scale, pad layout, tuning, note repeat and the rest), as **MENU** does. **‹ Back** at the top left of the options, or **MENU**, goes back to the synth.
 - **The title** shows the preset, with **edited** under it once you change anything. Tap the preset's name to open the synth's presets in the browser (see [Trying and saving presets](#trying-and-saving-presets)). The tabs beside it are the synth's **pages**: for Poly, Osc, Filter, Env, LFO, LFO 2, Voice, Routes and Pressure. Tap a tab, or hold **SHIFT** and turn the data wheel, to change page.
 - **The sections.** Each page is split into boxes, one for each job, with the job's name at the top: **Osc 1**, **Mix**, **Filter**, **Filter envelope**, **Output** and so on. The colour says what kind of job it is, the same on every synth and effect:
   - **cyan**: what makes the sound (oscillators, wavetables, strings, drawbars)
