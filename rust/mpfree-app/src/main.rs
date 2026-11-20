@@ -4948,7 +4948,7 @@ impl time::Pads for SeqPads<'_> {
         };
         let sounded = if let Some(s) = self.synth_of(track) {
             if pad < 16 {
-                let by = synth::Player::Track(usize::from(track));
+                let by = synth::Player::Clip(usize::from(track));
                 s.note_on_shifted(by, pad, velocity, offset, &shift);
             }
             pad < 16
@@ -4973,7 +4973,7 @@ impl time::Pads for SeqPads<'_> {
             note: pad.min(127) as u8,
         };
         if let Some(s) = self.synth_of(track) {
-            s.note_off_by(synth::Player::Track(usize::from(track)), pad, offset);
+            s.note_off_by(synth::Player::Clip(usize::from(track)), pad, offset);
         } else if !self.routed(track, pad, off, offset) {
             self.player.release_kit_at(kit, pad, offset);
         }
@@ -4990,16 +4990,8 @@ impl time::Pads for SeqPads<'_> {
         }
     }
     fn pressure_at(&mut self, track: u16, pad: usize, value: u8, offset: u32) {
-        let kit = self.kit_of(track);
-        let press = mpfree_play::Event::Pressure {
-            note: pad.min(127) as u8,
-            value,
-        };
-        if let Some(s) = self.synth_of(track) {
-            s.pressure_at(synth::Player::Track(usize::from(track)), pad, value, offset);
-        } else if !self.routed(track, pad, press, offset) {
-            self.player.pressure_kit_at(kit, pad, value, offset);
-        }
+        let by = synth::Player::Clip(usize::from(track));
+        self.pressure_by(by, track, pad, value, offset);
     }
 
     /// An arp's note: the pads played live (through the armed track's arp,
@@ -5054,7 +5046,7 @@ impl time::Pads for SeqPads<'_> {
                         velocity: v,
                     };
                     if let Some(s) = self.synth_of(o.track) {
-                        let by = synth::Player::Track(usize::from(o.track));
+                        let by = synth::Player::Arp(usize::from(o.track));
                         s.note_on_shifted(by, pad, v, o.offset, &shift);
                         self.hits += 1;
                     } else if self.routed(o.track, pad, on, o.offset) {
@@ -5087,7 +5079,7 @@ impl time::Pads for SeqPads<'_> {
                 // one-shot sounds ignore it.
                 let kit = self.kit_of(o.track);
                 if let Some(s) = self.synth_of(o.track) {
-                    let by = synth::Player::Track(usize::from(o.track));
+                    let by = synth::Player::Arp(usize::from(o.track));
                     s.note_off_by(by, usize::from(note), o.offset);
                 } else if !self.routed(o.track, usize::from(note), o.event, o.offset) {
                     self.player
@@ -5101,7 +5093,8 @@ impl time::Pads for SeqPads<'_> {
                 None
             }
             (Event::Pressure { note, value }, _) => {
-                self.pressure_at(o.track, usize::from(note), value, o.offset);
+                let by = synth::Player::Arp(usize::from(o.track));
+                self.pressure_by(by, o.track, usize::from(note), value, o.offset);
                 None
             }
             (Event::NoteOn { .. }, _)
@@ -5252,6 +5245,22 @@ fn synth_seen<'s>(
 }
 
 impl SeqPads<'_> {
+    /// Pressure on `pad`'s sounding note of `track`, from `by` (its clip,
+    /// or its arp): the synth's notes that source started, else the pad's
+    /// kind (an Instrument or MIDI out pad), else the kit's pad.
+    fn pressure_by(&mut self, by: synth::Player, track: u16, pad: usize, value: u8, offset: u32) {
+        let kit = self.kit_of(track);
+        let press = mpfree_play::Event::Pressure {
+            note: pad.min(127) as u8,
+            value,
+        };
+        if let Some(s) = self.synth_of(track) {
+            s.pressure_at(by, pad, value, offset);
+        } else if !self.routed(track, pad, press, offset) {
+            self.player.pressure_kit_at(kit, pad, value, offset);
+        }
+    }
+
     /// A clip's lock or lane on the track's own MIDI out control, from a
     /// track that plays ahead: MIDI out sends it, ahead or (missed by the
     /// forecast) on its frame, unless something else moves the control
@@ -9307,8 +9316,8 @@ fn player_session(
                         synth.note_off_note(note, 0);
                     }
                 } else {
-                    // The pads play the synth through the track.
-                    synth.note_off_by(synth::Player::Track(app.track()), pad, 0);
+                    // The pads play the synth through the track's arp.
+                    synth.note_off_by(synth::Player::Arp(app.track()), pad, 0);
                 }
             }
             if k == synth_kit {
@@ -11729,6 +11738,60 @@ mod tests {
             !ev.iter().any(|e| matches!(e, NoteOff { .. })),
             "the clip's note still sounds: {ev:?}"
         );
+    }
+
+    /// Instrument redesign step 5a, the gap left after finding 9: a clip
+    /// on track 1 plays pad 3 while you play pad 3 through the same
+    /// track's arp. The clip's note and yours end by their own source
+    /// (`synth::Player::Clip`, `synth::Player::Arp`): the clip letting go
+    /// leaves your note, and yours letting go ends it once both have.
+    #[test]
+    fn a_clip_and_the_live_pads_on_one_track_keep_their_own_notes() {
+        use mpfree_node::NodeEvent::{NoteOff, NoteOn};
+        use mpfree_play::{Event, Out};
+        use time::Pads;
+        let live = |offset: u32, event| Out {
+            offset,
+            frame: u64::from(offset),
+            track: 0,
+            dest: 0,
+            event,
+        };
+        let on = Event::NoteOn {
+            note: 3,
+            velocity: 100,
+        };
+        let ev = on_the_synth(&[0], |seq| {
+            assert!(seq.hit_at(0, 3, 100, 0));
+            seq.live(&live(10, on));
+            seq.release_at(0, 3, 20);
+        });
+        let ons = ev.iter().filter(|e| matches!(e, NoteOn { .. })).count();
+        assert!(ons >= 2 && ons % 2 == 0, "both started pad 3: {ev:?}");
+        assert!(
+            !ev.iter().any(|e| matches!(e, NoteOff { .. })),
+            "your note still sounds: {ev:?}"
+        );
+        // The other way round: your let-go leaves the clip's note.
+        let ev = on_the_synth(&[0], |seq| {
+            seq.live(&live(0, on));
+            assert!(seq.hit_at(0, 3, 100, 10));
+            seq.live(&live(20, Event::NoteOff { note: 3 }));
+        });
+        assert!(
+            !ev.iter().any(|e| matches!(e, NoteOff { .. })),
+            "the clip's note still sounds: {ev:?}"
+        );
+        // Both let go: each note ends once.
+        let ev = on_the_synth(&[0], |seq| {
+            seq.live(&live(0, on));
+            seq.hit_at(0, 3, 100, 10);
+            seq.live(&live(20, Event::NoteOff { note: 3 }));
+            seq.release_at(0, 3, 30);
+        });
+        let offs = ev.iter().filter(|e| matches!(e, NoteOff { .. })).count();
+        assert_eq!(2 * offs, ons, "{ev:?}");
+        assert!(matches!(ev.last(), Some(NoteOff { .. })), "{ev:?}");
     }
 
     fn args(s: &str) -> Vec<String> {
