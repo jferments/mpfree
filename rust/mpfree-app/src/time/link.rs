@@ -185,7 +185,10 @@ pub enum InPlace {
     EraseLock(Lock),
 }
 
-/// The audio half's counts of things lost, with each period.
+/// The audio half's counts of things lost, with each period, since the
+/// start. The rare ones (that should stay 0, or nearly) are kept in 32
+/// bits, and stop at `u32::MAX`, so a period's end stays small
+/// (`messages_are_small`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     /// Notes and locks lost to full tables.
@@ -194,16 +197,27 @@ pub struct Counts {
     pub touch_dropped: u64,
     /// Messages to the control half lost to a full queue.
     pub lost: u64,
+    /// New notes, locks and values left out of moments too busy for them
+    /// (refactor A2): the period's table, the arps' and the player's holds.
+    pub busy: u64,
     /// Views that could not catch up, and were sent back to compile again.
-    pub behind: u64,
+    pub behind: u32,
     /// Views it could not send back and kept rather than free (should
     /// stay 0).
-    pub kept: u64,
+    pub kept: u32,
     /// Transport commands the transport's queue refused.
-    pub refused: u64,
+    pub refused: u32,
     /// Step edits the view could not take in place, sent back to compile
     /// (should stay 0).
-    pub missed: u64,
+    pub missed: u32,
+    /// Endings (note-offs, unlocks, panics) that found no room: a bug,
+    /// which must stay 0.
+    pub ends_lost: u32,
+}
+
+/// `n` in a rare count's 32 bits, stopping at `u32::MAX`.
+pub fn rare(n: u64) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX)
 }
 
 /// The end of a period.

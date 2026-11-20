@@ -4611,6 +4611,12 @@ impl TimeControl {
             c.dropped + self.dropped(),
             c.touch_dropped + self.touch_lost
         );
+        // Moments too busy (refactor A2): what gave way was new, never an
+        // ending. Endings lost is a bug, said whenever it isn't 0.
+        line.push_str(&format!(
+            "; {} new notes or locks left out of moments too busy, {} endings lost",
+            c.busy, c.ends_lost
+        ));
         // Several armed tracks (rec-arm.md "Several tracks"): a track a take
         // left out for want of room.
         if self.also_full > 0 {
@@ -4621,7 +4627,7 @@ impl TimeControl {
         }
         // The fallbacks between the halves, when there are any.
         let lost = c.lost + self.lost();
-        if lost + c.behind + c.kept + c.refused + c.missed > 0 {
+        if lost + u64::from(c.behind + c.kept + c.refused + c.missed) > 0 {
             line.push_str(&format!(
                 "; between the halves: {lost} messages lost, {} late views compiled again, \
                  {} views kept unfreed, {} transport commands refused, {} step edits \

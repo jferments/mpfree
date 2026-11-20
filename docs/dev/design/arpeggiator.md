@@ -211,7 +211,7 @@ The owner accepted all four proposals, and they apply to every live test from ro
 
 1. **No Arp tab** (see "Where the arp lives").
 2. **One arp per track:** a latched arp keeps running when focus moves to another track. Built as one `ArpHost` per track slot in `mpfree-play` (`arps.rs`), in front of the track host.
-3. **One per-track switch, "Clips through the arp" (`Track::through_arp` in `mpfree-seq`):** Off (drum tracks) records the notes you hear, so rolls become notes; On (melodic tracks) records the chord you played and the clip plays back through the track's arp. CAPTURE follows the same rule.
+3. **One per-track switch, "Clips through the arp" (`Track::through_arp` in `mpfree-seq`):** Off (drum tracks) records the notes you hear, so rolls become notes; On (melodic tracks) records the chord you played and the clip plays back through the track's arp. CAPTURE follows the same rule. Turning it while a clip's notes sound leaves none hanging: each note-off goes where its note-on went (refactor A2, [playback.md](playback.md#endings-always-get-through-refactor-a2)).
 4. **Holding NOTE REPEAT shows the quick band** (done in round 6, as the slim strip).
 5. **STOP silences a latched arp and keeps the latch;** STOP again while stopped clears it. PLAY or a pad press plays the kept latch again (`Engine::hush`, `Engine::resume`).
 6. **Q-Link 3 is Swing,** following the transport's swing until it is turned.
