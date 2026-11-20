@@ -1765,6 +1765,123 @@ mod tests {
         });
     }
 
+    /// Play on the pads from end to end (the instrument redesign's step 1,
+    /// and the design review of 20 Nov's test): a drum pattern recorded on
+    /// Track 1, then Poly tried on the pads, while stopped and while the
+    /// pattern plays. The pads sound on the shared synth, the drums keep
+    /// their kit and their clip never changes. REC then puts Poly on a
+    /// track nobody set up (Track 2: Track 1 is the drums') as the Synth
+    /// kit, no copy, and the take holds the notes the try-out played and
+    /// plays them back on that one synth.
+    #[test]
+    fn play_on_the_pads_tries_poly_and_rec_records_it_without_touching_the_drums() {
+        use crate::rec_arm::Take;
+        use mpfree_transport::State;
+        fn record(s: &mut Session, pads: &[usize]) {
+            s.button("PLAY");
+            let end = s.t() + 5.0;
+            while s.time.info().state != State::Recording && s.t() < end {
+                s.run_periods(1);
+            }
+            assert_eq!(s.time.info().state, State::Recording);
+            for &p in pads {
+                s.pad(p, 100, 0.05);
+                s.run_for(0.1);
+            }
+            s.button("STOP").settle();
+        }
+        fn notes(s: &Session, t: usize) -> Vec<u8> {
+            let mut n: Vec<u8> = s.time.project().tracks[t]
+                .slots
+                .iter()
+                .flatten()
+                .flat_map(|c| c.notes.iter().map(|n| n.note))
+                .collect();
+            n.sort_unstable();
+            n.dedup();
+            n
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            // The drums: pads 1 and 5 on Track 1's kit.
+            s.button("REC").settle();
+            record(&mut s, &[0, 4]);
+            assert_eq!(notes(&s, 0), [0, 4], "the drum pattern");
+            let drums = s.time.project().tracks[0].clone();
+            // Poly on the pads, from the Synth tab.
+            s.press("header", "tab", "Synth").settle();
+            s.press("synth-pads-head", "play", "").settle();
+            assert!(s.app.pads_preview(), "{}", s.hint());
+            assert!(!s.synth_on, "Track 1 keeps its kit");
+            assert_eq!(s.track_kits.kit_of(0), Some(0));
+            // Tried while stopped, then while the pattern plays: the synth
+            // sounds, nothing records, the drums play on.
+            s.pad(2, 90, 0.05);
+            assert_eq!(
+                s.previewed,
+                [(2, s.app.velocity(90))],
+                "the synth played it"
+            );
+            s.hits.played.clear();
+            s.button("PLAY START").run_for(0.1);
+            s.pad(3, 90, 0.05);
+            s.run_for(4.0);
+            s.button("STOP").settle();
+            assert_eq!(s.previewed.len(), 2);
+            assert!(
+                s.hits.played.iter().any(|p| p.track == 0),
+                "the drum pattern played on"
+            );
+            assert!(
+                s.hits
+                    .played
+                    .iter()
+                    .all(|p| p.track == 0 && [0, 4].contains(&p.note)),
+                "no pad reached the kit or a track"
+            );
+            assert_eq!(s.time.project().tracks[0], drums, "the drum clip unchanged");
+            // REC: Track 2 gets the shared synth (the Synth kit, no copy)
+            // and the take waits for PLAY there.
+            s.button("REC").settle();
+            s.run_periods(2).settle();
+            assert_eq!(s.app.track(), 1, "{:?}", s.said());
+            assert!(s.track_kits.plays_synth(1) && s.synth_on);
+            assert_eq!(s.app.track_sound(1), None, "no instrument of its own");
+            assert!(!s.mix.instruments.holds(1), "no second synth");
+            assert!(!s.app.pads_preview());
+            assert_eq!(s.app.rec.ready, Some(Take::Replace));
+            assert_eq!(s.track_kits.kit_of(0), Some(0), "Track 1 still the kit's");
+            record(&mut s, &[2, 3]);
+            // The take holds the notes the try-out played, and the drums
+            // are as they were.
+            let mut want: Vec<u8> = [2, 3]
+                .iter()
+                .flat_map(|&p| s.synth.notes(p).to_vec())
+                .collect();
+            want.sort_unstable();
+            want.dedup();
+            assert!(!want.is_empty());
+            assert_eq!(notes(&s, 1), want, "the notes the pads played on Poly");
+            assert_eq!(s.time.project().tracks[0], drums, "the drum clip unchanged");
+            // Played back: Track 2's notes, on the one synth.
+            s.hits.played.clear();
+            s.button("PLAY START").run_for(4.0);
+            s.button("STOP").settle();
+            let back: Vec<u8> = s
+                .hits
+                .played
+                .iter()
+                .filter(|p| p.track == 1)
+                .map(|p| p.note)
+                .collect();
+            assert!(
+                !back.is_empty() && back.iter().all(|n| want.contains(n)),
+                "{back:?}"
+            );
+            assert!(s.track_kits.plays_synth(1));
+        });
+    }
+
     /// Every value a button's light took on the controller while the
     /// session ran for `seconds` (`Session::sent_lights`, as main.rs sends).
     fn lights_over(s: &mut Session, note: u8, seconds: f64) -> Vec<u8> {
