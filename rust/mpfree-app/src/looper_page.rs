@@ -188,6 +188,10 @@ pub fn why_faint(c: Ctl, s: &Status) -> &'static str {
     match c {
         Ctl::Send => "Record a loop first: Send sends the loop that plays",
         Ctl::Clear => "Nothing to clear: the loop is empty",
+        Ctl::Listen if s.phase == Phase::Playing && s.merging.is_none() => {
+            "Listen plays a loop on its own while the music is stopped: press STOP first"
+        }
+        Ctl::Listen if s.phase == Phase::Empty => "Nothing to listen to yet: record the loop first",
         Ctl::Undo => "Nothing to undo on this loop yet",
         Ctl::Redo => "Nothing to redo: Undo first",
         Ctl::History => "No history yet: overdub a layer first",
@@ -885,6 +889,7 @@ impl LooperPage {
             tempo: format!("{:.0} BPM", t.bpm),
             memory: memory(v),
             pads: self.pads_keys,
+            input: (source_word(v).to_string(), input_frac(self.hold)),
             capture: capture_button(v),
         };
         // An armed loop starts on the next bar line (on the bar PLAY
@@ -1110,7 +1115,14 @@ impl LooperPage {
             }
             parts.join(" · ")
         };
-        let input = (source.to_string(), input_frac(self.hold));
+        // Listen: the loop (or a layer) alone while the music is stopped.
+        let running = matches!(self.transport.state, State::Playing | State::Recording)
+            || self.transport.state == State::CountIn;
+        let listening = v.listening.filter(|&(m, _, _)| m == n);
+        let listen = (
+            has_sound && !running && s.phase == Phase::Playing && s.merging.is_none(),
+            listening.is_some_and(|(_, l, _)| l.is_none()),
+        );
         let names: Vec<String> = (0..s.layers)
             .map(|k| self.names[n].get(k).cloned().unwrap_or_default())
             .collect();
@@ -1159,6 +1171,8 @@ impl LooperPage {
                     pan: info.map_or(0.0, |l| l.pan),
                     faded: info.map_or(1.0, |l| l.faded),
                     recording: info.is_some_and(|l| l.recording),
+                    listening: info
+                        .is_some_and(|l| listening.is_some_and(|(_, w, _)| w == Some(l.id))),
                 }
             })
             .collect();
@@ -1330,9 +1344,11 @@ impl LooperPage {
             v,
             ui.get::<LoopEditor>(EDITOR).and_then(|e| e.wave.as_ref()),
         );
-        let position = match live {
-            Some((at, _)) => Some(at),
-            None => (!empty && s.frames > 0).then_some(s.position),
+        // While Listen plays, the playhead is where it plays.
+        let position = match (live, listening) {
+            (Some((at, _)), _) => Some(at),
+            (None, Some((_, _, at))) => Some(at),
+            (None, None) => (!empty && s.frames > 0).then_some(s.position),
         };
         let bars = live.map_or_else(|| bars_of(s.ticks, v.beats_per_bar), |(_, b)| b);
         let picked = self.layer.min(s.layers.saturating_sub(1));
@@ -1343,7 +1359,7 @@ impl LooperPage {
             if e.title != title
                 || e.sub != sub
                 || e.colour != colour
-                || e.input != input
+                || e.listen != listen
                 || e.has_sound != has_sound
                 || e.layers != layers
                 || e.empty != empty_look
@@ -1358,7 +1374,7 @@ impl LooperPage {
                 e.title = title;
                 e.sub = sub;
                 e.colour = colour;
-                e.input = input;
+                e.listen = listen;
                 e.has_sound = has_sound;
                 e.layers = layers;
                 e.empty = empty_look;
@@ -1702,7 +1718,7 @@ mod tests {
         let e = ui.get::<LoopEditor>(EDITOR).unwrap();
         assert_eq!(e.title, "Loop 1");
         assert_eq!(e.sub, "4 bars · 3 layers");
-        assert_eq!(e.input.0, "Pads");
+        assert_eq!(ui.get::<LoopDeck>(DECK).unwrap().head.input.0, "Pads");
         assert!(e.has_sound);
         let tags: Vec<&str> = e.layers.iter().map(|l| l.tag.as_str()).collect();
         assert_eq!(tags, ["first · 0.0 dB", "dub 1 · 0.0 dB", "dub 2 · muted"]);
@@ -1901,8 +1917,8 @@ mod tests {
         // Records from the loops.
         v.resample = true;
         page.update(&mut ui, &v, &Settings::default());
+        assert_eq!(ui.get::<LoopDeck>(DECK).unwrap().head.input.0, "Loops");
         let e = ui.get::<LoopEditor>(EDITOR).unwrap();
-        assert_eq!(e.input.0, "Loops");
         assert!(matches!(
             e.strip,
             Strip::Records {

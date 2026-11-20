@@ -5546,6 +5546,7 @@ fn looper_action(
             ));
             Vec::new()
         }
+        looping::LoopAction::Listen(what) => vec![app::Effect::Tell(looper.listen(what))],
         looping::LoopAction::StopWaiting => {
             if let Some(line) = looper.stop_waiting() {
                 out.note(&line);

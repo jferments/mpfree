@@ -1317,8 +1317,6 @@ mod looper {
             // Free length asks 4 bars; 3 whole ones were played, so 2.
             let t = at(&mut s, "leditor", "capture", 0);
             assert_eq!(t.label, "Capture bars 2 and 3");
-            let d = at(&mut s, "ldeck", "capture", 0);
-            assert_eq!((d.label.as_str(), d.enabled), ("Capture last 2 bars", true));
             s.button_with("SHIFT", "REC");
             assert!(
                 s.said()
@@ -1343,13 +1341,13 @@ mod looper {
             };
             assert!(peak > 0.05, "the pads are in it: {peak}");
 
-            // Two bars more, then the header's Capture: into Loop 2.
+            // Two bars more, then SHIFT + REC with Loop 1 picked: into
+            // Loop 2, the first empty one.
             for _ in 0..8 {
                 s.pad(1, 120, 0.1).run_for(0.4);
             }
-            let d = at(&mut s, "ldeck", "capture", 0);
-            assert!(d.label.starts_with("Capture last"), "{}", d.label);
-            s.press_target(&d).run_for(0.1);
+            s.button_with("SHIFT", "REC");
+            s.run_for(0.1);
             assert!(
                 s.said().iter().any(|l| l.contains("become Loop 2")),
                 "{:?}",

@@ -2844,3 +2844,54 @@ fn a_loop_armed_while_stopped_starts_with_play() {
     r.run(START + 500, &dc(0.25));
     assert_eq!((r.phase(0), r.l.status().origin), (Phase::Recording, 0));
 }
+
+#[test]
+fn listen_plays_a_loop_or_a_layer_alone_while_the_song_is_stopped() {
+    let mut r = Rig::new(8, 128);
+    record_one_bar(&mut r, &dc(0.25));
+    // Refused while the song plays.
+    assert!(!r.l.listen(0, None));
+    let stop = r.frame + 1_000;
+    r.at(stop, T::Stop);
+    r.run(stop + 2_000, &dc(0.0));
+    assert!(near(&r, r.frame - 1, [0.0, 0.0]), "silent when stopped");
+    // An empty loop has nothing to play.
+    assert!(!r.l.listen(1, None));
+    assert!(r.l.listen(0, None));
+    let from = r.frame;
+    r.run(from + 4_000, &dc(0.0));
+    assert!(r.max_step(from, from + 4_000) < 0.01, "faded in");
+    assert!(near(&r, from + 3_000, [0.25, -0.25]));
+    let (n, layer, at) = r.l.listening().unwrap();
+    assert_eq!((n, layer), (0, None));
+    assert!((at - 4_000.0 / BAR as f32).abs() < 1e-3);
+    // Round and round: past its end it starts again.
+    r.run(from + BAR as u64 + 3_000, &dc(0.0));
+    assert!(near(&r, r.frame - 1, [0.25, -0.25]));
+    // The loop muted: silent as heard, but its layer plays on its own.
+    r.cmd(L::Mute(true));
+    r.run(r.frame + 2_000, &dc(0.0));
+    let id = r.ids()[0];
+    r.layer(id, Lc::Mute(true));
+    r.run(r.frame + 128, &dc(0.0));
+    assert!(r.l.listen(0, Some(id)));
+    r.run(r.frame + 2_000, &dc(0.0));
+    assert!(
+        near(&r, r.frame - 1, [0.25, -0.25]),
+        "the layer alone, though muted"
+    );
+    // Stopping fades out.
+    r.l.stop_listening();
+    assert_eq!(r.l.listening(), None);
+    let from = r.frame;
+    r.run(from + 2_000, &dc(0.0));
+    assert!(r.max_step(from, from + 2_000) < 0.01, "faded out");
+    assert!(near(&r, r.frame - 1, [0.0, 0.0]));
+    // PLAY ends it.
+    assert!(r.l.listen(0, Some(id)));
+    r.run(r.frame + 2_000, &dc(0.0));
+    let play = r.frame;
+    r.at(play, T::Play);
+    r.run(play + 128, &dc(0.0));
+    assert_eq!(r.l.listening(), None);
+}

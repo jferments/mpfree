@@ -519,6 +519,20 @@ pub enum After {
     Overdub,
 }
 
+/// Listen: a loop, or one layer of it, playing alone from its start
+/// while the song is stopped ([`Looper::listen`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Listen {
+    n: usize,
+    /// One layer (its slot), or None for the whole loop as heard.
+    layer: Option<u8>,
+    /// The loop frame it plays next.
+    pos: usize,
+    /// Faded in from 0 over [`FADE`] frames, and out once `stopping`.
+    gain: f32,
+    stopping: bool,
+}
+
 /// When an armed loop's first pass starts: the Looper tab's Starts
 /// setting.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1825,6 +1839,9 @@ impl Loop {
 pub struct Looper {
     store: Store,
     capacity: usize,
+    /// Listen: a loop (or one of its layers) played alone while the song
+    /// is stopped ([`Looper::listen`]).
+    listen: Option<Listen>,
     loops: Vec<Loop>,
     selected: usize,
     queue: [Queued; QUEUE],
@@ -1866,6 +1883,7 @@ impl Looper {
         Looper {
             store: Store::new(n_blocks),
             capacity: n_blocks * BLOCK,
+            listen: None,
             loops: vec![Loop::NEW; MAX_LOOPS],
             selected: 0,
             queue: [Queued::Loop(Command::Clear); QUEUE],
@@ -1899,6 +1917,102 @@ impl Looper {
 
     /// Select loop `n` (0 to [`MAX_LOOPS`] - 1) for the commands queued
     /// after this. False (and counted) if the queue is full.
+    /// Listen: play loop `n` alone from its start, round and round, while
+    /// the song is stopped: the whole loop as heard (its layers' levels,
+    /// mutes and solos), or with `layer` ([`LayerInfo::id`]) that layer on
+    /// its own, even when muted. It plays at the speed it was recorded,
+    /// through the loop's level. It stops with [`Looper::stop_listening`],
+    /// or by itself when the song starts or the loop records or empties.
+    /// Refused (false) while the song plays, or for a loop with nothing
+    /// to play.
+    pub fn listen(&mut self, n: usize, layer: Option<u8>) -> bool {
+        let Some(l) = self.loops.get(n) else {
+            return false;
+        };
+        let playable = matches!(l.phase, Phase::Playing)
+            && l.len > 0
+            && !l.merging
+            && layer.is_none_or(|id| l.order[..l.in_order].contains(&id));
+        if !self.stopped || !playable {
+            return false;
+        }
+        self.listen = Some(Listen {
+            n,
+            layer,
+            pos: 0,
+            gain: 0.0,
+            stopping: false,
+        });
+        true
+    }
+
+    /// Listen fades out and stops.
+    pub fn stop_listening(&mut self) {
+        if let Some(l) = &mut self.listen {
+            l.stopping = true;
+        }
+    }
+
+    /// What Listen plays: the loop, the layer (None: all of it as heard)
+    /// and where it has got to, 0 to 1.
+    pub fn listening(&self) -> Option<(usize, Option<u8>, f32)> {
+        let l = self.listen.filter(|l| !l.stopping)?;
+        let len = self.loops[l.n].len.max(1);
+        Some((l.n, l.layer, l.pos as f32 / len as f32))
+    }
+
+    /// One period of Listen, added to `out` (n frames, interleaved).
+    fn play_listen(&mut self, block: &Block, n: usize, out: &mut [f32]) {
+        let Some(mut ls) = self.listen else {
+            return;
+        };
+        let stopped = block.spans().iter().all(|s| s.state == State::Stopped);
+        let l = &self.loops[ls.n];
+        let still = l.phase == Phase::Playing
+            && l.len > 0
+            && !l.merging
+            && ls
+                .layer
+                .is_none_or(|id| l.order[..l.in_order].contains(&id));
+        if !still {
+            // The loop changed under it: stop at once (it is silent or
+            // recording anyway).
+            self.listen = None;
+            return;
+        }
+        if !stopped {
+            ls.stopping = true;
+        }
+        let gains = l.listen_gains(ls.layer);
+        let replacing = ls.layer.is_none() && l.replacing();
+        let level = l.level;
+        let len = l.len;
+        let step = 1.0 / FADE as f32;
+        let mut f = 0;
+        while f < n {
+            let k = RUN.min(n - f).min(len - ls.pos);
+            let mut acc = [[0.0f32; 2]; RUN];
+            l.render_layers_at(&self.store, ls.n, ls.pos, &mut acc[..k], &gains, replacing);
+            for (j, a) in acc[..k].iter().enumerate() {
+                ls.gain = if ls.stopping {
+                    (ls.gain - step).max(0.0)
+                } else {
+                    (ls.gain + step).min(1.0)
+                };
+                let g = ls.gain * level;
+                out[2 * (f + j)] += a[0] * g;
+                out[2 * (f + j) + 1] += a[1] * g;
+            }
+            f += k;
+            ls.pos = (ls.pos + k) % len;
+            if ls.stopping && ls.gain == 0.0 {
+                self.listen = None;
+                return;
+            }
+        }
+        self.listen = Some(ls);
+    }
+
     pub fn select_loop(&mut self, n: usize) -> bool {
         self.push(Queued::Select(n))
     }
@@ -2458,6 +2572,7 @@ impl Looper {
         self.place_hits(block);
         self.close_free(block);
         self.tend_captures();
+        self.play_listen(block, n, out);
         // A loop with sound soloed: the others fall silent.
         let any_solo = self.loops.iter().any(|l| l.solo && l.phase != Phase::Empty);
         for l in &mut self.loops {
@@ -4358,7 +4473,22 @@ impl Loop {
     /// Frames `from..` of every layer, as heard (at the gains in `mg_g`),
     /// added into `acc`.
     fn render_layers(&self, store: &Store, me: usize, from: usize, acc: &mut [[f32; 2]]) {
-        if self.replacing() {
+        self.render_layers_at(store, me, from, acc, &self.mg_g, self.replacing());
+    }
+
+    /// [`Loop::render_layers`] at the gains `gains` (each layer slot's,
+    /// left and right); `replacing` hears Replace layers over the layers
+    /// under them, as they play.
+    fn render_layers_at(
+        &self,
+        store: &Store,
+        me: usize,
+        from: usize,
+        acc: &mut [[f32; 2]],
+        gains: &[[f32; 2]; MAX_LAYERS],
+        replacing: bool,
+    ) {
+        if replacing {
             // Frame by frame, each layer at its share under the Replace
             // layers after it, as they are heard.
             let any_solo = self.any_solo();
@@ -4368,7 +4498,7 @@ impl Loop {
                 let d = self.ducks(&self.views, self.len, p, strength);
                 for &k in &self.order[..self.in_order] {
                     let k = k as usize;
-                    let g = self.mg_g[k];
+                    let g = gains[k];
                     let v = &self.views[k];
                     if g == [0.0, 0.0] || v.size() == 0 || d[k] == 0.0 {
                         continue;
@@ -4383,7 +4513,7 @@ impl Loop {
         }
         for &k in &self.order[..self.in_order] {
             let k = k as usize;
-            let g = self.mg_g[k];
+            let g = gains[k];
             let v = &self.views[k];
             if g == [0.0, 0.0] || v.size() == 0 {
                 continue;
@@ -4401,6 +4531,25 @@ impl Loop {
     }
 
     /// The gains each layer is heard at, for a merge or a bounce.
+    /// The gains Listen plays at: the loop as heard, or one layer alone
+    /// (`id`, a layer slot) at its level and pan, even when muted.
+    fn listen_gains(&self, layer: Option<u8>) -> [[f32; 2]; MAX_LAYERS] {
+        let Some(id) = layer else {
+            return self.heard_gains();
+        };
+        let mut g = [[0.0f32; 2]; MAX_LAYERS];
+        let k = id as usize;
+        if self.order[..self.in_order].contains(&id) {
+            let s = &self.slots[k];
+            let level = s.level * s.age;
+            g[k] = [
+                level * (1.0 - s.pan).min(1.0),
+                level * (1.0 + s.pan).min(1.0),
+            ];
+        }
+        g
+    }
+
     fn heard_gains(&self) -> [[f32; 2]; MAX_LAYERS] {
         let any_solo = self.any_solo();
         let mut g = [[0.0f32; 2]; MAX_LAYERS];
