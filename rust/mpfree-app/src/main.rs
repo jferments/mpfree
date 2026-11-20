@@ -3921,10 +3921,14 @@ impl RenderTime {
 fn sampler_status(player: &sampler::Player, time: &RenderTime) -> String {
     let c = player.counters();
     format!(
-        "sampler: {}, {} steals, {} events dropped, at most {} grains ({} skipped)",
+        "sampler: {}, {} steals, {} events dropped ({} hits), {} let-gos kept aside, {} values merged, \
+         at most {} grains ({} skipped)",
         time.describe(),
         c.steals,
         c.dropped_events,
+        c.refused_hits,
+        c.late_let_gos,
+        c.merged_values,
         c.peak_grains,
         c.skipped_grains
     )
@@ -7000,8 +7004,11 @@ fn player_session(
                         player.release_kit_at(kit, pad, 0);
                     }
                 }
-                // The take the Wave page shows, kept off the pads.
-                gui::FromUi::SampleTake { kit, down } => player.take_at(kit, down, 0),
+                // The take the Wave page shows, kept off the pads. A hit
+                // the engine's full queue refuses is counted there.
+                gui::FromUi::SampleTake { kit, down } => {
+                    player.take_at(kit, down, 0);
+                }
                 gui::FromUi::SampleKey {
                     kit,
                     note,
@@ -10536,6 +10543,8 @@ fn player_session(
                         steals: c.steals,
                         given_up: shed.totals().given_up,
                         dropped: c.dropped_events + app.arps.dropped(),
+                        late_let_gos: c.late_let_gos,
+                        merged_values: c.merged_values,
                         peak_grains: c.peak_grains,
                     }
                 },

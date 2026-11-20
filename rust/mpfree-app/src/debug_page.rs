@@ -72,6 +72,10 @@ pub struct AudioNumbers {
     /// Voices given up under load (shed.rs).
     pub given_up: u64,
     pub dropped: u64,
+    /// The sampler's let-gos its full queue kept aside (they still land),
+    /// and pressure or knob values it merged to make room.
+    pub late_let_gos: u64,
+    pub merged_values: u64,
     pub peak_grains: usize,
 }
 
@@ -346,6 +350,15 @@ impl DebugPages {
                     Tone::Good
                 } else {
                     Tone::Bad
+                },
+            ),
+            (
+                "Queue full: let-gos kept aside · values merged".to_string(),
+                format!("{} · {}", a.late_let_gos, a.merged_values),
+                if a.late_let_gos + a.merged_values == 0 {
+                    Tone::Good
+                } else {
+                    Tone::Warn
                 },
             ),
             (

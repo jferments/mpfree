@@ -99,6 +99,10 @@ The last kind in the column, **Transpose**, moves a playing line instead of a so
 - The second Q-Link (Tune's place) turns Transpose too, two octaves either way, and so does the Record panel's **Transpose** row (see [Recording a clip](clips.md#recording-a-clip)). The Record panel's **Follows** row sets which tracks move with the armed one, so a bass and its chords can change key together.
 - What you record while transposed goes in as written and plays back transposed, so it sounds as you heard it.
 
+## When it gets busy
+
+However much is playing, a pad, a key or a recording on the Sample page that you let go always stops on time, so no note is left hanging. If one moment holds more than MPFree can line up (hundreds of hits and pressure changes at once), it first merges pressure and knob moves into the newest one, then skips new hits, and never skips a let-go. With **Show developer tools** on in Prefs, the Dev tab's Debug page counts how often that happened.
+
 ## Your timing
 
 The **Sequencer** tab's Steps view has a **Your timing** strip under the pattern that reads how early or late, how even and how hard you play the pads. Play along with a pattern there to practise: see [Your timing](sequencer.md#your-timing).

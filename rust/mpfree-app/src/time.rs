@@ -1904,6 +1904,94 @@ mod tests {
         assert_eq!(pass, (0..16).collect::<Vec<_>>());
     }
 
+    /// The first step on an empty track is one take: the new pattern, its
+    /// note and its launch. UNDO leaves the slot empty and stopped, REDO
+    /// brings the pattern back playing, and a step past the pattern's end
+    /// makes nothing. If the play view can't be built after an edit, the
+    /// edit is taken back from the clip, the takes and the launches
+    /// (refactor plan A1).
+    #[test]
+    fn the_first_step_its_pattern_and_its_launch_are_one_take() {
+        use mpfree_play::Launch;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let tap = |step| StepAction::Tap {
+            pad: 0,
+            step,
+            velocity: 100,
+        };
+        let playing = |h: &TimeHost| {
+            h.control
+                .launches
+                .iter()
+                .any(|l| (l.track, l.slot) == (0, 0))
+        };
+        let notes = |h: &TimeHost| h.control.project.clip(0, 0).map(|c| c.notes.len());
+        // A view that can't be built: two clips launched on track 2 (a
+        // track plays one at a time).
+        let two = |h: &mut TimeHost| {
+            for slot in 0..2 {
+                h.control.project.tracks[1].slots[slot] = Some(Clip::new("x", 3840));
+                h.control.launches.push(Launch {
+                    track: 1,
+                    slot,
+                    origin: 0,
+                    start: 0,
+                });
+            }
+        };
+        two(&mut h);
+        let launches = h.control.launches.clone();
+        let said = h.step_action(tap(0)).unwrap_err();
+        assert!(said.ends_with("the edit was taken back"), "{said}");
+        assert_eq!(notes(&h), None, "no pattern");
+        assert_eq!(h.control.launches, launches);
+        assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: nothing to undo");
+        h.control.launches.clear();
+        h.control.project.tracks[1].slots = Default::default();
+        // A step past the pattern's end makes nothing at all.
+        assert_eq!(h.step_action(tap(16)).unwrap(), "");
+        assert_eq!(notes(&h), None);
+        assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: nothing to undo");
+        // The first step: the pattern, its note and its launch.
+        let said = h.step_action(tap(0)).unwrap();
+        assert!(said.starts_with("steps: new clip Pattern 1"), "{said}");
+        assert_eq!(notes(&h), Some(1));
+        assert!(playing(&h));
+        // One UNDO takes all three back.
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(notes(&h), None, "the slot is empty");
+        assert!(!playing(&h), "and stopped");
+        assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: nothing to undo");
+        // REDO brings the pattern back playing.
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(notes(&h), Some(1));
+        assert!(playing(&h));
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 4, &[]);
+        assert_eq!(
+            pads.hits.first().map(|&(_, pad, _)| pad),
+            Some(0),
+            "it plays"
+        );
+        // An edit the view can't follow (a new length compiles) is taken
+        // back: the clip as it was, and UNDO takes back the first step.
+        two(&mut h);
+        let clip = h.control.project.clip(0, 0).cloned();
+        let said = h
+            .step_action(StepAction::Length {
+                steps: 32,
+                copy: true,
+            })
+            .unwrap_err();
+        assert!(said.ends_with("the edit was taken back"), "{said}");
+        assert_eq!(h.control.project.clip(0, 0).cloned(), clip);
+        h.control.launches.retain(|l| l.track != 1);
+        h.control.project.tracks[1].slots = Default::default();
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(notes(&h), None, "UNDO took back the first step");
+    }
+
     /// Taps, turns and locks on the pattern playing go into the view the
     /// audio half plays, in place: no compile, nothing allocated or freed
     /// on the audio half, and the view is just what a compile of the
