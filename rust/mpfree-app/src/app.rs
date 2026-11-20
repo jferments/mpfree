@@ -778,11 +778,12 @@ pub const EXPORT_RATES: [u32; 2] = [44_100, 48_000];
 pub const METRONOME_DBS: [i8; 6] = [-36, -30, -24, -18, -12, -6];
 
 impl Settings {
-    /// The latency the looper makes up for: none for the pads, which are
-    /// in time with the transport.
+    /// The latency the looper makes up for: none for the pads or a mix,
+    /// which are in time with the transport (the host makes up the mix's
+    /// own).
     pub fn loop_latency_now(&self) -> u32 {
         match self.loop_source {
-            LoopSource::Pads => 0,
+            LoopSource::Pads | LoopSource::Mix(_) => 0,
             LoopSource::Line => self.loop_latency,
         }
     }
@@ -4387,6 +4388,17 @@ impl App {
         fx
     }
 
+    /// Records from (the Looper tab's picker): a mix, the master or one
+    /// strip (a track or a submix), as `mixing::MixHost::loop_take` takes it.
+    pub fn loop_mix(&mut self, strip: mpfree_fx::StripId) -> Vec<Effect> {
+        let mut fx = self.set_loop_source(LoopSource::Mix(strip));
+        if !fx.is_empty() {
+            self.save_dirty = true;
+            fx.push(Effect::Settings(self.settings.clone()));
+        }
+        fx
+    }
+
     /// Record from `source`, with the latency that goes with it.
     fn set_loop_source(&mut self, source: LoopSource) -> Vec<Effect> {
         if source == self.settings.loop_source {
@@ -4792,7 +4804,9 @@ impl App {
                 "What the looper records: the pads and the",
                 "synth (before the click), or the line input.",
                 "Turning Line input on picks it; recording",
-                "the pads opens nothing.",
+                "the pads opens nothing. A mix (the master,",
+                "a track or a submix) is picked on the",
+                "Looper tab, under Records from.",
             ],
             Item::LoopMonitor => vec![
                 "Hear the line input through the outputs,",
@@ -7778,6 +7792,18 @@ mod tests {
                 .all(|e| !matches!(e, Effect::Looper(_))),
             "already the pads"
         );
+        // A mix, picked on the Looper tab: in time, so no latency; Prefs
+        // says so, and steps back to the pads or the line input from it.
+        let strip = mpfree_fx::StripId::Bus(2);
+        let fx = app.loop_mix(strip);
+        assert!(
+            fx.contains(&source(LoopSource::Mix(strip))) && fx.contains(&latency(0)),
+            "{fx:?}"
+        );
+        assert!(app.loop_mix(strip).is_empty(), "already that mix");
+        assert_eq!(app.item_text(Item::LoopSource).1, "A mix (Looper tab)");
+        let fx = app.step_item(0, 1);
+        assert!(fx.contains(&source(LoopSource::Line)), "{fx:?}");
     }
 
     #[test]
