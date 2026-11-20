@@ -1338,8 +1338,6 @@ impl App {
         if track == self.track {
             return Vec::new();
         }
-        // The list of synths was for the old track: it keeps its pick.
-        let picked = self.close_synth_pick(true);
         if self.pad_layout.is_some() {
             for slot in 0..16 {
                 self.release_pad(slot);
@@ -1362,10 +1360,6 @@ impl App {
         self.track_ui[self.track] = self.current_ui();
         self.track = track;
         let mut fx = self.take_ui(self.track_ui[track]);
-        if !picked.is_empty() {
-            // Only with the list open, from the screen: not the audio path.
-            fx.splice(0..0, picked);
-        }
         fx.push(Effect::Note(format!(
             "arp: track {} ({})",
             track + 1,

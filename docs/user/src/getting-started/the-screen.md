@@ -106,7 +106,6 @@ Some things are not tabs. They open over the page you are on, and close the same
 
 - **Options:** press **MENU** for the current page's settings, such as the repeat rate or the tempo on the Play page (on the Synth tab, the gear at the right of the title bar opens them too). **MENU** again, or **‹ Back** at the top left of the options, closes them.
 - **Prefs:** press **SHIFT + MENU** for MPFree's settings; **‹ Back** closes them too. See [Prefs](../reference/prefs.md).
-- **The list of synths:** tap the synth's name on the Synth tab (see [Synths](../making-music/synths.md#put-a-synth-on-the-pads)).
 - **The browser:** press **BROWSE**, or tap the folder at the top right. See [The browser](../making-music/saving.md#the-browser).
 - **The list of kits:** tap **PADS PLAY** on Play's transport bar, or **Kit** on the Pads tab.
 - **The Arp panel:** hold **NOTE REPEAT** and press **MENU**, or tap the arp chip.

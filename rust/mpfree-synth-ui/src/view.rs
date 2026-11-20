@@ -158,9 +158,6 @@ pub enum SynthAction {
     /// presets (the app opens the browser's preset picker; nothing goes to
     /// the synth).
     OpenPresets,
-    /// The instrument card was tapped: open (or close) the list of synths,
-    /// to pick what the track plays (Jay's device notes, 20 Nov 2026).
-    OpenSynths,
     /// The gear at the right of the title bar: the Synth options, as MENU
     /// opens them.
     Options,
@@ -317,8 +314,7 @@ impl SynthPanel {
         ui.add_page(&self.name, &self.spec())
     }
 
-    /// The page's layout as it is added (the app's wrap applied).
-    pub fn spec(&self) -> String {
+    fn spec(&self) -> String {
         self.wrap
             .map_or_else(|| self.layout().to_string(), |f| f(self.layout()))
     }
@@ -614,7 +610,6 @@ impl SynthPanel {
             }
             (TITLE, EventKind::Select(crate::widgets::GEAR)) => Some(SynthAction::Options),
             (TITLE, EventKind::Select(_)) => Some(SynthAction::OpenPresets),
-            (INST, EventKind::Select(_)) => Some(SynthAction::OpenSynths),
             (TILES, EventKind::Tab(n)) => {
                 let want = self.links.get(*n)?.clone();
                 self.show_page_named(ui, &want);
@@ -1178,18 +1173,11 @@ fn table_note(v: &impl Fn(u16) -> f32, id: u16) -> Option<&'static str> {
 // ---------------------------------------------------------------- instrument card
 
 /// The instrument over the presets: its swatch, its name and a line about
-/// it ("Keys track · Native · poly"). It is a button (raised, with ▾): a tap
-/// opens the list of synths, to pick what the track plays (Jay's device
-/// notes, 20 Nov 2026: a synth on the pads in one or two taps).
+/// it ("Keys track · Native · poly").
 pub struct InstCard {
     pub swatch: Color,
     pub name: String,
     pub detail: String,
-    /// The list of synths is open: outlined in the accent, the arrow up.
-    pub open: bool,
-    /// The app's line in place of `detail`, in the warning colour, such as
-    /// "Track 1 plays a kit" (the pads don't play what the tab shows).
-    pub note: Option<String>,
 }
 
 impl InstCard {
@@ -1198,8 +1186,6 @@ impl InstCard {
             swatch: QLINK_COLORS[1],
             name: String::new(),
             detail: String::new(),
-            open: false,
-            note: None,
         }
     }
 }
@@ -1213,24 +1199,7 @@ impl Default for InstCard {
 impl Widget for InstCard {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        // A button: raised and outlined, the accent while the list is open.
-        cx.canvas.fill_round_rect(r, t.radius, t.raised);
-        let (edge, width) = if self.open {
-            (t.accent, 2)
-        } else {
-            (t.outline, 1)
-        };
-        cx.canvas.stroke_round_rect(r, t.radius, width, edge);
-        let (ax, ay) = ((r.right() - 22) as f32, (r.y + r.h / 2) as f32);
-        let tip = if self.open { -3.0 } else { 3.0 };
-        crate::draw::stroke(
-            cx.canvas,
-            Rect::new(r.right() - 32, r.y, 24, r.h),
-            &[(ax - 6.0, ay - tip), (ax, ay + tip), (ax + 6.0, ay - tip)],
-            2.0,
-            t.accent,
-        );
-        let r = Rect::new(r.x, r.y, r.w - 30, r.h);
+        cx.panel(r);
         let inner = r.inset_xy(14, 12);
         let sw = inner.h.min(40);
         cx.canvas.fill_round_rect(
@@ -1248,31 +1217,18 @@ impl Widget for InstCard {
             t.text,
             &self.name,
         );
-        let (ink, line) = match &self.note {
-            Some(n) => (t.warn, n),
-            None => (t.text_dim, &self.detail),
-        };
         cx.text(
             FontId::Sans,
             t.size_small - 1.0,
             bottom,
             Align::Left,
-            ink,
-            line,
+            t.text_dim,
+            &self.detail,
         );
     }
 
-    fn targets(&self, r: Rect) -> Vec<mpfree_ui::Target> {
-        let what = if self.open {
-            "Close the synths".to_string()
-        } else {
-            format!("{}: pick a synth", self.name)
-        };
-        vec![mpfree_ui::Target::tap("card", 0, what, r)]
-    }
-
-    fn touch(&mut self, _f: u64, phase: Touch, _x: i32, _y: i32, _r: Rect) -> Option<EventKind> {
-        (phase == Touch::Down).then_some(EventKind::Select(0))
+    fn touch(&mut self, _f: u64, _phase: Touch, _x: i32, _y: i32, _r: Rect) -> Option<EventKind> {
+        None
     }
 }
 

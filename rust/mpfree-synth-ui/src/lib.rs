@@ -31,8 +31,6 @@
 //!   hammer, decays, tremolo), Drawbar (the drawbars, the wave, the
 //!   percussion, the rotor), Squelch (the wave, the filter, the sweep) and
 //!   Analog (the oscillators, the filter, envelopes, LFO, the voice cards).
-//! - [`pick`]: the list of synths over the page, to pick what the track
-//!   plays (a tap on the instrument card).
 //! - [`format`]: value text (260 Hz, 2.5 kHz, +3.2 oct).
 //! - [`draw`]: anti-aliased lines and arcs through `Canvas::blend_mask`.
 //! - [`sample`]: sample screens for the workstation preview and the tests.
@@ -47,7 +45,6 @@ pub mod format;
 pub mod inst_visual;
 pub mod kit_visual;
 pub mod pages;
-pub mod pick;
 pub mod qsets;
 pub mod sample;
 pub mod section_plans;

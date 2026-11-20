@@ -34,14 +34,12 @@ pub mod mapper;
 pub mod saved;
 pub mod step_pads;
 mod synth_pads;
-mod synth_pick;
 
 pub use arp::{built_in_patterns, mode_label, ArpItem, ArpView, LiveMap, WorkspaceView};
 pub use mapper::{Code, MapView, Mark};
 use mpfree_arp::scale::pads::Pad as PadNotes;
 pub use step_pads::StepPads;
 pub use synth_pads::SynthItem;
-pub use synth_pick::SynthPickView;
 
 use crate::cores::SoundCores;
 use crate::looping::{LoopAction, LoopMemory, LoopSource};
@@ -1113,15 +1111,6 @@ pub enum Effect {
         track: usize,
         id: Option<&'static str>,
     },
-    /// The list of synths opened on track `track`: the audio loop keeps a
-    /// copy of the track's own sound, for Cancel ([`Effect::TrackSoundBack`]).
-    KeepTrackSound(usize),
-    /// Cancel on the list of synths: track `track` plays again what it
-    /// played when the list opened (the copy [`Effect::KeepTrackSound`]
-    /// kept), or its kit.
-    TrackSoundBack(usize),
-    /// The list of synths over the Synth tab, or closed (None).
-    SynthPick(Option<SynthPickView>),
     /// The mixer opened on a view, or closed (`None`): the audio thread
     /// sends the panel its state only while it is open.
     Mixer(Option<mpfree_mixer_ui::MixView>),
@@ -1531,8 +1520,6 @@ pub struct App {
     /// The synth pads' engine, scale and bank layouts (the Synth tab's
     /// options), as handed to the synth.
     synth_pads: crate::synth::PadSettings,
-    /// The list of synths over the Synth tab, while it is open.
-    synth_pick: Option<synth_pick::SynthPick>,
     /// What each track plays as its own instrument (None: the kit), as
     /// the audio loop last said ([`App::set_track_sound`]); the Synth tab's
     /// Instrument row shows and sets the armed track's.
@@ -1739,7 +1726,6 @@ impl App {
             custom_scales: Vec::new(),
             scale_pick: 0,
             synth_pads: Default::default(),
-            synth_pick: None,
             track_sounds: [None; mpfree_seq::MAX_TRACKS],
             plugin_synths: Vec::new(),
             pad_scale_pick: 0,
@@ -3879,16 +3865,6 @@ impl App {
     /// Show `v`. The page left is remembered for going back, unless it is
     /// a menu, the guide or the workspace (whose Back goes to the panel).
     fn show(&mut self, v: View) -> Vec<Effect> {
-        // The list of synths keeps what it put on the track.
-        let picked = self.close_synth_pick(true);
-        let mut fx = self.show_page(v);
-        if !picked.is_empty() {
-            fx.splice(0..0, picked);
-        }
-        fx
-    }
-
-    fn show_page(&mut self, v: View) -> Vec<Effect> {
         self.menu_editing = false;
         // The screen closes a list or pad over the page when the page
         // changes, and Sample Recall with it.
@@ -7194,112 +7170,6 @@ mod tests {
         assert!(fx.contains(&Effect::Show(View::Synth)), "{fx:?}");
         press(&mut app, MENU);
         assert_eq!(app.view(), View::Synth);
-    }
-
-    /// The list of synths (Jay's device notes, 20 Nov 2026): a tap on the
-    /// instrument card opens it, a tap on a synth puts it on the track at
-    /// once, Cancel puts back what it had and Keep keeps it.
-    #[test]
-    fn the_list_of_synths_tries_a_synth_and_cancel_puts_the_kit_back() {
-        let sound = |fx: &[Effect]| {
-            fx.iter().find_map(|e| match e {
-                Effect::TrackSound { track, id } => Some((*track, *id)),
-                _ => None,
-            })
-        };
-        let view = |fx: &[Effect]| {
-            fx.iter().find_map(|e| match e {
-                Effect::SynthPick(v) => Some(v.clone()),
-                _ => None,
-            })
-        };
-        let mut app = ready();
-        assert!(app.open_synth_pick().is_empty(), "only on the Synth tab");
-        app.open_tab(View::Synth);
-        let fx = app.open_synth_pick();
-        assert!(fx.contains(&Effect::KeepTrackSound(0)), "{fx:?}");
-        let v = view(&fx).flatten().expect("the list");
-        assert_eq!(v.track, 0);
-        assert_eq!(v.choices[0].0, "Kit");
-        assert_eq!(v.choices[2].0, "FM");
-        assert_eq!(v.choices.len(), 1 + crate::synth::Engine::ALL.len());
-        assert_eq!((v.now, v.had), (0, 0));
-        // FM, then Pluck: each plays at once.
-        let fx = app.pick_synth(2);
-        assert_eq!(sound(&fx), Some((0, Some("mpfree.fm"))));
-        assert_eq!(view(&fx).flatten().map(|v| v.now), Some(2));
-        let fx = app.pick_synth(4);
-        assert_eq!(
-            sound(&fx),
-            Some((0, Some(crate::synth::Engine::Pluck.node_id())))
-        );
-        assert!(app
-            .pick_synth(4)
-            .iter()
-            .all(|e| !matches!(e, Effect::TrackSound { .. })));
-        // Cancel: the kit again.
-        let fx = app.close_synth_pick(false);
-        assert_eq!(fx, vec![Effect::TrackSoundBack(0), Effect::SynthPick(None)]);
-        assert_eq!(app.track_sound(0), None);
-        assert!(app.pick_synth(2).is_empty(), "closed");
-        // Keep: FM stays.
-        app.open_synth_pick();
-        app.pick_synth(2);
-        assert_eq!(app.close_synth_pick(true), vec![Effect::SynthPick(None)]);
-        assert_eq!(app.track_sound(0).map(|h| h.name), Some("FM"));
-        // Another page keeps the pick too, and closes the list.
-        app.open_synth_pick();
-        app.pick_synth(3);
-        let fx = app.open_tab(View::Play);
-        assert!(fx.contains(&Effect::SynthPick(None)), "{fx:?}");
-        assert_eq!(app.track_sound(0).map(|h| h.name), Some("Drums"));
-        // Cancel with nothing changed changes nothing.
-        app.open_tab(View::Synth);
-        app.open_synth_pick();
-        assert_eq!(app.close_synth_pick(false), vec![Effect::SynthPick(None)]);
-        // A second tap on the card closes it and keeps the pick.
-        app.open_synth_pick();
-        app.pick_synth(1);
-        assert_eq!(app.open_synth_pick(), vec![Effect::SynthPick(None)]);
-        assert_eq!(app.track_sound(0).map(|h| h.name), Some("Poly"));
-        // Poly, FM, Poly again, Cancel: the second Poly is a fresh copy, so
-        // the sound Poly had when the list opened comes back.
-        app.open_synth_pick();
-        app.pick_synth(2);
-        assert_eq!(sound(&app.pick_synth(1)), Some((0, Some("mpfree.poly"))));
-        let fx = app.close_synth_pick(false);
-        assert_eq!(fx, vec![Effect::TrackSoundBack(0), Effect::SynthPick(None)]);
-        assert_eq!(app.track_sound(0).map(|h| h.name), Some("Poly"));
-        // Kit, FM, Kit again, Cancel: the kit it plays is the kit it had.
-        app.open_synth_pick();
-        app.pick_synth(0);
-        app.close_synth_pick(true);
-        app.open_synth_pick();
-        app.pick_synth(2);
-        app.pick_synth(0);
-        assert_eq!(app.close_synth_pick(false), vec![Effect::SynthPick(None)]);
-        assert_eq!(app.track_sound(0), None);
-    }
-
-    /// Play on the pads: the track on its kit takes the synth shown (the
-    /// synth on the pads' engine) as its own instrument; with one already,
-    /// nothing.
-    #[test]
-    fn play_on_the_pads_gives_a_track_on_its_kit_the_synth_shown() {
-        let mut app = ready();
-        app.open_tab(View::Synth);
-        app.set_track(2);
-        let fx = app.play_synth_on_pads();
-        assert!(
-            fx.contains(&Effect::TrackSound {
-                track: 2,
-                id: Some(app.synth_pads.engine.node_id())
-            }),
-            "{fx:?}"
-        );
-        assert!(app.take_project_edit(), "the project keeps it");
-        assert!(app.play_synth_on_pads().is_empty(), "it has one now");
-        assert_eq!(app.track_sound(1), None, "track 2 alone");
     }
 
     /// The Synth tab's gear opens its options, as MENU does, and the
