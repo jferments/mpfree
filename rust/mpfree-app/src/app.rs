@@ -7262,6 +7262,23 @@ mod tests {
         app.pick_synth(1);
         assert_eq!(app.open_synth_pick(), vec![Effect::SynthPick(None)]);
         assert_eq!(app.track_sound(0).map(|h| h.name), Some("Poly"));
+        // Poly, FM, Poly again, Cancel: the second Poly is a fresh copy, so
+        // the sound Poly had when the list opened comes back.
+        app.open_synth_pick();
+        app.pick_synth(2);
+        assert_eq!(sound(&app.pick_synth(1)), Some((0, Some("mpfree.poly"))));
+        let fx = app.close_synth_pick(false);
+        assert_eq!(fx, vec![Effect::TrackSoundBack(0), Effect::SynthPick(None)]);
+        assert_eq!(app.track_sound(0).map(|h| h.name), Some("Poly"));
+        // Kit, FM, Kit again, Cancel: the kit it plays is the kit it had.
+        app.open_synth_pick();
+        app.pick_synth(0);
+        app.close_synth_pick(true);
+        app.open_synth_pick();
+        app.pick_synth(2);
+        app.pick_synth(0);
+        assert_eq!(app.close_synth_pick(false), vec![Effect::SynthPick(None)]);
+        assert_eq!(app.track_sound(0), None);
     }
 
     /// Play on the pads: the track on its kit takes the synth shown (the

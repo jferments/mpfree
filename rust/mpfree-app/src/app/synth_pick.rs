@@ -37,11 +37,14 @@ pub struct SynthPickView {
     pub had: usize,
 }
 
-/// The list open on a track: what it played when it opened.
+/// The list open on a track: what it played when it opened, and whether
+/// a tap changed its instrument since (back to the same synth too: that
+/// one is a fresh copy, not the sound it had).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct SynthPick {
     track: usize,
     had: Option<Held>,
+    changed: bool,
 }
 
 /// What each built-in synth is good for, in musicians' words (the manual's
@@ -112,6 +115,9 @@ impl App {
                 instance: 0,
             }),
         );
+        if let Some(open) = self.synth_pick.as_mut().filter(|p| p.track == track) {
+            open.changed = true;
+        }
         vec![Effect::TrackSound {
             track,
             id: pick.map(|c| c.0),
@@ -155,6 +161,7 @@ impl App {
         self.synth_pick = Some(SynthPick {
             track,
             had: self.track_sound(track),
+            changed: false,
         });
         // The audio loop keeps the track's sound now, for Cancel.
         vec![
@@ -175,14 +182,16 @@ impl App {
 
     /// Keep (or the page left, another track, the card again): the list
     /// closes and the track keeps what it plays. Cancel: what it played
-    /// when the list opened comes back, its own sound as it was.
+    /// when the list opened comes back, its own sound as it was, also
+    /// after a round trip back to the same synth (a fresh copy of it).
     pub fn close_synth_pick(&mut self, keep: bool) -> Vec<Effect> {
         let Some(pick) = self.synth_pick.take() else {
             return Vec::new();
         };
         let mut fx = Vec::new();
         let now = self.track_sound(pick.track);
-        if !keep && now.map(|h| h.id) != pick.had.map(|h| h.id) {
+        let moved = now.map(|h| h.id) != pick.had.map(|h| h.id);
+        if !keep && pick.changed && (moved || pick.had.is_some()) {
             self.set_track_sound(pick.track, pick.had);
             self.project_edit = true;
             fx.push(Effect::TrackSoundBack(pick.track));
