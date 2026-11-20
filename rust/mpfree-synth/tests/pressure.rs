@@ -179,8 +179,8 @@ fn a_level_slot_is_a_swell_never_a_boost() {
         }
     }
     assert_eq!(
-        checked, 5,
-        "Brass, Dust Pad, Worn Brass, Brass Section and Silk Pad swell"
+        checked, 6,
+        "Brass, Dust Pad, Worn Brass, Morph Pad, Brass Section and Silk Pad swell"
     );
 }
 

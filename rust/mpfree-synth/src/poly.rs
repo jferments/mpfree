@@ -48,7 +48,9 @@ use crate::osc::{self, Classic, Shape, Super, SAWS};
 use crate::params::*;
 use crate::pressure::{lfo_gate, swell_gain, Depths, Slot, MAX_TARGETS};
 use crate::table_osc::{self, Run, Warp, WARP_FM};
-use crate::voice::{routed, Adsr, Channel, DcBlock, Inputs, Lfo, Route, Source, VelCurve};
+use crate::voice::{
+    routed, Adsr, Channel, DcBlock, Inputs, Lfo, Priority, Route, Source, VelCurve,
+};
 use crate::wavetable::factory;
 use crate::wavetable::params::USER_TABLE;
 use crate::wavetable::table::Table;
@@ -290,6 +292,8 @@ struct Shared {
     /// the FM warp (the other oscillator moves its phase).
     table: [bool; 2],
     fm: [bool; 2],
+    /// The sub is a sine (else a square).
+    sub_sine: bool,
 }
 
 pub struct Poly {
@@ -599,6 +603,14 @@ impl Poly {
             .count()
     }
 
+    /// In Mono or Legato, the key the voice plays while held and the pitch
+    /// it is at now, in notes (gliding there or arrived); None in Poly or
+    /// with no key held.
+    pub fn mono_note(&self) -> Option<(u8, f32)> {
+        let v = &self.voices[0];
+        (self.v(VOICE_MODE) >= 1.0 && v.state == State::On).then_some((v.note, v.pitch))
+    }
+
     /// The pressure each sounding voice uses now (0 to 1), in voice order,
     /// for the Synth tab's live bars. Returns how many it wrote.
     pub fn pressures(&self, out: &mut [f32]) -> usize {
@@ -837,7 +849,11 @@ impl Poly {
         self.stack_len += 1;
 
         if mode != 0 {
-            // Mono and legato use slot 0 only.
+            // Mono and legato use slot 0 only, for the key Priority picks: a
+            // key that isn't it is only remembered, for when keys come up.
+            if self.held_pick() != Some(note) {
+                return;
+            }
             let glide = self.v(GLIDE) > 0.0;
             let legato = mode == 2 && was_held && self.voices[0].state == State::On;
             let from = if self.voices[0].sounding() {
@@ -1046,6 +1062,17 @@ impl Poly {
         best
     }
 
+    /// The held key Mono and Legato play, by Priority (the newest for
+    /// Last, as before Priority was a setting).
+    fn held_pick(&self) -> Option<u8> {
+        let held = &self.stack[..self.stack_len];
+        match Priority::from_index(self.v(PRIORITY)) {
+            Priority::Last => held.last().copied(),
+            Priority::Low => held.iter().min().copied(),
+            Priority::High => held.iter().max().copied(),
+        }
+    }
+
     fn stack_remove(&mut self, note: u8) {
         if let Some(i) = self.stack[..self.stack_len].iter().position(|&n| n == note) {
             self.stack.copy_within(i + 1..self.stack_len, i);
@@ -1059,13 +1086,14 @@ impl Poly {
         let mode = self.v(VOICE_MODE) as u8;
         let glide = self.v(GLIDE) > 0.0;
         if mode != 0 {
+            let back = self.held_pick();
             let v = &mut self.voices[0];
             if v.state != State::On || v.note != note {
                 return;
             }
-            if self.stack_len > 0 {
-                // Back to the newest note still held, without a retrigger.
-                let back = self.stack[self.stack_len - 1];
+            if let Some(back) = back {
+                // Back to the key still held that Priority picks, without a
+                // retrigger.
                 v.ex.retarget(self.exprs.on(back));
                 v.inp.key = Inputs::key_of(back);
                 v.note = back;
@@ -1185,6 +1213,7 @@ impl Poly {
         });
         s.unison = (self.values[UNISON as usize] as usize).clamp(1, UNISON_MAX);
         s.table = [s.wave1 == WAVE_TABLE, s.wave2 == WAVE_TABLE];
+        s.sub_sine = self.values[SUB_WAVE as usize] >= 0.5;
         // The positions and warps glide only while a Table wave plays.
         if s.table[0] || s.table[1] {
             s.fm = std::array::from_fn(|o| {
@@ -1361,7 +1390,14 @@ impl Poly {
         } else {
             1.0
         };
-        let o1 = self.v(OSC1_OCT) * 12.0;
+        // Glide mode Rate: Glide is how long an octave takes, at a constant
+        // speed in semitones (as Bass's).
+        let glide_step = if self.v(GLIDE_MODE) >= 0.5 && glide_ms > 0.0 {
+            12_000.0 / glide_ms / self.ctrl_rate()
+        } else {
+            0.0
+        };
+        let o1 = self.v(OSC1_OCT) * 12.0 + self.v(OSC1_SEMI) + self.v(OSC1_FINE) / 100.0;
         let o2 = self.v(OSC2_OCT) * 12.0 + self.v(OSC2_SEMI) + self.v(OSC2_FINE) / 100.0;
         let vib = lfo * self.v(LFO_PITCH);
         let pwm = lfo * self.v(LFO_PW) / 100.0;
@@ -1455,9 +1491,18 @@ impl Poly {
 
         let v = &mut self.voices[i];
         let p = v.pv;
-        v.pitch += (v.target - v.pitch) * glide_c;
-        if (v.target - v.pitch).abs() < 1e-4 {
-            v.pitch = v.target;
+        if glide_step > 0.0 {
+            let d = v.target - v.pitch;
+            if d.abs() <= glide_step {
+                v.pitch = v.target;
+            } else {
+                v.pitch += glide_step.copysign(d);
+            }
+        } else {
+            v.pitch += (v.target - v.pitch) * glide_c;
+            if (v.target - v.pitch).abs() < 1e-4 {
+                v.pitch = v.target;
+            }
         }
         v.ex.step(expr_c);
         let m = if MORE {
@@ -1771,7 +1816,8 @@ impl Poly {
             let use_sub = v.sub != 0.0;
             let use_noise = v.noise != 0.0;
             if use_sub {
-                osc_set(Wave::Pulse, c, &mut v.ph_sub, v.dt_sub, 0.5, v.sub);
+                let w = if s.sub_sine { Wave::Sine } else { Wave::Pulse };
+                osc_set(w, c, &mut v.ph_sub, v.dt_sub, 0.5, v.sub);
             }
             if use_noise {
                 for cj in c.iter_mut() {

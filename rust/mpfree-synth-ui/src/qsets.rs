@@ -102,6 +102,12 @@ const POLY: &[Curated] = &[
         "Osc",
         [pp::OSC2_SEMI, pp::OSC2_FINE, pp::OSC1_PW, pp::OSC2_PW],
     ),
+    // The Table wave's: each oscillator's position and warp (the Wavetable
+    // synth's first set, last here so Poly's others keep their places).
+    set(
+        "Tables",
+        [pp::OSC1_POS, pp::OSC2_POS, pp::OSC1_WARP, pp::OSC2_WARP],
+    ),
 ];
 
 use mpfree_synth::fm_params::{self as fp, op, op_id};
@@ -334,7 +340,7 @@ const CHOIR: &[Curated] = &[
     ),
 ];
 
-use mpfree_synth::drum_params::{field as df, pad_id, PADS, STRIDE};
+use mpfree_synth::drum_params::{self as dp, field as df, pad_id, PADS};
 
 use mpfree_synth::drum_fx::{self, field as xf, fx_id};
 
@@ -438,31 +444,59 @@ pub fn on_pad(info: &NodeInfo, sets: &[QSet], pad: usize) -> Vec<QSet> {
     sets.iter()
         .map(|s| QSet {
             name: s.name.clone(),
-            params: s.params.map(|p| {
-                p.map(|id| {
-                    if id < STRIDE {
-                        pad_id(pad, id)
-                    } else if pad1_fx(id) {
-                        fx_id(pad, id - drum_fx::BASE)
-                    } else {
-                        id
-                    }
-                })
-            }),
+            params: s.params.map(|p| p.map(|id| from_relative(pad, id))),
         })
         .collect()
+}
+
+/// As [`on_pad`], with the node's values (`value` by id): a Drums pad's
+/// factory Hit set turns that drum's own four ([`dp::page_qlinks`]: an
+/// 808 kick's tune, decay, tone and drive), as its Synth tab page does. A
+/// Hit set the musician changed stays as it is.
+pub fn on_pad_values(
+    info: &NodeInfo,
+    sets: &[QSet],
+    pad: usize,
+    value: &dyn Fn(u16) -> f32,
+) -> Vec<QSet> {
+    let mut out = on_pad(info, sets, pad);
+    if info.id == DRUMS_ID {
+        let pad = pad.min(PADS - 1);
+        let hit = DRUMS[0].params.map(|id| Some(from_relative(pad, id)));
+        let m = dp::model_of(value(pad_id(pad, df::MODEL)));
+        let own = dp::page_qlinks(m, value(dp::VOICES) >= 0.5).map(|f| Some(pad_id(pad, f)));
+        for set in out.iter_mut().filter(|s| s.params == hit) {
+            set.params = own;
+        }
+    }
+    out
+}
+
+/// Pad 1's id of a pad's field or effect, as the sets keep it, on pad
+/// `pad`; any other id as it is.
+fn from_relative(pad: usize, id: u16) -> u16 {
+    if pad1_fx(id) {
+        return fx_id(pad, id - drum_fx::BASE);
+    }
+    match dp::pad_field(id) {
+        Some((0, f)) => pad_id(pad, f),
+        _ => id,
+    }
 }
 
 /// The id to keep in a set for a parameter learned on screen: for Drums,
 /// a pad's parameter as pad 1's (so the knob follows the pad hit last);
 /// any other id as it is.
 pub fn pad_relative(info: &NodeInfo, id: u16) -> u16 {
-    if info.id == DRUMS_ID && usize::from(id) < PADS * usize::from(STRIDE) {
-        id % STRIDE
-    } else if info.id == DRUMS_ID && (drum_fx::BASE..drum_fx::KIT).contains(&id) {
-        drum_fx::BASE + (id - drum_fx::BASE) % drum_fx::STRIDE
-    } else {
-        id
+    if info.id != DRUMS_ID {
+        return id;
+    }
+    if (drum_fx::BASE..drum_fx::KIT).contains(&id) {
+        return drum_fx::BASE + (id - drum_fx::BASE) % drum_fx::STRIDE;
+    }
+    match dp::pad_field(id) {
+        Some((_, f)) => pad_id(0, f),
+        None => id,
     }
 }
 
@@ -691,7 +725,18 @@ mod tests {
         let p = Poly::new(48_000);
         let sets = factory(p.info(), p.params());
         let names: Vec<&str> = sets.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, ["Tone", "Env", "Filter env", "Motion", "Mix", "Osc"]);
+        assert_eq!(
+            names,
+            [
+                "Tone",
+                "Env",
+                "Filter env",
+                "Motion",
+                "Mix",
+                "Osc",
+                "Tables"
+            ]
+        );
         assert_eq!(
             sets[0].params,
             [pp::CUTOFF, pp::RESONANCE, pp::FENV_AMOUNT, pp::DRIVE].map(Some)
@@ -718,6 +763,36 @@ mod tests {
         assert_eq!(moved.params[3], None);
         // A knob learned on pad 9 is kept as pad 1's and follows the pad.
         assert_eq!(pad_relative(info, pad_id(8, df::DRIVE)), df::DRIVE);
+        // A newer field too: kept as pad 1's, put back on the pad.
+        let strike = pad_relative(info, pad_id(8, df::STRIKE));
+        assert_eq!(strike, pad_id(0, df::STRIKE));
+        let set = QSet {
+            name: "Own".into(),
+            params: [Some(strike), Some(df::TUNE), None, None],
+        };
+        let on3 = &on_pad(info, &[set], 2)[0];
+        assert_eq!(
+            on3.params[..2],
+            [Some(pad_id(2, df::STRIKE)), Some(pad_id(2, df::TUNE))]
+        );
+        // A Current kit's Hit set turns each drum's own four: the 808 kick
+        // on pad 14 of the Init kit.
+        let mut init = Drums::new(48_000);
+        init.load_preset(
+            Drums::presets()
+                .iter()
+                .find(|k| k.name == "Init Kit")
+                .unwrap(),
+        );
+        let own = on_pad_values(info, &sets, 13, &|id| init.param(id));
+        assert_eq!(
+            own[0].params,
+            [df::TUNE, df::DECAY, df::TONE, df::DRIVE].map(|f| Some(pad_id(13, f)))
+        );
+        assert_eq!(own[1..], on_pad(info, &sets, 13)[1..]);
+        // A Classic kit keeps tune, decay, tone and snap.
+        let classic = on_pad_values(info, &sets, 13, &|id| d.param(id));
+        assert_eq!(classic, on_pad(info, &sets, 13));
         assert_eq!(
             pad_relative(info, mpfree_synth::drum_params::BASE_NOTE),
             mpfree_synth::drum_params::BASE_NOTE

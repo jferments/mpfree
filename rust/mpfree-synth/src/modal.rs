@@ -62,6 +62,29 @@ pub const STEEL_DRUM: Modes = &[
     (5.03, 0.15, 0.4),
 ];
 
+/// Glockenspiel: a steel bar free at both ends, its modes at the
+/// free-free beam's 1 : 2.756 : 5.404 : 8.933, ringing long.
+pub const GLOCKENSPIEL: Modes = &[
+    (1.0, 1.0, 1.0),
+    (2.756, 0.35, 0.5),
+    (5.404, 0.2, 0.3),
+    (8.933, 0.1, 0.2),
+];
+/// Xylophone: a rosewood bar tuned so its second mode is a twelfth up
+/// (1 : 3 : 6), dry and short.
+pub const XYLOPHONE: Modes = &[(1.0, 1.0, 1.0), (3.0, 0.45, 0.35), (6.1, 0.2, 0.2)];
+/// Chimes: a tube free at both ends, its modes 2 to 7 over the note the
+/// ear hears, which is the missing fundamental of modes 4, 5 and 6 (near
+/// 2 : 3 : 4); mode 4 is the loudest.
+pub const CHIMES: Modes = &[
+    (0.618, 0.15, 1.2),
+    (1.209, 0.4, 1.1),
+    (2.0, 1.0, 1.0),
+    (2.988, 0.8, 0.85),
+    (4.175, 0.6, 0.7),
+    (5.51, 0.3, 0.55),
+];
+
 /// Materials with many modes would be louder: they share 1.5 among them.
 pub fn mode_share(modes: Modes) -> f32 {
     1.5 / modes.iter().map(|m| m.1).sum::<f32>()
@@ -223,8 +246,10 @@ impl<const N: usize> ModalBank<N> {
         self.y2 = [0.0; N];
     }
 
-    /// One frame: drives every mode with `x` and returns their sum.
-    #[inline]
+    /// One frame: drives every mode with `x` and returns their sum. Always
+    /// inlined: Pluck and Drums both call it, and with two callers the
+    /// compiler stopped inlining it into Pluck (Marimba +5.6 %).
+    #[inline(always)]
     pub fn tick(&mut self, x: f32) -> f32 {
         let mut s = 0.0;
         for k in 0..self.n {
@@ -262,8 +287,9 @@ impl Pulse {
         self.at < self.len
     }
 
-    /// Its next frame (0 once it has ended).
-    #[inline]
+    /// Its next frame (0 once it has ended). Always inlined, as
+    /// [`ModalBank::tick`].
+    #[inline(always)]
     pub fn next(&mut self) -> f32 {
         if self.at < self.len {
             let t = (self.at as f32 + 0.5) / self.len as f32;
