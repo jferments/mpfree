@@ -112,18 +112,21 @@ jobs:
           kits="$RUNNER_TEMP/free-kits" && rm -rf "$kits" && mkdir -p "$kits"
           cargo run --manifest-path rust/Cargo.toml --release --locked -p mpfree-factory --bin mpfree-free-kits -- \
             --cache "$cache" --out "$kits/free-kits" --credits "$kits/free-kits-credits.txt"
-      - name: Build the download helper, mpfree-fetch (linked dynamically)
+      - name: Build the download helper and the plugin process, mpfree-fetch and mpfree-plughost (linked dynamically)
         # The static pad player can't open the MPC's libcurl itself (the 16 Nov run's "Insufficient
-        # randomness"), so the Plugins place downloads through this helper beside it (stick::FETCH_FILE):
-        # linked dynamically, against a glibc no newer than the MPC's 2.39, as CI builds and checks it
-        # (mpc-inventory.yml). Its own target folder, so the static programs' build stays as it is.
+        # randomness"), so the Plugins place downloads through this helper beside it (stick::FETCH_FILE).
+        # Nor can it run plugins built against the MPC's C library (round 2, 20 Nov: Mono Voice crashed
+        # while loading), so each plugin runs in mpfree-plughost beside it (stick::PLUGHOST_FILE). Both
+        # linked dynamically, against a glibc no newer than the MPC's 2.39, as CI builds and checks them
+        # (mpc-inventory.yml). Their own target folder, so the static programs' build stays as it is.
         env:
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
         run: |
           cargo build --manifest-path rust/Cargo.toml --release --locked \
             --target-dir "${CARGO_TARGET_DIR:-rust/target}-fetch" \
-            --target armv7-unknown-linux-gnueabihf -p mpfree-mpcstore --bin mpfree-fetch
-      - name: Collect them, checked against the creator's list (stick::PROGRAM_FILES and FETCH_FILE)
+            --target armv7-unknown-linux-gnueabihf -p mpfree-mpcstore --bin mpfree-fetch \
+            -p mpfree-plughost --bin mpfree-plughost
+      - name: Collect them, checked against the creator's list (stick::PROGRAM_FILES, FETCH_FILE and PLUGHOST_FILE)
         run: |
           out="$RUNNER_TEMP/stick-programs"
           rm -rf "$out" && mkdir -p "$out"
@@ -145,24 +148,29 @@ jobs:
             arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI'
             cp "$f" "$out/$n"
           done
-          # The download helper: optional for a stick, but every release carries it.
-          fetch=$(python3 - <<'PY'
+          # The download helper and the plugin process: optional for a stick, but every release
+          # carries both.
+          helpers=$(python3 - <<'PY'
           import re
           src = open("rust/mpfree-stick/src/stick.rs").read()
-          print(re.search(r'pub const FETCH_FILE: &str = "([a-z0-9-]+)";', src).group(1))
+          print(" ".join(re.search(rf'pub const {c}: &str = "([a-z0-9-]+)";', src).group(1)
+                         for c in ("FETCH_FILE", "PLUGHOST_FILE")))
           PY
           )
-          f="${CARGO_TARGET_DIR:-rust/target}-fetch/armv7-unknown-linux-gnueabihf/release/$fetch"
-          arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI'
-          arm-linux-gnueabihf-readelf -l "$f" | grep -q 'Requesting program interpreter: /lib/ld-linux-armhf.so.3'
-          newest=$(arm-linux-gnueabihf-readelf -W --version-info "$f" | grep -o 'GLIBC_2\.[0-9]*' | sort -t. -k2 -n | tail -1)
-          echo "$fetch asks for $newest at most"
-          [ "${newest#GLIBC_2.}" -le 39 ] || { echo "$fetch needs a newer glibc than the MPC's 2.39"; exit 1; }
-          cp "$f" "$out/$fetch"
+          test -n "$helpers"
+          for helper in $helpers; do
+            f="${CARGO_TARGET_DIR:-rust/target}-fetch/armv7-unknown-linux-gnueabihf/release/$helper"
+            arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI'
+            arm-linux-gnueabihf-readelf -l "$f" | grep -q 'Requesting program interpreter: /lib/ld-linux-armhf.so.3'
+            newest=$(arm-linux-gnueabihf-readelf -W --version-info "$f" | grep -o 'GLIBC_2\.[0-9]*' | sort -t. -k2 -n | tail -1)
+            echo "$helper asks for $newest at most"
+            [ "${newest#GLIBC_2.}" -le 39 ] || { echo "$helper needs a newer glibc than the MPC's 2.39"; exit 1; }
+            cp "$f" "$out/$helper"
+          done
           # The free drum kits (freekits::STICK_FILE): the creator carries them like the
           # programs, and the stick builder adds them after MPFree's own kits.
           cp "$RUNNER_TEMP/free-kits/free-kits" "$out/free-kits"
-          (cd "$out" && sha256sum $names "$fetch" free-kits | tee SHA256SUMS)
+          (cd "$out" && sha256sum $names $helpers free-kits | tee SHA256SUMS)
       - name: Pack the programs for the creator builds
         run: tar -C "$RUNNER_TEMP" -cf "$RUNNER_TEMP/build-stick-programs.tar" stick-programs
       - name: The draft release, with the programs for the creator builds and the free kits' credits

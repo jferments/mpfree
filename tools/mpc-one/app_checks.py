@@ -2215,7 +2215,10 @@ CHECKS = (
          "   [SYN] Mono Voice (after the built-in synths). MENU closes the options.",
          "2. Play pads 1 to 8 for about 10 s, soft and hard.",
          "3. Hold a pad for 30 s, so a status line counts the plugin."],
-        [("the app found the plugin at its start",
+        [("plugins run in mpfree-plughost beside the app, linked against the MPC's C library (round 2: the static "
+          "app itself crashed loading it)",
+          at_start(r"^plugins: the plugin process is /\S*/mpfree-plughost$", r"^plugins: the plugin process is")),
+         ("the app found the plugin at its start",
           at_start(r"^plugins: \d+ effect\(s\) and [1-9]\d* instrument\(s\) in \S*files/plugins/?; "
                    r"each runs in its own process", r"^plugins: \d+ effect")),
          ("a track plays it", seen(r"^track \d+: plays \[SYN\] Mono Voice")),
