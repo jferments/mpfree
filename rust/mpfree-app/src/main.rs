@@ -11490,6 +11490,142 @@ mod tests {
         assert_eq!(transpose_colours(None), [[0; 3]; 16]);
     }
 
+    /// Runs `f` on the clips' and the arps' way to the sounds
+    /// ([`SeqPads`]) with `tracks` on the Synth kit, and gives back what
+    /// the synth was asked to start and end, in order.
+    fn on_the_synth(tracks: &[usize], f: impl FnOnce(&mut SeqPads)) -> Vec<mpfree_node::NodeEvent> {
+        let tone: Vec<i16> = (0..2_000)
+            .flat_map(|i| [((i as f32 * 0.03).sin() * 12_000.0) as i16; 2])
+            .collect();
+        let kick = kit::build(&[(mpc_one::PAD_NOTES[4], "Kick", &tone[..])]);
+        let mut ks = kit::parse_kits(&kit::build_kits(&[("House", kick)])).unwrap();
+        let mut player = sampler::Player::new(&mut ks, &mpc_one::PAD_NOTES, RATE).unwrap();
+        let mut synth = synth::Synth::new(RATE);
+        let mut kits = sampler::TrackKits::new(1);
+        for &t in tracks {
+            assert!(kits.set(t, kits.synth()));
+        }
+        let mut mix = mixing::MixHost::new(RATE, 0.0, 6.0);
+        let mut midi = midi_out::MidiOut::new(RATE, MIDI_OUT_LEAD);
+        let mut cv = cv_out::CvOut::new(RATE, MIDI_OUT_LEAD);
+        let mut tap = export::Tap::new();
+        let mut by_note = vec![mpfree_arp::scale::Held::new(); mpfree_seq::MAX_TRACKS];
+        let live = app::App::new(RATE, false).live_map();
+        assert!(
+            !live.plays_notes(),
+            "the synth's pads by pad, as on the Synth kit"
+        );
+        let mut seq = SeqPads {
+            player: &mut player,
+            synth: &mut synth,
+            kits: &kits,
+            shown: 0,
+            flashes: [0; 128],
+            hits: 0,
+            live,
+            live_hits: [(0, 0); MAX_LIVE_HITS],
+            n_live: 0,
+            silent: 0,
+            midi: &mut midi,
+            cv: &mut cv,
+            own: &mut mix.instruments,
+            modu: &mix.modu,
+            pad_synths: &mut mix.pad_synths,
+            only: None,
+            tap: &mut tap,
+            shifts: [mpfree_seq::Transpose::default(); mpfree_seq::MAX_TRACKS],
+            key: None,
+            by_note: &mut by_note,
+        };
+        f(&mut seq);
+        synth
+            .queued()
+            .into_iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    mpfree_node::NodeEvent::NoteOn { .. } | mpfree_node::NodeEvent::NoteOff { .. }
+                )
+            })
+            .collect()
+    }
+
+    /// Finding 9 of the step sequencer refactor (20 Nov 2026): two tracks
+    /// on the Synth kit play pad 3 at once. Each note lasts until its own
+    /// track lets go: the second hit doesn't cut the first, one track's
+    /// note-off doesn't end the other's note, and the note ends once both
+    /// have let go. Fails until the instrument redesign's step 4 keeps the
+    /// synth's notes by source (track and pad); it lands with that fix.
+    #[test]
+    fn two_tracks_on_the_synth_keep_their_own_notes_on_one_pad() {
+        use mpfree_node::NodeEvent::{NoteOff, NoteOn};
+        use time::Pads;
+        let ev = on_the_synth(&[0, 1], |seq| {
+            assert!(seq.hit_at(0, 3, 100, 0));
+            assert!(seq.hit_at(1, 3, 90, 10));
+            seq.release_at(0, 3, 20);
+        });
+        let ons = ev.iter().filter(|e| matches!(e, NoteOn { .. })).count();
+        assert!(
+            ons >= 2 && ons % 2 == 0,
+            "both tracks started pad 3: {ev:?}"
+        );
+        assert!(
+            !ev.iter().any(|e| matches!(e, NoteOff { .. })),
+            "track 2's note still sounds: {ev:?}"
+        );
+        let ev = on_the_synth(&[0, 1], |seq| {
+            seq.hit_at(0, 3, 100, 0);
+            seq.hit_at(1, 3, 90, 10);
+            seq.release_at(1, 3, 20);
+            seq.release_at(0, 3, 30);
+        });
+        let offs = ev.iter().filter(|e| matches!(e, NoteOff { .. })).count();
+        assert_eq!(
+            2 * offs,
+            ons,
+            "each note ends once, when both let go: {ev:?}"
+        );
+        assert!(matches!(ev.last(), Some(NoteOff { .. })), "{ev:?}");
+    }
+
+    /// Finding 9 with the live pads: a clip on track 2 plays pad 3 while
+    /// you play pad 3 on the armed track. Letting go of your pad ends your
+    /// note, not the clip's. Lands with the instrument redesign's step 4,
+    /// as above.
+    #[test]
+    fn a_live_pad_on_the_synth_leaves_a_clips_note_on_the_same_pad() {
+        use mpfree_node::NodeEvent::{NoteOff, NoteOn};
+        use mpfree_play::{Event, Out};
+        use time::Pads;
+        let live = |offset: u32, event| Out {
+            offset,
+            frame: u64::from(offset),
+            track: 0,
+            dest: 0,
+            event,
+        };
+        let ev = on_the_synth(&[0, 1], |seq| {
+            assert!(seq.hit_at(1, 3, 100, 0));
+            seq.live(&live(
+                10,
+                Event::NoteOn {
+                    note: 3,
+                    velocity: 100,
+                },
+            ));
+            seq.live(&live(20, Event::NoteOff { note: 3 }));
+        });
+        assert!(
+            ev.iter().filter(|e| matches!(e, NoteOn { .. })).count() >= 2,
+            "{ev:?}"
+        );
+        assert!(
+            !ev.iter().any(|e| matches!(e, NoteOff { .. })),
+            "the clip's note still sounds: {ev:?}"
+        );
+    }
+
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
     }
