@@ -9849,6 +9849,9 @@ fn player_session(
         // project's, a followed clock's, or the song's tempo points and
         // ramps while song mode plays them.
         synth.start(i * PERIOD as u64, time.info().bpm);
+        // The list of instruments follows the tracks' own: a new one gets
+        // an id, one taken out loses its. Never allocates.
+        listed.follow(mix.instruments.held_tracks());
         let homes = track_kits.homes(|t| !mix.instruments.holds(t) && !midi_out.takes(t as u16));
         let mut pads = mix.pads_homed(&homes);
         // With the drums split (Cores 3 and 2), the lane's voices are waited

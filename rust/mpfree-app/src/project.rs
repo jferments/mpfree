@@ -330,6 +330,37 @@ fn instrument_list(snap: &Snapshot, format: u32, notes: &mut Vec<String>) -> Ins
     }
 }
 
+/// The tracks' own instruments in the list (step 2b): each track the
+/// instruments part gave one (`held`, a bit each) keeps the id the list
+/// gives it, or gets a new one: silently in a project saved before
+/// instruments had ids, said in a newer one. An id whose track has no
+/// instrument (it wasn't in the part, or couldn't be made) is gone from
+/// the list, said.
+fn own_ids(list: &mut InstrumentList, held: u128, format: u32, notes: &mut Vec<String>) {
+    let tracks = 0..crate::instrument_list::TRACKS;
+    let said = format >= 2;
+    let mut missing = 0u128;
+    for t in tracks.clone() {
+        match (held >> t & 1 == 1, list.own_of(t)) {
+            (true, None) => missing |= 1 << t,
+            (false, Some(id)) if said => notes.push(format!(
+                "project: instrument {id} (track {}'s own) isn't there, so it is gone from the list",
+                t + 1
+            )),
+            _ => {}
+        }
+    }
+    list.follow(held);
+    for t in tracks.filter(|&t| said && missing >> t & 1 == 1) {
+        if let Some(id) = list.own_of(t) {
+            notes.push(format!(
+                "project: track {}'s own instrument had no id in the list; it is instrument {id} now",
+                t + 1
+            ));
+        }
+    }
+}
+
 /// What the tracks play, from the track kits part's picks: a kit as it
 /// is, and an instrument by its id, which is the shared synth (None) when
 /// the list has it. A track whose instrument the list hasn't got is left
@@ -345,6 +376,11 @@ fn tracks_play(
             TrackPick::Kit(k) => out.push((track, Some(k))),
             TrackPick::Instrument(id) => match list.kind(id) {
                 Some(Kind::SharedSynth) => out.push((track, None)),
+                Some(Kind::Own { track: of }) => notes.push(format!(
+                    "project: track {} plays kit 1 (its instrument {id} is track {}'s own)",
+                    track + 1,
+                    of + 1
+                )),
                 None => notes.push(format!(
                     "project: track {} plays kit 1 (its instrument {id} isn't in the project's list)",
                     track + 1
@@ -433,7 +469,13 @@ pub fn opening(
     if let Some(m) = mix.as_mut() {
         m.track1_own = instruments.iter().flatten().any(|l| l.track == 0);
     }
-    let instrument_list = instrument_list(snap, format, &mut notes);
+    let mut instrument_list = instrument_list(snap, format, &mut notes);
+    let held = instruments
+        .iter()
+        .flatten()
+        .filter(|l| l.track < crate::instrument_list::TRACKS)
+        .fold(0u128, |bits, l| bits | 1 << l.track);
+    own_ids(&mut instrument_list, held, format, &mut notes);
     let track_kits = match snap.part(TRACK_KITS).map(track_kits_parse) {
         None => Vec::new(),
         Some(Ok(picks)) => tracks_play(picks, &instrument_list, &mut notes),
@@ -2490,6 +2532,89 @@ mod tests {
         // Format 1 with no list is an old project: nothing to say.
         let o = with(None, None);
         assert!(instrument_notes(&o).is_empty(), "{:?}", o.notes);
+    }
+
+    /// The instruments part with FM on track 2 and Poly on track 4, each
+    /// at its start sound.
+    fn fm_on_2_and_poly_on_4() -> String {
+        use crate::instruments::{make, Instruments};
+        use crate::synth::Engine;
+        let (rate, plugins) = (44_100, crate::plugins::Plugins::none());
+        let synth = crate::synth::Synth::new(rate);
+        let mut inst = Instruments::new(rate, PERIOD);
+        for (track, engine) in [(1, Engine::Fm), (3, Engine::Poly)] {
+            let (id, extras, values) = synth.sound_of(engine);
+            let made = make(&plugins, id, &extras, &values, rate, PERIOD).unwrap();
+            let pads = synth.pads_for(engine);
+            assert!(inst.put(track, made, pads, &synth.tuning_now()).is_ok());
+        }
+        instruments_text(&inst)
+    }
+
+    /// Step 2b: the tracks' own instruments join the list. In a project
+    /// saved before instruments had ids they get the next ids in track
+    /// order, saying nothing; saved again the list names each one's
+    /// track, and opened again every one keeps its id.
+    #[test]
+    fn the_tracks_own_instruments_get_ids_that_come_back() {
+        let none = &crate::plugins::Plugins::none();
+        let mut c = collected(String::new(), String::new());
+        c.instruments = fm_on_2_and_poly_on_4();
+        let mut old = snapshot(&c, Vec::new());
+        old.meta.extra.retain(|(k, _)| k != FORMAT_KEY);
+        let o = opening(&old, 44_100, "an old project", none);
+        assert_eq!(o.instruments.iter().flatten().count(), 2);
+        let id = InstrumentId::from_number;
+        assert_eq!(
+            (o.instrument_list.own_of(1), o.instrument_list.own_of(3)),
+            (id(2), id(3))
+        );
+        assert!(instrument_notes(&o).is_empty(), "{:?}", o.notes);
+
+        c.instrument_list = o.instrument_list.text();
+        let snap = snapshot(&c, Vec::new());
+        assert_eq!(
+            snap.part(INSTRUMENT_LIST),
+            Some(
+                "mpfree-instrument-list 1\nnext 4\ninstrument 1 shared-synth\n\
+                 instrument 2 own track 2\ninstrument 3 own track 4\n"
+            )
+        );
+        let again = opening(&snap, 44_100, "it again", none);
+        assert_eq!(again.instrument_list, o.instrument_list);
+        assert!(instrument_notes(&again).is_empty(), "{:?}", again.notes);
+    }
+
+    /// A newer project whose list and instruments part disagree: a track's
+    /// instrument with no id gets the next one, an id whose track has no
+    /// instrument is gone, and each is said. A track pointed at another
+    /// track's own instrument plays kit 1, said.
+    #[test]
+    fn a_list_that_disagrees_with_the_instruments_part_is_put_right_and_said() {
+        let none = &crate::plugins::Plugins::none();
+        let mut c = collected(
+            format!("{TRACK_KITS_FORMAT}\ntrack 7 instrument 5\n"),
+            "mpfree-instrument-list 1\nnext 9\ninstrument 1 shared-synth\n\
+             instrument 5 own track 2\ninstrument 6 own track 6\n"
+                .to_string(),
+        );
+        c.instruments = fm_on_2_and_poly_on_4();
+        let o = opening(&snapshot(&c, Vec::new()), 44_100, "x", none);
+        let id = InstrumentId::from_number;
+        let list = &o.instrument_list;
+        assert_eq!(
+            (list.own_of(1), list.own_of(3), list.own_of(5)),
+            (id(5), id(9), None)
+        );
+        assert!(o.track_kits.is_empty());
+        assert_eq!(
+            instrument_notes(&o),
+            [
+                "project: instrument 6 (track 6's own) isn't there, so it is gone from the list",
+                "project: track 4's own instrument had no id in the list; it is instrument 9 now",
+                "project: track 7 plays kit 1 (its instrument 5 is track 2's own)",
+            ]
+        );
     }
 
     /// Looper redesign step 4c: a tempo a free first loop set is any

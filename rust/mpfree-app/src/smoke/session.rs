@@ -1141,6 +1141,10 @@ impl Session {
 
     fn period(&mut self) {
         self.settle();
+        // The list of instruments follows the tracks' own, as main.rs's
+        // period does.
+        self.instrument_list
+            .follow(self.mix.instruments.held_tracks());
         let t = self.t();
         // A loop key held for a second clears its loop, as player_session.
         for pad in self.keys_held.holds(t) {
