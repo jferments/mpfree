@@ -140,6 +140,13 @@ pub struct StepRecorder {
     fling_speed: f32,
     /// Down/Move reports per contact, for holds.
     tracks: Vec<(ContactId, Vec<PointerEvent>)>,
+    /// When each contact went down and, once lifted, came up. A hold is
+    /// timed by these, not by its reports: a still finger is never
+    /// reported again (the reader sends a Move only when the place
+    /// changes), so its last report can be seconds before the lift.
+    spans: Vec<(ContactId, u64, Option<u64>)>,
+    /// The latest finger event seen, for a finger still down at the end.
+    last_us: u64,
 }
 
 impl StepRecorder {
@@ -157,6 +164,8 @@ impl StepRecorder {
             flings: 0,
             fling_speed,
             tracks: Vec::new(),
+            spans: Vec::new(),
+            last_us: 0,
         }
     }
 
@@ -166,17 +175,28 @@ impl StepRecorder {
 
     pub fn pointer(&mut self, ev: &PointerEvent) {
         self.start_us.get_or_insert(ev.time_us);
+        self.last_us = self.last_us.max(ev.time_us);
         match ev.phase {
             Phase::Down => {
                 self.downs += 1;
                 self.tracks.push((ev.id, vec![*ev]));
+                self.spans.push((ev.id, ev.time_us, None));
             }
             Phase::Move => {
                 if let Some((_, v)) = self.tracks.iter_mut().find(|(id, _)| *id == ev.id) {
                     v.push(*ev);
                 }
             }
-            Phase::Up | Phase::Cancel => {}
+            Phase::Up | Phase::Cancel => {
+                if let Some((_, _, end)) = self
+                    .spans
+                    .iter_mut()
+                    .rev()
+                    .find(|(id, _, end)| *id == ev.id && end.is_none())
+                {
+                    *end = Some(ev.time_us);
+                }
+            }
         }
     }
 
@@ -235,17 +255,39 @@ impl StepRecorder {
         Some(line)
     }
 
-    /// End the window and judge the step.
+    /// End the window and judge the step, with a finger still down held
+    /// until its last event.
     pub fn finish(&self) -> StepSummary {
-        let hold = self
-            .tracks
-            .iter()
-            .max_by_key(|(_, v)| {
-                let first = v.first().map_or(0, |e| e.time_us);
-                let last = v.last().map_or(0, |e| e.time_us);
-                last - first
-            })
-            .and_then(|(_, v)| hold_stats(v));
+        self.finish_at(self.last_us)
+    }
+
+    /// End the window at `now_us` (the event clock) and judge the step. A
+    /// finger still down counts as held until `now_us`.
+    pub fn finish_at(&self, now_us: u64) -> StepSummary {
+        let now_us = now_us.max(self.last_us);
+        // The longest press, timed from Down to Up (or the window's end).
+        let held = |i: usize| {
+            let (_, down, end) = self.spans[i];
+            end.unwrap_or(now_us).saturating_sub(down)
+        };
+        let hold = (0..self.spans.len().min(self.tracks.len()))
+            .max_by_key(|&i| held(i))
+            .map(|i| {
+                let duration_us = held(i);
+                let reports = &self.tracks[i].1;
+                match hold_stats(reports) {
+                    Some(h) => HoldStats { duration_us, ..h },
+                    // A finger the panel never reported again: no wander.
+                    None => HoldStats {
+                        samples: reports.len(),
+                        duration_us,
+                        rate_hz: 0.0,
+                        std_x: 0.0,
+                        std_y: 0.0,
+                        max_dev: 0.0,
+                    },
+                }
+            });
         let total_swipes: u32 = self.swipes.iter().sum();
         let (pass, note) = match self.step.check {
             Check::Idle => (

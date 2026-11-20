@@ -68,7 +68,6 @@ In the browser's **Projects** place you also have:
 
 - **Save**, the same as SHIFT + BROWSE;
 - **Save as**, which asks for a name and saves the work as a new project;
-- **New project**, below;
 - **Export**, which makes a mixdown, stems and a MIDI file of the song (see [Exporting your music](exporting.md)).
 
 A save is all or nothing. The project's new files are written to the side first and only then swapped in, so if the power goes off during a save, the project opens as it was at the save before. A save that can't finish (a full stick, say) says so and leaves the last save as it was.
@@ -87,7 +86,7 @@ Press **BROWSE**, pick **Projects** on the left, pick a project and push the dat
 
 ### Starting a new project
 
-**New project** in the Projects place starts again from nothing: an empty song with 8 tracks, every track on the kit, no loops, no audio tracks, the factory kits, every arp at its default, the MIDI, sync and CV settings at their defaults, the synth sounds and mixer as they are when MPFree starts, and the synth pads chromatic in C, tuned to A4 = 440 Hz. Your Prefs and the other things MPFree keeps for you stay as they are. Nothing is saved until you save, and the first save names a new project.
+**New project**, at the bottom of the browser's left column under Trash (it is there whichever place the browser shows), starts again from nothing: an empty song with 8 tracks, every track on the kit, no loops, no audio tracks, the factory kits, every arp at its default, the MIDI, sync and CV settings at their defaults, the synth sounds and mixer as they are when MPFree starts, and the synth pads chromatic in C, tuned to A4 = 440 Hz. Your Prefs and the other things MPFree keeps for you stay as they are. Nothing is saved until you save, and the first save names a new project.
 
 If you have changed anything since you last saved or opened, opening a project or New project asks first, so you never lose work by accident. Playing the pads, changing page or the Level doesn't count as a change.
 
