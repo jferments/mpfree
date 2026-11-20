@@ -98,6 +98,10 @@ pub struct Control {
     pub look: Look,
     pub faint: bool,
     pub why: String,
+    /// A knob lit in this colour, and its name too, in place of the
+    /// accent: the Q-Link that turns it (the Pads tab's Level, Pan, Tune
+    /// and Voices in Q1 to Q4's colours).
+    pub tint: Option<Color>,
 }
 
 impl Control {
@@ -106,11 +110,18 @@ impl Control {
             look,
             faint: false,
             why: String::new(),
+            tint: None,
         }
     }
 
     pub fn faint_if(mut self, faint: bool) -> Control {
         self.faint = faint;
+        self
+    }
+
+    /// A knob lit in `color` ([`Control::tint`]).
+    pub fn tinted(mut self, color: Color) -> Control {
+        self.tint = Some(color);
         self
     }
 
@@ -927,7 +938,11 @@ pub fn paint(
         };
         let ink = if c.faint { t.text_faint } else { t.text };
         let dim = if c.faint { t.text_faint } else { t.text_dim };
-        let lit = if c.faint { t.text_faint } else { t.accent };
+        let lit = match (c.faint, c.tint) {
+            (true, _) => t.text_faint,
+            (false, Some(tint)) => tint,
+            (false, None) => t.accent,
+        };
         let on = p.row == selected;
         let (label, _) = p.rect.take_top(LABEL_H);
         match &c.look {
@@ -942,7 +957,14 @@ pub fn paint(
                         label.w,
                         LABEL_H,
                     );
-                    cx.text(FontId::Sans, 13.0, at, Align::Center, dim, line);
+                    cx.text(
+                        FontId::Sans,
+                        13.0,
+                        at,
+                        Align::Center,
+                        c.tint.filter(|_| !c.faint).unwrap_or(dim),
+                        line,
+                    );
                 }
                 let name_h = if p.tall { 2 * LABEL_H } else { LABEL_H };
                 let mid_x = p.rect.x as f32 + p.rect.w as f32 / 2.0;

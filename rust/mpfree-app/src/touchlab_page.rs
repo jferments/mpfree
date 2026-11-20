@@ -233,7 +233,8 @@ impl TouchLabView {
     }
 
     fn close_window(&mut self) {
-        let summary = self.recorder.finish();
+        // A finger still down when the window ends is held until now.
+        let summary = self.recorder.finish_at((self.clock)());
         self.lines.push(summary.journal_line());
         self.results[self.step] = Some(summary);
         self.router.clear();
