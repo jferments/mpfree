@@ -93,6 +93,16 @@ pub const fn track_channel(t: usize) -> usize {
     }
 }
 
+/// The first free place's strip: free places' instruments (the
+/// instrument redesign's step 6, `instruments::FREE`) sound on strips of
+/// their own, past every sequencer track's.
+pub const FREE_FIRST: usize = crate::instruments::first_track() + crate::instruments::TRACKS;
+
+/// Free place `n`'s mixer strip (from 0): [`FREE_FIRST`]` + n`.
+pub const fn free_channel(n: usize) -> usize {
+    FREE_FIRST + n
+}
+
 /// A track channel's name while the track's own instrument plays there
 /// (the instrument redesign's step 4d, Jay's rule: name by instrument):
 /// the instrument first, then the track, "FM · Track 3", so a name cut
@@ -421,7 +431,13 @@ pub fn throw_strips(
     for s in mixer.strips() {
         match s {
             StripId::Track(t) if t < TRACKS => out.push((track_strip_name(s, tracks, own), s)),
-            StripId::Track(t) if t - TRACKS < 128 && in_use & (1 << (t - TRACKS)) != 0 => {
+            // A free place's strip, while an instrument plays there.
+            StripId::Track(t) if t >= FREE_FIRST => {
+                if own(s).is_some() {
+                    out.push((track_strip_name(s, tracks, own), s));
+                }
+            }
+            StripId::Track(t) if in_use & (1 << (t - TRACKS)) != 0 => {
                 out.push((track_strip_name(s, tracks, own), s));
             }
             StripId::Bus(_) => subs.push((name(s), s)),
@@ -458,9 +474,14 @@ pub fn track_strip_name(
 
 /// Track `t`'s part of its own instrument's channel name: "Track 3", and
 /// track 1's old own channel ([`MixHost::old_first`]) as [`OLD_TRACK_1`].
+/// A free place's instrument is named for who plays it
+/// ([`MixHost::own_instrument_on`]): the pads ([`instruments::THE_PADS`],
+/// "Pads"), else the first track that does.
 fn own_track_label(s: StripId, t: usize) -> String {
     if s == StripId::Track(TRACKS) {
         OLD_TRACK_1.into()
+    } else if t == instruments::THE_PADS {
+        "Pads".into()
     } else {
         format!("Track {}", t + 1)
     }
@@ -549,6 +570,7 @@ pub fn name(s: StripId) -> String {
         StripId::Track(LOOP) => "Loop".into(),
         StripId::Track(AUDIO) => "Audio".into(),
         StripId::Track(TRACKS) => OLD_TRACK_1.into(),
+        StripId::Track(t) if t >= FREE_FIRST => format!("Free {}", t - FREE_FIRST + 1),
         StripId::Track(t) if t >= TRACKS => format!("Track {}", t - TRACKS + 1),
         LINE => "Line in".into(),
         s => default_name(s),
@@ -811,8 +833,9 @@ impl MixHost {
             inputs: 1,
             pads: PAD_STRIPS,
             // The engines' tracks, then one for each sequencer track's own
-            // instrument (unused ones cost a few flag checks).
-            tracks: TRACKS + instruments::TRACKS,
+            // instrument, then one for each free place's (step 6; unused
+            // ones cost a few flag checks).
+            tracks: TRACKS + instruments::HOLDERS,
             slots: SLOTS,
             max_latency_ms: 50.0,
         };
@@ -2457,12 +2480,25 @@ impl MixHost {
     /// ([`Instruments::on_strip`]): today track 1's on the Drums strip (or
     /// its old own channel), any other's on its own channel. None for a
     /// strip no track's own instrument plays on (a kit's, the engines'
-    /// others).
+    /// others). A free place's instrument (step 6) is named for who plays
+    /// it: the pads ([`instruments::THE_PADS`]) while they do, else the
+    /// first track that plays it, so two free places' strips never share
+    /// a name ("FM · Pads", "FM · Track 2").
     pub fn own_instrument_on(&self, s: StripId) -> Option<(usize, &'static str)> {
         let StripId::Track(c) = s else {
             return None;
         };
-        self.instruments.on_strip(c).map(|(t, h)| (t, h.name))
+        let (holder, held) = self.instruments.on_strip(c)?;
+        if holder < instruments::TRACKS {
+            return Some((holder, held.name));
+        }
+        let senders = self.instruments.senders(holder);
+        let by = if self.instruments.pads_play_at() == Some(holder) || senders == 0 {
+            instruments::THE_PADS
+        } else {
+            senders.trailing_zeros() as usize
+        };
+        Some((by, held.name))
     }
 
     /// The project's mixer part (`project::mixer_text_lent`), once the
@@ -2756,11 +2792,25 @@ impl MixHost {
     /// The tracks' strips as the mixer's Tracks view shows them: the
     /// engines' tracks, then each track's own instrument's while in use.
     pub fn track_strips(&self) -> Vec<StripId> {
-        let used = self.own_channels_in_use();
         (0..self.mixer.tracks())
-            .filter(|&t| t < TRACKS || used & (1 << (t - TRACKS)) != 0)
+            .filter(|&t| self.track_strip_shown(t))
             .map(StripId::Track)
             .collect()
+    }
+
+    /// Whether mixer track `t` shows on the Tracks view: the engines'
+    /// always, a track's own channel while in use
+    /// ([`MixHost::own_channels_in_use`]), a free place's while its
+    /// instrument plays or rings out there (step 6).
+    fn track_strip_shown(&self, t: usize) -> bool {
+        if t < TRACKS {
+            true
+        } else if t >= FREE_FIRST {
+            let n = t - FREE_FIRST;
+            n < instruments::FREE && self.instruments.free_in_use() >> n & 1 == 1
+        } else {
+            self.own_channels_in_use() >> (t - TRACKS) & 1 == 1
+        }
     }
 
     pub fn poll_state(&mut self, now: Instant) -> Option<MixState> {
@@ -2784,7 +2834,11 @@ impl MixHost {
             .collect();
         let ch = &self.pad_channels;
         // Lent pad channels show while lent.
+        let free_used = self.instruments.free_in_use();
         let shown = |s: StripId| match s {
+            StripId::Track(t) if t >= FREE_FIRST => {
+                t - FREE_FIRST < instruments::FREE && free_used >> (t - FREE_FIRST) & 1 == 1
+            }
             StripId::Track(t) if t >= TRACKS => used & (1 << (t - TRACKS)) != 0,
             StripId::Pad(p) if p >= PADS => ch.holder(s).is_some(),
             _ => true,
@@ -2794,7 +2848,7 @@ impl MixHost {
             None => strip_name(ch, s),
         };
         let mut st = MixState::from_mixer_where(&mut self.mixer, view, &named, &shown);
-        st.counts[0] = TRACKS + used.count_ones() as usize;
+        st.counts[0] = TRACKS + used.count_ones() as usize + free_used.count_ones() as usize;
         st.counts[1] = PADS + ch.lent().count();
         st.tracks = TRACKS;
         st.selected = self.selected;
@@ -3236,6 +3290,47 @@ mod tests {
         assert!(h.poll_instruments().is_some());
         assert_eq!(h.instruments.strip(2), Some(track_channel(2)));
         assert_eq!(h.strip_name(fm), "Poly \u{b7} Track 3");
+    }
+
+    /// A free place's instrument (step 6, a synth picked for the pads)
+    /// sounds on a strip of its own past every track's, named for who
+    /// plays it: "FM · Pads" while the pads do, else the first track that
+    /// plays it. It shows on the Tracks view and in the lists while it is
+    /// there.
+    #[test]
+    fn a_free_places_instrument_has_its_own_strip_named_for_who_plays_it() {
+        use crate::instruments::free;
+        use crate::synth::Engine;
+        let synth = crate::synth::Synth::new(RATE);
+        let mut h = MixHost::new(RATE, -6.0, -6.0);
+        assert!(h.mixer.tracks() > free_channel(instruments::FREE - 1));
+        let job = crate::instrument_job(&synth, free(1), Engine::Fm.node_id(), None);
+        assert!(h.build_instrument(job));
+        assert!(h.poll_instruments().is_some());
+        let strip = StripId::Track(free_channel(1));
+        assert_eq!(h.instruments.strip(free(1)), Some(free_channel(1)));
+        assert_eq!(h.strip_name(strip), "FM \u{b7} Pads", "nobody plays it yet");
+        h.instruments.set_send(4, Some(free(1))).unwrap();
+        assert_eq!(h.strip_name(strip), "FM \u{b7} Track 5");
+        assert!(h.instruments.pads_play(Some(free(1))));
+        assert_eq!(h.strip_name(strip), "FM \u{b7} Pads");
+        assert!(h.track_strips().contains(&strip));
+        h.show(Some(mpfree_mixer_ui::MixView::Tracks));
+        let st = h.poll_state(Instant::now()).unwrap();
+        assert_eq!(
+            st.strips.last().map(|v| v.name.as_str()),
+            Some("FM \u{b7} Pads")
+        );
+        let own = |s| h.own_instrument_on(s);
+        let strips = throw_strips(&h.mixer, h.own_channels_in_use(), &[], &own);
+        assert!(strips
+            .iter()
+            .any(|(n, s)| *s == strip && n == "FM \u{b7} Pads"));
+        // Taken out: the strip goes from the Tracks view.
+        assert!(h.instruments.pads_play(None));
+        h.instruments.set_send(4, None).unwrap();
+        assert!(h.instruments.take_out(free(1)));
+        assert_eq!(name(strip), "Free 2");
     }
 
     /// A project saved with settings on track 1's old own channel opens

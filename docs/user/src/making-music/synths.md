@@ -32,6 +32,21 @@ To hear a synth without changing any track, open the **Synth** tab while the sel
 
 To keep the synth without recording, put it on a track: pick **Synth** in the list of kits, or give the track its own synth (below).
 
+### Pick any synth for the pads
+
+Tap the synth's card at the top left of the **Synth** tab (its name, the track and Native or Plugin) to open the list of synths, **Pick a synth for the pads**. It works whatever the selected track plays.
+
+- **A tap plays it on the pads at once.** Tap **FM** and play the pads: you hear FM, and no track changes. Tap another synth to try that one instead. Each tile says what the synth is good for, and the one on the pads is outlined and marked **ON THE PADS**.
+- **Keep** (it names the synth: **Keep FM**) closes the list and the pads keep the synth. Tapping the card again, or going to another tab, keeps it too. **Cancel** gives the pads back what they played when you opened the list. The first tile, **Track 1's** (it names the selected track), gives the pads back to the track.
+- **It has its own mixer channel**, named for who plays it: **FM · Pads**.
+- **The pads keep it whichever track you select**, as with Play Poly on the pads: **Pads: FM** at the top of the screen says so, and tapping it, or **Follow track** under the card, gives the pads back to the track.
+- **The Synth tab shows it** while the pads play it, so you can pick its presets and turn its knobs. The line under its name reads **Pads, no track**.
+- **REC records it on a free track**, as above: the REC chip names the track first (**REC → Track 2 · FM**). That track then plays the same FM, heard on the FM's channel, and its parts are notes.
+- **A synth you try and leave goes away** once nothing plays it (not the pads, not a track), and the line at the bottom of the screen says so.
+- **Up to 16 synths at once.** The synths picked for the pads and the tracks' own synths count together; with 16 loaded, a tap says there is no room.
+- **The project remembers it.** Saved with FM on the pads, the project opens with FM there again.
+- **Not while the arp plays the pads** (NOTE REPEAT, Latch or the Arp panel): it plays through the selected track, so let go of it first.
+
 ## The twelve synths
 
 Any of the twelve can be a track's own instrument (see [A synth for each track](#a-synth-for-each-track)), and any track can have a different one.

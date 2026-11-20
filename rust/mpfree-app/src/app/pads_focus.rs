@@ -62,8 +62,10 @@ use crate::instrument_list::InstrumentId;
 use mpfree_seq::{Project, Track};
 
 /// What the pads play: the selected track's instrument, or an instrument
-/// chosen for them that stays whichever track is selected. Only the
-/// shared synth can be chosen yet (the Synth tab's button).
+/// chosen for them that stays whichever track is selected: the shared
+/// synth (the Synth tab's button), or, from step 6, an instrument of the
+/// list the instrument host holds (a free place's, picked in the list of
+/// synths, or a track's own).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PadFocus {
     /// The selected track's instrument (a new project's): "Follow track".
@@ -91,8 +93,8 @@ impl PadFocus {
 
     /// The pads part read back ([`PadFocus::text`]); Err says why it
     /// doesn't read: another first line, a line it doesn't know, or an
-    /// instrument that can't be chosen for the pads (only the shared synth
-    /// can, yet).
+    /// instrument number that can't be one. Whether the project's list has
+    /// the instrument is [`App::open_pads`]'s to check.
     pub fn parse(text: &str) -> Result<PadFocus, String> {
         let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
         match lines.next() {
@@ -111,11 +113,6 @@ impl PadFocus {
                         .ok()
                         .and_then(InstrumentId::from_number)
                         .ok_or_else(|| format!("\"{line}\" doesn't read"))?;
-                    if id != InstrumentId::SHARED_SYNTH {
-                        return Err(format!(
-                            "instrument {id} can't be chosen for the pads yet (only the synth, instrument 1)"
-                        ));
-                    }
                     PadFocus::Instrument(id)
                 }
                 _ => return Err(format!("\"{line}\" doesn't read")),
@@ -190,6 +187,11 @@ pub struct RecPlan {
     pub take: SynthTake,
     /// The pads' synth's name ("Poly").
     pub synth: &'static str,
+    /// The holder of the instrument the pads play in the instrument host
+    /// (step 6: a synth picked in the list of synths, in a free place),
+    /// which the track REC records on plays by a send; None for the
+    /// shared synth, which it plays as its Synth kit.
+    pub holder: Option<usize>,
 }
 
 impl RecPlan {
@@ -244,12 +246,84 @@ impl App {
         self.pads_focus() == PadFocus::SYNTH
     }
 
+    /// The holder in the instrument host of the instrument chosen for the
+    /// pads (step 6): a free place's, or a track's own. None while they
+    /// follow the track or have the shared synth, or once the list hasn't
+    /// got it.
+    pub fn pads_holder(&self) -> Option<usize> {
+        match self.pads_focus {
+            PadFocus::Instrument(id) => self.instrument_list.kind(id)?.holder(),
+            PadFocus::Track => None,
+        }
+    }
+
+    /// The instrument chosen for the pads that the host holds, as the
+    /// audio loop last said ("FM"), for the screen.
+    pub fn pads_held(&self) -> Option<crate::instruments::Held> {
+        self.track_sound(self.pads_holder()?)
+    }
+
+    /// The project's list of instruments as the audio loop has it now
+    /// (copied: it holds no heap). A free place given a synth for the
+    /// pads ([`App::pick_pads_synth`]) is what they play once it has an
+    /// id; an instrument chosen for them that has gone from the list gives
+    /// them back to the track, said. Nothing to do, nothing allocated.
+    pub fn set_instrument_list(
+        &mut self,
+        list: &crate::instrument_list::InstrumentList,
+    ) -> Vec<Effect> {
+        self.instrument_list.clone_from(list);
+        if let Some(id) = self.pads_to.and_then(|n| list.free_of(n)) {
+            self.pads_to = None;
+            self.pads_focus = PadFocus::Instrument(id);
+            return vec![Effect::PadsFocus(self.pads_focus)];
+        }
+        match self.pads_focus {
+            PadFocus::Instrument(id) if list.kind(id).is_none() => self.pads_back(|t| {
+                format!("The pads' synth is gone: they follow the track and play Track {t}'s instrument")
+            }),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The free places whose instrument nothing plays any more (not the
+    /// pads, nor a track by a send, nor one waiting to be the pads'), each
+    /// taken out (step 6): a synth tried on the pads and left goes away,
+    /// as nothing records it. Once a period; nothing allocated when there
+    /// is none.
+    pub fn put_away_free(&mut self) -> Vec<Effect> {
+        let mut fx = Vec::new();
+        let pads = self.pads_holder();
+        for n in 0..crate::instruments::FREE {
+            let holder = crate::instruments::free(n);
+            let Some(held) = self.track_sound(holder) else {
+                continue;
+            };
+            let sent = (0..mpfree_seq::MAX_TRACKS).any(|t| self.track_send(t) == Some(holder));
+            if pads == Some(holder) || self.pads_to == Some(n) || sent || self.keeps_free(n) {
+                continue;
+            }
+            self.set_track_sound(holder, None);
+            fx.push(Effect::TrackSound {
+                track: holder,
+                id: None,
+            });
+            fx.push(Effect::Note(format!(
+                "{}: nothing plays it, so it is put away",
+                held.name
+            )));
+        }
+        fx
+    }
+
     /// The Synth tab's button under the instrument card: the pads play the
     /// synth the tab shows whichever track is selected, or, while they do,
     /// follow the selected track again. Nothing while the pads follow a
     /// track that plays a synth already: its own, or the shared one.
     pub fn toggle_pads_synth(&mut self) -> Vec<Effect> {
-        if self.pads_chose_synth() {
+        // The shared synth, or a synth picked in the list (step 6): Follow
+        // track.
+        if self.pads_focus != PadFocus::Track || self.pads_to.is_some() {
             return self.pads_follow_track();
         }
         if self.pad_layout.is_some() || self.track_plays_instrument(self.track) {
@@ -291,6 +365,32 @@ impl App {
         })
     }
 
+    /// REC while the pads play a synth picked in the list of synths (step
+    /// 6), from holder `holder` of the instrument host: track `track` (0
+    /// based) plays that same instrument from now on by a send
+    /// ([`Effect::TrackSend`]), so the take plays the sound that was heard,
+    /// with no copy. The pads keep it (rule 1). The caller arms `track`,
+    /// which it added for this take when `added`.
+    pub fn rec_send_on(&mut self, track: usize, holder: usize, added: bool) -> Vec<Effect> {
+        let name = self
+            .track_sound(holder)
+            .map_or("the pads' synth", |h| h.name);
+        let new = if added { "a new track, " } else { "" };
+        self.project_edit = true;
+        // Before the audio loop says so: the press that follows records
+        // there.
+        if let Some(s) = self.track_sends.get_mut(track) {
+            *s = u8::try_from(holder).ok();
+        }
+        vec![
+            Effect::TrackSend { track, to: holder },
+            Effect::Note(format!(
+                "REC records {name} on {new}Track {}: the track plays the same {name} as the pads",
+                track + 1
+            )),
+        ]
+    }
+
     /// The name of the synth the pads can play ("Poly").
     pub fn pads_synth_name(&self) -> &'static str {
         self.synth_pads.engine.name()
@@ -328,12 +428,32 @@ impl App {
     /// allocation) otherwise: over a track that plays the synth the arp
     /// plays it.
     pub fn arp_ends_pads_synth(&mut self) -> Vec<Effect> {
-        if !self.pads_chose_synth() || self.pad_layout.is_some() || !self.generating() {
+        // The shared synth over a track that plays something else (no
+        // synth layout on the pads), or an instrument of the host's that
+        // the track doesn't play.
+        let over = match self.pads_focus {
+            PadFocus::Track => false,
+            _ if self.pads_chose_synth() => self.pad_layout.is_none(),
+            PadFocus::Instrument(_) => self
+                .pads_holder()
+                .is_some_and(|h| self.track_owner(self.track) != Some(h)),
+        };
+        if !over || !self.generating() {
             return Vec::new();
         }
         self.pads_back(|t| {
             format!("The arp plays Track {t}'s instrument: the pads follow the track")
         })
+    }
+
+    /// The holder whose instrument track `track` plays: its own, else the
+    /// one it sends to, as the audio loop last said.
+    pub fn track_owner(&self, track: usize) -> Option<usize> {
+        if self.track_sound(track).is_some() {
+            Some(track)
+        } else {
+            self.track_send(track)
+        }
     }
 
     /// The tracks with a kit (not the synth) or a MIDI output picked, a bit
@@ -371,12 +491,21 @@ impl App {
     }
 
     /// A project's pads part (None: New, or a project saved before it had
-    /// one: the pads follow the track). A part that doesn't read is said,
-    /// and the pads follow the track.
+    /// one: the pads follow the track). A part that doesn't read, or names
+    /// an instrument the project's list hasn't got
+    /// ([`App::set_instrument_list`] first), is said, and the pads follow
+    /// the track.
     pub fn open_pads(&mut self, text: Option<&str>) -> (Vec<String>, Vec<Effect>) {
         let mut notes = Vec::new();
+        self.pads_to = None;
         let focus = match text.map(PadFocus::parse) {
             None => PadFocus::Track,
+            Some(Ok(PadFocus::Instrument(id))) if self.instrument_list.kind(id).is_none() => {
+                notes.push(format!(
+                    "project: the pads part wasn't opened (instrument {id} isn't in the project's list); the pads follow the track"
+                ));
+                PadFocus::Track
+            }
             Some(Ok(f)) => f,
             Some(Err(why)) => {
                 notes.push(format!(
@@ -392,10 +521,11 @@ impl App {
     /// The pads follow the selected track again, saying what `why` writes.
     /// Nothing (and no allocation) when they do already.
     pub(super) fn pads_back(&mut self, why: impl FnOnce(usize) -> String) -> Vec<Effect> {
-        if self.pads_focus == PadFocus::Track {
+        if self.pads_focus == PadFocus::Track && self.pads_to.is_none() {
             return Vec::new();
         }
         self.pads_focus = PadFocus::Track;
+        self.pads_to = None;
         self.project_edit = true;
         vec![
             Effect::PadsFocus(PadFocus::Track),

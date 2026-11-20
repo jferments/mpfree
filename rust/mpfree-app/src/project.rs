@@ -378,10 +378,39 @@ fn own_ids(list: &mut InstrumentList, held: u128, format: u32, notes: &mut Vec<S
     }
 }
 
+/// The free places' instruments in the list (step 6): each place the
+/// instruments part gave one (`held`, a bit each) keeps the id the list
+/// gives it, or gets a new one, said; an id whose place has none (it
+/// couldn't be made) is gone from the list, said.
+fn free_ids(list: &mut InstrumentList, held: u16, notes: &mut Vec<String>) {
+    let places = 0..crate::instrument_list::FREE;
+    let mut missing = 0u16;
+    for n in places.clone() {
+        match (held >> n & 1 == 1, list.free_of(n)) {
+            (true, None) => missing |= 1 << n,
+            (false, Some(id)) => notes.push(format!(
+                "project: instrument {id} (free place {}'s) isn't there, so it is gone from the list",
+                n + 1
+            )),
+            _ => {}
+        }
+    }
+    list.follow_free(held);
+    for n in places.filter(|&n| missing >> n & 1 == 1) {
+        if let Some(id) = list.free_of(n) {
+            notes.push(format!(
+                "project: free place {}'s instrument had no id in the list; it is instrument {id} now",
+                n + 1
+            ));
+        }
+    }
+}
+
 /// What the tracks play, from the track kits part's picks: a kit as it
 /// is, and an instrument by its id: the shared synth (None in the first
-/// list), or another track's own instrument (step 4), a send in the
-/// second list (the track and the instrument's track). A track whose
+/// list), or another track's own instrument (step 4) or a free place's
+/// (step 6), a send in the second list (the track and the instrument's
+/// holder, `instruments::free` for a free place). A track whose
 /// instrument the list hasn't got, or that points at its own, is left
 /// out, so it plays its kit, and said.
 #[allow(clippy::type_complexity)]
@@ -398,6 +427,9 @@ fn tracks_play(
             TrackPick::Instrument(id) => match list.kind(id) {
                 Some(Kind::SharedSynth) => out.push((track, None)),
                 Some(Kind::Own { track: of }) if of != track => sends.push((track, of)),
+                Some(Kind::Free { place }) => {
+                    sends.push((track, crate::instruments::free(place)));
+                }
                 Some(Kind::Own { .. }) => notes.push(format!(
                     "project: track {} plays its own instrument {id} (it said it plays it from another track)",
                     track + 1
@@ -414,7 +446,8 @@ fn tracks_play(
 
 /// The track kits part with the sends (step 4): [`TrackKits::text`]'s
 /// lines, then `track 6 instrument 2` for each track that plays another
-/// track's own instrument, by that instrument's id in `list`.
+/// track's own instrument or a free place's, by that instrument's id in
+/// `list`.
 ///
 /// [`TrackKits::text`]: crate::sampler::TrackKits::text
 pub fn track_kits_text(
@@ -425,7 +458,7 @@ pub fn track_kits_text(
     use std::fmt::Write as _;
     let mut s = kits.text();
     for t in 0..crate::instruments::TRACKS {
-        if let Some(id) = inst.send(t).and_then(|o| list.own_of(o)) {
+        if let Some(id) = inst.send(t).and_then(|o| list.of_holder(o)) {
             let _ = writeln!(s, "track {} instrument {id}", t + 1);
         }
     }
@@ -527,6 +560,13 @@ pub fn opening(
         .filter(|l| l.track < crate::instrument_list::TRACKS)
         .fold(0u128, |bits, l| bits | 1 << l.track);
     own_ids(&mut instrument_list, held, format, &mut notes);
+    let held_free = instruments
+        .iter()
+        .flatten()
+        .filter_map(|l| l.track.checked_sub(crate::instrument_list::TRACKS))
+        .filter(|&n| n < crate::instrument_list::FREE)
+        .fold(0u16, |bits, n| bits | 1 << n);
+    free_ids(&mut instrument_list, held_free, &mut notes);
     let (track_kits, sends) = match snap.part(TRACK_KITS).map(track_kits_parse) {
         None => (Vec::new(), Vec::new()),
         Some(Ok(picks)) => tracks_play(picks, &instrument_list, &mut notes),
@@ -1361,10 +1401,20 @@ pub fn mixer_load(
 
 // ------------------------------------------------------------ the tracks' instruments
 
-/// A track's own instrument as a project had it, made on the screen
-/// thread, for the audio loop to put in (`Instruments::put`).
+/// A holder's name in the log: "track 3", "free place 2".
+fn holder_name(holder: usize) -> String {
+    match holder.checked_sub(crate::instruments::TRACKS) {
+        Some(n) => format!("free place {}", n + 1),
+        None => format!("track {}", holder + 1),
+    }
+}
+
+/// A track's own instrument, or a free place's (step 6), as a project had
+/// it, made on the screen thread, for the audio loop to put in
+/// (`Instruments::put`).
 pub struct Loaded {
-    /// The track, from 0.
+    /// Its holder: the track, from 0, or the free place
+    /// (`instruments::free`).
     pub track: usize,
     pub instrument: mpfree_track::Instrument,
     pub held: crate::instruments::Held,
@@ -1379,6 +1429,9 @@ pub struct Loaded {
 /// allocations, once): a plugin's state is its last snapshot, never a
 /// round trip.
 ///
+/// A free place's instrument (step 6) is a `free` block the same way,
+/// numbered from 1, after the tracks'.
+///
 /// ```text
 /// mpfree-instruments 2
 /// track 2 mpfree.fm
@@ -1391,16 +1444,23 @@ pub struct Loaded {
 /// track 4 clap:org.example.synth file=synth.clap
 /// param 0 0.5
 /// state AAECAw==
+/// free 1 mpfree.poly
+/// param 0 3
 /// ```
 pub fn instruments_text(inst: &crate::instruments::Instruments) -> String {
+    use crate::instruments::{HOLDERS, TRACKS};
     let mut s = String::with_capacity(1024);
     s.push_str(INSTRUMENTS_FORMAT);
     s.push('\n');
-    for t in 0..crate::instruments::TRACKS {
+    for t in 0..HOLDERS {
         let Some(node) = inst.node(t) else {
             continue;
         };
-        let _ = write!(s, "track {} {}", t + 1, node.info().id);
+        if t < TRACKS {
+            let _ = write!(s, "track {} {}", t + 1, node.info().id);
+        } else {
+            let _ = write!(s, "free {} {}", t - TRACKS + 1, node.info().id);
+        }
         let extras = node.save_extras();
         let (design, words): (Vec<_>, Vec<_>) = extras.iter().partition(|(k, _)| is_design_key(k));
         for (k, v) in words {
@@ -1468,7 +1528,7 @@ pub fn instruments_load(
             design.clear();
         }
         match first {
-            Some("track") => {
+            Some(kind @ ("track" | "free")) => {
                 if let Some(Some(m)) = open.take() {
                     made.push(m);
                 }
@@ -1479,20 +1539,37 @@ pub fn instruments_load(
                     let (k, v) = kv.split_once('=').ok_or_else(bad)?;
                     extras.push((k.to_string(), v.to_string()));
                 }
-                let track = n
-                    .checked_sub(1)
-                    .filter(|t| *t < crate::instruments::TRACKS && !made.iter().any(|m| m.0 == *t));
-                open = Some(match track {
+                // A track's from 0, or a free place's holder past them.
+                let (whose, holder) = if kind == "track" {
+                    (
+                        format!("track {n}'s"),
+                        n.checked_sub(1).filter(|t| *t < crate::instruments::TRACKS),
+                    )
+                } else {
+                    (
+                        format!("free place {n}'s"),
+                        n.checked_sub(1)
+                            .filter(|k| *k < crate::instruments::FREE)
+                            .map(crate::instruments::free),
+                    )
+                };
+                let holder = holder.filter(|h| !made.iter().any(|m| m.0 == *h));
+                let instead = if kind == "track" {
+                    "the track plays the kit"
+                } else {
+                    "nothing plays it"
+                };
+                open = Some(match holder {
                     None => {
                         notes.push(format!(
-                            "project: track {n}'s instrument is left out (no such track, or named twice)"
+                            "project: {whose} instrument is left out (no such place, or named twice)"
                         ));
                         None
                     }
                     // Not even made: the most at once already are.
                     Some(_) if made.len() >= crate::instruments::SLOTS => {
                         notes.push(format!(
-                            "project: track {n}'s instrument {id} is left out: {} tracks already have their own, the most at once; the track plays the kit",
+                            "project: {whose} instrument {id} is left out: {} instruments are loaded already, the most at once; {instead}",
                             crate::instruments::SLOTS
                         ));
                         None
@@ -1501,7 +1578,7 @@ pub fn instruments_load(
                         Ok((node, instance)) => Some((t, node, instance)),
                         Err(e) => {
                             notes.push(format!(
-                                "project: track {n}'s instrument {id} is left out: {e}; the track plays the kit"
+                                "project: {whose} instrument {id} is left out: {e}; {instead}"
                             ));
                             None
                         }
@@ -1541,8 +1618,8 @@ pub fn instruments_load(
                 if let Some((t, node, _)) = o.as_mut() {
                     if let Err(e) = node.load_state(&bytes) {
                         notes.push(format!(
-                            "project: track {}'s instrument {} didn't take its state ({e})",
-                            *t + 1,
+                            "project: {}'s instrument {} didn't take its state ({e})",
+                            holder_name(*t),
                             node.info().id
                         ));
                     }
@@ -1569,15 +1646,15 @@ pub fn instruments_load(
                 match crate::synth::as_poly(node) {
                     Ok(n) => {
                         notes.push(format!(
-                            "project: track {}'s Wavetable sound plays on Poly now (the Wavetable synth is part of Poly)",
-                            track + 1
+                            "project: {}'s Wavetable sound plays on Poly now (the Wavetable synth is part of Poly)",
+                            holder_name(track)
                         ));
                         n
                     }
                     Err(e) => {
                         notes.push(format!(
-                            "project: track {}'s Wavetable sound didn't move to Poly ({e}); the track plays the kit",
-                            track + 1
+                            "project: {}'s Wavetable sound didn't move to Poly ({e}); it is left out",
+                            holder_name(track)
                         ));
                         return None;
                     }
@@ -2647,6 +2724,43 @@ mod tests {
             "{:?}",
             o.notes
         );
+    }
+
+    /// Step 6: an instrument no track has (a synth picked for the pads,
+    /// in a free place) is saved in the instruments part as "free N" and
+    /// in the list by its id, and a track that plays it by that id; all of
+    /// it comes back the same.
+    #[test]
+    fn a_free_places_instrument_and_a_track_that_plays_it_come_back() {
+        use crate::instruments::{free, make, Instruments};
+        use crate::synth::Engine;
+        let (rate, plugins) = (44_100, crate::plugins::Plugins::none());
+        let synth = crate::synth::Synth::new(rate);
+        let mut inst = Instruments::new(rate, PERIOD);
+        let (id, extras, values) = synth.sound_of(Engine::Fm);
+        let made = make(&plugins, id, &extras, &values, rate, PERIOD).unwrap();
+        let pads = synth.pads_for(Engine::Fm);
+        assert!(inst.put(free(2), made, pads, &synth.tuning_now()).is_ok());
+        inst.set_send(5, Some(free(2))).unwrap();
+        let mut list = InstrumentList::new();
+        list.follow(inst.held_tracks());
+        list.follow_free(inst.held_free());
+        let kits = crate::sampler::TrackKits::new(4);
+        let text = track_kits_text(&kits, &inst, &list);
+        assert!(text.ends_with("\ntrack 6 instrument 2\n"), "{text}");
+        let mut c = collected(text, list.text());
+        c.instruments = instruments_text(&inst);
+        assert!(
+            c.instruments.contains("\nfree 3 mpfree.fm\n"),
+            "{}",
+            c.instruments
+        );
+        let o = opening(&snapshot(&c, Vec::new()), rate, "x", &plugins);
+        assert!(instrument_notes(&o).is_empty(), "{:?}", o.notes);
+        assert_eq!(o.instrument_list, list);
+        let back: Vec<usize> = o.instruments.iter().flatten().map(|l| l.track).collect();
+        assert_eq!(back, [free(2)]);
+        assert_eq!(o.sends, [(5, free(2))]);
     }
 
     /// Step 2b: the tracks' own instruments join the list. In a project

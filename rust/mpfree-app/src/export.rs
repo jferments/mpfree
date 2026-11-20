@@ -274,7 +274,7 @@ impl Facts {
         let info = time.info();
         let project = time.project();
         let tracks = track_names(time);
-        let stems = stem_strips(&mix.mixer, mix.own_channels_in_use(), &tracks);
+        let stems = stem_strips(mix, &tracks);
         let plays: Vec<(String, Plays)> = project
             .tracks
             .iter()
@@ -1105,13 +1105,22 @@ impl Running {
 }
 
 /// The mixer strips that can have a stem: the engines' tracks, each
-/// track's own channel in use (`in_use`: `MixHost::own_channels_in_use`,
-/// named after its track), and the returns.
-pub fn stem_strips(mixer: &Mixer, in_use: u128, tracks: &[String]) -> Vec<(String, StripId)> {
+/// track's own channel in use (`MixHost::own_channels_in_use`, named after
+/// its track), each free place's in use (the instrument redesign's step 6,
+/// named as the mixer names it, "FM · Pads"), and the returns.
+pub fn stem_strips(mix: &mixing::MixHost, tracks: &[String]) -> Vec<(String, StripId)> {
+    let in_use = mix.own_channels_in_use();
+    let free_used = mix.instruments.free_in_use();
     let mut out = Vec::new();
-    for s in mixer.strips() {
+    for s in mix.mixer.strips() {
         match s {
             StripId::Track(t) if t < TRACKS => out.push((mixing::name(s), s)),
+            StripId::Track(t) if t >= mixing::FREE_FIRST => {
+                let n = t - mixing::FREE_FIRST;
+                if n < crate::instruments::FREE && free_used >> n & 1 == 1 {
+                    out.push((mix.strip_name(s), s));
+                }
+            }
             StripId::Track(t) if in_use & (1 << (t - TRACKS)) != 0 => {
                 let k = t - TRACKS;
                 let name = tracks
@@ -1480,7 +1489,7 @@ mod tests {
                 bar_ticks: info.meter.bar_ticks(),
                 tempos: vec![(0, 120.0)],
                 tracks: vec!["Track 1".into()],
-                stems: stem_strips(&self.mix.mixer, self.mix.own_channels_in_use(), &[]),
+                stems: stem_strips(&self.mix, &[]),
                 by_track: Vec::new(),
                 song_on: false,
                 rig: Rig::default(),

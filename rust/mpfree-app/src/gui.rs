@@ -178,6 +178,11 @@ pub const GUIDE_LAYOUT: &str = "col(header:60, row(guide:*, found:400):*, hint:2
 /// The list of kits, over whatever page showed: a tap on the header's kit
 /// chip opens it (Jay's card, 13 Nov 14:57Z).
 pub const KITS_PAGE: &str = "Kits";
+/// The Synth tab with the list of synths over its page (app/synth_pick.rs).
+pub const SYNTH_PICK_PAGE: &str = "Synth · synths";
+/// The Synth tab's middle (the title bar over the page) in its layout,
+/// which the list of synths takes.
+const SYNTH_MIDDLE: &str = "col(synth-title:56, synth-tiles:*):*";
 /// The list of kits' last row while an empty user kit is left: it puts
 /// one on the armed track.
 pub const NEW_KIT: &str = "New kit";
@@ -796,8 +801,9 @@ pub struct Timing {
     pub audio: AudioNumbers,
 }
 
-/// What each track plays as its own instrument (None: the kit).
-pub type TrackSounds = [Option<crate::instruments::Held>; crate::instruments::TRACKS];
+/// What each track plays as its own instrument (None: the kit), then
+/// what each free place holds (step 6: a synth no track has).
+pub type TrackSounds = [Option<crate::instruments::Held>; crate::instruments::HOLDERS];
 
 /// The track whose instrument each track plays though it has none of its
 /// own (instrument redesign step 4; None: it plays its kit).
@@ -1198,9 +1204,16 @@ pub enum ToUi {
     SynthWheel(i32),
     /// On the Synth page: the next or previous page.
     SynthPage(i32),
+    /// The list of synths over the Synth tab, or closed (None)
+    /// (app/synth_pick.rs, the instrument redesign's step 6).
+    SynthPick(Option<Box<crate::app::SynthPickView>>),
     /// What the pads play: the selected track's instrument, or the synth
     /// chosen for them (app/pads_focus.rs).
     PadsFocus(crate::app::PadFocus),
+    /// The name of the instrument the pads play by the instrument host's
+    /// pads player (step 6: a synth picked in the list of synths), or None,
+    /// when it changes.
+    PadsHost(Option<&'static str>),
     /// Where REC would record the pads' synth (the recording plan,
     /// `desk::rec_plan`), when it changes: the REC chip names it.
     RecPlan(Option<crate::app::RecPlan>),
@@ -1482,6 +1495,13 @@ pub enum FromUi {
     /// opens over the page for the preset picker (true), or goes back to
     /// the page once the picker closes (false) (presets.rs).
     PresetPicker(bool),
+    /// The Synth tab's instrument card tapped: the list of synths opens
+    /// (or closes, keeping the pick) (app/synth_pick.rs).
+    SynthPickOpen,
+    /// A tap on choice `n` of the list of synths: the pads play it now.
+    SynthPickTap(usize),
+    /// The list's Keep (true) or Cancel (false).
+    SynthPickClose(bool),
     /// The Synth tab's gear: its options, as MENU opens them; on the
     /// options, their Back button: back to the page.
     OptionsButton,
@@ -1984,11 +2004,16 @@ pub struct Player {
     pads_focus: crate::app::PadFocus,
     /// The "Pads: Poly" chip's place: a tap is Follow track.
     pads_chip: Option<usize>,
+    /// The instrument the pads play by the host's pads player
+    /// ([`ToUi::PadsHost`], step 6): "FM".
+    pads_host: Option<&'static str>,
     /// Where REC would record the pads' synth ([`ToUi::RecPlan`]): the REC
     /// chip names it before you press.
     rec_plan: Option<crate::app::RecPlan>,
     /// The Synth page, once the synth's state has come.
     synth: Option<SynthPanel>,
+    /// The list of synths over the Synth tab, while it is open.
+    synth_pick: Option<Box<crate::app::SynthPickView>>,
     /// The Sample page and the kits' projects it edits (the Pads tab's
     /// screens too).
     pub sample: SamplePage,
@@ -2328,6 +2353,10 @@ impl Player {
         );
         ui.add(crate::xy_list::XY_LIST, crate::xy_list::XyList::new(0));
         ui.add(play_page::SYNTH_PADS_HEAD, PadsBar::default());
+        ui.add(
+            mpfree_synth_ui::pick::PICK,
+            mpfree_synth_ui::pick::SynthList::default(),
+        );
         ui.add("midi", LogPanel::new("MIDI in and out", true, 300));
         ui.add("events", LogPanel::new("Events", false, 200));
         ui.add("syslog", LogPanel::new("Console", true, CONSOLE_BACKLOG));
@@ -2546,8 +2575,10 @@ impl Player {
             touch_page: None,
             pads_focus: crate::app::PadFocus::Track,
             pads_chip: None,
+            pads_host: None,
             rec_plan: None,
             synth: None,
+            synth_pick: None,
             sample,
             browser: None,
             io_model: None,
@@ -2555,7 +2586,7 @@ impl Player {
             project_plugins: std::sync::Arc::new(crate::plugins::Plugins::none()),
             plugin_page: crate::plugin_page::PluginPage::new(),
             plugins_hinted: false,
-            track_sounds: [None; crate::instruments::TRACKS],
+            track_sounds: [None; crate::instruments::HOLDERS],
             track_sends: [None; crate::instruments::TRACKS],
             track_kits: crate::sampler::TrackKits::default(),
             held_synth: None,
@@ -3571,6 +3602,18 @@ impl Player {
         self.pads_focus == crate::app::PadFocus::SYNTH
     }
 
+    /// The synth picked for the pads in the list of synths that they play
+    /// by the instrument host (step 6), whichever track is selected: its
+    /// name ("FM"). None while they follow the track or have the shared
+    /// synth.
+    fn pads_picked(&self) -> Option<&'static str> {
+        match self.pads_focus {
+            crate::app::PadFocus::Track => None,
+            _ if self.pads_chose_synth() => None,
+            crate::app::PadFocus::Instrument(_) => self.pads_host,
+        }
+    }
+
     /// The shared synth's name ("Poly"), as the list of kits has it.
     fn shared_synth_name(&self) -> String {
         self.kits
@@ -3605,20 +3648,30 @@ impl Player {
     /// is Follow track.
     fn refresh_synth_button(&mut self) {
         let on_kit = self.synth_tab_on_kit();
-        let playing = self.pads_chose_synth() && on_kit.is_some();
-        let play = on_kit.map(|(track, name)| {
-            if playing {
-                (
-                    "Follow track".to_string(),
-                    format!("The pads play {name} on every track"),
-                )
-            } else {
-                (
-                    format!("Play {name} on the pads"),
-                    format!("Track {} keeps its kit", track + 1),
-                )
-            }
-        });
+        // A synth picked in the list (step 6): the button is Follow track,
+        // whatever the selected track plays.
+        let picked = self.pads_picked();
+        let playing = (self.pads_chose_synth() && on_kit.is_some()) || picked.is_some();
+        let play = if let Some(name) = picked {
+            Some((
+                "Follow track".to_string(),
+                format!("The pads play {name} on every track"),
+            ))
+        } else {
+            on_kit.map(|(track, name)| {
+                if playing {
+                    (
+                        "Follow track".to_string(),
+                        format!("The pads play {name} on every track"),
+                    )
+                } else {
+                    (
+                        format!("Play {name} on the pads"),
+                        format!("Track {} keeps its kit", track + 1),
+                    )
+                }
+            })
+        };
         let changed = self
             .ui
             .get::<PadsBar>(play_page::SYNTH_PADS_HEAD)
@@ -3652,8 +3705,45 @@ impl Player {
     fn synth_page(&self) -> String {
         if self.skin.as_ref().is_some_and(|s| s.on) {
             skin_page::PAGE.to_string()
+        } else if self.synth_pick.is_some() && self.ui.pages().iter().any(|p| p == SYNTH_PICK_PAGE)
+        {
+            SYNTH_PICK_PAGE.to_string()
         } else {
             "Synth".to_string()
+        }
+    }
+
+    /// The list of synths opened, changed or closed (app/synth_pick.rs):
+    /// it takes the page's place under the title bar's row, beside the
+    /// instrument card and the Q-Links; the card is outlined while it is
+    /// open.
+    fn set_synth_pick(&mut self, pick: Option<Box<crate::app::SynthPickView>>) {
+        if let (Some(v), Some(p)) = (pick.as_ref(), self.synth.as_ref()) {
+            let spec = p.spec();
+            let page = spec.replacen(SYNTH_MIDDLE, mpfree_synth_ui::pick::PICK, 1);
+            if page != spec && self.synth_pick.is_none() {
+                if let Err(e) = self.ui.add_page(SYNTH_PICK_PAGE, &page) {
+                    println!("screen: no list of synths ({e})");
+                }
+            }
+            if let Some(w) = self
+                .ui
+                .get_mut::<mpfree_synth_ui::pick::SynthList>(mpfree_synth_ui::pick::PICK)
+            {
+                w.title = "Pick a synth for the pads".to_string();
+                w.choices = v.choices.clone();
+                w.now = v.now;
+                w.had = v.had;
+            }
+        }
+        let was = self.synth_pick.is_some();
+        self.synth_pick = pick;
+        let open = self.synth_pick.is_some();
+        if let Some(c) = self.ui.get_mut::<synth_view::InstCard>(synth_view::INST) {
+            c.open = open;
+        }
+        if self.view == View::Synth && was != open {
+            self.show_view(View::Synth);
         }
     }
 
@@ -4812,6 +4902,10 @@ impl Player {
                 .and_then(|k| k.chip.clone())
                 .unwrap_or_else(|| self.shared_synth_name());
             return Some(play_widgets::PadsPlay::chosen(what));
+        }
+        // A synth picked in the list of synths (step 6): "Pads: FM".
+        if let Some(name) = self.pads_picked() {
+            return Some(play_widgets::PadsPlay::chosen(name.to_string()));
         }
         let k = self.kits.get(self.kit)?;
         let what = match &k.chip {
@@ -6009,8 +6103,13 @@ impl Player {
         // named on every page, since it stays whichever track is selected;
         // a tap is Follow track.
         self.pads_chip = None;
-        if self.pads_chose_synth() {
-            let name = self.shared_synth_name();
+        let chosen = if self.pads_chose_synth() {
+            Some(self.shared_synth_name())
+        } else {
+            // Or a synth picked in the list of synths (step 6).
+            self.pads_picked().map(str::to_string)
+        };
+        if let Some(name) = chosen {
             why.push(format!(
                 "The pads play {name} whichever track is selected: tap for Follow track"
             ));
@@ -6329,6 +6428,13 @@ impl Player {
                 View::Synth if self.skin_showing() => format!("{}'s own screen   ·   tap a control: pick it   ·   Wheel: pick one, push and turn: change it   ·   \
                                         Q-Links 1-4: the skin's knobs   ·   MPFree page: MPFree's own page   ·   {stop}",
                                        self.synth.as_ref().map_or("The plugin", |p| p.state.info.name)),
+                View::Synth if self.synth_pick.is_some() => format!("Tap a synth: the pads play it now   ·   \
+                                        Keep: the pads keep it   ·   Cancel: what they played   ·   No track changes   ·   {stop}"),
+                View::Synth if self.pads_picked().is_some() => {
+                    let name = self.pads_picked().unwrap_or("the synth");
+                    format!("The pads play {name} on every track; no track changes   ·   REC: {name} on a free track   ·   \
+                             Follow track: the button   ·   Q-Links 1-4: the marked knobs   ·   {stop}")
+                }
                 View::Synth if self.pads_chose_synth() && self.synth_tab_on_kit().is_some() => {
                     let (track, name) = self.synth_tab_on_kit().unwrap_or((0, "the synth"));
                     format!("The pads play {name} on every track; Track {} keeps its kit   ·   REC: {name} on an empty track   ·   \
@@ -8405,6 +8511,12 @@ impl Player {
                 self.refresh_pads_play();
                 self.refresh_chips();
             }
+            ToUi::PadsHost(name) => {
+                self.pads_host = name;
+                self.refresh_synth_button();
+                self.refresh_pads_play();
+                self.refresh_chips();
+            }
             ToUi::RecPlan(p) => {
                 self.rec_plan = p;
                 self.refresh_rec_chip();
@@ -8674,6 +8786,10 @@ impl Player {
                     p.step_page(&mut self.ui, delta);
                 }
                 self.refresh_qlinks();
+            }
+            ToUi::SynthPick(v) => {
+                self.set_synth_pick(v);
+                self.refresh_hint();
             }
             ToUi::SampleKits { projects, rate } => {
                 self.project_rate = rate;
@@ -11026,6 +11142,7 @@ impl Player {
                 | FromUi::PadBank(_)
                 | FromUi::PadsBrowse
                 | FromUi::PresetPicker(_)
+                | FromUi::SynthPickOpen
                 | FromUi::OptionsButton
                 | FromUi::PlayOnPads
                 | FromUi::FollowTrack
@@ -11067,6 +11184,13 @@ impl Player {
     fn show_view(&mut self, v: View) {
         if v != View::Browser {
             self.leave_preset_picker();
+        }
+        if v != View::Synth && self.synth_pick.is_some() {
+            // The app closed it too (another page keeps the pick).
+            self.synth_pick = None;
+            if let Some(c) = self.ui.get_mut::<synth_view::InstCard>(synth_view::INST) {
+                c.open = false;
+            }
         }
         if v == View::Pads && self.view != View::Pads && self.perform.shown {
             // Back on the Perform view: the app sends its throws' settings
@@ -11903,9 +12027,17 @@ impl Player {
             self.refresh_qlinks();
             match a {
                 Some(SynthAction::OpenPresets) => return self.open_presets(),
+                Some(SynthAction::OpenSynths) => return Some(FromUi::SynthPickOpen),
                 Some(SynthAction::Options) => return Some(FromUi::OptionsButton),
                 _ => return a.map(FromUi::Synth),
             }
+        }
+        if ev.widget == mpfree_synth_ui::pick::PICK {
+            return match ev.kind {
+                EventKind::Select(i) => Some(FromUi::SynthPickTap(i)),
+                EventKind::Tab(k) => Some(FromUi::SynthPickClose(k == mpfree_synth_ui::pick::KEEP)),
+                _ => None,
+            };
         }
         // The Pads tab's Kit: the list of kits over the page.
         if ev.widget == mpfree_sampler_ui::pads_tab::BAR
@@ -14715,6 +14847,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::Browse(k) => p.apply(ToUi::Browse(k)),
             Effect::SaveProject => p.ask_save(),
             Effect::PerformSet { set, opened } => p.apply(ToUi::PerformSet { set, opened }),
+            Effect::SynthPick(v) => p.apply(ToUi::SynthPick(v.map(Box::new))),
             Effect::PadsFocus(f) => p.apply(ToUi::PadsFocus(f)),
             Effect::Light(..)
             | Effect::StopSounds
@@ -14903,7 +15036,7 @@ pub fn sample_clips_busy(fonts: Fonts) -> Result<Player, String> {
 /// Lead and Chords (tracks 4-6) on Poly, FM and Strings.
 fn busy_sounds(p: &mut Player) {
     p.apply(ToUi::Looper(Box::new(busy_loops().clone())));
-    let mut sounds: TrackSounds = [None; crate::instruments::TRACKS];
+    let mut sounds: TrackSounds = [None; crate::instruments::HOLDERS];
     for (t, id, name) in [
         (3, "mpfree.poly", "Poly"),
         (4, "mpfree.fm", "FM"),
@@ -16898,7 +17031,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // Poly and Track 6 a plugin synth; the rest the kit.
     match sample_clips(fonts()) {
         Ok(mut p) => {
-            let mut s: TrackSounds = [None; crate::instruments::TRACKS];
+            let mut s: TrackSounds = [None; crate::instruments::HOLDERS];
             for (t, id, name) in [
                 (1, "mpfree.fm", "FM"),
                 (3, "mpfree.poly", "Poly"),
@@ -17666,6 +17799,20 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         trying.apply(ToUi::PadDown { pad, velocity: v });
     }
     out.push(("synth-pads-preview", trying));
+    // The list of synths over the Synth tab (step 6): opened from the
+    // instrument card and FM tapped, which the pads play once the audio
+    // loop has it in a place no track has.
+    let mut pick = sample_player(fonts());
+    let mut a = sample_app();
+    let mut fx = a.open_tab(View::Synth);
+    fx.extend(a.open_synth_pick());
+    fx.extend(a.pick_pads_synth(2));
+    let mut listed = crate::instrument_list::InstrumentList::new();
+    listed.follow_free(1);
+    fx.extend(a.set_instrument_list(&listed));
+    apply_effects(&mut pick, fx);
+    pick.apply(ToUi::PadsHost(Some("FM")));
+    out.push(("synth-pick", pick));
     // The mixer with two tracks playing their own instruments: Poly on
     // track 1 in the Drums strip, named "Track 1" for it, and FM on track 2
     // in its own channel after Synth, Loop and Audio.
@@ -18816,7 +18963,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert!(sounds(&p).iter().all(|s| s == "Kit"), "{:?}", sounds(&p));
-        let mut s: TrackSounds = [None; crate::instruments::TRACKS];
+        let mut s: TrackSounds = [None; crate::instruments::HOLDERS];
         s[2] = Some(crate::instruments::Held {
             id: "mpfree.fm",
             name: "FM",

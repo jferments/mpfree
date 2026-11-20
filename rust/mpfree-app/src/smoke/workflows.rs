@@ -1894,6 +1894,129 @@ mod tests {
         });
     }
 
+    /// The list of synths picks for the pads (the instrument redesign's
+    /// step 6; Jay's device notes: "assign a synth ... in just 1 or 2
+    /// actions, or ... preview it on the pads"). A tap on the Synth tab's
+    /// instrument card opens it; a tap on FM plays FM on the pads at once,
+    /// from a place no track has, while Track 1 keeps its kit and its drum
+    /// clip. Cancel gives the pads back and FM is put away; a second tap
+    /// puts the next synth in the same place; Keep keeps it, named in the
+    /// header. REC then records it on a free track, which plays the same
+    /// FM, and the take holds the notes the pads played on it.
+    #[test]
+    fn a_synth_picked_in_the_list_plays_on_the_pads_and_rec_records_it_on_a_free_track() {
+        use crate::app::PadFocus;
+        use crate::instruments::free;
+        use crate::rec_arm::Take;
+        use mpfree_transport::State;
+        fn rec_chip(s: &Session) -> String {
+            s.screen
+                .ui
+                .get::<crate::play_widgets::PlayTransport>(crate::play_page::TRANSPORT)
+                .and_then(|t| t.look.rec.as_ref().map(|c| c.line()))
+                .expect("the REC chip")
+        }
+        fn record(s: &mut Session, pads: &[usize]) {
+            s.button("PLAY");
+            let end = s.t() + 5.0;
+            while s.time.info().state != State::Recording && s.t() < end {
+                s.run_periods(1);
+            }
+            assert_eq!(s.time.info().state, State::Recording);
+            for &p in pads {
+                s.pad(p, 100, 0.05);
+                s.run_for(0.1);
+            }
+            s.button("STOP").settle();
+        }
+        fn notes(s: &Session, t: usize) -> Vec<u8> {
+            let mut n: Vec<u8> = s.time.project().tracks[t]
+                .slots
+                .iter()
+                .flatten()
+                .flat_map(|c| c.notes.iter().map(|n| n.note))
+                .collect();
+            n.sort_unstable();
+            n.dedup();
+            n
+        }
+        fn held(s: &Session, h: usize) -> Option<&'static str> {
+            s.mix.instruments.held(h).map(|h| h.name)
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            // The drums: pads 1 and 5 on Track 1's kit.
+            s.button("REC").settle();
+            record(&mut s, &[0, 4]);
+            let drums = s.time.project().tracks[0].clone();
+            // The card opens the list; FM plays on the pads at once.
+            s.press("header", "tab", "Synth").settle();
+            s.press("synth-inst", "card", "").settle();
+            assert!(
+                s.control("synth-pick", "synth", "FM").is_some(),
+                "{}",
+                s.hint()
+            );
+            s.press("synth-pick", "synth", "FM").run_periods(4).settle();
+            assert_eq!(held(&s, free(0)), Some("FM"));
+            assert_eq!(s.mix.instruments.pads_play_at(), Some(free(0)));
+            assert!(
+                (0..2).all(|t| !s.mix.instruments.plays(t)),
+                "no track changes"
+            );
+            assert_eq!(s.track_kits.kit_of(0), Some(0), "Track 1 keeps its kit");
+            // Cancel: the pads follow Track 1 again, and FM goes away.
+            s.press("synth-pick", "cancel", "Cancel")
+                .run_periods(4)
+                .settle();
+            assert_eq!(s.app.pads_focus(), PadFocus::Track);
+            assert_eq!(s.mix.instruments.pads_play_at(), None);
+            assert_eq!(held(&s, free(0)), None, "FM was put away");
+            // Pluck, then FM in the same place, then Keep.
+            s.press("synth-inst", "card", "").settle();
+            s.press("synth-pick", "synth", "Pluck")
+                .run_periods(4)
+                .settle();
+            assert_eq!(held(&s, free(0)), Some("Pluck"));
+            s.press("synth-pick", "synth", "FM").run_periods(4).settle();
+            assert_eq!(held(&s, free(0)), Some("FM"), "the same place");
+            assert_eq!(held(&s, free(1)), None);
+            s.press("synth-pick", "keep", "").run_periods(2).settle();
+            assert!(s.control("synth-pick", "synth", "FM").is_none(), "closed");
+            assert!(s.control("header", "chip", "Pads: FM").is_some());
+            // The pads play FM; Track 1's kit hears nothing.
+            s.hits.played.clear();
+            s.pad(2, 90, 0.05);
+            assert_eq!(s.previewed, [(2, s.app.velocity(90))], "FM played it");
+            assert!(s.hits.played.is_empty(), "no pad reached the kit");
+            // The REC chip names where REC will record FM: Track 2, the
+            // first track nobody set up.
+            s.run_periods(1).settle();
+            assert_eq!(rec_chip(&s), "REC → Track 2 · FM");
+            // REC: Track 2 plays the same FM, and the take waits for PLAY.
+            s.button("REC").settle();
+            s.run_periods(2).settle();
+            assert_eq!(s.app.track(), 1, "{:?}", s.said());
+            assert_eq!(s.mix.instruments.send(1), Some(free(0)), "the same FM");
+            assert_eq!(rec_chip(&s), "READY · PLAY starts → Track 2 · new clip");
+            assert_eq!(s.app.rec.ready, Some(Take::Replace));
+            assert!(
+                matches!(s.app.pads_focus(), PadFocus::Instrument(_)),
+                "REC never moves the pads"
+            );
+            // Track 2 plays notes now, so main.rs's takes there hold notes
+            // (step 5c); the session leaves that out, so its take holds
+            // the pads pressed.
+            assert_eq!(s.mix.instruments.note_tracks(), 1 << 1);
+            record(&mut s, &[2, 3]);
+            assert_eq!(notes(&s, 1), [2, 3], "the pads played on FM");
+            assert_eq!(s.time.project().tracks[0], drums, "the drum clip unchanged");
+            // The pads and Track 2 play the one FM, in its place.
+            assert_eq!(held(&s, free(0)), Some("FM"));
+            assert_eq!(s.mix.instruments.pads_play_at(), Some(free(0)));
+        });
+    }
+
     /// Pad focus (the instrument redesign's step 3, the design's proof): a
     /// drum clip plays on Track 1 while the pads play Poly, chosen on the
     /// Synth tab. Selecting other tracks and tapping a row of REC's list

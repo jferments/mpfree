@@ -585,6 +585,11 @@ impl Desk<'_> {
             gui::FromUi::PresetPicker(false) => fx.extend(app.close_browser()),
             // The Synth tab's gear and the options' Back: what MENU does.
             gui::FromUi::OptionsButton => fx.extend(app.options_button()),
+            // The Synth tab's list of synths, picking for the pads
+            // (app/synth_pick.rs, step 6).
+            gui::FromUi::SynthPickOpen => fx.extend(app.open_synth_pick()),
+            gui::FromUi::SynthPickTap(i) => fx.extend(app.pick_pads_synth(i)),
+            gui::FromUi::SynthPickClose(keep) => fx.extend(app.close_synth_pick(keep)),
             // The Synth tab's button: the synth on the pads whichever track
             // is selected, or Follow track (app/pads_focus.rs).
             gui::FromUi::PlayOnPads => fx.extend(app.toggle_pads_synth()),
@@ -664,6 +669,8 @@ impl Desk<'_> {
                 out.show(gui::ToUi::Nav(app::Nav::Step(d)))
             }
             app::Effect::Mixer(v) => mix.show(v),
+            // The list of synths over the Synth tab (app/synth_pick.rs).
+            app::Effect::SynthPick(v) => out.show(gui::ToUi::SynthPick(v.map(Box::new))),
             app::Effect::MixerLast => mix.show(Some(mix.last())),
             app::Effect::MixerFaders => out.show(gui::ToUi::MixerFaders),
             // The wheel on the mixer: Q-Link 1 on a strips view, the
@@ -895,7 +902,8 @@ pub const RECALL_WAITS: &str = "Finish the take first: Sample Recall opens once 
 pub const KEEP_WAITS: &str = "Finish the take first: Keep keeps what just played once it stops";
 
 /// The recording plan ([`app::RecPlan`], the redesign's step 5b): where
-/// REC or OVERDUB on the notes would record the pads' synth, or None when
+/// REC or OVERDUB on the notes would record the pads' synth (the shared
+/// one, or from step 6 a synth picked in the list of synths), or None when
 /// they'd record the armed track as it is (the pads follow the track, the
 /// armed track plays the synth itself, or REC records only the loop). REC
 /// uses it ([`rec_synth`]) and the REC chip names it before you press
@@ -907,18 +915,27 @@ pub fn rec_plan(
     mix: &mixing::MixHost,
 ) -> Option<app::RecPlan> {
     use crate::rec_arm::Target;
-    if !app.pads_chose_synth() {
-        return None;
-    }
+    let (holder, synth) = if app.pads_chose_synth() {
+        (None, app.pads_synth_name())
+    } else {
+        let h = app.pads_holder()?;
+        (Some(h), app.pads_held()?.name)
+    };
     let armed = time.armed().unwrap_or(0);
     let notes = app.rec.target == Target::Notes || app.rec.both;
-    if !notes || app.plays_pads_synth(armed) {
+    let plays = match holder {
+        None => app.plays_pads_synth(armed),
+        Some(h) => app.track_owner(armed) == Some(h),
+    };
+    if !notes || plays {
         return None;
     }
     let app_side = |t: usize| -> Option<&'static str> {
         let channel = mix.track_channel(t);
         if app.track_sound(t).is_some() {
             Some("has an instrument of its own")
+        } else if app.track_send(t).is_some() {
+            Some("plays another instrument")
         } else if app.configured(t) {
             Some("has a kit or a MIDI output picked")
         } else if channel < mixing::TRACKS {
@@ -932,7 +949,8 @@ pub fn rec_plan(
     };
     Some(app::RecPlan {
         take: app::synth_track(time.project(), armed, app.rec.pinned, app_side),
-        synth: app.pads_synth_name(),
+        synth,
+        holder,
     })
 }
 
@@ -940,8 +958,9 @@ pub fn rec_plan(
 /// the armed track plays something else: the take must play what was
 /// heard and change nothing set up (the design's rule 3,
 /// app/pads_focus.rs). A track nobody set up gets the synth and is armed
-/// (the selected one, the first one, or a new one added at the end), and
-/// the press comes again once it plays it. None when the press is REC's
+/// (the selected one, the first one, or a new one added at the end): the
+/// shared synth as its Synth kit, or a synth picked in the list of synths
+/// (step 6) by a send to it. The press comes again once it plays it. None when the press is REC's
 /// own: no synth chosen for the pads, the armed track playing it already,
 /// the loop armed (it records what is heard), or a take already going or
 /// ready. `Some(empty)` when nowhere fits (a pinned arm on a track set
@@ -1035,7 +1054,10 @@ fn rec_synth(
             mpfree_time_ui::TimeAction::Arm(Some(t)),
         ));
     }
-    fx.extend(app.rec_synth_on(t, added));
+    fx.extend(match plan.holder {
+        None => app.rec_synth_on(t, added),
+        Some(h) => app.rec_send_on(t, h, added),
+    });
     fx.push(app::Effect::Rec(p));
     Some(fx)
 }
