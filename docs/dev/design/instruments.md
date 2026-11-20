@@ -1,10 +1,10 @@
 <!--
-covers: rust/mpfree-app/src/instrument_list.rs rust/mpfree-app/src/project.rs rust/mpfree-app/src/app/pads_preview.rs rust/mpfree-seq/src/lib.rs rust/mpfree-seq/src/save.rs
+covers: rust/mpfree-app/src/instrument_list.rs rust/mpfree-app/src/project.rs rust/mpfree-app/src/app/pads_focus.rs rust/mpfree-seq/src/lib.rs rust/mpfree-seq/src/save.rs
 checked: 2026-11-20 c5b97009
 -->
 # Instruments apart from tracks
 
-**Status:** step 1 on main (Play on the pads, #722, train 124, 20 Nov 2026); step 2a built (the shared synth as instrument 1 of the project's list, project format 2, `rust/mpfree-app/src/instrument_list.rs`, 20 Nov 2026); step 2b built (the tracks' own instruments in the list, 20 Nov 2026); step 2c built (tracks get lasting ids, `rust/mpfree-seq`, 20 Nov 2026). Jay approved the plan and its five answers on 20 Nov 2026 (11:16 UTC). The plan, its rules and the reviews it went through: "Instruments, pads and tracks: the redesign" (https://claude.ai/artifact/A2iE1bDqPxk2uSJABCgTJg). Nothing here has run on the MPC One yet.
+**Status:** step 1 on main (Play on the pads, #722, train 124, 20 Nov 2026); step 2a built (the shared synth as instrument 1 of the project's list, project format 2, `rust/mpfree-app/src/instrument_list.rs`, 20 Nov 2026); step 2b built (the tracks' own instruments in the list, 20 Nov 2026); step 2c built (tracks get lasting ids, `rust/mpfree-seq`, 20 Nov 2026); step 3 built (pad focus: the synth chosen for the pads stays whichever track is selected, saved with the project, `app/pads_focus.rs`, 20 Nov 2026). Jay approved the plan and its five answers on 20 Nov 2026 (11:16 UTC). The plan, its rules and the reviews it went through: "Instruments, pads and tracks: the redesign" (https://claude.ai/artifact/A2iE1bDqPxk2uSJABCgTJg). Nothing here has run on the MPC One yet.
 
 ## The model
 
@@ -12,9 +12,9 @@ Jay's rule (20 Nov 2026): **instruments make the sound, tracks organize and reco
 
 Today an instrument belongs to a track: a track plays a kit, the shared synth (the Synth kit) or its own instrument (`instruments.rs`), and the pads play the armed track's. The redesign takes that apart in steps, each of which ships on its own, keeps old projects playing as they did, and gives the musician something they couldn't do before:
 
-1. **Try a synth on the pads** (on main): Play on the pads plays the shared synth while the armed track keeps its kit, and REC records it on a track nobody set up ([rec-arm.md](rec-arm.md), `app/pads_preview.rs`).
+1. **Try a synth on the pads** (on main): Play on the pads plays the shared synth while the armed track keeps its kit, and REC records it on a track nobody set up ([rec-arm.md](rec-arm.md), `app/pads_focus.rs`).
 2. **Instrument identities** (this page, below): instruments get lasting ids in a list in the project. No visible change.
-3. Pad focus: the pads play an instrument, not a track.
+3. **Pad focus** (built, below): the pads follow the selected track or play an instrument chosen for them, which stays whichever track is selected.
 4. Tracks send to instruments; each knob has one owner at a time.
 5. Recording by source, with one recording plan behind both the REC chip and REC.
 6. The instrument picker and banks.
@@ -80,3 +80,25 @@ What plays is unchanged: the track kits a project opens with are the same as bef
 - **Saved in the clips part:** `nexttrack <n>` before the tracks and `id <n>` after each track's name. An older build skips both lines. A project without them gets 1, 2, 3 ... as it opens, saying nothing; one that has `nexttrack` but a track without an id, or two sharing one, gets new ones for those, said (`project::opening`).
 - **Nothing reads them yet.** Tracks can't be moved or deleted from the middle today (UNDO takes away only the last added), so a track's place still names it, and the list of instruments, the track kits and the instruments part keep naming tracks by place. Step 4's knob owners are the first to use the ids (their priority), and anything that lets tracks move will switch those parts to ids as it goes in. `Project::track_with(id)` finds a track by its id.
 - **Tests:** `mpfree_seq` `track_id_tests::tracks_get_lasting_ids_that_are_never_given_twice`, `save::track_id_tests::track_ids_and_the_next_id_come_back`; `mpfree_play` `takes::tests::an_added_track_has_a_lasting_id_that_undo_and_redo_keep`; `project::tests::tracks_get_lasting_ids_as_a_project_opens`; the whole-session test above also checks that an old song's tracks get 1, 2, 3 ... and keep them through a save and an open.
+
+## Step 3: pad focus
+
+The design's rule 2: **the pads follow the selected track until you choose for them.** Selecting a track puts its instrument on the pads, as on the MPC ("Follow track"); an instrument chosen for the pads stays there whichever track is selected ("Pads: Poly") until Follow track. Rule 1 says what never moves them: arming or selecting a track, a row of REC's list, REC.
+
+### As built
+
+- **`app::PadFocus`** (`app/pads_focus.rs`): `Track` (a new project's) or `Instrument(InstrumentId)`, in the app's state (`App::pads_focus`), apart from the track and the arm. Only the shared synth can be chosen yet (`PadFocus::SYNTH`, instrument 1): the Synth tab's button, while the selected track plays a kit (`App::toggle_pads_synth`). The picker of step 6 chooses others.
+- **What moves it:** Follow track (the Synth tab's button again, or the header's chip, `App::pads_follow_track`); a kit picked for the selected track in the list of kits, or turned with SHIFT + the wheel (`App::kit_pick_follows_track`: a choice of what the pads play, as on the MPC, so they follow the track and play it); the arp coming on over a track that plays something else (`App::arp_ends_pads_synth`, below); a project opened (its own). **What doesn't:** `App::set_track` (selecting or arming), a row of REC's list (`desk.rs`, `ArmTrack`), REC (`App::rec_synth_on` keeps it).
+- **How the pads play it** (`main.rs`, `preview_on`, mirrored by the test session): once a period, after the kit has followed the armed track, the loop reconciles. While the synth is chosen and the selected track plays something else (a kit, its own instrument), pad hits go to the shared synth on their own, before the arp and the recorder, as step 1's preview did; while the track plays the shared synth itself, they play it the usual way, through the track (the arp, the recorder, the synth's layout). The pads' colours follow, sent once. A pad held across a change lets go where it started.
+- **REC** (step 1's rule 3): the desk's `rec_synth` acts only while the armed track plays something else. It points a track nobody set up at the shared synth (`Effect::SynthOnTrack`) and arms it; the pads keep the synth. The press comes again next period, when the armed track plays the pads' synth (`App::plays_pads_synth`, from `TrackKits::on_synth` each period), so it is REC's own, as is every later press there: a second take goes on the same track, not on another free one.
+- **The arp:** it plays through the selected track, so while the synth plays on its own it can't play the pads: the button won't choose the synth while the arp plays them, and the arp coming on gives the pads back to the track, said. Over a track that plays the synth the arp plays it, and the pads keep it. The arp by instrument is for a later step (MIDI and scripts play instruments).
+- **On screen:** the header's **Pads: Poly** chip on every page while the synth is chosen (warn, the shared synth's name from the list of kits; a tap is Follow track, `FromUi::FollowTrack`); Play's transport line reads "Pads: Poly · C3 to D#4" (`PadsPlay::chosen`) whichever track Play's rows show; the Synth tab's button reads **Follow track** over "The pads play Poly on every track". The Synth tab still shows the selected track's own instrument when it has one; which instrument the tab edits is the picker's (step 6).
+- **Saved** in the `pads` part, written with every save:
+
+  ```text
+  mpfree-pads 1
+  play instrument 1
+  ```
+
+  (`play track` while the pads follow the track). No part (New project, or a project saved before) follows the track, saying nothing; a part that doesn't read (another first line, a line it doesn't know, two `play` lines, none, or an instrument other than the shared synth) is said, and the pads follow the track (`App::open_pads`). An older build keeps it as a part it doesn't know.
+- **Tests:** `app::tests::the_synth_chosen_for_the_pads_stays_until_follow_track`, `the_pads_focus_is_saved_and_a_part_that_doesnt_read_is_said`, `the_arp_and_the_synth_on_the_pads_never_play_apart`; `desk::tests::rec_while_the_pads_play_the_synth_records_it_on_a_track_nobody_set_up` (the second press records on the same track); `gui::tests::the_synth_chosen_for_the_pads_is_named_and_follow_track_gives_them_back` (the chip, the button, Play's transport, the chip's tap); `project::tests::what_the_pads_play_is_kept_and_comes_back`; `sampler::tests` (`TrackKits::on_synth`); and through the whole session, the design's proof, `smoke::workflows::tests::the_pads_play_poly_while_a_drum_clip_plays_on_whichever_track_is_selected` (a drum clip plays on Track 1 while the pads play Poly with Track 1, Track 3 and, from REC's list, Track 2 armed: every hit on the synth, none on a kit or a track, no track or clip changed; then a kit picked and the chip give the pads back), and `smoke::song_workflows::tests::the_synth_chosen_for_the_pads_comes_back_with_the_project` (saved, New project follows the track, opened again with Poly on the pads).

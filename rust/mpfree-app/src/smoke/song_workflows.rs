@@ -599,6 +599,57 @@ mod tests {
         });
     }
 
+    /// What the pads play is kept with the project (the instrument
+    /// redesign's step 3): Poly chosen for the pads and saved; a new
+    /// project follows the track; the project opens with Poly on the pads,
+    /// named in the header again.
+    #[test]
+    fn the_synth_chosen_for_the_pads_comes_back_with_the_project() {
+        on_big_stack(|| {
+            use crate::app::PadFocus;
+            let mut l = lab("pad-focus");
+            let s = &mut l.s;
+            let name = "Night Market";
+            let lib = s.library.clone().expect("a library");
+            let loc = mpfree_library::Loc::top(mpfree_library::Place::Projects)
+                .join(name)
+                .expect("a project's place");
+            open(s, name);
+            assert_eq!(s.app.pads_focus(), PadFocus::Track, "saved before the part");
+            s.press("header", "tab", "Synth");
+            s.press("synth-pads-head", "play", "").settle();
+            assert!(s.app.pads_chose_synth(), "{}", s.hint());
+            s.button_with("SHIFT", "BROWSE");
+            let saved = format!("project: saved {name}");
+            assert!(s.until_said(&saved, 5.0), "{saved}: {:?}", s.said());
+            let snap = lib.open_project(&loc).expect("it opens");
+            assert_eq!(
+                snap.part(crate::project::PADS),
+                Some("mpfree-pads 1\nplay instrument 1\n")
+            );
+
+            s.button("BROWSE");
+            s.press("browser", "place", "Projects");
+            s.press("browser", "button", "New project");
+            s.run_for(0.3);
+            assert_eq!(
+                s.app.pads_focus(),
+                PadFocus::Track,
+                "a new project follows the track"
+            );
+            assert!(s.control("header", "chip", "Pads: Poly").is_none());
+
+            open(s, name);
+            assert!(s.app.pads_chose_synth(), "the project's: Poly on the pads");
+            s.press("header", "tab", "Play");
+            s.run_for(0.05);
+            assert!(s.control("header", "chip", "Pads: Poly").is_some());
+            let before = s.previewed.len();
+            s.pad(2, 90, 0.05);
+            assert_eq!(s.previewed.len(), before + 1, "the pads play Poly");
+        });
+    }
+
     // ------------------------------------------------------- performing
 
     /// Night Market in song mode (Song on Arrange, Play song, then Play): every
