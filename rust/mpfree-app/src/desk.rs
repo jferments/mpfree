@@ -372,6 +372,9 @@ impl Desk<'_> {
                     fx.extend(rec_effects(vec![app.rec.busy(&now)], time, looper));
                     return None;
                 }
+                // The musician's pick for REC: the pads play that track's
+                // instrument, so Play on the pads ends (app/pads_preview.rs).
+                fx.extend(app.rec_list_ends_pads_preview(t));
                 if time.armed() != Some(t) {
                     fx.extend(crate::time_action(
                         out,
@@ -880,13 +883,15 @@ pub const RECALL_WAITS: &str = "Finish the take first: Sample Recall opens once 
 pub const KEEP_WAITS: &str = "Finish the take first: Keep keeps what just played once it stops";
 
 /// REC or OVERDUB on the notes while the pads play the Synth tab's synth
-/// (Play on the pads): the take must play what was heard and change no
-/// clip (the design's rule 3). The selected track while it has no clips,
-/// or else the first track with none, gets the synth and is armed, and the
-/// press comes again once it plays it. None when the press is REC's own:
-/// no synth on the pads, the loop armed (it records what is heard), or a
-/// take already going or ready. `Some(empty)` when nowhere fits: the line
-/// says why and nothing changes.
+/// (Play on the pads): the take must play what was heard and change
+/// nothing set up (the design's rule 3, app/pads_preview.rs). A track
+/// nobody set up gets the synth and is armed (the selected one, the first
+/// one, or a new one added at the end), and the press comes again once it
+/// plays it. None when the press is REC's own: no synth on the pads, the
+/// loop armed (it records what is heard), or a take already going or
+/// ready. `Some(empty)` when nowhere fits (a pinned arm on a track set
+/// up, or a full project): the line says why and nothing changes. The arp
+/// playing the pads now ends Play on the pads first, and REC is REC's own.
 #[allow(clippy::too_many_arguments)]
 fn rec_synth(
     app: &mut app::App,
@@ -908,24 +913,89 @@ fn rec_synth(
     {
         return None;
     }
+    // The arp came on this period: the pads play the track again, through
+    // it, before the take starts (`App::arp_ends_pads_preview`).
+    let ended = app.arp_ends_pads_preview();
+    if !ended.is_empty() {
+        let mut fx = ended;
+        fx.push(app::Effect::Rec(p));
+        return Some(fx);
+    }
     let armed = time.armed().unwrap_or(0);
     let name = app.pads_synth_name();
     let tell = |out: &mut Out, s: String| {
         out.note(&s);
         out.show(gui::ToUi::Tell(s));
     };
-    let Some(t) = app::synth_track(time.project(), armed, |t| app.track_sound(t).is_some()) else {
-        tell(
-            out,
-            format!(
-                "No empty track to record {name} on: every track has clips. Back to Track {}'s kit records the drums",
-                armed + 1
-            ),
-        );
-        return Some(Vec::new());
+    let take = {
+        let app = &*app;
+        let mix = &*mix;
+        let app_side = |t: usize| -> Option<&'static str> {
+            let channel = mix.track_channel(t);
+            if app.track_sound(t).is_some() {
+                Some("has an instrument of its own")
+            } else if app.configured(t) {
+                Some("has a kit or a MIDI output picked")
+            } else if channel < mixing::TRACKS {
+                Some("is the Drums track")
+            } else if !crate::project::untouched_channel(
+                &mix.mixer,
+                mpfree_fx::StripId::Track(channel),
+            ) {
+                Some("has mixer settings")
+            } else {
+                None
+            }
+        };
+        app::synth_track(time.project(), armed, app.rec.pinned, app_side)
     };
     let mut fx = Vec::new();
-    if t != armed {
+    let (t, added) = match take {
+        app::SynthTake::On(t) => (t, false),
+        // A new track, armed as the Song view's + adds one (UNDO takes it
+        // away, after the take).
+        app::SynthTake::New => {
+            let count = time.track_count();
+            fx.extend(crate::time_action(
+                out,
+                time,
+                tracks,
+                looper,
+                app,
+                mix,
+                mpfree_time_ui::TimeAction::AddTrack,
+            ));
+            if time.track_count() <= count {
+                tell(
+                    out,
+                    format!("No free track to record {name} on, and no new one could be added"),
+                );
+                return Some(fx);
+            }
+            (count, true)
+        }
+        app::SynthTake::Pinned { track, why } => {
+            tell(
+                out,
+                format!(
+                    "REC is pinned to Track {}, which {why}: unpin it in REC's list to record {name} on a free track, or turn off Play on the pads",
+                    track + 1
+                ),
+            );
+            return Some(fx);
+        }
+        app::SynthTake::Full => {
+            tell(
+                out,
+                format!(
+                    "No free track to record {name} on, and the project holds no more: turn off Play on the pads to record Track {}'s kit",
+                    armed + 1
+                ),
+            );
+            return Some(fx);
+        }
+    };
+    if time.armed() != Some(t) {
         fx.extend(crate::time_action(
             out,
             time,
@@ -936,7 +1006,7 @@ fn rec_synth(
             mpfree_time_ui::TimeAction::Arm(Some(t)),
         ));
     }
-    fx.extend(app.rec_synth_on(t));
+    fx.extend(app.rec_synth_on(t, added));
     fx.push(app::Effect::Rec(p));
     Some(fx)
 }
@@ -1796,12 +1866,15 @@ mod tests {
         assert!(RECALL_WAITS.starts_with("Finish the take first"));
     }
 
-    /// REC while the pads play the Synth tab's synth (Play on the pads):
-    /// the take goes to a track that gets the synth, the selected one while
-    /// it is empty, else the first empty one, armed for it; no clip
-    /// changes, and with the loop armed REC is the loop's as ever.
+    /// REC while the pads play the synth (Play on the pads): a track
+    /// nobody set up gets the synth and is armed (Track 1, the Drums
+    /// track, never), and no clip changes; with the loop armed REC is the
+    /// loop's as ever. A track with a kit or MIDI output picked or mixer
+    /// settings is passed over; with none free a new track is added; a
+    /// pinned arm stays, and REC goes nowhere, saying why. The arp come on
+    /// ends the try-out, and REC is REC's own.
     #[test]
-    fn rec_while_the_pads_play_the_synth_records_it_on_an_empty_track() {
+    fn rec_while_the_pads_play_the_synth_records_it_on_a_track_nobody_set_up() {
         use crate::rec_arm::{Press, Target};
         let (tx, rx) = std::sync::mpsc::sync_channel::<gui::ToUi>(64);
         let mut out = Out {
@@ -1818,51 +1891,99 @@ mod tests {
         let mut tracks = audiotracks::TrackHost::new(44_100, 10);
         let mut mix = mixing::MixHost::new(44_100, 0.0, 6.0);
         let now = rec_now(&time, &looper);
-        let armed = time.armed().unwrap_or(0);
-        let mut rec = |app: &mut app::App, time: &mut time::TimeHost, out: &mut Out| {
-            rec_synth(
-                app,
-                time,
-                &mut tracks,
-                &looper,
-                &mut mix,
-                out,
-                Press::Rec,
-                &now,
-            )
+        let mut rec = |app: &mut app::App,
+                       time: &mut time::TimeHost,
+                       mix: &mut mixing::MixHost,
+                       out: &mut Out| {
+            rec_synth(app, time, &mut tracks, &looper, mix, out, Press::Rec, &now)
         };
-        // Without the synth on the pads REC is REC's own.
-        assert_eq!(rec(&mut app, &mut time, &mut out), None);
-        // The selected track is empty: it gets the synth.
-        app.toggle_pads_preview();
-        let fx = rec(&mut app, &mut time, &mut out).expect("the synth's take");
-        assert_eq!(fx[0], app::Effect::PadsPreview(false), "{fx:?}");
-        assert_eq!(fx[1], app::Effect::SynthOnTrack(armed), "{fx:?}");
-        assert_eq!(fx.last(), Some(&app::Effect::Rec(Press::Rec)));
-        assert!(!app.pads_preview());
-        assert!(app.track_sound(armed).is_none(), "the same synth, no copy");
-        // With the loop armed, the loop records what is heard.
-        app.toggle_pads_preview();
-        app.rec.target = Target::Loop;
-        assert_eq!(rec(&mut app, &mut time, &mut out), None);
-        assert!(app.pads_preview());
-        app.rec.target = Target::Notes;
-        // The selected track has a clip: the first empty track, armed.
-        time.put_clip(mpfree_seq::Clip::new("Beat", 384)).unwrap();
-        let fx = rec(&mut app, &mut time, &mut out).expect("the synth's take");
-        let to = fx
-            .iter()
-            .find_map(|e| match e {
+        let to = |fx: &[app::Effect]| {
+            fx.iter().find_map(|e| match e {
                 app::Effect::SynthOnTrack(t) => Some(*t),
                 _ => None,
             })
-            .unwrap();
-        assert_ne!(to, armed);
-        assert_eq!(time.armed(), Some(to), "armed for the take");
-        assert!(
-            app.track_sound(armed).is_none(),
-            "the drum track keeps its kit"
+        };
+        // The drums on Track 1.
+        assert_eq!(time.armed(), Some(0));
+        time.put_clip(mpfree_seq::Clip::new("Beat", 384)).unwrap();
+        let drums = time.project().tracks[0].clone();
+        // Without the synth on the pads REC is REC's own.
+        assert_eq!(rec(&mut app, &mut time, &mut mix, &mut out), None);
+        // With it: Track 2, the first nobody set up, armed for the take.
+        app.toggle_pads_preview();
+        let fx = rec(&mut app, &mut time, &mut mix, &mut out).expect("the synth's take");
+        assert_eq!(to(&fx), Some(1), "{fx:?}");
+        assert_eq!(time.armed(), Some(1), "armed for the take");
+        assert_eq!(fx.last(), Some(&app::Effect::Rec(Press::Rec)));
+        assert!(!app.pads_preview());
+        assert!(app.track_sound(1).is_none(), "the same synth, no copy");
+        assert_eq!(time.project().tracks[0], drums, "the drums unchanged");
+        // With the loop armed, the loop records what is heard.
+        time.act(mpfree_time_ui::TimeAction::Arm(Some(0))).unwrap();
+        app.toggle_pads_preview();
+        app.rec.target = Target::Loop;
+        assert_eq!(rec(&mut app, &mut time, &mut mix, &mut out), None);
+        assert!(app.pads_preview());
+        app.rec.target = Target::Notes;
+        // A kit picked on Track 2, mixer settings on Track 3: Track 4.
+        app.set_configured(1 << 1);
+        let p = mpfree_fx::strip_params()
+            .iter()
+            .find(|p| {
+                crate::project::saved_control(mpfree_fx::StripId::Track(mix.track_channel(2)), p.id)
+            })
+            .expect("a strip control");
+        mix.mixer.set_now(
+            mpfree_fx::StripId::Track(mix.track_channel(2)),
+            p.id,
+            if p.default == 0.0 { 0.5 } else { 0.0 },
         );
-        drop(rx);
+        let fx = rec(&mut app, &mut time, &mut mix, &mut out).expect("the synth's take");
+        assert_eq!(to(&fx), Some(3), "{fx:?}");
+        // Pinned on Track 1: REC stays, records nothing and says why.
+        time.act(mpfree_time_ui::TimeAction::Arm(Some(0))).unwrap();
+        app.toggle_pads_preview();
+        app.rec.pinned = true;
+        assert_eq!(
+            rec(&mut app, &mut time, &mut mix, &mut out),
+            Some(Vec::new())
+        );
+        assert_eq!(time.armed(), Some(0));
+        assert!(app.pads_preview(), "nothing changes");
+        let said: Vec<String> = rx
+            .try_iter()
+            .filter_map(|m| match m {
+                gui::ToUi::Tell(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            said.iter()
+                .any(|t| t.starts_with("REC is pinned to Track 1, which has clips")),
+            "{said:?}"
+        );
+        app.rec.pinned = false;
+        // Every track set up: a new one at the end, armed.
+        app.set_configured(u128::MAX);
+        let count = time.track_count();
+        let fx = rec(&mut app, &mut time, &mut mix, &mut out).expect("the synth's take");
+        assert_eq!(to(&fx), Some(count), "{fx:?}");
+        assert_eq!(time.track_count(), count + 1);
+        assert_eq!(time.armed(), Some(count));
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, app::Effect::Note(n) if n.contains("on a new track, Track"))));
+        assert_eq!(time.project().tracks[0], drums, "the drums unchanged");
+        // The arp on: the try-out ends and REC is REC's own next period.
+        time.act(mpfree_time_ui::TimeAction::Arm(Some(0))).unwrap();
+        app.toggle_pads_preview();
+        app.toggle_panel();
+        assert!(app.generating());
+        let fx = rec(&mut app, &mut time, &mut mix, &mut out).expect("the arp's end");
+        assert_eq!(fx[0], app::Effect::PadsPreview(false), "{fx:?}");
+        assert_eq!(to(&fx), None);
+        assert_eq!(fx.last(), Some(&app::Effect::Rec(Press::Rec)));
+        assert!(!app.pads_preview());
+        assert_eq!(rec(&mut app, &mut time, &mut mix, &mut out), None);
     }
 }
