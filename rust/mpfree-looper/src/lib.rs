@@ -296,6 +296,13 @@ pub enum Command {
     /// does ([`Status::capturing`]). Again, Undo or Clear call it off.
     /// Refused when the loop isn't empty or no whole bar was heard.
     Capture(u32),
+    /// Empty: as [`Command::Capture`], but the bars end on the bar line
+    /// heard on song tick `.0` (in the song as it last played on
+    /// unbroken), however long ago, so What you played's window can take
+    /// any bars still kept: `.1` of them, fewer (halving) when fewer fit.
+    /// Refused when that bar line isn't kept. Again, Undo or Clear call
+    /// it off, as for Capture.
+    CaptureTo(Tick, u32),
     /// The input is another source now: Capture forgets what it heard
     /// before. For every loop.
     NewInput,
@@ -2331,6 +2338,14 @@ impl Looper {
             .take(end, bars, self.loops[self.selected].latency)
     }
 
+    /// What [`Command::CaptureTo`] would take now, for the selected loop:
+    /// `bars` ending on the bar line heard on tick `end`.
+    pub fn capture_take_to(&self, end: Tick, bars: u32) -> Option<Take> {
+        let end = self.heard.line_at(end)?;
+        self.heard
+            .take(end, bars, self.loops[self.selected].latency)
+    }
+
     /// A Capture now would wait for the bar line coming: the song plays
     /// and is in a bar's last beat.
     pub fn capture_waits(&self) -> bool {
@@ -3004,6 +3019,7 @@ impl Looper {
                         | Command::Merge
                         | Command::Resample
                         | Command::Capture(_)
+                        | Command::CaptureTo(..)
                 ) | Queued::Layer(_, LayerCommand::Delete)
                     | Queued::Copy { .. }
             ) || (self.loops[self.selected].busy()
@@ -3066,11 +3082,16 @@ impl Looper {
             Queued::Loop(Command::TempoFromLoop(on)) => self.free_tempo = on,
             // A capture under way: again, Undo or Clear call it off.
             Queued::Loop(
-                Command::Capture(_) | Command::Undo | Command::Clear | Command::Forget,
+                Command::Capture(_)
+                | Command::CaptureTo(..)
+                | Command::Undo
+                | Command::Clear
+                | Command::Forget,
             ) if self.loops[s].capturing() => {
                 self.loops[s].call_off_capture();
             }
-            Queued::Loop(Command::Capture(bars)) => self.start_capture(s, bars),
+            Queued::Loop(Command::Capture(bars)) => self.start_capture(s, bars, None),
+            Queued::Loop(Command::CaptureTo(end, bars)) => self.start_capture(s, bars, Some(end)),
             Queued::Copy { from, id, to, keep } => self.start_copy(from, id, to, keep),
             Queued::Loop(Command::Clear | Command::Forget) if self.loops[s].loading => {
                 // Called off: the memory goes back (below).
@@ -3157,24 +3178,37 @@ impl Looper {
     /// Capture into loop `s` ([`Command::Capture`]): it waits for its bar
     /// line (the last one heard, or, pressed in a bar's last beat, the one
     /// coming); [`Looper::tend_captures`] takes it from there.
-    fn start_capture(&mut self, s: usize, bars: u32) {
-        let wait = self.heard.in_last_beat();
-        let lines = self.heard.lines();
+    /// Capture into loop `s`: `bars` ending on the last bar line (or the
+    /// one coming, in a bar's last beat), or on the one heard on tick
+    /// `to`.
+    fn start_capture(&mut self, s: usize, bars: u32, to: Option<Tick>) {
+        let (end, wait) = match to {
+            None => {
+                let wait = self.heard.in_last_beat();
+                let lines = self.heard.lines();
+                match (lines, wait) {
+                    (_, true) => (Some(lines), true),
+                    (0, false) => (None, false),
+                    (n, false) => (Some(n - 1), false),
+                }
+            }
+            Some(t) => (self.heard.line_at(t), false),
+        };
         let l = &mut self.loops[s];
-        if l.phase != Phase::Empty
-            || l.clearing
-            || l.loading
-            || l.adding
-            || self.loads[s].is_some()
-            || bars == 0
-            || (lines == 0 && !wait)
-        {
+        let Some(end) = end.filter(|_| {
+            l.phase == Phase::Empty
+                && !l.clearing
+                && !l.loading
+                && !l.adding
+                && self.loads[s].is_none()
+                && bars > 0
+        }) else {
             self.stats.refused += 1;
             return;
-        }
+        };
         l.capture = Some(Capture {
             bars,
-            end: if wait { lines } else { lines - 1 },
+            end,
             wait,
             take: None,
         });
@@ -3544,7 +3578,11 @@ impl Loop {
     fn must_wait(&self, q: Queued) -> bool {
         match q {
             // A capture: again, or Undo, calls it off; the rest waits.
-            Queued::Loop(Command::Capture(_) | Command::Undo) if self.capturing() => false,
+            Queued::Loop(Command::Capture(_) | Command::CaptureTo(..) | Command::Undo)
+                if self.capturing() =>
+            {
+                false
+            }
             _ if self.capture.is_some() => true,
             // Everything waits for a bounce (Clear stops it) and a load
             // (Clear calls it off).
@@ -3841,7 +3879,11 @@ impl Loop {
             Command::Edit(e) => self.edit(stats, e),
             // The looper starts these, with the time, the print and what
             // it heard.
-            Command::Merge | Command::Fit | Command::Capture(_) | Command::NewInput => {}
+            Command::Merge
+            | Command::Fit
+            | Command::Capture(_)
+            | Command::CaptureTo(..)
+            | Command::NewInput => {}
             Command::Resample => match self.phase {
                 Phase::Empty => {
                     self.apply(store, stats, me, Command::Record);
@@ -6075,9 +6117,9 @@ mod tests {
             assert!(n < NONE as usize && n * BLOCK >= rate as usize * 1200);
         }
         assert_eq!(n_blocks(44_100, 3600), NONE as usize);
-        // Five minutes: about 109 MB, a fifth of it per minute, and 10.6 MB
-        // for the 30 seconds Capture takes from.
-        assert_eq!(bytes_for(44_100, 300) / 1_000_000, 119);
+        // Five minutes: about 109 MB, a fifth of it per minute, and 21.2 MB
+        // for the 60 seconds Capture takes from.
+        assert_eq!(bytes_for(44_100, 300) / 1_000_000, 130);
     }
 
     /// Bit for bit what `rem_euclid` gives, over song positions and loop

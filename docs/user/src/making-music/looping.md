@@ -25,7 +25,7 @@ The first pass is the loop's first **layer**. Each overdub adds another, up to 1
 
 To get rid of a whole loop, first pass included, use **Clear** on the Looper tab, or hold the loop's ring for a second (on the Looper tab or Play's loop row). The **×** on a loop's last remaining layer does the same. **UNDO brings a cleared loop back** as it was, layers, history and all, until you record into that loop again or the memory is needed for another loop's layers (the oldest cleared loop goes first). In Perform, **Clear** and **×** take a half-second hold, so a stray touch can't clear a loop mid-set (see [Make and Perform](playing-live.md#make-and-perform)); the ring's hold is a second long already.
 
-The looper holds five minutes of stereo sound across all its loops and layers (the Looper tab shows how much is left). At 120 BPM a bar lasts two seconds, so that is room for about 37 four-bar layers, spread over up to eight loops of up to 16 layers each. If you need more or less, **Loop memory** in [Prefs](../reference/prefs.md) (also in the Looper tab's MENU) sets it from 1 to 20 minutes. The memory is set aside when MPFree starts, so a new size takes effect from the next start; the row says "(next start)" until then, and shows how many megabytes it uses (with the 30 seconds the looper keeps for [Capture](#capture-keep-what-you-just-played): 120 MB for five minutes).
+The looper holds five minutes of stereo sound across all its loops and layers (the Looper tab shows how much is left). At 120 BPM a bar lasts two seconds, so that is room for about 37 four-bar layers, spread over up to eight loops of up to 16 layers each. If you need more or less, **Loop memory** in [Prefs](../reference/prefs.md) (also in the Looper tab's MENU) sets it from 1 to 20 minutes. The memory is set aside when MPFree starts, so a new size takes effect from the next start; the row says "(next start)" until then, and shows how many megabytes it uses (with the 60 seconds the looper keeps for [Capture](#capture-keep-what-you-just-played): 131 MB for five minutes).
 
 ## The buttons
 
@@ -168,16 +168,19 @@ Press **MENU** on the Looper tab for the rarer settings as a list, with an expla
 
 ### Capture: keep what you just played
 
-The looper is always listening. While the song plays it keeps the last 30 seconds of what comes in from **Records from** (the pads, the line input or the loops), and where each bar line fell, whether you pressed Record or not. So when you play something good without recording it, it isn't lost: **Capture** turns the last bars you played into a loop.
+The looper is always listening. While the song plays it keeps the last 60 seconds of what comes in from **Records from** (the pads, the line input or the loops), and where each bar line fell, whether you pressed Record or not. So when you play something good without recording it, it isn't lost: **Capture** turns the last bars you played into a loop.
 
 - Press **SHIFT + REC** on the Looper tab, or pick an empty loop and tap the button over **What you played**, which sits on the bars it will take and names them ("Capture bars 10 and 11"). On the Play page's loop row, **Capture** says how many it will take ("Capture last 2 bars").
 - The bars go into the picked loop if it is empty, or else into the first empty loop. Its **Length** says how many: 1, 2, 4 or 8 bars, the pattern's length for **Pattern**, and 4 for **Free** (or Pattern with nothing playing).
 - They are the last whole bars, up to the bar line you just passed. Press it in the last beat of a bar and it waits for the bar line coming, so the bar you are finishing goes in too.
+- **Pick other bars:** the bars Capture takes are shaded on **What you played**, with a grip at each end. Drag the shading to take earlier bars: it moves a bar at a time, and stays on those bars as the song plays on (drag it back to the newest bar line and it keeps up again). Drag an end to take more or fewer: it grows and shrinks a whole pattern at a time (with **Length: Pattern** and a pattern playing; otherwise by the Length's bars, or a bar), with a dashed line where each repeat of the pattern starts, and the button says how many ("Capture bars 5 to 16 · 3 × pattern"). What you played shows at least four patterns' worth of bars, as far back as the 60 seconds go. A Capture, or a new Length, puts it back to the Length's bars.
 - A moment later the loop plays, in time with the song, as if you had recorded those bars: each bar plays where it belongs against the beat. Until then its ring waits in red, as a loop armed to record does, and says **Capturing** (or the bar it waits for, "13, Capture on bar"). What you played on a bar line lands on the loop's first beat, with the [latency](#latency) made up for as when you record.
 - If fewer bars were played than the Length asks, it takes fewer, halving (8, then 4, 2 and 1): only bars since you pressed PLAY count, and since **Records from** changed. Before a whole bar has gone by there is nothing to take, and Capture says so.
 - **Capture again**, **UNDO**, or a tap on the loop's ring (or its loop key) while it waits for its bar line or copies the bars in calls it off. Once it plays it is a loop like any other: overdub on it, change it, clear it.
 
 Capture needs room in the loop memory for the bars, as a recording does; when there isn't any it says so.
+
+{{shot: looper-window | What you played's window over three times a 2-bar pattern, a bar back from the newest bar line: a grip at each end and a dashed line where each repeat starts.}}
 
 ### The Q-Links
 

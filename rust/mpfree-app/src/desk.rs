@@ -568,6 +568,9 @@ impl Desk<'_> {
                 fx.push(app::Effect::Looper(looping::LoopAction::Listen(what)))
             }
             gui::FromUi::LoopMix(strip) => fx.extend(app.loop_mix(strip)),
+            gui::FromUi::LoopCaptureSpan(end, bars) => fx.push(app::Effect::Looper(
+                looping::LoopAction::CaptureSpan(end, bars),
+            )),
             gui::FromUi::LoopMixesWanted => out.show(throw_strips(mix, time)),
             gui::FromUi::LoopSteps(n) => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Steps(n)))

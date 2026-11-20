@@ -6488,21 +6488,21 @@ mod tests {
             Some(Effect::Menu(m)) => m.rows[at].1.clone(),
             _ => panic!("{fx:?}"),
         };
-        assert_eq!(app.item_text(Item::LoopMemory).1, "5 min, 120 MB");
+        assert_eq!(app.item_text(Item::LoopMemory).1, "5 min, 131 MB");
         let fx = app.step_item(at, 1);
-        assert_eq!(value(&fx), "10 min, 230 MB (next start)");
+        assert_eq!(value(&fx), "10 min, 240 MB (next start)");
         assert!(fx.contains(&Effect::Note(
             "loop memory: 10 min from the next start (now 5 min)".into()
         )));
-        assert_eq!(value(&app.step_item(at, 1)), "20 min, 448 MB (next start)");
-        assert_eq!(value(&app.step_item(at, 1)), "20 min, 448 MB (next start)");
+        assert_eq!(value(&app.step_item(at, 1)), "20 min, 458 MB (next start)");
+        assert_eq!(value(&app.step_item(at, 1)), "20 min, 458 MB (next start)");
         for _ in 0..5 {
             app.step_item(at, -1);
         }
         assert_eq!(app.settings.loop_memory, LoopMemory::Min1);
         assert_eq!(
             app.item_text(Item::LoopMemory).1,
-            "1 min, 33 MB (next start)"
+            "1 min, 44 MB (next start)"
         );
         // Kept as minutes; the next start makes it and says no more.
         let kept = app.app_settings();
@@ -6512,7 +6512,7 @@ mod tests {
         assert_eq!(next.settings.loop_memory, LoopMemory::Min1);
         assert!(notes[0].contains(", loop memory 1 min,"), "{notes:?}");
         next.set_loop_memory_now(LoopMemory::Min1);
-        assert_eq!(next.item_text(Item::LoopMemory).1, "1 min, 33 MB");
+        assert_eq!(next.item_text(Item::LoopMemory).1, "1 min, 44 MB");
         // A size it doesn't offer is left out, and the default stays.
         let mut odd = mpfree_store::Settings::default();
         odd.set_i64("loop-memory", 7);

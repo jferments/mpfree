@@ -1336,6 +1336,11 @@ impl LooperPage {
                 },
             }
         };
+        // What Capture takes into this loop: What you played's window.
+        let take = v
+            .heard
+            .take
+            .filter(|_| s.capturing.is_none() && v.capture_into.is_some_and(|c| c.0 == n));
         let empty_look = (layers.is_empty()).then(|| EmptyLook {
             title: format!("WHAT YOU PLAYED · {}", source.to_uppercase()),
             says: match s.phase {
@@ -1402,17 +1407,16 @@ impl LooperPage {
             },
             input: v.heard.cols.iter().map(|&db| input_frac(db)).collect(),
             bars: v.heard.lines[..v.heard.n_lines].to_vec(),
-            take: v
-                .heard
-                .take
-                .filter(|_| s.capturing.is_none() && v.capture_into.is_some_and(|c| c.0 == n))
-                .map(|(a, b, first, bars)| {
-                    (
-                        a,
-                        b,
-                        format!("Capture {}", crate::looping::bars_words(first, bars)),
-                    )
-                }),
+            take: take.map(|(a, b, first, bars)| {
+                (
+                    a,
+                    b,
+                    crate::looper_tab::capture_words(first, bars, v.heard.unit, v.heard.pattern),
+                )
+            }),
+            window: take.map(|t| (t.2, t.3)),
+            unit: v.heard.unit,
+            pattern: v.heard.pattern,
         });
         let history = self
             .history_open

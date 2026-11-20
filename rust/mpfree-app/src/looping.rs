@@ -90,23 +90,32 @@ const CELL_WAVE_EVERY: u64 = 8;
 /// Frames of what the looper heard in each of the peaks What you played
 /// draws from.
 const HEARD_CHUNK: u64 = 256;
-/// Columns of What you played: the last [`HEARD_BARS`] bars heard.
+/// Columns of What you played: the last [`HEARD_BARS`] bars heard, or
+/// more (up to [`HEARD_MAX_BARS`]) when its window takes more.
 pub const HEARD_COLS: usize = 240;
 pub const HEARD_BARS: u32 = 8;
+/// The most bars What you played shows: room for its window to take four
+/// times an 8-bar pattern, as far as the looper's 60 s go.
+pub const HEARD_MAX_BARS: u32 = 32;
 /// Bars Capture takes when the loop's Length is Free.
 pub const CAPTURE_FREE_BARS: u32 = 4;
 
-/// What the looper heard over the last [`HEARD_BARS`] bars, for an empty
-/// loop's What you played: its level, the bar lines in it, and what
-/// Capture into the picked loop would take now.
+/// What the looper heard over the last [`HEARD_BARS`] bars (or more), for
+/// an empty loop's What you played: its level, the bar lines in it, and
+/// what Capture into the picked loop would take now (its window).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HeardWave {
     /// Each column's peak, oldest first, dBFS (-inf silent).
     pub cols: [f32; HEARD_COLS],
     /// The bar lines in it, oldest first: each bar's number (from 1) and
     /// where it starts, 0 to 1; `n_lines` of them.
-    pub lines: [(i64, f32); HEARD_BARS as usize + 1],
+    pub lines: [(i64, f32); HEARD_MAX_BARS as usize + 1],
     pub n_lines: usize,
+    /// The bars the window grows and shrinks by: the pattern's length
+    /// while Length is Pattern and a pattern plays (`pattern` true), else
+    /// the Length's bars, else 1.
+    pub unit: u32,
+    pub pattern: bool,
     /// What Capture takes now: where it starts and ends (0 to 1), its
     /// first bar's number and how many bars.
     pub take: Option<(f32, f32, i64, u32)>,
@@ -119,8 +128,10 @@ impl Default for HeardWave {
     fn default() -> Self {
         HeardWave {
             cols: [f32::NEG_INFINITY; HEARD_COLS],
-            lines: [(0, 0.0); HEARD_BARS as usize + 1],
+            lines: [(0, 0.0); HEARD_MAX_BARS as usize + 1],
             n_lines: 0,
+            unit: 1,
+            pattern: false,
             take: None,
             waits: false,
         }
@@ -233,7 +244,7 @@ impl LoopMemory {
         mpfree_looper::bytes_for(rate, self.seconds()).div_ceil(1_000_000)
     }
 
-    /// Prefs' value for it: "5 min, 120 MB".
+    /// Prefs' value for it: "5 min, 131 MB".
     pub fn row(self, rate: u32) -> String {
         format!("{} min, {} MB", self.minutes(), self.megabytes(rate))
     }
@@ -249,6 +260,10 @@ pub enum LoopAction {
     Monitor(bool),
     /// Open or close the capture device (a state change on the MPC).
     LineInput(bool),
+    /// What you played's window moved or resized: the bars Capture takes,
+    /// ending on the bar line that starts bar `.0` (None: the newest, and
+    /// it keeps up), `.1` of them ([`LoopHost::set_capture_span`]).
+    CaptureSpan(Option<i64>, u32),
     /// A layer's control (its speaker): the layer by its id
     /// ([`LayerInfo::id`]), which stays the same through undo and redo.
     Layer(u8, LayerCommand),
@@ -1182,6 +1197,10 @@ pub struct LoopHost {
     /// first). A loop picked, or recorded, while empty takes it, so the
     /// choice sticks from loop to loop.
     starts: Starts,
+    /// What you played's window, moved or resized: the bar line its bars
+    /// end on (None: the newest, keeping up as the song plays) and how
+    /// many ([`LoopHost::set_capture_span`]). None: the Length's bars.
+    capture_span: Option<(Option<Tick>, u32)>,
     /// The pattern's length in bars ([`LoopHost::set_pattern_bars`]).
     pattern_bars: Option<u32>,
     /// The song was rolling (not stopped) in the last period.
@@ -1560,6 +1579,7 @@ impl LoopHost {
             tempos_refused: 0,
             match_pattern: false,
             starts: Starts::Bar,
+            capture_span: None,
             pattern_bars: None,
             last_rolling: false,
             input: vec![0.0; 2 * PERIOD],
@@ -1883,6 +1903,8 @@ impl LoopHost {
         // up to date by set_pattern_bars; any other Length lets go of it.
         if let Command::SetBars(b) = c {
             self.match_pattern = b == Some(PATTERN_BARS);
+            // A new Length: What you played's window takes it.
+            self.capture_span = None;
         }
         // Starts sticks: every empty loop records as it was last set.
         if let Command::SetStarts(w) = c {
@@ -2085,6 +2107,10 @@ impl LoopHost {
             ),
             (Command::Fit, _) => "fit: refused, no print plays".to_string(),
             (Command::Capture(b), _) => format!("Capture: the last {} heard", bars_words_n(b)),
+            (Command::CaptureTo(end, b), _) => format!(
+                "Capture: {} up to the bar line on tick {end}",
+                bars_words_n(b)
+            ),
             (Command::NewInput, _) => "Capture forgets what it heard before".to_string(),
         };
         if !self.looper.command(c) {
@@ -3046,7 +3072,86 @@ impl LoopHost {
             self.free_loop().ok()?
         };
         let bars = self.looper.loop_status(n)?.bars;
-        Some((n, bars.unwrap_or(CAPTURE_FREE_BARS)))
+        let bars = self
+            .span()
+            .map_or(bars.unwrap_or(CAPTURE_FREE_BARS), |s| s.1);
+        Some((n, bars))
+    }
+
+    /// The bars What you played's window grows and shrinks by, for loop
+    /// `n`, and whether they are the pattern's: the pattern's length while
+    /// Length is Pattern and a pattern plays, else the Length's bars,
+    /// else 1.
+    fn capture_unit(&self, n: usize) -> (u32, bool) {
+        match (self.match_pattern, self.pattern_bars) {
+            (true, Some(b)) => (b.max(1), true),
+            _ => (
+                self.looper
+                    .loop_status(n)
+                    .and_then(|s| s.bars)
+                    .unwrap_or(1)
+                    .max(1),
+                false,
+            ),
+        }
+    }
+
+    /// What you played's window as it stands: one moved back whose bar
+    /// line is no longer kept (the song stopped or jumped, or it fell out
+    /// of the 60 s) is let go of.
+    fn span(&self) -> Option<(Option<Tick>, u32)> {
+        let (end, bars) = self.capture_span?;
+        match end {
+            Some(t) => self.looper.capture_take_to(t, 1).map(|_| (end, bars)),
+            None => Some((None, bars)),
+        }
+    }
+
+    /// What Capture would take now, `bars` of it: up to the window's bar
+    /// line when it was moved back, else up to the newest.
+    fn capture_take_now(&self, bars: u32) -> Option<Take> {
+        match self.span().and_then(|s| s.0) {
+            Some(end) => self.looper.capture_take_to(end, bars),
+            None => self.looper.capture_take(bars),
+        }
+    }
+
+    /// A Capture now would wait for the bar line coming: the window keeps
+    /// up with the song, which is in a bar's last beat.
+    fn capture_waits_now(&self) -> bool {
+        self.span().and_then(|s| s.0).is_none() && self.looper.capture_waits()
+    }
+
+    /// What you played's window moved or resized on the Looper tab:
+    /// Capture takes `bars` ending on the bar line that starts bar `end`;
+    /// None, or the newest bar line, keeps up with the song. Until a
+    /// Capture, a new Length, or its bar line is no longer kept. A line
+    /// for the log.
+    pub fn set_capture_span(&mut self, end: Option<i64>, bars: u32) -> String {
+        let bars = bars.clamp(1, HEARD_MAX_BARS);
+        let mut lines = [(0 as Tick, 0u64); HEARD_MAX_BARS as usize + 1];
+        let n = self.looper.heard_lines(&mut lines);
+        let number = |t: Tick| t.div_euclid(self.bar_ticks.max(1)) + 1;
+        let newest = n.checked_sub(1).map(|i| number(lines[i].0));
+        let pinned = match end {
+            Some(e) if Some(e) != newest => match lines[..n].iter().find(|l| number(l.0) == e) {
+                Some(l) => Some((e, l.0)),
+                None => {
+                    return format!(
+                        "looper: Capture window: bar {e}'s line isn't kept: it stays as it was"
+                    )
+                }
+            },
+            _ => None,
+        };
+        self.capture_span = Some((pinned.map(|p| p.1), bars));
+        match pinned {
+            Some((e, _)) => format!(
+                "looper: Capture window: {}",
+                bars_words(e - i64::from(bars), bars)
+            ),
+            None => format!("looper: Capture window: the last {}", bars_words_n(bars)),
+        }
     }
 
     /// What the looper heard over the last [`HEARD_BARS`] bars at the
@@ -3060,7 +3165,17 @@ impl LoopHost {
         let now = self.looper.heard_at();
         let bar = self.bar_ticks.max(1) as f64 / f64::from(PPQ) * 60.0 / self.bpm.max(1.0)
             * f64::from(self.rate);
-        let span = (bar * f64::from(HEARD_BARS)).min((chunks - 1) as f64 * HEARD_CHUNK as f64);
+        // Room for the window to grow to four times its unit (the
+        // pattern), and a bar more than it takes.
+        let into = self.capture_into();
+        if let Some((n, _)) = into {
+            (w.unit, w.pattern) = self.capture_unit(n);
+        }
+        let shown = HEARD_BARS
+            .max(4 * w.unit)
+            .max(into.map_or(0, |i| i.1 + 1))
+            .min(HEARD_MAX_BARS);
+        let span = (bar * f64::from(shown)).min((chunks - 1) as f64 * HEARD_CHUNK as f64);
         let from = now as f64 - span;
         let x = |f: u64| ((f as f64 - from) / span) as f32;
         for (c, col) in w.cols.iter_mut().enumerate() {
@@ -3082,7 +3197,7 @@ impl LoopHost {
                 f32::NEG_INFINITY
             };
         }
-        let mut lines = [(0 as Tick, 0u64); HEARD_BARS as usize + 1];
+        let mut lines = [(0 as Tick, 0u64); HEARD_MAX_BARS as usize + 1];
         let n = self.looper.heard_lines(&mut lines);
         let number = |t: Tick| t.div_euclid(self.bar_ticks.max(1)) + 1;
         for &(t, f) in &lines[..n] {
@@ -3091,10 +3206,10 @@ impl LoopHost {
                 w.n_lines += 1;
             }
         }
-        w.waits = self.looper.capture_waits();
-        if let Some((_, bars)) = self.capture_into() {
+        w.waits = self.capture_waits_now();
+        if let Some((_, bars)) = into {
             let latency = u64::from(self.looper.status().latency);
-            w.take = self.looper.capture_take(bars).map(|t| {
+            w.take = self.capture_take_now(bars).map(|t| {
                 let a = t.start.saturating_sub(latency);
                 let (a, b) = (x(a), x(a + t.frames as u64));
                 if w.waits {
@@ -3127,13 +3242,16 @@ impl LoopHost {
             Ok(n) => n,
             Err(why) => return format!("looper: Capture: {why}"),
         };
-        let asked = self
-            .looper
-            .loop_status(n)
-            .and_then(|s| s.bars)
-            .unwrap_or(CAPTURE_FREE_BARS);
-        let waits = self.looper.capture_waits();
-        let take = self.looper.capture_take(asked);
+        let span = self.span();
+        let asked = span.map(|s| s.1).unwrap_or_else(|| {
+            self.looper
+                .loop_status(n)
+                .and_then(|s| s.bars)
+                .unwrap_or(CAPTURE_FREE_BARS)
+        });
+        let pinned = span.and_then(|s| s.0);
+        let waits = self.capture_waits_now();
+        let take = self.capture_take_now(asked);
         let Some(t) = take.or(waits.then_some(Take {
             bars: asked,
             start: 0,
@@ -3160,9 +3278,15 @@ impl LoopHost {
             }
             self.picked = n;
         }
-        if !self.looper.command(Command::Capture(asked)) {
+        let c = match pinned {
+            Some(end) => Command::CaptureTo(end, asked),
+            None => Command::Capture(asked),
+        };
+        if !self.looper.command(c) {
             return "looper: Capture: NOT started, the command queue is full".to_string();
         }
+        // The window goes back to the Length's bars, keeping up.
+        self.capture_span = None;
         let number = |tick: Tick| tick.div_euclid(self.bar_ticks.max(1)) + 1;
         if take.is_none() || waits {
             return format!(
@@ -3171,10 +3295,10 @@ impl LoopHost {
                 n + 1
             );
         }
-        let fewer = if t.bars < asked {
-            format!(" (its Length asks {asked}: fewer were played since PLAY)")
-        } else {
-            String::new()
+        let fewer = match (t.bars < asked, span.is_some()) {
+            (false, _) => String::new(),
+            (true, false) => format!(" (its Length asks {asked}: fewer were played since PLAY)"),
+            (true, true) => format!(" (the window asks {asked}: fewer were played or kept)"),
         };
         format!(
             "looper: Capture: {} become Loop {}{fewer}",
@@ -4255,6 +4379,111 @@ mod tests {
         run(&mut h, frame(&out) + 256, &mut out);
         assert!(h.capture().contains("no whole bar heard yet"));
         assert!(h.view(120.0).heard.take.is_none());
+    }
+
+    /// What you played's window: with a 2-bar pattern it grows by two
+    /// bars, and shows room for four patterns; moved back, it takes bars
+    /// that are long past "the last bars", which play in time; Capture,
+    /// or a new Length, lets go of it; at the newest bar line it keeps up.
+    #[test]
+    fn capture_window_moves_back_and_grows_by_the_pattern() {
+        const BAR: u64 = 88_200;
+        let mut h = LoopHost::new(44_100, 40);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        h.command(Command::SetLatency(0));
+        h.command(Command::SetBars(Some(PATTERN_BARS)));
+        h.set_pattern_bars(Some(2));
+        t.command(0, T::Play);
+        let mut run = |h: &mut LoopHost, to: u64, out: &mut Vec<(f32, f32)>| {
+            while (out.len() as u64) < to {
+                let frame = out.len() as u64;
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                for f in 0..PERIOD {
+                    (l[f], r[f]) = pads_at(frame + f as u64);
+                }
+                h.take_pads(&l, &r);
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                h.period(&b, &mut l, &mut r);
+                out.extend(l.iter().copied().zip(r.iter().copied()));
+            }
+        };
+        let mut out = Vec::new();
+        // The app follows the pattern every few periods.
+        run(&mut h, 1_024, &mut out);
+        h.set_pattern_bars(Some(2));
+        // Bar 10, beat 2.
+        run(&mut h, 9 * BAR + 30_000, &mut out);
+        let v = h.view(120.0);
+        assert_eq!((v.heard.unit, v.heard.pattern), (2, true));
+        assert_eq!(v.capture_into, Some((0, 2)), "a pattern's length");
+        let lines: Vec<i64> = v.heard.lines[..v.heard.n_lines]
+            .iter()
+            .map(|l| l.0)
+            .collect();
+        assert_eq!(
+            lines,
+            (3..=10).collect::<Vec<_>>(),
+            "8 bars: room for 4 patterns"
+        );
+        // Two patterns, back to bar 8's line: bars 4 to 7.
+        assert_eq!(
+            h.set_capture_span(Some(8), 4),
+            "looper: Capture window: bars 4 to 7"
+        );
+        let v = h.view(120.0);
+        assert_eq!(v.capture_into, Some((0, 4)));
+        let (a, b2, first, bars) = v.heard.take.expect("a take");
+        assert_eq!((first, bars), (4, 4));
+        assert!(0.0 < a && a < b2 && b2 < 1.0, "{a} {b2}");
+        assert_eq!(h.capture(), "looper: Capture: bars 4 to 7 become Loop 1");
+        assert_eq!(
+            h.view(120.0).capture_into,
+            Some((0, 2)),
+            "let go of: the pattern again"
+        );
+        run(&mut h, out.len() as u64 + 8_192, &mut out);
+        let s = h.looper.status();
+        assert_eq!(
+            (s.phase, s.frames, s.origin),
+            (Phase::Playing, 4 * BAR as usize, 3 * 3840)
+        );
+        let from = out.len();
+        run(&mut h, out.len() as u64 + BAR, &mut out);
+        for (n, y) in out.iter().enumerate().skip(from + 512) {
+            let want = pads_at(3 * BAR + (n as u64 - 3 * BAR) % (4 * BAR));
+            assert!(
+                (y.0 - want.0).abs() < 1e-6 && (y.1 - want.1).abs() < 1e-6,
+                "frame {n}: {y:?}, want {want:?}"
+            );
+        }
+        // Let go of after the Capture: Loop 2 takes the pattern again.
+        h.select(1);
+        run(&mut h, out.len() as u64 + 256, &mut out);
+        assert_eq!(h.view(120.0).capture_into, Some((1, 2)));
+        // At the newest bar line it keeps up: the last 6 bars.
+        let newest = {
+            let v = h.view(120.0);
+            v.heard.lines[v.heard.n_lines - 1].0
+        };
+        assert_eq!(
+            h.set_capture_span(Some(newest), 6),
+            "looper: Capture window: the last 6 bars"
+        );
+        let first = h.view(120.0).heard.take.unwrap().2;
+        run(&mut h, out.len() as u64 + BAR, &mut out);
+        assert_eq!(
+            h.view(120.0).heard.take.unwrap().2,
+            first + 1,
+            "it moves on"
+        );
+        // A bar line not kept leaves it; a new Length lets go of it.
+        assert!(h.set_capture_span(Some(999), 2).contains("isn't kept"));
+        assert_eq!(h.view(120.0).capture_into, Some((1, 6)));
+        h.command(Command::SetBars(Some(1)));
+        run(&mut h, out.len() as u64 + 256, &mut out);
+        assert_eq!(h.view(120.0).capture_into, Some((1, 1)));
     }
 
     /// The pads from the mix come a period late (the looper runs before

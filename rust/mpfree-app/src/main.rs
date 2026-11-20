@@ -5479,6 +5479,10 @@ fn looper_action(
             Vec::new()
         }
         looping::LoopAction::Capture => vec![app::Effect::Tell(looper.capture())],
+        looping::LoopAction::CaptureSpan(end, bars) => {
+            out.note(&looper.set_capture_span(end, bars));
+            Vec::new()
+        }
         looping::LoopAction::Source(s) => {
             looper.set_source(s);
             let what = match s {
