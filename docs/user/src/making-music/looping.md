@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-looper rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/loop_row.rs rust/mpfree-app/src/looper_deck.rs rust/mpfree-app/src/looper_tab.rs rust/mpfree-app/src/looping.rs rust/mpfree-seq/src/loops.rs
-checked: 2026-11-19 ea21a9b1
+checked: 2026-11-20 4b71b1a9
 -->
 
 # Recording loops
@@ -77,7 +77,7 @@ The **speaker** under a ring mutes the loop without picking it: it is kept and k
 
 Every loop plays at once, in time with the song, but only one records at a time: starting to record in one loop ends the recording in the others. The pads can do all of this too: see [The pads as loop keys](#the-pads-as-loop-keys).
 
-Over the loops: whether the song is stopped or playing and its tempo, **Pads as loop keys** (see [The pads as loop keys](#the-pads-as-loop-keys)), **Records from** (what every loop records, with a meter of how loud it is coming in; tap it to change: **Pads**, then **Line in**, then **Loops**; see [Recording a new loop](#recording-a-new-loop)) and the loop memory every loop shares ("37 s of 5 min").
+Over the loops: whether the song is stopped or playing and its tempo, **Pads as loop keys** (see [The pads as loop keys](#the-pads-as-loop-keys)), **Records from** (what every loop records, with a meter of how loud it is coming in; tap it and its choices open in the lanes' place: **Pads**, **Line in**, **Loops**, or a mix; see [Recording a new loop](#recording-a-new-loop)) and the loop memory every loop shares ("37 s of 5 min").
 
 ### The picked loop
 
@@ -126,11 +126,13 @@ Pick an empty loop and the space under the lanes shows how it will record, and t
 
 | Setting | What it does |
 |---|---|
-| **Records from** (over the loops) | **Pads**: MPFree's own sound as you hear it, with the effects on its tracks and the echoes and reverbs of the sends. It leaves out the loops, the audio tracks, the line input and the metronome, and the master's own effects and Level, which the loop plays through anyway. **Line in**: the INPUTS on the back of the MPC (it opens the line input). **Loops**: all the other loops as you hear them, so you can bounce several loops into one and keep layering. |
+| **Records from** (over the loops) | **Pads**: MPFree's own sound as you hear it, with the effects on its tracks and the echoes and reverbs of the sends. It leaves out the loops, the audio tracks, the line input and the metronome, and the master's own effects and Level, which the loop plays through anyway. **Line in**: the INPUTS on the back of the MPC (it opens the line input). **Loops**: all the other loops as you hear them, so you can bounce several loops into one and keep layering. **A mix**, from the row under them: **Master** is everything you hear but the loops (the tracks, the audio tracks and the line input), before the master's own effects and Level; a track or a submix is what it sends on, after its effects and fader, named as the Mix tab names it. The Loop track isn't offered, and a submix the Loop track plays into says it can't be recorded (the loop would record itself). |
 | **Monitor** | With Line in: hear the input through the outputs, about 9 ms late. Leave it off if you already hear your instrument another way, such as through a mixer. |
 | **Length** | **Pattern** (the default): as long as the pattern playing (the longest clip playing, in whole bars), so the loop always fits the beat; with nothing playing it records as on Free. **Free**: from the next bar line until you tap the ring again (it ends on the next bar line) or press STOP (it stops at once). Or 1, 2, 4 or 8 bars, and it ends by itself. With [Tempo from the first loop](#tempo-from-the-first-loop) on and the music stopped, a first loop with no set length records in your own time and sets the tempo. |
 | **Starts** | **On the bar** (the default): the first pass starts on the next bar line, or when PLAY starts the music. **When I play**: the loop waits for you, and your first note starts it ([below](#start-when-you-play)). With **Loops** it is always on the bar. |
 | **Then** | What the loop does when its first pass ends: **Play**, or go straight into an **Overdub**. |
+
+{{shot: looper-sources | Records from tapped: Pads, Line in and Loops, and the mixes under them, the master first.}}
 
 {{shot: looper-empty | An empty loop picked: What you played over the last eight bars, the two Capture would take marked, and how the loop will record under it.}}
 

@@ -321,6 +321,10 @@ pub struct LooperPage {
     bank: LoopBank,
     /// The pads are the loop keys: the deck's Pads switch is lit.
     pads_keys: bool,
+    /// The mixes Records from offers, named as the Mix tab names them:
+    /// the master, the tracks and the submixes, never the Loop track
+    /// ([`LooperPage::set_mixes`]).
+    mixes: Vec<(String, mpfree_fx::StripId)>,
 }
 
 impl LooperPage {
@@ -346,6 +350,7 @@ impl LooperPage {
             transport: TransportInfo::default(),
             bank: LoopBank::default(),
             pads_keys: false,
+            mixes: vec![("Master".to_string(), mpfree_fx::StripId::Master)],
         };
         p.update(ui, &LooperView::default(), &Settings::default());
         Ok(p)
@@ -604,6 +609,70 @@ impl LooperPage {
         self.history_open
     }
 
+    /// The strips the mixer has (`mixing::throw_strips`): Records from's
+    /// mixes are these but the Loop track, which would record itself. The
+    /// picker's chips follow.
+    pub fn set_mixes(&mut self, ui: &mut Ui, strips: &[(String, mpfree_fx::StripId)]) {
+        let loop_track = mpfree_fx::StripId::Track(crate::mixing::LOOP);
+        let mixes: Vec<_> = strips
+            .iter()
+            .filter(|s| s.1 != loop_track)
+            .cloned()
+            .collect();
+        if mixes == self.mixes {
+            return;
+        }
+        self.mixes = mixes;
+        if let Some(e) = ui.get_mut::<LoopEditor>(EDITOR) {
+            e.set_mixes(self.mixes.iter().map(|m| m.0.clone()).collect());
+        }
+        let v = self.view.clone();
+        self.refresh_deck(ui, &v);
+    }
+
+    /// Records from's mix `i` (into the picker's mix chips): its name and
+    /// strip.
+    pub fn mix(&self, i: usize) -> Option<(String, mpfree_fx::StripId)> {
+        self.mixes.get(i).cloned()
+    }
+
+    /// Records from, as the panel's choices count it: 0 Pads, 1 Line in, 2
+    /// Loops, then the mixes from 3 ([`crate::looper_tab::SOURCE_CHOICES`]
+    /// and the picker's mix chips); a mix no longer in the mixer lights
+    /// none.
+    pub fn source_index(&self, v: &LooperView) -> usize {
+        let fixed = crate::looper_tab::SOURCE_CHOICES.len();
+        match (v.resample, v.source) {
+            (true, _) => 2,
+            (false, LoopSource::Pads) => 0,
+            (false, LoopSource::Line) => 1,
+            (false, LoopSource::Mix(s)) => self
+                .mixes
+                .iter()
+                .position(|m| m.1 == s)
+                .map_or(usize::MAX, |i| fixed + i),
+        }
+    }
+
+    /// What the looper records from, as the input chip and an empty ring's
+    /// foot say it: "Pads", "Line in", "Loops", or the mix's name.
+    fn source_word(&self, v: &LooperView) -> String {
+        match (v.resample, v.source) {
+            (true, _) => "Loops".to_string(),
+            (false, LoopSource::Pads) => "Pads".to_string(),
+            (false, LoopSource::Line) => "Line in".to_string(),
+            (false, LoopSource::Mix(s)) => self.mix_name(s),
+        }
+    }
+
+    /// A mix's name as the Mix tab says it.
+    fn mix_name(&self, s: mpfree_fx::StripId) -> String {
+        self.mixes
+            .iter()
+            .find(|m| m.1 == s)
+            .map_or_else(|| crate::mixing::name(s), |m| m.0.clone())
+    }
+
     /// A tap on row `row` of the undo history: how many steps back (below
     /// 0) or forward that is. None for now itself.
     pub fn history_steps(&self, row: usize) -> Option<i32> {
@@ -653,11 +722,16 @@ impl LooperPage {
         let Some((n, k, counts)) = &self.take else {
             return;
         };
+        let mix_name = match v.source {
+            LoopSource::Mix(m) => self.mix_name(m),
+            _ => String::new(),
+        };
         let base = if v.resample && s.resampling {
             "Loops"
         } else {
             match v.source {
                 LoopSource::Line => "Line in",
+                LoopSource::Mix(_) => &mix_name,
                 LoopSource::Pads => match counts.iter().max_by_key(|(_, c)| *c) {
                     Some((g, _)) => g,
                     None => "",
@@ -889,13 +963,13 @@ impl LooperPage {
             tempo: format!("{:.0} BPM", t.bpm),
             memory: memory(v),
             pads: self.pads_keys,
-            input: (source_word(v).to_string(), input_frac(self.hold)),
+            input: (self.source_word(v), input_frac(self.hold)),
             capture: capture_button(v),
         };
         // An armed loop starts on the next bar line (on the bar PLAY
         // starts while stopped).
         let next_bar = running.then_some(bar + 2);
-        let foot = source_word(v).to_string();
+        let foot = self.source_word(v);
         let bar_frames = v.frames_per_beat * f64::from(v.beats_per_bar.max(1));
         let channels: Vec<Channel> = (0..MAX_LOOPS)
             .map(|n| {
@@ -1080,11 +1154,15 @@ impl LooperPage {
         let empty = s.phase == Phase::Empty;
         let has_sound = matches!(s.phase, Phase::Playing | Phase::Overdubbing);
         let title = format!("Loop {}", n + 1);
-        let source = source_word(v);
+        let source = self.source_word(v);
         let records = match (v.resample, v.source) {
-            (true, _) => "records the other loops",
-            (false, LoopSource::Pads) => "records the pads",
-            (false, LoopSource::Line) => "records the line input",
+            (true, _) => "records the other loops".to_string(),
+            (false, LoopSource::Pads) => "records the pads".to_string(),
+            (false, LoopSource::Line) => "records the line input".to_string(),
+            (false, LoopSource::Mix(mpfree_fx::StripId::Master)) => {
+                "records the whole mix but the loops".to_string()
+            }
+            (false, LoopSource::Mix(m)) => format!("records {}", self.mix_name(m)),
         };
         let sub = {
             let mut parts = Vec::new();
@@ -1236,7 +1314,7 @@ impl LooperPage {
             }
         } else {
             Strip::Records {
-                source: source_index(v),
+                source: u8::try_from(self.source_index(v)).unwrap_or(u8::MAX),
                 monitor: (!v.resample && v.source == LoopSource::Line && v.line_on)
                     .then_some(v.monitor),
                 // Length: Pattern is the app's choice; the looper only
@@ -1279,7 +1357,7 @@ impl LooperPage {
                      the tempo",
                     n + 1,
                     match v.source {
-                        LoopSource::Pads => "the first pad you play",
+                        LoopSource::Pads | LoopSource::Mix(_) => "the first pad you play",
                         LoopSource::Line => "the line input's first note",
                     }
                 ),
@@ -1287,7 +1365,7 @@ impl LooperPage {
                     "Loop {} records when you play: {} starts it {}",
                     n + 1,
                     match v.source {
-                        LoopSource::Pads => "the first pad you play",
+                        LoopSource::Pads | LoopSource::Mix(_) => "the first pad you play",
                         LoopSource::Line => "the line input's first note",
                     },
                     match self.transport.state {
@@ -1475,26 +1553,6 @@ impl LooperPage {
                 row.picked = v.selected;
             }
         }
-    }
-}
-
-/// What the looper records from, as the input chip and an empty ring's
-/// foot say it.
-fn source_word(v: &LooperView) -> &'static str {
-    match (v.resample, v.source) {
-        (true, _) => "Loops",
-        (false, LoopSource::Pads) => "Pads",
-        (false, LoopSource::Line) => "Line in",
-    }
-}
-
-/// Records from, as the panel's choices count it: 0 Pads, 1 Line in, 2
-/// Loops.
-pub fn source_index(v: &LooperView) -> u8 {
-    match (v.resample, v.source) {
-        (true, _) => 2,
-        (false, LoopSource::Pads) => 0,
-        (false, LoopSource::Line) => 1,
     }
 }
 

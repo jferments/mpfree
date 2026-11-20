@@ -509,7 +509,8 @@ pub const SEND_CHOICES: [(&str, &str); 4] = [
 pub const SEND_SHOW: usize = 3;
 
 /// Records from's choices, as its picker shows them in the lanes' place
-/// (the deck's Records from opens it): title and what it records.
+/// (the deck's Records from opens it): title and what it records. The
+/// mixes follow them, from index 3 ([`LoopEditor::set_mixes`]).
 pub const SOURCE_CHOICES: [(&str, &str); 3] = [
     ("Pads", "what you play on the pads, as you hear it"),
     ("Line in", "the INPUTS on the back of the MPC"),
@@ -579,6 +580,7 @@ struct EditorLook {
     strip: Strip,
     send_open: bool,
     sources: Option<usize>,
+    mixes: Vec<String>,
     history: Option<(HistoryList, usize)>,
     trim: Option<i64>,
     trimming: Option<(i64, i64)>,
@@ -620,8 +622,11 @@ pub struct LoopEditor {
     /// Send's choices show in the lanes' place.
     send_open: bool,
     /// Records from's choices show in the lanes' place, the one in use
-    /// (into [`SOURCE_CHOICES`]) lit.
+    /// (into [`SOURCE_CHOICES`], then the mixes) lit.
     sources: Option<usize>,
+    /// Records from's mixes, by name: the master, the tracks and the
+    /// submixes (the page's [`crate::looper_page::LooperPage::set_mixes`]).
+    mixes: Vec<String>,
     /// A finger on a trim grip (true: the end), and the range kept so far.
     trimming: Option<(u64, bool, i64, i64)>,
     /// A finger on the ruler: where it went down and the 1/16 notes it
@@ -670,6 +675,7 @@ impl Default for LoopEditor {
             send_built: [false; 4],
             send_open: false,
             sources: None,
+            mixes: vec!["Master".to_string()],
             trimming: None,
             nudging: None,
             feedback: None,
@@ -839,16 +845,38 @@ impl LoopEditor {
         self.sources
     }
 
-    /// Records from's choices, side by side in the lanes' space.
-    fn source_rects(lanes: Rect) -> Vec<Rect> {
+    /// Records from's mixes, by name, as the Mix tab names them.
+    pub fn set_mixes(&mut self, mixes: Vec<String>) {
+        self.mixes = mixes;
+    }
+
+    /// Records from's choices in the lanes' space: the three side by side,
+    /// then `mixes` chips in rows under them, as many as fit.
+    fn source_rects(lanes: Rect, mixes: usize) -> Vec<Rect> {
         let n = SOURCE_CHOICES.len() as i32;
-        let inner = lanes.inset_xy(24, 20);
+        let inner = lanes.inset_xy(24, 24);
         let w = (inner.w - 16 * (n - 1)) / n;
-        let h = inner.h.min(110);
-        let y0 = inner.y + (inner.h - h) / 2;
-        (0..n)
-            .map(|i| Rect::new(inner.x + i * (w + 16), y0, w, h))
-            .collect()
+        let h = 84;
+        let mut out: Vec<Rect> = (0..n)
+            .map(|i| Rect::new(inner.x + i * (w + 16), inner.y, w, h))
+            .collect();
+        let gap = 10;
+        let per_row = ((inner.w + gap) / (128 + gap)).max(1);
+        let cw = (inner.w - gap * (per_row - 1)) / per_row;
+        let top = inner.y + h + 36;
+        for k in 0..mixes as i32 {
+            let b = Rect::new(
+                inner.x + (k % per_row) * (cw + gap),
+                top + (k / per_row) * (40 + gap),
+                cw,
+                40,
+            );
+            if b.bottom() > lanes.bottom() - 4 {
+                break;
+            }
+            out.push(b);
+        }
+        out
     }
 
     fn paint_sources(&self, cx: &mut PaintCx, lanes: Rect, now: usize) {
@@ -856,11 +884,32 @@ impl LoopEditor {
         cx.canvas
             .fill_round_rect(lanes, 10, t.bg.mix(t.surface, 0.45));
         group_label(cx, lanes.x + 24, lanes.y + 4, "RECORDS FROM");
-        for (i, (b, (title, what))) in LoopEditor::source_rects(lanes)
-            .into_iter()
-            .zip(SOURCE_CHOICES)
-            .enumerate()
-        {
+        let rects = LoopEditor::source_rects(lanes, self.mixes.len());
+        let fixed = SOURCE_CHOICES.len();
+        if let Some(first) = rects.get(fixed) {
+            cx.text(
+                FontId::Bold,
+                11.5,
+                Rect::new(first.x, first.y - 22, lanes.w - 48, 14),
+                Align::Left,
+                t.text_dim,
+                "OR A MIX: THE MASTER (ALL BUT THE LOOPS), A TRACK OR A SUBMIX",
+            );
+        }
+        for (i, (b, name)) in rects.iter().skip(fixed).zip(&self.mixes).enumerate() {
+            let lit = fixed + i == now;
+            cx.canvas
+                .fill_round_rect(*b, 10, if lit { t.accent } else { t.raised });
+            cx.text(
+                FontId::Bold,
+                15.0,
+                b.inset_xy(8, 0),
+                Align::Center,
+                if lit { t.on_accent } else { t.text },
+                name,
+            );
+        }
+        for (i, (b, (title, what))) in rects.into_iter().zip(SOURCE_CHOICES).enumerate() {
             let lit = i == now;
             cx.canvas
                 .fill_round_rect(b, 12, if lit { t.accent } else { t.raised });
@@ -1225,6 +1274,7 @@ impl LoopEditor {
             strip: self.strip.clone(),
             send_open: self.send_open,
             sources: self.sources,
+            mixes: self.mixes.clone(),
             history: self
                 .history
                 .clone()
@@ -2168,8 +2218,14 @@ impl Widget for LoopEditor {
             out.push(t.disabled_if(!on || chosen));
         }
         if let Some(now) = self.sources {
-            for (i, b) in LoopEditor::source_rects(p.lanes).into_iter().enumerate() {
-                out.push(Target::tap("source", i, SOURCE_CHOICES[i].0, b).disabled_if(i == now));
+            let rects = LoopEditor::source_rects(p.lanes, self.mixes.len());
+            for (i, b) in rects.into_iter().enumerate() {
+                let label = SOURCE_CHOICES
+                    .get(i)
+                    .map(|c| c.0)
+                    .or_else(|| self.mixes.get(i - SOURCE_CHOICES.len()).map(String::as_str))
+                    .unwrap_or("");
+                out.push(Target::tap("source", i, label, b).disabled_if(i == now));
             }
             return out;
         }
@@ -2366,7 +2422,7 @@ impl Widget for LoopEditor {
                     return Some(EventKind::Tab(3));
                 }
                 if self.sources.is_some() {
-                    if let Some(i) = LoopEditor::source_rects(p.lanes)
+                    if let Some(i) = LoopEditor::source_rects(p.lanes, self.mixes.len())
                         .iter()
                         .position(|b| b.contains(x, y))
                     {

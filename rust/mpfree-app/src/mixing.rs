@@ -542,6 +542,10 @@ pub struct MixHost {
     perform_want: Vec<StripId>,
     perform_added: Vec<StripId>,
     perform_building: Vec<StripId>,
+    /// Where [`LOOP_CAPTURE`] listens now ([`MixHost::loop_take`]): the
+    /// master's input for the pads and the master, a strip after its
+    /// fader for a mix.
+    loop_point: (StripId, mpfree_fx::CapturePoint),
     /// The pad strips' mutes as `apply_mutes` last set them (a bit each):
     /// a strip's parameter reads its old value until the next period, so
     /// two changes in one period compare with what was sent.
@@ -794,6 +798,7 @@ impl MixHost {
             dropped: 0,
             pad_solos: 0,
             mutes_sent: 0,
+            loop_point: master_in,
             xy_effect: None,
             waiting: [None; WAITING],
             throw_said: Vec::new(),
@@ -1931,6 +1936,17 @@ impl MixHost {
         left: &mut [f32; PERIOD],
         right: &mut [f32; PERIOD],
     ) -> Result<u32, &'static str> {
+        self.mix_less(LEFT_OUT.len(), left, right)
+    }
+
+    /// [`LOOP_CAPTURE`] as the last period left it, without the first
+    /// `n` of [`LEFT_OUT`] ([`MixHost::pads_wet`]).
+    fn mix_less(
+        &self,
+        n: usize,
+        left: &mut [f32; PERIOD],
+        right: &mut [f32; PERIOD],
+    ) -> Result<u32, &'static str> {
         let m = &self.mixer;
         let latency = m.capture_latency(LOOP_CAPTURE).unwrap_or(0);
         match m.capture(LOOP_CAPTURE) {
@@ -1945,7 +1961,7 @@ impl MixHost {
                 return Ok(latency);
             }
         }
-        for (i, s) in LEFT_OUT.into_iter().enumerate() {
+        for (i, s) in LEFT_OUT.into_iter().enumerate().take(n) {
             let slot = LOOP_CAPTURE + 1 + i;
             let Some((l, r)) = m.capture(slot).filter(|(l, _)| l.len() == PERIOD) else {
                 continue;
@@ -1969,6 +1985,65 @@ impl MixHost {
             }
         }
         Ok(latency)
+    }
+
+    /// What the looper records into `left` and `right` this period, and its
+    /// latency, as [`MixHost::pads_wet`] says them: `from` None is the
+    /// pads ([`MixHost::pads_wet`]); the master is all its input but the
+    /// Loop track (the audio tracks and the line input stay in, before
+    /// the master's effects and fader, as the pads are); any other strip,
+    /// a track or a submix, is what it sends on, after its fader. Never the
+    /// Loop track, nor a submix the Loop track goes to (it would record
+    /// itself). When `from` changes, the capture point moves and this
+    /// period is silence (the mixer's next block takes from the new
+    /// point). Cheap: a copy, and at most three subtractions a frame.
+    pub fn loop_take(
+        &mut self,
+        from: Option<StripId>,
+        left: &mut [f32; PERIOD],
+        right: &mut [f32; PERIOD],
+    ) -> Result<u32, &'static str> {
+        use mpfree_fx::CapturePoint;
+        let point = match from {
+            None | Some(StripId::Master) => (StripId::Master, CapturePoint::BeforeInserts),
+            Some(s) => (s, CapturePoint::AfterFader),
+        };
+        if from == Some(StripId::Track(LOOP)) {
+            left.fill(0.0);
+            right.fill(0.0);
+            return Err("the Loop track can't record itself");
+        }
+        if let Some(s @ StripId::Bus(_)) = from {
+            if self.mixer.destination(StripId::Track(LOOP)) == Some(s) {
+                left.fill(0.0);
+                right.fill(0.0);
+                return Err("the Loop track goes to that submix");
+            }
+        }
+        let moved = point != self.loop_point;
+        // A strip is found again each period (cheap, and it allocates
+        // nothing), so one that moves in the mixer stays the one taken.
+        if moved || point.0 != StripId::Master {
+            if !self.mixer.set_capture(LOOP_CAPTURE, Some(point)) {
+                let master_in = (StripId::Master, CapturePoint::BeforeInserts);
+                let _ = self.mixer.set_capture(LOOP_CAPTURE, Some(master_in));
+                self.loop_point = master_in;
+                left.fill(0.0);
+                right.fill(0.0);
+                return Err("that strip isn't in the mix");
+            }
+            self.loop_point = point;
+        }
+        if moved {
+            left.fill(0.0);
+            right.fill(0.0);
+            return Ok(self.mixer.capture_latency(LOOP_CAPTURE).unwrap_or(0));
+        }
+        match from {
+            None => self.pads_wet(left, right),
+            Some(StripId::Master) => self.mix_less(1, left, right),
+            Some(_) => self.mix_less(0, left, right),
+        }
     }
 
     /// Points the sampler's capture point at `src`, or frees it for the
@@ -3132,6 +3207,90 @@ mod tests {
         // The Loop track on a submix: it can't be taken out.
         let (_, why) = go(true, true);
         assert_eq!(why, Some("the Loop track goes to a submix"));
+    }
+
+    /// The looper's mix choices: a track after its fader (the loop and
+    /// the drums left out), the master without the loop (the same as the
+    /// pads here, with no audio track or line input playing), never the
+    /// Loop track or a submix it goes to, and a strip not in the mix said.
+    #[test]
+    fn the_looper_records_a_mix_the_master_or_one_strip() {
+        use mpfree_fx::ids::mixer::output;
+        let go = |from: Option<StripId>, looping: bool, drums: bool, loop_bus: bool| {
+            let mut h = MixHost::new(RATE, -6.0, -6.0);
+            // The loop's echo (its send at -60 dB) stays in the master;
+            // truly off here, so the loop is left out to the last bit.
+            h.mixer.set_now(
+                StripId::Track(LOOP),
+                mx::send(DELAY_RETURN),
+                mpfree_fx::SILENT_DB,
+            );
+            if loop_bus {
+                h.mixer
+                    .set_now(StripId::Track(LOOP), mx::OUTPUT, output::bus(0));
+            }
+            let z = [0f32; PERIOD];
+            let (mut took, mut why) = (Vec::new(), None);
+            for p in 0..60 {
+                let at = p * PERIOD;
+                if drums {
+                    let d = tone(110.0, 0.5, at);
+                    let mut pads = h.pads();
+                    let (pl, pr) = pads.pad(0, 0).unwrap();
+                    pl[..PERIOD].copy_from_slice(&d);
+                    pr[..PERIOD].copy_from_slice(&d);
+                }
+                let s = tone(330.0, 0.3, at);
+                let lp = if looping { tone(550.0, 0.4, at) } else { z };
+                let (mut wl, mut wr) = ([1f32; PERIOD], [1f32; PERIOD]);
+                match h.loop_take(from, &mut wl, &mut wr) {
+                    Ok(_) => {}
+                    Err(e) => why = Some(e),
+                }
+                took.extend(wl.iter().zip(&wr).flat_map(|(a, b)| [*a, *b]));
+                let ctx = Ctx::new(RATE, at as u64);
+                let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
+                h.period(
+                    &ctx,
+                    (&s, &s),
+                    (&lp, &lp),
+                    (&z, &z),
+                    (&z, &z),
+                    &mut l,
+                    &mut r,
+                );
+            }
+            (took, why)
+        };
+        let same =
+            |a: &[f32], b: &[f32]| a.iter().zip(b).fold(0f32, |w, (x, y)| w.max((x - y).abs()));
+        let loud = |x: &[f32]| x.iter().fold(0f32, |m, v| m.max(v.abs()));
+        // The Synth track: its own sound only.
+        let synth = Some(StripId::Track(SYNTH));
+        let (all, why) = go(synth, true, true, false);
+        assert_eq!(why, None);
+        assert!(
+            all[..2 * PERIOD].iter().all(|&v| v == 0.0),
+            "the period it moves is silence"
+        );
+        let (alone, _) = go(synth, false, false, false);
+        assert!(same(&all, &alone) < 1e-6, "no loop and no drums in it");
+        assert!(loud(&alone) > 0.05, "the synth is in it");
+        // The master: all but the loop; here, what the pads take.
+        let (master, why) = go(Some(StripId::Master), true, true, false);
+        assert_eq!(why, None);
+        let (pads, _) = go(None, false, true, false);
+        assert!(same(&master, &pads) < 1e-6, "the master without the loop");
+        // Never the Loop track, nor a submix it plays into.
+        let (took, why) = go(Some(StripId::Track(LOOP)), true, true, false);
+        assert_eq!(why, Some("the Loop track can't record itself"));
+        assert_eq!(loud(&took), 0.0);
+        let (_, why) = go(Some(StripId::Bus(0)), true, true, true);
+        assert_eq!(why, Some("the Loop track goes to that submix"));
+        let (_, why) = go(Some(StripId::Bus(1)), true, true, true);
+        assert_eq!(why, None, "another submix is fine");
+        let (_, why) = go(Some(StripId::Bus(250)), true, true, false);
+        assert_eq!(why, Some("that strip isn't in the mix"));
     }
 
     #[test]

@@ -12,7 +12,7 @@
 //!   input strip, which is heard when Monitor is on (see `mixing.rs`). It
 //!   records from a
 //!   [`LoopSource`]: the pad player's own sound (the default, which opens
-//!   nothing) or the line input. It logs a `looper:` line for each press and
+//!   nothing), the line input, or a mix (the master or one strip). It logs a `looper:` line for each press and
 //!   each change, and builds the loop's waveform for the Looper tab a slice
 //!   at a time.
 //! - [`Printer`] keeps each loop's pitch at another tempo: when a loop is
@@ -156,16 +156,32 @@ pub enum LoopSource {
     Pads,
     /// The MPC's line input (Prefs, Line input).
     Line,
+    /// A mix, picked on the Looper tab (Records from): the master (all
+    /// you hear but the loops, before the master's effects and fader,
+    /// which the loop gets when it plays), or one strip, a track or a
+    /// submix, after its fader ([`crate::mixing::MixHost::loop_take`]).
+    /// Heard in time, like the pads; never the Loop track itself.
+    Mix(mpfree_fx::StripId),
 }
 
 impl LoopSource {
+    /// Prefs' Record from steps through these (a mix is picked on the
+    /// Looper tab, where the strips are named).
     pub const ALL: [LoopSource; 2] = [LoopSource::Pads, LoopSource::Line];
 
     pub fn name(self) -> &'static str {
         match self {
             LoopSource::Pads => "Pads and synth",
             LoopSource::Line => "Line input",
+            LoopSource::Mix(_) => "A mix (Looper tab)",
         }
+    }
+
+    /// Whether the sound comes from inside MPFree (the pads or a mix), in
+    /// time with the transport but for the mix's own latency, which the
+    /// host makes up: not the line input.
+    pub fn inside(self) -> bool {
+        !matches!(self, LoopSource::Line)
     }
 }
 
@@ -1872,7 +1888,7 @@ impl LoopHost {
         }
         let c = match c {
             Command::SetBars(Some(PATTERN_BARS)) => Command::SetBars(self.pattern_bars),
-            Command::SetLatency(_) if self.source == LoopSource::Pads => {
+            Command::SetLatency(_) if self.source.inside() => {
                 Command::SetLatency(self.pads_latency)
             }
             // Record (a ring, REC) on a loop capturing calls it off, as
@@ -2488,7 +2504,8 @@ impl LoopHost {
     /// The pads' sound for this period as the app records it: wet from the
     /// mixer, `latency` frames late after the period it lags
     /// ([`crate::mixing::MixHost::pads_wet`]), or dry from the engines, in
-    /// time, with the reason it isn't wet. A line for the log when that
+    /// time, with the reason it isn't wet. Recording from a mix, the mix
+    /// ([`crate::mixing::MixHost::loop_take`]), or silence and why. A line for the log when that
     /// changes (rarely: a strip routed to a submix, or a plugin's latency).
     pub fn take_pads_as(
         &mut self,
@@ -2504,9 +2521,14 @@ impl LoopHost {
             return None;
         }
         self.pads_dry = dry;
-        Some(match dry {
-            None => "looper: records the pads with their effects again".to_string(),
-            Some(why) => format!("looper: records the pads dry, without their effects: {why}"),
+        let mix = matches!(self.source, LoopSource::Mix(_));
+        Some(match (dry, mix) {
+            (None, false) => "looper: records the pads with their effects again".to_string(),
+            (Some(why), false) => {
+                format!("looper: records the pads dry, without their effects: {why}")
+            }
+            (None, true) => "looper: records the mix again".to_string(),
+            (Some(why), true) => format!("looper: records silence, the mix can't be had: {why}"),
         })
     }
 
@@ -2577,7 +2599,7 @@ impl LoopHost {
         self.queue_steps();
         let note = self.line.period(&mut self.input_l, &mut self.input_r);
         let (src_l, src_r) = match self.source {
-            LoopSource::Pads => (&self.pads_l, &self.pads_r),
+            LoopSource::Pads | LoopSource::Mix(_) => (&self.pads_l, &self.pads_r),
             LoopSource::Line => (&self.input_l, &self.input_r),
         };
         for f in 0..PERIOD {
@@ -2602,7 +2624,7 @@ impl LoopHost {
         self.pads_l = [0.0; PERIOD];
         self.pads_r = [0.0; PERIOD];
         // The pads' latency follows the mix (a plugin's latency, or dry).
-        if self.source == LoopSource::Pads
+        if self.source.inside()
             && self.latency_set != self.pads_latency
             && self.looper.command(Command::SetLatency(self.pads_latency))
         {
@@ -3139,7 +3161,7 @@ impl LoopHost {
     /// the screen: "(the first pad you play)".
     pub fn first_note(&self) -> &'static str {
         match self.source {
-            LoopSource::Pads => "(the first pad you play)",
+            LoopSource::Pads | LoopSource::Mix(_) => "(the first pad you play)",
             LoopSource::Line => "(the line input's first note over -40 dB)",
         }
     }
@@ -3148,7 +3170,7 @@ impl LoopHost {
     /// hit, if one is (the pads are what it records, and no hit was told
     /// on `frame` yet).
     pub fn listens_for_pads(&self, frame: u64) -> Option<usize> {
-        if self.source != LoopSource::Pads || self.resample || self.played_at == Some(frame) {
+        if !self.source.inside() || self.resample || self.played_at == Some(frame) {
             return None;
         }
         (0..MAX_LOOPS).find(|&n| self.looper.loop_status(n).is_some_and(|s| s.listening))
@@ -3290,6 +3312,12 @@ impl LoopHost {
             self.looper.command(Command::NewInput);
         }
         self.source = s;
+    }
+
+    /// What it records from now; a mix's strip is what the mixer's capture
+    /// point follows (`main.rs`, [`crate::mixing::MixHost::loop_take`]).
+    pub fn source(&self) -> LoopSource {
+        self.source
     }
 
     /// One slice of the loop's waveform; the finished wave when it is
@@ -4170,7 +4198,53 @@ mod tests {
     /// so once.
     #[test]
     fn the_pads_from_the_mix_are_recorded_in_time_though_a_period_late() {
+        let (mut h, mut t, mut b) = recorded_in_time_a_period_late(LoopSource::Pads);
+        // Dry: said once, and the latency goes to 0 with it.
+        let z = [0.0; PERIOD];
+        let why = "the Loop track goes to a submix";
+        assert_eq!(
+            h.take_pads_as(&z, &z, Err(why)).as_deref(),
+            Some("looper: records the pads dry, without their effects: the Loop track goes to a submix")
+        );
+        assert_eq!(h.take_pads_as(&z, &z, Err(why)), None);
+        let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+        assert!(t.process(PERIOD as u32, &mut b));
+        h.period(&b, &mut l, &mut r);
+        assert!(t.process(PERIOD as u32, &mut b));
+        h.period(&b, &mut l, &mut r);
+        assert_eq!(h.looper.status().latency, 0);
+        assert_eq!(
+            h.take_pads_as(&z, &z, Ok(0)).as_deref(),
+            Some("looper: records the pads with their effects again")
+        );
+    }
+
+    /// Records from a mix (a strip or the master) the same way: in time,
+    /// the mix's latency made up; its trouble is said as a mix's.
+    #[test]
+    fn a_mix_is_recorded_in_time_like_the_pads() {
+        let strip = mpfree_fx::StripId::Bus(0);
+        let (mut h, _, _) = recorded_in_time_a_period_late(LoopSource::Mix(strip));
+        assert_eq!(h.source(), LoopSource::Mix(strip));
+        assert_eq!(h.first_note(), "(the first pad you play)");
+        let z = [0.0; PERIOD];
+        let why = "that strip isn't in the mix";
+        assert_eq!(
+            h.take_pads_as(&z, &z, Err(why)).as_deref(),
+            Some("looper: records silence, the mix can't be had: that strip isn't in the mix")
+        );
+        assert_eq!(
+            h.take_pads_as(&z, &z, Ok(0)).as_deref(),
+            Some("looper: records the mix again")
+        );
+    }
+
+    /// A loop of a bar recorded from `source` (the pads or a mix), handed
+    /// over a period late as the mixer has it: the loop plays it back in
+    /// time to the frame. The host, the transport and its block, for more.
+    fn recorded_in_time_a_period_late(source: LoopSource) -> (LoopHost, Transport, Block) {
         let mut h = LoopHost::new(44_100, 20);
+        h.set_source(source);
         let mut t = Transport::new(44_100, 120.0).unwrap();
         let mut b = Block::new();
         h.command(Command::SetBars(Some(1)));
@@ -4207,24 +4281,7 @@ mod tests {
         }
         assert_eq!(checked, BAR - 2_000);
         assert_eq!(h.looper.status().latency, PERIOD as u32);
-        // Dry: said once, and the latency goes to 0 with it.
-        let z = [0.0; PERIOD];
-        let why = "the Loop track goes to a submix";
-        assert_eq!(
-            h.take_pads_as(&z, &z, Err(why)).as_deref(),
-            Some("looper: records the pads dry, without their effects: the Loop track goes to a submix")
-        );
-        assert_eq!(h.take_pads_as(&z, &z, Err(why)), None);
-        let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
-        assert!(t.process(PERIOD as u32, &mut b));
-        h.period(&b, &mut l, &mut r);
-        assert!(t.process(PERIOD as u32, &mut b));
-        h.period(&b, &mut l, &mut r);
-        assert_eq!(h.looper.status().latency, 0);
-        assert_eq!(
-            h.take_pads_as(&z, &z, Ok(0)).as_deref(),
-            Some("looper: records the pads with their effects again")
-        );
+        (h, t, b)
     }
 
     /// The audio thread's part: handing over the pads, a period, the log

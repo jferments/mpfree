@@ -5481,7 +5481,16 @@ fn looper_action(
         looping::LoopAction::Capture => vec![app::Effect::Tell(looper.capture())],
         looping::LoopAction::Source(s) => {
             looper.set_source(s);
-            out.note(&format!("looper: records from {}", s.name().to_lowercase()));
+            let what = match s {
+                looping::LoopSource::Mix(mpfree_fx::StripId::Master) => {
+                    "the master: all you hear but the loops".to_string()
+                }
+                looping::LoopSource::Mix(m) => {
+                    format!("{}: what it sends on, after its fader", mixing::name(m))
+                }
+                s => s.name().to_lowercase(),
+            };
+            out.note(&format!("looper: records from {what}"));
             Vec::new()
         }
         looping::LoopAction::Monitor(on) => {
@@ -9659,9 +9668,15 @@ fn player_session(
         // their effects, from the mix of the last period (the master's
         // input without the loops: mixing.rs); when that can't be had, the
         // drums and the synth as the engines make them, dry. Either way
-        // before the master, so the Level is applied once.
-        let how = mix.pads_wet(&mut pads_l, &mut pads_r);
-        if how.is_err() {
+        // before the master, so the Level is applied once. Records from a
+        // mix (the master or one strip) takes that from the mixer instead,
+        // or silence, said, when it can't be had.
+        let from_mix = match looper.source() {
+            looping::LoopSource::Mix(strip) => Some(strip),
+            _ => None,
+        };
+        let how = mix.loop_take(from_mix, &mut pads_l, &mut pads_r);
+        if how.is_err() && from_mix.is_none() {
             for f in 0..PERIOD {
                 pads_l[f] = drums_l[f] + synth_l[f];
                 pads_r[f] = drums_r[f] + synth_r[f];
