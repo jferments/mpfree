@@ -8549,6 +8549,9 @@ fn player_session(
                     .filter(|e| !matches!(e, app::Effect::Note(_))),
             );
         }
+        // What REC must leave alone while the pads play the synth by Play
+        // on the pads (app/pads_preview.rs): kits and MIDI outputs picked.
+        app.set_configured(track_kits.picked() | midi_out.routed());
         let mut stop = false;
         let mut later = Vec::new();
         for e in fx.drain(..) {
@@ -8875,6 +8878,9 @@ fn player_session(
         if kit_to.is_some() && app.pads_preview() {
             fx.extend(app.toggle_pads_preview());
         }
+        // The arp came on (NOTE REPEAT, Latch, the Arp panel): it plays the
+        // track's instrument, so Play on the pads ends.
+        fx.extend(app.arp_ends_pads_preview());
         let playing_kit = if synth_on { synth_kit } else { player.kit() };
         if let Some(k) = kit_to.filter(|&k| k != playing_kit) {
             used[k] = true;

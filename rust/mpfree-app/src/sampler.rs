@@ -254,6 +254,17 @@ impl TrackKits {
         self.entries.iter().any(|&e| usize::from(e) == entry)
     }
 
+    /// The tracks that play another kit than kit 1 (not the synth), a bit
+    /// each: a kit someone picked for them. Never allocates.
+    pub fn picked(&self) -> u128 {
+        let synth = self.synth;
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(|&(_, &e)| e != 0 && e != synth)
+            .fold(0, |bits, (t, _)| bits | 1 << t)
+    }
+
     /// Whether track `track` plays the synth.
     pub fn plays_synth(&self, track: usize) -> bool {
         self.entry(track) == usize::from(self.synth)
@@ -1895,6 +1906,11 @@ mod tests {
         assert!(!k.set(mpfree_seq::MAX_TRACKS, 1), "past the tracks");
         assert_eq!((k.kit_of(1), k.kit_of(4)), (Some(2), None));
         assert!(k.plays_synth(4) && !k.plays_synth(1));
+        assert_eq!(
+            k.picked(),
+            1 << 1 | 1 << 2 | 1 << 5,
+            "kits picked, not the synth"
+        );
         let homes = k.homes(|_| true);
         assert_eq!(
             &homes[..4],

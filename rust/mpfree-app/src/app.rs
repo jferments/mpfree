@@ -39,7 +39,7 @@ mod synth_pads;
 pub use arp::{built_in_patterns, mode_label, ArpItem, ArpView, LiveMap, WorkspaceView};
 pub use mapper::{Code, MapView, Mark};
 use mpfree_arp::scale::pads::Pad as PadNotes;
-pub use pads_preview::synth_track;
+pub use pads_preview::{synth_track, SynthTake};
 pub use step_pads::StepPads;
 pub use synth_pads::SynthItem;
 
@@ -1603,6 +1603,9 @@ pub struct App {
     /// The pads play the shared synth while the selected track keeps its
     /// kit ([`App::toggle_pads_preview`]).
     pads_preview: bool,
+    /// The tracks with a kit or a MIDI output picked, a bit each
+    /// ([`App::set_configured`]).
+    configured: u128,
     /// What each held pad pressed into the arp (kept so a layout change
     /// while a pad is down still lets go of the right notes).
     pad_pressed: [PadNotes; 16],
@@ -1769,6 +1772,7 @@ impl App {
             outline: false,
             pad_layout: None,
             pads_preview: false,
+            configured: 0,
             pad_pressed: [PadNotes::default(); 16],
             note_holds: [0; 128],
             keys_held: [false; 128],
@@ -7253,7 +7257,7 @@ mod tests {
         assert!(app.pads_preview());
         // The track it goes to plays the same synth (no copy), and the
         // pads go on playing it.
-        let fx = app.rec_synth_on(4);
+        let fx = app.rec_synth_on(4, false);
         assert_eq!(
             fx,
             [
@@ -7266,6 +7270,21 @@ mod tests {
         );
         assert_eq!(app.track_sound(4), None, "no copy on the track");
         assert!(!app.pads_preview());
+        app.toggle_pads_preview();
+        assert!(matches!(
+            &app.rec_synth_on(9, true)[2],
+            Effect::Note(n) if n == "REC records Poly on a new track, Track 10: the track plays the same Poly as the pads"
+        ));
+        // A row of REC's list: the musician's pick, so the pads play that
+        // track (and the preview ends, saying so).
+        app.toggle_pads_preview();
+        let fx = app.rec_list_ends_pads_preview(2);
+        assert_eq!(fx[0], Effect::PadsPreview(false), "{fx:?}");
+        assert!(
+            matches!(&fx[1], Effect::Note(n) if n.contains("Track 3 picked for REC")),
+            "{fx:?}"
+        );
+        assert!(app.rec_list_ends_pads_preview(2).is_empty(), "once");
         // Nothing while the pads already play a synth: the track's own.
         let poly = crate::instruments::Held {
             id: crate::synth::Engine::Poly.node_id(),
@@ -7277,32 +7296,102 @@ mod tests {
         assert!(!app.pads_preview());
     }
 
-    /// Where REC records the pads' synth: the selected track while it has
-    /// no clips, else the first track with none and no instrument of its
-    /// own; nowhere while every track has clips.
+    /// Where REC records the pads' synth (the design review of 20 Nov,
+    /// points A and B): the selected track when nobody set it up, else the
+    /// first such track, else a new one; a track with no clips but set up
+    /// (renamed, a setting moved, or what the app holds: a kit or MIDI out
+    /// picked, an instrument, mixer settings) is never taken; a pinned arm
+    /// is kept, or REC goes nowhere; and a full project takes nothing.
     #[test]
-    fn rec_records_the_pads_synth_on_an_empty_track() {
+    fn rec_records_the_pads_synth_on_a_track_nobody_set_up() {
+        use super::pads_preview::unfit;
         use mpfree_seq::{Clip, Project, Track};
         let mut p = Project::new();
-        for n in 0..4 {
-            p.tracks.push(Track::new(&format!("Track {}", n + 1), 0));
+        for n in 0..6 {
+            p.tracks.push(Track::new(&format!("Track {}", n + 1), n));
         }
-        let none = |_| false;
-        assert_eq!(synth_track(&p, 2, none), Some(2), "the selected one");
+        let free = |_| None;
+        assert_eq!(
+            synth_track(&p, 2, false, free),
+            SynthTake::On(2),
+            "the selected one"
+        );
         p.tracks[2].slots[1] = Some(Clip::new("Beat", 384));
-        p.tracks[0].slots[0] = Some(Clip::new("Drums", 384));
-        assert_eq!(synth_track(&p, 2, none), Some(1), "the first empty one");
+        assert_eq!(unfit(&p, 2, free), Some("has clips"));
         assert_eq!(
-            synth_track(&p, 2, |t| t == 1),
-            Some(3),
-            "not one with its own"
+            synth_track(&p, 2, false, free),
+            SynthTake::On(0),
+            "the first free one"
         );
-        p.tracks[3].slots[3] = Some(Clip::new("Keys", 384));
+        // Empty but set up: renamed, a setting moved.
+        p.tracks[0].name = "Bass".into();
+        p.tracks[1].record_quantise = Some(96);
+        assert_eq!(unfit(&p, 0, free), Some("has settings of its own"));
+        assert_eq!(unfit(&p, 1, free), Some("has settings of its own"));
+        // What the app holds: a kit picked on track 4, mixer settings on 5.
+        let app_side = |t: usize| match t {
+            3 => Some("has a kit or a MIDI output picked"),
+            4 => Some("has mixer settings"),
+            _ => None,
+        };
+        assert_eq!(synth_track(&p, 2, false, app_side), SynthTake::On(5));
+        // A pinned arm stays where it is, or REC goes nowhere.
         assert_eq!(
-            synth_track(&p, 2, |t| t == 1),
-            None,
-            "nowhere: nothing changes"
+            synth_track(&p, 2, true, app_side),
+            SynthTake::Pinned {
+                track: 2,
+                why: "has clips"
+            }
         );
+        assert_eq!(synth_track(&p, 5, true, app_side), SynthTake::On(5));
+        // Every track set up: a new one, unless the project is full.
+        p.tracks[5].follows = true;
+        assert_eq!(synth_track(&p, 2, false, app_side), SynthTake::New);
+        let last = mpfree_seq::MAX_TRACKS as u16;
+        for n in p.tracks.len() as u16..last {
+            let mut t = Track::new(&format!("Track {}", n + 1), n);
+            t.mute = true;
+            p.tracks.push(t);
+        }
+        assert_eq!(synth_track(&p, 2, false, app_side), SynthTake::Full);
+        // A Loop track is never one.
+        let loops = Track::new_loops("Track 7", 0);
+        p.tracks[6] = loops;
+        assert_eq!(unfit(&p, 6, free), Some("is a Loop track"));
+    }
+
+    /// The arp and Play on the pads (the design review of 20 Nov, point
+    /// C): the try-out plays as pressed, so it won't start while the arp
+    /// plays the pads, and the arp coming on ends it; a take then never
+    /// goes through an arp the try-out didn't.
+    #[test]
+    fn the_arp_and_play_on_the_pads_never_play_together() {
+        let mut app = ready();
+        app.open_tab(View::Synth);
+        app.toggle_pads_preview();
+        assert!(app.pads_preview());
+        assert!(app.arp_ends_pads_preview().is_empty(), "no arp, no change");
+        // NOTE REPEAT held: the arp plays the pads, through the track's kit.
+        app.button(REPEAT, true, 0.0);
+        assert!(app.generating());
+        let fx = app.arp_ends_pads_preview();
+        assert_eq!(fx[0], Effect::PadsPreview(false), "{fx:?}");
+        assert!(
+            matches!(&fx[1], Effect::Note(n) if n == "The arp plays Track 1's kit: Play on the pads is off"),
+            "{fx:?}"
+        );
+        assert!(!app.pads_preview() && app.pads_play_kit());
+        // Held still: the try-out won't start, and says why.
+        let fx = app.toggle_pads_preview();
+        assert!(
+            matches!(&fx[..], [Effect::Tell(t)] if t.contains("NOTE REPEAT")),
+            "{fx:?}"
+        );
+        assert!(!app.pads_preview());
+        app.button(REPEAT, false, 0.0);
+        assert!(!app.generating());
+        app.toggle_pads_preview();
+        assert!(app.pads_preview(), "the arp let go: it starts");
     }
 
     #[test]
