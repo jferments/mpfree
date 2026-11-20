@@ -4908,7 +4908,8 @@ impl time::Pads for SeqPads<'_> {
         };
         let sounded = if let Some(s) = self.synth_of(track) {
             if pad < 16 {
-                s.note_on_shifted(pad, velocity, offset, &shift);
+                let by = synth::Player::Track(usize::from(track));
+                s.note_on_shifted(by, pad, velocity, offset, &shift);
             }
             pad < 16
         } else if self.routed(track, pad, on, offset) {
@@ -4932,7 +4933,7 @@ impl time::Pads for SeqPads<'_> {
             note: pad.min(127) as u8,
         };
         if let Some(s) = self.synth_of(track) {
-            s.note_off(pad, offset);
+            s.note_off_by(synth::Player::Track(usize::from(track)), pad, offset);
         } else if !self.routed(track, pad, off, offset) {
             self.player.release_kit_at(kit, pad, offset);
         }
@@ -4955,7 +4956,7 @@ impl time::Pads for SeqPads<'_> {
             value,
         };
         if let Some(s) = self.synth_of(track) {
-            s.pressure_at(pad, value, offset);
+            s.pressure_at(synth::Player::Track(usize::from(track)), pad, value, offset);
         } else if !self.routed(track, pad, press, offset) {
             self.player.pressure_kit_at(kit, pad, value, offset);
         }
@@ -5013,7 +5014,8 @@ impl time::Pads for SeqPads<'_> {
                         velocity: v,
                     };
                     if let Some(s) = self.synth_of(o.track) {
-                        s.note_on_shifted(pad, v, o.offset, &shift);
+                        let by = synth::Player::Track(usize::from(o.track));
+                        s.note_on_shifted(by, pad, v, o.offset, &shift);
                         self.hits += 1;
                     } else if self.routed(o.track, pad, on, o.offset) {
                         // An Instrument or MIDI out pad: its voice, its note out.
@@ -5045,7 +5047,8 @@ impl time::Pads for SeqPads<'_> {
                 // one-shot sounds ignore it.
                 let kit = self.kit_of(o.track);
                 if let Some(s) = self.synth_of(o.track) {
-                    s.note_off(usize::from(note), o.offset);
+                    let by = synth::Player::Track(usize::from(o.track));
+                    s.note_off_by(by, usize::from(note), o.offset);
                 } else if !self.routed(o.track, usize::from(note), o.event, o.offset) {
                     self.player
                         .live_release_at(kit, usize::from(note), o.offset);
@@ -9203,7 +9206,8 @@ fn player_session(
                         synth.note_off_note(note, 0);
                     }
                 } else {
-                    synth.note_off(pad, 0);
+                    // The pads play the synth through the track.
+                    synth.note_off_by(synth::Player::Track(app.track()), pad, 0);
                 }
             }
             if k == synth_kit {
