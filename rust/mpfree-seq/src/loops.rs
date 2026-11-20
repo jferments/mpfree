@@ -125,7 +125,11 @@ pub fn song_plan(
     let now = last.end;
     let rolling = !last.is_empty();
     for b in &p.arrangement.placements {
-        let Some(n) = b.clip(&p.tracks).and_then(|c| c.looped) else {
+        // Only a Loop track's lane plays loops: looked at before its clip.
+        if !p.tracks.get(b.track).is_some_and(Track::is_loops) {
+            continue;
+        }
+        let Some(n) = p.block_clip(b).and_then(|c| c.looped) else {
             continue;
         };
         let Some(i) = Some(usize::from(n)).filter(|&i| i < LOOPS) else {
@@ -252,10 +256,11 @@ mod tests {
         a.slots[0] = Some(Clip::new_loop(0, 2 * BAR));
         a.slots[1] = Some(Clip::new_loop(1, BAR));
         p.tracks.push(a);
+        p.give_clip_ids();
         // Loop 1 from bar 2 for two bars, then loop 2 for a bar.
         p.arrangement.placements = vec![
-            Placement::linked(2, 0, BAR, 2 * BAR),
-            Placement::linked(2, 1, 3 * BAR, BAR),
+            Placement::of(&p.tracks, 2, 0, BAR, 2 * BAR),
+            Placement::of(&p.tracks, 2, 1, 3 * BAR, BAR),
         ];
         let free = |_| true;
         let at = |from: Tick, to: Tick| song_plan(&p, std::iter::once(from..to), free);

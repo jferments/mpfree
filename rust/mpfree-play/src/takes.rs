@@ -82,8 +82,8 @@ use mpfree_seq::arrange::Arrangement;
 use mpfree_seq::mpfree_moves::{Kind, Map, Point, Target};
 use mpfree_seq::steps::{Edit, MovesEdit};
 use mpfree_seq::{
-    touch_room, Clip, ClipSettings, DestId, Lock, ModelError, Note, Project, Scene, SceneSettings,
-    Touch, TouchKeep, TouchPoint, Track, MAX_TRACKS, ROWS,
+    touch_room, Clip, ClipId, ClipSettings, DestId, Lock, ModelError, Note, Project, Scene,
+    SceneSettings, Touch, TouchKeep, TouchPoint, Track, MAX_TRACKS, ROWS,
 };
 use mpfree_transport::time::Tick;
 
@@ -235,6 +235,11 @@ pub struct Take {
     /// (track, slot, clip). Undo puts each back if its slot is still
     /// empty; redo takes it out again.
     pub removed: Vec<(usize, usize, Clip)>,
+    /// Deleted clips the song plays, by id (Arrange 1.3): each went to the
+    /// song's own clips as it left its cell, so the song plays on. Undo
+    /// takes it from there back to its cell (while the cell is empty);
+    /// redo moves it to the song's clips again.
+    pub kept_by_song: Vec<ClipId>,
     /// Clips the take made longer or shorter, as (track, slot, from, to)
     /// in ticks (a page added or taken off).
     pub resized: Vec<(usize, usize, Tick, Tick)>,
@@ -765,8 +770,9 @@ impl Takes {
 
     /// ERASE + a clip (Jay after live test 3): take clip `slot` of
     /// `track` out of its slot, as an edit of its own that undo puts back.
-    /// The edit's number. `BadSlot` if there is no clip there; nothing
-    /// changes then.
+    /// A clip the song plays moves to the song's own clips, with its id,
+    /// so the song plays on (Arrange 1.3). The edit's number. `BadSlot` if
+    /// there is no clip there; nothing changes then.
     pub fn remove_clip(
         &mut self,
         project: &mut Project,
@@ -776,12 +782,22 @@ impl Takes {
         let gone = slot_mut(project, track, slot)
             .and_then(Option::take)
             .ok_or(ModelError::BadSlot)?;
+        let mut kept_by_song = Vec::new();
+        if project.arrangement.plays(gone.id) {
+            project
+                .arrangement
+                .clips
+                .keep(gone.clone())
+                .expect("a cell's clip has an id no song clip has");
+            kept_by_song.push(gone.id);
+        }
         self.edits += 1;
         let number = self.edits;
         self.push(Take {
             number,
             edited: true,
             removed: vec![(track, slot, gone)],
+            kept_by_song,
             ..Take::default()
         });
         Ok(number)
@@ -1249,9 +1265,18 @@ impl Takes {
             }
         }
         for (track, slot, gone) in take.removed.iter().rev() {
-            // A slot filled meanwhile keeps its clip.
-            if let Some(s) = slot_mut(project, *track, *slot).filter(|s| s.is_none()) {
-                *s = Some(gone.clone());
+            // A slot filled meanwhile keeps its clip (and the song keeps
+            // its copy of one it plays).
+            if !slot_mut(project, *track, *slot).is_some_and(|s| s.is_none()) {
+                continue;
+            }
+            let back = if take.kept_by_song.contains(&gone.id) {
+                project.arrangement.clips.take(gone.id)
+            } else {
+                None
+            };
+            if let Some(s) = slot_mut(project, *track, *slot) {
+                *s = Some(back.unwrap_or_else(|| gone.clone()));
             }
         }
         if let Some(d) = take.dropped {
@@ -1304,6 +1329,10 @@ impl Takes {
             // Kept as it is now, for the next undo.
             if let Some(c) = slot_mut(project, *track, *slot).and_then(Option::take) {
                 *gone = c;
+                // A deleted clip the song plays goes to its clips again.
+                if take.kept_by_song.contains(&gone.id) {
+                    let _ = project.arrangement.clips.keep(gone.clone());
+                }
             }
         }
         for (track, slot, made) in &take.made {
@@ -1833,6 +1862,105 @@ mod tests {
     /// a dragged row's clips keep theirs, an undone delete brings its old
     /// id back, and over a long run of edits, undos and redos no id is
     /// ever given to two clips or wound back.
+    /// Arrange 1.3: deleting a clip the song plays moves it, with its id,
+    /// to the song's own clips, so the song plays on; UNDO puts it back in
+    /// its cell and REDO moves it again. A clip the song doesn't play just
+    /// goes, and a cell filled since keeps its new clip (the song keeps its
+    /// own).
+    #[test]
+    fn a_deleted_clip_the_song_plays_stays_in_the_song_and_undo_brings_it_back() {
+        use mpfree_seq::arrange::Placement;
+        use mpfree_seq::{ClipAt, ClipId};
+        let mut p = project();
+        p.tracks[0].slots[1] = Some(Clip::new("spare", 1920));
+        p.give_clip_ids();
+        p.arrangement
+            .place(Placement::of(&p.tracks, 0, 0, 0, 7680))
+            .unwrap();
+        let before = p.clone();
+        let mut t = Takes::default();
+        t.remove_clip(&mut p, 0, 0).unwrap();
+        assert!(p.clip(0, 0).is_none());
+        assert_eq!(p.find_clip(ClipId(1)), Some(ClipAt::Song));
+        let played = |p: &Project| {
+            p.block_clip(&p.arrangement.placements[0])
+                .map(|c| c.name.clone())
+        };
+        assert_eq!(played(&p).as_deref(), Some("c"), "the song plays on");
+        p.check().unwrap();
+        assert_eq!(t.done()[0].kept_by_song, [ClipId(1)]);
+        t.undo(&mut p);
+        assert_eq!(p, before);
+        t.redo(&mut p);
+        assert_eq!(p.find_clip(ClipId(1)), Some(ClipAt::Song));
+        t.undo(&mut p);
+        assert_eq!(p, before);
+        // Not in the song: it just goes.
+        t.remove_clip(&mut p, 0, 1).unwrap();
+        assert!(p.arrangement.clips.is_empty());
+        assert!(t.done().last().unwrap().kept_by_song.is_empty());
+        t.undo(&mut p);
+        assert_eq!(p, before);
+        // Deleted, then the cell filled anew: UNDO leaves the new clip,
+        // and the song keeps playing its own.
+        t.remove_clip(&mut p, 0, 0).unwrap();
+        let mut new = Clip::new("new", 3840);
+        new.id = p.new_clip_id();
+        p.tracks[0].slots[0] = Some(new);
+        t.undo(&mut p);
+        assert_eq!(p.clip(0, 0).map(|c| c.name.as_str()), Some("new"));
+        assert_eq!(played(&p).as_deref(), Some("c"));
+        p.check().unwrap();
+    }
+
+    /// Arrange 1.3: a song undo step keeps the song's blocks, not its
+    /// clips. After 50 drags of a 1,000-block song with 100 clips of its
+    /// own, every step's song before and after shares the project's song
+    /// clips (no copy), so a step costs its blocks: a few dozen bytes each.
+    #[test]
+    fn a_song_undo_step_keeps_blocks_not_clips() {
+        use mpfree_seq::arrange::Placement;
+        use mpfree_seq::Note;
+        let mut p = Project::new();
+        for i in 0..10 {
+            let mut tr = Track::new(&format!("T{i}"), i);
+            let mut c = Clip::new("c", 3840);
+            c.notes = (0..64).map(|k| Note::new(k * 60, 30, 36, 100)).collect();
+            tr.slots[0] = Some(c);
+            p.tracks.push(tr);
+        }
+        p.give_clip_ids();
+        for k in 0..1000 {
+            let b = Placement::of(&p.tracks, k % 10, 0, (k / 10) as i64 * 3840, 3840);
+            p.arrangement.place(b).unwrap();
+        }
+        for i in (0..1000).step_by(10) {
+            p.make_unique(i).unwrap();
+        }
+        assert_eq!(p.arrangement.clips.len(), 100);
+        let mut t = Takes::new(64);
+        for k in 0..50 {
+            let before = p.arrangement.clone();
+            let i = p.arrangement.placements.len() - 1 - k;
+            let b = &p.arrangement.placements[i];
+            let (track, start) = (b.track, b.start + 4 * 3840);
+            p.arrangement
+                .move_placement(&p.tracks, i, track, start, false)
+                .unwrap();
+            t.song_edit(&p, SongChange::Moved { track, start }, before);
+        }
+        let now = &p.arrangement.clips;
+        for take in t.done() {
+            let e = take.song.as_deref().unwrap();
+            assert!(e.before.clips.shares(now) && e.after.clips.shares(now));
+        }
+        let step = 2 * 1000 * std::mem::size_of::<Placement>();
+        assert!(step <= 100_000, "{step} bytes a step");
+        // UNDO all the way back plays the song as it was.
+        while t.undo(&mut p).is_some() {}
+        assert_eq!(p.arrangement.placements[999].start, 99 * 3840);
+    }
+
     #[test]
     fn clip_ids_last_through_moves_copies_undo_and_redo() {
         use mpfree_seq::ClipId;
@@ -2230,8 +2358,9 @@ mod tests {
     fn a_song_edit_undoes_and_redoes_unless_the_song_changed_since() {
         use mpfree_seq::arrange::Placement;
         let mut p = project();
+        p.give_clip_ids();
         p.arrangement
-            .place(Placement::linked(0, 0, 0, 3840))
+            .place(Placement::of(&p.tracks, 0, 0, 0, 3840))
             .unwrap();
         let mut t = Takes::default();
         let before = p.arrangement.clone();

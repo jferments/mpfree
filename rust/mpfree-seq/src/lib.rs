@@ -1,5 +1,6 @@
 //! The time engine's model: a project holds tracks, a track holds clips in
-//! 16 slots, a clip holds notes. Plain data, edited only on the control
+//! rows (64, the grid showing 16 at a time), a clip holds notes, and the
+//! song's blocks name clips by their lasting ids. Plain data, edited only on the control
 //! thread and compiled into a read-only play view by `mpfree-play`.
 //!
 //! Everything is a clip: a step pattern, a recorded phrase and (later) a
@@ -61,7 +62,7 @@ pub mod save;
 pub mod scenes;
 pub mod steps;
 
-pub use arrange::{Arrangement, Marker, MorphRows, Placement, Source, TempoPoint};
+pub use arrange::{Arrangement, Marker, MorphRows, Placement, SongClips, TempoPoint};
 pub use mutate::{Amount, Original, Pitches};
 pub use scenes::{
     Follow, FollowAction, ListStep, Scene, SceneSettings, SongList, TrackProgram, MAX_SCENE_NAME,
@@ -1267,8 +1268,9 @@ impl TrackId {
 /// something that names a clip can't reach another clip by mistake.
 /// [`ClipId::NONE`] (0) is a clip that has none yet: one just made, or
 /// read from a project saved before clips had ids, until
-/// [`Project::give_clip_ids`]. The song's own copies of clips (made
-/// unique) get theirs when the song keeps its clips once (phase 1.3).
+/// [`Project::give_clip_ids`]. A clip lives in one place, a cell or the
+/// song's own clips ([`arrange::SongClips`]), and song blocks name it by
+/// its id ([`Placement::clip`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ClipId(pub u32);
 
@@ -1287,6 +1289,8 @@ impl ClipId {
 pub enum ClipAt {
     /// In a cell: track `track`, row `row`.
     Cell { track: usize, row: usize },
+    /// Among the song's own clips ([`Arrangement::clips`]).
+    Song,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1403,6 +1407,14 @@ impl Rows {
     /// The rows the Clips grid shows ([`SLOTS`]), empty ones too, in order.
     pub fn shown(&self) -> impl Iterator<Item = &Option<Clip>> + '_ {
         (0..SLOTS).map(|r| &self[r])
+    }
+
+    /// The row of the clip with id `id`, if this track has it.
+    pub fn row_of(&self, id: ClipId) -> Option<usize> {
+        if !id.is_given() {
+            return None;
+        }
+        self.iter().find(|(_, c)| c.id == id).map(|(r, _)| r)
     }
 
     /// The first empty row the grid shows; None when they are all full.
@@ -1715,9 +1727,14 @@ impl Project {
         ClipId(next)
     }
 
-    /// The highest id a clip in a cell has (0 for none).
+    /// The highest id a clip has, in a cell or the song's (0 for none).
     fn highest_clip_id(&self) -> u32 {
-        self.cell_clips().map(|(_, _, c)| c.id.0).max().unwrap_or(0)
+        let song = self.arrangement.clips.iter().last().map_or(0, |c| c.id.0);
+        self.cell_clips()
+            .map(|(_, _, c)| c.id.0)
+            .max()
+            .unwrap_or(0)
+            .max(song)
     }
 
     /// Every clip in a cell, as (track, row, clip), in track and row
@@ -1754,10 +1771,10 @@ impl Project {
     }
 
     /// Gives every clip in a cell that has no id, or has one an earlier
-    /// clip has too (in track and row order), the next id; the rest keep
-    /// theirs. How many were given. A project saved before clips had ids
-    /// gets 1, 2, 3 ... in track and row order. Allocates a list of the
-    /// ids seen.
+    /// clip has too (in track and row order), the next id, then the song's
+    /// own clips the same way; the rest keep theirs. How many were given.
+    /// A project saved before clips had ids gets 1, 2, 3 ... in track and
+    /// row order. Allocates a list of the ids seen.
     pub fn give_clip_ids(&mut self) -> usize {
         let mut next = self
             .next_clip
@@ -1775,6 +1792,10 @@ impl Project {
                 }
             }
         }
+        given += self
+            .arrangement
+            .clips
+            .give_ids(&mut next, |id| seen.contains(&id));
         self.next_clip = next;
         given
     }
@@ -1788,6 +1809,7 @@ impl Project {
         self.cell_clips()
             .find(|(_, _, c)| c.id == id)
             .map(|(track, row, _)| ClipAt::Cell { track, row })
+            .or_else(|| self.arrangement.clips.get(id).map(|_| ClipAt::Song))
     }
 
     /// Where the track with id `id` is now.
@@ -1798,7 +1820,8 @@ impl Project {
         self.tracks.iter().position(|t| t.id == id)
     }
 
-    /// Every track and clip in range.
+    /// Every track and clip in range, and no clip of the song's own with
+    /// an id a cell's clip has (a clip lives in one place).
     pub fn check(&self) -> Result<(), ModelError> {
         self.check_tracks()?;
         for t in &self.tracks {
@@ -1817,6 +1840,10 @@ impl Project {
         }
         if !self.launch.ok() {
             return Err(ModelError::BadLaunch);
+        }
+        let song = &self.arrangement.clips;
+        if !song.is_empty() && self.cell_clips().any(|(_, _, c)| song.get(c.id).is_some()) {
+            return Err(ModelError::BadPlacement);
         }
         self.arrangement.check(&self.tracks)
     }

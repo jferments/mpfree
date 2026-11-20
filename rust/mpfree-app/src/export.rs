@@ -1770,7 +1770,8 @@ mod tests {
             )
             .unwrap();
         p.tracks[1].slots[0] = Some(clip);
-        p.arrangement.placements = vec![Placement::linked(1, 0, 0, BAR)];
+        p.give_clip_ids();
+        p.arrangement.placements = vec![Placement::of(&p.tracks, 1, 0, 0, BAR)];
         // The song's own lane, on track 3's volume (CC 7): full, then off
         // at the half bar.
         let volume = ParamAddr::new(Owner::Midi(2), 7);

@@ -2,13 +2,15 @@
 //! an empty slot, two clips swapped, a clip copied, and a whole row moved
 //! or copied, each as one take that undo takes back.
 //!
-//! The song's blocks linked to a clip that moves go with it (to its new
-//! slot, and to its new track's lane), so the song plays as it did; so do
-//! the morph's rows and the rows' scenes when a row moves. Undo and redo
-//! work them out again from the drop ([`ClipDrop::after`] and
-//! [`ClipDrop::before`]), so an edit made to the song since is kept.
+//! A clip that moves keeps its lasting id (`mpfree_seq::ClipId`), so the
+//! song's blocks that play it are untouched and play it on, on their own
+//! lanes (the Arrange refactor's 1.3); a copy is a clip of its own, with
+//! a new id. When a row moves, the rows' scenes, the morph's rows and the
+//! song list's steps, which name rows, go with it. Undo and redo work
+//! them out again from the drop ([`ClipDrop::after`] and
+//! [`ClipDrop::before`]).
 
-use mpfree_seq::{Arrangement, ModelError, Project, Scene, Source, SCENES, SLOTS};
+use mpfree_seq::{ModelError, Project, Scene, SCENES, SLOTS};
 
 use super::{slot_mut, Take, Takes};
 
@@ -96,8 +98,7 @@ impl Takes {
     /// onto another clip the two change places. Its number and what it
     /// did. Nothing changes on an error: `BadSlot` with no clip at
     /// `from`, or `to` the same place or not a slot; `NoRoom` for a copy
-    /// onto a clip; `BadPlacement` when the clip's song blocks would
-    /// overlap blocks on its new track's lane.
+    /// onto a clip.
     pub fn drop_clip(
         &mut self,
         project: &mut Project,
@@ -121,7 +122,6 @@ impl Takes {
             (Some(_), false) => ClipDrop::Swapped(from, to),
             (Some(_), true) => return Err(ModelError::NoRoom),
         };
-        let song = relink(&project.arrangement, |c| Some(drop.after(c)))?;
         let mut take = Take {
             edited: true,
             dropped: Some(drop),
@@ -146,7 +146,7 @@ impl Takes {
                 take.made.push((to.0, to.1, a));
             }
         }
-        Ok((self.put_drop(project, take, song), drop))
+        Ok((self.put_drop(project, take), drop))
     }
 
     /// A row's number dragged on the Clips grid: row `from` (every
@@ -169,22 +169,15 @@ impl Takes {
         }
         // A row moves within the grid's rows ([`SLOTS`]); the rows past
         // them stay where they are (Arrange 1.2). A copy needs the grid's
-        // last row empty, and no song block linked to it (it would play
-        // the row moved into it).
-        let last = SLOTS - 1;
-        if copy && !project.row_empty(last) {
+        // last row empty.
+        if copy && !project.row_empty(SLOTS - 1) {
             return Err(ModelError::NoRoom);
-        }
-        let linked = |p: &mpfree_seq::Placement| p.slot() == Some(last);
-        if copy && project.arrangement.placements.iter().any(linked) {
-            return Err(ModelError::BadPlacement);
         }
         let drop = if copy {
             ClipDrop::RowCopied { from, to }
         } else {
             ClipDrop::RowMoved { from, to }
         };
-        let song = relink(&project.arrangement, |c| Some(drop.after(c)))?;
         let mut take = Take {
             edited: true,
             dropped: Some(drop),
@@ -221,13 +214,13 @@ impl Takes {
             }
         }
         take.made.sort_by_key(|(t, s, _)| (*t, *s));
-        let number = self.put_drop_filled(project, take, song);
+        let number = self.put_drop_filled(project, take);
         Ok((number, drop))
     }
 
-    /// Fill the slots a clip drop's take names, link the song as it
-    /// follows them and keep the take. Its number.
-    fn put_drop(&mut self, project: &mut Project, take: Take, song: Option<Arrangement>) -> u32 {
+    /// Fill the slots a clip drop's take names and keep the take. Its
+    /// number.
+    fn put_drop(&mut self, project: &mut Project, take: Take) -> u32 {
         for (t, s, _) in &take.removed {
             if let Some(slot) = slot_mut(project, *t, *s) {
                 *slot = None;
@@ -238,18 +231,10 @@ impl Takes {
                 *slot = Some(c.clone());
             }
         }
-        self.put_drop_filled(project, take, song)
+        self.put_drop_filled(project, take)
     }
 
-    fn put_drop_filled(
-        &mut self,
-        project: &mut Project,
-        mut take: Take,
-        song: Option<Arrangement>,
-    ) -> u32 {
-        if let Some(song) = song {
-            project.arrangement = song;
-        }
+    fn put_drop_filled(&mut self, project: &mut Project, mut take: Take) -> u32 {
         if let Some(drop) = take.dropped {
             follow_rows(project, drop, false);
         }
@@ -259,18 +244,10 @@ impl Takes {
     }
 }
 
-/// After undo (`back`) or redo moved a drop's clips: the song's linked
-/// blocks, and for a row the morph's rows and the scenes, follow them. A
-/// song edited since so that its blocks would overlap stays as it is.
+/// After undo (`back`) or redo moved a drop's clips: for a row, the
+/// scenes, the morph's rows and the song list's steps follow it (the
+/// song's blocks name their clips by id and need nothing).
 pub(super) fn follow(project: &mut Project, drop: ClipDrop, back: bool) {
-    let song = if back {
-        relink(&project.arrangement, |c| drop.before(c))
-    } else {
-        relink(&project.arrangement, |c| Some(drop.after(c)))
-    };
-    if let Ok(Some(song)) = song {
-        project.arrangement = song;
-    }
     follow_rows(project, drop, back);
 }
 
@@ -318,43 +295,6 @@ fn plain(s: &Scene) -> bool {
     *s == Scene::default()
 }
 
-/// `song` with each block linked to a clip moved where `to` says its
-/// clip went (None: left as it is), or None when no block moves.
-/// `BadPlacement` when blocks would overlap on a lane.
-fn relink(
-    song: &Arrangement,
-    to: impl Fn(Cell) -> Option<Cell>,
-) -> Result<Option<Arrangement>, ModelError> {
-    let goes = |track: usize, source: &Source| match source {
-        Source::Slot(s) => to((track, *s)).filter(|c| *c != (track, *s)),
-        Source::Own(_) => None,
-    };
-    if !song
-        .placements
-        .iter()
-        .any(|p| goes(p.track, &p.source).is_some())
-    {
-        return Ok(None);
-    }
-    let mut out = Arrangement {
-        placements: Vec::with_capacity(song.placements.len()),
-        markers: song.markers.clone(),
-        lanes: song.lanes.clone(),
-        morphs: song.morphs.clone(),
-        list: song.list.clone(),
-        tempo: song.tempo.clone(),
-    };
-    for p in &song.placements {
-        let mut q = p.clone();
-        if let Some((t, s)) = goes(p.track, &p.source) {
-            q.track = t;
-            q.source = Source::Slot(s);
-        }
-        out.place(q)?;
-    }
-    Ok(Some(out))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,7 +309,14 @@ mod tests {
         p.tracks[0].slots[1] = Some(Clip::new("Fill", 1920));
         p.tracks[1].slots[0] = Some(Clip::new("Bass A", 1920));
         p.tracks[1].slots[2] = Some(Clip::new("Bass C", 1920));
+        // Beat 1, Fill 2, Bass A 3, Bass C 4.
+        p.give_clip_ids();
         p
+    }
+
+    /// Where block `b`'s clip is now.
+    fn home(p: &Project, b: &Placement) -> Option<mpfree_seq::ClipAt> {
+        p.find_clip(b.clip)
     }
 
     fn name(p: &Project, t: usize, s: usize) -> Option<&str> {
@@ -433,43 +380,64 @@ mod tests {
         );
     }
 
+    /// Arrange 1.3: the song's blocks name their clips by id, so a clip
+    /// dragged to another cell, its own track's or another's, leaves them
+    /// as they are: they play it on, on their own lanes, and nothing about
+    /// the song changes through UNDO and REDO.
     #[test]
-    fn song_blocks_follow_their_clip_and_come_back_on_undo() {
+    fn song_blocks_stay_as_they_are_when_their_clip_moves() {
+        use mpfree_seq::ClipAt::Cell;
         let mut p = project();
         p.arrangement
-            .place(Placement::linked(1, 0, 0, 1920))
+            .place(Placement::of(&p.tracks, 1, 0, 0, 1920))
             .unwrap();
         p.arrangement
-            .place(Placement::linked(1, 2, 1920, 1920))
+            .place(Placement::of(&p.tracks, 1, 2, 1920, 1920))
             .unwrap();
         p.arrangement
-            .place(Placement::linked(2, 0, 0, 3840))
+            .place(Placement::of(&p.tracks, 2, 0, 0, 3840))
             .unwrap();
+        let song = p.arrangement.clone();
         let mut takes = Takes::new(8);
-        // Bass A to slot 4 of its track: its block follows, still linked.
+        // Bass A to row 4 of its track, then Bass C to the Keys' grid,
+        // where Keys' block sits: both fine, the song as it was.
         takes.drop_clip(&mut p, (1, 0), (1, 3), false).unwrap();
-        let on = |p: &Project, t| {
-            p.arrangement
-                .on_track(t)
-                .iter()
-                .map(|b| (b.start, b.slot()))
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(on(&p, 1), [(0, Some(3)), (1920, Some(2))]);
-        p.check().unwrap();
-        // Bass C onto Keys' lane would sit on Keys' block there: refused.
+        takes.drop_clip(&mut p, (1, 2), (2, 1), false).unwrap();
+        assert_eq!(p.arrangement, song);
+        let homes: Vec<_> = p
+            .arrangement
+            .on_track(1)
+            .iter()
+            .map(|b| home(&p, b))
+            .collect();
         assert_eq!(
-            takes.drop_clip(&mut p, (1, 2), (2, 1), false),
-            Err(ModelError::BadPlacement)
+            homes,
+            [
+                Some(Cell { track: 1, row: 3 }),
+                Some(Cell { track: 2, row: 1 })
+            ]
         );
-        assert_eq!(name(&p, 1, 2), Some("Bass C"), "nothing changed");
+        let played: Vec<_> = p
+            .arrangement
+            .on_track(1)
+            .iter()
+            .map(|b| p.block_clip(b).map(|c| c.name.as_str()))
+            .collect();
+        assert_eq!(played, [Some("Bass A"), Some("Bass C")]);
+        p.check().unwrap();
         takes.undo(&mut p);
-        assert_eq!(on(&p, 1), [(0, Some(0)), (1920, Some(2))]);
+        takes.undo(&mut p);
+        assert_eq!(p.arrangement, song);
         assert_eq!(p, {
             let mut q = project();
-            q.arrangement = p.arrangement.clone();
+            q.arrangement = song.clone();
             q
         });
+        takes.redo(&mut p);
+        assert_eq!(
+            home(&p, &p.arrangement.on_track(1)[0]),
+            Some(Cell { track: 1, row: 3 })
+        );
     }
 
     #[test]
@@ -477,7 +445,7 @@ mod tests {
         let mut p = project();
         p.scene_mut(2).unwrap().name = "Drop".into();
         p.arrangement
-            .place(Placement::linked(1, 2, 0, 1920))
+            .place(Placement::of(&p.tracks, 1, 2, 0, 1920))
             .unwrap();
         // The song list plays rows 3 then 2.
         let step = |row| mpfree_seq::ListStep { row, times: 1 };
@@ -496,9 +464,9 @@ mod tests {
         assert_eq!(name(&p, 0, 0), Some("Beat"), "the row above stayed");
         assert_eq!(p.scene(1).map(|s| s.name.as_str()), Some("Drop"));
         assert_eq!(
-            p.arrangement.placements[0].slot(),
-            Some(1),
-            "its block follows"
+            home(&p, &p.arrangement.placements[0]),
+            Some(mpfree_seq::ClipAt::Cell { track: 1, row: 1 }),
+            "its block plays it where it went"
         );
         p.check().unwrap();
         // A move that lands where it started does nothing.
@@ -523,7 +491,7 @@ mod tests {
         let mut want = project();
         want.scene_mut(2).unwrap().name = "Drop".into();
         want.arrangement
-            .place(Placement::linked(1, 2, 0, 1920))
+            .place(Placement::of(&want.tracks, 1, 2, 0, 1920))
             .unwrap();
         want.arrangement.list.steps = vec![step(2), step(1)];
         want.next_clip = p.next_clip;
@@ -531,16 +499,16 @@ mod tests {
     }
 
     /// Arrange 1.2: a row moves or is copied within the grid's 16 rows; a
-    /// clip and a scene in row 40, and the song's block linked to it,
-    /// stay where they are, through UNDO and REDO too. A copy is refused
-    /// while a song block is linked to the grid's last row.
+    /// clip and a scene in row 40, and the song's block of it, stay where
+    /// they are, through UNDO and REDO too.
     #[test]
     fn rows_past_the_grid_stay_put_when_a_row_moves() {
         let mut p = project();
         p.tracks[1].slots[40] = Some(Clip::new("Far", 1920));
+        p.give_clip_ids();
         p.scene_mut(40).unwrap().name = "Bank C".into();
         p.arrangement
-            .place(Placement::linked(1, 40, 3840, 1920))
+            .place(Placement::of(&p.tracks, 1, 40, 3840, 1920))
             .unwrap();
         let mut takes = Takes::default();
         takes.drop_row(&mut p, 0, 3, false).unwrap();
@@ -553,7 +521,7 @@ mod tests {
                     .placements
                     .iter()
                     .find(|b| b.start == 3840)
-                    .and_then(|b| b.slot()),
+                    .and_then(|b| p.tracks[1].slots.row_of(b.clip)),
             )
         };
         let want = (
@@ -567,16 +535,6 @@ mod tests {
         assert_eq!(far(&p), want);
         takes.redo(&mut p);
         assert_eq!(far(&p), want);
-        // A block on the grid's last row: a copy would make it play the
-        // row moved into it, so none is made.
-        let mut q = project();
-        q.arrangement
-            .place(Placement::linked(0, SLOTS - 1, 0, 1920))
-            .unwrap();
-        assert_eq!(
-            takes.drop_row(&mut q, 0, 0, true),
-            Err(ModelError::BadPlacement)
-        );
     }
 
     #[test]

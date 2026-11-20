@@ -9,7 +9,7 @@ use mpfree_perform::{Perform, SongRecorder, When};
 use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Sink, SONG_TRACK};
 use mpfree_seq::arrange::{MAX_PLACEMENTS, MORPH_LANE};
 use mpfree_seq::mpfree_param::ParamAddr;
-use mpfree_seq::{Clip, MorphRows, Note, Placement, Project, Source, Track};
+use mpfree_seq::{Clip, MorphRows, Note, Placement, Project, Track};
 use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, Transport};
 
@@ -203,7 +203,13 @@ fn project() -> Project {
         }
         p.tracks.push(tr);
     }
+    p.give_clip_ids();
     p
+}
+
+/// The row of block `b`'s clip on its own lane's track.
+fn row(p: &Project, b: &Placement) -> Option<usize> {
+    p.tracks[b.track].slots.row_of(b.clip)
 }
 
 fn launch(track: usize, slot: usize) -> Launch {
@@ -223,7 +229,7 @@ fn what_the_grid_played_the_song_plays_back_the_same() {
     p.scene_mut(2).unwrap().mutes = Some(0);
     // Track 2 plays the song: row 4's clip for 7 bars.
     p.arrangement
-        .place(Placement::linked(2, 3, 0, 7 * BAR))
+        .place(Placement::of(&p.tracks, 2, 3, 0, 7 * BAR))
         .unwrap();
     // Each waits for the next bar line.
     let acts = [
@@ -244,11 +250,9 @@ fn what_the_grid_played_the_song_plays_back_the_same() {
         .arrangement
         .placements
         .iter()
-        .map(|p| {
-            let Source::Slot(s) = p.source else {
-                panic!("linked")
-            };
-            (p.track, p.start, p.end(), s, p.offset)
+        .map(|b| {
+            let s = row(&song, b).expect("a block of a cell's clip");
+            (b.track, b.start, b.end(), s, b.offset)
         })
         .collect();
     assert_eq!(
@@ -295,7 +299,7 @@ fn a_loop_pass_records_over_the_last() {
         .arrangement
         .on_track(0)
         .iter()
-        .map(|p| (p.start, p.end(), p.slot()))
+        .map(|b| (b.start, b.end(), row(&song, b)))
         .collect();
     // The second pass stops 10 ticks short of its end: the first pass's
     // slot 0 is left there, from as far into its clip.
@@ -379,6 +383,7 @@ fn a_mute_leaves_a_gap_and_the_clip_comes_back_in_phase() {
         .map(|i| Note::new(i * 960, 100, 40 + i as u8, 100))
         .collect();
     p.tracks[0].slots[0] = Some(c);
+    p.give_clip_ids();
     // Muted from beat 2 of bar 1 to beat 3 of bar 2 (a 64-frame period
     // lands exactly on both).
     let acts = [
@@ -413,9 +418,13 @@ fn a_mute_leaves_a_gap_and_the_clip_comes_back_in_phase() {
 /// one bar each from bar 1001, far past anything a test plays.
 fn nearly_full(mut p: Project, track: usize, room: usize) -> Project {
     for k in 0..MAX_PLACEMENTS - room {
-        p.arrangement
-            .placements
-            .push(Placement::linked(track, 0, (1000 + k as i64) * BAR, BAR));
+        p.arrangement.placements.push(Placement::of(
+            &p.tracks,
+            track,
+            0,
+            (1000 + k as i64) * BAR,
+            BAR,
+        ));
     }
     p.check().unwrap();
     p
@@ -427,7 +436,7 @@ fn recorded(song: &Project) -> Vec<(usize, Tick, Tick, Option<usize>)> {
         .placements
         .iter()
         .filter(|b| b.start < 1000 * BAR)
-        .map(|b| (b.track, b.start, b.end(), b.slot()))
+        .map(|b| (b.track, b.start, b.end(), row(song, b)))
         .collect()
 }
 
@@ -444,6 +453,7 @@ fn sixteen_tracks_on_one_line_at_the_limit_go_in_together_or_stop_together() {
         tr.slots[1] = Some(held(60 + t));
         p.tracks.push(tr);
     }
+    p.give_clip_ids();
     let launches: Vec<Launch> = (0..16).map(|t| launch(t, 0)).collect();
     // Row 2 on bar 3, for every track.
     let acts = [(at(BAR + 100), Act::Scene(1))];
