@@ -6293,6 +6293,30 @@ fn synth_status(synth: &synth::Synth, time: &RenderTime) -> String {
 /// The log line for the pads moving to the synth, by an octave or to
 /// another layout: "pads: Poly synth, C3 to D#4 (pad 1 = C3; …)", with the
 /// scale and layout when a scale is on.
+/// The notes each of track `track`'s 16 pads plays, as a clip of notes on
+/// the track reads them (step 5c): what the pad plays on the track's own
+/// synth (or the one it plays) or on the shared synth, a chord's root
+/// last, or a kit pad's note in bank A. A pad that plays nothing keeps its
+/// own number. Never allocates.
+fn pad_rows(
+    own: &instruments::Instruments,
+    synth: &synth::Synth,
+    kits: &sampler::TrackKits,
+    track: usize,
+) -> time::PadRows {
+    let mut rows = time::PadRows::PADS;
+    for p in 0..16 {
+        if own.plays(track) {
+            rows.set(p, own.pad_notes(track, p));
+        } else if kits.plays_synth(track) {
+            rows.set(p, synth.notes(p));
+        } else if let Some(n) = mpfree_midi::profile::kit_note(p) {
+            rows.set(p, &[n]);
+        }
+    }
+    rows
+}
+
 /// The hint the Synth tab shows while the armed track (`track`, from 0)
 /// plays a kit: opening the tab leaves what the track plays alone.
 fn synth_tab_hint(track: usize) -> String {
@@ -9805,6 +9829,12 @@ fn player_session(
         // A take on a track whose instrument plays notes records notes
         // (instrument redesign step 5c).
         time.set_notes_tracks(mix.instruments.note_tracks());
+        // A clip of notes shows each pad's note on the step grid's pad
+        // rows: the root of what the pad plays on the track's own synth or
+        // the shared synth, or a kit pad's note (step 5c).
+        for t in 0..time.track_count().min(mpfree_seq::MAX_TRACKS) {
+            time.set_pad_rows(t, pad_rows(&mix.instruments, &synth, &track_kits, t));
+        }
         // CV out takes the outputs' jobs; run, reset and clock follow the
         // transport.
         cv_out.sync(&io_model);
@@ -12176,6 +12206,31 @@ mod tests {
             };
             assert!(seq.out(&clip_out(1, 20, pad, false)));
             assert!(!seq.own.holds_note(1, 3));
+        });
+    }
+
+    /// Step 5c: the step grid's pad rows on a clip of notes are the notes
+    /// the track's pads play: a track's own synth's pads (a chord's
+    /// root), the shared synth's, or a kit's pads' notes, as a clip of
+    /// notes plays them back.
+    #[test]
+    fn the_grids_pad_rows_are_the_notes_the_pads_play() {
+        on_the_pads(&[2], &[1], |seq| {
+            let rows = |seq: &SeqPads, t| pad_rows(seq.own, seq.synth, seq.kits, t);
+            let own = rows(seq, 1);
+            for p in 0..16 {
+                assert_eq!(own.notes(p), seq.own.pad_notes(1, p));
+            }
+            assert!(own.roots()[0] >= 16, "notes, not pads: {own:?}");
+            let shared = rows(seq, 2);
+            for p in 0..16 {
+                assert_eq!(shared.notes(p), seq.synth.notes(p));
+            }
+            assert_eq!(
+                rows(seq, 0).roots(),
+                mpc_one::PAD_NOTES,
+                "a kit's pads' notes"
+            );
         });
     }
 

@@ -334,6 +334,56 @@ fn note_of(e: Event) -> u8 {
     }
 }
 
+/// The notes each of a track's 16 pads plays, a chord's root last (as
+/// `Synth::notes` and `Instruments::pad_notes` give them): the step grid
+/// shows and edits a clip of notes through them, so its pad rows read as
+/// a clip of hits' do (the instrument redesign's step 5c). Fixed size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PadRows {
+    notes: [[u8; HEARD_NOTES]; 16],
+    n: [u8; 16],
+}
+
+impl PadRows {
+    /// Each pad plays its own number: a clip of pad hits' rows.
+    pub const PADS: PadRows = {
+        let mut r = PadRows {
+            notes: [[0; HEARD_NOTES]; 16],
+            n: [1; 16],
+        };
+        let mut p = 0;
+        while p < 16 {
+            r.notes[p][0] = p as u8;
+            p += 1;
+        }
+        r
+    };
+
+    /// Pad `pad` plays `notes` (the first [`HEARD_NOTES`], as a take
+    /// records them); none, or a pad past 16, changes nothing.
+    pub fn set(&mut self, pad: usize, notes: &[u8]) {
+        let (Some(row), false) = (self.notes.get_mut(pad), notes.is_empty()) else {
+            return;
+        };
+        let n = notes.len().min(HEARD_NOTES);
+        row[..n].copy_from_slice(&notes[..n]);
+        self.n[pad] = n as u8;
+    }
+
+    /// The notes pad `pad` plays, its root last; none past the 16 pads.
+    pub fn notes(&self, pad: usize) -> &[u8] {
+        match (self.notes.get(pad), self.n.get(pad)) {
+            (Some(row), Some(&n)) => &row[..usize::from(n)],
+            _ => &[],
+        }
+    }
+
+    /// Each pad's root: the note its row shows.
+    pub fn roots(&self) -> [u8; 16] {
+        std::array::from_fn(|p| self.notes(p).last().copied().unwrap_or(p as u8))
+    }
+}
+
 /// Where the sequencer's notes go: the sampler's pads. Each note names the
 /// track it came from (`Out::track`), so a host can play each track's own
 /// kit or instrument.
@@ -1440,6 +1490,13 @@ impl TimeHost {
     /// unless its clips play through its arp.
     pub fn set_notes_tracks(&mut self, tracks: u128) {
         self.control.set_notes_tracks(tracks);
+    }
+
+    /// The notes each of track `track`'s 16 pads plays: a clip of notes
+    /// shows each pad's root on the step grid's pad rows, and a tap on a
+    /// pad's row edits its notes (step 5c).
+    pub fn set_pad_rows(&mut self, track: usize, rows: PadRows) {
+        self.control.set_pad_rows(track, rows);
     }
 
     /// What the look-ahead did, for the log.
@@ -4122,6 +4179,173 @@ mod tests {
             Holds::Hits,
             "a clip of notes through the arp waits for step 5d"
         );
+    }
+
+    /// Step 5c: on a clip of notes the step grid's pad rows show the
+    /// notes the track's pads play, named by the pad, so the Play page and
+    /// the step pads read it as they read a clip of hits: a tap on pad 3's
+    /// row adds pad 3's note, the Note knob moves a step to another pad's
+    /// note, and a note no pad plays stays on a row of its own. A new
+    /// pattern on a track that plays notes holds notes; on one that
+    /// doesn't it holds pad hits, as before.
+    #[test]
+    fn a_clip_of_notes_shows_its_pads_notes_on_the_pad_rows() {
+        use mpfree_seq::steps::Change;
+        use mpfree_seq::Holds;
+        let mut rows = PadRows::PADS;
+        for p in 0..16 {
+            rows.set(p, &[60 + p as u8]);
+        }
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.set_notes_tracks(1);
+        h.set_pad_rows(0, rows);
+        let tap = |pad, step| StepAction::Tap {
+            pad,
+            step,
+            velocity: 100,
+        };
+        let said = h.step_action(tap(2, 0)).unwrap();
+        assert!(said.contains("step 1 of note D4"), "{said}");
+        let clip = h.project().clip(0, 0).unwrap().clone();
+        assert_eq!(clip.holds, Holds::Notes, "a new pattern holds notes");
+        let notes = |h: &TimeHost| -> Vec<(u8, Tick)> {
+            let mut v: Vec<_> = h
+                .project()
+                .clip(0, 0)
+                .unwrap()
+                .notes
+                .iter()
+                .map(|n| (n.note, n.tick))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(notes(&h), vec![(62, 0)], "pad 3's note");
+        // The grid names the row by the pad.
+        let shown = |h: &TimeHost| {
+            let s = h.steps();
+            let c = s.clip.expect("the pattern");
+            c.rows
+                .iter()
+                .filter(|(p, r)| *p != LINE && r.iter().any(Option::is_some))
+                .map(|(p, r)| (*p, r.iter().position(Option::is_some).unwrap()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shown(&h), vec![(2, 0)]);
+        // The Note knob on pad 3's step, to pad 6: the step plays pad 6's
+        // note, on pad 6's row.
+        h.step_action(StepAction::Change {
+            pad: 2,
+            step: 0,
+            change: Change::Note(5),
+        })
+        .unwrap();
+        assert_eq!(notes(&h), vec![(65, 0)]);
+        assert_eq!(shown(&h), vec![(5, 0)]);
+        // A note no pad plays (from a take, or a pad map changed since)
+        // keeps a row of its own, under its note.
+        h.step_action(tap(0, 2)).unwrap();
+        let mut up = rows;
+        for p in 0..16 {
+            up.set(p, &[72 + p as u8]);
+        }
+        h.set_pad_rows(0, up);
+        assert!(h.control.take_steps_changed(), "new rows show again");
+        let mut other = shown(&h);
+        other.sort();
+        assert_eq!(other, vec![(60, 2), (65, 0)]);
+        // A second tap on the same row takes the note back off.
+        h.set_pad_rows(0, rows);
+        h.step_action(tap(0, 2)).unwrap();
+        assert_eq!(notes(&h), vec![(65, 0)]);
+        // A track that plays no notes: a pattern of pad hits, by pad.
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.set_pad_rows(0, rows);
+        let said = h.step_action(tap(2, 0)).unwrap();
+        assert!(said.contains("step 1 of pad 3"), "{said}");
+        let clip = h.project().clip(0, 0).unwrap();
+        assert_eq!(clip.holds, Holds::Hits);
+        assert_eq!(clip.notes[0].note, 2);
+    }
+
+    /// Step 5c with a pad of chords: on a clip of notes a pad's row stands
+    /// for the whole chord, as a pad hit plays it on a clip of hits. A tap
+    /// puts all its notes on the step and takes them all off again; a
+    /// change takes every note; the Note knob puts the step on another
+    /// pad's notes; keys entered on the line are their pads' chords.
+    #[test]
+    fn a_pad_of_chords_steps_its_whole_chord_on_a_clip_of_notes() {
+        use mpfree_seq::steps::Change;
+        let mut rows = PadRows::PADS;
+        for p in 0..16 {
+            rows.set(p, &[60 + p as u8]);
+        }
+        // Pad 1 plays C major, its root last.
+        rows.set(0, &[64, 67, 60]);
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.set_notes_tracks(1);
+        h.set_pad_rows(0, rows);
+        let notes = |h: &TimeHost| -> Vec<(u8, u8)> {
+            let mut v: Vec<_> = h
+                .project()
+                .clip(0, 0)
+                .map(|c| c.notes.iter().map(|n| (n.note, n.velocity)).collect())
+                .unwrap_or_default();
+            v.sort();
+            v
+        };
+        let tap = |pad, step| StepAction::Tap {
+            pad,
+            step,
+            velocity: 100,
+        };
+        let said = h.step_action(tap(0, 0)).unwrap();
+        assert!(said.contains("note C4"), "the root names it: {said}");
+        assert_eq!(notes(&h), vec![(60, 100), (64, 100), (67, 100)]);
+        // Shown on pad 1's row.
+        let s = h.steps();
+        let row = &s.clip.as_ref().unwrap().rows;
+        assert!(row.iter().any(|(p, r)| *p == 0 && r[0].is_some()));
+        // Every note takes a change, and one UNDO takes it back.
+        h.step_action(StepAction::Change {
+            pad: 0,
+            step: 0,
+            change: Change::Velocity(50),
+        })
+        .unwrap();
+        assert_eq!(notes(&h), vec![(60, 50), (64, 50), (67, 50)]);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(notes(&h), vec![(60, 100), (64, 100), (67, 100)]);
+        // The Note knob to pad 6: the step plays pad 6's note.
+        h.step_action(StepAction::Change {
+            pad: 0,
+            step: 0,
+            change: Change::Note(5),
+        })
+        .unwrap();
+        assert_eq!(notes(&h), vec![(65, 100)]);
+        // And back to pad 1: the chord again.
+        h.step_action(StepAction::Change {
+            pad: 5,
+            step: 0,
+            change: Change::Note(0),
+        })
+        .unwrap();
+        assert_eq!(notes(&h), vec![(60, 100), (64, 100), (67, 100)]);
+        // A second tap takes the whole chord off.
+        h.step_action(tap(0, 0)).unwrap();
+        assert_eq!(notes(&h), vec![]);
+        // Keys on the line: pad 1 and pad 3 give the chord and D4.
+        let mut keys = [(0, 0); MAX_PEN];
+        keys[0] = (0, 90);
+        keys[1] = (2, 80);
+        h.step_action(StepAction::Enter {
+            step: 1,
+            keys,
+            n: 2,
+        })
+        .unwrap();
+        assert_eq!(notes(&h), vec![(60, 90), (62, 80), (64, 90), (67, 90)]);
     }
 
     /// Pads as pressed have no notes for a clip of notes (one through the
