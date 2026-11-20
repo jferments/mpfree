@@ -269,6 +269,7 @@ Opened over any page by holding a kit pad and pressing SHIFT + REC (sampler R5 p
 - **`synth-tiles/section-switch`**: an on or off switch in a section's heading (effect pages: a stage of the channel strip); while it is off the section's controls are dim.
 - **`synth-presets/row`**: a preset: tap to load it.
 - **`synth-pads-head/layout`**: Chromatic or In key for the pads. *Test:* `the_pads_heading_switches_the_synth_to_in_key`.
+- **`synth-pads-head/play`**: while the selected track's instrument is a kit, the whole heading is **Play Poly on the pads**: the synth on the pads while the track keeps its kit; again (**Back to Track 1's kit**), the kit (`app/pads_preview.rs`). *Tests:* `play_on_the_pads_hears_the_synth_while_the_track_keeps_its_kit`, `play_on_the_pads_keeps_the_kit_and_rec_records_the_synth_on_a_track`, `rec_while_the_pads_play_the_synth_records_it_on_a_track_nobody_set_up`, `rec_records_the_pads_synth_on_a_track_nobody_set_up`, `the_arp_and_play_on_the_pads_never_play_together`, `play_on_the_pads_tries_poly_and_rec_records_it_without_touching_the_drums`.
 - The Q-Link column on the Synth tab is the shared one (**`qlinks/knob-card`**, under Play tab): it names what the page's Q-Links turn, as their sections name them (Q1 to Q4 badges on the page); drag a card to turn it.
 
 ## Looper tab
