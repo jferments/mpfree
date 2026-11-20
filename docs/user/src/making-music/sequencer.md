@@ -19,7 +19,7 @@ Press **STEP SEQ** from any page to come here, with the pads turned into the ste
 
 A **pattern** is a loop of steps, like a grid: each row is a pad, each column a moment in time (a 16th note to begin with). A lit square plays that pad at that moment.
 
-- **Tap an empty square** to put a note there.
+- **Tap an empty square** to put a note there. On a track with no pattern yet, the first tap makes one and starts it playing; one **UNDO** takes that pattern away again, note and all, and **SHIFT + UNDO** brings it back playing.
 - **Tap a lit square** to take the note out. **UNDO** brings it back as it was, settings and all.
 - **Hold your finger on a lit square** for a moment to pick it: it gets a white outline, the step inspector opens at the bottom, and the Q-Links turn its settings (below). Holding a step pad with **STEP SEQ** on does the same.
 - **Hold ERASE and tap a square** also takes a step out, or use **Clear** in the step inspector.
