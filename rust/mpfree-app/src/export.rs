@@ -280,7 +280,7 @@ impl Facts {
             .iter()
             .enumerate()
             .map(|(k, t)| {
-                let sounds = !t.mute && t.slots.iter().flatten().any(|c| !c.notes.is_empty());
+                let sounds = !t.mute && t.slots.clips().any(|c| !c.notes.is_empty());
                 let plays = if outside(k) {
                     Plays::Outside
                 } else if !sounds {

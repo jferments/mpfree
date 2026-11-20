@@ -49,8 +49,7 @@ pub struct LoopPlan {
 pub fn on_track(p: &Project, t: usize) -> u8 {
     p.tracks.get(t).map_or(0, |t| {
         t.slots
-            .iter()
-            .flatten()
+            .clips()
             .filter_map(|c| c.looped)
             .fold(0, |m, n| m | bit(n))
     })
@@ -66,8 +65,7 @@ pub fn cells(p: &Project, n: u8) -> impl Iterator<Item = (usize, usize)> + '_ {
         track
             .slots
             .iter()
-            .enumerate()
-            .filter(move |(_, c)| c.as_ref().is_some_and(|c| c.looped == Some(n)))
+            .filter(move |(_, c)| c.looped == Some(n))
             .map(move |(s, _)| (t, s))
     })
 }
@@ -84,7 +82,7 @@ pub fn in_cell(p: &Project, n: u8) -> bool {
 pub fn playing(p: &Project, launched: impl Iterator<Item = (usize, usize)>) -> [bool; LOOPS] {
     let mut placed = 0u8;
     for t in p.tracks.iter().filter(|t| t.is_loops()) {
-        for n in t.slots.iter().flatten().filter_map(|c| c.looped) {
+        for n in t.slots.clips().filter_map(|c| c.looped) {
             placed |= bit(n);
         }
     }
@@ -160,11 +158,7 @@ pub fn song_plan(
 pub fn set_length(p: &mut Project, n: u8, ticks: Tick) -> usize {
     let len = length(ticks);
     let mut changed = 0;
-    for c in p
-        .tracks
-        .iter_mut()
-        .flat_map(|t| t.slots.iter_mut().flatten())
-    {
+    for c in p.tracks.iter_mut().flat_map(|t| t.slots.clips_mut()) {
         if c.looped == Some(n) && c.length != len {
             c.length = len;
             changed += 1;
@@ -175,14 +169,10 @@ pub fn set_length(p: &mut Project, n: u8, ticks: Tick) -> usize {
 
 /// Loop `n`'s cells empty (it was cleared). How many went.
 pub fn remove(p: &mut Project, n: u8) -> usize {
-    let mut gone = 0;
-    for s in p.tracks.iter_mut().flat_map(|t| t.slots.iter_mut()) {
-        if s.as_ref().is_some_and(|c| c.looped == Some(n)) {
-            *s = None;
-            gone += 1;
-        }
-    }
-    gone
+    p.tracks
+        .iter_mut()
+        .map(|t| t.slots.empty_where(|c| c.looped == Some(n)))
+        .sum()
 }
 
 /// A new Loop track's name: "Loops A", "Loops B" ... the first letter no
@@ -208,7 +198,7 @@ pub fn place(
     row: usize,
     busy: impl Fn(usize) -> bool,
 ) -> Option<(usize, usize)> {
-    if row >= crate::SLOTS || usize::from(n) >= LOOPS {
+    if row >= crate::ROWS || usize::from(n) >= LOOPS {
         return None;
     }
     let free = p
@@ -239,7 +229,7 @@ pub fn place(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{LoopInput, ModelError, Note, TrackKind, SLOTS};
+    use crate::{LoopInput, ModelError, Note, TrackKind};
 
     const BAR: Tick = 3840;
 
@@ -354,8 +344,9 @@ mod tests {
         // Names go on past letters taken.
         p.tracks[0].name = "Loops C".into();
         assert_eq!(new_name(&p), "Loops D");
-        // Past the grid's rows, or with the project full, it lands nowhere.
-        assert_eq!(place(&mut p, 4, BAR, SLOTS, |_| false), None);
+        // Past the rows a track keeps, or with the project full, it lands
+        // nowhere.
+        assert_eq!(place(&mut p, 4, BAR, crate::ROWS, |_| false), None);
         while p.tracks.len() < MAX_TRACKS {
             p.tracks.push(Track::new("x", 0));
         }

@@ -6,7 +6,7 @@ This builds on the [transport](transport.md). The full plan is the time engine d
 
 ## The model (`mpfree-seq`)
 
-A project holds up to 128 tracks (`MAX_TRACKS`; Jay, 14 Nov 2026: "Up to 128, like Akai's MPC", raised from 16). A track has a lasting id (`TrackId`, the instrument redesign's step 2c: not its place in the list; the project gives each new track the next one, `Project::next_track`, and never gives one twice: [instruments.md](instruments.md#2c-as-built)), a destination, an optional swing, a mute flag and 16 clip slots. A clip has:
+A project holds up to 128 tracks (`MAX_TRACKS`; Jay, 14 Nov 2026: "Up to 128, like Akai's MPC", raised from 16). A track has a lasting id (`TrackId`, the instrument redesign's step 2c: not its place in the list; the project gives each new track the next one, `Project::next_track`, and never gives one twice: [instruments.md](instruments.md#2c-as-built)), a destination, an optional swing, a mute flag and its clips by row (`Track::slots`, a `Rows`: up to 64 rows, `ROWS`, kept as long as the last clip; the Clips grid shows the first 16, `SLOTS`: [arrange.md](arrange.md#the-model-mpfree-seq)). A clip has:
 
 - a lasting id (`ClipId`, the Arrange refactor's 1.1: kept when it moves, new for a copy, never given twice: [arrange.md](arrange.md#the-model-mpfree-seq))
 - a length in its own ticks (from a 1/32 note to 256 bars)

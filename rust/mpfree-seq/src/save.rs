@@ -111,7 +111,7 @@ use crate::arrange::{Marker, MorphRows, Placement, Source, TempoPoint};
 use crate::scenes::{Follow, FollowAction, ListStep, Scene, MAX_LIST_STEPS, SCENES};
 use crate::{
     Clip, Cond, Join, LaunchGrid, Lock, LoopInput, Note, Original, Project, Quantise, Speed, Touch,
-    TouchPoint, Track, TrackKind, MAX_TRACKS, SLOTS,
+    TouchPoint, Track, TrackKind, MAX_TRACKS, ROWS,
 };
 
 /// The first line.
@@ -175,11 +175,9 @@ pub fn to_text(p: &Project) -> String {
         if t.follows {
             let _ = writeln!(s, "follows");
         }
-        for (slot, c) in t.slots.iter().enumerate() {
-            if let Some(c) = c {
-                let _ = writeln!(s, "clip {slot} {} {}", c.length, one_line(&c.name));
-                clip_body(&mut s, c);
-            }
+        for (row, c) in t.slots.iter() {
+            let _ = writeln!(s, "clip {row} {} {}", c.length, one_line(&c.name));
+            clip_body(&mut s, c);
         }
     }
     for (row, sc) in p.scenes.iter().enumerate() {
@@ -641,7 +639,7 @@ pub fn from_text(text: &str) -> Result<Project, String> {
             ("clip", At::Track) => {
                 let slot: usize = num(w.next()).ok_or_else(|| bad("slot"))?;
                 let length: Tick = num(w.next()).ok_or_else(|| bad("length"))?;
-                if slot >= SLOTS || last(&mut p).slots[slot].is_some() {
+                if slot >= ROWS || last(&mut p).slots[slot].is_some() {
                     return Err(bad("slot"));
                 }
                 let name = nth_rest(rest, 2);
@@ -1105,6 +1103,32 @@ mod track_id_tests {
         assert!(from_text(&text.replace("nexttrack 4", "nexttrack 0")).is_err());
     }
 
+    /// Arrange 1.2: a clip and a scene in row 40, past the grid's 16, are
+    /// kept through the text; a row past the 64 a project keeps is
+    /// refused.
+    #[test]
+    fn a_clip_and_a_scene_in_row_40_come_back() {
+        let mut p = Project::new();
+        p.tracks.push(Track::new("Drums", 0));
+        p.tracks[0].slots[40] = Some(Clip::new("Far", 3840));
+        p.scene_mut(40).unwrap().name = "Bank C".into();
+        p.arrangement
+            .place(Placement::linked(0, 40, 0, 3840))
+            .unwrap();
+        let text = to_text(&p);
+        assert!(text.contains("clip 40 3840 Far\n"), "{text}");
+        assert!(text.contains("scene 40 Bank C\n"), "{text}");
+        assert!(text.contains("place 0 0 3840 0 slot 40\n"), "{text}");
+        assert_eq!(from_text(&text).unwrap(), p);
+        for bad in [
+            text.replace("clip 40 ", "clip 64 "),
+            text.replace("scene 40 ", "scene 64 "),
+            text.replace("slot 40", "slot 64"),
+        ] {
+            assert!(from_text(&bad).is_err(), "{bad}");
+        }
+    }
+
     /// Arrange 1.1: each clip's lasting id, a loop cell's too, and the
     /// next id are kept through the text; a project saved before clips had
     /// ids reads with none (the app gives them as it opens it); and an id
@@ -1335,7 +1359,7 @@ mod tests {
         // The song list: an empty one writes nothing; steps out of range
         // are refused.
         assert!(!to_text(&Project::new()).contains("list"));
-        for bad in ["list 16 1", "list 0 0", "list 0 100", "list 0", "list x 1"] {
+        for bad in ["list 64 1", "list 0 0", "list 0 100", "list 0", "list x 1"] {
             assert!(from_text(&format!("{FORMAT}\n{bad}\n")).is_err(), "{bad}");
         }
         // A track's transpose (S4): as written writes nothing; past two

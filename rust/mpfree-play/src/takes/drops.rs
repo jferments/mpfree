@@ -30,7 +30,7 @@ pub enum ClipDrop {
     /// up or down one.
     RowMoved { from: usize, to: usize },
     /// A copy of row `from` went in before row `to`, and the rows from
-    /// `to` on moved down one (the last row was empty).
+    /// `to` on moved down one (the grid's last row was empty).
     RowCopied { from: usize, to: usize },
 }
 
@@ -41,7 +41,9 @@ impl ClipDrop {
             ClipDrop::Moved(a, b) | ClipDrop::Swapped(a, b) if (t, s) == a => b,
             ClipDrop::Swapped(a, b) if (t, s) == b => a,
             ClipDrop::RowMoved { from, to } => (t, moved(s, from, landing(from, to))),
-            ClipDrop::RowCopied { to, .. } if s >= to => (t, s + 1),
+            // The grid's rows from `to` move down one; its last row, empty,
+            // and the rows past the grid stay (Arrange 1.2).
+            ClipDrop::RowCopied { to, .. } if s >= to && s + 1 < SLOTS => (t, s + 1),
             _ => (t, s),
         }
     }
@@ -55,7 +57,7 @@ impl ClipDrop {
             ClipDrop::Copied(_, b) if (t, s) == b => None,
             ClipDrop::RowMoved { from, to } => Some((t, moved(s, landing(from, to), from))),
             ClipDrop::RowCopied { to, .. } if s == to => None,
-            ClipDrop::RowCopied { to, .. } if s > to => Some((t, s - 1)),
+            ClipDrop::RowCopied { to, .. } if s > to && s < SLOTS => Some((t, s - 1)),
             _ => Some((t, s)),
         }
     }
@@ -165,9 +167,17 @@ impl Takes {
         if from >= SLOTS || to > SLOTS || (!copy && (to == from || to == from + 1)) {
             return Err(ModelError::BadSlot);
         }
+        // A row moves within the grid's rows ([`SLOTS`]); the rows past
+        // them stay where they are (Arrange 1.2). A copy needs the grid's
+        // last row empty, and no song block linked to it (it would play
+        // the row moved into it).
         let last = SLOTS - 1;
         if copy && !project.row_empty(last) {
             return Err(ModelError::NoRoom);
+        }
+        let linked = |p: &mpfree_seq::Placement| p.slot() == Some(last);
+        if copy && project.arrangement.placements.iter().any(linked) {
+            return Err(ModelError::BadPlacement);
         }
         let drop = if copy {
             ClipDrop::RowCopied { from, to }
@@ -181,8 +191,7 @@ impl Takes {
             ..Take::default()
         };
         for (t, track) in project.tracks.iter().enumerate() {
-            for (s, c) in track.slots.iter().enumerate() {
-                let Some(c) = c else { continue };
+            for (s, c) in track.slots.iter() {
                 let (_, s2) = drop.after((t, s));
                 if s2 != s {
                     take.removed.push((t, s, c.clone()));
@@ -282,7 +291,9 @@ fn follow_rows(project: &mut Project, drop: ClipDrop, back: bool) {
     was.resize(SCENES, Scene::default());
     let mut now = vec![Scene::default(); SCENES];
     for (r, s) in was.iter().enumerate() {
-        if let Some(r2) = row(r).filter(|&r2| r2 < SCENES) {
+        // A plain row writes nothing: the grid's last row, empty for a
+        // copy, stays in place under the row that moves into it.
+        if let Some(r2) = row(r).filter(|&r2| r2 < SCENES && !plain(s)) {
             now[r2] = s.clone();
         }
     }
@@ -517,6 +528,55 @@ mod tests {
         want.arrangement.list.steps = vec![step(2), step(1)];
         want.next_clip = p.next_clip;
         assert_eq!(p, want);
+    }
+
+    /// Arrange 1.2: a row moves or is copied within the grid's 16 rows; a
+    /// clip and a scene in row 40, and the song's block linked to it,
+    /// stay where they are, through UNDO and REDO too. A copy is refused
+    /// while a song block is linked to the grid's last row.
+    #[test]
+    fn rows_past_the_grid_stay_put_when_a_row_moves() {
+        let mut p = project();
+        p.tracks[1].slots[40] = Some(Clip::new("Far", 1920));
+        p.scene_mut(40).unwrap().name = "Bank C".into();
+        p.arrangement
+            .place(Placement::linked(1, 40, 3840, 1920))
+            .unwrap();
+        let mut takes = Takes::default();
+        takes.drop_row(&mut p, 0, 3, false).unwrap();
+        takes.drop_row(&mut p, 1, 0, true).unwrap();
+        let far = |p: &Project| {
+            (
+                name(p, 1, 40).map(str::to_string),
+                p.scene(40).map(|s| s.name.clone()),
+                p.arrangement
+                    .placements
+                    .iter()
+                    .find(|b| b.start == 3840)
+                    .and_then(|b| b.slot()),
+            )
+        };
+        let want = (
+            Some("Far".to_string()),
+            Some("Bank C".to_string()),
+            Some(40),
+        );
+        assert_eq!(far(&p), want);
+        takes.undo(&mut p);
+        takes.undo(&mut p);
+        assert_eq!(far(&p), want);
+        takes.redo(&mut p);
+        assert_eq!(far(&p), want);
+        // A block on the grid's last row: a copy would make it play the
+        // row moved into it, so none is made.
+        let mut q = project();
+        q.arrangement
+            .place(Placement::linked(0, SLOTS - 1, 0, 1920))
+            .unwrap();
+        assert_eq!(
+            takes.drop_row(&mut q, 0, 0, true),
+            Err(ModelError::BadPlacement)
+        );
     }
 
     #[test]

@@ -457,11 +457,7 @@ mod tests {
                 s.press("browser", "button", "New project");
                 s.run_for(0.3);
                 assert!(
-                    s.time
-                        .project()
-                        .tracks
-                        .iter()
-                        .all(|t| t.slots.iter().all(Option::is_none)),
+                    s.time.project().tracks.iter().all(|t| t.slots.is_empty()),
                     "New project is empty"
                 );
 
@@ -1481,11 +1477,7 @@ mod tests {
             }
             s.run_for(0.3);
             assert!(
-                s.time
-                    .project()
-                    .tracks
-                    .iter()
-                    .all(|t| t.slots.iter().all(Option::is_none)),
+                s.time.project().tracks.iter().all(|t| t.slots.is_empty()),
                 "New project is empty"
             );
             if s.app.view() != crate::app::View::Browser {
@@ -1520,7 +1512,7 @@ mod tests {
                 .project()
                 .tracks
                 .iter()
-                .flat_map(|t| t.slots.iter().flatten())
+                .flat_map(|t| t.slots.clips())
                 .find(|c| c.name == "Drums")
                 .cloned()
                 .expect("the drums came back as a clip");

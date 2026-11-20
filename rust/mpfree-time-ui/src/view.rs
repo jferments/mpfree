@@ -860,9 +860,11 @@ impl TimeState {
                 transpose: t.transpose,
                 follows: t.follows,
                 melodic: false,
+                // The rows the grid shows (Arrange 1.2: a project keeps
+                // more, for scene banks to come).
                 slots: t
                     .slots
-                    .iter()
+                    .shown()
                     .map(|s| {
                         s.as_ref().map(|c| ClipInfo {
                             name: c.name.clone(),

@@ -74,8 +74,23 @@ pub use mpfree_param;
 use mpfree_param::{OnTrack, RelAddr};
 use mpfree_transport::time::{Swing, Tick, PPQ};
 
-/// Clip slots per track, one per pad.
+/// The rows the Clips grid shows: one bank of clip slots per track, one
+/// per pad. A project keeps up to [`ROWS`]; the grid shows these until
+/// scene banks come (the Arrange refactor's phase 5), and what looks for
+/// a free row on the grid (recording, a capture, Song → scenes) and a row
+/// dragged stay within them.
 pub const SLOTS: usize = 16;
+/// The most rows a project keeps clips and scenes in (the Arrange
+/// refactor's 1.2): four banks of [`SLOTS`]. A track keeps its clips by
+/// row number ([`Rows`]), so rows past its last clip cost nothing.
+pub const ROWS: usize = 4 * SLOTS;
+
+/// The rows of the bank of [`SLOTS`] that holds `row`: 0 to 15 for the
+/// grid's rows. Follow actions move within a clip's or a scene's bank.
+pub fn bank(row: usize) -> std::ops::Range<usize> {
+    let first = row / SLOTS * SLOTS;
+    first..first + SLOTS
+}
 /// Tracks in a project at most, as on Akai's MPC (Jay, 14 Nov 2026: up to
 /// 128). Engines keep a little state per track in fixed tables of this
 /// size, and do work only for the tracks a project has.
@@ -1319,7 +1334,130 @@ pub struct Track {
     /// "Follows transpose": the pads' Transpose moves this track with the
     /// armed one, so a bass and its chords change key together.
     pub follows: bool,
-    pub slots: [Option<Clip>; SLOTS],
+    /// Its clips by row, 0 to [`ROWS`] - 1 ([`Rows`]).
+    pub slots: Rows,
+}
+
+/// A track's clips by row number (the Arrange refactor's 1.2): row `r`'s
+/// clip or none, for rows 0 to [`ROWS`] - 1, kept as a list as long as
+/// its last clip, so rows past it cost nothing.
+///
+/// `rows[r]` reads row `r` (none past the last clip) and `rows[r] = ...`
+/// writes it (a row past [`ROWS`] panics, as an index past an array's end
+/// does). [`Rows::get`] and [`Rows::get_mut`] are the same, None past
+/// [`ROWS`]. [`Rows::iter`] lists the clips with their rows;
+/// [`Rows::shown`] the rows the grid shows, empty ones too. Two are equal
+/// when they hold the same clips in the same rows.
+#[derive(Clone, Default)]
+pub struct Rows {
+    cells: Vec<Option<Clip>>,
+}
+
+/// What an empty row reads as.
+static NO_CLIP: Option<Clip> = None;
+
+impl Rows {
+    /// Row `row`: its clip or none. None past [`ROWS`]. Never allocates.
+    pub fn get(&self, row: usize) -> Option<&Option<Clip>> {
+        (row < ROWS).then(|| self.cells.get(row).unwrap_or(&NO_CLIP))
+    }
+
+    /// Row `row` to change. None past [`ROWS`]. Allocates when the row
+    /// is past the last one kept.
+    pub fn get_mut(&mut self, row: usize) -> Option<&mut Option<Clip>> {
+        if row >= ROWS {
+            return None;
+        }
+        if self.cells.len() <= row {
+            self.cells.resize_with(row + 1, || None);
+        }
+        self.cells.get_mut(row)
+    }
+
+    /// Every clip with its row, in row order.
+    pub fn iter(&self) -> impl Iterator<Item = (usize, &Clip)> + '_ {
+        self.cells
+            .iter()
+            .enumerate()
+            .filter_map(|(r, c)| c.as_ref().map(|c| (r, c)))
+    }
+
+    /// Every clip with its row, in row order, to change.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (usize, &mut Clip)> + '_ {
+        self.cells
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(r, c)| c.as_mut().map(|c| (r, c)))
+    }
+
+    /// Every clip, in row order.
+    pub fn clips(&self) -> impl Iterator<Item = &Clip> + '_ {
+        self.cells.iter().flatten()
+    }
+
+    /// Every clip, in row order, to change.
+    pub fn clips_mut(&mut self) -> impl Iterator<Item = &mut Clip> + '_ {
+        self.cells.iter_mut().flatten()
+    }
+
+    /// The rows the Clips grid shows ([`SLOTS`]), empty ones too, in order.
+    pub fn shown(&self) -> impl Iterator<Item = &Option<Clip>> + '_ {
+        (0..SLOTS).map(|r| &self[r])
+    }
+
+    /// The first empty row the grid shows; None when they are all full.
+    pub fn first_free(&self) -> Option<usize> {
+        self.shown().position(Option::is_none)
+    }
+
+    /// No clip in any row.
+    pub fn is_empty(&self) -> bool {
+        self.cells.iter().all(Option::is_none)
+    }
+
+    /// Every row emptied.
+    pub fn clear(&mut self) {
+        self.cells.clear();
+    }
+
+    /// Empty every row whose clip `gone` picks. How many were emptied.
+    pub fn empty_where(&mut self, gone: impl Fn(&Clip) -> bool) -> usize {
+        let mut n = 0;
+        for cell in &mut self.cells {
+            if cell.as_ref().is_some_and(&gone) {
+                *cell = None;
+                n += 1;
+            }
+        }
+        n
+    }
+}
+
+impl std::ops::Index<usize> for Rows {
+    type Output = Option<Clip>;
+
+    fn index(&self, row: usize) -> &Option<Clip> {
+        self.cells.get(row).unwrap_or(&NO_CLIP)
+    }
+}
+
+impl std::ops::IndexMut<usize> for Rows {
+    fn index_mut(&mut self, row: usize) -> &mut Option<Clip> {
+        assert!(row < ROWS, "row {row} past the {ROWS} rows a track keeps");
+        self.get_mut(row).expect("checked")
+    }
+}
+
+impl PartialEq for Rows {
+    fn eq(&self, other: &Rows) -> bool {
+        self.iter().eq(other.iter())
+    }
+}
+
+impl std::fmt::Debug for Rows {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_map().entries(self.iter()).finish()
+    }
 }
 
 /// The furthest a track's transpose goes either way: two octaves of
@@ -1585,12 +1723,10 @@ impl Project {
     /// Every clip in a cell, as (track, row, clip), in track and row
     /// order.
     pub fn cell_clips(&self) -> impl Iterator<Item = (usize, usize, &Clip)> {
-        self.tracks.iter().enumerate().flat_map(|(t, tr)| {
-            tr.slots
-                .iter()
-                .enumerate()
-                .filter_map(move |(r, c)| c.as_ref().map(|c| (t, r, c)))
-        })
+        self.tracks
+            .iter()
+            .enumerate()
+            .flat_map(|(t, tr)| tr.slots.iter().map(move |(r, c)| (t, r, c)))
     }
 
     /// Put `clip`, a new clip or a copy, in the empty cell `row` of
@@ -1630,7 +1766,7 @@ impl Project {
         let mut seen = std::collections::HashSet::new();
         let mut given = 0;
         for tr in &mut self.tracks {
-            for c in tr.slots.iter_mut().flatten() {
+            for c in tr.slots.clips_mut() {
                 if !c.id.is_given() || !seen.insert(c.id) {
                     c.id = ClipId(next);
                     seen.insert(c.id);
@@ -1666,7 +1802,7 @@ impl Project {
     pub fn check(&self) -> Result<(), ModelError> {
         self.check_tracks()?;
         for t in &self.tracks {
-            for c in t.slots.iter().flatten() {
+            for c in t.slots.clips() {
                 c.check()?;
                 if c.looped.is_some() != t.is_loops() {
                     return Err(ModelError::BadLoop);
@@ -1818,7 +1954,7 @@ mod track_id_tests {
         assert_eq!(p.put_new_clip(0, 5, twin.clone()), Ok(ClipId(5)));
         assert_eq!(p.put_new_clip(0, 5, twin), Err(ModelError::BadSlot));
         assert_eq!(
-            p.put_new_clip(0, SLOTS, Clip::new("x", 3840)),
+            p.put_new_clip(0, ROWS, Clip::new("x", 3840)),
             Err(ModelError::BadSlot)
         );
         assert_eq!(
@@ -1842,6 +1978,52 @@ mod track_id_tests {
         q.tracks[0].slots[0] = Some(c);
         assert_eq!(q.give_clip_ids(), 0);
         assert_eq!((q.next_clip, q.new_clip_id()), (41, ClipId(41)));
+    }
+
+    /// Arrange 1.2: a track keeps its clips by row, up to ROWS; a row
+    /// past its last clip reads empty; two tracks' rows are equal when
+    /// they hold the same clips in the same rows; the grid's rows are
+    /// the first SLOTS, and a free one is looked for there.
+    #[test]
+    fn a_track_keeps_its_clips_by_row_up_to_64() {
+        let mut r = Rows::default();
+        assert!(r.is_empty() && r[40].is_none() && r.get(40) == Some(&None));
+        assert_eq!(r.get(ROWS), None);
+        r[40] = Some(Clip::new("far", 3840));
+        r[2] = Some(Clip::new("near", 3840));
+        let rows: Vec<(usize, &str)> = r.iter().map(|(k, c)| (k, c.name.as_str())).collect();
+        assert_eq!(rows, [(2, "near"), (40, "far")]);
+        assert_eq!(r.shown().count(), SLOTS);
+        assert_eq!(r.first_free(), Some(0));
+        assert!(r.get_mut(ROWS).is_none());
+        // An empty row written and left empty changes nothing.
+        let mut same = r.clone();
+        *same.get_mut(63).unwrap() = None;
+        assert_eq!(same, r);
+        assert_eq!(format!("{r:?}").matches("Clip {").count(), 2);
+        // The grid full, past its rows is not a free one.
+        for k in 0..SLOTS {
+            r[k] = Some(Clip::new("x", 960));
+        }
+        assert_eq!(r.first_free(), None);
+        assert_eq!(r.empty_where(|c| c.name == "x"), SLOTS);
+        assert_eq!(r.clips().count(), 1);
+        // Banks of SLOTS rows.
+        assert_eq!((bank(0), bank(15), bank(40)), (0..16, 0..16, 32..48));
+        // A project's checks and scenes go to row 63, no further.
+        let mut p = Project::new();
+        p.tracks.push(Track::new("t", 0));
+        p.tracks[0].slots[63] = Some(Clip::new("last", 960));
+        assert!(p.scene_mut(63).is_some() && p.scene_mut(ROWS).is_none());
+        assert_eq!(p.check(), Ok(()));
+        assert!(p.row_filled(63) && !p.row_empty(63));
+    }
+
+    #[test]
+    #[should_panic(expected = "past the 64 rows")]
+    fn a_row_past_64_is_not_a_row() {
+        let mut r = Rows::default();
+        r[ROWS] = Some(Clip::new("x", 960));
     }
 
     /// Two tracks with the same settings and clips match whatever their

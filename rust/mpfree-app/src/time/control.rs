@@ -40,7 +40,9 @@ use mpfree_seq::mpfree_moves::{Kind, MoveLog};
 use mpfree_seq::scenes::{MAX_LIST_STEPS, MAX_TIMES};
 use mpfree_seq::steps::{Edit, Grid};
 use mpfree_seq::ListStep;
-use mpfree_seq::{Clip, LaunchGrid, ModelError, Project, TouchPoint, LOOPS, MAX_TRACKS, SLOTS};
+use mpfree_seq::{
+    Clip, LaunchGrid, ModelError, Project, TouchPoint, LOOPS, MAX_TRACKS, ROWS, SLOTS,
+};
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::list::ListRow;
 use mpfree_time_ui::view::{
@@ -1184,7 +1186,7 @@ impl TimeControl {
             let Some(t) = self.project.tracks.get_mut(track) else {
                 continue;
             };
-            let Some(s) = t.slots.iter().position(Option::is_none) else {
+            let Some(s) = t.slots.first_free() else {
                 self.also_full += 1;
                 lines.push(format!(
                     "{} has no clip playing and no empty slot: it doesn't record this take",
@@ -1225,8 +1227,7 @@ impl TimeControl {
                 let t = self.project.tracks.get_mut(track).ok_or("no such track")?;
                 let s = t
                     .slots
-                    .iter()
-                    .position(Option::is_none)
+                    .first_free()
                     .ok_or_else(|| format!("{} has no empty slot to record into", t.name))?;
                 let clip = Clip::new(&format!("Clip {}", s + 1), length);
                 self.project
@@ -1428,7 +1429,7 @@ impl TimeControl {
                 .tracks
                 .get(track)?
                 .slots
-                .iter()
+                .shown()
                 .position(Option::is_some)
         };
         (track, launched.or_else(first))
@@ -1503,8 +1504,7 @@ impl TimeControl {
                 let t = self.project.tracks.get(track).ok_or("no such track")?;
                 let s = t
                     .slots
-                    .iter()
-                    .position(Option::is_none)
+                    .first_free()
                     .ok_or_else(|| format!("{} has no empty slot", t.name))?;
                 // Not in the slot yet: it goes in with its first notes.
                 let name = format!("Pattern {}", s + 1);
@@ -3300,8 +3300,9 @@ impl TimeControl {
                 })
             }
             TimeAction::ScenesToSong => {
-                // Every row with a clip, in order, after the song's end.
-                let rows: Vec<(usize, Tick)> = (0..SLOTS)
+                // Every row with a clip, in order, after the song's end
+                // (every row the project keeps, not only the grid's).
+                let rows: Vec<(usize, Tick)> = (0..ROWS)
                     .filter(|&r| self.project.row_filled(r))
                     .map(|r| (r, scene_length(&self.project, r, bar)))
                     .collect();
@@ -4532,7 +4533,7 @@ impl TimeControl {
             let k = n as u8;
             match (was.pass, is.pass) {
                 (false, true) if !loops::in_cell(&self.project, k) => {
-                    let row = self.perform.playing().map_or(0, |p| p.row.min(SLOTS - 1));
+                    let row = self.perform.playing().map_or(0, |p| p.row.min(ROWS - 1));
                     let (launches, cues) = (&self.launches, &self.cues);
                     let busy = |t: usize| {
                         launches.iter().any(|l| l.track == t) || cues.iter().any(|c| c.track == t)

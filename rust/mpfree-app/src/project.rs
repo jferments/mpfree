@@ -941,7 +941,7 @@ pub fn old_strip_targets(p: &mut mpfree_seq::Project) -> OldStripTargets {
         let Ok(t) = u8::try_from(t) else {
             break;
         };
-        for clip in track.slots.iter_mut().flatten() {
+        for clip in track.slots.clips_mut() {
             let (moved, clashed) = old_strip_lanes(&mut clip.moves, t);
             out.lanes += moved;
             out.clashes += clashed;

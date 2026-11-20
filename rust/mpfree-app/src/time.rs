@@ -4629,7 +4629,7 @@ mod tests {
         assert_eq!(h.act(TimeAction::StopAll).unwrap(), "stop all");
         run(&mut h, &mut pads, 6 * BAR, &[]);
         assert!(h.state().launches.is_empty());
-        assert!(h.act(TimeAction::LaunchScene(SLOTS)).is_err());
+        assert!(h.act(TimeAction::LaunchScene(mpfree_seq::ROWS)).is_err());
         assert_eq!(h.dropped(), 0);
     }
 
@@ -5483,6 +5483,59 @@ mod tests {
         assert_eq!(played.hits, live.hits);
         assert_eq!(played.releases, live.releases);
         assert_eq!((h.dropped(), song.dropped()), (0, 0));
+    }
+
+    /// Arrange 1.2: a clip and a scene in row 40, past the grid's 16,
+    /// save, open, launch and play; the scene's follow action moves within
+    /// its bank (rows 32 to 47), never to the grid's rows; the grid still
+    /// shows 16 rows; and a row dragged on the grid leaves row 40 alone.
+    #[test]
+    fn a_clip_and_a_scene_in_row_40_save_open_launch_and_stay_put() {
+        use mpfree_seq::{Follow, FollowAction, Note, ROWS};
+        let beats = |pad: u8| {
+            let mut c = Clip::new("beats", 3840);
+            c.notes = (0..4)
+                .map(|k| Note::new(k * 960, 100, pad + k as u8, 100))
+                .collect();
+            c
+        };
+        let mut p = TimeHost::new(RATE, 120.0).unwrap().project().clone();
+        p.tracks[0].slots[0] = Some(beats(10));
+        p.tracks[0].slots[40] = Some(beats(40));
+        p.tracks[1].slots[41] = Some(beats(60));
+        let next = Some(Follow::after(1, FollowAction::Next));
+        let s = p.scene_mut(40).unwrap();
+        s.name = "Far".into();
+        s.follow = next;
+        p.scene_mut(41).unwrap().follow = next;
+        let read = mpfree_seq::save::from_text(&mpfree_seq::save::to_text(&p)).unwrap();
+        assert_eq!(read, p);
+        let mut h = TimeHost::with_project(RATE, 120.0, read).unwrap();
+        assert_eq!(h.state().tracks[0].slots.len(), SLOTS, "the grid's rows");
+        let mut pads = Fake::default();
+        h.act(TimeAction::LaunchScene(40)).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, 3 * BAR - 1000, &[]);
+        let hits: Vec<usize> = pads.hits.iter().map(|h| h.1).collect();
+        assert_eq!(hits, [40, 41, 42, 43, 60, 61, 62, 63, 40, 41, 42, 43]);
+        h.command(Command::Stop);
+        // A row dragged and one copied on the grid: row 40 stays.
+        h.act(TimeAction::DropRow {
+            from: 0,
+            to: 3,
+            copy: false,
+        })
+        .unwrap();
+        h.act(TimeAction::DropRow {
+            from: 2,
+            to: 0,
+            copy: true,
+        })
+        .unwrap();
+        let p = h.project();
+        assert_eq!(p.clip(0, 40).map(|c| c.notes[0].note), Some(40));
+        assert_eq!(p.scene(40).map(|s| s.name.as_str()), Some("Far"));
+        assert!(h.act(TimeAction::LaunchScene(ROWS)).is_err());
     }
 
     /// Two one-bar rows become a song (Scenes → song), which plays in song
@@ -6555,8 +6608,7 @@ mod tests {
         let notes = |h: &TimeHost, t: usize| {
             h.control.project.tracks[t]
                 .slots
-                .iter()
-                .flatten()
+                .clips()
                 .map(|c| c.notes.iter().map(|n| n.note).collect::<Vec<_>>())
                 .collect::<Vec<_>>()
         };
@@ -6591,8 +6643,8 @@ mod tests {
         let mut pads = Fake::default();
         h.act(TimeAction::Arm(Some(0))).unwrap();
         h.act(TimeAction::ArmAlso(1 << 1 | 1 << 2)).unwrap();
-        for s in h.control.project.tracks[2].slots.iter_mut() {
-            *s = Some(Clip::new("full", 3840));
+        for s in 0..SLOTS {
+            h.control.project.tracks[2].slots[s] = Some(Clip::new("full", 3840));
         }
         let said = h.act(TimeAction::Transport(Command::Record)).unwrap();
         assert!(

@@ -30,7 +30,7 @@ use mpfree_seq::mpfree_moves::{Kind, Map, Moves, Target};
 use mpfree_seq::steps::Edit;
 use mpfree_seq::{
     touch_fits, Clip, ClipProgram, DestId, Direction, LaunchGrid, Lock, ModelError, Note, Project,
-    Quantise, Source, Speed, Touch, TouchPoint, MAX_LOCKS, MAX_NOTES, MAX_TRACKS, SLOTS,
+    Quantise, Source, Speed, Touch, TouchPoint, MAX_LOCKS, MAX_NOTES, MAX_TRACKS, ROWS,
 };
 use mpfree_transport::time::{Swing, TempoMap, Tick};
 
@@ -763,7 +763,7 @@ impl PlayView {
             .map_err(CompileError::Model)?;
         // The slots placed (a placement's own clip is checked with the
         // arrangement), each checked once however often it is placed.
-        let mut seen = [[false; SLOTS]; MAX_TRACKS];
+        let mut seen = [[false; ROWS]; MAX_TRACKS];
         for p in &project.arrangement.placements {
             if let (Source::Slot(s), Some(clip)) = (&p.source, p.clip(&project.tracks)) {
                 if let Some(done) = seen.get_mut(p.track).and_then(|t| t.get_mut(*s)) {
@@ -809,11 +809,11 @@ impl PlayView {
             let Some(clip) = p.clip(&project.tracks) else {
                 continue;
             };
-            // A placement's own clip is named by a number past the slots,
+            // A placement's own clip is named by a number past every row,
             // for the player's keys.
             let slot = match p.source {
                 Source::Slot(s) => s,
-                Source::Own(_) => SLOTS + i,
+                Source::Own(_) => ROWS + i,
             };
             let view = view_of(clip, track.swing, slot, p.origin(clip), p.start);
             if let Some(t) = self.tracks.get_mut(p.track) {
@@ -1216,7 +1216,7 @@ fn clip_view(
         .slots
         .get(slot)
         .and_then(Option::as_ref)
-        .filter(|_| slot < SLOTS)
+        .filter(|_| slot < ROWS)
         .ok_or(CompileError::EmptySlot { track, slot })?;
     clip.check().map_err(CompileError::Model)?;
     Ok(view_of(clip, t.swing, slot, origin, start))

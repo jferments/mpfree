@@ -83,7 +83,7 @@ use mpfree_seq::mpfree_moves::{Kind, Map, Point, Target};
 use mpfree_seq::steps::{Edit, MovesEdit};
 use mpfree_seq::{
     touch_room, Clip, ClipSettings, DestId, Lock, ModelError, Note, Project, Scene, SceneSettings,
-    Touch, TouchKeep, TouchPoint, Track, MAX_TRACKS, SLOTS,
+    Touch, TouchKeep, TouchPoint, Track, MAX_TRACKS, ROWS,
 };
 use mpfree_transport::time::Tick;
 
@@ -993,7 +993,7 @@ impl Takes {
         let mut removed = Vec::new();
         let mut rows = Vec::new();
         let mut scenes = Vec::new();
-        for row in 0..SLOTS {
+        for row in 0..ROWS {
             let mut changed = false;
             for track in 0..project.tracks.len() {
                 let (was, now) = (before.clip(track, row), project.clip(track, row));
@@ -2494,7 +2494,7 @@ mod tests {
         );
         assert_eq!(t.capture_clip(&mut p, 0, 2, c.clone()), Ok(2));
         assert_eq!(
-            t.capture_clip(&mut p, 0, SLOTS, c),
+            t.capture_clip(&mut p, 0, mpfree_seq::ROWS, c),
             Err(ModelError::BadSlot)
         );
     }

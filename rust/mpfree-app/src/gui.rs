@@ -25776,10 +25776,7 @@ mod tests {
         assert_eq!(keystep(), PortInput::LearnOnly);
         let song = fresh.time.as_ref().unwrap().project();
         assert_eq!(song.tracks.len(), crate::time::TRACKS);
-        assert!(song
-            .tracks
-            .iter()
-            .all(|t| t.slots.iter().all(Option::is_none)));
+        assert!(song.tracks.iter().all(|t| t.slots.is_empty()));
         assert!(fresh.notes.is_empty(), "{:?}", fresh.notes);
         assert!(p.browser.as_ref().unwrap().project().is_none());
         assert!(!p.browser.as_ref().unwrap().unsaved());

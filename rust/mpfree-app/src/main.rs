@@ -12610,8 +12610,7 @@ mod tests {
         let locks = |h: &time::TimeHost| -> Vec<(RelAddr, f32)> {
             h.project().tracks[2]
                 .slots
-                .iter()
-                .flatten()
+                .clips()
                 .flat_map(|c| c.locks.iter().map(|l| (l.addr, l.value)))
                 .collect()
         };

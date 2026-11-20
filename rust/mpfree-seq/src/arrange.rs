@@ -49,7 +49,7 @@ use crate::mpfree_param::ParamAddr;
 use crate::scenes::SongList;
 use crate::{
     Clip, Cond, Direction, Follow, FollowAction, Join, ModelError, Project, Scene, Track,
-    MAX_TRACKS, SCENES, SLOTS,
+    MAX_TRACKS, ROWS, SCENES, SLOTS,
 };
 use mpfree_transport::time::{
     valid_bpm, MapError, Segment, TempoMap, Tick, MAX_SEGMENTS, MIN_SPAN_TICKS,
@@ -226,7 +226,7 @@ impl Arrangement {
                 return Err(ModelError::BadPlacement);
             }
             match &p.source {
-                Source::Slot(s) if *s >= SLOTS => return Err(ModelError::BadPlacement),
+                Source::Slot(s) if *s >= ROWS => return Err(ModelError::BadPlacement),
                 Source::Own(c) => {
                     c.check()?;
                     // A loop's own copy only on a Loop track, a clip's off one.
@@ -852,7 +852,8 @@ pub fn song_to_scenes(project: &mut Project, bar: Tick) -> Result<ToScenes, Mode
         return Ok(ToScenes::default());
     }
     let n = parts.len();
-    let first = (0..SCENES.saturating_sub(n - 1))
+    // A run of empty rows on the grid: the rows it shows ([`SLOTS`]).
+    let first = (0..(SLOTS + 1).saturating_sub(n))
         .find(|&r| (r..r + n).all(|k| project.row_empty(k)))
         .ok_or(ModelError::NoRoom)?;
     let mut differences = song_differences(project, &parts, bar);
