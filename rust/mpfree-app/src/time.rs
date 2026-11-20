@@ -2187,6 +2187,75 @@ mod tests {
         );
     }
 
+    /// A step edit reaches what plays whole or not at all (refactor A3):
+    /// a queue that fills half way through it, or a view other than the
+    /// one it was made on, leaves the playing view as it was (not half the
+    /// edit), and the compiled view brings it.
+    #[test]
+    fn a_step_edit_reaches_the_playing_view_whole_or_not_at_all() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let tap = |step| StepAction::Tap {
+            pad: 0,
+            step,
+            velocity: 100,
+        };
+        h.step_action(tap(0)).unwrap();
+        run(&mut h, &mut pads, u64::from(PERIOD), &[]);
+        assert_eq!(*h.audio.view, h.control.view().unwrap());
+        let in_place = h.control.costs.steps_in_place;
+        // Room in the queue for one of the edit's three messages (the
+        // note out, the softer note in, the end).
+        h.audio.receive();
+        h.control.fill_queue_but(1);
+        let before = h.audio.view.clone();
+        h.control
+            .step_action(StepAction::Change {
+                pad: 0,
+                step: 0,
+                change: mpfree_seq::steps::Change::Velocity(60),
+            })
+            .unwrap();
+        h.audio.receive();
+        assert_eq!(
+            *h.audio.view, *before,
+            "not the note out without the note in"
+        );
+        assert_eq!(h.audio.counts().missed, 0, "nothing came to miss");
+        let to = pads.frame + 2 * u64::from(PERIOD);
+        run(&mut h, &mut pads, to, &[]);
+        assert_eq!(
+            *h.audio.view,
+            h.control.view().unwrap(),
+            "the compiled view brings it"
+        );
+        assert_eq!(h.audio.view_n, h.control.view_sent());
+        // Made on a view the audio half doesn't play (as when it sent the
+        // newest back to compile again): left out, and compiled.
+        h.audio.view_n = h.audio.view_n.wrapping_add(1);
+        let before = h.audio.view.clone();
+        h.control.step_action(tap(4)).unwrap();
+        assert_eq!(
+            h.control.costs.steps_in_place,
+            in_place + 1,
+            "sent in place"
+        );
+        h.audio.receive();
+        assert_eq!(*h.audio.view, *before);
+        assert_eq!(h.audio.counts().missed, 1);
+        let to = pads.frame + 2 * u64::from(PERIOD);
+        run(&mut h, &mut pads, to, &[]);
+        assert_eq!(*h.audio.view, h.control.view().unwrap());
+        assert_eq!(h.audio.view_n, h.control.view_sent());
+        // On the view it was made on, whole, with no compile.
+        let compiles = h.control.costs.compiles;
+        h.control.step_action(tap(8)).unwrap();
+        h.audio.receive();
+        assert_eq!(*h.audio.view, h.control.view().unwrap());
+        assert_eq!(h.control.costs.compiles, compiles);
+        assert_eq!(h.audio.counts().missed, 1);
+    }
+
     #[test]
     fn erase_takes_a_lanes_steps_or_a_clip_and_undo_brings_them_back() {
         use mpfree_seq::Note;

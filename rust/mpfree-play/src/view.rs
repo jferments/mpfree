@@ -332,6 +332,64 @@ impl ClipView {
         }
     }
 
+    /// Whether every one of `changes`, made in order, would go in: each
+    /// erase finds its note or lock (in the view, or added by a change
+    /// before it, and not erased by one), and each add finds room. Changes
+    /// nothing. Costs the changes times the clip's notes and locks.
+    fn fits(&self, changes: &[InPlace]) -> bool {
+        let (mut notes, mut locks) = (self.notes.len(), self.locks.len());
+        for (i, c) in changes.iter().enumerate() {
+            let before = &changes[..i];
+            match c {
+                InPlace::AddNote(_) if notes == self.notes.capacity() => return false,
+                InPlace::AddNote(_) => notes += 1,
+                InPlace::AddLock(_) if locks == self.locks.capacity() => return false,
+                InPlace::AddLock(_) => locks += 1,
+                InPlace::EraseNote(n) => {
+                    let had = self.notes.iter().filter(|x| x.src == *n).count();
+                    let added = before
+                        .iter()
+                        .filter(|c| **c == InPlace::AddNote(*n))
+                        .count();
+                    let gone = before
+                        .iter()
+                        .filter(|c| **c == InPlace::EraseNote(*n))
+                        .count();
+                    if had + added <= gone {
+                        return false;
+                    }
+                    notes -= 1;
+                }
+                InPlace::EraseLock(l) => {
+                    let had = self.locks.iter().filter(|x| x.src == *l).count();
+                    let added = before
+                        .iter()
+                        .filter(|c| **c == InPlace::AddLock(*l))
+                        .count();
+                    let gone = before
+                        .iter()
+                        .filter(|c| **c == InPlace::EraseLock(*l))
+                        .count();
+                    if had + added <= gone {
+                        return false;
+                    }
+                    locks -= 1;
+                }
+            }
+        }
+        true
+    }
+
+    /// One change, which [`ClipView::fits`] said goes in.
+    fn make(&mut self, c: &InPlace) -> bool {
+        match c {
+            InPlace::AddNote(n) => self.add_note(n),
+            InPlace::EraseNote(n) => self.remove_note(n),
+            InPlace::AddLock(l) => self.add_lock(l, None),
+            InPlace::EraseLock(l) => self.remove_lock(l),
+        }
+    }
+
     fn make_room(&mut self, notes: usize, locks: usize) {
         self.notes.reserve(notes);
         self.locks.reserve(locks);
@@ -479,6 +537,16 @@ impl TrackView {
         let k = self.regions.partition_point(|r| r.end <= tick);
         self.regions.get(k).filter(|r| r.clip.start <= tick)
     }
+}
+
+/// One change of a step edit to a clip, as the clip took it
+/// (`mpfree_seq::Clip::apply`), for [`PlayView::edit_in_place`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InPlace {
+    AddNote(Note),
+    EraseNote(Note),
+    AddLock(Lock),
+    EraseLock(Lock),
 }
 
 /// The project compiled for playback. Build it on the control thread; the
@@ -989,6 +1057,27 @@ impl PlayView {
             .all(|c| c.remove_lock(l))
     }
 
+    /// A step edit made to clip `slot` of `track` (`Clip::apply`: its
+    /// notes and locks erased, then those added, each lock added at the
+    /// end of the clip's): put it in this view where compiling again
+    /// would, whole or not at all (step sequencer refactor A3). False,
+    /// with the view as it was, when any change would not go in (no room,
+    /// or what it erases is not there); then compile instead. Real-time
+    /// safe: costs the changes times the clip's notes and locks.
+    pub fn edit_in_place(&mut self, track: usize, slot: usize, changes: &[InPlace]) -> bool {
+        let shown = self.shown(track, slot);
+        if !shown.iter().flatten().all(|c| c.fits(changes)) {
+            return false;
+        }
+        let mut all = true;
+        for c in shown.into_iter().flatten() {
+            for change in changes {
+                all &= c.make(change);
+            }
+        }
+        all
+    }
+
     /// Track `track`'s cue switches its mute to `mute` when it starts (a
     /// scene's mutes), or leaves it (`None`). False when the track has no
     /// cue. Call it on the control thread, after compiling.
@@ -1460,6 +1549,67 @@ mod tests {
         assert_eq!((c.song_len, c.notes[0].len, c.origin), (480.0, 5.0, 3840));
         assert_eq!(v.tracks[0].dest, 3);
         assert!(v.tracks[1].clip.is_none());
+    }
+
+    /// A step edit goes into the view whole or not at all (refactor A3):
+    /// one change that can't go in (here an erase of a note that isn't
+    /// there, or an add past the room) leaves the view as it was, the
+    /// changes before it too. One that fits is the view a compile makes.
+    #[test]
+    fn a_step_edit_goes_in_place_whole_or_not_at_all() {
+        let mut p = project();
+        let launch = Launch {
+            track: 0,
+            slot: 2,
+            origin: 0,
+            start: 0,
+        };
+        let mut v = PlayView::compile(&p, &[launch]).unwrap();
+        v.set_armed(Some(0));
+        v.make_room(1, 0);
+        let room = v.tracks[0].clip.as_ref().unwrap().notes.capacity() - v.notes();
+        let was = v.clone();
+        let clip = p.tracks[0].slots[2].as_mut().unwrap();
+        let (first, second) = (clip.notes[0], clip.notes[1]);
+        let louder = Note {
+            velocity: 127,
+            ..first
+        };
+        let gone = Note { note: 9, ..second };
+        // Its first change would go in; its second can't.
+        let half = [InPlace::EraseNote(first), InPlace::EraseNote(gone)];
+        assert!(!v.edit_in_place(0, 2, &half));
+        assert_eq!(v, was, "not even the first change");
+        // Room for so many notes more, not one past them.
+        let extra = |k: usize| {
+            InPlace::AddNote(Note {
+                note: 20 + k as u8,
+                ..first
+            })
+        };
+        let past: Vec<_> = (0..=room).map(extra).collect();
+        assert!(room >= 1 && !v.edit_in_place(0, 2, &past));
+        assert_eq!(v, was);
+        // An erase of a note the same edit added before it fits.
+        assert!(v.edit_in_place(
+            0,
+            2,
+            &[extra(0), InPlace::EraseNote(Note { note: 20, ..first })]
+        ));
+        assert_eq!(v.notes(), was.notes());
+        // A whole edit: the view a compile of the edited clip makes.
+        let edit = [InPlace::EraseNote(first), InPlace::AddNote(louder)];
+        assert!(v.edit_in_place(0, 2, &edit));
+        let clip = p.tracks[0].slots[2].as_mut().unwrap();
+        clip.notes.remove(0);
+        clip.notes.push(louder);
+        let fresh = PlayView::compile(&p, &[launch]).unwrap();
+        assert_eq!(
+            v.tracks[0].clip.as_ref().unwrap().notes,
+            fresh.tracks[0].clip.as_ref().unwrap().notes
+        );
+        // A slot the view doesn't play needs nothing.
+        assert!(v.edit_in_place(0, 5, &half));
     }
 
     #[test]

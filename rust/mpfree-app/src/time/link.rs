@@ -19,9 +19,10 @@
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 
 use mpfree_notefx::{Chain, Slot};
+pub use mpfree_play::InPlace;
 use mpfree_play::{Event, MuteLanded, PlayView, Rec, Started};
 use mpfree_seq::mpfree_moves::{Input, Kind};
-use mpfree_seq::{DestId, Lock, Note, TouchPoint, MAX_TRACKS};
+use mpfree_seq::{DestId, TouchPoint, MAX_TRACKS};
 use mpfree_time_ui::view::TransportInfo;
 use mpfree_transport::{Command, Span};
 
@@ -138,10 +139,15 @@ impl Tracks {
     }
 }
 
+/// The most changes one step edit sends to be made in place; a bigger one
+/// (a whole page erased or copied) compiles.
+pub const MAX_IN_PLACE: usize = 64;
+
 /// From the control half.
 pub enum ToAudio {
-    /// A view to play, which says what it includes.
-    View(Box<PlayView>),
+    /// A view to play, which says what it includes, and its number: each
+    /// view sent has the next. A step edit says the view it was made on.
+    View(Box<PlayView>, u32),
     /// A transport command, from the next period on.
     Command(Command),
     /// How many tracks there are, and which is armed, changed.
@@ -161,28 +167,24 @@ pub enum ToAudio {
     NoteArp { track: u16, at: u8 },
     /// A chain for a track's MIDI effects, the first time it has one.
     Chain(u16, Box<Chain>),
-    /// A step edit made to clip `slot` of `track`, one change a message,
-    /// in the order the clip took them ([`InPlace`]).
-    Edit {
+    /// One change of step edit `id`, in the order the clip took them
+    /// (`mpfree_seq::Clip::apply`: the notes and locks erased, then those
+    /// added). The audio half keeps them aside until [`ToAudio::EditEnd`].
+    EditPart { id: u32, change: InPlace },
+    /// Step edit `id` is whole: its `n` changes to clip `slot` of `track`,
+    /// made on view `view` (refactor A3). The audio half makes them all to
+    /// its view in place at once, or none: when one went missing (a full
+    /// queue stopped the edit half way), its view isn't that one (one it
+    /// sent back, or one still to come), or a change wouldn't go in, it
+    /// asks for a compile, which brings the edit. So it never plays half an
+    /// edit.
+    EditEnd {
+        id: u32,
         track: u16,
         slot: u16,
-        change: InPlace,
+        view: u32,
+        n: u8,
     },
-}
-
-/// One change of a step edit, for the audio half to make to the view it
-/// plays in place, as the clip took it (`mpfree_seq::Clip::apply`: the
-/// notes and locks erased, then those added). The queue keeps them in
-/// order with the views: a view sent before them was compiled without
-/// them, and one sent after them has them, so they need no number and no
-/// catch-up. A change the view cannot take (no room, or what it erases is
-/// not there) asks for a compile.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum InPlace {
-    AddNote(Note),
-    EraseNote(Note),
-    AddLock(Lock),
-    EraseLock(Lock),
 }
 
 /// The audio half's counts of things lost, with each period, since the

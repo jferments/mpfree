@@ -19,7 +19,8 @@
 //!
 //! A step edit (a tap, a turn, a lock) that only adds and erases notes and
 //! locks of a clip playing or cued is not compiled: its changes go to the
-//! audio half, which makes them to its view in place ([`ToAudio::Edit`]).
+//! audio half, which makes them to its view in place, whole or not at all
+//! ([`ToAudio::EditPart`], [`ToAudio::EditEnd`]; refactor A3).
 
 use std::time::{Duration, Instant};
 
@@ -49,7 +50,7 @@ use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_transport::{Block, Command, State};
 
 use super::follow::FollowCounts;
-use super::link::{Counts, InPlace, PeriodEnd, Rx, ToAudio, ToControl, Tracks, Tx};
+use super::link::{Counts, InPlace, PeriodEnd, Rx, ToAudio, ToControl, Tracks, Tx, MAX_IN_PLACE};
 use super::{StepAction, StepClip, StepsData, LINE, NEW_CLIP_BARS, RECORD_ROOM, STEP_TICKS};
 
 /// The clip settings card's join keys for its takes, a row each (see
@@ -123,9 +124,6 @@ impl Landed<'_> {
     }
 }
 
-/// The most changes a step edit sends to be made in place; a bigger one
-/// (a whole page erased or copied) compiles.
-const MAX_IN_PLACE: usize = 64;
 /// The most work a step edit made in place may cost the audio half: its
 /// changes times the clip's notes and locks, each change a search and a
 /// move of the ones after it. A bigger one compiles.
@@ -366,7 +364,11 @@ pub struct TimeControl {
     rx: Rx<ToControl>,
     /// A view the audio half's full queue handed back, sent again on the
     /// next poll unless a newer one replaces it.
-    unsent: Option<Box<PlayView>>,
+    unsent: Option<(Box<PlayView>, u32)>,
+    /// The number of the last view sent ([`ToAudio::View`]).
+    view_sent: u32,
+    /// The number of the last step edit sent in place.
+    edit_id: u32,
     /// The tracks' settings the audio half has.
     tracks_sent: Tracks,
     /// The tracks' MIDI effects the audio half has.
@@ -470,6 +472,8 @@ impl TimeControl {
             tx,
             rx,
             unsent: None,
+            view_sent: 0,
+            edit_id: 0,
             tracks_sent: tracks,
             note_fx_sent: Box::new([TrackFx::default(); MAX_TRACKS]),
             chains_given: [false; MAX_TRACKS],
@@ -530,12 +534,35 @@ impl TimeControl {
         })
     }
 
+    /// Fills the queue to the audio half (empty now) but for `free`
+    /// places, with messages that change nothing there: for tests of a
+    /// queue that fills.
+    #[cfg(test)]
+    pub(super) fn fill_queue_but(&mut self, free: usize) {
+        let (n, armed) = (self.tracks_sent.n, self.tracks_sent.armed);
+        for _ in 0..super::link::TO_AUDIO - free {
+            assert!(self.tx.send(ToAudio::Tracks { n, armed }).is_ok());
+        }
+    }
+
+    /// The number of the last view sent to the audio half.
+    #[cfg(test)]
+    pub(super) fn view_sent(&self) -> u32 {
+        self.view_sent
+    }
+
     /// A view for the audio half; one its full queue hands back waits for
     /// the next poll.
     fn send_view(&mut self, v: Box<PlayView>) {
+        self.view_sent = self.view_sent.wrapping_add(1);
+        self.push_view(v, self.view_sent);
+    }
+
+    /// View number `n` into the queue, or waiting for the next poll.
+    fn push_view(&mut self, v: Box<PlayView>, n: u32) {
         self.unsent = None;
-        if let Err(ToAudio::View(v)) = self.tx.send(ToAudio::View(v)) {
-            self.unsent = Some(v);
+        if let Err(ToAudio::View(v, n)) = self.tx.send(ToAudio::View(v, n)) {
+            self.unsent = Some((v, n));
         }
     }
 
@@ -638,8 +665,8 @@ impl TimeControl {
     /// period's bookkeeping. Allocates only for an edit (a compile, a
     /// started cue, a recording kept into the song).
     pub fn poll(&mut self) {
-        if let Some(v) = self.unsent.take() {
-            self.send_view(v);
+        if let Some((v, n)) = self.unsent.take() {
+            self.push_view(v, n);
         }
         self.sync_tracks();
         self.loop_at = [None; LOOPS];
@@ -930,8 +957,9 @@ impl TimeControl {
     /// song's placements play clips too; while recording or counting in,
     /// when the audio half edits the view itself; a view still waiting to
     /// go; a track other than the armed one, whose clips the view has no
-    /// room in; an edit too big; or a queue that fills (the changes that
-    /// went are made, then the compiled view takes their place).
+    /// room in; an edit too big; or a queue that fills (the audio half
+    /// makes none of the changes that went: an edit goes in whole or not
+    /// at all, and the compiled view brings it).
     fn in_place(&mut self, track: usize, slot: usize, edit: &Edit) -> bool {
         let changes =
             edit.erase.len() + edit.add.len() + edit.erase_locks.len() + edit.add_locks.len();
@@ -964,23 +992,29 @@ impl TimeControl {
         let (Ok(t), Ok(s)) = (u16::try_from(track), u16::try_from(slot)) else {
             return false;
         };
+        // At most MAX_IN_PLACE (64), checked above.
+        let n = u8::try_from(changes).unwrap_or(u8::MAX);
         // In the order the clip took them (`Clip::apply`), so the view
         // holds them in the order a compile would.
         let changes = (edit.erase.iter().map(|&n| InPlace::EraseNote(n)))
             .chain(edit.erase_locks.iter().map(|&l| InPlace::EraseLock(l)))
             .chain(edit.add.iter().map(|&n| InPlace::AddNote(n)))
             .chain(edit.add_locks.iter().map(|&l| InPlace::AddLock(l)));
+        self.edit_id = self.edit_id.wrapping_add(1);
+        let id = self.edit_id;
         for change in changes {
-            let m = ToAudio::Edit {
-                track: t,
-                slot: s,
-                change,
-            };
-            if self.tx.send(m).is_err() {
+            if self.tx.send(ToAudio::EditPart { id, change }).is_err() {
                 return false;
             }
         }
-        true
+        let end = ToAudio::EditEnd {
+            id,
+            track: t,
+            slot: s,
+            view: self.view_sent,
+            n,
+        };
+        self.tx.send(end).is_ok()
     }
 
     /// The view of the project as it is, with what it includes and room

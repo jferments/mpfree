@@ -58,6 +58,6 @@ pub use takes::{
     TAKE_ROOM,
 };
 pub use view::{
-    anchored, CompileError, Cue, Launch, MuteCue, MuteLanded, NowPlaying, PlayView, SceneProgram,
-    Started, EARLIEST,
+    anchored, CompileError, Cue, InPlace, Launch, MuteCue, MuteLanded, NowPlaying, PlayView,
+    SceneProgram, Started, EARLIEST,
 };
