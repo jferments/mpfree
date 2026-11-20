@@ -16,7 +16,8 @@
 //! a track nobody set up plays the same synth (the Synth kit, no copy) and
 //! the take goes there (`desk.rs`, [`synth_track`], [`App::rec_synth_on`]).
 //! "Nobody set up" is more than empty (the design review of 20 Nov,
-//! point B): no clips, a note track's settings as a new one has them, no
+//! point B): no clips, a note track's settings and default name as a new
+//! one has them ("Track 2" for the second), no
 //! instrument of its own, kit 1 or the synth, no MIDI output and no mixer
 //! settings ([`unfit`]); never Track 1, the Drums track. The selected track when it is one, else the first
 //! one, else a new track at the end of the project; nothing at all when the
@@ -57,11 +58,16 @@ pub fn unfit(
     if k.slots.iter().any(Option::is_some) {
         return Some("has clips");
     }
-    // Renamed, or a setting moved (swing, MIDI effects, transpose...).
+    // Renamed, or a setting moved (swing, MIDI effects, transpose...). The
+    // name must be this track's own default, "Track 2" for the second: a
+    // track renamed "Track 99" is set up (the design review of 20 Nov's
+    // second pass). A track after a deleted one keeps its old name and so
+    // counts as set up too, the safe way, until tracks get lasting ids
+    // (the redesign's step 2). Never allocates.
     let named = k
         .name
         .strip_prefix("Track ")
-        .is_some_and(|n| n.parse::<u16>().is_ok());
+        .is_some_and(|n| !n.starts_with(['0', '+']) && n.parse::<usize>() == Ok(t + 1));
     if !named || *k != Track::new(&k.name, k.dest) {
         return Some("has settings of its own");
     }
