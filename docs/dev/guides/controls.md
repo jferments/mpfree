@@ -259,6 +259,7 @@ Opened over any page by holding a kit pad and pressing SHIFT + REC (sampler R5 p
 ## Synth tab
 
 - **`synth-title/name`**: the preset's name above the page (MPFree's own engines only): opens the browser on the engine's presets, to try, load and save them (layout spec 4g, `mpfree-app/src/presets.rs`). *Test:* `the_synth_tabs_name_opens_its_presets_to_try_save_and_load`.
+- **`synth-title/gear`**: the gear at the right end of the title bar: the Synth options, as MENU opens them (Jay's device notes, 20 Nov 2026). *Test:* `the_synth_tabs_gear_opens_its_options_and_back_closes_them`.
 - **`synth-title/tab`**: the synth's pages (Osc, Filter, Env, LFO, ...). The lit one is showing. *Test:* `the_synth_page_shows_poly_and_sends_its_changes`.
 - **`synth-tiles/knob`**: a knob in a section (a level, a time, a cutoff): drag up or down to turn it (320 px is the whole range); tap it, then the wheel. The big ones matter most on the page. *Test:* `dragging_a_knob_up_turns_it_up_on_the_node`.
 - **`synth-tiles/fader`**, **`synth-tiles/drawbar`**, **`synth-tiles/slider`**: an envelope's or mixer's fader (drag up), an organ drawbar (drag down to add it, as on an organ), a routing row's slider (drag sideways). Each drags over its own track. *Test:* `a_fader_drags_over_its_own_track`.
@@ -347,6 +348,7 @@ The Looper tab as an instrument (17 Nov redesign; [the manual](../../user/src/ma
 
 ## Prefs, options and the debug pages
 
+- **`options/back`**: ‹ Back at the left of the options' and Prefs' title line: what MENU does there (back to the page, or to Prefs' main rows). *Tests:* `the_synth_tabs_gear_opens_its_options_and_back_closes_them`, `the_gear_and_back_do_what_menu_does`.
 - **`options/row`**, **`options/row-less`**, **`options/row-more`**: a row of Prefs or a page's options (MENU): tap to pick it (on the lift), ‹ › to change it (at once). A finger dragged up or down a long list scrolls it and picks nothing; the view follows the picked row a row at a time, with a scroll bar (`OptionList`, every option list alike). **`options/button`** and every other list's `button`: a button under the rows (the clip card's Save state and Reload). *Tests:* `appearance_switches_the_theme_live`, `a_long_option_list_scrolls_a_row_at_a_time_and_with_a_finger` (mpfree-ui).
 - **`controls/row`**: Map controls: a hardware button's row; tap it to learn that button again. **`mapcard/button`**: Stop listening, Skip, Clear.
 - **`dtabs/segment`**: the debug pages' tabs (MIDI, Performance, CPU by engine, Processes, ...).

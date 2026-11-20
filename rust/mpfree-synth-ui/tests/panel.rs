@@ -116,8 +116,9 @@ impl Rig {
         match a {
             SynthAction::Set { id, value } => self.node.set_param(*id, *value),
             SynthAction::Preset(i) => self.node.load_preset(&Poly::presets()[*i]),
-            // The app opens the browser's preset picker; nothing changes here.
-            SynthAction::OpenPresets => {}
+            // The app opens the browser's preset picker or the options;
+            // nothing changes here.
+            SynthAction::OpenPresets | SynthAction::Options => {}
         }
     }
 
@@ -280,7 +281,16 @@ fn a_tap_on_the_presets_name_opens_the_engines_presets() {
     assert_eq!(bar.title, "Pluck");
     let name = bar.name_rect(rect);
     assert!(name.right() <= bar.tab_rect(rect, 0).x, "clear of the tabs");
+    // The gear at the right end (Jay's device notes, 20 Nov 2026): the
+    // options, clear of the tabs.
+    let gear = bar.gear_rect(rect).expect("the gear");
+    let last = bar.tab_rect(rect, bar.tabs.len() - 1);
+    assert!(
+        last.right() < gear.x && gear.right() <= rect.right(),
+        "{last:?} {gear:?}"
+    );
     assert_eq!(r.tap(centre(name)), vec![SynthAction::OpenPresets]);
+    assert_eq!(r.tap(centre(gear)), vec![SynthAction::Options]);
     r.page("Filter");
 }
 
