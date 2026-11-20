@@ -30024,19 +30024,19 @@ mod tests {
         use mpfree_sampler::model::PADS;
         use mpfree_sampler_ui::rec_tab;
         use mpfree_sampler_ui::recall;
-        use mpfree_sampler_ui::recorder::{self, Recorder};
+        use mpfree_sampler_ui::recorder::{self, KeepCard};
         use mpfree_sampler_ui::sample::{feed_input, PAD, RATE};
         let mut p = sample_sampler(Fonts::embedded());
         open_sample(&mut p, sample_page::Editor::Wave);
-        let keep = |p: &Player| {
-            p.ui.get::<Recorder>(recorder::RECORDER)
-                .unwrap()
-                .view
-                .keep
-                .clone()
-        };
+        let keep = |p: &Player| p.ui.get::<KeepCard>(recorder::KEEP).unwrap().view.clone();
+        // Over the wave's right end, beside the overview (Jay's device
+        // notes, 20 Nov 2026), no longer on the recorder row.
         let card = |p: &Player| {
-            let r = Recorder::keep_rect(p.ui.rect_of(recorder::RECORDER).unwrap());
+            let r = p.ui.rect_of(recorder::KEEP).unwrap();
+            let wave = p.ui.rect_of(mpfree_sampler_ui::wave_tab::WAVE).unwrap();
+            let row = p.ui.rect_of(recorder::RECORDER).unwrap();
+            assert!(r.y >= row.bottom() && r.bottom() <= wave.y, "{r:?}");
+            assert_eq!(r.right(), wave.right());
             (r.x + r.w / 2, r.y + r.h / 2)
         };
         // The audio loop's answer to the card's asks, with no take
@@ -30083,10 +30083,19 @@ mod tests {
         feed_input(&mut feed, 20.0, 0.4, true);
         p.tick(0.033);
         let k = keep(&p);
+        // Its line names the bars, as the Looper's Capture does.
         assert_eq!(
             (k.title.as_str(), k.line.as_str(), k.ready),
-            ("Keep last 4 bars", "what just played, as a new take", true)
+            ("Keep last 4 bars", "bars 4 to 7, as a new take", true)
         );
+        // And its picture is what a tap keeps: the drum loop fed, its
+        // hits and the quiet between them.
+        let wave = p.ui.get::<KeepCard>(recorder::KEEP).unwrap().wave.clone();
+        assert_eq!(wave.len(), recorder::KEEP_COLUMNS);
+        let (lo, hi) = wave
+            .iter()
+            .fold((f32::MAX, 0.0f32), |(a, b), v| (a.min(*v), b.max(*v)));
+        assert!(hi > 0.1 && hi <= 1.0 && lo < hi / 2.0, "{wave:?}");
         // A tap: a new take on the page, no pad filled, one undo step.
         let before = pads(&p);
         tap(&mut p);
@@ -30117,7 +30126,7 @@ mod tests {
         });
         p.tick(0.033);
         let next = crate::app::kit_pad_name(PAD + 1);
-        assert_eq!(keep(&p).line, format!("what just played, onto {next}"));
+        assert_eq!(keep(&p).line, format!("bars 4 to 7, onto {next}"));
         tap(&mut p);
         assert_eq!(takes(&p), 0);
         assert!(p.sample.project(0).unwrap().pad(PAD + 1).is_some());
