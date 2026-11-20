@@ -10,7 +10,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 
 ## Start here
 
-- [Project README](../../README.md): what MPFree is, where it stands, how to build and test.
+- [Project README](../../README.md): what MPFree is, where it stands, and where to read more.
 - [Architecture](project/architecture.md): the proposed system design.
 - [Roadmap](project/roadmap.md): milestones, phase gates and open decisions.
 - [Testing and CI](guides/testing-and-ci.md): the test tiers, what each CI job checks, the self-hosted runners, rules for tests, coverage by crate, and the plan for the regression suite.
