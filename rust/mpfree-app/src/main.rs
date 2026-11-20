@@ -102,6 +102,7 @@ mod expr_rec;
 mod fxmodes;
 mod gui;
 mod imagecopy;
+mod instrument_list;
 mod instruments;
 mod kit;
 mod locks;
@@ -6042,6 +6043,11 @@ fn player_session(
     // every track until a pick). The pads play the armed track's; each
     // track's clips play its own.
     let mut track_kits = sampler::TrackKits::new(drum_kits);
+    // The project's instruments, each with its lasting id (the shared
+    // synth is instrument 1). Made here, before the sound starts; an open
+    // swaps in the project's, and this one goes back to be freed on the
+    // screen thread.
+    let mut listed = instrument_list::InstrumentList::new();
     // The time engine's REDOs seen so far: a track one brings back gets its
     // kit back (`TrackKits::follow`).
     let mut redos_seen = 0u64;
@@ -7198,6 +7204,9 @@ fn player_session(
                         }
                     }
                     kit_to = Some(track_kits.entry(app.track()));
+                    // The project's list of instruments; the old one goes
+                    // back in the box, to be freed on the screen thread.
+                    std::mem::swap(&mut listed, &mut o.instrument_list);
                     if let Some((options, sounds)) = o.synth.take() {
                         for line in synth.set_sounds(&sounds) {
                             out.note(&line);
@@ -9840,6 +9849,9 @@ fn player_session(
         // project's, a followed clock's, or the song's tempo points and
         // ramps while song mode plays them.
         synth.start(i * PERIOD as u64, time.info().bpm);
+        // The list of instruments follows the tracks' own: a new one gets
+        // an id, one taken out loses its. Never allocates.
+        listed.follow(mix.instruments.held_tracks());
         let homes = track_kits.homes(|t| !mix.instruments.holds(t) && !midi_out.takes(t as u16));
         let mut pads = mix.pads_homed(&homes);
         // With the drums split (Cores 3 and 2), the lane's voices are waited
@@ -10065,6 +10077,7 @@ fn player_session(
                 perform: app.perform_set().text(),
                 instruments: project::instruments_text(&mix.instruments),
                 track_kits: track_kits.text(),
+                instrument_list: listed.text(),
                 loops,
                 audio,
             })));
