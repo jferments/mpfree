@@ -70,9 +70,9 @@ pub struct TimeAudio {
     /// recorded.
     also_dropped: u64,
     /// Notes a take couldn't record in its clip's kind (step 5c): pads as
-    /// pressed into a clip of notes (one that plays through its arp, which
-    /// waits for step 5d), or routed keys for another armed track playing
-    /// a clip of notes. Counted with the notes dropped.
+    /// pressed into a clip of notes that came without their notes, or
+    /// routed keys for another armed track playing a clip of notes.
+    /// Counted with the notes dropped.
     kind_refused: u64,
     /// The notes each pad started in a take of notes, for its pressure
     /// ([`TimeAudio::pad_pressure`]): (notes, how many).
@@ -741,17 +741,41 @@ impl TimeAudio {
         0
     }
 
-    pub fn pad_pressed(&mut self, offset: u32, event: Event) {
+    pub fn pad_pressed(&mut self, offset: u32, h: &Heard) {
+        let Some(event) = h.pad else {
+            return;
+        };
         if self.tracks.records_pressed() {
-            // Pads as pressed have no notes to give a clip of notes.
             if self.takes_notes() {
-                if matches!(event, Event::NoteOn { .. }) {
+                // A clip of notes takes the pad's notes as pressed (step
+                // 5d); a pad with none to give is counted, not recorded.
+                if h.notes().is_empty() && matches!(event, Event::NoteOn { .. }) {
                     self.kind_refused += 1;
                 }
+                for &e in h.notes() {
+                    self.recorder.input(offset, e);
+                }
+                self.keep_pad_notes(h);
             } else {
                 self.recorder.input(offset, event);
             }
             self.played(offset, event);
+        }
+    }
+
+    /// Which notes a pad started, for its pressure on a take of notes.
+    fn keep_pad_notes(&mut self, h: &Heard) {
+        let Some(Event::NoteOn { note, .. }) = h.pad else {
+            return;
+        };
+        if let Some(p) = self.pad_notes.get_mut(usize::from(note)) {
+            *p = ([0; HEARD_NOTES], 0);
+            for e in h.notes() {
+                if let Event::NoteOn { note: n, .. } = *e {
+                    p.0[usize::from(p.1)] = n;
+                    p.1 += 1;
+                }
+            }
         }
     }
 
@@ -790,18 +814,9 @@ impl TimeAudio {
             }
         }
         if let Some(ev) = h.pad {
-            if let Event::NoteOn { note, .. } = ev {
-                if let Some(p) = self.pad_notes.get_mut(usize::from(note)) {
-                    *p = ([0; HEARD_NOTES], 0);
-                    for e in h.notes() {
-                        if let Event::NoteOn { note: n, .. } = *e {
-                            p.0[usize::from(p.1)] = n;
-                            p.1 += 1;
-                        }
-                    }
-                }
-            }
+            // Pads as pressed keep their own notes (`pad_pressed`).
             if !self.tracks.records_pressed() {
+                self.keep_pad_notes(h);
                 self.played(offset, ev);
             }
             self.hit_info(offset, ev);

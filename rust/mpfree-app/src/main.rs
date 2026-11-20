@@ -5008,7 +5008,10 @@ impl time::Pads for SeqPads<'_> {
         if self.quiet(o) {
             return Heard::NONE;
         }
-        let notes = self.kits.plays_synth(usize::from(o.track)) && self.live.plays_notes();
+        // An arp that works in notes says so (step 5d); the synth's
+        // layout on the pads presses notes too.
+        let notes =
+            o.notes || (self.kits.plays_synth(usize::from(o.track)) && self.live.plays_notes());
         let shift = self.shift(o.track);
         // By note number, a note sounds where its track's shift took it
         // when it started (`sound`), and shows and records as written
@@ -6317,6 +6320,26 @@ fn pad_rows(
     rows
 }
 
+/// Whether track `track`'s arp works in notes (step 5d): its own synth
+/// (or the one it plays) plays notes, not the Drums engine's sounds, or it
+/// plays the shared synth, whose pads press notes; not while its notes go
+/// to MIDI out, which plays the pads as its profile says. Never allocates.
+fn arp_on_notes(
+    own: &instruments::Instruments,
+    kits: &sampler::TrackKits,
+    midi: &midi_out::MidiOut,
+    track: usize,
+) -> bool {
+    if midi.takes(track as u16) {
+        return false;
+    }
+    if own.plays(track) {
+        own.plays_notes(track)
+    } else {
+        kits.plays_synth(track)
+    }
+}
+
 /// The hint the Synth tab shows while the armed track (`track`, from 0)
 /// plays a kit: opening the tab leaves what the track plays alone.
 fn synth_tab_hint(track: usize) -> String {
@@ -7270,7 +7293,9 @@ fn player_session(
                     if !waits_for_line(&mut time, &player, &app, synth_on, w, &mut waits_full, out)
                     {
                         if let Some(ev) = app.pressed_event(pad, v, true) {
-                            time.pad_pressed(0, ev);
+                            // With the notes it plays, for a take of notes (step 5d).
+                            let rows = pad_rows(&mix.instruments, &synth, &track_kits, app.track());
+                            time.pad_pressed_notes(0, ev, rows.notes(pad));
                         }
                         fx.extend(app.pad_down(pad, v));
                         awaiting[pad] = true;
@@ -7290,7 +7315,9 @@ fn player_session(
                     if !waits_for_line(&mut time, &player, &app, synth_on, w, &mut waits_full, out)
                     {
                         if let Some(ev) = app.pressed_event(pad, 0, false) {
-                            time.pad_pressed(0, ev);
+                            // With the notes it plays, for a take of notes (step 5d).
+                            let rows = pad_rows(&mix.instruments, &synth, &track_kits, app.track());
+                            time.pad_pressed_notes(0, ev, rows.notes(pad));
                         }
                         fx.extend(app.pad_up(pad));
                         awaiting[pad] = false;
@@ -8985,7 +9012,9 @@ fn player_session(
                     if !waits_for_line(&mut time, &player, &app, synth_on, w, &mut waits_full, out)
                     {
                         if let Some(ev) = app.pressed_event(pad, velocity, true) {
-                            time.pad_pressed(0, ev);
+                            // With the notes it plays, for a take of notes (step 5d).
+                            let rows = pad_rows(&mix.instruments, &synth, &track_kits, app.track());
+                            time.pad_pressed_notes(0, ev, rows.notes(pad));
                         }
                         fx.extend(app.pad_down(pad, velocity));
                         awaiting[pad] = true;
@@ -9006,7 +9035,9 @@ fn player_session(
                     if !waits_for_line(&mut time, &player, &app, synth_on, w, &mut waits_full, out)
                     {
                         if let Some(ev) = app.pressed_event(pad, 0, false) {
-                            time.pad_pressed(0, ev);
+                            // With the notes it plays, for a take of notes (step 5d).
+                            let rows = pad_rows(&mix.instruments, &synth, &track_kits, app.track());
+                            time.pad_pressed_notes(0, ev, rows.notes(pad));
                         }
                         fx.extend(app.pad_up(pad));
                         awaiting[pad] = false;
@@ -9832,8 +9863,15 @@ fn player_session(
         // A clip of notes shows each pad's note on the step grid's pad
         // rows: the root of what the pad plays on the track's own synth or
         // the shared synth, or a kit pad's note (step 5c).
+        // A track whose synth plays notes has its arp work in notes, so
+        // the live pads, a clip of notes and an old clip of pad hits meet
+        // in it as notes (step 5d).
         for t in 0..time.track_count().min(mpfree_seq::MAX_TRACKS) {
-            time.set_pad_rows(t, pad_rows(&mix.instruments, &synth, &track_kits, t));
+            let rows = pad_rows(&mix.instruments, &synth, &track_kits, t);
+            time.set_pad_rows(t, rows);
+            let on = arp_on_notes(&mix.instruments, &track_kits, &midi_out, t);
+            app.arps.set_on_notes(t, on);
+            app.arps.set_pads(t, &rows);
         }
         // CV out takes the outputs' jobs; run, reset and clock follow the
         // transport.
@@ -9856,6 +9894,16 @@ fn player_session(
                 )));
             }
         }
+        // The pads press the notes of the selected track's own synth into
+        // its arp while that plays notes (step 5d).
+        let own_notes = !app.pads_chose_synth()
+            && arp_on_notes(&mix.instruments, &track_kits, &midi_out, app.track())
+            && mix.instruments.plays(app.track());
+        app.set_arp_layout(
+            own_notes
+                .then(|| mix.instruments.pad_map(app.track()))
+                .flatten(),
+        );
         if let Some(app::Effect::Arp(v)) = app.arp_poll() {
             out.show(gui::ToUi::Arp(Box::new(v)));
         }
@@ -12234,7 +12282,33 @@ mod tests {
         });
     }
 
-    /// Step 5c on a kit: a clip's note plays the pad MIDI in would play
+    /// Step 5d: what an arp that works in notes plays on a track with its
+    /// own synth sounds by note on that synth and records as notes, though
+    /// the pads show a kit; a track's arp works in notes while its synth
+    /// plays notes, not while its notes go to MIDI out or it plays a kit.
+    #[test]
+    fn an_arp_of_notes_plays_a_tracks_own_synth_by_note() {
+        use mpfree_play::Event;
+        use time::Pads;
+        on_the_pads(&[2], &[1], |seq| {
+            assert!(!seq.live.plays_notes(), "the pads show a kit");
+            let on = Event::NoteOn {
+                note: 52,
+                velocity: 100,
+            };
+            let heard = seq.live(&clip_out(1, 0, on, true));
+            assert!(seq.own.holds_note(1, 52));
+            assert_eq!(heard.pad, None, "no pad of the kit's");
+            assert_eq!(heard.notes().len(), 1);
+            seq.live(&clip_out(1, 10, Event::NoteOff { note: 52 }, true));
+            assert!(!seq.own.holds_note(1, 52));
+            assert!(arp_on_notes(seq.own, seq.kits, seq.midi, 1), "own synth");
+            assert!(arp_on_notes(seq.own, seq.kits, seq.midi, 2), "shared synth");
+            assert!(!arp_on_notes(seq.own, seq.kits, seq.midi, 0), "a kit");
+        });
+    }
+
+    /// Step 5c on a kit: a clip's note plays the pad MIDI in would play    /// Step 5c on a kit: a clip's note plays the pad MIDI in would play
     /// for it (the kick on pad A5 is note `PAD_NOTES[4]`); a note on an
     /// empty pad plays nothing.
     #[test]

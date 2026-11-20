@@ -635,6 +635,13 @@ impl Instruments {
             .map_or(&[], Pad::notes)
     }
 
+    /// The pad map of the instrument track `track` plays (its own or
+    /// another track's): what its pads press into the track's arp while it
+    /// plays notes (step 5d). None if it plays none.
+    pub fn pad_map(&self, track: usize) -> Option<[Pad; PADS]> {
+        self.play_slot(track).map(|s| self.slots[s].pads)
+    }
+
     /// The pad of the instrument track `track` plays that plays `note`
     /// alone (its pad map's), for a MIDI file's notes (`midi_file.rs`):
     /// None if the track plays none, Some(None) if no pad does.

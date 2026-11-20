@@ -537,16 +537,10 @@ impl TimeControl {
     }
 
     /// What a new clip for a take on `track` holds: notes when its
-    /// instrument plays notes and its clips don't play through its arp
-    /// (a clip of notes through an arp waits for step 5d), else pad hits.
+    /// instrument plays notes (its clips through its arp too, since step
+    /// 5d), else pad hits.
     fn take_holds(&self, track: usize) -> mpfree_seq::Holds {
-        let notes = self.notes_tracks >> track.min(127) & 1 == 1
-            && self
-                .project
-                .tracks
-                .get(track)
-                .is_some_and(|t| !t.through_arp);
-        if notes {
+        if self.notes_tracks >> track.min(127) & 1 == 1 {
             mpfree_seq::Holds::Notes
         } else {
             mpfree_seq::Holds::Hits

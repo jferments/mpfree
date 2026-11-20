@@ -35,6 +35,15 @@
 //! engine a period doesn't visit has never been given anything, so it is
 //! as a new one: its first sync lines it up with the transport.
 //!
+//! **Arps that work in notes** (the instrument redesign's step 5d,
+//! [`TrackArps::set_on_notes`]). On a track whose synth plays notes the
+//! live pads press notes into its arp, a clip of notes goes in as it is
+//! ([`crate::arp::CLIP_NOTES`]), a clip of pad hits goes in as its pads'
+//! notes ([`TrackArps::set_pads`], each hit's end and pressure reaching
+//! what it pressed), and what the arp plays goes out as notes
+//! ([`Out::notes`]). Elsewhere (a kit, the Drums engine, MIDI out) the arp
+//! works in pad hits, as before.
+//!
 //! **MIDI effects** (`mpfree-notefx`, docs/dev/design/note-fx.md). A
 //! track with any gets a [`Chain`] around its arp: the effects above the
 //! arp's place ([`TrackFx::arp_at`]) change the notes going into it, the
@@ -73,6 +82,75 @@ use crate::room::{Table, ARPS, PLAYER, ROOM};
 /// table's places ([`ROOM`]).
 pub const MAX_OUT: usize = ROOM;
 
+/// Most notes one pad plays: a pad of chords
+/// (`mpfree_arp::scale::pads::MAX_PAD_NOTES`).
+pub const PAD_NOTES: usize = 4;
+
+/// The pads of a track's pad layout: 16.
+pub const LAYOUT_PADS: usize = 16;
+
+/// The notes each of a track's 16 pads plays, a chord's root last (the
+/// instrument redesign's step 5c and 5d): the step grid shows and edits a
+/// clip of notes through them, and an arp that works in notes
+/// ([`TrackArps::set_on_notes`]) plays a clip of pad hits by them. Fixed
+/// size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PadRows {
+    notes: [[u8; PAD_NOTES]; LAYOUT_PADS],
+    n: [u8; LAYOUT_PADS],
+}
+
+impl PadRows {
+    /// Each pad plays its own number: a clip of pad hits' rows.
+    pub const PADS: PadRows = {
+        let mut r = PadRows {
+            notes: [[0; PAD_NOTES]; LAYOUT_PADS],
+            n: [1; LAYOUT_PADS],
+        };
+        let mut p = 0;
+        while p < LAYOUT_PADS {
+            r.notes[p][0] = p as u8;
+            p += 1;
+        }
+        r
+    };
+
+    /// Pad `pad` plays `notes` (the first [`PAD_NOTES`]); none, or a pad
+    /// past 16, changes nothing.
+    pub fn set(&mut self, pad: usize, notes: &[u8]) {
+        let (Some(row), false) = (self.notes.get_mut(pad), notes.is_empty()) else {
+            return;
+        };
+        let n = notes.len().min(PAD_NOTES);
+        row[..n].copy_from_slice(&notes[..n]);
+        self.n[pad] = n as u8;
+    }
+
+    /// The notes pad `pad` plays, its root last; none past the 16 pads.
+    pub fn notes(&self, pad: usize) -> &[u8] {
+        match (self.notes.get(pad), self.n.get(pad)) {
+            (Some(row), Some(&n)) => &row[..usize::from(n)],
+            _ => &[],
+        }
+    }
+
+    /// Each pad's root: the note its row shows.
+    pub fn roots(&self) -> [u8; LAYOUT_PADS] {
+        core::array::from_fn(|p| self.notes(p).last().copied().unwrap_or(p as u8))
+    }
+}
+
+/// What a clip's pad hit pressed into an arp that works in notes: the
+/// pad's notes as they were then, so its end and pressure reach the same
+/// notes though the layout changed, and how many of its hits still hold
+/// them.
+#[derive(Clone, Copy, Debug, Default)]
+struct Pressed {
+    notes: [u8; PAD_NOTES],
+    n: u8,
+    holds: u8,
+}
+
 /// The seed [`TrackArps::reseed`] gives every arp.
 pub const RESEED: u32 = 0x2545_f491;
 
@@ -100,6 +178,17 @@ pub struct TrackArps {
     /// A chained track's notes in a period: into its chain, then what its
     /// arp played.
     lists: Box<[Notes; 2]>,
+    /// Tracks whose arp works in notes ([`TrackArps::set_on_notes`]).
+    on_notes: [bool; MAX_TRACKS],
+    /// What each track's arp's notes go out as this period: notes or pad
+    /// hits ([`Out::notes`]). It takes `on_notes` at each period's end, so
+    /// the endings a change sends out go as what they end.
+    notes_out: [bool; MAX_TRACKS],
+    /// Each track's pads' notes, for its clips' pad hits into an arp that
+    /// works in notes.
+    pads: Box<[PadRows; MAX_TRACKS]>,
+    /// What each track's clips' pad hits pressed into its arp, by pad.
+    pressed: Box<[[Pressed; LAYOUT_PADS]; MAX_TRACKS]>,
 }
 
 impl TrackArps {
@@ -121,6 +210,10 @@ impl TrackArps {
             arp_at: [0; MAX_TRACKS],
             cuts: [None; MAX_TRACKS],
             lists: Box::new([Notes::new(), Notes::new()]),
+            on_notes: [false; MAX_TRACKS],
+            notes_out: [false; MAX_TRACKS],
+            pads: Box::new([PadRows::PADS; MAX_TRACKS]),
+            pressed: Box::new([[Pressed::default(); LAYOUT_PADS]; MAX_TRACKS]),
         }
     }
 
@@ -249,12 +342,58 @@ impl TrackArps {
                 *t = on;
                 // One panic is enough however often it changes before the
                 // period.
-                let a = &mut self.arps[track];
-                if !a.engine.active().is_empty() && a.first_all_off() != Some(0) {
-                    a.input(0, Event::AllOff);
-                    self.fed[track] = true;
-                }
+                self.panic(track);
             }
+        }
+    }
+
+    /// A panic into track `track`'s arp at the period's start, unless it
+    /// holds nothing or has one there already: its clips' notes end, and
+    /// it lets go of what they pressed.
+    fn panic(&mut self, track: usize) {
+        let a = &mut self.arps[track];
+        if !a.engine.active().is_empty() && a.first_all_off() != Some(0) {
+            a.input(0, Event::AllOff);
+            self.pressed[track] = [Pressed::default(); LAYOUT_PADS];
+            self.fed[track] = true;
+        }
+    }
+
+    /// Whether track `track`'s arp works in notes (true: its instrument
+    /// plays notes, its own synth's or the shared synth's, the instrument
+    /// redesign's step 5d) or in pad hits (a kit, the Drums engine, MIDI
+    /// out). In notes, the live pads press their notes into it (the app
+    /// gives it them), a clip of notes goes in as it is, a clip of pad hits
+    /// goes in as the notes [`TrackArps::set_pads`] gives its pads (each
+    /// hit's end and pressure reaching what it pressed), and what the arp
+    /// plays goes out as notes ([`Out::notes`]). A change ends what the arp
+    /// holds, as the "Clips through the arp" switch does; those endings
+    /// go out as what they end.
+    pub fn set_on_notes(&mut self, track: usize, on: bool) {
+        let Some(&was) = self.on_notes.get(track) else {
+            return;
+        };
+        if was != on {
+            self.ask(track);
+            self.on_notes[track] = on;
+            if self.arps[track].engine.active().is_empty() {
+                // Nothing to end: its next notes go out as the new kind.
+                self.notes_out[track] = on;
+            }
+            self.panic(track);
+        }
+    }
+
+    /// Whether track `track`'s arp works in notes.
+    pub fn on_notes(&self, track: usize) -> bool {
+        self.on_notes.get(track).copied().unwrap_or(false)
+    }
+
+    /// The notes track `track`'s pads play, for its clips' pad hits into
+    /// an arp that works in notes. A hit already in keeps what it pressed.
+    pub fn set_pads(&mut self, track: usize, pads: &PadRows) {
+        if let Some(p) = self.pads.get_mut(track) {
+            *p = *pads;
         }
     }
 
@@ -360,7 +499,7 @@ impl TrackArps {
                 self.arps[t].engine.skip(block.frames);
                 continue;
             }
-            let (track, dest) = (t as u16, self.dest[t]);
+            let (track, dest, notes) = (t as u16, self.dest[t], self.notes_out[t]);
             let start = block.start_frame;
             let table = &mut self.table;
             self.arps[t].process(block, &mut |offset, kind| {
@@ -375,7 +514,7 @@ impl TrackArps {
                         track,
                         dest,
                         event,
-                        notes: false,
+                        notes,
                     },
                     ARPS,
                 );
@@ -390,6 +529,9 @@ impl TrackArps {
             }
         }
         self.table.clear();
+        // From the next period an arp's notes go out as what it works in.
+        let used = self.used;
+        self.notes_out[..used].copy_from_slice(&self.on_notes[..used]);
     }
 }
 
@@ -451,10 +593,69 @@ impl TrackArps {
                     track,
                     dest,
                     event: event_of(e.kind),
-                    notes: false,
+                    notes: self.notes_out[t],
                 },
                 ARPS,
             );
+        }
+    }
+}
+
+impl TrackArps {
+    /// Clip pad hit `o` on track `t`, whose arp works in notes: a hit goes
+    /// in as its pad's notes when the clip plays through the arp, and its
+    /// end and pressure reach what it pressed. True when the arp took it
+    /// all; false sends it on to the sink (a hit when the clip doesn't play
+    /// through the arp, its end, a pad past the 16, pressure, which the
+    /// sound hears too, and everything that isn't a note).
+    fn hit_as_notes(&mut self, t: usize, o: Out) -> bool {
+        let (arp, pads) = (&mut self.arps[t], &self.pads[t]);
+        match o.event {
+            Event::NoteOn { note, velocity } if self.through[t] => {
+                let Some(p) = self.pressed[t].get_mut(usize::from(note)) else {
+                    return false;
+                };
+                if p.holds == 0 {
+                    let notes = pads.notes(usize::from(note));
+                    p.notes[..notes.len()].copy_from_slice(notes);
+                    p.n = notes.len() as u8;
+                }
+                p.holds = p.holds.saturating_add(1);
+                for &n in &p.notes[..usize::from(p.n)] {
+                    arp.input_from(CLIPS, o.offset, Event::NoteOn { note: n, velocity });
+                }
+                self.fed[t] = true;
+                true
+            }
+            Event::NoteOff { note } => {
+                let Some(p) = self.pressed[t].get_mut(usize::from(note)) else {
+                    return false;
+                };
+                if p.holds == 0 {
+                    // Its start went to the sink.
+                    return false;
+                }
+                p.holds -= 1;
+                for &n in &p.notes[..usize::from(p.n)] {
+                    if arp.owes(CLIPS, n) {
+                        arp.input_from(CLIPS, o.offset, Event::NoteOff { note: n });
+                    }
+                }
+                self.fed[t] = true;
+                true
+            }
+            Event::Pressure { note, value } if self.through[t] => {
+                if let Some(p) = self.pressed[t].get(usize::from(note)) {
+                    if p.holds > 0 {
+                        for &n in &p.notes[..usize::from(p.n)] {
+                            arp.input_from(CLIPS, o.offset, Event::Pressure { note: n, value });
+                        }
+                        self.fed[t] = true;
+                    }
+                }
+                false
+            }
+            _ => false,
         }
     }
 }
@@ -491,6 +692,13 @@ impl Sink for Through<'_> {
                 arp.input(o.offset, Event::AllOff);
             }
             a.fed[..used].fill(true);
+            a.pressed[..used].fill([Pressed::default(); LAYOUT_PADS]);
+        } else if t < MAX_TRACKS && a.on_notes[t] && !o.notes {
+            // A clip of pad hits into an arp that works in notes: each hit
+            // as its pad's notes.
+            if a.hit_as_notes(t, o) {
+                return;
+            }
         } else if t < MAX_TRACKS {
             // A clip of notes' notes are kept apart from a clip of pad
             // hits' in the arp, so the same number of each never meet.

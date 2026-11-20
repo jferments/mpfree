@@ -42,7 +42,7 @@ pub mod view;
 
 pub use ahead::{is_gear_control, Ahead, AheadCounts, MAX_AHEAD};
 pub use arp::ArpHost;
-pub use arps::{Through, TrackArps};
+pub use arps::{PadRows, Through, TrackArps, LAYOUT_PADS, PAD_NOTES};
 pub use mpfree_param;
 pub use player::{
     Erased, ErasedLock, Event, Out, Player, Sink, Stats, ALL, ERASE_TAKES, MAX_LOCKED, SONG_TRACK,
