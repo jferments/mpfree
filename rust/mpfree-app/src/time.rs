@@ -544,7 +544,10 @@ impl TimeHost {
     /// Stopped at bar 1 with `project` (an opened one), track 1 armed when
     /// it has a track. Builds and compiles everything here (allocates):
     /// the app makes it on the screen thread and swaps it in.
-    pub fn with_project(rate: u32, bpm: f64, project: Project) -> Result<TimeHost, String> {
+    pub fn with_project(rate: u32, bpm: f64, mut project: Project) -> Result<TimeHost, String> {
+        // Every track has its lasting id from here on (a new project's,
+        // or one saved before tracks had ids, gets 1, 2, 3 ...).
+        project.give_track_ids();
         project
             .check()
             .map_err(|e| format!("the clips don't hold together: {e:?}"))?;

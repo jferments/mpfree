@@ -422,6 +422,16 @@ pub fn opening(
                 notes.push(old.line());
             }
         }
+        // Each track's lasting id (step 2c): a project saved before tracks
+        // had them gets 1, 2, 3 ... silently; in a newer one (it says the
+        // next id) a track without one, or sharing one, is said.
+        let had_ids = p.next_track != 0;
+        let given = p.give_track_ids();
+        if had_ids && given > 0 {
+            notes.push(format!(
+                "project: {given} of its tracks had no lasting id, or shared one; they have new ones"
+            ));
+        }
         let mut fx = Box::new([mpfree_notefx::TrackFx::default(); mpfree_seq::MAX_TRACKS]);
         for (t, tr) in p.tracks.iter().enumerate().take(mpfree_seq::MAX_TRACKS) {
             fx[t] = tr.note_fx;
@@ -2614,6 +2624,45 @@ mod tests {
                 "project: track 4's own instrument had no id in the list; it is instrument 9 now",
                 "project: track 7 plays kit 1 (its instrument 5 is track 2's own)",
             ]
+        );
+    }
+
+    /// Step 2c: tracks get lasting ids as a project opens. One saved
+    /// before tracks had ids gets 1, 2, 3 ... saying nothing; one that
+    /// says the next id but has a track without an id, or two sharing one,
+    /// gets new ones for those, said. The time engine keeps them.
+    #[test]
+    fn tracks_get_lasting_ids_as_a_project_opens() {
+        use mpfree_seq::{Track, TrackId};
+        let none = &crate::plugins::Plugins::none();
+        let mut c = collected(String::new(), InstrumentList::new().text());
+        for i in 0..3 {
+            c.clips
+                .tracks
+                .push(Track::new(&format!("Track {}", i + 1), i));
+        }
+        let o = opening(&snapshot(&c, Vec::new()), 44_100, "old", none);
+        let ids = |o: &Opening| -> Vec<TrackId> {
+            let t = o.time.as_ref().expect("the clips open");
+            t.project().tracks.iter().map(|t| t.id).collect()
+        };
+        assert_eq!(ids(&o), [TrackId(1), TrackId(2), TrackId(3)]);
+        assert!(
+            !o.notes.iter().any(|n| n.contains("lasting id")),
+            "{:?}",
+            o.notes
+        );
+
+        c.clips.next_track = 9;
+        c.clips.tracks[0].id = TrackId(7);
+        c.clips.tracks[1].id = TrackId(7);
+        let o = opening(&snapshot(&c, Vec::new()), 44_100, "damaged", none);
+        assert_eq!(ids(&o), [TrackId(7), TrackId(9), TrackId(10)]);
+        assert!(
+            o.notes.iter().any(|n| n
+                == "project: 2 of its tracks had no lasting id, or shared one; they have new ones"),
+            "{:?}",
+            o.notes
         );
     }
 

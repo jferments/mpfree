@@ -225,7 +225,9 @@ pub fn place(
             let dest = (0..=MAX_TRACKS as DestId)
                 .find(|d| p.tracks.iter().all(|t| t.dest != *d))
                 .unwrap_or(p.tracks.len() as DestId);
-            p.tracks.push(Track::new_loops(&name, dest));
+            let mut track = Track::new_loops(&name, dest);
+            p.give_track_id(&mut track);
+            p.tracks.push(track);
             p.tracks.len() - 1
         }
         None => return None,

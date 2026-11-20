@@ -695,6 +695,9 @@ impl Takes {
         track.dest = (0..=MAX_TRACKS as DestId)
             .find(|d| project.tracks.iter().all(|t| t.dest != *d))
             .unwrap_or(project.tracks.len() as DestId);
+        // Its lasting id, kept by the take, so REDO brings back the same
+        // track.
+        project.give_track_id(&mut track);
         let index = project.tracks.len();
         project.tracks.push(track.clone());
         self.edits += 1;
@@ -1655,6 +1658,30 @@ mod tests {
             Err(ModelError::TooManyTracks)
         );
         p.check().unwrap();
+    }
+
+    /// Instrument redesign step 2c: an added track gets the project's next
+    /// lasting id, UNDO and REDO take it away and bring it back with it,
+    /// and a track added after the UNDO gets a new one, never its id.
+    #[test]
+    fn an_added_track_has_a_lasting_id_that_undo_and_redo_keep() {
+        use mpfree_seq::TrackId;
+        let mut p = project();
+        p.tracks.push(Track::new("t2", 1));
+        assert_eq!(p.give_track_ids(), p.tracks.len());
+        let mut t = Takes::default();
+        let (_, at) = t.add_track(&mut p, "Track 3").unwrap();
+        let id = p.tracks[at].id;
+        assert_eq!(id, TrackId(at as u32 + 1));
+        assert_eq!(t.undo(&mut p), Some(1));
+        assert_eq!(t.redo(&mut p), Some(1));
+        assert_eq!(p.tracks[at].id, id, "the same track back");
+        assert_eq!(t.undo(&mut p), Some(1));
+        let (_, again) = t.add_track(&mut p, "Track 3").unwrap();
+        assert_eq!(again, at);
+        assert_eq!(p.tracks[again].id, TrackId(id.0 + 1), "a new id, not its");
+        assert_eq!(p.track_with(TrackId(id.0 + 1)), Some(again));
+        assert_eq!(p.track_with(id), None);
     }
 
     #[test]
