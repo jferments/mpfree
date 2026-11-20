@@ -649,6 +649,10 @@ pub struct TimeState {
     /// by default). The app sets them.
     pub cues: Vec<Cue>,
     pub armed: Option<usize>,
+    /// The track selected apart from the arm ([`TimeAction::Select`]), or
+    /// None while the selection is the armed track: see
+    /// [`TimeState::selected`].
+    pub track_pick: Option<usize>,
     /// The other armed tracks, a bit each (`TimeAction::ArmAlso`): a take
     /// records their notes with the armed track's. Never the armed one.
     pub also: u128,
@@ -837,6 +841,14 @@ impl Default for MorphInfo {
 }
 
 impl TimeState {
+    /// The selected track: the one the Sequencer's Steps, Notes and STEP
+    /// SEQ edit and the pads follow. The armed track unless a track was
+    /// selected apart from it while the arm is pinned
+    /// ([`TimeState::track_pick`]).
+    pub fn selected(&self) -> Option<usize> {
+        self.track_pick.or(self.armed)
+    }
+
     pub fn from_engine(
         transport: TransportInfo,
         project: &Project,
@@ -884,6 +896,7 @@ impl TimeState {
             launches: launches.to_vec(),
             cues: Vec::new(),
             armed,
+            track_pick: None,
             also: 0,
             clipboard: None,
             done: takes.done().iter().map(TakeRow::of).collect(),
@@ -1008,8 +1021,21 @@ pub enum TimeAction {
     Transport(Command),
     Undo,
     Redo,
-    /// Arm a track for recording, or none.
+    /// Arm a track for recording, or none. A track armed is selected too
+    /// (the Sequencer edits it and the pads follow it), so without a
+    /// pinned arm the two never part.
     Arm(Option<usize>),
+    /// A track picked (its name on Arrange, the Play page's track switch,
+    /// MAIN + a pad, a track on the Pads tab): selected, and armed too
+    /// unless REC's arm is pinned, which the app knows; it sends
+    /// [`TimeAction::Select`] then. On its own it arms, as
+    /// [`TimeAction::Arm`] does.
+    Pick(usize),
+    /// Select a track without moving the arm (a track picked while the
+    /// arm is pinned): Steps, Notes and STEP SEQ edit it and the pads
+    /// follow it, while REC still records the armed track. The armed
+    /// track itself selects it again.
+    Select(usize),
     /// Arm these tracks too, a bit each (track 0 the lowest), for one take
     /// over several tracks (the MPC's SHIFT + a track's arm): each records
     /// what its MIDI input sends it. The armed track is left out of it.
@@ -1529,14 +1555,14 @@ pub fn launches_after(launches: &[Launch], action: &TimeAction, t: &TransportInf
 }
 
 /// What a touch means, given what the screen shows.
-/// A tap on a track's name on the Clips grid: it arms the track, or lets
-/// go of the arm when it has it.
+/// A tap on a track's name on the Clips grid: it picks the track
+/// ([`TimeAction::Pick`]), or lets go of the arm when it has it.
 pub fn name_tap(st: &TimeState, track: usize) -> TimeAction {
-    TimeAction::Arm(if st.armed == Some(track) {
-        None
+    if st.armed == Some(track) {
+        TimeAction::Arm(None)
     } else {
-        Some(track)
-    })
+        TimeAction::Pick(track)
+    }
 }
 
 /// A tap on the Clips grid's cell at (`track`, `slot`): launch its clip,
@@ -4831,7 +4857,7 @@ mod tests {
         assert_eq!(tap(3, 0), None, "no such track");
         assert_eq!(
             action(&ev(CLIPS, EventKind::Tab(0)), &st),
-            Some(TimeAction::Arm(Some(0)))
+            Some(TimeAction::Pick(0))
         );
         assert_eq!(
             action(&ev(CLIPS, EventKind::Toggle(4)), &st),

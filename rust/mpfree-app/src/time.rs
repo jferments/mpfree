@@ -581,10 +581,16 @@ impl TimeHost {
         r
     }
 
-    /// The armed track (the one the pads, the arp panel and recording
-    /// follow), if any.
+    /// The armed track (the one REC records), if any.
     pub fn armed(&self) -> Option<usize> {
         self.control.armed()
+    }
+
+    /// The selected track (the one the Sequencer edits, and the pads and
+    /// the arp panel follow): the armed track unless a track was picked
+    /// while REC's arm is pinned (refactor C1).
+    pub fn selected(&self) -> Option<usize> {
+        self.control.selected()
     }
 
     /// SHIFT + TC (the MPC's TC On/Off): the armed track's Quantise while
@@ -2648,6 +2654,147 @@ mod tests {
             .act(TimeAction::AddTrack)
             .unwrap_err()
             .contains("128 tracks"));
+    }
+
+    /// Refactor C1: a track selected apart from the arm (a track picked
+    /// while REC's arm is pinned) is the one the Play page's steps show, a
+    /// step tap edits and the note editor opens, while REC still records
+    /// the armed track. Arming a track selects it again, and so does
+    /// selecting the armed track; a pick on its own arms; a Loop track
+    /// has no steps to select.
+    #[test]
+    fn a_track_selected_apart_from_the_arm_is_the_one_the_steps_edit() {
+        use mpfree_time_ui::editor::EditAction as E;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        assert_eq!((h.armed(), h.selected()), (Some(0), Some(0)));
+        let said = h.act(TimeAction::Select(2)).unwrap();
+        assert_eq!(said, "selected: Track 3 (REC stays on Track 1, pinned)");
+        assert_eq!((h.armed(), h.selected()), (Some(0), Some(2)));
+        let st = h.state();
+        assert_eq!(
+            (st.armed, st.track_pick, st.selected()),
+            (Some(0), Some(2), Some(2))
+        );
+        assert_eq!(h.steps().track, 2);
+        assert_eq!(h.steps().track_name, "Track 3");
+        // A step tapped goes into Track 3, which gets its first clip;
+        // Track 1 stays empty.
+        h.step_action(StepAction::Tap {
+            pad: 0,
+            step: 0,
+            velocity: 100,
+        })
+        .unwrap();
+        let notes = |h: &TimeHost, t: usize| -> usize {
+            h.project().tracks[t]
+                .slots
+                .iter()
+                .flatten()
+                .map(|c| c.notes.len())
+                .sum()
+        };
+        assert_eq!((notes(&h, 2), notes(&h, 0)), (1, 0));
+        assert_eq!(h.steps().clip.map(|c| c.slot), Some(0));
+        // The recorder still takes live notes for the armed track alone.
+        h.audio.receive();
+        assert_eq!(h.audio.armed(), Some(0));
+        // The note editor opens on the selected track's clip.
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Open)).unwrap(),
+            "edit: Pattern 1 on Track 3"
+        );
+        // Arming a track selects it too.
+        h.act(TimeAction::Arm(Some(1))).unwrap();
+        assert_eq!((h.armed(), h.selected()), (Some(1), Some(1)));
+        assert_eq!(h.state().track_pick, None);
+        // Selecting the armed track is the arm's selection again.
+        h.act(TimeAction::Select(3)).unwrap();
+        assert_eq!(h.act(TimeAction::Select(1)).unwrap(), "selected: Track 2");
+        assert_eq!((h.state().track_pick, h.selected()), (None, Some(1)));
+        // A pick on its own (the app found no pin) arms and selects.
+        h.act(TimeAction::Pick(4)).unwrap();
+        assert_eq!((h.armed(), h.selected()), (Some(4), Some(4)));
+        // Letting go of the arm leaves nothing selected apart from it.
+        h.act(TimeAction::Select(5)).unwrap();
+        h.act(TimeAction::Arm(None)).unwrap();
+        assert_eq!((h.armed(), h.selected()), (None, None));
+        // No such track, and a Loop track, select nothing.
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        assert!(h.act(TimeAction::Select(99)).is_err());
+        h.act(TimeAction::AddLoopTrack).unwrap();
+        let loops = h.project().tracks.len() - 1;
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        let said = h.act(TimeAction::Select(loops)).unwrap();
+        assert!(
+            said.ends_with("plays loops: the Sequencer stays on Track 1"),
+            "{said}"
+        );
+        assert_eq!(h.selected(), Some(0));
+    }
+
+    /// Refactor C1: the armed and the selected track are kept by their
+    /// lasting ids, never by their places: a track added before them, one
+    /// taken away from between them, UNDO taking away the armed track and
+    /// REDO bringing it back each leave the arm and the selection on their
+    /// own tracks (or, for a track that is gone, the arm on the last track
+    /// and the selection on the armed one); a project opened starts with
+    /// track 1 armed and selected.
+    #[test]
+    fn the_arm_and_the_selection_stay_on_their_own_tracks() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.act(TimeAction::Arm(Some(2))).unwrap();
+        h.act(TimeAction::Select(4)).unwrap();
+        let id = |h: &TimeHost, t: Option<usize>| t.map(|t| h.project().tracks[t].id);
+        let (armed, picked) = (id(&h, h.armed()), id(&h, h.selected()));
+        let names = |h: &TimeHost| {
+            let name = |t: Option<usize>| t.map(|t| h.project().tracks[t].name.clone());
+            (name(h.armed()), name(h.selected()))
+        };
+        let both = (Some("Track 3".to_string()), Some("Track 5".to_string()));
+        assert_eq!(names(&h), both);
+        // A track taken away from before both (as a delete would): each
+        // keeps its track, one place up.
+        h.control.project.tracks.remove(1);
+        h.control.compile().unwrap();
+        assert_eq!((h.armed(), h.selected()), (Some(1), Some(3)));
+        assert_eq!(names(&h), both);
+        // A track put in at the start: one place down.
+        let mut first = Track::new("New", 0);
+        h.control.project.give_track_id(&mut first);
+        h.control.project.tracks.insert(0, first);
+        h.control.compile().unwrap();
+        assert_eq!((h.armed(), h.selected()), (Some(2), Some(4)));
+        assert_eq!((id(&h, h.armed()), id(&h, h.selected())), (armed, picked));
+        // The selected track gone: the selection is the armed track.
+        h.control.project.tracks.remove(4);
+        h.control.compile().unwrap();
+        assert_eq!((h.armed(), h.selected()), (Some(2), Some(2)));
+        assert_eq!(h.state().track_pick, None);
+        // + Track arms and selects the new track; with another track
+        // selected apart from it, UNDO takes the armed track away: the arm
+        // goes to the last track, and the selection stays on its own.
+        h.act(TimeAction::AddTrack).unwrap();
+        let added = h.project().tracks.len() - 1;
+        assert_eq!((h.armed(), h.selected()), (Some(added), Some(added)));
+        h.act(TimeAction::Select(0)).unwrap();
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.project().tracks.len(), added);
+        assert_eq!((h.armed(), h.selected()), (Some(added - 1), Some(0)));
+        assert_eq!(names(&h).1.as_deref(), Some("New"));
+        // REDO brings the track back with its id; the arm, not an undo
+        // step, stays where it went, and the selection on its track.
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(h.project().tracks.len(), added + 1);
+        assert_eq!((h.armed(), h.selected()), (Some(added - 1), Some(0)));
+        // A project opened: track 1 armed and selected, whatever its ids.
+        let mut p = h.project().clone();
+        p.tracks.swap(0, 3);
+        let mut opened = TimeHost::with_project(RATE, 120.0, p).unwrap();
+        assert_eq!((opened.armed(), opened.selected()), (Some(0), Some(0)));
+        assert_eq!(opened.state().track_pick, None);
+        assert_eq!(opened.steps().track, 0);
+        opened.act(TimeAction::Select(1)).unwrap();
+        assert_eq!(opened.steps().track, 1);
     }
 
     const RATE: u32 = 44_100;
