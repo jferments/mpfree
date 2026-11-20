@@ -35,7 +35,7 @@ pub mod rng;
 pub mod voice;
 pub mod window;
 
-pub use buffer::{Aim, Clip, GrainSource, LiveBuffer};
+pub use buffer::{Aim, Clip, GrainSource, LiveBuffer, MIN_SPAN};
 pub use filter::{
     FilterKind, GrainFilter, CUTOFF_MAX_HZ, CUTOFF_MIN_HZ, FILTER_SPRAY_OCTAVES, Q_MAX, Q_MIN,
 };

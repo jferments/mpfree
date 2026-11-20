@@ -23,6 +23,8 @@ use std::time::{Duration, Instant};
 
 /// Messages waiting for a writer: over a second of a full DIN wire.
 pub const WIRE_QUEUE: usize = 4096;
+// MIDI out keeps a place here for every ending it owes (refactor A2b).
+const _: () = assert!(mpfree_midi::room::LIMITS.wire <= WIRE_QUEUE);
 /// Messages the log lists before it only counts them.
 const LISTED: u64 = 64;
 /// How long the writer waits for room in the kernel's buffer before it
@@ -150,6 +152,8 @@ impl ClockGaps {
 /// A port's writer thread.
 pub struct Writer {
     tx: SyncSender<Wire>,
+    /// Messages the queue took, so far ([`Writer::waiting`]).
+    sent: AtomicU64,
     log: Receiver<String>,
     thread: JoinHandle<()>,
     stats: Arc<Stats>,
@@ -237,6 +241,7 @@ impl Writer {
             })?;
         Ok(Writer {
             tx,
+            sent: AtomicU64::new(0),
             log,
             thread,
             stats,
@@ -247,7 +252,18 @@ impl Writer {
     /// Hands a message on without waiting. False when the queue is full
     /// (or the thread stopped): the message is dropped.
     pub fn send(&self, w: Wire) -> bool {
-        self.tx.try_send(w).is_ok()
+        let ok = self.tx.try_send(w).is_ok();
+        if ok {
+            self.sent.fetch_add(1, Ordering::Relaxed);
+        }
+        ok
+    }
+
+    /// Messages handed on and not yet written (or lost to a stalled port):
+    /// at most this many wait in the thread now, as it only writes them.
+    pub fn waiting(&self) -> u64 {
+        let done = self.written() + self.stalled();
+        self.sent.load(Ordering::Relaxed).saturating_sub(done)
     }
 
     /// The thread's log lines since the last call.

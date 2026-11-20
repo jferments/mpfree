@@ -212,7 +212,41 @@ with `--quick`) at 128 frames and 44.1 kHz:
   noise bursts, and the mixer with a song's inserts.
 - **time:** the transport looping 4 bars at 128 BPM with 8 clips playing
   16th-note chords (one at 3:2 speed, one swung and quantised), the first
-  through the arp at 32nds over 2 octaves.
+  through the arp at 32nds over 2 octaves. "Time: 16 tracks of ratchets, 8
+  locks a step" (refactor B1) is the time engine at its densest: 16 tracks
+  of 16th-note chords, every note ratcheted 4 times, 8 locks on every step.
+  The player's insertion sort of a period's note and lock starts is about
+  0.4 % of it (29,528 instructions a block with the sort, 29,398 without,
+  20 Nov), so refactor B5 (a merge of each track's sorted events in its
+  place) waits until this case shows the sort.
+- **control (refactor B1):** what a step edit costs the time engine's control
+  half, a touch a block, on a full clip (8,192 notes: a note on every one of
+  128 steps in 64 rows, the armed track's, playing). Each touch is timed
+  three ways. "the edit" is the edit worked out on the grid and made to the
+  clip and the takes (`Grid::toggle` or `Grid::lock_steps`, then
+  `Takes::edit`). "until it plays" adds the audio half's work: the edit
+  made to the view in place when `InPlace::fits` allows it, else the view
+  compiled again, as `TimeControl::step_action` decides. "Steps: the grid
+  rebuilt" is what the screen and the step pads are handed after any edit
+  (`Grid::shown`, as `TimeControl::steps` builds it). The touches are a tap
+  (a step's note out, then back in) and a lock detent (a held step's lock
+  turned, 64 detents a turn, one take). The app and the bench call the same
+  functions, so a change to the edit, the in-place rule or the grid moves
+  these counts. First desktop numbers (17:00Z, 20 Nov), means: a tap 16 µs
+  for the edit, 25 µs until it plays (in place); a detent 11 µs for the
+  edit, 3.7 ms until it plays (every detent compiled, since the in-place
+  rule counted a lock change against the clip's notes too); the grid
+  rebuilt 0.39 ms. Refactor B3 counts a lock change against the locks
+  alone (`InPlace::work`), so a detent goes in place: 12 µs until it plays
+  (callgrind: 58.0 million instructions a detent down to 0.39 million).
+  Refactor B2 builds the grid in one pass instead of one per row: 0.10 ms
+  (5.5 million instructions down to 1.6 million). These
+  are the control half's, which may allocate, so `--check-allocs` leaves
+  the module out and the golden check skips it (no sound); there is no
+  budget line for it. Today the control half runs on the audio thread
+  ([time-threads.md](time-threads.md), step 3), so these are also what a
+  touch costs there. The instruction gate guards them against slowdowns;
+  the targets come from the MPC's next device round.
 - **looper:** 60 s of looper memory, recording a 2-bar first pass from the
   input, then overdubbing layer after layer with an undo every 30 s.
 - **mix:** the mixer (from the FX thread) idle, and routing 12 tracks and 8
@@ -751,7 +785,11 @@ python3 tools/ci/instr_gate.py [--filter TEXT] [--bless]
 
 `mpfree-bench --count` runs each case for 200 blocks (after the same 50-block
 warm-up) between two callgrind client requests (`rust/mpfree-bench/src/vg.rs`;
-outside Valgrind they do nothing). `instr_gate.py` runs it under
+outside Valgrind they do nothing). The step-edit cases (module `control`)
+count 20 blocks after 5: each costs the same every block, and a detent's
+compile of a full clip is about 58 million instructions, so 250 of them
+would double the job's time. The bench lists each case with the blocks it
+counted, and the gate divides by that. `instr_gate.py` runs it under
 `valgrind --tool=callgrind`, reads one dump per case, and compares the
 instructions per block with `rust/mpfree-bench/instructions.txt`:
 

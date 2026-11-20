@@ -374,6 +374,24 @@ fn lifting_the_pad_stops_grains_and_releases() {
 }
 
 #[test]
+fn a_held_grain_pad_on_a_sound_too_short_to_read_ends_at_once() {
+    // A trim of 6 frames: no grain could read it.
+    let s = ramp(44_100);
+    let mut pad = granular_pad(&s, GrainParams::default());
+    pad.layers[0].region.start = 1_000;
+    pad.layers[0].region.end = 1_006;
+    let mut e = engine_for(&[(0, pad)], &s, 4);
+    e.apply(Event::NoteOn {
+        pad: 0,
+        velocity: 100,
+    });
+    let (out, _) = run(&mut e, 1_280, 128);
+    assert!(out.iter().all(|&x| x == 0.0));
+    assert_eq!(e.active_voices(), 0, "the held pad's voice is gone");
+    assert_eq!(e.live_grains(), 0);
+}
+
+#[test]
 fn stealing_and_the_budget_bound_the_grains() {
     let s = ramp(44_100);
     let busy = GrainParams {

@@ -12,7 +12,8 @@ any case costs more than 5 % above the baseline. A case that got more than
 
 - It runs `valgrind --tool=callgrind ... mpfree-bench --count`, which wraps each
   case's blocks in callgrind client requests (rust/mpfree-bench/src/vg.rs), and
-  reads one dump per case.
+  reads one dump per case. The bench lists each case with the blocks it
+  counted (the step-edit cases a tenth of them), which each dump is divided by.
 - `--bless` writes the counts as the new baseline. Do it with the toolchain CI
   pins (MPFREE_CLIPPY_TOOLCHAIN in the workflow), because another compiler
   makes other code. A baseline from another toolchain still compares, with a
@@ -69,6 +70,22 @@ def parse_dump(text):
     return name, total
 
 
+def listed(stdout, blocks):
+    """{case: blocks it counted} from mpfree-bench --count's listing: a header
+    line, then a case a line, "NAME<TAB>BLOCKS" (a bare name counted `blocks`).
+    The step-edit cases count a tenth of them (main.rs, `count`)."""
+    cases = {}
+    for line in stdout.splitlines()[1:]:
+        if not line.strip():
+            continue
+        name, tab, n = line.rpartition("\t")
+        if tab and n.isdigit() and int(n) > 0:
+            cases[name] = int(n)
+        else:
+            cases[line] = blocks
+    return cases
+
+
 def count(bench, blocks, filt):
     """{case: instructions per block}, counted under callgrind."""
     if shutil.which("valgrind") is None:
@@ -86,14 +103,14 @@ def count(bench, blocks, filt):
         if run.returncode != 0:
             sys.stderr.write(run.stdout[-4000:] + run.stderr[-4000:])
             sys.exit(f"instr_gate: callgrind run failed (exit {run.returncode})")
+        expected = listed(run.stdout, blocks)
         counts = {}
         for f in sorted(os.listdir(d)):
             with open(os.path.join(d, f), encoding="utf-8", errors="replace") as fh:
                 got = parse_dump(fh.read())
             if got is not None:
                 name, total = got
-                counts[name] = round(total / blocks)
-        expected = [l for l in run.stdout.splitlines()[1:] if l.strip()]
+                counts[name] = round(total / expected.get(name, blocks))
         missing = [n for n in expected if n not in counts]
         if missing:
             sys.exit(f"instr_gate: no count for {len(missing)} case(s), first {missing[0]!r}")

@@ -637,7 +637,9 @@ pub fn song_loops_state() -> Result<TimeState, String> {
         .filter(|&r| s.project.row_filled(r))
         .map(|r| (r, scene_length(&s.project, r, BAR)))
         .collect();
-    s.project.arrangement = scenes_to_song(&s.project, &rows, 0).map_err(|e| format!("{e:?}"))?;
+    s.project.arrangement = scenes_to_song(&s.project, &rows, 0)
+        .map(|t| t.song)
+        .map_err(|e| format!("{e:?}"))?;
     let mut state = s.state();
     state.song_view = true;
     state.song_on = true;
@@ -652,7 +654,9 @@ pub fn big_song_state() -> Result<TimeState, String> {
         .filter(|&r| s.project.row_filled(r))
         .map(|r| (r, scene_length(&s.project, r, BAR)))
         .collect();
-    s.project.arrangement = scenes_to_song(&s.project, &rows, 0).map_err(|e| format!("{e:?}"))?;
+    s.project.arrangement = scenes_to_song(&s.project, &rows, 0)
+        .map(|t| t.song)
+        .map_err(|e| format!("{e:?}"))?;
     let mut state = s.state();
     state.song_view = true;
     state.song_on = true;
@@ -829,7 +833,9 @@ pub fn song_state() -> Result<TimeState, String> {
         .filter(|&r| s.project.row_filled(r))
         .map(|r| (r, scene_length(&s.project, r, BAR)))
         .collect();
-    let mut song = scenes_to_song(&s.project, &rows, 0).map_err(|e| format!("{e:?}"))?;
+    let mut song = scenes_to_song(&s.project, &rows, 0)
+        .map(|t| t.song)
+        .map_err(|e| format!("{e:?}"))?;
     song.make_unique(&s.project.tracks, 2)
         .map_err(|e| format!("{e:?}"))?;
     s.project.arrangement = song;
@@ -860,7 +866,9 @@ pub fn busy_song_state() -> Result<TimeState, String> {
             sc.name = names[i % names.len()].into();
         }
     }
-    s.project.arrangement = scenes_to_song(&s.project, &rows, 0).map_err(|e| format!("{e:?}"))?;
+    s.project.arrangement = scenes_to_song(&s.project, &rows, 0)
+        .map(|t| t.song)
+        .map_err(|e| format!("{e:?}"))?;
     s.command_at(0, Command::Play)?;
     s.run_to(4 * BAR + 2 * BEAT)?;
     let mut state = s.state();
@@ -882,7 +890,9 @@ pub fn song_tempo_state() -> Result<TimeState, String> {
         .filter(|&r| s.project.row_filled(r))
         .map(|r| (r, scene_length(&s.project, r, BAR)))
         .collect();
-    let mut song = scenes_to_song(&s.project, &rows, 0).map_err(|e| format!("{e:?}"))?;
+    let mut song = scenes_to_song(&s.project, &rows, 0)
+        .map(|t| t.song)
+        .map_err(|e| format!("{e:?}"))?;
     song.set_tempo(2 * BAR, 100.0, Some(true))
         .map_err(|e| format!("{e:?}"))?;
     song.set_tempo(5 * BAR, 128.0, Some(false))

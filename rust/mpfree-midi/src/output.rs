@@ -8,6 +8,9 @@
 //! - [`OutQueue`] holds one port's messages for one period, in frame
 //!   order, with real-time bytes (clock) first among messages at the same
 //!   frame, and writes them out as bytes, with running status if asked.
+//!   Its [`crate::room::PortRoom`] says which go in, so a note-off, a
+//!   pedal coming up or an All notes off always has a place, here and in
+//!   the port's writer (step sequencer refactor A2b).
 //! - [`DinPacer`] works out when each message really leaves the DIN jack:
 //!   MIDI 1.0 runs at 31250 bit/s, 10 bits a byte, so a note takes about
 //!   0.96 ms and a 16-note chord about 15 ms. It reports how late each
@@ -18,6 +21,7 @@
 
 use crate::msg::{Channel, Msg};
 use crate::port::{PortId, MAX_PORTS};
+use crate::room::{PortRoom, LIMITS};
 
 /// Where one MIDI track plays.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,8 +32,9 @@ pub struct OutRoute {
 
 /// MIDI tracks (the same as `mpfree_seq::MAX_TRACKS`).
 pub const MAX_TRACKS: usize = 128;
-/// Messages one port can take in one period.
-pub const QUEUE: usize = 256;
+/// Messages one port can take in one period: everything its room lets in
+/// ([`crate::room::LIMITS`]).
+pub const QUEUE: usize = LIMITS.room();
 
 /// One message at a frame offset in the period, and the track that sent
 /// it (none for the clock).
@@ -195,8 +200,8 @@ impl Timed {
 pub struct OutQueue {
     buf: [Timed; QUEUE],
     len: usize,
-    /// Messages that did not fit, since it was made.
-    pub dropped: u64,
+    /// Which messages go in, so an ending always has a place.
+    room: PortRoom,
 }
 
 impl Default for OutQueue {
@@ -210,21 +215,63 @@ impl OutQueue {
         OutQueue {
             buf: [Timed::realtime(0, 0xF8); QUEUE],
             len: 0,
-            dropped: 0,
+            room: PortRoom::new(LIMITS),
         }
     }
 
+    /// Empty, for a new period, with nothing waiting in the port's writer.
+    /// What is owed stays owed.
     pub fn clear(&mut self) {
-        self.len = 0;
+        self.next_period(0);
     }
 
-    pub fn push(&mut self, t: Timed) {
+    /// Empty, for a new period, with `waiting` messages still in the
+    /// port's writer from earlier ones ([`PortRoom::period`]).
+    pub fn next_period(&mut self, waiting: usize) {
+        self.len = 0;
+        self.room.period(waiting);
+    }
+
+    /// Empty, and nothing owed: the port's gear went and can't be sent its
+    /// note-offs.
+    pub fn forget(&mut self) {
+        self.next_period(0);
+        self.room.forget();
+    }
+
+    /// Queues `t` if its room takes it ([`crate::room`]): a new note,
+    /// value or clock message in a period too busy is left out and
+    /// counted, an ending always goes in. False when it was left out.
+    pub fn push(&mut self, t: Timed) -> bool {
+        if !self.room.admit(t.bytes()) {
+            return false;
+        }
         if self.len < QUEUE {
             self.buf[self.len] = t;
             self.len += 1;
+            true
         } else {
-            self.dropped += 1;
+            debug_assert!(false, "the room let in more than the queue holds");
+            self.room.lost += 1;
+            false
         }
+    }
+
+    /// New notes, values and clock left out of periods too busy for them,
+    /// so far.
+    pub fn refused(&self) -> u64 {
+        self.room.refused
+    }
+
+    /// Endings that found no place, so far: a bug (should stay 0).
+    pub fn lost(&self) -> u64 {
+        self.room.lost
+    }
+
+    /// Note-offs left out because the port didn't owe their note (its
+    /// note-on was left out).
+    pub fn unowed(&self) -> u64 {
+        self.room.unowed
     }
 
     /// In frame order; real-time bytes first among equal frames; otherwise
@@ -757,6 +804,20 @@ mod tests {
             cc: 74,
             value,
         };
+        // Notes 60 and 61 went out in an earlier period, so their
+        // note-offs are owed (a note-off for a note never sent is left
+        // out, crate::room).
+        for note in [60, 61] {
+            q.push(Timed::msg(
+                0,
+                Msg::NoteOn {
+                    ch: 0,
+                    note,
+                    vel: 100,
+                },
+            ));
+        }
+        q.clear();
         q.push(Timed::msg(
             0,
             Msg::NoteOff {

@@ -41,6 +41,10 @@ pub const MAX: usize = 64;
 /// counts two.
 pub const HOLDS: usize = 128;
 
+// Each lock's value put back has a place in its instrument's queue: two
+// unlocks a period for each lock held (`mpfree_node::room`).
+const _: () = assert!(mpfree_track::ROOM.unlocks >= 2 * HOLDS);
+
 /// The tracks a lock can come from (each sequencer track).
 pub const TRACKS: usize = mpfree_seq::MAX_TRACKS;
 
@@ -283,6 +287,13 @@ impl Under {
                 Some(v)
             }
         }
+    }
+
+    /// Whether track `src` holds a lock on `key` now: a lock from it there
+    /// changes a value, and a new one adds a hold (whose end may put a
+    /// value back).
+    pub fn held_by(&self, key: u32, src: usize) -> bool {
+        u8::try_from(src).is_ok_and(|s| self.hold(key, s).is_some())
     }
 
     /// Whether a lock holds `key` now.

@@ -15,7 +15,16 @@
 //!   out when the last of them lets go, so one never cuts the other.
 //! - **Parameters in.** [`TrackHost::param`] is a parameter change on an
 //!   exact frame (automation, a parameter lock, the mod matrix), read back
-//!   with [`TrackHost::param_value`].
+//!   with [`TrackHost::param_value`]. A lock's value put back when it ends
+//!   is [`TrackHost::unlock`], asked for with [`TrackHost::hold`] before
+//!   each new lock.
+//! - **Endings always get in** (step sequencer refactor A2b): each slot's
+//!   queue takes events by the rule of `mpfree_node::room` ([`ROOM`]). New
+//!   notes and values have room of their own and are left out of a period
+//!   too busy for them (counted, [`SlotStats::dropped`]); a note-off for a
+//!   note the slot owes, a pedal coming up, a lock put back and a panic
+//!   always find a place ([`SlotStats::ends_lost`] counts one that didn't:
+//!   a bug).
 //! - **Sound out.** [`TrackHost::render`] adds each slot's instrument into
 //!   its track's input ([`Outputs`], which the mixer implements) before
 //!   the mixer runs. A block with a non-finite sample is dropped, the node
@@ -52,8 +61,8 @@
 //!
 //! [`TrackHost::new`] and [`Instrument::new`] allocate and belong on the
 //! control thread. Everything else never allocates, locks or panics: the
-//! event queues ([`MAX_EVENTS`] per slot per period, more are counted and
-//! dropped), the render buffers and the retired list are all made in
+//! event queues ([`MAX_EVENTS`] per slot per period, all its [`ROOM`]
+//! lets in), the render buffers and the retired list are all made in
 //! `new`. The output is the same, sample for sample, for any block size;
 //! the one exception is the moment a ringing-out instrument is retired,
 //! which lands on a block boundary (it is inaudible by then).
@@ -64,12 +73,26 @@ use std::time::{Duration, Instant};
 use mpfree_fx::Mixer;
 use mpfree_lanes::{Config as LaneConfig, Job, Lane, Setup as LaneSetup};
 use mpfree_node::pedal::{NoteSet, Pedals};
+use mpfree_node::room::{Limits, NodeRoom};
 use mpfree_node::{Ctl, Ctx, Cull, Node, NodeEvent, ParamInfo, Timed, Tuning};
 use mpfree_play::{Event, Out, Sink, ALL};
 use mpfree_prof::{Probe, Span};
 
-/// Events one slot can take in one period; more are counted and dropped.
-pub const MAX_EVENTS: usize = 256;
+/// What one period of a slot's queue takes (refactor A2b): new notes and
+/// values have room of their own; an ending always finds a place. Unlocks:
+/// two for each of the 128 locks a lock table holds at once (the app's
+/// `locks::HOLDS`), as its host asks [`TrackHost::hold`] before each new
+/// one.
+pub const ROOM: Limits = Limits {
+    starts: 128,
+    values: 256,
+    ends: 256,
+    unlocks: 256,
+    all_offs: 16,
+};
+/// Events one slot can take in one period: all its room lets in, and the
+/// `AllOff` a resting instrument gets as it plays again.
+pub const MAX_EVENTS: usize = ROOM.room() + 1;
 /// STOP's fade, in frames (10 ms at 44.1 kHz).
 pub const STOP_FADE: u32 = 441;
 /// A ringing-out instrument is retired after this many frames in a row
@@ -170,8 +193,12 @@ impl Outputs for Sum<'_> {
 pub struct SlotStats {
     /// Notes started.
     pub notes: u64,
-    /// Events that did not fit in a period's queue (should stay 0).
+    /// New notes, values and locks left out of a period too busy for them
+    /// (refactor A2b): something new gave way so nothing hangs.
     pub dropped: u64,
+    /// Endings (note-offs, pedals up, locks put back, panics) that found no
+    /// room: a bug, which must stay 0.
+    pub ends_lost: u64,
     /// Note-offs for a note nobody held (harmless; counted to spot bugs).
     pub stray_offs: u64,
     /// Blocks dropped for a non-finite sample (should stay 0).
@@ -292,6 +319,8 @@ struct Slot {
     track: Option<usize>,
     /// The events queued for the next render.
     events: Vec<Timed>,
+    /// Which events go in the queue, so an ending always fits.
+    room: NodeRoom,
     /// How many notes each note number has sounding (pads, clips, the arp).
     held: [u8; 128],
     /// The slot's tuning, given to each instrument that takes the slot.
@@ -395,6 +424,7 @@ impl TrackHost {
                 reset_due: false,
                 track: Some(i),
                 events: Vec::with_capacity(MAX_EVENTS),
+                room: NodeRoom::new(ROOM),
                 held: [0; 128],
                 tuning: Tuning::standard(),
                 stats: SlotStats::default(),
@@ -474,6 +504,7 @@ impl TrackHost {
         // Notes queued for the old instrument end with its AllOff.
         s.events.clear();
         s.held = [0; 128];
+        s.room.clear();
         s.pedals.clear_notes();
         // A new instrument starts where the least is placed (an old one
         // ringing out stays with it).
@@ -605,15 +636,32 @@ impl TrackHost {
     // ------------------------------------------------------------ events
 
     fn push(s: &mut Slot, t: Timed) -> bool {
-        Self::push_to(&mut s.events, &mut s.stats, t)
+        Self::push_to(&mut s.events, &mut s.room, &mut s.stats, t)
     }
 
-    fn push_to(events: &mut Vec<Timed>, stats: &mut SlotStats, t: Timed) -> bool {
+    /// Queues `t` if the slot's room takes it: a new note or value in a
+    /// period too busy is left out (counted by the room), an ending always
+    /// goes in. The queue holds all the room lets in, so one that doesn't
+    /// fit is an ending lost, counted as the bug it is.
+    fn push_to(
+        events: &mut Vec<Timed>,
+        room: &mut NodeRoom,
+        stats: &mut SlotStats,
+        t: Timed,
+    ) -> bool {
+        if !room.admit(&t.ev) {
+            return false;
+        }
+        Self::store(events, stats, t)
+    }
+
+    fn store(events: &mut Vec<Timed>, stats: &mut SlotStats, t: Timed) -> bool {
         if events.len() < events.capacity() {
             events.push(t);
             true
         } else {
-            stats.dropped += 1;
+            debug_assert!(false, "the room let in more than the queue holds");
+            stats.ends_lost += 1;
             false
         }
     }
@@ -629,12 +677,13 @@ impl TrackHost {
         let Slot {
             pedals,
             events,
+            room,
             stats,
             ..
         } = s;
         let mut all = true;
         pedals.filter(t.ev, |ev| {
-            all &= Self::push_to(events, stats, Timed::new(t.offset, ev));
+            all &= Self::push_to(events, room, stats, Timed::new(t.offset, ev));
         });
         all
     }
@@ -686,12 +735,16 @@ impl TrackHost {
         match t.ev {
             NodeEvent::NoteOn { note, velocity } if velocity > 0 => {
                 let n = usize::from(note & 0x7F);
-                if !Self::send::<PEDALLED>(s, t) {
-                    return false;
-                }
+                // Counted as a holder even when a busy period leaves it
+                // out, so its note-off pairs with it: the note ends with
+                // its last holder, and the room leaves out a note-off for
+                // a note it doesn't owe (refactor A2b).
                 s.held[n] = s.held[n].saturating_add(1);
-                s.stats.notes += 1;
-                true
+                let sent = Self::send::<PEDALLED>(s, t);
+                if sent {
+                    s.stats.notes += 1;
+                }
+                sent
             }
             NodeEvent::NoteOn { note, .. } | NodeEvent::NoteOff { note } => {
                 let n = usize::from(note & 0x7F);
@@ -702,14 +755,10 @@ impl TrackHost {
                     }
                     1 => {
                         // Only the last holder's note-off reaches the node;
-                        // if it is dropped the count stays, so a later
-                        // AllOff or note-off still ends it.
+                        // one for an owed note always has room.
+                        s.held[n] = 0;
                         let off = Timed::new(t.offset, NodeEvent::NoteOff { note });
-                        let sent = Self::send::<PEDALLED>(s, off);
-                        if sent {
-                            s.held[n] = 0;
-                        }
-                        sent
+                        Self::send::<PEDALLED>(s, off)
                     }
                     _ => {
                         s.held[n] -= 1;
@@ -756,6 +805,32 @@ impl TrackHost {
     /// A parameter change on an exact frame.
     pub fn param(&mut self, slot: usize, offset: u32, id: u16, value: f32) -> bool {
         self.event(slot, Timed::new(offset, NodeEvent::Param { id, value }))
+    }
+
+    /// Whether slot `slot` may take a new lock (one not held before),
+    /// asked before its first value goes in: so the value put back when it
+    /// ends ([`TrackHost::unlock`]) always has a place. False in a period
+    /// with as many new locks as [`ROOM`] lets in (counted).
+    pub fn hold(&mut self, slot: usize) -> bool {
+        self.slots.get_mut(slot).is_some_and(|s| s.room.hold())
+    }
+
+    /// A lock's end: parameter `id` back to `value` (the value under the
+    /// locks) on an exact frame. An ending: it always goes in while the
+    /// host asks [`TrackHost::hold`] before each new lock.
+    pub fn unlock(&mut self, slot: usize, offset: u32, id: u16, value: f32) -> bool {
+        let Some(s) = self.slots.get_mut(slot) else {
+            return false;
+        };
+        if !s.room.unlock() {
+            s.stats.ends_lost += 1;
+            return false;
+        }
+        Self::store(
+            &mut s.events,
+            &mut s.stats,
+            Timed::new(offset, NodeEvent::Param { id, value }),
+        )
     }
 
     /// Every note on every slot ends with its release.
@@ -811,8 +886,9 @@ impl TrackHost {
                     j -= 1;
                 }
             }
+            // No frames: the events wait for the next render, endings
+            // and all (refactor A2b).
             if n == 0 {
-                events.clear();
                 continue;
             }
             // A frozen track: the mixer plays its take, so the instrument
@@ -822,6 +898,8 @@ impl TrackHost {
             if !s.track.is_none_or(|t| out.wants(t)) {
                 events.clear();
                 s.held = [0; 128];
+                s.room.clear();
+                s.room.period();
                 s.pedals.clear_notes();
                 s.resting = true;
                 s.stats.rested += 1;
@@ -832,17 +910,20 @@ impl TrackHost {
                 }
                 continue;
             }
-            // Thawed: whatever it held when it went to rest ends first.
+            // Thawed: whatever it held when it went to rest ends first. Its
+            // place is kept apart from the room's ([`MAX_EVENTS`]).
             if std::mem::take(&mut s.resting) {
                 if events.len() < events.capacity() {
                     events.insert(0, Timed::new(0, NodeEvent::AllOff));
-                } else if let Some(e) = events.first_mut() {
-                    *e = Timed::new(0, NodeEvent::AllOff);
+                } else {
+                    debug_assert!(false, "the thaw's AllOff has a place");
+                    s.stats.ends_lost += 1;
                 }
             }
             // The period's events go with the work; the slot's queue is
-            // the work's emptied one from last period.
+            // the work's emptied one from last period, and a new period.
             std::mem::swap(&mut s.events, &mut s.work.events);
+            s.room.period();
             s.go = true;
         }
         let timing = !self.lanes.is_empty();
@@ -913,6 +994,7 @@ impl TrackHost {
             let w = &mut s.work;
             if w.reset {
                 s.held = [0; 128];
+                s.room.clear();
                 s.stats.resets += 1;
             }
             if w.wrote {
@@ -965,6 +1047,7 @@ impl TrackHost {
             inst.node.reset();
         }
         s.held = [0; 128];
+        s.room.clear();
         if retired.len() < retired.capacity() {
             if let Some(r) = s.work.ringing.take() {
                 retired.push(r.inst);
@@ -990,6 +1073,7 @@ impl TrackHost {
             if late {
                 if s.work.reset {
                     s.held = [0; 128];
+                    s.room.clear();
                     s.stats.resets += 1;
                 }
                 if s.work.ring_done && retired.len() < retired.capacity() {
@@ -1194,10 +1278,21 @@ impl TrackHost {
 
     // ------------------------------------------------------------ counters
 
+    /// Slot `slot`'s counters, with what its room left out and lost.
     pub fn stats(&self, slot: usize) -> SlotStats {
         self.slots
             .get(slot)
-            .map_or_else(SlotStats::default, |s| s.stats)
+            .map_or_else(SlotStats::default, |s| SlotStats {
+                dropped: s.stats.dropped + s.room.refused,
+                ends_lost: s.stats.ends_lost + s.room.lost,
+                ..s.stats
+            })
+    }
+
+    /// Endings every slot found no room for since the start: a bug, which
+    /// must stay 0 (refactor A2b).
+    pub fn ends_lost(&self) -> u64 {
+        (0..self.slots.len()).map(|i| self.stats(i).ends_lost).sum()
     }
 
     /// Frames asked of [`TrackHost::render`] past the block size (should
