@@ -6015,7 +6015,7 @@ fn time_state(time: &time::TimeHost, tracks: &audiotracks::TrackHost) -> mpfree_
 /// The synth's part of the status line.
 fn synth_status(synth: &synth::Synth, time: &RenderTime) -> String {
     let c = synth.counters();
-    format!(
+    let mut line = format!(
         "synth: {} ({}), {}, {} notes, at most {} voices ({} set), {} notes dropped, {} resets",
         synth.engine().name(),
         synth.preset_name(),
@@ -6025,7 +6025,14 @@ fn synth_status(synth: &synth::Synth, time: &RenderTime) -> String {
         synth.polyphony(),
         c.dropped,
         c.resets
-    )
+    );
+    // Knob owners (step 4b): locks another track or the hand kept waiting,
+    // and any a full table lost.
+    if let Some(locks) = synth.locks_line() {
+        line.push_str(", ");
+        line.push_str(&locks);
+    }
+    line
 }
 
 /// The log line for the pads moving to the synth, by an octave or to

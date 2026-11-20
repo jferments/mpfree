@@ -2120,6 +2120,12 @@ impl Synth {
     /// Each track's lasting id (`mpfree_seq::TrackId`, 0 for none), by
     /// track: when two tracks on the synth lock one knob, the lowest owns
     /// it (step 4b, locks.rs).
+    /// The status line's words for the knob locks that waited or were
+    /// lost (`locks::Under::describe`), when any were.
+    pub fn locks_line(&self) -> Option<String> {
+        self.locks.describe()
+    }
+
     pub fn set_ranks(&mut self, ids: &[u32; crate::locks::TRACKS]) {
         self.locks.set_ranks(ids);
     }

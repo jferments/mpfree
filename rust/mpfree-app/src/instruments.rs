@@ -995,7 +995,8 @@ impl Instruments {
                 parts.push(format!("track {} plays track {}'s", t + 1, o + 1));
             }
         }
-        if parts.is_empty() && self.refused == 0 && self.cut == 0 {
+        let locks = self.locks.describe();
+        if parts.is_empty() && self.refused == 0 && self.cut == 0 && locks.is_none() {
             return None;
         }
         if self.refused > 0 {
@@ -1005,6 +1006,7 @@ impl Instruments {
             let s = if self.cut == 1 { "" } else { "s" };
             parts.push(format!("{} ring-out{s} cut short", self.cut));
         }
+        parts.extend(locks);
         Some(parts.join(", "))
     }
 }
