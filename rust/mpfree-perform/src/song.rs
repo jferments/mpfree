@@ -6,7 +6,7 @@
 //! (the launch grid):
 //!
 //! - **Launches and stops.** A clip that starts on a track (a launch, a
-//!   scene, a follow action) becomes a placement linked to its slot from
+//!   scene, a follow action) becomes a placement naming the clip by id from
 //!   that tick, at the right place in the clip ([`Placement::offset`]), and
 //!   it ends where the track switches clip or stops.
 //! - **Mutes.** A muted stretch is left out: the placement ends where the
@@ -397,11 +397,14 @@ impl SongRecorder {
                 song.clear(&project.tracks, track, from, to)?;
             }
             for &(track, slot, origin, from, to) in &p.heard {
-                let mut pl = Placement::linked(track, slot, from, to - from);
-                if let Some(clip) = project.clip(track, slot) {
-                    let at = clip.speed.to_clip((from - origin) as f64).round() as Tick;
-                    pl.offset = at.rem_euclid(clip.length.max(1));
-                }
+                // A block of the clip heard, by its id. A clip deleted
+                // since (its cell empty) leaves nothing to name.
+                let Some(clip) = project.clip(track, slot) else {
+                    continue;
+                };
+                let mut pl = Placement::new(track, clip.id, from, to - from);
+                let at = clip.speed.to_clip((from - origin) as f64).round() as Tick;
+                pl.offset = at.rem_euclid(clip.length.max(1));
                 song.place(pl)?;
                 out.placements += 1;
             }

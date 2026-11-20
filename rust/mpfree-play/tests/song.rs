@@ -133,6 +133,8 @@ fn session(frames: u64) -> Session {
     t.slots[0] = Some(a);
     t.slots[1] = Some(b);
     p.tracks.push(t);
+    // A is clip 1, B clip 2: the song's blocks name them.
+    p.give_clip_ids();
     Session {
         project: p,
         launches: vec![],
@@ -169,8 +171,9 @@ fn placements_play_on_their_ticks_looping_and_from_their_offset() {
     let song = &mut s.project.arrangement;
     // A for two bars from bar 1 (it loops); B from bar 3 for one bar,
     // from its second beat.
-    song.place(Placement::linked(0, 0, BAR, 2 * BAR)).unwrap();
-    let mut b = Placement::linked(0, 1, 3 * BAR, BAR);
+    song.place(Placement::of(&s.project.tracks, 0, 0, BAR, 2 * BAR))
+        .unwrap();
+    let mut b = Placement::of(&s.project.tracks, 0, 1, 3 * BAR, BAR);
     b.offset = 960;
     song.place(b).unwrap();
     let r = same_everywhere(&s);
@@ -187,12 +190,57 @@ fn placements_play_on_their_ticks_looping_and_from_their_offset() {
     assert!(r.started.is_empty());
 }
 
+/// Arrange 1.3: a block names its clip by id and plays through its own
+/// lane's track: the drums' A on the bass's lane plays to the bass's
+/// destination, and A moved to the bass's grid still plays from its
+/// block on the drums' lane, to the drums', the same at every period.
+#[test]
+fn a_block_plays_its_clip_through_its_own_lane_wherever_the_clip_lives() {
+    let mut s = session(at(3 * BAR));
+    s.project.tracks.push(Track::new("bass", 1));
+    let mut across = Placement::of(&s.project.tracks, 0, 0, BAR, BAR);
+    across.track = 1;
+    s.project.arrangement.place(across).unwrap();
+    let r = same_everywhere(&s);
+    let ons: Vec<(i64, u16, u8)> = r
+        .played
+        .iter()
+        .filter_map(|&(f, d, e)| match e {
+            Event::NoteOn { note, .. } => Some(((f / TICK) as i64, d, note)),
+            _ => None,
+        })
+        .collect();
+    let want: Vec<(i64, u16, u8)> = (0..4).map(|i| (BAR + i * 960, 1, 1)).collect();
+    assert_eq!(ons, want, "the bass's destination");
+    // A moves to the bass's row 3; a block of it on the drums' lane plays
+    // it on, through the drums.
+    let mut s = session(at(3 * BAR));
+    s.project.tracks.push(Track::new("bass", 1));
+    s.project
+        .arrangement
+        .place(Placement::of(&s.project.tracks, 0, 0, BAR, BAR))
+        .unwrap();
+    let a = s.project.tracks[0].slots[0].take();
+    s.project.tracks[1].slots[3] = a;
+    let r = same_everywhere(&s);
+    let ons: Vec<(i64, u16, u8)> = r
+        .played
+        .iter()
+        .filter_map(|&(f, d, e)| match e {
+            Event::NoteOn { note, .. } => Some(((f / TICK) as i64, d, note)),
+            _ => None,
+        })
+        .collect();
+    let want: Vec<(i64, u16, u8)> = (0..4).map(|i| (BAR + i * 960, 0, 1)).collect();
+    assert_eq!(ons, want, "the drums' destination");
+}
+
 #[test]
 fn a_note_held_over_a_placements_end_ends_on_it() {
     let mut s = session(at(3 * BAR));
     s.project
         .arrangement
-        .place(Placement::linked(0, 1, 0, BAR + 480))
+        .place(Placement::of(&s.project.tracks, 0, 1, 0, BAR + 480))
         .unwrap();
     let r = same_everywhere(&s);
     // The second pass's first note (10, a beat long) is cut at 1.5 beats.
@@ -205,7 +253,7 @@ fn a_launched_clip_takes_the_track_over_and_the_song_plays_on_after_its_stop() {
     let mut s = session(at(6 * BAR));
     s.project
         .arrangement
-        .place(Placement::linked(0, 0, 0, 6 * BAR))
+        .place(Placement::of(&s.project.tracks, 0, 0, 0, 6 * BAR))
         .unwrap();
     s.cues = vec![
         (
@@ -251,8 +299,9 @@ fn a_launched_clip_takes_the_track_over_and_the_song_plays_on_after_its_stop() {
 fn a_locate_and_a_loop_jump_land_in_the_right_placement() {
     let mut s = session(at(6 * BAR));
     let song = &mut s.project.arrangement;
-    song.place(Placement::linked(0, 1, 0, 2 * BAR)).unwrap();
-    song.place(Placement::linked(0, 0, 2 * BAR, 4 * BAR))
+    song.place(Placement::of(&s.project.tracks, 0, 1, 0, 2 * BAR))
+        .unwrap();
+    song.place(Placement::of(&s.project.tracks, 0, 0, 2 * BAR, 4 * BAR))
         .unwrap();
     // A loop over bars 2 and 3 (B then A), then a locate into A.
     s.commands.push((0, Command::SetLoop(Some((BAR, 3 * BAR)))));
@@ -292,7 +341,7 @@ fn moves_chase_into_a_placement_and_follow_its_slot() {
         .put(target, Map::linear(0.0, 1.0), &pts, BAR as u32)
         .unwrap();
     // From the clip's middle: the first value is the lane's there.
-    let mut pl = Placement::linked(0, 0, BAR, BAR);
+    let mut pl = Placement::of(&s.project.tracks, 0, 0, BAR, BAR);
     pl.offset = 1920;
     s.project.arrangement.place(pl).unwrap();
     let r = same_everywhere(&s);
@@ -318,7 +367,7 @@ fn song_mode_off_plays_only_the_launches() {
     let mut s = session(at(2 * BAR));
     s.project
         .arrangement
-        .place(Placement::linked(0, 1, 0, 2 * BAR))
+        .place(Placement::of(&s.project.tracks, 0, 1, 0, 2 * BAR))
         .unwrap();
     let mut view = PlayView::compile(&s.project, &[]).unwrap();
     view.set_song(&s.project, false).unwrap();
@@ -413,9 +462,12 @@ fn each_placement_sends_its_clips_program_as_it_starts() {
     s.project.tracks[0].slots[0].as_mut().unwrap().program = program(4, None);
     s.project.tracks[0].slots[1].as_mut().unwrap().program = program(9, Some(130));
     let song = &mut s.project.arrangement;
-    song.place(Placement::linked(0, 0, 0, 2 * BAR)).unwrap();
-    song.place(Placement::linked(0, 1, 2 * BAR, BAR)).unwrap();
-    song.place(Placement::linked(0, 0, 3 * BAR, BAR)).unwrap();
+    song.place(Placement::of(&s.project.tracks, 0, 0, 0, 2 * BAR))
+        .unwrap();
+    song.place(Placement::of(&s.project.tracks, 0, 1, 2 * BAR, BAR))
+        .unwrap();
+    song.place(Placement::of(&s.project.tracks, 0, 0, 3 * BAR, BAR))
+        .unwrap();
     s.commands
         .push((0, Command::SetLoop(Some((2 * BAR, 4 * BAR)))));
     let r = same_everywhere(&s);

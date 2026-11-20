@@ -40,7 +40,9 @@ use mpfree_seq::mpfree_moves::{Kind, MoveLog};
 use mpfree_seq::scenes::{MAX_LIST_STEPS, MAX_TIMES};
 use mpfree_seq::steps::{Edit, Grid};
 use mpfree_seq::ListStep;
-use mpfree_seq::{Clip, LaunchGrid, ModelError, Project, TouchPoint, LOOPS, MAX_TRACKS, SLOTS};
+use mpfree_seq::{
+    Clip, LaunchGrid, ModelError, Project, TouchPoint, LOOPS, MAX_TRACKS, ROWS, SLOTS,
+};
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::list::ListRow;
 use mpfree_time_ui::view::{
@@ -1184,7 +1186,7 @@ impl TimeControl {
             let Some(t) = self.project.tracks.get_mut(track) else {
                 continue;
             };
-            let Some(s) = t.slots.iter().position(Option::is_none) else {
+            let Some(s) = t.slots.first_free() else {
                 self.also_full += 1;
                 lines.push(format!(
                     "{} has no clip playing and no empty slot: it doesn't record this take",
@@ -1192,7 +1194,10 @@ impl TimeControl {
                 ));
                 continue;
             };
-            t.slots[s] = Some(Clip::new(&format!("Clip {}", s + 1), length));
+            let clip = Clip::new(&format!("Clip {}", s + 1), length);
+            self.project
+                .put_new_clip(track, s, clip)
+                .map_err(|e| format!("new clip: {e:?}"))?;
             let launch = TimeAction::Launch { track, slot: s };
             (self.launches, self.cues) =
                 clips_after(&self.project, &self.launches, &self.cues, &launch, &info);
@@ -1222,10 +1227,12 @@ impl TimeControl {
                 let t = self.project.tracks.get_mut(track).ok_or("no such track")?;
                 let s = t
                     .slots
-                    .iter()
-                    .position(Option::is_none)
+                    .first_free()
                     .ok_or_else(|| format!("{} has no empty slot to record into", t.name))?;
-                t.slots[s] = Some(Clip::new(&format!("Clip {}", s + 1), length));
+                let clip = Clip::new(&format!("Clip {}", s + 1), length);
+                self.project
+                    .put_new_clip(track, s, clip)
+                    .map_err(|e| format!("new clip: {e:?}"))?;
                 (
                     s,
                     format!("new clip in slot {} of track {}", s + 1, track + 1),
@@ -1422,7 +1429,7 @@ impl TimeControl {
                 .tracks
                 .get(track)?
                 .slots
-                .iter()
+                .shown()
                 .position(Option::is_some)
         };
         (track, launched.or_else(first))
@@ -1497,8 +1504,7 @@ impl TimeControl {
                 let t = self.project.tracks.get(track).ok_or("no such track")?;
                 let s = t
                     .slots
-                    .iter()
-                    .position(Option::is_none)
+                    .first_free()
                     .ok_or_else(|| format!("{} has no empty slot", t.name))?;
                 // Not in the slot yet: it goes in with its first notes.
                 let name = format!("Pattern {}", s + 1);
@@ -2365,7 +2371,14 @@ impl TimeControl {
                 if s.is_some() {
                     return Err(format!("slot {} of {} is not empty", slot + 1, t.name));
                 }
-                *s = Some(Clip::new(&format!("Clip {}", slot + 1), length));
+                // With its lasting id (Arrange 1.1), as every clip gets.
+                self.project
+                    .put_new_clip(
+                        track,
+                        slot,
+                        Clip::new(&format!("Clip {}", slot + 1), length),
+                    )
+                    .map_err(|e| format!("new clip: {e:?}"))?;
                 self.armed = Some(track);
                 (self.launches, self.cues) =
                     clips_after(&self.project, &self.launches, &self.cues, &a, &info);
@@ -2390,27 +2403,25 @@ impl TimeControl {
             } => self.mutate(track, slot, more, melodic),
             TimeAction::Restore { track, slot } => self.restore(track, slot),
             TimeAction::DeleteClip { track, slot } => {
-                // A clip the song plays stays: its song blocks would go
-                // silent, and the song's edits have no undo yet.
-                let in_song = self.project.arrangement.placements.iter().any(|p| {
-                    p.track == track
-                        && matches!(p.source, mpfree_seq::arrange::Source::Slot(s) if s == slot)
-                });
-                if in_song {
-                    return Err(format!(
-                        "clip {} of track {} is in the song: delete its song blocks first",
-                        slot + 1,
-                        track + 1
-                    ));
-                }
+                // A clip the song plays goes to the song's own clips, so
+                // the song plays on (Arrange 1.3).
+                let kept = self
+                    .project
+                    .clip(track, slot)
+                    .is_some_and(|c| self.project.arrangement.plays(c.id));
                 self.takes
                     .remove_clip(&mut self.project, track, slot)
                     .map_err(|_| format!("slot {} of track {} is empty", slot + 1, track + 1))?;
                 self.forget_saved(Some((track, slot)));
                 // Its launch and cues go with it (compile drops them).
                 self.compile()?;
+                let song = if kept {
+                    "; the song keeps playing it"
+                } else {
+                    ""
+                };
                 Ok(format!(
-                    "erase: clip {} of track {} deleted (UNDO brings it back)",
+                    "erase: clip {} of track {} deleted{song} (UNDO brings it back)",
                     slot + 1,
                     track + 1
                 ))
@@ -2572,7 +2583,9 @@ impl TimeControl {
                 if n >= LOOPS || loops::in_cell(&self.project, into) || self.loops_seen[n].pass {
                     return Err(format!("clips: loop {} isn't free for a copy", n + 1));
                 }
-                self.project.tracks[to.0].slots[to.1] = Some(Clip::new_loop(into, len));
+                self.project
+                    .put_new_clip(to.0, to.1, Clip::new_loop(into, len))
+                    .map_err(|e| format!("clips: {e:?}"))?;
                 self.compile()?;
                 Ok(format!(
                     "clips: {was} copies into Loop {} on {}: launch it to hear it (the looper's UNDO takes it back)",
@@ -2769,7 +2782,11 @@ impl TimeControl {
                     }
                 };
                 if let Err(e) = self.compile() {
+                    // Back as it was, but for the clip ids it gave: an id
+                    // is never given twice.
+                    let next = self.project.next_clip;
                     self.project = before;
+                    self.project.next_clip = next;
                     self.compile()?;
                     return Err(e);
                 }
@@ -3169,7 +3186,7 @@ impl TimeControl {
         let named = |song: &mpfree_seq::arrange::Arrangement, i: usize| {
             song.placements
                 .get(i)
-                .and_then(|p| p.clip(tracks))
+                .and_then(|p| song.clip_of(tracks, p))
                 .map_or_else(|| "the block".to_string(), |c| c.name.clone())
         };
         let track_name = |t: usize| tracks.get(t).map_or_else(String::new, |t| t.name.clone());
@@ -3182,7 +3199,7 @@ impl TimeControl {
                 copy,
             } => {
                 let name = named(song, index);
-                let was = song.placements.get(index).map(|p| (p.track, p.slot()));
+                let was = song.placements.get(index).map(|p| p.track);
                 let j = song
                     .move_placement(tracks, index, track, start, copy)
                     .map_err(|e| match e {
@@ -3197,16 +3214,18 @@ impl TimeControl {
                             at(start)
                         ),
                     })?;
-                let own = was.is_some_and(|(t, slot)| t != track && slot.is_some());
-                let own = if own {
-                    ", as its own copy of the clip"
+                // On another lane it stays linked to its clip and plays
+                // through that track (Arrange 1.3).
+                let across = was.is_some_and(|t| t != track);
+                let own = if across {
+                    format!(", playing through {}", track_name(track))
                 } else {
-                    ""
+                    String::new()
                 };
-                let place = if was.is_some_and(|(t, _)| t == track) {
-                    at(start)
-                } else {
+                let place = if across {
                     format!("{}, {}", track_name(track), at(start))
+                } else {
+                    at(start)
                 };
                 self.selected = Some(j);
                 self.section = None;
@@ -3288,8 +3307,9 @@ impl TimeControl {
                 })
             }
             TimeAction::ScenesToSong => {
-                // Every row with a clip, in order, after the song's end.
-                let rows: Vec<(usize, Tick)> = (0..SLOTS)
+                // Every row with a clip, in order, after the song's end
+                // (every row the project keeps, not only the grid's).
+                let rows: Vec<(usize, Tick)> = (0..ROWS)
                     .filter(|&r| self.project.row_filled(r))
                     .map(|r| (r, scene_length(&self.project, r, bar)))
                     .collect();
@@ -3342,12 +3362,15 @@ impl TimeControl {
                 Err(e) => Err(format!("song → scenes: {e:?}")),
             },
             TimeAction::MakeUnique(i) => {
-                let p = song
+                let p = self
+                    .project
+                    .arrangement
                     .placements
                     .get(i)
                     .ok_or("make unique: no such placement")?;
                 let (track, start) = (p.track, p.start);
-                song.make_unique(tracks, i)
+                self.project
+                    .make_unique(i)
                     .map_err(|e| format!("make unique: {e:?}"))?;
                 Ok((
                     format!("placement {} is its own copy", i + 1),
@@ -4520,7 +4543,7 @@ impl TimeControl {
             let k = n as u8;
             match (was.pass, is.pass) {
                 (false, true) if !loops::in_cell(&self.project, k) => {
-                    let row = self.perform.playing().map_or(0, |p| p.row.min(SLOTS - 1));
+                    let row = self.perform.playing().map_or(0, |p| p.row.min(ROWS - 1));
                     let (launches, cues) = (&self.launches, &self.cues);
                     let busy = |t: usize| {
                         launches.iter().any(|l| l.track == t) || cues.iter().any(|c| c.track == t)
@@ -4548,7 +4571,7 @@ impl TimeControl {
                     };
                     let landed = match back.or_else(armed) {
                         Some((t, s)) => {
-                            project.tracks[t].slots[s] = Some(Clip::new_loop(k, is.ticks));
+                            let _ = project.put_new_clip(t, s, Clip::new_loop(k, is.ticks));
                             // One loop plays per Loop track: the one there
                             // stops as this one plays.
                             self.launches.retain(|l| l.track != t);
