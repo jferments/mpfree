@@ -806,6 +806,9 @@ impl TimeControl {
                     bar,
                 )
                 .changed();
+            // A follow's or the song list's scene: its mutes for tracks it
+            // gave no cue wait in the mute queue for its line.
+            compile |= self.queue_scene_mutes();
         }
         let recorded = std::mem::take(&mut self.recorded_now);
         // The transport stopped: what live to song recorded goes into the
@@ -2186,6 +2189,7 @@ impl TimeControl {
                         .iter()
                         .map(|t| t.mute)
                         .collect::<Vec<_>>(),
+                    self.mute_queue.clone(),
                 );
                 let song_was = self.song;
                 let (launches, cues) = (&mut self.launches, &mut self.cues);
@@ -2230,12 +2234,16 @@ impl TimeControl {
                         "stop all".to_string()
                     }
                 };
+                // The scene's mutes for tracks it gave no cue wait in the
+                // mute queue for its line.
+                self.queue_scene_mutes();
                 if let Err(e) = self.compile() {
                     self.song = song_was;
                     (self.launches, self.cues, self.perform) = (before.0, before.1, before.2);
                     for (t, m) in self.project.tracks.iter_mut().zip(before.3) {
                         t.mute = m;
                     }
+                    self.mute_queue = before.4;
                     return Err(e);
                 }
                 Ok(line)
@@ -4116,6 +4124,57 @@ impl TimeControl {
             Some(n) => format!("{n}; {line}"),
             None => line,
         });
+    }
+
+    /// A scene's mutes for the tracks it gave no cue (nothing playing or
+    /// cued, an empty cell: `Perform::take_line_mutes`) join the mute
+    /// queue, so they land on the scene's line with its cues, as TRACK
+    /// MUTE's do: in song mode such a track plays the song until then.
+    /// Each replaces what waited for its track (the scene is the later
+    /// change), and the queue lands on the scene's line from then on,
+    /// with whatever else waits in it. True when the queue changed.
+    fn queue_scene_mutes(&mut self) -> bool {
+        let Some((line, mutes)) = self.perform.take_line_mutes() else {
+            return false;
+        };
+        let mut changed = false;
+        for (t, m) in mutes.iter().enumerate() {
+            let (Some(m), Some(tr)) = (*m, self.project.tracks.get(t)) else {
+                continue;
+            };
+            let now = (tr.mute, tr.solo);
+            let queued = self
+                .mute_queue
+                .as_ref()
+                .and_then(|(_, q)| q.want.iter().find(|w| w.0 == t))
+                .map(|w| (w.1, w.2));
+            let want = (m, queued.map_or(now.1, |w| w.1));
+            if queued.unwrap_or(now) == want {
+                continue;
+            }
+            changed = true;
+            if let Some((_, q)) = &mut self.mute_queue {
+                q.want.retain(|w| w.0 != t);
+            }
+            if want != now {
+                let ids = &mut self.mute_ids;
+                let (_, q) = self.mute_queue.get_or_insert_with(|| {
+                    *ids += 1;
+                    (*ids, MuteWait::new(line))
+                });
+                q.want.push((t, want.0, want.1));
+            }
+        }
+        if changed {
+            if let Some((_, q)) = &mut self.mute_queue {
+                q.line = line;
+            }
+            if self.mute_queue.as_ref().is_some_and(|(_, q)| q.is_empty()) {
+                self.mute_queue = None;
+            }
+            self.changed = true;
+        }
+        changed
     }
 
     /// Land the mute queue at once, as STOP does with whatever waits.
