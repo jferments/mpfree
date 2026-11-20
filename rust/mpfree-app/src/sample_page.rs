@@ -17,6 +17,11 @@
 //!   Pads tab's map. SHIFT + wheel and - / + pick the previous or next pad
 //!   with a sound. A pad without a sound shows the Pads tab, where a sound
 //!   can be put on it.
+//! - While the pads play the synth the page keeps the kit and pad it
+//!   showed, whole (Jay's device notes, 20 Nov 2026: the Sample page is
+//!   for any audio and must never be blocked by what the pads do): pad
+//!   hits play notes then, so they don't pick its pads, and a tap on the
+//!   wave plays its pad straight on the sampler (`FromUi::SampleHit`).
 //! - An edit changes the project here (drags and turns merge into one undo
 //!   step each), then the kit's engine view is built again here and sent to
 //!   the audio thread in a box ([`SamplePage::take_view`]). The audio thread
@@ -579,6 +584,18 @@ pub enum RecFrom {
     Notes,
 }
 
+/// How a tap on the page played a pad of its kit, so its release goes
+/// the same way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Via {
+    /// As one of the 16 pads (it lights, records and plays as a hit).
+    Pads,
+    /// As an audition: a pad off the bank the pads show.
+    Audition,
+    /// Straight on kit `kit` in the sampler, while the pads play the synth.
+    Kit(usize),
+}
+
 /// The Source that opens Auto-sample, by name.
 pub const AUTO_SOURCE: &str = "Auto-sample";
 
@@ -587,6 +604,11 @@ pub const FLATTEN_NOT_TAKE: &str = "Flatten plays a pad, not a take";
 
 /// Why REC can't flatten a pad past the 16 with a channel of their own.
 pub const FLATTEN_BANK_A: &str = "Flatten plays bank A's pads";
+
+/// Why Send to pad and Load to pad wait for nothing while the pads play
+/// the synth: they take the next pad hit, which plays a note now.
+pub const SEND_SYNTH: &str =
+    "The pads play the synth: pick a kit on Play, then hit the pad to put it on";
 
 /// Why REC can't flatten while the pads play the synth.
 pub const FLATTEN_SYNTH: &str = "The pads play the synth";
@@ -730,9 +752,14 @@ pub struct SamplePage {
     /// go again after it.
     morph: Option<(usize, f32)>,
     /// The pad a tap on the waveform holds down (Gate, Loop, Granular),
-    /// and whether it went to the pads as one of the 16 (else it plays
-    /// as an audition, off the page on the pads).
-    auditioning: Option<(usize, bool)>,
+    /// and how it went ([`Via`]).
+    auditioning: Option<(usize, Via)>,
+    /// The pads play the synth (Jay's device notes, 20 Nov 2026: "what
+    /// the pads are currently doing should NEVER prevent me from being
+    /// able to access the sampler"). The page keeps the kit it edited
+    /// (`kit`) and stays whole: its takes, recorder, tools and Put on all
+    /// work; only pad hits stop picking its pads, since they play notes.
+    synth: bool,
     /// The bank of the kit on the pads (PAD BANK, the Pads tab's strip);
     /// None while the synth has them.
     pad_page: Option<usize>,
@@ -966,6 +993,7 @@ impl SamplePage {
             in_flight: false,
             morph: None,
             auditioning: None,
+            synth: false,
             pad_page: Some(0),
             last_turn: None,
             gesture: None,
@@ -1064,6 +1092,10 @@ impl SamplePage {
         }
         self.projects = projects;
         self.rate = rate;
+        // With the synth on the pads the page edits a kit of them still.
+        if self.synth && self.kit >= self.projects.len() {
+            self.kit = 0;
+        }
         // Views of sounds still here are kept (a kit loaded again, or a
         // sound in more than one kit); the rest are forgotten.
         let here: HashSet<SourceId> = self
@@ -1118,9 +1150,26 @@ impl SamplePage {
         self.stale = true;
     }
 
-    /// The kit the pads play now. Builds the page again when it is shown.
-    pub fn set_kit(&mut self, k: usize) {
-        if k == self.kit {
+    /// The kit the pads play now (`synth`: it is the synth's entry, past
+    /// the kits). Builds the page again when it is shown. With the synth
+    /// on the pads the page keeps the kit it edits and stays whole
+    /// ([`SamplePage::synth`]).
+    pub fn set_kit(&mut self, k: usize, synth: bool) {
+        if synth != self.synth {
+            self.synth = synth;
+            self.stale = true;
+            // Load to pad and Send to pad wait for a pad hit, which plays
+            // a note now.
+            if synth && (self.assign.take().is_some() || self.sending.take().is_some()) {
+                self.lines
+                    .push("sample: Load to pad called off (the pads play the synth)".into());
+            }
+            if synth && self.sending_take.take().is_some() {
+                self.lines
+                    .push("sample: Send to pad called off (the pads play the synth)".into());
+            }
+        }
+        if synth || k == self.kit {
             return;
         }
         self.lift();
@@ -1142,7 +1191,8 @@ impl SamplePage {
     /// A pad was hit: the tab edits it (or, with the pads playing notes,
     /// the keygroup that plays its note) from now on.
     pub fn hit(&mut self, pad: usize) {
-        if self.live.is_some() {
+        // A pad hit plays a note of the synth: no pad of the kit.
+        if self.live.is_some() || self.synth {
             // Live chop: the hit marks a cut and the pad stays.
             return;
         }
@@ -1158,7 +1208,7 @@ impl SamplePage {
     /// but nothing plays, lights or takes the hit (no live chop cut, no
     /// Load to pad or Send to pad).
     pub fn pick_quietly(&mut self, pad: usize) {
-        if self.live.is_some() {
+        if self.live.is_some() || self.synth {
             return;
         }
         let pad = self.played(pad);
@@ -1172,6 +1222,9 @@ impl SamplePage {
     /// pad hit from now on ([`SamplePage::hit`]) and shows its velocity
     /// ([`SamplePage::hit_velocity`]).
     pub fn press(&mut self, ui: &mut Ui, pad: usize, velocity: u8, shown: bool) {
+        if self.synth {
+            return;
+        }
         if shown && self.play_takes_pads(ui) && self.assign.is_none() && self.sending.is_none() {
             let a = match (self.play.as_mut(), self.play_state.as_ref()) {
                 (Some(tab), Some(st)) => tab.pad_hit(ui, st, pad),
@@ -1210,29 +1263,49 @@ impl SamplePage {
     /// A tap on the tabs playing kit pad `pad`: one of the 16 pads while
     /// it is on the bank the pads show (so it lights, records and plays
     /// as a hit would), else an audition of the pad.
-    fn pad_press(&self, pad: usize, down: bool) -> (FromUi, bool) {
+    /// While the pads play the synth, the page's kit's pad straight on
+    /// the sampler (every kit is in the engine), not through the pads,
+    /// which would play a note.
+    fn pad_press(&self, pad: usize, down: bool) -> (FromUi, Via) {
+        if self.synth {
+            let kit = self.kit;
+            return (
+                FromUi::SampleHit {
+                    kit,
+                    pad,
+                    velocity: crate::play_page::TAP_VELOCITY,
+                    down,
+                },
+                Via::Kit(kit),
+            );
+        }
         match self.pad_page {
-            Some(page) if pad / 16 != page => (FromUi::Audition { pad, down }, false),
+            Some(page) if pad / 16 != page => (FromUi::Audition { pad, down }, Via::Audition),
             Some(_) => (
                 FromUi::Pad {
                     pad: pad % 16,
                     down,
                 },
-                true,
+                Via::Pads,
             ),
-            None => (FromUi::Pad { pad, down }, true),
+            None => (FromUi::Pad { pad, down }, Via::Pads),
         }
     }
 
     /// Lets go of kit pad `pad` as [`SamplePage::pad_press`] pressed it.
-    fn pad_release(pad: usize, on_pads: bool) -> FromUi {
-        if on_pads {
-            FromUi::Pad {
+    fn pad_release(pad: usize, via: Via) -> FromUi {
+        match via {
+            Via::Pads => FromUi::Pad {
                 pad: pad % 16,
                 down: false,
-            }
-        } else {
-            FromUi::Audition { pad, down: false }
+            },
+            Via::Audition => FromUi::Audition { pad, down: false },
+            Via::Kit(kit) => FromUi::SampleHit {
+                kit,
+                pad,
+                velocity: 0,
+                down: false,
+            },
         }
     }
 
@@ -1310,6 +1383,18 @@ impl SamplePage {
         }
         let from = (self.pad as i32 + delta.signum()).rem_euclid(PADS as i32) as usize;
         if let Some(p) = self.with_sound(from, delta.signum()) {
+            self.pick_on_page(p);
+        }
+    }
+
+    /// The page itself moves to pad `p` (SHIFT + the wheel, - / +): as a
+    /// hit picks it, and while the pads play the synth too.
+    fn pick_on_page(&mut self, p: usize) {
+        if self.synth {
+            if self.live.is_none() {
+                self.pick(p);
+            }
+        } else {
             self.hit(p);
         }
     }
@@ -1387,6 +1472,9 @@ impl SamplePage {
 
     /// A pad let go: the Pads tab's map stops lighting it.
     pub fn pad_up(&mut self, ui: &mut Ui, pad: usize) {
+        if self.synth {
+            return;
+        }
         let pad = self.played(pad);
         self.light(ui, pad, false);
     }
@@ -1409,8 +1497,20 @@ impl SamplePage {
         }
     }
 
-    /// The kit the pads play now (past the kits: the synth).
+    /// The kit the pads play now (past the kits: the synth). While the
+    /// synth has the pads, the page edits [`SamplePage::edit_kit`].
     pub fn kit(&self) -> usize {
+        if self.synth {
+            usize::MAX
+        } else {
+            self.kit
+        }
+    }
+
+    /// The kit the page edits: the kit the pads play, or while they play
+    /// the synth the kit it edited before.
+    #[cfg(test)]
+    pub fn edit_kit(&self) -> usize {
         self.kit
     }
 
@@ -1432,7 +1532,7 @@ impl SamplePage {
     /// The pad picked as the browser's Load names it (`"A5"`), or None
     /// while the pads play the synth (no kit to load onto).
     pub fn load_target(&self) -> Option<String> {
-        (self.kit < self.projects.len()).then(|| self.pad_text(self.kit, self.pad))
+        (!self.synth && self.kit < self.projects.len()).then(|| self.pad_text(self.kit, self.pad))
     }
 
     /// Pad `pad`'s name as the 16 Levels panel shows it ("A2") and its
@@ -2030,11 +2130,6 @@ impl SamplePage {
                 "The kits are still loading".into(),
                 vec!["Their sounds show here once they are in."],
             )
-        } else if self.kit >= self.projects.len() {
-            (
-                "The pads play the synth".into(),
-                vec!["Pick a drum kit on Play (the wheel or a tap) to edit its sounds here."],
-            )
         } else {
             (
                 format!(
@@ -2221,6 +2316,8 @@ impl SamplePage {
                 let what = format!("pad {}", self.pad_text(self.kit, self.pad));
                 if self.sending.take().is_some() {
                     self.lines.push("sample: Send to pad called off".into());
+                } else if self.synth {
+                    self.told.push(SEND_SYNTH.to_string());
                 } else if !self
                     .projects
                     .get(self.kit)
@@ -3533,7 +3630,8 @@ impl SamplePage {
         }
     }
 
-    fn act(&mut self, ui: &mut Ui, a: WaveAction, out: &mut Vec<FromUi>) {
+    fn act(&mut self, ui: &mut Ui, mut a: WaveAction, out: &mut Vec<FromUi>) {
+        self.seat_grains(&mut a);
         // A take kept on the page: its edits go to the take.
         let a = match self.shown_take() {
             Some(i) => match self.act_take(ui, i, a, out) {
@@ -4472,9 +4570,38 @@ impl SamplePage {
         }
     }
 
+    /// A sound that starts playing as grains with the grain settings
+    /// untouched reads from its loudest grain, not its first frame
+    /// ([`Region::loudest_grain`]; Jay, 20 Nov 2026: "Granular synth is
+    /// barely audible"). Part of the same undo step as the mode change.
+    fn seat_grains(&self, a: &mut WaveAction) {
+        let WaveAction::Region { region, .. } = a else {
+            return;
+        };
+        let Some(st) = self.state.as_ref() else {
+            return;
+        };
+        if st.region.mode == PlayMode::Granular
+            || region.mode != PlayMode::Granular
+            || region.grain != model::GrainParams::default()
+        {
+            return;
+        }
+        let Some(source) = self
+            .projects
+            .get(self.kit)
+            .and_then(|p| p.source(region.source))
+        else {
+            return;
+        };
+        // To the Position row's step (0.1 %), as a turn would leave it.
+        let at = region.loudest_grain(source, region.grain.size_ms);
+        region.grain.position = (at * 1000.0).round() / 1000.0;
+    }
+
     fn audition(&mut self, pad: usize, out: &mut Vec<FromUi>) {
-        if let Some((held, on_pads)) = self.auditioning.take() {
-            out.push(Self::pad_release(held, on_pads));
+        if let Some((held, via)) = self.auditioning.take() {
+            out.push(Self::pad_release(held, via));
             return;
         }
         let held = self.state.as_ref().is_some_and(|st| {
@@ -4483,12 +4610,12 @@ impl SamplePage {
                 PlayMode::Gate | PlayMode::Loop | PlayMode::Granular
             )
         });
-        let (press, on_pads) = self.pad_press(pad, true);
+        let (press, via) = self.pad_press(pad, true);
         out.push(press);
         if held {
-            self.auditioning = Some((pad, on_pads));
+            self.auditioning = Some((pad, via));
         } else {
-            out.push(Self::pad_release(pad, on_pads));
+            out.push(Self::pad_release(pad, via));
         }
     }
 
@@ -4551,8 +4678,8 @@ impl SamplePage {
 
     /// Leaving the page: let go of a pad a tap holds, end the gesture.
     pub fn leave(&mut self, out: &mut Vec<FromUi>) {
-        if let Some((pad, on_pads)) = self.auditioning.take() {
-            out.push(Self::pad_release(pad, on_pads));
+        if let Some((pad, via)) = self.auditioning.take() {
+            out.push(Self::pad_release(pad, via));
         }
         if let Some(kit) = self.take_held.take() {
             out.push(FromUi::SampleTake { kit, down: false });
@@ -4765,7 +4892,7 @@ impl SamplePage {
         if self.shown_take().is_some() {
             return Some(FLATTEN_NOT_TAKE.to_string());
         }
-        if project.is_none_or(|p| p.pads_play() != PadsPlay::Pads) {
+        if self.synth || project.is_none_or(|p| p.pads_play() != PadsPlay::Pads) {
             return Some(FLATTEN_SYNTH.to_string());
         }
         if self.pad >= crate::mixing::PADS {
@@ -5184,7 +5311,7 @@ impl SamplePage {
     /// [`SamplePage::tick`]. What can't be used is left out and said in the
     /// log. A load while another is under way replaces it.
     pub fn open_kit(&mut self, dir: PathBuf) {
-        let Some(k) = (self.kit < self.projects.len()).then_some(self.kit) else {
+        let Some(k) = (!self.synth && self.kit < self.projects.len()).then_some(self.kit) else {
             self.told
                 .push("Pick a drum kit first: the pads play the synth".to_string());
             return;
@@ -5455,6 +5582,9 @@ impl SamplePage {
             self.lines.push(format!("sample: {}: {note}", src.name));
         }
         match r {
+            Ok(_) if to_pad && self.synth => {
+                self.told.push(SEND_SYNTH.to_string());
+            }
             Ok(l) if to_pad => {
                 self.lines
                     .push(format!("sample: hit a pad to put {} on it", l.src.name));
@@ -7886,6 +8016,8 @@ impl SamplePage {
         let name = self.take_shown().unwrap_or_default();
         if self.sending_take.take().is_some() {
             self.lines.push("sample: Send to pad called off".into());
+        } else if self.synth {
+            self.told.push(SEND_SYNTH.to_string());
         } else {
             self.lines
                 .push(format!("sample: hit a pad to put {name} on it"));
@@ -7953,7 +8085,7 @@ impl SamplePage {
                     self.open_take(None);
                     if !self.has_sound(self.pad) {
                         if let Some(p) = self.with_sound(self.pad, dir) {
-                            self.hit(p);
+                            self.pick_on_page(p);
                         }
                     }
                 }

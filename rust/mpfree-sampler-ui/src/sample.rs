@@ -1423,12 +1423,12 @@ pub fn grain_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     show_played(&mut s, 1.5);
     out.push(s);
 
-    // The loop as the Wave tab leaves it: it doesn't play grains yet.
+    // The loop as an undo leaves it: it doesn't play grains.
     let (p, view) = project();
     let mut s = grain_on(fonts(), p, view)?;
     (s.name, s.about) = (
         "grain-off",
-        "The pad still plays as a loop: the Grain section says so, and Shape's Mode makes it play grains",
+        "The pad plays as a loop (an undo took Granular away): the Grain section says so, and a tap on Grain plays it as grains",
     );
     let st = s.state.clone();
     s.tab.update(&mut s.ui, &st);

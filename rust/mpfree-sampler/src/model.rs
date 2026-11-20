@@ -1241,6 +1241,69 @@ impl Region {
             .fold(0.0, f32::max)
     }
 
+    /// Where its loudest grain is, as a grain position (0 to 1 across it):
+    /// the start of the `grain_ms` stretch with the most energy on the
+    /// channels it plays, looked for a quarter of a grain at a time. 0 for
+    /// silence, a region shorter than a grain or outside the sound.
+    ///
+    /// A sound played as grains with untouched settings reads from where
+    /// this says, not from its first frame (Jay's device notes, 20 Nov
+    /// 2026: "Granular synth is barely audible"): a frozen cloud at
+    /// position 0 replays the sound's first 80 ms, which on a take or a
+    /// phrase is often a breath, a count-in or silence.
+    pub fn loudest_grain(&self, source: &Source, grain_ms: f32) -> f32 {
+        let ch = usize::from(source.channels()).max(1);
+        let (start, end) = (
+            self.start as usize,
+            (self.end as usize).min(source.frames() as usize),
+        );
+        let len = end.saturating_sub(start);
+        let grain = ((f64::from(grain_ms.max(1.0)) * f64::from(source.rate())) / 1000.0) as usize;
+        if grain == 0 || len <= grain {
+            return 0.0;
+        }
+        let Some(frames) = source.data().f32s(start * ch..end * ch) else {
+            return 0.0;
+        };
+        let pick = if ch == 2 {
+            self.channels
+        } else {
+            ChannelPick::Left
+        };
+        let power: Vec<f64> = frames
+            .chunks_exact(ch)
+            .map(|f| {
+                let v = match pick {
+                    ChannelPick::Stereo => 0.5 * (f[0] * f[0] + f[1] * f[1]),
+                    ChannelPick::MonoSum => (0.5 * (f[0] + f[1])).powi(2),
+                    ChannelPick::Left => f[0] * f[0],
+                    ChannelPick::Right => f[1] * f[1],
+                };
+                f64::from(v)
+            })
+            .collect();
+        // Running sums: the energy of each grain-long stretch in O(n).
+        let mut sum = vec![0.0f64; power.len() + 1];
+        for (i, p) in power.iter().enumerate() {
+            sum[i + 1] = sum[i] + p;
+        }
+        let hop = (grain / 4).max(1);
+        let (mut best, mut best_at) = (0.0f64, 0usize);
+        let mut at = 0;
+        while at + grain <= power.len() {
+            let e = sum[at + grain] - sum[at];
+            if e > best * 1.000_001 {
+                best = e;
+                best_at = at;
+            }
+            at += hop;
+        }
+        if best <= 0.0 {
+            return 0.0;
+        }
+        (best_at as f64 / len as f64) as f32
+    }
+
     /// Its slice boundaries inside it (the ones a trim left outside are
     /// passed over).
     pub fn cuts(&self) -> impl Iterator<Item = u64> + '_ {
