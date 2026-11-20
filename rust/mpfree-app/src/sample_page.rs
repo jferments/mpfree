@@ -120,6 +120,7 @@ use crate::gui::FromUi;
 use crate::mixing::Captured;
 use crate::modpanels::PadFx;
 use crate::sampler::{Cloud, Playheads, RecFeed, RecSource, ViewSwap};
+use crate::views::Summary;
 use mpfree_fx::{CapturePoint, StripId};
 
 /// The Wave tab's page.
@@ -169,6 +170,41 @@ const PADS_PREFIX: &str = "smp-pads-";
 const AUTO_PREFIX: &str = "smp-auto-";
 /// A Q-Link resting this long ends its turn: the next one is a new undo step.
 const TURN_REST: Duration = Duration::from_secs(1);
+
+/// A grain start (0 to 1 across `region`) to the Position row's step
+/// (0.1 %), as a turn would leave it, while that step is under a quarter of
+/// the grain ([`SamplePage::seat_grains`]). On a long region it is wider
+/// (1.5 s on a 25-minute take, against an 80 ms grain) and would move the
+/// start off the loud spot, so the spot stays exact.
+pub(crate) fn seat_step(at: f32, region: &Region, rate: u32) -> f32 {
+    let grain = f64::from(region.grain.size_ms) * f64::from(rate) / 1000.0;
+    let step = region.frames() as f64 / 1000.0;
+    if step * 4.0 <= grain {
+        (at * 1000.0).round() / 1000.0
+    } else {
+        at
+    }
+}
+
+/// Grain starts waiting for their sound's summary at once, at most: a new
+/// one past them drops the oldest, which keeps its first-frame start.
+const MAX_SEATS: usize = 16;
+
+/// A grain start waiting for its sound's loudness summary
+/// ([`SamplePage::seat_later`]).
+#[derive(Clone)]
+struct Seat {
+    kit: usize,
+    pad: usize,
+    /// A take kept on the page, not pad `pad`.
+    take: Option<usize>,
+    layer: usize,
+    /// The switch to grains' undo step, which the move joins.
+    gesture: u64,
+    /// The region as the switch left it: the start moves only while it is
+    /// still exactly this.
+    region: Region,
+}
 
 /// The region (Wave tab) or pad (Play tab) a drag or turn started from,
 /// for its log line.
@@ -853,6 +889,19 @@ pub struct SamplePage {
     /// Times Sample Recall read the Source and its buffer went, so it read
     /// the master again (a fallback: counted, logged and shown).
     recall_fallbacks: u32,
+    /// Grain starts waiting for their sound's loudness summary: a long
+    /// sound switched to grains before its summary was worked out plays
+    /// its grains from its first frame at once, and moves to its loudest
+    /// grain when the summary comes ([`SamplePage::seat_later`]).
+    seats: Vec<Seat>,
+    /// The playing kit's voices as last heard, kept through a redraw (the
+    /// wave's own copy is cleared then): a seat never moves a cloud that
+    /// plays.
+    heard: Playheads,
+    /// Grain starts left at the sound's first frame because it has no
+    /// summary to find the loudest grain in (a fallback: counted, logged
+    /// and shown).
+    seat_fallbacks: u32,
     /// The take recording as the wave draws it (one-page step 2f, part 3),
     /// and the time to its next redraw.
     drawn: Option<mpfree_sampler_ui::live_take::LiveTake>,
@@ -1038,6 +1087,9 @@ impl SamplePage {
             feed: None,
             input_shared: false,
             recall_fallbacks: 0,
+            seats: Vec::new(),
+            heard: Playheads::default(),
+            seat_fallbacks: 0,
             drawn: None,
             drawn_in: 0.0,
             recall: None,
@@ -4604,8 +4656,23 @@ impl SamplePage {
     /// untouched reads from its loudest grain, not its first frame
     /// ([`Region::loudest_grain`]; Jay, 20 Nov 2026: "Granular synth is
     /// barely audible"). Part of the same undo step as the mode change.
-    fn seat_grains(&self, a: &mut WaveAction) {
-        let WaveAction::Region { region, .. } = a else {
+    ///
+    /// Nothing long runs here (sampler plan, phase 1 step 1): a region of
+    /// up to [`model::SCAN_FRAMES`] is searched frame by frame, about a
+    /// millisecond on the MPC; a longer one in its sound's loudness
+    /// summary, worked out off the screen when the sound came. Before the
+    /// summary is there, the grains play from the first frame at once and
+    /// move when it comes ([`Self::seat_later`]). The start is the loud
+    /// spot itself, not rounded to the Position row's 0.1 % step, which on
+    /// a 25-minute take is 1.5 s, wider than the 80 ms grain found.
+    fn seat_grains(&mut self, a: &mut WaveAction) {
+        let WaveAction::Region {
+            pad,
+            layer,
+            region,
+            gesture,
+        } = a
+        else {
             return;
         };
         let Some(st) = self.state.as_ref() else {
@@ -4617,16 +4684,169 @@ impl SamplePage {
         {
             return;
         }
-        let Some(source) = self
-            .projects
-            .get(self.kit)
-            .and_then(|p| p.source(region.source))
-        else {
+        let kit = self.kit;
+        let Some(source) = self.projects.get(kit).and_then(|p| p.source(region.source)) else {
             return;
         };
-        // To the Position row's step (0.1 %), as a turn would leave it.
-        let at = region.loudest_grain(source, region.grain.size_ms);
-        region.grain.position = (at * 1000.0).round() / 1000.0;
+        let ms = region.grain.size_ms;
+        let rate = source.rate();
+        if region.frames() <= model::SCAN_FRAMES {
+            let at = region.loudest_grain(source, ms);
+            region.grain.position = seat_step(at, region, rate);
+            return;
+        }
+        let seat = Seat {
+            kit,
+            pad: *pad,
+            take: self.shown_take(),
+            layer: *layer,
+            gesture: *gesture,
+            region: (**region).clone(),
+        };
+        match self.sources.summary(region.source) {
+            Summary::Ready(p) => match region.loudest_grain_from(source, ms, p.pyramid()) {
+                Some(at) => region.grain.position = seat_step(at, region, rate),
+                None => self.seat_fell_back(&seat),
+            },
+            Summary::Pending => {
+                let line = format!(
+                    "sample: {} plays its grains from its first frame until its sound's loudness summary is worked out",
+                    self.seat_text(&seat)
+                );
+                self.lines.push(line);
+                if self.seats.len() >= MAX_SEATS {
+                    self.seats.remove(0);
+                }
+                self.seats.push(seat);
+            }
+            Summary::None => self.seat_fell_back(&seat),
+        }
+    }
+
+    /// The grain starts waiting for their sound's summary
+    /// ([`Self::seat_grains`]): each moves to its loudest grain once the
+    /// summary is there, as part of the switch's undo step when nothing
+    /// else was done since. Only while its region is still exactly as the
+    /// switch left it (Position untouched, the same sound and trim), and
+    /// never under a playing cloud: a pad of the playing kit with voices
+    /// playing waits until it is silent.
+    fn seat_later(&mut self, ui: &mut Ui) {
+        let mut moved = false;
+        let mut i = 0;
+        while i < self.seats.len() {
+            let seat = self.seats[i].clone();
+            let now = self.projects.get(seat.kit).and_then(|p| {
+                let pad = match seat.take {
+                    Some(t) => p.take(t),
+                    None => p.pad(seat.pad),
+                }?;
+                pad.layers.get(seat.layer).map(|l| &l.region)
+            });
+            if now != Some(&seat.region) {
+                self.seats.remove(i);
+                continue;
+            }
+            let summary = self.sources.summary(seat.region.source);
+            let voice_pad = match seat.take {
+                Some(_) => usize::from(mpfree_sampler::engine::TAKE_PAD),
+                None => seat.pad,
+            };
+            let playing = usize::from(self.heard.kit) == seat.kit
+                && self.heard.of(voice_pad).next().is_some();
+            match summary {
+                Summary::Pending => {
+                    i += 1;
+                    continue;
+                }
+                Summary::Ready(_) if playing => {
+                    i += 1;
+                    continue;
+                }
+                _ => {}
+            }
+            self.seats.remove(i);
+            let at = match (&summary, self.projects.get(seat.kit)) {
+                (Summary::Ready(p), Some(project)) => {
+                    project.source(seat.region.source).and_then(|s| {
+                        let at = seat.region.loudest_grain_from(
+                            s,
+                            seat.region.grain.size_ms,
+                            p.pyramid(),
+                        )?;
+                        Some(seat_step(at, &seat.region, s.rate()))
+                    })
+                }
+                _ => None,
+            };
+            let Some(at) = at else {
+                self.seat_fell_back(&seat);
+                continue;
+            };
+            let Some(project) = self.projects.get_mut(seat.kit) else {
+                continue;
+            };
+            let layer = seat.layer;
+            let set = move |p: &mut Pad| p.layers[layer].region.grain.position = at;
+            let r = match seat.take {
+                Some(t) => project.edit_take(t, Some(seat.gesture), set),
+                None => project.edit_pad(seat.pad, Some(seat.gesture), set),
+            };
+            let what = self.seat_text(&seat);
+            match r {
+                Ok(()) => {
+                    self.edits += 1;
+                    if let Some(d) = self.dirty.get_mut(seat.kit) {
+                        *d = true;
+                    }
+                    self.lines.push(format!(
+                        "sample: {what} plays its grains from its loudest grain now, at {:.1} %",
+                        at * 100.0
+                    ));
+                    moved = true;
+                }
+                Err(e) => self
+                    .lines
+                    .push(format!("sample: {what}'s grain start not moved ({e:?})")),
+            }
+        }
+        if moved {
+            self.refresh(ui);
+        }
+    }
+
+    /// A grain start left at the sound's first frame: it has no summary
+    /// to find the loudest grain in. Counted and logged; Dev > Debug shows
+    /// the count.
+    fn seat_fell_back(&mut self, seat: &Seat) {
+        self.seat_fallbacks += 1;
+        let line = format!(
+            "sample: fallback: {} plays its grains from its first frame: its sound has no loudness summary ({} so far)",
+            self.seat_text(seat),
+            self.seat_fallbacks
+        );
+        self.lines.push(line);
+    }
+
+    /// Times a grain start was left at the sound's first frame for want
+    /// of its summary.
+    pub fn seat_fallbacks(&self) -> u32 {
+        self.seat_fallbacks
+    }
+
+    /// "kit 1 (Breaks) pad A5", or the take's name: the place a seat moves.
+    fn seat_text(&self, seat: &Seat) -> String {
+        let kit = self.kit_text_of(seat.kit);
+        match seat.take {
+            Some(t) => {
+                let name = self
+                    .projects
+                    .get(seat.kit)
+                    .and_then(|p| p.take(t))
+                    .map_or_else(|| format!("take {}", t + 1), |t| t.name.clone());
+                format!("{kit} {name}")
+            }
+            None => format!("{kit} pad {}", self.pad_text(seat.kit, seat.pad)),
+        }
     }
 
     fn audition(&mut self, pad: usize, out: &mut Vec<FromUi>) {
@@ -6337,6 +6557,9 @@ impl SamplePage {
                 self.stale = true;
             }
         }
+        if !self.seats.is_empty() {
+            self.seat_later(ui);
+        }
     }
 
     /// The take running: what came in since the last poll, and it lands
@@ -6387,6 +6610,13 @@ impl SamplePage {
         if self.drawn.is_some() && !self.take_recording() {
             self.end_live(ui);
         }
+    }
+
+    /// Holds the views worker before its next sound (`true`), or lets it
+    /// go on: for tests that see the page before a sound's summary comes.
+    #[cfg(test)]
+    pub fn hold_views(&self, held: bool) {
+        self.sources.hold(held);
     }
 
     /// Whether a sound's view (its peaks, hits, tempo or note) is still
@@ -7011,6 +7241,7 @@ impl SamplePage {
 
     /// Where the playing kit's voices are; the shown pad's are drawn.
     pub fn set_playheads(&mut self, ui: &mut Ui, heads: &Playheads) {
+        self.heard = *heads;
         self.live_heads(ui, heads);
         let frames: Vec<u64> = if usize::from(heads.kit) == self.kit && self.state.is_some() {
             // A take's voices carry no pad number of the kit's.

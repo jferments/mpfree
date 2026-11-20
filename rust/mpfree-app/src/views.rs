@@ -18,7 +18,17 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 
 use mpfree_sampler::model::{Source, SourceId};
-use mpfree_sampler_ui::source::{PitchTrack, SourceView};
+use mpfree_sampler_ui::source::{PitchTrack, PyramidPeaks, SourceView};
+
+/// Where a sound's loudness summary is ([`Views::summary`]).
+#[derive(Clone)]
+pub enum Summary {
+    Ready(Arc<PyramidPeaks>),
+    /// Still being worked out, or not asked for yet.
+    Pending,
+    /// Worked out without one: a sound the summary can't hold.
+    None,
+}
 
 /// What the worker does for a sound.
 enum Job {
@@ -48,6 +58,9 @@ enum Done {
 struct Queue {
     jobs: VecDeque<Job>,
     stop: bool,
+    /// The worker takes no job while set: tests hold it to see the page
+    /// before a view comes ([`Views::hold`]).
+    held: bool,
 }
 
 type Shared = Arc<(Mutex<Queue>, Condvar)>;
@@ -159,6 +172,20 @@ impl Inner {
         self.fresh = true;
     }
 
+    /// Where the loudness summary (the peak pyramid) of sound `id` is,
+    /// without asking for it: the first thing the worker works out, so it
+    /// comes long before the rest of the view.
+    pub fn summary(&self, id: SourceId) -> Summary {
+        match self.made.get(&id) {
+            Some(v) => match &v.pyramid {
+                Some(p) => Summary::Ready(p.clone()),
+                None if v.ready => Summary::None,
+                None => Summary::Pending,
+            },
+            None => Summary::Pending,
+        }
+    }
+
     /// The view of the sound `id`, if it is worked out: for the save, which
     /// keeps it beside the sound.
     pub fn ready(&self, id: SourceId) -> Option<Arc<SourceView>> {
@@ -243,6 +270,16 @@ impl Inner {
         }
     }
 
+    /// Holds the worker (`true`) before its next job, or lets it go on.
+    #[cfg(test)]
+    pub fn hold(&self, held: bool) {
+        let (lock, cv) = &*self.queue;
+        if let Ok(mut q) = lock.lock() {
+            q.held = held;
+        }
+        cv.notify_one();
+    }
+
     /// Whether any view asked for (or pitch) is still being worked out.
     #[allow(dead_code)] // the tests wait on it
     pub fn busy(&self) -> bool {
@@ -293,8 +330,10 @@ fn work(queue: &Shared, tx: &Sender<Done>) {
                 if q.stop {
                     return;
                 }
-                if let Some(j) = q.jobs.pop_front() {
-                    break j;
+                if !q.held {
+                    if let Some(j) = q.jobs.pop_front() {
+                        break j;
+                    }
                 }
                 q = match cv.wait(q) {
                     Ok(q) => q,
