@@ -121,8 +121,14 @@ pub fn to_text(p: &Project) -> String {
     if p.launch != LaunchGrid::default() {
         let _ = writeln!(s, "launch {}", launch_text(p.launch));
     }
+    if p.next_track != 0 {
+        let _ = writeln!(s, "nexttrack {}", p.next_track);
+    }
     for t in &p.tracks {
         let _ = writeln!(s, "track {}", one_line(&t.name));
+        if t.id.is_given() {
+            let _ = writeln!(s, "id {}", t.id.0);
+        }
         let _ = writeln!(s, "dest {}", t.dest);
         if let Some(sw) = t.swing {
             let _ = writeln!(s, "swing {} {}", sw.grid, sw.amount);
@@ -531,6 +537,15 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 at = At::Track;
             }
             ("dest", At::Track) => last(&mut p).dest = num(w.next()).ok_or_else(|| bad("dest"))?,
+            ("id", At::Track) => {
+                let id: u32 = num(w.next()).filter(|&n| n >= 1).ok_or_else(|| bad("id"))?;
+                last(&mut p).id = crate::TrackId(id);
+            }
+            ("nexttrack", At::Top) => {
+                p.next_track = num(w.next())
+                    .filter(|&n| n >= 1)
+                    .ok_or_else(|| bad("nexttrack"))?
+            }
             ("swing", At::Track) => {
                 last(&mut p).swing = Some(swing(&mut w).ok_or_else(|| bad("swing"))?)
             }
@@ -1022,6 +1037,39 @@ fn nth_rest(rest: &str, n: usize) -> &str {
         s = s.find(' ').map_or("", |k| &s[k + 1..]);
     }
     s
+}
+
+#[cfg(test)]
+mod track_id_tests {
+    use super::*;
+
+    /// Instrument redesign step 2c: each track's lasting id and the next
+    /// id are kept through the text; a project saved before tracks had
+    /// ids reads with none (the app gives them as it opens it), and an
+    /// id that doesn't read is refused.
+    #[test]
+    fn track_ids_and_the_next_id_come_back() {
+        let mut p = Project::new();
+        for i in 0..3 {
+            p.tracks.push(Track::new(&format!("Track {}", i + 1), i));
+        }
+        let old = to_text(&p);
+        assert!(!old.contains("\nid ") && !old.contains("nexttrack"));
+        assert_eq!(from_text(&old).unwrap(), p, "no ids, as saved");
+        assert_eq!(p.give_track_ids(), 3);
+        p.tracks.remove(1);
+        let text = to_text(&p);
+        assert!(text.contains("nexttrack 4\n"), "{text}");
+        assert!(text.contains("track Track 3\nid 3\n"), "{text}");
+        let back = from_text(&text).unwrap();
+        assert_eq!(back, p);
+        assert_eq!(back.track_with(crate::TrackId(3)), Some(1));
+        for bad in ["id 0", "id x"] {
+            let t = text.replace("id 3", bad);
+            assert!(from_text(&t).is_err(), "{bad}");
+        }
+        assert!(from_text(&text.replace("nexttrack 4", "nexttrack 0")).is_err());
+    }
 }
 
 #[cfg(test)]

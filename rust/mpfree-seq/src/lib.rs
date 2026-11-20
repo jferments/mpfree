@@ -1133,8 +1133,31 @@ pub fn touch_room(had: usize, points: &[TouchPoint]) -> bool {
 /// MIDI out ... The host owns the list; a track holds an index into it.
 pub type DestId = u16;
 
+/// A track's lasting number in its project (the instrument redesign's
+/// step 2c): not its place in the list, which changes when tracks are
+/// added, moved or taken away. A project gives each new track the next
+/// number ([`Project::next_track`]) and never gives one twice, so
+/// something that names a track (a knob's owner, say) can't reach another
+/// track by mistake. [`TrackId::NONE`] (0) is a track that has none yet:
+/// one just made, or read from a project saved before tracks had ids,
+/// until [`Project::give_track_ids`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TrackId(pub u32);
+
+impl TrackId {
+    /// No id given yet.
+    pub const NONE: TrackId = TrackId(0);
+
+    /// Whether it is a given id (not [`TrackId::NONE`]).
+    pub fn is_given(self) -> bool {
+        self != TrackId::NONE
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Track {
+    /// Its lasting id ([`TrackId`]), given by its project.
+    pub id: TrackId,
     pub name: String,
     pub dest: DestId,
     /// Overrides the transport's swing for every clip on the track that has
@@ -1269,8 +1292,11 @@ impl LoopInput {
 }
 
 impl Track {
+    /// A new track, with no id yet: its project gives it one
+    /// ([`Project::give_track_id`]) as it goes in.
     pub fn new(name: &str, dest: DestId) -> Track {
         Track {
+            id: TrackId::NONE,
             name: name.to_string(),
             dest,
             swing: None,
@@ -1294,6 +1320,41 @@ impl Track {
             kind: TrackKind::Loops(LoopInput::Pads),
             ..Track::new(name, dest)
         }
+    }
+
+    /// Whether `self` and `other` have the same settings and clips, their
+    /// ids and names aside (a track nobody set up has a new track's).
+    /// Never allocates. Every field is named, so a new one must be
+    /// placed here.
+    pub fn same_settings(&self, other: &Track) -> bool {
+        let Track {
+            id: _,
+            name: _,
+            dest,
+            swing,
+            mute,
+            solo,
+            through_arp,
+            record_touch,
+            record_quantise,
+            note_fx,
+            kind,
+            transpose,
+            follows,
+            slots,
+        } = self;
+        *dest == other.dest
+            && *swing == other.swing
+            && *mute == other.mute
+            && *solo == other.solo
+            && *through_arp == other.through_arp
+            && *record_touch == other.record_touch
+            && *record_quantise == other.record_quantise
+            && *note_fx == other.note_fx
+            && *kind == other.kind
+            && *transpose == other.transpose
+            && *follows == other.follows
+            && *slots == other.slots
     }
 
     /// A Loop track's input; None for a note track.
@@ -1324,6 +1385,11 @@ pub struct Project {
     /// When a launch, a stop or a scene lands (launch quantise, S4): the
     /// transport bar's "Launch 1 bar". A clip can have its own.
     pub launch: LaunchGrid,
+    /// The id the next track gets ([`TrackId`]): past every id the
+    /// project ever gave, so none is given twice, even to a track added
+    /// after one UNDO took away. 0 before any was given (a project saved
+    /// before tracks had ids).
+    pub next_track: u32,
 }
 
 impl Project {
@@ -1338,6 +1404,49 @@ impl Project {
         self.tracks
             .get(t)
             .is_some_and(|tr| tr.mute || (soloing && !tr.solo))
+    }
+
+    /// Gives `track` an id, the next one, if it has none or another
+    /// track of the project has its id (a copy, say): before it goes in.
+    /// Never allocates.
+    pub fn give_track_id(&mut self, track: &mut Track) {
+        let taken = |id: TrackId| self.tracks.iter().any(|t| t.id == id);
+        if !track.id.is_given() || taken(track.id) {
+            let highest = self.tracks.iter().map(|t| t.id.0).max().unwrap_or(0);
+            let next = self.next_track.max(highest.saturating_add(1)).max(1);
+            track.id = TrackId(next);
+            self.next_track = next.saturating_add(1);
+        } else {
+            self.next_track = self.next_track.max(track.id.0.saturating_add(1));
+        }
+    }
+
+    /// Gives every track that has no id, or has one an earlier track has
+    /// too, the next id, in track order; the rest keep theirs. How many
+    /// were given. A project saved before tracks had ids gets 1, 2, 3 ...
+    /// Never allocates.
+    pub fn give_track_ids(&mut self) -> usize {
+        let highest = self.tracks.iter().map(|t| t.id.0).max().unwrap_or(0);
+        let mut next = self.next_track.max(highest.saturating_add(1)).max(1);
+        let mut given = 0;
+        for t in 0..self.tracks.len() {
+            let id = self.tracks[t].id;
+            if !id.is_given() || self.tracks[..t].iter().any(|e| e.id == id) {
+                self.tracks[t].id = TrackId(next);
+                next = next.saturating_add(1);
+                given += 1;
+            }
+        }
+        self.next_track = next;
+        given
+    }
+
+    /// Where the track with id `id` is now.
+    pub fn track_with(&self, id: TrackId) -> Option<usize> {
+        if !id.is_given() {
+            return None;
+        }
+        self.tracks.iter().position(|t| t.id == id)
     }
 
     /// Every track and clip in range.
@@ -1411,6 +1520,64 @@ impl Project {
     /// The clip in a slot, if there is one.
     pub fn clip(&self, track: usize, slot: usize) -> Option<&Clip> {
         self.tracks.get(track)?.slots.get(slot)?.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod track_id_tests {
+    use super::*;
+
+    /// Instrument redesign step 2c: tracks get lasting ids in order, a
+    /// copy or a track sharing an id gets a new one, and an id is never
+    /// given twice, even after its track is gone.
+    #[test]
+    fn tracks_get_lasting_ids_that_are_never_given_twice() {
+        let mut p = Project::new();
+        for i in 0..3 {
+            p.tracks.push(Track::new(&format!("Track {}", i + 1), i));
+        }
+        assert_eq!(p.give_track_ids(), 3);
+        let ids: Vec<u32> = p.tracks.iter().map(|t| t.id.0).collect();
+        assert_eq!((ids, p.next_track), (vec![1, 2, 3], 4));
+        assert_eq!(p.give_track_ids(), 0, "they keep theirs");
+        // A copy of track 2 and a new track: the next ids.
+        let mut copy = p.tracks[1].clone();
+        p.give_track_id(&mut copy);
+        assert_eq!(copy.id, TrackId(4));
+        p.tracks.push(copy);
+        p.tracks.pop();
+        let mut new = Track::new("new", 3);
+        p.give_track_id(&mut new);
+        assert_eq!(new.id, TrackId(5), "4 is never given again");
+        // Two that share one (a damaged file): the later one gets a new id.
+        p.tracks[2].id = TrackId(1);
+        assert_eq!(p.give_track_ids(), 1);
+        assert_eq!(p.tracks[2].id, TrackId(6));
+        assert_eq!(p.track_with(TrackId(6)), Some(2));
+        assert_eq!(p.track_with(TrackId::NONE), None);
+        // A track read with its own id keeps it, and the next id moves past it.
+        let mut q = Project::new();
+        let mut t = Track::new("kept", 0);
+        t.id = TrackId(40);
+        q.give_track_id(&mut t);
+        assert_eq!((t.id, q.next_track), (TrackId(40), 41));
+    }
+
+    /// Two tracks with the same settings and clips match whatever their
+    /// ids and names; any setting or clip tells them apart.
+    #[test]
+    fn same_settings_looks_past_the_id_and_the_name() {
+        let mut a = Track::new("Track 3", 2);
+        a.id = TrackId(9);
+        let fresh = Track::new("", 2);
+        assert!(a.same_settings(&fresh));
+        let mut b = a.clone();
+        b.mute = true;
+        assert!(!b.same_settings(&fresh));
+        let mut c = a.clone();
+        c.slots[3] = Some(Clip::new("x", 3840));
+        assert!(!c.same_settings(&fresh));
+        assert!(!a.same_settings(&Track::new("", 3)), "another destination");
     }
 }
 
