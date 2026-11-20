@@ -4,7 +4,7 @@ checked: 2026-11-20 c5b97009
 -->
 # Instruments apart from tracks
 
-**Status:** step 1 on main (Play on the pads, #722, train 124, 20 Nov 2026); step 2a built (the shared synth as instrument 1 of the project's list, project format 2, `rust/mpfree-app/src/instrument_list.rs`, 20 Nov 2026); step 2b built (the tracks' own instruments in the list, 20 Nov 2026); step 2c built (tracks get lasting ids, `rust/mpfree-seq`, 20 Nov 2026); step 3 built (pad focus: the synth chosen for the pads stays whichever track is selected, saved with the project, `app/pads_focus.rs`, 20 Nov 2026); step 4a built (a track plays another track's own instrument, `instruments.rs`, 20 Nov 2026); step 4b built (knob owners, `locks.rs`, 20 Nov 2026); step 4c built (Duplicate: a copy of another track's instrument as its own; New instrument track: the preset picker's New track, 20 Nov 2026); step 4d's audit done and the instrument channels named for their instruments (20 Nov 2026); a clip's "this track's strip" follows the track's instrument (`time/strips.rs`, 20 Nov 2026); step 5a built (the shared synth ends notes by source: the pads, a track's arp, a track's clip, 20 Nov 2026). Jay approved the plan and its five answers on 20 Nov 2026 (11:16 UTC). The plan, its rules and the reviews it went through: "Instruments, pads and tracks: the redesign" (https://claude.ai/artifact/A2iE1bDqPxk2uSJABCgTJg). Nothing here has run on the MPC One yet.
+**Status:** step 1 on main (Play on the pads, #722, train 124, 20 Nov 2026); step 2a built (the shared synth as instrument 1 of the project's list, project format 2, `rust/mpfree-app/src/instrument_list.rs`, 20 Nov 2026); step 2b built (the tracks' own instruments in the list, 20 Nov 2026); step 2c built (tracks get lasting ids, `rust/mpfree-seq`, 20 Nov 2026); step 3 built (pad focus: the synth chosen for the pads stays whichever track is selected, saved with the project, `app/pads_focus.rs`, 20 Nov 2026); step 4a built (a track plays another track's own instrument, `instruments.rs`, 20 Nov 2026); step 4b built (knob owners, `locks.rs`, 20 Nov 2026); step 4c built (Duplicate: a copy of another track's instrument as its own; New instrument track: the preset picker's New track, 20 Nov 2026); step 4d's audit done and the instrument channels named for their instruments (20 Nov 2026); a clip's "this track's strip" follows the track's instrument (`time/strips.rs`, 20 Nov 2026); step 5a built (the shared synth ends notes by source: the pads, a track's arp, a track's clip, 20 Nov 2026); steps 5b to 5d built (one recording plan behind the REC chip and REC, clips of notes, arps in notes, 20 Nov 2026); step 6 built except the banks (free places for synths with no track and the list of synths for the pads; banks A to H wait on Jay, 20 Nov 2026); step 7 built except a MIDI route to an instrument and scripts (keys play a track's own synth by note and what the pads play, 20 Nov 2026); step 8 built in part (stems per instrument by default, the Synth tab says who plays its synth; layers wait for a place on the screen, 20 Nov 2026); step 9 built (an audio track records an instrument, a submix or the master from inside, before or after its effects, 20 Nov 2026). Jay approved the plan and its five answers on 20 Nov 2026 (11:16 UTC). The plan, its rules and the reviews it went through: "Instruments, pads and tracks: the redesign" (https://claude.ai/artifact/A2iE1bDqPxk2uSJABCgTJg). Nothing here has run on the MPC One yet.
 
 ## The model
 
@@ -16,11 +16,11 @@ Today an instrument belongs to a track: a track plays a kit, the shared synth (t
 2. **Instrument identities** (this page, below): instruments get lasting ids in a list in the project. No visible change.
 3. **Pad focus** (built, below): the pads follow the selected track or play an instrument chosen for them, which stays whichever track is selected.
 4. **Tracks send to instruments** (4a built, below): a track plays any instrument, several share one; each knob has one owner at a time (4b); Duplicate and New instrument track (4c, built); instrument channels in the mixer (4d).
-5. Recording by source, with one recording plan behind both the REC chip and REC.
-6. The instrument picker and banks.
-7. MIDI and scripts play instruments.
-8. Layers, mutes and stems by instrument.
-9. Audio points.
+5. **Recording by source** (built, below), with one recording plan behind both the REC chip and REC.
+6. **The list of synths and banks** (the list built, below; banks wait on Jay).
+7. **MIDI and scripts play instruments** (keys built, below; MIDI routes and scripts later).
+8. **Layers, mutes and stems by instrument** (stems and who plays built, below; layers later).
+9. **Audio points** (built, below): an audio track records from inside the mix.
 
 ## Step 2: instrument identities
 
@@ -308,7 +308,8 @@ The plan's step 8: "Layers, who plays what, mute and solo scopes, stems." Rule 7
 - **Rule 13**, "when you look, not everywhere": the Synth tab's hint line starts with who plays the synth it shows once more than one does, "FM: the pads, Track 2" or "Poly: the pads, Bass, Keys, 2 more" (tracks by their names, four at most, then how many more). With only the pads or one track it reads as before ("Pads play Poly", "The pads play FM on every track ...").
 - **Who** (`who_plays` in `main.rs`, mirrored by the smoke session): for an instrument the host holds, its own track, the tracks that send to it (`Instruments::senders`) and the pads (by the host's pads player, or following a track that plays it); for the shared synth, the tracks on the Synth kit and the pads while chosen for it or following such a track. Worked out a few times a second while the Synth tab shows, sent when it changes (`ToUi::WhoPlays`).
 - **Test:** `smoke::workflows::tests::the_synth_tab_says_who_plays_its_synth` (FM picked for the pads: the pads alone; REC points Track 2 at it: "FM: the pads, Track 2").
-- **Still to come in step 8:** "Track 2 → Poly → Synth channel" on a track's side, the pads' bank once banks point at instruments (6c), and layers (a player plus a short list of instruments it also plays), which need a place on the screen first.
+- **A track's side, as it stands.** Arrange already names what each track plays under its name ("Poly", "Track 3's FM", "Kit 2", `fill_sounds` in `gui.rs`), and a tap there opens the Synth tab's Instrument row for that track; since 4d the instrument's channel carries the instrument's name ("Poly · Track 2"), so the mixer strip is found by the same word. What is missing is the one line that says all three hops at once, "Track 2 → Poly → Poly · Track 2": it does not fit the name column, so it waits for a place on the screen (the layout spec's, so Jay's).
+- **Still to come in step 8:** that line, the pads' bank once banks point at instruments (6c), and layers (a player plus a short list of instruments it also plays), which need a place on the screen first.
 
 ## Step 9: recording points for audio
 
