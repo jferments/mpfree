@@ -167,6 +167,7 @@ M4 was host-only safety tooling and the [handoff state-machine simulator](../../
 - [FM synths](research/fm.md): ratios and the index, Chowning's instrument recipes, the DX7's chip, an approachable macro layer, measures F1 to F10 (2026-11-18).
 - [Organs, winds, choirs and tape](research/organ-wind-choir.md): combo and pipe organs, waveguide winds and breath, formant choirs, tape-replay character, measures O1 to O10 (2026-11-18).
 - [Wind instruments](research/wind.md): the clarinet, the sax and the flute as waveguides: the reed table and its thresholds, the cone as two lines, the flute's jet, breath and its controllers, what goes wrong, and why brass waits (2026-11-19).
+- [Plucked strings and struck bars](research/plucks.md): Karplus-Strong strings and modal mallets: the pick position as a comb on the string's output, bar and tube mode ratios, velocity and the mallet's contact, per-pluck variation, evening the keys with the loudness measure's own blocks and gates, and what a sitar's buzzing bridge needs (2026-11-19).
 - [Drum synths](research/drums.md): a few chosen knobs per drum, processing as part of the drum, the 808 cymbal's oscillator bank, the 909's hybrid, measures D1 to D10 (2026-11-18).
 
 - [RK3288 BootROM, p1 ID block and reset modes](research/bootrom.md): offline reverse engineering of the boot ROM and the first eMMC stage (2026-11-10).

@@ -29,12 +29,13 @@
 //!     The FX quality report: every target of each class (all of them when
 //!     none is named), met or not; writes DIR/quality.json
 //!     (docs/dev/design/fx-quality.md).
-//! fxlab synth [--rate HZ] [--renders] [--out DIR]
+//! fxlab synth [--rate HZ] [--renders] [--engine NAME] [--out DIR]
 //!     The synth library's baseline: every engine and factory preset
 //!     against its targets, met or not, and a count by measure; writes
 //!     DIR/synth.txt. With --renders, also each preset's listening phrase
 //!     as DIR/renders/ENGINE/NN-PRESET.wav and each drum kit's tour
-//!     (docs/dev/design/synth-quality.md).
+//!     (docs/dev/design/synth-quality.md). With --engine, only that
+//!     engine's presets (and renders), for a quick look while working on it.
 //! ```
 
 use std::path::PathBuf;
@@ -53,7 +54,7 @@ fn usage() -> ! {
     eprintln!("       fxlab plan (--effect ID | --controls LIST.tsv) [--points N] [--grid N] [--random N] [--seed N]");
     eprintln!("                  [--gains DB,DB...] [--programme FILE] [--out DIR]");
     eprintln!("       fxlab sweep --effect ID [plan options] [--out DIR]");
-    eprintln!("       fxlab synth [--rate HZ] [--renders] [--out DIR]");
+    eprintln!("       fxlab synth [--rate HZ] [--renders] [--engine NAME] [--out DIR]");
     eprintln!("       fxlab quality [--class delay|eq|reverb|drive|crush|compressor|filter|lofi|amp|modulation|limiter|gate|deesser|multiband|ducker|transient|strip|movement|pitch|voice]... [--rate HZ] [--out DIR]");
     std::process::exit(2);
 }
@@ -72,6 +73,7 @@ struct Args {
     reverb: bool,
     dynamics: bool,
     renders: bool,
+    engine: Option<String>,
     controls: Option<PathBuf>,
     plan: PlanOptions,
 }
@@ -91,6 +93,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Args {
         reverb: false,
         dynamics: false,
         renders: false,
+        engine: None,
         controls: None,
         plan: PlanOptions::default(),
     };
@@ -111,6 +114,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Args {
             "--reverb" => a.reverb = true,
             "--dynamics" => a.dynamics = true,
             "--renders" => a.renders = true,
+            "--engine" => a.engine = Some(it.next().unwrap_or_else(|| usage())),
             "--points" => a.plan.sweep_points = num() as usize,
             "--grid" => a.plan.grid_points = num() as usize,
             "--random" => a.plan.random = num() as usize,
@@ -342,13 +346,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("wrote {}", path.display());
         }
         "synth" => {
-            let rows = synth::report(a.rate);
+            let only = a.engine.as_deref().map(|n| {
+                synth::Engine::from_name(n).unwrap_or_else(|| {
+                    eprintln!("fxlab: no engine called {n}");
+                    std::process::exit(2)
+                })
+            });
+            let rows = match only {
+                Some(e) => synth::engine_report(a.rate, e),
+                None => synth::report(a.rate),
+            };
             let text = format!("{}\n{}", synth::to_text(&rows), synth::summary(&rows));
             print!("{text}");
             std::fs::create_dir_all(&a.out)?;
             std::fs::write(a.out.join("synth.txt"), &text)?;
             if a.renders {
-                for e in synth::Engine::ALL {
+                let engines = match only {
+                    Some(e) => vec![e],
+                    None => synth::Engine::ALL.to_vec(),
+                };
+                for e in engines {
                     let dir = a.out.join("renders").join(e.name());
                     std::fs::create_dir_all(&dir)?;
                     for (i, name) in e.presets().iter().enumerate() {
@@ -360,15 +377,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         wav::write(&path, &synth::phrase(e, i, a.rate))?;
                     }
                 }
-                let dir = a.out.join("renders").join("Drums");
-                std::fs::create_dir_all(&dir)?;
-                for (i, name) in synth::kits().iter().enumerate() {
-                    let file: String = name
-                        .chars()
-                        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-                        .collect();
-                    let path = dir.join(format!("{:02}-{file}.wav", i + 1));
-                    wav::write(&path, &synth::kit_tour(i, a.rate))?;
+                if only.is_none() {
+                    let dir = a.out.join("renders").join("Drums");
+                    std::fs::create_dir_all(&dir)?;
+                    for (i, name) in synth::kits().iter().enumerate() {
+                        let file: String = name
+                            .chars()
+                            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                            .collect();
+                        let path = dir.join(format!("{:02}-{file}.wav", i + 1));
+                        wav::write(&path, &synth::kit_tour(i, a.rate))?;
+                    }
                 }
             }
             eprintln!("wrote {}", a.out.display());

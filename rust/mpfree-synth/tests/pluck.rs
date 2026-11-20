@@ -304,6 +304,20 @@ fn mallets_ring_at_their_note() {
     for (name, note) in [("Marimba", 60u8), ("Vibes", 72), ("Kalimba", 72)] {
         let mut s = preset(name);
         let (l, _) = render(&mut s, 14_400, &[(0, on(note, 127))], |_| 128);
+        // A bar's upper modes are inharmonic (a kalimba's at 5.4 times the
+        // note), which pulls an autocorrelation of the whole sound off; the
+        // note is the fundamental, so read it through two one-pole low-passes
+        // at 1.5 times the note.
+        let c = (-std::f32::consts::TAU * 1.5 * hz(f32::from(note)) / RATE as f32).exp();
+        let (mut a, mut b) = (0.0f32, 0.0f32);
+        let l: Vec<f32> = l
+            .iter()
+            .map(|&x| {
+                a = (1.0 - c) * x + c * a;
+                b = (1.0 - c) * a + c * b;
+                b
+            })
+            .collect();
         let got = pitch(&l[4800..14_400]);
         let cents = 1200.0 * (got / hz(f32::from(note))).log2();
         assert!(cents.abs() < 5.0, "{name}: {got:.1} Hz ({cents:+.1} cents)");
@@ -426,8 +440,11 @@ fn the_harmonics_drawn_are_the_ones_plucks_play_on_average() {
         let got = average_harmonics(&mut s, 6);
         for h in 1..6 {
             let want = db(parts[h].level) - db(parts[0].level);
+            // A harmonic the comb cuts out is drawn far down; a pluck plays
+            // it under -40 dB (what's left is the analysis's own leak).
+            let cut = want < -40.0 && got[h] < -40.0;
             assert!(
-                (got[h] - want).abs() < 3.0,
+                cut || (got[h] - want).abs() < 3.0,
                 "position {position}, harmonic {}: {:.1} dB on average, drawn {want:.1}",
                 h + 1,
                 got[h]
@@ -473,4 +490,109 @@ fn the_modes_drawn_ring_as_the_mallet_plays_them() {
     let mut soft = [Partial::default(); 8];
     partials(|id| s.param(id), 36, RATE, &mut soft);
     assert!(soft[1].level < hard[1].level, "{soft:?} against {hard:?}");
+}
+
+#[test]
+fn position_at_the_middle_cuts_the_even_harmonics() {
+    let mut s = preset("Steel String");
+    s.set_param(POSITION, 50.0);
+    s.set_param(RELEASE, 10.0);
+    let got = average_harmonics(&mut s, 6);
+    for h in [1usize, 3, 5] {
+        assert!(got[h] < -30.0, "harmonic {}: {:.1} dB", h + 1, got[h]);
+    }
+    for h in [2usize, 4] {
+        assert!(got[h] > -20.0, "harmonic {}: {:.1} dB", h + 1, got[h]);
+    }
+}
+
+#[test]
+fn velocity_sets_how_much_quieter_a_soft_note_is() {
+    use mpfree_synth::voice::velocity_gain;
+    let level = |range: f32, vel: u8| {
+        let mut s = preset("Marimba");
+        s.set_param(VELOCITY, range);
+        s.set_param(VEL_TONE, 0.0);
+        let (l, r) = render(&mut s, 9600, &[(0, on(60, vel))], |_| 128);
+        db(peak(&l).max(peak(&r)))
+    };
+    for range in [0.0f32, 30.0, 48.0] {
+        let got = level(range, 127) - level(range, 1);
+        let want = db(velocity_gain(127, range)) - db(velocity_gain(1, range));
+        assert!(
+            (got - want).abs() < 0.1 && (want - range).abs() < 0.5,
+            "Velocity {range}: {got:.2} dB from 1 to 127, the curve says {want:.2}"
+        );
+    }
+}
+
+#[test]
+fn softer_hits_are_darker() {
+    for name in ["Marimba", "Nylon"] {
+        let bright = |vel: u8| {
+            let mut s = preset(name);
+            let (l, _) = render(&mut s, 9600, &[(0, on(60, vel))], |_| 128);
+            // Share of the energy in the first difference: higher means brighter.
+            let d: Vec<f32> = l.windows(2).map(|w| w[1] - w[0]).collect();
+            rms(&d[..4800]) / rms(&l[..4800])
+        };
+        assert!(
+            bright(127) > bright(20) * 1.2,
+            "{name}: {} at 127 vs {} at 20",
+            bright(127),
+            bright(20)
+        );
+    }
+}
+
+#[test]
+fn a_bass_string_starts_from_silence() {
+    for name in ["Muted Bass", "Upright Bass"] {
+        let mut s = preset(name);
+        let (l, _) = render(&mut s, 64, &[(0, on(36, 127))], |_| 64);
+        let (step, _) = l[..4].iter().fold((0.0f32, 0.0f32), |(m, prev), &x| {
+            (m.max((x - prev).abs()), x)
+        });
+        assert!(db(step) < -40.0, "{name}: a {:.1} dBFS step", db(step));
+    }
+}
+
+#[test]
+fn the_keys_are_evened_again_when_a_knob_moves() {
+    // Each key's level is kept once worked out; moving Decay works it out
+    // again, so a note after the move is as loud as on a fresh synth.
+    // (Each synth plays a moment of silence first, so the preset's Level
+    // has finished gliding, as it has when a player picks it.)
+    let note = 96u8;
+    let quiet = RATE as u64 / 10;
+    let mut s = preset("Marimba");
+    s.set_param(SPREAD, 0.0);
+    let gap = RATE as u64 * 3;
+    let (l, _) = render(
+        &mut s,
+        gap as usize,
+        &[(quiet, on(note, 127)), (RATE as u64 / 2, off(note))],
+        |_| 256,
+    );
+    let before = peak(&l);
+    s.set_param(DECAY, 400.0);
+    let (l, _) = render(&mut s, RATE as usize, &[(0, on(note, 127))], |_| 256);
+    let moved = peak(&l);
+    let mut fresh = preset("Marimba");
+    fresh.set_param(SPREAD, 0.0);
+    fresh.set_param(DECAY, 400.0);
+    let (l, _) = render(&mut fresh, RATE as usize, &[(quiet, on(note, 127))], |_| {
+        256
+    });
+    let want = peak(&l);
+    assert!(
+        (db(moved) - db(want)).abs() < 0.05,
+        "{:.2} dB after the move, {:.2} on a fresh synth",
+        db(moved),
+        db(want)
+    );
+    assert!(
+        (db(before) - db(want)).abs() > 0.5,
+        "Decay should change the level a key plays at"
+    );
 }

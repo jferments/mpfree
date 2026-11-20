@@ -133,13 +133,25 @@ fn build(params: &[ParamInfo], spec: &str, list: Vec<S>) -> Arrangement {
     }
 }
 
-/// The engine's plan for page `page`, if it has one.
-pub fn plan(info: &NodeInfo, params: &[ParamInfo], page: &str) -> Option<Arrangement> {
+/// The engine's plan for page `page`, if it has one, with the node's
+/// values (in `params` order: Drums' pad pages follow the pad's model).
+pub fn plan(
+    info: &NodeInfo,
+    params: &[ParamInfo],
+    values: &[f32],
+    page: &str,
+) -> Option<Arrangement> {
+    let value = |id: u16| {
+        params
+            .iter()
+            .position(|p| p.id == id)
+            .map_or(0.0, |i| values.get(i).copied().unwrap_or(params[i].default))
+    };
     let (spec, list) = match info.id {
         "mpfree.poly" => poly(page)?,
         "mpfree.fm" => fm(page)?,
         "mpfree.wavetable" => wavetable(page)?,
-        "mpfree.drums" => drums(page)?,
+        "mpfree.drums" => drums(page, &value)?,
         "mpfree.pluck" => pluck(page)?,
         "mpfree.keys" => keys(page)?,
         "mpfree.drawbar" => drawbar(page)?,
@@ -203,11 +215,16 @@ fn poly(page: &str) -> Option<Plan> {
     use mpfree_synth::params::*;
     Some(match page {
         "Osc" => (
-            "col(row(osc-1:*, osc-2:*):*, row(mix:*, supersaw:*):230)",
+            "col(row(osc-1:*, osc-2:*):*, mix:230)",
             vec![
-                s("osc-1", "Osc 1", Source, &[OSC1_WAVE, OSC1_OCT, OSC1_PW])
-                    .labels(&[(OSC1_PW, "Pulse width")])
-                    .draw("Osc"),
+                s(
+                    "osc-1",
+                    "Osc 1",
+                    Source,
+                    &[OSC1_WAVE, OSC1_OCT, OSC1_SEMI, OSC1_FINE, OSC1_PW],
+                )
+                .labels(&[(OSC1_PW, "Pulse width")])
+                .draw("Osc"),
                 s(
                     "osc-2",
                     "Osc 2",
@@ -219,21 +236,18 @@ fn poly(page: &str) -> Option<Plan> {
                     "mix",
                     "Mix",
                     Source,
-                    &[OSC1_LEVEL, OSC2_LEVEL, SUB_LEVEL, NOISE_LEVEL],
+                    &[OSC1_LEVEL, OSC2_LEVEL, SUB_LEVEL, NOISE_LEVEL, SUB_WAVE],
                 )
                 .faders(&[OSC1_LEVEL, OSC2_LEVEL, SUB_LEVEL, NOISE_LEVEL])
                 .labels(&[(OSC1_LEVEL, "Osc 1"), (OSC2_LEVEL, "Osc 2")])
                 .note("into the filter"),
-                // Its own words, so they don't read as the unison's.
-                s("supersaw", "Supersaw", Source, &[SUPER_DETUNE, SUPER_MIX])
-                    .labels(&[(SUPER_DETUNE, "Saw detune"), (SUPER_MIX, "Side saws")])
-                    .note("seven saws, when a wave is Supersaw"),
             ],
         ),
-        // Each oscillator's Table wave, its table drawn, over what moves
-        // the positions.
-        "Table" => (
-            "col(row(table-1:*, table-2:*):*, moves:150)",
+        // The two waves with settings of their own: each oscillator's
+        // Table wave, its table drawn, with what moves the positions, and
+        // the Supersaw.
+        "Waves" => (
+            "col(row(table-1:*, table-2:*, supersaw:210):*, moves:150)",
             vec![
                 s(
                     "table-1",
@@ -267,6 +281,10 @@ fn poly(page: &str) -> Option<Plan> {
                     (LFO_POS2, "LFO to position 2"),
                 ])
                 .note("the filter envelope and LFO 1"),
+                // Its own words, so they don't read as the unison's.
+                s("supersaw", "Supersaw", Source, &[SUPER_DETUNE, SUPER_MIX])
+                    .labels(&[(SUPER_DETUNE, "Saw detune"), (SUPER_MIX, "Side saws")])
+                    .note("seven saws"),
             ],
         ),
         "Filter" => (
@@ -392,7 +410,7 @@ fn poly(page: &str) -> Option<Plan> {
                     "voices",
                     "Voices",
                     Voice,
-                    &[VOICE_MODE, POLYPHONY, GLIDE, AGE],
+                    &[VOICE_MODE, PRIORITY, POLYPHONY, GLIDE, GLIDE_MODE, AGE],
                 ),
                 // Not "Voices": the Voices section has that word.
                 s(
@@ -722,8 +740,10 @@ fn wavetable(page: &str) -> Option<Plan> {
     })
 }
 
-fn drums(page: &str) -> Option<Plan> {
-    use mpfree_synth::drum_params::{field as f, pad_id, BASE_NOTE, LEVEL, METER_VOICES, PADS};
+fn drums(page: &str, value: &dyn Fn(u16) -> f32) -> Option<Plan> {
+    use mpfree_synth::drum_params::{
+        self as dp, field as f, pad_id, BASE_NOTE, LEVEL, METER_VOICES, PADS, VOICES,
+    };
     if let Some(p) = page
         .strip_prefix("Pad ")
         .and_then(|n| n.parse::<usize>().ok())
@@ -731,41 +751,87 @@ fn drums(page: &str) -> Option<Plan> {
         .map(|n| n - 1)
     {
         let id = |k: u16| pad_id(p, k);
+        let m = dp::model_of(value(id(f::MODEL)));
+        let current = value(VOICES) >= 0.5;
+        if !current && m < dp::model::FIRST {
+            // A Classic kit's first-engine drum: its fourteen, as always.
+            return Some((
+                "row(col(kit:150, sound:*):50*, col(body:*, mix:*):50*)",
+                vec![
+                    s("kit", "Kit", Source, &[]).draw("Kit").link("Kit"),
+                    s(
+                        "sound",
+                        "Sound",
+                        Source,
+                        &[
+                            id(f::MODEL),
+                            id(f::TUNE),
+                            id(f::DECAY),
+                            id(f::TONE),
+                            id(f::SNAP),
+                        ],
+                    )
+                    .draw("Hit"),
+                    s(
+                        "body",
+                        "Noise and sweep",
+                        Tone,
+                        &[id(f::NOISE), id(f::SWEEP), id(f::SWEEP_TIME), id(f::DRIVE)],
+                    )
+                    .draw("Sweep"),
+                    s(
+                        "mix",
+                        "Mix",
+                        Voice,
+                        &[
+                            id(f::CHOKE),
+                            id(f::LEVEL),
+                            id(f::PAN),
+                            id(f::VEL_TONE),
+                            id(f::VEL_LEVEL),
+                        ],
+                    ),
+                ],
+            ));
+        }
+        // Any other drum: the model and the four its Q-Links turn, the rest
+        // of its own knobs, then how it sits in the kit and plays. Each knob
+        // named as that drum calls it ("Punch" on the 808).
+        let q = dp::qlinks(m);
+        let mut sound = vec![id(f::MODEL)];
+        sound.extend(q.iter().map(|&k| id(k)));
+        let shape: Vec<u16> = dp::knobs(m)
+            .iter()
+            .filter(|(k, _)| !q.contains(k))
+            .map(|&(k, _)| id(k))
+            .collect();
+        let labels: Vec<(u16, &str)> = dp::knobs(m).iter().map(|&(k, l)| (id(k), l)).collect();
+        let bends = dp::knobs(m).iter().any(|&(k, _)| k == f::SWEEP);
+        let shape = s("body", "Shape", Tone, &shape).labels(&labels);
         return Some((
-            "row(col(kit:150, sound:*):50*, col(body:*, mix:*):50*)",
+            "row(col(kit:150, sound:*, feel:150):50*, col(body:*, mix:300):50*)",
             vec![
                 s("kit", "Kit", Source, &[]).draw("Kit").link("Kit"),
+                s("sound", "Sound", Source, &sound)
+                    .labels(&labels)
+                    .draw("Hit"),
                 s(
-                    "sound",
-                    "Sound",
-                    Source,
+                    "feel",
+                    "Feel",
+                    Motion,
                     &[
-                        id(f::MODEL),
-                        id(f::TUNE),
-                        id(f::DECAY),
-                        id(f::TONE),
-                        id(f::SNAP),
+                        id(f::VEL_LEVEL),
+                        id(f::VEL_TONE),
+                        id(f::ACCENT),
+                        id(f::VARIATION),
                     ],
-                )
-                .draw("Hit"),
-                s(
-                    "body",
-                    "Noise and sweep",
-                    Tone,
-                    &[id(f::NOISE), id(f::SWEEP), id(f::SWEEP_TIME), id(f::DRIVE)],
-                )
-                .draw("Sweep"),
+                ),
+                if bends { shape.draw("Sweep") } else { shape },
                 s(
                     "mix",
                     "Mix",
                     Voice,
-                    &[
-                        id(f::CHOKE),
-                        id(f::LEVEL),
-                        id(f::PAN),
-                        id(f::VEL_TONE),
-                        id(f::VEL_LEVEL),
-                    ],
+                    &[id(f::LEVEL), id(f::PAN), id(f::CHOKE), id(f::PLAYS)],
                 ),
             ],
         ));
@@ -875,7 +941,12 @@ fn drums(page: &str) -> Option<Plan> {
             vec![
                 s("kit", "Kit", Source, &[]).draw("Kit"),
                 s("levels", "Levels", Voice, &[]).draw("Levels"),
-                s("out", "Output", Voice, &[LEVEL, BASE_NOTE, METER_VOICES]),
+                s(
+                    "out",
+                    "Output",
+                    Voice,
+                    &[LEVEL, BASE_NOTE, VOICES, METER_VOICES],
+                ),
             ],
         ),
         _ => return None,
@@ -904,7 +975,13 @@ fn pluck(page: &str) -> Option<Plan> {
             "row(col(tuning:*, voices:*):55*, output:45*)",
             vec![
                 s("tuning", "Tuning", Voice, &[TRANSPOSE, FINE, BEND_RANGE]),
-                s("voices", "Voices", Voice, &[POLYPHONY, VEL_TONE]),
+                s(
+                    "voices",
+                    "Voices and touch",
+                    Voice,
+                    &[POLYPHONY, VEL_TONE, VELOCITY],
+                )
+                .labels(&[(VELOCITY, "Vel > level")]),
                 s(
                     "output",
                     "Output",
@@ -1161,7 +1238,7 @@ fn analog(page: &str) -> Option<Plan> {
             )
         }
         "Mod" => (
-            "row(lfo:*, pm:*)",
+            "row(lfo:*, col(pm:*, play:*))",
             vec![
                 s(
                     "lfo",
@@ -1193,6 +1270,15 @@ fn analog(page: &str) -> Option<Plan> {
                     (PM_CUTOFF, "Cutoff"),
                 ])
                 .note("each voice bends its own Osc 1"),
+                // Each note's pressure, and the mod wheel's vibrato on top
+                // of the LFO's.
+                s(
+                    "play",
+                    "Pressure and wheel",
+                    Motion,
+                    &[PRESS_TO, PRESSURE, WHEEL_VIB],
+                )
+                .labels(&[(PRESS_TO, "Pressure to"), (PRESSURE, "Amount")]),
             ],
         ),
         "Voice" => (
@@ -1205,7 +1291,7 @@ fn analog(page: &str) -> Option<Plan> {
                     "voices",
                     "Voices",
                     Voice,
-                    &[VOICE_MODE, POLYPHONY, GLIDE, UNI_DETUNE],
+                    &[VOICE_MODE, POLYPHONY, GLIDE, UNI_DETUNE, PRIORITY, LEGATO],
                 )
                 .labels(&[(UNI_DETUNE, "Detune")]),
                 s("tuning", "Tuning", Voice, &[TRANSPOSE, BEND_RANGE, FINE]),

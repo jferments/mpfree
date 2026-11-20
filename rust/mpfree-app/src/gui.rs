@@ -3921,7 +3921,8 @@ impl Player {
                 return Default::default();
             };
             let sets = mpfree_synth_ui::qsets::factory(st.info, st.params);
-            let sets = mpfree_synth_ui::qsets::on_pad(st.info, &sets, pad);
+            let sets =
+                mpfree_synth_ui::qsets::on_pad_values(st.info, &sets, pad, &|id| st.value(id));
             let Some(set) = sets.first() else {
                 return Default::default();
             };
@@ -16866,7 +16867,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         play_synth.apply(ToUi::PadDown { pad, velocity: v });
     }
     out.push(("play-synth", play_synth));
-    // The Table page with both oscillators on tables: Vowels a third
+    // The Waves page with both oscillators on tables: Vowels a third
     // through, the filter envelope scanning it, and Harmonics mirrored.
     let table: &[(u16, f32)] = {
         use mpfree_synth::params as pp;

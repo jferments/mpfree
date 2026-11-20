@@ -612,3 +612,630 @@ pressure.to-1 = Level
 pressure.depth-1 = 30
 pressure.to-2 = Cutoff
 pressure.depth-2 = 37.5
+
+# The Table presets: the Wavetable synth's nine, folded into Poly (19 Nov,
+# wave 2 of the synth library), converted by wavetable::to_poly with times
+# rounded to three figures and levels to a tenth of a dB. Both oscillators
+# play the Table wave. tests/wavetable_to_poly.rs checks that each plays as
+# the Wavetable synth's did.
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = Table Init
+
+# Osc 1
+osc-1.wave = Table
+
+# Osc 2
+osc-2.wave = Table
+osc-2.level = 0
+osc-2.table = Harmonics
+
+# Filter
+filter.cutoff = 8000
+filter.resonance = 10
+filter.env-amount = 0
+filter.velocity = 0.5
+
+# Filter env
+filter-env.decay = 600
+filter-env.sustain = 0
+filter-env.release = 393
+
+# LFO
+lfo.rate = 2
+
+# Output
+output.level = 1.9
+
+# Pressure
+pressure.to-1 = Position
+pressure.depth-1 = 33
+pressure.to-2 = Cutoff
+pressure.depth-2 = 25
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = Morph Pad
+
+# Osc 1
+osc-1.wave = Table
+osc-1.table = Vowels
+osc-1.position = 10
+
+# Osc 2
+osc-2.wave = Table
+osc-2.fine = 9
+osc-2.table = Drift
+osc-2.position = 30
+
+# Unison
+unison.unison = 3
+unison.detune = 14
+unison.spread = 80
+
+# Filter
+filter.cutoff = 3500
+filter.env-amount = 0
+filter.velocity = 0.5
+
+# Filter env
+filter-env.decay = 600
+filter-env.sustain = 0
+filter-env.release = 393
+
+# Amp env
+amp-env.attack = 287
+amp-env.decay = 1500
+amp-env.sustain = 85
+amp-env.release = 1970
+
+# LFO
+lfo.shape = Triangle
+lfo.rate = 0.15
+lfo.to-position-1 = 60
+lfo.to-position-2 = 40
+
+# Voice
+voice.voices = 6
+
+# Output
+output.level = -2.1
+
+# Pressure
+pressure.to-1 = Position
+pressure.depth-1 = 40
+pressure.to-2 = Level
+pressure.depth-2 = 25
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = Vowel Lead
+
+# Osc 1
+osc-1.wave = Table
+osc-1.table = Vowels
+
+# Osc 2
+osc-2.wave = Table
+osc-2.octave = -1
+osc-2.level = 35
+osc-2.position = 66
+
+# Filter
+filter.cutoff = 6000
+filter.resonance = 10
+filter.env-amount = 0
+filter.velocity = 0.5
+
+# Filter env
+filter-env.decay = 900
+filter-env.sustain = 40
+filter-env.release = 393
+filter-env.to-position-1 = 70
+
+# LFO
+lfo.rate = 5.5
+lfo.to-pitch = 0.2
+
+# Voice
+voice.mode = Legato
+voice.glide = 70
+voice.bend-range = 12
+
+# Output
+output.level = 1.9
+
+# Pressure
+pressure.to-1 = Position
+pressure.depth-1 = 60
+pressure.to-2 = Vibrato
+pressure.depth-2 = 40
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = Sync Sweep
+
+# Osc 1
+osc-1.wave = Table
+osc-1.table = Sync
+
+# Osc 2
+osc-2.wave = Table
+osc-2.octave = -1
+osc-2.level = 40
+osc-2.position = 66
+
+# Filter
+filter.cutoff = 9000
+filter.resonance = 10
+filter.drive = 6
+filter.env-amount = 0
+filter.velocity = 0.5
+
+# Filter env
+filter-env.decay = 450
+filter-env.sustain = 10
+filter-env.release = 393
+filter-env.to-position-1 = 100
+filter-env.vel-to-position = 30
+
+# Amp env
+amp-env.decay = 600
+amp-env.sustain = 60
+amp-env.release = 197
+
+# LFO
+lfo.rate = 2
+
+# Output
+output.level = 1.9
+
+# Pressure
+pressure.to-1 = Position
+pressure.depth-1 = 33
+pressure.to-2 = Cutoff
+pressure.depth-2 = 25
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = Digital Bell
+
+# Osc 1
+osc-1.wave = Table
+osc-1.table = FM
+osc-1.position = 70
+osc-1.warp = Sync
+
+# Osc 2
+osc-2.wave = Table
+osc-2.octave = 1
+osc-2.level = 30
+osc-2.table = Resonance
+osc-2.position = 40
+
+# Filter
+filter.cutoff = 12000
+filter.resonance = 10
+filter.env-amount = 0
+filter.velocity = 0.5
+
+# Filter env
+filter-env.decay = 800
+filter-env.sustain = 0
+filter-env.release = 393
+filter-env.to-position-1 = -70
+filter-env.to-warp = 25
+filter-env.vel-to-position = 30
+
+# Amp env
+amp-env.decay = 1800
+amp-env.sustain = 0
+amp-env.release = 1180
+
+# LFO
+lfo.rate = 2
+
+# Output
+output.level = 1.9
+
+# Pressure
+pressure.to-1 = Warp
+pressure.depth-1 = 30
+pressure.depth-2 = 25
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = Growl Bass
+
+# Osc 1
+osc-1.wave = Table
+osc-1.octave = -1
+osc-1.table = Resonance
+osc-1.warp = Bend
+osc-1.warp-amt = 20
+
+# Osc 2
+osc-2.wave = Table
+osc-2.octave = -2
+osc-2.level = 50
+osc-2.position = 100
+
+# Filter
+filter.cutoff = 1400
+filter.resonance = 30
+filter.drive = 12
+filter.env-amount = 0
+filter.key-track = 30
+filter.velocity = 0.5
+
+# Filter env
+filter-env.decay = 600
+filter-env.sustain = 0
+filter-env.release = 393
+
+# Amp env
+amp-env.sustain = 100
+amp-env.release = 78.6
+
+# LFO
+lfo.shape = Triangle
+lfo.rate = 2
+lfo.sync = 1/16
+lfo.to-position-1 = 70
+
+# Voice
+voice.mode = Legato
+voice.glide = 30
+
+# Output
+output.level = 1.9
+
+# Pressure
+pressure.to-1 = Warp
+pressure.depth-1 = 50
+pressure.to-2 = Cutoff
+pressure.depth-2 = 25
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = Organ
+
+# Osc 1
+osc-1.wave = Table
+osc-1.table = Organ
+osc-1.position = 45
+
+# Osc 2
+osc-2.wave = Table
+osc-2.level = 0
+osc-2.table = Harmonics
+
+# Filter
+filter.cutoff = 12000
+filter.resonance = 10
+filter.env-amount = 0
+filter.velocity = 0.5
+
+# Filter env
+filter-env.decay = 600
+filter-env.sustain = 0
+filter-env.release = 393
+
+# Amp env
+amp-env.attack = 1.28
+amp-env.sustain = 100
+amp-env.release = 59
+amp-env.velocity = 0
+
+# LFO
+lfo.rate = 6.5
+lfo.to-pitch = 0.08
+
+# Output
+output.level = 1.9
+
+# Pressure
+pressure.to-1 = Position
+pressure.depth-1 = 55
+pressure.depth-2 = 25
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = Harmonic Pluck
+
+# Osc 1
+osc-1.wave = Table
+osc-1.table = Harmonics
+osc-1.position = 100
+
+# Osc 2
+osc-2.wave = Table
+osc-2.level = 0
+osc-2.table = Harmonics
+
+# Filter
+filter.cutoff = 14000
+filter.resonance = 10
+filter.env-amount = 0
+filter.velocity = 0.5
+
+# Filter env
+filter-env.decay = 350
+filter-env.sustain = 0
+filter-env.release = 393
+filter-env.to-position-1 = -100
+filter-env.vel-to-position = -40
+
+# Amp env
+amp-env.decay = 700
+amp-env.sustain = 0
+amp-env.release = 393
+
+# LFO
+lfo.rate = 2
+
+# Output
+output.level = 1.9
+
+# Pressure
+pressure.to-1 = Off
+pressure.depth-1 = 33
+pressure.depth-2 = 25
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = FM Keys
+
+# Osc 1
+osc-1.wave = Table
+osc-1.warp = FM
+osc-1.warp-amt = 8
+
+# Osc 2
+osc-2.wave = Table
+osc-2.octave = 1
+osc-2.level = 0
+
+# Filter
+filter.cutoff = 10000
+filter.resonance = 10
+filter.env-amount = 0
+filter.velocity = 0.5
+
+# Filter env
+filter-env.decay = 900
+filter-env.sustain = 0
+filter-env.release = 393
+filter-env.to-warp = 45
+
+# Amp env
+amp-env.decay = 1400
+amp-env.sustain = 30
+amp-env.release = 491
+
+# LFO
+lfo.rate = 2
+
+# Output
+output.level = 1.9
+
+# Pressure
+pressure.to-1 = Warp
+pressure.depth-1 = 35
+pressure.depth-2 = 25
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = Portamento Lead
+
+# Osc 1
+osc-1.wave = Saw
+
+# Osc 2
+osc-2.wave = Saw
+osc-2.fine = 7
+osc-2.level = 60
+
+# Filter
+filter.cutoff = 2200
+filter.resonance = 20
+filter.env-amount = 1
+filter.key-track = 40
+filter.velocity = 1
+
+# Filter env
+filter-env.decay = 600
+filter-env.sustain = 40
+
+# Amp env
+amp-env.attack = 3
+amp-env.release = 220
+
+# Voice
+voice.mode = Legato
+voice.glide = 250
+voice.glide-mode = Rate
+
+# Output
+output.level = 0
+
+# Routes
+routes.from-2 = Velocity
+routes.to-2 = Cutoff
+routes.depth-2 = 30
+
+# Pressure
+pressure.to-1 = Vibrato
+pressure.depth-1 = 40
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = Low Note Lead
+
+# Osc 1
+osc-1.wave = Pulse
+osc-1.width = 40
+
+# Osc 2
+osc-2.octave = -1
+osc-2.level = 50
+
+# Mix
+mix.sub = 20
+
+# Filter
+filter.cutoff = 900
+filter.resonance = 35
+filter.env-amount = 2
+filter.key-track = 50
+filter.velocity = 1.5
+
+# Filter env
+filter-env.decay = 300
+filter-env.sustain = 30
+
+# Amp env
+amp-env.attack = 2
+amp-env.release = 120
+
+# Voice
+voice.mode = Mono
+voice.priority = Low
+voice.glide = 50
+
+# Output
+output.level = 0
+
+# Pressure
+pressure.to-1 = Cutoff
+pressure.depth-1 = 30
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = Breath Lead
+
+# Osc 1
+osc-1.wave = Saw
+
+# Osc 2
+osc-2.wave = Triangle
+osc-2.octave = 1
+osc-2.level = 30
+
+# Mix
+mix.noise = 8
+
+# Filter
+filter.cutoff = 1500
+filter.resonance = 15
+filter.key-track = 50
+filter.env-amount = 0.6
+
+# Amp env
+amp-env.attack = 25
+amp-env.release = 150
+
+# LFO 2
+lfo-2.rate = 5.2
+lfo-2.fade-in = 500
+lfo-2.to-pitch = 0.15
+
+# Voice
+voice.mode = Legato
+voice.glide = 40
+
+# Output
+output.level = 0
+
+# Routes
+routes.from-2 = Breath
+routes.to-2 = Cutoff
+routes.depth-2 = 50
+
+# Pressure
+pressure.to-1 = Cutoff
+pressure.depth-1 = 40
+pressure.to-2 = Vibrato
+pressure.depth-2 = 25
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = Slide Lead
+
+# Osc 1
+osc-1.wave = Saw
+
+# Osc 2
+osc-2.wave = Pulse
+osc-2.width = 30
+osc-2.fine = -6
+osc-2.level = 50
+
+# Filter
+filter.cutoff = 1300
+filter.resonance = 25
+filter.env-amount = 1.2
+filter.key-track = 40
+filter.velocity = 1
+
+# Filter env
+filter-env.decay = 500
+filter-env.sustain = 40
+
+# Amp env
+amp-env.attack = 4
+amp-env.release = 250
+
+# Output
+output.level = -1.5
+
+# Routes
+routes.from-2 = Tone
+routes.to-2 = Cutoff
+routes.depth-2 = 50
+
+# Pressure
+pressure.to-1 = Vibrato
+pressure.depth-1 = 35
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = Unison Lead
+
+# Osc 1
+osc-1.wave = Saw
+
+# Osc 2
+osc-2.level = 0
+
+# Unison
+unison.unison = 4
+unison.detune = 20
+unison.spread = 70
+
+# Filter
+filter.cutoff = 3000
+filter.resonance = 10
+filter.env-amount = 0.8
+filter.key-track = 40
+
+# Filter env
+filter-env.decay = 700
+filter-env.sustain = 50
+
+# Amp env
+amp-env.attack = 3
+amp-env.release = 200
+
+# Voice
+voice.mode = Mono
+voice.priority = High
+voice.glide = 30
+
+# Output
+output.level = 0
+
+# Pressure
+pressure.to-1 = Vibrato
+pressure.depth-1 = 30

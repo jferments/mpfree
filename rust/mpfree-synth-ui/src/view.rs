@@ -35,7 +35,7 @@
 use crate::fm_visual as fv;
 use crate::format::{amount_text, value_text};
 use crate::kit_visual as kv;
-use crate::pages::{plan, qlink_targets, Page};
+use crate::pages::{plan_values, qlink_targets, Page};
 use crate::section_view::{Control, Kind, SectionBox, SectionView};
 use crate::sections::{arrange, Arrangement, Section};
 use crate::visual;
@@ -320,7 +320,7 @@ impl SynthPanel {
     /// change made outside the panel. Keeps the page when the node is the same.
     pub fn load(&mut self, ui: &mut Ui, state: SynthState) -> Result<(), String> {
         let same = self.state.info.id == state.info.id && !self.pages.is_empty();
-        self.pages = plan(state.info, state.params);
+        self.pages = plan_values(state.info, state.params, &state.values);
         if !same {
             self.page = 0;
             self.focus = None;
@@ -341,7 +341,7 @@ impl SynthPanel {
             qlinks: Vec::new(),
         };
         let page = self.pages.get(self.page).unwrap_or(&empty);
-        self.arrangement = arrange(self.state.info, self.state.params, page);
+        self.arrangement = arrange(self.state.info, self.state.params, &self.state.values, page);
     }
 
     /// Each sounding voice's pressure, 0 to 1, for the Pressure page's live
@@ -582,6 +582,12 @@ impl SynthPanel {
 
     fn set(&mut self, ui: &mut Ui, i: usize, v: f32) -> Option<SynthAction> {
         let set = self.state.set(i, v);
+        if set.is_some() && relays_out(self.state.info, self.state.params[i].id) {
+            // A drum's model or the kit's voices pick the page's knobs.
+            self.pages = plan_values(self.state.info, self.state.params, &self.state.values);
+            self.page = self.page.min(self.pages.len().saturating_sub(1));
+            self.arrange();
+        }
         self.refresh(ui);
         set.map(|value| SynthAction::Set {
             id: self.state.params[i].id,
@@ -750,8 +756,14 @@ impl SynthPanel {
                 .filter(|t| *t != page.name && self.pages.iter().any(|p| &p.name == t))
                 .map(|t| link(&t));
             let mut why = None;
-            for &i in &sec.params {
-                let reason = inactive(st, i);
+            // Off for one reason all through: the reason alone ("one copy").
+            let reasons: Vec<_> = sec.params.iter().map(|&i| inactive(st, i)).collect();
+            if let Some(&Some(r)) = reasons.first() {
+                if reasons.len() > 1 && reasons.iter().all(|&x| x == Some(r)) {
+                    why = Some(r.to_string());
+                }
+            }
+            for (&i, &reason) in sec.params.iter().zip(&reasons) {
                 if why.is_none() {
                     why = reason.map(|r| format!("{} · {r}", sec.label(i, &st.params[i])));
                 }
@@ -861,6 +873,14 @@ fn control(st: &SynthState, sec: &Section, i: usize, qlink: Option<usize>, dim: 
     }
 }
 
+/// Whether changing parameter `id` changes which knobs the pages show: a
+/// Drums pad's model, or the kit's Voices.
+pub fn relays_out(info: &NodeInfo, id: u16) -> bool {
+    use mpfree_synth::drum_params as dp;
+    info.id == "mpfree.drums"
+        && (id == dp::VOICES || dp::pad_field(id).is_some_and(|(_, f)| f == dp::field::MODEL))
+}
+
 /// Why parameter `i` does nothing as the sound is set (a pulse width with
 /// no pulse wave, a unison detune in poly mode), if it doesn't.
 pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
@@ -882,6 +902,15 @@ pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
         }
     }
     match st.info.id {
+        "mpfree.drums" => {
+            use mpfree_synth::drum_params as dp;
+            if mpfree_synth::drum_fx::owns(id) {
+                return drum_fx_note(&v, id);
+            }
+            let (pad, f) = dp::pad_field(id)?;
+            let m = dp::model_of(v(dp::pad_id(pad, dp::field::MODEL)));
+            dp::idle_reason(m, v(dp::VOICES) >= 0.5, f)
+        }
         "mpfree.wind" => {
             use mpfree_synth::wind_params as wn;
             let flute = v(wn::MODEL).round() == wn::FLUTE;
@@ -964,7 +993,10 @@ pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
                 an::LFO_PW | an::PM_PW if !pulse(an::OSC1_WAVE) && !pulse(an::OSC2_WAVE) => {
                     Some("no pulse wave")
                 }
-                an::UNI_DETUNE if v(an::VOICE_MODE) < 0.5 => Some("Unison only"),
+                an::UNI_DETUNE | an::PRIORITY | an::LEGATO if v(an::VOICE_MODE) < 0.5 => {
+                    Some("Unison only")
+                }
+                an::PRESSURE if v(an::PRESS_TO).round() == an::PRESS_OFF => Some("pressure is off"),
                 an::F_DECAY if v(an::F_SUSTAIN) >= 100.0 => Some("sustain is full"),
                 an::A_DECAY if v(an::A_SUSTAIN) >= 100.0 => Some("sustain is full"),
                 _ => None,
@@ -977,6 +1009,9 @@ pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
             match id {
                 pp::OSC1_PW if poly && v(pp::OSC1_WAVE).round() != 1.0 => Some("pulse only"),
                 pp::OSC2_PW if poly && v(pp::OSC2_WAVE).round() != 1.0 => Some("pulse only"),
+                pp::SUB_WAVE if poly && v(pp::SUB_LEVEL) <= 0.0 => Some("sub is off"),
+                pp::PRIORITY if poly && v(pp::VOICE_MODE) < 0.5 => Some("Mono and Legato only"),
+                pp::GLIDE_MODE if poly && v(pp::GLIDE) <= 0.0 => Some("glide is off"),
                 pp::UNISON_DETUNE | pp::UNISON_SPREAD if poly && v(pp::UNISON) <= 1.0 => {
                     Some("one copy")
                 }
@@ -1065,42 +1100,42 @@ pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
             (id != fp::op_id(op, fp::op::ON) && v(fp::op_id(op, fp::op::ON)) < 0.5)
                 .then_some("operator is off")
         }
-        "mpfree.drums" => {
-            use mpfree_synth::drum_fx::{field as x, fx_id, kit as k, owns, BASE, KIT, STRIDE};
-            use mpfree_synth::drum_params::PADS;
-            if !owns(id) {
-                return None;
+        _ => None,
+    }
+}
+
+/// Why one of a drum's effects or the kit's sends does nothing (an id
+/// [`mpfree_synth::drum_fx::owns`]).
+fn drum_fx_note(v: &impl Fn(u16) -> f32, id: u16) -> Option<&'static str> {
+    use mpfree_synth::drum_fx::{field as x, fx_id, kit as k, BASE, KIT, STRIDE};
+    use mpfree_synth::drum_params::PADS;
+    let sends = |f: u16| (0..PADS).any(|p| v(fx_id(p, f)) > 0.0);
+    if id >= KIT {
+        return match id {
+            k::DELAY_TIME | k::DELAY_FEEDBACK | k::DELAY_TONE | k::DELAY_LEVEL
+                if !sends(x::DELAY_SEND) =>
+            {
+                Some("no drum sends to it")
             }
-            let sends = |f: u16| (0..PADS).any(|p| v(fx_id(p, f)) > 0.0);
-            if id >= KIT {
-                return match id {
-                    k::DELAY_TIME | k::DELAY_FEEDBACK | k::DELAY_TONE | k::DELAY_LEVEL
-                        if !sends(x::DELAY_SEND) =>
-                    {
-                        Some("no drum sends to it")
-                    }
-                    k::REVERB_SIZE
-                    | k::REVERB_DECAY
-                    | k::REVERB_TONE
-                    | k::REVERB_GATE
-                    | k::REVERB_LEVEL
-                        if !sends(x::REVERB_SEND) =>
-                    {
-                        Some("no drum sends to it")
-                    }
-                    _ => None,
-                };
+            k::REVERB_SIZE
+            | k::REVERB_DECAY
+            | k::REVERB_TONE
+            | k::REVERB_GATE
+            | k::REVERB_LEVEL
+                if !sends(x::REVERB_SEND) =>
+            {
+                Some("no drum sends to it")
             }
-            let pad = usize::from((id - BASE) / STRIDE);
-            let pv = |f: u16| v(fx_id(pad, f));
-            match (id - BASE) % STRIDE {
-                x::DIST_TONE | x::DIST_MIX if pv(x::DISTORTION) <= 0.0 => Some("distortion is off"),
-                x::MID_FREQ if pv(x::MID) == 0.0 => Some("mid is flat"),
-                x::THRESHOLD | x::COMP_ATTACK | x::COMP_RELEASE if pv(x::RATIO) <= 1.0 => {
-                    Some("ratio is 1:1")
-                }
-                _ => None,
-            }
+            _ => None,
+        };
+    }
+    let pad = usize::from((id - BASE) / STRIDE);
+    let pv = |f: u16| v(fx_id(pad, f));
+    match (id - BASE) % STRIDE {
+        x::DIST_TONE | x::DIST_MIX if pv(x::DISTORTION) <= 0.0 => Some("distortion is off"),
+        x::MID_FREQ if pv(x::MID) == 0.0 => Some("mid is flat"),
+        x::THRESHOLD | x::COMP_ATTACK | x::COMP_RELEASE if pv(x::RATIO) <= 1.0 => {
+            Some("ratio is 1:1")
         }
         _ => None,
     }
@@ -1360,10 +1395,10 @@ fn poly_cards(st: &SynthState, page: &str) -> Strip {
         let title = c.title.clone();
         s.push(c, &title);
     }
-    // Each oscillator's table, for the Table page's boxes.
-    if page == "Table" {
+    // Each oscillator's table, for the Waves page's boxes.
+    if page == "Waves" {
         for o in 0..2 {
-            s.push(table_card(&v, o), "Table");
+            s.push(table_card(&v, o), "Waves");
         }
     }
     s

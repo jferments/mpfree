@@ -270,6 +270,82 @@ fn legato_glides_without_retrigger() {
 }
 
 #[test]
+fn priority_picks_the_held_key_in_mono_and_legato() {
+    // C2 then G2 held: Last and High play G2, Low stays on C2.
+    for mode in [1.0, 2.0] {
+        for (prio, want, back) in [(0.0, 43u8, 36u8), (1.0, 36, 43), (2.0, 43, 36)] {
+            let mut s = Poly::new(RATE);
+            s.set_param(VOICE_MODE, mode);
+            s.set_param(PRIORITY, prio);
+            render(
+                &mut s,
+                2048,
+                &[(0, on(36, 100)), (512, on(43, 100))],
+                |_| 128,
+            );
+            assert_eq!(
+                s.mono_note().map(|m| m.0),
+                Some(want),
+                "mode {mode} priority {prio}"
+            );
+            // Letting go of the key that plays goes to the other, still held.
+            render(&mut s, 1024, &[(0, off(want))], |_| 128);
+            assert_eq!(
+                s.mono_note().map(|m| m.0),
+                Some(back),
+                "mode {mode} priority {prio}, after letting go"
+            );
+            assert_eq!(s.active_voices(), 1);
+        }
+    }
+    // Low: a key above the one playing doesn't restart the envelopes in
+    // Mono (it isn't played at all).
+    let mut s = Poly::new(RATE);
+    s.set_param(VOICE_MODE, 1.0);
+    s.set_param(PRIORITY, 1.0);
+    s.set_param(AMP_A, 0.5);
+    s.set_param(AMP_D, 5.0);
+    s.set_param(AMP_S, 50.0);
+    render(&mut s, 4800, &[(0, on(48, 100))], |_| 128);
+    let (l, _) = render(&mut s, 4800, &[(0, on(60, 100))], |_| 128);
+    assert!(peak(&l) < 0.25, "a key above Low's shouldn't retrigger");
+    assert_eq!(s.mono_note().map(|m| m.0), Some(48));
+}
+
+#[test]
+fn glide_by_rate_takes_longer_for_a_wider_interval() {
+    // Glide mode Rate, Glide 300 ms: an octave takes 300 ms, a fifth 175.
+    let time_to = |interval: u8| {
+        let mut s = Poly::new(RATE);
+        s.set_param(VOICE_MODE, 2.0);
+        s.set_param(GLIDE, 300.0);
+        s.set_param(GLIDE_MODE, 1.0);
+        render(&mut s, 2400, &[(0, on(48, 100))], |_| 128);
+        render(&mut s, 16, &[(0, on(48 + interval, 100))], |_| 16);
+        let mut t = 16usize;
+        while s.mono_note().unwrap().1 < f32::from(48 + interval) {
+            render(&mut s, 16, &[], |_| 16);
+            t += 16;
+            assert!(t < RATE as usize, "never arrived");
+        }
+        t as f32 / RATE as f32
+    };
+    let octave = time_to(12);
+    let fifth = time_to(7);
+    assert!((octave - 0.3).abs() < 0.002, "octave in {octave} s");
+    assert!((fifth - 0.175).abs() < 0.002, "fifth in {fifth} s");
+    // Time (the default) glides as before: 99 % of any interval in 300 ms,
+    // so after 50 ms an octave is over half done (Rate would be 2 notes in).
+    let mut s = Poly::new(RATE);
+    s.set_param(VOICE_MODE, 2.0);
+    s.set_param(GLIDE, 300.0);
+    render(&mut s, 2400, &[(0, on(48, 100))], |_| 128);
+    render(&mut s, 2400, &[(0, on(60, 100))], |_| 128);
+    let part = s.mono_note().unwrap().1;
+    assert!(part > 53.5 && part < 55.5, "Time glides as before: {part}");
+}
+
+#[test]
 fn low_cutoff_darkens_the_sound() {
     let energy_of_diff = |cut: f32| {
         let mut s = Poly::new(RATE);
