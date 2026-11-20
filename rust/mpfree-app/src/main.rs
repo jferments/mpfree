@@ -10790,6 +10790,7 @@ fn player_session(
                         late_let_gos: c.late_let_gos,
                         merged_values: c.merged_values,
                         peak_grains: c.peak_grains,
+                        window_waits: c.window_waits,
                     }
                 },
             }));
