@@ -189,7 +189,7 @@
 31342	Talk box
 111176	Vocoder
 87944	Tape delay
-8572	Time with trig conditions and ratchets, 8 clips, arp
+8952	Time with trig conditions and ratchets, 8 clips, arp
 43626	Time: 8 clips, 4 tracks 90 ms ahead
 15539	Time: recording 3 armed tracks, 8 clips
 9378	Time: transport, 8 clips, arp
