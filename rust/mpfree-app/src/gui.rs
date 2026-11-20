@@ -1704,6 +1704,19 @@ pub enum FromUi {
     /// The Looper tab: a command for the picked loop (an edit tool, Fade
     /// old, the seam fade, After recording).
     LoopCommand(mpfree_looper::Command),
+    /// The Looper tab's Listen: the picked loop (Some(None)) or one of
+    /// its layers by id played alone while the music is stopped; None
+    /// stops it ([`crate::looping::LoopAction::Listen`]).
+    LoopListen(Option<Option<u8>>),
+    /// Records from: a mix, the master or one strip
+    /// ([`crate::looping::LoopSource::Mix`]).
+    LoopMix(mpfree_fx::StripId),
+    /// What you played's window moved or resized
+    /// ([`crate::looping::LoopAction::CaptureSpan`]).
+    LoopCaptureSpan(Option<i64>, u32),
+    /// Records from's choices opened: the mixer's strips, to name its
+    /// mixes ([`ToUi::ThrowStrips`] answers).
+    LoopMixesWanted,
     /// The Looper tab's undo history: back (below 0) or forward this many
     /// steps.
     LoopSteps(i32),
@@ -5394,6 +5407,7 @@ impl Player {
                 LoopAct::Solo(n) => out.push(FromUi::LoopSolo(n)),
                 LoopAct::PadKeys => out.push(FromUi::LoopKeys),
                 LoopAct::Capture => out.push(FromUi::LoopCapture),
+                LoopAct::CaptureSpan(end, bars) => out.push(FromUi::LoopCaptureSpan(end, bars)),
                 LoopAct::Clear(n) => {
                     out.push(FromUi::LoopPick(n));
                     out.push(FromUi::LoopCommand(C::Clear));
@@ -5408,12 +5422,26 @@ impl Player {
                         out.push(FromUi::LoopLayer { id: l.id, command });
                     }
                 }
+                // Records from (the deck's header): its choices open in the
+                // lanes' place.
                 LoopAct::Strip(Ctl::Input) => {
-                    // Pads, then the line input, then the other loops.
-                    let next = (crate::looper_page::source_index(&self.looper) + 1) % 3;
-                    self.loop_source(next, &mut out);
+                    let now = self.looper_page.source_index(&self.looper);
+                    if let Some(e) = self
+                        .ui
+                        .get_mut::<crate::looper_tab::LoopEditor>(crate::looper_tab::EDITOR)
+                    {
+                        e.toggle_sources(now);
+                    }
+                    out.push(FromUi::LoopMixesWanted);
+                    self.ui.invalidate();
                 }
                 LoopAct::Strip(Ctl::Source(i)) => self.loop_source(i, &mut out),
+                LoopAct::Strip(Ctl::Listen) => out.push(FromUi::LoopListen(Some(None))),
+                LoopAct::LayerListen(k) => {
+                    if let Some(l) = self.looper_page.layer_info(k) {
+                        out.push(FromUi::LoopListen(Some(Some(l.id))));
+                    }
+                }
                 LoopAct::Strip(Ctl::Clear) => out.push(FromUi::LoopCommand(C::Clear)),
                 LoopAct::Strip(Ctl::Monitor) => {
                     out.push(FromUi::Looper(crate::looper_page::B_MONITOR))
@@ -5498,11 +5526,24 @@ impl Player {
         first
     }
 
-    /// Records from `i` (0 Pads, 1 Line in, 2 the other loops), as the
-    /// looper's settings ask for it. Line in opens the line input.
+    /// Records from `i` (0 Pads, 1 Line in, 2 the other loops, then the
+    /// mixes), as the looper's settings ask for it. Line in opens the line
+    /// input.
     fn loop_source(&mut self, i: u8, out: &mut Vec<FromUi>) {
         use crate::looping::LoopSource;
         out.push(FromUi::LoopRecordLoops(i == 2));
+        let fixed = crate::looper_tab::SOURCE_CHOICES.len();
+        if let Some(k) = usize::from(i).checked_sub(fixed) {
+            if let Some((name, strip)) = self.looper_page.mix(k) {
+                out.push(FromUi::LoopMix(strip));
+                self.tell(&if strip == mpfree_fx::StripId::Master {
+                    "Records from the master: all you hear but the loops".to_string()
+                } else {
+                    format!("Records from {name}: what it sends on, after its fader")
+                });
+            }
+            return;
+        }
         match i {
             0 if self.settings.loop_source != LoopSource::Pads => {
                 out.push(FromUi::LooperSetting(crate::app::Item::LoopSource, -1))
@@ -8649,6 +8690,7 @@ impl Player {
                 self.refresh_perform();
             }
             ToUi::ThrowStrips(strips) => {
+                self.looper_page.set_mixes(&mut self.ui, &strips);
                 if self.throw_strips != strips {
                     self.throw_strips = strips;
                     self.refresh_perform();
@@ -16926,10 +16968,136 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         Ok(p) => out.push(("looper", p)),
         Err(e) => eprintln!("looper sample: {e}"),
     }
+    // Listen: the music stopped, Loop 1's Bass layer playing on its own
+    // (its ▶ lit, the playhead where Listen has got to).
+    match sample_looper_picking(fonts(), 0) {
+        Ok(mut p) => {
+            let mut v = p.looper.clone();
+            v.listening = v.layers[1].map(|l| (0, Some(l.id), 0.4));
+            p.apply(ToUi::Looper(Box::new(v)));
+            out.push(("looper-listen", p));
+        }
+        Err(e) => eprintln!("looper sample: {e}"),
+    }
+    // Loop 4 armed on the bar with the music playing, in the last bar
+    // before it starts: the ring counts the beats left.
+    match sample_looper_jam(fonts()) {
+        Ok(mut p) => {
+            let mut v = p.looper.clone();
+            let l = &mut v.loops[6];
+            l.phase = mpfree_looper::Phase::Armed;
+            l.starts_on = Some(9 * 4 * mpfree_transport::time::PPQ as i64);
+            p.apply(ToUi::Looper(Box::new(v)));
+            p.apply(ToUi::Transport(TransportInfo {
+                state: mpfree_transport::State::Playing,
+                position: (8 * 4 + 1) * mpfree_transport::time::PPQ as i64,
+                bpm: 92.0,
+                ..TransportInfo::default()
+            }));
+            out.push(("looper-countdown", p));
+        }
+        Err(e) => eprintln!("looper sample: {e}"),
+    }
+    // Records from's choices open in the lanes' place (the deck's
+    // Records from tapped), Pads lit, and the mixes under them.
+    match sample_looper_picking(fonts(), 4) {
+        Ok(mut p) => {
+            use mpfree_fx::StripId;
+            let mut strips = vec![("Master".to_string(), StripId::Master)];
+            for t in 0..crate::mixing::TRACKS {
+                strips.push((crate::mixing::name(StripId::Track(t)), StripId::Track(t)));
+            }
+            strips.push((
+                "Keys".to_string(),
+                StripId::Track(crate::mixing::TRACKS + 2),
+            ));
+            for b in 0..8 {
+                strips.push((crate::mixing::name(StripId::Bus(b)), StripId::Bus(b)));
+            }
+            p.apply(ToUi::ThrowStrips(strips));
+            if let Some(e) =
+                p.ui.get_mut::<crate::looper_tab::LoopEditor>(crate::looper_tab::EDITOR)
+            {
+                e.toggle_sources(0);
+            }
+            out.push(("looper-sources", p));
+        }
+        Err(e) => eprintln!("looper sample: {e}"),
+    }
+    // A take holds its source (the design review of 20 Nov, point 6):
+    // Loop 6 records the pads, the master was picked while it
+    // records, so the chip says "This take" with the pick as the next
+    // take's, and the hint says so.
+    match sample_looper_jam(fonts()) {
+        Ok(mut p) => {
+            use crate::looping::LoopSource;
+            let mut v = p.looper.clone();
+            v.source = LoopSource::Mix(mpfree_fx::StripId::Master);
+            v.taking_from = Some(LoopSource::Pads);
+            p.apply(ToUi::Looper(Box::new(v)));
+            p.apply(ToUi::Tell(
+                "looper: this take keeps recording the pads (Kit 1); the master from the next take"
+                    .into(),
+            ));
+            out.push(("looper-this-take", p));
+        }
+        Err(e) => eprintln!("looper sample: {e}"),
+    }
+    // Records from: Master while the Loop track's echoes still ring in
+    // Return A: REC on an empty loop is refused, said in the hint.
+    match sample_looper_picking(fonts(), 4) {
+        Ok(mut p) => {
+            let mut v = p.looper.clone();
+            v.source = crate::looping::LoopSource::Mix(mpfree_fx::StripId::Master);
+            p.apply(ToUi::Looper(Box::new(v)));
+            p.apply(ToUi::Tell(
+                "looper: Loop 5 doesn't record: Return A still rings with the loop's echoes: \
+                 the master records once they die away"
+                    .into(),
+            ));
+            out.push(("looper-master-refused", p));
+        }
+        Err(e) => eprintln!("looper sample: {e}"),
+    }
+    // A take's source lost while it records (the master, a send to a
+    // return turned up): a gap of silence from here, said and counted.
+    match sample_looper_jam(fonts()) {
+        Ok(mut p) => {
+            let mut v = p.looper.clone();
+            v.source = crate::looping::LoopSource::Mix(mpfree_fx::StripId::Master);
+            p.apply(ToUi::Looper(Box::new(v)));
+            p.apply(ToUi::Tell(
+                "looper: the take records silence from here, the master can't be recorded: the Loop \
+                 track sends to Return A, so the loop would record its own echoes: turn that send down"
+                    .into(),
+            ));
+            out.push(("looper-take-gap", p));
+        }
+        Err(e) => eprintln!("looper sample: {e}"),
+    }
     // Loop 5 picked, empty: What you played, the last 8 bars heard with
     // their bar lines, and Capture over the last two.
     match sample_looper_picking(fonts(), 4) {
         Ok(p) => out.push(("looper-empty", p)),
+        Err(e) => eprintln!("looper sample: {e}"),
+    }
+    // What you played's window over three times a 2-bar pattern, moved
+    // back a bar from the newest bar line: its grips, the dashed line at
+    // each repeat, and the button saying so.
+    match sample_looper_picking(fonts(), 4) {
+        Ok(mut p) => {
+            let mut v = p.looper.clone();
+            let h = &mut v.heard;
+            (h.unit, h.pattern) = (2, true);
+            let n = h.n_lines;
+            if n >= 8 {
+                let (a, b) = (h.lines[n - 8], h.lines[n - 2]);
+                h.take = Some((a.1, b.1, a.0, 6));
+                v.capture_into = Some((4, 6));
+            }
+            p.apply(ToUi::Looper(Box::new(v)));
+            out.push(("looper-window", p));
+        }
         Err(e) => eprintln!("looper sample: {e}"),
     }
     // Loop 5 armed to start when you play (Starts: When I play), the song
@@ -19238,6 +19406,78 @@ mod tests {
     /// instrument, step 2); the status lights it and the hint says what
     /// the pads are. Play's loop row lights its own Pads switch, and a tap
     /// on it gives the pads back; neither page has a chip in the top bar.
+    /// Records from's mixes: the mixer's strips but the Loop track, named
+    /// as the Mix tab names them; a tap records from that mix, and the
+    /// deck's chip names it.
+    #[test]
+    fn records_from_offers_the_master_tracks_and_submixes() {
+        use crate::looper_deck::{LoopDeck, DECK};
+        use crate::looper_tab::{LoopEditor, EDITOR};
+        use mpfree_fx::StripId;
+        use mpfree_ui::Widget;
+        let mut p = sample_looper(Fonts::embedded()).unwrap();
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.take_actions();
+        let r = p.ui.rect_of(DECK).unwrap();
+        let (x, y) = centre_of(LoopDeck::input_rect(r));
+        let mut asked: Vec<FromUi> = p.touch(1, Touch::Down, x, y).into_iter().collect();
+        asked.extend(p.touch(1, Touch::Up, x, y));
+        asked.extend(p.take_actions());
+        assert!(asked.contains(&FromUi::LoopMixesWanted), "{asked:?}");
+        p.apply(ToUi::ThrowStrips(vec![
+            ("Master".to_string(), StripId::Master),
+            ("Drums".to_string(), StripId::Track(crate::mixing::DRUMS)),
+            ("Loop".to_string(), StripId::Track(crate::mixing::LOOP)),
+            (
+                "Bass line".to_string(),
+                StripId::Track(crate::mixing::TRACKS + 2),
+            ),
+            ("Submix 1".to_string(), StripId::Bus(0)),
+        ]));
+        let er = p.ui.rect_of(EDITOR).unwrap();
+        let labels: Vec<(usize, String)> =
+            p.ui.get::<LoopEditor>(EDITOR)
+                .unwrap()
+                .targets(er)
+                .into_iter()
+                .filter(|t| t.id == "source")
+                .map(|t| (t.index, t.label))
+                .collect();
+        let names: Vec<&str> = labels.iter().map(|l| l.1.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "Pads",
+                "Line in",
+                "Loops",
+                "Master",
+                "Drums",
+                "Bass line",
+                "Submix 1"
+            ],
+            "never the Loop track"
+        );
+        let sub =
+            p.ui.get::<LoopEditor>(EDITOR)
+                .unwrap()
+                .targets(er)
+                .into_iter()
+                .find(|t| t.id == "source" && t.label == "Submix 1")
+                .unwrap();
+        let (x, y) = centre_of(sub.rect);
+        let mut acts: Vec<FromUi> = p.touch(1, Touch::Down, x, y).into_iter().collect();
+        acts.extend(p.touch(1, Touch::Up, x, y));
+        acts.extend(p.take_actions());
+        assert!(acts.contains(&FromUi::LoopRecordLoops(false)), "{acts:?}");
+        assert!(acts.contains(&FromUi::LoopMix(StripId::Bus(0))), "{acts:?}");
+        // The looper says so: the deck's chip names the mix.
+        let mut v = p.looper.clone();
+        v.source = crate::looping::LoopSource::Mix(StripId::Bus(0));
+        p.apply(ToUi::Looper(Box::new(v)));
+        assert_eq!(p.ui.get::<LoopDeck>(DECK).unwrap().head.input.0, "Submix 1");
+        assert_eq!(p.looper_page.source_index(&p.looper), 6);
+    }
+
     #[test]
     fn the_pads_switch_and_chip_turn_the_loop_keys_on_and_off() {
         use crate::looper_deck::{LoopDeck, DECK};
@@ -19254,10 +19494,33 @@ mod tests {
         p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
         p.take_actions();
         let r = p.ui.rect_of(DECK).unwrap();
-        // The header's Capture beside it asks for the last bars heard.
-        let (x, y) = centre_of(LoopDeck::capture_rect(r));
-        assert_eq!(p.touch(1, Touch::Down, x, y), Some(FromUi::LoopCapture));
-        p.touch(1, Touch::Up, x, y);
+        // Records from beside it opens its choices in the lanes' place;
+        // Line in there switches to the line input.
+        {
+            use crate::looper_tab::{LoopEditor, EDITOR};
+            let (x, y) = centre_of(LoopDeck::input_rect(r));
+            p.touch(1, Touch::Down, x, y);
+            p.touch(1, Touch::Up, x, y);
+            assert!(p.take_actions().is_empty());
+            use mpfree_ui::Widget;
+            let e = p.ui.get::<LoopEditor>(EDITOR).unwrap();
+            assert_eq!(e.sources(), Some(0), "open, Pads lit");
+            let er = p.ui.rect_of(EDITOR).unwrap();
+            let line = e
+                .targets(er)
+                .into_iter()
+                .find(|t| t.id == "source" && t.index == 1)
+                .expect("Line in");
+            assert_eq!(line.label, "Line in");
+            let (x, y) = centre_of(line.rect);
+            assert_eq!(
+                p.touch(1, Touch::Down, x, y),
+                Some(FromUi::LoopRecordLoops(false))
+            );
+            p.touch(1, Touch::Up, x, y);
+            p.take_actions();
+            assert_eq!(p.ui.get::<LoopEditor>(EDITOR).unwrap().sources(), None);
+        }
         let (x, y) = centre_of(LoopDeck::pads_rect(r));
         assert_eq!(p.touch(1, Touch::Down, x, y), Some(FromUi::LoopKeys));
         p.touch(1, Touch::Up, x, y);
@@ -19327,6 +19590,68 @@ mod tests {
         s.perform = None;
         p.apply(ToUi::Status(s));
         assert!(!chips(&p).iter().any(|c| c.starts_with("Pads:")));
+    }
+
+    /// Listen: with the music stopped, the header's Listen plays the
+    /// picked loop alone and a lane's ▶ its layer; with the music playing
+    /// both are faint and a tap says why.
+    #[test]
+    fn listen_plays_the_loop_or_a_layer_while_the_music_is_stopped() {
+        use crate::looper_tab::{LoopEditor, EDITOR};
+        let mut p = sample_looper(Fonts::embedded()).unwrap();
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.take_actions();
+        let tap = |p: &mut Player, (x, y): (i32, i32)| {
+            let down = p.touch(1, Touch::Down, x, y);
+            down.or(p.touch(1, Touch::Up, x, y))
+        };
+        let r = p.ui.rect_of(EDITOR).unwrap();
+        let parts = LoopEditor::parts(r);
+        assert_eq!(
+            p.ui.get::<LoopEditor>(EDITOR).unwrap().listen,
+            (true, false)
+        );
+        assert_eq!(
+            tap(&mut p, centre_of(parts.listen)),
+            Some(FromUi::LoopListen(Some(None)))
+        );
+        // The Bass layer's ▶ (the lanes are newest first: Bass second).
+        let ids: Vec<u8> = p.looper.layers.iter().flatten().map(|l| l.id).collect();
+        let e = p.ui.get::<LoopEditor>(EDITOR).unwrap();
+        let (_, lane) = e
+            .lane_rects(parts.lanes)
+            .into_iter()
+            .find(|(k, _)| *k == 1)
+            .unwrap();
+        let lp = LoopEditor::lane_parts(lane);
+        assert_eq!(
+            tap(&mut p, centre_of(lp.listen)),
+            Some(FromUi::LoopListen(Some(Some(ids[1]))))
+        );
+        // Listening to it: its ▶ is lit, Listen isn't.
+        let mut v = p.looper.clone();
+        v.listening = Some((0, Some(ids[1]), 0.2));
+        p.apply(ToUi::Looper(Box::new(v)));
+        let e = p.ui.get::<LoopEditor>(EDITOR).unwrap();
+        assert!(e.layers[1].listening && !e.layers[0].listening);
+        assert_eq!(e.listen, (true, false));
+        // The music playing: faint, and a tap says why.
+        p.apply(ToUi::Transport(TransportInfo {
+            state: mpfree_transport::State::Playing,
+            position: 0,
+            bpm: 92.0,
+            ..TransportInfo::default()
+        }));
+        let mut v = p.looper.clone();
+        v.listening = None;
+        p.apply(ToUi::Looper(Box::new(v)));
+        assert_eq!(
+            p.ui.get::<LoopEditor>(EDITOR).unwrap().listen,
+            (false, false)
+        );
+        assert_eq!(tap(&mut p, centre_of(parts.listen)), None);
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains("while the music is stopped"), "{hint}");
     }
 
     #[test]
@@ -19467,13 +19792,12 @@ mod tests {
                 .map(|x| centre_of(x.1))
                 .unwrap()
         };
-        let (line, loops, four) = (ctl(Ctl::Source(1)), ctl(Ctl::Source(2)), ctl(Ctl::Bars(3)));
-        assert_eq!(tap(&mut p, line), Some(FromUi::LoopRecordLoops(false)));
-        assert_eq!(
-            p.take_actions(),
-            [FromUi::LooperSetting(crate::app::Item::LineInput, 1)]
-        );
-        assert_eq!(tap(&mut p, loops), Some(FromUi::LoopRecordLoops(true)));
+        // Records from is over the loops now, not under the lanes.
+        assert!(e
+            .strip_controls(s)
+            .iter()
+            .all(|x| !matches!(x.0, Ctl::Source(_))));
+        let four = ctl(Ctl::Bars(4));
         assert_eq!(tap(&mut p, four), Some(FromUi::LoopBars(Some(4))));
         assert!(p.take_actions().is_empty());
     }
