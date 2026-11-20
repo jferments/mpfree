@@ -141,6 +141,8 @@ pub struct Counters {
     /// or knob values merged into a newer one to make room.
     pub late_let_gos: u64,
     pub merged_values: u64,
+    /// Grain Shape turns that waited for older grains to end.
+    pub window_waits: u64,
     pub peak_grains: usize,
     pub skipped_grains: u64,
     /// Split ([`Player::split`]): parts of periods the lane rendered half
@@ -1140,6 +1142,7 @@ impl Player {
             refused_hits: s.refused_hits,
             late_let_gos: s.late_let_gos,
             merged_values: s.merged_values,
+            window_waits: self.engine.window_waits(),
             peak_grains: self.peak_grains,
             skipped_grains: s.skipped_grains,
             lane_parts: s.lane_parts,

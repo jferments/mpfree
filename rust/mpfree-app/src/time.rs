@@ -70,7 +70,8 @@ pub mod link;
 mod pad_wait;
 
 use mpfree_play::mpfree_param::{Owner, ParamAddr, RelAddr};
-use mpfree_play::{Event, Out, Sink, TrackArps};
+use mpfree_play::room::{self, Table};
+use mpfree_play::{Event, Out, TrackArps};
 use mpfree_seq::mpfree_moves::Input;
 use mpfree_seq::steps::{Change, Step};
 use mpfree_seq::{Clip, Project, Track};
@@ -90,8 +91,6 @@ pub use pad_wait::{DuePads, PadFrom, PadWait, MAX_WAITS};
 pub const TRACKS: usize = 8;
 /// Bars in a clip made by tapping an empty slot (without a loop set).
 pub const NEW_CLIP_BARS: i64 = 2;
-/// Notes the sequencer can start or stop in one period.
-const MAX_OUT: usize = 512;
 /// Notes, and locks, the armed track's clips can take while recording
 /// before the view is compiled again (which allocates): room set aside
 /// in the clip and in the play view each time it compiles.
@@ -388,33 +387,6 @@ impl Pads for crate::sampler::Player {
     }
 }
 
-/// The player's notes for one period, in a fixed table.
-struct Collect {
-    out: [Out; MAX_OUT],
-    /// Which of `out` an arp played (live playing, see [`Pads::live`]).
-    arp: [bool; MAX_OUT],
-    n: usize,
-    dropped: u64,
-}
-
-impl Collect {
-    fn push(&mut self, out: Out, arp: bool) {
-        if self.n < MAX_OUT {
-            self.out[self.n] = out;
-            self.arp[self.n] = arp;
-            self.n += 1;
-        } else {
-            self.dropped += 1;
-        }
-    }
-}
-
-impl Sink for Collect {
-    fn send(&mut self, out: Out) {
-        self.push(out, false);
-    }
-}
-
 /// The metronome: a short sine blip on each beat, higher on the bar.
 #[derive(Clone, Copy, Debug)]
 struct Click {
@@ -525,8 +497,13 @@ pub type LaneOut = (u32, mpfree_play::mpfree_param::ParamAddr, f32);
 /// The grid SHIFT + TC turns Quantise on at the first time: 1/16.
 pub const QUANTISE_ON: u32 = 240;
 
-/// Locks kept for the mixer in one period (more are dropped).
-const MAX_LOCKS: usize = 256;
+/// Locks and unlocks kept for the mixer in one period: every lock and
+/// unlock the period's table lets in (refactor A2: an unlock is never
+/// lost; mpfree_play::room).
+const MAX_LOCKS: usize = room::VALUES + room::LOCK_ENDS;
+/// Move values kept for the mod engine in one period: every value the
+/// period's table lets in.
+const MAX_LANES: usize = room::VALUES;
 
 impl TimeHost {
     /// Stopped at bar 1 with an empty project of [`TRACKS`] tracks, track 1
@@ -1453,11 +1430,32 @@ impl TimeHost {
         self.control.state()
     }
 
-    /// Notes and locks lost because a table was full (should stay 0). The
-    /// status line says it ([`TimeHost::describe`]); tests read it here.
+    /// Notes and locks that gave way (should stay 0): lost because a
+    /// table was full, left out of a moment too busy ([`TimeHost::busy`]),
+    /// or endings lost ([`TimeHost::ends_lost`]). The status line says
+    /// each ([`TimeHost::describe`]); tests read it here.
     #[allow(dead_code)]
     pub fn dropped(&self) -> u64 {
-        self.audio.counts().dropped + self.control.dropped() + self.audio.note_mods_dropped()
+        let c = self.audio.counts();
+        c.dropped
+            + c.busy
+            + u64::from(c.ends_lost)
+            + self.control.dropped()
+            + self.audio.note_mods_dropped()
+    }
+
+    /// New notes, locks and values left out of moments too busy for them
+    /// (refactor A2): something new gave way so nothing hangs.
+    #[allow(dead_code)]
+    pub fn busy(&self) -> u64 {
+        self.audio.counts().busy
+    }
+
+    /// Endings (note-offs, unlocks, panics) that found no room: a bug,
+    /// which must stay 0 (refactor A2).
+    #[allow(dead_code)]
+    pub fn ends_lost(&self) -> u64 {
+        u64::from(self.audio.counts().ends_lost)
     }
 
     /// The time engine's part of the status line, with what passing
@@ -2953,7 +2951,10 @@ mod tests {
         while pads.frame < 2 * BAR {
             h.period(PERIOD, &mut pads);
             pads.frame += u64::from(PERIOD);
-            lanes += h.audio.sink.out[..h.audio.sink.n]
+            lanes += h
+                .audio
+                .sink
+                .events()
                 .iter()
                 .filter(|o| matches!(o.event, Event::Lane { addr, .. } if addr == xy))
                 .count();
@@ -3871,6 +3872,195 @@ mod tests {
         assert_eq!((pads.stops, h.dropped(), arps.dropped()), (6, 0, 0));
     }
 
+    /// The pads' side of the stress tests (refactor A2): what sounds, by
+    /// track and pad, and the locks the mixer holds, so a note or a lock
+    /// left hanging shows.
+    #[derive(Default)]
+    struct Ledger {
+        sounding: std::collections::HashMap<(u16, usize), u32>,
+        hits: usize,
+        /// Releases of nothing sounding.
+        stray: usize,
+        stops: usize,
+        held: std::collections::HashSet<ParamAddr>,
+        most_locks: usize,
+    }
+
+    impl Ledger {
+        /// The locks and unlocks the period sent the mixer.
+        fn take_locks(&mut self, h: &mut TimeHost) {
+            self.most_locks = self.most_locks.max(h.locks().len());
+            for &(_, addr, value) in h.locks() {
+                if value.is_some() {
+                    self.held.insert(addr);
+                } else {
+                    self.held.remove(&addr);
+                }
+            }
+            h.clear_locks();
+        }
+    }
+
+    impl Pads for Ledger {
+        fn hit_at(&mut self, track: u16, pad: usize, _velocity: u8, _offset: u32) -> bool {
+            *self.sounding.entry((track, pad)).or_default() += 1;
+            self.hits += 1;
+            true
+        }
+        fn release_at(&mut self, track: u16, pad: usize, _offset: u32) {
+            match self.sounding.get_mut(&(track, pad)) {
+                Some(n) if *n > 1 => *n -= 1,
+                Some(_) => {
+                    self.sounding.remove(&(track, pad));
+                }
+                None => self.stray += 1,
+            }
+        }
+        fn stop_all(&mut self) {
+            self.sounding.clear();
+            self.stops += 1;
+        }
+        fn pressure_at(&mut self, _track: u16, _pad: usize, _value: u8, _offset: u32) {}
+    }
+
+    /// 16 tracks, far past what one period has room for, within the
+    /// player's own tables (256 notes sounding, 256 locks held). Slot 2
+    /// holds 16 long notes on each track, all on one tick. Slot 1 plays 16
+    /// notes on every sixteenth, each ending as the next starts (256
+    /// endings and 256 starts on one frame), with 16 locks a track (256
+    /// held at once) locked three times on every step (768 values), and
+    /// all ending together. Slot 2 plays first; `through` tracks play through
+    /// their arps.
+    fn crowd(through: usize) -> TimeHost {
+        use mpfree_play::mpfree_param::OnTrack;
+        use mpfree_seq::{Lock, Note};
+        let mut project = Project::new();
+        for t in 0..16u16 {
+            let mut track = Track::new(&format!("Track {}", t + 1), t);
+            track.through_arp = usize::from(t) < through;
+            let mut crowd = Clip::new("Crowd", 3840);
+            for step in 0..16 {
+                let at = step * 240;
+                for n in 0..16u8 {
+                    crowd.add_note(Note::new(at, 240, n, 100)).unwrap();
+                }
+                for cc in 0..16u16 {
+                    let addr = RelAddr::new(OnTrack::Midi, cc);
+                    for sound in [None, Some(0), Some(1)] {
+                        crowd
+                            .add_lock(Lock::new(at, sound, addr, f32::from(cc) / 16.0))
+                            .unwrap();
+                    }
+                }
+            }
+            let mut held = Clip::new("Held", 3840);
+            for n in 64..80u8 {
+                held.add_note(Note::new(0, 3 * 3840, n, 90)).unwrap();
+            }
+            track.slots[0] = Some(crowd);
+            track.slots[1] = Some(held);
+            project.tracks.push(track);
+        }
+        let mut h = TimeHost::with_project(RATE, 120.0, project).unwrap();
+        for track in 0..16 {
+            h.act(TimeAction::Launch { track, slot: 1 }).unwrap();
+        }
+        h
+    }
+
+    /// Plays [`crowd`]: the held notes for two bars (retriggered on the
+    /// loop), then every track switches to the crowd on the bar line while
+    /// its notes still hold (256 endings, 256 starts and 768 lock values on
+    /// one frame), two bars of it, then STOP. Returns the pads' side
+    /// once everything has had time to end.
+    fn play_the_crowd(h: &mut TimeHost, mut arps: Option<&mut TrackArps>) -> Ledger {
+        let mut pads = Ledger::default();
+        let mut until = |h: &mut TimeHost, pads: &mut Ledger, frame: u64| {
+            while h.audio.block().start_frame + u64::from(PERIOD) < frame {
+                match arps.as_deref_mut() {
+                    Some(a) => h.period_arps(PERIOD, pads, a),
+                    None => h.period(PERIOD, pads),
+                }
+                pads.take_locks(h);
+                assert_eq!(h.ends_lost(), 0, "at frame {}", h.audio.block().start_frame);
+            }
+        };
+        assert!(h.command(Command::Play));
+        until(h, &mut pads, BAR + BAR / 2);
+        for track in 0..16 {
+            h.act(TimeAction::Launch { track, slot: 0 }).unwrap();
+        }
+        until(h, &mut pads, 4 * BAR);
+        assert!(pads.held.len() > 100, "{} locks held", pads.held.len());
+        assert!(h.command(Command::Stop));
+        until(h, &mut pads, 5 * BAR);
+        assert_eq!(pads.stops, 0, "one STOP lets go, it doesn't panic");
+        pads
+    }
+
+    /// Every ending gets through a period far too busy (refactor A2): no
+    /// note or lock is left hanging, no note-off comes for a note that
+    /// never sounded, and what gave way was new notes and locks, counted.
+    #[test]
+    fn a_crowd_on_one_frame_leaves_nothing_hanging() {
+        let mut h = crowd(0);
+        let pads = play_the_crowd(&mut h, None);
+        assert!(pads.hits > 5_000, "{} hits", pads.hits);
+        assert!(
+            pads.sounding.is_empty(),
+            "left sounding: {:?}",
+            pads.sounding
+        );
+        assert!(pads.held.is_empty(), "locks left held: {:?}", pads.held);
+        assert_eq!(pads.stray, 0);
+        assert!(pads.most_locks <= MAX_LOCKS, "{}", pads.most_locks);
+        assert_eq!(h.ends_lost(), 0);
+        assert!(h.busy() > 0, "the crowd was too big for a period");
+        assert!(h
+            .describe()
+            .contains(" new notes or locks left out of moments too busy, 0 endings lost"));
+    }
+
+    /// The same crowd through the per-track arps, four tracks playing
+    /// their clips through their arps: the endings get through the arps'
+    /// table and into each arp, and a panic after it all still silences
+    /// everything.
+    #[test]
+    fn a_crowd_through_the_arps_leaves_nothing_hanging() {
+        use mpfree_arp::{Mode, Order, Rate, Settings};
+        let mut h = crowd(4);
+        let mut arps = TrackArps::new(RATE, 120.0);
+        for t in 0..4 {
+            arps.engine(t).unwrap().set_settings(Settings {
+                mode: Mode::Arp,
+                order: Order::Up,
+                rate: Rate::Sixteenth,
+                gate: 50,
+                ..Settings::default()
+            });
+        }
+        let mut pads = play_the_crowd(&mut h, Some(&mut arps));
+        assert!(pads.hits > 5_000, "{} hits", pads.hits);
+        assert!(
+            pads.sounding.is_empty(),
+            "left sounding: {:?}",
+            pads.sounding
+        );
+        assert!(pads.held.is_empty(), "locks left held: {:?}", pads.held);
+        assert_eq!(pads.stray, 0);
+        assert_eq!((h.ends_lost(), arps.lost()), (0, 0));
+        assert!(arps.refused() > 0, "the crowd was too big for a period");
+        for t in 0..4 {
+            assert_eq!(arps.engine_at(t).sounding(), 0, "track {}'s arp", t + 1);
+        }
+        // A panic after a full table still gets through.
+        assert!(h.command(Command::Stop));
+        for _ in 0..20 {
+            h.period_arps(PERIOD, &mut pads, &mut arps);
+        }
+        assert_eq!((pads.stops, h.ends_lost(), arps.lost()), (1, 0, 0));
+    }
+
     /// The live pads through a track's arp, while the transport plays: the
     /// arp steps on the transport's sixteenths (period_arps hands every arp
     /// the clock), its notes reach the pads as live playing, and the armed
@@ -4226,6 +4416,76 @@ mod tests {
         assert!(h.state().launches.is_empty());
         assert!(h.act(TimeAction::LaunchScene(SLOTS)).is_err());
         assert_eq!(h.dropped(), 0);
+    }
+
+    /// A scene that mutes a track it gives no cue (an empty cell, nothing
+    /// launched): in song mode that track plays the song, so its mute
+    /// waits in the mute queue and lands on the scene's bar line with the
+    /// scene's cue, not at the tap. Every 16th of the song plays up to the
+    /// line and none after it, at every period size, and with the track
+    /// soloed.
+    #[test]
+    fn a_scenes_mute_on_a_track_playing_the_song_lands_on_its_line() {
+        use mpfree_seq::arrange::Placement;
+        use mpfree_seq::Note;
+        let sixteenths = |pad: u8| {
+            let mut c = Clip::new("16ths", 3840);
+            c.notes = (0..16).map(|k| Note::new(k * 240, 60, pad, 100)).collect();
+            c
+        };
+        let one_bar = |pad: u8| {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = vec![Note::new(0, 100, pad, 100)];
+            c
+        };
+        let cases = [1u32, 7, 64, 128, 1000, 4096].map(|p| (p, false));
+        for (period, solo) in cases.into_iter().chain([(128, true)]) {
+            let mut h = TimeHost::new(RATE, 120.0).unwrap();
+            let mut pads = Fake::default();
+            let by = |h: &mut TimeHost, pads: &mut Fake, to: u64| {
+                while pads.frame < to {
+                    h.period(period, pads);
+                    pads.frame += u64::from(period);
+                }
+            };
+            let p = &mut h.control.project;
+            p.tracks[0].slots[1] = Some(one_bar(9));
+            p.tracks[1].slots[2] = Some(sixteenths(30));
+            p.arrangement
+                .placements
+                .push(Placement::linked(1, 2, 0, 8 * 3840));
+            p.scene_mut(1).unwrap().mutes = Some(0b10);
+            if solo {
+                p.tracks[0].solo = true;
+                p.tracks[1].solo = true;
+            }
+            h.act(TimeAction::SongMode(true)).unwrap();
+            h.command(Command::Play);
+            by(&mut h, &mut pads, BAR / 2 + 1000);
+            assert_eq!(h.act(TimeAction::LaunchScene(1)).unwrap(), "scene 2");
+            let st = h.state();
+            assert!(!st.tracks[1].mute, "period {period}: not at the tap");
+            let q = h.mute_wait().expect("it waits in the mute queue");
+            assert_eq!(q.want, vec![(1, true, solo)], "period {period}");
+            by(&mut h, &mut pads, 2 * BAR - 1000);
+            let song: Vec<u64> = pads
+                .hits
+                .iter()
+                .filter(|h| h.1 == 30)
+                .map(|h| h.0)
+                .collect();
+            assert_eq!(song.len(), 16, "period {period}, solo {solo}: {song:?}");
+            for (k, at) in song.iter().enumerate() {
+                let want = (k as u64 * BAR) / 16;
+                assert!(at.abs_diff(want) <= 1, "period {period}: {song:?}");
+            }
+            let row: Vec<u64> = pads.hits.iter().filter(|h| h.1 == 9).map(|h| h.0).collect();
+            assert_eq!(row.len(), 1, "period {period}: {:?}", pads.hits);
+            assert!(row[0].abs_diff(BAR) <= 1, "the cue's line: {row:?}");
+            assert!(h.state().tracks[1].mute, "period {period}: muted now");
+            assert!(h.mute_wait().is_none(), "period {period}: landed");
+            assert_eq!(h.dropped(), 0);
+        }
     }
 
     /// Loop tracks: a loop cell launched at once while stopped; while

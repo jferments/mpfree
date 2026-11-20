@@ -790,22 +790,17 @@ pub fn sections(project: &Project) -> Vec<(Tick, Tick, Vec<Option<usize>>)> {
 }
 
 /// Each section of the song into a row: see the module notes. Uses the
-/// first run of empty rows long enough; returns the rows, or `NoRoom` (and
-/// changes nothing) when there is none.
+/// first run of empty rows ([`Project::row_empty`]) long enough; returns
+/// the rows, or `NoRoom` (and changes nothing) when there is none.
 pub fn song_to_scenes(project: &mut Project, bar: Tick) -> Result<Vec<usize>, ModelError> {
     let bar = bar.max(1);
     let parts = sections(project);
     if parts.is_empty() {
         return Ok(Vec::new());
     }
-    let empty = |p: &Project, r: usize| {
-        !p.row_filled(r)
-            && p.scene(r)
-                .is_none_or(|s| s.follow.is_none() && s.values.is_empty())
-    };
     let n = parts.len();
     let first = (0..SCENES.saturating_sub(n - 1))
-        .find(|&r| (r..r + n).all(|k| empty(project, k)))
+        .find(|&r| (r..r + n).all(|k| project.row_empty(k)))
         .ok_or(ModelError::NoRoom)?;
     let mut p = project.clone();
     for (k, (a, b, playing)) in parts.iter().enumerate() {
@@ -1144,6 +1139,41 @@ mod tests {
         let again = q.clone();
         assert_eq!(song_to_scenes(&mut q, BAR), Err(ModelError::NoRoom));
         assert_eq!(q, again, "nothing changed");
+    }
+
+    /// Song → scenes takes only truly empty rows (`Project::row_empty`):
+    /// a row with no clip but a name, mutes, a follow, morph values or a
+    /// program change is a row someone set up, and is skipped.
+    #[test]
+    fn song_to_scenes_never_takes_a_row_set_up_without_clips() {
+        use crate::mpfree_param::{Owner, ParamAddr};
+        let mut p = project();
+        p.arrangement = scenes_to_song(&p, &[(0, BAR), (1, 2 * BAR)], 0).unwrap();
+        assert_eq!(sections(&p).len(), 2);
+        assert!(p.row_empty(2) && !p.row_empty(0), "no clip, a plain scene");
+        p.scene_mut(2).unwrap().name = "Intro".into();
+        p.scene_mut(3).unwrap().mutes = Some(0);
+        p.scene_mut(4).unwrap().follow = Some(Follow::after(2, FollowAction::Next));
+        p.scene_mut(5)
+            .unwrap()
+            .values
+            .push((ParamAddr::new(Owner::Inst(0), 1), 0.5));
+        let pc = crate::ClipProgram {
+            program: 3,
+            bank: None,
+        };
+        p.scene_mut(6).unwrap().set_program(1, Some(pc)).unwrap();
+        p.scene_mut(8).unwrap().name = "Outro".into();
+        for r in 2..=6 {
+            assert!(!p.row_empty(r), "row {r} is set up");
+        }
+        // Rows 2 to 6 are set up and 8 is named: the first run of two
+        // empty rows is 9 and 10 (7 alone is too short).
+        assert_eq!(song_to_scenes(&mut p, BAR), Ok(vec![9, 10]));
+        assert_eq!(p.scene(2).unwrap().name, "Intro", "left as it was");
+        assert_eq!(p.scene(3).unwrap().mutes, Some(0));
+        assert!(p.scene(5).unwrap().values.len() == 1);
+        assert_eq!(p.scene(6).unwrap().program(1), Some(pc));
     }
 
     #[test]

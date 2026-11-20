@@ -160,7 +160,7 @@ impl Takes {
             return Err(ModelError::BadSlot);
         }
         let last = SLOTS - 1;
-        if copy && (project.row_filled(last) || project.scene(last).is_some_and(|s| !plain(s))) {
+        if copy && !project.row_empty(last) {
             return Err(ModelError::NoRoom);
         }
         let drop = if copy {

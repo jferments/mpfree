@@ -771,3 +771,63 @@ fn midi_effects_give_the_same_notes_for_any_period_size_without_allocating() {
     assert!(ons(&reference, KEYS).len() > 20);
     assert_eq!(strip(&reference), strip(&other));
 }
+
+/// Turning "Clips through the arp" on or off while the clip's notes sound
+/// never leaves one hanging: each note-off goes where its note-on went
+/// (refactor A2). The chord starts one way, the switch turns half way
+/// through its bar, and it plays again the other way on the bar line.
+#[test]
+fn turning_the_switch_while_a_clip_note_sounds_leaves_nothing_hanging() {
+    const BAR: u64 = 88_200;
+    let before_line = |log: &[Out]| -> Vec<Out> {
+        log.iter()
+            .filter(|o| {
+                o.frame < BAR || (o.frame == BAR && matches!(o.event, Event::NoteOff { .. }))
+            })
+            .copied()
+            .collect()
+    };
+    // Off, then on: the chord went to the sink, so its note-offs do too.
+    let mut arps = TrackArps::new(44_100, 120.0);
+    arps.engine(KEYS).unwrap().set_settings(up_sixteenths());
+    let log = run(
+        &mut arps,
+        BAR + BAR / 4,
+        || 128,
+        |a, frame| {
+            if frame / 128 == BAR / 2 / 128 {
+                a.set_through(KEYS, true);
+            }
+        },
+    );
+    let offs_at_line: Vec<_> = offs(&log, KEYS)
+        .into_iter()
+        .filter(|o| o.0 == BAR)
+        .collect();
+    assert_eq!(offs_at_line, [(BAR, 60), (BAR, 64), (BAR, 67)]);
+    balanced(&before_line(&log));
+    assert!(
+        ons(&log, KEYS).iter().filter(|o| o.0 > BAR).count() > 2,
+        "then arpeggiated"
+    );
+    // On, then off: the arp let go of the chord when the switch turned, so
+    // the clip's note-offs have nothing left to end, and the chord plays
+    // as it is from the line.
+    let mut arps = TrackArps::new(44_100, 120.0);
+    arps.engine(KEYS).unwrap().set_settings(up_sixteenths());
+    arps.set_through(KEYS, true);
+    let log = run(
+        &mut arps,
+        BAR + BAR / 4,
+        || 128,
+        |a, frame| {
+            if frame / 128 == BAR / 2 / 128 {
+                a.set_through(KEYS, false);
+            }
+        },
+    );
+    balanced(&before_line(&log));
+    let after: Vec<_> = ons(&log, KEYS).into_iter().filter(|o| o.0 >= BAR).collect();
+    assert_eq!(after, [(BAR, 60), (BAR, 64), (BAR, 67)]);
+    assert_eq!((arps.lost(), arps.refused()), (0, 0));
+}

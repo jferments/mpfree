@@ -9,6 +9,10 @@ use crate::window::{Window, WindowTable};
 
 /// Grains one voice can play at once.
 pub const MAX_GRAINS: usize = 64;
+/// Window tables a voice keeps ([`GrainVoice::set_params`]): a new shape
+/// goes into one no grain reads, so every grain keeps the window it started
+/// with, playing or fading out under a hit, until it ends.
+pub const WINDOWS: usize = 4;
 /// A voice renders in parts of at most this many frames, through its own
 /// scratch buffers (see [`GrainVoice::render`], "Level").
 const PART: usize = 64;
@@ -227,6 +231,10 @@ pub struct Stats {
     /// True while the cloud wants more grains than a voice keeps
     /// ([`GrainVoice`] then spaces them out to fit, keeping the level).
     pub thinned: bool,
+    /// New window shapes that waited for a table to free, all
+    /// [`WINDOWS`] being read by grains still playing (new grains kept
+    /// the newest shape meanwhile).
+    pub window_waits: u64,
 }
 
 /// One grain, for drawing the cloud.
@@ -259,6 +267,9 @@ struct Grain {
     /// Its own filter, when the voice's is on as it is born.
     filtered: bool,
     svf: Svf,
+    /// The window table it reads, for its whole life
+    /// ([`GrainVoice::set_params`]).
+    win: u8,
 }
 
 /// What a part's grains add up to, frame by frame, before the level is
@@ -388,7 +399,14 @@ pub struct GrainVoice {
     /// moved on.
     started: u64,
     motion_at: u64,
-    window: WindowTable,
+    /// The window tables. New grains read `windows[win]`; a grain keeps
+    /// its table until it ends, and a table is written only while no grain
+    /// reads it (`users`, playing and fading grains). `wanted` is a shape
+    /// waiting for a table to free.
+    windows: [WindowTable; WINDOWS],
+    users: [u16; WINDOWS],
+    win: u8,
+    wanted: Option<Window>,
     grains: [Grain; MAX_GRAINS],
     active: usize,
     /// Grains fading out under a hit (see [`GrainVoice::render`], "Hits"),
@@ -471,7 +489,10 @@ impl GrainVoice {
             env_value: 0.0,
             started: 0,
             motion_at: 0,
-            window: WindowTable::new(params.window),
+            windows: std::array::from_fn(|_| WindowTable::new(params.window)),
+            users: [0; WINDOWS],
+            win: 0,
+            wanted: None,
             grains: [Grain::default(); MAX_GRAINS],
             active: 0,
             fading: [Grain::default(); MAX_GRAINS],
@@ -541,15 +562,71 @@ impl GrainVoice {
         &self.moved
     }
 
+    /// New grains take window `shape`: from a table that holds it already,
+    /// else written into the table new grains read if no grain reads it,
+    /// else into a free one; with every table read, it waits (counted).
+    fn set_window(&mut self, shape: Window) {
+        if let Some(j) = (0..WINDOWS).find(|&j| self.windows[j].shape() == shape) {
+            self.win = j as u8;
+            self.wanted = None;
+            return;
+        }
+        let w = usize::from(self.win);
+        let free = if self.users[w] == 0 {
+            Some(w)
+        } else {
+            (0..WINDOWS).find(|&j| self.users[j] == 0)
+        };
+        match free {
+            Some(j) => {
+                self.windows[j].set(shape);
+                self.win = j as u8;
+                self.wanted = None;
+            }
+            None => {
+                if self.wanted != Some(shape) {
+                    self.stats.window_waits += 1;
+                }
+                self.wanted = Some(shape);
+            }
+        }
+    }
+
+    /// The table a grain born now reads: a shape waiting gets a table as
+    /// soon as one is free.
+    fn window_now(&mut self) -> usize {
+        if let Some(shape) = self.wanted {
+            if let Some(j) = (0..WINDOWS).find(|&j| self.users[j] == 0) {
+                self.windows[j].set(shape);
+                self.win = j as u8;
+                self.wanted = None;
+            }
+        }
+        usize::from(self.win)
+    }
+
+    /// Every grain is gone: no table is read.
+    fn drop_grains(&mut self, budget: &mut Budget) {
+        budget.live = budget.live.saturating_sub(self.active + self.fading_n);
+        self.active = 0;
+        self.fading_n = 0;
+        self.users = [0; WINDOWS];
+        self.stats.active = 0;
+    }
+
     /// Takes effect for the next grain; grains already playing finish as
-    /// they started. A new window shape rebuilds the table (1025 values).
+    /// they started. A new window shape goes into one of the [`WINDOWS`]
+    /// tables no grain reads (1025 values), so grains playing or fading
+    /// keep theirs; with all of them read, new grains keep the newest
+    /// shape until one frees, at most a grain's length later, and the
+    /// latest shape asked for wins ([`Stats::window_waits`]).
     /// The LFO and the envelope move the new settings by as much as they
     /// moved the old (they move on at the next part of the voice's clock).
     /// A new quality mode crossfades from the old over 10 ms while the
     /// voice plays, and takes over at once while it is silent.
     pub fn set_params(&mut self, p: Params) {
         self.params = p;
-        self.window.set(p.window);
+        self.set_window(p.window);
         // A silent voice switches at once; one playing crossfades.
         if self.is_active() {
             self.stage.set(p.quality);
@@ -663,10 +740,7 @@ impl GrainVoice {
     /// unless the output is already being faded.
     pub fn kill(&mut self, budget: &mut Budget) {
         self.spawning = false;
-        budget.live = budget.live.saturating_sub(self.active + self.fading_n);
-        self.active = 0;
-        self.fading_n = 0;
-        self.stats.active = 0;
+        self.drop_grains(budget);
         self.stage.jump(self.params.quality);
     }
 
@@ -699,7 +773,7 @@ impl GrainVoice {
         for (o, g) in out.iter_mut().zip(&self.grains[..n]) {
             *o = GrainView {
                 position: ((g.pos - start as f64) / len).clamp(0.0, 1.0) as f32,
-                level: self.window.at(g.age as f32 * g.dphase + g.phase0),
+                level: self.windows[usize::from(g.win)].at(g.age as f32 * g.dphase + g.phase0),
                 reverse: g.inc < 0.0,
             };
         }
@@ -863,10 +937,7 @@ impl GrainVoice {
         let (start, end) = src.span();
         if end - start < 8 {
             // Nothing readable: let playing grains fall silent with the source.
-            budget.live = budget.live.saturating_sub(self.active + self.fading_n);
-            self.active = 0;
-            self.fading_n = 0;
-            self.stats.active = 0;
+            self.drop_grains(budget);
             self.span = (start, end);
             self.clock += n as u64;
             return;
@@ -905,7 +976,8 @@ impl GrainVoice {
                 mix::<S, true>(
                     &mut self.grains,
                     &mut self.active,
-                    &self.window,
+                    &self.windows,
+                    &mut self.users,
                     src,
                     budget,
                     &mut self.sc,
@@ -917,7 +989,8 @@ impl GrainVoice {
                     mix::<S, false>(
                         &mut self.fading,
                         &mut self.fading_n,
-                        &self.window,
+                        &self.windows,
+                        &mut self.users,
                         src,
                         budget,
                         &mut self.sc,
@@ -1075,11 +1148,11 @@ impl GrainVoice {
     /// and leave the level's sums: the hit plays alone at its own level.
     fn fade_for_hit(&mut self, budget: &mut Budget) {
         let f = (HIT_FADE_SECS * f64::from(self.out_rate)).max(2.0) as u32;
-        let peak = self.window.peak();
         // The divisor the level law gives them now (see `level`).
         let (mut s1, mut s2) = (0.0f32, 0.0f32);
         for g in &self.grains[..self.active] {
-            let a = self.window.at(g.age as f32 * g.dphase + g.phase0) * g.lvl;
+            let w = &self.windows[usize::from(g.win)];
+            let a = w.at(g.age as f32 * g.dphase + g.phase0) * g.lvl;
             s1 += a;
             s2 += a * a;
         }
@@ -1087,6 +1160,8 @@ impl GrainVoice {
         let divisor = (c * s1 + (1.0 - c) * s2.sqrt()).max(self.floor);
         for i in 0..self.active {
             let mut g = self.grains[i];
+            // Along the rest of its own window.
+            let peak = self.windows[usize::from(g.win)].peak();
             if g.len - g.age > f {
                 let now = g.age as f32 * g.dphase + g.phase0;
                 let q = if now < peak {
@@ -1104,6 +1179,8 @@ impl GrainVoice {
                 self.fading_n += 1;
             } else {
                 budget.live = budget.live.saturating_sub(1);
+                let u = &mut self.users[usize::from(g.win)];
+                *u = u.saturating_sub(1);
             }
         }
         self.active = 0;
@@ -1145,7 +1222,8 @@ impl GrainVoice {
             return;
         }
         // From the window's peak to its end, over at least half the size.
-        let peak = f64::from(self.window.peak()).min(0.999);
+        let win = self.window_now();
+        let peak = f64::from(self.windows[win].peak()).min(0.999);
         let size = self.size_frames();
         let mut frames = ((1.0 - peak).max(0.5) * (size - 1.0)).floor();
         // Not through the next hit, nor past the span.
@@ -1175,7 +1253,9 @@ impl GrainVoice {
             aim: src.aim(speed),
             filtered: svf.is_some(),
             svf: svf.unwrap_or_default(),
+            win: win as u8,
         };
+        self.users[win] += 1;
         self.active += 1;
         budget.live += 1;
         self.stats.spawned += 1;
@@ -1376,6 +1456,7 @@ impl GrainVoice {
             1.0
         };
         let svf = self.grain_filter(&p.filter, r_cut);
+        let win = self.window_now();
         self.grains[self.active] = Grain {
             pos: pos + inc * (f64::from(age) + frac),
             inc,
@@ -1389,7 +1470,9 @@ impl GrainVoice {
             aim: src.aim(speed),
             filtered: svf.is_some(),
             svf: svf.unwrap_or_default(),
+            win: win as u8,
         };
+        self.users[win] += 1;
         self.active += 1;
         budget.live += 1;
         self.stats.spawned += 1;
@@ -1398,12 +1481,14 @@ impl GrainVoice {
 }
 
 /// Mixes the grains playing into frames `from..to` of the scratch buffers,
-/// and retires the ones that finish.
+/// each through its own window table, and retires the ones that finish
+/// (their tables' `users` count them out).
 #[allow(clippy::too_many_arguments)]
 fn mix<S: GrainSource, const LEVEL: bool>(
     grains: &mut [Grain; MAX_GRAINS],
     active: &mut usize,
-    window: &WindowTable,
+    windows: &[WindowTable; WINDOWS],
+    users: &mut [u16; WINDOWS],
     src: &S,
     budget: &mut Budget,
     sc: &mut Scratch,
@@ -1426,6 +1511,7 @@ fn mix<S: GrainSource, const LEVEL: bool>(
     let mut i = 0;
     while i < *active {
         let g = &mut grains[i];
+        let window = &windows[usize::from(g.win)];
         let m = ((g.len - g.age) as usize).min(n);
         let (mut pos, mut age) = (g.pos, g.age);
         let (lvl, pl, pr, ph0) = (g.lvl, g.pl, g.pr, g.phase0);
@@ -1499,6 +1585,8 @@ fn mix<S: GrainSource, const LEVEL: bool>(
         g.age = age;
         if g.age >= g.len {
             budget.live = budget.live.saturating_sub(1);
+            let u = &mut users[usize::from(g.win)];
+            *u = u.saturating_sub(1);
             *active -= 1;
             grains[i] = grains[*active];
         } else {
@@ -1527,4 +1615,64 @@ pub fn quantise(semis: f32, mask: u16) -> f32 {
         }
     }
     best
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::buffer::Clip;
+
+    /// Each table counts the grains reading it, playing and fading.
+    fn counts_match(v: &GrainVoice) {
+        let mut n = [0u16; WINDOWS];
+        for g in v.grains[..v.active].iter().chain(&v.fading[..v.fading_n]) {
+            n[usize::from(g.win)] += 1;
+        }
+        assert_eq!(n, v.users);
+    }
+
+    /// The shape of the table each grain reads, playing then fading.
+    fn heard(v: &GrainVoice) -> Vec<Window> {
+        v.grains[..v.active]
+            .iter()
+            .chain(&v.fading[..v.fading_n])
+            .map(|g| v.windows[usize::from(g.win)].shape())
+            .collect()
+    }
+
+    #[test]
+    fn no_table_a_grain_reads_is_written_over() {
+        // Hits far enough apart for whole grains between them.
+        let hits = [100_000u64, 250_000, 400_000];
+        let data: Vec<f32> = (0..480_000)
+            .map(|i| ((i % 977) as f32 / 977.0) - 0.5)
+            .collect();
+        let src = Clip::new(&data, 1, 48_000).unwrap().with_hits(&hits);
+        let mut v = GrainVoice::new(48_000, 5);
+        let p = Params {
+            scan: 1.0,
+            size_ms: 1_500.0,
+            density: 30.0,
+            ..Params::default()
+        };
+        v.set_params(p);
+        v.start();
+        let mut budget = Budget::new(256);
+        let (mut l, mut r) = ([0.0f32; 128], [0.0f32; 128]);
+        for k in 0..3_000u32 {
+            let was = heard(&v);
+            let shape = (k % 37) as f32 / 36.0;
+            v.set_params(Params {
+                window: Window::Shape { shape },
+                ..p
+            });
+            assert_eq!(heard(&v), was, "period {k}");
+            v.render(&src, &mut budget, u64::from(k) * 128, &mut l, &mut r);
+            counts_match(&v);
+        }
+        assert!(v.stats().window_waits > 0);
+        v.kill(&mut budget);
+        counts_match(&v);
+        assert_eq!(budget.live(), 0);
+    }
 }

@@ -12,8 +12,11 @@
 //!   switch on the same bar line: each cue carries its track's mute
 //!   ([`mpfree_play::PlayView::set_cue_mute`], set again after every
 //!   compile by [`Perform::dress`]). A track with nothing playing or cued
-//!   and an empty cell gets no cue, and its mute is set at once, which
-//!   sounds the same. With the transport stopped it all happens at once.
+//!   and an empty cell gets no cue: its mute waits for the same line in
+//!   the host's mute queue ([`Perform::take_line_mutes`]), as TRACK
+//!   MUTE's do, since in song mode such a track still plays the song.
+//!   With the transport stopped, or Launch at once, it all happens at
+//!   once.
 //! - A scene's program changes (sequencer S5,
 //!   [`mpfree_seq::Scene::programs`]) go out on the same line, every track
 //!   with one, cued or not, so a track whose gear plays its own patterns
@@ -156,6 +159,11 @@ pub struct Perform {
     programs: [Option<SceneProgram>; MAX_TRACKS],
     /// The id of the last launch's program changes.
     program_id: u32,
+    /// The mutes the last scene launch set for its line on tracks it gave
+    /// no cue, until the host takes them ([`Perform::take_line_mutes`]).
+    line_mutes: [Option<bool>; MAX_TRACKS],
+    /// The line they land on: the scene's cues' line.
+    mute_line: LaunchGrid,
     clips: [Option<ClipCount>; MAX_TRACKS],
     /// The song list, while it plays.
     list: Option<ListPlaying>,
@@ -178,6 +186,8 @@ impl Perform {
             cue_lines: [None; MAX_TRACKS],
             programs: [None; MAX_TRACKS],
             program_id: 0,
+            line_mutes: [None; MAX_TRACKS],
+            mute_line: LaunchGrid::Bars(1),
             clips: [None; MAX_TRACKS],
             list: None,
             rng: seed | 1,
@@ -318,6 +328,10 @@ impl Perform {
         }
         // The scene's tracks start together, on the project's launch line.
         let line = project.launch;
+        // Its mutes for tracks it gives no cue wait for that line too (a
+        // launch before the host took the last ones replaces them).
+        self.line_mutes = [None; MAX_TRACKS];
+        self.mute_line = line;
         let mutes = project
             .scene(row)
             .map(|s| (0..MAX_TRACKS).map(|t| s.mutes_track(t)));
@@ -354,8 +368,12 @@ impl Perform {
                     self.cue_lines[t] = Some(line);
                 }
                 When::Cued => {
-                    if let Some(m) = mute[t] {
-                        track.mute = m;
+                    // Nothing to cue, but in song mode the track plays the
+                    // song: its mute waits for the line, unless the line
+                    // is at once.
+                    match mute[t] {
+                        Some(m) if line == LaunchGrid::Now => track.mute = m,
+                        m => self.line_mutes[t] = m,
                     }
                     self.cue_mutes[t] = None;
                     self.cue_lines[t] = None;
@@ -430,14 +448,30 @@ impl Perform {
         self.programs.get(track).copied().flatten()
     }
 
-    /// The program changes still waiting for their line land on `line`
-    /// (a follow's or the song list's point).
+    /// The program changes still waiting for their line, and the mutes
+    /// for tracks with no cue, land on `line` (a follow's or the song
+    /// list's point).
     fn programs_on(&mut self, line: LaunchGrid) {
         for p in self.programs.iter_mut().flatten() {
             if p.line.is_some() {
                 p.line = Some(line);
             }
         }
+        self.mute_line = line;
+    }
+
+    /// The mutes the last scene launch set on tracks it gave no cue (bit
+    /// for bit as the scene's: `Some(true)` mutes, `Some(false)` lets the
+    /// track be heard), and the line they land on with the scene's cues,
+    /// taken: the host puts them in its mute queue, so they land on that
+    /// line as TRACK MUTE's do. None when there are none. Call it after
+    /// each launch, play of the song list and [`Perform::due`].
+    pub fn take_line_mutes(&mut self) -> Option<(LaunchGrid, [Option<bool>; MAX_TRACKS])> {
+        if self.line_mutes.iter().all(Option::is_none) {
+            return None;
+        }
+        let mutes = std::mem::replace(&mut self.line_mutes, [None; MAX_TRACKS]);
+        Some((self.mute_line, mutes))
     }
 
     /// The mute a scene's cue on `track` sets when it starts, if any.
@@ -938,10 +972,16 @@ mod tests {
         assert_eq!(muted, vec![40, 127]);
     }
 
+    /// A track the scene gives no cue (nothing playing or cued, an empty
+    /// cell) still plays the song in song mode: its mute waits for the
+    /// scene's line, for the host's mute queue, instead of landing at the
+    /// tap. A follow's waits for the next bar line; Launch at once and a
+    /// launch while stopped set it at once.
     #[test]
-    fn an_idle_track_with_an_empty_cell_gets_its_mute_at_once() {
+    fn an_idle_tracks_mute_waits_for_the_scenes_line() {
         let mut p = project();
         p.scene_mut(2).unwrap().mutes = Some(0b10);
+        p.launch = LaunchGrid::Bars(2);
         let mut perf = Perform::default();
         let (mut launches, mut cues) = (vec![], vec![]);
         perf.launch_scene(&mut p, 2, When::Cued, &mut launches, &mut cues);
@@ -952,7 +992,41 @@ mod tests {
                 slot: Some(2)
             }]
         );
+        assert!(!p.tracks[1].mute, "not at the tap");
+        let (line, mutes) = perf.take_line_mutes().unwrap();
+        assert_eq!(line, LaunchGrid::Bars(2), "the scene's line");
+        assert_eq!((mutes[0], mutes[1]), (None, Some(true)), "track 0 is cued");
+        assert!(mutes[2..].iter().all(Option::is_none));
+        assert_eq!(perf.take_line_mutes(), None, "taken once");
+        // A second launch before the host takes them replaces them.
+        p.scene_mut(1).unwrap().mutes = Some(0);
+        p.scene_mut(3).unwrap().mutes = Some(0b100);
+        p.tracks.push(mpfree_seq::Track::new("t", 2));
+        p.tracks[0].slots[3] = Some(Clip::new("d", BAR));
+        let (mut launches, mut cues) = (vec![], vec![]);
+        perf.launch_scene(&mut p, 2, When::Cued, &mut launches, &mut cues);
+        perf.launch_scene(&mut p, 3, When::Cued, &mut launches, &mut cues);
+        let (_, mutes) = perf.take_line_mutes().unwrap();
+        assert_eq!((mutes[1], mutes[2]), (Some(false), Some(true)));
+        // A scene follow's land on its point, the next bar line.
+        p.scene_mut(2).unwrap().follow = Some(Follow::after(1, FollowAction::Next));
+        let (mut launches, mut cues) = (vec![], vec![]);
+        perf.launch_scene(&mut p, 2, When::Now(0), &mut launches, &mut cues);
+        assert_eq!(perf.take_line_mutes(), None, "stopped: at once");
         assert!(p.tracks[1].mute);
+        let fired = perf.due(&mut p, &mut launches, &mut cues, BAR - 10, BAR);
+        assert_eq!(fired.scene, Some(Some(3)));
+        let (line, mutes) = perf.take_line_mutes().unwrap();
+        assert_eq!(
+            (line, mutes[1], mutes[2]),
+            (LaunchGrid::Bars(1), Some(false), Some(true))
+        );
+        // Launch at once: the cues start at once, and so do the mutes.
+        (p.tracks[1].mute, p.tracks[2].mute) = (false, true);
+        p.launch = LaunchGrid::Now;
+        perf.launch_scene(&mut p, 2, When::Cued, &mut launches, &mut cues);
+        assert_eq!(perf.take_line_mutes(), None);
+        assert!(p.tracks[1].mute && !p.tracks[2].mute);
     }
 
     #[test]

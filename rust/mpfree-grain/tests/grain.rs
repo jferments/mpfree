@@ -1503,3 +1503,108 @@ fn filter_spray_gives_each_grain_its_own_cutoff_and_nothing_else_changes() {
         b.iter().map(|g| g.position.to_bits()).collect::<Vec<_>>()
     );
 }
+
+/// Two voices alike but for the Shape set at frame `at` (`a` and `b`),
+/// over `src`: grains already playing keep the window they started with,
+/// so for the first frames after `at` only new grains, still near the
+/// start of their windows, tell the two apart.
+fn shape_split<S: GrainSource>(src: &S, p: Params, at: usize, a: f32, b: f32) -> f32 {
+    let play = |shape: f32| {
+        let mut v = GrainVoice::new(RATE, 9);
+        v.set_params(p);
+        v.start();
+        let mut budget = Budget::new(256);
+        let (before, _) = run(&mut v, src, &mut budget, 0, at, 128);
+        v.set_params(Params {
+            window: Window::Shape { shape },
+            ..p
+        });
+        let (after, _) = run(&mut v, src, &mut budget, at as u64, 32, 32);
+        (before, after)
+    };
+    let ((x0, x), (y0, y)) = (play(a), play(b));
+    assert_eq!(x0, y0);
+    x.iter()
+        .zip(&y)
+        .fold(0.0f32, |m, (p, q)| m.max((p - q).abs()))
+}
+
+/// A low tone, so a cloud's output moves smoothly frame to frame.
+fn tone(frames: usize) -> Vec<f32> {
+    (0..frames)
+        .map(|i| 0.5 * (i as f32 * 2.0 * std::f32::consts::PI * 110.0 / RATE as f32).sin())
+        .collect()
+}
+
+/// The largest step between neighbouring frames.
+fn largest_step(x: &[f32]) -> f32 {
+    x.windows(2).fold(0.0f32, |m, w| m.max((w[1] - w[0]).abs()))
+}
+
+#[test]
+fn a_new_shape_reaches_new_grains_only_with_no_step() {
+    let data = tone(480_000);
+    let src = Clip::new(&data, 1, RATE).unwrap();
+    // 4 s grains, about 40 at once.
+    let p = Params {
+        position: 0.5,
+        spray: 0.5,
+        size_ms: 4_000.0,
+        density: 10.0,
+        spread: 1.0,
+        window: Window::Shape { shape: 0.6 },
+        ..Params::default()
+    };
+    // Square against pluck from frame 48,000: the grains playing hear
+    // neither.
+    let d = shape_split(&src, p, 48_000, 0.0, 1.0);
+    assert!(d < 0.01, "{d}");
+
+    // Shape swept back and forth over two seconds, a new value each
+    // period: far more shapes than tables, so some wait; never a step.
+    let mut v = GrainVoice::new(RATE, 9);
+    v.set_params(p);
+    v.start();
+    let mut budget = Budget::new(256);
+    let (steady, _) = run(&mut v, &src, &mut budget, 0, 48_000, 128);
+    let calm = largest_step(&steady[24_000..]);
+    let mut out = steady[47_000..].to_vec();
+    for k in 0..750u32 {
+        let t = (k % 250) as f32 / 250.0;
+        let shape = if (k / 250) % 2 == 0 { t } else { 1.0 - t };
+        v.set_params(Params {
+            window: Window::Shape { shape },
+            ..p
+        });
+        let at = 48_000 + u64::from(k) * 128;
+        out.extend(run(&mut v, &src, &mut budget, at, 128, 128).0);
+    }
+    let swept = largest_step(&out);
+    assert!(swept < calm * 1.5, "{swept} against {calm}");
+    assert!(v.stats().window_waits > 0, "every table was in use");
+}
+
+#[test]
+fn grains_fading_under_a_hit_keep_their_window() {
+    // A tone with hits marked in it, read forward at its own speed, so
+    // each hit starts a grain and the cloud, still sounding, fades out
+    // under it.
+    let hits = [24_000u64, 72_000];
+    let data = tone(240_000);
+    let src = Clip::new(&data, 1, RATE).unwrap().with_hits(&hits);
+    // Grains reading forward end at the next hit; ones reading backward
+    // play through it, fading out under it.
+    let p = Params {
+        position: 0.0,
+        scan: 1.0,
+        size_ms: 400.0,
+        density: 40.0,
+        timing: 0.0,
+        reverse: 1.0,
+        window: Window::Shape { shape: 0.6 },
+        ..Params::default()
+    };
+    // 1 ms after the hit at 24,000: the old grains are still fading.
+    let d = shape_split(&src, p, 24_048, 0.0, 1.0);
+    assert!(d < 0.01, "{d}");
+}

@@ -13664,7 +13664,9 @@ pub fn sample_player(fonts: Fonts) -> Player {
             dropped: 0,
             late_let_gos: 0,
             merged_values: 0,
+            ends_lost: 0,
             peak_grains: 0,
+            window_waits: 0,
         },
     }));
     p.set_screen_row(
@@ -16559,7 +16561,9 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                 dropped: 0,
                 late_let_gos: 0,
                 merged_values: 0,
+                ends_lost: 0,
                 peak_grains: 48,
+                window_waits: 0,
             },
             ..Timing::default()
         }));

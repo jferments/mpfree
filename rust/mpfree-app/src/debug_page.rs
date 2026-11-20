@@ -76,7 +76,12 @@ pub struct AudioNumbers {
     /// and pressure or knob values it merged to make room.
     pub late_let_gos: u64,
     pub merged_values: u64,
+    /// Note endings, unlocks and panics the time engine and the arps found
+    /// no room for (refactor A2): a bug, which must stay 0.
+    pub ends_lost: u64,
     pub peak_grains: usize,
+    /// Grain Shape turns that waited for older grains to end.
+    pub window_waits: u64,
 }
 
 /// The period: 128 frames at 44.1 kHz, in µs.
@@ -362,9 +367,27 @@ impl DebugPages {
                 },
             ),
             (
+                "Note endings lost".to_string(),
+                a.ends_lost.to_string(),
+                if a.ends_lost == 0 {
+                    Tone::Good
+                } else {
+                    Tone::Bad
+                },
+            ),
+            (
                 "Most grains at once".to_string(),
                 a.peak_grains.to_string(),
                 Tone::Normal,
+            ),
+            (
+                "Shape turns that waited for grains to end".to_string(),
+                a.window_waits.to_string(),
+                if a.window_waits == 0 {
+                    Tone::Normal
+                } else {
+                    Tone::Warn
+                },
             ),
         ];
         if let Some(s) = ui.get_mut::<StatList>("audio") {

@@ -10789,7 +10789,9 @@ fn player_session(
                         dropped: c.dropped_events + app.arps.dropped(),
                         late_let_gos: c.late_let_gos,
                         merged_values: c.merged_values,
+                        ends_lost: time.ends_lost(),
                         peak_grains: c.peak_grains,
+                        window_waits: c.window_waits,
                     }
                 },
             }));

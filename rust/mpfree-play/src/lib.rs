@@ -35,6 +35,7 @@ pub mod arps;
 pub mod player;
 pub mod record;
 pub mod recorded;
+pub mod room;
 mod steps;
 pub mod takes;
 pub mod view;

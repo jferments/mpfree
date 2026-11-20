@@ -47,18 +47,31 @@
 //! lands ([`Chain::cut`]): what it has on ends there, and nothing waiting
 //! (an echo, a strummed note) plays after it. So does a mute
 //! ([`TrackArps::cut`]).
+//!
+//! **No ending is ever lost** (step sequencer refactor A2; playback.md,
+//! "Endings always get through"). The period's notes for the sink wait in
+//! a [`Table`] whose [`crate::room::Room`] keeps the player's notes and
+//! the arps' apart, each paired on its own, so every note-off of a note it
+//! let in has its place; each arp's input keeps the same rule
+//! ([`crate::arp`]). A note-off goes where its note-on went: into the arp
+//! if the arp has it from the clips, to the sink if not, whatever the
+//! switch says now, so turning "Clips through the arp" on or off never
+//! leaves a note hanging. A period too busy leaves new notes out
+//! ([`TrackArps::refused`]); [`TrackArps::lost`] counts an ending that
+//! found no place anyway, a bug, which must stay 0.
 
 use mpfree_arp::{Engine, EventKind};
 use mpfree_notefx::{Chain, Ev, Kind, Notes, Period, TrackFx, MAX_FX};
 use mpfree_seq::{DestId, MAX_TRACKS};
 use mpfree_transport::Block;
 
-use crate::arp::ArpHost;
+use crate::arp::{ArpHost, CLIPS, EFFECTS, PADS};
 use crate::player::{Event, Out, Sink, ALL};
+use crate::room::{Table, ARPS, PLAYER, ROOM};
 
-/// Notes one period can carry to the sink through [`TrackArps`]; more are
-/// counted in [`TrackArps::dropped`].
-pub const MAX_OUT: usize = 1024;
+/// Events one period can carry to the sink through [`TrackArps`]: its
+/// table's places ([`ROOM`]).
+pub const MAX_OUT: usize = ROOM;
 
 /// The seed [`TrackArps::reseed`] gives every arp.
 pub const RESEED: u32 = 0x2545_f491;
@@ -73,12 +86,10 @@ pub struct TrackArps {
     fed: [bool; MAX_TRACKS],
     /// Tracks up to the highest one asked for: what a period visits.
     used: usize,
-    /// This period's notes for the sink, until [`TrackArps::finish`].
-    out: [Out; MAX_OUT],
-    /// Which of `out` an arp played (rather than the player passing it on).
-    from_arp: [bool; MAX_OUT],
-    n_out: usize,
-    dropped: u64,
+    /// This period's notes for the sink, until [`TrackArps::finish`],
+    /// each marked when an arp played it (rather than the player passing
+    /// it on).
+    table: Table,
     rate: u32,
     /// Each track's MIDI effects, once the host has given it a chain.
     chains: Vec<Option<Box<Chain>>>,
@@ -96,13 +107,6 @@ impl TrackArps {
     /// settings change. Track `t` plays into destination `t` until
     /// [`TrackArps::set_dest`] says otherwise. Allocates.
     pub fn new(sample_rate: u32, bpm: f64) -> TrackArps {
-        let blank = Out {
-            offset: 0,
-            frame: 0,
-            track: 0,
-            dest: 0,
-            event: Event::AllOff,
-        };
         TrackArps {
             arps: (0..MAX_TRACKS)
                 .map(|_| ArpHost::new(Engine::new(sample_rate, bpm)))
@@ -111,10 +115,7 @@ impl TrackArps {
             dest: core::array::from_fn(|t| t as DestId),
             fed: [false; MAX_TRACKS],
             used: 0,
-            out: [blank; MAX_OUT],
-            from_arp: [false; MAX_OUT],
-            n_out: 0,
-            dropped: 0,
+            table: Table::new(),
             rate: sample_rate,
             chains: (0..MAX_TRACKS).map(|_| None).collect(),
             arp_at: [0; MAX_TRACKS],
@@ -246,8 +247,11 @@ impl TrackArps {
         if let Some(t) = self.through.get_mut(track) {
             if *t != on {
                 *t = on;
-                if !self.arps[track].engine.active().is_empty() {
-                    self.arps[track].input(0, Event::AllOff);
+                // One panic is enough however often it changes before the
+                // period.
+                let a = &mut self.arps[track];
+                if !a.engine.active().is_empty() && a.first_all_off() != Some(0) {
+                    a.input(0, Event::AllOff);
                     self.fed[track] = true;
                 }
             }
@@ -275,19 +279,26 @@ impl TrackArps {
     }
 
     /// A live pad note for `track`, `offset` frames into the coming period.
-    /// The pads always play through their track's arp.
-    pub fn pad(&mut self, track: usize, offset: u32, event: Event) {
+    /// The pads always play through their track's arp. Whether it went in
+    /// (a period too busy leaves a new note out; an `AllOff` lets go of
+    /// every note the pads hold there).
+    pub fn pad(&mut self, track: usize, offset: u32, event: Event) -> bool {
         self.ask(track);
-        if let Some(a) = self.arps.get_mut(track) {
-            a.input(offset, event);
-            self.fed[track] = true;
+        match self.arps.get_mut(track) {
+            Some(a) => {
+                self.fed[track] = true;
+                a.input_from(PADS, offset, event)
+            }
+            None => false,
         }
     }
 
-    /// Notes lost so far: the arps' own and notes that did not fit in one
-    /// period's output. It should stay 0.
+    /// Notes that gave way so far: new notes left out of periods too busy
+    /// for them (here and in each arp), endings lost (a bug), and what the
+    /// arps' engines and the MIDI effects dropped. It should stay 0.
     pub fn dropped(&self) -> u64 {
-        self.dropped
+        self.table.refused()
+            + self.table.lost()
             + self.arps.iter().map(ArpHost::dropped).sum::<u64>()
             + self
                 .chains
@@ -296,6 +307,31 @@ impl TrackArps {
                 .map(|c| c.dropped())
                 .sum::<u64>()
             + self.lists.iter().map(|l| l.dropped).sum::<u64>()
+    }
+
+    /// New notes and values left out of periods too busy for them, so far:
+    /// on the way to the sink and into each arp.
+    pub fn refused(&self) -> u64 {
+        self.table.refused() + self.in_use().map(ArpHost::refused).sum::<u64>()
+    }
+
+    /// Endings (note-offs, unlocks, panics) that found no place, so far: a
+    /// bug, which must stay 0.
+    pub fn lost(&self) -> u64 {
+        self.table.lost() + self.in_use().map(ArpHost::lost).sum::<u64>()
+    }
+
+    /// Note-offs left out because their note-on was (a period too busy),
+    /// so far. Nothing hangs from them.
+    pub fn unowed(&self) -> u64 {
+        self.table.room.unowed + self.in_use().map(ArpHost::unowed).sum::<u64>()
+    }
+
+    /// The arps a period visits: only they are ever given a note, so
+    /// their counts are all the arps' (and cost what is in use to add up,
+    /// each period).
+    fn in_use(&self) -> impl Iterator<Item = &ArpHost> {
+        self.arps[..self.used].iter()
     }
 
     /// The [`Sink`] to hand the player this period.
@@ -314,8 +350,7 @@ impl TrackArps {
     /// played it (true) or the player passed it on (false), so a host can
     /// treat what the arps play from the pads as live playing.
     pub fn finish_with(&mut self, block: &Block, mut f: impl FnMut(&Out, bool)) {
-        let player_notes = self.n_out;
-        self.from_arp[..player_notes].fill(false);
+        let player_notes = self.table.len();
         for t in 0..self.used {
             if self.chains[t].is_some() {
                 self.run_chained(t, block);
@@ -327,25 +362,13 @@ impl TrackArps {
             }
             let (track, dest) = (t as u16, self.dest[t]);
             let start = block.start_frame;
-            let (arps, out, from_arp, n_out, dropped) = (
-                &mut self.arps,
-                &mut self.out,
-                &mut self.from_arp,
-                &mut self.n_out,
-                &mut self.dropped,
-            );
-            arps[t].process(block, &mut |offset, kind| {
+            let table = &mut self.table;
+            self.arps[t].process(block, &mut |offset, kind| {
                 let event = match kind {
                     EventKind::On { note, velocity } => Event::NoteOn { note, velocity },
                     EventKind::Off { note } => Event::NoteOff { note },
                 };
-                if *n_out < MAX_OUT {
-                    from_arp[*n_out] = true;
-                }
-                push(
-                    out,
-                    n_out,
-                    dropped,
+                table.put(
                     Out {
                         offset,
                         frame: start + u64::from(offset),
@@ -353,25 +376,19 @@ impl TrackArps {
                         dest,
                         event,
                     },
+                    ARPS,
                 );
             });
         }
         // Each source is in order already; a stable insertion sort merges
         // them without allocating (a period holds few notes).
-        let n = self.n_out;
-        let (out, from_arp) = (&mut self.out[..n], &mut self.from_arp[..n]);
-        for i in player_notes.max(1)..n {
-            let mut j = i;
-            while j > 0 && out[j - 1].offset > out[j].offset {
-                out.swap(j - 1, j);
-                from_arp.swap(j - 1, j);
-                j -= 1;
+        self.table.merge_from(player_notes);
+        for i in 0..self.table.len() {
+            if let Some((o, a)) = self.table.get(i) {
+                f(&o, a);
             }
         }
-        for (o, &a) in out.iter().zip(from_arp.iter()) {
-            f(o, a);
-        }
-        self.n_out = 0;
+        self.table.clear();
     }
 }
 
@@ -408,7 +425,7 @@ impl TrackArps {
         played.clear();
         chain.process_range(0, at, &p, notes.as_slice(), played);
         for e in played.as_slice() {
-            arp.input(offset_in(e, start), event_of(e.kind));
+            arp.input_from(EFFECTS, offset_in(e, start), event_of(e.kind));
         }
         notes.clear();
         let fed = std::mem::take(&mut self.fed[t]) || !played.is_empty();
@@ -426,13 +443,7 @@ impl TrackArps {
         played.clear();
         chain.process_range(at, MAX_FX, &p, notes.as_slice(), played);
         for e in played.as_slice() {
-            if self.n_out < MAX_OUT {
-                self.from_arp[self.n_out] = true;
-            }
-            push(
-                &mut self.out,
-                &mut self.n_out,
-                &mut self.dropped,
+            self.table.put(
                 Out {
                     offset: offset_in(e, start),
                     frame: e.at,
@@ -440,6 +451,7 @@ impl TrackArps {
                     dest,
                     event: event_of(e.kind),
                 },
+                ARPS,
             );
         }
     }
@@ -457,19 +469,11 @@ fn event_of(k: Kind) -> Event {
     }
 }
 
-fn push(out: &mut [Out; MAX_OUT], n: &mut usize, dropped: &mut u64, o: Out) {
-    if *n == MAX_OUT {
-        *dropped += 1;
-    } else {
-        out[*n] = o;
-        *n += 1;
-    }
-}
-
 /// The player's [`Sink`] for one period: a through track's notes go into
-/// its arp (its pressure too, which also goes on), everything else (other tracks' notes, and every parameter
-/// lock and unlock, which an arp has no use for) waits for
-/// [`TrackArps::finish`].
+/// its arp (its pressure too, which also goes on), everything else (other
+/// tracks' notes, and every parameter lock and unlock, which an arp has no
+/// use for) waits for [`TrackArps::finish`]. A note-off goes where its
+/// note-on went.
 pub struct Through<'a> {
     arps: &'a mut TrackArps,
 }
@@ -485,16 +489,30 @@ impl Sink for Through<'_> {
                 arp.input(o.offset, Event::AllOff);
             }
             a.fed[..used].fill(true);
-        } else if a.through(t) && matches!(o.event, Event::NoteOn { .. } | Event::NoteOff { .. }) {
-            a.arps[t].input(o.offset, o.event);
-            a.fed[t] = true;
-            return;
-        } else if a.through(t) && matches!(o.event, Event::Pressure { .. }) {
-            // The arp's repeats follow a clip's pressure, and the sound
-            // hears it too, as with the live pads.
-            a.arps[t].input(o.offset, o.event);
-            a.fed[t] = true;
+        } else if t < MAX_TRACKS {
+            let into_arp = match o.event {
+                Event::NoteOn { .. } => a.through[t],
+                // Where its note went, whatever the switch says now.
+                Event::NoteOff { note } => a.arps[t].owes(CLIPS, note),
+                Event::Pressure { .. } if a.through[t] => {
+                    // The arp's repeats follow a clip's pressure, and the
+                    // sound hears it too, as with the live pads.
+                    a.arps[t].input(o.offset, o.event);
+                    a.fed[t] = true;
+                    false
+                }
+                _ => false,
+            };
+            if into_arp {
+                a.arps[t].input(o.offset, o.event);
+                a.fed[t] = true;
+                return;
+            }
         }
-        push(&mut a.out, &mut a.n_out, &mut a.dropped, o);
+        a.table.put(o, PLAYER);
+    }
+
+    fn hold(&mut self) -> bool {
+        self.arps.table.room.hold()
     }
 }

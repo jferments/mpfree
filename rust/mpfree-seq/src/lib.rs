@@ -1517,6 +1517,15 @@ impl Project {
             .any(|t| t.slots.get(row).is_some_and(Option::is_some))
     }
 
+    /// Whether row `row` is empty: no clip on any track, and a plain scene
+    /// (no name, mutes, follow action, morph values or program changes).
+    /// The one test of a free row for everything that looks for room
+    /// (Song → scenes, a copied row), so a row set up with only a name or
+    /// mutes is never taken.
+    pub fn row_empty(&self, row: usize) -> bool {
+        !self.row_filled(row) && self.scene(row).is_none_or(|s| *s == Scene::default())
+    }
+
     /// The clip in a slot, if there is one.
     pub fn clip(&self, track: usize, slot: usize) -> Option<&Clip> {
         self.tracks.get(track)?.slots.get(slot)?.as_ref()

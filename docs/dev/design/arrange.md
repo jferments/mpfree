@@ -41,7 +41,7 @@ The model is in `rust/mpfree-seq/src/arrange.rs`, song-mode playback in `rust/mp
 - **Scenes → song (`scenes_to_song`).** Rows play one after another, each as a linked placement on every track that has a clip in the row, with a marker named after the scene ("Scene 3" when it has no name).
   - Each row is as long as `scene_length`: its follow action's bars, or else its longest clip rounded up to whole bars.
 - **Song → scenes (`song_to_scenes`).** The song is cut into sections wherever anything starts or ends, and at every marker. Sections next to each other with the same placements are merged, unless a marker splits them, and silent sections are left out.
-  - Each section becomes a row in the first run of empty rows long enough, with its clips copied in and the marker's name.
+  - Each section becomes a row in the first run of empty rows long enough, with its clips copied in and the marker's name. A row is empty by `Project::row_empty`, the one test every feature that looks for room uses (a copied row too): no clip on any track and a plain scene, so a row with only a name, mutes, a follow, morph values or a program change is never taken (`song_to_scenes_never_takes_a_row_set_up_without_clips`).
   - The rows are chained by follow actions: Next after the section's bars, and Stop on the last. Launching the first row plays the song.
   - With no run of empty rows long enough, it changes nothing and says so (`ModelError::NoRoom`).
   - A section that starts part way into a placement gets the whole clip, from its top.

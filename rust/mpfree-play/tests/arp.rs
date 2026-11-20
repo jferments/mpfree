@@ -3,6 +3,7 @@
 //! on the transport's grid, the same for any period size.
 
 use mpfree_arp::{Engine, EventKind, Mode, Order, Rate, Settings};
+use mpfree_play::arp::{CLIPS, MAX_INPUT, PADS, PANICS};
 use mpfree_play::{ArpHost, Event, Launch, Out, PlayView, Player, Sink, ALL};
 use mpfree_seq::{Clip, Note, Project, Track};
 use mpfree_transport::time::Swing;
@@ -238,17 +239,20 @@ fn the_arp_track_is_the_same_for_every_period_size() {
 #[test]
 fn live_pad_notes_mix_with_clip_notes_in_any_order() {
     // The player's notes, then live pad notes for the same period, come in
-    // two batches; the arp plays them in offset order either way.
+    // two batches; the arp plays them in offset order either way. Each
+    // source sends its own notes in order and pairs its own (refactor A2).
     let fed = [
         (
+            CLIPS,
             300,
             Event::NoteOn {
                 note: 60,
                 velocity: 100,
             },
         ),
-        (900, Event::NoteOff { note: 64 }),
+        (CLIPS, 900, Event::NoteOff { note: 60 }),
         (
+            PADS,
             40,
             Event::NoteOn {
                 note: 64,
@@ -256,6 +260,7 @@ fn live_pad_notes_mix_with_clip_notes_in_any_order() {
             },
         ),
         (
+            PADS,
             300,
             Event::NoteOn {
                 note: 67,
@@ -264,7 +269,7 @@ fn live_pad_notes_mix_with_clip_notes_in_any_order() {
         ),
     ];
     let sorted = [fed[2], fed[0], fed[3], fed[1]];
-    let play = |notes: &[(u32, Event)]| {
+    let play = |notes: &[(usize, u32, Event)]| {
         let mut t = Transport::new(44_100, 120.0).unwrap();
         t.command(0, Command::Play);
         let mut host = ArpHost::new(Engine::new(44_100, 120.0));
@@ -277,8 +282,8 @@ fn live_pad_notes_mix_with_clip_notes_in_any_order() {
         for period in 0..40 {
             t.process(1024, &mut block);
             if period == 0 {
-                for &(offset, event) in notes {
-                    host.input(offset, event);
+                for &(source, offset, event) in notes {
+                    assert!(host.input_from(source, offset, event));
                 }
             }
             let start = block.start_frame;
@@ -374,4 +379,70 @@ fn a_note_held_by_a_pad_and_a_clip_waits_for_both() {
         )],
     );
     assert!(host.engine.active().contains(62) && !host.engine.active().contains(60));
+}
+
+/// A period too busy for its notes leaves new ones out, and every note the
+/// arp let in still gets its note-off, as does every STOP's panic: nothing
+/// hangs and no ending is lost (refactor A2). A note held across the busy
+/// periods ends too.
+#[test]
+fn a_busy_period_leaves_new_notes_out_and_never_an_ending() {
+    let mut t = Transport::new(44_100, 120.0).unwrap();
+    t.command(0, Command::Play);
+    let mut host = ArpHost::new(Engine::new(44_100, 120.0));
+    host.engine.set_settings(arp_settings());
+    let mut block = Block::new();
+    let on = |note| Event::NoteOn {
+        note,
+        velocity: 100,
+    };
+    // A pad holds 5 from before.
+    t.process(512, &mut block);
+    assert!(host.input_from(PADS, 0, on(5)));
+    host.process(&block, &mut |_, _| {});
+    // The clips and the pads start every note at once.
+    t.process(512, &mut block);
+    let mut let_in = 0;
+    for source in [CLIPS, PADS] {
+        for note in 0..128u8 {
+            let_in += usize::from(host.input_from(source, u32::from(note), on(note)));
+        }
+    }
+    // Each note let in keeps a place for its note-off (the pad's 5 too),
+    // and PANICS places stay free.
+    assert_eq!(let_in, (MAX_INPUT - PANICS - 1) / 2);
+    assert_eq!(host.refused() as usize, 256 - let_in);
+    // Every one ends in the same period: the ones let in get in, the rest
+    // are left out (the arp never pressed them).
+    let mut ended = 0;
+    for source in [CLIPS, PADS] {
+        for note in (0..128u8).filter(|&n| source == CLIPS || n != 5) {
+            ended += usize::from(host.input_from(
+                source,
+                200 + u32::from(note),
+                Event::NoteOff { note },
+            ));
+        }
+    }
+    assert_eq!(ended, let_in);
+    // A STOP for each command the period can carry, and the switch.
+    for _ in 0..PANICS {
+        assert!(host.input(500, Event::AllOff));
+    }
+    assert_eq!(host.lost(), 0);
+    host.process(&block, &mut |_, _| {});
+    // The pad lets go of the 5 it held all along.
+    t.process(512, &mut block);
+    assert!(host.input_from(PADS, 0, Event::NoteOff { note: 5 }));
+    host.process(&block, &mut |_, _| {});
+    assert!(host.engine.active().is_empty());
+    assert_eq!((host.lost(), host.unowed() as usize), (0, 256 - let_in - 1));
+    // A panic from the pads lets go of what they hold, and only that.
+    t.process(512, &mut block);
+    assert!(host.input_from(PADS, 0, on(7)) && host.input(0, on(9)));
+    assert!(host.input_from(PADS, 10, Event::AllOff));
+    assert!(host.owes(CLIPS, 9) && !host.owes(PADS, 7));
+    host.process(&block, &mut |_, _| {});
+    let active = host.engine.active();
+    assert!(active.len() == 1 && active.contains(9));
 }

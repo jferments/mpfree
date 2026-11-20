@@ -29,7 +29,7 @@ use super::link::{
     Counts, InPlace, PeriodEnd, Rx, ToAudio, ToControl, Tracks, Tx, POINTS_CHUNK, TOUCH_CHUNK,
 };
 use super::pad_wait::{DuePads, PadFrom, PadWait, PadWaits};
-use super::{Click, Collect, HitInfo, LaneOut, LockOut, Pads, MAX_HITS, MAX_LOCKS, MAX_OUT};
+use super::{Click, HitInfo, LaneOut, LockOut, Pads, Table, MAX_HITS, MAX_LANES, MAX_LOCKS};
 
 /// Views kept here while the queue back to the control half is full,
 /// until they can go back to be freed there.
@@ -69,7 +69,9 @@ pub struct TimeAudio {
     /// so counted with the pressure values lost ([`Counts::touch_dropped`]).
     also_pressure: u64,
     block: Box<Block>,
-    pub(super) sink: Box<Collect>,
+    /// The period's events, let in by its room so no ending is ever lost
+    /// (refactor A2): the player's own, or what the arps pass on.
+    pub(super) sink: Box<Table>,
     pub(super) view: Box<PlayView>,
     /// The last recorded changes, for a view that comes in late.
     pub(super) recent: Box<Recent>,
@@ -112,6 +114,13 @@ pub struct TimeAudio {
     locks: Vec<LockOut>,
     lanes: Vec<LaneOut>,
     locks_dropped: u64,
+    /// Unlocks with no place in `locks`: a bug (it holds every one the
+    /// period's table lets in), which must stay 0.
+    locks_lost: u64,
+    /// The arps' new notes left out of busy moments, and their endings
+    /// lost, so far (`TrackArps::refused`, `TrackArps::lost`).
+    arps_busy: u64,
+    arps_lost: u64,
     tx: Tx<ToControl>,
     rx: Rx<ToAudio>,
     /// Views waiting to go back.
@@ -153,13 +162,6 @@ impl TimeAudio {
         tx: Tx<ToControl>,
         rx: Rx<ToAudio>,
     ) -> TimeAudio {
-        let blank = Out {
-            offset: 0,
-            frame: 0,
-            track: 0,
-            dest: 0,
-            event: Event::AllOff,
-        };
         let ahead = Ahead::new(&transport);
         TimeAudio {
             transport,
@@ -170,12 +172,7 @@ impl TimeAudio {
             also_dropped: 0,
             also_pressure: 0,
             block: Box::new(Block::new()),
-            sink: Box::new(Collect {
-                out: [blank; MAX_OUT],
-                arp: [false; MAX_OUT],
-                n: 0,
-                dropped: 0,
-            }),
+            sink: Box::new(Table::new()),
             view: Box::new(PlayView::empty()),
             recent: Box::new(Recent::new()),
             tracks,
@@ -194,8 +191,11 @@ impl TimeAudio {
             n_hits: 0,
             pressure_sent: [None; 128],
             locks: Vec::with_capacity(MAX_LOCKS),
-            lanes: Vec::with_capacity(MAX_LOCKS),
+            lanes: Vec::with_capacity(MAX_LANES),
             locks_dropped: 0,
+            locks_lost: 0,
+            arps_busy: 0,
+            arps_lost: 0,
             tx,
             rx,
             returns: std::array::from_fn(|_| None),
@@ -382,17 +382,22 @@ impl TimeAudio {
         self.lanes.clear();
     }
 
+    /// A lock (`Some`) or unlock (`None`) for the mixer's mod engine. The
+    /// list has a place for every one the period's table lets in; past
+    /// that a lock is dropped, an unlock lost (a bug, counted apart).
     fn lock_out(
         locks: &mut Vec<LockOut>,
-        dropped: &mut u64,
+        (dropped, lost): (&mut u64, &mut u64),
         offset: u32,
         addr: mpfree_play::mpfree_param::ParamAddr,
         value: Option<f32>,
     ) {
         if locks.len() < locks.capacity() {
             locks.push((offset, addr, value));
-        } else {
+        } else if value.is_some() {
             *dropped += 1;
+        } else {
+            *lost += 1;
         }
     }
 
@@ -1015,7 +1020,7 @@ impl TimeAudio {
         if !ok {
             return;
         }
-        self.sink.n = 0;
+        self.sink.clear();
         self.locks.clear();
         self.lanes.clear();
         match arps {
@@ -1039,15 +1044,20 @@ impl TimeAudio {
                     }
                 }
                 let sink = &mut *self.sink;
-                arps.finish_with(&self.block, |o, arp| sink.push(*o, arp));
+                arps.finish_with(&self.block, |o, arp| {
+                    sink.store(*o, arp);
+                });
+                (self.arps_busy, self.arps_lost) = (arps.refused(), arps.lost());
             }
             None => self
                 .player
                 .process(&self.view, &self.block, &mut *self.sink),
         }
-        for i in 0..self.sink.n {
-            let o = self.sink.out[i];
-            if self.sink.arp[i] {
+        for i in 0..self.sink.len() {
+            let Some((o, arp)) = self.sink.get(i) else {
+                break;
+            };
+            if arp {
                 // Live playing: the pad player's own treatment, and what it
                 // says to record goes to the armed track as heard (or, on a
                 // track whose clips play through its arp, the pads as
@@ -1097,7 +1107,7 @@ impl TimeAudio {
                     if !pads.lock_at(addr, Some(value), o.offset) {
                         Self::lock_out(
                             &mut self.locks,
-                            &mut self.locks_dropped,
+                            (&mut self.locks_dropped, &mut self.locks_lost),
                             o.offset,
                             addr,
                             Some(value),
@@ -1108,7 +1118,7 @@ impl TimeAudio {
                     if !pads.lock_at(addr, None, o.offset) {
                         Self::lock_out(
                             &mut self.locks,
-                            &mut self.locks_dropped,
+                            (&mut self.locks_dropped, &mut self.locks_lost),
                             o.offset,
                             addr,
                             None,
@@ -1235,18 +1245,19 @@ impl TimeAudio {
 
     pub fn counts(&self) -> Counts {
         Counts {
-            dropped: self.sink.dropped
-                + self.recorder.dropped()
+            dropped: self.recorder.dropped()
                 + self.also.iter().map(Recorder::dropped).sum::<u64>()
                 + self.also_dropped
                 + self.player.stats().dropped
                 + self.locks_dropped,
             touch_dropped: self.touch_dropped(),
             lost: self.lost,
-            behind: self.behind,
-            kept: self.kept,
-            refused: self.refused,
-            missed: self.missed,
+            behind: super::link::rare(self.behind),
+            kept: super::link::rare(self.kept),
+            refused: super::link::rare(self.refused),
+            missed: super::link::rare(self.missed),
+            busy: self.sink.refused() + self.player.stats().busy + self.arps_busy,
+            ends_lost: super::link::rare(self.sink.lost() + self.locks_lost + self.arps_lost),
         }
     }
 
