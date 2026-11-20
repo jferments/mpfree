@@ -57,8 +57,11 @@ pub const LOOP_COLOURS: [Color; 8] = [
 /// under the lanes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ctl {
-    /// The header: the input chip (a tap changes the input), Send, Clear.
+    /// The deck's Records from chip (a tap changes the input).
     Input,
+    /// The header's Listen: the picked loop alone while the music is
+    /// stopped (again: stop).
+    Listen,
     Send,
     Clear,
     /// A loop that plays.
@@ -78,7 +81,7 @@ pub enum Ctl {
     /// An empty loop: Records from (0 Pads, 1 Line in, 2 Loops).
     Source(u8),
     Monitor,
-    /// Length: 0 Free, then 1, 2, 4 and 8 bars.
+    /// Length: 0 Pattern, 1 Free, then 2 to 5: 1, 2, 4 and 8 bars.
     Bars(u8),
     /// Starts: 0 On the bar, 1 When I play.
     Starts(u8),
@@ -101,8 +104,17 @@ pub const SPEED_CHOICES: [&str; 3] = ["½×", "1×", "2×"];
 /// Merge's width at the strip's right end.
 const MERGE_W: i32 = 100;
 
-/// The Length choices' bars (None: free).
-pub const BAR_CHOICES: [Option<u32>; 5] = [None, Some(1), Some(2), Some(4), Some(8)];
+/// The Length choices' bars: the pattern's length
+/// ([`crate::looping::PATTERN_BARS`], the default), free (None), or a
+/// number of bars.
+pub const BAR_CHOICES: [Option<u32>; 6] = [
+    Some(crate::looping::PATTERN_BARS),
+    None,
+    Some(1),
+    Some(2),
+    Some(4),
+    Some(8),
+];
 
 /// What a touch on the Looper tab asked for.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -127,10 +139,17 @@ pub enum LoopAct {
     /// Capture (the deck's, What you played's): the last bars heard
     /// become a loop.
     Capture,
+    /// What you played's window moved or resized: the bars Capture takes,
+    /// ending on the bar line that starts bar `.0` (None: the newest, so
+    /// it keeps up), `.1` of them.
+    CaptureSpan(Option<i64>, u32),
     /// Show layer `k` (play order) on the Q-Links: it is picked.
     Layer(usize),
     /// A control of layer `k` (play order).
     LayerCmd(usize, LayerCommand),
+    /// Layer `k`'s ▶ (play order): that layer alone while the music is
+    /// stopped (again: stop).
+    LayerListen(usize),
     /// One of the panel's controls tapped.
     Strip(Ctl),
     /// A control drawn faint (it can't work now) was tapped: the screen
@@ -330,6 +349,8 @@ pub fn level_text(level: f32) -> String {
 /// One layer's lane.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayerRow {
+    /// Listen plays this layer alone now.
+    pub listening: bool,
     /// "Drums", "Layer 2".
     pub name: String,
     /// "dub 5 · -2.0 dB", "first · at 49 %", "dub 3 · muted".
@@ -361,6 +382,7 @@ impl Default for LayerRow {
             pan: 0.0,
             faded: 1.0,
             recording: false,
+            listening: false,
         }
     }
 }
@@ -461,17 +483,116 @@ pub struct EmptyLook {
     /// its button's words ("Capture bars 10 and 11"); None when there is
     /// nothing to take.
     pub take: Option<(f32, f32, String)>,
+    /// The bars it takes: the first one's number and how many.
+    pub window: Option<(i64, u32)>,
+    /// The bars the window grows and shrinks by (the pattern's length,
+    /// `pattern` true; or the Length's bars; or 1).
+    pub unit: u32,
+    pub pattern: bool,
 }
 
-/// What you played's Capture button, over the bars it takes, in the
-/// lanes' space `lanes`.
-pub fn empty_capture_rect(lanes: Rect, e: &EmptyLook) -> Option<Rect> {
-    let (a, b, _) = e.take.as_ref()?;
+impl EmptyLook {
+    /// Where bar `bar` starts on the wave (0 to 1), if its line shows; the
+    /// bar after the newest line ends at "now".
+    fn bar_x(&self, bar: i64) -> Option<f32> {
+        let newest = self.bars.last()?.0;
+        if bar == newest + 1 {
+            return Some(1.0);
+        }
+        self.bars.iter().find(|b| b.0 == bar).map(|b| b.1)
+    }
+
+    /// The button's words for a window of `bars` from bar `first`, with
+    /// how many patterns it holds.
+    fn words(&self, first: i64, bars: u32) -> String {
+        capture_words(first, bars, self.unit, self.pattern)
+    }
+}
+
+/// What you played's button for `bars` from bar `first`: "Capture bars 5
+/// to 10", and "· 3 × pattern" when it holds whole patterns of `unit`
+/// bars, more than one.
+pub fn capture_words(first: i64, bars: u32, unit: u32, pattern: bool) -> String {
+    let w = format!("Capture {}", crate::looping::bars_words(first, bars));
+    let unit = unit.max(1);
+    match (pattern, bars / unit) {
+        (true, k) if k > 1 && bars.is_multiple_of(unit) => format!("{w} · {k} × pattern"),
+        _ => w,
+    }
+}
+
+/// A finger on What you played's window: what it holds (the window, or
+/// one of its ends), where it went down, the window then and as it is now
+/// (first bar and bars), and whether it went down on the button.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WindowDrag {
+    finger: u64,
+    grip: Grip,
+    x0: i32,
+    from: (i64, u32),
+    now: (i64, u32),
+    button: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Grip {
+    Move,
+    Start,
+    End,
+}
+
+/// How near (pixels) to the window's end a finger takes that end.
+const GRIP_REACH: i32 = 22;
+
+/// The Capture button for a window from `a` to `b` (0 to 1) with its
+/// words `label`: centred over it, as wide as its words need.
+fn capture_button(lanes: Rect, a: f32, b: f32, label: &str) -> Rect {
     let w = empty_wave_rect(lanes);
     let mid = w.x + ((a + b) / 2.0 * w.w as f32) as i32;
-    let bw = 250.min(w.w);
+    let bw = ((60.0 + 8.6 * label.chars().count() as f32) as i32)
+        .max(200)
+        .min(w.w);
     let x = (mid - bw / 2).clamp(w.x, w.right() - bw);
-    Some(Rect::new(x, w.y + w.h / 2 - 22, bw, 44))
+    Rect::new(x, w.y + w.h / 2 - 22, bw, 44)
+}
+
+/// What you played's window from `a` to `b` (0 to 1): the wave's height
+/// over the bars it takes.
+fn window_rect(lanes: Rect, a: f32, b: f32) -> Rect {
+    let w = empty_wave_rect(lanes);
+    let at = |f: f32| w.x + (f.clamp(0.0, 1.0) * w.w as f32) as i32;
+    Rect::new(at(a), w.y, (at(b) - at(a)).max(1), w.h)
+}
+
+/// The window `from` (first bar, bars) after a finger on `grip` moved
+/// `steps` bars: moved, it keeps its bars; an end moved, it grows or
+/// shrinks by whole units (the pattern), the other end staying. Always
+/// whole bars that have been played and still show: from the oldest bar
+/// line to the newest.
+fn window_after(e: &EmptyLook, grip: Grip, from: (i64, u32), steps: i64) -> (i64, u32) {
+    let (Some(oldest), Some(newest)) = (e.bars.first().map(|b| b.0), e.bars.last().map(|b| b.0))
+    else {
+        return from;
+    };
+    let unit = i64::from(e.unit.max(1));
+    let (first, bars) = (from.0, i64::from(from.1));
+    let units = |n: i64| (n as f32 / unit as f32).round().max(1.0) as i64;
+    let (f, n) = match grip {
+        Grip::Move => ((first + steps).min(newest - bars).max(oldest), bars),
+        Grip::Start => {
+            let end = (first + bars).min(newest);
+            let k = units(bars - steps).min((end - oldest) / unit);
+            (end - k * unit, k * unit)
+        }
+        Grip::End => {
+            let k = units(bars + steps).min((newest - first) / unit);
+            (first, k * unit)
+        }
+    };
+    if n < 1 || f < oldest || f + n > newest + 1 {
+        return from;
+    }
+    (f, n as u32)
 }
 
 /// Where What you played draws the input, in the lanes' space.
@@ -490,11 +611,21 @@ pub const SEND_CHOICES: [(&str, &str); 4] = [
 /// Send's Show in Clips.
 pub const SEND_SHOW: usize = 3;
 
+/// Records from's choices, as its picker shows them in the lanes' place
+/// (the deck's Records from opens it): title and what it records. The
+/// mixes follow them, from index 3 ([`LoopEditor::set_mixes`]).
+pub const SOURCE_CHOICES: [(&str, &str); 3] = [
+    ("Pads", "what the pads play, and clips on that sound"),
+    ("Line in", "the INPUTS on the back of the MPC"),
+    ("Loops", "the other loops as you hear them"),
+];
+
 /// Where the panel's parts are.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EditorParts {
     pub head: Rect,
-    pub input: Rect,
+    /// Listen, left of Send.
+    pub listen: Rect,
     pub send: Rect,
     pub clear: Rect,
     pub ruler: Rect,
@@ -510,6 +641,8 @@ pub struct EditorParts {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LaneParts {
     pub head: Rect,
+    /// ▶: the layer alone while the music is stopped.
+    pub listen: Rect,
     pub solo: Rect,
     pub wave: Rect,
     pub delete: Rect,
@@ -539,7 +672,7 @@ struct EditorLook {
     title: String,
     sub: String,
     colour: Color,
-    input: (String, u8),
+    listen: (bool, bool),
     has_sound: bool,
     wave: Option<usize>,
     bars: usize,
@@ -549,10 +682,13 @@ struct EditorLook {
     empty: Option<EmptyLook>,
     strip: Strip,
     send_open: bool,
+    sources: Option<usize>,
+    mixes: Vec<String>,
     history: Option<(HistoryList, usize)>,
     trim: Option<i64>,
     trimming: Option<(i64, i64)>,
     nudging: Option<i32>,
+    window: Option<(i64, u32)>,
     feedback_held: bool,
     drag: Option<(usize, Rect, String, Option<DropSpot>)>,
     ready: Option<usize>,
@@ -566,9 +702,9 @@ pub struct LoopEditor {
     /// "Loops A · Verse · 4 bars · 6 layers", "empty · records the pads".
     pub sub: String,
     pub colour: Color,
-    /// The input chip: what the loop records from ("Pads", "Line in") and
-    /// its level now, 0 to 1 along the meter.
-    pub input: (String, f32),
+    /// Listen: whether it can play now (the loop has sound and the music
+    /// is stopped), and whether it plays the whole loop now (lit: Stop).
+    pub listen: (bool, bool),
     /// Send and Clear work: the loop has sound.
     pub has_sound: bool,
     pub wave: Option<Arc<LoopWave>>,
@@ -589,11 +725,19 @@ pub struct LoopEditor {
     pub send_built: [bool; 4],
     /// Send's choices show in the lanes' place.
     send_open: bool,
+    /// Records from's choices show in the lanes' place, the one in use
+    /// (into [`SOURCE_CHOICES`], then the mixes) lit.
+    sources: Option<usize>,
+    /// Records from's mixes, by name: the master, the tracks and the
+    /// submixes (the page's [`crate::looper_page::LooperPage::set_mixes`]).
+    mixes: Vec<String>,
     /// A finger on a trim grip (true: the end), and the range kept so far.
     trimming: Option<(u64, bool, i64, i64)>,
     /// A finger on the ruler: where it went down and the 1/16 notes it
     /// has moved.
     nudging: Option<(u64, i32, i32)>,
+    /// A finger on What you played's window (moving or resizing it).
+    window_drag: Option<WindowDrag>,
     /// A finger on the Feedback knob: where it went down and the value
     /// then.
     feedback: Option<(u64, i32, f32)>,
@@ -624,7 +768,7 @@ impl Default for LoopEditor {
             title: String::new(),
             sub: String::new(),
             colour: LOOP_COLOURS[0],
-            input: (String::new(), 0.0),
+            listen: (false, false),
             has_sound: false,
             wave: None,
             position: None,
@@ -636,8 +780,11 @@ impl Default for LoopEditor {
             strip: Strip::default(),
             send_built: [false; 4],
             send_open: false,
+            sources: None,
+            mixes: vec!["Master".to_string()],
             trimming: None,
             nudging: None,
+            window_drag: None,
             feedback: None,
             history: None,
             history_top: None,
@@ -660,7 +807,7 @@ pub const LANE_H: i32 = 60;
 const LANE_GAP: i32 = 4;
 const LANES_SHOWN: usize = 4;
 /// A lane's head: its speaker, name, tag and S.
-const LANE_HEAD: i32 = 160;
+const LANE_HEAD: i32 = 196;
 /// The undo history's rows: a fingertip tall, as the lanes.
 const STEP_H: i32 = 56;
 const STEP_GAP: i32 = 4;
@@ -674,7 +821,7 @@ impl LoopEditor {
         let head = Rect::new(r.x + 12, r.y + 8, r.w - 24, 36);
         let clear = Rect::new(head.right() - 88, head.y + 1, 88, 34);
         let send = Rect::new(clear.x - 8 - 80, head.y + 1, 80, 34);
-        let input = Rect::new(send.x - 8 - 128, head.y + 1, 128, 34);
+        let listen = Rect::new(send.x - 8 - 112, head.y + 1, 112, 34);
         let strip = Rect::new(
             r.x + 12,
             r.bottom() - 10 - (18 + CTRL_H),
@@ -694,7 +841,7 @@ impl LoopEditor {
         let ruler = Rect::new(wave_x, r.y + 50, lanes.right() - wave_x, 18);
         EditorParts {
             head,
-            input,
+            listen,
             send,
             clear,
             ruler,
@@ -733,10 +880,12 @@ impl LoopEditor {
     pub fn lane_parts(rr: Rect) -> LaneParts {
         let head = Rect::new(rr.x, rr.y, LANE_HEAD, rr.h);
         let solo = Rect::new(head.right() - 42, rr.y + (rr.h - 36) / 2, 34, 36);
+        let listen = Rect::new(solo.x - 40, solo.y, 34, 36);
         let wave = Rect::new(rr.x + LANE_HEAD + 8, rr.y, rr.w - LANE_HEAD - 8, rr.h);
         let delete = Rect::new(wave.right() - 44, rr.y + (rr.h - 36) / 2, 36, 36);
         LaneParts {
             head,
+            listen,
             solo,
             wave,
             delete,
@@ -784,6 +933,115 @@ impl LoopEditor {
     /// Close Send's choices (the loop emptied, or another was picked).
     pub fn close_send(&mut self) {
         self.send_open = false;
+    }
+
+    /// Open Records from's choices in the lanes' place, `now` (into
+    /// [`SOURCE_CHOICES`]) lit; open, close them.
+    pub fn toggle_sources(&mut self, now: usize) {
+        self.send_open = false;
+        self.sources = if self.sources.is_some() {
+            None
+        } else {
+            Some(now)
+        };
+    }
+
+    /// Records from's choices show, and the one lit.
+    #[cfg(test)]
+    pub fn sources(&self) -> Option<usize> {
+        self.sources
+    }
+
+    /// Records from's mixes, by name, as the Mix tab names them.
+    pub fn set_mixes(&mut self, mixes: Vec<String>) {
+        self.mixes = mixes;
+    }
+
+    /// Records from's choices in the lanes' space: the three side by side,
+    /// then `mixes` chips in rows under them, as many as fit.
+    fn source_rects(lanes: Rect, mixes: usize) -> Vec<Rect> {
+        let n = SOURCE_CHOICES.len() as i32;
+        let inner = lanes.inset_xy(24, 24);
+        let w = (inner.w - 16 * (n - 1)) / n;
+        let h = 84;
+        let mut out: Vec<Rect> = (0..n)
+            .map(|i| Rect::new(inner.x + i * (w + 16), inner.y, w, h))
+            .collect();
+        let gap = 10;
+        let per_row = ((inner.w + gap) / (128 + gap)).max(1);
+        let cw = (inner.w - gap * (per_row - 1)) / per_row;
+        let top = inner.y + h + 36;
+        for k in 0..mixes as i32 {
+            let b = Rect::new(
+                inner.x + (k % per_row) * (cw + gap),
+                top + (k / per_row) * (40 + gap),
+                cw,
+                40,
+            );
+            if b.bottom() > lanes.bottom() - 4 {
+                break;
+            }
+            out.push(b);
+        }
+        out
+    }
+
+    fn paint_sources(&self, cx: &mut PaintCx, lanes: Rect, now: usize) {
+        let t = cx.theme.clone();
+        cx.canvas
+            .fill_round_rect(lanes, 10, t.bg.mix(t.surface, 0.45));
+        group_label(cx, lanes.x + 24, lanes.y + 4, "RECORDS FROM");
+        let rects = LoopEditor::source_rects(lanes, self.mixes.len());
+        let fixed = SOURCE_CHOICES.len();
+        if let Some(first) = rects.get(fixed) {
+            cx.text(
+                FontId::Bold,
+                11.5,
+                Rect::new(first.x, first.y - 22, lanes.w - 48, 14),
+                Align::Left,
+                t.text_dim,
+                "OR A MIX: THE MASTER (ALL BUT THE LOOPS), A TRACK OR A SUBMIX",
+            );
+        }
+        for (i, (b, name)) in rects.iter().skip(fixed).zip(&self.mixes).enumerate() {
+            let lit = fixed + i == now;
+            cx.canvas
+                .fill_round_rect(*b, 10, if lit { t.accent } else { t.raised });
+            cx.text(
+                FontId::Bold,
+                15.0,
+                b.inset_xy(8, 0),
+                Align::Center,
+                if lit { t.on_accent } else { t.text },
+                name,
+            );
+        }
+        for (i, (b, (title, what))) in rects.into_iter().zip(SOURCE_CHOICES).enumerate() {
+            let lit = i == now;
+            cx.canvas
+                .fill_round_rect(b, 12, if lit { t.accent } else { t.raised });
+            let (ink, dim) = if lit {
+                (t.on_accent, t.on_accent)
+            } else {
+                (t.text, t.text_dim)
+            };
+            cx.text(
+                FontId::Bold,
+                18.0,
+                Rect::new(b.x, b.y + b.h / 2 - 24, b.w, 26),
+                Align::Center,
+                ink,
+                title,
+            );
+            cx.text(
+                FontId::Sans,
+                13.0,
+                Rect::new(b.x + 10, b.y + b.h / 2 + 4, b.w - 20, 18),
+                Align::Center,
+                dim,
+                what,
+            );
+        }
     }
 
     fn steps_fit(rows: Rect) -> usize {
@@ -925,16 +1183,10 @@ impl LoopEditor {
             Strip::Records {
                 monitor, starts, ..
             } => {
+                // Records from is over the loops (the deck's header), for
+                // every loop; here, how this one records.
                 let x = s.x;
-                for (i, l) in ["Pads", "Line in", "Loops"].iter().enumerate() {
-                    out.push((
-                        Ctl::Source(i as u8),
-                        Rect::new(x + 3 + i as i32 * 86, y + 3, 82, CTRL_H - 6),
-                        l.to_string(),
-                        true,
-                    ));
-                }
-                let mut x2 = x + 270;
+                let mut x2 = x;
                 if let Some(on) = monitor {
                     out.push((
                         Ctl::Monitor,
@@ -942,11 +1194,14 @@ impl LoopEditor {
                         format!("Monitor {}", if *on { "on" } else { "off" }),
                         true,
                     ));
+                    x2 += 100;
                 }
-                x2 += 90;
-                for (i, l) in ["Free", "1", "2", "4", "8 bars"].iter().enumerate() {
-                    let w = if i == 4 { 78 } else { 54 };
-                    let bx = x2 + 3 + [0, 58, 116, 174, 232][i];
+                for (i, l) in ["Pattern", "Free", "1", "2", "4", "8 bars"]
+                    .iter()
+                    .enumerate()
+                {
+                    let w = [70, 50, 36, 36, 36, 62][i];
+                    let bx = x2 + 3 + [0, 74, 128, 168, 208, 248][i];
                     out.push((
                         Ctl::Bars(i as u8),
                         Rect::new(bx, y + 3, w, CTRL_H - 6),
@@ -1115,10 +1370,7 @@ impl LoopEditor {
             title: self.title.clone(),
             sub: self.sub.clone(),
             colour: self.colour,
-            input: (
-                self.input.0.clone(),
-                (self.input.1.clamp(0.0, 1.0) * 5.0) as u8,
-            ),
+            listen: self.listen,
             has_sound: self.has_sound,
             wave: self.wave.as_ref().map(|w| Arc::as_ptr(w) as usize),
             bars: self.bars,
@@ -1128,6 +1380,8 @@ impl LoopEditor {
             empty: self.empty.clone(),
             strip: self.strip.clone(),
             send_open: self.send_open,
+            sources: self.sources,
+            mixes: self.mixes.clone(),
             history: self
                 .history
                 .clone()
@@ -1135,6 +1389,7 @@ impl LoopEditor {
             trim: self.trim_ticks,
             trimming: self.trimming.map(|t| (t.2, t.3)),
             nudging: self.nudging.map(|n| n.2),
+            window: self.window_drag.map(|d| d.now),
             feedback_held: self.feedback.is_some(),
             drag: self
                 .drag()
@@ -1154,6 +1409,54 @@ impl LoopEditor {
 // ------------------------------------------------------------- painting
 
 /// A button: raised (or lit), its label centred, faint when it can't work.
+/// A play triangle, `h` pixels tall, its left edge at `x` and centred on
+/// `y` (the UI font has no ▶).
+pub(crate) fn play_icon(cx: &mut PaintCx, x: f32, y: f32, h: f32, c: Color) {
+    let w = h * 0.87;
+    let bbox = Rect::new(
+        x as i32 - 2,
+        (y - h / 2.0) as i32 - 2,
+        w as i32 + 4,
+        h as i32 + 4,
+    );
+    let mut s = Shape::new(bbox);
+    let rows = (h * 2.0) as i32;
+    for i in 0..=rows {
+        let f = i as f32 / rows as f32;
+        let yy = y - h / 2.0 + f * h;
+        let len = w * (1.0 - (2.0 * f - 1.0).abs());
+        s.segment((x, yy), (x + len.max(0.5), yy), 1.2);
+    }
+    s.draw(cx.canvas, c);
+}
+
+/// Listen's button: ▶ Listen, or Stop lit while it plays.
+fn listen_button(cx: &mut PaintCx, b: Rect, works: bool, on: bool) {
+    let t = cx.theme.clone();
+    cx.canvas
+        .fill_round_rect(b, 10, if on { t.accent } else { t.raised });
+    let ink = if on { t.on_accent } else { t.button_ink(works) };
+    let label = if on { "Stop" } else { "Listen" };
+    let lw = cx.measure(FontId::Bold, 14.0, label);
+    let total = 12 + 8 + lw;
+    let x0 = b.x + (b.w - total) / 2;
+    let cy = b.y as f32 + b.h as f32 / 2.0;
+    if on {
+        cx.canvas
+            .fill_rect(Rect::new(x0, cy as i32 - 5, 11, 11), ink);
+    } else {
+        play_icon(cx, x0 as f32 + 1.0, cy, 12.0, ink);
+    }
+    cx.text(
+        FontId::Bold,
+        14.0,
+        Rect::new(x0 + 20, b.y, lw + 2, b.h),
+        Align::Left,
+        ink,
+        label,
+    );
+}
+
 fn button(cx: &mut PaintCx, b: Rect, label: &str, on: bool, lit: bool, px: f32) {
     let t = cx.theme.clone();
     cx.canvas
@@ -1293,7 +1596,7 @@ impl LoopEditor {
             t.text,
             &self.title,
         );
-        let sub_w = (p.input.x - 12 - (h.x + 32 + nw + 16)).max(0);
+        let sub_w = (p.listen.x - 12 - (h.x + 32 + nw + 16)).max(0);
         cx.text(
             FontId::Sans,
             14.0,
@@ -1302,35 +1605,9 @@ impl LoopEditor {
             t.text_dim,
             &self.sub,
         );
-        // The input with its meter: five bars, lit to the level.
-        cx.canvas.fill_round_rect(p.input, 10, t.raised);
-        let (word, level) = &self.input;
-        let ww = cx.measure(FontId::Bold, 14.0, word);
-        let total = ww + 10 + 5 * 8;
-        let x0 = p.input.x + (p.input.w - total) / 2;
-        cx.text(
-            FontId::Bold,
-            14.0,
-            Rect::new(x0, p.input.y, ww + 2, p.input.h),
-            Align::Left,
-            t.text,
-            word,
-        );
-        let lit = (level.clamp(0.0, 1.0) * 5.0).round() as i32;
-        for k in 0..5 {
-            let bh = 8 + k * 3;
-            let b = Rect::new(x0 + ww + 10 + k * 8, p.input.y + 25 - bh, 6, bh);
-            let c = if k < lit {
-                if k == 4 {
-                    t.bad
-                } else {
-                    t.good
-                }
-            } else {
-                t.outline
-            };
-            cx.canvas.fill_round_rect(b, 2, c);
-        }
+        // Listen: the loop alone while the music is stopped.
+        let (works, on) = self.listen;
+        listen_button(cx, p.listen, works || on, on);
         button(cx, p.send, "Send", self.has_sound, self.send_open, 14.0);
         let ink = if self.has_sound {
             t.bad
@@ -1428,7 +1705,7 @@ impl LoopEditor {
             if l.muted { t.bad } else { t.text_dim },
             l.muted,
         );
-        let name_w = p.solo.x - (p.head.x + 40) - 4;
+        let name_w = p.listen.x - (p.head.x + 40) - 4;
         cx.text(
             FontId::Bold,
             16.0,
@@ -1440,11 +1717,34 @@ impl LoopEditor {
         cx.text(
             FontId::Sans,
             12.0,
-            Rect::new(p.head.x + 14, top + 26, p.solo.x - p.head.x - 18, 18),
+            Rect::new(p.head.x + 14, top + 26, p.listen.x - p.head.x - 18, 18),
             Align::Left,
             if l.recording { t.warn } else { t.text_dim },
             &l.tag,
         );
+        // ▶: this layer alone while the music is stopped (lit while it
+        // plays; faint while the music plays).
+        cx.canvas
+            .fill_round_rect(p.listen, 8, if l.listening { t.accent } else { t.raised });
+        let ink = if l.listening {
+            t.on_accent
+        } else {
+            t.button_ink(self.listen.0)
+        };
+        let cy = p.listen.y as f32 + p.listen.h as f32 / 2.0;
+        if l.listening {
+            let c = p.listen.x + p.listen.w / 2;
+            cx.canvas
+                .fill_rect(Rect::new(c - 5, cy as i32 - 5, 10, 10), ink);
+        } else {
+            play_icon(
+                cx,
+                (p.listen.x + p.listen.w / 2) as f32 - 4.0,
+                cy,
+                12.0,
+                ink,
+            );
+        }
         cx.canvas
             .fill_round_rect(p.solo, 8, if l.solo { t.accent } else { t.raised });
         cx.text(
@@ -1552,6 +1852,55 @@ impl LoopEditor {
         }
     }
 
+    /// What you played's window as it shows: where a finger has it while
+    /// it is moved or resized, else what Capture takes now.
+    fn shown_take(&self) -> Option<(f32, f32, String)> {
+        let e = self.empty.as_ref()?;
+        match self.window_drag {
+            Some(d) => {
+                let (first, bars) = d.now;
+                let a = e.bar_x(first)?;
+                let b = e.bar_x(first + i64::from(bars))?;
+                Some((a, b, e.words(first, bars)))
+            }
+            None => e.take.clone(),
+        }
+    }
+
+    /// The window's edges, with grips to take them by (above the button,
+    /// where a finger finds them), and a line where each repeat of the
+    /// pattern starts inside it.
+    fn paint_window(&self, cx: &mut PaintCx, lanes: Rect, e: &EmptyLook, a: f32, b: f32) {
+        let t = cx.theme.clone();
+        let r = window_rect(lanes, a, b);
+        let w = empty_wave_rect(lanes);
+        let at = |f: f32| w.x + (f.clamp(0.0, 1.0) * w.w as f32) as i32;
+        let window = self.window_drag.map(|d| d.now).or(e.window);
+        if let Some((first, bars)) = window.filter(|_| e.unit > 1) {
+            let unit = i64::from(e.unit);
+            let mut k = unit;
+            while k < i64::from(bars) {
+                if let Some(x) = e.bar_x(first + k) {
+                    let x = at(x);
+                    let mut y = r.y;
+                    while y < r.bottom() {
+                        cx.canvas
+                            .fill_rect(Rect::new(x - 1, y, 2, 6.min(r.bottom() - y)), t.accent);
+                        y += 10;
+                    }
+                }
+                k += unit;
+            }
+        }
+        for x in [r.x, r.right() - 2] {
+            cx.canvas.fill_rect(Rect::new(x, r.y, 2, r.h), t.accent);
+        }
+        for x in [r.x - 5, r.right() - 7] {
+            cx.canvas
+                .fill_round_rect(Rect::new(x, r.y + 14, 12, 34), 6, t.accent);
+        }
+    }
+
     fn paint_empty(&self, cx: &mut PaintCx, lanes: Rect, e: &EmptyLook) {
         let t = cx.theme.clone();
         cx.canvas
@@ -1565,10 +1914,11 @@ impl LoopEditor {
             t.text_dim,
             &e.title,
         );
-        // What Capture takes, behind the input.
+        // What Capture takes (its window), behind the input.
         let w = empty_wave_rect(lanes);
         let at = |f: f32| w.x + (f.clamp(0.0, 1.0) * w.w as f32) as i32;
-        if let Some((a, b, _)) = &e.take {
+        let shown = self.shown_take();
+        if let Some((a, b, _)) = &shown {
             let (a, b) = (at(*a), at(*b));
             cx.canvas.fill_rect(
                 Rect::new(a, w.y, (b - a).max(1), w.h),
@@ -1601,8 +1951,12 @@ impl LoopEditor {
                 self.colour.mix(t.surface, 0.2),
             );
         }
-        if let Some(b) = empty_capture_rect(lanes, e) {
-            let label = e.take.as_ref().map_or("", |t| t.2.as_str());
+        if let Some((a, b, _)) = &shown {
+            self.paint_window(cx, lanes, e, *a, *b);
+        }
+        if let Some((a, b, label)) = &shown {
+            let b = capture_button(lanes, *a, *b, label);
+            let label = label.as_str();
             cx.canvas.fill_round_rect(b, 10, t.accent);
             let tw = cx.measure(FontId::Bold, 15.0, label);
             let icon_x = b.x + (b.w - tw - 26) / 2;
@@ -1845,21 +2199,12 @@ impl LoopEditor {
                     .fill_rect(Rect::new(first_div, s.y + 2, 1, s.h - 4), t.outline);
             }
             Strip::Records {
-                source,
                 monitor,
                 bars,
                 starts,
                 then,
+                ..
             } => {
-                group_label(cx, s.x, s.y, "RECORDS FROM");
-                let src: Vec<(Rect, &str, bool)> = ctls
-                    .iter()
-                    .filter_map(|c| match c.0 {
-                        Ctl::Source(i) => Some((c.1, c.2.as_str(), i == *source)),
-                        _ => None,
-                    })
-                    .collect();
-                segments(cx, &src);
                 if let (Some(on), Some(m)) = (monitor, rect(Ctl::Monitor)) {
                     group_label(cx, m.x, s.y, "MONITOR");
                     let sw = Rect::new(m.x, m.y + (m.h - 34) / 2, 62, 34);
@@ -1877,8 +2222,10 @@ impl LoopEditor {
                     })
                     .collect();
                 if let Some(first) = len.first() {
-                    cx.canvas
-                        .fill_rect(Rect::new(first.0.x - 18, s.y + 2, 1, s.h - 4), t.outline);
+                    if first.0.x - 18 > s.x {
+                        cx.canvas
+                            .fill_rect(Rect::new(first.0.x - 18, s.y + 2, 1, s.h - 4), t.outline);
+                    }
                     group_label(cx, first.0.x - 3, s.y, "LENGTH");
                 }
                 segments(cx, &len);
@@ -1923,7 +2270,9 @@ impl Widget for LoopEditor {
         let (fit, _) = LoopEditor::lane_fit(p.lanes);
         let wave_r = Rect::new(p.ruler.x, p.lanes.y, p.ruler.w, p.lanes.h);
         let play = self.play_x(wave_r.inset_xy(4, 0));
-        if self.send_open {
+        if let Some(now) = self.sources {
+            self.paint_sources(cx, p.lanes, now);
+        } else if self.send_open {
             self.paint_send(cx, p.lanes);
         } else if self.history.is_some() {
             self.paint_history(cx, p.lanes);
@@ -1986,7 +2335,17 @@ impl Widget for LoopEditor {
     fn targets(&self, r: Rect) -> Vec<Target> {
         let p = LoopEditor::parts(r);
         let mut out = vec![
-            Target::tap("input", 0, format!("Input: {}", self.input.0), p.input),
+            Target::tap(
+                "listen",
+                0,
+                if self.listen.1 {
+                    "Stop listening"
+                } else {
+                    "Listen"
+                },
+                p.listen,
+            )
+            .disabled_if(!self.listen.0 && !self.listen.1),
             Target::tap("send", 0, "Send", p.send).disabled_if(!self.has_sound),
             Target::tap("clear", 0, "Clear", p.clear).disabled_if(!self.has_sound),
         ];
@@ -2007,7 +2366,7 @@ impl Widget for LoopEditor {
                 Ctl::Bars(i) => Target::tap("bars", i as usize, label, b),
                 Ctl::Starts(i) => Target::tap("starts", i as usize, label, b),
                 Ctl::Then(i) => Target::tap("then", i as usize, label, b),
-                Ctl::Input | Ctl::Send | Ctl::Clear => continue,
+                Ctl::Input | Ctl::Listen | Ctl::Send | Ctl::Clear => continue,
             };
             let chosen = match (&self.strip, c) {
                 (Strip::Records { source, .. }, Ctl::Source(i)) => *source == i,
@@ -2019,6 +2378,18 @@ impl Widget for LoopEditor {
                 _ => false,
             };
             out.push(t.disabled_if(!on || chosen));
+        }
+        if let Some(now) = self.sources {
+            let rects = LoopEditor::source_rects(p.lanes, self.mixes.len());
+            for (i, b) in rects.into_iter().enumerate() {
+                let label = SOURCE_CHOICES
+                    .get(i)
+                    .map(|c| c.0)
+                    .or_else(|| self.mixes.get(i - SOURCE_CHOICES.len()).map(String::as_str))
+                    .unwrap_or("");
+                out.push(Target::tap("source", i, label, b).disabled_if(i == now));
+            }
+            return out;
         }
         if self.send_open {
             for (i, b) in LoopEditor::send_rects(p.lanes).into_iter().enumerate() {
@@ -2039,8 +2410,9 @@ impl Widget for LoopEditor {
         }
         if self.layers.is_empty() {
             if let Some(e) = &self.empty {
-                if let (Some(b), Some((_, _, label))) = (empty_capture_rect(p.lanes, e), &e.take) {
-                    out.push(Target::tap("capture", 0, label.clone(), b));
+                if let Some((a, b, label)) = self.shown_take().filter(|_| e.take.is_some()) {
+                    let b = capture_button(p.lanes, a, b, &label);
+                    out.push(Target::tap("capture", 0, label, b));
                 }
             }
             return out;
@@ -2066,8 +2438,12 @@ impl Widget for LoopEditor {
                 "layer-mute",
                 k,
                 format!("{name} speaker"),
-                Rect::new(lp.head.x, lp.head.y, lp.solo.x - lp.head.x - 2, lp.head.h),
+                Rect::new(lp.head.x, lp.head.y, lp.listen.x - lp.head.x - 2, lp.head.h),
             ));
+            out.push(
+                Target::tap("layer-listen", k, format!("{name} listen"), lp.listen)
+                    .disabled_if(!self.listen.0 && !self.layers[k].listening),
+            );
             out.push(Target::tap("layer-solo", k, format!("{name} S"), lp.solo));
             if k == self.picked && !self.layers[k].recording {
                 out.push(Target::tap(
@@ -2162,8 +2538,13 @@ impl Widget for LoopEditor {
         match phase {
             Touch::Down => {
                 // The header.
-                if p.input.contains(x, y) {
-                    self.acts.push(LoopAct::Strip(Ctl::Input));
+                if p.listen.contains(x, y) {
+                    let (works, on) = self.listen;
+                    self.acts.push(if works || on {
+                        LoopAct::Strip(Ctl::Listen)
+                    } else {
+                        LoopAct::Faint(Ctl::Listen)
+                    });
                     return Some(EventKind::Tab(0));
                 }
                 if p.send.contains(x, y) {
@@ -2172,6 +2553,7 @@ impl Widget for LoopEditor {
                         return Some(EventKind::Tab(1));
                     }
                     self.send_open = !self.send_open;
+                    self.sources = None;
                     return Some(EventKind::Tab(1));
                 }
                 if p.clear.contains(x, y) {
@@ -2202,6 +2584,19 @@ impl Widget for LoopEditor {
                     });
                     return Some(EventKind::Tab(3));
                 }
+                if self.sources.is_some() {
+                    if let Some(i) = LoopEditor::source_rects(p.lanes, self.mixes.len())
+                        .iter()
+                        .position(|b| b.contains(x, y))
+                    {
+                        self.sources = None;
+                        self.acts.push(LoopAct::Strip(Ctl::Source(i as u8)));
+                        return Some(EventKind::Select(i));
+                    }
+                    // Anywhere else closes the choices.
+                    self.sources = None;
+                    return None;
+                }
                 if self.send_open {
                     if let Some(i) = LoopEditor::send_rects(p.lanes)
                         .iter()
@@ -2226,11 +2621,35 @@ impl Widget for LoopEditor {
                     return None;
                 }
                 if self.layers.is_empty() {
-                    let capture = self
-                        .empty
-                        .as_ref()
-                        .and_then(|e| empty_capture_rect(p.lanes, e));
-                    if capture.is_some_and(|b| b.contains(x, y)) {
+                    // What you played's window: its button captures (on
+                    // the finger's lift, if it didn't move); a finger on
+                    // it moves it, and one by an end resizes it.
+                    let e = self.empty.as_ref()?;
+                    let (a, b, label) = e.take.clone()?;
+                    let win = window_rect(p.lanes, a, b);
+                    let on_button = capture_button(p.lanes, a, b, &label).contains(x, y);
+                    let in_wave = y >= win.y && y < win.bottom();
+                    let grip = if on_button {
+                        Some(Grip::Move)
+                    } else if in_wave && (x - win.x).abs() <= GRIP_REACH {
+                        Some(Grip::Start)
+                    } else if in_wave && (x - win.right()).abs() <= GRIP_REACH {
+                        Some(Grip::End)
+                    } else if win.contains(x, y) {
+                        Some(Grip::Move)
+                    } else {
+                        None
+                    };
+                    if let (Some(grip), Some(from)) = (grip, e.window) {
+                        self.window_drag = Some(WindowDrag {
+                            finger,
+                            grip,
+                            x0: x,
+                            from,
+                            now: from,
+                            button: on_button,
+                        });
+                    } else if on_button {
                         self.acts.push(LoopAct::Capture);
                         return Some(EventKind::Tab(4));
                     }
@@ -2266,7 +2685,13 @@ impl Widget for LoopEditor {
                     .find(|(_, rr)| rr.contains(x, y))?;
                 let l = self.layers[k].clone();
                 let lp = LoopEditor::lane_parts(rr);
-                let act = if lp.solo.inset(-3).contains(x, y) {
+                let act = if lp.listen.inset(-3).contains(x, y) {
+                    if self.listen.0 || l.listening {
+                        LoopAct::LayerListen(k)
+                    } else {
+                        LoopAct::Faint(Ctl::Listen)
+                    }
+                } else if lp.solo.inset(-3).contains(x, y) {
                     LoopAct::LayerCmd(k, LayerCommand::Solo(!l.solo))
                 } else if lp.head.contains(x, y) {
                     LoopAct::LayerCmd(k, LayerCommand::Mute(!l.muted))
@@ -2306,6 +2731,21 @@ impl Widget for LoopEditor {
                 *feedback = v;
                 self.acts.push(LoopAct::Feedback(v));
                 Some(EventKind::Value(v))
+            }
+            Touch::Move if self.window_drag.is_some_and(|d| d.finger == finger) => {
+                let d = self.window_drag?;
+                let e = self.empty.as_ref()?;
+                let w = empty_wave_rect(p.lanes);
+                let (first, last) = (e.bars.first()?, e.bars.last()?);
+                let lines = e.bars.len().checked_sub(1).filter(|&n| n > 0)? as f32;
+                let px = ((last.1 - first.1) / lines * w.w as f32).max(1.0);
+                let steps = ((x - d.x0) as f32 / px).round() as i64;
+                let now = window_after(e, d.grip, d.from, steps);
+                if now == d.now {
+                    return None;
+                }
+                self.window_drag = Some(WindowDrag { now, ..d });
+                Some(EventKind::Value(now.1 as f32))
             }
             Touch::Move if self.trimming.is_some_and(|t| t.0 == finger) => {
                 let (f, is_end, from, to) = self.trimming?;
@@ -2376,6 +2816,26 @@ impl Widget for LoopEditor {
             Touch::Up | Touch::Cancel => {
                 if self.feedback.is_some_and(|f| f.0 == finger) {
                     self.feedback = None;
+                    return None;
+                }
+                if let Some(d) = self.window_drag.filter(|d| d.finger == finger) {
+                    self.window_drag = None;
+                    if phase == Touch::Cancel {
+                        return None;
+                    }
+                    if d.now != d.from {
+                        let newest = self.empty.as_ref().and_then(|e| e.bars.last()).map(|b| b.0);
+                        let end = d.now.0 + i64::from(d.now.1);
+                        self.acts.push(LoopAct::CaptureSpan(
+                            (Some(end) != newest).then_some(end),
+                            d.now.1,
+                        ));
+                        return Some(EventKind::Value(d.now.1 as f32));
+                    }
+                    if d.button {
+                        self.acts.push(LoopAct::Capture);
+                        return Some(EventKind::Tab(4));
+                    }
                     return None;
                 }
                 if let Some(q) = self.press.filter(|q| q.finger == finger) {
@@ -2722,6 +3182,69 @@ mod tests {
         e.empty.as_mut().unwrap().take = None;
         assert!(!e.targets(r).iter().any(|t| t.id == "capture"));
         ui.paint(&mut mpfree_ui::SoftCanvas::new(1280, 800));
+    }
+
+    /// What you played's window: a finger in it moves it by whole bars,
+    /// one by an end grows or shrinks it by whole patterns, never past
+    /// the bars played; let go, Capture is asked to take that; at the
+    /// newest bar line it keeps up (None). The button still captures.
+    #[test]
+    fn the_capture_window_moves_and_resizes_by_the_pattern() {
+        let mut ui = page_of(EDITOR, editor(0));
+        let r = ui.rect_of(EDITOR).unwrap();
+        let lanes = LoopEditor::parts(r).lanes;
+        let x_of = |bar: i64| (bar - 4) as f32 / 9.0;
+        let look = EmptyLook {
+            title: "WHAT YOU PLAYED · PADS".into(),
+            bars: (5..=12).map(|b| (b, x_of(b))).collect(),
+            take: Some((x_of(9), x_of(11), "Capture bars 9 and 10".into())),
+            window: Some((9, 2)),
+            unit: 2,
+            pattern: true,
+            ..EmptyLook::default()
+        };
+        ui.get_mut::<LoopEditor>(EDITOR).unwrap().empty = Some(look.clone());
+        let win = window_rect(lanes, x_of(9), x_of(11));
+        let w = empty_wave_rect(lanes);
+        let bar = (w.w as f32 / 9.0) as i32;
+        let drag = |ui: &mut Ui, x: i32, y: i32, dx: i32| {
+            ui.touch(1, Touch::Down, x, y);
+            ui.touch(1, Touch::Move, x + dx / 2, y);
+            ui.touch(1, Touch::Move, x + dx, y);
+            ui.touch(1, Touch::Up, x + dx, y);
+        };
+        // Moved two bars back (by its top, clear of the button).
+        let top = win.y + 6;
+        drag(&mut ui, win.x + win.w / 2, top, -2 * bar);
+        assert_eq!(acts(&mut ui), vec![LoopAct::CaptureSpan(Some(9), 2)]);
+        // Its start pulled back two bars: a pattern more, bars 7 to 10.
+        drag(&mut ui, win.x, top, -2 * bar);
+        assert_eq!(acts(&mut ui), vec![LoopAct::CaptureSpan(Some(11), 4)]);
+        // Its end can't go past the bars played (bar 12 is still playing).
+        drag(&mut ui, win.right(), top, 3 * bar);
+        assert_eq!(acts(&mut ui), vec![], "no whole pattern more to take");
+        // Moved up to the newest bar line: it keeps up.
+        drag(&mut ui, win.x + win.w / 2, top, 3 * bar);
+        assert_eq!(acts(&mut ui), vec![LoopAct::CaptureSpan(None, 2)]);
+        // While a finger has it, it shows where, with its patterns.
+        let e = ui.get_mut::<LoopEditor>(EDITOR).unwrap();
+        e.window_drag = Some(WindowDrag {
+            finger: 9,
+            grip: Grip::Start,
+            x0: 0,
+            from: (9, 2),
+            now: (5, 6),
+            button: false,
+        });
+        let shown = e.shown_take().unwrap();
+        assert_eq!(shown.2, "Capture bars 5 to 10 · 3 × pattern");
+        assert_eq!((shown.0, shown.1), (x_of(5), x_of(11)));
+        ui.paint(&mut mpfree_ui::SoftCanvas::new(1280, 800));
+        ui.get_mut::<LoopEditor>(EDITOR).unwrap().window_drag = None;
+        // A tap on the button, unmoved, captures.
+        let b = capture_button(lanes, x_of(9), x_of(11), "Capture bars 9 and 10");
+        tap(&mut ui, b.x + b.w / 2, b.y + b.h / 2);
+        assert_eq!(acts(&mut ui), vec![LoopAct::Capture]);
     }
 
     #[test]

@@ -12,7 +12,7 @@
 //!   input strip, which is heard when Monitor is on (see `mixing.rs`). It
 //!   records from a
 //!   [`LoopSource`]: the pad player's own sound (the default, which opens
-//!   nothing) or the line input. It logs a `looper:` line for each press and
+//!   nothing), the line input, or a mix (the master or one strip). It logs a `looper:` line for each press and
 //!   each change, and builds the loop's waveform for the Looper tab a slice
 //!   at a time.
 //! - [`Printer`] keeps each loop's pitch at another tempo: when a loop is
@@ -46,6 +46,15 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
 pub const PERIOD: usize = 128;
+
+/// The Length setting's "Pattern", as the app sends it in
+/// `Command::SetBars(Some(PATTERN_BARS))`: a new loop takes the length of
+/// the pattern playing ([`LoopHost::set_pattern_bars`]), so it always
+/// fits the beat. The looper itself never sees it.
+pub const PATTERN_BARS: u32 = 0;
+
+/// The longest pattern Length: Pattern follows; a longer one records free.
+pub const PATTERN_MAX_BARS: u32 = 32;
 /// Frames the FIFO holds: 8 periods. More than 3 periods waiting means the
 /// input runs ahead; the oldest frames are dropped down to 2 periods.
 const FIFO: usize = 8 * PERIOD;
@@ -81,23 +90,32 @@ const CELL_WAVE_EVERY: u64 = 8;
 /// Frames of what the looper heard in each of the peaks What you played
 /// draws from.
 const HEARD_CHUNK: u64 = 256;
-/// Columns of What you played: the last [`HEARD_BARS`] bars heard.
+/// Columns of What you played: the last [`HEARD_BARS`] bars heard, or
+/// more (up to [`HEARD_MAX_BARS`]) when its window takes more.
 pub const HEARD_COLS: usize = 240;
 pub const HEARD_BARS: u32 = 8;
+/// The most bars What you played shows: room for its window to take four
+/// times an 8-bar pattern, as far as the looper's 60 s go.
+pub const HEARD_MAX_BARS: u32 = 32;
 /// Bars Capture takes when the loop's Length is Free.
 pub const CAPTURE_FREE_BARS: u32 = 4;
 
-/// What the looper heard over the last [`HEARD_BARS`] bars, for an empty
-/// loop's What you played: its level, the bar lines in it, and what
-/// Capture into the picked loop would take now.
+/// What the looper heard over the last [`HEARD_BARS`] bars (or more), for
+/// an empty loop's What you played: its level, the bar lines in it, and
+/// what Capture into the picked loop would take now (its window).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HeardWave {
     /// Each column's peak, oldest first, dBFS (-inf silent).
     pub cols: [f32; HEARD_COLS],
     /// The bar lines in it, oldest first: each bar's number (from 1) and
     /// where it starts, 0 to 1; `n_lines` of them.
-    pub lines: [(i64, f32); HEARD_BARS as usize + 1],
+    pub lines: [(i64, f32); HEARD_MAX_BARS as usize + 1],
     pub n_lines: usize,
+    /// The bars the window grows and shrinks by: the pattern's length
+    /// while Length is Pattern and a pattern plays (`pattern` true), else
+    /// the Length's bars, else 1.
+    pub unit: u32,
+    pub pattern: bool,
     /// What Capture takes now: where it starts and ends (0 to 1), its
     /// first bar's number and how many bars.
     pub take: Option<(f32, f32, i64, u32)>,
@@ -110,8 +128,10 @@ impl Default for HeardWave {
     fn default() -> Self {
         HeardWave {
             cols: [f32::NEG_INFINITY; HEARD_COLS],
-            lines: [(0, 0.0); HEARD_BARS as usize + 1],
+            lines: [(0, 0.0); HEARD_MAX_BARS as usize + 1],
             n_lines: 0,
+            unit: 1,
+            pattern: false,
             take: None,
             waits: false,
         }
@@ -137,26 +157,97 @@ pub fn bars_words(first: i64, bars: u32) -> String {
     }
 }
 
+/// What the pads play: an instrument, never a track (Jay, 20 Nov 2026:
+/// "Instruments generate sound. Tracks organize and record performances.
+/// The pads are controllers that play instruments."). One place in the
+/// app says which (`main.rs`, `pads_instrument`); the mixer says where it
+/// sounds ([`crate::mixing::MixHost::instrument_strip`]), separately. The
+/// instrument redesign's identities (its step 2) take its place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Instrument {
+    /// The instrument track `t` (0 based) holds of its own, which plays
+    /// into that track's channel.
+    Own(usize),
+    /// Kit `k` of the sampler (0: kit 1, on the pads' channels and the
+    /// Drums channel; another on the channel of the first track that
+    /// plays it).
+    Kit(usize),
+    /// The shared synth, on its Synth channel: the Synth kit picked, or
+    /// Play on the pads (the Synth tab).
+    Synth,
+    /// An instrument outside mpfree, over MIDI out: nothing of it reaches
+    /// the mix.
+    MidiOut,
+}
+
+impl Instrument {
+    /// Its name for the log.
+    pub fn name(self) -> String {
+        match self {
+            Instrument::Own(t) => format!("Track {}'s own instrument", t + 1),
+            Instrument::Kit(k) => format!("Kit {}", k + 1),
+            Instrument::Synth => "the synth".to_string(),
+            Instrument::MidiOut => "MIDI out".to_string(),
+        }
+    }
+}
+
+/// Why Records from: Pads records silence while the pads play
+/// MIDI out.
+pub const PADS_ON_MIDI_OUT: &str = "the pads play MIDI out, which sounds outside mpfree";
+
+/// What a take records from, in words for the log: the source and, for the
+/// pads, their instrument.
+fn source_words(s: LoopSource, pads: Option<Instrument>) -> String {
+    match (s, pads) {
+        (LoopSource::Pads, Some(Instrument::MidiOut)) => format!("silence ({PADS_ON_MIDI_OUT})"),
+        (LoopSource::Pads, Some(i)) => format!("the pads ({})", i.name()),
+        (LoopSource::Pads, None) => "the pads".to_string(),
+        (LoopSource::Line, _) => "the line input".to_string(),
+        (LoopSource::Mix(mpfree_fx::StripId::Master), _) => "the master".to_string(),
+        (LoopSource::Mix(m), _) => crate::mixing::name(m),
+    }
+}
+
 /// Where the looper records from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LoopSource {
-    /// The pad player's own sound (kits, grains and the synth) after the
-    /// master level, before the click and the loop. Opens nothing, and
-    /// needs no latency made up.
+    /// The pads: what the pads play ([`Instrument`]), on the
+    /// channel it plays into, after that channel's effects and fader
+    /// ([`crate::mixing::MixHost::instrument_strip`]). So a pattern on
+    /// another instrument stays out; clips on the same one are heard with
+    /// it (the name says so). Opens nothing, and is heard in time like a
+    /// mix.
     #[default]
     Pads,
     /// The MPC's line input (Prefs, Line input).
     Line,
+    /// A mix, picked on the Looper tab (Records from): the master (all
+    /// you hear but the loops, before the master's effects and fader,
+    /// which the loop gets when it plays), or one strip, a track or a
+    /// submix, after its fader ([`crate::mixing::MixHost::loop_take`]).
+    /// Heard in time, like the pads; never the Loop track itself.
+    Mix(mpfree_fx::StripId),
 }
 
 impl LoopSource {
+    /// Prefs' Record from steps through these (a mix is picked on the
+    /// Looper tab, where the strips are named).
     pub const ALL: [LoopSource; 2] = [LoopSource::Pads, LoopSource::Line];
 
     pub fn name(self) -> &'static str {
         match self {
-            LoopSource::Pads => "Pads and synth",
+            LoopSource::Pads => "Pads",
             LoopSource::Line => "Line input",
+            LoopSource::Mix(_) => "A mix (Looper tab)",
         }
+    }
+
+    /// Whether the sound comes from inside MPFree (the pads or a mix), in
+    /// time with the transport but for the mix's own latency, which the
+    /// host makes up: not the line input.
+    pub fn inside(self) -> bool {
+        !matches!(self, LoopSource::Line)
     }
 }
 
@@ -208,7 +299,7 @@ impl LoopMemory {
         mpfree_looper::bytes_for(rate, self.seconds()).div_ceil(1_000_000)
     }
 
-    /// Prefs' value for it: "5 min, 120 MB".
+    /// Prefs' value for it: "5 min, 131 MB".
     pub fn row(self, rate: u32) -> String {
         format!("{} min, {} MB", self.minutes(), self.megabytes(rate))
     }
@@ -224,6 +315,10 @@ pub enum LoopAction {
     Monitor(bool),
     /// Open or close the capture device (a state change on the MPC).
     LineInput(bool),
+    /// What you played's window moved or resized: the bars Capture takes,
+    /// ending on the bar line that starts bar `.0` (None: the newest, and
+    /// it keeps up), `.1` of them ([`LoopHost::set_capture_span`]).
+    CaptureSpan(Option<i64>, u32),
     /// A layer's control (its speaker): the layer by its id
     /// ([`LayerInfo::id`]), which stays the same through undo and redo.
     Layer(u8, LayerCommand),
@@ -233,6 +328,10 @@ pub enum LoopAction {
     /// STOP with the transport stopped: an overdub waiting for PLAY is
     /// let go and an armed loop disarmed ([`LoopHost::stop_waiting`]).
     StopWaiting,
+    /// Listen: Some(None) plays the picked loop alone while the song is
+    /// stopped, Some(Some(id)) one of its layers ([`LayerInfo::id`]);
+    /// asked again, or None, it stops ([`LoopHost::listen`]).
+    Listen(Option<Option<u8>>),
     /// The undo history: back `n` steps (below 0) or forward (above 0).
     Steps(i32),
     /// Loop `n`'s mute turned over without picking it, or the picked
@@ -1025,7 +1124,11 @@ impl LiveWave {
 pub struct LooperView {
     pub status: Status,
     pub stats: Stats,
+    /// Records from as picked: what the next take records.
     pub source: LoopSource,
+    /// What the take recording now records from, while it holds another
+    /// source than the one picked ([`LoopHost::settle`]).
+    pub taking_from: Option<LoopSource>,
     /// Records from the other loops: Record on an empty loop resamples
     /// ([`LoopHost::resample`]).
     pub resample: bool,
@@ -1066,6 +1169,15 @@ pub struct LooperView {
     /// Tempo from the first loop is on, and the song can take one now
     /// ([`LoopHost::set_tempo_from_loop`]).
     pub free_tempo: bool,
+    /// Length: Pattern is picked ([`PATTERN_BARS`]): a new loop takes the
+    /// length of the pattern playing.
+    pub match_pattern: bool,
+    /// Listen plays: the loop, its layer (None: the whole loop) and
+    /// where it has got to, 0 to 1 ([`LoopHost::listen`]).
+    pub listening: Option<(usize, Option<u8>, f32)>,
+    /// The pattern's length in bars as last told
+    /// ([`LoopHost::set_pattern_bars`]); None: no pattern plays.
+    pub pattern_bars: Option<u32>,
 }
 
 impl Default for LooperView {
@@ -1075,6 +1187,7 @@ impl Default for LooperView {
             status: l.status(),
             stats: l.stats(),
             source: LoopSource::Pads,
+            taking_from: None,
             resample: false,
             line_on: false,
             line: LineStats::default(),
@@ -1094,6 +1207,9 @@ impl Default for LooperView {
             heard: HeardWave::default(),
             capture_into: None,
             free_tempo: false,
+            match_pattern: false,
+            pattern_bars: None,
+            listening: None,
         }
     }
 }
@@ -1102,7 +1218,12 @@ pub struct LoopHost {
     pub looper: Looper,
     pub line: LineIn,
     pub monitor: bool,
-    pub source: LoopSource,
+    /// What this take records from (between takes, Records from as
+    /// picked): a take holds the one it started with
+    /// ([`LoopHost::settle`]).
+    source: LoopSource,
+    /// Records from as last picked: what the next take records.
+    chosen: LoopSource,
     /// The Looper tab's Records from: Loops. Record on an empty loop
     /// resamples into it: its first pass records the other loops as heard
     /// ([`Command::Resample`]).
@@ -1117,6 +1238,18 @@ pub struct LoopHost {
     pads_latency: u32,
     /// Why the pads are recorded dry, when they are.
     pads_dry: Option<&'static str>,
+    /// The instrument Records from: Pads takes, held with
+    /// `source` through a take (None for another source, or before the
+    /// app first said what the pads play).
+    pads: Option<Instrument>,
+    /// What the pads play now ([`LoopHost::follow_pads`]).
+    pads_now: Option<Instrument>,
+    /// The source a take held back, as the log was told (once).
+    held_said: Option<(LoopSource, Option<Instrument>)>,
+    /// Takes that recorded silence for a while: their source was lost
+    /// while they recorded ([`LoopHost::take_pads_as`]), counted, logged
+    /// and said on the screen.
+    pub dropouts: u64,
     /// The latency the looper was last given.
     latency_set: u32,
     /// Whether the looper was last told to listen by ear (the line input)
@@ -1134,6 +1267,21 @@ pub struct LoopHost {
     /// Tempos from a free first pass the song couldn't start at
     /// ([`LoopHost::tempo_refused`]): counted, logged and said.
     pub tempos_refused: u64,
+    /// Length: Pattern ([`PATTERN_BARS`]): an empty loop's first pass
+    /// takes the length of the pattern playing.
+    pub match_pattern: bool,
+    /// Starts, for every empty loop: the last one picked (On the bar at
+    /// first). A loop picked, or recorded, while empty takes it, so the
+    /// choice sticks from loop to loop.
+    starts: Starts,
+    /// What you played's window, moved or resized: the bar line its bars
+    /// end on (None: the newest, keeping up as the song plays) and how
+    /// many ([`LoopHost::set_capture_span`]). None: the Length's bars.
+    capture_span: Option<(Option<Tick>, u32)>,
+    /// The pattern's length in bars ([`LoopHost::set_pattern_bars`]).
+    pattern_bars: Option<u32>,
+    /// The song was rolling (not stopped) in the last period.
+    last_rolling: bool,
     input: Vec<f32>,
     out: Vec<f32>,
     last: Status,
@@ -1493,6 +1641,7 @@ impl LoopHost {
             line: LineIn::closed(),
             monitor: false,
             source: LoopSource::Pads,
+            chosen: LoopSource::Pads,
             resample: false,
             input_l: [0.0; PERIOD],
             input_r: [0.0; PERIOD],
@@ -1500,12 +1649,21 @@ impl LoopHost {
             pads_r: [0.0; PERIOD],
             pads_latency: 0,
             pads_dry: None,
+            pads: None,
+            pads_now: None,
+            held_said: None,
+            dropouts: 0,
             latency_set: 0,
             by_ear_set: false,
             played_at: None,
             starts_refused: 0,
             free_tempo: false,
             tempos_refused: 0,
+            match_pattern: false,
+            starts: Starts::Bar,
+            capture_span: None,
+            pattern_bars: None,
+            last_rolling: false,
             input: vec![0.0; 2 * PERIOD],
             out: vec![0.0; 2 * PERIOD],
             last,
@@ -1823,8 +1981,36 @@ impl LoopHost {
             .looper
             .loop_status(self.picked)
             .is_some_and(|s| s.capturing.is_some());
+        // Length: Pattern. The first pass takes the pattern's length, kept
+        // up to date by set_pattern_bars; any other Length lets go of it.
+        if let Command::SetBars(b) = c {
+            self.match_pattern = b == Some(PATTERN_BARS);
+            // A new Length: What you played's window takes it.
+            self.capture_span = None;
+        }
+        // Starts sticks: every empty loop records as it was last set.
+        if let Command::SetStarts(w) = c {
+            self.starts = w;
+        }
+        if c == Command::Record
+            && empty
+            && self
+                .looper
+                .loop_status(self.picked)
+                .is_some_and(|s| s.starts != self.starts)
+        {
+            self.looper.command(Command::SetStarts(self.starts));
+        }
+        if self.match_pattern
+            && c == Command::Record
+            && empty
+            && self.looper.status().bars != self.pattern_bars
+        {
+            self.looper.command(Command::SetBars(self.pattern_bars));
+        }
         let c = match c {
-            Command::SetLatency(_) if self.source == LoopSource::Pads => {
+            Command::SetBars(Some(PATTERN_BARS)) => Command::SetBars(self.pattern_bars),
+            Command::SetLatency(_) if self.source.inside() => {
                 Command::SetLatency(self.pads_latency)
             }
             // Record (a ring, REC) on a loop capturing calls it off, as
@@ -2003,6 +2189,10 @@ impl LoopHost {
             ),
             (Command::Fit, _) => "fit: refused, no print plays".to_string(),
             (Command::Capture(b), _) => format!("Capture: the last {} heard", bars_words_n(b)),
+            (Command::CaptureTo(end, b), _) => format!(
+                "Capture: {} up to the bar line on tick {end}",
+                bars_words_n(b)
+            ),
             (Command::NewInput, _) => "Capture forgets what it heard before".to_string(),
         };
         if !self.looper.command(c) {
@@ -2115,6 +2305,14 @@ impl LoopHost {
             );
         }
         self.picked = n;
+        // An empty loop takes Starts as it was last set (it shows it).
+        if self
+            .looper
+            .loop_status(n)
+            .is_some_and(|s| s.phase == Phase::Empty && s.starts != self.starts)
+        {
+            self.looper.command(Command::SetStarts(self.starts));
+        }
         format!("looper: loop {} picked ({what})", n + 1)
     }
 
@@ -2437,17 +2635,126 @@ impl LoopHost {
         self.pads_latency = 0;
     }
 
-    /// The pads' sound for this period as the app records it: wet from the
-    /// mixer, `latency` frames late after the period it lags
-    /// ([`crate::mixing::MixHost::pads_wet`]), or dry from the engines, in
-    /// time, with the reason it isn't wet. A line for the log when that
-    /// changes (rarely: a strip routed to a submix, or a plugin's latency).
+    /// What the pads play now (`main.rs`, `pads_instrument`), told each
+    /// period: Records from: Pads records it, from the next
+    /// take if one records now ([`LoopHost::settle`]).
+    pub fn follow_pads(&mut self, now: Instrument) -> Option<(String, bool)> {
+        self.pads_now = Some(now);
+        self.settle()
+    }
+
+    /// Records from picked (the Looper tab, Prefs): this take keeps its
+    /// source, so it records from the next one, or at once if none
+    /// records now ([`LoopHost::settle`]).
+    pub fn set_source(&mut self, s: LoopSource) -> Option<(String, bool)> {
+        self.chosen = s;
+        self.settle()
+    }
+
+    /// A take records one source from its start to its end: the source
+    /// picked and, for the pads, the instrument they played when it
+    /// started (the design review of 20 Nov, point 6). A source picked,
+    /// or the pads moved to another instrument, while a take records
+    /// waits for the take's end: said once, on the screen too, and the
+    /// Looper tab shows both ([`LooperView::taking_from`]). Then it takes
+    /// over, and What you played starts again with it
+    /// ([`Command::NewInput`]), so a Capture never spans two sources. A
+    /// line for the log when it changes or waits (and whether the screen
+    /// says it: a wait).
+    fn settle(&mut self) -> Option<(String, bool)> {
+        let pads = |s: LoopSource| {
+            if s == LoopSource::Pads {
+                self.pads_now
+            } else {
+                None
+            }
+        };
+        let next = (self.chosen, pads(self.chosen));
+        let now = (self.source, self.pads);
+        if next == now {
+            self.held_said = None;
+            return None;
+        }
+        if self.taking() {
+            if self.held_said == Some(next) {
+                return None;
+            }
+            self.held_said = Some(next);
+            let line = format!(
+                "looper: this take keeps recording {}; {} from the next take",
+                source_words(now.0, now.1),
+                source_words(next.0, next.1)
+            );
+            return Some((line, true));
+        }
+        self.held_said = None;
+        // Before the app first said what the pads play nothing was heard.
+        let heard = now != (LoopSource::Pads, None);
+        (self.source, self.pads) = next;
+        let restarted = match self.looper.command(Command::NewInput) {
+            true if heard => ", What you played starts again",
+            true => "",
+            false => ", What you played NOT started again (the command queue is full)",
+        };
+        let line = format!(
+            "looper: records {}{restarted}",
+            source_words(next.0, next.1)
+        );
+        Some((line, false))
+    }
+
+    /// What this period records from, as a take holds it: the source and,
+    /// for the pads, their instrument (`main.rs` takes its sound from the
+    /// mixer, `loop_input`).
+    pub fn takes_from(&self) -> (LoopSource, Option<Instrument>) {
+        (self.source, self.pads)
+    }
+
+    /// Whether any loop takes sound now: a first pass, an overdub, or a
+    /// Capture waiting for its bar line.
+    fn taking(&self) -> bool {
+        (0..MAX_LOOPS)
+            .filter_map(|n| self.looper.loop_status(n))
+            .any(|s| {
+                matches!(s.phase, Phase::Recording | Phase::Overdubbing) || s.capturing.is_some()
+            })
+    }
+
+    /// Why `c` won't start a take on the picked loop: the source it would
+    /// record (the pads or a mix) can't be had now, so a take would be
+    /// silence. Said on the screen; never another sound in its place.
+    /// None lets it through (and every press that ends or calls off a
+    /// take, and Loops, which records the loops).
+    pub fn refuse(&self, c: Command) -> Option<String> {
+        let why = match self.source {
+            LoopSource::Line => None,
+            LoopSource::Pads | LoopSource::Mix(_) => self.pads_dry,
+        }?;
+        let s = self.looper.loop_status(self.picked)?;
+        let starts = match (c, s.phase) {
+            (Command::Record | Command::Overdub, Phase::Empty) => {
+                s.capturing.is_none() && !self.resample
+            }
+            (Command::Record | Command::Overdub, Phase::Playing) => true,
+            _ => false,
+        };
+        starts.then(|| format!("Loop {} doesn't record: {why}", self.picked + 1))
+    }
+
+    /// The sound of what it records from for this period, as the mixer
+    /// had it: the pads or a mix
+    /// ([`crate::mixing::MixHost::loop_take`]), `latency` frames late after
+    /// the period it lags; or silence, with why it can't be had (never
+    /// another sound in its place). A line for the log when that changes
+    /// (rarely: a strip routed to a submix, or a plugin's latency), and
+    /// whether the screen says it too: while a take records, silence is a
+    /// gap in it (a dropout, counted), and its sound back is said too.
     pub fn take_pads_as(
         &mut self,
         left: &[f32; PERIOD],
         right: &[f32; PERIOD],
         how: Result<u32, &'static str>,
-    ) -> Option<String> {
+    ) -> Option<(String, bool)> {
         self.pads_l = *left;
         self.pads_r = *right;
         self.pads_latency = how.map_or(0, |l| PERIOD as u32 + l);
@@ -2456,10 +2763,26 @@ impl LoopHost {
             return None;
         }
         self.pads_dry = dry;
-        Some(match dry {
-            None => "looper: records the pads with their effects again".to_string(),
-            Some(why) => format!("looper: records the pads dry, without their effects: {why}"),
-        })
+        // The pads on MIDI out: silence, said by `settle`.
+        if self.source == LoopSource::Pads && self.pads == Some(Instrument::MidiOut) {
+            return None;
+        }
+        let taking = self.taking();
+        let what = source_words(self.source, self.pads);
+        let line = match (dry, taking) {
+            (Some(why), true) => {
+                self.dropouts += 1;
+                format!(
+                    "looper: the take records silence from here, {what} can't be recorded: {why}"
+                )
+            }
+            (None, true) => format!("looper: the take hears {what} again"),
+            (Some(why), false) => {
+                format!("looper: records silence, {what} can't be recorded: {why}")
+            }
+            (None, false) => format!("looper: hears {what} again"),
+        };
+        Some((line, taking))
     }
 
     /// One period for the mixer: read the line input, run the looper on the
@@ -2502,6 +2825,10 @@ impl LoopHost {
         left: &mut [f32; PERIOD],
         right: &mut [f32; PERIOD],
     ) -> (f32, Option<String>) {
+        self.last_rolling = block
+            .spans()
+            .iter()
+            .any(|s| s.state != mpfree_transport::State::Stopped);
         let note = self.record(block);
         let mut peak = 0f32;
         let mut over = false;
@@ -2525,7 +2852,7 @@ impl LoopHost {
         self.queue_steps();
         let note = self.line.period(&mut self.input_l, &mut self.input_r);
         let (src_l, src_r) = match self.source {
-            LoopSource::Pads => (&self.pads_l, &self.pads_r),
+            LoopSource::Pads | LoopSource::Mix(_) => (&self.pads_l, &self.pads_r),
             LoopSource::Line => (&self.input_l, &self.input_r),
         };
         for f in 0..PERIOD {
@@ -2550,7 +2877,7 @@ impl LoopHost {
         self.pads_l = [0.0; PERIOD];
         self.pads_r = [0.0; PERIOD];
         // The pads' latency follows the mix (a plugin's latency, or dry).
-        if self.source == LoopSource::Pads
+        if self.source.inside()
             && self.latency_set != self.pads_latency
             && self.looper.command(Command::SetLatency(self.pads_latency))
         {
@@ -2876,6 +3203,16 @@ impl LoopHost {
             } else {
                 String::new()
             }
+            + &if self.dropouts > 0 {
+                format!("; {} times a take's source was lost while it recorded (silence)", self.dropouts)
+            } else {
+                String::new()
+            }
+            + &if self.chosen != self.source {
+                format!("; next take from {}", self.chosen.name().to_lowercase())
+            } else {
+                String::new()
+            }
     }
 
     /// What the Looper tab shows; takes the meter's peaks.
@@ -2908,7 +3245,8 @@ impl LoopHost {
         LooperView {
             status: s,
             stats: self.looper.stats(),
-            source: self.source,
+            source: self.chosen,
+            taking_from: (self.source != self.chosen).then_some(self.source),
             resample: self.resample,
             line_on: self.line.is_open(),
             line: self.line.stats,
@@ -2928,6 +3266,9 @@ impl LoopHost {
             heard: self.heard_wave(),
             capture_into: self.capture_into(),
             free_tempo: self.free_tempo,
+            match_pattern: self.match_pattern,
+            pattern_bars: self.pattern_bars,
+            listening: self.looper.listening(),
         }
     }
 
@@ -2943,7 +3284,86 @@ impl LoopHost {
             self.free_loop().ok()?
         };
         let bars = self.looper.loop_status(n)?.bars;
-        Some((n, bars.unwrap_or(CAPTURE_FREE_BARS)))
+        let bars = self
+            .span()
+            .map_or(bars.unwrap_or(CAPTURE_FREE_BARS), |s| s.1);
+        Some((n, bars))
+    }
+
+    /// The bars What you played's window grows and shrinks by, for loop
+    /// `n`, and whether they are the pattern's: the pattern's length while
+    /// Length is Pattern and a pattern plays, else the Length's bars,
+    /// else 1.
+    fn capture_unit(&self, n: usize) -> (u32, bool) {
+        match (self.match_pattern, self.pattern_bars) {
+            (true, Some(b)) => (b.max(1), true),
+            _ => (
+                self.looper
+                    .loop_status(n)
+                    .and_then(|s| s.bars)
+                    .unwrap_or(1)
+                    .max(1),
+                false,
+            ),
+        }
+    }
+
+    /// What you played's window as it stands: one moved back whose bar
+    /// line is no longer kept (the song stopped or jumped, or it fell out
+    /// of the 60 s) is let go of.
+    fn span(&self) -> Option<(Option<Tick>, u32)> {
+        let (end, bars) = self.capture_span?;
+        match end {
+            Some(t) => self.looper.capture_take_to(t, 1).map(|_| (end, bars)),
+            None => Some((None, bars)),
+        }
+    }
+
+    /// What Capture would take now, `bars` of it: up to the window's bar
+    /// line when it was moved back, else up to the newest.
+    fn capture_take_now(&self, bars: u32) -> Option<Take> {
+        match self.span().and_then(|s| s.0) {
+            Some(end) => self.looper.capture_take_to(end, bars),
+            None => self.looper.capture_take(bars),
+        }
+    }
+
+    /// A Capture now would wait for the bar line coming: the window keeps
+    /// up with the song, which is in a bar's last beat.
+    fn capture_waits_now(&self) -> bool {
+        self.span().and_then(|s| s.0).is_none() && self.looper.capture_waits()
+    }
+
+    /// What you played's window moved or resized on the Looper tab:
+    /// Capture takes `bars` ending on the bar line that starts bar `end`;
+    /// None, or the newest bar line, keeps up with the song. Until a
+    /// Capture, a new Length, or its bar line is no longer kept. A line
+    /// for the log.
+    pub fn set_capture_span(&mut self, end: Option<i64>, bars: u32) -> String {
+        let bars = bars.clamp(1, HEARD_MAX_BARS);
+        let mut lines = [(0 as Tick, 0u64); HEARD_MAX_BARS as usize + 1];
+        let n = self.looper.heard_lines(&mut lines);
+        let number = |t: Tick| t.div_euclid(self.bar_ticks.max(1)) + 1;
+        let newest = n.checked_sub(1).map(|i| number(lines[i].0));
+        let pinned = match end {
+            Some(e) if Some(e) != newest => match lines[..n].iter().find(|l| number(l.0) == e) {
+                Some(l) => Some((e, l.0)),
+                None => {
+                    return format!(
+                        "looper: Capture window: bar {e}'s line isn't kept: it stays as it was"
+                    )
+                }
+            },
+            _ => None,
+        };
+        self.capture_span = Some((pinned.map(|p| p.1), bars));
+        match pinned {
+            Some((e, _)) => format!(
+                "looper: Capture window: {}",
+                bars_words(e - i64::from(bars), bars)
+            ),
+            None => format!("looper: Capture window: the last {}", bars_words_n(bars)),
+        }
     }
 
     /// What the looper heard over the last [`HEARD_BARS`] bars at the
@@ -2957,7 +3377,17 @@ impl LoopHost {
         let now = self.looper.heard_at();
         let bar = self.bar_ticks.max(1) as f64 / f64::from(PPQ) * 60.0 / self.bpm.max(1.0)
             * f64::from(self.rate);
-        let span = (bar * f64::from(HEARD_BARS)).min((chunks - 1) as f64 * HEARD_CHUNK as f64);
+        // Room for the window to grow to four times its unit (the
+        // pattern), and a bar more than it takes.
+        let into = self.capture_into();
+        if let Some((n, _)) = into {
+            (w.unit, w.pattern) = self.capture_unit(n);
+        }
+        let shown = HEARD_BARS
+            .max(4 * w.unit)
+            .max(into.map_or(0, |i| i.1 + 1))
+            .min(HEARD_MAX_BARS);
+        let span = (bar * f64::from(shown)).min((chunks - 1) as f64 * HEARD_CHUNK as f64);
         let from = now as f64 - span;
         let x = |f: u64| ((f as f64 - from) / span) as f32;
         for (c, col) in w.cols.iter_mut().enumerate() {
@@ -2979,7 +3409,7 @@ impl LoopHost {
                 f32::NEG_INFINITY
             };
         }
-        let mut lines = [(0 as Tick, 0u64); HEARD_BARS as usize + 1];
+        let mut lines = [(0 as Tick, 0u64); HEARD_MAX_BARS as usize + 1];
         let n = self.looper.heard_lines(&mut lines);
         let number = |t: Tick| t.div_euclid(self.bar_ticks.max(1)) + 1;
         for &(t, f) in &lines[..n] {
@@ -2988,10 +3418,10 @@ impl LoopHost {
                 w.n_lines += 1;
             }
         }
-        w.waits = self.looper.capture_waits();
-        if let Some((_, bars)) = self.capture_into() {
+        w.waits = self.capture_waits_now();
+        if let Some((_, bars)) = into {
             let latency = u64::from(self.looper.status().latency);
-            w.take = self.looper.capture_take(bars).map(|t| {
+            w.take = self.capture_take_now(bars).map(|t| {
                 let a = t.start.saturating_sub(latency);
                 let (a, b) = (x(a), x(a + t.frames as u64));
                 if w.waits {
@@ -3024,13 +3454,16 @@ impl LoopHost {
             Ok(n) => n,
             Err(why) => return format!("looper: Capture: {why}"),
         };
-        let asked = self
-            .looper
-            .loop_status(n)
-            .and_then(|s| s.bars)
-            .unwrap_or(CAPTURE_FREE_BARS);
-        let waits = self.looper.capture_waits();
-        let take = self.looper.capture_take(asked);
+        let span = self.span();
+        let asked = span.map(|s| s.1).unwrap_or_else(|| {
+            self.looper
+                .loop_status(n)
+                .and_then(|s| s.bars)
+                .unwrap_or(CAPTURE_FREE_BARS)
+        });
+        let pinned = span.and_then(|s| s.0);
+        let waits = self.capture_waits_now();
+        let take = self.capture_take_now(asked);
         let Some(t) = take.or(waits.then_some(Take {
             bars: asked,
             start: 0,
@@ -3057,9 +3490,15 @@ impl LoopHost {
             }
             self.picked = n;
         }
-        if !self.looper.command(Command::Capture(asked)) {
+        let c = match pinned {
+            Some(end) => Command::CaptureTo(end, asked),
+            None => Command::Capture(asked),
+        };
+        if !self.looper.command(c) {
             return "looper: Capture: NOT started, the command queue is full".to_string();
         }
+        // The window goes back to the Length's bars, keeping up.
+        self.capture_span = None;
         let number = |tick: Tick| tick.div_euclid(self.bar_ticks.max(1)) + 1;
         if take.is_none() || waits {
             return format!(
@@ -3068,10 +3507,10 @@ impl LoopHost {
                 n + 1
             );
         }
-        let fewer = if t.bars < asked {
-            format!(" (its Length asks {asked}: fewer were played since PLAY)")
-        } else {
-            String::new()
+        let fewer = match (t.bars < asked, span.is_some()) {
+            (false, _) => String::new(),
+            (true, false) => format!(" (its Length asks {asked}: fewer were played since PLAY)"),
+            (true, true) => format!(" (the window asks {asked}: fewer were played or kept)"),
         };
         format!(
             "looper: Capture: {} become Loop {}{fewer}",
@@ -3084,7 +3523,7 @@ impl LoopHost {
     /// the screen: "(the first pad you play)".
     pub fn first_note(&self) -> &'static str {
         match self.source {
-            LoopSource::Pads => "(the first pad you play)",
+            LoopSource::Pads | LoopSource::Mix(_) => "(the first pad you play)",
             LoopSource::Line => "(the line input's first note over -40 dB)",
         }
     }
@@ -3093,7 +3532,7 @@ impl LoopHost {
     /// hit, if one is (the pads are what it records, and no hit was told
     /// on `frame` yet).
     pub fn listens_for_pads(&self, frame: u64) -> Option<usize> {
-        if self.source != LoopSource::Pads || self.resample || self.played_at == Some(frame) {
+        if !self.source.inside() || self.resample || self.played_at == Some(frame) {
             return None;
         }
         (0..MAX_LOOPS).find(|&n| self.looper.loop_status(n).is_some_and(|s| s.listening))
@@ -3175,11 +3614,59 @@ impl LoopHost {
 
     /// Record from `s` (the pads or the line input): Capture forgets what
     /// it heard from the other.
-    pub fn set_source(&mut self, s: LoopSource) {
-        if s != self.source {
-            self.looper.command(Command::NewInput);
+    /// Listen: `what` Some(None) plays the picked loop alone, round and
+    /// round from its start, while the song is stopped; Some(Some(id))
+    /// one of its layers, even a muted one. The same again, or None,
+    /// stops it; PLAY stops it too. The line says what it did, or why
+    /// not.
+    pub fn listen(&mut self, what: Option<Option<u8>>) -> String {
+        let n = self.picked;
+        let now = self.looper.listening();
+        let Some(layer) = what else {
+            self.looper.stop_listening();
+            return "Listen: stopped".to_string();
+        };
+        if now.is_some_and(|(m, l, _)| m == n && l == layer) {
+            self.looper.stop_listening();
+            return "Listen: stopped".to_string();
         }
-        self.source = s;
+        let s = self.looper.status();
+        let name = match layer {
+            None => format!("Loop {}", n + 1),
+            Some(_) => format!("Loop {}'s layer", n + 1),
+        };
+        if self.looper.listen(n, layer) {
+            return format!("Listen: {name} plays on its own (again or PLAY: stop)");
+        }
+        match s.phase {
+            Phase::Empty | Phase::Armed => {
+                format!("Listen: Loop {} has nothing to play yet", n + 1)
+            }
+            Phase::Recording | Phase::Overdubbing => {
+                format!("Listen: Loop {} is recording", n + 1)
+            }
+            Phase::Playing if self.last_rolling => {
+                "Listen plays while the music is stopped: you hear the loops with it now"
+                    .to_string()
+            }
+            Phase::Playing => format!("Listen: {name} is busy (merging): try again in a moment"),
+        }
+    }
+
+    /// The length of the pattern playing, in bars (the longest clip that
+    /// plays, rounded up to whole bars; None when nothing plays, or past
+    /// [`PATTERN_MAX_BARS`]). With Length: Pattern the picked loop, while
+    /// empty, is kept at it, so a tap records exactly one pattern's worth.
+    pub fn set_pattern_bars(&mut self, bars: Option<u32>) {
+        let bars = bars.filter(|&b| (1..=PATTERN_MAX_BARS).contains(&b));
+        self.pattern_bars = bars;
+        if !self.match_pattern {
+            return;
+        }
+        let s = self.looper.status();
+        if s.phase == Phase::Empty && s.capturing.is_none() && s.bars != bars {
+            self.looper.command(Command::SetBars(bars));
+        }
     }
 
     /// One slice of the loop's waveform; the finished wave when it is
@@ -3264,6 +3751,7 @@ impl LoopHost {
 
 pub fn bars_text(b: Option<u32>) -> String {
     match b {
+        Some(PATTERN_BARS) => "the pattern's length".to_string(),
         Some(1) => "1 bar".to_string(),
         Some(n) => format!("{n} bars"),
         None => "free (until STOP or Record again)".to_string(),
@@ -3443,6 +3931,123 @@ mod tests {
 
     /// A layer's speaker: the mute goes to the layer by its id, the log
     /// names it, and the next view shows it muted and not heard.
+    /// Listen: refused while the music plays or the loop is empty; with
+    /// the music stopped it plays the picked loop, and asked again stops.
+    #[test]
+    fn listen_plays_the_picked_loop_while_stopped() {
+        let mut h = LoopHost::new(44_100, 8);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        assert!(h.listen(Some(None)).contains("nothing to play"));
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::SetLatency(0));
+        h.command(Command::Record);
+        t.command(0, T::Play);
+        let mut run = |h: &mut LoopHost, t: &mut Transport, periods: u64| {
+            for _ in 0..periods {
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.1; PERIOD], [0.1; PERIOD]);
+                h.take_pads(&l, &r);
+                h.period(&b, &mut l, &mut r);
+            }
+        };
+        run(&mut h, &mut t, 800);
+        assert_eq!(h.looper.status().phase, Phase::Playing);
+        assert!(h.listen(Some(None)).contains("while the music is stopped"));
+        let f = t.frame();
+        t.command(f, T::Stop);
+        run(&mut h, &mut t, 4);
+        assert!(h.listen(Some(None)).contains("Loop 1 plays on its own"));
+        run(&mut h, &mut t, 4);
+        assert_eq!(h.view(120.0).listening.map(|l| (l.0, l.1)), Some((0, None)));
+        assert!(h.listen(Some(None)).contains("stopped"));
+        assert_eq!(h.view(120.0).listening, None);
+    }
+
+    /// Length: Pattern (the default): an empty loop follows the pattern
+    /// playing, a tap records exactly that many bars, and picking another
+    /// Length lets go of it.
+    #[test]
+    fn length_pattern_follows_the_pattern_playing() {
+        let mut h = LoopHost::new(44_100, 8);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        let mut run = |h: &mut LoopHost, periods: u64| {
+            for _ in 0..periods {
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                h.period(&b, &mut l, &mut r);
+            }
+        };
+        assert!(h
+            .command(Command::SetBars(Some(PATTERN_BARS)))
+            .contains("first pass length"));
+        assert!(h.match_pattern);
+        // Nothing plays: free.
+        run(&mut h, 2);
+        assert_eq!(h.looper.status().bars, None);
+        h.set_pattern_bars(Some(4));
+        run(&mut h, 2);
+        assert_eq!(h.looper.status().bars, Some(4));
+        let v = h.view(120.0);
+        assert!(v.match_pattern);
+        assert_eq!(v.pattern_bars, Some(4));
+        // Too long to follow: free.
+        h.set_pattern_bars(Some(PATTERN_MAX_BARS + 1));
+        run(&mut h, 2);
+        assert_eq!(h.looper.status().bars, None);
+        h.set_pattern_bars(Some(2));
+        h.command(Command::Record);
+        run(&mut h, 2);
+        assert_eq!(h.looper.status().bars, Some(2));
+        // Another Length lets go of the pattern.
+        h.command(Command::SetBars(Some(8)));
+        h.set_pattern_bars(Some(1));
+        run(&mut h, 2);
+        assert!(!h.match_pattern);
+        assert!(!h.view(120.0).match_pattern);
+    }
+
+    /// Starts sticks from loop to loop: set on one empty loop, the next
+    /// empty loop picked shows it and records with it; a loop that has
+    /// sound keeps its own.
+    #[test]
+    fn starts_sticks_for_every_empty_loop() {
+        let mut h = LoopHost::new(44_100, 8);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        let mut run = |h: &mut LoopHost, periods: u64| {
+            for _ in 0..periods {
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                h.period(&b, &mut l, &mut r);
+            }
+        };
+        run(&mut h, 1);
+        assert_eq!(h.looper.status().starts, Starts::Bar, "on the bar at first");
+        h.command(Command::SetStarts(Starts::Play));
+        run(&mut h, 1);
+        h.select(3);
+        run(&mut h, 1);
+        assert_eq!(h.looper.status().starts, Starts::Play, "loop 4 shows it");
+        h.select(5);
+        assert!(h.command(Command::Record).contains("starts when you play"));
+        run(&mut h, 1);
+        let s = h.looper.loop_status(5).unwrap();
+        assert!(s.phase == Phase::Armed && s.listening, "{s:?}");
+        // Back to On the bar: the next one takes that.
+        h.select(6);
+        h.command(Command::SetStarts(Starts::Bar));
+        h.select(7);
+        run(&mut h, 1);
+        assert_eq!(h.looper.status().starts, Starts::Bar);
+        assert_eq!(
+            h.looper.loop_status(5).unwrap().starts,
+            Starts::Play,
+            "armed: kept"
+        );
+    }
+
     /// Records from the loops: Record on an empty loop resamples the
     /// others; on a loop that plays it still overdubs.
     #[test]
@@ -3825,7 +4430,7 @@ mod tests {
     fn the_pads_are_recorded_in_time_and_the_line_source_ignores_them() {
         for source in LoopSource::ALL {
             let mut h = LoopHost::new(44_100, 20);
-            h.source = source;
+            let _ = h.set_source(source);
             let mut t = Transport::new(44_100, 120.0).unwrap();
             let mut b = Block::new();
             h.command(Command::SetBars(Some(1)));
@@ -3969,20 +4574,340 @@ mod tests {
         let three = h.looper.loop_status(2).unwrap();
         assert_eq!((three.phase, three.capturing), (Phase::Empty, None));
         // Another source: what was heard before is forgotten.
-        h.set_source(LoopSource::Line);
+        let _ = h.set_source(LoopSource::Line);
         run(&mut h, frame(&out) + 256, &mut out);
         assert!(h.capture().contains("no whole bar heard yet"));
         assert!(h.view(120.0).heard.take.is_none());
     }
 
+    /// What you played's window: with a 2-bar pattern it grows by two
+    /// bars, and shows room for four patterns; moved back, it takes bars
+    /// that are long past "the last bars", which play in time; Capture,
+    /// or a new Length, lets go of it; at the newest bar line it keeps up.
+    #[test]
+    fn capture_window_moves_back_and_grows_by_the_pattern() {
+        const BAR: u64 = 88_200;
+        let mut h = LoopHost::new(44_100, 40);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        h.command(Command::SetLatency(0));
+        h.command(Command::SetBars(Some(PATTERN_BARS)));
+        h.set_pattern_bars(Some(2));
+        t.command(0, T::Play);
+        let mut run = |h: &mut LoopHost, to: u64, out: &mut Vec<(f32, f32)>| {
+            while (out.len() as u64) < to {
+                let frame = out.len() as u64;
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                for f in 0..PERIOD {
+                    (l[f], r[f]) = pads_at(frame + f as u64);
+                }
+                h.take_pads(&l, &r);
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                h.period(&b, &mut l, &mut r);
+                out.extend(l.iter().copied().zip(r.iter().copied()));
+            }
+        };
+        let mut out = Vec::new();
+        // The app follows the pattern every few periods.
+        run(&mut h, 1_024, &mut out);
+        h.set_pattern_bars(Some(2));
+        // Bar 10, beat 2.
+        run(&mut h, 9 * BAR + 30_000, &mut out);
+        let v = h.view(120.0);
+        assert_eq!((v.heard.unit, v.heard.pattern), (2, true));
+        assert_eq!(v.capture_into, Some((0, 2)), "a pattern's length");
+        let lines: Vec<i64> = v.heard.lines[..v.heard.n_lines]
+            .iter()
+            .map(|l| l.0)
+            .collect();
+        assert_eq!(
+            lines,
+            (3..=10).collect::<Vec<_>>(),
+            "8 bars: room for 4 patterns"
+        );
+        // Two patterns, back to bar 8's line: bars 4 to 7.
+        assert_eq!(
+            h.set_capture_span(Some(8), 4),
+            "looper: Capture window: bars 4 to 7"
+        );
+        let v = h.view(120.0);
+        assert_eq!(v.capture_into, Some((0, 4)));
+        let (a, b2, first, bars) = v.heard.take.expect("a take");
+        assert_eq!((first, bars), (4, 4));
+        assert!(0.0 < a && a < b2 && b2 < 1.0, "{a} {b2}");
+        assert_eq!(h.capture(), "looper: Capture: bars 4 to 7 become Loop 1");
+        assert_eq!(
+            h.view(120.0).capture_into,
+            Some((0, 2)),
+            "let go of: the pattern again"
+        );
+        run(&mut h, out.len() as u64 + 8_192, &mut out);
+        let s = h.looper.status();
+        assert_eq!(
+            (s.phase, s.frames, s.origin),
+            (Phase::Playing, 4 * BAR as usize, 3 * 3840)
+        );
+        let from = out.len();
+        run(&mut h, out.len() as u64 + BAR, &mut out);
+        for (n, y) in out.iter().enumerate().skip(from + 512) {
+            let want = pads_at(3 * BAR + (n as u64 - 3 * BAR) % (4 * BAR));
+            assert!(
+                (y.0 - want.0).abs() < 1e-6 && (y.1 - want.1).abs() < 1e-6,
+                "frame {n}: {y:?}, want {want:?}"
+            );
+        }
+        // Let go of after the Capture: Loop 2 takes the pattern again.
+        h.select(1);
+        run(&mut h, out.len() as u64 + 256, &mut out);
+        assert_eq!(h.view(120.0).capture_into, Some((1, 2)));
+        // At the newest bar line it keeps up: the last 6 bars.
+        let newest = {
+            let v = h.view(120.0);
+            v.heard.lines[v.heard.n_lines - 1].0
+        };
+        assert_eq!(
+            h.set_capture_span(Some(newest), 6),
+            "looper: Capture window: the last 6 bars"
+        );
+        let first = h.view(120.0).heard.take.unwrap().2;
+        run(&mut h, out.len() as u64 + BAR, &mut out);
+        assert_eq!(
+            h.view(120.0).heard.take.unwrap().2,
+            first + 1,
+            "it moves on"
+        );
+        // A bar line not kept leaves it; a new Length lets go of it.
+        assert!(h.set_capture_span(Some(999), 2).contains("isn't kept"));
+        assert_eq!(h.view(120.0).capture_into, Some((1, 6)));
+        h.command(Command::SetBars(Some(1)));
+        run(&mut h, out.len() as u64 + 256, &mut out);
+        assert_eq!(h.view(120.0).capture_into, Some((1, 1)));
+    }
+
     /// The pads from the mix come a period late (the looper runs before
     /// the mixer): the looper makes it up, whatever latency the app asks
     /// for (that is the line input's), so the loop is in time to the
-    /// frame. Falling back to the dry pads, and back to the mix, each say
-    /// so once.
+    /// frame. The source lost is silence, never another sound, said once,
+    /// and a take won't start on it (said on the screen); back again,
+    /// said once.
     #[test]
     fn the_pads_from_the_mix_are_recorded_in_time_though_a_period_late() {
+        let (mut h, mut t, mut b) = recorded_in_time_a_period_late(LoopSource::Pads);
+        // Dry: said once, and the latency goes to 0 with it.
+        let z = [0.0; PERIOD];
+        let why = "the Loop track goes to a submix";
+        let said = |s: &str| Some((s.to_string(), false));
+        assert_eq!(
+            h.take_pads_as(&z, &z, Err(why)),
+            said("looper: records silence, the pads can't be recorded: the Loop track goes to a submix")
+        );
+        assert_eq!(h.take_pads_as(&z, &z, Err(why)), None);
+        assert_eq!(h.looper.status().phase, Phase::Playing);
+        let no = Some("Loop 1 doesn't record: the Loop track goes to a submix".to_string());
+        assert_eq!(h.refuse(Command::Overdub), no);
+        assert_eq!(h.refuse(Command::Record), no);
+        assert_eq!(h.refuse(Command::Undo), None, "only what starts a take");
+        let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+        assert!(t.process(PERIOD as u32, &mut b));
+        h.period(&b, &mut l, &mut r);
+        assert!(t.process(PERIOD as u32, &mut b));
+        h.period(&b, &mut l, &mut r);
+        assert_eq!(h.looper.status().latency, 0);
+        assert_eq!(
+            h.take_pads_as(&z, &z, Ok(0)),
+            said("looper: hears the pads again")
+        );
+        assert_eq!(h.refuse(Command::Overdub), None);
+        assert_eq!(h.dropouts, 0, "no take recorded then");
+    }
+
+    /// Length: Pattern follows the pattern playing while the loop is
+    /// empty, and holds once it is armed: a clip launched between the arm
+    /// and the start doesn't change the take's length.
+    #[test]
+    fn length_pattern_holds_once_the_loop_is_armed() {
+        let mut h = LoopHost::new(44_100, 8);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        let mut period = |h: &mut LoopHost| {
+            assert!(t.process(PERIOD as u32, &mut b));
+            let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+            h.period(&b, &mut l, &mut r);
+        };
+        h.command(Command::SetBars(Some(PATTERN_BARS)));
+        period(&mut h);
+        h.set_pattern_bars(Some(4));
+        period(&mut h);
+        assert_eq!(h.looper.status().bars, Some(4));
+        h.set_pattern_bars(Some(2));
+        period(&mut h);
+        assert_eq!(h.looper.status().bars, Some(2), "empty: it follows");
+        h.command(Command::Record);
+        period(&mut h);
+        assert_eq!(h.looper.status().phase, Phase::Armed);
+        h.set_pattern_bars(Some(8));
+        period(&mut h);
+        assert_eq!(h.looper.status().bars, Some(2), "armed: it holds");
+    }
+
+    /// A take records one source from start to end (the design review of
+    /// 20 Nov, point 6): the pads moved to another instrument, or another
+    /// Records from picked, while it records wait for its end, said once
+    /// on the screen too, and the Looper tab shows what this take records
+    /// beside the pick; then the pick takes over and What you played
+    /// starts again. A source lost while a take records is a gap of
+    /// silence in it: counted, said on the screen, and its return too.
+    #[test]
+    fn a_take_holds_its_source_and_instrument_to_its_end() {
+        use mpfree_fx::StripId;
+        let mut h = LoopHost::new(44_100, 8);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        assert_eq!(
+            h.follow_pads(Instrument::Kit(0)),
+            Some(("looper: records the pads (Kit 1)".to_string(), false))
+        );
+        assert_eq!(h.follow_pads(Instrument::Kit(0)), None, "said once");
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::Record);
+        t.command(0, T::Play);
+        let z = [0.0; PERIOD];
+        let mut period = |h: &mut LoopHost, how: Result<u32, &'static str>| {
+            assert!(t.process(PERIOD as u32, &mut b));
+            let (mut l, mut r) = (z, z);
+            let said = h.take_pads_as(&z, &z, how);
+            h.period(&b, &mut l, &mut r);
+            said
+        };
+        for _ in 0..4 {
+            period(&mut h, Ok(0));
+        }
+        assert_eq!(h.looper.status().phase, Phase::Recording);
+        // Play on the pads mid-take: the take keeps Kit 1.
+        let held = "looper: this take keeps recording the pads (Kit 1); \
+                    the pads (the synth) from the next take";
+        assert_eq!(
+            h.follow_pads(Instrument::Synth),
+            Some((held.to_string(), true))
+        );
+        assert_eq!(h.follow_pads(Instrument::Synth), None, "said once");
+        assert_eq!(h.takes_from(), (LoopSource::Pads, Some(Instrument::Kit(0))));
+        // The master picked mid-take: the take keeps the pads too.
+        let (line, tell) = h.set_source(LoopSource::Mix(StripId::Master)).unwrap();
+        assert!(
+            tell && line.ends_with("; the master from the next take"),
+            "{line}"
+        );
+        assert_eq!(h.takes_from(), (LoopSource::Pads, Some(Instrument::Kit(0))));
+        let v = h.view(120.0);
+        assert_eq!(
+            (v.source, v.taking_from),
+            (LoopSource::Mix(StripId::Master), Some(LoopSource::Pads))
+        );
+        assert!(
+            h.set_source(LoopSource::Pads).unwrap().1,
+            "back: said again"
+        );
+        assert_eq!(h.view(120.0).taking_from, None, "the same source");
+        // The channel lost mid-take: a gap of silence, said and counted.
+        let why = "that strip isn't in the mix";
+        assert_eq!(
+            period(&mut h, Err(why)),
+            Some((
+                "looper: the take records silence from here, the pads (Kit 1) \
+                 can't be recorded: that strip isn't in the mix"
+                    .to_string(),
+                true
+            ))
+        );
+        assert_eq!(period(&mut h, Err(why)), None, "said once");
+        assert_eq!(h.dropouts, 1);
+        assert_eq!(
+            period(&mut h, Ok(0)),
+            Some((
+                "looper: the take hears the pads (Kit 1) again".to_string(),
+                true
+            ))
+        );
+        assert!(h.describe().contains("1 times a take's source was lost"));
+        for _ in 0..(88_200 / PERIOD + 2) {
+            period(&mut h, Ok(0));
+        }
+        assert_eq!(h.looper.status().phase, Phase::Playing);
+        // The take ended: the synth takes over.
+        assert_eq!(
+            h.follow_pads(Instrument::Synth),
+            Some((
+                "looper: records the pads (the synth), What you played starts again".to_string(),
+                false
+            ))
+        );
+        assert_eq!(h.takes_from(), (LoopSource::Pads, Some(Instrument::Synth)));
+        // Records from picked between takes changes at once.
+        let (line, tell) = h.set_source(LoopSource::Line).unwrap();
+        assert!(
+            !tell && line.starts_with("looper: records the line input"),
+            "{line}"
+        );
+        assert_eq!(h.takes_from(), (LoopSource::Line, None));
+    }
+
+    /// The pads named in the log, silence on MIDI out (said
+    /// once, not again as a mix lost), and nothing while another source
+    /// records.
+    #[test]
+    fn pads_say_which_instrument_they_record_and_silence_on_midi_out() {
+        let mut h = LoopHost::new(44_100, 8);
+        assert_eq!(
+            h.follow_pads(Instrument::Own(2)).map(|s| s.0).as_deref(),
+            Some("looper: records the pads (Track 3's own instrument)")
+        );
+        assert_eq!(
+            h.follow_pads(Instrument::MidiOut).map(|s| s.0).as_deref(),
+            Some(
+                "looper: records silence (the pads play MIDI out, which sounds outside mpfree), \
+                 What you played starts again"
+            )
+        );
+        let z = [0f32; PERIOD];
+        assert_eq!(h.take_pads_as(&z, &z, Err(PADS_ON_MIDI_OUT)), None);
+        let _ = h.set_source(LoopSource::Line);
+        assert_eq!(
+            h.follow_pads(Instrument::Synth),
+            None,
+            "another source: nothing to say"
+        );
+        assert_eq!(h.takes_from(), (LoopSource::Line, None));
+    }
+
+    #[test]
+    fn a_mix_is_recorded_in_time_like_the_pads() {
+        let strip = mpfree_fx::StripId::Bus(0);
+        let (mut h, _, _) = recorded_in_time_a_period_late(LoopSource::Mix(strip));
+        assert_eq!(h.takes_from(), (LoopSource::Mix(strip), None));
+        assert_eq!(h.first_note(), "(the first pad you play)");
+        let z = [0.0; PERIOD];
+        let why = "that strip isn't in the mix";
+        let name = crate::mixing::name(strip);
+        assert_eq!(
+            h.take_pads_as(&z, &z, Err(why)).map(|s| s.0),
+            Some(format!(
+                "looper: records silence, {name} can't be recorded: {why}"
+            ))
+        );
+        assert_eq!(
+            h.take_pads_as(&z, &z, Ok(0)).map(|s| s.0),
+            Some(format!("looper: hears {name} again"))
+        );
+    }
+
+    /// A loop of a bar recorded from `source` (the pads or a mix), handed
+    /// over a period late as the mixer has it: the loop plays it back in
+    /// time to the frame. The host, the transport and its block, for more.
+    fn recorded_in_time_a_period_late(source: LoopSource) -> (LoopHost, Transport, Block) {
         let mut h = LoopHost::new(44_100, 20);
+        let _ = h.set_source(source);
         let mut t = Transport::new(44_100, 120.0).unwrap();
         let mut b = Block::new();
         h.command(Command::SetBars(Some(1)));
@@ -4019,24 +4944,7 @@ mod tests {
         }
         assert_eq!(checked, BAR - 2_000);
         assert_eq!(h.looper.status().latency, PERIOD as u32);
-        // Dry: said once, and the latency goes to 0 with it.
-        let z = [0.0; PERIOD];
-        let why = "the Loop track goes to a submix";
-        assert_eq!(
-            h.take_pads_as(&z, &z, Err(why)).as_deref(),
-            Some("looper: records the pads dry, without their effects: the Loop track goes to a submix")
-        );
-        assert_eq!(h.take_pads_as(&z, &z, Err(why)), None);
-        let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
-        assert!(t.process(PERIOD as u32, &mut b));
-        h.period(&b, &mut l, &mut r);
-        assert!(t.process(PERIOD as u32, &mut b));
-        h.period(&b, &mut l, &mut r);
-        assert_eq!(h.looper.status().latency, 0);
-        assert_eq!(
-            h.take_pads_as(&z, &z, Ok(0)).as_deref(),
-            Some("looper: records the pads with their effects again")
-        );
+        (h, t, b)
     }
 
     /// The audio thread's part: handing over the pads, a period, the log

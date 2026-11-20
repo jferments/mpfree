@@ -181,6 +181,11 @@ pub fn free_tempo(len: usize, rate: u32, bar: Tick) -> Option<(u32, f64)> {
 /// A loop waiting for you to play ([`Starts::Play`]) by ear starts on the
 /// first input sample at or over this (-40 dB).
 pub const PLAY_LEVEL: f32 = 0.01;
+
+/// A loop armed on the bar with the song playing starts on the first bar
+/// line at least this many beats after the tap, so a tap just before a
+/// bar line gives time to get ready instead of starting at once.
+pub const LEAD_BEATS: i64 = 1;
 static SILENCE: f32 = 0.0;
 
 /// What the looper's buttons and screen ask for. Each applies to the
@@ -291,6 +296,13 @@ pub enum Command {
     /// does ([`Status::capturing`]). Again, Undo or Clear call it off.
     /// Refused when the loop isn't empty or no whole bar was heard.
     Capture(u32),
+    /// Empty: as [`Command::Capture`], but the bars end on the bar line
+    /// heard on song tick `.0` (in the song as it last played on
+    /// unbroken), however long ago, so What you played's window can take
+    /// any bars still kept: `.1` of them, fewer (halving) when fewer fit.
+    /// Refused when that bar line isn't kept. Again, Undo or Clear call
+    /// it off, as for Capture.
+    CaptureTo(Tick, u32),
     /// The input is another source now: Capture forgets what it heard
     /// before. For every loop.
     NewInput,
@@ -514,6 +526,20 @@ pub enum After {
     Overdub,
 }
 
+/// Listen: a loop, or one layer of it, playing alone from its start
+/// while the song is stopped ([`Looper::listen`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Listen {
+    n: usize,
+    /// One layer (its slot), or None for the whole loop as heard.
+    layer: Option<u8>,
+    /// The loop frame it plays next.
+    pos: usize,
+    /// Faded in from 0 over [`FADE`] frames, and out once `stopping`.
+    gain: f32,
+    stopping: bool,
+}
+
 /// When an armed loop's first pass starts: the Looper tab's Starts
 /// setting.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -646,6 +672,11 @@ pub struct Status {
     /// STOP cut the first pass short: the frames of it that hold sound.
     /// The rest, to `frames`, is silent. None otherwise.
     pub cut: Option<usize>,
+    /// Armed on the bar with the song playing: the bar line (song tick)
+    /// the first pass starts on. Always at least a beat after the tap
+    /// ([`LEAD_BEATS`]), so there is time to get ready. None otherwise
+    /// (stopped: it starts on the bar PLAY starts on).
+    pub starts_on: Option<Tick>,
     /// Cleared, and Undo can bring it back ([`Command::Clear`]).
     pub kept: bool,
     /// Soloed ([`Command::Solo`]).
@@ -1581,6 +1612,15 @@ struct Loop {
     /// stays the loop's start (a pickup: the frames before it lead into
     /// the first bar) or the note is the start (the song started on it).
     pending: Option<(u64, bool)>,
+    /// Armed on the bar this period ([`Command::Record`]): the next
+    /// period's start notes whether the song was playing.
+    just_armed: bool,
+    /// Armed on the bar with the song playing: the song tick of the tap,
+    /// and the one [`LEAD_BEATS`] after it. No bar line between them
+    /// starts the first pass, so a tap just before a bar line waits for
+    /// the next one instead of starting at once (a line on the tap's own
+    /// tick, the song starting with it, still does).
+    tap_lead: Option<(f64, f64)>,
     /// The song is stopped and a note came: the host is asked to start
     /// it ([`Looper::take_start`]).
     want_start: bool,
@@ -1756,6 +1796,8 @@ impl Loop {
         by_ear: false,
         hit: None,
         pending: None,
+        just_armed: false,
+        tap_lead: None,
         want_start: false,
         rec_from: 0,
         lead: 0,
@@ -1804,6 +1846,9 @@ impl Loop {
 pub struct Looper {
     store: Store,
     capacity: usize,
+    /// Listen: a loop (or one of its layers) played alone while the song
+    /// is stopped ([`Looper::listen`]).
+    listen: Option<Listen>,
     loops: Vec<Loop>,
     selected: usize,
     queue: [Queued; QUEUE],
@@ -1845,6 +1890,7 @@ impl Looper {
         Looper {
             store: Store::new(n_blocks),
             capacity: n_blocks * BLOCK,
+            listen: None,
             loops: vec![Loop::NEW; MAX_LOOPS],
             selected: 0,
             queue: [Queued::Loop(Command::Clear); QUEUE],
@@ -1878,6 +1924,102 @@ impl Looper {
 
     /// Select loop `n` (0 to [`MAX_LOOPS`] - 1) for the commands queued
     /// after this. False (and counted) if the queue is full.
+    /// Listen: play loop `n` alone from its start, round and round, while
+    /// the song is stopped: the whole loop as heard (its layers' levels,
+    /// mutes and solos), or with `layer` ([`LayerInfo::id`]) that layer on
+    /// its own, even when muted. It plays at the speed it was recorded,
+    /// through the loop's level. It stops with [`Looper::stop_listening`],
+    /// or by itself when the song starts or the loop records or empties.
+    /// Refused (false) while the song plays, or for a loop with nothing
+    /// to play.
+    pub fn listen(&mut self, n: usize, layer: Option<u8>) -> bool {
+        let Some(l) = self.loops.get(n) else {
+            return false;
+        };
+        let playable = matches!(l.phase, Phase::Playing)
+            && l.len > 0
+            && !l.merging
+            && layer.is_none_or(|id| l.order[..l.in_order].contains(&id));
+        if !self.stopped || !playable {
+            return false;
+        }
+        self.listen = Some(Listen {
+            n,
+            layer,
+            pos: 0,
+            gain: 0.0,
+            stopping: false,
+        });
+        true
+    }
+
+    /// Listen fades out and stops.
+    pub fn stop_listening(&mut self) {
+        if let Some(l) = &mut self.listen {
+            l.stopping = true;
+        }
+    }
+
+    /// What Listen plays: the loop, the layer (None: all of it as heard)
+    /// and where it has got to, 0 to 1.
+    pub fn listening(&self) -> Option<(usize, Option<u8>, f32)> {
+        let l = self.listen.filter(|l| !l.stopping)?;
+        let len = self.loops[l.n].len.max(1);
+        Some((l.n, l.layer, l.pos as f32 / len as f32))
+    }
+
+    /// One period of Listen, added to `out` (n frames, interleaved).
+    fn play_listen(&mut self, block: &Block, n: usize, out: &mut [f32]) {
+        let Some(mut ls) = self.listen else {
+            return;
+        };
+        let stopped = block.spans().iter().all(|s| s.state == State::Stopped);
+        let l = &self.loops[ls.n];
+        let still = l.phase == Phase::Playing
+            && l.len > 0
+            && !l.merging
+            && ls
+                .layer
+                .is_none_or(|id| l.order[..l.in_order].contains(&id));
+        if !still {
+            // The loop changed under it: stop at once (it is silent or
+            // recording anyway).
+            self.listen = None;
+            return;
+        }
+        if !stopped {
+            ls.stopping = true;
+        }
+        let gains = l.listen_gains(ls.layer);
+        let replacing = ls.layer.is_none() && l.replacing();
+        let level = l.level;
+        let len = l.len;
+        let step = 1.0 / FADE as f32;
+        let mut f = 0;
+        while f < n {
+            let k = RUN.min(n - f).min(len - ls.pos);
+            let mut acc = [[0.0f32; 2]; RUN];
+            l.render_layers_at(&self.store, ls.n, ls.pos, &mut acc[..k], &gains, replacing);
+            for (j, a) in acc[..k].iter().enumerate() {
+                ls.gain = if ls.stopping {
+                    (ls.gain - step).max(0.0)
+                } else {
+                    (ls.gain + step).min(1.0)
+                };
+                let g = ls.gain * level;
+                out[2 * (f + j)] += a[0] * g;
+                out[2 * (f + j) + 1] += a[1] * g;
+            }
+            f += k;
+            ls.pos = (ls.pos + k) % len;
+            if ls.stopping && ls.gain == 0.0 {
+                self.listen = None;
+                return;
+            }
+        }
+        self.listen = Some(ls);
+    }
+
     pub fn select_loop(&mut self, n: usize) -> bool {
         self.push(Queued::Select(n))
     }
@@ -1988,6 +2130,18 @@ impl Looper {
                 0
             },
             cut: (l.len > 0 && l.cut < l.len).then_some(l.cut),
+            starts_on: (l.phase == Phase::Armed)
+                .then_some(l.tap_lead)
+                .flatten()
+                .map(|(tap, until)| {
+                    let bar = self.bar_ticks.max(1) as f64;
+                    let line = (tap / bar).ceil() * bar;
+                    (if line > tap && line < until {
+                        (until / bar).ceil() * bar
+                    } else {
+                        line
+                    }) as Tick
+                }),
             kept: self.store.has_kept(n),
             solo: l.solo,
             solo_out: l.solo_out,
@@ -2180,6 +2334,14 @@ impl Looper {
     /// loop's latency. None when not even one whole bar was heard.
     pub fn capture_take(&self, bars: u32) -> Option<Take> {
         let end = self.heard.lines().checked_sub(1)?;
+        self.heard
+            .take(end, bars, self.loops[self.selected].latency)
+    }
+
+    /// What [`Command::CaptureTo`] would take now, for the selected loop:
+    /// `bars` ending on the bar line heard on tick `end`.
+    pub fn capture_take_to(&self, end: Tick, bars: u32) -> Option<Take> {
+        let end = self.heard.line_at(end)?;
         self.heard
             .take(end, bars, self.loops[self.selected].latency)
     }
@@ -2409,9 +2571,23 @@ impl Looper {
         }
         self.heard.hear(block, input, n);
         self.apply_commands();
+        // A loop armed with the song playing starts no sooner than
+        // LEAD_BEATS after the tap; armed while stopped or counting in,
+        // on the bar PLAY starts on (with the pads' pattern, SHIFT + Arm).
+        if let Some(s) = block.spans().first() {
+            let rolling = matches!(s.state, State::Playing | State::Recording);
+            let tap = s.tick_at(s.frame);
+            let until = tap + (LEAD_BEATS * s.meter.beat_ticks()) as f64;
+            for l in &mut self.loops {
+                if std::mem::take(&mut l.just_armed) && l.phase == Phase::Armed {
+                    l.tap_lead = rolling.then_some((tap, until));
+                }
+            }
+        }
         self.place_hits(block);
         self.close_free(block);
         self.tend_captures();
+        self.play_listen(block, n, out);
         // A loop with sound soloed: the others fall silent.
         let any_solo = self.loops.iter().any(|l| l.solo && l.phase != Phase::Empty);
         for l in &mut self.loops {
@@ -2843,6 +3019,7 @@ impl Looper {
                         | Command::Merge
                         | Command::Resample
                         | Command::Capture(_)
+                        | Command::CaptureTo(..)
                 ) | Queued::Layer(_, LayerCommand::Delete)
                     | Queued::Copy { .. }
             ) || (self.loops[self.selected].busy()
@@ -2905,11 +3082,16 @@ impl Looper {
             Queued::Loop(Command::TempoFromLoop(on)) => self.free_tempo = on,
             // A capture under way: again, Undo or Clear call it off.
             Queued::Loop(
-                Command::Capture(_) | Command::Undo | Command::Clear | Command::Forget,
+                Command::Capture(_)
+                | Command::CaptureTo(..)
+                | Command::Undo
+                | Command::Clear
+                | Command::Forget,
             ) if self.loops[s].capturing() => {
                 self.loops[s].call_off_capture();
             }
-            Queued::Loop(Command::Capture(bars)) => self.start_capture(s, bars),
+            Queued::Loop(Command::Capture(bars)) => self.start_capture(s, bars, None),
+            Queued::Loop(Command::CaptureTo(end, bars)) => self.start_capture(s, bars, Some(end)),
             Queued::Copy { from, id, to, keep } => self.start_copy(from, id, to, keep),
             Queued::Loop(Command::Clear | Command::Forget) if self.loops[s].loading => {
                 // Called off: the memory goes back (below).
@@ -2996,24 +3178,37 @@ impl Looper {
     /// Capture into loop `s` ([`Command::Capture`]): it waits for its bar
     /// line (the last one heard, or, pressed in a bar's last beat, the one
     /// coming); [`Looper::tend_captures`] takes it from there.
-    fn start_capture(&mut self, s: usize, bars: u32) {
-        let wait = self.heard.in_last_beat();
-        let lines = self.heard.lines();
+    /// Capture into loop `s`: `bars` ending on the last bar line (or the
+    /// one coming, in a bar's last beat), or on the one heard on tick
+    /// `to`.
+    fn start_capture(&mut self, s: usize, bars: u32, to: Option<Tick>) {
+        let (end, wait) = match to {
+            None => {
+                let wait = self.heard.in_last_beat();
+                let lines = self.heard.lines();
+                match (lines, wait) {
+                    (_, true) => (Some(lines), true),
+                    (0, false) => (None, false),
+                    (n, false) => (Some(n - 1), false),
+                }
+            }
+            Some(t) => (self.heard.line_at(t), false),
+        };
         let l = &mut self.loops[s];
-        if l.phase != Phase::Empty
-            || l.clearing
-            || l.loading
-            || l.adding
-            || self.loads[s].is_some()
-            || bars == 0
-            || (lines == 0 && !wait)
-        {
+        let Some(end) = end.filter(|_| {
+            l.phase == Phase::Empty
+                && !l.clearing
+                && !l.loading
+                && !l.adding
+                && self.loads[s].is_none()
+                && bars > 0
+        }) else {
             self.stats.refused += 1;
             return;
-        }
+        };
         l.capture = Some(Capture {
             bars,
-            end: if wait { lines } else { lines - 1 },
+            end,
             wait,
             take: None,
         });
@@ -3383,7 +3578,11 @@ impl Loop {
     fn must_wait(&self, q: Queued) -> bool {
         match q {
             // A capture: again, or Undo, calls it off; the rest waits.
-            Queued::Loop(Command::Capture(_) | Command::Undo) if self.capturing() => false,
+            Queued::Loop(Command::Capture(_) | Command::CaptureTo(..) | Command::Undo)
+                if self.capturing() =>
+            {
+                false
+            }
             _ if self.capture.is_some() => true,
             // Everything waits for a bounce (Clear stops it) and a load
             // (Clear calls it off).
@@ -3588,6 +3787,8 @@ impl Loop {
                     self.phase = Phase::Armed;
                     self.ring = [0.0; 2 * FADE];
                     self.unhear();
+                    self.just_armed = true;
+                    self.tap_lead = None;
                     // A new loop plays once recorded.
                     self.on = true;
                     self.cue = None;
@@ -3678,7 +3879,11 @@ impl Loop {
             Command::Edit(e) => self.edit(stats, e),
             // The looper starts these, with the time, the print and what
             // it heard.
-            Command::Merge | Command::Fit | Command::Capture(_) | Command::NewInput => {}
+            Command::Merge
+            | Command::Fit
+            | Command::Capture(_)
+            | Command::CaptureTo(..)
+            | Command::NewInput => {}
             Command::Resample => match self.phase {
                 Phase::Empty => {
                     self.apply(store, stats, me, Command::Record);
@@ -4310,7 +4515,22 @@ impl Loop {
     /// Frames `from..` of every layer, as heard (at the gains in `mg_g`),
     /// added into `acc`.
     fn render_layers(&self, store: &Store, me: usize, from: usize, acc: &mut [[f32; 2]]) {
-        if self.replacing() {
+        self.render_layers_at(store, me, from, acc, &self.mg_g, self.replacing());
+    }
+
+    /// [`Loop::render_layers`] at the gains `gains` (each layer slot's,
+    /// left and right); `replacing` hears Replace layers over the layers
+    /// under them, as they play.
+    fn render_layers_at(
+        &self,
+        store: &Store,
+        me: usize,
+        from: usize,
+        acc: &mut [[f32; 2]],
+        gains: &[[f32; 2]; MAX_LAYERS],
+        replacing: bool,
+    ) {
+        if replacing {
             // Frame by frame, each layer at its share under the Replace
             // layers after it, as they are heard.
             let any_solo = self.any_solo();
@@ -4320,7 +4540,7 @@ impl Loop {
                 let d = self.ducks(&self.views, self.len, p, strength);
                 for &k in &self.order[..self.in_order] {
                     let k = k as usize;
-                    let g = self.mg_g[k];
+                    let g = gains[k];
                     let v = &self.views[k];
                     if g == [0.0, 0.0] || v.size() == 0 || d[k] == 0.0 {
                         continue;
@@ -4335,7 +4555,7 @@ impl Loop {
         }
         for &k in &self.order[..self.in_order] {
             let k = k as usize;
-            let g = self.mg_g[k];
+            let g = gains[k];
             let v = &self.views[k];
             if g == [0.0, 0.0] || v.size() == 0 {
                 continue;
@@ -4353,6 +4573,25 @@ impl Loop {
     }
 
     /// The gains each layer is heard at, for a merge or a bounce.
+    /// The gains Listen plays at: the loop as heard, or one layer alone
+    /// (`id`, a layer slot) at its level and pan, even when muted.
+    fn listen_gains(&self, layer: Option<u8>) -> [[f32; 2]; MAX_LAYERS] {
+        let Some(id) = layer else {
+            return self.heard_gains();
+        };
+        let mut g = [[0.0f32; 2]; MAX_LAYERS];
+        let k = id as usize;
+        if self.order[..self.in_order].contains(&id) {
+            let s = &self.slots[k];
+            let level = s.level * s.age;
+            g[k] = [
+                level * (1.0 - s.pan).min(1.0),
+                level * (1.0 + s.pan).min(1.0),
+            ];
+        }
+        g
+    }
+
     fn heard_gains(&self) -> [[f32; 2]; MAX_LAYERS] {
         let any_solo = self.any_solo();
         let mut g = [[0.0f32; 2]; MAX_LAYERS];
@@ -4664,6 +4903,17 @@ impl Loop {
         {
             self.unhear();
         }
+        // The lead counts from where the tap was in the song: once the
+        // song stops or jumps, the loop starts on the next bar line it
+        // reaches (on the bar PLAY starts on).
+        if self.phase == Phase::Armed
+            && matches!(
+                mark,
+                Mark::Stopped { .. } | Mark::Located { .. } | Mark::Looped { .. } | Mark::Panic
+            )
+        {
+            self.tap_lead = None;
+        }
         if self.phase != Phase::Recording {
             return;
         }
@@ -4746,6 +4996,13 @@ impl Loop {
     /// the loop listens again.
     fn starts_on(&mut self, span: &Span, t: Tick, f: u64) -> Option<(u64, usize)> {
         if self.starts == Starts::Bar || self.resample {
+            // Too soon after the tap: the next bar line.
+            if self
+                .tap_lead
+                .is_some_and(|(tap, until)| (t as f64) > tap && (t as f64) < until)
+            {
+                return None;
+            }
             return Some((f, 0));
         }
         let (p, pickup) = self.pending?;
@@ -5860,9 +6117,9 @@ mod tests {
             assert!(n < NONE as usize && n * BLOCK >= rate as usize * 1200);
         }
         assert_eq!(n_blocks(44_100, 3600), NONE as usize);
-        // Five minutes: about 109 MB, a fifth of it per minute, and 10.6 MB
-        // for the 30 seconds Capture takes from.
-        assert_eq!(bytes_for(44_100, 300) / 1_000_000, 119);
+        // Five minutes: about 109 MB, a fifth of it per minute, and 21.2 MB
+        // for the 60 seconds Capture takes from.
+        assert_eq!(bytes_for(44_100, 300) / 1_000_000, 130);
     }
 
     /// Bit for bit what `rem_euclid` gives, over song positions and loop

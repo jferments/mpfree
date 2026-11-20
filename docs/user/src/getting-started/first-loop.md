@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-looper rust/mpfree-app/src/looping.rs rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/loop_row.rs rust/mpfree-app/src/play_page.rs
-checked: 2026-11-19 a6fb29b2
+checked: 2026-11-20 4b71b1a9
 -->
 
 # Your first loop
@@ -20,9 +20,9 @@ The **Play** page has a row of all eight loops under the transport bar, a card e
 
 1. Set the tempo you want (see [Your first beat](first-beat.md#set-the-tempo)). The loop keeps it.
 2. Press **PLAY**. The transport bar counts bars and beats.
-3. Tap **Loop 1's ring**. The loop waits for the start of the next bar, then records: the ring turns red and goes round with the bars as it records.
-4. Play the pads, a beat as long as you like. The loop keeps recording until you end it.
-5. Tap the ring again just before the end of your beat. The loop closes at the end of that bar and starts playing back what you played, the ring in the loop's colour.
+3. Tap **Loop 1's ring**. The ring turns red and waits for the next bar line, counting down the beats in the last bar ("3 beats to REC"; a tap in the bar's last beat waits for the bar after, so you always get at least a beat to get ready). Then it records, going round with the bars.
+4. Play the pads. With a pattern playing, the loop is as long as the pattern (**Length: Pattern**, the default) and closes by itself, so it always fits the beat. With nothing else playing, play a beat as long as you like: the loop keeps recording until you end it.
+5. With nothing else playing, tap the ring again just before the end of your beat. The loop closes at the end of that bar and starts playing back what you played, the ring in the loop's colour.
 
 As on the MPC, you can also press **REC** with the transport stopped, then **PLAY**. REC records the loop when the loop is armed: tap **Arm** at the left of the loop row (or open the Looper tab), and the REC chip on the transport bar then says "→ Loop 1" (see [What REC records](../making-music/sequencer.md#what-rec-records)). With the transport stopped, REC then PLAY records the loop from the first bar until you press **REC** again or **STOP**. **STOP** stops at once and keeps what you played; the loop runs on to the end of that bar, silent after the stop, and **PLAY** plays it.
 
