@@ -270,6 +270,9 @@ pub struct TimeControl {
     /// Other armed tracks a take found with no clip and no empty slot to
     /// make one in: they didn't record it.
     also_full: u64,
+    /// The tracks whose instrument plays notes, a bit each
+    /// ([`TimeControl::set_notes_tracks`]).
+    notes_tracks: u128,
     takes: Takes,
     /// REDOs done so far: a track that comes back with one is the one UNDO
     /// took away, and its kit comes back with it (`TrackKits::follow`).
@@ -435,6 +438,7 @@ impl TimeControl {
             also: 0,
             also_n: 0,
             also_full: 0,
+            notes_tracks: 0,
             takes: Takes::default(),
             redos: 0,
             clipboard: None,
@@ -494,6 +498,30 @@ impl TimeControl {
     /// follow), if any.
     pub fn armed(&self) -> Option<usize> {
         self.armed
+    }
+
+    /// The tracks whose instrument plays notes, a bit each, from the
+    /// host's instruments: a new clip REC makes for a take on one holds
+    /// notes (the instrument redesign's step 5c).
+    pub fn set_notes_tracks(&mut self, tracks: u128) {
+        self.notes_tracks = tracks;
+    }
+
+    /// What a new clip for a take on `track` holds: notes when its
+    /// instrument plays notes and its clips don't play through its arp
+    /// (a clip of notes through an arp waits for step 5d), else pad hits.
+    fn take_holds(&self, track: usize) -> mpfree_seq::Holds {
+        let notes = self.notes_tracks >> track.min(127) & 1 == 1
+            && self
+                .project
+                .tracks
+                .get(track)
+                .is_some_and(|t| !t.through_arp);
+        if notes {
+            mpfree_seq::Holds::Notes
+        } else {
+            mpfree_seq::Holds::Hits
+        }
     }
 
     /// The other armed tracks, a bit each, without the armed one
@@ -1229,7 +1257,11 @@ impl TimeControl {
                     .iter()
                     .position(Option::is_none)
                     .ok_or_else(|| format!("{} has no empty slot to record into", t.name))?;
-                t.slots[s] = Some(Clip::new(&format!("Clip {}", s + 1), length));
+                let holds = self.take_holds(track);
+                let t = self.project.tracks.get_mut(track).ok_or("no such track")?;
+                let mut clip = Clip::new(&format!("Clip {}", s + 1), length);
+                clip.holds = holds;
+                t.slots[s] = Some(clip);
                 (
                     s,
                     format!("new clip in slot {} of track {}", s + 1, track + 1),
@@ -2362,6 +2394,7 @@ impl TimeControl {
                 ))
             }
             TimeAction::NewClip { track, slot } => {
+                let holds = self.take_holds(track);
                 let bar = info.meter.bar_ticks();
                 let length = info.loop_range.map_or(NEW_CLIP_BARS * bar, |(a, b)| b - a);
                 let t = self.project.tracks.get_mut(track).ok_or("no such track")?;
@@ -2369,7 +2402,9 @@ impl TimeControl {
                 if s.is_some() {
                     return Err(format!("slot {} of {} is not empty", slot + 1, t.name));
                 }
-                *s = Some(Clip::new(&format!("Clip {}", slot + 1), length));
+                let mut clip = Clip::new(&format!("Clip {}", slot + 1), length);
+                clip.holds = holds;
+                *s = Some(clip);
                 self.armed = Some(track);
                 (self.launches, self.cues) =
                     clips_after(&self.project, &self.launches, &self.cues, &a, &info);

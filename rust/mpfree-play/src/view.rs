@@ -1370,6 +1370,9 @@ pub struct NowPlaying {
     /// False for a clip that plays its steps in random order (S6): it
     /// never comes round the same, so it has no loop to freeze.
     pub repeats: bool,
+    /// The clip holds notes, not pad hits ([`mpfree_seq::Holds`]): what a
+    /// take into it records (the instrument redesign's step 5c).
+    pub holds_notes: bool,
 }
 
 /// A cue carried out on the audio thread that the view does not show yet.

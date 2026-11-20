@@ -457,6 +457,14 @@ impl Instruments {
             .is_some_and(|h| h.id != crate::synth::Engine::Drums.node_id())
     }
 
+    /// The tracks that play notes ([`Instruments::plays_notes`]), one bit
+    /// each: where a new take holds notes (step 5c). Never allocates.
+    pub fn note_tracks(&self) -> u128 {
+        (0..TRACKS.min(128))
+            .filter(|&t| self.plays_notes(t))
+            .fold(0, |bits, t| bits | 1 << t)
+    }
+
     /// The tracks that play their own instrument, one bit each (not one
     /// only ringing out an old one): what the project's list of
     /// instruments follows (`InstrumentList::follow`). Never allocates.
@@ -616,6 +624,15 @@ impl Instruments {
         if let Some(s) = self.slot(track) {
             self.slots[s].pads = pads;
         }
+    }
+
+    /// The notes pad `pad` plays on the instrument track `track` plays (its
+    /// pad map's, as written): none if the track plays none, or past the
+    /// pads.
+    pub fn pad_notes(&self, track: usize, pad: usize) -> &[u8] {
+        self.play_slot(track)
+            .and_then(|s| self.slots[s].pads.get(pad))
+            .map_or(&[], Pad::notes)
     }
 
     /// The pad of the instrument track `track` plays that plays `note`

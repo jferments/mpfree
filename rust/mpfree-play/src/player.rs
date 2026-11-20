@@ -1038,6 +1038,7 @@ impl Player {
             stamp: clip.stamp,
             muted: self.muted(view, track),
             repeats,
+            holds_notes: clip.holds_notes,
         })
     }
 

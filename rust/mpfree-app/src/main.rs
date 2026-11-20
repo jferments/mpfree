@@ -5000,11 +5000,13 @@ impl time::Pads for SeqPads<'_> {
     /// a latched arp, or a clip through its arp). It gets the velocity
     /// curve; with a synth pad layout it is a MIDI note for the synth and
     /// its pad (if any) is what shows and records; otherwise it is a pad.
-    /// Returns what the armed track records as heard.
-    fn live(&mut self, o: &mpfree_play::Out) -> Option<mpfree_play::Event> {
+    /// Returns what the armed track records as heard: the pad, and the
+    /// notes as written for a take of notes (step 5c).
+    fn live(&mut self, o: &mpfree_play::Out) -> time::Heard {
         use mpfree_play::Event;
+        use time::Heard;
         if self.quiet(o) {
-            return None;
+            return Heard::NONE;
         }
         let notes = self.kits.plays_synth(usize::from(o.track)) && self.live.plays_notes();
         let shift = self.shift(o.track);
@@ -5029,18 +5031,25 @@ impl time::Pads for SeqPads<'_> {
         match (o.event, sound.event) {
             (Event::NoteOn { note, velocity }, Event::NoteOn { note: heard, .. }) => {
                 let v = self.live.velocity(velocity);
-                let pad = if notes {
+                let on = Event::NoteOn { note, velocity: v };
+                if notes {
                     // A note no pad has (an arp octave up, a scale run)
-                    // still plays; only a pad's own note shows and records.
+                    // still plays, and a take of notes records it; only a
+                    // pad's own note shows, and records as a pad.
                     self.synth.note_on_note(heard, v, o.offset);
                     self.hits += 1;
-                    self.live.pad_of_note(note)?
-                } else {
+                    let pad = self.live.pad_of_note(note);
+                    if let Some(pad) = pad {
+                        self.live_hit(pad, v);
+                    }
+                    return Heard::of(pad.map(|p| pad_on(p, v)), on, &[note]);
+                }
+                let pad = {
                     // A kit's pad, 1 to 128 (the page's, as the pads
                     // pressed it), or the synth's slot.
                     let pad = usize::from(note);
                     if pad >= 128 {
-                        return None;
+                        return Heard::NONE;
                     }
                     let kit = self.kit_of(o.track);
                     let on = Event::NoteOn {
@@ -5062,19 +5071,14 @@ impl time::Pads for SeqPads<'_> {
                     }
                     pad
                 };
-                if self.n_live < MAX_LIVE_HITS {
-                    self.live_hits[self.n_live] = (pad as u8, v);
-                    self.n_live += 1;
-                }
-                Some(Event::NoteOn {
-                    note: pad as u8,
-                    velocity: v,
-                })
+                self.live_hit(pad, v);
+                let (written, n) = self.pad_notes(o.track, pad);
+                Heard::of(Some(pad_on(pad, v)), on, &written[..n])
             }
             (Event::NoteOff { note }, Event::NoteOff { note: heard }) if notes => {
                 self.synth.note_off_note(heard, o.offset);
-                let pad = self.live.pad_of_note(note)?;
-                Some(Event::NoteOff { note: pad as u8 })
+                let pad = self.live.pad_of_note(note);
+                Heard::of(pad.map(pad_off), o.event, &[note])
             }
             (Event::NoteOff { note }, _) => {
                 // The synth's note ends; a Grains pad stops when let go;
@@ -5087,17 +5091,18 @@ impl time::Pads for SeqPads<'_> {
                     self.player
                         .live_release_at(kit, usize::from(note), o.offset);
                 }
-                Some(o.event)
+                let (written, n) = self.pad_notes(o.track, usize::from(note));
+                Heard::of(Some(o.event), o.event, &written[..n])
             }
             (Event::AllOff, _) => {
                 self.midi.all_off(o.offset);
                 self.stop_all();
-                None
+                Heard::NONE
             }
             (Event::Pressure { note, value }, _) => {
                 let by = synth::Player::Arp(usize::from(o.track));
                 self.pressure_by(by, o.track, usize::from(note), value, o.offset);
-                None
+                Heard::NONE
             }
             (Event::NoteOn { .. }, _)
             | (
@@ -5106,7 +5111,7 @@ impl time::Pads for SeqPads<'_> {
                 | Event::Unlock { .. }
                 | Event::Program { .. },
                 _,
-            ) => None,
+            ) => Heard::NONE,
         }
     }
 
@@ -5250,6 +5255,19 @@ impl time::Pads for SeqPads<'_> {
         }
         self.flash(o);
     }
+}
+
+/// Pad `pad`'s hit at velocity `v`, as a take of pad hits records it.
+fn pad_on(pad: usize, v: u8) -> mpfree_play::Event {
+    mpfree_play::Event::NoteOn {
+        note: pad as u8,
+        velocity: v,
+    }
+}
+
+/// Pad `pad`'s let-go, as a take of pad hits records it.
+fn pad_off(pad: usize) -> mpfree_play::Event {
+    mpfree_play::Event::NoteOff { note: pad as u8 }
 }
 
 /// A note's start, end or pressure (not a panic, lock or program).
@@ -5617,27 +5635,56 @@ impl SeqPads<'_> {
 
     /// An arp's note by number that sounds nowhere (its shift took it off
     /// the keyboard): its pad still shows, and it records as written.
-    fn live_unheard(&mut self, o: &mpfree_play::Out) -> Option<mpfree_play::Event> {
+    fn live_unheard(&mut self, o: &mpfree_play::Out) -> time::Heard {
         use mpfree_play::Event;
+        use time::Heard;
         match o.event {
             Event::NoteOn { note, velocity } => {
                 let v = self.live.velocity(velocity);
-                let pad = self.live.pad_of_note(note)?;
-                if self.n_live < MAX_LIVE_HITS {
-                    self.live_hits[self.n_live] = (pad as u8, v);
-                    self.n_live += 1;
+                let pad = self.live.pad_of_note(note);
+                if let Some(pad) = pad {
+                    self.live_hit(pad, v);
                 }
-                Some(Event::NoteOn {
-                    note: pad as u8,
-                    velocity: v,
-                })
+                let on = Event::NoteOn { note, velocity: v };
+                Heard::of(pad.map(|p| pad_on(p, v)), on, &[note])
             }
             Event::NoteOff { note } => {
-                let pad = self.live.pad_of_note(note)?;
-                Some(Event::NoteOff { note: pad as u8 })
+                let pad = self.live.pad_of_note(note);
+                Heard::of(pad.map(pad_off), o.event, &[note])
             }
-            _ => None,
+            _ => Heard::NONE,
         }
+    }
+
+    /// A live hit on `pad` at velocity `v`, for the pads' flashes and the
+    /// Play page.
+    fn live_hit(&mut self, pad: usize, v: u8) {
+        if self.n_live < MAX_LIVE_HITS {
+            self.live_hits[self.n_live] = (pad as u8, v);
+            self.n_live += 1;
+        }
+    }
+
+    /// The notes pad `pad` of track `track` plays as written (before its
+    /// live transpose), for a take of notes (step 5c): its own instrument's
+    /// pad map (or the one it plays of another track's), the synth's pad
+    /// layout while the track plays the synth, else the kit pad's note as
+    /// MIDI out and MIDI in read it (`mpfree_midi::profile::kit_note`).
+    fn pad_notes(&self, track: u16, pad: usize) -> ([u8; time::HEARD_NOTES], usize) {
+        let t = usize::from(track);
+        let mut out = [0; time::HEARD_NOTES];
+        let kit;
+        let notes: &[u8] = if self.own.plays(t) {
+            self.own.pad_notes(t, pad)
+        } else if self.kits.plays_synth(t) {
+            self.synth.notes(pad)
+        } else {
+            kit = mpfree_midi::profile::kit_note(pad);
+            kit.as_slice()
+        };
+        let n = notes.len().min(out.len());
+        out[..n].copy_from_slice(&notes[..n]);
+        (out, n)
     }
 
     /// A clip's event on a track with its own instrument, or another
@@ -5688,53 +5735,53 @@ impl SeqPads<'_> {
         o: &mpfree_play::Out,
         notes: bool,
         shift: &Shift,
-    ) -> Option<mpfree_play::Event> {
+    ) -> time::Heard {
         use mpfree_play::Event;
+        use time::Heard;
         let track = usize::from(o.track);
         match (o.event, sound.event) {
             (Event::NoteOn { note, velocity }, Event::NoteOn { note: heard, .. }) => {
                 let v = self.live.velocity(velocity);
-                let pad = if notes {
+                let on = Event::NoteOn { note, velocity: v };
+                if notes {
                     self.own.note_on(track, heard, v, o.offset);
                     self.hits += 1;
-                    self.live.pad_of_note(note)?
-                } else {
-                    let pad = usize::from(note);
-                    if pad >= 16 {
-                        return None;
+                    let pad = self.live.pad_of_note(note);
+                    if let Some(pad) = pad {
+                        self.live_hit(pad, v);
                     }
-                    self.own.pad_on_shifted(track, pad, v, o.offset, shift);
-                    self.hits += 1;
-                    pad
-                };
-                if self.n_live < MAX_LIVE_HITS {
-                    self.live_hits[self.n_live] = (pad as u8, v);
-                    self.n_live += 1;
+                    return Heard::of(pad.map(|p| pad_on(p, v)), on, &[note]);
                 }
-                Some(Event::NoteOn {
-                    note: pad as u8,
-                    velocity: v,
-                })
+                let pad = usize::from(note);
+                if pad >= 16 {
+                    return Heard::NONE;
+                }
+                self.own.pad_on_shifted(track, pad, v, o.offset, shift);
+                self.hits += 1;
+                self.live_hit(pad, v);
+                let (written, n) = self.pad_notes(o.track, pad);
+                Heard::of(Some(pad_on(pad, v)), on, &written[..n])
             }
             (Event::NoteOff { note }, Event::NoteOff { note: heard }) if notes => {
                 self.own.note_off(track, heard, o.offset);
-                let pad = self.live.pad_of_note(note)?;
-                Some(Event::NoteOff { note: pad as u8 })
+                let pad = self.live.pad_of_note(note);
+                Heard::of(pad.map(pad_off), o.event, &[note])
             }
             (Event::NoteOff { note }, _) => {
                 self.own.pad_off(track, usize::from(note), o.offset);
-                Some(o.event)
+                let (written, n) = self.pad_notes(o.track, usize::from(note));
+                Heard::of(Some(o.event), o.event, &written[..n])
             }
             (Event::AllOff, _) => {
                 self.midi.all_off(o.offset);
                 self.own.all_off(track);
                 time::Pads::stop_all(self);
-                None
+                Heard::NONE
             }
             (Event::Pressure { note, value }, _) if !notes => {
                 self.own
                     .pad_pressure(track, usize::from(note), value, o.offset);
-                None
+                Heard::NONE
             }
             (Event::NoteOn { .. }, _)
             | (
@@ -5744,7 +5791,7 @@ impl SeqPads<'_> {
                 | Event::Unlock { .. }
                 | Event::Program { .. },
                 _,
-            ) => None,
+            ) => Heard::NONE,
         }
     }
 
@@ -5793,13 +5840,15 @@ impl SeqPads<'_> {
         o: &mpfree_play::Out,
         notes: bool,
         shift: &Shift,
-    ) -> Option<mpfree_play::Event> {
+    ) -> time::Heard {
         use midi_out::NoteIs;
         use mpfree_play::Event;
+        use time::Heard;
         match (o.event, sound.event) {
             (Event::NoteOn { note, velocity }, Event::NoteOn { note: heard, .. }) => {
                 let v = self.live.velocity(velocity);
-                let pad = if notes {
+                let on = Event::NoteOn { note, velocity: v };
+                if notes {
                     let played = mpfree_play::Out {
                         event: Event::NoteOn {
                             note: heard,
@@ -5808,11 +5857,16 @@ impl SeqPads<'_> {
                         ..*o
                     };
                     self.midi.send(&played, NoteIs::Note);
-                    self.live.pad_of_note(note)?
-                } else {
+                    let pad = self.live.pad_of_note(note);
+                    if let Some(pad) = pad {
+                        self.live_hit(pad, v);
+                    }
+                    return Heard::of(pad.map(|p| pad_on(p, v)), on, &[note]);
+                }
+                let pad = {
                     let pad = usize::from(note);
                     if pad >= KIT_PADS {
-                        return None;
+                        return Heard::NONE;
                     }
                     let played = mpfree_play::Out {
                         event: Event::NoteOn { note, velocity: v },
@@ -5827,23 +5881,19 @@ impl SeqPads<'_> {
                     self.midi.send(&played, is);
                     pad
                 };
-                if self.n_live < MAX_LIVE_HITS {
-                    self.live_hits[self.n_live] = (pad as u8, v);
-                    self.n_live += 1;
-                }
-                Some(Event::NoteOn {
-                    note: pad as u8,
-                    velocity: v,
-                })
+                self.live_hit(pad, v);
+                let (written, n) = self.pad_notes(o.track, pad);
+                Heard::of(Some(pad_on(pad, v)), on, &written[..n])
             }
             (Event::NoteOff { note }, _) if notes => {
                 self.midi.send(sound, NoteIs::Note);
-                let pad = self.live.pad_of_note(note)?;
-                Some(Event::NoteOff { note: pad as u8 })
+                let pad = self.live.pad_of_note(note);
+                Heard::of(pad.map(pad_off), o.event, &[note])
             }
-            (Event::NoteOff { .. }, _) => {
+            (Event::NoteOff { note }, _) => {
                 self.midi.send(o, NoteIs::Pad(&[]));
-                Some(o.event)
+                let (written, n) = self.pad_notes(o.track, usize::from(note));
+                Heard::of(Some(o.event), o.event, &written[..n])
             }
             (Event::Pressure { .. }, _) => {
                 if notes {
@@ -5851,12 +5901,12 @@ impl SeqPads<'_> {
                 } else {
                     self.midi.send(o, NoteIs::Pad(&[]));
                 }
-                None
+                Heard::NONE
             }
             (Event::AllOff, _) => {
                 self.midi.all_off(o.offset);
                 time::Pads::stop_all(self);
-                None
+                Heard::NONE
             }
             (Event::NoteOn { .. }, _)
             | (
@@ -5865,7 +5915,7 @@ impl SeqPads<'_> {
                 | Event::Unlock { .. }
                 | Event::Program { .. },
                 _,
-            ) => None,
+            ) => Heard::NONE,
         }
     }
 }
@@ -9752,6 +9802,9 @@ fn player_session(
         // The tracks on gear slower than the sound's lead play their clips
         // that much ahead (sequencer S5).
         time.set_ahead(&midi_out.ahead());
+        // A take on a track whose instrument plays notes records notes
+        // (instrument redesign step 5c).
+        time.set_notes_tracks(mix.instruments.note_tracks());
         // CV out takes the outputs' jobs; run, reset and clock follow the
         // transport.
         cv_out.sync(&io_model);
@@ -12147,6 +12200,47 @@ mod tests {
             };
             assert!(seq.out(&clip_out(0, 10, empty, true)));
             assert_eq!(seq.hits, 1, "an empty pad");
+        });
+    }
+
+    /// Step 5c, recording: a live pad says what a take records of it both
+    /// ways. On a track's own instrument the notes are its pad map's as
+    /// written; on a kit, the pad's note as MIDI in and out read it.
+    #[test]
+    fn a_live_pad_records_as_its_pad_or_as_its_notes() {
+        use mpfree_play::Event;
+        use time::Pads;
+        let live = |track: u16, event| clip_out(track, 0, event, false);
+        let on = Event::NoteOn {
+            note: 3,
+            velocity: 100,
+        };
+        on_the_pads(&[], &[1], |seq| {
+            let written = seq.own.pad_notes(1, 3).to_vec();
+            assert!(!written.is_empty());
+            let h = seq.live(&live(1, on));
+            assert!(matches!(h.pad, Some(Event::NoteOn { note: 3, .. })));
+            let notes: Vec<u8> = h
+                .notes()
+                .iter()
+                .map(|e| match *e {
+                    Event::NoteOn { note, .. } => note,
+                    _ => 255,
+                })
+                .collect();
+            assert_eq!(notes, written, "the pad map's notes");
+            let h = seq.live(&live(1, Event::NoteOff { note: 3 }));
+            assert_eq!(h.pad, Some(Event::NoteOff { note: 3 }));
+            assert_eq!(h.notes().len(), written.len());
+            // A kit: the pad's note.
+            let h = seq.live(&live(0, on));
+            assert_eq!(
+                h.notes(),
+                [Event::NoteOn {
+                    note: mpfree_midi::profile::kit_note(3).unwrap(),
+                    velocity: seq.live.velocity(100),
+                }]
+            );
         });
     }
 

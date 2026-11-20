@@ -1094,14 +1094,14 @@ fn live_notes_on_a_midi_out_track_go_out_and_record_as_their_pad() {
     };
     let heard = time::Pads::live(&mut seq, &at(on));
     assert_eq!(
-        heard,
+        heard.pad,
         Some(Event::NoteOn {
             note: 2,
             velocity: v
         })
     );
     let off = Event::NoteOff { note: 2 };
-    assert_eq!(time::Pads::live(&mut seq, &at(off)), Some(off));
+    assert_eq!(time::Pads::live(&mut seq, &at(off)).pad, Some(off));
     assert_eq!((seq.hits, seq.silent), (0, 0), "the pads sounded it");
     assert_eq!(&seq.live_hits[..seq.n_live], [(2, v)]);
     // Another track's notes still play on the pads.
@@ -1421,7 +1421,7 @@ fn live_pads_on_a_track_with_its_own_instrument_play_it() {
         velocity: 100,
     };
     assert_eq!(
-        time::Pads::live(&mut seq, &at(0, on)),
+        time::Pads::live(&mut seq, &at(0, on)).pad,
         Some(Event::NoteOn {
             note: 2,
             velocity: v
@@ -1429,7 +1429,7 @@ fn live_pads_on_a_track_with_its_own_instrument_play_it() {
     );
     assert_eq!(&seq.live_hits[..seq.n_live], [(2, v)]);
     let off = Event::NoteOff { note: 2 };
-    assert_eq!(time::Pads::live(&mut seq, &at(0, off)), Some(off));
+    assert_eq!(time::Pads::live(&mut seq, &at(0, off)).pad, Some(off));
     // A clip on track 1 is taken by its instrument; one on track 2 isn't,
     // and goes on to the kit.
     assert!(time::Pads::out(&mut seq, &at(0, on)));

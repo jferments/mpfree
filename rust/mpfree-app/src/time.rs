@@ -273,6 +273,67 @@ pub struct HitInfo {
     pub bar_ticks: Tick,
 }
 
+/// Most notes one live note records as: a pad of chords' notes
+/// (`mpfree_arp::scale::pads::MAX_PAD_NOTES`).
+pub const HEARD_NOTES: usize = 4;
+
+/// What the armed track records of one live note ([`Pads::live`]): its pad,
+/// which a take of pad hits records and CAPTURE's history and the Play
+/// page's timing keep, and its notes as written (before the track's live
+/// transpose), which a take of notes records (the instrument redesign's
+/// step 5c). A pad of chords gives several notes; a note no pad plays (an
+/// arp's octave up) gives no pad. Fixed size, made on the audio thread.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Heard {
+    pub pad: Option<Event>,
+    notes: [Event; HEARD_NOTES],
+    n: u8,
+}
+
+impl Heard {
+    /// Nothing records.
+    pub const NONE: Heard = Heard {
+        pad: None,
+        notes: [Event::AllOff; HEARD_NOTES],
+        n: 0,
+    };
+
+    /// A host with no instruments: the pad, and the same number as its
+    /// note.
+    pub fn pad(event: Event) -> Heard {
+        Heard::of(Some(event), event, &[note_of(event)])
+    }
+
+    /// `kind` (a note-on with its velocity, a note-off, a pressure) on each
+    /// of `notes`, recorded as `pad` in a take of pad hits.
+    pub fn of(pad: Option<Event>, kind: Event, notes: &[u8]) -> Heard {
+        let mut h = Heard { pad, ..Heard::NONE };
+        for &note in notes.iter().take(HEARD_NOTES) {
+            h.notes[usize::from(h.n)] = match kind {
+                Event::NoteOn { velocity, .. } => Event::NoteOn { note, velocity },
+                Event::NoteOff { .. } => Event::NoteOff { note },
+                Event::Pressure { value, .. } => Event::Pressure { note, value },
+                e => e,
+            };
+            h.n += 1;
+        }
+        h
+    }
+
+    /// The notes a take of notes records, in order.
+    pub fn notes(&self) -> &[Event] {
+        &self.notes[..usize::from(self.n)]
+    }
+}
+
+/// The note number of a note's start, end or pressure (0 for the rest).
+fn note_of(e: Event) -> u8 {
+    match e {
+        Event::NoteOn { note, .. } | Event::NoteOff { note } | Event::Pressure { note, .. } => note,
+        _ => 0,
+    }
+}
+
 /// Where the sequencer's notes go: the sampler's pads. Each note names the
 /// track it came from (`Out::track`), so a host can play each track's own
 /// kit or instrument.
@@ -343,31 +404,32 @@ pub trait Pads {
     /// A note one of the per-track arps played ([`TimeHost::period_arps`]):
     /// the pads through their track's arp, a latched arp, or a clip that
     /// plays through its arp. It is live playing, so the pad player gives
-    /// it the pads' own treatment (velocity curve, flashes). Returns the
-    /// note to record as heard on the armed track (a pad number), or None.
-    /// By default it plays as a clip's note and records as it is.
-    fn live(&mut self, o: &Out) -> Option<Event> {
+    /// it the pads' own treatment (velocity curve, flashes). Returns what
+    /// the armed track records of it as heard: its pad, and its notes for
+    /// a take of notes ([`Heard`]). By default it plays as a clip's note
+    /// and records as it is.
+    fn live(&mut self, o: &Out) -> Heard {
         match o.event {
             Event::NoteOn { note, velocity } => {
                 self.hit_at(o.track, usize::from(note), velocity, o.offset);
-                Some(o.event)
+                Heard::pad(o.event)
             }
             Event::NoteOff { note } => {
                 self.release_at(o.track, usize::from(note), o.offset);
-                Some(o.event)
+                Heard::pad(o.event)
             }
             Event::AllOff => {
                 self.stop_all();
-                None
+                Heard::NONE
             }
             Event::Pressure { note, value } => {
                 self.pressure_at(o.track, usize::from(note), value, o.offset);
-                None
+                Heard::NONE
             }
             Event::Lock { .. }
             | Event::Lane { .. }
             | Event::Unlock { .. }
-            | Event::Program { .. } => None,
+            | Event::Program { .. } => Heard::NONE,
         }
     }
 }
@@ -1370,6 +1432,14 @@ impl TimeHost {
     /// their period ([`Pads::out_ahead`]). All 0 plays nothing ahead.
     pub fn set_ahead(&mut self, frames: &[u32]) {
         self.audio.set_ahead(frames);
+    }
+
+    /// The tracks whose instrument plays notes (a track's own synth, or
+    /// another track's it plays, but not the Drums engine), one bit each:
+    /// a new clip REC makes for a take on one holds notes (step 5c),
+    /// unless its clips play through its arp.
+    pub fn set_notes_tracks(&mut self, tracks: u128) {
+        self.control.set_notes_tracks(tracks);
     }
 
     /// What the look-ahead did, for the log.
@@ -2689,6 +2759,9 @@ mod tests {
         /// (track, mixer track): where a track's instrument sounds
         /// ([`Pads::sounds_on`]); a track not here, on its own strip.
         sounds: Vec<(u16, u8)>,
+        /// A live pad plays these notes above its number (a chord of an
+        /// instrument's pad map, step 5c); empty: its number alone.
+        chord: Vec<u8>,
     }
 
     impl Pads for Fake {
@@ -2726,6 +2799,30 @@ mod tests {
             let at = self.frame + u64::from(offset);
             self.locks.push((at, self.hits.len(), addr, value));
             true
+        }
+        // As the default, but a pad's notes are its chord's.
+        fn live(&mut self, o: &Out) -> Heard {
+            let (note, play) = match o.event {
+                Event::NoteOn { note, velocity } => (
+                    note,
+                    self.hit_at(o.track, usize::from(note), velocity, o.offset),
+                ),
+                Event::NoteOff { note } => {
+                    self.release_at(o.track, usize::from(note), o.offset);
+                    (note, true)
+                }
+                _ => return Heard::NONE,
+            };
+            let notes: Vec<u8> = if self.chord.is_empty() {
+                vec![note]
+            } else {
+                self.chord.iter().map(|&k| note + k).collect()
+            };
+            if play {
+                Heard::of(Some(o.event), o.event, &notes)
+            } else {
+                Heard::NONE
+            }
         }
     }
 
@@ -3957,6 +4054,107 @@ mod tests {
             .filter(|&&(f, _, _)| f >= 2 * BAR)
             .map(|&(f, p, _)| (f, p))
             .collect()
+    }
+
+    /// Step 5c: REC's new clip on a track whose instrument plays notes
+    /// holds notes, and the take records the notes the pads played (a
+    /// pad's chord, each note), with the pad's pressure on each; on a
+    /// track that doesn't, or one whose clips play through its arp, it
+    /// holds pad hits and records the pad, as before.
+    #[test]
+    fn a_take_on_a_track_that_plays_notes_records_its_notes() {
+        use mpfree_seq::Holds;
+        let take = |track: usize, through: bool| {
+            let mut h = TimeHost::new(RATE, 120.0).unwrap();
+            let mut pads = Fake {
+                chord: vec![60, 64],
+                ..Fake::default()
+            };
+            let mut arps = TrackArps::new(RATE, 120.0);
+            h.control.project.tracks[track].through_arp = through;
+            h.set_notes_tracks(1 << 1);
+            h.command(Command::SetLoop(Some((0, 3840))));
+            h.act(TimeAction::NewClip { track, slot: 0 }).unwrap();
+            let holds = h.project().clip(track, 0).unwrap().holds;
+            while pads.frame < BAR - 1000 {
+                let at = pads.frame;
+                if at == 10 * u64::from(PERIOD) {
+                    arps.pad(
+                        track,
+                        0,
+                        Event::NoteOn {
+                            note: 4,
+                            velocity: 100,
+                        },
+                    );
+                }
+                if at == 20 * u64::from(PERIOD) {
+                    h.pad_pressure(5, 4, 70);
+                }
+                if at == 40 * u64::from(PERIOD) {
+                    arps.pad(track, 0, Event::NoteOff { note: 4 });
+                }
+                h.period_arps(PERIOD, &mut pads, &mut arps);
+                pads.frame += u64::from(PERIOD);
+            }
+            let clip = h.project().clip(track, 0).unwrap().clone();
+            let mut notes: Vec<(u8, Vec<u8>)> = clip
+                .notes
+                .iter()
+                .map(|n| (n.note, clip.touch_of(n).iter().map(|p| p.value).collect()))
+                .collect();
+            notes.sort();
+            assert_eq!(h.dropped(), 0);
+            (holds, notes)
+        };
+        assert_eq!(
+            take(1, false),
+            (Holds::Notes, vec![(64, vec![70]), (68, vec![70])],),
+            "the chord's notes, each with the pad's pressure"
+        );
+        assert_eq!(
+            take(0, false),
+            (Holds::Hits, vec![(4, vec![70])]),
+            "a track that plays no notes records the pad"
+        );
+        assert_eq!(
+            take(1, true).0,
+            Holds::Hits,
+            "a clip of notes through the arp waits for step 5d"
+        );
+    }
+
+    /// Pads as pressed have no notes for a clip of notes (one through the
+    /// arp, which waits for step 5d): they aren't recorded into it, and
+    /// each is counted.
+    #[test]
+    fn pads_as_pressed_into_a_clip_of_notes_are_counted_not_recorded() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut arps = TrackArps::new(RATE, 120.0);
+        h.control.project.tracks[1].through_arp = true;
+        h.command(Command::SetLoop(Some((0, 3840))));
+        h.act(TimeAction::NewClip { track: 1, slot: 0 }).unwrap();
+        h.control.project.tracks[1].slots[0].as_mut().unwrap().holds = mpfree_seq::Holds::Notes;
+        h.control.compile().unwrap();
+        for i in 0..40u64 {
+            if i == 10 {
+                h.pad_pressed(
+                    0,
+                    Event::NoteOn {
+                        note: 4,
+                        velocity: 100,
+                    },
+                );
+            }
+            if i == 20 {
+                h.pad_pressed(0, Event::NoteOff { note: 4 });
+            }
+            h.period_arps(PERIOD, &mut pads, &mut arps);
+            pads.frame += u64::from(PERIOD);
+        }
+        assert!(h.project().clip(1, 0).unwrap().notes.is_empty());
+        assert_eq!(h.dropped(), 1);
     }
 
     /// A track's MIDI effects go from the project to the sound loop: the
