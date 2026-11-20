@@ -70,6 +70,7 @@ use mpfree_sampler::model::{
 use mpfree_ui::widgets::{ListItem, ListView};
 use mpfree_ui::{EventKind, Ui, UiEvent};
 
+use crate::panel::{Control, Item, Look, Panel, Section};
 use crate::play_tab::{self, stepped, value_text};
 use crate::slice_tool::{bank_of, pad_text, BANK};
 use crate::wave_tab::{default_loop, duration_text, mode_label, pad_color};
@@ -866,7 +867,14 @@ impl PadsTab {
             .collect();
         let clip = st.clips.get(st.pad - st.first).cloned().flatten();
         let footer = picked.and_then(|p| footer(p, st));
+        let th = ui.theme.clone();
+        // Q1 to Q4's colours, as the Q-Link cards have them (Jay's pick of
+        // the mockups, 20 Nov 2026).
+        let tints = [th.accent, th.good, th.warn, mpfree_ui::Color::rgb(0xC77DFF)];
+        let (controls, panel) = pad_panel(kind, picked, st, self.bank, clip.as_deref(), tints);
         if let Some(list) = ui.get_mut::<SettingList>(LIST) {
+            list.controls = controls;
+            list.panel = Some(panel);
             list.title = format!("Pad {here}");
             list.right = format!("clip: {}", clip.as_deref().unwrap_or("none"));
             list.rows = rows;
@@ -1232,6 +1240,150 @@ impl PadsTab {
             gesture: Some(gesture),
         })
     }
+}
+
+/// The Pad list as a panel of controls (Jay's device notes, 20 Nov 2026:
+/// "more of the text fields on pad page to be knobs, so it doesn't look
+/// like a wall of text"): each of type `kind`'s rows as a control, in
+/// one section titled for the pad. The knobs the Q-Links turn are lit in
+/// Q1 to Q4's colours, `tints` (Jay's pick of the mockups, 20 Nov 2026).
+fn pad_panel(
+    kind: PadType,
+    picked: Option<&Pad>,
+    st: &PadsState,
+    bank: Option<char>,
+    clip: Option<&str>,
+    tints: [mpfree_ui::Color; 4],
+) -> (Vec<Control>, Panel) {
+    let here = pad_text(bank, st.pad);
+    let empty = format!("{here} has no sound: Browse for one");
+    let controls = kind
+        .rows()
+        .iter()
+        .map(|&row| {
+            let shared = row.play_row().and_then(|r| match picked {
+                Some(p) => play_tab::pad_control(p, r),
+                None => play_tab::pad_control(&blank_pad(""), r),
+            });
+            let mut c = match row {
+                Row::Sound => Control::new(Look::Chip).faint_because(
+                    st.sounds.is_empty(),
+                    "The kit has no sounds yet: Browse for one",
+                ),
+                Row::Mode => {
+                    let now = picked.and_then(|p| p.layers.first()).map(|l| l.region.mode);
+                    Control::new(Look::Choice {
+                        options: MODES
+                            .iter()
+                            .map(|m| crate::wave_tab::mode_label(*m).to_string())
+                            .collect(),
+                        on: now
+                            .and_then(|m| MODES.iter().position(|x| *x == m))
+                            .unwrap_or(0),
+                        off: Vec::new(),
+                    })
+                    .faint_because(now.is_none(), &empty)
+                }
+                Row::Effects => Control::new(Look::Button(row_text(picked, st, row)))
+                    .faint_because(
+                        st.effects.is_none(),
+                        "This pad has no channel of its own on Mix",
+                    ),
+                Row::EditPad => {
+                    let why = edit_pad_why(bank, st);
+                    Control::new(Look::Button(EDIT_PAD_TEXT.into()))
+                        .faint_because(why.is_some(), why.as_deref().unwrap_or(""))
+                }
+                Row::Engine | Row::Port => Control::new(Look::Chip),
+                Row::Note => {
+                    let n = match picked.map(|p| &p.kind) {
+                        Some(PadKind::Instrument { note, .. } | PadKind::MidiOut { note, .. }) => {
+                            *note
+                        }
+                        _ => 0,
+                    };
+                    Control::new(Look::Knob {
+                        pos: f32::from(n) / 127.0,
+                        steps: 127,
+                        bipolar: false,
+                    })
+                }
+                Row::Channel => {
+                    let ch = match picked.map(|p| &p.kind) {
+                        Some(PadKind::MidiOut { channel, .. }) => *channel,
+                        _ => 1,
+                    };
+                    Control::new(Look::Knob {
+                        pos: f32::from(ch.saturating_sub(1)) / 15.0,
+                        steps: 15,
+                        bipolar: false,
+                    })
+                }
+                Row::Tempo => Control::new(Look::Stepper),
+                _ => shared
+                    .unwrap_or_else(|| Control::new(Look::Chip))
+                    .faint_because(picked.is_none(), &empty),
+            };
+            if let Some(k) = kind.qlinks().iter().position(|q| *q == Some(row)) {
+                if matches!(c.look, Look::Knob { .. }) {
+                    c = c.tinted(tints[k]);
+                }
+            }
+            c
+        })
+        .collect();
+    let at = |row: Row| Item::new(kind.index_of(row).unwrap_or(usize::MAX));
+    let lines = match kind {
+        PadType::Sample => vec![
+            vec![
+                at(Row::Sound).labelled(),
+                at(Row::Effects).labelled().wide(170),
+            ],
+            vec![at(Row::Mode).labelled()],
+            vec![
+                at(Row::Level),
+                at(Row::Pan),
+                at(Row::Tune),
+                at(Row::Polyphony),
+            ],
+            vec![
+                at(Row::MuteGroup).labelled().wide(150),
+                at(Row::EditPad).labelled(),
+            ],
+        ],
+        PadType::Loop => vec![
+            vec![
+                at(Row::Sound).labelled(),
+                at(Row::Effects).labelled().wide(170),
+            ],
+            vec![
+                at(Row::Tempo).labelled(),
+                at(Row::MuteGroup).labelled().wide(150),
+            ],
+            vec![at(Row::Level), at(Row::Pan), at(Row::Tune)],
+            vec![at(Row::EditPad).labelled()],
+        ],
+        PadType::Instrument => vec![
+            vec![at(Row::Engine).labelled()],
+            vec![at(Row::Note).wide(120)],
+            vec![at(Row::EditPad).labelled()],
+        ],
+        PadType::MidiOut => vec![
+            vec![at(Row::Port).labelled()],
+            vec![at(Row::Channel).wide(120), at(Row::Note).wide(120)],
+            vec![at(Row::EditPad).labelled()],
+        ],
+    };
+    let mut panel = Panel {
+        sections: vec![Section::new(&format!("Pad {here}"), 1, lines)
+            .note(&format!("clip: {}", clip.unwrap_or("none")))],
+    };
+    // A line said along the bottom (where a hit goes): the controls
+    // start from the top to leave it the room.
+    if picked.is_some_and(|p| footer(p, st).is_some()) {
+        panel.sections[0].from_top = true;
+    }
+    (controls, panel)
 }
 
 /// "3 layers · Loop", for the map; a sliced pad's slices first ("16
