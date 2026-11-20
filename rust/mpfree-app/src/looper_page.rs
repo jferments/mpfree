@@ -279,6 +279,12 @@ impl LoopBank {
 /// group of sounds went into it.
 type Take = (usize, usize, Vec<(&'static str, u32)>);
 
+/// What the looper records from now: the source a take holds, else
+/// Records from as picked.
+fn now_source(v: &LooperView) -> LoopSource {
+    v.taking_from.unwrap_or(v.source)
+}
+
 /// A level in dBFS along the input meter, 0 to 1 (-48 dB to 0).
 fn input_frac(db: f32) -> f32 {
     if !db.is_finite() {
@@ -654,15 +660,36 @@ impl LooperPage {
         }
     }
 
-    /// What the looper records from, as the input chip and an empty ring's
-    /// foot say it: "Pads", "Line in", "Loops", or the mix's name.
+    /// What the looper records from now, as the input chip, an empty
+    /// ring's foot and What you played say it: "Pads' instrument", "Line
+    /// in", "Loops", or the mix's name. While a take holds another source
+    /// than the one picked, the take's: a loop started then records it too.
     fn source_word(&self, v: &LooperView) -> String {
-        match (v.resample, v.source) {
-            (true, _) => "Loops".to_string(),
-            (false, LoopSource::Pads) => "Pads".to_string(),
-            (false, LoopSource::Line) => "Line in".to_string(),
-            (false, LoopSource::Mix(s)) => self.mix_name(s),
+        match v.resample {
+            true => "Loops".to_string(),
+            false => self.word_of(now_source(v)),
         }
+    }
+
+    /// A source in a word or two, as the screen names it.
+    fn word_of(&self, s: LoopSource) -> String {
+        match s {
+            LoopSource::Pads => "Pads' instrument".to_string(),
+            LoopSource::Line => "Line in".to_string(),
+            LoopSource::Mix(s) => self.mix_name(s),
+        }
+    }
+
+    /// The input chip: what the take recording now records from while it
+    /// holds another source than the one picked, with the pick as the
+    /// next take's (`LooperView::taking_from`); else Records from as
+    /// picked.
+    fn input_words(&self, v: &LooperView) -> (String, Option<String>) {
+        let next = v
+            .taking_from
+            .filter(|_| !v.resample)
+            .map(|_| self.word_of(v.source));
+        (self.source_word(v), next)
     }
 
     /// A mix's name as the Mix tab says it.
@@ -722,14 +749,14 @@ impl LooperPage {
         let Some((n, k, counts)) = &self.take else {
             return;
         };
-        let mix_name = match v.source {
+        let mix_name = match now_source(v) {
             LoopSource::Mix(m) => self.mix_name(m),
             _ => String::new(),
         };
         let base = if v.resample && s.resampling {
             "Loops"
         } else {
-            match v.source {
+            match now_source(v) {
                 LoopSource::Line => "Line in",
                 LoopSource::Mix(_) => &mix_name,
                 LoopSource::Pads => match counts.iter().max_by_key(|(_, c)| *c) {
@@ -963,7 +990,8 @@ impl LooperPage {
             tempo: format!("{:.0} BPM", t.bpm),
             memory: memory(v),
             pads: self.pads_keys,
-            input: (self.source_word(v), input_frac(self.hold)),
+            input: (self.input_words(v).0, input_frac(self.hold)),
+            input_next: self.input_words(v).1,
             capture: capture_button(v),
         };
         // An armed loop starts on the next bar line (on the bar PLAY
@@ -1155,9 +1183,9 @@ impl LooperPage {
         let has_sound = matches!(s.phase, Phase::Playing | Phase::Overdubbing);
         let title = format!("Loop {}", n + 1);
         let source = self.source_word(v);
-        let records = match (v.resample, v.source) {
+        let records = match (v.resample, now_source(v)) {
             (true, _) => "records the other loops".to_string(),
-            (false, LoopSource::Pads) => "records the pads".to_string(),
+            (false, LoopSource::Pads) => "records the pads' instrument".to_string(),
             (false, LoopSource::Line) => "records the line input".to_string(),
             (false, LoopSource::Mix(mpfree_fx::StripId::Master)) => {
                 "records the whole mix but the loops".to_string()
@@ -1361,7 +1389,7 @@ impl LooperPage {
                     "Loop {} records free when you play: {} starts it, and REC again sets \
                      the tempo",
                     n + 1,
-                    match v.source {
+                    match now_source(v) {
                         LoopSource::Pads | LoopSource::Mix(_) => "the first pad you play",
                         LoopSource::Line => "the line input's first note",
                     }
@@ -1369,7 +1397,7 @@ impl LooperPage {
                 Phase::Armed if s.listening => format!(
                     "Loop {} records when you play: {} starts it {}",
                     n + 1,
-                    match v.source {
+                    match now_source(v) {
                         LoopSource::Pads | LoopSource::Mix(_) => "the first pad you play",
                         LoopSource::Line => "the line input's first note",
                     },
@@ -1767,7 +1795,10 @@ mod tests {
         assert_eq!(d.channels[0].centre, ("2".to_string(), "of 4".to_string()));
         assert_eq!(d.channels[0].bars, 4);
         assert_eq!(d.channels[2].centre.0, "+");
-        assert_eq!(d.channels[2].foot, "Pads", "what an empty one records");
+        assert_eq!(
+            d.channels[2].foot, "Pads' instrument",
+            "what an empty one records"
+        );
         assert_eq!(d.picked, 0);
         assert_eq!(d.head.memory.0, "16 s of 1 min");
         assert!((d.head.memory.1 - 16.0 / 60.0).abs() < 1e-4);
@@ -1780,7 +1811,10 @@ mod tests {
         let e = ui.get::<LoopEditor>(EDITOR).unwrap();
         assert_eq!(e.title, "Loop 1");
         assert_eq!(e.sub, "4 bars · 3 layers");
-        assert_eq!(ui.get::<LoopDeck>(DECK).unwrap().head.input.0, "Pads");
+        assert_eq!(
+            ui.get::<LoopDeck>(DECK).unwrap().head.input.0,
+            "Pads' instrument"
+        );
         assert!(e.has_sound);
         let tags: Vec<&str> = e.layers.iter().map(|l| l.tag.as_str()).collect();
         assert_eq!(tags, ["first · 0.0 dB", "dub 1 · 0.0 dB", "dub 2 · muted"]);
@@ -1806,10 +1840,10 @@ mod tests {
         page.update(&mut ui, &v, &Settings::default());
         let e = ui.get::<LoopEditor>(EDITOR).unwrap();
         assert_eq!(e.title, "Loop 6");
-        assert_eq!(e.sub, "empty · records the pads");
+        assert_eq!(e.sub, "empty · records the pads' instrument");
         assert!(e.layers.is_empty() && !e.has_sound);
         let look = e.empty.as_ref().unwrap();
-        assert_eq!(look.title, "WHAT YOU PLAYED · PADS");
+        assert_eq!(look.title, "WHAT YOU PLAYED · PADS' INSTRUMENT");
         assert!(look.says.contains("ring"), "{}", look.says);
         assert!(
             matches!(

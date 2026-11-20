@@ -157,14 +157,67 @@ pub fn bars_words(first: i64, bars: u32) -> String {
     }
 }
 
+/// What the pads play: an instrument, never a track (Jay, 20 Nov 2026:
+/// "Instruments generate sound. Tracks organize and record performances.
+/// The pads are controllers that play instruments."). One place in the
+/// app says which (`main.rs`, `pads_instrument`); the mixer says where it
+/// sounds ([`crate::mixing::MixHost::instrument_strip`]), separately. The
+/// instrument redesign's identities (its step 2) take its place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Instrument {
+    /// The instrument track `t` (0 based) holds of its own, which plays
+    /// into that track's channel.
+    Own(usize),
+    /// Kit `k` of the sampler (0: kit 1, on the pads' channels and the
+    /// Drums channel; another on the channel of the first track that
+    /// plays it).
+    Kit(usize),
+    /// The shared synth, on its Synth channel: the Synth kit picked, or
+    /// Play on the pads (the Synth tab).
+    Synth,
+    /// An instrument outside mpfree, over MIDI out: nothing of it reaches
+    /// the mix.
+    MidiOut,
+}
+
+impl Instrument {
+    /// Its name for the log.
+    pub fn name(self) -> String {
+        match self {
+            Instrument::Own(t) => format!("Track {}'s own instrument", t + 1),
+            Instrument::Kit(k) => format!("Kit {}", k + 1),
+            Instrument::Synth => "the synth".to_string(),
+            Instrument::MidiOut => "MIDI out".to_string(),
+        }
+    }
+}
+
+/// Why Records from: Pads' instrument records silence while the pads play
+/// MIDI out.
+pub const PADS_ON_MIDI_OUT: &str = "the pads play MIDI out, which sounds outside mpfree";
+
+/// What a take records from, in words for the log: the source and, for the
+/// pads, their instrument.
+fn source_words(s: LoopSource, pads: Option<Instrument>) -> String {
+    match (s, pads) {
+        (LoopSource::Pads, Some(Instrument::MidiOut)) => format!("silence ({PADS_ON_MIDI_OUT})"),
+        (LoopSource::Pads, Some(i)) => format!("the pads' instrument ({})", i.name()),
+        (LoopSource::Pads, None) => "the pads' instrument".to_string(),
+        (LoopSource::Line, _) => "the line input".to_string(),
+        (LoopSource::Mix(mpfree_fx::StripId::Master), _) => "the master".to_string(),
+        (LoopSource::Mix(m), _) => crate::mixing::name(m),
+    }
+}
+
 /// Where the looper records from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LoopSource {
-    /// What the pads play: the strip of the armed track's instrument or
-    /// kit, after its effects and fader
-    /// ([`crate::mixing::MixHost::pads_strip`]), so a pattern on another
-    /// track stays out; one on the same instrument is heard with it.
-    /// Opens nothing, and is heard in time like a mix.
+    /// The pads' instrument: what the pads play ([`Instrument`]), on the
+    /// channel it plays into, after that channel's effects and fader
+    /// ([`crate::mixing::MixHost::instrument_strip`]). So a pattern on
+    /// another instrument stays out; clips on the same one are heard with
+    /// it (the name says so). Opens nothing, and is heard in time like a
+    /// mix.
     #[default]
     Pads,
     /// The MPC's line input (Prefs, Line input).
@@ -184,7 +237,7 @@ impl LoopSource {
 
     pub fn name(self) -> &'static str {
         match self {
-            LoopSource::Pads => "Pads and synth",
+            LoopSource::Pads => "Pads' instrument",
             LoopSource::Line => "Line input",
             LoopSource::Mix(_) => "A mix (Looper tab)",
         }
@@ -1071,7 +1124,11 @@ impl LiveWave {
 pub struct LooperView {
     pub status: Status,
     pub stats: Stats,
+    /// Records from as picked: what the next take records.
     pub source: LoopSource,
+    /// What the take recording now records from, while it holds another
+    /// source than the one picked ([`LoopHost::settle`]).
+    pub taking_from: Option<LoopSource>,
     /// Records from the other loops: Record on an empty loop resamples
     /// ([`LoopHost::resample`]).
     pub resample: bool,
@@ -1130,6 +1187,7 @@ impl Default for LooperView {
             status: l.status(),
             stats: l.stats(),
             source: LoopSource::Pads,
+            taking_from: None,
             resample: false,
             line_on: false,
             line: LineStats::default(),
@@ -1160,7 +1218,12 @@ pub struct LoopHost {
     pub looper: Looper,
     pub line: LineIn,
     pub monitor: bool,
-    pub source: LoopSource,
+    /// What this take records from (between takes, Records from as
+    /// picked): a take holds the one it started with
+    /// ([`LoopHost::settle`]).
+    source: LoopSource,
+    /// Records from as last picked: what the next take records.
+    chosen: LoopSource,
     /// The Looper tab's Records from: Loops. Record on an empty loop
     /// resamples into it: its first pass records the other loops as heard
     /// ([`Command::Resample`]).
@@ -1175,12 +1238,18 @@ pub struct LoopHost {
     pads_latency: u32,
     /// Why the pads are recorded dry, when they are.
     pads_dry: Option<&'static str>,
-    /// The strip Records from: Pads takes ([`LoopHost::pads_from`]): None
-    /// while the source isn't the pads, Some(None) while they play MIDI
-    /// out (silence).
-    pads_strip: Option<Option<mpfree_fx::StripId>>,
-    /// The strip the pads play now, which a take holds back until it ends.
-    pads_wanted: Option<Option<mpfree_fx::StripId>>,
+    /// The instrument Records from: Pads' instrument takes, held with
+    /// `source` through a take (None for another source, or before the
+    /// app first said what the pads play).
+    pads: Option<Instrument>,
+    /// What the pads play now ([`LoopHost::follow_pads`]).
+    pads_now: Option<Instrument>,
+    /// The source a take held back, as the log was told (once).
+    held_said: Option<(LoopSource, Option<Instrument>)>,
+    /// Takes that recorded silence for a while: their source was lost
+    /// while they recorded ([`LoopHost::take_pads_as`]), counted, logged
+    /// and said on the screen.
+    pub dropouts: u64,
     /// The latency the looper was last given.
     latency_set: u32,
     /// Whether the looper was last told to listen by ear (the line input)
@@ -1572,6 +1641,7 @@ impl LoopHost {
             line: LineIn::closed(),
             monitor: false,
             source: LoopSource::Pads,
+            chosen: LoopSource::Pads,
             resample: false,
             input_l: [0.0; PERIOD],
             input_r: [0.0; PERIOD],
@@ -1579,8 +1649,10 @@ impl LoopHost {
             pads_r: [0.0; PERIOD],
             pads_latency: 0,
             pads_dry: None,
-            pads_strip: None,
-            pads_wanted: None,
+            pads: None,
+            pads_now: None,
+            held_said: None,
+            dropouts: 0,
             latency_set: 0,
             by_ear_set: false,
             played_at: None,
@@ -2563,51 +2635,79 @@ impl LoopHost {
         self.pads_latency = 0;
     }
 
-    /// The strip Records from: Pads takes: what the pads play
-    /// (`Some(Some(strip))`, main.rs `pads_sound`), MIDI out
-    /// (`Some(None)`: silence), or None while the source is another;
-    /// call it each period with what the pads play now. While a take
-    /// records (a first pass, an overdub or a Capture waiting for its bar
-    /// line) the strip holds still, so a take is one source with no gap
-    /// in it, and moves once the take ends. When it moves, What you
-    /// played starts again ([`Command::NewInput`], as a new Records from
-    /// does), so a Capture never spans two sources. A line for the log
-    /// when it moves or is held, so what the loop hears is never a guess.
-    pub fn pads_from(&mut self, wanted: Option<Option<mpfree_fx::StripId>>) -> Option<String> {
-        let asked = wanted != self.pads_wanted;
-        self.pads_wanted = wanted;
-        if wanted == self.pads_strip {
-            return None;
-        }
-        let name =
-            |s: Option<mpfree_fx::StripId>| s.map_or("MIDI out".to_string(), crate::mixing::name);
-        if self.taking() {
-            if let (Some(now), Some(_)) = (self.pads_strip, wanted) {
-                return asked
-                    .then(|| format!("looper: Pads stays on {} until the take ends", name(now)));
-            }
-        }
-        let before = std::mem::replace(&mut self.pads_strip, wanted);
-        let restarted = match before.is_some() && wanted.is_some() {
-            true if self.looper.command(Command::NewInput) => ", What you played starts again",
-            true => ", What you played NOT started again (the command queue is full)",
-            false => "",
-        };
-        match wanted? {
-            Some(s) => Some(format!(
-                "looper: Pads records {}, what the pads play{restarted}",
-                crate::mixing::name(s)
-            )),
-            None => Some(format!(
-                "looper: Pads records silence: the pads play MIDI out, which sounds outside mpfree{restarted}"
-            )),
-        }
+    /// What the pads play now (`main.rs`, `pads_instrument`), told each
+    /// period: Records from: Pads' instrument records it, from the next
+    /// take if one records now ([`LoopHost::settle`]).
+    pub fn follow_pads(&mut self, now: Instrument) -> Option<(String, bool)> {
+        self.pads_now = Some(now);
+        self.settle()
     }
 
-    /// The strip Records from: Pads takes this period, as
-    /// [`LoopHost::pads_from`] left it (None inside: MIDI out).
-    pub fn pads_taken(&self) -> Option<Option<mpfree_fx::StripId>> {
-        self.pads_strip
+    /// Records from picked (the Looper tab, Prefs): this take keeps its
+    /// source, so it records from the next one, or at once if none
+    /// records now ([`LoopHost::settle`]).
+    pub fn set_source(&mut self, s: LoopSource) -> Option<(String, bool)> {
+        self.chosen = s;
+        self.settle()
+    }
+
+    /// A take records one source from its start to its end: the source
+    /// picked and, for the pads, the instrument they played when it
+    /// started (the design review of 20 Nov, point 6). A source picked,
+    /// or the pads moved to another instrument, while a take records
+    /// waits for the take's end: said once, on the screen too, and the
+    /// Looper tab shows both ([`LooperView::taking_from`]). Then it takes
+    /// over, and What you played starts again with it
+    /// ([`Command::NewInput`]), so a Capture never spans two sources. A
+    /// line for the log when it changes or waits (and whether the screen
+    /// says it: a wait).
+    fn settle(&mut self) -> Option<(String, bool)> {
+        let pads = |s: LoopSource| {
+            if s == LoopSource::Pads {
+                self.pads_now
+            } else {
+                None
+            }
+        };
+        let next = (self.chosen, pads(self.chosen));
+        let now = (self.source, self.pads);
+        if next == now {
+            self.held_said = None;
+            return None;
+        }
+        if self.taking() {
+            if self.held_said == Some(next) {
+                return None;
+            }
+            self.held_said = Some(next);
+            let line = format!(
+                "looper: this take keeps recording {}; {} from the next take",
+                source_words(now.0, now.1),
+                source_words(next.0, next.1)
+            );
+            return Some((line, true));
+        }
+        self.held_said = None;
+        // Before the app first said what the pads play nothing was heard.
+        let heard = now != (LoopSource::Pads, None);
+        (self.source, self.pads) = next;
+        let restarted = match self.looper.command(Command::NewInput) {
+            true if heard => ", What you played starts again",
+            true => "",
+            false => ", What you played NOT started again (the command queue is full)",
+        };
+        let line = format!(
+            "looper: records {}{restarted}",
+            source_words(next.0, next.1)
+        );
+        Some((line, false))
+    }
+
+    /// What this period records from, as a take holds it: the source and,
+    /// for the pads, their instrument (`main.rs` takes its sound from the
+    /// mixer, `loop_input`).
+    pub fn takes_from(&self) -> (LoopSource, Option<Instrument>) {
+        (self.source, self.pads)
     }
 
     /// Whether any loop takes sound now: a first pass, an overdub, or a
@@ -2641,18 +2741,20 @@ impl LoopHost {
         starts.then(|| format!("Loop {} doesn't record: {why}", self.picked + 1))
     }
 
-    /// The pads' sound for this period as the app records it: wet from the
-    /// mixer, `latency` frames late after the period it lags
-    /// ([`crate::mixing::MixHost::pads_wet`]), or dry from the engines, in
-    /// time, with the reason it isn't wet. Recording from a mix, the mix
-    /// ([`crate::mixing::MixHost::loop_take`]), or silence and why. A line for the log when that
-    /// changes (rarely: a strip routed to a submix, or a plugin's latency).
+    /// The sound of what it records from for this period, as the mixer
+    /// had it: the pads' instrument or a mix
+    /// ([`crate::mixing::MixHost::loop_take`]), `latency` frames late after
+    /// the period it lags; or silence, with why it can't be had (never
+    /// another sound in its place). A line for the log when that changes
+    /// (rarely: a strip routed to a submix, or a plugin's latency), and
+    /// whether the screen says it too: while a take records, silence is a
+    /// gap in it (a dropout, counted), and its sound back is said too.
     pub fn take_pads_as(
         &mut self,
         left: &[f32; PERIOD],
         right: &[f32; PERIOD],
         how: Result<u32, &'static str>,
-    ) -> Option<String> {
+    ) -> Option<(String, bool)> {
         self.pads_l = *left;
         self.pads_r = *right;
         self.pads_latency = how.map_or(0, |l| PERIOD as u32 + l);
@@ -2661,17 +2763,22 @@ impl LoopHost {
             return None;
         }
         self.pads_dry = dry;
-        // The pads on MIDI out: silence, said by `pads_from`.
-        if self.pads_strip == Some(None) && dry.is_some() {
+        // The pads on MIDI out: silence, said by `settle`.
+        if self.source == LoopSource::Pads && self.pads == Some(Instrument::MidiOut) {
             return None;
         }
-        let mix = matches!(self.source, LoopSource::Mix(_));
-        Some(match (dry, mix) {
-            (None, false) => "looper: records the pads again".to_string(),
-            (Some(why), false) => format!("looper: Pads records silence: {why}"),
-            (None, true) => "looper: records the mix again".to_string(),
-            (Some(why), true) => format!("looper: records silence, the mix can't be had: {why}"),
-        })
+        let taking = self.taking();
+        let what = source_words(self.source, self.pads);
+        let line = match (dry, taking) {
+            (Some(why), true) => {
+                self.dropouts += 1;
+                format!("looper: the take records silence from here, {what} can't be had: {why}")
+            }
+            (None, true) => format!("looper: the take hears {what} again"),
+            (Some(why), false) => format!("looper: records silence, {what} can't be had: {why}"),
+            (None, false) => format!("looper: hears {what} again"),
+        };
+        Some((line, taking))
     }
 
     /// One period for the mixer: read the line input, run the looper on the
@@ -3092,6 +3199,16 @@ impl LoopHost {
             } else {
                 String::new()
             }
+            + &if self.dropouts > 0 {
+                format!("; {} times a take's source was lost while it recorded (silence)", self.dropouts)
+            } else {
+                String::new()
+            }
+            + &if self.chosen != self.source {
+                format!("; next take from {}", self.chosen.name().to_lowercase())
+            } else {
+                String::new()
+            }
     }
 
     /// What the Looper tab shows; takes the meter's peaks.
@@ -3124,7 +3241,8 @@ impl LoopHost {
         LooperView {
             status: s,
             stats: self.looper.stats(),
-            source: self.source,
+            source: self.chosen,
+            taking_from: (self.source != self.chosen).then_some(self.source),
             resample: self.resample,
             line_on: self.line.is_open(),
             line: self.line.stats,
@@ -3545,19 +3663,6 @@ impl LoopHost {
         if s.phase == Phase::Empty && s.capturing.is_none() && s.bars != bars {
             self.looper.command(Command::SetBars(bars));
         }
-    }
-
-    pub fn set_source(&mut self, s: LoopSource) {
-        if s != self.source {
-            self.looper.command(Command::NewInput);
-        }
-        self.source = s;
-    }
-
-    /// What it records from now; a mix's strip is what the mixer's capture
-    /// point follows (`main.rs`, [`crate::mixing::MixHost::loop_take`]).
-    pub fn source(&self) -> LoopSource {
-        self.source
     }
 
     /// One slice of the loop's waveform; the finished wave when it is
@@ -4321,7 +4426,7 @@ mod tests {
     fn the_pads_are_recorded_in_time_and_the_line_source_ignores_them() {
         for source in LoopSource::ALL {
             let mut h = LoopHost::new(44_100, 20);
-            h.source = source;
+            let _ = h.set_source(source);
             let mut t = Transport::new(44_100, 120.0).unwrap();
             let mut b = Block::new();
             h.command(Command::SetBars(Some(1)));
@@ -4465,7 +4570,7 @@ mod tests {
         let three = h.looper.loop_status(2).unwrap();
         assert_eq!((three.phase, three.capturing), (Phase::Empty, None));
         // Another source: what was heard before is forgotten.
-        h.set_source(LoopSource::Line);
+        let _ = h.set_source(LoopSource::Line);
         run(&mut h, frame(&out) + 256, &mut out);
         assert!(h.capture().contains("no whole bar heard yet"));
         assert!(h.view(120.0).heard.take.is_none());
@@ -4588,9 +4693,10 @@ mod tests {
         // Dry: said once, and the latency goes to 0 with it.
         let z = [0.0; PERIOD];
         let why = "the Loop track goes to a submix";
+        let said = |s: &str| Some((s.to_string(), false));
         assert_eq!(
-            h.take_pads_as(&z, &z, Err(why)).as_deref(),
-            Some("looper: Pads records silence: the Loop track goes to a submix")
+            h.take_pads_as(&z, &z, Err(why)),
+            said("looper: records silence, the pads' instrument can't be had: the Loop track goes to a submix")
         );
         assert_eq!(h.take_pads_as(&z, &z, Err(why)), None);
         assert_eq!(h.looper.status().phase, Phase::Playing);
@@ -4605,10 +4711,11 @@ mod tests {
         h.period(&b, &mut l, &mut r);
         assert_eq!(h.looper.status().latency, 0);
         assert_eq!(
-            h.take_pads_as(&z, &z, Ok(0)).as_deref(),
-            Some("looper: records the pads again")
+            h.take_pads_as(&z, &z, Ok(0)),
+            said("looper: hears the pads' instrument again")
         );
         assert_eq!(h.refuse(Command::Overdub), None);
+        assert_eq!(h.dropouts, 0, "no take recorded then");
     }
 
     /// Length: Pattern follows the pattern playing while the loop is
@@ -4640,91 +4747,158 @@ mod tests {
         assert_eq!(h.looper.status().bars, Some(2), "armed: it holds");
     }
 
-    /// Records from: Pads holds its strip through a take (a track picked
-    /// while it records waits for the take's end, said once), then moves,
-    /// and What you played starts again with it.
+    /// A take records one source from start to end (the design review of
+    /// 20 Nov, point 6): the pads moved to another instrument, or another
+    /// Records from picked, while it records wait for its end, said once
+    /// on the screen too, and the Looper tab shows what this take records
+    /// beside the pick; then the pick takes over and What you played
+    /// starts again. A source lost while a take records is a gap of
+    /// silence in it: counted, said on the screen, and its return too.
     #[test]
-    fn pads_hold_their_strip_through_a_take_then_what_you_played_starts_again() {
+    fn a_take_holds_its_source_and_instrument_to_its_end() {
         use mpfree_fx::StripId;
-        let drums = Some(Some(StripId::Track(crate::mixing::DRUMS)));
-        let synth = Some(Some(StripId::Track(crate::mixing::SYNTH)));
         let mut h = LoopHost::new(44_100, 8);
         let mut t = Transport::new(44_100, 120.0).unwrap();
         let mut b = Block::new();
         assert_eq!(
-            h.pads_from(drums).as_deref(),
-            Some("looper: Pads records Drums, what the pads play")
+            h.follow_pads(Instrument::Kit(0)),
+            Some((
+                "looper: records the pads' instrument (Kit 1)".to_string(),
+                false
+            ))
         );
+        assert_eq!(h.follow_pads(Instrument::Kit(0)), None, "said once");
         h.command(Command::SetBars(Some(1)));
         h.command(Command::Record);
         t.command(0, T::Play);
         let z = [0.0; PERIOD];
-        let mut period = |h: &mut LoopHost| {
+        let mut period = |h: &mut LoopHost, how: Result<u32, &'static str>| {
             assert!(t.process(PERIOD as u32, &mut b));
             let (mut l, mut r) = (z, z);
-            let _ = h.take_pads_as(&z, &z, Ok(0));
+            let said = h.take_pads_as(&z, &z, how);
             h.period(&b, &mut l, &mut r);
+            said
         };
         for _ in 0..4 {
-            period(&mut h);
+            period(&mut h, Ok(0));
         }
         assert_eq!(h.looper.status().phase, Phase::Recording);
+        // Play on the pads mid-take: the take keeps Kit 1.
+        let held = "looper: this take keeps recording the pads' instrument (Kit 1); \
+                    the pads' instrument (the synth) from the next take";
         assert_eq!(
-            h.pads_from(synth).as_deref(),
-            Some("looper: Pads stays on Drums until the take ends")
+            h.follow_pads(Instrument::Synth),
+            Some((held.to_string(), true))
         );
-        assert_eq!(h.pads_from(synth), None, "said once");
-        assert_eq!(h.pads_taken(), drums);
+        assert_eq!(h.follow_pads(Instrument::Synth), None, "said once");
+        assert_eq!(h.takes_from(), (LoopSource::Pads, Some(Instrument::Kit(0))));
+        // The master picked mid-take: the take keeps the pads too.
+        let (line, tell) = h.set_source(LoopSource::Mix(StripId::Master)).unwrap();
+        assert!(
+            tell && line.ends_with("; the master from the next take"),
+            "{line}"
+        );
+        assert_eq!(h.takes_from(), (LoopSource::Pads, Some(Instrument::Kit(0))));
+        let v = h.view(120.0);
+        assert_eq!(
+            (v.source, v.taking_from),
+            (LoopSource::Mix(StripId::Master), Some(LoopSource::Pads))
+        );
+        assert!(
+            h.set_source(LoopSource::Pads).unwrap().1,
+            "back: said again"
+        );
+        assert_eq!(h.view(120.0).taking_from, None, "the same source");
+        // The channel lost mid-take: a gap of silence, said and counted.
+        let why = "that strip isn't in the mix";
+        assert_eq!(
+            period(&mut h, Err(why)),
+            Some((
+                "looper: the take records silence from here, the pads' instrument (Kit 1) \
+                 can't be had: that strip isn't in the mix"
+                    .to_string(),
+                true
+            ))
+        );
+        assert_eq!(period(&mut h, Err(why)), None, "said once");
+        assert_eq!(h.dropouts, 1);
+        assert_eq!(
+            period(&mut h, Ok(0)),
+            Some((
+                "looper: the take hears the pads' instrument (Kit 1) again".to_string(),
+                true
+            ))
+        );
+        assert!(h.describe().contains("1 times a take's source was lost"));
         for _ in 0..(88_200 / PERIOD + 2) {
-            period(&mut h);
+            period(&mut h, Ok(0));
         }
         assert_eq!(h.looper.status().phase, Phase::Playing);
+        // The take ended: the synth takes over.
         assert_eq!(
-            h.pads_from(synth).as_deref(),
-            Some("looper: Pads records Synth, what the pads play, What you played starts again")
+            h.follow_pads(Instrument::Synth),
+            Some((
+                "looper: records the pads' instrument (the synth), What you played starts again"
+                    .to_string(),
+                false
+            ))
         );
-        assert_eq!(h.pads_taken(), synth);
+        assert_eq!(h.takes_from(), (LoopSource::Pads, Some(Instrument::Synth)));
+        // Records from picked between takes changes at once.
+        let (line, tell) = h.set_source(LoopSource::Line).unwrap();
+        assert!(
+            !tell && line.starts_with("looper: records the line input"),
+            "{line}"
+        );
+        assert_eq!(h.takes_from(), (LoopSource::Line, None));
     }
 
-    /// Records from a mix (a strip or the master) the same way: in time,
-    /// the mix's latency made up; its trouble is said as a mix's.
+    /// The pads' instrument named in the log, silence on MIDI out (said
+    /// once, not again as a mix lost), and nothing while another source
+    /// records.
     #[test]
-    fn pads_says_which_strip_it_records_and_silence_on_midi_out() {
-        use mpfree_fx::StripId;
+    fn pads_say_which_instrument_they_record_and_silence_on_midi_out() {
         let mut h = LoopHost::new(44_100, 8);
-        let drums = Some(Some(StripId::Track(crate::mixing::DRUMS)));
         assert_eq!(
-            h.pads_from(drums).as_deref(),
-            Some("looper: Pads records Drums, what the pads play")
+            h.follow_pads(Instrument::Own(2)).map(|s| s.0).as_deref(),
+            Some("looper: records the pads' instrument (Track 3's own instrument)")
         );
-        assert_eq!(h.pads_from(drums), None, "said once");
-        let synth = Some(Some(StripId::Track(crate::mixing::SYNTH)));
         assert_eq!(
-            h.pads_from(synth).as_deref(),
-            Some("looper: Pads records Synth, what the pads play, What you played starts again")
+            h.follow_pads(Instrument::MidiOut).map(|s| s.0).as_deref(),
+            Some(
+                "looper: records silence (the pads play MIDI out, which sounds outside mpfree), \
+                 What you played starts again"
+            )
         );
-        assert!(h.pads_from(Some(None)).unwrap().contains("silence"));
-        // Silence on MIDI out isn't said again as the pads recorded dry.
         let z = [0f32; PERIOD];
-        assert_eq!(h.take_pads_as(&z, &z, Err("the pads play MIDI out")), None);
-        assert_eq!(h.pads_from(None), None, "another source: nothing to say");
+        assert_eq!(h.take_pads_as(&z, &z, Err(PADS_ON_MIDI_OUT)), None);
+        let _ = h.set_source(LoopSource::Line);
+        assert_eq!(
+            h.follow_pads(Instrument::Synth),
+            None,
+            "another source: nothing to say"
+        );
+        assert_eq!(h.takes_from(), (LoopSource::Line, None));
     }
 
     #[test]
     fn a_mix_is_recorded_in_time_like_the_pads() {
         let strip = mpfree_fx::StripId::Bus(0);
         let (mut h, _, _) = recorded_in_time_a_period_late(LoopSource::Mix(strip));
-        assert_eq!(h.source(), LoopSource::Mix(strip));
+        assert_eq!(h.takes_from(), (LoopSource::Mix(strip), None));
         assert_eq!(h.first_note(), "(the first pad you play)");
         let z = [0.0; PERIOD];
         let why = "that strip isn't in the mix";
+        let name = crate::mixing::name(strip);
         assert_eq!(
-            h.take_pads_as(&z, &z, Err(why)).as_deref(),
-            Some("looper: records silence, the mix can't be had: that strip isn't in the mix")
+            h.take_pads_as(&z, &z, Err(why)).map(|s| s.0),
+            Some(format!(
+                "looper: records silence, {name} can't be had: {why}"
+            ))
         );
         assert_eq!(
-            h.take_pads_as(&z, &z, Ok(0)).as_deref(),
-            Some("looper: records the mix again")
+            h.take_pads_as(&z, &z, Ok(0)).map(|s| s.0),
+            Some(format!("looper: hears {name} again"))
         );
     }
 
@@ -4733,7 +4907,7 @@ mod tests {
     /// time to the frame. The host, the transport and its block, for more.
     fn recorded_in_time_a_period_late(source: LoopSource) -> (LoopHost, Transport, Block) {
         let mut h = LoopHost::new(44_100, 20);
-        h.set_source(source);
+        let _ = h.set_source(source);
         let mut t = Transport::new(44_100, 120.0).unwrap();
         let mut b = Block::new();
         h.command(Command::SetBars(Some(1)));

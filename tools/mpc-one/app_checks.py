@@ -810,7 +810,7 @@ CHECKS = (
          "   (not the shared delay's echoes), then silence to the end of the bar, and round again. STOP."],
         [("the loop recorded", seen(r"^looper: Record: armed")),
          ("STOP kept the take", seen(r"^looper: loop of .* cut at STOP")),
-         ("the pads' channel was recorded", not_seen(r"^looper: Pads records silence"))],
+         ("the pads' instrument was recorded", not_seen(r"^looper: (the take )?records silence"))],
         "Did the loop play back your pads?",
         ["plays_loop_rings_play_mute_solo_and_clear_their_loops",
          "the_first_pass_shows_as_it_records",
