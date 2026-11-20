@@ -231,6 +231,11 @@ pub struct Take {
     /// COPY + an empty slot put a copy there ([`Takes::paste_clip`]): the
     /// clip is in `made`.
     pub pasted: bool,
+    /// The clip in `made` was launched as it went in (the Sequencer's first
+    /// step on an empty track, [`Takes::new_clip`]): redo launches it
+    /// again, as the step did. Undo needs nothing: a clip that leaves its
+    /// slot stops.
+    pub launched: bool,
     /// A whole clip put in place of the clip there
     /// ([`Takes::replace_clip`]), and why: the clip it replaced is in
     /// `removed`, the new one in `made`.
@@ -300,6 +305,11 @@ pub struct Takes {
     /// Captures join this one while it is the latest take
     /// ([`Takes::joining`]).
     joining: Option<u32>,
+    /// What the latest new take put out as it went in, for
+    /// [`Takes::withdraw`]: the oldest take of a full list, and the takes
+    /// redo could bring. Kept until the next new take.
+    evicted: Option<Take>,
+    cleared: Vec<Take>,
 }
 
 impl Default for Takes {
@@ -319,6 +329,8 @@ impl Takes {
             captures: 0,
             edits: 0,
             joining: None,
+            evicted: None,
+            cleared: vec![],
         }
     }
 
@@ -584,6 +596,37 @@ impl Takes {
         slot: usize,
         clip: Clip,
     ) -> Result<u32, ModelError> {
+        self.put_new(project, track, slot, clip, true, false)
+    }
+
+    /// The Sequencer's first step on an empty track: put `clip`, a new
+    /// clip that already holds the step's notes, in clip `slot` of
+    /// `track`, as one edit. Undo takes it away whole, leaving the slot
+    /// empty, and redo puts it back; `launched` says the clip was launched
+    /// as it went in, so redo launches it again ([`Take::launched`]). The
+    /// edit's number. `BadSlot` if there is no such slot or it holds a
+    /// clip; the clip's own refusals as they are. Nothing changes on an
+    /// error.
+    pub fn new_clip(
+        &mut self,
+        project: &mut Project,
+        track: usize,
+        slot: usize,
+        clip: Clip,
+        launched: bool,
+    ) -> Result<u32, ModelError> {
+        self.put_new(project, track, slot, clip, false, launched)
+    }
+
+    fn put_new(
+        &mut self,
+        project: &mut Project,
+        track: usize,
+        slot: usize,
+        clip: Clip,
+        pasted: bool,
+        launched: bool,
+    ) -> Result<u32, ModelError> {
         clip.check()?;
         let s = slot_mut(project, track, slot).ok_or(ModelError::BadSlot)?;
         if s.is_some() {
@@ -595,7 +638,8 @@ impl Takes {
         self.push(Take {
             number,
             edited: true,
-            pasted: true,
+            pasted,
+            launched,
             made: vec![(track, slot, clip)],
             ..Take::default()
         });
@@ -1206,6 +1250,50 @@ impl Takes {
         self.undone.pop()
     }
 
+    /// Take back the edit to clip `slot` of `track` just made by
+    /// [`Takes::edit`] or [`Takes::new_clip`], when what plays could not
+    /// follow it (the play view would not compile): the clip and the takes
+    /// are as they were before it, and redo can't bring it. `edit` and
+    /// `join` are what `edit` was given (an empty edit for `new_clip`);
+    /// `fresh` says the edit made a take of its own (the edit count went
+    /// up) rather than joining the latest one. A take of its own goes, and
+    /// what its push put out comes back: the oldest take of a full list,
+    /// and the takes redo could bring. A joining edit comes out of that
+    /// take alone, the turns before it staying. `BadSlot`, with nothing
+    /// changed, if the latest take is not an edit.
+    pub fn withdraw(
+        &mut self,
+        project: &mut Project,
+        (track, slot): (usize, usize),
+        edit: &Edit,
+        join: Option<u64>,
+        fresh: bool,
+    ) -> Result<(), ModelError> {
+        if !self.done.last().is_some_and(|t| t.edited) {
+            return Err(ModelError::BadSlot);
+        }
+        if fresh {
+            self.undo(project);
+            self.undone.pop();
+            self.edits -= 1;
+            if let Some(t) = self.evicted.take() {
+                self.done.insert(0, t);
+            }
+            self.undone = std::mem::take(&mut self.cleared);
+            return Ok(());
+        }
+        // The edit the other way round joins the take as the edit did, so
+        // what it put in and took out cancels.
+        let back = Edit {
+            erase: edit.add.clone(),
+            add: edit.erase.clone(),
+            erase_locks: edit.add_locks.clone(),
+            add_locks: edit.erase_locks.clone(),
+            ..Edit::default()
+        };
+        self.edit(project, track, slot, &back, join).map(|_| ())
+    }
+
     /// The takes that can be undone, oldest first.
     pub fn done(&self) -> &[Take] {
         &self.done
@@ -1284,9 +1372,10 @@ impl Takes {
     }
 
     fn push(&mut self, take: Take) -> &mut Take {
-        self.undone.clear();
+        self.cleared = std::mem::take(&mut self.undone);
+        self.evicted = None;
         if self.done.len() == self.limit {
-            self.done.remove(0);
+            self.evicted = Some(self.done.remove(0));
         }
         self.done.push(take);
         self.done.last_mut().expect("just pushed")
@@ -1457,6 +1546,95 @@ mod tests {
         assert_eq!(t.redo(&mut p), Some(1));
         assert_eq!(p.tracks[0].slots[5].as_ref(), Some(&copy));
         assert_eq!(t.paste_clip(&mut p, 0, 99, copy), Err(ModelError::BadSlot));
+    }
+
+    /// The Sequencer's first step on an empty track: the new clip with
+    /// its note is one edit. Undo takes it away whole, leaving the slot
+    /// empty; redo puts it back, and the take says it was launched so
+    /// redo can launch it again. A slot with a clip refuses it.
+    #[test]
+    fn a_first_step_clip_is_one_edit_undo_takes_away_whole() {
+        use mpfree_seq::steps::Grid;
+        let mut p = project();
+        let mut t = Takes::default();
+        let g = Grid::new(240).unwrap();
+        let mut c = Clip::new("Pattern 2", 3840);
+        let e = g.toggle(&c, 36, 0, 100);
+        c.apply(&e).unwrap();
+        assert_eq!(
+            t.new_clip(&mut p, 0, 0, c.clone(), true),
+            Err(ModelError::BadSlot)
+        );
+        assert!(t.done().is_empty(), "a refusal makes no take");
+        assert_eq!(t.new_clip(&mut p, 0, 1, c.clone(), true), Ok(1));
+        let take = &t.done()[0];
+        assert!(take.edited && take.launched && !take.pasted);
+        assert_eq!(p.tracks[0].slots[1].as_ref(), Some(&c));
+        assert_eq!(t.undo(&mut p), Some(1));
+        assert!(
+            p.tracks[0].slots[1].is_none(),
+            "the clip goes with its note"
+        );
+        assert_eq!(t.redo(&mut p), Some(1));
+        assert_eq!(p.tracks[0].slots[1].as_ref(), Some(&c));
+        assert!(t.done()[0].launched);
+    }
+
+    /// An edit what plays could not follow is taken back whole: a take of
+    /// its own goes, giving back the oldest take a full list let go and
+    /// the takes redo could bring; a joining edit comes out of its take
+    /// alone, the turn before it staying.
+    #[test]
+    fn a_withdrawn_edit_leaves_the_clip_and_the_takes_as_they_were() {
+        use mpfree_seq::steps::{Change, Grid};
+        let g = Grid::new(240).unwrap();
+        let c = |p: &Project| p.tracks[0].slots[0].clone().unwrap();
+        let mut p = project();
+        // A full list (two takes): the third edit pushes the first out.
+        let mut t = Takes::new(2);
+        for step in [0, 4] {
+            let e = g.toggle(&c(&p), 36, step, 100);
+            t.edit(&mut p, 0, 0, &e, None).unwrap();
+        }
+        let before = (c(&p), t.done().to_vec(), t.edits());
+        let e = g.toggle(&c(&p), 36, 8, 100);
+        assert_eq!(t.edit(&mut p, 0, 0, &e, None), Ok(3));
+        assert_eq!(t.done()[0].number, 2, "take 1 was pushed out");
+        t.withdraw(&mut p, (0, 0), &e, None, true).unwrap();
+        assert_eq!((c(&p), t.done().to_vec(), t.edits()), before);
+        // With a take to redo: the edit ends redo, and taking it back
+        // brings redo back.
+        assert_eq!(t.undo(&mut p), Some(2));
+        let before = (c(&p), t.done().to_vec(), t.undone().to_vec(), t.edits());
+        let e = g.toggle(&c(&p), 36, 12, 100);
+        assert_eq!(t.edit(&mut p, 0, 0, &e, None), Ok(3));
+        assert!(t.undone().is_empty());
+        t.withdraw(&mut p, (0, 0), &e, None, true).unwrap();
+        let after = (c(&p), t.done().to_vec(), t.undone().to_vec(), t.edits());
+        assert_eq!(after, before);
+        assert_eq!(t.redo(&mut p), Some(2));
+        assert_eq!(ticks(&p), vec![0, 960]);
+        // A turn: 100 -> 90 is a take, 90 -> 80 joins it; taking the
+        // second detent back leaves the take at 90.
+        let mut p = project();
+        let mut t = Takes::default();
+        let tap = g.toggle(&c(&p), 36, 0, 100);
+        t.edit(&mut p, 0, 0, &tap, None).unwrap();
+        let key = Some(Change::Velocity(0).key(36, 0));
+        let e = g.change(&c(&p), 36, 0, Change::Velocity(90));
+        assert_eq!(t.edit(&mut p, 0, 0, &e, key), Ok(2));
+        let before = (c(&p), t.done().to_vec(), t.edits());
+        let e = g.change(&c(&p), 36, 0, Change::Velocity(80));
+        assert_eq!(t.edit(&mut p, 0, 0, &e, key), Ok(2), "joins");
+        t.withdraw(&mut p, (0, 0), &e, key, false).unwrap();
+        assert_eq!((c(&p), t.done().to_vec(), t.edits()), before);
+        assert_eq!(g.row(&c(&p), 36)[0].map(|s| s.velocity), Some(90));
+        // Nothing to take back when the latest take is not an edit.
+        t.add(&mut p, &taken(480, 1)).unwrap();
+        assert_eq!(
+            t.withdraw(&mut p, (0, 0), &e, key, false),
+            Err(ModelError::BadSlot)
+        );
     }
 
     /// The scene editor: a row's settings as an edit of their own; the

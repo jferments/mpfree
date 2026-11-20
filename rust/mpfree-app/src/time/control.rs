@@ -1399,6 +1399,14 @@ impl TimeControl {
 
     /// A touch on the Play page's pattern, as one undoable edit (a
     /// Q-Link turned through many values joins one). A line for the log.
+    ///
+    /// One action is one transaction, for the clip and for what plays. On
+    /// a track with no clip, the first step makes the clip, its notes and
+    /// its launch as one take, which one UNDO takes back whole (REDO
+    /// brings it back playing); an edit that changes nothing makes
+    /// nothing, not even the clip. If the play view can't be built after
+    /// the edit, the edit is taken back from the clip and the takes (and
+    /// the launches as they were), and the error says so.
     pub fn step_action(&mut self, a: StepAction) -> Result<String, String> {
         let grid = Grid::new(STEP_TICKS).expect("a sixteenth is a step size");
         let (track, slot) = self.step_focus();
@@ -1411,22 +1419,21 @@ impl TimeControl {
                 else {
                     return Ok(String::new());
                 };
-                let t = self.project.tracks.get_mut(track).ok_or("no such track")?;
+                let t = self.project.tracks.get(track).ok_or("no such track")?;
                 let s = t
                     .slots
                     .iter()
                     .position(Option::is_none)
                     .ok_or_else(|| format!("{} has no empty slot", t.name))?;
+                // Not in the slot yet: it goes in with its first notes.
                 let name = format!("Pattern {}", s + 1);
-                t.slots[s] = Some(Clip::new(&name, grid.page_length()));
-                let info = self.info;
-                let launch = TimeAction::Launch { track, slot: s };
-                (self.launches, self.cues) =
-                    clips_after(&self.project, &self.launches, &self.cues, &launch, &info);
-                (s, Some(name))
+                (s, Some(Clip::new(&name, grid.page_length())))
             }
         };
-        let clip = self.project.clip(track, slot).ok_or("the clip is gone")?;
+        let clip = match &made {
+            Some(c) => c,
+            None => self.project.clip(track, slot).ok_or("the clip is gone")?,
+        };
         let (edit, join, what) = match a {
             StepAction::Tap {
                 pad,
@@ -1573,18 +1580,38 @@ impl TimeControl {
                 (grid.resize(clip, steps, copy), None, clip.name.clone())
             }
         };
-        if edit.is_empty() && made.is_none() {
+        // A step past the clip's end, or a change to nothing: no take, and
+        // on an empty track no clip either.
+        if edit.is_empty() {
             return Ok(String::new());
         }
-        let take = self
-            .takes
-            .edit(&mut self.project, track, slot, &edit, join)
-            .map_err(|e| format!("steps: {e:?}"))?;
+        let before = (self.launches.clone(), self.cues.clone());
+        let (edits, lock_take) = (self.takes.edits(), self.lock_take);
+        let (take, made) = match made {
+            Some(mut c) => {
+                c.apply(&edit).map_err(|e| format!("steps: {e:?}"))?;
+                let name = c.name.clone();
+                let take = self
+                    .takes
+                    .new_clip(&mut self.project, track, slot, c, true)
+                    .map_err(|e| format!("steps: {e:?}"))?;
+                let info = self.info;
+                let launch = TimeAction::Launch { track, slot };
+                (self.launches, self.cues) =
+                    clips_after(&self.project, &self.launches, &self.cues, &launch, &info);
+                (take, Some(name))
+            }
+            None => (
+                self.takes
+                    .edit(&mut self.project, track, slot, &edit, join)
+                    .map_err(|e| format!("steps: {e:?}"))?,
+                None,
+            ),
+        };
         let joined = matches!(a, StepAction::Lock { .. }) && take == self.lock_take;
         if matches!(a, StepAction::Lock { .. }) {
             self.lock_take = take;
         }
-        let before = (self.launches.clone(), self.cues.clone());
         let launched = made.is_none() && !edit.add.is_empty() && self.launch_edited(track, slot);
         if made.is_none() && !launched && self.in_place(track, slot, &edit) {
             self.changed = true;
@@ -1593,8 +1620,24 @@ impl TimeControl {
         } else {
             self.costs.steps_compiled += 1;
             if let Err(e) = self.compile() {
+                // What plays can't follow: the edit goes from the clip and
+                // the takes (a new clip with it), the launches go back, and
+                // the view as it was is built again.
+                let fresh = self.takes.edits() != edits;
+                let (edit, join) = match made {
+                    Some(_) => (Edit::default(), None),
+                    None => (edit, join),
+                };
+                let back =
+                    self.takes
+                        .withdraw(&mut self.project, (track, slot), &edit, join, fresh);
                 (self.launches, self.cues) = before;
-                return Err(e);
+                self.lock_take = lock_take;
+                let _ = self.compile();
+                return Err(match back {
+                    Ok(()) => format!("steps: {e}: the edit was taken back"),
+                    Err(b) => format!("steps: {e}: the edit could not be taken back ({b:?})"),
+                });
             }
         }
         let on = if edit.add.is_empty() { "off" } else { "on" };
@@ -1806,6 +1849,21 @@ impl TimeControl {
             TimeAction::Redo => match self.takes.redo(&mut self.project) {
                 Some(_) => {
                     self.redos += 1;
+                    // The Sequencer's first step launched the clip it made:
+                    // back again, it plays again (unless its track has
+                    // another clip playing or waiting by now).
+                    let launched: Vec<(usize, usize)> = self
+                        .takes
+                        .done()
+                        .last()
+                        .filter(|t| t.launched)
+                        .map(|t| t.made.iter().map(|&(tr, sl, _)| (tr, sl)).collect())
+                        .unwrap_or_default();
+                    for (track, slot) in launched {
+                        if self.project.clip(track, slot).is_some() {
+                            self.launch_edited(track, slot);
+                        }
+                    }
                     let row = self.takes.done().last().map(TakeRow::of);
                     if let Some(d) = row.and_then(|r| r.dropped) {
                         self.follow_launches(d, false);
