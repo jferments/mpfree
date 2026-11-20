@@ -215,7 +215,7 @@ mod looper {
             s.button("STOP").run_for(0.1);
             assert_eq!(status(&s).phase, Phase::Playing);
             assert!(
-                !s.said().iter().any(|l| l.contains("records the pads dry")),
+                !s.said().iter().any(|l| l.contains("Pads records silence")),
                 "{:?}",
                 s.said()
             );
@@ -3021,7 +3021,7 @@ mod device_log {
             s.button("REC");
             wrote(&s, n, "looper: Record: armed", "");
             // The looper check's `^looper: loop of .* cut at STOP`, and
-            // never `^looper: records the pads dry`.
+            // never `^looper: Pads records silence`.
             s.run_for(3.0);
             let n = s.lines.len();
             s.button("STOP").run_for(0.2);
@@ -3029,7 +3029,7 @@ mod device_log {
             assert!(!s
                 .lines
                 .iter()
-                .any(|l| l.starts_with("looper: records the pads dry")));
+                .any(|l| l.starts_with("looper: Pads records silence")));
         });
     }
 }
