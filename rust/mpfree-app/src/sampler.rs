@@ -265,6 +265,16 @@ impl TrackKits {
             .fold(0, |bits, (t, _)| bits | 1 << t)
     }
 
+    /// The tracks that play the synth, a bit each. Never allocates.
+    pub fn on_synth(&self) -> u128 {
+        let synth = self.synth;
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(|&(_, &e)| e == synth)
+            .fold(0, |bits, (t, _)| bits | 1 << t)
+    }
+
     /// Whether track `track` plays the synth.
     pub fn plays_synth(&self, track: usize) -> bool {
         self.entry(track) == usize::from(self.synth)
@@ -1914,6 +1924,7 @@ mod tests {
             1 << 1 | 1 << 2 | 1 << 5,
             "kits picked, not the synth"
         );
+        assert_eq!(k.on_synth(), 1 << 4, "the synth's tracks");
         let homes = k.homes(|_| true);
         assert_eq!(
             &homes[..4],

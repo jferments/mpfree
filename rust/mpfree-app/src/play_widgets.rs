@@ -68,7 +68,8 @@ pub struct PadsPlay {
     /// Between the track and the rest: " · ", or in controller mode the
     /// Controller chip's own " → " or ": ".
     pub join: &'static str,
-    /// Controller mode: the dot in the theme's warn colour, as the chip.
+    /// Controller mode, or a synth chosen for the pads: the dot in the
+    /// theme's warn colour, as the chip.
     pub warn: bool,
 }
 
@@ -95,6 +96,19 @@ impl PadsPlay {
             what: what.to_string(),
             color: Color::rgb(0xFFC145),
             join,
+            warn: true,
+        }
+    }
+
+    /// The synth chosen for the pads, whichever track is selected (the
+    /// instrument redesign's step 3): "Pads: Poly · C3 to D#4", in the
+    /// warn colour as the header's "Pads: Poly" chip.
+    pub fn chosen(what: String) -> PadsPlay {
+        PadsPlay {
+            track: "Pads".to_string(),
+            what,
+            color: Color::rgb(0xFFC145),
+            join: ": ",
             warn: true,
         }
     }
