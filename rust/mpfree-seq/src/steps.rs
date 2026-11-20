@@ -334,12 +334,55 @@ const ALL: u8 = LINE;
 /// track's notes and chords on the step pads). No note has this number.
 pub const LINE: u8 = 255;
 
+/// The notes a clip of pad hits shows on its pad rows: the 16 pads, in
+/// order ([`Grid::shown`]).
+pub const PAD_ROWS: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+
+/// Note `n`, `nudge` ticks from its step's line, joined to what step `slot`
+/// shows: the step's first note (the earliest, then the shortest, the
+/// softest, the least likely; the clip's first of equals) with how many
+/// notes it holds and their range.
+fn join_step(slot: &mut Option<Step>, n: &Note, nudge: Tick) {
+    let step = Step {
+        velocity: n.velocity,
+        len: n.len,
+        nudge,
+        chance: n.chance,
+        cond: n.cond,
+        ratchet: n.ratchet,
+        on: n.on,
+        ramp: n.ramp,
+        join: n.join,
+        notes: 1,
+        low: n.note,
+        high: n.note,
+    };
+    *slot = Some(match *slot {
+        None => step,
+        Some(s) => {
+            let first =
+                if (nudge, n.len, n.velocity, n.chance) < (s.nudge, s.len, s.velocity, s.chance) {
+                    step
+                } else {
+                    s
+                };
+            Step {
+                notes: s.notes + 1,
+                low: s.low.min(n.note),
+                high: s.high.max(n.note),
+                ..first
+            }
+        }
+    });
+}
+
 /// What a step grid shows of a clip, all pages ([`Grid::shown`]).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Shown {
-    /// Every pad's row (0 to 15), then any other note the clip holds in
-    /// the order its notes first come, with its steps (None: empty); and
-    /// [`LINE`] last, each step's notes as one.
+    /// Every pad's row (the notes [`Grid::shown`] was given, 0 to 15 for
+    /// pad hits), then any other note the clip holds in the order its
+    /// notes first come, with its steps (None: empty); and [`LINE`] last,
+    /// each step's notes as one.
     pub rows: Vec<(u8, Vec<Option<Step>>)>,
     /// The same rows' locks: how many each step holds (its row's own and
     /// the whole step's), for the step pads' lock colour.
@@ -488,34 +531,69 @@ impl Grid {
 
     /// What a step grid shows of `clip`, all pages: what the Play page's
     /// pattern and the step pads draw, built again whenever the clip
-    /// changes (the refactor's B1 times it on an 8,192-note clip).
-    pub fn shown(self, clip: &Clip) -> Shown {
-        let mut pitches: Vec<u8> = (0..16).collect();
+    /// changes. `pads` are the notes the pad rows stand for, in order
+    /// ([`PAD_ROWS`] for a clip of pad hits); any other note the clip holds
+    /// gets a row after them. One pass over the clip's notes and one over
+    /// its locks, whatever the rows (refactor B2): what [`Grid::row`],
+    /// [`Grid::line`], [`Grid::lock_row`] and [`Grid::lock_line`] give for
+    /// each row, which used to be a pass each.
+    pub fn shown(self, clip: &Clip, pads: &[u8]) -> Shown {
+        const NONE: usize = usize::MAX;
+        let steps = self.steps(clip.length);
+        // Each note's row.
+        let mut at = [NONE; 256];
+        let mut pitches: Vec<u8> = Vec::with_capacity(pads.len() + 16);
+        for &p in pads.iter().chain(clip.notes.iter().map(|n| &n.note)) {
+            if at[usize::from(p)] == NONE {
+                at[usize::from(p)] = pitches.len();
+                pitches.push(p);
+            }
+        }
+        let mut rows = vec![vec![None; steps]; pitches.len()];
+        let mut line = vec![None; steps];
         for n in &clip.notes {
-            if !pitches.contains(&n.note) {
-                pitches.push(n.note);
+            let (i, nudge) = self.place(clip.length, n.tick);
+            if i < steps {
+                join_step(&mut rows[at[usize::from(n.note)]][i], n, nudge);
+                join_step(&mut line[i], n, nudge);
+            }
+        }
+        // A whole step's lock (a chord's) counts on every row, and is the
+        // line's.
+        let mut locks = vec![vec![0usize; steps]; pitches.len()];
+        let (mut whole, mut on_line) = (vec![0usize; steps], vec![0usize; steps]);
+        let mut lock_values = Vec::with_capacity(clip.locks.len());
+        for l in &clip.locks {
+            let i = self.place(clip.length, l.tick).0;
+            lock_values.push((l.sound.unwrap_or(LINE), i, l.addr, l.value));
+            if i >= steps {
+                continue;
+            }
+            on_line[i] += 1;
+            match l.sound.map(|p| at[usize::from(p)]) {
+                None => whole[i] += 1,
+                Some(NONE) => {}
+                Some(row) => locks[row][i] += 1,
+            }
+        }
+        for row in &mut locks {
+            for (n, w) in row.iter_mut().zip(&whole) {
+                *n += w;
             }
         }
         Shown {
-            locks: pitches
-                .iter()
-                .map(|&p| (p, self.lock_row(clip, p)))
-                .chain(std::iter::once((LINE, self.lock_line(clip))))
-                .collect(),
-            // A whole step's lock (a chord's) is the line's.
-            lock_values: clip
-                .locks
-                .iter()
-                .map(|l| {
-                    let row = l.sound.unwrap_or(LINE);
-                    (row, self.place(clip.length, l.tick).0, l.addr, l.value)
-                })
-                .collect(),
             rows: pitches
-                .into_iter()
-                .map(|p| (p, self.row(clip, p)))
-                .chain(std::iter::once((LINE, self.line(clip))))
+                .iter()
+                .copied()
+                .zip(rows)
+                .chain(std::iter::once((LINE, line)))
                 .collect(),
+            locks: pitches
+                .into_iter()
+                .zip(locks)
+                .chain(std::iter::once((LINE, on_line)))
+                .collect(),
+            lock_values,
         }
     }
 
@@ -536,39 +614,9 @@ impl Grid {
         let mut row: Vec<Option<Step>> = vec![None; self.steps(clip.length)];
         for n in clip.notes.iter().filter(|n| keep(n)) {
             let (i, nudge) = self.place(clip.length, n.tick);
-            let Some(slot) = row.get_mut(i) else { continue };
-            let step = Step {
-                velocity: n.velocity,
-                len: n.len,
-                nudge,
-                chance: n.chance,
-                cond: n.cond,
-                ratchet: n.ratchet,
-                on: n.on,
-                ramp: n.ramp,
-                join: n.join,
-                notes: 1,
-                low: n.note,
-                high: n.note,
-            };
-            *slot = Some(match *slot {
-                None => step,
-                Some(s) => {
-                    let first = if (nudge, n.len, n.velocity, n.chance)
-                        < (s.nudge, s.len, s.velocity, s.chance)
-                    {
-                        step
-                    } else {
-                        s
-                    };
-                    Step {
-                        notes: s.notes + 1,
-                        low: s.low.min(n.note),
-                        high: s.high.max(n.note),
-                        ..first
-                    }
-                }
-            });
+            if let Some(slot) = row.get_mut(i) {
+                join_step(slot, n, nudge);
+            }
         }
         row
     }
@@ -1410,7 +1458,7 @@ mod tests {
         let mut c = clip(BAR, &[(0, 40), (240, 3), (480, 40)]);
         let addr = RelAddr::new(mpfree_param::OnTrack::Inst, 2);
         c.locks = vec![Lock::new(240, None, addr, 0.5)];
-        let shown = g.shown(&c);
+        let shown = g.shown(&c, &PAD_ROWS);
         let rows: Vec<u8> = shown.rows.iter().map(|r| r.0).collect();
         let want: Vec<u8> = (0..16).chain([40, LINE]).collect();
         assert_eq!(rows, want);
@@ -1420,6 +1468,70 @@ mod tests {
         assert_eq!(shown.locks.len(), 18);
         assert!(shown.locks.iter().all(|(_, row)| row[1] == 1));
         assert_eq!(shown.lock_values, vec![(LINE, 1, addr, 0.5)]);
+    }
+
+    /// The grid built in one pass (refactor B2) is what a pass per row
+    /// gives, row by row: on a busy clip of chords, nudges either way,
+    /// notes past the last line, other notes than the pads, and locks on
+    /// rows, on rows with no note, on no row shown and on whole steps; for
+    /// pad hits and for a layout of other notes.
+    #[test]
+    fn the_grid_shown_in_one_pass_is_each_row_on_its_own() {
+        let g = Grid::new(240).unwrap();
+        let mut seed = 0x2545_f491_u32;
+        let mut next = |m: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed % m
+        };
+        let length = 3 * BAR + 100;
+        let mut c = Clip::new("busy", length);
+        c.notes = (0..600)
+            .map(|_| Note {
+                len: Tick::from(next(500)) + 1,
+                chance: next(100) as u8 + 1,
+                ..Note::new(
+                    Tick::from(next(length as u32 + 200)) - 100,
+                    60,
+                    next(48) as u8,
+                    next(127) as u8 + 1,
+                )
+            })
+            .collect();
+        c.locks = (0..300)
+            .map(|k| {
+                let sound = match next(4) {
+                    0 => None,
+                    _ => Some(next(64) as u8),
+                };
+                let addr = RelAddr::new(mpfree_param::OnTrack::Inst, (k % 5) as u16);
+                Lock::new(Tick::from(next(length as u32)), sound, addr, k as f32)
+            })
+            .collect();
+        for pads in [PAD_ROWS.to_vec(), (36..52).collect(), vec![]] {
+            let shown = g.shown(&c, &pads);
+            let n = shown.rows.len();
+            assert_eq!(
+                &shown.rows[..pads.len()]
+                    .iter()
+                    .map(|r| r.0)
+                    .collect::<Vec<_>>(),
+                &pads
+            );
+            assert_eq!(shown.rows[n - 1], (LINE, g.line(&c)));
+            assert_eq!(shown.locks[n - 1], (LINE, g.lock_line(&c)));
+            for ((p, row), (q, locks)) in shown.rows[..n - 1].iter().zip(&shown.locks) {
+                assert_eq!((p, row), (q, &g.row(&c, *p)), "row {p}");
+                assert_eq!(locks, &g.lock_row(&c, *p), "row {p}'s locks");
+            }
+            // Every note has its row, once.
+            let mut seen: Vec<u8> = shown.rows[..n - 1].iter().map(|r| r.0).collect();
+            assert!(c.notes.iter().all(|x| seen.contains(&x.note)));
+            seen.sort_unstable();
+            seen.dedup();
+            assert_eq!(seen.len(), n - 1);
+        }
     }
 
     #[test]

@@ -3327,7 +3327,7 @@ fn step_grid() -> Case {
         what: "every row's steps, lock counts and lock values, for the screen and the step pads",
         block: Box::new(move |_, l, r| {
             let clip = song.clip(0, 0).expect("the clip");
-            let shown = grid.shown(clip);
+            let shown = grid.shown(clip, &mpfree_seq::steps::PAD_ROWS);
             l.fill(0.0);
             r.fill(0.0);
             l[0] = shown

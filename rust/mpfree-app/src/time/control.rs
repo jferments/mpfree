@@ -1420,7 +1420,7 @@ impl TimeControl {
             let origin = launch.map(|l| l.origin);
             let order =
                 launch.and_then(|l| mpfree_play::StepOrder::of(c, track, slot, l.origin, l.start));
-            let shown = grid.shown(c);
+            let shown = grid.shown(c, &mpfree_seq::steps::PAD_ROWS);
             Some(StepClip {
                 slot,
                 name: c.name.clone(),
