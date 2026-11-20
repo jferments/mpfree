@@ -802,3 +802,152 @@ fn the_loudest_grain_is_where_the_sound_is_loudest_on_its_channels() {
     let left = f64::from(r3.loudest_grain(&st, 80.0)) * 2.0;
     assert!((0.18..0.23).contains(&left), "{left} s");
 }
+
+/// The energy of the grain-long stretch a region's grain position `at`
+/// starts, on the channels it plays: what a grain start is judged by.
+fn grain_energy(r: &Region, s: &Source, at: f32, grain_ms: f32) -> f64 {
+    let ch = usize::from(s.channels());
+    let grain = (f64::from(grain_ms) * f64::from(s.rate()) / 1000.0) as usize;
+    let first = r.start as usize + (f64::from(at) * r.frames() as f64).round() as usize;
+    let data = s.data();
+    (first..(first + grain).min(s.frames() as usize))
+        .map(|f| {
+            let (l, rt) = if ch == 2 {
+                (data.get(2 * f), data.get(2 * f + 1))
+            } else {
+                (data.get(f), data.get(f))
+            };
+            f64::from(match r.channels {
+                _ if ch == 1 => l * l,
+                ChannelPick::Stereo => 0.5 * (l * l + rt * rt),
+                ChannelPick::MonoSum => (0.5 * (l + rt)).powi(2),
+                ChannelPick::Left => l * l,
+                ChannelPick::Right => rt * rt,
+            })
+        })
+        .sum()
+}
+
+/// Sampler plan, phase 1 step 1: a long region's grain start comes from
+/// its sound's loudness summary, never a scan of the whole sound, and
+/// lands where the frame-by-frame search does: as loud (within 0.5 dB
+/// over a grain) and, where one spot is clearly the loudest, within a
+/// quarter of a grain of it. On every pick of channels, a trimmed region,
+/// a 16-bit sound and silence.
+#[test]
+fn a_long_regions_grain_start_comes_from_its_summary_where_the_scan_would_put_it() {
+    use mpfree_analysis::PeakPyramid;
+    let n = (SCAN_FRAMES as usize) * 2 + 12_345;
+    let secs = |i: usize| i as f32 / RATE as f32;
+    let tone = |i: usize, hz: f32| (secs(i) * hz * std::f32::consts::TAU).sin();
+    // A soft tone throughout; the left side loud at 9.3 s, the right at
+    // 2.1 s, both (opposite each other) at 5.0 s and in step, less loud,
+    // at 7.4 s.
+    let mut lr = Vec::with_capacity(2 * n);
+    for i in 0..n {
+        let t = secs(i);
+        let soft = 0.05 * tone(i, 220.0);
+        let burst = |at: f32| (at..at + 0.1).contains(&t);
+        let l = soft
+            + if burst(9.3) {
+                0.9 * tone(i, 330.0)
+            } else {
+                0.0
+            };
+        let r = soft
+            + if burst(2.1) {
+                0.8 * tone(i, 440.0)
+            } else {
+                0.0
+            };
+        let (l, r) = if burst(5.0) {
+            (l + 0.7 * tone(i, 110.0), r - 0.7 * tone(i, 110.0))
+        } else if burst(7.4) {
+            (l + 0.4 * tone(i, 110.0), r + 0.4 * tone(i, 110.0))
+        } else {
+            (l, r)
+        };
+        lr.push(l);
+        lr.push(r);
+    }
+    let st = Source::new("long", RATE, 2, lr).unwrap();
+    let summary = PeakPyramid::build_from(st.data(), 2).unwrap();
+    let grain = 80.0;
+    let quarter = f64::from(grain) / 4000.0;
+    let check = |r: &Region, s: &Source, summary: &PeakPyramid, loudest_at: Option<f32>| {
+        let scanned = r.loudest_grain(s, grain);
+        let found = r.loudest_grain_from(s, grain, summary).unwrap();
+        let (es, ef) = (
+            grain_energy(r, s, scanned, grain),
+            grain_energy(r, s, found, grain),
+        );
+        let db = 10.0 * (ef / es).log10();
+        assert!(
+            db > -0.5,
+            "{:?}: {db} dB ({found} for {scanned})",
+            r.channels
+        );
+        if let Some(t) = loudest_at {
+            let start = r.start as f64 / f64::from(RATE);
+            let len = r.frames() as f64 / f64::from(RATE);
+            let at = start + f64::from(found) * len;
+            assert!(
+                (at - f64::from(t)).abs() < quarter + 0.1,
+                "{:?}: {at} s, not {t} s",
+                r.channels
+            );
+            let was = start + f64::from(scanned) * len;
+            assert!(
+                (at - was).abs() <= quarter,
+                "{:?}: {at} s, the scan {was} s",
+                r.channels
+            );
+        }
+    };
+    let mut r = Region::whole(&st);
+    for (pick, at) in [
+        (ChannelPick::Left, 9.3),
+        (ChannelPick::Right, 2.1),
+        // Both sides together are loudest at 5.0 s...
+        (ChannelPick::Stereo, 5.0),
+        // ...where they cancel when mixed: the summary's loudest there is
+        // measured and passed over for the left side's burst.
+        (ChannelPick::MonoSum, 9.3),
+    ] {
+        r.channels = pick;
+        check(&r, &st, &summary, Some(at));
+    }
+    // Trimmed to after the right side's burst.
+    r.channels = ChannelPick::Right;
+    r.start = (3.0 * RATE as f32) as u64;
+    r.end = (11.5 * RATE as f32) as u64;
+    check(&r, &st, &summary, None);
+    // A 16-bit mono sound: one loud stretch late on.
+    let mono: Vec<f32> = (0..n)
+        .map(|i| {
+            let x = if (10.2..10.25).contains(&secs(i)) {
+                0.6
+            } else {
+                0.01
+            } * tone(i, 100.0);
+            ((x * 32_768.0).round() + 0.0) / 32_768.0
+        })
+        .collect();
+    let m = Source::new("mono16", RATE, 1, mono).unwrap();
+    assert!(m.data().is_16_bit());
+    let ms = PeakPyramid::build_from(m.data(), 1).unwrap();
+    check(&Region::whole(&m), &m, &ms, Some(10.2));
+    // Silence: from the start.
+    let quiet = Source::new("quiet", RATE, 1, vec![0.0; n]).unwrap();
+    let qs = PeakPyramid::build_from(quiet.data(), 1).unwrap();
+    assert_eq!(
+        Region::whole(&quiet).loudest_grain_from(&quiet, grain, &qs),
+        Some(0.0)
+    );
+    // Another sound's summary is not this one's.
+    assert_eq!(
+        Region::whole(&m).loudest_grain_from(&m, grain, &summary),
+        None
+    );
+    assert_eq!(Region::whole(&st).loudest_grain_from(&st, grain, &qs), None);
+}
