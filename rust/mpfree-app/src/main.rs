@@ -4677,6 +4677,30 @@ fn send_track(
     (lines, tell)
 }
 
+/// Track `from`'s own instrument's sound now, to copy (step 4c,
+/// Duplicate): its node id, and its extras and values as a preset keeps
+/// them. None when it has none. Allocates (an effect's work, as a preset
+/// try's). Main.rs and the test session both run it.
+fn sound_of_track(
+    own: &instruments::Instruments,
+    from: usize,
+) -> Option<(&'static str, synth::SoundCopy)> {
+    let held = own.held(from)?;
+    let node = own.node(from)?;
+    let values = node.params().iter().map(|p| node.param(p.id)).collect();
+    Some((held.id, (node.save_extras(), values)))
+}
+
+/// What the screen says once track `track` has a copy of track `from`'s
+/// instrument `name` (step 4c).
+fn copied_note(track: usize, from: usize, name: &str) -> String {
+    format!(
+        "Track {} plays its own copy of {}: change one and the other stays",
+        track + 1,
+        app::sent_name(from, name)
+    )
+}
+
 /// What pad `pad` plays on MIDI Out, CV and an export: the synth's pad
 /// layout's notes while the synth has the pads, else the kit's pad (the
 /// note its port's device profile gives it, or its own,
@@ -7395,6 +7419,7 @@ fn player_session(
                     }
                     fx.extend(perform_fx);
                     // What the pads play: the project's, or the track.
+                    app.forget_copies();
                     let (notes, pads_fx) = app.open_pads(o.pads.as_deref());
                     for line in notes {
                         out.note(&line);
@@ -9046,6 +9071,42 @@ fn player_session(
                         track,
                         &track_presets,
                     )));
+                }
+                // The Instrument row: a copy of another track's instrument
+                // as the track's own (step 4c, Duplicate), made as a new
+                // sound is; it goes in once made (Landed, below).
+                app::Effect::TrackCopy { track, from } => {
+                    let name = mix.instruments.held(from).map_or("instrument", |h| h.name);
+                    let tell = match sound_of_track(&mix.instruments, from) {
+                        None => Some(format!(
+                            "Track {}: Track {} has no instrument of its own to copy",
+                            track + 1,
+                            from + 1
+                        )),
+                        Some(_) if !mix.instruments.has_room(track) => Some(full_note(track, name)),
+                        Some((id, sound)) => {
+                            let job = instrument_job(&synth, track, id, Some(sound));
+                            if mix.build_instrument(job) {
+                                track_presets.copy(from, track);
+                                let s = copied_note(track, from, name);
+                                out.note(&s);
+                                out.show(gui::ToUi::Tell(s));
+                                None
+                            } else {
+                                Some(format!(
+                                    "Track {}: busy making another sound; the copy of {} not made, try again",
+                                    track + 1,
+                                    app::sent_name(from, name)
+                                ))
+                            }
+                        }
+                    };
+                    if let Some(s) = tell {
+                        out.note(&s);
+                        out.show(gui::ToUi::Tell(s));
+                        app.set_track_sound(track, mix.instruments.held(track));
+                        app.set_track_sends(&sends_now(&mix.instruments));
+                    }
                 }
                 // What the pads play changed: the screen names it; the pads
                 // follow below, once the kit has.

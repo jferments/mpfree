@@ -14536,6 +14536,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::SynthPads(_)
             | Effect::TrackSound { .. }
             | Effect::TrackSend { .. }
+            | Effect::TrackCopy { .. }
             | Effect::SynthOnTrack(_)
             | Effect::ProgEdit
             | Effect::Metronome { .. }

@@ -81,6 +81,9 @@ enum SoundChoice {
     Sound(&'static str, &'static str),
     /// Another track's own instrument, played from this track (step 4).
     Track(usize),
+    /// A copy of another track's own instrument as this track's own: the
+    /// same engine and sound, a separate instrument (step 4c, Duplicate).
+    Copy(usize),
 }
 
 /// Track `owner`'s instrument `name` as a track that plays it names it,
@@ -258,7 +261,10 @@ impl App {
         match item {
             SynthItem::Engine => vec![
                 "What the selected track plays: Kit (the pads'",
-                "kit, as every track starts), or its own",
+                "kit, as every track starts), another track's",
+                "instrument (\"Track 3's FM\", shared: one",
+                "sound for both), a copy of one (its own, the",
+                "same sound to change apart), or its own",
                 "instrument: Poly (subtractive), FM (six",
                 "operators), Drums (a sound on each pad), Pluck",
                 "(strings and mallets) and the others, then",
@@ -385,7 +391,7 @@ impl App {
             .chain(
                 (0..mpfree_seq::MAX_TRACKS)
                     .filter(|&t| t != self.track && self.track_sound(t).is_some())
-                    .map(SoundChoice::Track),
+                    .flat_map(|t| [SoundChoice::Track(t), SoundChoice::Copy(t)]),
             )
             .chain(
                 Engine::ALL
@@ -404,6 +410,9 @@ impl App {
     fn sound_choice_now(&self, choices: &[SoundChoice]) -> usize {
         let now = match (self.track_send(self.track), self.track_sound(self.track)) {
             (Some(o), _) => SoundChoice::Track(o),
+            (None, Some(_)) if self.copied_from(self.track).is_some() => {
+                SoundChoice::Copy(self.copied_from(self.track).unwrap_or(0))
+            }
             (None, Some(h)) => SoundChoice::Sound(h.id, h.name),
             (None, None) => SoundChoice::Kit,
         };
@@ -418,6 +427,9 @@ impl App {
 
     /// The Instrument row's value: what the selected track plays.
     fn engine_text(&self) -> String {
+        if let Some(o) = self.copied_from(self.track) {
+            return format!("Copy of {}", self.sent_name(o));
+        }
         match (self.track_send(self.track), self.track_sound(self.track)) {
             (Some(o), _) => self.sent_name(o),
             (None, Some(h)) => h.name.to_string(),
@@ -434,8 +446,22 @@ impl App {
         )
     }
 
-    /// The Instrument row stepped by `d`: the selected track's sound, Kit first,
-    /// then the engines and the plugin synths.
+    /// Why track `track` can't take an instrument of its own now (every
+    /// place is taken), if it hasn't one already.
+    fn no_room_for(&self, track: usize) -> Option<Effect> {
+        let others = self.track_sounds.iter().flatten().count();
+        (self.track_sound(track).is_none() && others >= crate::instruments::SLOTS).then(|| {
+            Effect::Tell(format!(
+                "Track {} plays the kit: {} tracks already have their own instrument, the most at once. Set one of them to Kit first",
+                track + 1,
+                crate::instruments::SLOTS
+            ))
+        })
+    }
+
+    /// The Instrument row stepped by `d`: the selected track's sound, Kit
+    /// first, then the other tracks' instruments (each, then a copy of
+    /// it), then the engines and the plugin synths.
     fn step_track_sound(&mut self, d: i32) -> Vec<Effect> {
         let choices = self.sound_choices();
         let at = self.sound_choice_now(&choices);
@@ -444,23 +470,17 @@ impl App {
             return Vec::new();
         }
         let track = self.track;
+        self.track_copied[track] = None;
         let pick = match choices[to] {
             SoundChoice::Kit => None,
             SoundChoice::Sound(id, name) => Some((id, name)),
             SoundChoice::Track(owner) => return self.send_track_to(owner),
+            SoundChoice::Copy(owner) => return self.copy_track_sound(owner),
         };
         // A track with no instrument of its own takes a place only while
         // one is free.
-        let others = self.track_sounds.iter().flatten().count();
-        if pick.is_some()
-            && self.track_sound(track).is_none()
-            && others >= crate::instruments::SLOTS
-        {
-            return vec![Effect::Tell(format!(
-                "Track {} plays the kit: {} tracks already have their own instrument, the most at once. Set one of them to Kit first",
-                self.track + 1,
-                crate::instruments::SLOTS
-            ))];
+        if let Some(no) = pick.and_then(|_| self.no_room_for(track)) {
+            return vec![no];
         }
         // The project keeps each track's instrument: unsaved work.
         self.project_edit = true;
@@ -497,6 +517,46 @@ impl App {
         }
         self.track_sends[track] = Some(owner as u8);
         vec![Effect::TrackSend { track, to: owner }]
+    }
+
+    /// The Instrument row's copy of track `owner`'s instrument for the
+    /// selected track (step 4c, Duplicate): its own from now on, with the
+    /// same engine and sound, so a change to one leaves the other. A send
+    /// ends; an instrument of its own takes the copy's sound and keeps the
+    /// tracks that play it, as a new sound does. The loop makes it.
+    fn copy_track_sound(&mut self, owner: usize) -> Vec<Effect> {
+        let track = self.track;
+        let Some(held) = self.track_sound(owner) else {
+            return Vec::new();
+        };
+        if let Some(no) = self.no_room_for(track) {
+            return vec![no];
+        }
+        self.project_edit = true;
+        self.track_sends[track] = None;
+        self.set_track_sound(
+            track,
+            Some(crate::instruments::Held {
+                instance: 0,
+                ..held
+            }),
+        );
+        self.track_copied[track] = Some(owner as u8);
+        vec![Effect::TrackCopy { track, from: owner }]
+    }
+
+    /// The track whose instrument track `track`'s own was copied from on
+    /// the Instrument row, while both still play the same engine.
+    fn copied_from(&self, track: usize) -> Option<usize> {
+        let from = usize::from(*self.track_copied.get(track)?.as_ref()?);
+        let id = |t| self.track_sound(t).map(|h| h.id);
+        (id(track).is_some() && id(track) == id(from)).then_some(from)
+    }
+
+    /// A project opened: no track's instrument is a copy made on the row
+    /// any more.
+    pub fn forget_copies(&mut self) {
+        self.track_copied = [None; mpfree_seq::MAX_TRACKS];
     }
 
     /// The selected track's send ends, as it gets its own instrument or the
@@ -557,6 +617,10 @@ impl App {
     /// Track `track`'s own instrument as the audio loop has it now.
     pub fn set_track_sound(&mut self, track: usize, held: Option<crate::instruments::Held>) {
         if let Some(t) = self.track_sounds.get_mut(track) {
+            // Another instrument (or none): not the copy any more.
+            if t.map(|h| h.id) != held.map(|h| h.id) {
+                self.track_copied[track] = None;
+            }
             *t = held;
         }
     }

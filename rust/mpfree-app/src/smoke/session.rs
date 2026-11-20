@@ -1756,6 +1756,7 @@ impl Session {
             self.out.note(&line);
         }
         self.fx.extend(fx);
+        self.app.forget_copies();
         let (notes, fx) = self.app.open_pads(o.pads.as_deref());
         for line in notes {
             self.out.note(&line);
@@ -2185,6 +2186,37 @@ impl Session {
                         }
                         if let Some(s) = tell {
                             self.out.show(ToUi::Tell(s));
+                        }
+                        let held = self.mix.instruments.held(track);
+                        self.app.set_track_sound(track, held);
+                        self.app
+                            .set_track_sends(&crate::sends_now(&self.mix.instruments));
+                    }
+                    // As main.rs (step 4c), the copy made at once, as the
+                    // builder thread would.
+                    Effect::TrackCopy { track, from } => {
+                        let name = self
+                            .mix
+                            .instruments
+                            .held(from)
+                            .map_or("instrument", |h| h.name);
+                        if let Some((id, (extras, values))) =
+                            crate::sound_of_track(&self.mix.instruments, from)
+                        {
+                            let plugins = crate::plugins::Plugins::none();
+                            let made = crate::instruments::make(
+                                &plugins, id, &extras, &values, RATE, PERIOD,
+                            )
+                            .expect("a copy of an engine");
+                            let engine = crate::synth::Engine::from_node_id(id)
+                                .unwrap_or(crate::synth::Engine::Poly);
+                            let pads = self.synth.pads_for(engine);
+                            let tuning = self.synth.tuning_now();
+                            if self.mix.instruments.put(track, made, pads, &tuning).is_ok() {
+                                let s = crate::copied_note(track, from, name);
+                                self.out.note(&s);
+                                self.out.show(ToUi::Tell(s));
+                            }
                         }
                         let held = self.mix.instruments.held(track);
                         self.app.set_track_sound(track, held);

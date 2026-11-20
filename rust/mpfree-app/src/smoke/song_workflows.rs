@@ -734,6 +734,77 @@ mod tests {
         });
     }
 
+    /// Duplicate (step 4c): Track 3 steps on the Instrument row past
+    /// "Track 2's Poly" to a copy of it, its own Poly with Track 2's sound
+    /// and an id of its own; a turn on one leaves the other, and the
+    /// project keeps both.
+    #[test]
+    fn a_copy_of_another_tracks_instrument_is_its_own() {
+        on_big_stack(|| {
+            use crate::gui::FromUi;
+            use mpfree_time_ui::TimeAction;
+            let mut l = lab("copy");
+            let s = &mut l.s;
+            let name = "Night Market";
+            open(s, name);
+            s.give_own(1, crate::synth::Engine::Poly);
+            // A sound of Track 2's own, away from the engine's.
+            let p = {
+                let node = s.mix.instruments.node(1).expect("Track 2's Poly");
+                *node
+                    .params()
+                    .iter()
+                    .find(|p| !p.readonly && p.max > p.min)
+                    .expect("a knob")
+            };
+            let theirs = |s: &Session, t: usize| s.mix.instruments.node(t).map(|n| n.param(p.id));
+            let own = theirs(s, 1).unwrap();
+            let set = if own == p.max { p.min } else { p.max };
+            assert!(s.mix.instruments.param(1, p.id, set));
+            s.run_for(0.05);
+            assert_eq!(theirs(s, 1), Some(set));
+
+            s.route(FromUi::Time(TimeAction::Arm(Some(2))));
+            s.run_for(0.05);
+            s.press("header", "tab", "Synth").settle();
+            s.button("MENU").settle();
+            for _ in 0..2 {
+                s.route(FromUi::MenuStep(0, 1));
+                s.run_for(0.05);
+            }
+            s.button("MENU").settle();
+            assert!(s.mix.instruments.holds(2), "{:?}", s.said());
+            assert_eq!(s.mix.instruments.send(2), None);
+            assert_eq!(s.mix.instruments.owner(2), Some(2));
+            let said =
+                "Track 3 plays its own copy of Track 2's Poly: change one and the other stays";
+            assert!(s.lines.iter().any(|l| l == said), "{:?}", s.said());
+            assert_eq!(theirs(s, 2), Some(set), "the copy has Track 2's sound");
+            // A turn on the copy leaves Track 2's.
+            assert!(s.mix.instruments.param(2, p.id, own));
+            s.run_for(0.05);
+            assert_eq!((theirs(s, 1), theirs(s, 2)), (Some(set), Some(own)));
+
+            s.press("header", "tab", "Arrange").settle();
+            let sounds: Vec<&str> = s.screen.time.tracks[1..3]
+                .iter()
+                .map(|t| t.sound.as_str())
+                .collect();
+            assert_eq!(sounds, ["Poly", "Poly"]);
+            s.button_with("SHIFT", "BROWSE");
+            let saved = format!("project: saved {name}");
+            assert!(s.until_said(&saved, 5.0), "{saved}: {:?}", s.said());
+            let ids = (
+                s.instrument_list.own_of(1).expect("Track 2's has an id"),
+                s.instrument_list.own_of(2).expect("the copy has one"),
+            );
+            assert_ne!(ids.0, ids.1, "two instruments");
+            open(s, name);
+            assert!(s.mix.instruments.holds(1) && s.mix.instruments.holds(2));
+            assert_eq!(s.mix.instruments.send(2), None);
+        });
+    }
+
     // ------------------------------------------------------- performing
 
     /// Night Market in song mode (Song on Arrange, Play song, then Play): every

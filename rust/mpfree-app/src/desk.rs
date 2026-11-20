@@ -863,6 +863,7 @@ impl Desk<'_> {
             | app::Effect::SaveProject
             | app::Effect::TrackSound { .. }
             | app::Effect::TrackSend { .. }
+            | app::Effect::TrackCopy { .. }
             | app::Effect::PadsFocus(_)
             | app::Effect::SynthOnTrack(_)
             | app::Effect::SixteenLevels
