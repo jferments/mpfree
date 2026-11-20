@@ -433,7 +433,7 @@ With the synth on the pads, the pattern on the **Sequencer** tab's **Steps** (an
 
 {{shot: sequencer-steps-synth | The Sequencer's Steps on a synth track in C minor: the rows are the scale's notes from C3 to C4, the roots shaded. Step 1 holds a C minor triad, with an accent, a 50 % note and a 1:2 note later on.}}
 
-- **Tap a step in a row** to put that note there, and tap more rows on the same step for a chord. Tap a lit step to pick it for the Q-Links, and again to switch it off (it keeps its notes and settings; another tap brings it back). **ERASE** + a tap takes it out.
+- **Tap a step in a row** to put that note there, and tap more rows on the same step for a chord. Tap a lit step to take it out (**UNDO** brings it back), or hold your finger on it to pick it for the Q-Links and the step inspector. **ERASE** + a tap takes it out too.
 - **Hold a row's name** to hear its note.
 - **‹** and **›** beside **Oct** show the rows an octave lower or higher. The pattern starts from the root under the lowest note you've used.
 - **Fold** shows only the notes the pattern uses, so a bass line or a chord part fits on one screen. Tap it again for every note.

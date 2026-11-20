@@ -10,6 +10,8 @@ checked: 2026-11-18 ec8cb82
 
 The **Sample** tab works on one pad at a time. **Hit a pad** to pick it; its name and sound are at the top left of the page. It is one page: the recorder, the tools that trim, slice, warp and grain the sound, the wave, and the pad's settings with its **Sound** beside them. Beside the pad's name, **Send to pad** and **Chop to pads** (see [below](#send-to-pad-and-chop-to-pads)). The pad's layers, keygroups, scenes and each slice's own settings are on the Pads tab's **Edit pad** (see [Shaping how a pad plays](shaping-a-pad.md)). The four **Q-Link** cards are down the right-hand side, as on every other page: each says what its knob turns here, and you can drag a card up or down to turn it from the screen.
 
+The Sample tab is yours whatever the pads play. While the pads play the synth, the page stays on the kit and pad it showed: record, keep takes, trim, slice, warp, make grains and put the result on pads or in your library as ever. Hitting a pad plays a note of the synth then, so it doesn't change the pad the page shows (pick another one with SHIFT + the data wheel), and a tap on the wave plays the page's pad on its own, not a synth note. **Load to pad** and **Send to pad**, which wait for a pad hit, wait for the pads to play a kit again.
+
 {{shot: sample | The Sample tab on Wave: pad A5's name and source at the top, the recorder row, the Trim, Slice, Warp and Grain tools with the overview, the wave with its Start, Loop and End markers, and the pad's mode, gain and fades, options and sound underneath.}}
 
 ## Recording a sample

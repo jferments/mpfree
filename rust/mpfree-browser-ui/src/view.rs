@@ -29,6 +29,9 @@ const HEAD_H: i32 = 56;
 const FOOT_H: i32 = 52;
 const STATUS_H: i32 = 30;
 const PLACE_H: i32 = 50;
+/// New project at the foot of the places column, and the gap above it.
+const NEW_PROJECT_H: i32 = 52;
+const NEW_PROJECT_GAP: i32 = 12;
 const BUTTON_H: i32 = 56;
 /// Movement before a touch on the list counts as a drag, not a tap.
 const DRAG: i32 = 14;
@@ -49,6 +52,8 @@ struct Geo {
     sort: Rect,
     status: Rect,
     place_rows: Vec<Rect>,
+    /// New project, at the foot of the places column (`Screen::new_project`).
+    new_project: Option<Rect>,
     detail_buttons: Vec<(Button, Rect)>,
     detail_body: Rect,
     /// The pad map under a sound, when the Selected column has room.
@@ -114,15 +119,32 @@ impl Geo {
         let (_, list) = rest.take_right(gap);
         // Places.
         let pb = card_body(places);
+        let (pb, new_project) = if s.new_project {
+            let (b, rest) = pb.take_bottom(NEW_PROJECT_H);
+            (rest.take_bottom(NEW_PROJECT_GAP).1, Some(b))
+        } else {
+            (pb, None)
+        };
+        let gaps = |k: usize, src: &Source| {
+            k > 0 && matches!(src, Source::Recent | Source::Place(Place::Trash))
+        };
+        // The rows close up a little when New project needs their room.
+        let n = s.sources.len() as i32;
+        let gap_h = 14
+            * s.sources
+                .iter()
+                .enumerate()
+                .filter(|(k, &i)| gaps(*k, &SOURCES[i]))
+                .count() as i32;
+        let pitch = PLACE_H.min((pb.h - gap_h) / n.max(1)).max(36);
         let mut place_rows = Vec::new();
         let mut y = pb.y;
         for (k, &i) in s.sources.iter().enumerate() {
-            let src = &SOURCES[i];
-            if k > 0 && matches!(src, Source::Recent | Source::Place(Place::Trash)) {
+            if gaps(k, &SOURCES[i]) {
                 y += 14;
             }
-            place_rows.push(Rect::new(pb.x, y, pb.w, PLACE_H - 4));
-            y += PLACE_H;
+            place_rows.push(Rect::new(pb.x, y, pb.w, pitch - 4));
+            y += pitch;
         }
         // List.
         let inner = list.inset(12);
@@ -205,6 +227,7 @@ impl Geo {
             sort,
             status,
             place_rows,
+            new_project,
             detail_buttons,
             detail_body: body,
             map,
@@ -783,6 +806,14 @@ impl BrowserView {
         (sr.x + sr.w / 2, sr.y + sr.h / 2)
     }
 
+    /// The middle of New project at the foot of the places column, in a
+    /// browser drawn in `r` showing `s` (None: it isn't shown).
+    pub fn new_project_point(r: Rect, s: &Screen) -> Option<(i32, i32)> {
+        Geo::new(r, s)
+            .new_project
+            .map(|b| (b.x + b.w / 2, b.y + b.h / 2))
+    }
+
     /// The rows that fit in the Plugins place's list in a browser drawn
     /// in `r`.
     pub fn plugin_rows_in(r: Rect) -> usize {
@@ -818,6 +849,9 @@ impl BrowserView {
         let g = Geo::new(r, s);
         if let Some(k) = g.place_rows.iter().position(|pr| pr.contains(x, y)) {
             return Some(Input::Source(s.sources[k]));
+        }
+        if g.new_project.is_some_and(|b| b.contains(x, y)) {
+            return Some(Input::Button(Button::NewProject));
         }
         if let Some(p) = &s.plugins {
             return crate::plugins::hit(g.list, g.detail, p, x, y).map(Input::Plugins);
@@ -888,6 +922,9 @@ impl Widget for BrowserView {
                 s.place_label(i),
             );
         }
+        if let Some(b) = g.new_project {
+            button(cx, b, Button::NewProject.label(), false, false);
+        }
         if let Some(p) = &s.plugins {
             crate::plugins::paint(cx, g.list, g.detail, p);
         } else {
@@ -928,6 +965,10 @@ impl Widget for BrowserView {
         for (k, pr) in g.place_rows.iter().enumerate() {
             let label = s.sources.get(k).map_or("", |&i| s.place_label(i));
             out.push(Target::tap("place", k, label, *pr));
+        }
+        if let Some(b) = g.new_project {
+            let n = Button::NewProject;
+            out.push(Target::tap("button", n as usize, n.label(), b));
         }
         if let Some(p) = &s.plugins {
             out.extend(crate::plugins::targets(g.list, g.detail, p));

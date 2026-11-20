@@ -749,3 +749,56 @@ fn a_stretch_keeps_its_sounds_hits_sharp() {
         );
     }
 }
+
+/// Jay's device notes (20 Nov 2026): "Granular synth is barely audible".
+/// A frozen cloud at position 0 replays a sound's first grain, which on a
+/// take is often silence; a sound turned granular reads from its loudest
+/// grain instead ([`Region::loudest_grain`]).
+#[test]
+fn the_loudest_grain_is_where_the_sound_is_loudest_on_its_channels() {
+    let n = RATE as usize * 2;
+    // Quiet for half a second, a soft tone, then a loud burst at 1.5 s.
+    let data: Vec<f32> = (0..n)
+        .map(|i| {
+            let t = i as f32 / RATE as f32;
+            let tone = (t * 220.0 * std::f32::consts::TAU).sin();
+            if t < 0.5 {
+                0.0
+            } else if (1.5..1.6).contains(&t) {
+                0.9 * tone
+            } else {
+                0.1 * tone
+            }
+        })
+        .collect();
+    let s = Source::new("late", RATE, 1, data).unwrap();
+    let r = Region::whole(&s);
+    let at = r.loudest_grain(&s, 80.0);
+    let secs = f64::from(at) * 2.0;
+    assert!((1.48..1.53).contains(&secs), "{secs} s");
+    // Within a trimmed region, as a fraction of it.
+    let mut r2 = r.clone();
+    r2.start = RATE as u64;
+    let at2 = f64::from(r2.loudest_grain(&s, 80.0));
+    assert!((0.48..0.53).contains(&at2), "{at2}");
+    // Silence, and a region shorter than a grain: from the start.
+    let quiet = Source::new("quiet", RATE, 1, vec![0.0; n]).unwrap();
+    assert_eq!(Region::whole(&quiet).loudest_grain(&quiet, 80.0), 0.0);
+    let short = Source::new("short", RATE, 1, vec![0.5; 1000]).unwrap();
+    assert_eq!(Region::whole(&short).loudest_grain(&short, 80.0), 0.0);
+    // Stereo: only the side it plays counts.
+    let mut lr = Vec::with_capacity(2 * n);
+    for i in 0..n {
+        let t = i as f32 / RATE as f32;
+        lr.push(if (0.2..0.3).contains(&t) { 0.8 } else { 0.0 });
+        lr.push(if (1.2..1.3).contains(&t) { 0.8 } else { 0.0 });
+    }
+    let st = Source::new("lr", RATE, 2, lr).unwrap();
+    let mut r3 = Region::whole(&st);
+    r3.channels = ChannelPick::Right;
+    let right = f64::from(r3.loudest_grain(&st, 80.0)) * 2.0;
+    assert!((1.18..1.23).contains(&right), "{right} s");
+    r3.channels = ChannelPick::Left;
+    let left = f64::from(r3.loudest_grain(&st, 80.0)) * 2.0;
+    assert!((0.18..0.23).contains(&left), "{left} s");
+}

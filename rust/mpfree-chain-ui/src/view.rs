@@ -724,14 +724,18 @@ enum Drag {
 /// dragged (less is a tap).
 const SLOT_SLOP: i32 = 12;
 
-/// The strip list over the editor: the groups down the left, a page of
-/// strip tiles (four a row), its Back, and arrows when a group has more
-/// strips than a page. As the sidechain list it has Off (or Tempo) above
-/// the groups, only the groups that can feed the effect (a group it
-/// leaves out is an empty rect), the line under them that says why, and
-/// what the effect hears now beside Back.
+/// The strip list over the editor: "‹ Back" at the top left, where the
+/// editor's own ‹ is (Jay's device round, 20 Nov: the list's Back was at
+/// the top right, where nothing else keeps it), the groups down the left
+/// under it, a page of strip tiles (four a row), and arrows when a group
+/// has more strips than a page. As the sidechain list it has Off (or
+/// Tempo) above the groups, only the groups that can feed the effect (a
+/// group it leaves out is an empty rect), the line under them that says
+/// why, and what the effect hears now at the head's right.
 pub struct ListLayout {
     pub panel: Rect,
+    /// The column's label ("LISTEN TO" or "STRIPS"), under Back.
+    pub label: Rect,
     pub groups: [Rect; 6],
     pub title: Rect,
     pub back: Rect,
@@ -758,6 +762,8 @@ const TILE_H: i32 = 72;
 /// The sidechain list's Off button, and what it hears now beside Back.
 const OFF_H: i32 = 60;
 const NOW_W: i32 = 200;
+/// The list's "‹ Back": as tall as the editor's ‹ and in its place.
+const LIST_BACK_W: i32 = 112;
 
 /// Where the strip list goes in `r`.
 pub fn list_layout(r: Rect) -> ListLayout {
@@ -771,11 +777,15 @@ pub fn list_layout_for(r: Rect, sc: Option<ScParts>) -> ListLayout {
     let inner = panel.inset(14);
     let (left, right) = inner.take_left(200);
     let right = right.take_left(14).1;
+    // Back where the editor's ‹ is: the chain head card's inset.
+    let back = Rect::new(r.x + 10, r.y + (HEAD_H - 44) / 2, LIST_BACK_W, 44);
+    let label = Rect::new(left.x, back.bottom() + 8, left.w, 28);
+    let col = label.bottom() + 4;
     let off = sc
         .filter(|p| p.off)
-        .map(|_| Rect::new(left.x, left.y + 36, left.w, OFF_H));
+        .map(|_| Rect::new(left.x, col, left.w, OFF_H));
     // Below Off and a rule under it, the groups the list shows, packed.
-    let top = off.map_or(left.y + 36, |o| o.bottom() + 17);
+    let top = off.map_or(col, |o| o.bottom() + 17);
     let mut at = 0;
     let groups = std::array::from_fn(|i| {
         if sc.is_some_and(|p| !p.shown[i]) {
@@ -788,9 +798,8 @@ pub fn list_layout_for(r: Rect, sc: Option<ScParts>) -> ListLayout {
     let note_y = top + at * 56 + 4;
     let note = Rect::new(left.x, note_y, left.w, (left.bottom() - note_y).max(0));
     let (head, grid) = right.take_top(36);
-    let back = Rect::new(head.right() - 96, head.y, 96, 36);
-    let now = sc.map(|_| Rect::new(back.x - 12 - NOW_W, head.y, NOW_W, 36));
-    let arrows_x = now.map_or(back.x, |n| n.x);
+    let now = sc.map(|_| Rect::new(head.right() - NOW_W, head.y, NOW_W, 36));
+    let arrows_x = now.map_or(head.right() + 12, |n| n.x);
     let next = Rect::new(arrows_x - 12 - 44, head.y, 44, 36);
     let prev = Rect::new(next.x - 6 - 44, head.y, 44, 36);
     let title = Rect::new(head.x, head.y, prev.x - 8 - head.x, 36);
@@ -809,6 +818,7 @@ pub fn list_layout_for(r: Rect, sc: Option<ScParts>) -> ListLayout {
         .collect();
     ListLayout {
         panel,
+        label,
         groups,
         title,
         back,
@@ -1161,12 +1171,10 @@ impl ChainView {
         let listens = self.state.sidechain.as_ref();
         cx.canvas.fill_round_rect(ll.panel, 14, t.surface);
         cx.canvas.stroke_round_rect(ll.panel, 14, 1, t.outline);
-        let left = ll.panel.inset(14).take_left(200).0;
-        let label = Rect::new(left.x, ll.panel.y + 14, left.w, 28);
         cx.text(
             FontId::Bold,
             t.size_small - 2.0,
-            label,
+            ll.label,
             Align::Left,
             t.text_dim,
             if sc.is_some() { "LISTEN TO" } else { "STRIPS" },
@@ -1289,11 +1297,11 @@ impl ChainView {
         cx.canvas.fill_round_rect(ll.back, 10, t.raised);
         cx.text(
             FontId::Bold,
-            t.size_small,
+            t.size_body,
             ll.back,
             Align::Center,
             t.text,
-            "Back",
+            "‹  Back",
         );
         let n = list.strips.len();
         let page = ll.tiles.len().max(1);
@@ -1376,7 +1384,7 @@ impl ChainView {
             let area = Rect::new(
                 ll.title.x,
                 ll.title.bottom() + 10,
-                ll.back.right() - ll.title.x,
+                ll.now.map_or(ll.next.right(), |n| n.right()) - ll.title.x,
                 TILE_H,
             );
             cx.text(
@@ -2532,7 +2540,7 @@ impl Widget for ChainView {
                         .disabled_if(list.strips[i].refused.is_some()),
                 );
             }
-            out.push(Target::tap("strips-back", 0, "Back", ll.back));
+            out.push(Target::tap("strips-back", 0, "‹ Back", ll.back));
             return out;
         }
         if let Some(b) = l.back {

@@ -7,7 +7,8 @@
 //!   add) and PLAY or PLAY START starts the take, after the count-in; the
 //!   MPC's way, so REC held and PLAY pressed records at once. While playing,
 //!   REC punches in replacing and OVERDUB adding; while recording, REC
-//!   punches out and OVERDUB switches between replacing and adding. STOP
+//!   punches out, and OVERDUB switches a replacing take to adding or
+//!   punches an adding one out (never adding to replacing). STOP
 //!   lets go of ready. Following another device's Start and Stop while it
 //!   is stopped ([`Now::clock`]), the ready take records from its Start
 //!   (time/follow.rs), so PLAY keeps it ready and says so.
@@ -367,11 +368,15 @@ impl RecArm {
                 out.push(Do::Transport(Command::Record));
                 out
             }
-            // REC punches out (the music plays on); OVERDUB switches
-            // between replacing and adding.
+            // REC punches out (the music plays on). OVERDUB turns a
+            // replacing take into adding, and punches an adding take out:
+            // it never turns adding into replacing, which would start
+            // erasing the pattern in the middle of a take (Jay's device
+            // run, 20 Nov 2026: OVERDUB pressed again to stop adding
+            // erased notes).
             State::Recording | State::CountIn => vec![Do::Transport(match take {
-                Take::Replace => Command::Record,
-                Take::Add => Command::ToggleOverdub,
+                Take::Add if !now.overdub => Command::ToggleOverdub,
+                Take::Replace | Take::Add => Command::Record,
             })],
         }
     }
@@ -969,11 +974,41 @@ mod tests {
         );
         let recording = now(State::Recording);
         assert_eq!(a.press(Press::Rec, &recording), [t(Command::Record)]);
+        // Replacing: OVERDUB switches the take to adding.
         assert_eq!(
             a.press(Press::Overdub, &recording),
             [t(Command::ToggleOverdub)]
         );
         assert_eq!(a.ready, None);
+    }
+
+    /// OVERDUB pressed again while a take adds punches it out, as REC
+    /// does: it never switches the take to replacing, which would erase
+    /// the notes the playhead reaches from then on (Jay's device run, 20
+    /// Nov 2026). The same with REC and the loop armed together.
+    #[test]
+    fn overdub_while_adding_punches_out_and_never_starts_erasing() {
+        let mut a = RecArm::default();
+        for state in [State::Recording, State::CountIn] {
+            let adding = Now {
+                overdub: true,
+                ..now(state)
+            };
+            assert_eq!(a.press(Press::Overdub, &adding), [t(Command::Record)]);
+            assert_eq!(a.press(Press::Rec, &adding), [t(Command::Record)]);
+        }
+        let mut both = RecArm {
+            both: true,
+            ..RecArm::default()
+        };
+        let adding = Now {
+            overdub: true,
+            loop_taking: true,
+            ..now(State::Recording)
+        };
+        let out = both.press(Press::Overdub, &adding);
+        assert!(out.contains(&t(Command::Record)), "{out:?}");
+        assert!(!out.contains(&t(Command::ToggleOverdub)), "{out:?}");
     }
 
     #[test]

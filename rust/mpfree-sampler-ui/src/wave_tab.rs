@@ -415,6 +415,15 @@ pub enum WaveAction {
 /// The key a typed Warp tempo comes back with ([`NumberAsk::key`]).
 pub const TYPED_WARP_TEMPO: &str = "warp-tempo";
 
+/// What the Grain tool's note says after "Plays as One shot" while the
+/// sound doesn't play as grains (an undo took Granular away).
+pub const GRAIN_AGAIN: &str = "tap Grain to play it as grains";
+
+/// "Plays as One shot", "Plays as a loop": the sound's mode, in words.
+pub fn plays_as(mode: PlayMode) -> String {
+    format!("Plays as {}", mode_label(mode))
+}
+
 /// The Warp tempo, to be typed: 20 to 999 BPM, to a hundredth.
 pub fn warp_tempo_ask(r: &Region) -> Option<NumberAsk> {
     let w = r.warp.as_ref()?;
@@ -1472,6 +1481,23 @@ impl WaveTab {
         warp_tool::Row::ALL.get(i).copied()
     }
 
+    /// The Grain tool plays the sound as grains: picked (or tapped again,
+    /// after an undo) on a sound in another mode, it makes it Granular,
+    /// one undo step (Jay's device notes, 20 Nov 2026: "the grain tab
+    /// should automatically be in granular mode"). The Trim tool's Mode
+    /// puts it back.
+    fn grain_on(&mut self, st: &WaveState) -> Option<WaveAction> {
+        if self.tool != Tool::Grain || st.region.mode == PlayMode::Granular {
+            return None;
+        }
+        let mut r = st.region.clone();
+        r.mode = PlayMode::Granular;
+        self.gesture = None;
+        let a = self.edit(st, Key::Row(Row::Mode), r);
+        self.gesture = None;
+        a
+    }
+
     /// The Grain tool's row picked on the panel, if one is.
     fn grain_row(&self, ui: &Ui, st: &WaveState) -> Option<grain_tab::Row> {
         let i = ui.get::<SettingList>(REGION)?.selected;
@@ -1486,7 +1512,7 @@ impl WaveTab {
     fn grain_note(&self, st: &WaveState) -> String {
         let r = &st.region;
         if r.mode != PlayMode::Granular {
-            return format!("Mode is {}: pick Granular in Shape", mode_label(r.mode));
+            return format!("{}: {GRAIN_AGAIN}", plays_as(r.mode));
         }
         if let Some(note) = grain_tool::part_note(r, self.grain_part) {
             return note.to_string();
@@ -1750,7 +1776,7 @@ impl WaveTab {
             (TOOLS, EventKind::Tab(i)) => {
                 let tool = *Tool::ALL.get(*i)?;
                 self.set_tool(ui, st, tool);
-                None
+                self.grain_on(st)
             }
             (WAVE, EventKind::Marker { index, frame }) if self.tool == Tool::Slice => {
                 let cs = st.chop.clone()?;
