@@ -1811,7 +1811,7 @@ mod tests {
             // Poly on the pads, from the Synth tab.
             s.press("header", "tab", "Synth").settle();
             s.press("synth-pads-head", "play", "").settle();
-            assert!(s.app.pads_preview(), "{}", s.hint());
+            assert!(s.app.pads_chose_synth(), "{}", s.hint());
             assert!(!s.synth_on, "Track 1 keeps its kit");
             assert_eq!(s.track_kits.kit_of(0), Some(0));
             // Tried while stopped, then while the pattern plays: the synth
@@ -1848,7 +1848,7 @@ mod tests {
             assert!(s.track_kits.plays_synth(1) && s.synth_on);
             assert_eq!(s.app.track_sound(1), None, "no instrument of its own");
             assert!(!s.mix.instruments.holds(1), "no second synth");
-            assert!(!s.app.pads_preview());
+            assert!(s.app.pads_chose_synth(), "REC never moves the pads");
             assert_eq!(s.app.rec.ready, Some(Take::Replace));
             assert_eq!(s.track_kits.kit_of(0), Some(0), "Track 1 still the kit's");
             record(&mut s, &[2, 3]);
@@ -1879,6 +1879,108 @@ mod tests {
                 "{back:?}"
             );
             assert!(s.track_kits.plays_synth(1));
+        });
+    }
+
+    /// Pad focus (the instrument redesign's step 3, the design's proof): a
+    /// drum clip plays on Track 1 while the pads play Poly, chosen on the
+    /// Synth tab. Selecting other tracks and tapping a row of REC's list
+    /// never move the pads, the header names them on every page, and no
+    /// track or clip changes; a kit picked for the selected track, or the
+    /// header's chip (Follow track), gives the pads back to the track.
+    #[test]
+    fn the_pads_play_poly_while_a_drum_clip_plays_on_whichever_track_is_selected() {
+        use crate::app::PadFocus;
+        use crate::gui::FromUi;
+        use mpfree_time_ui::TimeAction;
+        use mpfree_transport::State;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            // The drums: pads 1 and 5 on Track 1's kit, recorded.
+            s.button("REC").settle();
+            s.button("PLAY");
+            let end = s.t() + 5.0;
+            while s.time.info().state != State::Recording && s.t() < end {
+                s.run_periods(1);
+            }
+            for p in [0, 4] {
+                s.pad(p, 100, 0.05);
+                s.run_for(0.1);
+            }
+            s.button("STOP").settle();
+            let tracks = s.time.project().tracks.clone();
+            assert!(tracks[0].slots.iter().any(Option::is_some), "the drum clip");
+            // Poly chosen for the pads, on the Synth tab: named in the header.
+            s.press("header", "tab", "Synth").settle();
+            s.press("synth-pads-head", "play", "").settle();
+            assert!(s.app.pads_chose_synth(), "{}", s.hint());
+            assert!(s.control("header", "chip", "Pads: Poly").is_some());
+            // The drum clip plays; the pads play Poly while Track 1, then
+            // Track 3 (selected), then Track 2 (a row of REC's list) is the
+            // armed one.
+            s.hits.played.clear();
+            s.button("PLAY START").run_for(0.1);
+            s.pad(2, 90, 0.05);
+            s.route(FromUi::Time(TimeAction::Arm(Some(2))));
+            s.run_for(0.05);
+            assert_eq!(s.app.track(), 2);
+            assert!(
+                s.app.pads_chose_synth(),
+                "selecting a track never moves the pads"
+            );
+            s.pad(3, 90, 0.05);
+            s.press("header", "tab", "Play").settle();
+            assert!(s.control("header", "chip", "Pads: Poly").is_some());
+            assert!(s.pads_play().starts_with("Pads: Poly"), "{}", s.pads_play());
+            let open = s.control("play-transport", "rec", "").unwrap().target;
+            s.press_target(&open).settle();
+            s.press("rec-list", "row", "Track 2 · new clip").settle();
+            s.press("rec-list", "close", "Close").settle();
+            s.run_for(0.05);
+            assert_eq!(s.app.track(), 1);
+            assert!(s.app.pads_chose_synth(), "REC's list never moves the pads");
+            s.pad(5, 90, 0.05);
+            s.run_for(4.0);
+            s.button("STOP").settle();
+            assert_eq!(s.previewed.len(), 3, "every hit played Poly");
+            assert!(
+                s.hits.played.iter().any(|p| p.track == 0),
+                "the drum clip played on"
+            );
+            assert!(
+                s.hits
+                    .played
+                    .iter()
+                    .all(|p| p.track == 0 && [0, 4].contains(&p.note)),
+                "no pad reached a kit or a track: {:?}",
+                s.hits.played
+            );
+            assert_eq!(s.time.project().tracks, tracks, "no track or clip changed");
+            assert!(
+                (0..3).all(|t| s.track_kits.kit_of(t) == Some(0)),
+                "every track keeps kit 1"
+            );
+            // A kit picked for the selected track: what the pads play.
+            s.open_kits();
+            let rows: Vec<_> = s
+                .controls()
+                .into_iter()
+                .filter(|c| c.widget == "kits" && c.target.id == "row")
+                .collect();
+            s.press_target(&rows[1].target).run_for(0.2);
+            assert_eq!(s.app.pads_focus(), PadFocus::Track);
+            assert_eq!(s.track_kits.entry(1), 1, "Track 2 plays kit 2");
+            assert_eq!(s.kit, 1, "and the pads with it");
+            // Chosen again, then the header's chip: Follow track.
+            s.press("header", "tab", "Synth").settle();
+            s.press("synth-pads-head", "play", "").settle();
+            assert!(s.app.pads_chose_synth(), "{}", s.hint());
+            s.press("header", "chip", "Pads: Poly").settle();
+            assert_eq!(s.app.pads_focus(), PadFocus::Track);
+            assert!(s.control("header", "chip", "Pads: Poly").is_none());
+            let before = s.previewed.len();
+            s.pad(0, 90, 0.05);
+            assert_eq!(s.previewed.len(), before, "the pads play Track 2's kit");
         });
     }
 
@@ -1929,7 +2031,7 @@ mod tests {
             // instrument, not the track (still Track 1's kit).
             s.press("header", "tab", "Synth").settle();
             s.press("synth-pads-head", "play", "").settle();
-            assert!(s.app.pads_preview(), "{}", s.hint());
+            assert!(s.app.pads_chose_synth(), "{}", s.hint());
             s.run_periods(2);
             let synth = (LoopSource::Pads, Some(Instrument::Synth));
             assert_eq!(s.looper.takes_from(), synth);

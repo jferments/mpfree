@@ -254,10 +254,10 @@ pub struct SynthPads {
 /// (Chromatic) or `Tab(1)` (In key).
 ///
 /// On the Synth tab, while the selected track's instrument is a kit, the
-/// bar is the **Play on the pads** button instead ([`PadsBar::play`]; Jay's
-/// device notes, 20 Nov 2026; app/pads_preview.rs): a tap anywhere on it
-/// gives `Tab(PLAY_TAP)`. While the synth is on the pads it reads "Back to
-/// Track 1's kit" ([`PadsBar::playing`]).
+/// bar is the **Play Poly on the pads** button instead ([`PadsBar::play`];
+/// Jay's device notes, 20 Nov 2026; app/pads_focus.rs): a tap anywhere on
+/// it gives `Tab(PLAY_TAP)`. While the synth is chosen for the pads it
+/// reads "Follow track" ([`PadsBar::playing`]).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PadsBar {
     /// "PADS · BANK A · BOOM BAP", "SYNTH · BANK B · C3 TO D#4".
@@ -266,8 +266,9 @@ pub struct PadsBar {
     /// "Play Poly on the pads", with its second line ("Track 1 keeps its
     /// kit"): the bar is that button.
     pub play: Option<(String, String)>,
-    /// The synth is on the pads: the button is raised and outlined, with a
-    /// stop square, rather than the accent with a play triangle.
+    /// The synth is chosen for the pads: the button (Follow track) is
+    /// raised and outlined, with a stop square, rather than the accent
+    /// with a play triangle.
     pub playing: bool,
 }
 
