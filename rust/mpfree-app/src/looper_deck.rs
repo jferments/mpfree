@@ -120,7 +120,7 @@ pub struct Channel {
     pub level: f32,
     /// How loud it plays now, 0 to 1 along the level bar.
     pub meter: f32,
-    /// Under an empty ring: what it records from ("Pads", "Line in"), or
+    /// Under an empty ring: what it records from ("Pads' instrument", "Line in"), or
     /// that UNDO brings back the loop cleared.
     pub foot: String,
     /// Soloed: the S beside the speaker lit.
@@ -159,9 +159,13 @@ pub struct DeckHead {
     pub memory: (String, f32),
     /// The pads are the loop keys (SHIFT + SAMPLER): the Pads switch lit.
     pub pads: bool,
-    /// Records from: what every loop records ("Pads", "Line in",
-    /// "Loops") and its level now, 0 to 1 along the meter.
+    /// Records from: what every loop records ("Pads' instrument", "Line
+    /// in", "Loops") and its level now, 0 to 1 along the meter. While a
+    /// take holds another source than the one picked, the take's.
     pub input: (String, f32),
+    /// While a take holds another source than the one picked: the pick,
+    /// which the next take records (the chip says "This take").
+    pub input_next: Option<String>,
     /// Capture, for Play's loop row (the Looper tab has it on What you
     /// played, over the bars it takes).
     pub capture: CaptureButton,
@@ -570,34 +574,61 @@ impl LoopDeck {
             },
             "Pads as loop keys",
         );
-        // Records from: what every loop records, its meter lit to the
-        // level (five bars).
+        // Records from: what every loop records, on one line when it fits
+        // ("Records from Line in"), else its caption over it; its meter lit
+        // to the level (five bars). While a take holds another source than
+        // the one picked, the take's under "This take", and the pick as the
+        // next take's when that fits.
         let pill = LoopDeck::input_rect(r).inset_xy(0, 3);
         cx.canvas.fill_round_rect(pill, 8, t.raised);
         let (word, level) = &self.head.input;
-        let cap = "Records from";
-        let cw = cx.measure(FontId::Sans, 12.0, cap);
+        let meter_w = 5 * 7;
         let ww = cx.measure(FontId::Bold, 14.0, word);
-        let total = cw + 8 + ww + 10 + 5 * 7;
-        let x0 = pill.x + ((pill.w - total) / 2).max(8);
-        cx.text(
-            FontId::Sans,
-            12.0,
-            Rect::new(x0, pill.y, cw + 2, pill.h),
-            Align::Left,
-            t.text_dim,
-            cap,
-        );
-        cx.text(
-            FontId::Bold,
-            14.0,
-            Rect::new(x0 + cw + 8, pill.y, ww + 2, pill.h),
-            Align::Left,
-            t.text,
-            word,
-        );
+        let (cap, held) = match &self.head.input_next {
+            Some(next) => {
+                let both = format!("THIS TAKE · NEXT: {}", next.to_uppercase());
+                let fits = cx.measure(FontId::Bold, 10.5, &both) <= pill.w - 24;
+                (if fits { both } else { "THIS TAKE".to_string() }, true)
+            }
+            None => ("Records from".to_string(), false),
+        };
+        let cw = cx.measure(FontId::Sans, 12.0, &cap);
+        let one_line = !held && cw + 8 + ww + 10 + meter_w <= pill.w - 16;
+        let (mx, word_rect) = if one_line {
+            let total = cw + 8 + ww + 10 + meter_w;
+            let x0 = pill.x + ((pill.w - total) / 2).max(8);
+            cx.text(
+                FontId::Sans,
+                12.0,
+                Rect::new(x0, pill.y, cw + 2, pill.h),
+                Align::Left,
+                t.text_dim,
+                &cap,
+            );
+            (
+                x0 + cw + 8 + ww + 10,
+                Rect::new(x0 + cw + 8, pill.y, ww + 2, pill.h),
+            )
+        } else {
+            let x0 = pill.x + 12;
+            let caps = if held {
+                cap.clone()
+            } else {
+                cap.to_uppercase()
+            };
+            cx.text(
+                FontId::Bold,
+                10.5,
+                Rect::new(x0, pill.y + 3, pill.w - 24, 13),
+                Align::Left,
+                if held { t.accent } else { t.text_dim },
+                &caps,
+            );
+            let mx = pill.right() - 12 - meter_w;
+            (mx, Rect::new(x0, pill.y + 15, mx - x0 - 6, pill.h - 17))
+        };
+        cx.text(FontId::Bold, 14.0, word_rect, Align::Left, t.text, word);
         let lit = (level.clamp(0.0, 1.0) * 5.0).round() as i32;
-        let mx = x0 + cw + 8 + ww + 10;
         for k in 0..5 {
             let bh = 6 + k * 3;
             let b = Rect::new(mx + k * 7, pill.y + pill.h / 2 + 9 - bh, 5, bh);
@@ -721,14 +752,36 @@ impl LoopDeck {
             cx.canvas.fill_round_rect(p.solo, 10, fill);
             cx.text(FontId::Bold, 15.0, p.solo, Align::Center, ink, "S");
         } else {
-            cx.text(
-                FontId::Sans,
-                13.0,
-                p.mute,
-                Align::Center,
-                t.text_dim,
-                &ch.foot,
-            );
+            // What it records from, on two lines when it doesn't fit on
+            // one ("Pads' / instrument").
+            let fits = cx.measure(FontId::Sans, 13.0, &ch.foot) <= p.mute.w - 8;
+            match ch.foot.split_once(' ').filter(|_| !fits) {
+                Some((a, b)) => {
+                    let m = p.mute;
+                    let half = m.h / 2;
+                    for (i, line) in [a, b].into_iter().enumerate() {
+                        let y = m.y + half - 17 + i as i32 * 17;
+                        cx.text(
+                            FontId::Sans,
+                            13.0,
+                            Rect::new(m.x, y, m.w, 17),
+                            Align::Center,
+                            t.text_dim,
+                            line,
+                        );
+                    }
+                }
+                None => {
+                    cx.text(
+                        FontId::Sans,
+                        13.0,
+                        p.mute,
+                        Align::Center,
+                        t.text_dim,
+                        &ch.foot,
+                    );
+                }
+            }
         }
     }
 }
@@ -809,7 +862,13 @@ impl Widget for LoopDeck {
             Target::tap(
                 "records-from",
                 0,
-                format!("Records from: {}", self.head.input.0),
+                match &self.head.input_next {
+                    Some(next) => format!(
+                        "Records from: this take {}, the next take {next}",
+                        self.head.input.0
+                    ),
+                    None => format!("Records from: {}", self.head.input.0),
+                },
                 LoopDeck::input_rect(r),
             ),
         ];

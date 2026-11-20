@@ -189,56 +189,70 @@ mod looper {
         });
     }
 
-    /// The loop records the pads as they are heard, with their effects:
-    /// the echo of the Play page's delay on the Drums is in the loop, and
-    /// the pad lands where it was played, though the mix comes a period
-    /// late (the final round: the echo was heard but not recorded).
+    /// The loop records what it records from as heard, with its effects,
+    /// and the pad lands where it was played though the mix comes a
+    /// period late. Pads' instrument is the Drums channel (its inserts
+    /// and fader): the echo of the Play page's delay on the Drums sounds
+    /// on Return A, outside it, so it stays out (20 Nov, the design
+    /// review: the pads' instrument, never the whole mix). Records from:
+    /// Master records the echo too (the final round of 16 Nov: the echo
+    /// was heard but not recorded).
     #[test]
     fn the_loop_records_the_pads_with_their_effects() {
+        use crate::looping::LoopSource;
         use crate::mixing::{PlayFx, DELAY_RETURN, DRUMS};
         use mpfree_fx::ids::mixer as mx;
         use mpfree_fx::StripId;
-        on_big_stack(|| {
-            let mut s = Session::new();
-            s.make_sounds();
-            s.mix.play(PlayFx::Strip {
-                strip: StripId::Track(DRUMS),
-                id: mx::send(DELAY_RETURN),
-                value: 0.0,
+        for master in [false, true] {
+            on_big_stack(move || {
+                let mut s = Session::new();
+                s.make_sounds();
+                s.mix.play(PlayFx::Strip {
+                    strip: StripId::Track(DRUMS),
+                    id: mx::send(DELAY_RETURN),
+                    value: 0.0,
+                });
+                if master {
+                    let _ = s.looper.set_source(LoopSource::Mix(StripId::Master));
+                }
+                s.press("header", "tab", "Looper");
+                s.button("REC").button("PLAY");
+                until_phase(&mut s, Phase::Recording, 0.5);
+                s.run_for(0.25);
+                s.pad(0, 127, 0.05);
+                s.run_for(1.5);
+                s.button("STOP").run_for(0.1);
+                assert_eq!(status(&s).phase, Phase::Playing);
+                assert!(
+                    !s.said().iter().any(|l| l.contains("records silence")),
+                    "{:?}",
+                    s.said()
+                );
+                let x = first_layer(&s);
+                let rms = |a: usize, b: usize| {
+                    (x[a..b].iter().map(|v| v[0] * v[0]).sum::<f32>() / (b - a) as f32).sqrt()
+                };
+                let hit = x.iter().position(|v| v[0].abs() > 0.01).expect("the pad");
+                // Played about 0.25 s into the bar (a period or two either
+                // way for where the session hands the press over), not a
+                // period later.
+                let at = hit as f64 / 44_100.0;
+                assert!((0.24..0.27).contains(&at), "the pad at {at} s");
+                // The pad's sound is gone in 0.15 s; the 1/8 dotted echo
+                // comes 0.375 s after it.
+                let ms = |m: usize| hit + m * 441 / 10;
+                let gap = rms(ms(250), ms(350));
+                let echo = rms(ms(375), ms(475));
+                if master {
+                    assert!(
+                        echo > 0.01 && echo > 5.0 * gap,
+                        "echo {echo}, before it {gap}"
+                    );
+                } else {
+                    assert!(echo < 1e-3, "no echo from Return A: {echo}");
+                }
             });
-            s.press("header", "tab", "Looper");
-            s.button("REC").button("PLAY");
-            until_phase(&mut s, Phase::Recording, 0.5);
-            s.run_for(0.25);
-            s.pad(0, 127, 0.05);
-            s.run_for(1.5);
-            s.button("STOP").run_for(0.1);
-            assert_eq!(status(&s).phase, Phase::Playing);
-            assert!(
-                !s.said().iter().any(|l| l.contains("Pads records silence")),
-                "{:?}",
-                s.said()
-            );
-            let x = first_layer(&s);
-            let rms = |a: usize, b: usize| {
-                (x[a..b].iter().map(|v| v[0] * v[0]).sum::<f32>() / (b - a) as f32).sqrt()
-            };
-            let hit = x.iter().position(|v| v[0].abs() > 0.01).expect("the pad");
-            // Played about 0.25 s into the bar (a period or two either
-            // way for where the session hands the press over), not a
-            // period later.
-            let at = hit as f64 / 44_100.0;
-            assert!((0.24..0.27).contains(&at), "the pad at {at} s");
-            // The pad's sound is gone in 0.15 s; the 1/8 dotted echo comes
-            // 0.375 s after it.
-            let ms = |m: usize| hit + m * 441 / 10;
-            let gap = rms(ms(250), ms(350));
-            let echo = rms(ms(375), ms(475));
-            assert!(
-                echo > 0.01 && echo > 5.0 * gap,
-                "echo {echo}, before it {gap}"
-            );
-        });
+        }
     }
 
     /// The steps the picked loop's UNDO would take back.
@@ -3021,7 +3035,7 @@ mod device_log {
             s.button("REC");
             wrote(&s, n, "looper: Record: armed", "");
             // The looper check's `^looper: loop of .* cut at STOP`, and
-            // never `^looper: Pads records silence`.
+            // never `^looper: (the take )?records silence`.
             s.run_for(3.0);
             let n = s.lines.len();
             s.button("STOP").run_for(0.2);
@@ -3029,7 +3043,8 @@ mod device_log {
             assert!(!s
                 .lines
                 .iter()
-                .any(|l| l.starts_with("looper: Pads records silence")));
+                .any(|l| l.starts_with("looper: records silence")
+                    || l.starts_with("looper: the take records silence")));
         });
     }
 }

@@ -17024,6 +17024,57 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("looper sample: {e}"),
     }
+    // A take holds its source (the design review of 20 Nov, point 6):
+    // Loop 6 records the pads' instrument, the master was picked while it
+    // records, so the chip says "This take" with the pick as the next
+    // take's, and the hint says so.
+    match sample_looper_jam(fonts()) {
+        Ok(mut p) => {
+            use crate::looping::LoopSource;
+            let mut v = p.looper.clone();
+            v.source = LoopSource::Mix(mpfree_fx::StripId::Master);
+            v.taking_from = Some(LoopSource::Pads);
+            p.apply(ToUi::Looper(Box::new(v)));
+            p.apply(ToUi::Tell(
+                "looper: this take keeps recording the pads' instrument (Kit 1); the master from the next take"
+                    .into(),
+            ));
+            out.push(("looper-this-take", p));
+        }
+        Err(e) => eprintln!("looper sample: {e}"),
+    }
+    // Records from: Master while the Loop track's echoes still ring in
+    // Return A: REC on an empty loop is refused, said in the hint.
+    match sample_looper_picking(fonts(), 4) {
+        Ok(mut p) => {
+            let mut v = p.looper.clone();
+            v.source = crate::looping::LoopSource::Mix(mpfree_fx::StripId::Master);
+            p.apply(ToUi::Looper(Box::new(v)));
+            p.apply(ToUi::Tell(
+                "looper: Loop 5 doesn't record: Return A still rings with the loop's echoes: \
+                 the master records once they die away"
+                    .into(),
+            ));
+            out.push(("looper-master-refused", p));
+        }
+        Err(e) => eprintln!("looper sample: {e}"),
+    }
+    // A take's source lost while it records (the master, a send to a
+    // return turned up): a gap of silence from here, said and counted.
+    match sample_looper_jam(fonts()) {
+        Ok(mut p) => {
+            let mut v = p.looper.clone();
+            v.source = crate::looping::LoopSource::Mix(mpfree_fx::StripId::Master);
+            p.apply(ToUi::Looper(Box::new(v)));
+            p.apply(ToUi::Tell(
+                "looper: the take records silence from here, the master can't be had: the Loop \
+                 track sends to Return A, so the loop would record its own echoes: turn that send down"
+                    .into(),
+            ));
+            out.push(("looper-take-gap", p));
+        }
+        Err(e) => eprintln!("looper sample: {e}"),
+    }
     // Loop 5 picked, empty: What you played, the last 8 bars heard with
     // their bar lines, and Capture over the last two.
     match sample_looper_picking(fonts(), 4) {

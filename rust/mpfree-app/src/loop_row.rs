@@ -608,7 +608,7 @@ mod tests {
                     } else {
                         RingState::Empty
                     },
-                    foot: "Pads".to_string(),
+                    foot: "Pads' instrument".to_string(),
                     ..Channel::default()
                 })
                 .collect(),
