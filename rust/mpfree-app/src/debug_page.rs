@@ -76,8 +76,9 @@ pub struct AudioNumbers {
     /// and pressure or knob values it merged to make room.
     pub late_let_gos: u64,
     pub merged_values: u64,
-    /// Note endings, unlocks and panics the time engine and the arps found
-    /// no room for (refactor A2): a bug, which must stay 0.
+    /// Note endings, unlocks and panics the time engine, the arps and the
+    /// instruments' queues found no room for (refactor A2, A2b): a bug,
+    /// which must stay 0.
     pub ends_lost: u64,
     pub peak_grains: usize,
     /// Grain Shape turns that waited for older grains to end.

@@ -16686,6 +16686,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         replaced: None,
         variant: None,
         scene: None,
+        rows: None,
     };
     st.done = vec![
         take(1, 0, false, false),
@@ -20935,6 +20936,7 @@ mod tests {
             replaced: None,
             variant: None,
             scene: None,
+            rows: None,
         };
         let mut st = p.time.clone();
         st.done = vec![take(1), take(2), take(3)];
@@ -21546,6 +21548,7 @@ mod tests {
             replaced: None,
             variant: None,
             scene: None,
+            rows: None,
         });
         p.apply(ToUi::Time(Box::new(st.clone())));
         assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));

@@ -785,8 +785,16 @@ impl GrainVoice {
         self.density() * self.size_frames() / f64::from(self.out_rate)
     }
 
+    /// Where the cloud reads (before spray), 0 to `len` into the span: the
+    /// position plus how far the scan has moved it, round the span. The
+    /// far right (100 %, nothing scanned) is the span's end, not its start.
     fn base_offset(&self, len: f64) -> f64 {
-        (f64::from(self.moved.position.clamp(0.0, 1.0)) * len + self.scan_offset).rem_euclid(len)
+        let at = f64::from(self.moved.position.clamp(0.0, 1.0)) * len + self.scan_offset;
+        if at == len {
+            len
+        } else {
+            at.rem_euclid(len)
+        }
     }
 
     /// How much longer than the size the varied grains are on average:
@@ -935,9 +943,14 @@ impl GrainVoice {
     ) {
         let n = left.len().min(right.len());
         let (start, end) = src.span();
-        if end - start < 8 {
-            // Nothing readable: let playing grains fall silent with the source.
+        if end - start < crate::buffer::MIN_SPAN {
+            // Nothing readable: let playing grains fall silent with the
+            // source. A sound that can never be long enough stops making
+            // grains, so the voice ends; a buffer still filling waits.
             self.drop_grains(budget);
+            if !src.grows() {
+                self.spawning = false;
+            }
             self.span = (start, end);
             self.clock += n as u64;
             return;
@@ -1420,8 +1433,18 @@ impl GrainVoice {
         // has to play is read, which keeps the start in step with the
         // cloud to come rather than opening with the sound's far end.
         let past = f64::from(age);
-        let pos = start as f64 + (self.base_offset(len) + spray * len * 0.5).rem_euclid(len)
-            - scan * past;
+        // A scanning cloud reads round and round the span; a still one
+        // stays where it is put, so spray past an end turns back from it,
+        // and the far right reads the sound's end (the clamps below fit
+        // each grain inside: a forward one ends on the last frame it can
+        // read, a reversed one starts from it).
+        let off = self.base_offset(len) + spray * len * 0.5;
+        let off = if scan == 0.0 {
+            fold(off, len)
+        } else {
+            off.rem_euclid(len)
+        };
+        let pos = start as f64 + off - scan * past;
         let pos = if reverse {
             pos.clamp(lo + extent, hi + speed * past)
         } else {
@@ -1592,6 +1615,16 @@ fn mix<S: GrainSource, const LEVEL: bool>(
         } else {
             i += 1;
         }
+    }
+}
+
+/// `x` folded back into 0 to `len` at both ends, as a mirror would.
+fn fold(x: f64, len: f64) -> f64 {
+    let m = x.rem_euclid(2.0 * len);
+    if m > len {
+        2.0 * len - m
+    } else {
+        m
     }
 }
 

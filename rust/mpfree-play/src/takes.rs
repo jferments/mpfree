@@ -40,6 +40,12 @@
 //! became, as long as nothing else changed the song in between (live to
 //! song, say); otherwise they leave it alone.
 //!
+//! Song → scenes fills rows: clips in their cells and each row's scene
+//! (its name and follow action). [`Takes::rows_edit`] keeps every cell and
+//! scene it changed, before and after, as one edit, so UNDO empties the
+//! rows again and redo fills them, cell by cell and scene by scene, as
+//! long as each is as the edit left it.
+//!
 //! A recorded note's pad pressure goes in with it ([`Takes::add_touched`]):
 //! into the clip's pressure first, which only ever grows, so undo and
 //! redo of the note need not touch it.
@@ -76,8 +82,8 @@ use mpfree_seq::arrange::Arrangement;
 use mpfree_seq::mpfree_moves::{Kind, Map, Point, Target};
 use mpfree_seq::steps::{Edit, MovesEdit};
 use mpfree_seq::{
-    touch_room, Clip, ClipSettings, DestId, Lock, ModelError, Note, Project, SceneSettings, Touch,
-    TouchPoint, Track, MAX_TRACKS,
+    touch_room, Clip, ClipSettings, DestId, Lock, ModelError, Note, Project, Scene, SceneSettings,
+    Touch, TouchKeep, TouchPoint, Track, MAX_TRACKS, SLOTS,
 };
 use mpfree_transport::time::Tick;
 
@@ -185,6 +191,30 @@ pub const DEFAULT_LIMIT: usize = 32;
 /// before adding one allocates.
 pub const TAKE_ROOM: usize = 256;
 
+/// Pressure values a clip may hold before [`Takes::reclaim_touch`] frees
+/// the ones nothing names any more: half its room (refactor B4b).
+pub const TOUCH_RECLAIM_AT: usize = mpfree_seq::MAX_TOUCH_POINTS / 2;
+
+/// Whether take `t` puts a clip in slot `slot` of `track`, or takes one
+/// out, or adds the track: the clip there is another one on its far
+/// side ([`Takes::reclaim_touch`]).
+fn swaps_clip(t: &Take, track: usize, slot: usize) -> bool {
+    t.made
+        .iter()
+        .chain(&t.removed)
+        .any(|(tr, sl, _)| (*tr, *sl) == (track, slot))
+        || t.track_added.as_ref().is_some_and(|(i, _)| *i == track)
+}
+
+/// Each note take `t` added to or erased from clip `slot` of `track`.
+fn notes_in(t: &mut Take, track: usize, slot: usize, f: &mut impl FnMut(&mut Note)) {
+    for (tr, sl, n) in t.added.iter_mut().chain(t.erased.iter_mut()) {
+        if (*tr, *sl) == (track, slot) {
+            f(n);
+        }
+    }
+}
+
 /// What one take changed. Each note is (track, slot, note).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Take {
@@ -243,6 +273,10 @@ pub struct Take {
     /// A scene's name, mutes or follow action changed
     /// ([`Takes::set_scene`]).
     pub scene: Option<Box<SceneEdit>>,
+    /// Whole rows changed at once ([`Takes::rows_edit`]: Song → scenes):
+    /// their scenes, before and after. The clips are in `made` and
+    /// `removed`.
+    pub rows: Option<Box<RowsEdit>>,
 }
 
 /// Why a take put a whole clip in place of another ([`Take::replaced`]).
@@ -264,6 +298,41 @@ pub struct SceneEdit {
     pub after: SceneSettings,
 }
 
+/// Rows changed as one edit ([`Takes::rows_edit`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RowsEdit {
+    /// The rows it changed, in order.
+    pub rows: Vec<usize>,
+    /// The scenes it changed, as (row, before, after), whole: a plain
+    /// row's scene is `Scene::default()`.
+    pub scenes: Vec<(usize, Scene, Scene)>,
+}
+
+/// Row `row`'s whole scene (a plain one past the last).
+fn whole_scene(project: &Project, row: usize) -> Scene {
+    project.scene(row).cloned().unwrap_or_default()
+}
+
+/// Give row `row` the scene `s`, whole, leaving no plain rows at the end
+/// of the project's scenes. Nothing past the last row.
+fn put_whole_scene(project: &mut Project, row: usize, s: &Scene) {
+    if let Some(at) = project.scene_mut(row) {
+        at.clone_from(s);
+    }
+    drop_plain_scenes(project);
+}
+
+/// Take the plain scenes off the end of the project's scenes.
+fn drop_plain_scenes(project: &mut Project) {
+    while project
+        .scenes
+        .last()
+        .is_some_and(|s| *s == Scene::default())
+    {
+        project.scenes.pop();
+    }
+}
+
 /// Row `row`'s settings (a plain row's are empty).
 fn scene_settings(project: &Project, row: usize) -> SceneSettings {
     project
@@ -281,13 +350,7 @@ fn put_scene(project: &mut Project, row: usize, s: &SceneSettings) -> Result<(),
         .scene_mut(row)
         .ok_or(ModelError::BadScene)?
         .set_settings(s)?;
-    while project
-        .scenes
-        .last()
-        .is_some_and(|s| *s == mpfree_seq::Scene::default())
-    {
-        project.scenes.pop();
-    }
+    drop_plain_scenes(project);
     Ok(())
 }
 
@@ -349,7 +412,8 @@ impl Takes {
     /// clip has no room for is left off the note (the second value says
     /// so); the note still goes in. The note as added. Undo and redo take
     /// the note out and put it back; its pressure stays in the clip, so
-    /// the note keeps it.
+    /// the note keeps it (even through [`Takes::reclaim_touch`], which
+    /// renumbers it).
     pub fn add_touched(
         &mut self,
         project: &mut Project,
@@ -906,6 +970,60 @@ impl Takes {
         Ok(number)
     }
 
+    /// Song → scenes, made by the caller: `before` is the project as it
+    /// was and `project` as it is now, with the same tracks. Every cell
+    /// and scene that changed, in any row, goes into one edit of its own:
+    /// a clip put in an empty cell goes in `made`, a clip taken out in
+    /// `removed`, a clip changed in both, and each row's scene before and
+    /// after. Undo takes each new clip out and puts back the one that was
+    /// there, and gives each row its scene back while it has the one the
+    /// edit gave it; redo the same way. The edit's number, or the latest
+    /// edit's when nothing changed (no take then).
+    pub fn rows_edit(&mut self, before: &Project, project: &Project) -> u32 {
+        let mut made = Vec::new();
+        let mut removed = Vec::new();
+        let mut rows = Vec::new();
+        let mut scenes = Vec::new();
+        for row in 0..SLOTS {
+            let mut changed = false;
+            for track in 0..project.tracks.len() {
+                let (was, now) = (before.clip(track, row), project.clip(track, row));
+                if was == now {
+                    continue;
+                }
+                changed = true;
+                if let Some(c) = was {
+                    removed.push((track, row, c.clone()));
+                }
+                if let Some(c) = now {
+                    made.push((track, row, c.clone()));
+                }
+            }
+            let (was, now) = (whole_scene(before, row), whole_scene(project, row));
+            if was != now {
+                changed = true;
+                scenes.push((row, was, now));
+            }
+            if changed {
+                rows.push(row);
+            }
+        }
+        if rows.is_empty() {
+            return self.edits;
+        }
+        self.edits += 1;
+        let number = self.edits;
+        self.push(Take {
+            number,
+            edited: true,
+            made,
+            removed,
+            rows: Some(Box::new(RowsEdit { rows, scenes })),
+            ..Take::default()
+        });
+        number
+    }
+
     /// CAPTURE into a clip that holds notes already (the one that was
     /// playing): add `notes` to clip `slot` of `track`, as a take of its
     /// own, with their pressure: each note's `touch` names its run in
@@ -1145,6 +1263,13 @@ impl Takes {
                 let _ = put_scene(project, e.row, &e.before);
             }
         }
+        if let Some(e) = take.rows.as_deref() {
+            for (row, was, now) in e.scenes.iter().rev() {
+                if whole_scene(project, *row) == *now {
+                    put_whole_scene(project, *row, was);
+                }
+            }
+        }
         if let Some((index, kept)) = &mut take.track_added {
             // Kept as it is now (its name, its clips), for redo.
             if project.tracks.len() == *index + 1 {
@@ -1194,6 +1319,13 @@ impl Takes {
         if let Some(e) = take.scene.as_deref() {
             if scene_settings(project, e.row) == e.before {
                 let _ = put_scene(project, e.row, &e.after);
+            }
+        }
+        if let Some(e) = take.rows.as_deref() {
+            for (row, was, now) in &e.scenes {
+                if whole_scene(project, *row) == *was {
+                    put_whole_scene(project, *row, now);
+                }
             }
         }
         for (track, slot, note) in &take.erased {
@@ -1302,6 +1434,61 @@ impl Takes {
     /// The takes that can be redone, the next one last.
     pub fn undone(&self) -> &[Take] {
         &self.undone
+    }
+
+    /// Free the pressure values clip `slot` of `track` holds that nothing
+    /// can play again (refactor B4b): what none of its notes names, nor
+    /// a note its Restore would bring back, nor a note an undo or redo
+    /// would put back in this clip. Every run that is kept is renumbered,
+    /// in the clip, its original and those takes, so undo and redo still
+    /// find their notes. The values freed (0: nothing to free, or no such
+    /// clip). The caller compiles the view again after.
+    ///
+    /// The takes that name this clip are the ones back to the take that
+    /// put it in its slot (or added its track), and the ones redo would
+    /// bring up to the one that would take it out or put another in:
+    /// past those, a take's notes name another clip's pressure, kept with
+    /// that clip in the take. What [`Takes::withdraw`] could put back is
+    /// forgotten: it only ever follows the edit just made, and this never
+    /// runs between the two. Allocates; for the control thread.
+    pub fn reclaim_touch(&mut self, project: &mut Project, track: usize, slot: usize) -> usize {
+        let Some(c) = clip(project, track, slot) else {
+            return 0;
+        };
+        let original = c.original.iter().flat_map(|o| &o.notes);
+        let mut runs: Vec<Touch> = c.notes.iter().chain(original).map(|n| n.touch).collect();
+        self.each_note_of(track, slot, &mut |n| runs.push(n.touch));
+        let keep = TouchKeep::of(c.touch.len(), runs);
+        if keep.keeps_all() {
+            return 0;
+        }
+        let freed = c.touch.len() - keep.kept();
+        c.touch = keep.kept_of(&c.touch).collect();
+        let original = c.original.iter_mut().flat_map(|o| o.notes.iter_mut());
+        for n in c.notes.iter_mut().chain(original) {
+            n.touch = keep.run(n.touch);
+        }
+        self.each_note_of(track, slot, &mut |n| n.touch = keep.run(n.touch));
+        self.evicted = None;
+        self.cleared.clear();
+        freed
+    }
+
+    /// Each note an undo or a redo would add to or take from clip `slot`
+    /// of `track` as it is now ([`Takes::reclaim_touch`]).
+    fn each_note_of(&mut self, track: usize, slot: usize, f: &mut impl FnMut(&mut Note)) {
+        for t in self.done.iter_mut().rev() {
+            notes_in(t, track, slot, f);
+            if swaps_clip(t, track, slot) {
+                break;
+            }
+        }
+        for t in self.undone.iter_mut().rev() {
+            if swaps_clip(t, track, slot) {
+                break;
+            }
+            notes_in(t, track, slot, f);
+        }
     }
 
     /// Captures so far: the next one is number `captures() + 1`.
@@ -1473,6 +1660,110 @@ mod tests {
             .iter()
             .map(|n| n.tick)
             .collect()
+    }
+
+    /// Refactor B4b: freeing a clip's unused pressure keeps every value a
+    /// note, its Restore, an undo or a redo can still bring back, and
+    /// renumbers them all alike; a take naming another clip's pressure is
+    /// left as it is.
+    #[test]
+    fn reclaiming_pressure_keeps_what_undo_redo_and_restore_bring_back() {
+        let run = |v: u8| -> Vec<TouchPoint> {
+            (0..3)
+                .map(|k| TouchPoint {
+                    at: k * 5,
+                    value: v + k as u8,
+                })
+                .collect()
+        };
+        let c = |p: &mut Project| p.tracks[0].slots[0].clone().unwrap();
+        let mut p = project();
+        let mut t = Takes::default();
+        // Take 1: A, then pressure no note names (a note whose take fell
+        // off the undo list), then B. Take 2: C, and A erased.
+        let (a, _) = t.add_touched(&mut p, &taken(0, 1), &run(10)).unwrap();
+        let orphan = c(&mut p).touch.len();
+        clip(&mut p, 0, 0).unwrap().add_touch(&run(70)).unwrap();
+        let (b, _) = t.add_touched(&mut p, &taken(100, 1), &run(20)).unwrap();
+        let (cc, _) = t.add_touched(&mut p, &taken(200, 2), &run(30)).unwrap();
+        let erased = Erased {
+            track: 0,
+            slot: 0,
+            note: a,
+            take: 2,
+        };
+        assert!(t.erase(&mut p, &erased));
+        // Take 3: D, undone (redo brings it back).
+        let (d, _) = t.add_touched(&mut p, &taken(300, 3), &run(40)).unwrap();
+        assert_eq!(t.undo(&mut p), Some(3));
+        // A note only Restore would bring back.
+        let r = clip(&mut p, 0, 0).unwrap().add_touch(&run(50)).unwrap();
+        let restored = Note {
+            touch: r,
+            ..taken(400, 0).note
+        };
+        clip(&mut p, 0, 0).unwrap().original = Some(Box::new(mpfree_seq::Original {
+            length: 3840,
+            notes: vec![restored],
+            locks: Vec::new(),
+            moves: mpfree_seq::mpfree_moves::Moves::new(),
+            variation: 1,
+        }));
+        let before = c(&mut p);
+        let values = |cl: &Clip, n: &Note| cl.touch_of(n).to_vec();
+        assert_eq!(before.touch.len(), 18);
+        assert_eq!(values(&before, &b), run(20));
+
+        assert_eq!(t.reclaim_touch(&mut p, 0, 0), 3, "the orphan's three");
+        let now = c(&mut p);
+        assert_eq!(now.touch.len(), 15);
+        assert!(!now.touch.iter().any(|x| x.value >= 70), "{orphan}");
+        // What plays now plays the same.
+        assert_eq!(now.notes.len(), before.notes.len());
+        for (n, m) in now.notes.iter().zip(&before.notes) {
+            assert_eq!(values(&now, n), values(&before, m));
+        }
+        let o = &now.original.as_ref().unwrap().notes[0];
+        assert_eq!(values(&now, o), run(50), "Restore's note");
+        // Redo brings D back with its pressure; undo of take 2 brings A
+        // back and takes C out.
+        assert_eq!(t.redo(&mut p), Some(3));
+        let dn = *c(&mut p).notes.iter().find(|n| n.tick == 300).unwrap();
+        assert_eq!(values(&c(&mut p), &dn), run(40));
+        assert_eq!(t.undo(&mut p), Some(3));
+        assert_eq!(t.undo(&mut p), Some(2));
+        let now = c(&mut p);
+        let an = now.notes.iter().find(|n| n.tick == 0).unwrap();
+        assert_eq!(values(&now, an), run(10));
+        assert!(!now.notes.iter().any(|n| n.tick == 200), "C taken out");
+        assert_eq!(t.redo(&mut p), Some(2));
+        assert_eq!(t.redo(&mut p), Some(3));
+        assert_eq!(c(&mut p).notes.len(), 3, "B, C, D");
+        let _ = (cc, d);
+        // Nothing more to free.
+        assert_eq!(t.reclaim_touch(&mut p, 0, 0), 0);
+
+        // Another clip put in its place (a Mutate): the takes before it
+        // name the old clip's pressure, and stay as they are.
+        let mut new = Clip::new("new", 3840);
+        new.add_touch(&run(90)).unwrap();
+        let keep = new.add_touch(&run(100)).unwrap();
+        new.add_note(Note {
+            touch: keep,
+            ..taken(0, 0).note
+        })
+        .unwrap();
+        t.replace_clip(&mut p, 0, 0, new, Replaced::Mutate).unwrap();
+        let old_takes: Vec<Take> = t.done()[..t.done().len() - 1].to_vec();
+        assert_eq!(t.reclaim_touch(&mut p, 0, 0), 3);
+        assert_eq!(&t.done()[..t.done().len() - 1], old_takes.as_slice());
+        let now = c(&mut p);
+        assert_eq!(values(&now, &now.notes[0]), run(100));
+        // Undo puts the old clip back, and its takes still find their notes.
+        assert!(t.undo(&mut p).is_some());
+        assert!(t.undo(&mut p).is_some());
+        let old = c(&mut p);
+        assert!(!old.notes.iter().any(|n| n.tick == 300), "D out");
     }
 
     /// The clip settings card: a change is an edit of its own, a turn of
@@ -1679,6 +1970,50 @@ mod tests {
             t.set_scene(&mut p, mpfree_seq::SCENES, named, None),
             Err(ModelError::BadScene)
         );
+    }
+
+    /// Song → scenes as one edit: every cell and scene it changed, so
+    /// undo gives back the project exactly and redo the filled rows; a
+    /// change of nothing is no take; a scene changed since is left alone.
+    #[test]
+    fn rows_filled_at_once_are_one_edit_and_undo_gives_the_project_back() {
+        use mpfree_seq::{Follow, FollowAction};
+        let mut p = project();
+        p.tracks.push(Track::new("u", 1));
+        p.tracks[1].slots[3] = Some(Clip::new("old", 3840));
+        p.scene_mut(1).unwrap().name = "Verse".into();
+        let mut t = Takes::default();
+        let before = p.clone();
+        assert_eq!(t.rows_edit(&before, &p), 0, "nothing changed");
+        assert!(t.done().is_empty());
+        // Two rows filled, one clip changed, one taken out.
+        for row in [4, 5] {
+            p.tracks[0].slots[row] = Some(Clip::new("a", 3840 * 2));
+            p.tracks[1].slots[row] = Some(Clip::new("b", 3840));
+            let s = p.scene_mut(row).unwrap();
+            s.name = format!("Part {row}");
+            s.follow = Some(Follow::after(2, FollowAction::Next));
+        }
+        p.tracks[0].slots[0] = Some(Clip::new("c2", 3840));
+        p.tracks[1].slots[3] = None;
+        let after = p.clone();
+        let n = t.rows_edit(&before, &p);
+        assert_eq!(n, 1);
+        let e = t.done()[0].rows.as_deref().unwrap();
+        assert_eq!(e.rows, [0, 3, 4, 5]);
+        assert_eq!(e.scenes.len(), 2);
+        assert_eq!(t.undo(&mut p), Some(n));
+        assert_eq!(p, before, "undo gives the project back");
+        assert_eq!(p.scenes.len(), 2, "the plain rows at the end go");
+        assert_eq!(t.redo(&mut p), Some(n));
+        assert_eq!(p, after, "redo fills the rows again");
+        // A scene changed since stays as it is; the rest goes back.
+        p.scene_mut(5).unwrap().name = "Mine".into();
+        t.undo(&mut p);
+        assert_eq!(p.scene(5).unwrap().name, "Mine");
+        assert_eq!(whole_scene(&p, 4), Scene::default());
+        assert!(p.tracks[0].slots[4].is_none() && p.tracks[1].slots[5].is_none());
+        assert_eq!(p.tracks[1].slots[3], before.tracks[1].slots[3]);
     }
 
     /// Reload clip: the saved state goes in as an edit of its own; undo

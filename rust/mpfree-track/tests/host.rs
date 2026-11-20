@@ -4,9 +4,7 @@ use mpfree_fx::{Mixer, MixerConfig};
 use mpfree_node::{Ctl, Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Tuning};
 use mpfree_play::{Event, Out, Sink, ALL};
 use mpfree_synth::{Fm, Poly};
-use mpfree_track::{
-    Instrument, Outputs, Sum, SwapError, TrackHost, MAX_EVENTS, QUIET_FRAMES, STOP_FADE,
-};
+use mpfree_track::{Instrument, Outputs, Sum, SwapError, TrackHost, QUIET_FRAMES, ROOM, STOP_FADE};
 
 const RATE: u32 = 44_100;
 
@@ -443,10 +441,10 @@ fn a_non_finite_block_is_dropped_and_the_node_reset() {
 }
 
 #[test]
-fn a_full_queue_counts_what_it_drops_and_long_blocks_are_counted() {
+fn a_busy_period_counts_what_it_leaves_out_and_long_blocks_are_counted() {
     let mut host = TrackHost::new(1, RATE, 256);
     host.swap(0, Some(poly())).unwrap();
-    for k in 0..MAX_EVENTS + 10 {
+    for k in 0..ROOM.values + 10 {
         host.param(0, (k % 128) as u32, mpfree_synth::params::CUTOFF, 1000.0);
     }
     assert_eq!(host.stats(0).dropped, 10);
@@ -464,6 +462,55 @@ fn a_full_queue_counts_what_it_drops_and_long_blocks_are_counted() {
         Some(1000.0)
     );
     assert_eq!(host.param_value(3, 0), None);
+}
+
+/// Every ending gets in however busy the period (refactor A2b): new notes
+/// and values past the room are left out and counted, every note ends, and
+/// nothing hangs.
+#[test]
+fn every_ending_gets_in_however_busy_the_period() {
+    let mut host = TrackHost::new(1, RATE, 256);
+    host.swap(0, Some(poly())).unwrap();
+    let mut out = Split::new(1, 128);
+    let mut frame = 0;
+    // Every note starts; ten end and start again, past the period's room
+    // for new notes; so do knob values past theirs.
+    for note in 0..128 {
+        assert!(host.note_on(0, 0, note, 100));
+    }
+    for note in 0..10 {
+        assert!(host.note_off(0, 1, note));
+        assert!(!host.note_on(0, 2, note, 100), "past the room: left out");
+    }
+    for _ in 0..ROOM.values + 5 {
+        host.param(0, 3, mpfree_synth::params::CUTOFF, 900.0);
+    }
+    assert_eq!(host.stats(0).dropped, 10 + 5);
+    // Every note-off still goes in; the ten left out end with nothing to
+    // end (their note-offs are left out, not lost).
+    for note in 0..128 {
+        host.note_off(0, 4, note);
+    }
+    // Locks: as many new ones as the room grants, then each put back.
+    let granted = (0..ROOM.unlocks).filter(|_| host.hold(0)).count();
+    assert_eq!(granted, ROOM.unlocks / 2);
+    for _ in 0..ROOM.unlocks {
+        assert!(host.unlock(0, 5, mpfree_synth::params::CUTOFF, 1000.0));
+    }
+    assert_eq!(host.stats(0).ends_lost, 0);
+    run(&mut host, &mut out, &mut frame, 1, 128);
+    assert_eq!(
+        host.param_value(0, mpfree_synth::params::CUTOFF),
+        Some(1000.0),
+        "the last value put back"
+    );
+    // Nothing hangs: two seconds on, every note has rung out.
+    let peaks = run(&mut host, &mut out, &mut frame, 690, 128);
+    assert!(peaks.last().unwrap()[0] < 1e-4, "{:?}", peaks.last());
+    // A new period has room again.
+    assert!(host.note_on(0, 0, 60, 100));
+    assert!(host.hold(0));
+    assert_eq!(host.stats(0).ends_lost, 0);
 }
 
 #[test]

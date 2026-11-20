@@ -26,7 +26,8 @@ use mpfree_transport::{Block, Command, Mark, State, Transport};
 
 use super::follow::{Follow, FollowCounts, Follower};
 use super::link::{
-    Counts, InPlace, PeriodEnd, Rx, StripCounts, ToAudio, ToControl, Tracks, Tx, POINTS_CHUNK,
+    Counts, InPlace, PeriodEnd, Rx, StripCounts, ToAudio, ToControl, Tracks, Tx, MAX_IN_PLACE,
+    POINTS_CHUNK,
     TOUCH_CHUNK,
 };
 use super::pad_wait::{DuePads, PadFrom, PadWait, PadWaits};
@@ -141,6 +142,14 @@ pub struct TimeAudio {
     /// A step edit missed and asked for a compile, which brings it: the
     /// next view taken ends it, so a run of misses asks once.
     asked: bool,
+    /// The number of the view it plays ([`ToAudio::View`]): a step edit
+    /// made on another one isn't made to it.
+    pub(super) view_n: u32,
+    /// The parts of the step edit coming ([`ToAudio::EditPart`]), kept
+    /// aside until it is whole: its id, its changes, how many came.
+    staged: [InPlace; MAX_IN_PLACE],
+    staged_id: u32,
+    parts: usize,
     /// The tempo last asked for (a SetTempo, or [`TimeAudio::start_at`]'s)
     /// and the frame it is due on, until the period that applies it has
     /// run: [`TimeAudio::follow_tempo`] compares the app's tempo with it,
@@ -214,6 +223,10 @@ impl TimeAudio {
             refused: 0,
             missed: 0,
             asked: false,
+            view_n: 0,
+            staged: [InPlace::EraseNote(mpfree_seq::Note::new(0, 1, 0, 1)); MAX_IN_PLACE],
+            staged_id: 0,
+            parts: 0,
             tempo_asked: None,
             map_asked: None,
             starts_refused: 0,
@@ -247,7 +260,7 @@ impl TimeAudio {
         self.send_returns();
         while let Some(m) = self.rx.recv() {
             match m {
-                ToAudio::View(v) => self.take_view(v),
+                ToAudio::View(v, n) => self.take_view(v, n),
                 ToAudio::Command(cmd) => {
                     if !self.command(cmd) {
                         self.refused += 1;
@@ -278,28 +291,39 @@ impl TimeAudio {
                     Some(slot @ None) => *slot = Some(c),
                     _ => self.free_chain(c),
                 },
-                ToAudio::Edit {
+                ToAudio::EditPart { id, change } => {
+                    if id != self.staged_id {
+                        (self.staged_id, self.parts) = (id, 0);
+                    }
+                    if let Some(c) = self.staged.get_mut(self.parts) {
+                        *c = change;
+                    }
+                    self.parts += 1;
+                }
+                ToAudio::EditEnd {
+                    id,
                     track,
                     slot,
-                    change,
-                } => self.edit(usize::from(track), usize::from(slot), change),
+                    view,
+                    n,
+                } => self.edit(id, (usize::from(track), usize::from(slot)), view, n),
             }
         }
     }
 
-    /// One change of a step edit, made to the view in place where a
-    /// compile would put it, without allocating. One the view cannot take
-    /// (no room left, or what it erases is not there) asks for a compile,
-    /// which brings it and the changes after it: once, until a new view
-    /// comes.
-    fn edit(&mut self, track: usize, slot: usize, change: InPlace) {
-        let v = &mut self.view;
-        let done = match change {
-            InPlace::AddNote(n) => v.add_note(track, slot, &n),
-            InPlace::EraseNote(n) => v.remove_note(track, slot, &n),
-            InPlace::AddLock(l) => v.add_lock(track, slot, &l, None),
-            InPlace::EraseLock(l) => v.remove_lock(track, slot, &l),
-        };
+    /// Step edit `id`, whole: its `n` changes, made on view `view`, to
+    /// clip `slot` of `track` in this view in place where a compile would
+    /// put them, all at once or none, without allocating (refactor A3).
+    /// One with a part missing, made on another view, or with a change
+    /// the view cannot take (no room left, or what it erases is not
+    /// there) asks for a compile, which brings it and the edits after it:
+    /// once, until a new view comes.
+    fn edit(&mut self, id: u32, (track, slot): (usize, usize), view: u32, n: u8) {
+        let n = usize::from(n);
+        let whole = id == self.staged_id && self.parts == n && n <= MAX_IN_PLACE;
+        self.parts = 0;
+        let done =
+            whole && view == self.view_n && self.view.edit_in_place(track, slot, &self.staged[..n]);
         if !done {
             self.missed += 1;
             if !std::mem::replace(&mut self.asked, true) {
@@ -310,13 +334,14 @@ impl TimeAudio {
 
     /// A new view: it plays from now on, with the recorded changes made
     /// since it was compiled. One that cannot catch up goes back.
-    fn take_view(&mut self, mut v: Box<PlayView>) {
+    fn take_view(&mut self, mut v: Box<PlayView>, n: u32) {
         let after = v.includes().map_or(self.recent.last(), |i| i.recorded);
         match self.recent.catch_up(&mut v, after) {
             Ok(()) => {
                 let old = std::mem::replace(&mut self.view, v);
                 self.give_back(old);
                 self.asked = false;
+                self.view_n = n;
             }
             Err(_) => {
                 self.behind += 1;

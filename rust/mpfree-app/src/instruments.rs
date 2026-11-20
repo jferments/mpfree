@@ -820,8 +820,10 @@ impl Instruments {
         };
         let key = lock_key(owner, id);
         let Some(value) = value else {
+            // The value put back is an ending: it always has a place, as
+            // each new lock asked first (below; refactor A2b).
             if let Some(back) = self.locks.unlock(key, track) {
-                self.host.param(s, offset, id, back);
+                self.host.unlock(s, offset, id, back);
             }
             return true;
         };
@@ -837,6 +839,11 @@ impl Instruments {
         let Some(now) = self.host.param_value(s, id) else {
             return false;
         };
+        // A new lock asks its slot's room first; in a period too busy it
+        // is left out (counted) and its end finds nothing to put back.
+        if !self.locks.held_by(key, track) && !self.host.hold(s) {
+            return true;
+        }
         match self.locks.lock(key, track, value, now, smooth) {
             Some(true) => self.host.param(s, offset, id, value),
             Some(false) => true,
@@ -955,6 +962,12 @@ impl Instruments {
         self.host.pop_retired()
     }
 
+    /// Endings the instruments' queues found no room for since the start:
+    /// a bug, which must stay 0 (refactor A2b).
+    pub fn ends_lost(&self) -> u64 {
+        self.host.ends_lost()
+    }
+
     /// Track `track`'s counts since its slot was lent to it: notes, drops
     /// and resets. All 0 while it has no instrument.
     pub fn stats(&self, track: usize) -> SlotStats {
@@ -965,6 +978,7 @@ impl Instruments {
         SlotStats {
             notes: now.notes - base.notes,
             dropped: now.dropped - base.dropped,
+            ends_lost: now.ends_lost - base.ends_lost,
             stray_offs: now.stray_offs - base.stray_offs,
             resets: now.resets - base.resets,
             swaps: now.swaps - base.swaps,

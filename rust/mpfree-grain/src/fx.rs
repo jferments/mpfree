@@ -133,6 +133,9 @@ impl GrainSource for Slice<'_> {
     fn rate(&self) -> u32 {
         self.buf.rate()
     }
+    fn grows(&self) -> bool {
+        true
+    }
     fn channels(&self) -> usize {
         self.buf.channels()
     }

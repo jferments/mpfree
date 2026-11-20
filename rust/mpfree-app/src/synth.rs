@@ -48,6 +48,7 @@ use mpfree_instruments::preset::{engine_of, Error as PresetError};
 use mpfree_instruments::sound::{has_design, is_design_key};
 use mpfree_instruments::{Design, Designed, Sound, SoundError};
 use mpfree_node::pedal::Pedals;
+use mpfree_node::room::{Limits, NodeRoom};
 use mpfree_node::{Ctl, Ctx, Cull, Node, NodeEvent, ParamInfo, Timed};
 use mpfree_synth::drum_params;
 use mpfree_synth::{
@@ -94,8 +95,20 @@ pub const MAX_OCTAVE: i32 = 3;
 pub const PAD_C: [u8; 3] = [0x2C, 0x00, 0x3F];
 pub const PAD_WHITE: [u8; 3] = [0x00, 0x2A, 0x3F];
 pub const PAD_BLACK: [u8; 3] = [0x00, 0x08, 0x3F];
-/// Note events one period can hold, per engine; more are counted and dropped.
-pub const MAX_EVENTS: usize = 128;
+/// What one period of an engine's queue takes (refactor A2b,
+/// `mpfree_node::room`): new notes and values have room of their own, and
+/// an ending (a note-off, a pedal coming up, a lock put back, a panic)
+/// always finds a place. Unlocks: two for each lock the table can hold
+/// ([`crate::locks::HOLDS`]), as [`Synth::lock`] asks before each new one.
+pub const ROOM: Limits = Limits {
+    starts: 128,
+    values: 256,
+    ends: 256,
+    unlocks: 2 * crate::locks::HOLDS,
+    all_offs: 16,
+};
+/// Places in each engine's queue: all its room lets in.
+pub const MAX_EVENTS: usize = ROOM.room();
 /// Frames a node renders at a time into the synth's own buffers.
 const SCRATCH: usize = 256;
 /// STOP's fade, in frames (10 ms at 44.1 kHz).
@@ -487,9 +500,15 @@ impl PadSettings {
 pub struct Counters {
     pub notes: u64,
     pub peak_voices: usize,
-    /// Note events that did not fit in a period, plus notes the synth had
-    /// no voice for (both should stay 0).
+    /// Notes the synth had no voice for, and hits on a pad past the 16
+    /// (both should stay 0).
     pub dropped: u64,
+    /// New notes, values and locks left out of a period too busy for them
+    /// (refactor A2b): something new gave way so nothing hangs.
+    pub busy: u64,
+    /// Endings (note-offs, pedals up, locks put back, panics) that found
+    /// no room: a bug, which must stay 0.
+    pub ends_lost: u64,
     /// Blocks dropped for a non-finite sample (should stay 0).
     pub resets: u64,
 }
@@ -575,9 +594,14 @@ pub struct Synth {
     choir: Sound<Choir>,
     rate: u32,
     /// Note events for each engine (in [`Engine::ALL`]'s order) this period.
-    events: [[Timed; MAX_EVENTS]; ENGINES],
+    events: Box<[[Timed; MAX_EVENTS]; ENGINES]>,
     len: [usize; ENGINES],
+    /// Which events go in each engine's queue, so an ending always fits.
+    rooms: [NodeRoom; ENGINES],
+    /// Hits on a pad past the 16, and endings with no place in the queue
+    /// though their room let them in (a bug).
     dropped_events: u64,
+    ends_lost: u64,
     /// The sustain and sostenuto pedals, holding the notes of the engine on
     /// the pads while it doesn't hear them itself (`Node::hears`).
     pedals: Pedals,
@@ -875,9 +899,14 @@ impl Synth {
             wind: plain(wind, rate),
             choir: plain(choir, rate),
             rate,
-            events: [[Timed::new(0, NodeEvent::AllOff); MAX_EVENTS]; ENGINES],
+            events: vec![[Timed::new(0, NodeEvent::AllOff); MAX_EVENTS]; ENGINES]
+                .into_boxed_slice()
+                .try_into()
+                .unwrap_or_else(|_| unreachable!("ENGINES queues")),
             len: [0; ENGINES],
+            rooms: [NodeRoom::new(ROOM); ENGINES],
             dropped_events: 0,
+            ends_lost: 0,
             pedals: Pedals::new(),
             left: [0.0; SCRATCH],
             right: [0.0; SCRATCH],
@@ -1412,13 +1441,26 @@ impl Synth {
         }
     }
 
+    /// Queues `ev` for `engine` if its room takes it (refactor A2b): a new
+    /// note or value in a period too busy is left out and counted; an
+    /// ending always goes in.
     fn push_raw(&mut self, engine: Engine, offset: u32, ev: NodeEvent) {
         let k = engine.index();
+        if self.rooms[k].admit(&ev) {
+            self.store(k, offset, ev);
+        }
+    }
+
+    /// Puts an event its room let in in engine `k`'s queue. The queue holds
+    /// all the room lets in, so it always fits; one that doesn't is an
+    /// ending lost, counted as the bug it is.
+    fn store(&mut self, k: usize, offset: u32, ev: NodeEvent) {
         if self.len[k] < MAX_EVENTS {
             self.events[k][self.len[k]] = Timed::new(offset, ev);
             self.len[k] += 1;
         } else {
-            self.dropped_events += 1;
+            debug_assert!(false, "the room let in more than the queue holds");
+            self.ends_lost += 1;
         }
     }
 
@@ -1477,7 +1519,12 @@ impl Synth {
         let Some(i) = player.index() else {
             return;
         };
-        if pad >= PADS || velocity == 0 {
+        if velocity == 0 {
+            return;
+        }
+        if pad >= PADS {
+            // A clip's hit past the synth's 16 pads plays nothing: counted.
+            self.dropped_events += 1;
             return;
         }
         self.release_pad(i, pad, offset);
@@ -1780,6 +1827,11 @@ impl Synth {
     /// Never allocates.
     pub fn render(&mut self, frame: u64, bpm: f64, left: &mut [f32], right: &mut [f32]) {
         let n = left.len().min(right.len());
+        // No frames: the events wait for the next render, endings and all
+        // (refactor A2b).
+        if n == 0 {
+            return;
+        }
         // The locks that ended play now: forget them. A knob a new owner
         // glides to, or the hand let go of, moves from the start (knob
         // owners, locks.rs).
@@ -1800,8 +1852,9 @@ impl Synth {
         }
         let len = self.len;
         self.len = [0; ENGINES];
-        if n == 0 {
-            return;
+        // A new period's queues: what is owed stays owed.
+        for room in &mut self.rooms {
+            room.period();
         }
         let on = self.settings.engine.index();
         let run: [bool; ENGINES] =
@@ -1864,6 +1917,8 @@ impl Synth {
                 node.process(&ctx, &self.events[k][first..e[k]], sl, sr);
                 if !sl.iter().chain(sr.iter()).all(|s| s.is_finite()) {
                     node.reset();
+                    // The reset ended its notes: nothing owed.
+                    self.rooms[k].clear();
                     if k == on {
                         self.forget_pads();
                         self.holders = [0; 128];
@@ -1890,6 +1945,9 @@ impl Synth {
                 if self.fade == 0 {
                     for e in Engine::ALL {
                         self.engine_node_mut(e).reset();
+                    }
+                    for room in &mut self.rooms {
+                        room.clear();
                     }
                     self.forget_pads();
                     self.holders = [0; 128];
@@ -1943,6 +2001,8 @@ impl Synth {
             notes: self.notes,
             peak_voices: self.peak_voices,
             dropped: self.dropped_events + self.poly.dropped + self.fm.dropped,
+            busy: self.rooms.iter().map(|r| r.refused).sum(),
+            ends_lost: self.ends_lost + self.rooms.iter().map(|r| r.lost).sum::<u64>(),
             resets: self.resets,
         }
     }
@@ -2102,8 +2162,13 @@ impl Synth {
         let e = self.settings.engine;
         let key = lock_key(e, id);
         let Some(value) = value else {
+            // The value put back is an ending: it always has a place, as
+            // each new lock asked first (below).
             if let Some(back) = self.locks.unlock(key, track) {
-                self.push(e, offset, NodeEvent::Param { id, value: back });
+                let k = e.index();
+                if self.rooms[k].unlock() {
+                    self.store(k, offset, NodeEvent::Param { id, value: back });
+                }
             }
             return true;
         };
@@ -2117,6 +2182,12 @@ impl Synth {
             _ => return false,
         };
         let now = self.node().param(id);
+        // A new lock asks its engine's room first, so its value put back
+        // will have a place; in a period too busy it is left out (counted)
+        // and its end finds nothing to put back.
+        if !self.locks.held_by(key, track) && !self.rooms[e.index()].hold() {
+            return true;
+        }
         match self.locks.lock(key, track, value, now, smooth) {
             Some(true) => self.push(e, offset, NodeEvent::Param { id, value }),
             Some(false) => {}
@@ -3227,6 +3298,8 @@ mod tests {
                     notes: 1,
                     peak_voices: 1,
                     dropped: 0,
+                    busy: 0,
+                    ends_lost: 0,
                     resets: 0
                 },
                 "{engine:?}"
@@ -3791,16 +3864,90 @@ mod tests {
     }
 
     #[test]
-    fn too_many_events_are_counted_not_kept() {
+    fn a_busy_period_leaves_new_notes_out_and_every_ending_in() {
         let mut s = Synth::new(44_100);
-        for _ in 0..MAX_EVENTS + 5 {
-            s.note_on(1, 80, 0);
+        // Every note starts (the arp's, by number), then five more hits
+        // past the period's room are left out; so are bends past it.
+        for note in 0..128 {
+            s.note_on_note(note, 80, 0);
         }
-        assert_eq!(s.len[0], MAX_EVENTS);
-        assert!(s.counters().dropped >= 5);
+        for note in 0..5 {
+            s.note_on_note(note, 80, 0);
+        }
+        for _ in 0..ROOM.values + 3 {
+            s.bend(0.1);
+        }
+        let c = s.counters();
+        assert_eq!((c.busy, c.ends_lost), (5 + 3, 0));
+        // Every note-off still goes in, the last holder's: the five left
+        // out were counted as holders, so their notes end with them.
+        for note in 0..128 {
+            s.note_off_note(note, 0);
+        }
+        let offs = |s: &Synth| {
+            s.queued()
+                .iter()
+                .filter(|e| matches!(e, NodeEvent::NoteOff { .. }))
+                .count()
+        };
+        assert_eq!(offs(&s), 123);
+        for note in 0..5 {
+            s.note_off_note(note, 0);
+        }
+        assert_eq!(offs(&s), 128);
+        assert!(s.len[s.engine().index()] <= MAX_EVENTS);
+        assert_eq!(s.counters().ends_lost, 0);
+        // A new period has room again.
         let mut frame = 0;
         run(&mut s, &mut frame, 1, 128);
         assert_eq!(s.len, [0; ENGINES]);
+        s.note_on_note(60, 80, 0);
+        assert_eq!(s.queued().len(), 1);
+        // A hit past the 16 pads plays nothing, and is counted.
+        let dropped = s.counters().dropped;
+        s.note_on_shifted(Player::Pads, PADS, 80, 0, &Shift::NONE);
+        assert_eq!(s.counters().dropped, dropped + 1);
+    }
+
+    #[test]
+    fn a_lock_put_back_always_finds_room_and_new_locks_ask_first() {
+        let mut s = Synth::new(44_100);
+        let ids: Vec<u16> = s
+            .node()
+            .params()
+            .iter()
+            .filter(|p| !p.readonly && p.max > p.min)
+            .map(|p| p.id)
+            .take(crate::locks::MAX)
+            .collect();
+        assert!(ids.len() >= 32, "enough knobs to fill a period");
+        // A period's values all spent: the first track's locks' values
+        // (it owns the knobs) are left out, but each new lock is held, up
+        // to the new holds a period grants; the rest are left out.
+        for _ in 0..ROOM.values {
+            s.bend(0.1);
+        }
+        let tracks = ROOM.unlocks / 2 / ids.len() + 1;
+        let mut held = 0;
+        for t in 0..tracks {
+            for &id in &ids {
+                assert!(s.lock(t, id, Some(0.5), 0));
+                held += 1;
+            }
+        }
+        let granted = held.min(ROOM.unlocks / 2).min(crate::locks::HOLDS);
+        assert_eq!(s.locks_holding(), ids.len().min(granted));
+        assert_eq!(s.counters().busy, (ids.len() + held - granted) as u64);
+        // Every lock ends in the same period: each value put back fits.
+        let before = s.queued().len();
+        for t in 0..tracks {
+            for &id in &ids {
+                assert!(s.lock(t, id, None, 0));
+            }
+        }
+        assert_eq!(s.locks_holding(), 0);
+        assert!(s.queued().len() > before, "the values under came back");
+        assert_eq!(s.counters().ends_lost, 0);
     }
 
     #[test]

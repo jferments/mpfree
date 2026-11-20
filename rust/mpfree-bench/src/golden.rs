@@ -1,7 +1,8 @@
 //! Golden regression checks: every bench case (every synth preset, the drum
 //! kits, the plucks, every effect, the sampler, the mixer, the arp and time
-//! engine, the looper) rendered for two seconds and compared with a stored
-//! fingerprint, `golden/cases.txt`.
+//! engine, the looper; not the step edits, which make no sound) rendered
+//! for two seconds and compared with a stored fingerprint,
+//! `golden/cases.txt`.
 //!
 //! The looper is rendered for 8 s instead: it records its first 4 s and only
 //! then plays back.
@@ -186,7 +187,12 @@ const HEADER: &str = "\
 fn golden_every_case_sounds_as_it_did() {
     let mut got = Vec::new();
     let mut broken = Vec::new();
-    for mut c in cases::all(RATE) {
+    // The step-edit cases make no sound: the instruction gate and their
+    // own tests in cases.rs check them.
+    for mut c in cases::all(RATE)
+        .into_iter()
+        .filter(|c| c.module != cases::CONTROL)
+    {
         let blocks = blocks_for(&c);
         match fingerprint(&mut c, blocks) {
             Ok(p) => got.push((c.name, p)),

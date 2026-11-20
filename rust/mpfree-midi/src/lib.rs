@@ -48,6 +48,7 @@ pub mod msg;
 pub mod output;
 pub mod port;
 pub mod profile;
+pub mod room;
 pub mod setup;
 pub mod smf;
 
