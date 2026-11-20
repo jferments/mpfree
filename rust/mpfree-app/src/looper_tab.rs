@@ -508,6 +508,14 @@ pub const SEND_CHOICES: [(&str, &str); 4] = [
 /// Send's Show in Clips.
 pub const SEND_SHOW: usize = 3;
 
+/// Records from's choices, as its picker shows them in the lanes' place
+/// (the deck's Records from opens it): title and what it records.
+pub const SOURCE_CHOICES: [(&str, &str); 3] = [
+    ("Pads", "what you play on the pads, as you hear it"),
+    ("Line in", "the INPUTS on the back of the MPC"),
+    ("Loops", "the other loops as you hear them"),
+];
+
 /// Where the panel's parts are.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EditorParts {
@@ -570,6 +578,7 @@ struct EditorLook {
     empty: Option<EmptyLook>,
     strip: Strip,
     send_open: bool,
+    sources: Option<usize>,
     history: Option<(HistoryList, usize)>,
     trim: Option<i64>,
     trimming: Option<(i64, i64)>,
@@ -610,6 +619,9 @@ pub struct LoopEditor {
     pub send_built: [bool; 4],
     /// Send's choices show in the lanes' place.
     send_open: bool,
+    /// Records from's choices show in the lanes' place, the one in use
+    /// (into [`SOURCE_CHOICES`]) lit.
+    sources: Option<usize>,
     /// A finger on a trim grip (true: the end), and the range kept so far.
     trimming: Option<(u64, bool, i64, i64)>,
     /// A finger on the ruler: where it went down and the 1/16 notes it
@@ -657,6 +669,7 @@ impl Default for LoopEditor {
             strip: Strip::default(),
             send_built: [false; 4],
             send_open: false,
+            sources: None,
             trimming: None,
             nudging: None,
             feedback: None,
@@ -807,6 +820,72 @@ impl LoopEditor {
     /// Close Send's choices (the loop emptied, or another was picked).
     pub fn close_send(&mut self) {
         self.send_open = false;
+    }
+
+    /// Open Records from's choices in the lanes' place, `now` (into
+    /// [`SOURCE_CHOICES`]) lit; open, close them.
+    pub fn toggle_sources(&mut self, now: usize) {
+        self.send_open = false;
+        self.sources = if self.sources.is_some() {
+            None
+        } else {
+            Some(now)
+        };
+    }
+
+    /// Records from's choices show, and the one lit.
+    #[cfg(test)]
+    pub fn sources(&self) -> Option<usize> {
+        self.sources
+    }
+
+    /// Records from's choices, side by side in the lanes' space.
+    fn source_rects(lanes: Rect) -> Vec<Rect> {
+        let n = SOURCE_CHOICES.len() as i32;
+        let inner = lanes.inset_xy(24, 20);
+        let w = (inner.w - 16 * (n - 1)) / n;
+        let h = inner.h.min(110);
+        let y0 = inner.y + (inner.h - h) / 2;
+        (0..n)
+            .map(|i| Rect::new(inner.x + i * (w + 16), y0, w, h))
+            .collect()
+    }
+
+    fn paint_sources(&self, cx: &mut PaintCx, lanes: Rect, now: usize) {
+        let t = cx.theme.clone();
+        cx.canvas
+            .fill_round_rect(lanes, 10, t.bg.mix(t.surface, 0.45));
+        group_label(cx, lanes.x + 24, lanes.y + 4, "RECORDS FROM");
+        for (i, (b, (title, what))) in LoopEditor::source_rects(lanes)
+            .into_iter()
+            .zip(SOURCE_CHOICES)
+            .enumerate()
+        {
+            let lit = i == now;
+            cx.canvas
+                .fill_round_rect(b, 12, if lit { t.accent } else { t.raised });
+            let (ink, dim) = if lit {
+                (t.on_accent, t.on_accent)
+            } else {
+                (t.text, t.text_dim)
+            };
+            cx.text(
+                FontId::Bold,
+                18.0,
+                Rect::new(b.x, b.y + b.h / 2 - 24, b.w, 26),
+                Align::Center,
+                ink,
+                title,
+            );
+            cx.text(
+                FontId::Sans,
+                13.0,
+                Rect::new(b.x + 10, b.y + b.h / 2 + 4, b.w - 20, 18),
+                Align::Center,
+                dim,
+                what,
+            );
+        }
     }
 
     fn steps_fit(rows: Rect) -> usize {
@@ -1145,6 +1224,7 @@ impl LoopEditor {
             empty: self.empty.clone(),
             strip: self.strip.clone(),
             send_open: self.send_open,
+            sources: self.sources,
             history: self
                 .history
                 .clone()
@@ -1978,7 +2058,9 @@ impl Widget for LoopEditor {
         let (fit, _) = LoopEditor::lane_fit(p.lanes);
         let wave_r = Rect::new(p.ruler.x, p.lanes.y, p.ruler.w, p.lanes.h);
         let play = self.play_x(wave_r.inset_xy(4, 0));
-        if self.send_open {
+        if let Some(now) = self.sources {
+            self.paint_sources(cx, p.lanes, now);
+        } else if self.send_open {
             self.paint_send(cx, p.lanes);
         } else if self.history.is_some() {
             self.paint_history(cx, p.lanes);
@@ -2084,6 +2166,12 @@ impl Widget for LoopEditor {
                 _ => false,
             };
             out.push(t.disabled_if(!on || chosen));
+        }
+        if let Some(now) = self.sources {
+            for (i, b) in LoopEditor::source_rects(p.lanes).into_iter().enumerate() {
+                out.push(Target::tap("source", i, SOURCE_CHOICES[i].0, b).disabled_if(i == now));
+            }
+            return out;
         }
         if self.send_open {
             for (i, b) in LoopEditor::send_rects(p.lanes).into_iter().enumerate() {
@@ -2246,6 +2334,7 @@ impl Widget for LoopEditor {
                         return Some(EventKind::Tab(1));
                     }
                     self.send_open = !self.send_open;
+                    self.sources = None;
                     return Some(EventKind::Tab(1));
                 }
                 if p.clear.contains(x, y) {
@@ -2275,6 +2364,19 @@ impl Widget for LoopEditor {
                         LoopAct::Faint(c)
                     });
                     return Some(EventKind::Tab(3));
+                }
+                if self.sources.is_some() {
+                    if let Some(i) = LoopEditor::source_rects(p.lanes)
+                        .iter()
+                        .position(|b| b.contains(x, y))
+                    {
+                        self.sources = None;
+                        self.acts.push(LoopAct::Strip(Ctl::Source(i as u8)));
+                        return Some(EventKind::Select(i));
+                    }
+                    // Anywhere else closes the choices.
+                    self.sources = None;
+                    return None;
                 }
                 if self.send_open {
                     if let Some(i) = LoopEditor::send_rects(p.lanes)

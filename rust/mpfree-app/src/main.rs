@@ -9672,7 +9672,7 @@ fn player_session(
         }
         // Length: Pattern follows the pattern playing, a few times a
         // second (it changes with a launch or an edit of a clip's length).
-        if i % 32 == 0 {
+        if i.is_multiple_of(32) {
             looper.set_pattern_bars(pattern_bars(&time));
         }
         // The loop, for its track; the line input comes with it. First
