@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-sampler-ui/src/pads_tab.rs rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs rust/mpfree-app/src/perform_tab.rs rust/mpfree-app/src/perform_pads.rs rust/mpfree-app/src/pad_synths.rs rust/mpfree-app/src/kit.rs rust/mpfree-browser-ui
-checked: 2026-11-19 f0b39161
+checked: 2026-11-20 14cca201
 -->
 
 # The Pads tab
@@ -38,6 +38,8 @@ A sound already in the kit can go on another pad without the browser: pick the p
 
 ## A pad's settings
 
+The settings are controls rather than a list: the sound has **‹** and **›**, the mode is a row of buttons, the mute group has **–** and **+**, and level, pan, tune and polyphony are knobs you drag up and down with a finger. Each knob is lit in the colour of the Q-Link that turns it (Q1 blue, Q2 green, Q3 amber, Q4 purple, as on the Q-Link cards elsewhere), so you can see which hardware knob does what.
+
 For a **Sample** pad (every pad starts as one), the settings are:
 
 - its **sound**;
@@ -48,7 +50,7 @@ For a **Sample** pad (every pad starts as one), the settings are:
 - **Effects**: the effects on the pad's own mixer channel (**+ FX** when it has none). Tap it, or push the wheel on it, to open the pad's chain in the Mix tab, and **‹** brings you back (see [Effects](effects.md#adding-an-effect-the-chain-editor)). A pad without a channel of its own (any but kit 1's A1 to A16) gets one when you add an effect, and gives it back once it has none (see [Effects on one pad](shaping-a-pad.md#effects-on-one-pad-or-on-the-whole-kit));
 - **Edit pad** ("layers, keys, scenes, slices ›"), the last row on every kind of pad: tap it, push the wheel on it, or press **PROG EDIT**, and Edit pad opens on the pad picked, with its layers and their velocity ranges, its envelope, filter, pitch and movement, what velocity and pressure change, its keygroup on a keyboard, the scenes A and B, what it stops and brings in, and each slice's own settings (see [Shaping how a pad plays](shaping-a-pad.md)). **‹ Pads** at the top right, the Pads tab at the top, or **PROG EDIT** again bring you back to the pads. An Instrument or MIDI out pad, and a pad with no sound, have no layers: the row is faint there, and a tap on it says why.
 
-Change a row as in any list (the wheel picks it, **–** and **+** change it, or push the wheel and turn), or rest a finger on it and turn the wheel. **Q-Links 1 to 4** turn level, pan, tune and voices. **SHIFT** + the data wheel steps through the pads that have a sound.
+Drag a knob, tap a button, or tap **‹** / **›** or **–** / **+**. The data wheel works on them too: it picks a control (the one picked is outlined), **–** and **+** change it, or push the wheel and turn; or rest a finger on a control and turn the wheel. **Q-Links 1 to 4** turn level, pan, tune and polyphony. On a Loop pad Q-Link 4 turns the tempo; on an Instrument pad the **Note** knob is lit as Q1, and on a MIDI out pad the **Channel** and **Note** knobs are lit as Q2 and Q1. **SHIFT** + the data wheel steps through the pads that have a sound.
 
 ## What a pad plays: Sample, Loop, Instrument, MIDI out
 

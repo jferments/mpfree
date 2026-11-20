@@ -430,7 +430,7 @@ mod tests {
                 s.control("chain", "strips-pick", "").is_some(),
                 "the returns"
             );
-            s.press("chain", "strips-back", "Back").run_for(0.2);
+            s.press("chain", "strips-back", "‹ Back").run_for(0.2);
             assert_eq!(engine(&mut s).title, "Synth FX");
             s.press("chain", "back", "").run_for(0.1);
             assert_eq!(s.view(), View::Mixer);
@@ -444,7 +444,7 @@ mod tests {
             s.press("header", "tab", "Pads").run_for(0.3);
             assert_eq!(s.view(), View::Pads);
             // A pad with no effects: + FX, and the picker up in Mix.
-            s.press("smp-pads-list", "row-button", "+ FX").run_for(0.2);
+            s.press("smp-pads-list", "button", "+ FX").run_for(0.2);
             assert_eq!(s.view(), View::Chain);
             let t = engine(&mut s);
             assert!(t.picking, "the picker up on the pad's empty chain");
@@ -457,8 +457,7 @@ mod tests {
             s.press("chain", "back", "").run_for(0.3);
             assert_eq!(s.view(), View::Pads);
             assert!(
-                s.control("smp-pads-list", "row-button", "Compressor")
-                    .is_some(),
+                s.control("smp-pads-list", "button", "Compressor").is_some(),
                 "the row names the pad's effect"
             );
             // Again, with the wheel to the row and a push: the chain on its
@@ -489,7 +488,7 @@ mod tests {
             s.run_for(0.2);
             assert_eq!(s.screen.sample.pad(), 20, "B5");
             assert_eq!(s.mix.pad_channels.channel(0, 20), None, "none yet");
-            s.press("smp-pads-list", "row-button", "+ FX").run_for(0.2);
+            s.press("smp-pads-list", "button", "+ FX").run_for(0.2);
             assert_eq!(s.view(), View::Chain);
             let lent = s.mix.pad_channels.channel(0, 20);
             assert_eq!(lent, Some(StripId::Pad(crate::mixing::PADS)));
@@ -501,18 +500,17 @@ mod tests {
             assert_eq!(s.view(), View::Pads);
             assert_eq!(s.mix.pad_channels.channel(0, 20), lent, "kept");
             assert!(
-                s.control("smp-pads-list", "row-button", "Compressor")
-                    .is_some(),
+                s.control("smp-pads-list", "button", "Compressor").is_some(),
                 "the row names the pad's effect"
             );
             // Taken off: plain again, and ‹ gives the channel back.
-            s.press("smp-pads-list", "row-button", "Compressor")
+            s.press("smp-pads-list", "button", "Compressor")
                 .run_for(0.2);
             assert_eq!(s.view(), View::Chain);
             s.press("chain", "remove", "Remove").run_for(0.3);
             s.press("chain", "back", "").run_for(0.3);
             assert_eq!(s.mix.pad_channels.channel(0, 20), None, "given back");
-            assert!(s.control("smp-pads-list", "row-button", "+ FX").is_some());
+            assert!(s.control("smp-pads-list", "button", "+ FX").is_some());
         });
     }
 
@@ -981,8 +979,8 @@ mod tests {
     }
 
     /// Play > Beats: four Kick steps tapped make the pattern, PLAY plays
-    /// the kick four times a bar, and a step tapped again is picked, then
-    /// switched off and kept.
+    /// the kick four times a bar; a step held is picked, and a step tapped
+    /// again comes out.
     #[test]
     fn steps_tapped_on_beats_play_in_time() {
         on_big_stack(|| {
@@ -1008,15 +1006,11 @@ mod tests {
             );
             s.button("STOP");
 
-            // A tap on a step that is on picks it (the Q-Links edit it); a
-            // second tap switches it off and keeps it (the redesign's step
-            // 3b): the note stays in the clip and the player leaves it out.
-            s.press("steps", "step", "Kick step 5");
-            assert_eq!(
-                on(&clip_row(&s, kick)),
-                [1, 5, 9, 13],
-                "the first tap picks it"
-            );
+            // A finger held on a step picks it (the Q-Links edit it), the
+            // step kept; a tap on a lit step takes it out (Jay's device
+            // run, 20 Nov 2026: no "off" from a tap).
+            s.hold_press("steps", "step", "Kick step 5");
+            assert_eq!(on(&clip_row(&s, kick)), [1, 5, 9, 13], "the hold picks it");
             let card = s.control("qlinks", "knob-card", "").map(|c| c.target.label);
             assert_eq!(
                 card.as_deref(),
@@ -1024,13 +1018,9 @@ mod tests {
                 "Q-Link 1 is its velocity"
             );
             s.press("steps", "step", "Kick step 5");
-            assert_eq!(
-                on(&clip_row(&s, kick)),
-                [1, 5, 9, 13],
-                "the second keeps it"
-            );
-            let step5 = s.time.steps().clip.and_then(|c| c.row(kick as u8)[4]);
-            assert!(step5.is_some_and(|st| !st.on), "the second switches it off");
+            assert_eq!(on(&clip_row(&s, kick)), [1, 9, 13], "the tap takes it out");
+            s.button("UNDO");
+            assert_eq!(on(&clip_row(&s, kick)), [1, 5, 9, 13], "UNDO");
         });
     }
 
@@ -1072,7 +1062,7 @@ mod tests {
             }
             assert!(!s.page().ends_with("· step"), "{}", s.page());
             assert!(s.control("throws", "throw", "").is_some());
-            s.press("steps", "step", "Kick step 5");
+            s.hold_press("steps", "step", "Kick step 5");
             assert!(s.page().ends_with("· step"), "{}", s.page());
             assert!(
                 s.control("throws", "throw", "").is_none(),
@@ -1147,16 +1137,16 @@ mod tests {
         });
     }
 
-    /// A tap never takes a step's settings away (the Play, Pads and
-    /// Sequencer redesign's step 3b): on Play's rows a lit step switches
-    /// off, keeping its velocity, and shows "off"; the next tap brings it
-    /// back as it was; ERASE + a tap takes it out and UNDO brings it back.
-    /// On the Sequencer's Steps a lit step is picked first, a tap on it
-    /// switches it off (the inspector says so) and the inspector's On
-    /// brings it back; Tie / Slide steps with a tap, and the Trig bank's
-    /// fourth Q-Link ramps the ratchet.
+    /// A tap puts a step in or takes it out (Jay's device run, 20 Nov
+    /// 2026: a tap that showed "off" instead of taking the step out was
+    /// unclear). On Play's rows and on the Sequencer's Steps a tap on a
+    /// lit step takes it out, UNDO bringing it back as it was; a finger
+    /// held on a step picks it for the inspector instead, the step kept.
+    /// The inspector's Off switches it off and kept (drawn "off"), and a
+    /// tap or its On brings it back; Tie / Slide steps with a tap, and the
+    /// Trig bank's fourth Q-Link ramps the ratchet.
     #[test]
-    fn a_tap_switches_a_step_off_and_keeps_it() {
+    fn a_tap_takes_a_step_out_and_a_hold_picks_it() {
         on_big_stack(|| {
             let mut s = Session::new();
             s.play_view("All").settle();
@@ -1179,29 +1169,30 @@ mod tests {
             s.press("steps", "step", "Kick step 1").settle();
             assert!(step(&s).is_some_and(|st| st.on), "a note on step 1");
 
-            // The Sequencer: picked, then a louder velocity.
+            // The Sequencer: held, it is picked and kept; then a louder
+            // velocity.
             s.play_view("Beats").settle();
-            s.press("steps", "step", "Kick step 1").settle();
+            s.hold_press("steps", "step", "Kick step 1").settle();
+            assert!(step(&s).is_some_and(|st| st.on), "the hold keeps it");
             assert_eq!(inspect(&s).title, "Step 1 · Kick");
             assert_eq!(inspect(&s).on, Some(true));
             s.qlink(0, 5).settle();
             let loud = step(&s).expect("the step").velocity;
             assert!(loud > crate::play_page::TAP_VELOCITY, "{loud}");
 
-            // Play: a tap switches it off and keeps it; another brings it
-            // back as it was.
+            // Play: a tap takes it out; UNDO brings it back as it was.
             s.play_view("All").settle();
+            assert!(
+                s.hint().starts_with("Tap a step: in or out"),
+                "{}",
+                s.hint()
+            );
             s.press("steps", "step", "Kick step 1").settle();
-            let st = step(&s).expect("the step is kept");
-            assert!(!st.on && st.velocity == loud, "{st:?}");
-            assert_eq!(off_mark(&s), (true, true), "drawn as off");
-            assert!(s.hint().starts_with("Tap a step: on or off (kept)"));
-            s.press("steps", "step", "Kick step 1").settle();
-            let st = step(&s).expect("the step");
-            assert!(st.on && st.velocity == loud, "{st:?}");
-            assert_eq!(off_mark(&s), (true, false));
+            assert_eq!(step(&s), None, "the tap took it out");
+            s.button("UNDO").run_for(0.2);
+            assert_eq!(step(&s).map(|st| st.velocity), Some(loud), "UNDO");
 
-            // ERASE + a tap takes it out; UNDO brings it back.
+            // ERASE + a tap takes it out too; UNDO brings it back.
             s.button_edge("ERASE", true);
             s.press("steps", "step", "Kick step 1");
             s.button_edge("ERASE", false);
@@ -1210,22 +1201,32 @@ mod tests {
             s.button("UNDO").run_for(0.2);
             assert_eq!(step(&s).map(|st| st.velocity), Some(loud), "UNDO");
 
-            // The Sequencer: the picked step's tap switches it off, and
-            // the inspector says so; its On brings it back.
+            // The Sequencer: the first tap on a lit step takes it out, no
+            // pick first.
             s.play_view("Beats").settle();
             s.press("steps", "step", "Kick step 1").settle();
-            s.press("steps", "step", "Kick step 1").settle();
-            assert!(step(&s).is_some_and(|st| !st.on));
+            assert_eq!(step(&s), None, "one tap takes it out");
+            s.button("UNDO").run_for(0.2);
+            assert_eq!(step(&s).map(|st| st.velocity), Some(loud), "UNDO");
+
+            // The inspector's Off switches it off and kept, drawn "off";
+            // a tap brings it back on, its On too.
+            s.hold_press("steps", "step", "Kick step 1").settle();
+            s.press("step-inspector", "off", "Step off, kept").settle();
+            assert!(step(&s).is_some_and(|st| !st.on && st.velocity == loud));
             let i = inspect(&s);
             assert_eq!(
                 (i.title.as_str(), i.on),
                 ("Step 1 · Kick · off", Some(false))
             );
-            s.press("step-inspector", "on", "Step on").settle();
+            assert_eq!(off_mark(&s), (true, true), "drawn as off");
+            s.press("steps", "step", "Kick step 1").settle();
             assert!(step(&s).is_some_and(|st| st.on && st.velocity == loud));
+            assert_eq!(off_mark(&s), (true, false));
             s.press("step-inspector", "off", "Step off, kept").settle();
             assert!(step(&s).is_some_and(|st| !st.on));
             s.press("step-inspector", "on", "Step on").settle();
+            assert!(step(&s).is_some_and(|st| st.on && st.velocity == loud));
 
             // Tie / Slide: a tap steps it.
             use mpfree_seq::Join;
@@ -1239,6 +1240,42 @@ mod tests {
             let ramp = step(&s).expect("the step").ramp;
             assert_eq!(ramp, 12);
             assert_eq!(inspect(&s).chips[6].1, "+12");
+        });
+    }
+
+    /// The hold that picks a step on the Sequencer's Steps is timed: a
+    /// finger lifted before it (a slow tap) still takes a lit step out,
+    /// and a finger held on an empty step, which has nothing to pick,
+    /// puts a note there when it lifts.
+    #[test]
+    fn a_slow_tap_still_toggles_and_an_empty_step_held_gets_a_note() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.play_view("Beats").settle();
+            let kick = lane(&s, "Kick").0;
+            use mpfree_ui::Touch;
+            let finger = |s: &mut Session, label: &str, held: f32| {
+                let t = s.control("steps", "step", label).expect("the step").target;
+                let (x, y) = t.centre();
+                let mut acts = Vec::new();
+                acts.extend(s.screen.touch(9, Touch::Down, x, y));
+                let mut left = held;
+                while left > 0.0 {
+                    s.screen.tick(0.05);
+                    left -= 0.05;
+                }
+                acts.extend(s.screen.touch(9, Touch::Up, x, y));
+                acts.extend(s.screen.take_actions());
+                for a in acts {
+                    s.route(a);
+                }
+                s.run_periods(4).settle();
+            };
+            finger(&mut s, "Kick step 3", 1.0);
+            assert_eq!(on(&clip_row(&s, kick)), [3], "held on an empty step");
+            assert!(!s.page().ends_with("· step"), "nothing picked");
+            finger(&mut s, "Kick step 3", 0.25);
+            assert_eq!(on(&clip_row(&s, kick)), Vec::<usize>::new(), "a slow tap");
         });
     }
 
@@ -1286,8 +1323,8 @@ mod tests {
             let locked = lock(&s, 4).expect("a lock on step 5");
             assert!(!s.page().ends_with("· step"), "let go: {}", s.page());
 
-            // Picked on the screen: its lock, with the ×.
-            s.press("steps", "step", &format!("{name} step 5"));
+            // Held on the screen: its lock, with the ×.
+            s.hold_press("steps", "step", &format!("{name} step 5"));
             let i = inspect(&s);
             assert_eq!(i.locks.len(), 1, "{i:?}");
             assert_eq!(i.locks[0].1, "Tune");
@@ -1307,7 +1344,7 @@ mod tests {
             assert_eq!(lock(&s, 8), Some(locked), "the copy has the lock");
 
             // Clear step 9: out, its lock too; UNDO brings both back.
-            s.press("steps", "step", &format!("{name} step 9"));
+            s.hold_press("steps", "step", &format!("{name} step 9"));
             assert_eq!(inspect(&s).title, format!("Step 9 · {name}"));
             s.press("step-inspector", "clear", "Clear the step");
             assert_eq!(on(&clip_row(&s, 4)), [1, 5]);

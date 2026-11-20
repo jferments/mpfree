@@ -20,9 +20,10 @@ Press **STEP SEQ** from any page to come here, with the pads turned into the ste
 A **pattern** is a loop of steps, like a grid: each row is a pad, each column a moment in time (a 16th note to begin with). A lit square plays that pad at that moment.
 
 - **Tap an empty square** to put a note there.
-- **Tap a lit square** to pick it: it gets a white outline, the step inspector opens at the bottom, and the Q-Links turn its settings (below).
-- **Tap the picked square again** to switch it off. It keeps everything (velocity, length, condition, locks), shows as an outline with **off** in it, and another tap switches it back on as it was. This is how you drop a hit out and back in without losing it.
-- **Hold ERASE and tap a square** to take the step out for good, or use **Clear** in the step inspector. **UNDO** brings it back.
+- **Tap a lit square** to take the note out. **UNDO** brings it back as it was, settings and all.
+- **Hold your finger on a lit square** for a moment to pick it: it gets a white outline, the step inspector opens at the bottom, and the Q-Links turn its settings (below). Holding a step pad with **STEP SEQ** on does the same.
+- **Hold ERASE and tap a square** also takes a step out, or use **Clear** in the step inspector.
+- To drop a hit out and bring it back later without losing its settings, pick it and tap **Off** in the step inspector. It shows as an outline with **off** in it, and a tap on it switches it back on as it was.
 
 Changes play the next time the pattern comes round. **PLAY** starts the pattern on the screen when nothing else is playing, and a line moves across the grid to show where it is.
 
@@ -47,11 +48,11 @@ Each square shows its step:
 | A triangle at the bottom | A nudge: pointing left for early, right for late. |
 | A bar running into the next square | A long note. |
 | Purple dots at the top right | Locks: the step changes the sound. |
-| An outline in the row's colour with **off** in it | A step switched off (its locks' dots stay). |
+| An outline in the row's colour with **off** in it | A step switched off with the inspector's **Off** (its locks' dots stay). Tap it to switch it back on. |
 
 ## A step's settings
 
-Tap a lit square to pick it. The Q-Links now turn its four main settings:
+Hold your finger on a lit square to pick it. The Q-Links now turn its four main settings:
 
 | Q-Link | Setting | What it does |
 |---|---|---|
@@ -80,7 +81,7 @@ While a step is picked, the bottom of the Steps view (where the throws are) show
 - **Its eight settings**, with the ones the Q-Links turn outlined: velocity, length, nudge, chance, condition, ratchet, ramp and **Tie / Slide**. Tie / Slide changes with a tap: **off**; **tie**, which joins the step's note to the same note before it with no new attack; or **slide**, which overlaps the note before so a synth set to glide slides into it.
 - **Step**, **Trig** and **Sound**, which you can tap instead of pressing **Q-LINK**.
 - **Locks on this step**, each with a **×** that takes it off.
-- **On** and **Off**, which switch the step off and back on with everything kept (the title says "off" while it is).
+- **On** and **Off**, which switch the step off and back on with everything kept (the title says "off" while it is). A tap on a step that is off also switches it back on.
 - **Copy**: tap it, then tap the step on the same row that should get a copy.
 - **Clear**, which takes the step out.
 
@@ -187,7 +188,7 @@ Programming steps is precise; playing in feels human. To record what you play on
 3. Play. Press **STOP** when you're done: what you played appears on the pattern.
 4. To add to it without erasing the rest, press **OVERDUB** instead of REC, then **PLAY**: the chip says **READY TO ADD**, and the take adds to what's there.
 
-While the music plays, **REC** punches in (replacing) and **OVERDUB** punches in adding; while it records, **REC** punches out and **OVERDUB** switches between replacing and adding. Press **UNDO** to take back the last recording, and **SHIFT + UNDO** brings it back. If you started recording by mistake, **UNDO** while it records throws the take away and the music plays on.
+While the music plays, **REC** punches in (replacing) and **OVERDUB** punches in adding; while it records, **REC** punches out, and **OVERDUB** turns a replacing take into adding, or, while it adds, punches out too. OVERDUB never starts erasing in the middle of a take. Press **UNDO** to take back the last recording, and **SHIFT + UNDO** brings it back. If you started recording by mistake, **UNDO** while it records throws the take away and the music plays on.
 
 Every recording is kept as a **take**, so UNDO and SHIFT + UNDO step back and forward through them. To have notes land on the grid as you play, set **Quantise** in the Arrange tab's Record settings. There's more on recording, takes and the Arrange tab in [Clips and patterns](clips.md).
 

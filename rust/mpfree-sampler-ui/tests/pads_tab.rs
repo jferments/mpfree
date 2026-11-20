@@ -695,9 +695,9 @@ fn the_edit_pad_row_opens_edit_pad_and_is_faint_on_a_pad_with_no_layers() {
     );
     let list = s.ui.get::<SettingList>(pads_tab::LIST).unwrap();
     assert!(list.buttons.contains(&k) && list.why_faint(k).is_none());
-    // A tap on its button, as a finger gives it, in view under the rest.
+    // A tap on its button on the panel, as a finger gives it.
     let r = s.ui.rect_of(pads_tab::LIST).unwrap();
-    let (_, button) = list.row_rects(r, k).expect("Edit pad is in view");
+    let button = list.control_rect(r, k).expect("Edit pad is on the panel");
     assert_eq!(
         act(&mut s, pads_tab::LIST, EventKind::Tab(k)),
         Some(PadsAction::EditPad)
@@ -718,7 +718,7 @@ fn the_edit_pad_row_opens_edit_pad_and_is_faint_on_a_pad_with_no_layers() {
     let why = "A11 is an Instrument pad: it plays a synth voice, and has no layers to edit";
     let list = s.ui.get::<SettingList>(pads_tab::LIST).unwrap();
     assert_eq!(list.why_faint(k), Some(why));
-    let (_, button) = list.row_rects(r, k).unwrap();
+    let button = list.control_rect(r, k).unwrap();
     let (x, y) = (button.x + button.w / 2, button.y + button.h / 2);
     let ev = s.ui.touch(2, Touch::Down, x, y).unwrap();
     s.ui.touch(2, Touch::Up, x, y);
@@ -961,4 +961,67 @@ fn the_types_sample_screen_shows_a_pad_of_each_type() {
         s.ui.get::<SectionChips>(pads_tab::TYPE).unwrap().selected,
         3
     );
+}
+
+/// The Pad list is a panel of controls (Jay's device notes, 20 Nov 2026,
+/// mockup B): Mode as its five buttons, the settings the Q-Links turn as
+/// knobs lit in Q1 to Q4's colours, and a knob dragged up steps its row
+/// as the list's arrows did.
+#[test]
+fn the_pad_list_is_a_panel_of_knobs_in_the_qlinks_colours() {
+    use mpfree_sampler_ui::panel::Look;
+    let mut s = pads(PAD);
+    let list = s.ui.get::<SettingList>(pads_tab::LIST).unwrap();
+    assert!(list.panel.is_some(), "drawn as a panel");
+    assert_eq!(list.controls.len(), list.rows.len());
+    let at = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap();
+    let mut tints = Vec::new();
+    for (k, row) in pads_tab::QLINK_ROWS.iter().enumerate() {
+        let c = &list.controls[at(*row)];
+        assert!(matches!(c.look, Look::Knob { .. }), "{row:?} is a knob");
+        let tint = c
+            .tint
+            .unwrap_or_else(|| panic!("{row:?} lit as Q{}", k + 1));
+        assert!(!tints.contains(&tint), "each Q-Link its own colour");
+        tints.push(tint);
+    }
+    let Look::Choice { options, on, .. } = &list.controls[at(Row::Mode)].look else {
+        panic!("Mode is a row of buttons");
+    };
+    assert_eq!(options.len(), 5);
+    assert_eq!(options[*on], row_value(&s, Row::Mode));
+    assert!(matches!(
+        list.controls[at(Row::MuteGroup)].look,
+        Look::Stepper
+    ));
+    assert!(matches!(
+        list.controls[at(Row::EditPad)].look,
+        Look::Button(_)
+    ));
+    // A finger dragged up the Level knob turns it up.
+    let r = s.ui.rect_of(pads_tab::LIST).unwrap();
+    let knob = list.control_rect(r, at(Row::Level)).unwrap();
+    let (x, y) = (knob.x + knob.w / 2, knob.y + knob.h / 2);
+    s.ui.touch(1, Touch::Down, x, y);
+    let mut steps = Vec::new();
+    for dy in (6..=60).step_by(6) {
+        if let Some(ev) = s.ui.touch(1, Touch::Move, x, y - dy) {
+            steps.push(ev);
+        }
+    }
+    s.ui.touch(1, Touch::Up, x, y - 60);
+    let ev = steps
+        .iter()
+        .find(|e| matches!(e.kind, EventKind::Step { .. }))
+        .expect("the drag steps the knob");
+    assert_eq!(ev.widget, pads_tab::LIST);
+    let EventKind::Step { index, delta } = ev.kind else {
+        unreachable!()
+    };
+    assert_eq!(index, at(Row::Level));
+    assert!(delta > 0, "up is louder");
+    let before = s.project.pad(PAD).unwrap().level_db;
+    let a = act(&mut s, pads_tab::LIST, ev.kind.clone()).expect("a pad edit");
+    apply(&mut s, &a);
+    assert!(s.project.pad(PAD).unwrap().level_db > before);
 }
