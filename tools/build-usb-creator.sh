@@ -97,8 +97,14 @@ fi
 step "The free drum kits"
 kits_cache="${XDG_CACHE_HOME:-$HOME/.cache}/mpfree-free-kits"
 mkdir -p "$out"
-cargo run --manifest-path rust/Cargo.toml --release --locked -p mpfree-factory --bin mpfree-free-kits -- \
-  --cache "$kits_cache" --out "$out/free-kits" | tail -n 1
+echo "(the first time, this builds the kit maker and fetches the samples: a few minutes)"
+# It lists every pad of every kit; that goes to a log, and only its last line here.
+if ! cargo run --manifest-path rust/Cargo.toml --release --locked -p mpfree-factory --bin mpfree-free-kits -- \
+  --cache "$kits_cache" --out "$out/free-kits" >"$out/free-kits.log" 2>&1; then
+  tail -n 20 "$out/free-kits.log" >&2
+  stop "the free drum kits couldn't be made: the lines above say why, and $out/free-kits.log has them all."
+fi
+tail -n 1 "$out/free-kits.log"
 
 step "Collecting them for the creator"
 rm -rf "$programs"

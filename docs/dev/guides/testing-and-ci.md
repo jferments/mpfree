@@ -39,7 +39,7 @@ filters, so the check always reports.
 
 | Job | Checks | Typical time |
 | --- | --- | --- |
-| `syntax` | Shell syntax; static no-write checks on the read-only scripts; about 20 Python test files for the device tools against fakes (BusyBox, offline images, DTBs, the RK3288 ROM tools); `python3 -m unittest discover -s tests` (12 more) | ~1 min |
+| `syntax` | Shell syntax; static no-write checks on the read-only scripts; about 20 Python test files for the device tools against fakes (BusyBox, offline images, DTBs, the RK3288 ROM tools); the one-command USB creator build against stand-in tools (`tools/tests/test_build_usb_creator.py`); `python3 -m unittest discover -s tests` (12 more) | ~1 min |
 | `core` | C++ reference engine build, `ctest`, WAV format and size | ~10 s |
 | `lint` | `cargo clippy --workspace --all-targets` with warnings as errors, and `cargo fmt --check`, on a pinned toolchain | ~1 min |
 | `rust` | After `instructions`: all workspace tests, natively in debug; the `mpfree-bench` no-allocation check; the FX quality ratchet; host self-tests and fixed-output renders; C++/Rust WAV parity | ~12 min |
@@ -134,7 +134,7 @@ the `syntax` job.
 
 ### The USB creator's release workflow
 
-[`.github/workflows/release-creator.yml`](../../../.github/workflows/release-creator.yml) is not CI: it runs only by hand (**Run workflow**) or on a `creator-vX.Y.Z` tag, and makes a draft release of the USB creator for Linux, Windows and macOS ([Releases](../design/usb-creator.md#releases)). MPFree's programs for the MPC, its free drum kits (`mpfree-free-kits`, which fetches the samples `rust/mpfree-factory/free-kits.txt` pins from GitHub and keeps them in the runner's tool cache, `_work/_tool/mpfree-free-kits`) and the draft itself use the self-hosted runners; the creator is built on GitHub's own Ubuntu 22.04, Windows and macOS runners, which count against the account's Actions minutes (about 180 counted minutes a release). Each build runs the creator's tests on its own system and lists that machine's USB disks, the only place the Windows and macOS disk code runs before a real stick.
+[`.github/workflows/release-creator.yml`](../../../.github/workflows/release-creator.yml) is not CI: it runs only by hand (**Run workflow**) or on a `creator-vX.Y.Z` tag, and makes a draft release of the USB creator for Linux, Windows and macOS ([Releases](../design/usb-creator.md#releases)). MPFree's programs for the MPC, its free drum kits (`mpfree-free-kits`, which fetches the samples `rust/mpfree-factory/free-kits.txt` pins from GitHub and keeps them in the runner's tool cache, `_work/_tool/mpfree-free-kits`) and the draft itself use the self-hosted runners; the creator is built on GitHub's own Ubuntu 22.04, Windows and macOS runners, which count against the account's Actions minutes (about 180 counted minutes a release). Each build runs the creator's tests on its own system and lists that machine's USB disks, the only place the Windows and macOS disk code runs before a real stick. Between releases, [`tools/build-usb-creator.sh`](build-usb-creator.md) builds the same Linux creator from the same build lines on a developer's own computer.
 
 ### MPFree's kernel build
 
