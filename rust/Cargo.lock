@@ -815,6 +815,7 @@ dependencies = [
  "mpfree-simd",
  "mpfree-status",
  "mpfree-store",
+ "mpfree-stream",
  "mpfree-synth",
  "mpfree-synth-ui",
  "mpfree-time-ui",
@@ -870,6 +871,7 @@ dependencies = [
  "mpfree-sampler",
  "mpfree-seq",
  "mpfree-simd",
+ "mpfree-stream",
  "mpfree-synth",
  "mpfree-time-ui",
  "mpfree-track",
@@ -1382,6 +1384,7 @@ name = "mpfree-stream"
 version = "0.1.0"
 dependencies = [
  "mpfree-stream",
+ "sha2",
 ]
 
 [[package]]

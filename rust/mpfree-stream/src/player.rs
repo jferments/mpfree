@@ -52,6 +52,29 @@ impl Default for Config {
     }
 }
 
+/// The fewest cache slots a budget makes: 1 MiB.
+pub const MIN_SLOTS: usize = 16;
+
+impl Config {
+    /// The cache for the musician's budget of `bytes` (64, 128 or 256 MB):
+    /// as many whole units as fit, at least [`MIN_SLOTS`], the rest as by
+    /// default. The cache is made whole at start, so this is what it takes.
+    pub fn for_budget(bytes: u64) -> Config {
+        let unit = (UNIT * std::mem::size_of::<f32>()) as u64;
+        Config {
+            slots: usize::try_from(bytes / unit)
+                .unwrap_or(usize::MAX)
+                .max(MIN_SLOTS),
+            ..Config::default()
+        }
+    }
+
+    /// The bytes the cache takes.
+    pub fn cache_bytes(&self) -> u64 {
+        (self.slots as u64).saturating_mul((UNIT * std::mem::size_of::<f32>()) as u64)
+    }
+}
+
 /// Counters for the screen and the tests.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
@@ -67,6 +90,9 @@ pub struct Stats {
     /// Messages that could neither go back nor be held: only if more
     /// buffers circulate than [`Config::buffers`] says (never freed here).
     pub lost: u32,
+    /// Notes from cursors at or past [`MAX_CURSORS`]: not planned for, so
+    /// they play only what is already in the cache.
+    pub over_limit: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -604,10 +630,12 @@ impl Player {
 
     /// Note that cursor `cursor` plays `source` at `place` this period
     /// (the last note of a round is posted). A cursor id at or past
-    /// [`MAX_CURSORS`] is ignored.
+    /// [`MAX_CURSORS`] isn't planned for, and is counted
+    /// ([`Stats::over_limit`]).
     pub fn playing(&mut self, source: u16, cursor: u16, place: Place) {
         let c = usize::from(cursor);
         if c >= MAX_CURSORS {
+            self.stats.over_limit = self.stats.over_limit.saturating_add(1);
             return;
         }
         let Some(src) = self.sources.get(usize::from(source)).copied() else {

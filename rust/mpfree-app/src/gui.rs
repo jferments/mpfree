@@ -12128,6 +12128,7 @@ impl Player {
                 rss_kb,
                 total_kb,
                 free_kb,
+                promised: crate::memory::promised(),
             });
             let fell = self.sample.recall_fallbacks();
             if fell > 0 {
@@ -29373,7 +29374,7 @@ mod tests {
             if short {
                 // Room to read the file, not for its converted copy.
                 p.sample
-                    .set_mem_free(|| Some(crate::memory::FLOOR + 300_000));
+                    .set_mem_free(|| Some(crate::memory::FLOOR + 450_000));
             }
             p.sample.open_kit(folder.clone());
             tick_until(&mut p, |p| {

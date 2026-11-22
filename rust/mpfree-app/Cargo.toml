@@ -70,6 +70,9 @@ mpfree-mpcskin = { path = "../mpfree-mpcskin" }
 # Open MPC plugins from the catalog or zips on the stick (plugin_store.rs).
 mpfree-mpcstore = { path = "../mpfree-mpcstore" }
 mpfree-browser-ui = { path = "../mpfree-browser-ui" }
+# Sound file headers: memory.rs works out what decoding a file will hold
+# from its header (memory.rs `decode_need`).
+mpfree-stream = { path = "../mpfree-stream" }
 # Export: the mixdown, the stems and the MIDI file (export.rs).
 mpfree-export = { path = "../mpfree-export" }
 # The first start on a creator stick (setup.rs): the MPC's own kits and
