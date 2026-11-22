@@ -1349,6 +1349,17 @@ impl PlayView {
         }
     }
 
+    /// Track `track`'s cue is kept out of this view: it lands once a
+    /// later view shows it, on the first line after that view was decided
+    /// (the host's cues that wait for their audio). False when the track
+    /// has no cue. Call it on the control thread, after compiling.
+    pub fn hold_back_cue(&mut self, track: usize) -> bool {
+        self.tracks
+            .get_mut(track)
+            .and_then(|t| t.cue.take())
+            .is_some()
+    }
+
     /// The cue waiting on `track`: `Some(Some(slot))` for a launch,
     /// `Some(None)` for a stop.
     pub fn cue(&self, track: usize) -> Option<Option<usize>> {

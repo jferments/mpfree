@@ -511,6 +511,13 @@ impl Perform {
         }
     }
 
+    /// The cued scene's cues were all taken back (the host cancelled
+    /// them: their audio wasn't ready in time): no scene is cued, so the
+    /// next cue that starts isn't taken for it.
+    pub fn forget_cued(&mut self) {
+        self.cued = None;
+    }
+
     /// Take back what is cued on `track` (the host removed its cue), with
     /// the scene's program change for it.
     pub fn uncue(&mut self, track: usize) {

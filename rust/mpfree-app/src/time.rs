@@ -65,6 +65,7 @@
 
 mod apart;
 mod audio;
+mod audio_wait;
 mod control;
 mod follow;
 pub mod link;
@@ -87,6 +88,7 @@ use std::f32::consts::TAU;
 pub use apart::Say;
 use apart::{Apart, Told};
 pub use audio::TimeAudio;
+pub use audio_wait::{AudioNeed, CueKey};
 pub use control::{MuteLight, PadTap, SongAudio, TimeControl};
 pub use follow::Follow;
 use link::Tracks;
@@ -1042,6 +1044,47 @@ impl TimeHost {
     #[allow(dead_code)]
     pub fn set_through_arp(&mut self, track: usize, on: bool) -> bool {
         let r = self.with(|c| c.set_through_arp(track, on));
+        self.sent(r)
+    }
+
+    /// Cues that launch audio wait until the start of their audio is held
+    /// in memory (`on`: takes stream from their files), or go as they are
+    /// (see `TimeControl::set_audio_waits`).
+    // The app's streaming calls it (the audio tracks rethink's phase 2);
+    // until then only tests do.
+    #[allow(dead_code)]
+    pub fn set_audio_waits(&mut self, on: bool) {
+        self.with(|c| c.set_audio_waits(on));
+        self.sent(());
+    }
+
+    /// What the cues waiting for their audio need held (see
+    /// `TimeControl::audio_needs`). Ask again when the state's
+    /// `audio_waits.needs_rev` rises.
+    // The app's streaming calls it (the audio tracks rethink's phase 2);
+    // until then only tests do.
+    #[allow(dead_code)]
+    pub fn audio_needs(&mut self) -> Vec<AudioNeed> {
+        self.with(|c| c.audio_needs().to_vec())
+    }
+
+    /// The audio `key`'s cues need is held (`ok`), or not yet (see
+    /// `TimeControl::audio_held`). False when nothing waits under `key`.
+    // The app's streaming calls it (the audio tracks rethink's phase 2);
+    // until then only tests do.
+    #[allow(dead_code)]
+    pub fn audio_held(&mut self, key: CueKey, ok: bool) -> bool {
+        let r = self.with(|c| c.audio_held(key, ok));
+        self.sent(r)
+    }
+
+    /// The audio held for `key` was given back before its cues landed (see
+    /// `TimeControl::audio_given_back`).
+    // The app's streaming calls it (the audio tracks rethink's phase 2);
+    // until then only tests do.
+    #[allow(dead_code)]
+    pub fn audio_given_back(&mut self, key: CueKey) -> bool {
+        let r = self.with(|c| c.audio_given_back(key));
         self.sent(r)
     }
 
@@ -11378,5 +11421,332 @@ mod tests {
         // An empty project has nothing armed.
         let none = TimeHost::with_project(RATE, 120.0, mpfree_seq::Project::new()).unwrap();
         assert_eq!(none.state().armed, None);
+    }
+
+    /// Cues that wait for their audio while takes stream from their files
+    /// (the audio tracks rethink's phase 2; `time/audio_wait.rs`).
+    mod audio_waits {
+        use super::*;
+        use mpfree_play::Cue;
+        use mpfree_seq::{AudioClip, ClipRegion, LaunchGrid, RecId};
+        use mpfree_time_ui::view::AudioWaitCounts;
+
+        /// A bar in ticks.
+        const TICKS: i64 = 3840;
+        const DRUMS: usize = 0;
+        const VOCAL: usize = 1;
+        /// A second at the tests' rate, in frames.
+        const SECOND: i64 = RATE as i64;
+
+        /// An audio clip `bars` long: recording `rec` from frame 0 on its
+        /// first bar, and recording 9 from frame 100,000 on its second.
+        fn audio_clip(name: &str, rec: u128, bars: i64) -> Clip {
+            let mut c = Clip::new(name, bars * TICKS);
+            let mut a = AudioClip::of(RecId(rec), 0, 200_000, TICKS, 120.0);
+            if bars > 1 {
+                a.regions
+                    .push(ClipRegion::new(TICKS, 2 * TICKS, RecId(9), 100_000));
+            }
+            c.audio = Some(a);
+            c
+        }
+
+        fn beat(name: &str) -> Clip {
+            let mut c = Clip::new(name, TICKS);
+            for k in 0..4 {
+                c.add_note(mpfree_seq::Note::new(k * 960, 240, 36, 100))
+                    .unwrap();
+            }
+            c
+        }
+
+        /// Drums playing their first clip and a vocal (an audio track) with
+        /// Verse (2 bars) and Chorus (1 bar), a quarter of a bar into the
+        /// song, with waits on or off.
+        fn host(waits: bool) -> (TimeHost, Fake) {
+            let mut p = Project::new();
+            let mut drums = Track::new("Drums", 1);
+            drums.slots[0] = Some(beat("Beat"));
+            drums.slots[1] = Some(beat("Fill"));
+            let mut vocal = Track::new_audio("Vocal", 2);
+            vocal.slots[0] = Some(audio_clip("Verse", 1, 2));
+            vocal.slots[1] = Some(audio_clip("Chorus", 2, 1));
+            p.tracks.push(drums);
+            p.tracks.push(vocal);
+            let mut h = TimeHost::with_project(RATE, 120.0, p).unwrap();
+            h.act(TimeAction::Launch {
+                track: DRUMS,
+                slot: 0,
+            })
+            .unwrap();
+            h.set_audio_waits(waits);
+            h.command(Command::Play);
+            let mut pads = Fake::default();
+            run(&mut h, &mut pads, BAR / 4, &[]);
+            (h, pads)
+        }
+
+        /// The clip `track` plays and the song tick it started on.
+        fn playing(h: &TimeHost, track: usize) -> Option<(usize, i64)> {
+            h.control
+                .launches
+                .iter()
+                .find(|l| l.track == track)
+                .map(|l| (l.slot, l.start))
+        }
+
+        fn cued_in_view(h: &TimeHost, track: usize) -> Option<Option<usize>> {
+            h.control.view().unwrap().cue(track)
+        }
+
+        fn counts(h: &TimeHost) -> (u64, u64, u64, u64, u64, u32) {
+            let c = h.state().audio_waits;
+            (
+                c.kept,
+                c.held,
+                c.moved,
+                c.cancelled,
+                c.given_back,
+                c.waiting,
+            )
+        }
+
+        fn launch(h: &mut TimeHost, track: usize, slot: usize) {
+            h.act(TimeAction::Launch { track, slot }).unwrap();
+        }
+
+        #[test]
+        fn with_streaming_off_or_no_audio_a_cue_goes_as_it_did() {
+            let (mut h, mut pads) = host(false);
+            launch(&mut h, VOCAL, 0);
+            assert!(h.audio_needs().is_empty());
+            assert_eq!(cued_in_view(&h, VOCAL), Some(Some(0)));
+            run(&mut h, &mut pads, BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, VOCAL), Some((0, TICKS)));
+            assert_eq!(h.state().audio_waits, AudioWaitCounts::default());
+            // Waits on: a cue that launches no audio still goes at once.
+            h.set_audio_waits(true);
+            launch(&mut h, DRUMS, 1);
+            assert!(h.audio_needs().is_empty());
+            assert_eq!(cued_in_view(&h, DRUMS), Some(Some(1)));
+            run(&mut h, &mut pads, 2 * BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, DRUMS), Some((1, 2 * TICKS)));
+            assert_eq!(counts(&h), (0, 0, 0, 0, 0, 0));
+        }
+
+        #[test]
+        fn a_cue_held_in_time_lands_on_its_line() {
+            let (mut h, mut pads) = host(true);
+            launch(&mut h, VOCAL, 0);
+            // Each region's first second, from its start.
+            let needs = h.audio_needs();
+            let key = needs[0].cue;
+            let got: Vec<_> = needs.iter().map(|n| (n.cue, n.rec, n.from, n.to)).collect();
+            assert_eq!(
+                got,
+                vec![
+                    (key, RecId(1), 0, SECOND),
+                    (key, RecId(9), 100_000, 100_000 + SECOND)
+                ]
+            );
+            // Cued, as the screens show it, but out of the view.
+            assert_eq!(
+                h.control.cues,
+                vec![Cue {
+                    track: VOCAL,
+                    slot: Some(0)
+                }]
+            );
+            assert_eq!(cued_in_view(&h, VOCAL), None);
+            assert_eq!(counts(&h), (1, 0, 0, 0, 0, 1));
+            run(&mut h, &mut pads, BAR / 2, &[]);
+            assert!(h.audio_held(key, true));
+            assert_eq!(cued_in_view(&h, VOCAL), Some(Some(0)));
+            run(&mut h, &mut pads, BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, VOCAL), Some((0, TICKS)), "on its line");
+            assert!(h.audio_needs().is_empty());
+            assert_eq!(counts(&h), (1, 1, 0, 0, 0, 0));
+            // A key no longer waiting answers false.
+            assert!(!h.audio_held(key, true));
+        }
+
+        #[test]
+        fn a_cue_not_held_moves_twice_then_is_cancelled() {
+            let (mut h, mut pads) = host(true);
+            launch(&mut h, VOCAL, 1);
+            let key = h.audio_needs()[0].cue;
+            assert!(h.audio_held(key, false), "not held yet: it waits");
+            run(&mut h, &mut pads, BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, VOCAL), None);
+            assert_eq!(h.control.cues.len(), 1, "still cued");
+            let said = h.take_later_note().unwrap();
+            assert!(
+                said.contains("audio not ready: Vocal: Chorus moves to bar 3"),
+                "{said}"
+            );
+            run(&mut h, &mut pads, 2 * BAR + BAR / 8, &[]);
+            let said = h.take_later_note().unwrap();
+            assert!(said.contains("moves to bar 4"), "{said}");
+            assert_eq!(counts(&h), (1, 0, 2, 0, 0, 1));
+            run(&mut h, &mut pads, 3 * BAR + BAR / 8, &[]);
+            let said = h.take_later_note().unwrap();
+            assert!(
+                said.contains("audio not ready: Vocal: Chorus cancelled after 2 moves"),
+                "{said}"
+            );
+            assert!(h.control.cues.is_empty());
+            assert!(h.audio_needs().is_empty());
+            assert_eq!(counts(&h), (1, 0, 2, 1, 0, 0));
+            run(&mut h, &mut pads, 5 * BAR, &[]);
+            assert_eq!(playing(&h, VOCAL), None, "never launched");
+        }
+
+        #[test]
+        fn a_hold_given_back_moves_the_cue_and_a_new_hold_lands_it() {
+            let (mut h, mut pads) = host(true);
+            launch(&mut h, VOCAL, 0);
+            let key = h.audio_needs()[0].cue;
+            assert!(h.audio_held(key, true));
+            run(&mut h, &mut pads, BAR * 3 / 4, &[]);
+            assert!(h.audio_given_back(key));
+            assert_eq!(cued_in_view(&h, VOCAL), None, "out of the view again");
+            let said = h.take_later_note().unwrap();
+            assert!(said.contains("Vocal: Verse moves to bar 3"), "{said}");
+            run(&mut h, &mut pads, BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, VOCAL), None);
+            assert!(h.audio_held(key, true));
+            run(&mut h, &mut pads, 2 * BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, VOCAL), Some((0, 2 * TICKS)));
+            assert_eq!(counts(&h), (1, 2, 1, 0, 1, 0));
+            // Nothing held waits under it now.
+            assert!(!h.audio_given_back(key));
+        }
+
+        #[test]
+        fn a_scenes_cues_wait_and_land_as_one() {
+            let (mut h, mut pads) = host(true);
+            h.act(TimeAction::LaunchScene(1)).unwrap();
+            let needs = h.audio_needs();
+            assert_eq!(needs.len(), 1, "the chorus's one region");
+            let key = needs[0].cue;
+            // The drums' cue launches no audio but waits with the scene.
+            assert_eq!(cued_in_view(&h, DRUMS), None);
+            assert_eq!(cued_in_view(&h, VOCAL), None);
+            assert_eq!(h.state().scene_cued, Some(1));
+            run(&mut h, &mut pads, BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, DRUMS), Some((0, 0)), "the beat plays on");
+            assert_eq!(playing(&h, VOCAL), None);
+            let said = h.take_later_note().unwrap();
+            assert!(said.contains("scene 2 moves to bar 3"), "{said}");
+            assert!(h.audio_held(key, true));
+            assert_eq!(cued_in_view(&h, DRUMS), Some(Some(1)));
+            run(&mut h, &mut pads, 2 * BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, DRUMS), Some((1, 2 * TICKS)));
+            assert_eq!(playing(&h, VOCAL), Some((1, 2 * TICKS)));
+            assert_eq!(h.state().scene_playing, Some(1));
+            assert_eq!(counts(&h), (1, 1, 1, 0, 0, 0));
+        }
+
+        #[test]
+        fn a_scene_cancelled_takes_all_its_cues_back() {
+            let (mut h, mut pads) = host(true);
+            h.act(TimeAction::LaunchScene(1)).unwrap();
+            run(&mut h, &mut pads, 3 * BAR + BAR / 8, &[]);
+            let said = h.take_later_note().unwrap();
+            assert!(said.contains("scene 2 cancelled after 2 moves"), "{said}");
+            assert!(h.control.cues.is_empty());
+            assert_eq!(h.state().scene_cued, None);
+            assert_eq!(playing(&h, DRUMS), Some((0, 0)));
+            assert_eq!(playing(&h, VOCAL), None);
+            // A launch after it isn't taken for the scene.
+            launch(&mut h, DRUMS, 1);
+            run(&mut h, &mut pads, 4 * BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, DRUMS), Some((1, 4 * TICKS)));
+            assert_eq!(h.state().scene_playing, None);
+        }
+
+        #[test]
+        fn at_now_a_cue_lands_once_held_and_gives_up_after_two_bars() {
+            let (mut h, mut pads) = host(true);
+            for slot in 0..2 {
+                h.control.project.tracks[VOCAL].slots[slot]
+                    .as_mut()
+                    .unwrap()
+                    .launch = Some(LaunchGrid::Now);
+            }
+            launch(&mut h, VOCAL, 0);
+            let key = h.audio_needs()[0].cue;
+            run(&mut h, &mut pads, BAR / 2, &[]);
+            assert_eq!(playing(&h, VOCAL), None);
+            let at = h.state().transport.position;
+            assert!(h.audio_held(key, true));
+            run(&mut h, &mut pads, BAR / 2 + BAR / 8, &[]);
+            let (slot, start) = playing(&h, VOCAL).unwrap();
+            assert_eq!(slot, 0);
+            assert!((at..at + 200).contains(&start), "{start} from {at}");
+            // Never held: it gives up two bars after it was decided.
+            launch(&mut h, VOCAL, 1);
+            let decided = pads.frame;
+            run(&mut h, &mut pads, decided + 2 * BAR - BAR / 8, &[]);
+            assert_eq!(h.control.cues.len(), 1, "still waiting");
+            run(&mut h, &mut pads, decided + 2 * BAR + BAR / 8, &[]);
+            let said = h.take_later_note().unwrap();
+            assert!(
+                said.contains("Vocal: Chorus cancelled after 2 bars"),
+                "{said}"
+            );
+            assert!(h.control.cues.is_empty());
+            assert_eq!(playing(&h, VOCAL).map(|p| p.0), Some(0));
+        }
+
+        #[test]
+        fn a_legato_cue_needs_its_audio_from_the_place_it_takes_over() {
+            let (mut h, mut pads) = host(true);
+            // The verse plays from bar 1; the chorus, legato on a 1/4 grid
+            // and two bars long, takes over its place on the next beat.
+            let mut chorus = audio_clip("Chorus", 2, 2);
+            chorus.legato = true;
+            chorus.launch = Some(LaunchGrid::Ticks(960));
+            h.control.project.tracks[VOCAL].slots[1] = Some(chorus);
+            h.control.project.give_clip_ids();
+            h.control.launches.push(mpfree_play::Launch {
+                track: VOCAL,
+                slot: 0,
+                origin: 0,
+                start: 0,
+            });
+            h.control.compile().unwrap();
+            launch(&mut h, VOCAL, 1);
+            let needs = h.audio_needs();
+            let got: Vec<_> = needs.iter().map(|n| (n.rec, n.from, n.to)).collect();
+            // The next beat is tick 1,920, a second into the first region:
+            // from there to its end; the second region from its start.
+            assert_eq!(
+                got,
+                vec![
+                    (RecId(2), SECOND, 2 * SECOND),
+                    (RecId(9), 100_000, 100_000 + SECOND)
+                ]
+            );
+            assert!(h.audio_held(needs[0].cue, true));
+            run(&mut h, &mut pads, BAR / 2 + BAR / 8, &[]);
+            assert_eq!(playing(&h, VOCAL).map(|p| p.0), Some(1));
+        }
+
+        #[test]
+        fn a_loop_jump_aims_a_waiting_cue_at_the_next_line_without_a_move() {
+            let (mut h, mut pads) = host(true);
+            h.command(Command::SetLoop(Some((0, 2 * TICKS))));
+            launch(&mut h, VOCAL, 0);
+            let key = h.audio_needs()[0].cue;
+            // Bar 2 plays without it (one move), then the loop goes back to
+            // bar 1: it aims at bar 2 again, still one move.
+            run(&mut h, &mut pads, 2 * BAR + BAR / 8, &[]);
+            assert_eq!(counts(&h).2, 1);
+            assert!(h.audio_held(key, true));
+            run(&mut h, &mut pads, 3 * BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, VOCAL), Some((0, TICKS)));
+            assert_eq!(counts(&h), (1, 1, 1, 0, 0, 0));
+        }
     }
 }

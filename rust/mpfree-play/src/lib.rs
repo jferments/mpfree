@@ -63,6 +63,6 @@ pub use takes::{
     TAKE_ROOM, TOUCH_RECLAIM_AT,
 };
 pub use view::{
-    anchored, CompileError, Cue, InPlace, Launch, MuteCue, MuteLanded, NowPlaying, PlayView,
-    SceneProgram, Started, EARLIEST, IN_PLACE_WORK, MAX_IN_PLACE,
+    anchored, pass_into, CompileError, Cue, InPlace, Launch, MuteCue, MuteLanded, NowPlaying,
+    PlayView, SceneProgram, Started, EARLIEST, IN_PLACE_WORK, MAX_IN_PLACE,
 };
