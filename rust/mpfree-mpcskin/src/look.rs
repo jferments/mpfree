@@ -221,13 +221,14 @@ mod tests {
 
     #[test]
     fn a_torture_theme_is_rescued_and_every_rescue_is_listed() {
-        // Every colour alike, see-through panels.
-        let t = Theme::parse(
+        // Every colour alike, see-through panels. The app refuses such a
+        // theme (`Theme::unusable`); the guards don't count on that.
+        let (t, _) = Theme::load(
             "bg = #777777\nsurface = #7A7A7A80\nraised = #7C7C7C\noutline = #787878\n\
              text = #7B7B7B\ntext_dim = #7B7B7B\ntext_faint = #7B7B7B\naccent = #797979\n\
              on_accent = #7A7A7A\nglow = 255",
-        )
-        .unwrap();
+        );
+        assert!(t.unusable().is_some());
         let rescues = reads(&t);
         let what: Vec<&str> = rescues.iter().map(|r| r.what).collect();
         assert!(what.contains(&"text on the pop-up"), "{what:?}");
