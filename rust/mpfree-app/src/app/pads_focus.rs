@@ -142,7 +142,7 @@ pub fn unfit(
     if k.is_loops() {
         return Some("is a Loop track");
     }
-    if k.slots.iter().any(Option::is_some) {
+    if !k.slots.is_empty() {
         return Some("has clips");
     }
     // Renamed, or a setting moved (swing, MIDI effects, transpose...). The

@@ -215,13 +215,14 @@ fn volume(track: u8) -> ParamAddr {
     ParamAddr::new(Owner::Strip(Strip::Track(track)), mx::VOLUME)
 }
 
-/// The song: each (track, slot, from bar, bars) linked to its slot, and a
-/// marker on each section.
 /// A section of the song: its name, first bar, bars, and the (track,
 /// slot) clips placed in it.
 type Section<'a> = (&'a str, Tick, Tick, &'a [(usize, usize)]);
 
+/// The song: a block of each section's (track, slot) clips, named by the
+/// clip's id, and a marker on each section.
 fn song(p: &mut Project, sections: &[Section]) {
+    p.give_clip_ids();
     let mut placed = Vec::new();
     for &(name, from, bars, clips) in sections {
         p.arrangement.markers.push(Marker {
@@ -229,7 +230,13 @@ fn song(p: &mut Project, sections: &[Section]) {
             name: name.to_string(),
         });
         for &(track, slot) in clips {
-            placed.push(Placement::linked(track, slot, from * BAR, bars * BAR));
+            placed.push(Placement::of(
+                &p.tracks,
+                track,
+                slot,
+                from * BAR,
+                bars * BAR,
+            ));
         }
     }
     placed.sort_by_key(|pl| (pl.track, pl.start));

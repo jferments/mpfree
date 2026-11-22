@@ -6,7 +6,7 @@ The model is in `rust/mpfree-seq/src/scenes.rs`. `rust/mpfree-perform` carries i
 
 ## The model (`mpfree-seq`)
 
-- **Scene `k` is row `k`** of every track's slots, so there are 16 (`SCENES = SLOTS`). `Project::scenes` holds what a row has besides its clips. A row the project keeps nothing for is a plain scene: launching it still plays its clips. `Project::scene_mut(row)` makes the plain rows up to it when a row gets a name, mutes or a follow.
+- **Scene `k` is row `k`** of every track's slots, so there are 64 (`SCENES = ROWS`, the Arrange refactor's 1.2: four banks of 16; the grid shows the first 16 until scene banks come). `Project::scenes` holds what a row has besides its clips. A row the project keeps nothing for is a plain scene: launching it still plays its clips. `Project::scene_mut(row)` makes the plain rows up to it when a row gets a name, mutes or a follow.
 - **`Scene { name, mutes, follow, values, programs }`**.
   - `mutes: Option<u128>`: bit `t` mutes track `t` while the scene plays. `None` leaves the mutes as they are.
   - `follow: Option<Follow>`: what happens after it has played some bars.
@@ -16,6 +16,7 @@ The model is in `rust/mpfree-seq/src/scenes.rs`. `rust/mpfree-perform` carries i
 - **`Follow { bars, action, other, chance }`**: after `bars` bars (1 to 999, counted from where it started), `action` with a chance of `chance` %, and `other` the rest of the time. These are Ableton's A and B.
 - **`FollowAction`**: Stay, Again, Next, Previous, First, Last, Any, Other, Stop.
   - For a clip, Next means the next filled slot down its track, wrapping round to the first after the last. Empty slots are skipped. For a scene, Next is the next row with a clip on any track.
+  - Follow actions move within the bank of 16 rows the clip or scene is in (`mpfree_seq::bank`): from row 40, Next goes to the next filled row of rows 32 to 47 (counted from 0) and wraps round within them, never to the grid's rows (Arrange 1.2).
   - Any picks any filled one, this one included. Other picks any but this one, and stays when there is no other.
   - Stop stops the clip's track, or every track for a scene.
   - `follow_target` works out where an action goes. It never allocates.

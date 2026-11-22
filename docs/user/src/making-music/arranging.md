@@ -72,13 +72,13 @@ The song is your clips laid out on a timeline, one lane per track. Tap **Song â€
 - Under each track's name is what it plays: its kit (**Kit** for kit 1, then **Kit 2** and on: see [A kit for each track](pads.md#a-kit-for-each-track)), **Synth**, or its own instrument (see [A synth for each track](synths.md#a-synth-for-each-track)).
 - **Loop tracks** have lanes too, and Song on plays their loops' blocks as it plays clips (see [Loops in the song](looping.md#loops-in-the-song)).
 
-A block in the song is linked to its clip, so when you edit the clip, every block that uses it changes too. **Make unique** gives the selected block its own copy, so you can change it without touching the others. A unique block has a small dot in its corner. **Delete** removes the selected block, and **UNDO** puts it back. In Perform, Delete takes a half-second hold (see [Make and Perform](playing-live.md#make-and-perform)).
+A block in the song is linked to its clip, so when you edit the clip, every block that uses it changes too. Moving the clip on the grid, to another row or track, doesn't change the song: its blocks play it wherever it is. **Make unique** gives the selected block its own copy, so you can change it without touching the others. A unique block has a small dot in its corner. **Delete** removes the selected block, and **UNDO** puts it back. In Perform, Delete takes a half-second hold (see [Make and Perform](playing-live.md#make-and-perform)).
 
 ### Moving blocks and sections
 
 You can move the song around with your finger:
 
-- **Drag a block** to move it. Once your finger moves, it lifts and follows you, and its new place is outlined, with a tag saying the bar it starts on. It snaps to the bar. Drag it up or down to put it on another track's lane (a loop's block stays on its Loop track's lane, and a clip's block stays off them). There it plays that track's sound, and it gets its own copy of the clip (like **Make unique**), because the clip belongs to the first track. Hold **SHIFT** as you lift to drop a copy instead, linked to the same clip. Lift it where it started to leave it be. A block can't land on top of another one.
+- **Drag a block** to move it. Once your finger moves, it lifts and follows you, and its new place is outlined, with a tag saying the bar it starts on. It snaps to the bar. Drag it up or down to put it on another track's lane (a loop's block stays on its Loop track's lane, and a clip's block stays off them). There it plays that track's sound and stays linked to the same clip, so editing the clip still changes both. Hold **SHIFT** as you lift to drop a copy instead, linked to the same clip. Lift it where it started to leave it be. A block can't land on top of another one.
 - **Drag a picked block's end** to make it longer or shorter, a bar at a time. The picked block has a grip (two short bars) at its right end. Past the clip's end, the clip plays again from its top.
 - **Drag a section's name** on the ruler to move the whole section, every track, from its marker to the next one. A line shows where it will go. The sections close up behind it and make room for it, so nothing is written over. Hold **SHIFT** as you lift to put a copy there instead, such as a second verse. A block that runs across a section's edge is cut there, and each part still plays as it did. A section can't move while the song has morph moves recorded in it or tempo points, because they would stay behind.
 - Hold a dragged block or section at the left or right edge and the bars scroll.
@@ -135,7 +135,7 @@ A scene's length is its follow action's bars if it has one, else its longest cli
 2. Press play and jam: launch clips and rows, stop tracks, move the morph crossfader.
 3. Press stop, or tap **Rec song** again. What you played goes into the song.
 
-- Each clip goes into the song where it started and stopped, linked to its slot. It plays from the song just as it does from the grid, pad pressure included.
+- Each clip goes into the song where it started and stopped, linked to its clip. It plays from the song just as it does from the grid, pad pressure included.
 - Tracks that were muted are left out of the song for as long as they were muted.
 - The morph crossfader's moves are recorded too, with the two rows it was between. If you leave the crossfader still for a moment, the song holds it there until your next move.
 - A track you didn't touch keeps what the song already had there. Where you launched a clip, it records over the song, like recording over tape.
