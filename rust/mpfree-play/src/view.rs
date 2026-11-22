@@ -2182,6 +2182,10 @@ mod tests {
                     c.length = 1680;
                 }),
             ),
+            (
+                "holds notes",
+                Box::new(|c| c.holds = mpfree_seq::Holds::Notes),
+            ),
         ];
         let mut stamps = vec![(stamp(&base()), "as it was")];
         for (what, edit) in edits {
