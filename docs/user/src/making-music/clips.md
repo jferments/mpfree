@@ -116,6 +116,7 @@ The Record panel has three tabs at its top: **Record**, the record settings, **C
 - **Bank:** the bank select sent just before the program, shown as the two numbers sent (CC 0 / CC 32), **0/0** to **127/127**, or **off** to send none. Your synth's manual says which bank numbers it uses. Hold **SHIFT** as you tap its arrows to step the first number (a whole CC 0).
 - **Direction:** the order the clip plays its steps of a sixteenth in. **Forward** plays it as written. **Reverse** plays the last step first. **Ping pong** plays forward to the end, then back to the start, and on, the end steps once each turn, so it turns wherever it reached when the clip starts its next pass. **Random** plays every step once a pass in an order of its own, a new order each pass; each pass plays the same every time you play the song, so an export sounds as you heard it. Each step's notes and locks go with it, and a note played a little early or late keeps that place around its step. The clip's knob moves still play forward. The playhead on the step pads and on Play's rows lights the step you hear, so it runs backwards, turns or jumps with the clip. A clip that isn't two whole steps or more plays forward and the row shows **—**: a tap puts it back to **Forward**.
 - **Mutate:** a new variation of the clip's notes, and back. **›** mutates it; **‹** restores the original. See [Mutate and Restore](#mutate-and-restore) below.
+- **Melody:** **pads** or **notes**: whether the clip's tune follows what its pads play now, or keeps its own notes. On a synth track, **›** converts a clip that follows the pads. See [Melody: Convert to notes](#melody-convert-to-notes) below.
 
 {{shot: clips-card-direction | The Clip tab's Direction row: Clip 1 plays its steps in reverse.}}
 
@@ -149,6 +150,27 @@ Hold **SHIFT** as you tap **›** for a bolder variation, about half the notes. 
 The row says **original** until you mutate, then **variant**. The clip keeps its original beside it, so tap **›** again for another variation of the original (not of the variation), as many times as you like. Tap **‹** (or press **–**) to **restore** the original: its notes, locks, length and knob moves come back as they were before the first Mutate, whatever you changed since. The clip's settings (speed, direction and the rest) stay as they are now.
 
 Each Mutate and Restore is a take ("Mutate 4 · variant 2", "Restore 5 · the original"), so **UNDO** steps back through them. The original is saved with the project, so Restore still works after you open it again. Mutate waits until a recording is done, and a clip with no notes, or a Loop track's cell, has nothing to mutate.
+
+### Melody: Convert to notes
+
+A clip on a synth track either **uses notes**, each note keeping its pitch whatever you do to the pads, or **follows the pads**: it remembers which pads were hit and plays whatever those pads play now, so a new scale, pad layout or octave changes its tune. Recording on a synth track makes clips that use notes. Clips made before that, and every clip on a kit, follow the pads. The Clip tab's **Melody** row says which: **pads** or **notes**.
+
+To fix a clip's tune as it sounds now, tap **›** on its **Melody** row (or pick the row with the data wheel and press **+**). Nothing changes yet: the line under the screen says what it would do ("Convert to notes: 8 pad hits become 12 notes. Keeps what Verse plays now with these pads (C3 to D#4)"), and the buttons under the rows are **Cancel** and **Convert**. Tap **Convert**, and each hit becomes the note its pad plays now, or every note of a chord pad, each keeping the hit's timing, length, velocity, condition, ratchet, tie or slide, and its pressure. A lock on the synth's sound stays on its step. The clip plays exactly as it did, the row says **notes**, and the line says "Converted: 8 pad hits are 12 notes". It is one take ("Convert 5 · converted to notes"), so **UNDO** brings back the clip that follows the pads, and **SHIFT + UNDO** converts it again. If you mutated the clip, its original is converted too, so **Restore** brings back notes.
+
+{{shot: clips-card-convert | Convert to notes' preview: what it would make on the line under the screen, Cancel and Convert under the rows.}}
+
+Convert works with the music stopped: while it plays, the line asks you to press **STOP** first, and **Convert** appears when you do. If the clip or the pads change after the preview, **Convert** changes nothing and asks you to look again. Doing anything else on the Arrange page closes the preview, as **Cancel** does.
+
+When converting couldn't keep exactly what the clip plays, nothing changes, only **Cancel** shows, and the line names everything to fix at once:
+
+- **A step with a chance below 100 %:** a chord's notes would each roll their own dice. Set it to 100 % first.
+- **A lock on a pad's own setting,** such as "Pad A3's Tune on step 5": it has no note to follow. The lock lane's **×** takes it off.
+- **A pad that plays no note now,** because its notes fall off the top or bottom of the keyboard: take its steps off, or move the pads so it plays one.
+- **Two pads that play the same note, sounding together,** such as "Pad A1 and Pad A4 both play C3 and sound together on step 5": as notes, one would cut the other short. Move one of them.
+- **Two pads with the same root, with locks on the same step:** they would land on one row. Take one off.
+- **More notes than a clip holds** (8,192): chord pads multiply them.
+
+A kit's clips always follow the pads, so their row has no **›**. There is no way yet to turn a clip of notes back into one that follows the pads. **Reload** brings a saved state back as you saved it, so a state saved before converting follows the pads again: save it again after converting.
 
 Coming: the clip's name and colour, and its step size.
 

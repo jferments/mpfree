@@ -6639,6 +6639,9 @@ fn time_action(
             | TimeAction::ClipLength { .. }
             | TimeAction::Mutate { .. }
             | TimeAction::Restore { .. }
+            | TimeAction::ConvertPreview { .. }
+            | TimeAction::Convert { .. }
+            | TimeAction::ConvertCancel
             | TimeAction::CopyClip { .. }
             | TimeAction::PasteClip { .. }
             | TimeAction::DropClip { .. }
@@ -6845,8 +6848,9 @@ fn synth_status(synth: &synth::Synth, time: &RenderTime) -> String {
 /// The notes each of track `track`'s 16 pads plays, as a clip of notes on
 /// the track reads them (step 5c): what the pad plays on the track's own
 /// synth (or the one it plays) or on the shared synth, a chord's root
-/// last, or a kit pad's note in bank A. A pad that plays nothing keeps its
-/// own number. Never allocates.
+/// last, or a kit pad's note in bank A. A pad that plays nothing (its
+/// notes outside 0 to 127) has none, and the grid shows its row on its own
+/// number. Never allocates.
 fn pad_rows(
     own: &instruments::Instruments,
     synth: &synth::Synth,
