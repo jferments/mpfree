@@ -10260,23 +10260,35 @@ impl Player {
     /// An opened project's parts: the screen's own go to the Sample tab and
     /// the I/O setup here; the audio loop's are read and built here and
     /// sent in one piece (project.rs).
+    ///
+    /// All or nothing (docs/dev/design/project-safety.md): the whole
+    /// project is read first, and one that can't be (saved by a newer
+    /// MPFree, or a part that doesn't read) is refused before anything
+    /// changes, so the project open stays as it was. A part the project
+    /// hasn't got opens as New has it, never as the last project left it.
     fn open_project(&mut self, loc: &mpfree_library::Loc, snap: &mpfree_library::Snapshot) {
-        if let Some(text) = snap.part(crate::project::SAMPLER) {
-            if let Some(lib) = self.browser.as_ref().map(|b| b.library().clone()) {
-                let loc = loc.clone();
-                self.sample.open_part(
-                    text.to_string(),
-                    Box::new(move |f| {
-                        lib.sample_path(&loc, f)
-                            .and_then(std::fs::read)
-                            .map_err(|e| e.to_string())
-                    }),
-                );
-            }
+        let o = match self.project_opening(snap, loc.name()) {
+            Ok(o) => o,
+            Err(why) => return self.open_refused(loc.name(), &why),
+        };
+        let lib = self.browser.as_ref().map(|b| b.library().clone());
+        if let (Some(text), Some(lib)) = (snap.part(crate::project::SAMPLER), lib) {
+            let loc = loc.clone();
+            self.sample.open_part(
+                text.to_string(),
+                Box::new(move |f| {
+                    lib.sample_path(&loc, f)
+                        .and_then(std::fs::read)
+                        .map_err(|e| e.to_string())
+                }),
+            );
         }
         self.open_midi(snap.part(crate::project::MIDI));
-        let o = crate::project::opening(snap, self.project_rate, loc.name(), &self.project_plugins);
         self.outbox.push(FromUi::OpenProject(Box::new(o)));
+        // No kits saved: the factory kits, as New has them.
+        if snap.part(crate::project::SAMPLER).is_none() {
+            self.factory_kits();
+        }
         // The loops, on a thread: the layers' files can be big. A read
         // still going for an earlier open is dropped with its channel.
         self.loops_load = None;
@@ -10355,6 +10367,51 @@ impl Player {
         }
     }
 
+    /// The project as the audio loop takes it, every part read: the parts
+    /// it hasn't got are New's ([`crate::project::completed`]). Err says
+    /// why it can't open, in words for the musician.
+    fn project_opening(
+        &self,
+        snap: &mpfree_library::Snapshot,
+        what: &str,
+    ) -> Result<crate::project::Opening, String> {
+        let filled;
+        let snap = match &self.project_defaults {
+            _ if crate::project::is_complete(snap) => snap,
+            Some(d) => {
+                filled = crate::project::completed(snap, d);
+                &filled
+            }
+            None => return Err("the sound is still starting; try again in a moment".to_string()),
+        };
+        crate::project::opening(snap, self.project_rate, what, &self.project_plugins)
+    }
+
+    /// A project that can't open: nothing of it went in, and the browser
+    /// goes back to the project still open, so that it can't be saved over
+    /// the refused one.
+    fn open_refused(&mut self, name: &str, why: &str) {
+        let line = format!("didn't open {name}: {why}. The project you had open is unchanged");
+        if let Some(b) = self.browser.as_mut() {
+            b.open_refused(tell_text(&line));
+            mpfree_browser_ui::show(&mut self.ui, b);
+        }
+        self.say(format!("project: {line}"));
+        self.tell(&line);
+    }
+
+    /// The factory kits on every kit, their sound with the open's actions
+    /// (New, or a project with no kits saved).
+    fn factory_kits(&mut self) {
+        if !self.sample.reset_kits(&mut self.ui) {
+            self.say("project: the kits haven't come yet; they stay as they are".to_string());
+        }
+        self.sample_changed();
+        if let Some(a) = self.sample.take_view() {
+            self.outbox.push(a);
+        }
+    }
+
     /// New project: the parts the app started with, the factory kits.
     fn new_project(&mut self) {
         let Some(d) = self.project_defaults.as_ref() else {
@@ -10365,25 +10422,27 @@ impl Player {
             return;
         };
         let snap = crate::project::new_snapshot(d);
-        let mut o = crate::project::opening(
+        let o = match crate::project::opening(
             &snap,
             self.project_rate,
             "a new project",
             &self.project_plugins,
-        );
-        (o.clear_loops, o.clear_audio) = (true, true);
+        ) {
+            Ok(o) => o,
+            // New's own parts always read; if one ever didn't, nothing
+            // changes and it is said.
+            Err(why) => {
+                let line = format!("a new project couldn't be made: {why}");
+                self.say(format!("project: {line}"));
+                self.tell(&line);
+                return;
+            }
+        };
         self.open_midi(None);
         self.outbox.push(FromUi::OpenProject(Box::new(o)));
         (self.loops_load, self.audio_load) = (None, None);
         self.opened_at = Some(Instant::now());
-        if !self.sample.reset_kits(&mut self.ui) {
-            self.say("project: the kits haven't come yet; they stay as they are".to_string());
-        }
-        self.sample_changed();
-        // The factory kits' sound goes out with New's own actions.
-        if let Some(a) = self.sample.take_view() {
-            self.outbox.push(a);
-        }
+        self.factory_kits();
         self.open_actions = self.outbox.len();
         self.say("project: new project".to_string());
     }
@@ -26563,6 +26622,89 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Phase 0 of the audio tracks plan (docs/dev/design/project-safety.md):
+    /// a project this build can't read whole (clips saved as
+    /// `mpfree-clips 9`, as an `mpfree-clips 2` project is to a build from
+    /// before it, or a newer project format) doesn't open. Nothing goes to
+    /// the engines, the browser still saves to the project that was open,
+    /// and the screen says why in plain words.
+    #[test]
+    fn a_project_this_build_cant_read_doesnt_open_and_the_open_one_stays() {
+        use crate::project::{self, Defaults};
+        use mpfree_browser_ui::sample::{select, source};
+        use mpfree_library::{Loc, Place};
+        let dir = std::env::temp_dir().join(format!("mpfree-refused-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = mpfree_library::Library::at(&dir).unwrap();
+        let mut p = sample_sampler(Fonts::embedded());
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), "");
+        p.take_actions();
+        let synth = crate::synth::Synth::new(44_100);
+        let good = project::new_snapshot(&Defaults {
+            tempo: 120.0,
+            mixer: project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0, 0),
+            modu: String::new(),
+            synth: project::synth_text(&Default::default(), &synth.sounds()),
+        });
+        let song = Loc::top(Place::Projects).join("Song").unwrap();
+        lib.save_project(&song, &good, 0).unwrap();
+        let mut clips_9 = good.clone();
+        for (name, text) in &mut clips_9.parts {
+            if name == project::CLIPS {
+                *text = text.replacen("mpfree-clips 2", "mpfree-clips 9", 1);
+            }
+        }
+        let mut newer = good.clone();
+        for (k, v) in &mut newer.meta.extra {
+            if k == project::FORMAT_KEY {
+                *v = (project::FORMAT + 1).to_string();
+            }
+        }
+        let later = Loc::top(Place::Projects).join("From later").unwrap();
+        let newest = Loc::top(Place::Projects).join("Newest").unwrap();
+        lib.save_project(&later, &clips_9, 0).unwrap();
+        lib.save_project(&newest, &newer, 0).unwrap();
+        p.apply(ToUi::Show(View::Browser));
+        let open = |p: &mut Player, name: &str| {
+            let b = p.browser.as_mut().unwrap();
+            b.go_source(source("Projects"));
+            select(b, name);
+            b.push();
+            p.step_browser();
+            p.take_actions().into_iter().find_map(|a| match a {
+                FromUi::OpenProject(o) => Some(o),
+                _ => None,
+            })
+        };
+        let opened = open(&mut p, "Song").expect("Song opens");
+        p.apply(ToUi::ProjectBack(opened));
+        for (name, why) in [
+            ("From later", "its clips can't be read ("),
+            ("Newest", "it was saved by a newer MPFree ("),
+        ] {
+            assert!(open(&mut p, name).is_none(), "{name} went to the engines");
+            let b = p.browser.as_ref().unwrap();
+            assert_eq!(b.project(), Some(&song), "{name}");
+            assert_eq!(b.last_project(), Some(&song), "{name}");
+            assert!(!b.unsaved(), "{name}");
+            let (line, problem) = b.status_line().unwrap();
+            assert!(problem, "{line}");
+            assert!(
+                line.starts_with(&format!("Didn't open {name}: {why}"))
+                    && line.ends_with("The project you had open is unchanged"),
+                "{line}"
+            );
+            let said = format!("project: didn't open {name}: {why}");
+            assert!(
+                events_log(&p).iter().any(|l| l.starts_with(&said)),
+                "{:?}",
+                events_log(&p)
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// Autosave (Jay's pick, 14 Nov): unsaved work edited since the last
     /// autosave goes, every 2 minutes, into autosave's own project; a save
     /// the musician asks for wins. At the next start, work autosaved after
@@ -26599,7 +26741,7 @@ mod tests {
                 mixer: mixer.clone(),
                 modu: String::new(),
                 synth: synth_text.clone(),
-                arp: String::new(),
+                arp: format!("{}\n", crate::app::ARP_HEADER),
                 instruments: String::new(),
                 track_kits: String::new(),
                 instrument_list: crate::instrument_list::InstrumentList::new().text(),

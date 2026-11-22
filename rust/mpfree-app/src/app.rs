@@ -36,7 +36,9 @@ pub mod saved;
 pub mod step_pads;
 mod synth_pads;
 
-pub use arp::{built_in_patterns, mode_label, ArpItem, ArpView, LiveMap, WorkspaceView};
+pub use arp::{
+    built_in_patterns, mode_label, ArpItem, ArpView, LiveMap, WorkspaceView, ARP_HEADER,
+};
 pub use mapper::{Code, MapView, Mark};
 use mpfree_arp::scale::pads::Pad as PadNotes;
 pub use pads_focus::{synth_track, PadFocus, RecPlan, SynthTake};
