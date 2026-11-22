@@ -213,6 +213,15 @@ const TO_AUDIO: &str = "to-audio";
 /// Normalize's peaks read off the screen, on the service.
 const PEAK: &str = "peak";
 
+/// Opening a project's kits, on the service's file lane (one at a time).
+const OPEN: &str = "open";
+
+/// Loading a kit file, on the file lane (one at a time).
+const KIT: &str = "kit";
+
+/// The browser's Load, on the file lane (one at a time).
+const LOAD: &str = "load";
+
 /// A job's id from what it is for (a Put on audio track's sound and span,
 /// a Normalize's layer), so the same asked for again while it waits takes
 /// its place.
@@ -6034,21 +6043,22 @@ impl SamplePage {
 
     /// Opens the sampler's part of a project (`text`, as
     /// [`SamplePage::save_part`] made it). The sounds are read (`read` gives
-    /// a file's bytes from the project's `samples/`) and decoded on a
-    /// thread of their own; the kits change on a later
-    /// [`SamplePage::tick`], each kit in its place, and the log says what
-    /// couldn't be used. A take or auto-sample under way is dropped then,
-    /// as when the kits are loaded.
+    /// a file's bytes from the project's `samples/`) and decoded on the job
+    /// service's file lane (plan phase 2 step 7g), so a long analysis never
+    /// holds it up; the kits change on a later [`SamplePage::tick`], each
+    /// kit in its place, and the log says what couldn't be used. A take or
+    /// auto-sample under way is dropped then, as when the kits are loaded.
+    /// An open while another is under way replaces it.
     #[allow(dead_code)] // the app's browser wiring calls it
     pub fn open_part(&mut self, text: String, read: ReadSample) {
         let (tx, rx) = mpsc::channel();
         let (free, rate) = (self.mem_free, self.rate);
-        let spawned = std::thread::Builder::new()
-            .name("sample-open".into())
-            .spawn(move || {
-                let _ = crate::cores::background(); // off the sound's cores and priority
-                                                    // Each sound only while it leaves the memory MPFree keeps
-                                                    // free; one that doesn't is left out and the log says why.
+        self.jobs.submit(mpfree_sampler::jobs::Job::new(
+            Lane::File,
+            Key::new(OPEN, 0),
+            move |_| {
+                // Each sound only while it leaves the memory MPFree keeps
+                // free; one that doesn't is left out and the log says why.
                 let r = save::from_text(&text, &mut |f| {
                     let bytes = read(f)?;
                     crate::memory::room_in(
@@ -6062,17 +6072,11 @@ impl SamplePage {
                     let views = cached_views(&o, &read);
                     (o, said, views)
                 }));
-            });
-        match spawned {
-            Ok(_) => {
-                self.opening = Some(rx);
-                self.lines
-                    .push("sample: opening the project's kits".to_string());
-            }
-            Err(e) => self
-                .lines
-                .push(format!("sample: the project's kits weren't opened ({e})")),
-        }
+            },
+        ));
+        self.opening = Some(rx);
+        self.lines
+            .push("sample: opening the project's kits".to_string());
     }
 
     /// The kit the pads play as a kit file (`mpfree_library::kit`): its
@@ -6120,7 +6124,7 @@ impl SamplePage {
 
     /// Loads a kit file (`dir` is its folder: `kit.txt` and its sounds) in
     /// place of the kit the pads play, named for the folder. Read and decoded
-    /// on a thread of its own; the kit changes on a later
+    /// on the job service's file lane; the kit changes on a later
     /// [`SamplePage::tick`]. What can't be used is left out and said in the
     /// log. A load while another is under way replaces it.
     pub fn open_kit(&mut self, dir: PathBuf) {
@@ -6147,24 +6151,18 @@ impl SamplePage {
             .to_string();
         let (tx, rx) = mpsc::channel();
         let (free, rate) = (self.mem_free, self.rate);
-        let spawned = std::thread::Builder::new()
-            .name("sample-kit".into())
-            .spawn(move || {
-                let _ = crate::cores::background(); // off the sound's cores and priority
+        self.jobs.submit(mpfree_sampler::jobs::Job::new(
+            Lane::File,
+            Key::new(KIT, 0),
+            move |_| {
                 let r = read_kit_file(&dir, &mut |f, len| {
                     crate::memory::room_in(free(), crate::memory::decode_need(f, len))
                 });
                 let _ = tx.send(r.map(|o| opened_at_rate(o, rate, free)));
-            });
-        match spawned {
-            Ok(_) => {
-                self.kit_loading = Some((rx, k, name.clone()));
-                self.lines.push(format!("sample: loading the kit {name}"));
-            }
-            Err(e) => self
-                .lines
-                .push(format!("sample: the kit {name} wasn't loaded ({e})")),
-        }
+            },
+        ));
+        self.kit_loading = Some((rx, k, name.clone()));
+        self.lines.push(format!("sample: loading the kit {name}"));
     }
 
     fn poll_kit(&mut self, ui: &mut Ui) {
@@ -6174,7 +6172,7 @@ impl SamplePage {
         let r = match rx.try_recv() {
             Ok(r) => r,
             Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => Err("its thread stopped".to_string()),
+            Err(TryRecvError::Disconnected) => Err("it stopped before it finished".to_string()),
         };
         let Some((_, k, name)) = self.kit_loading.take() else {
             return;
@@ -6231,24 +6229,21 @@ impl SamplePage {
 
     /// The browser's Load (`to_pad` false: onto the pad shown, one undo
     /// step) and Load to pad (`to_pad`: onto the next pad hit). The WAV,
-    /// AIFF or FLAC file is read and decoded on a thread of its own and
-    /// lands on a later [`SamplePage::tick`]. A Load while another is under way
-    /// replaces it.
+    /// AIFF or FLAC file is read and decoded on the job service's file lane
+    /// and lands on a later [`SamplePage::tick`]. A Load while another is
+    /// under way replaces it.
     #[allow(dead_code)] // the app's browser wiring calls it
     pub fn load_file(&mut self, path: PathBuf, to_pad: bool) {
         let (tx, rx) = mpsc::channel();
         let free = self.mem_free;
         let rate = self.rate;
-        let spawned = std::thread::Builder::new()
-            .name("sample-load".into())
-            .spawn(move || {
-                let _ = crate::cores::background(); // off the sound's cores and priority
+        self.jobs.submit(
+            mpfree_sampler::jobs::Job::new(Lane::File, Key::new(LOAD, 0), move |_| {
                 let _ = tx.send(read_sound(&path, free, rate));
-            });
-        match spawned {
-            Ok(_) => self.loading = Some((rx, to_pad)),
-            Err(e) => self.lines.push(format!("sample: not loaded ({e})")),
-        }
+            })
+            .order(Order::First),
+        );
+        self.loading = Some((rx, to_pad));
     }
 
     /// A sound Load to pad is holding for the next pad hit.
@@ -6262,7 +6257,7 @@ impl SamplePage {
         let r = match rx.try_recv() {
             Ok(r) => r,
             Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => Err("its thread stopped".to_string()),
+            Err(TryRecvError::Disconnected) => Err("it stopped before it finished".to_string()),
         };
         self.opening = None;
         match r {
@@ -6383,7 +6378,7 @@ impl SamplePage {
         let r = match rx.try_recv() {
             Ok(r) => r,
             Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => Err("its thread stopped".to_string()),
+            Err(TryRecvError::Disconnected) => Err("it stopped before it finished".to_string()),
         };
         self.loading = None;
         if let Ok(LoadedSound {
@@ -7125,7 +7120,7 @@ impl SamplePage {
         if failed > self.spawn_failed_told {
             self.spawn_failed_told = failed;
             self.lines.push(format!(
-                "sample: a background worker couldn't start ({failed}× so far); the waveforms wait for it, tried again with the next one"
+                "sample: a background worker couldn't start ({failed}× so far); its work waits for it, tried again with the next job"
             ));
         }
         if !self.seats.is_empty() {
@@ -7195,6 +7190,12 @@ impl SamplePage {
     #[cfg(test)]
     pub fn hold_views(&self, held: bool) {
         self.sources.hold(held);
+    }
+
+    /// The page's job service: for tests that put work of their own on it.
+    #[cfg(test)]
+    pub fn jobs(&self) -> &Jobs {
+        &self.jobs
     }
 
     /// Puts the page's work on `jobs` (its views with it, none made yet):

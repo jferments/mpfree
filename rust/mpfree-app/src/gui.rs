@@ -25069,6 +25069,52 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Sampler plan step 7g: a Load runs on the job service's file lane,
+    /// so a long piece of work on its sound lane (a long take's waveform, a
+    /// stretch) never holds it up.
+    #[test]
+    fn a_load_lands_while_long_work_holds_the_sound_lane() {
+        use mpfree_sampler::jobs::{Job, Key, Lane};
+        use mpfree_sampler::model::Source;
+        use mpfree_sampler::wav;
+        let dir = std::env::temp_dir().join(format!("mpfree-sample-lanes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let s = Source::new("x", 44_100, 1, vec![0.25; 44_100]).unwrap();
+        let path = dir.join("Clap 4.wav");
+        std::fs::write(&path, wav::bytes(&s)).unwrap();
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        // Work on the sound lane that runs until it is let go.
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        let (started, running) = std::sync::mpsc::channel::<()>();
+        p.sample
+            .jobs()
+            .submit(Job::new(Lane::Sound, Key::new("long", 1), move |_| {
+                let _ = started.send(());
+                // Until let go, or the test ends.
+                let _ = wait.recv();
+            }));
+        running
+            .recv_timeout(WORKER_WAIT)
+            .expect("the sound lane's work started");
+        p.sample.load_file(path, false);
+        let end = Instant::now() + Duration::from_secs(20);
+        while !p
+            .sample
+            .project(0)
+            .unwrap()
+            .pad(pad)
+            .is_some_and(|pd| pd.name == "Clap 4")
+        {
+            assert!(Instant::now() < end, "held up: {:?}", events_log(&p));
+            std::thread::sleep(Duration::from_millis(5));
+            p.tick(0.033);
+        }
+        assert!(p.sample.jobs().busy(), "the sound lane is still busy");
+        let _ = go.send(());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn the_warp_tool_pins_the_hits_and_the_copy_goes_through_them() {
         use mpfree_sampler_ui::warp_tool::Row;
