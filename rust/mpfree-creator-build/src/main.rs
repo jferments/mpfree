@@ -106,7 +106,8 @@ fn repo_root() -> Result<PathBuf, String> {
 
 fn run() -> Result<(), String> {
     let root = repo_root()?;
-    let out = root.join("rust/target/usb-creator");
+    // Joined part by part, so Windows shows its own separators throughout.
+    let out = root.join("rust").join("target").join("usb-creator");
 
     step("What it builds");
     let commit = git(&root, &["log", "-1", "--format=%h"]);
@@ -585,7 +586,10 @@ fn creator(root: &Path, programs: &Path) -> Result<PathBuf, String> {
     }
     run_cargo(c, "the creator didn't build: the lines above say why.")?;
     let exe = root
-        .join("rust/mpfree-creator/target/release")
+        .join("rust")
+        .join("mpfree-creator")
+        .join("target")
+        .join("release")
         .join(if cfg!(windows) {
             "mpfree-creator.exe"
         } else {

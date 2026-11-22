@@ -102,7 +102,7 @@ cargo usb-creator
 ```
 
 - **Check W1:** it ends with `DONE: the USB creator is ready` and the line to open it. Note how long it took. If it stops with `STOP:`, copy the last 30 lines.
-- **Check W2:** copy the six SHA-256 lines under `== Collecting them for the creator`. Compare them with the Mac's (M2) if you tested both: with the same commit, any line that matches shows the two computers built that program byte for byte the same (not expected for every file; worth knowing).
+- **Check W2:** copy the six SHA-256 lines under `== Collecting them for the creator`. The `free-kits` line is the same on every computer. The five programs' lines differ from one system to another, even for the same commit (GitHub's Linux, Mac and Windows machines show this too), so they are for the record, not a check.
 
 **3. Open it.**
 
