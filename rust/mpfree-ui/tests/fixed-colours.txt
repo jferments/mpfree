@@ -15,8 +15,9 @@ mpfree-app/src/sys.rs * # system call flags, not colours
 mpfree-app/src/time/control.rs 2 # finger ids, not colours
 mpfree-fx-ui/src/sample.rs 5 # sample data for the preview screens
 mpfree-fx-ui/src/visual.rs 1 # before theme roles (phase 0 baseline)
+mpfree-mpcskin/src/look.rs 6 # Akai's generic knob colours (skin art), and black and white as the last resort for a theme whose own inks cannot read
 mpfree-mpcskin/src/model.rs 5 # plugin skin defaults from Akai's skin format
-mpfree-mpcskin/src/view.rs 20 # plugin skin drawing, and MPFree's pop-ups over skins (to follow the theme in phase 2, Joshi 22 Nov)
+mpfree-mpcskin/src/view.rs 8 # plugin skin drawing: the colours the MPC draws a skin's own controls in
 mpfree-sampler-ui/src/sample.rs 3 # sample data for the preview screens
 mpfree-sampler-ui/src/widgets.rs 8 # content colours: the pads' palette (PAD_COLORS), shown through content() and swatch()
 mpfree-synth-ui/src/sample.rs 8 # sample data for the preview screens
