@@ -29,6 +29,8 @@
 //! - [`robust`]: the DSP quality plan's Y4 (every engine, the drums and
 //!   every effect stay finite at every setting) and Y7 (the same output
 //!   for any block size), `docs/dev/design/dsp-quality.md`.
+//! - [`reference`]: the same plan's Y8, each aliasing case against a
+//!   render at 8 times the rate brought down to 44.1 kHz.
 //! - [`programme`]: every stimulus in one recording with a sync chirp and
 //!   a schedule, for capturing a reference device and cutting it back up.
 //! - [`card`]: report cards over the registry, written as JSON.
@@ -56,6 +58,7 @@ pub mod plan;
 pub mod programme;
 pub mod prototype;
 pub mod quality;
+pub mod reference;
 pub mod response;
 pub mod robust;
 pub mod room;

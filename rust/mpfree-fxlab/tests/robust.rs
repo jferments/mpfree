@@ -27,6 +27,7 @@ const RATE: u32 = 44_100;
 /// re-syncs only at the start of a block, and the rotary, whose difference
 /// is rounding (below -400 dB).
 const BIT_EXACT: &[&str] = &[
+    "synth/Poly",
     "synth/Analog",
     "synth/Squelch",
     "synth/FM",
