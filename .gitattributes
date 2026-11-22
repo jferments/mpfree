@@ -1,0 +1,5 @@
+# Every file is checked out byte for byte as it is in the repository, on every
+# computer: no line-ending conversion (Git for Windows converts by default),
+# so a clone on Windows builds the same MPFree, from the same text files, as
+# one on Linux or macOS (cargo usb-creator; docs/dev/guides/build-usb-creator.md).
+* -text

@@ -1,0 +1,16 @@
+[package]
+name = "mpfree-creator-build"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "cargo usb-creator: builds the MPFree USB creator, with this clone's MPFree inside it, on Linux, macOS or Windows"
+
+# Its own workspace, like the creator's: `cargo usb-creator` builds only this
+# small program first, and it builds the rest.
+[workspace]
+
+[dependencies]
+sha2 = "0.10"
+# Ubuntu's packages (.deb) are an ar archive holding a zstd-compressed tar.
+ruzstd = "0.8"
+tar = { version = "0.4", default-features = false }

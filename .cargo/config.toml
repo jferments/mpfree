@@ -1,0 +1,5 @@
+# `cargo usb-creator`, run in this folder on Linux, macOS or Windows, builds
+# the MPFree USB creator with this clone's MPFree inside it
+# (rust/mpfree-creator-build; docs/dev/guides/build-usb-creator.md).
+[alias]
+usb-creator = "run --manifest-path rust/mpfree-creator-build/Cargo.toml --locked --"
