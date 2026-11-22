@@ -551,6 +551,17 @@ impl Out {
         }
     }
 
+    /// Something of the project just opened that the audio loop couldn't
+    /// put back, for the screen ([`gui::ToUi::LeftOut`]): the project
+    /// isn't saved over. Allocates nothing more than the line already did.
+    fn left_out(&mut self, what: String) {
+        if let Some(s) = self.sink.as_ref() {
+            if s.try_send(gui::ToUi::LeftOut(what)).is_err() {
+                self.dropped += 1;
+            }
+        }
+    }
+
     /// A MIDI message in or out: like `note`, but the pad player shows it in
     /// its MIDI monitor rather than the events.
     fn midi(&mut self, line: &str) {
@@ -10775,6 +10786,9 @@ fn player_session(
         }
         if let Some(line) = tracks.take_note() {
             out.note(&line);
+        }
+        if let Some(what) = tracks.take_left_out() {
+            out.left_out(what);
         }
         if std::mem::take(&mut save_asked) {
             if mix.opening() || looper.opening() || tracks.opening() {
