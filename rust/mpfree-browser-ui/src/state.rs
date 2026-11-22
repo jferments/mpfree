@@ -151,7 +151,8 @@ impl Pick {
         matches!(
             b,
             Button::Load | Button::Open | Button::Audition | Button::Favourite | Button::Cancel
-        ) || (b == Button::SavePreset && matches!(self, Pick::Preset { .. }))
+        ) || (matches!(b, Button::SavePreset | Button::NewTrackSound)
+            && matches!(self, Pick::Preset { .. }))
     }
 
     /// A place's name in it: a preset picker calls the engine's folder
@@ -274,6 +275,9 @@ pub enum Button {
     /// A kit: a new track (as + Track adds one, armed) that plays it, in
     /// an empty kit of its own.
     NewTrack,
+    /// A preset picker's: a new track (as + Track adds one, armed) with
+    /// its own synth playing the preset picked (New instrument track).
+    NewTrackSound,
 }
 
 impl Button {
@@ -301,6 +305,7 @@ impl Button {
             Button::SaveKit => "Save kit",
             Button::SavePreset => "Save preset",
             Button::NewTrack => "New track with this kit",
+            Button::NewTrackSound => "New track",
         }
     }
 }
@@ -376,6 +381,15 @@ fn now_utc() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// Where a preset for a new track comes from.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PresetFrom {
+    /// One of the engine's own, by its place in the picker's Factory list.
+    Factory(usize),
+    /// One of the musician's, by its file.
+    File(PathBuf),
+}
+
 /// What the app must do (the browser does everything else itself).
 #[derive(Clone, Debug, PartialEq)]
 pub enum BrowseAction {
@@ -397,6 +411,17 @@ pub enum BrowseAction {
     LoadKit {
         loc: Loc,
         path: PathBuf,
+    },
+    /// New track, in a preset picker (New instrument track, the instrument
+    /// redesign's step 4c): the app adds a track, as "+ Track" does, and
+    /// once it is there and armed gives it a synth of its own, `engine`
+    /// (the picker's folder: `Poly`, `FM` ...), playing this preset
+    /// (`name`, from `from`). The track the picker tried presets on has its
+    /// sound back first ([`BrowseAction::RevertPreset`]).
+    NewTrackWithPreset {
+        engine: String,
+        name: String,
+        from: PresetFrom,
     },
     /// New track with this kit: the app adds a track, as + Track does,
     /// and once it is there and armed loads this kit (`path`, as for
@@ -2236,6 +2261,40 @@ impl Browser {
                     _ => self.status = Some((format!("{} is not a sound", r.name), true)),
                 }
             }
+            Button::NewTrackSound => {
+                let (Some(r), Some(Pick::Preset { engine })) = (row, &self.pick) else {
+                    return;
+                };
+                if r.kind != Kind::Preset {
+                    return;
+                }
+                let from = match (r.factory, &loc) {
+                    (Some(i), _) => PresetFrom::Factory(i),
+                    (None, Some(l)) => match self.library().file_path(l) {
+                        Ok(path) => PresetFrom::File(path),
+                        Err(_) => {
+                            self.status =
+                                Some((format!("{}: {} is not there", b.label(), r.name), true));
+                            return;
+                        }
+                    },
+                    (None, None) => return,
+                };
+                let engine = engine.clone();
+                if self.tried {
+                    self.actions.push(BrowseAction::RevertPreset);
+                }
+                self.actions.push(BrowseAction::NewTrackWithPreset {
+                    engine,
+                    name: r.name.clone(),
+                    from,
+                });
+                self.status = Some((format!("A new track for {}", r.name), false));
+                if let Some(l) = loc {
+                    self.remember(l);
+                }
+                self.close_pick(true);
+            }
             Button::NewTrack => {
                 let Some(r) = row.filter(|r| r.kind == Kind::Kit) else {
                     return;
@@ -3045,8 +3104,10 @@ impl Browser {
             if !self.preset_now.name.is_empty() {
                 d.lines.push(("You had".into(), self.preset_now.label()));
             }
+            d.lines
+                .push(("New track".into(), "Its own synth, with this sound".into()));
             // The row's star stars one of the musician's.
-            d.buttons = vec![Button::Load];
+            d.buttons = vec![Button::Load, Button::NewTrackSound];
             return d;
         }
         if r.factory.is_some() {

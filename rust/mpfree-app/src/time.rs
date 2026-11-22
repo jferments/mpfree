@@ -68,6 +68,7 @@ mod control;
 mod follow;
 pub mod link;
 mod pad_wait;
+pub mod strips;
 
 use mpfree_play::mpfree_param::{Owner, ParamAddr, RelAddr};
 use mpfree_play::room::{self, Table};
@@ -279,6 +280,74 @@ pub struct HitInfo {
     pub bar_ticks: Tick,
 }
 
+/// Most notes one live note records as: a pad of chords' notes
+/// (`mpfree_arp::scale::pads::MAX_PAD_NOTES`).
+pub const HEARD_NOTES: usize = 4;
+
+/// What the armed track records of one live note ([`Pads::live`]): its pad,
+/// which a take of pad hits records and CAPTURE's history and the Play
+/// page's timing keep, and its notes as written (before the track's live
+/// transpose), which a take of notes records (the instrument redesign's
+/// step 5c). A pad of chords gives several notes; a note no pad plays (an
+/// arp's octave up) gives no pad. Fixed size, made on the audio thread.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Heard {
+    pub pad: Option<Event>,
+    notes: [Event; HEARD_NOTES],
+    n: u8,
+}
+
+impl Heard {
+    /// Nothing records.
+    pub const NONE: Heard = Heard {
+        pad: None,
+        notes: [Event::AllOff; HEARD_NOTES],
+        n: 0,
+    };
+
+    /// A host with no instruments: the pad, and the same number as its
+    /// note.
+    pub fn pad(event: Event) -> Heard {
+        Heard::of(Some(event), event, &[note_of(event)])
+    }
+
+    /// `kind` (a note-on with its velocity, a note-off, a pressure) on each
+    /// of `notes`, recorded as `pad` in a take of pad hits.
+    pub fn of(pad: Option<Event>, kind: Event, notes: &[u8]) -> Heard {
+        let mut h = Heard { pad, ..Heard::NONE };
+        for &note in notes.iter().take(HEARD_NOTES) {
+            h.notes[usize::from(h.n)] = match kind {
+                Event::NoteOn { velocity, .. } => Event::NoteOn { note, velocity },
+                Event::NoteOff { .. } => Event::NoteOff { note },
+                Event::Pressure { value, .. } => Event::Pressure { note, value },
+                e => e,
+            };
+            h.n += 1;
+        }
+        h
+    }
+
+    /// The notes a take of notes records, in order.
+    pub fn notes(&self) -> &[Event] {
+        &self.notes[..usize::from(self.n)]
+    }
+}
+
+/// The note number of a note's start, end or pressure (0 for the rest).
+fn note_of(e: Event) -> u8 {
+    match e {
+        Event::NoteOn { note, .. } | Event::NoteOff { note } | Event::Pressure { note, .. } => note,
+        _ => 0,
+    }
+}
+
+/// The notes each of a track's 16 pads plays (`mpfree_play::PadRows`):
+/// the step grid shows and edits a clip of notes through them, and a
+/// track's arp that works in notes plays a clip of pad hits by them.
+pub use mpfree_play::PadRows;
+
+const _: () = assert!(HEARD_NOTES == mpfree_play::PAD_NOTES);
+
 /// Where the sequencer's notes go: the sampler's pads. Each note names the
 /// track it came from (`Out::track`), so a host can play each track's own
 /// kit or instrument.
@@ -296,7 +365,10 @@ pub trait Pads {
     /// False leaves it to go on as usual (an `AllOff` should, so the pads
     /// stop too). The arps' notes, the live pads among them, go to
     /// [`Pads::live`] instead, which sees the whole event and says what
-    /// records. By default nothing is taken.
+    /// records. A clip of notes' notes ([`Out::notes`], instrument
+    /// redesign step 5c) come here too: a host with instruments takes
+    /// them, as the pad methods would read each note as a pad. By
+    /// default nothing is taken, and they play as pads.
     fn out(&mut self, o: &Out) -> bool {
         let _ = o;
         false
@@ -334,34 +406,44 @@ pub trait Pads {
         let _ = (addr, value, offset);
         false
     }
+    /// The mixer track (its number among the mixer's tracks) where track
+    /// `track`'s instrument sounds, for a clip's locks on "this track's
+    /// strip" ([`strips`]): another track's instrument it plays (step 4a)
+    /// is heard on that instrument's strip. None where the host doesn't
+    /// say (a kit, the synth, MIDI out): its own strip. By default None.
+    fn sounds_on(&self, track: u16) -> Option<u8> {
+        let _ = track;
+        None
+    }
     /// A note one of the per-track arps played ([`TimeHost::period_arps`]):
     /// the pads through their track's arp, a latched arp, or a clip that
     /// plays through its arp. It is live playing, so the pad player gives
-    /// it the pads' own treatment (velocity curve, flashes). Returns the
-    /// note to record as heard on the armed track (a pad number), or None.
-    /// By default it plays as a clip's note and records as it is.
-    fn live(&mut self, o: &Out) -> Option<Event> {
+    /// it the pads' own treatment (velocity curve, flashes). Returns what
+    /// the armed track records of it as heard: its pad, and its notes for
+    /// a take of notes ([`Heard`]). By default it plays as a clip's note
+    /// and records as it is.
+    fn live(&mut self, o: &Out) -> Heard {
         match o.event {
             Event::NoteOn { note, velocity } => {
                 self.hit_at(o.track, usize::from(note), velocity, o.offset);
-                Some(o.event)
+                Heard::pad(o.event)
             }
             Event::NoteOff { note } => {
                 self.release_at(o.track, usize::from(note), o.offset);
-                Some(o.event)
+                Heard::pad(o.event)
             }
             Event::AllOff => {
                 self.stop_all();
-                None
+                Heard::NONE
             }
             Event::Pressure { note, value } => {
                 self.pressure_at(o.track, usize::from(note), value, o.offset);
-                None
+                Heard::NONE
             }
             Event::Lock { .. }
             | Event::Lane { .. }
             | Event::Unlock { .. }
-            | Event::Program { .. } => None,
+            | Event::Program { .. } => Heard::NONE,
         }
     }
 }
@@ -506,8 +588,11 @@ pub const QUANTISE_ON: u32 = 240;
 
 /// Locks and unlocks kept for the mixer in one period: every lock and
 /// unlock the period's table lets in (refactor A2: an unlock is never
-/// lost; mpfree_play::room).
-const MAX_LOCKS: usize = room::VALUES + room::LOCK_ENDS;
+/// lost; mpfree_play::room), and room again for the ends a lock on "this
+/// track's strip" sends on the old strip when its instrument moved
+/// ([`strips`]: one at most for each lock held, fewer than
+/// `room::LOCK_ENDS`).
+const MAX_LOCKS: usize = room::VALUES + 2 * room::LOCK_ENDS;
 /// Move values kept for the mod engine in one period: every value the
 /// period's table lets in.
 const MAX_LANES: usize = room::VALUES;
@@ -1067,12 +1152,20 @@ impl TimeHost {
 
     /// A pad note as pressed, before any arp, in the coming period at
     /// `offset`. When the armed track's clips play through its arp, this
-    /// is what it records, and what the capture history keeps.
-    // The app calls it once its pads play through the per-track arps (the
-    // arp thread's side); until then only tests do.
-    #[allow(dead_code)]
+    /// is what it records, and what the capture history keeps. A clip of
+    /// notes has no notes from it: [`TimeHost::pad_pressed_notes`] gives
+    /// them.
     pub fn pad_pressed(&mut self, offset: u32, event: Event) {
-        self.audio.pad_pressed(offset, event);
+        self.audio
+            .pad_pressed(offset, &Heard::of(Some(event), event, &[]));
+    }
+
+    /// [`TimeHost::pad_pressed`] with the notes the pad plays, as written
+    /// (`PadRows`): a take of notes on a track whose clips play through
+    /// its arp records them (the instrument redesign's step 5d).
+    pub fn pad_pressed_notes(&mut self, offset: u32, event: Event, notes: &[u8]) {
+        self.audio
+            .pad_pressed(offset, &Heard::of(Some(event), event, notes));
     }
 
     /// Whether a live hit on a pad that starts on the launch line waits
@@ -1369,6 +1462,21 @@ impl TimeHost {
     /// their period ([`Pads::out_ahead`]). All 0 plays nothing ahead.
     pub fn set_ahead(&mut self, frames: &[u32]) {
         self.audio.set_ahead(frames);
+    }
+
+    /// The tracks whose instrument plays notes (a track's own synth, or
+    /// another track's it plays, but not the Drums engine), one bit each:
+    /// a new clip REC makes for a take on one holds notes (step 5c), its
+    /// clips through its arp too (step 5d).
+    pub fn set_notes_tracks(&mut self, tracks: u128) {
+        self.control.set_notes_tracks(tracks);
+    }
+
+    /// The notes each of track `track`'s 16 pads plays: a clip of notes
+    /// shows each pad's root on the step grid's pad rows, and a tap on a
+    /// pad's row edits its notes (step 5c).
+    pub fn set_pad_rows(&mut self, track: usize, rows: PadRows) {
+        self.control.set_pad_rows(track, rows);
     }
 
     /// What the look-ahead did, for the log.
@@ -3055,9 +3163,21 @@ mod tests {
             mpfree_play::mpfree_param::ParamAddr,
             Option<f32>,
         )>,
+        /// (track, mixer track): where a track's instrument sounds
+        /// ([`Pads::sounds_on`]); a track not here, on its own strip.
+        sounds: Vec<(u16, u8)>,
+        /// A live pad plays these notes above its number (a chord of an
+        /// instrument's pad map, step 5c); empty: its number alone.
+        chord: Vec<u8>,
     }
 
     impl Pads for Fake {
+        fn sounds_on(&self, track: u16) -> Option<u8> {
+            self.sounds
+                .iter()
+                .find(|(t, _)| *t == track)
+                .map(|&(_, s)| s)
+        }
         fn hit_at(&mut self, _track: u16, pad: usize, velocity: u8, offset: u32) -> bool {
             self.hits
                 .push((self.frame + u64::from(offset), pad, velocity));
@@ -3086,6 +3206,33 @@ mod tests {
             let at = self.frame + u64::from(offset);
             self.locks.push((at, self.hits.len(), addr, value));
             true
+        }
+        // As the default, but a pad's notes are its chord's.
+        fn live(&mut self, o: &Out) -> Heard {
+            let (note, play) = match o.event {
+                Event::NoteOn { note, velocity } => (
+                    note,
+                    self.hit_at(o.track, usize::from(note), velocity, o.offset),
+                ),
+                Event::NoteOff { note } => {
+                    self.release_at(o.track, usize::from(note), o.offset);
+                    (note, true)
+                }
+                _ => return Heard::NONE,
+            };
+            let notes: Vec<u8> = if self.chord.is_empty() {
+                vec![note]
+            } else {
+                self.chord.iter().map(|&k| note + k).collect()
+            };
+            if !play {
+                Heard::NONE
+            } else if o.notes {
+                // An arp working in notes (step 5d): a note, no pad.
+                Heard::of(None, o.event, &[note])
+            } else {
+                Heard::of(Some(o.event), o.event, &notes)
+            }
         }
     }
 
@@ -4174,6 +4321,86 @@ mod tests {
         assert!(clip.notes.is_empty() && clip.locks.is_empty());
     }
 
+    /// Instrument redesign, after step 4d: a clip's lock on "this track's
+    /// strip" goes where the track's instrument sounds (strips.rs). Track
+    /// 2 plays track 3's instrument, heard on track 3's strip: its lock
+    /// and the lock's end go there, and track 3's own lock on the same
+    /// control waits behind it (no lasting ids here, so by track), then
+    /// takes over. A lock on an effect of track 2's strip stays there.
+    #[test]
+    fn a_lock_on_this_tracks_strip_goes_where_its_instrument_sounds() {
+        use mpfree_play::mpfree_param::{track_strip, OnTrack, Owner, ParamAddr, RelAddr, Strip};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let vol = RelAddr::new(OnTrack::Strip, 0);
+        let fx = RelAddr::new(OnTrack::Insert(1), 2);
+        // Each track: pad 2 on steps 1 and 9, step 1 locked; step 9's note,
+        // with no lock, ends it.
+        for (track, value) in [(1, 0.25), (2, 0.75)] {
+            h.act(TimeAction::Arm(Some(track))).unwrap();
+            for step in [0, 8] {
+                h.step_action(StepAction::Tap {
+                    pad: 2,
+                    step,
+                    velocity: 100,
+                })
+                .unwrap();
+            }
+            h.step_action(StepAction::Lock {
+                pad: 2,
+                steps: 1,
+                addr: vol,
+                value: Some(value),
+            })
+            .unwrap();
+        }
+        h.act(TimeAction::Arm(Some(1))).unwrap();
+        h.step_action(StepAction::Lock {
+            pad: 2,
+            steps: 1,
+            addr: fx,
+            value: Some(0.5),
+        })
+        .unwrap();
+        let Strip::Track(three) = track_strip(2) else {
+            unreachable!()
+        };
+        let mut pads = Fake {
+            sounds: vec![(1, three)],
+            ..Fake::default()
+        };
+        h.command(Command::Play);
+        let mut out = Vec::new();
+        // Past step 9, before the clip comes round again.
+        while pads.frame < 3 * BAR / 4 {
+            h.period(PERIOD, &mut pads);
+            out.extend(h.locks().iter().map(|&(_, a, v)| (a, v)));
+            h.clear_locks();
+            pads.frame += u64::from(PERIOD);
+        }
+        let on_three = ParamAddr::new(Owner::Strip(Strip::Track(three)), 0);
+        let fx_two = fx.on(1);
+        assert_eq!(
+            out,
+            vec![
+                // Step 1: track 2's lock on track 3's strip; its effect
+                // lock on its own; track 3's own lock waits.
+                (on_three, Some(0.25)),
+                (fx_two, Some(0.5)),
+                // Step 9: track 2's end hands the control to track 3, whose
+                // end lets it go.
+                (on_three, Some(0.75)),
+                (fx_two, None),
+                (on_three, None),
+            ]
+        );
+        let c = h.control.strips;
+        assert_eq!((c.moved, c.waited, c.full), (1, 1, 0));
+        assert!(h
+            .describe()
+            .contains("this track's strip: 1 locks went to their instrument's strip, 1 waited"));
+        assert_eq!(h.dropped(), 0);
+    }
+
     /// Per-track arps with track `track`'s arp playing up in sixteenths.
     fn arp_up(track: usize) -> TrackArps {
         use mpfree_arp::{Mode, Order, Rate, Settings};
@@ -4237,6 +4464,379 @@ mod tests {
             .filter(|&&(f, _, _)| f >= 2 * BAR)
             .map(|&(f, p, _)| (f, p))
             .collect()
+    }
+
+    /// Step 5c: REC's new clip on a track whose instrument plays notes
+    /// holds notes, and the take records the notes the pads played (a
+    /// pad's chord, each note), with the pad's pressure on each; on a
+    /// track that doesn't it holds pad hits and records the pad, as
+    /// before. Through the arp it holds notes too (step 5d).
+    #[test]
+    fn a_take_on_a_track_that_plays_notes_records_its_notes() {
+        use mpfree_seq::Holds;
+        let take = |track: usize, through: bool| {
+            let mut h = TimeHost::new(RATE, 120.0).unwrap();
+            let mut pads = Fake {
+                chord: vec![60, 64],
+                ..Fake::default()
+            };
+            let mut arps = TrackArps::new(RATE, 120.0);
+            h.control.project.tracks[track].through_arp = through;
+            h.set_notes_tracks(1 << 1);
+            h.command(Command::SetLoop(Some((0, 3840))));
+            h.act(TimeAction::NewClip { track, slot: 0 }).unwrap();
+            let holds = h.project().clip(track, 0).unwrap().holds;
+            while pads.frame < BAR - 1000 {
+                let at = pads.frame;
+                if at == 10 * u64::from(PERIOD) {
+                    arps.pad(
+                        track,
+                        0,
+                        Event::NoteOn {
+                            note: 4,
+                            velocity: 100,
+                        },
+                    );
+                }
+                if at == 20 * u64::from(PERIOD) {
+                    h.pad_pressure(5, 4, 70);
+                }
+                if at == 40 * u64::from(PERIOD) {
+                    arps.pad(track, 0, Event::NoteOff { note: 4 });
+                }
+                h.period_arps(PERIOD, &mut pads, &mut arps);
+                pads.frame += u64::from(PERIOD);
+            }
+            let clip = h.project().clip(track, 0).unwrap().clone();
+            let mut notes: Vec<(u8, Vec<u8>)> = clip
+                .notes
+                .iter()
+                .map(|n| (n.note, clip.touch_of(n).iter().map(|p| p.value).collect()))
+                .collect();
+            notes.sort();
+            assert_eq!(h.dropped(), 0);
+            (holds, notes)
+        };
+        assert_eq!(
+            take(1, false),
+            (Holds::Notes, vec![(64, vec![70]), (68, vec![70])],),
+            "the chord's notes, each with the pad's pressure"
+        );
+        assert_eq!(
+            take(0, false),
+            (Holds::Hits, vec![(4, vec![70])]),
+            "a track that plays no notes records the pad"
+        );
+        // Through the arp, pads as pressed: none here, so the take records
+        // nothing but makes a clip of notes (step 5d).
+        assert_eq!(take(1, true).0, Holds::Notes);
+    }
+
+    /// Step 5c: on a clip of notes the step grid's pad rows show the
+    /// notes the track's pads play, named by the pad, so the Play page and
+    /// the step pads read it as they read a clip of hits: a tap on pad 3's
+    /// row adds pad 3's note, the Note knob moves a step to another pad's
+    /// note, and a note no pad plays stays on a row of its own. A new
+    /// pattern on a track that plays notes holds notes; on one that
+    /// doesn't it holds pad hits, as before.
+    #[test]
+    fn a_clip_of_notes_shows_its_pads_notes_on_the_pad_rows() {
+        use mpfree_seq::steps::Change;
+        use mpfree_seq::Holds;
+        let mut rows = PadRows::PADS;
+        for p in 0..16 {
+            rows.set(p, &[60 + p as u8]);
+        }
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.set_notes_tracks(1);
+        h.set_pad_rows(0, rows);
+        let tap = |pad, step| StepAction::Tap {
+            pad,
+            step,
+            velocity: 100,
+        };
+        let said = h.step_action(tap(2, 0)).unwrap();
+        assert!(said.contains("step 1 of note D4"), "{said}");
+        let clip = h.project().clip(0, 0).unwrap().clone();
+        assert_eq!(clip.holds, Holds::Notes, "a new pattern holds notes");
+        let notes = |h: &TimeHost| -> Vec<(u8, Tick)> {
+            let mut v: Vec<_> = h
+                .project()
+                .clip(0, 0)
+                .unwrap()
+                .notes
+                .iter()
+                .map(|n| (n.note, n.tick))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(notes(&h), vec![(62, 0)], "pad 3's note");
+        // The grid names the row by the pad.
+        let shown = |h: &TimeHost| {
+            let s = h.steps();
+            let c = s.clip.expect("the pattern");
+            c.rows
+                .iter()
+                .filter(|(p, r)| *p != LINE && r.iter().any(Option::is_some))
+                .map(|(p, r)| (*p, r.iter().position(Option::is_some).unwrap()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shown(&h), vec![(2, 0)]);
+        // The Note knob on pad 3's step, to pad 6: the step plays pad 6's
+        // note, on pad 6's row.
+        h.step_action(StepAction::Change {
+            pad: 2,
+            step: 0,
+            change: Change::Note(5),
+        })
+        .unwrap();
+        assert_eq!(notes(&h), vec![(65, 0)]);
+        assert_eq!(shown(&h), vec![(5, 0)]);
+        // A note no pad plays (from a take, or a pad map changed since)
+        // keeps a row of its own, under its note.
+        h.step_action(tap(0, 2)).unwrap();
+        let mut up = rows;
+        for p in 0..16 {
+            up.set(p, &[72 + p as u8]);
+        }
+        h.set_pad_rows(0, up);
+        assert!(h.control.take_steps_changed(), "new rows show again");
+        let mut other = shown(&h);
+        other.sort();
+        assert_eq!(other, vec![(60, 2), (65, 0)]);
+        // A second tap on the same row takes the note back off.
+        h.set_pad_rows(0, rows);
+        h.step_action(tap(0, 2)).unwrap();
+        assert_eq!(notes(&h), vec![(65, 0)]);
+        // A track that plays no notes: a pattern of pad hits, by pad.
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.set_pad_rows(0, rows);
+        let said = h.step_action(tap(2, 0)).unwrap();
+        assert!(said.contains("step 1 of pad 3"), "{said}");
+        let clip = h.project().clip(0, 0).unwrap();
+        assert_eq!(clip.holds, Holds::Hits);
+        assert_eq!(clip.notes[0].note, 2);
+    }
+
+    /// Step 5c with a pad of chords: on a clip of notes a pad's row stands
+    /// for the whole chord, as a pad hit plays it on a clip of hits. A tap
+    /// puts all its notes on the step and takes them all off again; a
+    /// change takes every note; the Note knob puts the step on another
+    /// pad's notes; keys entered on the line are their pads' chords.
+    #[test]
+    fn a_pad_of_chords_steps_its_whole_chord_on_a_clip_of_notes() {
+        use mpfree_seq::steps::Change;
+        let mut rows = PadRows::PADS;
+        for p in 0..16 {
+            rows.set(p, &[60 + p as u8]);
+        }
+        // Pad 1 plays C major, its root last.
+        rows.set(0, &[64, 67, 60]);
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.set_notes_tracks(1);
+        h.set_pad_rows(0, rows);
+        let notes = |h: &TimeHost| -> Vec<(u8, u8)> {
+            let mut v: Vec<_> = h
+                .project()
+                .clip(0, 0)
+                .map(|c| c.notes.iter().map(|n| (n.note, n.velocity)).collect())
+                .unwrap_or_default();
+            v.sort();
+            v
+        };
+        let tap = |pad, step| StepAction::Tap {
+            pad,
+            step,
+            velocity: 100,
+        };
+        let said = h.step_action(tap(0, 0)).unwrap();
+        assert!(said.contains("note C4"), "the root names it: {said}");
+        assert_eq!(notes(&h), vec![(60, 100), (64, 100), (67, 100)]);
+        // Shown on pad 1's row.
+        let s = h.steps();
+        let row = &s.clip.as_ref().unwrap().rows;
+        assert!(row.iter().any(|(p, r)| *p == 0 && r[0].is_some()));
+        // Every note takes a change, and one UNDO takes it back.
+        h.step_action(StepAction::Change {
+            pad: 0,
+            step: 0,
+            change: Change::Velocity(50),
+        })
+        .unwrap();
+        assert_eq!(notes(&h), vec![(60, 50), (64, 50), (67, 50)]);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(notes(&h), vec![(60, 100), (64, 100), (67, 100)]);
+        // The Note knob to pad 6: the step plays pad 6's note.
+        h.step_action(StepAction::Change {
+            pad: 0,
+            step: 0,
+            change: Change::Note(5),
+        })
+        .unwrap();
+        assert_eq!(notes(&h), vec![(65, 100)]);
+        // And back to pad 1: the chord again.
+        h.step_action(StepAction::Change {
+            pad: 5,
+            step: 0,
+            change: Change::Note(0),
+        })
+        .unwrap();
+        assert_eq!(notes(&h), vec![(60, 100), (64, 100), (67, 100)]);
+        // A second tap takes the whole chord off.
+        h.step_action(tap(0, 0)).unwrap();
+        assert_eq!(notes(&h), vec![]);
+        // Keys on the line: pad 1 and pad 3 give the chord and D4.
+        let mut keys = [(0, 0); MAX_PEN];
+        keys[0] = (0, 90);
+        keys[1] = (2, 80);
+        h.step_action(StepAction::Enter {
+            step: 1,
+            keys,
+            n: 2,
+        })
+        .unwrap();
+        assert_eq!(notes(&h), vec![(60, 90), (62, 80), (64, 90), (67, 90)]);
+    }
+
+    /// Pads as pressed with no notes to give a clip of notes (one through
+    /// the arp) aren't recorded into it, and each is counted.
+    #[test]
+    fn pads_as_pressed_into_a_clip_of_notes_are_counted_not_recorded() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut arps = TrackArps::new(RATE, 120.0);
+        h.control.project.tracks[1].through_arp = true;
+        h.command(Command::SetLoop(Some((0, 3840))));
+        h.act(TimeAction::NewClip { track: 1, slot: 0 }).unwrap();
+        h.control.project.tracks[1].slots[0].as_mut().unwrap().holds = mpfree_seq::Holds::Notes;
+        h.control.compile().unwrap();
+        for i in 0..40u64 {
+            if i == 10 {
+                h.pad_pressed(
+                    0,
+                    Event::NoteOn {
+                        note: 4,
+                        velocity: 100,
+                    },
+                );
+            }
+            if i == 20 {
+                h.pad_pressed(0, Event::NoteOff { note: 4 });
+            }
+            h.period_arps(PERIOD, &mut pads, &mut arps);
+            pads.frame += u64::from(PERIOD);
+        }
+        assert!(h.project().clip(1, 0).unwrap().notes.is_empty());
+        assert_eq!(h.dropped(), 1);
+    }
+
+    /// Step 5d: pads as pressed on a track whose clips play through its
+    /// arp record their notes into a clip of notes, each with the pad's
+    /// pressure.
+    #[test]
+    fn pads_as_pressed_into_a_clip_of_notes_record_their_notes() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut arps = TrackArps::new(RATE, 120.0);
+        h.control.project.tracks[1].through_arp = true;
+        h.set_notes_tracks(1 << 1);
+        h.command(Command::SetLoop(Some((0, 3840))));
+        h.act(TimeAction::NewClip { track: 1, slot: 0 }).unwrap();
+        for i in 0..40u64 {
+            if i == 10 {
+                let on = Event::NoteOn {
+                    note: 4,
+                    velocity: 100,
+                };
+                h.pad_pressed_notes(0, on, &[64, 67, 60]);
+            }
+            if i == 15 {
+                h.pad_pressure(0, 4, 70);
+            }
+            if i == 20 {
+                h.pad_pressed_notes(0, Event::NoteOff { note: 4 }, &[64, 67, 60]);
+            }
+            h.period_arps(PERIOD, &mut pads, &mut arps);
+            pads.frame += u64::from(PERIOD);
+        }
+        let clip = h.project().clip(1, 0).unwrap().clone();
+        assert_eq!(clip.holds, mpfree_seq::Holds::Notes);
+        let mut notes: Vec<(u8, Vec<u8>)> = clip
+            .notes
+            .iter()
+            .map(|n| (n.note, clip.touch_of(n).iter().map(|p| p.value).collect()))
+            .collect();
+        notes.sort();
+        assert_eq!(
+            notes,
+            vec![(60, vec![70]), (64, vec![70]), (67, vec![70])],
+            "the pad's chord, each note with its pressure"
+        );
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Step 5d, as the plan proves it: the pads recorded while a clip
+    /// plays the same synth on another track, both through arps that work
+    /// in notes. The take holds the pads' notes and never the clip's,
+    /// whether the recording track's clips play through its arp (the pads
+    /// as pressed) or not (what its arp played).
+    #[test]
+    fn a_take_of_the_pads_leaves_out_a_clip_playing_the_same_synth() {
+        use mpfree_seq::{Holds, Note};
+        for through in [false, true] {
+            let mut h = TimeHost::new(RATE, 120.0).unwrap();
+            let mut pads = Fake::default();
+            let mut arps = TrackArps::new(RATE, 120.0);
+            let mut rows = PadRows::PADS;
+            rows.set(4, &[64, 67, 60]);
+            for t in 0..2 {
+                arps.set_on_notes(t, true);
+                arps.set_pads(t, &rows);
+            }
+            // Track 1 plays D3 all through, through its arp.
+            h.control.project.tracks[0].through_arp = true;
+            let mut c = Clip::new("D3", 3840);
+            c.holds = Holds::Notes;
+            c.notes = vec![Note::new(0, 3840, 50, 100)];
+            h.control.project.tracks[0].slots[0] = Some(c);
+            h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+            // Track 2 records the pads: pad 5, a C major chord.
+            h.control.project.tracks[1].through_arp = through;
+            h.set_notes_tracks(0b11);
+            h.command(Command::SetLoop(Some((0, 3840))));
+            h.act(TimeAction::NewClip { track: 1, slot: 0 }).unwrap();
+            let on = Event::NoteOn {
+                note: 4,
+                velocity: 100,
+            };
+            let off = Event::NoteOff { note: 4 };
+            for i in 0..40u64 {
+                for (at, e) in [(10, on), (20, off)] {
+                    if i == at {
+                        h.pad_pressed_notes(0, e, rows.notes(4));
+                        for &n in rows.notes(4) {
+                            let e = match e {
+                                Event::NoteOn { velocity, .. } => {
+                                    Event::NoteOn { note: n, velocity }
+                                }
+                                _ => Event::NoteOff { note: n },
+                            };
+                            arps.pad(1, 0, e);
+                        }
+                    }
+                }
+                h.period_arps(PERIOD, &mut pads, &mut arps);
+                pads.frame += u64::from(PERIOD);
+            }
+            assert!(pads.hits.iter().any(|&(_, n, _)| n == 50), "the clip plays");
+            let clip = h.project().clip(1, 0).unwrap().clone();
+            assert_eq!(clip.holds, Holds::Notes, "through {through}");
+            let mut notes: Vec<u8> = clip.notes.iter().map(|n| n.note).collect();
+            notes.sort();
+            assert_eq!(notes, vec![60, 64, 67], "through {through}");
+            assert_eq!(h.dropped(), 0);
+        }
     }
 
     /// A track's MIDI effects go from the project to the sound loop: the

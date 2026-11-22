@@ -3052,6 +3052,7 @@ fn time_ahead(rate: u32, tracks: usize, ahead: usize) -> Case {
             track: 0,
             dest: 0,
             event: mpfree_play::Event::AllOff,
+            notes: false,
         }; REAL_PASS],
         n: 0,
     });

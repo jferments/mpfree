@@ -55,8 +55,10 @@ use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_transport::{Block, Command, State};
 
 use super::follow::FollowCounts;
-use super::link::{Counts, InPlace, PeriodEnd, Rx, ToAudio, ToControl, Tracks, Tx};
-use super::{StepAction, StepClip, StepsData, LINE, NEW_CLIP_BARS, RECORD_ROOM, STEP_TICKS};
+use super::link::{Counts, InPlace, PeriodEnd, Rx, StripCounts, ToAudio, ToControl, Tracks, Tx};
+use super::{
+    PadRows, StepAction, StepClip, StepsData, LINE, NEW_CLIP_BARS, RECORD_ROOM, STEP_TICKS,
+};
 
 /// The clip settings card's join keys for its takes, a row each (see
 /// `Takes::set_clip`).
@@ -291,6 +293,12 @@ pub struct TimeControl {
     /// Other armed tracks a take found with no clip and no empty slot to
     /// make one in: they didn't record it.
     also_full: u64,
+    /// The tracks whose instrument plays notes, a bit each
+    /// ([`TimeControl::set_notes_tracks`]).
+    notes_tracks: u128,
+    /// The note each track's pads play (a pad's root), for the step grid's
+    /// pad rows on a clip of notes ([`TimeControl::set_pad_rows`]).
+    pad_rows: Box<[PadRows; MAX_TRACKS]>,
     takes: Takes,
     /// REDOs done so far: a track that comes back with one is the one UNDO
     /// took away, and its kit comes back with it (`TrackKits::follow`).
@@ -314,6 +322,8 @@ pub struct TimeControl {
     counts: Counts,
     /// What following another device's clock put right or lost.
     follow: FollowCounts,
+    /// What clips' locks on "this track's strip" did (`strips.rs`).
+    pub strips: StripCounts,
     /// Following another device's Start and Stop while it is stopped:
     /// PLAY waits for its Start (set by the host before each action).
     pub(super) clock_waits: bool,
@@ -458,6 +468,8 @@ impl TimeControl {
             also: 0,
             also_n: 0,
             also_full: 0,
+            notes_tracks: 0,
+            pad_rows: Box::new([PadRows::PADS; MAX_TRACKS]),
             takes: Takes::default(),
             redos: 0,
             clipboard: None,
@@ -469,6 +481,7 @@ impl TimeControl {
             info,
             counts: Counts::default(),
             follow: FollowCounts::default(),
+            strips: StripCounts::default(),
             clock_waits: false,
             block: Box::new(Block::new()),
             fresh: true,
@@ -516,6 +529,26 @@ impl TimeControl {
     /// The armed track (the one REC records), if any.
     pub fn armed(&self) -> Option<usize> {
         self.armed
+    }
+
+    /// The tracks whose instrument plays notes, a bit each, from the
+    /// host's instruments: a new clip REC makes for a take on one holds
+    /// notes (the instrument redesign's step 5c).
+    pub fn set_notes_tracks(&mut self, tracks: u128) {
+        self.notes_tracks = tracks;
+    }
+
+    /// The notes each of track `track`'s 16 pads plays, from the host's
+    /// instruments: on a clip of notes the step grid's pad rows show each
+    /// pad's root, and a tap on a pad's row edits the pad's notes (step
+    /// 5c). The grid is shown again when they change.
+    pub fn set_pad_rows(&mut self, track: usize, rows: PadRows) {
+        if let Some(r) = self.pad_rows.get_mut(track) {
+            if *r != rows {
+                *r = rows;
+                self.steps_changed = true;
+            }
+        }
     }
 
     /// The selected track: the one the Sequencer's Steps, Notes and STEP
@@ -655,6 +688,27 @@ impl TimeControl {
         // the selected one): the Sequencer edits what plays.
         if self.clip_picked().is_none() {
             self.clip_pick = None;
+        }
+    }
+
+    /// The notes the step grid's pad rows stand for on `clip` of `track`:
+    /// the pads, 0 to 15, on a clip of pad hits; the track's pads' notes
+    /// on a clip of notes.
+    fn rows_of(&self, track: usize, clip: &Clip) -> PadRows {
+        match clip.holds {
+            mpfree_seq::Holds::Hits => PadRows::PADS,
+            mpfree_seq::Holds::Notes => self.pad_rows.get(track).copied().unwrap_or(PadRows::PADS),
+        }
+    }
+
+    /// What a new clip for a take on `track` holds: notes when its
+    /// instrument plays notes (its clips through its arp too, since step
+    /// 5d), else pad hits.
+    fn take_holds(&self, track: usize) -> mpfree_seq::Holds {
+        if self.notes_tracks >> track.min(127) & 1 == 1 {
+            mpfree_seq::Holds::Notes
+        } else {
+            mpfree_seq::Holds::Hits
         }
     }
 
@@ -879,6 +933,7 @@ impl TimeControl {
                     }
                 }
                 ToControl::Follow(c) => self.follow = c,
+                ToControl::Strips(c) => self.strips = c,
                 ToControl::Period(end) => self.period(end),
                 ToControl::Done(v) => drop(v),
                 ToControl::Chain(c) => drop(c),
@@ -1409,7 +1464,9 @@ impl TimeControl {
                     .slots
                     .first_free()
                     .ok_or_else(|| format!("{} has no empty slot to record into", t.name))?;
-                let clip = Clip::new(&format!("Clip {}", s + 1), length);
+                let holds = self.take_holds(track);
+                let mut clip = Clip::new(&format!("Clip {}", s + 1), length);
+                clip.holds = holds;
                 self.project
                     .put_new_clip(track, s, clip)
                     .map_err(|e| format!("new clip: {e:?}"))?;
@@ -1648,7 +1705,17 @@ impl TimeControl {
             let origin = launch.map(|l| l.origin);
             let order =
                 launch.and_then(|l| mpfree_play::StepOrder::of(c, track, slot, l.origin, l.start));
-            let shown = grid.shown(c, &mpfree_seq::steps::PAD_ROWS);
+            // A clip of notes shows its pads' notes on the pad rows, named
+            // by the pad, so the Play page and the step pads read every clip
+            // by pad (step 5c).
+            let pads = self.rows_of(track, c).roots();
+            let shown = grid.shown(c, &pads);
+            let pad_of = |note: u8| -> u8 {
+                match pads.iter().position(|&p| p == note) {
+                    Some(i) if c.holds == mpfree_seq::Holds::Notes && note != LINE => i as u8,
+                    _ => note,
+                }
+            };
             Some(StepClip {
                 slot,
                 name: c.name.clone(),
@@ -1657,9 +1724,21 @@ impl TimeControl {
                 song_step: c.speed.to_song(STEP_TICKS as f64),
                 origin,
                 order,
-                rows: shown.rows,
-                locks: shown.locks,
-                lock_values: shown.lock_values,
+                rows: shown
+                    .rows
+                    .into_iter()
+                    .map(|(p, r)| (pad_of(p), r))
+                    .collect(),
+                locks: shown
+                    .locks
+                    .into_iter()
+                    .map(|(p, r)| (pad_of(p), r))
+                    .collect(),
+                lock_values: shown
+                    .lock_values
+                    .into_iter()
+                    .map(|(p, i, a, v)| (pad_of(p), i, a, v))
+                    .collect(),
             })
         });
         let playing = self
@@ -1708,16 +1787,32 @@ impl TimeControl {
                     .slots
                     .first_free()
                     .ok_or_else(|| format!("{} has no empty slot", t.name))?;
-                // Not in the slot yet: it goes in with its first notes.
+                // Not in the slot yet: it goes in with its first notes. On
+                // a track that plays notes it holds notes, as a take does.
                 let name = format!("Pattern {}", s + 1);
-                (s, Some(Clip::new(&name, grid.page_length())))
+                let mut c = Clip::new(&name, grid.page_length());
+                c.holds = self.take_holds(track);
+                (s, Some(c))
             }
         };
         let clip = match &made {
             Some(c) => c,
             None => self.project.clip(track, slot).ok_or("the clip is gone")?,
         };
-        let (edit, join, what) = match a {
+        // The pads name the rows; on a clip of notes each pad's row stands
+        // for the pad's notes (step 5c), and the log names its root.
+        let rows = self.rows_of(track, clip);
+        let notes = clip.holds == mpfree_seq::Holds::Notes;
+        let row = |p: u8| row_name(p, notes);
+        let (keys_are, key_name) = if notes {
+            ("notes", crate::synth::note_name as fn(u8) -> String)
+        } else {
+            (
+                "pads",
+                (|p: u8| (u16::from(p) + 1).to_string()) as fn(u8) -> String,
+            )
+        };
+        let act = |a: StepAction| match a {
             StepAction::Tap {
                 pad,
                 step,
@@ -1725,24 +1820,28 @@ impl TimeControl {
             } => (
                 grid.toggle(clip, pad, step, velocity),
                 None,
-                format!("step {} of pad {}", step + 1, pad + 1),
+                format!("step {} of {}", step + 1, row(pad)),
             ),
             StepAction::Enter { step, keys, n } => {
                 let keys = &keys[..usize::from(n).min(keys.len())];
-                let pads: Vec<String> = keys.iter().map(|k| (k.0 + 1).to_string()).collect();
+                let pads: Vec<String> = keys.iter().map(|k| key_name(k.0)).collect();
                 (
                     grid.enter(clip, step, keys),
                     None,
                     if keys.is_empty() {
                         format!("step {} of the line", step + 1)
                     } else {
-                        format!("step {} of the line: pads {}", step + 1, pads.join(", "))
+                        format!(
+                            "step {} of the line: {keys_are} {}",
+                            step + 1,
+                            pads.join(", ")
+                        )
                     },
                 )
             }
             StepAction::Keys { steps, keys, n } => {
                 let keys = &keys[..usize::from(n).min(keys.len())];
-                let pads: Vec<String> = keys.iter().map(|k| (k.0 + 1).to_string()).collect();
+                let pads: Vec<String> = keys.iter().map(|k| key_name(k.0)).collect();
                 let list = step_list(steps);
                 let names: Vec<String> = list.iter().map(|i| (i + 1).to_string()).collect();
                 let s = if list.len() == 1 { "" } else { "s" };
@@ -1750,7 +1849,7 @@ impl TimeControl {
                     grid.enter_steps(clip, &list, keys),
                     Some(mpfree_seq::steps::enter_key(steps)),
                     format!(
-                        "step{s} {} of the line: pads {} from the keys",
+                        "step{s} {} of the line: {keys_are} {} from the keys",
                         names.join(", "),
                         pads.join(", ")
                     ),
@@ -1759,12 +1858,16 @@ impl TimeControl {
             StepAction::Change { pad, step, change } if pad == LINE => (
                 grid.change_all(clip, step, change),
                 Some(change.key_all(step)),
-                format!("step {} of the line: {}", step + 1, change_name(change)),
+                format!(
+                    "step {} of the line: {}",
+                    step + 1,
+                    change_name(change, notes)
+                ),
             ),
             StepAction::Change { pad, step, change } => (
                 grid.change(clip, pad, step, change),
                 Some(change.key(pad, step)),
-                format!("step {} of pad {}: {change:?}", step + 1, pad + 1),
+                format!("step {} of {}: {change:?}", step + 1, row(pad)),
             ),
             StepAction::ChangeSteps { pad, steps, change } => {
                 let held: Vec<usize> = (0..128).filter(|i| steps & (1u128 << i) != 0).collect();
@@ -1781,8 +1884,8 @@ impl TimeControl {
                             .map(|i| (i + 1).to_string())
                             .collect::<Vec<_>>()
                             .join(", "),
-                        row_name(pad),
-                        change_name(change)
+                        row(pad),
+                        change_name(change, notes)
                     ),
                 )
             }
@@ -1803,7 +1906,7 @@ impl TimeControl {
                     format!(
                         "{} of {}: lock {addr} {}",
                         steps_text(&held),
-                        row_name(pad),
+                        row(pad),
                         value.map_or("off".to_string(), |v| format!("{v}"))
                     ),
                 )
@@ -1813,13 +1916,13 @@ impl TimeControl {
                 (
                     grid.clear_step_locks(clip, (pad != LINE).then_some(pad), &held),
                     None,
-                    format!("{} of {}", steps_text(&held), row_name(pad)),
+                    format!("{} of {}", steps_text(&held), row(pad)),
                 )
             }
             StepAction::ClearPad { pad } => (
                 grid.clear_row(clip, pad),
                 None,
-                format!("pad {}'s steps", pad + 1),
+                format!("{}'s steps", row(pad)),
             ),
             StepAction::ClearSteps { pad, from, to } => (
                 if pad == LINE {
@@ -1829,9 +1932,9 @@ impl TimeControl {
                 },
                 None,
                 if to == from + 1 {
-                    format!("step {} of {}", from + 1, row_name(pad))
+                    format!("step {} of {}", from + 1, row(pad))
                 } else {
-                    format!("steps {} to {to} of {}", from + 1, row_name(pad))
+                    format!("steps {} to {to} of {}", from + 1, row(pad))
                 },
             ),
             StepAction::CopySteps {
@@ -1847,13 +1950,13 @@ impl TimeControl {
                 },
                 None,
                 if count == 1 {
-                    format!("step {} of {} to step {}", from + 1, row_name(pad), to + 1)
+                    format!("step {} of {} to step {}", from + 1, row(pad), to + 1)
                 } else {
                     format!(
                         "steps {} to {} of {} to steps {} to {}",
                         from + 1,
                         from + count,
-                        row_name(pad),
+                        row(pad),
                         to + 1,
                         to + count
                     )
@@ -1862,6 +1965,11 @@ impl TimeControl {
             StepAction::Length { steps, copy } => {
                 (grid.resize(clip, steps, copy), None, clip.name.clone())
             }
+        };
+        let (edit, join, what) = if notes {
+            on_notes(grid, clip, a, &rows, act)
+        } else {
+            act(a)
         };
         // A step past the clip's end, or a change to nothing: no take, and
         // on an empty track no clip either.
@@ -2605,6 +2713,7 @@ impl TimeControl {
                 ))
             }
             TimeAction::NewClip { track, slot } => {
+                let holds = self.take_holds(track);
                 let bar = info.meter.bar_ticks();
                 let length = info.loop_range.map_or(NEW_CLIP_BARS * bar, |(a, b)| b - a);
                 let t = self.project.tracks.get_mut(track).ok_or("no such track")?;
@@ -2613,12 +2722,10 @@ impl TimeControl {
                     return Err(format!("slot {} of {} is not empty", slot + 1, t.name));
                 }
                 // With its lasting id (Arrange 1.1), as every clip gets.
+                let mut clip = Clip::new(&format!("Clip {}", slot + 1), length);
+                clip.holds = holds;
                 self.project
-                    .put_new_clip(
-                        track,
-                        slot,
-                        Clip::new(&format!("Clip {}", slot + 1), length),
-                    )
+                    .put_new_clip(track, slot, clip)
                     .map_err(|e| format!("new clip: {e:?}"))?;
                 self.set_armed(Some(track));
                 (self.launches, self.cues) =
@@ -5040,6 +5147,16 @@ impl TimeControl {
                 self.also_full
             ));
         }
+        // Clips' locks on "this track's strip" on a track whose instrument
+        // sounds elsewhere (strips.rs), when there were any.
+        let st = &self.strips;
+        if st.any() {
+            line.push_str(&format!(
+                "; this track's strip: {} locks went to their instrument's strip, {} waited \
+                 for a track before them, {} stayed on the track's own strip with the table full",
+                st.moved, st.waited, st.full
+            ));
+        }
         // The fallbacks between the halves, when there are any.
         let lost = c.lost + self.lost();
         if lost + u64::from(c.behind + c.kept + c.refused + c.missed) > 0 {
@@ -5109,20 +5226,235 @@ pub(super) fn bar_beat(t: Tick, meter: mpfree_transport::time::Meter) -> String 
     }
 }
 
+/// Step action `a` on a clip of notes, whose pad rows stand for the notes
+/// `rows` gives each pad (step 5c), as `act` takes an action on a clip of
+/// hits: on each of the pad's notes, root first, joined as one edit, with
+/// the root's undo key and log line. A tap takes a chord pad's notes off
+/// the step when its root is on it, else puts the missing ones on; the
+/// Note knob puts the step on another pad's notes (`swap`); keys entered
+/// on the line are their pads' notes. The line and the rows of notes no
+/// pad plays go to `act` as they are.
+fn on_notes(
+    grid: Grid,
+    clip: &Clip,
+    a: StepAction,
+    rows: &PadRows,
+    act: impl Fn(StepAction) -> (mpfree_seq::steps::Edit, Option<u64>, String),
+) -> (mpfree_seq::steps::Edit, Option<u64>, String) {
+    use super::MAX_PEN;
+    use mpfree_seq::steps::Change;
+    // A row's notes, root first: a pad's, or the row's own note.
+    let of = |pad: u8| -> Vec<u8> {
+        match rows.notes(usize::from(pad)) {
+            [] => vec![pad],
+            n => n.iter().rev().copied().collect(),
+        }
+    };
+    let has = |note: u8, i: usize| !grid.notes(clip, note, i).is_empty();
+    // `with` each of `notes` (root first), joined.
+    let each = |notes: &[u8], with: &dyn Fn(u8) -> StepAction| {
+        let mut out = act(with(notes[0]));
+        for &n in &notes[1..] {
+            out.0.join(act(with(n)).0);
+        }
+        out
+    };
+    let keys = |keys: [(u8, u8); MAX_PEN], n: u8| {
+        let mut out = [(0u8, 0u8); MAX_PEN];
+        let mut m = 0;
+        for &(pad, velocity) in &keys[..usize::from(n).min(MAX_PEN)] {
+            for note in of(pad) {
+                if m < MAX_PEN && !out[..m].iter().any(|k| k.0 == note) {
+                    out[m] = (note, velocity);
+                    m += 1;
+                }
+            }
+        }
+        (out, m as u8)
+    };
+    match a {
+        StepAction::Tap {
+            pad,
+            step,
+            velocity,
+        } if pad != LINE => {
+            let notes = of(pad);
+            let on = has(notes[0], step);
+            let notes: Vec<u8> = notes.into_iter().filter(|&n| has(n, step) == on).collect();
+            each(&notes, &|n| StepAction::Tap {
+                pad: n,
+                step,
+                velocity,
+            })
+        }
+        StepAction::Change {
+            pad,
+            step,
+            change: Change::Note(to),
+        } if pad != LINE => {
+            let (from, to) = (of(pad), of(to));
+            let named = act(StepAction::Change {
+                pad: from[0],
+                step,
+                change: Change::Note(to[0]),
+            });
+            if from.len() == 1 && to.len() == 1 {
+                return named;
+            }
+            (swap(grid, clip, &from, &to, step), named.1, named.2)
+        }
+        StepAction::ChangeSteps {
+            pad,
+            steps,
+            change: Change::Note(to),
+        } if pad != LINE => {
+            let (from, to) = (of(pad), of(to));
+            let named = act(StepAction::ChangeSteps {
+                pad: from[0],
+                steps,
+                change: Change::Note(to[0]),
+            });
+            if from.len() == 1 && to.len() == 1 {
+                return named;
+            }
+            let mut edit = mpfree_seq::steps::Edit::default();
+            for i in step_list(steps) {
+                edit.join(swap(grid, clip, &from, &to, i));
+            }
+            (edit, named.1, named.2)
+        }
+        StepAction::Change { pad, step, change } if pad != LINE => {
+            each(&of(pad), &|n| StepAction::Change {
+                pad: n,
+                step,
+                change,
+            })
+        }
+        StepAction::ChangeSteps { pad, steps, change } if pad != LINE => {
+            each(&of(pad), &|n| StepAction::ChangeSteps {
+                pad: n,
+                steps,
+                change,
+            })
+        }
+        StepAction::Lock {
+            pad,
+            steps,
+            addr,
+            value,
+        } if pad != LINE => each(&of(pad), &|n| StepAction::Lock {
+            pad: n,
+            steps,
+            addr,
+            value,
+        }),
+        StepAction::ClearLocks { pad, steps } if pad != LINE => {
+            each(&of(pad), &|n| StepAction::ClearLocks { pad: n, steps })
+        }
+        StepAction::ClearPad { pad } if pad != LINE => {
+            each(&of(pad), &|n| StepAction::ClearPad { pad: n })
+        }
+        StepAction::ClearSteps { pad, from, to } if pad != LINE => {
+            each(&of(pad), &|n| StepAction::ClearSteps { pad: n, from, to })
+        }
+        StepAction::CopySteps {
+            pad,
+            from,
+            to,
+            count,
+        } if pad != LINE => each(&of(pad), &|n| StepAction::CopySteps {
+            pad: n,
+            from,
+            to,
+            count,
+        }),
+        StepAction::Enter { step, keys: k, n } => {
+            let (keys, n) = keys(k, n);
+            act(StepAction::Enter { step, keys, n })
+        }
+        StepAction::Keys { steps, keys: k, n } => {
+            let (keys, n) = keys(k, n);
+            act(StepAction::Keys { steps, keys, n })
+        }
+        a => act(a),
+    }
+}
+
+/// Step `i`'s notes of `from` (a pad's notes, root first) moved onto `to`
+/// (another pad's) on a clip of notes, as the Note knob moves a step of
+/// pad hits to another pad: each new note as the step's root was (its
+/// velocity, length and the rest), its locks with it; the locks of a note
+/// with no new one go, as step entry drops a gone sound's. Refused (no
+/// change) where the step has none of `from`, or already has a note of
+/// `to` that isn't moving.
+fn swap(grid: Grid, clip: &Clip, from: &[u8], to: &[u8], i: usize) -> mpfree_seq::steps::Edit {
+    let old: Vec<mpfree_seq::Note> = from.iter().flat_map(|&n| grid.notes(clip, n, i)).collect();
+    let Some(&model) = old.first() else {
+        return mpfree_seq::steps::Edit::default();
+    };
+    if to
+        .iter()
+        .any(|&m| !from.contains(&m) && !grid.notes(clip, m, i).is_empty())
+    {
+        return mpfree_seq::steps::Edit::default();
+    }
+    let mut add: Vec<mpfree_seq::Note> = to
+        .iter()
+        .map(|&m| mpfree_seq::Note { note: m, ..model })
+        .collect();
+    let mut erase = old;
+    // A note already there as it would be put stays.
+    erase.retain(|n| match add.iter().position(|a| a == n) {
+        Some(j) => {
+            add.remove(j);
+            false
+        }
+        None => true,
+    });
+    let mut edit = mpfree_seq::steps::Edit {
+        erase,
+        add,
+        ..mpfree_seq::steps::Edit::default()
+    };
+    for (k, &n) in from.iter().enumerate() {
+        for l in grid.locks(clip, Some(n), i) {
+            match to.get(k) {
+                Some(&m) if m == n => {}
+                Some(&m) => {
+                    edit.erase_locks.push(l);
+                    edit.add_locks.push(mpfree_seq::Lock {
+                        sound: Some(m),
+                        ..l
+                    });
+                }
+                None => edit.erase_locks.push(l),
+            }
+        }
+    }
+    edit
+}
+
 /// The steps whose bits are set (step 0 the lowest).
 /// A step row as the log names it: "pad 5", or "the line".
-fn row_name(pad: u8) -> String {
+/// On a clip of notes (`notes`) a row is its note: "note C3".
+fn row_name(pad: u8, notes: bool) -> String {
     if pad == LINE {
         "the line".to_string()
+    } else if notes {
+        format!("note {}", crate::synth::note_name(pad))
     } else {
         format!("pad {}", pad + 1)
     }
 }
 
 /// A step change for the lines: as Debug says it, but the Note knob's pad
-/// counted from 1, as the lines count pads.
-fn change_name(change: mpfree_seq::steps::Change) -> String {
+/// counted from 1, as the lines count pads (named as a note on a clip of
+/// notes, `notes`).
+fn change_name(change: mpfree_seq::steps::Change, notes: bool) -> String {
     match change {
+        mpfree_seq::steps::Change::Note(to) if notes => {
+            format!("lowest note {}", crate::synth::note_name(to))
+        }
         mpfree_seq::steps::Change::Note(to) => format!("lowest note on pad {}", u16::from(to) + 1),
         c => format!("{c:?}"),
     }

@@ -123,6 +123,8 @@ Tap a locked square again to take its lock off (the lane stays), or hold **ERASE
 
 A send's lane throws on chosen steps: lock **Delay send** high on the last two steps of a bar and only they echo. A sound's lock plays when the sound hits on that step, so a lock on a step without a hit waits for one there.
 
+**On a track that plays another track's instrument** (see [Share one between tracks](synths.md#a-synth-for-each-track)), the volume, pan and sends lanes move that instrument's mixer channel, since that is where the track is heard. If the instrument's own track, or another track that plays it, locks the same setting at the same time, the track you made first moves it, and the other's lock takes over when it stops.
+
 {{shot: sequencer-lanes-list | The list + Lane opens: the kick's settings (the pad hit last) first, then the track's volume, pan and sends.}}
 
 {{shot: sequencer-lock-lanes | Lock lanes on the Steps: Tune and Decay under the kick, a Tune lane under the snare, each locked step a purple bar with its value.}}

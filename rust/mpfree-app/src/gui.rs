@@ -1211,6 +1211,9 @@ pub enum ToUi {
     /// What the pads play: the selected track's instrument, or the synth
     /// chosen for them (app/pads_focus.rs).
     PadsFocus(crate::app::PadFocus),
+    /// Where REC would record the pads' synth (the recording plan,
+    /// `desk::rec_plan`), when it changes: the REC chip names it.
+    RecPlan(Option<crate::app::RecPlan>),
     /// The kits' sampler projects, for the Sample tab (once, after
     /// loading), and the rate to build their engine views for.
     SampleKits {
@@ -1501,6 +1504,14 @@ pub enum FromUi {
     /// The preset picker on the Synth tab's sound: try, load, put back or
     /// save a preset (presets.rs).
     Preset(crate::presets::Ask),
+    /// New track (New instrument track, step 4c): track
+    /// `track`, just added and armed, gets a synth of its own, the engine
+    /// of preset folder `engine`, playing `give`.
+    NewTrackSound {
+        track: usize,
+        engine: String,
+        give: crate::presets::Give,
+    },
     /// The browser's preview: hear this sound once (it replaces one
     /// playing).
     Preview(Box<crate::preview::Preview>),
@@ -1900,6 +1911,31 @@ struct KitTrackAsk {
     load: Option<std::path::PathBuf>,
 }
 
+/// A track asked of the time engine for a synth of its own (the preset
+/// picker's New track; New instrument track, the
+/// instrument redesign's step 4c). Once the new track is armed and the
+/// preset is read, the sound loop gives it the synth
+/// ([`Player::poll_sound_track`]).
+struct SoundTrackAsk {
+    /// How many tracks there were: the new track is this one.
+    tracks: usize,
+    /// When it was asked: a track that never comes is given up.
+    at: Instant,
+    /// The engine's preset folder (`Poly`, `FM` ...) and the preset's name.
+    engine: String,
+    name: String,
+    /// The preset: one of the engine's own, or the musician's being read.
+    preset: SoundTrackPreset,
+    /// The new track, once it is there and armed.
+    track: Option<usize>,
+}
+
+enum SoundTrackPreset {
+    Factory(usize),
+    Reading(std::sync::mpsc::Receiver<Result<String, String>>),
+    Read(String),
+}
+
 pub struct Player {
     pub ui: Ui,
     /// The project save handed to the library's worker: when, with how many
@@ -1958,6 +1994,9 @@ pub struct Player {
     pads_focus: crate::app::PadFocus,
     /// The "Pads: Poly" chip's place: a tap is Follow track.
     pads_chip: Option<usize>,
+    /// Where REC would record the pads' synth ([`ToUi::RecPlan`]): the REC
+    /// chip names it before you press.
+    rec_plan: Option<crate::app::RecPlan>,
     /// The Synth page, once the synth's state has come.
     synth: Option<SynthPanel>,
     /// The Sample page and the kits' projects it edits (the Pads tab's
@@ -2093,6 +2132,9 @@ pub struct Player {
     /// A track asked of the time engine for a kit ("+ Kit track", or a
     /// chop to a new kit): once the new track is armed it gets its kit.
     kit_track: Option<KitTrackAsk>,
+    /// A new track on its way for a synth of its own (the preset
+    /// picker's New track).
+    sound_track: Option<SoundTrackAsk>,
     /// What each header chip that only shows (CPU, RAM, session, time
     /// left) says when tapped, by its place; empty for the others.
     chip_why: Vec<String>,
@@ -2544,6 +2586,7 @@ impl Player {
             touch_page: None,
             pads_focus: crate::app::PadFocus::Track,
             pads_chip: None,
+            rec_plan: None,
             synth: None,
             sample,
             browser: None,
@@ -2602,6 +2645,7 @@ impl Player {
             clip_rows: Vec::new(),
             lane_rows: Vec::new(),
             kit_track: None,
+            sound_track: None,
             chip_why: Vec::new(),
             fingers: Vec::new(),
             outbox: Vec::new(),
@@ -2934,7 +2978,7 @@ impl Player {
             );
             return None;
         }
-        if self.kit_track.is_some() {
+        if self.kit_track.is_some() || self.sound_track.is_some() {
             self.tell("A new track is still on its way: try again in a moment");
             return None;
         }
@@ -2953,6 +2997,126 @@ impl Player {
         });
         self.refresh_kit_tracks();
         Some(FromUi::Time(TimeAction::AddTrack))
+    }
+
+    /// The preset picker's New track (New instrument
+    /// track, step 4c): a new track (as + Track adds one, armed), which the
+    /// sound loop gives a synth of its own playing the preset once it is
+    /// armed and the preset is read ([`Player::poll_sound_track`]).
+    /// Refused and said with no room for a track, or while another new
+    /// track is on its way.
+    fn add_track_for_sound(
+        &mut self,
+        engine: String,
+        name: String,
+        from: mpfree_browser_ui::PresetFrom,
+    ) {
+        if self.time.tracks.len() >= mpfree_seq::MAX_TRACKS {
+            self.tell(&format!(
+                "The song has {} tracks, the most it can: no room for a new one",
+                mpfree_seq::MAX_TRACKS
+            ));
+            return;
+        }
+        if self.kit_track.is_some() || self.sound_track.is_some() {
+            self.tell("A new track is still on its way: try again in a moment");
+            return;
+        }
+        let preset = match from {
+            mpfree_browser_ui::PresetFrom::Factory(i) => SoundTrackPreset::Factory(i),
+            mpfree_browser_ui::PresetFrom::File(path) => {
+                SoundTrackPreset::Reading(crate::presets::read_in_background(path))
+            }
+        };
+        self.say(format!("browser: a new track for {engine}'s {name}"));
+        self.sound_track = Some(SoundTrackAsk {
+            tracks: self.time.tracks.len(),
+            at: Instant::now(),
+            engine,
+            name,
+            preset,
+            track: None,
+        });
+        self.outbox.push(FromUi::Time(TimeAction::AddTrack));
+    }
+
+    /// The time engine's news after New track: the new
+    /// track, once it is there and armed. Another track armed first, or
+    /// none after a few seconds, gives the ask up, said.
+    fn sound_track_armed(&mut self) {
+        let Some(ask) = self.sound_track.as_mut() else {
+            return;
+        };
+        if ask.track.is_some() {
+            return;
+        }
+        let n = ask.tracks;
+        let why = if self.time.tracks.len() > n {
+            if self.time.armed == Some(n) {
+                ask.track = Some(n);
+                return;
+            }
+            "another track was armed first"
+        } else if ask.at.elapsed() > Duration::from_secs(3) {
+            "no new track came for it"
+        } else {
+            return;
+        };
+        if let Some(ask) = self.sound_track.take() {
+            let line = format!("{} wasn't put on a new track: {why}", ask.name);
+            self.tell(&line);
+            self.say(format!("browser: {line}"));
+        }
+    }
+
+    /// Once a frame: the new track for a synth of its own, armed, and its
+    /// preset read: to the sound loop. A preset that can't be read is
+    /// said, and the new track stays on its kit.
+    fn poll_sound_track(&mut self) {
+        let Some(ask) = self.sound_track.as_mut() else {
+            return;
+        };
+        if let SoundTrackPreset::Reading(rx) = &ask.preset {
+            match rx.try_recv() {
+                Ok(Ok(text)) => ask.preset = SoundTrackPreset::Read(text),
+                Ok(Err(e)) => {
+                    let line = format!("{} wasn't read: {e}", ask.name);
+                    self.sound_track = None;
+                    self.tell(&line);
+                    self.say(format!("browser: {line}"));
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    let line = format!("{} wasn't read: its thread stopped", ask.name);
+                    self.sound_track = None;
+                    self.tell(&line);
+                    self.say(format!("browser: {line}"));
+                    return;
+                }
+            }
+        }
+        if ask.track.is_none() || matches!(ask.preset, SoundTrackPreset::Reading(_)) {
+            return;
+        }
+        let Some(ask) = self.sound_track.take() else {
+            return;
+        };
+        let give = match ask.preset {
+            SoundTrackPreset::Factory(i) => crate::presets::Give::Factory(i),
+            SoundTrackPreset::Read(text) => crate::presets::Give::Text {
+                name: ask.name,
+                text,
+            },
+            SoundTrackPreset::Reading(_) => return,
+        };
+        if let Some(track) = ask.track {
+            self.outbox.push(FromUi::NewTrackSound {
+                track,
+                engine: ask.engine,
+                give,
+            });
+        }
     }
 
     /// A chop to a new kit on the Sample tab (sampler R4.6) filled kit
@@ -2974,7 +3138,7 @@ impl Player {
     /// What the Slice tool's Put on New kit would do now (sampler R4.6): the
     /// first empty kit, for a new track, or why not.
     fn refresh_new_kit(&mut self) {
-        let new_kit = if self.kit_track.is_some() {
+        let new_kit = if self.kit_track.is_some() || self.sound_track.is_some() {
             Err("A new track is on its way: a moment".to_string())
         } else if self.time.tracks.len() >= mpfree_seq::MAX_TRACKS {
             Err(format!(
@@ -5144,7 +5308,9 @@ impl Player {
                 pinned: false,
             };
         }
-        let tracks = self.armed_tracks_name();
+        // While the pads have a synth the armed track doesn't play, REC
+        // records it where the recording plan says, alone.
+        let tracks = self.armed_tracks_name().filter(|_| self.rec_plan.is_none());
         let mut chip = if let Some(names) = tracks {
             // Several tracks (SHIFT + a track's row): "Drums + Bass + Keys",
             // "Drums + 2 tracks" when it doesn't fit; with the loop too,
@@ -5196,12 +5362,7 @@ impl Player {
         if self.time.also == 0 || !self.rec.armed(Target::Notes) {
             return None;
         }
-        let name = |t: usize| {
-            self.time
-                .tracks
-                .get(t)
-                .map_or_else(|| format!("Track {}", t + 1), |tr| tr.name.clone())
-        };
+        let name = |t: usize| self.track_name(t);
         let others: Vec<String> = (0..self.time.tracks.len().min(128))
             .filter(|&t| t != main && self.time.also & (1u128 << t) != 0)
             .map(name)
@@ -5225,13 +5386,34 @@ impl Player {
         })
     }
 
+    /// Track `t`'s name (0 based), as Arrange shows it: "Track 3", or the
+    /// name you gave it.
+    fn track_name(&self, t: usize) -> String {
+        self.time
+            .tracks
+            .get(t)
+            .map_or_else(|| format!("Track {}", t + 1), |tr| tr.name.clone())
+    }
+
     /// One target's part of the REC chip.
     fn rec_chip_of(&self, t: crate::rec_arm::Target) -> play_widgets::RecChip {
         use crate::rec_arm::Target;
         use mpfree_looper::Phase;
         use play_widgets::{RecChip, RecState};
         match t {
-            Target::Notes => self.play.notes_rec_chip(self.rec.ready),
+            Target::Notes => {
+                let chip = self.play.notes_rec_chip(self.rec.ready);
+                // The pads' synth, before you press: where REC will record
+                // it ("Track 2 · Poly", "New track · Poly", "Track 1 · not
+                // free"). A take ready or going is on its track already.
+                match self.rec_plan {
+                    Some(plan) if chip.state == RecState::Armed => RecChip {
+                        what: plan.chip(|t| self.track_name(t)),
+                        ..chip
+                    },
+                    _ => chip,
+                }
+            }
             Target::Loop => {
                 let phase = self.looper.status.phase;
                 RecChip {
@@ -8382,6 +8564,10 @@ impl Player {
                 self.refresh_pads_play();
                 self.refresh_chips();
             }
+            ToUi::RecPlan(p) => {
+                self.rec_plan = p;
+                self.refresh_rec_chip();
+            }
             ToUi::TrackKits(k) => {
                 self.track_kits = *k;
                 self.refill_sounds();
@@ -8846,6 +9032,7 @@ impl Player {
                 self.time = *st;
                 self.name_io_tracks();
                 self.kit_track_armed();
+                self.sound_track_armed();
                 // Another track armed: the Play on the pads button follows.
                 self.refresh_synth_button();
                 self.refresh_kit_tracks();
@@ -9530,6 +9717,9 @@ impl Player {
                 if let Some(fx) = self.add_track_for_kit(Some(path)) {
                     self.outbox.push(fx);
                 }
+            }
+            A::NewTrackWithPreset { engine, name, from } => {
+                self.add_track_for_sound(engine, name, from);
             }
             A::SaveKitRequested => self.save_kit(),
             A::Note(line) => self.say(line),
@@ -13055,6 +13245,7 @@ impl Player {
         self.poll_plugins();
         self.poll_preview();
         self.poll_preset_file();
+        self.poll_sound_track();
         self.poll_midi();
         self.poll_loops();
         self.poll_audio();
@@ -25846,6 +26037,124 @@ mod tests {
             "{:?}",
             p.told
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The preset picker's New track (step 4c): + Track
+    /// adds one, and once it is armed (and a file of the musician's is
+    /// read) the sound loop is asked to give it a synth playing the preset.
+    #[test]
+    fn new_track_with_this_sound_adds_a_track_and_asks_for_its_synth() {
+        use crate::presets::Give;
+        use mpfree_browser_ui::{BrowseAction as A, PresetFrom};
+        let mut p = sample_sampler(Fonts::embedded());
+        sample_pattern(&mut p, 0);
+        p.take_actions();
+        // The time engine adds a track: armed (the new one) or not.
+        let add = |p: &mut Player, armed_new: bool| {
+            let mut st = p.time.clone();
+            let n = st.tracks.len();
+            let mut added = st.tracks[0].clone();
+            added.name = format!("Track {}", n + 1);
+            added.slots.iter_mut().for_each(|s| *s = None);
+            st.tracks.push(added);
+            st.armed = Some(if armed_new { n } else { 0 });
+            p.apply(ToUi::Time(Box::new(st)));
+            n
+        };
+        let told = |p: &Player, what: &str| p.told.as_ref().is_some_and(|(t, _)| t.contains(what));
+        let ask = |engine: &str, name: &str, from| A::NewTrackWithPreset {
+            engine: engine.into(),
+            name: name.into(),
+            from,
+        };
+
+        // One of the engine's own.
+        p.browse_action(ask("FM", "Glass", PresetFrom::Factory(1)));
+        assert_eq!(p.take_actions(), vec![FromUi::Time(TimeAction::AddTrack)]);
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "browser: a new track for FM's Glass"));
+        // One new track at a time.
+        p.browse_action(ask("FM", "Glass", PresetFrom::Factory(1)));
+        assert!(p.take_actions().is_empty());
+        assert!(told(&p, "still on its way"));
+        let track = add(&mut p, true);
+        p.poll_sound_track();
+        assert_eq!(
+            p.take_actions(),
+            vec![FromUi::NewTrackSound {
+                track,
+                engine: "FM".into(),
+                give: Give::Factory(1),
+            }]
+        );
+        assert!(p.sound_track.is_none());
+
+        // One of the musician's: its file is read first.
+        let dir = std::env::temp_dir().join(format!("mpfree-sound-track-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("Metal bass.preset");
+        std::fs::write(&file, "the preset's text").unwrap();
+        p.browse_action(ask("FM", "Metal bass", PresetFrom::File(file)));
+        assert_eq!(p.take_actions(), vec![FromUi::Time(TimeAction::AddTrack)]);
+        let track = add(&mut p, true);
+        let end = Instant::now() + WORKER_WAIT;
+        let asked = loop {
+            p.poll_sound_track();
+            let asked = p.take_actions();
+            if !asked.is_empty() {
+                break asked;
+            }
+            assert!(Instant::now() < end, "the file was never read");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(
+            asked,
+            vec![FromUi::NewTrackSound {
+                track,
+                engine: "FM".into(),
+                give: Give::Text {
+                    name: "Metal bass".into(),
+                    text: "the preset's text".into(),
+                },
+            }]
+        );
+        // A file that isn't there: said, and the new track keeps its kit.
+        p.browse_action(ask("FM", "Gone", PresetFrom::File(dir.join("Gone.preset"))));
+        p.take_actions();
+        add(&mut p, true);
+        let end = Instant::now() + WORKER_WAIT;
+        while p.sound_track.is_some() {
+            assert!(Instant::now() < end, "the file was never tried");
+            std::thread::sleep(Duration::from_millis(5));
+            p.poll_sound_track();
+        }
+        assert!(p.take_actions().is_empty());
+        assert!(told(&p, "Gone wasn't read"));
+
+        // Another track armed before the new one: given up, said.
+        p.browse_action(ask("FM", "Glass", PresetFrom::Factory(1)));
+        p.take_actions();
+        add(&mut p, false);
+        p.poll_sound_track();
+        assert!(p.take_actions().is_empty());
+        assert!(p.sound_track.is_none());
+        assert!(told(
+            &p,
+            "Glass wasn't put on a new track: another track was armed first"
+        ));
+
+        // With no room for another track, it says so and adds nothing.
+        let mut full = p.time.clone();
+        let more = full.tracks[0].clone();
+        full.tracks.resize(mpfree_seq::MAX_TRACKS, more);
+        p.apply(ToUi::Time(Box::new(full)));
+        p.take_actions();
+        p.browse_action(ask("FM", "Glass", PresetFrom::Factory(1)));
+        assert!(p.take_actions().is_empty());
+        assert!(told(&p, "no room for a new one"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
