@@ -11,7 +11,7 @@ use crate::{aiff, wav};
 /// was left out (a file cut short, stray bytes between FLAC frames).
 pub fn read(name: &str, b: &[u8]) -> Result<(Source, Option<String>), String> {
     match b.get(..4) {
-        Some(b"RIFF") => wav::read(name, b).map(|s| (s, None)),
+        Some(b"RIFF" | b"RF64" | b"BW64") => wav::read(name, b).map(|s| (s, None)),
         Some(b"FORM") => aiff::read(name, b),
         Some(b"fLaC") => flac(name, b),
         Some(x) if &x[..3] == b"ID3" => flac(name, b),
