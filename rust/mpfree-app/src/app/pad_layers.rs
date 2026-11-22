@@ -26,6 +26,11 @@
 //!   plays the layers whichever way the first plays (on its own, or
 //!   through the armed track), before the arp and the recorder, and its
 //!   let-go ends each where it started.
+//! - **REC** (step 11c) records each layer on a track of its own, in one
+//!   take: an armed track that plays its synth, or a free one pointed at
+//!   it and armed with the first (`desk.rs`, `rec_plan` and `rec_synth`;
+//!   [`App::pads_layer_synths`]). The audio loop gives each hit to the
+//!   armed tracks that play a layer ([`App::pads_layer_recs`]).
 //! - **Saved** in a part of its own, `pad-layers` ([`App::pad_layers_part`],
 //!   `crate::project::PAD_LAYERS`), a line per layer after the first
 //!   (`layer instrument 4`), written only while there are layers. The

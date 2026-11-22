@@ -67,7 +67,11 @@ The pads can play up to four synths at once, such as a soft pad sound and a bass
 - **Layers are for every bank.** **Layer** and **Bank B only** don't go together: picking one turns the other off. A bank with a synth of its own plays that synth alone.
 - **Not while the arp plays the pads**: the arp plays through the selected track, where layers can't follow, so starting it gives the pads back to the track.
 - **The project remembers them.** An older MPFree opening the project plays the first synth only.
-- **Recording.** REC records the first synth on a free track, as above. To loop all the layers with the Looper, record from a mix that has them all (the Looper tab's **Records from**), such as Master: **Records from: Pads** takes the first synth's channel.
+- **Recording.** REC records each layer on a track of its own, in one take. The REC chip names where the first goes and counts the rest: **REC → Track 2 · FM + 1 more**. When you press REC, the first synth goes on a free track as above, and each layer gets a free track too (or a new one at the end), pointed at that same synth and armed with the first, as SHIFT + a tap in REC's list arms a track. A track you armed that already plays a layer's synth keeps it. Every hit, and every key a pad plays, goes into each track, and one UNDO takes the whole take back. The next REC records on the same tracks, with nothing more to set up.
+  - A new track that REC added for a layer goes away with its own UNDO, after the take's.
+  - When the project holds no more tracks, or 16 tracks already record at once, the line says which layer isn't recorded, and the rest record.
+  - A keyboard's key goes into a layer's track as the pad that plays its note on that synth; a note no pad plays alone sounds but isn't kept, as on a track a keyboard is routed to.
+- **Looping layers.** To loop all the layers with the Looper, record from a mix that has them all (the Looper tab's **Records from**), such as Master: **Records from: Pads** takes the first synth's channel.
 
 ## The twelve synths
 
