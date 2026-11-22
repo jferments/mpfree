@@ -390,6 +390,90 @@ fn a_project_whose_open_left_things_out_is_saved_beside_it() {
     assert!(b.left_out_list().is_empty());
 }
 
+/// Every project keeps a lasting id (a set list finds a renamed song by
+/// it): saves keep it, Save As gives the copy its own, and a folder copied
+/// outside mpfree is told apart from its original at its next save, with a
+/// line saying so.
+#[test]
+fn saves_keep_a_project_id_and_a_copy_made_outside_gets_its_own() {
+    let (mut b, lib) = browser();
+    let night = Loc::new(Place::Projects, &["Night drive"]).unwrap();
+    let id = lib.project_meta(&night).unwrap().id;
+    assert_eq!(id.len(), 32, "the sample project has an id: {id:?}");
+    let snap = || Snapshot {
+        meta: Meta::default(),
+        parts: vec![("transport".into(), "bpm = 92\n".into())],
+    };
+    let t = 1_794_431_040;
+    b.go_source(src("Projects"));
+    select(&mut b, "Night drive");
+    b.push();
+    b.take_actions();
+    b.save(snap(), t);
+    assert_eq!(b.screen().status.unwrap().0, "Saved Night drive");
+    assert_eq!(lib.project_meta(&night).unwrap().id, id);
+    // Save as: a song of its own.
+    b.save_as(t);
+    b.input(Input::Key(Key::Char('2')));
+    b.input(Input::Key(Key::Done));
+    assert!(b.take_actions().contains(&BrowseAction::SaveRequested));
+    b.save(snap(), t + 60);
+    let two = Loc::new(Place::Projects, &["Night drive2"]).unwrap();
+    assert_eq!(b.project(), Some(&two));
+    let id2 = lib.project_meta(&two).unwrap().id;
+    assert!(id2.len() == 32 && id2 != id, "{id2}");
+    // A copy of the folder made on a computer carries the original's id.
+    let from = lib.root().join("Projects/Night drive");
+    let copy = from.with_file_name("Night drive copy");
+    fn copy_dir(a: &std::path::Path, b: &std::path::Path) {
+        std::fs::create_dir(b).unwrap();
+        for e in std::fs::read_dir(a).unwrap().map(Result::unwrap) {
+            if e.file_type().unwrap().is_dir() {
+                copy_dir(&e.path(), &b.join(e.file_name()));
+            } else {
+                std::fs::copy(e.path(), b.join(e.file_name())).unwrap();
+            }
+        }
+    }
+    copy_dir(&from, &copy);
+    let copy_loc = Loc::new(Place::Projects, &["Night drive copy"]).unwrap();
+    assert_eq!(lib.project_meta(&copy_loc).unwrap().id, id);
+    b.go_source(src("Projects"));
+    select(&mut b, "Night drive copy");
+    b.push();
+    b.take_actions();
+    b.save(snap(), t + 120);
+    assert_eq!(
+        b.screen().status.unwrap().0,
+        "Saved Night drive copy. It was a copy of Night drive, so from now on it counts as a song of its own"
+    );
+    let own = lib.project_meta(&copy_loc).unwrap().id;
+    assert!(own.len() == 32 && own != id && own != id2, "{own}");
+    // The original keeps its id.
+    assert_eq!(lib.project_meta(&night).unwrap().id, id);
+    // Each save also brings the project's list of files (its manifest) up
+    // to date, for a set list's check.
+    let m = lib.manifest(&copy_loc).unwrap().expect("a manifest");
+    assert!(m.get("parts/transport.txt").is_some(), "{m:?}");
+    assert!(lib.check_project(&copy_loc, false).unwrap().whole());
+    // One that can't be written says so; the save itself stands.
+    std::fs::create_dir(lib.root().join("Projects/Night drive2/manifest.txt.part")).unwrap();
+    b.go_source(src("Projects"));
+    select(&mut b, "Night drive2");
+    b.push();
+    b.take_actions();
+    b.save(snap(), t + 180);
+    let (line, bad) = b.screen().status.unwrap();
+    assert!(bad, "{line}");
+    assert!(
+        line.starts_with(
+            "Saved Night drive2, but the list of its files that set lists check wasn't updated: "
+        ),
+        "{line}"
+    );
+    assert_eq!(lib.project_meta(&two).unwrap().saved, t + 180);
+}
+
 #[test]
 fn lists_survive_a_restart_and_bad_lines_are_skipped() {
     let (mut b, _) = browser();
@@ -411,6 +495,52 @@ fn the_worker_thread_gives_the_same_lists() {
         tries += 1;
     }
     assert_eq!(names(&b)[0], "Drums");
+}
+
+/// The manifest a save asks for is a job nothing waits on: the browser is
+/// no longer busy once the save has landed (a power-off goes ahead), and
+/// its answer doesn't count against the next job.
+#[test]
+fn a_manifest_after_a_save_holds_nothing_up() {
+    let lib = fill(&temp()).unwrap();
+    let mut b = Browser::new(lib.clone());
+    let wait = |b: &mut Browser, done: &dyn Fn(&Browser) -> bool| {
+        for _ in 0..1000 {
+            b.poll();
+            if done(b) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        panic!("the worker didn't answer");
+    };
+    wait(&mut b, &|b| !names(b).is_empty() && !b.busy());
+    let snap = Snapshot {
+        meta: Meta::default(),
+        parts: vec![("transport".into(), "bpm = 90\n".into())],
+    };
+    b.save(snap, 1_794_431_040);
+    assert!(b.busy());
+    wait(&mut b, &|b| !b.busy());
+    assert_eq!(
+        b.screen().status.unwrap().0,
+        "Saved Project 2026-11-11 21.04"
+    );
+    let loc = Loc::new(Place::Projects, &["Project 2026-11-11 21.04"]).unwrap();
+    for _ in 0..1000 {
+        b.poll();
+        if lib.manifest(&loc).unwrap().is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(lib.manifest(&loc).unwrap().is_some());
+    b.poll();
+    assert!(!b.busy());
+    // The next job still counts as one.
+    b.go_source(src("Samples"));
+    assert!(b.busy());
+    wait(&mut b, &|b| !b.busy());
 }
 
 #[test]

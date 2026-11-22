@@ -1408,6 +1408,11 @@ pub enum BrowseKey {
 
 pub struct App {
     pub settings: Settings,
+    /// The tempo was set by hand (tapped, typed, turned, from a remote)
+    /// since the project opened; false while it is the project's, the
+    /// default or a loop's. A free first loop's reading counts a tempo
+    /// you meant strongly (the looper's `Command::TempoMeant`).
+    pub tempo_by_hand: bool,
     pub map: ButtonMap,
     /// One arp per track (owner decision 2). The pads play the armed
     /// track's ([`App::set_track`]); the arp panel, the NOTE REPEAT band and
@@ -1767,6 +1772,7 @@ impl App {
         let sent_notes = arps.engine_at(0).active().clone();
         let mut app = App {
             settings,
+            tempo_by_hand: false,
             map: ButtonMap::measured(),
             arps,
             track: 0,
@@ -3821,6 +3827,7 @@ impl App {
             return Vec::new();
         }
         self.settings.bpm = (bpm * 10.0).round() / 10.0;
+        self.tempo_by_hand = true;
         self.update_engine();
         let mut fx = vec![
             self.status(),
@@ -3830,6 +3837,13 @@ impl App {
             fx.push(self.menu_view());
         }
         fx
+    }
+
+    /// [`App::set_tempo`], by hand (typed, turned, from a remote): a free
+    /// first loop's reading counts it ([`App::tempo_by_hand`]).
+    pub fn set_tempo_by_hand(&mut self, bpm: f64) -> Vec<Effect> {
+        self.tempo_by_hand = true;
+        self.set_tempo(bpm)
     }
 
     /// The tempo, set from elsewhere (the Arrange page): Note Repeat, the arp
@@ -4967,12 +4981,12 @@ impl App {
             ],
             Item::LoopTempo => vec![
                 "On: with the song stopped, the first loop",
-                "on Free length records in your own time, and",
-                "its length sets the tempo when REC closes it:",
-                "the bars that make 80 to 160 BPM. The song",
-                "starts at that tempo as the loop comes round.",
-                "Not while another device's clock leads, the",
-                "song has more than one tempo, or an export runs.",
+                "records in your own time and its length sets",
+                "the tempo: Length's bars at the tempo you play,",
+                "or on Free the likeliest bars (a close call",
+                "says so). The song starts as the loop comes",
+                "round. Not while another device's clock leads,",
+                "the song has more than one tempo, or exporting.",
             ],
             Item::LoopMemory => vec![
                 "How much sound the loops can hold, all",
@@ -5371,6 +5385,7 @@ impl App {
             }
             Item::Tempo => {
                 s.bpm = (s.bpm + d as f64).clamp(30.0, 300.0).round();
+                self.tempo_by_hand = true;
                 self.update_engine();
                 fx.push(self.status());
             }

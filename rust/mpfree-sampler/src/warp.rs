@@ -15,13 +15,15 @@
 //! [`crate::engine::EngineView::build_warped`]. The audio thread only
 //! hears of the tempo ([`crate::engine::Engine::set_tempo`]).
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Arc;
-use std::thread::JoinHandle;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use mpfree_stretch::{Job, Settings, StretchError, TimeMap};
+
+use crate::jobs::{self, Jobs, Key, Lane};
 
 use crate::model::{
     through, ModelError, Pin, Project, Region, Source, SourceId, Warp, WarpMethod, PADS,
@@ -292,22 +294,22 @@ impl Warps {
         Warps::spec(project, key)?.start()
     }
 
-    /// What the job for `key` needs, copied out of the project (the
-    /// region's frames once): quick, for the control thread to hand to a
-    /// [`Worker`].
+    /// What the job for `key` needs, taken from the project: the sound
+    /// itself, shared, and the region's span, whose frames are copied out
+    /// only as the job starts, on its worker (sampler plan phase 2 step
+    /// 7h): quick, for the control thread to hand to a [`Worker`].
     pub fn spec(project: &Project, key: &CopyKey) -> Result<JobSpec, StretchError> {
         let s = project.source(key.source).ok_or(StretchError::Empty)?;
-        let ch = usize::from(s.channels());
-        let (a, b) = (key.start as usize * ch, key.end as usize * ch);
-        let data = s.data().f32s(a..b).ok_or(StretchError::Empty)?;
+        if key.start >= key.end || key.end > s.frames() {
+            return Err(StretchError::Empty);
+        }
         let map = match Warps::pinned_warp(project, key) {
             Some(w) => TimeMap::new(CopyMap::new(&w, s.rate(), key).points().to_vec())?,
             None => TimeMap::to_length(key.end - key.start, key.frames)?,
         };
         Ok(JobSpec {
-            data: data.into(),
-            channels: s.channels(),
-            rate: s.rate(),
+            source: s.clone(),
+            span: key.start..key.end,
             map,
             settings: Settings {
                 semitones: (key.cents as f32 / 100.0).clamp(-24.0, 24.0),
@@ -338,17 +340,28 @@ impl Warps {
 
 /// Everything a stretch job needs, owned, so it can go to a worker.
 pub struct JobSpec {
-    pub data: Arc<[f32]>,
-    pub channels: u8,
-    pub rate: u32,
+    /// The sound, shared (a sound never changes once made).
+    pub source: Source,
+    /// The frames of it the job stretches: copied out as floats only when
+    /// it starts ([`JobSpec::start`]), on its worker, never on the screen.
+    pub span: std::ops::Range<u64>,
     pub map: TimeMap,
     pub settings: Settings,
 }
 
 impl JobSpec {
-    /// The job (finding the hits first).
+    /// The job: its span copied out of the sound, then the hits found.
     pub fn start(self) -> Result<Job, StretchError> {
-        Job::new(self.data, self.channels, self.rate, self.map, self.settings)
+        let ch = usize::from(self.source.channels());
+        let (a, b) = (self.span.start as usize * ch, self.span.end as usize * ch);
+        let data = self.source.data().f32s(a..b).ok_or(StretchError::Empty)?;
+        Job::new(
+            data.into(),
+            self.source.channels(),
+            self.source.rate(),
+            self.map,
+            self.settings,
+        )
     }
 }
 
@@ -358,76 +371,110 @@ pub enum Done {
     /// The copy for the key, and how long it took.
     Copy(CopyKey, Vec<f32>, Duration),
     Failed(CopyKey, StretchError),
-    /// Dropped by [`Worker::cancel`] before it finished.
+    /// Dropped before it finished: by [`Worker::cancel`], or for a newer
+    /// copy of the same region (another tempo, other pins).
     Cancelled(CopyKey),
+    /// Not started: the memory floor couldn't spare it. Why, in a
+    /// musician's words.
+    Refused(CopyKey, String),
 }
 
 /// Output frames the worker does between looks at whether it was
 /// cancelled: a few ms of work on the MPC.
 const WORKER_STEP: usize = 8192;
 
-/// A thread that makes stretched copies one at a time, in the order asked.
-/// Dropping it cancels what is left and waits for the thread.
+/// The job service's key for a copy: its region and tune, whatever the
+/// tempo and pins, so a copy asked for at a newer tempo (or after the pins
+/// moved) takes the place of the one still waiting or running.
+fn service_key(k: &CopyKey) -> Key {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (k.source.0, k.start, k.end, k.cents).hash(&mut h);
+    Key::new("stretch", h.finish())
+}
+
+/// The copies on the job service, by its key: the newest asked for each.
+type Asked = Arc<Mutex<HashMap<Key, CopyKey>>>;
+
+/// Makes stretched copies on the sampler's job service ([`crate::jobs`],
+/// its sound lane), in the order asked. A copy of a region asked for again
+/// (at a newer tempo, or with its pins moved) takes the place of the one
+/// still waiting or running, which comes back [`Done::Cancelled`] at once:
+/// a run of tempo changes keeps one job a region, and only the last is
+/// made. Dropping it cancels what is left.
 pub struct Worker {
-    tx: Option<Sender<(u64, CopyKey, JobSpec)>>,
+    jobs: Jobs,
+    tx: Sender<Done>,
     rx: Receiver<Done>,
     generation: Arc<AtomicU64>,
-    handle: Option<JoinHandle<()>>,
+    asked: Asked,
 }
 
 impl Worker {
-    /// Starts the thread: off the sound's cores, and at idle priority
-    /// once the program allows it ([`mpfree_lanes::os::idle_job`]), so a
-    /// stretch never competes with the audio thread or slows the screen.
-    pub fn spawn() -> std::io::Result<Worker> {
-        let (tx, jobs) = channel::<(u64, CopyKey, JobSpec)>();
-        let (done, rx) = channel();
-        let generation = Arc::new(AtomicU64::new(0));
-        let current = generation.clone();
-        let handle = std::thread::Builder::new()
-            .name("mpfree-stretch".into())
-            .spawn(move || {
-                // Off the sound's cores and priority when started by the
-                // audio thread, and after the screen.
-                mpfree_lanes::os::idle_job();
-                for (g, key, spec) in jobs {
-                    let stale = || current.load(Ordering::Relaxed) != g;
-                    let t = Instant::now();
-                    let result = if stale() {
-                        Done::Cancelled(key)
-                    } else {
-                        match spec.start() {
-                            Err(e) => Done::Failed(key, e),
-                            Ok(mut job) => loop {
-                                if stale() {
-                                    break Done::Cancelled(key);
-                                }
-                                if job.run(WORKER_STEP).finished {
-                                    let out = job.into_output().unwrap_or_default();
-                                    break Done::Copy(key, out, t.elapsed());
-                                }
-                            },
-                        }
-                    };
-                    if done.send(result).is_err() {
-                        break;
-                    }
-                }
-            })?;
-        Ok(Worker {
-            tx: Some(tx),
+    /// A worker on `jobs` (the app's: [`Jobs::shared`]).
+    pub fn on(jobs: Jobs) -> Worker {
+        let (tx, rx) = channel();
+        Worker {
+            jobs,
+            tx,
             rx,
-            generation,
-            handle: Some(handle),
-        })
+            generation: Arc::new(AtomicU64::new(0)),
+            asked: Arc::default(),
+        }
     }
 
-    /// Asks for the copy for `key`.
-    pub fn send(&self, key: CopyKey, spec: JobSpec) -> bool {
+    /// Asks for the copy for `key`, which holds about `need` bytes while it
+    /// is made (the source's part, the stretch's working copy and the
+    /// copy). False if the worker is going.
+    pub fn send(&self, key: CopyKey, spec: JobSpec, need: u64) -> bool {
+        let id = service_key(&key);
+        {
+            let mut asked = self.asked.lock().unwrap_or_else(|e| e.into_inner());
+            match asked.insert(id, key) {
+                // Asked for already, and still on its way.
+                Some(old) if old == key && self.jobs.has(id) => return true,
+                Some(old) if old != key && self.tx.send(Done::Cancelled(old)).is_err() => {
+                    return false;
+                }
+                _ => {}
+            }
+        }
         let g = self.generation.load(Ordering::Relaxed);
-        self.tx
-            .as_ref()
-            .is_some_and(|tx| tx.send((g, key, spec)).is_ok())
+        let (current, done, asked) = (self.generation.clone(), self.tx.clone(), self.asked.clone());
+        let (refused, told) = (self.tx.clone(), self.asked.clone());
+        self.jobs.submit(
+            jobs::Job::new(Lane::Sound, id, move |run| {
+                let stale = || current.load(Ordering::Relaxed) != g || run.cancelled();
+                let t = Instant::now();
+                let result = if stale() {
+                    Done::Cancelled(key)
+                } else {
+                    match spec.start() {
+                        Err(e) => Done::Failed(key, e),
+                        Ok(mut job) => loop {
+                            if stale() {
+                                break Done::Cancelled(key);
+                            }
+                            if job.run(WORKER_STEP).finished {
+                                let out = job.into_output().unwrap_or_default();
+                                break Done::Copy(key, out, t.elapsed());
+                            }
+                        },
+                    }
+                };
+                // Said only while it is still the newest copy asked for its
+                // region: one taken over was said cancelled already.
+                if forget(&asked, id, key) {
+                    let _ = done.send(result);
+                }
+            })
+            .needs(need, move |why| {
+                if forget(&told, id, key) {
+                    let _ = refused.send(Done::Refused(key, why));
+                }
+            }),
+        );
+        true
     }
 
     /// Drops every job asked for so far, the one running included (it
@@ -436,7 +483,7 @@ impl Worker {
         self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// A finished (or failed, or cancelled) job, if one is waiting.
+    /// A finished (or failed, cancelled or refused) job, if one is waiting.
     pub fn try_recv(&self) -> Option<Done> {
         self.rx.try_recv().ok()
     }
@@ -445,15 +492,30 @@ impl Worker {
     pub fn recv_timeout(&self, timeout: Duration) -> Option<Done> {
         self.rx.recv_timeout(timeout).ok()
     }
+
+    /// Copies asked for and not yet back.
+    pub fn asked(&self) -> usize {
+        self.asked.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+}
+
+/// Takes `key` off the copies asked for if it is still the newest for its
+/// region `id`: true then, and its result is said.
+fn forget(asked: &Asked, id: Key, key: CopyKey) -> bool {
+    let mut asked = asked.lock().unwrap_or_else(|e| e.into_inner());
+    if asked.get(&id) == Some(&key) {
+        asked.remove(&id);
+        true
+    } else {
+        false
+    }
 }
 
 impl Drop for Worker {
+    /// What is left is cancelled: the job running stops within a step, and
+    /// the ones waiting end as soon as they start.
     fn drop(&mut self) {
         self.cancel();
-        self.tx = None;
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
-        }
     }
 }
 
@@ -495,16 +557,14 @@ impl Process {
         self.spec(project)?.start()
     }
 
-    /// What the job needs, owned, for a worker to start it there (finding
-    /// the hits is part of the work).
+    /// What the job needs, owned, for a worker to start it there (copying
+    /// the region's frames out and finding the hits are part of the work).
     pub fn spec(&self, project: &Project) -> Result<JobSpec, StretchError> {
         let r = self.region(project)?;
         let s = project.source(r.source).ok_or(StretchError::Empty)?;
-        let ch = usize::from(s.channels());
-        let data = s
-            .data()
-            .f32s(r.start as usize * ch..r.end as usize * ch)
-            .ok_or(StretchError::Empty)?;
+        if r.start >= r.end || r.end > s.frames() {
+            return Err(StretchError::Empty);
+        }
         // Pins a stretch would follow are made part of the new audio.
         let map = match r.warp.as_ref().filter(|w| w.pinned()) {
             Some(w) => {
@@ -519,9 +579,8 @@ impl Process {
             ..Settings::default()
         };
         Ok(JobSpec {
-            data: data.into(),
-            channels: s.channels(),
-            rate: s.rate(),
+            source: s.clone(),
+            span: r.start..r.end,
             map,
             settings,
         })
