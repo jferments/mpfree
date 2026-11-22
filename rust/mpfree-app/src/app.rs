@@ -835,8 +835,9 @@ impl Default for Settings {
 
 /// The themes Prefs > Appearance offers: the built-in name and its row.
 /// The same names, in the same order, as `mpfree_ui::theme::BUILTIN`.
-pub const THEMES: [(&str, &str); 4] = [
+pub const THEMES: [(&str, &str); 5] = [
     ("default", "Default"),
+    ("light", "Light"),
     ("console", "Console"),
     ("synthwave", "Synthwave"),
     ("spaceship", "Spaceship"),

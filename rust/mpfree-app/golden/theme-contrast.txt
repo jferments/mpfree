@@ -228,6 +228,34 @@ default synth-routes 1 # before the theme refactor (phase 0 baseline)
 default synth-table 4 # before the theme refactor (phase 0 baseline)
 default synth-track 1 # before the theme refactor (phase 0 baseline)
 default synth-voice 4 # before the theme refactor (phase 0 baseline)
+light arrange-instruments 1 # Light (phase 4): faint text, under 3:1 in Default too
+light browser 2 # Light (phase 4): faint text, under 3:1 in Default too
+light browser-samples 6 # Light (phase 4): faint text, under 3:1 in Default too
+light chain 1 # Light (phase 4): faint text, under 3:1 in Default too
+light clips 6 # Light (phase 4): faint text, under 3:1 in Default too
+light clips-card 1 # Light (phase 4): faint text, under 3:1 in Default too
+light clips-card-direction 1 # Light (phase 4): faint text, under 3:1 in Default too
+light clips-card-mutate 1 # Light (phase 4): faint text, under 3:1 in Default too
+light clips-loops 3 # Light (phase 4): faint text, under 3:1 in Default too
+light clips-mutes 1 # Light (phase 4): faint text, under 3:1 in Default too
+light clips-perform 7 # Light (phase 4): faint text, under 3:1 in Default too
+light clips-scene 1 # Light (phase 4): faint text, under 3:1 in Default too
+light clips-scene-program 1 # Light (phase 4): faint text, under 3:1 in Default too
+light clips-solo 1 # Light (phase 4): faint text, under 3:1 in Default too
+light clips-tracks 5 # Light (phase 4): faint text, under 3:1 in Default too
+light clips-tracks-end 3 # Light (phase 4): faint text, under 3:1 in Default too
+light looper-empty 1 # Light (phase 4): faint text, under 3:1 in Default too
+light looper-free 1 # Light (phase 4): faint text, under 3:1 in Default too
+light looper-listening 1 # Light (phase 4): faint text, under 3:1 in Default too
+light looper-master-refused 1 # Light (phase 4): faint text, under 3:1 in Default too
+light looper-sources 1 # Light (phase 4): faint text, under 3:1 in Default too
+light looper-window 1 # Light (phase 4): faint text, under 3:1 in Default too
+light sequencer-notes-tracker 4 # Light (phase 4): faint text, under 3:1 in Default too
+light synth 1 # Light (phase 4): faint text, under 3:1 in Default too
+light synth-on-kit 1 # Light (phase 4): faint text, under 3:1 in Default too
+light synth-pads-preview 1 # Light (phase 4): faint text, under 3:1 in Default too
+light synth-table 3 # Light (phase 4): faint text, under 3:1 in Default too
+light synth-voice 2 # Light (phase 4): faint text, under 3:1 in Default too
 spaceship arp-panel 5 # before the theme refactor (phase 0 baseline)
 spaceship arp-quick-band 18 # before the theme refactor (phase 0 baseline)
 spaceship arp-workspace-record 18 # before the theme refactor (phase 0 baseline)

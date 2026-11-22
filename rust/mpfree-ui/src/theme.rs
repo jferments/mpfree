@@ -147,7 +147,7 @@ pub struct Theme {
 }
 
 /// The built-in themes, by the name a theme file's `base` uses.
-pub const BUILTIN: [&str; 4] = ["default", "console", "synthwave", "spaceship"];
+pub const BUILTIN: [&str; 5] = ["default", "light", "console", "synthwave", "spaceship"];
 
 impl Theme {
     /// The default: dark, for a studio, with one blue accent and status colours.
@@ -199,6 +199,56 @@ impl Theme {
     }
 
     /// Green on black, glowing like a phosphor screen.
+    /// Light: the default's layout and blue accent on pale grey, for a
+    /// bright room or daylight. Every role is on its table rule, turned
+    /// for a light theme; status and track colours are darkened so they
+    /// read as text and lines on the pale panels.
+    pub fn light() -> Theme {
+        Theme {
+            name: "Light".into(),
+            bg: Color::rgb(0xE4E7EB),
+            surface: Color::rgb(0xF4F5F7),
+            raised: Color::rgb(0xDCE1E8),
+            outline: Color::rgb(0xBFC6D1),
+            text: Color::rgb(0x161A21),
+            text_dim: Color::rgb(0x474F5E),
+            text_faint: Color::rgb(0x5E6777),
+            accent: Color::rgb(0x2A63D4),
+            accent2: Color::rgb(0x8B3CC6),
+            on_accent: Color::rgb(0xFFFFFF),
+            good: Color::rgb(0x17784C),
+            warn: Color::rgb(0x965700),
+            bad: Color::rgb(0xC42B2B),
+            track: [
+                0x2A63D4, 0x17784C, 0xA96700, 0x8B45D0, 0xC24E22, 0x0D7A8A, 0xBC3374, 0x56820F,
+            ]
+            .map(Color::rgb),
+            radius: 14,
+            gap: sizes::GAP,
+            pad: sizes::PAD,
+            size_brand: sizes::SIZE_BRAND,
+            size_title: sizes::SIZE_TITLE,
+            size_body: sizes::SIZE_BODY,
+            size_small: sizes::SIZE_SMALL,
+            size_mono: sizes::SIZE_MONO,
+            corners: Corners::Round,
+            glow: 0,
+            text_glow: 0,
+            backdrop: Backdrop::Solid,
+            backdrop_to: Color::rgb(0xD3D8E0),
+            backdrop_line: Color::rgb(0xF4F5F7),
+            backdrop_step: 40,
+            face_body: sizes::FACE_BODY,
+            face_title: sizes::FACE_TITLE,
+            startup: Startup::Synthwave,
+            tint: 0,
+            mode: Mode::Light,
+            roles: [Color::rgb(0); ROLE_COUNT],
+            sources: Vec::new(),
+        }
+        .with_roles(&[])
+    }
+
     pub fn console() -> Theme {
         Theme {
             name: "Console".into(),
@@ -345,6 +395,7 @@ impl Theme {
     pub fn builtin(name: &str) -> Option<Theme> {
         match name.trim().to_ascii_lowercase().as_str() {
             "default" | "dark" => Some(Theme::dark()),
+            "light" => Some(Theme::light()),
             "console" => Some(Theme::console()),
             "synthwave" => Some(Theme::synthwave()),
             "spaceship" => Some(Theme::spaceship()),
@@ -1279,8 +1330,9 @@ mod tests {
     #[test]
     fn every_built_in_theme_keeps_the_colours_its_screens_drew() {
         // Phase 0 of the theme plan changes no pixel: each role is the
-        // colour the screens it replaces drew before.
-        for name in BUILTIN {
+        // colour the screens it replaces drew before. Light came later and
+        // has every role on its rule.
+        for name in BUILTIN.into_iter().filter(|&n| n != "light") {
             let t = Theme::builtin(name).unwrap();
             assert_eq!(t.record(), Color::rgb(0xFF4D5E), "{name}");
             assert_eq!(

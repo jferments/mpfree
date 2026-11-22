@@ -89,8 +89,8 @@ roles! {
         "Q-Link knob 3.";
     Qlink4 "qlink.4" "Controls" Core "{track.4}"
         "Q-Link knob 4.";
-    TextInverse "text_inverse" "Text" Role "{bg}"
-        "Text on a fill too bright (or too dark) for `text`; ink_on() picks between the two.";
+    TextInverse "text_inverse" "Text" Role "light_dark({surface}, {bg})"
+        "Text on a fill too bright (or too dark) for `text`; ink_on() picks between the two. A light theme's is its palest colour.";
     Highlight "highlight" "Light and shade" Role "{text}"
         "Bright marks: what a pad or button flashes towards when it is hit, and the ring round a picked cell.";
     Shadow "shadow" "Light and shade" Role "light_dark({text}, {bg})"
