@@ -1957,7 +1957,7 @@ impl NoteGrid {
         // Fit and Follow.
         for (r, label, lit) in [(g.fit, "Fit", false), (g.follow, "Follow", g.v.follow)] {
             let (fill, ink) = if lit {
-                (t.accent, t.on_accent)
+                (t.picked(), t.on_picked())
             } else {
                 (t.raised, t.text)
             };
