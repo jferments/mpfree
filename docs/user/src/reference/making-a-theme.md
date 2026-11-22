@@ -6,7 +6,7 @@ checked: 2026-11-22 512dc09a
 
 # Making your own theme
 
-A theme sets MPFree's colours and the style of its panels. MPFree has five built in: **Default**, **Light**, **Console**, **Synthwave** and **Spaceship** (**Prefs > Appearance**). You can make your own with a short text file.
+A theme sets MPFree's colours and the style of its panels. MPFree has six built in: **Default**, **Slate**, **Light**, **Console**, **Synthwave** and **Spaceship** (**Prefs > Appearance**). You can make your own with a short text file.
 
 A theme changes colours, corners, glow, the pattern behind the panels and the startup screen. It never moves anything. The layout, the text sizes and the font are the same in every theme, so every button and every place you touch stays where it is. The pads' lights keep their colours, and so does a plugin's own skin.
 
@@ -31,7 +31,7 @@ That's Synthwave with an orange accent. MPFree remembers your pick at the next s
 ## How a theme file reads
 
 - One setting per line, written `key = value`. A `#` at the start of a line, or after a space, starts a comment.
-- **`base`** comes first: the built-in theme to start from (`default`, `light`, `console`, `synthwave` or `spaceship`). Anything you don't set stays as that theme has it, so a theme can be one line long.
+- **`base`** comes first: the built-in theme to start from (`default`, `slate`, `light`, `console`, `synthwave` or `spaceship`). Anything you don't set stays as that theme has it, so a theme can be one line long.
 - **`name`** is what the Appearance row shows. Without one, or with the name of a built-in theme, the row shows the file name.
 
 The quickest way to start is to copy a built-in theme. Each one is written out in full, every setting with its value, in MPFree's source code on [GitHub](https://github.com/jferments/mpfree): search the repository for `light.theme`, say. Copy one, change what you like, and keep only the lines you changed under a `base = ...` line.
