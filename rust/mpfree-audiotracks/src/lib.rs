@@ -61,8 +61,18 @@
 //!   take records under it ([`Io::Start`]). The host makes, writes and
 //!   finishes the files off the audio thread (see [`host`]); the audio
 //!   thread only says what to do, and a take stays put until the host has
-//!   copied all of it out ([`AudioTracks::written`]). The takes still play
-//!   from memory.
+//!   copied all of it out ([`AudioTracks::written`]).
+//! - **Playing from files.** Given the stream layer's player
+//!   ([`AudioTracks::stream`]), a take can play from its file in place of
+//!   the pool: a recorded take moves to its finished file once the frames
+//!   its regions are about to play are in the stream cache, so the move
+//!   never changes a sample ([`Command::OnFile`]), and a saved take can
+//!   open as its file with nothing copied in
+//!   ([`AudioTracks::add_file_take`]). Each track tells the player where
+//!   it plays and where it plays next; every frame that plays silence
+//!   because the stick was late is counted, a take at a time
+//!   ([`AudioTracks::missed`]). Without a player every take is in the
+//!   pool, as before.
 //!
 //! [`AudioTracks::command`] and [`AudioTracks::process`] never allocate,
 //! lock or panic, and give the same output for any period size.
@@ -84,6 +94,8 @@ use std::fmt;
 
 use save::{Saved, TakeFile, TrackFile};
 
+use mpfree_stream::msg::{Place, MAX_CURSORS, MAX_SOURCES};
+use mpfree_stream::player::Player;
 use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_transport::transport::MAX_PERIOD;
 use mpfree_transport::{Block, Mark, Span, State};
@@ -115,6 +127,16 @@ pub const PEAK_BLOCK: usize = 256;
 /// host takes them every period, and a period asks for at most a few for
 /// each command and each track's punch in, so the queue never fills.
 pub const IO_QUEUE: usize = 1024;
+/// Seconds ahead a track tells the stream player of its next region, so
+/// that region's first frames are read before it starts.
+pub const CUE_S: f64 = 4.0;
+/// Seconds of a region's frames, from where it plays, that must be in the
+/// stream cache before its take moves from the pool to its file.
+pub const MOVE_S: f64 = 2.0;
+
+// A take's stream source is its id, and each track plays through two
+// cursors (see [`AudioTracks::stream`]).
+const _: () = assert!(MAX_TAKES <= MAX_SOURCES && 2 * MAX_TRACKS <= MAX_CURSORS);
 
 fn min_max(xs: &[f32]) -> (f32, f32) {
     xs.iter()
@@ -261,6 +283,20 @@ pub enum Command {
     /// go back to where they sat on a song that is gone. Changes no
     /// region.
     ForgetSong(u32),
+    /// Take `take`'s finished file is open as stream source generation
+    /// `gen` (the source is the take's id): the take moves from the pool
+    /// to its file once the frames its regions are about to play are in
+    /// the stream cache, and its memory is then free (see
+    /// [`AudioTracks::stream`]). `rec` is the take's lasting id, so a take
+    /// forgotten meanwhile, its id given to another, is never moved.
+    /// Refused unless the tracks have a player and the take is in the
+    /// pool, settled (not recording, loading or still being copied out to
+    /// its file).
+    OnFile {
+        take: u16,
+        rec: RecordingId,
+        gen: u32,
+    },
 }
 
 /// Why the tracks can't take a song time edit ([`AudioTracks::retime_refused`]).
@@ -452,6 +488,15 @@ pub struct Stats {
     /// full (it never should be): a take whose [`Io::Start`] is dropped
     /// has no file, and is saved from memory.
     pub io_dropped: u32,
+    /// Frames of takes played from their files that played silence
+    /// because the stream cache didn't have them yet (or their file wasn't
+    /// open): every dropout, for all takes ([`AudioTracks::missed`] gives
+    /// them a take at a time).
+    pub missed: u64,
+    /// Files opened for a take ([`Command::OnFile`]) whose channels or
+    /// length didn't match it: the take stays in the pool, and the host is
+    /// asked to close the file ([`Io::Close`]).
+    pub mismatched: u32,
 }
 
 /// What the host does about the recording files while
@@ -476,6 +521,11 @@ pub enum Io {
     /// reads a take while it records), finish its file once it has stopped
     /// recording, then tell [`AudioTracks::written`].
     Start { take: u16 },
+    /// Take `take`'s stream source is no longer played (the take was
+    /// forgotten or cleared, or its file didn't match it): close it. A
+    /// newer take may already have the id; its own source is opened
+    /// later, under a newer generation.
+    Close { take: u16 },
 }
 
 /// The memory gauge, in samples (a stereo frame is two).
@@ -483,6 +533,31 @@ pub enum Io {
 pub struct Memory {
     pub used: usize,
     pub capacity: usize,
+}
+
+/// Where a take's audio is (the audio tracks rethink, phase 3b).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Store {
+    /// In the pool.
+    Pool,
+    /// In the pool, and its finished file is open as stream source
+    /// generation `gen`: it moves to the file once the frames its regions
+    /// are about to play are in the cache ([`Command::OnFile`]).
+    Moving { gen: u32 },
+    /// Stream source generation `gen`, played through the player; it holds
+    /// no pool memory.
+    File { gen: u32 },
+}
+
+/// A region a track plays, or is about to: its take, the take's frame
+/// where it plays (or starts), and the frame it stops at (its crossfade's
+/// end). Told to the player each period, and what a take's move to its
+/// file waits for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Cue {
+    take: u16,
+    frame: u64,
+    end: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -505,6 +580,11 @@ struct Take {
     /// can't be forgotten, nor the tracks cleared, until the host says
     /// [`AudioTracks::written`].
     writing: bool,
+    store: Store,
+    /// Frames played from its file that played silence (see
+    /// [`Stats::missed`]), and the song tick of the latest.
+    missed: u64,
+    miss_tick: f64,
 }
 
 const NO_TAKE: Take = Take {
@@ -521,6 +601,9 @@ const NO_TAKE: Take = Take {
     cut_short: false,
     loading: false,
     writing: false,
+    store: Store::Pool,
+    missed: 0,
+    miss_tick: 0.0,
 };
 
 impl Take {
@@ -552,23 +635,49 @@ impl Take {
                 continue;
             };
             let b = slot * CHUNK + off;
-            let src = &pool.data[b..b + count * ch];
-            let dst = &mut out[2 * j..2 * (j + count)];
-            if ch == 1 {
-                for (i, (d, s)) in dst.chunks_exact_mut(2).zip(src).enumerate() {
-                    let g = gain(j + i) * *s;
-                    d[0] += g;
-                    d[1] += g;
-                }
-            } else {
-                for (i, (d, s)) in dst.chunks_exact_mut(2).zip(src.chunks_exact(2)).enumerate() {
-                    let g = gain(j + i);
-                    d[0] += g * s[0];
-                    d[1] += g * s[1];
-                }
-            }
+            add_frames(&pool.data[b..b + count * ch], ch, out, j, gain);
             j += count;
         }
+    }
+
+    /// [`Take::add_into`] for a take played from its file, stream source
+    /// `id` at generation `gen`, through the player's cache (`scratch`
+    /// holds what is read). Gives the frames that played silence for want
+    /// of them: not in the cache yet, or the source not open at `gen` with
+    /// the take's channels and length (or no player).
+    #[allow(clippy::too_many_arguments)]
+    fn add_from_file(
+        &self,
+        player: Option<&mut Player>,
+        id: u16,
+        gen: u32,
+        k: i64,
+        out: &mut [f32],
+        scratch: &mut [f32],
+        gain: &impl Fn(usize) -> f32,
+    ) -> u64 {
+        let n = out.len() / 2;
+        let ch = self.channels as usize;
+        let j0 = if k < 0 { ((-k) as usize).min(n) } else { 0 };
+        let from = (k + j0 as i64) as usize;
+        let have = self.frames.saturating_sub(from).min(n - j0);
+        if have == 0 {
+            return 0;
+        }
+        let shape = Some((u16::from(self.channels), self.frames as u64));
+        let Some(p) = player.filter(|p| p.source(id) == Some((gen, true)) && p.shape(id) == shape)
+        else {
+            return have as u64;
+        };
+        let (mut missed, mut done) = (0, 0);
+        while done < have {
+            let count = (have - done).min(scratch.len() / ch);
+            let buf = &mut scratch[..count * ch];
+            missed += p.read(id, (from + done) as u64, buf);
+            add_frames(buf, ch, out, j0 + done, gain);
+            done += count;
+        }
+        missed
     }
 
     fn sample(&self, pool: &Pool, id: u16, k: usize, c: usize) -> Option<f32> {
@@ -579,6 +688,27 @@ impl Take {
         let s = k * ch + c.min(ch - 1);
         let slot = pool.readable(id, (s / CHUNK) as u32)?;
         Some(pool.data[slot * CHUNK + s % CHUNK])
+    }
+}
+
+/// Adds `gain`-weighted frames `src` (interleaved, `ch` channels: a mono
+/// frame goes to both sides) into the interleaved stereo `out` from its
+/// frame `j`: `gain(j + i)` weighs frame `i`.
+fn add_frames(src: &[f32], ch: usize, out: &mut [f32], j: usize, gain: &impl Fn(usize) -> f32) {
+    let count = src.len() / ch;
+    let dst = &mut out[2 * j..2 * (j + count)];
+    if ch == 1 {
+        for (i, (d, s)) in dst.chunks_exact_mut(2).zip(src).enumerate() {
+            let g = gain(j + i) * *s;
+            d[0] += g;
+            d[1] += g;
+        }
+    } else {
+        for (i, (d, s)) in dst.chunks_exact_mut(2).zip(src.chunks_exact(2)).enumerate() {
+            let g = gain(j + i);
+            d[0] += g * s[0];
+            d[1] += g * s[1];
+        }
     }
 }
 
@@ -826,6 +956,14 @@ pub struct AudioTracks {
     /// [`MAX_PERIOD`] frames a track, which the host fills before
     /// [`AudioTracks::process`].
     inside: Box<[f32]>,
+    /// The stream layer's sound-thread side, for takes played from their
+    /// files ([`AudioTracks::stream`]), and room for what a run reads
+    /// through it.
+    player: Option<Player>,
+    reads: Box<[f32]>,
+    /// Where each track plays, or is about to (see [`AudioTracks::cue`]),
+    /// a region in each of its two cursors.
+    cues: [[Option<Cue>; 2]; MAX_TRACKS],
 }
 
 /// One track's room in [`AudioTracks::inside_input`].
@@ -864,6 +1002,9 @@ impl AudioTracks {
             files: false,
             io: VecDeque::with_capacity(IO_QUEUE),
             inside: vec![0.0; MAX_TRACKS * INSIDE].into_boxed_slice(),
+            player: None,
+            reads: vec![0.0; 2 * RUN].into_boxed_slice(),
+            cues: [[None; 2]; MAX_TRACKS],
         }
     }
 
@@ -1011,8 +1152,14 @@ impl AudioTracks {
 
     /// Frame `k`, channel `c` of a take (a mono take answers for both).
     pub fn sample(&self, id: u16, k: usize, c: usize) -> Option<f32> {
-        let t = self.takes.get(id as usize).filter(|t| t.live)?;
-        t.sample(&self.pool, id, k, c)
+        self.pooled(id)?.sample(&self.pool, id, k, c)
+    }
+
+    /// A take whose audio is in the pool (not played from its file).
+    fn pooled(&self, id: u16) -> Option<&Take> {
+        self.takes
+            .get(id as usize)
+            .filter(|t| t.live && !matches!(t.store, Store::File { .. }))
     }
 
     /// The lowest and highest sample of frames `from..to` of a take, over
@@ -1022,7 +1169,7 @@ impl AudioTracks {
     /// does not allocate. A host shares the result with the screen thread
     /// as it shares the rest of the state.
     pub fn peaks(&self, id: u16, from: usize, to: usize) -> Option<(f32, f32)> {
-        let t = self.takes.get(id as usize).filter(|t| t.live)?;
+        let t = self.pooled(id)?;
         let to = to.min(t.frames);
         if from >= to {
             return None;
@@ -1071,7 +1218,7 @@ impl AudioTracks {
     /// The take as a 32-bit float WAV (for the store). Allocates: not on
     /// the audio thread.
     pub fn take_wav(&self, id: u16) -> Option<Vec<u8>> {
-        let t = self.takes.get(id as usize).filter(|t| t.live)?;
+        let t = self.pooled(id)?;
         let ch = t.channels as usize;
         let bytes = t.frames * ch * 4;
         let mut w = Vec::with_capacity(44 + bytes);
@@ -1547,8 +1694,22 @@ impl AudioTracks {
                 if !ok || self.in_use(id) {
                     return self.refuse();
                 }
-                self.pool.release_take(id);
-                self.takes[id as usize] = NO_TAKE;
+                self.forget(id);
+            }
+            Command::OnFile { take, rec, gen } => {
+                let ok = self.player.is_some()
+                    && self.takes.get(take as usize).is_some_and(|t| {
+                        t.live
+                            && t.rec == rec
+                            && t.store == Store::Pool
+                            && !t.recording
+                            && !t.loading
+                            && !t.writing
+                    });
+                if !ok {
+                    return self.refuse();
+                }
+                self.takes[take as usize].store = Store::Moving { gen };
             }
             Command::Swap { old, new, ratio } => {
                 let ok = |id: u16| {
@@ -1679,10 +1840,7 @@ impl AudioTracks {
     /// gives the frames it has so far (they never change once written).
     /// Does not allocate.
     pub fn read_take(&self, id: u16, from: usize, out: &mut [f32]) -> Option<usize> {
-        let t = self
-            .takes
-            .get(id as usize)
-            .filter(|t| t.live && !t.loading)?;
+        let t = self.pooled(id).filter(|t| !t.loading)?;
         let ch = t.channels as usize;
         let want = (out.len() / ch).min(t.frames.saturating_sub(from));
         let mut done = 0;
@@ -1816,8 +1974,7 @@ impl AudioTracks {
         }
         for id in 0..MAX_TAKES {
             if self.takes[id].live {
-                self.pool.release_take(id as u16);
-                self.takes[id] = NO_TAKE;
+                self.forget(id as u16);
             }
         }
         self.pending = [None; MAX_TRACKS];
@@ -2151,6 +2308,9 @@ impl AudioTracks {
             .min(out.len() / 2)
             .min(MAX_PERIOD as usize);
         let now = block.start_frame;
+        if let Some(p) = self.player.as_mut() {
+            p.begin();
+        }
         for i in 0..self.q_len {
             if let Some(c) = self.queue[i].take() {
                 self.apply(c, map, now);
@@ -2204,6 +2364,18 @@ impl AudioTracks {
             m += 1;
         }
         self.mix(n, out);
+        // Where the tracks play next, for the player, and the takes that
+        // can move to their files now.
+        if self.player.is_some() {
+            match block.spans().last() {
+                Some(sp) => self.cue(map, sp.tick_at(sp.frame + u64::from(sp.len)), sp.bpm),
+                None => self.cues = [[None; 2]; MAX_TRACKS],
+            }
+            self.move_to_files();
+        }
+        if let Some(p) = self.player.as_mut() {
+            p.end(n as u32);
+        }
         self.last_map = *map;
     }
 
@@ -2263,6 +2435,228 @@ impl AudioTracks {
         self.takes
             .get(take as usize)
             .is_some_and(|t| t.live && t.writing)
+    }
+
+    // ---- playing from files -------------------------------------------
+
+    /// Play takes from their files through `player`, the stream layer's
+    /// sound-thread side (made off the audio thread, with every buffer it
+    /// will use, its coordinator on a thread of its own), or stop (None).
+    /// The player given before comes back, to be dropped off the audio
+    /// thread. Real-time safe.
+    ///
+    /// A take's stream source is its id. A recorded take moves from the
+    /// pool to its finished file with [`Command::OnFile`]; a saved take
+    /// opens as its file ([`AudioTracks::add_file_take`]). Each period the
+    /// tracks begin and end the player's period, read what file takes play
+    /// through it, and tell it where each track plays, or is about to:
+    /// the region there and the next one if it starts within [`CUE_S`],
+    /// through cursors `2 * track` (even regions) and `2 * track + 1` (odd
+    /// ones), so a region keeps its cursor as it goes from next to
+    /// playing. Every frame that plays silence because it wasn't in the
+    /// cache is counted ([`AudioTracks::missed`]). Without a player, file
+    /// takes play silence, counted the same.
+    pub fn stream(&mut self, player: Option<Player>) -> Option<Player> {
+        std::mem::replace(&mut self.player, player)
+    }
+
+    /// The player, for its counters.
+    pub fn player(&self) -> Option<&Player> {
+        self.player.as_ref()
+    }
+
+    /// Whether take `id` plays from its file (it holds no pool memory).
+    pub fn on_file(&self, id: u16) -> bool {
+        self.takes
+            .get(id as usize)
+            .is_some_and(|t| t.live && matches!(t.store, Store::File { .. }))
+    }
+
+    /// Frames of take `id` that played silence because its file's frames
+    /// weren't in the cache yet (or its file wasn't open), and the song
+    /// tick of the latest. None if the take is not there.
+    pub fn missed(&self, id: u16) -> Option<(u64, f64)> {
+        let t = self.takes.get(id as usize).filter(|t| t.live)?;
+        Some((t.missed, t.miss_tick))
+    }
+
+    /// Put a saved take back as its file, stream source `f.id` at
+    /// generation `gen`, which the host has opened and checked against
+    /// `f`'s channels and length: nothing is copied in and no pool memory
+    /// is taken. It plays once the player has the source open at `gen`
+    /// (until then, what it should play is counted as missed). Under its
+    /// own id and lasting id, as [`AudioTracks::load_take`]; refused
+    /// (false, nothing changed) as that is but for the audio, which isn't
+    /// needed, and without a player. Does not allocate.
+    pub fn add_file_take(&mut self, f: &TakeFile, gen: u32) -> bool {
+        let id = f.id as usize;
+        if self.player.is_none()
+            || id >= MAX_TAKES
+            || self.takes[id].live
+            || f.track >= MAX_TRACKS
+            || !(1..=2).contains(&f.channels)
+            || f.frames == 0
+            || !f.anchor.is_finite()
+        {
+            return false;
+        }
+        let rec = self.keep_id(f.rec);
+        self.takes[id] = Take {
+            live: true,
+            rec,
+            track: f.track as u8,
+            channels: f.channels as u8,
+            group: f.group,
+            pass: f.pass,
+            bpm: if f.bpm.is_finite() && f.bpm > 0.0 {
+                f.bpm
+            } else {
+                0.0
+            },
+            anchor: f.anchor,
+            frames: f.frames,
+            store: Store::File { gen },
+            ..NO_TAKE
+        };
+        self.groups = self.groups.max(f.group);
+        true
+    }
+
+    /// Take `id` goes: its pool memory back, and its stream source closed
+    /// if it has one.
+    fn forget(&mut self, id: u16) {
+        self.pool.release_take(id);
+        if self.takes[id as usize].store != Store::Pool {
+            self.ask(Io::Close { take: id });
+        }
+        self.takes[id as usize] = NO_TAKE;
+    }
+
+    /// Where each track plays, or is about to, from song tick `tick` (see
+    /// [`AudioTracks::stream`]), for the regions of takes played from, or
+    /// moving to, their files; told to the player. A track that records,
+    /// or the tracks turned off, play nothing.
+    fn cue(&mut self, map: &TempoMap, tick: f64, bpm: f64) {
+        if self.player.is_none() {
+            return;
+        }
+        self.cues = [[None; 2]; MAX_TRACKS];
+        if !self.active {
+            return;
+        }
+        let rate = self.rate;
+        let tail = mpfree_transport::time::ticks_in(FADE as f64, bpm, rate) + 1.0;
+        let ahead = CUE_S * f64::from(rate);
+        for t in 0..MAX_TRACKS {
+            let tr = &self.tracks[t];
+            if tr.rec.is_some() {
+                continue;
+            }
+            let first = tr
+                .regions()
+                .partition_point(|r| r.end as f64 + tail <= tick);
+            for i in first..(first + 2).min(tr.n) {
+                let r = tr.regions[i];
+                let Some(tk) = self
+                    .takes
+                    .get(r.take as usize)
+                    .filter(|k| k.live && k.store != Store::Pool)
+                else {
+                    continue;
+                };
+                // Frames from the region's start to the tick: 0 for one
+                // still to come, if it comes soon enough.
+                let e0 = if r.start as f64 > tick {
+                    if frames_from(map, tick, r.start as f64, rate) > ahead {
+                        break;
+                    }
+                    0
+                } else {
+                    frames_from(map, r.start as f64, tick, rate).round() as i64
+                };
+                let len_f = frames_from(map, r.start as f64, r.end as f64, rate).round() as i64;
+                let end = (r.src + len_f + FADE as i64).clamp(0, tk.frames as i64) as u64;
+                let frame = (r.src + e0).max(0) as u64;
+                if frame < end {
+                    self.cues[t][i % 2] = Some(Cue {
+                        take: r.take,
+                        frame,
+                        end,
+                    });
+                }
+            }
+        }
+        let AudioTracks {
+            player,
+            cues,
+            takes,
+            ..
+        } = self;
+        let Some(p) = player.as_mut() else {
+            return;
+        };
+        for (t, two) in cues.iter().enumerate() {
+            for (k, c) in two.iter().enumerate() {
+                let Some(c) = c else {
+                    continue;
+                };
+                let (Store::Moving { gen } | Store::File { gen }) = takes[c.take as usize].store
+                else {
+                    continue;
+                };
+                if p.source(c.take) == Some((gen, true)) {
+                    let place = Place {
+                        frame: c.frame,
+                        speed: 1.0,
+                        looping: None,
+                        end: Some(c.end),
+                    };
+                    p.playing(c.take, (2 * t + k) as u16, place);
+                }
+            }
+        }
+    }
+
+    /// Each take moving to its file ([`Command::OnFile`]) whose source is
+    /// open moves once [`MOVE_S`] of every region it plays, or is about
+    /// to, from where it plays, is in the cache (at once if none plays
+    /// it), its pool memory given back: so the move never plays silence.
+    /// One whose file doesn't match it stays in the pool (counted in
+    /// [`Stats::mismatched`]), and its source is closed.
+    fn move_to_files(&mut self) {
+        if self.player.is_none() {
+            return;
+        }
+        let need = (MOVE_S * f64::from(self.rate)) as u64;
+        for id in 0..MAX_TAKES as u16 {
+            let Store::Moving { gen } = self.takes[id as usize].store else {
+                continue;
+            };
+            let Some(p) = self.player.as_ref() else {
+                return;
+            };
+            if p.source(id) != Some((gen, true)) {
+                continue;
+            }
+            let tk = &self.takes[id as usize];
+            if p.shape(id) != Some((u16::from(tk.channels), tk.frames as u64)) {
+                self.takes[id as usize].store = Store::Pool;
+                self.stats.mismatched += 1;
+                self.ask(Io::Close { take: id });
+                continue;
+            }
+            let covered = self
+                .cues
+                .iter()
+                .flatten()
+                .flatten()
+                .filter(|c| c.take == id)
+                .all(|c| p.covers(id, c.frame, need.min(c.end - c.frame)));
+            if covered {
+                self.takes[id as usize].store = Store::File { gen };
+                self.pool.release_take(id);
+            }
+        }
     }
 
     /// A loop jump or a locate while recording: each recording track ends
@@ -2419,6 +2813,9 @@ impl AudioTracks {
             takes,
             pool,
             fade,
+            player,
+            reads,
+            stats,
             ..
         } = self;
         let tr = &mut tracks[t];
@@ -2465,12 +2862,33 @@ impl AudioTracks {
             };
             let dst = &mut buf[2 * off..2 * (off + len)];
             let plain_from = (FADE as i64).max(fi);
-            if e0 >= plain_from && e0 + len as i64 <= len_f - fo {
-                // The whole run is past the fades: one gain.
-                let g = r.gain;
-                tk.add_into(pool, r.take, r.src + e0, dst, &|_| g);
-            } else {
-                tk.add_into(pool, r.take, r.src + e0, dst, &|j| gain_at(e0 + j as i64));
+            // The whole run past the fades: one gain.
+            let plain = e0 >= plain_from && e0 + len as i64 <= len_f - fo;
+            let (g, k) = (r.gain, r.src + e0);
+            let missed = match tk.store {
+                Store::File { gen } => {
+                    let p = player.as_mut();
+                    if plain {
+                        tk.add_from_file(p, r.take, gen, k, dst, reads, &|_| g)
+                    } else {
+                        let gain = |j: usize| gain_at(e0 + j as i64);
+                        tk.add_from_file(p, r.take, gen, k, dst, reads, &gain)
+                    }
+                }
+                Store::Pool | Store::Moving { .. } => {
+                    if plain {
+                        tk.add_into(pool, r.take, k, dst, &|_| g);
+                    } else {
+                        tk.add_into(pool, r.take, k, dst, &|j| gain_at(e0 + j as i64));
+                    }
+                    0
+                }
+            };
+            if missed > 0 {
+                let m = &mut takes[r.take as usize];
+                m.missed += missed;
+                m.miss_tick = tick0;
+                stats.missed += missed;
             }
         }
     }

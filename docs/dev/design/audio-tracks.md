@@ -66,7 +66,7 @@ All takes share one pool of samples, asked for once in `AudioTracks::new(rate, s
 - `memory()` is the gauge (`used`, `capacity`, in samples).
 - **Waveforms.** The pool keeps the lowest and highest sample of every block of 256 samples (`PEAK_BLOCK`) as audio is recorded or loaded. `peaks(id, from, to)` reads the table for whole blocks, so a screen column covering a second of audio costs about 170 reads instead of 44,100. It works while a take records, up to what has been written, and doesn't allocate. A chunk is whole blocks, so a block never mixes two takes. The host gives the screen waveforms (`wave`, below).
 
-The pool is the whole limit, as a tape that ends. Each take also goes to a file of its own as it records ([Recording to files](#recording-to-files-phase-3a)); playing takes from their files, with the pool as a cache in front of them, is phase 3b.
+The pool is the whole limit, as a tape that ends. Each take also goes to a file of its own as it records ([Recording to files](#recording-to-files-phase-3a)), and with the stream layer's player a take can play from its file instead, its pool memory freed ([Playing from files](#playing-from-files-phase-3b)).
 
 ## Saved with the project
 
@@ -151,6 +151,26 @@ How big the buffer must be depends on the stick, so `mpfree-disktest` measures i
 - **Reading only:** `mpfree-disktest --read-only` reads files already on partition 4 and writes nothing, with many paced streams and the tail of the read times; the streaming survey runs with it. Both are step D0 and D1 of [disk streaming](disk-streaming.md#p0-the-measuring-tools).
 - **On a desktop:** `mpfree-disktest --desktop-test DIR [--quick]`. Tests: `tests/disktest.rs` (a quick run leaves nothing, a folder holding other files is left alone, a leftover folder of its own is cleared, no run off the stick without the flag) and `tools/mpc-one/tests/test_host_disktest_mpc.py` (against a fake test build under BusyBox).
 
+## Playing from files (phase 3b)
+
+Phase 3b plays takes from their files through the [stream layer](disk-streaming.md)'s cache, so the pool only has to hold what is recording. It is built a step at a time ([plan](https://claude.ai/artifact/QTRWuX9CrPdVRdf4A5e1HX), "Build order for 3b"); streaming stays off unless the Dev switch (step 3) turns it on, and on the MPC until the stick tests have run with Jay's go.
+
+**Step 1, the engine** ([`lib.rs`](../../../rust/mpfree-audiotracks/src/lib.rs)):
+
+- **The tracks own the player.** `stream(Some(player))` gives the tracks the stream layer's sound-thread side (`mpfree_stream::player::Player`, made off the audio thread with every buffer it will use; its coordinator runs elsewhere), and gives back the one before, to be dropped off the audio thread. Each period begins and ends the player's period around the tracks' own.
+- **Where a take's audio is.** In the pool, moving, or its file. A take's stream source is its id (`MAX_TAKES` is the layer's `MAX_SOURCES`). The readers that copy out of the pool (`read_take`, `peaks`, `sample`, `take_wav`) give None for a take on its file: the host reads its file instead (step 2).
+- **One read path.** A region chooses the store by its take: the pool, or `Player::read` into a run's buffer, mixed through the same gains, fades and crossfades. A frame not in the cache yet, or a take whose source isn't open at its generation with its channels and length, plays silence and is counted: `Stats::missed` for all takes, `missed(id)` a take at a time with the song tick of the latest, for the log and later the lanes and the status monitor.
+- **Telling the player where it plays.** After each period, each track names the region it plays (or the first one ahead) and the next one if that starts within `CUE_S` (4 s), through cursors `2 * track` and `2 * track + 1` by the region's parity, so a region keeps its cursor as it goes from next to playing: 16 cursors in all. The place is the take's frame there and the end of the region's crossfade. Stopped, the regions at the playhead are named, so Play finds their frames read. A track recording, or the tracks turned off, name nothing.
+- **The move to a file.** `Command::OnFile { take, rec, gen }` (the host, once the take's file is Saved and opened as its source) marks the take moving. It moves once its source is open at `gen` and `MOVE_S` (2 s) of every region it plays or is about to, from where it plays, is in the cache (`Player::covers`), or at once if none plays it, stopped or playing: then its pool memory goes back. So the move never plays silence. A file whose channels or length don't match the take keeps it in the pool, counted (`Stats::mismatched`), and its source is closed. `rec` guards against a take forgotten meanwhile, its id given to another.
+- **Opening a take as its file.** `add_file_take(&file, gen)` puts a saved take back as its source with nothing copied in and no pool memory taken (the host opens and checks the file first). It plays once the player has the source open.
+- **Closing.** A take on (or moving to) its file that is forgotten or cleared asks the host to close its source (`Io::Close`).
+
+**Tests** (`tests/stream.rs`, with the layer's coordinator reading real files on a stick that answers each read a set number of periods late): takes move to their files half a bar into the song, on a stick a quarter of a second slow, and not one sample of the song changes, with the pool then empty; a move waits, stopped at bar 1, until the frames there have come; saved takes opened as their files play exactly as their copies in memory; frames a stick never brings play silence and every one is counted, a take at a time; a file a frame short keeps its take in memory and is closed; forgetting and clearing close the sources; and 120 generated edits (comps, splits, erases, moves, gains, fades, undo and redo, three seeds) play the same from the files as from memory, every half bar compared. `tests/no_alloc.rs` plays from files under the counting allocator: a move while the song plays, frames missed, the player taken away and given back, a clear, and a take opened as its file.
+
+**Cost.** With no player the tracks skip all of it: the three audio tracks bench cases rose about 1 % (44,735 instructions a block for 8 playing comped takes). A bench case playing from files waits for a way to feed the cache without writing files, since the bench also runs on the MPC.
+
+**Not yet in step 1:** a stick slower than the gap between two short regions makes the third region's start late, since only two regions a track are read ahead. Holding every region's start in the cache answers that (step 4, heads).
+
 ## In the pad player
 
 [`rust/mpfree-app/src/audiotracks.rs`](../../../rust/mpfree-app/src/audiotracks.rs) holds `TrackHost`, which owns the `AudioHost` in the app's audio loop.
@@ -228,7 +248,7 @@ The plan keeps recordings, clips, tracks and players apart: a recording is sound
 
 ## Not built yet
 
-- Playing takes from their files (phase 3b): the stream layer's player and cache, sized by its budget, with the pool as the cache in front of the files.
+- Playing takes from their files, steps 2 to 5 of phase 3b: the host opening the files and reading them for saves, fits and waveforms; the Dev switch and the cache size from the memory setting; region starts held in the cache, unused files cleared, outside files and their own rates; and takes longer than memory.
 - The take states on the lanes ("Unsaved: N s", At risk, Stopped) wait for the layout spec; until then they go to the log, and the status monitor will count them.
 - Clearing out files in a project's `samples/` that no save names any more. Takes never saved in a project are not deleted: the next start moves them into Recordings.
 - Fitting takes on its own when the tempo changes. The host fits one take when asked; deciding when to ask is the app's call.

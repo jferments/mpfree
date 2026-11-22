@@ -953,6 +953,9 @@ impl AudioHost {
                         self.tracks.written(take);
                     }
                 }
+                // The host opens no stream sources yet (the audio tracks
+                // rethink, phase 3b step 2), so it has none to close.
+                Io::Close { .. } => {}
             }
         }
         let mut budget = COPY_SAMPLES;

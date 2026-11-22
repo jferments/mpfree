@@ -187,7 +187,7 @@ Both run on the test build (MPFree's system on the stick, port 2222) through [`t
 
 ## P0.5: the old engine's fault fixes
 
-The fault tests were written first and failed against the old engine; these changes make them pass. The audio tracks' phase 3a (22 Nov) then removed the old engine's streaming whole, with these tests: its takes record through `mpfree-stream`'s writer ([audio-tracks.md](audio-tracks.md#recording-to-files-phase-3a)), and play from their files in phase 3b. What follows is the record of P0.5.
+The fault tests were written first and failed against the old engine; these changes make them pass. The audio tracks' phase 3a (22 Nov) then removed the old engine's streaming whole, with these tests: its takes record through `mpfree-stream`'s writer ([audio-tracks.md](audio-tracks.md#recording-to-files-phase-3a)), and play from their files in phase 3b, whose first step, the engine reading takes through the layer's player, is built ([audio-tracks.md](audio-tracks.md#playing-from-files-phase-3b)). What follows is the record of P0.5.
 
 - **Short reads (finding 2).** A chunk that comes back shorter than the take's audio there is counted (`Stats::short_reads`), never played, and asked for again when next wanted. A failed read is too, as before.
 - **Failed writes (finding 3).** A failed write is asked for again (`Io::Rewrite`, always into the take's own file, never a new one, even for chunk 0), and the file finished again once the take is recorded; a failed finish is tried again too. After `WRITE_TRIES` (3) tries, or when a request is lost to a full queue, the take is **at risk**: its unwritten chunks stay dirty in memory, so it still plays and nothing else takes their room.
