@@ -175,7 +175,7 @@ impl Widget for HistoryPanel {
             let after = k > self.now;
             cx.canvas.fill_round_rect(
                 sr,
-                10,
+                t.round(10),
                 if now {
                     t.raised
                 } else {
@@ -183,7 +183,7 @@ impl Widget for HistoryPanel {
                 },
             );
             if k == self.picked {
-                cx.canvas.stroke_round_rect(sr, 10, 3, t.accent);
+                cx.canvas.stroke_round_rect(sr, t.round(10), 3, t.accent);
             }
             let ink = if after { t.text_faint } else { t.text };
             let label = Rect::new(sr.x + 18, sr.y, sr.w - 150, sr.h);
@@ -212,7 +212,7 @@ impl Widget for HistoryPanel {
             );
         }
         let close = HistoryPanel::close_rect(r);
-        cx.canvas.fill_round_rect(close, 12, t.raised);
+        cx.canvas.fill_round_rect(close, t.round(12), t.raised);
         cx.text(
             FontId::Bold,
             t.size_title,

@@ -1184,7 +1184,7 @@ impl ChainView {
         if let (Some(b), Some(l)) = (ll.off, listens) {
             let lit = !l.listening;
             cx.canvas
-                .fill_round_rect(b, 10, if lit { t.accent } else { t.raised });
+                .fill_round_rect(b, t.round(10), if lit { t.accent } else { t.raised });
             let (name, about) = match l.listens.row {
                 mpfree_fx::sidechain::Row::Source => ("Tempo", "ducks on the beat"),
                 _ => ("Off", "listens to its own track"),
@@ -1217,7 +1217,7 @@ impl ChainView {
             let on = i == list.group;
             cx.canvas.fill_round_rect(
                 *b,
-                10,
+                t.round(10),
                 if on {
                     t.raised
                 } else {
@@ -1280,7 +1280,7 @@ impl ChainView {
             }
             if let (Some(b), false) = (ll.now, sc.now.is_empty()) {
                 cx.canvas
-                    .fill_round_rect(b, 10, t.surface.mix(t.raised, 0.5));
+                    .fill_round_rect(b, t.round(10), t.surface.mix(t.raised, 0.5));
                 let tone = sc.current.map_or(t.text_faint, |s| strip_color(&t, s));
                 cx.canvas
                     .fill_round_rect(Rect::new(b.x + 10, b.y + 9, 4, b.h - 18), 2, tone);
@@ -1294,7 +1294,7 @@ impl ChainView {
                 );
             }
         }
-        cx.canvas.fill_round_rect(ll.back, 10, t.raised);
+        cx.canvas.fill_round_rect(ll.back, t.round(10), t.raised);
         cx.text(
             FontId::Bold,
             t.size_body,
@@ -1311,7 +1311,7 @@ impl ChainView {
                 (ll.next, ">", self.list_first + page < n),
             ] {
                 cx.canvas
-                    .fill_round_rect(b, 10, if live { t.raised } else { t.surface });
+                    .fill_round_rect(b, t.round(10), if live { t.raised } else { t.surface });
                 cx.text(
                     FontId::Bold,
                     t.size_title,
@@ -1330,7 +1330,7 @@ impl ChainView {
             let refused = p.refused.is_some();
             cx.canvas.fill_round_rect(
                 tile,
-                10,
+                t.round(10),
                 if refused {
                     t.surface.mix(t.raised, 0.35)
                 } else {
@@ -1342,7 +1342,7 @@ impl ChainView {
                 None => p.strip == self.state.strip,
             };
             if current {
-                cx.canvas.stroke_round_rect(tile, 10, 2, t.accent);
+                cx.canvas.stroke_round_rect(tile, t.round(10), 2, t.accent);
             }
             cx.canvas.fill_round_rect(
                 Rect::new(tile.x, tile.y + 12, 4, tile.h - 24),
@@ -2318,7 +2318,7 @@ fn paint_slot(
 ) {
     cx.canvas.fill_round_rect(
         row,
-        10,
+        t.round(10),
         if sel {
             t.raised
         } else {
@@ -2333,7 +2333,7 @@ fn paint_slot(
     let badge = Rect::new(row.x + 10, row.y + (row.h - 24) / 2, 24, 24);
     cx.canvas.fill_round_rect(
         badge,
-        6,
+        t.round(6),
         if s.on {
             t.accent.mix(t.surface, 0.55)
         } else {
@@ -3173,7 +3173,7 @@ impl ChainView {
             let on = i == st.scope;
             cx.canvas.fill_round_rect(
                 *r,
-                10,
+                t.round(10),
                 if on {
                     t.raised
                 } else {
@@ -3350,7 +3350,7 @@ impl ChainView {
         ]) {
             cx.canvas.fill_round_rect(
                 *b,
-                10,
+                t.round(10),
                 if ok {
                     t.raised
                 } else {
@@ -3698,7 +3698,7 @@ impl ChainView {
         for (b, label) in [(l.add_lfo, "+ LFO"), (l.add_follower, "+ Follower")] {
             cx.canvas.fill_round_rect(
                 b,
-                10,
+                t.round(10),
                 if takes {
                     t.raised
                 } else {

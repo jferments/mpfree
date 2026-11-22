@@ -892,7 +892,9 @@ fn every_sample_takes_its_colours_from_the_theme() {
     // would its Q-Link colours anywhere but on the Q-Link badges and cards
     // (the knobs keep their colours under every theme). Edges of shapes
     // blend, so only exact matches count.
-    let text = [TEXT, TEXT_DIM, TEXT_FAINT];
+    let d = Theme::dark();
+    let text: Vec<Color> = [TEXT, TEXT_DIM, TEXT_FAINT].map(|p| p.on(&d)).to_vec();
+    let qlinks: Vec<Color> = QLINK_COLORS.map(|p| p.on(&d)).to_vec();
     let found = |c: &SoftCanvas, r: Rect, fixed: &[Color]| {
         let mut n = 0;
         for y in r.y..r.bottom() {
@@ -905,7 +907,7 @@ fn every_sample_takes_its_colours_from_the_theme() {
         }
         n
     };
-    let all: Vec<Color> = QLINK_COLORS.into_iter().chain(text).collect();
+    let all: Vec<Color> = qlinks.iter().chain(&text).copied().collect();
     for name in ["console", "synthwave", "spaceship"] {
         for mut s in sample::samples(Fonts::embedded).unwrap() {
             s.ui.set_theme(Theme::builtin(name).unwrap());
@@ -925,7 +927,7 @@ fn every_sample_takes_its_colours_from_the_theme() {
             let r = s.ui.rect_of(TILES).unwrap();
             for g in view(&s.ui).geometry(r) {
                 if let Some(d) = g.drawing {
-                    let n = found(&c, d, &QLINK_COLORS);
+                    let n = found(&c, d, &qlinks);
                     assert_eq!(n, 0, "{name} {}: a drawing has Q-Link colours", s.name);
                 }
             }

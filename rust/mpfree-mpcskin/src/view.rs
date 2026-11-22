@@ -7,6 +7,7 @@
 //! opens) are 1280 x 800, the whole screen.
 
 use crate::handle::{Env, Handle, Params, Target, Val};
+use crate::look::{KnobInk, Look, Rescue};
 use crate::model::{increment, Handler};
 use crate::model::{
     Action, Component, Drag, Entry, Fill, HwFocus, KnobKind, KnobOverlay, LabelKind, OnAction,
@@ -15,7 +16,7 @@ use crate::model::{
 use crate::paint::{self, color, fill, outline, px, text, Fonts, Images};
 use crate::qlinks::{pick, variants, QLinks, TabKnobs};
 use mpfree_ui::shape::Shape;
-use mpfree_ui::{Canvas, Color, Rect, SoftCanvas};
+use mpfree_ui::{Canvas, Color, Rect, SoftCanvas, Theme};
 use std::collections::HashMap;
 use std::f32::consts::PI;
 use std::path::{Path, PathBuf};
@@ -536,6 +537,15 @@ pub struct View {
     tick: u64,
     /// The menu overlay's first row shown.
     menu_scroll: usize,
+    /// MPFree's pop-ups' colours, from the theme ([`View::set_theme`]).
+    look: Look,
+    /// The colours the theme gave the pop-ups that had to be moved to read.
+    rescues: Vec<Rescue>,
+    /// Times the Q-Link bank's frame found the art under it too mid-toned
+    /// for either theme ink and drew two-tone, and where it last did (tab,
+    /// bank), so a redraw of the same place isn't counted again.
+    two_tone: u64,
+    two_tone_at: Option<(usize, usize)>,
 }
 
 impl View {
@@ -557,7 +567,27 @@ impl View {
             images: Images::new(&root),
             tick: 0,
             menu_scroll: 0,
+            look: Look::default(),
+            rescues: Vec::new(),
+            two_tone: 0,
+            two_tone_at: None,
         }
+    }
+
+    /// Colours MPFree's own pop-ups (the knob editor and the list of
+    /// choices) and its marks on the art in theme `t`. Returns the colours
+    /// the theme gave that had to be moved to read, for the log.
+    pub fn set_theme(&mut self, t: &Theme) -> &[Rescue] {
+        let (look, rescues) = Look::from_theme(t);
+        self.look = look;
+        self.rescues = rescues;
+        &self.rescues
+    }
+
+    /// The theme's colours that were moved to read, and the two-tone marks
+    /// drawn: every rescue so far, for the Debug page.
+    pub fn rescue_count(&self) -> u64 {
+        self.rescues.len() as u64 + self.two_tone
     }
 
     /// The tabs: name, function key (0-based) and sub-tab (0-based).
@@ -737,7 +767,27 @@ impl View {
             if let Some(r) = t.qlink_bounds.get(self.bank) {
                 if r.w > 2.0 && r.h > 2.0 {
                     let r = px(*r);
-                    c.stroke_round_rect(r, 8, 3, Color::rgb(0xFFFFFF).with_alpha(170));
+                    let band = [
+                        Rect::new(r.x, r.y, r.w, 3),
+                        Rect::new(r.x, r.bottom() - 3, r.w, 3),
+                        Rect::new(r.x, r.y + 3, 3, r.h - 6),
+                        Rect::new(r.right() - 3, r.y + 3, 3, r.h - 6),
+                    ];
+                    let under = average(c, &band);
+                    match self.look.mark(under) {
+                        Some(ink) => c.stroke_round_rect(r, 8, 3, ink),
+                        None => {
+                            // Too mid-toned for either ink: an inner line
+                            // in one on an outer one in the other.
+                            let [a, b] = self.look.inks;
+                            c.stroke_round_rect(r, 8, 3, b);
+                            c.stroke_round_rect(r.inset(1), 7, 1, a);
+                            if self.two_tone_at != Some((self.tab, self.bank)) {
+                                self.two_tone_at = Some((self.tab, self.bank));
+                                self.two_tone += 1;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -847,7 +897,16 @@ impl View {
                     text(c, &mut self.fonts, style, r, &v.text, clip);
                 }
                 KnobKind::Generic { label, bipolar } => {
-                    generic_knob(c, &mut self.fonts, r, clip, v, *label, *bipolar);
+                    generic_knob(
+                        c,
+                        &mut self.fonts,
+                        r,
+                        clip,
+                        v,
+                        *label,
+                        *bipolar,
+                        KnobInk::AKAI,
+                    );
                 }
                 KnobKind::Rotating {
                     foreground,
@@ -1126,27 +1185,54 @@ impl View {
         }
     }
 
+    /// The screen dimmed and the pop-up's solid panel, its edge standing
+    /// out from the dimmed skin round it.
+    fn overlay_frame(&self, c: &mut SoftCanvas, r: RectF) -> RectF {
+        let look = self.look;
+        fill(c, r, 0xC000_0000);
+        let panel = overlay_panel(r);
+        let p = px(panel);
+        let ring = [
+            Rect::new(p.x, p.y - 6, p.w, 4),
+            Rect::new(p.x, p.bottom() + 2, p.w, 4),
+            Rect::new(p.x - 6, p.y, 4, p.h),
+            Rect::new(p.right() + 2, p.y, 4, p.h),
+        ];
+        let edge = look.edge(average(c, &ring));
+        c.fill_round_rect(p, look.radius, look.panel);
+        c.stroke_round_rect(p, look.radius, 2, edge);
+        panel
+    }
+
+    /// MPFree's own text in a pop-up: the UI font, in `colour`.
+    fn overlay_text(
+        height: f32,
+        bold: bool,
+        colour: Color,
+        h_align: crate::model::HAlign,
+    ) -> crate::model::TextStyle {
+        crate::model::TextStyle {
+            font: "Inter".into(),
+            style: if bold { "SemiBold" } else { "Regular" }.into(),
+            height,
+            colour: 0xFF00_0000 | colour.xrgb(),
+            h_align,
+            v_align: crate::model::VAlign::Centre,
+            case: crate::model::Case::Original,
+        }
+    }
+
     fn knob_overlay(&mut self, c: &mut SoftCanvas, r: RectF, v: &Val, bipolar: bool) {
         // MPFree's own large value editor: the screen dimmed, a panel with
         // the parameter's name, a big knob and its value.
-        fill(c, r, 0xC000_0000);
-        let panel = overlay_panel(r);
-        c.fill_round_rect(px(panel), 18, Color::rgb(0x1E1D1E));
-        c.stroke_round_rect(px(panel), 18, 2, Color::rgb(0x3A3A3A));
-        let title = crate::model::TextStyle {
-            font: "Titillium Web".into(),
-            style: "SemiBold".into(),
-            height: 40.0,
-            colour: 0xFFFF_FFFF,
-            h_align: crate::model::HAlign::Centre,
-            v_align: crate::model::VAlign::Centre,
-            case: crate::model::Case::Upper,
-        };
+        let look = self.look;
+        let panel = self.overlay_frame(c, r);
+        let centre = crate::model::HAlign::Centre;
         let full = px(r);
         text(
             c,
             &mut self.fonts,
-            &title,
+            &Self::overlay_text(34.0, true, look.text, centre),
             RectF::new(panel.x, panel.y + 16.0, panel.w, 56.0),
             &v.name,
             full,
@@ -1157,17 +1243,11 @@ impl View {
             300.0,
             300.0,
         );
-        generic_knob(c, &mut self.fonts, k, full, v, false, bipolar);
-        let value = crate::model::TextStyle {
-            height: 52.0,
-            case: crate::model::Case::Original,
-            style: "Bold".into(),
-            ..title
-        };
+        generic_knob(c, &mut self.fonts, k, full, v, false, bipolar, look.knob);
         text(
             c,
             &mut self.fonts,
-            &value,
+            &Self::overlay_text(46.0, true, look.text, centre),
             RectF::new(panel.x, panel.y + panel.h - 96.0, panel.w, 72.0),
             &v.text,
             full,
@@ -1175,35 +1255,27 @@ impl View {
     }
 
     fn menu_overlay(&mut self, c: &mut SoftCanvas, r: RectF, v: &Val, numbers: bool) {
-        fill(c, r, 0xC000_0000);
-        let panel = overlay_panel(r);
-        c.fill_round_rect(px(panel), 18, Color::rgb(0x1E1D1E));
+        let look = self.look;
+        let panel = self.overlay_frame(c, r);
         let full = px(r);
         let names = menu_names(v);
         let cur = v.steps.map(|n| v.step(n) as usize);
         let rows = menu_rows(panel, names.len(), self.menu_scroll);
-        let style = crate::model::TextStyle {
-            font: "Titillium Web".into(),
-            style: "SemiBold".into(),
-            height: 34.0,
-            colour: 0xFFFF_FFFF,
-            h_align: crate::model::HAlign::Left,
-            v_align: crate::model::VAlign::Centre,
-            case: crate::model::Case::Original,
-        };
         for (i, row) in rows {
-            if Some(i) == cur {
-                c.fill_round_rect(px(row), 10, Color::rgb(0xD31145));
+            let on = Some(i) == cur;
+            if on {
+                c.fill_round_rect(px(row), look.row_radius, look.row);
             }
             let label = if numbers {
                 format!("{}  {}", i + 1, names[i])
             } else {
                 names[i].clone()
             };
+            let ink = if on { look.row_text } else { look.text };
             text(
                 c,
                 &mut self.fonts,
-                &style,
+                &Self::overlay_text(30.0, on, ink, crate::model::HAlign::Left),
                 RectF::new(row.x + 20.0, row.y, row.w - 40.0, row.h),
                 &label,
                 full,
@@ -1917,6 +1989,7 @@ fn rotated(c: &mut SoftCanvas, p: &crate::png::Picture, r: RectF, angle: f32, cl
 /// MPFree's knob for the generic knob types and the knob overlay: a 270
 /// degree track, the value's arc, a pointer, and (with `label`) the value
 /// under it.
+#[allow(clippy::too_many_arguments)]
 fn generic_knob(
     c: &mut SoftCanvas,
     fonts: &mut Fonts,
@@ -1925,6 +1998,7 @@ fn generic_knob(
     v: &Val,
     label: bool,
     bipolar: bool,
+    ink: KnobInk,
 ) {
     let text_h = if label {
         (r.h * 0.22).clamp(12.0, 40.0)
@@ -1945,7 +2019,7 @@ fn generic_knob(
     with_clip(c, clip, |c| {
         let mut track = Shape::new(px(r));
         track.arc(cx, cy, rad, a0, a1, width);
-        c.blend_shape(&track, Color::rgb(0x3A3A3A));
+        c.blend_shape(&track, ink.track);
         let (from, to) = if bipolar {
             let mid = (a0 + a1) / 2.0;
             (mid.min(at), mid.max(at))
@@ -1955,11 +2029,11 @@ fn generic_knob(
         if to > from + 1e-3 {
             let mut lit = Shape::new(px(r));
             lit.arc(cx, cy, rad, from, to, width);
-            c.blend_shape(&lit, Color::rgb(0xD31145));
+            c.blend_shape(&lit, ink.lit);
         }
         let mut cap = Shape::new(px(r));
         cap.disc(cx, cy, rad - width * 1.5);
-        c.blend_shape(&cap, Color::rgb(0x2A2A2A));
+        c.blend_shape(&cap, ink.cap);
         let mut ptr = Shape::new(px(r));
         let (ps, pc) = at.sin_cos();
         ptr.segment(
@@ -1967,7 +2041,7 @@ fn generic_knob(
             (cx + pc * (rad - width * 2.0), cy + ps * (rad - width * 2.0)),
             width * 0.7,
         );
-        c.blend_shape(&ptr, Color::rgb(0xFFFFFF));
+        c.blend_shape(&ptr, ink.pointer);
     });
     if label {
         let style = crate::model::TextStyle {
@@ -1990,26 +2064,61 @@ fn generic_knob(
     }
 }
 
-/// The overlays' panel in the middle of the screen.
+/// The overlays' panel: in the middle of the part of the MPC's screen
+/// MPFree shows (the tab's area, under its own top bar), so none of it is
+/// hidden.
 fn overlay_panel(r: RectF) -> RectF {
-    let w = (r.w * 0.5).min(640.0);
-    let h = (r.h * 0.75).min(600.0);
-    RectF::new(r.x + (r.w - w) / 2.0, r.y + (r.h - h) / 2.0, w, h)
+    // `r` in the MPC's screen coordinates, cut to the tab's area.
+    let (top, bottom) = (r.y.max(TAB_TOP), (r.y + r.h).min(TAB_TOP + TAB_H));
+    let area = RectF::new(r.x, top, r.w, (bottom - top).max(0.0));
+    let w = (area.w * 0.5).min(640.0);
+    let h = (area.h - 28.0).min(600.0);
+    RectF::new(
+        area.x + (area.w - w) / 2.0,
+        area.y + (area.h - h) / 2.0,
+        w,
+        h,
+    )
+}
+
+/// The average colour of the pixels in `rects` (inside the canvas).
+fn average(c: &SoftCanvas, rects: &[Rect]) -> Color {
+    let screen = Rect::new(0, 0, c.width(), c.height());
+    let mut sum = [0u64; 4];
+    for r in rects {
+        let r = r.intersect(screen);
+        for y in r.y..r.bottom() {
+            for x in r.x..r.right() {
+                let p = c.pixel(x, y);
+                sum[0] += p.r as u64;
+                sum[1] += p.g as u64;
+                sum[2] += p.b as u64;
+                sum[3] += 1;
+            }
+        }
+    }
+    let n = sum[3].max(1);
+    Color {
+        r: (sum[0] / n) as u8,
+        g: (sum[1] / n) as u8,
+        b: (sum[2] / n) as u8,
+        a: 255,
+    }
 }
 
 fn menu_names(v: &Val) -> Vec<String> {
     match v.steps {
         Some(n) if n > 1 => {
-            // The replacement strings, or the step numbers.
-            let mut names = Vec::new();
-            for i in 0..n {
-                names.push(if Some(i) == v.steps.map(|n| v.step(n)) {
-                    v.text.clone()
-                } else {
-                    (i + 1).to_string()
-                });
-            }
-            names
+            // The replacement strings, else the step numbers (with the
+            // current one's text).
+            let cur = v.step(n);
+            (0..n)
+                .map(|i| match v.names.get(i as usize) {
+                    Some(name) if v.names.len() == n as usize => name.clone(),
+                    _ if i == cur => v.text.clone(),
+                    _ => (i + 1).to_string(),
+                })
+                .collect()
         }
         _ => vec![v.text.clone()],
     }
@@ -2219,5 +2328,129 @@ mod tests {
         // It stops at the last one.
         v.focus_step(&p, 5);
         assert_eq!(sets(&v.wheel(&p, 1, false)), [(1, 0.51)]);
+    }
+
+    /// The test skin with slot b's double tap opening the list of choices
+    /// for Parameter 1 (six named ones), its slots' backgrounds `slot`.
+    fn menu_view(slot: &str) -> View {
+        let text = SKIN
+            .replace(
+                r#""replacementStrings": []"#,
+                r#""replacementStrings": [{"key": "Parameter 1", "value": ["Saw", "Square", "Triangle", "Sine", "Noise", "Supersaw"]}]"#,
+            )
+            .replace(
+                r#""handler": "Show Overlay", "handleName": "Data", "additionalData": "knob overlay"}"#,
+                r#""handler": "Show Overlay", "handleName": "Data", "additionalData": "menu overlay"}"#,
+            )
+            .replace("ff101010", slot)
+            .replace("ff303030", slot)
+            .replace("ff000000", slot);
+        let j = json::parse(&text).unwrap();
+        let skin = Skin::from_json(&j, Path::new("/nonexistent/Plugin Skins")).unwrap();
+        View::new(skin, QLinks::sequential(3))
+    }
+
+    fn open_b(v: &mut View, p: &Vals) {
+        for ms in [0, 100] {
+            v.touch(
+                p,
+                Touch::Down {
+                    x: 500.0,
+                    y: 200.0,
+                    ms,
+                },
+            );
+            v.touch(p, Touch::Up { x: 500.0, y: 200.0 });
+        }
+        assert!(v.overlay_open());
+    }
+
+    #[test]
+    fn the_pop_up_is_whole_inside_the_part_of_the_screen_mpfree_shows() {
+        let p = overlay_panel(RectF::new(0.0, 0.0, TAB_W, SCREEN_H));
+        assert!(p.y >= TAB_TOP && p.y + p.h <= TAB_TOP + TAB_H, "{p:?}");
+        assert!(p.h >= 500.0, "{p:?}");
+    }
+
+    #[test]
+    fn the_list_names_every_choice_not_only_the_current_one() {
+        let mut v = menu_view("ff101010");
+        let p = Vals(vec![0.5, 0.4, 0.0]);
+        open_b(&mut v, &p);
+        let names = menu_names(&v.val(&p, "Parameter 1"));
+        assert_eq!(
+            names,
+            ["Saw", "Square", "Triangle", "Sine", "Noise", "Supersaw"]
+        );
+    }
+
+    /// The pop-up over a skin as the app draws it: the tab at its place on
+    /// the MPC's screen, the overlay over the whole screen.
+    fn screen(v: &mut View, p: &Vals) -> SoftCanvas {
+        let mut tab = SoftCanvas::new(TAB_W as i32, TAB_H as i32);
+        v.draw(p, &mut tab, Rect::new(0, 0, TAB_W as i32, TAB_H as i32));
+        let mut c = SoftCanvas::new(TAB_W as i32, SCREEN_H as i32);
+        let at = (TAB_TOP as i32 * TAB_W as i32) as usize;
+        c.px[at..at + tab.px.len()].copy_from_slice(&tab.px);
+        v.draw_overlay(p, &mut c);
+        c
+    }
+
+    #[test]
+    fn pop_ups_follow_the_theme_and_read_over_bright_and_dark_skins() {
+        use mpfree_ui::theme::contrast;
+        let torture = Theme::parse(
+            "bg = #777777\nsurface = #7A7A7A80\nraised = #7C7C7C\noutline = #787878\n\
+             text = #7B7B7B\ntext_dim = #7B7B7B\ntext_faint = #7B7B7B\naccent = #797979",
+        )
+        .unwrap();
+        let mut themes: Vec<Theme> = mpfree_ui::theme::BUILTIN
+            .iter()
+            .map(|n| Theme::builtin(n).unwrap())
+            .collect();
+        themes.push(torture);
+        let p = Vals(vec![0.5, 0.4, 0.0]);
+        for t in &themes {
+            for slot in ["ff0a0a0a", "fff4f4f4"] {
+                let mut v = menu_view(slot);
+                let rescued = v.set_theme(t).len();
+                assert_eq!(v.rescue_count(), rescued as u64);
+                open_b(&mut v, &p);
+                let c = screen(&mut v, &p);
+                let panel = px(overlay_panel(RectF::new(0.0, 0.0, TAB_W, SCREEN_H)));
+                let look = v.look;
+                // The panel is solid and the theme's.
+                let mid = c.pixel(panel.x + panel.w / 2, panel.bottom() - 20);
+                assert_eq!(mid.with_alpha(255), look.panel, "{} {slot}", t.name);
+                // Its edge stands out from the dimmed skin round it.
+                let outside = c.pixel(panel.x + panel.w / 2, panel.y - 4);
+                let edge = c.pixel(panel.x + panel.w / 2, panel.y);
+                assert!(
+                    contrast(edge, outside) >= 2.9 || contrast(mid, outside) >= 3.0,
+                    "{} {slot}: edge {edge:?} on {outside:?}",
+                    t.name
+                );
+                // The chosen row is the theme's, its text reads.
+                assert!(contrast(look.row_text, look.row) >= 4.5, "{}", t.name);
+                assert!(contrast(look.text, look.panel) >= 4.5, "{}", t.name);
+            }
+        }
+    }
+
+    #[test]
+    fn the_q_link_frame_reads_on_bright_and_dark_art() {
+        use mpfree_ui::theme::contrast;
+        let p = Vals(vec![0.5, 0.4, 0.0]);
+        for slot in ["ff0a0a0a", "fff4f4f4", "ff6c6c6c"] {
+            let mut v = menu_view(slot);
+            let mut c = SoftCanvas::new(TAB_W as i32, TAB_H as i32);
+            v.draw(&p, &mut c, Rect::new(0, 0, TAB_W as i32, TAB_H as i32));
+            // The frame round the bank (100 100 500 200): its top line's
+            // middle against the art just inside it.
+            let line = c.pixel(350, 101);
+            let art = c.pixel(350, 110);
+            assert!(contrast(line, art) >= 2.9, "{slot}: {line:?} on {art:?}");
+            assert_eq!(v.rescue_count(), u64::from(slot == "ff6c6c6c"), "{slot}");
+        }
     }
 }

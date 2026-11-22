@@ -27,10 +27,9 @@
 use mpfree_sampler::grain_presets;
 use mpfree_sampler::model::{GrainFilterKind, GrainQuality, MotionTarget, Region};
 use mpfree_ui::wave::{GrainSpan, Marker, MarkerKind, TabSide};
-use mpfree_ui::Color;
+use mpfree_ui::{Paint, Role};
 
 use crate::grain_tab::{self, size_ms_at, Row};
-use crate::grain_widgets::GRAIN_COLOR;
 use crate::panel::{Control, Item, Look, Panel, Section};
 use crate::widgets::Setting;
 
@@ -281,7 +280,7 @@ pub fn span(r: &Region, rate: u32, bpm: f64, spray_now: Option<f32>) -> GrainSpa
         len: grain.max(1),
         spray: (f64::from(spray) * len as f64).round() as u64,
         within: (r.start, r.end),
-        color: Color::rgb(GRAIN_COLOR),
+        color: Paint::from(Role::Grain),
     }
 }
 
@@ -289,7 +288,7 @@ pub fn span(r: &Region, rate: u32, bpm: f64, spray_now: Option<f32>) -> GrainSpa
 /// start, SIZE where the first one ends; GRAIN's tab sits left of its
 /// line and SIZE's right of it, so a short window keeps both clear.
 pub fn markers(s: &GrainSpan) -> [Marker; 2] {
-    let c = Color::rgb(GRAIN_COLOR);
+    let c = Paint::from(Role::Grain);
     [
         Marker::new(s.at, GRAIN_TAB, MarkerKind::Cue)
             .colored(c)

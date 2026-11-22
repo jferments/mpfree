@@ -25,7 +25,7 @@ use crate::looper_deck::{
 use crate::looper_page::LAYER_COLOURS;
 use crate::looper_tab::LoopAct;
 use crate::play_widgets::{paint_arm, ArmPill, ARM_PILL_W};
-use mpfree_ui::draw::{self, speaker};
+use mpfree_ui::draw::{self, speaker_on};
 use mpfree_ui::{Align, EventKind, FontId, PaintCx, Rect, Shape, Target, Touch, Widget};
 use std::cell::RefCell;
 
@@ -273,8 +273,8 @@ impl LoopRow {
             let chip = Rect::new(x, cy - CHIP_H / 2, w, CHIP_H);
             let colour = LAYER_COLOURS[k % LAYER_COLOURS.len()];
             let off = !l.heard;
-            cx.canvas
-                .fill_round_rect(chip, CHIP_H / 2, t.surface.mix(t.raised, 0.6));
+            let chip_fill = t.surface.mix(t.raised, 0.6);
+            cx.canvas.fill_round_rect(chip, CHIP_H / 2, chip_fill);
             cx.canvas.stroke_round_rect(chip, CHIP_H / 2, 1, t.outline);
             draw::dot(
                 cx,
@@ -291,12 +291,13 @@ impl LoopRow {
                 if off { t.text_faint } else { t.text },
                 &l.name,
             );
-            speaker(
+            speaker_on(
                 cx,
                 chip.right() - 18,
                 cy,
                 if l.muted { t.bad } else { t.text_dim },
                 l.muted,
+                chip_fill,
             );
             // The whole chip answers, from the row's top to below it.
             chips.push(Rect::new(chip.x, r.y, chip.w, chip.bottom() + 6 - r.y));
@@ -313,7 +314,7 @@ impl LoopRow {
         } else {
             (t.raised, t.text_faint)
         };
-        cx.canvas.fill_round_rect(b, 8, bg);
+        cx.canvas.fill_round_rect(b, t.round(8), bg);
         let icon = Rect::new(b.x + 12, b.y + b.h / 2 - 8, 16, 16);
         capture_icon(cx, icon, fg);
         cx.text(
@@ -350,11 +351,13 @@ impl LoopRow {
         cx.canvas
             .fill_rect(p.card.inset(-GAP / 2).intersect(body(r)), t.surface);
         cx.canvas
-            .fill_round_rect(p.card, 10, t.surface.mix(t.raised, 0.4));
+            .fill_round_rect(p.card, t.round(10), t.surface.mix(t.raised, 0.4));
         if look.picked {
-            cx.canvas.stroke_round_rect(p.card, 10, 2, t.accent);
+            cx.canvas
+                .stroke_round_rect(p.card, t.round(10), 2, t.accent);
         } else {
-            cx.canvas.stroke_round_rect(p.card, 10, 1, t.outline);
+            cx.canvas
+                .stroke_round_rect(p.card, t.round(10), 1, t.outline);
         }
         let mut s = Shape::new(Rect::new(p.name.x + 6, p.name.y + 6, 14, 14));
         s.disc(p.name.x as f32 + 14.0, p.name.y as f32 + 13.0, 4.0);
@@ -390,15 +393,15 @@ impl LoopRow {
             } else {
                 t.raised
             };
-            cx.canvas.fill_round_rect(p.mute, 8, b);
+            cx.canvas.fill_round_rect(p.mute, t.round(8), b);
             let (sx, sy) = (p.mute.x + p.mute.w / 2 + 2, p.mute.y + p.mute.h / 2);
-            speaker(cx, sx, sy, if muted { t.bad } else { t.text }, muted);
+            speaker_on(cx, sx, sy, if muted { t.bad } else { t.text }, muted, b);
             let (fill, ink) = if ch.solo {
                 (t.accent, t.on_accent)
             } else {
                 (t.raised, t.text_dim)
             };
-            cx.canvas.fill_round_rect(p.solo, 8, fill);
+            cx.canvas.fill_round_rect(p.solo, t.round(8), fill);
             cx.text(FontId::Bold, 14.0, p.solo, Align::Center, ink, "S");
         } else {
             // What an empty loop records from, beside its ring.

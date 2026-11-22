@@ -49,7 +49,7 @@ use mpfree_synth::{fm_params as fp, pressure as sp};
 use mpfree_ui::qlink::QLinkCard;
 use mpfree_ui::text::FontId;
 use mpfree_ui::widgets::{ListItem, ListView};
-use mpfree_ui::{Align, Color, EventKind, PaintCx, Rect, Touch, Ui, UiEvent, Widget};
+use mpfree_ui::{Align, Color, EventKind, Paint, PaintCx, Rect, Touch, Ui, UiEvent, Widget};
 
 /// Widget names the panel adds. The app's own are `header` and `hint`,
 /// and the Q-Link column ([`QLINK_COLUMN`]), which the app fills from
@@ -1196,7 +1196,7 @@ pub struct InstCard {
 impl InstCard {
     pub fn new() -> InstCard {
         InstCard {
-            swatch: QLINK_COLORS[1],
+            swatch: mpfree_ui::draw::GREEN,
             name: String::new(),
             detail: String::new(),
             open: false,
@@ -1366,7 +1366,7 @@ fn poly_cards(st: &SynthState, page: &str) -> Strip {
     let v = |id: u16| st.value(id);
     let (blue, green, amber) = (QLINK_COLORS[0], QLINK_COLORS[1], QLINK_COLORS[2]);
     let (white, grey) = (TEXT, TEXT_DIM);
-    let trace = |pts: Vec<(f32, f32)>, color: Color, fill: bool, dashed: bool| Trace {
+    let trace = |pts: Vec<(f32, f32)>, color: Paint, fill: bool, dashed: bool| Trace {
         pts,
         color,
         width: if dashed { 1.5 } else { 2.5 },
@@ -1488,7 +1488,7 @@ fn table_card(v: &impl visual::Values, o: usize) -> Card {
 }
 
 /// Drums' families' colours: a tuned body, noise over a body, metal.
-const FAMILY: [Color; 3] = [QLINK_COLORS[1], QLINK_COLORS[2], QLINK_COLORS[0]];
+const FAMILY: [Paint; 3] = [QLINK_COLORS[1], QLINK_COLORS[2], QLINK_COLORS[0]];
 
 /// Drums' four cards: the kit (a box per pad, the pad shown ringed), the
 /// hit and the pitch sweep of the pad shown (pad 1 on the Kit page), and
@@ -1542,7 +1542,7 @@ fn drum_cards(st: &SynthState, page: &str) -> Strip {
     );
     let secs = kv::hit_window(&shape);
     let [body, noise, click] = kv::hit_parts(&shape, secs);
-    let part = |pts: Vec<(f32, f32)>, color: Color, fill: bool| Trace {
+    let part = |pts: Vec<(f32, f32)>, color: Paint, fill: bool| Trace {
         pts,
         color,
         width: 2.0,
@@ -1768,13 +1768,13 @@ fn inst_cards(st: &SynthState, page: &str) -> Strip {
 }
 
 /// Carriers' colour, modulators' colour, and the text on both.
-const CARRIER: Color = QLINK_COLORS[1];
-const MODULATOR: Color = QLINK_COLORS[0];
-const ON_BOX: Color = ON_FILL;
-const LINE: Color = TEXT_DIM;
-const WHITE: Color = TEXT;
+const CARRIER: Paint = QLINK_COLORS[1];
+const MODULATOR: Paint = QLINK_COLORS[0];
+const ON_BOX: Paint = ON_FILL;
+const LINE: Paint = TEXT_DIM;
+const WHITE: Paint = TEXT;
 
-fn line(pts: Vec<(f32, f32)>, color: Color) -> Trace {
+fn line(pts: Vec<(f32, f32)>, color: Paint) -> Trace {
     Trace {
         pts,
         color,
@@ -1934,7 +1934,7 @@ fn fm_cards(st: &SynthState, page: &str) -> Strip {
 /// The algorithm card: the operators as boxes, those in `ring` ringed in
 /// their colour, a tap on a box opening its page. A tap elsewhere on the
 /// card opens the Algo page.
-fn algorithm_card(s: &mut Strip, st: &SynthState, ring: &[(usize, Color)], active: bool) {
+fn algorithm_card(s: &mut Strip, st: &SynthState, ring: &[(usize, Paint)], active: bool) {
     let v = |id: u16| st.value(id);
     let l = fv::algorithm_layout(st.value(fp::ALGORITHM) as usize);
     let fb = v(fp::FEEDBACK) > 0.0;
