@@ -278,7 +278,7 @@ impl Desk<'_> {
                     out.note(&format!("XY pad: plays {name}"));
                     fx.extend(app.set_xy_effect(e));
                 }
-                mix.play(p);
+                mix.play_screen(p);
                 let _ = tell_throw_said(mix, out);
             }
             // A lane's speaker: the pad muted on its track (step 10).

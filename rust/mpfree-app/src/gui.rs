@@ -2344,6 +2344,14 @@ pub struct Player {
     /// Actions that came from something other than a touch (a page change
     /// letting go of a pad, the wheel in the workspace), for the audio thread.
     outbox: Vec<FromUi>,
+    /// Let-gos and moves that found the queue to the audio thread full,
+    /// sent first on a later frame (waiting.rs).
+    waiting: crate::waiting::Waiting,
+    /// The XY pad's state for the audio thread, beside that queue
+    /// (xy_slot.rs), and the touch it is on.
+    xy_slot: Option<Arc<crate::xy_slot::XySlot>>,
+    xy_gesture: u16,
+    xy_held: bool,
     /// A scripted run's taps waiting for the page they need, each with when
     /// it was first tried ([`Player::script_taps_due`]).
     script_taps: VecDeque<(ScriptTap, Option<Instant>)>,
@@ -2911,6 +2919,10 @@ impl Player {
             chip_why: Vec::new(),
             fingers: Vec::new(),
             outbox: Vec::new(),
+            waiting: crate::waiting::Waiting::default(),
+            xy_slot: None,
+            xy_gesture: 0,
+            xy_held: false,
             script_taps: VecDeque::new(),
             script_hold: None,
             #[cfg(test)]
@@ -4530,6 +4542,64 @@ impl Player {
             self.qlink_sent = v;
             v
         })
+    }
+
+    /// Where the XY pad's state goes for the audio thread (xy_slot.rs).
+    pub fn set_xy_slot(&mut self, slot: Arc<crate::xy_slot::XySlot>) {
+        self.xy_slot = Some(slot);
+    }
+
+    /// The screen's XY pad at `x`, `y`, held or not: written to the slot
+    /// before its action goes (a new touch counts one more gesture).
+    fn xy_state(&mut self, x: f32, y: f32, down: bool) {
+        if down && !self.xy_held {
+            self.xy_gesture = self.xy_gesture.wrapping_add(1);
+        }
+        self.xy_held = down;
+        if let Some(slot) = &self.xy_slot {
+            slot.write(crate::xy_slot::XyState {
+                gesture: self.xy_gesture,
+                down,
+                x,
+                y,
+            });
+        }
+    }
+
+    /// Sends `a` to the audio thread. A let-go or a move that finds the
+    /// queue full waits for a later frame, and so does anything for a
+    /// control whose let-go waits (waiting.rs); anything else that can't go
+    /// is [`Player::unsent`]'s.
+    pub fn send(&mut self, tx: &SyncSender<FromUi>, a: FromUi) {
+        let Some(a) = self.waiting.behind(a) else {
+            return;
+        };
+        match tx.try_send(a) {
+            Ok(()) => {}
+            Err(TrySendError::Full(a)) => {
+                if let Some(a) = self.waiting.full(a) {
+                    self.unsent(a);
+                }
+            }
+            Err(TrySendError::Disconnected(a)) => self.unsent(a),
+        }
+    }
+
+    /// Sends what waits (waiting.rs), oldest first, before this frame's
+    /// actions.
+    pub fn send_waiting(&mut self, tx: &SyncSender<FromUi>) {
+        if self.waiting.is_empty() {
+            return;
+        }
+        // With the audio thread gone nothing is held there any more: what
+        // waited is dropped.
+        let said = self.waiting.send(|a| match tx.try_send(a) {
+            Ok(()) | Err(TrySendError::Disconnected(_)) => Ok(()),
+            Err(TrySendError::Full(a)) => Err(a),
+        });
+        if let Some(l) = said {
+            self.say(l);
+        }
     }
 
     /// The Q-Link values didn't reach the audio thread: hand them on
@@ -14092,6 +14162,9 @@ impl Player {
             }
             (play_page::XY, EventKind::Xy { x, y, down }) => {
                 let fx = self.play.xy(x, y, down);
+                if let PlayFx::Xy { x, y, down } = fx {
+                    self.xy_state(x, y, down);
+                }
                 self.refresh_play();
                 Some(FromUi::PlayFx(fx))
             }
@@ -14583,6 +14656,9 @@ impl Player {
         }
         // The XY pad glides home after the finger lifts.
         if let Some(fx) = self.play.tick_xy(dt * 1000.0) {
+            if let PlayFx::Xy { x, y, down } = fx {
+                self.xy_state(x, y, down);
+            }
             self.outbox.push(FromUi::PlayFx(fx));
             self.refresh_play();
         }
@@ -15046,7 +15122,8 @@ pub fn spawn(
                                 player.set_touch_time(time_us);
                                 if let Some(a) = player.touch(finger, phase, x, y) {
                                     player.saw_action(&a);
-                                    let _ = tx.try_send(a);
+                                    player.send_waiting(&tx);
+                                    player.send(&tx, a);
                                 }
                             }
                             report.touches = touch_total + t.contacts;
@@ -15344,11 +15421,10 @@ fn present(
 /// Hands the screen's actions to the audio thread. A kit view that finds no
 /// room goes back to the Sample page, which builds it again later.
 fn send_actions(player: &mut Player, tx: &SyncSender<FromUi>) {
+    // What waited for room goes first, so nothing overtakes it.
+    player.send_waiting(tx);
     for a in player.take_actions() {
-        match tx.try_send(a) {
-            Ok(()) => {}
-            Err(TrySendError::Full(a) | TrySendError::Disconnected(a)) => player.unsent(a),
-        }
+        player.send(tx, a);
     }
     // The Q-Links' values, for MIDI Follow's Send values back; with the
     // queue full they go again next time.
@@ -25009,6 +25085,48 @@ mod tests {
             matches!(first, Some(FromUi::PlayFx(PlayFx::Xy { x, y, down: true })) if (x - 0.5).abs() < 0.02 && y < 0.2),
             "{first:?}"
         );
+    }
+
+    /// With the queue to the audio thread full, the XY pad's press and
+    /// lift wait for room and go in order, never dropped; the pad's state
+    /// is written beside the queue first (xy_slot.rs).
+    #[test]
+    fn the_xy_pads_lift_waits_for_room_and_its_state_goes_beside_the_queue() {
+        let mut p = sample_play(Fonts::embedded(), PlayView::All);
+        p.take_actions();
+        let slot = Arc::new(crate::xy_slot::XySlot::default());
+        p.set_xy_slot(Arc::clone(&slot));
+        let (tx, rx) = std::sync::mpsc::sync_channel::<FromUi>(1);
+        tx.try_send(FromUi::TapTempo).unwrap();
+        let xy = p.ui.rect_of(play_page::XY).unwrap();
+        let (cx, cy) = (xy.x + xy.w / 2, xy.y + xy.h / 2);
+        let down = p.touch(6, Touch::Down, cx, cy).expect("the pad's press");
+        let s = slot.read();
+        assert!(s.down && s.gesture == 1, "{s:?}");
+        p.send(&tx, down);
+        let up = p.touch(6, Touch::Up, cx, cy).expect("its lift");
+        let s = slot.read();
+        assert!(!s.down && s.gesture == 1, "up before the lift goes: {s:?}");
+        p.send(&tx, up);
+        assert_eq!(rx.try_recv(), Ok(FromUi::TapTempo));
+        // Room for one a frame: the press, then the lift.
+        p.send_waiting(&tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(FromUi::PlayFx(PlayFx::Xy { down: true, .. }))
+        ));
+        p.send_waiting(&tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(FromUi::PlayFx(PlayFx::Xy { down: false, .. }))
+        ));
+        assert!(
+            p.said_all.iter().any(|l| l.contains("waited for room")),
+            "counted and said"
+        );
+        // The next touch is the next gesture.
+        let _ = p.touch(7, Touch::Down, cx, cy);
+        assert_eq!(slot.read().gesture, 2);
     }
 
     /// The XY pad's chip names what it plays and opens a list in place of
