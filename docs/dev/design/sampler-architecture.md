@@ -1,6 +1,6 @@
 # Sampler architecture
 
-**Status:** proposal, 2026-11-10, for the owner's review. This is the engineering plan behind the [sampler design](sampler-design.md) and the [feature map](sampler-features.md). Mockups of the screens are in the [mpfree-claude repo](https://github.com/jferments/mpfree-claude/tree/main/sampler) together with the sampler skill tree.
+**Status:** as built on 22 Nov 2026, with the target of the sampler refactor: see [As built, and where it is going](#as-built-and-where-it-is-going). Written on 10 Nov 2026 as a proposal for the owner's review; the proposal's sections stay below, each with an **As built** note where what was built differs. This is the engineering plan behind the [sampler design](sampler-design.md) and the [feature map](sampler-features.md). Mockups of the screens are in the [mpfree-claude repo](https://github.com/jferments/mpfree-claude/tree/main/sampler) together with the sampler skill tree.
 
 It says which crates hold what, which thread does what, how data moves between them without ever blocking the audio thread, what is stored on disk, how each algorithm works in outline, and how each part is tested before it reaches the MPC.
 
@@ -11,6 +11,70 @@ It says which crates hold what, which thread does what, how data moves between t
 3. **State lives in one place.** The project model (sources, regions, pads, chop sets) is owned by the *control* thread. The audio thread gets immutable snapshots of what it needs; the UI gets change notices. Nobody else mutates the model.
 4. **Every change is a command.** UI, hardware and MIDI all send the same commands to the control thread. Commands are logged for undo and are the only way to change a project.
 5. **Testable on the workstation.** Every crate except the device backends runs and is tested on x86 and as 32-bit ARM under qemu, as today.
+
+Principles 1, 2 and 5 hold, with the gaps in 2 listed under [As built](#as-built-22-nov). Principles 3 and 4 were not built as written: there is no control thread, and changes are not commands yet. The refactor keeps the model on the screen thread and puts sampler commands in front of it (step 12).
+
+## As built, and where it is going
+
+The sampler was built in rounds (steps S1 to S7, rounds R1 to R7). An outside review on 20 Nov 2026 led to a refactor in four phases, which the owner started on 20 Nov (phase 1) and 22 Nov (phase 2). This section says what was built, where it differs from the proposal, and the target the refactor works towards.
+
+### As built (22 Nov)
+
+- **No control thread.** Each kit's model (`mpfree_sampler::model::Project`) lives on the screen thread, in the Sample page (`SamplePage::projects`). The pad player builds every kit before the sound starts and hands the projects over once (`Player::take_projects`). An edit builds the kit's engine view again on the screen thread and sends it to the audio thread in a `ViewSwap`; the old view comes back in the same box and is freed on the screen thread.
+- **Changes are method calls, not commands yet.** The Sample page calls the model's methods (`Project::map_to_keys` and the rest) directly. Each returns an undo step. Undo is per kit, kept in memory and not saved.
+- **Ten kinds of background thread, each with its own queue:**
+  - `mpfree-analyse`: a sound's view (peaks, mono mix, onsets, tempo, root note, and the pitch track when asked for; `mpfree-app/src/views.rs`);
+  - `mpfree-hits`: hits for a Stretch grain pad (`mpfree-sampler/src/hits.rs`);
+  - `mpfree-octaves`: octave copies (`bandlimit.rs`);
+  - `mpfree-stretch`: Warp's stretched copies (`warp::Worker`);
+  - `mpfree-process`: Process;
+  - `sample-open`, `sample-kit` and `sample-load`: a project's sounds, opening a kit, and Load;
+  - `preview-load`: the browser's preview;
+  - `autosample`.
+
+  All of them run off the sound's cores at background priority. The views worker works on the sound shown last first, which is the pattern the job service spreads.
+- **Some heavy work is still on the screen.** Map to keys works a sound's analysis out on the spot when the views worker hasn't yet (`Views::full`). Put on audio track copies the sound and converts its rate (`send_to_audio`). Before phase 1 the grain start scanned the whole sound and Normalize copied it; neither does now.
+- **Memory.** There is no arena: sounds come from the system heap. A load, a stretched copy, an auto-sample and, since phase 1, Put on audio track refuse to start when they would leave less than 256 MB free (`memory::room_in`; see [Sample memory](#sample-memory)).
+- **Sounds by id.** In the model a sound's id is a 64-bit FNV-1a hash of its rate, channels and samples (`SourceId`). The project folder names each sound by a 128-bit hash of its bytes ([browser.md](browser.md#projects)), so a project holds each sound once on disk. In memory, two kits with one sound can hold two copies, and each analysed sound keeps a whole mono copy for snapping markers (`SourceView`).
+- **Kits are not instruments yet.** The pads play the armed track's kit (`Player::select`), and automation names a pad by track and pad number (`Owner::Pad`). The instrument node ([`node.rs`](#as-an-instrument-node-noders)) is used only by tests.
+
+### The target
+
+The engine stays as it is. Two new pieces sit around it: sampler commands, which every control goes through, and one job service, which does all heavy work away from the screen and the sound. There is still no separate control thread: commands run on the screen thread, as the page's edits do today, and never do heavy work themselves.
+
+- **Sampler commands** (step 12). A `SamplerCommand` value, applied to a kit in one place that checks it, makes the change, groups the undo step and asks for any work. Each command names its kit by the instrument id of the [instrument redesign](instruments.md), never by track. The touch screen, Q-Links, MIDI learn, locks and later scripts all call it.
+- **One job service** (step 7), in place of the ten threads. One set of priorities, one memory account and one way to cancel, with two kinds of worker:
+  - sound work (views, pitch, hits, octave copies, stretching, Process);
+  - file work (loading sounds, opening kits), so a long analysis never holds up a load.
+
+  The sound being edited comes first, and a newer job for the same sound replaces an older one. Each result carries the sound, the settings and the edit it was worked out for, and is thrown away (and counted) if any of them changed. Every job checks memory before it starts. Nothing falls back to working on the screen: an action waits, saying so, or says why it can't.
+- **Sounds held once** (step 8). One store per project, each sound once by a 128-bit id, with its analysis beside it. Kits point at sounds, and old ids still load. The view's spare mono copy goes. The files on disk don't change.
+- **Grains shared by musical priority** (step 9). Before each part of a period the 256 grains are shared out in ranks: a new hit's first grains, then held pads and the master Grains FX, then ringing tails and the oldest clouds, which thin first. Nothing is cut without a fade.
+- **Shown to the musician** (step 10). When the sampler thins grains, steals voices or drops events, a short warning in plain words. The counts stay on Dev > Debug.
+- **The engine in modules** (step 11): events, voices, grains, routing, master effect and counters, with offline renders bit for bit the same.
+- **Kits as instruments** (phase 3). A kit gets a lasting instrument id and takes notes like any instrument, and automation names a pad by instrument and pad. Grain settings become `mpfree-mod` parameters.
+
+### The refactor's phases
+
+| Phase | Steps | State |
+|---|---|---|
+| 1. Fix what can break a show | 1 the grain start from the loudness summary (#729); 2 let-gos always land (#733); 3 grains keep their window (#739); 4 the edges of a sound (#746); 5 a quick Normalize and memory checks (#751) | Done, 20 Nov |
+| 2. Dependable on the MPC | 6 this page; 7 one job service; 8 sounds held once; 9 grains by priority; 10 show the trade; 11 the engine in modules; 12 sampler commands; 13 a worst-case grain bench | Started 22 Nov |
+| 3. Kits become instruments | 14 kits join the instrument list; 15 one way in for notes; 16 pads named by instrument; 17 grain settings join automation | After the instrument redesign's step 2, agreed step by step with that work |
+| 4. Better sound, judged by ear | 18 a listening set; 19 steadier Stretch; 20 the level law; 21 extras if wanted; 22 long sounds from the stick | With the owner, by ear |
+
+**What stays as it is:**
+
+- Rust, and today's crates.
+- One grain engine for the pads and Grains FX.
+- Sounds that never change once made, and engine views built off the audio thread and swapped in whole.
+- The fixed voice pool, the grain arrays made up front, and the two-core split.
+- Regions, layers and slices that never touch the sound, and undo per kit.
+- The one Sample page.
+- The grain level law, which gets measured, not replaced.
+- Warp's stretch.
+- The recorder.
+- `mpfree-mod` as the one modulation system.
 
 ## Crates
 
@@ -47,6 +111,8 @@ It says which crates hold what, which thread does what, how data moves between t
 
 `mpfree-app` (the program `mpfree`) is both the program for hardware rounds and what the owner eventually boots into.
 
+**As built:** there is no `mpfree-project` or `mpfree-audio`. Projects are folders of the library (`mpfree-library`, [browser.md](browser.md#projects)), in which the sampler keeps its part (`parts/sampler.txt`, `mpfree-sampler/src/save.rs`). ALSA playback and capture are in `mpfree-app/src/alsa.rs`.
+
 ## Threads
 
 | Thread | Priority | Core | Period | Owns |
@@ -58,6 +124,8 @@ It says which crates hold what, which thread does what, how data moves between t
 | Input | normal | 1 | blocking reads | Controller MIDI and touch events, forwarded to Control (pad hits also go straight to Audio, see below) |
 
 **Pad latency path.** A pad hit must not wait for the control thread. The input thread sends the hit to the audio thread directly on a dedicated ring (`PadHit { pad, velocity, time }`), and a copy to Control for the UI and recording. The audio thread looks the pad up in its own snapshot. This keeps the pad-to-sound path as short as the pad player's today; round 4 measures that path on the device.
+
+**As built:** there is no control thread and no shared pair of workers. The model lives on the screen thread (`mpfree-screen`). The audio thread runs at `SCHED_FIFO` 70, on core 3 when Prefs "Sound cores" says so, and half the drum voices can run on a lane on core 2 ([`Engine::split`](#performance-budget)). Background work runs on ten kinds of thread ([As built](#as-built-22-nov)); step 7 puts it behind one job service.
 
 ## Data flow
 
@@ -81,14 +149,16 @@ The audio thread holds an `EngineView`: for each pad, the layers and regions it 
 
 A playing voice keeps its own handle to its sample buffer, so replacing or deleting a sample while it plays is safe: the buffer is freed only when the last voice stops.
 
+**As built:** the screen thread stands where Control is drawn. It builds a kit's view and sends it in a `ViewSwap`, and the old view comes back in the same box to be freed there (`Player::swap_view`).
+
 ### Sample memory
 
 | Item | Plan |
 |---|---|
 | Format in RAM | Interleaved, 44.1 kHz, as `model::Pcm`: `i16` when every sample is a 16-bit value exactly (a 16-bit WAV or AIFF, and what is cut from one), else `f32`. A mono source is stored mono and read with a channel flag. See [16-bit sounds](#the-voice) under the voice |
-| Pool | One `mlock`ed arena reserved at start-up (size from settings, default 1 GiB, measured on the device), carved into buffers by a simple allocator on the control thread. No allocation from the system heap per sample, so memory use is predictable and never pages |
+| Pool | One `mlock`ed arena reserved at start-up (size from settings, default 1 GiB, measured on the device), carved into buffers by a simple allocator on the control thread. No allocation from the system heap per sample, so memory use is predictable and never pages. Not built: see the floor below |
 | Handles | `SampleRef` = index + generation into the arena, reference-counted; the audio thread only increments and decrements counts, and frees go back through a ring |
-| Long sources | First version: everything in RAM. Later (S8): sources over a size limit stream from disk with the first second resident |
+| Long sources | First version: everything in RAM. Later (S8): sources over a size limit stream from disk with the first second resident. Not built: the refactor's step 22 |
 | Floor (as built, 14 Nov) | There is no arena yet: sounds come from the system heap. So the pad player refuses a load that would leave less than 256 MB free (`MemAvailable`; `mpfree-app` `memory.rs`): a Load or preview from the browser, each of a project's sounds as it opens, a stretched copy (the pad repitches instead) and an auto-sample (its `Plan::estimate`). The refusal says what it needed and what was free, in the log and in place of the hint. See [profiling.md](profiling.md#memory-floor-refuse-a-load-rather-than-be-killed) |
 
 On a 32-bit process the address space is about 3 GB. A 1 GiB arena, the rolling buffers (about 85 MB), the UI (under 64 MB) and the engine (under 64 MB) fit with room to spare.
@@ -127,7 +197,7 @@ struct Pad     { layers: Vec<Layer>, poly: Poly, choke: Option<u8>, choke_one_wa
 struct Program { kind: ProgramKind /* Drum | Keygroup */, pads: [Option<Pad>; 128], name: String }
 ```
 
-**Commands** are an enum (`SetRegionStart { region, frame }`, `AddMarker`, `Convert { chop, to }`, `AssignToPad`, `RecordStart`, ...). Each command applied to the model returns its inverse, which goes in the undo log. Live gestures (a knob turning) are merged into one undo step per gesture.
+**Commands** are an enum (`SetRegionStart { region, frame }`, `AddMarker`, `Convert { chop, to }`, `AssignToPad`, `RecordStart`, ...). Each command applied to the model returns its inverse, which goes in the undo log. Live gestures (a knob turning) are merged into one undo step per gesture. **As built:** not yet. The Sample page calls the model's methods, each of which returns its undo step; the refactor's step 12 brings `SamplerCommand`.
 
 ## Recording
 
@@ -689,6 +759,8 @@ MyBeat.mpfree/
   takes/                recordings not yet assigned (kept until the project is cleaned)
 ```
 
+**As built:** a project is a folder of the library ([browser.md](browser.md#projects)): `project.txt`, one text part per engine in `parts/` (the sampler's is `parts/sampler.txt`), each sound in `samples/` named by a 128-bit hash of its bytes with its view beside it (`<id>.a1.peaks`), and earlier saves in `versions/`. A save is whole or nothing. There is no `undo.log`: undo isn't saved.
+
 `project.toml` holds programs, pads, layers, regions, chop sets and settings, referring to sources by hash. A pad can be exported with a small sidecar (`Name.mpfree`) that carries its regions, chop sets and warp, so edits travel with the file (an owner complaint about the MPC): see [Export and sidecars](#export-and-sidecars-mpfree-sampler-mpfree-app).
 
 ## Real-time guarantees and how they are tested
@@ -728,9 +800,9 @@ The worst blocks come from the grains: the four granular pads average 50 grains 
 - **xrun:** count it, show it in the header, keep going. Never stop the transport for an xrun.
 - **Event queue full:** values merge, hits are refused and counted, let-gos wait aside and still land on their frame ([The event queue and let-gos](#the-event-queue-and-let-gos-sampler-plan-phase-1-step-2)).
 - **Worker failure** (bad file, failed stretch): the job reports an error to the UI; the model is unchanged.
-- **Arena full:** a recording or load is refused before it starts, with the space needed and the space free; the rolling buffers are never shrunk.
+- **Arena full:** a recording or load is refused before it starts, with the space needed and the space free; the rolling buffers are never shrunk. As built there is no arena: the [memory floor](#sample-memory) refuses instead.
 - **UI crash:** the engine keeps playing; the supervisor restarts the UI (later, when the UI is its own process).
-- **Power loss:** the last saved project and the undo log replay to the last finished gesture.
+- **Power loss:** the last saved project and the undo log replay to the last finished gesture. As built: a save is whole or nothing and earlier saves are kept, but undo isn't saved.
 
 ## Device safety
 
@@ -750,3 +822,5 @@ The steps S1-S8 in the [design](sampler-design.md#steps) map onto crates like th
 | S6 granular | `mpfree-grain`, `mpfree-sampler-ui` (the Wave page's Grain tool) |
 | S7 warp, phrase, keygroups, looper, tape, auto-sample | `mpfree-stretch`, `mpfree-sampler` |
 | S8 streaming and imports | `mpfree-project` (`symphonia` optional), `mpfree-sampler` (stream voices) |
+
+**As built:** S1 to S7 are built, as each section above says. Of S8, FLAC (`mpfree-flac`) and MPC programs (`mpfree-mpc-import`) import; streaming is the refactor's step 22. What comes next is the [refactor's phases](#the-refactors-phases).
