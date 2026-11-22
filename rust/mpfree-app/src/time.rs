@@ -85,7 +85,7 @@ use std::f32::consts::TAU;
 pub use apart::Say;
 use apart::{Apart, Told};
 pub use audio::TimeAudio;
-pub use control::{MuteLight, PadTap, TimeControl};
+pub use control::{MuteLight, PadTap, SongAudio, TimeControl};
 pub use follow::Follow;
 use link::Tracks;
 pub use mpfree_play::AheadCounts;
@@ -1388,6 +1388,33 @@ impl TimeHost {
             c.act(a)
         });
         self.sent(r)
+    }
+
+    /// [`TimeHost::act`] with the audio tracks, for a song time edit, UNDO
+    /// and REDO while they hold regions or a song edit's step: their
+    /// regions move with the song in the same period, or nothing moves
+    /// anywhere (the Arrange refactor's 3.4,
+    /// [`TimeControl::act_with_audio`]). Apart, the control half is
+    /// borrowed back for it ([`Apart::lend`]), so the edit and the regions
+    /// go together.
+    pub fn act_with_audio(
+        &mut self,
+        a: TimeAction,
+        audio: &mut dyn SongAudio,
+    ) -> Result<String, String> {
+        self.play_from(&a);
+        let waits = self.audio.clock_waits();
+        let r = self.with(|c| {
+            c.clock_waits = waits;
+            c.act_with_audio(a, audio)
+        });
+        self.sent(r)
+    }
+
+    /// Whether the song's UNDO (`undo`), or its REDO, still reaches song
+    /// edit `n` ([`TimeControl::song_reaches`]).
+    pub fn song_reaches(&mut self, n: u32, undo: bool) -> bool {
+        self.with(|c| c.song_reaches(n, undo))
     }
 
     /// Where PLAY starts from, for SHIFT + PLAY ([`TimeHost::play_back`]).
