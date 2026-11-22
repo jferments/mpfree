@@ -16,8 +16,8 @@
 151691614	Arrange: the big song saved and opened, 512 blocks of 32 clips
 6918010	Arrange: the big song's view, 512 blocks of 32 clips: compiled and swapped
 44291	Audio tracks: 6 playing comped takes, 2 recording
+44798	Audio tracks: 6 playing comped takes, 2 recording to files
 44270	Audio tracks: 8 playing comped takes
-54516	Audio tracks: 8 streaming comped takes
 26033	Auto wah
 21329	Auto-pan
 60954	Bass Distorted 808, a line
