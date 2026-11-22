@@ -394,6 +394,7 @@ fn the_host_period_never_allocates_while_streaming() {
     drop(h);
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(calls, 0, "allocations in the host's period");
+}
 
 /// Phase 0.2: a save fills a room made off the audio thread
 /// (`Saved::room`) without allocating, and holds what `save_file` gives;

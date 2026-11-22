@@ -1408,14 +1408,18 @@ impl AudioTracks {
     /// history: New project, or a project opening. The latency and
     /// whether the tracks play are kept. Refused (false, nothing changed)
     /// while a track records or a take copies in, or, streaming, while
-    /// audio is still going to the disk. Does not allocate.
+    /// audio is still going to the disk or a take's finish is not yet
+    /// answered. Does not allocate.
     pub fn clear(&mut self) -> bool {
         let busy = self
             .tracks
             .iter()
             .any(|t| t.rec.is_some() || t.tail.is_some())
             || !self.loads.is_empty()
-            || (self.streaming && self.unwritten() > 0);
+            || (self.streaming && self.unwritten() > 0)
+            // A finish still on the disk: its answer must not reach the
+            // next project's take of the same number.
+            || self.takes.iter().any(|t| t.live && t.finishing > 0);
         if busy {
             return false;
         }
