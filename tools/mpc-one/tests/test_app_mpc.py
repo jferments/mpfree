@@ -1355,6 +1355,11 @@ class StaticTests(unittest.TestCase):
             # the host-only display lists for the GPU benchmark (--display-lists, never on the MPC)
             "OpenOptions::new().write(true).create_new(true).open(&path).and_then(|mut f| f.write_all(&bytes))"
             ".map_err(|e| format!(\"{}: {e}\", path.display()))?;",
+            # the host-only contact sheet's page (--contact-sheet DIR, themes phase 5, never on the MPC): DIR/index.html,
+            # made new beside the PNGs write_png makes in DIR/theme and DIR/base; create_new neither overwrites a
+            # file nor follows a link, and nothing else is opened
+            "OpenOptions::new().write(true).create_new(true).open(&page).and_then(|mut f| f.write_all(contact_sheet_html("
+            "&label, &base_label, &names).as_bytes())).map_err(|e| format!(\"{}: {e}\", page.display()))?;",
             # the ACVA playback device
             "let file = OpenOptions::new().read(true).write(true).custom_flags(sys::O_NONBLOCK).open(path)?;",
             # the ACVA capture device (the line input), opened only when the owner turns Line input on
