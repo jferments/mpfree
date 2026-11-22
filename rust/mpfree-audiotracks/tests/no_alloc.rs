@@ -436,7 +436,7 @@ fn a_save_fills_its_room_without_allocating() {
         A::Arm(0, true),
         A::Arm(2, true),
         A::SetInput(2, Input::Stereo),
-        A::SetLevel(5, 0.5),
+        A::SetInput(5, Input::Right),
         A::SetMonitor(6, Monitor::In),
     ] {
         a.command(c);

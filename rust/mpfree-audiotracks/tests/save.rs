@@ -62,7 +62,7 @@ impl Rig {
 }
 
 /// Track 0 (mono) loop-records three passes of a bar, comped; track 2
-/// (stereo) records one bar in a punch; mixes set.
+/// (stereo) records one bar in a punch; a region's gain set.
 fn session() -> Rig {
     let mut r = Rig::new(AudioTracks::new(RATE, 20));
     r.a.command(A::Arm(0, true));
@@ -92,8 +92,7 @@ fn session() -> Rig {
         at: 600,
         gain: 0.8,
     });
-    r.a.command(A::SetPan(2, 0.4));
-    r.a.command(A::SetLevel(0, 1.5));
+    // No level or pan: a save doesn't hold them (the app's mixer does).
     r.live = false;
     r.run_to(r.frame + 10);
     r
@@ -235,9 +234,9 @@ fn settle(r: &mut Rig) {
 }
 
 /// Each recording is given a lasting id as it starts, kept by the save and
-/// by every open after it; a take saved before ids gets one as it opens,
-/// kept from its next save; a take recorded after a take was forgotten
-/// never gets the forgotten one's id, and two takes never share one.
+/// by every open after it; a saved take without one is refused; a take
+/// recorded after a take was forgotten never gets the forgotten one's id,
+/// and two takes never share one.
 #[test]
 fn each_recording_keeps_its_lasting_id() {
     let a = session();
@@ -261,8 +260,7 @@ fn each_recording_keeps_its_lasting_id() {
     assert_eq!(again, recs);
     assert_eq!(save(&b).0, text);
 
-    // A part from before ids: each take gets one as it opens, the next
-    // save keeps it, and an open of that save keeps it again.
+    // A part whose take has no id is refused: every take saved has one.
     let mut before = String::new();
     for line in text.lines() {
         let line = match line.find(" rec=") {
@@ -273,14 +271,8 @@ fn each_recording_keeps_its_lasting_id() {
         before.push('\n');
     }
     assert!(!before.contains("rec="), "{before}");
-    let mut c = open(&before, &files);
-    settle(&mut c);
-    let given: Vec<RecordingId> = c.a.takes().map(|k| k.rec).collect();
-    assert!(given.iter().all(|r| r.is_given() && !recs.contains(r)));
-    let (kept, files) = save(&c);
-    let mut d = open(&kept, &files);
-    settle(&mut d);
-    assert_eq!(d.a.takes().map(|k| k.rec).collect::<Vec<_>>(), given);
+    let why = from_text(&before).unwrap_err();
+    assert!(why.contains("no rec"), "{why}");
 
     // Forgotten, then recorded again: a new id, never the forgotten one.
     let mut e = session();

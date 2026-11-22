@@ -639,10 +639,6 @@ impl TrackHost {
                         id: 0,
                         input: s.input,
                         monitor: s.monitor,
-                        level: s.level,
-                        pan: s.pan,
-                        muted: s.mute,
-                        solo: s.solo,
                         from,
                         regions: Vec::new(),
                     });
@@ -653,7 +649,6 @@ impl TrackHost {
         saved.takes.retain(|k| alive(k.track));
         for x in &mut saved.tracks {
             x.id = ids.id_of(x.index).map_or(0, |id| id.0);
-            (x.muted, x.solo) = (false, false);
         }
         saved.tracks.sort_by_key(|x| x.index);
         Some(saved)
@@ -848,13 +843,7 @@ impl TrackHost {
     /// An opened project's audio tracks, read from its files: they go in
     /// once the tracks are empty ([`TrackHost::clear`] comes first). What
     /// is left of `saved` is dropped on the host's worker.
-    pub fn open(&mut self, mut saved: Saved) {
-        // Level and pan are each track's mixer strip's (phase 1b): an
-        // older part's moved there as the project opened
-        // (`project::audio_strip_moves`), so the engine plays at unity.
-        for t in &mut saved.tracks {
-            (t.level, t.pan) = (1.0, 0.0);
-        }
+    pub fn open(&mut self, saved: Saved) {
         if let Some(old) = self.pending.replace(saved) {
             self.host.drop_saved(old);
         }
@@ -901,16 +890,12 @@ impl TrackHost {
         let Some(mut saved) = self.pending.take() else {
             return;
         };
-        // Only the engine tracks a project track plays: an older part's
-        // tracks with only settings had no lane and became no track
-        // (`project::audio_slots`). Mute and solo are the project
-        // track's now, so the engine's own stay off.
+        // Only the engine tracks a project track plays. Level and pan
+        // are the mixer strip's and mute and solo the project track's, so
+        // the engine's own stay as the clear left them: unity and off.
         let ids = self.slots;
         saved.tracks.retain(|t| ids.id_of(t.index).is_some());
         saved.takes.retain(|k| ids.id_of(k.track).is_some());
-        for t in &mut saved.tracks {
-            (t.muted, t.solo) = (false, false);
-        }
         self.silent = [false; MAX_TRACKS];
         let (tracks, takes) = (saved.tracks.len(), saved.takes.len());
         let inside: Vec<(usize, Inside)> = saved

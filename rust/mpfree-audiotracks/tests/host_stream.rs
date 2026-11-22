@@ -154,7 +154,7 @@ fn a_save_names_the_files_and_opens_in_a_fresh_host() {
         from: 2 * BAR_TICKS,
         to: 3 * BAR_TICKS,
     });
-    r.h.command(A::SetLevel(0, 0.5));
+    // No level: a save doesn't hold it (the app's mixer does).
     assert!(r.h.save());
     let mut saved = None;
     r.run_until(|r| {

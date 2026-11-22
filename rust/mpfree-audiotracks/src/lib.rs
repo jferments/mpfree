@@ -1693,11 +1693,7 @@ impl AudioTracks {
             let keep = t.n > 0
                 || room.takes[..takes].iter().any(|k| k.track == i)
                 || t.input != Input::Left
-                || t.monitor != Monitor::Auto
-                || t.level != 1.0
-                || t.pan != 0.0
-                || t.mute
-                || t.solo;
+                || t.monitor != Monitor::Auto;
             if !keep {
                 continue;
             }
@@ -1705,10 +1701,6 @@ impl AudioTracks {
             f.index = i;
             f.input = t.input;
             f.monitor = t.monitor;
-            f.level = t.level;
-            f.pan = t.pan;
-            f.muted = t.mute;
-            f.solo = t.solo;
             f.from.clear();
             f.regions.clear();
             f.regions.extend_from_slice(t.regions());
@@ -1803,9 +1795,11 @@ impl AudioTracks {
         Ok(())
     }
 
-    /// Put a saved track's settings and regions back (its takes loaded
-    /// with [`AudioTracks::load_take`], before or after). The undo history
-    /// is forgotten. Does not allocate. False (nothing changed) if the
+    /// Put a saved track's input, monitor and regions back (its takes
+    /// loaded with [`AudioTracks::load_take`], before or after); its level,
+    /// pan, mute and solo stay as they are, since a save doesn't hold
+    /// them (the app keeps them in its mixer and track list). The undo
+    /// history is forgotten. Does not allocate. False (nothing changed) if the
     /// track is past the last or recording, or the regions are too many or
     /// out of order.
     pub fn load_track(&mut self, f: &TrackFile) -> bool {
@@ -1820,18 +1814,6 @@ impl AudioTracks {
         let t = &mut self.tracks[f.index];
         t.input = f.input;
         t.monitor = f.monitor;
-        t.level = if f.level.is_finite() {
-            f.level.clamp(0.0, 2.0)
-        } else {
-            1.0
-        };
-        t.pan = if f.pan.is_finite() {
-            f.pan.clamp(-1.0, 1.0)
-        } else {
-            0.0
-        };
-        t.mute = f.muted;
-        t.solo = f.solo;
         t.n = f.regions.len();
         t.regions[..t.n].copy_from_slice(&f.regions);
         self.h_done = 0;

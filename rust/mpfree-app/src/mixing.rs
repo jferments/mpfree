@@ -128,8 +128,9 @@ pub fn instrument_channel_name(instrument: &str, track: &str) -> String {
 }
 /// The name of the shared Audio strip, which every audio track played
 /// through before each had its own channel (the audio tracks rethink,
-/// phase 1b). It shows only while it still holds settings: an older
-/// project's, which couldn't move to a submix ([`MixHost::old_audio`]).
+/// phase 1b). Nothing plays through it now; it shows only while it still
+/// holds settings a project an older mpfree saved gave it, so they aren't
+/// hidden ([`MixHost::old_audio`]).
 pub const OLD_AUDIO: &str = "Audio (old)";
 /// The name of track 1's old own channel, in a project saved with
 /// settings on it ([`MixHost::old_first`]).
@@ -2982,10 +2983,9 @@ impl MixHost {
     }
 
     /// The shared Audio strip still holds settings (an effect, a send, a
-    /// fader or pan moved, a mute): an older project's whose Audio strip
-    /// couldn't move to a submix as it opened (`project::move_audio_strip`).
-    /// Its audio tracks play through their own channels all the same, so
-    /// it shows, as "Audio (old)", to say what is there.
+    /// fader or pan moved, a mute): a project's an older mpfree saved.
+    /// Audio tracks play through their own channels, so nothing is heard
+    /// through it; it shows, as "Audio (old)", to say what is there.
     pub fn old_audio(&self) -> bool {
         let s = StripId::Track(AUDIO);
         self.mixer.chain(s).is_some_and(|c| !c.is_empty())
