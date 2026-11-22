@@ -136,7 +136,7 @@ use mpfree_transport::time::{Swing, Tick};
 use mpfree_transport::{Block, Mark, Marker, Span, State};
 
 use crate::steps::{first_pass, Steps, HALF, STEP};
-use crate::view::{ClipView, MuteLanded, NowPlaying, PlayView, Started, Switches, TrackView};
+use crate::view::{ClipView, MuteLanded, NowPlaying, PlayView, Started, Switches};
 
 /// Notes sounding at once, across all tracks.
 pub const MAX_ACTIVE: usize = 256;
@@ -1014,8 +1014,8 @@ impl Player {
         let (clip, origin, start) = match self.switches.playing_from(view, track) {
             Some(p) => p,
             None if view.song => {
-                let r = view.tracks.get(track)?.region_at(tick)?;
-                (&r.clip, r.clip.origin, r.clip.start)
+                let (r, clip) = view.placed_at(track, tick)?;
+                (clip, r.origin, r.start)
             }
             None => return None,
         };
@@ -1367,11 +1367,11 @@ impl Player {
         // placements.
         let song = view.song && playing.is_none();
         let placed = if song {
-            track.region_at(ticks.start)
+            view.placed_at(i, ticks.start)
         } else {
             None
         };
-        let region = placed.map(|r| (r.clip.slot, r.clip.start));
+        let region = placed.map(|(r, c)| (c.slot, r.start));
         // A clip started since the last span (a launch, not a cue):
         // the track's last result starts again.
         let now = playing.map(|(c, _, start)| (c.slot, start)).or(region);
@@ -1387,7 +1387,7 @@ impl Player {
         if let Some(at) = self.scene_due(view, i, &ticks, bar) {
             let own = match switch {
                 Some(s) if s <= at => track.cue.as_ref().and_then(|c| c.clip.as_ref()),
-                _ if song => track.region_at(at).map(|r| &r.clip),
+                _ if song => view.placed_at(i, at).map(|(_, c)| c),
                 _ => playing.map(|(c, _, _)| c),
             }
             .and_then(|c| c.program);
@@ -1395,7 +1395,7 @@ impl Player {
         }
         // Its program change, once: on its start, or here when it
         // started before (the music starting, a jump into it).
-        let clip = playing.map(|(c, _, _)| c).or(placed.map(|r| &r.clip));
+        let clip = playing.map(|(c, _, _)| c).or(placed.map(|(_, c)| c));
         if let (Some(key), Some(c)) = (now, clip) {
             let at = key.1.clamp(ticks.start, ticks.end - 1);
             self.program_start(i, key, c.program, at, track.dest, false);
@@ -1428,7 +1428,7 @@ impl Player {
                 self.collect_moves(clip, origin, i, track.dest, &before);
             }
         } else if song && !muted {
-            self.collect_song(track, i, &before, switch, span.swing);
+            self.collect_song(view, i, &before, switch, span.swing);
         }
         let Some(at) = switch else { return };
         // A track starts one cue a call at most, and there are at most
@@ -1499,7 +1499,7 @@ impl Player {
             }
         } else if view.song && playing.is_none() && !self.muted(view, i) {
             // Stopped: the track goes back to the song.
-            self.collect_song(track, i, &(at..ticks.end), None, span.swing);
+            self.collect_song(view, i, &(at..ticks.end), None, span.swing);
         }
     }
 
@@ -2213,29 +2213,35 @@ impl Player {
     /// cue's switch.
     fn collect_song(
         &mut self,
-        track: &TrackView,
+        view: &PlayView,
         i: usize,
         ticks: &Range<Tick>,
         cut: Option<Tick>,
         swing: Swing,
     ) {
+        let Some(track) = view.tracks.get(i) else {
+            return;
+        };
         let t = i as u16;
         let first = track.regions.partition_point(|r| r.end <= ticks.start);
         for r in &track.regions[first..] {
-            if r.clip.start >= ticks.end {
+            if r.start >= ticks.end {
                 break;
             }
-            let part = ticks.start.max(r.clip.start)..ticks.end.min(r.end);
-            if ticks.contains(&r.clip.start) {
-                let key = (r.clip.slot, r.clip.start);
-                self.program_start(i, key, r.clip.program, r.clip.start, track.dest, true);
+            // Every block's clip is in the view's song clips.
+            let Some(clip) = view.song_clips.get(r.clip) else {
+                continue;
+            };
+            let part = ticks.start.max(r.start)..ticks.end.min(r.end);
+            if ticks.contains(&r.start) {
+                let key = (clip.slot, r.start);
+                self.program_start(i, key, clip.program, r.start, track.dest, true);
             }
             let end = cut.map_or(r.end, |c| c.min(r.end));
-            let clip = &r.clip;
             self.collect(
                 clip,
-                clip.origin,
-                clip.start,
+                r.origin,
+                r.start,
                 t,
                 track.dest,
                 swing,
@@ -2248,7 +2254,7 @@ impl Player {
             if clip.moves.is_empty() {
                 self.forget_moves(i);
             } else {
-                self.collect_moves(clip, clip.origin, i, track.dest, &part);
+                self.collect_moves(clip, r.origin, i, track.dest, &part);
             }
             if ticks.contains(&r.end) {
                 self.cut_hits(t, r.end);

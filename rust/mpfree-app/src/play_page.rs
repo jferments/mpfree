@@ -859,6 +859,11 @@ pub struct PlayPage {
     /// STEP SEQ: the step pads held (their sound, and the steps, the first
     /// held first). The Q-Links set them.
     pub held: Option<(u8, Vec<usize>)>,
+    /// Steps picked together on the Sequencer's Steps with SHIFT + a tap
+    /// (refactor C4): their lane and two or more steps, in the order
+    /// picked. The inspector and the Q-Links set them all, as steps held
+    /// on the pads are. One step picked is [`PlayPage::selected`].
+    pub picks: Option<(u8, Vec<usize>)>,
     /// Q-LINK while steps are held: the bank shown.
     pub bank: HeldBank,
     /// The held steps' sound's Sound bank (a kit pad's tune, decay,
@@ -1055,6 +1060,7 @@ impl Default for PlayPage {
             xy_effect: None,
             on_pads: None,
             held: None,
+            picks: None,
             bank: HeldBank::Step,
             sound_bank: Default::default(),
             copy_from: None,
@@ -1260,7 +1266,7 @@ impl PlayPage {
     /// The Q-Links' targets on the view shown: a held step pad's, on any
     /// view.
     pub fn knobs(&self) -> [Knob; 4] {
-        if self.held.is_some() {
+        if self.group().is_some() {
             return match self.held_bank() {
                 HeldBank::Trig => [Knob::Cond, Knob::Ratchet, Knob::NudgeTicks, Knob::Ramp],
                 HeldBank::Sound => [
@@ -1301,10 +1307,18 @@ impl PlayPage {
         }
     }
 
+    /// The steps set together: the step pads held, else the steps picked
+    /// together on the Sequencer's Steps (refactor C4).
+    pub fn group(&self) -> Option<&(u8, Vec<usize>)> {
+        self.held
+            .as_ref()
+            .or(self.picks.as_ref().filter(|_| self.view == PlayView::Beats))
+    }
+
     /// The steps the Q-Links set are the synth's line's: held on the pads,
     /// or picked on its lane.
     pub fn on_line(&self) -> bool {
-        match &self.held {
+        match self.group() {
             Some((sound, _)) => *sound == LINE,
             None => self.selected.is_some_and(|(p, _)| p == usize::from(LINE)),
         }
@@ -1346,7 +1360,7 @@ impl PlayPage {
                 .and_then(|c| c.row(LINE).get(i).copied().flatten())
                 .map_or(0, |s| s.high.saturating_sub(s.low))
         };
-        let steps: Vec<usize> = match &self.held {
+        let steps: Vec<usize> = match self.group() {
             Some((_, steps)) => steps.clone(),
             None => self.selected.map(|(_, i)| i).into_iter().collect(),
         };
@@ -1356,7 +1370,7 @@ impl PlayPage {
     /// The step the Q-Links set: the step pad held first that has a note
     /// (pad, step, what it is), else the step picked in Beats.
     pub fn target_step(&self) -> Option<(usize, usize, Step)> {
-        if let Some((sound, steps)) = &self.held {
+        if let Some((sound, steps)) = self.group() {
             let clip = self.steps.clip.as_ref()?;
             let row = clip.row(*sound);
             return steps
@@ -1370,7 +1384,7 @@ impl PlayPage {
     /// picked, or Sound when no held step has a note (SHIFT + an empty
     /// step: a lock with no note).
     pub fn held_bank(&self) -> HeldBank {
-        if self.held.is_some() && self.held_bits().1 == 0 {
+        if self.group().is_some() && self.held_bits().1 == 0 {
             HeldBank::Sound
         } else {
             self.bank
@@ -1379,7 +1393,7 @@ impl PlayPage {
 
     /// Every step held, with a note or not, as a step action's bits.
     fn all_held_bits(&self) -> u128 {
-        self.held.as_ref().map_or(0, |(_, steps)| {
+        self.group().map_or(0, |(_, steps)| {
             steps
                 .iter()
                 .filter(|&&i| i < 128)
@@ -1391,7 +1405,7 @@ impl PlayPage {
     /// there, else the sound's own (and whether it is a lock).
     fn sound_value(&self, k: usize) -> Option<(&SoundKnob, f32, bool)> {
         let sk = self.sound_bank.get(k)?.as_ref()?;
-        let (sound, steps) = self.held.as_ref()?;
+        let (sound, steps) = self.group()?;
         let lock = self
             .steps
             .clip
@@ -1403,7 +1417,7 @@ impl PlayPage {
     /// The steps held with a note, as a step action's bits (step 0 the
     /// lowest), and how many there are.
     fn held_bits(&self) -> (u128, u32) {
-        let (Some((sound, steps)), Some(clip)) = (&self.held, self.steps.clip.as_ref()) else {
+        let (Some((sound, steps)), Some(clip)) = (self.group(), self.steps.clip.as_ref()) else {
             return (0, 0);
         };
         let row = clip.row(*sound);
@@ -1416,7 +1430,7 @@ impl PlayPage {
 
     /// "Step 5", or "Steps 5, 9" when several are held.
     pub fn held_name(&self) -> Option<String> {
-        let (_, steps) = self.held.as_ref()?;
+        let (_, steps) = self.group()?;
         let list: Vec<String> = steps.iter().map(|i| (i + 1).to_string()).collect();
         Some(if list.len() == 1 {
             format!("Step {}", list[0])
@@ -1428,7 +1442,7 @@ impl PlayPage {
     /// Whether the step inspector shows: Beats, with steps held or a
     /// step picked.
     pub fn inspecting(&self) -> bool {
-        self.view == PlayView::Beats && (self.held.is_some() || self.selected_step().is_some())
+        self.view == PlayView::Beats && (self.group().is_some() || self.selected_step().is_some())
     }
 
     /// The step the inspector shows: the step held first, or the step
@@ -1437,7 +1451,7 @@ impl PlayPage {
         if self.view != PlayView::Beats {
             return None;
         }
-        if let Some((sound, steps)) = &self.held {
+        if let Some((sound, steps)) = self.group() {
             return Some((usize::from(*sound), *steps.first()?, true));
         }
         self.selected_step().map(|(pad, i, _)| (pad, i, false))
@@ -1458,6 +1472,7 @@ impl PlayPage {
         let has_note = target.is_some();
         let on = target.map(|(_, _, s)| s.on);
         let title = match (held, self.held_name()) {
+            (true, Some(steps)) if self.held.is_none() => format!("{steps} · {name} · picked"),
             (true, Some(steps)) => format!("{steps} · {name} · held"),
             _ => format!("Step {} · {name}", i + 1),
         };
@@ -1502,7 +1517,7 @@ impl PlayPage {
                     .collect()
             })
             .unwrap_or_default();
-        let one = self.held.as_ref().is_none_or(|(_, steps)| steps.len() == 1);
+        let one = self.group().is_none_or(|(_, steps)| steps.len() == 1);
         Some(Inspect {
             title,
             bank,
@@ -1612,8 +1627,9 @@ impl PlayPage {
                     to: i + 1,
                 })
             }
-            InspectTap::Close if !held => {
+            InspectTap::Close if self.held.is_none() => {
                 self.selected = None;
+                self.picks = None;
                 self.copy_from = None;
                 self.bank = HeldBank::Step;
                 None
@@ -1765,7 +1781,7 @@ impl PlayPage {
                     return QLinkCard::default();
                 };
                 let (text, pos, bipolar) = sk.kind.read(v);
-                let sound = self.held.as_ref().map_or(0, |h| usize::from(h.0));
+                let sound = self.group().map_or(0, |h| usize::from(h.0));
                 let scope = format!(
                     "{} · {}",
                     self.held_name().unwrap_or_default(),
@@ -1962,7 +1978,7 @@ impl PlayPage {
                 // Every step held takes the lock, with a note or not.
                 let (sk, v, _) = self.sound_value(usize::from(k))?;
                 let (addr, value) = (sk.addr, sk.kind.turn(v, ticks, fine));
-                let pad = self.held.as_ref()?.0;
+                let pad = self.group()?.0;
                 let a = StepAction::Lock {
                     pad,
                     steps: self.all_held_bits(),
@@ -2145,6 +2161,7 @@ impl PlayPage {
             if let Some((page, _)) = self.playhead().filter(|(p, _)| *p != self.page) {
                 self.page = page;
                 self.selected = None;
+                self.picks = None;
             }
         }
         // Hits older than the window go.
@@ -2160,7 +2177,32 @@ impl PlayPage {
     }
 
     pub fn set_steps(&mut self, s: StepsData) {
+        let shown = |d: &StepsData| (d.track, d.clip.as_ref().map(|c| c.slot));
+        let other = shown(&s) != shown(&self.steps);
         self.steps = s;
+        if other {
+            // Another track or clip (refactor C2's chip, a track picked):
+            // the steps picked were the last one's.
+            self.selected = None;
+            self.picks = None;
+        } else if let Some((pad, v)) = self.picks.clone() {
+            // A step picked together that has no note now (UNDO took it)
+            // leaves the steps picked.
+            let row = self
+                .steps
+                .clip
+                .as_ref()
+                .map(|c| c.row(pad))
+                .unwrap_or_default();
+            let lit: Vec<usize> = v
+                .iter()
+                .copied()
+                .filter(|&i| row.get(i).copied().flatten().is_some())
+                .collect();
+            if lit.len() != v.len() {
+                self.set_picks(usize::from(pad), lit);
+            }
+        }
         let n = self.steps.clip.as_ref().map_or(16, |c| c.steps);
         let pages = n.div_ceil(PAGE).max(1);
         self.page = match self.on_pads {
@@ -2734,7 +2776,15 @@ impl PlayPage {
         g.hold_picks = self.view == PlayView::Beats;
         let clip = self.steps.clip.as_ref();
         let first = clip.map_or("Pattern", |c| c.name.as_str());
-        let title = if self.steps.track_name.is_empty() {
+        // The Sequencer's Steps: the clip's name is a chip that lists the
+        // track's clips to edit (refactor C2), once there is a clip.
+        let chip = (self.sequencer && self.view == PlayView::Beats)
+            .then_some(clip)
+            .flatten()
+            .map(|c| c.name.clone());
+        let title = if chip.is_some() {
+            self.steps.track_name.clone()
+        } else if self.steps.track_name.is_empty() {
             first.to_string()
         } else {
             format!("{first} · {}", self.steps.track_name)
@@ -2748,6 +2798,9 @@ impl PlayPage {
             right.push_str(&format!(" · pads: page {} · BANK {letter}", s.page + 1));
         } else if clip.is_none() {
             right.push_str(" · tap a step to start one");
+        } else if let Some(other) = self.steps.playing.as_ref().filter(|_| chip.is_some()) {
+            // A clip picked to edit while another plays: which one is heard.
+            right.push_str(&format!(" · {other} plays"));
         } else if self.view == PlayView::Beats {
             right.push_str(" · hold a step to edit it");
         }
@@ -2767,6 +2820,9 @@ impl PlayPage {
         if g.title != title {
             g.title = title;
         }
+        if g.chip != chip {
+            g.chip = chip;
+        }
         if g.right != right {
             g.right = right;
         }
@@ -2784,8 +2840,7 @@ impl PlayPage {
         }
         // The step pads held, on the page shown: outlined too.
         let held: Vec<(usize, usize)> = self
-            .held
-            .as_ref()
+            .group()
             .map(|(sound, steps)| {
                 steps
                     .iter()
@@ -2858,6 +2913,7 @@ impl PlayPage {
         if moved {
             self.page = to;
             self.selected = None;
+            self.picks = None;
         }
         moved
     }
@@ -2873,6 +2929,7 @@ impl PlayPage {
         if moved {
             // The step picked was on the page left.
             self.selected = None;
+            self.picks = None;
         }
         moved
     }
@@ -2977,6 +3034,7 @@ impl PlayPage {
             return false;
         }
         self.copy_from = None;
+        self.picks = None;
         self.selected = Some((pad, i));
         if self.held.is_none() {
             self.bank = HeldBank::Step;
@@ -2984,11 +3042,84 @@ impl PlayPage {
         true
     }
 
+    /// SHIFT + a tap on step `col` of the page shown, on `pad`'s lane (the
+    /// Sequencer's Steps, refactor C4): a step with notes is picked at
+    /// once, or joins the steps picked on its lane, or (picked already)
+    /// leaves them. The inspector and the Q-Links then set every step
+    /// picked, as one undo, as they set steps held on the pads. False on
+    /// an empty step or a lock lane's: the tap then does what a tap does.
+    /// A line saying what is picked, when something changed.
+    pub fn shift_pick(&mut self, pad: usize, col: usize) -> Option<String> {
+        if pad >= crate::play_widgets::LOCK_LANE || pad > usize::from(u8::MAX) {
+            return None;
+        }
+        let i = self.page * PAGE + col;
+        let lit = self
+            .steps
+            .clip
+            .as_ref()
+            .is_some_and(|c| c.row(pad as u8).get(i).copied().flatten().is_some());
+        if !lit {
+            return None;
+        }
+        self.copy_from = None;
+        // The steps picked on this lane so far (none on another lane).
+        let mut steps: Vec<usize> = match (&self.picks, self.selected) {
+            (Some((p, v)), _) if usize::from(*p) == pad => v.clone(),
+            (None, Some((p, j))) if p == pad => vec![j],
+            _ => Vec::new(),
+        };
+        match steps.iter().position(|&s| s == i) {
+            Some(k) => {
+                steps.remove(k);
+            }
+            None => steps.push(i),
+        }
+        self.set_picks(pad, steps);
+        if self.held.is_none() {
+            self.bank = HeldBank::Step;
+        }
+        let name = self.pad_name(pad);
+        Some(match self.picks.as_ref().map(|(_, v)| v.len()) {
+            Some(n) => format!(
+                "steps: {n} steps of {name} picked: the Q-Links and the inspector set them all"
+            ),
+            None if self.selected.is_some() => format!("steps: step {} of {name} picked", i + 1),
+            None => "steps: nothing picked".to_string(),
+        })
+    }
+
+    /// The steps picked on `pad`'s lane: none, one (the step picked) or
+    /// several (picked together).
+    fn set_picks(&mut self, pad: usize, steps: Vec<usize>) {
+        match steps.len() {
+            0 => {
+                self.selected = None;
+                self.picks = None;
+            }
+            1 => {
+                self.selected = Some((pad, steps[0]));
+                self.picks = None;
+            }
+            _ => {
+                self.selected = None;
+                self.picks = Some((pad as u8, steps));
+            }
+        }
+    }
+
     /// Step `i` of `pad`'s lane comes out: the inspector lets it go.
     fn let_go_of(&mut self, pad: usize, i: usize) {
         if self.selected == Some((pad, i)) {
             self.selected = None;
             self.copy_from = None;
+        }
+        // A step taken out leaves the steps picked together.
+        if let Some((p, v)) = self.picks.clone().filter(|(p, _)| usize::from(*p) == pad) {
+            if v.contains(&i) {
+                let rest = v.into_iter().filter(|&s| s != i).collect();
+                self.set_picks(usize::from(p), rest);
+            }
         }
     }
 
@@ -3050,9 +3181,8 @@ impl PlayPage {
         if !note && !locked {
             return None;
         }
-        if self.selected == Some((pad, i)) {
-            self.selected = None;
-            self.copy_from = None;
+        if note {
+            self.let_go_of(pad, i);
         }
         Some(StepAction::ClearSteps {
             pad: pad as u8,

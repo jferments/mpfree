@@ -198,6 +198,12 @@ const LANES_HINT: &str = "Tap a setting, or turn the wheel and push: its lock la
 /// that plays outside gear (with its Another CC button).
 const LANES_PAD_LINE: &str = "Hit a pad first to list its sound's settings.";
 const LANES_GEAR_LINE: &str = "Another CC: any control of the gear, by number.";
+/// The Sequencer's clip chip (refactor C2): the selected track's clips,
+/// over the page, to pick the one the Sequencer edits without starting it.
+pub const EDIT_CLIPS_PAGE: &str = "Edit clip";
+pub const EDIT_CLIPS_LAYOUT: &str =
+    "col(header:60, row(edit-clips:*, edit-clips-card:440):*, hint:26)";
+const EDIT_CLIPS_HINT: &str = "Tap a clip, or turn the wheel and push: the Sequencer edits it and nothing starts   ·   Back or a tab: close the list";
 
 const CONSOLE_HINT: &str =
     "Switch the MPC off with its power switch to return to the stock firmware";
@@ -255,6 +261,10 @@ const SHIFT_PERFORM_HINT: &str = "SHIFT + a pad: learn a key on your gear for it
 const SHIFT_CLIPS_HINT: &str =
     "SHIFT +   tap a clip, a scene or a track's name: MIDI Learn   ·   drag a clip: copy   ·   \
      + Track: Loop track   ·   MENU: Prefs   ·   STOP: back to bar 1";
+/// SHIFT held on the Sequencer's Steps (refactor C4).
+const SHIFT_SEQ_HINT: &str =
+    "SHIFT +   tap steps: pick several, one turn sets them all   ·   a lock's drag: fine   ·   \
+     wheel: synth octave   ·   MENU: Prefs   ·   STOP: back to bar 1";
 const SHIFT_HINT: &str =
     "SHIFT +   wheel: synth octave   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
 /// SHIFT held with the pads as steps.
@@ -2145,6 +2155,10 @@ pub struct Player {
     kit_rows: Vec<Option<usize>>,
     /// The Lanes list is open over the Sequencer's Steps (its + Lane).
     lane_list: bool,
+    /// The Sequencer's clip chip's list is over the page (refactor C2),
+    /// and the slot each of its rows picks (None: what plays).
+    clip_list: bool,
+    clip_rows: Vec<Option<usize>>,
     /// The Lanes list's rows: each a setting, its name, and what it is on.
     lane_rows: Vec<(play_page::LockLane, String, String)>,
     /// A track asked of the time engine for a kit ("+ Kit track", or a
@@ -2345,6 +2359,30 @@ impl Player {
         ];
         lanes_card.buttons = vec!["Back".to_string()];
         ui.add("lanes-card", lanes_card);
+        ui.add("edit-clips", ListView::new("Clips"));
+        let mut clips_card = Card::new("Edit a clip");
+        clips_card.heading = "Clips".to_string();
+        clips_card.lines = vec![
+            (
+                "The Sequencer edits the clip you pick.".to_string(),
+                Tone::Normal,
+            ),
+            (
+                "Nothing starts or stops: what plays keeps playing.".to_string(),
+                Tone::Dim,
+            ),
+            (
+                "What plays: edit the clip that plays again.".to_string(),
+                Tone::Dim,
+            ),
+            (
+                "Picking another track goes back to what plays.".to_string(),
+                Tone::Dim,
+            ),
+            ("Back keeps the clip you edit.".to_string(), Tone::Dim),
+        ];
+        clips_card.buttons = vec!["Back".to_string()];
+        ui.add("edit-clips-card", clips_card);
         ui.add("timing", StatList::new("Timing"));
         ui.add(play_page::TRANSPORT, PlayTransport::default());
         ui.add(play_page::MASTER, MasterBar::new());
@@ -2431,6 +2469,8 @@ impl Player {
             .expect("undo history layout");
         ui.add_page(KITS_PAGE, KITS_LAYOUT).expect("kits layout");
         ui.add_page(LANES_PAGE, LANES_LAYOUT).expect("lanes layout");
+        ui.add_page(EDIT_CLIPS_PAGE, EDIT_CLIPS_LAYOUT)
+            .expect("edit clips layout");
         ui.add_page("System info", SYSTEM_LAYOUT)
             .expect("system info layout");
         let patterns = crate::app::built_in_patterns();
@@ -2641,6 +2681,8 @@ impl Player {
             kit_list: false,
             kit_rows: Vec::new(),
             lane_list: false,
+            clip_list: false,
+            clip_rows: Vec::new(),
             lane_rows: Vec::new(),
             kit_track: None,
             sound_track: None,
@@ -3283,6 +3325,87 @@ impl Player {
         self.switch_page(LANES_PAGE);
         self.lane_list = true;
         self.refresh_hint();
+    }
+
+    /// The clip chip's list again (refactor C2): What plays, then each of
+    /// the selected track's clips, saying which plays, which starts next
+    /// and which the Sequencer edits.
+    fn refresh_clip_list(&mut self) {
+        let track = self.play.steps.track;
+        let shown = self.play.steps.clip.as_ref().map(|c| c.slot);
+        let picked = self.time.clip_pick;
+        let playing = self.time.launch(track).map(|l| l.slot);
+        let next = self
+            .time
+            .cues
+            .iter()
+            .find(|c| c.track == track)
+            .and_then(|c| c.slot);
+        let name = |s: usize| self.time.clip(track, s).map(|c| c.name.clone());
+        let mut rows = vec![None];
+        let mut items = vec![ListItem {
+            text: "What plays".to_string(),
+            detail: match playing.and_then(name) {
+                Some(n) if picked.is_none() => format!("{n} · editing"),
+                Some(n) => n,
+                None => "no clip plays: the first".to_string(),
+            },
+            color: None,
+        }];
+        let slots = self.time.tracks.get(track).map_or(0, |t| t.slots.len());
+        for s in 0..slots {
+            let Some(text) = name(s) else { continue };
+            let mut detail = format!("slot {}", s + 1);
+            if playing == Some(s) {
+                detail.push_str(" · plays");
+            }
+            if next == Some(s) {
+                detail.push_str(" · starts next");
+            }
+            if picked == Some(s) || (picked.is_none() && shown == Some(s) && playing.is_none()) {
+                detail.push_str(" · editing");
+            }
+            rows.push(Some(s));
+            items.push(ListItem {
+                text,
+                detail,
+                color: None,
+            });
+        }
+        let selected = rows.iter().position(|r| *r == picked).unwrap_or(0);
+        if let Some(l) = self.ui.get_mut::<ListView>("edit-clips") {
+            l.items = items;
+            l.selected = selected;
+        }
+        self.clip_rows = rows;
+    }
+
+    /// The Sequencer's clip chip: the list of the track's clips over the
+    /// page, or the page again.
+    fn toggle_clip_list(&mut self) {
+        if self.clip_list {
+            self.show_view(self.view);
+            return;
+        }
+        if self.play.steps.clip.is_none() {
+            self.tell("clips: tap a step to start a pattern first");
+            return;
+        }
+        self.close_touch_page();
+        self.refresh_clip_list();
+        self.switch_page(EDIT_CLIPS_PAGE);
+        self.clip_list = true;
+        self.refresh_hint();
+    }
+
+    /// Row `row` of the clip chip's list picked: the list closes and the
+    /// Sequencer edits that clip (or what plays), with nothing started.
+    fn pick_edit_clip(&mut self, row: usize) -> Option<FromUi> {
+        let slot = *self.clip_rows.get(row)?;
+        if self.clip_list {
+            self.show_view(self.view);
+        }
+        Some(FromUi::Time(TimeAction::EditClip(slot)))
     }
 
     /// A setting picked on the Lanes list: its lock lane shows (with no
@@ -5527,6 +5650,7 @@ impl Player {
         let mut g = StepGrid::default();
         if let Some(old) = self.ui.get::<StepGrid>(play_page::STEPS) {
             g.title.clone_from(&old.title);
+            g.chip.clone_from(&old.chip);
             g.right.clone_from(&old.right);
             g.lanes.clone_from(&old.lanes);
             g.steps = old.steps;
@@ -5561,10 +5685,12 @@ impl Player {
                     && (old.top, old.add_lane) == (g.top, g.add_lane)
                     && old.rows_open == g.rows_open
                     && old.hold_picks == g.hold_picks
+                    && old.chip == g.chip
             });
         if !same {
             if let Some(w) = self.ui.get_mut::<StepGrid>(play_page::STEPS) {
                 w.title = g.title;
+                w.chip = g.chip;
                 w.right = g.right;
                 w.lanes = g.lanes;
                 w.steps = g.steps;
@@ -5582,6 +5708,9 @@ impl Player {
         }
         if self.lane_list {
             self.refresh_lane_list();
+        }
+        if self.clip_list {
+            self.refresh_clip_list();
         }
         let mut th = Throws::default();
         self.play.fill_throws(&mut th);
@@ -6345,6 +6474,8 @@ impl Player {
             KITS_HINT.to_string()
         } else if self.lane_list {
             LANES_HINT.to_string()
+        } else if self.clip_list {
+            EDIT_CLIPS_HINT.to_string()
         } else if let Some(name) = &self.learning {
             learning_hint(name)
         } else if let Some(bank) = self.status.main_held.filter(|_| self.ready) {
@@ -6394,6 +6525,13 @@ impl Player {
             && (self.view != View::Mixer || mpfree_mixer_ui::io_hint(&self.ui).is_none())
         {
             SHIFT_LEARN_HINT.to_string()
+        } else if self.status.shift
+            && self.ready
+            && self.view == View::Sequencer
+            && self.play.view == PlayView::Beats
+            && self.time.edit.is_none()
+        {
+            SHIFT_SEQ_HINT.to_string()
         } else if self.status.shift && self.ready {
             SHIFT_HINT.to_string()
         } else if self.status.erase && self.ready && self.status.steps.is_some_and(|s| !s.picking) {
@@ -7056,6 +7194,26 @@ impl Player {
     /// control to control, press the control it is on, or grab a value and
     /// turn it.
     fn nav(&mut self, n: Nav) {
+        // The clip chip's list takes the wheel: it moves the row picked,
+        // and the push edits that clip.
+        if self.clip_list {
+            match n {
+                Nav::Turn(d) | Nav::Step(d) | Nav::Fine(d) => {
+                    if let Some(l) = self.ui.get_mut::<ListView>("edit-clips") {
+                        let last = l.items.len().saturating_sub(1) as i64;
+                        l.selected = (l.selected as i64 + i64::from(d)).clamp(0, last) as usize;
+                    }
+                }
+                Nav::Push => {
+                    let row = self.ui.get::<ListView>("edit-clips").map(|l| l.selected);
+                    if let Some(a) = row.and_then(|r| self.pick_edit_clip(r)) {
+                        self.outbox.push(a);
+                    }
+                }
+            }
+            self.refresh_hint();
+            return;
+        }
         // The Lanes list takes the wheel: it moves the row picked (the
         // list follows it, past the rows a finger reaches) and the push
         // adds that row's lane.
@@ -10310,23 +10468,35 @@ impl Player {
     /// An opened project's parts: the screen's own go to the Sample tab and
     /// the I/O setup here; the audio loop's are read and built here and
     /// sent in one piece (project.rs).
+    ///
+    /// All or nothing (docs/dev/design/project-safety.md): the whole
+    /// project is read first, and one that can't be (saved by a newer
+    /// MPFree, or a part that doesn't read) is refused before anything
+    /// changes, so the project open stays as it was. A part the project
+    /// hasn't got opens as New has it, never as the last project left it.
     fn open_project(&mut self, loc: &mpfree_library::Loc, snap: &mpfree_library::Snapshot) {
-        if let Some(text) = snap.part(crate::project::SAMPLER) {
-            if let Some(lib) = self.browser.as_ref().map(|b| b.library().clone()) {
-                let loc = loc.clone();
-                self.sample.open_part(
-                    text.to_string(),
-                    Box::new(move |f| {
-                        lib.sample_path(&loc, f)
-                            .and_then(std::fs::read)
-                            .map_err(|e| e.to_string())
-                    }),
-                );
-            }
+        let o = match self.project_opening(snap, loc.name()) {
+            Ok(o) => o,
+            Err(why) => return self.open_refused(loc.name(), &why),
+        };
+        let lib = self.browser.as_ref().map(|b| b.library().clone());
+        if let (Some(text), Some(lib)) = (snap.part(crate::project::SAMPLER), lib) {
+            let loc = loc.clone();
+            self.sample.open_part(
+                text.to_string(),
+                Box::new(move |f| {
+                    lib.sample_path(&loc, f)
+                        .and_then(std::fs::read)
+                        .map_err(|e| e.to_string())
+                }),
+            );
         }
         self.open_midi(snap.part(crate::project::MIDI));
-        let o = crate::project::opening(snap, self.project_rate, loc.name(), &self.project_plugins);
         self.outbox.push(FromUi::OpenProject(Box::new(o)));
+        // No kits saved: the factory kits, as New has them.
+        if snap.part(crate::project::SAMPLER).is_none() {
+            self.factory_kits();
+        }
         // The loops, on a thread: the layers' files can be big. A read
         // still going for an earlier open is dropped with its channel.
         self.loops_load = None;
@@ -10405,6 +10575,51 @@ impl Player {
         }
     }
 
+    /// The project as the audio loop takes it, every part read: the parts
+    /// it hasn't got are New's ([`crate::project::completed`]). Err says
+    /// why it can't open, in words for the musician.
+    fn project_opening(
+        &self,
+        snap: &mpfree_library::Snapshot,
+        what: &str,
+    ) -> Result<crate::project::Opening, String> {
+        let filled;
+        let snap = match &self.project_defaults {
+            _ if crate::project::is_complete(snap) => snap,
+            Some(d) => {
+                filled = crate::project::completed(snap, d);
+                &filled
+            }
+            None => return Err("the sound is still starting; try again in a moment".to_string()),
+        };
+        crate::project::opening(snap, self.project_rate, what, &self.project_plugins)
+    }
+
+    /// A project that can't open: nothing of it went in, and the browser
+    /// goes back to the project still open, so that it can't be saved over
+    /// the refused one.
+    fn open_refused(&mut self, name: &str, why: &str) {
+        let line = format!("didn't open {name}: {why}. The project you had open is unchanged");
+        if let Some(b) = self.browser.as_mut() {
+            b.open_refused(tell_text(&line));
+            mpfree_browser_ui::show(&mut self.ui, b);
+        }
+        self.say(format!("project: {line}"));
+        self.tell(&line);
+    }
+
+    /// The factory kits on every kit, their sound with the open's actions
+    /// (New, or a project with no kits saved).
+    fn factory_kits(&mut self) {
+        if !self.sample.reset_kits(&mut self.ui) {
+            self.say("project: the kits haven't come yet; they stay as they are".to_string());
+        }
+        self.sample_changed();
+        if let Some(a) = self.sample.take_view() {
+            self.outbox.push(a);
+        }
+    }
+
     /// New project: the parts the app started with, the factory kits.
     fn new_project(&mut self) {
         let Some(d) = self.project_defaults.as_ref() else {
@@ -10415,25 +10630,27 @@ impl Player {
             return;
         };
         let snap = crate::project::new_snapshot(d);
-        let mut o = crate::project::opening(
+        let o = match crate::project::opening(
             &snap,
             self.project_rate,
             "a new project",
             &self.project_plugins,
-        );
-        (o.clear_loops, o.clear_audio) = (true, true);
+        ) {
+            Ok(o) => o,
+            // New's own parts always read; if one ever didn't, nothing
+            // changes and it is said.
+            Err(why) => {
+                let line = format!("a new project couldn't be made: {why}");
+                self.say(format!("project: {line}"));
+                self.tell(&line);
+                return;
+            }
+        };
         self.open_midi(None);
         self.outbox.push(FromUi::OpenProject(Box::new(o)));
         (self.loops_load, self.audio_load) = (None, None);
         self.opened_at = Some(Instant::now());
-        if !self.sample.reset_kits(&mut self.ui) {
-            self.say("project: the kits haven't come yet; they stay as they are".to_string());
-        }
-        self.sample_changed();
-        // The factory kits' sound goes out with New's own actions.
-        if let Some(a) = self.sample.take_view() {
-            self.outbox.push(a);
-        }
+        self.factory_kits();
         self.open_actions = self.outbox.len();
         self.say("project: new project".to_string());
     }
@@ -11296,6 +11513,7 @@ impl Player {
         // Sequencer's transport both have the chip).
         self.kit_list = false;
         self.lane_list = false;
+        self.clip_list = false;
         let notes = v == View::Sequencer && self.time.edit.is_some();
         if v != self.view || notes || !matches!(v, View::Play | View::Sequencer) {
             self.rec_list = false;
@@ -12343,6 +12561,12 @@ impl Player {
                 self.show_view(self.view);
                 None
             }
+            // The clip chip's list: a clip to edit (or what plays); Back.
+            ("edit-clips", EventKind::Select(row)) => self.pick_edit_clip(row),
+            ("edit-clips-card", EventKind::Tab(_)) => {
+                self.show_view(self.view);
+                None
+            }
             (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_BPM)) => {
                 Some(FromUi::TapTempo)
             }
@@ -12488,6 +12712,12 @@ impl Player {
                 self.toggle_lane_list();
                 None
             }
+            // The clip chip (refactor C2): the track's clips, to edit one
+            // without starting it.
+            (play_page::STEPS, EventKind::Tab(play_widgets::HEAD_CLIP)) => {
+                self.toggle_clip_list();
+                None
+            }
             // A gear lane's mod rows (LFO to CC, layout spec 4m): its name
             // opens them over the pattern; + LFO adds a row from LFO 1, a
             // finger on a row's bar sets its depth, its × takes it off,
@@ -12580,6 +12810,23 @@ impl Player {
                     .map_or(0, |(r, g)| g.steps_last_top(r));
                 self.play.scroll_steps(delta, last);
                 self.refresh_play();
+                None
+            }
+            // SHIFT + a tap on a step with notes (the Sequencer's Steps,
+            // refactor C4): it is picked at once, with the steps picked on
+            // its lane already, or leaves them; the Q-Links and the
+            // inspector set them all. On an empty step it is a tap.
+            (play_page::STEPS, EventKind::Cell { row, col })
+                if self.status.shift
+                    && self.view == View::Sequencer
+                    && self.play.view == PlayView::Beats
+                    && self.play.shift_pick(row, col).is_some_and(|line| {
+                        println!("{line}");
+                        true
+                    }) =>
+            {
+                self.refresh_play();
+                self.refresh_qlinks();
                 None
             }
             (play_page::STEPS, EventKind::Cell { row, col }) => {
@@ -16345,6 +16592,23 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     list.toggle_lane_list();
     out.push(("sequencer-lock-lanes", lanes));
     out.push(("sequencer-lanes-list", list));
+    // The clip chip's list (refactor C2): What plays, then the track's
+    // clips, Pattern 1 playing and edited.
+    let mut clips = sample_play(fonts(), PlayView::Beats);
+    {
+        let track = clips.play.steps.track;
+        let mut st = clips.time.clone();
+        if let Some(c) = st.tracks[track].slots[0].clone() {
+            for (s, name) in [(1, "Fill"), (2, "Pattern 3"), (4, "Breakdown")] {
+                let mut other = c.clone();
+                other.name = name.into();
+                st.tracks[track].slots[s] = Some(other);
+            }
+        }
+        clips.apply(ToUi::Time(Box::new(st)));
+    }
+    clips.toggle_clip_list();
+    out.push(("sequencer-edit-clips", clips));
     // A track that plays outside gear (step 5b, board 4): its notes as
     // scale rows, its CC lanes under them (the gear's Cutoff opening over
     // the bar, a bend on step 7); then its Lanes list, the gear's CCs.
@@ -19631,6 +19895,7 @@ mod tests {
         p.time.edit = Some(Box::new(time_view::EditInfo {
             editor: Editor::new(0, 0, &clip),
             clip,
+            rev: 0,
             track_name: "Track 1".into(),
             bar: 3840,
         }));
@@ -19650,7 +19915,10 @@ mod tests {
         let tc = grid.button_rects(area)[7];
         assert_eq!(
             tap(&mut p, (note.x + note.w / 2, note.y + note.h / 2)),
-            Some(FromUi::Time(TimeAction::Edit(EditAction::Note(1))))
+            Some(FromUi::Time(TimeAction::Edit(EditAction::Note {
+                index: 1,
+                rev: 0
+            })))
         );
         assert_eq!(
             tap(&mut p, (tc.x + tc.w / 2, tc.y + tc.h / 2)),
@@ -22734,6 +23002,180 @@ mod tests {
         assert!(p
             .take_actions()
             .contains(&FromUi::PlayFx(PlayFx::XyEffect(Some(1)))));
+    }
+
+    /// Refactor C4: on the Sequencer's Steps SHIFT + a tap picks a step
+    /// with notes at once; more taps add steps on its lane, a second tap
+    /// takes one out, and one Q-Link turn sets them all as one edit. A
+    /// tap that takes a step out leaves the picks too; SHIFT + an empty
+    /// step is a tap; a hold, a page turn or the inspector's × ends the
+    /// picks; SHIFT's hint says so.
+    #[test]
+    fn shift_and_taps_pick_several_steps_and_one_turn_sets_them_all() {
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.take_actions();
+        let hat = 4;
+        let lit = |p: &Player, i: usize| {
+            p.play
+                .steps
+                .clip
+                .as_ref()
+                .is_some_and(|c| c.row(hat as u8).get(i).copied().flatten().is_some())
+        };
+        let (a, b, c) = (0, 2, 4);
+        assert!(lit(&p, a) && lit(&p, b) && lit(&p, c) && !lit(&p, 1));
+        let tap = |p: &mut Player, col: usize| {
+            p.on_event(UiEvent {
+                widget: play_page::STEPS.into(),
+                kind: EventKind::Cell { row: hat, col },
+            })
+        };
+        p.status.shift = true;
+        p.refresh_hint();
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains("tap steps: pick several"), "{hint}");
+        // SHIFT + taps: one step, then three together (no step changes).
+        assert_eq!(tap(&mut p, a), None);
+        assert_eq!(p.play.selected, Some((hat, a)));
+        assert_eq!(tap(&mut p, b), None);
+        assert_eq!(tap(&mut p, c), None);
+        assert_eq!(p.play.picks, Some((hat as u8, vec![a, b, c])));
+        assert_eq!(p.play.selected, None);
+        assert!(p.take_actions().is_empty(), "picking edits nothing");
+        let title = p.play.inspect().unwrap().title;
+        assert!(
+            title.starts_with("Steps 1, 3, 5 · ") && title.ends_with(" · picked"),
+            "{title}"
+        );
+        // One turn of the velocity Q-Link sets the three as one edit.
+        let bits = (1u128 << a) | (1 << b) | (1 << c);
+        let knob = p.play.knobs()[0];
+        assert_eq!(knob, Knob::Velocity);
+        match p.play.turn_knob(knob, 2, false) {
+            Some(Turn::Step(StepAction::ChangeSteps { pad, steps, .. })) => {
+                assert_eq!((pad, steps), (hat as u8, bits));
+            }
+            t => panic!("{t:?}"),
+        }
+        // A second SHIFT + tap takes one out of the picks.
+        tap(&mut p, b);
+        assert_eq!(p.play.picks, Some((hat as u8, vec![a, c])));
+        // SHIFT + an empty step is a tap: a note goes in.
+        assert!(matches!(
+            tap(&mut p, 1),
+            Some(FromUi::Steps(StepAction::Tap { step: 1, .. }))
+        ));
+        // A plain tap taking a picked step out leaves the picks: one is
+        // left, the step picked.
+        p.status.shift = false;
+        assert!(matches!(
+            tap(&mut p, c),
+            Some(FromUi::Steps(StepAction::Tap { step: 4, .. }))
+        ));
+        assert_eq!(p.play.picks, None);
+        assert_eq!(p.play.selected, Some((hat, a)));
+        // Picked again, then the inspector's × lets them all go.
+        p.status.shift = true;
+        tap(&mut p, b);
+        assert!(p.play.picks.is_some());
+        p.play.inspector_tap(InspectTap::Close);
+        assert_eq!((p.play.picks.clone(), p.play.selected), (None, None));
+        // A hold picks one step alone; another clip shown lets picks go.
+        tap(&mut p, a);
+        tap(&mut p, b);
+        assert!(p.play.pick_step(hat, c));
+        assert_eq!(
+            (p.play.picks.clone(), p.play.selected),
+            (None, Some((hat, c)))
+        );
+        tap(&mut p, a);
+        assert!(p.play.picks.is_some());
+        let mut other = p.play.steps.clone();
+        if let Some(clip) = other.clip.as_mut() {
+            clip.slot += 1;
+        }
+        p.play.set_steps(other);
+        assert_eq!((p.play.picks.clone(), p.play.selected), (None, None));
+    }
+
+    /// Refactor C2: on the Sequencer's Steps the clip's name is a chip;
+    /// a tap lists What plays and the track's clips (which plays, which
+    /// the Sequencer edits), and a row picked, by a tap or the wheel's
+    /// push, asks to edit that clip with nothing started. Back closes it.
+    #[test]
+    fn the_clip_chip_lists_the_tracks_clips_and_picks_one_to_edit() {
+        use mpfree_ui::Widget as _;
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        let track = p.play.steps.track;
+        let mut st = p.time.clone();
+        let mut other = st.tracks[track].slots[0].clone().unwrap();
+        other.name = "Pattern 3".into();
+        st.tracks[track].slots[2] = Some(other);
+        p.apply(ToUi::Time(Box::new(st)));
+        p.take_actions();
+        let grid = p.ui.get::<StepGrid>(play_page::STEPS).unwrap();
+        assert_eq!(grid.chip.as_deref(), Some("Pattern 1"));
+        assert!(!grid.title.contains("PATTERN") && !grid.title.contains("Pattern"));
+        let r = p.ui.rect_of(play_page::STEPS).unwrap();
+        let chip = grid
+            .targets(r)
+            .into_iter()
+            .find(|t| t.id == "head" && t.index == play_widgets::HEAD_CLIP)
+            .unwrap()
+            .rect;
+        let (x, y) = (chip.x + chip.w / 2, chip.y + chip.h / 2);
+        let page = p.page().to_string();
+        p.touch(7, Touch::Down, x, y);
+        p.touch(7, Touch::Up, x, y);
+        assert_eq!(p.page(), EDIT_CLIPS_PAGE);
+        let rows: Vec<(String, String)> =
+            p.ui.get::<ListView>("edit-clips")
+                .unwrap()
+                .items
+                .iter()
+                .map(|i| (i.text.clone(), i.detail.clone()))
+                .collect();
+        assert_eq!(
+            rows,
+            [
+                ("What plays".to_string(), "Pattern 1 · editing".to_string()),
+                ("Pattern 1".to_string(), "slot 1 · plays".to_string()),
+                ("Pattern 3".to_string(), "slot 3".to_string()),
+            ]
+        );
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains("nothing starts"), "{hint}");
+        // A tap on Pattern 3: the list closes, nothing launches.
+        assert_eq!(
+            p.on_event(UiEvent {
+                widget: "edit-clips".into(),
+                kind: EventKind::Select(2),
+            }),
+            Some(FromUi::Time(TimeAction::EditClip(Some(2))))
+        );
+        assert_eq!(p.page(), page);
+        // The wheel: down one row from What plays, and the push picks it.
+        p.toggle_clip_list();
+        assert_eq!(p.page(), EDIT_CLIPS_PAGE);
+        p.take_actions();
+        p.nav(Nav::Turn(1));
+        p.nav(Nav::Push);
+        assert!(p
+            .take_actions()
+            .contains(&FromUi::Time(TimeAction::EditClip(Some(0)))));
+        assert_ne!(p.page(), EDIT_CLIPS_PAGE);
+        // Back keeps the clip edited.
+        p.toggle_clip_list();
+        p.take_actions();
+        assert_eq!(
+            p.on_event(UiEvent {
+                widget: "edit-clips-card".into(),
+                kind: EventKind::Tab(0),
+            }),
+            None
+        );
+        assert_ne!(p.page(), EDIT_CLIPS_PAGE);
+        assert!(p.take_actions().is_empty());
     }
 
     /// The Sequencer's lock lanes (the redesign's step 5, board 3): the
@@ -26508,6 +26950,89 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Phase 0 of the audio tracks plan (docs/dev/design/project-safety.md):
+    /// a project this build can't read whole (clips saved as
+    /// `mpfree-clips 9`, as an `mpfree-clips 2` project is to a build from
+    /// before it, or a newer project format) doesn't open. Nothing goes to
+    /// the engines, the browser still saves to the project that was open,
+    /// and the screen says why in plain words.
+    #[test]
+    fn a_project_this_build_cant_read_doesnt_open_and_the_open_one_stays() {
+        use crate::project::{self, Defaults};
+        use mpfree_browser_ui::sample::{select, source};
+        use mpfree_library::{Loc, Place};
+        let dir = std::env::temp_dir().join(format!("mpfree-refused-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = mpfree_library::Library::at(&dir).unwrap();
+        let mut p = sample_sampler(Fonts::embedded());
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), "");
+        p.take_actions();
+        let synth = crate::synth::Synth::new(44_100);
+        let good = project::new_snapshot(&Defaults {
+            tempo: 120.0,
+            mixer: project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0, 0),
+            modu: String::new(),
+            synth: project::synth_text(&Default::default(), &synth.sounds()),
+        });
+        let song = Loc::top(Place::Projects).join("Song").unwrap();
+        lib.save_project(&song, &good, 0).unwrap();
+        let mut clips_9 = good.clone();
+        for (name, text) in &mut clips_9.parts {
+            if name == project::CLIPS {
+                *text = text.replacen("mpfree-clips 2", "mpfree-clips 9", 1);
+            }
+        }
+        let mut newer = good.clone();
+        for (k, v) in &mut newer.meta.extra {
+            if k == project::FORMAT_KEY {
+                *v = (project::FORMAT + 1).to_string();
+            }
+        }
+        let later = Loc::top(Place::Projects).join("From later").unwrap();
+        let newest = Loc::top(Place::Projects).join("Newest").unwrap();
+        lib.save_project(&later, &clips_9, 0).unwrap();
+        lib.save_project(&newest, &newer, 0).unwrap();
+        p.apply(ToUi::Show(View::Browser));
+        let open = |p: &mut Player, name: &str| {
+            let b = p.browser.as_mut().unwrap();
+            b.go_source(source("Projects"));
+            select(b, name);
+            b.push();
+            p.step_browser();
+            p.take_actions().into_iter().find_map(|a| match a {
+                FromUi::OpenProject(o) => Some(o),
+                _ => None,
+            })
+        };
+        let opened = open(&mut p, "Song").expect("Song opens");
+        p.apply(ToUi::ProjectBack(opened));
+        for (name, why) in [
+            ("From later", "its clips can't be read ("),
+            ("Newest", "it was saved by a newer MPFree ("),
+        ] {
+            assert!(open(&mut p, name).is_none(), "{name} went to the engines");
+            let b = p.browser.as_ref().unwrap();
+            assert_eq!(b.project(), Some(&song), "{name}");
+            assert_eq!(b.last_project(), Some(&song), "{name}");
+            assert!(!b.unsaved(), "{name}");
+            let (line, problem) = b.status_line().unwrap();
+            assert!(problem, "{line}");
+            assert!(
+                line.starts_with(&format!("Didn't open {name}: {why}"))
+                    && line.ends_with("The project you had open is unchanged"),
+                "{line}"
+            );
+            let said = format!("project: didn't open {name}: {why}");
+            assert!(
+                events_log(&p).iter().any(|l| l.starts_with(&said)),
+                "{:?}",
+                events_log(&p)
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// Autosave (Jay's pick, 14 Nov): unsaved work edited since the last
     /// autosave goes, every 2 minutes, into autosave's own project; a save
     /// the musician asks for wins. At the next start, work autosaved after
@@ -26543,7 +27068,7 @@ mod tests {
                 mixer: mixer.clone(),
                 modu: String::new(),
                 synth: synth_text.clone(),
-                arp: String::new(),
+                arp: format!("{}\n", crate::app::ARP_HEADER),
                 instruments: String::new(),
                 track_kits: String::new(),
                 instrument_list: crate::instrument_list::InstrumentList::new().text(),

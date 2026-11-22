@@ -111,13 +111,20 @@ pub use mpfree_seq::steps::LINE;
 /// Pad hits kept for the screen between two periods (more are dropped).
 const MAX_HITS: usize = 16;
 
-/// What the Play page's pattern shows: the armed track's clip (the one
-/// playing, else its first), each sound's steps.
+/// What the Play page's pattern shows: the selected track's clip (the one
+/// picked to edit, else the one playing, else its first), each sound's
+/// steps.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StepsData {
     pub track: usize,
     pub track_name: String,
     pub clip: Option<StepClip>,
+    /// The clip was picked to edit apart from what plays (the Sequencer's
+    /// clip chip, refactor C2).
+    pub picked: bool,
+    /// The track's clip that plays, when it isn't the one shown: its
+    /// name.
+    pub playing: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2226,6 +2233,53 @@ mod tests {
         );
     }
 
+    /// In song mode a tap on a clip the song plays goes into the one copy
+    /// every block of it plays, on its own lane and on another track's, in
+    /// place (Arrange 2.3): no compile, nothing allocated or freed on the
+    /// audio half, and the view just what a compile gives.
+    #[test]
+    fn a_step_edit_in_song_mode_goes_into_every_block_in_place() {
+        use mpfree_seq::arrange::Placement;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let tap = |pad, step, velocity| StepAction::Tap {
+            pad,
+            step,
+            velocity,
+        };
+        // A pattern on track 0, stopped, then in the song: two blocks on
+        // its own lane and one on track 1's.
+        h.step_action(tap(0, 0, 100)).unwrap();
+        h.act(TimeAction::StopAll).unwrap();
+        let p = &mut h.control.project;
+        for (track, start) in [(0, 0), (0, 2 * 3840), (1, 3840)] {
+            let mut b = Placement::of(&p.tracks, 0, 0, start, 3840);
+            b.track = track;
+            p.arrangement.place(b).unwrap();
+        }
+        h.act(TimeAction::SongMode(true)).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        assert_eq!(h.steps().clip.map(|c| c.slot), Some(0));
+        let compiles = h.control.costs.compiles;
+        let edits = [tap(0, 4, 100), tap(0, 8, 90), tap(0, 4, 100)];
+        for (i, a) in edits.into_iter().enumerate() {
+            let line = h.control.step_action(a);
+            assert!(line.is_ok(), "{a:?}: {line:?}");
+            let ((), allocs) = crate::sys::alloc_count::calls(|| h.audio.receive());
+            assert_eq!(allocs, 0, "{a:?}: the audio half allocated or freed");
+            assert_eq!(
+                *h.audio.view,
+                h.control.view().unwrap(),
+                "{a:?}: the view in place is what a compile gives"
+            );
+            run(&mut h, &mut pads, BAR / 2 + (i as u64 + 1) * BAR / 4, &[]);
+        }
+        assert_eq!(h.control.costs.compiles, compiles, "nothing compiled");
+        assert_eq!(h.control.costs.steps_in_place, edits.len() as u64);
+        assert_eq!(h.audio.counts().missed, 0);
+    }
+
     /// A step edit the view can't take in place compiles, as before: a new
     /// pattern, the pattern's length, a big erase, and any edit while
     /// recording, when the audio half edits the view itself.
@@ -2398,6 +2452,99 @@ mod tests {
         assert_eq!(h.control.costs.compiles, compiles + 1);
         h.act(TimeAction::Select(0)).unwrap();
         assert_eq!(h.control.costs.compiles, compiles + 1);
+    }
+
+    /// Refactor C2: the clip chip picks which of the selected track's
+    /// clips the Sequencer edits, without starting it: what plays keeps
+    /// playing, the edit goes to the picked clip (one take UNDO takes
+    /// back) with nothing compiled, and another track selected, What
+    /// plays or the clip taken away goes back to the clip that plays.
+    #[test]
+    fn a_clip_picked_to_edit_takes_the_steps_and_nothing_starts() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        for (s, name) in ["Pattern 1", "Pattern 2", "Pattern 3"]
+            .into_iter()
+            .enumerate()
+        {
+            h.control.project.tracks[0].slots[s] = Some(Clip::new(name, 16 * STEP_TICKS));
+        }
+        h.control.project.tracks[1].slots[0] = Some(Clip::new("Bass", 16 * STEP_TICKS));
+        h.control.project.give_clip_ids();
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 4, &[]);
+        let said = h.act(TimeAction::EditClip(Some(2))).unwrap();
+        assert_eq!(said, "editing Pattern 3 on Track 1 (Pattern 1 plays)");
+        let steps = h.steps();
+        assert_eq!(steps.clip.as_ref().map(|c| c.slot), Some(2));
+        assert!(steps.picked);
+        assert_eq!(steps.playing.as_deref(), Some("Pattern 1"));
+        assert_eq!(h.state().clip_pick, Some(2));
+        // A step goes into Pattern 3; Pattern 1 plays on, untouched, and
+        // nothing compiles (the picked clip isn't in what plays).
+        let compiles = h.control.costs.compiles;
+        h.step_action(StepAction::Tap {
+            pad: 0,
+            step: 4,
+            velocity: 100,
+        })
+        .unwrap();
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        assert_eq!(h.project().clip(0, 2).unwrap().notes.len(), 1);
+        assert!(h.project().clip(0, 0).unwrap().notes.is_empty());
+        assert_eq!(h.control.launches.len(), 1);
+        assert_eq!(h.control.launches[0].slot, 0, "Pattern 1 still plays");
+        assert_eq!(h.control.costs.compiles, compiles, "nothing compiled");
+        assert_eq!(*h.audio.view, h.control.view().unwrap());
+        h.act(TimeAction::Undo).unwrap();
+        assert!(
+            h.project().clip(0, 2).unwrap().notes.is_empty(),
+            "UNDO takes it back"
+        );
+        assert_eq!(
+            h.steps().clip.as_ref().map(|c| c.slot),
+            Some(2),
+            "and the pick stays"
+        );
+        // Launching another clip keeps the pick.
+        h.act(TimeAction::Launch { track: 0, slot: 1 }).unwrap();
+        run(&mut h, &mut pads, BAR * 2, &[]);
+        assert_eq!(h.steps().clip.as_ref().map(|c| c.slot), Some(2));
+        // What plays: the clip that plays again.
+        h.act(TimeAction::EditClip(None)).unwrap();
+        let steps = h.steps();
+        assert_eq!(steps.clip.as_ref().map(|c| c.slot), Some(1));
+        assert!(!steps.picked);
+        assert_eq!(steps.playing, None);
+        assert_eq!(h.state().clip_pick, None);
+        // Another track selected forgets the pick; back on track 1 the
+        // Sequencer shows what plays.
+        h.act(TimeAction::EditClip(Some(2))).unwrap();
+        h.act(TimeAction::Arm(Some(1))).unwrap();
+        assert_eq!(h.state().clip_pick, None);
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        assert_eq!(h.steps().clip.as_ref().map(|c| c.slot), Some(1));
+        // The picked clip dragged to another row: the pick goes with it
+        // (kept by the clip's lasting id, not its row).
+        h.act(TimeAction::EditClip(Some(2))).unwrap();
+        h.act(TimeAction::DropClip {
+            from: (0, 2),
+            to: (0, 5),
+            copy: false,
+        })
+        .unwrap();
+        assert_eq!(h.state().clip_pick, Some(5));
+        assert_eq!(h.steps().clip.as_ref().map(|c| c.slot), Some(5));
+        // A picked clip taken away: the Sequencer goes back to what plays.
+        h.act(TimeAction::DeleteClip { track: 0, slot: 5 }).unwrap();
+        assert_eq!(h.state().clip_pick, None);
+        assert_eq!(h.steps().clip.as_ref().map(|c| c.slot), Some(1));
+        // An empty slot, or nothing selected, can't be picked.
+        assert!(h.act(TimeAction::EditClip(Some(9))).is_err());
+        h.act(TimeAction::Arm(None)).unwrap();
+        assert!(h.act(TimeAction::EditClip(Some(0))).is_err());
     }
 
     /// A change the view can't make in place (here, a note it erases that
@@ -7344,7 +7491,8 @@ mod tests {
             "edit: timing correct moved 3 notes"
         );
         assert_eq!(ticks(&h), [0, 960, 1920]);
-        h.act(TimeAction::Edit(E::Note(1))).unwrap();
+        let rev = h.state().edit.unwrap().rev;
+        h.act(TimeAction::Edit(E::Note { index: 1, rev })).unwrap();
         assert_eq!(
             h.act(TimeAction::Edit(E::Button(6))).unwrap(),
             "edit: 1 notes deleted"
@@ -7360,6 +7508,145 @@ mod tests {
             "edit: closed"
         );
         assert!(h.state().edit.is_none());
+    }
+
+    /// A tap on a note carries the clip's revision: after something else
+    /// changed the clip (here a step tapped on Steps), a tap made on the
+    /// old picture is refused and erases nothing; the picks follow their
+    /// notes to where they now are, and when a picked note goes they are
+    /// cleared and the legend says so (piano roll plan 0A.1).
+    #[test]
+    fn the_note_editor_refuses_a_tap_on_an_old_picture_and_its_picks_follow() {
+        use mpfree_time_ui::editor::EditAction as E;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let tap = |step| StepAction::Tap {
+            pad: 0,
+            step,
+            velocity: 100,
+        };
+        // Three kicks on steps 1, 5 and 9, then the editor on them.
+        for step in [0, 4, 8] {
+            h.step_action(tap(step)).unwrap();
+        }
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        let notes = |h: &TimeHost| h.control.project.clip(0, 0).unwrap().notes.clone();
+        let info = |h: &mut TimeHost| {
+            h.take_changed();
+            *h.state().edit.unwrap()
+        };
+        let old = info(&mut h);
+        assert_eq!(old.clip.notes.len(), 3);
+        // Erase picked, then step 1 taken off on Steps: the notes move up.
+        h.act(TimeAction::Edit(E::Button(2))).unwrap();
+        h.act(TimeAction::Edit(E::Button(2))).unwrap();
+        let mid = info(&mut h);
+        assert_eq!(mid.editor.tool, mpfree_time_ui::editor::Tool::Erase);
+        let gone = notes(&h)[0];
+        h.step_action(tap(0)).unwrap();
+        assert!(!notes(&h).contains(&gone));
+        // A tap made on the picture before: refused, nothing erased.
+        let before = notes(&h);
+        let said = h
+            .act(TimeAction::Edit(E::Note {
+                index: 0,
+                rev: mid.rev,
+            }))
+            .unwrap_err();
+        assert!(
+            said.contains("the clip changed under your finger"),
+            "{said}"
+        );
+        assert_eq!(notes(&h), before);
+        // The new picture's tap erases the note it showed.
+        let now = info(&mut h);
+        assert!(now.rev > mid.rev);
+        let hit = now.clip.notes[1];
+        h.act(TimeAction::Edit(E::Note {
+            index: 1,
+            rev: now.rev,
+        }))
+        .unwrap();
+        assert!(!notes(&h).contains(&hit));
+        assert_eq!(notes(&h).len(), 1);
+        // Picks follow: two kicks back, the last one picked by Select...
+        h.act(TimeAction::Edit(E::Button(2))).unwrap();
+        for step in [0, 12] {
+            h.step_action(tap(step)).unwrap();
+        }
+        let st = info(&mut h);
+        assert_eq!(st.editor.tool, mpfree_time_ui::editor::Tool::Select);
+        let last = st
+            .clip
+            .notes
+            .iter()
+            .position(|n| n.tick == 12 * 240)
+            .unwrap();
+        let picked = st.clip.notes[last];
+        h.act(TimeAction::Edit(E::Note {
+            index: last,
+            rev: st.rev,
+        }))
+        .unwrap();
+        // ...then the first note taken off on Steps: the pick follows its
+        // note to its new place.
+        h.step_action(tap(0)).unwrap();
+        let st = info(&mut h);
+        assert!(!st.editor.cleared);
+        assert_eq!(st.editor.sel.len(), 1);
+        assert_eq!(st.clip.notes[st.editor.sel[0]], picked);
+        // The picked note itself taken off: the picks are cleared, and the
+        // legend says why.
+        h.step_action(tap(12)).unwrap();
+        let st = info(&mut h);
+        assert!(st.editor.sel.is_empty());
+        assert!(st.editor.cleared);
+        let grid = mpfree_time_ui::view::note_grid(&st, &h.state());
+        assert!(
+            grid.legend.contains("the clip changed: picks cleared"),
+            "{}",
+            grid.legend
+        );
+    }
+
+    /// An editor edit that what plays can't follow (the play view would not
+    /// build) is taken back from the clip and the takes, as a step edit is.
+    #[test]
+    fn a_note_editor_edit_the_play_view_cant_follow_is_taken_back() {
+        use mpfree_play::Launch;
+        use mpfree_time_ui::editor::EditAction as E;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.step_action(StepAction::Tap {
+            pad: 0,
+            step: 0,
+            velocity: 100,
+        })
+        .unwrap();
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        // Draw picked.
+        h.act(TimeAction::Edit(E::Button(2))).unwrap();
+        // A view that can't be built: two clips launched on track 2.
+        for slot in 0..2 {
+            h.control.project.tracks[1].slots[slot] = Some(Clip::new("x", 3840));
+            h.control.launches.push(Launch {
+                track: 1,
+                slot,
+                origin: 0,
+                start: 0,
+            });
+        }
+        let clip = h.control.project.clip(0, 0).cloned();
+        let ed = h.state().edit.map(|e| e.editor);
+        let said = h
+            .act(TimeAction::Edit(E::Empty { tick: 960, note: 3 }))
+            .unwrap_err();
+        assert!(said.ends_with("the edit was taken back"), "{said}");
+        assert_eq!(h.control.project.clip(0, 0).cloned(), clip);
+        assert_eq!(h.state().edit.map(|e| e.editor), ed, "the editor as it was");
+        // UNDO takes back the step, not the drawn note.
+        h.control.launches.retain(|l| l.track != 1);
+        h.control.project.tracks[1].slots = Default::default();
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.control.project.clip(0, 0).map(|c| c.notes.len()), None);
     }
 
     /// Pads played over bars 2 and 3 without recording; Capture keeps them

@@ -10,9 +10,84 @@ It is made for beatmakers and live performers alike, and it is free to use, chan
 
 ## Where it stands
 
-MPFree is early test software, and there is no public release yet. It runs from a USB stick that you make on your computer with the MPFree USB creator: the MPC starts MPFree from the stick, and the MPC's own system and software are left exactly as they were. [Installing MPFree](docs/user/src/getting-started/installing.md) walks through it.
+MPFree is early test software, and there is no public release yet. It runs from a USB stick that you make on your computer with the MPFree USB creator: the MPC starts MPFree from the stick, and the MPC's own system and software are left exactly as they were. [Make an MPFree USB stick](#make-an-mpfree-usb-stick), below, walks you through it.
 
 Most of what is described below is built and checked on a computer by MPFree's own automated tests. Trying it on the MPC itself is under way, one feature at a time.
+
+## Make an MPFree USB stick
+
+Until there is a release to download, you make the stick from this repository on a Linux computer. One command builds the MPFree USB creator with the latest MPFree inside it, and the creator writes the stick. It takes about 20 minutes the first time, most of it waiting.
+
+> [!WARNING]
+> MPFree has only been tested on the **MPC One (Gen 1)**, the original MPC One. Everything on the USB stick is erased. The MPC's own system and software are not changed: switch it on without the stick and the factory software starts as before.
+
+### What you need
+
+- An **MPC One (Gen 1)** updated to **MPC 3.10.1**, with Akai's own instructions.
+- Akai's **USB update file for MPC 3.10.1**: a single `.img` file from Akai's download page. When the page asks how you want to update, choose **USB**, not PC or Mac. MPFree never comes with any of Akai's files: the creator uses your copy.
+- A **USB stick of 16 GB or more**. 32 GB is better: MPFree keeps your work and a backup of your MPC (about 8 GB) on it.
+- A **Linux computer** (a 64-bit PC) with an internet connection. The creator itself also runs on Windows and macOS, but building it needs Linux.
+
+### 1. Install the tools (once)
+
+On Debian or Ubuntu, in a terminal:
+
+```sh
+sudo apt install git curl build-essential python3 gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+The second line installs Rust. Accept its defaults, then close the terminal and open a new one. On another Linux, install the same tools with its package manager.
+
+### 2. Get the code
+
+```sh
+git clone https://github.com/jferments/mpfree.git
+cd mpfree
+```
+
+### 3. Build the USB creator
+
+```sh
+tools/build-usb-creator.sh
+```
+
+The first build takes about 10 minutes. It ends with `DONE: the USB creator is ready` and the line that opens it. If a tool is missing, it stops with `STOP:` and says what to install. If your Linux is newer than the MPC's, it asks you to run one more line once, then to run it again.
+
+### 4. Make the stick
+
+Put the USB stick into the computer, then open the creator:
+
+```sh
+rust/target/usb-creator/mpfree-creator
+```
+
+1. **Akai's update file:** the creator looks in your Downloads, Desktop and Documents folders and shows the file it found, with a green tick and **MPC 3.10.1 (MPC One, Gen 1)**. If your file is somewhere else, drag it onto the window, or type the full path of the file or its folder and press Enter.
+2. **Your USB stick:** choose your stick. The creator lists only USB sticks, never your computer's own disks.
+3. **Make the stick:** leave the two boxes under **On the first start** ticked. Click **Make the stick**, tick **Yes, erase this stick**, click **Erase and make the stick**, and give your password.
+
+After a few minutes the creator says **The stick is ready**. Eject the stick and take it out.
+
+### 5. Start MPFree on the MPC
+
+The first time, the MPC needs a small start-up helper, which you add with one tap:
+
+1. Switch the MPC on without the stick. Press **MENU**, open **Preferences**, then **Enhancements**, and switch on the **developer panel**. Then hold **SHIFT**, press **MENU**, choose **Developer**, and switch developer mode on.
+2. Put the stick into one of the MPC's USB ports. When the MPC asks whether to run `autorun.sh`, tap **Yes**.
+3. The MPC switches developer mode off again and restarts by itself into MPFree. The first start backs up your MPC onto the stick and brings in its drum kits and samples, which takes 20 to 30 minutes, once. Keep the stick in until the pads light up.
+
+From then on, switch the MPC on with the stick in to play MPFree, and without it for the factory software. [Installing MPFree](docs/user/src/getting-started/installing.md) has every step in detail, including checking that developer mode is off afterwards and taking MPFree off the MPC again.
+
+### Updating to a newer MPFree
+
+```sh
+cd mpfree
+git pull
+tools/build-usb-creator.sh
+rust/target/usb-creator/mpfree-creator
+```
+
+In the creator, choose the same stick. It sees MPFree on it, and step 3 becomes **Update MPFree on this stick**. Leave **Keep my backup, settings and files** chosen, click **Update MPFree**, and give your password. Your settings, work and backup stay on the stick, so there is no long first start, and you don't need developer mode again.
 
 ## What you can do with it
 
@@ -63,13 +138,7 @@ MPFree is written mainly in Rust. On a Linux computer with stable Rust installed
 cargo test --manifest-path rust/Cargo.toml --workspace --locked
 ~~~
 
-To build the USB creator for Linux with this clone's MPFree inside it, the way a release builds it:
-
-~~~sh
-tools/build-usb-creator.sh
-~~~
-
-It ends with the creator as one file and the line to open it ([Building the USB creator](docs/dev/guides/build-usb-creator.md)). [Testing and CI](docs/dev/guides/testing-and-ci.md) covers the rest of the tests, and [mpfree on the test build](docs/dev/guides/mpfree-app.md) covers running it on an MPC One.
+`tools/build-usb-creator.sh` builds the USB creator ([Make an MPFree USB stick](#make-an-mpfree-usb-stick) above; [Building the USB creator](docs/dev/guides/build-usb-creator.md) has what it does and how it differs from a release). [Testing and CI](docs/dev/guides/testing-and-ci.md) covers the rest of the tests, and [mpfree on the test build](docs/dev/guides/mpfree-app.md) covers running it on an MPC One.
 
 ## License
 

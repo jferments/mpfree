@@ -72,6 +72,8 @@ pub fn built_in_patterns() -> Vec<(String, Pattern)> {
 const QLINK_UNITS: [i32; 4] = [3, 1, 1, 4];
 /// The panel's mode tabs, and the modes NOTE REPEAT can turn on.
 mod part;
+/// The arp part's first line, for the project opener's check.
+pub use part::HEADER as ARP_HEADER;
 
 const MODES: [Mode; 4] = [Mode::Direct, Mode::Repeat, Mode::Arp, Mode::Pattern];
 const GENERATING: [Mode; 3] = [Mode::Repeat, Mode::Arp, Mode::Pattern];

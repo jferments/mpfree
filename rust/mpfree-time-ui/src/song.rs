@@ -1015,7 +1015,7 @@ impl SongLanes {
                 t.size_small - 1.0,
                 said,
                 Align::Left,
-                t.text_faint,
+                t.text_dim,
                 "Not played through",
             );
             label(cx, lab(from[0]), "From");

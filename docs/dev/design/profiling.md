@@ -250,6 +250,41 @@ with `--quick`) at 128 frames and 44.1 kHz:
   a tap 485,970 for the edit and 711,323 until it plays, a detent 375,783
   and 387,476, the grid 1,568,091, and the dense time case 29,520 a
   block); the targets come from the MPC's next device round.
+- **control, the big song (Arrange refactor 2.1):** what the song costs the
+  control half, on a song of 512 blocks: 16 tracks, each with two 4-bar
+  clips of 1,000 notes (32 clips), and 32 blocks a track, so every clip
+  plays in 16 blocks (`arrange_song` in the bench). "the big song's view:
+  compiled and swapped" is the view a song-mode edit compiles
+  (`PlayView::compile_cued` and `set_song`, as `TimeControl::view`), taken
+  by the audio half (`Recent::catch_up`, then the swap) and the old one
+  freed; its memory figure is the view's alone. "a step tap in song mode:
+  until it plays" is a tap on one of the song's clips, out and back in
+  (`Grid::toggle`, `Takes::edit`), then, before 2.3, the view compiled
+  again, since a song-mode edit couldn't go in place. "the
+  big song saved and opened" is the clips part written and read back
+  (`save::to_text`, `from_text`). A block of the first two was billions of
+  instructions before 2.3 and saving is still 150 million, so these cases
+  count one block in 200 after one warm-up block, and the timing run a few
+  (`cases::blocks_for`). First desktop
+  numbers (22 Nov), means: compiled and swapped 223 ms, the view holding
+  31.4 MB (512,000 notes, a copy of its clip in every block); a tap 224 ms
+  until it plays; saved and opened 8.1 ms. Callgrind: 3.52 billion
+  instructions to compile and swap, 3.52 billion a tap, 152 million to save
+  and open. Nearly all of the compile was the view's stamp, which hashed
+  the text of every note: about 6,800 instructions a note. Phase 2.3's
+  first step hashes each note, lock and lane word by word instead
+  (`note_hash`, `lock_hash`, `lane_hash`), with every field named so a new
+  one can't be left out: compiled and swapped 5.1 ms, a tap 5.0 ms until it
+  plays (desktop means), 74 million instructions each, 47 times fewer. Its
+  second step compiles each clip the song plays once, not once a block
+  (`PlayView::song_clips`), and makes a song-mode tap in place in that one
+  copy instead of compiling: compiled and swapped 0.41 ms with the view
+  holding 2.0 MB (32,000 notes), 6.9 million instructions; a tap 4 us until
+  it plays, 129 thousand instructions (the case now makes the edit in place
+  with `PlayView::edit_in_place`, as the audio half does). From 2.1 to
+  here: the view 15 times smaller, its compile 500 times cheaper, a tap
+  27,000 times. Their counts go into `instructions.txt` from CI's first
+  run, as the step cases' did.
 - **looper:** 60 s of looper memory, recording a 2-bar first pass from the
   input, then overdubbing layer after layer with an undo every 30 s.
 - **mix:** the mixer (from the FX thread) idle, and routing 12 tracks and 8
