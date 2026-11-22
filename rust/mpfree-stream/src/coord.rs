@@ -19,7 +19,15 @@
 //! - **Holds.** A part of a source can be held in the cache whether or
 //!   not anything plays it: a start, a loop point, a cued launch, fetched
 //!   by a deadline or in the background. A group of holds succeeds whole
-//!   or not at all, inside the budget.
+//!   or not at all, inside the budget. Holds have a [`HoldTier`]: when
+//!   room runs short (what plays, at the least safe window, and capture
+//!   memory come first), the lowest tier is given back first, newest
+//!   first, and said so ([`Coordinator::given_back`]).
+//! - **Jobs.** Whole files read for something other than playing (a kit's
+//!   sounds, a preset, the next song's files) go through the same device,
+//!   in steps of at most [`Plan::join_bytes`], one step at a time and only
+//!   once every playback read wanted is asked for, best [`JobTier`]
+//!   first.
 //! - **Room and admission.** The budget is the sound thread's cache. What
 //!   plays (at the wanted window), what is held and what recordings
 //!   reserve must fit; if it doesn't, the window planned with shrinks and
@@ -248,6 +256,34 @@ pub struct Admission {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct HoldId(u32);
 
+/// What a hold is for, most important first: when room runs short the
+/// last is given back first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum HoldTier {
+    /// "Keep in memory": a sound the musician pinned.
+    Pinned,
+    /// A cued launch's starts, until it has started.
+    Cued,
+    /// Starts and loop points of the song playing.
+    Head,
+    /// The next song's starts, inside its own budget.
+    Next,
+}
+
+/// Names a whole-file read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct JobId(u32);
+
+/// How soon a whole-file read is wanted, most first; every playback read
+/// comes before any of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum JobTier {
+    /// Preparing the next song (kit sounds, presets, files).
+    NextSong,
+    /// Anything that can wait.
+    Background,
+}
+
 /// Why a group of holds was refused (none of it is held).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
@@ -284,13 +320,27 @@ struct Hold {
     from: u64,
     to: u64,
     by: Option<Instant>,
+    tier: HoldTier,
+}
+
+struct Job {
+    id: u32,
+    tier: JobTier,
+    file: Arc<File>,
+    len: u64,
+    data: Vec<u8>,
+    busy: bool,
+}
+
+/// What a read in flight is for.
+enum Kind {
+    Units { tag: Tag, first: u32, units: u32 },
+    Job(u32),
 }
 
 /// A read in flight.
 struct Flight {
-    tag: Tag,
-    first: u32,
-    units: u32,
+    kind: Kind,
     cancel: Arc<AtomicBool>,
     bytes: usize,
 }
@@ -326,6 +376,10 @@ pub struct Coordinator {
     flights: HashMap<u32, Flight>,
     holds: Vec<Hold>,
     next_hold: u32,
+    given_back: VecDeque<HoldId>,
+    jobs: Vec<Job>,
+    next_job: u32,
+    finished: HashMap<u32, Result<Vec<u8>, String>>,
     reserve: usize,
     pool: Vec<Vec<f32>>,
     bytes: Vec<Vec<u8>>,
@@ -375,6 +429,10 @@ impl Coordinator {
             flights: HashMap::new(),
             holds: Vec::new(),
             next_hold: 1,
+            given_back: VecDeque::new(),
+            jobs: Vec::new(),
+            next_job: 1,
+            finished: HashMap::new(),
             reserve: 0,
             pool: (0..cfg.buffers).map(|_| vec![0.0; UNIT]).collect(),
             bytes: Vec::new(),
@@ -419,9 +477,11 @@ impl Coordinator {
         self.admission
     }
 
-    /// Cache units kept for recordings (their capture memory).
+    /// Cache units kept for recordings (their capture memory). Holds that
+    /// no longer fit are given back.
     pub fn set_reserve(&mut self, units: usize) {
         self.reserve = units;
+        self.fit_holds();
     }
 
     fn send(&mut self, m: ToPlayer) {
@@ -460,7 +520,7 @@ impl Coordinator {
         self.map.retain(|(s, _), _| *s != source);
         self.asked.retain(|(s, _), _| *s != source);
         for f in self.flights.values() {
-            if f.tag.source == source {
+            if matches!(f.kind, Kind::Units { tag, .. } if tag.source == source) {
                 f.cancel.store(true, Ordering::Relaxed);
             }
         }
@@ -480,7 +540,9 @@ impl Coordinator {
         self.map.clear();
         self.asked.clear();
         for f in self.flights.values() {
-            f.cancel.store(true, Ordering::Relaxed);
+            if matches!(f.kind, Kind::Units { .. }) {
+                f.cancel.store(true, Ordering::Relaxed);
+            }
         }
         self.holds.clear();
         self.ready.clear();
@@ -605,15 +667,17 @@ impl Coordinator {
     // ---- holds and readiness ---------------------------------------------
 
     /// Hold frames `from..to` of each part's source in the cache, by `by`
-    /// from now (or in the background), until released: all of them, or
-    /// none if any source isn't an open file or they don't fit beside what
-    /// plays (at the least safe window) and what is held and reserved. A
-    /// memory source is whole in memory already: holding it is refused as
-    /// not a file.
+    /// from now (or in the background), until released or given back: all
+    /// of them, or none if any source isn't an open file or they don't fit
+    /// beside what plays (at the least safe window), what is reserved and
+    /// what is held at the same tier or above. Holds below it that no
+    /// longer fit are given back. A memory source is whole in memory
+    /// already: holding it is refused as not a file.
     pub fn hold_all(
         &mut self,
         parts: &[(u16, u64, u64)],
         by: Option<Duration>,
+        tier: HoldTier,
     ) -> Result<Vec<HoldId>, Refusal> {
         let mut new: HashSet<(u16, u32)> = HashSet::new();
         let mut tags = Vec::with_capacity(parts.len());
@@ -629,7 +693,7 @@ impl Coordinator {
             }
             tags.push(src.tag);
         }
-        let mut have = self.held_units();
+        let mut have = self.held_units(tier);
         have.extend(self.wants(self.plan.min_window_s).into_keys());
         let before = have.len() + self.reserve;
         have.extend(new);
@@ -652,10 +716,37 @@ impl Coordinator {
                 from,
                 to,
                 by,
+                tier,
             });
             ids.push(HoldId(id));
         }
+        self.fit_holds();
         Ok(ids)
+    }
+
+    /// Give back holds, lowest tier and newest first, until what plays at
+    /// the least safe window, what is reserved and what is held fit.
+    fn fit_holds(&mut self) {
+        let budget = self.mirror.len();
+        let playing: HashSet<(u16, u32)> = self.wants(self.plan.min_window_s).into_keys().collect();
+        loop {
+            let mut have = self.held_units(HoldTier::Next);
+            have.extend(playing.iter().copied());
+            if have.len() + self.reserve <= budget || self.holds.is_empty() {
+                return;
+            }
+            let worst = (0..self.holds.len())
+                .max_by_key(|&i| (self.holds[i].tier, self.holds[i].id))
+                .expect("not empty");
+            let h = self.holds.remove(worst);
+            self.given_back.push_back(HoldId(h.id));
+        }
+    }
+
+    /// The next hold given back for room since last asked (a "ready"
+    /// answer that counted on it no longer stands).
+    pub fn given_back(&mut self) -> Option<HoldId> {
+        self.given_back.pop_front()
     }
 
     /// [`Coordinator::hold_all`] with one part.
@@ -665,8 +756,9 @@ impl Coordinator {
         from: u64,
         to: u64,
         by: Option<Duration>,
+        tier: HoldTier,
     ) -> Result<HoldId, Refusal> {
-        self.hold_all(&[(source, from, to)], by).map(|v| v[0])
+        self.hold_all(&[(source, from, to)], by, tier).map(|v| v[0])
     }
 
     /// Let a hold go (its units may be given up when room is needed).
@@ -680,9 +772,10 @@ impl Coordinator {
         self.holds.iter().any(|h| h.id == id.0)
     }
 
-    fn held_units(&self) -> HashSet<(u16, u32)> {
+    /// Units held at `tier` or above.
+    fn held_units(&self, tier: HoldTier) -> HashSet<(u16, u32)> {
         let mut out = HashSet::new();
-        for h in &self.holds {
+        for h in self.holds.iter().filter(|h| h.tier <= tier) {
             let Some(l) = self.sources[usize::from(h.tag.source)]
                 .as_ref()
                 .and_then(Src::layout)
@@ -780,9 +873,13 @@ impl Coordinator {
             self.bytes.push(r.buf);
             return;
         };
-        let s = fl.tag.source;
-        for u in fl.first..fl.first + fl.units {
-            if self.asked.get(&(s, u)) == Some(&(fl.tag.gen, r.request)) {
+        let (tag, first, units) = match fl.kind {
+            Kind::Units { tag, first, units } => (tag, first, units),
+            Kind::Job(id) => return self.job_reply(id, r),
+        };
+        let s = tag.source;
+        for u in first..first + units {
+            if self.asked.get(&(s, u)) == Some(&(tag.gen, r.request)) {
                 self.asked.remove(&(s, u));
             }
         }
@@ -791,7 +888,7 @@ impl Coordinator {
             self.bytes.push(r.buf);
             return;
         }
-        if !self.current(fl.tag) {
+        if !self.current(tag) {
             self.stats.stale += 1;
             self.bytes.push(r.buf);
             return;
@@ -809,9 +906,9 @@ impl Coordinator {
             let sample = (n as f64 / secs).clamp(1.0e5, 1.0e10);
             self.speed = 0.8 * self.speed + 0.2 * sample;
         }
-        if fl.units == 1 {
+        if units == 1 {
             if n == fl.bytes {
-                self.ready.push_back((fl.tag, fl.first, r.buf));
+                self.ready.push_back((tag, first, r.buf));
             } else {
                 self.stats.short_reads += 1;
                 self.bytes.push(r.buf);
@@ -820,19 +917,129 @@ impl Coordinator {
         }
         // A joined read: each unit it brought whole goes on.
         let mut at = 0;
-        for u in fl.first..fl.first + fl.units {
+        for u in first..first + units {
             let want = self.unit_bytes(s, u);
             if at + want <= n {
                 let mut b = self.bytes.pop().unwrap_or_default();
                 b.clear();
                 b.extend_from_slice(&r.buf[at..at + want]);
-                self.ready.push_back((fl.tag, u, b));
+                self.ready.push_back((tag, u, b));
             } else {
                 self.stats.short_reads += 1;
             }
             at += want;
         }
         self.bytes.push(r.buf);
+    }
+
+    fn job_reply(&mut self, id: u32, r: ReadReply) {
+        let Some(i) = self.jobs.iter().position(|j| j.id == id) else {
+            // Cancelled meanwhile.
+            self.bytes.push(r.buf);
+            return;
+        };
+        let job = &mut self.jobs[i];
+        job.busy = false;
+        let done = match r.got {
+            _ if r.cancelled => false,
+            Err(e) => {
+                let j = self.jobs.remove(i);
+                self.finished.insert(j.id, Err(e.to_string()));
+                self.bytes.push(r.buf);
+                return;
+            }
+            Ok(n) => {
+                job.data.extend_from_slice(&r.buf[..n]);
+                // A short step: the file ended early (it shrank).
+                n < r.buf.len() || job.data.len() as u64 >= job.len
+            }
+        };
+        self.bytes.push(r.buf);
+        if done {
+            let j = self.jobs.remove(i);
+            self.finished.insert(j.id, Ok(j.data));
+        }
+    }
+
+    // ---- whole-file reads -----------------------------------------------
+
+    /// Read the whole file at `path` through the device, behind every
+    /// playback read; [`Coordinator::take_job`] gives it once done.
+    pub fn read_file(&mut self, path: &Path, tier: JobTier) -> Result<JobId, String> {
+        let file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let len = file
+            .metadata()
+            .map_err(|e| format!("{}: {e}", path.display()))?
+            .len();
+        let id = self.next_job;
+        self.next_job += 1;
+        if len == 0 {
+            self.finished.insert(id, Ok(Vec::new()));
+        } else {
+            self.jobs.push(Job {
+                id,
+                tier,
+                file: Arc::new(file),
+                len,
+                data: Vec::new(),
+                busy: false,
+            });
+        }
+        Ok(JobId(id))
+    }
+
+    /// A finished whole-file read: the bytes, or why it failed. `None`
+    /// while it is still reading (or if it was cancelled or taken).
+    pub fn take_job(&mut self, id: JobId) -> Option<Result<Vec<u8>, String>> {
+        self.finished.remove(&id.0)
+    }
+
+    /// Stop a whole-file read (a step in flight is let go when it lands).
+    pub fn cancel_job(&mut self, id: JobId) {
+        self.jobs.retain(|j| j.id != id.0);
+        self.finished.remove(&id.0);
+    }
+
+    /// Whole-file reads not finished.
+    pub fn jobs_waiting(&self) -> usize {
+        self.jobs.len()
+    }
+
+    /// One step of the most wanted job, if none is in flight.
+    fn job_step(&mut self) -> bool {
+        if self.jobs.iter().any(|j| j.busy) {
+            return false;
+        }
+        let Some(i) = (0..self.jobs.len()).min_by_key(|&i| (self.jobs[i].tier, self.jobs[i].id))
+        else {
+            return false;
+        };
+        let step = self.plan.join_bytes.max(64 * 1024) as u64;
+        let job = &mut self.jobs[i];
+        let at = job.data.len() as u64;
+        let len = (job.len - at).min(step) as usize;
+        job.busy = true;
+        let (id, file) = (job.id, job.file.clone());
+        self.request = self.request.wrapping_add(1);
+        let request = self.request;
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.flights.insert(
+            request,
+            Flight {
+                kind: Kind::Job(id),
+                cancel: cancel.clone(),
+                bytes: len,
+            },
+        );
+        self.dev.submit(ReadReq {
+            request,
+            file,
+            at,
+            len,
+            buf: self.bytes.pop().unwrap_or_default(),
+            cancel,
+        });
+        true
     }
 
     fn unit_bytes(&self, source: u16, unit: u32) -> usize {
@@ -986,7 +1193,8 @@ impl Coordinator {
         }
         // Admission: what plays at the wanted window, beside what is held
         // and reserved; if that doesn't fit, the largest window that does.
-        let held = self.held_units();
+        self.fit_holds();
+        let held = self.held_units(HoldTier::Next);
         let budget = self.mirror.len();
         let reserve = self.reserve;
         let need = |wants: &Wants| -> usize {
@@ -1050,9 +1258,11 @@ impl Coordinator {
         // Cancel reads none of whose units are wanted now (and take back a
         // cancel for any wanted again before the device got to it).
         for f in self.flights.values() {
-            let wanted = self.current(f.tag)
-                && (f.first..f.first + f.units).any(|u| wants.contains_key(&(f.tag.source, u)));
-            f.cancel.store(!wanted, Ordering::Relaxed);
+            if let Kind::Units { tag, first, units } = f.kind {
+                let wanted = self.current(tag)
+                    && (first..first + units).any(|u| wants.contains_key(&(tag.source, u)));
+                f.cancel.store(!wanted, Ordering::Relaxed);
+            }
         }
         missing.sort_by(|a, b| {
             a.0.total_cmp(&b.0)
@@ -1063,8 +1273,10 @@ impl Coordinator {
             missing.iter().map(|&(_, t, u)| (t.source, u)).collect();
         let mut queue_s: f64 = self.flights.values().map(|f| self.read_time(f.bytes)).sum();
         let mut busy = false;
+        let mut all_asked = true;
         for i in 0..missing.len() {
             if self.flights.len() >= self.plan.in_flight {
+                all_asked = false;
                 break;
             }
             let (_, tag, unit) = missing[i];
@@ -1117,9 +1329,11 @@ impl Coordinator {
             self.flights.insert(
                 request,
                 Flight {
-                    tag,
-                    first: unit,
-                    units,
+                    kind: Kind::Units {
+                        tag,
+                        first: unit,
+                        units,
+                    },
                     cancel,
                     bytes,
                 },
@@ -1129,6 +1343,12 @@ impl Coordinator {
             self.stats.joined += u64::from(units - 1);
             self.dev.submit(req);
             busy = true;
+        }
+        // Whole-file reads: only once every playback read wanted is asked
+        // for, and one step at a time, so a playback read never waits
+        // behind more than one step.
+        if all_asked && self.flights.len() < self.plan.in_flight {
+            busy |= self.job_step();
         }
         busy
     }

@@ -6,10 +6,12 @@ use std::collections::VecDeque;
 use std::fs;
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use mpfree_stream::coord::{serve, Coordinator, Device, Plan, ReadReply, ReadReq, Refusal};
+use mpfree_stream::coord::{
+    serve, Coordinator, Device, HoldTier, JobTier, Plan, ReadReply, ReadReq, Refusal,
+};
 use mpfree_stream::cursor::Cursor;
 use mpfree_stream::player::{unit_frames, Config, Player};
 use mpfree_stream::testkit::{folder, memory, played, wav, Rig, Store};
@@ -235,7 +237,7 @@ fn holds_fetch_starts_whole_or_not_at_all() {
     let parts = [(0, 0, 2 * uf), (1, 0, 2 * uf), (2, 0, 2 * uf)];
     let launch = rig
         .c
-        .hold_all(&parts, Some(Duration::from_millis(50)))
+        .hold_all(&parts, Some(Duration::from_millis(50)), HoldTier::Cued)
         .expect("fits");
     assert_eq!(rig.c.not_ready(&parts), vec![0, 1, 2]);
     for _ in 0..40 {
@@ -246,7 +248,7 @@ fn holds_fetch_starts_whole_or_not_at_all() {
     assert!(parts.iter().all(|&(s, f, t)| rig.p.covers(s, f, t - f)));
     // Too much for the room left: none of it is held.
     let big = [(0, 0, 4 * uf), (1, 0, 12 * uf)];
-    match rig.c.hold_all(&big, None) {
+    match rig.c.hold_all(&big, None, HoldTier::Head) {
         Err(Refusal::OverBudget { need, room }) => {
             assert_eq!((need, room), (2 + 10, 10));
         }
@@ -258,9 +260,15 @@ fn holds_fetch_starts_whole_or_not_at_all() {
         "nothing of the refused group held"
     );
     // A part of a source that isn't open, or is in memory: refused.
-    assert_eq!(rig.c.hold(9, 0, 10, None), Err(Refusal::NotOpen(9)));
+    assert_eq!(
+        rig.c.hold(9, 0, 10, None, HoldTier::Pinned),
+        Err(Refusal::NotOpen(9))
+    );
     rig.c.open_memory(5, 1, memory(1, 10, 1)).expect("opens");
-    assert_eq!(rig.c.hold(5, 0, 10, None), Err(Refusal::NotOpen(5)));
+    assert_eq!(
+        rig.c.hold(5, 0, 10, None, HoldTier::Pinned),
+        Err(Refusal::NotOpen(5))
+    );
     // Replacing a source lets its holds go.
     rig.c.open(1, &paths[2]).expect("opens");
     assert!(rig.c.is_held(launch[0]) && !rig.c.is_held(launch[1]));
@@ -335,4 +343,189 @@ fn admission_says_plainly_when_a_workload_does_not_fit() {
     assert!(b.covered && b.window_s == 41.0, "{b:?}");
     let c = run(Plan::for_shortfall(20.0), 8, 1_900);
     assert!(!c.covered && !c.safe && c.reserved == 1_900, "{c:?}");
+}
+
+#[test]
+fn the_next_song_is_given_back_first_and_said_so() {
+    let dir = folder("tiers");
+    let frames = 200_000u64;
+    let paths: Vec<_> = (1..=3u32)
+        .map(|m| {
+            let p = dir.join(format!("{m}.wav"));
+            wav(&p, Store::Float, 2, frames, m);
+            p
+        })
+        .collect();
+    let cfg = Config {
+        slots: 16,
+        ..Config::default()
+    };
+    let mut rig = Rig::new(cfg, Plan::default());
+    rig.c.new_project();
+    for (s, p) in paths.iter().enumerate() {
+        rig.c.open(s as u16, p).expect("opens");
+    }
+    let uf = unit_frames(2);
+    let next = rig
+        .c
+        .hold(2, 0, 8 * uf, None, HoldTier::Next)
+        .expect("fits");
+    let head = rig
+        .c
+        .hold(0, 0, 6 * uf, None, HoldTier::Head)
+        .expect("fits");
+    assert_eq!(rig.c.given_back(), None);
+    // A cued launch outranks the next song: it is given back to make room.
+    let cued = rig
+        .c
+        .hold(1, 0, 4 * uf, None, HoldTier::Cued)
+        .expect("fits");
+    assert_eq!(rig.c.given_back(), Some(next));
+    assert_eq!(rig.c.given_back(), None);
+    assert!(!rig.c.is_held(next) && rig.c.is_held(head) && rig.c.is_held(cued));
+    // The next song can't come back beside them.
+    assert_eq!(
+        rig.c.hold(2, 0, 8 * uf, None, HoldTier::Next),
+        Err(Refusal::OverBudget { need: 8, room: 6 })
+    );
+    let next = rig
+        .c
+        .hold(2, 0, 6 * uf, None, HoldTier::Next)
+        .expect("fits");
+    // Capture memory outranks every hold: the lowest go first.
+    rig.c.set_reserve(4);
+    assert_eq!(rig.c.given_back(), Some(next));
+    assert_eq!(rig.c.given_back(), None);
+    rig.c.set_reserve(8);
+    assert_eq!(rig.c.given_back(), Some(head));
+    assert!(rig.c.is_held(cued));
+    // What plays (at the least safe window) outranks them too.
+    let mut k = Cursor::new(2, 0);
+    k.set_end(Some(3 * uf));
+    let mut outs = vec![vec![0.0; 512]];
+    for _ in 0..8 {
+        rig.period(&mut [&mut k], &mut outs);
+    }
+    assert_eq!(rig.c.given_back(), None, "4 + 3 + 8 fit");
+    k.set_end(Some(5 * uf));
+    for _ in 0..8 {
+        rig.period(&mut [&mut k], &mut outs);
+    }
+    assert_eq!(rig.c.given_back(), Some(cued));
+    assert!(!rig.c.is_held(cued));
+}
+
+/// A device that serves at most a set number of reads a period, and
+/// checks that no more than one whole-file step ever waits in it.
+struct Paced {
+    queue: VecDeque<ReadReq>,
+    tokens: Arc<AtomicUsize>,
+    step: usize,
+    log: Arc<Mutex<Vec<usize>>>,
+}
+
+impl Device for Paced {
+    fn submit(&mut self, r: ReadReq) {
+        self.log.lock().unwrap().push(r.len);
+        self.queue.push_back(r);
+        let steps = self.queue.iter().filter(|q| q.len == self.step).count();
+        assert!(steps <= 1, "{steps} whole-file steps queued at once");
+    }
+    fn poll(&mut self) -> Option<ReadReply> {
+        if self.queue.is_empty() || self.tokens.load(Ordering::Relaxed) == 0 {
+            return None;
+        }
+        self.tokens.fetch_sub(1, Ordering::Relaxed);
+        self.queue.pop_front().map(serve)
+    }
+}
+
+#[test]
+fn whole_files_load_behind_playback_one_step_at_a_time() {
+    let dir = folder("jobs");
+    let song = dir.join("song.wav");
+    let frames = 400_000u64;
+    wav(&song, Store::Pcm24, 2, frames, 4);
+    let big = dir.join("kit.bin");
+    let bytes: Vec<u8> = (0..3 * 1024 * 1024u32)
+        .map(|i| (i * 7 % 251) as u8)
+        .collect();
+    fs::write(&big, &bytes).expect("write");
+    let small_file = dir.join("preset.bin");
+    fs::write(&small_file, b"a small preset").expect("write");
+    let empty = dir.join("empty.bin");
+    fs::write(&empty, b"").expect("write");
+
+    let cfg = small();
+    let (p, rx, tx) = Player::new(cfg);
+    let tokens = Arc::new(AtomicUsize::new(0));
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let step = Plan::default().join_bytes;
+    let dev = Paced {
+        queue: VecDeque::new(),
+        tokens: tokens.clone(),
+        step,
+        log: log.clone(),
+    };
+    let c = Coordinator::new(cfg, Plan::default(), rx, tx, Box::new(dev));
+    let mut rig = Rig { p, c };
+    rig.c.new_project();
+    rig.c.open(0, &song).expect("opens");
+    assert!(rig
+        .c
+        .read_file(&dir.join("missing.bin"), JobTier::NextSong)
+        .is_err());
+    let e = rig.c.read_file(&empty, JobTier::Background).expect("opens");
+    assert_eq!(rig.c.take_job(e), Some(Ok(Vec::new())));
+    // The song plays first (it posts where it plays once a round).
+    let mut k = Cursor::new(0, 0);
+    let mut outs = vec![vec![0.0; 512]];
+    for _ in 0..4 {
+        rig.period(&mut [&mut k], &mut outs);
+        k.seek(0);
+    }
+    // The preset waits in the background; the kit is for the next song.
+    let preset = rig
+        .c
+        .read_file(&small_file, JobTier::Background)
+        .expect("opens");
+    let kit = rig.c.read_file(&big, JobTier::NextSong).expect("opens");
+    let mut order = Vec::new();
+    let mut got_kit = None;
+    for _ in 0..2_000 {
+        tokens.store(2, Ordering::Relaxed);
+        rig.period(&mut [&mut k], &mut outs);
+        k.seek(0);
+        if let Some(r) = rig.c.take_job(kit) {
+            got_kit = Some(r.expect("reads"));
+            order.push("kit");
+        }
+        if let Some(r) = rig.c.take_job(preset) {
+            assert_eq!(r.expect("reads"), b"a small preset");
+            order.push("preset");
+        }
+        if order.len() == 2 {
+            break;
+        }
+    }
+    assert_eq!(
+        order,
+        ["kit", "preset"],
+        "the next song before the background"
+    );
+    assert_eq!(got_kit.expect("the kit came"), bytes);
+    // Every playback read the window wants (8 s of 24-bit stereo) was
+    // asked for before the first whole-file step.
+    let log = log.lock().unwrap().clone();
+    let first_step = log.iter().position(|&l| l == step).expect("steps");
+    let before: usize = log[..first_step].iter().sum();
+    assert!(before >= 352_800 * 6, "{before} bytes of playback first");
+    assert!(rig.c.is_ready(0, 0, 352_800), "the song's window is all in");
+    assert_eq!(rig.c.jobs_waiting(), 0);
+    // Playback still exact.
+    tokens.store(usize::MAX / 2, Ordering::Relaxed);
+    let missed = play(&mut rig, &mut k, 100, |f| {
+        [played(4, f, 0), played(4, f, 1)]
+    });
+    assert_eq!(missed, 0);
 }

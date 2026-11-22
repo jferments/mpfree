@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use mpfree_stream::coord::{Coordinator, Device, IoThread, Plan, ReadReply, ReadReq};
+use mpfree_stream::coord::{Coordinator, Device, HoldTier, IoThread, Plan, ReadReply, ReadReq};
 use mpfree_stream::cursor::Cursor;
 use mpfree_stream::player::{unit_frames, Config, Player};
 use mpfree_stream::testkit::{
@@ -359,7 +359,13 @@ fn unload_and_replace_mid_play_never_play_old_audio() {
             7 => {
                 let s = r.next(4) as u16;
                 let from = r.next(frames);
-                if let Ok(h) = rig.c.hold(s, from, from + 1 + r.next(10_000), None) {
+                let tier = [
+                    HoldTier::Pinned,
+                    HoldTier::Cued,
+                    HoldTier::Head,
+                    HoldTier::Next,
+                ][r.next(4) as usize];
+                if let Ok(h) = rig.c.hold(s, from, from + 1 + r.next(10_000), None, tier) {
                     holds.push(h);
                     *ops.entry("hold").or_default() += 1;
                 }
