@@ -33329,42 +33329,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Sampler plan phase 2, step 7's memory test: everything the sampler
-    /// holds at once (long takes, their waveforms, their stretched copies
-    /// and an undo history holding the takes they replaced) stays inside
-    /// the MPC's 2 GB with mpfree's 256 MB floor left free, not just each
-    /// part on its own. Scaled 1:8 (250 MB, 32 MB kept free, six takes of
-    /// a minute) so it runs anywhere. It counts every byte every
-    /// thread holds, so it runs alone, in a process of its own
-    /// ([`memory_together_alone`]).
-    #[test]
-    #[cfg_attr(
-        target_arch = "arm",
-        ignore = "runs itself again as a child process, which qemu's runner doesn't"
-    )]
-    fn everything_the_sampler_holds_at_once_fits_the_mpcs_memory() {
-        let out = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "gui::tests::memory_together_alone",
-                "--ignored",
-                "--nocapture",
-                "--test-threads=1",
-            ])
-            .env("MPFREE_MEMORY_TOGETHER", "1")
-            .output()
-            .unwrap();
-        let text = String::from_utf8_lossy(&out.stdout);
-        for l in text.lines().filter(|l| l.starts_with("memory:")) {
-            println!("{l}");
-        }
-        assert!(
-            out.status.success() && text.contains("1 passed"),
-            "{text}\n{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-
     /// The scaled MPC: its memory, and the floor mpfree keeps free.
     const MPC_BYTES: u64 = 2_000_000_000 / 8;
     const MPC_KEEP: u64 = crate::memory::FLOOR / 8;
@@ -33382,20 +33346,27 @@ mod tests {
         )
     }
 
-    /// [`everything_the_sampler_holds_at_once_fits_the_mpcs_memory`]'s
-    /// body, run alone in a child process.
+    /// Sampler plan phase 2, step 7's memory test: everything the sampler
+    /// holds at once (long takes, their waveforms, their stretched copies
+    /// and an undo history holding the takes they replaced) stays inside
+    /// the MPC's 2 GB with mpfree's 256 MB floor left free, not just each
+    /// part on its own. Scaled 1:8 (250 MB, 32 MB kept free, six takes of
+    /// a minute) so it runs anywhere. It counts every byte its own threads
+    /// hold (this one and its job service's workers:
+    /// `alloc_count::track_from_now`), so the tests beside it don't add to
+    /// the count.
     #[test]
-    #[ignore = "run by everything_the_sampler_holds_at_once_fits_the_mpcs_memory, alone"]
-    fn memory_together_alone() {
+    #[cfg_attr(
+        target_arch = "arm",
+        ignore = "eight minute-long takes stretched: measured on the host, not under emulation"
+    )]
+    fn everything_the_sampler_holds_at_once_fits_the_mpcs_memory() {
         use crate::sys::alloc_count;
         use mpfree_sampler::jobs::{Config, Jobs};
         use mpfree_sampler::model::Source;
         use mpfree_sampler::wav;
         use mpfree_sampler_ui::warp_tool;
         use mpfree_sampler_ui::wave_tab::{self, Tool};
-        if std::env::var_os("MPFREE_MEMORY_TOGETHER").is_none() {
-            return;
-        }
         let rate = 44_100u32;
         let dir = std::env::temp_dir().join(format!("mpfree-memory-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -33420,8 +33391,13 @@ mod tests {
             })
             .collect();
         let mut p = sample_player(Fonts::embedded());
+        // The service's workers count with this thread.
         p.sample.use_jobs(Jobs::new(Config {
             free: mpc_free,
+            on_start: |lane| {
+                (sample_page::jobs_config().on_start)(lane);
+                alloc_count::track_this_thread();
+            },
             ..sample_page::jobs_config()
         }));
         p.sample.set_mem_free(mpc_free);

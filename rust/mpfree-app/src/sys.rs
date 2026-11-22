@@ -221,10 +221,12 @@ pub mod alloc_count {
     thread_local! {
         static WATCH: Cell<bool> = const { Cell::new(false) };
         static CALLS: Cell<usize> = const { Cell::new(0) };
+        /// This thread's bytes count in [`LIVE`] ([`track_this_thread`]).
+        static TRACKED: Cell<bool> = const { Cell::new(false) };
     }
 
-    /// The bytes every thread holds, and the most they held, from
-    /// [`track_from_now`]: for a test run alone in its own process.
+    /// The bytes the tracked threads hold, and the most they held, from
+    /// [`track_from_now`]: a test's own threads, so it runs beside others.
     static TRACK: AtomicBool = AtomicBool::new(false);
     static LIVE: AtomicI64 = AtomicI64::new(0);
     static PEAK: AtomicI64 = AtomicI64::new(0);
@@ -236,7 +238,7 @@ pub mod alloc_count {
     }
 
     fn held(bytes: i64) {
-        if TRACK.load(Ordering::Relaxed) {
+        if TRACK.load(Ordering::Relaxed) && TRACKED.with(Cell::get) {
             let now = LIVE.fetch_add(bytes, Ordering::Relaxed) + bytes;
             PEAK.fetch_max(now, Ordering::Relaxed);
         }
@@ -263,13 +265,24 @@ pub mod alloc_count {
         }
     }
 
-    /// Counts the bytes every thread allocates and frees from now on, from
-    /// 0 (memory held before and freed later counts against it): for a
-    /// test that runs alone in a process of its own.
+    /// Counts the bytes this thread and the threads marked with
+    /// [`track_this_thread`] allocate and free from now on, from 0 (memory
+    /// held before and freed later counts against it; memory a tracked
+    /// thread allocates and another frees stays counted). Other threads
+    /// don't count, so the test that tracks runs beside the others. One
+    /// test at a time tracks.
     pub fn track_from_now() {
+        track_this_thread();
         LIVE.store(0, Ordering::Relaxed);
         PEAK.store(0, Ordering::Relaxed);
         TRACK.store(true, Ordering::Relaxed);
+    }
+
+    /// This thread's bytes count once [`track_from_now`] starts: a worker
+    /// the tracking test started (a job service's, through its
+    /// `Config::on_start`).
+    pub fn track_this_thread() {
+        TRACKED.with(|t| t.set(true));
     }
 
     /// Bytes held now, more than at [`track_from_now`].
