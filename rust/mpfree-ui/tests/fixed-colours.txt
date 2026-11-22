@@ -21,8 +21,7 @@ mpfree-mpcskin/src/view.rs 8 # plugin skin drawing: the colours the MPC draws a 
 mpfree-sampler-ui/src/sample.rs 3 # sample data for the preview screens
 mpfree-sampler-ui/src/widgets.rs 8 # content colours: the pads' palette (PAD_COLORS), shown through content() and swatch()
 mpfree-synth-ui/src/sample.rs 8 # sample data for the preview screens
-mpfree-time-ui/src/editor.rs 1 # before theme roles (phase 0 baseline)
-mpfree-time-ui/src/view.rs 8 # before theme roles (phase 0 baseline)
+mpfree-time-ui/src/view.rs 8 # the eight track colours a new project's tracks get: content, kept in every theme
 mpfree-ui/src/draw.rs 8 # content colours: the mockups' palette for kinds of sound and throws, shown through content() and swatch()
 mpfree-ui/src/png.rs * # PNG checksums, not colours
 mpfree-ui/src/theme.rs * # the built-in themes: where colours are written down
