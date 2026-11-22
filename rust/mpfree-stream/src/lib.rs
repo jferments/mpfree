@@ -33,13 +33,21 @@
 //!   another; [`snapshot`]: a set's real versions, named by content, and
 //!   its checks; [`ready`]: how ready a set is, from what was tested.
 //! - [`storage`]: the stick and the SD card (only through the hardware
-//!   project's handle), insertion numbers, paths kept inside a library.
+//!   project's handle), insertion numbers, paths kept inside a library;
+//!   [`cardcopy`]: files copied from the card onto the stick, checked.
+//! - [`flac`]: FLAC as a compressed source: its seek index (its own seek
+//!   table only if it checks out, else built), any run of frames decoded
+//!   into the cache's units, every jump checked.
+//! - [`status`]: what the musician is told: the layer's states turned into
+//!   System status reports (the Storage kinds), each change once.
 
 #![forbid(unsafe_code)]
 
+pub mod cardcopy;
 pub mod coord;
 pub mod crc32c;
 pub mod cursor;
+pub mod flac;
 pub mod format;
 pub mod fsio;
 pub mod ledger;
@@ -53,6 +61,7 @@ pub mod rec;
 pub mod recover;
 pub mod resample;
 pub mod snapshot;
+pub mod status;
 pub mod storage;
 #[cfg(feature = "testkit")]
 pub mod testkit;

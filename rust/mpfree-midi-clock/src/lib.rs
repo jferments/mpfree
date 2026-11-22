@@ -200,6 +200,24 @@ impl ClockOut {
         out.push(Message::one(offset, CONTINUE));
     }
 
+    /// The song is at `tick` from `offset` on, playing or not, whatever
+    /// played before: a jump, or another song taking over on a frame (a
+    /// timing change, a song switch). Playing from the top (tick 0 or a
+    /// count-in), Stop if it ran and Start; playing from further in, Song
+    /// Position and Continue (after Stop if it ran); stopped, Stop if it
+    /// ran and Song Position.
+    pub fn moved(&mut self, offset: u32, tick: i64, playing: bool, out: &mut Messages) {
+        if !playing {
+            self.stopped(offset, out);
+            out.push(Message::song_position(offset, sixteenths(tick)));
+        } else if tick <= 0 || !self.running {
+            self.stopped(offset, out);
+            self.started(offset, tick, out);
+        } else {
+            self.located(offset, tick, out);
+        }
+    }
+
     /// A pulse line the transport plays: `tick` is a multiple of
     /// [`PULSE_TICKS`] at `offset`. Sends the pulse when it is due.
     pub fn pulse(&mut self, tick: i64, offset: u32, out: &mut Messages) {
@@ -552,6 +570,35 @@ mod tests {
             &want,
             "a pulse sent once; none while stopped"
         );
+    }
+
+    #[test]
+    fn moved_takes_a_position_and_whether_it_plays() {
+        let mut c = ClockOut::new();
+        let mut out = Messages::new();
+        // Another song from its top while one runs: Stop, then Start.
+        c.started(0, 0, &mut out);
+        c.moved(100, 0, true, &mut out);
+        // From a marker further in: Stop, Song Position, Continue.
+        c.moved(200, 3840, true, &mut out);
+        // Stopped there: Stop, Song Position.
+        c.moved(300, 1920, false, &mut out);
+        // Starting from stopped further in: Song Position and Continue.
+        c.moved(400, 3840, true, &mut out);
+        let want = [
+            Message::one(0, START),
+            Message::one(100, STOP),
+            Message::one(100, START),
+            Message::one(200, STOP),
+            Message::song_position(200, 16),
+            Message::one(200, CONTINUE),
+            Message::one(300, STOP),
+            Message::song_position(300, 8),
+            Message::song_position(400, 16),
+            Message::one(400, CONTINUE),
+        ];
+        assert_eq!(out.as_slice(), &want);
+        assert!(c.running());
     }
 
     #[test]

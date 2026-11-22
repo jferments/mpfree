@@ -149,6 +149,32 @@ mod tests {
 
     // ------------------------------------------------------- playing
 
+    /// System status's gate: each song opens and plays eight bars from its
+    /// first scene with nothing wrong on the status board. The watchers
+    /// look each time the audio loop's timing arrives (every 250 ms), as
+    /// main.rs sends it; this session has no audio loop, so the test sends
+    /// it.
+    #[test]
+    fn every_song_plays_green() {
+        on_big_stack(|| {
+            for (i, song) in songs::all().into_iter().enumerate() {
+                // A session each, so no song asks to save the last.
+                let mut l = lab(&format!("green-{i}"));
+                open(&mut l.s, song.name);
+                launch(&mut l.s, 0);
+                let looks = (8.0 * bar(&song) / 0.25).ceil() as usize;
+                for _ in 0..looks {
+                    l.s.run_for(0.25);
+                    l.s.screen
+                        .apply(crate::gui::ToUi::Timing(crate::gui::Timing::default()));
+                }
+                assert!(l.s.time.info().state.rolling(), "{} plays", song.name);
+                let wrong = l.s.screen.status_unexpected(&[]);
+                assert!(wrong.is_empty(), "{}: {wrong:?}", song.name);
+            }
+        });
+    }
+
     /// Night Market: launching the Intro plays the whole song by its
     /// scenes' follow actions, each section with its own tracks (the Perc
     /// track sits the Break out by the scene's mutes), and the Outro stops
@@ -445,8 +471,7 @@ mod tests {
                 s.qlink(1, -6);
                 let _ = v0;
                 let edited = s.time.project().clone();
-                let mixer =
-                    crate::project::mixer_text(&s.mix.mixer, s.mix.pad_mutes(), s.mix.pad_solos());
+                let mixer = crate::project::mixer_text(&s.mix.mixer, s.mix.pad_mutes());
 
                 s.button_with("SHIFT", "BROWSE");
                 let saved = format!("project: saved {}", song.name);
@@ -475,7 +500,7 @@ mod tests {
                 );
                 s.run_for(0.5);
                 assert_eq!(
-                    crate::project::mixer_text(&s.mix.mixer, s.mix.pad_mutes(), s.mix.pad_solos()),
+                    crate::project::mixer_text(&s.mix.mixer, s.mix.pad_mutes()),
                     mixer,
                     "{}: the mixer as edited",
                     song.name
