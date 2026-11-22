@@ -144,7 +144,16 @@ pub struct Counters {
     /// Grain Shape turns that waited for older grains to end.
     pub window_waits: u64,
     pub peak_grains: usize,
+    /// Grains not made for the budget: it was full, or a cloud had its
+    /// share of it.
     pub skipped_grains: u64,
+    /// Grains ended early to keep room for new hits (each faded out), and
+    /// times a cloud got no share of a crowded budget (sampler plan step 9).
+    pub faded_grains: u64,
+    pub held_back_clouds: u64,
+    /// How long the grain budget was crowded, so every cloud got a share,
+    /// in milliseconds.
+    pub crowded_ms: u64,
     /// Split ([`Player::split`]): parts of periods the lane rendered half
     /// the voices for, and the ones it was late for (that half unheard for
     /// the part). Both 0 unsplit.
@@ -1145,6 +1154,9 @@ impl Player {
             window_waits: self.engine.window_waits(),
             peak_grains: self.peak_grains,
             skipped_grains: s.skipped_grains,
+            faded_grains: s.faded_grains,
+            held_back_clouds: s.held_back_clouds,
+            crowded_ms: s.crowded_frames * 1000 / u64::from(self.engine.rate().max(1)),
             lane_parts: s.lane_parts,
             lane_late: s.lane_late,
         }

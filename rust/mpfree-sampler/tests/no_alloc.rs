@@ -563,8 +563,8 @@ fn render_and_events_never_allocate() {
     );
     assert!(e.stats().hits > 2000);
     assert!(
-        e.stats().skipped_grains > 0,
-        "the grain budget never filled; the test is not busy enough"
+        e.stats().skipped_grains + e.stats().crowded_frames > 0,
+        "the grain budget never filled or crowded; the test is not busy enough"
     );
     assert_eq!(reader.written(), 2200 * 128);
     assert_eq!(recall_reader.written(), 2000 * 128);

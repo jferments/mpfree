@@ -670,6 +670,9 @@ struct Collect<'a> {
     ticks: &'a Range<Tick>,
     erase: Erase,
     sound: bool,
+    /// The track's pads left out ([`crate::view`]'s `TrackView::pads`):
+    /// a hit on one isn't played (a clip of notes plays every note).
+    pads: u128,
     cut: Option<Tick>,
 }
 
@@ -1449,7 +1452,7 @@ impl Player {
             if !(muted && erase.is_none()) {
                 self.collect(
                     clip, origin, start, i as u16, track.dest, span.swing, &before, erase, !muted,
-                    switch,
+                    track.pads, switch,
                 );
             }
             // The clip's moves after its locks: a step's lock on the
@@ -1523,6 +1526,7 @@ impl Player {
                 &(at..ticks.end),
                 NO_ERASE,
                 true,
+                track.pads,
                 None,
             );
             if clip.moves.is_empty() {
@@ -2303,6 +2307,7 @@ impl Player {
                 &part,
                 NO_ERASE,
                 true,
+                track.pads,
                 Some(end),
             );
             if clip.moves.is_empty() {
@@ -2342,6 +2347,7 @@ impl Player {
         ticks: &Range<Tick>,
         erase: Erase,
         sound: bool,
+        pads: u128,
         cut: Option<Tick>,
     ) {
         if (clip.notes.is_empty() && clip.locks.is_empty())
@@ -2359,6 +2365,7 @@ impl Player {
             ticks,
             erase,
             sound,
+            pads: if clip.holds_notes { 0 } else { pads },
             cut,
         };
         // The pass `start` is in, counted from the origin, worked out at
@@ -2471,6 +2478,7 @@ impl Player {
             ticks,
             erase,
             sound,
+            pads,
             cut,
         } = *c;
         if r.to < r.from {
@@ -2503,6 +2511,10 @@ impl Player {
                 continue;
             }
             if !sound {
+                continue;
+            }
+            // A pad muted on this track (step 10): its hits are left out.
+            if pads != 0 && pads >> (n.note & 127) & 1 == 1 {
                 continue;
             }
             // A ratchet's first hit lasts its share of the note.
