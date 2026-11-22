@@ -34,9 +34,9 @@ use crate::alsa;
 use mpfree_looper::print::{frames_at, PrintJob};
 use mpfree_looper::save::Saved;
 use mpfree_looper::{
-    Bounce, Command, Edit, History, LayerCommand, LayerInfo, LoopFile, Looper, Memory, Phase,
-    Print, Reading, Starts, Stats, Status, Step, Sure, Take, HEARD_SECONDS, LOOP_MAX_BPM,
-    LOOP_MIN_BPM, MAX_LAYERS, MAX_LOOPS,
+    Bounce, Candidate, Command, Edit, History, LayerCommand, LayerInfo, LoopFile, Looper, Memory,
+    NoteStart, Phase, Print, Reading, SmartEnd, SmartNote, SmartOutcome, Starts, Stats, Status,
+    Step, Sure, Take, HEARD_SECONDS, LOOP_MAX_BPM, LOOP_MIN_BPM, MAX_LAYERS, MAX_LOOPS,
 };
 use mpfree_seq::loops::{LoopNow, LoopPlan};
 use mpfree_transport::time::{Tick, PPQ};
@@ -1326,6 +1326,12 @@ pub struct LoopHost {
     /// The song's tempo was set by hand, as the looper was last told
     /// ([`LoopHost::set_tempo_meant`]).
     tempo_meant: bool,
+    /// Smart loop end, as the looper was last told
+    /// ([`LoopHost::set_smart_end`]).
+    smart: SmartEnd,
+    /// Periods whose notes didn't all reach smart loop end
+    /// ([`LoopHost::notes_lost`]): counted, logged and said.
+    pub notes_lost: u64,
     /// Free first passes whose Length bars would have been slower than
     /// [`LOOP_MIN_BPM`], so the length was read instead
     /// ([`Reading::overruled`]): counted, logged and said.
@@ -1725,6 +1731,8 @@ impl LoopHost {
             starts_refused: 0,
             free_tempo: false,
             tempo_meant: false,
+            smart: SmartEnd::Off,
+            notes_lost: 0,
             readings_overruled: 0,
             tempos_refused: 0,
             match_pattern: false,
@@ -2223,6 +2231,7 @@ impl LoopHost {
                     "off"
                 }
             ),
+            (Command::SetSmartEnd(m), _) => format!("smart loop end: {}", smart_end_text(m)),
             (Command::TempoMeant(on), _) => format!(
                 "the song's tempo counts as {} when a free first loop's length is read",
                 if on {
@@ -3281,6 +3290,22 @@ impl LoopHost {
             } else {
                 String::new()
             }
+            + &if st.taps_kept + st.ends_moved + st.ends_offered > 0 {
+                format!(
+                    "; smart loop end: {} ends moved, {} offered, {} taps kept",
+                    st.ends_moved, st.ends_offered, st.taps_kept
+                )
+            } else {
+                String::new()
+            }
+            + &if self.notes_lost > 0 {
+                format!(
+                    "; {} periods with more notes than smart loop end could follow",
+                    self.notes_lost
+                )
+            } else {
+                String::new()
+            }
             + &if self.readings_overruled > 0 {
                 format!(
                     "; {} loops too long for their Length's bars (read instead)",
@@ -3692,12 +3717,56 @@ impl LoopHost {
     /// ([`Looper::take_tempo`]): its loop, how its length read (its bars
     /// and tempo, how sure) and that frame. A Length the reading couldn't
     /// keep is counted ([`LoopHost::readings_overruled`]).
-    pub fn take_tempo(&mut self) -> Option<(usize, Reading, u64)> {
-        let (n, r, at) = self.looper.take_tempo()?;
+    pub fn take_tempo(&mut self) -> Option<(usize, Reading, u64, Tick)> {
+        let (n, r, at, into) = self.looper.take_tempo()?;
         if r.overruled() {
             self.readings_overruled += 1;
         }
-        Some((n, r, at))
+        Some((n, r, at, into))
+    }
+
+    /// Smart loop end (the MENU setting, [`Command::SetSmartEnd`]): it
+    /// follows the pads and MIDI notes, so it's Off while takes record
+    /// from the line input or a mix. Cheap to call every period: the
+    /// looper is told when it changes.
+    pub fn set_smart_end(&mut self, m: SmartEnd) {
+        let m = if self.source == LoopSource::Pads {
+            m
+        } else {
+            SmartEnd::Off
+        };
+        if m != self.smart && self.looper.command(Command::SetSmartEnd(m)) {
+            self.smart = m;
+        }
+    }
+
+    /// A note started on `track` (a pad hit or a MIDI note-on), on the
+    /// song's frame clock: smart loop end weighs it. Every note of a
+    /// period, before [`LoopHost::run`].
+    pub fn note(&mut self, frame: u64, track: u16, key: u8, velocity: u8) {
+        self.looper.note(NoteStart {
+            frame,
+            source: track,
+            key,
+            velocity,
+        });
+    }
+
+    /// Notes started, the newest on `at`, that the time engine had no
+    /// room to pass on: counted ([`LoopHost::notes_lost`]), and smart
+    /// loop end keeps a tap whose reach they fall in.
+    pub fn notes_lost(&mut self, at: u64) {
+        self.notes_lost += 1;
+        self.looper.notes_lost(at);
+    }
+
+    /// After the looper's period: what smart loop end made of a closing
+    /// tap ([`Looper::take_smart`]), once a pass. The line for the log
+    /// (with the best two ends, scored) and, when your tap stood, the
+    /// words for the screen.
+    pub fn take_smart(&mut self) -> Option<(String, Option<String>)> {
+        let note = self.looper.take_smart()?;
+        Some(smart_words(&note, self.rate))
     }
 
     /// The song can't start at the tempo loop `n` set (`why`): counted;
@@ -3866,6 +3935,98 @@ pub fn overdubs_text(o: mpfree_looper::Overdubs) -> &'static str {
     }
 }
 
+/// Smart loop end's setting, as the log says it.
+pub fn smart_end_text(m: SmartEnd) -> &'static str {
+    match m {
+        SmartEnd::Off => "Off (the loop closes on your tap)",
+        SmartEnd::Suggest => "Suggest (it closes on your tap, then offers the end you played)",
+        SmartEnd::Auto => {
+            "Auto (it listens a moment past your tap, then closes on the end you played)"
+        }
+    }
+}
+
+/// `frames` at `rate` in whole milliseconds, without the sign.
+fn ms(frames: i64, rate: u32) -> f64 {
+    (frames.unsigned_abs() as f64 * 1000.0 / f64::from(rate.max(1))).round()
+}
+
+/// Your tap was late or early by a move of `by` frames (negative: the
+/// end found is earlier, so the tap was late).
+fn tap_off(by: i64, rate: u32) -> String {
+    format!(
+        "your tap was {:.0} ms {}",
+        ms(by, rate),
+        if by < 0 { "late" } else { "early" }
+    )
+}
+
+/// One scored end, for the log: where it is from the tap and its score.
+fn candidate_text(c: &Candidate, tap: u64, rate: u32) -> String {
+    let at = if c.end == tap {
+        "your tap".to_string()
+    } else {
+        let by = c.end as i64 - tap as i64;
+        format!(
+            "{:.0} ms {} your tap",
+            ms(by, rate),
+            if by < 0 { "before" } else { "after" }
+        )
+    };
+    format!(
+        "{at}, score {:.2} (onset {:.2}, rhythm {:.2}, context {:.2}, prior {:.2})",
+        c.score, c.onset, c.rhythm, c.context, c.prior
+    )
+}
+
+/// What smart loop end made of a closing tap ([`LoopHost::take_smart`]):
+/// the log line, with the best two ends scored, and when the tap stood,
+/// the words for the screen (every fallback is shown).
+fn smart_words(note: &SmartNote, rate: u32) -> (String, Option<String>) {
+    let n = note.n + 1;
+    let scored = match (note.best, note.second) {
+        (Some(b), Some(s)) => format!(
+            " (best: {}; next: {})",
+            candidate_text(&b, note.tap, rate),
+            candidate_text(&s, note.tap, rate)
+        ),
+        (Some(b), None) => format!(" (best: {})", candidate_text(&b, note.tap, rate)),
+        _ => String::new(),
+    };
+    match note.outcome {
+        SmartOutcome::Moved(by) => (
+            format!(
+                "looper: Loop {n}: {}; smart loop end closed it on the end you played{scored}",
+                tap_off(by, rate)
+            ),
+            None,
+        ),
+        SmartOutcome::Offered(by) => (
+            format!(
+                "looper: Loop {n}: {}; smart loop end offers the end you played{scored}",
+                tap_off(by, rate)
+            ),
+            None,
+        ),
+        SmartOutcome::Close(by) => (
+            format!(
+                "looper: Loop {n}: smart loop end found the end you played {:.0} ms from your \
+                 tap, too near to hear, so it offers nothing{scored}",
+                ms(by, rate)
+            ),
+            None,
+        ),
+        SmartOutcome::Kept(why) => (
+            format!("looper: Loop {n}: smart loop end kept your tap: {why}{scored}"),
+            Some(if why == mpfree_looper::OVERDUB_AT_ONCE {
+                format!("Kept your tap: {why}. Auto can fix this before it does.")
+            } else {
+                format!("Kept your tap: {why}.")
+            }),
+        ),
+    }
+}
+
 /// A loop's length in bars of `bar` ticks, for the log.
 fn ticks_text(ticks: i64, bar: Tick) -> String {
     let bar = bar.max(1);
@@ -3991,7 +4152,7 @@ mod tests {
                 assert!(t.process(PERIOD as u32, &mut b));
                 let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
                 h.period(&b, &mut l, &mut r);
-                took = took.or(h.take_tempo());
+                took = took.or(h.take_tempo().map(|(n, r, at, _)| (n, r, at)));
             }
             took
         };

@@ -87,16 +87,19 @@
 
 #![forbid(unsafe_code)]
 
+pub mod ends;
 pub mod heard;
 pub mod print;
 pub mod reading;
 pub mod save;
 mod view;
 
+pub use ends::{Candidate, NoteStart, Verdict};
 pub use heard::{Take, HEARD_SECONDS};
 pub use reading::{read_bars, Reading, Sure, TempoHint, TempoKind, LOOP_MAX_BPM, LOOP_MIN_BPM};
 pub use save::{LayerFile, LoopFile};
 
+use ends::NoteLog;
 use heard::Heard;
 
 use view::{Cursor, View};
@@ -244,6 +247,14 @@ pub enum Command {
     /// when a free first pass's length is read ([`TempoKind`]). For every
     /// loop.
     TempoMeant(bool),
+    /// Smart loop end (for every loop; Off by default): how a free first
+    /// pass's closing tap is checked against the notes you played
+    /// ([`Looper::note`], [`ends`]). Off closes on the tap. Suggest closes
+    /// on the tap too, then offers the end it found ([`Status::offer`]).
+    /// Auto listens on to the end of the reach after the tap
+    /// ([`Status::closing`]), then closes on the end it found (or the
+    /// tap), with the loop and the song already that far in.
+    SetSmartEnd(SmartEnd),
     /// Fade old: the share of the older audio that stays each time the loop
     /// comes round while overdubbing, 0 to 1 (1, the default, fades
     /// nothing; 0.88 keeps 88 % a pass). The older layers turn down by it
@@ -614,6 +625,55 @@ pub enum Phase {
     Overdubbing,
 }
 
+/// Smart loop end ([`Command::SetSmartEnd`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SmartEnd {
+    /// The loop closes on your tap.
+    #[default]
+    Off,
+    /// It closes on your tap, then offers the end it found.
+    Suggest,
+    /// It listens on to the end of the reach, then closes on the end it
+    /// found.
+    Auto,
+}
+
+/// What smart loop end made of a free first pass's closing tap, once
+/// ([`Looper::take_smart`]), for the log.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SmartNote {
+    pub n: usize,
+    pub outcome: SmartOutcome,
+    /// The closing tap's frame (the song's frame clock).
+    pub tap: u64,
+    /// The best end and the runner-up (the tap, when it was), scored.
+    pub best: Option<Candidate>,
+    pub second: Option<Candidate>,
+}
+
+/// What became of the tap, in frames from it (negative: the end is
+/// earlier, the tap was late).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SmartOutcome {
+    /// Auto moved the end.
+    Moved(i64),
+    /// Suggest offers moving it ([`Status::offer`]).
+    Offered(i64),
+    /// The end found is within [`OFFER_MS`] of the tap: nothing worth
+    /// offering.
+    Close(i64),
+    /// The tap stood, and why.
+    Kept(&'static str),
+}
+
+/// Why Suggest kept a tap when Then: Overdub started the overdub on it
+/// ([`SmartOutcome::Kept`]): Suggest can't wait for you there.
+pub const OVERDUB_AT_ONCE: &str = "the overdub started at once";
+
+/// The smallest move Suggest offers, in milliseconds: anything nearer the
+/// tap can't be heard.
+pub const OFFER_MS: f64 = 5.0;
+
 /// Counted, never silent.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
@@ -634,6 +694,11 @@ pub struct Stats {
     /// First passes that kept nothing after their end
     /// ([`KEEP_AFTER`]), for want of memory: their end can't move later.
     pub kept_short: u64,
+    /// Smart loop end: closing taps that stood (no clear match, or the
+    /// overdub started at once), and ends Auto moved or Suggest offered.
+    pub taps_kept: u64,
+    pub ends_moved: u64,
+    pub ends_offered: u64,
 }
 
 /// What the screen shows of one loop.
@@ -746,6 +811,14 @@ pub struct Status {
     /// (and for loops captured or opened from a save, which keep nothing
     /// around them).
     pub bounds: Option<Bounds>,
+    /// Smart loop end, Auto: Record closed the free first pass and it
+    /// listens on to the end of the reach before it closes (the ring says
+    /// closing).
+    pub closing: bool,
+    /// Smart loop end, Suggest: the end it found, in frames from the tap
+    /// the loop closed on (negative: earlier, the tap was late). It lasts
+    /// until the loop's sound changes.
+    pub offer: Option<i64>,
 }
 
 /// The memory gauge: all the loops together.
@@ -1687,6 +1760,39 @@ struct Loop {
     /// The first pass records free, with the song stopped: no bars yet,
     /// its length sets the tempo ([`Command::TempoFromLoop`]).
     free: bool,
+    /// Smart loop end: the frame the free first pass would close on
+    /// without it (the closing tap), once Record closed it and it reads.
+    tap: Option<u64>,
+    /// Auto: listening on past the tap to the end of the reach.
+    closing: bool,
+    /// Suggest: the closed pass waits to the end of the reach for its
+    /// decision.
+    smart_wait: Option<SmartWait>,
+    /// Suggest: the end it offers, from the tap, at the loop's version
+    /// then (a change to the sound ends the offer).
+    offer: Option<i64>,
+    offer_version: u64,
+}
+
+/// A closed free first pass waiting for smart loop end's decision.
+#[derive(Clone, Copy, Debug)]
+struct SmartWait {
+    tap: u64,
+    reach: u64,
+    start: u64,
+    bar: Tick,
+    beat: Tick,
+    /// How the tap's length read: the bars an end found keeps.
+    reading: Reading,
+}
+
+/// `like`'s bars over `len` frames instead: the reading of an end smart
+/// loop end found, a few milliseconds from the tap, keeps the tap's bar
+/// count (None when that tempo is out of the app's range).
+fn reread(len: usize, rate: u32, bar: Tick, like: &Reading) -> Option<Reading> {
+    let bpm = reading::tempo_of(len, rate, bar, like.bars);
+    (bpm.is_finite() && (LOOP_MIN_BPM..=LOOP_MAX_BPM).contains(&bpm))
+        .then_some(Reading { bpm, ..*like })
 }
 
 /// The start of a first pass that was heard before the pass began (its
@@ -1855,6 +1961,11 @@ impl Loop {
         lead: 0,
         fill: None,
         free: false,
+        tap: None,
+        closing: false,
+        smart_wait: None,
+        offer: None,
+        offer_version: 0,
     };
 
     /// Armed to start when you play, and no note yet.
@@ -1924,12 +2035,18 @@ pub struct Looper {
     /// then.
     stopped: bool,
     bar_ticks: Tick,
-    /// A free first pass closed: its loop, its reading, and the frame the
-    /// song starts on ([`Looper::take_tempo`]).
-    tempo_out: Option<(usize, Reading, u64)>,
+    /// A free first pass closed: its loop, its reading, the frame the
+    /// song starts on and the ticks into the loop it starts at
+    /// ([`Looper::take_tempo`]).
+    tempo_out: Option<(usize, Reading, u64, Tick)>,
     /// A free first pass may be recording: [`Looper::close_free`] looks
     /// at the loops only then, not every period.
     free_open: bool,
+    /// Smart loop end ([`Command::SetSmartEnd`]), the notes it weighs and
+    /// what it made of the last tap, for the host.
+    smart: SmartEnd,
+    notes: NoteLog,
+    smart_out: Option<SmartNote>,
 }
 
 impl Looper {
@@ -1962,6 +2079,9 @@ impl Looper {
             bar_ticks: 4 * PPQ as Tick,
             tempo_out: None,
             free_open: false,
+            smart: SmartEnd::Off,
+            notes: NoteLog::new(),
+            smart_out: None,
         }
     }
 
@@ -2222,6 +2342,8 @@ impl Looper {
                 captured: (l.captured.0 as i64, l.captured.1 as i64),
                 kept: l.slots[0].valid.1 as i64,
             }),
+            closing: l.closing,
+            offer: l.offer.filter(|_| l.offer_version == l.version),
         })
     }
 
@@ -2856,13 +2978,64 @@ impl Looper {
 
     /// A free first pass closed ([`Command::TempoFromLoop`]): its loop, how
     /// its length read (its bars and the tempo they set, how sure, the
-    /// other reading), and the frame the host starts the song on at that
-    /// tempo (the next period's first, where the loop comes round), from
-    /// the start of the bar it stopped in: the loop's first bar. Once per
-    /// pass. If the song can't start, the loop plays at the song's tempo
-    /// when it does (like tape, until a print is in).
-    pub fn take_tempo(&mut self) -> Option<(usize, Reading, u64)> {
+    /// other reading), the frame the host starts the song on at that tempo
+    /// (the next period's first), and where: this many ticks after the
+    /// start of the bar it stopped in (the loop's first bar). 0, where the
+    /// loop comes round, unless smart loop end's Auto listened on past
+    /// the end it closed on: then the loop is already that far in, and
+    /// the song starts there with it. Once per pass. If the song can't
+    /// start, the loop plays at the song's tempo when it does (like tape,
+    /// until a print is in).
+    pub fn take_tempo(&mut self) -> Option<(usize, Reading, u64, Tick)> {
         self.tempo_out.take()
+    }
+
+    /// What smart loop end made of a closing tap ([`Command::SetSmartEnd`]),
+    /// once per pass: Auto's when the loop closes, Suggest's at the end of
+    /// the reach after it.
+    pub fn take_smart(&mut self) -> Option<SmartNote> {
+        self.smart_out.take()
+    }
+
+    /// A note started (a pad hit or a MIDI note-on, [`NoteStart`]), on the
+    /// song's frame clock: smart loop end weighs them ([`ends`]). Give
+    /// every note of a period before [`Looper::process`] runs it. Kept
+    /// only while it could matter (a free first pass armed, recording or
+    /// waiting for its decision); allocation-free.
+    pub fn note(&mut self, n: NoteStart) {
+        if self.takes_notes() {
+            self.notes.push(n);
+        }
+    }
+
+    /// A note started on `at` that was lost before it got here (the
+    /// host had no room for it): a tap whose reach it falls in stands,
+    /// as for notes the log itself had to drop.
+    pub fn notes_lost(&mut self, at: u64) {
+        if self.takes_notes() {
+            self.notes.lost(at);
+        }
+    }
+
+    /// Whether a note given now is kept: smart loop end is on with tempo
+    /// from the first loop, or a decision waits. (A note in the period
+    /// that arms the loop counts: the period's end forgets what nothing
+    /// needs, [`Looper::wants_notes`].)
+    fn takes_notes(&self) -> bool {
+        (self.smart != SmartEnd::Off && self.free_tempo)
+            || self.loops.iter().any(|l| l.smart_wait.is_some())
+    }
+
+    /// Whether smart loop end needs the notes: on, and a free first pass
+    /// may be armed or recording, or one waits for its decision.
+    fn wants_notes(&self) -> bool {
+        self.loops.iter().any(|l| l.smart_wait.is_some())
+            || (self.smart != SmartEnd::Off
+                && self.free_tempo
+                && self
+                    .loops
+                    .iter()
+                    .any(|l| l.phase == Phase::Armed || (l.free && l.phase == Phase::Recording)))
     }
 
     /// Whether loop `k`, recording a first pass now, would record free
@@ -2892,6 +3065,10 @@ impl Looper {
         } = self;
         loops[k].begin_free(store, k, rec_from, *now, *bar_ticks);
         self.free_open = true;
+        // Smart loop end's notes: from a reach before the pass (a smart
+        // start looks there) on.
+        let reach = ends::reach(self.rate, f64::NAN);
+        self.notes.keep_from(rec_from.saturating_sub(reach));
     }
 
     /// Each free first pass asked to close ([`Loop::ending`]) closes on
@@ -2899,14 +3076,19 @@ impl Looper {
     /// ([`read_bars`]): its bars from the start of the bar the song is
     /// stopped in, and its reading for the host ([`Looper::take_tempo`]).
     fn close_free(&mut self, block: &Block) {
+        let end = block.start_frame + u64::from(block.frames);
+        self.tend_smart(end);
+        if (!self.notes.is_empty() || self.notes.dropped() > 0) && !self.wants_notes() {
+            self.notes.clear();
+        }
         if !self.free_open {
             return;
         }
-        let end = block.start_frame + u64::from(block.frames);
         let Some(span) = block.spans().first() else {
             return;
         };
         let bar = span.meter.bar_ticks().max(1);
+        let beat = span.meter.beat_ticks().max(1);
         let hint = TempoHint {
             bpm: span.bpm,
             kind: if self.tempo_meant {
@@ -2915,35 +3097,170 @@ impl Looper {
                 TempoKind::Earlier
             },
         };
+        let rate = self.rate;
         let mut open = false;
         for k in 0..self.loops.len() {
             let l = &self.loops[k];
             if !(l.free && l.phase == Phase::Recording) {
                 continue;
             }
-            let len = end.saturating_sub(l.rec_from) as usize;
-            let closing = if l.ending {
-                read_bars(len, self.rate, bar, l.bars, Some(hint))
-            } else {
-                None
-            };
+            let said = l.bars;
+            let read = |len: usize| read_bars(len, rate, bar, said, Some(hint));
+            let rec_from = l.rec_from;
+            let len = end.saturating_sub(rec_from) as usize;
+            let closing = if l.ending { read(len) } else { None };
             let Some(reading) = closing else {
                 open = true;
                 continue;
             };
+            // The tap: the frame it closes on without smart loop end.
+            let tap = *self.loops[k].tap.get_or_insert(end);
+            let tap_len = (tap - rec_from) as usize;
+            let tap_reading = read(tap_len).unwrap_or(reading);
+            let reach = ends::reach(rate, tap_reading.bpm);
+            // Auto listens on to the end of the reach first.
+            let (len, reading, into) = if self.smart == SmartEnd::Auto {
+                if end < tap + reach {
+                    self.loops[k].closing = true;
+                    open = true;
+                    continue;
+                }
+                let ask = ends::Ask {
+                    rate,
+                    start: rec_from,
+                    tap,
+                    reach,
+                    heard_to: end,
+                    bar,
+                    beat,
+                };
+                let bars = tap_reading.bars;
+                let d = ends::decide(&self.notes, &ask, &|_| Some(bars));
+                let moved = (d.verdict == Verdict::Moved)
+                    .then(|| reread((d.end - rec_from) as usize, rate, bar, &tap_reading))
+                    .flatten();
+                let (stop, len, reading, outcome) = match moved {
+                    Some(r) => (
+                        d.end,
+                        (d.end - rec_from) as usize,
+                        r,
+                        SmartOutcome::Moved(d.moved_by(tap)),
+                    ),
+                    None => (
+                        tap,
+                        tap_len,
+                        tap_reading,
+                        SmartOutcome::Kept(if d.verdict == Verdict::Moved {
+                            "too short a loop"
+                        } else {
+                            d.verdict.why()
+                        }),
+                    ),
+                };
+                self.smart_said(k, tap, outcome, d.best, d.second);
+                (len, reading, end - stop)
+            } else {
+                (len, reading, 0)
+            };
             let pos = span.ticks().start;
             let origin = pos - pos.rem_euclid(bar);
-            let t = origin + i64::from(reading.bars) * bar;
+            let ticks = i64::from(reading.bars) * bar;
+            let t = origin + ticks;
+            let into = (into as f64 * ticks as f64 / len.max(1) as f64).round() as Tick;
             let l = &mut self.loops[k];
             l.free = false;
+            l.closing = false;
             l.origin = origin;
             l.bar = bar;
             l.end_tick = Some(t);
+            if self.smart == SmartEnd::Suggest {
+                l.smart_wait = Some(SmartWait {
+                    tap,
+                    reach,
+                    start: rec_from,
+                    bar,
+                    beat,
+                    reading,
+                });
+            }
             if l.finish_len(&mut self.store, &mut self.stats, k, t, len, true) {
-                self.tempo_out = Some((k, reading, end));
+                self.tempo_out = Some((k, reading, end, into.clamp(0, ticks - 1)));
+            } else {
+                self.loops[k].forget_smart();
             }
         }
         self.free_open = open;
+    }
+
+    /// Suggest: a closed free pass whose reach has been heard to its end
+    /// gets its decision. With an overdub under way (the loop's Then, or
+    /// Overdub pressed) the tap stands: Suggest can't wait for you there.
+    fn tend_smart(&mut self, end: u64) {
+        for k in 0..self.loops.len() {
+            let Some(w) = self.loops[k].smart_wait else {
+                continue;
+            };
+            if self.loops[k].od_open {
+                self.loops[k].smart_wait = None;
+                self.smart_said(k, w.tap, SmartOutcome::Kept(OVERDUB_AT_ONCE), None, None);
+                continue;
+            }
+            if end < w.tap + w.reach {
+                continue;
+            }
+            self.loops[k].smart_wait = None;
+            let (rate, bar) = (self.rate, w.bar);
+            let ask = ends::Ask {
+                rate,
+                start: w.start,
+                tap: w.tap,
+                reach: w.reach,
+                heard_to: end,
+                bar,
+                beat: w.beat,
+            };
+            let bars = w.reading.bars;
+            let d = ends::decide(&self.notes, &ask, &|_| Some(bars));
+            let by = d.moved_by(w.tap);
+            let audible = by.unsigned_abs() as f64 * 1000.0 / f64::from(rate) >= OFFER_MS;
+            let reads = reread((d.end - w.start) as usize, rate, bar, &w.reading).is_some();
+            let outcome = match d.verdict {
+                Verdict::Moved if !reads => SmartOutcome::Kept("too short a loop"),
+                Verdict::Moved if audible => {
+                    let l = &mut self.loops[k];
+                    l.offer = Some(by);
+                    l.offer_version = l.version;
+                    SmartOutcome::Offered(by)
+                }
+                Verdict::Moved => SmartOutcome::Close(by),
+                v => SmartOutcome::Kept(v.why()),
+            };
+            self.smart_said(k, w.tap, outcome, d.best, d.second);
+        }
+    }
+
+    /// Smart loop end's word on loop `k`'s tap, for the host, counted.
+    fn smart_said(
+        &mut self,
+        k: usize,
+        tap: u64,
+        outcome: SmartOutcome,
+        best: Option<Candidate>,
+        second: Option<Candidate>,
+    ) {
+        match outcome {
+            SmartOutcome::Moved(_) => self.stats.ends_moved += 1,
+            SmartOutcome::Offered(_) => self.stats.ends_offered += 1,
+            SmartOutcome::Kept(_) => self.stats.taps_kept += 1,
+            SmartOutcome::Close(_) => {}
+        }
+        self.smart_out = Some(SmartNote {
+            n: k,
+            outcome,
+            tap,
+            best,
+            second,
+        });
     }
 
     /// Each loop waiting for you to play that a note came to: where its
@@ -3157,6 +3474,7 @@ impl Looper {
             }
             Queued::Loop(Command::TempoFromLoop(on)) => self.free_tempo = on,
             Queued::Loop(Command::TempoMeant(on)) => self.tempo_meant = on,
+            Queued::Loop(Command::SetSmartEnd(m)) => self.smart = m,
             // A capture under way: again, Undo or Clear call it off.
             Queued::Loop(
                 Command::Capture(_)
@@ -3850,6 +4168,7 @@ impl Loop {
                 | Command::StartsByEar(_)
                 | Command::TempoFromLoop(_)
                 | Command::TempoMeant(_)
+                | Command::SetSmartEnd(_)
                 | Command::SetFadeOld(_)
                 | Command::SetLatency(_)
                 | Command::SetLevel(_)
@@ -3946,7 +4265,8 @@ impl Loop {
             Command::Played(_)
             | Command::StartsByEar(_)
             | Command::TempoFromLoop(_)
-            | Command::TempoMeant(_) => {}
+            | Command::TempoMeant(_)
+            | Command::SetSmartEnd(_) => {}
             Command::SetFadeOld(k) if k.is_finite() => self.fade_old = k.clamp(0.0, 1.0),
             Command::SetFadeOld(_) => {}
             Command::SetLatency(l) => self.latency = l,
@@ -4981,6 +5301,15 @@ impl Loop {
         self.lead = 0;
         self.fill = None;
         self.free = false;
+        self.forget_smart();
+    }
+
+    /// Smart loop end lets go of this loop's tap, wait and offer.
+    fn forget_smart(&mut self) {
+        self.tap = None;
+        self.closing = false;
+        self.smart_wait = None;
+        self.offer = None;
     }
 
     fn abort(&mut self, stats: &mut Stats) {
@@ -5222,6 +5551,7 @@ impl Loop {
         store.drop_kept(me);
         self.phase = Phase::Recording;
         self.free = true;
+        self.forget_smart();
         self.origin = 0;
         self.start_frame = rec_from;
         self.bar = bar;

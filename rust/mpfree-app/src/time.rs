@@ -1166,6 +1166,14 @@ impl TimeHost {
         self.audio.hits()
     }
 
+    /// Every note started in the period just run ([`TimeAudio::take_notes`]):
+    /// its frame, track, note and velocity, for the looper's smart loop
+    /// end; then forgets them. The newest frame of a note lost for want
+    /// of room, if any was.
+    pub fn take_notes(&mut self, f: impl FnMut(u64, u16, u8, u8)) -> Option<u64> {
+        self.audio.take_notes(f)
+    }
+
     pub fn clear_hits(&mut self) {
         self.audio.clear_hits();
     }
@@ -1301,7 +1309,9 @@ impl TimeHost {
     /// Start the song on frame `at` (see [`TimeHost::next_frame`]): the
     /// looper's Starts: When I play, whose first note starts the song so
     /// bar 1 is where you started. Only while it is stopped: back to the
-    /// start of the bar it stopped in, the tempo `bpm` if given (the whole
+    /// start of the bar it stopped in (and `into` ticks after it, where a
+    /// loop closed by smart loop end's Auto already is), the tempo `bpm`
+    /// if given (the whole
     /// song takes it), then PLAY on `at`, with no count-in. With a take
     /// ready (`take`, as for [`TimeHost::take_waits`]) it records from
     /// there too, a punch-in with no count-in, into the clip REC readies
@@ -1314,18 +1324,19 @@ impl TimeHost {
         at: u64,
         bpm: Option<f64>,
         take: Option<bool>,
+        into: Tick,
     ) -> Result<Option<String>, String> {
         // The clip REC readies comes first, so with none to record into
         // the song starts without the take, and no punch-in needs taking
         // back. Only when the start will go in.
         let ready = match take {
-            Some(_) if self.audio.start_refusal(bpm, take).is_none() => {
+            Some(_) if self.audio.start_refusal(bpm, take, into).is_none() => {
                 Some(self.with(|c| c.take_started_on_note()))
             }
             _ => None,
         };
         let take = take.filter(|_| ready.as_ref().is_some_and(Result::is_ok));
-        self.audio.start_at(at, bpm, take)?;
+        self.audio.start_at(at, bpm, take, into)?;
         Ok(ready.map(|r| {
             self.sent(r)
                 .unwrap_or_else(|e| format!("rec: {e}, so it only plays"))
@@ -9551,7 +9562,7 @@ mod tests {
         let bar = 4 * mpfree_transport::PPQ as i64;
         let at = h.next_frame() + 40;
         // The app's tempo moves with it, in the same period (4c's way).
-        assert_eq!(h.start_at(at, Some(117.3456), None), Ok(None));
+        assert_eq!(h.start_at(at, Some(117.3456), None, 0), Ok(None));
         h.follow_tempo(117.3456);
         h.period(PERIOD, &mut pads);
         let span = *h.block().spans().last().unwrap();
@@ -9584,7 +9595,7 @@ mod tests {
         assert_eq!(h.info().bpm, 100.0);
         assert_eq!(asked, 1, "asked again before the line");
         // Refused while it plays, and while it counts in.
-        let r = h.start_at(h.next_frame(), None, None);
+        let r = h.start_at(h.next_frame(), None, None, 0);
         assert_eq!(r, Err("the song is playing already".to_string()));
         assert!(h.command(Command::StopAndRewind));
         h.period(PERIOD, &mut pads);
@@ -9592,14 +9603,14 @@ mod tests {
         assert!(h.command(Command::Record));
         h.period(PERIOD, &mut pads);
         assert_eq!(h.info().state, State::CountIn);
-        let r = h.start_at(h.next_frame(), None, None);
+        let r = h.start_at(h.next_frame(), None, None, 0);
         assert_eq!(r, Err("the song is counting in".to_string()));
         assert_eq!(h.starts_refused(), 2);
         // A take ready: it records from the note, with no count-in.
         assert!(h.command(Command::StopAndRewind));
         h.period(PERIOD, &mut pads);
         let at = h.next_frame();
-        let line = h.start_at(at, None, Some(true)).unwrap().unwrap();
+        let line = h.start_at(at, None, Some(true), 0).unwrap().unwrap();
         assert!(
             line.starts_with("rec: the take started on your note"),
             "{line}"
@@ -9616,7 +9627,7 @@ mod tests {
         h.period(PERIOD, &mut pads);
         h.control.armed = Some(h.control.project.tracks.len());
         let at = h.next_frame() + 40;
-        let line = h.start_at(at, None, Some(false)).unwrap().unwrap();
+        let line = h.start_at(at, None, Some(false), 0).unwrap().unwrap();
         assert!(line.ends_with("so it only plays"), "{line}");
         for _ in 0..8 {
             h.period(PERIOD, &mut pads);
@@ -9639,7 +9650,7 @@ mod tests {
         while h.audio.queue_room() > 2 {
             assert!(h.audio.command_at(far, Command::Stop));
         }
-        let r = h.start_at(h.next_frame(), Some(90.0), None);
+        let r = h.start_at(h.next_frame(), Some(90.0), None, 0);
         assert_eq!(r, Err("the transport's queue is full".to_string()));
         assert_eq!(h.audio.queue_room(), 2, "nothing queued");
         h.period(PERIOD, &mut pads);

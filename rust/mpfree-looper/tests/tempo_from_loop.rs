@@ -12,8 +12,8 @@
 //! (3 s).
 
 use mpfree_looper::{
-    read_bars, After, Command as L, Looper, Phase, Reading, Starts, Sure, TempoHint, TempoKind,
-    FADE, LOOP_MAX_BPM,
+    read_bars, After, Command as L, Looper, NoteStart, Phase, Reading, SmartEnd, SmartOutcome,
+    Starts, Sure, TempoHint, TempoKind, FADE, LOOP_MAX_BPM,
 };
 use mpfree_transport::time::PPQ;
 use mpfree_transport::{Block, Command as T, Meter, State, Transport};
@@ -38,6 +38,11 @@ struct Rig {
     reading: Option<Reading>,
     /// Starts the looper asked for (When I play, stopped): none here.
     starts: usize,
+    /// Notes played (pads), given to the looper period by period.
+    notes: Vec<NoteStart>,
+    /// Where the song started in the loop, in ticks after its first bar
+    /// line (smart loop end's Auto).
+    into: i64,
 }
 
 impl Rig {
@@ -56,6 +61,8 @@ impl Rig {
             tempo: None,
             reading: None,
             starts: 0,
+            notes: Vec::new(),
+            into: 0,
         };
         r.cmd(L::TempoFromLoop(true));
         r.cmd(L::SetBars(None));
@@ -86,18 +93,28 @@ impl Rig {
                 self.input[2 * i + 1] = x[1];
             }
             self.mix[..2 * n].fill(0.0);
+            // The period's notes first, as the host gives them.
+            let end = self.frame + n as u64;
+            for x in self
+                .notes
+                .iter()
+                .filter(|x| x.frame >= self.frame && x.frame < end)
+            {
+                self.l.note(*x);
+            }
             assert!(self.t.process(n as u32, &mut self.b));
             self.l
                 .process(&self.b, &self.input[..2 * n], &mut self.mix[..2 * n]);
             self.out.extend_from_slice(&self.mix[..2 * n]);
             self.frame += n as u64;
-            if let Some((k, reading, at)) = self.l.take_tempo() {
+            if let Some((k, reading, at, into)) = self.l.take_tempo() {
                 let bpm = reading.bpm;
                 self.reading = Some(reading);
+                self.into = into;
                 assert_eq!(at, self.frame, "the next period's first frame");
                 assert_eq!(self.t.state(), State::Stopped);
                 let pos = self.t.position();
-                let start = pos - pos.rem_euclid(self.t.meter().bar_ticks());
+                let start = pos - pos.rem_euclid(self.t.meter().bar_ticks()) + into;
                 if start != pos {
                     assert!(self.t.command(at, T::Locate(start)));
                 }
@@ -585,4 +602,110 @@ fn a_meter_of_three_quarters_sets_its_tempo_in_quarters() {
     let want = 60.0 * f64::from(RATE) * 3.0 * 2.0 / s.frames as f64;
     assert_eq!((reading.bars, bpm), (2, want));
     assert!((119.0..121.0).contains(&bpm), "{bpm}");
+}
+
+/// A beat on the pads from frame `from` at 120 BPM (a beat is 11 025
+/// frames): the kick on 1 and 3, the snare on 2 and 4, for `beats` beats
+/// and the downbeat after them.
+fn pads_beat(from: u64, beats: u64) -> Vec<NoteStart> {
+    (0..=beats)
+        .map(|k| NoteStart {
+            frame: from + k * 11_025,
+            source: 0,
+            key: if k % 2 == 0 { 36 } else { 38 },
+            velocity: if k % 2 == 0 { 120 } else { 100 },
+        })
+        .collect()
+}
+
+/// Two bars at 120 BPM on the pads from Record, and Record again 60 ms
+/// (1 323 frames) after the downbeat that ends them. The rig, the frame
+/// the pass started on, and the tap: the frame it would close on without
+/// smart loop end.
+fn late_tap(mode: SmartEnd, notes: bool) -> (Rig, u64, u64) {
+    let mut r = Rig::new(256);
+    r.cmd(L::SetSmartEnd(mode));
+    r.run(10_000);
+    r.cmd(L::Record);
+    let rec_from = r.frame;
+    if notes {
+        r.notes = pads_beat(rec_from, 8);
+    }
+    r.run(rec_from + 88_200 + 1_323);
+    r.cmd(L::Record);
+    // The tap is the end of the period that takes the press.
+    let f = r.frame + 256;
+    r.run(f);
+    (r, rec_from, f)
+}
+
+#[test]
+fn auto_closes_on_the_downbeat_you_played_and_starts_the_song_that_far_in() {
+    let (mut r, rec_from, tap) = late_tap(SmartEnd::Auto, true);
+    // It listens on to the end of the reach (100 ms, 2 205 frames).
+    assert!(r.l.status().closing);
+    assert_eq!(r.l.status().phase, Phase::Recording);
+    r.until_playing(2_205 + 512);
+    let (_, bpm, at) = r.tempo.expect("a tempo");
+    assert!(at >= tap + 2_205 && at < tap + 2_205 + 256);
+    let s = r.l.status();
+    // Two bars at exactly 120: the loop ends on the downbeat played.
+    assert_eq!(
+        (s.frames, s.ticks, s.closing),
+        (88_200, 2 * BAR_TICKS, false)
+    );
+    assert_eq!(bpm, 120.0);
+    let note = r.l.take_smart().expect("a word on the tap");
+    let down = rec_from + 88_200;
+    assert_eq!(note.outcome, SmartOutcome::Moved(down as i64 - tap as i64));
+    assert_eq!(r.l.stats().ends_moved, 1);
+    // The song starts as far into the loop as the loop came round since
+    // the downbeat, and the loop plays from there.
+    let into = (at - down) as f64 * (2 * BAR_TICKS) as f64 / 88_200.0;
+    assert_eq!(r.into, into.round() as i64);
+    r.run(at + 20_000);
+    let from = rec_from + (r.into as f64 * 88_200.0 / (2 * BAR_TICKS) as f64).round() as u64;
+    for j in [FADE as u64 + 10, 5_000, 15_000] {
+        let x = r.out_at(at + j);
+        assert!(close(x, sound(from + j)), "frame {j}");
+        assert!(
+            !close(x, sound(from + j - 1_323)),
+            "not where the tap put it"
+        );
+    }
+}
+
+#[test]
+fn suggest_closes_on_the_tap_then_offers_the_end_it_found() {
+    let (mut r, rec_from, tap) = late_tap(SmartEnd::Suggest, true);
+    r.until_playing(512);
+    let (_, _, at) = r.tempo.expect("a tempo");
+    assert_eq!(at, tap, "on the tap, as Off");
+    assert_eq!(r.l.status().frames as u64, tap - rec_from);
+    assert_eq!(r.into, 0);
+    assert_eq!(r.l.status().offer, None, "not before the reach is heard");
+    r.run(tap + 2_205 + 256);
+    let by = (rec_from + 88_200) as i64 - tap as i64;
+    assert_eq!(r.l.status().offer, Some(by));
+    let note = r.l.take_smart().unwrap();
+    assert_eq!(note.outcome, SmartOutcome::Offered(by));
+    assert_eq!(r.l.stats().ends_offered, 1);
+}
+
+#[test]
+fn with_no_note_near_the_tap_auto_keeps_it() {
+    let (mut r, rec_from, tap) = late_tap(SmartEnd::Auto, false);
+    r.until_playing(2_205 + 512);
+    let (_, _, at) = r.tempo.unwrap();
+    let s = r.l.status();
+    assert_eq!(s.frames as u64, tap - rec_from);
+    assert_eq!(
+        r.l.take_smart().unwrap().outcome,
+        SmartOutcome::Kept("no note near it")
+    );
+    assert_eq!(r.l.stats().taps_kept, 1);
+    // It closed on the tap, and the song starts as far in as it came
+    // round since.
+    let into = (at - tap) as f64 * s.ticks as f64 / s.frames as f64;
+    assert_eq!(r.into, into.round() as i64);
 }

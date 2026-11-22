@@ -1457,6 +1457,76 @@ mod looper {
             assert_ne!(bpm, before);
             assert_eq!(s.time.tempo_map().segments().len(), 1);
             assert_eq!(s.looper.tempos_refused, 0);
+            // Smart loop end (Suggest, the default) found no note near
+            // the tap: it stood, counted and said.
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l == "looper: Loop 1: smart loop end kept your tap: no note near it"),
+                "{:?}",
+                s.said()
+            );
+            assert_eq!(s.looper.looper.stats().taps_kept, 1);
+        });
+    }
+
+    /// Smart loop end step 1, the whole way through: on Auto, a pad hit
+    /// just after REC, the same pad again 2 s later and REC tapped 40 ms
+    /// after that. The pads' notes reach the looper, the loop is the
+    /// length between the two hits, and the song starts as far into bar
+    /// 1 as the loop already is.
+    #[test]
+    fn auto_smart_loop_end_closes_on_the_hit_you_played_again() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            s.press("header", "tab", "Looper");
+            s.app.settings.loop_tempo = true;
+            s.app.settings.smart_end = mpfree_looper::SmartEnd::Auto;
+            let free = at(&mut s, "leditor", "bars", 1);
+            s.press_target(&free).run_for(0.1);
+            s.button("REC");
+            // The opening hit (within the reach of REC, so the loop's
+            // start is that far before it), and the same pad again.
+            let first = s.time.next_frame();
+            s.pad(0, 120, 0.1);
+            s.run_for(2.0 - 0.1);
+            let again = s.time.next_frame();
+            s.pad_edge(0, 120, true);
+            s.run_for(0.04);
+            s.button("REC");
+            s.pad_edge(0, 0, false);
+            until_phase(&mut s, Phase::Playing, 1.0);
+            let st = status(&s);
+            let between = (again - first) as usize;
+            assert!(
+                st.frames.abs_diff(between) <= crate::PERIOD,
+                "{} frames, {between} between the hits: {:?}",
+                st.frames,
+                s.said()
+            );
+            let line = s
+                .said()
+                .into_iter()
+                .find(|l| l.starts_with("looper: Loop 1: your tap was "))
+                .unwrap_or_else(|| panic!("{:?}", s.said()));
+            assert!(
+                line.contains(" ms late; smart loop end closed it on the end you played (best: "),
+                "{line}"
+            );
+            assert_eq!(s.looper.looper.stats().ends_moved, 1);
+            // The song started part-way into bar 1, where the loop is.
+            s.run_periods(1);
+            let info = s.time.info();
+            assert!(info.state.rolling());
+            let st = status(&s);
+            let loop_at = st.origin + (f64::from(st.position) * st.ticks as f64) as i64;
+            assert!(info.position > 0, "not from the bar line");
+            assert!(
+                (info.position - loop_at).abs() < st.ticks / 100,
+                "song at {}, loop at {loop_at}",
+                info.position
+            );
         });
     }
 

@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-looper rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/loop_row.rs rust/mpfree-app/src/looper_deck.rs rust/mpfree-app/src/looper_tab.rs rust/mpfree-app/src/looping.rs rust/mpfree-seq/src/loops.rs
-checked: 2026-11-22 e7409223
+checked: 2026-11-22 0df0743b
 -->
 
 # Recording loops
@@ -176,7 +176,19 @@ A few things to know about where a loop records from:
 - **Nothing else in its place.** If the looper can't get the sound you picked (for example, the Loop or Audio track goes to a submix while you record Master), it records silence and says why, and a new take or overdub won't start until it can.
 - **Master and the loop's own sound.** While the Loop track sends to a return (louder than the -60 dB "off" the Play page leaves it at), or goes to a submix, the looper won't record **Master**: the loop would record its own echoes, and every overdub would add them again. Turn that send down (or send the Loop track to the master), or record a track or submix instead. After the send comes down, Master waits until that return's echoes of the loop have died away (a delay's repeats, a reverb's tail), and the screen says so.
 
-Press **MENU** on the Looper tab for the rarer settings as a list, with an explanation beside each: the line input itself, the latency to make up for, **Loop level** (-24 to +6 dB), **Tempo from the first loop** ([above](#tempo-from-the-first-loop)) and **Loop memory**. The Loop level, Tempo from the first loop, and the latency once you set it by hand, are kept for you whatever project is open; the line input is off at every start, so the Looper records the pads until you turn it on.
+Press **MENU** on the Looper tab for the rarer settings as a list, with an explanation beside each: the line input itself, the latency to make up for, **Loop level** (-24 to +6 dB), **Tempo from the first loop** ([above](#tempo-from-the-first-loop)), **Smart loop end** ([below](#smart-loop-end)) and **Loop memory**. The Loop level, Tempo from the first loop, Smart loop end, and the latency once you set it by hand, are kept for you whatever project is open; the line input is off at every start, so the Looper records the pads until you turn it on.
+
+#### Smart loop end
+
+Closing a loop exactly on the beat is hard. Tap a little late and the loop is a little long, so the tempo comes out slow and the loop stumbles each time round. When you play that first loop on the pads or a keyboard, MPFree can listen to the notes you played around your tap and find the downbeat you meant. Most players hit the loop's first beat again as they close it, and that is what it looks for. Choose what it does with **Smart loop end** in the Looper tab's MENU:
+
+- **Suggest** (the default): the loop closes on your tap, as before. If you clearly played the downbeat a little off your tap, MPFree finds it. For now only the log says so ("your tap was 48 ms late"); a coming update adds **Snap**, to move the end there with one tap.
+- **Auto**: after your tap the loop listens on for a moment (a tenth of a second at most; the ring says **closing**), then closes on the downbeat you played. The music starts in step with where the loop has got to, a little way into bar 1, so you hear no gap.
+- **Off**: the loop closes on your tap.
+
+It only looks near your tap: within a tenth of a second, or a 1/16 note at very fast tempos. A hit wins when it sounds like the loop's first hit (the same pad or note, about as hard), fits the beat of what you played, and what follows it sounds like the start of the loop again. If no hit is clearly the one, your tap stands and the screen says why: "Kept your tap: no clear match near it." It works best when your first hit comes right after you start the loop.
+
+Smart loop end listens to the pads and MIDI notes, so it is off while the Looper records the line input or a mix.
 
 ### Capture: keep what you just played
 

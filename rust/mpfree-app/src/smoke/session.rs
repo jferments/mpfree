@@ -1576,6 +1576,14 @@ impl Session {
                 self.export.running(),
             ));
         self.looper.set_tempo_meant(self.app.tempo_by_hand);
+        self.looper.set_smart_end(self.app.settings.smart_end);
+        // The period's notes, for smart loop end, as main.rs gives them.
+        if let Some(at) = self
+            .time
+            .take_notes(|frame, track, key, velocity| self.looper.note(frame, track, key, velocity))
+        {
+            self.looper.notes_lost(at);
+        }
         if let Some(line) = self.looper.run(self.time.block(), &mut ll, &mut lr) {
             self.out.note(&line);
         }
@@ -1590,6 +1598,7 @@ impl Session {
         let (said, tempo) =
             crate::loop_sets_tempo(&mut self.looper, &mut self.time, take, exporting);
         self.out.loop_start(said);
+        self.out.smart_end(self.looper.take_smart());
         self.loop_tempo = tempo.or(self.loop_tempo);
         // The Looper tab and the Play page's strip follow the loop, as
         // main.rs shows them: its wave a slice at a time, its changes in

@@ -21,7 +21,8 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use mpfree_looper::{
-    After, Command as L, Edit as E, LayerCommand as Lc, Looper, Overdubs, Phase, Starts, MAX_LOOPS,
+    After, Command as L, Edit as E, LayerCommand as Lc, Looper, NoteStart, Overdubs, Phase,
+    SmartEnd, Starts, MAX_LOOPS,
 };
 use mpfree_transport::{Block, Command as T, Transport};
 
@@ -538,6 +539,13 @@ fn starting_when_you_play_never_allocates() {
 
 #[test]
 fn a_free_pass_setting_the_tempo_never_allocates() {
+    // Smart loop end in each mode, with the pads' notes going in.
+    for mode in [SmartEnd::Off, SmartEnd::Suggest, SmartEnd::Auto] {
+        free_pass_without_allocating(mode);
+    }
+}
+
+fn free_pass_without_allocating(mode: SmartEnd) {
     const RATE: u32 = 44_100;
     let mut t = Transport::new(RATE, 100.0).unwrap();
     let mut l = Looper::new(RATE, 30);
@@ -546,11 +554,22 @@ fn a_free_pass_setting_the_tempo_never_allocates() {
     let mut out = vec![0.0f32; 2 * 4096];
     let sizes = [1usize, 7, 128, 333, 4096, 64, 256];
     let mut tempos = 0;
+    let mut said = 0;
     watch(true);
     let _ = l.command(L::TempoFromLoop(true));
     let _ = l.command(L::SetBars(None));
+    let _ = l.command(L::SetSmartEnd(mode));
     for i in 0..3000u64 {
         let f = t.frame();
+        // A pad every few periods, more than the note log holds.
+        if i % 3 == 0 {
+            l.note(NoteStart {
+                frame: f,
+                source: 1,
+                key: (i % 16) as u8,
+                velocity: 100,
+            });
+        }
         match i {
             // Loop 0 records free from Record; Record again a moment
             // later waits to be a bar at 160 BPM, then sets the tempo.
@@ -604,16 +623,24 @@ fn a_free_pass_setting_the_tempo_never_allocates() {
         assert!(t.process(n as u32, &mut b));
         l.process(&b, &input[..2 * n], &mut out[..2 * n]);
         // The host: the tempo, then PLAY, on the frame asked.
-        if let Some((_, r, at)) = l.take_tempo() {
+        if let Some((_, r, at, _)) = l.take_tempo() {
             let _ = t.command(at, T::SetTempo(r.bpm));
             let _ = t.command(at, T::Play);
             tempos += 1;
+        }
+        if l.take_smart().is_some() {
+            said += 1;
         }
         let _ = l.status();
         let _ = l.stats();
     }
     watch(false);
-    assert_eq!(calls(), 0, "allocated while a free pass set the tempo");
+    assert_eq!(
+        calls(),
+        0,
+        "allocated while a free pass set the tempo ({mode:?})"
+    );
+    assert_eq!(said > 0, mode != SmartEnd::Off, "{mode:?}");
     assert_eq!(tempos, 2, "two passes set the tempo");
     assert!(l.stats().aborted >= 1, "PLAY threw one away");
 }
