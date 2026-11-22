@@ -2399,11 +2399,13 @@ mod tests {
     #[test]
     fn pop_ups_follow_the_theme_and_read_over_bright_and_dark_skins() {
         use mpfree_ui::theme::contrast;
-        let torture = Theme::parse(
+        // The app refuses this theme (`Theme::unusable`); the pop-ups'
+        // guards don't count on that.
+        let (torture, problems) = Theme::load(
             "bg = #777777\nsurface = #7A7A7A80\nraised = #7C7C7C\noutline = #787878\n\
              text = #7B7B7B\ntext_dim = #7B7B7B\ntext_faint = #7B7B7B\naccent = #797979",
-        )
-        .unwrap();
+        );
+        assert!(torture.unusable().is_some(), "{problems:?}");
         let mut themes: Vec<Theme> = mpfree_ui::theme::BUILTIN
             .iter()
             .map(|n| Theme::builtin(n).unwrap())
