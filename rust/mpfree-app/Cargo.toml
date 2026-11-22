@@ -26,6 +26,8 @@ mpfree-track = { path = "../mpfree-track" }
 mpfree-play = { path = "../mpfree-play" }
 mpfree-notefx = { path = "../mpfree-notefx" }
 mpfree-time-ui = { path = "../mpfree-time-ui" }
+mpfree-compose = { path = "../mpfree-compose" }
+mpfree-context = { path = "../mpfree-context" }
 mpfree-capture = { path = "../mpfree-capture" }
 mpfree-perform = { path = "../mpfree-perform" }
 mpfree-node = { path = "../mpfree-node" }
