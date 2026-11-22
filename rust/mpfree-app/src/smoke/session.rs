@@ -903,6 +903,13 @@ impl Session {
         let own = &mut self.mix.instruments;
         // The pads' layers play each key too, by note (step 11a).
         self.pad_layers.key(key, shape, &mut self.synth, own);
+        // And into each track recording a layer (step 11c).
+        let rv = velocity.and_then(|v| self.app.layer_rec_velocity(v));
+        let (time, own) = (&mut self.time, &self.mix.instruments);
+        self.pad_layers.rec_key(key, rv, time, own, &self.synth);
+        let app = &self.app;
+        let shape = |v| app.velocity(v);
+        let own = &mut self.mix.instruments;
         if self
             .keys_on_pads
             .key(key, preview, shape, &mut self.synth, own)
@@ -1059,6 +1066,7 @@ impl Session {
         if !down && pad < 16 {
             let own = &mut self.mix.instruments;
             self.pad_layers.pad_off(pad, &mut self.synth, own);
+            self.pad_layers.rec_off(pad, &mut self.time);
         }
         if down && self.app.pads_are_steps() {
             let v = self.app.velocity(velocity);
@@ -1149,6 +1157,8 @@ impl Session {
                 .pad_on_shifted(crate::instruments::THE_PADS, pad, v, 0, &none);
             let own = &mut self.mix.instruments;
             self.pad_layers.pad_on(pad, v, &mut self.synth, own);
+            let rv = self.app.layer_rec_velocity(velocity);
+            self.pad_layers.rec_on(pad, rv, &mut self.time);
             self.host_held[pad] = true;
             self.previewed.push((pad, v));
             self.out.show(ToUi::PadDown { pad, velocity: v });
@@ -1168,6 +1178,8 @@ impl Session {
             self.synth.note_on(pad, v, 0);
             let own = &mut self.mix.instruments;
             self.pad_layers.pad_on(pad, v, &mut self.synth, own);
+            let rv = self.app.layer_rec_velocity(velocity);
+            self.pad_layers.rec_on(pad, rv, &mut self.time);
             self.preview_held[pad] = true;
             self.previewed.push((pad, v));
             self.out.show(ToUi::PadDown { pad, velocity: v });
@@ -1227,6 +1239,8 @@ impl Session {
                 let v = self.app.velocity(velocity);
                 let own = &mut self.mix.instruments;
                 self.pad_layers.pad_on(pad, v, &mut self.synth, own);
+                let rv = self.app.layer_rec_velocity(velocity);
+                self.pad_layers.rec_on(pad, rv, &mut self.time);
             }
             let fx = self.app.pad_down(pad, velocity);
             self.fx.extend(fx);
@@ -1314,6 +1328,8 @@ impl Session {
             &mut self.synth,
             &mut self.mix.instruments,
         );
+        let recs = self.app.pads_layer_recs(self.time.also());
+        self.pad_layers.rec_to(recs);
         let host_name = pads_at
             .and_then(|h| self.mix.instruments.held(h))
             .map(|h| h.name);

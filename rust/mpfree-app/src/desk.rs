@@ -914,18 +914,21 @@ pub const KEEP_WAITS: &str = "Finish the take first: Keep keeps what just played
 
 /// The recording plan ([`app::RecPlan`], the redesign's step 5b): where
 /// REC or OVERDUB on the notes would record the pads' synth (the shared
-/// one, or from step 6 a synth picked in the list of synths), or None when
-/// they'd record the armed track as it is (the pads follow the track, the
-/// armed track plays the synth itself, or REC records only the loop). REC
-/// uses it ([`rec_synth`]) and the REC chip names it before you press
-/// (`main.rs` and the smoke session send it when it changes), so the two
-/// can't disagree. Changes nothing, and allocates nothing.
+/// one, or from step 6 a synth picked in the list of synths) and, from step
+/// 11c, each of their layers; or None when they'd record the armed track
+/// as it is (the pads follow the track, the armed track plays the synth
+/// itself and every layer has an armed track that plays it, or REC
+/// records only the loop). REC uses it ([`rec_synth`]) and the REC chip
+/// names it before you press (`main.rs` and the smoke session send it
+/// when it changes), so the two can't disagree. Changes nothing, and
+/// allocates nothing.
 pub fn rec_plan(
     app: &app::App,
     time: &time::TimeHost,
     mix: &mixing::MixHost,
 ) -> Option<app::RecPlan> {
     use crate::rec_arm::Target;
+    use app::SynthTake;
     let (holder, synth) = if app.pads_chose_synth() {
         (None, app.pads_synth_name())
     } else {
@@ -934,35 +937,76 @@ pub fn rec_plan(
     };
     let armed = time.armed().unwrap_or(0);
     let notes = app.rec.target == Target::Notes || app.rec.both;
-    let plays = match holder {
-        None => app.plays_pads_synth(armed),
-        Some(h) => app.track_owner(armed) == Some(h),
-    };
-    if !notes || plays {
+    if !notes {
         return None;
     }
-    let app_side = |t: usize| -> Option<&'static str> {
-        let channel = mix.track_channel(t);
-        if app.track_sound(t).is_some() {
-            Some("has an instrument of its own")
-        } else if app.track_send(t).is_some() {
-            Some("plays another instrument")
-        } else if app.configured(t) {
-            Some("has a kit or a MIDI output picked")
-        } else if channel < mixing::TRACKS {
-            Some("is the Drums track")
-        } else if !crate::project::untouched_channel(&mix.mixer, mpfree_fx::StripId::Track(channel))
-        {
-            Some("has mixer settings")
-        } else {
-            None
-        }
+    let project = time.project();
+    let app_side = |t: usize| track_set_up(app, mix, t);
+    let ready = app.track_plays_synth(armed, holder);
+    let take = if ready {
+        SynthTake::On(armed)
+    } else {
+        app::synth_track(project, armed, app.rec.pinned, app_side)
     };
-    Some(app::RecPlan {
-        take: app::synth_track(time.project(), armed, app.rec.pinned, app_side),
+    let mut plan = app::RecPlan {
+        take,
         synth,
         holder,
-    })
+        ready,
+        layers: [None; crate::instruments::PAD_LAYERS - 1],
+    };
+    let first = match take {
+        SynthTake::On(t) => Some(t),
+        SynthTake::New => None,
+        // Nowhere for the first: nothing records, the layers neither.
+        SynthTake::Pinned { .. } | SynthTake::Full => return Some(plan),
+    };
+    let bit = |t: usize| 1u128.checked_shl(t as u32).unwrap_or(0);
+    let also = time.also();
+    // The armed track can record a layer it plays when the first moves
+    // the arm from it.
+    let candidates = if first == Some(armed) {
+        also
+    } else {
+        also | bit(armed)
+    };
+    plan.layers = app::layer_takes(
+        app.pads_layer_synths(),
+        project.tracks.len(),
+        first,
+        candidates,
+        |t, h| app.track_plays_synth(t, h),
+        |t| app::unfit(project, t, app_side).is_none(),
+    );
+    // Every layer armed where it plays already: REC as it is.
+    let set = |l: &app::LayerTake| {
+        matches!(l.take, SynthTake::On(t) if l.plays && also & bit(t) != 0)
+    };
+    if ready && plan.layers.iter().flatten().all(set) {
+        return None;
+    }
+    Some(plan)
+}
+
+/// Why track `t` can't take the pads' synth for REC, from what the app and
+/// the mixer have ([`app::unfit`]'s `app_side`): an instrument of its own,
+/// a send, a kit or MIDI output picked, the Drums track's channel, mixer
+/// settings. None for one nobody set up.
+fn track_set_up(app: &app::App, mix: &mixing::MixHost, t: usize) -> Option<&'static str> {
+    let channel = mix.track_channel(t);
+    if app.track_sound(t).is_some() {
+        Some("has an instrument of its own")
+    } else if app.track_send(t).is_some() {
+        Some("plays another instrument")
+    } else if app.configured(t) {
+        Some("has a kit or a MIDI output picked")
+    } else if channel < mixing::TRACKS {
+        Some("is the Drums track")
+    } else if !crate::project::untouched_channel(&mix.mixer, mpfree_fx::StripId::Track(channel)) {
+        Some("has mixer settings")
+    } else {
+        None
+    }
 }
 
 /// REC or OVERDUB on the notes while the synth is chosen for the pads and
@@ -971,9 +1015,14 @@ pub fn rec_plan(
 /// app/pads_focus.rs). A track nobody set up gets the synth and is armed
 /// (the selected one, the first one, or a new one added at the end): the
 /// shared synth as its Synth kit, or a synth picked in the list of synths
-/// (step 6) by a send to it. The press comes again once it plays it. None when the press is REC's
-/// own: no synth chosen for the pads, the armed track playing it already,
-/// the loop armed (it records what is heard), or a take already going or
+/// (step 6) by a send to it. Each of the pads' layers (step 11c) gets a
+/// track the same way, armed with it as a track SHIFT + a tap in REC's
+/// list arms (#639), so the takes share one number and one UNDO; a layer
+/// with an armed track that plays it already keeps it. The press comes
+/// again once they play them. None when the press is REC's own: no synth
+/// chosen for the pads, the armed track playing it already and every
+/// layer armed where it plays (a layer with no place is said then), the
+/// loop armed (it records what is heard), or a take already going or
 /// ready. `Some(empty)` when nowhere fits (a pinned arm on a track set
 /// up, or a full project): the line says why and nothing changes. The arp
 /// playing the pads now gives them back to the track first, and REC is
@@ -990,6 +1039,7 @@ fn rec_synth(
     now: &crate::rec_arm::Now,
 ) -> Option<Vec<app::Effect>> {
     use crate::rec_arm::Press;
+    use app::SynthTake;
     if !matches!(p, Press::Rec | Press::Overdub) || now.taking() || app.rec.ready.is_some() {
         return None;
     }
@@ -1008,32 +1058,81 @@ fn rec_synth(
         out.note(&s);
         out.show(gui::ToUi::Tell(s));
     };
+    let bit = |t: usize| 1u128.checked_shl(t as u32).unwrap_or(0);
+    // The layers (step 11c): which want a track set up or armed, within
+    // the tracks that can record at once; which can't record, and why.
+    let first_on = match plan.take {
+        SynthTake::On(t) => bit(t),
+        _ => 0,
+    };
+    let also_was = time.also() & !first_on;
+    let mut room = crate::time::MAX_ALSO.saturating_sub(also_was.count_ones() as usize);
+    let mut work = [None; crate::instruments::PAD_LAYERS - 1];
+    let mut left_out = Vec::new();
+    for (slot, l) in work.iter_mut().zip(plan.layers.iter().flatten()) {
+        let arm = !matches!(l.take, SynthTake::On(t) if also_was & bit(t) != 0);
+        match l.take {
+            SynthTake::Full => left_out.push(format!(
+                "{} isn't recorded: no free track, and the project holds no more",
+                l.synth
+            )),
+            _ if l.plays && !arm => {}
+            _ if arm && app.rec.pad.is_some() => left_out.push(format!(
+                "{} isn't recorded: a pad take records alone",
+                l.synth
+            )),
+            _ if arm && room == 0 => left_out.push(format!(
+                "{} isn't recorded: {} tracks at most record at once, SHIFT + a tap in REC's list lets go of one",
+                l.synth,
+                crate::time::MAX_ALSO + 1
+            )),
+            _ => {
+                room -= usize::from(arm);
+                *slot = Some(*l);
+            }
+        }
+    }
+    if plan.ready && work.iter().all(Option::is_none) {
+        // Nothing to set up: REC records what it can, and says what not.
+        if !left_out.is_empty() {
+            tell(out, left_out.join("; "));
+        }
+        return None;
+    }
     let mut fx = Vec::new();
+    // A new track, armed as the Song view's + adds one (UNDO takes it
+    // away, after the take): `None` when none could be added.
+    let mut add = |fx: &mut Vec<app::Effect>,
+                   out: &mut Out,
+                   time: &mut time::TimeHost,
+                   app: &mut app::App,
+                   mix: &mut mixing::MixHost|
+     -> Option<usize> {
+        let count = time.track_count();
+        fx.extend(crate::time_action(
+            out,
+            time,
+            tracks,
+            looper,
+            app,
+            mix,
+            mpfree_time_ui::TimeAction::AddTrack,
+        ));
+        (time.track_count() > count).then_some(count)
+    };
     let (t, added) = match plan.take {
-        app::SynthTake::On(t) => (t, false),
-        // A new track, armed as the Song view's + adds one (UNDO takes it
-        // away, after the take).
-        app::SynthTake::New => {
-            let count = time.track_count();
-            fx.extend(crate::time_action(
-                out,
-                time,
-                tracks,
-                looper,
-                app,
-                mix,
-                mpfree_time_ui::TimeAction::AddTrack,
-            ));
-            if time.track_count() <= count {
+        SynthTake::On(t) => (t, false),
+        SynthTake::New => match add(&mut fx, out, time, app, mix) {
+            Some(t) => (t, true),
+            None => {
                 tell(
                     out,
                     format!("No free track to record {name} on, and no new one could be added"),
                 );
                 return Some(fx);
             }
-            (count, true)
-        }
-        app::SynthTake::Pinned { track, why } => {
+        },
+        SynthTake::Pinned { track, why } => {
             tell(
                 out,
                 format!(
@@ -1043,7 +1142,7 @@ fn rec_synth(
             );
             return Some(fx);
         }
-        app::SynthTake::Full => {
+        SynthTake::Full => {
             tell(
                 out,
                 format!(
@@ -1054,6 +1153,28 @@ fn rec_synth(
             return Some(fx);
         }
     };
+    // The layers' new tracks, added before anything is armed (adding a
+    // track lets the other armed tracks go, and arms the new one).
+    let mut layer_at = [None; crate::instruments::PAD_LAYERS - 1];
+    for (at, l) in layer_at.iter_mut().zip(work.iter()) {
+        let Some(l) = l else { continue };
+        *at = match l.take {
+            SynthTake::On(lt) => Some((lt, false)),
+            _ => match add(&mut fx, out, time, app, mix) {
+                Some(lt) => Some((lt, true)),
+                None => {
+                    tell(
+                        out,
+                        format!(
+                            "No free track to record {} on, and no new one could be added",
+                            l.synth
+                        ),
+                    );
+                    return Some(fx);
+                }
+            },
+        };
+    }
     if time.armed() != Some(t) {
         fx.extend(crate::time_action(
             out,
@@ -1065,10 +1186,50 @@ fn rec_synth(
             mpfree_time_ui::TimeAction::Arm(Some(t)),
         ));
     }
-    fx.extend(match plan.holder {
-        None => app.rec_synth_on(t, added),
-        Some(h) => app.rec_send_on(t, h, added),
-    });
+    if !plan.ready {
+        fx.extend(match plan.holder {
+            None => app.rec_synth_on(t, added),
+            Some(h) => app.rec_send_on(t, h, added),
+        });
+    }
+    // Each layer's track plays its synth and is armed too, with the other
+    // tracks armed before.
+    app.rec.also = also_was;
+    for (l, at) in work.iter().zip(layer_at) {
+        let (Some(l), Some((lt, added))) = (l, at) else {
+            continue;
+        };
+        if !l.plays {
+            fx.extend(match l.holder {
+                None => app.rec_synth_on(lt, added),
+                Some(h) => app.rec_send_on(lt, h, added),
+            });
+        }
+        if app.rec.also & bit(lt) == 0 {
+            let track = time
+                .project()
+                .tracks
+                .get(lt)
+                .map_or_else(|| format!("Track {}", lt + 1), |k| k.name.clone());
+            let done = app.rec.add_track(lt, &track, Some(t), now);
+            let done = done
+                .into_iter()
+                .filter(|d| !matches!(d, crate::rec_arm::Do::Tracks(_)));
+            fx.extend(rec_effects(done.collect(), time, looper));
+        }
+    }
+    if time.also() != app.rec.also {
+        fx.extend(crate::time_action(
+            out,
+            time,
+            tracks,
+            looper,
+            app,
+            mix,
+            mpfree_time_ui::TimeAction::ArmAlso(app.rec.also),
+        ));
+    }
+    out.show(gui::ToUi::Rec(app.rec));
     fx.push(app::Effect::Rec(p));
     Some(fx)
 }

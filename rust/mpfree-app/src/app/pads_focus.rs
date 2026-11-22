@@ -259,21 +259,107 @@ pub struct RecPlan {
     /// which the track REC records on plays by a send; None for the
     /// shared synth, which it plays as its Synth kit.
     pub holder: Option<usize>,
+    /// The armed track plays the pads' synth already (`take` is it): only
+    /// the layers want a place.
+    pub ready: bool,
+    /// Where REC records each of the pads' layers beyond the first (step
+    /// 11c), in their order; None past the last.
+    pub layers: [Option<LayerTake>; super::pad_layers::MORE],
+}
+
+/// Where REC records one of the pads' layers (the instrument redesign's
+/// step 11c): as the first, where its synth lives. An armed track that
+/// plays it already (one REC records too, or the armed track the first
+/// moves the arm from), else a free track pointed at it, else a new one;
+/// `Full` when the project holds no more, and that layer isn't recorded.
+/// Never `Pinned`: the pin is the first's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LayerTake {
+    pub take: SynthTake,
+    /// The layer's synth's name ("Pluck").
+    pub synth: &'static str,
+    /// Its holder in the instrument host, as [`RecPlan::holder`]; None for
+    /// the shared synth.
+    pub holder: Option<usize>,
+    /// The track plays the synth already: nothing on it changes.
+    pub plays: bool,
 }
 
 impl RecPlan {
     /// The REC chip's words after the arrow: "Track 2 · Poly", "New track
     /// · Poly", "Track 1 · not free" (pinned to a track that can't take
-    /// it), "No free track · Poly". `name` gives a track's name ("Bass"
-    /// for one you named).
+    /// it), "No free track · Poly"; with layers that record too, "Track 2
+    /// · FM + 1 more" (step 11c). `name` gives a track's name ("Bass" for
+    /// one you named).
     pub fn chip(self, name: impl Fn(usize) -> String) -> String {
-        match self.take {
+        let more = self.more();
+        let first = match self.take {
             SynthTake::On(t) => format!("{} · {}", name(t), self.synth),
             SynthTake::New => format!("New track · {}", self.synth),
-            SynthTake::Pinned { track, .. } => format!("{} · not free", name(track)),
-            SynthTake::Full => format!("No free track · {}", self.synth),
+            SynthTake::Pinned { track, .. } => return format!("{} · not free", name(track)),
+            SynthTake::Full => return format!("No free track · {}", self.synth),
+        };
+        if more == 0 {
+            first
+        } else {
+            format!("{first} + {more} more")
         }
     }
+
+    /// How many layers record besides the first: those with a place.
+    pub fn more(self) -> usize {
+        self.layers
+            .iter()
+            .flatten()
+            .filter(|l| l.take != SynthTake::Full)
+            .count()
+    }
+}
+
+/// Where REC records the pads' layers beyond the first (step 11c), in
+/// order: an armed track that plays a layer's synth already, from
+/// `candidates` (a bit each: the other armed tracks, and the armed one
+/// when the first moves the arm from it), else the first free track, else
+/// a new one while the project holds more. `first` is the track the
+/// first records on (None: a new one). `plays` says whether a track plays
+/// a layer (its holder, None for the shared synth); `fits` whether a
+/// track is free ([`unfit`] says None). Allocates nothing.
+pub fn layer_takes(
+    layers: [Option<(&'static str, Option<usize>)>; super::pad_layers::MORE],
+    tracks: usize,
+    first: Option<usize>,
+    candidates: u128,
+    plays: impl Fn(usize, Option<usize>) -> bool,
+    fits: impl Fn(usize) -> bool,
+) -> [Option<LayerTake>; super::pad_layers::MORE] {
+    let bit = |t: usize| 1u128.checked_shl(t as u32).unwrap_or(0);
+    let mut used = first.map_or(0, bit);
+    // New tracks the plan adds: the first's, then the layers'.
+    let mut news = usize::from(first.is_none());
+    layers.map(|l| {
+        let (synth, holder) = l?;
+        let armed = (0..tracks.min(128))
+            .find(|&t| candidates & bit(t) != 0 && used & bit(t) == 0 && plays(t, holder));
+        let (take, plays) = if let Some(t) = armed {
+            (SynthTake::On(t), true)
+        } else if let Some(t) = (0..tracks).find(|&t| used & bit(t) == 0 && fits(t)) {
+            (SynthTake::On(t), false)
+        } else if tracks + news < mpfree_seq::MAX_TRACKS {
+            news += 1;
+            (SynthTake::New, false)
+        } else {
+            (SynthTake::Full, false)
+        };
+        if let SynthTake::On(t) = take {
+            used |= bit(t);
+        }
+        Some(LayerTake {
+            take,
+            synth,
+            holder,
+            plays,
+        })
+    })
 }
 
 /// Where REC records the pads' synth: the armed track when nobody set it

@@ -44,7 +44,7 @@ pub use arp::{
 pub use mapper::{Code, MapView, Mark};
 use mpfree_arp::scale::pads::Pad as PadNotes;
 pub use pad_layers::layer_names;
-pub use pads_focus::{synth_track, PadFocus, RecPlan, SynthTake};
+pub use pads_focus::{layer_takes, synth_track, unfit, LayerTake, PadFocus, RecPlan, SynthTake};
 pub use step_pads::StepPads;
 pub use synth_pads::{sent_name, SynthItem};
 pub use synth_pick::SynthPickView;
@@ -7899,6 +7899,8 @@ mod tests {
             take,
             synth: "Poly",
             holder: None,
+            ready: false,
+            layers: [None; pad_layers::MORE],
         };
         assert_eq!(plan(SynthTake::On(2)).chip(name), "Track 3 · Poly");
         assert_eq!(plan(SynthTake::On(1)).chip(name), "Bass · Poly");
@@ -7912,6 +7914,62 @@ mod tests {
             "Track 1 · not free"
         );
         assert_eq!(plan(SynthTake::Full).chip(name), "No free track · Poly");
+        // Layers (step 11c): the first by name, the rest counted; a layer
+        // with no place isn't.
+        let layer = |take| {
+            Some(LayerTake {
+                take,
+                synth: "Pluck",
+                holder: Some(3),
+                plays: false,
+            })
+        };
+        let mut two = plan(SynthTake::On(1));
+        two.layers[0] = layer(SynthTake::On(2));
+        assert_eq!(two.chip(name), "Bass · Poly + 1 more");
+        two.layers[1] = layer(SynthTake::New);
+        assert_eq!(two.chip(name), "Bass · Poly + 2 more");
+        two.layers[1] = layer(SynthTake::Full);
+        assert_eq!(two.chip(name), "Bass · Poly + 1 more");
+        let mut pinned = two;
+        pinned.take = SynthTake::Pinned {
+            track: 0,
+            why: "has clips",
+        };
+        assert_eq!(pinned.chip(name), "Track 1 · not free", "nothing records");
+    }
+
+    /// Where REC records the pads' layers (step 11c): an armed track that
+    /// plays a layer's synth already keeps it; else the first free track
+    /// that the first and the layers before haven't taken; else a new one
+    /// after the first's, while the project holds more; else none.
+    #[test]
+    fn each_layer_records_where_its_synth_plays_or_on_a_free_track() {
+        let layers = [Some(("Pluck", Some(130))), Some(("Poly", None)), None];
+        // Tracks 0 to 4: Track 3 plays Pluck; Tracks 2 and 4 are free.
+        let plays = |t: usize, h: Option<usize>| match h {
+            Some(130) => t == 3,
+            _ => false,
+        };
+        let fits = |t: usize| t == 2 || t == 4;
+        // Track 3 armed too: Pluck stays there; Poly takes Track 4, as the
+        // first took Track 2.
+        let got = layer_takes(layers, 5, Some(2), 1 << 3, plays, fits);
+        let take = |l: Option<LayerTake>| l.map(|l| (l.take, l.plays));
+        assert_eq!(take(got[0]), Some((SynthTake::On(3), true)));
+        assert_eq!(take(got[1]), Some((SynthTake::On(4), false)));
+        assert_eq!(got[2], None);
+        assert_eq!(got[1].unwrap().synth, "Poly");
+        // Track 3 not armed: Pluck takes the free Track 4, Poly a new one.
+        let got = layer_takes(layers, 5, Some(2), 0, plays, fits);
+        assert_eq!(take(got[0]), Some((SynthTake::On(4), false)));
+        assert_eq!(take(got[1]), Some((SynthTake::New, false)));
+        // The first on a new track: the layers' new ones come after it,
+        // until the project holds no more.
+        let max = mpfree_seq::MAX_TRACKS;
+        let got = layer_takes(layers, max - 2, None, 0, plays, |_| false);
+        assert_eq!(take(got[0]), Some((SynthTake::New, false)));
+        assert_eq!(take(got[1]), Some((SynthTake::Full, false)));
     }
 
     /// The arp and the synth chosen for the pads (the design review of 20

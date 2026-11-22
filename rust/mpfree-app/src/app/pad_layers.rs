@@ -122,6 +122,62 @@ impl App {
         self.layers_apply() && self.pad_layers.contains(&Some(InstrumentId::SHARED_SYNTH))
     }
 
+    /// The layers that play now, for REC (step 11c), in order: each one's
+    /// name and holder in the instrument host (None for the shared synth).
+    /// A layer whose free place isn't held yet is left out. Allocates
+    /// nothing.
+    pub fn pads_layer_synths(&self) -> [Option<(&'static str, Option<usize>)>; MORE] {
+        let mut out = [None; MORE];
+        if !self.layers_apply() {
+            return out;
+        }
+        let playing = self
+            .pad_layers()
+            .filter_map(|id| match self.instrument_list.kind(id)? {
+                Kind::SharedSynth => Some((self.instrument_name(id), None)),
+                k => k.holder().map(|h| (self.instrument_name(id), Some(h))),
+            });
+        for (slot, l) in out.iter_mut().zip(playing) {
+            *slot = Some(l);
+        }
+        out
+    }
+
+    /// Whether track `track` plays a synth: holder `holder`'s, by its own
+    /// or a send, or (None) the shared synth as its Synth kit; as the
+    /// audio loop last said.
+    pub fn track_plays_synth(&self, track: usize, holder: Option<usize>) -> bool {
+        match holder {
+            None => self.plays_pads_synth(track),
+            Some(h) => self.track_owner(track) == Some(h),
+        }
+    }
+
+    /// The track each layer that plays now records on (step 11c), in the
+    /// order of [`App::pads_layer_synths`]: one of the other armed tracks
+    /// (`also`, a bit each: `TimeHost::also`) that plays its synth, as REC
+    /// sets them up (`desk.rs`, `rec_synth`). None: no layer there, or no
+    /// such track. The audio loop gives them each pad hit. Allocates
+    /// nothing.
+    pub fn pads_layer_recs(&self, also: u128) -> [Option<u8>; MORE] {
+        let mut used = 0u128;
+        self.pads_layer_synths().map(|l| {
+            let (_, holder) = l?;
+            let t = (0..128).find(|&t| {
+                also >> t & 1 == 1 && used >> t & 1 == 0 && self.track_plays_synth(t, holder)
+            })?;
+            used |= 1 << t;
+            Some(t as u8)
+        })
+    }
+
+    /// The velocity a hit of `velocity` (raw) goes into a layer's track
+    /// at, as the armed track's recorder takes the pads
+    /// ([`App::pressed_event`]); None while the pads only write steps.
+    pub fn layer_rec_velocity(&self, velocity: u8) -> Option<u8> {
+        (!self.free_time_recording()).then(|| self.live_map().velocity(velocity.max(1)))
+    }
+
     /// Instrument `id`'s name ("FM"), as the audio loop last said.
     pub fn instrument_name(&self, id: InstrumentId) -> &'static str {
         match self.instrument_list.kind(id) {

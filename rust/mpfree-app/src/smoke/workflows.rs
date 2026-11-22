@@ -2204,6 +2204,100 @@ mod tests {
         });
     }
 
+    /// REC records each layer on its own track (the instrument redesign's
+    /// step 11c). FM picked for the pads, with Pluck as a layer: the chip
+    /// names where FM goes and counts Pluck, "REC → Track 2 · FM + 1
+    /// more". REC points Track 2 at FM and Track 3 at Pluck and arms both;
+    /// the hits and a key go into both in one take, and one UNDO takes the
+    /// take back from both. The next REC needs nothing set up.
+    #[test]
+    fn rec_records_each_layer_on_its_own_track_in_one_take() {
+        use crate::instruments::free;
+        use crate::rec_arm::Take;
+        use mpfree_transport::State;
+        fn rec_chip(s: &Session) -> String {
+            s.screen
+                .ui
+                .get::<crate::play_widgets::PlayTransport>(crate::play_page::TRANSPORT)
+                .and_then(|t| t.look.rec.as_ref().map(|c| c.line()))
+                .expect("the REC chip")
+        }
+        fn notes(s: &Session, t: usize) -> Vec<u8> {
+            let mut n: Vec<u8> = s.time.project().tracks[t]
+                .slots
+                .clips()
+                .flat_map(|c| c.notes.iter().map(|n| n.note))
+                .collect();
+            n.sort_unstable();
+            n.dedup();
+            n
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("header", "tab", "Synth").settle();
+            s.press("synth-inst", "card", "").settle();
+            s.press("synth-pick", "synth", "FM").run_periods(4).settle();
+            s.press("synth-pick", "layer", "Layer").settle();
+            s.press("synth-pick", "synth", "Pluck")
+                .run_periods(4)
+                .settle();
+            s.press("synth-pick", "keep", "").run_periods(2).settle();
+            assert_eq!(s.app.pads_layer_names().as_deref(), Some("FM + Pluck"));
+            assert_eq!(s.mix.instruments.layer_at(0), Some(free(1)));
+            s.run_periods(1).settle();
+            assert_eq!(rec_chip(&s), "REC → Track 2 · FM + 1 more");
+            // REC: Track 2 plays FM, Track 3 Pluck, both armed.
+            s.route(crate::gui::FromUi::Time(
+                mpfree_time_ui::TimeAction::Transport(mpfree_transport::Command::SetCountIn(0)),
+            ));
+            s.button("REC").settle();
+            s.run_periods(4).settle();
+            assert_eq!(s.time.armed(), Some(1), "{:?}", s.said());
+            assert_eq!(s.mix.instruments.send(1), Some(free(0)), "Track 2: FM");
+            assert_eq!(s.mix.instruments.send(2), Some(free(1)), "Track 3: Pluck");
+            assert_eq!(s.time.also(), 1 << 2, "Track 3 armed too");
+            assert_eq!(s.app.rec.ready, Some(Take::Replace));
+            assert_eq!(s.app.pads_layer_recs(s.time.also())[0], Some(2));
+            // PLAY: the hits and a key go into both tracks.
+            s.button("PLAY");
+            let end = s.t() + 4.0;
+            while s.time.info().state != State::Recording && s.t() < end {
+                s.run_periods(1);
+            }
+            assert_eq!(s.time.info().state, State::Recording);
+            for p in [2, 3] {
+                s.pad(p, 100, 0.05);
+                s.run_for(0.1);
+            }
+            // A key Pluck's pad 6 plays alone goes into its track as that
+            // pad.
+            let key = match s.mix.instruments.pad_notes(2, 5) {
+                [n] => *n,
+                other => panic!("pad 6 plays {other:?}"),
+            };
+            s.key_edge(key, Some(100));
+            s.run_for(0.1);
+            s.key_edge(key, None);
+            s.run_for(0.1);
+            s.button("REC");
+            s.run_for(0.5);
+            assert_eq!(notes(&s, 1), [2, 3], "FM's track");
+            assert_eq!(notes(&s, 2), [2, 3, 5], "Pluck's track");
+            assert_eq!(notes(&s, 0), Vec::<u8>::new(), "Track 1's kit keeps out");
+            let st = s.time.state();
+            assert_eq!(st.done.len(), 1, "one take");
+            s.button("STOP").settle();
+            // One UNDO on Play takes the take back from both.
+            s.press("header", "tab", "Play").settle();
+            s.button("UNDO").run_for(0.3);
+            assert!(notes(&s, 1).is_empty() && notes(&s, 2).is_empty());
+            // The next REC needs nothing set up: the chip names the armed
+            // tracks.
+            s.run_periods(1).settle();
+            assert_eq!(rec_chip(&s), "REC → Track 2 + Track 3");
+        });
+    }
+
     /// A keyboard plays what the pads play (the instrument redesign's step
     /// 7b): a synth picked in the list, then the shared synth chosen for
     /// them, each key its own note, while Track 1's kit hears none of it. A
