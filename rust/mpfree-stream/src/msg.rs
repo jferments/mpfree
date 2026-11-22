@@ -13,12 +13,21 @@
 //! goes in and keeps a mirror of the cache: only its own messages change
 //! the cache, and they are applied in order, so the mirror is exact.
 
-/// Sources the layer knows at once, at most.
+/// Sources open at once, at most: each holds a file handle and its read
+/// state. The sampler's worst case opens 65 (its 64 voices and an
+/// audition, each on a sound of its own), beside 16 stems, takes and
+/// clips. Registered sounds, which cost only their details, have limits
+/// of their own ([`crate::policy::registry`]).
 pub const MAX_SOURCES: usize = 256;
 
 /// Cursors (voices reading a source) at once, at most; a cursor's id is
-/// below this.
-pub const MAX_CURSORS: usize = 512;
+/// below this. The sampler's worst case is 130: 64 voices and an
+/// audition, each with room for a release fade still sounding while a
+/// steal starts its next. Beside it: 16 stems, the audio tracks' lanes
+/// and the launcher's clips. A cursor past it is counted, never played
+/// silently ([`crate::player::Stats::over_limit`]). The sampler's numbers
+/// are the workstation's until the device round measures them.
+pub const MAX_CURSORS: usize = 256;
 
 use std::sync::Arc;
 

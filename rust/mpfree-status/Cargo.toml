@@ -1,0 +1,8 @@
+[package]
+name = "mpfree-status"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "System status for MPFree: the catalogue of problems a musician needs to know about, the reports any thread sends, and the board on the screen thread that turns them into one status colour, nine systems and their problems"
+
+[dependencies]

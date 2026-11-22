@@ -765,7 +765,6 @@ fn run_passes(
         let plays = |t: usize| match only {
             None => true,
             Some(Only::Track(k)) => t == 2 || t == usize::from(k),
-            Some(Only::AudioTrack(_)) => unreachable!(),
         };
         let (mut at, mut k) = (0usize, 0usize);
         let step = loop {

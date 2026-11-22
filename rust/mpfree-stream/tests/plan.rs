@@ -1,6 +1,6 @@
 //! The coordinator's planning (phase P1.5): sounds held in memory, a
 //! cursor's end, joined reads, cancelling, holds, launch readiness and
-//! admission to the memory budget.
+//! admission to the memory budget, and the streaming ledger.
 
 use std::collections::VecDeque;
 use std::fs;
@@ -13,7 +13,7 @@ use mpfree_stream::coord::{
     serve, Coordinator, Device, HoldTier, JobTier, Plan, ReadReply, ReadReq, Refusal,
 };
 use mpfree_stream::cursor::Cursor;
-use mpfree_stream::player::{unit_frames, Config, Player};
+use mpfree_stream::player::{unit_frames, Config, Player, UNIT};
 use mpfree_stream::testkit::{folder, memory, played, wav, Rig, Store};
 
 fn small() -> Config {
@@ -688,4 +688,104 @@ fn background_reads_stop_past_three_quarters_of_capture_memory() {
         }
     }
     assert_eq!(got.expect("read").len(), 300_000);
+}
+
+#[test]
+fn the_ledger_counts_what_streaming_allocated_not_what_it_borrows() {
+    let dir = folder("ledger");
+    let frames = 200_000u64;
+    let path = dir.join("stem.wav");
+    wav(&path, Store::Float, 2, frames, 1);
+    let cfg = Config {
+        slots: 16,
+        ..Config::default()
+    };
+    let mut rig = Rig::new(cfg, Plan::default());
+    rig.c.new_project();
+    rig.c.open(0, &path).expect("opens");
+    let lent = memory(2, 30_000, 2);
+    rig.c.open_memory(1, 2, lent.clone()).expect("opens");
+    let unit = (UNIT * 4) as u64;
+    let uf = unit_frames(2);
+
+    // The cache is allocated whole at start; nothing in it is in use yet.
+    let l = rig.c.ledger();
+    assert_eq!(l.cache.allocated, 16 * unit);
+    assert_eq!(l.cache.allocated, cfg.cache_bytes());
+    assert_eq!(
+        (l.cache.in_use, l.cache.reserved, l.cache.reclaimable),
+        (0, 0, 0)
+    );
+    // The lent sound is shown, charged to its owner, never to streaming.
+    assert_eq!(l.lent, lent.len() as u64 * 4);
+    assert_eq!(
+        l.charged(),
+        l.cache.allocated + l.buffers.allocated + l.jobs
+    );
+    assert!(
+        l.buffers.allocated > 0,
+        "the fill buffers are made at start"
+    );
+
+    // A hold and a recording's reserve are promised units: reserved,
+    // then in use once fetched. Allocated doesn't move.
+    rig.c
+        .hold(0, 0, 6 * uf, None, HoldTier::Head)
+        .expect("fits");
+    rig.c.set_reserve(4);
+    assert_eq!(rig.c.ledger().cache.reserved, 10 * unit);
+    let mut outs = vec![vec![0.0; 512]];
+    for _ in 0..40 {
+        rig.period(&mut [], &mut outs);
+    }
+    let l = rig.c.ledger();
+    assert!(rig.c.is_ready(0, 0, 6 * uf));
+    assert!(l.cache.in_use >= 6 * unit, "{l:?}");
+    assert!(l.cache.in_use <= l.cache.allocated);
+    assert_eq!(l.cache.allocated, 16 * unit);
+    assert_eq!(l.cache.reclaimable, 0, "emptying units gives nothing back");
+    // Reserved never says more than the cache has.
+    rig.c.set_reserve(40);
+    assert_eq!(rig.c.ledger().cache.reserved, 16 * unit);
+    // Letting go of the lent sound takes it off the ledger.
+    rig.c.close(1);
+    assert_eq!(rig.c.ledger().lent, 0);
+}
+
+#[test]
+fn sixteen_stems_at_once_are_read_once_and_never_filled_twice() {
+    // Every unit of 16 stems wanted in the same round: more read than
+    // buffers can carry at once. One waiting for a buffer must not be
+    // asked for again, or its second fill takes the playing copy away
+    // while it is copied in (a dropout).
+    let dir = folder("sixteen");
+    let mut rig = Rig::new(
+        Config {
+            slots: 256,
+            ..Config::default()
+        },
+        Plan::default(),
+    );
+    rig.c.new_project();
+    for s in 0..16u16 {
+        let p = dir.join(format!("{s}.wav"));
+        wav(&p, Store::Float, 2, 48_000, u32::from(s) + 1);
+        rig.c.open(s, &p).expect("opens");
+    }
+    let mut ks: Vec<Cursor> = (0..16).map(|s| Cursor::new(s, s)).collect();
+    let mut refs: Vec<&mut Cursor> = ks.iter_mut().collect();
+    rig.warm(&mut refs, 400);
+    // 6 units a stem.
+    assert_eq!(rig.c.cached(), 96);
+    assert_eq!(rig.p.ready(), 96);
+    let s = rig.c.stats();
+    assert_eq!(s.reads + s.joined, 96, "{s:?}");
+    assert_eq!(rig.p.stats().filled, 96);
+    let mut missed = 0;
+    for _ in 0..100 {
+        let mut outs = vec![vec![0.0; 512]; 16];
+        missed += rig.period(&mut refs, &mut outs);
+    }
+    assert_eq!(missed, 0);
+    assert_eq!(rig.p.stats().filled, 96);
 }
