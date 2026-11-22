@@ -18,8 +18,12 @@
 //! (this one), grains, slices and Put on, the recorder, kits and takes.
 //! Nothing here touches the screen or the audio thread.
 
+use std::ops::Range;
+
 use mpfree_sampler::engine::PadField;
-use mpfree_sampler::model::{ModelError, Pad, PadsPlay, Project, Region, SourceId, MAX_LAYERS};
+use mpfree_sampler::model::{
+    ChopMode, ChopSet, ModelError, Pad, PadsPlay, Project, Region, SourceId, KEPT_CHOP, MAX_LAYERS,
+};
 use mpfree_sampler::scene;
 
 use crate::pads_tab::sound_region;
@@ -117,6 +121,131 @@ pub enum Change {
     /// Map to keys: each `(pad, note)` made a keygroup at that root note,
     /// and the pads play notes (`Project::map_to_keys`).
     MapToKeys { roots: Vec<(usize, u8)> },
+    /// Chop to pads: the slices of `chop` made into pads of this kit from
+    /// the pad or take `from`, one undo step; a take leaves the page in it
+    /// (`Project::chop_take`). Onto another kit (Chop to a new kit) is
+    /// [`Chop::place_in`], which the app runs with both kits.
+    Chop { from: Chopped, chop: Box<Chop> },
+    /// The Slice tool's cuts in sound `source` kept with the kit, so they
+    /// are there when the tool comes back to it: saved, but no undo step,
+    /// and nothing that plays changes ([`Change::plays`]).
+    KeepChop {
+        source: SourceId,
+        mode: ChopMode,
+        cuts: Vec<u64>,
+    },
+}
+
+/// What slices are made from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Chopped {
+    /// A pad of the kit.
+    Pad(usize),
+    /// A take kept on the Sample page.
+    Take(usize),
+}
+
+/// Slices of a sound made into pads (the Slice tool's Chop to pads): the
+/// chop between `bounds`, each slice's pad made from the pad or take
+/// chopped, its layer `layer` first so its settings carry over.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Chop {
+    /// The sound sliced.
+    pub source: SourceId,
+    /// The chop's name and how it was made.
+    pub name: String,
+    pub mode: ChopMode,
+    /// The region's start, the cuts and its end, in the sound's frames.
+    pub bounds: Vec<u64>,
+    pub layer: usize,
+    /// The first pad the slices go on.
+    pub to_pad: usize,
+    /// As keygroups of one note each from this note, the pads then playing
+    /// notes (`Project::chop_to_keys`).
+    pub keys_from: Option<u8>,
+    /// All on pad `to_pad` as one sliced pad (`Project::chop_to_one_pad`).
+    pub one_pad: bool,
+}
+
+impl Chop {
+    /// How many slices.
+    pub fn count(&self) -> usize {
+        self.bounds.len().saturating_sub(1)
+    }
+
+    /// The pads the slices fill.
+    pub fn pads(&self) -> Range<usize> {
+        let n = if self.one_pad { 1 } else { self.count() };
+        self.to_pad..self.to_pad + n
+    }
+
+    /// The chop made of the sound in `p`, and which of its slices (from
+    /// `first`, `count` of them) lie between the bounds. Refused when the
+    /// bounds don't rise or the chop doesn't land on them.
+    pub fn slices(&self, p: &Project) -> Result<(ChopSet, usize, usize), ModelError> {
+        let bounds = &self.bounds;
+        if bounds.len() < 2 || bounds.windows(2).any(|w| w[0] >= w[1]) {
+            return Err(ModelError::BadSlice);
+        }
+        let s = p.source(self.source).ok_or(ModelError::UnknownSource)?;
+        let c = ChopSet::from_markers(&self.name, s, self.mode, bounds.iter().copied())?;
+        let first = usize::from(bounds[0] > 0);
+        let count = self.count();
+        if c.bounds(first).map(|b| b.0) != Some(bounds[0])
+            || c.bounds(first + count - 1).map(|b| b.1) != bounds.last().copied()
+        {
+            return Err(ModelError::BadSlice);
+        }
+        Ok((c, first, count))
+    }
+
+    /// What each slice's pad is made from: `made_from` with the chopped
+    /// layer first.
+    fn template(&self, made_from: &Pad) -> Result<Pad, ModelError> {
+        let mut t = made_from.clone();
+        if self.layer >= t.layers.len() {
+            return Err(ModelError::BadPad);
+        }
+        t.layers.swap(0, self.layer);
+        Ok(t)
+    }
+
+    /// The slices on `p`'s pads, each made from `made_from`, one undo step.
+    fn place(&self, p: &mut Project, made_from: &Pad) -> Result<(), ModelError> {
+        let template = self.template(made_from)?;
+        let (c, first, count) = self.slices(p)?;
+        let made = if self.one_pad {
+            p.chop_to_one_pad(c, first, count, self.to_pad, Some(&template))
+        } else {
+            match self.keys_from {
+                Some(from) => p.chop_to_keys(c, first, count, self.to_pad, from, Some(&template)),
+                None => p.chop_to_pads(c, first, count, self.to_pad, Some(&template)),
+            }
+        };
+        made.map(|_| ())
+    }
+
+    /// Chop to a new kit: the slices on `to`'s pads from `to_pad`, made
+    /// from `made_from` (a pad or a take) of `from` as [`Change::Chop`]
+    /// makes them, with the sound added to `to`: one undo step of `to`.
+    /// `from` doesn't change; a take chopped is let go from it by the
+    /// caller. Returns the pads it filled.
+    pub fn place_in(
+        &self,
+        from: &Project,
+        made_from: Chopped,
+        to: &mut Project,
+    ) -> Result<Range<usize>, ModelError> {
+        let made_from = match made_from {
+            Chopped::Pad(i) => from.pad(i).ok_or(ModelError::BadPad)?,
+            Chopped::Take(i) => from.take(i).ok_or(ModelError::BadTake)?,
+        };
+        let template = self.template(made_from)?;
+        let (c, first, count) = self.slices(from)?;
+        let s = from.source(c.source).ok_or(ModelError::UnknownSource)?;
+        to.chop_to_pads_of(s, c, first, count, self.to_pad, Some(&template))?;
+        Ok(self.to_pad..self.to_pad + count)
+    }
 }
 
 impl Change {
@@ -215,10 +344,27 @@ impl Change {
             Change::PadsPlay(play) => p.set_pads_play(*play),
             Change::KeyFade(fade) => p.set_key_fade(*fade),
             Change::MapToKeys { roots } => p.map_to_keys(roots).map(|_| ()),
+            Change::Chop {
+                from: Chopped::Pad(pad),
+                chop,
+            } => {
+                let made_from = p.pad(*pad).ok_or(ModelError::BadPad)?.clone();
+                chop.place(p, &made_from)
+            }
+            Change::Chop {
+                from: Chopped::Take(i),
+                chop,
+            } => p.chop_take(*i, |p, take| chop.place(p, take)),
+            Change::KeepChop { source, mode, cuts } => {
+                let s = p.source(*source).ok_or(ModelError::UnknownSource)?;
+                let c = ChopSet::from_markers(KEPT_CHOP, s, *mode, cuts.iter().copied())?;
+                p.keep_chop(c)
+            }
         }
     }
 
-    /// The pad it changes, or None for a change of the whole kit.
+    /// The pad it changes, or None for a change of the whole kit (a chop
+    /// fills [`Chop::pads`]).
     pub fn pad(&self) -> Option<usize> {
         match self {
             Change::Pad { pad, .. }
@@ -232,7 +378,11 @@ impl Change {
             | Change::AddLayer { pad, .. }
             | Change::RemoveLayer { pad, .. }
             | Change::LayerSound { pad, .. } => Some(*pad),
-            Change::PadsPlay(_) | Change::KeyFade(_) | Change::MapToKeys { .. } => None,
+            Change::PadsPlay(_)
+            | Change::KeyFade(_)
+            | Change::MapToKeys { .. }
+            | Change::Chop { .. }
+            | Change::KeepChop { .. } => None,
         }
     }
 
@@ -240,10 +390,18 @@ impl Change {
     /// the Play page's pad names show.
     pub fn renames(&self) -> bool {
         match self {
-            Change::Pad { .. } => true,
+            Change::Pad { .. } | Change::Chop { .. } => true,
             Change::Name { pad_name, .. } => pad_name.is_some(),
             _ => false,
         }
+    }
+}
+
+impl Change {
+    /// Whether it can change what the kit plays, so the kit's view must go
+    /// to the audio thread again. A chop kept changes only what is saved.
+    pub fn plays(&self) -> bool {
+        !matches!(self, Change::KeepChop { .. })
     }
 }
 
@@ -565,6 +723,111 @@ mod tests {
             Change::AddLayer { pad: 0, after: 0 }.apply(&mut p, None),
             Err(ModelError::TooManyLayers)
         );
+    }
+
+    /// A chop of pad 0's sound (4,800 frames) into four slices from pad 4.
+    fn chop(p: &Project) -> Chop {
+        Chop {
+            source: p.pad(0).unwrap().layers[0].region.source,
+            name: "Chop".to_string(),
+            mode: ChopMode::Manual,
+            bounds: vec![0, 1200, 2400, 3600, 4800],
+            layer: 1,
+            to_pad: 4,
+            keys_from: None,
+            one_pad: false,
+        }
+    }
+
+    #[test]
+    fn chop_to_pads_fills_its_pads_in_one_step_from_a_pad_or_a_take() {
+        let (base, ..) = kit();
+        let c = chop(&base);
+        assert_eq!(c.pads(), 4..8);
+        let mut p = base.clone();
+        let before = steps(&mut p.clone());
+        Change::Chop {
+            from: Chopped::Pad(0),
+            chop: Box::new(c.clone()),
+        }
+        .apply(&mut p, None)
+        .expect("chopped");
+        for (k, pad) in (4..8).enumerate() {
+            let r = &p.pad(pad).expect("a slice's pad").layers[0].region;
+            assert_eq!((r.start, r.end), (1200 * k as u64, 1200 * (k as u64 + 1)));
+        }
+        assert_eq!(steps(&mut p.clone()), before + 1);
+        // One pad, sliced.
+        let mut one = base.clone();
+        let c1 = Chop {
+            one_pad: true,
+            ..c.clone()
+        };
+        assert_eq!(c1.pads(), 4..5);
+        Change::Chop {
+            from: Chopped::Pad(0),
+            chop: Box::new(c1),
+        }
+        .apply(&mut one, None)
+        .expect("on one pad");
+        assert!(one.pad(4).is_some() && one.pad(5).is_none());
+        // From a take kept on the page: the take leaves with the chop.
+        let mut t = base.clone();
+        let take = t.pad(0).unwrap().clone();
+        let i = t.add_take(take).expect("a take");
+        let before = steps(&mut t.clone());
+        Change::Chop {
+            from: Chopped::Take(i),
+            chop: Box::new(c.clone()),
+        }
+        .apply(&mut t, None)
+        .expect("chopped from the take");
+        assert!(t.take(i).is_none() && t.pad(7).is_some());
+        assert_eq!(steps(&mut t.clone()), before + 1);
+        // Onto another kit: that kit gets the sound and the slices; this
+        // one doesn't change.
+        let mut other = Project::new();
+        let pads = c
+            .place_in(&base, Chopped::Pad(0), &mut other)
+            .expect("onto another kit");
+        assert_eq!(pads, 4..8);
+        assert!(other
+            .pad(4)
+            .is_some_and(|pd| other.source(pd.layers[0].region.source).is_some()));
+        // Bounds that don't rise are refused, and change nothing.
+        let mut bad = base.clone();
+        let wrong = Chop {
+            bounds: vec![0, 2400, 1200, 4800],
+            ..c
+        };
+        assert_eq!(
+            Change::Chop {
+                from: Chopped::Pad(0),
+                chop: Box::new(wrong),
+            }
+            .apply(&mut bad, None),
+            Err(ModelError::BadSlice)
+        );
+        assert!(same(&bad, &base));
+    }
+
+    #[test]
+    fn a_chop_kept_is_no_undo_step_and_plays_nothing_new() {
+        let (base, ..) = kit();
+        let mut p = base.clone();
+        let source = p.pad(0).unwrap().layers[0].region.source;
+        let before = steps(&mut p.clone());
+        let keep = Change::KeepChop {
+            source,
+            mode: ChopMode::Grid,
+            cuts: vec![1200, 2400],
+        };
+        assert!(!keep.plays());
+        keep.apply(&mut p, None).expect("kept");
+        let kept = p.kept_chop(source).expect("the chop kept");
+        assert_eq!((kept.name.as_str(), kept.mode), (KEPT_CHOP, ChopMode::Grid));
+        assert_eq!(steps(&mut p), before, "no undo step");
+        assert!(Change::KeyFade(1).plays());
     }
 
     #[test]

@@ -19,10 +19,11 @@
 //! changes.
 
 use std::fmt;
+use std::ops::Range;
 
 use mpfree_sampler::engine::MAX_KITS;
 use mpfree_sampler::model::{ModelError, Project};
-pub use mpfree_sampler_ui::command::Change;
+pub use mpfree_sampler_ui::command::{Change, Chopped};
 
 use crate::instrument_list::InstrumentId;
 
@@ -52,6 +53,10 @@ pub struct Command {
     /// The same for every change of one drag or turn, so they make one
     /// undo step; None is a step of its own.
     pub gesture: Option<u64>,
+    /// Another kit the change's result goes onto, `kit` staying as it is
+    /// (Chop to a new kit: the slices of `kit`'s pad or take on this kit's
+    /// pads); None, `kit` itself. Only a chop goes onto another kit.
+    pub onto: Option<InstrumentId>,
 }
 
 impl Command {
@@ -62,12 +67,22 @@ impl Command {
             kit: kit_id(kit),
             change,
             gesture: None,
+            onto: None,
         }
     }
 
     /// The command as part of `gesture`'s undo step.
     pub fn in_gesture(self, gesture: Option<u64>) -> Command {
         Command { gesture, ..self }
+    }
+
+    /// The command's result onto kit `kit` (a place in the list of kits)
+    /// instead: Chop to a new kit.
+    pub fn onto(self, kit: usize) -> Command {
+        Command {
+            onto: Some(kit_id(kit)),
+            ..self
+        }
     }
 }
 
@@ -79,6 +94,9 @@ pub enum Refused {
     /// The kit refused the change (no such pad, layer or sound, or a pad
     /// the model doesn't take).
     Model(ModelError),
+    /// Onto another kit, a change that only goes to its own (all but a
+    /// chop).
+    OntoAnotherKit,
 }
 
 /// As the page's log lines have always said a refused edit: the model's
@@ -88,18 +106,24 @@ impl fmt::Display for Refused {
         match self {
             Refused::NoKit(_) => write!(f, "NoKit"),
             Refused::Model(e) => write!(f, "{e:?}"),
+            Refused::OntoAnotherKit => write!(f, "OntoAnotherKit"),
         }
     }
 }
 
 /// What a command did.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Done {
-    /// The kit it changed, as a place in the list of kits: its new view is
-    /// owed to the audio thread.
+    /// The kit it changed, as a place in the list of kits (the kit it went
+    /// onto, for a chop onto another).
     pub kit: usize,
+    /// It may have changed what the kit plays: its new view is owed to the
+    /// audio thread. False for a change only saved (a chop kept).
+    pub plays: bool,
     /// It renamed, replaced or retyped a pad, which the Play page shows.
     pub renamed: bool,
+    /// The pads a chop filled.
+    pub pads: Option<Range<usize>>,
 }
 
 /// Runs `cmd` on `kits` (the list of kits): the kit its id names makes the
@@ -107,13 +131,50 @@ pub struct Done {
 /// kit changes.
 pub fn run(kits: &mut [Project], cmd: &Command) -> Result<Done, Refused> {
     let kit = kit_of(cmd.kit, kits.len()).ok_or(Refused::NoKit(cmd.kit))?;
-    cmd.change
-        .apply(&mut kits[kit], cmd.gesture)
-        .map_err(Refused::Model)?;
-    Ok(Done {
+    let onto = match cmd.onto {
+        Some(id) => Some(kit_of(id, kits.len()).ok_or(Refused::NoKit(id))?),
+        None => None,
+    };
+    let done = |kit, pads| Done {
         kit,
+        plays: cmd.change.plays(),
         renamed: cmd.change.renames(),
-    })
+        pads,
+    };
+    match (&cmd.change, onto) {
+        (_, Some(to)) if to == kit => Err(Refused::OntoAnotherKit),
+        (Change::Chop { from, chop }, Some(to)) => {
+            let (f, t) = two_mut(kits, kit, to);
+            let pads = chop.place_in(f, *from, t).map_err(Refused::Model)?;
+            // The take chopped leaves its kit's page, a step there.
+            if let Chopped::Take(i) = from {
+                kits[kit].remove_take(*i).map_err(Refused::Model)?;
+            }
+            Ok(done(to, Some(pads)))
+        }
+        (_, Some(_)) => Err(Refused::OntoAnotherKit),
+        (change, None) => {
+            change
+                .apply(&mut kits[kit], cmd.gesture)
+                .map_err(Refused::Model)?;
+            let pads = match change {
+                Change::Chop { chop, .. } => Some(chop.pads()),
+                _ => None,
+            };
+            Ok(done(kit, pads))
+        }
+    }
+}
+
+/// Kits `a` (to read) and `b` (to change), two places in the list.
+fn two_mut(kits: &mut [Project], a: usize, b: usize) -> (&Project, &mut Project) {
+    if a < b {
+        let (lo, hi) = kits.split_at_mut(b);
+        (&lo[a], &mut hi[0])
+    } else {
+        let (lo, hi) = kits.split_at_mut(a);
+        (&hi[0], &mut lo[b])
+    }
 }
 
 #[cfg(test)]
@@ -173,7 +234,9 @@ mod tests {
             run(&mut k, &cmd),
             Ok(Done {
                 kit: 1,
-                renamed: false
+                plays: true,
+                renamed: false,
+                pads: None,
             })
         );
         assert_eq!(k[1].pad(0).map(|p| p.level_db), Some(-6.0));
@@ -212,6 +275,45 @@ mod tests {
             assert_eq!(a.pad(0), b.pad(0));
             assert!(!a.clone().undo() || b.clone().undo());
         }
+    }
+
+    #[test]
+    fn a_chop_goes_onto_another_kit_and_only_a_chop_does() {
+        let mut k = kits();
+        let before = k.clone();
+        let source = k[0].pad(0).unwrap().layers[0].region.source;
+        let chop = mpfree_sampler_ui::command::Chop {
+            source,
+            name: "Chop".to_string(),
+            mode: mpfree_sampler::model::ChopMode::Manual,
+            bounds: vec![0, 480, 960],
+            layer: 0,
+            to_pad: 0,
+            keys_from: None,
+            one_pad: false,
+        };
+        let take = k[0].pad(0).cloned().expect("pad 0");
+        let i = k[0].add_take(take).expect("a take");
+        let from_take = Command::to_kit(
+            0,
+            Change::Chop {
+                from: Chopped::Take(i),
+                chop: Box::new(chop.clone()),
+            },
+        );
+        let done = run(&mut k, &from_take.clone().onto(2)).expect("onto kit 3");
+        assert_eq!((done.kit, done.pads, done.renamed), (2, Some(0..2), true));
+        assert!(k[2].pad(1).is_some(), "the slices on kit 3");
+        assert!(k[0].take(i).is_none(), "the take left kit 1's page");
+        assert_eq!(k[0].pad(0), before[0].pad(0));
+        // Onto itself, or another change onto another kit: refused.
+        assert_eq!(
+            run(&mut k, &from_take.onto(0)),
+            Err(Refused::OntoAnotherKit)
+        );
+        let fade = Command::to_kit(0, Change::KeyFade(1)).onto(1);
+        assert_eq!(run(&mut k, &fade), Err(Refused::OntoAnotherKit));
+        assert_eq!(k[1].pad(0), before[1].pad(0));
     }
 
     #[test]

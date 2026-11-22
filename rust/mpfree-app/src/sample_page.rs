@@ -84,8 +84,8 @@ use mpfree_sampler::export;
 use mpfree_sampler::jobs::{Config as JobsConfig, Jobs, Key, Lane, Order};
 use mpfree_sampler::keymap::{self, RootFrom};
 use mpfree_sampler::model::{
-    self as model, ChannelPick, ChopSet, Fade, Layer, Levels, LoopMode, ModelError, Pad, PadsPlay,
-    PlayMode, Project, Region, Source, SourceId, Warp, KEPT_CHOP, PADS, SLICE_KEYS_FROM, WARP_BPM,
+    self as model, ChannelPick, Fade, Layer, Levels, LoopMode, ModelError, Pad, PadsPlay, PlayMode,
+    Project, Region, Source, SourceId, Warp, PADS, SLICE_KEYS_FROM, WARP_BPM,
 };
 use mpfree_sampler::phrase::Phrase;
 use mpfree_sampler::record::{self, Input, Looped, Progress, Recording};
@@ -2979,22 +2979,26 @@ impl SamplePage {
             return;
         };
         let id = st.source.id;
-        let Some(project) = self.projects.get_mut(self.kit) else {
+        let kit = self.kit;
+        if self.projects.get(kit).and_then(|p| p.source(id)).is_none() {
             return;
+        }
+        let keep = Change::KeepChop {
+            source: id,
+            mode,
+            cuts: cuts.into_iter().collect(),
         };
-        let Some(source) = project.source(id) else {
-            return;
-        };
-        let kept =
-            ChopSet::from_markers(KEPT_CHOP, source, mode, cuts).and_then(|c| project.keep_chop(c));
-        match kept {
-            Ok(()) => {
-                if let Some(cs) = st.chop.as_mut() {
-                    Arc::make_mut(cs).kept = project.kept_chop(id).cloned();
+        // The work is unsaved; the audio thread's view is the same.
+        match self.command(&Command::to_kit(kit, keep)) {
+            Ok(_) => {
+                let kept = self
+                    .projects
+                    .get(kit)
+                    .and_then(|p| p.kept_chop(id))
+                    .cloned();
+                if let Some(cs) = self.state.as_mut().and_then(|st| st.chop.as_mut()) {
+                    Arc::make_mut(cs).kept = kept;
                 }
-                // The work is unsaved; the audio thread's view is the same.
-                self.edits += 1;
-                self.unsaved = true;
             }
             Err(e) => self
                 .lines
@@ -3220,32 +3224,29 @@ impl SamplePage {
         let new_name = (to_kit != kit).then(|| self.new_kit_name(&name, to_kit));
         // Worked out before the pads change: the chop's source stays.
         let phrase = a.phrase(project);
-        let made = match (take, to_kit == kit) {
-            (None, true) => a.apply(&mut self.projects[kit]),
-            (Some(i), true) => a.apply_take(&mut self.projects[kit], i),
-            (None, false) => {
-                let (from, to) = two_mut(&mut self.projects, kit, to_kit);
-                a.apply_to(from, to)
-            }
-            (Some(i), false) => {
-                let (from, to) = two_mut(&mut self.projects, kit, to_kit);
-                // The take goes from its kit's page too, an undo step there.
-                a.apply_take_to(from, i, to).and_then(|pads| {
-                    self.projects[kit].remove_take(i)?;
-                    Ok(pads)
-                })
-            }
+        let Some((from, chop)) = a.chop(take) else {
+            return;
         };
+        let mut cmd = Command::to_kit(
+            kit,
+            Change::Chop {
+                from,
+                chop: Box::new(chop),
+            },
+        );
+        if to_kit != kit {
+            // The take goes from its kit's page too, an undo step there.
+            cmd = cmd.onto(to_kit);
+        }
+        let made = self
+            .command(&cmd)
+            .map(|done| done.pads.unwrap_or(0..0))
+            .map_err(|e| e.to_string());
         match made {
             Ok(pads) => {
-                self.edits += 1;
-                if let Some(d) = self.dirty.get_mut(to_kit) {
-                    *d = true;
-                }
                 if let (Some(n), Some(new)) = (self.names.get_mut(to_kit), new_name) {
                     *n = new;
                 }
-                self.mark_renamed(to_kit);
                 let n = bounds.len() - 1;
                 let to = if pads.len() == 1 {
                     self.pad_text(to_kit, pads.start)
@@ -3335,9 +3336,9 @@ impl SamplePage {
                 }
             }
             Err(e) => self.lines.push(match take {
-                Some(_) => format!("sample: chop of {name} not made ({e:?})"),
+                Some(_) => format!("sample: chop of {name} not made ({e})"),
                 None => format!(
-                    "sample: chop of pad {} not made ({e:?})",
+                    "sample: chop of pad {} not made ({e})",
                     self.pad_text(kit, *pad)
                 ),
             }),
@@ -3637,16 +3638,22 @@ impl SamplePage {
     /// is an edit, the kit's new view is owed to the audio thread, and a
     /// pad renamed or replaced tells the Play page. Refused, nothing
     /// changes, and the caller says why in its own words.
-    fn command(&mut self, cmd: &Command) -> Result<usize, sampler_commands::Refused> {
+    fn command(
+        &mut self,
+        cmd: &Command,
+    ) -> Result<sampler_commands::Done, sampler_commands::Refused> {
         let done = sampler_commands::run(&mut self.projects, cmd)?;
         self.edits += 1;
-        if let Some(d) = self.dirty.get_mut(done.kit) {
+        if !done.plays {
+            // Saved, but nothing that plays changed: no view goes.
+            self.unsaved = true;
+        } else if let Some(d) = self.dirty.get_mut(done.kit) {
             *d = true;
         }
         if done.renamed {
             self.mark_renamed(done.kit);
         }
-        Ok(done.kit)
+        Ok(done)
     }
 
     /// Kit `kit`'s pad names changed: the Play page is told
@@ -8174,19 +8181,6 @@ pub fn describe(a: &Region, b: &Region, rate: u32) -> String {
         out.push(grains);
     }
     out.join(", ")
-}
-
-/// Projects `a` and `b` (not the same) of `all`, `a` to read and `b` to
-/// change.
-fn two_mut(all: &mut [Project], a: usize, b: usize) -> (&Project, &mut Project) {
-    assert_ne!(a, b);
-    if a < b {
-        let (lo, hi) = all.split_at_mut(b);
-        (&lo[a], &mut hi[0])
-    } else {
-        let (lo, hi) = all.split_at_mut(a);
-        (&hi[0], &mut lo[b])
-    }
 }
 
 /// A phrase as a clip of the time engine, at [`PPQ`]: slice `k` is a note
