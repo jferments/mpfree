@@ -1,43 +1,20 @@
 //! The memory every take shares: equal chunks of [`CHUNK`] samples, asked
 //! for once. A take's audio is a run of chunks (chunk `c` holds its samples
 //! `c * CHUNK..`), each in any free slot, found through a small table that
-//! never grows. Slots are:
-//!
-//! - **Dirty:** recorded (or loaded) here and not yet on the disk; never
-//!   given to anything else.
-//! - **Clean:** the same as the disk has; can go to another chunk when a
-//!   slot is needed, the one wanted longest ago first.
-//! - **Loading:** waiting for the disk thread to fill it; plays nothing yet.
-//!
-//! With no disk (no streaming) every slot stays dirty, so the memory is the
-//! whole limit, as a tape that ends.
+//! never grows. A slot is free or holds one chunk until its take gives it
+//! back, so the memory is the whole limit, as a tape that ends.
 
 use crate::PEAK_BLOCK;
 
 /// Samples in one chunk (128 KiB of 32-bit floats): the unit the memory is
-/// shared out in, and the unit read from and written to the disk.
+/// shared out in.
 pub const CHUNK: usize = 32_768;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum State {
-    Free,
-    Dirty,
-    Clean,
-    Loading,
-}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Slot {
     pub take: u16,
     pub chunk: u32,
-    pub state: State,
-    /// The planning round that last wanted it.
-    pub last: u64,
-    /// Its blocks' peaks are kept (a chunk read from the disk has none:
-    /// the disk side keeps those).
-    pub noted: bool,
-    /// Writes of it that failed (a dirty slot).
-    pub tries: u8,
+    pub used: bool,
 }
 
 const EMPTY: u64 = u64::MAX;
@@ -60,8 +37,6 @@ pub(crate) struct Pool {
     free: Vec<u32>,
     /// Each block's lowest and highest sample, kept as audio is written.
     pub peaks: Vec<(f32, f32)>,
-    /// The planning round now.
-    pub clock: u64,
 }
 
 impl Pool {
@@ -83,10 +58,7 @@ impl Pool {
                 Slot {
                     take: 0,
                     chunk: 0,
-                    state: State::Free,
-                    last: 0,
-                    noted: false,
-                    tries: 0,
+                    used: false,
                 };
                 n
             ],
@@ -95,12 +67,7 @@ impl Pool {
             mask: size - 1,
             free,
             peaks: vec![(0.0, 0.0); n * CHUNK / PEAK_BLOCK],
-            clock: 1,
         }
-    }
-
-    pub fn len(&self) -> usize {
-        self.slots.len()
     }
 
     pub fn used(&self) -> usize {
@@ -126,11 +93,9 @@ impl Pool {
         }
     }
 
-    /// The slot holding chunk `chunk` of take `take`, if it can be read.
+    /// The slot holding chunk `chunk` of take `take`.
     pub fn readable(&self, take: u16, chunk: u32) -> Option<usize> {
-        self.find(take, chunk)
-            .map(|s| s as usize)
-            .filter(|&s| matches!(self.slots[s].state, State::Dirty | State::Clean))
+        self.find(take, chunk).map(|s| s as usize)
     }
 
     fn insert(&mut self, k: u64, v: u32) {
@@ -175,35 +140,13 @@ impl Pool {
         self.keys[i] = EMPTY;
     }
 
-    /// A slot for chunk `chunk` of take `take`, in `state`: a free one, or
-    /// else the clean one wanted longest ago. With `any` false, only a slot
-    /// not wanted in this planning round can go. None if there is none.
-    pub fn alloc(&mut self, take: u16, chunk: u32, state: State, any: bool) -> Option<usize> {
-        let s = match self.free.pop() {
-            Some(s) => s,
-            None => {
-                let mut best: Option<(u32, u64)> = None;
-                for (i, sl) in self.slots.iter().enumerate() {
-                    if sl.state == State::Clean
-                        && (any || sl.last < self.clock)
-                        && best.is_none_or(|b| sl.last < b.1)
-                    {
-                        best = Some((i as u32, sl.last));
-                    }
-                }
-                let (s, _) = best?;
-                let old = self.slots[s as usize];
-                self.remove(key(old.take, old.chunk));
-                s
-            }
-        };
+    /// A free slot for chunk `chunk` of take `take`; None if there is none.
+    pub fn alloc(&mut self, take: u16, chunk: u32) -> Option<usize> {
+        let s = self.free.pop()?;
         self.slots[s as usize] = Slot {
             take,
             chunk,
-            state,
-            last: self.clock,
-            noted: state == State::Dirty,
-            tries: 0,
+            used: true,
         };
         self.insert(key(take, chunk), s);
         Some(s as usize)
@@ -211,11 +154,11 @@ impl Pool {
 
     pub fn release(&mut self, s: usize) {
         let sl = self.slots[s];
-        if sl.state == State::Free {
+        if !sl.used {
             return;
         }
         self.remove(key(sl.take, sl.chunk));
-        self.slots[s].state = State::Free;
+        self.slots[s].used = false;
         if self.free.len() < self.free.capacity() {
             self.free.push(s as u32);
         }
@@ -224,7 +167,7 @@ impl Pool {
     /// Give back every slot of take `take`.
     pub fn release_take(&mut self, take: u16) {
         for s in 0..self.slots.len() {
-            if self.slots[s].state != State::Free && self.slots[s].take == take {
+            if self.slots[s].used && self.slots[s].take == take {
                 self.release(s);
             }
         }
@@ -282,13 +225,10 @@ mod tests {
         let mut p = Pool::new(40 * CHUNK);
         let mut held = Vec::new();
         for i in 0..40u32 {
-            let s = p.alloc((i % 7) as u16, i, State::Dirty, true).unwrap();
+            let s = p.alloc((i % 7) as u16, i).unwrap();
             held.push(((i % 7) as u16, i, s));
         }
-        assert!(
-            p.alloc(9, 0, State::Dirty, true).is_none(),
-            "every slot dirty"
-        );
+        assert!(p.alloc(9, 0).is_none(), "every slot taken");
         for &(t, c, s) in &held {
             assert_eq!(p.find(t, c), Some(s as u32));
         }
@@ -306,26 +246,6 @@ mod tests {
             .iter()
             .filter(|h| h.0 == 2)
             .all(|h| p.find(h.0, h.1).is_none()));
-    }
-
-    #[test]
-    fn a_clean_slot_wanted_longest_ago_goes_first_and_wanted_ones_stay() {
-        let mut p = Pool::new(3 * CHUNK);
-        for c in 0..3 {
-            let s = p.alloc(1, c, State::Clean, true).unwrap();
-            p.slots[s].last = 10 + u64::from(c);
-        }
-        p.clock = 12;
-        // Chunk 2 was wanted this round: only 0 and 1 may go, 0 first.
-        let s = p.alloc(2, 0, State::Loading, false).unwrap();
-        assert_eq!(p.find(1, 0), None);
-        assert_eq!(p.find(2, 0), Some(s as u32));
-        let s1 = p.find(1, 1).unwrap() as usize;
-        p.slots[s1].last = 12;
-        assert!(p.alloc(2, 1, State::Loading, false).is_none());
-        assert!(
-            p.alloc(2, 1, State::Dirty, true).is_some(),
-            "a recording may take a wanted one"
-        );
+        assert_eq!(p.used(), (40 - 14 - 4) * CHUNK);
     }
 }

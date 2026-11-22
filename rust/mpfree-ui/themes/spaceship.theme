@@ -43,5 +43,7 @@ series.6      = #4FC3C9
 series.7      = #F06292
 series.8      = #AED581
 handle        = #FFFFFF
+picked        = {accent}
+on_picked     = {on_accent}
 cut           = #B8C2D6
 grain         = #C77DFF

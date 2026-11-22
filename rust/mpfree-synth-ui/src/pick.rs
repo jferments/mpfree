@@ -136,7 +136,7 @@ impl Widget for SynthList {
                 (one, only, format!("Bank {b} only")),
             ] {
                 if on {
-                    cx.canvas.fill_round_rect(rect, 8, t.accent);
+                    cx.canvas.fill_round_rect(rect, 8, t.picked());
                 } else {
                     cx.canvas.fill_round_rect(rect, 8, t.raised);
                     cx.canvas.stroke_round_rect(rect, 8, 1, t.outline);
@@ -146,7 +146,7 @@ impl Widget for SynthList {
                     t.size_small,
                     rect,
                     Align::Center,
-                    if on { t.on_accent } else { t.text },
+                    if on { t.on_picked() } else { t.text },
                     &label,
                 );
             }

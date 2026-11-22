@@ -118,7 +118,7 @@ impl Widget for EffectGrid {
             let c = EffectGrid::cell(r, i);
             let picked = i == self.selected;
             let (fill, ink, dim) = match (picked, self.open) {
-                (true, true) => (t.accent, t.on_accent, t.on_accent),
+                (true, true) => (t.picked(), t.on_picked(), t.on_picked()),
                 _ => (t.raised, t.text, t.text_dim),
             };
             cx.canvas.fill_round_rect(c, t.round(10), fill);

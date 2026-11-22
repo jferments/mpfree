@@ -71,6 +71,10 @@ All of it is in `rust/mpfree-status`, std only, with no I/O and no drawing.
 | `project/parts-missing` | warn | stays | Parts missing | Show what's missing |
 | `project/crash-restart` | fail | stays | After a crash | Open the last project |
 | `screen/no-gpu` | warn | stays | No GPU drawing | |
+| `screen/theme-left-out` | warn | stays | Theme left out | |
+| `screen/theme-mistakes` | warn | stays | Theme has mistakes | |
+| `screen/theme-not-found` | warn | stays | Theme not found | |
+| `screen/skin-colours-moved` | warn | stays | Colours fixed | |
 | `mpc/one-core` | warn | stays | Sound on one core | |
 
 `controls/no-session` hides the dropouts, skips, dropped notes, voices given up and near limit that it causes.
@@ -145,9 +149,9 @@ The `Player` keeps its own status clock, moved on by `tick(dt)`, so the board's 
 | Phase | What lands | State |
 |---|---|---|
 | 0 | The `mpfree-status` crate (catalogue, reports, board) and the Dev > Status page; save failures and the crash restart report | built |
-| 1 | Watchers on the screen thread for the kinds above; one log line each time a problem starts or ends; the demo songs play green. Still only in Dev > Debug. The sampler's trades move in with its step 10, and the bench's check moves to `Board::unexpected` with its step 13 | built (the trades: with the sampler) |
+| 1 | Watchers on the screen thread for the kinds above (the themes' four are reported by the theme code itself); one log line each time a problem starts or ends; the demo songs play green. Still only in Dev > Debug. The sampler's trades move in with its step 10, and the bench's check moves to `Board::unexpected` with its step 13 | built (the trades: with the sampler) |
 | 2 | The status chip (CPU and RAM, coloured; it replaces today's CPU, RAM and session chips), the System status page (opened from the chip or a Prefs row), the red hint line, the manual chapter "When something goes wrong", golden screens and the controls catalogue. Its layout spec change lands first, as its own docs pull request for the owner | planned |
-| 3 | Everyone reports in: disk streaming, themes, plugins, MIDI clock, the MPC's temperature and processor clock, each owner's pull request adding its own catalogue entries | planned |
+| 3 | Everyone reports in: disk streaming, themes (their four came with the theme writers' tools), plugins, MIDI clock, the MPC's temperature and processor clock, each owner's pull request adding its own catalogue entries | planned |
 | Later | Not in this go: where the time goes per track and pad, saving a report to the stick, and errors from the system journal from a short reviewed list | |
 
 ## Tests
