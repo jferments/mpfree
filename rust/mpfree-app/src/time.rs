@@ -7910,6 +7910,116 @@ mod tests {
         }
     }
 
+    /// Arrange 2.6: with the control half on a thread of its own, busy with
+    /// everything a musician does to a song while it plays (launches,
+    /// scenes, stops, step taps, undo and redo, capture, mutes, song mode
+    /// on and off), the audio half allocates and frees nothing in any
+    /// whole period: taking what the control half sent, playing, and
+    /// sending back what it no longer plays.
+    #[test]
+    fn the_audio_half_allocates_nothing_in_any_period_while_the_control_half_works_on_its_own_thread(
+    ) {
+        use mpfree_seq::Note;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        /// Pads that only count, so the test itself allocates nothing.
+        #[derive(Default)]
+        struct Count(u64);
+        impl Pads for Count {
+            fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
+                self.0 += 1;
+                true
+            }
+            fn release_at(&mut self, _: u16, _: usize, _: u32) {}
+            fn stop_all(&mut self) {}
+            fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
+        }
+        let mut h = TimeHost::new(RATE, 140.0).unwrap();
+        // Eight tracks, two rows of 4-bar clips of 64 notes each.
+        for t in 0..8 {
+            if t > 0 {
+                h.act(TimeAction::AddTrack).unwrap();
+            }
+            for row in 0..2 {
+                let mut c = Clip::new("busy", 4 * 3840);
+                c.notes = (0..64)
+                    .map(|i| Note::new(i * 240, 120, ((t + row + i as usize) % 16) as u8, 100))
+                    .collect();
+                h.control.project.tracks[t].slots[row] = Some(c);
+            }
+        }
+        h.control.project.give_clip_ids();
+        h.act(TimeAction::ScenesToSong).unwrap();
+        h.command(Command::Play);
+        let (mut control, mut audio) = h.split();
+        let done = Arc::new(AtomicBool::new(false));
+        let stop = done.clone();
+        let thread = std::thread::spawn(move || {
+            let tap = |step| StepAction::Tap {
+                pad: 3,
+                step,
+                velocity: 100,
+            };
+            let mut k = 0usize;
+            let mut lines = 0usize;
+            while !stop.load(Ordering::Relaxed) {
+                let r = match k % 12 {
+                    0 => control.act(TimeAction::Launch {
+                        track: k % 8,
+                        slot: (k / 8) % 2,
+                    }),
+                    1 => control.act(TimeAction::LaunchScene((k / 12) % 2)),
+                    2 => control.step_action(tap(k % 16)),
+                    3 => control.act(TimeAction::Undo),
+                    4 => control.act(TimeAction::Redo),
+                    5 => control.act(TimeAction::Capture),
+                    6 => control.mute_or_solo(k % 8, k % 24 < 12, false),
+                    7 => control.act(TimeAction::StopClip(k % 8)),
+                    8 => control.act(TimeAction::SongMode(k % 24 < 12)),
+                    9 => control.step_action(tap((k + 5) % 16)),
+                    10 => control.act(TimeAction::Uncue(k % 8)),
+                    _ => control.act(TimeAction::Launch {
+                        track: (k + 3) % 8,
+                        slot: 1,
+                    }),
+                };
+                lines += usize::from(r.is_ok());
+                k += 1;
+                control.poll();
+                std::thread::sleep(std::time::Duration::from_micros(300));
+            }
+            control.poll();
+            (control, k, lines)
+        });
+        let mut pads = Count::default();
+        let mut worst = (0, 0);
+        for period in 0..4000 {
+            let ((), n) = crate::sys::alloc_count::calls(|| audio.run(PERIOD, &mut pads, None));
+            if n > worst.1 {
+                worst = (period, n);
+            }
+            std::thread::sleep(std::time::Duration::from_micros(100));
+        }
+        done.store(true, Ordering::Relaxed);
+        let (mut control, actions, ok) = thread.join().unwrap();
+        // What the audio half sent back last is freed there.
+        audio.run(PERIOD, &mut pads, None);
+        control.poll();
+        assert_eq!(worst, (0, 0), "(period, allocations and frees) at worst");
+        assert!(
+            actions > 1000 && ok > actions / 4,
+            "{actions} actions, {ok} ok"
+        );
+        assert!(pads.0 > 200, "it played: {} hits", pads.0);
+        assert!(
+            control.costs.compiles > 100,
+            "{} views",
+            control.costs.compiles
+        );
+        let c = audio.counts();
+        assert_eq!((c.lost, c.kept, c.ends_lost, control.lost()), (0, 0, 0, 0));
+    }
+
     /// Split, the halves run on two threads: the control half on its own,
     /// launching a clip and starting the transport, then polling every
     /// millisecond; the audio half here. The clip plays from the period
