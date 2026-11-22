@@ -52,7 +52,8 @@ Tap a track's name (or its input) to open its **track panel** over the lanes. Ta
 | **Arm**, **Mute**, **Solo** | Mute and Solo are the track's own, the same as **TRACK MUTE** and the mute and solo anywhere else: soloing an audio track silences every other track, the drums and synths too, and soloing any other track silences the audio tracks that aren't soloed. |
 | **Input** | What the track records. **L** (the left jack, the default), **R**, **L+R** (both jacks mixed into one), **ST** (stereo) or **Mix** (a sound from inside mpfree: see [Record what mpfree plays](#record-what-mpfree-plays)). It can't change while the track records. |
 | **Monitor** | When you hear the input through the track. **Auto** (the default) plays it while the track is armed, except during playback. **In** always plays it, armed or not. **Off** never does: use it when you hear your instrument another way, such as through a mixer. With **Mix** picked the panel says **Not played through** here instead: you already hear that sound. |
-| **Level**, **Pan** | With a step either way on screen. Q-Links 1 and 2 turn them too while the panel is open. |
+| **Level**, **Pan** | The track's own mixer strip's fader and pan, with a step either way on screen. Q-Links 1 and 2 turn them too while the panel is open (their cells say **its strip**). Turned here or on the **Mix** tab, it is the same fader and pan. |
+| **Its strip in Mix ›** | Opens the **Mix** tab's tracks with this track's strip picked, for its effects, sends and output. |
 | **Takes** | Opens the track's take lanes (below). |
 
 ## Record what mpfree plays
@@ -77,7 +78,7 @@ Tap a region to pick it. The buttons along the bottom become **Split**, **Erase*
 - **Split** cuts the region at the playhead, so put the playhead inside it first.
 - **Erase** takes the region out.
 - **Drag** a region sideways to move it. It snaps to sixteenth notes; hold **SHIFT** to move it freely. It stays picked where it lands.
-- **Gain** and **Fades** are on the Q-Links. While a region is picked, the four knobs turn the track's **Level** (Q1) and **Pan** (Q2), and the region's **Gain** (Q3) and **Fades** (Q4, the fade in and the fade out together). Hold **SHIFT** for fine steps. A fade shows as a slope on the region.
+- **Gain** and **Fades** are on the Q-Links. While a region is picked, the four knobs turn the track's **Level** (Q1) and **Pan** (Q2), which are its mixer strip's, and the region's **Gain** (Q3) and **Fades** (Q4, the fade in and the fade out together). Hold **SHIFT** for fine steps. A fade shows as a slope on the region.
 - **Undo** takes back the last change, and **SHIFT + Undo** redoes what Undo took back.
 
 ## Comping with take lanes
@@ -98,11 +99,14 @@ When an older take plays, its region on the track says which one ("take 1"). Tap
 
 - **Latency.** Sound takes a few milliseconds to come in through the inputs, so a take would land slightly late. Audio tracks make up for it with **Line input latency** in [Prefs](../reference/prefs.md), so a take lines up with the beat you played it against. It's the same setting as the Looper's **Latency to make up for**: change either and both follow.
 - **Memory.** The audio tracks share one minute of stereo memory to begin with. The Song view's legend says how much is free ("Audio 0:42 of 1:00 free"). **Audio track memory** in [Prefs](../reference/prefs.md) sets 30 seconds to 10 minutes, from the next start. A recording that runs out of memory stops there and keeps what it got.
-- **The mixer.** All the audio tracks play through one **Audio** strip in the mixer (**TRACK MIX**), where you can add effects to them together.
+- **The mixer.** Each audio track plays through a mixer strip of its own (**TRACK MIX**), named after the track, in its colour, with a wave mark and its input (**In L**, **Mix**) by the name. Add effects and sends there, or send it to a submix. The strip's **M** and **S** are the track's own **Mute** and **Solo**, so a solo there plays this track alone among all your tracks. A strip has no freeze: an audio track already plays recorded sound. To give several audio tracks the same effects, send their strips to one submix.
+- **Projects from before.** In a project saved when all the audio tracks shared one **Audio** strip, each track's level and pan move to its own strip as it opens. If that **Audio** strip had effects or settings, they move to the first free submix, and the audio tracks play into it, so the song sounds as it did; the opening says which submix. With no submix free, they stay on a strip called **Audio (old)**, which nothing plays through any more, and mpfree won't save over the project.
+
+{{shot: mixer-audio-tracks | The Mix tab's tracks with two audio tracks, Vocal and Guitar, each on its own strip with a wave mark and its input; the guitar is picked, 3 dB down and panned right.}}
 
 ## Saving
 
-The audio tracks are saved with the project (**SHIFT + BROWSE**): every take, the regions you comped from them, and each track's input, monitor, level, pan, mute and solo. If a track is recording when you save, the save waits until it stops. Opening a project ends any recording and brings in the project's audio tracks; **New project** empties them. See [Saving your work](saving.md).
+The audio tracks are saved with the project (**SHIFT + BROWSE**): every take, the regions you comped from them, and each track's input, monitor, mute and solo; its level, pan and effects are saved with its mixer strip. If a track is recording when you save, the save waits until it stops. Opening a project ends any recording and brings in the project's audio tracks; **New project** empties them. See [Saving your work](saving.md).
 
 > [!MPC]
-> On the MPC, audio tracks sit in the same sequence as MIDI tracks and each has its own mixer channel. In MPFree they are in the same track list as your other tracks too, and you record them on the Song view's timeline, each in its own lane among your tracks; they share one Audio strip in the mixer for now.
+> On the MPC, audio tracks sit in the same sequence as MIDI tracks and each has its own mixer channel. In MPFree they are in the same track list as your other tracks too, each with its own mixer strip, and you record them on the Song view's timeline, each in its own lane among your tracks.

@@ -51,14 +51,16 @@ use mpfree_audiotracks::host::{AudioHost, ImportRefused, TakeWave, MAX_COLUMNS};
 use mpfree_audiotracks::save::{Saved, TrackFile};
 use mpfree_audiotracks::{Command, Input, Monitor, TakeInfo, MAX_TRACKS, PEAK_BLOCK};
 use mpfree_seq::TrackId;
-use mpfree_time_ui::song::{audio_blocks, take_lanes, AudioLane, MixFrom, MONITORS};
+use mpfree_time_ui::song::{audio_blocks, input_chip, take_lanes, AudioLane, MixFrom, MONITORS};
 use mpfree_time_ui::view::{
     audio_color, track_color, AudioAction, RegionId, TimeState, TransportInfo,
 };
 use mpfree_transport::{Block, TempoMap, Tick};
 use mpfree_ui::qlink::QLinkCard;
 
+use crate::mixing::MixHost;
 use crate::PERIOD;
+use mpfree_fx::ids::mixer as mx;
 
 /// Prefs "Audio track memory" (layout spec 4c): the stereo seconds every
 /// take shares, 60 s by default (about 21 MB at 44.1 kHz). It is set aside,
@@ -369,6 +371,102 @@ impl TrackHost {
         }
     }
 
+    /// Each engine track's sound of the last period into its project
+    /// track's own mixer channel (the audio tracks rethink, phase 1b), whose
+    /// strip gives it its level, pan, effects and sends; and which tracks
+    /// those are ([`MixHost::audio_tracks`]), so their strips show. Added
+    /// into the channels' inputs for the next block; nothing allocates.
+    /// The panel's level and pan follow the strips' (the screen sees them
+    /// change at the next look, as for any setting).
+    pub fn play_into(&mut self, mix: &mut MixHost) {
+        let mut bits = 0u128;
+        for s in 0..MAX_TRACKS {
+            let Some(p) = self.place[s].filter(|&p| p < 128) else {
+                mix.point_audio_out(s, None);
+                continue;
+            };
+            bits |= 1 << p;
+            let ch = mix.track_channel(p);
+            // The looper's pads leave it out (`MixHost::pads_wet`).
+            mix.point_audio_out(s, Some(ch));
+            let strip = mpfree_fx::StripId::Track(ch);
+            self.volume[s] = from_db(mix.value(strip, mx::VOLUME), LEVEL_MAX_DB);
+            self.pan[s] = mix.value(strip, mx::PAN) / 100.0;
+            let out = self.host.tracks.track_out(s, PERIOD);
+            if let Some((l, r)) = mix.mixer.track_input(ch) {
+                for (f, fr) in out.chunks_exact(2).enumerate().take(PERIOD) {
+                    l[f] += fr[0];
+                    r[f] += fr[1];
+                }
+            }
+        }
+        mix.audio_tracks = bits;
+    }
+
+    /// The mixer screen's strips of the audio tracks (layout spec 3a):
+    /// named after the track, in its colour, with a wave mark and its
+    /// input; M and S are the track's mute and solo (`project`'s), and it
+    /// is dimmed while the project silences it (`silenced`). An audio
+    /// track's strip has no freeze: there is no loop to take.
+    pub fn dress_strips(
+        &self,
+        st: &mut mpfree_mixer_ui::MixState,
+        project: &mpfree_seq::Project,
+        silenced: u128,
+        mix: &MixHost,
+    ) {
+        for s in 0..MAX_TRACKS {
+            let Some(p) = self.place[s] else {
+                continue;
+            };
+            let Some(t) = project.tracks.get(p) else {
+                continue;
+            };
+            let id = mpfree_fx::StripId::Track(mix.track_channel(p));
+            for v in st.strips.iter_mut().filter(|v| v.id == id) {
+                v.name = t.name.clone();
+                v.color = Some(track_color(p));
+                v.audio = Some(match self.inside[s] {
+                    Some(_) => "Mix".to_string(),
+                    None => input_chip(self.inputs[s]).to_string(),
+                });
+                v.mute = t.mute;
+                v.solo = t.solo;
+                v.audible = p >= 128 || silenced >> p & 1 == 0;
+                v.freezable = false;
+            }
+        }
+    }
+
+    /// The audio tracks that sound, for Stems by Track (export.rs): each
+    /// with something on it that the project doesn't silence (its mute, a
+    /// solo elsewhere: `silenced`), by its place in `project`, with its
+    /// own channel's strip and its name.
+    pub fn heard(
+        &self,
+        project: &mpfree_seq::Project,
+        silenced: u128,
+        mix: &MixHost,
+    ) -> Vec<(usize, mpfree_fx::StripId, String)> {
+        let mut out: Vec<(usize, mpfree_fx::StripId, String)> = (0..MAX_TRACKS)
+            .filter_map(|s| {
+                let p = self.place[s].filter(|&p| p < 128 && silenced >> p & 1 == 0)?;
+                if self.host.tracks.regions(s).is_empty() {
+                    return None;
+                }
+                let t = project.tracks.get(p)?;
+                let name = if t.name.trim().is_empty() {
+                    format!("Track {}", p + 1)
+                } else {
+                    t.name.clone()
+                };
+                Some((p, mpfree_fx::StripId::Track(mix.track_channel(p)), name))
+            })
+            .collect();
+        out.sort_by_key(|(p, _, _)| *p);
+        out
+    }
+
     /// "+ Track"'s Audio track was picked: the audio track it adds is
     /// armed once it has an engine track.
     pub fn arm_next(&mut self) {
@@ -431,7 +529,6 @@ impl TrackHost {
         map: &TempoMap,
         song_on: bool,
         line: (&[f32; PERIOD], &[f32; PERIOD]),
-        out: (&mut [f32; PERIOD], &mut [f32; PERIOD]),
     ) {
         if song_on != self.active && self.host.command(Command::SetActive(song_on)) {
             self.active = song_on;
@@ -441,12 +538,10 @@ impl TrackHost {
             self.input[2 * f + 1] = line.1[f];
         }
         self.out.fill(0.0);
+        // The engine's sum is no one's since phase 1b: each track plays
+        // through its own channel (`play_into`).
         self.host
             .period(block, map, &self.input[..], &mut self.out[..]);
-        for f in 0..PERIOD {
-            out.0[f] = self.out[2 * f];
-            out.1[f] = self.out[2 * f + 1];
-        }
         self.measure();
         self.periods += 1;
         self.tend_open();
@@ -733,7 +828,13 @@ impl TrackHost {
     /// An opened project's audio tracks, read from its files: they go in
     /// once the tracks are empty ([`TrackHost::clear`] comes first). What
     /// is left of `saved` is dropped on the host's worker.
-    pub fn open(&mut self, saved: Saved) {
+    pub fn open(&mut self, mut saved: Saved) {
+        // Level and pan are each track's mixer strip's (phase 1b): an
+        // older part's moved there as the project opened
+        // (`project::audio_strip_moves`), so the engine plays at unity.
+        for t in &mut saved.tracks {
+            (t.level, t.pan) = (1.0, 0.0);
+        }
         if let Some(old) = self.pending.replace(saved) {
             self.host.drop_saved(old);
         }
@@ -1122,19 +1223,15 @@ impl TrackHost {
                     })
                 };
                 match knob {
-                    0 => {
-                        let step = if fine { 0.1 } else { 0.5 };
-                        let v = from_db(to_db(self.volume[t]) + step * ticks as f32, LEVEL_MAX_DB);
-                        self.send(Command::SetLevel(t, v))?;
-                        self.volume[t] = v;
-                    }
-                    1 => {
-                        let step = if fine { 0.01 } else { 0.02 };
-                        let v = (self.pan[t] + step * ticks as f32).clamp(-1.0, 1.0);
-                        // Snap to the middle near it, so centre is easy to find.
-                        let v = if v.abs() < 0.005 { 0.0 } else { v };
-                        self.send(Command::SetPan(t, v))?;
-                        self.pan[t] = v;
+                    // The level and pan are the track's mixer strip's
+                    // (phase 1b): the app moves the strip (main.rs's
+                    // `time_action`), and the engine track stays at unity
+                    // and centre, so they never count twice.
+                    0 | 1 => {
+                        return Err(format!(
+                            "audio {}: its level and pan are its mixer strip's",
+                            t + 1
+                        ))
                     }
                     2 => {
                         let reg = picked()?;
@@ -1179,6 +1276,9 @@ impl TrackHost {
                 self.changed = true;
                 String::new()
             }
+            // The app opens the Mix tab at the track's strip (main.rs's
+            // `time_action`): nothing here.
+            AudioAction::Strip(_) => String::new(),
             AudioAction::Input { track, input } => {
                 let n = self.track_no(track)?;
                 if tr.recording(track).is_some() {
@@ -1528,13 +1628,14 @@ pub fn audio_knobs(st: &TimeState) -> Option<AudioKnobs> {
     let lane = st.audio.iter().find(|l| l.track == t)?;
     let index = st.region.filter(|r| r.track == t).map(|r| r.index);
     let b = index.and_then(|i| lane.blocks.get(i));
-    let track = format!("AUDIO {}", t + 1);
+    // Level and pan are the track's strip's (phase 1b, as drawn).
+    let track = "ITS STRIP";
     let pos = |v: f32, max: f32| (to_db(v) - FLOOR_DB) / (max - FLOOR_DB);
-    let mut pan = QLinkCard::new("Pan", &track, &pan_text(lane.pan), (lane.pan + 1.0) / 2.0);
+    let mut pan = QLinkCard::new("Pan", track, &pan_text(lane.pan), (lane.pan + 1.0) / 2.0);
     pan.bipolar = true;
     let level = QLinkCard::new(
         "Level",
-        &track,
+        track,
         &db_text(lane.volume),
         pos(lane.volume, LEVEL_MAX_DB),
     );
@@ -1837,12 +1938,13 @@ mod tests {
                 }
             }
             let r = [0.0f32; PERIOD];
-            let (mut ol, mut or) = ([0.0f32; PERIOD], [0.0f32; PERIOD]);
             self.t.process(PERIOD as u32, &mut self.b);
             let map = *self.t.tempo_map();
-            self.h
-                .period(&self.b, &map, self.song, (&l, &r), (&mut ol, &mut or));
-            self.heard = ol.iter().chain(or.iter()).fold(0.0, |m, s| m.max(s.abs()));
+            self.h.period(&self.b, &map, self.song, (&l, &r));
+            // What the tracks played, each into its own channel.
+            self.heard = (0..MAX_TRACKS)
+                .flat_map(|s| self.h.host.tracks.track_out(s, PERIOD).iter())
+                .fold(0.0, |m, s| m.max(s.abs()));
             self.frame += PERIOD as u64;
         }
 
@@ -1966,17 +2068,14 @@ mod tests {
             (r.h.slots.slot_of(a.id), r.h.slots.slot_of(b.id)),
             (Some(0), Some(1))
         );
-        // Audio 2 holds a sound; Audio 1 is armed and turned down.
+        // Audio 2 holds a sound; Audio 1 is armed and never heard through.
         r.h.action(AudioAction::Arm { track: 0, on: true }, &r.info(), true)
             .unwrap();
-        let turn = AudioAction::Turn {
+        let off = AudioAction::Monitor {
             track: 0,
-            region: None,
-            knob: 0,
-            ticks: -4,
-            fine: false,
+            monitor: Monitor::Off,
         };
-        r.h.action(turn, &r.info(), true).unwrap();
+        r.h.action(off, &r.info(), true).unwrap();
         r.periods(2);
         r.h.bring(
             Sound {
@@ -1995,7 +2094,7 @@ mod tests {
             r.period();
         }
         assert_eq!(r.h.host.tracks.regions(1).len(), 1, "on Audio 2");
-        assert!(r.h.host.tracks.settings(0).unwrap().level < 0.9);
+        assert_eq!(r.h.host.tracks.settings(0).unwrap().monitor, Monitor::Off);
         // Audio 2 goes: its engine track stays its, silent, with no lane.
         r.project.tracks.pop();
         r.sync();
@@ -2023,13 +2122,85 @@ mod tests {
         r.h.arm_next();
         assert_eq!(r.add(), 0);
         r.periods(2);
-        let level = r.h.host.tracks.settings(0).unwrap().level;
-        assert_eq!(level, 1.0, "a new track's level");
+        let new = r.h.host.tracks.settings(0).unwrap();
+        assert_eq!(
+            (new.level, new.monitor),
+            (1.0, Monitor::Auto),
+            "a new track's"
+        );
         assert!(r.h.host.tracks.armed(0), "armed, ready to record");
         // Without "+ Track" (the Sample page's), not armed.
         assert_eq!(r.add(), 2);
         r.periods(2);
         assert!(!r.h.host.tracks.armed(2));
+    }
+
+    /// Phase 1b: each audio track plays into its own mixer channel (and
+    /// only there), counts as a channel in use, and the looper's pads
+    /// leave it out; its strip's fader and pan show back in the track
+    /// (the panel, the lanes, the cards); and an export hears it from its
+    /// strip, by its name, while it has something on it.
+    #[test]
+    fn each_audio_track_plays_into_its_own_mixer_channel() {
+        use mpfree_fx::StripId;
+        let mut r = Rig::with(2);
+        let mut mix = MixHost::new(RATE, -6.0, -6.0);
+        r.h.bring(
+            Sound {
+                name: "Hit".into(),
+                channels: 1,
+                audio: vec![0.25; 44_100],
+                cuts: Vec::new(),
+                bpm: 120.0,
+            },
+            &TransportInfo::default(),
+        )
+        .unwrap();
+        let t0 = Instant::now();
+        while r.h.host.importing().is_some() {
+            assert!(t0.elapsed() < Duration::from_secs(20), "never placed");
+            r.period();
+        }
+        let s = (0..2)
+            .find(|&s| !r.h.host.tracks.regions(s).is_empty())
+            .unwrap();
+        let other = 1 - s;
+        let (p, q) = (r.h.place(s).unwrap(), r.h.place(other).unwrap());
+        let (ch, quiet) = (mix.track_channel(p), mix.track_channel(q));
+        assert_ne!(ch, quiet);
+        mix.mixer.set_now(StripId::Track(ch), mx::VOLUME, -6.0);
+        mix.mixer.set_now(StripId::Track(ch), mx::PAN, 50.0);
+        r.command(T::Play);
+        let peak = |mix: &mut MixHost, c: usize| {
+            let (l, rr) = mix.mixer.track_input(c).unwrap();
+            l.iter().chain(rr.iter()).fold(0f32, |m, x| m.max(x.abs()))
+        };
+        let (mut own, mut elsewhere) = (0f32, 0f32);
+        for _ in 0..20 {
+            r.period();
+            r.h.play_into(&mut mix);
+            own = own.max(peak(&mut mix, ch));
+            elsewhere = elsewhere
+                .max(peak(&mut mix, quiet))
+                .max(peak(&mut mix, crate::mixing::AUDIO));
+            let z = [0f32; PERIOD];
+            let (mut l, mut rr) = (z, z);
+            let ctx = mpfree_node::Ctx::new(RATE, r.frame);
+            mix.period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut rr);
+        }
+        assert!(own > 0.2, "{own}");
+        assert_eq!(elsewhere, 0.0, "only its own channel");
+        assert_eq!(mix.audio_tracks, 1 << p | 1 << q);
+        assert_eq!(mix.channels_in_use() & (1 << p), 1 << p);
+        // The strip's fader and pan, as the panel and cards show them.
+        assert!((to_db(r.h.volume[s]) + 6.0).abs() < 1e-3);
+        assert_eq!(r.h.pan[s], 0.5);
+        let heard = r.h.heard(&r.project, r.silenced(), &mix);
+        let name = r.project.tracks[p].name.clone();
+        assert_eq!(heard, [(p, StripId::Track(ch), name)]);
+        // Muted (silenced): no stem.
+        r.mute(s, false, true);
+        assert!(r.h.heard(&r.project, r.silenced(), &mix).is_empty());
     }
 
     /// Step 9's panel: Mix picks what the mix offers (the one picked last
@@ -2275,10 +2446,19 @@ mod tests {
             r.periods(2);
             line
         };
-        assert_eq!(turn(&mut r, 0, -12, false), "", "turns write no log line");
-        turn(&mut r, 1, 10, false);
-        turn(&mut r, 1, 5, true);
-        turn(&mut r, 2, 7, false);
+        // Q1 and Q2 are the track's strip's (phase 1b): the app moves the
+        // strip, and the cards show it as the tracks mirror it.
+        let a = AudioAction::Turn {
+            track: 0,
+            region: Some(0),
+            knob: 0,
+            ticks: 1,
+            fine: false,
+        };
+        let e = r.h.action(a, &r.info(), true).unwrap_err();
+        assert!(e.contains("its mixer strip's"), "{e}");
+        (r.h.volume[0], r.h.pan[0]) = (from_db(-6.0, LEVEL_MAX_DB), 0.25);
+        assert_eq!(turn(&mut r, 2, 7, false), "", "turns write no log line");
         turn(&mut r, 2, -5, true);
         turn(&mut r, 3, 4, false);
         let mut st = r.state();
@@ -2289,11 +2469,6 @@ mod tests {
         let shown: Vec<_> = knobs.cards.iter().map(|c| c.value.as_str()).collect();
         assert_eq!(shown, ["-6.0 dB", "R25", "3.0 dB", "20 ms"]);
         assert!(r.h.take_changed());
-        // The level goes off at the floor and stops at +6 dB.
-        turn(&mut r, 0, -200, false);
-        assert_eq!(r.h.volume[0], 0.0);
-        turn(&mut r, 0, 400, false);
-        assert!((to_db(r.h.volume[0]) - 6.0).abs() < 1e-3);
         // Gain and Fades point at their knobs; a fifth knob has nothing.
         assert!(r
             .h
@@ -2313,7 +2488,7 @@ mod tests {
             fine: false,
         };
         assert!(r.h.action(a, &r.info(), true).is_err());
-        // Without a region, Q3 and Q4 ask for one; Q1 still turns.
+        // Without a region, Q3 and Q4 ask for one.
         let bare = |knob| AudioAction::Turn {
             track: 0,
             region: None,
@@ -2324,7 +2499,6 @@ mod tests {
         let err = r.h.action(bare(2), &r.info(), true).unwrap_err();
         assert!(err.contains("pick a region of audio 1"), "{err}");
         assert!(r.h.action(bare(3), &r.info(), true).is_err());
-        assert!(r.h.action(bare(0), &r.info(), true).is_ok());
         assert_eq!(r.h.host.tracks.stats().refused, 0);
         // No region picked and no panel open: no cards.
         st.region = None;

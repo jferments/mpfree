@@ -6443,6 +6443,66 @@ fn time_action(
         }
         a => a,
     };
+    // The panel's level and pan, and Q1 and Q2 while it is open, are the
+    // track's mixer strip's (phase 1b): the same fader and pan as on the
+    // Mix tab, moved from either place.
+    if let TimeAction::Audio(AudioAction::Turn {
+        track,
+        knob: knob @ (0 | 1),
+        ticks,
+        fine,
+        ..
+    }) = a
+    {
+        let Some(p) = tracks.place(track) else {
+            out.note(&format!(
+                "audio tracks: there is no audio track {}",
+                track + 1
+            ));
+            return Vec::new();
+        };
+        let strip = mpfree_fx::StripId::Track(mix.track_channel(p));
+        let (id, value) = if knob == 0 {
+            let step = if fine { 0.1 } else { 0.5 };
+            // From silent, the first step is at -60 dB, as the panel's
+            // level always started.
+            let db = mix.wanted(strip, mpfree_fx::ids::mixer::VOLUME).max(-60.0);
+            let db = db + step * ticks as f32;
+            let db = if db <= -60.0 {
+                mpfree_fx::SILENT_DB
+            } else {
+                db.min(6.0)
+            };
+            (mpfree_fx::ids::mixer::VOLUME, db)
+        } else {
+            let step = if fine { 1.0 } else { 2.0 };
+            let v = (mix.wanted(strip, mpfree_fx::ids::mixer::PAN) + step * ticks as f32)
+                .clamp(-100.0, 100.0);
+            // Snap to the middle near it, so centre is easy to find.
+            (
+                mpfree_fx::ids::mixer::PAN,
+                if v.abs() < 0.5 { 0.0 } else { v },
+            )
+        };
+        mix.action(&mpfree_mixer_ui::MixAction::Set { strip, id, value });
+        return Vec::new();
+    }
+    // The panel's "Its strip in Mix ›": the Mix tab's tracks, with the
+    // track's own strip picked (the mixer pages to it).
+    if let TimeAction::Audio(AudioAction::Strip(track)) = a {
+        let Some(p) = tracks.place(track) else {
+            out.note(&format!(
+                "audio tracks: there is no audio track {}",
+                track + 1
+            ));
+            return Vec::new();
+        };
+        let strip = mpfree_fx::StripId::Track(mix.track_channel(p));
+        mix.action(&mpfree_mixer_ui::MixAction::Select(strip));
+        let mut fx = app.open_tab(app::View::Mixer);
+        fx.push(app::Effect::Mixer(Some(mpfree_mixer_ui::MixView::Tracks)));
+        return fx;
+    }
     if matches!(a, TimeAction::AddAudioTrack) && tracks.free_slot().is_none() {
         out.note(&format!(
             "audio tracks: {} audio tracks is the most this MPFree plays",
@@ -7362,7 +7422,6 @@ fn player_session(
     let (mut drums_l, mut drums_r) = ([0f32; PERIOD], [0f32; PERIOD]);
     let (mut synth_l, mut synth_r) = ([0f32; PERIOD], [0f32; PERIOD]);
     let (mut loop_l, mut loop_r) = ([0f32; PERIOD], [0f32; PERIOD]);
-    let (mut audio_l, mut audio_r) = ([0f32; PERIOD], [0f32; PERIOD]);
     let (mut pads_l, mut pads_r) = ([0f32; PERIOD], [0f32; PERIOD]);
     let mut frames = [0i32; PERIOD * 2];
     let mut buf = [0u8; 256];
@@ -7959,7 +8018,7 @@ fn player_session(
                         rig,
                         &|t| midi_out.takes(t as u16),
                         &pads,
-                        &export::audio_heard(&tracks.host.tracks),
+                        &tracks.heard(time.project(), time.silenced(), &mix),
                     );
                     out.show(gui::ToUi::ExportFacts(Box::new(f)));
                 }
@@ -11172,13 +11231,8 @@ fn player_session(
         out.loop_start(said);
         loop_tempo = tempo.or(loop_tempo);
         // The audio tracks record the same line input onto the Song view's
-        // lanes, and play into the mixer's Audio track (song mode only).
+        // lanes, and each plays into its own mixer channel (song mode only).
         tracks.follow_latency(app.settings.loop_latency);
-        // An export's replay of one audio track: only it plays (export.rs).
-        tracks.host.tracks.set_only(match export.only() {
-            Some(mpfree_export::Only::AudioTrack(t)) => Some(usize::from(t)),
-            _ => None,
-        });
         // The audio tracks in the track list (phase 1a): each engine track
         // follows its project track, and is silent while that is muted or
         // left out by a solo.
@@ -11191,8 +11245,9 @@ fn player_session(
             time.tempo_map(),
             time.song_on(),
             looper.input(),
-            (&mut audio_l, &mut audio_r),
         );
+        // Each audio track into its own channel (phase 1b).
+        tracks.play_into(&mut mix);
         // The strip's waveform, built a slice at a time: its cost counts in
         // the looper's stage, so the stage numbers show it.
         let loop_wave = looper.wave_step(i, LOOP_WAVE_PERIODS);
@@ -11367,7 +11422,6 @@ fn player_session(
             &ctx,
             (&synth_l, &synth_r),
             (&loop_l, &loop_r),
-            (&audio_l, &audio_r),
             looper.input(),
             &mut left,
             &mut right,
@@ -11482,7 +11536,9 @@ fn player_session(
             }
         }
         parts.begin();
-        if let Some(st) = mix.poll_state(Instant::now()) {
+        if let Some(mut st) = mix.poll_state(Instant::now()) {
+            // The audio tracks' strips, named and lit as their tracks.
+            tracks.dress_strips(&mut st, time.project(), time.silenced(), &mix);
             out.show(gui::ToUi::Mixer(Box::new(st)));
         }
         panels.poll(
@@ -13147,6 +13203,76 @@ mod tests {
         assert!(time.state().clip(0, 0).is_some());
     }
 
+    /// The audio tracks rethink, phase 1b: an audio track's panel level
+    /// and pan (and Q1, Q2) move its own mixer strip, and "Its strip in
+    /// Mix ›" opens the Mix tab's tracks with that strip picked.
+    #[test]
+    fn an_audio_track_s_level_pan_and_strip_button_are_its_mixer_strip_s() {
+        use mpfree_fx::ids::mixer as mx;
+        let mut out = Out {
+            console: None,
+            sink: None,
+            dropped: 0,
+            report: None,
+            queued: None,
+            last_draw: Instant::now(),
+        };
+        let mut time = time::TimeHost::new(RATE, 120.0).unwrap();
+        let mut app = app::App::new(RATE, false);
+        let mut mix = mixing::MixHost::new(RATE, -6.0, -6.0);
+        let mut tracks = audiotracks::TrackHost::new(RATE, 1);
+        let looper = looping::LoopHost::new(RATE, 1);
+        let mut act =
+            |time: &mut time::TimeHost,
+             tracks: &mut audiotracks::TrackHost,
+             app: &mut app::App,
+             mix: &mut mixing::MixHost,
+             a| { time_action(&mut out, time, tracks, &looper, app, mix, a) };
+        act(
+            &mut time,
+            &mut tracks,
+            &mut app,
+            &mut mix,
+            TimeAction::AddAudioTrack,
+        );
+        tracks.sync(time.project(), time.silenced(), true);
+        let place = tracks
+            .place(0)
+            .expect("the audio track has an engine track");
+        let strip = mpfree_fx::StripId::Track(mix.track_channel(place));
+        let turn = |knob, ticks| {
+            TimeAction::Audio(AudioAction::Turn {
+                track: 0,
+                region: None,
+                knob,
+                ticks,
+                fine: false,
+            })
+        };
+        // Two turns before the next period add up.
+        let before = mix.value(strip, mx::VOLUME);
+        act(&mut time, &mut tracks, &mut app, &mut mix, turn(0, -4));
+        act(&mut time, &mut tracks, &mut app, &mut mix, turn(0, -2));
+        assert_eq!(mix.wanted(strip, mx::VOLUME), before - 3.0);
+        act(&mut time, &mut tracks, &mut app, &mut mix, turn(1, 5));
+        assert_eq!(mix.wanted(strip, mx::PAN), 10.0);
+        let fx = act(
+            &mut time,
+            &mut tracks,
+            &mut app,
+            &mut mix,
+            TimeAction::Audio(AudioAction::Strip(0)),
+        );
+        assert_eq!(app.view(), app::View::Mixer);
+        assert_eq!(
+            fx.last(),
+            Some(&app::Effect::Mixer(Some(mpfree_mixer_ui::MixView::Tracks)))
+        );
+        mix.show(Some(mpfree_mixer_ui::MixView::Tracks));
+        let st = mix.poll_state(Instant::now()).expect("the mixer shows");
+        assert_eq!(st.selected, Some(strip));
+    }
+
     /// Arrange 2.6b: with the editing side on its own thread
     /// (--time-thread), ERASE + a clip and UNDO return no words at once;
     /// the answers come back later and say the same as together.
@@ -13840,7 +13966,7 @@ mod tests {
             let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
             for _ in 0..periods {
                 let ctx = mpfree_node::Ctx::new(RATE, at * PERIOD as u64);
-                mix.period(&ctx, (&z, &z), (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
+                mix.period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
                 at += 1;
             }
         };

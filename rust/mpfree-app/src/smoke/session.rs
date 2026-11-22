@@ -1638,12 +1638,6 @@ impl Session {
         );
         let z = [0f32; PERIOD];
         let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
-        let (mut al, mut ar) = ([0f32; PERIOD], [0f32; PERIOD]);
-        // An export's replay of one audio track: only it plays (export.rs).
-        self.tracks.host.tracks.set_only(match self.export.only() {
-            Some(mpfree_export::Only::AudioTrack(t)) => Some(usize::from(t)),
-            _ => None,
-        });
         let silenced = self.time.silenced();
         self.tracks.sync(self.time.project(), silenced, false);
         self.tracks.feed_inside(&mut self.mix);
@@ -1652,8 +1646,8 @@ impl Session {
             self.time.tempo_map(),
             self.time.song_on(),
             (&z, &z),
-            (&mut al, &mut ar),
         );
+        self.tracks.play_into(&mut self.mix);
         let mut played = 0;
         if let Some(p) = self.sounds.as_mut() {
             p.set_tempo(self.time.info().bpm);
@@ -1662,15 +1656,8 @@ impl Session {
             played = pads.played();
         }
         self.mix.drums(played, &mut l, &mut r);
-        self.mix.period(
-            &ctx,
-            (&z, &z),
-            (&ll, &lr),
-            (&al, &ar),
-            (&z, &z),
-            &mut l,
-            &mut r,
-        );
+        self.mix
+            .period(&ctx, (&z, &z), (&ll, &lr), (&z, &z), &mut l, &mut r);
         // The kit's pads whose mute or solo came due, as main.rs lands them.
         crate::land_pads(&mut self.time, &mut self.mix);
         if let Some(h) = self.heard.as_mut() {
@@ -2106,7 +2093,9 @@ impl Session {
                     mpfree_export::Rig::default(),
                     &|_| false,
                     &|_| pads,
-                    &crate::export::audio_heard(&self.tracks.host.tracks),
+                    &self
+                        .tracks
+                        .heard(self.time.project(), self.time.silenced(), &self.mix),
                 );
                 self.out.show(ToUi::ExportFacts(Box::new(f)));
             }

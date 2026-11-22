@@ -23,7 +23,8 @@
 //!   the mixer), and the looper makes that up. When it can't be had, the
 //!   looper records silence and says why; never another sound.
 //!   [`MixHost::pads_wet`] (the master's input without the Loop track,
-//!   the Audio track and the line input) is the pads as they were before.
+//!   the audio tracks' channels and the line input) is the pads as they
+//!   were before.
 //!   The master is refused while the Loop track's sound is anywhere else
 //!   that plays into it: a submix, a send, or the echoes of either still
 //!   ringing ([`MixHost::loop_echo`]).
@@ -93,6 +94,18 @@ pub const fn track_channel(t: usize) -> usize {
     }
 }
 
+/// The sequencer track whose own channel mixer track `ch` is, the other
+/// way from [`track_channel`]: none for the engines' tracks, track 1's old
+/// own channel and the free places'. (Track 1's is Drums, which isn't
+/// only track 1's.)
+pub const fn channel_track(ch: usize) -> Option<usize> {
+    if ch > crate::instruments::first_track() && ch < FREE_FIRST {
+        Some(ch - crate::instruments::first_track())
+    } else {
+        None
+    }
+}
+
 /// The first free place's strip: free places' instruments (the
 /// instrument redesign's step 6, `instruments::FREE`) sound on strips of
 /// their own, past every sequencer track's.
@@ -113,6 +126,11 @@ pub const fn free_channel(n: usize) -> usize {
 pub fn instrument_channel_name(instrument: &str, track: &str) -> String {
     format!("{instrument} \u{b7} {track}")
 }
+/// The name of the shared Audio strip, which every audio track played
+/// through before each had its own channel (the audio tracks rethink,
+/// phase 1b). It shows only while it still holds settings: an older
+/// project's, which couldn't move to a submix ([`MixHost::old_audio`]).
+pub const OLD_AUDIO: &str = "Audio (old)";
 /// The name of track 1's old own channel, in a project saved with
 /// settings on it ([`MixHost::old_first`]).
 pub const OLD_TRACK_1: &str = "Track 1 (old)";
@@ -301,10 +319,14 @@ pub const LOOP_CAPTURE: usize = SAMPLER_CAPTURE - 5;
 /// looper's: each audio track recording from inside the mix (the
 /// instrument redesign's step 9, [`MixHost::audio_take`]).
 pub const AUDIO_CAPTURE: usize = LOOP_CAPTURE - mpfree_audiotracks::MAX_TRACKS;
-/// The strips the looper's pads leave out: the loops, the audio tracks and
-/// the line input, in the order of their capture points after
+/// The audio tracks' own channels after their faders, one capture point an
+/// engine track from here: what the looper's pads leave out of the mix
+/// for them ([`MixHost::pads_wet`], [`MixHost::point_audio_out`]).
+pub const AUDIO_OUT_CAPTURE: usize = AUDIO_CAPTURE - mpfree_audiotracks::MAX_TRACKS;
+/// The strips the looper's pads leave out besides the audio tracks: the
+/// loops and the line input, in the order of their capture points after
 /// [`LOOP_CAPTURE`].
-const LEFT_OUT: [StripId; 3] = [StripId::Track(LOOP), StripId::Track(AUDIO), LINE];
+const LEFT_OUT: [StripId; 2] = [StripId::Track(LOOP), LINE];
 
 /// What the Play page's Q-Links and speakers show, read from the mixer (so
 /// the mixer panel's changes show there too).
@@ -572,7 +594,7 @@ pub fn name(s: StripId) -> String {
         StripId::Track(DRUMS) => "Drums".into(),
         StripId::Track(SYNTH) => "Synth".into(),
         StripId::Track(LOOP) => "Loop".into(),
-        StripId::Track(AUDIO) => "Audio".into(),
+        StripId::Track(AUDIO) => OLD_AUDIO.into(),
         StripId::Track(TRACKS) => OLD_TRACK_1.into(),
         StripId::Track(t) if t >= FREE_FIRST => format!("Free {}", t - FREE_FIRST + 1),
         StripId::Track(t) if t >= TRACKS => format!("Track {}", t - TRACKS + 1),
@@ -643,6 +665,9 @@ pub struct MixHost {
     /// Where each audio track's capture point listens now
     /// ([`MixHost::audio_take`]), None while it is free.
     audio_points: [Option<(StripId, mpfree_fx::CapturePoint)>; mpfree_audiotracks::MAX_TRACKS],
+    /// Each engine audio track's channel as [`AUDIO_OUT_CAPTURE`] + track
+    /// takes it ([`MixHost::point_audio_out`]).
+    audio_outs: [Option<usize>; mpfree_audiotracks::MAX_TRACKS],
     /// Frames each return still rings with the Loop track's sound, and the
     /// submix it went to with how long that rings ([`MixHost::loop_echo`]).
     loop_echoes: [u64; mpfree_fx::RETURNS],
@@ -675,6 +700,10 @@ pub struct MixHost {
     /// 1, on the first track that plays it), a bit each, as the last
     /// period's [`MixHost::pads_homed`] had them.
     kit_tracks: u128,
+    /// The tracks that are audio tracks with an engine track, a bit each
+    /// (`audiotracks::TrackHost::play_into` sets it every period): each
+    /// plays into its own channel (the audio tracks rethink, phase 1b).
+    pub audio_tracks: u128,
     /// Each kit's home as the last period's [`MixHost::pads_homed`] had it
     /// (0: the pads and Drums; t: track t - 1's channel).
     homes: [u8; KITS],
@@ -902,6 +931,7 @@ impl MixHost {
             mutes_sent: 0,
             loop_point: master_in,
             audio_points: [None; mpfree_audiotracks::MAX_TRACKS],
+            audio_outs: [None; mpfree_audiotracks::MAX_TRACKS],
             loop_echoes: [0; mpfree_fx::RETURNS],
             loop_bus_echo: None,
             xy_effect: None,
@@ -918,6 +948,7 @@ impl MixHost {
             pad_synths: crate::pad_synths::PadSynths::new(rate, PERIOD),
             pad_landed: None,
             kit_tracks: 0,
+            audio_tracks: 0,
             homes: [0; KITS],
             pad_channels: PadChannels::default(),
             instrument_time: Duration::ZERO,
@@ -1940,6 +1971,17 @@ impl MixHost {
         }
     }
 
+    /// A strip control as the next period will have it: the last value
+    /// given to [`MixHost::set`] since the last period, else as it stands
+    /// ([`MixHost::value`]). Steps that come between two periods add up
+    /// from it.
+    pub fn wanted(&self, strip: StripId, id: u16) -> f32 {
+        match strip {
+            StripId::Pad(_) => self.value(strip, id),
+            _ => self.mixer.wanted(strip, id),
+        }
+    }
+
     /// Sets a strip control from the start of the next period: through the
     /// mod engine once a lock has made it a target, else straight to the
     /// mixer.
@@ -2029,23 +2071,42 @@ impl MixHost {
 
     /// What the looper records from the pads, wet, into `left` and `right`:
     /// the master's input as the last period left it, without the Loop
-    /// track, the Audio track and the line input. That is every track you
-    /// play after its effects and fader, with the echoes and reverbs the
-    /// send returns add (the master's own effects and fader come after it,
-    /// as they do for the loop when it plays). Returns its latency in frames
-    /// after the period it is late; or why it can't be had, when one of the
-    /// three, sounding, goes to a submix or is out of step with the master's
-    /// input (a plugin's latency). Cheap: three subtractions a frame.
+    /// track, the audio tracks (each on its own channel) and the line input.
+    /// That is every track you play after its effects and fader, with the
+    /// echoes and reverbs the send returns add (the master's own effects and
+    /// fader come after it, as they do for the loop when it plays). Returns
+    /// its latency in frames after the period it is late; or why it can't be
+    /// had, when one of those, sounding, goes to a submix or is out of step
+    /// with the master's input (a plugin's latency). Cheap: a subtraction a
+    /// frame for each that sounds.
     pub fn pads_wet(
         &self,
         left: &mut [f32; PERIOD],
         right: &mut [f32; PERIOD],
     ) -> Result<u32, &'static str> {
-        self.mix_less(LEFT_OUT.len(), left, right)
+        self.mix_less(2, left, right)
     }
 
-    /// [`LOOP_CAPTURE`] as the last period left it, without the first
-    /// `n` of [`LEFT_OUT`] ([`MixHost::pads_wet`]).
+    /// Points engine audio track `t`'s capture ([`AUDIO_OUT_CAPTURE`] + `t`)
+    /// at its channel `ch`, after the fader, or frees it (None), so
+    /// [`MixHost::pads_wet`] leaves it out. Only a change moves the point.
+    /// Real-time safe.
+    pub fn point_audio_out(&mut self, t: usize, ch: Option<usize>) {
+        use mpfree_fx::CapturePoint;
+        let Some(was) = self.audio_outs.get(t).copied() else {
+            return;
+        };
+        if was == ch {
+            return;
+        }
+        let point = ch.map(|c| (StripId::Track(c), CapturePoint::AfterFader));
+        let held = self.mixer.set_capture(AUDIO_OUT_CAPTURE + t, point);
+        self.audio_outs[t] = if held { ch } else { None };
+    }
+
+    /// [`LOOP_CAPTURE`] as the last period left it, without: nothing (`n`
+    /// 0), the Loop track (1), or the Loop track, the audio tracks and the
+    /// line input (2, [`MixHost::pads_wet`]).
     fn mix_less(
         &self,
         n: usize,
@@ -2066,8 +2127,17 @@ impl MixHost {
                 return Ok(latency);
             }
         }
-        for (i, s) in LEFT_OUT.into_iter().enumerate().take(n) {
-            let slot = LOOP_CAPTURE + 1 + i;
+        const LOOP_SUB: &str = "the Loop track goes to a submix";
+        const AUDIO_SUB: &str = "an audio track goes to a submix";
+        const LINE_SUB: &str = "the line input goes to a submix";
+        let loops = [(LOOP_CAPTURE + 1, LEFT_OUT[0], LOOP_SUB)];
+        let audio =
+            self.audio_outs.iter().enumerate().filter_map(|(t, c)| {
+                c.map(|c| (AUDIO_OUT_CAPTURE + t, StripId::Track(c), AUDIO_SUB))
+            });
+        let line = [(LOOP_CAPTURE + 2, LEFT_OUT[1], LINE_SUB)];
+        let rest = audio.chain(line).filter(|_| n >= 2);
+        for (slot, s, why) in loops.into_iter().filter(|_| n >= 1).chain(rest) {
             let Some((l, r)) = m.capture(slot).filter(|(l, _)| l.len() == PERIOD) else {
                 continue;
             };
@@ -2075,11 +2145,7 @@ impl MixHost {
                 continue;
             }
             if m.destination(s) != Some(StripId::Master) {
-                return Err(match i {
-                    0 => "the Loop track goes to a submix",
-                    1 => "the Audio track goes to a submix",
-                    _ => "the line input goes to a submix",
-                });
+                return Err(why);
             }
             if m.capture_latency(slot) != Some(latency) {
                 return Err("a plugin's latency puts the mix out of step");
@@ -2344,9 +2410,10 @@ impl MixHost {
     /// name, as the mixer panel names the strips: each instrument's
     /// channel (a track's own or a free place's instrument by its name,
     /// Drums, Synth, a kit's channel on a track), the Loop track, each
-    /// submix, then the master. Never the audio tracks' own strip (they
-    /// would record themselves), the line input (the panel's L, R, L+R
-    /// and ST) or a pad's channel. Allocates: for the panel's taps.
+    /// submix, then the master. Never an audio track's own channel (none
+    /// is an instrument's or a kit's), the old shared Audio strip, the
+    /// line input (the panel's L, R, L+R and ST) or a pad's channel.
+    /// Allocates: for the panel's taps.
     pub fn inside_sources(&self) -> Vec<(String, StripId)> {
         let kit_channels: Vec<usize> = (0..mpfree_seq::MAX_TRACKS)
             .filter(|&t| self.kit_tracks >> t & 1 == 1)
@@ -2605,7 +2672,7 @@ impl MixHost {
     /// own instrument (or ringing out an old one), or a kit
     /// ([`MixHost::pads_homed`]).
     pub fn channels_in_use(&self) -> u128 {
-        self.instruments.in_use() | self.kit_tracks
+        self.instruments.in_use() | self.kit_tracks | self.audio_tracks
     }
 
     /// Sequencer track `t`'s mixer channel: [`track_channel`], but track
@@ -2684,12 +2751,14 @@ impl MixHost {
         ctx: &Ctx,
         synth: Stereo,
         looped: Stereo,
-        audio: Stereo,
         line: Stereo,
         left: &mut [f32; PERIOD],
         right: &mut [f32; PERIOD],
     ) -> (f32, bool) {
-        for (t, (l, r)) in [(SYNTH, synth), (LOOP, looped), (AUDIO, audio)] {
+        // The audio tracks are in already, each on its own channel
+        // (`audiotracks::TrackHost::play_into`): the Audio strip hears
+        // nothing since phase 1b.
+        for (t, (l, r)) in [(SYNTH, synth), (LOOP, looped)] {
             if let Some((dl, dr)) = self.mixer.track_input(t) {
                 dl[..PERIOD].copy_from_slice(l);
                 dr[..PERIOD].copy_from_slice(r);
@@ -2807,6 +2876,12 @@ impl MixHost {
         self.state_at = None;
     }
 
+    /// Something the panel shows changed outside the mixer (an audio
+    /// track's mute or solo): its next state goes at once.
+    pub fn state_now(&mut self) {
+        self.state_at = None;
+    }
+
     /// The view the panel showed last (Track Mix at first), where the Mix
     /// tab opens it again.
     pub fn last(&self) -> MixView {
@@ -2894,7 +2969,9 @@ impl MixHost {
     /// ([`MixHost::own_channels_in_use`]), a free place's while its
     /// instrument plays or rings out there (step 6).
     fn track_strip_shown(&self, t: usize) -> bool {
-        if t < TRACKS {
+        if t == AUDIO {
+            self.old_audio()
+        } else if t < TRACKS {
             true
         } else if t >= FREE_FIRST {
             let n = t - FREE_FIRST;
@@ -2902,6 +2979,20 @@ impl MixHost {
         } else {
             self.own_channels_in_use() >> (t - TRACKS) & 1 == 1
         }
+    }
+
+    /// The shared Audio strip still holds settings (an effect, a send, a
+    /// fader or pan moved, a mute): an older project's whose Audio strip
+    /// couldn't move to a submix as it opened (`project::move_audio_strip`).
+    /// Its audio tracks play through their own channels all the same, so
+    /// it shows, as "Audio (old)", to say what is there.
+    pub fn old_audio(&self) -> bool {
+        let s = StripId::Track(AUDIO);
+        self.mixer.chain(s).is_some_and(|c| !c.is_empty())
+            || mpfree_fx::strip_params()
+                .iter()
+                .filter(|p| crate::project::saved_control(s, p.id))
+                .any(|p| self.mixer.param(s, p.id) != p.default)
     }
 
     pub fn poll_state(&mut self, now: Instant) -> Option<MixState> {
@@ -2926,7 +3017,10 @@ impl MixHost {
         let ch = &self.pad_channels;
         // Lent pad channels show while lent.
         let free_used = self.instruments.free_in_use();
+        // The shared Audio strip only while it still holds settings.
+        let old_audio = self.old_audio();
         let shown = |s: StripId| match s {
+            StripId::Track(AUDIO) => old_audio,
             StripId::Track(t) if t >= FREE_FIRST => {
                 t - FREE_FIRST < instruments::FREE && free_used >> (t - FREE_FIRST) & 1 == 1
             }
@@ -2939,7 +3033,9 @@ impl MixHost {
             None => strip_name(ch, s),
         };
         let mut st = MixState::from_mixer_where(&mut self.mixer, view, &named, &shown);
-        st.counts[0] = TRACKS + used.count_ones() as usize + free_used.count_ones() as usize;
+        st.counts[0] = TRACKS - usize::from(!old_audio)
+            + used.count_ones() as usize
+            + free_used.count_ones() as usize;
         st.counts[1] = PADS + ch.lent().count();
         st.tracks = TRACKS;
         st.selected = self.selected;
@@ -3128,7 +3224,7 @@ mod tests {
                 pr[..PERIOD].iter_mut().zip(&d).for_each(|(o, x)| *o += x);
             }
             let ctx = Ctx::new(RATE, (p * PERIOD) as u64);
-            let (pk, c) = h.period(&ctx, (&z, &z), (&z, &z), (&z, &z), (&i, &i), &mut l, &mut r);
+            let (pk, c) = h.period(&ctx, (&z, &z), (&z, &z), (&i, &i), &mut l, &mut r);
             // The loudest of the last half: after the glides.
             if p >= periods / 2 {
                 peak = peak.max(pk);
@@ -3354,7 +3450,6 @@ mod tests {
                 "Poly \u{b7} Track 1",
                 "Synth",
                 "Loop",
-                "Audio",
                 "FM \u{b7} Track 3"
             ]
         );
@@ -3371,7 +3466,7 @@ mod tests {
                 "Poly \u{b7} Track 1",
                 "Synth",
                 "Loop",
-                "Audio",
+                "Audio (old)",
                 "FM \u{b7} Bass"
             ]
         );
@@ -3531,15 +3626,7 @@ mod tests {
             pl[..PERIOD].iter_mut().zip(&d).for_each(|(o, x)| *o += x);
             pr[..PERIOD].iter_mut().zip(&d).for_each(|(o, x)| *o += x);
             let ctx = Ctx::new(RATE, (p * PERIOD) as u64);
-            h.period(
-                &ctx,
-                (&z, &z),
-                (&z, &z),
-                (&z, &z),
-                (&z, &z),
-                &mut ol,
-                &mut or,
-            );
+            h.period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut ol, &mut or);
         }
         assert!(ol.iter().any(|s| s.abs() > 0.05), "heard through Drums");
     }
@@ -3660,15 +3747,7 @@ mod tests {
                 wet.extend(wl.iter().zip(&wr).flat_map(|(a, b)| [*a, *b]));
                 let ctx = Ctx::new(RATE, at as u64);
                 let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
-                h.period(
-                    &ctx,
-                    (&s, &s),
-                    (&lp, &lp),
-                    (&z, &z),
-                    (&z, &z),
-                    &mut l,
-                    &mut r,
-                );
+                h.period(&ctx, (&s, &s), (&lp, &lp), (&z, &z), &mut l, &mut r);
             }
             (wet, why)
         };
@@ -3692,6 +3771,67 @@ mod tests {
         assert_eq!(why, Some("the Loop track goes to a submix"));
     }
 
+    /// An audio track plays into its own channel (the audio tracks
+    /// rethink, phase 1b): the looper's pads, wet, leave it out as they
+    /// leave out the loops, and say why they can't once it goes to a
+    /// submix. Freed, its capture point takes nothing out.
+    #[test]
+    fn the_pads_wet_leave_out_each_audio_track_s_own_channel() {
+        use mpfree_fx::ids::mixer::output;
+        let go = |audio: bool, to_bus: bool, point: bool| {
+            let mut h = MixHost::new(RATE, -6.0, -6.0);
+            let ch = h.track_channel(2);
+            h.audio_tracks = 1 << 2;
+            if point {
+                h.point_audio_out(0, Some(ch));
+                // Once is enough: the same channel again moves nothing.
+                h.point_audio_out(0, Some(ch));
+            }
+            if to_bus {
+                h.mixer
+                    .set_now(StripId::Track(ch), mx::OUTPUT, output::bus(0));
+            }
+            let z = [0f32; PERIOD];
+            let (mut wet, mut why) = (Vec::new(), None);
+            for p in 0..60 {
+                let at = p * PERIOD;
+                let (mut wl, mut wr) = ([0f32; PERIOD], [0f32; PERIOD]);
+                if let Err(e) = h.pads_wet(&mut wl, &mut wr) {
+                    why = Some(e);
+                }
+                wet.extend(wl.iter().zip(&wr).flat_map(|(a, b)| [*a, *b]));
+                let s = tone(330.0, 0.3, at);
+                if audio {
+                    let a = tone(550.0, 0.4, at);
+                    let (l, r) = h.mixer.track_input(ch).unwrap();
+                    l[..PERIOD].copy_from_slice(&a);
+                    r[..PERIOD].copy_from_slice(&a);
+                }
+                let ctx = Ctx::new(RATE, at as u64);
+                let (mut l, mut r) = (z, z);
+                h.period(&ctx, (&s, &s), (&z, &z), (&z, &z), &mut l, &mut r);
+            }
+            (wet, why)
+        };
+        let (with, why) = go(true, false, true);
+        assert_eq!(why, None);
+        let (without, _) = go(false, false, true);
+        let worst = with
+            .iter()
+            .zip(&without)
+            .fold(0f32, |w, (a, b)| w.max((a - b).abs()));
+        assert!(worst < 1e-6, "the audio track is left out: {worst}");
+        // Not pointed at it: it is in the pads.
+        let (heard, _) = go(true, false, false);
+        let most = heard
+            .iter()
+            .zip(&without)
+            .fold(0f32, |w, (a, b)| w.max((a - b).abs()));
+        assert!(most > 0.1, "{most}");
+        let (_, why) = go(true, true, true);
+        assert_eq!(why, Some("an audio track goes to a submix"));
+    }
+
     /// The master is refused while the Loop track's sound is anywhere
     /// else that plays into it (the design review of 20 Nov: tails and
     /// indirect routes): a send to a return, a submix, a submix's send, and
@@ -3712,7 +3852,6 @@ mod tests {
             let (mut l, mut r) = (z, z);
             h.period(
                 &Ctx::new(RATE, at),
-                (&z, &z),
                 (&z, &z),
                 (&z, &z),
                 (&z, &z),
@@ -3864,15 +4003,7 @@ mod tests {
                 took.extend(wl.iter().zip(&wr).flat_map(|(a, b)| [*a, *b]));
                 let ctx = Ctx::new(RATE, at as u64);
                 let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
-                h.period(
-                    &ctx,
-                    (&s, &s),
-                    (&lp, &lp),
-                    (&z, &z),
-                    (&z, &z),
-                    &mut l,
-                    &mut r,
-                );
+                h.period(&ctx, (&s, &s), (&lp, &lp), (&z, &z), &mut l, &mut r);
             }
             (took, why)
         };
@@ -3929,7 +4060,7 @@ mod tests {
             }
             let ctx = Ctx::new(RATE, at as u64);
             let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
-            h.period(&ctx, (&z, &z), (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
+            h.period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
             at += PERIOD;
             let peak = |x: &[f32]| x.iter().fold(0f32, |m, v| m.max(v.abs()));
             let cap = h.rec_capture().map(|(cl, cr, lat)| {
@@ -3987,7 +4118,7 @@ mod tests {
             }
             let ctx = Ctx::new(RATE, at as u64);
             let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
-            h.period(&ctx, (&z, &z), (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
+            h.period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
             at += PERIOD;
         };
         let peak = |x: &[f32]| x.iter().fold(0f32, |m, v| m.max(v.abs()));
@@ -4090,6 +4221,36 @@ mod tests {
         assert!(peak <= 1.0, "{peak}");
     }
 
+    /// The audio tracks rethink, phase 1b: an audio track's own channel
+    /// shows while its track is an audio track, and the old shared Audio
+    /// strip, as "Audio (old)", only while it holds an older project's
+    /// settings; it gets no sound either way.
+    #[test]
+    fn audio_tracks_show_their_own_channels_and_the_old_strip_only_with_settings() {
+        let mut h = MixHost::new(RATE, -6.0, -6.0);
+        h.audio_tracks = 1 << 2;
+        h.show(Some(MixView::Tracks));
+        let t0 = Instant::now();
+        let st = h.poll_state(t0).unwrap();
+        let ids: Vec<StripId> = st.strips.iter().map(|s| s.id).collect();
+        assert!(ids.contains(&StripId::Track(h.track_channel(2))), "{ids:?}");
+        assert!(!ids.contains(&StripId::Track(AUDIO)), "{ids:?}");
+        assert!(!h.old_audio());
+        h.mixer.set_now(StripId::Track(AUDIO), mx::VOLUME, -4.0);
+        assert!(h.old_audio());
+        h.state_now();
+        let st = h.poll_state(t0).unwrap();
+        let old = st
+            .strip(StripId::Track(AUDIO))
+            .expect("shown with settings");
+        assert_eq!(old.name, OLD_AUDIO);
+        // No longer an audio track: its channel goes.
+        h.audio_tracks = 0;
+        h.state_now();
+        let st = h.poll_state(t0).unwrap();
+        assert!(st.strip(StripId::Track(h.track_channel(2))).is_none());
+    }
+
     #[test]
     fn the_panel_gets_states_while_it_shows_and_drives_the_mixer() {
         let mut h = MixHost::new(RATE, -6.0, -6.0);
@@ -4103,7 +4264,8 @@ mod tests {
                 .iter()
                 .map(|s| s.name.as_str())
                 .collect::<Vec<_>>(),
-            ["Drums", "Synth", "Loop", "Audio"]
+            ["Drums", "Synth", "Loop"],
+            "the old shared Audio strip only with an older project's settings"
         );
         assert!(st.strips[0].peak[0] > 0.1);
         assert_eq!(st.master.volume_db, -6.0);
@@ -4531,7 +4693,8 @@ mod tests {
 
     /// The strips a throw can play on: the master, the engines' tracks, a
     /// track's own channel only while in use (by its track's name), and
-    /// the submixes.
+    /// the submixes. (The app leaves out the old Audio strip unless it
+    /// holds an older project's settings: `desk::throw_strips`.)
     #[test]
     fn a_throw_plays_on_the_master_a_track_or_a_submix() {
         let h = MixHost::new(RATE, 0.0, 0.0);
@@ -4540,7 +4703,7 @@ mod tests {
         let named: Vec<&str> = strips.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(
             named[..6],
-            ["Master", "Drums", "Synth", "Loop", "Audio", "Keys"]
+            ["Master", "Drums", "Synth", "Loop", "Audio (old)", "Keys"]
         );
         assert_eq!(strips[5].1, StripId::Track(TRACKS + 1));
         assert_eq!(strips[6], ("Sub 1".to_string(), StripId::Bus(0)));

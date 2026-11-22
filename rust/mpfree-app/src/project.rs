@@ -45,6 +45,7 @@
 use std::fmt::Write as _;
 
 use mpfree_fx::ids::mixer as mx;
+use mpfree_fx::ids::mixer::output;
 use mpfree_fx::{Insert, Mixer, StripId};
 use mpfree_instruments::sound::is_design_key;
 use mpfree_library::Snapshot;
@@ -621,6 +622,7 @@ pub fn opening(
         .and_then(|(_, v)| parse_swing(v));
     let mut note_fx = None;
     let mut audio = crate::audiotracks::Slots::default();
+    let mut audio_moves = Vec::new();
     let format = check(snap)?;
     let since_4b = saved_since_4b(snap);
     let cant = |part: &str, e: String| format!("{} can't be read ({e})", part_words(part));
@@ -656,6 +658,9 @@ pub fn opening(
             // The audio tracks in the track list (phase 1a): an older
             // project's become tracks at its end.
             let (slots, note) = audio_slots(&mut p, snap.part(AUDIOTRACKS))?;
+            // An older part's levels and pans move to the tracks' mixer
+            // strips (phase 1b), below once the mixer is read.
+            audio_moves = audio_strip_moves(&p, &slots, snap.part(AUDIOTRACKS));
             audio = slots;
             notes.extend(note);
             let mut fx = Box::new([mpfree_notefx::TrackFx::default(); mpfree_seq::MAX_TRACKS]);
@@ -684,6 +689,16 @@ pub fn opening(
     if let Some(m) = &mix {
         notes.extend(m.notes.iter().cloned());
         left_out.extend(m.left_out.iter().cloned());
+    }
+    if !audio_moves.is_empty() {
+        if mix.is_none() {
+            let empty = format!("{MIXER_FORMAT}\n");
+            let m = mixer_load(&empty, None, rate, plugins).map_err(|e| cant(MIXER, e))?;
+            mix = Some(Box::new(m));
+        }
+        if let Some(m) = mix.as_mut() {
+            move_audio_strips(m, &audio_moves, &mut notes, &mut left_out);
+        }
     }
     let instruments = match snap.part(INSTRUMENTS) {
         None => Vec::new(),
@@ -896,7 +911,181 @@ pub fn audio_part(mut saved: mpfree_audiotracks::save::Saved) -> (String, Vec<Ta
             files.push((k.file.clone(), audio, k.channels));
         }
     }
-    (mpfree_audiotracks::save::to_text(&saved), files)
+    let text = mpfree_audiotracks::save::to_text(&saved);
+    // Level and pan are the tracks' mixer strips' (phase 1b): said after
+    // the first line, so an open never moves them twice.
+    let text = match text.split_once('\n') {
+        Some((first, rest)) => format!("{first}\n{AUDIO_LEVELS_IN_STRIPS}\n{rest}"),
+        None => text,
+    };
+    (text, files)
+}
+
+/// The line after the first of an audio tracks part saved since each
+/// audio track has its own mixer channel (the audio tracks rethink, phase
+/// 1b): its tracks' level and pan are their strips', saved with the mixer.
+/// A part without it is older, and its levels and pans move to the strips
+/// once as it opens ([`audio_strip_moves`]).
+pub const AUDIO_LEVELS_IN_STRIPS: &str = "levels=strips";
+
+/// What moves into the mixer as a project with an older audio tracks part
+/// opens (phase 1b): each of its tracks' channel (`mixing::track_channel`
+/// of its place in `p`, with `slots`), level (0 to 2) and pan (-1 to 1).
+/// Empty for a part saved since ([`AUDIO_LEVELS_IN_STRIPS`]) or none.
+pub fn audio_strip_moves(
+    p: &mpfree_seq::Project,
+    slots: &crate::audiotracks::Slots,
+    part: Option<&str>,
+) -> Vec<(usize, f32, f32)> {
+    let Some(text) = part else {
+        return Vec::new();
+    };
+    if text.lines().nth(1).map(str::trim) == Some(AUDIO_LEVELS_IN_STRIPS) {
+        return Vec::new();
+    }
+    let Ok(saved) = mpfree_audiotracks::save::from_text(text) else {
+        return Vec::new();
+    };
+    saved
+        .tracks
+        .iter()
+        .filter_map(|t| {
+            let id = *slots.0.get(t.index)?;
+            let place = p.track_with(id).filter(|_| id.is_given())?;
+            Some((crate::mixing::track_channel(place), t.level, t.pan))
+        })
+        .collect()
+}
+
+/// The audio engine's level (0 to 2) as a strip's fader, in dB.
+fn level_db(level: f32) -> f32 {
+    if level <= 0.0 {
+        mpfree_fx::SILENT_DB
+    } else {
+        (20.0 * level.log10()).clamp(mpfree_fx::SILENT_DB, 6.0)
+    }
+}
+
+/// The audio engine's pan (-1 to 1: the far side fading in a straight
+/// line) as a strip's (-100 to 100: the far side fading on a quarter
+/// cosine), so each side comes out as loud as it did.
+fn strip_pan(pan: f32) -> f32 {
+    let p = pan.clamp(-1.0, 1.0);
+    p.signum() * (1.0 - p.abs()).acos() * 200.0 / std::f32::consts::PI
+}
+
+/// Sets strip `s`'s control `id` in the mixer `m` an open brings, from
+/// what it had (None: not set, its default).
+fn set_loaded(m: &mut MixLoad, s: StripId, id: u16, f: impl Fn(Option<f32>) -> f32) {
+    let k = match m.strips.iter().position(|(st, _)| *st == s) {
+        Some(k) => k,
+        None => {
+            m.strips.push((s, Vec::new()));
+            m.strips.len() - 1
+        }
+    };
+    let params = &mut m.strips[k].1;
+    match params.iter_mut().find(|(i, _)| *i == id) {
+        Some((_, v)) => *v = f(Some(*v)),
+        None => params.push((id, f(None))),
+    }
+}
+
+/// Moves an older project's audio track levels and pans into their
+/// strips in the mixer `m` it opens with (phase 1b, `moves` from
+/// [`audio_strip_moves`]), added to whatever the strip had. And the shared
+/// Audio strip they all played through: when it holds anything (an
+/// effect, a send, its fader, pan or mute), its settings go to a free
+/// submix and the tracks' strips play into that submix, so the project
+/// sounds as it did. With no submix free (one before the Audio strip's own
+/// submix, when it played into one) they stay on the Audio strip, shown as
+/// "Audio (old)" and heard by nothing: said in `notes`, and in `left_out`,
+/// so the project isn't saved over.
+pub fn move_audio_strips(
+    m: &mut MixLoad,
+    moves: &[(usize, f32, f32)],
+    notes: &mut Vec<String>,
+    left_out: &mut Vec<String>,
+) {
+    if moves.is_empty() {
+        return;
+    }
+    for &(ch, level, pan) in moves {
+        let s = StripId::Track(ch);
+        set_loaded(m, s, mx::VOLUME, |was| {
+            (was.unwrap_or(0.0) + level_db(level)).clamp(mpfree_fx::SILENT_DB, 6.0)
+        });
+        if pan != 0.0 {
+            set_loaded(m, s, mx::PAN, |_| strip_pan(pan));
+        }
+    }
+    // The shared Audio strip, as the project had it.
+    let audio = StripId::Track(crate::mixing::AUDIO);
+    let defaults = mpfree_fx::strip_params();
+    let default = |id: u16| {
+        defaults
+            .iter()
+            .find(|p| p.id == id)
+            .map_or(0.0, |p| p.default)
+    };
+    let set_away: Vec<(u16, f32)> = m
+        .strips
+        .iter()
+        .filter(|(st, _)| *st == audio)
+        .flat_map(|(_, ps)| ps.iter().copied())
+        .filter(|&(id, v)| v != default(id))
+        .collect();
+    let effects = m.chains.iter().any(|(st, c)| *st == audio && !c.is_empty());
+    if set_away.is_empty() && !effects {
+        return;
+    }
+    // Where the Audio strip played: the master, or a submix (a submix
+    // plays only into a later one, so the new one must come before it).
+    let out = set_away
+        .iter()
+        .find(|(id, _)| *id == mx::OUTPUT)
+        .map_or(output::MASTER, |&(_, v)| v);
+    let before = if out >= 1.0 && out <= mpfree_fx::BUSES as f32 {
+        out as usize - 1
+    } else {
+        mpfree_fx::BUSES
+    };
+    let used = |b: usize| {
+        let bus = StripId::Bus(b);
+        let to = output::bus(b);
+        m.strips.iter().any(|(st, ps)| {
+            (*st == bus && ps.iter().any(|&(id, v)| v != default(id)))
+                || ps.iter().any(|&(id, v)| id == mx::OUTPUT && v == to)
+        }) || m.chains.iter().any(|(st, c)| *st == bus && !c.is_empty())
+    };
+    let Some(b) = (0..before).find(|&b| !used(b)) else {
+        notes.push(
+            "project: its Audio strip's effects and settings stay on Audio (old), which no audio track plays through now: no submix was free for them"
+                .to_string(),
+        );
+        left_out.push("the Audio strip's effects".to_string());
+        return;
+    };
+    let bus = StripId::Bus(b);
+    m.strips.retain(|(st, _)| *st != bus);
+    m.chains.retain(|(st, _)| *st != bus);
+    for (st, _) in m.strips.iter_mut() {
+        if *st == audio {
+            *st = bus;
+        }
+    }
+    for (st, _) in m.chains.iter_mut() {
+        if *st == audio {
+            *st = bus;
+        }
+    }
+    for &(ch, _, _) in moves {
+        set_loaded(m, StripId::Track(ch), mx::OUTPUT, |_| output::bus(b));
+    }
+    notes.push(format!(
+        "project: its Audio strip's effects and settings are on Sub {} now, which its audio tracks play into",
+        b + 1
+    ));
 }
 
 /// Reads the audio tracks' part and each take's sound (`read` gives a
@@ -3116,6 +3305,128 @@ mod tests {
         let e = audio_slots(&mut full, Some(&text)).unwrap_err();
         assert!(e.contains("its 2 audio tracks become tracks now"), "{e}");
         assert_eq!(full, before, "nothing changed");
+    }
+
+    /// Phase 1b: an older audio tracks part's levels and pans move into
+    /// the tracks' own strips, once (a part saved since says so on its
+    /// second line); the shared Audio strip's settings and effects go to
+    /// the first free submix before the one it played into, and the
+    /// tracks' strips play there; with none free they stay on Audio (old),
+    /// said, and the project isn't saved over.
+    #[test]
+    fn an_older_projects_audio_levels_and_audio_strip_move_into_the_mixer() {
+        use crate::mixing::{track_channel, AUDIO};
+        use mpfree_audiotracks::save::{to_text, Saved, TrackFile};
+        use mpfree_fx::ids::mixer::output;
+        use mpfree_seq::{Project, Track};
+        let mut p = Project::new();
+        p.tracks.push(Track::new("Track 1", 0));
+        p.tracks.push(Track::new_audio("Vocal", 0));
+        p.tracks.push(Track::new_audio("Guitar", 0));
+        p.give_track_ids();
+        let track = |index, id, level, pan| TrackFile {
+            index,
+            id,
+            input: mpfree_audiotracks::Input::Left,
+            monitor: mpfree_audiotracks::Monitor::Auto,
+            level,
+            pan,
+            muted: false,
+            solo: false,
+            from: String::new(),
+            regions: Vec::new(),
+        };
+        let saved = Saved {
+            rate: 48_000,
+            tracks: vec![
+                track(0, p.tracks[1].id.0, 0.5, -0.5),
+                track(1, p.tracks[2].id.0, 0.0, 0.0),
+            ],
+            takes: Vec::new(),
+        };
+        let older = to_text(&saved);
+        let mut q = p.clone();
+        let (slots, _) = audio_slots(&mut q, Some(&older)).unwrap();
+        let moves = audio_strip_moves(&q, &slots, Some(&older));
+        assert_eq!(
+            moves,
+            [(track_channel(1), 0.5, -0.5), (track_channel(2), 0.0, 0.0)]
+        );
+        // Saved since: the marker, and nothing moves again.
+        let (newer, _) = audio_part(saved.clone());
+        assert_eq!(newer.lines().nth(1), Some(AUDIO_LEVELS_IN_STRIPS));
+        assert!(mpfree_audiotracks::save::from_text(&newer).is_ok());
+        assert!(audio_strip_moves(&q, &slots, Some(&newer)).is_empty());
+        assert!(audio_strip_moves(&q, &slots, None).is_empty());
+        let load = |strips: Vec<(StripId, Vec<(u16, f32)>)>, chains| MixLoad {
+            pad_mutes: 0,
+            pad_solos: 0,
+            lent: Vec::new(),
+            track1: None,
+            track1_own: false,
+            strips,
+            chains,
+            modu: None,
+            note_fx: None,
+            notes: Vec::new(),
+            left_out: Vec::new(),
+            keys: Vec::new(),
+        };
+        let param = |m: &MixLoad, s: StripId, id: u16| {
+            m.strips
+                .iter()
+                .find(|(st, _)| *st == s)
+                .and_then(|(_, ps)| ps.iter().find(|(i, _)| *i == id))
+                .map(|(_, v)| *v)
+        };
+        let (vocal, guitar) = (
+            StripId::Track(track_channel(1)),
+            StripId::Track(track_channel(2)),
+        );
+        // A plain Audio strip: the levels and pans alone.
+        let (mut notes, mut left) = (Vec::new(), Vec::new());
+        let mut m = load(vec![(vocal, vec![(mx::VOLUME, -2.0)])], Vec::new());
+        move_audio_strips(&mut m, &moves, &mut notes, &mut left);
+        let half = 20.0 * 0.5f32.log10();
+        assert!((param(&m, vocal, mx::VOLUME).unwrap() - (-2.0 + half)).abs() < 1e-4);
+        // Half to the left: the right side as loud as before (half).
+        let pan = param(&m, vocal, mx::PAN).unwrap();
+        let right = (pan / 200.0 * std::f32::consts::PI).cos();
+        assert!(pan < 0.0 && (right - 0.5).abs() < 1e-4, "{pan}");
+        assert_eq!(param(&m, guitar, mx::VOLUME), Some(mpfree_fx::SILENT_DB));
+        assert_eq!(param(&m, guitar, mx::PAN), None, "centred");
+        assert!(notes.is_empty() && left.is_empty());
+        // The Audio strip with its fader down and into Sub 3, Sub 1 in
+        // use: its settings go to Sub 2, and both tracks play there.
+        let audio = StripId::Track(AUDIO);
+        let mut m = load(
+            vec![
+                (
+                    audio,
+                    vec![(mx::VOLUME, -6.0), (mx::OUTPUT, output::bus(2))],
+                ),
+                (StripId::Bus(0), vec![(mx::VOLUME, -1.0)]),
+            ],
+            Vec::new(),
+        );
+        move_audio_strips(&mut m, &moves, &mut notes, &mut left);
+        assert_eq!(param(&m, StripId::Bus(1), mx::VOLUME), Some(-6.0));
+        assert_eq!(param(&m, StripId::Bus(1), mx::OUTPUT), Some(output::bus(2)));
+        assert_eq!(param(&m, audio, mx::VOLUME), None);
+        assert_eq!(param(&m, vocal, mx::OUTPUT), Some(output::bus(1)));
+        assert_eq!(param(&m, guitar, mx::OUTPUT), Some(output::bus(1)));
+        assert!(notes[0].contains("are on Sub 2 now"), "{notes:?}");
+        assert!(left.is_empty());
+        // Into Sub 1 itself: no submix before it is free.
+        let (mut notes, mut left) = (Vec::new(), Vec::new());
+        let mut m = load(
+            vec![(audio, vec![(mx::OUTPUT, output::bus(0))])],
+            Vec::new(),
+        );
+        move_audio_strips(&mut m, &moves, &mut notes, &mut left);
+        assert_eq!(param(&m, audio, mx::OUTPUT), Some(output::bus(0)));
+        assert!(notes[0].contains("stay on Audio (old)"), "{notes:?}");
+        assert_eq!(left, ["the Audio strip's effects"]);
     }
 
     /// Phase 1a: a project with an audio track says it needs audio

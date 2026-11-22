@@ -41,7 +41,8 @@
 //!   from the mix its From steps `Tab(PANEL_FROM_LESS)` and
 //!   `Tab(PANEL_FROM_MORE)` and its Effects `Tab(PANEL_BEFORE)` and
 //!   `Tab(PANEL_AFTER)`; the level's and pan's steps `Step { index:
-//!   PANEL_LEVEL or PANEL_PAN, delta: -1 or 1 }`.
+//!   PANEL_LEVEL or PANEL_PAN, delta: -1 or 1 }`, and "Its strip in Mix
+//!   ›" `Tab(PANEL_STRIP)`.
 //!
 //! A drag up or down the name column scrolls the lanes when there are more
 //! than fit ([`MIN_LANE`] pixels each at least). The scroll is the
@@ -133,6 +134,13 @@ pub const PANEL_FROM_LESS: usize = PANEL_MIX + 1;
 pub const PANEL_FROM_MORE: usize = PANEL_MIX + 2;
 pub const PANEL_BEFORE: usize = PANEL_MIX + 3;
 pub const PANEL_AFTER: usize = PANEL_MIX + 4;
+/// The panel's "Its strip in Mix ›": the Mix tab, with the track's strip
+/// picked (the audio tracks rethink, phase 1b).
+pub const PANEL_STRIP: usize = PANEL_MIX + 5;
+/// The line under the panel's level and pan, as drawn on the approved
+/// screens: they are its strip's.
+pub const PANEL_NOTE: &str =
+    "Level and pan move its strip in Mix  ·  Mute and Solo are the track's";
 /// The `index` of the panel's level and pan steps.
 pub const PANEL_LEVEL: usize = 0;
 pub const PANEL_PAN: usize = 1;
@@ -172,11 +180,9 @@ pub const ADD_KINDS: [(&str, usize); 3] = [
     ("Loop track", ADD_LOOP),
 ];
 /// The line under each row's name, as drawn on the approved screens.
-/// (An audio track's own mixer strip comes with phase 1b, and its line
-/// says so then.)
 pub const ADD_ABOUT: [&str; 3] = [
     "Plays a kit or an instrument; records notes",
-    "Records sound from an input",
+    "Records sound from an input; its own mixer strip",
     "Loops in the Clips grid (they join audio tracks later)",
 ];
 /// The hint line while the "+ Track" chooser is open.
@@ -409,7 +415,8 @@ pub struct AudioLane {
     /// The level bar along the header's bottom edge, 0 to 1.
     pub level: f32,
     /// The track's level, 0 to 2 (1 is as recorded), and its balance, -1
-    /// (left) to 1 (right): what Q1 and Q2 turn with a region picked.
+    /// (left) to 1 (right): its mixer strip's fader and pan (phase 1b), as
+    /// the panel's Level and Pan and Q1 and Q2 show and turn them.
     pub volume: f32,
     pub pan: f32,
     /// When it hears its input, and whether it is muted or soloed: for
@@ -590,7 +597,9 @@ pub fn chooser_rows(x: i32, y: i32) -> [Rect; 3] {
 /// The track panel's size at most, its rows' height and its labels'
 /// width.
 const PANEL_W: i32 = 560;
-const PANEL_H: i32 = 176;
+const PANEL_H: i32 = 188;
+/// The panel's "Its strip in Mix ›" button's width.
+const PANEL_STRIP_W: i32 = 140;
 const PANEL_ROW: i32 = 36;
 const PANEL_LABEL: i32 = 52;
 
@@ -616,6 +625,10 @@ pub struct PanelParts {
     /// The level's and the pan's step down, value and step up.
     pub level: [Rect; 3],
     pub pan: [Rect; 3],
+    /// "Its strip in Mix ›", at the end of the level's row, and the line
+    /// under it ([`PANEL_NOTE`]).
+    pub strip: Rect,
+    pub note: Rect,
 }
 
 impl Default for SongLanes {
@@ -1150,7 +1163,7 @@ impl SongLanes {
             .any(|l| l.track == track && l.mix.is_some());
         let w = (g.lanes.w - NAME_W).min(PANEL_W);
         let rows_h = if mixed {
-            PANEL_H + PANEL_ROW + 6
+            PANEL_H + PANEL_ROW + 5
         } else {
             PANEL_H
         };
@@ -1168,7 +1181,7 @@ impl SongLanes {
         };
         let panel = Rect::new(g.lanes.x + NAME_W, y, w, h);
         let inner = panel.inset(12);
-        let row = |k: i32| inner.y + 32 + k * (PANEL_ROW + 6);
+        let row = |k: i32| inner.y + 30 + k * (PANEL_ROW + 5);
         let at = |x: i32, k: i32, w: i32| Rect::new(x, row(k), w, PANEL_ROW);
         let close = Rect::new(inner.right() - 72, inner.y - 2, 72, 28);
         let x1 = inner.x + PANEL_LABEL;
@@ -1189,9 +1202,11 @@ impl SongLanes {
             (None, None)
         };
         let lk = if mixed { 3 } else { 2 };
-        let level = [at(x1, lk, 36), at(x1 + 40, lk, 84), at(x1 + 128, lk, 36)];
-        let px = level[2].right() + 30 + 20 + 40;
-        let pan = [at(px, lk, 36), at(px + 40, lk, 64), at(px + 108, lk, 36)];
+        let level = [at(x1, lk, 36), at(x1 + 40, lk, 72), at(x1 + 116, lk, 36)];
+        let px = level[2].right() + 12 + 40;
+        let pan = [at(px, lk, 36), at(px + 40, lk, 52), at(px + 96, lk, 36)];
+        let strip = at(inner.right() - PANEL_STRIP_W, lk, PANEL_STRIP_W);
+        let note = Rect::new(inner.x, row(lk) + PANEL_ROW + 2, inner.w, 14);
         Some(PanelParts {
             track,
             panel,
@@ -1207,6 +1222,8 @@ impl SongLanes {
             effects,
             level,
             pan,
+            strip,
+            note,
         })
     }
 
@@ -1345,7 +1362,7 @@ impl SongLanes {
             _ if lane.pan < 0.0 => format!("L{pan_n}"),
             _ => format!("R{pan_n}"),
         };
-        for (parts, value, q) in [(&p.level, level, "Q1"), (&p.pan, pan, "Q2")] {
+        for (parts, value) in [(&p.level, level), (&p.pan, pan)] {
             button(cx, parts[0], "−", false, t.accent);
             button(cx, parts[2], "+", false, t.accent);
             cx.text(
@@ -1356,15 +1373,18 @@ impl SongLanes {
                 t.text,
                 &value,
             );
-            cx.text(
-                FontId::Bold,
-                t.size_small - 3.0,
-                Rect::new(parts[2].right() + 6, parts[2].y, 28, parts[2].h),
-                Align::Left,
-                t.text_faint,
-                q,
-            );
         }
+        // Level and pan are the track's strip's (phase 1b): the way to it,
+        // and the line saying so.
+        button(cx, p.strip, "Its strip in Mix ›", false, t.accent);
+        cx.text(
+            FontId::Sans,
+            t.size_small - 3.0,
+            p.note,
+            Align::Left,
+            t.text_dim,
+            PANEL_NOTE,
+        );
         cx.canvas.set_clip(old);
     }
 
@@ -1414,6 +1434,8 @@ impl SongLanes {
             step(PANEL_PAN, -1)
         } else if hit(&p.pan[2]) {
             step(PANEL_PAN, 1)
+        } else if hit(&p.strip) {
+            tab(PANEL_STRIP)
         } else {
             None
         })
@@ -2568,6 +2590,7 @@ impl Widget for SongLanes {
                     );
                 }
             }
+            out.push(Target::tap("panel-strip", 0, "Its strip in Mix", p.strip));
             out.push(Target::tap("panel-level-less", 0, "Level -", p.level[0]));
             out.push(Target::tap("panel-level-more", 0, "Level +", p.level[2]));
             out.push(Target::tap("panel-pan-less", 0, "Pan -", p.pan[0]));
@@ -3288,7 +3311,17 @@ mod tests {
             .chain(p.inputs)
             .chain(p.monitors)
             .chain(p.level)
-            .chain(p.pan);
+            .chain(p.pan)
+            .chain([p.strip, p.note]);
+        // "Its strip in Mix ›" ends the level's row, clear of the pan, with
+        // the line saying what it is under it (phase 1b, as drawn).
+        assert!(
+            p.pan[2].right() + 8 <= p.strip.x,
+            "{:?} {:?}",
+            p.pan,
+            p.strip
+        );
+        assert!(p.strip.bottom() <= p.note.y);
         for b in every {
             assert!(
                 p.panel.inset(4).contains(b.x, b.y),
@@ -3331,6 +3364,7 @@ mod tests {
         assert_eq!(tap(p.level[2]), step(PANEL_LEVEL, 1));
         assert_eq!(tap(p.pan[0]), step(PANEL_PAN, -1));
         assert_eq!(tap(p.pan[2]), step(PANEL_PAN, 1));
+        assert_eq!(tap(p.strip), Some(EventKind::Tab(PANEL_STRIP)));
         // Its empty space and its value read-outs take the touch and ask
         // for nothing, even with a block under them.
         assert_eq!(tap(p.level[1]), None);
@@ -3396,7 +3430,7 @@ mod tests {
             after_effects: true,
         });
         let p = s.panel_parts(r).unwrap();
-        assert_eq!(p.panel.h, line.panel.h + PANEL_ROW + 6, "a row more");
+        assert_eq!(p.panel.h, line.panel.h + PANEL_ROW + 5, "a row more");
         let (from, fx) = (p.from.unwrap(), p.effects.unwrap());
         let every = [p.mix]
             .into_iter()
@@ -3404,7 +3438,8 @@ mod tests {
             .chain(from)
             .chain(fx)
             .chain(p.level)
-            .chain(p.pan);
+            .chain(p.pan)
+            .chain([p.strip, p.note]);
         for b in every {
             assert!(
                 p.panel.inset(4).contains(b.x, b.y)

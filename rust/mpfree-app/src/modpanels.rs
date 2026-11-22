@@ -1723,7 +1723,7 @@ mod tests {
             for _ in 0..periods {
                 let ctx = Ctx::new(RATE, self.period * PERIOD as u64);
                 self.h
-                    .period(&ctx, (&z, &z), (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
+                    .period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
                 self.period += 1;
             }
         }
@@ -2537,15 +2537,7 @@ mod tests {
                     }
                 }
                 let ctx = Ctx::new(RATE, at);
-                r.h.period(
-                    &ctx,
-                    (&z, &z),
-                    (&z, &z),
-                    (&z, &z),
-                    (&z, &z),
-                    &mut l,
-                    &mut rr,
-                );
+                r.h.period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut rr);
                 r.period += 1;
                 out.extend_from_slice(&l);
             }

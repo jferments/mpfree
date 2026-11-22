@@ -1408,6 +1408,9 @@ pub enum AudioAction {
     Panel(usize),
     /// The panel's Close.
     ClosePanel,
+    /// The panel's "Its strip in Mix ›": open the Mix tab with the track's
+    /// own strip picked (the audio tracks rethink, phase 1b).
+    Strip(usize),
     /// The panel: what the track records from, when it hears its input,
     /// and its mute and solo.
     Input {
@@ -1881,6 +1884,7 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                 PANEL_MUTE => AudioAction::Mute { track, on: !mute },
                 PANEL_SOLO => AudioAction::Solo { track, on: !solo },
                 PANEL_TAKES => AudioAction::Takes(track),
+                crate::song::PANEL_STRIP => AudioAction::Strip(track),
                 k if (PANEL_INPUT..PANEL_INPUT + INPUTS.len()).contains(&k) => AudioAction::Input {
                     track,
                     input: INPUTS[k - PANEL_INPUT].1,
@@ -5988,6 +5992,10 @@ mod tests {
         );
         assert_eq!(tab(PANEL_TAKES, &st), audio(AudioAction::Takes(3)));
         assert_eq!(
+            tab(crate::song::PANEL_STRIP, &st),
+            audio(AudioAction::Strip(3))
+        );
+        assert_eq!(
             tab(PANEL_INPUT + 3, &st),
             audio(AudioAction::Input {
                 track: 3,
@@ -6022,7 +6030,11 @@ mod tests {
         let fx = |after| audio(AudioAction::MixEffects { track: 3, after });
         assert_eq!(tab(PANEL_BEFORE, &st), fx(false));
         assert_eq!(tab(PANEL_AFTER, &st), fx(true));
-        assert_eq!(tab(PANEL_AFTER + 1, &st), None, "past the last");
+        assert_eq!(
+            tab(crate::song::PANEL_STRIP + 1, &st),
+            None,
+            "past the last"
+        );
         let step = |index, delta, st: &TimeState| song(EventKind::Step { index, delta }, st);
         let turn = |knob, ticks, region| {
             audio(AudioAction::Turn {
