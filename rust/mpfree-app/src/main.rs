@@ -6510,6 +6510,10 @@ fn save_shelf(mix: &mut mixing::MixHost, store: &mpfree_store::Store, out: &mut 
     ] {
         if let Err(e) = store.write(fxp::OWNER, name, text.into_bytes()) {
             out.note(&format!("fx: {name} not saved: {e}"));
+            out.show(gui::ToUi::Problem(mpfree_status::Report::happened(
+                &mpfree_status::kinds::SAVE_FAILED,
+                1,
+            )));
         }
     }
 }
@@ -7555,6 +7559,10 @@ fn player_session(
                         out.note("touch tuning: not saved (no data folder); it stays until the power goes off");
                     } else if let Err(e) = store.save_settings(app::saved::TOUCH, &settings) {
                         out.note(&format!("not saved: {}: {e}", app::saved::TOUCH));
+                        out.show(gui::ToUi::Problem(mpfree_status::Report::happened(
+                            &mpfree_status::kinds::SAVE_FAILED,
+                            1,
+                        )));
                     }
                 }
                 // The selected track's own synth, when it has one; else the
@@ -11347,6 +11355,10 @@ fn player_session(
                 if store.saves() {
                     if let Err(e) = store.save_settings(owner, &settings) {
                         out.note(&format!("not saved: {owner}: {e}"));
+                        out.show(gui::ToUi::Problem(mpfree_status::Report::happened(
+                            &mpfree_status::kinds::SAVE_FAILED,
+                            1,
+                        )));
                     }
                 }
             }
@@ -11356,6 +11368,10 @@ fn player_session(
                     let file = midi_saved::RIG;
                     if let Err(e) = store.write(midi_saved::OWNER, file, text.into_bytes()) {
                         out.note(&format!("not saved: midi/{file}: {e}"));
+                        out.show(gui::ToUi::Problem(mpfree_status::Report::happened(
+                            &mpfree_status::kinds::SAVE_FAILED,
+                            1,
+                        )));
                     }
                 }
             }

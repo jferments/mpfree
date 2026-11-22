@@ -20,6 +20,11 @@
 //!   to find, and a card for the one picked (`app::mapper`).
 //!
 //! - Touch: test, measure and tune the touchscreen (`touch_dev.rs`).
+//! - Status: the status board raw (`mpfree-status`; System status phase
+//!   0): every problem noted this session, by system and worst first, with
+//!   its state, count and times, and the last reports, newest first. The
+//!   musician's System status page comes in phase 2; until then problems
+//!   show only here.
 //! - Console: the system log (the page SHIFT + ERASE + TAP TEMPO opens), here with
 //!   the strip.
 //!
@@ -42,6 +47,7 @@ pub const ENGINES_PAGE: &str = "CPU by engine";
 pub const PROCS_PAGE: &str = "Processes";
 pub const MAP_PAGE: &str = "Map controls";
 pub const CONSOLE_PAGE: &str = "Dev console";
+pub const STATUS_PAGE: &str = "Status board";
 pub const DEBUG_LAYOUT: &str =
     "col(header:60, dtabs:52, row(midimon:*, col(events:*, timing:232):460):*, hint:26)";
 pub const PERF_LAYOUT: &str =
@@ -52,6 +58,10 @@ pub const PROCS_LAYOUT: &str = "col(header:60, dtabs:52, row(procs:*, cores:420)
 pub const MAP_LAYOUT: &str =
     "col(header:60, dtabs:52, row(controls:*, col(mapcard:*, mapinfo:236):660):*, hint:26)";
 pub const CONSOLE_LAYOUT: &str = "col(header:60, dtabs:52, syslog:*, hint:26)";
+pub const STATUS_LAYOUT: &str =
+    "col(header:60, dtabs:52, row(statusopen:*, statusevents:500):*, hint:26)";
+/// The most reports the Status page lists (more don't fit the panel).
+const STATUS_EVENTS: usize = 40;
 
 /// How much render time the graph keeps: one value per screen update of
 /// the timing (every 250 ms), a minute's worth.
@@ -161,6 +171,129 @@ pub struct DebugPages {
     proc_view: ProcView,
 }
 
+/// How long ago `t` was at `now`, short ("0.4 s", "12 s", "3:05").
+/// When `t` was, as time since `start` (MPFree's start): "4.0 s", "12 s",
+/// "1:10". It stands still, so the page redraws only when the board
+/// changes.
+fn at(start: std::time::Instant, t: std::time::Instant) -> String {
+    let s = t.saturating_duration_since(start).as_secs_f32();
+    if s < 10.0 {
+        format!("{s:.1} s")
+    } else if s < 60.0 {
+        format!("{s:.0} s")
+    } else {
+        let s = s as u64;
+        format!("{}:{:02}", s / 60, s % 60)
+    }
+}
+
+/// The Status page's rows: the problems (a summary line first), and the
+/// last reports, with times since `start`.
+pub fn status_rows(board: &mpfree_status::Board, start: std::time::Instant) -> (Rows, Rows) {
+    use mpfree_status::{Level, Op, ProblemState, Shape};
+    let level_tone = |l: Level| match l {
+        Level::Fail => Tone::Bad,
+        Level::Warn => Tone::Warn,
+        Level::Note => Tone::Dim,
+    };
+    let chip = board.chip();
+    let mut open = vec![(
+        "Status colour".to_string(),
+        match chip.level {
+            None => "all good".to_string(),
+            Some(l) => format!(
+                "{}{} · {} now · {} ended, not seen",
+                l.word(),
+                if chip.ring { ", ring" } else { "" },
+                chip.now,
+                chip.unseen
+            ),
+        },
+        chip.level.map_or(Tone::Good, level_tone),
+    )];
+    let raw = board.raw();
+    if raw.is_empty() {
+        open.push((
+            "Problems".to_string(),
+            "none this session".to_string(),
+            Tone::Dim,
+        ));
+    }
+    for p in raw {
+        let subject = match p.subject.0 {
+            0 => String::new(),
+            n => format!(" #{n}"),
+        };
+        let state = match p.state {
+            ProblemState::Settling => "settling".to_string(),
+            ProblemState::Now => "now".to_string(),
+            ProblemState::Ended => match p.ended {
+                Some(t) => format!("ended at {}", at(start, t)),
+                None => "ended".to_string(),
+            },
+        };
+        // A state that is going is last going now: its last time would
+        // move every look, so only its first is shown until it ends.
+        let going = p.kind.shape != Shape::Happens && p.state != ProblemState::Ended;
+        let mut value = if going {
+            format!("{state} · {}× · first at {}", p.times, at(start, p.first))
+        } else {
+            format!(
+                "{state} · {}× · first at {} · last at {}",
+                p.times,
+                at(start, p.first),
+                at(start, p.last)
+            )
+        };
+        if !p.seen {
+            value.push_str(" · not seen");
+        }
+        if p.hidden {
+            value.push_str(" · hidden by its cause");
+        }
+        let tone = if !p.listed() {
+            Tone::Dim
+        } else if p.is_now() || !p.seen {
+            level_tone(p.kind.level)
+        } else {
+            Tone::Normal
+        };
+        open.push((
+            format!("{} {}{subject}", p.kind.level.word(), p.kind.id),
+            value,
+            tone,
+        ));
+    }
+    if board.lost() > 0 {
+        open.push((
+            "No room on the board".to_string(),
+            format!("{} reports", board.lost()),
+            Tone::Bad,
+        ));
+    }
+    let events = board
+        .events()
+        .take(STATUS_EVENTS)
+        .map(|e| {
+            let op = match e.op {
+                Op::Happened { times } => format!("+{times}"),
+                Op::Began => "began".to_string(),
+                Op::Ended => "ended".to_string(),
+            };
+            let subject = match e.subject.0 {
+                0 => String::new(),
+                n => format!(" #{n}"),
+            };
+            (
+                format!("{}{subject} {op}", e.kind.id),
+                format!("at {}", at(start, e.at)),
+                Tone::Normal,
+            )
+        })
+        .collect();
+    (open, events)
+}
+
 fn found_colour(m: Mark) -> Option<Color> {
     match m {
         Mark::Found(_) => Some(Color::from_pad([0x08, 0x30, 0x10])),
@@ -184,6 +317,7 @@ impl DebugPages {
                 "Processes",
                 "Map controls",
                 "Touch",
+                "Status",
                 "Console",
             ]),
         );
@@ -245,6 +379,12 @@ impl DebugPages {
             crate::touch_dev::TARGETS_PAGE,
             crate::touch_dev::TARGETS_LAYOUT,
         )?;
+        ui.add(
+            "statusopen",
+            StatList::new("Problems this session: state · times · first · last"),
+        );
+        ui.add("statusevents", StatList::new("Last reports, newest first"));
+        ui.add_page(STATUS_PAGE, STATUS_LAYOUT)?;
         ui.add_page(CONSOLE_PAGE, CONSOLE_LAYOUT)?;
         let mut d = DebugPages {
             history: VecDeque::new(),
@@ -260,6 +400,7 @@ impl DebugPages {
             Vec::new(),
         );
         DebugPages::set_procs(ui, &procs::ProcView::default());
+        DebugPages::set_status(ui, &mpfree_status::Board::new(), std::time::Instant::now());
         Ok(d)
     }
 
@@ -272,6 +413,7 @@ impl DebugPages {
             View::Procs => Some(PROCS_PAGE),
             View::Map => Some(MAP_PAGE),
             View::Touch => Some(crate::touch_dev::PAGE),
+            View::StatusBoard => Some(STATUS_PAGE),
             View::Console => Some(CONSOLE_PAGE),
             _ => None,
         }
@@ -495,6 +637,34 @@ impl DebugPages {
         }
     }
 
+    /// The Status page from the board at `now` (its clock).
+    /// Fills the Status page from the board, times since `start`; a list
+    /// that hasn't changed isn't touched, so it doesn't redraw.
+    pub fn set_status(ui: &mut Ui, board: &mpfree_status::Board, start: std::time::Instant) {
+        let (open, events) = status_rows(board, start);
+        if ui
+            .get::<StatList>("statusopen")
+            .is_some_and(|l| l.rows != open)
+        {
+            if let Some(l) = ui.get_mut::<StatList>("statusopen") {
+                l.set(open);
+            }
+        }
+        let title = match board.older() {
+            0 => "Last reports, newest first".to_string(),
+            n => format!("Last reports, newest first ({n} older)"),
+        };
+        if ui
+            .get::<StatList>("statusevents")
+            .is_some_and(|l| l.rows != events || l.title != title)
+        {
+            if let Some(l) = ui.get_mut::<StatList>("statusevents") {
+                l.title = title;
+                l.set(events);
+            }
+        }
+    }
+
     pub fn set_map(ui: &mut Ui, m: &MapView) {
         if let Some(l) = ui.get_mut::<ListView>("controls") {
             l.title = format!(
@@ -667,6 +837,9 @@ mod tests {
         assert!(ui.rect_of("engnow").unwrap().h > 500);
         ui.show(PROCS_PAGE).unwrap();
         assert!(ui.rect_of("procs").unwrap().h > 500);
+        ui.show(STATUS_PAGE).unwrap();
+        assert!(ui.rect_of("statusopen").unwrap().h > 500);
+        assert!(ui.rect_of("statusevents").unwrap().w >= 500);
         for _ in 0..HISTORY + 10 {
             d.set_audio(
                 &mut ui,
@@ -709,5 +882,85 @@ mod tests {
         let g = ui.get_mut::<Graph>("graph").unwrap();
         assert_eq!(g.values.len(), HISTORY);
         assert_eq!(g.right, "now 50 %");
+    }
+
+    #[test]
+    fn the_status_page_lists_the_board_raw() {
+        use mpfree_status::{kinds, Board, Report, Subject};
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let s = |x: u64| t0 + Duration::from_secs(x);
+        let mut b = Board::new();
+        let (open, events) = status_rows(&b, t0);
+        assert_eq!(
+            open,
+            vec![
+                (
+                    "Status colour".to_string(),
+                    "all good".to_string(),
+                    Tone::Good
+                ),
+                (
+                    "Problems".to_string(),
+                    "none this session".to_string(),
+                    Tone::Dim
+                ),
+            ]
+        );
+        assert!(events.is_empty());
+        b.apply(Report::happened(&kinds::SOUND_DROPOUT, 3), t0);
+        b.apply(Report::began(&kinds::PORT_MISSING).about(Subject(2)), s(1));
+        b.tick(s(5));
+        let (open, events) = status_rows(&b, t0);
+        assert_eq!(
+            open[0],
+            (
+                "Status colour".to_string(),
+                "fail, ring · 1 now · 1 ended, not seen".to_string(),
+                Tone::Bad
+            )
+        );
+        assert_eq!(
+            open[1],
+            (
+                "fail sound/dropout".to_string(),
+                "ended at 0.0 s · 3× · first at 0.0 s · last at 0.0 s · not seen".to_string(),
+                Tone::Bad
+            )
+        );
+        assert_eq!(
+            open[2],
+            (
+                "warn midi/port-missing #2".to_string(),
+                "now · 1× · first at 1.0 s · not seen".to_string(),
+                Tone::Warn
+            )
+        );
+        assert_eq!(
+            events,
+            vec![
+                (
+                    "midi/port-missing #2 began".to_string(),
+                    "at 1.0 s".to_string(),
+                    Tone::Normal
+                ),
+                (
+                    "sound/dropout +3".to_string(),
+                    "at 0.0 s".to_string(),
+                    Tone::Normal
+                ),
+            ]
+        );
+        b.seen(s(6));
+        b.apply(Report::happened(&kinds::SOUND_DROPOUT, 1), s(70));
+        b.tick(s(74));
+        let (open, _) = status_rows(&b, t0);
+        assert_eq!(
+            open[1].1,
+            "ended at 1:10 · 4× · first at 0.0 s · last at 1:10 · not seen"
+        );
+        b.seen(s(75));
+        let (open, _) = status_rows(&b, t0);
+        assert_eq!(open[1].2, Tone::Normal, "seen and over");
     }
 }
