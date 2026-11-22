@@ -1631,6 +1631,7 @@ pub fn all(rate: u32) -> Vec<Case> {
             SamplerPads::Grains,
         )
     }));
+    v.extend(grain_worst_cases(rate));
     v.push(measured(|| {
         effect(
             "Multi filter (LP 12)",
@@ -2588,6 +2589,204 @@ fn held_grains(rate: u32, grains: usize) -> Case {
         }),
         mem_bytes: 0,
     }
+}
+
+/// What a grain worst case turns on (sampler plan step 13).
+#[derive(Clone, Copy, Default)]
+struct Worst {
+    /// A band pass on every grain, its cutoff sprayed (`GrainFilter`).
+    filters: bool,
+    /// Pitched up 7 semitones, so every grain takes the clean
+    /// (band-limited) read.
+    clean: bool,
+    /// Each grain's pitch sprayed over 12 semitones either way: grains at
+    /// many speeds, those up past two semitones on the clean read.
+    pitch_spray: bool,
+    /// The master Grains FX over everything, dense.
+    master: bool,
+}
+
+/// How often a grain worst case lets go of one of its pads and hits it
+/// again, in blocks (about 0.3 s), so new hits, ringing tails and the room
+/// made for them come round all the time.
+const WORST_RETRIGGER: u64 = 100;
+
+/// A grain worst case (sampler plan step 13): `pads` granular pads held
+/// (two voices each, so a let-go rings out under the next hit), together
+/// asking for more grains at once than the engine's budget, so the whole
+/// budget plays and the sharing of step 9 works every block; every
+/// [`WORST_RETRIGGER`] blocks the next pad is let go and hit again.
+/// `w` turns on the costly grain features. Five pads: 100 ms grains, 640 a
+/// second, each wanting the 64 a voice keeps. More pads: the 400 ms, 150 a
+/// second clouds of the sharing tests.
+fn grain_worst(name: &str, rate: u32, pads: usize, w: Worst, lane: Option<LaneConfig>) -> Case {
+    let split = lane.is_some();
+    let mut e = grain_worst_engine(name, rate, pads, w, lane);
+    Case {
+        name: name.to_string(),
+        module: "sampler",
+        what: "granular pads held over the grain budget, one re-hit every 0.3 s",
+        block: Box::new(move |b, l, r| {
+            grain_worst_hits(&mut e, b, pads);
+            if split {
+                e.render_until(l, r, Instant::now() + lane_wait());
+            } else {
+                l.fill(0.0);
+                r.fill(0.0);
+                e.render(l, r);
+            }
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// A [`grain_worst`] case's hits for block `b`: every pad at the start,
+/// then the next pad let go and hit again every [`WORST_RETRIGGER`]
+/// blocks.
+fn grain_worst_hits(e: &mut Engine, b: u64, pads: usize) {
+    if b == 0 {
+        for pad in 0..pads {
+            e.apply(Event::NoteOn {
+                pad: pad as u8,
+                velocity: 100,
+            });
+        }
+    } else if b.is_multiple_of(WORST_RETRIGGER) {
+        let pad = ((b / WORST_RETRIGGER) % pads as u64) as u8;
+        e.apply(Event::NoteOff { pad });
+        e.apply(Event::NoteOn { pad, velocity: 100 });
+    }
+}
+
+/// The engine behind a [`grain_worst`] case, checked for its trades as it
+/// ends.
+fn grain_worst_engine(
+    name: &str,
+    rate: u32,
+    pads: usize,
+    w: Worst,
+    lane: Option<LaneConfig>,
+) -> Watched {
+    let s = Source::new("worst", rate, 2, bench_sound(rate as usize * 4, false)).expect("source");
+    if w.clean || w.pitch_spray {
+        // Made now, so every grain finds them (a long sound's copies are
+        // otherwise made on their own thread).
+        s.make_octaves();
+    }
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    for i in 0..pads {
+        let mut r = Region::whole(&s);
+        r.mode = PlayMode::Granular;
+        let (size_ms, density) = if pads <= 5 {
+            (100.0, 640.0)
+        } else {
+            (400.0, 150.0)
+        };
+        r.grain = GrainParams {
+            position: i as f32 / pads as f32,
+            spray: 0.5,
+            size_ms,
+            density,
+            spread: 1.0,
+            pitch: if w.clean { 7.0 } else { 0.0 },
+            pitch_spray: if w.pitch_spray { 12.0 } else { 0.0 },
+            filter: if w.filters {
+                mpfree_sampler::model::GrainFilter {
+                    kind: mpfree_sampler::model::GrainFilterKind::Band,
+                    cutoff_hz: 1_500.0,
+                    resonance: 0.5,
+                    spray: 1.0,
+                }
+            } else {
+                mpfree_sampler::model::GrainFilter::default()
+            },
+            ..GrainParams::default()
+        };
+        let mut pad = Pad::new("g", Layer::new(r));
+        pad.polyphony = 2;
+        p.set_pad(i, Some(pad), None).expect("pad");
+    }
+    let mut e = Engine::new(rate, 2 * pads);
+    if w.master {
+        e.set_master_fx(Engine::make_master_fx(rate));
+        p.set_master(
+            MasterFx {
+                mix: 0.5,
+                grain: GrainParams {
+                    density: 200.0,
+                    size_ms: 150.0,
+                    spray: 0.3,
+                    ..MasterFx::default().grain
+                },
+            },
+            None,
+        )
+        .expect("master");
+    }
+    e.set_view(EngineView::build(&p, rate));
+    // Crowded by design. Each pad's let-go rings out until its next hit
+    // comes round, so the re-hit takes over no voice.
+    let allow = Allow {
+        grains: true,
+        late: lane.as_ref().is_some_and(|c| c.threaded),
+        ..Allow::default()
+    };
+    if let Some(config) = lane {
+        e.split(config);
+    }
+    Watched::new(e, name, allow)
+}
+
+/// The grain worst cases on one core, for every bench run, the
+/// instruction gate and the golden fingerprints (sampler plan step 13).
+fn grain_worst_cases(rate: u32) -> Vec<Case> {
+    let all = Worst {
+        filters: true,
+        clean: true,
+        pitch_spray: true,
+        master: true,
+    };
+    [
+        ("Grains worst: 5 pads", Worst::default(), 5),
+        (
+            "Grains worst: 5 pads, grain filters",
+            Worst {
+                filters: true,
+                ..Worst::default()
+            },
+            5,
+        ),
+        (
+            "Grains worst: 5 pads, clean read",
+            Worst {
+                clean: true,
+                ..Worst::default()
+            },
+            5,
+        ),
+        (
+            "Grains worst: 5 pads, pitch spray",
+            Worst {
+                pitch_spray: true,
+                ..Worst::default()
+            },
+            5,
+        ),
+        (
+            "Grains worst: 5 pads + Grains FX",
+            Worst {
+                master: true,
+                ..Worst::default()
+            },
+            5,
+        ),
+        ("Grains worst: 5 pads, everything", all, 5),
+        ("Grains worst: 64 clouds sharing", Worst::default(), 64),
+    ]
+    .into_iter()
+    .map(|(name, w, pads)| measured(|| grain_worst(name, rate, pads, w, None)))
+    .collect()
 }
 
 /// The engine behind [`held_grains`].
@@ -4797,6 +4996,38 @@ pub fn lanes(rate: u32, worker: Option<usize>, third: Option<usize>) -> Vec<Case
             )
         }),
         measured(|| {
+            grain_worst(
+                "Grains worst: 5 pads, everything, split, one core",
+                rate,
+                5,
+                Worst {
+                    filters: true,
+                    clean: true,
+                    pitch_spray: true,
+                    master: true,
+                },
+                Some(LaneConfig {
+                    name: "mpfree-bench-ln".into(),
+                    threaded: false,
+                    ..LaneConfig::default()
+                }),
+            )
+        }),
+        measured(|| {
+            grain_worst(
+                "Grains worst: 5 pads, everything, split, 2 cores",
+                rate,
+                5,
+                Worst {
+                    filters: true,
+                    clean: true,
+                    pitch_spray: true,
+                    master: true,
+                },
+                Some(config(false)),
+            )
+        }),
+        measured(|| {
             beside(
                 "Sampler 24 voices + Poly Init 8 voices, 1 core",
                 rate,
@@ -5274,7 +5505,7 @@ mod tests {
     #[test]
     fn the_lane_cases_cover_one_core_and_two() {
         let mut cases = lanes(44_100, None, None);
-        assert_eq!(cases.len(), 21);
+        assert_eq!(cases.len(), 23);
         assert!(cases.iter().any(|c| c.name.contains("one core")));
         assert!(cases.iter().any(|c| c.name.contains("2 cores")));
         for c in &mut cases {
@@ -5398,6 +5629,44 @@ mod tests {
         }
         let st = g.lp.stats();
         assert_eq!((st.refused, st.aborted, st.dropped_commands), (0, 0, 0));
+    }
+
+    #[test]
+    fn the_grain_worst_cases_keep_the_whole_budget_playing() {
+        // Sampler plan step 13: each case asks for more grains than the
+        // budget, so near the budget's worth plays every block, shared out,
+        // and its re-hits sound.
+        let every = Worst {
+            filters: true,
+            clean: true,
+            pitch_spray: true,
+            master: true,
+        };
+        for (w, pads) in [(Worst::default(), 5), (every, 5), (Worst::default(), 64)] {
+            let mut e = grain_worst_engine("test", 44_100, pads, w, None);
+            let (mut l, mut r) = ([0.0f32; 128], [0.0f32; 128]);
+            let (mut least, mut most, mut sum) = (usize::MAX, 0, 0);
+            for b in 0..700u64 {
+                grain_worst_hits(&mut e, b, pads);
+                e.render(&mut l, &mut r);
+                if b >= 200 {
+                    least = least.min(e.live_grains());
+                    most = most.max(e.live_grains());
+                    sum += e.live_grains();
+                }
+            }
+            // About 200 of the 256 play (step 9 keeps room for a new hit
+            // and counts the grains about to end), dipping as a re-hit's
+            // cloud builds while the one let go rings out.
+            let budget = mpfree_sampler::engine::GRAIN_BUDGET;
+            let mean = sum / 500;
+            assert!(most + RESERVE <= budget, "{pads} pads: {most}");
+            assert!(mean * 4 >= budget * 3, "{pads} pads: {mean} on average");
+            assert!(least * 2 >= budget, "{pads} pads: as few as {least}");
+            let st = e.stats();
+            assert!(st.crowded_frames > 0 && st.hits >= 5, "{st:?}");
+            assert!(l.iter().chain(&r).all(|v| v.is_finite()));
+        }
     }
 
     #[test]
