@@ -11,7 +11,7 @@
 //! rate=44100
 //! track=0 id=9 input=left monitor=auto level=1 pan=0 muted=0 solo=0
 //! region start=0 end=3840 take=3 src=0 gain=1 fade_in=0 fade_out=0
-//! take=3 track=0 group=1 pass=0 bpm=120 anchor=-12.5 frames=44100 channels=1 file=3f0c.wav
+//! take=3 rec=5b2f0d9c41e8a7763c0f12ab9e4d8c01 track=0 group=1 pass=0 bpm=120 anchor=-12.5 frames=44100 channels=1 file=3f0c.wav
 //! ```
 //!
 //! A line is `key=value` words; `file=` comes last and takes the rest of
@@ -25,6 +25,16 @@
 //! part, from before, still opens: its tracks have no id ([`TrackFile::id`]
 //! 0), and the app gives each one with something on it a track.
 //!
+//! The take lines are the project's table of recordings (phase 1c): a
+//! take line's `rec` is the recording's lasting id
+//! ([`crate::RecordingId`], 32 hex digits), saved and never given to
+//! another; its `take` number is only the engine place the regions above
+//! name. A take line without `rec` (saved before) gets a new id as it
+//! loads, kept from its next save on. Every recording is the project's
+//! own, its file in the project's `samples/`, at the part's `rate`;
+//! recordings from outside the project, and files at their own rates,
+//! come with streaming (the rethink's phase 3).
+//!
 //! Saving: [`crate::AudioTracks::save_into`] fills a [`Saved::room`] made
 //! off the audio thread with the settings, regions and takes without
 //! allocating ([`crate::AudioTracks::save_file`] makes its own room: not
@@ -35,7 +45,7 @@
 
 use mpfree_transport::time::Tick;
 
-use crate::{Input, Monitor, Region, MAX_REGIONS, MAX_TAKES, MAX_TRACKS};
+use crate::{Input, Monitor, RecordingId, Region, MAX_REGIONS, MAX_TAKES, MAX_TRACKS};
 
 /// The first line of the text.
 pub const FORMAT: &str = "mpfree-audiotracks 2";
@@ -71,7 +81,11 @@ pub struct TrackFile {
 /// A take as saved.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TakeFile {
+    /// Its place in the engine, which the regions name.
     pub id: u16,
+    /// Its lasting id: [`RecordingId::NONE`] for a take that has none yet
+    /// (saved before, or new), which gets one as it loads.
+    pub rec: RecordingId,
     pub track: usize,
     pub group: u16,
     pub pass: u16,
@@ -125,6 +139,7 @@ impl Saved {
             takes: (0..MAX_TAKES)
                 .map(|id| TakeFile {
                     id: id as u16,
+                    rec: RecordingId::NONE,
                     track: 0,
                     group: 0,
                     pass: 0,
@@ -193,8 +208,13 @@ pub fn to_text(saved: &Saved) -> String {
         }
     }
     for k in &saved.takes {
+        let rec = if k.rec.is_given() {
+            format!(" rec={}", k.rec)
+        } else {
+            String::new()
+        };
         s.push_str(&format!(
-            "take={} track={} group={} pass={} bpm={} anchor={} frames={} channels={} file={}\n",
+            "take={}{rec} track={} group={} pass={} bpm={} anchor={} frames={} channels={} file={}\n",
             k.id, k.track, k.group, k.pass, k.bpm, k.anchor, k.frames, k.channels, k.file
         ));
     }
@@ -330,8 +350,17 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
             if file.is_empty() {
                 return Err(format!("line {n}: a take with no file"));
             }
+            let rec = match get(&kv, "rec") {
+                None => RecordingId::NONE,
+                Some(v) => RecordingId::parse(v)
+                    .ok_or_else(|| format!("line {n}: rec={v} is not a recording id"))?,
+            };
+            if rec.is_given() && saved.takes.iter().any(|k| k.rec == rec) {
+                return Err(format!("line {n}: recording {rec} twice"));
+            }
             saved.takes.push(TakeFile {
                 id,
+                rec,
                 track,
                 group: num(&kv, "group", n)?,
                 pass: num(&kv, "pass", n)?,
@@ -513,6 +542,7 @@ mod tests {
         };
         let take = |id, track, file: &str| TakeFile {
             id,
+            rec: RecordingId(0xabc0_0000_0000_0000_0000_0000_0000_0000 + u128::from(id)),
             track,
             group: 2,
             pass: id,
@@ -588,6 +618,39 @@ mod tests {
         // Version 1 with ids (never written) reads them as nothing.
         let old = v2.replace("mpfree-audiotracks 2", "mpfree-audiotracks 1");
         assert!(from_text(&old).unwrap().tracks.iter().all(|t| t.id == 0));
+    }
+
+    /// The take lines are the project's recordings: each keeps its lasting
+    /// id; a line from before has none (it gets one as it loads); an id is
+    /// 32 hex digits, not 0, and never there twice.
+    #[test]
+    fn each_recording_keeps_its_lasting_id() {
+        let t = to_text(&saved());
+        assert!(
+            t.contains("\ntake=5 rec=abc00000000000000000000000000005 track=3 "),
+            "{t}"
+        );
+        let s = from_text(&t).unwrap();
+        assert_eq!(s.takes[2].rec, RecordingId(0xabc << 116 | 5));
+        let before = t.replace(" rec=abc00000000000000000000000000001", "");
+        let s = from_text(&before).unwrap();
+        assert_eq!(s.takes[1].rec, RecordingId::NONE);
+        assert!(!to_text(&s).contains("take=1 rec"));
+        let one = "abc00000000000000000000000000001";
+        for bad in [
+            "abc",
+            "zbc00000000000000000000000000001",
+            "00000000000000000000000000000000",
+        ] {
+            let e = from_text(&t.replace(one, bad)).unwrap_err();
+            assert!(e.contains("is not a recording id"), "{e}");
+        }
+        let e = from_text(&t.replace(one, "abc00000000000000000000000000000")).unwrap_err();
+        assert!(e.contains("twice"), "{e}");
+        assert_eq!(
+            RecordingId::parse(one).map(|r| r.to_string()),
+            Some(one.into())
+        );
     }
 
     #[test]

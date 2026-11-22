@@ -27772,6 +27772,7 @@ mod tests {
             }],
             takes: vec![mpfree_audiotracks::save::TakeFile {
                 id: 4,
+                rec: mpfree_audiotracks::RecordingId(0x77),
                 track: 1,
                 group: 1,
                 pass: 0,
@@ -27895,6 +27896,8 @@ mod tests {
         assert_eq!(t.regions[0].take, 4);
         let k = &audio.takes[0];
         assert_eq!((k.id, k.frames, k.channels), (4, 4410, 1));
+        // The recording keeps its lasting id (phase 1c).
+        assert_eq!(k.rec, mpfree_audiotracks::RecordingId(0x77));
         assert_eq!(k.audio, take);
         assert!(
             k.file.starts_with("take-") && k.file.ends_with(".wav"),

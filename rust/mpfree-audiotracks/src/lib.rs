@@ -40,6 +40,13 @@
 //!   armed track while stopped or recording, and the track's regions
 //!   otherwise; [`Monitor::In`] always hears the input as well;
 //!   [`Monitor::Off`] never does.
+//! - **Lasting ids.** Every take is a recording with a [`RecordingId`]:
+//!   given as it starts (recorded, brought in or a stretched copy) or kept
+//!   from its save, saved with it, and never given to another, so a
+//!   project, its undo steps and later its clips and files can name it
+//!   across saves. The take's `u16` is only its place in this engine;
+//!   regions and undo steps name that place, and a place an undo step
+//!   names is never given to another take ([`AudioTracks::in_use`]).
 //! - **One memory.** Takes share one pool of samples, asked for once in
 //!   [`AudioTracks::new`], in chunks of [`CHUNK`] samples: a recording
 //!   takes one chunk at a time, so several tracks record together with no
@@ -70,6 +77,7 @@ pub use pool::CHUNK;
 use pool::{Pool, State as SlotState};
 pub use retime::{Piece, Retime};
 use std::collections::VecDeque;
+use std::fmt;
 
 use save::{Saved, TakeFile, TrackFile};
 
@@ -281,6 +289,92 @@ pub enum SongStep {
     Gone,
 }
 
+/// A recording's lasting id (the audio tracks rethink, phase 1c): a
+/// random 128-bit number, given as a take starts (recorded, brought in, or
+/// a stretched copy) and saved with it, never given to another. 0 is none.
+/// The recording files of the disk streaming plan carry the same number
+/// in their names (`NAME_ID.wav`, ID as its 32 hex digits:
+/// [`RecordingId::to_string`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RecordingId(pub u128);
+
+impl RecordingId {
+    pub const NONE: RecordingId = RecordingId(0);
+
+    pub fn is_given(self) -> bool {
+        self.0 != 0
+    }
+
+    /// From its 32 hex digits, as saved and in file names; None for
+    /// anything else, or for 0.
+    pub fn parse(s: &str) -> Option<RecordingId> {
+        if s.len() != 32 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        u128::from_str_radix(s, 16)
+            .ok()
+            .map(RecordingId)
+            .filter(|r| r.is_given())
+    }
+}
+
+impl fmt::Display for RecordingId {
+    /// Its 32 hex digits, lower case.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:032x}", self.0)
+    }
+}
+
+/// Makes [`RecordingId`]s without allocating (on the audio thread, as a
+/// recording starts): a key drawn at random once, and a count put through
+/// a mix that never maps two counts to one number, so no id repeats in a
+/// run, and runs (each with its own key) don't meet but by a chance of
+/// about one in 2^128.
+#[derive(Clone, Copy)]
+struct Ids {
+    key: u128,
+    next: u64,
+}
+
+impl Ids {
+    fn new() -> Ids {
+        use std::hash::{BuildHasher, Hasher};
+        let half = |salt: u64| {
+            let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+            h.write_u64(salt);
+            if let Ok(d) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+                h.write_u128(d.as_nanos());
+            }
+            h.finish()
+        };
+        Ids {
+            key: (u128::from(half(1)) << 64) | u128::from(half(2)),
+            next: 0,
+        }
+    }
+
+    fn fresh(&mut self) -> RecordingId {
+        loop {
+            let n = self.next;
+            self.next = self.next.wrapping_add(1);
+            // `mix` is one to one, so the high half alone never repeats.
+            let hi = mix((self.key >> 64) as u64 ^ n);
+            let lo = mix(self.key as u64 ^ n.rotate_left(32) ^ 0x9e37_79b9_7f4a_7c15);
+            let id = RecordingId((u128::from(hi) << 64) | u128::from(lo));
+            if id.is_given() {
+                return id;
+            }
+        }
+    }
+}
+
+/// SplitMix64's finish: a one-to-one mix of the 64 bits.
+fn mix(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
 /// A stretch of song ticks playing a stretch of a take: tick `start`
 /// plays the take's frame `src`, and the frames after it follow at the
 /// recorded rate up to tick `end`.
@@ -316,7 +410,10 @@ impl Region {
 /// What the screen shows of a take.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TakeInfo {
+    /// Its place in this engine (what regions name).
     pub id: u16,
+    /// Its lasting id ([`RecordingId`]), kept across saves.
+    pub rec: RecordingId,
     pub track: usize,
     /// Recordings of one press of Record share a group; each pass of a
     /// loop recording is a take of its own, numbered from 0.
@@ -419,6 +516,7 @@ pub struct Memory {
 #[derive(Clone, Copy)]
 struct Take {
     live: bool,
+    rec: RecordingId,
     track: u8,
     channels: u8,
     group: u16,
@@ -441,6 +539,7 @@ struct Take {
 
 const NO_TAKE: Take = Take {
     live: false,
+    rec: RecordingId::NONE,
     track: 0,
     channels: 1,
     group: 0,
@@ -715,6 +814,8 @@ fn fade_table() -> [f32; FADE + 1] {
 /// The audio tracks: see the module notes.
 pub struct AudioTracks {
     rate: u32,
+    /// Where new takes' lasting ids come from.
+    ids: Ids,
     /// [`AudioTracks::set_only`]: the one track heard (an export's replay).
     only: Option<usize>,
     pool: Pool,
@@ -773,6 +874,7 @@ impl AudioTracks {
         let hist = (0..HISTORY).map(|_| Snap::new()).collect();
         AudioTracks {
             rate,
+            ids: Ids::new(),
             only: None,
             pool: Pool::new(samples),
             takes: vec![NO_TAKE; MAX_TAKES],
@@ -901,6 +1003,7 @@ impl AudioTracks {
         let t = self.takes.get(id as usize).filter(|t| t.live)?;
         Some(TakeInfo {
             id,
+            rec: t.rec,
             track: t.track as usize,
             group: t.group,
             pass: t.pass,
@@ -911,6 +1014,28 @@ impl AudioTracks {
             recording: t.recording,
             cut_short: t.cut_short,
         })
+    }
+
+    /// The take whose lasting id is `rec`, if it is here.
+    pub fn take_of(&self, rec: RecordingId) -> Option<u16> {
+        if !rec.is_given() {
+            return None;
+        }
+        self.takes
+            .iter()
+            .position(|t| t.live && t.rec == rec)
+            .map(|i| i as u16)
+    }
+
+    /// The lasting id a take loaded or brought in keeps: its own when it
+    /// has one no other take has, else a new one (a part saved before
+    /// takes had them; two takes never share one).
+    fn keep_id(&mut self, rec: RecordingId) -> RecordingId {
+        if rec.is_given() && self.take_of(rec).is_none() {
+            rec
+        } else {
+            self.ids.fresh()
+        }
     }
 
     /// An id no take has, for a take made off the audio thread (a stretch)
@@ -1552,6 +1677,7 @@ impl AudioTracks {
         for k in self.takes() {
             let f = &mut room.takes[takes];
             f.id = k.id;
+            f.rec = k.rec;
             f.track = k.track;
             f.group = k.group;
             f.pass = k.pass;
@@ -1618,7 +1744,8 @@ impl AudioTracks {
         (done > 0 || want == 0).then_some(done)
     }
 
-    /// Put a saved take back, under its own id: its memory is taken now,
+    /// Put a saved take back, under its own id and its lasting id (a new
+    /// one if it has none or another take has it): its memory is taken now,
     /// and its audio (moved in, never grown or freed here) copies in at
     /// [`LOAD_SPEED`] over the next periods; it plays once copied. Then
     /// the audio waits in [`AudioTracks::take_returned`] for the host to
@@ -1640,8 +1767,10 @@ impl AudioTracks {
         {
             return Err(f);
         }
+        let rec = self.keep_id(f.rec);
         self.takes[id] = Take {
             live: true,
+            rec,
             track: f.track as u8,
             channels: f.channels as u8,
             group: f.group,
@@ -1910,6 +2039,7 @@ impl AudioTracks {
         };
         self.takes[id] = Take {
             live: true,
+            rec: self.ids.fresh(),
             track: t as u8,
             channels: ch as u8,
             group,
@@ -2370,7 +2500,8 @@ impl AudioTracks {
     }
 
     /// Streaming: put back a take whose audio is on the disk, under its own
-    /// id; its chunks are read as the song needs them. Does not allocate.
+    /// id and lasting id (as [`AudioTracks::load_take`]); its chunks are
+    /// read as the song needs them. Does not allocate.
     /// Gives `f` back if not streaming, the id is past the last or in use,
     /// the track past the last, or the take empty.
     pub fn add_take(&mut self, f: TakeFile) -> Result<(), TakeFile> {
@@ -2386,8 +2517,10 @@ impl AudioTracks {
             return Err(f);
         }
         self.pool.release_take(f.id);
+        let rec = self.keep_id(f.rec);
         self.takes[id] = Take {
             live: true,
+            rec,
             track: f.track as u8,
             channels: f.channels as u8,
             group: f.group,
@@ -2762,5 +2895,25 @@ impl AudioTracks {
                 tr.gains = target;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Ids never repeat in a run, are never 0, and two runs draw two keys.
+    #[test]
+    fn recording_ids_never_repeat() {
+        let mut ids = Ids::new();
+        let mut seen: Vec<u128> = (0..20_000).map(|_| ids.fresh().0).collect();
+        assert!(seen.iter().all(|&r| r != 0));
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), 20_000);
+        assert_ne!(Ids::new().key, Ids::new().key);
+        // Each half looks random: about half its bits set.
+        let r = ids.fresh().0;
+        assert!((32..=96).contains(&r.count_ones()), "{r:032x}");
     }
 }

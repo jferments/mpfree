@@ -1092,7 +1092,9 @@ pub fn move_audio_strips(
 /// file's bytes from the project's `samples/`); `rate` is the sound's.
 /// The files can be big: run it off the screen thread. A take whose sound
 /// can't be read, or isn't the take's, is left out with the regions
-/// playing it, and a line says so (and the third list).
+/// playing it, and a line says so (and the third list). Takes saved
+/// before recordings had lasting ids are counted in a line too: each gets
+/// one as it loads (phase 1c).
 pub fn audio_open(
     text: &str,
     rate: u32,
@@ -1139,6 +1141,16 @@ pub fn audio_open(
         for t in &mut saved.tracks {
             t.regions.retain(|r| !gone.contains(&r.take));
         }
+    }
+    // Saved before recordings had lasting ids (phase 1c): the tracks give
+    // each one as it loads, kept from the next save on.
+    let new_ids = saved.takes.iter().filter(|k| !k.rec.is_given()).count();
+    if new_ids > 0 {
+        notes.push(format!(
+            "project: {new_ids} {} saved before recordings had lasting ids {} one now, kept from the next save",
+            if new_ids == 1 { "take" } else { "takes" },
+            if new_ids == 1 { "gets" } else { "get" }
+        ));
     }
     Ok((saved, notes, left))
 }
@@ -3215,6 +3227,7 @@ mod tests {
         };
         let take = |id, track| TakeFile {
             id,
+            rec: mpfree_audiotracks::RecordingId::NONE,
             track,
             group: 0,
             pass: 0,
@@ -4073,6 +4086,7 @@ mod tests {
         use mpfree_audiotracks::{Input, Monitor, Region};
         let take = |id: u16, channels: usize, audio: Vec<f32>| TakeFile {
             id,
+            rec: mpfree_audiotracks::RecordingId(0x100 + u128::from(id)),
             track: 0,
             group: 1,
             pass: id,
@@ -4142,6 +4156,24 @@ mod tests {
         assert_eq!(back.takes[2].audio, a);
         assert_eq!(back.tracks[0].input, Input::Stereo);
         assert_eq!(back.tracks[0].regions.len(), 2);
+        // Each recording keeps its lasting id, though two share a file.
+        let recs: Vec<u128> = back.takes.iter().map(|k| k.rec.0).collect();
+        assert_eq!(recs, vec![0x100, 0x101, 0x102]);
+        // Saved before lasting ids: said, and each gets one as it loads.
+        let before: String = text
+            .lines()
+            .map(|l| match l.find(" rec=") {
+                Some(i) => format!("{}{}\n", &l[..i], &l[i + 37..]),
+                None => format!("{l}\n"),
+            })
+            .collect();
+        let (back, notes, left) = audio_open(&before, 44_100, read).unwrap();
+        assert!(back.takes.iter().all(|k| !k.rec.is_given()));
+        assert!(left.is_empty());
+        assert_eq!(
+            notes,
+            vec!["project: 3 takes saved before recordings had lasting ids get one now, kept from the next save".to_string()]
+        );
         // Take 2's file gone: it is left out with its region, and said;
         // another rate is said too (not left out: the takes are there).
         let (back, notes, left) = audio_open(&text, 48_000, |f| {

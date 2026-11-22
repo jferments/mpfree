@@ -178,6 +178,8 @@ fn commands_and_periods_never_allocate() {
         a.process(&b, &map, &input, &mut out);
         let mut load = Some(TakeFile {
             id: 200,
+            // Its own lasting id, kept as it loads.
+            rec: mpfree_audiotracks::RecordingId(0x5eed),
             track: 5,
             group: 9,
             pass: 0,

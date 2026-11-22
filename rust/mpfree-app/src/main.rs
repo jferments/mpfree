@@ -13393,6 +13393,7 @@ mod tests {
             let frames = 2 * RATE as usize;
             let take = mpfree_audiotracks::save::TakeFile {
                 id: 0,
+                rec: mpfree_audiotracks::RecordingId::NONE,
                 track: 0,
                 group: 0,
                 pass: 0,

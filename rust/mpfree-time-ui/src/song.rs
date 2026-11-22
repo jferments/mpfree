@@ -3925,6 +3925,7 @@ mod tests {
         let map = TempoMap::constant(120.0).unwrap();
         let info = |id: u16, track: usize, group: u16, pass: u16| TakeInfo {
             id,
+            rec: mpfree_audiotracks::RecordingId(u128::from(id) + 1),
             track,
             group,
             pass,
@@ -4157,6 +4158,7 @@ mod tests {
         use mpfree_audiotracks::{Region, TakeInfo};
         let take = |id: u16, track: usize, group: u16, pass: u16| TakeInfo {
             id,
+            rec: mpfree_audiotracks::RecordingId(u128::from(id) + 1),
             track,
             group,
             pass,

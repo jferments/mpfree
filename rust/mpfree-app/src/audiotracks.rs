@@ -3021,6 +3021,10 @@ mod tests {
             std::thread::sleep(Duration::from_micros(100));
         };
         assert_eq!((saved.tracks.len(), saved.takes.len()), (2, 1));
+        // The recording's lasting id goes with the save (phase 1c).
+        let rec = r.h.host.tracks.takes().next().unwrap().rec;
+        assert!(rec.is_given());
+        assert_eq!(saved.takes[0].rec, rec);
         let first = r.h.host.tracks.regions(0).to_vec();
         r.waves();
 
@@ -3047,6 +3051,7 @@ mod tests {
             Some("project: 2 audio tracks and 1 take in")
         );
         assert_eq!(r.h.host.tracks.takes().count(), 1);
+        assert_eq!(r.h.host.tracks.takes().next().unwrap().rec, rec, "kept");
         assert_eq!(r.h.host.tracks.regions(0), &first[..]);
         assert!(r.h.host.tracks.regions(2).is_empty());
         assert!(!r.h.host.tracks.armed(2));
