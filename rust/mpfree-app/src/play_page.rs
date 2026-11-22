@@ -1562,6 +1562,11 @@ impl PlayPage {
     fn lock_text(&self, addr: RelAddr, v: f32) -> (String, String) {
         use mpfree_play::mpfree_param::OnTrack;
         use mpfree_sampler::engine::PadField;
+        // Made for an instrument the track doesn't play now (F1): named
+        // as made; the instrument's knob there now reads another control.
+        if self.silent_lock(addr).is_some() {
+            return (self.lock_name(addr), format!("{v:.2}"));
+        }
         if let Some(sk) = self.sound_bank.iter().flatten().find(|k| k.addr == addr) {
             return (sk.name.clone(), sk.kind.read(v).0);
         }
@@ -2485,6 +2490,7 @@ impl PlayPage {
                     picked,
                     percent: kind == NoteValue::Chance,
                 }),
+                silent: None,
             }),
         }
     }
@@ -2669,12 +2675,23 @@ impl PlayPage {
 
     /// A lock lane's name, as its knob or the inspector names it.
     pub fn lock_name(&self, addr: RelAddr) -> String {
+        // Made for an instrument the track doesn't play now (F1): its
+        // name as it was made, not the name of that number now.
+        if let Some(s) = self.silent_lock(addr) {
+            return s
+                .made_for
+                .param_name(addr.param)
+                .map_or_else(|| format!("Control {}", addr.param), str::to_string);
+        }
         self.lock_knob(addr)
             .map_or_else(|| self.lock_text(addr, 0.0).0, |k| k.name.clone())
     }
 
     /// A lock's value as text and where its bar reaches.
     fn lock_cell(&self, addr: RelAddr, v: f32) -> (f32, String) {
+        if self.silent_lock(addr).is_some() {
+            return (0.5, format!("{v:.2}"));
+        }
         match self.lock_knob(addr) {
             Some(k) => {
                 let (text, pos, _) = k.kind.read(v);
@@ -2725,6 +2742,10 @@ impl PlayPage {
         };
         let gear = l.row == LINE && l.addr.on == mpfree_play::mpfree_param::OnTrack::Midi;
         let moved = gear && self.gear_moved.contains(&self.lane_target(l));
+        // Locks made for an instrument the track doesn't play now (F1):
+        // named as they were made, and said why they don't play.
+        let silent = self.silent_lock(l.addr);
+        let sub = silent.map_or(sub, |s| format!("lock · {}", s.made_for.name));
         Lane {
             pad: crate::play_widgets::LOCK_LANE + id,
             name: self.lock_name(l.addr),
@@ -2749,8 +2770,20 @@ impl PlayPage {
                 opens_rows: gear,
                 moved,
                 values: None,
+                silent: silent.map(|s| s.line(l.addr.param)),
             }),
         }
+    }
+
+    /// What the Steps say of the clip's locks on instrument control
+    /// `addr`, when they were made for an instrument the track doesn't
+    /// play now (step sequencer refactor F1).
+    pub fn silent_lock(&self, addr: RelAddr) -> Option<&crate::time::SilentLocks> {
+        if addr.on != mpfree_play::mpfree_param::OnTrack::Inst {
+            return None;
+        }
+        let s = self.steps.clip.as_ref()?.silent.as_ref()?;
+        s.params.contains(&addr.param).then_some(s)
     }
 
     /// The setting lock lane `l` locks, on the Sequencer's track.
@@ -2807,6 +2840,9 @@ impl PlayPage {
                 value: None,
             };
             return Ok((a, format!("steps: {name} unlocked on step {}", i + 1)));
+        }
+        if let Some(s) = self.silent_lock(l.addr) {
+            return Err(format!("steps: {}: × takes them off", s.line(l.addr.param)));
         }
         let own = self
             .lock_knob(l.addr)
@@ -3845,6 +3881,7 @@ mod tests {
             rows,
             locks: Vec::new(),
             lock_values: Vec::new(),
+            silent: None,
         });
         p
     }

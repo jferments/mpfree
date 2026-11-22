@@ -18107,6 +18107,31 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         vel.add_value_lane_of(pad, NoteValue::Velocity);
     }
     out.push(("sequencer-value-lanes", vel));
+    // A synth track's lock lane made for another synth (refactor F1): the
+    // pattern's Cutoff locks were made on Poly and the track plays FM now,
+    // so they are kept, faint, and the lane says why.
+    let mut silent = sample_beats_synth(fonts());
+    {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        let addr = RelAddr::new(OnTrack::Inst, 9);
+        let mut st = silent.play.steps.clone();
+        if let Some(c) = st.clip.as_mut() {
+            for (i, v) in [(0, 0.3), (4, 0.7), (6, 0.5), (12, 0.9)] {
+                c.lock_values.push((crate::time::LINE, i, addr, v));
+            }
+            c.silent = Some(crate::time::SilentLocks {
+                made_for: mpfree_seq::inst::Inst {
+                    node: "mpfree.poly".into(),
+                    name: "Poly".into(),
+                    params: vec![(9, "Cutoff".into())],
+                },
+                params: vec![9],
+                now: "FM".into(),
+            });
+        }
+        silent.apply(ToUi::Steps(Box::new(st)));
+    }
+    out.push(("sequencer-silent-locks", silent));
     // A track that plays outside gear (step 5b, board 4): its notes as
     // scale rows, its CC lanes under them (the gear's Cutoff opening over
     // the bar, a bend on step 7); then its Lanes list, the gear's CCs.
@@ -26005,6 +26030,71 @@ mod tests {
             panic!("{a:?}");
         };
         assert_eq!((pad, addr.on), (crate::time::LINE, OnTrack::Inst));
+    }
+
+    /// Step sequencer refactor F1: a lock lane whose locks were made for
+    /// a synth the track doesn't play now is named as it was made, says
+    /// why over its faint steps, refuses a new lock with that, and its ×
+    /// still takes the locks off.
+    #[test]
+    fn a_synth_lock_made_for_another_synth_says_why_it_is_silent() {
+        use crate::time::SilentLocks;
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_seq::inst::Inst;
+        let mut p = sample_beats_synth(Fonts::embedded());
+        let addr = RelAddr::new(OnTrack::Inst, 9);
+        let mut st = p.play.steps.clone();
+        let c = st.clip.as_mut().unwrap();
+        c.lock_values.push((crate::time::LINE, 2, addr, 0.4));
+        c.silent = Some(SilentLocks {
+            made_for: Inst {
+                node: "mpfree.poly".into(),
+                name: "Poly".into(),
+                params: vec![(9, "Cutoff".into())],
+            },
+            params: vec![9],
+            now: "FM".into(),
+        });
+        p.apply(ToUi::Steps(Box::new(st)));
+        let lane =
+            p.ui.get::<StepGrid>(play_page::STEPS)
+                .unwrap()
+                .lanes
+                .iter()
+                .find(|l| l.lock.is_some())
+                .cloned()
+                .unwrap();
+        let k = lane.lock.as_ref().unwrap();
+        assert_eq!(
+            (lane.name.as_str(), k.sub.as_str()),
+            ("Cutoff", "lock · Poly")
+        );
+        assert_eq!(
+            k.silent.as_deref(),
+            Some("made for Poly's Cutoff, not playing on FM")
+        );
+        assert_eq!(k.cells[2], Some((0.5, "0.40".to_string())));
+        // A tap on an empty step says why rather than locking it.
+        let id = lane.pad - play_widgets::LOCK_LANE;
+        assert_eq!(
+            p.play.tap_lock(id, 0),
+            Err("steps: made for Poly's Cutoff, not playing on FM: × takes them off".into())
+        );
+        // The × takes them off.
+        p.take_actions();
+        let a = p.on_event(UiEvent {
+            widget: play_page::STEPS.into(),
+            kind: EventKind::Toggle(lane.pad),
+        });
+        assert_eq!(
+            a,
+            Some(FromUi::Steps(StepAction::Lock {
+                pad: crate::time::LINE,
+                steps: 1 << 2,
+                addr,
+                value: None,
+            }))
+        );
     }
 
     /// The I/O view's tracks are the project's, by name, every one: a

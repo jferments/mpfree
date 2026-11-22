@@ -32,6 +32,8 @@
 //! direction pingpong
 //! holds notes
 //! step 1/8T
+//! madefor mpfree.poly Poly
+//! madename 3 Cutoff
 //! touch 0:10 50:40
 //! note 0 240 36 100 100 - 1 0 2
 //! note 240 240 38 90 100 - 4 0 0 ramp:-40 slide
@@ -122,6 +124,12 @@
 //! a clip without it holds pad hits, as every clip saved before did. An
 //! older build skips it, and a word it doesn't know, and plays the notes
 //! as pads.
+//!
+//! A clip's `madefor <node> <name>` line, and a `madename <id> <name>`
+//! line for each control, say what instrument its instrument locks were
+//! made for (step sequencer refactor F1, [`crate::inst`]): written only
+//! while it has some. An older build skips them and plays its locks; this
+//! one plays them only on that kind of instrument.
 //!
 //! A mutated clip's `original` lines (sequencer S6, [`crate::mutate`])
 //! are the clip as it was before its first Mutate, which Restore puts
@@ -333,6 +341,14 @@ fn clip_body(s: &mut String, c: &Clip) {
     if c.step != crate::steps::DEFAULT_SIZE {
         if let Some(name) = crate::steps::size_name(c.step) {
             let _ = writeln!(s, "step {name}");
+        }
+    }
+    // What its instrument locks were made for (refactor F1). A node id is
+    // one word; one that isn't is not written, and its locks play.
+    if let Some(m) = c.made_for.as_ref().filter(|m| is_word(&m.node)) {
+        let _ = writeln!(s, "madefor {} {}", m.node, m.name);
+        for (id, name) in &m.params {
+            let _ = writeln!(s, "madename {id} {name}");
         }
     }
     // Pressure first: the notes name runs of it. Only what the notes and
@@ -773,6 +789,22 @@ pub fn from_text(text: &str) -> Result<Project, String> {
             ("holds", At::Clip(c, _)) => {
                 let word = w.next().ok_or_else(|| bad("holds"))?;
                 c.holds = crate::Holds::from_word(word).unwrap_or_default();
+            }
+            // What its instrument locks were made for (refactor F1).
+            ("madefor", At::Clip(c, _)) => {
+                let node = w.next().ok_or_else(|| bad("madefor"))?;
+                c.made_for = Some(crate::inst::Inst {
+                    node: node.to_string(),
+                    name: nth_rest(rest, 1).to_string(),
+                    params: Vec::new(),
+                });
+            }
+            ("madename", At::Clip(c, _)) => {
+                let id: u16 = num(w.next()).ok_or_else(|| bad("madename"))?;
+                let m = c.made_for.as_mut().ok_or_else(|| bad("madename"))?;
+                if m.param_name(id).is_none() {
+                    m.params.push((id, nth_rest(rest, 1).to_string()));
+                }
             }
             ("launch", At::Top) => p.launch = launch(&mut w).ok_or_else(|| bad("launch"))?,
             ("touch", At::Clip(c, _)) => {
@@ -1225,6 +1257,11 @@ fn flag(w: Option<&str>) -> Option<bool> {
 }
 
 /// The text after the first `n` words (a name with its spaces kept).
+/// Whether `s` is one word a line can hold (not empty, no white space).
+fn is_word(s: &str) -> bool {
+    !s.is_empty() && !s.contains(char::is_whitespace)
+}
+
 fn nth_rest(rest: &str, n: usize) -> &str {
     let mut s = rest;
     for _ in 0..n {
@@ -1922,6 +1959,45 @@ mod tests {
         assert_eq!(step(&text.replace("step 1/8T\n", "")), 240);
         assert_eq!(step(&text.replace("step 1/8T", "step 1/7")), 240);
         assert!(from_text(&text.replace("step 1/8T", "step")).is_err());
+    }
+
+    /// What a clip's instrument locks were made for (refactor F1) reads
+    /// back, names with spaces and all; a clip without has no lines; an
+    /// older file without them reads untagged; a name line with no
+    /// `madefor` before it, or no number, refuses the part.
+    #[test]
+    fn what_a_clips_locks_were_made_for_reads_back() {
+        use crate::inst::Inst;
+        use mpfree_param::OnTrack;
+        let mut p = full();
+        let c = p.tracks[0].slots[0].as_mut().unwrap();
+        c.locks
+            .push(Lock::new(0, None, RelAddr::new(OnTrack::Inst, 3), 0.5));
+        c.made_for = Some(Inst {
+            node: "mpfree.poly".into(),
+            name: "Poly synth".into(),
+            params: vec![(3, "Filter cutoff".into())],
+        });
+        let text = to_text(&p);
+        assert!(
+            text.contains("madefor mpfree.poly Poly synth\nmadename 3 Filter cutoff\n"),
+            "{text}"
+        );
+        let back = from_text(&text).unwrap();
+        assert_eq!(back.tracks[0].slots[0], p.tracks[0].slots[0]);
+        let old = text
+            .replace("madefor mpfree.poly Poly synth\n", "")
+            .replace("madename 3 Filter cutoff\n", "");
+        assert_eq!(
+            from_text(&old).unwrap().tracks[0].slots[0]
+                .as_ref()
+                .unwrap()
+                .made_for,
+            None
+        );
+        assert!(!to_text(&full()).contains("madefor"));
+        assert!(from_text(&text.replace("madefor mpfree.poly Poly synth\n", "")).is_err());
+        assert!(from_text(&text.replace("madename 3 ", "madename x ")).is_err());
     }
 
     /// A mutated clip keeps its original (S6), lanes and all, read back

@@ -55,6 +55,7 @@
 #![forbid(unsafe_code)]
 
 pub mod arrange;
+pub mod inst;
 pub mod loops;
 pub mod mutate;
 pub mod notes;
@@ -113,7 +114,7 @@ pub const MAX_TOUCH_POINTS: usize = 65536;
 pub const LOOPS: usize = 8;
 
 /// One note in a clip, in the clip's own ticks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Note {
     /// Start, from the clip's start: `0 <= tick < clip length`.
     pub tick: Tick,
@@ -931,6 +932,10 @@ pub struct Clip {
     pub original: Option<Box<Original>>,
     /// Whether its notes are pad hits or MIDI notes (step 5c).
     pub holds: Holds,
+    /// The instrument its instrument locks were made for, with the names
+    /// of the controls they lock (step sequencer refactor F1,
+    /// [`inst`]); None while it has none.
+    pub made_for: Option<inst::Inst>,
 }
 
 /// A clip's settings that are not its notes: how fast it plays, its own
@@ -1011,6 +1016,43 @@ pub enum ModelError {
     /// empty and its song material is its regions, in the audio tracks
     /// part.
     AudioTrack,
+}
+
+/// Take one item equal to each of `out` out of `from`, the first equal one
+/// left each time, as removing them one at a time would; the rest keep
+/// their order. For each item of `out`, whether one was found. One pass,
+/// so taking m items out of n costs n + m, not n × m; a short `out` goes
+/// one at a time, which is quicker for a few.
+pub fn take_out_each<T: Copy + Eq + std::hash::Hash>(from: &mut Vec<T>, out: &[T]) -> Vec<bool> {
+    if out.len() <= 8 {
+        return out
+            .iter()
+            .map(|x| match from.iter().position(|y| y == x) {
+                Some(i) => {
+                    from.remove(i);
+                    true
+                }
+                None => false,
+            })
+            .collect();
+    }
+    // Each value asked for: how many of its asks are met, and which asks
+    // they are, in order.
+    let mut wanted: std::collections::HashMap<T, (usize, Vec<usize>)> =
+        std::collections::HashMap::with_capacity(out.len());
+    for (i, x) in out.iter().enumerate() {
+        wanted.entry(*x).or_default().1.push(i);
+    }
+    let mut found = vec![false; out.len()];
+    from.retain(|x| match wanted.get_mut(x) {
+        Some((met, asks)) if *met < asks.len() => {
+            found[asks[*met]] = true;
+            *met += 1;
+            false
+        }
+        _ => true,
+    });
+    found
 }
 
 impl Clip {
@@ -1104,6 +1146,7 @@ impl Clip {
             step: steps::DEFAULT_SIZE,
             original: None,
             holds: Holds::Hits,
+            made_for: None,
         }
     }
 
@@ -1174,6 +1217,16 @@ impl Clip {
             }
             None => false,
         }
+    }
+
+    /// Remove one note equal to each of `notes`, as [`Clip::remove_note`]
+    /// would one at a time, but in one pass however many there are (an
+    /// edit to all 8,192 notes): how many it found.
+    pub fn remove_notes(&mut self, notes: &[Note]) -> usize {
+        take_out_each(&mut self.notes, notes)
+            .iter()
+            .filter(|&&found| found)
+            .count()
     }
 
     /// Add one lock. A lock out of range (its tick, its sound, a value
@@ -1413,6 +1466,11 @@ pub struct Track {
     pub pad_solos: u128,
     /// Its clips by row, 0 to [`ROWS`] - 1 ([`Rows`]).
     pub slots: Rows,
+    /// The instrument it plays now, every control named (step sequencer
+    /// refactor F1, [`inst`]): told by the app, never saved, and left out
+    /// of comparisons. None when not told (a kit, MIDI out), and then its
+    /// clips' instrument locks play.
+    pub plays: inst::Plays,
 }
 
 /// A track's clips by row number (the Arrange refactor's 1.2): row `r`'s
@@ -1662,6 +1720,7 @@ impl Track {
             pad_mutes: 0,
             pad_solos: 0,
             slots: Default::default(),
+            plays: inst::Plays::default(),
         }
     }
 
@@ -1705,6 +1764,7 @@ impl Track {
             pad_mutes,
             pad_solos,
             slots,
+            plays: _,
         } = self;
         *dest == other.dest
             && *swing == other.swing

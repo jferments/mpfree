@@ -3,14 +3,15 @@
 //! were played on.
 //!
 //! **Several armed tracks** (the MPC's SHIFT + a track's arm): the view's
-//! other armed tracks ([`PlayView::set_also`]) each get a notes-only
-//! recorder of their own ([`Recorder::also`]), fed that track's notes
-//! (routed keys) and given the armed track's recorder's take number before
-//! each period ([`Recorder::set_take`]), so one take's notes on every track
-//! carry one number and one undo takes them back. It records notes into
-//! its track's playing clip as below, with that track's record quantise,
-//! cues and replace pass; knob locks, gestures and pad pressure stay the
-//! armed track's.
+//! other armed tracks ([`PlayView::set_also`]) each get a recorder of
+//! their own ([`Recorder::also`]), fed that track's notes and their
+//! pressure (routed keys) and given the armed track's recorder's take
+//! number before each period ([`Recorder::set_take`]), so one take's notes
+//! on every track carry one number and one undo takes them back. It
+//! records notes, and the pressure on them (step sequencer refactor E3),
+//! into its track's playing clip as below, with that track's record
+//! quantise, cues and replace pass; knob locks and gestures stay the armed
+//! track's.
 //!
 //! The control thread arms a track in the play view
 //! ([`PlayView::set_armed`]). The audio thread feeds the [`Recorder`] each
@@ -132,6 +133,9 @@ pub const MOVE_ROOM: usize = 2 * MOVE_POINTS + 8;
 pub const MAX_TOUCH_INPUT: usize = 512;
 /// Notes keeping pressure at once: held, or waiting for the playhead.
 pub const TOUCH_BUFS: usize = 32;
+/// The same on another armed track ([`Recorder::also`], step sequencer
+/// refactor E3): a second keyboard's chord, in an eighth of the room.
+pub const ALSO_TOUCH_BUFS: usize = 8;
 /// Pressure values one note keeps; later ones are counted as dropped.
 pub const TOUCH_POINTS: usize = 2048;
 /// A pressure value this many steps from the last one kept is kept at once.
@@ -364,17 +368,19 @@ impl Recorder {
         )
     }
 
-    /// A notes-only recorder for the `k`th of the view's other armed
-    /// tracks ([`PlayView::set_also`], [`PlayView::also_track`]), for a
-    /// take over several tracks. It records the notes the host feeds it
-    /// ([`Recorder::input`]: that track's routed keys) into that track's
-    /// playing clip, as the armed track's recorder does, with its record
-    /// quantise, cues and replace pass. It keeps no knob locks, gestures or
-    /// pressure, so it has no room for them (about 1 % of
-    /// [`Recorder::new`]'s): pressure, moves and knob moves fed to it are
-    /// counted as dropped. With no `k`th track it records nothing.
+    /// A recorder of notes and their pressure for the `k`th of the view's
+    /// other armed tracks ([`PlayView::set_also`],
+    /// [`PlayView::also_track`]), for a take over several tracks. It
+    /// records the notes the host feeds it ([`Recorder::input`]: that
+    /// track's routed keys) into that track's playing clip, as the armed
+    /// track's recorder does, with its record quantise, cues and replace
+    /// pass, and the pressure on them the same way (step sequencer
+    /// refactor E3), with room for [`ALSO_TOUCH_BUFS`] notes at once. It
+    /// keeps no knob locks or gestures, so it has no room for them: moves
+    /// and knob moves fed to it are counted as dropped. With no `k`th track
+    /// it records nothing.
     pub fn also(k: usize) -> Recorder {
-        Recorder::make(Which::Also(k), 0, 0, 0)
+        Recorder::make(Which::Also(k), 0, 0, ALSO_TOUCH_BUFS * TOUCH_POINTS)
     }
 
     fn make(which: Which, points: usize, taken_points: usize, touch: usize) -> Recorder {
@@ -439,10 +445,8 @@ impl Recorder {
     /// [`MAX_TOUCH_INPUT`], so a flood of pressure never crowds out notes;
     /// a value on the same offset as a note comes after it.
     pub fn input(&mut self, offset: u32, event: Event) {
-        // A notes-only recorder keeps no pressure or locks.
-        if self.which != Which::Armed
-            && matches!(event, Event::Pressure { .. } | Event::Lock { .. })
-        {
+        // Another armed track's recorder keeps no locks.
+        if self.which != Which::Armed && matches!(event, Event::Lock { .. }) {
             self.dropped += 1;
             return;
         }
@@ -770,7 +774,8 @@ impl Recorder {
         self.held[n].kept = value;
         let mut buf = h.buf;
         if buf == NO_BUF {
-            match (0..TOUCH_BUFS).find(|&k| self.bufs_used & (1 << k) == 0) {
+            let bufs = (self.touch.len() / TOUCH_POINTS).min(TOUCH_BUFS);
+            match (0..bufs).find(|&k| self.bufs_used & (1 << k) == 0) {
                 Some(k) => {
                     self.bufs_used |= 1 << k;
                     self.touch_len[k] = 0;

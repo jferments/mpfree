@@ -906,7 +906,14 @@ impl PlayView {
                 return Err(CompileError::Model(ModelError::BadPlacement));
             };
             let swing = k.swing.map(|(grid, amount)| Swing { grid, amount });
-            self.song_clips.push(view_of(clip, swing, k.slot, 0, 0));
+            // A cell's clip plays as its own track's instrument would; a
+            // song clip of its own, shared by lanes, plays all its locks.
+            let plays = k
+                .cell
+                .and_then(|(t, _)| project.tracks.get(t))
+                .and_then(|t| t.plays.get());
+            self.song_clips
+                .push(view_of(clip, swing, plays, k.slot, 0, 0));
         }
         self.song_keys = keys;
         for (track, key, mut region) in blocks {
@@ -1350,17 +1357,33 @@ fn clip_view(
         .filter(|_| slot < ROWS)
         .ok_or(CompileError::EmptySlot { track, slot })?;
     clip.check().map_err(CompileError::Model)?;
-    Ok(view_of(clip, t.swing, slot, origin, start))
+    Ok(view_of(clip, t.swing, t.plays.get(), slot, origin, start))
 }
 
-/// `clip` compiled, named `slot`, on a track whose swing is `track_swing`.
+/// `clip` compiled, named `slot`, on a track whose swing is `track_swing`
+/// and that plays `plays`: its instrument locks and move lanes made for
+/// another instrument are left out (step sequencer refactor F1,
+/// `mpfree_seq::inst`).
 pub(crate) fn view_of(
     clip: &Clip,
     track_swing: Option<Swing>,
+    plays: Option<&mpfree_seq::inst::Inst>,
     slot: usize,
     origin: Tick,
     start: Tick,
 ) -> ClipView {
+    let silent = clip.inst_silent(plays).is_some();
+    let moves = if silent {
+        let mut m = clip.moves.clone();
+        for lane in clip.moves.lanes() {
+            if !clip.lane_plays(lane, plays) {
+                m.remove(lane.target);
+            }
+        }
+        m
+    } else {
+        clip.moves.clone()
+    };
     let mut view = ClipView {
         slot,
         origin,
@@ -1372,7 +1395,7 @@ pub(crate) fn view_of(
         swing: clip.swing.or(track_swing),
         notes: Vec::new(),
         locks: Vec::new(),
-        moves: clip.moves.clone(),
+        moves,
         touch: clip.touch.clone(),
         stamp: 0,
         program: clip.program,
@@ -1382,7 +1405,12 @@ pub(crate) fn view_of(
     };
     view.notes = clip.notes.iter().map(|n| view.note_view(n)).collect();
     view.notes.sort_by(|a, b| a.local.total_cmp(&b.local));
-    view.locks = clip.locks.iter().map(|l| view.lock_view(l)).collect();
+    view.locks = clip
+        .locks
+        .iter()
+        .filter(|l| !silent || clip.lock_plays(l, plays))
+        .map(|l| view.lock_view(l))
+        .collect();
     view.locks.sort_by(|a, b| a.local.total_cmp(&b.local));
     view.stamp = stamp_of(&view);
     view
@@ -2013,6 +2041,57 @@ mod tests {
     use super::*;
     use mpfree_seq::{Clip, Note, Quantise, Track};
 
+    /// Step sequencer refactor F1: a clip's locks and move lanes on the
+    /// track's instrument, made for Poly, play while the track plays
+    /// Poly (or the app hasn't said), and are left out on FM; its lock on
+    /// the strip plays either way.
+    #[test]
+    fn instrument_locks_made_for_another_instrument_are_left_out() {
+        use mpfree_seq::inst::{Inst, Plays};
+        use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_seq::Lock;
+        let named = |node: &str, name: &str, p: &str| Inst {
+            node: node.into(),
+            name: name.into(),
+            params: vec![(3, p.into())],
+        };
+        let poly = named("mpfree.poly", "Poly", "Cutoff");
+        let mut p = Project::new();
+        let mut t = Track::new("bass", 0);
+        let mut c = Clip::new("line", 960);
+        let cutoff = RelAddr::new(OnTrack::Inst, 3);
+        c.locks.push(Lock::new(0, None, cutoff, 0.5));
+        c.locks
+            .push(Lock::new(240, None, RelAddr::new(OnTrack::Strip, 0), -6.0));
+        let ramp = [(0.0, 0.2, Kind::Ramp), (100.0, 0.7, Kind::Ramp)];
+        c.moves
+            .put(Target::Track(cutoff), Map::linear(0.0, 1.0), &ramp, 960)
+            .unwrap();
+        c.made_for = Some(poly.clone());
+        t.slots[0] = Some(c);
+        p.tracks.push(t);
+        let launch = Launch {
+            track: 0,
+            slot: 0,
+            origin: 0,
+            start: 0,
+        };
+        let shown = |p: &Project| {
+            let v = PlayView::compile(p, &[launch]).unwrap();
+            let c = v.tracks[0].clip.as_ref().unwrap();
+            (c.locks.len(), c.moves.lanes().len())
+        };
+        assert_eq!(shown(&p), (2, 1), "not told: everything plays");
+        p.tracks[0].plays = Plays(Some(std::sync::Arc::new(poly)));
+        assert_eq!(shown(&p), (2, 1));
+        let fm = named("mpfree.fm", "FM", "Ratio");
+        p.tracks[0].plays = Plays(Some(std::sync::Arc::new(fm)));
+        assert_eq!(shown(&p), (1, 0), "only the strip's lock");
+        let v = PlayView::compile(&p, &[launch]).unwrap();
+        let only = &v.tracks[0].clip.as_ref().unwrap().locks[0];
+        assert_eq!(only.src.addr.on, OnTrack::Strip);
+    }
+
     fn project() -> Project {
         let mut p = Project::new();
         let mut t = Track::new("drums", 3);
@@ -2201,7 +2280,7 @@ mod tests {
         let map = Map::linear(0.0, 1.0);
         let gesture = |a: f64, b: f64| [(a, 0.2, Kind::Ramp), (b, 0.7, Kind::Ramp)];
         clip.moves.put(cut, map, &gesture(0.0, 100.0), 960).unwrap();
-        let fresh = |c: &Clip| view_of(c, None, 2, 0, 0);
+        let fresh = |c: &Clip| view_of(c, None, None, 2, 0, 0);
         let mut v = fresh(&clip);
         v.make_room(4, 4);
         let mut stamps = vec![v.stamp];
@@ -2277,14 +2356,14 @@ mod tests {
             c.moves = lane(cut, map, &ramp);
             c
         };
-        let stamp = |c: &Clip| view_of(c, None, 2, 0, 0).stamp;
+        let stamp = |c: &Clip| view_of(c, None, None, 2, 0, 0).stamp;
         assert_eq!(
             stamp(&base()),
             stamp(&base()),
             "the same clip, the same stamp"
         );
         assert_eq!(
-            view_of(&base(), None, 5, 960, 3840).stamp,
+            view_of(&base(), None, None, 5, 960, 3840).stamp,
             stamp(&base()),
             "where it plays is not in it"
         );

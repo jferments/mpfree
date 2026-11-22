@@ -160,7 +160,42 @@ pub struct StepClip {
     /// Each row's own locks: row, step, parameter and value, for the
     /// Q-Links' cards of a held step.
     pub lock_values: Vec<(u8, usize, RelAddr, f32)>,
+    /// Its instrument locks made for another instrument (step sequencer
+    /// refactor F1, `mpfree_seq::inst`): kept, not played. None while
+    /// they play.
+    pub silent: Option<SilentLocks>,
 }
+
+/// A clip's instrument locks that don't play on its track's instrument
+/// now (step sequencer refactor F1): what they were made for, which
+/// controls, and what the track plays now.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SilentLocks {
+    pub made_for: mpfree_seq::inst::Inst,
+    /// The controls (on `made_for`) whose locks don't play.
+    pub params: Vec<u16>,
+    /// The name of the instrument the track plays now ("FM").
+    pub now: String,
+}
+
+impl SilentLocks {
+    /// What a silent lane on control `id` says: "made for Poly's Cutoff,
+    /// not playing on FM".
+    pub fn line(&self, id: u16) -> String {
+        format!(
+            "made for {}, not playing on {}",
+            self.made_for.control(id),
+            self.now
+        )
+    }
+}
+
+/// An instrument a track plays, as the app knows it (step sequencer
+/// refactor F1): its node's info and controls, both static.
+pub type InstRef = (
+    &'static mpfree_node::NodeInfo,
+    &'static [mpfree_node::ParamInfo],
+);
 
 impl StepClip {
     /// The steps of `pitch` (empty when the clip has no such row).
@@ -1948,6 +1983,13 @@ impl TimeHost {
     /// their period ([`Pads::out_ahead`]). All 0 plays nothing ahead.
     pub fn set_ahead(&mut self, frames: &[u32]) {
         self.audio.set_ahead(frames);
+    }
+
+    /// The instrument each track plays now, by place (step sequencer
+    /// refactor F1): a clip's instrument locks play only on the kind they
+    /// were made for. Cheap when nothing changed; told every period.
+    pub fn set_instruments(&mut self, plays: &[Option<InstRef>]) {
+        self.with(|c| c.set_instruments(plays));
     }
 
     /// The tracks whose instrument plays notes (a track's own synth, or
@@ -5355,6 +5397,96 @@ mod tests {
         );
         let clip = h.control.project.tracks[2].slots[0].as_ref().unwrap();
         assert!(clip.notes.is_empty() && clip.locks.is_empty());
+    }
+
+    /// Step sequencer refactor F1: a clip's lock on its synth's control
+    /// plays only while the track plays the kind of synth it was made
+    /// for. Made on Poly, it is left out of what plays on FM, kept, and
+    /// the Steps say why; a new lock (or a recorded move) for FM stays
+    /// out while it is there; back on Poly it plays; taken off, the clip
+    /// forgets Poly and FM's lock goes in.
+    #[test]
+    fn a_synth_lock_plays_only_on_the_synth_it_was_made_for() {
+        use mpfree_node::Node;
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_seq::steps::LINE;
+        let poly = crate::synth::engine_node("mpfree.poly", RATE).unwrap();
+        let fm = crate::synth::engine_node("mpfree.fm", RATE).unwrap();
+        let of = |n: &dyn Node| -> Option<InstRef> { Some((n.info(), n.params())) };
+        let cutoff = poly.params().iter().find(|p| p.name == "Cutoff").unwrap();
+        let addr = RelAddr::new(OnTrack::Inst, cutoff.id);
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.control.project.tracks[0].slots[0] = Some(Clip::new("Bass", 3840));
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        h.set_instruments(&[of(&*poly)]);
+        let lock = |value| StepAction::Lock {
+            pad: LINE,
+            steps: 1,
+            addr,
+            value,
+        };
+        h.step_action(lock(Some(0.4))).unwrap();
+        let made = |h: &TimeHost| {
+            let c = h.control.project.tracks[0].slots[0].as_ref().unwrap();
+            c.made_for.clone().map(|m| (m.node, m.name, m.params))
+        };
+        assert_eq!(
+            made(&h),
+            Some((
+                "mpfree.poly".into(),
+                "Poly".into(),
+                vec![(cutoff.id, "Cutoff".into())]
+            ))
+        );
+        let played = |h: &mut TimeHost, pads: &mut Fake| {
+            let mut out = Vec::new();
+            for _ in 0..BAR / u64::from(PERIOD) {
+                h.period(PERIOD, pads);
+                out.extend_from_slice(h.locks());
+            }
+            out.iter().any(|&(_, a, _)| a == addr.on(0))
+        };
+        assert!(played(&mut h, &mut pads), "on Poly it plays");
+        h.set_instruments(&[of(&*fm)]);
+        assert!(!played(&mut h, &mut pads), "on FM it doesn't");
+        let c = h.control.project.tracks[0].slots[0].as_ref().unwrap();
+        assert_eq!(c.locks.len(), 1, "kept");
+        let silent = h.steps().clip.unwrap().silent.unwrap();
+        assert_eq!(silent.params, vec![cutoff.id]);
+        assert_eq!(
+            silent.line(cutoff.id),
+            "made for Poly's Cutoff, not playing on FM"
+        );
+        assert_eq!(
+            h.step_action(lock(Some(0.7))),
+            Err("steps: this pattern's Poly locks don't play on FM: take them off first".into())
+        );
+        // A move of FM's control recorded into it stays out, counted.
+        h.act(TimeAction::Transport(Command::Record)).unwrap();
+        run(&mut h, &mut pads, 3 * BAR, &[]);
+        assert_eq!(h.info().state, State::Recording);
+        h.knob(0, addr.on(0), 0.9);
+        run(&mut h, &mut pads, 3 * BAR + BAR / 2, &[]);
+        h.command(Command::Stop);
+        run(&mut h, &mut pads, 4 * BAR, &[]);
+        let c = h.control.project.tracks[0].slots[0].as_ref().unwrap();
+        assert_eq!(c.locks.len(), 1);
+        assert_eq!(h.control.inst_refused(), 1);
+        assert!(h
+            .describe()
+            .contains("1 recorded moves left out of patterns"));
+        h.command(Command::Play);
+        h.set_instruments(&[of(&*poly)]);
+        assert!(played(&mut h, &mut pads), "back on Poly it plays");
+        assert_eq!(h.steps().clip.unwrap().silent, None);
+        // Taken off (allowed on any synth), the clip forgets Poly.
+        h.set_instruments(&[of(&*fm)]);
+        h.step_action(lock(None)).unwrap();
+        assert_eq!(made(&h), None);
+        h.step_action(lock(Some(0.7))).unwrap();
+        assert_eq!(made(&h).map(|m| m.1), Some("FM".to_string()));
     }
 
     /// Instrument redesign, after step 4d: a clip's lock on "this track's
@@ -9087,11 +9219,15 @@ mod tests {
     /// readies a clip on each, the keys a route plays on each armed track
     /// record into its own clip, a routed track that isn't armed only
     /// plays, and one UNDO takes the take back on every track. The arm
-    /// can't change while the take records.
+    /// can't change while the take records. A track that records pressure
+    /// keeps its keys' pressure on their notes (refactor E3); one that
+    /// doesn't leaves it out, as the armed track's pads.
     #[test]
     fn armed_tracks_record_their_routed_keys_in_one_take() {
         let mut h = TimeHost::new(RATE, 120.0).unwrap();
         let mut pads = Fake::default();
+        // Track 3 doesn't record pressure (a track does unless told).
+        assert!(h.set_record_touch(2, false));
         h.act(TimeAction::Arm(Some(0))).unwrap();
         assert_eq!(
             h.act(TimeAction::ArmAlso(1 << 1 | 1 << 2 | 1 << 0))
@@ -9120,6 +9256,7 @@ mod tests {
             (BAR + 4500, 1, Event::Pressure { note: 5, value: 40 }),
             (BAR + 6000, 1, Event::NoteOff { note: 5 }),
             (BAR + 3000, 2, on(7)),
+            (BAR + 5000, 2, Event::Pressure { note: 7, value: 70 }),
             (BAR + 9000, 2, Event::NoteOff { note: 7 }),
             (BAR + 4000, 3, on(1)),
             (BAR + 5000, 3, Event::NoteOff { note: 1 }),
@@ -9148,11 +9285,17 @@ mod tests {
             notes(&h, 3).is_empty(),
             "a track that isn't armed only plays"
         );
-        // Pressure on another armed track isn't recorded yet: counted with
-        // the pressure values lost, and said on the status line.
-        assert_eq!(h.touch_dropped(), 1);
+        // Track 2 records pressure: its note keeps it. Track 3 doesn't.
+        let touch = |h: &TimeHost, t: usize| {
+            let c = h.control.project.tracks[t].slots.clips().next().unwrap();
+            let pts = c.touch_of(&c.notes[0]);
+            pts.iter().map(|p| p.value).collect::<Vec<u8>>()
+        };
+        assert_eq!(touch(&h, 1), vec![40]);
+        assert_eq!(touch(&h, 2), Vec::<u8>::new());
+        assert_eq!(h.touch_dropped(), 0, "nothing lost");
         let line = h.describe();
-        assert!(line.contains("1 pressure values lost"), "{line}");
+        assert!(line.contains("0 pressure values lost"), "{line}");
         assert!(!line.contains("left out of a take"), "{line}");
         let st = h.state();
         assert_eq!(st.done.len(), 1, "one take");
