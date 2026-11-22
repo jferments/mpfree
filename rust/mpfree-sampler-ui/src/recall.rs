@@ -23,10 +23,10 @@ use std::cell::Cell;
 
 use mpfree_sampler::record::Input;
 use mpfree_ui::qlink::{QLinkCard, QLinkColumn};
-use mpfree_ui::{Align, Color, FontId, PaintCx, Rect, Ui, Widget};
+use mpfree_ui::{Align, FontId, PaintCx, Rect, Ui, Widget};
 
 use crate::panel::{Control, Item, Look, Panel, Section};
-use crate::rec_widgets::{Strip, REC_COLOR};
+use crate::rec_widgets::Strip;
 use crate::wave_tab::{duration_text, pad_label};
 use crate::widgets::{Setting, SettingList};
 
@@ -612,7 +612,7 @@ impl Widget for RecallView {
         self.painted.set(Some(self.look(r)));
         cx.panel(r);
         let [title, overview, numbers, caption, zoom, note] = RecallView::areas(r);
-        let rec = Color::rgb(REC_COLOR);
+        let rec = t.record();
         let small = t.size_small;
         // The title, and the REC chip on the right.
         let w = cx.text(
@@ -628,12 +628,13 @@ impl Widget for RecallView {
         if !self.chip.is_empty() {
             let cw = cx.measure(FontId::Bold, small, &self.chip) + 28;
             let chip = Rect::new(title.right() - cw, title.y - 2, cw, title.h + 4);
-            cx.canvas.fill_round_rect(chip, 8, rec.with_alpha(40));
-            cx.canvas.stroke_round_rect(chip, 8, 2, rec);
+            cx.canvas
+                .fill_round_rect(chip, t.round(8), rec.with_alpha(40));
+            cx.canvas.stroke_round_rect(chip, t.round(8), 2, rec);
             cx.text(FontId::Bold, small, chip, Align::Center, t.text, &self.chip);
         }
         // The two minutes: each column's reach, the bar lines, the bracket.
-        cx.canvas.fill_round_rect(overview, 6, t.bg);
+        cx.canvas.fill_round_rect(overview, t.round(6), t.bg);
         let mid = overview.y + overview.h / 2;
         let half = (overview.h / 2 - 3).max(1) as f32;
         let per = self.strip.per();
@@ -689,7 +690,7 @@ impl Widget for RecallView {
             &self.caption,
         );
         // The bracket drawn large.
-        cx.canvas.fill_round_rect(zoom, 6, t.bg);
+        cx.canvas.fill_round_rect(zoom, t.round(6), t.bg);
         if !self.zoom.is_empty() {
             let mid = zoom.y + zoom.h / 2;
             let half = (zoom.h / 2 - 8).max(1) as f32;

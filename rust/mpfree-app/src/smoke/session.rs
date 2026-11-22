@@ -1749,6 +1749,9 @@ impl Session {
         if let Some(line) = self.tracks.take_note() {
             self.out.note(&line);
         }
+        if let Some(what) = self.tracks.take_left_out() {
+            self.out.left_out(what);
+        }
         if std::mem::take(&mut self.save_asked) {
             if self.mix.opening() || self.looper.opening() || self.tracks.opening() {
                 self.out

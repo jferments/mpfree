@@ -189,6 +189,9 @@ pub struct TrackHost {
     pending: Option<Saved>,
     /// A line for the log from the open.
     note: Option<String>,
+    /// What the open couldn't put back, for the screen
+    /// ([`TrackHost::take_left_out`]).
+    left_out: Option<String>,
     /// Each track's level bar, 0 to 1 (see [`meter`]), and the bars last
     /// given to the screen.
     meter: [f32; MAX_TRACKS],
@@ -235,6 +238,7 @@ impl TrackHost {
             clearing: false,
             pending: None,
             note: None,
+            left_out: None,
             meter: [0.0; MAX_TRACKS],
             meter_shown: [0.0; MAX_TRACKS],
         }
@@ -549,11 +553,19 @@ impl TrackHost {
         self.note.take()
     }
 
+    /// What the open couldn't put back (takes or tracks with no room), a
+    /// few words for the screen, once: the project isn't saved over.
+    pub fn take_left_out(&mut self) -> Option<String> {
+        self.left_out.take()
+    }
+
     /// The open's next step, each period: empty the tracks once nothing
     /// records, then put the waiting part in.
     fn tend_open(&mut self) {
         if self.clearing {
-            if !self.host.tracks.clear() {
+            // The host's clear: a fit or read still coming for the old
+            // takes is dropped, never let near the project's.
+            if !self.host.clear() {
                 return;
             }
             self.clearing = false;
@@ -598,6 +610,7 @@ impl TrackHost {
                 plural(takes)
             ),
             Err(e) => {
+                self.left_out = Some("part of its audio tracks".to_string());
                 format!("project: {e} (a take left out may not fit in Prefs > Audio track memory)")
             }
         });

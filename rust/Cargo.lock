@@ -870,8 +870,10 @@ dependencies = [
  "mpfree-seq",
  "mpfree-simd",
  "mpfree-synth",
+ "mpfree-time-ui",
  "mpfree-track",
  "mpfree-transport",
+ "mpfree-ui",
 ]
 
 [[package]]
@@ -1350,6 +1352,13 @@ dependencies = [
 [[package]]
 name = "mpfree-store"
 version = "0.1.0"
+
+[[package]]
+name = "mpfree-stream"
+version = "0.1.0"
+dependencies = [
+ "mpfree-stream",
+]
 
 [[package]]
 name = "mpfree-stretch"

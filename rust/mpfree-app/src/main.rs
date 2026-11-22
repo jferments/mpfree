@@ -18,7 +18,7 @@
 //!   setup --seconds N  Akai's session and setup, replayed byte for byte
 //!   drums --seconds N [--gain-db G]
 //!                      plays the first kit in kits.bin from the pads
-//!   play --seconds N [--gain-db G] [--kits FILE] [--sound-cores MODE]
+//!   play --seconds N [--gain-db G] [--kits FILE] [--sound-cores MODE] [--time-thread]
 //!                      the pad player: Akai's session and setup, then every kit
 //!                      in kits.bin, picked with the wheel or the screen, played
 //!                      from the pads or the screen, level on Q-Link 1 (at most
@@ -31,6 +31,7 @@
 //!                      the markers; Chop: slices put on the kit's pads; edits
 //!                      stay in memory); STOP ends it
 //!   app [--gain-db G] [--kits FILE] [--keep-screen] [--data DIR] [--sound-cores MODE]
+//!       [--time-thread]
 //!                      the same pad player as a program that starts at power-on
 //!                      (the test stick's mpfree-app service) and runs until the
 //!                      power goes off: a loading page with a progress bar while
@@ -59,6 +60,11 @@
 //! lanes on core 2 for half the drum voices and part of the mixer's
 //! inserts, or (a test) those plus the synth on a lane on core 1 (cores.rs).
 //! It changes only this program's threads.
+//!
+//! `--time-thread` (play and app) runs the time engine's editing side (the
+//! clips, the song, the takes and every compile) on a thread of its own
+//! instead of the audio thread (Arrange 2.6b, time-threads.md "Apart"). Off
+//! until a device round has compared the two.
 //!
 //! The screen is MPFree's GUI (crate mpfree-ui, screens in gui.rs). Every line
 //! also goes to stdout, which the workstation shows, and to the report file.
@@ -232,6 +238,9 @@ struct Options {
     /// Where the sound runs for this run (`play` and `app`; cores.rs);
     /// else Prefs' saved "Sound cores".
     sound_cores: Option<cores::SoundCores>,
+    /// The time engine's control half on a thread of its own (`play` and
+    /// `app`; Arrange 2.6b). Off until a device round has compared it.
+    time_thread: bool,
     /// Draw the screen on the GPU, in this program of its own
     /// (`mpfree-gpu-screen`; `play` and `app`; drawing.rs). Off until a
     /// device round has checked it; any failure draws in software again.
@@ -293,6 +302,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         patterns: None,
         data: None,
         sound_cores: None,
+        time_thread: false,
         gpu_screen: None,
         power_request: None,
         script: None,
@@ -337,6 +347,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--theme" => o.theme = Some(value()?),
             "--kits" => o.kits = PathBuf::from(value()?),
             "--keep-screen" => o.keep_screen = true,
+            "--time-thread" => o.time_thread = true,
             "--patterns" => o.patterns = Some(PathBuf::from(value()?)),
             "--data" => o.data = Some(PathBuf::from(value()?)),
             "--gpu-screen" => o.gpu_screen = Some(PathBuf::from(value()?)),
@@ -402,6 +413,9 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     }
     if o.gpu_screen.is_some() && o.command != "app" && o.command != "play" {
         return Err("--gpu-screen goes with app or play".to_string());
+    }
+    if o.time_thread && o.command != "app" && o.command != "play" {
+        return Err("--time-thread goes with app or play".to_string());
     }
     Ok(o)
 }
@@ -534,6 +548,17 @@ impl Out {
         let _ = io::stdout().flush();
         if let Some(c) = self.console.as_mut() {
             c.push(line);
+        }
+    }
+
+    /// Something of the project just opened that the audio loop couldn't
+    /// put back, for the screen ([`gui::ToUi::LeftOut`]): the project
+    /// isn't saved over. Allocates nothing more than the line already did.
+    fn left_out(&mut self, what: String) {
+        if let Some(s) = self.sink.as_ref() {
+            if s.try_send(gui::ToUi::LeftOut(what)).is_err() {
+                self.dropped += 1;
+            }
         }
     }
 
@@ -2545,9 +2570,17 @@ fn mute_key(
 ) -> String {
     match (tap.keys, no_mutes) {
         (app::MuteKeys::Off, _) => String::new(),
-        (app::MuteKeys::Tracks, _) => time
-            .mute_or_solo(tap.bank * 16 + pad, tap.wait, tap.solo)
-            .unwrap_or_else(|e| format!("track mute: {e}")),
+        (app::MuteKeys::Tracks, _) => {
+            let say = time::Say::Note {
+                ok: "",
+                err: "track mute: ",
+            };
+            match time.mute_or_solo_then(tap.bank * 16 + pad, tap.wait, tap.solo, say) {
+                Some(r) => r.unwrap_or_else(|e| format!("track mute: {e}")),
+                // Apart, said when the answer comes.
+                None => String::new(),
+            }
+        }
         (app::MuteKeys::Pads, Some(why)) => why,
         (app::MuteKeys::Pads, None) => {
             match time.pad_mute_or_solo(track, page * 16 + pad, tap.wait, tap.solo) {
@@ -6455,41 +6488,81 @@ fn time_action(
         }
         _ => None,
     };
+    let say = match waiting {
+        Some(leader) => time::Say::Waiting(leader),
+        None if erase => time::Say::Tell,
+        None if undo => time::Say::Undo,
+        None => time::Say::Note {
+            ok: "time: ",
+            err: "time: ",
+        },
+    };
     let r = match a {
         // The scene morph runs on the mixer's mod engine.
         TimeAction::MorphRows { .. }
         | TimeAction::Morph(_)
         | TimeAction::SnapBack
         | TimeAction::KeepMorph
-        | TimeAction::SaveScene(_) => time.morph(a, &mut mix.modu, &mix.mixer),
-        _ => time.act(a),
+        | TimeAction::SaveScene(_) => Some(time.morph(a, &mut mix.modu, &mix.mixer)),
+        // Apart (--time-thread), the action goes to the editing side's
+        // thread and what it says comes back later ([`time_said`]).
+        _ => time.act_then(a, say.clone()),
     };
-    // The note editor opened or closed: the Sequencer's Notes view follows.
-    let fx = app.set_notes_open(time.editing());
-    if let (Ok(line), Some(leader)) = (&r, waiting) {
-        out.note(&format!("time: {line}"));
-        let mut fx = fx;
-        fx.push(app::Effect::Tell(format!(
-            "Waiting for clock: PLAY starts when {leader} starts"
-        )));
-        return fx;
-    }
-    match r {
-        Ok(line) | Err(line) if erase => {
-            let mut fx = fx;
-            fx.push(app::Effect::Tell(line));
-            return fx;
-        }
-        Ok(line) | Err(line) if undo => {
-            let mut fx = fx;
-            fx.push(app::Effect::Tell(undo_said(&line)));
-            return fx;
-        }
-        Ok(line) if !line.is_empty() => out.note(&format!("time: {line}")),
-        Ok(_) => {}
-        Err(e) => out.note(&format!("time: {e}")),
+    // The note editor opened or closed: the Sequencer's Notes view
+    // follows (apart, again when the answer comes).
+    let mut fx = app.set_notes_open(time.editing());
+    if let Some(r) = r {
+        fx.extend(time_said(out, say, r));
     }
     fx
+}
+
+/// What the time engine answered, said as the caller asked (`say`): the
+/// same words whether the answer came at once (together) or later from
+/// the editing side's own thread (apart, [`time::TimeHost::take_said`]).
+fn time_said(out: &mut Out, say: time::Say, r: Result<String, String>) -> Vec<app::Effect> {
+    match (say, r) {
+        (time::Say::Waiting(leader), Ok(line)) => {
+            out.note(&format!("time: {line}"));
+            vec![app::Effect::Tell(format!(
+                "Waiting for clock: PLAY starts when {leader} starts"
+            ))]
+        }
+        (time::Say::Waiting(_), Err(e)) => {
+            out.note(&format!("time: {e}"));
+            Vec::new()
+        }
+        (time::Say::Tell, Ok(line) | Err(line)) => vec![app::Effect::Tell(line)],
+        (time::Say::Undo, Ok(line) | Err(line)) => vec![app::Effect::Tell(undo_said(&line))],
+        (time::Say::Note { ok, .. }, Ok(line)) => {
+            if !line.is_empty() {
+                out.note(&format!("{ok}{line}"));
+            }
+            Vec::new()
+        }
+        (time::Say::Note { err, .. }, Err(e)) => {
+            out.note(&format!("{err}{e}"));
+            Vec::new()
+        }
+        (time::Say::NoteOrTell { .. }, Ok(line)) => {
+            if !line.is_empty() {
+                out.note(&line);
+            }
+            Vec::new()
+        }
+        (time::Say::NoteOrTell { err }, Err(e)) => vec![app::Effect::Tell(format!("{err}{e}"))],
+    }
+}
+
+/// The time engine's editing side onto a thread of its own
+/// (`--time-thread`), or left on the audio thread with why, said.
+fn time_apart(out: &mut Out, time: time::TimeHost) -> time::TimeHost {
+    let (time, why) = time.into_apart();
+    match why {
+        None => out.note("time: the editing side runs on a thread of its own (--time-thread)"),
+        Some(why) => out.note(&format!("time: {why}; it runs on the audio thread")),
+    }
+    time
 }
 
 /// The time engine's "undo: take 3 · Drums / 1" as the screen says it:
@@ -7069,8 +7142,12 @@ fn player_session(
             d.display()
         ),
     });
-    // The time engine (transport, clips, takes) runs in this loop too.
+    // The time engine (transport, clips, takes) runs in this loop too;
+    // with --time-thread its editing side has a thread of its own.
     let mut time = time::TimeHost::new(RATE, app.settings.bpm)?;
+    if o.time_thread {
+        time = time_apart(out, time);
+    }
     // The looper follows the transport; the line input stays closed until
     // the Prefs row "Line input" opens it. Its memory (Prefs "Loop memory",
     // as saved) is set aside once, here, and locked in RAM with the rest.
@@ -7145,7 +7222,10 @@ fn player_session(
     // screen thread to be freed there.
     let mut defaults_sent = false;
     let mut save_asked = false;
-    let mut project_back: Option<gui::ToUi> = None;
+    // The engines an open replaced wait here, two at most: the screen keeps
+    // at most two opens on their way (gui::OPENS_ON_THEIR_WAY), so a box
+    // always finds a slot and none is ever freed on this thread.
+    let mut project_back: [Option<gui::ToUi>; gui::OPENS_ON_THEIR_WAY] = Default::default();
     // A save: the Looper's loops and the audio tracks' takes being read,
     // what of them is read already, whether the parts are to be collected
     // (once both are), and the parts waiting for room on the way to the
@@ -7909,6 +7989,10 @@ fn player_session(
                     if let Some(mut t) = o.time.take() {
                         // The metronome is the system's: it stays as it is.
                         (t.metronome, t.click_gain) = (time.metronome, time.click_gain);
+                        // Its editing side runs where the last one's did.
+                        if time.apart() {
+                            *t = time_apart(out, *t);
+                        }
                         std::mem::swap(&mut time, &mut *t);
                         // The old engine goes back in the box, to be freed
                         // on the screen thread.
@@ -8086,11 +8170,17 @@ fn player_session(
                         out.note(&line);
                     }
                     out.note(&format!("project: {} is in", o.what));
-                    if let Some(old) = project_back.replace(gui::ToUi::ProjectBack(o)) {
-                        // Only one open travels at a time; an older one is
-                        // freed here (not expected).
-                        drop(old);
-                        out.note("project: two opens going back; one freed on the audio thread");
+                    // The replaced engines go back to the screen thread to
+                    // be freed there (live shows A2). The screen never has
+                    // more opens on their way than there are slots, so one
+                    // is always free.
+                    match project_back.iter_mut().find(|b| b.is_none()) {
+                        Some(slot) => *slot = Some(gui::ToUi::ProjectBack(o)),
+                        None => {
+                            debug_assert!(false, "more opens on their way than slots");
+                            drop(o);
+                            out.note("project: more opens going back than slots; one freed on the audio thread (not expected)");
+                        }
                     }
                 }
                 // A plugin installed from BROWSE's Plugins place: the Synth
@@ -8298,8 +8388,10 @@ fn player_session(
         if let Some(m) = view_back.take() {
             view_back = out.try_show(m).err();
         }
-        if let Some(m) = project_back.take() {
-            project_back = out.try_show(m).err();
+        for b in project_back.iter_mut() {
+            if let Some(m) = b.take() {
+                *b = out.try_show(m).err();
+            }
         }
         parts.lap(parts::SCREEN_ACTIONS);
         ports.show_pressure = app.settings.show_pressure;
@@ -8588,11 +8680,14 @@ fn player_session(
                         remote::ClipsAct::Nothing => {}
                         remote::ClipsAct::Mute { track, solo, .. } => {
                             let wait = time.perform();
-                            out.note(
-                                &time
-                                    .mute_or_solo(track, wait, solo)
-                                    .unwrap_or_else(|e| format!("track mute: {e}")),
-                            );
+                            let say = time::Say::Note {
+                                ok: "",
+                                err: "track mute: ",
+                            };
+                            if let Some(r) = time.mute_or_solo_then(track, wait, solo, say.clone())
+                            {
+                                fx.extend(time_said(out, say, r));
+                            }
                         }
                         remote::ClipsAct::Press(c) => {
                             let st = time.state();
@@ -9577,6 +9672,15 @@ fn player_session(
         // as it is.
         if let Some(bpm) = loop_tempo.take() {
             fx.extend(app.set_tempo(bpm));
+        }
+        // The time engine's editing side on its own thread
+        // (--time-thread): what its answers say, as each caller asked,
+        // and the Sequencer's Notes view following the note editor.
+        if time.apart() {
+            for (say, r) in time.take_said() {
+                fx.extend(time_said(out, say, r));
+            }
+            fx.extend(app.set_notes_open(time.editing()));
         }
         if let Some(bpm) = followed_tempo.take() {
             let bpm = (bpm * 10.0).round() / 10.0;
@@ -11155,6 +11259,9 @@ fn player_session(
         }
         if let Some(line) = tracks.take_note() {
             out.note(&line);
+        }
+        if let Some(what) = tracks.take_left_out() {
+            out.left_out(what);
         }
         if std::mem::take(&mut save_asked) {
             if mix.opening() || looper.opening() || tracks.opening() {
@@ -13014,6 +13121,59 @@ mod tests {
         assert!(time.state().clip(0, 0).is_some());
     }
 
+    /// Arrange 2.6b: with the editing side on its own thread
+    /// (--time-thread), ERASE + a clip and UNDO return no words at once;
+    /// the answers come back later and say the same as together.
+    #[test]
+    fn apart_erase_and_undo_say_what_they_did_when_the_answer_comes() {
+        let mut out = Out {
+            console: None,
+            sink: None,
+            dropped: 0,
+            report: None,
+            queued: None,
+            last_draw: Instant::now(),
+        };
+        let mut time = time::TimeHost::new(RATE, 120.0).unwrap();
+        time.put_clip(mpfree_seq::Clip::new("beat", 3840)).unwrap();
+        let mut time = time_apart(&mut out, time);
+        assert!(time.apart());
+        let mut app = app::App::new(RATE, false);
+        let mut mix = mixing::MixHost::new(RATE, -6.0, -6.0);
+        let mut tracks = audiotracks::TrackHost::new(RATE, 1);
+        let looper = looping::LoopHost::new(RATE, 1);
+        let mut said = Vec::new();
+        for a in [
+            TimeAction::DeleteClip { track: 0, slot: 0 },
+            TimeAction::Undo,
+        ] {
+            let fx = time_action(
+                &mut out,
+                &mut time,
+                &mut tracks,
+                &looper,
+                &mut app,
+                &mut mix,
+                a,
+            );
+            assert!(fx.is_empty(), "nothing said yet: {fx:?}");
+        }
+        let t0 = Instant::now();
+        while said.len() < 2 {
+            assert!(t0.elapsed() < Duration::from_secs(10), "{said:?}");
+            for (say, r) in time.take_said() {
+                said.extend(time_said(&mut out, say, r));
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            matches!(said.as_slice(), [app::Effect::Tell(d), app::Effect::Tell(u)]
+                if d.contains("deleted") && u.starts_with("Undid delete ")
+                    && u.ends_with("Track 1 / 1")),
+            "{said:?}"
+        );
+    }
+
     #[test]
     fn a_plugin_preset_reads_with_its_folder_first() {
         let mut p = mpfree_plughost::Preset {
@@ -13415,6 +13575,10 @@ mod tests {
         assert!(parse_args(&args("app --sound-cores 2")).is_err());
         assert!(parse_args(&args("app --sound-cores")).is_err());
         assert!(parse_args(&args("click --seconds 5 --sound-cores two")).is_err());
+        // The time engine's editing side on its own thread (Arrange 2.6b).
+        assert!(parse_args(&args("app --time-thread")).unwrap().time_thread);
+        assert!(!parse_args(&args("app")).unwrap().time_thread);
+        assert!(parse_args(&args("click --seconds 5 --time-thread")).is_err());
     }
 
     #[test]

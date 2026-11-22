@@ -18,10 +18,11 @@
 //! the line. Unknown keys and lines are skipped, so a newer build's text
 //! still loads. A region line belongs to the track line above it.
 //!
-//! Saving: [`crate::AudioTracks::save_file`] gives the settings, regions
-//! and takes (allocates: not on the audio thread), and
-//! [`crate::AudioTracks::read_take`] reads each take's audio a piece at a
-//! time without allocating. Opening: [`crate::AudioTracks::load_take`]
+//! Saving: [`crate::AudioTracks::save_into`] fills a [`Saved::room`] made
+//! off the audio thread with the settings, regions and takes without
+//! allocating ([`crate::AudioTracks::save_file`] makes its own room: not
+//! on the audio thread), and [`crate::AudioTracks::read_take`] reads each
+//! take's audio a piece at a time without allocating. Opening: [`crate::AudioTracks::load_take`]
 //! puts each take back (its audio copies in over a few periods) and
 //! [`crate::AudioTracks::load_track`] each track.
 
@@ -75,6 +76,50 @@ pub struct Saved {
     pub rate: u32,
     pub tracks: Vec<TrackFile>,
     pub takes: Vec<TakeFile>,
+}
+
+/// Room for a take's file name in a [`Saved::room`] (a streamed take's
+/// name, `<stamp>-<n>.wav`, is at most 45 bytes).
+pub const NAME_ROOM: usize = 64;
+
+impl Saved {
+    /// Room for the most a save can hold: [`MAX_TRACKS`] tracks of
+    /// [`MAX_REGIONS`] regions each and [`MAX_TAKES`] takes, each with room
+    /// for a [`NAME_ROOM`] file name, so that
+    /// [`crate::AudioTracks::save_into`] fills it on the audio thread
+    /// without allocating. Allocates (about 120 KB): made on a worker.
+    pub fn room(rate: u32) -> Saved {
+        Saved {
+            rate,
+            tracks: (0..MAX_TRACKS)
+                .map(|index| TrackFile {
+                    index,
+                    input: Input::Left,
+                    monitor: Monitor::Auto,
+                    level: 1.0,
+                    pan: 0.0,
+                    muted: false,
+                    solo: false,
+                    from: String::new(),
+                    regions: Vec::with_capacity(MAX_REGIONS),
+                })
+                .collect(),
+            takes: (0..MAX_TAKES)
+                .map(|id| TakeFile {
+                    id: id as u16,
+                    track: 0,
+                    group: 0,
+                    pass: 0,
+                    bpm: 0.0,
+                    anchor: 0.0,
+                    frames: 0,
+                    channels: 1,
+                    file: String::with_capacity(NAME_ROOM),
+                    audio: Vec::new(),
+                })
+                .collect(),
+        }
+    }
 }
 
 fn flag(b: bool) -> u8 {

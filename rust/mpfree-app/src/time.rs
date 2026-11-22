@@ -63,6 +63,7 @@
 //! hear about recorded notes at most four times a second
 //! ([`TimeHost::take_changed`]). Every track plays the current kit.
 
+mod apart;
 mod audio;
 mod control;
 mod follow;
@@ -81,6 +82,8 @@ use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, Transport};
 use std::f32::consts::TAU;
 
+pub use apart::Say;
+use apart::{Apart, Told};
 pub use audio::TimeAudio;
 pub use control::{MuteLight, PadTap, TimeControl};
 pub use follow::Follow;
@@ -555,7 +558,7 @@ impl Click {
 /// control half taking the period's news, so the two never differ for
 /// long enough to show.
 pub struct TimeHost {
-    control: TimeControl,
+    control: Half,
     audio: TimeAudio,
     /// Click while counting in and recording (off by default since live
     /// test 3; Play's options and SHIFT + PLAY START turn it on).
@@ -573,6 +576,36 @@ pub struct TimeHost {
     /// The count-in's bars before SHIFT + OVERDUB turned it off (0: none
     /// yet), so SHIFT + OVERDUB gives the same back.
     count_in_was: u8,
+}
+
+/// Where the control half runs: here, on the facade's thread with the
+/// audio half (together, the default), or on a thread of its own (apart,
+/// `--time-thread`; Arrange 2.6b, [`apart`]).
+enum Half {
+    Here(Box<TimeControl>),
+    Apart(Box<Apart>),
+}
+
+/// Tests reach into the control half together; apart it is on its thread.
+#[cfg(test)]
+impl std::ops::Deref for Half {
+    type Target = TimeControl;
+    fn deref(&self) -> &TimeControl {
+        match self {
+            Half::Here(c) => c,
+            Half::Apart(_) => panic!("the control half runs on its own thread"),
+        }
+    }
+}
+
+#[cfg(test)]
+impl std::ops::DerefMut for Half {
+    fn deref_mut(&mut self) -> &mut TimeControl {
+        match self {
+            Half::Here(c) => c,
+            Half::Apart(_) => panic!("the control half runs on its own thread"),
+        }
+    }
 }
 
 /// A step's parameter lock (`value`) or its end (`None`), `offset` frames
@@ -632,7 +665,7 @@ impl TimeHost {
         let audio = TimeAudio::new(transport, rate, tracks, to_control, from_control);
         let control = TimeControl::new(project, info, rate, to_audio, from_audio, tracks)?;
         let mut host = TimeHost {
-            control,
+            control: Half::Here(Box::new(control)),
             audio,
             metronome: false,
             click_gain: click_gain(CLICK_DB),
@@ -661,12 +694,105 @@ impl TimeHost {
     /// audio half's, [`TimeControl::lost`] for the control half's; a view
     /// waits and is sent again). [`TimeControl::describe`] puts every
     /// count in the status line once one is not 0.
-    #[allow(dead_code)] // The app thread's control thread takes it (step 3).
+    /// Together only (apart, the control half is on its thread already).
+    #[allow(dead_code)] // The tests' threads take it.
     pub fn split(self) -> (TimeControl, TimeAudio) {
         let mut audio = self.audio;
         audio.metronome = self.metronome;
         audio.set_click_gain(self.click_gain);
-        (self.control, audio)
+        match self.control {
+            Half::Here(c) => (*c, audio),
+            Half::Apart(_) => panic!("split: the control half runs on its own thread"),
+        }
+    }
+
+    /// The control half onto a thread of its own (apart, the app's
+    /// `--time-thread`; Arrange 2.6b, [`apart`]). The host comes back
+    /// apart, or together with why the thread didn't start.
+    pub fn into_apart(self) -> (TimeHost, Option<String>) {
+        let TimeHost {
+            control,
+            audio,
+            metronome,
+            click_gain,
+            leader,
+            quantise_was,
+            play_from,
+            count_in_was,
+        } = self;
+        let (control, why) = match control {
+            Half::Here(c) => match Apart::start(c) {
+                Ok(a) => (Half::Apart(Box::new(a)), None),
+                Err((c, why)) => (Half::Here(c), Some(why)),
+            },
+            apart => (apart, None),
+        };
+        let host = TimeHost {
+            control,
+            audio,
+            metronome,
+            click_gain,
+            leader,
+            quantise_was,
+            play_from,
+            count_in_was,
+        };
+        (host, why)
+    }
+
+    /// The control half back on this thread (together), after what was
+    /// asked of it so far. None if its thread was lost.
+    #[allow(dead_code)] // Tests; a later step may switch modes while running.
+    pub fn into_together(self) -> Option<TimeHost> {
+        let TimeHost {
+            control,
+            mut audio,
+            metronome,
+            click_gain,
+            leader,
+            quantise_was,
+            play_from,
+            count_in_was,
+        } = self;
+        let control = match control {
+            Half::Apart(a) => Half::Here(a.stop()?),
+            here => here,
+        };
+        audio.receive();
+        Some(TimeHost {
+            control,
+            audio,
+            metronome,
+            click_gain,
+            leader,
+            quantise_was,
+            play_from,
+            count_in_was,
+        })
+    }
+
+    /// The control half runs on its own thread.
+    pub fn apart(&self) -> bool {
+        matches!(self.control, Half::Apart(_))
+    }
+
+    /// `f` on the control half: here, or apart borrowed back from its
+    /// thread for the call ([`Apart::lend`], counted): the same answer
+    /// either way.
+    fn with<R>(&mut self, f: impl FnOnce(&mut TimeControl) -> R) -> R {
+        match &mut self.control {
+            Half::Here(c) => f(c),
+            Half::Apart(a) => a.lend(f),
+        }
+    }
+
+    /// The asks' answers since the last call, with how the caller wants
+    /// each said (apart; together each call answers at once).
+    pub fn take_said(&mut self) -> Vec<(Say, Result<String, String>)> {
+        match &mut self.control {
+            Half::Here(_) => Vec::new(),
+            Half::Apart(a) => a.take_said(),
+        }
     }
 
     /// The audio half takes what the control half sent, and passes `r` on.
@@ -677,14 +803,20 @@ impl TimeHost {
 
     /// The armed track (the one REC records), if any.
     pub fn armed(&self) -> Option<usize> {
-        self.control.armed()
+        match &self.control {
+            Half::Here(c) => c.armed(),
+            Half::Apart(a) => a.light.armed,
+        }
     }
 
     /// The selected track (the one the Sequencer edits, and the pads and
     /// the arp panel follow): the armed track unless a track was picked
     /// while REC's arm is pinned (refactor C1).
     pub fn selected(&self) -> Option<usize> {
-        self.control.selected()
+        match &self.control {
+            Half::Here(c) => c.selected(),
+            Half::Apart(a) => a.light.selected,
+        }
     }
 
     /// SHIFT + TC (the MPC's TC On/Off): the armed track's Quantise while
@@ -693,8 +825,7 @@ impl TimeHost {
     pub fn toggle_record_quantise(&mut self) -> Result<String, String> {
         let t = self.armed().ok_or("pick a track first")?;
         let track = self
-            .control
-            .project
+            .project()
             .tracks
             .get(t)
             .ok_or_else(|| format!("no track {}", t + 1))?;
@@ -774,25 +905,34 @@ impl TimeHost {
     /// The other armed tracks, a bit each, without the armed one
     /// (`TimeAction::ArmAlso`).
     pub fn also(&self) -> u128 {
-        self.control.also()
+        match &self.control {
+            Half::Here(c) => c.also(),
+            Half::Apart(a) => a.light.also,
+        }
     }
 
     /// The Loop cell armed on the grid, while it is still empty: the next
     /// loop recorded lands there (loop-tracks.md part 4).
     pub fn loop_cell(&self) -> Option<(usize, usize)> {
-        self.control.loop_cell()
+        match &self.control {
+            Half::Here(c) => c.loop_cell(),
+            Half::Apart(a) => a.light.loop_cell,
+        }
     }
 
     /// The note editor is open (the Sequencer tab shows its Notes view).
     pub fn editing(&self) -> bool {
-        self.control.editing()
+        match &self.control {
+            Half::Here(c) => c.editing(),
+            Half::Apart(a) => a.light.editing,
+        }
     }
 
     /// The loop playing (or launched) on Loop track `t`, for OVERDUB with
     /// a cell of it armed.
     pub fn loop_on(&self, t: usize) -> Option<usize> {
         let mask = mpfree_seq::loops::on_track(self.project(), t);
-        let plan = self.control.loop_plan();
+        let plan = self.loop_plan();
         (0..mpfree_seq::LOOPS).find(|&n| plan.on[n] && mask & (1u8 << n) != 0)
     }
 
@@ -802,9 +942,13 @@ impl TimeHost {
         self.audio.transposes()
     }
 
-    /// The project the clips are in (for a save: `project.rs`).
+    /// The project the clips are in (for a save: `project.rs`). Apart, the
+    /// copy published after the last change.
     pub fn project(&self) -> &Project {
-        &self.control.project
+        match &self.control {
+            Half::Here(c) => &c.project,
+            Half::Apart(a) => &a.heavy.project,
+        }
     }
 
     /// "Clips through the arp" for `track` (see `Track::through_arp`).
@@ -815,7 +959,7 @@ impl TimeHost {
     // tests do.
     #[allow(dead_code)]
     pub fn set_through_arp(&mut self, track: usize, on: bool) -> bool {
-        let r = self.control.set_through_arp(track, on);
+        let r = self.with(|c| c.set_through_arp(track, on));
         self.sent(r)
     }
 
@@ -823,7 +967,7 @@ impl TimeHost {
     /// (see `TimeControl::set_note_fx`). False if there is no such note
     /// track.
     pub fn set_note_fx(&mut self, track: usize, fx: mpfree_notefx::TrackFx) -> bool {
-        let r = self.control.set_note_fx(track, fx);
+        let r = self.with(|c| c.set_note_fx(track, fx));
         self.sent(r)
     }
 
@@ -865,12 +1009,18 @@ impl TimeHost {
 
     /// What the Play page's pattern shows. Allocates: called on a change.
     pub fn steps(&self) -> StepsData {
-        self.control.steps()
+        match &self.control {
+            Half::Here(c) => c.steps(),
+            Half::Apart(a) => a.heavy.steps.clone(),
+        }
     }
 
     /// True once after the steps the Play page shows changed.
     pub fn take_steps_changed(&mut self) -> bool {
-        self.control.take_steps_changed()
+        match &mut self.control {
+            Half::Here(c) => c.take_steps_changed(),
+            Half::Apart(a) => a.take_steps_changed(),
+        }
     }
 
     /// A touch on the Play page's pattern, as one undoable edit (a
@@ -878,20 +1028,53 @@ impl TimeHost {
     /// clip in place when it can be (`TimeControl::in_place`). A line for
     /// the log.
     pub fn step_action(&mut self, a: StepAction) -> Result<String, String> {
-        let at = std::time::Instant::now();
-        let was = self.control.costs;
-        let r = self.control.step_action(a);
-        let r = self.sent(r);
-        // From the action to the audio half having made it: what a tap
-        // or a turn costs the audio thread while both halves run on it.
-        let took = at.elapsed();
-        let c = &mut self.control.costs;
-        if c.steps_in_place > was.steps_in_place {
-            c.slowest_in_place = c.slowest_in_place.max(took);
-        } else if c.steps_compiled > was.steps_compiled {
-            c.slowest_step_compiled = c.slowest_step_compiled.max(took);
+        let audio = &mut self.audio;
+        let mut run = move |c: &mut TimeControl| {
+            let at = std::time::Instant::now();
+            let was = c.costs;
+            let r = c.step_action(a);
+            audio.receive();
+            // From the action to the audio half having made it: what a
+            // tap or a turn costs the audio thread while both halves run
+            // on it (apart, the wait for the control half is the lend's).
+            let took = at.elapsed();
+            let c = &mut c.costs;
+            if c.steps_in_place > was.steps_in_place {
+                c.slowest_in_place = c.slowest_in_place.max(took);
+            } else if c.steps_compiled > was.steps_compiled {
+                c.slowest_step_compiled = c.slowest_step_compiled.max(took);
+            }
+            r
+        };
+        match &mut self.control {
+            Half::Here(c) => run(c),
+            Half::Apart(ap) => ap.lend(run),
         }
-        r
+    }
+
+    /// [`TimeHost::step_action`] for a tap or a turn that only says what
+    /// it did, as [`TimeHost::act_then`] makes an action: together the
+    /// answer at once, apart None and the answer later, so a step edit
+    /// that has to compile never costs the audio thread.
+    pub fn step_action_then(&mut self, a: StepAction, say: Say) -> Option<Result<String, String>> {
+        let Half::Apart(ap) = &mut self.control else {
+            return Some(self.step_action(a));
+        };
+        ap.ask(Box::new(move |c| {
+            let at = std::time::Instant::now();
+            let was = c.costs;
+            let r = c.step_action(a);
+            // Apart, the edit's own time on the editing side's thread.
+            let took = at.elapsed();
+            let costs = &mut c.costs;
+            if costs.steps_in_place > was.steps_in_place {
+                costs.slowest_in_place = costs.slowest_in_place.max(took);
+            } else if costs.steps_compiled > was.steps_compiled {
+                costs.slowest_step_compiled = costs.slowest_step_compiled.max(took);
+            }
+            Some(Told::Said(say, r))
+        }));
+        None
     }
 
     /// The pad hits of the last period that fell while the transport
@@ -926,7 +1109,7 @@ impl TimeHost {
     /// the way was full (counted either way).
     pub fn command(&mut self, cmd: Command) -> bool {
         let refused = self.audio.counts().refused;
-        let sent = self.control.command(cmd);
+        let sent = self.with(|c| c.command(cmd));
         self.audio.receive();
         sent && self.audio.counts().refused == refused
     }
@@ -953,7 +1136,18 @@ impl TimeHost {
     /// arrives ([`TimeHost::followed_bpm`]).
     pub fn follow_tempo(&mut self, bpm: f64) {
         if self.audio.followed_bpm().is_none() {
-            self.control.project_tempo(bpm);
+            match &mut self.control {
+                Half::Here(c) => c.project_tempo(bpm),
+                // Apart, only a change goes (it does nothing otherwise).
+                Half::Apart(a) if a.tempo != Some(bpm) => {
+                    a.tempo = Some(bpm);
+                    a.ask(Box::new(move |c| {
+                        c.project_tempo(bpm);
+                        None
+                    }));
+                }
+                Half::Apart(_) => {}
+            }
             self.audio.receive();
         }
         self.audio.follow_tempo(bpm);
@@ -963,14 +1157,20 @@ impl TimeHost {
     /// point in effect at the playhead (`TempoEdit::AtPlayhead`), not the
     /// project's tempo.
     pub fn song_tempo_plays(&self) -> bool {
-        self.control.song_tempo_plays()
+        match &self.control {
+            Half::Here(c) => c.song_tempo_plays(),
+            Half::Apart(a) => a.light.song_tempo_plays,
+        }
     }
 
     /// While song mode plays the song's tempo points, the tempo of the
     /// point in effect at the playhead (None before the first): what the
     /// tempo turned steps from.
     pub fn tempo_here(&self) -> Option<f64> {
-        self.control.tempo_here()
+        match &self.control {
+            Half::Here(c) => c.tempo_here(),
+            Half::Apart(a) => a.light.tempo_here,
+        }
     }
 
     /// Follow another device's MIDI clock with these options (the
@@ -1001,12 +1201,15 @@ impl TimeHost {
         if !self.audio.took() {
             return None;
         }
-        let r = self.control.take_started();
-        // No clip to record into (no empty slot): it plays without
-        // recording, the punch-in taken back on its frame.
-        if r.is_err() {
-            self.control.command(Command::Record);
-        }
+        let r = self.with(|c| {
+            let r = c.take_started();
+            // No clip to record into (no empty slot): it plays without
+            // recording, the punch-in taken back on its frame.
+            if r.is_err() {
+                c.command(Command::Record);
+            }
+            r
+        });
         Some(
             self.sent(r)
                 .unwrap_or_else(|e| format!("rec: {e}, so it only plays")),
@@ -1035,7 +1238,7 @@ impl TimeHost {
         // back. Only when the start will go in.
         let ready = match take {
             Some(_) if self.audio.start_refusal(bpm, take).is_none() => {
-                Some(self.control.take_started_on_note())
+                Some(self.with(|c| c.take_started_on_note()))
             }
             _ => None,
         };
@@ -1099,7 +1302,17 @@ impl TimeHost {
     /// Carry out a touch on the time engine's screens. Returns a line for
     /// the log.
     pub fn act(&mut self, a: TimeAction) -> Result<String, String> {
-        // Where PLAY starts from, for SHIFT + PLAY ([`TimeHost::play_back`]).
+        self.play_from(&a);
+        let waits = self.audio.clock_waits();
+        let r = self.with(|c| {
+            c.clock_waits = waits;
+            c.act(a)
+        });
+        self.sent(r)
+    }
+
+    /// Where PLAY starts from, for SHIFT + PLAY ([`TimeHost::play_back`]).
+    fn play_from(&mut self, a: &TimeAction) {
         let info = self.info();
         if info.state == mpfree_transport::State::Stopped {
             match a {
@@ -1108,15 +1321,37 @@ impl TimeHost {
                 _ => {}
             }
         }
-        self.control.clock_waits = self.audio.clock_waits();
-        let r = self.control.act(a);
-        self.sent(r)
+    }
+
+    /// [`TimeHost::act`] for the screen's and the buttons' touches, which
+    /// only say what they did: together the answer (`Some`), for the caller
+    /// to say as `say` asks; apart None at once, the action sent to the
+    /// control half's thread, and its answer later from
+    /// [`TimeHost::take_said`] with `say`, so a compile never costs the
+    /// audio thread (Arrange 2.6b).
+    pub fn act_then(&mut self, a: TimeAction, say: Say) -> Option<Result<String, String>> {
+        if !self.apart() {
+            return Some(self.act(a));
+        }
+        self.play_from(&a);
+        let waits = self.audio.clock_waits();
+        if let Half::Apart(ap) = &mut self.control {
+            ap.ask(Box::new(move |c| {
+                c.clock_waits = waits;
+                Some(Told::Said(say, c.act(a)))
+            }));
+        }
+        None
     }
 
     /// What live to song put into the song when the transport stopped
-    /// (or why it could not), once, for the log.
+    /// (or why it could not), once, for the log; apart, also what a take
+    /// did to Rec song and what the loops did on the grid.
     pub fn take_later_note(&mut self) -> Option<String> {
-        self.control.take_later_note()
+        match &mut self.control {
+            Half::Here(c) => c.take_later_note(),
+            Half::Apart(a) => a.take_note(),
+        }
     }
 
     /// The morph bar on the mixer's mod engine (`modu`): the rows, the
@@ -1128,7 +1363,7 @@ impl TimeHost {
         modu: &mut crate::modmix::ModMix,
         mixer: &mpfree_fx::Mixer,
     ) -> Result<String, String> {
-        let r = self.control.morph(a, modu, mixer);
+        let r = self.with(|c| c.morph(a, modu, mixer));
         self.sent(r)
     }
 
@@ -1138,7 +1373,7 @@ impl TimeHost {
     /// launched: a tap on the Clips page plays it like any clip. Returns a
     /// line for the log.
     pub fn put_clip(&mut self, clip: Clip) -> Result<String, String> {
-        let r = self.control.put_clip(clip);
+        let r = self.with(|c| c.put_clip(clip));
         self.sent(r)
     }
 
@@ -1146,7 +1381,7 @@ impl TimeHost {
     /// its track's first empty slot, as one take that one UNDO on the
     /// Clips page takes away; all or none. Returns a line for the log.
     pub fn put_clips(&mut self, clips: Vec<(usize, Clip)>) -> Result<String, String> {
-        let r = self.control.put_clips(clips);
+        let r = self.with(|c| c.put_clips(clips));
         self.sent(r)
     }
 
@@ -1233,7 +1468,7 @@ impl TimeHost {
     /// there is no such track.
     #[allow(dead_code)]
     pub fn set_record_touch(&mut self, track: usize, on: bool) -> bool {
-        let r = self.control.set_record_touch(track, on);
+        let r = self.with(|c| c.set_record_touch(track, on));
         self.sent(r)
     }
 
@@ -1242,7 +1477,11 @@ impl TimeHost {
     /// ([`TimeHost::describe`]); tests read it here.
     #[allow(dead_code)]
     pub fn touch_dropped(&self) -> u64 {
-        self.audio.touch_dropped() + self.control.touch_lost()
+        let lost = match &self.control {
+            Half::Here(c) => c.touch_lost(),
+            Half::Apart(a) => a.light.touch_lost,
+        };
+        self.audio.touch_dropped() + lost
     }
 
     /// Live erase (ERASE held on a pad while the transport plays, the
@@ -1315,8 +1554,28 @@ impl TimeHost {
     /// joins the mute queue and lands on the launch line while the
     /// transport rolls ([`TimeControl::mute_or_solo`]).
     pub fn mute_or_solo(&mut self, t: usize, wait: bool, solo: bool) -> Result<String, String> {
-        let r = self.control.mute_or_solo(t, wait, solo);
+        let r = self.with(|c| c.mute_or_solo(t, wait, solo));
         self.sent(r)
+    }
+
+    /// [`TimeHost::mute_or_solo`] as [`TimeHost::act_then`] makes an
+    /// action: together the answer, apart None and the answer later.
+    pub fn mute_or_solo_then(
+        &mut self,
+        t: usize,
+        wait: bool,
+        solo: bool,
+        say: Say,
+    ) -> Option<Result<String, String>> {
+        match &mut self.control {
+            Half::Here(_) => Some(self.mute_or_solo(t, wait, solo)),
+            Half::Apart(a) => {
+                a.ask(Box::new(move |c| {
+                    Some(Told::Said(say, c.mute_or_solo(t, wait, solo)))
+                }));
+                None
+            }
+        }
     }
 
     /// Pad `pad` of track `t`'s kit tapped as a mute key: at once, or
@@ -1329,75 +1588,115 @@ impl TimeHost {
         wait: bool,
         solo: bool,
     ) -> Result<PadTap, String> {
-        let r = self.control.pad_mute_or_solo(t, pad, wait, solo);
+        let r = self.with(|c| c.pad_mute_or_solo(t, pad, wait, solo));
         self.sent(r)
     }
 
     /// Pad `pad` of track `t` muted or let play at once, from a pattern
     /// row's speaker ([`TimeControl::pad_mute_now`]).
     pub fn pad_mute_now(&mut self, t: usize, pad: usize, mute: bool) -> Result<String, String> {
-        let r = self.control.pad_mute_now(t, pad, mute);
+        let r = self.with(|c| c.pad_mute_now(t, pad, mute));
         self.sent(r)
     }
 
     /// An old project's kit 1 pad mutes and solos set on each track in
     /// `tracks` ([`TimeControl::carry_pad_mutes`]): how many took them.
     pub fn carry_pad_mutes(&mut self, tracks: u128, mutes: u128, solos: u128) -> usize {
-        let r = self.control.carry_pad_mutes(tracks, mutes, solos);
+        let r = self.with(|c| c.carry_pad_mutes(tracks, mutes, solos));
         self.sent(r)
     }
 
-    /// Track `t`'s pad mutes and solos, a bit each by kit pad.
+    /// Track `t`'s pad mutes and solos, a bit each by kit pad, as the
+    /// project has them (apart, its published copy).
     pub fn pad_mutes(&self, t: usize) -> Option<(u128, u128)> {
-        self.control.pad_mutes(t)
+        self.project()
+            .tracks
+            .get(t)
+            .map(|tr| (tr.pad_mutes, tr.pad_solos))
     }
 
     /// Whether a change waits for track `t`'s pad `pad`, for its light.
+    /// Apart, the published copy has the selected track's pads only (the
+    /// keys light those), so another track's say none wait.
     pub fn pad_waiting(&self, t: usize, pad: usize) -> bool {
-        self.control.pad_waiting(t, pad)
+        match &self.control {
+            Half::Here(c) => c.pad_waiting(t, pad),
+            Half::Apart(a) => {
+                a.light.selected == Some(t)
+                    && a.light.pad_waiting.get(pad).copied().unwrap_or(false)
+            }
+        }
     }
 
     /// Whether track `t` is muted (None: no such track).
     #[allow(dead_code)]
     pub fn muted(&self, t: usize) -> Option<bool> {
-        self.control.muted(t)
+        match &self.control {
+            Half::Here(c) => c.muted(t),
+            Half::Apart(a) => a.light.muted.get(t).copied().flatten(),
+        }
     }
 
     /// The tracks silent now, muted or left out by a solo, a bit a track
     /// ([`TimeControl::silenced`]): a track gone silent ends what its kit's
     /// Instrument and MIDI out pads hold, which no strip of its mutes.
     pub fn silenced(&self) -> u128 {
-        self.control.silenced()
+        match &self.control {
+            Half::Here(c) => c.silenced(),
+            Half::Apart(a) => a.light.silenced,
+        }
     }
 
     /// The tracks muted and soloed once the mute queue lands, a bit a
     /// track ([`TimeControl::mute_bits`]), for MIDI Learn.
     pub fn mute_bits(&self) -> (u128, u128) {
-        self.control.mute_bits()
+        match &self.control {
+            Half::Here(c) => c.mute_bits(),
+            Half::Apart(a) => a.light.mute_bits,
+        }
     }
 
     /// What TRACK MUTE's pad for track `t` shows (None: no such track).
     pub fn mute_light(&self, t: usize) -> Option<MuteLight> {
-        self.control.mute_light(t)
+        match &self.control {
+            Half::Here(c) => c.mute_light(t),
+            Half::Apart(a) => a.light.mute_light.get(t).copied().flatten(),
+        }
     }
 
     /// The mute queue waiting, if any.
     #[allow(dead_code)]
     pub fn mute_wait(&self) -> Option<&mpfree_time_ui::view::MuteWait> {
-        self.control.mute_wait()
+        match &self.control {
+            Half::Here(c) => c.mute_wait(),
+            Half::Apart(a) => a.heavy.mute_wait.as_ref(),
+        }
     }
 
     /// The project is in Perform, not Make (sequencer S4): the app follows
     /// it each period (`App::set_perform`).
     pub fn perform(&self) -> bool {
-        self.control.perform()
+        match &self.control {
+            Half::Here(c) => c.perform(),
+            Half::Apart(a) => a.light.perform,
+        }
     }
 
     /// Whether a take records (the notes, their count-in, or a loop's
     /// pass), each period: in Perform a take turns Rec song on for its
     /// length ([`TimeControl::take_follows`]). A line for the log.
     pub fn take_follows(&mut self, taking: bool) -> Option<String> {
-        let r = self.control.take_follows(taking);
+        let r = match &mut self.control {
+            Half::Here(c) => c.take_follows(taking),
+            // Apart, only a change goes (it does nothing otherwise); its
+            // line comes back for the log ([`TimeHost::take_later_note`]).
+            Half::Apart(a) if a.taking != Some(taking) => {
+                a.taking = Some(taking);
+                a.ask(Box::new(move |c| c.take_follows(taking).map(Told::Note)));
+                None
+            }
+            Half::Apart(_) => None,
+        };
         self.sent(r)
     }
 
@@ -1405,7 +1704,10 @@ impl TimeHost {
     /// lands on ([`TimeControl::loop_plan`]): for the looper, before its
     /// period, so a launch lands on its line's own frame.
     pub fn loop_plan(&self) -> mpfree_seq::loops::LoopPlan {
-        self.control.loop_plan()
+        match &self.control {
+            Half::Here(c) => c.loop_plan(),
+            Half::Apart(a) => a.light.loop_plan,
+        }
     }
 
     /// What the looper says of its loops ([`TimeControl::loops_are`]):
@@ -1414,27 +1716,44 @@ impl TimeHost {
         &mut self,
         now: &[mpfree_seq::loops::LoopNow; mpfree_seq::LOOPS],
     ) -> Vec<String> {
-        let r = self.control.loops_are(now);
+        let r = match &mut self.control {
+            Half::Here(c) => c.loops_are(now),
+            // Apart, sent; the lines come back for the log
+            // ([`TimeHost::take_later_note`]).
+            Half::Apart(a) => {
+                a.loops_are(*now);
+                Vec::new()
+            }
+        };
         self.sent(r)
     }
 
     /// The project's tracks, for TRACK MUTE's banks.
     pub fn track_count(&self) -> usize {
-        self.control.track_count()
+        match &self.control {
+            Half::Here(c) => c.track_count(),
+            Half::Apart(a) => a.light.track_count,
+        }
     }
 
     /// REDOs done so far, and whether REDO has anything to do: a track
     /// that comes back with a REDO gets its kit back
     /// ([`crate::sampler::TrackKits::follow`]).
     pub fn redos(&self) -> (u64, bool) {
-        (self.control.redos(), self.control.can_redo())
+        match &self.control {
+            Half::Here(c) => (c.redos(), c.can_redo()),
+            Half::Apart(a) => (a.light.redos, a.light.can_redo),
+        }
     }
 
     /// Whether track `t` has a clip launched (playing, or waiting for the
     /// transport); TRACK MUTE's pad lights have it in [`MuteLight`].
     #[cfg(test)]
     pub fn launched(&self, t: usize) -> bool {
-        self.control.launched(t)
+        match &self.control {
+            Half::Here(c) => c.launched(t),
+            Half::Apart(a) => t < 128 && a.light.launched & (1 << t) != 0,
+        }
     }
 
     /// FILL, as of the last period, for the button's light.
@@ -1484,14 +1803,14 @@ impl TimeHost {
     /// a new clip REC makes for a take on one holds notes (step 5c), its
     /// clips through its arp too (step 5d).
     pub fn set_notes_tracks(&mut self, tracks: u128) {
-        self.control.set_notes_tracks(tracks);
+        self.with(|c| c.set_notes_tracks(tracks));
     }
 
     /// The notes each of track `track`'s 16 pads plays: a clip of notes
     /// shows each pad's root on the step grid's pad rows, and a tap on a
     /// pad's row edits its notes (step 5c).
     pub fn set_pad_rows(&mut self, track: usize, rows: PadRows) {
-        self.control.set_pad_rows(track, rows);
+        self.with(|c| c.set_pad_rows(track, rows));
     }
 
     /// What the look-ahead did, for the log.
@@ -1517,8 +1836,14 @@ impl TimeHost {
         self.audio.metronome = self.metronome;
         self.audio.set_click_gain(self.click_gain);
         self.audio.run(frames, pads, arps);
-        self.control.poll();
-        self.audio.receive();
+        match &mut self.control {
+            Half::Here(c) => {
+                c.poll();
+                self.audio.receive();
+            }
+            // Apart, the thread polls; the newest copy comes here.
+            Half::Apart(a) => a.take_shown(),
+        }
     }
 
     /// Add the click to the rendered period; returns the peak afterwards.
@@ -1540,7 +1865,10 @@ impl TimeHost {
     /// Song mode is on: the song plays on tracks with no clip launched.
     /// Audio tracks play and record only then (layout spec 4c).
     pub fn song_on(&self) -> bool {
-        self.control.song_on()
+        match &self.control {
+            Half::Here(c) => c.song_on(),
+            Half::Apart(a) => a.light.song_on,
+        }
     }
 
     /// The song position as bar.beat.tick, for log lines.
@@ -1560,12 +1888,18 @@ impl TimeHost {
     /// True once after the clips, launches or takes changed. Notes and
     /// locks being recorded are told at most every quarter second.
     pub fn take_changed(&mut self) -> bool {
-        self.control.take_changed()
+        match &mut self.control {
+            Half::Here(c) => c.take_changed(),
+            Half::Apart(a) => a.take_changed(),
+        }
     }
 
     /// Everything the screens show.
     pub fn state(&self) -> TimeState {
-        self.control.state()
+        match &self.control {
+            Half::Here(c) => c.state(),
+            Half::Apart(a) => a.heavy.state.clone(),
+        }
     }
 
     /// Notes and locks that gave way (should stay 0): lost because a
@@ -1578,7 +1912,10 @@ impl TimeHost {
         c.dropped
             + c.busy
             + u64::from(c.ends_lost)
-            + self.control.dropped()
+            + match &self.control {
+                Half::Here(c) => c.dropped(),
+                Half::Apart(a) => a.light.dropped,
+            }
             + self.audio.note_mods_dropped()
     }
 
@@ -1599,7 +1936,10 @@ impl TimeHost {
     /// The time engine's part of the status line, with what passing
     /// between the halves lost, if anything.
     pub fn describe(&self) -> String {
-        self.control.describe()
+        match &self.control {
+            Half::Here(c) => c.describe(),
+            Half::Apart(a) => format!("{}; {}", a.heavy.describe, a.describe()),
+        }
     }
 }
 
@@ -7608,6 +7948,69 @@ mod tests {
         );
     }
 
+    /// Piano roll plan 0C.1: an editor edit on the playing clip goes into
+    /// the view in place, as a step edit does (no compile, the view just
+    /// what a compile gives, timed for the status line); a drag of the
+    /// velocity lane, sent once as the finger lifts, is one take; and the
+    /// screens get one shared copy of the clip, the same while it is
+    /// unchanged, a new one when it changed.
+    #[test]
+    fn the_note_editor_edits_the_playing_clip_in_place_and_shares_one_copy() {
+        use mpfree_time_ui::editor::EditAction as E;
+        use std::sync::Arc;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let tap = |step| StepAction::Tap {
+            pad: 0,
+            step,
+            velocity: 100,
+        };
+        for step in [0, 4, 8] {
+            h.step_action(tap(step)).unwrap();
+        }
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        let info = |h: &mut TimeHost| {
+            h.take_changed();
+            *h.state().edit.unwrap()
+        };
+        let a = info(&mut h);
+        assert!(Arc::ptr_eq(&a.clip, &info(&mut h).clip), "the same copy");
+        let compiles = h.control.costs.compiles;
+        h.act(TimeAction::Edit(E::Button(4))).unwrap();
+        let takes = h.state().done.len();
+        for v in [0.5, 1.0] {
+            h.act(TimeAction::Edit(E::Velocity(v))).unwrap();
+            h.audio.receive();
+            assert_eq!(
+                *h.audio.view,
+                h.control.view().unwrap(),
+                "in place, as a compile gives"
+            );
+        }
+        assert_eq!(h.state().done.len(), takes + 2, "a take a drag");
+        let c = h.control.costs;
+        assert_eq!(
+            (c.compiles, c.notes_in_place, c.notes_compiled),
+            (compiles, 2, 0)
+        );
+        assert!(
+            h.describe().contains("; note edits: 2 in place (slowest "),
+            "{}",
+            h.describe()
+        );
+        let b = info(&mut h);
+        assert!(!Arc::ptr_eq(&a.clip, &b.clip), "changed: a new copy");
+        assert!(b.clip.notes.iter().all(|n| n.velocity == 127));
+        // A change from Steps: a new copy, then the same one again.
+        h.step_action(tap(12)).unwrap();
+        let d = info(&mut h);
+        assert!(!Arc::ptr_eq(&b.clip, &d.clip));
+        assert_eq!(d.clip.notes.len(), 4);
+        assert!(Arc::ptr_eq(&d.clip, &info(&mut h).clip));
+    }
+
     /// An editor edit that what plays can't follow (the play view would not
     /// build) is taken back from the clip and the takes, as a step edit is.
     #[test]
@@ -7634,11 +8037,15 @@ mod tests {
                 start: 0,
             });
         }
+        // Another track armed: the edit compiles rather than going into the
+        // view in place (plan 0C.1).
+        h.control.armed = Some(2);
         let clip = h.control.project.clip(0, 0).cloned();
         let ed = h.state().edit.map(|e| e.editor);
         let said = h
             .act(TimeAction::Edit(E::Empty { tick: 960, note: 3 }))
             .unwrap_err();
+        assert_eq!(h.control.costs.notes_compiled, 1);
         assert!(said.ends_with("the edit was taken back"), "{said}");
         assert_eq!(h.control.project.clip(0, 0).cloned(), clip);
         assert_eq!(h.state().edit.map(|e| e.editor), ed, "the editor as it was");
@@ -8679,6 +9086,623 @@ mod tests {
                     assert!(f.abs_diff(i as u64 * bar) <= 1, "{action:?}: {step:?}");
                 }
             }
+        }
+    }
+
+    /// The timing contract (Arrange 2.5) through the halves: a launch the
+    /// control half decides before it has heard the audio half play a bar
+    /// line (as a control half on its own thread can be behind) starts at
+    /// once, in phase with that line, and Dev counts it; from there on it
+    /// plays as if the launch had come in time for the line. Decided with
+    /// every period heard, the same launch at the same moment waits for the
+    /// next line, as before.
+    #[test]
+    fn a_launch_decided_before_the_control_half_heard_a_line_lands_in_phase_with_it() {
+        use mpfree_seq::Note;
+        let bar = u64::from(RATE) * 4 / 5;
+        let line = 2 * bar;
+        // `act` launches B at the first period from that frame; the
+        // control half hears nothing from `deaf` until then.
+        let play = |frames: u32, act: u64, deaf: u64| {
+            let mut h = TimeHost::new(RATE, 300.0).unwrap();
+            let mut pads = Fake::default();
+            let mut a = Clip::new("A", 3840);
+            a.notes = (0..4).map(|i| Note::new(i * 960, 100, 0, 100)).collect();
+            // B: two bars, so a pass out of phase would put its second
+            // bar's note (3) elsewhere.
+            let mut b = Clip::new("B", 2 * 3840);
+            b.notes = (0..8)
+                .flat_map(|i| {
+                    [
+                        Note::new(i * 960, 100, 1, 100),
+                        Note::new(i * 960 + 480, 100, 2, 100),
+                    ]
+                })
+                .chain([Note::new(3840, 100, 3, 100)])
+                .collect();
+            h.control.project.tracks[0].slots[0] = Some(a);
+            h.control.project.tracks[0].slots[1] = Some(b);
+            h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+            h.command(Command::Play);
+            let mut acted = None;
+            while pads.frame < 5 * bar {
+                if acted.is_none() && pads.frame >= act {
+                    h.act(TimeAction::Launch { track: 0, slot: 1 }).unwrap();
+                    acted = Some(pads.frame);
+                }
+                if (deaf..act).contains(&pads.frame) {
+                    h.audio.run(frames, &mut pads, None);
+                } else {
+                    h.period(frames, &mut pads);
+                }
+                pads.frame += u64::from(frames);
+            }
+            let (c, q) = (h.audio.counts(), h.audio.cue_counts());
+            assert_eq!(
+                (
+                    c.lost,
+                    c.behind,
+                    c.kept,
+                    c.refused,
+                    q.stale,
+                    q.lost,
+                    h.dropped()
+                ),
+                (0, 0, 0, 0, 0, 0, 0)
+            );
+            let hits: Vec<_> = pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
+            (hits, acted.unwrap_or(0), q.late, h.control.describe())
+        };
+        for frames in [64u32, 128, 512] {
+            let f = u64::from(frames);
+            // The period that holds the line.
+            let holds = line / f * f;
+            // In time: launched a period before it, everything heard.
+            let (in_time, _, late, _) = play(frames, holds - f, u64::MAX);
+            assert_eq!(late, 0);
+            for held in 1..=4u64 {
+                let what = format!("{frames} frames, {held} periods unheard");
+                // Launched after the line, the last `held` periods unheard.
+                let act = holds + f;
+                let (hits, from, late, said) = play(frames, act, act - held * f);
+                assert_eq!(late, 1, "{what}");
+                assert!(
+                    said.contains("1 started after their line"),
+                    "{what}: {said}"
+                );
+                // From the period it came on, as in time; before it, A.
+                let after = |h: &[(u64, usize)]| -> Vec<_> {
+                    h.iter().filter(|e| e.0 >= from).copied().collect()
+                };
+                assert_eq!(after(&hits), after(&in_time), "{what}");
+                assert!(
+                    after(&hits).iter().any(|e| e.1 == 3),
+                    "{what}: B's second bar"
+                );
+                assert!(
+                    hits.iter()
+                        .all(|&(at, p)| (at < from) == (p == 0) || at < line),
+                    "{what}"
+                );
+                // Everything heard, the same launch waits for bar 4.
+                let (step, _, late, _) = play(frames, act, u64::MAX);
+                assert_eq!(late, 0, "{what}");
+                let b = step.iter().find(|e| e.1 != 0).map(|e| e.0);
+                assert_eq!(b, Some(3 * bar), "{what}");
+            }
+        }
+    }
+
+    /// Arrange 2.6: with the control half on a thread of its own, busy with
+    /// everything a musician does to a song while it plays (launches,
+    /// scenes, stops, step taps, undo and redo, capture, mutes, song mode
+    /// on and off), the audio half allocates and frees nothing in any
+    /// whole period: taking what the control half sent, playing, and
+    /// sending back what it no longer plays.
+    #[test]
+    fn the_audio_half_allocates_nothing_in_any_period_while_the_control_half_works_on_its_own_thread(
+    ) {
+        use mpfree_seq::Note;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        /// Pads that only count, so the test itself allocates nothing.
+        #[derive(Default)]
+        struct Count(u64);
+        impl Pads for Count {
+            fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
+                self.0 += 1;
+                true
+            }
+            fn release_at(&mut self, _: u16, _: usize, _: u32) {}
+            fn stop_all(&mut self) {}
+            fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
+        }
+        let mut h = TimeHost::new(RATE, 140.0).unwrap();
+        // Eight tracks, two rows of 4-bar clips of 64 notes each.
+        for t in 0..8 {
+            if t > 0 {
+                h.act(TimeAction::AddTrack).unwrap();
+            }
+            for row in 0..2 {
+                let mut c = Clip::new("busy", 4 * 3840);
+                c.notes = (0..64)
+                    .map(|i| Note::new(i * 240, 120, ((t + row + i as usize) % 16) as u8, 100))
+                    .collect();
+                h.control.project.tracks[t].slots[row] = Some(c);
+            }
+        }
+        h.control.project.give_clip_ids();
+        h.act(TimeAction::ScenesToSong).unwrap();
+        h.command(Command::Play);
+        let (mut control, mut audio) = h.split();
+        let done = Arc::new(AtomicBool::new(false));
+        let stop = done.clone();
+        let thread = std::thread::spawn(move || {
+            let tap = |step| StepAction::Tap {
+                pad: 3,
+                step,
+                velocity: 100,
+            };
+            let mut k = 0usize;
+            let mut lines = 0usize;
+            while !stop.load(Ordering::Relaxed) {
+                let r = match k % 12 {
+                    0 => control.act(TimeAction::Launch {
+                        track: k % 8,
+                        slot: (k / 8) % 2,
+                    }),
+                    1 => control.act(TimeAction::LaunchScene((k / 12) % 2)),
+                    2 => control.step_action(tap(k % 16)),
+                    3 => control.act(TimeAction::Undo),
+                    4 => control.act(TimeAction::Redo),
+                    5 => control.act(TimeAction::Capture),
+                    6 => control.mute_or_solo(k % 8, k % 24 < 12, false),
+                    7 => control.act(TimeAction::StopClip(k % 8)),
+                    8 => control.act(TimeAction::SongMode(k % 24 < 12)),
+                    9 => control.step_action(tap((k + 5) % 16)),
+                    10 => control.act(TimeAction::Uncue(k % 8)),
+                    _ => control.act(TimeAction::Launch {
+                        track: (k + 3) % 8,
+                        slot: 1,
+                    }),
+                };
+                lines += usize::from(r.is_ok());
+                k += 1;
+                control.poll();
+                std::thread::sleep(std::time::Duration::from_micros(300));
+            }
+            control.poll();
+            (control, k, lines)
+        });
+        let mut pads = Count::default();
+        let mut worst = (0, 0);
+        for period in 0..4000 {
+            let ((), n) = crate::sys::alloc_count::calls(|| audio.run(PERIOD, &mut pads, None));
+            if n > worst.1 {
+                worst = (period, n);
+            }
+            std::thread::sleep(std::time::Duration::from_micros(100));
+        }
+        done.store(true, Ordering::Relaxed);
+        let (mut control, actions, ok) = thread.join().unwrap();
+        // What the audio half sent back last is freed there.
+        audio.run(PERIOD, &mut pads, None);
+        control.poll();
+        assert_eq!(worst, (0, 0), "(period, allocations and frees) at worst");
+        assert!(
+            actions > 1000 && ok > actions / 4,
+            "{actions} actions, {ok} ok"
+        );
+        assert!(pads.0 > 200, "it played: {} hits", pads.0);
+        assert!(
+            control.costs.compiles > 100,
+            "{} views",
+            control.costs.compiles
+        );
+        let c = audio.counts();
+        assert_eq!((c.lost, c.kept, c.ends_lost, control.lost()), (0, 0, 0, 0));
+    }
+
+    /// Arrange 2.6b: periods, a millisecond apart, until the editing side
+    /// on its own thread has answered `n` asks: the answers, oldest first.
+    fn answers(h: &mut TimeHost, pads: &mut Fake, n: usize) -> Vec<(Say, Result<String, String>)> {
+        let mut said = Vec::new();
+        let t0 = std::time::Instant::now();
+        while said.len() < n {
+            assert!(t0.elapsed().as_secs() < 10, "{} of {n} answers", said.len());
+            h.period(PERIOD, pads);
+            pads.frame += u64::from(PERIOD);
+            said.extend(h.take_said());
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(said.len(), n, "{said:?}");
+        said
+    }
+
+    /// Periods, a millisecond apart, until `done` holds of what the facade
+    /// reads (apart, the copy the editing side publishes).
+    fn until(h: &mut TimeHost, pads: &mut Fake, done: impl Fn(&TimeHost) -> bool) {
+        let t0 = std::time::Instant::now();
+        while !done(h) {
+            assert!(t0.elapsed().as_secs() < 10, "the copy never followed");
+            h.period(PERIOD, pads);
+            pads.frame += u64::from(PERIOD);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    /// A host with a one-bar clip of four notes on track 1, row 1.
+    fn host_with_a_clip() -> TimeHost {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut c = Clip::new("beat", 3840);
+        c.notes = (0..4)
+            .map(|i| mpfree_seq::Note::new(i * 960, 100, 3, 100))
+            .collect();
+        h.control.project.tracks[0].slots[0] = Some(c);
+        h.control.project.give_clip_ids();
+        h
+    }
+
+    /// Arrange 2.6b: apart, the screen's actions go to the editing side's
+    /// thread and return at once; their answers come back later, each with
+    /// how its caller wants it said, the same as together answers them on
+    /// the spot, and the published copy comes to match the project and
+    /// the selection together has. Back together, nothing was lost.
+    #[test]
+    fn apart_the_screens_actions_answer_as_together_and_the_copy_follows() {
+        let note = Say::Note {
+            ok: "time: ",
+            err: "time: ",
+        };
+        let actions = vec![
+            (TimeAction::AddTrack, note.clone()),
+            (TimeAction::Launch { track: 0, slot: 0 }, note.clone()),
+            (TimeAction::Arm(Some(1)), note.clone()),
+            (TimeAction::Launch { track: 0, slot: 3 }, note.clone()),
+            (TimeAction::Uncue(0), note.clone()),
+            (TimeAction::Undo, Say::Undo),
+            (TimeAction::Redo, Say::Undo),
+            (TimeAction::DeleteClip { track: 0, slot: 0 }, Say::Tell),
+            (TimeAction::Undo, Say::Undo),
+            (TimeAction::DeleteClip { track: 0, slot: 7 }, Say::Tell),
+        ];
+        let mut together = host_with_a_clip();
+        let mut pads = Fake::default();
+        let mut want = Vec::new();
+        for (a, say) in actions.clone() {
+            let r = together
+                .act_then(a, say.clone())
+                .expect("together answers at once");
+            want.push((say, r));
+            together.period(PERIOD, &mut pads);
+            pads.frame += u64::from(PERIOD);
+        }
+        assert!(
+            want.iter().any(|(_, r)| r.is_err()),
+            "an empty slot: {want:?}"
+        );
+        let (mut h, why) = host_with_a_clip().into_apart();
+        assert_eq!(why, None);
+        assert!(h.apart());
+        let mut pads = Fake::default();
+        for (a, say) in actions {
+            assert_eq!(h.act_then(a, say), None, "apart, the answer comes later");
+        }
+        assert_eq!(answers(&mut h, &mut pads, want.len()), want);
+        until(&mut h, &mut pads, |h| {
+            h.project() == together.project()
+                && (h.armed(), h.selected(), h.track_count(), h.redos())
+                    == (
+                        together.armed(),
+                        together.selected(),
+                        together.track_count(),
+                        together.redos(),
+                    )
+                && h.steps() == together.steps()
+        });
+        assert!(h.take_changed(), "the screens are told");
+        assert!(
+            h.describe().contains("10 asks, 0 lends"),
+            "{}",
+            h.describe()
+        );
+        let h = h.into_together().expect("the control half comes back");
+        assert!(!h.apart());
+        assert_eq!(h.project(), together.project());
+    }
+
+    /// Arrange 2.6b: apart, a call that isn't an ask borrows the control
+    /// half back for the call (a lend): its answer is the same as
+    /// together's, and what the facade reads straight after (the armed
+    /// track, the steps, the mutes) already shows it. Lends are counted.
+    #[test]
+    fn apart_a_lent_call_answers_at_once_and_reads_see_it() {
+        let (mut h, why) = host_with_a_clip().into_apart();
+        assert_eq!(why, None);
+        let mut pads = Fake::default();
+        assert!(h.act(TimeAction::Arm(Some(0))).is_ok());
+        assert_eq!(h.armed(), Some(0));
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        let before = h.steps();
+        assert!(before.clip.is_some(), "the launched clip's steps");
+        let r = h.step_action(StepAction::Tap {
+            pad: 5,
+            step: 2,
+            velocity: 100,
+        });
+        assert!(r.is_ok(), "{r:?}");
+        assert_ne!(h.steps(), before, "read straight after the tap");
+        assert!(h.take_steps_changed());
+        h.mute_or_solo(0, false, false).unwrap();
+        assert_eq!(h.muted(0), Some(true), "read straight after the mute");
+        // A copy published before a lend never comes after it: the facade
+        // never sees an older state than the lend left.
+        for k in 0..200 {
+            let t = k % 3;
+            h.act(TimeAction::Select(t)).unwrap();
+            h.period(PERIOD, &mut pads);
+            pads.frame += u64::from(PERIOD);
+            assert_eq!(h.selected(), Some(t), "after lend {k}");
+        }
+        h.act(TimeAction::Select(0)).unwrap();
+        assert!(h.command(Command::Play));
+        until(&mut h, &mut pads, |h| h.info().state.rolling());
+        while !pads_heard(&pads) {
+            h.period(PERIOD, &mut pads);
+            pads.frame += u64::from(PERIOD);
+        }
+        assert!(
+            h.describe().contains("0 asks, 206 lends"),
+            "{}",
+            h.describe()
+        );
+        // The project, read from the copy, comes to have the tap.
+        until(&mut h, &mut pads, |h| {
+            h.project().clip(0, 0).map(|c| c.notes.len()) == Some(5)
+        });
+    }
+
+    /// Whether the fake pads were told anything (a muted track still
+    /// plays to the pads' mixer strip, silent there).
+    fn pads_heard(p: &Fake) -> bool {
+        !p.hits.is_empty() || p.frame > 2 * BAR
+    }
+
+    /// Arrange 2.6b: apart, the facade's period (the audio half's period
+    /// and taking the newest copy, the copy it replaces sent back to be
+    /// freed on the editing side's thread) allocates and frees nothing, in
+    /// any period, while the editing side compiles launch after launch on
+    /// its own thread; the asks themselves are made between periods.
+    #[test]
+    fn apart_the_facades_period_allocates_nothing_while_the_editing_side_compiles() {
+        /// Pads that only count, so the test itself allocates nothing.
+        #[derive(Default)]
+        struct Count(u64);
+        impl Pads for Count {
+            fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
+                self.0 += 1;
+                true
+            }
+            fn release_at(&mut self, _: u16, _: usize, _: u32) {}
+            fn stop_all(&mut self) {}
+            fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
+        }
+        let mut h = TimeHost::new(RATE, 140.0).unwrap();
+        for t in 0..4 {
+            if t > 0 {
+                h.act(TimeAction::AddTrack).unwrap();
+            }
+            for row in 0..2 {
+                let mut c = Clip::new("busy", 4 * 3840);
+                c.notes = (0..64)
+                    .map(|i| {
+                        mpfree_seq::Note::new(
+                            i * 240,
+                            120,
+                            ((t + row + i as usize) % 16) as u8,
+                            100,
+                        )
+                    })
+                    .collect();
+                h.control.project.tracks[t].slots[row] = Some(c);
+            }
+        }
+        h.control.project.give_clip_ids();
+        h.command(Command::Play);
+        let (mut h, why) = h.into_apart();
+        assert_eq!(why, None);
+        let note = Say::Note { ok: "", err: "" };
+        let mut pads = Count::default();
+        let mut worst = (0, 0);
+        let mut asked = 0;
+        for period in 0..3000 {
+            if period % 3 == 0 {
+                let k = period / 3;
+                let a = match k % 4 {
+                    0 => TimeAction::Launch {
+                        track: k % 4,
+                        slot: (k / 4) % 2,
+                    },
+                    1 => TimeAction::Undo,
+                    2 => TimeAction::Redo,
+                    _ => TimeAction::StopClip(k % 4),
+                };
+                assert_eq!(h.act_then(a, note.clone()), None);
+                asked += 1;
+                let _ = h.take_said();
+            }
+            let ((), n) = crate::sys::alloc_count::calls(|| h.period(PERIOD, &mut pads));
+            if n > worst.1 {
+                worst = (period, n);
+            }
+            if period % 10 == 0 {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        assert_eq!(worst, (0, 0), "(period, allocations and frees) at worst");
+        let h = h.into_together().expect("back");
+        assert!(asked > 900);
+        assert!(
+            h.control.costs.compiles > 100,
+            "{}",
+            h.control.costs.compiles
+        );
+        assert!(pads.0 > 20, "it played: {} hits", pads.0);
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Arrange 2.6b: apart, what comes back without being asked reaches
+    /// the app as together: live to song's and the loops' lines, the mute
+    /// queue's landings and the steps changing; and the inputs the app
+    /// gives every period go only when they change.
+    #[test]
+    fn apart_the_editing_sides_news_reach_the_app() {
+        let (mut h, why) = host_with_a_clip().into_apart();
+        assert_eq!(why, None);
+        let mut pads = Fake::default();
+        // The tempo, every period: one ask for the change only.
+        for _ in 0..20 {
+            h.follow_tempo(100.0);
+            h.take_follows(false);
+            h.period(PERIOD, &mut pads);
+        }
+        assert!(h.describe().contains("2 asks"), "{}", h.describe());
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        // The editing side has heard the transport start (its copy of the
+        // screens' state says so).
+        until(&mut h, &mut pads, |h| {
+            h.state().transport.state.rolling() && h.info().bpm == 100.0
+        });
+        // A mute waiting for its line lands on it, and its light follows.
+        h.mute_or_solo(0, true, false).unwrap();
+        assert!(h.mute_light(0).is_some_and(|l| l.waiting));
+        until(&mut h, &mut pads, |h| h.muted(0) == Some(true));
+        assert!(h.mute_light(0).is_some_and(|l| !l.waiting && l.silent));
+        let h = h.into_together().expect("back");
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Arrange 2.6c, on the desktop: what each action costs the facade's
+    /// thread (the audio thread in the app) in the big song in song mode
+    /// while it plays, together and apart: the call and the period after
+    /// it, mean and worst of 20. Apart, the screen's actions go as asks
+    /// ([`TimeHost::act_then`], as `time_action` sends them), and a step
+    /// tap both as an ask and lent. `cargo test --release -p mpfree-app --bin mpfree --
+    /// --ignored print_what_each_action_costs --nocapture`.
+    #[test]
+    #[ignore]
+    fn print_what_each_action_costs_the_audio_thread_in_the_big_song() {
+        use mpfree_seq::{Note, Placement};
+        for apart in [false, true] {
+            let mut h = TimeHost::new(RATE, 120.0).unwrap();
+            let len = 16 * 960i64;
+            for t in 0..16 {
+                if t > 0 {
+                    h.act(TimeAction::AddTrack).unwrap();
+                }
+                for row in 0..2usize {
+                    let mut c = Clip::new("c", len);
+                    c.notes = (0..1000i64)
+                        .map(|k| {
+                            let pitch = 36 + (k * 7 + row as i64) % 48;
+                            Note::new(k * len / 1000, 8, pitch as u8, 100)
+                        })
+                        .collect();
+                    h.control.project.tracks[t].slots[row] = Some(c);
+                }
+            }
+            h.control.project.give_clip_ids();
+            for t in 0..16 {
+                for k in 0..32i64 {
+                    let b =
+                        Placement::of(&h.control.project.tracks, t, (k % 2) as usize, k * len, len);
+                    h.control.project.arrangement.place(b).unwrap();
+                }
+            }
+            h.act(TimeAction::SongMode(true)).unwrap();
+            h.command(Command::Play);
+            if apart {
+                h = h.into_apart().0;
+            }
+            let mut pads = Fake::default();
+            for _ in 0..50 {
+                h.period(PERIOD, &mut pads);
+            }
+            let note = Say::Note { ok: "", err: "" };
+            let mut rows: Vec<(&str, f64, f64)> = Vec::new();
+            let mut time = |name, h: &mut TimeHost, f: &mut dyn FnMut(&mut TimeHost)| {
+                let (mut worst, mut sum) = (0f64, 0f64);
+                for _ in 0..20 {
+                    let t0 = std::time::Instant::now();
+                    f(h);
+                    h.period(PERIOD, &mut pads);
+                    let ms = t0.elapsed().as_secs_f64() * 1000.0;
+                    (worst, sum) = (worst.max(ms), sum + ms);
+                    // The rest of the period, and a few more, as the app
+                    // has between touches.
+                    for _ in 0..3 {
+                        std::thread::sleep(std::time::Duration::from_millis(3));
+                        h.period(PERIOD, &mut pads);
+                        let _ = h.take_said();
+                    }
+                }
+                rows.push((name, sum / 20.0, worst));
+            };
+            let mut k = 0;
+            let act = |h: &mut TimeHost, a: TimeAction| {
+                let _ = h.act_then(a, note.clone());
+            };
+            time("a period alone", &mut h, &mut |_| {});
+            time("launch", &mut h, &mut |h| {
+                k += 1;
+                act(
+                    h,
+                    TimeAction::Launch {
+                        track: k % 16,
+                        slot: k % 2,
+                    },
+                );
+            });
+            time("scene", &mut h, &mut |h| {
+                k += 1;
+                act(h, TimeAction::LaunchScene(k % 2));
+            });
+            time("undo", &mut h, &mut |h| act(h, TimeAction::Undo));
+            time("redo", &mut h, &mut |h| act(h, TimeAction::Redo));
+            time("song mode off and on", &mut h, &mut |h| {
+                act(h, TimeAction::SongMode(false));
+                act(h, TimeAction::SongMode(true));
+            });
+            time("track mute", &mut h, &mut |h| {
+                k += 1;
+                let _ = h.mute_or_solo_then(k % 16, false, false, note.clone());
+            });
+            time("step tap", &mut h, &mut |h| {
+                k += 1;
+                let tap = StepAction::Tap {
+                    pad: 3,
+                    step: k % 16,
+                    velocity: 100,
+                };
+                let _ = h.step_action_then(tap, note.clone());
+            });
+            time("step tap, lent apart", &mut h, &mut |h| {
+                k += 1;
+                let _ = h.step_action(StepAction::Tap {
+                    pad: 3,
+                    step: k % 16,
+                    velocity: 100,
+                });
+            });
+            time("the screens' state", &mut h, &mut |h| {
+                std::hint::black_box(h.state());
+            });
+            let mode = if apart { "apart" } else { "together" };
+            for (n, mean, worst) in &rows {
+                eprintln!("{mode:9} {n:22} mean {mean:7.3} ms, worst {worst:7.3} ms");
+            }
+            eprintln!("{mode:9} {}", h.describe());
         }
     }
 

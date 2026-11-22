@@ -1998,6 +1998,7 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(arrange_compile());
     v.push(measured(arrange_step));
     v.push(measured(arrange_save));
+    v.push(measured(song_view_frame));
     v.push(measured(|| live_arps(rate, 4)));
     v.push(measured(|| live_arps(rate, 16)));
     v.push(measured(|| looper(rate, 60)));
@@ -3170,6 +3171,18 @@ fn time_record(rate: u32, tracks: usize, armed: usize) -> Case {
 /// `--check-allocs` leaves it out.
 pub const CONTROL: &str = "control";
 
+/// The module of the screen's cases (Arrange refactor 2.4): the screen
+/// thread's work, not the audio path's. Like [`CONTROL`] it has no budget
+/// line of its own, may allocate and makes no sound.
+pub const SCREEN: &str = "screen";
+
+/// The case is not the audio path's: the control half's or the screen's
+/// (no sound, so no golden fingerprint, and `--check-allocs` leaves it
+/// out).
+pub fn off_the_audio_path(c: &Case) -> bool {
+    c.module == CONTROL || c.module == SCREEN
+}
+
 /// What the big-song cases' names start with (Arrange refactor 2.1). Each
 /// of their blocks compiles or saves a whole song, about a fifth of a
 /// second a block on a desktop today, so they count and time far fewer
@@ -3177,14 +3190,14 @@ pub const CONTROL: &str = "control";
 pub const BIG_SONG: &str = "Arrange: ";
 
 /// Blocks to warm up for and then count, of `blocks` asked for: an engine
-/// counts every one after 50; the control half's step cases a tenth of
-/// them after 5, since a step edit costs far more a block than an engine
-/// and the same every block; the big-song cases one in 200 (at least one)
+/// counts every one after 50; the control half's step cases and the
+/// screen's cases a tenth of them after 5, since a step edit or a frame
+/// costs far more a block than an engine and the same every block; the big-song cases one in 200 (at least one)
 /// after one, since a block of theirs is billions of instructions.
 pub fn blocks_for(c: &Case, blocks: u64) -> (u64, u64) {
     if c.name.starts_with(BIG_SONG) {
         (1, (blocks / 200).max(1))
-    } else if c.module == CONTROL {
+    } else if off_the_audio_path(c) {
         (5, (blocks / 10).max(1))
     } else {
         (50, blocks)
@@ -3497,6 +3510,76 @@ fn arrange_save() -> Case {
             r.fill(0.0);
             l[0] = text.len() as f32;
             r[0] = back.arrangement.placements.len() as f32;
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// The Song view of the longest song (Arrange refactor 2.4): 4,096 blocks
+/// (`MAX_PLACEMENTS`: 16 tracks of 256 four-bar blocks, each naming one of
+/// its track's two clips), a frame a block, as the screen draws one while
+/// the song plays: the playhead moved (`ToUi::Transport`), the time page
+/// updated and the page painted in software at the MPC's size. Every 8th
+/// frame the view scrolls a bar on, as the wheel does, back to the start
+/// past the song's end. Its bytes include the page and the fonts.
+fn song_view_frame() -> Case {
+    use mpfree_play::Takes;
+    use mpfree_seq::Placement;
+    use mpfree_time_ui::view::{self as tv, TimePage, TimeState, TransportInfo};
+    use mpfree_ui::widgets::{Header, Label};
+    use mpfree_ui::{Align, Fonts, SoftCanvas, Theme, Tone, Ui};
+    let bar = 4 * i64::from(PPQ);
+    let mut song = Song::new();
+    for t in 0..ARR_TRACKS {
+        let mut tr = Track::new(&format!("Track {}", t + 1), t as u16);
+        tr.slots[0] = Some(Clip::new(&format!("Verse {}", t + 1), 4 * bar));
+        tr.slots[1] = Some(Clip::new(&format!("Chorus {}", t + 1), 4 * bar));
+        song.tracks.push(tr);
+    }
+    song.give_clip_ids();
+    let per_track = (mpfree_seq::arrange::MAX_PLACEMENTS / ARR_TRACKS) as i64;
+    for t in 0..ARR_TRACKS {
+        for k in 0..per_track {
+            let b = Placement::of(&song.tracks, t, (k % 2) as usize, k * 4 * bar, 4 * bar);
+            song.arrangement.place(b).expect("room for the block");
+        }
+    }
+    let playing = TransportInfo {
+        state: mpfree_transport::State::Playing,
+        ..TransportInfo::default()
+    };
+    let mut st = TimeState::from_engine(playing, &song, &[], Some(0), &Takes::default());
+    st.song_view = true;
+    st.song_on = true;
+    let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+    ui.add("header", Header::new(&["Play", "Clips"]));
+    ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+    let mut page = TimePage::add_to(&mut ui).expect("the time page");
+    ui.show(tv::CLIPS_PAGE).expect("the clips page");
+    page.update(&mut ui, &st);
+    let mut canvas = SoftCanvas::new(1280, 800);
+    ui.paint(&mut canvas);
+    let end_bar = per_track * 4;
+    Case {
+        name: "Song view: 4,096 blocks, a frame while the song plays".to_string(),
+        module: SCREEN,
+        what: "the playhead moved, the page updated and painted; a bar's scroll every 8th frame",
+        block: Box::new(move |b, l, r| {
+            st.transport.position += i64::from(PPQ) / 8;
+            if b % 8 == 7 {
+                let back = if page.first_bar + 1 >= end_bar {
+                    -end_bar
+                } else {
+                    1
+                };
+                page.scroll(&ui, back as i32);
+            }
+            page.update(&mut ui, &st);
+            let drawn = ui.paint(&mut canvas);
+            l.fill(0.0);
+            r.fill(0.0);
+            l[0] = drawn.len() as f32;
+            r[0] = page.first_bar as f32;
         }),
         mem_bytes: 0,
     }
@@ -3865,7 +3948,7 @@ fn audio_tracks(rate: u32, recording: usize, streaming: bool) -> Case {
                  limit: usize| {
         while let Some(r) = a.take_io() {
             match r {
-                TrackIo::Write { take, chunk } => {
+                TrackIo::Write { take, chunk } | TrackIo::Rewrite { take, chunk } => {
                     if let Some(c) = a.chunk(take, chunk) {
                         disk.insert((take, chunk), c.to_vec());
                     }
@@ -5148,6 +5231,21 @@ mod tests {
         let c = arrange_save();
         assert_eq!(blocks_for(&c, 200), (1, 1));
         assert_eq!(blocks_for(&step_grid(), 200), (5, 20));
+    }
+
+    #[test]
+    fn the_song_view_case_draws_every_frame_and_scrolls() {
+        // Each frame draws (the playhead moved); every 8th scrolls a bar.
+        let mut c = measured(song_view_frame);
+        assert_eq!(c.module, SCREEN);
+        let (l, r) = run(&mut c, 7);
+        assert!(l[0] > 0.0);
+        assert_eq!(r[0], 0.0);
+        let (l, r) = run(&mut c, 9);
+        assert!(l[0] > 0.0);
+        assert_eq!(r[0], 1.0);
+        assert!(off_the_audio_path(&c));
+        assert_eq!(blocks_for(&c, 200), (5, 20));
     }
 
     #[test]

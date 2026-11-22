@@ -213,7 +213,7 @@ impl Widget for Header {
             let tr = self.tab_rect(r, i);
             let on = i == self.active;
             if on {
-                cx.canvas.fill_round_rect(tr, 10, t.raised);
+                cx.canvas.fill_round_rect(tr, t.round(10), t.raised);
                 let bar = Rect::new(tr.x + 20, tr.bottom() - 4, tr.w - 40, 3);
                 cx.canvas.fill_round_rect(bar, 1, t.accent);
             }
@@ -230,7 +230,7 @@ impl Widget for Header {
         // The mixer icon at the right edge: three sliders.
         if let (Some(b), Some(open)) = (self.icon_rect(r), self.mixer_icon) {
             cx.canvas
-                .fill_round_rect(b, 10, if open { t.raised } else { t.surface });
+                .fill_round_rect(b, t.round(10), if open { t.raised } else { t.surface });
             if open {
                 let bar = Rect::new(b.x + 10, b.bottom() - 4, b.w - 20, 3);
                 cx.canvas.fill_round_rect(bar, 1, t.accent);
@@ -250,7 +250,7 @@ impl Widget for Header {
         // arrow out (pointing left).
         if let (Some(b), Some(open)) = (self.io_icon_rect(r), self.io_icon) {
             cx.canvas
-                .fill_round_rect(b, 10, if open { t.raised } else { t.surface });
+                .fill_round_rect(b, t.round(10), if open { t.raised } else { t.surface });
             if open {
                 let bar = Rect::new(b.x + 10, b.bottom() - 4, b.w - 20, 3);
                 cx.canvas.fill_round_rect(bar, 1, t.accent);
@@ -269,7 +269,7 @@ impl Widget for Header {
         // The folder icon: a folder's outline, its tab at the top left.
         if let (Some(b), Some(open)) = (self.folder_icon_rect(r), self.folder_icon) {
             let well = if open { t.raised } else { t.surface };
-            cx.canvas.fill_round_rect(b, 10, well);
+            cx.canvas.fill_round_rect(b, t.round(10), well);
             if open {
                 let bar = Rect::new(b.x + 10, b.bottom() - 4, b.w - 20, 3);
                 cx.canvas.fill_round_rect(bar, 1, t.accent);
@@ -477,17 +477,16 @@ impl Widget for PadGrid {
             let (fill, ink, sub) = match color {
                 Some(c) => {
                     let fill = t.surface.mix(c, 0.20 + 0.80 * lit);
-                    let bright = lit > 0.45;
-                    let ink = if bright { t.bg } else { t.text };
-                    (
-                        fill,
-                        ink,
-                        if bright {
-                            t.bg.with_alpha(170)
-                        } else {
-                            c.mix(t.text, 0.35)
-                        },
-                    )
+                    // The name in whichever text reads on the lit pad; the
+                    // line under it quieter, in the pad's colour while the
+                    // pad is dim.
+                    let ink = t.ink_on(fill);
+                    let sub = if ink == t.text {
+                        t.readable(c.mix(t.text, 0.35), fill)
+                    } else {
+                        ink.with_alpha(170)
+                    };
+                    (fill, ink, sub)
                 }
                 None => (t.surface, t.text_faint, t.text_faint),
             };
@@ -632,7 +631,7 @@ impl Widget for ListView {
                 ROW_H - 4,
             );
             if k == self.selected {
-                cx.canvas.fill_round_rect(row, 10, t.raised);
+                cx.canvas.fill_round_rect(row, t.round(10), t.raised);
                 cx.canvas
                     .fill_round_rect(Rect::new(row.x, row.y + 10, 4, row.h - 20), 2, t.accent);
             }
@@ -1226,7 +1225,7 @@ impl Widget for Card {
         }
         for (i, label) in self.buttons.iter().enumerate() {
             let b = self.button_rect(r, i);
-            cx.canvas.fill_round_rect(b, 12, t.raised);
+            cx.canvas.fill_round_rect(b, t.round(12), t.raised);
             cx.text(FontId::Bold, t.size_body, b, Align::Center, t.text, label);
         }
     }
@@ -1534,8 +1533,8 @@ impl Widget for OptionList {
         if let Some(b) = self.back_rect(r) {
             // ‹ Back, then the title after it.
             cx.panel(r);
-            cx.canvas.fill_round_rect(b, 10, t.raised);
-            cx.canvas.stroke_round_rect(b, 10, 1, t.outline);
+            cx.canvas.fill_round_rect(b, t.round(10), t.raised);
+            cx.canvas.stroke_round_rect(b, t.round(10), 1, t.outline);
             let label = self.back.as_deref().unwrap_or_default();
             cx.text(
                 FontId::Bold,
@@ -1604,7 +1603,7 @@ impl Widget for OptionList {
             let on = k == self.selected;
             let narrow = OptionList::narrow(row);
             if on {
-                cx.canvas.fill_round_rect(row, 10, t.raised);
+                cx.canvas.fill_round_rect(row, t.round(10), t.raised);
                 cx.canvas
                     .fill_round_rect(Rect::new(row.x, row.y + 12, 4, row.h - 24), 2, t.accent);
             }
@@ -1625,9 +1624,9 @@ impl Widget for OptionList {
             let boxr = value.inset_xy(0, 7);
             let open = on && self.editing;
             cx.canvas
-                .fill_round_rect(boxr, 10, if on { t.surface } else { t.raised });
+                .fill_round_rect(boxr, t.round(10), if on { t.surface } else { t.raised });
             if open {
-                cx.canvas.stroke_round_rect(boxr, 10, 2, t.accent);
+                cx.canvas.stroke_round_rect(boxr, t.round(10), 2, t.accent);
             }
             let (left, mid) = boxr.take_left(arrow);
             let (right, mid) = mid.take_right(arrow);
@@ -1665,10 +1664,13 @@ impl Widget for OptionList {
             let Some(br) = self.button_rect(r, i) else {
                 continue;
             };
-            cx.canvas
-                .fill_round_rect(br, 10, if b.enabled { t.raised } else { t.surface });
+            cx.canvas.fill_round_rect(
+                br,
+                t.round(10),
+                if b.enabled { t.raised } else { t.surface },
+            );
             if b.waiting {
-                cx.canvas.stroke_round_rect(br, 10, 2, t.warn);
+                cx.canvas.stroke_round_rect(br, t.round(10), 2, t.warn);
             }
             cx.text(
                 FontId::Bold,

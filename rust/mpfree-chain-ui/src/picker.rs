@@ -422,10 +422,10 @@ pub fn paint(cx: &mut PaintCx, l: &PickerLayout, st: &ChainState, pv: &PickerVie
 fn tile_back(cx: &mut PaintCx, r: Rect, lit: bool) {
     let t = cx.theme.clone();
     if lit {
-        cx.canvas.fill_round_rect(r, 10, t.accent);
+        cx.canvas.fill_round_rect(r, t.round(10), t.accent);
         cx.canvas.fill_round_rect(r.inset(2), 9, t.raised);
     } else {
-        cx.canvas.fill_round_rect(r, 10, t.raised);
+        cx.canvas.fill_round_rect(r, t.round(10), t.raised);
     }
 }
 

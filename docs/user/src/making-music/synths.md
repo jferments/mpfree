@@ -427,7 +427,7 @@ Some presets bring their own effects (a phaser, a wah, a reverb, an amp) and a f
 
 When the selected track plays an MPC plugin instrument that has a skin, the Synth tab shows that skin, as its makers drew it for the MPC: the same pictures, knobs, buttons and text, at the same size.
 
-- **Tap and drag** the skin's controls as you would on an MPC. A double tap on a knob or a menu opens its larger editor over the screen; a tap outside it closes it.
+- **Tap and drag** the skin's controls as you would on an MPC. A double tap on a knob or a menu opens its larger editor over the screen; a tap outside it closes it. The larger editor is MPFree's own, in your theme's colours (Prefs > Appearance), and a menu lists every choice by name; the skin itself keeps its makers' colours in every theme.
 - **The buttons under the skin** are its tabs, one per function key as on an MPC. A tap shows that tab; when a key has more than one tab (its button reads "Osc  1/2"), another tap goes to the next.
 - **Q-Links 1 to 4** turn the knobs the plugin's makers chose for the tab. A tap on a control picks the group of knobs it belongs to, as on an MPC. The skin shows the change.
 - **The wheel** picks the skin's controls one after another; push it and turn to change the one picked (see [The screen](../getting-started/the-screen.md#the-wheels-outline)).

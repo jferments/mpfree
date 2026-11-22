@@ -974,6 +974,9 @@ pub struct SamplePage {
     gear_out: Option<GearOut>,
     /// A project's kits being read and decoded ([`SamplePage::open_part`]).
     opening: Option<Receiver<ProjectRead>>,
+    /// What the project's kits left out, a few words each, for the app
+    /// ([`SamplePage::take_left_out`]).
+    left_out: Vec<String>,
     /// A kit file being read and decoded ([`SamplePage::open_kit`]): it
     /// goes in place of this kit, under this name.
     kit_loading: Option<KitLoading>,
@@ -1138,6 +1141,7 @@ impl SamplePage {
             auto_last: String::new(),
             gear_out: None,
             opening: None,
+            left_out: Vec::new(),
             kit_loading: None,
             loading: None,
             assign: None,
@@ -5679,6 +5683,7 @@ impl SamplePage {
     /// as when the kits are loaded.
     #[allow(dead_code)] // the app's browser wiring calls it
     pub fn open_part(&mut self, text: String, read: ReadSample) {
+        self.left_out.clear();
         let (tx, rx) = mpsc::channel();
         let (free, rate) = (self.mem_free, self.rate);
         let spawned = std::thread::Builder::new()
@@ -5929,10 +5934,25 @@ impl SamplePage {
                     ));
                 }
             }
-            Err(e) => self
-                .lines
-                .push(format!("sample: the project's kits weren't opened ({e})")),
+            Err(e) => {
+                self.lines
+                    .push(format!("sample: the project's kits weren't opened ({e})"));
+                self.left_out.push("its kits".to_string());
+            }
         }
+    }
+
+    /// Whether a project's kits are being read: the kits here are still
+    /// the last project's until they land.
+    pub fn opening(&self) -> bool {
+        self.opening.is_some()
+    }
+
+    /// What the project's kits left out since the last call (a sound whose
+    /// file isn't there or doesn't fit, a pad or take without its sound),
+    /// a few words each: "part of the kit Drums".
+    pub fn take_left_out(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.left_out)
     }
 
     /// Puts the kits of an opened project in place of the ones here, kit
@@ -5940,6 +5960,13 @@ impl SamplePage {
     fn apply_opened(&mut self, ui: &mut Ui, o: Opened) {
         for n in &o.notes {
             self.lines.push(format!("sample: {n}"));
+            // Each line is something left out, "Drums: sound kick.wav
+            // left out (...)", its kit's name first (none for a kit
+            // without one).
+            self.left_out.push(match n.split_once(": ") {
+                Some((kit, _)) if !kit.is_empty() => format!("part of the kit {kit}"),
+                _ => "part of a kit".to_string(),
+            });
         }
         let short = o
             .notes
@@ -5993,6 +6020,7 @@ impl SamplePage {
             return false;
         };
         self.opening = None;
+        self.left_out.clear();
         self.loading = None;
         self.assign = None;
         let rate = self.rate;

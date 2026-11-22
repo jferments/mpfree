@@ -291,6 +291,105 @@ fn the_first_save_needs_no_typing_and_later_saves_keep_versions() {
     assert!(b.take_actions().contains(&BrowseAction::SaveRequested));
 }
 
+/// docs/dev/design/project-safety.md: a project whose open left things
+/// out (an effect this stick can't make, a take whose file is missing) is
+/// never saved over by SHIFT + BROWSE: the save goes into a new project
+/// beside it, said, and the one on the stick keeps all it has. Save as
+/// saves where it is told; another open, or a refused one, sets the mark
+/// as that project has it.
+#[test]
+fn a_project_whose_open_left_things_out_is_saved_beside_it() {
+    let (mut b, lib) = browser();
+    let snap = |bpm: f64| Snapshot {
+        meta: Meta {
+            tempo: bpm,
+            ..Meta::default()
+        },
+        parts: vec![("transport".into(), format!("bpm = {bpm}\n"))],
+    };
+    let t = 1_794_431_040;
+    let night = Loc::new(Place::Projects, &["Night drive"]).unwrap();
+    let beside = Loc::new(Place::Projects, &["Night drive 2"]).unwrap();
+    let as_it_was = lib.open_project(&night).unwrap();
+    let versions = lib.versions(&night).unwrap().len();
+    let open_night = |b: &mut Browser| {
+        b.go_source(src("Projects"));
+        select(b, "Night drive");
+        b.push();
+        assert!(b
+            .take_actions()
+            .iter()
+            .any(|a| matches!(a, BrowseAction::ProjectOpened { loc, .. } if *loc == night)));
+    };
+    open_night(&mut b);
+    // The app found what it couldn't open, part by part.
+    b.left_out(["the effect clap:com.example.verb on Master".to_string()]);
+    b.left_out(["a take of audio 2".to_string()]);
+    assert_eq!(b.left_out_list().len(), 2);
+    b.save(snap(100.0), t);
+    assert!(b.take_actions().contains(&BrowseAction::ProjectSaved {
+        loc: beside.clone()
+    }));
+    assert_eq!(b.project(), Some(&beside));
+    assert_eq!(
+        b.status_line(),
+        Some((
+            "Saved as Night drive 2: Night drive opened without the effect clap:com.example.verb on Master and 1 more, so it stays as it was",
+            false
+        ))
+    );
+    let saved = lib.open_project(&beside).unwrap();
+    assert_eq!(saved.part("transport"), Some("bpm = 100\n"));
+    assert_eq!(saved.meta.name, "Night drive 2");
+    // Night drive is untouched: the same parts, no new version.
+    let now = lib.open_project(&night).unwrap();
+    assert_eq!(now.parts, as_it_was.parts);
+    assert_eq!(lib.versions(&night).unwrap().len(), versions);
+    // The new project holds all it has: the next save goes into it.
+    assert!(b.left_out_list().is_empty());
+    b.save(snap(101.0), t + 60);
+    assert_eq!(b.project(), Some(&beside));
+    assert_eq!(lib.versions(&beside).unwrap().len(), 1);
+
+    // Opened again, it leaves the effect out again. Save as offers the
+    // name beside it; the project's own name, typed, is the musician's
+    // choice and saves over it.
+    open_night(&mut b);
+    assert!(b.left_out_list().is_empty(), "a new open starts clean");
+    b.left_out(["the effect clap:com.example.verb on Master".to_string()]);
+    b.save_as(t + 120);
+    assert!(matches!(&b.screen().modal, Modal::Keyboard { text, .. } if text == "Night drive 3"));
+    for _ in 0.."Night drive 3".len() {
+        b.input(Input::Key(Key::Backspace));
+    }
+    for c in "Night drive".chars() {
+        b.input(Input::Key(if c == ' ' { Key::Space } else { Key::Char(c) }));
+    }
+    b.input(Input::Key(Key::Done));
+    assert!(b.take_actions().contains(&BrowseAction::SaveRequested));
+    assert!(b.left_out_list().is_empty());
+    b.save(snap(102.0), t + 180);
+    assert_eq!(b.project(), Some(&night));
+    assert_eq!(b.status_line(), Some(("Saved Night drive", false)));
+    assert_eq!(lib.versions(&night).unwrap().len(), versions + 1);
+
+    // A refused open puts the mark back as it was for the project still
+    // open.
+    open_night(&mut b);
+    b.left_out(["loop 3".to_string()]);
+    b.go_source(src("Projects"));
+    select(&mut b, "Night drive 2");
+    b.push();
+    b.take_actions();
+    assert!(b.left_out_list().is_empty());
+    b.open_refused("Didn't open Night drive 2".into());
+    assert_eq!(b.left_out_list(), ["loop 3".to_string()]);
+    assert_eq!(b.project(), Some(&night));
+    // New project forgets it.
+    b.new_project();
+    assert!(b.left_out_list().is_empty());
+}
+
 #[test]
 fn lists_survive_a_restart_and_bad_lines_are_skipped() {
     let (mut b, _) = browser();

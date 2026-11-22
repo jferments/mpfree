@@ -1375,7 +1375,7 @@ impl Ui {
                         a: 150,
                         ..theme.bad
                     };
-                    canvas.fill_round_rect(Rect::new(h.x, h.y, w, h.h), 8, fill);
+                    canvas.fill_round_rect(Rect::new(h.x, h.y, w, h.h), theme.round(8), fill);
                 }
                 if !*full {
                     damage.push(part);

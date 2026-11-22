@@ -193,8 +193,11 @@ impl Widget for LayerMap {
                 continue;
             };
             let on = k == self.selected;
-            cx.canvas
-                .fill_round_rect(b, 8, l.color.mix(t.surface, if on { 0.45 } else { 0.72 }));
+            cx.canvas.fill_round_rect(
+                b,
+                t.round(8),
+                l.color.mix(t.surface, if on { 0.45 } else { 0.72 }),
+            );
             cx.canvas.fill_rect(Rect::new(b.x, b.y, 4, b.h), l.color);
             if self.fade > 0 {
                 let w = |v: f32| LayerMap::x_of(plot, v);
@@ -209,7 +212,7 @@ impl Widget for LayerMap {
                 }
             }
             if on {
-                cx.canvas.stroke_round_rect(b, 8, 2, l.color);
+                cx.canvas.stroke_round_rect(b, t.round(8), 2, l.color);
             }
             // The names go inside the bar if they fit, else beside it on
             // the side with more room.
@@ -555,7 +558,7 @@ impl Widget for EnvelopeView {
                 11.0,
                 Rect::new(x - POINT / 2, y - POINT / 2, POINT, POINT),
                 Align::Center,
-                t.bg,
+                t.on_accent,
                 p.letter(),
             );
         }
