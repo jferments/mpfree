@@ -303,9 +303,13 @@ pub struct Stats {
     /// Streaming: frames that should have played but whose chunk was not
     /// in memory in time (they played silence).
     pub missed: u64,
-    /// Streaming: chunks the disk could not read or write.
+    /// Streaming: chunks the disk could not read or write (each try of a
+    /// write counts), and take files it could not finish.
     pub read_errors: u32,
     pub write_errors: u32,
+    /// Streaming: reads that came back shorter than the chunk (never
+    /// played: the chunk is asked for again).
+    pub short_reads: u32,
     /// Streaming: disk requests dropped because the queue was full.
     pub io_dropped: u32,
 }
@@ -318,11 +322,36 @@ pub enum Io {
     Read { take: u16, chunk: u32 },
     /// Chunk `chunk` of the take is recorded (the last one may be short):
     /// copy it with [`AudioTracks::chunk`], write it, then tell
-    /// [`AudioTracks::written`] (or [`AudioTracks::write_failed`]).
+    /// [`AudioTracks::written`] (or [`AudioTracks::write_failed`]). Chunk
+    /// 0 is a new take: a new file.
     Write { take: u16, chunk: u32 },
+    /// A write that failed, tried again: as [`Io::Write`], into the file
+    /// the take already has (never a new one, even for chunk 0).
+    Rewrite { take: u16, chunk: u32 },
     /// The take's recording ended; every chunk has been asked for. Finish
-    /// its file ([`AudioTracks::take`] gives its length).
+    /// its file ([`AudioTracks::take`] gives its length), then tell
+    /// [`AudioTracks::finished`]. Asked again after a write tried again.
     Finish { take: u16 },
+}
+
+/// Tries for each write, and for finishing each file, before a take is
+/// [`SaveState::AtRisk`].
+pub const WRITE_TRIES: u8 = 3;
+
+/// Streaming: how far a take's audio is on the disk
+/// ([`AudioTracks::save_state`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaveState {
+    /// It is still recording.
+    Recording,
+    /// Recorded; some of it is still on its way to the disk.
+    Saving,
+    /// Every sample is on the disk and its file finished.
+    Saved,
+    /// The disk failed it (a write or the finish failed every try, or a
+    /// request was lost): what is not on the disk stays in memory, and
+    /// never makes room for anything else, so it still plays.
+    AtRisk,
 }
 
 /// The memory gauge, in samples (a stereo frame is two).
@@ -347,6 +376,12 @@ struct Take {
     cut_short: bool,
     /// Its saved audio is still copying in: it plays nothing yet.
     loading: bool,
+    /// Streaming: finishes of its file asked for and not answered yet;
+    /// finishes that failed in a row.
+    finishing: u8,
+    finish_fails: u8,
+    /// Streaming: the disk failed it (see [`SaveState::AtRisk`]).
+    at_risk: bool,
 }
 
 const NO_TAKE: Take = Take {
@@ -361,6 +396,9 @@ const NO_TAKE: Take = Take {
     recording: false,
     cut_short: false,
     loading: false,
+    finishing: 0,
+    finish_fails: 0,
+    at_risk: false,
 };
 
 impl Take {
@@ -1627,7 +1665,8 @@ impl AudioTracks {
     }
 
     /// The take stops recording. Streaming: its last, short chunk goes to
-    /// be written, and its file to be finished.
+    /// be written, and its file to be finished (a take with no audio has
+    /// no file).
     fn close(&mut self, id: usize) {
         let tk = &mut self.takes[id];
         if !tk.recording {
@@ -1639,7 +1678,7 @@ impl AudioTracks {
             // Nothing was written: its first chunk goes back.
             self.pool.release_take(id as u16);
         }
-        if self.streaming {
+        if self.streaming && samples > 0 {
             if !samples.is_multiple_of(CHUNK) {
                 self.ask(Io::Write {
                     take: id as u16,
@@ -1650,11 +1689,34 @@ impl AudioTracks {
         }
     }
 
+    /// A request for the disk thread. One that does not fit in the queue
+    /// is counted, and never left waiting for an answer that will not
+    /// come: a read's slot goes back (asked for again when next wanted),
+    /// and a take that would not be written or finished is at risk.
     fn ask(&mut self, r: Io) {
         if self.io.len() < self.io.capacity() {
+            if let Io::Finish { take } = r {
+                if let Some(t) = self.takes.get_mut(take as usize) {
+                    t.finishing = t.finishing.saturating_add(1);
+                }
+            }
             self.io.push_back(r);
-        } else {
-            self.stats.io_dropped += 1;
+            return;
+        }
+        self.stats.io_dropped += 1;
+        match r {
+            Io::Read { take, chunk } => {
+                if let Some(s) = self.pool.find(take, chunk).map(|s| s as usize) {
+                    if self.pool.slots[s].state == SlotState::Loading {
+                        self.pool.release(s);
+                    }
+                }
+            }
+            Io::Write { take, .. } | Io::Rewrite { take, .. } | Io::Finish { take } => {
+                if let Some(t) = self.takes.get_mut(take as usize) {
+                    t.at_risk = true;
+                }
+            }
         }
     }
 
@@ -1838,9 +1900,85 @@ impl AudioTracks {
         }
     }
 
-    /// The chunk could not be written: it stays in memory (counted).
-    pub fn write_failed(&mut self, _take: u16, _chunk: u32) {
+    /// The chunk could not be written: it stays in memory (counted) and is
+    /// asked for again ([`Io::Rewrite`], and the file finished again once
+    /// the take is recorded), up to [`WRITE_TRIES`] tries; after that the
+    /// take is [`SaveState::AtRisk`] and the chunk stays in memory.
+    pub fn write_failed(&mut self, take: u16, chunk: u32) {
         self.stats.write_errors += 1;
+        let Some(done) = self
+            .takes
+            .get(take as usize)
+            .filter(|t| t.live)
+            .map(|t| !t.recording && !t.loading)
+        else {
+            return;
+        };
+        let Some(s) = self.pool.find(take, chunk).map(|s| s as usize) else {
+            return;
+        };
+        let sl = &mut self.pool.slots[s];
+        if sl.state != SlotState::Dirty {
+            return;
+        }
+        sl.tries = sl.tries.saturating_add(1);
+        if sl.tries < WRITE_TRIES {
+            self.ask(Io::Rewrite { take, chunk });
+            if done {
+                self.ask(Io::Finish { take });
+            }
+        } else {
+            self.takes[take as usize].at_risk = true;
+        }
+    }
+
+    /// The disk thread's answer to [`Io::Finish`]. A failed finish is
+    /// counted with the write errors and tried again, up to
+    /// [`WRITE_TRIES`] in a row; after that the take is
+    /// [`SaveState::AtRisk`].
+    pub fn finished(&mut self, take: u16, ok: bool) {
+        let Some(t) = self.takes.get_mut(take as usize).filter(|t| t.live) else {
+            return;
+        };
+        t.finishing = t.finishing.saturating_sub(1);
+        if ok {
+            t.finish_fails = 0;
+            return;
+        }
+        t.finish_fails = t.finish_fails.saturating_add(1);
+        let again = t.finish_fails < WRITE_TRIES;
+        if !again {
+            t.at_risk = true;
+        }
+        self.stats.write_errors += 1;
+        if again {
+            self.ask(Io::Finish { take });
+        }
+    }
+
+    /// Streaming: how far take `id`'s audio is on the disk. None if not
+    /// streaming, or there is no such take. Looks at every slot: for the
+    /// screen, not for every period.
+    pub fn save_state(&self, id: u16) -> Option<SaveState> {
+        if !self.streaming {
+            return None;
+        }
+        let t = self.takes.get(id as usize).filter(|t| t.live)?;
+        let dirty = || {
+            self.pool
+                .slots
+                .iter()
+                .any(|s| s.state == SlotState::Dirty && s.take == id)
+        };
+        Some(if t.at_risk {
+            SaveState::AtRisk
+        } else if t.recording {
+            SaveState::Recording
+        } else if t.loading || t.finishing > 0 || dirty() {
+            SaveState::Saving
+        } else {
+            SaveState::Saved
+        })
     }
 
     /// The disk thread's answer to [`Io::Read`]: the chunk's samples. False
@@ -1854,6 +1992,11 @@ impl AudioTracks {
     /// periods: `data` goes at sample `from` of the chunk; with `last` the
     /// rest of the chunk is cleared and it plays from now on. False
     /// (nothing changed) if the chunk is no longer wanted.
+    ///
+    /// A chunk that comes back shorter than the take's audio there (`from`
+    /// plus `data`, with `last`) is a short read: counted
+    /// ([`Stats::short_reads`]), never played, and asked for again when
+    /// next wanted (false).
     pub fn fill_part(
         &mut self,
         take: u16,
@@ -1862,6 +2005,14 @@ impl AudioTracks {
         data: &[f32],
         last: bool,
     ) -> bool {
+        let Some(want) = self
+            .takes
+            .get(take as usize)
+            .filter(|t| t.live)
+            .map(|t| t.chunk_len(chunk))
+        else {
+            return false;
+        };
         let Some(s) = self.pool.find(take, chunk).map(|s| s as usize) else {
             return false;
         };
@@ -1869,6 +2020,11 @@ impl AudioTracks {
             return false;
         }
         let n = data.len().min(CHUNK - from);
+        if last && from + n < want {
+            self.stats.short_reads += 1;
+            self.pool.release(s);
+            return false;
+        }
         let b = s * CHUNK + from;
         self.pool.data[b..b + n].copy_from_slice(&data[..n]);
         if last {

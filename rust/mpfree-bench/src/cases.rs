@@ -3865,7 +3865,7 @@ fn audio_tracks(rate: u32, recording: usize, streaming: bool) -> Case {
                  limit: usize| {
         while let Some(r) = a.take_io() {
             match r {
-                TrackIo::Write { take, chunk } => {
+                TrackIo::Write { take, chunk } | TrackIo::Rewrite { take, chunk } => {
                     if let Some(c) = a.chunk(take, chunk) {
                         disk.insert((take, chunk), c.to_vec());
                     }

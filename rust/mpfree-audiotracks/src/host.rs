@@ -39,7 +39,9 @@ pub use crate::disk::DiskStats;
 use crate::disk::{Disk, FromDisk, ToDisk};
 use crate::save::{Saved, TakeFile};
 use crate::stretch::{fit_ratio, StretchJob};
-use crate::{AudioTracks, Command, Io, TakeInfo, CHUNK, IO_QUEUE, MAX_TAKES, PEAK_BLOCK};
+use crate::{
+    AudioTracks, Command, Io, SaveState, TakeInfo, CHUNK, IO_QUEUE, MAX_TAKES, PEAK_BLOCK,
+};
 
 /// Streaming: samples copied into or out of the tracks' memory in one
 /// period at most (a chunk takes 4 periods): about 94 chunks a second at
@@ -619,7 +621,9 @@ impl AudioHost {
 
     /// Fit take `id` to `bpm` (the tempo now), keeping its pitch. False if
     /// a fit is under way, the take is not there or records, its tempo is
-    /// not known or already `bpm`, or there is no worker.
+    /// not known or already `bpm`, or there is no worker; streaming, also
+    /// until all of it is on the disk ([`SaveState::Saved`]), as the fit
+    /// reads it from there.
     pub fn fit(&mut self, id: u16, bpm: f64) -> bool {
         if self.fitting.is_some() || self.tx.is_none() {
             return false;
@@ -631,7 +635,9 @@ impl AudioHost {
             return false;
         };
         if let Some(st) = &self.stream {
-            if take.frames * take.channels > FIT_MAX_SAMPLES {
+            if take.frames * take.channels > FIT_MAX_SAMPLES
+                || self.tracks.save_state(id) != Some(SaveState::Saved)
+            {
                 return false;
             }
             let _ = st.tx.send(ToDisk::ReadAll {
@@ -904,11 +910,9 @@ impl AudioHost {
                         st.spare.push(buf);
                     }
                 },
-                FromDisk::Finished { ok } => {
+                FromDisk::Finished { take, ok } => {
                     st.in_flight -= 1;
-                    if !ok {
-                        self.tracks.write_failed(u16::MAX, 0);
-                    }
+                    self.tracks.finished(take, ok);
                 }
                 FromDisk::Opened { file, ok } => {
                     st.opening -= 1;
@@ -957,14 +961,15 @@ impl AudioHost {
                     });
                 } else {
                     match st.waiting.front().copied() {
-                        Some(Io::Write { take, chunk }) => {
+                        Some(io @ (Io::Write { take, chunk } | Io::Rewrite { take, chunk })) => {
                             if budget == 0 || st.spare.is_empty() {
                                 break;
                             }
                             st.waiting.pop_front();
-                            if chunk == 0 {
+                            if matches!(io, Io::Write { chunk: 0, .. }) {
                                 // A new take: a new file, never one a save
-                                // names.
+                                // names. (A write tried again goes to the
+                                // file the take has.)
                                 let name = format!("{}-{}.wav", st.stamp, st.next);
                                 st.next += 1;
                                 st.names[take as usize] = Some(name.clone());
@@ -994,7 +999,7 @@ impl AudioHost {
                             }
                             continue;
                         }
-                        _ => break,
+                        Some(Io::Read { .. }) | None => break,
                     }
                 }
             }
