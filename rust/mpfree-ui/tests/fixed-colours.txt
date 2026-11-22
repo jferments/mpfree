@@ -9,7 +9,7 @@ mpfree-app/src/looper_tab.rs 8 # before theme roles (phase 0 baseline)
 mpfree-app/src/modpanels.rs 1 # before theme roles (phase 0 baseline)
 mpfree-app/src/perform_tab.rs 2 # before theme roles (phase 0 baseline)
 mpfree-app/src/play_page.rs 1 # before theme roles (phase 0 baseline)
-mpfree-app/src/play_widgets.rs 11 # before theme roles (phase 0 baseline)
+mpfree-app/src/play_widgets.rs 3 # the pads chip's colour before a theme is known (drawn warn), and the pink ~ of a control the mod matrix moves
 mpfree-app/src/skin_page.rs 1 # before theme roles (phase 0 baseline)
 mpfree-app/src/sys.rs * # system call flags, not colours
 mpfree-app/src/time/control.rs 2 # finger ids, not colours

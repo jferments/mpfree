@@ -1975,7 +1975,7 @@ impl Widget for PadMap {
                     t.size_small - 2.0,
                     top,
                     Align::Right,
-                    t.good,
+                    t.readable(t.good, fill),
                     &format!("▶ {clip}"),
                 );
             } else if let Some(badge) = c.badge.as_ref().filter(|_| filled) {
@@ -1984,7 +1984,7 @@ impl Widget for PadMap {
                     t.size_small - 3.0,
                     top,
                     Align::Right,
-                    c.color,
+                    t.readable(c.color, fill),
                     badge,
                 );
             }

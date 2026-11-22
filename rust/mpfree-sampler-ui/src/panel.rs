@@ -964,7 +964,9 @@ pub fn paint(
                         13.0,
                         at,
                         Align::Center,
-                        c.tint.filter(|_| !c.faint).unwrap_or(dim),
+                        c.tint
+                            .filter(|_| !c.faint)
+                            .map_or(dim, |tint| t.readable(tint, t.surface)),
                         line,
                     );
                 }

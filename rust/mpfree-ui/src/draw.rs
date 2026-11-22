@@ -157,8 +157,14 @@ pub fn pill_width(cx: &mut PaintCx, text: &str, filled: bool) -> i32 {
 }
 
 /// A speaker about 22 px wide centred on (x, y): sound waves when on, a red
-/// cross when muted.
+/// cross when muted. Drawn on a button, use [`speaker_on`] with its fill.
 pub fn speaker(cx: &mut PaintCx, x: i32, y: i32, c: Color, muted: bool) {
+    let fill = cx.theme.panel();
+    speaker_on(cx, x, y, c, muted, fill);
+}
+
+/// [`speaker`] on `fill`: the cross is moved just far enough to read on it.
+pub fn speaker_on(cx: &mut PaintCx, x: i32, y: i32, c: Color, muted: bool, fill: Color) {
     let t = cx.theme.clone();
     let body = if muted { t.text_faint } else { c };
     cx.canvas.fill_rect(Rect::new(x - 10, y - 3, 4, 6), body);
@@ -170,7 +176,7 @@ pub fn speaker(cx: &mut PaintCx, x: i32, y: i32, c: Color, muted: bool) {
             14.0,
             Rect::new(x, y - 8, 12, 16),
             Align::Left,
-            t.bad,
+            t.readable(t.bad, fill),
             "×",
         );
     } else {

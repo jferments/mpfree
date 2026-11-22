@@ -389,7 +389,7 @@ impl Widget for PadsBar {
                     .fill_round_rect(half.inset(2), (half.h - 4) / 2, t.accent);
             }
             let ink = if lit {
-                t.bg
+                t.ink_on(t.accent)
             } else if i == 1 && !s.scale {
                 t.text_faint
             } else {
