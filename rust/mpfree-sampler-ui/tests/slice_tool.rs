@@ -1388,9 +1388,10 @@ fn put_on_new_kit_chops_onto_an_empty_kit_for_a_new_track_in_one_undo_step() {
 
 /// The one Sample page's step 6: Put on Audio track, where the app has
 /// audio tracks, after New kit. The slices go on no pad, so the pad map,
-/// its chip, First pad and Phrase are faint and say why, the lane is
-/// empty, and the main button asks the app to put them on an audio track
-/// in a row, the chop as it is.
+/// its chip and First pad are faint and say why, the lane is empty, and
+/// the main button asks the app to put them on an audio track in a row,
+/// the chop as it is. In Phrase's place a switch puts the whole sound in
+/// a cell instead (audio tracks phase 2, Put in a cell).
 #[test]
 fn put_on_audio_track_puts_the_slices_in_a_row_on_no_pad() {
     let mut s = chop();
@@ -1441,14 +1442,20 @@ fn put_on_audio_track_puts_the_slices_in_a_row_on_no_pad() {
     // Q-Link 4 (First pad) has no pad to move.
     let q4 = s.ui.get::<KnobCard>(wave_tab::QLINKS[3]).unwrap();
     assert!(!q4.enabled && q4.why == no_pad);
-    // An audio track plays the slices in time: no phrase.
-    step(&mut s, Row::Phrase, 1);
-    let l = s.ui.get::<SettingList>(wave_tab::REGION).unwrap();
-    assert!(l.controls[Row::Phrase.index()].faint);
-    assert_eq!(
-        l.controls[Row::Phrase.index()].why,
-        "Phrase is for pads: on an audio track the slices already play one after another"
-    );
+    // An audio track plays the slices in time: no phrase. In the Phrase
+    // row's place, where the sound goes: On the song, or In a cell (audio
+    // tracks phase 2).
+    let switch = |s: &Sample| {
+        let l = s.ui.get::<SettingList>(wave_tab::REGION).unwrap();
+        let c = &l.controls[Row::Phrase.index()];
+        match &c.look {
+            Look::Choice { options, on, .. } => (options.clone(), *on, c.faint),
+            look => panic!("{look:?}"),
+        }
+    };
+    let both = vec!["On the song".to_string(), "In a cell".to_string()];
+    assert_eq!(switch(&s), (both.clone(), 0, false));
+    assert_eq!(value(&s, Row::Phrase), "On the song");
     assert_eq!(list_right(&s), "a region each, from the playhead's bar");
     let (labels, enabled) = buttons(&s);
     assert_eq!((labels[3].as_str(), enabled[3]), ("To audio track", true));
@@ -1461,11 +1468,44 @@ fn put_on_audio_track_puts_the_slices_in_a_row_on_no_pad() {
             layer: 0,
             name: "Break 92".into(),
             bounds: b.clone(),
+            cell: false,
         })
     );
     // Nothing changed here: it can go again (on another bar, say).
     assert_eq!(s.tab.slice().bounds(cs(&s.state)), b);
     assert!(press(&mut s, Button::ToPads).is_some());
+    // In a cell: the whole sound, Start to End, its slices aside, as a
+    // clip in the cell the app names (a new audio track's when it names
+    // none). The note says how it plays: it has a tempo, so it loops.
+    step(&mut s, Row::Phrase, 1);
+    assert_eq!(switch(&s), (both, 1, false));
+    assert_eq!(value(&s, Row::Phrase), "In a cell");
+    assert_eq!(buttons(&s).0[3], "Into a new audio track");
+    with_chop(&mut s.state, |c| c.cell = Some(("Vocal".into(), 2)));
+    shown(&mut s);
+    assert_eq!(buttons(&s).0[3], "Into Vocal, row 3");
+    assert!(
+        list_right(&s).starts_with("the whole sound · loops "),
+        "{}",
+        list_right(&s)
+    );
+    assert!(list_right(&s).ends_with(" at 92 BPM"), "{}", list_right(&s));
+    let region = &s.state.region;
+    let whole = vec![region.start, region.end];
+    assert_eq!(
+        press(&mut s, Button::ToPads),
+        Some(ChopAction::ToAudio {
+            pad: PAD,
+            layer: 0,
+            name: "Break 92".into(),
+            bounds: whole,
+            cell: true,
+        })
+    );
+    assert_eq!(s.tab.slice().bounds(cs(&s.state)), b, "the slices stay");
+    // Back On the song.
+    step(&mut s, Row::Phrase, -1);
+    assert_eq!(buttons(&s).0[3], "To audio track");
     // No longer offered, Put on is back on Pads.
     with_chop(&mut s.state, |c| c.audio = false);
     shown(&mut s);

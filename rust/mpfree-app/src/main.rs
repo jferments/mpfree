@@ -6456,6 +6456,43 @@ fn fit_ended(
     }
 }
 
+/// A sound Put in a cell came in ([`audiotracks::TrackHost::tend_cell_sound`]):
+/// its clip goes in its track's first empty cell, as an edit UNDO takes
+/// away, or its take is forgotten if the track has no room now. The hint
+/// line.
+fn cell_sound_in(
+    time: &mut time::TimeHost,
+    tracks: &mut audiotracks::TrackHost,
+    done: Result<(usize, mpfree_seq::Clip), String>,
+) -> String {
+    let (track, clip) = match done {
+        Ok(d) => d,
+        Err(e) => return format!("Put in a cell: {e}"),
+    };
+    let name = clip.name.clone();
+    let rec = clip
+        .audio
+        .as_ref()
+        .and_then(|a| a.regions.first())
+        .map(|r| r.rec);
+    match time.put_audio_clip(track, clip) {
+        Ok(row) => {
+            let who = time
+                .project()
+                .tracks
+                .get(track)
+                .map_or("", |t| t.name.as_str());
+            format!("{name} into {who}, row {} · UNDO takes it out", row + 1)
+        }
+        Err(e) => {
+            if let Some(rec) = rec {
+                tracks.forget_recording(rec);
+            }
+            format!("Put in a cell: {e}")
+        }
+    }
+}
+
 /// A touch or a button for the time engine. The tempo belongs to the app
 /// (Note Repeat and the arp follow it too), so the Arrange page's tempo goes
 /// there; the transport follows it each period. Returns the app's effects.
@@ -7408,8 +7445,10 @@ fn player_session(
     // 2): the needs go to the tracks whenever they change.
     time.set_audio_waits(tracks.streams());
     let mut needs_rev = 0u64;
-    // A Fit to tempo ended, its clip waiting while the time engine records.
+    // A Fit to tempo ended, or a sound Put in a cell came in: its clip
+    // waits while the time engine records.
     let mut fit_done: Option<audiotracks::ClipFitDone> = None;
+    let mut cell_done: Option<Result<(usize, mpfree_seq::Clip), String>> = None;
     out.show(gui::ToUi::Time(Box::new(time_state(&time, &tracks))));
     let (mut shown_transport, mut transport_shown_at) = (time.info(), Instant::now());
     let mut periods = app.settings.periods;
@@ -11056,6 +11095,15 @@ fn player_session(
             out.note(&format!("audio tracks: {line}"));
             out.show(gui::ToUi::Tell(line));
         }
+        // Put in a cell: once the sound is in, its clip goes in the cell.
+        if cell_done.is_none() {
+            cell_done = tracks.tend_cell_sound(time.info().bpm);
+        }
+        if let Some(done) = cell_done.take_if(|_| !recording) {
+            let line = cell_sound_in(&mut time, &mut tracks, done);
+            out.note(&format!("audio tracks: {line}"));
+            out.show(gui::ToUi::Tell(line));
+        }
         // A region just moved is picked again where it went.
         if let Some(r) = tracks.take_repick() {
             let _ = time.act(TimeAction::Audio(AudioAction::Pick(Some(r))));
@@ -13879,6 +13927,95 @@ mod tests {
         }
         let first = (64..bar - 64).find(|&i| cell[i] != song[i]);
         assert_eq!(first, None, "the clip plays what the song played");
+    }
+
+    /// Audio tracks phase 2, step 2c: Put in a cell from the Sample page.
+    /// The sound goes in the armed audio track's first empty cell, else the
+    /// first audio track's with one; as a take the song doesn't play, and
+    /// a clip that loops at its tempo (to the nearest beat), or with no
+    /// tempo plays once, up to the next beat at the project's. UNDO takes
+    /// it out.
+    #[test]
+    fn a_sound_put_in_a_cell_becomes_a_clip_the_song_doesnt_play() {
+        use mpfree_seq::{AudioClip, Clip, Project, RecId, Track};
+        let mut p = Project::new();
+        p.tracks.push(Track::new("Keys", 0));
+        let mut vocal = Track::new_audio("Vocal", 0);
+        for (slot, name) in [(0, "Verse vox"), (1, "Hook vox")] {
+            let mut c = Clip::new(name, 3840);
+            c.audio = Some(AudioClip::of(RecId(7), 0, 88_200, 3840, 120.0));
+            vocal.slots[slot] = Some(c);
+        }
+        p.tracks.push(vocal);
+        p.tracks.push(Track::new_audio("Guitar", 0));
+        p.give_track_ids();
+        let mut time = time::TimeHost::with_project(RATE, 120.0, p).unwrap();
+        let mut tracks = audiotracks::TrackHost::new(RATE, 30);
+        tracks.sync(time.project(), 0, true);
+        let s = (0..mpfree_audiotracks::MAX_TRACKS)
+            .find(|&s| tracks.place(s) == Some(1))
+            .expect("an engine track for Vocal");
+        // Keys is armed, and plays notes: Vocal's first empty cell, row 3.
+        time.act(TimeAction::Arm(Some(0))).unwrap();
+        assert_eq!(time.cell_for_sound(), Some((1, 2)));
+        // Two bars at 92 BPM.
+        let frames = (f64::from(RATE) * 8.0 * 60.0 / 92.0).round() as usize;
+        let sound = |name: &str, frames: usize, bpm: f64| audiotracks::Sound {
+            name: name.into(),
+            channels: 1,
+            audio: vec![0.25; frames],
+            cuts: vec![1000],
+            bpm,
+            cell: true,
+        };
+        let arrive = |time: &mut time::TimeHost, tracks: &mut audiotracks::TrackHost| {
+            let t0 = std::time::Instant::now();
+            loop {
+                run_audio(time, tracks, 1, s, 0.0, &mut Vec::new(), &mut None);
+                if let Some(d) = tracks.tend_cell_sound(time.info().bpm) {
+                    break d;
+                }
+                assert!(t0.elapsed().as_secs() < 30, "the sound never came in");
+            }
+        };
+        let said = tracks.bring_to_cell(sound("Break 92", frames, 92.0), 1, time.project());
+        assert_eq!(said, Ok("Break 92 going into Vocal".to_string()));
+        let done = arrive(&mut time, &mut tracks);
+        let (track, clip) = done.clone().expect("its clip");
+        assert_eq!((track, clip.length, clip.once), (1, 8 * 960, false));
+        let a = clip.audio.clone().unwrap();
+        assert_eq!(
+            (a.bpm, a.regions.len(), a.last_frame),
+            (92.0, 1, frames as i64)
+        );
+        assert_eq!(
+            cell_sound_in(&mut time, &mut tracks, done),
+            "Break 92 into Vocal, row 3 · UNDO takes it out"
+        );
+        assert_eq!(
+            time.project().clip(1, 2).map(|c| c.name.as_str()),
+            Some("Break 92")
+        );
+        assert!(tracks.host.tracks.regions(s).is_empty(), "not on the song");
+        let rec = mpfree_audiotracks::RecordingId(a.regions[0].rec.0);
+        assert!(tracks.host.tracks.take_of(rec).is_some(), "its take is in");
+        // No tempo: it plays once, 5.2 s up to the next beat at 120.
+        let secs = (f64::from(RATE) * 5.2) as usize;
+        tracks
+            .bring_to_cell(sound("Riser", secs, 0.0), 1, time.project())
+            .unwrap();
+        let done = arrive(&mut time, &mut tracks);
+        let (_, clip) = done.clone().expect("its clip");
+        assert_eq!((clip.length, clip.once), (11 * 960, true));
+        assert_eq!(clip.audio.as_ref().map(|a| a.bpm), Some(120.0));
+        assert_eq!(
+            cell_sound_in(&mut time, &mut tracks, done),
+            "Riser into Vocal, row 4 · UNDO takes it out"
+        );
+        // UNDO takes it out.
+        time.act(TimeAction::Undo).unwrap();
+        assert!(time.project().clip(1, 3).is_none());
+        assert!(time.project().clip(1, 2).is_some());
     }
 
     /// Audio tracks phase 2, step 2c: Fit to tempo on a clip made at 120

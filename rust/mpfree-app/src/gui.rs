@@ -3323,7 +3323,8 @@ impl Player {
     }
 
     /// What the Slice tool's Put on New kit would do now (sampler R4.6): the
-    /// first empty kit, for a new track, or why not.
+    /// first empty kit, for a new track, or why not; and where its Put in a
+    /// cell would put the sound.
     fn refresh_new_kit(&mut self) {
         let new_kit = if self.kit_track.is_some() || self.sound_track.is_some() {
             Err("A new track is on its way: a moment".to_string())
@@ -3340,6 +3341,13 @@ impl Player {
                 })
         };
         self.sample.set_new_kit(&mut self.ui, new_kit);
+        // Put in a cell's cell (audio tracks phase 2), for the Slice
+        // tool's main button.
+        let cell = self
+            .time
+            .cell_for_sound()
+            .map(|(t, row)| (self.time.tracks[t].name.clone(), row));
+        self.sample.set_audio_cell(&mut self.ui, cell);
     }
 
     /// The time engine's news after + Kit track: once the new track is

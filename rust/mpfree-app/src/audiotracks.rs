@@ -97,6 +97,15 @@ struct ClipFit {
     done: Vec<FitCopy>,
 }
 
+/// Put in a cell under way ([`TrackHost::bring_to_cell`]): the sound
+/// copying in as a take of its own, for a clip in project track `track`.
+struct CellSound {
+    track: usize,
+    name: String,
+    frames: usize,
+    bpm: f64,
+}
+
 /// How a Fit to tempo ended ([`TrackHost::tend_clip_fit`]).
 #[derive(Debug, PartialEq)]
 pub enum ClipFitDone {
@@ -440,6 +449,8 @@ pub struct TrackHost {
     waits_looked: u32,
     /// Fit to tempo on an audio clip's card, under way.
     clip_fit: Option<ClipFit>,
+    /// Put in a cell, the sound copying in.
+    cell_sound: Option<CellSound>,
     /// The song's meter, for the bar a dropout was at.
     time_sig: mpfree_transport::time::Meter,
 }
@@ -514,6 +525,7 @@ impl TrackHost {
             next_cue: 0,
             waits_looked: 0,
             clip_fit: None,
+            cell_sound: None,
             time_sig: mpfree_transport::time::Meter::default(),
         }
     }
@@ -1347,6 +1359,7 @@ impl TrackHost {
         // A fit under way was the old project's clip's: the host stops it
         // and forgets its copies with the rest.
         self.clip_fit = None;
+        self.cell_sound = None;
         self.tend_open();
     }
 
@@ -1839,6 +1852,14 @@ impl TrackHost {
         }
     }
 
+    /// A recording no clip will name (a sound Put in a cell whose cell
+    /// went meanwhile): forgotten, its memory back.
+    pub fn forget_recording(&mut self, rec: RecId) {
+        if let Some(id) = self.host.tracks.take_of(RecordingId(rec.0)) {
+            let _ = self.host.command(Command::Forget(id));
+        }
+    }
+
     /// The cell whose clip is fitting, and how far it has got, 0 to 1.
     pub fn clip_fit_progress(&self) -> Option<(usize, usize, f32)> {
         let f = self.clip_fit.as_ref()?;
@@ -2191,6 +2212,7 @@ impl TrackHost {
             audio,
             cuts,
             bpm,
+            ..
         } = s;
         let tr = &self.host.tracks;
         let refuse = |h: &mut TrackHost, audio: Vec<f32>, why: String| {
@@ -2247,6 +2269,113 @@ impl TrackHost {
                 "{secs:.1} s is more than the audio tracks' memory has left: erase takes, or more memory in Prefs > Audio track memory"
             )),
         }
+    }
+
+    /// Put in a cell (audio tracks phase 2, the Sample page's Put on Audio
+    /// track with In a cell): sound `s`, whole, as a take of its own on
+    /// project track `track` (an audio track) that the song doesn't play.
+    /// Once it is in, [`TrackHost::tend_cell_sound`] gives the clip that
+    /// plays it, for the clips to put in the track's first empty cell.
+    /// Ok is a line for the log; Err says why not (another sound still
+    /// coming in, no take or memory left, not an audio track). Call it
+    /// between periods, as [`TrackHost::bring`].
+    pub fn bring_to_cell(
+        &mut self,
+        s: Sound,
+        track: usize,
+        project: &mpfree_seq::Project,
+    ) -> Result<String, String> {
+        let Sound {
+            name,
+            channels,
+            audio,
+            bpm,
+            ..
+        } = s;
+        let engine = project
+            .tracks
+            .get(track)
+            .filter(|t| t.is_audio())
+            .and_then(|t| self.slots.slot_of(t.id));
+        let Some(engine) = engine.filter(|_| self.cell_sound.is_none()) else {
+            self.host.drop_audio(audio);
+            return Err(if self.cell_sound.is_some() {
+                "another sound is still going into its cell: a moment".into()
+            } else {
+                format!("there is no audio track {}", track + 1)
+            });
+        };
+        let frames = audio.len() / channels.max(1);
+        let secs = frames as f64 / f64::from(self.rate);
+        match self.host.import_for_clip(engine, channels, audio, bpm) {
+            Ok(_) => {
+                let who = self.who(engine);
+                self.cell_sound = Some(CellSound {
+                    track,
+                    name: name.clone(),
+                    frames,
+                    bpm,
+                });
+                Ok(format!("{name} going into {who}"))
+            }
+            Err(ImportRefused::Busy) => {
+                Err("another sound is still going onto its track: a moment".into())
+            }
+            Err(ImportRefused::NoTake) => Err(format!(
+                "the audio tracks hold {} takes, the most: forget some takes first",
+                mpfree_audiotracks::MAX_TAKES
+            )),
+            Err(ImportRefused::NoRoom) => Err(format!(
+                "{secs:.1} s is more than the audio tracks' memory has left: erase takes, or more memory in Prefs > Audio track memory"
+            )),
+        }
+    }
+
+    /// Each loop: the sound Put in a cell has come in. Some once it has:
+    /// the project track and the clip that plays it (or why not). A sound
+    /// with a tempo loops, made at its tempo, as long as it is to the
+    /// nearest beat; one with none plays once, made at `bpm` (the
+    /// project's), its length up to the next beat, and rings to its end.
+    pub fn tend_cell_sound(
+        &mut self,
+        bpm: f64,
+    ) -> Option<Result<(usize, mpfree_seq::Clip), String>> {
+        self.cell_sound.as_ref()?;
+        let id = match self.host.imported() {
+            Some(id) => id,
+            None if self.host.importing().is_some() => return None,
+            None => {
+                let c = self.cell_sound.take()?;
+                return Some(Err(format!("{} didn't come in: try again", c.name)));
+            }
+        };
+        let rec = self.host.tracks.take(id).map(|t| RecId(t.rec.0));
+        let c = self.cell_sound.take()?;
+        let Some(rec) = rec else {
+            return Some(Err(format!("{} didn't come in: try again", c.name)));
+        };
+        let secs = c.frames as f64 / f64::from(self.rate);
+        let ppq = f64::from(mpfree_transport::time::PPQ);
+        let (made, beats, once) = if mpfree_transport::time::valid_bpm(c.bpm) {
+            (c.bpm, (secs * c.bpm / 60.0).round().max(1.0), false)
+        } else {
+            (bpm, (secs * bpm / 60.0 - 1e-9).ceil().max(1.0), true)
+        };
+        let length = (beats * ppq) as Tick;
+        let mut clip = mpfree_seq::Clip::new(&c.name, length);
+        clip.audio = Some(mpfree_seq::AudioClip::of(
+            rec,
+            0,
+            c.frames.max(1) as i64,
+            length,
+            made,
+        ));
+        clip.once = once;
+        if clip.check().is_err() {
+            let _ = self.host.command(Command::Forget(id));
+            return Some(Err(format!("{} is longer than a clip holds", c.name)));
+        }
+        Some(Ok((c.track, clip)))
     }
 
     /// Track `t`'s number as the screen writes it, if there is one.
@@ -2539,7 +2668,8 @@ fn take_name(tr: &mpfree_audiotracks::AudioTracks, take: u16) -> String {
 /// A sound from the Sample page for an audio track ([`TrackHost::bring`]):
 /// `audio` interleaved, `channels` 1 or 2, at the tracks' rate, cut into
 /// slices at its frames `cuts` (rising), and its tempo `bpm` (0: not
-/// known), named `name`.
+/// known), named `name`. With `cell` it goes in a cell, whole, as a clip
+/// (Put in a cell, [`TrackHost::bring_to_cell`]), not on the song.
 #[derive(PartialEq)]
 pub struct Sound {
     pub name: String,
@@ -2547,6 +2677,7 @@ pub struct Sound {
     pub audio: Vec<f32>,
     pub cuts: Vec<u64>,
     pub bpm: f64,
+    pub cell: bool,
 }
 
 /// Not the samples: a sound is long, and actions are logged by name.
@@ -3013,6 +3144,7 @@ mod tests {
                 audio: vec![0.25; 4410],
                 cuts: Vec::new(),
                 bpm: 120.0,
+                cell: false,
             },
             &TransportInfo::default(),
         )
@@ -3081,6 +3213,7 @@ mod tests {
                 audio: vec![0.25; 44_100],
                 cuts: Vec::new(),
                 bpm: 120.0,
+                cell: false,
             },
             &TransportInfo::default(),
         )
@@ -4167,6 +4300,7 @@ mod tests {
                 .collect(),
             cuts,
             bpm: 120.0,
+            cell: false,
         };
         let bar = mpfree_transport::Meter::default().bar_ticks();
         let at = |b: i64| TransportInfo {

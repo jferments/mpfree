@@ -1084,6 +1084,17 @@ impl TimeHost {
         self.sent(r)
     }
 
+    /// Put in a cell's cell (audio tracks phase 2,
+    /// `mpfree_time_ui::view::pick_cell`), as (track, row); None: no audio
+    /// track has an empty cell.
+    pub fn cell_for_sound(&self) -> Option<(usize, usize)> {
+        let cells = self.project().tracks.iter().map(|t| {
+            let empty = t.slots.shown().position(|c| c.is_none());
+            (t.is_audio(), empty)
+        });
+        mpfree_time_ui::view::pick_cell(self.armed(), cells)
+    }
+
     /// Fit to tempo's end (audio tracks phase 2): clip `slot` of `track`,
     /// if still clip `id`, plays `audio`, as one edit UNDO takes back
     /// (see `TimeControl::fit_clip`). Its name, or why not.

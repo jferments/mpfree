@@ -445,6 +445,27 @@ pub struct LoopsInfo {
     pub recording: bool,
 }
 
+/// Put in a cell's cell (audio tracks phase 2): the armed track's first
+/// empty cell if it is an audio track with one, else the first audio
+/// track's that has one, as (track, row). None: no audio track has an
+/// empty cell (a new one is added for the sound). `tracks` gives, track by
+/// track, whether it is an audio track and its first empty row.
+pub fn pick_cell(
+    armed: Option<usize>,
+    tracks: impl Iterator<Item = (bool, Option<usize>)>,
+) -> Option<(usize, usize)> {
+    let cells: Vec<Option<usize>> = tracks
+        .map(|(audio, empty)| empty.filter(|_| audio))
+        .collect();
+    let armed = armed.and_then(|a| Some((a, (*cells.get(a)?)?)));
+    armed.or_else(|| {
+        cells
+            .iter()
+            .enumerate()
+            .find_map(|(t, e)| e.map(|row| (t, row)))
+    })
+}
+
 impl ClipInfo {
     /// One pass, in song ticks.
     pub fn song_len(&self) -> f64 {
@@ -904,6 +925,16 @@ impl TimeState {
     /// ([`TimeState::track_pick`]).
     pub fn selected(&self) -> Option<usize> {
         self.track_pick.or(self.armed)
+    }
+
+    /// Put in a cell's cell (audio tracks phase 2, [`pick_cell`]), as
+    /// (track, row); None: a new audio track.
+    pub fn cell_for_sound(&self) -> Option<(usize, usize)> {
+        let cells = self.tracks.iter().map(|t| {
+            let empty = t.slots.iter().position(Option::is_none);
+            (t.audio, empty)
+        });
+        pick_cell(self.armed, cells)
     }
 
     pub fn from_engine(

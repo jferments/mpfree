@@ -546,6 +546,16 @@ impl Desk<'_> {
             },
             // Put on Audio track (the one Sample page's step 6): where it
             // went, or why not, said in place of the hint.
+            // Put in a cell (audio tracks phase 2): the whole sound as a
+            // clip in an audio track's cell; the clip goes in once the
+            // sound is in (the main loop).
+            gui::FromUi::SampleToAudio(s) if s.cell => {
+                let (Ok(line) | Err(line)) = put_in_cell(time, tracks, out, *s);
+                out.note(&format!("audio tracks: {line}"));
+                if !line.is_empty() {
+                    out.show(gui::ToUi::Tell(line));
+                }
+            }
             gui::FromUi::SampleToAudio(s) => {
                 // No audio track with room: a new one at the end of the
                 // track list (phase 1a), as + Track adds it.
@@ -974,6 +984,44 @@ fn audio_strip_switch(
     tracks.sync(time.project(), time.silenced(), true);
     mix.state_now();
     said
+}
+
+/// Put in a cell (audio tracks phase 2): sound `s` goes in the cell
+/// [`time::TimeHost::cell_for_sound`] picks, or a new audio track's first
+/// (added as + Track adds one) when no audio track has an empty cell. Ok
+/// is the line while it comes in; Err why not.
+fn put_in_cell(
+    time: &mut time::TimeHost,
+    tracks: &mut audiotracks::TrackHost,
+    out: &mut Out,
+    s: audiotracks::Sound,
+) -> Result<String, String> {
+    let track = match time.cell_for_sound() {
+        Some((t, _)) => Some(t),
+        None if tracks.free_slot().is_some() => {
+            match time.act(mpfree_time_ui::view::TimeAction::AddAudioTrack) {
+                Ok(line) => out.note(&format!("time: {line}")),
+                Err(e) => out.note(&format!("time: {e}")),
+            }
+            tracks.sync(time.project(), time.silenced(), true);
+            let p = time.project();
+            p.tracks
+                .len()
+                .checked_sub(1)
+                .filter(|&t| p.tracks[t].is_audio())
+        }
+        None => None,
+    };
+    let Some(track) = track else {
+        tracks.host.drop_audio(s.audio);
+        return Err(format!(
+            "Put in a cell: every audio track's cells are full, and there is no room for another audio track ({} at most)",
+            mpfree_audiotracks::MAX_TRACKS
+        ));
+    };
+    tracks
+        .bring_to_cell(s, track, time.project())
+        .map_err(|e| format!("Put in a cell: {e}"))
 }
 
 pub fn take_waits(app: &app::App, time: &time::TimeHost, looper: &looping::LoopHost) -> bool {

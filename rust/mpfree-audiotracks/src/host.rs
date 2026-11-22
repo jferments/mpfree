@@ -426,6 +426,11 @@ pub struct AudioHost {
     /// placed once it is in, and where it is cut (kept, not freed, here).
     importing: Option<u16>,
     import_cuts: Vec<u64>,
+    /// The sound brought in goes in a clip, not on the song
+    /// ([`AudioHost::import_for_clip`]): once in, it is said in
+    /// `imported`, not placed.
+    import_place: bool,
+    imported: Option<u16>,
     /// Sounds brought in and placed.
     pub imports: u64,
     /// Which tracks a background job is for: one more each time they are
@@ -533,6 +538,8 @@ impl AudioHost {
             fitted: None,
             importing: None,
             import_cuts: Vec::new(),
+            import_place: true,
+            imported: None,
             imports: 0,
             generation: 0,
             stale: 0,
@@ -1107,6 +1114,7 @@ impl AudioHost {
         if self.importing.is_some() {
             return refuse(self, audio, ImportRefused::Busy);
         }
+        self.import_place = true;
         let Some(id) = self.tracks.free_take_id() else {
             return refuse(self, audio, ImportRefused::NoTake);
         };
@@ -1158,6 +1166,29 @@ impl AudioHost {
         }
     }
 
+    /// Put in a cell (audio tracks phase 2): a sound brought in as for
+    /// [`AudioHost::import`], uncut, as a take of its own on `track` that
+    /// the song doesn't play: once it is in (copied in, or written to its
+    /// file and open), [`AudioHost::imported`] gives it, for a clip to
+    /// name. Refused as for [`AudioHost::import`].
+    pub fn import_for_clip(
+        &mut self,
+        track: usize,
+        channels: usize,
+        audio: Vec<f32>,
+        bpm: f64,
+    ) -> Result<u16, ImportRefused> {
+        let id = self.import(track, 0, channels, audio, Vec::new(), bpm)?;
+        self.import_place = false;
+        Ok(id)
+    }
+
+    /// The take of a sound brought in for a clip that has come in since
+    /// the last ask ([`AudioHost::import_for_clip`]).
+    pub fn imported(&mut self) -> Option<u16> {
+        self.imported.take()
+    }
+
     /// The take of a sound brought in that is still copying in.
     pub fn importing(&self) -> Option<u16> {
         self.importing
@@ -1177,7 +1208,11 @@ impl AudioHost {
             }
         } else if self.tracks.loading() == 0 {
             self.importing = None;
-            if self.tracks.place(id, &self.import_cuts, map) {
+            if !self.import_place {
+                // For a clip: said, not placed.
+                self.imported = Some(id);
+                self.imports += 1;
+            } else if self.tracks.place(id, &self.import_cuts, map) {
                 self.imports += 1;
             }
             self.import_cuts.clear();
