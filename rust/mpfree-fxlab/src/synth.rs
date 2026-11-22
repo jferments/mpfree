@@ -164,7 +164,7 @@ impl Engine {
 
     /// A fresh engine at `rate` with factory preset `preset`'s engine
     /// settings loaded, and no effects.
-    fn engine_with(self, preset: usize, rate: u32) -> Box<dyn Node> {
+    pub(crate) fn engine_with(self, preset: usize, rate: u32) -> Box<dyn Node> {
         match self {
             Engine::Poly => {
                 let mut n = Poly::new(rate);

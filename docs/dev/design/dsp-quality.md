@@ -27,6 +27,8 @@ From the ratchet files on main (`rust/mpfree-fxlab/quality/synth.tsv`, `sampler.
 | Poly drive 24 dB / distortion 24 dB | -50 / -45 and -45 / -40 dB | the curve runs per voice at 1x |
 | Sampler, a semitone up, 9 kHz out | spur -31.5 dB | the Hermite read for small pitch changes |
 | Sampler, a fifth down, 9 kHz out | spur -43.6 dB, 1.1 dB quiet | the same read pitched down |
+| Sampler, an octave down, 9 kHz out (Y5) | spur -7.7 dB, 3.0 dB quiet | the same read pitched down: its images fold into the band |
+| Sampler, a fifth down, 13.5 kHz out (Y5) | spur -3.4 dB, 4.6 dB quiet | the same |
 
 Nobody has measured the synth filters above 4 kHz, their self-oscillation pitch, or what each engine does with block sizes other than 128. Phase 0 adds those measures.
 
@@ -105,6 +107,15 @@ New measures join fxlab and its ratchets in steps 0.2 and 0.5. As today, a targe
 | Y6 | A 96 kHz file's 30 kHz tone played an octave down | Original read (3.2): heard at 15 kHz within 1 dB. Copy fallback: under -50 dB, and reported as a fallback |
 | Y7 | Each engine's output at block sizes 1, 37 and 128 against 128, with the same event times and start state. Four classes: bit-exact; within a stated tolerance; equal by ear only; block-dependent by design (the last two documented) | The bit-exact class is a **gate**; the rest reported |
 | Y8 | Reference: the engine at 44.1 kHz against its own 8x render brought down with a long linear-phase filter. Fizz energy, error in the intended harmonics, spectral envelope, level; error over time only where phase is fixed | Set per step in 0.5, once 8x and 16x agree |
+
+### First results (Y4 to Y7)
+
+Built in `rust/mpfree-fxlab`: `src/robust.rs` and `tests/robust.rs` for Y4 and Y7 (release only, their own CI step, about 35 s on four cores), and Y5 and Y6 in `src/sampler.rs` (the sampler ratchet, `quality/sampler.tsv`). Measured at e5518efc.
+
+- **Y4: every subject stays finite.** 62 subjects (the 12 engines with their first preset's settings and no effects, the first drum kit, every registered effect), 20,208 renders. Each render is 0.6 s. An instrument plays notes 0 and 127 at velocities 1 and 127, a chord, bends to both ends, full pressure, the mod wheel and breath. An effect gets silence, full-scale white noise, a full-scale sine sweep and silence again. The layers are: the defaults; each control alone at its bottom, top and middle; all at the bottom, all at the top, alternating; 16 seeded random settings; every pair of controls in one group at their tops; each control swept from bottom to top and back in 0.3 s. No render held a NaN or an infinity. The loudest finite peaks (shown, not gated) come from gains at their tops: the channel strip +49 dBFS, multiband +49, Drums +34, Analog +33.
+- **Y7: almost everything is bit-exact for any block size.** Notes and a seeded parameter move every 700 to 4,700 frames, rendered in blocks of 1 and 37 frames, against 128. Every engine, the drums and 46 of the 49 effects are bit-exact, and `tests/robust.rs` now holds all 59 to it. Not bit-exact: the chorus (-2.4 dB against the peak) and the phaser (-16 dB), whose LFO takes a new rate and re-syncs only at the start of a block (a defect to fix, not a design); the rotary differs only by rounding (below -400 dB).
+- **Y5: the sampler's read fails pitch-downs near the top.** At 3 kHz out, everything meets -50 dB except an octave down (-44.5). At 9 kHz out: a semitone and two semitones down -28.9 and -26.3, two up -34.8, an octave down -7.7 dB with the tone 3.0 dB quiet. At 13.5 kHz out: -13.5 to -19.0 dB at one and two semitones each way, and a fifth down -3.4 dB with the tone 4.6 dB quiet. These are the read's images folding back into the band. Step 1.4's target covers every row.
+- **Y6: the engine reads a 96 kHz sound at its own rate.** Its 30 kHz tone played an octave down is heard at -4.1 dB. The lab hands the engine a 96 kHz sound directly; whether loading a file keeps it at 96 kHz is what step 3.1 checks. The 4 dB loss is the read's own response that high, which step 1.4 also covers.
 
 **Fizz targets by kind:**
 

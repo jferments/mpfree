@@ -26,6 +26,9 @@
 //!   library's targets (tuning, aliasing, velocity, level, stereo, the
 //!   filter, glide, envelopes, FM sidebands, drum decays), with the same
 //!   ratchet (`docs/dev/design/synth-quality.md`).
+//! - [`robust`]: the DSP quality plan's Y4 (every engine, the drums and
+//!   every effect stay finite at every setting) and Y7 (the same output
+//!   for any block size), `docs/dev/design/dsp-quality.md`.
 //! - [`programme`]: every stimulus in one recording with a sync chirp and
 //!   a schedule, for capturing a reference device and cutting it back up.
 //! - [`card`]: report cards over the registry, written as JSON.
@@ -54,6 +57,7 @@ pub mod programme;
 pub mod prototype;
 pub mod quality;
 pub mod response;
+pub mod robust;
 pub mod room;
 pub mod sampler;
 pub mod signals;
