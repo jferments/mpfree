@@ -64,6 +64,7 @@ use super::follow::FollowCounts;
 use super::link::{
     Counts, CueCounts, InPlace, PeriodEnd, Rx, StripCounts, ToAudio, ToControl, Tracks, Tx,
 };
+use super::timing::next_timeline;
 use super::{PadRows, StepAction, StepClip, StepsData, LINE, NEW_CLIP_BARS, RECORD_ROOM};
 
 /// The clip settings card's join keys for its takes, a row each (see
@@ -280,6 +281,19 @@ fn bars_edit(
 
 /// A song time edit for the audio tracks' regions: its pieces. None for
 /// one that moves nothing, or with more pieces than an edit has.
+/// Whether action `a` moves time in the song: a section moved or copied,
+/// bars put in or taken out (with room before or a section deleted), a
+/// tempo point added, moved or changed, song mode on or off. Markers,
+/// blocks, clips, launches and mutes don't (agreed with the Arrange
+/// refactor for step 0C).
+fn moves_song_time(a: &TimeAction) -> bool {
+    match a {
+        TimeAction::MoveSection { .. } | TimeAction::SongBars(_) | TimeAction::SongMode(_) => true,
+        TimeAction::SongTempo(e) => !matches!(e, TempoEdit::Pick(_)),
+        _ => false,
+    }
+}
+
 pub fn retime_of(edit: &TimeEdit) -> Option<Retime> {
     if edit.moves_nothing() {
         return None;
@@ -648,7 +662,11 @@ impl TimeControl {
             touch_lost: 0,
             touch_grew: Vec::new(),
             touch_freed: (0, 0),
-            includes: Includes::default(),
+            // A project's own timeline, never another's (step 0C).
+            includes: Includes {
+                timeline: next_timeline(),
+                ..Includes::default()
+            },
             decisions: Box::default(),
             heard: 0,
             cue_counts: CueCounts::default(),
@@ -2705,6 +2723,14 @@ impl TimeControl {
     /// the log.
     pub fn act(&mut self, a: TimeAction) -> Result<String, String> {
         let info = self.info;
+        // An edit that moves time in the song gives the views compiled from
+        // now on a new timeline, so a timing change made before it is
+        // cancelled (step 0C, agreed with the Arrange refactor). Before the
+        // edit, so the view it compiles carries it; one that fails only
+        // cancels a change early.
+        if moves_song_time(&a) {
+            self.includes.timeline = next_timeline();
+        }
         match a {
             // A track picked arms it, unless the app found REC's arm
             // pinned and sent `Select` instead (refactor C1).
@@ -2787,6 +2813,7 @@ impl TimeControl {
                         // The song's blocks and sections changed places.
                         self.selected = None;
                         self.section = None;
+                        self.includes.timeline = next_timeline();
                     }
                     if row.is_some_and(|r| r.captured) {
                         // It can be kept again.
@@ -2823,6 +2850,7 @@ impl TimeControl {
                     if row.is_some_and(|r| r.song.is_some()) {
                         self.selected = None;
                         self.section = None;
+                        self.includes.timeline = next_timeline();
                     }
                     let said = self.take_said(row);
                     self.compile().map(|_| format!("redo: {said}"))
