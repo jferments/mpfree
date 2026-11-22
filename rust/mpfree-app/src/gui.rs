@@ -19715,7 +19715,7 @@ mod tests {
         ];
         p.time.edit = Some(Box::new(time_view::EditInfo {
             editor: Editor::new(0, 0, &clip),
-            clip,
+            clip: clip.into(),
             rev: 0,
             track_name: "Track 1".into(),
             bar: 3840,
