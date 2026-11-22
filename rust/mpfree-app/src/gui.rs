@@ -30745,7 +30745,10 @@ mod tests {
         // is sent, and it says why.
         p.sample.use_jobs(mpfree_sampler::jobs::Jobs::new(
             mpfree_sampler::jobs::Config {
-                free: || Some(crate::memory::FLOOR + 1000),
+                promise: |need| {
+                    crate::memory::reserve(|| Some(crate::memory::FLOOR + 1000), need)
+                        .map(mpfree_sampler::jobs::Hold::new)
+                },
                 ..sample_page::jobs_config()
             },
         ));
@@ -34900,7 +34903,10 @@ mod tests {
         let short = |p: &mut Player| {
             p.sample.use_jobs(mpfree_sampler::jobs::Jobs::new(
                 mpfree_sampler::jobs::Config {
-                    free: || Some(crate::memory::FLOOR + 1000),
+                    promise: |need| {
+                        crate::memory::reserve(|| Some(crate::memory::FLOOR + 1000), need)
+                            .map(mpfree_sampler::jobs::Hold::new)
+                    },
                     ..sample_page::jobs_config()
                 },
             ));
@@ -35257,7 +35263,9 @@ mod tests {
         let mut p = sample_player(Fonts::embedded());
         // The service's workers count with this thread.
         p.sample.use_jobs(Jobs::new(Config {
-            free: mpc_free,
+            promise: |need| {
+                crate::memory::reserve(mpc_free, need).map(mpfree_sampler::jobs::Hold::new)
+            },
             on_start: |lane| {
                 (sample_page::jobs_config().on_start)(lane);
                 alloc_count::track_this_thread();
@@ -37077,7 +37085,9 @@ mod tests {
         // No memory to spare for the tone's waveform: Map to keys says why
         // and maps nothing.
         let mut p = start(Some(Jobs::new(Config {
-            free: || Some(0),
+            promise: |need| {
+                crate::memory::reserve(|| Some(0), need).map(mpfree_sampler::jobs::Hold::new)
+            },
             ..sample_page::jobs_config()
         })));
         press(&mut p);

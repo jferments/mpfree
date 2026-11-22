@@ -580,8 +580,10 @@ mod tests {
     /// Memory just short: a job that needs more than a megabyte is refused.
     fn short_service() -> Jobs {
         Jobs::new(mpfree_sampler::jobs::Config {
-            free: || Some(257_000_000),
-            room: crate::memory::room_in,
+            promise: |need| {
+                crate::memory::reserve(|| Some(257_000_000), need)
+                    .map(mpfree_sampler::jobs::Hold::new)
+            },
             ..mpfree_sampler::jobs::Config::default()
         })
     }
@@ -642,8 +644,9 @@ mod tests {
     fn a_refused_view_comes_once_memory_is_free_again() {
         let s = clicks("Loop", 2, 0.8);
         let jobs = Jobs::new(mpfree_sampler::jobs::Config {
-            free: free_then_more,
-            room: crate::memory::room_in,
+            promise: |need| {
+                crate::memory::reserve(free_then_more, need).map(mpfree_sampler::jobs::Hold::new)
+            },
             ..mpfree_sampler::jobs::Config::default()
         });
         let mut v = Views::new(jobs.clone());
