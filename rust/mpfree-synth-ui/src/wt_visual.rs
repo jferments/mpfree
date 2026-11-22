@@ -12,7 +12,7 @@
 use mpfree_synth::wavetable::factory;
 use mpfree_synth::wavetable::params::{self as wp, osc_id};
 use mpfree_synth::wavetable::table::{Table, PREVIEW};
-use mpfree_ui::Color;
+use mpfree_ui::Paint;
 
 use crate::visual::{self, Values};
 use crate::widgets::{Card, Trace, QLINK_COLORS, TEXT, TEXT_DIM, TEXT_FAINT};
@@ -191,14 +191,14 @@ pub fn table_name(v: &impl Values, o: Ids) -> String {
 pub fn cards(v: &impl Values, page: &str) -> Vec<Card> {
     let (blue, green) = (QLINK_COLORS[0], QLINK_COLORS[1]);
     let (ghost, grey, white) = (TEXT_FAINT, TEXT_DIM, TEXT);
-    let tr = |pts: Vec<(f32, f32)>, color: Color, width: f32, fill: bool, dashed: bool| Trace {
+    let tr = |pts: Vec<(f32, f32)>, color: Paint, width: f32, fill: bool, dashed: bool| Trace {
         pts,
         color,
         width,
         fill,
         dashed,
     };
-    let osc = |o: usize, color: Color| {
+    let osc = |o: usize, color: Paint| {
         let (ghosts, front) = stack(v, Ids::wavetable(o));
         let title = if o == 0 { "Osc A" } else { "Osc B" };
         let mut traces: Vec<Trace> = ghosts

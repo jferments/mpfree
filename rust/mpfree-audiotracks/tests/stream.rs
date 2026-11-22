@@ -88,7 +88,7 @@ impl Rig {
         };
         while let Some(r) = self.a.take_io() {
             match r {
-                Io::Write { take, chunk } => {
+                Io::Write { take, chunk } | Io::Rewrite { take, chunk } => {
                     let data = self
                         .a
                         .chunk(take, chunk)
@@ -101,7 +101,10 @@ impl Rig {
                 Io::Read { take, chunk } => {
                     d.pending.push_back((self.period + d.delay, take, chunk))
                 }
-                Io::Finish { take } => d.finished.push(take),
+                Io::Finish { take } => {
+                    d.finished.push(take);
+                    self.a.finished(take, true);
+                }
             }
         }
         while d.pending.front().is_some_and(|p| p.0 <= self.period) {

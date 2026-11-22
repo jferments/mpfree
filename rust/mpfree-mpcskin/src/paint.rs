@@ -32,7 +32,14 @@ impl Fonts {
         let heavy = s.contains("bold") || s.contains("black") || s.contains("heavy");
         let semi = s.contains("semibold") || s.contains("demi");
         let medium = s.contains("medium");
-        if name.eq_ignore_ascii_case("Roboto") {
+        if name.eq_ignore_ascii_case("Inter") {
+            // MPFree's own UI font, for its pop-ups over a skin.
+            if semi || heavy {
+                ("inter-semibold", mpfree_ui::text::INTER_SEMIBOLD)
+            } else {
+                ("inter-regular", mpfree_ui::text::INTER_REGULAR)
+            }
+        } else if name.eq_ignore_ascii_case("Roboto") {
             if semi {
                 ("roboto-semibold", ROBOTO_SEMIBOLD)
             } else if heavy {

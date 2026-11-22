@@ -602,7 +602,8 @@ fn paint_export(cx: &mut PaintCx, r: Rect, p: &ExportPanel) {
                     false,
                 );
             } else {
-                cx.canvas.stroke_round_rect(g.arrangement, 10, 1, t.outline);
+                cx.canvas
+                    .stroke_round_rect(g.arrangement, t.round(10), 1, t.outline);
                 cx.text(
                     FontId::Sans,
                     t.size_small,
@@ -668,7 +669,8 @@ fn paint_export(cx: &mut PaintCx, r: Rect, p: &ExportPanel) {
             if p.can_start() {
                 button(cx, g.right, "Start", true, false);
             } else {
-                cx.canvas.stroke_round_rect(g.right, 10, 1, t.outline);
+                cx.canvas
+                    .stroke_round_rect(g.right, t.round(10), 1, t.outline);
                 cx.text(
                     FontId::Sans,
                     t.size_small,
@@ -907,7 +909,7 @@ impl Widget for BrowserView {
             let src = &SOURCES[i];
             let on = i == s.source;
             if on {
-                cx.canvas.fill_round_rect(*pr, 10, t.raised);
+                cx.canvas.fill_round_rect(*pr, t.round(10), t.raised);
                 cx.canvas
                     .fill_round_rect(Rect::new(pr.x, pr.y + 12, 4, pr.h - 24), 2, t.accent);
             }
@@ -1122,7 +1124,7 @@ fn detail_label(s: &Screen, b: Button) -> String {
 fn button(cx: &mut PaintCx, r: Rect, label: &str, lit: bool, danger: bool) {
     let t = cx.theme.clone();
     let fill = if lit { t.accent } else { t.raised };
-    cx.canvas.fill_round_rect(r, 10, fill);
+    cx.canvas.fill_round_rect(r, t.round(10), fill);
     let ink = if lit {
         t.on_accent
     } else if danger {
@@ -1166,7 +1168,7 @@ fn star_rect(rr: Rect) -> Rect {
 fn paint_row(cx: &mut PaintCx, rr: Rect, row: &Row, selected: bool) {
     let t = cx.theme.clone();
     if selected {
-        cx.canvas.fill_round_rect(rr, 10, t.raised);
+        cx.canvas.fill_round_rect(rr, t.round(10), t.raised);
         cx.canvas
             .fill_round_rect(Rect::new(rr.x, rr.y + 12, 4, rr.h - 24), 2, t.accent);
     }
@@ -1240,7 +1242,8 @@ fn paint_row(cx: &mut PaintCx, rr: Rect, row: &Row, selected: bool) {
 
 fn paint_overview(cx: &mut PaintCx, r: Rect, o: &[(f32, f32)], c: Color) {
     let t = cx.theme.clone();
-    cx.canvas.fill_round_rect(r, 8, t.bg.with_alpha(160));
+    cx.canvas
+        .fill_round_rect(r, t.round(8), t.bg.with_alpha(160));
     if o.is_empty() || r.w <= 4 {
         return;
     }
@@ -1415,7 +1418,7 @@ fn paint_files(cx: &mut PaintCx, g: &Geo, s: &Screen) {
     cx.panel(g.list);
     if s.can_go_back {
         let b = g.back.inset_xy(0, 6);
-        cx.canvas.fill_round_rect(b, 10, t.raised);
+        cx.canvas.fill_round_rect(b, t.round(10), t.raised);
         cx.text(
             FontId::Bold,
             t.size_title,
@@ -1585,7 +1588,7 @@ fn paint_map(cx: &mut PaintCx, m: &MapGeo, map: &crate::state::MapShown) {
         let r = *r;
         match &cell.name {
             Some(name) => {
-                cx.canvas.fill_round_rect(r, 8, t.raised);
+                cx.canvas.fill_round_rect(r, t.round(8), t.raised);
                 if let Some(c) = draw::sound_color(name) {
                     cx.canvas.fill_round_rect(
                         Rect::new(r.x, r.y + 6, 4, r.h - 12),
@@ -1594,10 +1597,10 @@ fn paint_map(cx: &mut PaintCx, m: &MapGeo, map: &crate::state::MapShown) {
                     );
                 }
             }
-            None => cx.canvas.stroke_round_rect(r, 8, 1, t.outline),
+            None => cx.canvas.stroke_round_rect(r, t.round(8), 1, t.outline),
         }
         if cell.picked {
-            cx.canvas.stroke_round_rect(r, 8, 2, t.accent);
+            cx.canvas.stroke_round_rect(r, t.round(8), 2, t.accent);
         }
         let inner = r.inset_xy(10, 6);
         let (top, bottom) = inner.take_top(inner.h / 2);
@@ -1639,7 +1642,7 @@ fn paint_over(cx: &mut PaintCx, r: Rect, s: &Screen) {
                 t.text_dim,
                 title,
             );
-            cx.canvas.fill_round_rect(k.field, 10, t.raised);
+            cx.canvas.fill_round_rect(k.field, t.round(10), t.raised);
             let tw = cx.text(
                 FontId::Sans,
                 t.size_title,

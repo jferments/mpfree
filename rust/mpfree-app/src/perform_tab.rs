@@ -620,7 +620,7 @@ fn action_color(a: PadAction) -> Color {
             c[usize::from(n) % c.len()]
         }
         PadAction::Mute(_) => mpfree_ui::draw::FX,
-        PadAction::Scene(_) => mpfree_ui::draw::KNOB[1],
+        PadAction::Scene(_) => mpfree_ui::draw::GREEN,
         PadAction::Macro { .. } => MACRO_COLOR,
     }
 }
@@ -834,7 +834,7 @@ impl PerformTab {
         let label = pad_label(page, self.pad);
         let page_name = self.set.page_name(page);
         if let Some(bar) = ui.get_mut::<PadBar>(BAR) {
-            bar.color = action_color(a);
+            bar.color = mpfree_ui::Paint::Content(action_color(a));
             bar.title = match a {
                 PadAction::None => format!("Perform pads {label} · nothing"),
                 a => format!("Perform pads {label} · {}", action_name(a, names)),

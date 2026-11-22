@@ -7908,6 +7908,69 @@ mod tests {
         );
     }
 
+    /// Piano roll plan 0C.1: an editor edit on the playing clip goes into
+    /// the view in place, as a step edit does (no compile, the view just
+    /// what a compile gives, timed for the status line); a drag of the
+    /// velocity lane, sent once as the finger lifts, is one take; and the
+    /// screens get one shared copy of the clip, the same while it is
+    /// unchanged, a new one when it changed.
+    #[test]
+    fn the_note_editor_edits_the_playing_clip_in_place_and_shares_one_copy() {
+        use mpfree_time_ui::editor::EditAction as E;
+        use std::sync::Arc;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let tap = |step| StepAction::Tap {
+            pad: 0,
+            step,
+            velocity: 100,
+        };
+        for step in [0, 4, 8] {
+            h.step_action(tap(step)).unwrap();
+        }
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        let info = |h: &mut TimeHost| {
+            h.take_changed();
+            *h.state().edit.unwrap()
+        };
+        let a = info(&mut h);
+        assert!(Arc::ptr_eq(&a.clip, &info(&mut h).clip), "the same copy");
+        let compiles = h.control.costs.compiles;
+        h.act(TimeAction::Edit(E::Button(4))).unwrap();
+        let takes = h.state().done.len();
+        for v in [0.5, 1.0] {
+            h.act(TimeAction::Edit(E::Velocity(v))).unwrap();
+            h.audio.receive();
+            assert_eq!(
+                *h.audio.view,
+                h.control.view().unwrap(),
+                "in place, as a compile gives"
+            );
+        }
+        assert_eq!(h.state().done.len(), takes + 2, "a take a drag");
+        let c = h.control.costs;
+        assert_eq!(
+            (c.compiles, c.notes_in_place, c.notes_compiled),
+            (compiles, 2, 0)
+        );
+        assert!(
+            h.describe().contains("; note edits: 2 in place (slowest "),
+            "{}",
+            h.describe()
+        );
+        let b = info(&mut h);
+        assert!(!Arc::ptr_eq(&a.clip, &b.clip), "changed: a new copy");
+        assert!(b.clip.notes.iter().all(|n| n.velocity == 127));
+        // A change from Steps: a new copy, then the same one again.
+        h.step_action(tap(12)).unwrap();
+        let d = info(&mut h);
+        assert!(!Arc::ptr_eq(&b.clip, &d.clip));
+        assert_eq!(d.clip.notes.len(), 4);
+        assert!(Arc::ptr_eq(&d.clip, &info(&mut h).clip));
+    }
+
     /// An editor edit that what plays can't follow (the play view would not
     /// build) is taken back from the clip and the takes, as a step edit is.
     #[test]
@@ -7934,11 +7997,15 @@ mod tests {
                 start: 0,
             });
         }
+        // Another track armed: the edit compiles rather than going into the
+        // view in place (plan 0C.1).
+        h.control.armed = Some(2);
         let clip = h.control.project.clip(0, 0).cloned();
         let ed = h.state().edit.map(|e| e.editor);
         let said = h
             .act(TimeAction::Edit(E::Empty { tick: 960, note: 3 }))
             .unwrap_err();
+        assert_eq!(h.control.costs.notes_compiled, 1);
         assert!(said.ends_with("the edit was taken back"), "{said}");
         assert_eq!(h.control.project.clip(0, 0).cloned(), clip);
         assert_eq!(h.state().edit.map(|e| e.editor), ed, "the editor as it was");

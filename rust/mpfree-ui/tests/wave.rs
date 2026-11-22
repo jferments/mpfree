@@ -217,10 +217,10 @@ fn a_pair_of_tabs_hugging_a_span_keep_clear_of_each_other() {
     let mut w = wave(1);
     w.set_markers(vec![
         Marker::new(20_000, "GRAIN", MarkerKind::Cue)
-            .colored(c0)
+            .colored(mpfree_ui::Paint::Literal(c0))
             .tab_on(TabSide::Before),
         Marker::new(22_000, "SIZE", MarkerKind::Cue)
-            .colored(c0)
+            .colored(mpfree_ui::Paint::Literal(c0))
             .tab_on(TabSide::After),
     ]);
     let c = paint(&w, R);

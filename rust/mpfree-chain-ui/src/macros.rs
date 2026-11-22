@@ -491,8 +491,9 @@ impl Widget for MacrosView {
         }
         let hx = track.x + (st.morph.clamp(0.0, 1.0) * track.w as f32) as i32;
         let handle = Rect::new(hx - 16, l.slider.y + 4, 32, l.slider.h - 8);
-        cx.canvas.fill_round_rect(handle, 8, t.text);
-        cx.canvas.stroke_round_rect(handle, 8, 1, t.outline);
+        cx.canvas.fill_round_rect(handle, t.round(8), t.text);
+        cx.canvas
+            .stroke_round_rect(handle, t.round(8), 1, t.outline);
         let what = Rect::new(inner.x, l.slider.bottom() + 18, inner.w, 22);
         cx.text(
             FontId::Bold,
@@ -556,7 +557,7 @@ impl Widget for MacrosView {
             );
             y += CHANGE_H;
         }
-        cx.canvas.fill_round_rect(l.snap, 10, t.raised);
+        cx.canvas.fill_round_rect(l.snap, t.round(10), t.raised);
         cx.text(
             FontId::Bold,
             t.size_small,
@@ -567,7 +568,7 @@ impl Widget for MacrosView {
         );
         for (k, b) in l.save.iter().enumerate() {
             cx.canvas
-                .fill_round_rect(*b, 10, if k == 0 { t.accent } else { t.warn });
+                .fill_round_rect(*b, t.round(10), if k == 0 { t.accent } else { t.warn });
             cx.text(
                 FontId::Bold,
                 t.size_small,
@@ -823,8 +824,8 @@ fn paint_editor(cx: &mut PaintCx, e: &EditorLayout, m: usize, name: &str, tv: &T
     for (p, label) in [(tv.from, "From"), (tv.to, "To")] {
         let x = x_of(p);
         let h = Rect::new(x - 14, tr.y, 28, tr.h);
-        cx.canvas.fill_round_rect(h, 8, c);
-        cx.canvas.stroke_round_rect(h, 8, 1, t.outline);
+        cx.canvas.fill_round_rect(h, t.round(8), c);
+        cx.canvas.stroke_round_rect(h, t.round(8), 1, t.outline);
         cx.text(
             FontId::Sans,
             t.size_small - 1.0,
@@ -839,7 +840,7 @@ fn paint_editor(cx: &mut PaintCx, e: &EditorLayout, m: usize, name: &str, tv: &T
     }
     // What a turn of the macro does: macro along, target up.
     let g = e.graph;
-    cx.canvas.stroke_round_rect(g, 8, 1, t.outline);
+    cx.canvas.stroke_round_rect(g, t.round(8), 1, t.outline);
     let pg = g.inset(10);
     let pts: Vec<(f32, f32)> = (0..=48)
         .map(|i| {
@@ -881,7 +882,7 @@ fn paint_editor(cx: &mut PaintCx, e: &EditorLayout, m: usize, name: &str, tv: &T
     for (k, r) in e.curves.iter().enumerate() {
         let on = CURVES[k] == tv.curve;
         cx.canvas
-            .fill_round_rect(*r, 10, if on { c } else { t.raised });
+            .fill_round_rect(*r, t.round(10), if on { c } else { t.raised });
         cx.text(
             FontId::Bold,
             t.size_small,
@@ -891,7 +892,7 @@ fn paint_editor(cx: &mut PaintCx, e: &EditorLayout, m: usize, name: &str, tv: &T
             MapCurve::NAMES[k],
         );
     }
-    cx.canvas.fill_round_rect(e.flip, 10, t.raised);
+    cx.canvas.fill_round_rect(e.flip, t.round(10), t.raised);
     cx.text(
         FontId::Bold,
         t.size_small,
@@ -900,7 +901,7 @@ fn paint_editor(cx: &mut PaintCx, e: &EditorLayout, m: usize, name: &str, tv: &T
         t.text,
         "Flip the range",
     );
-    cx.canvas.stroke_round_rect(e.remove, 10, 1, t.bad);
+    cx.canvas.stroke_round_rect(e.remove, t.round(10), 1, t.bad);
     cx.text(
         FontId::Bold,
         t.size_small,

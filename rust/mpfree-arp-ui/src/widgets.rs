@@ -45,7 +45,7 @@ impl Widget for Segments {
             let c = self.cell(r, i).inset_xy(3, 2);
             let on = i == self.active;
             if on {
-                cx.canvas.fill_round_rect(c, 10, t.raised);
+                cx.canvas.fill_round_rect(c, t.round(10), t.raised);
                 let bar = Rect::new(c.x + 8, c.bottom() - 3, c.w - 16, 3);
                 cx.canvas.fill_round_rect(bar, 1, t.accent);
             }
@@ -133,7 +133,7 @@ impl Widget for MiniBar {
             (faster, "+", self.can_faster),
         ] {
             cx.canvas
-                .fill_round_rect(b, 10, if on { t.raised } else { t.surface });
+                .fill_round_rect(b, t.round(10), if on { t.raised } else { t.surface });
             cx.text(
                 FontId::Bold,
                 t.size_title,
@@ -155,7 +155,7 @@ impl Widget for MiniBar {
         let ink = if self.latched { t.warn } else { t.text_dim };
         cx.canvas.fill_round_rect(
             latch,
-            10,
+            t.round(10),
             if self.latched {
                 t.bg.mix(t.warn, 0.22)
             } else {
@@ -163,7 +163,7 @@ impl Widget for MiniBar {
             },
         );
         if self.latched {
-            cx.canvas.stroke_round_rect(latch, 10, 2, t.warn);
+            cx.canvas.stroke_round_rect(latch, t.round(10), 2, t.warn);
         }
         cx.text(
             FontId::Bold,
@@ -426,12 +426,12 @@ impl Widget for StepStrip {
             let cell = self.cell(r, i);
             let quiet = matches!(c.kind, CellKind::Rest | CellKind::Tie);
             cx.canvas
-                .fill_round_rect(cell, 8, if quiet { t.surface } else { t.raised });
+                .fill_round_rect(cell, t.round(8), if quiet { t.surface } else { t.raised });
             if self.cursor == Some(i) {
-                cx.canvas.stroke_round_rect(cell, 8, 2, t.accent);
+                cx.canvas.stroke_round_rect(cell, t.round(8), 2, t.accent);
             }
             if self.playing == Some(i) {
-                cx.canvas.stroke_round_rect(cell, 8, 3, t.good);
+                cx.canvas.stroke_round_rect(cell, t.round(8), 3, t.good);
             }
             if c.accent {
                 let dot = Rect::new(cell.right() - 14, cell.y + 7, 7, 7);
@@ -569,9 +569,9 @@ impl Widget for ButtonRow {
             } else {
                 t.bg.mix(t.tone(b.tone), 0.18)
             };
-            cx.canvas.fill_round_rect(br, 10, fill);
+            cx.canvas.fill_round_rect(br, t.round(10), fill);
             if b.disabled {
-                cx.canvas.stroke_round_rect(br, 10, 1, t.outline);
+                cx.canvas.stroke_round_rect(br, t.round(10), 1, t.outline);
             }
             let ink = if b.disabled {
                 t.text_faint
@@ -714,21 +714,24 @@ impl Widget for LaneGrid {
             for col in 0..self.columns {
                 let cell = self.cell(r, row, col);
                 let Some(c) = cells.get(col) else {
-                    cx.canvas.stroke_round_rect(cell, 6, 1, t.outline);
+                    cx.canvas.stroke_round_rect(cell, t.round(6), 1, t.outline);
                     continue;
                 };
                 let quiet = matches!(c.kind, CellKind::Rest | CellKind::Tie);
-                cx.canvas
-                    .fill_round_rect(cell, 6, if quiet { t.surface } else { t.raised });
+                cx.canvas.fill_round_rect(
+                    cell,
+                    t.round(6),
+                    if quiet { t.surface } else { t.raised },
+                );
                 let playing = match self.playing_rows.get(row) {
                     Some(p) => *p == Some(col),
                     None => self.playing == Some(col),
                 };
                 if playing {
-                    cx.canvas.stroke_round_rect(cell, 6, 2, t.good);
+                    cx.canvas.stroke_round_rect(cell, t.round(6), 2, t.good);
                 }
                 if self.cursor == Some((row, col)) {
-                    cx.canvas.stroke_round_rect(cell, 6, 3, t.accent);
+                    cx.canvas.stroke_round_rect(cell, t.round(6), 3, t.accent);
                 }
                 if c.accent {
                     let dot = Rect::new(cell.right() - 12, cell.y + 6, 6, 6);

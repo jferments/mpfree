@@ -92,7 +92,7 @@ roles! {
     TextInverse "text_inverse" "Text" Role "{bg}"
         "Text on a fill too bright (or too dark) for `text`; ink_on() picks between the two.";
     Highlight "highlight" "Light and shade" Role "{text}"
-        "What a pad or button flashes towards when it is hit.";
+        "Bright marks: what a pad or button flashes towards when it is hit, and the ring round a picked cell.";
     Shadow "shadow" "Light and shade" Role "light_dark({text}, {bg})"
         "Drop shadows under lifted things (drawn see-through).";
     Series1 "series.1" "Palettes" Role "{track.1}"
@@ -111,6 +111,12 @@ roles! {
         "The seventh.";
     Series8 "series.8" "Palettes" Role "{track.8}"
         "The eighth.";
+    Handle "handle" "Controls" Role "light_dark({surface}, {text})"
+        "The knob of a switch and the handle of a slider.";
+    Cut "cut" "Palettes" Role "{text_dim}"
+        "The EQ's low and high cuts, beside its bands' series colours.";
+    Grain "grain" "Sampler" Role "{accent2}"
+        "The sampler's grain window over the wave and its GRAIN and SIZE marks.";
 }
 
 /// How many roles there are.
@@ -498,6 +504,16 @@ pub struct Swatch {
     pub ink: Color,
 }
 
+/// A piano keyboard's colours on a theme ([`Theme::keys`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Keys {
+    pub white: Color,
+    pub black: Color,
+    /// A root (or otherwise marked) white key, tinted with the accent.
+    pub white_root: Color,
+    pub black_root: Color,
+}
+
 /// How much of the colour a [`Swatch::tint`] has over the panel.
 pub const TINT: f32 = 0.18;
 
@@ -507,17 +523,68 @@ pub const TINT: f32 = 0.18;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Paint {
     Key(ColorKey),
+    /// A theme colour see-through: its own alpha times `.1` / 255.
+    Alpha(ColorKey, u8),
+    /// `.0` mixed `.2` % of the way to `.1`, both the theme's.
+    Mix(ColorKey, ColorKey, u8),
     Content(Color),
     Literal(Color),
 }
 
 impl Paint {
+    /// The core colours, for panels that build what they draw before they
+    /// know the theme.
+    pub const BG: Paint = Paint::Key(ColorKey::Bg);
+    pub const SURFACE: Paint = Paint::Key(ColorKey::Surface);
+    pub const RAISED: Paint = Paint::Key(ColorKey::Raised);
+    pub const OUTLINE: Paint = Paint::Key(ColorKey::Outline);
+    pub const TEXT: Paint = Paint::Key(ColorKey::Text);
+    pub const TEXT_DIM: Paint = Paint::Key(ColorKey::TextDim);
+    pub const TEXT_FAINT: Paint = Paint::Key(ColorKey::TextFaint);
+    pub const ACCENT: Paint = Paint::Key(ColorKey::Accent);
+    pub const ACCENT2: Paint = Paint::Key(ColorKey::Accent2);
+    pub const ON_ACCENT: Paint = Paint::Key(ColorKey::OnAccent);
+    pub const GOOD: Paint = Paint::Key(ColorKey::Good);
+    pub const WARN: Paint = Paint::Key(ColorKey::Warn);
+    pub const BAD: Paint = Paint::Key(ColorKey::Bad);
+
+    /// Track colour `i` (0 to 7).
+    pub const fn track(i: usize) -> Paint {
+        Paint::Key(ColorKey::Track((i % 8) as u8))
+    }
+
     /// The colour on `t`.
     pub fn on(self, t: &Theme) -> Color {
         match self {
             Paint::Key(k) => t.color(k),
+            Paint::Alpha(k, a) => {
+                let c = t.color(k);
+                c.with_alpha((c.a as u32 * a as u32 / 255) as u8)
+            }
+            Paint::Mix(a, b, pct) => t.color(a).mix(t.color(b), pct as f32 / 100.0),
             Paint::Content(c) => t.content(c),
             Paint::Literal(c) => c,
+        }
+    }
+
+    /// The same colour drawn at alpha `a` (a theme colour's own alpha is
+    /// kept and multiplied by it). A mix stays opaque.
+    pub const fn with_alpha(self, a: u8) -> Paint {
+        match self {
+            Paint::Key(k) | Paint::Alpha(k, _) => Paint::Alpha(k, a),
+            Paint::Content(c) => Paint::Content(c.with_alpha(a)),
+            Paint::Literal(c) => Paint::Literal(c.with_alpha(a)),
+            Paint::Mix(..) => self,
+        }
+    }
+
+    /// The theme colour it names and the alpha it is drawn at, for a
+    /// theme colour plain or see-through.
+    pub const fn key(self) -> Option<(ColorKey, u8)> {
+        match self {
+            Paint::Key(k) => Some((k, 255)),
+            Paint::Alpha(k, a) => Some((k, a)),
+            _ => None,
         }
     }
 }
@@ -640,6 +707,50 @@ impl Theme {
             b
         } else {
             a
+        }
+    }
+
+    /// `ink` half see-through, for the text of a control that does nothing
+    /// as set, but never under 3:1 on `fill` (the floor for readable text):
+    /// where half would read less, it is drawn just solid enough. Text a
+    /// dark theme fades to half still reads there, so it comes back half.
+    pub fn faded(&self, ink: Color, fill: Color) -> Color {
+        let fill = over(fill, self.panel());
+        let reads = |a: u8| contrast(over(ink.with_alpha(a), fill), fill) >= 3.0;
+        let mut a = ink.a / 2;
+        while a < ink.a && !reads(a) {
+            a = a.saturating_add(4).min(ink.a);
+        }
+        ink.with_alpha(a)
+    }
+
+    /// `ink` for text on `fill`, moved just far enough towards the theme's
+    /// text or inverse text (whichever reads on `fill`) to reach 4.5:1.
+    /// Text that already reads comes back as it is, so a theme whose
+    /// colours read draws exactly what it chose. Use it for text in a
+    /// colour of its own (a knob's number, a marker's label) on a fill the
+    /// theme doesn't choose.
+    pub fn readable(&self, ink: Color, fill: Color) -> Color {
+        let fill = over(fill, self.panel());
+        reach(ink, self.ink_on(fill), fill, 4.5)
+    }
+
+    /// A piano keyboard's colours: white keys in the theme's light colour
+    /// (`text` on a dark theme, a quarter of the way to `bg` so they don't
+    /// glare; `surface` on a light one), black keys in its dark colour,
+    /// and marked keys tinted with the accent. Label a key with
+    /// `ink_on(key)`.
+    pub fn keys(&self) -> Keys {
+        let (light, dark, dim) = if self.is_light() {
+            (self.surface, self.text, 0.0)
+        } else {
+            (self.text, self.bg, 0.25)
+        };
+        Keys {
+            white: light.mix(dark, dim),
+            black: dark,
+            white_root: light.mix(self.accent, 0.35),
+            black_root: dark.mix(self.accent, 0.7),
         }
     }
 
@@ -773,6 +884,39 @@ mod tests {
     }
 
     #[test]
+    fn readable_leaves_text_that_reads_and_moves_text_that_doesnt() {
+        let t = Theme::dark();
+        let blue = Color::rgb(0x6EA8FE);
+        assert_eq!(t.readable(blue, t.surface), blue);
+        // Blue on amber is under 2:1; it moves towards the dark ink that
+        // reads on amber, just far enough.
+        let amber = Color::rgb(0xFFC145);
+        let fixed = t.readable(blue, amber);
+        assert!(contrast(fixed, amber) >= 4.5, "{fixed:?}");
+        assert!(contrast(fixed, amber) < contrast(t.bg, amber));
+        // On a light theme the same blue on its panel darkens.
+        let light = Theme::parse("bg = #E4E7EB\nsurface = #F4F5F7\ntext = #161A21").unwrap();
+        let fixed = light.readable(blue, light.surface);
+        assert!(contrast(fixed, light.surface) >= 4.5, "{fixed:?}");
+    }
+
+    #[test]
+    fn faded_text_is_half_but_never_under_three_to_one() {
+        let t = Theme::dark();
+        let ink = t.text_dim.mix(t.text, 0.3);
+        assert_eq!(t.faded(ink, t.surface), ink.with_alpha(127));
+        // Half of a dark ink on a light panel reads under 3:1: it is drawn
+        // more solid, just enough.
+        let light = Theme::parse("bg = #E4E7EB\nsurface = #F4F5F7\ntext = #161A21").unwrap();
+        let ink = light.text_dim.mix(light.text, 0.3);
+        let f = light.faded(ink, light.surface);
+        assert!(f.a > 127 && f.a < 255, "{f:?}");
+        let on = over(f, light.surface);
+        assert!(contrast(on, light.surface) >= 3.0);
+        assert!(contrast(over(f.with_alpha(f.a - 4), light.surface), light.surface) < 3.0);
+    }
+
+    #[test]
     fn round_scales_corners_by_the_themes_radius() {
         let mut t = Theme::dark();
         assert_eq!(t.round(10), 10);
@@ -796,6 +940,8 @@ mod tests {
         let kit = Color::rgb(0xFF6B6B);
         assert_eq!(Paint::Content(kit).on(&b), b.content(kit));
         assert_eq!(Paint::Literal(kit).on(&b), kit);
+        let p = Paint::Mix(ColorKey::Accent, ColorKey::Bad, 55);
+        assert_eq!(p.on(&b), b.accent.mix(b.bad, 0.55));
     }
 
     #[test]

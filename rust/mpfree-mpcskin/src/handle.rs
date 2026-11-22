@@ -302,6 +302,8 @@ pub struct Val {
     pub value: f32,
     /// Discrete steps (replacement strings, a Local's range).
     pub steps: Option<u32>,
+    /// The steps' names, when the skin's replacement strings give them.
+    pub names: Vec<String>,
     pub text: String,
     pub name: String,
     /// What a write goes to.
@@ -361,6 +363,7 @@ impl Env<'_> {
                 let n = names.len() as u32;
                 v.steps = Some(n);
                 v.text = names[v.step(n) as usize].clone();
+                v.names = names.clone();
             }
             None => v.text = self.params.text(i),
         }

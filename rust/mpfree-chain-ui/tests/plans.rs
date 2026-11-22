@@ -107,7 +107,7 @@ fn cards(id: &str) -> Vec<String> {
     let n = registry::make(id).unwrap();
     let st = FxState::from_node(n.as_ref(), "", t.accent, 120.0, 48_000);
     let scratch = Scratch::new(&st);
-    visual::strip(&st, "", None, &scratch, &t)
+    visual::strip(&st, "", None, &scratch)
         .cards
         .into_iter()
         .map(|c| c.title)
