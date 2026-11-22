@@ -1086,6 +1086,129 @@ impl Envelope {
     }
 }
 
+/// A region as a run plays it: on song ticks, `len_f` frames long (its
+/// ticks' frames along the tempo map), meeting the region before it with
+/// `before` and the one after with `after`.
+struct Placed<'a> {
+    r: &'a Region,
+    len_f: i64,
+    before: Join,
+    after: Join,
+}
+
+/// What a run reads regions through: the takes, the pool, the stream
+/// player and its room, the crossfade table and the counts. One place
+/// adds a region, for the song's regions and (phase 2) clips alike.
+struct Reader<'a> {
+    takes: &'a mut [Take],
+    pool: &'a Pool,
+    fade: &'a [f32; FADE + 1],
+    player: &'a mut Option<Box<Player>>,
+    reads: &'a mut [f32],
+    stats: &'a mut Stats,
+}
+
+impl Reader<'_> {
+    /// Add `p` into `dst` (interleaved stereo, a run's frames) from song
+    /// tick `tick0`: its gain, its own fades, the crossfades its joins ask
+    /// for and the [`FADE`] frames past its end; frames from memory or its
+    /// file, those that miss counted.
+    fn add(&mut self, p: &Placed, map: &TempoMap, rate: u32, tick0: f64, dst: &mut [f32]) {
+        let (r, len_f, before, after) = (p.r, p.len_f, p.before, p.after);
+        let len = dst.len() / 2;
+        let Some(tk) = self
+            .takes
+            .get(r.take as usize)
+            .filter(|k| k.live && !k.loading)
+        else {
+            return;
+        };
+        // Frames since the region's start at the run's first frame.
+        let e0 = frames_from(map, r.start as f64, tick0, rate).round() as i64;
+        let stop = len_f
+            + if after == Join::Straight {
+                0
+            } else {
+                FADE as i64
+            };
+        if e0 >= stop || e0 + len as i64 <= 0 {
+            return;
+        }
+        let env = Envelope::of(r, len_f);
+        let fade = self.fade;
+        let gain_at = |e: i64| -> f32 {
+            if e < 0 || e >= stop {
+                return 0.0;
+            }
+            let mut g = r.gain;
+            if e < FADE as i64 {
+                match before {
+                    Join::Fade => g *= fade[e as usize],
+                    Join::Ramp => g *= e as f32 / FADE as f32,
+                    Join::Straight => {}
+                }
+            }
+            if e >= len_f {
+                // Never Straight: then `stop` is `len_f`.
+                let j = FADE as i64 - (e - len_f);
+                match after {
+                    Join::Ramp => g *= j as f32 / FADE as f32,
+                    _ => g *= fade[j as usize],
+                }
+            }
+            // Its own fades. A fade out reaches nothing at the end of the
+            // region it was cut from, and the crossfade past its end goes
+            // on from where it got to.
+            g * env.at(e)
+        };
+        let (plain_from, plain_to) = env.plain();
+        let edge = if before == Join::Straight {
+            0
+        } else {
+            FADE as i64
+        };
+        // The whole run past the fades and crossfades: one gain.
+        let plain = e0 >= plain_from.max(edge) && e0 + len as i64 <= plain_to.min(len_f);
+        let (g, k) = (r.gain, r.src + e0);
+        let (pool, reads) = (self.pool, &mut *self.reads);
+        let missed = match tk.store {
+            Store::File { gen } => {
+                let p = self.player.as_deref_mut();
+                let end = tk.frames;
+                if plain {
+                    tk.add_from_file(p, r.take, gen, end, k, dst, reads, &|_| g)
+                } else {
+                    let gain = |j: usize| gain_at(e0 + j as i64);
+                    tk.add_from_file(p, r.take, gen, end, k, dst, reads, &gain)
+                }
+            }
+            Store::Part { gen, freed, .. } if freed > 0 => {
+                let p = self.player.as_deref_mut();
+                if plain {
+                    tk.add_part(pool, p, r.take, gen, freed, k, dst, reads, &|_| g)
+                } else {
+                    let gain = |j: usize| gain_at(e0 + j as i64);
+                    tk.add_part(pool, p, r.take, gen, freed, k, dst, reads, &gain)
+                }
+            }
+            Store::Pool | Store::Part { .. } => {
+                if plain {
+                    tk.add_into(pool, r.take, k, dst, &|_| g);
+                } else {
+                    tk.add_into(pool, r.take, k, dst, &|j| gain_at(e0 + j as i64));
+                }
+                0
+            }
+        };
+        if missed > 0 {
+            let m = &mut self.takes[r.take as usize];
+            m.missed += missed;
+            m.miss_tick = tick0;
+            self.stats.missed += missed;
+        }
+    }
+}
+
 /// The audio tracks: see the module notes.
 pub struct AudioTracks {
     rate: u32,
@@ -3149,17 +3272,19 @@ impl AudioTracks {
             .regions()
             .partition_point(|r| r.end as f64 + tail <= tick0);
         let (regions, buf) = (&tr.regions[..tr.n], &mut tr.buf);
+        let mut reader = Reader {
+            takes,
+            pool,
+            fade,
+            player,
+            reads,
+            stats,
+        };
+        let dst = &mut buf[2 * off..2 * (off + len)];
         for (i, r) in regions.iter().enumerate().skip(first) {
             if r.start as f64 >= tick1 {
                 break;
             }
-            let Some(tk) = takes.get(r.take as usize).filter(|k| k.live && !k.loading) else {
-                continue;
-            };
-            // Frames since the region's start at the run's first frame,
-            // and the region's length in frames.
-            let e0 = frames_from(map, r.start as f64, tick0, rate).round() as i64;
-            let len_f = frames_from(map, r.start as f64, r.end as f64, rate).round() as i64;
             // How it meets the regions either side ([`Join`]).
             let before = match i.checked_sub(1) {
                 Some(h) => join(&regions[h], r, map, rate),
@@ -3168,87 +3293,14 @@ impl AudioTracks {
             let after = regions
                 .get(i + 1)
                 .map_or(Join::Fade, |n| join(r, n, map, rate));
-            let stop = len_f
-                + if after == Join::Straight {
-                    0
-                } else {
-                    FADE as i64
-                };
-            if e0 >= stop || e0 + len as i64 <= 0 {
-                continue;
-            }
-            let env = Envelope::of(r, len_f);
-            let fade = &*fade;
-            let gain_at = |e: i64| -> f32 {
-                if e < 0 || e >= stop {
-                    return 0.0;
-                }
-                let mut g = r.gain;
-                if e < FADE as i64 {
-                    match before {
-                        Join::Fade => g *= fade[e as usize],
-                        Join::Ramp => g *= e as f32 / FADE as f32,
-                        Join::Straight => {}
-                    }
-                }
-                if e >= len_f {
-                    // Never Straight: then `stop` is `len_f`.
-                    let j = FADE as i64 - (e - len_f);
-                    match after {
-                        Join::Ramp => g *= j as f32 / FADE as f32,
-                        _ => g *= fade[j as usize],
-                    }
-                }
-                // Its own fades. A fade out reaches nothing at the end of
-                // the region it was cut from, and the crossfade past its
-                // end goes on from where it got to.
-                g * env.at(e)
+            let len_f = frames_from(map, r.start as f64, r.end as f64, rate).round() as i64;
+            let placed = Placed {
+                r,
+                len_f,
+                before,
+                after,
             };
-            let dst = &mut buf[2 * off..2 * (off + len)];
-            let (plain_from, plain_to) = env.plain();
-            let edge = if before == Join::Straight {
-                0
-            } else {
-                FADE as i64
-            };
-            // The whole run past the fades and crossfades: one gain.
-            let plain = e0 >= plain_from.max(edge) && e0 + len as i64 <= plain_to.min(len_f);
-            let (g, k) = (r.gain, r.src + e0);
-            let missed = match tk.store {
-                Store::File { gen } => {
-                    let p = player.as_deref_mut();
-                    let end = tk.frames;
-                    if plain {
-                        tk.add_from_file(p, r.take, gen, end, k, dst, reads, &|_| g)
-                    } else {
-                        let gain = |j: usize| gain_at(e0 + j as i64);
-                        tk.add_from_file(p, r.take, gen, end, k, dst, reads, &gain)
-                    }
-                }
-                Store::Part { gen, freed, .. } if freed > 0 => {
-                    let p = player.as_deref_mut();
-                    if plain {
-                        tk.add_part(pool, p, r.take, gen, freed, k, dst, reads, &|_| g)
-                    } else {
-                        let gain = |j: usize| gain_at(e0 + j as i64);
-                        tk.add_part(pool, p, r.take, gen, freed, k, dst, reads, &gain)
-                    }
-                }
-                Store::Pool | Store::Part { .. } => {
-                    if plain {
-                        tk.add_into(pool, r.take, k, dst, &|_| g);
-                    } else {
-                        tk.add_into(pool, r.take, k, dst, &|j| gain_at(e0 + j as i64));
-                    }
-                    0
-                }
-            };
-            if missed > 0 {
-                let m = &mut takes[r.take as usize];
-                m.missed += missed;
-                m.miss_tick = tick0;
-                stats.missed += missed;
-            }
+            reader.add(&placed, map, rate, tick0, dst);
         }
     }
 
