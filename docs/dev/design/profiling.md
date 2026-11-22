@@ -331,6 +331,54 @@ with `--quick`) at 128 frames and 44.1 kHz:
   `instructions.txt` was taken with CI's pinned toolchain on the build
   container, which gave the three Arrange cases' counts to within 0.05 %
   of CI's.
+- **screen, the piano roll (piano roll plan 0C.3):** six "Piano roll: ..."
+  cases draw the note editor on the full clip of the step cases (8,192
+  notes, 8 bars), a frame a block, at the MPC's size, with the transport
+  playing (`roll_frame` in the bench): "built and drawn" hands the page a
+  new copy of the clip each frame, so the roll is built again from its
+  notes (what every edit costs the screen); "with pressure" is the same
+  with a run of pad pressure on every note; "a frame while it plays" only
+  moves the playhead (`note_playhead`); "scrolled" shows two bars and moves
+  them on a sixteenth a frame, as a finger on the ruler does; "zoomed"
+  zooms a step a frame from a bar across to the whole clip and back, as a
+  pinch does; "switched" shows two full clips in turn, each keeping its
+  own view (`TimePage::views`). Each frame is `TimePage::update` and the
+  page painted in software (`Ui::paint`). First desktop numbers (22 Nov,
+  `--quick`), means: built and drawn 1.5 ms, with pressure 1.8 ms, a frame
+  while it plays 1.6 ms, scrolled 1.7 ms, zoomed 2.6 ms (the whole clip in
+  view draws every note), switched 1.7 ms. A frame that only moved the
+  playhead costs as much as one that built the roll again: building the
+  roll is cheap next to painting the whole page, as on the Song view, so
+  drawing the playhead alone is the next saving. Callgrind (the build
+  container's compiler, 22 Nov), instructions a frame: built 21.2 million
+  (19.8 million of it the paint, as a frame while it plays shows), with
+  pressure 27.0 million, scrolled 20.7 million, zoomed 46.0 million,
+  switched 21.2 million.
+- **control, note editor edits (piano roll plan 0C.3):** two "Note editor:
+  ..." cases make an editor edit on the same clip while it plays, as
+  `TimeControl::edit` does (`note_edit` in the bench): the edit worked out
+  (`Editor::act`), made to the clip and the takes (`Takes::edit`), the
+  picks found again (`Editor::applied`), and the playing view edited in
+  place when `InPlace::fits` allows it, else compiled. "a velocity change
+  and its UNDO" sets one picked note's velocity (a velocity lane lift) and
+  takes it back with UNDO, a block each; "all picked and transposed" moves
+  every note a semitone. On a clip this full neither goes in place: a
+  velocity change is a note out and one in, twice the clip's notes of
+  work against `IN_PLACE_WORK` (8,192), where a step tap's one change
+  fits, so the view compiles after each; the cases' test checks that, so
+  a change to the rule shows there. First desktop numbers (22 Nov),
+  means: a velocity change or its UNDO 0.28 ms until it plays (the compile
+  0.2 ms of it); a transpose of every note 1.0 s, nearly all of it in
+  `Takes::edit`: `Clip::apply` takes each note out with a search and a
+  `Vec::remove` (about 0.4 s for 8,192 of them), and an edit joined to the
+  take before it (the Transpose row's next step) cancels each note
+  against the take's lists the same way (0.8 to 1.3 s). `Editor::act`
+  costs 0.5 ms of it and `Editor::applied` 8 ms. Callgrind: 4.1 million
+  instructions a velocity block, 5.2 billion a transpose. So the transpose counts
+  and times one block after one, as the big-song cases do
+  (`cases::BIG_EDIT`, `cases::big`); the clip and the takes are the step
+  sequencer's to make faster. Like the other new cases, their counts go
+  into `instructions.txt` from CI's first run after they merge.
 - **looper:** 60 s of looper memory, recording a 2-bar first pass from the
   input, then overdubbing layer after layer with an undo every 30 s.
 - **mix:** the mixer (from the FX thread) idle, and routing 12 tracks and 8
