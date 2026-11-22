@@ -161,11 +161,27 @@ impl Widget for Graph {
     }
 }
 
+/// The audio list's row naming what the sound gave up last (sampler
+/// plan step 10; it moves to the System status monitor once that is
+/// designed).
+pub const LAST_TRADE: &str = "What the sound gave up last";
+
+/// `s` seconds as "12 s", "4 min", "2 h".
+fn ago(s: f32) -> String {
+    match s {
+        s if s < 60.0 => format!("{} s", s.round() as u32),
+        s if s < 3600.0 => format!("{} min", (s / 60.0).round() as u32),
+        s => format!("{} h", (s / 3600.0).round() as u32),
+    }
+}
+
 /// The Dev tab's widgets and what they show.
 pub struct DebugPages {
     history: VecDeque<f32>,
     audio: AudioNumbers,
     proc_view: ProcView,
+    /// What the sound gave up last, and seconds since (`gui::Trades`).
+    trade: Option<(&'static str, f32)>,
 }
 
 fn found_colour(m: Mark) -> Option<Color> {
@@ -257,6 +273,7 @@ impl DebugPages {
             history: VecDeque::new(),
             audio: AudioNumbers::default(),
             proc_view: ProcView::default(),
+            trade: None,
         };
         d.show_audio(ui);
         d.show_proc(ui);
@@ -292,6 +309,12 @@ impl DebugPages {
         ) {
             s.active = i;
         }
+    }
+
+    /// What the sound gave up last and seconds since, shown with the
+    /// audio numbers ([`LAST_TRADE`]).
+    pub fn set_trade(&mut self, t: Option<(&'static str, f32)>) {
+        self.trade = t;
     }
 
     pub fn set_audio(&mut self, ui: &mut Ui, a: AudioNumbers) {
@@ -346,6 +369,19 @@ impl DebugPages {
                 "Worst period so far".to_string(),
                 format!("{:.0} µs ({:.0} %)", a.worst_us, pct(a.worst_us)),
                 tone(a.worst_us),
+            ),
+            (
+                LAST_TRADE.to_string(),
+                match self.trade {
+                    None => "nothing so far".to_string(),
+                    Some((t, s)) if s < 1.0 => format!("{t}, just now"),
+                    Some((t, s)) => format!("{t}, {} ago", ago(s)),
+                },
+                if self.trade.is_some() {
+                    Tone::Warn
+                } else {
+                    Tone::Good
+                },
             ),
             (
                 "Voices stolen · given up".to_string(),

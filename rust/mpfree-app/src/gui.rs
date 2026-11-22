@@ -821,6 +821,128 @@ impl ControllerShow {
     }
 }
 
+/// A trade after this many seconds without one starts a new run of them,
+/// which the console says again.
+pub const TRADE_QUIET_S: f32 = 3.0;
+
+/// What the sound gave up to keep going, most serious first (sampler plan
+/// step 10). Nothing shows on the screen normally (Jay, 22 Nov 2026: no
+/// chip for each situation on the top bar): Dev > Debug names the last
+/// one and how long ago, beside the counts, and the console says why when
+/// a run of them starts. They move to the System status monitor, the one
+/// status chip and its page, once it is designed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Trade {
+    /// Notes or values the sampler's full queue refused.
+    NotesDropped,
+    /// A core late with its part of the sound, left out for a moment.
+    SoundSkipped,
+    /// Voices stopped because the sound was close to running late.
+    VoicesGivenUp,
+    /// Grain pads wanting more grains than the sampler plays at once.
+    GrainsThinned,
+}
+
+impl Trade {
+    pub fn chip(self) -> &'static str {
+        match self {
+            Trade::NotesDropped => "Notes dropped",
+            Trade::SoundSkipped => "Sound skipped",
+            Trade::VoicesGivenUp => "Voices given up",
+            Trade::GrainsThinned => "Grains thinned",
+        }
+    }
+
+    pub fn why(self) -> &'static str {
+        match self {
+            Trade::NotesDropped => {
+                "Notes dropped: more came in at once than the sampler can take. Dev > Debug has the counts"
+            }
+            Trade::SoundSkipped => {
+                "Sound skipped: one of the cores was late with its part of the sound, so that part was left out for a moment. Dev > Debug has the counts"
+            }
+            Trade::VoicesGivenUp => {
+                "Voices given up: the sound was close to running late, so some voices stopped. Dev > Debug has the counts"
+            }
+            Trade::GrainsThinned => {
+                "Grains thinned to keep the sound going: the grain pads want more grains at once than the sampler plays, so the oldest thin or go quiet. Dev > Debug has the counts"
+            }
+        }
+    }
+}
+
+/// The counts [`Trade`]s are read from, the run of them now and the last.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Trades {
+    dropped: u64,
+    late: u64,
+    given_up: u64,
+    faded: u64,
+    held_back: u64,
+    crowded_s: f32,
+    /// The worst trade of the run going on, and how long until it ends
+    /// with none.
+    run: Option<(Trade, f32)>,
+    /// The last trade, and seconds since.
+    last: Option<(Trade, f32)>,
+}
+
+impl Trades {
+    /// Reads the audio loop's counts and the cores' late parts
+    /// ([`crate::cores::late`]): any that rose is a trade now. Returns the
+    /// trade that starts a new run, or outranks the run's worst, for the
+    /// console to say.
+    pub fn note(&mut self, a: &AudioNumbers, late: u64) -> Option<Trade> {
+        let mut now: Option<Trade> = None;
+        let mut saw = |t: Trade| now = Some(now.map_or(t, |n| n.min(t)));
+        if a.dropped > self.dropped {
+            saw(Trade::NotesDropped);
+        }
+        if late > self.late {
+            saw(Trade::SoundSkipped);
+        }
+        if a.given_up > self.given_up {
+            saw(Trade::VoicesGivenUp);
+        }
+        if a.faded_grains > self.faded
+            || a.held_back_clouds > self.held_back
+            || a.crowded_s > self.crowded_s
+        {
+            saw(Trade::GrainsThinned);
+        }
+        self.dropped = a.dropped;
+        self.late = late;
+        self.given_up = a.given_up;
+        self.faded = a.faded_grains;
+        self.held_back = a.held_back_clouds;
+        self.crowded_s = a.crowded_s;
+        let t = now?;
+        self.last = Some((t, 0.0));
+        let (worst, say) = match self.run {
+            Some((w, _)) if w <= t => (w, None),
+            _ => (t, Some(t)),
+        };
+        self.run = Some((worst, TRADE_QUIET_S));
+        say
+    }
+
+    /// Time passing.
+    pub fn tick(&mut self, dt: f32) {
+        let dt = dt.max(0.0);
+        if let Some((t, left)) = self.run {
+            self.run = (left > dt).then_some((t, left - dt));
+        }
+        if let Some((_, since)) = self.last.as_mut() {
+            *since += dt;
+        }
+    }
+
+    /// The last trade and seconds since, for Dev > Debug.
+    pub fn last(&self) -> Option<(Trade, f32)> {
+        self.last
+    }
+}
+
 /// Timing numbers from the audio thread.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Timing {
@@ -2226,6 +2348,9 @@ pub struct Player {
     cpu_at: f32,
     /// The memory in use, % of all ([`Player::set_ram`]); None until read.
     ram_pct: Option<f64>,
+    /// What the sound gave up to keep going, for the top bar's warn chip
+    /// (sampler plan step 10).
+    trades: Trades,
     /// Touch tuning: every finger goes through the filter first (the
     /// correction and the hold filter); `tuning` is what it applies and
     /// `saved_tuning` what the store has.
@@ -2733,6 +2858,7 @@ impl Player {
             chain_page: Box::default(),
             cpu_at: 0.0,
             ram_pct: None,
+            trades: Trades::default(),
             filter: Filter::new((size.0 as f32, size.1 as f32)),
             tuning: Tuning::default(),
             saved_tuning: Tuning::default(),
@@ -8596,8 +8722,17 @@ impl Player {
             }
             ToUi::Timing(t) => {
                 self.timing = t;
+                let late = self
+                    .engines
+                    .as_ref()
+                    .map_or(0, |e| crate::cores::late(&e.cores));
+                if let Some(trade) = self.trades.note(&t.audio, late) {
+                    self.push_console(&format!("sound, warn: {}", trade.why()));
+                }
                 self.show_timing();
                 self.refresh_chips();
+                self.debug
+                    .set_trade(self.trades.last().map(|(t, s)| (t.chip(), s)));
                 self.debug.set_audio(&mut self.ui, t.audio);
             }
             ToUi::Map(m) => DebugPages::set_map(&mut self.ui, &m),
@@ -13558,6 +13693,7 @@ impl Player {
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
         self.power_tick(dt);
+        self.trades.tick(dt);
         self.script_hold_tick(dt);
         self.guard_tick(dt);
         self.step_hold_tick(dt);
@@ -19531,6 +19667,85 @@ mod tests {
     use super::*;
     use mpfree_touch::mt::InputEvent;
     use std::io::ErrorKind;
+
+    #[test]
+    fn what_the_sound_gives_up_is_in_debug_and_never_on_the_top_bar() {
+        // Sampler plan step 10, as Jay asked on 22 Nov 2026: no chip for
+        // it on the top bar; Dev > Debug names the last trade, worst first,
+        // and the console says why once a run of them starts.
+        let mut p = sample_player(Fonts::embedded());
+        let chips = |p: &Player| {
+            p.ui.get::<Header>("header")
+                .unwrap()
+                .chips
+                .iter()
+                .map(|c| c.text.clone())
+                .collect::<Vec<_>>()
+        };
+        let timing = |audio: AudioNumbers| {
+            ToUi::Timing(Timing {
+                audio,
+                ..Timing::default()
+            })
+        };
+        let console = |p: &Player| {
+            p.ui.get::<LogPanel>("syslog")
+                .unwrap()
+                .lines()
+                .filter(|l| l.0.starts_with("sound, warn: "))
+                .count()
+        };
+        let debug_row = |p: &Player| {
+            p.ui.get::<StatList>("audio")
+                .unwrap()
+                .rows
+                .iter()
+                .find(|r| r.0 == crate::debug_page::LAST_TRADE)
+                .map(|r| r.1.clone())
+        };
+        p.apply(timing(AudioNumbers::default()));
+        let before = chips(&p);
+        assert_eq!(debug_row(&p).as_deref(), Some("nothing so far"));
+        // The grain budget crowded: said once, named in Debug, no chip.
+        let mut a = AudioNumbers {
+            crowded_s: 0.5,
+            faded_grains: 12,
+            ..AudioNumbers::default()
+        };
+        p.apply(timing(a));
+        assert_eq!(chips(&p), before, "nothing new on the top bar");
+        assert_eq!(console(&p), 1);
+        assert_eq!(debug_row(&p).as_deref(), Some("Grains thinned, just now"));
+        // More of it within the run: not said again.
+        a.faded_grains += 5;
+        p.apply(timing(a));
+        assert_eq!(console(&p), 1);
+        // A worse one in the run is said; Debug names it.
+        a.given_up += 1;
+        p.apply(timing(a));
+        assert_eq!(console(&p), 2);
+        p.tick(12.0);
+        p.apply(timing(a));
+        assert_eq!(debug_row(&p).as_deref(), Some("Voices given up, 12 s ago"));
+        // After a quiet spell a new run is said again.
+        a.faded_grains += 1;
+        p.apply(timing(a));
+        assert_eq!(console(&p), 3);
+        assert_eq!(chips(&p), before);
+        // A late core: below dropped notes, above the rest.
+        let mut t = Trades::default();
+        let busy = AudioNumbers {
+            given_up: 1,
+            faded_grains: 1,
+            ..AudioNumbers::default()
+        };
+        assert_eq!(t.note(&busy, 1), Some(Trade::SoundSkipped));
+        assert_eq!(
+            t.note(&AudioNumbers { dropped: 1, ..busy }, 2),
+            Some(Trade::NotesDropped)
+        );
+        assert!(Trade::SoundSkipped.why().starts_with("Sound skipped"));
+    }
 
     /// The held buttons' lines: hold MAIN (the pads pick a track), hold
     /// FULL LEVEL (a hit sets the level), COPY over the kit's pads; and

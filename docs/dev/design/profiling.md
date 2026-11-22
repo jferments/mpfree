@@ -208,6 +208,10 @@ with `--quick`) at 128 frames and 44.1 kHz:
   Counted in instructions on the workstation, 24 plain voices took 408,000
   a block through the full voice loop and take 39,000 through the plain
   path; 64 take 74,000.
+  Each sampler case's engine is checked as the case ends: dropped events
+  or given-up voices fail the run, and so do steals, thinned grains or a
+  late lane unless the case allows them (sampler plan step 10;
+  [sampler architecture](sampler-architecture.md#showing-the-trade-step-10)).
 - **fx:** every effect, Grains FX and a 4-slot insert chain, on a tone under
   noise bursts, and the mixer with a song's inserts.
 - **time:** the transport looping 4 bars at 128 BPM with 8 clips playing
