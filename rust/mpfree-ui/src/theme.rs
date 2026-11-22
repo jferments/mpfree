@@ -380,9 +380,10 @@ impl Theme {
 
     /// The roles every built-in theme sets to the colours its screens
     /// drew before roles existed (phase 0 of the theme plan keeps every
-    /// built-in theme pixel for pixel the same): the sampler's record red,
-    /// the EQ's band colours, and the white flash and black shadow of the
-    /// Play page's pads. The default theme's Q-Link colours are its first
+    /// built-in theme pixel for pixel the same): the sampler's record red
+    /// and grain purple, the EQ's band colours, the white flash and black
+    /// shadow of the Play page's pads, and the white of switch knobs and
+    /// slider handles. The default theme's Q-Link colours are its first
     /// four track colours, which its rule gives anyway.
     const DEFAULT_ROLES: &'static [(Role, u32)] = &[
         (Role::Record, 0xFF4D5E),
@@ -396,6 +397,9 @@ impl Theme {
         (Role::Series6, 0x4FC3C9),
         (Role::Series7, 0xF06292),
         (Role::Series8, 0xAED581),
+        (Role::Handle, 0xFFFFFF),
+        (Role::Grain, 0xC77DFF),
+        (Role::Cut, 0xB8C2D6),
     ];
 
     /// The other built-in themes: the same, and the default theme's Q-Link
@@ -416,6 +420,9 @@ impl Theme {
         (Role::Qlink2, 0x3DDC97),
         (Role::Qlink3, 0xFFC145),
         (Role::Qlink4, 0xD46CFF),
+        (Role::Handle, 0xFFFFFF),
+        (Role::Grain, 0xC77DFF),
+        (Role::Cut, 0xB8C2D6),
     ];
 
     /// The theme with every role on its table rule except `fixed`, worked
@@ -1296,7 +1303,9 @@ mod tests {
             assert_eq!(t.record(), Color::rgb(0xFF4D5E), "{name}");
             assert_eq!(
                 (0..4).map(|i| t.qlink(i)).collect::<Vec<_>>(),
-                crate::draw::KNOB.to_vec(),
+                [0x6EA8FE, 0x3DDC97, 0xFFC145, 0xD46CFF]
+                    .map(Color::rgb)
+                    .to_vec(),
                 "{name}"
             );
             assert_eq!(t.role(Role::TextInverse), t.bg, "{name}");

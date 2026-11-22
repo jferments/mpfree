@@ -221,6 +221,20 @@ pub struct Counts {
     pub ends_lost: u32,
 }
 
+/// What the timing contract counted (Arrange 2.5), sent when it changes
+/// ([`ToControl::Cues`]), so the period's end stays one small message.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CueCounts {
+    /// Cues, mute cues and scene program changes whose line played before
+    /// their view came, started at once in phase with it.
+    pub late: u32,
+    /// Cues dropped as older than one carried out.
+    pub stale: u32,
+    /// Clips a newer cue took out of the view before it showed them
+    /// started (the track was silent until it did).
+    pub lost: u32,
+}
+
 /// `n` in a rare count's 32 bits, stopping at `u32::MAX`.
 pub fn rare(n: u64) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
@@ -285,6 +299,9 @@ pub enum ToControl {
     /// What following another device's clock put right or lost, when it
     /// changed (before the period's end).
     Follow(FollowCounts),
+    /// What the timing contract counted, when it changed (before the
+    /// period's end).
+    Cues(CueCounts),
     /// What clips' locks on "this track's strip" did, when it changed
     /// (before the period's end; [`super::strips`]).
     Strips(StripCounts),

@@ -768,6 +768,7 @@ struct BeforeOpen {
     unsaved: bool,
     recovering: bool,
     recent: Vec<Loc>,
+    left_out: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -847,6 +848,12 @@ pub struct Browser {
     /// What the last open of a project changed, until the app takes the
     /// project or refuses it ([`Browser::open_refused`]).
     before_open: Option<BeforeOpen>,
+    /// What the project open left out, a few words each
+    /// ([`Browser::left_out`]): a save would lose it, so SHIFT + BROWSE
+    /// saves into a new project beside it.
+    left_out: Vec<String>,
+    /// A save going into such a new project: its name, and why.
+    saving_beside: Option<(String, String)>,
     mode: Mode,
     sort: Sort,
     /// The Export panel while it is open (it stays through a picker and
@@ -925,6 +932,8 @@ impl Browser {
             unsaved: false,
             recovering: false,
             before_open: None,
+            left_out: Vec::new(),
+            saving_beside: None,
             mode: Mode::Folder,
             sort: Sort::Name,
             export: None,
@@ -1155,7 +1164,14 @@ impl Browser {
                 }
             }
             Ok(Outcome::Saved(loc)) => {
-                self.status = Some((format!("Saved {}", loc.name()), false));
+                let line = match self.saving_beside.take() {
+                    Some((name, why)) => format!("Saved as {name}: {why}"),
+                    None => format!("Saved {}", loc.name()),
+                };
+                self.status = Some((line, false));
+                // The project saved holds all it has: nothing left out to
+                // keep from it.
+                self.left_out.clear();
                 self.unsaved = false;
                 self.project = Some(loc.clone());
                 self.last = Some(loc.clone());
@@ -1179,6 +1195,7 @@ impl Browser {
                 self.created = 0;
                 self.unsaved = true;
                 self.recovering = true;
+                self.left_out.clear();
                 self.actions.push(BrowseAction::ProjectOpened { loc, snap });
                 if self.pick.is_some() && !std::mem::take(&mut self.opening_last) {
                     self.close_pick(true);
@@ -1191,6 +1208,7 @@ impl Browser {
                 self.last = Some(loc.clone());
                 self.created = snap.meta.created;
                 self.unsaved = false;
+                self.left_out.clear();
                 self.remember(loc.clone());
                 self.actions.push(BrowseAction::ProjectOpened { loc, snap });
                 // Opened at start (Prefs > At start), a picker opened
@@ -1221,6 +1239,7 @@ impl Browser {
                 self.created = snap.meta.created;
                 // Not the newest save: saving it keeps what it replaces.
                 self.unsaved = true;
+                self.left_out.clear();
                 self.remember(loc.clone());
                 self.actions.push(BrowseAction::ProjectOpened { loc, snap });
             }
@@ -1923,6 +1942,7 @@ impl Browser {
             unsaved: self.unsaved,
             recovering: self.recovering,
             recent: self.recent.clone(),
+            left_out: self.left_out.clone(),
         }
     }
 
@@ -1942,6 +1962,7 @@ impl Browser {
             self.unsaved = b.unsaved;
             self.recovering = b.recovering;
             self.recent = b.recent;
+            self.left_out = b.left_out;
             if lists {
                 self.actions
                     .push(BrowseAction::SaveLists(self.lists_text()));
@@ -2601,6 +2622,11 @@ impl Browser {
                     Purpose::NewFolder(parent) => self.send(Job::NewFolder { parent, name }),
                     Purpose::SaveAs => {
                         if let Ok(loc) = Loc::top(Place::Projects).join(&name) {
+                            // The name typed is the musician's choice, even
+                            // the project's own after an open that left
+                            // things out (the name ready to keep was the
+                            // one beside it).
+                            self.left_out.clear();
                             self.project = Some(loc);
                             self.actions.push(BrowseAction::SaveRequested);
                         }
@@ -2669,14 +2695,47 @@ impl Browser {
     /// time, as a new project named for the time (no typing needed;
     /// Rename changes it later). `now` is seconds since 1970 (UTC).
     pub fn save(&mut self, snap: Snapshot, now: u64) {
-        self.save_with(snap, Vec::new(), now);
+        let _ = self.save_with(snap, Vec::new(), now);
     }
 
     /// [`Browser::save`] with the sounds the parts name (the sampler's
     /// recordings and kits), written into the project first where it
     /// doesn't have them yet.
-    pub fn save_with(&mut self, mut snap: Snapshot, samples: Vec<NewSample>, now: u64) {
+    ///
+    /// A project whose open left things out ([`Browser::left_out`]) isn't
+    /// saved over: the save goes into a new project beside it
+    /// (`Night drive 2`), which is the project from then on, and the
+    /// status line says why. Save as, to any name, saves where it is told.
+    /// Gives, for a save beside, "Saving as Night drive 2: Night drive
+    /// opened without the effect X on Master, so it stays as it was", for
+    /// the hint line.
+    pub fn save_with(
+        &mut self,
+        mut snap: Snapshot,
+        samples: Vec<NewSample>,
+        now: u64,
+    ) -> Option<String> {
+        self.saving_beside = None;
         let loc = match &self.project {
+            Some(l) if !self.left_out.is_empty() => {
+                let name = self.library().copy_project_name(l.name());
+                match Loc::top(Place::Projects).join(&name) {
+                    Ok(beside) => {
+                        let why = format!(
+                            "{} opened without {}, so it stays as it was",
+                            l.name(),
+                            self.left_out_words()
+                        );
+                        self.saving_beside = Some((name, why));
+                        snap.meta.name = String::new();
+                        beside
+                    }
+                    Err(e) => {
+                        self.status = Some((e.to_string(), true));
+                        return None;
+                    }
+                }
+            }
             Some(l) => l.clone(),
             None => {
                 let name = self.library().new_project_name(now);
@@ -2684,7 +2743,7 @@ impl Browser {
                     Ok(l) => l,
                     Err(e) => {
                         self.status = Some((e.to_string(), true));
-                        return;
+                        return None;
                     }
                 }
             }
@@ -2699,13 +2758,21 @@ impl Browser {
             snap.meta.created = self.created;
         }
         snap.meta.saved = now;
-        self.status = Some((format!("Saving {}", loc.name()), false));
+        // Said before the job is sent: an inline library answers at once.
+        let beside = self.saving_beside();
+        self.status = Some((
+            beside
+                .clone()
+                .unwrap_or_else(|| format!("Saving {}", loc.name())),
+            false,
+        ));
         self.send(Job::SaveProject {
             project: loc,
             snap,
             keep: KEEP_VERSIONS,
             samples,
         });
+        beside
     }
 
     /// Autosave (every 2 minutes while there is unsaved work, the app's
@@ -2757,16 +2824,18 @@ impl Browser {
         (meta.saved > last).then_some((loc, meta.saved))
     }
 
-    /// Save as: asks for a name (the time-stamped one ready to keep).
+    /// Save as: asks for a name (the time-stamped one ready to keep, or
+    /// the project's; the one beside it when its open left things out).
     pub fn save_as(&mut self, now: u64) {
+        let text = match &self.project {
+            Some(l) if !self.left_out.is_empty() => self.library().copy_project_name(l.name()),
+            Some(l) => l.name().to_string(),
+            None => self.library().new_project_name(now),
+        };
         self.modal = Modal::Keyboard {
             purpose: Purpose::SaveAs,
             title: "Save the project as".into(),
-            text: self
-                .project
-                .as_ref()
-                .map(|l| l.name().to_string())
-                .unwrap_or_else(|| self.library().new_project_name(now)),
+            text,
             shift: false,
         };
     }
@@ -2775,6 +2844,40 @@ impl Browser {
     pub fn new_project(&mut self) {
         self.project = None;
         self.created = 0;
+        self.left_out.clear();
+    }
+
+    /// The app says what the project just opened left out (an effect or
+    /// instrument this stick can't make, a take or loop whose file isn't
+    /// there), a few words each, as it finds out (some parts are read
+    /// after the open). Until the project is saved somewhere else or
+    /// another opens, SHIFT + BROWSE saves into a new project beside it,
+    /// so the one on the stick keeps all it has
+    /// (docs/dev/design/project-safety.md).
+    pub fn left_out(&mut self, what: impl IntoIterator<Item = String>) {
+        self.left_out.extend(what);
+    }
+
+    /// What the project open left out, as [`Browser::left_out`] was told.
+    pub fn left_out_list(&self) -> &[String] {
+        &self.left_out
+    }
+
+    /// A save going into a new project beside the one open (its open
+    /// left things out), as the status line says it while it goes.
+    fn saving_beside(&self) -> Option<String> {
+        self.saving_beside
+            .as_ref()
+            .map(|(name, why)| format!("Saving as {name}: {why}"))
+    }
+
+    /// "the effect X on Master", "the effect X on Master and 2 more".
+    fn left_out_words(&self) -> String {
+        match self.left_out.as_slice() {
+            [] => String::new(),
+            [one] => one.clone(),
+            [first, rest @ ..] => format!("{first} and {} more", rest.len()),
+        }
     }
 
     /// New project, agreed: forget the project and ask the app for a

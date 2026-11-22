@@ -58,11 +58,13 @@
 //! covers the top lanes, so the audio lanes under the MIDI ones stay in
 //! view; touches on it go to it alone.
 
+use crate::view::PlacementInfo;
 use crate::widgets::{rec_song_pill, REC_SONG_W};
 use mpfree_audiotracks::host::TakeWave;
 use mpfree_audiotracks::{frames_from, Input, Monitor, Region, TakeInfo};
 use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// The buttons along the bottom, left to right.
@@ -79,6 +81,14 @@ pub const SONG_BUTTONS: [&str; 6] = [
 pub const AUDIO_BUTTONS: [&str; 6] = ["Split", "Erase", "Fades", "Gain", "Takes", "Undo"];
 /// The last two buttons while a tempo point is picked (tempo ramps).
 pub const TEMPO_BUTTONS: [&str; 2] = ["Ramp", "Delete"];
+/// The last four buttons while a section is picked (Arrange 3.3).
+pub const SECTION_BUTTONS: [&str; 4] = ["+ Bar", "Rename", "Remove marker", "Delete bars"];
+/// The ruler, as the row of [`EventKind::Place`]: a marker added on the
+/// bar at `at` (index [`NONE`], a tap where no name is), or marker
+/// `index` moved there (the picked section's grip dragged).
+pub const RULER_ROW: usize = 0x501;
+/// The picked section's grip on the ruler: its width, left of its marker.
+pub const GRIP_W: i32 = 28;
 /// The tempo lane, as the row of [`EventKind::Place`] (a point added, with
 /// index [`NONE`], or point `index` moved to `at`) and of
 /// [`EventKind::Cell`] (point `col` picked).
@@ -164,6 +174,153 @@ pub struct SongBlock {
     pub unique: bool,
 }
 
+/// The song's blocks as the Song view keeps them (Arrange refactor 2.4):
+/// in the arrangement's order (it derefs to them), shared by every copy of
+/// the view the screen makes to compare, and found by lane and time, so a
+/// frame draws and hit-tests only the blocks in view and an update that
+/// changes no block copies none, however long the song.
+///
+/// Equal when they are the same blocks: a copy compares in one step.
+#[derive(Clone, Debug, Default)]
+pub struct SongBlocks(Arc<BlockIndex>);
+
+#[derive(Debug, Default)]
+struct BlockIndex {
+    all: Vec<SongBlock>,
+    /// Places in `all`, by track and then start.
+    order: Vec<u32>,
+    /// Where track `t`'s blocks are in `order`: `lanes[t]..lanes[t + 1]`.
+    lanes: Vec<usize>,
+    /// For each place in `order`, the latest end of its track's blocks up
+    /// to it: with the starts in order, the blocks between two ticks are
+    /// two binary searches away, whether or not blocks overlap.
+    reach: Vec<Tick>,
+    /// The latest end of all (0 with none).
+    end: Tick,
+    /// The app's list they were made from ([`SongBlocks::of`]).
+    from: Option<Arc<[PlacementInfo]>>,
+}
+
+impl SongBlocks {
+    pub fn new(all: Vec<SongBlock>) -> SongBlocks {
+        SongBlocks::index(all, None)
+    }
+
+    /// The blocks of the app's placements, kept with them: see
+    /// [`SongBlocks::made_from`].
+    pub fn of(placements: &Arc<[PlacementInfo]>) -> SongBlocks {
+        let all = placements
+            .iter()
+            .enumerate()
+            .map(|(index, p)| SongBlock {
+                index,
+                track: p.track,
+                start: p.start,
+                length: p.length,
+                name: p.name.clone(),
+                unique: p.unique,
+            })
+            .collect();
+        SongBlocks::index(all, Some(placements.clone()))
+    }
+
+    /// They were made from `placements`, the same list (not an equal one):
+    /// one comparison, whatever the song's length.
+    pub fn made_from(&self, placements: &Arc<[PlacementInfo]>) -> bool {
+        self.0
+            .from
+            .as_ref()
+            .is_some_and(|f| Arc::ptr_eq(f, placements))
+    }
+
+    fn index(all: Vec<SongBlock>, from: Option<Arc<[PlacementInfo]>>) -> SongBlocks {
+        let lanes_n = all.iter().map(|b| b.track + 1).max().unwrap_or(0);
+        let mut order: Vec<u32> = (0..all.len() as u32).collect();
+        // The arrangement keeps its placements so: then this is one pass.
+        order.sort_by_key(|&i| (all[i as usize].track, all[i as usize].start));
+        let mut lanes = vec![0; lanes_n + 1];
+        for b in &all {
+            lanes[b.track + 1] += 1;
+        }
+        for t in 0..lanes_n {
+            lanes[t + 1] += lanes[t];
+        }
+        let mut reach = Vec::with_capacity(order.len());
+        for (k, &i) in order.iter().enumerate() {
+            let b = &all[i as usize];
+            let before = if k > 0 && all[order[k - 1] as usize].track == b.track {
+                reach[k - 1]
+            } else {
+                Tick::MIN
+            };
+            reach.push(before.max(b.start + b.length));
+        }
+        let end = all.iter().map(|b| b.start + b.length).max().unwrap_or(0);
+        SongBlocks(Arc::new(BlockIndex {
+            all,
+            order,
+            lanes,
+            reach,
+            end,
+            from,
+        }))
+    }
+
+    /// Placement `index` (its index in the arrangement).
+    pub fn get(&self, index: usize) -> Option<&SongBlock> {
+        let all = &self.0.all;
+        match all.get(index) {
+            Some(b) if b.index == index => Some(b),
+            _ => all.iter().find(|b| b.index == index),
+        }
+    }
+
+    /// Track `track`'s blocks that play some of `from..to`, by start.
+    pub fn between(
+        &self,
+        track: usize,
+        from: Tick,
+        to: Tick,
+    ) -> impl Iterator<Item = &SongBlock> + '_ {
+        let ix = &*self.0;
+        let run = match (ix.lanes.get(track), ix.lanes.get(track + 1)) {
+            (Some(&a), Some(&b)) => a..b,
+            _ => 0..0,
+        };
+        let (order, reach) = (&ix.order[run.clone()], &ix.reach[run]);
+        let first = reach.partition_point(|&e| e <= from);
+        let last = order.partition_point(|&i| ix.all[i as usize].start < to);
+        order[first..last.max(first)]
+            .iter()
+            .map(|&i| &ix.all[i as usize])
+            .filter(move |b| b.start + b.length > from)
+    }
+
+    /// Where the last block ends (0 with none).
+    pub fn end(&self) -> Tick {
+        self.0.end
+    }
+}
+
+impl std::ops::Deref for SongBlocks {
+    type Target = [SongBlock];
+    fn deref(&self) -> &[SongBlock] {
+        &self.0.all
+    }
+}
+
+impl From<Vec<SongBlock>> for SongBlocks {
+    fn from(all: Vec<SongBlock>) -> SongBlocks {
+        SongBlocks::new(all)
+    }
+}
+
+impl PartialEq for SongBlocks {
+    fn eq(&self, o: &SongBlocks) -> bool {
+        Arc::ptr_eq(&self.0, &o.0) || self.0.all == o.0.all
+    }
+}
+
 /// An audio region as the Song view shows it: see [`audio_blocks`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioBlock {
@@ -243,7 +400,7 @@ pub struct SongLanes {
     pub tracks: Vec<(String, Color)>,
     /// What each track plays, under its name; empty shows only the name.
     pub sounds: Vec<String>,
-    pub blocks: Vec<SongBlock>,
+    pub blocks: SongBlocks,
     pub markers: Vec<(Tick, String)>,
     /// Ticks a bar.
     pub bar: Tick,
@@ -308,6 +465,10 @@ pub(crate) enum Held {
     /// Tempo point `k`, or the tempo lane where there is none (`None`: a
     /// tap there adds one).
     Tempo { k: Option<usize>, dt: Tick },
+    /// The ruler where no name is: a tap adds a marker (Arrange 3.3).
+    Ruler,
+    /// The picked section's grip: marker `k` alone moves (Arrange 3.3).
+    MarkerGrip { k: usize, dt: Tick },
 }
 
 /// A finger holding something on the Song view.
@@ -385,7 +546,7 @@ impl Default for SongLanes {
             alert: false,
             tracks: Vec::new(),
             sounds: Vec::new(),
-            blocks: Vec::new(),
+            blocks: SongBlocks::default(),
             markers: Vec::new(),
             bar: 3840,
             first_bar: 0,
@@ -808,6 +969,8 @@ impl SongLanes {
         let g = self.geo(r);
         let widths = if self.region.is_some() {
             [84, 84, 84, 84, 84, 84]
+        } else if self.section_buttons() {
+            [84, 124, 90, 110, 150, 150]
         } else {
             [84, 124, 140, 140, 124, 96]
         };
@@ -879,12 +1042,13 @@ impl SongLanes {
         };
         // A shadow under it, so it lifts off the lanes.
         let shadow = Rect::new(p.panel.x + 2, p.panel.y + 4, p.panel.w, p.panel.h);
-        cx.canvas.fill_round_rect(shadow, 12, t.bg);
+        cx.canvas.fill_round_rect(shadow, t.round(12), t.bg);
         let old = cx.canvas.clip();
         cx.canvas.set_clip(old.intersect(p.panel));
+        let fill = t.surface.mix(t.raised, 0.35);
+        cx.canvas.fill_round_rect(p.panel, t.round(12), fill);
         cx.canvas
-            .fill_round_rect(p.panel, 12, t.surface.mix(t.raised, 0.35));
-        cx.canvas.stroke_round_rect(p.panel, 12, 1, t.outline);
+            .stroke_round_rect(p.panel, t.round(12), 1, t.outline);
         let inner = p.panel.inset(12);
         cx.canvas
             .fill_round_rect(Rect::new(inner.x, inner.y + 4, 4, 18), 2, lane.color);
@@ -900,13 +1064,13 @@ impl SongLanes {
             t.size_small,
             Rect::new(inner.x + 12, inner.y - 2, p.close.x - inner.x - 16, 28),
             Align::Left,
-            lane.color.mix(t.text, 0.25),
+            t.readable(lane.color.mix(t.text, 0.25), fill),
             &format!("{}{state}", lane.name),
         );
         let button = |cx: &mut PaintCx, b: Rect, word: &str, on: bool, tone: Color| {
             cx.canvas
-                .fill_round_rect(b, 8, if on { tone } else { t.raised });
-            let ink = if on { t.bg } else { t.text };
+                .fill_round_rect(b, t.round(8), if on { tone } else { t.raised });
+            let ink = if on { t.ink_on(tone) } else { t.text };
             cx.text(
                 FontId::Bold,
                 t.size_small - 1.0,
@@ -1122,7 +1286,34 @@ impl SongLanes {
 
     /// Placement `index` (its index in the arrangement).
     fn block(&self, index: usize) -> Option<&SongBlock> {
-        self.blocks.iter().find(|b| b.index == index)
+        self.blocks.get(index)
+    }
+
+    /// The song ticks the view shows: its first bar to past its last.
+    fn ticks_shown(&self) -> (Tick, Tick) {
+        let bar = self.bar.max(1);
+        (
+            self.first_bar * bar,
+            (self.first_bar + self.bars.max(1)) * bar,
+        )
+    }
+
+    /// The blocks in view, lane by lane, with where each is drawn (clipped
+    /// to the view): the only blocks a frame draws or hit-tests (Arrange
+    /// refactor 2.4), found by lane and time, so a long song costs no more
+    /// than a short one.
+    fn blocks_in_view<'a>(
+        &'a self,
+        g: &'a Geo,
+    ) -> impl Iterator<Item = (&'a SongBlock, Rect)> + 'a {
+        let (from, to) = self.ticks_shown();
+        let first = self.first(g);
+        let lanes = first..(first + self.shown(g)).min(self.tracks.len());
+        lanes.flat_map(move |k| {
+            self.blocks
+                .between(k, from, to)
+                .filter_map(move |b| Some((b, self.span_rect(g, k, b.start, b.start + b.length)?)))
+        })
     }
 
     /// Section `k`'s name on the ruler, where a finger picks it up, if it
@@ -1147,6 +1338,46 @@ impl SongLanes {
         ))
     }
 
+    /// Whether the last four buttons are the picked section's
+    /// ([`SECTION_BUTTONS`]): a section picked, and no audio region or
+    /// tempo point.
+    pub fn section_buttons(&self) -> bool {
+        self.region.is_none()
+            && self.tempo_pick.is_none()
+            && self.section.is_some_and(|k| k < self.markers.len())
+    }
+
+    /// The picked section's grip on the ruler, left of its marker, if its
+    /// marker shows: [`GRIP_W`] wide, the ruler's height.
+    pub fn grip_rect(&self, r: Rect) -> Option<Rect> {
+        let k = self.section?;
+        let g = self.geo(r);
+        let x = self.x_of(g.ruler, self.markers.get(k)?.0);
+        if x < g.ruler.x + NAME_W || x >= g.ruler.right() {
+            return None;
+        }
+        let left = (x - GRIP_W).max(g.ruler.x + NAME_W);
+        (x - left >= 12).then(|| Rect::new(left, g.ruler.y, x - left, RULER_H))
+    }
+
+    /// The ruler right of the name column, where a tap adds a marker.
+    pub fn ruler_rect(&self, r: Rect) -> Rect {
+        let g = self.geo(r);
+        Rect::new(g.ruler.x + NAME_W, g.ruler.y, g.ruler.w - NAME_W, RULER_H)
+    }
+
+    /// Where the ruler tapped or the grip held lands: the nearest bar
+    /// line, never before bar 1.
+    fn ruler_landing(&self, r: Rect, gr: &Grip) -> Tick {
+        let dt = match gr.held {
+            Held::MarkerGrip { dt, .. } => dt,
+            _ => 0,
+        };
+        let bar = self.bar.max(1);
+        let t = self.tick_at(self.geo(r).lanes, gr.at.0) - dt;
+        ((t + bar / 2).div_euclid(bar) * bar).max(0)
+    }
+
     /// The picked placement's end grip, if its end shows.
     pub fn end_rect(&self, r: Rect) -> Option<Rect> {
         let b = self.block(self.selected?)?;
@@ -1167,12 +1398,7 @@ impl SongLanes {
             return Some(m.0);
         }
         let last = self.markers.last()?.0;
-        let end = self
-            .blocks
-            .iter()
-            .map(|b| b.start + b.length)
-            .max()
-            .unwrap_or(0);
+        let end = self.blocks.end();
         let bar = self.bar.max(1);
         Some(last + ((end - last).max(1) + bar - 1) / bar * bar)
     }
@@ -1274,6 +1500,21 @@ impl SongLanes {
             }
             // A swipe along the empty lane does nothing.
             Held::Tempo { k: None, .. } => None,
+            Held::Ruler if !gr.lifted => Some(EventKind::Place {
+                index: NONE,
+                row: RULER_ROW,
+                at: self.ruler_landing(r, gr),
+            }),
+            Held::Ruler => None,
+            Held::MarkerGrip { .. } if !gr.lifted => None,
+            Held::MarkerGrip { k, .. } => {
+                let at = self.ruler_landing(r, gr);
+                (self.markers.get(k)?.0 != at).then_some(EventKind::Place {
+                    index: k,
+                    row: RULER_ROW,
+                    at,
+                })
+            }
         }
     }
 
@@ -1440,7 +1681,7 @@ impl SongLanes {
             t.size_small - 2.0,
             tag,
             Align::Center,
-            t.bg,
+            t.ink_on(t.accent),
             text,
         );
     }
@@ -1459,8 +1700,8 @@ impl SongLanes {
                 };
                 let home = self.block_rect(r, b);
                 if let Some(h) = home {
-                    cx.canvas.fill_round_rect(h, 6, t.surface);
-                    cx.canvas.stroke_round_rect(h, 6, 2, t.outline);
+                    cx.canvas.fill_round_rect(h, t.round(6), t.surface);
+                    cx.canvas.stroke_round_rect(h, t.round(6), 2, t.outline);
                 }
                 let land = self.block_landing(r, gr);
                 let at = land.and_then(|(k, s)| Some((self.span_rect(&g, k, s, s + b.length)?, s)));
@@ -1468,14 +1709,9 @@ impl SongLanes {
                     // Red where it would run into another block (the app
                     // refuses it and says so).
                     let end = start + b.length;
-                    let clash = self.blocks.iter().any(|o| {
-                        o.index != index
-                            && o.track == k
-                            && o.start < end
-                            && start < o.start + o.length
-                    });
+                    let clash = self.blocks.between(k, start, end).any(|o| o.index != index);
                     let ink = if clash { t.bad } else { t.accent };
-                    cx.canvas.stroke_round_rect(l.inset(-2), 8, 3, ink);
+                    cx.canvas.stroke_round_rect(l.inset(-2), t.round(8), 3, ink);
                 }
                 let w =
                     (self.x_of(g.lanes, b.start + b.length) - self.x_of(g.lanes, b.start)).max(24);
@@ -1484,8 +1720,9 @@ impl SongLanes {
                     None => Rect::new(gr.at.0 - 12, gr.at.1 - g.lane_h / 2, w, g.lane_h - 4),
                 };
                 let color = self.tracks.get(b.track).map_or(t.accent, |c| c.1);
-                cx.canvas.fill_round_rect(card, 6, t.raised.mix(color, 0.5));
-                cx.canvas.stroke_round_rect(card, 6, 2, t.accent);
+                cx.canvas
+                    .fill_round_rect(card, t.round(6), t.raised.mix(color, 0.5));
+                cx.canvas.stroke_round_rect(card, t.round(6), 2, t.accent);
                 if card.w > 30 {
                     cx.text(
                         FontId::Sans,
@@ -1508,8 +1745,10 @@ impl SongLanes {
                 };
                 if let Some(l) = self.span_rect(&g, b.track, b.start, b.start + length) {
                     let color = self.tracks.get(b.track).map_or(t.accent, |c| c.1);
-                    cx.canvas.fill_round_rect(l, 6, t.raised.mix(color, 0.3));
-                    cx.canvas.stroke_round_rect(l.inset(-2), 8, 3, t.accent);
+                    cx.canvas
+                        .fill_round_rect(l, t.round(6), t.raised.mix(color, 0.3));
+                    cx.canvas
+                        .stroke_round_rect(l.inset(-2), t.round(8), 3, t.accent);
                     if l.w > 30 {
                         cx.text(
                             FontId::Sans,
@@ -1524,7 +1763,21 @@ impl SongLanes {
                     self.paint_tag(cx, (l.right() - 60).max(l.x), l.y - 24, &text);
                 }
             }
-            Held::Tempo { k: None, .. } => {}
+            Held::Tempo { k: None, .. } | Held::Ruler => {}
+            Held::MarkerGrip { k, .. } => {
+                // A line where the marker lands, and a tag saying where
+                // its section will start; the blocks stay as they are.
+                let at = self.ruler_landing(r, gr);
+                let x = self.x_of(g.lanes, at);
+                if x >= g.lanes.x + NAME_W && x <= g.lanes.right() {
+                    let h = g.lanes.bottom() - g.ruler.y;
+                    cx.canvas
+                        .fill_round_rect(Rect::new(x - 1, g.ruler.y, 2, h), 1, t.accent);
+                    let name = self.markers.get(k).map_or("", |m| m.1.as_str());
+                    let text = format!("{name} from bar {}", at / bar + 1);
+                    self.paint_tag(cx, x + 6, g.ruler.y + RULER_H + 4, &text);
+                }
+            }
             Held::Tempo { k: Some(k), .. } => {
                 // A line where it lands, and its tempo and bar on a tag.
                 let at = self.tempo_landing(r, gr);
@@ -1548,7 +1801,7 @@ impl SongLanes {
                 let x1 = self.x_of(g.lanes, b).min(g.lanes.right());
                 if x1 > x0 {
                     let home = Rect::new(x0, top, x1 - x0, g.lanes.bottom() - top);
-                    cx.canvas.stroke_round_rect(home, 6, 2, t.outline);
+                    cx.canvas.stroke_round_rect(home, t.round(6), 2, t.outline);
                 }
                 let gap = self.section_gap(r, gr).and_then(|j| self.edge_tick(j));
                 if let Some(e) = gap {
@@ -1581,8 +1834,8 @@ impl SongLanes {
                 }
                 let y = (g.ruler.y + dy).clamp(g.ruler.y, g.lanes.bottom() - 28);
                 let chip = Rect::new(x, y, w, 28);
-                cx.canvas.fill_round_rect(chip, 8, t.raised);
-                cx.canvas.stroke_round_rect(chip, 8, 2, t.accent);
+                cx.canvas.fill_round_rect(chip, t.round(8), t.raised);
+                cx.canvas.stroke_round_rect(chip, t.round(8), 2, t.accent);
                 cx.text(
                     FontId::Bold,
                     t.size_small - 1.0,
@@ -1620,7 +1873,7 @@ impl SongLanes {
     ) {
         let t = cx.theme.clone();
         cx.canvas
-            .fill_round_rect(br, 6, t.raised.mix(lane.color, 0.42));
+            .fill_round_rect(br, t.round(6), t.raised.mix(lane.color, 0.42));
         // The block's full stretch on screen, unclipped, so the waveform
         // and the fades line up when it runs off an edge.
         let x0 = self.x_of(g.lanes, b.start);
@@ -1666,7 +1919,7 @@ impl SongLanes {
             );
         }
         if picked {
-            cx.canvas.stroke_round_rect(br, 6, 2, t.accent);
+            cx.canvas.stroke_round_rect(br, t.round(6), 2, t.accent);
         }
     }
 
@@ -1694,14 +1947,14 @@ impl SongLanes {
         if self.panel == Some(lane.track) {
             // Its panel is open.
             cx.canvas
-                .stroke_round_rect(h.inset_xy(-2, 1), 6, 1, t.accent);
+                .stroke_round_rect(h.inset_xy(-2, 1), t.round(6), 1, t.accent);
         }
         cx.text(
             FontId::Bold,
             t.size_small - 1.0,
             Rect::new(h.x + 20, h.y, (chip.x - h.x - 24).max(0), h.h),
             Align::Left,
-            lane.color.mix(t.text, 0.25),
+            t.readable(lane.color.mix(t.text, 0.25), t.surface),
             &lane.name,
         );
         let bar = Rect::new(h.x + 2, h.bottom() - 6, h.w - 4, 3);
@@ -1730,7 +1983,7 @@ impl Widget for SongLanes {
             if self.alert { t.warn } else { t.text_dim },
             &self.legend,
         );
-        cx.canvas.fill_round_rect(list, 10, t.raised);
+        cx.canvas.fill_round_rect(list, t.round(10), t.raised);
         cx.text(
             FontId::Bold,
             t.size_small,
@@ -1775,11 +2028,25 @@ impl Widget for SongLanes {
             );
             let mut ink = t.warn;
             if self.section == Some(k) {
-                // Picked, for the wheel: the name on a pill.
+                // Picked, for the wheel: the name on a pill, and its grip
+                // (two short bars) left of the marker, which moves the
+                // marker alone (Arrange 3.3).
                 let w = cx.measure(FontId::Bold, t.size_small - 2.0, name) + 10;
                 cx.canvas
                     .fill_round_rect(Rect::new(x, g.ruler.y + 11, w, 16), 8, t.warn);
-                ink = t.bg;
+                ink = t.ink_on(t.warn);
+                if let Some(gp) = self.grip_rect(r) {
+                    let pill = Rect::new(gp.right() - 15, gp.y + 2, 13, gp.h - 4);
+                    cx.canvas.fill_round_rect(pill, 4, t.raised);
+                    for k in 0..2 {
+                        let bx = pill.x + 4 + k * 4;
+                        cx.canvas.fill_round_rect(
+                            Rect::new(bx, pill.y + 5, 2, pill.h - 10),
+                            1,
+                            t.warn,
+                        );
+                    }
+                }
             }
             cx.text(
                 FontId::Bold,
@@ -1832,7 +2099,7 @@ impl Widget for SongLanes {
                         t.size_small,
                         at,
                         Align::Left,
-                        color.mix(t.text, 0.25),
+                        t.readable(color.mix(t.text, 0.25), t.surface),
                         name,
                     );
                     if let Some(s) = sound {
@@ -1860,7 +2127,7 @@ impl Widget for SongLanes {
                         Rect::new(row.x + 20, row.y, NAME_W - 28, row.h),
                         Align::Left,
                         if used {
-                            lane.color.mix(t.text, 0.4)
+                            t.readable(lane.color.mix(t.text, 0.4), t.surface)
                         } else {
                             t.text_faint
                         },
@@ -1878,7 +2145,7 @@ impl Widget for SongLanes {
                 }
                 Some(Lane::AddTrack) => {
                     if let Some(b) = self.add_track_rect(r) {
-                        cx.canvas.stroke_round_rect(b, 8, 1, t.outline);
+                        cx.canvas.stroke_round_rect(b, t.round(8), 1, t.outline);
                         cx.text(
                             FontId::Bold,
                             t.size_small - 1.0,
@@ -1891,7 +2158,7 @@ impl Widget for SongLanes {
                 }
                 Some(Lane::Add) => {
                     if let Some(b) = self.add_rect(r) {
-                        cx.canvas.stroke_round_rect(b, 8, 1, t.outline);
+                        cx.canvas.stroke_round_rect(b, t.round(8), 1, t.outline);
                         cx.text(
                             FontId::Bold,
                             t.size_small - 1.0,
@@ -1905,19 +2172,17 @@ impl Widget for SongLanes {
                 None => {}
             }
         }
-        for b in &self.blocks {
-            let Some(br) = self.block_rect(r, b) else {
-                continue;
-            };
+        for (b, br) in self.blocks_in_view(&g) {
             let color = self.tracks.get(b.track).map_or(t.accent, |c| c.1);
-            cx.canvas.fill_round_rect(br, 6, t.raised.mix(color, 0.42));
+            cx.canvas
+                .fill_round_rect(br, t.round(6), t.raised.mix(color, 0.42));
             if b.unique {
                 // Its own copy: a corner mark.
                 cx.canvas
                     .fill_round_rect(Rect::new(br.right() - 10, br.y + 4, 6, 6), 3, t.text);
             }
             if self.selected == Some(b.index) {
-                cx.canvas.stroke_round_rect(br, 6, 2, t.accent);
+                cx.canvas.stroke_round_rect(br, t.round(6), 2, t.accent);
                 // Its end grip: two bars inside its right end.
                 if self.end_rect(r).is_some() && br.w > 24 {
                     for k in 0..2 {
@@ -1954,7 +2219,7 @@ impl Widget for SongLanes {
                 if ma == a && (x1 - x0).abs() >= DRAG_SLOP {
                     if let Some(br) = self.region_rect(r, a, mi) {
                         let ghost = Rect::new(br.x + x1 - x0, br.y, br.w, br.h);
-                        cx.canvas.stroke_round_rect(ghost, 6, 2, t.accent);
+                        cx.canvas.stroke_round_rect(ghost, t.round(6), 2, t.accent);
                     }
                 }
             }
@@ -1962,8 +2227,9 @@ impl Widget for SongLanes {
             if let (Some(from), Some(now)) = (lane.recording, self.playhead) {
                 let lane_k = self.audio_k(a);
                 if let Some(br) = self.span_rect(&g, lane_k, from, now.max(from + 1)) {
-                    cx.canvas.fill_round_rect(br, 6, t.bad.mix(t.surface, 0.35));
-                    cx.canvas.stroke_round_rect(br, 6, 1, t.bad);
+                    cx.canvas
+                        .fill_round_rect(br, t.round(6), t.bad.mix(t.surface, 0.35));
+                    cx.canvas.stroke_round_rect(br, t.round(6), 1, t.bad);
                     if br.w > 34 && br.h >= 30 {
                         cx.text(
                             FontId::Bold,
@@ -1995,9 +2261,10 @@ impl Widget for SongLanes {
             .tempo_pick
             .and_then(|i| self.tempo.get(i))
             .filter(|_| !audio);
+        let section = self.section_buttons();
         for (k, br) in self.button_rects(r).iter().enumerate() {
             let lit = (k == 1 && self.on && !audio) || (k == 4 && tempo.is_some_and(|p| p.2));
-            let live = audio || tempo.is_some() || !(k >= 4 && !selected);
+            let live = audio || tempo.is_some() || section || !(k >= 4 && !selected);
             let fill = if lit {
                 t.good
             } else if live {
@@ -2005,9 +2272,9 @@ impl Widget for SongLanes {
             } else {
                 t.surface
             };
-            cx.canvas.fill_round_rect(*br, 10, fill);
+            cx.canvas.fill_round_rect(*br, t.round(10), fill);
             let ink = if lit {
-                t.bg
+                t.ink_on(fill)
             } else if live {
                 t.text
             } else {
@@ -2023,6 +2290,8 @@ impl Widget for SongLanes {
                 }
             } else if k >= 4 && tempo.is_some() {
                 TEMPO_BUTTONS[k - 4]
+            } else if k >= 2 && section {
+                SECTION_BUTTONS[k - 2]
             } else {
                 SONG_BUTTONS[k]
             };
@@ -2052,6 +2321,8 @@ impl Widget for SongLanes {
                     ("region-button", AUDIO_BUTTONS[k])
                 } else if tempo {
                     ("tempo-button", TEMPO_BUTTONS[k - 4])
+                } else if k >= 2 && self.section_buttons() {
+                    ("section-button", SECTION_BUTTONS[k - 2])
                 } else {
                     ("button", SONG_BUTTONS[k])
                 };
@@ -2101,8 +2372,9 @@ impl Widget for SongLanes {
                 }
             }
         }
-        for b in &self.blocks {
-            if let Some(br) = self.block_rect(r, b).and_then(&shown) {
+        let g = self.geo(r);
+        for (b, br) in self.blocks_in_view(&g) {
+            if let Some(br) = shown(br) {
                 out.push(Target::tap("block", b.index, b.name.clone(), br));
             }
         }
@@ -2114,10 +2386,28 @@ impl Widget for SongLanes {
                 Target::drag("block-end", b.index, format!("{} end", b.name), e).towards(-40, 0),
             );
         }
+        let mut free = self.ruler_rect(r);
         for (k, (_, name)) in self.markers.iter().enumerate() {
             if let Some(m) = self.marker_rect(r, k) {
                 out.push(Target::tap("section", k, name.clone(), m));
+                if m.right() > free.x {
+                    free = Rect::new(m.right(), free.y, (free.right() - m.right()).max(0), free.h);
+                }
             }
+        }
+        // The ruler past the last name (a tap there adds a marker), and
+        // the picked section's grip (Arrange 3.3).
+        if free.w >= 40 {
+            out.push(Target::tap("ruler", 0, "Ruler", free));
+        }
+        if let (Some(k), Some(gp)) = (self.section, self.grip_rect(r)) {
+            let name = self.markers.get(k).map_or("", |m| m.1.as_str());
+            out.push(
+                Target::drag("section-grip", k, format!("{name} starts"), gp).towards(
+                    self.x_of(self.geo(r).lanes, self.bar) - self.x_of(self.geo(r).lanes, 0),
+                    0,
+                ),
+            );
         }
         if let (Some(p), Some(lane)) = (
             panel,
@@ -2329,6 +2619,14 @@ impl Widget for SongLanes {
                 return None;
             }
         }
+        // The picked section's grip: its marker alone moves.
+        if let (Some(k), Some(gp)) = (self.section, self.grip_rect(r)) {
+            if gp.contains(x, y) {
+                let dt = self.tick_at(g.lanes, x) - self.markers[k].0;
+                self.grip = Some(Grip::new(Held::MarkerGrip { k, dt }, x, y));
+                return None;
+            }
+        }
         if let Some(k) = (0..self.markers.len())
             .find(|&k| self.marker_rect(r, k).is_some_and(|m| m.contains(x, y)))
         {
@@ -2336,13 +2634,18 @@ impl Widget for SongLanes {
             self.grip = Some(Grip::new(Held::Section { k, dt }, x, y));
             return None;
         }
-        if let Some(b) = self
-            .blocks
-            .iter()
-            .find(|b| self.block_rect(r, b).is_some_and(|br| br.contains(x, y)))
-        {
-            let dt = self.tick_at(g.lanes, x) - b.start;
-            self.grip = Some(Grip::new(Held::Block { index: b.index, dt }, x, y));
+        // The ruler where no name is: a tap adds a marker.
+        if self.ruler_rect(r).contains(x, y) {
+            self.grip = Some(Grip::new(Held::Ruler, x, y));
+            return None;
+        }
+        let hit = self
+            .blocks_in_view(&g)
+            .find(|(_, br)| br.contains(x, y))
+            .map(|(b, _)| (b.index, b.start));
+        if let Some((index, start)) = hit {
+            let dt = self.tick_at(g.lanes, x) - start;
+            self.grip = Some(Grip::new(Held::Block { index, dt }, x, y));
             return None;
         }
         for (a, lane) in self.audio.iter().enumerate() {
@@ -2390,7 +2693,7 @@ mod tests {
                 ("Drums".into(), Color::rgb(0xE8A33D)),
                 ("Bass".into(), Color::rgb(0x6EA8FE)),
             ],
-            blocks: vec![
+            blocks: SongBlocks::new(vec![
                 SongBlock {
                     index: 0,
                     track: 0,
@@ -2407,7 +2710,7 @@ mod tests {
                     name: "Late".into(),
                     unique: true,
                 },
-            ],
+            ]),
             ..SongLanes::default()
         }
     }
@@ -2561,7 +2864,9 @@ mod tests {
             (4 * bar, "Verse".into()),
             (8 * bar, "Out".into()),
         ];
-        s.blocks[1].start = 10 * bar;
+        let mut all = s.blocks.to_vec();
+        all[1].start = 10 * bar;
+        s.blocks = all.into();
         let r = Rect::new(12, 140, 814, 534);
         let bar_px = (r.w - 28 - NAME_W) / 16;
         let m = s.marker_rect(r, 1).unwrap();
@@ -2589,6 +2894,78 @@ mod tests {
         );
         let t = s.targets(r);
         assert_eq!(t.iter().filter(|t| t.id == "section").count(), 3);
+    }
+
+    /// Arrange 3.3: a tap on the ruler where no name is adds a marker on
+    /// the nearest bar; a swipe there does nothing; the picked section's
+    /// grip, left of its marker, drags the marker alone to the bar; and a
+    /// picked section turns the last four buttons into its own.
+    #[test]
+    fn a_tap_on_the_ruler_adds_a_marker_and_the_grip_moves_it() {
+        let mut s = lanes();
+        let bar = 3840;
+        s.markers = vec![(0, "Intro".into()), (4 * bar, "Verse".into())];
+        let r = Rect::new(12, 140, 814, 534);
+        let ruler = s.ruler_rect(r);
+        let bar_px = f64::from(ruler.w) / 16.0;
+        let x_at = |b: f64| ruler.x + (b * bar_px).round() as i32;
+        let y = ruler.y + ruler.h / 2;
+        // Bar 11 and a bit: past Verse's name, the nearest bar line.
+        let x = x_at(10.3);
+        s.touch(1, Touch::Down, x, y, r);
+        assert_eq!(
+            s.touch(1, Touch::Up, x, y, r),
+            Some(EventKind::Place {
+                index: NONE,
+                row: RULER_ROW,
+                at: 10 * bar
+            })
+        );
+        s.touch(1, Touch::Down, x, y, r);
+        s.touch(1, Touch::Move, x + 3 * bar_px as i32, y, r);
+        assert_eq!(s.touch(1, Touch::Up, x + 3 * bar_px as i32, y, r), None);
+        // No grip until a section is picked; then left of its marker.
+        assert_eq!(s.grip_rect(r), None);
+        assert!(!s.section_buttons());
+        s.section = Some(1);
+        let gp = s.grip_rect(r).unwrap();
+        assert_eq!((gp.right(), gp.w), (x_at(4.0), GRIP_W));
+        assert!(s.section_buttons());
+        let (gx, gy) = (gp.x + gp.w / 2, gp.y + gp.h / 2);
+        // A tap on it does nothing; dragged two bars on, Verse's marker
+        // lands on bar 7.
+        s.touch(1, Touch::Down, gx, gy, r);
+        assert_eq!(s.touch(1, Touch::Up, gx, gy, r), None);
+        s.touch(1, Touch::Down, gx, gy, r);
+        s.touch(1, Touch::Move, gx + 2 * bar_px as i32, gy, r);
+        assert_eq!(
+            s.touch(1, Touch::Up, gx + 2 * bar_px as i32, gy, r),
+            Some(EventKind::Place {
+                index: 1,
+                row: RULER_ROW,
+                at: 6 * bar
+            })
+        );
+        // Let go where it started: nothing.
+        s.touch(1, Touch::Down, gx, gy, r);
+        s.touch(1, Touch::Move, gx, gy + 20, r);
+        assert_eq!(s.touch(1, Touch::Up, gx, gy + 20, r), None);
+        let t = s.targets(r);
+        let words: Vec<&str> = t
+            .iter()
+            .filter(|t| t.id == "section-button")
+            .map(|t| t.label.as_str())
+            .collect();
+        assert_eq!(words, SECTION_BUTTONS);
+        assert_eq!(t.iter().filter(|t| t.id == "section-grip").count(), 1);
+        assert_eq!(t.iter().filter(|t| t.id == "ruler").count(), 1);
+        // The buttons still fit where they were.
+        let b = s.button_rects(r);
+        assert!(b[5].right() <= r.right());
+        // A tempo point picked takes the last buttons back.
+        s.tempo = vec![(0, 120.0, false)];
+        s.tempo_pick = Some(0);
+        assert!(!s.section_buttons());
     }
 
     /// Tempo ramps: the tempo lane sits under the ruler, above the lanes;
@@ -2858,7 +3235,8 @@ mod tests {
         // Its empty space and its value read-outs take the touch and ask
         // for nothing, even with a block under them.
         assert_eq!(tap(p.level[1]), None);
-        low.blocks.push(SongBlock {
+        let mut all = low.blocks.to_vec();
+        all.push(SongBlock {
             index: 2,
             track: 3,
             start: 0,
@@ -2866,6 +3244,7 @@ mod tests {
             name: "Under".into(),
             unique: false,
         });
+        low.blocks = all.into();
         let under = low.block_rect(r, &low.blocks[2].clone()).unwrap();
         assert!(lp.panel.contains(under.x + 3, under.y + 3));
         assert_eq!(low.touch(1, Touch::Down, under.x + 3, under.y + 3, r), None);
@@ -3138,6 +3517,136 @@ mod tests {
             .map(input_chip)
             .collect();
         assert_eq!(chips, ["L", "R", "L+R", "ST"]);
+    }
+
+    /// The longest song (`MAX_PLACEMENTS`, 4,096 blocks): 16 tracks of 256
+    /// four-bar blocks end to end, by track and then start, as the
+    /// arrangement keeps them.
+    fn longest_song() -> SongLanes {
+        let bar = 3840;
+        SongLanes {
+            tracks: (0..16)
+                .map(|k| (format!("T{k}"), Color::rgb(0xE8A33D)))
+                .collect(),
+            blocks: SongBlocks::new(
+                (0..4096)
+                    .map(|i| SongBlock {
+                        index: i,
+                        track: i / 256,
+                        start: (i % 256) as Tick * 4 * bar,
+                        length: 4 * bar,
+                        name: format!("Clip {}", i % 32),
+                        unique: false,
+                    })
+                    .collect(),
+            ),
+            ..SongLanes::default()
+        }
+    }
+
+    #[test]
+    fn only_the_blocks_in_view_are_drawn_and_hit_tested() {
+        // Arrange refactor 2.4: a frame finds the blocks in view by lane
+        // and time, and they are the ones every block's own rectangle
+        // says show.
+        let mut s = longest_song();
+        let r = Rect::new(12, 140, 1256, 600);
+        for (first_bar, first_lane) in [(0, 0), (37, 0), (1000, 5), (1020, 9), (5000, 0)] {
+            s.first_bar = first_bar;
+            s.first_lane = first_lane;
+            let every: Vec<(usize, Rect)> = s
+                .blocks
+                .iter()
+                .filter_map(|b| Some((b.index, s.block_rect(r, b)?)))
+                .collect();
+            let hit: Vec<(usize, Rect)> = s
+                .targets(r)
+                .iter()
+                .filter(|t| t.id == "block")
+                .map(|t| (t.index, t.rect))
+                .collect();
+            assert_eq!(hit, every, "from bar {first_bar}, lane {first_lane}");
+            let g = s.geo(r);
+            // Five four-bar blocks at most in sixteen bars of each lane shown.
+            assert!(hit.len() <= 5 * s.shown(&g), "{}", hit.len());
+            if first_bar < 1024 {
+                assert!(!hit.is_empty());
+                let (index, br) = hit[hit.len() / 2];
+                assert_eq!(s.touch(1, Touch::Down, br.x + 3, br.y + 3, r), None);
+                assert_eq!(
+                    s.touch(1, Touch::Up, br.x + 3, br.y + 3, r),
+                    Some(EventKind::Select(index))
+                );
+            } else {
+                assert!(hit.is_empty(), "past the song's end");
+            }
+        }
+        // The song's end, for the last section's edge, is the last block's.
+        s.markers = vec![(0, "All".into())];
+        assert_eq!(s.edge_tick(1), Some(1024 * 3840));
+        // It paints.
+        s.first_bar = 300;
+        let mut ui = mpfree_ui::Ui::new(
+            mpfree_ui::Theme::dark(),
+            mpfree_ui::Fonts::embedded(),
+            1280,
+            800,
+        );
+        ui.add("song", s);
+        ui.add_page("p", "song").unwrap();
+        ui.show("p").unwrap();
+        let mut c = mpfree_ui::SoftCanvas::new(1280, 800);
+        assert!(!ui.paint(&mut c).is_empty());
+    }
+
+    #[test]
+    fn blocks_between_two_ticks_are_found_by_lane_overlapping_or_not() {
+        // In any order and overlapping (the arrangement allows neither, but
+        // the index does not rely on it), against looking at every block.
+        let mut seed = 7u32;
+        let mut next = |n: u32| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) % n
+        };
+        let mut all: Vec<SongBlock> = (0..300)
+            .map(|i| SongBlock {
+                index: i,
+                track: next(4) as usize,
+                start: Tick::from(next(2000)),
+                length: Tick::from(1 + next(300)),
+                name: String::new(),
+                unique: false,
+            })
+            .collect();
+        // Shuffled, so a block is not where its index says.
+        for i in (1..all.len()).rev() {
+            all.swap(i, next(i as u32 + 1) as usize);
+        }
+        let blocks = SongBlocks::new(all.clone());
+        for _ in 0..500 {
+            let (track, from) = (next(5) as usize, Tick::from(next(2400)) - 100);
+            let to = from + Tick::from(next(400));
+            let mut want: Vec<usize> = all
+                .iter()
+                .filter(|b| b.track == track && b.start < to && from < b.start + b.length)
+                .map(|b| b.index)
+                .collect();
+            let mut got: Vec<usize> = blocks.between(track, from, to).map(|b| b.index).collect();
+            want.sort_unstable();
+            got.sort_unstable();
+            assert_eq!(got, want, "track {track}, {from}..{to}");
+        }
+        for b in &all {
+            assert_eq!(blocks.get(b.index), Some(b));
+        }
+        assert_eq!(blocks.get(300), None);
+        let end = all.iter().map(|b| b.start + b.length).max();
+        assert_eq!(Some(blocks.end()), end);
+        assert_eq!(SongBlocks::default().end(), 0);
+        assert_eq!(SongBlocks::default().between(0, 0, 100).count(), 0);
+        // Equal by content, and a copy in one step.
+        assert_eq!(blocks, SongBlocks::new(all));
+        assert_ne!(blocks, SongBlocks::default());
     }
 
     #[test]

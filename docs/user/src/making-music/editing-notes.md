@@ -27,12 +27,15 @@ The Notes view has the Arrange tab's transport bar along the top (**Stop**, **Pl
 
 The notes are bars on a piano roll: higher notes higher up, time running left to right, longer notes longer. A drum clip shows its 16 pads instead of keys. Under the roll, the velocity lane shows how hard each note plays. A note played with [pad pressure](clips.md#pad-pressure) shows it as a lighter shape along its bottom: it rises where you pressed harder and falls where you let up.
 
+Notes are drawn as they will play. A note whose step is off (tapped off on Steps) is only an outline: it keeps its place and settings and plays nothing. A note that repeats (a ratchet) shows each hit, lighter or darker as its velocity ramps, and each hit shows in the velocity lane too. A tied note has a short level mark just before it, and a sliding note a short slanting one.
+
 - **Pick notes.** Tap a note to pick it. **All** picks every note, and **None** lets them go.
 - **Move them.** Drag a picked note and every picked note moves with it, along time and up or down in pitch. Moves land on the snap's lines (**Snap**, 1/16 to begin with).
-- **Velocity.** Slide a finger along the velocity lane to set the picked notes' velocity.
+- **Velocity.** Slide a finger along the velocity lane to set the picked notes' velocity. Their bars follow your finger, and the new velocity goes in when you lift it, so **UNDO** takes back the whole slide.
+- **One finger at a time.** A drag belongs to the finger that started it. If another finger touches the screen while you drag, the drag stops, the notes stay where they were, and that touch does nothing.
 - **Draw and erase.** The tool button switches between Select, Draw and Erase. With Draw, tap an empty spot to add a note there. With Erase, tap a note to take it out.
 - **Duplicate** copies the picked notes to just after them. **Delete** takes them out (in Perform, hold it for half a second).
-- **Grid, List, Tracker.** The second button says which view is showing (**Grid** to begin with) and switches to the next. **List** shows the notes as a list, one row per note, with its position, note, velocity, length and chance. **Tracker** shows every step, described below.
+- **Grid, List, Tracker.** The second button says which view is showing (**Grid** to begin with) and switches to the next. **List** shows the notes as a list, one row per note, with its position, note, velocity, length and chance. An off note's row is faint and its note says "off"; a tied or sliding note's says "tie" or "slide". **Tracker** shows every step, described below.
 
 {{shot: sequencer-notes-list | The same notes as a list, the picked ones lit.}}
 
@@ -47,7 +50,7 @@ The tracker shows the clip as a list of steps from top to bottom, empty steps in
 {{shot: sequencer-notes-tracker | The tracker on a bar of drums: a nudged hat, a 1:2 hat, a FILL open hat, a ratchet, and the picked snare with a lock. The Euclid rows are beside it.}}
 
 - **One row per step**, at the snap's size (1/16 to begin with). A step with several notes, such as a kick and a hat together, gives each note a row of its own under the step. An empty step shows dots.
-- **The columns**: the step (bar.beat.step), the pad or note, velocity, length, nudge (how many ticks early or late), chance, condition, ratchet, and how many parameter locks the step has. A setting left at its default shows as a faint dot, so what you changed stands out.
+- **The columns**: the step (bar.beat.step), the pad or note, velocity, length, nudge (how many ticks early or late), chance, condition, ratchet (with its velocity ramp when it has one: "×4 -40" is four hits, the last 40 softer than the first), and how many parameter locks the step has. A setting left at its default shows as a faint dot, so what you changed stands out. A note whose step is off has a faint row and says "off" after its name; a tied or sliding note says "tie" or "slide".
 - **Tap a note's row** to pick it, then change it with the Edit options. With the Draw tool, tap an empty step to put a note there: the sound of the last note you tapped, a step long. With Erase, tap a note's row to take it out.
 - The step on each beat is shaded, a bar starts with a line, and a green mark shows the step playing.
 

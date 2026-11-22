@@ -62,6 +62,7 @@ pub mod notes;
 pub mod save;
 pub mod scenes;
 pub mod steps;
+pub mod time_edit;
 
 pub use arrange::{Arrangement, Marker, MorphRows, Placement, SongClips, TempoPoint};
 pub use mutate::{Amount, Original, Pitches};
@@ -69,6 +70,7 @@ pub use scenes::{
     Follow, FollowAction, ListStep, Scene, SceneSettings, SongList, TrackProgram, MAX_SCENE_NAME,
     SCENES,
 };
+pub use time_edit::TimeEdit;
 
 pub use mpfree_moves;
 use mpfree_moves::Moves;

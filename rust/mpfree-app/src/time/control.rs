@@ -22,6 +22,7 @@
 //! audio half, which makes them to its view in place, whole or not at all
 //! ([`ToAudio::EditPart`], [`ToAudio::EditEnd`]; refactor A3).
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mpfree_capture::{keep, moves_for_clip, Capture, KeepError, Kept, Now, Pending};
@@ -29,7 +30,8 @@ use mpfree_notefx::{Chain, TrackFx, MAX_FX};
 use mpfree_perform::{Perform, SceneMorph, SongRecorder, When};
 use mpfree_play::Replaced;
 use mpfree_play::{
-    ClipDrop, Cue, Includes, Launch, MuteCue, MuteLanded, PlayView, SongChange, Started, Takes,
+    ClipDrop, Cue, Decisions, Includes, Launch, MuteCue, MuteLanded, PlayView, SongChange, Started,
+    Takes,
 };
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
 use mpfree_seq::arrange::{
@@ -39,7 +41,9 @@ use mpfree_seq::loops::{self, LoopNow, LoopPlan};
 use mpfree_seq::mpfree_moves::{Kind, MoveLog};
 use mpfree_seq::scenes::{MAX_LIST_STEPS, MAX_TIMES};
 use mpfree_seq::steps::{size_name, Edit, Grid, DEFAULT_SIZE};
+use mpfree_seq::time_edit::Refused;
 use mpfree_seq::ListStep;
+use mpfree_seq::TimeEdit;
 use mpfree_seq::{
     Clip, ClipId, LaunchGrid, ModelError, Project, TouchPoint, TrackId, LOOPS, MAX_TRACKS, ROWS,
     SLOTS,
@@ -47,15 +51,17 @@ use mpfree_seq::{
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::list::ListRow;
 use mpfree_time_ui::view::{
-    bars_label, card_rows, clips_after, grid_name, rows_named, scene_rows, AudioAction, EditInfo,
-    FollowNext, MorphInfo, MuteWait, RegionId, TakeRow, TempoEdit, TimeAction, TimeState,
-    TransportInfo, SCENE_NAME,
+    bars_label, card_rows, clips_after, grid_name, rows_named, scene_rows, AudioAction, BarsEdit,
+    EditAnswer, EditInfo, EditOutcome, FollowNext, MarkerEdit, MorphInfo, MuteWait, RegionId,
+    TakeRow, TempoEdit, TimeAction, TimeState, TransportInfo, SCENE_NAME,
 };
 use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_transport::{Block, Command, State};
 
 use super::follow::FollowCounts;
-use super::link::{Counts, InPlace, PeriodEnd, Rx, StripCounts, ToAudio, ToControl, Tracks, Tx};
+use super::link::{
+    Counts, CueCounts, InPlace, PeriodEnd, Rx, StripCounts, ToAudio, ToControl, Tracks, Tx,
+};
 use super::{
     InstRef, PadRows, SilentLocks, StepAction, StepClip, StepsData, LINE, NEW_CLIP_BARS,
     RECORD_ROOM,
@@ -148,15 +154,27 @@ pub struct Costs {
     /// taken what it sent ([`super::TimeHost::step_action`]).
     pub slowest_in_place: Duration,
     pub slowest_step_compiled: Duration,
+    /// Note editor edits made in place, and those that compiled (piano
+    /// roll plan 0C.1), with the slowest of each: the control half's time
+    /// from the touch to the edit sent ([`TimeControl::edit`]), on
+    /// whichever thread it runs.
+    pub notes_in_place: u64,
+    pub notes_compiled: u64,
+    pub slowest_note_in_place: Duration,
+    pub slowest_note_compiled: Duration,
 }
 
 impl Costs {
     /// "compiles: 12 (slowest 0.21 ms, 96 notes and locks); step edits:
-    /// 40 in place (slowest 0.02 ms), 3 compiled (slowest 0.25 ms)".
+    /// 40 in place (slowest 0.02 ms), 3 compiled (slowest 0.25 ms); note
+    /// edits: 5 in place (slowest 0.03 ms), 1 compiled (slowest 0.30 ms)".
+    /// The note edits come last, so the device checks that read the rest
+    /// (`tools/mpc-one/app_checks.py`) read it as before.
     pub fn describe(&self) -> String {
         let ms = |d: Duration| d.as_secs_f64() * 1e3;
         format!(
             "compiles: {} (slowest {:.2} ms, {} notes and locks); step edits: {} in place \
+             (slowest {:.2} ms), {} compiled (slowest {:.2} ms); note edits: {} in place \
              (slowest {:.2} ms), {} compiled (slowest {:.2} ms)",
             self.compiles,
             ms(self.slowest_compile),
@@ -164,7 +182,11 @@ impl Costs {
             self.steps_in_place,
             ms(self.slowest_in_place),
             self.steps_compiled,
-            ms(self.slowest_step_compiled)
+            ms(self.slowest_step_compiled),
+            self.notes_in_place,
+            ms(self.slowest_note_in_place),
+            self.notes_compiled,
+            ms(self.slowest_note_compiled)
         )
     }
 }
@@ -268,9 +290,15 @@ pub struct TimeControl {
     /// The editor's clip as the editor last knew it, and its revision,
     /// which moves each time the clip differs from that copy (piano roll
     /// plan 0A.1): the editor's own edits, and anything else that changed
-    /// it, which the picks follow ([`TimeControl::edit_follow`]).
-    edit_seen: Option<Clip>,
+    /// it, which the picks follow ([`TimeControl::edit_follow`]). Shared
+    /// with the screens: [`TimeControl::state`] sends this same copy while
+    /// the clip is unchanged, so they rebuild the roll only when it moved
+    /// (plan 0C.1).
+    edit_seen: Option<Arc<Clip>>,
     edit_rev: u64,
+    /// What became of the editor's last touch, and how many touches it
+    /// has had (plan 0C.2): sent with the clip ([`EditInfo::answer`]).
+    edit_answer: EditAnswer,
     /// The armed track: REC records it, and the audio half's recorder
     /// takes live notes only for it. Kept by its lasting id
     /// (`armed_id`), so a track added, taken away by UNDO or brought back
@@ -406,9 +434,19 @@ pub struct TimeControl {
     /// Pressure values no note could play again, freed so far, and how
     /// many times (refactor B4b).
     touch_freed: (u64, u64),
-    /// What the views include: the recorded changes made so far, and the
-    /// started cues applied on each track.
+    /// What the views include: the recorded changes made so far, the
+    /// started cues applied on each track, and each track's newest
+    /// decision with the frame it was made at (Arrange 2.5).
     pub(super) includes: Includes,
+    /// The control half's side of the timing contract: which cues are new
+    /// decisions (Arrange 2.5).
+    decisions: Box<Decisions>,
+    /// The absolute frame the music had reached as far as the control half
+    /// has heard: the end of the last period it took.
+    heard: u64,
+    /// What the audio half's player counted for the contract, as last
+    /// sent.
+    cue_counts: CueCounts,
     tx: Tx<ToAudio>,
     rx: Rx<ToControl>,
     /// A view the audio half's full queue handed back, sent again on the
@@ -477,6 +515,7 @@ impl TimeControl {
             editor: None,
             edit_seen: None,
             edit_rev: 0,
+            edit_answer: EditAnswer::default(),
             armed: None,
             armed_id: TrackId::NONE,
             track_pick: None,
@@ -531,6 +570,9 @@ impl TimeControl {
             touch_grew: Vec::new(),
             touch_freed: (0, 0),
             includes: Includes::default(),
+            decisions: Box::default(),
+            heard: 0,
+            cue_counts: CueCounts::default(),
             tx,
             rx,
             unsent: None,
@@ -1005,6 +1047,7 @@ impl TimeControl {
                     }
                 }
                 ToControl::Follow(c) => self.follow = c,
+                ToControl::Cues(c) => self.cue_counts = c,
                 ToControl::Strips(c) => self.strips = c,
                 ToControl::Period(end) => self.period(end),
                 ToControl::Done(v) => drop(v),
@@ -1022,6 +1065,7 @@ impl TimeControl {
         self.fresh = true;
         self.block.start_frame = end.start_frame;
         self.block.frames = end.frames;
+        self.heard = end.start_frame + u64::from(end.frames);
         self.info = end.info;
         self.counts = end.counts;
         // Out of recording: a take UNDO threw away goes now that all of
@@ -1080,6 +1124,7 @@ impl TimeControl {
             }
             self.perform.started(&mut self.project, &st);
             st.apply(&mut self.launches, &mut self.cues);
+            self.decisions.started(&st);
             if let Some(n) = self.includes.switches.get_mut(st.track) {
                 *n = n.wrapping_add(1);
             }
@@ -1362,7 +1407,11 @@ impl TimeControl {
         if self.also != 0 && self.also_n != n {
             self.also = 0;
         }
-        let v = self.view()?;
+        let mut v = self.view()?;
+        // Each new decision in it gets its revision and the frame the
+        // music had reached when it was made: a cue whose line played
+        // before the view came lands late, in phase (Arrange 2.5).
+        self.decisions.stamp(&mut v, self.heard, &mut self.includes);
         // Room to record into every armed track's clips without
         // allocating.
         let mut armed = self.armed_set();
@@ -1812,6 +1861,20 @@ impl TimeControl {
             Some(SongChange::Tempo { at }) => {
                 return format!(
                     "{} · the song's tempo at {}",
+                    r.short(),
+                    bar_beat(at, self.info.meter)
+                )
+            }
+            Some(SongChange::Bars { at, .. }) => {
+                return format!(
+                    "{} · the song's bars at {}",
+                    r.short(),
+                    bar_beat(at, self.info.meter)
+                )
+            }
+            Some(SongChange::Marker { at }) => {
+                return format!(
+                    "{} · the song's marker at {}",
                     r.short(),
                     bar_beat(at, self.info.meter)
                 )
@@ -2396,6 +2459,35 @@ impl TimeControl {
     /// note made on an older picture of the clip is refused, and an edit
     /// what plays can't follow is taken back (piano roll plan 0A.1).
     fn edit(&mut self, a: EditAction) -> Result<String, String> {
+        // Its answer, for the screen (plan 0C.2): numbered, with the
+        // revision it was carried out on and what became of it.
+        self.edit_follow();
+        let from = self.edit_rev;
+        let r = self.edit_touch(a);
+        // The revision moves on Open, and on an edit that went in.
+        let took = r.is_ok() && a != EditAction::Open && self.edit_rev != from;
+        let outcome = match &r {
+            Err(why) => EditOutcome::Refused(why.clone()),
+            Ok(_) if took => EditOutcome::Taken {
+                rev: self.edit_rev,
+                landed: self
+                    .editor
+                    .as_ref()
+                    .map_or_else(Vec::new, |e| e.sel.clone()),
+            },
+            Ok(_) => EditOutcome::Unchanged,
+        };
+        self.edit_answer = EditAnswer {
+            n: self.edit_answer.n + 1,
+            from,
+            outcome,
+        };
+        self.changed = true;
+        r
+    }
+
+    /// [`TimeControl::edit`]'s touch itself.
+    fn edit_touch(&mut self, a: EditAction) -> Result<String, String> {
         if a == EditAction::Open {
             let (track, slot) = self.step_focus();
             let name = self
@@ -2407,12 +2499,13 @@ impl TimeControl {
             let clip = self.project.clip(track, slot).ok_or("edit: no such clip")?;
             let line = format!("edit: {} on {name}", clip.name);
             self.editor = Some(Editor::new(track, slot, clip));
-            self.edit_seen = Some(clip.clone());
+            self.edit_seen = Some(Arc::new(clip.clone()));
             self.edit_rev += 1;
             self.changed = true;
             return Ok(line);
         }
-        self.edit_follow();
+        // `edit` has followed the clip.
+        let at = Instant::now();
         if let EditAction::Note { rev, .. } = a {
             if rev != self.edit_rev {
                 // The screen still shows the clip as it was: it gets the
@@ -2452,7 +2545,24 @@ impl TimeControl {
                 ed.applied(clip, &done);
             }
             self.editor = Some(ed);
-            if let Err(e) = self.compile() {
+            // Into the playing clip in place when it fits, as a step edit
+            // goes (plan 0C.1); else one compile.
+            let in_place = self.in_place(track, slot, &done.edit);
+            let built = if in_place {
+                self.steps_changed = true;
+                Ok(())
+            } else {
+                self.compile()
+            };
+            let (took, c) = (at.elapsed(), &mut self.costs);
+            if in_place {
+                c.notes_in_place += 1;
+                c.slowest_note_in_place = c.slowest_note_in_place.max(took);
+            } else {
+                c.notes_compiled += 1;
+                c.slowest_note_compiled = c.slowest_note_compiled.max(took);
+            }
+            if let Err(e) = built {
                 // What plays can't follow: the edit goes from the clip and
                 // the takes, the editor is as it was, and the view as it
                 // was is built again (as a step edit does).
@@ -2471,7 +2581,7 @@ impl TimeControl {
                     Err(b) => format!("edit: {e}: the edit could not be taken back ({b:?})"),
                 });
             }
-            self.edit_seen = self.project.clip(track, slot).cloned();
+            self.edit_seen = self.project.clip(track, slot).cloned().map(Arc::new);
             self.edit_rev += 1;
         } else {
             self.editor = Some(ed);
@@ -2490,16 +2600,16 @@ impl TimeControl {
             return;
         };
         let now = self.project.clip(ed.track, ed.slot);
-        if now == self.edit_seen.as_ref() {
+        if now == self.edit_seen.as_deref() {
             return;
         }
-        match (self.edit_seen.as_ref(), now) {
+        match (self.edit_seen.as_deref(), now) {
             (Some(was), Some(now)) => {
                 ed.follow(was, now);
             }
             _ => ed.sel.clear(),
         }
-        self.edit_seen = now.cloned();
+        self.edit_seen = now.cloned().map(Arc::new);
         self.edit_rev += 1;
         self.changed = true;
     }
@@ -3523,10 +3633,20 @@ impl TimeControl {
             | TimeAction::DeletePlacement(_)
             | TimeAction::MovePlacement { .. }
             | TimeAction::StretchPlacement { .. }
-            | TimeAction::MoveSection { .. } => {
+            | TimeAction::MoveSection { .. }
+            | TimeAction::SongBars(_)
+            | TimeAction::SongMarker(_) => {
                 // Edits of the song alone, each one UNDO takes back.
                 let bar = info.meter.bar_ticks();
                 let before = self.project.arrangement.clone();
+                // + Bar pressed again on the same section joins its take:
+                // presses in a row are one UNDO.
+                let join = match a {
+                    TimeAction::SongBars(BarsEdit::RoomBefore(k)) => {
+                        Some(ROOM_BEFORE_JOIN | k as u64)
+                    }
+                    _ => None,
+                };
                 let edited = if matches!(
                     a,
                     TimeAction::ListTimes { .. }
@@ -3553,7 +3673,7 @@ impl TimeControl {
                     return Err(e);
                 }
                 if let Some(c) = change.filter(|_| self.project.arrangement != before) {
-                    self.takes.song_edit(&self.project, c, before);
+                    self.takes.song_edit_joining(&self.project, c, before, join);
                 }
                 self.changed = true;
                 Ok(line)
@@ -3899,6 +4019,7 @@ impl TimeControl {
         bar: Tick,
     ) -> Result<(String, Option<SongChange>), String> {
         let meter = self.info.meter;
+        let bpm = self.project_bpm;
         let tracks = &self.project.tracks;
         let song = &mut self.project.arrangement;
         let named = |song: &mpfree_seq::arrange::Arrangement, i: usize| {
@@ -3980,20 +4101,12 @@ impl TimeControl {
                     .markers
                     .get(marker)
                     .map_or_else(String::new, |m| m.name.clone());
-                match song.move_section(tracks, marker, gap, copy, bar) {
-                    Ok(()) => {}
-                    Err(ModelError::BadMoves) if !song.tempo.is_empty() => {
-                        return Err(format!(
-                            "song: {name} can't move while the song has tempo points: they would stay where they are"
-                        ))
-                    }
-                    Err(ModelError::BadMoves) => {
-                        return Err(format!(
-                            "song: {name} can't move while the song has morph moves: they would stay where they are"
-                        ))
-                    }
-                    Err(_) => return Err(format!("song: {name} can't go there")),
-                }
+                // Its tempo, morph moves and rows go with it (Arrange 3.2).
+                song.move_section(tracks, marker, gap, copy, bar, bpm)
+                    .map_err(|r| match r {
+                        Refused::BadRange => format!("song: {name} can't go there"),
+                        r => format!("song: {name} can't go there: {}", refused_said(r, at)),
+                    })?;
                 let now = if copy {
                     gap
                 } else if gap > marker + 1 {
@@ -4023,6 +4136,159 @@ impl TimeControl {
                         Some(SongChange::SectionMoved { at: start }),
                     )
                 })
+            }
+            TimeAction::SongBars(e) => {
+                let b = bar.max(1);
+                let section = |k: usize| {
+                    song.section(k, b)
+                        .ok_or_else(|| "song: there's no such section".to_string())
+                };
+                let (edit, from, len, inserted) = match e {
+                    BarsEdit::Insert { at, bars } => {
+                        let len = Tick::from(bars) * b;
+                        (TimeEdit::Insert { at, len }, at, len, true)
+                    }
+                    BarsEdit::RoomBefore(k) => {
+                        let (at, _) = section(k)?;
+                        (TimeEdit::Insert { at, len: b }, at, b, true)
+                    }
+                    BarsEdit::Delete { from, to } => {
+                        (TimeEdit::Delete { from, to }, from, to - from, false)
+                    }
+                    BarsEdit::DeleteSection(k) => {
+                        let (from, to) = section(k)?;
+                        (TimeEdit::Delete { from, to }, from, to - from, false)
+                    }
+                };
+                let n = if len % b == 0 {
+                    format!("{}", len / b)
+                } else {
+                    format!("{:.1}", len as f64 / b as f64)
+                };
+                let bars = if n == "1" { "bar" } else { "bars" };
+                // The bars taken out, by number: "bar 9", "bars 9 to 10".
+                let span = if from % b == 0 && len % b == 0 && len > 0 {
+                    let (first, last) = (from / b + 1, (from + len) / b);
+                    if first == last {
+                        format!("bar {first}")
+                    } else {
+                        format!("bars {first} to {last}")
+                    }
+                } else {
+                    format!("{} to {}", at(from), at(from + len))
+                };
+                *song = song.edited(tracks, edit, bpm).map_err(|r| {
+                    let what = if inserted {
+                        format!("{n} {bars} can't go in at {}", at(from))
+                    } else if len <= 0 {
+                        format!("there are no bars to take out at {}", at(from))
+                    } else {
+                        format!("{span} can't come out")
+                    };
+                    match r {
+                        Refused::BadRange => format!("song: {what}"),
+                        r => format!("song: {what}: {}", refused_said(r, at)),
+                    }
+                })?;
+                // + Bar keeps its section picked (the markers keep their
+                // order); anything else may have moved what the picks name.
+                self.section = match e {
+                    BarsEdit::RoomBefore(k) => Some(k),
+                    _ => None,
+                };
+                self.selected = None;
+                self.tempo_pick = None;
+                Ok((
+                    if inserted {
+                        format!(
+                            "song: {n} empty {bars} at {}; everything after moved on (UNDO takes them out)",
+                            at(from)
+                        )
+                    } else {
+                        format!(
+                            "song: {span} taken out; everything after moved back (UNDO puts them back)"
+                        )
+                    },
+                    Some(SongChange::Bars {
+                        at: from,
+                        len,
+                        inserted,
+                    }),
+                ))
+            }
+            TimeAction::SongMarker(e) => {
+                let marker = |song: &mpfree_seq::arrange::Arrangement, k: usize| {
+                    song.markers
+                        .get(k)
+                        .map(|m| (m.at, m.name.clone()))
+                        .ok_or_else(|| "song: there's no such marker".to_string())
+                };
+                match e {
+                    MarkerEdit::Add(t) => {
+                        let name = song.new_marker_name();
+                        let k = song.add_marker(t, &name).map_err(|_| {
+                            if t < 0 {
+                                "song: a marker can't go before the song's start".to_string()
+                            } else if song.markers.iter().any(|m| m.at == t) {
+                                format!("song: there's a marker at {} already", at(t))
+                            } else {
+                                "song: the song has as many markers as it can hold".to_string()
+                            }
+                        })?;
+                        self.section = Some(k);
+                        Ok((
+                            format!("song: marker {name} at {} (UNDO takes it away)", at(t)),
+                            Some(SongChange::Marker { at: t }),
+                        ))
+                    }
+                    MarkerEdit::Rename { index, name } => {
+                        let (t, was) = marker(song, index)?;
+                        let name = name.trim().to_string();
+                        song.rename_marker(index, &name)
+                            .map_err(|_| format!("song: {was} needs a name"))?;
+                        Ok((
+                            format!("song: {was} is {name} now (UNDO gives its name back)"),
+                            Some(SongChange::Marker { at: t }),
+                        ))
+                    }
+                    MarkerEdit::Move { index, at: t } => {
+                        let (_, name) = marker(song, index)?;
+                        let k = song.move_marker(index, t).map_err(|_| {
+                            if t < 0 {
+                                format!("song: {name} can't go before the song's start")
+                            } else {
+                                format!("song: {name} can't go onto another marker at {}", at(t))
+                            }
+                        })?;
+                        self.section = Some(k);
+                        Ok((
+                            format!(
+                                "song: {name} moved to {}; only where its section starts moved (UNDO takes it back)",
+                                at(t)
+                            ),
+                            Some(SongChange::Marker { at: t }),
+                        ))
+                    }
+                    MarkerEdit::Delete(index) => {
+                        let (t, name) = marker(song, index)?;
+                        song.remove_marker(index)
+                            .map_err(|_| "song: there's no such marker".to_string())?;
+                        self.section = None;
+                        let joins = index
+                            .checked_sub(1)
+                            .and_then(|k| song.markers.get(k))
+                            .map_or_else(
+                                || "what comes before the first marker".to_string(),
+                                |m| m.name.clone(),
+                            );
+                        Ok((
+                            format!(
+                                "song: marker {name} taken away; its bars join {joins} (UNDO puts it back)"
+                            ),
+                            Some(SongChange::Marker { at: t }),
+                        ))
+                    }
+                }
             }
             TimeAction::ScenesToSong => {
                 // Every row with a clip, in order, after the song's end
@@ -5445,12 +5711,19 @@ impl TimeControl {
         st.edit = self.editor.as_ref().and_then(|ed| {
             let clip = self.project.clip(ed.track, ed.slot)?;
             let bar = clip.speed.to_clip(self.info.meter.bar_ticks() as f64);
+            // The copy the editor last knew, when the clip is still that
+            // (always, after `take_changed`): no copy of the clip each time.
+            let clip = match &self.edit_seen {
+                Some(seen) if **seen == *clip => Arc::clone(seen),
+                _ => Arc::new(clip.clone()),
+            };
             Some(Box::new(EditInfo {
                 editor: ed.clone(),
-                clip: clip.clone(),
+                clip,
                 rev: self.edit_rev,
                 track_name: self.project.tracks[ed.track].name.clone(),
                 bar: bar.round() as Tick,
+                answer: self.edit_answer.clone(),
             }))
         });
         st
@@ -5551,6 +5824,17 @@ impl TimeControl {
                 c.behind, c.kept, c.refused, c.missed
             ));
         }
+        // The timing contract (Arrange 2.5): cues the audio half carried
+        // out after their line, in phase with it, because their view came
+        // late; older ones it dropped; clips a newer cue took away first.
+        let q = &self.cue_counts;
+        if q.late + q.stale + q.lost > 0 {
+            line.push_str(&format!(
+                "; cues whose view came late: {} started after their line, in time with it, \
+                 {} older ones dropped, {} times a track was silent until the next view",
+                q.late, q.stale, q.lost
+            ));
+        }
         // What compiles and step edits cost (the device's numbers for the
         // control half's own thread).
         line.push_str("; ");
@@ -5597,6 +5881,30 @@ fn next_filled(filled: &[usize], row: usize, delta: i32) -> Option<usize> {
             .find(|&&r| r < row)
             .or_else(|| filled.last())
             .copied()
+    }
+}
+
+/// The join key of the Song view's + Bar on section `k` (this, or `k`):
+/// presses in a row on one section are one take.
+const ROOM_BEFORE_JOIN: u64 = 0xBA25 << 32;
+
+/// Why an edit of the song's time was refused, in a musician's words,
+/// with `at` naming a place in the song.
+fn refused_said(r: Refused, at: impl Fn(Tick) -> String) -> String {
+    use mpfree_seq::arrange::{MAX_MARKERS, MAX_MORPHS, MAX_PLACEMENTS, MAX_TEMPO_POINTS};
+    match r {
+        Refused::BadRange => "there's no such stretch of the song".to_string(),
+        Refused::Blocks => format!("the song would hold more than {MAX_PLACEMENTS} blocks"),
+        Refused::Markers => format!("the song would hold more than {MAX_MARKERS} markers"),
+        Refused::TempoPoints => {
+            format!("the song would need more than {MAX_TEMPO_POINTS} tempo points")
+        }
+        Refused::TempoTooClose(t) => {
+            format!("two tempo points would be closer than a 1/16 at {}", at(t))
+        }
+        Refused::Lanes => "the song's moves would have too many points".to_string(),
+        Refused::Morphs => format!("the morph would change rows more than {MAX_MORPHS} times"),
+        Refused::Check(e) => format!("the song wouldn't add up ({e:?})"),
     }
 }
 

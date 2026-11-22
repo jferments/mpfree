@@ -101,7 +101,7 @@ use mpfree_transport::{Block, Mark, Marker, Span, State};
 
 use crate::player::Event;
 use crate::steps::{Steps, STEP};
-use crate::view::{ClipView, PlayView, Switches};
+use crate::view::{ClipView, Due, PlayView, Switches};
 
 /// Notes one period can bring to the recorder.
 pub const MAX_INPUT: usize = 256;
@@ -617,14 +617,19 @@ impl Recorder {
             // Cues starting in this span, as the player starts them. The
             // armed track's waits for the notes played before it.
             let mut switch = None;
-            if matches!(span.state, State::Playing | State::Recording) {
-                let ticks = span.ticks();
+            let playing = matches!(span.state, State::Playing | State::Recording);
+            let ticks = if span.state.rolling() {
+                span.ticks()
+            } else {
+                0..0
+            };
+            if playing {
                 let bar = span.meter.bar_ticks();
                 for i in 0..view.tracks.len() {
                     match self.switches.due(view, i, &ticks, bar) {
-                        Some(at) if Some(i) == self.armed => switch = Some(at),
-                        Some(at) => {
-                            self.switches.start(view, i, at);
+                        Some(due) if Some(i) == self.armed => switch = Some(due),
+                        Some(due) => {
+                            self.switches.start(view, i, due);
                         }
                         None => {}
                     }
@@ -674,14 +679,14 @@ impl Recorder {
                 }
                 let frame = span.frame + u64::from(offset.saturating_sub(span.offset));
                 let song = span.tick_at(frame);
-                if let Some(at) = switch.filter(|&at| half_up(song) >= at) {
-                    self.switch(view, at);
+                if let Some(due) = switch.filter(|d| half_up(song) >= d.at) {
+                    self.switch(view, due);
                     switch = None;
                 }
                 self.gesture(view, input, song);
             }
-            if let Some(at) = switch {
-                self.switch(view, at);
+            if let Some(due) = switch {
+                self.switch(view, due);
             }
             // One-step values whose time is up within this span.
             if span.state == State::Recording {
@@ -690,7 +695,10 @@ impl Recorder {
             // The last tick the next span can start a note on is
             // `end - 1`, so this releases nothing an input there would not.
             if span.state.rolling() {
-                self.release(span.ticks().end - 1);
+                self.release(ticks.end - 1);
+            }
+            if playing {
+                self.switches.played(span, &ticks);
             }
         }
         for marker in &markers[m..] {
@@ -813,7 +821,7 @@ impl Recorder {
         span: &Span,
         offset: u32,
         event: Event,
-        switch: &mut Option<Tick>,
+        switch: &mut Option<Due>,
     ) {
         // Nothing is held outside recording: punch out, stop and jumps end
         // every note first.
@@ -822,8 +830,8 @@ impl Recorder {
         }
         let frame = span.frame + u64::from(offset.saturating_sub(span.offset));
         let tick = span.tick_at(frame).round() as Tick;
-        if let Some(at) = switch.filter(|&at| tick >= at) {
-            self.switch(view, at);
+        if let Some(due) = switch.filter(|d| tick >= d.at) {
+            self.switch(view, due);
             *switch = None;
         }
         self.release(tick);
@@ -902,13 +910,14 @@ impl Recorder {
 
     /// The armed track's cue starts on song tick `at`: the held notes end
     /// there, in the clip that was playing.
-    fn switch(&mut self, view: &PlayView, at: Tick) {
+    fn switch(&mut self, view: &PlayView, due: Due) {
+        let at = due.at;
         self.finish_all(view, self.swing, at);
         self.end_gestures(view, at as f64, true);
         // As in the player, a switch ends the replace pass.
         self.replacing = None;
         if let Some(track) = self.armed {
-            self.switches.start(view, track, at);
+            self.switches.start(view, track, due);
         }
     }
 

@@ -337,7 +337,7 @@ impl Widget for LevelsPanel {
             // Transpose has no pad to pick.
             let faint = i == 0 && m.transpose.is_some();
             cx.canvas
-                .fill_round_rect(*b, 8, if armed { t.accent } else { t.raised });
+                .fill_round_rect(*b, t.round(8), if armed { t.accent } else { t.raised });
             let color = match i {
                 _ if armed => t.on_accent,
                 _ if faint => t.text_dim.mix(t.raised, 0.5),
@@ -361,11 +361,12 @@ impl Widget for LevelsPanel {
                 None => m.lit == Some(k),
             };
             let (fill, fg, sub) = if lit {
-                (hit_fill, t.bg, t.bg.mix(hit_fill, 0.3))
+                let ink = t.ink_on(hit_fill);
+                (hit_fill, ink, ink.mix(hit_fill, 0.3))
             } else {
                 (rest_fill, t.text, t.text.mix(rest_fill, 0.25))
             };
-            cx.canvas.fill_round_rect(*c, 10, fill);
+            cx.canvas.fill_round_rect(*c, t.round(10), fill);
             let body = c.inset(12);
             let (num, rest) = body.take_top(16);
             cx.text(
@@ -411,7 +412,7 @@ impl Widget for LevelsPanel {
             cx.canvas.fill_round_rect(
                 Rect::new(bar.x, bar.y, w, bar.h),
                 3,
-                if lit { t.bg } else { hit_fill },
+                if lit { fg } else { hit_fill },
             );
         }
         // The kinds.
@@ -435,7 +436,7 @@ impl Widget for LevelsPanel {
             for (row, by) in p.kinds.iter().zip(Kind::ALL) {
                 let sel = by == picked;
                 if sel {
-                    cx.canvas.fill_round_rect(*row, 8, t.raised);
+                    cx.canvas.fill_round_rect(*row, t.round(8), t.raised);
                     cx.canvas.fill_rect(
                         Rect::new(row.x, row.y + 8, 3, (row.h - 16).max(0)),
                         t.accent,

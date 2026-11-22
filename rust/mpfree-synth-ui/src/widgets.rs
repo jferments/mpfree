@@ -4,55 +4,30 @@
 
 use crate::draw::Mask;
 use mpfree_ui::text::FontId;
-use mpfree_ui::{Align, Color, EventKind, PaintCx, Rect, Target, Theme, Touch, Widget};
+use mpfree_ui::{Align, Color, ColorKey, EventKind, Paint, PaintCx, Rect, Target, Touch, Widget};
 use std::f32::consts::PI;
 
 // Panels build their tiles, cards and nodes without knowing the theme, so
-// they pick each colour by what it means, written as the default theme's
-// own colour for it (below). The widgets show the theme on screen's colour
-// for that meaning in its place ([`themed`]), so the default theme looks
-// exactly as written and every other theme gets its own colours.
+// they name each colour by what it means (a [`Paint`]: a theme colour, or
+// a content colour), and the widgets look it up in the theme on screen
+// when they draw ([`Paint::on`]).
 
-/// Q-Link colours, 1 to 4: the default theme's first four track colours
-/// (blue, green, amber, violet). On screen each is the theme's own
-/// `track` colour 1 to 4.
-pub const QLINK_COLORS: [Color; 4] = [
-    Color::rgb(0x6EA8FE),
-    Color::rgb(0x3DDC97),
-    Color::rgb(0xFFC145),
-    Color::rgb(0xD46CFF),
+/// Q-Link colours, 1 to 4: the theme's `track` colours 1 to 4 (in the
+/// default theme blue, green, amber and violet).
+pub const QLINK_COLORS: [Paint; 4] = [
+    Paint::Key(ColorKey::Track(0)),
+    Paint::Key(ColorKey::Track(1)),
+    Paint::Key(ColorKey::Track(2)),
+    Paint::Key(ColorKey::Track(3)),
 ];
-/// The default theme's `text`; on screen, the theme's `text`.
-pub const TEXT: Color = Color::rgb(0xE9ECF2);
-/// The default theme's `text_dim`; on screen, the theme's `text_dim`.
-pub const TEXT_DIM: Color = Color::rgb(0x98A1B3);
-/// The default theme's `text_faint`; on screen, the theme's `text_faint`.
-pub const TEXT_FAINT: Color = Color::rgb(0x5F687B);
-/// Text on a coloured box: the default theme's `on_accent`; on screen, the
-/// theme's `on_accent`.
-pub const ON_FILL: Color = Color::rgb(0x0B0D12);
-
-/// A colour a panel put in a tile, card or node, as theme `t` shows it:
-/// [`QLINK_COLORS`] become `t.track` 1 to 4, and [`TEXT`], [`TEXT_DIM`],
-/// [`TEXT_FAINT`] and [`ON_FILL`] become the tokens they name. Their
-/// transparency is kept. Any other colour comes back as it is.
-pub fn themed(t: &Theme, c: Color) -> Color {
-    let same = |a: Color| (a.r, a.g, a.b) == (c.r, c.g, c.b);
-    let token = if let Some(i) = QLINK_COLORS.iter().position(|&q| same(q)) {
-        t.track(i)
-    } else if same(TEXT) {
-        t.text
-    } else if same(TEXT_DIM) {
-        t.text_dim
-    } else if same(TEXT_FAINT) {
-        t.text_faint
-    } else if same(ON_FILL) {
-        t.on_accent
-    } else {
-        return c;
-    };
-    token.with_alpha((token.a as u32 * c.a as u32 / 255) as u8)
-}
+/// The theme's `text`.
+pub const TEXT: Paint = Paint::Key(ColorKey::Text);
+/// The theme's `text_dim`.
+pub const TEXT_DIM: Paint = Paint::Key(ColorKey::TextDim);
+/// The theme's `text_faint`.
+pub const TEXT_FAINT: Paint = Paint::Key(ColorKey::TextFaint);
+/// Text on a coloured box: the theme's `on_accent`.
+pub const ON_FILL: Paint = Paint::Key(ColorKey::OnAccent);
 
 /// Matches the default theme's padding, so `touch` (which has no theme)
 /// finds the same rectangles `paint` drew.
@@ -142,7 +117,7 @@ pub const GEAR_W: i32 = 44;
 impl TitleBar {
     pub fn new() -> TitleBar {
         TitleBar {
-            swatch: QLINK_COLORS[1],
+            swatch: mpfree_ui::draw::GREEN,
             show_swatch: true,
             title: String::new(),
             subtitle: String::new(),
@@ -255,7 +230,7 @@ impl Widget for TitleBar {
         if self.show_swatch {
             cx.canvas.fill_round_rect(
                 Rect::new(inner.x, inner.y + (inner.h - sw) / 2, sw, sw),
-                10,
+                t.round(10),
                 t.content(self.swatch),
             );
         }
@@ -268,8 +243,8 @@ impl Widget for TitleBar {
         if self.opens {
             // A button: raised, outlined, with a down arrow at its end.
             let b = self.name_rect(r);
-            cx.canvas.fill_round_rect(b, 10, t.raised);
-            cx.canvas.stroke_round_rect(b, 10, 1, t.outline);
+            cx.canvas.fill_round_rect(b, t.round(10), t.raised);
+            cx.canvas.stroke_round_rect(b, t.round(10), 1, t.outline);
             let (ax, ay) = ((b.right() - 22) as f32, (b.y + b.h / 2) as f32);
             crate::draw::stroke(
                 cx.canvas,
@@ -303,7 +278,7 @@ impl Widget for TitleBar {
         if self.tabs.is_empty() {
             return;
         }
-        cx.canvas.fill_round_rect(pill, 12, t.bg);
+        cx.canvas.fill_round_rect(pill, t.round(12), t.bg);
         // Many pages (FM has twelve) make narrow tabs: a smaller font keeps
         // names like "Kbd 1-2" whole.
         let pill = self.tabs_rect(r).inset(4);
@@ -316,7 +291,7 @@ impl Widget for TitleBar {
             let c = self.tab_rect(r, i);
             let on = i == self.active;
             if on {
-                cx.canvas.fill_round_rect(c, 9, t.raised);
+                cx.canvas.fill_round_rect(c, t.round(9), t.raised);
             }
             let font = if on { FontId::Bold } else { FontId::Sans };
             cx.text(
@@ -378,8 +353,8 @@ pub const GEAR: usize = 1;
 /// A gear on a raised button in `b`: the options.
 pub fn paint_gear(cx: &mut PaintCx, b: Rect) {
     let t = cx.theme.clone();
-    cx.canvas.fill_round_rect(b, 10, t.raised);
-    cx.canvas.stroke_round_rect(b, 10, 1, t.outline);
+    cx.canvas.fill_round_rect(b, t.round(10), t.raised);
+    cx.canvas.stroke_round_rect(b, t.round(10), 1, t.outline);
     let (cx0, cy0) = ((b.x + b.w / 2) as f32, (b.y + b.h / 2) as f32);
     // Eight teeth round a ring.
     for k in 0..8 {
@@ -411,7 +386,7 @@ pub fn paint_gear(cx: &mut PaintCx, b: Rect) {
 #[derive(Clone, Debug)]
 pub struct Trace {
     pub pts: Vec<(f32, f32)>,
-    pub color: Color,
+    pub color: Paint,
     pub width: f32,
     /// A soft fill down to the bottom of the plot.
     pub fill: bool,
@@ -435,9 +410,9 @@ pub struct Card {
     /// plot (live pressure per voice). An empty slot shows as a faint stub.
     pub bars: Vec<f32>,
     /// The bars' colour.
-    pub bar_color: Option<Color>,
+    pub bar_color: Option<Paint>,
     /// A colour per bar, over `bar_color` (carriers and modulators).
-    pub bar_colors: Vec<Color>,
+    pub bar_colors: Vec<Paint>,
     /// A label under each bar ("1" to "6").
     pub bar_labels: Vec<String>,
     /// Boxes drawn over the curves (an FM algorithm's operators). A tap on
@@ -453,11 +428,13 @@ pub struct CardNode {
     pub x: f32,
     pub y: f32,
     pub label: String,
-    pub fill: Color,
-    pub text: Color,
+    pub fill: Paint,
+    /// Its label's colour; moved towards the theme's text or inverse text
+    /// where it would not read on `fill`.
+    pub text: Paint,
     /// Drawn with a ring in this colour: the operator the page is about (on
     /// a keyboard page, the colour of its curve).
-    pub ring: Option<Color>,
+    pub ring: Option<Paint>,
     /// Faded: switched off or silent.
     pub dim: bool,
     /// A feedback loop from this box back into node `k` of the same card
@@ -552,7 +529,7 @@ impl Widget for Visuals {
                 &card.caption,
             );
             let p = Visuals::plot_rect(c);
-            paint_plot(cx, p, card, &|c| themed(&t, c));
+            paint_plot(cx, p, card, &|c| c.on(&t));
         }
     }
 
@@ -613,9 +590,9 @@ impl Widget for Visuals {
 
 /// Draws a card's plot into `p`: its grid, midline, bars, curves, dot and
 /// boxes, without the card's panel or title. `color` turns each colour the
-/// card names into the one drawn ([`themed`] for the strip; a section
+/// card names into the one drawn (the theme's for the strip; a section
 /// draws the Q-Link colours in shades of its own).
-pub fn paint_plot(cx: &mut PaintCx, p: Rect, card: &Card, color: &dyn Fn(Color) -> Color) {
+pub fn paint_plot(cx: &mut PaintCx, p: Rect, card: &Card, color: &dyn Fn(Paint) -> Color) {
     let t = cx.theme.clone();
     for (x, label) in &card.grid {
         let gx = p.x + (x * p.w as f32) as i32;
@@ -699,7 +676,7 @@ pub fn node_rect(plot: Rect, n: &CardNode) -> Rect {
 
 /// Draws a card's boxes and their feedback loops: a loop leaves a box's
 /// right side, runs up past the box it feeds and comes down into its top.
-fn paint_nodes(cx: &mut PaintCx, p: Rect, nodes: &[CardNode], color: &dyn Fn(Color) -> Color) {
+fn paint_nodes(cx: &mut PaintCx, p: Rect, nodes: &[CardNode], color: &dyn Fn(Paint) -> Color) {
     let t = cx.theme.clone();
     for n in nodes {
         let Some(to) = n.feedback.and_then(|k| nodes.get(k)) else {
@@ -725,7 +702,8 @@ fn paint_nodes(cx: &mut PaintCx, p: Rect, nodes: &[CardNode], color: &dyn Fn(Col
         let (fill, text) = if n.dim {
             (t.raised, t.text_faint)
         } else {
-            (color(n.fill), color(n.text))
+            let fill = color(n.fill);
+            (fill, t.readable(color(n.text), fill))
         };
         if let Some(c) = n.ring {
             cx.canvas.stroke_round_rect(b.inset(-3), 7, 2, color(c));
@@ -763,7 +741,7 @@ pub struct Tile {
     pub kind: TileKind,
     /// Q-Link 1 to 4 turns it (0 to 3).
     pub qlink: Option<usize>,
-    pub color: Color,
+    pub color: Paint,
 }
 
 struct Drag {
@@ -897,13 +875,20 @@ impl Widget for TileGrid {
         let fill = t.surface.mix(t.raised, 0.55);
         for (i, tile) in self.tiles.iter().enumerate() {
             let tr = self.tile_rect(r, i);
-            let color = themed(&t, tile.color);
+            let color = tile.color.on(&t);
             let on = self.selected == Some(i);
-            cx.canvas
-                .fill_round_rect(tr, 12, if on && self.editing { t.raised } else { fill });
+            cx.canvas.fill_round_rect(
+                tr,
+                t.round(12),
+                if on && self.editing { t.raised } else { fill },
+            );
             if on {
-                cx.canvas
-                    .stroke_round_rect(tr, 12, if self.editing { 3 } else { 2 }, t.accent);
+                cx.canvas.stroke_round_rect(
+                    tr,
+                    t.round(12),
+                    if self.editing { 3 } else { 2 },
+                    t.accent,
+                );
             }
             let label = tile.label.to_uppercase();
             match &tile.kind {
@@ -930,7 +915,7 @@ impl Widget for TileGrid {
                     let parts = TileGrid::choice_rects(tr, names.len());
                     if parts.len() != names.len() || names.len() > 4 {
                         for (k, arrow) in ["‹", "›"].iter().enumerate() {
-                            cx.canvas.fill_round_rect(parts[k], 8, t.raised);
+                            cx.canvas.fill_round_rect(parts[k], t.round(8), t.raised);
                             cx.text(
                                 FontId::Bold,
                                 t.size_title,
@@ -959,7 +944,7 @@ impl Widget for TileGrid {
                             let on = k == *index;
                             cx.canvas.fill_round_rect(
                                 parts[k],
-                                8,
+                                t.round(8),
                                 if on { color } else { t.raised },
                             );
                             let font = if on { FontId::Bold } else { FontId::Sans };
@@ -968,7 +953,7 @@ impl Widget for TileGrid {
                                 t.size_small,
                                 parts[k],
                                 Align::Center,
-                                if on { t.on_accent } else { t.text_dim },
+                                if on { t.ink_on(color) } else { t.text_dim },
                                 name,
                             );
                         }
@@ -993,13 +978,13 @@ impl Widget for TileGrid {
             }
             if let Some(q) = tile.qlink {
                 let badge = Rect::new(tr.right() - 40, tr.bottom() - 26, 32, 20);
-                cx.canvas.fill_round_rect(badge, 6, t.track(q % 4));
+                cx.canvas.fill_round_rect(badge, t.round(6), t.track(q % 4));
                 cx.text(
                     FontId::Bold,
                     12.0,
                     badge,
                     Align::Center,
-                    t.on_accent,
+                    t.ink_on(t.track(q % 4)),
                     &format!("Q{}", q + 1),
                 );
             }
@@ -1299,45 +1284,21 @@ impl Widget for QLinkStrip {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mpfree_ui::Theme;
 
     #[test]
-    fn panel_colours_are_the_default_themes_own() {
-        let d = Theme::dark();
-        assert_eq!(
-            QLINK_COLORS,
-            [d.track[0], d.track[1], d.track[2], d.track[3]]
-        );
-        assert_eq!(
-            [TEXT, TEXT_DIM, TEXT_FAINT, ON_FILL],
-            [d.text, d.text_dim, d.text_faint, d.on_accent]
-        );
-        // So the default theme shows every colour as the panel wrote it.
-        let other = Color::rgb(0x123456);
-        for c in QLINK_COLORS
-            .into_iter()
-            .chain([TEXT, TEXT_DIM, TEXT_FAINT, ON_FILL, other])
-        {
-            assert_eq!(themed(&d, c), c);
-            assert_eq!(themed(&d, c.with_alpha(90)), c.with_alpha(90));
-        }
-    }
-
-    #[test]
-    fn other_themes_show_their_own_tokens() {
-        for name in ["console", "synthwave", "spaceship"] {
+    fn the_palette_names_theme_colours() {
+        for name in ["default", "console", "synthwave", "spaceship"] {
             let t = Theme::builtin(name).unwrap();
-            for (i, &q) in QLINK_COLORS.iter().enumerate() {
-                assert_eq!(themed(&t, q), t.track[i], "{name} Q{}", i + 1);
+            for (i, q) in QLINK_COLORS.iter().enumerate() {
+                assert_eq!(q.on(&t), t.track[i], "{name} Q{}", i + 1);
             }
-            assert_eq!(themed(&t, TEXT), t.text);
-            assert_eq!(themed(&t, TEXT_DIM), t.text_dim);
-            assert_eq!(themed(&t, TEXT_FAINT), t.text_faint);
-            assert_eq!(themed(&t, ON_FILL), t.on_accent);
+            assert_eq!(TEXT.on(&t), t.text);
+            assert_eq!(TEXT_DIM.on(&t), t.text_dim);
+            assert_eq!(TEXT_FAINT.on(&t), t.text_faint);
+            assert_eq!(ON_FILL.on(&t), t.on_accent);
             // Transparency is kept.
-            assert_eq!(themed(&t, TEXT.with_alpha(51)), t.text.with_alpha(51));
-            // A colour with no meaning here (a kit's) is left alone.
-            let kit = Color::rgb(0xF5A524);
-            assert_eq!(themed(&t, kit), kit);
+            assert_eq!(TEXT.with_alpha(51).on(&t), t.text.with_alpha(51));
         }
     }
 }

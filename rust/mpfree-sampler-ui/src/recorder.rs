@@ -53,7 +53,7 @@ use mpfree_ui::Shape;
 
 use crate::panel::{Control, Item, Look, Panel, Section};
 use crate::rec_tab::{self, EndAt, RecSettings, Row, StartAt};
-use crate::rec_widgets::{db, FLOOR_DB, REC_COLOR};
+use crate::rec_widgets::{db, FLOOR_DB};
 use crate::recall::{Length, OPEN_BARS};
 use crate::widgets::Setting;
 
@@ -564,20 +564,20 @@ impl Widget for Recorder {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         cx.canvas.fill_rect(r, t.bg);
-        let red = Color::rgb(REC_COLOR);
+        let red = t.record();
         // REC: lit while a take records, outlined while it waits.
         let b = Recorder::rec_rect(r);
         let v = &self.view;
         let (fill, ink, dot) = if v.recording && !v.waiting {
-            (red, t.bg, t.bg)
+            (red, t.ink_on(red), t.ink_on(red))
         } else if self.can_press() {
             (t.raised, t.text, red)
         } else {
             (t.raised, t.text_faint, red.mix(t.raised, 0.6))
         };
-        cx.canvas.fill_round_rect(b, 10, fill);
+        cx.canvas.fill_round_rect(b, t.round(10), fill);
         if v.waiting {
-            cx.canvas.stroke_round_rect(b, 10, 2, red);
+            cx.canvas.stroke_round_rect(b, t.round(10), 2, red);
         }
         // "● REC" over the second line: where the take goes, how long it
         // has run, what it waits for, or why REC can't start one.
@@ -598,7 +598,7 @@ impl Widget for Recorder {
         let lit = v.recording && !v.waiting;
         let (line, line_ink) = match v.cannot.as_ref().filter(|_| !v.recording) {
             Some(why) => (why.as_str(), t.warn),
-            None if lit => (v.status.as_str(), t.bg),
+            None if lit => (v.status.as_str(), t.ink_on(red)),
             None if self.can_press() => (v.status.as_str(), t.text_dim),
             None => (v.status.as_str(), t.text_faint),
         };
@@ -607,7 +607,7 @@ impl Widget for Recorder {
         for (k, (name, value)) in self.values().iter().enumerate() {
             let c = Recorder::card_rect(r, k);
             let busy = self.card_busy(k);
-            cx.canvas.fill_round_rect(c, 10, t.raised);
+            cx.canvas.fill_round_rect(c, t.round(10), t.raised);
             let ink = if busy { t.text_faint } else { t.text };
             let arrow = if busy { t.text_faint } else { t.text_dim };
             let (left, rest) = c.take_left(26);
@@ -735,10 +735,10 @@ impl Widget for KeepCard {
         cx.canvas.fill_rect(r, t.bg);
         let k = &self.view;
         let c = KeepCard::body(r);
-        cx.canvas.fill_round_rect(c, 10, t.raised);
+        cx.canvas.fill_round_rect(c, t.round(10), t.raised);
         // What a tap keeps, at the card's right: its own little wave.
         let pic = c.take_right(KEEP_WAVE_W).0.inset_xy(8, 8);
-        cx.canvas.fill_round_rect(pic, 6, t.surface);
+        cx.canvas.fill_round_rect(pic, t.round(6), t.surface);
         if !self.wave.is_empty() {
             let band = pic.inset_xy(4, 4);
             let ink = if k.ready { t.accent } else { t.text_faint };

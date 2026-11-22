@@ -8,8 +8,10 @@
 //!   saved project's pads find their sounds again.
 //! - [`read`] takes the WAV files people bring: 8, 16, 24 or 32-bit PCM and
 //!   32 or 64-bit float, mono or stereo, plain or `WAVE_FORMAT_EXTENSIBLE`,
-//!   at 8 to 192 kHz. A file cut short (a recorder that lost power) gives
-//!   the whole frames it has.
+//!   at 8 to 192 kHz, as RIFF or as RF64 (the 64-bit sizes of a `ds64`
+//!   chunk, EBU Tech 3306, which MPFree's recordings past 4 GiB use). A
+//!   file cut short (a recorder that lost power) gives the whole frames it
+//!   has.
 //! - [`file_name`] names a sound's file by its id: the same sound is kept
 //!   once however many pads and kits use it.
 //! - [`bytes_marked`] adds what other software reads of a sampled sound:
@@ -264,19 +266,22 @@ pub fn bytes_marked(s: &Source, marks: &Marks) -> Vec<u8> {
 /// [`Marks`]); what isn't there, or is broken, is left out.
 pub fn marks(b: &[u8]) -> Marks {
     let mut m = Marks::default();
-    if b.len() < 12 || &b[0..4] != b"RIFF" || &b[8..12] != b"WAVE" {
+    let Some(rf64) = wav_kind(b) else {
         return m;
-    }
+    };
     let mut names: Vec<(u32, String)> = Vec::new();
     let mut cues: Vec<(u32, u64)> = Vec::new();
+    let mut big = None;
     let mut at = 12;
     while at + 8 <= b.len() {
         let id = &b[at..at + 4];
-        let len = u32_at(b, at + 4).unwrap_or(0) as usize;
+        let len = chunk_len(b, rf64, id, at, big);
         let start = at + 8;
         let end = start.saturating_add(len).min(b.len());
         let body = &b[start..end];
-        if id == b"smpl" {
+        if id == b"ds64" && rf64 {
+            big = u64_at(body, 8);
+        } else if id == b"smpl" {
             let note = u32_at(body, 12).filter(|&n| n < 128);
             m.root = note.map(|n| n as u8);
             let loops = u32_at(body, 28).unwrap_or(0);
@@ -337,23 +342,51 @@ fn u32_at(b: &[u8], i: usize) -> Option<u32> {
     Some(u32::from_le_bytes(b.get(i..i + 4)?.try_into().ok()?))
 }
 
+fn u64_at(b: &[u8], i: usize) -> Option<u64> {
+    Some(u64::from_le_bytes(b.get(i..i + 8)?.try_into().ok()?))
+}
+
+/// Whether `b` starts as a WAV file: RIFF, or RF64 (also as BW64).
+fn wav_kind(b: &[u8]) -> Option<bool> {
+    if b.len() < 12 || &b[8..12] != b"WAVE" {
+        return None;
+    }
+    match &b[0..4] {
+        b"RIFF" => Some(false),
+        b"RF64" | b"BW64" => Some(true),
+        _ => None,
+    }
+}
+
+/// How long the chunk `id` at `at` in WAV file `b` says it is. An RF64
+/// file's data chunk takes its size from the `ds64` chunk (`big`).
+fn chunk_len(b: &[u8], rf64: bool, id: &[u8], at: usize, big: Option<u64>) -> usize {
+    let len = u64::from(u32_at(b, at + 4).unwrap_or(0));
+    let len = match (rf64, id, len, big) {
+        (true, b"data", 0xFFFF_FFFF, Some(d)) => d,
+        _ => len,
+    };
+    usize::try_from(len).unwrap_or(usize::MAX)
+}
+
 /// A WAV file's sound, named `name`. See the module docs for what it takes.
 pub fn read(name: &str, b: &[u8]) -> Result<Source, String> {
-    if b.len() < 12 || &b[0..4] != b"RIFF" || &b[8..12] != b"WAVE" {
-        return Err("not a WAV file".into());
-    }
+    let rf64 = wav_kind(b).ok_or("not a WAV file")?;
     // (tag, channels, rate, bits)
     let mut fmt: Option<(u16, u16, u32, u16)> = None;
     let mut data: Option<&[u8]> = None;
+    let mut big = None;
     let mut at = 12;
     while at + 8 <= b.len() {
         let id = &b[at..at + 4];
-        let len = u32_at(b, at + 4).unwrap_or(0) as usize;
+        let len = chunk_len(b, rf64, id, at, big);
         let start = at + 8;
         // A chunk running past the end is cut there (a file cut short).
         let end = start.saturating_add(len).min(b.len());
         let body = &b[start..end];
-        if id == b"fmt " && fmt.is_none() {
+        if id == b"ds64" && rf64 {
+            big = u64_at(body, 8);
+        } else if id == b"fmt " && fmt.is_none() {
             let bad = || "a broken fmt chunk".to_string();
             let mut tag = u16_at(body, 0).ok_or_else(bad)?;
             let channels = u16_at(body, 2).ok_or_else(bad)?;

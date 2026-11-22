@@ -36,9 +36,9 @@ use crate::list::{
     LIST_TO_SONG, SCENE_STEP,
 };
 use crate::song::{
-    AudioLane, SongBlock, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, BARS_BACK, BARS_ON, INPUTS,
+    AudioLane, SongBlocks, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, BARS_BACK, BARS_ON, INPUTS,
     MONITORS, NONE, PANEL, PANEL_CLOSE, PANEL_INPUT, PANEL_MONITOR, PANEL_MUTE, PANEL_SOLO,
-    PANEL_TAKES, REC, REGION_SLOTS, SECTION_TAP, TEMPO_ROW,
+    PANEL_TAKES, REC, REGION_SLOTS, RULER_ROW, SECTION_TAP, TEMPO_ROW,
 };
 use crate::widgets::{
     BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, TakeItem,
@@ -62,6 +62,7 @@ use mpfree_transport::{Command, State, Transport};
 use mpfree_ui::qlink::QLinkColumn;
 use mpfree_ui::widgets::{Chip, OptionButton, OptionList, OptionRow};
 use mpfree_ui::{Color, EventKind, Tone, Ui, UiEvent};
+use std::sync::Arc;
 
 /// Widget names the page adds. The app's own are `header` and `hint`.
 pub const TRANSPORT: &str = "transport";
@@ -143,13 +144,13 @@ pub fn copy_hint(st: &TimeState) -> String {
 
 /// The hint line under the Song view.
 pub const SONG_HINT: &str =
-    "Tap a block to pick it   ·   drag a block or a section's name: move it (SHIFT as you lift: copy)   ·   Song on: the song plays where no clip is launched   ·   SHIFT + wheel: bars";
+    "Tap a block to pick it   ·   drag a block or a section's name: move it (SHIFT as you lift: copy)   ·   tap the ruler: add a marker   ·   SHIFT + wheel: bars";
 /// The hint line under the Song view with a block picked.
 pub const SONG_BLOCK_HINT: &str =
     "Drag the block: move it a bar at a time (SHIFT as you lift: copy)   ·   drag its end: longer or shorter   ·   push the wheel: move it a beat at a time   ·   SHIFT + wheel: bars";
 /// The hint line under the Song view with a section picked.
 pub const SONG_SECTION_HINT: &str =
-    "Drag the section's name: move it, the others close up (SHIFT as you lift: copy)   ·   push the wheel: move it a section at a time   ·   SHIFT + wheel: bars";
+    "Drag the name: move the section (SHIFT as you lift: copy)   ·   drag the grip: move where it starts   ·   + Bar: a bar of room before it   ·   push the wheel: move it a section at a time";
 /// The hint line under the Song view with a tempo point picked.
 pub const SONG_TEMPO_HINT: &str =
     "Drag the point: move it a bar at a time   ·   push the wheel: change its tempo   ·   Ramp: glide to the next point   ·   SHIFT + wheel: bars";
@@ -565,7 +566,8 @@ impl TakeRow {
     /// What it is: "take", "capture", "edit", "delete", "paste",
     /// "settings", "reload", "mutate", "restore", for a drop "move",
     /// "swap" or "copy", and for a Song view edit "move", "copy",
-    /// "length", "delete", "unique", "scenes" or "tempo", "list" for the
+    /// "length", "delete", "unique", "scenes", "tempo", "bars" or
+    /// "marker", "list" for the
     /// song list, "scene" for the scene editor and "song → scenes".
     pub fn word(&self) -> &'static str {
         if self.rows.is_some() {
@@ -581,6 +583,8 @@ impl TakeRow {
                 SongChange::Scenes { .. } => "scenes",
                 SongChange::List | SongChange::ListToSong { .. } => "list",
                 SongChange::Tempo { .. } => "tempo",
+                SongChange::Bars { .. } => "bars",
+                SongChange::Marker { .. } => "marker",
             };
         }
         if let Some(d) = self.dropped {
@@ -727,8 +731,11 @@ pub struct TimeState {
     /// The scene playing's follow action, for Perform's NEXT (S4). The
     /// app sets it.
     pub follow_next: Option<FollowNext>,
-    /// The arrangement's placements and markers.
-    pub placements: Vec<PlacementInfo>,
+    /// The arrangement's placements and markers. The placements are
+    /// shared: the screen keeps the same list from one transport update to
+    /// the next, so the Song view knows its blocks are the same without
+    /// comparing them (Arrange refactor 2.4).
+    pub placements: Arc<[PlacementInfo]>,
     pub markers: Vec<(Tick, String)>,
     /// The placement selected on the Song view. The app sets it.
     pub selected: Option<usize>,
@@ -801,7 +808,10 @@ pub enum Pick {
 #[derive(Clone, Debug, PartialEq)]
 pub struct EditInfo {
     pub editor: Editor,
-    pub clip: Clip,
+    /// The clip, shared: the time engine sends the same one until the clip
+    /// changes, so the screen tells an unchanged clip at no cost
+    /// ([`Arc::ptr_eq`]) and rebuilds the roll only when it did.
+    pub clip: Arc<Clip>,
     /// The clip's revision: it moves whenever the clip changes (an edit,
     /// a recorded note, UNDO, an edit from Steps), and a tap on a note
     /// carries the one it was made on ([`EditAction::Note`]).
@@ -809,6 +819,35 @@ pub struct EditInfo {
     pub track_name: String,
     /// A bar, in the clip's ticks.
     pub bar: Tick,
+    /// What became of the editor's last touch (piano roll plan 0C.2).
+    pub answer: EditAnswer,
+}
+
+/// What became of the note editor's last touch, in the copy of the clip
+/// the screen reads (piano roll plan 0C.2), so a roll showing an edit
+/// before it goes in knows when it did and where its notes landed, or
+/// why it didn't.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EditAnswer {
+    /// Which touch: the editor's touches counted by the time engine from
+    /// its start, so a new number is a new answer (0: none yet).
+    pub n: u64,
+    /// The clip's revision the touch was carried out on.
+    pub from: u64,
+    pub outcome: EditOutcome,
+}
+
+/// See [`EditAnswer`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum EditOutcome {
+    /// The clip was left as it was: a pick, a tool, a scroll, a setting.
+    #[default]
+    Unchanged,
+    /// The edit went in: the clip is at revision `rev` and the notes it
+    /// made are at `landed`, which are the picks after it.
+    Taken { rev: u64, landed: Vec<usize> },
+    /// Refused or taken back, and why.
+    Refused(String),
 }
 
 /// A placement as the screens show it.
@@ -949,7 +988,8 @@ impl TimeState {
                     // deleted clip the song still plays).
                     unique: project.arrangement.clips.get(p.clip).is_some(),
                 })
-                .collect(),
+                .collect::<Vec<_>>()
+                .into(),
             markers: project
                 .arrangement
                 .markers
@@ -1299,6 +1339,11 @@ pub enum TimeAction {
     },
     /// A section's name tapped: pick it (the wheel's push then grabs it).
     PickSection(Option<usize>),
+    /// Bars put in or taken out of the song (Arrange 3.3), everything
+    /// after moving with them.
+    SongBars(BarsEdit),
+    /// The song's markers edited (Arrange 3.3): only the markers change.
+    SongMarker(MarkerEdit),
     /// Give a placement its own copy of its clip.
     MakeUnique(usize),
     DeletePlacement(usize),
@@ -1379,6 +1424,41 @@ pub enum TempoEdit {
     /// card, 18 Nov): the point in effect at the playhead takes `bpm`, or
     /// before the first point a new one at the playhead's bar.
     AtPlayhead(f64),
+}
+
+/// Bars put in or taken out of the song (Arrange 3.3): one
+/// `mpfree_seq::TimeEdit`, so the blocks, markers, tempo points, morph
+/// moves and rows after it all move, and UNDO takes it back.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BarsEdit {
+    /// `bars` empty bars put in at song tick `at` (a bar line): the room
+    /// holds the tempo and the morph as they were just before it.
+    Insert { at: Tick, bars: u32 },
+    /// The bars from song tick `from` to `to` taken out (bar lines), and
+    /// everything after closed up.
+    Delete { from: Tick, to: Tick },
+    /// The Song view's + Bar, section `k` picked: an empty bar put in just
+    /// before it. Presses in a row on the same section are one UNDO.
+    RoomBefore(usize),
+    /// The Song view's Delete bars, section `k` picked: its bars
+    /// (`Arrangement::section`) taken out.
+    DeleteSection(usize),
+}
+
+/// An edit of the song's markers (Arrange 3.3), each one UNDO takes back.
+/// Only the markers change: to move what plays, move a section.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MarkerEdit {
+    /// A new marker on song tick `at` (a bar line), named with the next
+    /// free letter (`Arrangement::new_marker_name`), picked.
+    Add(Tick),
+    /// Marker `index` given a new name.
+    Rename { index: usize, name: String },
+    /// Marker `index` moved to song tick `at` (a bar line): its section's
+    /// edge moves, nothing else.
+    Move { index: usize, at: Tick },
+    /// Marker `index` taken away: its bars join the section before.
+    Delete(usize),
 }
 
 /// What a touch on the Song view's audio lanes asks for (layout spec 4c).
@@ -1775,6 +1855,39 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         ) => Some(TimeAction::SongTempo(TempoEdit::Pick(
             (st.tempo_pick != Some(*col)).then_some(*col),
         ))),
+        // The ruler: a tap where no name is adds a marker; the picked
+        // section's grip moves its marker alone (Arrange 3.3).
+        (
+            SONG,
+            EventKind::Place {
+                index: NONE,
+                row: RULER_ROW,
+                at,
+            },
+        ) => Some(TimeAction::SongMarker(MarkerEdit::Add(*at))),
+        (
+            SONG,
+            EventKind::Place {
+                index,
+                row: RULER_ROW,
+                at,
+            },
+        ) => Some(TimeAction::SongMarker(MarkerEdit::Move {
+            index: *index,
+            at: *at,
+        })),
+        // With a section picked, the last four buttons are + Bar, Rename
+        // (the app opens the text keyboard: `song_rename`), Remove marker
+        // and Delete bars.
+        (SONG, EventKind::Tab(k @ (2 | 4 | 5))) if section_buttons(st) => {
+            let s = st.section?;
+            Some(match k {
+                2 => TimeAction::SongBars(BarsEdit::RoomBefore(s)),
+                4 => TimeAction::SongMarker(MarkerEdit::Delete(s)),
+                _ => TimeAction::SongBars(BarsEdit::DeleteSection(s)),
+            })
+        }
+        (SONG, EventKind::Tab(3)) if section_buttons(st) => None,
         // With a point picked, the last two buttons are Ramp and Delete.
         (SONG, EventKind::Tab(k @ (4 | 5))) if st.region.is_none() && st.tempo_pick.is_some() => {
             let index = st.tempo_pick?;
@@ -3177,6 +3290,25 @@ pub fn rows_named(first: usize, last: usize) -> String {
     }
 }
 
+/// Whether the Song view's last four buttons are the picked section's
+/// (`song::SECTION_BUTTONS`): a section picked, no audio region or tempo
+/// point.
+pub fn section_buttons(st: &TimeState) -> bool {
+    st.region.is_none()
+        && st.tempo_pick.is_none()
+        && st.section.is_some_and(|k| k < st.markers.len())
+}
+
+/// The marker the Song view's Rename asks to name (button 4 with a
+/// section picked), with its name: the app opens the text keyboard.
+pub fn song_rename(ev: &UiEvent, st: &TimeState) -> Option<(usize, String)> {
+    if ev.widget != SONG || ev.kind != EventKind::Tab(3) || !section_buttons(st) || !st.song_view {
+        return None;
+    }
+    let k = st.section?;
+    Some((k, st.markers.get(k)?.1.clone()))
+}
+
 pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
     let mut word = row.word().to_string();
     word[..1].make_ascii_uppercase();
@@ -3196,9 +3328,17 @@ pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
                 .map_or("section", |m| m.1.as_str());
             return format!("{word} {} · {name}", row.shown());
         }
-        Some(SongChange::Tempo { at }) => {
+        Some(SongChange::Tempo { at } | SongChange::Bars { at, .. }) => {
             let bar = st.transport.meter.bar_ticks().max(1);
             return format!("{word} {} · bar {}", row.shown(), at.div_euclid(bar) + 1);
+        }
+        Some(SongChange::Marker { at }) => {
+            let bar = st.transport.meter.bar_ticks().max(1);
+            let name = st.markers.iter().find(|m| m.0 == at).map_or_else(
+                || format!("bar {}", at.div_euclid(bar) + 1),
+                |m| m.1.clone(),
+            );
+            return format!("{word} {} · {name}", row.shown());
         }
         Some(SongChange::Scenes { .. } | SongChange::List | SongChange::ListToSong { .. })
         | None => {}
@@ -3250,6 +3390,20 @@ fn take_detail(st: &TimeState, row: &TakeRow) -> String {
         Some(SongChange::List) => return "song list".into(),
         Some(SongChange::ListToSong { steps }) => return format!("{steps} steps → song"),
         Some(SongChange::Tempo { .. }) => return "tempo point".into(),
+        Some(SongChange::Bars { len, inserted, .. }) => {
+            let n = if len % bar == 0 {
+                format!("{}", len / bar)
+            } else {
+                format!("{:.1}", len as f64 / bar as f64)
+            };
+            let bars = if n == "1" { "bar" } else { "bars" };
+            return if inserted {
+                format!("{n} {bars} put in")
+            } else {
+                format!("{n} {bars} taken out")
+            };
+        }
+        Some(SongChange::Marker { at }) => return format!("at bar {}", bar_of(at)),
         None => {}
     }
     match row.dropped {
@@ -3915,9 +4069,17 @@ pub fn min_sec(seconds: f64) -> String {
 /// waveforms are left out: [`TimePage::update`] copies `st.waves` only
 /// when they change, as they can be large.
 pub fn song_lanes(st: &TimeState, first_bar: i64) -> SongLanes {
+    song_lanes_with(st, first_bar, None)
+}
+
+/// [`song_lanes`], with `blocks` for the blocks when they were made from
+/// `st.placements` ([`SongBlocks::made_from`]), so an update that changes
+/// no block copies none (Arrange refactor 2.4).
+fn song_lanes_with(st: &TimeState, first_bar: i64, blocks: Option<SongBlocks>) -> SongLanes {
     let t = &st.transport;
     let bar = t.meter.bar_ticks();
-    let placed = st.placements.iter().map(|p| p.start + p.length);
+    let blocks = blocks.unwrap_or_else(|| SongBlocks::of(&st.placements));
+    let placed = std::iter::once(blocks.end());
     let audio = st
         .audio
         .iter()
@@ -3947,19 +4109,7 @@ pub fn song_lanes(st: &TimeState, first_bar: i64) -> SongLanes {
             .map(|(i, tr)| (tr.name.clone(), track_color(i)))
             .collect(),
         sounds: st.tracks.iter().map(|tr| tr.sound.clone()).collect(),
-        blocks: st
-            .placements
-            .iter()
-            .enumerate()
-            .map(|(index, p)| SongBlock {
-                index,
-                track: p.track,
-                start: p.start,
-                length: p.length,
-                name: p.name.clone(),
-                unique: p.unique,
-            })
-            .collect(),
+        blocks,
         markers: st.markers.clone(),
         bar,
         first_bar,
@@ -3981,20 +4131,38 @@ pub fn song_lanes(st: &TimeState, first_bar: i64) -> SongLanes {
     }
 }
 
-/// The note editor's roll or list for `e`, with the playhead where the
-/// clip plays now (if it is launched).
-pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
+/// Where the note editor's clip plays now, in its own ticks, if it is
+/// launched and the transport has started.
+pub fn note_playhead(e: &EditInfo, st: &TimeState) -> Option<Tick> {
     let ed = &e.editor;
     let c = &e.clip;
-    let playhead = st
-        .launches
+    st.launches
         .iter()
         .find(|l| (l.track, l.slot) == (ed.track, ed.slot))
         .filter(|_| c.length > 0 && st.transport.position >= 0)
         .map(|l| {
             let at = c.speed.to_clip((st.transport.position - l.origin) as f64);
             (at.floor() as Tick).rem_euclid(c.length)
-        });
+        })
+}
+
+/// The screen built the note editor from `a` and is asked to show `b`:
+/// nothing but the playhead can have changed. The same clip (one shared
+/// copy, not compared note by note), revision and editor.
+fn same_edit(a: &EditInfo, b: &EditInfo) -> bool {
+    Arc::ptr_eq(&a.clip, &b.clip)
+        && a.rev == b.rev
+        && a.editor == b.editor
+        && a.bar == b.bar
+        && a.track_name == b.track_name
+}
+
+/// The note editor's roll or list for `e`, with the playhead where the
+/// clip plays now (if it is launched).
+pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
+    let ed = &e.editor;
+    let c = &e.clip;
+    let playhead = note_playhead(e, st);
     let selected = |i: usize| ed.sel.contains(&i);
     let n_sel = ed.sel.iter().filter(|&&i| i < c.notes.len()).count();
     let mut g = NoteGrid::new();
@@ -4084,6 +4252,11 @@ pub struct TimePage {
     /// while it is open the Clips page keeps the grid, the song or the
     /// list, and the editor's layout comes back once this is false again.
     pub edit_hidden: bool,
+    /// What the note editor's roll and options were last built from: an
+    /// update with the same clip and editor moves only the playhead
+    /// (piano roll plan 0C.1), so the playing transport costs the screen
+    /// no rebuild of 8,192 notes a frame.
+    edit_built: Option<Box<EditInfo>>,
 }
 
 impl TimePage {
@@ -4355,7 +4528,16 @@ impl TimePage {
                 l.can_add = can_add;
             }
         }
-        let mut lanes = song_lanes(st, self.first_bar);
+        // The blocks shown, while the placements are the same list: a frame
+        // that only moves the playhead or scrolls copies and compares no
+        // block (Arrange refactor 2.4).
+        let blocks = ui
+            .get::<SongLanes>(SONG)
+            .map(|l| &l.blocks)
+            .filter(|b| b.made_from(&st.placements))
+            .cloned();
+        let kept = blocks.is_some();
+        let mut lanes = song_lanes_with(st, self.first_bar, blocks);
         let (same, same_waves) = ui.get::<SongLanes>(SONG).map_or((true, true), |l| {
             let waves = crate::song::same_waves(&l.waves, &st.waves);
             lanes.keep_scroll(l);
@@ -4369,6 +4551,13 @@ impl TimePage {
                 let waves = std::mem::take(&mut l.waves);
                 *l = lanes;
                 l.waves = if same_waves { waves } else { st.waves.clone() };
+            }
+        } else if !kept {
+            // The same blocks in a new list (a new state from the engine):
+            // kept as made from it, so the next frames know them in one
+            // step. Nothing drawn changes.
+            if let Some(l) = ui.get_mut_quiet::<SongLanes>(SONG) {
+                l.blocks = lanes.blocks;
             }
         }
         let m = st.morph;
@@ -4387,21 +4576,37 @@ impl TimePage {
                 *b = bar;
             }
         }
-        if let Some(e) = &st.edit {
-            let grid = note_grid(e, st);
-            if ui.get::<NoteGrid>(NOTES).is_some_and(|g| !g.same(&grid)) {
-                if let Some(g) = ui.get_mut::<NoteGrid>(NOTES) {
-                    g.show(grid);
+        match &st.edit {
+            Some(e) if self.edit_built.as_ref().is_some_and(|b| same_edit(b, e)) => {
+                // Only the playhead can have moved.
+                let at = note_playhead(e, st);
+                if ui.get::<NoteGrid>(NOTES).is_some_and(|g| g.playhead != at) {
+                    if let Some(g) = ui.get_mut::<NoteGrid>(NOTES) {
+                        g.playhead = at;
+                    }
                 }
             }
-            let rows = edit_rows(&e.editor, &e.clip);
-            if let Some(l) = ui.get_mut::<OptionList>(EDIT_OPTIONS) {
-                if l.rows != rows || l.selected != e.editor.row {
-                    l.rows = rows;
-                    l.selected = e.editor.row;
-                    l.right = "wheel or arrows".to_string();
+            Some(e) => {
+                let grid = note_grid(e, st);
+                if ui.get::<NoteGrid>(NOTES).is_some_and(|g| !g.same(&grid)) {
+                    if let Some(g) = ui.get_mut::<NoteGrid>(NOTES) {
+                        g.show(grid);
+                    }
                 }
+                let rows = edit_rows(&e.editor, &e.clip);
+                if ui
+                    .get::<OptionList>(EDIT_OPTIONS)
+                    .is_some_and(|l| l.rows != rows || l.selected != e.editor.row)
+                {
+                    if let Some(l) = ui.get_mut::<OptionList>(EDIT_OPTIONS) {
+                        l.rows = rows;
+                        l.selected = e.editor.row;
+                        l.right = "wheel or arrows".to_string();
+                    }
+                }
+                self.edit_built = Some(e.clone());
             }
+            None => self.edit_built = None,
         }
         let rows = record_rows(st);
         let tabs = panel_tabs(st);
@@ -4471,7 +4676,7 @@ mod tests {
     use super::*;
     use mpfree_seq::{Clip, Note, Track};
     use mpfree_ui::widgets::{Header, Label};
-    use mpfree_ui::{Align, Fonts, Theme};
+    use mpfree_ui::{Align, Fonts, SoftCanvas, Theme};
 
     const BAR: Tick = 3840;
 
@@ -4727,15 +4932,69 @@ mod tests {
         .unwrap();
         let e = EditInfo {
             editor: crate::editor::Editor::new(0, 0, &c),
-            clip: c,
+            clip: c.into(),
             rev: 0,
             track_name: "Drums".into(),
             bar: BAR,
+            answer: EditAnswer::default(),
         };
         let g = note_grid(&e, &state());
         assert_eq!(g.touch, [point(0, 90), point(40, 30)]);
         assert!(g.touch_of(0).is_empty());
         assert_eq!(g.touch_of(1), &g.touch[..]);
+    }
+
+    /// Piano roll plan 0C.1: while the note editor's clip (one shared
+    /// copy) and the editor stay the same, an update moves only the roll's
+    /// playhead and builds none of its notes again; a new copy builds it.
+    #[test]
+    fn the_note_editor_moves_only_its_playhead_while_its_clip_is_the_same() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Clips"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = state();
+        let mut c = Clip::new("A", 2 * BAR);
+        c.add_note(Note::new(0, 240, 1, 100)).unwrap();
+        st.edit = Some(Box::new(EditInfo {
+            editor: crate::editor::Editor::new(0, 0, &c),
+            clip: c.into(),
+            rev: 1,
+            track_name: "Drums".into(),
+            bar: BAR,
+            answer: EditAnswer::default(),
+        }));
+        page.update(&mut ui, &st);
+        let e = st.edit.clone().unwrap();
+        let head = note_playhead(&e, &st);
+        assert!(head.is_some(), "track 1's clip plays");
+        assert_eq!(ui.get::<NoteGrid>(NOTES).unwrap().playhead, head);
+        // Marked, to see whether the roll is built again.
+        ui.get_mut::<NoteGrid>(NOTES).unwrap().title = "kept".into();
+        st.transport.position += 120;
+        page.update(&mut ui, &st);
+        let g = ui.get::<NoteGrid>(NOTES).unwrap();
+        assert_eq!(g.title, "kept", "not built again");
+        assert_eq!(g.playhead, note_playhead(&e, &st));
+        assert_ne!(g.playhead, head, "the playhead moved");
+        // The same notes in a new copy (the clip changed and changed
+        // back): built again.
+        let e = st.edit.as_mut().unwrap();
+        e.clip = Arc::new((*e.clip).clone());
+        page.update(&mut ui, &st);
+        assert!(ui
+            .get::<NoteGrid>(NOTES)
+            .unwrap()
+            .title
+            .starts_with("Edit · A"));
+        // Closed and opened again: built again too.
+        let open = st.edit.take();
+        page.update(&mut ui, &st);
+        ui.get_mut::<NoteGrid>(NOTES).unwrap().title = "kept".into();
+        st.edit = open;
+        page.update(&mut ui, &st);
+        assert_ne!(ui.get::<NoteGrid>(NOTES).unwrap().title, "kept");
     }
 
     #[test]
@@ -5030,6 +5289,68 @@ mod tests {
     }
 
     #[test]
+    fn a_frame_that_moves_the_playhead_or_scrolls_copies_no_block() {
+        // Arrange refactor 2.4: while the placements are the same list, the
+        // Song view keeps its blocks, so a long song costs a frame no more
+        // than a short one; new placements are new blocks.
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Clips"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = state();
+        st.song_view = true;
+        let place = |n: usize| -> Arc<[PlacementInfo]> {
+            (0..n)
+                .map(|k| PlacementInfo {
+                    track: k % 3,
+                    start: (k / 3) as Tick * BAR,
+                    length: BAR,
+                    name: format!("Clip {k}"),
+                    unique: false,
+                })
+                .collect::<Vec<_>>()
+                .into()
+        };
+        st.placements = place(4096);
+        page.update(&mut ui, &st);
+        let blocks = |ui: &Ui| ui.get::<SongLanes>(SONG).unwrap().blocks.as_ptr();
+        let first = blocks(&ui);
+        for k in 0..4 {
+            st.transport.position += 960;
+            page.update(&mut ui, &st);
+            page.scroll(&ui, k);
+            page.update(&mut ui, &st);
+            let l = ui.get::<SongLanes>(SONG).unwrap();
+            assert_eq!(l.first_bar, (0..=k).sum::<i32>() as i64);
+            assert_eq!(l.playhead, Some(st.transport.position));
+            assert!(
+                std::ptr::eq(blocks(&ui), first),
+                "frame {k} copied the blocks"
+            );
+        }
+        // An equal list from the engine (a new state) is copied once, with
+        // nothing to draw, and the frames after it copy nothing.
+        let mut c = SoftCanvas::new(1280, 800);
+        ui.paint(&mut c);
+        st.placements = place(4096);
+        page.update(&mut ui, &st);
+        assert!(ui.paint(&mut c).is_empty(), "nothing changed on the screen");
+        let second = blocks(&ui);
+        assert!(!std::ptr::eq(second, first));
+        st.transport.position += 960;
+        page.update(&mut ui, &st);
+        page.update(&mut ui, &st);
+        assert!(std::ptr::eq(blocks(&ui), second));
+        // A changed one shows.
+        st.placements = place(5);
+        page.update(&mut ui, &st);
+        let l = ui.get::<SongLanes>(SONG).unwrap();
+        assert_eq!(l.blocks.len(), 5);
+        assert_eq!(l.blocks.get(4).map(|b| b.name.as_str()), Some("Clip 4"));
+    }
+
+    #[test]
     fn the_song_view_swaps_in_for_the_grid_and_its_buttons_act() {
         let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
         ui.add("header", Header::new(&["Play", "Clips"]));
@@ -5042,13 +5363,14 @@ mod tests {
             Some(TimeAction::SongView(true))
         );
         st.song_view = true;
-        st.placements.push(PlacementInfo {
+        st.placements = vec![PlacementInfo {
             track: 0,
             start: 3840,
             length: 7680,
             name: "Boom".into(),
             unique: false,
-        });
+        }]
+        .into();
         page.update(&mut ui, &st);
         assert!(ui.rect_of(SONG).is_some() && ui.rect_of(CLIPS).is_none());
         let lanes = ui.get::<SongLanes>(SONG).unwrap();

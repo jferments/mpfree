@@ -34,9 +34,12 @@
 //! [`edit_rows`] fills the Edit options list; its `Step` and `Select`
 //! become [`EditAction::Row`] and [`EditAction::PickRow`].
 
+use std::cell::RefCell;
+use std::sync::Arc;
+
 use mpfree_seq::notes::{self, Snap, Tc, TcKind, Which, DIVISIONS};
 use mpfree_seq::steps::{Edit, Euclid, Grid, MAX_EUCLID_STEPS};
-use mpfree_seq::{Clip, Cond, Lock, Note, TouchPoint};
+use mpfree_seq::{Clip, Cond, Join, Lock, Note, TouchPoint};
 use mpfree_transport::time::{Tick, PPQ};
 use mpfree_ui::widgets::OptionRow;
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
@@ -473,16 +476,15 @@ impl Editor {
                 true,
                 format!("edit: {} notes moved", sel.len()),
             ),
-            EditAction::Velocity(v) => {
-                let v = (1.0 + v.clamp(0.0, 1.0) * 126.0).round() as u8;
-                (
-                    notes::set_velocity(clip, &sel, v),
-                    key(1),
-                    true,
-                    true,
-                    String::new(),
-                )
-            }
+            // One a drag of the velocity lane (sent when the finger lifts),
+            // so each drag is its own take.
+            EditAction::Velocity(v) => (
+                notes::set_velocity(clip, &sel, lane_velocity(v)),
+                None,
+                true,
+                true,
+                String::new(),
+            ),
             EditAction::PickRow(r) => {
                 self.row = r.min(EDIT_ROWS.len() - 1);
                 return Done::default();
@@ -939,6 +941,12 @@ pub fn drop_frame(ticks: Tick, notes: i32) -> u64 {
     n << 32 | t
 }
 
+/// The velocity the lane's value `v` (0 to 1, [`EditAction::Velocity`])
+/// sets: 1 to 127.
+pub fn lane_velocity(v: f32) -> u8 {
+    (1.0 + v.clamp(0.0, 1.0) * 126.0).round() as u8
+}
+
 /// The drag a `Marker`'s frame holds ([`drop_frame`]).
 pub fn drop_of(frame: u64) -> (Tick, i32) {
     let t = (frame & 0xFFFF_FFFF) as Tick - (1 << 31);
@@ -961,6 +969,15 @@ pub struct NoteBox {
     pub selected: bool,
     /// Its pad pressure in [`NoteGrid::touch`] (none: `len` 0).
     pub touch: mpfree_seq::Touch,
+    /// Its step is on; an off note keeps its place and plays nothing
+    /// ([`Note::on`]), so the roll draws it as an outline.
+    pub on: bool,
+    /// Its ratchet's velocity ramp ([`Note::ramp`]): the roll shades each
+    /// hit as it will play.
+    pub ramp: i8,
+    /// How it starts ([`Note::join`]): a tie or a slide is marked at its
+    /// start.
+    pub join: Join,
 }
 
 impl NoteBox {
@@ -976,6 +993,9 @@ impl NoteBox {
             ratchet: n.ratchet,
             selected,
             touch: mpfree_seq::Touch::NONE,
+            on: n.on,
+            ramp: n.ramp,
+            join: n.join,
         }
     }
 }
@@ -1002,6 +1022,102 @@ impl LockMark {
         LockMark {
             tick: l.tick,
             sound: l.sound,
+        }
+    }
+}
+
+/// The roll's notes in buckets a bar long, each note in every bar it
+/// sounds in (cut at the clip's end), so a roll that shows part of the
+/// clip looks only at the notes near it (piano roll plan 0C.2).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NoteIndex {
+    bar: Tick,
+    buckets: Vec<Vec<u32>>,
+}
+
+impl NoteIndex {
+    /// The index of `notes` in a clip `length` long, in buckets `bar`
+    /// long.
+    pub fn new(notes: &[NoteBox], length: Tick, bar: Tick) -> NoteIndex {
+        let bar = bar.max(1);
+        let length = length.max(1);
+        let count = ((length + bar - 1) / bar) as usize;
+        let mut buckets = vec![Vec::new(); count];
+        for (i, n) in notes.iter().enumerate() {
+            let start = n.tick.clamp(0, length - 1);
+            let end = (n.tick + n.len.max(1)).clamp(start + 1, length);
+            let (first, last) = ((start / bar) as usize, ((end - 1) / bar) as usize);
+            for b in &mut buckets[first..=last.min(count - 1)] {
+                b.push(i as u32);
+            }
+        }
+        NoteIndex { bar, buckets }
+    }
+
+    /// The notes in the bars that ticks `from..to` touch, each once, in
+    /// index order (the roll's drawing order, the last on top). It may
+    /// name notes just outside the ticks: the caller checks each place.
+    pub fn near(&self, from: Tick, to: Tick) -> Vec<usize> {
+        let Some(last) = self.buckets.len().checked_sub(1) else {
+            return Vec::new();
+        };
+        if to <= from {
+            return Vec::new();
+        }
+        let first = (from.max(0) / self.bar) as usize;
+        let end = ((to - 1).max(0) / self.bar) as usize;
+        let mut out: Vec<usize> = self
+            .buckets
+            .get(first..=end.min(last))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|&i| i as usize)
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+}
+
+/// What the grid works out from its notes once and keeps while they stay
+/// the same (piano roll plan 0C.2): the tracker's rows, the list's order
+/// and the roll's note index, each worked out when first wanted. A grid
+/// built again ([`NoteGrid::show`]) starts without them, and each is
+/// checked against what it was worked out from (the notes' count and
+/// where they are kept, the clip's length, the bar and the tracker's
+/// step), so a grid given other notes works them out again. Change a
+/// grid's notes in place and call [`NoteGrid::forget`].
+#[derive(Clone, Debug, Default)]
+struct Kept {
+    rows: RefCell<Option<(Stamp, Arc<[TrackRow]>)>>,
+    order: RefCell<Option<(Stamp, Arc<[usize]>)>>,
+    index: RefCell<Option<(Stamp, Arc<NoteIndex>)>>,
+}
+
+/// What [`Kept`]'s answers were worked out from.
+type Stamp = (usize, usize, Tick, Tick, Tick);
+
+/// A cache: never part of what a grid shows.
+impl PartialEq for Kept {
+    fn eq(&self, _: &Kept) -> bool {
+        true
+    }
+}
+
+/// `cell`'s answer if it was worked out from `stamp`, else `make`'s, kept.
+fn kept<T: ?Sized>(
+    cell: &RefCell<Option<(Stamp, Arc<T>)>>,
+    stamp: Stamp,
+    make: impl FnOnce() -> Arc<T>,
+) -> Arc<T> {
+    let mut c = cell.borrow_mut();
+    match &*c {
+        Some((s, v)) if *s == stamp => Arc::clone(v),
+        _ => {
+            let v = make();
+            *c = Some((stamp, Arc::clone(&v)));
+            v
         }
     }
 }
@@ -1036,19 +1152,23 @@ pub struct NoteGrid {
     /// in clip ticks from its note's start (as `Clip::touch`).
     pub touch: Vec<TouchPoint>,
     drag: Option<Drag>,
+    kept: Kept,
 }
 
-/// A note being dragged: which, where the finger went down, and the move
-/// so far (snapped).
+/// A note being dragged: by which finger, which note, where the finger
+/// went down, and the move so far (snapped).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Drag {
+    /// Only this finger moves or drops it ([`NoteGrid::touch`]).
+    finger: u64,
     index: usize,
     x: i32,
     y: i32,
     ticks: Tick,
     notes: i32,
-    /// The finger is in the velocity lane.
-    velocity: bool,
+    /// The finger is in the velocity lane: the value under it, 0 to 1,
+    /// shown on the picked notes and sent once, when it lifts.
+    lane: Option<f32>,
 }
 
 const KEYS_W: i32 = 64;
@@ -1101,11 +1221,12 @@ impl Default for NoteGrid {
             tool: Tool::Select,
             lens: Lens::Grid,
             first: 0,
-            color: Color::rgb(0x6EA8FE),
+            color: crate::view::track_color(2),
             step: STEP_FALLBACK,
             locks: Vec::new(),
             touch: Vec::new(),
             drag: None,
+            kept: Kept::default(),
         }
     }
 }
@@ -1117,6 +1238,11 @@ struct Geo {
     vel: Rect,
     tools: Rect,
     rows: i32,
+}
+
+/// The velocity lane's value at `y`, 0 (its bottom) to 1 (its top).
+fn lane_value(g: &Geo, y: i32) -> f32 {
+    f32::from((g.vel.bottom() - 3 - y).clamp(0, g.vel.h - 6) as u16) / (g.vel.h - 6).max(1) as f32
 }
 
 impl NoteGrid {
@@ -1220,18 +1346,23 @@ impl NoteGrid {
     /// Where note `i` is drawn on the roll, if it shows (moved by a drag
     /// in progress when it is selected).
     pub fn note_rect(&self, r: Rect, i: usize) -> Option<Rect> {
-        let g = self.geo(r);
+        self.note_rect_in(&self.geo(r), i)
+    }
+
+    /// [`NoteGrid::note_rect`] in the roll's places `g`, worked out once
+    /// for every note drawn or touched.
+    fn note_rect_in(&self, g: &Geo, i: usize) -> Option<Rect> {
         let n = self.notes.get(i)?;
         let (dt, dn) = match self.drag {
-            Some(d) if n.selected && !d.velocity => (d.ticks, d.notes),
+            Some(d) if n.selected && d.lane.is_none() => (d.ticks, d.notes),
             _ => (0, 0),
         };
         let note = u8::try_from(i32::from(n.note) + dn).ok()?;
-        let y = self.y_of(&g, note)?;
+        let y = self.y_of(g, note)?;
         let tick = (n.tick + dt).rem_euclid(self.length.max(1));
-        let x0 = self.x_of(&g, tick);
-        let x1 = self.x_of(&g, (tick + n.len).min(self.length)).max(x0 + 3);
-        Some(Rect::new(x0, y + 1, x1 - x0, self.row_h(&g) - 2))
+        let x0 = self.x_of(g, tick);
+        let x1 = self.x_of(g, (tick + n.len).min(self.length)).max(x0 + 3);
+        Some(Rect::new(x0, y + 1, x1 - x0, self.row_h(g) - 2))
     }
 
     /// Where row `k` of the list or the tracker is (0 is the heading), if
@@ -1258,9 +1389,51 @@ impl NoteGrid {
         step_grid(self.step)
     }
 
-    /// The tracker's rows.
-    pub fn track_rows(&self) -> Vec<TrackRow> {
-        track_rows(&self.notes, self.length, self.grid())
+    /// What the kept answers are worked out from ([`Kept`]).
+    fn stamp(&self) -> Stamp {
+        (
+            self.notes.len(),
+            self.notes.as_ptr() as usize,
+            self.length,
+            self.bar,
+            self.step,
+        )
+    }
+
+    /// Drop what was worked out from the notes ([`Kept`]), after changing
+    /// them in place.
+    pub fn forget(&mut self) {
+        self.kept = Kept::default();
+    }
+
+    /// The tracker's rows, worked out once for these notes.
+    pub fn track_rows(&self) -> Arc<[TrackRow]> {
+        kept(&self.kept.rows, self.stamp(), || {
+            track_rows(&self.notes, self.length, self.grid()).into()
+        })
+    }
+
+    /// The roll's note index, worked out once for these notes.
+    pub fn index(&self) -> Arc<NoteIndex> {
+        kept(&self.kept.index, self.stamp(), || {
+            Arc::new(NoteIndex::new(&self.notes, self.length, self.bar))
+        })
+    }
+
+    /// The notes the roll may show in `g`, in drawing order: every note
+    /// while the whole clip is in view or a note is being dragged (it may
+    /// be dragged into view), else the index's notes near the ticks in
+    /// view.
+    fn in_view(&self, g: &Geo) -> Vec<usize> {
+        let (from, to) = (
+            self.tick_at(g, g.roll.x),
+            self.tick_at(g, g.roll.right()) + 1,
+        );
+        let dragging = self.drag.is_some_and(|d| d.lane.is_none());
+        if dragging || (from <= 0 && to >= self.length) {
+            return (0..self.notes.len()).collect();
+        }
+        self.index().near(from, to)
     }
 
     /// The buttons along the bottom.
@@ -1299,7 +1472,7 @@ impl NoteGrid {
         }
     }
 
-    fn paint_roll(&self, cx: &mut PaintCx, r: Rect, g: &Geo) {
+    fn paint_roll(&self, cx: &mut PaintCx, g: &Geo) {
         let t = cx.theme.clone();
         let rh = self.row_h(g);
         // Rows: the black keys darker, C lines brighter.
@@ -1362,27 +1535,64 @@ impl NoteGrid {
             );
             bar += 1;
         }
-        // The notes, then the velocity lane under them.
+        // The notes as they will play, then the velocity lane under them.
         let top = t.accent;
-        for (i, n) in self.notes.iter().enumerate() {
-            let Some(nr) = self.note_rect(r, i) else {
+        let shade = |v: u8| t.raised.mix(self.color, 0.35 + 0.65 * f32::from(v) / 127.0);
+        // The velocity lane dragged: the picked notes as they would be.
+        let preview = self.drag.and_then(|d| d.lane).map(lane_velocity);
+        let vel_of = |n: &NoteBox| match preview {
+            Some(v) if n.selected => NoteBox { velocity: v, ..*n },
+            _ => *n,
+        };
+        let shown = self.in_view(g);
+        for &i in &shown {
+            let Some(nr) = self.note_rect_in(g, i) else {
                 continue;
             };
-            let shade = 0.35 + 0.65 * f32::from(n.velocity) / 127.0;
-            let fill = t.raised.mix(self.color, shade);
-            cx.canvas.fill_round_rect(nr, 3, fill);
-            self.paint_touch(cx, g, nr, i, fill.mix(t.text, 0.5));
+            let n = &vel_of(&self.notes[i]);
+            let fill = shade(n.velocity);
+            if !n.on {
+                // Off: its place and settings kept, nothing played.
+                cx.canvas.stroke_round_rect(nr, 3, 1, self.color);
+            } else {
+                for (hr, v) in self.hit_rects(g, nr, n) {
+                    cx.canvas.fill_round_rect(hr, 3, shade(v));
+                }
+                self.paint_touch(cx, g, nr, i, fill.mix(t.text, 0.5));
+            }
+            self.paint_join(cx, g, nr, n.join, if n.on { fill } else { self.color });
             if n.selected {
                 cx.canvas.stroke_round_rect(nr, 3, 2, top);
             }
         }
         cx.canvas.fill_round_rect(g.vel, 6, t.surface);
-        for n in &self.notes {
+        let lane = |v: u8| (f32::from(v) / 127.0 * (g.vel.h - 6) as f32).round() as i32;
+        for &i in &shown {
+            let n = &vel_of(&self.notes[i]);
             let x = self.x_of(g, n.tick);
-            let h = (f32::from(n.velocity) / 127.0 * (g.vel.h - 6) as f32).round() as i32;
-            let c = if n.selected { top } else { self.color };
+            let h = lane(n.velocity);
+            let c = if n.selected {
+                top
+            } else if n.on {
+                self.color
+            } else {
+                t.outline
+            };
             cx.canvas
                 .fill_rect(Rect::new(x, g.vel.bottom() - 3 - h, 4, h.max(1)), c);
+            // A ratchet's later hits, thinner, at their own velocities.
+            let hits = i64::from(n.ratchet.max(1));
+            for k in 1..hits {
+                let at = n.tick + n.len * k / hits;
+                if at >= self.length {
+                    break;
+                }
+                let h = lane(mpfree_seq::ramped(n.velocity, n.ramp, k as u8, n.ratchet));
+                cx.canvas.fill_rect(
+                    Rect::new(self.x_of(g, at), g.vel.bottom() - 3 - h, 2, h.max(1)),
+                    c.mix(t.surface, 0.3),
+                );
+            }
         }
         cx.text(
             FontId::Sans,
@@ -1398,6 +1608,54 @@ impl NoteGrid {
                 Rect::new(x, g.ruler.y, 2, g.roll.bottom() - g.ruler.y),
                 t.good,
             );
+        }
+    }
+
+    /// Note `n`'s hits in its box `nr`, each with the velocity it plays
+    /// at: the whole box for a plain note; a ratchet's hits evenly spread
+    /// over its length with a gap between them where there is room,
+    /// shaded by its ramp ([`mpfree_seq::ramped`]). A hit past the clip's
+    /// end is left out, as the box is cut there.
+    /// Nothing is allocated: the roll asks for every note on every frame.
+    fn hit_rects(&self, g: &Geo, nr: Rect, n: &NoteBox) -> impl Iterator<Item = (Rect, u8)> {
+        let hits = i32::from(n.ratchet.max(1));
+        let full = f64::from(g.roll.w) * n.len as f64 / self.length.max(1) as f64;
+        let split = hits > 1 && full >= f64::from(2 * hits);
+        let (velocity, ramp, ratchet) = (n.velocity, n.ramp, n.ratchet);
+        let x_of = move |k: i32| nr.x + (full * f64::from(k) / f64::from(hits)).round() as i32;
+        (0..if split { hits } else { 1 }).map_while(move |k| {
+            if !split {
+                return Some((nr, velocity));
+            }
+            let (x0, x1) = (x_of(k), x_of(k + 1).min(nr.right()));
+            let gap = i32::from(x1 - x0 >= 5);
+            let v = mpfree_seq::ramped(velocity, ramp, k as u8, ratchet);
+            (x0 < nr.right()).then(|| (Rect::new(x0, nr.y, (x1 - x0 - gap).max(1), nr.h), v))
+        })
+    }
+
+    /// A joined note's mark, just before its start: a tie a level stub
+    /// from the note it continues, a slide a short rising slant.
+    fn paint_join(&self, cx: &mut PaintCx, g: &Geo, nr: Rect, join: Join, color: Color) {
+        let mid = nr.y + nr.h / 2;
+        let left = (nr.x - 8).max(g.roll.x);
+        match join {
+            Join::Attack => {}
+            Join::Tie => {
+                if nr.x > left {
+                    cx.canvas
+                        .fill_rect(Rect::new(left, mid - 1, nr.x - left, 3), color);
+                }
+            }
+            Join::Slide => {
+                for k in 0..4 {
+                    let x = nr.x - 8 + 2 * k;
+                    if x >= g.roll.x {
+                        cx.canvas
+                            .fill_rect(Rect::new(x, mid + 3 - 2 * k, 2, 2), color);
+                    }
+                }
+            }
         }
     }
 
@@ -1463,11 +1721,13 @@ impl NoteGrid {
             let cells = [
                 format!("{}", i + 1),
                 position_name(n.tick, self.bar),
-                self.row_name(n.note),
+                self.note_name(n),
                 n.velocity.to_string(),
                 length_name(n.len),
                 format!("{} %", n.chance),
             ];
+            // An off note's row is faint: it plays nothing.
+            let ink = if n.on { t.text } else { t.text_faint };
             let mut x = row.x + 8;
             for ((_, w), text) in LIST_COLS.iter().zip(cells) {
                 cx.text(
@@ -1475,7 +1735,7 @@ impl NoteGrid {
                     t.size_small,
                     Rect::new(x, row.y, *w, row.h),
                     Align::Left,
-                    t.text,
+                    ink,
                     &text,
                 );
                 x += w;
@@ -1500,7 +1760,7 @@ impl NoteGrid {
     }
 
     /// The cells of tracker row `row`, and whether they are faint (an
-    /// empty step).
+    /// empty step, or a note whose step is off).
     fn track_cells(&self, row: &TrackRow) -> ([String; 9], bool) {
         let dot = || "·".to_string();
         let pos = if row.first {
@@ -1531,7 +1791,7 @@ impl NoteGrid {
             .count();
         let cells = [
             pos,
-            self.row_name(n.note),
+            self.note_name(n),
             n.velocity.to_string(),
             length_name(n.len),
             if nudge == 0 {
@@ -1549,14 +1809,28 @@ impl NoteGrid {
             } else {
                 n.cond.to_string()
             },
-            if n.ratchet == 1 {
-                dot()
-            } else {
-                format!("×{}", n.ratchet)
+            match (n.ratchet, n.ramp) {
+                (1, _) => dot(),
+                (r, 0) => format!("×{r}"),
+                (r, ramp) => format!("×{r} {ramp:+}"),
             },
             if locks == 0 { dot() } else { locks_name(locks) },
         ];
-        (cells, false)
+        // An off note's row is faint, as an empty step's: it plays nothing.
+        (cells, !n.on)
+    }
+
+    /// A note's row name, with how it starts when it is joined and "off"
+    /// when its step is off: "C3", "D3 tie", "E3 off".
+    fn note_name(&self, n: &NoteBox) -> String {
+        let mut name = self.row_name(n.note);
+        for word in [n.join.word(), if n.on { "" } else { "off" }] {
+            if !word.is_empty() {
+                name.push(' ');
+                name.push_str(word);
+            }
+        }
+        name
     }
 
     fn paint_tracker(&self, cx: &mut PaintCx, r: Rect) {
@@ -1592,7 +1866,7 @@ impl NoteGrid {
             let picked = row.note.is_some_and(|i| self.notes[i].selected);
             if picked {
                 cx.canvas
-                    .fill_round_rect(rr, 6, t.raised.mix(t.accent, 0.3));
+                    .fill_round_rect(rr, t.round(6), t.raised.mix(t.accent, 0.3));
             } else if row.first && line % beat == 0 {
                 // Beats stand out, as a tracker's every fourth row does.
                 cx.canvas.fill_rect(rr, t.surface);
@@ -1633,11 +1907,13 @@ impl NoteGrid {
     }
 
     /// The notes' indexes in time order (then by note), as the list
-    /// shows them.
-    pub fn list_order(&self) -> Vec<usize> {
-        let mut order: Vec<usize> = (0..self.notes.len()).collect();
-        order.sort_by_key(|&i| (self.notes[i].tick, self.notes[i].note));
-        order
+    /// shows them, worked out once for these notes.
+    pub fn list_order(&self) -> Arc<[usize]> {
+        kept(&self.kept.order, self.stamp(), || {
+            let mut order: Vec<usize> = (0..self.notes.len()).collect();
+            order.sort_by_key(|&i| (self.notes[i].tick, self.notes[i].note));
+            order.into()
+        })
     }
 }
 
@@ -1647,7 +1923,7 @@ impl Widget for NoteGrid {
         cx.titled_panel(r, &self.title, &self.legend);
         let g = self.geo(r);
         match self.lens {
-            Lens::Grid => self.paint_roll(cx, r, &g),
+            Lens::Grid => self.paint_roll(cx, &g),
             Lens::List => self.paint_list(cx, r),
             Lens::Tracker => self.paint_tracker(cx, r),
         }
@@ -1655,7 +1931,7 @@ impl Widget for NoteGrid {
             let lit = (k == 1 && self.lens != Lens::Grid) || (k == 2 && self.tool != Tool::Select);
             let fill = if lit { t.accent } else { t.raised };
             let ink = if lit { t.on_accent } else { t.text };
-            cx.canvas.fill_round_rect(*br, 10, fill);
+            cx.canvas.fill_round_rect(*br, t.round(10), fill);
             cx.text(
                 FontId::Bold,
                 t.size_small,
@@ -1694,16 +1970,17 @@ impl Widget for NoteGrid {
         if !g.vel.is_empty() {
             out.push(Target::drag("velocity", 0, "velocity lane", g.vel).towards(0, -g.vel.h / 3));
         }
-        for i in 0..self.notes.len() {
-            if let Some(nr) = self.note_rect(r, i) {
+        let shown = self.in_view(&g);
+        for &i in &shown {
+            if let Some(nr) = self.note_rect_in(&g, i) {
                 out.push(Target::tap("note", i, format!("note {}", i + 1), nr));
             }
         }
         // An empty place on the roll adds a note: its top left corner,
         // where the sample clips leave room.
         let spot = Rect::new(g.roll.x + 2, g.roll.y + 2, 12, 12);
-        let free = (0..self.notes.len()).all(|i| {
-            self.note_rect(r, i)
+        let free = shown.iter().all(|&i| {
+            self.note_rect_in(&g, i)
                 .is_none_or(|nr| nr.intersect(spot).is_empty())
         });
         if free && !g.roll.is_empty() {
@@ -1712,10 +1989,23 @@ impl Widget for NoteGrid {
         out
     }
 
-    fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+    /// Touches are followed finger by finger: a drag (a note or the
+    /// velocity lane) is its finger's alone, so another finger's moves and
+    /// lift leave it be, and another finger coming down while it drags
+    /// stops it where it was and does nothing else: the drag sends nothing
+    /// when its finger lifts, and the notes stay put.
+    fn touch(&mut self, f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let g = self.geo(r);
+        let others = self.drag.is_some_and(|d| d.finger != f);
         match phase {
+            Touch::Down if others => {
+                self.drag = None;
+                None
+            }
+            Touch::Move | Touch::Up | Touch::Cancel if others => None,
             Touch::Down => {
+                // This finger's own drag that never heard its lift ends.
+                self.drag = None;
                 if let Some(k) = self.button_rects(r).iter().position(|b| b.contains(x, y)) {
                     return Some(EventKind::Tab(k));
                 }
@@ -1743,30 +2033,34 @@ impl Widget for NoteGrid {
                     return order.get(self.first + k - 1).map(|&i| EventKind::Select(i));
                 }
                 if g.vel.contains(x, y) {
+                    // Shown as the finger moves, sent once when it lifts:
+                    // one edit, one UNDO.
                     self.drag = Some(Drag {
+                        finger: f,
                         index: 0,
                         x,
                         y,
                         ticks: 0,
                         notes: 0,
-                        velocity: true,
+                        lane: Some(lane_value(&g, y)),
                     });
-                    let v = f32::from((g.vel.bottom() - 3 - y).clamp(0, g.vel.h - 6) as u16)
-                        / (g.vel.h - 6).max(1) as f32;
-                    return Some(EventKind::Value(v));
+                    return None;
                 }
                 // The topmost note under the finger (drawn last).
-                if let Some(i) = (0..self.notes.len())
+                if let Some(i) = self
+                    .in_view(&g)
+                    .into_iter()
                     .rev()
-                    .find(|&i| self.note_rect(r, i).is_some_and(|nr| nr.contains(x, y)))
+                    .find(|&i| self.note_rect_in(&g, i).is_some_and(|nr| nr.contains(x, y)))
                 {
                     self.drag = Some(Drag {
+                        finger: f,
                         index: i,
                         x,
                         y,
                         ticks: 0,
                         notes: 0,
-                        velocity: false,
+                        lane: None,
                     });
                     return Some(EventKind::Select(i));
                 }
@@ -1786,10 +2080,12 @@ impl Widget for NoteGrid {
             }
             Touch::Move => {
                 let d = self.drag?;
-                if d.velocity {
-                    let v = f32::from((g.vel.bottom() - 3 - y).clamp(0, g.vel.h - 6) as u16)
-                        / (g.vel.h - 6).max(1) as f32;
-                    return Some(EventKind::Value(v));
+                if d.lane.is_some() {
+                    self.drag = Some(Drag {
+                        lane: Some(lane_value(&g, y)),
+                        ..d
+                    });
+                    return None;
                 }
                 let n = self.notes.get(d.index)?;
                 let raw = self.tick_at(&g, x) - self.tick_at(&g, d.x);
@@ -1800,7 +2096,10 @@ impl Widget for NoteGrid {
             }
             Touch::Up => {
                 let d = self.drag.take()?;
-                (!d.velocity && (d.ticks, d.notes) != (0, 0)).then(|| EventKind::Marker {
+                if let Some(v) = d.lane {
+                    return Some(EventKind::Value(v));
+                }
+                ((d.ticks, d.notes) != (0, 0)).then(|| EventKind::Marker {
                     index: d.index,
                     frame: drop_frame(d.ticks, d.notes),
                 })
@@ -2238,21 +2537,7 @@ mod tests {
     /// before.
     #[test]
     fn the_roll_shows_each_notes_pressure() {
-        use mpfree_ui::{Fonts, SoftCanvas, Theme};
-        let paint = |g: &NoteGrid| {
-            let mut c = SoftCanvas::new(R.right(), R.bottom());
-            let theme = Theme::dark();
-            let mut fonts = Fonts::embedded();
-            g.paint(
-                &mut PaintCx {
-                    canvas: &mut c,
-                    theme: &theme,
-                    fonts: &mut fonts,
-                },
-                R,
-            );
-            c
-        };
+        let paint = painted;
         let plain = grid();
         let mut pressed = grid();
         // Note 1 of 2 (240 ticks): pressed fully for its first half, then
@@ -2273,6 +2558,213 @@ mod tests {
         assert_eq!(a.pixel(right, y), b.pixel(right, y), "let go");
         let (x, y) = mid(pressed.note_rect(R, 1).unwrap());
         assert_eq!(a.pixel(x, y), b.pixel(x, y), "the other note");
+    }
+
+    /// The grid painted alone in `R`, in the dark theme.
+    fn painted(g: &NoteGrid) -> mpfree_ui::SoftCanvas {
+        use mpfree_ui::{Fonts, SoftCanvas, Theme};
+        let mut c = SoftCanvas::new(R.right(), R.bottom());
+        let theme = Theme::dark();
+        let mut fonts = Fonts::embedded();
+        g.paint(
+            &mut PaintCx {
+                canvas: &mut c,
+                theme: &theme,
+                fonts: &mut fonts,
+            },
+            R,
+        );
+        c
+    }
+
+    /// Whether `a` and `b` differ anywhere in `r`.
+    fn differ_in(a: &mpfree_ui::SoftCanvas, b: &mpfree_ui::SoftCanvas, r: Rect) -> bool {
+        (r.y..r.bottom()).any(|y| (r.x..r.right()).any(|x| a.pixel(x, y) != b.pixel(x, y)))
+    }
+
+    /// The roll draws each note as it will play: an off note as an outline
+    /// with its inside left as the roll is, a ratchet's hits apart and
+    /// shaded by its ramp, a tie or a slide marked just before its start;
+    /// the list and the tracker say the same in words.
+    #[test]
+    fn the_roll_draws_notes_as_they_will_play() {
+        let mut n = Note::new(960, 480, 52, 64);
+        n.on = false;
+        n.ratchet = 4;
+        n.ramp = 40;
+        n.join = Join::Slide;
+        let b = NoteBox::of(&n, false);
+        assert_eq!(
+            (b.on, b.ratchet, b.ramp, b.join),
+            (false, 4, 40, Join::Slide)
+        );
+        // The second note left out, for comparing.
+        let mut gone = grid();
+        gone.notes.truncate(1);
+        let mut plain = grid();
+        plain.notes[1].selected = false;
+        let nr = plain.note_rect(R, 1).unwrap();
+        let blank = painted(&gone);
+        assert!(
+            differ_in(&blank, &painted(&plain), nr.inset(2)),
+            "an on note is filled"
+        );
+        // Off: only its outline shows.
+        let mut off = plain.clone();
+        off.notes[1].on = false;
+        let shown = painted(&off);
+        assert!(!differ_in(&blank, &shown, nr.inset(2)), "nothing inside");
+        assert!(differ_in(&blank, &shown, nr), "its outline");
+        // A ratchet: four hits ramping down 40, a gap between each.
+        let mut rat = plain.clone();
+        rat.notes[1].ratchet = 4;
+        rat.notes[1].ramp = -40;
+        let hits: Vec<_> = rat.hit_rects(&rat.geo(R), nr, &rat.notes[1]).collect();
+        let vels: Vec<u8> = hits.iter().map(|h| h.1).collect();
+        assert_eq!(vels, vec![64, 51, 37, 24]);
+        assert_eq!(hits[0].0.x, nr.x);
+        assert!(
+            hits.windows(2).all(|w| w[0].0.right() < w[1].0.x),
+            "{hits:?}"
+        );
+        assert!(hits[3].0.right() <= nr.right());
+        let (shown, y) = (painted(&rat), nr.y + nr.h / 2);
+        let gap = hits[0].0.right();
+        assert_eq!(shown.pixel(gap, y), blank.pixel(gap, y), "the gap");
+        let (first, last) = (mid(hits[0].0), mid(hits[3].0));
+        assert_ne!(shown.pixel(first.0, y), shown.pixel(last.0, y), "the ramp");
+        assert_eq!(
+            plain
+                .hit_rects(&plain.geo(R), nr, &plain.notes[1])
+                .collect::<Vec<_>>(),
+            vec![(nr, 64)],
+            "a plain note is one hit"
+        );
+        // A tie or a slide is marked just before the note.
+        let before = Rect::new(nr.x - 8, nr.y, 8, nr.h);
+        let unjoined = painted(&plain);
+        for join in [Join::Tie, Join::Slide] {
+            let mut joined = plain.clone();
+            joined.notes[1].join = join;
+            assert!(differ_in(&unjoined, &painted(&joined), before), "{join:?}");
+        }
+        // At the clip's start the mark stays off the note names.
+        let mut first = plain.clone();
+        first.notes[0].join = Join::Slide;
+        let keys = plain.geo(R).keys;
+        assert!(!differ_in(&unjoined, &painted(&first), keys));
+        // In words: off and joined in the note's name, the ramp beside the
+        // ratchet, an off note's row faint.
+        let mut words = rat.clone();
+        words.notes[1].on = false;
+        words.notes[1].join = Join::Tie;
+        let rows = words.track_rows();
+        let row = rows.iter().find(|r| r.note == Some(1)).unwrap();
+        let (cells, faint) = words.track_cells(row);
+        let name = words.row_name(52);
+        assert_eq!(cells[1], format!("{name} tie off"));
+        assert_eq!(cells[7], "×4 -40");
+        assert!(faint, "an off note's row");
+        let row = rows.iter().find(|r| r.note == Some(0)).unwrap();
+        assert!(!words.track_cells(row).1, "an on note's row");
+    }
+
+    /// Piano roll plan 0C.2: the note index finds the notes near a span
+    /// of ticks, each once and in drawing order, a long note in every bar
+    /// it sounds in and cut at the clip's end; the tracker's rows, the
+    /// list's order and the index are worked out once for a grid's notes
+    /// and again for other notes.
+    #[test]
+    fn the_note_index_and_what_the_grid_keeps() {
+        let bar = 960;
+        let boxes = |notes: &[(Tick, Tick)]| -> Vec<NoteBox> {
+            notes
+                .iter()
+                .map(|&(t, l)| NoteBox::of(&Note::new(t, l, 60, 100), false))
+                .collect()
+        };
+        // Bar 1; bars 1 to 3; bar 3; bar 4, running past the end.
+        let notes = boxes(&[
+            (0, 240),
+            (480, 2 * bar),
+            (2 * bar + 10, 10),
+            (3 * bar, 5 * bar),
+        ]);
+        let ix = NoteIndex::new(&notes, 4 * bar, bar);
+        assert_eq!(ix.near(0, 4 * bar), vec![0, 1, 2, 3]);
+        assert_eq!(ix.near(bar, bar + 1), vec![1], "the long note");
+        assert_eq!(ix.near(2 * bar, 3 * bar), vec![1, 2]);
+        assert_eq!(ix.near(3 * bar, 9 * bar), vec![3], "cut at the end");
+        assert!(ix.near(bar, bar).is_empty());
+        assert!(NoteIndex::new(&[], 4 * bar, bar).near(0, bar).is_empty());
+        // Kept: the same answer while the notes are the same.
+        let g = grid();
+        assert!(Arc::ptr_eq(&g.track_rows(), &g.track_rows()));
+        assert!(Arc::ptr_eq(&g.list_order(), &g.list_order()));
+        assert!(Arc::ptr_eq(&g.index(), &g.index()));
+        let rows = g.track_rows();
+        // Another step: other rows.
+        let mut finer = g.clone();
+        finer.step /= 2;
+        assert!(finer.track_rows().len() > rows.len());
+        // Notes changed in place, then forgotten: worked out again.
+        let mut moved = g.clone();
+        moved.notes[0].tick = 2000;
+        moved.forget();
+        assert_eq!(moved.list_order().to_vec(), vec![1, 0]);
+        assert_eq!(g.list_order().to_vec(), vec![0, 1]);
+        // A grid shown again starts afresh.
+        let mut shown = g.clone();
+        shown.show(moved.clone());
+        assert_eq!(shown.list_order().to_vec(), vec![1, 0]);
+    }
+
+    /// Touches are followed finger by finger: a drag is its own finger's,
+    /// and a second finger coming down stops it with nothing sent.
+    #[test]
+    fn a_drag_is_its_fingers_alone_and_a_second_finger_stops_it() {
+        let mut g = grid();
+        let n1 = g.note_rect(R, 1).unwrap();
+        let (x, y) = mid(n1);
+        let beat = (f64::from(g.geo(R).roll.w) / 4.0).round() as i32;
+        assert_eq!(g.touch(1, Touch::Down, x, y, R), Some(EventKind::Select(1)));
+        // Another finger's moves and lift leave the drag be.
+        assert_eq!(g.touch(2, Touch::Move, x + beat + 3, y, R), None);
+        assert_eq!(g.note_rect(R, 1), Some(n1));
+        assert_eq!(g.touch(1, Touch::Move, x + beat + 3, y, R), None);
+        let moved = g.note_rect(R, 1).unwrap();
+        assert_ne!(moved, n1);
+        assert_eq!(g.touch(2, Touch::Up, x, y, R), None);
+        assert_eq!(g.note_rect(R, 1), Some(moved), "still dragging");
+        // A second finger down: the drag stops where it was, nothing sent,
+        // and that finger does nothing (here, it would add a note).
+        let n0 = g.note_rect(R, 0).unwrap();
+        let empty = (n0.x + n0.w * 3, n0.y + n0.h / 2);
+        assert_eq!(g.touch(2, Touch::Down, empty.0, empty.1, R), None);
+        assert_eq!(g.note_rect(R, 1), Some(n1), "back in place");
+        assert_eq!(g.touch(1, Touch::Move, x + 2 * beat, y, R), None);
+        assert_eq!(g.note_rect(R, 1), Some(n1));
+        assert_eq!(g.touch(1, Touch::Up, x + 2 * beat, y, R), None, "no drop");
+        assert_eq!(g.touch(2, Touch::Up, empty.0, empty.1, R), None);
+        // With every finger up, a tap works again.
+        assert!(matches!(
+            g.touch(3, Touch::Down, empty.0, empty.1, R),
+            Some(EventKind::Cell { row: 50, .. })
+        ));
+        assert_eq!(g.touch(3, Touch::Up, empty.0, empty.1, R), None);
+        // The velocity lane: a second finger stops it, and nothing is sent.
+        let v = g.geo(R).vel;
+        assert_eq!(g.touch(4, Touch::Down, v.x + 10, v.y + 3, R), None);
+        assert!(g.drag.is_some());
+        assert_eq!(g.touch(5, Touch::Down, v.x + 40, v.y + 3, R), None);
+        assert_eq!(g.drag, None);
+        assert_eq!(g.touch(4, Touch::Move, v.x + 10, v.bottom(), R), None);
+        assert_eq!(g.touch(4, Touch::Up, v.x + 10, v.bottom(), R), None);
+        assert_eq!(g.touch(5, Touch::Up, v.x + 40, v.y + 3, R), None);
+        // A finger whose lift was lost starts afresh when it comes down.
+        assert_eq!(g.touch(6, Touch::Down, x, y, R), Some(EventKind::Select(1)));
+        assert!(g.touch(6, Touch::Down, empty.0, empty.1, R).is_some());
+        assert_eq!(g.note_rect(R, 1), Some(n1));
     }
 
     #[test]
@@ -2366,15 +2858,22 @@ mod tests {
     fn the_velocity_lane_and_the_list() {
         let mut g = grid();
         let v = g.geo(R).vel;
-        match g.touch(1, Touch::Down, v.x + 10, v.y + 3, R) {
-            Some(EventKind::Value(x)) => assert!(x > 0.95, "{x}"),
-            other => panic!("{other:?}"),
-        }
-        match g.touch(1, Touch::Move, v.x + 10, v.bottom(), R) {
-            Some(EventKind::Value(x)) => assert_eq!(x, 0.0),
-            other => panic!("{other:?}"),
-        }
-        assert_eq!(g.touch(1, Touch::Up, v.x + 10, v.bottom(), R), None);
+        // A drag of the lane is shown on the picked notes as the finger
+        // moves, and sent once, as the finger lifts: one edit.
+        let painted_before = painted(&g);
+        assert_eq!(g.touch(1, Touch::Down, v.x + 10, v.y + 3, R), None);
+        assert_eq!(g.drag.and_then(|d| d.lane).map(lane_velocity), Some(127));
+        assert_eq!(g.touch(1, Touch::Move, v.x + 10, v.bottom(), R), None);
+        assert_eq!(g.drag.and_then(|d| d.lane), Some(0.0));
+        assert!(
+            differ_in(&painted_before, &painted(&g), v),
+            "the picked note's bar follows the finger"
+        );
+        assert_eq!(
+            g.touch(1, Touch::Up, v.x + 10, v.bottom(), R),
+            Some(EventKind::Value(0.0))
+        );
+        assert_eq!(g.drag, None);
         g.lens = Lens::List;
         // Row 1 is the first note in time order.
         let row = g.list_rect(R, 2).unwrap();

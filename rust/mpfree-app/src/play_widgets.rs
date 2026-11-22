@@ -18,9 +18,11 @@
 use crate::play_page::{SynthPads, LAYOUT_SWITCH, LOCKED};
 use mpfree_arp::scale::pads::PadLayout;
 use mpfree_seq::Cond;
-use mpfree_ui::draw::{self, card, card_head, dot, pill, speaker, KNOB};
+use mpfree_ui::draw::{self, card, card_head, dot, pill, speaker_on};
 use mpfree_ui::widgets::{Pad, PadGrid};
-use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Tone, Touch, Widget};
+use mpfree_ui::{
+    Align, Color, EventKind, FontId, PaintCx, Rect, Role, Target, Tone, Touch, Widget,
+};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 
@@ -266,9 +268,9 @@ pub fn paint_pill(cx: &mut PaintCx, p: Rect, pill: ArmPill) {
             t.bad.mix(t.surface, 0.85),
             Some((2, t.bad)),
             Some(t.bad),
-            t.bad,
+            t.readable(t.bad, t.bad.mix(t.surface, 0.85)),
         ),
-        ArmPill::Rec => (t.bad, None, Some(t.bg), t.bg),
+        ArmPill::Rec => (t.bad, None, Some(t.ink_on(t.bad)), t.ink_on(t.bad)),
     };
     cx.canvas.fill_round_rect(p, rad, fill);
     if let Some((w, c)) = line {
@@ -302,12 +304,15 @@ pub fn paint_rec_chip(cx: &mut PaintCx, r: Rect, c: &RecChip) {
     let t = cx.theme.clone();
     let (fill, head_ink, ink) = match c.state {
         RecState::Armed => (t.raised, t.text_dim, t.text),
-        RecState::Ready => (t.bad.mix(t.surface, 0.82), t.bad, t.text),
-        RecState::Recording => (t.bad, t.bg, t.bg),
+        RecState::Ready => {
+            let fill = t.bad.mix(t.surface, 0.82);
+            (fill, t.readable(t.bad, fill), t.text)
+        }
+        RecState::Recording => (t.bad, t.ink_on(t.bad), t.ink_on(t.bad)),
     };
-    cx.canvas.fill_round_rect(r, 10, fill);
+    cx.canvas.fill_round_rect(r, t.round(10), fill);
     if c.state == RecState::Ready {
-        cx.canvas.stroke_round_rect(r, 10, 2, t.bad);
+        cx.canvas.stroke_round_rect(r, t.round(10), 2, t.bad);
     }
     let mut x = r.x + 12;
     if c.state == RecState::Armed {
@@ -338,7 +343,7 @@ pub fn paint_rec_chip(cx: &mut PaintCx, r: Rect, c: &RecChip) {
 /// over the track's dot and the text.
 fn paint_pads_play(cx: &mut PaintCx, r: Rect, p: &PadsPlay) {
     let t = cx.theme.clone();
-    cx.canvas.fill_round_rect(r, 10, t.raised);
+    cx.canvas.fill_round_rect(r, t.round(10), t.raised);
     let half = r.h / 2;
     cx.text(
         FontId::Bold,
@@ -643,19 +648,20 @@ impl Widget for PlayTransport {
             }
         }
         if !segs.is_empty() {
-            cx.canvas.fill_round_rect(b, 12, t.bg.mix(t.surface, 0.3));
+            cx.canvas
+                .fill_round_rect(b, t.round(12), t.bg.mix(t.surface, 0.3));
         }
         for (i, (sr, name)) in segs.iter().zip(self.look.views).enumerate() {
             let on = i == self.look.view;
             if on {
-                cx.canvas.fill_round_rect(*sr, 10, t.accent);
+                cx.canvas.fill_round_rect(*sr, t.round(10), t.accent);
             }
             cx.text(
                 FontId::Bold,
                 15.0,
                 *sr,
                 Align::Center,
-                if on { t.bg } else { t.text_dim },
+                if on { t.ink_on(t.accent) } else { t.text_dim },
                 name,
             );
         }
@@ -847,11 +853,19 @@ impl MiniPads {
         };
         let fill = t.raised.mix(c, 0.28 + 0.72 * lit);
         if lit > 0.0 {
-            cx.canvas
-                .stroke_round_rect(cr.inset(-3), 10, 2, c.with_alpha((180.0 * lit) as u8));
+            cx.canvas.stroke_round_rect(
+                cr.inset(-3),
+                t.round(10),
+                2,
+                c.with_alpha((180.0 * lit) as u8),
+            );
         }
         cx.canvas.fill_round_rect(cr, 7, fill);
-        let ink = if lit > 0.45 { t.bg } else { t.text };
+        let ink = if lit > 0.45 {
+            t.readable(t.role(Role::TextInverse), fill)
+        } else {
+            t.readable(t.text, fill)
+        };
         let ir = cr.inset_xy(7, 0);
         if h >= 34 {
             let (a, b) = ir.take_top(h / 2);
@@ -876,7 +890,8 @@ impl MiniPads {
         }
         // Its hit waits for the launch line: outlined as a cued clip is.
         if self.waiting & (1 << i) != 0 {
-            cx.canvas.stroke_round_rect(cr.inset(-3), 10, 2, t.warn);
+            cx.canvas
+                .stroke_round_rect(cr.inset(-3), t.round(10), 2, t.warn);
         }
     }
 }
@@ -937,7 +952,7 @@ impl Widget for MiniPads {
                             .fill_round_rect(half.inset(2), (half.h - 4) / 2, t.accent);
                     }
                     let ink = if lit {
-                        t.bg
+                        t.ink_on(t.accent)
                     } else if i == 1 && !s.scale {
                         t.text_faint
                     } else {
@@ -2149,7 +2164,7 @@ impl StepGrid {
             // Fold: lit while on.
             let face = Rect::new(hd.fold.x + 4, mid - 13, hd.fold.w - 8, 26);
             let (fill, ink) = if p.fold {
-                (t.accent, t.bg)
+                (t.accent, t.ink_on(t.accent))
             } else {
                 (t.raised, t.text)
             };
@@ -2193,7 +2208,7 @@ impl StepGrid {
         let face = |b: Rect| Rect::new(b.x, mid - 14, b.w, 28);
         // The track: a dot in its colour, its name over "Track 1".
         let tr = face(l.track);
-        cx.canvas.fill_round_rect(tr, 8, t.raised);
+        cx.canvas.fill_round_rect(tr, t.round(8), t.raised);
         let ink = t.button_ink(b.switch);
         cx.text(
             FontId::Bold,
@@ -2226,11 +2241,11 @@ impl StepGrid {
             let f = face(*br);
             let lit = b.bank == Some(i);
             let (fill, ink) = if lit {
-                (t.accent, t.bg)
+                (t.accent, t.ink_on(t.accent))
             } else {
                 (t.raised, t.button_ink(b.bank.is_some()))
             };
-            cx.canvas.fill_round_rect(f, 8, fill);
+            cx.canvas.fill_round_rect(f, t.round(8), fill);
             let letter = ((b'A' + i as u8) as char).to_string();
             cx.text(FontId::Bold, 14.0, f, Align::Center, ink, &letter);
         }
@@ -2238,7 +2253,7 @@ impl StepGrid {
         let (prev, next, _, _) = self.usable();
         for (br, label, usable) in [(l.prev, "‹", prev), (l.next, "›", next)] {
             let f = face(br).inset_xy(3, 0);
-            cx.canvas.fill_round_rect(f, 8, t.raised);
+            cx.canvas.fill_round_rect(f, t.round(8), t.raised);
             cx.text(
                 FontId::Bold,
                 16.0,
@@ -2266,11 +2281,11 @@ impl StepGrid {
         // Follow, lit while on.
         let f = face(l.follow);
         let (fill, ink) = if b.follow {
-            (t.accent, t.bg)
+            (t.accent, t.ink_on(t.accent))
         } else {
             (t.raised, t.text)
         };
-        cx.canvas.fill_round_rect(f, 8, fill);
+        cx.canvas.fill_round_rect(f, t.round(8), fill);
         cx.text(FontId::Bold, 13.0, f, Align::Center, ink, "Follow");
     }
 
@@ -2339,7 +2354,7 @@ fn paint_cell(
     let tint = |a: f32| {
         let f = t.raised.mix(c, if muted { a * 0.4 } else { a });
         if lit {
-            f.mix(Color::rgb(0xFFFFFF), 0.35)
+            f.mix(t.role(Role::Highlight), 0.35)
         } else {
             f
         }
@@ -2356,7 +2371,7 @@ fn paint_cell(
         let ink = if muted {
             t.raised.mix(c, 0.5)
         } else {
-            c.mix(t.text, 0.15)
+            t.readable(c.mix(t.text, 0.15), base)
         };
         cx.canvas.stroke_round_rect(sr, 5, 2, ink);
         cx.text(FontId::Bold, 12.0, sr, Align::Center, ink, "off");
@@ -2404,9 +2419,12 @@ fn paint_cell(
             2.0,
             5.0,
         );
-        cx.canvas.blend_shape(&sh, c.mix(Color::rgb(0xFFFFFF), 0.3));
+        cx.canvas
+            .blend_shape(&sh, c.mix(t.role(Role::Highlight), 0.3));
     }
-    let ink = t.bg;
+    // The chips' white, and the ink on it (and on the ratchet's marks).
+    let chip_fill = t.role(Role::Highlight).with_alpha(220);
+    let ink = t.ink_on(t.role(Role::Highlight));
     // The top left: the condition, else the chance, then the ticks.
     let label = if m.cond != Cond::Always {
         m.cond.to_string()
@@ -2419,8 +2437,7 @@ fn paint_cell(
     if !label.is_empty() {
         let w = (label.len() as i32 * 7 + 6).min(sr.w - 8);
         let chip = Rect::new(x, sr.y + 3, w, 14);
-        cx.canvas
-            .fill_round_rect(chip, 3, Color::rgb(0xFFFFFF).with_alpha(220));
+        cx.canvas.fill_round_rect(chip, 3, chip_fill);
         cx.text(FontId::Bold, 10.0, chip, Align::Center, ink, &label);
         x += w + 3;
     }
@@ -2468,17 +2485,18 @@ fn paint_lock_lane(
 ) {
     let t = cx.theme.clone();
     let y = g.row_y(k);
-    let ink = LOCKED.mix(Color::rgb(0xFFFFFF), 0.45);
-    // Locks that don't play now (F1): the lane's name is faint too.
+    let lane_ink = t.readable(LOCKED.mix(t.role(Role::Highlight), 0.45), t.surface);
+    // Locks that don't play now (F1): the lane's name is faint too, its
+    // outline as any lock lane's (fainter, it would not show).
     let ink = if lk.silent.is_some() {
-        ink.mix(t.surface, 0.45)
+        lane_ink.mix(t.surface, 0.45)
     } else {
-        ink
+        lane_ink
     };
     let mb = g.mute_button(k);
     let nr = Rect::new(g.names.x, y, mb.x - 4 - g.names.x, g.rh);
-    cx.canvas.fill_round_rect(nr, 8, t.surface);
-    dashed_outline(cx, nr, ink.with_alpha(130));
+    cx.canvas.fill_round_rect(nr, t.round(8), t.surface);
+    dashed_outline(cx, nr, lane_ink.with_alpha(130));
     // The hook from the sound above.
     cx.canvas
         .fill_rect(Rect::new(nr.x + 9, nr.y + 7, 2, 10), ink);
@@ -2491,12 +2509,13 @@ fn paint_lock_lane(
         // The mod matrix moves its control (an LFO): a pink ~ after it.
         let w = cx.measure(FontId::Bold, 13.0, &lane.name).min(top.w - 16);
         let mark = Rect::new(top.x + w + 5, top.y, 16, top.h);
-        cx.text(FontId::Bold, 16.0, mark, Align::Left, MOVED, "~");
+        let moved = t.readable(MOVED, t.surface);
+        cx.text(FontId::Bold, 16.0, mark, Align::Left, moved, "~");
     }
     cx.text(FontId::Sans, 10.0, bottom, Align::Left, t.text_dim, &lk.sub);
     // The ×: the lane comes off, its locks too.
-    cx.canvas.fill_round_rect(mb, 6, t.raised);
-    cx.canvas.stroke_round_rect(mb, 6, 1, t.outline);
+    cx.canvas.fill_round_rect(mb, t.round(6), t.raised);
+    cx.canvas.stroke_round_rect(mb, t.round(6), 1, t.outline);
     cx.text(FontId::Bold, 16.0, mb, Align::Center, t.text_dim, "×");
     for s in 0..steps.min(16) {
         let sr = g.cell(k, s);
@@ -2506,7 +2525,7 @@ fn paint_lock_lane(
             t.raised.mix(t.surface, 0.45)
         };
         let base = if play == Some(s) {
-            base.mix(Color::rgb(0xFFFFFF), 0.12)
+            base.mix(t.role(Role::Highlight), 0.12)
         } else {
             base
         };
@@ -2535,7 +2554,7 @@ fn paint_lock_lane(
             10.0,
             Rect::new(sr.x, sr.y + 2, sr.w, 13),
             Align::Center,
-            Color::rgb(0xFFFFFF),
+            t.readable(t.role(Role::Highlight), base),
             shown,
         );
     }
@@ -2565,7 +2584,9 @@ fn paint_value_lane(
     let mb = g.mute_button(k);
     let nr = Rect::new(g.names.x, y, mb.x - 4 - g.names.x, g.rh);
     cx.canvas.fill_round_rect(nr, 8, t.surface);
-    dashed_outline(cx, nr, t.outline);
+    // In the hook's ink, as a lock lane's is in its own: the theme's
+    // outline is too faint for a dashed line (under 3:1 in Console).
+    dashed_outline(cx, nr, t.text_dim.with_alpha(170));
     // The hook from the sound above.
     cx.canvas
         .fill_rect(Rect::new(nr.x + 9, nr.y + 7, 2, 10), t.text_dim);
@@ -2604,7 +2625,7 @@ fn paint_rows(cx: &mut PaintCx, open: &LaneRows, rg: &RowsGeom) {
     cx.canvas.fill_round_rect(
         rg.panel.inset(-3),
         t.radius + 3,
-        Color::rgb(0).with_alpha(90),
+        t.role(Role::Shadow).with_alpha(90),
     );
     cx.canvas.fill_round_rect(rg.panel, t.radius, t.surface);
     cx.canvas
@@ -2664,7 +2685,7 @@ fn paint_rows(cx: &mut PaintCx, open: &LaneRows, rg: &RowsGeom) {
         );
     }
     let ink = if open.can_add { t.text } else { t.text_faint };
-    cx.canvas.fill_round_rect(rg.add, 9, t.raised);
+    cx.canvas.fill_round_rect(rg.add, t.round(9), t.raised);
     cx.text(
         FontId::Bold,
         t.size_small,
@@ -2765,7 +2786,7 @@ impl Widget for StepGrid {
             let h = g.row_y(lanes.len().max(1) - 1) + g.rh - g.grid.y;
             cx.canvas.fill_round_rect(
                 Rect::new(px - 3, g.grid.y - 3, g.cw + 6, h + 6),
-                6,
+                t.round(6),
                 t.accent.with_alpha(40),
             );
         }
@@ -2799,7 +2820,7 @@ impl Widget for StepGrid {
                 } else {
                     t.raised
                 };
-                cx.canvas.fill_round_rect(key, 6, fill);
+                cx.canvas.fill_round_rect(key, t.round(6), fill);
                 // The tag only on a root's key, so a chord's name has the
                 // whole key elsewhere.
                 let inner = key.inset_xy(12, 0);
@@ -2865,13 +2886,15 @@ impl Widget for StepGrid {
                 cx.text(FontId::Sans, 14.0, name_r, Align::Left, ink, &lane.name);
                 // The mute button: a box round the speaker, red-tinted while
                 // muted.
-                if lane.muted {
-                    cx.canvas.fill_round_rect(mb, 6, t.raised.mix(t.bad, 0.3));
+                let mute_fill = if lane.muted {
+                    t.raised.mix(t.bad, 0.3)
                 } else {
-                    cx.canvas.fill_round_rect(mb, 6, t.raised);
-                }
-                cx.canvas.stroke_round_rect(mb, 6, 1, t.outline);
-                speaker(cx, mb.x + mb.w / 2 + 1, mb.y + mb.h / 2, t.text, lane.muted);
+                    t.raised
+                };
+                cx.canvas.fill_round_rect(mb, t.round(6), mute_fill);
+                cx.canvas.stroke_round_rect(mb, t.round(6), 1, t.outline);
+                let (sx, sy) = (mb.x + mb.w / 2 + 1, mb.y + mb.h / 2);
+                speaker_on(cx, sx, sy, t.text, lane.muted, mute_fill);
             }
             for s in 0..16 {
                 let sr = g.cell(k, s);
@@ -2890,7 +2913,7 @@ impl Widget for StepGrid {
                 // The whole lane, names to its last step, inside the gap.
                 let right = g.col_x(15) + g.cw;
                 let lane_r = Rect::new(g.names.x - 2, y - 2, right + 2 - (g.names.x - 2), g.rh + 4);
-                cx.canvas.stroke_round_rect(lane_r, 8, 2, t.accent);
+                cx.canvas.stroke_round_rect(lane_r, t.round(8), 2, t.accent);
             }
         }
         // Play's rows, or the Steps with lock lanes: a rail at the right,
@@ -3607,14 +3630,18 @@ impl Widget for StepInspector {
             } else {
                 t.raised
             };
-            cx.canvas.fill_round_rect(*b, 8, fill);
-            let ink = if on { t.bg } else { t.button_ink(usable[k]) };
+            cx.canvas.fill_round_rect(*b, t.round(8), fill);
+            let ink = if on {
+                t.ink_on(fill)
+            } else {
+                t.button_ink(usable[k])
+            };
             let name = ["Step", "Trig", "Sound"][k];
             cx.text(FontId::Bold, 15.0, *b, Align::Center, ink, name);
         }
         // × for a step picked: picks it off (a step held goes when let go).
         if !i.sound {
-            cx.canvas.fill_round_rect(g.close, 8, t.raised);
+            cx.canvas.fill_round_rect(g.close, t.round(8), t.raised);
             cx.text(FontId::Bold, 18.0, g.close, Align::Center, t.text_dim, "×");
         }
         // The settings: name over value, the ones the Q-Links turn outlined.
@@ -3627,7 +3654,7 @@ impl Widget for StepInspector {
                 g.chips[0].h,
             );
             cx.canvas
-                .fill_round_rect(r0, 8, t.raised.mix(t.surface, 0.5));
+                .fill_round_rect(r0, t.round(8), t.raised.mix(t.surface, 0.5));
             cx.text(
                 FontId::Sans,
                 15.0,
@@ -3639,9 +3666,9 @@ impl Widget for StepInspector {
         }
         for (k, (name, value)) in i.chips.iter().enumerate().take(g.chips.len()) {
             let c = g.chips[k];
-            cx.canvas.fill_round_rect(c, 8, t.raised);
+            cx.canvas.fill_round_rect(c, t.round(8), t.raised);
             if i.turned[k] {
-                cx.canvas.stroke_round_rect(c, 8, 2, t.accent);
+                cx.canvas.stroke_round_rect(c, t.round(8), 2, t.accent);
             }
             let (top, bottom) = c.inset_xy(12, 6).take_top(20);
             cx.text(FontId::Sans, 13.0, top, Align::Left, t.text_dim, name);
@@ -3665,8 +3692,12 @@ impl Widget for StepInspector {
                     (true, _) => t.warn,
                     _ => t.raised,
                 };
-                cx.canvas.fill_round_rect(*b, 8, fill);
-                let ink = if lit { t.bg } else { t.button_ink(true) };
+                cx.canvas.fill_round_rect(*b, t.round(8), fill);
+                let ink = if lit {
+                    t.ink_on(fill)
+                } else {
+                    t.button_ink(true)
+                };
                 cx.text(FontId::Bold, 15.0, *b, Align::Center, ink, ["On", "Off"][k]);
             }
         }
@@ -3689,7 +3720,7 @@ impl Widget for StepInspector {
                 lr.x + 18,
                 lr.y + lr.h / 2,
                 5,
-                LOCKED.mix(Color::rgb(0xFFFFFF), 0.4),
+                LOCKED.mix(t.role(Role::Highlight), 0.4),
             );
             let text_r = Rect::new(lr.x + 30, lr.y, lr.w - 30 - 34, lr.h);
             let nw = cx.text(FontId::Bold, 15.0, text_r, Align::Left, t.text, name);
@@ -3735,8 +3766,12 @@ impl Widget for StepInspector {
             (g.clear, "Clear", false),
         ] {
             cx.canvas
-                .fill_round_rect(b, 8, if on { t.accent } else { t.raised });
-            let ink = if on { t.bg } else { t.button_ink(i.one) };
+                .fill_round_rect(b, t.round(8), if on { t.accent } else { t.raised });
+            let ink = if on {
+                t.ink_on(t.accent)
+            } else {
+                t.button_ink(i.one)
+            };
             cx.text(FontId::Bold, 15.0, b, Align::Center, ink, label);
         }
     }
@@ -3891,15 +3926,15 @@ impl Widget for Throws {
             if th.on {
                 cx.canvas
                     .stroke_round_rect(cr.inset(-3), 13, 2, th.color.with_alpha(170));
-                cx.canvas.fill_round_rect(*cr, 10, th.color);
+                cx.canvas.fill_round_rect(*cr, t.round(10), th.color);
             } else {
-                cx.canvas.fill_round_rect(*cr, 10, t.raised);
+                cx.canvas.fill_round_rect(*cr, t.round(10), t.raised);
                 cx.canvas
                     .fill_round_rect(Rect::new(cr.x + 10, cr.y + 9, 18, 4), 2, th.color);
             }
-            let ink = if th.on { t.bg } else { t.text };
+            let ink = if th.on { t.ink_on(th.color) } else { t.text };
             let sub_ink = if th.on {
-                t.bg.with_alpha(170)
+                t.ink_on(th.color).with_alpha(170)
             } else {
                 t.text_dim
             };
@@ -4071,7 +4106,8 @@ impl Widget for XyPad {
                 .fill_rect(Rect::new(cx0 - 4 + k, cy0 + k, 9 - 2 * k, 1), t.text_dim);
         }
         let (axis, pad) = body.take_bottom(18);
-        cx.canvas.fill_round_rect(pad, 10, t.bg.mix(t.surface, 0.4));
+        cx.canvas
+            .fill_round_rect(pad, t.round(10), t.bg.mix(t.surface, 0.4));
         for k in 1..4 {
             let x = pad.x + pad.w * k / 4;
             let y = pad.y + pad.h * k / 4;
@@ -4086,7 +4122,7 @@ impl Widget for XyPad {
                 pad.y + ((1.0 - fy.clamp(0.0, 1.0)) * pad.h as f32) as i32,
             )
         };
-        let c = KNOB[0];
+        let c = t.qlink(0);
         let n = self.trail.len();
         for (k, &(tx, ty)) in self.trail.iter().enumerate() {
             let f = (k + 1) as f32 / (n + 1) as f32;
@@ -4409,7 +4445,8 @@ impl YourTiming {
     /// How the offsets spread, 30 ms early to 30 ms late, in `hist`.
     fn paint_spread(&self, cx: &mut PaintCx, hist: Rect, strip: bool) {
         let t = cx.theme.clone();
-        cx.canvas.fill_round_rect(hist, 8, t.bg.mix(t.surface, 0.4));
+        cx.canvas
+            .fill_round_rect(hist, t.round(8), t.bg.mix(t.surface, 0.4));
         let hb = if strip {
             hist.inset_xy(10, 5)
         } else {
@@ -4522,7 +4559,7 @@ mod tests {
         Lane {
             pad,
             name: format!("Pad {}", pad + 1),
-            color: KNOB[0],
+            color: draw::BLUE,
             muted: false,
             steps: steps.to_vec(),
             marks: Vec::new(),
@@ -4680,7 +4717,7 @@ mod tests {
             bank: Some(BankHead {
                 track: "Drums".into(),
                 sub: "Track 1 · armed".into(),
-                color: KNOB[0],
+                color: draw::BLUE,
                 switch: true,
                 bank: Some(0),
                 follow: false,
@@ -4998,7 +5035,7 @@ mod tests {
                 .map(|i| Throw {
                     name: format!("T{i}"),
                     sub: String::new(),
-                    color: KNOB[0],
+                    color: draw::BLUE,
                     on: false,
                 })
                 .collect(),
