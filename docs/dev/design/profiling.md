@@ -269,11 +269,16 @@ with `--quick`) at 128 frames and 44.1 kHz:
   31.4 MB (512,000 notes, a copy of its clip in every block); a tap 224 ms
   until it plays; saved and opened 8.1 ms. Callgrind: 3.52 billion
   instructions to compile and swap, 3.52 billion a tap, 152 million to save
-  and open. Nearly all of the compile is the view's stamp, which hashes the
-  text of every note (`stamp_of`, `debug_hash`): about 6,800 instructions a
-  note. Phase 2.3 keeps one compiled copy a clip, and so divides the
-  compile and the view's memory by the blocks a clip plays in. Their counts
-  go into `instructions.txt` from CI's first run, as the step cases' did.
+  and open. Nearly all of the compile was the view's stamp, which hashed
+  the text of every note: about 6,800 instructions a note. Phase 2.3's
+  first step hashes each note, lock and lane word by word instead
+  (`note_hash`, `lock_hash`, `lane_hash`), with every field named so a new
+  one can't be left out: compiled and swapped 5.1 ms, a tap 5.0 ms until it
+  plays (desktop means), 74 million instructions each, 47 times fewer. The
+  view still holds 31.4 MB. Phase 2.3 then keeps one compiled copy a clip,
+  and so divides what is left of the compile and the view's memory by the
+  blocks a clip plays in. Their counts go into `instructions.txt` from CI's
+  first run, as the step cases' did.
 - **looper:** 60 s of looper memory, recording a 2-bar first pass from the
   input, then overdubbing layer after layer with an undo every 30 s.
 - **mix:** the mixer (from the FX thread) idle, and routing 12 tracks and 8

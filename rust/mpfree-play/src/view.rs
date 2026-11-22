@@ -277,7 +277,7 @@ impl ClipView {
         let v = self.note_view(n);
         let i = self.notes.partition_point(|x| x.local <= v.local);
         self.notes.insert(i, v);
-        self.stamp = self.stamp.wrapping_add(debug_hash(&v));
+        self.stamp = self.stamp.wrapping_add(note_hash(&v));
         true
     }
 
@@ -286,7 +286,7 @@ impl ClipView {
         match self.notes.iter().position(|x| x.src == *n) {
             Some(i) => {
                 let v = self.notes.remove(i);
-                self.stamp = self.stamp.wrapping_sub(debug_hash(&v));
+                self.stamp = self.stamp.wrapping_sub(note_hash(&v));
                 true
             }
             None => false,
@@ -306,8 +306,8 @@ impl ClipView {
                     let was = std::mem::replace(&mut self.locks[i], v);
                     self.stamp = self
                         .stamp
-                        .wrapping_sub(debug_hash(&was))
-                        .wrapping_add(debug_hash(&v));
+                        .wrapping_sub(lock_hash(&was))
+                        .wrapping_add(lock_hash(&v));
                     true
                 }
                 _ => false,
@@ -318,7 +318,7 @@ impl ClipView {
         }
         let i = self.locks.partition_point(|x| x.local <= v.local);
         self.locks.insert(i, v);
-        self.stamp = self.stamp.wrapping_add(debug_hash(&v));
+        self.stamp = self.stamp.wrapping_add(lock_hash(&v));
         true
     }
 
@@ -327,7 +327,7 @@ impl ClipView {
         match self.locks.iter().position(|x| x.src == *l) {
             Some(i) => {
                 let v = self.locks.remove(i);
-                self.stamp = self.stamp.wrapping_sub(debug_hash(&v));
+                self.stamp = self.stamp.wrapping_sub(lock_hash(&v));
                 true
             }
             None => false,
@@ -1287,9 +1287,10 @@ pub(crate) fn view_of(
     view
 }
 
-/// FNV-1a, fed text (`write!`) or whole words, finished with a mix so
-/// that the sums in [`ClipView::stamp`] spread over every bit. It never
-/// allocates, so the audio thread keeps a stamp up to date as it records.
+/// FNV-1a over whole words, finished with a mix so that the sums in
+/// [`ClipView::stamp`] spread over every bit. It never allocates or
+/// formats, so the audio thread keeps a stamp up to date as it records
+/// at a few dozen instructions a note.
 struct Fnv(u64);
 
 impl Fnv {
@@ -1310,19 +1311,118 @@ impl Fnv {
     }
 }
 
-impl std::fmt::Write for Fnv {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        for b in s.bytes() {
-            self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+/// For the types that derive `Hash` ([`Cond`](mpfree_seq::Cond),
+/// [`Touch`], [`Join`](mpfree_seq::Join), [`RelAddr`], [`Direction`],
+/// [`Target`]): each number they hand over is one word.
+impl std::hash::Hasher for Fnv {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.word(u64::from(b));
         }
-        Ok(())
+    }
+    fn write_u8(&mut self, i: u8) {
+        self.word(u64::from(i));
+    }
+    fn write_u16(&mut self, i: u16) {
+        self.word(u64::from(i));
+    }
+    fn write_u32(&mut self, i: u32) {
+        self.word(u64::from(i));
+    }
+    fn write_u64(&mut self, i: u64) {
+        self.word(i);
+    }
+    fn write_usize(&mut self, i: usize) {
+        self.word(i as u64);
+    }
+    fn write_i8(&mut self, i: i8) {
+        self.word(i as u64);
+    }
+    fn write_i16(&mut self, i: i16) {
+        self.word(i as u64);
+    }
+    fn write_i32(&mut self, i: i32) {
+        self.word(i as u64);
+    }
+    fn write_i64(&mut self, i: i64) {
+        self.word(i as u64);
+    }
+    fn write_isize(&mut self, i: isize) {
+        self.word(i as u64);
     }
 }
 
-fn debug_hash(v: &impl std::fmt::Debug) -> u64 {
-    use std::fmt::Write;
+/// A compiled note's share of a stamp. Every field is named, so a field
+/// added to [`Note`] or [`NoteView`] doesn't build until it is hashed
+/// here (or said not to change what plays).
+fn note_hash(v: &NoteView) -> u64 {
+    use std::hash::Hash;
+    let NoteView {
+        local,
+        len,
+        note,
+        velocity,
+        src,
+    } = *v;
+    let Note {
+        tick,
+        len: ticks,
+        note: src_note,
+        velocity: src_velocity,
+        chance,
+        cond,
+        ratchet,
+        touch,
+        on,
+        ramp,
+        join,
+    } = src;
     let mut h = Fnv::new();
-    let _ = write!(h, "{v:?}");
+    h.word(local.to_bits());
+    h.word(len.to_bits());
+    h.word(tick as u64);
+    h.word(ticks as u64);
+    h.word(
+        u64::from(note)
+            | u64::from(velocity) << 8
+            | u64::from(src_note) << 16
+            | u64::from(src_velocity) << 24
+            | u64::from(chance) << 32
+            | u64::from(ratchet) << 40
+            | u64::from(ramp as u8) << 48
+            | u64::from(on) << 56,
+    );
+    cond.hash(&mut h);
+    touch.hash(&mut h);
+    join.hash(&mut h);
+    h.done()
+}
+
+/// A compiled lock's share of a stamp, every field named as for notes.
+fn lock_hash(v: &LockView) -> u64 {
+    use std::hash::Hash;
+    let LockView {
+        local,
+        addr,
+        value,
+        src,
+    } = *v;
+    let Lock {
+        tick,
+        sound,
+        addr: src_addr,
+        value: src_value,
+    } = src;
+    let mut h = Fnv::new();
+    h.word(local.to_bits());
+    h.word(u64::from(value.to_bits()) | u64::from(src_value.to_bits()) << 32);
+    h.word(tick as u64);
+    h.word(sound.map_or(0, |s| 0x100 | u64::from(s)));
+    addr.hash(&mut h);
+    src_addr.hash(&mut h);
     h.done()
 }
 
@@ -1338,9 +1438,17 @@ fn touch_hash(i: usize, p: TouchPoint) -> u64 {
 /// A lane's share of a stamp. Word by word: a lane can hold thousands of
 /// points and the audio thread hashes one after each recorded gesture.
 fn lane_hash(l: &mpfree_seq::mpfree_moves::Lane) -> u64 {
-    use std::fmt::Write;
+    use std::hash::Hash;
+    let Map {
+        min,
+        max,
+        log,
+        steps,
+    } = l.map;
     let mut h = Fnv::new();
-    let _ = write!(h, "{:?}|{:?}|", l.target, l.map);
+    l.target.hash(&mut h);
+    h.word(u64::from(min.to_bits()) | u64::from(max.to_bits()) << 32);
+    h.word(u64::from(log) | (steps as u64) << 8);
     for p in &l.points {
         h.word(u64::from(p.tick) << 32 | u64::from(p.u.to_bits()));
         h.word(p.kind as u64);
@@ -1351,26 +1459,51 @@ fn lane_hash(l: &mpfree_seq::mpfree_moves::Lane) -> u64 {
 /// [`ClipView::stamp`] worked out whole: a hash of the clip's settings
 /// plus the sum of a hash per note, lock, pressure point and moves lane.
 /// A sum, so a recorded note or lock changes it by its own share alone
-/// (the same as a compile of the clip with it would give).
+/// (the same as a compile of the clip with it would give). Every field
+/// is named, so a new one has to say whether it is in the stamp.
 fn stamp_of(v: &ClipView) -> u64 {
-    let head = debug_hash(&(
-        v.length,
-        v.speed,
-        v.quantise,
-        v.song_len,
-        v.swing,
-        v.direction,
-        v.steps,
-    ));
-    let notes = v.notes.iter().map(debug_hash);
-    let locks = v.locks.iter().map(debug_hash);
-    let touch = v.touch.iter().enumerate().map(|(i, p)| touch_hash(i, *p));
-    let lanes = v.moves.lanes().iter().map(lane_hash);
+    use std::hash::Hash;
+    let ClipView {
+        // Where it plays, not what.
+        slot: _,
+        origin: _,
+        start: _,
+        length,
+        speed: Speed { num, den },
+        quantise,
+        song_len,
+        swing,
+        notes,
+        locks,
+        moves,
+        touch,
+        stamp: _,
+        // Outside gear's alone.
+        program: _,
+        direction,
+        steps,
+    } = v;
+    let mut h = Fnv::new();
+    h.word(*length as u64);
+    h.word(u64::from(*num) | u64::from(*den) << 8);
+    h.word(quantise.map_or(0, |Quantise { grid, strength }| {
+        1 << 48 | u64::from(strength) << 32 | u64::from(grid)
+    }));
+    h.word(song_len.to_bits());
+    h.word(swing.map_or(0, |Swing { grid, amount }| {
+        1 << 48 | u64::from(amount) << 32 | u64::from(grid)
+    }));
+    direction.hash(&mut h);
+    h.word(u64::from(*steps));
+    let notes = notes.iter().map(note_hash);
+    let locks = locks.iter().map(lock_hash);
+    let touch = touch.iter().enumerate().map(|(i, p)| touch_hash(i, *p));
+    let lanes = moves.lanes().iter().map(lane_hash);
     notes
         .chain(locks)
         .chain(touch)
         .chain(lanes)
-        .fold(head, u64::wrapping_add)
+        .fold(h.done(), u64::wrapping_add)
 }
 
 /// What a track plays now ([`crate::Player::now_playing`]), for a host
@@ -1795,6 +1928,175 @@ mod tests {
         assert!(v.remove_note(&n));
         clip.notes.pop();
         assert_eq!(v, fresh(&clip), "taken out");
+    }
+
+    #[test]
+    fn every_part_of_what_a_clip_plays_is_in_its_stamp() {
+        use mpfree_param::OnTrack;
+        use mpfree_seq::mpfree_moves::Steps;
+        use mpfree_seq::{Cond, Join};
+        let cut = Target::Track(RelAddr::new(OnTrack::Inst, 3));
+        let map = Map::linear(0.0, 1.0);
+        let ramp = [(0.0, 0.2, Kind::Ramp), (100.0, 0.7, Kind::Ramp)];
+        let lane = |target: Target, map: Map, points: &[(f64, f32, Kind)]| {
+            let mut m = Moves::default();
+            m.put(target, map, points, 1920).unwrap();
+            m
+        };
+        let base = || {
+            let mut c = Clip::new("s", 1920);
+            c.notes = vec![Note::new(0, 240, 60, 100), Note::new(480, 240, 62, 90)];
+            c.touch = vec![
+                TouchPoint { at: 0, value: 40 },
+                TouchPoint { at: 5, value: 90 },
+            ];
+            c.notes[1].touch = Touch { first: 0, len: 2 };
+            c.locks = vec![Lock::new(0, None, RelAddr::new(OnTrack::Inst, 3), 0.25)];
+            c.moves = lane(cut, map, &ramp);
+            c
+        };
+        let stamp = |c: &Clip| view_of(c, None, 2, 0, 0).stamp;
+        assert_eq!(
+            stamp(&base()),
+            stamp(&base()),
+            "the same clip, the same stamp"
+        );
+        assert_eq!(
+            view_of(&base(), None, 5, 960, 3840).stamp,
+            stamp(&base()),
+            "where it plays is not in it"
+        );
+        let mut program = base();
+        program.program = Some(ClipProgram {
+            program: 5,
+            bank: None,
+        });
+        assert_eq!(
+            stamp(&program),
+            stamp(&base()),
+            "nor outside gear's program"
+        );
+        type EditFn = Box<dyn Fn(&mut Clip)>;
+        let edits: Vec<(&str, EditFn)> = vec![
+            ("tick", Box::new(|c| c.notes[0].tick = 10)),
+            ("length", Box::new(|c| c.notes[0].len = 250)),
+            ("pitch", Box::new(|c| c.notes[0].note = 61)),
+            ("velocity", Box::new(|c| c.notes[0].velocity = 101)),
+            ("chance", Box::new(|c| c.notes[0].chance = 50)),
+            (
+                "condition",
+                Box::new(|c| c.notes[0].cond = Cond::Every { a: 1, b: 2 }),
+            ),
+            (
+                "its pass",
+                Box::new(|c| c.notes[0].cond = Cond::Every { a: 2, b: 2 }),
+            ),
+            ("ratchet", Box::new(|c| c.notes[0].ratchet = 2)),
+            ("pressure run", Box::new(|c| c.notes[1].touch.len = 1)),
+            ("off", Box::new(|c| c.notes[0].on = false)),
+            ("ramp", Box::new(|c| c.notes[0].ramp = -3)),
+            ("join", Box::new(|c| c.notes[0].join = Join::Slide)),
+            ("lock tick", Box::new(|c| c.locks[0].tick = 10)),
+            ("lock sound", Box::new(|c| c.locks[0].sound = Some(0))),
+            (
+                "lock knob",
+                Box::new(|c| c.locks[0].addr = RelAddr::new(OnTrack::Inst, 4)),
+            ),
+            ("lock value", Box::new(|c| c.locks[0].value = 0.5)),
+            ("pressure", Box::new(|c| c.touch[1].value = 91)),
+            ("pressure place", Box::new(|c| c.touch[1].at = 6)),
+            (
+                "lane knob",
+                Box::new(move |c| {
+                    let other = Target::Track(RelAddr::new(OnTrack::Inst, 4));
+                    c.moves = lane(other, map, &ramp);
+                }),
+            ),
+            (
+                "lane range",
+                Box::new(move |c| c.moves = lane(cut, Map::linear(0.0, 2.0), &ramp)),
+            ),
+            (
+                "lane curve",
+                Box::new(move |c| {
+                    let log = Map {
+                        log: true,
+                        ..Map::linear(0.1, 1.0)
+                    };
+                    let lin = Map::linear(0.1, 1.0);
+                    assert_ne!(log, lin);
+                    c.moves = lane(cut, log, &ramp);
+                }),
+            ),
+            (
+                "lane steps",
+                Box::new(move |c| {
+                    let whole = Map {
+                        steps: Steps::Whole,
+                        ..map
+                    };
+                    c.moves = lane(cut, whole, &ramp);
+                }),
+            ),
+            (
+                "point tick",
+                Box::new(move |c| {
+                    let p = [(0.0, 0.2, Kind::Ramp), (200.0, 0.7, Kind::Ramp)];
+                    c.moves = lane(cut, map, &p);
+                }),
+            ),
+            (
+                "point value",
+                Box::new(move |c| {
+                    let p = [(0.0, 0.3, Kind::Ramp), (100.0, 0.7, Kind::Ramp)];
+                    c.moves = lane(cut, map, &p);
+                }),
+            ),
+            (
+                "point kind",
+                Box::new(move |c| {
+                    let p = [(0.0, 0.2, Kind::Step), (100.0, 0.7, Kind::Ramp)];
+                    c.moves = lane(cut, map, &p);
+                }),
+            ),
+            ("clip length", Box::new(|c| c.length = 3840)),
+            ("speed", Box::new(|c| c.speed = Speed { num: 2, den: 1 })),
+            (
+                "quantise",
+                Box::new(|c| c.quantise = Quantise::new(240, 100)),
+            ),
+            (
+                "quantise strength",
+                Box::new(|c| c.quantise = Quantise::new(240, 50)),
+            ),
+            (
+                "swing",
+                Box::new(|c| c.swing = Some(Swing::new(240, 60).unwrap())),
+            ),
+            (
+                "swing amount",
+                Box::new(|c| c.swing = Some(Swing::new(240, 70).unwrap())),
+            ),
+            ("direction", Box::new(|c| c.direction = Direction::Reverse)),
+            (
+                "direction's steps",
+                Box::new(|c| {
+                    c.direction = Direction::Reverse;
+                    c.length = 1680;
+                }),
+            ),
+        ];
+        let mut stamps = vec![(stamp(&base()), "as it was")];
+        for (what, edit) in edits {
+            let mut c = base();
+            edit(&mut c);
+            assert_ne!(c, base(), "{what}: an edit");
+            let s = stamp(&c);
+            if let Some((_, was)) = stamps.iter().find(|(t, _)| *t == s) {
+                panic!("{what}: the same stamp as {was}");
+            }
+            stamps.push((s, what));
+        }
     }
 
     #[test]
