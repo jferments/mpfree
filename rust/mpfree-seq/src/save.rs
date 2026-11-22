@@ -31,6 +31,7 @@
 //! program 4 bank 2
 //! direction pingpong
 //! holds notes
+//! step 1/8T
 //! touch 0:10 50:40
 //! note 0 240 36 100 100 - 1 0 2
 //! note 240 240 38 90 100 - 4 0 0 ramp:-40 slide
@@ -101,6 +102,12 @@
 //! A clip's `direction` line is its play direction (sequencer S6:
 //! `reverse`, `pingpong` or `random`; none for forward); an older build
 //! skips it, and a word it doesn't know, and plays the clip forward.
+//!
+//! A clip's `step` line is the step size its step grid shows (step
+//! sequencer refactor D1: `1/4`, `1/8`, `1/8T`, `1/16T` or `1/32`; none
+//! for 1/16). It changes only what the Steps show, so an older build
+//! skips it, and this one a size it doesn't know, and shows 1/16 steps;
+//! the notes play the same either way.
 //!
 //! A clip's `holds notes` line says its notes are MIDI notes, each
 //! number a pitch (the instrument redesign's step 5c, [`crate::Holds`]);
@@ -302,6 +309,11 @@ fn clip_body(s: &mut String, c: &Clip) {
     }
     if c.holds != crate::Holds::Hits {
         let _ = writeln!(s, "holds {}", c.holds.word());
+    }
+    if c.step != crate::steps::DEFAULT_SIZE {
+        if let Some(name) = crate::steps::size_name(c.step) {
+            let _ = writeln!(s, "step {name}");
+        }
     }
     // Pressure first: the notes name runs of it. Only what the notes and
     // the original's notes name is written, each run renumbered (B4a):
@@ -730,6 +742,11 @@ pub fn from_text(text: &str) -> Result<Project, String> {
             ("direction", At::Clip(c, _)) => {
                 let word = w.next().ok_or_else(|| bad("direction"))?;
                 c.direction = crate::Direction::from_word(word).unwrap_or_default();
+            }
+            // A step size this build doesn't know shows 1/16 steps.
+            ("step", At::Clip(c, _)) => {
+                let word = w.next().ok_or_else(|| bad("step"))?;
+                c.step = crate::steps::size_named(word).unwrap_or(crate::steps::DEFAULT_SIZE);
             }
             // A newer build's kind of notes plays as pad hits here.
             ("holds", At::Clip(c, _)) => {
@@ -1500,6 +1517,7 @@ mod tests {
             bank: Some(300),
         });
         c.direction = crate::Direction::PingPong;
+        c.step = 320;
         c.holds = crate::Holds::Notes;
         let pts: Vec<TouchPoint> = (0..150)
             .map(|k| TouchPoint {
@@ -1853,6 +1871,36 @@ mod tests {
             crate::Direction::Forward
         );
         assert!(from_text(&text.replace("direction pingpong", "direction")).is_err());
+    }
+
+    /// A clip's step size (refactor D1): read back by name; none is 1/16,
+    /// and so is a size this build doesn't know; a line with no size
+    /// refuses the part.
+    #[test]
+    fn a_clips_step_size_reads_back() {
+        let text = to_text(&full());
+        assert!(text.contains("holds notes\nstep 1/8T\n"), "{text}");
+        let step = |t: &str| {
+            from_text(t).unwrap().tracks[0].slots[0]
+                .as_ref()
+                .unwrap()
+                .step
+        };
+        assert_eq!(step(&text), 320);
+        for size in crate::steps::SIZES {
+            let name = crate::steps::size_name(size).unwrap();
+            let t = text.replace("step 1/8T\n", &format!("step {name}\n"));
+            assert_eq!(step(&t), size, "{name}");
+            let again = to_text(&from_text(&t).unwrap());
+            assert_eq!(
+                again.contains("\nstep "),
+                size != crate::steps::DEFAULT_SIZE,
+                "{name}"
+            );
+        }
+        assert_eq!(step(&text.replace("step 1/8T\n", "")), 240);
+        assert_eq!(step(&text.replace("step 1/8T", "step 1/7")), 240);
+        assert!(from_text(&text.replace("step 1/8T", "step")).is_err());
     }
 
     /// A mutated clip keeps its original (S6), lanes and all, read back

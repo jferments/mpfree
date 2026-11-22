@@ -1092,6 +1092,44 @@ pub struct LockCells {
     /// Something in the mod matrix moves its control (an LFO): a pink ~
     /// right of its name.
     pub moved: bool,
+    /// A Velocity or Chance lane (refactor D3) in place of locks: each
+    /// step's value as bars a finger draws ([`ValueCells`]); `cells` is
+    /// then empty.
+    pub values: Option<ValueCells>,
+}
+
+/// A Velocity or Chance lane under a sound (step sequencer refactor D3):
+/// each step's value on the page as a bar, drawn and drawn on with the
+/// shared lane ([`mpfree_time_ui::lane::Lane`]). A finger's stroke over
+/// it sets the steps along its path; its lift gives `Tab(VALUE_DONE)`,
+/// and [`StepGrid::stroke_done`] holds the lane's `pad` and each step
+/// (on the page) with its new value, for one edit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValueCells {
+    pub min: u8,
+    pub max: u8,
+    /// Each step on the page: its value and whether it plays (a step
+    /// switched off is faint); None, no note there.
+    pub cells: Vec<Option<(u8, bool)>>,
+    /// The steps on the page picked or held: outlined.
+    pub picked: Vec<usize>,
+    /// Chance: values read "50 %".
+    pub percent: bool,
+}
+
+/// A Velocity or Chance lane's stroke ended with changes: `Tab(VALUE_DONE)`
+/// (refactor D3); the changes wait in [`StepGrid::stroke_done`].
+pub const VALUE_DONE: usize = 1 << 18;
+
+/// A finger drawing on a Velocity or Chance lane: the lane's `pad`, the
+/// shared lane with the stroke's preview, and which step each bar is.
+#[derive(Clone, Debug, PartialEq)]
+struct ValueStroke {
+    finger: u64,
+    pad: usize,
+    lane: mpfree_time_ui::lane::Lane,
+    cols: Vec<usize>,
+    area: Rect,
 }
 
 /// A gear lane's name tapped (LFO to CC): `Tab(LANE_NAME + number)`, the
@@ -1193,7 +1231,11 @@ pub struct StepGrid {
     /// with a ▾ before the title. A tap on it gives `Tab(HEAD_CLIP)`, for
     /// the list of the track's clips to edit.
     pub chip: Option<String>,
-    /// "1/16 · 1 bar".
+    /// The Sequencer's step size chip (refactor D1): the clip's step size
+    /// ("1/16"), left of the length. A tap gives `Tab(HEAD_SIZE)`, for the
+    /// list of step sizes.
+    pub size: Option<String>,
+    /// "1/16 · 1 bar"; with the step size chip, "1 bar".
     pub right: String,
     /// Every lane there could be, most wanted first (sounds with notes,
     /// the pad hit last, then the kit's other sounds).
@@ -1244,6 +1286,12 @@ pub struct StepGrid {
     drag: Option<LockDrag>,
     /// A finger on a mod row's depth bar, and its row, until it lifts.
     depth_drag: Option<(u64, usize)>,
+    /// A finger drawing on a Velocity or Chance lane (refactor D3).
+    stroke: Option<ValueStroke>,
+    /// The last stroke's changes, for the app to take on
+    /// `Tab(VALUE_DONE)`: the lane's `pad`, and each step on the page
+    /// with its new value.
+    pub stroke_done: Option<(usize, Vec<(usize, u8)>)>,
     painted: RefCell<Option<(Rect, StepLook)>>,
 }
 
@@ -1315,6 +1363,16 @@ pub const HEAD_BANK: usize = 16;
 pub const HEAD_LANE: usize = 11;
 /// The Steps head's clip chip: `Tab(HEAD_CLIP)`.
 pub const HEAD_CLIP: usize = 12;
+/// The Steps head's step size chip: `Tab(HEAD_SIZE)` (refactor D1).
+pub const HEAD_SIZE: usize = 13;
+/// The Steps head's length ("16 steps"): `Tab(HEAD_LENGTH)` puts the
+/// wheel on it (refactor D2). Turned, a step at a time, it is
+/// `Step { index: LENGTH_TURN, delta }`; SHIFT + - / + (or SHIFT + the
+/// wheel with a finger on it) doubles or halves it, `Step { index:
+/// LENGTH_TWICE, delta }`.
+pub const HEAD_LENGTH: usize = 10;
+pub const LENGTH_TURN: usize = 1;
+pub const LENGTH_TWICE: usize = 2;
 /// A lock lane's `pad`: this plus its number among the lock lanes. A tap
 /// on its step `col` gives `Cell { row: pad, col }`, its × `Toggle(pad)`,
 /// and a drag on (or the wheel turning) the step's cell `Step { index:
@@ -1341,8 +1399,9 @@ pub const HEAD_LONGER: usize = 3;
 pub const HEAD_FOLD: usize = 4;
 pub const HEAD_LOWER: usize = 5;
 pub const HEAD_HIGHER: usize = 6;
-/// The most steps the pattern's + makes, and the fewest its - leaves.
-pub const MAX_STEPS: usize = 128;
+/// The most steps the pattern's + makes, and the fewest its - leaves
+/// (a step at a time the length goes down to one).
+pub use crate::time::MAX_STEPS;
 pub const MIN_STEPS: usize = 16;
 
 /// What a paint drew, to find what changed.
@@ -1350,6 +1409,7 @@ pub const MIN_STEPS: usize = 16;
 struct StepLook {
     title: String,
     chip: Option<String>,
+    size: Option<String>,
     right: String,
     lanes: Vec<Lane>,
     steps: usize,
@@ -1364,6 +1424,9 @@ struct StepLook {
     top: usize,
     add_lane: bool,
     rows_open: Option<LaneRows>,
+    /// A stroke on a Velocity or Chance lane: its lane and the values it
+    /// shows.
+    stroke: Option<(usize, Vec<Option<i32>>)>,
 }
 
 /// The pattern head's controls, right to left: + and - round the length,
@@ -1385,13 +1448,17 @@ struct Head {
     higher: Rect,
     /// + Lane, left of the page (empty without it).
     lane: Rect,
+    /// The step size chip, left of the length (empty without it).
+    size: Rect,
 }
 
 /// A head button's width.
 const HEAD_BTN: i32 = 56;
+/// The step size chip's width: "1/16T" and its ▾.
+const SIZE_CHIP_W: i32 = 84;
 
 impl Head {
-    fn of(r: Rect, pitched: bool, add_lane: bool) -> Head {
+    fn of(r: Rect, pitched: bool, add_lane: bool, size: bool) -> Head {
         let (h, body) = card_head(r);
         let band = Rect::new(h.x, r.y, h.w, body.y - 2 - r.y);
         let mut x = h.right();
@@ -1402,6 +1469,12 @@ impl Head {
         let longer = take(HEAD_BTN);
         let length = take(78);
         let shorter = take(HEAD_BTN);
+        let size = if size {
+            take(6);
+            take(SIZE_CHIP_W)
+        } else {
+            Rect::new(shorter.x, band.y, 0, 0)
+        };
         take(14);
         let next = take(HEAD_BTN);
         let page = take(52);
@@ -1444,12 +1517,15 @@ impl Head {
             octave,
             higher,
             lane,
+            size,
         }
     }
 
     /// The control under (`x`, `y`), as its `Tab` index.
     fn at(&self, x: i32, y: i32) -> Option<usize> {
         [
+            (self.size, HEAD_SIZE),
+            (self.length, HEAD_LENGTH),
             (self.lane, HEAD_LANE),
             (self.prev, HEAD_PREV),
             (self.next, HEAD_NEXT),
@@ -1787,6 +1863,7 @@ impl StepGrid {
         StepLook {
             title: self.title.clone(),
             chip: self.chip.clone(),
+            size: self.size.clone(),
             right: self.right.clone(),
             lanes: self.lanes.clone(),
             steps: self.steps,
@@ -1801,6 +1878,104 @@ impl StepGrid {
             top: self.top,
             add_lane: self.add_lane,
             rows_open: self.rows_open.clone(),
+            stroke: self.stroke.as_ref().map(|s| {
+                let shown = (0..s.lane.bars.len()).map(|k| s.lane.shown(k)).collect();
+                (s.pad, shown)
+            }),
+        }
+    }
+
+    /// Value lane `vc` (lane `pad`) in row `k` as the shared lane draws
+    /// it: a bar on each step with a note, where its cell is; which step
+    /// each bar is; and the cells' span.
+    fn value_lane(
+        &self,
+        g: &GridGeom,
+        k: usize,
+        vc: &ValueCells,
+    ) -> (mpfree_time_ui::lane::Lane, Vec<usize>, Rect) {
+        use mpfree_time_ui::lane::{Bar, Lane as Bars};
+        let n = self.steps.min(16);
+        let mut lane = Bars::new(i32::from(vc.min), i32::from(vc.max), 1);
+        let mut cols = Vec::new();
+        let mut bars = Vec::new();
+        for s in 0..n {
+            let Some((v, on)) = vc.cells.get(s).copied().flatten() else {
+                continue;
+            };
+            let c = g.cell(k, s);
+            bars.push(Bar {
+                x: c.x,
+                w: c.w,
+                value: i32::from(v),
+                picked: vc.picked.contains(&s),
+                dim: !on,
+                label: if vc.percent {
+                    format!("{v}%")
+                } else {
+                    v.to_string()
+                },
+            });
+            cols.push(s);
+        }
+        lane.set_bars(bars);
+        let first = g.cell(k, 0);
+        let last = g.cell(k, n.max(1) - 1);
+        let area = Rect::new(first.x, first.y, last.right() - first.x, first.h);
+        (lane, cols, area)
+    }
+
+    /// A finger on value lane row `k` (lane `pad`): the shared lane
+    /// starts its stroke there.
+    fn start_stroke(&mut self, f: u64, x: i32, y: i32, r: Rect, pad: usize) -> bool {
+        let g = self.geom(r);
+        let shown = self.shown(g.rows);
+        let Some((k, vc)) = shown.iter().enumerate().find_map(|(k, l)| {
+            (l.pad == pad)
+                .then(|| l.lock.as_ref()?.values.clone())
+                .flatten()
+                .map(|vc| (k, vc))
+        }) else {
+            return false;
+        };
+        let (mut lane, cols, area) = self.value_lane(&g, k, &vc);
+        if lane.bars.is_empty() {
+            // No note on the page to set: the touch is the lane's anyway.
+            return true;
+        }
+        lane.touch(f, Touch::Down, x, y, area);
+        self.stroke = Some(ValueStroke {
+            finger: f,
+            pad,
+            lane,
+            cols,
+            area,
+        });
+        true
+    }
+
+    /// A finger's touch while a stroke is on: its moves preview, its lift
+    /// ends it (`Tab(VALUE_DONE)` when steps changed), and another finger
+    /// coming down ends it with nothing.
+    fn stroke_on(&mut self, f: u64, phase: Touch, x: i32, y: i32) -> Option<EventKind> {
+        use mpfree_time_ui::lane::LaneTouch;
+        let s = self.stroke.as_mut()?;
+        let area = s.area;
+        match s.lane.touch(f, phase, x, y, area) {
+            LaneTouch::Done(changed) => {
+                let (pad, cols) = (s.pad, s.cols.clone());
+                self.stroke = None;
+                let changed: Vec<(usize, u8)> = changed
+                    .into_iter()
+                    .filter_map(|(b, v)| Some((*cols.get(b)?, u8::try_from(v).ok()?)))
+                    .collect();
+                if changed.is_empty() {
+                    return None;
+                }
+                self.stroke_done = Some((pad, changed));
+                Some(EventKind::Tab(VALUE_DONE))
+            }
+            LaneTouch::Preview | LaneTouch::None => None,
         }
     }
 
@@ -1812,7 +1987,12 @@ impl StepGrid {
 
     /// The pattern head, with + Lane where it shows.
     fn head(&self, r: Rect) -> Head {
-        Head::of(r, self.pitched.is_some(), self.add_lane)
+        Head::of(
+            r,
+            self.pitched.is_some(),
+            self.add_lane,
+            self.size.is_some(),
+        )
     }
 
     /// The clip chip's place in the heading (after the Arm pill), if it
@@ -1860,14 +2040,19 @@ impl StepGrid {
         );
     }
 
-    /// The middle of head control `k` (`HEAD_PREV` ...) with scale rows
-    /// (`pitched`) or without, for the app's tests.
+    /// The middle of head control `k` (`HEAD_PREV` to `HEAD_HIGHER`) as
+    /// this grid lays its head out in `r`, for the app's tests.
     #[cfg(test)]
-    pub fn head_at(r: Rect, k: usize, pitched: bool) -> (i32, i32) {
-        let h = Head::of(r, pitched, false);
-        let b = [
-            h.prev, h.next, h.shorter, h.longer, h.fold, h.lower, h.higher,
-        ][k];
+    pub fn head_at(&self, r: Rect, k: usize) -> (i32, i32) {
+        let h = self.head(r);
+        let b = match k {
+            HEAD_LENGTH => h.length,
+            HEAD_SIZE => h.size,
+            HEAD_LANE => h.lane,
+            _ => [
+                h.prev, h.next, h.shorter, h.longer, h.fold, h.lower, h.higher,
+            ][k],
+        };
         (b.x + b.w / 2, b.y + b.h / 2)
     }
 
@@ -1939,6 +2124,24 @@ impl StepGrid {
                 "+ Lane",
             );
         }
+        if let Some(size) = self.size.as_deref().filter(|_| hd.size.w > 0) {
+            // The step size chip: the size and a ▾, raised as a button.
+            let face = Rect::new(hd.size.x + 2, mid - 13, hd.size.w - 4, 26);
+            cx.canvas.fill_round_rect(face, 13, t.raised);
+            cx.text(
+                FontId::Bold,
+                14.0,
+                Rect::new(face.x + 10, face.y, (face.w - 28).max(0), face.h),
+                Align::Center,
+                t.button_ink(self.length > 0),
+                size,
+            );
+            let (vx, vy) = (face.right() - 14, mid - 2);
+            for k in 0..5 {
+                cx.canvas
+                    .fill_rect(Rect::new(vx - 4 + k, vy + k, 9 - 2 * k, 1), t.text_dim);
+            }
+        }
         let row = |b: Rect| Rect::new(b.x, h.y, b.w, h.h);
         if let Some(p) = self.pitched {
             let rows = self.geom(r).rows;
@@ -1972,7 +2175,13 @@ impl StepGrid {
             t.text_dim,
             &page,
         );
-        let length = format!("{} steps", self.length.max(MIN_STEPS));
+        // The clip's steps at its step size; a new pattern's 16 before one.
+        let n = if self.length == 0 {
+            MIN_STEPS
+        } else {
+            self.length
+        };
+        let length = format!("{n} steps");
         cx.text(
             FontId::Bold,
             draw::HEAD_PX,
@@ -2049,7 +2258,11 @@ impl StepGrid {
                 label,
             );
         }
-        let total = self.length.max(MIN_STEPS);
+        let total = if self.length == 0 {
+            MIN_STEPS
+        } else {
+            self.length
+        };
         let from = (self.page * 16 + 1).min(total);
         let to = (self.page * 16 + self.steps.max(1)).min(total);
         cx.text(
@@ -2332,6 +2545,55 @@ fn paint_lock_lane(
     }
 }
 
+/// A Velocity or Chance lane's name, its × and its steps' cells (refactor
+/// D3), drawn as a lock lane's but in the theme's own inks; the shared
+/// lane draws the bars over the cells.
+fn paint_value_lane(
+    cx: &mut PaintCx,
+    g: &GridGeom,
+    k: usize,
+    lane: &Lane,
+    lk: &LockCells,
+    steps: usize,
+    play: Option<usize>,
+) {
+    let t = cx.theme.clone();
+    let y = g.row_y(k);
+    let mb = g.mute_button(k);
+    let nr = Rect::new(g.names.x, y, mb.x - 4 - g.names.x, g.rh);
+    cx.canvas.fill_round_rect(nr, 8, t.surface);
+    // In the hook's ink, as a lock lane's is in its own: the theme's
+    // outline is too faint for a dashed line (under 3:1 in Console).
+    dashed_outline(cx, nr, t.text_dim.with_alpha(170));
+    // The hook from the sound above.
+    cx.canvas
+        .fill_rect(Rect::new(nr.x + 9, nr.y + 7, 2, 10), t.text_dim);
+    cx.canvas
+        .fill_rect(Rect::new(nr.x + 9, nr.y + 15, 8, 2), t.text_dim);
+    let text = Rect::new(nr.x + 22, nr.y + 2, nr.w - 26, nr.h - 4);
+    let (top, bottom) = text.take_top(text.h * 11 / 20);
+    cx.text(FontId::Bold, 13.0, top, Align::Left, t.text, &lane.name);
+    cx.text(FontId::Sans, 10.0, bottom, Align::Left, t.text_dim, &lk.sub);
+    // The ×: the lane comes off; the steps keep their values.
+    cx.canvas.fill_round_rect(mb, 6, t.raised);
+    cx.canvas.stroke_round_rect(mb, 6, 1, t.outline);
+    cx.text(FontId::Bold, 16.0, mb, Align::Center, t.text_dim, "×");
+    for s in 0..steps.min(16) {
+        let sr = g.cell(k, s);
+        let base = if s % 4 == 0 {
+            t.raised
+        } else {
+            t.raised.mix(t.surface, 0.45)
+        };
+        let base = if play == Some(s) {
+            base.mix(t.text, 0.12)
+        } else {
+            base
+        };
+        cx.canvas.fill_round_rect(sr, 5, base);
+    }
+}
+
 /// A gear lane's mod rows over the pattern (LFO to CC), as the chain
 /// editor draws a control's: the title, each row's source, its depth bar
 /// from the middle and its ×, then + LFO.
@@ -2513,7 +2775,18 @@ impl Widget for StepGrid {
             let c = lane.color;
             let on_pads = self.on_pads == Some(lane.pad);
             if let Some(lk) = &lane.lock {
-                paint_lock_lane(cx, &g, k, lane, lk, self.steps, self.play);
+                match &lk.values {
+                    Some(vc) => {
+                        let (bars, _, area) = self.value_lane(&g, k, vc);
+                        let bars = match &self.stroke {
+                            Some(s) if s.pad == lane.pad => &s.lane,
+                            _ => &bars,
+                        };
+                        paint_value_lane(cx, &g, k, lane, lk, self.steps, self.play);
+                        bars.paint(cx, area, lane.color);
+                    }
+                    None => paint_lock_lane(cx, &g, k, lane, lk, self.steps, self.play),
+                }
                 continue;
             }
             if self.pitched.is_some() && lane.pad < 16 {
@@ -2700,6 +2973,19 @@ impl Widget for StepGrid {
         if let Some(chip) = self.chip_rect(r) {
             out.push(Target::tap("head", HEAD_CLIP, "Clip to edit", chip));
         }
+        if h.size.w > 0 && self.bank.is_none() {
+            out.push(
+                Target::tap("head", HEAD_SIZE, "Step size", h.size).disabled_if(self.length == 0),
+            );
+        }
+        // The length: a value the wheel and - / + turn a step at a time
+        // (refactor D2), once a tap or the outline puts them on it.
+        if self.bank.is_none() {
+            out.push(
+                Target::drag("length", HEAD_LENGTH, "Length", h.length)
+                    .disabled_if(self.length == 0),
+            );
+        }
         if self.pitched.is_some() && self.bank.is_none() {
             let (lower, higher) = self.octave_usable(g.rows);
             for (k, label, rect, can) in [
@@ -2729,12 +3015,29 @@ impl Widget for StepGrid {
                         name,
                     ));
                 }
+                let values = lane.lock.as_ref().is_some_and(|lk| lk.values.is_some());
                 out.push(Target::tap(
                     "lock-lane-off",
                     id,
-                    format!("{} lock lane: take it off", lane.name),
+                    if values {
+                        format!("{} lane: take it off", lane.name)
+                    } else {
+                        format!("{} lock lane: take it off", lane.name)
+                    },
                     g.mute_button(k),
                 ));
+                if values {
+                    // A Velocity or Chance lane: a finger draws its steps.
+                    for st in 0..self.steps.min(16) {
+                        out.push(Target::drag(
+                            "value",
+                            id * 16 + st,
+                            format!("{} lane, step {}", lane.name, st + 1),
+                            g.cell(k, st),
+                        ));
+                    }
+                    continue;
+                }
                 for st in 0..self.steps.min(16) {
                     out.push(
                         Target::drag(
@@ -2778,21 +3081,55 @@ impl Widget for StepGrid {
     }
 
     fn steps(&self, t: &Target) -> bool {
-        t.id == "lock"
+        matches!(t.id, "lock" | "length" | "value")
     }
 
-    /// The wheel turning a lock's cell held (or grabbed): as a drag.
+    /// The wheel turning a lock's cell held (or grabbed): as a drag. On
+    /// the length: a step a detent. On a Velocity or Chance lane's step:
+    /// its value.
     fn step(&mut self, t: &Target, delta: i32, _r: Rect) -> Option<EventKind> {
-        (t.id == "lock").then_some(EventKind::Step {
-            index: LOCK_LANE + t.index,
-            delta,
-        })
+        if t.id == "value" {
+            // The wheel under a finger on a Velocity or Chance lane: the
+            // wheel sets the step, so the finger's lift sets nothing.
+            self.stroke = None;
+        }
+        match t.id {
+            "lock" | "value" => Some(EventKind::Step {
+                index: LOCK_LANE + t.index,
+                delta,
+            }),
+            "length" => Some(EventKind::Step {
+                index: LENGTH_TURN,
+                delta,
+            }),
+            _ => None,
+        }
+    }
+
+    /// SHIFT + - / + on the length (or SHIFT + the wheel with a finger on
+    /// it): twice or half the steps, as the head's + and - (refactor D2).
+    fn held_step(&mut self, t: &Target, delta: i32, fine: bool, r: Rect) -> Option<EventKind> {
+        if fine && t.id == "length" {
+            return Some(EventKind::Step {
+                index: LENGTH_TWICE,
+                delta,
+            });
+        }
+        self.step(t, delta, r)
     }
 
     fn touch(&mut self, f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         // A gear lane's mod rows, open over the pattern, take every finger.
         if let Some(rg) = self.rows_geom(r) {
             return self.rows_touch(&rg, f, phase, x, y);
+        }
+        // A stroke on a Velocity or Chance lane: its finger draws, and
+        // another finger ends it with nothing.
+        if self.stroke.is_some() {
+            let ours = self.stroke.as_ref().is_some_and(|s| s.finger == f);
+            if ours || phase == Touch::Down {
+                return self.stroke_on(f, phase, x, y);
+            }
         }
         // A scale row's note sounds until its finger lifts.
         if phase == Touch::Up {
@@ -2852,6 +3189,11 @@ impl Widget for StepGrid {
             return Some(EventKind::Select(0));
         }
         let tap = self.tap_at(f, x, y, r);
+        if let Some(EventKind::Cell { row, .. }) = tap {
+            if row >= LOCK_LANE && self.start_stroke(f, x, y, r, row) {
+                return None;
+            }
+        }
         if let Some(EventKind::Cell { row, col }) = tap {
             if row >= LOCK_LANE {
                 // A lock's cell: a drag turns it, a tap waits for the
@@ -3204,6 +3546,34 @@ impl StepInspector {
     }
 }
 
+/// A ratchet hit's bar in the inspector's Ratchet chip, and the gap
+/// between bars.
+const HIT_W: i32 = 5;
+const HIT_GAP: i32 = 3;
+
+/// A ratchet's hits in its chip `c` (step sequencer refactor D4): a bar
+/// each at the chip's right, first to last, as tall as its velocity after
+/// the ramp, so a roll that rises or falls shows before it plays. Nothing
+/// for one hit.
+fn paint_hits(cx: &mut PaintCx, c: Rect, hits: &[u8]) {
+    let n = hits.len() as i32;
+    if n < 2 {
+        return;
+    }
+    let t = cx.theme.clone();
+    let w = n * HIT_W + (n - 1) * HIT_GAP;
+    let area = Rect::new(c.right() - 12 - w, c.y + 10, w, c.h - 20);
+    // The baseline, faint, then the bars on it.
+    cx.canvas
+        .fill_rect(Rect::new(area.x - 2, area.bottom(), w + 4, 1), t.text_faint);
+    for (k, &v) in hits.iter().enumerate() {
+        let h = (i32::from(v) * area.h / 127).max(3);
+        let x = area.x + k as i32 * (HIT_W + HIT_GAP);
+        cx.canvas
+            .fill_round_rect(Rect::new(x, area.bottom() - h, HIT_W, h), 1, t.accent);
+    }
+}
+
 impl Widget for StepInspector {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
@@ -3285,6 +3655,9 @@ impl Widget for StepInspector {
                 // A tap steps it: a small › at its top right says so.
                 let mark = Rect::new(c.right() - 26, c.y + 4, 20, 18);
                 cx.text(FontId::Bold, 13.0, mark, Align::Center, t.text_dim, "›");
+            }
+            if k == crate::play_page::INSPECT_RATCHET_CHIP {
+                paint_hits(cx, c, &i.hits);
             }
         }
         // On and Off: the one the step is lit (Off in the warn colour, as
@@ -4194,6 +4567,7 @@ mod tests {
                     .collect(),
                 opens_rows: false,
                 moved: false,
+                values: None,
             }),
             ..lane(LOCK_LANE + id, &[])
         };
@@ -4438,6 +4812,7 @@ mod tests {
                 cells: vec![None; 16],
                 opens_rows: true,
                 moved: false,
+                values: None,
             }),
             ..lane(LOCK_LANE + id, &[])
         }));
@@ -4543,7 +4918,7 @@ mod tests {
         );
         // The head: Fold, then the octave's ‹ and ›, before the page's.
         for k in [HEAD_FOLD, HEAD_LOWER, HEAD_HIGHER, HEAD_PREV, HEAD_LONGER] {
-            let (x, y) = StepGrid::head_at(r, k, true);
+            let (x, y) = g.head_at(r, k);
             assert_eq!(g.touch(7, Touch::Down, x, y, r), Some(EventKind::Tab(k)));
         }
         let t = g.targets(r);
@@ -4551,8 +4926,8 @@ mod tests {
         assert!(!t.iter().any(|t| t.id == "mute" && t.index < 16));
         assert!(t.iter().any(|t| t.id == "head" && t.label == "Fold"));
         // A kit's lanes: no Fold, no octave.
+        let (x, y) = g.head_at(r, HEAD_FOLD);
         g.pitched = None;
-        let (x, y) = StepGrid::head_at(r, HEAD_FOLD, true);
         assert_eq!(g.touch(8, Touch::Down, x, y, r), None);
     }
 

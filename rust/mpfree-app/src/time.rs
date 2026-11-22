@@ -134,8 +134,10 @@ pub struct StepsData {
 pub struct StepClip {
     pub slot: usize,
     pub name: String,
-    /// Steps in the clip (16 a bar).
+    /// Steps in the clip (16 a bar at its first step size).
     pub steps: usize,
+    /// A step, in the clip's ticks: its step size (refactor D1).
+    pub step: Tick,
     /// The clip's length and a step's, in song ticks (after its speed).
     pub song_length: f64,
     pub song_step: f64,
@@ -190,8 +192,14 @@ impl StepClip {
             return None;
         }
         if let Some(order) = self.order {
-            let big = ((pos - origin) as f64 / self.song_step).floor() as i64;
-            return Some(order.step(big).min(self.steps.saturating_sub(1)));
+            // A play direction moves by 1/16s whatever the step size
+            // (`DIRECTION_STEP`): the step lit is the one holding the
+            // 1/16 heard.
+            let dir = mpfree_seq::DIRECTION_STEP;
+            let song_dir = self.song_step * dir as f64 / self.step.max(1) as f64;
+            let big = ((pos - origin) as f64 / song_dir).floor() as i64;
+            let tick = order.step(big) as Tick * dir;
+            return Some(((tick / self.step.max(1)) as usize).min(self.steps.saturating_sub(1)));
         }
         let at = ((pos - origin) as f64).rem_euclid(self.song_length);
         Some(((at / self.song_step) as usize).min(self.steps.saturating_sub(1)))
@@ -269,7 +277,78 @@ pub enum StepAction {
     /// repeat the ones before them; steps that go take their notes along.
     /// One take, so UNDO puts the old length and notes back.
     Length { steps: usize, copy: bool },
+    /// The length a step at a time (refactor D2: the head's length tapped,
+    /// then the wheel or - and +): `steps` more (or fewer, negative), from
+    /// the clip's own length, up to [`MAX_STEPS`] and down to one step.
+    /// New steps are empty; steps that go take their notes along. One take
+    /// each, so UNDO puts the old length and notes back.
+    LengthBy { steps: i32 },
+    /// A Velocity or Chance lane's stroke under sound `pad` (refactor
+    /// D3): step `from + k` takes `values[k]`, 0 leaving it as it is. One
+    /// edit, so one UNDO takes the whole stroke back. Empty steps are left
+    /// out.
+    Values {
+        pad: u8,
+        from: usize,
+        kind: NoteValue,
+        values: [u8; 16],
+    },
 }
+
+/// A note setting a lane under a sound shows and sets, step by step (the
+/// Sequencer's Velocity and Chance lanes, refactor D3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NoteValue {
+    Velocity,
+    Chance,
+}
+
+impl NoteValue {
+    pub const ALL: [NoteValue; 2] = [NoteValue::Velocity, NoteValue::Chance];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            NoteValue::Velocity => "Velocity",
+            NoteValue::Chance => "Chance",
+        }
+    }
+
+    /// Its least and most.
+    pub fn range(self) -> (u8, u8) {
+        match self {
+            NoteValue::Velocity => (1, 127),
+            NoteValue::Chance => (1, 100),
+        }
+    }
+
+    /// A step's value.
+    pub fn of(self, s: &Step) -> u8 {
+        match self {
+            NoteValue::Velocity => s.velocity,
+            NoteValue::Chance => s.chance,
+        }
+    }
+
+    /// The change that sets it to `v`.
+    pub fn change(self, v: u8) -> Change {
+        match self {
+            NoteValue::Velocity => Change::Velocity(v),
+            NoteValue::Chance => Change::Chance(v),
+        }
+    }
+
+    /// `v` as the lane writes it: "96", "50 %".
+    pub fn text(self, v: u8) -> String {
+        match self {
+            NoteValue::Velocity => v.to_string(),
+            NoteValue::Chance => format!("{v} %"),
+        }
+    }
+}
+
+/// The most steps the Sequencer's head makes a pattern, doubling or a
+/// step at a time (Jay after live test 3: up to 128).
+pub const MAX_STEPS: usize = 128;
 
 /// A pad hit while the transport rolls: where it fell, for the Play page's
 /// timing (the Beats view's timing strip).
@@ -2887,6 +2966,243 @@ mod tests {
         assert!(h.act(TimeAction::EditClip(Some(0))).is_err());
     }
 
+    /// The step size (refactor D1) cuts the same clip into steps of
+    /// another size: its length and every note's time stay, nothing
+    /// compiles, a tap lands on the new grid, and UNDO puts the size back.
+    #[test]
+    fn the_step_size_cuts_the_clip_into_other_steps_and_no_note_moves() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        // 13 sixteenths, notes on 1/16 steps 1 and 3 and one nudged later.
+        let mut beat = Clip::new("Bass", 13 * STEP_TICKS);
+        for (tick, pitch) in [(0, 36), (480, 36), (600, 38)] {
+            beat.notes
+                .push(mpfree_seq::Note::new(tick, 120, pitch, 100));
+        }
+        h.control.project.tracks[0].slots[0] = Some(beat);
+        h.control.project.give_clip_ids();
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 4, &[]);
+        let before = h.project().clip(0, 0).unwrap().notes.clone();
+        let compiles = h.control.costs.compiles;
+        let said = h.act(TimeAction::StepSize(480)).unwrap();
+        assert_eq!(said, "steps: Bass in 1/8 steps (7)");
+        let clip = h.project().clip(0, 0).unwrap();
+        assert_eq!((clip.step, clip.length), (480, 13 * STEP_TICKS));
+        assert_eq!(clip.notes, before, "no note moves");
+        assert_eq!(h.control.costs.compiles, compiles, "nothing compiled");
+        assert_eq!(*h.audio.view, h.control.view().unwrap());
+        let steps = h.steps().clip.unwrap();
+        assert_eq!((steps.steps, steps.step), (7, 480));
+        // Step 2 of 1/8 holds the note on 1/16 step 3 and the one 120
+        // ticks after it, nudged.
+        let kick = steps.row(36)[1].unwrap();
+        assert_eq!((kick.nudge, kick.len), (0, 120));
+        assert_eq!(steps.row(38)[1].map(|s| s.nudge), Some(120));
+        // A tap on 1/8 step 4 puts a note on tick 1440.
+        h.step_action(StepAction::Tap {
+            pad: 0,
+            step: 3,
+            velocity: 100,
+        })
+        .unwrap();
+        let added: Vec<_> = h
+            .project()
+            .clip(0, 0)
+            .unwrap()
+            .notes
+            .iter()
+            .filter(|n| !before.contains(n))
+            .map(|n| n.tick)
+            .collect();
+        assert_eq!(added, [1440]);
+        // Triplets: 3,120 ticks is 10 steps of 1/8T, the last one short.
+        h.act(TimeAction::StepSize(320)).unwrap();
+        assert_eq!(h.steps().clip.unwrap().steps, 10);
+        // The head's length counts the clip's steps (12 triplet eighths
+        // are a bar); the clip card's Length row still counts sixteenths.
+        let said = h
+            .step_action(StepAction::Length {
+                steps: 12,
+                copy: false,
+            })
+            .unwrap();
+        assert!(said.contains("is 12 steps (1 bar)"), "{said}");
+        assert_eq!(h.project().clip(0, 0).unwrap().length, 16 * STEP_TICKS);
+        h.act(TimeAction::ClipLength {
+            track: 0,
+            slot: 0,
+            steps: 8,
+            copy: false,
+        })
+        .unwrap();
+        assert_eq!(h.project().clip(0, 0).unwrap().length, 8 * STEP_TICKS);
+        h.act(TimeAction::Undo).unwrap();
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.project().clip(0, 0).unwrap().length, 13 * STEP_TICKS);
+        // UNDO: the triplets go, then the tap, then the eighths.
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.project().clip(0, 0).unwrap().step, 480);
+        h.act(TimeAction::Undo).unwrap();
+        h.act(TimeAction::Undo).unwrap();
+        let clip = h.project().clip(0, 0).unwrap();
+        assert_eq!((clip.step, &clip.notes), (240, &before));
+        assert_eq!(h.steps().clip.unwrap().steps, 13);
+        // Not a step size; a track with no clip.
+        assert!(h.act(TimeAction::StepSize(200)).is_err());
+        h.act(TimeAction::Arm(Some(1))).unwrap();
+        assert!(h.act(TimeAction::StepSize(480)).is_err());
+    }
+
+    /// Refactor D2: the length a step at a time, from the clip's own
+    /// length: fewer steps take their notes (UNDO brings them back), more
+    /// are empty, at the clip's step size; it stops at one step and at
+    /// 128, and a longer (recorded) clip is never cut by a step more.
+    #[test]
+    fn the_length_goes_a_step_at_a_time_and_a_long_clip_is_never_cut() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut beat = Clip::new("Bass", 16 * STEP_TICKS);
+        for step in [0, 13, 14] {
+            beat.notes
+                .push(mpfree_seq::Note::new(step * STEP_TICKS, 120, 36, 100));
+        }
+        h.control.project.tracks[0].slots[0] = Some(beat);
+        h.control.project.give_clip_ids();
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        let before = h.project().clip(0, 0).unwrap().notes.clone();
+        let by = |h: &mut TimeHost, steps| h.step_action(StepAction::LengthBy { steps });
+        for _ in 0..3 {
+            by(&mut h, -1).unwrap();
+        }
+        let clip = h.project().clip(0, 0).unwrap();
+        assert_eq!(clip.length, 13 * STEP_TICKS);
+        assert_eq!(clip.notes.len(), 1, "steps 14 and 15 went with theirs");
+        let said = by(&mut h, 1).unwrap();
+        assert_eq!(
+            said,
+            "steps: Bass is 14 steps (1 bar) · the new steps are empty"
+        );
+        let said = by(&mut h, -1).unwrap();
+        assert!(
+            said.ends_with("13 steps (1 bar) · UNDO brings the rest back"),
+            "{said}"
+        );
+        // Five takes: UNDO five times, and the notes are back.
+        for _ in 0..5 {
+            h.act(TimeAction::Undo).unwrap();
+        }
+        let clip = h.project().clip(0, 0).unwrap();
+        assert_eq!((clip.length, &clip.notes), (16 * STEP_TICKS, &before));
+        // At 1/8 steps: one more is an eighth, and the bars follow.
+        h.act(TimeAction::StepSize(480)).unwrap();
+        let said = by(&mut h, 1).unwrap();
+        assert!(said.contains("is 9 steps (2 bars)"), "{said}");
+        assert_eq!(h.project().clip(0, 0).unwrap().length, 9 * 480);
+        // Down to one step, and no further.
+        assert!(by(&mut h, -100).unwrap().contains("is 1 step (1 bar)"));
+        assert_eq!(by(&mut h, -1).unwrap_err(), "steps: 1 step is the fewest");
+        // Up to 128, and no further.
+        by(&mut h, 500).unwrap();
+        assert_eq!(h.steps().clip.unwrap().steps, MAX_STEPS);
+        assert!(by(&mut h, 1).unwrap_err().contains("128 steps is the most"));
+        // A recorded clip of 200 sixteenths: a step more is refused, a
+        // step fewer takes one step, never down to 128.
+        h.act(TimeAction::StepSize(240)).unwrap();
+        h.step_action(StepAction::Length {
+            steps: 200,
+            copy: false,
+        })
+        .unwrap();
+        assert!(by(&mut h, 1).is_err());
+        by(&mut h, -1).unwrap();
+        assert_eq!(h.project().clip(0, 0).unwrap().length, 199 * STEP_TICKS);
+        // No clip: nothing.
+        h.act(TimeAction::Arm(Some(1))).unwrap();
+        assert_eq!(by(&mut h, 1), Ok(String::new()));
+    }
+
+    /// A Velocity or Chance lane's stroke (refactor D3): each step it
+    /// crossed gets its own value in one edit, so one UNDO takes the
+    /// whole stroke back; steps it left alone and steps with no note stay
+    /// as they were.
+    #[test]
+    fn a_lanes_stroke_sets_each_step_its_own_value_in_one_undo() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        for step in [0, 4, 8] {
+            h.step_action(StepAction::Tap {
+                pad: 0,
+                step,
+                velocity: 100,
+            })
+            .unwrap();
+        }
+        let before = h.steps().clip.unwrap();
+        let mut values = [0u8; 16];
+        values[0] = 40;
+        values[1] = 90; // no note there: nothing
+        values[4] = 127;
+        let said = h
+            .step_action(StepAction::Values {
+                pad: 0,
+                from: 0,
+                kind: NoteValue::Velocity,
+                values,
+            })
+            .unwrap();
+        assert_eq!(said, "steps: Velocity of pad 1 on 2 steps");
+        let vel = |h: &TimeHost| {
+            let c = h.steps().clip.unwrap();
+            [0, 4, 8].map(|i| c.row(0)[i].map(|s| s.velocity))
+        };
+        assert_eq!(vel(&h), [Some(40), Some(127), Some(100)]);
+        assert!(h.steps().clip.unwrap().row(0)[1].is_none());
+        // Chance the same way, its own edit.
+        let mut chance = [0u8; 16];
+        chance[8] = 25;
+        h.step_action(StepAction::Values {
+            pad: 0,
+            from: 0,
+            kind: NoteValue::Chance,
+            values: chance,
+        })
+        .unwrap();
+        assert_eq!(h.steps().clip.unwrap().row(0)[8].unwrap().chance, 25);
+        // UNDO twice: the chance, then the whole stroke.
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.steps().clip.unwrap().row(0)[8].unwrap().chance, 100);
+        assert_eq!(vel(&h), [Some(40), Some(127), Some(100)]);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.steps().clip.unwrap(), before);
+    }
+
+    /// A play direction moves by 1/16s whatever the step size (refactor
+    /// D1): the playhead lights the step of the 1/16 heard. Reversed, 8
+    /// sixteenths as 4 eighths light 4, 4, 3, 3 ... from the start.
+    #[test]
+    fn a_play_direction_lights_the_step_heard_at_any_step_size() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut clip = Clip::new("Hats", 8 * STEP_TICKS);
+        clip.notes.push(mpfree_seq::Note::new(0, 120, 36, 100));
+        clip.direction = mpfree_seq::Direction::Reverse;
+        clip.step = 480;
+        h.control.project.tracks[0].slots[0] = Some(clip);
+        h.control.project.give_clip_ids();
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 4, &[]);
+        let c = h.steps().clip.unwrap();
+        assert!(c.order.is_some());
+        let o = c.origin.unwrap();
+        let lit: Vec<_> = (0..8).map(|k| c.playing(o + k * STEP_TICKS + 10)).collect();
+        let want: Vec<_> = [3, 3, 2, 2, 1, 1, 0, 0].into_iter().map(Some).collect();
+        assert_eq!(lit, want);
+    }
+
     /// A change the view can't make in place (here, a note it erases that
     /// the project changed behind its back) asks for one compile, which brings it and
     /// the changes after it; the status line counts it.
@@ -3314,6 +3630,267 @@ mod tests {
         assert!(said.contains("UNDO puts it back"), "{said}");
         h.act(TimeAction::Undo).unwrap();
         assert_eq!(h.control.project.arrangement.placements.len(), 2);
+    }
+
+    /// A section moves with its tempo points (Arrange 3.2), one UNDO
+    /// takes the whole move back, and a refusal says why in plain words.
+    #[test]
+    fn a_section_moves_with_its_tempo_and_undo_takes_it_back() {
+        use mpfree_seq::arrange::Placement;
+        const BAR: i64 = 3840;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.control.project.tracks[0].slots[0] = Some(Clip::new("Beat", BAR));
+        h.control.project.give_clip_ids();
+        let tracks = h.control.project.tracks.clone();
+        let song = &mut h.control.project.arrangement;
+        song.place(Placement::of(&tracks, 0, 0, 0, 4 * BAR))
+            .unwrap();
+        song.mark(0, "Intro").unwrap();
+        song.mark(2 * BAR, "Verse").unwrap();
+        song.set_tempo(2 * BAR, 90.0, None).unwrap();
+        let start = h.control.project.arrangement.clone();
+        let said = h
+            .act(TimeAction::MoveSection {
+                marker: 1,
+                gap: 0,
+                copy: false,
+            })
+            .unwrap();
+        assert!(said.contains("Verse moved to bar 1"), "{said}");
+        let song = &h.control.project.arrangement;
+        let tempo: Vec<_> = song.tempo.iter().map(|p| (p.at, p.bpm)).collect();
+        // The Verse's 90 BPM from bar 1, the Intro's 120 after it, and
+        // past the song's end the 90 it had there.
+        assert_eq!(tempo, [(0, 90.0), (2 * BAR, 120.0), (4 * BAR, 90.0)]);
+        assert_eq!(song.placements.len(), 1, "the beat stays one block");
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.control.project.arrangement, start);
+        // The most tempo points a song holds, the Verse starting between
+        // two: refused, nothing changes.
+        let song = &mut h.control.project.arrangement;
+        song.tempo.clear();
+        for k in 0..mpfree_seq::arrange::MAX_TEMPO_POINTS as i64 {
+            let bpm = if k % 2 == 0 { 100.0 } else { 110.0 };
+            song.set_tempo(k * 240, bpm, None).unwrap();
+        }
+        song.markers[1].at = 3 * 240 + 120;
+        let before = h.control.project.arrangement.clone();
+        let said = h
+            .act(TimeAction::MoveSection {
+                marker: 1,
+                gap: 0,
+                copy: false,
+            })
+            .unwrap_err();
+        // The Verse's start and the place it left each need a point.
+        assert_eq!(
+            said,
+            "song: Verse can't go there: the song would need more than 31 tempo points"
+        );
+        assert_eq!(h.control.project.arrangement, before);
+    }
+
+    /// Bars put in and taken out (Arrange 3.3): everything after moves,
+    /// tempo points and markers too, each is one UNDO, and the undo list
+    /// names it.
+    #[test]
+    fn bars_go_in_and_come_out_and_undo_takes_each_back() {
+        use mpfree_seq::arrange::Placement;
+        use mpfree_time_ui::BarsEdit;
+        const BAR: i64 = 3840;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        for (t, name) in [(0, "Beat"), (1, "Bass")] {
+            h.control.project.tracks[t].slots[0] = Some(Clip::new(name, BAR));
+        }
+        h.control.project.give_clip_ids();
+        let tracks = h.control.project.tracks.clone();
+        let song = &mut h.control.project.arrangement;
+        song.place(Placement::of(&tracks, 0, 0, 0, 4 * BAR))
+            .unwrap();
+        song.place(Placement::of(&tracks, 1, 0, 4 * BAR, 2 * BAR))
+            .unwrap();
+        song.mark(0, "Intro").unwrap();
+        song.mark(4 * BAR, "Verse").unwrap();
+        song.set_tempo(4 * BAR, 100.0, None).unwrap();
+        let start = h.control.project.arrangement.clone();
+        let bars = |h: &mut TimeHost, e| h.act(TimeAction::SongBars(e));
+        // Two bars for a bridge before the Verse.
+        let said = bars(
+            &mut h,
+            BarsEdit::Insert {
+                at: 4 * BAR,
+                bars: 2,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            said,
+            "song: 2 empty bars at bar 5; everything after moved on (UNDO takes them out)"
+        );
+        let song = &h.control.project.arrangement;
+        assert_eq!(song.markers[1].at, 6 * BAR, "the Verse moved on");
+        assert_eq!(song.tempo[0].at, 6 * BAR, "and its tempo");
+        assert_eq!(song.placements[1].start, 6 * BAR, "and the bass");
+        let after_insert = song.clone();
+        // A bar out of the Intro's beat.
+        let said = bars(
+            &mut h,
+            BarsEdit::Delete {
+                from: BAR,
+                to: 2 * BAR,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            said,
+            "song: bar 2 taken out; everything after moved back (UNDO puts them back)"
+        );
+        let song = &h.control.project.arrangement;
+        assert_eq!(song.placements[0].length, 3 * BAR, "the beat a bar shorter");
+        assert_eq!(song.markers[1].at, 5 * BAR);
+        // No bars at all: refused, nothing changes.
+        let before = h.control.project.arrangement.clone();
+        let said = bars(
+            &mut h,
+            BarsEdit::Delete {
+                from: 2 * BAR,
+                to: 2 * BAR,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(said, "song: there are no bars to take out at bar 3");
+        assert_eq!(h.control.project.arrangement, before);
+        let st = h.control.state();
+        let row = st.done.last().unwrap();
+        assert_eq!(row.word(), "bars");
+        assert_eq!(mpfree_time_ui::view::take_title(&st, row), "Bars 2 · bar 2");
+        let said = h.act(TimeAction::Undo).unwrap();
+        assert!(said.contains("the song's bars at bar 2"), "{said}");
+        assert_eq!(h.control.project.arrangement, after_insert);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.control.project.arrangement, start, "both undone");
+        // + Bar with the Verse picked, twice: two empty bars before it,
+        // the Verse still picked, and one UNDO for both.
+        let said = bars(&mut h, BarsEdit::RoomBefore(1)).unwrap();
+        assert_eq!(
+            said,
+            "song: 1 empty bar at bar 5; everything after moved on (UNDO takes them out)"
+        );
+        assert_eq!(h.control.state().section, Some(1), "the Verse stays picked");
+        let said = bars(&mut h, BarsEdit::RoomBefore(1)).unwrap();
+        assert!(said.starts_with("song: 1 empty bar at bar 6;"), "{said}");
+        let song = &h.control.project.arrangement;
+        assert_eq!(
+            (
+                song.markers[1].at,
+                song.placements[1].start,
+                song.tempo[0].at
+            ),
+            (6 * BAR, 6 * BAR, 6 * BAR)
+        );
+        let st = h.control.state();
+        let row = st.done.last().unwrap();
+        assert_eq!(
+            row.song,
+            Some(mpfree_play::takes::SongChange::Bars {
+                at: 4 * BAR,
+                len: 2 * BAR,
+                inserted: true
+            }),
+            "the undo list says 2 bars put in"
+        );
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.control.project.arrangement, start, "one UNDO for both");
+        // Delete bars on the Verse: its bars out, with its bass and
+        // marker (what would follow keeps the tempo it had); UNDO puts
+        // them back.
+        let said = bars(&mut h, BarsEdit::DeleteSection(1)).unwrap();
+        assert_eq!(
+            said,
+            "song: bars 5 to 6 taken out; everything after moved back (UNDO puts them back)"
+        );
+        let song = &h.control.project.arrangement;
+        assert_eq!((song.placements.len(), song.markers.len()), (1, 1));
+        let said = bars(&mut h, BarsEdit::DeleteSection(1)).unwrap_err();
+        assert!(said.starts_with("song: "), "{said}");
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.control.project.arrangement, start);
+    }
+
+    /// Markers added, renamed, moved and taken away (Arrange 3.3): only the
+    /// markers change, each is one UNDO, and names are kept.
+    #[test]
+    fn markers_are_added_renamed_moved_and_taken_away_each_one_undo() {
+        use mpfree_seq::arrange::Placement;
+        use mpfree_time_ui::MarkerEdit;
+        const BAR: i64 = 3840;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.control.project.tracks[0].slots[0] = Some(Clip::new("Beat", BAR));
+        h.control.project.give_clip_ids();
+        let tracks = h.control.project.tracks.clone();
+        let song = &mut h.control.project.arrangement;
+        song.place(Placement::of(&tracks, 0, 0, 0, 8 * BAR))
+            .unwrap();
+        song.mark(0, "Intro").unwrap();
+        let start = h.control.project.arrangement.clone();
+        let marker = |h: &mut TimeHost, e| h.act(TimeAction::SongMarker(e));
+        let names = |h: &TimeHost| -> Vec<(i64, String)> { h.control.state().markers.clone() };
+        let said = marker(&mut h, MarkerEdit::Add(4 * BAR)).unwrap();
+        assert_eq!(said, "song: marker A at bar 5 (UNDO takes it away)");
+        assert_eq!(h.control.state().section, Some(1), "picked");
+        let said = marker(&mut h, MarkerEdit::Add(4 * BAR)).unwrap_err();
+        assert_eq!(said, "song: there's a marker at bar 5 already");
+        let said = marker(
+            &mut h,
+            MarkerEdit::Rename {
+                index: 1,
+                name: " Bridge ".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(said, "song: A is Bridge now (UNDO gives its name back)");
+        let said = marker(
+            &mut h,
+            MarkerEdit::Rename {
+                index: 1,
+                name: "  ".into(),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(said, "song: Bridge needs a name");
+        let said = marker(
+            &mut h,
+            MarkerEdit::Move {
+                index: 1,
+                at: 6 * BAR,
+            },
+        )
+        .unwrap();
+        assert!(said.starts_with("song: Bridge moved to bar 7;"), "{said}");
+        assert_eq!(
+            names(&h),
+            [(0, "Intro".to_string()), (6 * BAR, "Bridge".to_string())]
+        );
+        let said = marker(&mut h, MarkerEdit::Move { index: 1, at: 0 }).unwrap_err();
+        assert_eq!(said, "song: Bridge can't go onto another marker at bar 1");
+        let said = marker(&mut h, MarkerEdit::Delete(1)).unwrap();
+        assert_eq!(
+            said,
+            "song: marker Bridge taken away; its bars join Intro (UNDO puts it back)"
+        );
+        assert_eq!(
+            h.control.project.arrangement.placements, start.placements,
+            "only the markers changed"
+        );
+        let said = h.act(TimeAction::Undo).unwrap();
+        assert!(said.contains("the song's marker at bar 7"), "{said}");
+        assert_eq!(names(&h)[1].1, "Bridge", "back with its name");
+        for _ in 0..3 {
+            h.act(TimeAction::Undo).unwrap();
+        }
+        assert_eq!(h.control.project.arrangement, start, "every edit undone");
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(names(&h)[1], (4 * BAR, "A".to_string()));
     }
 
     #[test]
@@ -8009,6 +8586,63 @@ mod tests {
         assert!(!Arc::ptr_eq(&b.clip, &d.clip));
         assert_eq!(d.clip.notes.len(), 4);
         assert!(Arc::ptr_eq(&d.clip, &info(&mut h).clip));
+    }
+
+    /// Piano roll plan 0C.2: the copy of the clip the screen reads carries
+    /// the answer to the editor's last touch, numbered: taken with the new
+    /// revision and where its notes landed, refused with why, or nothing
+    /// changed.
+    #[test]
+    fn the_note_editors_copy_answers_each_touch() {
+        use mpfree_time_ui::editor::EditAction as E;
+        use mpfree_time_ui::view::EditOutcome as O;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        for step in [0, 4, 8] {
+            h.step_action(StepAction::Tap {
+                pad: 0,
+                step,
+                velocity: 100,
+            })
+            .unwrap();
+        }
+        let answer = |h: &mut TimeHost| {
+            h.take_changed();
+            h.state().edit.unwrap().answer
+        };
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        let a = answer(&mut h);
+        assert_eq!((a.n, a.outcome), (1, O::Unchanged));
+        let rev = h.state().edit.unwrap().rev;
+        // A pick: nothing changed.
+        h.act(TimeAction::Edit(E::Note { index: 1, rev })).unwrap();
+        assert_eq!(answer(&mut h).outcome, O::Unchanged);
+        // A move: taken, at a new revision, the note where it landed.
+        h.act(TimeAction::Edit(E::Drop {
+            ticks: 240,
+            notes: 2,
+        }))
+        .unwrap();
+        let a = answer(&mut h);
+        let st = h.state().edit.unwrap();
+        assert_eq!(a.n, 3);
+        assert_eq!(a.from, rev);
+        let O::Taken { rev: now, landed } = a.outcome else {
+            panic!("{a:?}")
+        };
+        assert_eq!(now, st.rev);
+        assert!(now > rev);
+        assert_eq!(landed.len(), 1);
+        let n = st.clip.notes[landed[0]];
+        assert_eq!((n.tick, n.note), (4 * STEP_TICKS + 240, 2));
+        // A tap on the old picture: refused, and why.
+        h.act(TimeAction::Edit(E::Note { index: 0, rev }))
+            .unwrap_err();
+        let a = answer(&mut h);
+        assert_eq!(a.n, 4);
+        assert!(
+            matches!(&a.outcome, O::Refused(why) if why.contains("the clip changed")),
+            "{a:?}"
+        );
     }
 
     /// An editor edit that what plays can't follow (the play view would not

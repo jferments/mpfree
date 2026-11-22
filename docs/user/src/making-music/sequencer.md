@@ -27,7 +27,7 @@ A **pattern** is a loop of steps, like a grid: each row is a pad, each column a 
 
 Changes play the next time the pattern comes round. **PLAY** starts the pattern on the screen when nothing else is playing, and a line moves across the grid to show where it is.
 
-The heading over the grid has, from the left: the red **Armed** pill, the clip chip with the pattern's name, the track's name, **+ Lane** (see [Lock lanes](#lock-lanes)), the page arrows **‹ 1/1 ›** and the length **– 16 steps +**.
+The heading over the grid has, from the left: the red **Armed** pill, the clip chip with the pattern's name, the track's name, **+ Lane** (see [Lock lanes](#lock-lanes)), the page arrows **‹ 1/1 ›**, the step size chip **1/16 ▾** (see [Change the step size](#change-the-step-size)) and the length **– 16 steps +**.
 
 ### Edit another clip
 
@@ -39,9 +39,21 @@ The list starts with **What plays**, which goes back to editing the clip that pl
 
 **Mute a row.** Each row's name is its mute button, with a speaker in the box beside it: tap the name to mute that pad on this track, so you can drop the kick out and bring it back. Another track playing the same kit keeps its kick, rows on every bank and kit have a mute, and a synth's rows (notes, not pads) have none. Hold **ERASE** and tap a row's name to delete all of that sound's steps.
 
-**Make it longer.** A pattern starts at 16 steps, one bar of 16ths. Tap **+** at the top right of the pattern to double it to 32 steps, then 64, then 128 (eight bars). The new steps repeat the ones you have, so the beat carries on and you change what you want in the copy. **‹** and **›** turn the pages of 16 steps, and the number between them says which page you're on. **–** halves the pattern again, down to 16 steps; press **UNDO** if you want the steps it took off back.
+**Make it longer.** A pattern starts at 16 steps, one bar of 16ths. Tap **+** at the top right of the pattern to double it to 32 steps, then 64, then 128 (eight bars of 16ths). The new steps repeat the ones you have, so the beat carries on and you change what you want in the copy. **‹** and **›** turn the pages of 16 steps, and the number between them says which page you're on. **–** halves the pattern again, down to 16 steps; press **UNDO** if you want the steps it took off back.
+
+**Any length.** For a 13-step bass line against a 16-step beat, tap the length (**16 steps**) and turn the wheel, or press the **–** and **+** buttons by the wheel: each click adds or takes one step, down to 1 and up to 128. New steps are empty, and **UNDO** brings back a step you took off, notes and all. **SHIFT** + **–** or **+** halves or doubles it as the buttons on the screen do. Push the wheel, or tap somewhere else, when you're done.
 
 With more rows than fit, swipe the rows up and down; the bar at the right shows where you are. Turning **Timing strip** off in the Sequencer's options (**MENU**) gives the pattern more rows.
+
+### Change the step size
+
+Each step is a 16th note to begin with. For a slow bass line in 8ths, hi-hats in 32nds or a shuffle in triplets, tap the step size chip (**1/16 ▾**, left of the length) and pick a size: **1/4**, **1/8**, **1/8T**, **1/16**, **1/16T** or **1/32** (T is a triplet). Each row says how many steps the pattern has at that size.
+
+No note moves and the pattern keeps its length: a one-bar pattern of 16 sixteenths becomes 8 eighths or 32 thirty-seconds, and the notes that fall between the new steps stay where they are, as a nudge on the nearest step. New taps go on the new steps. Each pattern keeps its own step size, it's saved with the song, and **UNDO** puts the old size back. With **STEP SEQ** on, the step pads follow the size too.
+
+Turn the wheel and push to pick a row, or tap **Back** to keep the size you have. The chip is greyed until the track has a pattern: tap a step first.
+
+{{shot: sequencer-step-size | The step size list: 1/4 to 1/32 with the steps each gives, 1/16 the size now.}}
 
 ### Reading the pattern
 
@@ -89,6 +101,7 @@ The conditions are:
 While a step is picked, the bottom of the Steps view (where the throws are) shows everything about it:
 
 - **Its eight settings**, with the ones the Q-Links turn outlined: velocity, length, nudge, chance, condition, ratchet, ramp and **Tie / Slide**. Tie / Slide changes with a tap: **off**; **tie**, which joins the step's note to the same note before it with no new attack; or **slide**, which overlaps the note before so a synth set to glide slides into it.
+- **A ratchet's hits**, drawn as small bars beside its number, one per hit and as tall as it plays. Turn **Ramp** and you see a roll rise or fall before you hear it.
 - **Step**, **Trig** and **Sound**, which you can tap instead of pressing **Q-LINK**.
 - **Locks on this step**, each with a **×** that takes it off.
 - **On** and **Off**, which switch the step off and back on with everything kept (the title says "off" while it is). A tap on a step that is off also switches it back on.
@@ -96,6 +109,22 @@ While a step is picked, the bottom of the Steps view (where the throws are) show
 - **Clear**, which takes the step out.
 
 **UNDO** brings back whatever a tap there changed. Tap **×** at its top right to close it: the step stays, the throws come back, and **Q-LINK** reaches your macros again.
+
+{{shot: sequencer-step-ratchet | The step inspector on a hi-hat step of four hits, its ramp at +45: the bars in the Ratchet card rise from the first hit to the last.}}
+
+### Draw velocity and chance
+
+How hard each hit plays, and how often, can be drawn with a finger, like accents on a drum machine's velocity lane.
+
+1. Hit the pad, then tap **+ Lane** at the top of the pattern (it also adds [lock lanes](#lock-lanes)). The list starts with that pad's **Velocity** and **Chance**.
+2. Tap one. A lane opens under the sound with a bar on every step it hits, as tall as the hit is loud (1 to 127) or as likely to play (1 to 100 %), the number over it.
+3. Drag a finger along the lane. Each step you pass goes to the height under your finger, so a slow wave gives soft and loud hits in one go. Nothing changes in the sound until you lift your finger, and then one **UNDO** takes the whole stroke back.
+
+Tap a bar to set just that step. To set one exactly, keep your finger on its bar and turn the data wheel: 5 a click, or 1 with **SHIFT** held. A second finger on the pattern while you draw calls the stroke off. Steps without a hit have no bar, and a step you switched off draws faint.
+
+The **×** takes the lane away; the hits keep the velocity or chance you drew. These lanes are on drum tracks; on a synth track, set a note's velocity in the step inspector or the note editor.
+
+{{shot: sequencer-value-lanes | A Velocity lane under the hi-hat: every beat's hit at 118, the ones between at 52 to 84, each a bar with its number.}}
 
 ## Locks: a step that changes the sound
 
@@ -114,7 +143,7 @@ When two tracks play the same instrument (the synth, or one track's instrument t
 
 A **lock lane** shows one setting step by step, under its sound, like a row of its own: the sound's tune, decay, filter, level or slice (on a sliced pad), or the track's volume, pan or sends. Every setting the pattern already locks has a lane, so locks you recorded live show up.
 
-1. Hit the pad whose sound you want to lock, then tap **+ Lane** at the top of the pattern. The list shows that pad's settings first, then the track's.
+1. Hit the pad whose sound you want to lock, then tap **+ Lane** at the top of the pattern. The list shows that pad's settings first (after its [Velocity and Chance](#draw-velocity-and-chance)), then the track's.
 2. Tap a setting (or turn the wheel to it and push). It gets an empty lane under its sound, and the rows scroll to it.
 3. Tap a square on the lane to lock that step at the sound's own setting.
 4. Drag it up or down (hold **SHIFT** for fine steps), or keep your finger on it and turn the data wheel. Each locked step shows a purple bar as high as its value, with the value over it.
@@ -125,7 +154,7 @@ A send's lane throws on chosen steps: lock **Delay send** high on the last two s
 
 **On a track that plays another track's instrument** (see [Share one between tracks](synths.md#a-synth-for-each-track)), the volume, pan and sends lanes move that instrument's mixer channel, since that is where the track is heard. If the instrument's own track, or another track that plays it, locks the same setting at the same time, the track you made first moves it, and the other's lock takes over when it stops.
 
-{{shot: sequencer-lanes-list | The list + Lane opens: the kick's settings (the pad hit last) first, then the track's volume, pan and sends.}}
+{{shot: sequencer-lanes-list | The list + Lane opens: the kick's Velocity and Chance (the pad hit last), then its settings to lock, then the track's volume, pan and sends.}}
 
 {{shot: sequencer-lock-lanes | Lock lanes on the Steps: Tune and Decay under the kick, a Tune lane under the snare, each locked step a purple bar with its value.}}
 

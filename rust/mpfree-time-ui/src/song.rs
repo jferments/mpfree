@@ -88,6 +88,14 @@ pub const SONG_BUTTONS: [&str; 6] = [
 pub const AUDIO_BUTTONS: [&str; 6] = ["Split", "Erase", "Fades", "Gain", "Takes", "Undo"];
 /// The last two buttons while a tempo point is picked (tempo ramps).
 pub const TEMPO_BUTTONS: [&str; 2] = ["Ramp", "Delete"];
+/// The last four buttons while a section is picked (Arrange 3.3).
+pub const SECTION_BUTTONS: [&str; 4] = ["+ Bar", "Rename", "Remove marker", "Delete bars"];
+/// The ruler, as the row of [`EventKind::Place`]: a marker added on the
+/// bar at `at` (index [`NONE`], a tap where no name is), or marker
+/// `index` moved there (the picked section's grip dragged).
+pub const RULER_ROW: usize = 0x501;
+/// The picked section's grip on the ruler: its width, left of its marker.
+pub const GRIP_W: i32 = 28;
 /// The tempo lane, as the row of [`EventKind::Place`] (a point added, with
 /// index [`NONE`], or point `index` moved to `at`) and of
 /// [`EventKind::Cell`] (point `col` picked).
@@ -484,6 +492,10 @@ pub(crate) enum Held {
     /// Tempo point `k`, or the tempo lane where there is none (`None`: a
     /// tap there adds one).
     Tempo { k: Option<usize>, dt: Tick },
+    /// The ruler where no name is: a tap adds a marker (Arrange 3.3).
+    Ruler,
+    /// The picked section's grip: marker `k` alone moves (Arrange 3.3).
+    MarkerGrip { k: usize, dt: Tick },
 }
 
 /// A finger holding something on the Song view.
@@ -989,6 +1001,8 @@ impl SongLanes {
         let g = self.geo(r);
         let widths = if self.region.is_some() {
             [84, 84, 84, 84, 84, 84]
+        } else if self.section_buttons() {
+            [84, 124, 90, 110, 150, 150]
         } else {
             [84, 124, 140, 140, 124, 96]
         };
@@ -1426,6 +1440,46 @@ impl SongLanes {
         ))
     }
 
+    /// Whether the last four buttons are the picked section's
+    /// ([`SECTION_BUTTONS`]): a section picked, and no audio region or
+    /// tempo point.
+    pub fn section_buttons(&self) -> bool {
+        self.region.is_none()
+            && self.tempo_pick.is_none()
+            && self.section.is_some_and(|k| k < self.markers.len())
+    }
+
+    /// The picked section's grip on the ruler, left of its marker, if its
+    /// marker shows: [`GRIP_W`] wide, the ruler's height.
+    pub fn grip_rect(&self, r: Rect) -> Option<Rect> {
+        let k = self.section?;
+        let g = self.geo(r);
+        let x = self.x_of(g.ruler, self.markers.get(k)?.0);
+        if x < g.ruler.x + NAME_W || x >= g.ruler.right() {
+            return None;
+        }
+        let left = (x - GRIP_W).max(g.ruler.x + NAME_W);
+        (x - left >= 12).then(|| Rect::new(left, g.ruler.y, x - left, RULER_H))
+    }
+
+    /// The ruler right of the name column, where a tap adds a marker.
+    pub fn ruler_rect(&self, r: Rect) -> Rect {
+        let g = self.geo(r);
+        Rect::new(g.ruler.x + NAME_W, g.ruler.y, g.ruler.w - NAME_W, RULER_H)
+    }
+
+    /// Where the ruler tapped or the grip held lands: the nearest bar
+    /// line, never before bar 1.
+    fn ruler_landing(&self, r: Rect, gr: &Grip) -> Tick {
+        let dt = match gr.held {
+            Held::MarkerGrip { dt, .. } => dt,
+            _ => 0,
+        };
+        let bar = self.bar.max(1);
+        let t = self.tick_at(self.geo(r).lanes, gr.at.0) - dt;
+        ((t + bar / 2).div_euclid(bar) * bar).max(0)
+    }
+
     /// The picked placement's end grip, if its end shows.
     pub fn end_rect(&self, r: Rect) -> Option<Rect> {
         let b = self.block(self.selected?)?;
@@ -1548,6 +1602,21 @@ impl SongLanes {
             }
             // A swipe along the empty lane does nothing.
             Held::Tempo { k: None, .. } => None,
+            Held::Ruler if !gr.lifted => Some(EventKind::Place {
+                index: NONE,
+                row: RULER_ROW,
+                at: self.ruler_landing(r, gr),
+            }),
+            Held::Ruler => None,
+            Held::MarkerGrip { .. } if !gr.lifted => None,
+            Held::MarkerGrip { k, .. } => {
+                let at = self.ruler_landing(r, gr);
+                (self.markers.get(k)?.0 != at).then_some(EventKind::Place {
+                    index: k,
+                    row: RULER_ROW,
+                    at,
+                })
+            }
         }
     }
 
@@ -1796,7 +1865,21 @@ impl SongLanes {
                     self.paint_tag(cx, (l.right() - 60).max(l.x), l.y - 24, &text);
                 }
             }
-            Held::Tempo { k: None, .. } => {}
+            Held::Tempo { k: None, .. } | Held::Ruler => {}
+            Held::MarkerGrip { k, .. } => {
+                // A line where the marker lands, and a tag saying where
+                // its section will start; the blocks stay as they are.
+                let at = self.ruler_landing(r, gr);
+                let x = self.x_of(g.lanes, at);
+                if x >= g.lanes.x + NAME_W && x <= g.lanes.right() {
+                    let h = g.lanes.bottom() - g.ruler.y;
+                    cx.canvas
+                        .fill_round_rect(Rect::new(x - 1, g.ruler.y, 2, h), 1, t.accent);
+                    let name = self.markers.get(k).map_or("", |m| m.1.as_str());
+                    let text = format!("{name} from bar {}", at / bar + 1);
+                    self.paint_tag(cx, x + 6, g.ruler.y + RULER_H + 4, &text);
+                }
+            }
             Held::Tempo { k: Some(k), .. } => {
                 // A line where it lands, and its tempo and bar on a tag.
                 let at = self.tempo_landing(r, gr);
@@ -2051,11 +2134,25 @@ impl Widget for SongLanes {
             );
             let mut ink = t.warn;
             if self.section == Some(k) {
-                // Picked, for the wheel: the name on a pill.
+                // Picked, for the wheel: the name on a pill, and its grip
+                // (two short bars) left of the marker, which moves the
+                // marker alone (Arrange 3.3).
                 let w = cx.measure(FontId::Bold, t.size_small - 2.0, name) + 10;
                 cx.canvas
                     .fill_round_rect(Rect::new(x, g.ruler.y + 11, w, 16), 8, t.warn);
                 ink = t.ink_on(t.warn);
+                if let Some(gp) = self.grip_rect(r) {
+                    let pill = Rect::new(gp.right() - 15, gp.y + 2, 13, gp.h - 4);
+                    cx.canvas.fill_round_rect(pill, 4, t.raised);
+                    for k in 0..2 {
+                        let bx = pill.x + 4 + k * 4;
+                        cx.canvas.fill_round_rect(
+                            Rect::new(bx, pill.y + 5, 2, pill.h - 10),
+                            1,
+                            t.warn,
+                        );
+                    }
+                }
             }
             cx.text(
                 FontId::Bold,
@@ -2270,9 +2367,10 @@ impl Widget for SongLanes {
             .tempo_pick
             .and_then(|i| self.tempo.get(i))
             .filter(|_| !audio);
+        let section = self.section_buttons();
         for (k, br) in self.button_rects(r).iter().enumerate() {
             let lit = (k == 1 && self.on && !audio) || (k == 4 && tempo.is_some_and(|p| p.2));
-            let live = audio || tempo.is_some() || !(k >= 4 && !selected);
+            let live = audio || tempo.is_some() || section || !(k >= 4 && !selected);
             let fill = if lit {
                 t.good
             } else if live {
@@ -2298,6 +2396,8 @@ impl Widget for SongLanes {
                 }
             } else if k >= 4 && tempo.is_some() {
                 TEMPO_BUTTONS[k - 4]
+            } else if k >= 2 && section {
+                SECTION_BUTTONS[k - 2]
             } else {
                 SONG_BUTTONS[k]
             };
@@ -2327,6 +2427,8 @@ impl Widget for SongLanes {
                     ("region-button", AUDIO_BUTTONS[k])
                 } else if tempo {
                     ("tempo-button", TEMPO_BUTTONS[k - 4])
+                } else if k >= 2 && self.section_buttons() {
+                    ("section-button", SECTION_BUTTONS[k - 2])
                 } else {
                     ("button", SONG_BUTTONS[k])
                 };
@@ -2390,10 +2492,28 @@ impl Widget for SongLanes {
                 Target::drag("block-end", b.index, format!("{} end", b.name), e).towards(-40, 0),
             );
         }
+        let mut free = self.ruler_rect(r);
         for (k, (_, name)) in self.markers.iter().enumerate() {
             if let Some(m) = self.marker_rect(r, k) {
                 out.push(Target::tap("section", k, name.clone(), m));
+                if m.right() > free.x {
+                    free = Rect::new(m.right(), free.y, (free.right() - m.right()).max(0), free.h);
+                }
             }
+        }
+        // The ruler past the last name (a tap there adds a marker), and
+        // the picked section's grip (Arrange 3.3).
+        if free.w >= 40 {
+            out.push(Target::tap("ruler", 0, "Ruler", free));
+        }
+        if let (Some(k), Some(gp)) = (self.section, self.grip_rect(r)) {
+            let name = self.markers.get(k).map_or("", |m| m.1.as_str());
+            out.push(
+                Target::drag("section-grip", k, format!("{name} starts"), gp).towards(
+                    self.x_of(self.geo(r).lanes, self.bar) - self.x_of(self.geo(r).lanes, 0),
+                    0,
+                ),
+            );
         }
         if let (Some(p), Some(lane)) = (
             panel,
@@ -2618,11 +2738,24 @@ impl Widget for SongLanes {
                 return None;
             }
         }
+        // The picked section's grip: its marker alone moves.
+        if let (Some(k), Some(gp)) = (self.section, self.grip_rect(r)) {
+            if gp.contains(x, y) {
+                let dt = self.tick_at(g.lanes, x) - self.markers[k].0;
+                self.grip = Some(Grip::new(Held::MarkerGrip { k, dt }, x, y));
+                return None;
+            }
+        }
         if let Some(k) = (0..self.markers.len())
             .find(|&k| self.marker_rect(r, k).is_some_and(|m| m.contains(x, y)))
         {
             let dt = self.tick_at(g.lanes, x) - self.markers[k].0;
             self.grip = Some(Grip::new(Held::Section { k, dt }, x, y));
+            return None;
+        }
+        // The ruler where no name is: a tap adds a marker.
+        if self.ruler_rect(r).contains(x, y) {
+            self.grip = Some(Grip::new(Held::Ruler, x, y));
             return None;
         }
         let hit = self
@@ -2880,6 +3013,78 @@ mod tests {
         );
         let t = s.targets(r);
         assert_eq!(t.iter().filter(|t| t.id == "section").count(), 3);
+    }
+
+    /// Arrange 3.3: a tap on the ruler where no name is adds a marker on
+    /// the nearest bar; a swipe there does nothing; the picked section's
+    /// grip, left of its marker, drags the marker alone to the bar; and a
+    /// picked section turns the last four buttons into its own.
+    #[test]
+    fn a_tap_on_the_ruler_adds_a_marker_and_the_grip_moves_it() {
+        let mut s = lanes();
+        let bar = 3840;
+        s.markers = vec![(0, "Intro".into()), (4 * bar, "Verse".into())];
+        let r = Rect::new(12, 140, 814, 534);
+        let ruler = s.ruler_rect(r);
+        let bar_px = f64::from(ruler.w) / 16.0;
+        let x_at = |b: f64| ruler.x + (b * bar_px).round() as i32;
+        let y = ruler.y + ruler.h / 2;
+        // Bar 11 and a bit: past Verse's name, the nearest bar line.
+        let x = x_at(10.3);
+        s.touch(1, Touch::Down, x, y, r);
+        assert_eq!(
+            s.touch(1, Touch::Up, x, y, r),
+            Some(EventKind::Place {
+                index: NONE,
+                row: RULER_ROW,
+                at: 10 * bar
+            })
+        );
+        s.touch(1, Touch::Down, x, y, r);
+        s.touch(1, Touch::Move, x + 3 * bar_px as i32, y, r);
+        assert_eq!(s.touch(1, Touch::Up, x + 3 * bar_px as i32, y, r), None);
+        // No grip until a section is picked; then left of its marker.
+        assert_eq!(s.grip_rect(r), None);
+        assert!(!s.section_buttons());
+        s.section = Some(1);
+        let gp = s.grip_rect(r).unwrap();
+        assert_eq!((gp.right(), gp.w), (x_at(4.0), GRIP_W));
+        assert!(s.section_buttons());
+        let (gx, gy) = (gp.x + gp.w / 2, gp.y + gp.h / 2);
+        // A tap on it does nothing; dragged two bars on, Verse's marker
+        // lands on bar 7.
+        s.touch(1, Touch::Down, gx, gy, r);
+        assert_eq!(s.touch(1, Touch::Up, gx, gy, r), None);
+        s.touch(1, Touch::Down, gx, gy, r);
+        s.touch(1, Touch::Move, gx + 2 * bar_px as i32, gy, r);
+        assert_eq!(
+            s.touch(1, Touch::Up, gx + 2 * bar_px as i32, gy, r),
+            Some(EventKind::Place {
+                index: 1,
+                row: RULER_ROW,
+                at: 6 * bar
+            })
+        );
+        // Let go where it started: nothing.
+        s.touch(1, Touch::Down, gx, gy, r);
+        s.touch(1, Touch::Move, gx, gy + 20, r);
+        assert_eq!(s.touch(1, Touch::Up, gx, gy + 20, r), None);
+        let t = s.targets(r);
+        let words: Vec<&str> = t
+            .iter()
+            .filter(|t| t.id == "section-button")
+            .map(|t| t.label.as_str())
+            .collect();
+        assert_eq!(words, SECTION_BUTTONS);
+        assert_eq!(t.iter().filter(|t| t.id == "section-grip").count(), 1);
+        assert_eq!(t.iter().filter(|t| t.id == "ruler").count(), 1);
+        // The buttons still fit where they were.
+        let b = s.button_rects(r);
+        assert!(b[5].right() <= r.right());
+        // A tempo point picked takes the last buttons back.
+        s.tempo = vec![(0, 120.0, false)];
+        s.tempo_pick = Some(0);
+        assert!(!s.section_buttons());
     }
 
     /// Tempo ramps: the tempo lane sits under the ruler, above the lanes;
