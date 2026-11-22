@@ -2544,7 +2544,9 @@ fn paint_value_lane(
     let mb = g.mute_button(k);
     let nr = Rect::new(g.names.x, y, mb.x - 4 - g.names.x, g.rh);
     cx.canvas.fill_round_rect(nr, 8, t.surface);
-    dashed_outline(cx, nr, t.outline);
+    // In the hook's ink, as a lock lane's is in its own: the theme's
+    // outline is too faint for a dashed line (under 3:1 in Console).
+    dashed_outline(cx, nr, t.text_dim.with_alpha(170));
     // The hook from the sound above.
     cx.canvas
         .fill_rect(Rect::new(nr.x + 9, nr.y + 7, 2, 10), t.text_dim);
