@@ -369,7 +369,7 @@ fn rec_ready_hint(c: &play_widgets::RecChip) -> String {
 fn track_mute_hint(bank: usize, tracks: usize) -> String {
     format!(
         "TRACK MUTE · {}   ·   PAD BANK: other tracks   ·   green: playing, red: muted   ·   \
-         SHIFT + TRACK MUTE: the kit's pads   ·   TRACK MUTE: the pads play again",
+         SHIFT + TRACK MUTE: the track's pads   ·   TRACK MUTE: the pads play again",
         crate::app::mute_bank_words(bank, tracks)
     )
 }
@@ -474,7 +474,7 @@ fn perform_chip(page: &str) -> String {
 }
 
 const PAD_MUTE_HINT: &str =
-    "SHIFT + TRACK MUTE:   a pad mutes and unmutes itself in the kit   ·   red: muted   ·   \
+    "SHIFT + TRACK MUTE:   a pad mutes and unmutes itself on this track   ·   red: muted   ·   \
                              TRACK MUTE: tracks   ·   SHIFT + TRACK MUTE: the pads play again";
 const SHIFT_SYNTH_HINT: &str =
     "SHIFT +   touch a knob: MIDI Learn   ·   wheel: page   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
@@ -879,31 +879,16 @@ fn played_name(h: crate::instruments::Held, from: Option<usize>) -> String {
     }
 }
 
-/// What a pad mute says on a track that plays kit `kit` (counted from
-/// 0, and not kit 1): its pads play through the track's channel, which
-/// has the mute. `what` starts the line ("steps", "pad mute").
-pub fn other_kit_mutes(what: &str, kit: usize) -> String {
-    format!(
-        "{what}: Kit {}'s pads play through their track's channel: mute the track",
-        kit + 1
-    )
-}
-
-/// Why a kit pad has no mute of its own, in a line starting `what`: on
-/// kit `kit` (the armed track's, counted from 0) past kit 1 its pads play
-/// through their track's channel; on page `page` past A (PAD BANK) they
-/// have no pad strips, which only kit 1's pads A1-A16 have until any pad
-/// can have its own channel. None for those 16, and for no kit (the
-/// synth's pads).
-pub fn no_pad_mutes(what: &str, kit: Option<usize>, page: usize) -> Option<String> {
-    match kit? {
-        0 if page == 0 => None,
-        0 => Some(format!(
-            "{what}: pads {}-{} have no mixer strips of their own yet (A1-A16 have): mute the track",
-            crate::app::kit_pad_name(page * 16),
-            crate::app::kit_pad_name(page * 16 + 15)
+/// Why a track's pads have no mutes, in a line starting `what`: it plays
+/// notes (the synth, or an instrument: `kit` None), and pad mutes are a
+/// kit's. None on a kit: any kit's pads, on any bank, mute on their track
+/// (the instrument redesign's step 10).
+pub fn no_pad_mutes(what: &str, kit: Option<usize>) -> Option<String> {
+    match kit {
+        Some(_) => None,
+        None => Some(format!(
+            "{what}: this track plays notes, and pad mutes are a kit's: mute the track"
         )),
-        k => Some(other_kit_mutes(what, k)),
     }
 }
 
@@ -1404,6 +1389,10 @@ pub enum ToUi {
         delta: i32,
         scroll: bool,
     },
+    /// TC with the note editor showing (piano roll plan 1A.1): its drawer
+    /// opens on Timing Correct's settings, or, open already, the notes are
+    /// corrected.
+    EditTc,
     /// The Map controls page (debug mode).
     Map(Box<MapView>),
     /// The audio loop's CPU by engine numbers, sent once at the start; the
@@ -1570,6 +1559,13 @@ pub enum FromUi {
     /// An opened project's audio tracks with their takes' audio, read on
     /// their own thread: they go in once the old ones are emptied.
     OpenAudio(Box<mpfree_audiotracks::save::Saved>),
+    /// The audio tracks record each take to a file of its own in this
+    /// folder (the library's work folder for them) from now on: sent once
+    /// at start, after what a cut-off run left there is recovered.
+    AudioFiles(std::path::PathBuf),
+    /// A project save finished into this folder (the project's
+    /// `samples/`): the audio tracks keep their takes' files from there.
+    AudioSavedInto(std::path::PathBuf),
     /// The Pads tab's Browse for: open the browser, whose Load puts a
     /// sound on the pad picked.
     PadsBrowse,
@@ -1918,9 +1914,16 @@ pub enum FromUi {
     /// the next control moved on a keyboard or controller to take it. The
     /// same value again cancels.
     LearnValue(LearnValue),
-    /// The Play page: a filter, a send, a fader, a speaker, a throw or the
-    /// XY pad, for the mixer (`mixing.rs`).
+    /// The Play page: a filter, a send, a fader, a throw or the XY pad,
+    /// for the mixer (`mixing.rs`).
     PlayFx(PlayFx),
+    /// A pattern row's speaker: pad `pad` of `track`'s kit muted or let
+    /// play on that track, at once (the instrument redesign's step 10).
+    PadMute {
+        track: usize,
+        pad: usize,
+        mute: bool,
+    },
     /// The Play page's pattern: a step tapped or changed.
     Steps(StepAction),
     /// The sampler's line input: its writing end, for the audio thread to
@@ -2195,6 +2198,11 @@ pub struct Player {
     /// An opened project's audio tracks being read (the takes' files can
     /// be big).
     audio_load: Option<std::sync::mpsc::Receiver<AudioRead>>,
+    /// The audio tracks' recovery at start, on its own thread: their work
+    /// folder and the lines it says ([`Player::recover_audio_files`]).
+    #[allow(clippy::type_complexity)]
+    audio_recover:
+        Option<std::sync::mpsc::Receiver<(std::path::PathBuf, std::io::Result<Vec<String>>)>>,
     /// The browser's preview level, in dB (its Q-Link 3).
     preview_db: f32,
     /// A sound file being read for the preview.
@@ -2788,6 +2796,7 @@ impl Player {
             loops_load: None,
             file_saves: Vec::new(),
             audio_load: None,
+            audio_recover: None,
             preview_db: crate::preview::LEVEL_DB,
             preview_load: None,
             midi_load: None,
@@ -5913,10 +5922,11 @@ impl Player {
     /// pattern, the throws, the XY pad and the timing. Only what changed
     /// is marked for drawing.
     fn refresh_play(&mut self) {
-        self.play.pad_strips = !matches!(
-            self.track_kits.kit_of(self.play.steps.track),
-            Some(k) if k > 0
-        );
+        self.play.pad_mutes = self
+            .time
+            .tracks
+            .get(self.play.steps.track)
+            .map_or(0, |t| t.pad_mutes);
         let mut look = self.play.transport_look();
         look.rec = Some(self.refresh_rec_chip());
         look.pads = self.pads_play();
@@ -9838,10 +9848,23 @@ impl Player {
                 delta,
                 scroll: true,
             } => {
-                if let Some(a) = self.time_page.scroll(&self.ui, delta) {
+                if let Some(a) = self.time_page.scroll(&mut self.ui, delta) {
                     self.outbox.push(FromUi::Time(a));
                 }
                 self.time_page.update(&mut self.ui, &self.time);
+            }
+            ToUi::EditTc => {
+                if self.time_page.edit_drawer && self.time.edit.is_some() {
+                    self.outbox
+                        .push(FromUi::Time(TimeAction::Edit(EditAction::Correct)));
+                } else {
+                    // Timing Correct's settings: the drawer's first rows.
+                    self.time_page.edit_drawer = true;
+                    self.outbox
+                        .push(FromUi::Time(TimeAction::Edit(EditAction::PickRow(0))));
+                    self.time_page.update(&mut self.ui, &self.time);
+                    self.refresh_hint();
+                }
             }
             ToUi::ClipsWheel {
                 delta,
@@ -9893,6 +9916,19 @@ impl Player {
     /// (`app::RowKey`): pick a row, step it, or open it for the wheel.
     fn rows(&mut self, k: crate::app::RowKey) {
         use crate::app::RowKey;
+        // The note editor with its drawer closed: the wheel, - / + and the
+        // push open it, and the wheel and - / + do nothing more that time
+        // (piano roll plan 1A.1).
+        if matches!(self.view, View::Arrange | View::Sequencer)
+            && !matches!(k, RowKey::Editing(false))
+            && self.time_page.open_drawer(&self.ui)
+        {
+            self.time_page.update(&mut self.ui, &self.time);
+            self.refresh_hint();
+            if !matches!(k, RowKey::Editing(true)) {
+                return;
+            }
+        }
         if let RowKey::Editing(on) = k {
             // The Song view with a block, a section or a tempo point
             // picked: the push grabs it for the wheel, and lets go again.
@@ -10249,12 +10285,90 @@ impl Player {
                 let root = lib.root().display().to_string();
                 self.set_browser(mpfree_browser_ui::Browser::new(lib), lists);
                 self.say(format!("browser: the library is {root}"));
+                self.recover_audio_files();
             }
             Err(e) => self.say(format!(
                 "browser: no library in {} ({e}); the Pads tab's Browse view says so",
                 dir.display()
             )),
         }
+    }
+
+    /// At start, with the library open: what a cut-off run left in the
+    /// audio tracks' work folder (a crash, a power cut, takes never saved
+    /// in a project) is finished and moved into Recordings, on a thread of
+    /// its own, and then the audio tracks record each take to a file there
+    /// (`poll_audio_recover`). Without a work folder they record into
+    /// memory only, and the line says why.
+    pub(crate) fn recover_audio_files(&mut self) {
+        let Some(lib) = self.browser.as_ref().map(|b| b.library().clone()) else {
+            return;
+        };
+        let work = match lib.work_dir(crate::project::AUDIOTRACKS) {
+            Ok(w) => w,
+            Err(e) => {
+                self.say(format!(
+                    "audio tracks: takes record into memory only, as their folder couldn't be made ({e})"
+                ));
+                return;
+            }
+        };
+        let keep = lib.root().join(mpfree_library::Place::Recordings.folder());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("audio-recover".into())
+            .spawn(move || {
+                let r = mpfree_audiotracks::files::recover_into(&work, &keep);
+                let _ = tx.send((work, r));
+            });
+        match spawned {
+            Ok(_) => self.audio_recover = Some(rx),
+            Err(e) => self.say(format!(
+                "audio tracks: takes record into memory only, as the recovery couldn't start ({e})"
+            )),
+        }
+    }
+
+    /// The recovery at start, once done: its lines, then recording to
+    /// files from now on.
+    fn poll_audio_recover(&mut self) {
+        let Some(rx) = &self.audio_recover else {
+            return;
+        };
+        let (work, r) = match rx.try_recv() {
+            Ok(got) => got,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.audio_recover = None;
+                self.say(
+                    "audio tracks: takes record into memory only, as the recovery stopped".into(),
+                );
+                return;
+            }
+        };
+        self.audio_recover = None;
+        match r {
+            Ok(lines) => {
+                let kept = !lines.is_empty();
+                for l in lines {
+                    self.say(l);
+                }
+                if kept {
+                    self.tell("Takes from last time were recovered into Recordings");
+                }
+            }
+            // Recording to files goes on: a take whose file can't be made
+            // doesn't arm, and says why.
+            Err(e) => self.say(format!(
+                "audio tracks: the takes left from last time couldn't be looked at ({e}); \
+                 they are tried again next start"
+            )),
+        }
+        self.say(format!(
+            "audio tracks: each take is saved to a file as it records, in {}",
+            work.display()
+        ));
+        self.outbox.push(FromUi::AudioFiles(work));
     }
 
     /// The Pads tab's browser is `b`, with its Recent and Favourites from
@@ -10471,6 +10585,15 @@ impl Player {
             A::ProjectOpened { loc, snap } => self.open_project(&loc, &snap),
             A::ProjectSaved { loc } => {
                 self.say(format!("project: saved {}", loc.name()));
+                // The audio tracks' takes copied into it are kept from
+                // there now; their copies in the work folder go.
+                if let Some(dir) = self
+                    .browser
+                    .as_ref()
+                    .and_then(|b| b.library().samples_dir(&loc).ok())
+                {
+                    self.outbox.push(FromUi::AudioSavedInto(dir));
+                }
                 if let Some((at, sounds, parts)) = self.save_sent.take() {
                     self.say(format!(
                         "project: the save took {:.1} s ({sounds} sounds, {parts} parts)",
@@ -10977,19 +11100,27 @@ impl Player {
                 )
             }));
         }
-        // The audio tracks: their part, and a WAV a take, written a piece
-        // at a time.
+        // The audio tracks: their part, and a take's file copied whole
+        // (a take recorded to its file, or one the project opened), else
+        // a WAV written from its samples a piece at a time.
         if let Some(audio) = c.audio.take() {
             let rate = audio.rate;
             let (text, files) = crate::project::audio_part(audio);
             extra.push((crate::project::AUDIOTRACKS.to_string(), text));
-            samples.extend(files.into_iter().map(|(file, audio, channels)| {
-                mpfree_library::NewSample::new(
+            samples.extend(files.into_iter().map(|f| match f {
+                crate::project::TakeAudio::Copy { file, from } => {
+                    mpfree_library::NewSample::file(file, from)
+                }
+                crate::project::TakeAudio::Write {
+                    file,
+                    audio,
+                    channels,
+                } => mpfree_library::NewSample::new(
                     file,
                     std::sync::Arc::new(move |w: &mut dyn std::io::Write| {
                         mpfree_audiotracks::save::write_wav(w, &audio, channels, rate)
                     }),
-                )
+                ),
             }));
         }
         let snap = crate::project::snapshot(&c, extra);
@@ -11096,9 +11227,7 @@ impl Player {
                 .name("audio-open".into())
                 .spawn(move || {
                     let r = crate::project::audio_open(&text, rate, |f| {
-                        lib.sample_path(&loc, f)
-                            .and_then(std::fs::read)
-                            .map_err(|e| e.to_string())
+                        lib.sample_path(&loc, f).map_err(|e| e.to_string())
                     });
                     let _ = tx.send(r);
                 });
@@ -12065,6 +12194,8 @@ impl Player {
                 | FromUi::OpenProject(_)
                 | FromUi::OpenLoops(_)
                 | FromUi::OpenAudio(_)
+                | FromUi::AudioFiles(_)
+                | FromUi::AudioSavedInto(_)
                 | FromUi::Kit(_)
                 | FromUi::LevelDb(_)
                 | FromUi::Tab(_)
@@ -13690,26 +13821,17 @@ impl Player {
                     }
                 }
             }
-            (play_page::STEPS, EventKind::Toggle(pad)) if pad < 16 && !self.play.pad_strips => {
-                self.tell(&other_kit_mutes(
-                    "steps",
-                    self.track_kits.kit_of(self.play.steps.track).unwrap_or(0),
-                ));
-                None
-            }
-            // Pads past A16 have no strip, so no mute, yet.
-            (play_page::STEPS, EventKind::Toggle(pad)) if pad >= 16 => {
-                let kit = self.track_kits.kit_of(self.play.steps.track);
-                if let Some(why) = no_pad_mutes("steps", kit.or(Some(0)), pad / 16) {
-                    self.tell(&why);
+            // A lane's speaker: its pad muted on the track the steps show,
+            // on any kit and bank (step 10).
+            (play_page::STEPS, EventKind::Toggle(pad)) if pad < 128 => {
+                let track = self.play.steps.track;
+                let mute = self.play.pad_mutes >> pad & 1 == 0;
+                // Shown at once; the engine's state says the same next.
+                if let Some(t) = self.time.tracks.get_mut(track) {
+                    t.pad_mutes ^= 1 << pad;
                 }
-                None
-            }
-            (play_page::STEPS, EventKind::Toggle(pad)) if pad < 16 => {
-                let mute = self.play.levels.pad_mutes & (1 << pad) == 0;
-                self.play.levels.pad_mutes ^= 1 << pad;
                 self.refresh_play();
-                Some(FromUi::PlayFx(PlayFx::PadMute { pad, mute }))
+                Some(FromUi::PadMute { track, pad, mute })
             }
             (play_page::INSPECTOR, EventKind::Tab(k)) if k < 3 => {
                 let bank = [HeldBank::Step, HeldBank::Trig, HeldBank::Sound][k];
@@ -13987,6 +14109,7 @@ impl Player {
                 None
             }
             (time_view::CLIPS, EventKind::Toggle(_))
+            | (time_view::NOTES, EventKind::Tab(_) | EventKind::View { .. })
             | (
                 time_view::RECORD | time_view::CLIP_CARD | time_view::SCENE_CARD,
                 EventKind::Tab(_),
@@ -14133,6 +14256,11 @@ impl Player {
 
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
+        // What the Clips page asks of the time engine on its own (Snap
+        // Auto's division as the roll's zoom changes it).
+        for a in self.time_page.take_asks() {
+            self.outbox.push(FromUi::Time(a));
+        }
         self.status_tick(dt);
         self.power_tick(dt);
         self.script_hold_tick(dt);
@@ -14338,6 +14466,7 @@ impl Player {
         self.poll_midi();
         self.poll_loops();
         self.poll_audio();
+        self.poll_audio_recover();
         self.open_at_start();
         self.bundle_tick();
         self.autosave_tick(dt);
@@ -15161,6 +15290,9 @@ pub fn sample_player(fonts: Fonts) -> Player {
             ends_lost: 0,
             peak_grains: 0,
             window_waits: 0,
+            faded_grains: 0,
+            held_back_clouds: 0,
+            crowded_s: 0.0,
         },
     }));
     p.set_screen_row(
@@ -15754,8 +15886,13 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
             limit_db: 1.2,
         });
     }
+    // Pad 8 muted on the track the steps show (step 10: the track's).
+    let shown = p.play.steps.track;
+    if let Some(t) = p.time.tracks.get_mut(shown) {
+        t.pad_mutes = 1 << 7;
+    }
+    p.play.pad_mutes = 1 << 7;
     let mut levels = p.play.levels;
-    levels.pad_mutes = 1 << 7;
     levels.drums_filter = -16.0;
     levels.loop_db = -3.0;
     levels.line_db = 6.0;
@@ -16005,6 +16142,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::Nav(n) => p.apply(ToUi::Nav(n)),
             Effect::Held { delta, fine } => p.apply(ToUi::Held { delta, fine }),
             Effect::ClipsWheel { delta, scroll } => p.apply(ToUi::ClipsWheel { delta, scroll }),
+            Effect::EditTc => p.apply(ToUi::EditTc),
             Effect::Map(m) => p.apply(ToUi::Map(Box::new(m))),
             Effect::SynthPage(d) => p.apply(ToUi::SynthPage(d)),
             Effect::SampleWheel(d) => p.apply(ToUi::SampleWheel(d)),
@@ -18264,6 +18402,9 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                 ends_lost: 0,
                 peak_grains: 48,
                 window_waits: 0,
+                faded_grains: 0,
+                held_back_clouds: 0,
+                crowded_s: 0.0,
             },
             ..Timing::default()
         }));
@@ -21158,7 +21299,7 @@ mod tests {
         let area = p.ui.rect_of(time_view::NOTES).unwrap();
         let grid = p.ui.get::<NoteGrid>(time_view::NOTES).unwrap();
         let note = grid.note_rect(area, 1).unwrap();
-        let tc = grid.button_rects(area)[7];
+        let edit = grid.button_rects(area)[7];
         assert_eq!(
             tap(&mut p, (note.x + note.w / 2, note.y + note.h / 2)),
             Some(FromUi::Time(TimeAction::Edit(EditAction::Note {
@@ -21166,10 +21307,67 @@ mod tests {
                 rev: 0
             })))
         );
+        // Edit opens the drawer of Edit options and takes (the page's
+        // own), whose Correct corrects the timing; TC does too, once the
+        // drawer shows (piano roll plan 1A.1).
         assert_eq!(
-            tap(&mut p, (tc.x + tc.w / 2, tc.y + tc.h / 2)),
-            Some(FromUi::Time(TimeAction::Edit(EditAction::Button(7))))
+            tap(&mut p, (edit.x + edit.w / 2, edit.y + edit.h / 2)),
+            None
         );
+        assert_eq!(
+            p.ui.layout_of(CLIPS_PAGE),
+            Some(time_view::EDIT_DRAWER_LAYOUT)
+        );
+        p.ui.paint(&mut SoftCanvas::new(1280, 800));
+        let options = p.ui.rect_of(time_view::EDIT_OPTIONS).unwrap();
+        let correct =
+            p.ui.get::<OptionList>(time_view::EDIT_OPTIONS)
+                .unwrap()
+                .button_rect(options, 0)
+                .unwrap();
+        assert_eq!(
+            tap(
+                &mut p,
+                (correct.x + correct.w / 2, correct.y + correct.h / 2)
+            ),
+            Some(FromUi::Time(TimeAction::Edit(EditAction::Correct)))
+        );
+        p.take_actions();
+        p.apply(ToUi::EditTc);
+        assert_eq!(
+            p.take_actions(),
+            vec![FromUi::Time(TimeAction::Edit(EditAction::Correct))]
+        );
+        // Edit (narrower with the drawer open) again closes it; then TC
+        // opens it on Timing Correct's settings, and the wheel or - / +
+        // open it too.
+        let area = p.ui.rect_of(time_view::NOTES).unwrap();
+        let edit =
+            p.ui.get::<NoteGrid>(time_view::NOTES)
+                .unwrap()
+                .button_rects(area)[7];
+        assert_eq!(
+            tap(&mut p, (edit.x + edit.w / 2, edit.y + edit.h / 2)),
+            None
+        );
+        assert_eq!(p.ui.layout_of(CLIPS_PAGE), Some(time_view::EDIT_LAYOUT));
+        p.apply(ToUi::EditTc);
+        assert_eq!(
+            p.ui.layout_of(CLIPS_PAGE),
+            Some(time_view::EDIT_DRAWER_LAYOUT)
+        );
+        assert_eq!(
+            p.take_actions(),
+            vec![FromUi::Time(TimeAction::Edit(EditAction::PickRow(0)))]
+        );
+        p.time_page.edit_drawer = false;
+        p.time_page.update(&mut p.ui, &p.time);
+        p.apply(ToUi::Rows(crate::app::RowKey::Step(1)));
+        assert_eq!(
+            p.ui.layout_of(CLIPS_PAGE),
+            Some(time_view::EDIT_DRAWER_LAYOUT)
+        );
+        assert!(p.take_actions().is_empty(), "the press only opened it");
         // The list and the tracker have hint lines of their own, which say
         // SHIFT + wheel scrolls them.
         let mut st = p.time.clone();
@@ -21971,7 +22169,14 @@ mod tests {
             p.ui.get::<StepGrid>(play_page::STEPS)
                 .unwrap()
                 .name_at(r, 0);
-        let mute = |m| vec![FromUi::PlayFx(PlayFx::PadMute { pad: 0, mute: m })];
+        let track = p.play.steps.track;
+        let mute = |mute| {
+            vec![FromUi::PadMute {
+                track,
+                pad: 0,
+                mute,
+            }]
+        };
         assert_eq!(finger(&mut p, &[Touch::Down, Touch::Up], name), mute(true));
         let (id, lane) = on(&p).unwrap();
         assert_eq!(id, "mute");
@@ -23599,19 +23804,16 @@ mod tests {
         let r = p.ui.rect_of(play_page::STEPS).unwrap();
         let g = p.ui.get::<StepGrid>(play_page::STEPS).unwrap();
         let (lane1, name1) = (g.lanes_shown(r)[1], g.name_at(r, 1));
-        let mutes = p.play.levels.pad_mutes;
+        let mutes = p.play.pad_mutes;
         assert_eq!(
             tap(&mut p, name1),
             Some(FromUi::Steps(StepAction::ClearPad { pad: lane1 as u8 }))
         );
-        assert_eq!(p.play.levels.pad_mutes, mutes, "no mute while erasing");
+        assert_eq!(p.play.pad_mutes, mutes, "no mute while erasing");
         // Let go of ERASE: the name mutes again.
         erase(&mut p, false);
         assert!(!hint(&p).starts_with("ERASE held"));
-        assert!(matches!(
-            tap(&mut p, name1),
-            Some(FromUi::PlayFx(PlayFx::PadMute { .. }))
-        ));
+        assert!(matches!(tap(&mut p, name1), Some(FromUi::PadMute { .. })));
         // Arrange: a clip is deleted; an empty slot says so and makes none.
         use mpfree_time_ui::widgets::ClipGrid;
         let mut p = sample_clips(Fonts::embedded()).unwrap();
@@ -23907,45 +24109,41 @@ mod tests {
         assert_eq!(on(&p), [false, false]);
     }
 
+    /// Step 10: a track on kit 2 mutes its own pads as one on kit 1
+    /// does: the speaker shows the track's mute, and a lane's name mutes
+    /// its pad on the track the steps show.
     #[test]
-    fn a_track_on_another_kit_shows_no_pad_mutes_and_says_why() {
+    fn a_track_on_another_kit_mutes_its_own_pads() {
         let mut p = sample_play(Fonts::embedded(), PlayView::All);
         p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
-        let muted = |p: &Player| {
+        let muted = |p: &Player, pad: usize| {
             p.ui.get::<StepGrid>(play_page::STEPS)
                 .unwrap()
                 .lanes
                 .iter()
-                .find(|l| l.pad == 7)
+                .find(|l| l.pad == pad)
                 .unwrap()
                 .muted
         };
-        assert!(muted(&p), "kit 1's clap is muted on its pad strip");
-        // Track 1 picks kit 2: its pads play through the track's channel,
-        // so kit 1's mutes aren't theirs.
+        assert!(muted(&p, 7), "the clap is muted on the track");
         let mut kits = crate::sampler::TrackKits::new(2);
         assert!(kits.set(0, 1));
         p.apply(ToUi::TrackKits(Box::new(kits)));
-        assert!(!muted(&p));
+        assert!(muted(&p, 7), "on kit 2 too: the track's mute");
         let r = p.ui.rect_of(play_page::STEPS).unwrap();
-        let (x, y) =
-            p.ui.get::<StepGrid>(play_page::STEPS)
-                .unwrap()
-                .name_at(r, 0);
+        let g = p.ui.get::<StepGrid>(play_page::STEPS).unwrap();
+        let (pad, (x, y)) = (g.lanes_shown(r)[0], g.name_at(r, 0));
+        let (track, was) = (p.play.steps.track, muted(&p, pad));
         let down = p.touch(1, Touch::Down, x, y);
         assert_eq!(
             down.or(p.touch(1, Touch::Up, x, y)),
-            None,
-            "no pad strip muted"
+            Some(FromUi::PadMute {
+                track,
+                pad,
+                mute: !was
+            })
         );
-        let told = p.told.as_ref().map(|t| t.0.clone()).unwrap_or_default();
-        assert!(
-            told.contains("Kit 2's pads play through their track's channel"),
-            "{told}"
-        );
-        // Back on kit 1: the mute shows again.
-        p.apply(ToUi::TrackKits(Box::new(crate::sampler::TrackKits::new(2))));
-        assert!(muted(&p));
+        assert_eq!(muted(&p, pad), !was, "shown at once");
     }
 
     /// R3 part 2b: PAD BANK B puts the kit's pads B1-B16 on the 16 pads:
@@ -24147,10 +24345,15 @@ mod tests {
                 velocity: play_page::TAP_VELOCITY
             }))
         );
-        // A speaker: the pad's mute, for the mixer.
+        // A speaker: the pad's mute on the track the steps show (step 10).
+        let track = p.play.steps.track;
         assert_eq!(
             tap(&mut p, speaker),
-            Some(FromUi::PlayFx(PlayFx::PadMute { pad: 2, mute: true }))
+            Some(FromUi::PadMute {
+                track,
+                pad: 2,
+                mute: true
+            })
         );
         // A throw held and let go: the performance effect on the master.
         let throws = p.ui.rect_of(play_page::THROWS).unwrap();
@@ -27781,6 +27984,169 @@ mod tests {
         assert_eq!(q.sample.cache_part().len(), 1);
     }
 
+    /// Sampler plan step 8: a sound loaded into two kits is held once, in
+    /// the sound store, with one set of octave copies; the page's memory
+    /// count says so.
+    #[test]
+    fn a_sound_loaded_into_two_kits_is_held_once() {
+        use mpfree_sampler::model::Source;
+        use mpfree_sampler::wav;
+        let dir = std::env::temp_dir().join(format!("mpfree-two-kits-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A sound no other test holds.
+        let data: Vec<f32> = (0..2 * 22_050)
+            .map(|i| ((i as f32 * 0.0137).sin() * 0.4 * 32_768.0).round() / 32_768.0 + 0.0)
+            .collect();
+        let path = dir.join("Shared.wav");
+        let made = Source::new("Shared", 44_100, 2, data).unwrap();
+        std::fs::write(&path, wav::bytes(&made)).unwrap();
+        drop(made);
+        let mut p = sample_player(Fonts::embedded());
+        let (kit, _) = mpfree_sampler_ui::sample::project();
+        p.apply(ToUi::SampleKits {
+            projects: vec![kit.clone(), kit],
+            rate: 44_100,
+        });
+        p.apply(ToUi::Show(View::Sample));
+        let pad = 3;
+        let source = |p: &Player, k: usize| {
+            let kit = p.sample.project(k).unwrap();
+            let id = kit.pad(pad)?.layers[0].region.source;
+            kit.source(id).cloned()
+        };
+        let load = |p: &mut Player, k: usize| {
+            p.apply(ToUi::Kit(k));
+            let _ = p.take_actions();
+            p.apply(ToUi::PadDown { pad, velocity: 100 });
+            p.apply(ToUi::PadUp(pad));
+            p.tick(0.033);
+            p.sample.load_file(path.clone(), false);
+            tick_until(p, |p| source(p, k).is_some_and(|s| s.name == "Shared"));
+        };
+        load(&mut p, 0);
+        let before = p.sample.memory();
+        load(&mut p, 1);
+        let (one, two) = (source(&p, 0).unwrap(), source(&p, 1).unwrap());
+        assert!(one.same_sound(&two), "one copy for both kits");
+        assert_eq!(one.data().addr(), two.data().addr());
+        // What one kit's pad makes for it is the other's too.
+        one.make_octaves();
+        assert!(two.octaves().get().is_some());
+        let after = p.sample.memory();
+        assert_eq!((after.count, after.sounds), (before.count, before.sounds));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Sampler plan step 8: a project an older build saved, its sounds and
+    /// their analysis named by 64-bit ids, opens with the same kit and the
+    /// same sounds, reads its analysis, and saves again under the same
+    /// names, so no sound is written twice.
+    #[test]
+    fn an_older_projects_sounds_keep_their_files_and_open_the_same() {
+        use mpfree_sampler::model::{Layer, Pad, Region, Source};
+        use mpfree_sampler::wav;
+        use mpfree_sampler_ui::source::{cache_file, SourceView};
+        use std::collections::HashMap;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let rate = mpfree_sampler_ui::sample::RATE;
+        // A kit on a sound no other test holds, since the file it keeps is
+        // kept with the sound itself.
+        let data: Vec<f32> = (0..2 * rate as usize)
+            .map(|i| {
+                let t = (i / 2) as f32 / rate as f32;
+                let y = 0.5 * (t * 330.0 * std::f32::consts::TAU).sin() * (-3.0 * t).exp();
+                (y * 32_768.0).round() / 32_768.0 + 0.0
+            })
+            .collect();
+        let made = Source::new("Old take", rate, 2, data).unwrap();
+        let mut saved = Project::new();
+        saved.add_source(made.clone());
+        let layer = Layer::new(Region::whole(&made));
+        saved
+            .set_pad(pad, Some(Pad::new("Old take", layer)), None)
+            .unwrap();
+        let mut p = sample_player(Fonts::embedded());
+        p.apply(ToUi::SampleKits {
+            projects: vec![saved.clone()],
+            rate,
+        });
+        let (mut text, sounds) = p.sample.save_part();
+        let view = SourceView::analyse(&made);
+        let file = cache_file(&made);
+        drop(p);
+        // As the older build named them: the 64-bit FNV-1a hash of the
+        // sound's rate, channels and samples.
+        let old_id = |s: &mpfree_sampler::model::Source| {
+            let mut h = 0xCBF2_9CE4_8422_2325u64;
+            let bytes = s.rate().to_le_bytes().into_iter().chain([s.channels()]);
+            let samples = s.data().iter().flat_map(|x| x.to_bits().to_le_bytes());
+            for b in bytes.chain(samples) {
+                h = (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01B3);
+            }
+            h
+        };
+        let mut files: HashMap<String, Vec<u8>> = HashMap::new();
+        let mut old_names = Vec::new();
+        for (f, s) in &sounds {
+            let old = format!("{:016x}.wav", old_id(s));
+            assert!(text.contains(f.as_str()) && f.len() == 32 + 4, "{f}");
+            text = text.replace(f.as_str(), &old);
+            files.insert(old.clone(), wav::bytes(s));
+            old_names.push(old);
+        }
+        // Its analysis, the old id inside, beside the sound shown.
+        let shown = sounds.iter().position(|(_, s)| s.id() == view.id).unwrap();
+        let old_cache = old_names[shown].replace(".wav", ".a1.peaks");
+        assert_ne!(old_cache, file);
+        let mut bytes = view.to_cache().unwrap();
+        bytes[8..16].copy_from_slice(&old_id(&sounds[shown].1).to_le_bytes());
+        files.insert(old_cache.clone(), bytes);
+        let mut q = sample_player(Fonts::embedded());
+        q.apply(ToUi::SampleKits {
+            projects: vec![Project::new()],
+            rate,
+        });
+        q.apply(ToUi::Kit(0));
+        q.apply(ToUi::Show(View::Sample));
+        let _ = q.take_actions();
+        q.sample.open_part(
+            text,
+            Box::new(move |f| files.get(f).cloned().ok_or_else(|| "missing".to_string())),
+        );
+        tick_until(&mut q, |q| q.sample.project(0).unwrap().pad(pad).is_some());
+        // The same kit, on the same sounds, sample for sample: it plays as
+        // it did.
+        let got = q.sample.project(0).unwrap();
+        assert_eq!(got.pad(pad), saved.pad(pad));
+        assert_eq!(got.chop_sets, saved.chop_sets);
+        assert_eq!(got.sources().len(), saved.sources().len());
+        for s in saved.sources() {
+            let g = got.source(s.id()).expect("the same id");
+            assert!(g
+                .data()
+                .iter()
+                .map(f32::to_bits)
+                .eq(s.data().iter().map(f32::to_bits)));
+        }
+        // Its analysis read, not worked out again.
+        assert!(!q.sample.analysing(), "nothing analysed again");
+        let log = events_log(&q);
+        assert!(
+            log.iter()
+                .any(|l| l == "sample: the analysis of 1 sound read from the project"),
+            "{log:?}"
+        );
+        // Saved again: the same files, so the library writes none.
+        let (text, again) = q.sample.save_part();
+        let mut names: Vec<String> = again.into_iter().map(|(f, _)| f).collect();
+        names.sort();
+        old_names.sort();
+        assert_eq!(names, old_names);
+        assert!(old_names.iter().all(|f| text.contains(f.as_str())));
+        let caches: Vec<String> = q.sample.cache_part().into_iter().map(|(f, _)| f).collect();
+        assert_eq!(caches, vec![old_cache]);
+    }
+
     #[test]
     fn the_kits_save_with_their_sounds_and_open_again() {
         use mpfree_sampler::{save, wav};
@@ -28496,6 +28862,7 @@ mod tests {
                 frames: 4410,
                 channels: 1,
                 file: String::new(),
+                path: None,
                 audio: take.clone(),
             }],
         };
@@ -28503,7 +28870,7 @@ mod tests {
             tempo: 98.0,
             swing: mpfree_transport::time::Swing::new(240, 62).unwrap(),
             clips: clips.clone(),
-            mixer: project::mixer_text(&mix.mixer, 0, 0),
+            mixer: project::mixer_text(&mix.mixer, 0),
             modu: String::new(),
             synth: project::synth_text(&Default::default(), &synth.sounds()),
             arp: "mpfree-arp 1\ntrack 1\nmode = arp\n".to_string(),
@@ -28618,12 +28985,14 @@ mod tests {
         // The recording keeps its lasting id (phase 1c).
         assert_eq!(k.rec, mpfree_audiotracks::RecordingId(0x77));
         assert_eq!(k.audio, take);
-        assert!(
-            k.file.starts_with("take-") && k.file.ends_with(".wav"),
-            "{}",
-            k.file
+        // Named for its lasting id (phase 3a: it had no file of its own),
+        // and read from where the project keeps it, so the next save
+        // copies it from there.
+        assert_eq!(k.file, format!("take_{}.wav", k.rec));
+        assert_eq!(
+            k.path.as_ref(),
+            lib.sample_path(&loc, &k.file).ok().as_ref()
         );
-        assert!(lib.sample_path(&loc, &k.file).is_ok());
         assert!(!p.browser.as_ref().unwrap().unsaved());
         // Once the open settles, a pad played isn't an edit; a new clip is.
         p.opened_at = None;
@@ -28686,7 +29055,6 @@ mod tests {
                 tempo: 120.0,
                 mixer: project::mixer_text(
                     &crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer,
-                    0,
                     0,
                 ),
                 modu: String::new(),
@@ -28830,7 +29198,7 @@ mod tests {
         let synth = crate::synth::Synth::new(44_100);
         let good = project::new_snapshot(&Defaults {
             tempo: 120.0,
-            mixer: project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0, 0),
+            mixer: project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0),
             modu: String::new(),
             synth: project::synth_text(&Default::default(), &synth.sounds()),
         });
@@ -28903,7 +29271,7 @@ mod tests {
         let synth = crate::synth::Synth::new(44_100);
         let good = project::new_snapshot(&Defaults {
             tempo: 120.0,
-            mixer: project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0, 0),
+            mixer: project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0),
             modu: String::new(),
             synth: project::synth_text(&Default::default(), &synth.sounds()),
         });
@@ -28986,8 +29354,7 @@ mod tests {
         p.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), "");
         p.take_actions();
         let synth = crate::synth::Synth::new(44_100);
-        let mixer =
-            project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0, 0);
+        let mixer = project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0);
         let synth_text = project::synth_text(&Default::default(), &synth.sounds());
         let mut song = project::new_snapshot(&Defaults {
             tempo: 120.0,
@@ -29124,8 +29491,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let lib = mpfree_library::Library::at(&dir).unwrap();
         let synth = crate::synth::Synth::new(44_100);
-        let mixer =
-            project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0, 0);
+        let mixer = project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0);
         let synth_text = project::synth_text(&Default::default(), &synth.sounds());
         let defaults = || {
             Box::new(Defaults {
@@ -35477,7 +35843,7 @@ mod tests {
                 .count();
         let peak = alloc_count::peak_bytes().max(0) as u64;
         println!(
-            "memory: at most {:.0} MB of {:.0} MB, {:.0} MB kept free; {} takes, {copies} copies, {refused} refusals",
+            "memory: at most {:.1} MB of {:.0} MB, {:.0} MB kept free; {} takes, {copies} copies, {refused} refusals",
             peak as f64 / 1e6,
             MPC_BYTES as f64 / 1e6,
             MPC_KEEP as f64 / 1e6,

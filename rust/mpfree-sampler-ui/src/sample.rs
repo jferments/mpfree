@@ -1122,7 +1122,7 @@ pub fn melody_project() -> (Project, Arc<SourceView>) {
     let (mut p, _) = project();
     let source = Source::new("Sung line", RATE, 1, melody().0).expect("the melody is valid");
     let view = SourceView::analyse(&source);
-    let view = Arc::new(match view.follow_pitch(RATE) {
+    let view = Arc::new(match view.follow_pitch(&source) {
         Some(t) => view.with_pitch(t),
         None => view,
     });

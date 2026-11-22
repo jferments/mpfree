@@ -884,6 +884,13 @@ jobs:
         # against rust/mpfree-fxlab/quality/synth.tsv. An improvement is
         # recorded with MPFREE_QUALITY_BLESS=1 (docs/dev/design/synth-quality.md).
         run: cargo test --manifest-path rust/Cargo.toml --release --locked -p mpfree-fxlab --test synth
+      - name: DSP quality gates Y4, Y7 and Y8 (finite output, block size, reference)
+        # Release only: every synth engine, the drums and every effect, each on
+        # its own, stays finite at every setting the layers try (Y4); the
+        # subjects listed as bit-exact stay so in blocks of 1 and 37 frames
+        # (Y7); the aliasing cases listed as converged keep an 8x reference
+        # that agrees with 16x (Y8). docs/dev/design/dsp-quality.md.
+        run: cargo test --manifest-path rust/Cargo.toml --release --locked -p mpfree-fxlab --test robust --test reference -- --nocapture
       - name: Test host-native Rust MPC userspace coexistence self-test
         run: |
           cargo run --manifest-path rust/Cargo.toml --release --locked \

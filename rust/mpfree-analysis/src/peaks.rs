@@ -42,6 +42,17 @@ impl Samples for [f32] {
     }
 }
 
+impl Samples for Vec<f32> {
+    #[inline]
+    fn len(&self) -> usize {
+        Vec::len(self)
+    }
+    #[inline]
+    fn at(&self, i: usize) -> f32 {
+        self[i]
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Column {
     pub min: f32,

@@ -105,6 +105,7 @@ impl StretchJob {
                 frames,
                 channels: ch,
                 file: String::new(),
+                path: None,
                 audio,
             },
             crate::Command::Swap {

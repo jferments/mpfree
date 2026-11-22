@@ -498,11 +498,7 @@ impl Session {
     pub fn defaults(&self) -> crate::project::Defaults {
         crate::project::Defaults {
             tempo: self.app.settings.bpm,
-            mixer: crate::project::mixer_text(
-                &self.mix.mixer,
-                self.mix.pad_mutes(),
-                self.mix.pad_solos(),
-            ),
+            mixer: crate::project::mixer_text(&self.mix.mixer, self.mix.pad_mutes()),
             modu: self.mix.modu.save(),
             synth: crate::project::synth_text(&self.app.synth_settings(), &self.synth.sounds()),
         }
@@ -1109,8 +1105,10 @@ impl Session {
             self.mute_pressed[pad] = true;
             let (tap, more) = self.app.mute_tap();
             self.fx.extend(more);
-            let why = crate::no_mutes(&self.track_kits, self.app.track(), self.app.pad_page());
-            let line = crate::mute_key(tap, pad, why, &mut self.time, &mut self.mix);
+            let notes = self.mix.instruments.note_tracks();
+            let why = crate::no_mutes(&self.track_kits, notes, self.app.track());
+            let (t, page) = (self.app.track(), self.app.pad_page());
+            let line = crate::mute_key(tap, pad, t, page, why, &mut self.time);
             self.out.note(&line);
             return;
         }
@@ -1537,15 +1535,18 @@ impl Session {
         if let Some(c) = self.cloud.take() {
             self.out.show(ToUi::SampleGrains(c));
         }
-        // The sampler's input: the line input's sine, when it is on.
-        if let (Some(feed), Some(hz)) = (self.rec_feed.as_mut(), self.line_tone) {
+        // The line input's sine, when it is on: the sampler's input, and
+        // the audio tracks' (as main.rs gives them the looper's input).
+        let mut line = [0f32; PERIOD];
+        if let Some(hz) = self.line_tone {
             let step = hz / RATE as f32;
-            let mut l = [0f32; PERIOD];
-            for x in l.iter_mut() {
+            for x in line.iter_mut() {
                 *x = 0.5 * (self.line_phase * std::f32::consts::TAU).sin();
                 self.line_phase = (self.line_phase + step).fract();
             }
-            feed.period_gain(self.time.block(), &l, &l, 0, self.rec_gain);
+        }
+        if let (Some(feed), Some(_)) = (self.rec_feed.as_mut(), self.line_tone) {
+            feed.period_gain(self.time.block(), &line, &line, 0, self.rec_gain);
         }
         self.rec_gain.0 = self.rec_gain.1;
         // The looper's period, as main.rs runs it (`crate::loop_input`):
@@ -1671,7 +1672,7 @@ impl Session {
             self.time.block(),
             self.time.tempo_map(),
             self.time.song_on(),
-            (&z, &z),
+            (&line, &line),
         );
         self.tracks.play_into(&mut self.mix);
         let mut played = 0;
@@ -1685,7 +1686,6 @@ impl Session {
         self.mix
             .period(&ctx, (&z, &z), (&ll, &lr), (&z, &z), &mut l, &mut r);
         // The kit's pads whose mute or solo came due, as main.rs lands them.
-        crate::land_pads(&mut self.time, &mut self.mix);
         if let Some(h) = self.heard.as_mut() {
             h.extend(l.iter().zip(&r).flat_map(|(a, b)| [*a, *b]));
         }
@@ -1767,6 +1767,9 @@ impl Session {
         if let Some(line) = self.tracks.take_note() {
             self.out.note(&line);
         }
+        if let Some(line) = self.tracks.take_file_line() {
+            self.out.note(&line);
+        }
         if let Some(what) = self.tracks.take_left_out() {
             self.out.left_out(what);
         }
@@ -1816,11 +1819,7 @@ impl Session {
             tempo: self.app.settings.bpm,
             swing: self.time.info().swing,
             clips: self.time.project().clone(),
-            mixer: crate::project::mixer_text(
-                &self.mix.mixer,
-                self.mix.pad_mutes(),
-                self.mix.pad_solos(),
-            ),
+            mixer: crate::project::mixer_text(&self.mix.mixer, self.mix.pad_mutes()),
             modu: self.mix.modu.save(),
             synth: crate::project::synth_text(&self.app.synth_settings(), &self.synth.sounds()),
             arp: self.app.arp_part(),
@@ -1913,6 +1912,11 @@ impl Session {
             }
         }
         self.kit_to = Some(self.track_kits.entry(self.app.track()));
+        // An old project's kit 1 pad mutes, each kit 1 track's (step 10).
+        if let Some(line) = crate::carry_pad_mutes(&mut self.mix, &self.track_kits, &mut self.time)
+        {
+            self.out.note(&line);
+        }
         std::mem::swap(&mut self.instrument_list, &mut o.instrument_list);
         // As main.rs: the app has the list before the pads part names one.
         let fx = self.app.set_instrument_list(&self.instrument_list);
@@ -2106,6 +2110,8 @@ impl Session {
             FromUi::OpenProject(o) => self.open_project(o),
             FromUi::OpenLoops(l) => self.looper.open(*l),
             FromUi::OpenAudio(a) => self.tracks.open(*a),
+            FromUi::AudioFiles(dir) => self.tracks.record_to(dir),
+            FromUi::AudioSavedInto(dir) => self.tracks.saved_into(dir),
             FromUi::ExportAsk => {
                 // Nothing plays outside here, and every track plays the
                 // pads: the drum kit's strip or the synth's.

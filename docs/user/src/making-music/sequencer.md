@@ -37,7 +37,7 @@ The list starts with **What plays**, which goes back to editing the clip that pl
 
 {{shot: sequencer-edit-clips | The clip chip's list: What plays (Pattern 1, edited now), then the track's clips with their slots, Pattern 1 playing.}}
 
-**Mute a row.** Each row's name is its mute button, with a speaker in the box beside it: tap the name to mute that pad, so you can drop the kick out and bring it back. Hold **ERASE** and tap a row's name to delete all of that sound's steps.
+**Mute a row.** Each row's name is its mute button, with a speaker in the box beside it: tap the name to mute that pad on this track, so you can drop the kick out and bring it back. Another track playing the same kit keeps its kick, rows on every bank and kit have a mute, and a synth's rows (notes, not pads) have none. Hold **ERASE** and tap a row's name to delete all of that sound's steps.
 
 **Make it longer.** A pattern starts at 16 steps, one bar of 16ths. Tap **+** at the top right of the pattern to double it to 32 steps, then 64, then 128 (eight bars of 16ths). The new steps repeat the ones you have, so the beat carries on and you change what you want in the copy. **‹** and **›** turn the pages of 16 steps, and the number between them says which page you're on. **–** halves the pattern again, down to 16 steps; press **UNDO** if you want the steps it took off back.
 

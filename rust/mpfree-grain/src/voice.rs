@@ -202,7 +202,8 @@ impl Default for Params {
 pub struct Budget {
     pub limit: usize,
     live: usize,
-    /// Grains refused by this budget since it was made.
+    /// Grains refused by this budget since it was made: it was full, or
+    /// the voice had its share of it ([`GrainVoice::set_share`]).
     pub skipped: u64,
 }
 
@@ -235,6 +236,12 @@ pub struct Stats {
     /// [`WINDOWS`] being read by grains still playing (new grains kept
     /// the newest shape meanwhile).
     pub window_waits: u64,
+    /// Grains not made because the voice had its share of the budget
+    /// ([`GrainVoice::set_share`]; counted in `skipped` too).
+    pub held_back: u64,
+    /// Grains ended early, fading over a few milliseconds along their own
+    /// windows, to make room for others ([`GrainVoice::fade_oldest`]).
+    pub faded: u64,
 }
 
 /// One grain, for drawing the cloud.
@@ -475,6 +482,10 @@ pub struct GrainVoice {
     k_floor_size: f64,
     /// The quality mode's stage on the way out ([`Params::quality`]).
     stage: Stage,
+    /// The most grains it may keep alive at once: its share of the budget
+    /// ([`GrainVoice::set_share`]), [`MAX_GRAINS`] unless the budget is
+    /// crowded.
+    share: usize,
 }
 
 impl GrainVoice {
@@ -529,6 +540,124 @@ impl GrainVoice {
             k_floor_down: coefficient(FLOOR_SECS, out_rate.max(1)),
             k_floor_size: 0.0,
             stage: Stage::new(out_rate),
+            share: MAX_GRAINS,
+        }
+    }
+
+    /// The most grains it may keep alive at once from now on: its share of
+    /// a crowded budget (the sampler plan's step 9). Under [`MAX_GRAINS`]
+    /// the cloud thins evenly, its gaps widening to fit as for
+    /// [`CAP_FIT`], at the same level; grains already playing finish, so a
+    /// share smaller than what it has only slows its new grains. At 0 it
+    /// makes no new grains and finishes the ones it has. [`MAX_GRAINS`]
+    /// (or more) is no share at all: it plays as it always did.
+    pub fn set_share(&mut self, grains: usize) {
+        self.share = grains.min(MAX_GRAINS);
+    }
+
+    /// Its share ([`GrainVoice::set_share`]).
+    pub fn share(&self) -> usize {
+        self.share
+    }
+
+    /// Grains alive now: playing, and fading under a hit.
+    pub fn alive(&self) -> usize {
+        self.active + self.fading_n
+    }
+
+    /// About how many grains it would keep alive at its settings with no
+    /// share holding it back: none once it stops making them (its grains
+    /// finish), else its overlap (the density by its grains' size, as last
+    /// fitted) with the headroom random timing needs, at most
+    /// [`MAX_GRAINS`].
+    pub fn wants(&self) -> usize {
+        if !self.spawning {
+            return 0;
+        }
+        let gap = self
+            .sync_interval()
+            .unwrap_or(f64::from(self.out_rate) / self.density().max(1e-9));
+        let overlap = (self.fit_size / gap.max(1.0)).min(CAP_FIT);
+        ((overlap * MAX_GRAINS as f64 / CAP_FIT).ceil() as usize + 1).min(MAX_GRAINS)
+    }
+
+    /// About how many grains it will have alive `frames` from now with no
+    /// share holding it back: those alive now and those it starts
+    /// meanwhile, at most what it [wants](GrainVoice::wants). A new hit
+    /// asks for this rather than all it will ever want, so a few hits at
+    /// once don't take every grain for their first moments.
+    pub fn wants_within(&self, frames: u64) -> usize {
+        let wants = self.wants();
+        if wants == 0 {
+            return 0;
+        }
+        let gap = self.sync_interval().unwrap_or_else(|| {
+            (f64::from(self.out_rate) / self.density().max(1e-9)).max(self.fit_size / CAP_FIT)
+        });
+        let starts = (frames as f64 / gap.max(1.0)).ceil() as usize + 1;
+        (self.alive() + starts).min(wants)
+    }
+
+    /// Output frames since it last started ([`GrainVoice::start`]): how
+    /// long the cloud has played.
+    pub fn played(&self) -> u64 {
+        self.clock.saturating_sub(self.started)
+    }
+
+    /// Grains alive now that end within `frames`: playing, and fading
+    /// under a hit or to make room.
+    pub fn ending(&self, frames: u32) -> usize {
+        let soon = |g: &&Grain| g.len.saturating_sub(g.age) <= frames;
+        self.grains[..self.active].iter().filter(soon).count()
+            + self.fading[..self.fading_n].iter().filter(soon).count()
+    }
+
+    /// Ends up to `n` of its grains early, the oldest first, each fading
+    /// out over `frames` along the rest of its own window (one still
+    /// rising from where its falling side has the same level), as grains
+    /// do under a hit: never cut. A grain already ending within `frames`
+    /// is left as it is and not counted. They stay counted in the budget
+    /// until they end. Returns how many it ended.
+    pub fn fade_oldest(&mut self, n: usize, frames: u32) -> usize {
+        let f = frames.max(2);
+        let mut done = 0;
+        while done < n {
+            // The oldest grain not ending within `f` yet.
+            let mut oldest: Option<usize> = None;
+            for (i, g) in self.grains[..self.active].iter().enumerate() {
+                if g.len.saturating_sub(g.age) > f
+                    && oldest.is_none_or(|o| g.age > self.grains[o].age)
+                {
+                    oldest = Some(i);
+                }
+            }
+            let Some(i) = oldest else { break };
+            let peak = self.windows[usize::from(self.grains[i].win)].peak();
+            let g = &mut self.grains[i];
+            let now = g.age as f32 * g.dphase + g.phase0;
+            let q = if now < peak {
+                peak + (peak - now) * (1.0 - peak) / peak
+            } else {
+                now
+            };
+            g.dphase = (1.0 - q) / f as f32;
+            g.phase0 = q - g.age as f32 * g.dphase;
+            g.len = g.age + f;
+            done += 1;
+        }
+        self.stats.faded += done as u64;
+        done
+    }
+
+    /// The most grains it aims to keep alive, for the even thinning: as
+    /// [`CAP_FIT`] is to [`MAX_GRAINS`], so its share is to this. With no
+    /// share at all it keeps its usual gaps, every grain held back, so it
+    /// starts again at once when a share comes back.
+    fn cap_fit(&self) -> f64 {
+        if self.share >= MAX_GRAINS || self.share == 0 {
+            CAP_FIT
+        } else {
+            (self.share as f64 * CAP_FIT / MAX_GRAINS as f64).max(1.0)
         }
     }
 
@@ -709,6 +838,8 @@ impl GrainVoice {
         self.tick_motion();
         self.spawning = true;
         self.prefill = true;
+        // A cloud starts unshared, until the budget is shared out again.
+        self.share = MAX_GRAINS;
         self.next_at = self.clock as f64;
         self.last_spawn = self.clock as f64;
         self.scan_offset = 0.0;
@@ -866,7 +997,7 @@ impl GrainVoice {
     /// density's, or wider when the cloud wants more grains than
     /// [`CAP_FIT`] (it thins evenly).
     fn period(&self) -> f64 {
-        (f64::from(self.out_rate) / self.density()).max(self.fit_size / CAP_FIT)
+        (f64::from(self.out_rate) / self.density()).max(self.fit_size / self.cap_fit())
     }
 
     /// Offset in this block (at or after `from`, before `n`) of the next grain.
@@ -1077,8 +1208,8 @@ impl GrainVoice {
             at += m;
         }
         self.stats.active = self.active;
-        self.stats.thinned =
-            self.spawning && self.density() * self.fit_size / f64::from(self.out_rate) > CAP_FIT;
+        self.stats.thinned = self.spawning
+            && self.density() * self.fit_size / f64::from(self.out_rate) > self.cap_fit();
     }
 
     /// What this part's grains go by, from the settings (as moved): the
@@ -1199,6 +1330,18 @@ impl GrainVoice {
         self.active = 0;
     }
 
+    /// True, and counted (in `budget` too), when its share holds back a
+    /// new grain.
+    fn held_back(&mut self, budget: &mut Budget) -> bool {
+        if self.share >= MAX_GRAINS || self.alive() < self.share {
+            return false;
+        }
+        self.stats.skipped += 1;
+        self.stats.held_back += 1;
+        budget.skipped += 1;
+        true
+    }
+
     /// A new grain's filter, its cutoff `r_cut` (-1 to 1) of the spray
     /// from the cutoff; `None` while the filter is off.
     fn grain_filter(&self, f: &GrainFilter, r_cut: f32) -> Option<Svf> {
@@ -1218,6 +1361,9 @@ impl GrainVoice {
         hit: f64,
         frac: f64,
     ) {
+        if self.held_back(budget) {
+            return;
+        }
         if self.active >= MAX_GRAINS || budget.live >= budget.limit {
             self.stats.skipped += 1;
             budget.skipped += 1;
@@ -1390,6 +1536,9 @@ impl GrainVoice {
         let r_size = self.vrng.bipolar();
         let r_level = self.vrng.unit();
         let r_cut = self.frng.bipolar();
+        if self.held_back(budget) {
+            return;
+        }
         if self.active >= MAX_GRAINS || budget.live >= budget.limit {
             self.stats.skipped += 1;
             budget.skipped += 1;

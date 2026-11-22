@@ -52,29 +52,32 @@
 //!   takes one chunk at a time, so several tracks record together with no
 //!   planning, and nothing is ever moved. [`Command::Forget`] gives a take
 //!   back.
-//! - **Streaming.** With [`AudioTracks::stream`] on, the memory is a cache
-//!   in front of the disk: recorded chunks go out to be written
-//!   ([`Io::Write`]) and can then make room for others, and the chunks the
-//!   next seconds of the song need are asked for ahead ([`Io::Read`]),
-//!   with the loop's start and the first chunk of each region kept when
-//!   there is room. The audio thread only ever reads memory; a chunk not
-//!   there in time plays silence and is counted ([`Stats::missed`]). The
-//!   host's disk thread does the reading and writing (see [`host`]).
+//! - **Recording to files.** With [`AudioTracks::files`] on, every take
+//!   recorded also goes to a file of its own as it records, so a crash or
+//!   a power cut loses at most a few seconds of it (the recording file
+//!   protocol of `mpfree-stream`, docs/dev/design/recording-files.md). The
+//!   files are made when a track arms, before anything records: an armed
+//!   track holds the lasting id of its next take ([`Io::Arm`]), and that
+//!   take records under it ([`Io::Start`]). The host makes, writes and
+//!   finishes the files off the audio thread (see [`host`]); the audio
+//!   thread only says what to do, and a take stays put until the host has
+//!   copied all of it out ([`AudioTracks::written`]). The takes still play
+//!   from memory.
 //!
 //! [`AudioTracks::command`] and [`AudioTracks::process`] never allocate,
 //! lock or panic, and give the same output for any period size.
 
 #![forbid(unsafe_code)]
 
-mod disk;
+pub mod files;
 pub mod host;
 mod pool;
 pub mod retime;
 pub mod save;
 pub mod stretch;
 
+use pool::Pool;
 pub use pool::CHUNK;
-use pool::{Pool, State as SlotState};
 pub use retime::{Piece, Retime};
 use std::collections::VecDeque;
 use std::fmt;
@@ -108,17 +111,10 @@ const RUN: usize = 128;
 /// lowest and highest sample of every block of the pool. A chunk is whole
 /// blocks, so a block never holds two takes.
 pub const PEAK_BLOCK: usize = 256;
-/// Disk requests waiting for the host, at most.
+/// Requests about the recording files waiting for the host, at most. The
+/// host takes them every period, and a period asks for at most a few for
+/// each command and each track's punch in, so the queue never fills.
 pub const IO_QUEUE: usize = 1024;
-/// Streaming: how far ahead of the playhead chunks are asked for, and how
-/// much of the loop's start and of each region's start is kept, in
-/// seconds.
-pub const AHEAD_SECONDS: f64 = 4.0;
-pub const HEAD_SECONDS: f64 = 1.0;
-/// Streaming: reads asked for in one planning round at most.
-const READS_PER_PLAN: usize = 64;
-/// Streaming: frames between planning rounds (and at once after a jump).
-const PLAN_FRAMES: usize = 1024;
 
 fn min_max(xs: &[f32]) -> (f32, f32) {
     xs.iter()
@@ -139,7 +135,7 @@ pub enum Input {
 }
 
 impl Input {
-    fn channels(self) -> usize {
+    pub fn channels(self) -> usize {
         match self {
             Input::Stereo => 2,
             _ => 1,
@@ -452,58 +448,34 @@ pub struct Stats {
     pub dropped: u32,
     /// Recordings cut short by a full memory or [`MAX_TAKES`].
     pub full: u32,
-    /// Streaming: frames that should have played but whose chunk was not
-    /// in memory in time (they played silence).
-    pub missed: u64,
-    /// Streaming: chunks the disk could not read or write (each try of a
-    /// write counts), and take files it could not finish.
-    pub read_errors: u32,
-    pub write_errors: u32,
-    /// Streaming: reads that came back shorter than the chunk (never
-    /// played: the chunk is asked for again).
-    pub short_reads: u32,
-    /// Streaming: disk requests dropped because the queue was full.
+    /// Requests about the recording files dropped because the queue was
+    /// full (it never should be): a take whose [`Io::Start`] is dropped
+    /// has no file, and is saved from memory.
     pub io_dropped: u32,
 }
 
-/// A request for the host's disk thread, in order (see [`AudioTracks::take_io`]).
+/// What the host does about the recording files while
+/// [`AudioTracks::files`] is on, in order ([`AudioTracks::take_io`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Io {
-    /// Read chunk `chunk` of the take's file, then give it with
-    /// [`AudioTracks::fill`] (or [`AudioTracks::fill_failed`]).
-    Read { take: u16, chunk: u32 },
-    /// Chunk `chunk` of the take is recorded (the last one may be short):
-    /// copy it with [`AudioTracks::chunk`], write it, then tell
-    /// [`AudioTracks::written`] (or [`AudioTracks::write_failed`]). Chunk
-    /// 0 is a new take: a new file.
-    Write { take: u16, chunk: u32 },
-    /// A write that failed, tried again: as [`Io::Write`], into the file
-    /// the take already has (never a new one, even for chunk 0).
-    Rewrite { take: u16, chunk: u32 },
-    /// The take's recording ended; every chunk has been asked for. Finish
-    /// its file ([`AudioTracks::take`] gives its length), then tell
-    /// [`AudioTracks::finished`]. Asked again after a write tried again.
-    Finish { take: u16 },
-}
-
-/// Tries for each write, and for finishing each file, before a take is
-/// [`SaveState::AtRisk`].
-pub const WRITE_TRIES: u8 = 3;
-
-/// Streaming: how far a take's audio is on the disk
-/// ([`AudioTracks::save_state`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SaveState {
-    /// It is still recording.
-    Recording,
-    /// Recorded; some of it is still on its way to the disk.
-    Saving,
-    /// Every sample is on the disk and its file finished.
-    Saved,
-    /// The disk failed it (a write or the finish failed every try, or a
-    /// request was lost): what is not on the disk stays in memory, and
-    /// never makes room for anything else, so it still plays.
-    AtRisk,
+    /// Track `track` armed (or its next take changed channels): make the
+    /// files its next take records into, for recording `rec` with
+    /// `channels` channels. If they can't be made the take still records,
+    /// into memory only.
+    Arm {
+        track: u8,
+        rec: RecordingId,
+        channels: u8,
+    },
+    /// The files made for `rec` won't be recorded into (the track was
+    /// disarmed, its next take changed channels, or the tracks were
+    /// cleared): remove them.
+    Disarm { rec: RecordingId },
+    /// Take `take` started recording into the files made for its lasting
+    /// id. Copy its frames out as they come ([`AudioTracks::read_take`]
+    /// reads a take while it records), finish its file once it has stopped
+    /// recording, then tell [`AudioTracks::written`].
+    Start { take: u16 },
 }
 
 /// The memory gauge, in samples (a stereo frame is two).
@@ -529,12 +501,10 @@ struct Take {
     cut_short: bool,
     /// Its saved audio is still copying in: it plays nothing yet.
     loading: bool,
-    /// Streaming: finishes of its file asked for and not answered yet;
-    /// finishes that failed in a row.
-    finishing: u8,
-    finish_fails: u8,
-    /// Streaming: the disk failed it (see [`SaveState::AtRisk`]).
-    at_risk: bool,
+    /// Recorded with files on, and not yet all copied out to its file: it
+    /// can't be forgotten, nor the tracks cleared, until the host says
+    /// [`AudioTracks::written`].
+    writing: bool,
 }
 
 const NO_TAKE: Take = Take {
@@ -550,16 +520,13 @@ const NO_TAKE: Take = Take {
     recording: false,
     cut_short: false,
     loading: false,
-    finishing: 0,
-    finish_fails: 0,
-    at_risk: false,
+    writing: false,
 };
 
 impl Take {
     /// Adds `gain`-weighted frames `k..k + n` of take `id` into the
     /// interleaved stereo `out` (n frames); frames the take does not have
-    /// add nothing. `gain(j)` is the gain of frame `j` of the run. The
-    /// frames whose chunk is not in memory: they add nothing either.
+    /// add nothing. `gain(j)` is the gain of frame `j` of the run.
     fn add_into(
         &self,
         pool: &Pool,
@@ -567,10 +534,9 @@ impl Take {
         k: i64,
         out: &mut [f32],
         gain: &impl Fn(usize) -> f32,
-    ) -> usize {
+    ) {
         let n = out.len() / 2;
         let ch = self.channels as usize;
-        let mut missed = 0;
         // Skip frames before the take.
         let mut j = if k < 0 { ((-k) as usize).min(n) } else { 0 };
         while j < n {
@@ -582,7 +548,6 @@ impl Take {
             let off = s % CHUNK;
             let count = ((CHUNK - off) / ch).min(n - j).min(self.frames - at);
             let Some(slot) = pool.readable(id, (s / CHUNK) as u32) else {
-                missed += count;
                 j += count;
                 continue;
             };
@@ -604,7 +569,6 @@ impl Take {
             }
             j += count;
         }
-        missed
     }
 
     fn sample(&self, pool: &Pool, id: u16, k: usize, c: usize) -> Option<f32> {
@@ -615,13 +579,6 @@ impl Take {
         let s = k * ch + c.min(ch - 1);
         let slot = pool.readable(id, (s / CHUNK) as u32)?;
         Some(pool.data[slot * CHUNK + s % CHUNK])
-    }
-
-    /// Samples in chunk `c` (the last one may be short).
-    fn chunk_len(&self, c: u32) -> usize {
-        (self.frames * self.channels as usize)
-            .saturating_sub(c as usize * CHUNK)
-            .min(CHUNK)
     }
 }
 
@@ -665,6 +622,10 @@ struct Track {
     /// as late as this many frames, which a take makes up in place of the
     /// line input's latency. It is never heard through the track.
     inside: Option<u32>,
+    /// Files on and armed: the lasting id its next take records under,
+    /// whose files the host has been asked to make ([`Io::Arm`]), and the
+    /// channels they were made for. None otherwise.
+    next: Option<(RecordingId, u8)>,
 }
 
 impl Track {
@@ -685,6 +646,16 @@ impl Track {
             gains: [1.0, 1.0],
             buf: vec![0.0; 2 * MAX_PERIOD as usize],
             inside: None,
+            next: None,
+        }
+    }
+
+    /// The channels its next take records: from inside, the mix in
+    /// stereo; else as its input says.
+    fn channels(&self) -> u8 {
+        match self.inside {
+            Some(_) => 2,
+            None => self.input.channels() as u8,
         }
     }
 
@@ -847,16 +818,10 @@ pub struct AudioTracks {
     /// thread.
     returned: Vec<Vec<f32>>,
     fade: [f32; FADE + 1],
-    /// Streaming (see the module notes).
-    streaming: bool,
+    /// Recording to files (see the module notes), and what the host is
+    /// asked to do about them.
+    files: bool,
     io: VecDeque<Io>,
-    /// Where the song is (tick, tempo, rolling), at the end of the last run.
-    at_tick: f64,
-    at_bpm: f64,
-    loop_range: Option<(Tick, Tick)>,
-    /// Frames since the last planning round, and whether one is due now.
-    plan_wait: usize,
-    replan: bool,
     /// Each track's block from inside (step 9), stereo interleaved,
     /// [`MAX_PERIOD`] frames a track, which the host fills before
     /// [`AudioTracks::process`].
@@ -896,13 +861,8 @@ impl AudioTracks {
             loads: Vec::with_capacity(MAX_TAKES),
             returned: Vec::with_capacity(MAX_TAKES),
             fade: fade_table(),
-            streaming: false,
+            files: false,
             io: VecDeque::with_capacity(IO_QUEUE),
-            at_tick: 0.0,
-            at_bpm: 120.0,
-            loop_range: None,
-            plan_wait: 0,
-            replan: false,
             inside: vec![0.0; MAX_TRACKS * INSIDE].into_boxed_slice(),
         }
     }
@@ -1059,7 +1019,7 @@ impl AudioTracks {
     /// its channels: for a waveform on the screen. It reads the peak table
     /// for whole blocks of [`PEAK_BLOCK`] samples, so a long stretch costs
     /// little; it works while the take records (up to what is written) and
-    /// does not allocate. Only chunks in memory count: None if none is. A host shares the result with the screen thread
+    /// does not allocate. A host shares the result with the screen thread
     /// as it shares the rest of the state.
     pub fn peaks(&self, id: u16, from: usize, to: usize) -> Option<(f32, f32)> {
         let t = self.takes.get(id as usize).filter(|t| t.live)?;
@@ -1074,8 +1034,7 @@ impl AudioTracks {
         while s < end {
             let off = s % CHUNK;
             let count = (CHUNK - off).min(end - s);
-            let slot = self.pool.readable(id, (s / CHUNK) as u32);
-            if let Some(slot) = slot.filter(|&sl| self.pool.slots[sl].noted) {
+            if let Some(slot) = self.pool.readable(id, (s / CHUNK) as u32) {
                 let (l, h) = self.pool.range_peaks(slot * CHUNK + off, count);
                 lo = lo.min(l);
                 hi = hi.max(h);
@@ -1398,10 +1357,15 @@ impl AudioTracks {
                 if !on {
                     self.punch_out(t, map, now, None);
                 }
+                self.ready_next(t);
             }
-            Command::SetInput(t, i) if ok_track(t) => self.tracks[t].input = i,
+            Command::SetInput(t, i) if ok_track(t) => {
+                self.tracks[t].input = i;
+                self.ready_next(t);
+            }
             Command::SetInside(t, lat) if ok_track(t) && self.tracks[t].rec.is_none() => {
                 self.tracks[t].inside = lat.map(|l| l.min(MAX_PERIOD * 8));
+                self.ready_next(t);
             }
             Command::SetMonitor(t, m) if ok_track(t) => self.tracks[t].monitor = m,
             Command::SetLevel(t, l) if ok_track(t) && l.is_finite() => {
@@ -1579,7 +1543,7 @@ impl AudioTracks {
                 let ok = self
                     .takes
                     .get(id as usize)
-                    .is_some_and(|t| t.live && !t.recording && !t.loading);
+                    .is_some_and(|t| t.live && !t.recording && !t.loading && !t.writing);
                 if !ok || self.in_use(id) {
                     return self.refuse();
                 }
@@ -1710,15 +1674,15 @@ impl AudioTracks {
     }
 
     /// Copy frames `from..` of a take into `out` (interleaved, the take's
-    /// channels), as many as fit and are in memory: the number of frames
-    /// copied, or None if the take is not there, records or is loading, or
-    /// its frame `from` is not in memory (streaming: read its file
-    /// instead). Does not allocate.
+    /// channels), as many as fit and it has: the number of frames copied,
+    /// or None if the take is not there or is loading. A take recording
+    /// gives the frames it has so far (they never change once written).
+    /// Does not allocate.
     pub fn read_take(&self, id: u16, from: usize, out: &mut [f32]) -> Option<usize> {
         let t = self
             .takes
             .get(id as usize)
-            .filter(|t| t.live && !t.recording && !t.loading)?;
+            .filter(|t| t.live && !t.loading)?;
         let ch = t.channels as usize;
         let want = (out.len() / ch).min(t.frames.saturating_sub(from));
         let mut done = 0;
@@ -1733,7 +1697,7 @@ impl AudioTracks {
             out[done * ch..(done + count) * ch].copy_from_slice(&self.pool.data[b..b + count * ch]);
             done += count;
         }
-        (done > 0 || want == 0).then_some(done)
+        Some(done)
     }
 
     /// Put a saved take back, under its own id and its lasting id (a new
@@ -1745,6 +1709,9 @@ impl AudioTracks {
     /// or in use, the track past the last, the audio not `frames *
     /// channels` long, the memory short, or [`MAX_TAKES`] loads waiting
     /// to copy or to be collected.
+    // The take comes back whole on a refusal, so its audio is never freed
+    // here; boxing it would allocate on the audio thread.
+    #[allow(clippy::result_large_err)]
     pub fn load_take(&mut self, f: TakeFile) -> Result<(), TakeFile> {
         let id = f.id as usize;
         let need = f.frames * f.channels;
@@ -1776,15 +1743,8 @@ impl AudioTracks {
             loading: true,
             ..NO_TAKE
         };
-        // Streaming: chunks are taken as the audio copies in (each written
-        // chunk makes room again), so only the first is needed now.
-        let chunks = if self.streaming {
-            1
-        } else {
-            need.div_ceil(CHUNK)
-        };
-        for c in 0..chunks as u32 {
-            if self.pool.alloc(f.id, c, SlotState::Dirty, true).is_none() {
+        for c in 0..need.div_ceil(CHUNK) as u32 {
+            if self.pool.alloc(f.id, c).is_none() {
                 self.pool.release_take(f.id);
                 self.takes[id] = NO_TAKE;
                 return Err(f);
@@ -1823,23 +1783,24 @@ impl AudioTracks {
 
     /// Every track as new (no regions, unarmed, settings as at start)
     /// and every take forgotten, its memory given back, with the undo
-    /// history: New project, or a project opening. The latency and
-    /// whether the tracks play are kept. Refused (false, nothing changed)
-    /// while a track records or a take copies in, or, streaming, while
-    /// audio is still going to the disk or a take's finish is not yet
-    /// answered. Does not allocate.
+    /// history: New project, or a project opening. The latency, whether
+    /// the tracks play and whether they record to files are kept; the
+    /// files made for armed tracks go ([`Io::Disarm`]). Refused (false,
+    /// nothing changed) while a track records, a take copies in, or a
+    /// take is still being copied out to its file. Does not allocate.
     pub fn clear(&mut self) -> bool {
         let busy = self
             .tracks
             .iter()
             .any(|t| t.rec.is_some() || t.tail.is_some())
             || !self.loads.is_empty()
-            || (self.streaming && self.unwritten() > 0)
-            // A finish still on the disk: its answer must not reach the
-            // next project's take of the same number.
-            || self.takes.iter().any(|t| t.live && t.finishing > 0);
+            || self.takes.iter().any(|t| t.live && t.writing);
         if busy {
             return false;
+        }
+        for t in 0..MAX_TRACKS {
+            self.tracks[t].armed = false;
+            self.ready_next(t);
         }
         for t in &mut self.tracks {
             t.n = 0;
@@ -1863,7 +1824,6 @@ impl AudioTracks {
         self.groups = 0;
         self.h_done = 0;
         self.h_redo = 0;
-        self.replan = true;
         true
     }
 
@@ -1950,14 +1910,9 @@ impl AudioTracks {
                 let off = at % CHUNK;
                 let c = (CHUNK - off).min(count - w);
                 let c_at = (at / CHUNK) as u32;
-                let slot = match self.pool.find(id, c_at) {
-                    Some(slot) => slot as usize,
-                    None => match self.pool.alloc(id, c_at, SlotState::Dirty, true) {
-                        Some(slot) => slot,
-                        // Streaming, every chunk waiting to be written:
-                        // go on next period.
-                        None => break,
-                    },
+                // Every chunk was taken by load_take.
+                let Some(slot) = self.pool.readable(id, c_at) else {
+                    break;
                 };
                 let b = slot * CHUNK + off;
                 self.pool.data[b..b + c].copy_from_slice(&audio[at..at + c]);
@@ -1974,24 +1929,6 @@ impl AudioTracks {
             let finished = done + count == total;
             if finished {
                 tk.loading = false;
-            }
-            if self.streaming {
-                // Streaming: every chunk copied in goes to be written.
-                for c in done / CHUNK..(done + count) / CHUNK {
-                    self.ask(Io::Write {
-                        take: id,
-                        chunk: c as u32,
-                    });
-                }
-                if finished {
-                    if !total.is_multiple_of(CHUNK) {
-                        self.ask(Io::Write {
-                            take: id,
-                            chunk: (total / CHUNK) as u32,
-                        });
-                    }
-                    self.ask(Io::Finish { take: id });
-                }
             }
             if finished {
                 let (_, audio) = self.loads.remove(0);
@@ -2014,28 +1951,28 @@ impl AudioTracks {
         };
         let lat = self.tracks[t].inside.unwrap_or(self.latency);
         let lat_ticks = mpfree_transport::time::ticks_in(f64::from(lat), bpm, self.rate);
-        // From inside: the mix in stereo.
-        let ch = match self.tracks[t].inside {
-            Some(_) => 2,
-            None => self.tracks[t].input.channels(),
+        // With files on, the take records under the id its files were made
+        // for (they match its channels: ready_next keeps them so).
+        self.ready_next(t);
+        let ch = self.tracks[t].channels();
+        let (rec, writing) = match self.tracks[t].next {
+            Some((rec, _)) => (rec, true),
+            None => (self.ids.fresh(), false),
         };
         self.takes[id] = Take {
             live: true,
-            rec: self.ids.fresh(),
+            rec,
             track: t as u8,
-            channels: ch as u8,
+            channels: ch,
             group,
             pass,
             bpm,
             anchor: tick - lat_ticks,
             recording: true,
+            writing,
             ..NO_TAKE
         };
-        if self
-            .pool
-            .alloc(id as u16, 0, SlotState::Dirty, true)
-            .is_none()
-        {
+        if self.pool.alloc(id as u16, 0).is_none() {
             self.takes[id] = NO_TAKE;
             self.stats.full += 1;
             self.tracks[t].blocked = true;
@@ -2046,6 +1983,36 @@ impl AudioTracks {
             g0: g,
             t_in: tick,
         });
+        if writing {
+            // Its files are the take's now; the track's next take gets
+            // files of its own.
+            self.tracks[t].next = None;
+            self.ask(Io::Start { take: id as u16 });
+            self.ready_next(t);
+        }
+    }
+
+    /// Files on: an armed track has files ready for its next take, made
+    /// for the channels it records now, and a disarmed one has none. Asks
+    /// the host to make or remove them as that changes.
+    fn ready_next(&mut self, t: usize) {
+        let tr = &self.tracks[t];
+        let want = (self.files && tr.armed).then(|| tr.channels());
+        if tr.next.map(|(_, ch)| ch) == want {
+            return;
+        }
+        if let Some((rec, _)) = self.tracks[t].next.take() {
+            self.ask(Io::Disarm { rec });
+        }
+        if let Some(channels) = want {
+            let rec = self.ids.fresh();
+            self.tracks[t].next = Some((rec, channels));
+            self.ask(Io::Arm {
+                track: t as u8,
+                rec,
+                channels,
+            });
+        }
     }
 
     /// End track `t`'s recording at absolute frame `g`. `end` is the song
@@ -2094,58 +2061,32 @@ impl AudioTracks {
         }
     }
 
-    /// The take stops recording. Streaming: its last, short chunk goes to
-    /// be written, and its file to be finished (a take with no audio has
-    /// no file).
+    /// The take stops recording.
     fn close(&mut self, id: usize) {
         let tk = &mut self.takes[id];
         if !tk.recording {
             return;
         }
         tk.recording = false;
-        let samples = tk.frames * tk.channels as usize;
-        if samples == 0 {
+        if tk.frames == 0 {
             // Nothing was written: its first chunk goes back.
             self.pool.release_take(id as u16);
         }
-        if self.streaming && samples > 0 {
-            if !samples.is_multiple_of(CHUNK) {
-                self.ask(Io::Write {
-                    take: id as u16,
-                    chunk: (samples / CHUNK) as u32,
-                });
-            }
-            self.ask(Io::Finish { take: id as u16 });
-        }
     }
 
-    /// A request for the disk thread. One that does not fit in the queue
-    /// is counted, and never left waiting for an answer that will not
-    /// come: a read's slot goes back (asked for again when next wanted),
-    /// and a take that would not be written or finished is at risk.
+    /// A request for the host. One that does not fit in the queue (never,
+    /// as the host takes them every period) is counted, and a take whose
+    /// start it was is left without a file rather than waiting for a copy
+    /// that won't come.
     fn ask(&mut self, r: Io) {
         if self.io.len() < self.io.capacity() {
-            if let Io::Finish { take } = r {
-                if let Some(t) = self.takes.get_mut(take as usize) {
-                    t.finishing = t.finishing.saturating_add(1);
-                }
-            }
             self.io.push_back(r);
             return;
         }
         self.stats.io_dropped += 1;
-        match r {
-            Io::Read { take, chunk } => {
-                if let Some(s) = self.pool.find(take, chunk).map(|s| s as usize) {
-                    if self.pool.slots[s].state == SlotState::Loading {
-                        self.pool.release(s);
-                    }
-                }
-            }
-            Io::Write { take, .. } | Io::Rewrite { take, .. } | Io::Finish { take } => {
-                if let Some(t) = self.takes.get_mut(take as usize) {
-                    t.at_risk = true;
-                }
+        if let Io::Start { take } = r {
+            if let Some(t) = self.takes.get_mut(take as usize) {
+                t.writing = false;
             }
         }
     }
@@ -2161,7 +2102,7 @@ impl AudioTracks {
             let (c, off) = ((s / CHUNK) as u32, s % CHUNK);
             let slot = match self.pool.find(id as u16, c) {
                 Some(slot) => slot as usize,
-                None => match self.pool.alloc(id as u16, c, SlotState::Dirty, true) {
+                None => match self.pool.alloc(id as u16, c) {
                     Some(slot) => slot,
                     None => {
                         self.takes[id].cut_short = true;
@@ -2194,12 +2135,6 @@ impl AudioTracks {
             self.pool.note(b, count * ch);
             self.takes[id].frames += count;
             j += count;
-            if self.streaming && off + count * ch == CHUNK {
-                self.ask(Io::Write {
-                    take: id as u16,
-                    chunk: c,
-                });
-            }
         }
         true
     }
@@ -2269,358 +2204,65 @@ impl AudioTracks {
             m += 1;
         }
         self.mix(n, out);
-        if self.streaming {
-            self.plan_wait += n;
-            if self.replan || self.plan_wait >= PLAN_FRAMES {
-                self.plan(map);
-            }
-        }
         self.last_map = *map;
     }
 
-    // ---- streaming -----------------------------------------------------
+    // ---- recording to files -------------------------------------------
 
-    /// Turn streaming on or off (see the module notes). Only while no take
-    /// is there: false (nothing changed) otherwise.
-    pub fn stream(&mut self, on: bool) -> bool {
-        if self.takes.iter().any(|t| t.live) {
+    /// Record to files, or stop (see the module notes): the host turns it
+    /// on once it has a folder for them. Armed tracks get their files
+    /// ([`Io::Arm`]) or let them go ([`Io::Disarm`]). Refused (false,
+    /// nothing changed) while a track records or a take is still being
+    /// copied out to its file.
+    pub fn files(&mut self, on: bool) -> bool {
+        let busy = self
+            .tracks
+            .iter()
+            .any(|t| t.rec.is_some() || t.tail.is_some())
+            || self.takes.iter().any(|t| t.live && t.writing);
+        if busy {
             return false;
         }
-        self.streaming = on;
-        self.io.clear();
-        self.replan = on;
+        self.files = on;
+        for t in 0..MAX_TRACKS {
+            self.ready_next(t);
+        }
         true
     }
 
-    pub fn streaming(&self) -> bool {
-        self.streaming
+    pub fn records_to_files(&self) -> bool {
+        self.files
     }
 
-    /// The next request for the disk thread, oldest first.
+    /// The lasting id track `t`'s next take records under, and the
+    /// channels its files were made for (files on and armed).
+    pub fn next_recording(&self, t: usize) -> Option<(RecordingId, usize)> {
+        let (rec, ch) = self.tracks.get(t)?.next?;
+        Some((rec, usize::from(ch)))
+    }
+
+    /// The next request about the recording files, oldest first.
     pub fn take_io(&mut self) -> Option<Io> {
         self.io.pop_front()
     }
 
-    /// The loop, for keeping its start in memory (the transport's
-    /// [`Mark::LoopSet`] does the same; this is for a loop set before the
-    /// tracks were made).
-    pub fn set_loop(&mut self, r: Option<(Tick, Tick)>) {
-        if r != self.loop_range {
-            self.loop_range = r;
-            self.replan = true;
-        }
-    }
-
-    /// The samples of chunk `chunk` of a take while it is in memory (the
-    /// last chunk may be short), for [`Io::Write`].
-    pub fn chunk(&self, take: u16, chunk: u32) -> Option<&[f32]> {
-        let t = self.takes.get(take as usize).filter(|t| t.live)?;
-        let slot = self.pool.readable(take, chunk)?;
-        let len = t.chunk_len(chunk);
-        (len > 0).then(|| &self.pool.data[slot * CHUNK..slot * CHUNK + len])
-    }
-
-    /// Chunk `chunk` of a take is on the disk now: its memory can make
-    /// room for others. A chunk still being recorded (not yet asked to be
-    /// written) is left as it is.
-    pub fn written(&mut self, take: u16, chunk: u32) {
-        let Some(t) = self.takes.get(take as usize).filter(|t| t.live) else {
-            return;
-        };
-        let full = t.chunk_len(chunk) == CHUNK || !t.recording;
-        if let Some(s) = self.pool.find(take, chunk) {
-            let sl = &mut self.pool.slots[s as usize];
-            if sl.state == SlotState::Dirty && full {
-                sl.state = SlotState::Clean;
-            }
-        }
-    }
-
-    /// The chunk could not be written: it stays in memory (counted) and is
-    /// asked for again ([`Io::Rewrite`], and the file finished again once
-    /// the take is recorded), up to [`WRITE_TRIES`] tries; after that the
-    /// take is [`SaveState::AtRisk`] and the chunk stays in memory.
-    pub fn write_failed(&mut self, take: u16, chunk: u32) {
-        self.stats.write_errors += 1;
-        let Some(done) = self
+    /// Every frame of take `take` is copied out to its file and it has
+    /// stopped recording ([`Io::Start`]): it can be forgotten again.
+    pub fn written(&mut self, take: u16) {
+        if let Some(t) = self
             .takes
-            .get(take as usize)
-            .filter(|t| t.live)
-            .map(|t| !t.recording && !t.loading)
-        else {
-            return;
-        };
-        let Some(s) = self.pool.find(take, chunk).map(|s| s as usize) else {
-            return;
-        };
-        let sl = &mut self.pool.slots[s];
-        if sl.state != SlotState::Dirty {
-            return;
-        }
-        sl.tries = sl.tries.saturating_add(1);
-        if sl.tries < WRITE_TRIES {
-            self.ask(Io::Rewrite { take, chunk });
-            if done {
-                self.ask(Io::Finish { take });
-            }
-        } else {
-            self.takes[take as usize].at_risk = true;
-        }
-    }
-
-    /// The disk thread's answer to [`Io::Finish`]. A failed finish is
-    /// counted with the write errors and tried again, up to
-    /// [`WRITE_TRIES`] in a row; after that the take is
-    /// [`SaveState::AtRisk`].
-    pub fn finished(&mut self, take: u16, ok: bool) {
-        let Some(t) = self.takes.get_mut(take as usize).filter(|t| t.live) else {
-            return;
-        };
-        t.finishing = t.finishing.saturating_sub(1);
-        if ok {
-            t.finish_fails = 0;
-            return;
-        }
-        t.finish_fails = t.finish_fails.saturating_add(1);
-        let again = t.finish_fails < WRITE_TRIES;
-        if !again {
-            t.at_risk = true;
-        }
-        self.stats.write_errors += 1;
-        if again {
-            self.ask(Io::Finish { take });
-        }
-    }
-
-    /// Streaming: how far take `id`'s audio is on the disk. None if not
-    /// streaming, or there is no such take. Looks at every slot: for the
-    /// screen, not for every period.
-    pub fn save_state(&self, id: u16) -> Option<SaveState> {
-        if !self.streaming {
-            return None;
-        }
-        let t = self.takes.get(id as usize).filter(|t| t.live)?;
-        let dirty = || {
-            self.pool
-                .slots
-                .iter()
-                .any(|s| s.state == SlotState::Dirty && s.take == id)
-        };
-        Some(if t.at_risk {
-            SaveState::AtRisk
-        } else if t.recording {
-            SaveState::Recording
-        } else if t.loading || t.finishing > 0 || dirty() {
-            SaveState::Saving
-        } else {
-            SaveState::Saved
-        })
-    }
-
-    /// The disk thread's answer to [`Io::Read`]: the chunk's samples. False
-    /// (nothing changed) if it is no longer wanted (the take was
-    /// forgotten, or the chunk is there already).
-    pub fn fill(&mut self, take: u16, chunk: u32, data: &[f32]) -> bool {
-        self.fill_part(take, chunk, 0, data, true)
-    }
-
-    /// Part of [`AudioTracks::fill`], so a chunk can copy in over several
-    /// periods: `data` goes at sample `from` of the chunk; with `last` the
-    /// rest of the chunk is cleared and it plays from now on. False
-    /// (nothing changed) if the chunk is no longer wanted.
-    ///
-    /// A chunk that comes back shorter than the take's audio there (`from`
-    /// plus `data`, with `last`) is a short read: counted
-    /// ([`Stats::short_reads`]), never played, and asked for again when
-    /// next wanted (false).
-    pub fn fill_part(
-        &mut self,
-        take: u16,
-        chunk: u32,
-        from: usize,
-        data: &[f32],
-        last: bool,
-    ) -> bool {
-        let Some(want) = self
-            .takes
-            .get(take as usize)
-            .filter(|t| t.live)
-            .map(|t| t.chunk_len(chunk))
-        else {
-            return false;
-        };
-        let Some(s) = self.pool.find(take, chunk).map(|s| s as usize) else {
-            return false;
-        };
-        if self.pool.slots[s].state != SlotState::Loading || from > CHUNK {
-            return false;
-        }
-        let n = data.len().min(CHUNK - from);
-        if last && from + n < want {
-            self.stats.short_reads += 1;
-            self.pool.release(s);
-            return false;
-        }
-        let b = s * CHUNK + from;
-        self.pool.data[b..b + n].copy_from_slice(&data[..n]);
-        if last {
-            self.pool.data[b + n..s * CHUNK + CHUNK].fill(0.0);
-            self.pool.slots[s].state = SlotState::Clean;
-        }
-        true
-    }
-
-    /// The chunk could not be read: its slot goes back (counted; asked for
-    /// again when next wanted).
-    pub fn fill_failed(&mut self, take: u16, chunk: u32) {
-        self.stats.read_errors += 1;
-        if let Some(s) = self.pool.find(take, chunk).map(|s| s as usize) {
-            if self.pool.slots[s].state == SlotState::Loading {
-                self.pool.release(s);
-            }
-        }
-    }
-
-    /// Streaming: put back a take whose audio is on the disk, under its own
-    /// id and lasting id (as [`AudioTracks::load_take`]); its chunks are
-    /// read as the song needs them. Does not allocate.
-    /// Gives `f` back if not streaming, the id is past the last or in use,
-    /// the track past the last, or the take empty.
-    pub fn add_take(&mut self, f: TakeFile) -> Result<(), TakeFile> {
-        let id = f.id as usize;
-        if !self.streaming
-            || id >= MAX_TAKES
-            || self.takes[id].live
-            || f.track >= MAX_TRACKS
-            || !(1..=2).contains(&f.channels)
-            || f.frames == 0
-            || !f.anchor.is_finite()
+            .get_mut(take as usize)
+            .filter(|t| t.live && !t.recording)
         {
-            return Err(f);
-        }
-        self.pool.release_take(f.id);
-        let rec = self.keep_id(f.rec);
-        self.takes[id] = Take {
-            live: true,
-            rec,
-            track: f.track as u8,
-            channels: f.channels as u8,
-            group: f.group,
-            pass: f.pass,
-            bpm: if f.bpm.is_finite() && f.bpm > 0.0 {
-                f.bpm
-            } else {
-                0.0
-            },
-            anchor: f.anchor,
-            frames: f.frames,
-            ..NO_TAKE
-        };
-        self.groups = self.groups.max(f.group);
-        self.replan = true;
-        Ok(())
-    }
-
-    /// Chunks not yet written to the disk (recorded or loaded here), and
-    /// chunks waiting to be read.
-    pub fn unwritten(&self) -> usize {
-        self.pool
-            .slots
-            .iter()
-            .filter(|s| s.state == SlotState::Dirty)
-            .count()
-    }
-
-    /// One planning round: hold (and ask the disk for) the chunks the next
-    /// [`AHEAD_SECONDS`] of the song play, then the loop's start, then the
-    /// start of each region, nearest first, while there is room.
-    fn plan(&mut self, map: &TempoMap) {
-        self.plan_wait = 0;
-        self.replan = false;
-        self.pool.clock += 1;
-        let mut reads = READS_PER_PLAN.min(self.io.capacity() - self.io.len());
-        let rate = f64::from(self.rate);
-        let ahead = AHEAD_SECONDS * rate;
-        let head = HEAD_SECONDS * rate;
-        let at = self.at_tick;
-        // The first quarter for every track, then the rest.
-        self.want_window(map, at, ahead / 4.0, &mut reads);
-        self.want_window(map, at, ahead, &mut reads);
-        if let Some((ls, le)) = self.loop_range {
-            if at < le as f64 {
-                self.want_window(map, ls as f64, head, &mut reads);
-            }
-        }
-        // Region starts, at most a quarter of the memory.
-        let mut room = self.pool.len() / 4;
-        for t in 0..MAX_TRACKS {
-            let tr = &self.tracks[t];
-            let first = tr.regions().partition_point(|r| (r.end as f64) < at);
-            for i in (first..tr.n).chain(0..first) {
-                let r = self.tracks[t].regions[i];
-                let end = frames_from(map, r.start as f64, r.end as f64, self.rate).min(head);
-                let held = self.want_frames(r.take, r.src, r.src + end as i64, &mut reads);
-                room = room.saturating_sub(held);
-                if room == 0 {
-                    return;
-                }
-            }
+            t.writing = false;
         }
     }
 
-    /// Hold the chunks every track plays from tick `t0` for `frames`.
-    fn want_window(&mut self, map: &TempoMap, t0: f64, frames: f64, reads: &mut usize) {
-        let rate = self.rate;
-        let t1 = tick_after(map, t0, frames, rate);
-        let tail = mpfree_transport::time::ticks_in(FADE as f64, self.at_bpm, rate) + 1.0;
-        for t in 0..MAX_TRACKS {
-            let first = self.tracks[t]
-                .regions()
-                .partition_point(|r| r.end as f64 + tail <= t0);
-            for i in first..self.tracks[t].n {
-                let r = self.tracks[t].regions[i];
-                if r.start as f64 >= t1 {
-                    break;
-                }
-                let a = frames_from(map, r.start as f64, t0.max(r.start as f64), rate);
-                let b = frames_from(map, r.start as f64, t1.min(r.end as f64), rate) + FADE as f64;
-                self.want_frames(r.take, r.src + a as i64, r.src + b.ceil() as i64, reads);
-            }
-        }
-    }
-
-    /// Hold the chunks of take frames `a..b`; how many it holds.
-    fn want_frames(&mut self, take: u16, a: i64, b: i64, reads: &mut usize) -> usize {
-        let Some(t) = self
-            .takes
+    /// Whether take `take` is still being copied out to its file.
+    pub fn writing(&self, take: u16) -> bool {
+        self.takes
             .get(take as usize)
-            .filter(|t| t.live && !t.loading)
-        else {
-            return 0;
-        };
-        let ch = t.channels as usize;
-        let b = (b.max(0) as usize).min(t.frames);
-        let a = a.max(0) as usize;
-        if a >= b {
-            return 0;
-        }
-        let mut held = 0;
-        for c in (a * ch / CHUNK) as u32..=((b * ch - 1) / CHUNK) as u32 {
-            if let Some(s) = self.pool.find(take, c) {
-                self.pool.slots[s as usize].last = self.pool.clock;
-                held += 1;
-            } else if *reads > 0
-                && self
-                    .pool
-                    .alloc(take, c, SlotState::Loading, false)
-                    .is_some()
-            {
-                *reads -= 1;
-                held += 1;
-                self.ask(Io::Read { take, chunk: c });
-            }
-        }
-        held
+            .is_some_and(|t| t.live && t.writing)
     }
 
     /// A loop jump or a locate while recording: each recording track ends
@@ -2630,18 +2272,8 @@ impl AudioTracks {
         let end = match mark {
             Mark::Looped { end, .. } => end as f64,
             Mark::Located { from, .. } => from as f64,
-            Mark::LoopSet(r) => {
-                self.loop_range = r;
-                self.replan = true;
-                return;
-            }
-            Mark::Started { .. } | Mark::Stopped { .. } | Mark::Rewound | Mark::Tempo(_) => {
-                self.replan = true;
-                return;
-            }
             _ => return,
         };
-        self.replan = true;
         for t in 0..MAX_TRACKS {
             if let Some(rec) = self.tracks[t].rec {
                 let tk = self.takes[rec.take as usize];
@@ -2666,8 +2298,6 @@ impl AudioTracks {
         let recording_state = span.state == State::Recording;
         let rolling = matches!(span.state, State::Playing | State::Recording);
         let tick0 = span.tick_at(f);
-        self.at_tick = span.tick_at(f + len as u64);
-        self.at_bpm = span.bpm;
         for t in 0..MAX_TRACKS {
             // What this track records: its block from inside, or the line.
             let input = match self.tracks[t].inside {
@@ -2789,10 +2419,8 @@ impl AudioTracks {
             takes,
             pool,
             fade,
-            stats,
             ..
         } = self;
-        let missed = &mut stats.missed;
         let tr = &mut tracks[t];
         let first = tr
             .regions()
@@ -2840,10 +2468,9 @@ impl AudioTracks {
             if e0 >= plain_from && e0 + len as i64 <= len_f - fo {
                 // The whole run is past the fades: one gain.
                 let g = r.gain;
-                *missed += tk.add_into(pool, r.take, r.src + e0, dst, &|_| g) as u64;
+                tk.add_into(pool, r.take, r.src + e0, dst, &|_| g);
             } else {
-                *missed +=
-                    tk.add_into(pool, r.take, r.src + e0, dst, &|j| gain_at(e0 + j as i64)) as u64;
+                tk.add_into(pool, r.take, r.src + e0, dst, &|j| gain_at(e0 + j as i64));
             }
         }
     }
