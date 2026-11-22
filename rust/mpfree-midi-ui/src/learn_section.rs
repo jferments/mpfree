@@ -1405,7 +1405,7 @@ impl Learn {
     /// The MIDI Follow card (board 8's right card).
     fn paint_follow(&self, cx: &mut PaintCx, m: &IoModel, card: Rect) {
         let t = cx.theme.clone();
-        cx.canvas.fill_round_rect(card, 12, t.surface);
+        cx.canvas.fill_round_rect(card, t.round(12), t.surface);
         let r = follow_rects(card);
         cx.text(
             FontId::Bold,
@@ -1470,7 +1470,7 @@ impl Learn {
     /// the one Learn waits for lit.
     fn paint_transport(&self, cx: &mut PaintCx, m: &IoModel, l: &Layout, back: bool) {
         let t = cx.theme.clone();
-        cx.canvas.fill_round_rect(l.card, 12, t.surface);
+        cx.canvas.fill_round_rect(l.card, t.round(12), t.surface);
         let ci = l.card.inset(14);
         cx.text(
             FontId::Bold,
@@ -1525,7 +1525,7 @@ impl Learn {
     /// then Stop all and Back to song, the one Learn waits for lit.
     fn paint_clips(&self, cx: &mut PaintCx, m: &IoModel, l: &Layout, back: bool) {
         let t = cx.theme.clone();
-        cx.canvas.fill_round_rect(l.card, 12, t.surface);
+        cx.canvas.fill_round_rect(l.card, t.round(12), t.surface);
         let ci = l.card.inset(14);
         cx.text(
             FontId::Bold,
@@ -1573,7 +1573,7 @@ impl Learn {
     /// lit.
     fn paint_looper(&self, cx: &mut PaintCx, m: &IoModel, l: &Layout, back: bool) {
         let t = cx.theme.clone();
-        cx.canvas.fill_round_rect(l.card, 12, t.surface);
+        cx.canvas.fill_round_rect(l.card, t.round(12), t.surface);
         let ci = l.card.inset(14);
         cx.text(
             FontId::Bold,
@@ -1619,7 +1619,7 @@ impl Learn {
     /// waits for lit.
     fn paint_play(&self, cx: &mut PaintCx, m: &IoModel, l: &Layout, back: bool) {
         let t = cx.theme.clone();
-        cx.canvas.fill_round_rect(l.card, 12, t.surface);
+        cx.canvas.fill_round_rect(l.card, t.round(12), t.surface);
         let ci = l.card.inset(14);
         cx.text(
             FontId::Bold,
@@ -1680,7 +1680,7 @@ impl Learn {
 
     fn paint_card(&self, cx: &mut PaintCx, m: &IoModel, l: &Layout, k: usize) {
         let t = cx.theme.clone();
-        cx.canvas.fill_round_rect(l.card, 12, t.surface);
+        cx.canvas.fill_round_rect(l.card, t.round(12), t.surface);
         let Some((kept, s)) = m.setup.learned_at(k) else {
             return;
         };
@@ -1786,11 +1786,11 @@ impl Learn {
 fn button(cx: &mut PaintCx, r: Rect, text: &str, lit: bool) {
     let t = cx.theme.clone();
     let (fill, ink) = if lit {
-        (t.accent2, t.on_accent)
+        (t.accent2, t.ink_on(t.accent2))
     } else {
         (t.raised, t.text)
     };
-    cx.canvas.fill_round_rect(r, 10, fill);
+    cx.canvas.fill_round_rect(r, t.round(10), fill);
     cx.text(FontId::Sans, t.size_small, r, Align::Center, ink, text);
 }
 
@@ -1801,14 +1801,14 @@ fn segment(cx: &mut PaintCx, r: Rect, text: &str, on: bool, enabled: bool) {
         (false, true) => (t.raised, t.text),
         (false, false) => (t.raised, t.text_faint),
     };
-    cx.canvas.fill_round_rect(r, 10, fill);
+    cx.canvas.fill_round_rect(r, t.round(10), fill);
     cx.text(FontId::Bold, t.size_small, r, Align::Center, ink, text);
 }
 
 fn stepper(cx: &mut PaintCx, minus: Rect, plus: Rect, value: &str) {
     let t = cx.theme.clone();
     for (r, s) in [(minus, "−"), (plus, "+")] {
-        cx.canvas.fill_round_rect(r, 8, t.raised);
+        cx.canvas.fill_round_rect(r, t.round(8), t.raised);
         cx.text(FontId::Bold, t.size_body, r, Align::Center, t.text, s);
     }
     let mid = Rect::new(
@@ -1817,7 +1817,7 @@ fn stepper(cx: &mut PaintCx, minus: Rect, plus: Rect, value: &str) {
         plus.x - minus.right() - 8,
         minus.h,
     );
-    cx.canvas.fill_round_rect(mid, 8, t.bg);
+    cx.canvas.fill_round_rect(mid, t.round(8), t.bg);
     cx.text(
         FontId::Sans,
         t.size_small,
@@ -1853,17 +1853,17 @@ impl IoSection for Learn {
         let l = layout(r, m.live.learning.is_some());
         // Learning: what the next control moved takes.
         if let (Some(b), Some(name)) = (l.banner, &m.live.learning) {
-            cx.canvas.fill_round_rect(b, 12, t.surface);
+            cx.canvas.fill_round_rect(b, t.round(12), t.surface);
             cx.canvas
                 .fill_round_rect(Rect::new(b.x, b.y + 6, 4, b.h - 12), 2, t.accent2);
             let chip = Rect::new(b.x + 16, b.y + 12, 96, b.h - 24);
-            cx.canvas.fill_round_rect(chip, 6, t.accent2);
+            cx.canvas.fill_round_rect(chip, t.round(6), t.accent2);
             cx.text(
                 FontId::Bold,
                 t.size_small * 0.85,
                 chip,
                 Align::Center,
-                t.on_accent,
+                t.ink_on(t.accent2),
                 "LEARNING",
             );
             let text = Rect::new(chip.right() + 12, b.y, l.cancel.x - chip.right() - 20, b.h);
@@ -1922,7 +1922,7 @@ impl IoSection for Learn {
                 "RIG: every project  ·  PROJECT: this song",
             );
         }
-        cx.canvas.fill_round_rect(l.table, 12, t.surface);
+        cx.canvas.fill_round_rect(l.table, t.round(12), t.surface);
         let cols = columns(l.body);
         let inner = l.table.inset(10);
         for (i, h) in ["Control", "Moves", "Now", "Kept in"].iter().enumerate() {
@@ -1965,9 +1965,9 @@ impl IoSection for Learn {
             };
             let idle = idle_why(&m, *kept, s);
             if k == self.pick {
-                cx.canvas.stroke_round_rect(rr, 8, 2, t.accent2);
+                cx.canvas.stroke_round_rect(rr, t.round(8), 2, t.accent2);
             } else if k % 2 == 1 {
-                cx.canvas.fill_round_rect(rr, 8, t.raised);
+                cx.canvas.fill_round_rect(rr, t.round(8), t.raised);
             }
             let ink = if idle.is_some() { t.text_faint } else { t.text };
             let dim = if idle.is_some() {
@@ -2057,7 +2057,7 @@ impl IoSection for Learn {
                 Kept::Rig => (t.accent, "RIG"),
                 Kept::Project => (t.accent2, "PROJECT"),
             };
-            cx.canvas.stroke_round_rect(chip, 6, 1, fill);
+            cx.canvas.stroke_round_rect(chip, t.round(6), 1, fill);
             cx.text(
                 FontId::Bold,
                 t.size_small * 0.8,

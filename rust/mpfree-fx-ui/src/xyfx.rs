@@ -118,12 +118,12 @@ impl Widget for EffectGrid {
             let c = EffectGrid::cell(r, i);
             let picked = i == self.selected;
             let (fill, ink, dim) = match (picked, self.open) {
-                (true, true) => (t.accent, t.bg, t.bg),
+                (true, true) => (t.accent, t.on_accent, t.on_accent),
                 _ => (t.raised, t.text, t.text_dim),
             };
-            cx.canvas.fill_round_rect(c, 10, fill);
+            cx.canvas.fill_round_rect(c, t.round(10), fill);
             if picked && !self.open {
-                cx.canvas.stroke_round_rect(c, 10, 2, t.accent);
+                cx.canvas.stroke_round_rect(c, t.round(10), 2, t.accent);
             }
             let inner = c.inset_xy(10, 6);
             let (top, bottom) = inner.take_top(inner.h / 2);

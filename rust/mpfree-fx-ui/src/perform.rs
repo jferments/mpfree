@@ -128,20 +128,20 @@ impl Widget for PerformPads {
             let c = PerformPads::cell(r, i);
             let lit = t.accent;
             let (fill, ink, dim) = match p.state {
-                2 => (lit, t.bg, t.bg),
+                2 => (lit, t.on_accent, t.on_accent),
                 3 => (t.raised.mix(lit, 0.45), t.text, t.text),
                 _ if p.effect.is_empty() => {
                     (t.surface.mix(t.raised, 0.5), t.text_faint, t.text_faint)
                 }
                 _ => (t.raised, t.text, t.text_dim),
             };
-            cx.canvas.fill_round_rect(c, 10, fill);
+            cx.canvas.fill_round_rect(c, t.round(10), fill);
             if p.state == 1 {
-                cx.canvas.stroke_round_rect(c, 10, 3, t.warn);
+                cx.canvas.stroke_round_rect(c, t.round(10), 3, t.warn);
             } else if self.selected == Some(i) {
-                cx.canvas.stroke_round_rect(c, 10, 2, t.text);
+                cx.canvas.stroke_round_rect(c, t.round(10), 2, t.text);
             } else if p.held {
-                cx.canvas.stroke_round_rect(c, 10, 2, lit);
+                cx.canvas.stroke_round_rect(c, t.round(10), 2, lit);
             }
             let inner = c.inset_xy(10, 7);
             let (top, bottom) = inner.take_top(inner.h / 2);
@@ -293,7 +293,7 @@ impl Widget for XyView {
         let t = cx.theme.clone();
         cx.titled_panel(r, &self.title, &self.readout);
         let a = XyView::area(r);
-        cx.canvas.fill_round_rect(a, 10, t.raised);
+        cx.canvas.fill_round_rect(a, t.round(10), t.raised);
         // Quarter lines (across, a stepped X's columns instead), and
         // stronger lines through where it rests.
         let cols = self.columns.len() as i32;
@@ -420,11 +420,18 @@ impl Widget for XyView {
         // Hold.
         let h = XyView::hold_rect(r);
         if self.hold {
-            cx.canvas.fill_round_rect(h, 9, t.warn);
-            cx.text(FontId::Bold, t.size_small, h, Align::Center, t.bg, "Hold");
+            cx.canvas.fill_round_rect(h, t.round(9), t.warn);
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                h,
+                Align::Center,
+                t.ink_on(t.warn),
+                "Hold",
+            );
         } else {
-            cx.canvas.fill_round_rect(h, 9, t.surface);
-            cx.canvas.stroke_round_rect(h, 9, 1, t.outline);
+            cx.canvas.fill_round_rect(h, t.round(9), t.surface);
+            cx.canvas.stroke_round_rect(h, t.round(9), 1, t.outline);
             cx.text(
                 FontId::Sans,
                 t.size_small,

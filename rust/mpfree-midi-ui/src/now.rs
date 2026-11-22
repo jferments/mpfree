@@ -40,10 +40,6 @@ const BASE: u8 = 48;
 /// The highest the keyboard starts (C7): its last keys past G9 are left
 /// out.
 const TOP_BASE: u8 = 96;
-const PIANO_WHITE: Color = Color::rgb(0xE9ECF2);
-const PIANO_BLACK: Color = Color::rgb(0x1A1D24);
-const PIANO_INK: Color = Color::rgb(0x0B0D12);
-const PIANO_LABEL: Color = Color::rgb(0x5F687B);
 
 const CARD_GAP: i32 = 10;
 const ROW_H: i32 = 34;
@@ -322,7 +318,7 @@ fn held_for(s: f32) -> String {
 /// A card: its panel and title, and the area below the title.
 pub(crate) fn card(cx: &mut PaintCx, r: Rect, title: &str, right: &str, right_ink: Color) -> Rect {
     let t = cx.theme.clone();
-    cx.canvas.fill_round_rect(r, 10, t.surface);
+    cx.canvas.fill_round_rect(r, t.round(10), t.surface);
     let head = Rect::new(r.x + 14, r.y + 8, r.w - 28, 24);
     cx.text(
         FontId::Bold,
@@ -390,6 +386,8 @@ fn paint_keys(cx: &mut PaintCx, d: &NowData, r: Rect) {
         .flat_map(|o| WHITE.iter().map(move |w| base + o * 12 + w))
         .collect();
     let ww = kb.w / whites.len() as i32;
+    let piano = t.keys();
+    let white = if t.is_light() { piano.white } else { t.text };
     for (i, &note) in whites.iter().enumerate() {
         if note > 127 {
             continue;
@@ -397,7 +395,7 @@ fn paint_keys(cx: &mut PaintCx, d: &NowData, r: Rect) {
         let key = Rect::new(kb.x + i as i32 * ww, kb.y, ww - 2, kb.h);
         let vel = h.vel[usize::from(note)];
         cx.canvas
-            .fill_round_rect(key, 3, if vel > 0 { t.good } else { PIANO_WHITE });
+            .fill_round_rect(key, 3, if vel > 0 { t.good } else { white });
         let foot = Rect::new(key.x, key.bottom() - 20, key.w, 18);
         if vel > 0 {
             cx.text(
@@ -405,7 +403,7 @@ fn paint_keys(cx: &mut PaintCx, d: &NowData, r: Rect) {
                 t.size_small * 0.8,
                 foot,
                 Align::Center,
-                PIANO_INK,
+                t.ink_on(t.good),
                 &vel.to_string(),
             );
         } else if note % 12 == 0 {
@@ -414,7 +412,7 @@ fn paint_keys(cx: &mut PaintCx, d: &NowData, r: Rect) {
                 t.size_small * 0.75,
                 foot.inset_xy(2, 0),
                 Align::Left,
-                PIANO_LABEL,
+                t.readable(t.text_faint, white),
                 &note_name(note),
             );
         }
@@ -429,7 +427,7 @@ fn paint_keys(cx: &mut PaintCx, d: &NowData, r: Rect) {
         let key = Rect::new(x, kb.y, bw, kb.h * 3 / 5);
         let held = h.vel[usize::from(note + 1)] > 0;
         cx.canvas
-            .fill_round_rect(key, 2, if held { t.good } else { PIANO_BLACK });
+            .fill_round_rect(key, 2, if held { t.good } else { piano.black });
     }
     let line = Rect::new(body.x, kb.bottom() + 8, body.w, 24);
     let notes: Vec<String> = h
@@ -783,7 +781,7 @@ fn paint_still(cx: &mut PaintCx, d: &NowData, r: Rect, button: Rect) {
     } else {
         (t.bg, t.text_faint)
     };
-    cx.canvas.fill_round_rect(button, 10, fill);
+    cx.canvas.fill_round_rect(button, t.round(10), fill);
     cx.text(
         FontId::Bold,
         t.size_small,
