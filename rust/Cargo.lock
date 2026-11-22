@@ -1362,6 +1362,7 @@ name = "mpfree-stream"
 version = "0.1.0"
 dependencies = [
  "mpfree-stream",
+ "sha2",
 ]
 
 [[package]]

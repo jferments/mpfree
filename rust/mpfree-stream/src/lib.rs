@@ -28,6 +28,10 @@
 //! - [`resample`]: files at another rate played at the engine's,
 //!   resampled ahead into engine-rate units
 //!   ([`coord::Coordinator::open_at_engine_rate`]).
+//! - [`prepare`]: prepared copies at the engine's rate, named by what made
+//!   them; [`publish`]: files published whole or not at all, never over
+//!   another; [`snapshot`]: a set's real versions, named by content, and
+//!   its checks; [`ready`]: how ready a set is, from what was tested.
 
 #![forbid(unsafe_code)]
 
@@ -40,9 +44,13 @@ pub mod ledger;
 pub mod msg;
 pub mod player;
 pub mod policy;
+pub mod prepare;
+pub mod publish;
+pub mod ready;
 pub mod rec;
 pub mod recover;
 pub mod resample;
+pub mod snapshot;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 pub mod writer;
