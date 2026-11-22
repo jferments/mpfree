@@ -87,10 +87,14 @@ impl Default for Held {
 
 impl Held {
     pub const fn new() -> Held {
-        Held {
-            to: [0; 128],
-            n: [0; 128],
+        // Each note where it is written, until it starts somewhere.
+        let mut to = [0; 128];
+        let mut i = 0;
+        while i < 128 {
+            to[i] = i as u8;
+            i += 1;
         }
+        Held { to, n: [0; 128] }
     }
 
     /// `note` starts under `shift`: the note to play, or None when it
@@ -127,6 +131,14 @@ impl Held {
         (self.n.get(i).copied().unwrap_or(0) > 0).then(|| self.to[i])
     }
 
+    /// Where `note` went when it last started, held still or not: for a
+    /// path that follows one which started or ended it already (a note
+    /// sent ahead to gear, then played in its own period). As written if
+    /// it never started.
+    pub fn went(&self, note: u8) -> u8 {
+        self.to[usize::from(note & 0x7F)]
+    }
+
     /// Nothing held (a panic, or every note cut).
     pub fn clear(&mut self) {
         self.n = [0; 128];
@@ -137,6 +149,17 @@ impl Held {
 mod tests {
     use super::*;
     use crate::{MAJOR, MINOR};
+
+    #[test]
+    fn a_note_remembers_where_it_went_after_it_ends() {
+        let mut h = Held::new();
+        assert_eq!(h.went(60), 60, "as written before it starts");
+        assert_eq!(h.on(60, &Shift::semitones(2)), Some(62));
+        assert_eq!(h.went(60), 62);
+        assert_eq!(h.off(60), Some(62));
+        assert_eq!(h.went(60), 62, "after its end, for what follows it");
+        assert_eq!(h.off(60), None);
+    }
 
     #[test]
     fn a_shift_moves_by_semitones_or_by_notes_of_its_key() {

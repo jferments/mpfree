@@ -526,19 +526,26 @@ impl Held {
     }
 }
 
-/// Who started a pad's notes on the shared synth (instrument redesign step
-/// 4): the pads straight on it (the synth chosen for the pads, a step's or
-/// a scale row's audition) or a track (its clip, or the pads through its
-/// arp). Each keeps its own notes, so two tracks on one pad, or a track
-/// and the pads, never end each other's.
+/// Who started a pad's notes on the shared synth, the source a note ends
+/// by (instrument redesign step 4, sources from step 5): the pads straight
+/// on it (the synth chosen for the pads, a step's or a scale row's
+/// audition), a track's arp (the pads through it, or a clip through it),
+/// or a track's clip as recorded. Each keeps its own notes, so two tracks
+/// on one pad, a track and the pads, or a clip and the live pads on the
+/// same track never end each other's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Player {
     Pads,
-    Track(usize),
+    /// Track `t`'s clip, as recorded.
+    Clip(usize),
+    /// What track `t`'s arp played: the pads through it (live playing),
+    /// or its clip through it ("Clips through the arp").
+    Arp(usize),
 }
 
-/// The players the synth keeps notes for: the pads, then every track.
-const PLAYERS: usize = 1 + mpfree_seq::MAX_TRACKS;
+/// The players the synth keeps notes for: the pads, then every track's
+/// clip, then every track's arp.
+const PLAYERS: usize = 1 + 2 * mpfree_seq::MAX_TRACKS;
 /// Words of the bit set of players that hold a pad now.
 const PLAYER_WORDS: usize = PLAYERS.div_ceil(128);
 
@@ -547,8 +554,9 @@ impl Player {
     fn index(self) -> Option<usize> {
         match self {
             Player::Pads => Some(0),
-            Player::Track(t) if t < mpfree_seq::MAX_TRACKS => Some(1 + t),
-            Player::Track(_) => None,
+            Player::Clip(t) if t < mpfree_seq::MAX_TRACKS => Some(1 + t),
+            Player::Arp(t) if t < mpfree_seq::MAX_TRACKS => Some(1 + mpfree_seq::MAX_TRACKS + t),
+            Player::Clip(_) | Player::Arp(_) => None,
         }
     }
 }
@@ -1494,8 +1502,8 @@ impl Synth {
         self.note_on_shifted(Player::Pads, pad, velocity, offset, &Shift::NONE);
     }
 
-    /// Pad `pad` starts its notes for `player` (a track's clip or the pads
-    /// through its arp), with its track's live transpose (sequencer S4):
+    /// Pad `pad` starts its notes for `player` (a track's clip, or its
+    /// arp), with its track's live transpose (sequencer S4):
     /// each of the pad's notes moves by `shift`, and one that falls off the
     /// keyboard is left out. The player's pad remembers what it started, so
     /// its note-off and pressure reach those notes whatever the shift is by
@@ -1733,10 +1741,16 @@ impl Synth {
 
     /// Pressure, 0 to 127, on a note by number (while something holds it).
     pub fn pressure_note(&mut self, note: u8, value: u8) {
+        self.pressure_note_at(note, value, 0);
+    }
+
+    /// [`Synth::pressure_note`] `offset` frames into the next block (a
+    /// clip's recorded pressure on a note it plays by number).
+    pub fn pressure_note_at(&mut self, note: u8, value: u8, offset: u32) {
         if note <= 127 && self.holders[usize::from(note)] > 0 {
             self.push(
                 self.settings.engine,
-                0,
+                offset,
                 NodeEvent::Pressure {
                     note,
                     value: value.min(127),
@@ -2191,6 +2205,12 @@ impl Synth {
     /// Each track's lasting id (`mpfree_seq::TrackId`, 0 for none), by
     /// track: when two tracks on the synth lock one knob, the lowest owns
     /// it (step 4b, locks.rs).
+    /// The status line's words for the knob locks that waited or were
+    /// lost (`locks::Under::describe`), when any were.
+    pub fn locks_line(&self) -> Option<String> {
+        self.locks.describe()
+    }
+
     pub fn set_ranks(&mut self, ids: &[u32; crate::locks::TRACKS]) {
         self.locks.set_ranks(ids);
     }
@@ -2842,10 +2862,10 @@ mod tests {
         };
         // Pad 0 is C3 (48). Track 2's clip holds it; track 5 hits it a
         // fourth up and lets go; the pads hit it as it is.
-        s.note_on_shifted(Player::Track(2), 0, 100, 0, &Shift::NONE);
-        s.note_on_shifted(Player::Track(5), 0, 100, 1, &Shift::semitones(5));
+        s.note_on_shifted(Player::Clip(2), 0, 100, 0, &Shift::NONE);
+        s.note_on_shifted(Player::Clip(5), 0, 100, 1, &Shift::semitones(5));
         s.note_on(0, 100, 2);
-        s.note_off_by(Player::Track(5), 0, 3);
+        s.note_off_by(Player::Clip(5), 0, 3);
         assert_eq!(
             queued(&s),
             vec![on(48), on(53), on(48), NodeEvent::NoteOff { note: 53 }],
@@ -2856,8 +2876,8 @@ mod tests {
         // 2's then ends it.
         s.note_off(0, 0);
         assert!(queued(&s).is_empty(), "C3 is still track 2's");
-        s.pressure_at(Player::Track(2), 0, 70, 1);
-        s.note_off_by(Player::Track(2), 0, 2);
+        s.pressure_at(Player::Clip(2), 0, 70, 1);
+        s.note_off_by(Player::Clip(2), 0, 2);
         assert_eq!(
             queued(&s),
             vec![
@@ -2871,15 +2891,9 @@ mod tests {
         // A hit again on the same player's pad ends its last first (Note
         // Repeat), and a track past the last plays nothing.
         run(&mut s, &mut frame, 1, 64);
-        s.note_on_shifted(Player::Track(2), 0, 90, 0, &Shift::NONE);
-        s.note_on_shifted(Player::Track(2), 0, 90, 1, &Shift::NONE);
-        s.note_on_shifted(
-            Player::Track(mpfree_seq::MAX_TRACKS),
-            0,
-            90,
-            2,
-            &Shift::NONE,
-        );
+        s.note_on_shifted(Player::Clip(2), 0, 90, 0, &Shift::NONE);
+        s.note_on_shifted(Player::Clip(2), 0, 90, 1, &Shift::NONE);
+        s.note_on_shifted(Player::Clip(mpfree_seq::MAX_TRACKS), 0, 90, 2, &Shift::NONE);
         let q = queued(&s);
         assert_eq!(q.len(), 3, "{q:?}");
         assert_eq!(q[1], NodeEvent::NoteOff { note: 48 });
@@ -2896,17 +2910,48 @@ mod tests {
         );
         s.all_off();
         run(&mut s, &mut frame, 1, 64);
-        s.note_off_by(Player::Track(2), 0, 0);
+        s.note_off_by(Player::Clip(2), 0, 0);
         assert!(queued(&s).is_empty(), "nothing held after the panic");
+    }
+
+    /// Step 5a: a track's clip and its arp (the live pads through it) are
+    /// two sources, so on one pad each ends only its own notes.
+    #[test]
+    fn a_tracks_clip_and_its_arp_end_their_own_notes() {
+        let mut s = Synth::new(44_100);
+        s.note_on_shifted(Player::Clip(2), 0, 100, 0, &Shift::NONE);
+        s.note_on_shifted(Player::Arp(2), 0, 100, 1, &Shift::NONE);
+        s.note_off_by(Player::Clip(2), 0, 2);
+        let q = queued(&s);
+        assert!(
+            !q.iter().any(|e| matches!(e, NodeEvent::NoteOff { .. })),
+            "the arp's C3 plays on: {q:?}"
+        );
+        s.pressure_at(Player::Arp(2), 0, 50, 3);
+        s.note_off_by(Player::Arp(2), 0, 4);
+        let q = queued(&s);
+        assert_eq!(
+            &q[q.len() - 2..],
+            [
+                NodeEvent::Pressure {
+                    note: 48,
+                    value: 50
+                },
+                NodeEvent::NoteOff { note: 48 },
+            ]
+        );
+        // A track past the last has no arp row either.
+        s.note_on_shifted(Player::Arp(mpfree_seq::MAX_TRACKS), 0, 90, 5, &Shift::NONE);
+        assert_eq!(queued(&s).len(), q.len());
     }
 
     #[test]
     fn a_shifted_pad_starts_its_notes_moved_and_ends_them() {
         let mut s = Synth::new(44_100);
         // Pad 0 plays C3 (48): up a fourth, F3.
-        s.note_on_shifted(Player::Track(0), 0, 100, 0, &Shift::semitones(5));
-        s.pressure_at(Player::Track(0), 0, 60, 2);
-        s.note_off_by(Player::Track(0), 0, 4);
+        s.note_on_shifted(Player::Clip(0), 0, 100, 0, &Shift::semitones(5));
+        s.pressure_at(Player::Clip(0), 0, 60, 2);
+        s.note_off_by(Player::Clip(0), 0, 4);
         assert_eq!(
             queued(&s),
             vec![

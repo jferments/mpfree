@@ -26,11 +26,15 @@ use mpfree_transport::{Block, Command, Mark, State, Transport};
 
 use super::follow::{Follow, FollowCounts, Follower};
 use super::link::{
-    Counts, CueCounts, InPlace, PeriodEnd, Rx, ToAudio, ToControl, Tracks, Tx, MAX_IN_PLACE,
-    POINTS_CHUNK, TOUCH_CHUNK,
+    Counts, CueCounts, InPlace, PeriodEnd, Rx, StripCounts, ToAudio, ToControl, Tracks, Tx,
+    MAX_IN_PLACE, POINTS_CHUNK, TOUCH_CHUNK,
 };
 use super::pad_wait::{DuePads, PadFrom, PadWait, PadWaits};
-use super::{Click, HitInfo, LaneOut, LockOut, Pads, Table, MAX_HITS, MAX_LANES, MAX_LOCKS};
+use super::strips::{Ev, Sent, StripLocks};
+use super::{
+    Click, Heard, HitInfo, LaneOut, LockOut, Pads, Table, HEARD_NOTES, MAX_HITS, MAX_LANES,
+    MAX_LOCKS,
+};
 
 /// Views kept here while the queue back to the control half is full,
 /// until they can go back to be freed there.
@@ -65,6 +69,14 @@ pub struct TimeAudio {
     /// Routed keys for another armed track past [`super::MAX_ALSO`]: not
     /// recorded.
     also_dropped: u64,
+    /// Notes a take couldn't record in its clip's kind (step 5c): pads as
+    /// pressed into a clip of notes that came without their notes, or
+    /// routed keys for another armed track playing a clip of notes.
+    /// Counted with the notes dropped.
+    kind_refused: u64,
+    /// The notes each pad started in a take of notes, for its pressure
+    /// ([`TimeAudio::pad_pressure`]): (notes, how many).
+    pad_notes: [([u8; HEARD_NOTES], u8); 128],
     /// Pressure from routed keys on another armed track while the
     /// transport records: not recorded (that recorder keeps notes only),
     /// so counted with the pressure values lost ([`Counts::touch_dropped`]).
@@ -124,6 +136,11 @@ pub struct TimeAudio {
     /// lost, so far (`TrackArps::refused`, `TrackArps::lost`).
     arps_busy: u64,
     arps_lost: u64,
+    /// The locks on "this track's strip", with where each went: the strip
+    /// its track's instrument sounds on ([`super::strips`]).
+    strips: Box<StripLocks>,
+    /// Their counts as last sent to the control half.
+    strips_sent: StripCounts,
     tx: Tx<ToControl>,
     rx: Rx<ToAudio>,
     /// Views waiting to go back.
@@ -181,6 +198,8 @@ impl TimeAudio {
             also: (0..super::MAX_ALSO).map(Recorder::also).collect(),
             also_live: 0,
             also_dropped: 0,
+            kind_refused: 0,
+            pad_notes: [([0; HEARD_NOTES], 0); 128],
             also_pressure: 0,
             block: Box::new(Block::new()),
             sink: Box::new(Table::new()),
@@ -208,6 +227,8 @@ impl TimeAudio {
             locks_lost: 0,
             arps_busy: 0,
             arps_lost: 0,
+            strips: Box::new(StripLocks::new()),
+            strips_sent: StripCounts::default(),
             tx,
             rx,
             returns: std::array::from_fn(|_| None),
@@ -408,6 +429,49 @@ impl TimeAudio {
     pub fn clear_locks(&mut self) {
         self.locks.clear();
         self.lanes.clear();
+    }
+
+    /// A clip's lock, move value or their end on its way to the mixer's
+    /// mod engine (`MixHost::lock`, `MixHost::lane`). One on "this
+    /// track's strip" goes to the strip the track's instrument sounds on
+    /// ([`Pads::sounds_on`]), ends where it began, and waits while a track
+    /// before it in line holds the same control ([`super::strips`]). A
+    /// move sends the old strip's end first; the list has room for it
+    /// ([`super::MAX_LOCKS`]), and past that a lock is dropped and an
+    /// unlock lost, as in [`Self::lock_out`].
+    fn send_to_mixer(
+        &mut self,
+        pads: &impl Pads,
+        o: &Out,
+        addr: mpfree_play::mpfree_param::ParamAddr,
+        ev: Ev,
+    ) {
+        let (locks, lanes) = (&mut self.locks, &mut self.lanes);
+        let (dropped, lost) = (&mut self.locks_dropped, &mut self.locks_lost);
+        let set = &self.tracks.set;
+        let rank = |t: u8| set.get(usize::from(t)).map_or(0, |s| s.id);
+        let offset = o.offset;
+        let mut send = |s: Sent| match s {
+            Sent::Lock(a, v) => Self::lock_out(locks, (&mut *dropped, &mut *lost), offset, a, v),
+            Sent::Lane(a, v) => {
+                if lanes.len() < lanes.capacity() {
+                    lanes.push((offset, a, v));
+                } else {
+                    *dropped += 1;
+                }
+            }
+        };
+        let sounds_on = pads.sounds_on(o.track);
+        if !self
+            .strips
+            .take(o.track, addr, ev, sounds_on, rank, &mut send)
+        {
+            send(match ev {
+                Ev::Lock(v) => Sent::Lock(addr, Some(v)),
+                Ev::Lane(v) => Sent::Lane(addr, v),
+                Ev::End => Sent::Lock(addr, None),
+            });
+        }
     }
 
     /// A lock (`Some`) or unlock (`None`) for the mixer's mod engine. The
@@ -680,10 +744,41 @@ impl TimeAudio {
         0
     }
 
-    pub fn pad_pressed(&mut self, offset: u32, event: Event) {
+    pub fn pad_pressed(&mut self, offset: u32, h: &Heard) {
+        let Some(event) = h.pad else {
+            return;
+        };
         if self.tracks.records_pressed() {
-            self.recorder.input(offset, event);
+            if self.takes_notes() {
+                // A clip of notes takes the pad's notes as pressed (step
+                // 5d); a pad with none to give is counted, not recorded.
+                if h.notes().is_empty() && matches!(event, Event::NoteOn { .. }) {
+                    self.kind_refused += 1;
+                }
+                for &e in h.notes() {
+                    self.recorder.input(offset, e);
+                }
+                self.keep_pad_notes(h);
+            } else {
+                self.recorder.input(offset, event);
+            }
             self.played(offset, event);
+        }
+    }
+
+    /// Which notes a pad started, for its pressure on a take of notes.
+    fn keep_pad_notes(&mut self, h: &Heard) {
+        let Some(Event::NoteOn { note, .. }) = h.pad else {
+            return;
+        };
+        if let Some(p) = self.pad_notes.get_mut(usize::from(note)) {
+            *p = ([0; HEARD_NOTES], 0);
+            for e in h.notes() {
+                if let Event::NoteOn { note: n, .. } = *e {
+                    p.0[usize::from(p.1)] = n;
+                    p.1 += 1;
+                }
+            }
         }
     }
 
@@ -692,6 +787,47 @@ impl TimeAudio {
             self.recorder.input(offset, event);
             self.played(offset, event);
         }
+        self.hit_info(offset, event);
+    }
+
+    /// The armed track's clip holds notes (step 5c), so a take records
+    /// notes, not pads.
+    fn takes_notes(&self) -> bool {
+        self.tracks
+            .armed
+            .and_then(|t| self.now_playing(t))
+            .is_some_and(|n| n.holds_notes)
+    }
+
+    /// A live note heard on the armed track ([`Pads::live`]): a take of
+    /// pad hits records its pad, as [`TimeAudio::pad`]; a take of notes
+    /// its notes, and keeps which notes the pad started for its pressure.
+    /// CAPTURE's history and the Play page's timing take the pad either
+    /// way.
+    fn heard(&mut self, offset: u32, h: &Heard) {
+        if !self.takes_notes() {
+            if let Some(ev) = h.pad {
+                self.pad(offset, ev);
+            }
+            return;
+        }
+        if !self.tracks.records_pressed() {
+            for &e in h.notes() {
+                self.recorder.input(offset, e);
+            }
+        }
+        if let Some(ev) = h.pad {
+            // Pads as pressed keep their own notes (`pad_pressed`).
+            if !self.tracks.records_pressed() {
+                self.keep_pad_notes(h);
+                self.played(offset, ev);
+            }
+            self.hit_info(offset, ev);
+        }
+    }
+
+    /// A pad's hit while the transport rolls, for the Play page's timing.
+    fn hit_info(&mut self, offset: u32, event: Event) {
         let Event::NoteOn { note, velocity } = event else {
             return;
         };
@@ -721,7 +857,15 @@ impl TimeAudio {
         }
         let event = Event::Pressure { note: pad, value };
         if self.tracks.records_touch() {
-            self.recorder.input(offset, event);
+            if self.takes_notes() {
+                // On each note the pad started (step 5c).
+                let (notes, n) = self.pad_notes[usize::from(pad)];
+                for &note in &notes[..usize::from(n)] {
+                    self.recorder.input(offset, Event::Pressure { note, value });
+                }
+            } else {
+                self.recorder.input(offset, event);
+            }
         }
         // CAPTURE's history keeps it always, as it keeps the notes (its
         // keep leaves it out for a track that doesn't record pressure).
@@ -739,7 +883,20 @@ impl TimeAudio {
     /// its recorder while the transport records (its notes, not its
     /// pressure: that is the armed track's alone for now, and counted).
     pub fn routed(&mut self, track: u8, offset: u32, event: Event) {
-        if let Some(k) = self.view.also_rank(usize::from(track)) {
+        // A routed key comes as the pad that plays its note: no note for a
+        // clip of notes on that track (step 5c), so counted, not recorded.
+        let mut rank = self.view.also_rank(usize::from(track));
+        if rank.is_some()
+            && self
+                .now_playing(usize::from(track))
+                .is_some_and(|n| n.holds_notes)
+        {
+            if matches!(event, Event::NoteOn { .. }) {
+                self.kind_refused += 1;
+            }
+            rank = None;
+        }
+        if let Some(k) = rank {
             match event {
                 Event::NoteOn { .. } | Event::NoteOff { .. } | Event::AllOff => {
                     match self.also.get_mut(k) {
@@ -1091,9 +1248,8 @@ impl TimeAudio {
                 // track whose clips play through its arp, the pads as
                 // pressed do, through pad_pressed).
                 let heard = pads.live(&o);
-                if let Some(ev) = heard.filter(|_| self.tracks.armed == Some(usize::from(o.track)))
-                {
-                    self.pad(o.offset, ev);
+                if self.tracks.armed == Some(usize::from(o.track)) {
+                    self.heard(o.offset, &heard);
                 }
                 continue;
             }
@@ -1133,34 +1289,18 @@ impl TimeAudio {
                 // the audio loop hands them to.
                 Event::Lock { addr, value } => {
                     if !pads.lock_at(addr, Some(value), o.offset) {
-                        Self::lock_out(
-                            &mut self.locks,
-                            (&mut self.locks_dropped, &mut self.locks_lost),
-                            o.offset,
-                            addr,
-                            Some(value),
-                        );
+                        self.send_to_mixer(&*pads, &o, addr, Ev::Lock(value));
                     }
                 }
                 Event::Unlock { addr } => {
                     if !pads.lock_at(addr, None, o.offset) {
-                        Self::lock_out(
-                            &mut self.locks,
-                            (&mut self.locks_dropped, &mut self.locks_lost),
-                            o.offset,
-                            addr,
-                            None,
-                        );
+                        self.send_to_mixer(&*pads, &o, addr, Ev::End);
                     }
                 }
                 // A move lane's value goes to the mod engine too, where any
                 // hand on the control beats it.
                 Event::Lane { addr, value } => {
-                    if self.lanes.len() < self.lanes.capacity() {
-                        self.lanes.push((o.offset, addr, value));
-                    } else {
-                        self.locks_dropped += 1;
-                    }
+                    self.send_to_mixer(&*pads, &o, addr, Ev::Lane(value))
                 }
                 // A clip's program change goes to outside gear alone
                 // (`Pads::out`, S5): the pads have no programs.
@@ -1266,6 +1406,10 @@ impl TimeAudio {
         if cues != self.cues_sent && self.tx.send(ToControl::Cues(cues)).is_ok() {
             self.cues_sent = cues;
         }
+        let strips = self.strips.counts();
+        if strips != self.strips_sent && self.tx.send(ToControl::Strips(strips)).is_ok() {
+            self.strips_sent = strips;
+        }
         let end = PeriodEnd {
             start_frame: self.block.start_frame,
             frames: self.block.frames,
@@ -1287,6 +1431,7 @@ impl TimeAudio {
             dropped: self.recorder.dropped()
                 + self.also.iter().map(Recorder::dropped).sum::<u64>()
                 + self.also_dropped
+                + self.kind_refused
                 + self.player.stats().dropped
                 + self.locks_dropped,
             touch_dropped: self.touch_dropped(),

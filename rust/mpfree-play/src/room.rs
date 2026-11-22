@@ -269,6 +269,7 @@ impl Table {
             track: 0,
             dest: 0,
             event: Event::AllOff,
+            notes: false,
         };
         Table {
             out: vec![blank; ROOM].into_boxed_slice(),
@@ -381,6 +382,7 @@ mod tests {
             track,
             dest: 0,
             event,
+            notes: false,
         }
     }
 

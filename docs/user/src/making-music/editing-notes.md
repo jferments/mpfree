@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-time-ui/src/editor.rs rust/mpfree-seq/src/notes.rs rust/mpfree-app/src/time.rs
-checked: 2026-11-19 f0b39161
+checked: 2026-11-22 829e1568
 -->
 
 # Editing notes
@@ -36,7 +36,9 @@ The notes are bars on a piano roll: higher notes higher up, time running left to
 
 {{shot: sequencer-notes-list | The same notes as a list, the picked ones lit.}}
 
-Every edit is a take, so **UNDO** takes it back and **SHIFT + UNDO** puts it back again. Tap **‹ Steps**, or press **STEP SEQ**, to close the editor and see the clip as steps again. The editor stays open while you visit other tabs, and the Sequencer tab shows it again when you come back.
+Every edit is a take, so **UNDO** takes it back and **SHIFT + UNDO** puts it back again.
+
+If the clip changes while you edit, because you're recording into it, pressed **UNDO**, or tapped a step on Steps, your picked notes stay picked wherever they now sit. If a picked note was taken out, the picks are let go and the line over the roll says "the clip changed: picks cleared". A tap on a note that landed just as the clip changed does nothing, so it never hits the wrong note: tap again. If an edit can't be played (rare), it is taken back and the log says so. Tap **‹ Steps**, or press **STEP SEQ**, to close the editor and see the clip as steps again. The editor stays open while you visit other tabs, and the Sequencer tab shows it again when you come back.
 
 ## The tracker
 
