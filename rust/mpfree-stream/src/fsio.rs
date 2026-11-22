@@ -74,11 +74,15 @@ impl StdFs {
 
     fn file(&mut self, path: &Path) -> io::Result<&mut File> {
         if !self.open.contains_key(path) {
-            let f = OpenOptions::new()
-                .read(true)
-                .write(!self.read_only)
-                .open(path)?;
-            self.open.insert(path.to_path_buf(), f);
+            // Spelled out, so the MPC write check (tools/mpc-one) sees the
+            // one open for writing.
+            if self.read_only {
+                let f = File::open(path)?;
+                self.open.insert(path.to_path_buf(), f);
+            } else {
+                let f = OpenOptions::new().read(true).write(true).open(path)?;
+                self.open.insert(path.to_path_buf(), f);
+            }
         }
         Ok(self.open.get_mut(path).expect("just opened"))
     }
