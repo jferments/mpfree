@@ -3,7 +3,9 @@
 //! are not its own, and refuses to run anywhere but the stick without the
 //! desktop flag. With `--read-only` it reads the audio under `library/`
 //! and the files under `backup/` and changes nothing at all, never
-//! following a link out of them.
+//! following a link out of them. With `--under-load` it reads them the
+//! same way while its load runs, writes only its own files, and leaves
+//! nothing behind.
 
 use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;
@@ -113,6 +115,14 @@ fn without_the_desktop_flag_it_runs_only_on_the_stick() {
     assert_eq!(out.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&out.stderr).contains("Nothing was written"));
     let out = bin().args(["--read-only", "--quick"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let out = bin().arg("--under-load").output().unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Nothing was written"));
+    let out = bin()
+        .args(["--read-only", "--under-load"])
+        .output()
+        .unwrap();
     assert_eq!(out.status.code(), Some(2));
 }
 
@@ -268,4 +278,138 @@ fn a_read_only_run_with_too_little_audio_is_refused() {
     assert!(err.contains("too little to read"), "{err}");
     assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1);
     std::fs::remove_dir_all(&d).unwrap();
+}
+
+#[test]
+fn an_under_load_run_reports_every_step_and_leaves_nothing() {
+    let d = scratch("load");
+    let lib = d.join("library");
+    for i in 0..6 {
+        noise(
+            &lib.join(format!("Samples/kit/s{i}.wav")),
+            (1 << 20) + i * 70_000,
+            i as u32 + 1,
+        );
+    }
+    noise(
+        &d.join("backup/mpc-one-emmc-x/mmcblk0.img"),
+        (5 << 20) + 4096,
+        11,
+    );
+    std::fs::write(lib.join("notes.txt"), b"keep me").unwrap();
+    let before = snapshot(&d);
+
+    let out = bin()
+        .arg("--desktop-test")
+        .arg(&d)
+        .args(["--under-load", "--quick"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{text}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for want in [
+        "under load: reads the audio under",
+        "found: 6 audio files in library/",
+        "files: the recording up to 3 MiB, the heavy write up to 4 MiB",
+        "1. Nothing else, with the recording",
+        "2. A heavy write, with the recording",
+        "3. A heavy read, with the recording",
+        "4. A heavy write and a heavy read, with the recording",
+        "5. A busy processor, with the recording",
+        "6. Heavy task switching, with the recording",
+        "7. A busy processor and heavy task switching, with the recording",
+        "8. Everything at once, with the recording",
+        "load: CPUs busy ",
+        "task switches a second",
+        "a 1 ms sleep woke late by:",
+        "2 streams, 24-bit",
+        "4 streams, 24-bit",
+        "worst shortfall",
+        "recording (3.10 MB/s, fdatasync every second)",
+        "heavy write: ",
+        "heavy read: ",
+        "busy threads: ",
+        "switching threads: 8 pairs",
+        "Summary:",
+        "the files read in library/ and backup/ are as they were",
+        "the folder is deleted",
+        "done",
+    ] {
+        assert!(text.contains(want), "missing {want:?} in\n{text}");
+    }
+    assert!(!text.contains("left out"), "{text}");
+    for name in ["s0.wav", "notes.txt", "kit", "mmcblk0"] {
+        assert!(!text.contains(name), "{name} named in\n{text}");
+    }
+    // Its folder is gone and nothing else changed.
+    assert_eq!(snapshot(&d), before);
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
+#[test]
+fn under_load_the_load_steps_are_watched_for_heat() {
+    let d = scratch("load-hot");
+    for i in 0..6 {
+        noise(
+            &d.join(format!("library/s{i}.wav")),
+            (1 << 20) + i * 70_000,
+            i as u32 + 1,
+        );
+    }
+    let zones = scratch("load-zones");
+    let z = zones.join("thermal_zone0");
+    std::fs::create_dir_all(&z).unwrap();
+    std::fs::write(z.join("type"), "cpu-thermal\n").unwrap();
+    std::fs::write(z.join("trip_point_0_temp"), "70000\n").unwrap();
+    std::fs::write(z.join("trip_point_0_type"), "passive\n").unwrap();
+    let run = |temp: &str| {
+        std::fs::write(z.join("temp"), temp).unwrap();
+        let out = bin()
+            .arg("--desktop-test")
+            .arg(&d)
+            .args(["--under-load", "--quick"])
+            .env("MPFREE_DISKTEST_THERMAL", &zones)
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            out.status.success(),
+            "{text}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            text.contains("temperature: cpu-thermal now ")
+                && text.contains("trip points: passive 70 °C"),
+            "{text}"
+        );
+        assert!(
+            text.contains("the busy and switching threads stop at 70 °C"),
+            "{text}"
+        );
+        text
+    };
+    // Cool: every step runs, the temperature is reported.
+    let text = run("45000\n");
+    assert!(!text.contains("left out"), "{text}");
+    assert!(text.contains("45.0 °C at the most"), "{text}");
+    // Hot: the steps that heat the processor are left out, the rest run.
+    let text = run("80000\n");
+    assert!(
+        text.contains("left out: the MPC is at 80.0 °C, at or over the stop at 70 °C"),
+        "{text}"
+    );
+    let left: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("  left out: "))
+        .collect();
+    assert_eq!(left.len(), 4, "{text}");
+    assert!(text.contains("heavy write: "), "{text}");
+    assert!(!text.contains("busy threads: "), "{text}");
+    assert!(!d.join("mpfree-disktest").exists());
+    std::fs::remove_dir_all(&d).unwrap();
+    std::fs::remove_dir_all(&zones).unwrap();
 }

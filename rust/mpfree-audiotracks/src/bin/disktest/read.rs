@@ -44,17 +44,17 @@ pub const LIBRARY: &str = "library";
 /// A creator stick's eMMC backup inside the data folder: every file is read.
 pub const BACKUP: &str = "backup";
 /// Longer files are read as pieces of this size (1 MiB in a quick run).
-const PIECE: u64 = 64 << 20;
+pub(super) const PIECE: u64 = 64 << 20;
 /// The kinds of audio file read, by extension, any case.
 const EXTENSIONS: [&str; 4] = ["wav", "aif", "aiff", "flac"];
 /// Smaller files are left out: a stream reads long files.
 const MIN_FILE: u64 = 64 * 1024;
 const MAX_FILES: usize = 5000;
 const MAX_DEPTH: usize = 16;
-const KIB: usize = 1024;
+pub(super) const KIB: usize = 1024;
 /// Bytes a second of one stereo stream at 44.1 kHz.
 const RATE_16: f64 = 44_100.0 * 2.0 * 2.0;
-const RATE_24: f64 = 44_100.0 * 2.0 * 3.0;
+pub(super) const RATE_24: f64 = 44_100.0 * 2.0 * 3.0;
 const RATE_F32: f64 = 44_100.0 * 2.0 * 4.0;
 /// The plan's window rule: 2 x the worst shortfall + 1 s, at least 4 s.
 const WINDOW_MIN_S: f64 = 4.0;
@@ -76,18 +76,18 @@ impl From<String> for Fail {
 }
 
 /// A stretch of a file a stream reads: the whole file, or 64 MiB of it.
-struct Piece {
-    path: PathBuf,
-    start: u64,
-    len: u64,
+pub(super) struct Piece {
+    pub(super) path: PathBuf,
+    pub(super) start: u64,
+    pub(super) len: u64,
 }
 
 /// What the walk found, and what it left out.
 #[derive(Default)]
-struct Found {
-    pieces: Vec<Piece>,
-    files: [usize; 2],
-    bytes: [u64; 2],
+pub(super) struct Found {
+    pub(super) pieces: Vec<Piece>,
+    pub(super) files: [usize; 2],
+    pub(super) bytes: [u64; 2],
     largest: u64,
     links: usize,
     other_fs: usize,
@@ -96,7 +96,7 @@ struct Found {
 }
 
 /// Each file's length and change time, to check nothing changed.
-type Snapshot = BTreeMap<PathBuf, (u64, i64, i64)>;
+pub(super) type Snapshot = BTreeMap<PathBuf, (u64, i64, i64)>;
 
 fn is_audio(p: &Path) -> bool {
     p.extension()
@@ -107,7 +107,7 @@ fn is_audio(p: &Path) -> bool {
 /// The pieces to read under `base` (the audio in `library/`, every file
 /// in `backup/`), largest first, and a snapshot of every file seen there.
 /// Never follows a link or leaves `base`'s file system.
-fn find(base: &Path, piece: u64) -> Result<(Found, Snapshot), Fail> {
+pub(super) fn find(base: &Path, piece: u64) -> Result<(Found, Snapshot), Fail> {
     let dev = fs::symlink_metadata(base)
         .map_err(|e| Fail::Refused(format!("{}: {e}", base.display())))?
         .dev();
@@ -182,7 +182,7 @@ fn find(base: &Path, piece: u64) -> Result<(Found, Snapshot), Fail> {
 }
 
 /// Open read-only, never through a link, and only on file system `dev`.
-fn open(p: &Path, dev: u64) -> std::io::Result<File> {
+pub(super) fn open(p: &Path, dev: u64) -> std::io::Result<File> {
     let f = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
@@ -195,7 +195,7 @@ fn open(p: &Path, dev: u64) -> std::io::Result<File> {
 }
 
 /// Read until `buf` is full or the file ends; the bytes read.
-fn fill(f: &mut File, buf: &mut [u8]) -> std::io::Result<usize> {
+pub(super) fn fill(f: &mut File, buf: &mut [u8]) -> std::io::Result<usize> {
     let mut n = 0;
     while n < buf.len() {
         match f.read(&mut buf[n..]) {
@@ -210,7 +210,7 @@ fn fill(f: &mut File, buf: &mut [u8]) -> std::io::Result<usize> {
 
 /// Drop one piece's pages from the cache: advice only, on that range.
 /// The 64-bit call, so offsets past 2 GiB are right on the MPC's 32-bit ARM.
-fn drop_range(f: &File, start: u64, len: u64) {
+pub(super) fn drop_range(f: &File, start: u64, len: u64) {
     // SAFETY: a valid descriptor; advice only, on this range of this file.
     unsafe {
         libc::posix_fadvise64(
@@ -232,18 +232,18 @@ fn drop_pieces(pieces: &[&Piece], dev: u64) -> Result<(), String> {
 }
 
 /// Open a piece at its start.
-fn open_piece(a: &Piece, dev: u64) -> std::io::Result<File> {
+pub(super) fn open_piece(a: &Piece, dev: u64) -> std::io::Result<File> {
     let mut f = open(&a.path, dev)?;
     f.seek(SeekFrom::Start(a.start))?;
     Ok(f)
 }
 
 #[derive(Clone, Copy)]
-struct Config {
-    streams: usize,
-    read: usize,
-    rate: f64,
-    kind: &'static str,
+pub(super) struct Config {
+    pub(super) streams: usize,
+    pub(super) read: usize,
+    pub(super) rate: f64,
+    pub(super) kind: &'static str,
 }
 
 struct Plan {
@@ -293,7 +293,12 @@ fn plan(quick: bool) -> Plan {
 /// Give each stream its own pieces, largest first to the stream with the
 /// least, until each has `want` bytes or the pieces run out. None if a
 /// stream would have fewer than two reads' worth.
-fn assign(files: &[Piece], streams: usize, want: u64, read: usize) -> Option<Vec<Vec<&Piece>>> {
+pub(super) fn assign(
+    files: &[Piece],
+    streams: usize,
+    want: u64,
+    read: usize,
+) -> Option<Vec<Vec<&Piece>>> {
     if files.len() < streams {
         return None;
     }
@@ -314,23 +319,27 @@ fn assign(files: &[Piece], streams: usize, want: u64, read: usize) -> Option<Vec
 }
 
 #[derive(Default)]
-struct Result1 {
-    reads: Times,
-    opens: Times,
-    bytes: u64,
-    ends: u64,
-    wraps: u64,
-    behind_ms: f64,
-    longest_behind_ms: f64,
+pub(super) struct Result1 {
+    pub(super) reads: Times,
+    pub(super) opens: Times,
+    pub(super) bytes: u64,
+    pub(super) ends: u64,
+    pub(super) wraps: u64,
+    pub(super) behind_ms: f64,
+    pub(super) longest_behind_ms: f64,
+    /// A stream fell so far behind that it was stopped at the cap.
+    pub(super) cut: bool,
 }
 
 /// One stream: read its pieces in turn at `cfg.rate` bytes a second until
-/// `secs` have passed, starting `offset` s after `start`.
+/// `secs` have passed, starting `offset` s after `start`; stopped `cap_s`
+/// after `start` if it is still behind then.
 fn stream(
     pieces: &[&Piece],
     cfg: Config,
     dev: u64,
     secs: f64,
+    cap_s: f64,
     start: Instant,
     offset: f64,
 ) -> Result<Result1, String> {
@@ -347,6 +356,12 @@ fn stream(
             break;
         }
         let now = start.elapsed().as_secs_f64();
+        if now >= cap_s {
+            // Too far behind to wait for: its shortfall now stands.
+            r.behind_ms = r.behind_ms.max((now - due) * 1e3);
+            r.cut = true;
+            break;
+        }
         if now < due {
             if let Some(s) = behind_since.take() {
                 r.longest_behind_ms = r.longest_behind_ms.max((now - s) * 1e3);
@@ -392,13 +407,21 @@ fn stream(
     Ok(r)
 }
 
-/// Run one configuration: every stream on its own thread.
-fn run_config(cfg: Config, groups: &[Vec<&Piece>], dev: u64, secs: f64) -> Result<Result1, String> {
+/// Run one configuration: every stream on its own thread, for `secs`, and
+/// at most `cap_s` (wall time) however far behind the streams fall.
+pub(super) fn run_config(
+    cfg: Config,
+    groups: &[Vec<&Piece>],
+    dev: u64,
+    secs: f64,
+    cap_s: f64,
+) -> Result<Result1, String> {
     let all: Vec<&Piece> = groups.iter().flatten().copied().collect();
     drop_pieces(&all, dev)?;
     let start = Instant::now();
     let spread = cfg.read as f64 / cfg.rate;
     let secs = secs + LEAD_S;
+    let cap_s = cap_s + LEAD_S;
     let results: Vec<Result<Result1, String>> = std::thread::scope(|s| {
         let handles: Vec<_> = groups
             .iter()
@@ -406,7 +429,7 @@ fn run_config(cfg: Config, groups: &[Vec<&Piece>], dev: u64, secs: f64) -> Resul
             .map(|(k, files)| {
                 let offset = LEAD_S + spread * k as f64 / groups.len() as f64;
                 s.spawn(move || {
-                    let r = stream(files, cfg, dev, secs, start, offset);
+                    let r = stream(files, cfg, dev, secs, cap_s, start, offset);
                     if r.is_err() {
                         STOP.store(true, Ordering::Relaxed);
                     }
@@ -432,16 +455,17 @@ fn run_config(cfg: Config, groups: &[Vec<&Piece>], dev: u64, secs: f64) -> Resul
         all.wraps += r.wraps;
         all.behind_ms = all.behind_ms.max(r.behind_ms);
         all.longest_behind_ms = all.longest_behind_ms.max(r.longest_behind_ms);
+        all.cut |= r.cut;
     }
     Ok(all)
 }
 
 /// "1 file", "2 files".
-fn count(n: usize, what: &str) -> String {
+pub(super) fn count(n: usize, what: &str) -> String {
     format!("{n} {what}{}", if n == 1 { "" } else { "s" })
 }
 
-fn window_s(shortfall_ms: f64) -> f64 {
+pub(super) fn window_s(shortfall_ms: f64) -> f64 {
     (2.0 * shortfall_ms / 1e3 + 1.0).max(WINDOW_MIN_S)
 }
 
@@ -556,7 +580,8 @@ pub fn run(base: &Path, quick: bool) -> Result<(), Fail> {
             continue;
         };
         say!("\n  {label}");
-        let r = run_config(*cfg, &groups, dev, z.secs)?;
+        // Never cut short: this run measures how far behind streams fall.
+        let r = run_config(*cfg, &groups, dev, z.secs, f64::INFINITY)?;
         say!("  {}", r.reads.report_tails("read"));
         say!(
             "    worst shortfall {:.1} ms, longest behind {:.1} ms; {:.1} MiB read, {} file ends, {} passes started again",
@@ -641,6 +666,39 @@ mod tests {
         // With no target, every file is given out.
         let g = assign(&files, 2, u64::MAX, 100).unwrap();
         assert_eq!(g.iter().map(|s| s.len()).sum::<usize>(), 6);
+    }
+
+    #[test]
+    fn a_stream_that_cannot_keep_up_stops_at_the_cap() {
+        let d = std::env::temp_dir().join(format!("mpfree-disktest-cap-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let p = d.join("a.wav");
+        fs::write(&p, vec![7u8; 256 * 1024]).unwrap();
+        let dev = fs::metadata(&d).unwrap().dev();
+        let piece = Piece {
+            path: p,
+            start: 0,
+            len: 256 * 1024,
+        };
+        // A pace no disk keeps: 10 s of it would take far longer than the
+        // 0.2 s cap, so the stream stops there, behind.
+        let cfg = Config {
+            streams: 1,
+            read: 64 * KIB,
+            rate: 1e13,
+            kind: "test",
+        };
+        let t = Instant::now();
+        let r = run_config(cfg, &[vec![&piece]], dev, 10.0, 0.2).unwrap();
+        assert!(r.cut);
+        assert!(r.behind_ms > 100.0, "{}", r.behind_ms);
+        assert!(t.elapsed() < Duration::from_secs(5));
+        // With no cap a set at a pace it keeps is never cut.
+        let cfg = Config { rate: 1e6, ..cfg };
+        let r = run_config(cfg, &[vec![&piece]], dev, 0.1, f64::INFINITY).unwrap();
+        assert!(!r.cut);
+        fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
