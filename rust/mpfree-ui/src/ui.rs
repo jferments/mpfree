@@ -738,8 +738,9 @@ impl Ui {
         Ok(())
     }
 
-    /// Switch theme: colours, effects and font roles change at once, and
-    /// pages are laid out again with the new spacing. Redraws everything.
+    /// Switch theme: colours, corners and effects change at once; sizes
+    /// and spacing are the same in every theme ([`crate::sizes`]), so pages
+    /// keep their layout. Redraws everything.
     pub fn set_theme(&mut self, theme: Theme) {
         self.fonts.set_roles(theme.face_body, theme.face_title);
         self.theme = theme;

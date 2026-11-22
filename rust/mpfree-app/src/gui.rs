@@ -1287,6 +1287,14 @@ pub enum ToUi {
     /// The themes folder's theme files, read at start: the file name
     /// (what `Settings::theme` holds when one is picked) and the theme.
     ThemeFiles(Vec<(String, Theme)>),
+    /// Theme safety nets at start, added to the Debug page's counts: theme
+    /// files left out (they didn't parse, or no one could read their
+    /// text) and starts where the default theme showed in place of the
+    /// saved one or the one `--theme` named.
+    ThemeFallbacks {
+        left_out: u64,
+        default_shown: u64,
+    },
     ClearLogs,
     ClearConsole,
     /// The synth: its parameters, values and presets (at the start, and
@@ -2131,6 +2139,9 @@ pub struct Player {
     settings: Settings,
     /// The themes folder's themes, for Prefs > Appearance.
     theme_files: Vec<(String, Theme)>,
+    /// Theme files left out at start and starts with the default theme
+    /// in place of the one asked for ([`ToUi::ThemeFallbacks`]).
+    theme_fallbacks: (u64, u64),
     session: (String, Tone),
     /// Lines for the Console page come from the system log (the app); in the
     /// timed step there is none, so the step's own lines go there.
@@ -2781,6 +2792,7 @@ impl Player {
             status,
             settings: Settings::default(),
             theme_files: Vec::new(),
+            theme_fallbacks: (0, 0),
             session: ("Starting".to_string(), Tone::Dim),
             console_from_lines: timed,
             console_backlog: VecDeque::new(),
@@ -9282,6 +9294,13 @@ impl Player {
             }
             ToUi::Settings(s) => self.set_settings(s),
             ToUi::ThemeFiles(t) => self.theme_files = t,
+            ToUi::ThemeFallbacks {
+                left_out,
+                default_shown,
+            } => {
+                self.theme_fallbacks.0 += left_out;
+                self.theme_fallbacks.1 += default_shown;
+            }
             ToUi::ClearLogs => {
                 for name in ["midi", "events"] {
                     let title = self
@@ -12277,6 +12296,21 @@ impl Player {
                 memory.push((
                     "Skin pop-ups: colours moved so they read".to_string(),
                     format!("{moved}×"),
+                    Tone::Warn,
+                ));
+            }
+            let (left_out, default_shown) = self.theme_fallbacks;
+            if left_out > 0 {
+                memory.push((
+                    "Themes: theme files left out (see the log)".to_string(),
+                    format!("{left_out}×"),
+                    Tone::Warn,
+                ));
+            }
+            if default_shown > 0 {
+                memory.push((
+                    "Themes: default theme shown in place of the one asked for".to_string(),
+                    format!("{default_shown}×"),
                     Tone::Warn,
                 ));
             }
@@ -17983,7 +18017,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     undo.tick(UNDO_HOLD);
     undo.apply(ToUi::Rows(crate::app::RowKey::Pick(-1)));
     out.push(("undo-history", undo));
-    // Prefs with the Appearance row selected, stepped to Synthwave.
+    // Prefs with the Appearance row selected, stepped to Console.
     let mut look = sample_player(fonts());
     let mut l = crate::app::App::new(44_100, false);
     let mut fx = l.open_tab(View::Prefs);
