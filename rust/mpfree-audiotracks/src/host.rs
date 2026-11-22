@@ -1365,7 +1365,12 @@ impl AudioHost {
                     .is_some_and(|t| t.rec == rec && !t.recording)
                     && !self.tracks.on_file(take)
                 {
-                    self.tracks.command(Command::OnFile { take, rec, gen });
+                    self.tracks.command(Command::OnFile {
+                        take,
+                        rec,
+                        gen,
+                        growing: false,
+                    });
                 } else {
                     self.send(ToWorker::Close { take, gen });
                 }
