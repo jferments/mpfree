@@ -3572,7 +3572,7 @@ fn song_view_frame() -> Case {
                 } else {
                     1
                 };
-                page.scroll(&ui, back as i32);
+                page.scroll(&mut ui, back as i32);
             }
             page.update(&mut ui, &st);
             let drawn = ui.paint(&mut canvas);

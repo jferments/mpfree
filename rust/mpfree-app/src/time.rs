@@ -8364,7 +8364,7 @@ mod tests {
         };
         let ticks = |h: &TimeHost| -> Vec<Tick> { sorted(h).iter().map(|n| n.tick).collect() };
         assert_eq!(
-            h.act(TimeAction::Edit(E::Button(7))).unwrap(),
+            h.act(TimeAction::Edit(E::Correct)).unwrap(),
             "edit: timing correct moved 3 notes"
         );
         assert_eq!(ticks(&h), [0, 960, 1920]);
