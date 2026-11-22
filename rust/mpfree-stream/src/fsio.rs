@@ -2,7 +2,9 @@
 //! test can stand a model stick in for the real one (`testkit::ModelStick`):
 //! create, write, read, cut to length, sync, rename, remove and sync a
 //! folder. Paths are whole; a real file is opened once and kept open until
-//! it is renamed or removed.
+//! it is renamed or removed. The SD card is read through a read-only one
+//! ([`StdFs::read_only`]): it is mounted read-only, and nothing here
+//! writes to it.
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -19,6 +21,11 @@ pub trait Fs {
     fn write_at(&mut self, path: &Path, at: u64, bytes: &[u8]) -> io::Result<()>;
     /// Read up to `buf.len()` bytes at `at`; fewer only at the end.
     fn read_at(&mut self, path: &Path, at: u64, buf: &mut [u8]) -> io::Result<usize>;
+    /// As [`Fs::read_at`], but from the device past the system's cache
+    /// where it allows, to check what a published file really holds.
+    fn read_fresh(&mut self, path: &Path, at: u64, buf: &mut [u8]) -> io::Result<usize> {
+        self.read_at(path, at, buf)
+    }
     fn len(&mut self, path: &Path) -> io::Result<u64>;
     fn set_len(&mut self, path: &Path, len: u64) -> io::Result<()>;
     /// `fdatasync`: the file's data and length are on the stick.
@@ -36,24 +43,107 @@ pub trait Fs {
 #[derive(Default)]
 pub struct StdFs {
     open: HashMap<PathBuf, File>,
+    read_only: bool,
+    fresh_fallbacks: u64,
 }
+
+/// Fresh reads are made in blocks of this size, at offsets and into
+/// memory aligned to it (what `O_DIRECT` asks).
+const ALIGN: usize = 4096;
 
 impl StdFs {
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Files opened for reading only, and every change refused: for the
+    /// SD card, mounted read-only.
+    pub fn read_only() -> Self {
+        StdFs {
+            read_only: true,
+            ..Self::default()
+        }
+    }
+
+    /// Fresh reads that had to go through the system's cache instead (the
+    /// file system doesn't read past it, or the read wasn't aligned): a
+    /// check made that way proves less, and the app shows the count.
+    pub fn fresh_fallbacks(&self) -> u64 {
+        self.fresh_fallbacks
+    }
+
     fn file(&mut self, path: &Path) -> io::Result<&mut File> {
         if !self.open.contains_key(path) {
-            let f = OpenOptions::new().read(true).write(true).open(path)?;
+            let f = OpenOptions::new()
+                .read(true)
+                .write(!self.read_only)
+                .open(path)?;
             self.open.insert(path.to_path_buf(), f);
         }
         Ok(self.open.get_mut(path).expect("just opened"))
+    }
+
+    fn writable(&self, path: &Path) -> io::Result<()> {
+        if self.read_only {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("{}: read-only here", path.display()),
+            ));
+        }
+        Ok(())
+    }
+
+    /// A read past the page cache (`O_DIRECT`), or None where the file
+    /// system doesn't allow one.
+    #[cfg(target_os = "linux")]
+    fn direct(path: &Path, at: u64, buf: &mut [u8]) -> io::Result<Option<usize>> {
+        use std::os::unix::fs::{FileExt, OpenOptionsExt};
+        if !at.is_multiple_of(ALIGN as u64) {
+            return Ok(None);
+        }
+        let f = match OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECT)
+            .open(path)
+        {
+            Ok(f) => f,
+            Err(e) if e.raw_os_error() == Some(libc::EINVAL) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let len = buf.len().next_multiple_of(ALIGN);
+        let mut raw = vec![0u8; len + ALIGN];
+        let off = raw.as_ptr().align_offset(ALIGN);
+        let mem = &mut raw[off..off + len];
+        let mut got = 0;
+        while got < len {
+            match f.read_at(&mut mem[got..], at + got as u64) {
+                Ok(0) => break,
+                Ok(n) => {
+                    got += n;
+                    // Short only at the end of the file.
+                    if !got.is_multiple_of(ALIGN) {
+                        break;
+                    }
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) if e.raw_os_error() == Some(libc::EINVAL) => return Ok(None),
+                Err(e) => return Err(e),
+            }
+        }
+        let n = got.min(buf.len());
+        buf[..n].copy_from_slice(&mem[..n]);
+        Ok(Some(n))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn direct(_: &Path, _: u64, _: &mut [u8]) -> io::Result<Option<usize>> {
+        Ok(None)
     }
 }
 
 impl Fs for StdFs {
     fn create(&mut self, path: &Path, new_only: bool) -> io::Result<()> {
+        self.writable(path)?;
         self.open.remove(path);
         let mut o = OpenOptions::new();
         o.read(true).write(true);
@@ -68,6 +158,7 @@ impl Fs for StdFs {
     }
 
     fn write_at(&mut self, path: &Path, at: u64, bytes: &[u8]) -> io::Result<()> {
+        self.writable(path)?;
         let f = self.file(path)?;
         f.seek(SeekFrom::Start(at))?;
         f.write_all(bytes)
@@ -88,29 +179,44 @@ impl Fs for StdFs {
         Ok(got)
     }
 
+    fn read_fresh(&mut self, path: &Path, at: u64, buf: &mut [u8]) -> io::Result<usize> {
+        match Self::direct(path, at, buf)? {
+            Some(n) => Ok(n),
+            None => {
+                self.fresh_fallbacks += 1;
+                self.read_at(path, at, buf)
+            }
+        }
+    }
+
     fn len(&mut self, path: &Path) -> io::Result<u64> {
         Ok(fs::metadata(path)?.len())
     }
 
     fn set_len(&mut self, path: &Path, len: u64) -> io::Result<()> {
+        self.writable(path)?;
         self.file(path)?.set_len(len)
     }
 
     fn sync(&mut self, path: &Path) -> io::Result<()> {
+        self.writable(path)?;
         self.file(path)?.sync_data()
     }
 
     fn sync_dir(&mut self, dir: &Path) -> io::Result<()> {
+        self.writable(dir)?;
         File::open(dir)?.sync_all()
     }
 
     fn rename(&mut self, from: &Path, to: &Path) -> io::Result<()> {
+        self.writable(from)?;
         self.open.remove(from);
         self.open.remove(to);
         fs::rename(from, to)
     }
 
     fn remove(&mut self, path: &Path) -> io::Result<()> {
+        self.writable(path)?;
         self.open.remove(path);
         fs::remove_file(path)
     }

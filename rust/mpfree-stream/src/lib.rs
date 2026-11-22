@@ -33,10 +33,12 @@
 //!   another; [`snapshot`]: a set's real versions, named by content, and
 //!   its checks; [`ready`]: how ready a set is, from what was tested.
 //! - [`storage`]: the stick and the SD card (only through the hardware
-//!   project's handle), insertion numbers, paths kept inside a library.
+//!   project's handle), insertion numbers, paths kept inside a library;
+//!   [`cardcopy`]: files copied from the card onto the stick, checked.
 
 #![forbid(unsafe_code)]
 
+pub mod cardcopy;
 pub mod coord;
 pub mod crc32c;
 pub mod cursor;
