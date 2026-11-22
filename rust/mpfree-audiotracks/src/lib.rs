@@ -1015,6 +1015,9 @@ pub struct AudioTracks {
     cues: [[Option<Cue>; 2]; MAX_TRACKS],
     /// Take ids kept for takes on their way ([`AudioTracks::reserve`]).
     reserved: [bool; MAX_TAKES],
+    /// No take's pool memory goes to its file for now
+    /// ([`AudioTracks::keep_memory`]).
+    keep: bool,
 }
 
 /// One track's room in [`AudioTracks::inside_input`].
@@ -1054,6 +1057,7 @@ impl AudioTracks {
             io: VecDeque::with_capacity(IO_QUEUE),
             inside: vec![0.0; MAX_TRACKS * INSIDE].into_boxed_slice(),
             player: None,
+            keep: false,
             reads: vec![0.0; 2 * RUN].into_boxed_slice(),
             cues: [[None; 2]; MAX_TRACKS],
             reserved: [false; MAX_TAKES],
@@ -2567,6 +2571,14 @@ impl AudioTracks {
             .is_some_and(|t| t.live && matches!(t.store, Store::File { .. }))
     }
 
+    /// While `keep`, no take gives its pool memory back to its file (see
+    /// [`Command::OnFile`]): what each has in the pool stays there, so a
+    /// save reading takes from the pool and their files meanwhile finds
+    /// each frame where it looked. Does not allocate.
+    pub fn keep_memory(&mut self, keep: bool) {
+        self.keep = keep;
+    }
+
     /// How many of take `id`'s frames, from its start, play from its file
     /// rather than the pool: all of a take on its file, those below the
     /// pool's part of a take whose file holds only some of it so far (a
@@ -2743,7 +2755,7 @@ impl AudioTracks {
     /// take) stays in the pool (counted in [`Stats::mismatched`]), and its
     /// source is closed.
     fn free_to_files(&mut self) {
-        if self.player.is_none() {
+        if self.player.is_none() || self.keep {
             return;
         }
         let need = (MOVE_S * f64::from(self.rate)) as u64;

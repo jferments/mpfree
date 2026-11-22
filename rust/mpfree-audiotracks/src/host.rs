@@ -60,7 +60,7 @@ use mpfree_stream::writer::Gate;
 use mpfree_transport::time::TempoMap;
 use mpfree_transport::{Block, Mark, Tick};
 
-use crate::files::{self, FileEvent, FileView, Files, Name, Said, WriterConfig};
+use crate::files::{self, FileEvent, FileView, Files, Growing, Name, Said, WriterConfig};
 use crate::save::{Saved, TakeFile};
 use crate::streaming::{self, FromStream, Head, Read, Stream, StreamConfig, ToStream};
 use crate::stretch::{fit_ratio, StretchJob};
@@ -662,7 +662,7 @@ impl AudioHost {
         let mix = |h: u64, v: u64| (h ^ v).wrapping_mul(0x0100_0000_01b3);
         let mut from = mix(0xcbf2_9ce4_8422_2325, now.div_euclid(HEADS_SPAN) as u64);
         for t in 0..MAX_TRACKS {
-            for r in tr.regions(t).iter().filter(|r| tr.on_file(r.take)) {
+            for r in tr.regions(t).iter().filter(|r| plays_from_file(tr, r.take)) {
                 for v in [t as u64, r.start as u64, r.src as u64, u64::from(r.take)] {
                     from = mix(from, v);
                 }
@@ -699,7 +699,7 @@ impl AudioHost {
             })
         };
         for t in 0..MAX_TRACKS {
-            for r in tr.regions(t).iter().filter(|r| tr.on_file(r.take)) {
+            for r in tr.regions(t).iter().filter(|r| plays_from_file(tr, r.take)) {
                 if let Some(h) = head(r.take, r.src.max(0) as u64, order(r.start, r.end > now)) {
                     heads.push(h);
                 }
@@ -724,7 +724,7 @@ impl AudioHost {
         let r = tr
             .regions(t)
             .iter()
-            .find(|r| r.contains(start) && r.start != start && tr.on_file(r.take))?;
+            .find(|r| r.contains(start) && r.start != start && plays_from_file(tr, r.take))?;
         let rate = self.tracks.rate();
         let at = r.src + crate::frames_from(map, r.start as f64, start as f64, rate).round() as i64;
         Some((r.take, at.max(0) as u64))
@@ -1002,7 +1002,7 @@ impl AudioHost {
         let Some(ratio) = fit_ratio(take.bpm, bpm).filter(|r| (r - 1.0).abs() > 1e-9) else {
             return false;
         };
-        if self.tracks.on_file(id) {
+        if self.plays_from_file(id) {
             self.fit_from_file(take, ratio, bpm);
             return true;
         }
@@ -1028,7 +1028,14 @@ impl AudioHost {
     /// Whether `take` is still there, the same recording, now on its file
     /// (it moved while it was read from memory).
     fn moved_to_file(&self, take: u16, rec: RecordingId) -> bool {
-        self.tracks.on_file(take) && self.tracks.take(take).is_some_and(|t| t.rec == rec)
+        self.plays_from_file(take) && self.tracks.take(take).is_some_and(|t| t.rec == rec)
+    }
+
+    /// Whether some of take `id` plays from its file (all of it, or the
+    /// start of a long recording whose memory went there as it recorded):
+    /// a fit or a waveform reads it from there, not memory.
+    fn plays_from_file(&self, id: u16) -> bool {
+        plays_from_file(&self.tracks, id)
     }
 
     /// The take being fitted, while a fit is under way.
@@ -1057,7 +1064,7 @@ impl AudioHost {
             self.send(ToWorker::DropWave(wave));
         }
         let columns = columns.clamp(1, MAX_COLUMNS);
-        match self.tracks.take(id).filter(|_| self.tracks.on_file(id)) {
+        match self.tracks.take(id).filter(|_| self.plays_from_file(id)) {
             Some(take) => self.wave_from_file(take, columns),
             None => {
                 self.send(ToWorker::Wave(columns));
@@ -1342,8 +1349,28 @@ impl AudioHost {
                 self.heads_held = held;
                 self.heads_short();
             }
-            FromStream::Open { take, rec, gen, .. } => {
-                if let Some(i) = self
+            FromStream::Open {
+                take,
+                rec,
+                gen,
+                growing,
+                ..
+            } => {
+                let ours = self.tracks.take(take).is_some_and(|t| t.rec == rec);
+                if growing {
+                    // A recording's file as it is written: its memory goes
+                    // back as the file holds it.
+                    if ours && self.tracks.file_frames(take) == Some(0) {
+                        self.tracks.command(Command::OnFile {
+                            take,
+                            rec,
+                            gen,
+                            growing: true,
+                        });
+                    } else {
+                        self.send(ToWorker::Close { take, gen });
+                    }
+                } else if let Some(i) = self
                     .opening
                     .iter()
                     .position(|k| k.id == take && k.rec == rec)
@@ -1673,7 +1700,7 @@ impl AudioHost {
             self.send(ToWorker::DropWave(wave(0, 0, 0)));
             return None;
         };
-        if self.tracks.on_file(id) {
+        if self.plays_from_file(id) {
             // It moved to its file while the room was made.
             self.send(ToWorker::DropWave(wave(0, 0, 0)));
             self.wave_from_file(t, n);
@@ -1705,7 +1732,7 @@ impl AudioHost {
                     // (read from there instead).
                     let n = wave.columns.capacity();
                     let moved = self.tracks.take(wave.id).filter(|t| {
-                        self.tracks.on_file(t.id)
+                        self.plays_from_file(t.id)
                             && t.frames == wave.frames
                             && t.channels == wave.channels
                     });
@@ -1741,6 +1768,15 @@ impl AudioHost {
     }
 
     fn tend_save(&mut self, budget: usize) {
+        self.save_step(budget);
+        // While the takes are named and read, what each has in memory
+        // stays there, so the worker and the reading agree on where each
+        // frame is.
+        let reading = matches!(self.saving, Some(Saving::Sizing | Saving::Reading { .. }));
+        self.tracks.keep_memory(reading);
+    }
+
+    fn save_step(&mut self, budget: usize) {
         match self.saving.take() {
             None => {}
             Some(Saving::Asking) => self.saving = Some(Saving::Asking),
@@ -1786,6 +1822,15 @@ impl AudioHost {
                         continue;
                     }
                     let ch = k.channels;
+                    if frame == 0 {
+                        // A take whose memory went to its file as it
+                        // recorded: the worker read that part from there.
+                        frame = self
+                            .tracks
+                            .file_frames(k.id)
+                            .filter(|&n| n < k.frames)
+                            .unwrap_or(0);
+                    }
                     let to = (frame + left).min(k.frames);
                     match self
                         .tracks
@@ -1967,19 +2012,59 @@ struct Worker {
 
 impl Worker {
     /// Take files finished (recorded, or a project's) go to the stream
-    /// thread to open.
+    /// thread to open, and recordings' files to open or grow as they are
+    /// written.
     fn open_finished(&mut self) {
         let Some(st) = &self.stream else {
             return;
         };
+        let era = self.era;
         for (take, rec, path, channels, frames) in self.files.take_opens() {
             let _ = st.tx.send(ToStream::Open {
-                era: self.era,
+                era,
                 take,
                 rec,
                 path,
                 channels,
                 frames,
+            });
+        }
+        for g in self.files.take_grows() {
+            let _ = st.tx.send(match g {
+                Growing::Open {
+                    take,
+                    rec,
+                    path,
+                    channels,
+                    frames,
+                } => ToStream::OpenGrowing {
+                    era,
+                    take,
+                    rec,
+                    path,
+                    channels,
+                    frames,
+                },
+                Growing::Grow { take, rec, frames } => ToStream::Grow {
+                    era,
+                    take,
+                    rec,
+                    frames,
+                },
+                Growing::Finished {
+                    take,
+                    rec,
+                    path,
+                    channels,
+                    frames,
+                } => ToStream::Finished {
+                    era,
+                    take,
+                    rec,
+                    path,
+                    channels,
+                    frames,
+                },
             });
         }
     }
@@ -2219,6 +2304,10 @@ impl Worker {
                 return self.read_for(take.rec, want);
             }
             ToWorker::WaveFile { take, columns } => {
+                // Recorded here: from the peaks of what went to its file.
+                if let Some(w) = self.files.wave_of(&take, columns) {
+                    return Some(FromWorker::WaveFile(w));
+                }
                 return self.read_for(take.rec, Want::Wave { take, columns });
             }
             ToWorker::Read(Read { job, bytes }) => {
@@ -2228,6 +2317,12 @@ impl Worker {
             }
         })
     }
+}
+
+/// Whether some of take `id` plays from its file (see
+/// [`AudioHost::plays_from_file`]).
+fn plays_from_file(tr: &AudioTracks, id: u16) -> bool {
+    tr.file_frames(id).is_some_and(|n| n > 0)
 }
 
 /// A take's waveform in about `columns` columns from its frames `audio`

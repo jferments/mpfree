@@ -14,6 +14,10 @@
 //!   channels and frames at the tracks' rate. The answer is the source's
 //!   generation, for [`crate::Command::OnFile`] or
 //!   [`crate::AudioTracks::add_file_take`], or why not.
+//! - **Open growing** a recording's file still being written, at the frames
+//!   committed so far (`Coordinator::open_growing`), and **grow** it as
+//!   more are, under the same generation, so the take's memory goes back
+//!   as its file holds it (step 5: takes longer than memory).
 //! - **Close** a take's source, only if it is still the generation asked
 //!   for (a newer take may have the id by then).
 //! - **A new project**: every source closed and the cache emptied.
@@ -81,22 +85,23 @@ impl StreamConfig {
 pub fn check_file(path: &Path, channels: usize, frames: usize, rate: u32) -> Result<(), String> {
     let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let l = mpfree_stream::format::layout(&mut f).map_err(|e| e.to_string())?;
-    mismatch(&l, channels, frames, rate).map_or(Ok(()), Err)
+    mismatch(&l, channels, Some(frames), rate).map_or(Ok(()), Err)
 }
 
 /// Why a file laid out as `l` isn't a take of `channels` and `frames` at
-/// `rate` Hz, if it isn't.
-fn mismatch(l: &Layout, channels: usize, frames: usize, rate: u32) -> Option<String> {
+/// `rate` Hz, if it isn't. Without `frames` (a file still being written,
+/// so its length grows) only its channels and rate count.
+fn mismatch(l: &Layout, channels: usize, frames: Option<usize>, rate: u32) -> Option<String> {
     if usize::from(l.channels) != channels {
         Some(format!(
             "it has {} channels, the take {channels}",
             l.channels
         ))
-    } else if l.frames != frames as u64 {
+    } else if let Some(frames) = frames.filter(|&f| l.frames != f as u64) {
         Some(format!("it has {} frames, the take {frames}", l.frames))
     } else if l.rate != rate {
         Some(format!("it is at {} Hz, the tracks at {rate} Hz", l.rate))
-    } else if l.cut_short {
+    } else if frames.is_some() && l.cut_short {
         Some("it holds less audio than its header says".into())
     } else {
         None
@@ -107,6 +112,36 @@ fn mismatch(l: &Layout, channels: usize, frames: usize, rate: u32) -> Option<Str
 pub(crate) enum ToStream {
     /// `era` is the host's generation of the tracks, given back.
     Open {
+        era: u32,
+        take: u16,
+        rec: RecordingId,
+        path: PathBuf,
+        channels: usize,
+        frames: usize,
+    },
+    /// Open a recording's file still being written, playing its first
+    /// `frames` (committed): it must have the take's channels at the
+    /// tracks' rate.
+    OpenGrowing {
+        era: u32,
+        take: u16,
+        rec: RecordingId,
+        path: PathBuf,
+        channels: usize,
+        frames: u64,
+    },
+    /// The file opened growing for recording `rec` holds its first
+    /// `frames` now.
+    Grow {
+        era: u32,
+        take: u16,
+        rec: RecordingId,
+        frames: u64,
+    },
+    /// It is finished at `path` and holds `frames`: grown to them, or, if
+    /// it isn't open as it grew (that failed, or it was closed), opened
+    /// as a finished file like [`ToStream::Open`].
+    Finished {
         era: u32,
         take: u16,
         rec: RecordingId,
@@ -145,14 +180,17 @@ const HEADS_A_HOLD: usize = 16;
 
 /// What the stream thread answers the audio thread.
 pub(crate) enum FromStream {
-    /// Take `take`'s file is open as its source, at generation `gen`.
+    /// Take `take`'s file is open as its source, at generation `gen`:
+    /// still being written if `growing`.
     Open {
         era: u32,
         take: u16,
         rec: RecordingId,
         gen: u32,
+        growing: bool,
     },
-    /// It couldn't be opened, or doesn't hold what the take does.
+    /// It couldn't be opened, doesn't hold what the take does, or
+    /// couldn't grow.
     Failed {
         era: u32,
         take: u16,
@@ -213,6 +251,7 @@ fn run(
         rate,
         c,
         gens: vec![0; MAX_SOURCES],
+        recs: vec![RecordingId::NONE; MAX_SOURCES],
         reading: Vec::new(),
         heads: Vec::new(),
     };
@@ -252,8 +291,10 @@ fn run(
 struct Side {
     rate: u32,
     c: Coordinator,
-    /// The generation each source was opened at (0: closed).
+    /// The generation each source was opened at (0: closed), and its
+    /// recording.
     gens: Vec<u32>,
+    recs: Vec<RecordingId>,
     /// Whole-file reads under way: the worker's job, the coordinator's.
     reading: Vec<(u32, JobId)>,
     /// The holds on regions' starts.
@@ -276,7 +317,46 @@ impl Side {
                 path,
                 channels,
                 frames,
-            } => answer(self.open(era, take, rec, &path, channels, frames)),
+            } => answer(self.open(era, take, rec, &path, channels, Some(frames))),
+            ToStream::OpenGrowing {
+                era,
+                take,
+                rec,
+                path,
+                channels,
+                frames,
+            } => answer(self.open_growing(era, take, rec, &path, channels, frames)),
+            ToStream::Grow {
+                era,
+                take,
+                rec,
+                frames,
+            } => match self.grow(take, rec, frames) {
+                Some(Err(why)) => answer(FromStream::Failed {
+                    era,
+                    take,
+                    rec,
+                    why,
+                }),
+                _ => true,
+            },
+            ToStream::Finished {
+                era,
+                take,
+                rec,
+                path,
+                channels,
+                frames,
+            } => match self.grow(take, rec, frames as u64) {
+                Some(Ok(())) => true,
+                Some(Err(why)) => answer(FromStream::Failed {
+                    era,
+                    take,
+                    rec,
+                    why,
+                }),
+                None => answer(self.open(era, take, rec, &path, channels, Some(frames))),
+            },
             ToStream::Close { take, gen } => {
                 if self.gens.get(usize::from(take)) == Some(&gen) {
                     self.c.close(take);
@@ -306,6 +386,14 @@ impl Side {
                 }),
             },
         }
+    }
+
+    /// Grow take `take`'s source, if it is recording `rec`'s file opened
+    /// as it grew, to `frames`: None if it isn't.
+    fn grow(&mut self, take: u16, rec: RecordingId, frames: u64) -> Option<Result<(), String>> {
+        let t = usize::from(take);
+        (self.gens.get(t).is_some_and(|&g| g > 0) && self.recs[t] == rec)
+            .then(|| self.c.grow(take, frames))
     }
 
     /// Hold `heads` instead of the heads held before, a few to a hold, in
@@ -367,7 +455,7 @@ impl Side {
     }
 
     /// Open take `take`'s file at `path` as its source, if it holds
-    /// `channels` and `frames` at the tracks' rate.
+    /// `channels` and `frames` (when given) at the tracks' rate.
     fn open(
         &mut self,
         era: u32,
@@ -375,34 +463,81 @@ impl Side {
         rec: RecordingId,
         path: &Path,
         channels: usize,
-        frames: usize,
+        frames: Option<usize>,
+    ) -> FromStream {
+        let tag = match self.c.open(take, path) {
+            Ok(tag) => tag,
+            Err(why) => {
+                return FromStream::Failed {
+                    era,
+                    take,
+                    rec,
+                    why,
+                }
+            }
+        };
+        self.opened(era, take, rec, tag.gen, channels, frames)
+    }
+
+    /// Open take `take`'s file at `path`, still being written, as its
+    /// source playing its first `frames`, if it has `channels` at the
+    /// tracks' rate.
+    fn open_growing(
+        &mut self,
+        era: u32,
+        take: u16,
+        rec: RecordingId,
+        path: &Path,
+        channels: usize,
+        frames: u64,
+    ) -> FromStream {
+        match self.c.open_growing(take, path, frames) {
+            Ok(tag) => self.opened(era, take, rec, tag.gen, channels, None),
+            Err(why) => FromStream::Failed {
+                era,
+                take,
+                rec,
+                why,
+            },
+        }
+    }
+
+    /// Take `take`'s file just opened as generation `gen`: kept if it has
+    /// `channels` and `frames` (when given: a finished file) at the
+    /// tracks' rate, else closed.
+    fn opened(
+        &mut self,
+        era: u32,
+        take: u16,
+        rec: RecordingId,
+        gen: u32,
+        channels: usize,
+        frames: Option<usize>,
     ) -> FromStream {
         let (c, rate) = (&mut self.c, self.rate);
-        let failed = |why: String| FromStream::Failed {
-            era,
-            take,
-            rec,
-            why,
+        let why = match c.layout(take) {
+            None => Some("it isn't a sound file the stream layer reads".into()),
+            Some(l) => mismatch(&l, channels, frames, rate),
         };
-        let tag = match c.open(take, path) {
-            Ok(tag) => tag,
-            Err(why) => return failed(why),
-        };
-        let Some(l) = c.layout(take) else {
+        let t = usize::from(take);
+        if let Some(why) = why {
             c.close(take);
-            return failed("it isn't a sound file the stream layer reads".into());
-        };
-        if let Some(why) = mismatch(&l, channels, frames, rate) {
-            c.close(take);
-            self.gens[usize::from(take)] = 0;
-            return failed(why);
+            self.gens[t] = 0;
+            return FromStream::Failed {
+                era,
+                take,
+                rec,
+                why,
+            };
         }
-        self.gens[usize::from(take)] = tag.gen;
+        self.gens[t] = gen;
+        self.recs[t] = rec;
         FromStream::Open {
             era,
             take,
             rec,
-            gen: tag.gen,
+            gen,
+            growing: frames.is_none(),
         }
     }
 }

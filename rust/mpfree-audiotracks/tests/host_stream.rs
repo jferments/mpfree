@@ -89,7 +89,12 @@ impl Rig {
 
     /// [`Rig::new`] with takes played from their files through `cfg`.
     fn with(dir: Option<&Path>, cfg: Option<StreamConfig>) -> Rig {
-        let mut h = AudioHost::new(RATE, 30);
+        Rig::sized(dir, cfg, 30)
+    }
+
+    /// [`Rig::with`] with memory for `seconds` of stereo.
+    fn sized(dir: Option<&Path>, cfg: Option<StreamConfig>, seconds: u32) -> Rig {
+        let mut h = AudioHost::new(RATE, seconds);
         let stream = cfg.is_some();
         if let Some(cfg) = cfg {
             assert!(h.stream(cfg));
@@ -685,6 +690,82 @@ fn a_project_s_converted_takes_are_written_to_files_and_play_from_them() {
         assert_eq!((ch, rate), (b.channels, RATE));
         assert!(audio == b.audio, "the converted sound, as it was");
     }
+    assert!(r.events().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Track 0 (mono) records `bars` bars from [`START`], then disarms; with
+/// `files`, into its file, at about four times the speed it plays (each
+/// period given time, so the writer commits as it would).
+fn record_paced(r: &mut Rig, bars: u64, files: bool) {
+    r.h.command(A::Arm(0, true));
+    if files {
+        r.run_until(|r| r.h.armed_file(0) == Some(true));
+    }
+    r.t.command(START, T::Record);
+    r.t.command(START + bars * BAR, T::Stop);
+    while r.frame < START + bars * BAR + 4 * P {
+        r.period();
+        if files && r.frame > START {
+            std::thread::sleep(Duration::from_millis(3));
+        }
+    }
+    r.h.command(A::Arm(0, false));
+    r.live = false;
+}
+
+#[test]
+fn a_recording_longer_than_memory_records_on_as_its_file_takes_it() {
+    let dir = scratch("long");
+    // 8 s of mono into memory for 3 s of stereo (6 s of mono).
+    let mut mem = Rig::sized(None, None, 30);
+    record_paced(&mut mem, 8, false);
+    let want = mem.save();
+    let mut short = Rig::sized(Some(&dir), None, 3);
+    record_paced(&mut short, 8, true);
+    assert_eq!(
+        short.h.tracks.stats().full,
+        1,
+        "without streaming: cut short"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let dir = scratch("long-on");
+    let mut r = Rig::sized(Some(&dir), Some(small()), 3);
+    record_paced(&mut r, 8, true);
+    assert_eq!(r.h.tracks.stats().full, 0, "never out of memory");
+    r.run_until(|r| r.all_on_file());
+    assert_eq!(r.h.tracks.memory().used, 0);
+    let k = r.h.tracks.takes().next().unwrap();
+    assert_eq!(k.frames, want.takes[0].frames);
+    // Its file holds what memory would have.
+    let saved = r.save();
+    let path = saved.takes[0]
+        .path
+        .as_ref()
+        .expect("copied whole from its file");
+    let (audio, ch, _) = from_wav(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(ch, 1);
+    assert!(audio == want.takes[0].audio, "the same sound");
+    // Its waveform (from what the writer was given) is memory's.
+    assert!(mem.h.wave(k.id, 300));
+    assert!(r.h.wave(k.id, 300));
+    let mut want_wave = None;
+    mem.run_until(|m| {
+        want_wave = m.h.take_wave();
+        want_wave.is_some()
+    });
+    let mut got_wave = None;
+    r.run_until(|r| {
+        got_wave = r.h.take_wave();
+        got_wave.is_some()
+    });
+    assert!(!want_wave.as_ref().unwrap().columns.is_empty());
+    assert_eq!(got_wave, want_wave);
+    // And plays as it does from memory.
+    let got = r.play_song();
+    assert!(got == mem.play_song());
+    assert_eq!(r.h.tracks.stats().missed, 0);
     assert!(r.events().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
