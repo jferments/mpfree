@@ -208,6 +208,16 @@ with `--quick`) at 128 frames and 44.1 kHz:
   Counted in instructions on the workstation, 24 plain voices took 408,000
   a block through the full voice loop and take 39,000 through the plain
   path; 64 take 74,000.
+  **The grain worst cases** (sampler plan step 13; "Grains worst: …"):
+  five granular pads held, together asking for more grains than the
+  256 the engine plays, so near the whole budget plays every block and
+  step 9's sharing works all the time, with a pad let go and hit again
+  every 0.3 s. One case for each costly grain feature (grain filters, the
+  clean read, pitch spray, the Grains FX on top), one with everything, and
+  64 clouds sharing the budget; the lanes run adds everything split, on
+  one core and on two. They are there for their slowest blocks: the MPC
+  judges them, and the workstation only compares before with after
+  ([sampler architecture](sampler-architecture.md#a-worst-case-grain-bench-step-13)).
   Each sampler case's engine is checked as the case ends: dropped events
   or given-up voices fail the run, and so do steals, thinned grains or a
   late lane unless the case allows them (sampler plan step 10;
@@ -439,7 +449,8 @@ core B (3,2 on the MPC); without it nothing is pinned. The default run is
 unchanged. The sampler appears three ways: one engine of 24 voices, two
 engines of 12 voices splitting the pads, and one engine of 24 voices split
 natively (`Engine::split`, see the sampler architecture), each on one core
-and on two. Eight synth tracks of eight engines in the track host play on
+and on two, and the grain worst case with everything on, split natively on
+one core and on two. Eight synth tracks of eight engines in the track host play on
 one core, two and three (with `--lane-cores A,B` the third core is the
 first from 1 that is neither A nor B: 1 on the MPC), placed by what each
 costs ([Track host](track-host.md#other-cores-lanes)).
