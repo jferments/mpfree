@@ -80,13 +80,28 @@ You can move the song around with your finger:
 
 - **Drag a block** to move it. Once your finger moves, it lifts and follows you, and its new place is outlined, with a tag saying the bar it starts on. It snaps to the bar. Drag it up or down to put it on another track's lane (a loop's block stays on its Loop track's lane, and a clip's block stays off them). There it plays that track's sound and stays linked to the same clip, so editing the clip still changes both. Hold **SHIFT** as you lift to drop a copy instead, linked to the same clip. Lift it where it started to leave it be. A block can't land on top of another one.
 - **Drag a picked block's end** to make it longer or shorter, a bar at a time. The picked block has a grip (two short bars) at its right end. Past the clip's end, the clip plays again from its top.
-- **Drag a section's name** on the ruler to move the whole section, every track, from its marker to the next one. A line shows where it will go. The sections close up behind it and make room for it, so nothing is written over. Hold **SHIFT** as you lift to put a copy there instead, such as a second verse. A block that runs across a section's edge is cut there, and each part still plays as it did. A section can't move while the song has morph moves recorded in it or tempo points, because they would stay behind.
+- **Drag a section's name** on the ruler to move the whole section, every track, from its marker to the next one. A line shows where it will go. The sections close up behind it and make room for it, so nothing is written over. Hold **SHIFT** as you lift to put a copy there instead, such as a second verse. Everything in the section goes with it: its blocks, its marker, its tempo changes and its morph moves, so it sounds the same in its new place. A block that runs across a section's edge is cut there, and each part still plays as it did; where the parts of one block meet again in step, they stay one block. If a tempo ramp runs past the section's end, its last 1/16 holds steady so the section still ends on time.
 - Hold a dragged block or section at the left or right edge and the bars scroll.
 - With the wheel: pick a block, push the wheel to grab it, turn to move it a beat at a time, and push again to let go. Tap a section's name to pick it, then push and turn to move it a section at a time.
 - **UNDO** takes back any of these, one at a time, and **SHIFT + UNDO** puts them back again.
 
 > [!MPC]
 > On the MPC, a song is a list of sequences played one after another. In MPFree, the song is a timeline of clips, and each track can leave the song to play a launched clip and come back.
+
+### Markers and bars
+
+The names on the ruler are markers: each one starts a section, which runs to the next marker. You can add your own and make room in the song.
+
+{{shot: arrange-song-section | The Verse picked by a tap on its name: its grip just left of its marker, and + Bar, Rename, Remove marker and Delete bars at the end of the bottom row.}}
+
+- **Tap the ruler** where no name is to add a marker on the nearest bar line. It is named with the next free letter (A, B, C…) and picked, ready to rename. Tap a bar that has a marker and it says so.
+- **Tap a section's name** to pick it. The last four buttons on the bottom row change:
+  - **+ Bar** puts an empty bar just before the section. The section and everything after it move a bar later, every track, with their tempo changes and morph moves. Press it again for another bar; presses in a row are one **UNDO**. To make room at the end of a section, pick the one after it.
+  - **Rename** opens the keyboard with the name in it. Type the new name and tap **Enter**.
+  - **Remove marker** takes the marker away. Its bars join the section before, and nothing you hear changes.
+  - **Delete bars** takes the section's bars out of the song, every track, and closes the gap. Its tempo changes and morph moves go with it. In Perform it needs a half-second hold, like every delete. To take out some other stretch of bars, put markers around it first, delete it, then remove the markers.
+- **Drag the grip** (two short bars just left of the picked section's marker) along the ruler to move where the section starts. It snaps to the bar, with a tag such as "Verse from bar 6". Only the marker moves, never what plays, and it can't land on another marker.
+- **UNDO** takes back each of these, and the message line says what changed.
 
 ### The song's tempo
 
@@ -146,7 +161,3 @@ A scene's length is its follow action's bars if it has one, else its longest cli
 
 > [!NOTE]
 > A track that is muted when you stop stays muted. Its silent parts are already left out of the song, so unmute it to hear the song as you played it.
-
-## Coming
-
-- Naming a section on the ruler yourself, and adding a section marker without a scene. For now a section takes its name from the scene that went into the song there.

@@ -15,6 +15,9 @@
 //!   times each plays ([`list::SongListView`]).
 //! - [`editor`]: the note editor of the Arrange page (a piano roll or a
 //!   list, with Timing Correct): [`editor::Editor`], [`editor::NoteGrid`].
+//! - [`lane`]: a lane of bars a finger draws, one value each (the
+//!   Sequencer's Velocity and Chance lanes, the piano roll's lanes):
+//!   [`lane::Lane`].
 //! - [`sample`]: sample screens with a real transport, player, recorder and
 //!   take undo behind them, for the workstation preview and the tests.
 //!
@@ -25,10 +28,13 @@
 #![forbid(unsafe_code)]
 
 pub mod editor;
+pub mod lane;
 pub mod list;
 pub mod sample;
 pub mod song;
 pub mod view;
 pub mod widgets;
 
-pub use view::{action, TempoEdit, TimeAction, TimePage, TimeState, TransportInfo};
+pub use view::{
+    action, BarsEdit, MarkerEdit, TempoEdit, TimeAction, TimePage, TimeState, TransportInfo,
+};

@@ -285,7 +285,10 @@ impl Desk<'_> {
                 // ERASE + a lane's name: said in place of the hint.
                 let erase = matches!(a, time::StepAction::ClearPad { .. });
                 // The pattern's length: said in place of the hint too.
-                let length = matches!(a, time::StepAction::Length { .. });
+                let length = matches!(
+                    a,
+                    time::StepAction::Length { .. } | time::StepAction::LengthBy { .. }
+                );
                 if !erase && !length {
                     // A tap or a turn: apart (--time-thread) it goes to the
                     // editing side's thread and is said when it answers.

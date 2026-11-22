@@ -38,7 +38,7 @@ use crate::list::{
 use crate::song::{
     AudioLane, SongBlocks, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, BARS_BACK, BARS_ON, INPUTS,
     MONITORS, NONE, PANEL, PANEL_CLOSE, PANEL_INPUT, PANEL_MONITOR, PANEL_MUTE, PANEL_SOLO,
-    PANEL_TAKES, REC, REGION_SLOTS, SECTION_TAP, TEMPO_ROW,
+    PANEL_TAKES, REC, REGION_SLOTS, RULER_ROW, SECTION_TAP, TEMPO_ROW,
 };
 use crate::widgets::{
     BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, TakeItem,
@@ -144,13 +144,13 @@ pub fn copy_hint(st: &TimeState) -> String {
 
 /// The hint line under the Song view.
 pub const SONG_HINT: &str =
-    "Tap a block to pick it   ·   drag a block or a section's name: move it (SHIFT as you lift: copy)   ·   Song on: the song plays where no clip is launched   ·   SHIFT + wheel: bars";
+    "Tap a block to pick it   ·   drag a block or a section's name: move it (SHIFT as you lift: copy)   ·   tap the ruler: add a marker   ·   SHIFT + wheel: bars";
 /// The hint line under the Song view with a block picked.
 pub const SONG_BLOCK_HINT: &str =
     "Drag the block: move it a bar at a time (SHIFT as you lift: copy)   ·   drag its end: longer or shorter   ·   push the wheel: move it a beat at a time   ·   SHIFT + wheel: bars";
 /// The hint line under the Song view with a section picked.
 pub const SONG_SECTION_HINT: &str =
-    "Drag the section's name: move it, the others close up (SHIFT as you lift: copy)   ·   push the wheel: move it a section at a time   ·   SHIFT + wheel: bars";
+    "Drag the name: move the section (SHIFT as you lift: copy)   ·   drag the grip: move where it starts   ·   + Bar: a bar of room before it   ·   push the wheel: move it a section at a time";
 /// The hint line under the Song view with a tempo point picked.
 pub const SONG_TEMPO_HINT: &str =
     "Drag the point: move it a bar at a time   ·   push the wheel: change its tempo   ·   Ramp: glide to the next point   ·   SHIFT + wheel: bars";
@@ -569,7 +569,8 @@ impl TakeRow {
     /// What it is: "take", "capture", "edit", "delete", "paste",
     /// "settings", "reload", "mutate", "restore", for a drop "move",
     /// "swap" or "copy", and for a Song view edit "move", "copy",
-    /// "length", "delete", "unique", "scenes" or "tempo", "list" for the
+    /// "length", "delete", "unique", "scenes", "tempo", "bars" or
+    /// "marker", "list" for the
     /// song list, "scene" for the scene editor and "song → scenes".
     pub fn word(&self) -> &'static str {
         if self.rows.is_some() {
@@ -585,6 +586,8 @@ impl TakeRow {
                 SongChange::Scenes { .. } => "scenes",
                 SongChange::List | SongChange::ListToSong { .. } => "list",
                 SongChange::Tempo { .. } => "tempo",
+                SongChange::Bars { .. } => "bars",
+                SongChange::Marker { .. } => "marker",
             };
         }
         if let Some(d) = self.dropped {
@@ -819,6 +822,35 @@ pub struct EditInfo {
     pub track_name: String,
     /// A bar, in the clip's ticks.
     pub bar: Tick,
+    /// What became of the editor's last touch (piano roll plan 0C.2).
+    pub answer: EditAnswer,
+}
+
+/// What became of the note editor's last touch, in the copy of the clip
+/// the screen reads (piano roll plan 0C.2), so a roll showing an edit
+/// before it goes in knows when it did and where its notes landed, or
+/// why it didn't.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EditAnswer {
+    /// Which touch: the editor's touches counted by the time engine from
+    /// its start, so a new number is a new answer (0: none yet).
+    pub n: u64,
+    /// The clip's revision the touch was carried out on.
+    pub from: u64,
+    pub outcome: EditOutcome,
+}
+
+/// See [`EditAnswer`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum EditOutcome {
+    /// The clip was left as it was: a pick, a tool, a scroll, a setting.
+    #[default]
+    Unchanged,
+    /// The edit went in: the clip is at revision `rev` and the notes it
+    /// made are at `landed`, which are the picks after it.
+    Taken { rev: u64, landed: Vec<usize> },
+    /// Refused or taken back, and why.
+    Refused(String),
 }
 
 /// A placement as the screens show it.
@@ -1067,6 +1099,10 @@ pub enum TimeAction {
     /// first while none does). A track selected again goes back to what
     /// plays.
     EditClip(Option<usize>),
+    /// The step size of the clip the Sequencer edits, in ticks: one of
+    /// `mpfree_seq::steps::SIZES` (refactor D1). A clip setting UNDO takes
+    /// back; the clip's length and its notes' times stay.
+    StepSize(Tick),
     /// Arm these tracks too, a bit each (track 0 the lowest), for one take
     /// over several tracks (the MPC's SHIFT + a track's arm): each records
     /// what its MIDI input sends it. The armed track is left out of it.
@@ -1311,6 +1347,11 @@ pub enum TimeAction {
     },
     /// A section's name tapped: pick it (the wheel's push then grabs it).
     PickSection(Option<usize>),
+    /// Bars put in or taken out of the song (Arrange 3.3), everything
+    /// after moving with them.
+    SongBars(BarsEdit),
+    /// The song's markers edited (Arrange 3.3): only the markers change.
+    SongMarker(MarkerEdit),
     /// Give a placement its own copy of its clip.
     MakeUnique(usize),
     DeletePlacement(usize),
@@ -1391,6 +1432,41 @@ pub enum TempoEdit {
     /// card, 18 Nov): the point in effect at the playhead takes `bpm`, or
     /// before the first point a new one at the playhead's bar.
     AtPlayhead(f64),
+}
+
+/// Bars put in or taken out of the song (Arrange 3.3): one
+/// `mpfree_seq::TimeEdit`, so the blocks, markers, tempo points, morph
+/// moves and rows after it all move, and UNDO takes it back.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BarsEdit {
+    /// `bars` empty bars put in at song tick `at` (a bar line): the room
+    /// holds the tempo and the morph as they were just before it.
+    Insert { at: Tick, bars: u32 },
+    /// The bars from song tick `from` to `to` taken out (bar lines), and
+    /// everything after closed up.
+    Delete { from: Tick, to: Tick },
+    /// The Song view's + Bar, section `k` picked: an empty bar put in just
+    /// before it. Presses in a row on the same section are one UNDO.
+    RoomBefore(usize),
+    /// The Song view's Delete bars, section `k` picked: its bars
+    /// (`Arrangement::section`) taken out.
+    DeleteSection(usize),
+}
+
+/// An edit of the song's markers (Arrange 3.3), each one UNDO takes back.
+/// Only the markers change: to move what plays, move a section.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MarkerEdit {
+    /// A new marker on song tick `at` (a bar line), named with the next
+    /// free letter (`Arrangement::new_marker_name`), picked.
+    Add(Tick),
+    /// Marker `index` given a new name.
+    Rename { index: usize, name: String },
+    /// Marker `index` moved to song tick `at` (a bar line): its section's
+    /// edge moves, nothing else.
+    Move { index: usize, at: Tick },
+    /// Marker `index` taken away: its bars join the section before.
+    Delete(usize),
 }
 
 /// What a touch on the Song view's audio lanes asks for (layout spec 4c).
@@ -1825,6 +1901,39 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         ) => Some(TimeAction::SongTempo(TempoEdit::Pick(
             (st.tempo_pick != Some(*col)).then_some(*col),
         ))),
+        // The ruler: a tap where no name is adds a marker; the picked
+        // section's grip moves its marker alone (Arrange 3.3).
+        (
+            SONG,
+            EventKind::Place {
+                index: NONE,
+                row: RULER_ROW,
+                at,
+            },
+        ) => Some(TimeAction::SongMarker(MarkerEdit::Add(*at))),
+        (
+            SONG,
+            EventKind::Place {
+                index,
+                row: RULER_ROW,
+                at,
+            },
+        ) => Some(TimeAction::SongMarker(MarkerEdit::Move {
+            index: *index,
+            at: *at,
+        })),
+        // With a section picked, the last four buttons are + Bar, Rename
+        // (the app opens the text keyboard: `song_rename`), Remove marker
+        // and Delete bars.
+        (SONG, EventKind::Tab(k @ (2 | 4 | 5))) if section_buttons(st) => {
+            let s = st.section?;
+            Some(match k {
+                2 => TimeAction::SongBars(BarsEdit::RoomBefore(s)),
+                4 => TimeAction::SongMarker(MarkerEdit::Delete(s)),
+                _ => TimeAction::SongBars(BarsEdit::DeleteSection(s)),
+            })
+        }
+        (SONG, EventKind::Tab(3)) if section_buttons(st) => None,
         // With a point picked, the last two buttons are Ramp and Delete.
         (SONG, EventKind::Tab(k @ (4 | 5))) if st.region.is_none() && st.tempo_pick.is_some() => {
             let index = st.tempo_pick?;
@@ -3244,6 +3353,25 @@ pub fn rows_named(first: usize, last: usize) -> String {
     }
 }
 
+/// Whether the Song view's last four buttons are the picked section's
+/// (`song::SECTION_BUTTONS`): a section picked, no audio region or tempo
+/// point.
+pub fn section_buttons(st: &TimeState) -> bool {
+    st.region.is_none()
+        && st.tempo_pick.is_none()
+        && st.section.is_some_and(|k| k < st.markers.len())
+}
+
+/// The marker the Song view's Rename asks to name (button 4 with a
+/// section picked), with its name: the app opens the text keyboard.
+pub fn song_rename(ev: &UiEvent, st: &TimeState) -> Option<(usize, String)> {
+    if ev.widget != SONG || ev.kind != EventKind::Tab(3) || !section_buttons(st) || !st.song_view {
+        return None;
+    }
+    let k = st.section?;
+    Some((k, st.markers.get(k)?.1.clone()))
+}
+
 pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
     let mut word = row.word().to_string();
     word[..1].make_ascii_uppercase();
@@ -3263,9 +3391,17 @@ pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
                 .map_or("section", |m| m.1.as_str());
             return format!("{word} {} · {name}", row.shown());
         }
-        Some(SongChange::Tempo { at }) => {
+        Some(SongChange::Tempo { at } | SongChange::Bars { at, .. }) => {
             let bar = st.transport.meter.bar_ticks().max(1);
             return format!("{word} {} · bar {}", row.shown(), at.div_euclid(bar) + 1);
+        }
+        Some(SongChange::Marker { at }) => {
+            let bar = st.transport.meter.bar_ticks().max(1);
+            let name = st.markers.iter().find(|m| m.0 == at).map_or_else(
+                || format!("bar {}", at.div_euclid(bar) + 1),
+                |m| m.1.clone(),
+            );
+            return format!("{word} {} · {name}", row.shown());
         }
         Some(SongChange::Scenes { .. } | SongChange::List | SongChange::ListToSong { .. })
         | None => {}
@@ -3317,6 +3453,20 @@ fn take_detail(st: &TimeState, row: &TakeRow) -> String {
         Some(SongChange::List) => return "song list".into(),
         Some(SongChange::ListToSong { steps }) => return format!("{steps} steps → song"),
         Some(SongChange::Tempo { .. }) => return "tempo point".into(),
+        Some(SongChange::Bars { len, inserted, .. }) => {
+            let n = if len % bar == 0 {
+                format!("{}", len / bar)
+            } else {
+                format!("{:.1}", len as f64 / bar as f64)
+            };
+            let bars = if n == "1" { "bar" } else { "bars" };
+            return if inserted {
+                format!("{n} {bars} put in")
+            } else {
+                format!("{n} {bars} taken out")
+            };
+        }
+        Some(SongChange::Marker { at }) => return format!("at bar {}", bar_of(at)),
         None => {}
     }
     match row.dropped {
@@ -4849,6 +4999,7 @@ mod tests {
             }),
             // Its longest word.
             direction: Direction::PingPong,
+            step: mpfree_seq::steps::DEFAULT_SIZE,
         };
         values.extend(card_rows(CARD_STEP, card).into_iter().map(|r| r.value));
         values.extend(card_rows(MAX_CLIP_TICKS, card).into_iter().map(|r| r.value));
@@ -4917,6 +5068,7 @@ mod tests {
             rev: 0,
             track_name: "Drums".into(),
             bar: BAR,
+            answer: EditAnswer::default(),
         };
         let g = note_grid(&e, &state());
         assert_eq!(g.touch, [point(0, 90), point(40, 30)]);
@@ -4943,6 +5095,7 @@ mod tests {
             rev: 1,
             track_name: "Drums".into(),
             bar: BAR,
+            answer: EditAnswer::default(),
         }));
         page.update(&mut ui, &st);
         let e = st.edit.clone().unwrap();
