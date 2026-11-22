@@ -23,15 +23,29 @@
 //!   that suggest one change (contract 6).
 //! - [`style`]: styles made of components, three presets (contract 11).
 //! - [`profile`]: five instrument kinds (contract 10).
-//! - [`keep`]: events as the clip notes Keep writes, all or nothing.
+//! - [`keep`]: events as the clip notes Keep writes, all or nothing, and
+//!   Continue's edit (a longer clip and its new notes, one take).
+//!
+//! Phase 0B, the check through real playback:
+//!
+//! - [`bind`]: a clip's [`mpfree_context::Revision`] (a hash of what it
+//!   plays), the [`Binding`] of a preview to one clip at one revision, and
+//!   the project as it plays while a result is heard.
+//! - [`preview`]: the preview's states, from asking to Keep or Cancel,
+//!   with stale results dropped (contract 7).
+//!
+//! `tests/playback.rs` plays results through the real play view and
+//! player and keeps them with the real take undo.
 //!
 //! Nothing here runs on the audio thread. The composer runs as an
 //! idle-priority background job (phase 0C onwards).
 #![forbid(unsafe_code)]
 
+pub mod bind;
 pub mod dice;
 pub mod event;
 pub mod keep;
+pub mod preview;
 pub mod profile;
 pub mod realize;
 pub mod refit;
@@ -39,9 +53,11 @@ pub mod rules;
 pub mod style;
 pub mod timing;
 
+pub use bind::{audition, revision, revision_in, Binding, Stale};
 pub use dice::{Dice, DiceName, Job};
 pub use event::{Event, MotifRef, Motion, NoteDecision, Part, PartId, Role, Source};
-pub use keep::{clip_notes, KeepError};
+pub use keep::{clip_notes, continuation, KeepError};
+pub use preview::{Arrival, Preview, Proposal, Refusal, State};
 pub use profile::{Articulation, InstrumentKind, Profile};
 pub use realize::{decisions_of, realize, Fit, PlainNote};
 pub use refit::{action, effect, misfits, Action, Aspects, Change, Effect, How, Target};
