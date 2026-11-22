@@ -20,7 +20,7 @@ MPFree reads the whole project before anything of the open one changes. If any p
 
 **Not refused** (opens as before, and is said): lines a part doesn't know (a newer build's, skipped by every reader), and things this build can't make, such as a plugin whose file isn't on the stick, an effect it hasn't got or a track pointing at an instrument the list hasn't got. A format 2 project with no list of instruments opens with New's list, said. Lenient parts stay lenient: the Perform set skips a line it can't read, the MIDI setup and the arps' settings say what they left out, and a pads part that doesn't read (what the pads play is how you play, not the song) is said and the pads follow the track.
 
-**Still to come in phase 0:** a project that opened with things left out is saved over only after MPFree says what would be lost; every background job (a file read, a fitted copy, an import) carries the project's generation, so a result for a project no longer open is dropped (today the loops' and audio tracks' read threads already are, by dropping their channels on each open); and "every recording found" waits for the shared streaming layer.
+**Still to come:** a project that opened with things left out is saved over only after MPFree says what would be lost, and "every recording found" waits for the shared streaming layer. Late results are 0.3, below.
 
 **Tests:** `project::tests::a_project_this_build_cant_read_whole_doesnt_open_and_says_why` (each part, the needs line, the missing parts), `the_project_format_and_the_list_are_written_and_a_problem_is_said`, and in the screen `gui::tests::a_project_this_build_cant_read_doesnt_open_and_the_open_one_stays`, which opens a project whose clips are `mpfree-clips 9` (as an `mpfree-clips 2` project is to a build from before it) and one of a newer format, and checks that nothing reaches the engines and the browser still saves to the project that was open.
 
@@ -38,9 +38,20 @@ Now (`rust/mpfree-audiotracks/src/host.rs`, `tend_save`):
 
 A save cancelled while the worker has the room (an open arriving) has the worker's answer dropped when it comes (`cancelled`), as before. `tests/no_alloc.rs` (`a_save_fills_its_room_without_allocating`) checks that filling a room, settled or not, allocates nothing and gives what `save_file` gives.
 
-### Saves committed in order (0.3, planned)
+## Late results never reach the wrong project (0.3, as built)
 
-Every save commits in order: the media (samples, takes, loops) written and synced first, then the project file through the library's temporary file, sync, rename and directory sync, so a cut-off save never leaves a project naming a file that isn't there.
+A job started for one project can finish after another has opened. Where each kind is caught:
+
+- **The screen's reads** (the kits, the loops, the audio tracks): each open replaces the channel the last open's thread answers on (`SamplePage::opening`, `Player::loops_load`, `Player::audio_load`), so an answer for an older open has nowhere to go; New project's factory kits drop a kit read still under way (`SamplePage::reset_kits`).
+- **What the audio loop holds for an open:** the looper's loops waiting to go in (`LoopHost::clear_all` drops them) and the audio tracks' part (`TrackHost::clear` drops it).
+- **The audio tracks' background jobs** (new): `AudioHost::clear` empties the tracks for an open or New, and adds one to the host's generation. A fit's buffer and its stretched take carry the generation they were asked for in, and one for emptied tracks is dropped as it comes and counted (`AudioHost::stale`). Before, a fit under way when a project opened came back after the switch and was swapped into the new project's take with the same id (take ids come back after a clear). Streaming, the whole take asked of the disk for such a fit is dropped as it comes too (`stale_reads`: the disk answers every read, in order; a generation on the disk's own messages is the streaming layer's, agreed with its thread). A sound being brought in goes with the rest.
+- **The looper's prints** check the loop's version before they are used (`Printer`, `Looper::loop_status`). Loops become clips of audio tracks in phase 4, which moves them onto the same generation.
+
+**Tests:** `tests/host.rs` `a_fit_from_before_a_project_opened_never_reaches_the_new_takes` (the clear at every stage of a fit; without the generation the old take lands as the new project's take 1) and `tests/host_stream.rs` `a_fit_read_from_before_a_project_opened_is_dropped`.
+
+## Saves committed in order (0.3: already so, checked)
+
+The library already commits a project save in order (`Library::save_project_with`, `rust/mpfree-library/src/project.rs`): the new sounds (including an audio track's take files, copied from its work folder) and the new parts are written beside the project and synced together; then the sounds are renamed into `samples/` and the folder synced; then the old parts go into `versions/`, the new parts into place, the folder synced, and last `project.txt` through a `.part` file, synced, renamed and the folder synced. A save cut off at any point opens as the save before or the new one, never a project naming a file that isn't there (`Library::recover`). The audio tracks hand their part over only once every take has settled (0.2), so the take files a save copies are whole.
 
 ## Tests under pressure (0.4, planned)
 

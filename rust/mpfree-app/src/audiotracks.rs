@@ -347,7 +347,9 @@ impl TrackHost {
     /// records, then put the waiting part in.
     fn tend_open(&mut self) {
         if self.clearing {
-            if !self.host.tracks.clear() {
+            // The host's clear: a fit or read still coming for the old
+            // takes is dropped, never let near the project's.
+            if !self.host.clear() {
                 return;
             }
             self.clearing = false;

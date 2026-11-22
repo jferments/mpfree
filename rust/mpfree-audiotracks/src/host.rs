@@ -129,14 +129,19 @@ enum ToWorker {
         takes: usize,
         audio: bool,
     },
-    /// A zeroed buffer of this many samples (a take to fit).
-    Buffer(usize),
+    /// A zeroed buffer of this many samples (a take to fit), for the
+    /// tracks of generation `gen`.
+    Buffer {
+        n: usize,
+        gen: u32,
+    },
     Stretch {
         take: TakeInfo,
         audio: Vec<f32>,
         ratio: f64,
         bpm: f64,
         id: u16,
+        gen: u32,
     },
     /// Room for a waveform of this many columns.
     Wave(usize),
@@ -148,8 +153,14 @@ enum ToWorker {
 enum FromWorker {
     Room(Saved),
     Sized(Saved),
-    Buffer(Vec<f32>),
-    Stretched(Option<(crate::save::TakeFile, Command)>),
+    Buffer {
+        audio: Vec<f32>,
+        gen: u32,
+    },
+    Stretched {
+        out: Option<(crate::save::TakeFile, Command)>,
+        gen: u32,
+    },
     Wave(Vec<(f32, f32)>),
 }
 
@@ -232,6 +243,18 @@ pub struct AudioHost {
     import_cuts: Vec<u64>,
     /// Sounds brought in and placed.
     pub imports: u64,
+    /// Which tracks a background job is for: one more each time they are
+    /// emptied ([`AudioHost::clear`], a project opening or New). A fit's
+    /// buffer or stretched take carries the generation it was asked for
+    /// in, and one for tracks since emptied is dropped.
+    generation: u32,
+    /// Streaming: whole takes asked of the disk for a fit before the
+    /// tracks were emptied, whose answers are dropped as they come (the
+    /// disk answers each, in order).
+    stale_reads: u32,
+    /// Background results dropped because the tracks were emptied after
+    /// they were asked for.
+    pub stale: u64,
 }
 
 /// Why [`AudioHost::import`] could not take a sound.
@@ -275,13 +298,17 @@ impl AudioHost {
                             }
                             FromWorker::Sized(saved)
                         }
-                        ToWorker::Buffer(n) => FromWorker::Buffer(vec![0.0; n]),
+                        ToWorker::Buffer { n, gen } => FromWorker::Buffer {
+                            audio: vec![0.0; n],
+                            gen,
+                        },
                         ToWorker::Stretch {
                             take,
                             audio,
                             ratio,
                             bpm,
                             id,
+                            gen,
                         } => {
                             let out = StretchJob::new(take, audio, rate, ratio, bpm, id)
                                 .ok()
@@ -289,7 +316,7 @@ impl AudioHost {
                                     while !j.run(1 << 15).finished {}
                                     j.finish()
                                 });
-                            FromWorker::Stretched(out)
+                            FromWorker::Stretched { out, gen }
                         }
                         ToWorker::Wave(n) => FromWorker::Wave(Vec::with_capacity(n)),
                         ToWorker::Drop(v) => {
@@ -328,6 +355,9 @@ impl AudioHost {
             importing: None,
             import_cuts: Vec::new(),
             imports: 0,
+            generation: 0,
+            stale_reads: 0,
+            stale: 0,
         }
     }
 
@@ -612,7 +642,10 @@ impl AudioHost {
             self.fitting = Some(Fitting::Fetching { take, ratio, bpm });
             return true;
         }
-        self.send(ToWorker::Buffer(take.frames * take.channels));
+        self.send(ToWorker::Buffer {
+            n: take.frames * take.channels,
+            gen: self.generation,
+        });
         self.fitting = Some(Fitting::Sizing { take, ratio, bpm });
         true
     }
@@ -669,6 +702,32 @@ impl AudioHost {
     /// waiting), to be dropped on the worker rather than here.
     pub fn drop_saved(&self, s: Saved) {
         self.send(ToWorker::DropSaved(s));
+    }
+
+    /// Every track as new and every take forgotten
+    /// ([`AudioTracks::clear`]: refused, false, while a track records, a
+    /// take copies in or audio is still going to the disk), for New
+    /// project or a project opening. The background jobs asked for until
+    /// now are the old project's: a fit under way stops, and whatever the
+    /// worker or the disk still sends for it is dropped as it comes
+    /// ([`AudioHost::stale`]), so it can never reach the new project's
+    /// takes (a take id comes back after a clear). A sound still being
+    /// brought in goes with the rest. Does not allocate.
+    pub fn clear(&mut self) -> bool {
+        if !self.tracks.clear() {
+            return false;
+        }
+        self.generation = self.generation.wrapping_add(1);
+        match self.fitting.take() {
+            Some(Fitting::Reading { audio, .. }) => self.send(ToWorker::Drop(audio)),
+            Some(Fitting::Fetching { .. }) => self.stale_reads += 1,
+            // Sizing and Stretching: the worker's answer carries the old
+            // generation; Loading: its take went with the rest.
+            Some(Fitting::Sizing { .. } | Fitting::Stretching { .. } | Fitting::Loading { .. })
+            | None => {}
+        }
+        self.importing = None;
+        true
     }
 
     /// Stop the waveform being read and drop one finished but not taken
@@ -728,7 +787,19 @@ impl AudioHost {
                         frame: 0,
                     });
                 }
-                FromWorker::Buffer(audio) => match self.fitting.take() {
+                // For tracks emptied since it was asked for (a project
+                // opened): dropped, never let near the new project's takes.
+                FromWorker::Buffer { audio, gen } if gen != self.generation => {
+                    self.stale += 1;
+                    self.send(ToWorker::Drop(audio));
+                }
+                FromWorker::Stretched { out, gen } if gen != self.generation => {
+                    self.stale += 1;
+                    if let Some((file, _)) = out {
+                        self.send(ToWorker::Drop(file.audio));
+                    }
+                }
+                FromWorker::Buffer { audio, .. } => match self.fitting.take() {
                     Some(Fitting::Sizing { take, ratio, bpm }) => {
                         self.fitting = Some(Fitting::Reading {
                             take,
@@ -762,7 +833,7 @@ impl AudioHost {
                         }));
                     }
                 },
-                FromWorker::Stretched(out) => {
+                FromWorker::Stretched { out, .. } => {
                     self.fitting = None;
                     let Some((mut file, swap)) = out else {
                         self.fits_failed += 1;
@@ -994,6 +1065,15 @@ impl AudioHost {
                 None => break,
             }
         }
+        if let Some((_, a)) = audio.as_mut().filter(|_| self.stale_reads > 0) {
+            // A fit's read asked for before the tracks were emptied.
+            self.stale_reads -= 1;
+            self.stale += 1;
+            if let Some(a) = a.take() {
+                self.send(ToWorker::Drop(a));
+            }
+            audio = None;
+        }
         if let Some((take, a)) = audio {
             match (self.fitting.take(), a) {
                 (
@@ -1011,6 +1091,7 @@ impl AudioHost {
                             ratio,
                             bpm,
                             id,
+                            gen: self.generation,
                         });
                         self.fitting = Some(Fitting::Stretching { take: t });
                     }
@@ -1224,6 +1305,7 @@ impl AudioHost {
                                         ratio,
                                         bpm,
                                         id,
+                                        gen: self.generation,
                                     });
                                     self.fitting = Some(Fitting::Stretching { take });
                                 }
