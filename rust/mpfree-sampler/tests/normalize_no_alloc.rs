@@ -7,8 +7,8 @@
 //! ([`Region::peak`]).
 //!
 //! The 25-minute timing (`--ignored`, in release) also writes down what
-//! Put on audio track takes on the same take, so step 7, which moves that
-//! work off the screen, can show it gone.
+//! Put on audio track's copy takes on the same take: the work step 7e
+//! moved off the screen, onto the job service.
 //!
 //! This file installs mpfree-prof's counting allocator (per thread).
 
@@ -103,8 +103,8 @@ fn best_of_5<T>(mut f: impl FnMut() -> T) -> (Duration, T) {
 /// normalize_no_alloc -- --ignored --nocapture`. The plan's test: on a
 /// 25-minute take Normalize copies nothing and takes under 16 ms in
 /// Stereo, Left and Right (Mono sum is timed too). Prints the times, and
-/// Put on audio track's, which still copies the take as floats (and
-/// converts it when its rate isn't the app's) on the screen thread.
+/// Put on audio track's copy of the take as floats (and its conversion when
+/// its rate isn't the app's), made on the job service since step 7e.
 #[test]
 #[ignore]
 fn print_normalize_and_put_on_audio_track_on_a_25_minute_take() {
@@ -136,8 +136,8 @@ fn print_normalize_and_put_on_audio_track_on_a_25_minute_take() {
             assert!(quick < Duration::from_millis(16), "{pick:?}: {quick:?}");
         }
     }
-    // Put on audio track, as it is now: the take as floats, and converted
-    // when the app runs at another rate.
+    // Put on audio track's work (on the job service since step 7e): the
+    // take as floats, and converted when the app runs at another rate.
     let ch = 2;
     let (copy, audio) = best_of_5(|| s.data().f32s(0..n * ch).unwrap().into_owned());
     println!(

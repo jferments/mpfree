@@ -3013,23 +3013,31 @@ fn loop_sets_tempo(
     take: Option<bool>,
     exporting: bool,
 ) -> (LoopStart, Option<f64>) {
-    let Some((n, bars, bpm, at)) = looper.take_tempo() else {
+    let Some((n, r, at)) = looper.take_tempo() else {
         return (None, None);
     };
-    match start_song_on_note(time, at, Some(bpm), take, exporting) {
-        Ok(more) => (
-            Some((
-                format!(
-                    "looper: Loop {} is {} at {bpm:.2} BPM: the song starts at that tempo{}",
-                    n + 1,
-                    looping::bars_words_n(bars),
-                    more.map(|m| format!("; {m}")).unwrap_or_default()
-                ),
-                false,
-            )),
-            Some(bpm),
+    match start_song_on_note(time, at, Some(r.bpm), take, exporting) {
+        Ok(more) => {
+            // A close call, or a Length it couldn't keep: on the screen too.
+            let note = looping::reading_note(&r);
+            (
+                Some((
+                    format!(
+                        "looper: Loop {} is {}: the song starts at that tempo{}{}",
+                        n + 1,
+                        looping::reading_words(&r),
+                        more.map(|m| format!("; {m}")).unwrap_or_default(),
+                        note.as_ref().map(|w| format!(" ({w})")).unwrap_or_default()
+                    ),
+                    note.is_some(),
+                )),
+                Some(r.bpm),
+            )
+        }
+        Err(why) => (
+            Some((looper.tempo_refused(n, r.bars, r.bpm, &why), true)),
+            None,
         ),
-        Err(why) => (Some((looper.tempo_refused(n, bars, bpm, &why), true)), None),
     }
 }
 
@@ -6404,9 +6412,10 @@ fn time_action(
     // the project's tempo stays; otherwise it is the project's.
     let a = match a {
         TimeAction::Transport(Command::SetTempo(bpm)) if time.song_tempo_plays() => {
+            app.tempo_by_hand = true;
             TimeAction::SongTempo(TempoEdit::AtPlayhead(bpm))
         }
-        TimeAction::Transport(Command::SetTempo(bpm)) => return app.set_tempo(bpm),
+        TimeAction::Transport(Command::SetTempo(bpm)) => return app.set_tempo_by_hand(bpm),
         // A track picked while REC's arm is pinned is selected alone: the
         // Sequencer edits it and the pads follow it, and REC stays where
         // it was pinned (refactor C1). Only a tap on Arm or a row of REC's
@@ -8094,6 +8103,8 @@ fn player_session(
                     if let Some(bpm) = o.tempo {
                         fx.extend(app.set_tempo(bpm));
                     }
+                    // The project's tempo is left from before, not set now.
+                    app.tempo_by_hand = false;
                     if let Some(mut t) = o.time.take() {
                         // The metronome is the system's: it stays as it is.
                         (t.metronome, t.click_gain) = (time.metronome, time.click_gain);
@@ -8762,7 +8773,7 @@ fn player_session(
                             // Without set_tempo's log line: a knob would
                             // fill the log.
                             fx.extend(
-                                app.set_tempo(bpm)
+                                app.set_tempo_by_hand(bpm)
                                     .into_iter()
                                     .filter(|e| !matches!(e, app::Effect::Note(_))),
                             );
@@ -9776,6 +9787,8 @@ fn player_session(
         // as it is.
         if let Some(bpm) = loop_tempo.take() {
             fx.extend(app.set_tempo(bpm));
+            // The loop's, not set by hand.
+            app.tempo_by_hand = false;
         }
         // The time engine's editing side on its own thread
         // (--time-thread): what its answers say, as each caller asked,
@@ -11240,6 +11253,7 @@ fn player_session(
             &time,
             export.running(),
         ));
+        looper.set_tempo_meant(app.tempo_by_hand);
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);
         // A loop that heard the line input with the song stopped starts it.
         let take = app.rec.ready.map(|take| take == rec_arm::Take::Add);
@@ -12581,6 +12595,8 @@ fn main() {
         Path::new(REPORT_DIR).join("report.txt"),
         Path::new(REPORT_DIR).join(crash::RUNNING),
     );
+    // The sampler's job service, before anything asks it for work.
+    mpfree_sampler::jobs::configure(sample_page::jobs_config());
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = parse_args(&args).and_then(read_script).and_then(|o| {
         // Both draw every sample screen, whose one frame needs more stack

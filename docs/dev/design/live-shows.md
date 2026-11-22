@@ -10,7 +10,7 @@ The rules it keeps: one track list per project; instruments make the sound, trac
 |---|---|---|
 | A1 | All-or-nothing opens: the parts gate is the audio tracks rethink's phase 0.1 ([Project safety](project-safety.md)); A1 adds a refusal when sounds, takes or loops would be left out, and Open what reads | next |
 | A2 | The engines an open replaced always go back to the screen thread, never freed on the audio thread | built ([Project safety](project-safety.md#the-engines-an-open-replaced-go-back-live-shows-a2-as-built)) |
-| A3 | Lasting project ids (Save As gives a new one, a rename keeps it, twins are noticed) and a manifest per project | planned |
+| A3 | Lasting project ids (Save As gives a new one, a rename keeps it, twins are noticed) and a manifest per project | built ([The browser and projects](browser.md#projects)) |
 | A4 | Real songs measured on the MPC (read-only, on the owner's go) | planned |
 | K1 | Keys play keygroups by note on the sampler's single note path, with each kit's Keys play: Pads, Keygroups or Both | planned |
 | B1, B2 | Sets, the Set editor and the Show view with cold changes; the set check as a preflight, Prepare show media and Soundcheck | planned |
