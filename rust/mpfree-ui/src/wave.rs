@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 use crate::color::Color;
 use crate::geom::Rect;
+use crate::roles::Paint;
 use crate::text::{Align, FontId};
 use crate::theme::Theme;
 use crate::ui::{EventKind, PaintCx, Target, Touch, Widget};
@@ -199,8 +200,9 @@ pub struct Marker {
     /// tool's marks, the tool's bright and the rest faint lines with no
     /// tab, [`Marker::line_only`]).
     pub faint: bool,
-    /// Its colour, in place of its kind's.
-    pub color: Option<Color>,
+    /// Its colour, in place of its kind's (resolved on the theme it is
+    /// drawn with).
+    pub color: Option<Paint>,
     /// Where its tab sits: a pair hugging a span from outside (the grain
     /// window's) keep clear of each other however close they come.
     pub side: TabSide,
@@ -231,8 +233,8 @@ impl Marker {
     }
 
     /// The same marker in colour `c`.
-    pub fn colored(mut self, c: Color) -> Marker {
-        self.color = Some(c);
+    pub fn colored(mut self, c: impl Into<Paint>) -> Marker {
+        self.color = Some(c.into());
         self
     }
 
@@ -291,7 +293,7 @@ pub struct GrainSpan {
     pub len: u64,
     pub spray: u64,
     pub within: (u64, u64),
-    pub color: Color,
+    pub color: Paint,
 }
 
 /// Bar lines: the frame of the first downbeat, frames per beat, beats per
@@ -314,7 +316,7 @@ pub struct LaneCell {
     pub start: u64,
     pub end: u64,
     pub text: String,
-    pub color: Color,
+    pub color: Paint,
     pub lit: bool,
     pub picked: bool,
 }
@@ -716,7 +718,7 @@ impl Widget for Waveform {
                 if xb > xa {
                     cx.canvas.fill_rect(
                         Rect::new(xa, wave.y, xb - xa, wave.h),
-                        w.color.with_alpha(alpha),
+                        w.color.on(&t).with_alpha(alpha),
                     );
                 }
             };
@@ -881,7 +883,7 @@ impl Widget for Waveform {
         // The grains playing: a mark round the wave's middle for each, as
         // tall and as bright as its window is open.
         if !self.grains.is_empty() {
-            let c = self.window.map_or(t.warn, |w| w.color);
+            let c = self.window.map_or(t.warn, |w| w.color.on(&t));
             let mid = wave.y + wave.h / 2;
             for &(f, level) in &self.grains {
                 let x = self.x_in(wave, f as f64).round() as i32;
@@ -903,7 +905,9 @@ impl Widget for Waveform {
         let mut tabs = Vec::with_capacity(self.markers.len());
         for i in 0..self.markers.len() {
             let m = &self.markers[i];
-            let c = m.color.unwrap_or_else(|| marker_color(&t, m.kind));
+            let c = m
+                .color
+                .map_or_else(|| marker_color(&t, m.kind), |p| p.on(&t));
             let c = if m.faint { c.mix(t.surface, 0.62) } else { c };
             let x = self.x_in(wave, m.frame as f64).round() as i32;
             if x >= wave.x && x <= wave.right() {
@@ -912,8 +916,15 @@ impl Widget for Waveform {
             let w = (cx.measure(FontId::Bold, 13.0, &m.label) + 18).max(24);
             let tab = self.tab_rect(r, i, w);
             if let Some(tab) = tab {
-                cx.canvas.fill_round_rect(tab, 6, c);
-                cx.text(FontId::Bold, 13.0, tab, Align::Center, t.bg, &m.label);
+                cx.canvas.fill_round_rect(tab, t.round(6), c);
+                cx.text(
+                    FontId::Bold,
+                    13.0,
+                    tab,
+                    Align::Center,
+                    t.ink_on(c),
+                    &m.label,
+                );
             }
             tabs.push(tab);
         }
@@ -929,13 +940,16 @@ impl Widget for Waveform {
                     continue;
                 }
                 let cell = Rect::new(xa + 1, lane.y, xb - xa - 2, lane.h);
-                let fill = c.color.with_alpha(if c.lit { 84 } else { 46 });
-                cx.canvas.fill_round_rect(cell, 6, fill);
+                let colour = c.color.on(&t);
+                let fill = colour.with_alpha(if c.lit { 84 } else { 46 });
+                cx.canvas.fill_round_rect(cell, t.round(6), fill);
                 if c.picked {
-                    cx.canvas.stroke_round_rect(cell, 6, 1, c.color);
+                    cx.canvas.stroke_round_rect(cell, t.round(6), 1, colour);
                 }
                 if cx.measure(FontId::Bold, 13.0, &c.text) + 6 <= cell.w {
-                    cx.text(FontId::Bold, 13.0, cell, Align::Center, c.color, &c.text);
+                    // In its colour, kept readable over its own tint.
+                    let ink = t.readable(colour, fill);
+                    cx.text(FontId::Bold, 13.0, cell, Align::Center, ink, &c.text);
                 }
             }
         }
@@ -1273,12 +1287,14 @@ impl Widget for WaveOverview {
             (xb.min(inner.right()) - xa.max(inner.x)).max(4) + 4,
             r.h - 6,
         );
-        cx.canvas.fill_round_rect(b, 6, t.accent.with_alpha(40));
-        cx.canvas.stroke_round_rect(b, 6, 2, t.accent);
+        cx.canvas
+            .fill_round_rect(b, t.round(6), t.accent.with_alpha(40));
+        cx.canvas.stroke_round_rect(b, t.round(6), 2, t.accent);
         if !self.label.is_empty() {
             let w = cx.measure(FontId::Sans, 11.0, &self.label) + 12;
             let tag = Rect::new(r.right() - w - 4, r.y + 4, w, 16);
-            cx.canvas.fill_round_rect(tag, 6, t.surface.with_alpha(220));
+            cx.canvas
+                .fill_round_rect(tag, t.round(6), t.surface.with_alpha(220));
             cx.text(
                 FontId::Sans,
                 11.0,

@@ -132,7 +132,7 @@ impl ChainPage {
             Some(mut st) if visual::has_visuals(st.info.id) => {
                 st.color = t.accent;
                 let scratch = Scratch::new(&st);
-                visual::strip(&st, "", None, &scratch, t).cards
+                visual::strip(&st, "", None, &scratch).cards
             }
             _ => Vec::new(),
         };

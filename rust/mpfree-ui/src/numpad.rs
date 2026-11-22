@@ -273,8 +273,8 @@ impl Widget for NumPad {
             &ask.range(),
         );
         let d = NumPad::display(r);
-        cx.canvas.fill_round_rect(d, 12, t.raised);
-        cx.canvas.stroke_round_rect(d, 12, 2, t.accent);
+        cx.canvas.fill_round_rect(d, t.round(12), t.raised);
+        cx.canvas.stroke_round_rect(d, t.round(12), 2, t.accent);
         let unit = if ask.unit.is_empty() {
             String::new()
         } else {
@@ -316,7 +316,7 @@ impl Widget for NumPad {
             let usable = self.usable(k);
             let enter = k == KEY_ENTER;
             cx.canvas
-                .fill_round_rect(kr, 12, if enter { t.accent } else { t.raised });
+                .fill_round_rect(kr, t.round(12), if enter { t.accent } else { t.raised });
             let ink = if enter {
                 t.on_accent
             } else {

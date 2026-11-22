@@ -1,0 +1,19 @@
+[package]
+name = "mpfree-stream"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The shared stream layer: long sounds played from disk through a RAM cache the sound thread owns, read in their own format, every request tagged with who asked; no allocation, locking or file access on the sound thread"
+
+[lib]
+name = "mpfree_stream"
+path = "src/lib.rs"
+
+[dependencies]
+
+[features]
+# Marked sounds and the frame checker, for tests built on the layer.
+testkit = []
+
+[dev-dependencies]
+mpfree-stream = { path = ".", features = ["testkit"] }

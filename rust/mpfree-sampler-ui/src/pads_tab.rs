@@ -782,7 +782,7 @@ impl PadsTab {
         let here = pad_text(self.bank, st.pad);
         let picked = st.picked();
         if let Some(bar) = ui.get_mut::<PadBar>(BAR) {
-            bar.color = pad_color(st.pad);
+            bar.color = mpfree_ui::Paint::Content(pad_color(st.pad));
             bar.button = Some(format!("Browse for {here}"));
             bar.kit = (!self.kit_name.is_empty()).then(|| self.kit_name.clone());
             bar.title = match picked {
@@ -870,7 +870,12 @@ impl PadsTab {
         let th = ui.theme.clone();
         // Q1 to Q4's colours, as the Q-Link cards have them (Jay's pick of
         // the mockups, 20 Nov 2026).
-        let tints = [th.accent, th.good, th.warn, mpfree_ui::Color::rgb(0xC77DFF)];
+        let tints = [
+            th.accent,
+            th.good,
+            th.warn,
+            th.content(crate::widgets::PAD_COLORS[4]),
+        ];
         let (controls, panel) = pad_panel(kind, picked, st, self.bank, clip.as_deref(), tints);
         if let Some(list) = ui.get_mut::<SettingList>(LIST) {
             list.controls = controls;

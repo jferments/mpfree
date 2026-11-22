@@ -29,7 +29,7 @@ use mpfree_ui::canvas::Image;
 use mpfree_ui::qlink::QLinkCard;
 use mpfree_ui::text::{Align, FontId};
 use mpfree_ui::ui::{EventKind, PaintCx, Target, Touch, Widget};
-use mpfree_ui::{Color, Rect, SoftCanvas};
+use mpfree_ui::{Color, Rect, SoftCanvas, Theme};
 
 /// The skin itself, 1280 x 628.
 pub const SKIN: &str = "mpc-skin";
@@ -171,6 +171,23 @@ impl SkinWidget {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Colours MPFree's pop-ups over the skin in theme `t` and draws again.
+    /// A colour the theme gave them that had to be moved to read is logged
+    /// (and counted on the Debug page).
+    pub fn set_theme(&mut self, t: &Theme) {
+        let rescues = self.view.set_theme(t);
+        if !rescues.is_empty() {
+            let what: Vec<&str> = rescues.iter().map(|r| r.what).collect();
+            println!(
+                "screen: theme {}: {} colour(s) on the skin's pop-ups moved so they read: {}",
+                t.name,
+                rescues.len(),
+                what.join(", ")
+            );
+        }
+        self.render();
     }
 
     /// Edits from the skin's own controls, the wheel or a Q-Link. The

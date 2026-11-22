@@ -79,6 +79,10 @@ pub struct Started {
     /// Where the new clip counts its passes from: `at`, or for a legato
     /// clip earlier, where the clip it took over started its pass.
     pub from: Tick,
+    /// The revision of the cue it carried out ([`Includes::cues`]; 0: not
+    /// said): a cue the host makes after it is a new decision, even one
+    /// for the same clip.
+    pub rev: u32,
 }
 
 /// A mute or solo change waiting on a track for its line (sequencer S4's
@@ -1637,6 +1641,46 @@ struct Switch {
     at: Tick,
     /// The track's mute from then on, when the cue switches it.
     mute: Option<bool>,
+    /// The revision of the cue it carried out ([`Includes::cues`]; 0: not
+    /// said).
+    rev: u32,
+    /// A newer cue took its place in the view before the view showed it,
+    /// so its clip is not there; counted once a span played so
+    /// ([`Switches::lost`]), not when the newer cue starts at once.
+    lost: bool,
+    counted: bool,
+}
+
+/// Where a cue, a mute cue or a scene's program change lands in a span:
+/// on its line `line`, or past it at `at`, the span's first tick, for a
+/// late one (its line played before its view came; Arrange 2.5). A clip
+/// it starts plays in phase with `line` either way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Due {
+    pub at: Tick,
+    pub line: Tick,
+}
+
+impl Due {
+    /// Its line played before it could land.
+    pub fn late(&self) -> bool {
+        self.at != self.line
+    }
+}
+
+/// The spans the switches remember, for late cues: 32, at least 8
+/// periods (a span a period, more across a loop jump or a tempo change),
+/// against a view held back 1 to 4.
+const PLAYED: usize = 32;
+
+/// A span the playhead played: its first frame and its length, its ticks,
+/// and its bar's ticks. 32 bytes, so the ring copies quickly.
+#[derive(Clone, Copy, Debug, Default)]
+struct Played {
+    frame: u64,
+    ticks: (Tick, Tick),
+    len: u32,
+    bar: u32,
 }
 
 /// The cues carried out on each track until the view shows them. The
@@ -1652,6 +1696,25 @@ pub(crate) struct Switches {
     /// One past the last track with a switch in `on` (0: none), so a period
     /// looks at those tracks only, not all 128.
     hi: usize,
+    /// One past the last track with anything in `made`, `done` or
+    /// `stale_seen`, so a copy takes those tracks only.
+    used: usize,
+    /// The newest cue revision carried out on each track
+    /// ([`Includes::cues`]), and the last older one a view showed (counted
+    /// once).
+    done: [u32; MAX_TRACKS],
+    stale_seen: [u32; MAX_TRACKS],
+    /// The last [`PLAYED`] spans played since the music started, a ring:
+    /// `n_played` counts them all.
+    played: [Played; PLAYED],
+    n_played: usize,
+    /// Cues, mute cues and scene program changes that landed late, in
+    /// phase; cues dropped because a newer one had been carried out; and
+    /// switches whose clip a newer cue took out of the view before it
+    /// showed them (the track is silent until it does).
+    pub late: u64,
+    pub stale: u64,
+    pub lost: u64,
 }
 
 impl Switches {
@@ -1660,7 +1723,115 @@ impl Switches {
             on: [None; MAX_TRACKS],
             made: [0; MAX_TRACKS],
             hi: 0,
+            used: 0,
+            done: [0; MAX_TRACKS],
+            stale_seen: [0; MAX_TRACKS],
+            played: [Played::default(); PLAYED],
+            n_played: 0,
+            late: 0,
+            stale: 0,
+            lost: 0,
         }
+    }
+
+    /// Copy `src` into these (the look-ahead's player does, every period):
+    /// only the tracks it uses, so the copy stays small.
+    pub fn copy_from(&mut self, src: &Switches) {
+        // Past `hi` every track is None in both.
+        let hi = self.hi.max(src.hi);
+        self.on[..hi].copy_from_slice(&src.on[..hi]);
+        let used = self.used.max(src.used);
+        self.made[..used].copy_from_slice(&src.made[..used]);
+        self.done[..used].copy_from_slice(&src.done[..used]);
+        self.stale_seen[..used].copy_from_slice(&src.stale_seen[..used]);
+        self.played = src.played;
+        self.hi = src.hi;
+        self.used = src.used;
+        self.n_played = src.n_played;
+        self.late = src.late;
+        self.stale = src.stale;
+        self.lost = src.lost;
+    }
+
+    /// The revision of the view's cue on `track` (0: not said).
+    fn rev(view: &PlayView, track: usize) -> u32 {
+        view.includes
+            .as_ref()
+            .and_then(|i| i.cues.get(track).copied())
+            .unwrap_or(0)
+    }
+
+    /// Remember a span the playhead played, its `ticks` (`span.ticks()`,
+    /// which the caller has), after its cues were looked at. The player and
+    /// the recorder call it for every span, in order.
+    pub fn played(&mut self, span: &mpfree_transport::Span, ticks: &Range<Tick>) {
+        if !matches!(
+            span.state,
+            mpfree_transport::State::Playing | mpfree_transport::State::Recording
+        ) {
+            return;
+        }
+        if ticks.is_empty() {
+            return;
+        }
+        for sw in self.on[..self.hi].iter_mut().flatten() {
+            if sw.lost && !sw.counted {
+                sw.counted = true;
+                self.lost += 1;
+            }
+        }
+        self.played[self.n_played % PLAYED] = Played {
+            frame: span.frame,
+            ticks: (ticks.start, ticks.end),
+            len: span.len,
+            bar: u32::try_from(span.meter.bar_ticks()).unwrap_or(u32::MAX),
+        };
+        self.n_played += 1;
+    }
+
+    /// The frame the host had reached when it decided the cue on `track`
+    /// ([`Includes::decided`]; 0: not said).
+    pub fn decided(view: &PlayView, track: usize) -> u64 {
+        view.includes
+            .as_ref()
+            .and_then(|i| i.decided.get(track).copied())
+            .unwrap_or(0)
+    }
+
+    /// The frame the host had reached when it decided the mute queue
+    /// ([`Includes::mutes_decided`]; 0: not said).
+    pub fn mutes_decided(view: &PlayView) -> u64 {
+        view.includes.as_ref().map_or(0, |i| i.mutes_decided)
+    }
+
+    /// The first line of `line` the playhead played since frame `from`,
+    /// when a cue was decided, before the span now playing: a cue for it
+    /// is late. None for `from` 0 (not said).
+    pub fn crossed(&self, from: u64, line: LaunchGrid) -> Option<Tick> {
+        if from == 0 {
+            return None;
+        }
+        let n = self.n_played.min(PLAYED);
+        for k in self.n_played - n..self.n_played {
+            let p = self.played[k % PLAYED];
+            let (f0, f1) = (p.frame, p.frame + u64::from(p.len));
+            let (t0, t1) = p.ticks;
+            if f1 <= from {
+                continue;
+            }
+            // The first tick played at or after `from`.
+            let t = if f0 >= from {
+                t0
+            } else {
+                let (df, dt) = ((f1 - f0) as i128, i128::from(t1 - t0));
+                t0 + (((from - f0) as i128 * dt + df - 1) / df) as Tick
+            };
+            let at = line.next(t, Tick::from(p.bar));
+            if at < t1 {
+                return Some(at);
+            }
+        }
+        None
     }
 
     /// Forget the switches the view has caught up with. A view that says
@@ -1668,23 +1839,38 @@ impl Switches {
     /// the track as were made; any other once its cue is gone (the control
     /// thread applied it, or took it back).
     pub fn follow(&mut self, view: &PlayView) {
+        if let Some(inc) = &view.includes {
+            // Only a track with a cue carried out can show an older one.
+            for (i, t) in view.tracks.iter().enumerate().take(self.used) {
+                let rev = inc.cues.get(i).copied().unwrap_or(0);
+                if t.cue.is_some() && rev != 0 && rev < self.done[i] && self.stale_seen[i] != rev {
+                    self.stale_seen[i] = rev;
+                    self.stale += 1;
+                    self.used = self.used.max(i + 1);
+                }
+            }
+        }
         let mut hi = 0;
         for (i, s) in self.on[..self.hi].iter_mut().enumerate() {
-            let Some(sw) = *s else {
+            let Some(mut sw) = *s else {
                 continue;
             };
-            let shown = match view.includes {
+            let cued = view.tracks.get(i).and_then(|t| t.cue.as_ref());
+            let shown = match &view.includes {
                 Some(inc) => inc.switches[i] >= self.made[i],
-                None => view
-                    .tracks
-                    .get(i)
-                    .and_then(|t| t.cue.as_ref())
-                    .is_none_or(|c| c.slot != sw.slot),
+                None => cued.is_none_or(|c| c.slot != sw.slot),
             };
             if shown {
                 *s = None;
-            } else {
-                hi = i + 1;
+                continue;
+            }
+            hi = i + 1;
+            // A newer cue in the view before it shows the switch: the
+            // switch's clip is gone from it.
+            let rev = Switches::rev(view, i);
+            if cued.is_some() && rev != 0 && rev != sw.rev && !sw.lost {
+                sw.lost = true;
+                *s = Some(sw);
             }
         }
         self.hi = hi;
@@ -1692,46 +1878,76 @@ impl Switches {
 
     /// Where the cue on `track` starts in a span playing `ticks`, if it
     /// does: the first line of its launch quantise among them (with bars
-    /// of `bar` ticks), the span's first tick for at once.
+    /// of `bar` ticks), the span's first tick for at once; or, late, the
+    /// span's first tick, when its line played since it was decided
+    /// ([`Switches::crossed`]). A view that says its cues' revisions
+    /// ([`Includes::cues`]) never has a cue carried out twice, and a newer
+    /// cue takes the place of a switch it does not show yet; one that
+    /// does not, waits for the view to show the switch.
     pub fn due(
         &self,
         view: &PlayView,
         track: usize,
         ticks: &Range<Tick>,
         bar: Tick,
-    ) -> Option<Tick> {
-        if self.on.get(track).is_none_or(Option::is_some) {
+    ) -> Option<Due> {
+        let cue = view.tracks.get(track)?.cue.as_ref()?;
+        let rev = Switches::rev(view, track);
+        let carried = match rev {
+            0 => self.on.get(track).is_none_or(Option::is_some),
+            r => self.done.get(track).is_none_or(|&d| r <= d),
+        };
+        if carried {
             return None;
         }
-        let cue = view.tracks.get(track)?.cue.as_ref()?;
+        if let Some(line) = self.crossed(Switches::decided(view, track), cue.line) {
+            return Some(Due {
+                at: ticks.start,
+                line,
+            });
+        }
         let at = cue.line.next(ticks.start, bar);
-        (at < ticks.end).then_some(at)
+        (at < ticks.end).then_some(Due { at, line: at })
     }
 
-    /// Carry out the cue on `track` at song tick `at`. A legato clip
+    /// Carry out the cue on `track` where `due` says. A legato clip
     /// launched over a playing one starts as if it had started when that
-    /// one's pass did, so it plays on from the same place in the bar.
-    pub fn start(&mut self, view: &PlayView, track: usize, at: Tick) -> Option<Started> {
+    /// one's pass did, so it plays on from the same place in the bar. A
+    /// late cue's clip plays in phase with its line, as if it had started
+    /// there, from the tick it starts on.
+    pub fn start(&mut self, view: &PlayView, track: usize, due: Due) -> Option<Started> {
         let cue = view.tracks.get(track)?.cue.as_ref()?;
+        let Due { at, line } = due;
         // Legato: the song ticks the playing clip is into its pass.
         let into = match (cue.legato, &cue.clip, self.playing_from(view, track)) {
-            (true, Some(_), Some((old, origin, _))) => pass_into(at, origin, old.length, old.speed),
+            (true, Some(_), Some((old, origin, _))) => {
+                pass_into(line, origin, old.length, old.speed)
+            }
             _ => 0,
         };
-        let from = at - into;
+        let from = line - into;
         let origin = cue
             .clip
             .as_ref()
             .map_or(at, |c| anchored(from, c.length, c.speed));
+        let rev = Switches::rev(view, track);
         *self.on.get_mut(track)? = Some(Switch {
             slot: cue.slot,
             origin,
             start: from,
             at,
             mute: cue.mute,
+            rev,
+            lost: false,
+            counted: false,
         });
         self.made[track] = self.made[track].wrapping_add(1);
+        self.done[track] = self.done[track].max(rev);
         self.hi = self.hi.max(track + 1);
+        self.used = self.used.max(track + 1);
+        if due.late() {
+            self.late += 1;
+        }
         Some(Started {
             track,
             slot: cue.slot,
@@ -1739,6 +1955,7 @@ impl Switches {
             origin,
             mute: cue.mute,
             from,
+            rev,
         })
     }
 
@@ -1772,6 +1989,9 @@ impl Switches {
     ) -> Option<(&'a ClipView, Tick, Tick)> {
         let t = view.tracks.get(track)?;
         match self.on.get(track).copied().flatten() {
+            // A newer cue took the switch's place in the view: its clip is
+            // not there (counted in `lost`).
+            Some(sw) if sw.lost => None,
             Some(sw) => t
                 .cue
                 .as_ref()?
@@ -2442,6 +2662,7 @@ mod tests {
             origin: -100,
             mute: None,
             from: 7680,
+            rev: 0,
         }
         .apply(&mut launches, &mut cues);
         assert_eq!(
@@ -2468,6 +2689,7 @@ mod tests {
             origin: 7680,
             mute: None,
             from: 7680,
+            rev: 0,
         }
         .apply(&mut launches, &mut cues);
         assert_eq!(

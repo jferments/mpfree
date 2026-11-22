@@ -1576,19 +1576,19 @@ fn paint_square(cx: &mut PaintCx, r: Rect, sq: &Square, inward: bool, picked: bo
     let t = cx.theme.clone();
     match sq.kind {
         Kind::Set => {
-            cx.canvas.fill_round_rect(r, 8, t.raised);
+            cx.canvas.fill_round_rect(r, t.round(8), t.raised);
             let bar = if inward { t.good } else { t.accent };
             let bar = if sq.waits { t.text_faint } else { bar };
             cx.canvas
                 .fill_round_rect(Rect::new(r.x, r.y + 4, 3, r.h - 8), 1, bar);
         }
         Kind::Empty => {
-            cx.canvas.stroke_round_rect(r, 8, 1, t.outline);
+            cx.canvas.stroke_round_rect(r, t.round(8), 1, t.outline);
         }
         Kind::None => {}
     }
     if picked {
-        cx.canvas.stroke_round_rect(r, 8, 2, t.accent);
+        cx.canvas.stroke_round_rect(r, t.round(8), 2, t.accent);
     }
     if sq.blocks > 0 {
         let b = Rect::new(r.right() - 24, r.bottom() - 20, 20, 16);
@@ -1598,7 +1598,7 @@ fn paint_square(cx: &mut PaintCx, r: Rect, sq: &Square, inward: bool, picked: bo
             t.size_small * 0.75,
             b,
             Align::Center,
-            t.on_accent,
+            t.ink_on(t.accent2),
             &sq.blocks.to_string(),
         );
     }
@@ -1633,7 +1633,7 @@ fn button(cx: &mut PaintCx, r: Rect, text: &str, lit: bool) {
     } else {
         (t.raised, t.text)
     };
-    cx.canvas.fill_round_rect(r, 10, fill);
+    cx.canvas.fill_round_rect(r, t.round(10), fill);
     cx.text(FontId::Bold, t.size_small, r, Align::Center, ink, text);
 }
 
@@ -1651,7 +1651,7 @@ fn lines(cx: &mut PaintCx, r: Rect, text: &[String], ink: Color) {
 fn stepper(cx: &mut PaintCx, minus: Rect, plus: Rect, value: &str, picked: bool) {
     let t = cx.theme.clone();
     for (r, s) in [(minus, "−"), (plus, "+")] {
-        cx.canvas.fill_round_rect(r, 8, t.raised);
+        cx.canvas.fill_round_rect(r, t.round(8), t.raised);
         cx.text(FontId::Bold, t.size_body, r, Align::Center, t.text, s);
     }
     let mid = Rect::new(
@@ -1660,9 +1660,9 @@ fn stepper(cx: &mut PaintCx, minus: Rect, plus: Rect, value: &str, picked: bool)
         plus.x - minus.right() - 8,
         minus.h,
     );
-    cx.canvas.fill_round_rect(mid, 8, t.bg);
+    cx.canvas.fill_round_rect(mid, t.round(8), t.bg);
     if picked {
-        cx.canvas.stroke_round_rect(mid, 8, 2, t.accent);
+        cx.canvas.stroke_round_rect(mid, t.round(8), 2, t.accent);
     }
     cx.text(
         FontId::Sans,
@@ -1678,7 +1678,7 @@ impl Routing {
     /// The card under the grid for the picked square.
     fn paint_card(&self, cx: &mut PaintCx, m: &IoModel, l: &Layout, src: &Src, dest: &Dest) {
         let t = cx.theme.clone();
-        cx.canvas.fill_round_rect(l.panel, 10, t.surface);
+        cx.canvas.fill_round_rect(l.panel, t.round(10), t.surface);
         let (s, _) = src_text(m, src);
         let (d, _) = dest_text(m, dest);
         let whose = self.whose_of(m, src, dest);
@@ -1797,7 +1797,7 @@ impl Routing {
                     let (line, steps) = Self::route_rects(l, k - first);
                     let picked = k == self.route.min(mine.len() - 1);
                     if picked {
-                        cx.canvas.fill_round_rect(line, 8, t.raised);
+                        cx.canvas.fill_round_rect(line, t.round(8), t.raised);
                     }
                     stepper(cx, steps[0], steps[1], &channel_text(r.channel), picked);
                     let arrow = Rect::new(steps[1].right() + 4, line.y, 32, line.h);
@@ -1873,7 +1873,7 @@ impl Routing {
                     let (line, steps) = Self::route_rects(l, k - first);
                     let picked = k == self.route.min(mine.len() - 1);
                     if picked {
-                        cx.canvas.fill_round_rect(line, 8, t.raised);
+                        cx.canvas.fill_round_rect(line, t.round(8), t.raised);
                     }
                     stepper(cx, steps[0], steps[1], &channel_text(r.channel), picked);
                     let bb = blocks_button(line);
@@ -2036,7 +2036,7 @@ impl Routing {
             }
             if n < MAX_BLOCKS {
                 let r = tl.tile(n);
-                cx.canvas.stroke_round_rect(r, 10, 1, t.outline);
+                cx.canvas.stroke_round_rect(r, t.round(10), 1, t.outline);
                 let head = Rect::new(r.x, r.y + 14, r.w, 24);
                 cx.text(
                     FontId::Bold,
@@ -2068,7 +2068,7 @@ impl Routing {
             }
         }
         // What last went through, and what it became.
-        cx.canvas.fill_round_rect(tl.through, 6, t.bg);
+        cx.canvas.fill_round_rect(tl.through, t.round(6), t.bg);
         let inner = Rect::new(
             tl.through.x + 10,
             tl.through.y,
@@ -2138,16 +2138,16 @@ fn blocks_chip(cx: &mut PaintCx, r: Rect, n: usize) {
         n => format!("{n} blocks ›"),
     };
     let t = cx.theme.clone();
-    cx.canvas.stroke_round_rect(r, 10, 1, t.outline);
+    cx.canvas.stroke_round_rect(r, t.round(10), 1, t.outline);
     cx.text(FontId::Bold, t.size_small, r, Align::Center, t.text, &text);
 }
 
 /// A block's tile: its kind, its value and a line under it.
 fn paint_tile(cx: &mut PaintCx, r: Rect, b: &Block, picked: bool) {
     let t = cx.theme.clone();
-    cx.canvas.fill_round_rect(r, 10, t.raised);
+    cx.canvas.fill_round_rect(r, t.round(10), t.raised);
     if picked {
-        cx.canvas.stroke_round_rect(r, 10, 2, t.accent);
+        cx.canvas.stroke_round_rect(r, t.round(10), 2, t.accent);
     }
     let inner = Rect::new(r.x + 12, r.y + 8, r.w - 24, r.h - 16);
     let name = b.kind().name().to_uppercase();
@@ -2468,7 +2468,7 @@ impl IoSection for Routing {
         );
 
         // The grid.
-        cx.canvas.fill_round_rect(l.grid, 10, t.surface);
+        cx.canvas.fill_round_rect(l.grid, t.round(10), t.surface);
         for (c, d) in g.cols.iter().enumerate() {
             let x = l.body.x + NAME_W + c as i32 * l.col_w;
             let (name, sub) = dest_text(&m, d);
