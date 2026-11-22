@@ -71,7 +71,9 @@ pub use song::{Recorded, SongRecorder};
 use mpfree_play::{anchored, Cue, Launch, PlayView, SceneProgram, Started};
 use mpfree_seq::arrange::scene_length;
 use mpfree_seq::scenes::follow_target;
-use mpfree_seq::{Clip, Follow, FollowAction, LaunchGrid, Project, MAX_TRACKS, SCENES, SLOTS};
+use mpfree_seq::{
+    bank, Clip, Follow, FollowAction, LaunchGrid, Project, MAX_TRACKS, SCENES, SLOTS,
+};
 use mpfree_transport::Tick;
 
 /// When a launch happens.
@@ -603,13 +605,18 @@ impl Perform {
         if let (Some(p), None, None) = (self.playing, self.cued, self.list) {
             if let Some(f) = project.scene(p.row).and_then(|s| s.follow) {
                 if now > point(p.start, f, p.stays, bar) - bar {
-                    let mut filled = [false; SCENES];
+                    // The rows of its bank (Arrange 1.2: the grid's 16
+                    // until scene banks come).
+                    let rows = bank(p.row);
+                    let mut filled = [false; SLOTS];
                     for (r, x) in filled.iter_mut().enumerate() {
-                        *x = project.row_filled(r);
+                        *x = project.row_filled(rows.start + r);
                     }
                     let action = self.pick(&f);
                     let roll = self.roll();
-                    match (action, follow_target(action, p.row, &filled, roll)) {
+                    let at = p.row - rows.start;
+                    let target = follow_target(action, at, &filled, roll).map(|r| rows.start + r);
+                    match (action, target) {
                         (FollowAction::Stay, _) => {
                             self.playing = Some(Playing {
                                 stays: p.stays + 1,
@@ -683,13 +690,17 @@ impl Perform {
             if now <= point(l.start, f, count.stays, bar) - bar {
                 continue;
             }
+            // The clips of its bank (Arrange 1.2).
+            let rows = bank(l.slot);
             let mut filled = [false; SLOTS];
             for (s, x) in filled.iter_mut().enumerate() {
-                *x = track.slots[s].is_some();
+                *x = track.slots[rows.start + s].is_some();
             }
             let action = self.pick(&f);
             let roll = self.roll();
-            match (action, follow_target(action, l.slot, &filled, roll)) {
+            let at = l.slot - rows.start;
+            let target = follow_target(action, at, &filled, roll).map(|s| rows.start + s);
+            match (action, target) {
                 (FollowAction::Stay, _) => {
                     self.clips[l.track] = Some(ClipCount {
                         stays: count.stays + 1,

@@ -180,6 +180,11 @@
 59214	Squelch Acid Line, a line
 61774	Squelch Distorted, a line
 64328	Squelch Square Acid, a line
+375783	Steps: a lock detent, 8,192 notes: the edit
+387476	Steps: a lock detent, 8,192 notes: until it plays
+485970	Steps: a tap, 8,192 notes: the edit
+711323	Steps: a tap, 8,192 notes: until it plays
+1568091	Steps: the grid rebuilt, 8,192 notes in 64 rows
 153829	Strings Init, 1 keys
 385402	Strings Init, 49 keys
 221035	Strings Init, 6 keys
@@ -190,6 +195,7 @@
 111176	Vocoder
 87944	Tape delay
 8952	Time with trig conditions and ratchets, 8 clips, arp
+29520	Time: 16 tracks of ratchets, 8 locks a step
 43626	Time: 8 clips, 4 tracks 90 ms ahead
 15539	Time: recording 3 armed tracks, 8 clips
 9378	Time: transport, 8 clips, arp

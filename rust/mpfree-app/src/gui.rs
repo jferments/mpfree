@@ -2745,7 +2745,8 @@ impl Player {
             if info.loops.is_some() {
                 continue;
             }
-            let armed = self.time.armed == Some(t);
+            // The selected track's kit is the one the pads play.
+            let armed = self.time.selected() == Some(t);
             let clips = info.slots.iter().any(Option::is_some);
             let own = played(&self.track_sounds, &self.track_sends, t);
             let (kit, color, enabled) = match (own, self.track_kits.kit_of(t)) {
@@ -3418,7 +3419,7 @@ impl Player {
     /// loading never changes another track's sound; Err says why not when
     /// none is left.
     fn kit_for_load(&self) -> Result<Option<usize>, String> {
-        let armed = self.time.armed;
+        let armed = self.time.selected();
         let shared: Vec<usize> = (0..self.time.tracks.len())
             .filter(|&t| Some(t) != armed && self.track_kits.kit_of(t) == Some(self.kit))
             .filter(|&t| played(&self.track_sounds, &self.track_sends, t).is_none())
@@ -3665,7 +3666,7 @@ impl Player {
     /// play the synth the Synth tab shows through the track
     /// (app/pads_focus.rs): the track and the synth's name.
     fn synth_tab_on_kit(&self) -> Option<(usize, &'static str)> {
-        let track = self.time.armed.unwrap_or(0);
+        let track = self.time.selected().unwrap_or(0);
         let state = &self.synth.as_ref()?.state;
         // The tab shows the selected track's own instrument, or the one it
         // plays of another track's (named for its track, main.rs's
@@ -9585,7 +9586,7 @@ impl Player {
         let target = self.sample.load_target();
         let kit_on = self
             .kit_page()
-            .and(self.time.armed)
+            .and(self.time.selected())
             .and_then(|t| self.time.tracks.get(t))
             .map(|t| t.name.clone());
         let map = target.as_ref().and_then(|_| self.browser_pad_map());
@@ -11504,6 +11505,14 @@ impl Player {
                     Tone::Warn,
                 ));
             }
+            let read = self.sample.normalize_fallbacks();
+            if read > 0 {
+                memory.push((
+                    "Sampler: Normalize read every frame (no summary)".to_string(),
+                    format!("{read}×"),
+                    Tone::Warn,
+                ));
+            }
             DebugPages::set_engines(&mut self.ui, &snap, memory, rows);
         }
     }
@@ -12132,12 +12141,12 @@ impl Player {
                     None
                 }
                 // A track while the set shows: its kit's pads again (and
-                // the track armed, if it wasn't).
+                // the track picked, if it wasn't).
                 EventKind::Select(t) if self.perform.shown => {
                     self.perform_view(false);
-                    (self.time.armed != Some(t)).then_some(FromUi::Time(TimeAction::Arm(Some(t))))
+                    (self.time.selected() != Some(t)).then_some(FromUi::Time(TimeAction::Pick(t)))
                 }
-                EventKind::Select(t) => Some(FromUi::Time(TimeAction::Arm(Some(t)))),
+                EventKind::Select(t) => Some(FromUi::Time(TimeAction::Pick(t))),
                 EventKind::Tab(_) => self.add_kit_track(),
                 _ => None,
             };
@@ -12565,8 +12574,8 @@ impl Player {
                 self.refresh_play();
                 None
             }
-            // Play's head: the track switch arms the track before or after
-            // the armed one (Loop tracks have no pads, so it skips them).
+            // Play's head: the track switch picks the track before or after
+            // the selected one (Loop tracks have no pads, so it skips them).
             (play_page::STEPS, EventKind::Tab(k))
                 if k == play_widgets::HEAD_TRACK_PREV || k == play_widgets::HEAD_TRACK_NEXT =>
             {
@@ -12576,7 +12585,7 @@ impl Player {
                     1
                 };
                 match self.next_track(d) {
-                    Some(t) => Some(FromUi::Time(TimeAction::Arm(Some(t)))),
+                    Some(t) => Some(FromUi::Time(TimeAction::Pick(t))),
                     None => {
                         self.tell("tracks: no other track with pads (Arrange's + Track adds one)");
                         None
@@ -22145,11 +22154,11 @@ mod tests {
         // The switch: the next track, round the ends.
         assert_eq!(
             tap(&mut p, head(play_widgets::HEAD_TRACK_NEXT)),
-            Some(FromUi::Time(TimeAction::Arm(Some(1))))
+            Some(FromUi::Time(TimeAction::Pick(1)))
         );
         assert_eq!(
             tap(&mut p, head(play_widgets::HEAD_TRACK_PREV)),
-            Some(FromUi::Time(TimeAction::Arm(Some(crate::time::TRACKS - 1))))
+            Some(FromUi::Time(TimeAction::Pick(crate::time::TRACKS - 1)))
         );
         // A bank: PAD BANK's; the rows follow the pads' page from its top.
         assert_eq!(
@@ -25110,7 +25119,7 @@ mod tests {
         };
         assert_eq!(
             p.on_event(ev(EventKind::Select(2))),
-            Some(FromUi::Time(TimeAction::Arm(Some(2))))
+            Some(FromUi::Time(TimeAction::Pick(2)))
         );
         // + Kit track adds a track; once it comes back armed it gets the
         // empty kit.
@@ -26072,6 +26081,8 @@ mod tests {
         clip.add_note(mpfree_seq::Note::new(0, 240, 36, 100))
             .unwrap();
         clips.tracks[0].slots[0] = Some(clip);
+        // Its lasting id, as a project in the app has it (Arrange 1.1).
+        clips.give_clip_ids();
         let synth = crate::synth::Synth::new(44_100);
         // Loop 2 with one layer, as the looper's save gives it.
         let layer: Vec<f32> = (0..2 * 4410).map(|k| (k % 97) as f32 / 200.0).collect();
@@ -26343,10 +26354,7 @@ mod tests {
         assert_eq!(keystep(), PortInput::LearnOnly);
         let song = fresh.time.as_ref().unwrap().project();
         assert_eq!(song.tracks.len(), crate::time::TRACKS);
-        assert!(song
-            .tracks
-            .iter()
-            .all(|t| t.slots.iter().all(Option::is_none)));
+        assert!(song.tracks.iter().all(|t| t.slots.is_empty()));
         assert!(fresh.notes.is_empty(), "{:?}", fresh.notes);
         assert!(p.browser.as_ref().unwrap().project().is_none());
         assert!(!p.browser.as_ref().unwrap().unsaved());
@@ -28122,6 +28130,25 @@ mod tests {
         check(&p, &s, "Take 1");
         assert_eq!(p.sample.project(0).unwrap().takes().len(), 1);
         assert_eq!(p.sample.take_shown().as_deref(), Some("Take 1"));
+        // Too little memory for the copy (sampler plan, phase 1 step 5):
+        // nothing is sent, and it says why.
+        p.sample.set_mem_free(|| Some(crate::memory::FLOOR + 1000));
+        p.take_actions();
+        p.on_event(UiEvent {
+            widget: wave_tab::REGION.into(),
+            kind: EventKind::Tab(Row::Chop.index()),
+        });
+        assert!(!p
+            .take_actions()
+            .iter()
+            .any(|a| matches!(a, FromUi::SampleToAudio(_))));
+        assert!(
+            events_log(&p).iter().any(|l| l
+                .starts_with("sample: not put on an audio track: not enough memory: needs about")),
+            "{:?}",
+            events_log(&p)
+        );
+        p.sample.set_mem_free(|| None);
     }
 
     /// The Slice tool on a take kept on the page (one Sample page step 3):
@@ -32136,6 +32163,111 @@ mod tests {
         assert_eq!(sample_page::seat_step(0.123_456, &long, rate), 0.123);
         long.end = 25 * 60 * u64::from(rate);
         assert_eq!(sample_page::seat_step(0.123_456, &long, rate), 0.123_456);
+    }
+
+    /// Sampler plan, phase 1 step 5: Normalize on a long take finds its
+    /// peak in its sound's loudness summary, the same peak as frame by
+    /// frame, with nothing long done on the screen. Before the summary is
+    /// worked out it waits and says so, and lands when the summary comes,
+    /// as an undo step of its own, unless the region changed meanwhile.
+    #[test]
+    fn normalize_on_a_long_take_waits_for_its_summary_and_finds_the_same_peak() {
+        use mpfree_sampler::model::{Layer, Pad, PlayMode, Project, Region, Source, SCAN_FRAMES};
+        use mpfree_sampler_ui::wave_tab::{Row, REGION};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let rate = mpfree_sampler_ui::sample::RATE;
+        // 12 s of 16-bit stereo, soft but for the left side at 9 s.
+        let n = 2 * SCAN_FRAMES as usize;
+        let data: Vec<f32> = (0..2 * n)
+            .map(|i| {
+                let t = (i / 2) as f32 / rate as f32;
+                let loud = (9.0..9.2).contains(&t) && i % 2 == 0;
+                let a = if loud { 0.5 } else { 0.05 };
+                let x = a * (t * 220.0 * std::f32::consts::TAU).sin();
+                ((x * 32_768.0).round() + 0.0) / 32_768.0
+            })
+            .collect();
+        let source = Source::new("Long take", rate, 2, data).unwrap();
+        assert!(source.data().is_16_bit());
+        let mut project = Project::new();
+        project.add_source(source.clone());
+        let mut r = Region::whole(&source);
+        r.mode = PlayMode::OneShot;
+        let peak = r.peak(&source);
+        assert!((0.49..=0.5).contains(&peak), "{peak}");
+        let gain = (-20.0 * peak.log10() * 10.0).floor() / 10.0;
+        project
+            .set_pad(pad, Some(Pad::new("Long take", Layer::new(r))), None)
+            .unwrap();
+        let start = |hold: bool| {
+            let mut p = sample_player(Fonts::embedded());
+            p.sample.hold_views(hold);
+            p.apply(ToUi::SampleKits {
+                projects: vec![project.clone()],
+                rate,
+            });
+            p.apply(ToUi::PadDown { pad, velocity: 100 });
+            p.apply(ToUi::PadUp(pad));
+            p.apply(ToUi::Show(View::Sample));
+            p
+        };
+        let gain_now = |p: &Player| {
+            p.sample.project(0).unwrap().pad(pad).unwrap().layers[0]
+                .region
+                .gain_db
+        };
+        let press = |p: &mut Player| {
+            p.on_event(UiEvent {
+                widget: REGION.into(),
+                kind: EventKind::Tab(Row::Normalize.index()),
+            })
+        };
+        let said = |p: &Player, line: &str| events_log(p).iter().any(|l| l.starts_with(line));
+        let waits = "sample: pad A5 normalizes once its sound's loudness summary is worked out";
+        let done = "sample: pad A5 normalized: its peak -6.0 dB, gain +0.0 -> ";
+
+        // The summary not there yet: it waits, and says so.
+        let mut p = start(true);
+        press(&mut p);
+        assert_eq!(gain_now(&p), 0.0);
+        assert!(said(&p, waits), "{:?}", events_log(&p));
+        p.tick(0.0);
+        assert_eq!(gain_now(&p), 0.0, "still waiting");
+        // It comes: the gain lands, an undo step of its own.
+        p.sample.hold_views(false);
+        settle_views(&mut p);
+        p.tick(0.0);
+        assert_eq!(gain_now(&p), gain);
+        assert!(said(&p, done), "{:?}", events_log(&p));
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(gain_now(&p), 0.0);
+        assert_eq!(p.sample.normalize_fallbacks(), 0);
+
+        // The region changed while it waited: it is let go, and says so.
+        let mut p = start(true);
+        press(&mut p);
+        p.sample
+            .project_mut(0)
+            .unwrap()
+            .edit_pad(pad, None, |pd| pd.layers[0].region.gain_db = -3.0)
+            .unwrap();
+        p.tick(0.0);
+        assert!(said(
+            &p,
+            "sample: pad A5 not normalized: it changed before its sound's loudness summary was worked out"
+        ));
+        p.sample.hold_views(false);
+        settle_views(&mut p);
+        p.tick(0.0);
+        assert_eq!(gain_now(&p), -3.0);
+
+        // The summary already there: at once, from the summary.
+        let mut p = start(false);
+        settle_views(&mut p);
+        press(&mut p);
+        assert_eq!(gain_now(&p), gain);
+        assert!(said(&p, done) && !said(&p, waits), "{:?}", events_log(&p));
+        assert_eq!(p.sample.normalize_fallbacks(), 0);
     }
 
     #[test]

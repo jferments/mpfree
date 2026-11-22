@@ -506,6 +506,14 @@ pub fn opening(
                 "project: {given} of its tracks had no lasting id, or shared one; they have new ones"
             ));
         }
+        // Each clip's lasting id (Arrange 1.1), the same way.
+        let had_ids = p.next_clip != 0;
+        let given = p.give_clip_ids();
+        if had_ids && given > 0 {
+            notes.push(format!(
+                "project: {given} of its clips had no lasting id, or shared one; they have new ones"
+            ));
+        }
         let mut fx = Box::new([mpfree_notefx::TrackFx::default(); mpfree_seq::MAX_TRACKS]);
         for (t, tr) in p.tracks.iter().enumerate().take(mpfree_seq::MAX_TRACKS) {
             fx[t] = tr.note_fx;
@@ -973,7 +981,7 @@ pub fn old_strip_targets(p: &mut mpfree_seq::Project) -> OldStripTargets {
         let Ok(t) = u8::try_from(t) else {
             break;
         };
-        for clip in track.slots.iter_mut().flatten() {
+        for clip in track.slots.clips_mut() {
             let (moved, clashed) = old_strip_lanes(&mut clip.moves, t);
             out.lanes += moved;
             out.clashes += clashed;
@@ -2870,6 +2878,62 @@ mod tests {
         );
     }
 
+    /// Arrange 1.1: clips get lasting ids as a project opens, and keep
+    /// them through a save. One saved before clips had ids gets 1, 2, 3
+    /// ... in track and row order, saying nothing; one that says the next
+    /// id but has a clip without one, or two sharing one, gets new ones
+    /// for those, said.
+    #[test]
+    fn clips_get_lasting_ids_as_a_project_opens() {
+        use mpfree_seq::{Clip, ClipId, Track};
+        let none = &crate::plugins::Plugins::none();
+        let mut c = collected(String::new(), InstrumentList::new().text());
+        for i in 0..2 {
+            c.clips
+                .tracks
+                .push(Track::new(&format!("Track {}", i + 1), i));
+        }
+        c.clips.tracks[1].slots[0] = Some(Clip::new("bass", 3840));
+        c.clips.tracks[0].slots[4] = Some(Clip::new("fill", 3840));
+        c.clips.tracks[0].slots[1] = Some(Clip::new("beat", 3840));
+        let ids = |o: &Opening| -> Vec<(String, ClipId)> {
+            let t = o.time.as_ref().expect("the clips open");
+            t.project()
+                .cell_clips()
+                .map(|(_, _, c)| (c.name.clone(), c.id))
+                .collect()
+        };
+        let o = opening(&snapshot(&c, Vec::new()), 44_100, "old", none);
+        let named = |v: [(&str, u32); 3]| -> Vec<(String, ClipId)> {
+            v.iter().map(|(n, i)| (n.to_string(), ClipId(*i))).collect()
+        };
+        assert_eq!(ids(&o), named([("beat", 1), ("fill", 2), ("bass", 3)]));
+        assert!(
+            !o.notes.iter().any(|n| n.contains("lasting id")),
+            "{:?}",
+            o.notes
+        );
+        // Saved with them, they come back as they were.
+        let opened = o.time.as_ref().unwrap().project().clone();
+        let as_made = std::mem::replace(&mut c.clips, opened);
+        let back = opening(&snapshot(&c, Vec::new()), 44_100, "saved", none);
+        assert_eq!(ids(&back), named([("beat", 1), ("fill", 2), ("bass", 3)]));
+        assert_eq!(back.time.as_ref().unwrap().project().next_clip, 4);
+        c.clips = as_made;
+
+        c.clips.next_clip = 9;
+        c.clips.tracks[0].slots[1].as_mut().unwrap().id = ClipId(7);
+        c.clips.tracks[0].slots[4].as_mut().unwrap().id = ClipId(7);
+        let o = opening(&snapshot(&c, Vec::new()), 44_100, "damaged", none);
+        assert_eq!(ids(&o), named([("beat", 7), ("fill", 9), ("bass", 10)]));
+        assert!(
+            o.notes.iter().any(|n| n
+                == "project: 2 of its clips had no lasting id, or shared one; they have new ones"),
+            "{:?}",
+            o.notes
+        );
+    }
+
     /// Looper redesign step 4c: a tempo a free first loop set is any
     /// number, and the loop is its length only at that tempo. A project
     /// keeps it exactly through its text and opens the song at it.
@@ -3040,7 +3104,11 @@ mod tests {
             clip(&p, 2).moves.lanes()[0].target,
             Target::Fixed(ParamAddr::new(Owner::Insert(Strip::Track(2), 1), 2))
         );
-        assert_eq!(clip(&p, 0), clips.tracks[0].slots[0].clone().unwrap());
+        // As it was, but for the lasting id it got as it opened.
+        assert_eq!(
+            clip(&p, 0).copied(),
+            clips.tracks[0].slots[0].clone().unwrap()
+        );
         let line = notes
             .iter()
             .find(|n| n.starts_with("project: saved before Drums was track 1's strip"))
@@ -3060,7 +3128,10 @@ mod tests {
 
         // Saved since: as written.
         let (p, notes) = open(format!("{MIXER_FORMAT}\npadmutes 0\ntrack1 t0\n"));
-        assert_eq!(clip(&p, 1), clips.tracks[1].slots[0].clone().unwrap());
+        assert_eq!(
+            clip(&p, 1).copied(),
+            clips.tracks[1].slots[0].clone().unwrap()
+        );
         assert!(
             !notes.iter().any(|n| n.contains("saved before Drums")),
             "{notes:?}"

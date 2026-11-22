@@ -6372,6 +6372,11 @@ fn time_action(
             TimeAction::SongTempo(TempoEdit::AtPlayhead(bpm))
         }
         TimeAction::Transport(Command::SetTempo(bpm)) => return app.set_tempo(bpm),
+        // A track picked while REC's arm is pinned is selected alone: the
+        // Sequencer edits it and the pads follow it, and REC stays where
+        // it was pinned (refactor C1). Only a tap on Arm or a row of REC's
+        // list moves a pinned arm.
+        TimeAction::Pick(t) if app.rec.pinned => TimeAction::Select(t),
         a => a,
     };
     // The audio lanes' touches go to the audio tracks; a pick stays with
@@ -7669,11 +7674,11 @@ fn player_session(
                     fx.push(app::Effect::Tell(line));
                 }
                 // A tap on a track's sound line on Arrange: the track is
-                // selected (armed, as the Record panel's Armed row) and the
-                // Synth tab's MENU opens on its Instrument row.
+                // picked (selected, and armed unless the arm is pinned) and
+                // the Synth tab's MENU opens on its Instrument row.
                 gui::FromUi::TrackInstrument(track) if track < time.project().tracks.len() => {
-                    if time.armed() != Some(track) {
-                        fx.push(app::Effect::Time(TimeAction::Arm(Some(track))));
+                    if time.selected() != Some(track) {
+                        fx.push(app::Effect::Time(TimeAction::Pick(track)));
                     }
                     fx.extend(app.open_track_instrument(track));
                     out.show(gui::ToUi::Synth(synth_tab(
@@ -10292,16 +10297,17 @@ fn player_session(
         // transport.
         cv_out.sync(&io_model);
         cv_out.clock(time.block());
-        // The armed track is the one the pads and the arp screens play.
-        let armed = time.armed().unwrap_or(0);
-        if armed != app.track() {
+        // The selected track is the one the pads and the arp screens play
+        // (the armed one unless a track was picked with the arm pinned).
+        let selected = time.selected().unwrap_or(0);
+        if selected != app.track() {
             let before = app.track();
-            fx.extend(app.set_track(armed));
-            // The pads play what the newly armed track plays.
-            kit_follow = Some(track_kits.entry(armed));
+            fx.extend(app.set_track(selected));
+            // The pads play what the newly selected track plays.
+            kit_follow = Some(track_kits.entry(selected));
             // The Synth tab follows the selected track's own synth (or the
             // pads' instrument of the host's, step 6).
-            if mix.instruments.plays(armed)
+            if mix.instruments.plays(selected)
                 || mix.instruments.plays(before)
                 || mix.instruments.pads_play_at().is_some()
             {
@@ -10725,7 +10731,7 @@ fn player_session(
             // MAIN held: the pads are tracks, the one picked white.
             pages_shown = None;
             let first = bank * 16;
-            let want = track_pick_colours(time.armed().map(|a| a.wrapping_sub(first)), |p| {
+            let want = track_pick_colours(time.selected().map(|a| a.wrapping_sub(first)), |p| {
                 time.mute_light(first + p)
             });
             for pad in 0..16 {
@@ -13710,8 +13716,7 @@ mod tests {
         let locks = |h: &time::TimeHost| -> Vec<(RelAddr, f32)> {
             h.project().tracks[2]
                 .slots
-                .iter()
-                .flatten()
+                .clips()
                 .flat_map(|c| c.locks.iter().map(|l| (l.addr, l.value)))
                 .collect()
         };

@@ -607,9 +607,11 @@ impl TimeHost {
     /// it has a track. Builds and compiles everything here (allocates):
     /// the app makes it on the screen thread and swaps it in.
     pub fn with_project(rate: u32, bpm: f64, mut project: Project) -> Result<TimeHost, String> {
-        // Every track has its lasting id from here on (a new project's,
-        // or one saved before tracks had ids, gets 1, 2, 3 ...).
+        // Every track and every clip has its lasting id from here on (a
+        // new project's, or one saved before they had ids, gets 1, 2, 3
+        // ...).
         project.give_track_ids();
+        project.give_clip_ids();
         project
             .check()
             .map_err(|e| format!("the clips don't hold together: {e:?}"))?;
@@ -666,10 +668,16 @@ impl TimeHost {
         r
     }
 
-    /// The armed track (the one the pads, the arp panel and recording
-    /// follow), if any.
+    /// The armed track (the one REC records), if any.
     pub fn armed(&self) -> Option<usize> {
         self.control.armed()
+    }
+
+    /// The selected track (the one the Sequencer edits, and the pads and
+    /// the arp panel follow): the armed track unless a track was picked
+    /// while REC's arm is pinned (refactor C1).
+    pub fn selected(&self) -> Option<usize> {
+        self.control.selected()
     }
 
     /// SHIFT + TC (the MPC's TC On/Off): the armed track's Quantise while
@@ -1666,7 +1674,10 @@ mod tests {
         h.control.project.tracks[0].slots[0] = Some(Clip::new("taken", 960));
         let line = h.put_clip(clip.clone()).unwrap();
         assert_eq!(line, "phrase: 4 notes in slot 2 of Track 1");
-        assert_eq!(h.control.project.clip(0, 1), Some(&clip));
+        // A new clip, with a lasting id of its own.
+        let put = h.control.project.clip(0, 1).unwrap();
+        assert!(put.id.is_given());
+        assert_eq!(put.copied(), clip);
         assert!(h.control.launches.is_empty(), "not launched");
         // The armed track takes it.
         h.act(TimeAction::Arm(Some(2))).unwrap();
@@ -1738,8 +1749,11 @@ mod tests {
             .put_clips(vec![(0, drums.clone()), (1, bass.clone())])
             .unwrap();
         assert_eq!(line, "2 clips with 1 notes, from slot 1 of Track 1");
-        assert_eq!(h.control.project.clip(0, 0), Some(&drums));
-        assert_eq!(h.control.project.clip(1, 1), Some(&bass));
+        let put = |t, s| h.control.project.clip(t, s).map(Clip::copied);
+        assert_eq!(put(0, 0), Some(drums.clone()));
+        assert_eq!(put(1, 1), Some(bass.clone()));
+        let ids = |t, s| h.control.project.clip(t, s).unwrap().id;
+        assert!(ids(0, 0).is_given() && ids(1, 1).is_given() && ids(0, 0) != ids(1, 1));
         assert!(h.control.launches.is_empty(), "not launched");
         // One UNDO takes both.
         h.act(TimeAction::Undo).unwrap();
@@ -2306,6 +2320,71 @@ mod tests {
         assert_eq!(ways(&h), (3, 1), "two steps' notes");
     }
 
+    /// Refactor C3: a track selected apart from the arm (picked while
+    /// REC's arm is pinned elsewhere) has room in the view for its step
+    /// edits, so a tap, a velocity change and a lock detent on its playing
+    /// clip go in place as the armed track's do: nothing compiled, nothing
+    /// missed, and the view in place is what a compile gives. The armed
+    /// track's clip keeps its room for recording.
+    #[test]
+    fn step_edits_on_a_track_selected_apart_from_the_arm_go_in_place() {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_seq::steps::Change;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        for t in [0, 2] {
+            h.control.project.tracks[t].slots[0] = Some(Clip::new("Beat", 16 * STEP_TICKS));
+            h.act(TimeAction::Launch { track: t, slot: 0 }).unwrap();
+        }
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        h.act(TimeAction::Select(2)).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 4, &[]);
+        let ways = |h: &TimeHost| {
+            (
+                h.control.costs.steps_in_place,
+                h.control.costs.steps_compiled,
+            )
+        };
+        let compiles = h.control.costs.compiles;
+        let tune = RelAddr::new(OnTrack::Pad(1), 2);
+        let edits = [
+            StepAction::Tap {
+                pad: 1,
+                step: 4,
+                velocity: 100,
+            },
+            StepAction::Change {
+                pad: 1,
+                step: 4,
+                change: Change::Velocity(60),
+            },
+            StepAction::Lock {
+                pad: 1,
+                steps: 1 << 4,
+                addr: tune,
+                value: Some(300.0),
+            },
+        ];
+        for (i, a) in edits.into_iter().enumerate() {
+            h.step_action(a).unwrap();
+            run(&mut h, &mut pads, BAR / 4 + (i as u64 + 1) * BAR / 8, &[]);
+        }
+        assert_eq!(ways(&h), (3, 0), "each edit in place");
+        assert_eq!(h.control.costs.compiles, compiles, "nothing compiled");
+        assert_eq!(h.audio.counts().missed, 0);
+        assert_eq!(*h.audio.view, h.control.view().unwrap());
+        let clip = h.project().clip(2, 0).unwrap();
+        assert_eq!((clip.notes.len(), clip.locks.len()), (1, 1));
+        assert!(h.project().clip(0, 0).unwrap().notes.is_empty());
+        // Selecting another track compiles once, for its room; selecting
+        // the armed track again needs none.
+        h.act(TimeAction::Select(3)).unwrap();
+        assert_eq!(h.control.costs.compiles, compiles + 1);
+        h.act(TimeAction::Select(0)).unwrap();
+        assert_eq!(h.control.costs.compiles, compiles + 1);
+    }
+
     /// A change the view can't make in place (here, a note it erases that
     /// the project changed behind its back) asks for one compile, which brings it and
     /// the changes after it; the status line counts it.
@@ -2467,17 +2546,22 @@ mod tests {
             .act(TimeAction::DeleteClip { track: 0, slot: 0 })
             .unwrap_err()
             .contains("empty"));
-        // A clip in the song stays.
-        h.control
-            .project
-            .arrangement
-            .placements
-            .push(mpfree_seq::arrange::Placement::linked(0, 1, 0, 960));
-        assert!(h
-            .act(TimeAction::DeleteClip { track: 0, slot: 1 })
-            .unwrap_err()
-            .contains("in the song"));
-        assert!(h.control.project.clip(0, 1).is_some());
+        // A clip the song plays goes to the song's own clips (Arrange
+        // 1.3): the song plays on, and UNDO puts it back in its cell.
+        let p = &mut h.control.project;
+        p.give_clip_ids();
+        let block = mpfree_seq::arrange::Placement::of(&p.tracks, 0, 1, 0, 960);
+        p.arrangement.placements.push(block);
+        let said = h.act(TimeAction::DeleteClip { track: 0, slot: 1 }).unwrap();
+        assert!(said.contains("the song keeps playing it"), "{said}");
+        let p = &h.control.project;
+        assert!(p.clip(0, 1).is_none());
+        let b = &p.arrangement.placements[0];
+        assert_eq!(p.block_clip(b).map(|c| c.name.as_str()), Some("fill"));
+        h.act(TimeAction::Undo).unwrap();
+        let p = &h.control.project;
+        assert_eq!(p.clip(0, 1).map(|c| c.name.as_str()), Some("fill"));
+        assert!(p.arrangement.clips.is_empty());
     }
 
     /// The clip settings card (sequencer S3): a row turned is one take
@@ -2566,7 +2650,10 @@ mod tests {
         assert!(h.state().done.is_empty(), "a copy is no take");
         let said = h.act(TimeAction::PasteClip { track: 1, slot: 2 }).unwrap();
         assert!(said.contains("a copy of beat in"), "{said}");
-        assert_eq!(h.control.project.clip(1, 2), Some(&beat));
+        // A copy: the same clip, but a clip of its own with its own id.
+        let pasted = h.control.project.clip(1, 2).unwrap();
+        assert_eq!(pasted.copied(), beat.copied());
+        assert_ne!(pasted.id, h.control.project.clip(0, 0).unwrap().id);
         assert_eq!(h.state().done.last().unwrap().short(), "paste 1");
         assert!(h
             .act(TimeAction::PasteClip { track: 0, slot: 0 })
@@ -2652,9 +2739,12 @@ mod tests {
         for (t, name) in [(0, "Beat"), (1, "Bass")] {
             h.control.project.tracks[t].slots[0] = Some(Clip::new(name, BAR));
         }
+        h.control.project.give_clip_ids();
+        let tracks = h.control.project.tracks.clone();
         let song = &mut h.control.project.arrangement;
-        song.place(Placement::linked(0, 0, 0, 2 * BAR)).unwrap();
-        song.place(Placement::linked(1, 0, 2 * BAR, 2 * BAR))
+        song.place(Placement::of(&tracks, 0, 0, 0, 2 * BAR))
+            .unwrap();
+        song.place(Placement::of(&tracks, 1, 0, 2 * BAR, 2 * BAR))
             .unwrap();
         song.mark(0, "Intro").unwrap();
         song.mark(2 * BAR, "Verse").unwrap();
@@ -2673,12 +2763,20 @@ mod tests {
         let said = h.act(mv(0, 1, 2 * BAR, false)).unwrap_err();
         assert!(said.contains("would run into another block"), "{said}");
         assert_eq!(h.control.project.arrangement, before);
-        // A copy onto the bass's lane is its own copy of the clip.
+        // A copy onto the bass's lane stays linked to the beat and plays
+        // through the bass (Arrange 1.3).
         let said = h.act(mv(0, 1, 6 * BAR, true)).unwrap();
         assert!(
-            said.contains("a copy of Beat at Track 2, bar 7, as its own copy"),
+            said.contains("a copy of Beat at Track 2, bar 7, playing through Track 2"),
             "{said}"
         );
+        let p = &h.control.project;
+        let copy = p.arrangement.at(1, 6 * BAR).unwrap();
+        assert_eq!(
+            p.arrangement.placements[copy].clip,
+            p.clip(0, 0).unwrap().id
+        );
+        assert!(p.arrangement.clips.is_empty(), "no copy of the clip");
         let said = h
             .act(TimeAction::StretchPlacement {
                 index: 0,
@@ -2756,6 +2854,146 @@ mod tests {
             .act(TimeAction::AddTrack)
             .unwrap_err()
             .contains("128 tracks"));
+    }
+
+    /// Refactor C1: a track selected apart from the arm (a track picked
+    /// while REC's arm is pinned) is the one the Play page's steps show, a
+    /// step tap edits and the note editor opens, while REC still records
+    /// the armed track. Arming a track selects it again, and so does
+    /// selecting the armed track; a pick on its own arms; a Loop track
+    /// has no steps to select.
+    #[test]
+    fn a_track_selected_apart_from_the_arm_is_the_one_the_steps_edit() {
+        use mpfree_time_ui::editor::EditAction as E;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        assert_eq!((h.armed(), h.selected()), (Some(0), Some(0)));
+        let said = h.act(TimeAction::Select(2)).unwrap();
+        assert_eq!(said, "selected: Track 3 (REC stays on Track 1, pinned)");
+        assert_eq!((h.armed(), h.selected()), (Some(0), Some(2)));
+        let st = h.state();
+        assert_eq!(
+            (st.armed, st.track_pick, st.selected()),
+            (Some(0), Some(2), Some(2))
+        );
+        assert_eq!(h.steps().track, 2);
+        assert_eq!(h.steps().track_name, "Track 3");
+        // A step tapped goes into Track 3, which gets its first clip;
+        // Track 1 stays empty.
+        h.step_action(StepAction::Tap {
+            pad: 0,
+            step: 0,
+            velocity: 100,
+        })
+        .unwrap();
+        let notes = |h: &TimeHost, t: usize| -> usize {
+            h.project().tracks[t]
+                .slots
+                .clips()
+                .map(|c| c.notes.len())
+                .sum()
+        };
+        assert_eq!((notes(&h, 2), notes(&h, 0)), (1, 0));
+        assert_eq!(h.steps().clip.map(|c| c.slot), Some(0));
+        // The recorder still takes live notes for the armed track alone.
+        h.audio.receive();
+        assert_eq!(h.audio.armed(), Some(0));
+        // The note editor opens on the selected track's clip.
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Open)).unwrap(),
+            "edit: Pattern 1 on Track 3"
+        );
+        // Arming a track selects it too.
+        h.act(TimeAction::Arm(Some(1))).unwrap();
+        assert_eq!((h.armed(), h.selected()), (Some(1), Some(1)));
+        assert_eq!(h.state().track_pick, None);
+        // Selecting the armed track is the arm's selection again.
+        h.act(TimeAction::Select(3)).unwrap();
+        assert_eq!(h.act(TimeAction::Select(1)).unwrap(), "selected: Track 2");
+        assert_eq!((h.state().track_pick, h.selected()), (None, Some(1)));
+        // A pick on its own (the app found no pin) arms and selects.
+        h.act(TimeAction::Pick(4)).unwrap();
+        assert_eq!((h.armed(), h.selected()), (Some(4), Some(4)));
+        // Letting go of the arm leaves nothing selected apart from it.
+        h.act(TimeAction::Select(5)).unwrap();
+        h.act(TimeAction::Arm(None)).unwrap();
+        assert_eq!((h.armed(), h.selected()), (None, None));
+        // No such track, and a Loop track, select nothing.
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        assert!(h.act(TimeAction::Select(99)).is_err());
+        h.act(TimeAction::AddLoopTrack).unwrap();
+        let loops = h.project().tracks.len() - 1;
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        let said = h.act(TimeAction::Select(loops)).unwrap();
+        assert!(
+            said.ends_with("plays loops: the Sequencer stays on Track 1"),
+            "{said}"
+        );
+        assert_eq!(h.selected(), Some(0));
+    }
+
+    /// Refactor C1: the armed and the selected track are kept by their
+    /// lasting ids, never by their places: a track added before them, one
+    /// taken away from between them, UNDO taking away the armed track and
+    /// REDO bringing it back each leave the arm and the selection on their
+    /// own tracks (or, for a track that is gone, the arm on the last track
+    /// and the selection on the armed one); a project opened starts with
+    /// track 1 armed and selected.
+    #[test]
+    fn the_arm_and_the_selection_stay_on_their_own_tracks() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.act(TimeAction::Arm(Some(2))).unwrap();
+        h.act(TimeAction::Select(4)).unwrap();
+        let id = |h: &TimeHost, t: Option<usize>| t.map(|t| h.project().tracks[t].id);
+        let (armed, picked) = (id(&h, h.armed()), id(&h, h.selected()));
+        let names = |h: &TimeHost| {
+            let name = |t: Option<usize>| t.map(|t| h.project().tracks[t].name.clone());
+            (name(h.armed()), name(h.selected()))
+        };
+        let both = (Some("Track 3".to_string()), Some("Track 5".to_string()));
+        assert_eq!(names(&h), both);
+        // A track taken away from before both (as a delete would): each
+        // keeps its track, one place up.
+        h.control.project.tracks.remove(1);
+        h.control.compile().unwrap();
+        assert_eq!((h.armed(), h.selected()), (Some(1), Some(3)));
+        assert_eq!(names(&h), both);
+        // A track put in at the start: one place down.
+        let mut first = Track::new("New", 0);
+        h.control.project.give_track_id(&mut first);
+        h.control.project.tracks.insert(0, first);
+        h.control.compile().unwrap();
+        assert_eq!((h.armed(), h.selected()), (Some(2), Some(4)));
+        assert_eq!((id(&h, h.armed()), id(&h, h.selected())), (armed, picked));
+        // The selected track gone: the selection is the armed track.
+        h.control.project.tracks.remove(4);
+        h.control.compile().unwrap();
+        assert_eq!((h.armed(), h.selected()), (Some(2), Some(2)));
+        assert_eq!(h.state().track_pick, None);
+        // + Track arms and selects the new track; with another track
+        // selected apart from it, UNDO takes the armed track away: the arm
+        // goes to the last track, and the selection stays on its own.
+        h.act(TimeAction::AddTrack).unwrap();
+        let added = h.project().tracks.len() - 1;
+        assert_eq!((h.armed(), h.selected()), (Some(added), Some(added)));
+        h.act(TimeAction::Select(0)).unwrap();
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.project().tracks.len(), added);
+        assert_eq!((h.armed(), h.selected()), (Some(added - 1), Some(0)));
+        assert_eq!(names(&h).1.as_deref(), Some("New"));
+        // REDO brings the track back with its id; the arm, not an undo
+        // step, stays where it went, and the selection on its track.
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(h.project().tracks.len(), added + 1);
+        assert_eq!((h.armed(), h.selected()), (Some(added - 1), Some(0)));
+        // A project opened: track 1 armed and selected, whatever its ids.
+        let mut p = h.project().clone();
+        p.tracks.swap(0, 3);
+        let mut opened = TimeHost::with_project(RATE, 120.0, p).unwrap();
+        assert_eq!((opened.armed(), opened.selected()), (Some(0), Some(0)));
+        assert_eq!(opened.state().track_pick, None);
+        assert_eq!(opened.steps().track, 0);
+        opened.act(TimeAction::Select(1)).unwrap();
+        assert_eq!(opened.steps().track, 1);
     }
 
     const RATE: u32 = 44_100;
@@ -5218,7 +5456,7 @@ mod tests {
         assert_eq!(h.act(TimeAction::StopAll).unwrap(), "stop all");
         run(&mut h, &mut pads, 6 * BAR, &[]);
         assert!(h.state().launches.is_empty());
-        assert!(h.act(TimeAction::LaunchScene(SLOTS)).is_err());
+        assert!(h.act(TimeAction::LaunchScene(mpfree_seq::ROWS)).is_err());
         assert_eq!(h.dropped(), 0);
     }
 
@@ -5255,9 +5493,10 @@ mod tests {
             let p = &mut h.control.project;
             p.tracks[0].slots[1] = Some(one_bar(9));
             p.tracks[1].slots[2] = Some(sixteenths(30));
+            p.give_clip_ids();
             p.arrangement
                 .placements
-                .push(Placement::linked(1, 2, 0, 8 * 3840));
+                .push(Placement::of(&p.tracks, 1, 2, 0, 8 * 3840));
             p.scene_mut(1).unwrap().mutes = Some(0b10);
             if solo {
                 p.tracks[0].solo = true;
@@ -5490,10 +5729,12 @@ mod tests {
         t.slots[0] = Some(Clip::new_loop(0, 3840));
         t.slots[1] = Some(Clip::new_loop(1, 3840));
         h.control.project.tracks.push(t);
+        h.control.project.give_clip_ids();
+        let tracks = &h.control.project.tracks;
         // Loop 1 over bars 2 and 3, loop 2 over bar 4.
         h.control.project.arrangement.placements = vec![
-            Placement::linked(8, 0, 3840, 7680),
-            Placement::linked(8, 1, 11520, 3840),
+            Placement::of(tracks, 8, 0, 3840, 7680),
+            Placement::of(tracks, 8, 1, 11520, 3840),
         ];
         h.act(TimeAction::SongMode(true)).unwrap();
         run(&mut h, &mut pads, u64::from(PERIOD), &[]);
@@ -5990,9 +6231,11 @@ mod tests {
             let p = &mut h.control.project;
             p.tracks[0].slots[2] = Some(four);
             p.tracks[1].slots[0] = Some(eighths);
+            p.give_clip_ids();
             let s = &mut p.arrangement;
-            s.place(Placement::linked(0, 2, 0, 8 * 3840)).unwrap();
-            s.place(Placement::linked(1, 0, 2 * 3840, 4 * 3840))
+            s.place(Placement::of(&p.tracks, 0, 2, 0, 8 * 3840))
+                .unwrap();
+            s.place(Placement::of(&p.tracks, 1, 0, 2 * 3840, 4 * 3840))
                 .unwrap();
             // The song, in song mode from bar 1.
             let mut heard = Fake::default();
@@ -6050,6 +6293,7 @@ mod tests {
         let s = p.scene_mut(2).unwrap();
         s.mutes = Some(0);
         s.follow = Some(Follow::after(1, FollowAction::Stop));
+        p.give_clip_ids();
         let mut song = TimeHost::new(RATE, 120.0).unwrap();
         song.control.project = h.control.project.clone();
         // The rows, from the first.
@@ -6074,6 +6318,59 @@ mod tests {
         assert_eq!((h.dropped(), song.dropped()), (0, 0));
     }
 
+    /// Arrange 1.2: a clip and a scene in row 40, past the grid's 16,
+    /// save, open, launch and play; the scene's follow action moves within
+    /// its bank (rows 32 to 47), never to the grid's rows; the grid still
+    /// shows 16 rows; and a row dragged on the grid leaves row 40 alone.
+    #[test]
+    fn a_clip_and_a_scene_in_row_40_save_open_launch_and_stay_put() {
+        use mpfree_seq::{Follow, FollowAction, Note, ROWS};
+        let beats = |pad: u8| {
+            let mut c = Clip::new("beats", 3840);
+            c.notes = (0..4)
+                .map(|k| Note::new(k * 960, 100, pad + k as u8, 100))
+                .collect();
+            c
+        };
+        let mut p = TimeHost::new(RATE, 120.0).unwrap().project().clone();
+        p.tracks[0].slots[0] = Some(beats(10));
+        p.tracks[0].slots[40] = Some(beats(40));
+        p.tracks[1].slots[41] = Some(beats(60));
+        let next = Some(Follow::after(1, FollowAction::Next));
+        let s = p.scene_mut(40).unwrap();
+        s.name = "Far".into();
+        s.follow = next;
+        p.scene_mut(41).unwrap().follow = next;
+        let read = mpfree_seq::save::from_text(&mpfree_seq::save::to_text(&p)).unwrap();
+        assert_eq!(read, p);
+        let mut h = TimeHost::with_project(RATE, 120.0, read).unwrap();
+        assert_eq!(h.state().tracks[0].slots.len(), SLOTS, "the grid's rows");
+        let mut pads = Fake::default();
+        h.act(TimeAction::LaunchScene(40)).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, 3 * BAR - 1000, &[]);
+        let hits: Vec<usize> = pads.hits.iter().map(|h| h.1).collect();
+        assert_eq!(hits, [40, 41, 42, 43, 60, 61, 62, 63, 40, 41, 42, 43]);
+        h.command(Command::Stop);
+        // A row dragged and one copied on the grid: row 40 stays.
+        h.act(TimeAction::DropRow {
+            from: 0,
+            to: 3,
+            copy: false,
+        })
+        .unwrap();
+        h.act(TimeAction::DropRow {
+            from: 2,
+            to: 0,
+            copy: true,
+        })
+        .unwrap();
+        let p = h.project();
+        assert_eq!(p.clip(0, 40).map(|c| c.notes[0].note), Some(40));
+        assert_eq!(p.scene(40).map(|s| s.name.as_str()), Some("Far"));
+        assert!(h.act(TimeAction::LaunchScene(ROWS)).is_err());
+    }
+
     /// Two one-bar rows become a song (Scenes → song), which plays in song
     /// mode; a clip launched on track 1 takes it over, and the song plays
     /// on there after it stops. The song goes back into rows (Song →
@@ -6092,6 +6389,7 @@ mod tests {
             h.control.project.tracks[t].slots[1] = Some(one_bar(base + 1));
         }
         h.control.project.tracks[0].slots[5] = Some(one_bar(9));
+        h.control.project.give_clip_ids();
         h.control.project.scene_mut(1).unwrap().name = "Drop".into();
         // Row 6 has a clip too: three rows, bars 1, 2 and 3.
         assert_eq!(
@@ -6127,9 +6425,12 @@ mod tests {
             "song → scenes: rows 3 to 5, exact (UNDO takes it back)"
         );
         let p = &h.control.project;
-        assert_eq!(p.tracks[0].slots[2], p.tracks[0].slots[0]);
-        assert_eq!(p.tracks[1].slots[3], p.tracks[1].slots[1]);
-        assert_eq!(p.tracks[0].slots[4], p.tracks[0].slots[5]);
+        // Copies of the clips the song played, each with an id of its own.
+        let same = |a: (usize, usize), b: (usize, usize)| {
+            let (a, b) = (p.clip(a.0, a.1).unwrap(), p.clip(b.0, b.1).unwrap());
+            a.copied() == b.copied() && a.id != b.id
+        };
+        assert!(same((0, 2), (0, 0)) && same((1, 3), (1, 1)) && same((0, 4), (0, 5)));
         assert_eq!(p.scene(3).unwrap().name, "Drop");
         // One edit: UNDO gives the project back exactly, REDO the rows.
         let after = p.clone();
@@ -6139,7 +6440,11 @@ mod tests {
         let said = h.act(TimeAction::Undo).unwrap();
         assert!(said.ends_with(" · rows 3 to 5"), "{said}");
         assert!(said.starts_with("undo: song → scenes "), "{said}");
-        assert_eq!(h.control.project, before);
+        // As before, but for the next clip id: UNDO never winds it back.
+        assert!(h.control.project.next_clip > before.next_clip);
+        let mut want = before.clone();
+        want.next_clip = h.control.project.next_clip;
+        assert_eq!(h.control.project, want);
         h.act(TimeAction::Redo).unwrap();
         assert_eq!(h.control.project, after);
         // Refused (too few empty rows left in a run): nothing changes, and
@@ -6209,12 +6514,17 @@ mod tests {
             p.tracks[t].slots[0] = Some(one_bar(base));
             p.tracks[t].slots[1] = Some(one_bar(base + 1));
         }
+        p.give_clip_ids();
         // Room for the pass (a block and a stretch on each track) and one
         // block more: row 2's two don't fit.
         for k in 0..MAX_PLACEMENTS - 5 {
-            p.arrangement
-                .placements
-                .push(Placement::linked(2, 0, (1000 + k as i64) * 3840, 3840));
+            p.arrangement.placements.push(Placement::of(
+                &p.tracks,
+                2,
+                0,
+                (1000 + k as i64) * 3840,
+                3840,
+            ));
         }
         h.act(TimeAction::LaunchScene(0)).unwrap();
         h.act(TimeAction::RecSong(true)).unwrap();
@@ -6268,6 +6578,7 @@ mod tests {
             h.control.project.tracks[t].slots[0] = Some(one_bar(base));
             h.control.project.tracks[t].slots[1] = Some(one_bar(base + 1));
         }
+        h.control.project.give_clip_ids();
         h.act(TimeAction::LaunchScene(0)).unwrap();
         h.act(TimeAction::RecSong(true)).unwrap();
         assert!(h.state().song_rec);
@@ -6331,11 +6642,11 @@ mod tests {
         };
         h.control.project.tracks[0].slots[0] = Some(one_bar(4));
         h.control.project.tracks[0].slots[1] = Some(one_bar(9));
-        h.control
-            .project
-            .arrangement
+        let p = &mut h.control.project;
+        p.give_clip_ids();
+        p.arrangement
             .placements
-            .push(Placement::linked(0, 0, 0, 8 * 3840));
+            .push(Placement::of(&p.tracks, 0, 0, 0, 8 * 3840));
         h.act(TimeAction::SongMode(true)).unwrap();
         assert!(!h.state().over_song(), "the song alone");
         h.act(TimeAction::Launch { track: 0, slot: 1 }).unwrap();
@@ -6513,6 +6824,7 @@ mod tests {
         t.slots[0] = Some(one_bar("intro", 4));
         t.slots[1] = Some(one_bar("verse", 9));
         t.slots[3] = Some(one_bar("drop", 6));
+        h.control.project.give_clip_ids();
         // Two steps: row 1, then the next row with a clip, row 2.
         assert_eq!(
             h.act(TimeAction::ListAdd).unwrap(),
@@ -7137,8 +7449,7 @@ mod tests {
         let notes = |h: &TimeHost, t: usize| {
             h.control.project.tracks[t]
                 .slots
-                .iter()
-                .flatten()
+                .clips()
                 .map(|c| c.notes.iter().map(|n| n.note).collect::<Vec<_>>())
                 .collect::<Vec<_>>()
         };
@@ -7173,8 +7484,8 @@ mod tests {
         let mut pads = Fake::default();
         h.act(TimeAction::Arm(Some(0))).unwrap();
         h.act(TimeAction::ArmAlso(1 << 1 | 1 << 2)).unwrap();
-        for s in h.control.project.tracks[2].slots.iter_mut() {
-            *s = Some(Clip::new("full", 3840));
+        for s in 0..SLOTS {
+            h.control.project.tracks[2].slots[s] = Some(Clip::new("full", 3840));
         }
         let said = h.act(TimeAction::Transport(Command::Record)).unwrap();
         assert!(
@@ -8500,6 +8811,8 @@ mod tests {
         let read = mpfree_seq::save::from_text(&mpfree_seq::save::to_text(&p)).unwrap();
         assert_eq!(read, p);
         let mut h = TimeHost::with_project(RATE, 120.0, read).unwrap();
+        // As saved, its clip given its lasting id as it opens.
+        p.give_clip_ids();
         assert_eq!(h.project(), &p);
         assert_eq!(h.state().armed, Some(0));
         let mut pads = Fake::default();
