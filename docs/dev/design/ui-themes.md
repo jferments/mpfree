@@ -54,9 +54,10 @@ The roles are one table, `ROLES` in [`roles.rs`](../../../rust/mpfree-ui/src/rol
 | `shadow` | Light and shade | `light_dark({text}, {bg})` | Drop shadows (drawn see-through) |
 | `series.1` to `series.8` | Palettes | `{track.1}` to `{track.8}` | Graph lines and EQ bands, in order |
 | `handle` | Controls | `light_dark({surface}, {text})` | A switch's knob, a slider's handle |
+| `cut` | Palettes | `{text_dim}` | The EQ's low and high cuts, beside its bands' series colours |
 | `grain` | Sampler | `{accent2}` | The grain window over the wave and its GRAIN and SIZE marks |
 
-Every built-in theme sets some roles to the exact colours its screens drew before roles existed (the sampler's record red `#FF4D5E` and grain purple `#C77DFF`, the EQ's band colours, the Play page's white flash and black shadow, the white of switch knobs and slider handles, and outside Default the default Q-Link colours), so moving a screen onto roles changes no pixel. Light (phase 4) uses the rules. A theme file with `base = default` copies those colours too, like everything else the base sets; a line such as `record = {bad}` puts a role back on its rule.
+Every built-in theme sets some roles to the exact colours its screens drew before roles existed (the sampler's record red `#FF4D5E` and grain purple `#C77DFF`, the EQ's band and cut colours, the Play page's white flash and black shadow, the white of switch knobs and slider handles, and outside Default the default Q-Link colours), so moving a screen onto roles changes no pixel. Light (phase 4) uses the rules. A theme file with `base = default` copies those colours too, like everything else the base sets; a line such as `record = {bad}` puts a role back on its rule.
 
 What screens call:
 
@@ -117,10 +118,10 @@ Asked for on 2026-11-22 (a Reddit request for a light theme; the owner's go the 
 | --- | --- | --- |
 | 0 | Roles table and helpers, theme files that follow and mix colours, `Theme::load` with problems, the contrast and fixed-colour checks | #762 |
 | 1 | Shared widgets (`mpfree-ui`, the app's frame): Q-Link colours as `qlink` roles (`draw::KNOB` is gone; the Q-Link column's numbers through `t.readable`), labels on coloured fills (pills, wave markers, pads) through `ink_on`, card corners through `t.round`. Default draws the same display lists; in the other built-in themes the shared widgets' corners follow `radius`. A trial light palette's unreadable runs fall from 1,063 to about 400, the rest in feature crates | this change |
-| 2 | One pull request per feature crate (sampler, chain and mixer EQ, time, synth and FX with `Paint`, MIDI, arp and browser, the app's Play, Perform and Looper, and `mpfree-mpcskin`) | sampler: this change (its two palettes one, record red and grain purple from roles, knob cards, marks and lane cells keep a `Paint`, labels on fills through `ink_on`, keyboards through `t.keys()`; every Sample page reads in the trial light palette) |
+| 2 | One pull request per feature crate (sampler, chain and mixer EQ, time, synth and FX with `Paint`, MIDI, arp and browser, the app's Play, Perform and Looper, and `mpfree-mpcskin`) | sampler: this change (its two palettes one, record red and grain purple from roles, knob cards, marks and lane cells keep a `Paint`, labels on fills through `ink_on`, keyboards through `t.keys()`; every Sample page reads in the trial light palette); chain and mixer EQ: this change (bands from `series`, cuts from `cut`, dot and button labels through `ink_on`, the notes keyboard through `t.keys()`, corners through `t.round`; every chain and mixer page reads in the trial light palette) |
 | 3 | Text sizes, `gap` and `pad` leave themes (owner, 22 Nov: consistent sizes everywhere so no theme can break a layout); the 8 touch areas that assume 14 px padding are fixed | |
 | 4 | `Theme::light()` and `themes/light.theme`, Light after Default in Prefs > Appearance, golden screens for Light, the manual page "Making your own theme" (shown to the owner on contact sheets first) | |
-| 5 | Theme writers' tools: problems on the Appearance row, `--check-theme`, a contact sheet script, commented example themes | |
+| 5 | Theme writers' tools: problems on the Appearance row, `--check-theme`, a contact sheet script, commented example themes, and a "Keep this theme?" prompt after picking a theme that goes back to the old one after 15 seconds untouched (owner, 22 Nov; a Prefs change, so it goes through the layout spec) | |
 
 Flexible layouts and user-made controls are a separate, later piece of work (owner, 22 Nov), not part of themes.
 

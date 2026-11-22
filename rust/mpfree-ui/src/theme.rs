@@ -399,6 +399,7 @@ impl Theme {
         (Role::Series8, 0xAED581),
         (Role::Handle, 0xFFFFFF),
         (Role::Grain, 0xC77DFF),
+        (Role::Cut, 0xB8C2D6),
     ];
 
     /// The other built-in themes: the same, and the default theme's Q-Link
@@ -421,6 +422,7 @@ impl Theme {
         (Role::Qlink4, 0xD46CFF),
         (Role::Handle, 0xFFFFFF),
         (Role::Grain, 0xC77DFF),
+        (Role::Cut, 0xB8C2D6),
     ];
 
     /// The theme with every role on its table rule except `fixed`, worked

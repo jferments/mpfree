@@ -113,6 +113,8 @@ roles! {
         "The eighth.";
     Handle "handle" "Controls" Role "light_dark({surface}, {text})"
         "The knob of a switch and the handle of a slider.";
+    Cut "cut" "Palettes" Role "{text_dim}"
+        "The EQ's low and high cuts, beside its bands' series colours.";
     Grain "grain" "Sampler" Role "{accent2}"
         "The sampler's grain window over the wave and its GRAIN and SIZE marks.";
 }

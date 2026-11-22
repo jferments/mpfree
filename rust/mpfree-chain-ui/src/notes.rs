@@ -299,7 +299,7 @@ pub fn paint_row(
 ) {
     cx.canvas.fill_round_rect(
         row,
-        10,
+        t.round(10),
         if sel {
             t.raised
         } else {
@@ -392,7 +392,7 @@ pub fn paint_caption(
             for (r, ok, pointing_up) in [(u, up, true), (d, down, false)] {
                 cx.canvas.fill_round_rect(
                     r,
-                    6,
+                    t.round(6),
                     if ok {
                         t.raised
                     } else {
@@ -425,7 +425,7 @@ pub fn paint_list(cx: &mut PaintCx, t: &Theme, l: &ListLayout, ns: &NotesState) 
         }
     }
     if let Some(a) = l.add {
-        cx.canvas.stroke_round_rect(a, 10, 1, t.outline);
+        cx.canvas.stroke_round_rect(a, t.round(10), 1, t.outline);
         cx.text(
             FontId::Bold,
             t.size_small - 1.0,
@@ -437,7 +437,7 @@ pub fn paint_list(cx: &mut PaintCx, t: &Theme, l: &ListLayout, ns: &NotesState) 
     }
     let p = l.plays;
     cx.canvas
-        .fill_round_rect(p, 10, t.surface.mix(t.raised, 0.35));
+        .fill_round_rect(p, t.round(10), t.surface.mix(t.raised, 0.35));
     let inner = p.inset_xy(12, 4);
     let (top, rest) = inner.take_top(16);
     cx.text(
@@ -963,7 +963,7 @@ fn join_and(names: &[&str]) -> String {
 fn paint_button(cx: &mut PaintCx, t: &Theme, r: Rect, label: &str, on: bool, usable: bool) {
     cx.canvas.fill_round_rect(
         r,
-        10,
+        t.round(10),
         if on {
             t.accent
         } else if usable {
@@ -995,7 +995,7 @@ pub fn paint_page(cx: &mut PaintCx, t: &Theme, page: Rect, l: &PageLayout, ns: &
         }
         let all = Fx::all();
         for (fx, r) in all.iter().zip(&l.tiles) {
-            cx.canvas.fill_round_rect(*r, 12, t.raised);
+            cx.canvas.fill_round_rect(*r, t.round(12), t.raised);
             let inner = r.inset(16);
             let (top, rest) = inner.take_top(30);
             cx.text(
@@ -1095,7 +1095,7 @@ pub fn paint_page(cx: &mut PaintCx, t: &Theme, page: Rect, l: &PageLayout, ns: &
             );
             if !row.seg.is_empty() {
                 cx.canvas
-                    .fill_round_rect(row.value, 10, t.bg.mix(t.surface, 0.4));
+                    .fill_round_rect(row.value, t.round(10), t.bg.mix(t.surface, 0.4));
                 let names = match s.kind {
                     SetKind::Choice(list) => list,
                     SetKind::Number { .. } => &[],
@@ -1103,7 +1103,7 @@ pub fn paint_page(cx: &mut PaintCx, t: &Theme, page: Rect, l: &PageLayout, ns: &
                 for &(r, v) in &row.seg {
                     let name = names.get(v as usize).copied().unwrap_or("");
                     if v == now {
-                        cx.canvas.fill_round_rect(r, 8, t.accent);
+                        cx.canvas.fill_round_rect(r, t.round(8), t.accent);
                     }
                     cx.text(
                         if v == now { FontId::Bold } else { FontId::Sans },
@@ -1166,7 +1166,14 @@ fn paint_keys(cx: &mut PaintCx, t: &Theme, card: Rect, ns: &NotesState, fx: &Fx)
         .filter(|&n| n <= 127 && !is_black(n))
         .collect();
     let ww = keys.w / whites.len().max(1) as i32;
-    let white_ink = t.text.mix(t.surface, 0.06);
+    // White keys nearly as bright as the text on a dark theme; a light
+    // theme's keyboard colours otherwise (the keys the right way round).
+    let piano = t.keys();
+    let white_ink = if t.is_light() {
+        piano.white
+    } else {
+        t.text.mix(t.surface, 0.06)
+    };
     let x_of = |n: u8| -> i32 {
         let i = whites.iter().position(|&w| w > n).unwrap_or(whites.len());
         keys.x + i as i32 * ww
@@ -1188,7 +1195,7 @@ fn paint_keys(cx: &mut PaintCx, t: &Theme, card: Rect, ns: &NotesState, fx: &Fx)
                 t.size_small - 3.0,
                 r.take_bottom(24).0,
                 Align::Center,
-                t.bg,
+                t.ink_on(fill),
                 &note_name(n),
             );
         }
@@ -1199,7 +1206,7 @@ fn paint_keys(cx: &mut PaintCx, t: &Theme, card: Rect, ns: &NotesState, fx: &Fx)
         let fill = if out.contains(&n) && n != played {
             t.accent
         } else {
-            t.bg
+            piano.black
         };
         cx.canvas.fill_round_rect(r, 3, fill);
         if n == played {
