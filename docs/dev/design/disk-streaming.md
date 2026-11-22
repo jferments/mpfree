@@ -5,7 +5,7 @@ checked: 2026-11-22 829e1568
 
 # Disk streaming from the USB stick and the SD card
 
-**Status:** plan approved by the owner on 2026-11-22 (phases P0 to P1.5 on the workstation; every step on the MPC waits for its own go). P0's measuring tools are built: the streaming survey (D0) and the read-only stick test (D1), neither run on the MPC yet. Nothing streams in the app yet: the audio tracks' engine is still the 12 Nov one, switched off.
+**Status:** plan approved by the owner on 2026-11-22 (phases P0 to P1.5 on the workstation; every step on the MPC waits for its own go). P0's measuring tools are built: the streaming survey (D0) and the read-only stick test (D1), neither run on the MPC yet. P0.5's fault fixes in the old engine are built, with the fault tests (below). Nothing streams in the app yet: the audio tracks' engine is still the 12 Nov one, switched off.
 
 **Owner:** the disk streaming thread. What plays and when belongs to the audio tracks ([audio-tracks.md](audio-tracks.md)); this layer makes sure it is in RAM in time. The SD card's switching on and its safety testing (steps S0 and S1) belong to the [SD card plan](../hardware/sd-card-and-internal-drive.md) and the owner's hardware project.
 
@@ -27,7 +27,7 @@ The order of what matters: recordings are never lost silently, then steady timin
 6. **Importing refuses while streaming** (`ImportRefused::Streaming`).
 7. **The WAV header and the sync come only at the end.** A cut mid-take leaves a file with no usable header. `finish()` also computes the data size as a `u32`, which overflows after about 3 h 23 min of stereo float.
 
-The cheap fixes go into the old engine with failing tests first (P0.5); the deep ones are designed out of the new layer (P1).
+The cheap fixes go into the old engine with failing tests first (P0.5); the deep ones are designed out of the new layer (P1). After P0.5, findings 2, 3 and 4 and the `u32` length of 7 are fixed in the old engine; 1, 5, 6 and the header and sync of 7 each have an ignored test that fails until P1 ([below](#p05-the-old-engines-fault-fixes)).
 
 ## The design
 
@@ -155,7 +155,7 @@ Each phase is one or a few draft PRs to the merge desk, docs in the same PR.
 | Phase | Delivers | Done when |
 |---|---|---|
 | P0 measuring tools | the D0 survey, `mpfree-disktest --read-only`, this page | built (this page's last section) |
-| P0.5 tests first | the fault suite W with a reference-sound check, failing first for the seven findings; in the old engine short reads become errors, failed writes get recording states, long jobs yield | W runs against the old engine and the new one |
+| P0.5 tests first | the fault suite W with a reference-sound check, failing first for the seven findings; in the old engine short reads become errors, failed writes get recording states, long jobs yield | W runs against the old engine and the new one (built: [below](#p05-the-old-engines-fault-fixes)) |
 | P1 `mpfree-stream` | sources with generations, cursors, the fixed-size queues and fixed work per period, the coordinator, workers, the recoverable recording file (RF64-ready), 16 and 24-bit WAV and AIFF read in their own format, looping and speed; audio tracks move onto it unchanged once the harness passes | written chunk ownership rules and the unload-while-playing test; the recording spec page reviewed before the recording code; a small interface the sampler and launcher can use later |
 | P1.5 scheduler | deadlines, recording pressure, joined reads, cancelling, admission to the budget, launch readiness | admission that knows when a workload can't fit |
 | P2 audio tracks stream | streaming on; import in the background; the cache budget setting replacing Audio track memory; recording states and recovery; dropouts shown; unused take files cleared | recorded audio checked against what went in |
@@ -184,3 +184,15 @@ Both run on the test build (MPFree's system on the stick, port 2222) through [`t
 - **Build** (from `rust/`): `RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static" cargo build --release --target armv7-unknown-linux-gnueabihf -p mpfree-audiotracks --bin mpfree-disktest`.
 - **On a desktop:** `mpfree-disktest --desktop-test DIR --read-only [--quick]` reads `DIR/library` and `DIR/backup`.
 - **Tests:** `rust/mpfree-audiotracks/tests/disktest.rs` (a read-only run changes nothing, never follows a link out, names no file; too little to read is refused), the unit tests in `read.rs`, and `tools/mpc-one/tests/test_host_disktest_mpc.py` (the survey against a fake stick, USB path and pad player under BusyBox; the modes and their opt-ins; a static check that the survey only reads).
+
+## P0.5: the old engine's fault fixes
+
+The fault tests were written first and failed against the old engine; these changes make them pass. The audio tracks' page has the details ([audio-tracks.md](audio-tracks.md#streaming-from-the-stick)).
+
+- **Short reads (finding 2).** A chunk that comes back shorter than the take's audio there is counted (`Stats::short_reads`), never played, and asked for again when next wanted. A failed read is too, as before.
+- **Failed writes (finding 3).** A failed write is asked for again (`Io::Rewrite`, always into the take's own file, never a new one, even for chunk 0), and the file finished again once the take is recorded; a failed finish is tried again too. After `WRITE_TRIES` (3) tries, or when a request is lost to a full queue, the take is **at risk**: its unwritten chunks stay dirty in memory, so it still plays and nothing else takes their room.
+- **Recording states.** `AudioTracks::save_state(id)`: Recording, Saving, Saved, AtRisk. A fit waits for Saved, because it reads the take's file. The audio tracks rethink will make a save stop with a reason when a take is at risk, rather than wait.
+- **Long jobs (finding 4).** The disk thread reads a whole file (a fit, or the waveform table of a saved take with no `.peaks` file) 512 KiB at a time, answering up to 8 other requests between steps, so playback reads and recording writes never wait behind it.
+- **The WAV length (finding 7, in part).** A finish whose length doesn't fit a WAV header (`WAV_MAX_DATA`, about 3 hours of stereo at 48 kHz) fails instead of writing a wrong length; the sizes are worked out in 64 bits, so a 32-bit MPC never wraps them.
+- **Fault knobs.** `DiskStats` has `fail_writes`, `fail_finishes` and `short_reads` (the next so many of each fail) and counts the long jobs' steps.
+- **Tests.** `tests/faults.rs` (a fake disk) and `tests/host_faults.rs` (the real disk thread, its knobs, and a take file cut short under it) check every sample played against what was recorded; the disk thread's unit tests cover the long jobs and the WAV limit. Ignored, each naming its finding, until P1 fixes it: the host's period allocates (1, in `tests/no_alloc.rs`), an old reply lands in a new project's take (5), a sound can't be brought in while streaming (6), a recording's file has no usable header until it ends (7).
