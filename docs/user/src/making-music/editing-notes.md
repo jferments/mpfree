@@ -25,7 +25,7 @@ The Notes view has the Arrange tab's transport bar along the top (**Stop**, **Pl
 
 ## The piano roll
 
-The notes are bars on a piano roll: higher notes higher up, time running left to right, longer notes longer. A drum clip shows its 16 pads instead of keys; a clip of notes on a synth track shows the keys even while it is empty. Under the roll, a lane shows how hard each note plays, how likely it is to play, how many times it repeats, or the picked notes' pressure (see [The lane under the roll](#the-lane-under-the-roll)). A note played with [pad pressure](clips.md#pad-pressure) shows it as a lighter shape along its bottom: it rises where you pressed harder and falls where you let up.
+The notes are bars on a piano roll: higher notes higher up, time running left to right, longer notes longer. A drum clip shows a row for each of the kit's pads instead of keys (see [Drum clips](#drum-clips)); a clip of notes on a synth track shows the keys even while it is empty. Under the roll, a lane shows how hard each note plays, how likely it is to play, how many times it repeats, or the picked notes' pressure (see [The lane under the roll](#the-lane-under-the-roll)). A note played with [pad pressure](clips.md#pad-pressure) shows it as a lighter shape along its bottom: it rises where you pressed harder and falls where you let up.
 
 Notes are drawn as they will play. A note whose step is off (tapped off on Steps) is only an outline: it keeps its place and settings and plays nothing. A note that repeats (a ratchet) shows each hit, lighter or darker as its velocity ramps, and each hit shows in the velocity lane too. A tied note has a short level mark just before it, and a sliding note a short slanting one.
 
@@ -150,6 +150,20 @@ Faint clips show on the piano roll only, not on the list or the tracker. Each ti
 
 *Try it:* open an empty bass clip on the same row as your chords, tap **Show** and pick the chords (marked **Plays with**). Draw a note under the lowest note of each chord, then tap one of the chords' faint notes to open the chords with the bass behind them.
 
+### Drum clips
+
+A clip of pad hits, the kind a drum track records, shows a row for each pad of the kit in place of the keys: **A1** at the bottom up to **H16**, all 128 pads in their 8 banks. Each row says which pad it is and the kit's name for it, as in **A1 Kick** or **A2 Snare**, and a line marks where each bank starts. A track that plays a synth shows its notes on the keys as before; the clip's own kind decides, not the notes in it.
+
+- **PAD BANK** takes the roll to that bank's first pad, so **B** shows B1 and up, just as the pads go to bank B. Opening an empty drum clip starts on the bank the pads are on.
+- **Fold** on **Rows with notes** shows only the pads the clip uses, so a beat on pads all over the kit fits in a few rows.
+- Pinch to the smallest zoom (rows 24 pixels tall) to see more pads at once. For tapping in a beat step by step, **Steps** is still the quicker view.
+- A drum clip has no scale and no chords, so the **Scale** and **Chord** chips aren't there.
+- Everything else works as on the keys: draw, pick, drag a hit to another pad, change velocities in the lane, and write from the pads with **Pads write**.
+
+{{shot: sequencer-notes-drums | A bar of drums: rows A1 Kick up to A6 Rim, named after the kit's sounds, with the kick, snare, hats, clap and rim drawn on them.}}
+
+*Try it:* open a drum clip, press **PAD BANK B**, draw a hit on B1, then press **PAD BANK A** to go back to the kick and snare.
+
 ### Zoom and scroll
 
 Rows open at least 40 pixels tall, big enough for a fingertip, and the roll opens with the clip's notes filling them. A short clip opens whole; a long one opens on two bars from its first note.
@@ -180,7 +194,7 @@ Each clip can have a scale of its own, so a melody stays in key while you move a
 - **New notes land in key.** With a scale on, a note you draw or tap in on a row off the scale lands on the scale note nearest it (the lower one when two are as near). Hold **SHIFT** to put it exactly where you tap.
 - **Fit to scale.** The last row of the Edit options moves the picked notes, or every note when none are picked, onto the nearest scale note. Its value says how many notes are off the scale ("3 off"); turn the data wheel either way to fit them, and one **UNDO** takes it back.
 - **Find them.** **Off the scale** in the Select menu picks every note off the clip's scale.
-- **Pads.** A clip of pad hits has no scale, since its notes are pads rather than pitches: its chip says "Scale: none on pads". That includes an older clip on a synth track that follows the pads; convert it to notes first ([Melody: Convert to notes](clips.md#melody-convert-to-notes)) to give it a scale.
+- **Pads.** A drum clip has no scale, so the **Scale** chip isn't there (see [Drum clips](#drum-clips)). That includes an older clip on a synth track that follows the pads; convert it to notes first ([Melody: Convert to notes](clips.md#melody-convert-to-notes)) to give it a scale.
 
 {{shot: sequencer-notes-scales | The Scale menu open over the roll: the roots along the top, then the pads' scale and every other scale.}}
 

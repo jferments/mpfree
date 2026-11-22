@@ -1309,7 +1309,7 @@ impl Editor {
         };
         let chord = chord_notes(shape, self.minor, note, lit_scale(clip), self.offers.pads);
         let line = match (chord.len(), chord_name(&chord)) {
-            (1, _) => format!("edit: note {} drawn at tick {tick}", note_name(note)),
+            (1, _) => format!("edit: {} drawn at tick {tick}", one_named(clip, note)),
             (_, Some(name)) => format!("edit: chord {name} drawn at tick {tick}"),
             _ => format!("edit: chord on {} drawn at tick {tick}", note_name(note)),
         };
@@ -1644,7 +1644,7 @@ impl Editor {
                         None,
                         false,
                         true,
-                        format!("edit: note {} taken out", note_name(n.note)),
+                        format!("edit: {} taken out", one_named(clip, n.note)),
                     )
                 } else if self.add {
                     // Add to pick: in, or out again.
@@ -1672,7 +1672,7 @@ impl Editor {
                 None,
                 false,
                 true,
-                format!("edit: note {} erased", note_name(clip.notes[i].note)),
+                format!("edit: {} erased", one_named(clip, clip.notes[i].note)),
             ),
             // A finger holding a note, another tapping: the note tapped
             // joins the picks, or leaves them.
@@ -2154,8 +2154,7 @@ impl Editor {
                     // The sound the fill writes: its notes are picked, so
                     // the roll shows which.
                     13 => {
-                        let top = if pads(clip) { 15 } else { 127 };
-                        self.sound = (i32::from(self.sound) + d).clamp(0, top) as u8;
+                        self.sound = (i32::from(self.sound) + d).clamp(0, 127) as u8;
                         self.sel = (0..clip.notes.len())
                             .filter(|&i| clip.notes[i].note == self.sound)
                             .collect();
@@ -2604,7 +2603,7 @@ pub fn edit_rows(ed: &Editor, clip: &Clip) -> Vec<OptionRow> {
                 t => format!("by {}", step_name(t)),
             }
         },
-        of_sel(&|n| i64::from(n.note), &|v| note_name(v as u8)),
+        of_sel(&|n| i64::from(n.note), &|v| sound_name(v as u8, pads(clip))),
         of_sel(&|n| i64::from(n.velocity), &|v| v.to_string()),
         of_sel(&|n| n.len, &length_name),
         of_sel(&|n| i64::from(n.chance), &|v| format!("{v} %")),
@@ -2733,10 +2732,10 @@ pub fn hits_name(n: u8) -> String {
     }
 }
 
-/// A sound as the editor names it: "Pad 3" on a pad clip, else the note.
+/// A sound as the editor names it: "Pad B5" on a pad clip, else the note.
 pub fn sound_name(n: u8, pads: bool) -> String {
     if pads {
-        format!("Pad {}", u16::from(n) + 1)
+        format!("Pad {}", pad_place(n))
     } else {
         note_name(n)
     }
@@ -2831,12 +2830,29 @@ pub fn lit_scale(clip: &Clip) -> Option<Scale> {
     clip.scale.filter(|_| clip.takes_scale() && !pads(clip))
 }
 
-/// The clip plays the pads: it holds pad hits (not MIDI notes,
-/// [`mpfree_seq::Holds`]) and every note is below 16, or it has none. The
-/// roll shows 16 pad rows; a clip of notes shows the keys even while
-/// empty, so its first notes (and chords, plan 2B.2) can be drawn.
+/// The clip plays the pads: it holds pad hits, not MIDI notes
+/// ([`mpfree_seq::Holds`], which says so: nothing is guessed from its
+/// notes; piano roll plan 4.2). The roll shows a row a pad, the kit's 128
+/// in its 8 banks; a clip of notes shows the keys even while empty, so
+/// its first notes (and chords, plan 2B.2) can be drawn.
 pub fn pads(clip: &Clip) -> bool {
-    clip.holds != mpfree_seq::Holds::Notes && clip.notes.iter().all(|n| n.note < 16)
+    clip.holds == mpfree_seq::Holds::Hits
+}
+
+/// One note as an edit's line names it: "note C3", or "Pad A1" on a pad
+/// clip (plan 4.2).
+fn one_named(clip: &Clip, n: u8) -> String {
+    match pads(clip) {
+        true => sound_name(n, true),
+        false => format!("note {}", note_name(n)),
+    }
+}
+
+/// A kit pad's place as the MPC names it, its bank's letter and its
+/// number in the bank: "A1" for the first, "B5" for the 21st, "H16" for
+/// the last.
+pub fn pad_place(n: u8) -> String {
+    format!("{}{}", char::from(b'A' + (n / 16).min(7)), n % 16 + 1)
 }
 
 /// A MIDI note's name, C3 being 60 (the MPC's way).
@@ -3422,8 +3438,15 @@ pub struct NoteGrid {
     pub add: bool,
     /// The Select menu is open over the roll (the roll's own, plan 1B.3).
     pub menu: bool,
-    /// Pad rows (Pad 1 to 16) in place of note names.
+    /// Pad rows (A1 to H16, the kit's 128 pads) in place of note names
+    /// (piano roll plan 4.2).
     pub pads: bool,
+    /// The kit's name for each pad, pad 1 first ("" for none), which the
+    /// pad rows show after the pad's place (plan 4.2).
+    pub pad_names: Arc<Vec<String>>,
+    /// The bank the pads play (0 = A to 7 = H): an empty pad clip opens
+    /// on its first row (plan 4.2).
+    pub bank: u8,
     pub playhead: Option<Tick>,
     /// The editor's cursor (plan 1C.1): a line on the roll and a mark on
     /// the tracker's line, where the pads will write; the wheel moves it.
@@ -3652,6 +3675,9 @@ const MAX_HANDLES: usize = 64;
 const NEAR: i32 = 24;
 
 const KEYS_W: i32 = 64;
+/// The key column on pad rows (plan 4.2): room for a pad's place and the
+/// kit's name for it.
+const PAD_KEYS_W: i32 = 112;
 const RULER_H: i32 = 22;
 /// The overview strip over the ruler, with Fit under the keys and Follow
 /// at its right end.
@@ -3709,6 +3735,8 @@ impl Default for NoteGrid {
             view: RollView::default(),
             drawer: false,
             pads: false,
+            pad_names: Arc::default(),
+            bank: 0,
             playhead: None,
             cursor: None,
             snap: PPQ as Tick / 4,
@@ -3814,6 +3842,7 @@ impl NoteGrid {
             && self.legend == other.legend
             && (self.length, self.bar, self.pads, self.drawer, self.add)
                 == (other.length, other.bar, other.pads, other.drawer, other.add)
+            && (&self.pad_names, self.bank) == (&other.pad_names, other.bank)
             && self.view == other.view
             && (self.snap, self.tool, self.lens, self.first)
                 == (other.snap, other.tool, other.lens, other.first)
@@ -4039,7 +4068,7 @@ impl NoteGrid {
             (Rect::new(rest.x, rest.y, rest.w, 0), rest)
         };
         let (ruler, rest) = rest.take_top(RULER_H);
-        let (keys, roll) = rest.take_left(KEYS_W);
+        let (keys, roll) = rest.take_left(if self.pads { PAD_KEYS_W } else { KEYS_W });
         let follow = Rect::new(roll.right() - FOLLOW_W, strip.y, FOLLOW_W, strip.h);
         let none = Rect::new(0, 0, 0, 0);
         let open = roll_lens && !self.lane.folded;
@@ -4049,7 +4078,11 @@ impl NoteGrid {
         // line.
         let chip = |right: i32, w: i32| Rect::new(right - w, head.y - 2, w, 26);
         let fold_chip = chip(head.right(), FOLD_CHIP_W);
-        let scale_chip = chip(fold_chip.x - 6, SCALE_CHIP_W);
+        // None on pad rows (plan 4.2): a clip of pad hits has no scale.
+        let scale_chip = match self.pads {
+            true => Rect::new(fold_chip.x, fold_chip.y, 0, 0),
+            false => chip(fold_chip.x - 6, SCALE_CHIP_W),
+        };
         let chord_chip = match self.pads {
             true => Rect::new(scale_chip.x, scale_chip.y, 0, 0),
             false => chip(scale_chip.x - 6, CHORD_CHIP_W),
@@ -4133,7 +4166,7 @@ impl NoteGrid {
     /// notes; or the scale's rows, and any row with a picked note, which
     /// never folds away.
     fn row_map(&self) -> Rows {
-        let n = if self.pads { 16 } else { 128 };
+        let n = 128;
         let fold = self.fold_now();
         if fold == Fold::All {
             return Rows::all(n);
@@ -4155,7 +4188,7 @@ impl NoteGrid {
 
     /// How many notes Fold hides on `rows`.
     fn hidden(&self, rows: &Rows) -> usize {
-        if rows.n >= if self.pads { 16 } else { 128 } {
+        if rows.n >= 128 {
             return 0;
         }
         self.notes
@@ -4198,7 +4231,7 @@ impl NoteGrid {
         self.lane.h.clamp(LANE_MIN, most)
     }
 
-    /// How many rows the roll has: 16 pads, or 128 notes, less what Fold
+    /// How many rows the roll has: 128 pads or notes, less what Fold
     /// hides.
     fn rows(&self) -> u8 {
         self.row_map().n
@@ -4226,12 +4259,13 @@ impl NoteGrid {
     pub fn open_view(&self, r: Rect) -> RollView {
         let roll = NoteGrid {
             lens: Lens::Grid,
+            pads: self.pads,
             ..NoteGrid::default()
         }
         .geo(r)
         .roll;
         let rows = self.row_map();
-        RollView::open(
+        let v = RollView::open(
             self.notes
                 .iter()
                 .filter_map(|n| Some((n.tick, rows.of(n.note)?))),
@@ -4239,7 +4273,40 @@ impl NoteGrid {
             self.bar,
             roll,
             rows.n,
-        )
+        );
+        // An empty pad clip: the bank the pads play, from its first pad
+        // (plan 4.2).
+        match self.pads && self.notes.is_empty() {
+            true => self.bank_view(v, roll, self.bank),
+            false => v,
+        }
+    }
+
+    /// The view `v` scrolled to bank `bank`'s first pad row (plan 4.2:
+    /// PAD BANK on a pad clip), that row at the bottom of the roll, or
+    /// the first row Fold leaves from there up; the zoom as it was.
+    fn bank_view(&self, mut v: RollView, roll: Rect, bank: u8) -> RollView {
+        let rows = self.row_map();
+        let first = bank.min(7) * 16;
+        let row = (first..128)
+            .find_map(|n| rows.of(n))
+            .or_else(|| (0..first).rev().find_map(|n| rows.of(n)))
+            .unwrap_or(0);
+        v.lift = i32::from(row) * v.row_h;
+        v.follow = false;
+        v.clamped(roll, self.length, rows.n)
+    }
+
+    /// The roll in `r` scrolled to bank `bank`'s first pad row ("PAD BANK
+    /// jumps to a bank", plan 4.2), if it shows pad rows; None otherwise.
+    pub fn show_bank(&mut self, r: Rect, bank: u8) -> Option<RollView> {
+        self.bank = bank.min(7);
+        if !self.pads || self.lens != Lens::Grid {
+            return None;
+        }
+        let g = self.geo(r);
+        self.view = self.bank_view(g.v, g.roll, self.bank);
+        Some(self.view)
     }
 
     /// The view as this roll in `r` shows it (kept within the clip).
@@ -4606,8 +4673,20 @@ impl NoteGrid {
         }
     }
 
+    /// A row's name: the note, or the pad's place and the kit's name
+    /// for it ("A1 Kick", plan 4.2).
     fn row_name(&self, note: u8) -> String {
-        sound_name(note, self.pads)
+        if !self.pads {
+            return note_name(note);
+        }
+        match self
+            .pad_names
+            .get(usize::from(note))
+            .filter(|n| !n.is_empty())
+        {
+            Some(name) => format!("{} {name}", pad_place(note)),
+            None => pad_place(note),
+        }
     }
 
     /// The tick a dragged note's start lands on: snapped to a line.
@@ -4660,7 +4739,7 @@ impl NoteGrid {
     /// the legend.
     fn paint_head(&self, cx: &mut PaintCx, g: &Geo) {
         let t = cx.theme.clone();
-        if g.scale_chip.is_empty() {
+        if g.fold_chip.is_empty() {
             self.paint_switches(cx, g);
             self.paint_legend(cx, g, g.pads_chip.x);
             return;
@@ -4678,26 +4757,22 @@ impl NoteGrid {
             );
             paint_caret(cx, r.right() - 12, r.y + r.h / 2, false, ink);
         };
-        let scale = if self.pads {
-            "none on pads"
-        } else {
-            self.scale_name.as_str()
-        };
-        let lit = self.scale.is_some() && !self.pads;
-        let (fill, scale_ink) = match lit {
-            true => (
-                t.raised.mix(self.color, 0.35),
-                t.ink_on(t.raised.mix(self.color, 0.35)),
-            ),
-            false => (t.raised, ink),
-        };
-        chip(
-            cx,
-            g.scale_chip,
-            &format!("Scale: {scale}"),
-            fill,
-            scale_ink,
-        );
+        if !g.scale_chip.is_empty() {
+            let (fill, scale_ink) = match self.scale.is_some() {
+                true => (
+                    t.raised.mix(self.color, 0.35),
+                    t.ink_on(t.raised.mix(self.color, 0.35)),
+                ),
+                false => (t.raised, ink),
+            };
+            chip(
+                cx,
+                g.scale_chip,
+                &format!("Scale: {}", self.scale_name),
+                fill,
+                scale_ink,
+            );
+        }
         let fold = self.fold_now();
         let (fill, fold_ink) = match fold {
             Fold::All => (t.raised, ink),
@@ -4809,10 +4884,13 @@ impl NoteGrid {
                 Some(k) if k.contains(i16::from(note)) => (lit, t.text_dim, false),
                 // Faint, but never under the theme's floor for text.
                 Some(_) => (t.bg, t.readable(t.text_faint, t.bg), false),
+                // Pad rows (plan 4.2): a line under each bank's first pad,
+                // as under each C.
+                None if self.pads => (t.surface, t.text, note % 16 == 0),
                 None => {
-                    let black = !self.pads && matches!(note % 12, 1 | 3 | 6 | 8 | 10);
-                    let c = !self.pads && note % 12 == 0;
-                    let ink = if c || self.pads { t.text } else { t.text_faint };
+                    let black = matches!(note % 12, 1 | 3 | 6 | 8 | 10);
+                    let c = note % 12 == 0;
+                    let ink = if c { t.text } else { t.text_faint };
                     (if black { t.bg } else { t.surface }, ink, c)
                 }
             };
@@ -4822,11 +4900,17 @@ impl NoteGrid {
                 cx.canvas
                     .fill_rect(Rect::new(g.keys.x, y + 2, 3, rh - 4), self.color);
             }
+            // A pad's place and name read from the left, a note's name
+            // from the keys' edge.
+            let (key, align) = match self.pads {
+                true => (Rect::new(g.keys.x + 8, y, g.keys.w - 14, rh), Align::Left),
+                false => (Rect::new(g.keys.x, y, g.keys.w - 6, rh), Align::Right),
+            };
             cx.text(
                 FontId::Sans,
                 t.size_small - 2.0,
-                Rect::new(g.keys.x, y, g.keys.w - 6, rh),
-                Align::Right,
+                key,
+                align,
                 key_ink,
                 &self.row_name(note),
             );
@@ -5799,7 +5883,7 @@ impl NoteGrid {
             None => format!(
                 "{} · {}",
                 position_name(tick, self.bar),
-                sound_name(note, self.pads)
+                self.row_name(note)
             ),
         };
         let t = cx.theme.clone();
@@ -7589,10 +7673,15 @@ mod tests {
     use super::*;
     use mpfree_seq::mpfree_param::OnTrack;
 
+    /// A clip of these notes: of pad hits while they are all on the
+    /// first 16 pads, else of notes.
     fn clip(notes: &[(Tick, Tick, u8)]) -> Clip {
         let mut c = Clip::new("Bass", 4 * 960);
         for &(t, l, n) in notes {
             c.add_note(Note::new(t, l, n, 100)).unwrap();
+        }
+        if c.notes.iter().any(|n| n.note >= 16) {
+            c.holds = mpfree_seq::Holds::Notes;
         }
         c
     }
@@ -8446,7 +8535,7 @@ mod tests {
         // Draw on an empty step puts the sound there, a step long.
         ed.act(EditAction::Button(2), &c);
         let done = run(&mut ed, &mut c, EditAction::Step(480));
-        assert_eq!(done.line, "edit: Pad 2 drawn at tick 480");
+        assert_eq!(done.line, "edit: Pad A2 drawn at tick 480");
         assert_eq!(ticks_of(&c, &ed.sel), vec![(480, 1)]);
         assert_eq!(c.notes[2].len, 240);
         assert!(ed.act(EditAction::Step(3840), &c).edit.is_empty());
@@ -8476,7 +8565,7 @@ mod tests {
         assert!(a.join.is_some() && a.join == b.join);
         assert_eq!(on(&c, 1), vec![240, 1680, 2880]);
         let rows = edit_rows(&ed, &c);
-        assert_eq!(rows[EUCLID_ROW].value, "Pad 2");
+        assert_eq!(rows[EUCLID_ROW].value, "Pad A2");
         assert_eq!(
             (
                 rows[14].value.as_str(),
@@ -8494,7 +8583,7 @@ mod tests {
             &c,
         );
         assert!(done.edit.is_empty());
-        assert_eq!(done.line, "edit: euclid on Pad 3");
+        assert_eq!(done.line, "edit: euclid on Pad A3");
         assert!(ed.sel.is_empty(), "pad 3 plays nothing");
         ed.act(
             EditAction::Row {
@@ -8597,7 +8686,7 @@ mod tests {
             )
         );
         let cells = |k: usize| g.track_cells(&rows[k]);
-        assert_eq!(cells(0).0[..2], ["1.1.1".to_string(), "Pad 1".to_string()]);
+        assert_eq!(cells(0).0[..2], ["1.1.1".to_string(), "A1".to_string()]);
         assert_eq!(cells(1).0[0], "");
         assert_eq!(cells(2).0[4], "+18");
         assert_eq!(cells(2).0[5], "·");
@@ -9779,6 +9868,7 @@ mod scale_tests {
         for &(t, n) in notes {
             c.add_note(Note::new(t, 240, n, 100)).unwrap();
         }
+        c.holds = mpfree_seq::Holds::Notes;
         c
     }
 
@@ -10808,5 +10898,130 @@ mod ghost_tests {
             tap(&mut d, 3, faint),
             Some(EventKind::Cell { row: 60, .. })
         ));
+    }
+}
+
+/// Drum clips (piano roll plan 4.2): a row a pad, named, and PAD BANK.
+#[cfg(test)]
+mod pad_row_tests {
+    use super::*;
+
+    const R: Rect = Rect {
+        x: 0,
+        y: 0,
+        w: 1100,
+        h: 640,
+    };
+
+    fn drums(pads: &[u8]) -> NoteGrid {
+        let mut names = vec![String::new(); 128];
+        names[0] = "Kick".into();
+        names[1] = "Snare".into();
+        NoteGrid {
+            notes: pads
+                .iter()
+                .map(|&p| NoteBox::of(&Note::new(0, 240, p, 100), false))
+                .collect(),
+            length: 3840,
+            bar: 3840,
+            pads: true,
+            pad_names: Arc::new(names),
+            ..NoteGrid::default()
+        }
+    }
+
+    /// The bottom row the roll shows.
+    fn lowest(g: &NoteGrid) -> u8 {
+        let geo = g.geo(R);
+        let row = *geo.v.notes_shown(geo.roll, geo.rows.n).start();
+        geo.rows.note_of(row).unwrap()
+    }
+
+    /// Clip::holds alone says a clip plays the pads: a kit clip with a
+    /// note past the first bank still does, a clip of notes on low notes
+    /// doesn't.
+    #[test]
+    fn a_clip_of_pad_hits_is_drums_whatever_its_notes() {
+        let mut c = Clip::new("Beat", 3840);
+        c.add_note(Note::new(0, 240, 20, 100)).unwrap();
+        assert!(pads(&c), "pad B5 is a pad");
+        c.holds = mpfree_seq::Holds::Notes;
+        c.notes[0].note = 3;
+        assert!(!pads(&c), "a note low down is a note");
+        assert_eq!(
+            (pad_place(0), pad_place(20), pad_place(127)),
+            ("A1".into(), "B5".into(), "H16".into())
+        );
+        assert_eq!(sound_name(20, true), "Pad B5");
+        assert_eq!(one_named(&c, 60), "note C3");
+    }
+
+    /// Each of the kit's 128 pads has a row, named by its place and the
+    /// kit's name for it; the key column is wider for the names.
+    #[test]
+    fn a_drum_clip_has_a_named_row_for_each_pad() {
+        let g = drums(&[0, 1, 20]);
+        assert_eq!(g.rows(), 128);
+        assert_eq!(
+            (g.row_name(0), g.row_name(1), g.row_name(20)),
+            ("A1 Kick".into(), "A2 Snare".into(), "B5".into())
+        );
+        let keys = |g: &NoteGrid| g.geo(R).keys.w;
+        let notes = NoteGrid {
+            pads: false,
+            ..drums(&[60])
+        };
+        assert!(keys(&g) > keys(&notes), "room for the names");
+        // No scale and no chords on pads: Fold alone.
+        let geo = g.geo(R);
+        assert!(geo.scale_chip.is_empty() && geo.chord_chip.is_empty());
+        assert!(!geo.fold_chip.is_empty());
+        assert_eq!(notes.row_name(60), "C3");
+    }
+
+    /// PAD BANK scrolls a roll of pad rows to the bank's first pad, the
+    /// zoom kept; with Fold on Rows with notes, to the first row there
+    /// from there up. An empty drum clip opens on the bank the pads play;
+    /// a clip of notes doesn't move.
+    #[test]
+    fn pad_bank_scrolls_to_its_banks_first_pad() {
+        let mut g = drums(&[0, 1, 20]);
+        g.view = g.open_view(R);
+        let row_h = g.view.row_h;
+        assert_eq!(lowest(&g), 0, "the notes from A1");
+        let v = g.show_bank(R, 1).expect("a roll of pad rows");
+        assert_eq!((lowest(&g), v.row_h, g.bank), (16, row_h, 1));
+        g.show_bank(R, 7);
+        assert!(lowest(&g) > 16, "as far up as the rows go");
+        // Folded to 24 rows with notes, more than show.
+        let pads: Vec<u8> = (0..13).chain(20..31).collect();
+        let mut g = NoteGrid {
+            fold: Fold::Notes,
+            ..drums(&pads)
+        };
+        g.view = g.open_view(R);
+        g.show_bank(R, 1);
+        assert_eq!(lowest(&g), 20, "B5, the first pad with notes from B1");
+        // Empty, on bank C.
+        let empty = NoteGrid {
+            bank: 2,
+            ..drums(&[])
+        };
+        let open = NoteGrid {
+            view: empty.open_view(R),
+            ..empty
+        };
+        assert_eq!(lowest(&open), 32);
+        // Notes and the list stay where they are.
+        let mut keys = NoteGrid {
+            pads: false,
+            ..drums(&[60])
+        };
+        assert_eq!(keys.show_bank(R, 1), None);
+        let mut list = NoteGrid {
+            lens: Lens::List,
+            ..drums(&[0])
+        };
+        assert_eq!(list.show_bank(R, 1), None);
     }
 }

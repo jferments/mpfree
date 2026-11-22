@@ -9522,6 +9522,8 @@ mod tests {
             ChordShape, EditAction as E, ToolAct, ToolKind, STRUM_ROW, STRUM_TICKS,
         };
         let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        // A track that plays notes: its clip holds notes (plan 4.2).
+        h.set_notes_tracks(1);
         h.step_action(StepAction::Tap {
             pad: 0,
             step: 0,

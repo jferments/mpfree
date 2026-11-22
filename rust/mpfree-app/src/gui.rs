@@ -3113,6 +3113,7 @@ impl Player {
     fn set_kits(&mut self, kits: Vec<KitView>) {
         self.kits = kits;
         self.set_kit(0);
+        self.refresh_edit_pads();
     }
 
     /// Whether kit `k` is one of the empty kits kept for New kit and
@@ -5171,6 +5172,31 @@ impl Player {
         self.play.lock_knobs = knobs;
         self.play.gear = gear;
         self.refresh_edit_locks();
+    }
+
+    /// The note editor's pad rows (piano roll plan 4.2): the names of the
+    /// pads of the kit the track of the clip it shows plays (none for a
+    /// clip of notes, or a track that plays its own instrument or the
+    /// synth), and the bank the pads play, which PAD BANK picks.
+    fn refresh_edit_pads(&mut self) {
+        let none: &[Option<String>] = &[];
+        let names = match self.time.edit.as_deref() {
+            Some(e) if mpfree_time_ui::editor::pads(&e.clip) => {
+                let t = e.editor.track;
+                match played(&self.track_sounds, &self.track_sends, t) {
+                    Some(_) => none,
+                    None => self
+                        .track_kits
+                        .kit_of(t)
+                        .and_then(|k| self.kits.get(k))
+                        .filter(|k| k.synth.is_none())
+                        .map_or(none, |k| k.pads.as_slice()),
+                }
+            }
+            _ => none,
+        };
+        let bank = self.pad_page.min(7) as u8;
+        self.time_page.set_pads(&mut self.ui, names, bank);
     }
 
     /// The note editor's lock lanes (piano roll plan 3A.2): while it is
@@ -9605,6 +9631,8 @@ impl Player {
                     // bank, so the pad they edit is one the pads play.
                     self.sample.set_pad_page(self.kit_page());
                     self.sample_changed();
+                    // A roll of pad rows goes to the bank (piano roll 4.2).
+                    self.refresh_edit_pads();
                 }
             }
             ToUi::Level { db, .. } => {
@@ -9993,12 +10021,14 @@ impl Player {
             ToUi::Plugins(p) => self.project_plugins = p,
             ToUi::TrackSounds(s) => {
                 self.track_sounds = *s;
+                self.refresh_edit_pads();
                 self.refill_sounds();
                 self.refresh_kit_tracks();
                 self.refresh_synth_button();
             }
             ToUi::TrackSends(s) => {
                 self.track_sends = *s;
+                self.refresh_edit_pads();
                 self.refill_sounds();
                 self.refresh_kit_tracks();
                 self.refresh_synth_button();
@@ -10041,6 +10071,7 @@ impl Player {
             ToUi::KitIds(ids) => self.sample.set_kit_ids(*ids),
             ToUi::TrackKits(k) => {
                 self.track_kits = *k;
+                self.refresh_edit_pads();
                 self.refill_sounds();
                 // A user kit a track plays is in the list of kits.
                 self.refresh_kit_list();
@@ -10425,6 +10456,7 @@ impl Player {
                         self.set_kit(kit);
                     }
                 }
+                self.refresh_edit_pads();
                 self.refresh_pads_bar();
                 // The synth's engine or scale: which tracks transpose, and
                 // the key In key moves through.
@@ -10575,6 +10607,7 @@ impl Player {
                     }
                 }
                 self.sample.set_tempo(self.time.transport.bpm);
+                self.refresh_edit_pads();
                 self.time_page.update(&mut self.ui, &self.time);
                 self.play.set_transport(self.time.transport);
                 self.refresh_play();
@@ -19996,6 +20029,17 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("sequencer-notes-pads sample: {e}"),
     }
+    // A drum clip (piano roll plan 4.2): a row a pad, named after the
+    // kit's sounds, from A1 up.
+    match mpfree_time_ui::sample::notes_drums_state() {
+        Ok(state) => {
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Sequencer));
+            out.push(("sequencer-notes-drums", p));
+        }
+        Err(e) => eprintln!("sequencer-notes-drums sample: {e}"),
+    }
     // Other clips faintly behind (piano roll plan 4.1): the stab's pluck
     // that plays with the keys and their first take for reference, the
     // roll at its closest from A3, where the three meet; then the Show
@@ -27200,6 +27244,50 @@ mod tests {
             .iter()
             .filter_map(|l| Some(format!("{} {}", l.name, l.lock.as_ref()?.sub)))
             .collect()
+    }
+
+    /// Drum clips (piano roll plan 4.2): the roll's pad rows carry the
+    /// names of the pads of the kit the track plays, PAD BANK scrolls the
+    /// roll to its bank's first pad, and the roll keeps it.
+    #[test]
+    fn a_drum_clip_names_its_pad_rows_and_pad_bank_scrolls_them() {
+        use mpfree_time_ui::editor::Editor;
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.apply(ToUi::Show(View::Sequencer));
+        let mut clip = mpfree_seq::Clip::new("Beat", 3840);
+        for pad in [0, 1, 2, 3, 20] {
+            clip.add_note(mpfree_seq::Note::new(0, 240, pad, 100))
+                .unwrap();
+        }
+        let mut st = Box::new(p.time.clone());
+        st.edit = Some(Box::new(time_view::EditInfo {
+            editor: Editor::new(0, 0, &clip),
+            clip: clip.clone().into(),
+            rev: 1,
+            track_name: "Track 1".into(),
+            bar: 3840,
+            answer: Default::default(),
+            locks: Default::default(),
+            ghosts: Default::default(),
+        }));
+        p.apply(ToUi::Time(st));
+        p.tick(0.1);
+        let kit = p.track_kits.kit_of(0).expect("track 1 plays a kit");
+        let first = p.kits[kit].pads[0].clone().expect("its first pad is named");
+        let grid = |p: &Player| p.ui.get::<NoteGrid>(time_view::NOTES).unwrap().clone();
+        let g = grid(&p);
+        assert!(g.pads);
+        assert_eq!(g.pad_names[0], first);
+        let low = |g: &NoteGrid| g.view.lift / g.view.row_h.max(1);
+        assert_eq!(low(&g), 0, "the notes from A1");
+        p.apply(ToUi::PadPage(1));
+        let g = grid(&p);
+        assert_eq!((low(&g), g.bank), (16, 1), "bank B from B1");
+        // The next picture keeps it.
+        let st = Box::new(p.time.clone());
+        p.apply(ToUi::Time(st));
+        p.tick(0.1);
+        assert_eq!(low(&grid(&p)), 16);
     }
 
     /// The note editor's Pads write chip asks the time engine to switch
