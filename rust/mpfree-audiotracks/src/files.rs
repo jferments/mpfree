@@ -182,6 +182,9 @@ pub enum FileEvent {
     /// A project's track went in without its regions, as it was recording
     /// when its takes' files had opened.
     TrackLeftOut { track: usize },
+    /// The cache holds the starts of only `held` of the `of` regions
+    /// playing from the drive: the others may start late.
+    HeadsShort { held: usize, of: usize },
 }
 
 impl FileEvent {
@@ -194,7 +197,7 @@ impl FileEvent {
             | FileEvent::State { track, .. }
             | FileEvent::Unopened { track, .. }
             | FileEvent::TrackLeftOut { track } => *track,
-            FileEvent::NoStream { .. } => 0,
+            FileEvent::NoStream { .. } | FileEvent::HeadsShort { .. } => 0,
         }
     }
 
@@ -251,6 +254,10 @@ impl FileEvent {
             FileEvent::NoStream { why } => format!(
                 "audio tracks: takes play from memory, as playing them from the drive couldn't \
                  start ({why})"
+            ),
+            FileEvent::HeadsShort { held, of } => format!(
+                "audio tracks: the cache holds the starts of {held} of the {of} regions playing \
+                 from the drive; the others may start late (a bigger Audio track memory helps)"
             ),
             FileEvent::TrackLeftOut { .. } => format!(
                 "audio tracks: {who}'s regions in the project were left out, as it was recording \

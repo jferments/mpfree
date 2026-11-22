@@ -412,8 +412,9 @@ fn the_host_period_hardly_allocates_while_recording_to_files() {
 /// Phase 3b step 2: with streaming on, the host's period hardly allocates
 /// either (the worker's and the stream thread's channels now and then):
 /// takes recorded to their files and moved to them, the song played from
-/// them, the tracks emptied (the files closed) and a project opened as its
-/// files, then played.
+/// them (the regions' starts held in the cache as it goes), the tracks
+/// emptied (the files closed) and a project opened as its files, then
+/// played.
 #[test]
 fn the_host_period_hardly_allocates_while_takes_play_from_their_files() {
     use mpfree_audiotracks::files::WriterConfig;

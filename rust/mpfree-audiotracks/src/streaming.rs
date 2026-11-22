@@ -20,6 +20,12 @@
 //! - **Read** a whole file behind every playback read
 //!   ([`Coordinator::read_file`]), for a waveform or a fit of a take on
 //!   its file; the bytes go back to the worker.
+//! - **Heads**: hold the start of every region of a take on its file in
+//!   the cache ([`Coordinator::hold_all`], tier Head), in the order the
+//!   host gives (the ones that may play soonest first), a few to a hold,
+//!   so when the cache runs short the last are given back first; the
+//!   answer says how many are held, and so does a later give-back (what
+//!   plays always comes first).
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -27,7 +33,7 @@ use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender, TryRecvError}
 use std::sync::Arc;
 use std::time::Duration;
 
-use mpfree_stream::coord::{Coordinator, IoThread, JobId, JobTier, Plan};
+use mpfree_stream::coord::{Coordinator, HoldId, HoldTier, IoThread, JobId, JobTier, Plan};
 use mpfree_stream::format::Layout;
 use mpfree_stream::msg::MAX_SOURCES;
 use mpfree_stream::player::{Config, Player, UNIT};
@@ -117,10 +123,28 @@ pub(crate) enum ToStream {
         job: u32,
         path: PathBuf,
     },
+    /// Hold these starts of regions in the cache from now on, in the
+    /// order given (the ones that matter most first), instead of the last.
+    Heads(Vec<Head>),
 }
 
+/// The start of a region of a take on its file, to hold in the cache:
+/// frames `from..to` of take `take`'s source. `order` is the host's, for
+/// sorting them by how soon they may play.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Head {
+    pub order: i64,
+    pub take: u16,
+    pub from: u64,
+    pub to: u64,
+}
+
+/// Heads held together, so the cache gives back the last ones first when
+/// it runs short of room.
+const HEADS_A_HOLD: usize = 16;
+
 /// What the stream thread answers the audio thread.
-pub(crate) enum Opened {
+pub(crate) enum FromStream {
     /// Take `take`'s file is open as its source, at generation `gen`.
     Open {
         era: u32,
@@ -135,6 +159,12 @@ pub(crate) enum Opened {
         rec: RecordingId,
         why: String,
     },
+    /// The first `held` of the heads asked for are held (the rest didn't
+    /// fit); the room comes back.
+    Heads { heads: Vec<Head>, held: usize },
+    /// Heads were given back for room (what plays needed it): `held` are
+    /// still held.
+    HeadsGivenBack { held: usize },
 }
 
 /// What the stream thread gives back for a [`ToStream::Read`].
@@ -151,11 +181,11 @@ pub(crate) struct Stream {
 
 /// Start the stream layer for tracks at `rate`: the player (for the audio
 /// thread), and the coordinator on a thread of its own, answering opens
-/// through `opened` and reads through `read`.
+/// and holds through `answer` and reads through `read`.
 pub(crate) fn start(
     rate: u32,
     cfg: StreamConfig,
-    opened: impl Fn(Opened) -> bool + Send + 'static,
+    answer: impl Fn(FromStream) -> bool + Send + 'static,
     read: impl Fn(Read) -> bool + Send + 'static,
 ) -> io::Result<(Box<Player>, Stream)> {
     let plan = Plan { rate, ..cfg.plan };
@@ -166,7 +196,7 @@ pub(crate) fn start(
     let (to, jobs) = channel::<ToStream>();
     std::thread::Builder::new()
         .name("mpfree-at-stream".into())
-        .spawn(move || run(rate, coord, &jobs, opened, read))?;
+        .spawn(move || run(rate, coord, &jobs, answer, read))?;
     Ok((Box::new(player), Stream { tx: to, gate }))
 }
 
@@ -176,7 +206,7 @@ fn run(
     rate: u32,
     c: Coordinator,
     jobs: &Receiver<ToStream>,
-    opened: impl Fn(Opened) -> bool,
+    answer: impl Fn(FromStream) -> bool,
     read: impl Fn(Read) -> bool,
 ) {
     let mut s = Side {
@@ -184,6 +214,7 @@ fn run(
         c,
         gens: vec![0; MAX_SOURCES],
         reading: Vec::new(),
+        heads: Vec::new(),
     };
     loop {
         let mut busy = false;
@@ -191,7 +222,7 @@ fn run(
             match jobs.try_recv() {
                 Ok(m) => {
                     busy = true;
-                    if !s.handle(m, &opened, &read) {
+                    if !s.handle(m, &answer, &read) {
                         return;
                     }
                 }
@@ -200,13 +231,13 @@ fn run(
             }
         }
         busy |= s.c.step();
-        if !s.finish_reads(&read) {
+        if !s.finish_reads(&read) || !s.heads_given_back(&answer) {
             return;
         }
         if !busy {
             match jobs.recv_timeout(Duration::from_millis(2)) {
                 Ok(m) => {
-                    if !s.handle(m, &opened, &read) {
+                    if !s.handle(m, &answer, &read) {
                         return;
                     }
                 }
@@ -225,6 +256,8 @@ struct Side {
     gens: Vec<u32>,
     /// Whole-file reads under way: the worker's job, the coordinator's.
     reading: Vec<(u32, JobId)>,
+    /// The holds on regions' starts.
+    heads: Vec<HoldId>,
 }
 
 impl Side {
@@ -232,7 +265,7 @@ impl Side {
     fn handle(
         &mut self,
         m: ToStream,
-        opened: &impl Fn(Opened) -> bool,
+        answer: &impl Fn(FromStream) -> bool,
         read: &impl Fn(Read) -> bool,
     ) -> bool {
         match m {
@@ -243,7 +276,7 @@ impl Side {
                 path,
                 channels,
                 frames,
-            } => opened(self.open(era, take, rec, &path, channels, frames)),
+            } => answer(self.open(era, take, rec, &path, channels, frames)),
             ToStream::Close { take, gen } => {
                 if self.gens.get(usize::from(take)) == Some(&gen) {
                     self.c.close(take);
@@ -252,9 +285,15 @@ impl Side {
                 true
             }
             ToStream::Project => {
+                // Every hold goes with the sources.
                 self.c.new_project();
                 self.gens.fill(0);
+                self.heads.clear();
                 true
+            }
+            ToStream::Heads(heads) => {
+                let held = self.hold_heads(&heads);
+                answer(FromStream::Heads { heads, held })
             }
             ToStream::Read { job, path } => match self.c.read_file(&path, JobTier::Background) {
                 Ok(id) => {
@@ -267,6 +306,46 @@ impl Side {
                 }),
             },
         }
+    }
+
+    /// Hold `heads` instead of the heads held before, a few to a hold, in
+    /// order, until one doesn't fit: how many are held.
+    fn hold_heads(&mut self, heads: &[Head]) -> usize {
+        // Holds given back before now were the old heads'.
+        while self.c.given_back().is_some() {}
+        for id in self.heads.drain(..) {
+            self.c.release_hold(id);
+        }
+        let mut parts = Vec::with_capacity(HEADS_A_HOLD);
+        for group in heads.chunks(HEADS_A_HOLD) {
+            parts.clear();
+            parts.extend(
+                group
+                    .iter()
+                    .filter(|h| self.gens.get(usize::from(h.take)).is_some_and(|&g| g > 0))
+                    .map(|h| (h.take, h.from, h.to)),
+            );
+            match self.c.hold_all(&parts, None, HoldTier::Head) {
+                Ok(ids) => self.heads.extend(ids),
+                Err(_) => break,
+            }
+        }
+        self.heads.len()
+    }
+
+    /// Heads the coordinator gave back since last looked, as what plays
+    /// needed their room (the last held go first, a hold at a time): the
+    /// host hears how many are still held. False once the answer can't go.
+    fn heads_given_back(&mut self, answer: &impl Fn(FromStream) -> bool) -> bool {
+        let mut gone = false;
+        while let Some(id) = self.c.given_back() {
+            gone = true;
+            self.heads.retain(|&h| h != id);
+        }
+        !gone
+            || answer(FromStream::HeadsGivenBack {
+                held: self.heads.len(),
+            })
     }
 
     /// Whole-file reads finished go back.
@@ -297,9 +376,9 @@ impl Side {
         path: &Path,
         channels: usize,
         frames: usize,
-    ) -> Opened {
+    ) -> FromStream {
         let (c, rate) = (&mut self.c, self.rate);
-        let failed = |why: String| Opened::Failed {
+        let failed = |why: String| FromStream::Failed {
             era,
             take,
             rec,
@@ -319,7 +398,7 @@ impl Side {
             return failed(why);
         }
         self.gens[usize::from(take)] = tag.gen;
-        Opened::Open {
+        FromStream::Open {
             era,
             take,
             rec,

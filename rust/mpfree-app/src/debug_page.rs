@@ -543,6 +543,15 @@ impl DebugPages {
                 Tone::Normal,
             ));
             rows.push((
+                "Audio track region starts in the cache".to_string(),
+                format!("{} of {}", f.heads_held, f.heads_wanted),
+                if f.heads_held == f.heads_wanted {
+                    Tone::Normal
+                } else {
+                    Tone::Warn
+                },
+            ));
+            rows.push((
                 "Audio tracks silent, the drive late".to_string(),
                 format!("{:.1} s", f.silent_s),
                 if f.silent_s == 0.0 {

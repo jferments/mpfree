@@ -169,7 +169,7 @@ Phase 3b plays takes from their files through the [stream layer](disk-streaming.
 
 **Cost.** With no player the tracks skip all of it: the three audio tracks bench cases rose about 1 % (44,735 instructions a block for 8 playing comped takes). A bench case playing from files waits for a way to feed the cache without writing files, since the bench also runs on the MPC.
 
-**Not yet in step 1:** a stick slower than the gap between two short regions makes the third region's start late, since only two regions a track are read ahead. Holding every region's start in the cache answers that (step 4, heads).
+**Not in step 1:** a stick slower than the gap between two short regions makes the third region's start late, since only two regions a track are read ahead. Holding every region's start in the cache answers that (step 4, heads, below).
 
 **Step 2, the host** ([`host.rs`](../../../rust/mpfree-audiotracks/src/host.rs), [`streaming.rs`](../../../rust/mpfree-audiotracks/src/streaming.rs), [`files.rs`](../../../rust/mpfree-audiotracks/src/files.rs)):
 
@@ -189,6 +189,17 @@ Phase 3b plays takes from their files through the [stream layer](disk-streaming.
 - **Dropouts.** About once a second while it happens, `TrackHost::take_file_line` gives a line for the takes on their files that played silence since the last, with the track's name and the bar of the latest: "audio tracks: the drive fell behind: 0.3 s of Vocal went silent at bar 34". Dev's Performance page shows "Audio track takes on their files" and "Audio tracks silent, the drive late" (seconds since the start) while streaming is on. The lanes and the status monitor take these over when they can show them.
 
 **Tests:** in `mpfree-app`, a project's take opens as its 30-second file with no memory taken, a jump the cache can't have yet plays silence that the Performance numbers count, and the log names the track and bar within a second; the Dev option is off by default, kept and used from the next start; `audio_open` with streaming reads no sound, refuses a file of another length by its header, and still reads takes at another rate. In `mpfree-audiotracks`, a project's tracks wait for its takes' files, and one emptied while they open lets nothing in.
+
+**Step 4, region starts** ([`host.rs`](../../../rust/mpfree-audiotracks/src/host.rs) `tend_heads`, [`streaming.rs`](../../../rust/mpfree-audiotracks/src/streaming.rs) `hold_heads`): every region of a take on its file has its start held in the cache, so a jump, a region after a gap, or the third of three short regions never waits on the drive.
+
+- **What is held.** From each region's first frame of its take, twice the longest stall the plan expects of the drive (`Plan::stall_s`, 0.5 s, so 1 s; never under 0.25 s), or to the take's end.
+- **When.** About every 93 ms (32 periods of 128 frames) the host fingerprints the regions of takes on their files and which four bars the playhead is in, without allocating. When that changes, it fills a list made once at start (`MAX_HEADS`, every region of every track) and sends it to the stream thread: the regions ahead of the playhead first, nearest first, then the ones behind it, most recent first.
+- **On the stream thread** the old holds are let go and the new ones taken, 16 to a hold (`Coordinator::hold_all`, tier Head), in that order, until one doesn't fit beside what plays (at the least window) and what is reserved. The answer says how many are held and brings the list back.
+- **What plays comes first.** When playing needs the room (more regions at once, the window growing), the coordinator gives back the last holds first; the stream thread tells the host how many are left.
+- **Too small a cache.** If the cache can't hold every start, the soonest are held, the log says so ("audio tracks: the cache holds the starts of 16 of the 24 regions playing from the drive; the others may start late (a bigger Audio track memory helps)", `FileEvent::HeadsShort`) once for each number of regions, and again only if fewer still are held, and the host asks again every 2.7 s or so in case room came back. Dev's Performance page shows "Audio track region starts in the cache" (held of wanted) while streaming is on.
+- **Cost.** The audio thread sorts at most a few thousand small entries when the regions change, and nothing else; each hold costs the stream thread a pass over the held units, so thousands of regions cost it a few milliseconds per change, off the audio thread.
+
+**Tests** (`tests/host_stream.rs`): a 24-bar take cut in four has its four starts in the cache and not the middle of a region; playing, a jump into the middle of a region plays silence for a moment but a jump to a region's start doesn't; moving a region over the next moves the starts held. With a cache of 24 units and 24 regions, the first 16 starts from the playhead are held and the last 8 not, said once, and asking again a few seconds on says nothing more. The app's Performance numbers show the start held. Loop starts are not held yet: the tracks don't know the transport's loop (next in step 4).
 
 ## In the pad player
 
@@ -267,7 +278,7 @@ The plan keeps recordings, clips, tracks and players apart: a recording is sound
 
 ## Not built yet
 
-- Playing takes from their files, steps 4 and 5 of phase 3b: region starts held in the cache, unused files cleared, outside files and their own rates, and imports and fitted takes written to files; and takes longer than memory. Streaming is behind Dev's switch until then.
+- Playing takes from their files, the rest of steps 4 and 5 of phase 3b: loop starts held in the cache, unused files cleared, outside files and their own rates, and imports and fitted takes written to files; and takes longer than memory. Streaming is behind Dev's switch until then.
 - The take states on the lanes ("Unsaved: N s", At risk, Stopped) wait for the layout spec; until then they go to the log, and the status monitor will count them.
 - Clearing out files in a project's `samples/` that no save names any more. Takes never saved in a project are not deleted: the next start moves them into Recordings.
 - Fitting takes on its own when the tempo changes. The host fits one take when asked; deciding when to ask is the app's call.

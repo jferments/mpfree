@@ -62,11 +62,26 @@ use mpfree_transport::{Block, Tick};
 
 use crate::files::{self, FileEvent, FileView, Files, Name, Said, WriterConfig};
 use crate::save::{Saved, TakeFile};
-use crate::streaming::{self, Opened, Read, Stream, StreamConfig, ToStream};
+use crate::streaming::{self, FromStream, Head, Read, Stream, StreamConfig, ToStream};
 use crate::stretch::{fit_ratio, StretchJob};
 use crate::{
-    AudioTracks, Command, Io, RecordingId, TakeInfo, CHUNK, MAX_TAKES, MAX_TRACKS, PEAK_BLOCK,
+    AudioTracks, Command, Io, RecordingId, TakeInfo, CHUNK, MAX_REGIONS, MAX_TAKES, MAX_TRACKS,
+    PEAK_BLOCK,
 };
+
+/// The most region starts held in the cache: every region of every track.
+pub const MAX_HEADS: usize = MAX_TRACKS * MAX_REGIONS;
+/// Periods between looks at whether the regions' starts to hold have
+/// changed (about 93 ms at 128 frames).
+const HEADS_EVERY: u64 = 32;
+/// The playhead moving into another stretch of this many ticks (four bars
+/// of 4/4) sorts the starts again.
+const HEADS_SPAN: Tick = 16 * mpfree_transport::time::PPQ as Tick;
+/// The shortest start held, in seconds.
+const MIN_HEAD_S: f64 = 0.25;
+/// Periods between asks again while the cache holds only some of the
+/// starts (about 2.7 s at 128 frames): room may have come back.
+const HEADS_RETRY: u64 = 1024;
 
 /// Recording to files: samples copied out of the tracks' memory in one
 /// period at most: 64 times what 8 stereo tracks record in a 128-frame
@@ -208,6 +223,8 @@ enum ToWorker {
     /// Start the stream layer: takes play from their files (boxed: sent
     /// once, at start, and far bigger than the rest).
     Stream(Box<StreamConfig>),
+    /// Hold these regions' starts in the cache (the room comes back).
+    Heads(Vec<Head>),
     /// Close take `take`'s stream source, if still at generation `gen`.
     Close {
         take: u16,
@@ -260,7 +277,7 @@ enum FromWorker {
     /// The stream layer couldn't start: why.
     StreamFailed(String),
     /// What came of opening a take's file (from the stream thread).
-    Opened(Opened),
+    Stream(FromStream),
     /// A waveform read from a take's file.
     WaveFile(TakeWave),
 }
@@ -349,6 +366,21 @@ pub struct AudioHost {
     /// A project's takes waiting for their files to open (room for every
     /// take, made once; a take here holds no audio, name or path).
     opening: Vec<TakeFile>,
+    /// Room for the starts of the regions of takes on their files, to
+    /// hold in the cache (made when streaming starts; away while the
+    /// stream thread holds them), what they were last made from, and how
+    /// many frames each is.
+    heads: Option<Vec<Head>>,
+    heads_from: u64,
+    head_frames: u64,
+    /// Region starts held in the cache, of those wanted, as the stream
+    /// thread last said; the shortfall last said in the log; periods run,
+    /// and the period the starts last went.
+    pub heads_held: usize,
+    pub heads_wanted: usize,
+    heads_said: (usize, usize),
+    periods: u64,
+    heads_sent: u64,
     /// That project's tracks (its takes taken out), waiting until every
     /// take has come in or been left out: then they go in, without the
     /// regions of a take left out, so no region ever plays a take that
@@ -409,6 +441,14 @@ impl AudioHost {
             streaming: false,
             opening: Vec::with_capacity(MAX_TAKES),
             waiting: None,
+            heads: None,
+            heads_from: 0,
+            head_frames: 0,
+            heads_held: 0,
+            heads_wanted: 0,
+            heads_said: (0, 0),
+            periods: 0,
+            heads_sent: 0,
         }
     }
 
@@ -417,12 +457,18 @@ impl AudioHost {
     /// `cfg`, and the tracks get its player a moment later. Call it once,
     /// at start, before [`AudioHost::record_to`], so the writer waits for
     /// playback's reads. False (nothing changed) once files are on, if it
-    /// is on already, or with no worker. Does not allocate.
+    /// is on already, or with no worker. Makes the room for the regions'
+    /// starts it holds in the cache, each twice the longest stall the
+    /// plan expects of the drive (`cfg.plan.stall_s`): not on the audio
+    /// thread.
     pub fn stream(&mut self, cfg: StreamConfig) -> bool {
         if self.tx.is_none() || self.streaming || self.tracks.records_to_files() {
             return false;
         }
         self.streaming = true;
+        self.heads = Some(Vec::with_capacity(MAX_HEADS));
+        let head_s = (2.0 * cfg.plan.stall_s).max(MIN_HEAD_S);
+        self.head_frames = (head_s * f64::from(self.tracks.rate())) as u64;
         self.send(ToWorker::Stream(Box::new(cfg)));
         true
     }
@@ -518,6 +564,72 @@ impl AudioHost {
         self.tracks.process(block, map, input, out);
         self.tend_import(map);
         self.tend(block.frames as usize);
+        self.periods += 1;
+        if self.streaming && self.periods.is_multiple_of(HEADS_EVERY) {
+            if let Some(sp) = block.spans().last() {
+                self.tend_heads(sp.tick_at(sp.frame + u64::from(sp.len)) as Tick);
+            }
+        }
+    }
+
+    /// Every region of a take on its file has its start held in the cache
+    /// (the stream thread's [`ToStream::Heads`]), so a jump or a region
+    /// after a gap never waits on the drive: once the regions, the takes
+    /// on their files or the playhead's four bars change, their starts
+    /// go to the stream thread, the ones ahead of the playhead first,
+    /// nearest first, then the ones behind it. If the cache can't hold
+    /// them all, the last are left out, the log says how many, and they
+    /// go again every few seconds in case room came back. Does not
+    /// allocate.
+    fn tend_heads(&mut self, now: Tick) {
+        let Some(mut heads) = self.heads.take() else {
+            // The stream thread has the room.
+            return;
+        };
+        let tr = &self.tracks;
+        let mix = |h: u64, v: u64| (h ^ v).wrapping_mul(0x0100_0000_01b3);
+        let mut from = mix(0xcbf2_9ce4_8422_2325, now.div_euclid(HEADS_SPAN) as u64);
+        for t in 0..MAX_TRACKS {
+            for r in tr.regions(t).iter().filter(|r| tr.on_file(r.take)) {
+                for v in [t as u64, r.start as u64, r.src as u64, u64::from(r.take)] {
+                    from = mix(from, v);
+                }
+            }
+        }
+        let retry =
+            self.heads_held < self.heads_wanted && self.periods - self.heads_sent >= HEADS_RETRY;
+        if from == self.heads_from && !retry {
+            self.heads = Some(heads);
+            return;
+        }
+        self.heads_from = from;
+        self.heads_sent = self.periods;
+        heads.clear();
+        for t in 0..MAX_TRACKS {
+            for r in tr.regions(t) {
+                let Some(k) = tr.take(r.take).filter(|_| tr.on_file(r.take)) else {
+                    continue;
+                };
+                let (start, frames) = (r.src.max(0) as u64, k.frames as u64);
+                if start >= frames || heads.len() == heads.capacity() {
+                    continue;
+                }
+                let order = if r.end > now {
+                    (r.start - now).max(0)
+                } else {
+                    Tick::MAX / 2 + (now - r.start)
+                };
+                heads.push(Head {
+                    order,
+                    take: r.take,
+                    from: start,
+                    to: (start + self.head_frames).min(frames),
+                });
+            }
+        }
+        heads.sort_unstable();
+        self.heads_wanted = heads.len();
+        self.send(ToWorker::Heads(heads));
     }
 
     /// Start saving the audio tracks; the result comes in
@@ -881,6 +993,8 @@ impl AudioHost {
         });
         if self.streaming {
             self.send(ToWorker::Project);
+            // A new project's shortfall is news.
+            self.heads_said = (0, 0);
         }
         true
     }
@@ -966,7 +1080,7 @@ impl AudioHost {
                     self.tracks_in();
                     self.event(FileEvent::NoStream { why });
                 }
-                FromWorker::Opened(o) => self.opened(o),
+                FromWorker::Stream(o) => self.stream_said(o),
                 FromWorker::WaveFile(w) => match self.waving {
                     Some(Waving::File { id }) if id == w.id => {
                         self.waving = None;
@@ -1060,17 +1174,39 @@ impl AudioHost {
         self.tend_wave(WAVE_SPEED * frames.max(1));
     }
 
-    /// What came of opening a take's file: a project's take comes in as
-    /// its file, a recorded one moves to it; a file no take wants any
-    /// more is closed.
-    fn opened(&mut self, o: Opened) {
+    /// The log hears when the cache holds fewer of the regions' starts
+    /// than wanted: once for each number wanted, and again only if fewer
+    /// still are held (so a cache that keeps giving room back and taking
+    /// it again doesn't fill the log).
+    fn heads_short(&mut self) {
+        let (held, of) = (self.heads_held, self.heads_wanted);
+        let (said_held, said_of) = self.heads_said;
+        if held < of && (of != said_of || held < said_held) {
+            self.heads_said = (held, of);
+            self.event(FileEvent::HeadsShort { held, of });
+        }
+    }
+
+    /// What the stream thread answers: a project's take comes in as its
+    /// file, a recorded one moves to it, a file no take wants any more is
+    /// closed; and how many regions' starts the cache holds.
+    fn stream_said(&mut self, o: FromStream) {
         match o {
             // For tracks since emptied: its source goes.
-            Opened::Open { era, take, gen, .. } if era != self.generation => {
+            FromStream::Open { era, take, gen, .. } if era != self.generation => {
                 self.send(ToWorker::Close { take, gen });
             }
-            Opened::Failed { era, .. } if era != self.generation => {}
-            Opened::Open { take, rec, gen, .. } => {
+            FromStream::Failed { era, .. } if era != self.generation => {}
+            FromStream::Heads { heads, held } => {
+                self.heads = Some(heads);
+                self.heads_held = held;
+                self.heads_short();
+            }
+            FromStream::HeadsGivenBack { held } => {
+                self.heads_held = held;
+                self.heads_short();
+            }
+            FromStream::Open { take, rec, gen, .. } => {
                 if let Some(i) = self
                     .opening
                     .iter()
@@ -1098,7 +1234,7 @@ impl AudioHost {
                     self.send(ToWorker::Close { take, gen });
                 }
             }
-            Opened::Failed { take, rec, why, .. } => {
+            FromStream::Failed { take, rec, why, .. } => {
                 if let Some(i) = self
                     .opening
                     .iter()
@@ -1820,15 +1956,15 @@ impl Worker {
                 if self.stream.is_some() {
                     return None;
                 }
-                let opened = {
+                let answer = {
                     let done = done.clone();
-                    move |o| done.send(FromWorker::Opened(o)).is_ok()
+                    move |o| done.send(FromWorker::Stream(o)).is_ok()
                 };
                 let read = {
                     let back = back.clone();
                     move |r| back.send(ToWorker::Read(r)).is_ok()
                 };
-                match streaming::start(rate, *cfg, opened, read) {
+                match streaming::start(rate, *cfg, answer, read) {
                     Ok((player, st)) => {
                         files.stream();
                         self.stream = Some(st);
@@ -1836,6 +1972,10 @@ impl Worker {
                     }
                     Err(e) => FromWorker::StreamFailed(e.to_string()),
                 }
+            }
+            ToWorker::Heads(heads) => {
+                self.to_stream(ToStream::Heads(heads));
+                return None;
             }
             ToWorker::Close { take, gen } => {
                 self.to_stream(ToStream::Close { take, gen });

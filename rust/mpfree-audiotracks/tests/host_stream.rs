@@ -7,7 +7,10 @@
 //! memory; a project take whose file is missing is left out and said,
 //! with its regions; a project's tracks wait for its takes' files;
 //! clearing closes the files, and a project opens again after; streaming
-//! can't start once recording to files has.
+//! can't start once recording to files has. Step 4: every region's start
+//! is held in the cache (so a jump to one never waits on the drive), and
+//! follows the regions as they change; a cache too small for them all
+//! holds the soonest and the log says so, once.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -22,6 +25,7 @@ use mpfree_transport::{Block, Command as T, Transport};
 
 const RATE: u32 = 22_050;
 const BAR: u64 = 22_050; // at 240 BPM
+const BAR_T: i64 = 4 * 960;
 const P: u64 = 256;
 /// Where every rig starts recording, the same frame in each.
 const START: u64 = 8 * BAR;
@@ -51,9 +55,13 @@ fn quick() -> WriterConfig {
 }
 
 fn small() -> StreamConfig {
+    cache(256)
+}
+
+fn cache(slots: usize) -> StreamConfig {
     StreamConfig {
         cache: Config {
-            slots: 256,
+            slots,
             ..Config::default()
         },
         ..StreamConfig::default()
@@ -73,9 +81,15 @@ impl Rig {
     /// A host recording to files in `dir`, with takes played from their
     /// files if `stream`.
     fn new(dir: Option<&Path>, stream: bool) -> Rig {
+        Rig::with(dir, stream.then(small))
+    }
+
+    /// [`Rig::new`] with takes played from their files through `cfg`.
+    fn with(dir: Option<&Path>, cfg: Option<StreamConfig>) -> Rig {
         let mut h = AudioHost::new(RATE, 30);
-        if stream {
-            assert!(h.stream(small()));
+        let stream = cfg.is_some();
+        if let Some(cfg) = cfg {
+            assert!(h.stream(cfg));
         }
         if let Some(dir) = dir {
             assert!(h.record_to(dir.to_path_buf(), quick()).is_ok());
@@ -157,6 +171,41 @@ impl Rig {
             });
         }
         assert_eq!(self.h.tracks.takes().count(), 2);
+    }
+
+    /// Track 0 (mono) records `bars` bars from [`START`], then disarms;
+    /// until its take is on its file.
+    fn record_long(&mut self, bars: u64) {
+        self.h.command(A::Arm(0, true));
+        self.run_until(|r| r.h.armed_file(0) == Some(true));
+        assert!(self.frame < START - P);
+        self.t.command(START, T::Record);
+        self.t.command(START + bars * BAR, T::Stop);
+        self.run_to(START + bars * BAR + 4 * P);
+        self.h.command(A::Arm(0, false));
+        self.live = false;
+        self.run_until(|r| r.all_on_file());
+        assert_eq!(self.h.tracks.takes().count(), 1);
+    }
+
+    /// Track 0 cut at each of `bars`; its regions after.
+    fn split(&mut self, bars: impl IntoIterator<Item = i64>) -> Vec<mpfree_audiotracks::Region> {
+        for bar in bars {
+            assert!(self.h.command(A::Split {
+                track: 0,
+                at: bar * BAR_T
+            }));
+        }
+        self.period();
+        self.h.tracks.regions(0).to_vec()
+    }
+
+    /// Whether the cache holds frames `from..from + frames` of take `k`.
+    fn cached(&self, k: u16, from: i64, frames: u64) -> bool {
+        self.h
+            .tracks
+            .player()
+            .is_some_and(|p| p.covers(k, from as u64, frames))
     }
 
     /// Three bars from bar 1, from the next period. The periods run far
@@ -392,5 +441,91 @@ fn streaming_starts_only_before_recording_to_files() {
     assert!(h.stream(small()));
     assert!(!h.stream(small()), "once");
     assert!(h.streams());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_starts_of_regions_on_their_files_are_held_so_a_jump_to_one_plays_at_once() {
+    let dir = scratch("heads");
+    let mut r = Rig::with(Some(&dir), Some(cache(64)));
+    r.record_long(24);
+    let regions = r.split([6, 12, 18]);
+    assert_eq!(regions.len(), 4);
+    r.run_until(|r| r.h.heads_wanted == 4 && r.h.heads_held == 4);
+    // A second of each: twice the longest stall the plan expects.
+    let k = regions[0].take;
+    r.run_until(|r| regions.iter().all(|g| r.cached(k, g.src, BAR)));
+    // Only the starts: not the rest of a region (the playhead, stopped
+    // at the end of the take, wants nothing).
+    assert!(!r.cached(k, regions[2].src + 3 * BAR as i64, P));
+    // Playing: a jump into the middle of a region, which the cache can't
+    // have yet, plays silence for a moment; a jump to a region's start
+    // plays at once.
+    r.t.command(r.frame, T::Locate(0));
+    r.run_to(r.frame + 2 * P);
+    r.t.command(r.frame, T::PlayStart);
+    r.run_to(r.frame + 10 * P);
+    let missed = |r: &Rig| r.h.tracks.stats().missed;
+    assert_eq!(missed(&r), 0, "bar 1's start is held too");
+    r.t.command(r.frame, T::Locate(15 * BAR_T));
+    r.run_to(r.frame + 2 * P);
+    let m = missed(&r);
+    assert!(m > 0);
+    r.t.command(r.frame, T::Locate(12 * BAR_T));
+    r.run_to(r.frame + 2 * P);
+    assert_eq!(missed(&r), m);
+    r.t.command(r.frame, T::StopAndRewind);
+    r.run_to(r.frame + 2 * P);
+    // Moved over the next one: the starts held follow the regions.
+    assert!(r.h.command(A::Move {
+        track: 0,
+        at: 13 * BAR_T,
+        to: 15 * BAR_T
+    }));
+    r.period();
+    let moved = r.h.tracks.regions(0).to_vec();
+    assert_ne!(moved, regions);
+    r.run_until(|r| moved.iter().all(|g| r.cached(k, g.src, BAR)));
+    assert!(r.events().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_cache_too_small_for_every_start_holds_the_soonest_and_says_so_once() {
+    let dir = scratch("short");
+    // 24 units: the first 16 starts (a second each, 22 units of the
+    // mono take) fit, the next 8 don't.
+    let mut r = Rig::with(Some(&dir), Some(cache(24)));
+    r.record_long(24);
+    r.t.command(r.frame, T::Locate(0));
+    r.run_to(r.frame + 2 * P);
+    let regions = r.split(1..24);
+    assert_eq!(regions.len(), 24);
+    let mut ev = Vec::new();
+    r.run_until(|r| {
+        ev.extend(r.events());
+        !ev.is_empty()
+    });
+    assert!(
+        matches!(ev[..], [FileEvent::HeadsShort { held: 16, of: 24 }]),
+        "{ev:?}"
+    );
+    assert!(ev[0].line("").starts_with(
+        "audio tracks: the cache holds the starts of 16 of the 24 regions playing from the drive"
+    ));
+    assert_eq!((r.h.heads_held, r.h.heads_wanted), (16, 24));
+    // The soonest: from the playhead on.
+    let k = regions[0].take;
+    r.run_until(|r| regions[..16].iter().all(|g| r.cached(k, g.src, BAR)));
+    assert!(regions[17..].iter().all(|g| !r.cached(k, g.src, P)));
+    // Asked again a few seconds on, in case room came back: the same, so
+    // the log hears nothing more.
+    r.run_to(r.frame + 1100 * P);
+    for _ in 0..100 {
+        r.period();
+        std::thread::sleep(Duration::from_micros(300));
+    }
+    assert!(r.events().is_empty());
+    assert_eq!(r.h.heads_held, 16);
     let _ = std::fs::remove_dir_all(&dir);
 }

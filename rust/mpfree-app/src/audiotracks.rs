@@ -304,6 +304,10 @@ pub struct StreamNumbers {
     /// Seconds of takes on their files that played as silence, the drive
     /// being late, since the start.
     pub silent_s: f64,
+    /// Starts of regions of takes on their files held in the cache, of
+    /// those wanted (fewer if the cache is too small for them all).
+    pub heads_held: usize,
+    pub heads_wanted: usize,
 }
 
 impl TrackHost {
@@ -384,6 +388,8 @@ impl TrackHost {
             on_file: tr.takes().filter(|k| tr.on_file(k.id)).count(),
             takes: tr.takes().count(),
             silent_s: tr.stats().missed as f64 / f64::from(self.rate),
+            heads_held: self.host.heads_held,
+            heads_wanted: self.host.heads_wanted,
         })
     }
 
@@ -3352,8 +3358,18 @@ mod tests {
                 on_file: 1,
                 takes: 1,
                 silent_s: 0.0,
+                ..r.h.stream_numbers().unwrap()
             })
         );
+        // The region's start is held in the cache.
+        let t0 = Instant::now();
+        while r.h.stream_numbers().unwrap().heads_held == 0 {
+            assert!(t0.elapsed() < Duration::from_secs(20), "never held");
+            r.period();
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        let n = r.h.stream_numbers().unwrap();
+        assert_eq!((n.heads_held, n.heads_wanted), (1, 1));
         // Playing, then on at once to bar 11 (20 s in), which the cache
         // can't have yet: its first period plays silence.
         r.command(T::Locate(0));
