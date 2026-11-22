@@ -1362,3 +1362,25 @@ fn a_late_pipeline_silences_the_returns_until_their_inserts_come_back() {
     assert_eq!(m.chain(StripId::Return(0)).unwrap().len(), 1);
     assert_eq!(m.chain(StripId::Return(1)).unwrap().len(), 1);
 }
+
+/// What the next block will have: the last value queued for a control,
+/// else the control as it stands, so steps given between two blocks add
+/// up (the audio tracks' panel level and pan step from it).
+#[test]
+fn wanted_is_the_last_value_queued_else_the_value_now() {
+    let mut m = mixer(small());
+    let t = StripId::Track(1);
+    m.set_now(t, mx::VOLUME, -3.0);
+    assert_eq!(m.wanted(t, mx::VOLUME), -3.0);
+    assert!(m.set(t, mx::VOLUME, -4.0));
+    assert!(m.set(t, mx::PAN, 20.0));
+    assert!(m.set(t, mx::VOLUME, -5.0));
+    assert_eq!(m.param(t, mx::VOLUME), -3.0, "not yet");
+    assert_eq!(m.wanted(t, mx::VOLUME), -5.0);
+    assert_eq!(m.wanted(t, mx::PAN), 20.0);
+    let s = Script::default();
+    play(&mut m, &s, 512, &mut blocks(512));
+    assert_eq!(m.param(t, mx::VOLUME), -5.0);
+    assert_eq!(m.wanted(t, mx::VOLUME), -5.0);
+    assert!(m.wanted(StripId::Track(99), mx::VOLUME).is_nan());
+}

@@ -1,15 +1,20 @@
 //! Tempo from the first loop, against a real transport. With the song
-//! stopped and every other loop empty, a loop on Free length records free
+//! stopped and every other loop empty, a loop's first pass records free
 //! (no bars yet) from Record, or from your note with When I play. Record
 //! again closes it on the next period's first frame, and its length sets
-//! the tempo: the fewest bars (1, 2, 4 ...) that put it between 80 and
-//! 160 BPM, from the start of the bar the song stopped in. The host starts
-//! the song there, on the frame the loop comes round, at that tempo.
+//! the tempo: the bars Length set, or on Free length the bars the reading
+//! picks (`read_bars`), from the start of the bar the song stopped in.
+//! The host starts the song there, on the frame the loop comes round, at
+//! that tempo.
 //!
-//! 22.05 kHz in 4/4. The song is at 100 BPM before; a bar at 160 BPM is
-//! 33 075 frames (1.5 s), at 80 BPM 66 150 (3 s).
+//! 22.05 kHz in 4/4. The song is at 100 BPM before; a bar at 300 BPM is
+//! 17 640 frames (0.8 s), at 160 BPM 33 075 (1.5 s), at 80 BPM 66 150
+//! (3 s).
 
-use mpfree_looper::{free_tempo, After, Command as L, Looper, Phase, Starts, FADE};
+use mpfree_looper::{
+    read_bars, After, Command as L, Looper, Phase, Reading, Starts, Sure, TempoHint, TempoKind,
+    FADE, LOOP_MAX_BPM,
+};
 use mpfree_transport::time::PPQ;
 use mpfree_transport::{Block, Command as T, Meter, State, Transport};
 
@@ -29,6 +34,8 @@ struct Rig {
     out: Vec<f32>,
     /// What the looper asked for: loop, tempo and frame.
     tempo: Option<(usize, f64, u64)>,
+    /// How the loop's length read.
+    reading: Option<Reading>,
     /// Starts the looper asked for (When I play, stopped): none here.
     starts: usize,
 }
@@ -47,6 +54,7 @@ impl Rig {
             mix: vec![0.0; 2 * period],
             out: Vec::new(),
             tempo: None,
+            reading: None,
             starts: 0,
         };
         r.cmd(L::TempoFromLoop(true));
@@ -83,7 +91,9 @@ impl Rig {
                 .process(&self.b, &self.input[..2 * n], &mut self.mix[..2 * n]);
             self.out.extend_from_slice(&self.mix[..2 * n]);
             self.frame += n as u64;
-            if let Some((k, bpm, at)) = self.l.take_tempo() {
+            if let Some((k, reading, at)) = self.l.take_tempo() {
+                let bpm = reading.bpm;
+                self.reading = Some(reading);
                 assert_eq!(at, self.frame, "the next period's first frame");
                 assert_eq!(self.t.state(), State::Stopped);
                 let pos = self.t.position();
@@ -135,36 +145,116 @@ fn close(a: [f32; 2], b: [f32; 2]) -> bool {
     (a[0] - b[0]).abs() < 1e-5 && (a[1] - b[1]).abs() < 1e-5
 }
 
+/// The old rule: the fewest bars (1, 2, 4 ...) at 80 BPM or more.
+fn old_window(len: usize, bar: i64) -> (u32, f64) {
+    let quarters = bar as f64 / PPQ as f64;
+    let tempo = |bars: u32| 60.0 * f64::from(RATE) * quarters * f64::from(bars) / len as f64;
+    let mut bars = 1;
+    while tempo(bars) < 80.0 {
+        bars *= 2;
+    }
+    (bars, tempo(bars))
+}
+
 #[test]
-fn the_bars_are_the_fewest_that_make_80_to_160_bpm() {
+fn with_nothing_else_to_go_on_the_reading_picks_what_80_to_160_did() {
+    let read = |len: usize, bar: i64| read_bars(len, RATE, bar, None, None);
     // 4/4: a bar at 120 BPM is 2 s.
-    assert_eq!(free_tempo(44_100, RATE, BAR_TICKS), Some((1, 120.0)));
-    // The edges: one bar at 160 exactly, and shorter waits.
-    assert_eq!(free_tempo(33_075, RATE, BAR_TICKS), Some((1, 160.0)));
-    assert_eq!(free_tempo(33_074, RATE, BAR_TICKS), None);
-    // One bar at 80 exactly; a frame longer is 2 bars just under 160.
-    assert_eq!(free_tempo(66_150, RATE, BAR_TICKS), Some((1, 80.0)));
-    let (bars, bpm) = free_tempo(66_151, RATE, BAR_TICKS).unwrap();
-    assert_eq!(bars, 2);
-    assert!(bpm < 160.0 && bpm > 159.99, "{bpm}");
-    // 7 s: 4 bars at 137.14.
-    let (bars, bpm) = free_tempo(154_350, RATE, BAR_TICKS).unwrap();
-    assert_eq!(bars, 4);
-    assert!((bpm - 960.0 / 7.0).abs() < 1e-9, "{bpm}");
+    let r = read(44_100, BAR_TICKS).unwrap();
+    assert_eq!(
+        (r.bars, r.bpm, r.sure, r.other),
+        (1, 120.0, Sure::Clear, None)
+    );
+    // The shortest is a bar at 300 BPM (it was a bar at 160).
+    assert_eq!(
+        read(17_640, BAR_TICKS).map(|r| (r.bars, r.bpm)),
+        Some((1, 300.0))
+    );
+    assert_eq!(read(17_639, BAR_TICKS), None);
+    assert_eq!(read(33_075, BAR_TICKS).map(|r| r.bpm), Some(160.0));
+    // One bar at 80 exactly: as before, but it says it's a close call.
+    let r = read(66_150, BAR_TICKS).unwrap();
+    assert_eq!((r.bars, r.bpm, r.sure), (1, 80.0, Sure::Ambiguous));
+    assert_eq!(r.other, Some((2, 160.0)));
+    // A frame longer: 2 bars just under 160, the same close call.
+    let r = read(66_151, BAR_TICKS).unwrap();
+    assert_eq!((r.bars, r.sure), (2, Sure::Ambiguous));
+    assert!(r.bpm < 160.0 && r.bpm > 159.99, "{}", r.bpm);
+    assert_eq!(r.other.map(|o| o.0), Some(1));
+    // 7 s: 4 bars at 137.14, clear.
+    let r = read(154_350, BAR_TICKS).unwrap();
+    assert_eq!((r.bars, r.sure), (4, Sure::Clear));
+    assert!((r.bpm - 960.0 / 7.0).abs() < 1e-9, "{}", r.bpm);
     // 6/8 (3 quarter notes a bar): 1.5 s is a bar at 120.
-    let (bars, bpm) = free_tempo(33_075, RATE, 3 * PPQ as i64).unwrap();
-    assert_eq!((bars, bpm), (1, 120.0));
+    let r = read(33_075, 3 * PPQ as i64).unwrap();
+    assert_eq!((r.bars, r.bpm), (1, 120.0));
     // Nothing recorded, or no bar: none.
-    assert_eq!(free_tempo(0, RATE, BAR_TICKS), None);
-    assert_eq!(free_tempo(44_100, RATE, 0), None);
-    // Every length gives a tempo from 80 up to 160, with bars making the
-    // length exactly.
-    for len in (33_075..2_000_000).step_by(9_973) {
-        let (bars, bpm) = free_tempo(len, RATE, BAR_TICKS).unwrap();
-        assert!((80.0..=160.0).contains(&bpm), "{len}: {bpm}");
-        assert!(bars.is_power_of_two());
-        let frames = f64::from(bars) * 4.0 * 60.0 * f64::from(RATE) / bpm;
-        assert!((frames - len as f64).abs() < 1e-6, "{len}: {frames}");
+    assert_eq!(read(0, BAR_TICKS), None);
+    assert_eq!(read(44_100, 0), None);
+    // Every length the old rule took reads as it did, with bars making
+    // the length exactly; clear well inside the old window, a close call
+    // near its edges.
+    for bar in [BAR_TICKS, 3 * PPQ as i64, 7 * PPQ as i64 / 2] {
+        let shortest = (bar as f64 / PPQ as f64 * 60.0 * f64::from(RATE) / 160.0).ceil() as usize;
+        for len in (shortest..2_000_000).step_by(9_973) {
+            let r = read(len, bar).unwrap();
+            assert_eq!(
+                (r.bars, r.bpm),
+                old_window(len, bar),
+                "{len} frames, bar {bar}"
+            );
+            assert!(r.bars.is_power_of_two());
+            let quarters = bar as f64 / PPQ as f64;
+            let frames = f64::from(r.bars) * quarters * 60.0 * f64::from(RATE) / r.bpm;
+            assert!((frames - len as f64).abs() < 1e-6, "{len}: {frames}");
+            if r.bpm > 88.0 && r.bpm < 146.0 {
+                assert_eq!(r.sure, Sure::Clear, "{len}: {}", r.bpm);
+            }
+            if r.sure == Sure::Clear {
+                // (Or the only reading: double would be over 300.)
+                assert!(
+                    (87.0..147.0).contains(&r.bpm) || 2.0 * r.bpm > LOOP_MAX_BPM,
+                    "{len}: {}",
+                    r.bpm
+                );
+            } else {
+                let (b, t) = r.other.unwrap();
+                assert!(b == r.bars * 2 || b * 2 == r.bars, "an octave away");
+                assert!((t - r.bpm * f64::from(b) / f64::from(r.bars)).abs() < 1e-9);
+            }
+        }
+    }
+}
+
+#[test]
+fn the_reading_never_leaves_the_apps_tempos() {
+    let hints = [
+        None,
+        Some(TempoHint {
+            bpm: 45.0,
+            kind: TempoKind::Set,
+        }),
+        Some(TempoHint {
+            bpm: 290.0,
+            kind: TempoKind::Set,
+        }),
+    ];
+    for hint in hints {
+        for said in [None, Some(1), Some(3), Some(8)] {
+            for len in (1..3_000_000).step_by(7_919) {
+                let Some(r) = read_bars(len, RATE, BAR_TICKS, said, hint) else {
+                    // Only too short to close.
+                    let n = said.unwrap_or(1);
+                    let fastest = 60.0 * f64::from(RATE) * 4.0 * f64::from(n) / len as f64;
+                    assert!(fastest > LOOP_MAX_BPM, "{len} {said:?}: {fastest}");
+                    continue;
+                };
+                assert!((30.0..=300.0).contains(&r.bpm), "{len} {said:?}: {}", r.bpm);
+                if let Some(n) = said.filter(|_| !r.overruled()) {
+                    assert_eq!(r.bars, n, "{len}: Length's bars kept");
+                }
+            }
+        }
     }
 }
 
@@ -200,7 +290,11 @@ fn a_free_pass_sets_the_tempo_and_the_song_starts_where_it_comes_round() {
         );
         assert!(at > press && at <= press + period as u64, "period {period}");
         assert_eq!((s.ticks, s.origin, s.free), (BAR_TICKS, 0, false));
-        assert_eq!(free_tempo(len, RATE, BAR_TICKS), Some((1, bpm)));
+        let read = r.reading.unwrap();
+        assert_eq!(
+            (read.bars, read.bpm, read.sure, read.said),
+            (1, bpm, Sure::Clear, None)
+        );
         assert!(
             (55_000..=55_000 + period).contains(&len),
             "period {period}: {len}"
@@ -261,27 +355,27 @@ fn a_long_pass_takes_more_bars_from_the_bar_the_song_stopped_in() {
 }
 
 #[test]
-fn closed_too_soon_it_waits_to_be_a_bar_at_160() {
+fn closed_too_soon_it_waits_to_be_a_bar_at_300() {
     for period in [64, 4_096] {
         let mut r = Rig::new(period);
         r.cmd(L::Record);
         r.run(1);
         let rec_from = 0;
-        // 1 s in: shorter than a bar at 160 BPM.
-        r.run(22_050);
+        // 0.4 s in: shorter than a bar at 300 BPM.
+        r.run(8_820);
         r.cmd(L::Record);
-        r.run(30_000);
+        r.run(13_000);
         let s = r.l.status();
         assert_eq!((s.phase, s.ending, s.free), (Phase::Recording, true, true));
         assert!(r.tempo.is_none());
-        r.until_playing(33_075);
+        r.until_playing(17_640);
         let (_, bpm, at) = r.tempo.unwrap();
         let len = (at - rec_from) as usize;
         assert!(
-            (33_075..33_075 + period).contains(&len),
+            (17_640..17_640 + period).contains(&len),
             "period {period}: {len}"
         );
-        assert!(bpm <= 160.0 && bpm > 140.0, "{bpm}");
+        assert!(bpm <= 300.0 && bpm > 240.0, "{bpm}");
     }
 }
 
@@ -305,15 +399,16 @@ fn the_song_starting_under_a_free_pass_throws_it_away() {
 }
 
 #[test]
-fn not_free_while_off_with_bars_set_or_another_loop_in_use() {
+fn not_free_while_off_or_another_loop_in_use() {
     // Off: armed while stopped, it waits for PLAY as it always has.
     let mut r = Rig::new(256);
     r.cmd(L::TempoFromLoop(false));
     r.cmd(L::Record);
     r.run(30_000);
     assert_eq!(r.l.status().phase, Phase::Armed);
-    // Bars set: the same.
+    // Off with bars set: the same.
     let mut r = Rig::new(256);
+    r.cmd(L::TempoFromLoop(false));
     r.cmd(L::SetBars(Some(2)));
     r.cmd(L::Record);
     r.run(30_000);
@@ -321,7 +416,7 @@ fn not_free_while_off_with_bars_set_or_another_loop_in_use() {
     // Another loop has sound: the song's tempo is already the loops'.
     let mut r = Rig::new(256);
     r.cmd(L::Record);
-    r.run(10_000);
+    r.run(20_000);
     r.cmd(L::Record);
     r.until_playing(40_000);
     let bpm = r.tempo.take().unwrap().1;
@@ -334,6 +429,74 @@ fn not_free_while_off_with_bars_set_or_another_loop_in_use() {
     assert_eq!((s.phase, s.free), (Phase::Armed, false));
     assert!(r.tempo.is_none());
     assert_eq!(r.t.bpm(), bpm);
+}
+
+#[test]
+fn with_length_set_the_bars_are_at_the_tempo_you_play() {
+    // 2 bars in about 3.6 s: 2 bars at about 133 BPM, not the old
+    // tempo's 2 bars, and nothing read.
+    let mut r = Rig::new(256);
+    r.cmd(L::SetBars(Some(2)));
+    r.run(256);
+    let s = r.l.status();
+    assert_eq!(
+        (s.phase, s.free),
+        (Phase::Empty, true),
+        "Record would record free"
+    );
+    r.cmd(L::Record);
+    r.run(512);
+    assert_eq!(r.l.status().phase, Phase::Recording);
+    r.run(80_256);
+    r.cmd(L::Record);
+    r.until_playing(512);
+    let (_, bpm, at) = r.tempo.unwrap();
+    let reading = r.reading.unwrap();
+    assert_eq!(
+        (reading.bars, reading.said, reading.sure),
+        (2, Some(2), Sure::Clear)
+    );
+    let s = r.l.status();
+    assert_eq!(s.ticks, 2 * BAR_TICKS);
+    let want = 2.0 * 4.0 * 60.0 * f64::from(RATE) / s.frames as f64;
+    assert!((bpm - want).abs() < 1e-9, "{bpm} for {} frames", s.frames);
+    assert!((130.0..135.0).contains(&bpm), "{bpm}");
+    r.run(at + 1_000);
+    assert_eq!(r.t.bpm(), bpm);
+    // 4 bars closed at 1.5 s would be 640 BPM: it waits to be 4 bars at
+    // 300 (70 560 frames).
+    let mut r = Rig::new(256);
+    r.cmd(L::SetBars(Some(4)));
+    r.cmd(L::Record);
+    r.run(33_075);
+    r.cmd(L::Record);
+    r.run(60_000);
+    assert_eq!(r.l.status().phase, Phase::Recording);
+    r.until_playing(70_560);
+    let (_, bpm, _) = r.tempo.unwrap();
+    assert_eq!(r.reading.unwrap().bars, 4);
+    assert!(bpm <= 300.0 && bpm > 295.0, "{bpm}");
+}
+
+#[test]
+fn a_tempo_set_by_hand_settles_a_close_call() {
+    // 3.04 s: 1 bar at 79 or 2 at 158. The song was at 80: left from
+    // before, it leans the close call to 79; set by hand, it settles it.
+    let len = 67_000;
+    for meant in [false, true] {
+        let mut r = Rig::new(256);
+        assert!(r.t.command(0, T::SetTempo(80.0)));
+        r.cmd(L::TempoMeant(meant));
+        r.run(256);
+        r.cmd(L::Record);
+        r.run(256 + len);
+        r.cmd(L::Record);
+        r.until_playing(512);
+        let reading = r.reading.unwrap();
+        assert_eq!(reading.bars, 1, "set by hand: {meant}");
+        let sure = if meant { Sure::Clear } else { Sure::Ambiguous };
+        assert_eq!(reading.sure, sure, "set by hand: {meant}");
+    }
 }
 
 #[test]
@@ -418,7 +581,8 @@ fn a_meter_of_three_quarters_sets_its_tempo_in_quarters() {
     let (_, bpm, _) = r.tempo.unwrap();
     let s = r.l.status();
     assert_eq!(s.ticks, 2 * meter.bar_ticks());
-    let (bars, want) = free_tempo(s.frames, RATE, meter.bar_ticks()).unwrap();
-    assert_eq!((bars, bpm), (2, want));
+    let reading = r.reading.unwrap();
+    let want = 60.0 * f64::from(RATE) * 3.0 * 2.0 / s.frames as f64;
+    assert_eq!((reading.bars, bpm), (2, want));
     assert!((119.0..121.0).contains(&bpm), "{bpm}");
 }

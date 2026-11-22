@@ -45,8 +45,11 @@
 //!   one pool, as they need it, and give it back when a layer can no
 //!   longer come back. Nothing is ever moved, so the memory never
 //!   fragments. [`Looper::memory`] is the gauge.
-//! - **No clicks:** the loop point is crossfaded with the input from just
-//!   before the first pass, so the end flows into the start. Punch in and
+//! - **No clicks:** the first pass keeps what was heard just before it
+//!   ([`KEEP_BEFORE`]) and after it ([`KEEP_AFTER`]), and the loop point
+//!   is a seam the loop plays, never written into the audio: the end
+//!   fades into what came just before the start, so it flows into the
+//!   start, over the loop's seam fade ([`Edit::SeamFade`]). Punch in and
 //!   out, start, stop, mute, undo, delete, clear and every layer's level,
 //!   pan, mute and solo fade over [`FADE`] frames, and a jump in the song
 //!   position (a locate, a transport loop that is not a whole number of
@@ -86,10 +89,12 @@
 
 pub mod heard;
 pub mod print;
+pub mod reading;
 pub mod save;
 mod view;
 
 pub use heard::{Take, HEARD_SECONDS};
+pub use reading::{read_bars, Reading, Sure, TempoHint, TempoKind, LOOP_MAX_BPM, LOOP_MIN_BPM};
 pub use save::{LayerFile, LoopFile};
 
 use heard::Heard;
@@ -124,6 +129,13 @@ pub const HISTORY: usize = 64;
 const EDITS: usize = 16;
 /// The longest seam fade, in frames (about 186 ms at 44.1 kHz).
 pub const MAX_SEAM: usize = 8192;
+/// Frames a first pass keeps of what was heard before its first frame:
+/// a seam's worth at the longest, so the loop point fades into what was
+/// really played before the start, at any seam fade.
+pub const KEEP_BEFORE: usize = MAX_SEAM;
+/// Frames a first pass keeps of what it hears after its end (while the
+/// loop plays on): room for the end to move later, and a seam after it.
+pub const KEEP_AFTER: usize = 2 * MAX_SEAM;
 /// A 1/16 note, in ticks: the nudge step and the shortest loop an edit
 /// makes.
 const SIXTEENTH: Tick = PPQ as Tick / 4;
@@ -152,32 +164,6 @@ const NONE: u16 = u16::MAX;
 /// An overdub whose input never went over this (-60 dB) took silence, and
 /// leaves no layer ([`Overdubs`]).
 pub const SILENT: f32 = 0.001;
-/// The slowest tempo a free first pass sets ([`Command::TempoFromLoop`]).
-pub const FREE_MIN_BPM: f64 = 80.0;
-/// The fastest: a free first pass shorter than a bar at this tempo waits
-/// to close until it is one.
-pub const FREE_MAX_BPM: f64 = 160.0;
-
-/// The bars and the tempo a free first pass of `len` frames sets
-/// ([`Command::TempoFromLoop`]) at `rate`, with bars of `bar` ticks: the
-/// fewest bars (1, 2, 4, 8 ...) that put it at [`FREE_MIN_BPM`] or more,
-/// which is under [`FREE_MAX_BPM`] once it takes 2 or more. The tempo
-/// makes `bars` bars exactly `len` frames. None while the pass is shorter
-/// than a bar at [`FREE_MAX_BPM`].
-pub fn free_tempo(len: usize, rate: u32, bar: Tick) -> Option<(u32, f64)> {
-    let quarters = bar as f64 / PPQ as f64;
-    let tempo = |bars: u32| 60.0 * f64::from(rate) * quarters * f64::from(bars) / len as f64;
-    // (A NaN or an infinity, for no frames or no bar, is refused here.)
-    if !(tempo(1).is_finite() && tempo(1) > 0.0 && tempo(1) <= FREE_MAX_BPM) {
-        return None;
-    }
-    let mut bars = 1u32;
-    while tempo(bars) < FREE_MIN_BPM {
-        bars = bars.checked_mul(2)?;
-    }
-    Some((bars, tempo(bars)))
-}
-
 /// A loop waiting for you to play ([`Starts::Play`]) by ear starts on the
 /// first input sample at or over this (-40 dB).
 pub const PLAY_LEVEL: f32 = 0.01;
@@ -237,21 +223,27 @@ pub enum Command {
     /// the pads, whose sound includes the song's own). For every loop.
     StartsByEar(bool),
     /// Tempo from the first loop (for every loop; off by default). With
-    /// the song stopped and every other loop empty, a loop set to Free
-    /// length ([`Command::SetBars`] None) records free: from Record (On
-    /// the bar) or from your note (When I play), with no bars yet. Record
-    /// again closes it on the next period's first frame, or, before it is
-    /// a bar at [`FREE_MAX_BPM`], once it is. Its length then sets the
-    /// tempo ([`free_tempo`]): the bars (1, 2, 4, 8 ...) that put it
-    /// between [`FREE_MIN_BPM`] and [`FREE_MAX_BPM`], from the start of
-    /// the bar the song stopped in. The host starts the song there, on
-    /// the frame the loop comes round, at that tempo
+    /// the song stopped and every other loop empty, a loop's first pass
+    /// records free: from Record (On the bar) or from your note (When I
+    /// play), with no bars yet. Record again closes it on the next
+    /// period's first frame, or, before it is a bar at [`LOOP_MAX_BPM`]
+    /// (with Length set, that many bars), once it is. Its length then
+    /// sets the tempo ([`read_bars`]): the bars Length set
+    /// ([`Command::SetBars`]), "this many bars at the tempo I play", or
+    /// on Free length the bars the reading picks, from the start of the
+    /// bar the song stopped in. The host starts the song there, on the
+    /// frame the loop comes round, at that tempo
     /// ([`Looper::take_tempo`]). The song starting under a free pass
     /// (PLAY, or a count-in) throws the pass away (counted). The host
     /// turns this off while the song can't take a tempo from a loop
     /// (another device's clock leads, its tempo map has more than one
     /// tempo, an export runs).
     TempoFromLoop(bool),
+    /// The song's tempo was set by hand since the project opened (true),
+    /// or was left from before (false, the default): how much it counts
+    /// when a free first pass's length is read ([`TempoKind`]). For every
+    /// loop.
+    TempoMeant(bool),
     /// Fade old: the share of the older audio that stays each time the loop
     /// comes round while overdubbing, 0 to 1 (1, the default, fades
     /// nothing; 0.88 keeps 88 % a pass). The older layers turn down by it
@@ -428,6 +420,40 @@ pub enum Edit {
     /// ticks changes; the audio plays faster or slower to fit it, until a
     /// print made at that speed is in ([`Status::rate`]).
     Speed(i8),
+    /// Move the loop this many frames later (above 0) or earlier in the
+    /// audio its first pass kept: both boundaries shift together, so the
+    /// length stays, and what plays changes. Only while the loop is its
+    /// first pass alone and unedited ([`Status::bounds`]), within what it
+    /// kept.
+    Move(i64),
+    /// Move the loop's end this many frames later (above 0) or earlier
+    /// in the audio its first pass kept: the length changes and bar 1
+    /// stays. The bars stay too, so the loop plays a little faster or
+    /// slower to fit them until the tempo changes with it. At least a
+    /// 1/16 note; as [`Edit::Move`] otherwise.
+    Resize(i64),
+    /// Move bar 1 this many frames later (above 0) or earlier inside the
+    /// same audio, going round the loop: what plays stays, where it
+    /// starts changes (as a pickup does). As [`Edit::Move`] otherwise.
+    Turn(i64),
+}
+
+/// Where a first pass's loop lies in the audio it kept
+/// ([`Status::bounds`]): frames from the first frame kept, at the loop's
+/// rate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Bounds {
+    /// The frame that plays on bar 1: the loop's downbeat.
+    pub src: i64,
+    /// The loop's first frame: `src`, or before it when the loop is
+    /// turned (a pickup): the frames from here to `src` play at the
+    /// loop's end, leading into bar 1.
+    pub start: i64,
+    /// Where the pass began and where it closed, as recorded: the
+    /// boundaries go back to these.
+    pub captured: (i64, i64),
+    /// Frames kept: the boundaries move within 0 to this.
+    pub kept: i64,
 }
 
 /// What one layer's controls ask for ([`Looper::layer_command`]). Each
@@ -605,6 +631,9 @@ pub struct Stats {
     /// STOP came before a 1/16 note was played, or the pass outgrew the
     /// memory.
     pub aborted: u64,
+    /// First passes that kept nothing after their end
+    /// ([`KEEP_AFTER`]), for want of memory: their end can't move later.
+    pub kept_short: u64,
 }
 
 /// What the screen shows of one loop.
@@ -711,6 +740,12 @@ pub struct Status {
     /// stopped and the setting on, empty (Record would start it so) or
     /// listening (the note it waits for would).
     pub free: bool,
+    /// Where the loop lies in the audio its first pass kept, while the
+    /// loop is that pass alone and unedited, so that [`Edit::Move`],
+    /// [`Edit::Resize`] and [`Edit::Turn`] can be made. None otherwise
+    /// (and for loops captured or opened from a save, which keep nothing
+    /// around them).
+    pub bounds: Option<Bounds>,
 }
 
 /// The memory gauge: all the loops together.
@@ -947,6 +982,10 @@ struct Shape {
     len_ticks: Tick,
     origin: Tick,
     seam: usize,
+    /// The first pass's loop in the audio it kept (frames: its first,
+    /// and the one on bar 1), while layer 0 plays that region alone
+    /// ([`Loop::bounds_now`]).
+    region: Option<(usize, usize)>,
     speed: i8,
     rate: i8,
     views: [View; MAX_LAYERS],
@@ -959,6 +998,7 @@ const NO_SHAPE: Shape = Shape {
     len_ticks: 0,
     origin: 0,
     seam: FADE,
+    region: None,
     speed: 0,
     rate: 0,
     views: [View::EMPTY; MAX_LAYERS],
@@ -1459,12 +1499,19 @@ struct Loop {
     fade_old: f32,
 
     /// The first pass's writer is still at work (it runs `latency` frames
-    /// behind, and ends by crossfading the loop point).
+    /// behind).
     first_open: bool,
+    /// Its writer keeps what it hears after the loop's end, up to
+    /// [`KEEP_AFTER`] frames, while the loop plays.
+    tail: bool,
+    /// What was heard before the first pass, copying in as its first
+    /// [`KEEP_BEFORE`] frames: the frame heard that is the pass's first,
+    /// and the frames copied.
+    before: Option<(u64, usize)>,
     /// The latency the first pass is written with (fixed when it starts).
     rec_latency: u32,
-    /// Input just before the loop's first frame, oldest first.
-    pre: [f32; 2 * FADE],
+    /// What the writer took before the first pass's first frame, oldest
+    /// at `ring_at` (for a resample's loop point, [`Loop::keep_pre`]).
     ring: [f32; 2 * FADE],
     ring_at: usize,
     // The overdub writer.
@@ -1506,6 +1553,10 @@ struct Loop {
     /// the cuts they make.
     views: [View; MAX_LAYERS],
     seam: usize,
+    /// The first pass's loop in the audio it kept ([`Shape::region`]).
+    region: Option<(usize, usize)>,
+    /// Where the first pass began and closed in the audio it kept.
+    captured: (usize, usize),
     /// The shapes before the edits in the history.
     shapes: [Shape; EDITS],
     /// An edit's crossfade: frames left, the shape it comes from, and
@@ -1640,8 +1691,8 @@ struct Loop {
 
 /// The start of a first pass that was heard before the pass began (its
 /// bar line had passed, or a pickup came before it): copied in from what
-/// was heard at [`LOAD_SPEED`], with the input before it for the loop
-/// point (`pre`), while the writer takes the input from `to` on.
+/// was heard at [`LOAD_SPEED`], while the writer takes the input from
+/// `to` on.
 #[derive(Clone, Copy, Debug)]
 struct Fill {
     /// The frame heard that is the pass's first.
@@ -1650,8 +1701,6 @@ struct Fill {
     to: usize,
     /// The frame it began on (its pace counts from there).
     at: u64,
-    /// The input before the first frame is still to be read.
-    pre: bool,
 }
 
 /// A capture waiting ([`Command::Capture`]): the bars asked for, the bar
@@ -1710,8 +1759,9 @@ impl Loop {
         after: After::Play,
         fade_old: 1.0,
         first_open: false,
+        tail: false,
+        before: None,
         rec_latency: 0,
-        pre: [0.0; 2 * FADE],
         ring: [0.0; 2 * FADE],
         ring_at: 0,
         od_open: false,
@@ -1736,6 +1786,8 @@ impl Loop {
         mixing: false,
         views: [View::EMPTY; MAX_LAYERS],
         seam: FADE,
+        region: None,
+        captured: (0, 0),
         shapes: [NO_SHAPE; EDITS],
         xf: 0,
         xf_shape: 0,
@@ -1866,13 +1918,15 @@ pub struct Looper {
     rate: u32,
     /// Tempo from the first loop ([`Command::TempoFromLoop`]).
     free_tempo: bool,
+    /// The song's tempo was set by hand ([`Command::TempoMeant`]).
+    tempo_meant: bool,
     /// The song was stopped at the period's start, and its bar's ticks
     /// then.
     stopped: bool,
     bar_ticks: Tick,
-    /// A free first pass closed: its loop, the tempo, and the frame the
+    /// A free first pass closed: its loop, its reading, and the frame the
     /// song starts on ([`Looper::take_tempo`]).
-    tempo_out: Option<(usize, f64, u64)>,
+    tempo_out: Option<(usize, Reading, u64)>,
     /// A free first pass may be recording: [`Looper::close_free`] looks
     /// at the loops only then, not every period.
     free_open: bool,
@@ -1903,6 +1957,7 @@ impl Looper {
             heard: Heard::new(heard_frames(rate, seconds)),
             rate,
             free_tempo: false,
+            tempo_meant: false,
             stopped: true,
             bar_ticks: 4 * PPQ as Tick,
             tempo_out: None,
@@ -2129,7 +2184,9 @@ impl Looper {
             } else {
                 0
             },
-            cut: (l.len > 0 && l.cut < l.len).then_some(l.cut),
+            // (Not once an edit has made it longer than the pass was.)
+            cut: (l.len > 0 && l.cut < l.len && l.cut < l.captured.1 - l.captured.0)
+                .then_some(l.cut),
             starts_on: (l.phase == Phase::Armed)
                 .then_some(l.tap_lead)
                 .flatten()
@@ -2156,9 +2213,15 @@ impl Looper {
             },
             starts: l.starts,
             listening: l.listening(),
-            lead: l.lead,
+            lead: l.bounds_now().map_or(l.lead, |(start, src)| src - start),
             free: l.free
                 || ((l.phase == Phase::Empty || l.listening()) && self.stopped && self.frees(n)),
+            bounds: l.bounds_now().map(|(start, src)| Bounds {
+                src: src as i64,
+                start: start as i64,
+                captured: (l.captured.0 as i64, l.captured.1 as i64),
+                kept: l.slots[0].valid.1 as i64,
+            }),
         })
     }
 
@@ -2498,13 +2561,15 @@ impl Looper {
     /// records. None before the first frame and once the pass has ended.
     pub fn first_pass(&self, n: usize) -> Option<LayerView<'_>> {
         let l = self.loops.get(n)?;
-        (l.phase == Phase::Recording && l.written > 0).then_some(LayerView {
+        let kept = KEEP_BEFORE + l.written;
+        let view = View::region(kept, KEEP_BEFORE, l.written, KEEP_BEFORE)?;
+        (l.phase == Phase::Recording).then_some(LayerView {
             store: &self.store,
             lp: n,
             slot: 0,
             len: l.written,
-            valid: (0, l.written),
-            view: View::whole(l.written),
+            valid: (0, kept),
+            view,
         })
     }
 
@@ -2638,6 +2703,9 @@ impl Looper {
                 } else if l.ld_heard.is_some() {
                     l.render_heard(store, stats, k, heard, end);
                 }
+            }
+            if l.before.is_some() {
+                l.render_before(store, stats, k, heard);
             }
             if l.fill.is_some() {
                 l.render_fill(store, stats, k, heard, end);
@@ -2786,23 +2854,24 @@ impl Looper {
         }
     }
 
-    /// A free first pass closed ([`Command::TempoFromLoop`]): its loop, the
-    /// tempo its length sets, and the frame the host starts the song on
-    /// at that tempo (the next period's first, where the loop comes
-    /// round), from the start of the bar it stopped in: the loop's first
-    /// bar. Once per pass. If the song can't start, the loop plays at the
-    /// song's tempo when it does (like tape, until a print is in).
-    pub fn take_tempo(&mut self) -> Option<(usize, f64, u64)> {
+    /// A free first pass closed ([`Command::TempoFromLoop`]): its loop, how
+    /// its length read (its bars and the tempo they set, how sure, the
+    /// other reading), and the frame the host starts the song on at that
+    /// tempo (the next period's first, where the loop comes round), from
+    /// the start of the bar it stopped in: the loop's first bar. Once per
+    /// pass. If the song can't start, the loop plays at the song's tempo
+    /// when it does (like tape, until a print is in).
+    pub fn take_tempo(&mut self) -> Option<(usize, Reading, u64)> {
         self.tempo_out.take()
     }
 
     /// Whether loop `k`, recording a first pass now, would record free
-    /// ([`Command::TempoFromLoop`]): on, Free length, not resampling, and
-    /// every other loop empty (nothing loading, copying in or capturing).
+    /// ([`Command::TempoFromLoop`]): on, not resampling, and every other
+    /// loop empty (nothing loading, copying in or capturing). Its Length
+    /// doesn't matter: a bar count is the bars at the tempo you play.
     fn frees(&self, k: usize) -> bool {
         let l = &self.loops[k];
         self.free_tempo
-            && l.bars.is_none()
             && !l.resample
             && self.loops.iter().enumerate().all(|(i, o)| {
                 i == k
@@ -2817,19 +2886,18 @@ impl Looper {
         let Looper {
             store,
             loops,
-            heard,
             now,
             bar_ticks,
             ..
         } = self;
-        loops[k].begin_free(store, k, heard, rec_from, *now, *bar_ticks);
+        loops[k].begin_free(store, k, rec_from, *now, *bar_ticks);
         self.free_open = true;
     }
 
     /// Each free first pass asked to close ([`Loop::ending`]) closes on
-    /// the next period's first frame, once it is a bar at
-    /// [`FREE_MAX_BPM`]: its bars from the start of the bar the song is
-    /// stopped in, and the tempo for the host ([`Looper::take_tempo`]).
+    /// the next period's first frame, once it is long enough
+    /// ([`read_bars`]): its bars from the start of the bar the song is
+    /// stopped in, and its reading for the host ([`Looper::take_tempo`]).
     fn close_free(&mut self, block: &Block) {
         if !self.free_open {
             return;
@@ -2839,6 +2907,14 @@ impl Looper {
             return;
         };
         let bar = span.meter.bar_ticks().max(1);
+        let hint = TempoHint {
+            bpm: span.bpm,
+            kind: if self.tempo_meant {
+                TempoKind::Set
+            } else {
+                TempoKind::Earlier
+            },
+        };
         let mut open = false;
         for k in 0..self.loops.len() {
             let l = &self.loops[k];
@@ -2847,24 +2923,24 @@ impl Looper {
             }
             let len = end.saturating_sub(l.rec_from) as usize;
             let closing = if l.ending {
-                free_tempo(len, self.rate, bar)
+                read_bars(len, self.rate, bar, l.bars, Some(hint))
             } else {
                 None
             };
-            let Some((bars, bpm)) = closing else {
+            let Some(reading) = closing else {
                 open = true;
                 continue;
             };
             let pos = span.ticks().start;
             let origin = pos - pos.rem_euclid(bar);
-            let t = origin + i64::from(bars) * bar;
+            let t = origin + i64::from(reading.bars) * bar;
             let l = &mut self.loops[k];
             l.free = false;
             l.origin = origin;
             l.bar = bar;
             l.end_tick = Some(t);
-            if l.finish_len(&mut self.store, &mut self.stats, k, t, len) {
-                self.tempo_out = Some((k, bpm, end));
+            if l.finish_len(&mut self.store, &mut self.stats, k, t, len, true) {
+                self.tempo_out = Some((k, reading, end));
             }
         }
         self.free_open = open;
@@ -3080,6 +3156,7 @@ impl Looper {
                 }
             }
             Queued::Loop(Command::TempoFromLoop(on)) => self.free_tempo = on,
+            Queued::Loop(Command::TempoMeant(on)) => self.tempo_meant = on,
             // A capture under way: again, Undo or Clear call it off.
             Queued::Loop(
                 Command::Capture(_)
@@ -3772,6 +3849,7 @@ impl Loop {
                 | Command::Played(_)
                 | Command::StartsByEar(_)
                 | Command::TempoFromLoop(_)
+                | Command::TempoMeant(_)
                 | Command::SetFadeOld(_)
                 | Command::SetLatency(_)
                 | Command::SetLevel(_)
@@ -3865,7 +3943,10 @@ impl Loop {
                 }
             }
             // The looper hands these to every loop.
-            Command::Played(_) | Command::StartsByEar(_) | Command::TempoFromLoop(_) => {}
+            Command::Played(_)
+            | Command::StartsByEar(_)
+            | Command::TempoFromLoop(_)
+            | Command::TempoMeant(_) => {}
             Command::SetFadeOld(k) if k.is_finite() => self.fade_old = k.clamp(0.0, 1.0),
             Command::SetFadeOld(_) => {}
             Command::SetLatency(l) => self.latency = l,
@@ -3904,6 +3985,7 @@ impl Loop {
             len_ticks: self.len_ticks,
             origin: self.origin,
             seam: self.seam,
+            region: self.region,
             speed: self.speed,
             rate: self.rate,
             views: self.views,
@@ -3917,6 +3999,7 @@ impl Loop {
         self.len_ticks = s.len_ticks;
         self.origin = s.origin;
         self.seam = s.seam;
+        self.region = s.region;
         self.speed = s.speed;
         self.rate = s.rate;
         self.views = s.views;
@@ -3966,6 +4049,13 @@ impl Loop {
             }
             Some(())
         };
+        if matches!(
+            e,
+            Edit::Half | Edit::Double | Edit::Reverse | Edit::Nudge(_) | Edit::Trim { .. }
+        ) {
+            // The first pass's layer plays more than its region now.
+            s.region = None;
+        }
         match e {
             Edit::Half => {
                 if ticks % 2 != 0 || ticks / 2 < SIXTEENTH || len < 2 {
@@ -4007,6 +4097,29 @@ impl Loop {
                 s.len_ticks = to - from;
                 s.origin += from;
             }
+            Edit::Move(d) | Edit::Resize(d) | Edit::Turn(d) => {
+                let (start, src) = self.bounds_now()?;
+                let (a, b, n) = (start as i64, src as i64, len as i64);
+                let (a, b, n) = match e {
+                    Edit::Move(_) => (a.checked_add(d)?, b.checked_add(d)?, n),
+                    Edit::Resize(_) => (a, b, n.checked_add(d)?),
+                    _ => (a, a + (b - a + d.rem_euclid(n)) % n, n),
+                };
+                // Within what was kept, at least a 1/16 note, and moved.
+                let kept = self.slots[0].valid.1 as i64;
+                let shortest = frames(SIXTEENTH).max(1) as i64;
+                if a < 0
+                    || n < shortest
+                    || a + n > kept
+                    || (a, b, n) == (start as i64, src as i64, len as i64)
+                {
+                    return None;
+                }
+                let size = s.views[0].size();
+                s.views[0] = View::region(size, a as usize, n as usize, b as usize)?;
+                s.region = Some((a as usize, b as usize));
+                s.len = n as usize;
+            }
             Edit::SeamFade(f) => s.seam = (f as usize).min(MAX_SEAM),
             Edit::Speed(to) => {
                 let to = to.clamp(-1, 1);
@@ -4033,6 +4146,21 @@ impl Loop {
             return None;
         }
         Some(s)
+    }
+
+    /// The first pass's loop in the audio it kept (its first frame, and
+    /// the one on bar 1), while it is the loop's only layer and plays that
+    /// region alone, unedited (but for its seam fade and speed): what
+    /// [`Edit::Move`], [`Edit::Resize`] and [`Edit::Turn`] change.
+    fn bounds_now(&self) -> Option<(usize, usize)> {
+        let (start, src) = self.region?;
+        let v = &self.views[0];
+        let alone = self.in_order == 1
+            && self.order[0] == 0
+            && self.slots[0].valid.0 == 0
+            && (1..MAX_LAYERS).all(|k| !self.live(k));
+        (alone && View::region(v.size(), start, self.len, src).as_ref() == Some(v))
+            .then_some((start, src))
     }
 
     /// A place to keep a shape for Undo. When all are taken, the history
@@ -4468,7 +4596,11 @@ impl Loop {
             && self.in_order > 0;
         let g = self.heard_gains();
         let first = self.order[0] as usize;
-        let nothing = self.in_order == 1 && self.views[first].is_whole() && g[first] == [1.0, 1.0];
+        // One layer playing its audio as it is: all of it, or a first
+        // pass's region from its start.
+        let plain = self.views[first].is_whole()
+            || (first == 0 && self.bounds_now().is_some_and(|(start, src)| start == src));
+        let nothing = self.in_order == 1 && plain && g[first] == [1.0, 1.0];
         if !ready || nothing {
             stats.refused += 1;
             return;
@@ -4822,6 +4954,10 @@ impl Loop {
         self.cut = 0;
         self.then_overdub = false;
         self.first_open = false;
+        self.tail = false;
+        self.before = None;
+        self.region = None;
+        self.captured = (0, 0);
         self.written = 0;
         self.od_open = false;
         self.clearing = false;
@@ -5057,30 +5193,32 @@ impl Loop {
         self.lead = lead;
         self.unhear();
         let from = rec_from + u64::from(self.rec_latency);
+        self.keep_before(from);
         self.fill = (from < write_at).then(|| Fill {
             from,
             done: 0,
             to: (write_at - from) as usize,
             at: write_at,
-            pre: true,
         });
+    }
+
+    /// The first pass's first frame is the one heard at `from`: what was
+    /// heard before it copies in as its first [`KEEP_BEFORE`] frames
+    /// ([`Loop::render_before`]). Not for a resample, which records what
+    /// the other loops play, not what was heard: it keeps the input
+    /// before it for the loop point, as the writer saw it
+    /// ([`Loop::keep_pre`]).
+    fn keep_before(&mut self, from: u64) {
+        self.tail = false;
+        self.before = (!self.resample).then_some((from, 0));
     }
 
     /// The first pass starts free ([`Command::TempoFromLoop`]) on song
     /// frame `rec_from`, `now` being the period's first: no bars or bar
     /// lines until it closes ([`Looper::close_free`]). A start before
     /// `now` (a note) copies in from what was heard, as
-    /// [`Loop::begin_first`]'s does; otherwise the input heard just before
-    /// it is the loop point's.
-    fn begin_free(
-        &mut self,
-        store: &mut Store,
-        me: usize,
-        heard: &Heard,
-        rec_from: u64,
-        now: u64,
-        bar: Tick,
-    ) {
+    /// [`Loop::begin_first`]'s does.
+    fn begin_free(&mut self, store: &mut Store, me: usize, rec_from: u64, now: u64, bar: Tick) {
         store.drop_kept(me);
         self.phase = Phase::Recording;
         self.free = true;
@@ -5100,32 +5238,18 @@ impl Loop {
         self.lead = 0;
         self.unhear();
         let from = rec_from + u64::from(self.rec_latency);
+        self.keep_before(from);
         self.fill = (from < now).then(|| Fill {
             from,
             done: 0,
             to: (now - from) as usize,
             at: now,
-            pre: true,
         });
-        if self.fill.is_none() {
-            // The writer adds what comes from `now` to the input before the
-            // pass's first frame.
-            for k in 0..FADE {
-                let x = now
-                    .checked_sub((FADE - k) as u64)
-                    .filter(|&g| heard.holds(g))
-                    .map_or([0.0; 2], |g| heard.frame(g));
-                self.ring[2 * k] = x[0];
-                self.ring[2 * k + 1] = x[1];
-            }
-            self.ring_at = 0;
-        }
     }
 
     /// The first pass's frames heard before it began, copied in at
-    /// [`LOAD_SPEED`] from what was heard, and the input before them for
-    /// the loop point. Thrown away (counted) if what was heard has moved
-    /// past them or there is no memory.
+    /// [`LOAD_SPEED`] from what was heard. Thrown away (counted) if what
+    /// was heard has moved past them or there is no memory.
     fn render_fill(
         &mut self,
         store: &mut Store,
@@ -5137,23 +5261,11 @@ impl Loop {
         let Some(mut fl) = self.fill else {
             return;
         };
-        if fl.pre {
-            for k in 0..FADE {
-                let back = (FADE - k) as u64;
-                let x = fl
-                    .from
-                    .checked_sub(back)
-                    .map_or([0.0; 2], |g| heard.frame(g));
-                self.pre[2 * k] = x[0];
-                self.pre[2 * k + 1] = x[1];
-            }
-            fl.pre = false;
-        }
         let due = end.saturating_sub(fl.at).saturating_mul(LOAD_SPEED as u64);
         let target = fl.to.min(due.min(usize::MAX as u64) as usize);
         if fl.done < target {
             if !heard.holds(fl.from + fl.done as u64)
-                || !store.grow(me, 0, (target - 1) / BLOCK + 1)
+                || !store.grow(me, 0, (KEEP_BEFORE + target - 1) / BLOCK + 1)
             {
                 stats.aborted += 1;
                 self.reset();
@@ -5161,7 +5273,7 @@ impl Loop {
                 return;
             }
             for q in fl.done..target {
-                store.set(me, 0, q, heard.frame(fl.from + q as u64));
+                store.set(me, 0, KEEP_BEFORE + q, heard.frame(fl.from + q as u64));
             }
             fl.done = target;
             self.written = self.written.max(target);
@@ -5169,9 +5281,41 @@ impl Loop {
         self.fill = (fl.done < fl.to).then_some(fl);
     }
 
+    /// What was heard before the first pass, copied in as its first
+    /// [`KEEP_BEFORE`] frames as it comes ([`Loop::keep_before`]):
+    /// silence where nothing was heard (the input had just started). The
+    /// pass is thrown away (counted) if there is no memory.
+    fn render_before(&mut self, store: &mut Store, stats: &mut Stats, me: usize, heard: &Heard) {
+        let Some((from, done)) = self.before else {
+            return;
+        };
+        // Frame `q` kept is the one heard at `from - KEEP_BEFORE + q`.
+        let first = from as i64 - KEEP_BEFORE as i64;
+        let target = (heard.at() as i64 - first).clamp(0, KEEP_BEFORE as i64) as usize;
+        if done >= target {
+            return;
+        }
+        if !store.grow(me, 0, (target - 1) / BLOCK + 1) {
+            stats.aborted += 1;
+            self.reset();
+            self.reclaim(store, me);
+            return;
+        }
+        for q in done..target {
+            let g = first + q as i64;
+            let x = if g >= 0 {
+                heard.frame(g as u64)
+            } else {
+                [0.0; 2]
+            };
+            store.set(me, 0, q, x);
+        }
+        self.before = (target < KEEP_BEFORE).then_some((from, target));
+    }
+
     fn finish_first(&mut self, store: &mut Store, stats: &mut Stats, me: usize, t: Tick, f: u64) {
         let len = (f - self.start_frame) as usize;
-        self.finish_len(store, stats, me, t, len);
+        self.finish_len(store, stats, me, t, len, true);
     }
 
     /// STOP during the first pass (the transport stopped at `tick`, frame
@@ -5199,14 +5343,17 @@ impl Loop {
         // Stopped: no overdub waits for PLAY.
         self.then_overdub = false;
         self.end_tick = Some(end_t);
-        if self.finish_len(store, stats, me, end_t, len) {
+        // Nothing after STOP is kept.
+        if self.finish_len(store, stats, me, end_t, len, false) {
             self.cut = len.min(f.saturating_sub(self.rec_from) as usize);
-            self.slots[0].valid = (0, self.cut);
+            self.slots[0].valid = (0, KEEP_BEFORE + self.cut);
         }
     }
 
-    /// The first pass ends at tick `t`, `len` frames long. False if there
-    /// is no memory for it (the pass is thrown away).
+    /// The first pass ends at tick `t`, `len` frames long, keeping what
+    /// follows it if `after` ([`KEEP_AFTER`]: its memory is taken now,
+    /// or counted short). False if there is no memory for the pass (it is
+    /// thrown away).
     fn finish_len(
         &mut self,
         store: &mut Store,
@@ -5214,34 +5361,51 @@ impl Loop {
         me: usize,
         t: Tick,
         len: usize,
+        after: bool,
     ) -> bool {
         self.mixing = true;
-        if len == 0 || !store.grow(me, 0, blocks_for(len)) {
+        // The loop is a region of what the pass keeps: what was heard
+        // before it, the loop, and what the writer hears after it while
+        // the loop plays. Past those, MAX_SEAM frames are never written,
+        // so a seam that reaches past what was kept reads silence instead
+        // of going round to the other end.
+        let kept = KEEP_BEFORE + len;
+        let size = kept + KEEP_AFTER + MAX_SEAM;
+        // A pickup plays at the loop's end, leading into its first bar.
+        if self.lead >= len {
+            self.lead = 0;
+        }
+        let view = View::region(size, KEEP_BEFORE, len, KEEP_BEFORE + self.lead);
+        let tail = after && view.is_some() && store.grow(me, 0, blocks_for(kept + KEEP_AFTER));
+        let Some(view) = view.filter(|_| tail || store.grow(me, 0, blocks_for(kept))) else {
             stats.aborted += 1;
             self.reset();
             self.reclaim(store, me);
             return false;
+        };
+        if after && !tail {
+            stats.kept_short += 1;
         }
         // A pass cut back to a bar line it had recorded past gives back
         // the blocks after it.
-        store.shrink(me, 0, blocks_for(len));
+        store.shrink(
+            me,
+            0,
+            blocks_for(if tail { kept + KEEP_AFTER } else { kept }),
+        );
         self.len = len;
         self.cut = len;
         self.len_ticks = t - self.origin;
         self.order[0] = 0;
         self.in_order = 1;
         self.slots[0] = Slot {
-            valid: (0, len),
+            valid: (0, kept),
             ..Slot::NEW
         };
-        self.views[0] = View::whole(len);
-        // A pickup plays at the loop's end, leading into its first bar.
-        if self.lead > 0 {
-            match View::whole(len).rotate(-(self.lead as i64)) {
-                Some(v) if self.lead < len => self.views[0] = v,
-                _ => self.lead = 0,
-            }
-        }
+        self.views[0] = view;
+        self.region = Some((KEEP_BEFORE, KEEP_BEFORE + self.lead));
+        self.captured = (KEEP_BEFORE, kept);
+        self.tail = tail;
         self.n_done = 0;
         self.n_undone = 0;
         self.ending = false;
@@ -5269,6 +5433,7 @@ impl Loop {
         let before = match self.phase {
             Phase::Armed => true,
             _ if self.first_open => f < self.rec_from + u64::from(self.rec_latency),
+            _ if self.tail => false,
             _ => return,
         };
         if before {
@@ -5283,85 +5448,88 @@ impl Loop {
             return;
         }
         let j = (f - self.rec_from - u64::from(self.rec_latency)) as usize;
-        if j == 0 {
-            self.keep_pre();
+        if j == 0 && self.resample && !self.keep_pre(store, stats, me) {
+            return;
         }
+        // The pass's frame `j` is the audio's `KEEP_BEFORE + j`.
+        let q = KEEP_BEFORE + j;
         if self.len > 0 && j >= self.cut {
-            // The loop point waits for a start heard before the pass to be
-            // in.
-            if self.fill.is_none() {
-                self.seal(store, me);
+            // The pass is written once a start heard before it is in.
+            if self.first_open && self.fill.is_none() && self.before.is_none() {
+                self.close_first(store, me);
+            }
+            if self.tail && q >= self.captured.1 {
+                self.keep_after(store, me, q, x);
             }
             return;
         }
-        if !store.grow(me, 0, j / BLOCK + 1) {
+        if !store.grow(me, 0, q / BLOCK + 1) {
             stats.aborted += 1;
             self.reset();
             self.reclaim(store, me);
             return;
         }
-        store.set(me, 0, j, x);
+        store.set(me, 0, q, x);
         self.written = self.written.max(j + 1);
     }
 
-    /// The first pass's first frame: the input just before it, for the
-    /// loop point (unless what was heard before the pass copies it in,
-    /// [`Fill`]). Out of line: it runs once a pass, and the writer around
-    /// it runs every frame.
-    #[inline(never)]
-    fn keep_pre(&mut self) {
-        if self.fill.is_some() {
+    /// What the writer hears after the loop's end, as frame `q` of the
+    /// audio, up to [`KEEP_AFTER`] frames (its memory was taken when the
+    /// pass ended): what the layer holds grows by a frame. It stops at a
+    /// gap (the slot went to another layer).
+    fn keep_after(&mut self, store: &mut Store, me: usize, q: usize, x: [f32; 2]) {
+        let end = self.captured.1 + KEEP_AFTER;
+        if q >= end || self.slots[0].valid != (0, q) {
+            self.tail = false;
             return;
+        }
+        store.set(me, 0, q, x);
+        self.slots[0].valid.1 = q + 1;
+        self.tail = q + 1 < end;
+    }
+
+    /// A resample's first frame: it keeps what the writer took just
+    /// before it (what the other loops played, not what was heard) as the
+    /// last [`FADE`] frames before the loop, for the loop point, and
+    /// silence before those. False if there is no memory (the pass is
+    /// thrown away). Out of line: it runs once a pass, and the writer
+    /// around it runs every frame.
+    #[inline(never)]
+    fn keep_pre(&mut self, store: &mut Store, stats: &mut Stats, me: usize) -> bool {
+        if !store.grow(me, 0, blocks_for(KEEP_BEFORE)) {
+            stats.aborted += 1;
+            self.reset();
+            self.reclaim(store, me);
+            return false;
+        }
+        for q in 0..KEEP_BEFORE - FADE {
+            store.set(me, 0, q, [0.0; 2]);
         }
         for k in 0..FADE {
             let r = (self.ring_at + k) % FADE;
-            self.pre[2 * k] = self.ring[2 * r];
-            self.pre[2 * k + 1] = self.ring[2 * r + 1];
+            let x = [self.ring[2 * r], self.ring[2 * r + 1]];
+            store.set(me, 0, KEEP_BEFORE - FADE + k, x);
         }
+        true
     }
 
-    /// The loop point: the end fades into the input from just before the
-    /// start, which flows on into the start.
-    fn seal(&mut self, store: &mut Store, me: usize) {
+    /// The first pass is written. Its loop point is a seam the loop plays
+    /// ([`piece_frame`]: the end fades into what was heard just before
+    /// the start), so nothing is written for it; a take STOP cut short
+    /// fades out where STOP came.
+    fn close_first(&mut self, store: &mut Store, me: usize) {
         self.first_open = false;
         // A resampled first pass is written: overdubs take the input.
         self.resample = false;
         let cut = self.cut.min(self.len);
         if cut < self.len {
-            // Cut by STOP: the take fades out where STOP came.
             let out = FADE.min(cut / 2);
             for k in 0..out {
                 let w = 1.0 - (k as f32 + 0.5) / out as f32;
-                let idx = cut - out + k;
-                let a = store.get(me, 0, idx);
-                store.set(me, 0, idx, [a[0] * w, a[1] * w]);
+                let q = KEEP_BEFORE + cut - out + k;
+                let a = store.get(me, 0, q);
+                store.set(me, 0, q, [a[0] * w, a[1] * w]);
             }
-        }
-        let fade = FADE.min(self.len / 2);
-        for k in 0..fade {
-            let w = (k as f32 + 0.5) / fade as f32;
-            let p = FADE - fade + k;
-            let idx = self.len - fade + k;
-            // After a cut the end is silence (never written).
-            let a = if idx < cut {
-                store.get(me, 0, idx)
-            } else {
-                [0.0; 2]
-            };
-            let y = [
-                a[0] * (1.0 - w) + self.pre[2 * p] * w,
-                a[1] * (1.0 - w) + self.pre[2 * p + 1] * w,
-            ];
-            store.set(me, 0, idx, y);
-        }
-        if cut < self.len {
-            // What plays: the take, and the loop point's fade into it.
-            let from = self.len - fade;
-            self.slots[0].valid = if from <= cut {
-                (0, self.len)
-            } else {
-                (from, self.len - from + cut)
-            };
         }
     }
 
@@ -5387,6 +5555,10 @@ impl Loop {
             if let Some(k) = slot.filter(|_| store.available() + redo_blocks >= need) {
                 self.n_undone = 0;
                 self.reclaim(store, me);
+                if k == 0 {
+                    // The first pass is gone for good: its writer stops.
+                    self.tail = false;
+                }
                 return store.grow(me, k, need).then_some(k);
             }
             let i = self.done[..self.n_done]
@@ -5707,6 +5879,7 @@ impl Loop {
             && playing
             && !self.od_open
             && !self.first_open
+            && !self.tail
             && !self.mixing
             && self.gain == 1.0
             && self.on
@@ -5819,7 +5992,63 @@ impl Loop {
             }
             let blocks = store.blocks_of(me, k);
             let view = &self.views[k];
-            if !view.is_whole() {
+            let whole = view.is_whole();
+            if let Some(o) = if whole { None } else { view.forward() } {
+                // One piece from audio frame `o` (a first pass's region):
+                // as `layer_frame`, its frames straight from the audio
+                // where they are all written (nearly always), but for the
+                // seam's before the loop point.
+                let seam = self.seam;
+                let f = seam.min(len);
+                let edge = if f > 0 && view.cut_after(0) {
+                    len - f
+                } else {
+                    len
+                };
+                let (start, count) = s.valid;
+                let plain = (start == 0 && o + len <= count) || count >= view.size();
+                // The whole run before the seam (as nearly every run is):
+                // no frame needs a check. Positions only go forward in a
+                // run, so in one shorter than half the loop the last frame
+                // is the furthest unless the run went round.
+                let short = n > 0 && ticks[n - 1] - ticks[0] < len_ticks * 0.5;
+                let top = if short && i0s[0] <= i0s[n - 1] {
+                    i0s[n - 1]
+                } else {
+                    len - 1
+                };
+                if plain && top + 1 < edge {
+                    for j in 0..n {
+                        let (q0, q1) = (o + i0s[j], o + i1s[j]);
+                        let a = store.frame(blocks, q0 / BLOCK, q0 % BLOCK);
+                        let b = store.frame(blocks, q1 / BLOCK, q1 % BLOCK);
+                        for c in 0..2 {
+                            acc[j][c] += g[c] * (a[c] + (b[c] - a[c]) * fracs[j]);
+                        }
+                    }
+                    continue;
+                }
+                for j in 0..n {
+                    let (i0, i1) = (i0s[j], i1s[j]);
+                    let (a, b) = if plain && i0 < edge && i1 < edge {
+                        let (q0, q1) = (o + i0, o + i1);
+                        (
+                            store.frame(blocks, q0 / BLOCK, q0 % BLOCK),
+                            store.frame(blocks, q1 / BLOCK, q1 % BLOCK),
+                        )
+                    } else {
+                        (
+                            piece_frame(store, blocks, s.valid, view, seam, 0, i0),
+                            piece_frame(store, blocks, s.valid, view, seam, 0, i1),
+                        )
+                    };
+                    for c in 0..2 {
+                        acc[j][c] += g[c] * (a[c] + (b[c] - a[c]) * fracs[j]);
+                    }
+                }
+                continue;
+            }
+            if !whole {
                 // As `layer_frame`, finding the pieces with a cursor, and
                 // reading a frame once when it is one frame's second and
                 // the next one's first.
@@ -6056,9 +6285,35 @@ impl Loop {
                 continue;
             }
             if !views[k].is_whole() {
+                let view = &views[k];
                 let blocks = store.blocks_of(me, k);
-                let a = layer_frame(store, blocks, s.valid, &views[k], seam, i0);
-                let b = layer_frame(store, blocks, s.valid, &views[k], seam, i1);
+                // A first pass plays its audio straight through from one
+                // frame (`still_run` does the same): away from the seam,
+                // with every frame written, a frame is just `o + i`.
+                let fast = view.forward().filter(|&o| {
+                    let f = seam.min(len);
+                    let edge = if f > 0 && view.cut_after(0) {
+                        len - f
+                    } else {
+                        len
+                    };
+                    let (start, count) = s.valid;
+                    let plain = (start == 0 && o + len <= count) || count >= view.size();
+                    plain && i0 < edge && i1 < edge
+                });
+                let (a, b) = match fast {
+                    Some(o) => {
+                        let (q0, q1) = (o + i0, o + i1);
+                        (
+                            store.frame(blocks, q0 / BLOCK, q0 % BLOCK),
+                            store.frame(blocks, q1 / BLOCK, q1 % BLOCK),
+                        )
+                    }
+                    None => (
+                        layer_frame(store, blocks, s.valid, view, seam, i0),
+                        layer_frame(store, blocks, s.valid, view, seam, i1),
+                    ),
+                };
                 let (a, b) = (a.map(|v| v * d0[k]), b.map(|v| v * d1[k]));
                 for (c, v) in y.iter_mut().enumerate() {
                     *v += g[c] * (a[c] + (b[c] - a[c]) * frac);

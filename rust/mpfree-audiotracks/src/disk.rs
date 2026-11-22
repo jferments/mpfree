@@ -822,6 +822,7 @@ mod tests {
         d.open.remove(&1);
         let file = TakeFile {
             id: 7,
+            rec: crate::RecordingId::NONE,
             track: 0,
             group: 0,
             pass: 0,
