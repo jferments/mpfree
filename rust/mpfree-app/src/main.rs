@@ -158,6 +158,7 @@ mod screen_picture;
 mod script;
 mod setup;
 mod shed;
+mod show;
 mod skin_page;
 #[cfg(test)]
 mod smoke;
