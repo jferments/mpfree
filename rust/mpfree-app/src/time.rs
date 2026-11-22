@@ -8645,18 +8645,16 @@ mod tests {
         };
         let old = info(&mut h);
         assert_eq!(old.clip.notes.len(), 3);
-        // Erase picked, then step 1 taken off on Steps: the notes move up.
-        h.act(TimeAction::Edit(E::Button(2))).unwrap();
-        h.act(TimeAction::Edit(E::Button(2))).unwrap();
+        // Step 1 taken off on Steps: the notes move up.
         let mid = info(&mut h);
-        assert_eq!(mid.editor.tool, mpfree_time_ui::editor::Tool::Erase);
         let gone = notes(&h)[0];
         h.step_action(tap(0)).unwrap();
         assert!(!notes(&h).contains(&gone));
-        // A tap made on the picture before: refused, nothing erased.
+        // ERASE + a tap made on the picture before: refused, nothing
+        // erased.
         let before = notes(&h);
         let said = h
-            .act(TimeAction::Edit(E::Note {
+            .act(TimeAction::Edit(E::Erase {
                 index: 0,
                 rev: mid.rev,
             }))
@@ -8666,19 +8664,35 @@ mod tests {
             "{said}"
         );
         assert_eq!(notes(&h), before);
-        // The new picture's tap erases the note it showed.
+        // The new picture's erase takes the note it showed.
         let now = info(&mut h);
         assert!(now.rev > mid.rev);
         let hit = now.clip.notes[1];
-        h.act(TimeAction::Edit(E::Note {
+        h.act(TimeAction::Edit(E::Erase {
             index: 1,
             rev: now.rev,
         }))
         .unwrap();
         assert!(!notes(&h).contains(&hit));
         assert_eq!(notes(&h).len(), 1);
-        // Picks follow: two kicks back, the last one picked by Select...
-        h.act(TimeAction::Edit(E::Button(2))).unwrap();
+        // The same for a move and a tap on an old picture (piano roll
+        // plan 1B.1: every action naming a note carries its picture).
+        for a in [
+            E::Tap {
+                index: 0,
+                rev: mid.rev,
+            },
+            E::Drop {
+                index: 0,
+                rev: mid.rev,
+                ticks: 240,
+                notes: 0,
+            },
+        ] {
+            assert!(h.act(TimeAction::Edit(a)).is_err());
+            assert_eq!(notes(&h).len(), 1);
+        }
+        // Picks follow: two kicks back, the last one picked...
         for step in [0, 12] {
             h.step_action(tap(step)).unwrap();
         }
@@ -8810,6 +8824,8 @@ mod tests {
         assert_eq!(answer(&mut h).outcome, O::Unchanged);
         // A move: taken, at a new revision, the note where it landed.
         h.act(TimeAction::Edit(E::Drop {
+            index: 1,
+            rev,
             ticks: 240,
             notes: 2,
         }))

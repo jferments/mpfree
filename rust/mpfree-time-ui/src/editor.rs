@@ -63,7 +63,7 @@ use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, W
 pub const EDIT_BUTTONS: [&str; 8] = [
     "‹ Steps",
     "Grid",
-    "Tool",
+    "Draw",
     "Snap",
     "All",
     "Duplicate",
@@ -119,8 +119,12 @@ pub const DEFAULT_SNAP: usize = SNAP_AUTO;
 const SIXTEENTH: usize = 6;
 /// The length of a note drawn with no snap: a 1/16.
 const FREE_LEN: Tick = PPQ as Tick / 4;
-/// The velocity a drawn note gets.
+/// The velocity a drawn note gets until another is used.
 const DRAW_VELOCITY: u8 = 100;
+/// A step, for a tap with Draw on (plan 1B.1, call 3): a note no longer
+/// than this comes out, as a tap on a lit step does; a longer one is
+/// picked. A 1/16, the Steps view's step.
+pub const TAP_STEP: Tick = PPQ as Tick / 4;
 /// Join keys, so turning a row or dragging the velocity lane makes one
 /// undoable take.
 const JOIN: u64 = 0xED17_0000_0000;
@@ -156,16 +160,19 @@ impl Lens {
     }
 }
 
-/// What a tap on the roll does.
+/// What a tap on the roll does: the Draw button, lit while Draw is on
+/// (piano roll plan 1B.1, the plan's call 2: one Draw button in place of
+/// the Select, Draw and Erase cycle; ERASE held + a tap erases).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tool {
-    /// Taps select; a drag moves the selection.
+    /// Draw off, editing: a tap picks a note, a drag moves the picked
+    /// notes, a double tap on empty space puts a note in.
     #[default]
     Select,
-    /// A tap on empty space puts a note there.
+    /// Draw on, the step feel: a tap on empty space puts a note in, a tap
+    /// on a note no longer than a step takes it out, a drag on empty space
+    /// draws a note as long as the drag.
     Draw,
-    /// A tap on a note takes it out.
-    Erase,
 }
 
 impl Tool {
@@ -173,15 +180,13 @@ impl Tool {
         match self {
             Tool::Select => "Select",
             Tool::Draw => "Draw",
-            Tool::Erase => "Erase",
         }
     }
 
     fn next(self) -> Tool {
         match self {
             Tool::Select => Tool::Draw,
-            Tool::Draw => Tool::Erase,
-            Tool::Erase => Tool::Select,
+            Tool::Draw => Tool::Select,
         }
     }
 }
@@ -193,17 +198,37 @@ pub enum EditAction {
     Open,
     /// Button `k` of [`EDIT_BUTTONS`].
     Button(usize),
-    /// A note tapped, by its index in the clip, on the picture of
-    /// revision `rev` ([`crate::EditInfo::rev`]). The app refuses it if
-    /// the clip has moved on since, so a tap never lands on another note
-    /// (piano roll plan 0A.1).
+    /// A note picked (a hold on the roll, a row of the list or the
+    /// tracker), by its index in the clip, on the picture of revision
+    /// `rev` ([`crate::EditInfo::rev`]). The app refuses every action
+    /// naming a note if the clip has moved on since, so a touch never
+    /// lands on another note (piano roll plan 0A.1). A note already
+    /// picked keeps the others with it.
     Note { index: usize, rev: u64 },
-    /// Empty space on the roll tapped.
+    /// A note on the roll tapped (plan 1B.1): with Draw on, a note no
+    /// longer than a step comes out ([`TAP_STEP`]) and a longer one is
+    /// picked; with Draw off it is picked in place of the others.
+    Tap { index: usize, rev: u64 },
+    /// A note taken out: ERASE held + a tap.
+    Erase { index: usize, rev: u64 },
+    /// Empty space on the roll tapped: with Draw on a note one snap long
+    /// goes in, with Draw off the picks are let go.
     Empty { tick: Tick, note: u8 },
+    /// A note `len` long put in at `tick`, whatever the tool: a drag on
+    /// empty space with Draw on, a double tap with Draw off. It stops at
+    /// the clip's end.
+    Draw { tick: Tick, note: u8, len: Tick },
     /// An empty step of the tracker tapped, by its line.
     Step(Tick),
-    /// The selection dragged by this many ticks and notes.
-    Drop { ticks: Tick, notes: i32 },
+    /// Note `index` dragged by this many ticks and notes, as its finger
+    /// lifted: the picked notes move with it when it is one of them, else
+    /// it is picked alone and moves.
+    Drop {
+        index: usize,
+        rev: u64,
+        ticks: Tick,
+        notes: i32,
+    },
     /// The velocity lane: the selection's velocity, 0 to 1.
     Velocity(f32),
     /// An Edit option stepped.
@@ -221,6 +246,25 @@ pub enum EditAction {
     /// drawer. The picked notes, or all of them with none picked.
     Correct,
 }
+
+impl EditAction {
+    /// The revision of the picture an action naming a note was made on
+    /// (the app refuses it if the clip has moved on).
+    pub fn rev(&self) -> Option<u64> {
+        match *self {
+            EditAction::Note { rev, .. }
+            | EditAction::Tap { rev, .. }
+            | EditAction::Erase { rev, .. }
+            | EditAction::Drop { rev, .. } => Some(rev),
+            _ => None,
+        }
+    }
+}
+
+/// An edit [`Editor::act`] works out: the change, its join key, whether
+/// the notes it puts in are picked after, whether the picked notes it
+/// leaves alone stay picked, and the log line.
+type Made = (Edit, Option<u64>, bool, bool, String);
 
 /// What [`Editor::act`] asks of the app.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -278,6 +322,9 @@ pub struct Editor {
     /// Euclidean fill writes it.
     pub sound: u8,
     pub euclid: Euclid,
+    /// The velocity last used (a note picked or drawn, the lane): the
+    /// next drawn note gets it.
+    pub velocity: u8,
     /// Something else changed the clip and took a picked note with it, so
     /// the picks were cleared ([`Editor::follow`]); the legend says so
     /// until the next touch.
@@ -320,6 +367,7 @@ impl Editor {
             first: 0,
             sound,
             euclid: Euclid::default(),
+            velocity: DRAW_VELOCITY,
             cleared: false,
         }
     }
@@ -380,6 +428,32 @@ impl Editor {
         }
     }
 
+    /// Note `n` was picked: its sound is the one worked on, and its
+    /// velocity the next drawn note's.
+    fn worked_on(&mut self, n: Note) {
+        self.sound = n.note;
+        self.velocity = n.velocity;
+    }
+
+    /// A note `len` long at `tick` on `note`, at the velocity last used,
+    /// stopping at the clip's end (plan 1B.1: a choice, not the model's
+    /// rule); picked after. None past the end.
+    fn draw(&mut self, clip: &Clip, tick: Tick, note: u8, len: Tick) -> Option<Made> {
+        if !(0..clip.length).contains(&tick) {
+            return None;
+        }
+        let len = len.max(1).min(clip.length - tick);
+        let n = Note::new(tick, len, note.min(127), self.velocity);
+        self.sound = n.note;
+        Some((
+            notes::add(clip, n),
+            None,
+            true,
+            false,
+            format!("edit: note {} drawn at tick {tick}", note_name(n.note)),
+        ))
+    }
+
     /// The selection, in range and in order.
     fn picked(&self, clip: &Clip) -> Vec<usize> {
         let mut s: Vec<usize> = self
@@ -431,7 +505,8 @@ impl Editor {
             }
             EditAction::Button(2) => {
                 self.tool = self.tool.next();
-                return Done::line(format!("edit: tool {}", self.tool.name()));
+                let on = if self.tool == Tool::Draw { "on" } else { "off" };
+                return Done::line(format!("edit: draw {on}"));
             }
             EditAction::Button(3) => {
                 self.snap = (self.snap + 1) % SNAPS;
@@ -487,48 +562,63 @@ impl Editor {
                 )
             }
             EditAction::Button(_) => return Done::default(),
-            EditAction::Note { index: i, .. } if i < clip.notes.len() => match self.tool {
-                Tool::Erase => (
-                    notes::delete(clip, &[i]),
-                    None,
-                    false,
-                    true,
-                    format!("edit: note {} erased", i + 1),
-                ),
-                // A tap on a selected note keeps the group, so a drag
-                // moves it; on another note it selects that one. Its sound
-                // is the one worked on.
-                _ => {
-                    if !sel.contains(&i) {
-                        self.sel = vec![i];
-                    }
-                    self.sound = clip.notes[i].note;
-                    return Done::default();
+            // A note picked: one already picked keeps the others with it.
+            // Its sound is the one worked on, its velocity the next drawn.
+            EditAction::Note { index: i, .. } if i < clip.notes.len() => {
+                if !sel.contains(&i) {
+                    self.sel = vec![i];
                 }
-            },
-            EditAction::Note { .. } => return Done::default(),
-            EditAction::Empty { tick, note } => match self.tool {
-                Tool::Draw if tick < clip.length => {
-                    let n = Note::new(tick, self.step(), note.min(127), DRAW_VELOCITY);
+                self.worked_on(clip.notes[i]);
+                return Done::default();
+            }
+            // A tap with Draw on takes out a note no longer than a step,
+            // only the one tapped (never every note of its step and
+            // pitch); a longer one, or any with Draw off, is picked alone.
+            EditAction::Tap { index: i, .. } if i < clip.notes.len() => {
+                let n = clip.notes[i];
+                if self.tool == Tool::Draw && n.len <= TAP_STEP {
                     self.sound = n.note;
                     (
-                        notes::add(clip, n),
+                        notes::delete(clip, &[i]),
                         None,
-                        true,
                         false,
-                        format!("edit: note {} drawn at tick {tick}", note_name(note)),
+                        true,
+                        format!("edit: note {} taken out", note_name(n.note)),
                     )
+                } else {
+                    self.sel = vec![i];
+                    self.worked_on(n);
+                    return Done::default();
                 }
+            }
+            EditAction::Erase { index: i, .. } if i < clip.notes.len() => (
+                notes::delete(clip, &[i]),
+                None,
+                false,
+                true,
+                format!("edit: note {} erased", note_name(clip.notes[i].note)),
+            ),
+            EditAction::Note { .. } | EditAction::Tap { .. } | EditAction::Erase { .. } => {
+                return Done::default()
+            }
+            EditAction::Empty { tick, note } => match self.tool {
+                Tool::Draw => match self.draw(clip, tick, note, self.step()) {
+                    Some(d) => d,
+                    None => return Done::default(),
+                },
                 Tool::Select => {
                     self.sel.clear();
                     return Done::default();
                 }
-                _ => return Done::default(),
+            },
+            EditAction::Draw { tick, note, len } => match self.draw(clip, tick, note, len) {
+                Some(d) => d,
+                None => return Done::default(),
             },
             EditAction::Step(tick) => match self.tool {
                 // The editor's sound, a step long, on the step's line.
                 Tool::Draw if (0..clip.length).contains(&tick) => {
-                    let n = Note::new(tick, self.grid().size(), self.sound, DRAW_VELOCITY);
+                    let n = Note::new(tick, self.grid().size(), self.sound, self.velocity);
                     (
                         notes::add(clip, n),
                         None,
@@ -541,19 +631,38 @@ impl Editor {
                     self.sel.clear();
                     return Done::default();
                 }
-                _ => return Done::default(),
+                Tool::Draw => return Done::default(),
             },
-            EditAction::Drop { ticks, notes: by } => (
-                notes::shift(clip, &sel, ticks, by),
-                None,
-                true,
-                true,
-                format!("edit: {} notes moved", sel.len()),
-            ),
+            // The note dragged moves its picks with it, or alone when it
+            // wasn't picked.
+            EditAction::Drop {
+                index,
+                ticks,
+                notes: by,
+                ..
+            } => {
+                let moved = match index < clip.notes.len() && !sel.contains(&index) {
+                    true => vec![index],
+                    false => sel.clone(),
+                };
+                if let Some(&i) = moved.first() {
+                    self.sound = clip.notes[i].note;
+                }
+                (
+                    notes::shift(clip, &moved, ticks, by),
+                    None,
+                    true,
+                    false,
+                    format!("edit: {} notes moved", moved.len()),
+                )
+            }
             // One a drag of the velocity lane (sent when the finger lifts),
             // so each drag is its own take.
             EditAction::Velocity(v) => (
-                notes::set_velocity(clip, &sel, lane_velocity(v)),
+                notes::set_velocity(clip, &sel, {
+                    self.velocity = lane_velocity(v);
+                    self.velocity
+                }),
                 None,
                 true,
                 true,
@@ -1025,6 +1134,18 @@ pub fn drop_frame(ticks: Tick, notes: i32) -> u64 {
     n << 32 | t
 }
 
+/// Note `i` of `old`, found in `new`: at the same place if it is still
+/// there, else the first equal note (its place, length, pitch and
+/// velocity), else none.
+fn refind(old: &[NoteBox], new: &[NoteBox], i: usize) -> Option<usize> {
+    let n = old.get(i)?;
+    let key = |m: &NoteBox| (m.tick, m.len, m.note, m.velocity);
+    if new.get(i).is_some_and(|m| key(m) == key(n)) {
+        return Some(i);
+    }
+    new.iter().position(|m| key(m) == key(n))
+}
+
 /// The velocity the lane's value `v` (0 to 1, [`EditAction::Velocity`])
 /// sets: 1 to 127.
 pub fn lane_velocity(v: f32) -> u8 {
@@ -1249,6 +1370,9 @@ pub struct NoteGrid {
     hand: Hand,
     /// When the overview was last tapped, for a double tap.
     overview_tap: Option<Instant>,
+    /// When and where empty roll was last tapped with Draw off, for a
+    /// double tap (a note goes in).
+    empty_tap: Option<(Instant, (i32, i32))>,
     kept: Kept,
 }
 
@@ -1257,6 +1381,30 @@ pub struct NoteGrid {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Hand {
     Idle,
+    /// A finger on a note, not yet a tap, a hold or a drag (piano roll
+    /// plan 1B.1): nothing is sent until it lifts (a tap), stays down
+    /// [`HOLD`] seconds (a hold picks the note, [`NoteGrid::tick`]) or
+    /// moves [`TAP_SLOP`] (a drag).
+    Press {
+        finger: u64,
+        index: usize,
+        at: (i32, i32),
+        now: (i32, i32),
+        /// Seconds down so far.
+        held: f32,
+        /// The hold picked the note: its lift taps nothing.
+        picked: bool,
+    },
+    /// A finger drawing a note on empty roll with Draw on: from the cell
+    /// it went down on to the end of the cell under it now, at least a
+    /// snap long, sent when it lifts.
+    Pen {
+        finger: u64,
+        note: u8,
+        from: Tick,
+        to: Tick,
+        now: (i32, i32),
+    },
     /// A finger on empty roll: its tap acts when it lifts (so a pinch
     /// starting there draws nothing), unless it moved away first.
     Wait {
@@ -1302,8 +1450,12 @@ enum Strip {
 const TAP_SLOP: i32 = 24;
 /// A finger moved this far on a strip starts scrolling.
 const STRIP_SLOP: i32 = 6;
-/// Two taps on the overview this close together are a double tap.
+/// Two taps on the overview, or on empty roll with Draw off, this close
+/// together are a double tap.
 const DOUBLE_TAP: Duration = Duration::from_millis(400);
+/// A finger held this long on a note without moving [`TAP_SLOP`] picks
+/// it (seconds; the plan's 0.4 s, as on Steps).
+pub const HOLD: f32 = 0.4;
 
 /// A note being dragged: by which finger, which note, where the finger
 /// went down, and the move so far (snapped).
@@ -1386,6 +1538,7 @@ impl Default for NoteGrid {
             drag: None,
             hand: Hand::Idle,
             overview_tap: None,
+            empty_tap: None,
             kept: Kept::default(),
         }
     }
@@ -1443,12 +1596,30 @@ impl NoteGrid {
     }
 
     /// Show what `other` shows, keeping what the fingers are doing.
+    /// A finger on a note or dragging one follows its note to where it
+    /// now is in `other`'s notes (by value), or lets go of it when it is
+    /// gone, so its lift never acts on another note.
     pub fn show(&mut self, other: NoteGrid) {
-        let (drag, hand, overview_tap) = (self.drag, self.hand, self.overview_tap);
+        let (mut drag, mut hand) = (self.drag, self.hand);
+        let refind = |i: usize| refind(&self.notes, &other.notes, i);
+        if let Some(d) = drag.as_mut().filter(|d| d.lane.is_none()) {
+            match refind(d.index) {
+                Some(i) => d.index = i,
+                None => drag = None,
+            }
+        }
+        if let Hand::Press { index, .. } = &mut hand {
+            match refind(*index) {
+                Some(i) => *index = i,
+                None => hand = Hand::Idle,
+            }
+        }
+        let (overview_tap, empty_tap) = (self.overview_tap, self.empty_tap);
         *self = NoteGrid {
             drag,
             hand,
             overview_tap,
+            empty_tap,
             ..other
         };
     }
@@ -1595,7 +1766,7 @@ impl NoteGrid {
     fn note_rect_in(&self, g: &Geo, i: usize) -> Option<Rect> {
         let n = self.notes.get(i)?;
         let (dt, dn) = match self.drag {
-            Some(d) if n.selected && d.lane.is_none() => (d.ticks, d.notes),
+            Some(d) if self.moves(d, i) => (d.ticks, d.notes),
             _ => (0, 0),
         };
         let note = u8::try_from(i32::from(n.note) + dn).ok()?;
@@ -1693,7 +1864,6 @@ impl NoteGrid {
         let any = self.notes.iter().any(|n| n.selected);
         match k {
             1 => self.lens.name().into(),
-            2 => self.tool.name().into(),
             // Snap Auto names itself ("Auto · 1/16").
             3 if self.snap_name.starts_with("Auto") => self.snap_name.clone(),
             3 => format!("Snap {}", self.snap_name),
@@ -1843,6 +2013,17 @@ impl NoteGrid {
             }
             self.paint_join(cx, g, nr, n.join, if n.on { fill } else { self.color });
             if n.selected {
+                cx.canvas.stroke_round_rect(nr, 3, 2, top);
+            }
+        }
+        // A note being drawn with Draw on: where it goes when the finger
+        // lifts.
+        if let Hand::Pen { note, from, to, .. } = self.hand {
+            if let Some(y) = self.y_of(g, note) {
+                let x0 = self.x_of(g, from);
+                let x1 = self.x_of(g, to).max(x0 + 3);
+                let nr = Rect::new(x0, y + 1, x1 - x0, g.v.row_h - 2);
+                cx.canvas.fill_round_rect(nr, 3, shade(DRAW_VELOCITY));
                 cx.canvas.stroke_round_rect(nr, 3, 2, top);
             }
         }
@@ -2419,6 +2600,58 @@ impl Widget for NoteGrid {
                     return None;
                 }
                 match self.hand {
+                    // A press that moves far enough is a drag of its note.
+                    Hand::Press {
+                        finger, index, at, ..
+                    } if (x - at.0).abs().max((y - at.1).abs()) >= TAP_SLOP => {
+                        self.hand = Hand::Idle;
+                        self.drag = Some(Drag {
+                            finger,
+                            index,
+                            x: at.0,
+                            y: at.1,
+                            now: (x, y),
+                            ticks: 0,
+                            notes: 0,
+                            lane: None,
+                        });
+                    }
+                    Hand::Press { ref mut now, .. } => {
+                        *now = (x, y);
+                        return None;
+                    }
+                    // With Draw on, a finger moved on empty roll draws a
+                    // note as long as its drag.
+                    Hand::Wait {
+                        finger,
+                        at,
+                        cell: (note, from),
+                        moved: false,
+                        ..
+                    } if self.tool == Tool::Draw
+                        && (x - at.0).abs().max((y - at.1).abs()) >= TAP_SLOP =>
+                    {
+                        self.hand = Hand::Pen {
+                            finger,
+                            note,
+                            from,
+                            to: self.pen_end(&g, from, x),
+                            now: (x, y),
+                        };
+                        return None;
+                    }
+                    Hand::Pen {
+                        finger, note, from, ..
+                    } => {
+                        self.hand = Hand::Pen {
+                            finger,
+                            note,
+                            from,
+                            to: self.pen_end(&g, from, x),
+                            now: (x, y),
+                        };
+                        return None;
+                    }
                     Hand::Wait {
                         finger,
                         at,
@@ -2507,16 +2740,30 @@ impl Widget for NoteGrid {
                         self.hand = Hand::Idle;
                         return None;
                     }
+                    // A tap on a note, unless a hold picked it.
+                    Hand::Press { index, picked, .. } => {
+                        self.hand = Hand::Idle;
+                        return (up && !picked).then_some(EventKind::Toggle(index));
+                    }
+                    Hand::Pen { note, from, to, .. } => {
+                        self.hand = Hand::Idle;
+                        return up.then_some(EventKind::Span {
+                            index: usize::from(note),
+                            from,
+                            to,
+                        });
+                    }
                     Hand::Wait {
+                        at,
                         cell: (note, tick),
                         moved,
                         ..
                     } => {
                         self.hand = Hand::Idle;
-                        return (up && !moved).then_some(EventKind::Cell {
-                            row: usize::from(note),
-                            col: tick as usize,
-                        });
+                        if !up || moved {
+                            return None;
+                        }
+                        return Some(self.empty_tapped(at, note, tick));
                     }
                     Hand::Scroll {
                         on,
@@ -2556,6 +2803,82 @@ impl Widget for NoteGrid {
 }
 
 impl NoteGrid {
+    /// Time passing, `dt` seconds (from the app's tick): a finger held on
+    /// a note for [`HOLD`] without moving picks it, `Select(index)`, and
+    /// its lift then taps nothing (plan 1B.1, as holding a step on Steps).
+    pub fn tick(&mut self, dt: f32) -> Option<EventKind> {
+        let Hand::Press {
+            index,
+            ref mut held,
+            ref mut picked,
+            ..
+        } = self.hand
+        else {
+            return None;
+        };
+        if *picked {
+            return None;
+        }
+        *held += dt.max(0.0);
+        if *held < HOLD {
+            return None;
+        }
+        *picked = true;
+        Some(EventKind::Select(index))
+    }
+
+    /// Note `i` moves with drag `d`: the picked notes when the note
+    /// dragged is one of them, else the note dragged alone.
+    fn moves(&self, d: Drag, i: usize) -> bool {
+        if d.lane.is_some() {
+            return false;
+        }
+        match self.notes.get(d.index) {
+            Some(n) if n.selected => self.notes.get(i).is_some_and(|m| m.selected),
+            _ => i == d.index,
+        }
+    }
+
+    /// Where a note drawn from tick `from` ends with the finger at `x`:
+    /// the end of the snap's cell under the finger (the tick under it
+    /// with no snap), at least a snap on from `from`, and never past the
+    /// clip's end.
+    fn pen_end(&self, g: &Geo, from: Tick, x: i32) -> Tick {
+        let t = g.v.tick_at(g.roll, x);
+        let (end, unit) = match self.snap {
+            0 => (t, FREE_LEN),
+            s => ((t.div_euclid(s) + 1) * s, s),
+        };
+        end.max(from + unit).min(self.length.max(from + 1))
+    }
+
+    /// A tap on empty roll at `at`, on row `note` at the cell from
+    /// `tick`: `Cell` (with Draw on a note goes in, with Draw off the
+    /// picks go), or with Draw off a second tap there soon after a first:
+    /// a note one snap long, `Span`, without turning Draw on.
+    fn empty_tapped(&mut self, at: (i32, i32), note: u8, tick: Tick) -> EventKind {
+        let now = Instant::now();
+        let double = self.tool == Tool::Select
+            && self.empty_tap.is_some_and(|(t, p)| {
+                now.duration_since(t) <= DOUBLE_TAP
+                    && (p.0 - at.0).abs().max((p.1 - at.1).abs()) < TAP_SLOP
+            });
+        if double {
+            self.empty_tap = None;
+            let unit = if self.snap > 0 { self.snap } else { FREE_LEN };
+            return EventKind::Span {
+                index: usize::from(note),
+                from: tick,
+                to: (tick + unit).min(self.length),
+            };
+        }
+        self.empty_tap = (self.tool == Tool::Select).then_some((now, at));
+        EventKind::Cell {
+            row: usize::from(note),
+            col: tick as usize,
+        }
+    }
+
     /// The one finger at work (a drag, a tap waiting, a scroll, or the
     /// finger left from a pinch) and where it is now.
     fn finger_now(&self) -> Option<(u64, i32, i32)> {
@@ -2563,7 +2886,9 @@ impl NoteGrid {
             return Some((d.finger, d.now.0, d.now.1));
         }
         match self.hand {
-            Hand::Wait { finger, now, .. }
+            Hand::Press { finger, now, .. }
+            | Hand::Pen { finger, now, .. }
+            | Hand::Wait { finger, now, .. }
             | Hand::Scroll { finger, now, .. }
             | Hand::Spent { finger, now } => Some((finger, now.0, now.1)),
             Hand::Idle | Hand::Pinch(_) => None,
@@ -2730,17 +3055,16 @@ impl NoteGrid {
             .rev()
             .find(|&i| self.note_rect_in(g, i).is_some_and(|nr| nr.contains(x, y)))
         {
-            self.drag = Some(Drag {
+            // A tap, a hold or a drag: nothing goes until it is one.
+            self.hand = Hand::Press {
                 finger: f,
                 index: i,
-                x,
-                y,
+                at: (x, y),
                 now: (x, y),
-                ticks: 0,
-                notes: 0,
-                lane: None,
-            });
-            return Some(EventKind::Select(i));
+                held: 0.0,
+                picked: false,
+            };
+            return None;
         }
         // Empty roll: the cell under the finger, sent when it lifts.
         let note = self.note_at(g, y)?;
@@ -2841,6 +3165,8 @@ mod tests {
             &mut ed,
             &mut c,
             EditAction::Drop {
+                index: 2,
+                rev: 0,
                 ticks: 240,
                 notes: 2,
             },
@@ -2850,6 +3176,22 @@ mod tests {
             ticks_of(&c, &ed.sel),
             vec![(240, 50), (720, 52), (1200, 54)]
         );
+        // A note that isn't picked moves alone, and is picked after.
+        let lone = c.notes.iter().position(|n| n.tick == 720).unwrap();
+        ed.sel = vec![(lone + 1) % 3];
+        let done = run(
+            &mut ed,
+            &mut c,
+            EditAction::Drop {
+                index: lone,
+                rev: 0,
+                ticks: 240,
+                notes: 0,
+            },
+        );
+        assert_eq!(done.line, "edit: 1 notes moved");
+        assert_eq!(ticks_of(&c, &ed.sel), vec![(960, 52)]);
+        assert_eq!(c.notes.len(), 3);
         // An empty tap with the select tool clears it.
         ed.act(
             EditAction::Empty {
@@ -2898,10 +3240,82 @@ mod tests {
         run(&mut ed, &mut c, EditAction::Button(6));
         assert_eq!(c.notes.len(), 2);
         assert!(ed.sel.is_empty());
-        ed.act(EditAction::Button(2), &c);
-        assert_eq!(ed.tool, Tool::Erase);
-        run(&mut ed, &mut c, EditAction::Note { index: 0, rev: 0 });
+        // ERASE + a tap, whatever the tool.
+        run(&mut ed, &mut c, EditAction::Erase { index: 0, rev: 0 });
         assert_eq!(c.notes.len(), 1);
+    }
+
+    /// Draw on is the step feel (piano roll plan 1B.1): a tap takes out a
+    /// note no longer than a step, only the one tapped, and picks a
+    /// longer one; Draw off, a tap picks the note alone. A drawn note
+    /// gets the velocity last used and stops at the clip's end.
+    #[test]
+    fn draw_on_taps_notes_out_or_picks_them_and_draws_to_the_end() {
+        // Two notes of one step and pitch, and a long one.
+        let mut c = clip(&[(0, 240, 60), (0, 120, 60), (480, 960, 62)]);
+        let mut ed = Editor::new(0, 0, &c);
+        ed.act(EditAction::Button(2), &c);
+        assert_eq!(ed.tool, Tool::Draw);
+        let done = run(&mut ed, &mut c, EditAction::Tap { index: 1, rev: 0 });
+        assert_eq!(done.line, "edit: note C3 taken out");
+        assert_eq!(c.notes.len(), 2, "only the note tapped");
+        assert_eq!((c.notes[0].tick, c.notes[0].len), (0, 240));
+        // The long note: picked, nothing taken out.
+        let long = c.notes.iter().position(|n| n.len == 960).unwrap();
+        let done = ed.act(
+            EditAction::Tap {
+                index: long,
+                rev: 0,
+            },
+            &c,
+        );
+        assert!(done.edit.is_empty());
+        assert_eq!(ed.sel, [long]);
+        // Its velocity is the next drawn note's.
+        c.notes[long].velocity = 77;
+        ed.act(
+            EditAction::Note {
+                index: long,
+                rev: 0,
+            },
+            &c,
+        );
+        assert_eq!(ed.velocity, 77);
+        // Drawn to past the end: it stops there.
+        run(
+            &mut ed,
+            &mut c,
+            EditAction::Draw {
+                tick: 3600,
+                note: 64,
+                len: 960,
+            },
+        );
+        let n = c.notes.iter().find(|n| n.note == 64).unwrap();
+        assert_eq!((n.tick, n.len, n.velocity), (3600, 240, 77));
+        assert_eq!(ticks_of(&c, &ed.sel), [(3600, 64)]);
+        // Draw off: a tap picks the note alone, even out of a group.
+        ed.act(EditAction::Button(2), &c);
+        assert_eq!(ed.tool, Tool::Select);
+        ed.sel = (0..c.notes.len()).collect();
+        let done = ed.act(EditAction::Tap { index: 0, rev: 0 }, &c);
+        assert!(done.edit.is_empty());
+        assert_eq!(ed.sel, [0]);
+        // An empty tap lets the picks go; Draw puts a note in anyway.
+        ed.act(EditAction::Empty { tick: 0, note: 70 }, &c);
+        assert!(ed.sel.is_empty());
+        run(
+            &mut ed,
+            &mut c,
+            EditAction::Draw {
+                tick: 960,
+                note: 70,
+                len: 240,
+            },
+        );
+        assert_eq!(c.notes.len(), 4);
+        assert_eq!(EditAction::Tap { index: 0, rev: 9 }.rev(), Some(9));
+        assert_eq!(EditAction::Empty { tick: 0, note: 1 }.rev(), None);
     }
 
     #[test]
@@ -3030,7 +3444,6 @@ mod tests {
         assert_eq!(c.notes[2].len, 240);
         assert!(ed.act(EditAction::Step(3840), &c).edit.is_empty());
         // Select on an empty step lets the notes go.
-        ed.act(EditAction::Button(2), &c);
         ed.act(EditAction::Button(2), &c);
         assert_eq!(ed.tool, Tool::Select);
         ed.act(EditAction::Step(720), &c);
@@ -3551,7 +3964,7 @@ mod tests {
         let n1 = g.note_rect(R, 1).unwrap();
         let (x, y) = mid(n1);
         let beat = (f64::from(g.geo(R).roll.w) / 4.0).round() as i32;
-        assert_eq!(g.touch(1, Touch::Down, x, y, R), Some(EventKind::Select(1)));
+        assert_eq!(g.touch(1, Touch::Down, x, y, R), None);
         // Another finger's moves and lift leave the drag be.
         assert_eq!(g.touch(2, Touch::Move, x + beat + 3, y, R), None);
         assert_eq!(g.note_rect(R, 1), Some(n1));
@@ -3604,7 +4017,7 @@ mod tests {
         assert_eq!(g.touch(5, Touch::Up, v.x + 40, v.y + 3, R), None);
         g.view = view;
         // A finger whose lift was lost starts afresh when it comes down.
-        assert_eq!(g.touch(6, Touch::Down, x, y, R), Some(EventKind::Select(1)));
+        assert_eq!(g.touch(6, Touch::Down, x, y, R), None);
         assert_eq!(g.touch(6, Touch::Down, empty.0, empty.1, R), None);
         assert!(g.touch(6, Touch::Up, empty.0, empty.1, R).is_some());
         assert_eq!(g.note_rect(R, 1), Some(n1));
@@ -3658,8 +4071,9 @@ mod tests {
         let mut g = grid();
         let n1 = g.note_rect(R, 1).unwrap();
         let (x, y) = mid(n1);
-        assert_eq!(g.touch(1, Touch::Down, x, y, R), Some(EventKind::Select(1)));
-        assert_eq!(g.touch(1, Touch::Up, x, y, R), None, "a tap is not a drag");
+        // A note: nothing until the finger lifts, then a tap.
+        assert_eq!(g.touch(1, Touch::Down, x, y, R), None);
+        assert_eq!(g.touch(1, Touch::Up, x, y, R), Some(EventKind::Toggle(1)));
         // Empty space: the row's note and the tick snapped down, when the
         // finger lifts.
         let n0 = g.note_rect(R, 0).unwrap();
@@ -3679,9 +4093,100 @@ mod tests {
             Some(EventKind::Tab(7))
         );
         assert_eq!(g.button_label(7), "Edit");
+        assert_eq!(g.button_label(2), "Draw");
         assert_eq!(g.button_label(3), "Snap 1/16");
         g.snap_name = "Auto · 1/8".into();
         assert_eq!(g.button_label(3), "Auto · 1/8");
+    }
+
+    /// A finger on a note is a tap, a hold or a drag before anything
+    /// goes (piano roll plan 1B.1): a hold picks the note and its lift
+    /// taps nothing; a drag moves the note alone when it isn't picked.
+    /// With Draw on a drag on empty roll draws a note as long as the drag;
+    /// with Draw off a double tap there puts one in.
+    #[test]
+    fn a_finger_is_a_tap_a_hold_or_a_drag_before_anything_goes() {
+        let mut g = grid();
+        let n0 = g.note_rect(R, 0).unwrap();
+        let (x, y) = mid(n0);
+        // A hold: nothing until 0.4 s, then the pick; the lift taps nothing.
+        assert_eq!(g.touch(1, Touch::Down, x, y, R), None);
+        assert_eq!(g.tick(0.3), None);
+        assert_eq!(g.touch(1, Touch::Move, x + 10, y, R), None, "not far");
+        assert_eq!(g.tick(0.15), Some(EventKind::Select(0)));
+        assert_eq!(g.tick(1.0), None, "once");
+        assert_eq!(g.touch(1, Touch::Up, x + 10, y, R), None);
+        // A drag of a note that isn't picked: it moves alone.
+        let beat = (f64::from(g.geo(R).roll.w) / 4.0).round() as i32;
+        let n1 = g.note_rect(R, 1).unwrap();
+        assert_eq!(g.touch(2, Touch::Down, x, y, R), None);
+        assert_eq!(g.touch(2, Touch::Move, x + beat + 3, y, R), None);
+        assert_ne!(g.note_rect(R, 0), Some(n0), "the note dragged moves");
+        assert_eq!(g.note_rect(R, 1), Some(n1), "the picked one stays");
+        assert!(matches!(
+            g.touch(2, Touch::Up, x + beat + 3, y, R),
+            Some(EventKind::Marker { index: 0, .. })
+        ));
+        // A press follows its note when the notes change under it, and
+        // lets go when its note is gone.
+        assert_eq!(g.touch(3, Touch::Down, x, y, R), None);
+        let mut swapped = g.clone();
+        swapped.notes.swap(0, 1);
+        g.show(swapped.clone());
+        assert_eq!(g.touch(3, Touch::Up, x, y, R), Some(EventKind::Toggle(1)));
+        assert_eq!(g.touch(3, Touch::Down, x, y, R), None);
+        let mut gone = swapped;
+        gone.notes.remove(1);
+        g.show(gone);
+        assert_eq!(g.touch(3, Touch::Up, x, y, R), None);
+        // Draw on: a drag on empty roll draws, from the cell it started
+        // in to the end of the cell under the finger, shown as it goes.
+        let mut g = grid();
+        g.tool = Tool::Draw;
+        g.snap = 240;
+        let n0 = g.note_rect(R, 0).unwrap();
+        let (ex, ey) = (n0.x + n0.w * 3, n0.y + n0.h / 2);
+        let before = painted(&g);
+        assert_eq!(g.touch(4, Touch::Down, ex, ey, R), None);
+        assert_eq!(g.touch(4, Touch::Move, ex + beat, ey, R), None);
+        assert!(differ_in(&before, &painted(&g), g.geo(R).roll));
+        match g.touch(4, Touch::Up, ex + beat, ey, R) {
+            Some(EventKind::Span { index, from, to }) => {
+                assert_eq!(index, 50);
+                assert_eq!(from % 240, 0);
+                assert_eq!(to % 240, 0);
+                assert!(to - from >= 960, "{from}..{to}");
+            }
+            other => panic!("{other:?}"),
+        }
+        // A tap there with Draw on: a cell, twice (no double tap).
+        for _ in 0..2 {
+            assert_eq!(g.touch(5, Touch::Down, ex, ey, R), None);
+            assert!(matches!(
+                g.touch(5, Touch::Up, ex, ey, R),
+                Some(EventKind::Cell { row: 50, .. })
+            ));
+        }
+        // Draw off: the second of two quick taps puts a note in.
+        g.tool = Tool::Select;
+        g.touch(6, Touch::Down, ex, ey, R);
+        assert!(matches!(
+            g.touch(6, Touch::Up, ex, ey, R),
+            Some(EventKind::Cell { .. })
+        ));
+        g.touch(6, Touch::Down, ex + 5, ey, R);
+        match g.touch(6, Touch::Up, ex + 5, ey, R) {
+            Some(EventKind::Span {
+                index: 50,
+                from,
+                to,
+            }) => assert_eq!(to - from, 240),
+            other => panic!("{other:?}"),
+        }
+        // A drag on empty roll with Draw off sends nothing (yet).
+        g.touch(7, Touch::Down, ex, ey, R);
+        g.touch(7, Touch::Move, ex + beat, ey, R);
+        assert_eq!(g.touch(7, Touch::Up, ex + beat, ey, R), None);
     }
 
     #[test]
