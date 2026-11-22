@@ -2526,7 +2526,12 @@ mod tests {
                 s.route(FromUi::Time(TimeAction::Audio(a)));
                 s.run_periods(2).settle();
             };
-            audio(&mut s, AudioAction::Add);
+            // "+ Track" opens its chooser; Audio track adds one, armed.
+            s.press("song", "add-track", "+ Track").settle();
+            s.press("song", "add-kind", "Audio track")
+                .run_periods(2)
+                .settle();
+            assert!(s.tracks.host.tracks.armed(0), "armed as it is added");
             audio(&mut s, AudioAction::Panel(0));
             s.press("song", "panel-mix", "Mix").run_periods(2).settle();
             assert!(s.tracks.inside(0).is_some(), "Mix picks a source");
@@ -2545,7 +2550,6 @@ mod tests {
             assert!(from.after_effects, "after its effects by default");
             let shown = s.screen.time.audio[0].mix.as_ref().map(|m| m.name.clone());
             assert_eq!(shown, Some(name));
-            s.press("song", "panel-arm", "Arm").run_periods(2).settle();
             assert!(s.tracks.host.tracks.armed(0));
             s.run_periods(4);
             assert!(s.tracks.host.tracks.records_inside(0), "the engine has it");
@@ -2608,7 +2612,7 @@ mod tests {
             let mut saved = None;
             for _ in 0..2000 {
                 s.run_periods(1);
-                saved = s.tracks.take_saved();
+                saved = s.tracks.take_saved(s.time.project());
                 if saved.is_some() {
                     break;
                 }

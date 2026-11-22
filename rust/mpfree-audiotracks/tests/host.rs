@@ -119,7 +119,6 @@ fn rms(out: &[f32], from: u64, to: u64) -> f64 {
 fn a_save_made_across_periods_opens_in_a_fresh_host_and_plays_the_same() {
     let mut r = Rig::new();
     r.record_bar();
-    r.h.command(A::SetLevel(0, 0.7));
     assert!(r.h.save());
     assert!(!r.h.save(), "one save at a time");
     let mut saved = None;
@@ -337,8 +336,10 @@ fn a_cancelled_save_leaves_nothing_behind_and_the_next_save_works() {
 fn clear_empties_the_tracks_and_a_part_loads_over_them() {
     let mut r = Rig::new();
     r.record_bar();
-    r.h.command(A::SetLevel(0, 0.7));
-    r.h.command(A::Mute(1, true));
+    // Level, pan, mute and solo aren't saved (the app's mixer and track
+    // list keep them); the input and monitor are.
+    r.h.command(A::SetMonitor(1, mpfree_audiotracks::Monitor::Off));
+    r.h.command(A::SetInput(1, mpfree_audiotracks::Input::Right));
     r.run_to(r.frame + 10);
     assert!(r.h.save());
     let mut saved = None;
@@ -348,7 +349,6 @@ fn clear_empties_the_tracks_and_a_part_loads_over_them() {
     });
     let saved = saved.unwrap();
     let before = r.play(BAR + 1000);
-    assert_eq!(r.h.tracks.settings(0).unwrap().level, 0.7);
 
     // Refused while a track records.
     r.live = true;
@@ -382,8 +382,14 @@ fn clear_empties_the_tracks_and_a_part_loads_over_them() {
     // The saved part goes back in under its own take ids.
     assert!(r.h.load(saved).is_ok());
     r.run_until(|r| r.h.tracks.loading() == 0);
-    assert_eq!(r.h.tracks.settings(0).unwrap().level, 0.7);
-    assert!(r.h.tracks.settings(1).unwrap().mute);
+    let s = r.h.tracks.settings(1).unwrap();
+    assert_eq!(
+        (s.monitor, s.input),
+        (
+            mpfree_audiotracks::Monitor::Off,
+            mpfree_audiotracks::Input::Right
+        )
+    );
     assert_eq!(r.play(BAR + 1000), before);
 }
 

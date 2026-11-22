@@ -137,6 +137,14 @@ pub struct StripView {
     pub freezable: bool,
     /// A freeze or print of it under way (the app's, from its `Print`).
     pub take: Option<TakeView>,
+    /// An audio track's strip (the audio tracks rethink, phase 1b): its
+    /// input ("L", "ST", "Mix"), drawn with a wave mark beside the name.
+    /// The app fills it in, and [`StripView::color`] with the track's
+    /// colour.
+    pub audio: Option<String>,
+    /// The stripe's colour, when the app gives one (an audio track's, its
+    /// track's colour); else the strip's own.
+    pub color: Option<mpfree_ui::Color>,
 }
 
 /// The parametric EQ's engine id.
@@ -178,6 +186,8 @@ impl StripView {
             frozen: false,
             freezable: matches!(id, StripId::Track(_) | StripId::Pad(_)),
             take: None,
+            audio: None,
+            color: None,
         }
     }
 

@@ -208,6 +208,9 @@ pub fn unfit(
     if k.is_loops() {
         return Some("is a Loop track");
     }
+    if k.is_audio() {
+        return Some("is an audio track");
+    }
     if !k.slots.is_empty() {
         return Some("has clips");
     }

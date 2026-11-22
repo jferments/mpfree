@@ -53,12 +53,17 @@ use mpfree_audiotracks::{
     Command, Input, Monitor, Retime, RetimeRefused, SongStep, TakeInfo, MAX_REGIONS, MAX_TRACKS,
     PEAK_BLOCK,
 };
-use mpfree_time_ui::song::{audio_blocks, take_lanes, AudioLane, MixFrom, MONITORS};
-use mpfree_time_ui::view::{audio_color, AudioAction, RegionId, TimeState, TransportInfo};
+use mpfree_seq::TrackId;
+use mpfree_time_ui::song::{audio_blocks, input_chip, take_lanes, AudioLane, MixFrom, MONITORS};
+use mpfree_time_ui::view::{
+    audio_color, track_color, AudioAction, RegionId, TimeState, TransportInfo,
+};
 use mpfree_transport::{Block, TempoMap, Tick};
 use mpfree_ui::qlink::QLinkCard;
 
+use crate::mixing::MixHost;
 use crate::PERIOD;
+use mpfree_fx::ids::mixer as mx;
 
 /// Prefs "Audio track memory" (layout spec 4c): the stereo seconds every
 /// take shares, 60 s by default (about 21 MB at 44.1 kHz). It is set aside,
@@ -117,9 +122,52 @@ impl AudioMemory {
 /// Periods between checks for a change the Song view should show (about
 /// 23 ms at 128 frames).
 const CHECK_EVERY: u64 = 8;
+/// Periods after "+ Track"'s Audio track in which the audio track that
+/// comes is armed (about 2.7 s at 128 frames and 48 kHz): an add the time
+/// engine refused arms nothing later.
+const ARM_WINDOW: u64 = 1000;
 /// Periods between new reads of a recording take's waveform (about a
 /// quarter of a second).
 const GROW_EVERY: u64 = 86;
+
+/// Room for each audio track's name in the lines (bytes; a longer name is
+/// cut short there).
+const NAME_ROOM: usize = 64;
+
+/// Which project track each of the audio engine's tracks plays (the audio
+/// tracks rethink, phase 1a: an audio track is a track in the project's
+/// one track list, [`mpfree_seq::TrackKind::Audio`]): the track's lasting
+/// id, or [`TrackId::NONE`] for a free one. The engine's tracks are fixed
+/// arrays, so a track added or taken away never allocates on the audio
+/// thread; this table is the only place the two meet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Slots(pub [TrackId; MAX_TRACKS]);
+
+impl Default for Slots {
+    fn default() -> Slots {
+        Slots([TrackId::NONE; MAX_TRACKS])
+    }
+}
+
+impl Slots {
+    /// The engine track that plays project track `id`.
+    pub fn slot_of(&self, id: TrackId) -> Option<usize> {
+        if !id.is_given() {
+            return None;
+        }
+        self.0.iter().position(|&s| s == id)
+    }
+
+    /// The project track engine track `slot` plays.
+    pub fn id_of(&self, slot: usize) -> Option<TrackId> {
+        self.0.get(slot).copied().filter(|id| id.is_given())
+    }
+
+    /// The first engine track that plays nothing.
+    pub fn free(&self) -> Option<usize> {
+        self.0.iter().position(|s| !s.is_given())
+    }
+}
 
 /// Why the audio tracks' own Undo, and Redo, stop at a song edit's step
 /// (the Arrange refactor's 3.4): the song's UNDO and REDO move them.
@@ -145,8 +193,6 @@ pub struct TrackHost {
     /// The line input and the tracks' sound, interleaved stereo.
     input: Box<[f32; 2 * PERIOD]>,
     out: Box<[f32; 2 * PERIOD]>,
-    /// Audio tracks whose lanes show even when empty ("+ Audio").
-    shown: usize,
     /// What each track records from (the engine keeps it too; this is for
     /// the header's chip).
     inputs: [Input; MAX_TRACKS],
@@ -171,8 +217,6 @@ pub struct TrackHost {
     volume: [f32; MAX_TRACKS],
     pan: [f32; MAX_TRACKS],
     monitor: [Monitor; MAX_TRACKS],
-    mute: [bool; MAX_TRACKS],
-    solo: [bool; MAX_TRACKS],
     /// The track whose panel is open over the lanes, and the track whose
     /// take lanes show.
     panel: Option<usize>,
@@ -206,6 +250,22 @@ pub struct TrackHost {
     /// given to the screen.
     meter: [f32; MAX_TRACKS],
     meter_shown: [f32; MAX_TRACKS],
+    /// Which project track each engine track plays (phase 1a), and where
+    /// that track is in the track list as last found ([`TrackHost::sync`]).
+    pub slots: Slots,
+    place: [Option<usize>; MAX_TRACKS],
+    /// Each engine track's project track's name as last found, for the
+    /// hint and log lines ([`TrackHost::who`]); room made at start, so
+    /// [`TrackHost::sync`] never allocates. A track gone keeps its name.
+    names: [String; MAX_TRACKS],
+    /// Each engine track silenced as last sent: its project track muted,
+    /// left out by a solo, or gone (taken away by UNDO, its recordings
+    /// kept for a REDO).
+    silent: [bool; MAX_TRACKS],
+    /// The period "+ Track"'s Audio track was picked in: the next audio
+    /// track given an engine track (within [`ARM_WINDOW`]) is armed
+    /// (layout spec 4c).
+    arm_next: Option<u64>,
 }
 
 impl TrackHost {
@@ -220,7 +280,6 @@ impl TrackHost {
             rate,
             input: Box::new([0.0; 2 * PERIOD]),
             out: Box::new([0.0; 2 * PERIOD]),
-            shown: 0,
             inputs: [Input::Left; MAX_TRACKS],
             inside: [None; MAX_TRACKS],
             inside_name: Default::default(),
@@ -232,8 +291,6 @@ impl TrackHost {
             volume: [1.0; MAX_TRACKS],
             pan: [0.0; MAX_TRACKS],
             monitor: [Monitor::Auto; MAX_TRACKS],
-            mute: [false; MAX_TRACKS],
-            solo: [false; MAX_TRACKS],
             panel: None,
             takes_open: None,
             repick: None,
@@ -251,7 +308,237 @@ impl TrackHost {
             left_out: None,
             meter: [0.0; MAX_TRACKS],
             meter_shown: [0.0; MAX_TRACKS],
+            slots: Slots::default(),
+            names: std::array::from_fn(|_| String::with_capacity(NAME_ROOM)),
+            place: [None; MAX_TRACKS],
+            silent: [false; MAX_TRACKS],
+            arm_next: None,
         }
+    }
+
+    /// A project opening, or New: which project track each engine track
+    /// plays from now on (`project::audio_slots`). Set as the tracks are
+    /// emptied ([`TrackHost::clear`]). Does not allocate.
+    pub fn bind(&mut self, slots: Slots) {
+        self.slots = slots;
+        self.place = [None; MAX_TRACKS];
+        self.changed = true;
+    }
+
+    /// Each period, before [`TrackHost::period`]: the audio tracks of the
+    /// project's track list (`project`) found again, and each engine
+    /// track silenced as its project track is (`silenced`, a bit a track:
+    /// muted or left out by a solo, `TimeHost::silenced`), since mute and
+    /// solo are the track's. A few times a second, and at once with `now`
+    /// (after the tracks change), the table follows the track list: a new audio
+    /// track gets a free engine track, with its settings as new; one gone
+    /// (UNDO took it away) lets go of its engine track if nothing is on
+    /// it, or keeps it, silent, for a REDO. Does not allocate.
+    pub fn sync(&mut self, project: &mpfree_seq::Project, silenced: u128, now: bool) {
+        let look = now || self.periods.is_multiple_of(CHECK_EVERY);
+        if look && !self.clearing && self.pending.is_none() {
+            self.place = [None; MAX_TRACKS];
+            for (i, t) in project.tracks.iter().enumerate() {
+                if !t.is_audio() {
+                    continue;
+                }
+                let s = match self.slots.slot_of(t.id) {
+                    Some(s) => s,
+                    None => match self.free_slot() {
+                        Some(s) => {
+                            self.slots.0[s] = t.id;
+                            self.fresh(s);
+                            // Added from "+ Track": armed, ready to record.
+                            let periods = self.periods;
+                            if self.arm_next.is_some_and(|at| periods - at < ARM_WINDOW) {
+                                self.arm_next = None;
+                                let _ = self.host.command(Command::Arm(s, true));
+                            }
+                            s
+                        }
+                        // More audio tracks than engine tracks: + Track
+                        // refuses first, so only a broken project.
+                        None => continue,
+                    },
+                };
+                self.place[s] = Some(i);
+                self.keep_name(s, &t.name);
+            }
+            for s in 0..MAX_TRACKS {
+                if self.place[s].is_some() || !self.slots.0[s].is_given() {
+                    continue;
+                }
+                // Its track gone (Undo of the add): an arm goes, so REC
+                // never records a track that isn't there; once empty the
+                // engine track is free.
+                let tr = &self.host.tracks;
+                if tr.armed(s) && tr.recording(s).is_none() {
+                    let _ = self.host.command(Command::Arm(s, false));
+                }
+                if self.empty(s) {
+                    self.slots.0[s] = TrackId::NONE;
+                    self.changed = true;
+                }
+            }
+        }
+        for s in 0..MAX_TRACKS {
+            let quiet = self.slots.0[s].is_given()
+                && self.place[s].is_none_or(|i| i < 128 && silenced & (1 << i) != 0);
+            if quiet != self.silent[s] && self.host.command(Command::Mute(s, quiet)) {
+                self.silent[s] = quiet;
+                self.changed = true;
+            }
+        }
+    }
+
+    /// Each engine track's sound of the last period into its project
+    /// track's own mixer channel (the audio tracks rethink, phase 1b), whose
+    /// strip gives it its level, pan, effects and sends; and which tracks
+    /// those are ([`MixHost::audio_tracks`]), so their strips show. Added
+    /// into the channels' inputs for the next block; nothing allocates.
+    /// The panel's level and pan follow the strips' (the screen sees them
+    /// change at the next look, as for any setting).
+    pub fn play_into(&mut self, mix: &mut MixHost) {
+        let mut bits = 0u128;
+        for s in 0..MAX_TRACKS {
+            let Some(p) = self.place[s].filter(|&p| p < 128) else {
+                mix.point_audio_out(s, None);
+                continue;
+            };
+            bits |= 1 << p;
+            let ch = mix.track_channel(p);
+            // The looper's pads leave it out (`MixHost::pads_wet`).
+            mix.point_audio_out(s, Some(ch));
+            let strip = mpfree_fx::StripId::Track(ch);
+            self.volume[s] = from_db(mix.value(strip, mx::VOLUME), LEVEL_MAX_DB);
+            self.pan[s] = mix.value(strip, mx::PAN) / 100.0;
+            let out = self.host.tracks.track_out(s, PERIOD);
+            if let Some((l, r)) = mix.mixer.track_input(ch) {
+                for (f, fr) in out.chunks_exact(2).enumerate().take(PERIOD) {
+                    l[f] += fr[0];
+                    r[f] += fr[1];
+                }
+            }
+        }
+        mix.audio_tracks = bits;
+    }
+
+    /// The mixer screen's strips of the audio tracks (layout spec 3a):
+    /// named after the track, in its colour, with a wave mark and its
+    /// input; M and S are the track's mute and solo (`project`'s), and it
+    /// is dimmed while the project silences it (`silenced`). An audio
+    /// track's strip has no freeze: there is no loop to take.
+    pub fn dress_strips(
+        &self,
+        st: &mut mpfree_mixer_ui::MixState,
+        project: &mpfree_seq::Project,
+        silenced: u128,
+        mix: &MixHost,
+    ) {
+        for s in 0..MAX_TRACKS {
+            let Some(p) = self.place[s] else {
+                continue;
+            };
+            let Some(t) = project.tracks.get(p) else {
+                continue;
+            };
+            let id = mpfree_fx::StripId::Track(mix.track_channel(p));
+            for v in st.strips.iter_mut().filter(|v| v.id == id) {
+                v.name = t.name.clone();
+                v.color = Some(track_color(p));
+                v.audio = Some(match self.inside[s] {
+                    Some(_) => "Mix".to_string(),
+                    None => input_chip(self.inputs[s]).to_string(),
+                });
+                v.mute = t.mute;
+                v.solo = t.solo;
+                v.audible = p >= 128 || silenced >> p & 1 == 0;
+                v.freezable = false;
+            }
+        }
+    }
+
+    /// The audio tracks that sound, for Stems by Track (export.rs): each
+    /// with something on it that the project doesn't silence (its mute, a
+    /// solo elsewhere: `silenced`), by its place in `project`, with its
+    /// own channel's strip and its name.
+    pub fn heard(
+        &self,
+        project: &mpfree_seq::Project,
+        silenced: u128,
+        mix: &MixHost,
+    ) -> Vec<(usize, mpfree_fx::StripId, String)> {
+        let mut out: Vec<(usize, mpfree_fx::StripId, String)> = (0..MAX_TRACKS)
+            .filter_map(|s| {
+                let p = self.place[s].filter(|&p| p < 128 && silenced >> p & 1 == 0)?;
+                if self.host.tracks.regions(s).is_empty() {
+                    return None;
+                }
+                let t = project.tracks.get(p)?;
+                let name = if t.name.trim().is_empty() {
+                    format!("Track {}", p + 1)
+                } else {
+                    t.name.clone()
+                };
+                Some((p, mpfree_fx::StripId::Track(mix.track_channel(p)), name))
+            })
+            .collect();
+        out.sort_by_key(|(p, _, _)| *p);
+        out
+    }
+
+    /// "+ Track"'s Audio track was picked: the audio track it adds is
+    /// armed once it has an engine track.
+    pub fn arm_next(&mut self) {
+        self.arm_next = Some(self.periods);
+    }
+
+    /// An engine track no project track plays, ready for a new one: none
+    /// while a project opens.
+    pub fn free_slot(&self) -> Option<usize> {
+        if self.clearing || self.pending.is_some() {
+            return None;
+        }
+        (0..MAX_TRACKS).find(|&s| !self.slots.0[s].is_given() && self.empty(s))
+    }
+
+    /// Engine track `s` holds nothing: no region, take or recording, and
+    /// isn't armed.
+    fn empty(&self, s: usize) -> bool {
+        let tr = &self.host.tracks;
+        tr.regions(s).is_empty()
+            && tr.recording(s).is_none()
+            && !tr.armed(s)
+            && !tr.takes().any(|k| k.track == s)
+    }
+
+    /// Engine track `s`, just given to a new audio track: its settings as
+    /// a new track's.
+    fn fresh(&mut self, s: usize) {
+        for c in [
+            Command::SetInput(s, Input::Left),
+            Command::SetMonitor(s, Monitor::Auto),
+            Command::SetLevel(s, 1.0),
+            Command::SetPan(s, 0.0),
+            Command::Solo(s, false),
+            Command::SetInside(s, None),
+        ] {
+            let _ = self.host.command(c);
+        }
+        self.inputs[s] = Input::Left;
+        self.monitor[s] = Monitor::Auto;
+        self.volume[s] = 1.0;
+        self.pan[s] = 0.0;
+        self.inside[s] = None;
+        self.inside_last[s] = None;
+        self.inside_lat[s] = None;
+        self.changed = true;
+    }
+
+    /// Where engine track `s`'s project track is in the track list, as
+    /// last found.
+    pub fn place(&self, s: usize) -> Option<usize> {
+        self.place.get(s).copied().flatten()
     }
 
     /// One period: the line input (`line`) in, the tracks' sound out into
@@ -262,7 +549,6 @@ impl TrackHost {
         map: &TempoMap,
         song_on: bool,
         line: (&[f32; PERIOD], &[f32; PERIOD]),
-        out: (&mut [f32; PERIOD], &mut [f32; PERIOD]),
     ) {
         if song_on != self.active && self.host.command(Command::SetActive(song_on)) {
             self.active = song_on;
@@ -272,12 +558,10 @@ impl TrackHost {
             self.input[2 * f + 1] = line.1[f];
         }
         self.out.fill(0.0);
+        // The engine's sum is no one's since phase 1b: each track plays
+        // through its own channel (`play_into`).
         self.host
             .period(block, map, &self.input[..], &mut self.out[..]);
-        for f in 0..PERIOD {
-            out.0[f] = self.out[2 * f];
-            out.1[f] = self.out[2 * f + 1];
-        }
         self.measure();
         self.periods += 1;
         self.tend_open();
@@ -301,21 +585,21 @@ impl TrackHost {
         let n = self.track_no(t)?;
         if self.host.tracks.recording(t).is_some() {
             return Err(format!(
-                "audio {n} is recording: change what it records after it stops"
+                "{n} is recording: change what it records after it stops"
             ));
         }
         let line = match from {
             None => {
                 self.send(Command::SetInside(t, None))?;
                 self.inside[t] = None;
-                format!("audio {n} records {}", input_words(self.inputs[t]))
+                format!("{n} records {}", input_words(self.inputs[t]))
             }
             Some((f, name)) => {
                 self.inside[t] = Some(f);
                 self.inside_last[t] = Some(f);
                 self.inside_name[t] = name.to_string();
                 let when = if f.after_effects { "after" } else { "before" };
-                format!("audio {n} records {name}, {when} its effects")
+                format!("{n} records {name}, {when} its effects")
             }
         };
         self.inside_lat[t] = None;
@@ -326,9 +610,21 @@ impl TrackHost {
 
     /// The save [`AudioHost::save`] started, once it is read, with where
     /// each track records from inside the mix (step 9) written in: a
-    /// track with only that set is saved too.
-    pub fn take_saved(&mut self) -> Option<Saved> {
+    /// track with only that set is saved too. Each track is named by its
+    /// project track's id (phase 1a); an engine track whose project track
+    /// isn't in `project`'s track list (UNDO took it away) is left out,
+    /// with its takes, as the track is. Mute and solo are the project
+    /// track's, saved with it, so they are never written here.
+    pub fn take_saved(&mut self, project: &mpfree_seq::Project) -> Option<Saved> {
         let mut saved = self.host.take_saved()?;
+        let ids = self.slots;
+        let alive = |s: usize| {
+            ids.id_of(s).is_some_and(|id| {
+                project
+                    .track_with(id)
+                    .is_some_and(|i| project.tracks[i].is_audio())
+            })
+        };
         for t in 0..MAX_TRACKS {
             let Some(f) = self.inside[t] else { continue };
             let from = inside_text(f);
@@ -340,17 +636,19 @@ impl TrackHost {
                     };
                     saved.tracks.push(TrackFile {
                         index: t,
+                        id: 0,
                         input: s.input,
                         monitor: s.monitor,
-                        level: s.level,
-                        pan: s.pan,
-                        muted: s.mute,
-                        solo: s.solo,
                         from,
                         regions: Vec::new(),
                     });
                 }
             }
+        }
+        saved.tracks.retain(|x| alive(x.index));
+        saved.takes.retain(|k| alive(k.track));
+        for x in &mut saved.tracks {
+            x.id = ids.id_of(x.index).map_or(0, |id| id.0);
         }
         saved.tracks.sort_by_key(|x| x.index);
         Some(saved)
@@ -436,8 +734,8 @@ impl TrackHost {
                 if !self.inside_lost[t] {
                     self.inside_lost[t] = true;
                     self.note = Some(format!(
-                        "audio {}: {} isn't in the mix, so it records silence",
-                        t + 1,
+                        "{}: {} isn't in the mix, so it records silence",
+                        self.who(t),
                         self.inside_name[t]
                     ));
                 }
@@ -585,15 +883,21 @@ impl TrackHost {
             while let Some(w) = self.waves.pop() {
                 self.host.drop_wave(w);
             }
-            (self.panel, self.takes_open, self.repick, self.shown) = (None, None, None, 0);
+            (self.panel, self.takes_open, self.repick) = (None, None, None);
             self.resync();
             self.changed = true;
         }
-        let Some(saved) = self.pending.take() else {
+        let Some(mut saved) = self.pending.take() else {
             return;
         };
+        // Only the engine tracks a project track plays. Level and pan
+        // are the mixer strip's and mute and solo the project track's, so
+        // the engine's own stay as the clear left them: unity and off.
+        let ids = self.slots;
+        saved.tracks.retain(|t| ids.id_of(t.index).is_some());
+        saved.takes.retain(|k| ids.id_of(k.track).is_some());
+        self.silent = [false; MAX_TRACKS];
         let (tracks, takes) = (saved.tracks.len(), saved.takes.len());
-        self.shown = saved.tracks.iter().map(|t| t.index + 1).max().unwrap_or(0);
         let inside: Vec<(usize, Inside)> = saved
             .tracks
             .iter()
@@ -635,8 +939,6 @@ impl TrackHost {
                 self.monitor[t] = s.monitor;
                 self.volume[t] = s.level;
                 self.pan[t] = s.pan;
-                self.mute[t] = s.mute;
-                self.solo[t] = s.solo;
             }
             if !self.host.tracks.records_inside(t) {
                 self.inside[t] = None;
@@ -650,13 +952,10 @@ impl TrackHost {
         std::mem::take(&mut self.changed)
     }
 
+    /// Engine track `t` has a lane: a project track plays it (phase 1a:
+    /// an audio track's lane shows whether it holds anything or not).
     fn shows(&self, t: usize) -> bool {
-        let tr = &self.host.tracks;
-        t < self.shown
-            || self.panel == Some(t)
-            || tr.armed(t)
-            || !tr.regions(t).is_empty()
-            || tr.recording(t).is_some()
+        self.place(t).is_some()
     }
 
     /// A waveform read: into the list.
@@ -724,7 +1023,9 @@ impl TrackHost {
     fn signature(&self) -> u64 {
         let tr = &self.host.tracks;
         let mut h = Fnv::new();
-        h.add(self.shown as u64);
+        for s in 0..MAX_TRACKS {
+            h.add(self.place[s].map_or(u64::MAX, |i| i as u64));
+        }
         h.add(self.panel.map_or(u64::MAX, |t| t as u64));
         h.add(self.takes_open.map_or(u64::MAX, |t| t as u64));
         for t in 0..MAX_TRACKS {
@@ -733,7 +1034,7 @@ impl TrackHost {
             h.add(u64::from(self.pan[t].to_bits()));
             h.add(self.inputs[t] as u64);
             h.add(self.monitor[t] as u64);
-            h.add(u64::from(self.mute[t]) | u64::from(self.solo[t]) << 1);
+            h.add(u64::from(self.silent[t]));
             h.add(tr.recording(t).map_or(u64::MAX, u64::from));
             for r in tr.regions(t) {
                 h.add(r.start as u64);
@@ -764,8 +1065,14 @@ impl TrackHost {
             .filter(|&t| self.shows(t))
             .map(|t| AudioLane {
                 track: t,
-                name: format!("Audio {}", t + 1),
-                color: audio_color(t),
+                // In its project track's place, with its name and colour
+                // (phase 1).
+                row: self.place(t).unwrap_or(usize::MAX),
+                name: self
+                    .place(t)
+                    .and_then(|i| st.tracks.get(i))
+                    .map_or_else(|| format!("Audio {}", t + 1), |i| i.name.clone()),
+                color: self.place(t).map_or_else(|| audio_color(t), track_color),
                 armed: tr.armed(t),
                 input: self.inputs[t],
                 mix: self.inside[t].map(|f| MixFrom {
@@ -776,8 +1083,15 @@ impl TrackHost {
                 volume: self.volume[t],
                 pan: self.pan[t],
                 monitor: self.monitor[t],
-                mute: self.mute[t],
-                solo: self.solo[t],
+                // The project track's (phase 1a).
+                mute: self
+                    .place(t)
+                    .and_then(|i| st.tracks.get(i))
+                    .is_some_and(|i| i.mute),
+                solo: self
+                    .place(t)
+                    .and_then(|i| st.tracks.get(i))
+                    .is_some_and(|i| i.solo),
                 blocks: audio_blocks(t, tr.regions(t), &takes, map, self.rate),
                 takes: take_lanes(t, tr.regions(t), &takes, map, self.rate),
                 recording: tr
@@ -826,26 +1140,23 @@ impl TrackHost {
                     return Err(format!("there is no audio track {}", track + 1));
                 }
                 self.send(Command::Arm(track, on))?;
-                let n = track + 1;
+                let n = self.who(track);
                 match (on, line_open) {
-                    (false, _) => format!("audio {n} disarmed"),
+                    (false, _) => format!("{n} disarmed"),
                     (true, _) if self.inside[track].is_some() => format!(
-                        "audio {n} armed: REC records {} in song mode",
+                        "{n} armed: REC records {} in song mode",
                         self.inside_name[track]
                     ),
-                    (true, true) => format!("audio {n} armed: REC records it in song mode"),
+                    (true, true) => format!("{n} armed: REC records it in song mode"),
                     (true, false) => format!(
-                        "audio {n} armed, but the line input is off: turn on Prefs > Line input to record"
+                        "{n} armed, but the line input is off: turn on Prefs > Line input to record"
                     ),
                 }
             }
-            AudioAction::Add => {
-                let next = (0..MAX_TRACKS)
-                    .find(|&t| !self.shows(t))
-                    .ok_or_else(|| format!("all {MAX_TRACKS} audio tracks are showing"))?;
-                self.shown = next + 1;
-                self.changed = true;
-                format!("audio {} added", next + 1)
+            // An audio track is a track (phase 1a): mute and solo are the
+            // track's (`main::time_action`).
+            AudioAction::Mute { .. } | AudioAction::Solo { .. } => {
+                return Err("an audio track's mute and solo are its track's".into())
             }
             AudioAction::Split(r) => {
                 let reg = region(tr, r)?;
@@ -857,7 +1168,7 @@ impl TrackHost {
                     );
                 }
                 self.send(Command::Split { track: r.track, at })?;
-                format!("audio {}: region split", r.track + 1)
+                format!("{}: region split", self.who(r.track))
             }
             AudioAction::Erase(r) => {
                 let reg = region(tr, r)?;
@@ -866,7 +1177,7 @@ impl TrackHost {
                     from: reg.start,
                     to: reg.end,
                 })?;
-                format!("audio {}: region erased (Undo brings it back)", r.track + 1)
+                format!("{}: region erased (Undo brings it back)", self.who(r.track))
             }
             AudioAction::Undo => {
                 if (0..MAX_TRACKS).any(|t| tr.recording(t).is_some()) {
@@ -919,23 +1230,19 @@ impl TrackHost {
                 };
                 let picked = || {
                     reg.ok_or_else(|| {
-                        format!("Q{}: pick a region of audio {} first", knob + 1, t + 1)
+                        format!("Q{}: pick a region of {} first", knob + 1, self.who(t))
                     })
                 };
                 match knob {
-                    0 => {
-                        let step = if fine { 0.1 } else { 0.5 };
-                        let v = from_db(to_db(self.volume[t]) + step * ticks as f32, LEVEL_MAX_DB);
-                        self.send(Command::SetLevel(t, v))?;
-                        self.volume[t] = v;
-                    }
-                    1 => {
-                        let step = if fine { 0.01 } else { 0.02 };
-                        let v = (self.pan[t] + step * ticks as f32).clamp(-1.0, 1.0);
-                        // Snap to the middle near it, so centre is easy to find.
-                        let v = if v.abs() < 0.005 { 0.0 } else { v };
-                        self.send(Command::SetPan(t, v))?;
-                        self.pan[t] = v;
+                    // The level and pan are the track's mixer strip's
+                    // (phase 1b): the app moves the strip (main.rs's
+                    // `time_action`), and the engine track stays at unity
+                    // and centre, so they never count twice.
+                    0 | 1 => {
+                        return Err(format!(
+                            "{}: its level and pan are its mixer strip's",
+                            self.who(t)
+                        ))
                     }
                     2 => {
                         let reg = picked()?;
@@ -980,12 +1287,13 @@ impl TrackHost {
                 self.changed = true;
                 String::new()
             }
+            // The app opens the Mix tab at the track's strip (main.rs's
+            // `time_action`): nothing here.
+            AudioAction::Strip(_) => String::new(),
             AudioAction::Input { track, input } => {
                 let n = self.track_no(track)?;
                 if tr.recording(track).is_some() {
-                    return Err(format!(
-                        "audio {n} is recording: change its input after it stops"
-                    ));
+                    return Err(format!("{n} is recording: change its input after it stops"));
                 }
                 if self.inside[track].is_some() {
                     self.set_inside(track, None)?;
@@ -993,13 +1301,13 @@ impl TrackHost {
                 self.send(Command::SetInput(track, input))?;
                 self.inputs[track] = input;
                 self.changed = true;
-                format!("audio {n} records {}", input_words(input))
+                format!("{n} records {}", input_words(input))
             }
             AudioAction::Mix { track, step } => self.mix_step(track, step)?,
             AudioAction::MixEffects { track, after } => {
                 let n = self.track_no(track)?;
                 let Some(f) = self.inside[track] else {
-                    return Err(format!("audio {n} records the line input: pick Mix first"));
+                    return Err(format!("{n} records the line input: pick Mix first"));
                 };
                 if f.after_effects == after {
                     return Ok(String::new());
@@ -1016,28 +1324,7 @@ impl TrackHost {
                 self.send(Command::SetMonitor(track, monitor))?;
                 self.monitor[track] = monitor;
                 self.changed = true;
-                format!("audio {n} monitor: {}", monitor_words(monitor))
-            }
-            AudioAction::Mute { track, on } => {
-                let n = self.track_no(track)?;
-                self.send(Command::Mute(track, on))?;
-                self.mute[track] = on;
-                self.changed = true;
-                format!("audio {n} {}", if on { "muted" } else { "unmuted" })
-            }
-            AudioAction::Solo { track, on } => {
-                let n = self.track_no(track)?;
-                self.send(Command::Solo(track, on))?;
-                self.solo[track] = on;
-                self.changed = true;
-                format!(
-                    "audio {n} {}",
-                    if on {
-                        "soloed (among the audio tracks)"
-                    } else {
-                        "unsoloed"
-                    }
-                )
+                format!("{n} monitor: {}", monitor_words(monitor))
             }
             AudioAction::Takes(t) => {
                 let n = self.track_no(t)?;
@@ -1048,7 +1335,7 @@ impl TrackHost {
                 }
                 let count = tr.takes().filter(|k| k.track == t).count();
                 if count == 0 {
-                    return Err(format!("audio {n} has no takes yet: REC records one"));
+                    return Err(format!("{n} has no takes yet: REC records one"));
                 }
                 // The lanes go under the track's lane, where the panel
                 // may sit.
@@ -1056,7 +1343,7 @@ impl TrackHost {
                 self.panel = None;
                 self.changed = true;
                 format!(
-                    "audio {n}: {count} take{} under the lane: swipe across one to play that stretch, tap it to use it all",
+                    "{n}: {count} take{} under the lane: swipe across one to play that stretch, tap it to use it all",
                     if count == 1 { "" } else { "s" }
                 )
             }
@@ -1071,8 +1358,8 @@ impl TrackHost {
                     .ok_or_else(|| "that take is gone".to_string())?;
                 if tr.recording(k.track).is_some() {
                     return Err(format!(
-                        "audio {}: comping waits until the recording stops",
-                        k.track + 1
+                        "{}: comping waits until the recording stops",
+                        self.who(k.track)
                     ));
                 }
                 let (from, to) = if fine {
@@ -1083,8 +1370,8 @@ impl TrackHost {
                 let name = take_name(tr, take);
                 self.send(Command::Comp { take, from, to })?;
                 format!(
-                    "audio {}: {name} plays from {} to {}",
-                    k.track + 1,
+                    "{}: {name} plays from {} to {}",
+                    self.who(k.track),
                     bar_beat(from, t),
                     bar_beat(to, t)
                 )
@@ -1097,8 +1384,8 @@ impl TrackHost {
                 let reg = region(tr, r)?;
                 if tr.recording(r.track).is_some() {
                     return Err(format!(
-                        "audio {}: moving waits until the recording stops",
-                        r.track + 1
+                        "{}: moving waits until the recording stops",
+                        self.who(r.track)
                     ));
                 }
                 let to = if fine { to } else { snap(to) }.max(0);
@@ -1112,8 +1399,8 @@ impl TrackHost {
                 })?;
                 self.repick = Some((r.track, to));
                 format!(
-                    "audio {}: region moved to {} (Undo puts it back)",
-                    r.track + 1,
+                    "{}: region moved to {} (Undo puts it back)",
+                    self.who(r.track),
                     bar_beat(to, t)
                 )
             }
@@ -1123,8 +1410,8 @@ impl TrackHost {
                     .ok_or_else(|| "that take is gone".to_string())?;
                 if tr.recording(k.track).is_some() {
                     return Err(format!(
-                        "audio {}: comping waits until the recording stops",
-                        k.track + 1
+                        "{}: comping waits until the recording stops",
+                        self.who(k.track)
                     ));
                 }
                 let name = take_name(tr, take);
@@ -1135,8 +1422,8 @@ impl TrackHost {
                     to: Tick::MAX,
                 })?;
                 format!(
-                    "audio {}: {name} plays everywhere it has audio",
-                    k.track + 1
+                    "{}: {name} plays everywhere it has audio",
+                    self.who(k.track)
                 )
             }
             // The time engine keeps the pick (`TimeControl`).
@@ -1145,13 +1432,32 @@ impl TrackHost {
         Ok(line)
     }
 
+    /// The audio track a sound from the Sample page goes on
+    /// ([`TrackHost::bring`]): the first of the track list's audio tracks
+    /// that is empty, else the first with nothing from the bar the
+    /// playhead is in (`t`) on. None: none has room (the app adds one).
+    pub fn bring_track(&self, t: &TransportInfo) -> Option<usize> {
+        let tr = &self.host.tracks;
+        let bar = t.meter.bar_ticks().max(1);
+        let at = t.position.div_euclid(bar) * bar;
+        let mut listed: [usize; MAX_TRACKS] = std::array::from_fn(|s| s);
+        listed.sort_by_key(|&s| self.place(s).unwrap_or(usize::MAX));
+        let listed = listed.into_iter().filter(|&s| self.place(s).is_some());
+        let empty = |k: usize| tr.regions(k).is_empty() && !tr.armed(k);
+        let free = |k: usize| !tr.armed(k) && tr.regions(k).iter().all(|r| r.end <= at);
+        listed
+            .clone()
+            .find(|&k| empty(k))
+            .or_else(|| listed.clone().find(|&k| free(k)))
+    }
+
     /// A sound from the Sample page (its Slice tool's Put on Audio track,
     /// the one Sample page's step 6), as the MPC's Audio Track from
-    /// Samples: on the first empty audio track (else the first with
-    /// nothing from the bar on), from the bar the playhead is in (`t`), a
-    /// region a slice, as one undo step. Ok is a line for the log; Err
-    /// says why not. Call it between periods (it drops the sound's name
-    /// and cuts; the audio goes to the tracks, or to their worker).
+    /// Samples: on the track [`TrackHost::bring_track`] picks, from the
+    /// bar the playhead is in (`t`), a region a slice, as one undo step.
+    /// Ok is a line for the log; Err says why not. Call it between
+    /// periods (it drops the sound's name and cuts; the audio goes to the
+    /// tracks, or to their worker).
     pub fn bring(&mut self, s: Sound, t: &TransportInfo) -> Result<String, String> {
         let Sound {
             name,
@@ -1174,14 +1480,9 @@ impl TrackHost {
         }
         let bar = t.meter.bar_ticks().max(1);
         let at = t.position.div_euclid(bar) * bar;
-        let empty = |k: usize| tr.regions(k).is_empty() && !tr.armed(k);
-        let free = |k: usize| !tr.armed(k) && tr.regions(k).iter().all(|r| r.end <= at);
-        let Some(track) = (0..MAX_TRACKS)
-            .find(|&k| empty(k))
-            .or_else(|| (0..MAX_TRACKS).find(|&k| free(k)))
-        else {
+        let Some(track) = self.bring_track(t) else {
             let why = format!(
-                "every audio track has regions from bar {} on: move the playhead past them, or erase some in the Song view",
+                "every audio track has regions from bar {} on: move the playhead past them, erase some in the Song view, or add an audio track",
                 at / bar + 1
             );
             return refuse(self, audio, why);
@@ -1194,7 +1495,6 @@ impl TrackHost {
             .count();
         match self.host.import(track, at, channels, audio, cuts, bpm) {
             Ok(_) => {
-                self.shown = self.shown.max(track + 1);
                 self.changed = true;
                 let what = match slices {
                     1 => name,
@@ -1207,8 +1507,8 @@ impl TrackHost {
                     "it plays in song mode, and "
                 };
                 Ok(format!(
-                    "{what} on audio {} from bar {}; {song}the Song view's Undo takes it off",
-                    track + 1,
+                    "{what} on {} from bar {}; {song}the Song view's Undo takes it off",
+                    self.who(track),
                     at / bar + 1
                 ))
             }
@@ -1227,11 +1527,40 @@ impl TrackHost {
     }
 
     /// Track `t`'s number as the screen writes it, if there is one.
-    fn track_no(&self, t: usize) -> Result<usize, String> {
+    /// What the lines call engine track `t` ([`TrackHost::who`]), or why
+    /// there is no such track.
+    fn track_no(&self, t: usize) -> Result<String, String> {
         if t < MAX_TRACKS {
-            Ok(t + 1)
+            Ok(self.who(t))
         } else {
             Err(format!("there is no audio track {}", t + 1))
+        }
+    }
+
+    /// What the hint and log lines call engine track `s`: its project
+    /// track's name, as the musician named it, else "Audio N" (N the
+    /// engine track's number, as its lane says without a name).
+    fn who(&self, s: usize) -> String {
+        match self.names.get(s).map(|n| n.trim()) {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => format!("Audio {}", s + 1),
+        }
+    }
+
+    /// Keeps `name` as engine track `s`'s name without allocating: the
+    /// room was made at start ([`NAME_ROOM`]), and a longer name is cut
+    /// short on a character's edge.
+    fn keep_name(&mut self, s: usize, name: &str) {
+        let Some(room) = self.names.get_mut(s) else {
+            return;
+        };
+        let mut end = name.len().min(room.capacity());
+        while !name.is_char_boundary(end) {
+            end -= 1;
+        }
+        if room.as_str() != &name[..end] {
+            room.clear();
+            room.push_str(&name[..end]);
         }
     }
 
@@ -1364,13 +1693,14 @@ pub fn audio_knobs(st: &TimeState) -> Option<AudioKnobs> {
     let lane = st.audio.iter().find(|l| l.track == t)?;
     let index = st.region.filter(|r| r.track == t).map(|r| r.index);
     let b = index.and_then(|i| lane.blocks.get(i));
-    let track = format!("AUDIO {}", t + 1);
+    // Level and pan are the track's strip's (phase 1b, as drawn).
+    let track = "ITS STRIP";
     let pos = |v: f32, max: f32| (to_db(v) - FLOOR_DB) / (max - FLOOR_DB);
-    let mut pan = QLinkCard::new("Pan", &track, &pan_text(lane.pan), (lane.pan + 1.0) / 2.0);
+    let mut pan = QLinkCard::new("Pan", track, &pan_text(lane.pan), (lane.pan + 1.0) / 2.0);
     pan.bipolar = true;
     let level = QLinkCard::new(
         "Level",
-        &track,
+        track,
         &db_text(lane.volume),
         pos(lane.volume, LEVEL_MAX_DB),
     );
@@ -1594,11 +1924,11 @@ impl crate::time::SongAudio for TrackHost {
         }
         match self.host.tracks.retime_refused(r)? {
             RetimeRefused::Recording(t) => {
-                Some(format!("audio {} is recording (stop it first)", t + 1))
+                Some(format!("{} is recording (stop it first)", self.who(t)))
             }
             RetimeRefused::Full(t) => Some(format!(
-                "audio {} would be cut into more than {MAX_REGIONS} regions",
-                t + 1
+                "{} would be cut into more than {MAX_REGIONS} regions",
+                self.who(t)
             )),
         }
     }
@@ -1640,6 +1970,9 @@ mod tests {
         t: Transport,
         b: Block,
         h: TrackHost,
+        /// The project's track list: two note tracks, then the audio
+        /// tracks [`Rig::add`] adds.
+        project: mpfree_seq::Project,
         song: bool,
         frame: u64,
         /// The line input's tone on while true.
@@ -1649,10 +1982,18 @@ mod tests {
 
     impl Rig {
         fn new() -> Rig {
+            let mut project = mpfree_seq::Project::new();
+            for i in 0..2 {
+                project
+                    .tracks
+                    .push(mpfree_seq::Track::new(&format!("Track {}", i + 1), i));
+            }
+            project.give_track_ids();
             Rig {
                 t: Transport::new(RATE, 120.0).unwrap(),
                 b: Block::new(),
                 h: TrackHost::new(RATE, 10),
+                project,
                 song: true,
                 frame: 0,
                 live: false,
@@ -1660,7 +2001,56 @@ mod tests {
             }
         }
 
+        /// A rig with `n` audio tracks in its track list, engine tracks 0
+        /// to `n` - 1.
+        fn with(n: usize) -> Rig {
+            let mut r = Rig::new();
+            for s in 0..n {
+                assert_eq!(r.add(), s);
+            }
+            r
+        }
+
+        /// An audio track at the end of the track list, as + Track adds
+        /// it: its engine track.
+        fn add(&mut self) -> usize {
+            let n = self.project.tracks.iter().filter(|t| t.is_audio()).count();
+            let mut track = mpfree_seq::Track::new_audio(&format!("Audio {}", n + 1), 0);
+            self.project.give_track_id(&mut track);
+            let id = track.id;
+            self.project.tracks.push(track);
+            self.sync();
+            self.h.slots.slot_of(id).expect("an engine track")
+        }
+
+        /// The tracks silent now, a bit a track (`TimeHost::silenced`).
+        fn silenced(&self) -> u128 {
+            (0..self.project.tracks.len())
+                .filter(|&i| self.project.silent(i))
+                .fold(0, |b, i| b | 1 << i)
+        }
+
+        fn sync(&mut self) {
+            let silenced = self.silenced();
+            self.h.sync(&self.project, silenced, true);
+        }
+
+        /// Engine track `s`'s project track muted or soloed, as TRACK MUTE
+        /// or the track panel does it.
+        fn mute(&mut self, s: usize, solo: bool, on: bool) {
+            let i = self.h.place(s).expect("a project track");
+            let t = &mut self.project.tracks[i];
+            if solo {
+                t.solo = on;
+            } else {
+                t.mute = on;
+            }
+            self.sync();
+        }
+
         fn period(&mut self) {
+            let silenced = self.silenced();
+            self.h.sync(&self.project, silenced, false);
             let mut l = [0.0f32; PERIOD];
             if self.live {
                 for (j, x) in l.iter_mut().enumerate() {
@@ -1669,12 +2059,13 @@ mod tests {
                 }
             }
             let r = [0.0f32; PERIOD];
-            let (mut ol, mut or) = ([0.0f32; PERIOD], [0.0f32; PERIOD]);
             self.t.process(PERIOD as u32, &mut self.b);
             let map = *self.t.tempo_map();
-            self.h
-                .period(&self.b, &map, self.song, (&l, &r), (&mut ol, &mut or));
-            self.heard = ol.iter().chain(or.iter()).fold(0.0, |m, s| m.max(s.abs()));
+            self.h.period(&self.b, &map, self.song, (&l, &r));
+            // What the tracks played, each into its own channel.
+            self.heard = (0..MAX_TRACKS)
+                .flat_map(|s| self.h.host.tracks.track_out(s, PERIOD).iter())
+                .fold(0.0, |m, s| m.max(s.abs()));
             self.frame += PERIOD as u64;
         }
 
@@ -1696,7 +2087,13 @@ mod tests {
         }
 
         fn state(&self) -> TimeState {
-            let mut st = TimeState::default();
+            let mut st = TimeState::from_engine(
+                TransportInfo::default(),
+                &self.project,
+                &[],
+                None,
+                &mpfree_play::Takes::new(4),
+            );
             self.h.fill(&mut st, self.t.tempo_map());
             st
         }
@@ -1719,12 +2116,10 @@ mod tests {
         let mut r = Rig::new();
         assert!(r.state().audio.is_empty(), "no lane before one is added");
         assert_eq!(r.state().audio_free, None);
-        // "+ Audio" shows track 1's lane; arming it with the line input off
-        // says where to turn it on.
-        assert_eq!(
-            r.h.action(AudioAction::Add, &r.info(), true).unwrap(),
-            "audio 1 added"
-        );
+        // An audio track in the track list has a lane; arming it with the
+        // line input off says where to turn it on.
+        assert_eq!(r.add(), 0);
+        assert_eq!(r.h.place(0), Some(2), "after the two note tracks");
         let line =
             r.h.action(AudioAction::Arm { track: 0, on: true }, &r.info(), false)
                 .unwrap();
@@ -1779,6 +2174,156 @@ mod tests {
         r.periods(4);
     }
 
+    /// Phase 1a: an audio track taken out of the track list (Undo of the
+    /// add) keeps its engine track while that holds a recording, silent,
+    /// and gets it back when the track comes back; an armed one is
+    /// disarmed, so REC records no track that isn't there; an empty one
+    /// is freed for the next audio track, with a new track's settings.
+    /// One added from "+ Track" is armed.
+    #[test]
+    fn an_engine_track_follows_its_track_away_and_back() {
+        let mut r = Rig::with(2);
+        r.periods(2);
+        let (a, b) = (r.project.tracks[2].clone(), r.project.tracks[3].clone());
+        assert_eq!(
+            (r.h.slots.slot_of(a.id), r.h.slots.slot_of(b.id)),
+            (Some(0), Some(1))
+        );
+        // Audio 2 holds a sound; Audio 1 is armed and never heard through.
+        r.h.action(AudioAction::Arm { track: 0, on: true }, &r.info(), true)
+            .unwrap();
+        let off = AudioAction::Monitor {
+            track: 0,
+            monitor: Monitor::Off,
+        };
+        r.h.action(off, &r.info(), true).unwrap();
+        r.periods(2);
+        r.h.bring(
+            Sound {
+                name: "Hit".into(),
+                channels: 1,
+                audio: vec![0.25; 4410],
+                cuts: Vec::new(),
+                bpm: 120.0,
+            },
+            &TransportInfo::default(),
+        )
+        .unwrap();
+        let t0 = Instant::now();
+        while r.h.host.importing().is_some() {
+            assert!(t0.elapsed() < Duration::from_secs(20), "never placed");
+            r.period();
+        }
+        assert_eq!(r.h.host.tracks.regions(1).len(), 1, "on Audio 2");
+        assert_eq!(r.h.host.tracks.settings(0).unwrap().monitor, Monitor::Off);
+        // Audio 2 goes: its engine track stays its, silent, with no lane.
+        r.project.tracks.pop();
+        r.sync();
+        r.periods(1);
+        assert_eq!(r.h.slots.id_of(1), Some(b.id));
+        assert_eq!(r.h.place(1), None);
+        assert!(r.h.silent[1], "a track that's gone is silent");
+        assert_eq!(r.state().audio.len(), 1);
+        // It comes back (Redo): the same engine track, heard again.
+        r.project.tracks.push(b.clone());
+        r.sync();
+        r.periods(1);
+        assert_eq!(r.h.place(1), Some(3));
+        assert!(!r.h.silent[1]);
+        assert_eq!(r.state().audio.len(), 2);
+        // Audio 1 goes: disarmed, then free, and the next audio track,
+        // added from "+ Track", gets it as new, armed.
+        r.project.tracks.remove(2);
+        r.sync();
+        r.periods(1);
+        assert!(!r.h.host.tracks.armed(0), "disarmed");
+        r.sync();
+        assert_eq!(r.h.slots.id_of(0), None);
+        assert_eq!(r.h.free_slot(), Some(0));
+        r.h.arm_next();
+        assert_eq!(r.add(), 0);
+        r.periods(2);
+        let new = r.h.host.tracks.settings(0).unwrap();
+        assert_eq!(
+            (new.level, new.monitor),
+            (1.0, Monitor::Auto),
+            "a new track's"
+        );
+        assert!(r.h.host.tracks.armed(0), "armed, ready to record");
+        // Without "+ Track" (the Sample page's), not armed.
+        assert_eq!(r.add(), 2);
+        r.periods(2);
+        assert!(!r.h.host.tracks.armed(2));
+    }
+
+    /// Phase 1b: each audio track plays into its own mixer channel (and
+    /// only there), counts as a channel in use, and the looper's pads
+    /// leave it out; its strip's fader and pan show back in the track
+    /// (the panel, the lanes, the cards); and an export hears it from its
+    /// strip, by its name, while it has something on it.
+    #[test]
+    fn each_audio_track_plays_into_its_own_mixer_channel() {
+        use mpfree_fx::StripId;
+        let mut r = Rig::with(2);
+        let mut mix = MixHost::new(RATE, -6.0, -6.0);
+        r.h.bring(
+            Sound {
+                name: "Hit".into(),
+                channels: 1,
+                audio: vec![0.25; 44_100],
+                cuts: Vec::new(),
+                bpm: 120.0,
+            },
+            &TransportInfo::default(),
+        )
+        .unwrap();
+        let t0 = Instant::now();
+        while r.h.host.importing().is_some() {
+            assert!(t0.elapsed() < Duration::from_secs(20), "never placed");
+            r.period();
+        }
+        let s = (0..2)
+            .find(|&s| !r.h.host.tracks.regions(s).is_empty())
+            .unwrap();
+        let other = 1 - s;
+        let (p, q) = (r.h.place(s).unwrap(), r.h.place(other).unwrap());
+        let (ch, quiet) = (mix.track_channel(p), mix.track_channel(q));
+        assert_ne!(ch, quiet);
+        mix.mixer.set_now(StripId::Track(ch), mx::VOLUME, -6.0);
+        mix.mixer.set_now(StripId::Track(ch), mx::PAN, 50.0);
+        r.command(T::Play);
+        let peak = |mix: &mut MixHost, c: usize| {
+            let (l, rr) = mix.mixer.track_input(c).unwrap();
+            l.iter().chain(rr.iter()).fold(0f32, |m, x| m.max(x.abs()))
+        };
+        let (mut own, mut elsewhere) = (0f32, 0f32);
+        for _ in 0..20 {
+            r.period();
+            r.h.play_into(&mut mix);
+            own = own.max(peak(&mut mix, ch));
+            elsewhere = elsewhere
+                .max(peak(&mut mix, quiet))
+                .max(peak(&mut mix, crate::mixing::AUDIO));
+            let z = [0f32; PERIOD];
+            let (mut l, mut rr) = (z, z);
+            let ctx = mpfree_node::Ctx::new(RATE, r.frame);
+            mix.period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut rr);
+        }
+        assert!(own > 0.2, "{own}");
+        assert_eq!(elsewhere, 0.0, "only its own channel");
+        assert_eq!(mix.audio_tracks, 1 << p | 1 << q);
+        assert_eq!(mix.channels_in_use() & (1 << p), 1 << p);
+        // The strip's fader and pan, as the panel and cards show them.
+        assert!((to_db(r.h.volume[s]) + 6.0).abs() < 1e-3);
+        assert_eq!(r.h.pan[s], 0.5);
+        let heard = r.h.heard(&r.project, r.silenced(), &mix);
+        let name = r.project.tracks[p].name.clone();
+        assert_eq!(heard, [(p, StripId::Track(ch), name)]);
+        // Muted (silenced): no stem.
+        r.mute(s, false, true);
+        assert!(r.h.heard(&r.project, r.silenced(), &mix).is_empty());
+    }
+
     /// Step 9's panel: Mix picks what the mix offers (the one picked last
     /// on the way back), From steps round it, Effects turns before or
     /// after, an input chip goes back to the line input, nothing changes
@@ -1789,6 +2334,9 @@ mod tests {
         use mpfree_fx::StripId;
         let mut r = Rig::new();
         let act = |r: &mut Rig, a| r.h.action(a, &r.info(), true);
+        for s in 0..3 {
+            assert_eq!(r.add(), s);
+        }
         let e = act(&mut r, AudioAction::Mix { track: 0, step: 0 }).unwrap_err();
         assert!(e.contains("offers nothing"), "{e}");
         r.h.offer(vec![
@@ -1806,10 +2354,10 @@ mod tests {
         .unwrap_err();
         assert!(e.contains("pick Mix first"), "{e}");
         let line = act(&mut r, AudioAction::Mix { track: 2, step: 0 }).unwrap();
-        assert_eq!(line, "audio 3 records Drums, after its effects");
+        assert_eq!(line, "Audio 3 records Drums, after its effects");
         let line = act(&mut r, AudioAction::Mix { track: 2, step: -1 }).unwrap();
         assert_eq!(
-            line, "audio 3 records Master, after its effects",
+            line, "Audio 3 records Master, after its effects",
             "round the list"
         );
         let line = act(&mut r, AudioAction::Mix { track: 2, step: 2 }).unwrap();
@@ -1822,7 +2370,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(line, "audio 3 records FM · Pads, before its effects");
+        assert_eq!(line, "Audio 3 records FM · Pads, before its effects");
         let (f, name) = r.h.inside(2).unwrap();
         assert_eq!(
             (f.strip, f.after_effects, name),
@@ -1831,28 +2379,28 @@ mod tests {
         // The name follows the strip when the mix is offered again.
         r.h.offer(vec![("Poly · Pads".into(), StripId::Track(200))]);
         assert_eq!(r.h.inside(2).unwrap().1, "Poly · Pads");
-        let mut st = r.state();
-        assert!(st.audio.is_empty(), "no lane shows yet");
-        act(&mut r, AudioAction::Add).unwrap();
-        act(&mut r, AudioAction::Add).unwrap();
-        act(&mut r, AudioAction::Add).unwrap();
-        st = r.state();
+        let st = r.state();
         let m = st.audio[2].mix.clone().unwrap();
         assert_eq!((m.name.as_str(), m.after_effects), ("Poly · Pads", false));
         let line = act(&mut r, AudioAction::Arm { track: 2, on: true }).unwrap();
-        assert_eq!(line, "audio 3 armed: REC records Poly · Pads in song mode");
+        assert_eq!(line, "Audio 3 armed: REC records Poly · Pads in song mode");
         // The project keeps it: a track with only that set is saved too.
         assert!(r.h.host.save());
         let mut saved = None;
         for _ in 0..4000 {
             r.period();
-            saved = r.h.take_saved();
+            saved = r.h.take_saved(&r.project);
             if saved.is_some() {
                 break;
             }
             std::thread::sleep(Duration::from_micros(50));
         }
         let saved = saved.expect("saved");
+        assert_eq!(
+            saved.tracks.iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![r.project.tracks[4].id.0],
+            "named by its project track's id"
+        );
         let t2 = saved
             .tracks
             .iter()
@@ -1902,7 +2450,7 @@ mod tests {
 
     #[test]
     fn split_erase_and_undo_edit_the_region_and_refusals_say_why() {
-        let mut r = Rig::new();
+        let mut r = Rig::with(3);
         r.h.action(AudioAction::Arm { track: 0, on: true }, &r.info(), true)
             .unwrap();
         r.live = true;
@@ -1930,11 +2478,14 @@ mod tests {
                 .unwrap_err();
         assert!(e.contains("playhead inside"), "{e}");
         r.command(T::Locate(1920));
-        r.periods(2);
+        // The line names the track as the musician named it.
+        let p = r.project.tracks.iter().position(|t| t.is_audio()).unwrap();
+        r.project.tracks[p].name = "Vocal".into();
+        r.periods(CHECK_EVERY as usize);
         assert_eq!(
             r.h.action(AudioAction::Split(reg), &r.info(), true)
                 .unwrap(),
-            "audio 1: region split"
+            "Vocal: region split"
         );
         r.periods(2);
         assert_eq!(r.h.host.tracks.regions(0).len(), 2);
@@ -1979,15 +2530,14 @@ mod tests {
             .action(AudioAction::Arm { track: 8, on: true }, &r.info(), true)
             .is_err());
         assert!(r.h.action(AudioAction::Takes(8), &r.info(), true).is_err());
-        // Every lane added: "+ Audio" says so.
-        for _ in 1..MAX_TRACKS {
-            r.h.action(AudioAction::Add, &r.info(), true).unwrap();
+        // Mute and solo are the track list's now (phase 1a).
+        let mute = AudioAction::Mute { track: 0, on: true };
+        assert!(r.h.action(mute, &r.info(), true).is_err());
+        // Every engine track given to an audio track: none is free.
+        for s in 3..MAX_TRACKS {
+            assert_eq!(r.add(), s);
         }
-        assert!(r
-            .h
-            .action(AudioAction::Add, &r.info(), true)
-            .unwrap_err()
-            .contains("all 8"));
+        assert_eq!(r.h.free_slot(), None);
         assert_eq!(
             r.h.host.tracks.stats().refused,
             0,
@@ -1997,7 +2547,7 @@ mod tests {
 
     #[test]
     fn the_q_links_turn_level_pan_gain_and_fades_and_the_cards_say_them() {
-        let mut r = Rig::new();
+        let mut r = Rig::with(3);
         r.h.action(AudioAction::Arm { track: 0, on: true }, &r.info(), true)
             .unwrap();
         r.live = true;
@@ -2020,10 +2570,19 @@ mod tests {
             r.periods(2);
             line
         };
-        assert_eq!(turn(&mut r, 0, -12, false), "", "turns write no log line");
-        turn(&mut r, 1, 10, false);
-        turn(&mut r, 1, 5, true);
-        turn(&mut r, 2, 7, false);
+        // Q1 and Q2 are the track's strip's (phase 1b): the app moves the
+        // strip, and the cards show it as the tracks mirror it.
+        let a = AudioAction::Turn {
+            track: 0,
+            region: Some(0),
+            knob: 0,
+            ticks: 1,
+            fine: false,
+        };
+        let e = r.h.action(a, &r.info(), true).unwrap_err();
+        assert!(e.contains("its mixer strip's"), "{e}");
+        (r.h.volume[0], r.h.pan[0]) = (from_db(-6.0, LEVEL_MAX_DB), 0.25);
+        assert_eq!(turn(&mut r, 2, 7, false), "", "turns write no log line");
         turn(&mut r, 2, -5, true);
         turn(&mut r, 3, 4, false);
         let mut st = r.state();
@@ -2034,11 +2593,6 @@ mod tests {
         let shown: Vec<_> = knobs.cards.iter().map(|c| c.value.as_str()).collect();
         assert_eq!(shown, ["-6.0 dB", "R25", "3.0 dB", "20 ms"]);
         assert!(r.h.take_changed());
-        // The level goes off at the floor and stops at +6 dB.
-        turn(&mut r, 0, -200, false);
-        assert_eq!(r.h.volume[0], 0.0);
-        turn(&mut r, 0, 400, false);
-        assert!((to_db(r.h.volume[0]) - 6.0).abs() < 1e-3);
         // Gain and Fades point at their knobs; a fifth knob has nothing.
         assert!(r
             .h
@@ -2058,7 +2612,7 @@ mod tests {
             fine: false,
         };
         assert!(r.h.action(a, &r.info(), true).is_err());
-        // Without a region, Q3 and Q4 ask for one; Q1 still turns.
+        // Without a region, Q3 and Q4 ask for one.
         let bare = |knob| AudioAction::Turn {
             track: 0,
             region: None,
@@ -2067,9 +2621,8 @@ mod tests {
             fine: false,
         };
         let err = r.h.action(bare(2), &r.info(), true).unwrap_err();
-        assert!(err.contains("pick a region of audio 1"), "{err}");
+        assert!(err.contains("pick a region of Audio 1"), "{err}");
         assert!(r.h.action(bare(3), &r.info(), true).is_err());
-        assert!(r.h.action(bare(0), &r.info(), true).is_ok());
         assert_eq!(r.h.host.tracks.stats().refused, 0);
         // No region picked and no panel open: no cards.
         st.region = None;
@@ -2081,18 +2634,21 @@ mod tests {
     /// the Q-Links follow the panel's track.
     #[test]
     fn the_track_panel_sets_the_track_and_the_q_links_follow_it() {
-        let mut r = Rig::new();
+        let mut r = Rig::with(3);
         let act = |r: &mut Rig, a| {
             let out = r.h.action(a, &r.info(), true);
             r.periods(2);
             out
         };
-        // The panel opens on an empty track: its lane shows while it is
-        // open, and the header toggles it.
+        // The panel opens on an empty track (every audio track has its
+        // lane), and the header toggles it.
         act(&mut r, AudioAction::Panel(2)).unwrap();
         let st = r.state();
         assert_eq!(st.audio_panel, Some(2));
-        assert_eq!(st.audio.iter().map(|l| l.track).collect::<Vec<_>>(), [2]);
+        assert_eq!(
+            st.audio.iter().map(|l| l.track).collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
         assert!(r.h.take_changed());
         let knobs = audio_knobs(&st).unwrap();
         assert_eq!((knobs.track, knobs.region), (2, None));
@@ -2101,7 +2657,7 @@ mod tests {
         assert_eq!(shown, ["0.0 dB", "C", "pick one", "pick one"]);
         act(&mut r, AudioAction::Panel(2)).unwrap();
         assert_eq!(r.state().audio_panel, None);
-        assert!(r.state().audio.is_empty(), "closed: the empty lane goes");
+        assert_eq!(r.state().audio.len(), 3, "closed: the empty lane stays");
         act(&mut r, AudioAction::Panel(1)).unwrap();
         act(&mut r, AudioAction::ClosePanel).unwrap();
         assert_eq!(r.state().audio_panel, None);
@@ -2146,22 +2702,24 @@ mod tests {
         .unwrap();
         r.periods(4);
         assert!(r.heard > 0.1, "Auto, armed and stopped: heard");
-        // Mute silences the track; Solo of another track does too.
-        act(&mut r, AudioAction::Mute { track: 0, on: true }).unwrap();
+        // Its track's mute silences it; a solo of another track does too,
+        // a note track's as well (solo is the project's); its own solo
+        // brings it back.
+        r.mute(0, false, true);
         r.periods(4);
         assert_eq!(r.heard, 0.0, "muted");
-        act(
-            &mut r,
-            AudioAction::Mute {
-                track: 0,
-                on: false,
-            },
-        )
-        .unwrap();
-        act(&mut r, AudioAction::Solo { track: 1, on: true }).unwrap();
+        r.mute(0, false, false);
+        r.mute(1, true, true);
         r.periods(4);
         assert_eq!(r.heard, 0.0, "another track soloed");
-        act(&mut r, AudioAction::Solo { track: 0, on: true }).unwrap();
+        r.mute(1, true, false);
+        r.project.tracks[0].solo = true;
+        r.sync();
+        r.periods(4);
+        assert_eq!(r.heard, 0.0, "a note track soloed");
+        r.project.tracks[0].solo = false;
+        r.mute(1, true, true);
+        r.mute(0, true, true);
         r.periods(4);
         assert!(r.heard > 0.1, "soloed too: heard");
 
@@ -2216,7 +2774,7 @@ mod tests {
     /// fine, and a tap uses the take everywhere it has audio.
     #[test]
     fn take_lanes_open_under_the_track_and_a_swipe_comps_a_stretch() {
-        let mut r = Rig::new();
+        let mut r = Rig::with(3);
         let act = |r: &mut Rig, a| {
             let out = r.h.action(a, &r.info(), true);
             r.periods(2);
@@ -2285,7 +2843,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(line, "audio 1: take 1 plays from 1.2 to 1.4");
+        assert_eq!(line, "Audio 1: take 1 plays from 1.2 to 1.4");
         assert_eq!(
             plays(&r),
             [(0, 960, new), (960, 2880, old), (2880, end, new)]
@@ -2308,7 +2866,7 @@ mod tests {
         assert_eq!(plays(&r), [(0, end, new)]);
         // A tap: the take everywhere it has audio.
         let line = act(&mut r, AudioAction::UseTake(old)).unwrap();
-        assert_eq!(line, "audio 1: take 1 plays everywhere it has audio");
+        assert_eq!(line, "Audio 1: take 1 plays everywhere it has audio");
         assert!(plays(&r).iter().all(|p| p.2 == old), "{:?}", plays(&r));
         assert!(r.h.take_changed());
         // Takes again closes them.
@@ -2331,7 +2889,7 @@ mod tests {
     /// (free with SHIFT); the screen picks it again where it went.
     #[test]
     fn a_dragged_region_moves_on_the_grid_and_is_picked_again() {
-        let mut r = Rig::new();
+        let mut r = Rig::with(3);
         let act = |r: &mut Rig, a| {
             let out = r.h.action(a, &r.info(), true);
             r.periods(2);
@@ -2368,7 +2926,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(line, "audio 1: region moved to 3.1 (Undo puts it back)");
+        assert_eq!(line, "Audio 1: region moved to 3.1 (Undo puts it back)");
         let g = r.h.host.tracks.regions(0)[0];
         assert_eq!((g.start, g.end), (7680, 7680 + len));
         assert_eq!(r.h.take_repick(), Some(reg));
@@ -2446,9 +3004,15 @@ mod tests {
             r.h.action(a, &r.info(), true).unwrap();
             r.periods(2);
         };
-        // A bar on audio 1, audio 2 muted and set to the right input.
+        // A bar on audio 1, audio 2 muted (its track's mute) and set to
+        // the right input, audio 3 empty.
+        for s in 0..3 {
+            assert_eq!(r.add(), s);
+        }
         act(&mut r, AudioAction::Arm { track: 0, on: true });
-        act(&mut r, AudioAction::Mute { track: 1, on: true });
+        r.mute(1, false, true);
+        r.periods(1);
+        assert!(r.h.host.tracks.settings(1).unwrap().mute, "silenced");
         act(
             &mut r,
             AudioAction::Input {
@@ -2482,6 +3046,10 @@ mod tests {
             std::thread::sleep(Duration::from_micros(100));
         };
         assert_eq!((saved.tracks.len(), saved.takes.len()), (2, 1));
+        // The recording's lasting id goes with the save (phase 1c).
+        let rec = r.h.host.tracks.takes().next().unwrap().rec;
+        assert!(rec.is_given());
+        assert_eq!(saved.takes[0].rec, rec);
         let first = r.h.host.tracks.regions(0).to_vec();
         r.waves();
 
@@ -2508,13 +3076,20 @@ mod tests {
             Some("project: 2 audio tracks and 1 take in")
         );
         assert_eq!(r.h.host.tracks.takes().count(), 1);
+        assert_eq!(r.h.host.tracks.takes().next().unwrap().rec, rec, "kept");
         assert_eq!(r.h.host.tracks.regions(0), &first[..]);
         assert!(r.h.host.tracks.regions(2).is_empty());
         assert!(!r.h.host.tracks.armed(2));
         let st = r.state();
-        assert_eq!(st.audio.iter().map(|l| l.track).collect::<Vec<_>>(), [0, 1]);
+        assert_eq!(
+            st.audio.iter().map(|l| l.track).collect::<Vec<_>>(),
+            [0, 1, 2],
+            "every audio track in the list has its lane"
+        );
         assert!(st.audio[1].mute && st.audio[1].input == Input::Right);
         assert!(!st.audio[0].mute && !st.audio[0].armed);
+        r.periods(1);
+        assert!(r.h.host.tracks.settings(1).unwrap().mute, "silenced again");
         // The waveform is read again for the take that came back.
         r.waves();
         assert_eq!(r.state().waves.len(), 1);
@@ -2525,19 +3100,23 @@ mod tests {
         r.command(T::Stop);
         r.periods(4);
 
-        // New project: empty, every setting as at start, no line.
+        // New project: no audio track, empty, every setting as at start,
+        // no line.
+        r.project.tracks.retain(|t| !t.is_audio());
+        r.h.bind(Slots::default());
         r.h.clear();
         r.periods(2);
         assert!(!r.h.opening());
         assert_eq!(r.h.take_note(), None);
         assert_eq!(r.h.host.tracks.takes().count(), 0);
         assert!(r.state().audio.is_empty());
-        assert!(!r.h.mute[1] && r.h.inputs[1] == Input::Left);
+        assert!(!r.h.silent[1] && r.h.inputs[1] == Input::Left);
+        assert!(!r.h.host.tracks.settings(1).unwrap().mute);
     }
 
     #[test]
     fn the_level_bars_follow_the_input_while_armed_and_the_sound_and_fall_back() {
-        let mut r = Rig::new();
+        let mut r = Rig::with(3);
         r.periods(4);
         assert_eq!(r.h.take_levels(), None, "silence sends nothing");
         // Armed, the bar shows the input it records: a tone at 0.5 is
@@ -2611,7 +3190,7 @@ mod tests {
 
     #[test]
     fn steady_play_never_allocates() {
-        let mut r = Rig::new();
+        let mut r = Rig::with(3);
         r.h.action(AudioAction::Arm { track: 0, on: true }, &r.info(), true)
             .unwrap();
         r.live = true;
@@ -2641,6 +3220,11 @@ mod tests {
     fn a_sound_from_the_sample_page_goes_on_an_empty_track_from_the_playheads_bar() {
         let mut r = Rig::new();
         r.periods(2);
+        let none = r.h.bring_track(&TransportInfo::default());
+        assert_eq!(none, None, "no audio track: the app adds one first");
+        for s in 0..MAX_TRACKS {
+            assert_eq!(r.add(), s);
+        }
         let sound = |name: &str, frames: usize, cuts: Vec<u64>| Sound {
             name: name.into(),
             channels: 1,
@@ -2664,7 +3248,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             line,
-            "Break's 2 slices on audio 1 from bar 3; the Song view's Undo takes it off"
+            "Break's 2 slices on Audio 1 from bar 3; the Song view's Undo takes it off"
         );
         assert_eq!(
             r.h.bring(sound("Hit", 100, Vec::new()), &at(3)),
@@ -2682,17 +3266,13 @@ mod tests {
         assert!((regs[1].src - half as i64).abs() <= 1, "{regs:?}");
         let take = r.h.host.tracks.take(regs[0].take).unwrap();
         assert_eq!((take.bpm, take.frames, take.channels), (120.0, 2 * half, 1));
-        assert_eq!(
-            r.state().audio.iter().map(|l| l.track).collect::<Vec<_>>(),
-            [0]
-        );
         // The next goes on the next empty track, until none is empty.
         for k in 1..MAX_TRACKS {
             let line = r.h.bring(sound("Hit", 4410, Vec::new()), &at(3)).unwrap();
             assert_eq!(
                 line,
                 format!(
-                    "Hit on audio {} from bar 3; the Song view's Undo takes it off",
+                    "Hit on Audio {} from bar 3; the Song view's Undo takes it off",
                     k + 1
                 )
             );
@@ -2705,12 +3285,12 @@ mod tests {
         // None empty: the first with nothing from the bar on, else none.
         assert_eq!(
             r.h.bring(sound("Hit", 4410, Vec::new()), &at(1)),
-            Err("every audio track has regions from bar 1 on: move the playhead past them, or erase some in the Song view".into())
+            Err("every audio track has regions from bar 1 on: move the playhead past them, erase some in the Song view, or add an audio track".into())
         );
         let line = r.h.bring(sound("Hit", 4410, Vec::new()), &at(9)).unwrap();
         assert_eq!(
             line,
-            "Hit on audio 1 from bar 9; the Song view's Undo takes it off"
+            "Hit on Audio 1 from bar 9; the Song view's Undo takes it off"
         );
         while r.h.host.importing().is_some() {
             r.period();
@@ -2727,7 +3307,7 @@ mod tests {
         let line = r.h.bring(sound("Hit", 4410, Vec::new()), &at(12)).unwrap();
         assert_eq!(
             line,
-            "Hit on audio 1 from bar 12; it plays in song mode, and the Song view's Undo takes it off"
+            "Hit on Audio 1 from bar 12; it plays in song mode, and the Song view's Undo takes it off"
         );
         while r.h.host.importing().is_some() {
             r.period();

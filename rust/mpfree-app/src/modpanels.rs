@@ -144,10 +144,10 @@ pub struct NotesSource {
 
 impl NotesSource {
     /// Track `t`'s, from the project and the app's arps; None for a Loop
-    /// track or past the project's tracks.
+    /// track, an audio track or past the project's tracks.
     pub fn of(app: &App, time: &crate::time::TimeHost, t: usize) -> Option<NotesSource> {
         let track = time.project().tracks.get(t)?;
-        if track.loops().is_some() {
+        if !track.plays_notes() {
             return None;
         }
         let s = app.arps.engine_at(t).settings();
@@ -1723,7 +1723,7 @@ mod tests {
             for _ in 0..periods {
                 let ctx = Ctx::new(RATE, self.period * PERIOD as u64);
                 self.h
-                    .period(&ctx, (&z, &z), (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
+                    .period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
                 self.period += 1;
             }
         }
@@ -2537,15 +2537,7 @@ mod tests {
                     }
                 }
                 let ctx = Ctx::new(RATE, at);
-                r.h.period(
-                    &ctx,
-                    (&z, &z),
-                    (&z, &z),
-                    (&z, &z),
-                    (&z, &z),
-                    &mut l,
-                    &mut rr,
-                );
+                r.h.period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut rr);
                 r.period += 1;
                 out.extend_from_slice(&l);
             }

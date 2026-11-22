@@ -244,6 +244,22 @@ impl Desk<'_> {
                     out.show(gui::ToUi::Tell(line));
                 }
             }
+            // An audio track's strip's M and S are the track's mute and
+            // solo (layout spec 3a), as TRACK MUTE's and the panel's are.
+            gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::Set {
+                strip: mpfree_fx::StripId::Track(ch),
+                id: id @ (mpfree_fx::ids::mixer::MUTE | mpfree_fx::ids::mixer::SOLO),
+                value,
+            }) if audio_track_on(time, mix, ch).is_some() =>
+            {
+                let t = audio_track_on(time, mix, ch).unwrap_or(0);
+                let solo = id == mpfree_fx::ids::mixer::SOLO;
+                match audio_strip_switch(time, tracks, mix, t, solo, value >= 0.5) {
+                    Some(Ok(line)) => out.note(&line),
+                    Some(Err(e)) => out.note(&format!("mixer: {e}")),
+                    None => {}
+                }
+            }
             // The mixer panel. Its master fader is the Level, so the Play page follows it.
             gui::FromUi::Mixer(a) => {
                 if let Some(db) = mix.action(&a) {
@@ -433,6 +449,12 @@ impl Desk<'_> {
                     )));
                     return None;
                 }
+                if time.project().tracks.get(t).is_some_and(|tr| tr.is_audio()) {
+                    fx.push(app::Effect::Tell(format!(
+                        "{name} is an audio track: its arm dot on the Song view arms it"
+                    )));
+                    return None;
+                }
                 let done = app.rec.add_track(t, &name, time.armed(), &now);
                 out.show(gui::ToUi::Rec(app.rec));
                 fx.extend(rec_effects(done, time, looper));
@@ -530,6 +552,15 @@ impl Desk<'_> {
             // Put on Audio track (the one Sample page's step 6): where it
             // went, or why not, said in place of the hint.
             gui::FromUi::SampleToAudio(s) => {
+                // No audio track with room: a new one at the end of the
+                // track list (phase 1a), as + Track adds it.
+                if tracks.bring_track(&time.info()).is_none() && tracks.free_slot().is_some() {
+                    match time.act(mpfree_time_ui::view::TimeAction::AddAudioTrack) {
+                        Ok(line) => out.note(&format!("time: {line}")),
+                        Err(e) => out.note(&format!("time: {e}")),
+                    }
+                    tracks.sync(time.project(), time.silenced(), true);
+                }
                 let (Ok(line) | Err(line)) = tracks.bring(*s, &time.info());
                 out.note(&format!("audio tracks: {line}"));
                 out.show(gui::ToUi::Tell(line));
@@ -920,6 +951,35 @@ impl Desk<'_> {
 /// or a pad take): Sample Recall waits for it (the sequencer thread, 18
 /// Nov; REC arm rule 6), as the Wave page's Keep card does (one-page step
 /// 2c), since REC mid-take punches out and neither may take that.
+/// The audio track whose own mixer strip is channel `ch` (the audio
+/// tracks rethink, phase 1b), if one is.
+fn audio_track_on(time: &time::TimeHost, mix: &mixing::MixHost, ch: usize) -> Option<usize> {
+    mixing::channel_track(ch).filter(|&t| {
+        mix.track_channel(t) == ch && time.project().tracks.get(t).is_some_and(|tr| tr.is_audio())
+    })
+}
+
+/// Audio track `t`'s strip's M (or S, `solo`) set `on` on the mixer panel:
+/// the track's mute or solo, as TRACK MUTE's and the track panel's are
+/// (layout spec 3a), so a solo there is project-wide. The engine track
+/// follows at once and the panel reads again. What the time engine said,
+/// or None when it was so already.
+fn audio_strip_switch(
+    time: &mut time::TimeHost,
+    tracks: &mut crate::audiotracks::TrackHost,
+    mix: &mut mixing::MixHost,
+    t: usize,
+    solo: bool,
+    on: bool,
+) -> Option<Result<String, String>> {
+    let tr = time.project().tracks.get(t)?;
+    let now = if solo { tr.solo } else { tr.mute };
+    let said = (now != on).then(|| time.mute_or_solo(t, false, solo));
+    tracks.sync(time.project(), time.silenced(), true);
+    mix.state_now();
+    said
+}
+
 pub fn take_waits(app: &app::App, time: &time::TimeHost, looper: &looping::LoopHost) -> bool {
     let now = rec_now(time, looper);
     now.taking() || now.loop_armed || app.rec.ready.is_some() || app.rec.pad.is_some()
@@ -1361,13 +1421,20 @@ pub fn perform_pad(
 /// hit); a track mute pad mutes or unmutes its track, at the launch line
 /// in Perform; a scene pad launches its row.
 /// The strips a Perform pad's throw can play on now, for the screen.
+/// The audio tracks play into their own channels (phase 1b), named after
+/// them; the old shared Audio strip is listed only while it holds an
+/// older project's settings ([`mixing::MixHost::old_audio`]).
 pub fn throw_strips(mix: &mixing::MixHost, time: &time::TimeHost) -> gui::ToUi {
-    gui::ToUi::ThrowStrips(mixing::throw_strips(
+    let mut strips = mixing::throw_strips(
         &mix.mixer,
         mix.own_channels_in_use(),
         &crate::export::track_names(time),
         &|s| mix.own_instrument_on(s),
-    ))
+    );
+    if !mix.old_audio() {
+        strips.retain(|(_, s)| *s != mpfree_fx::StripId::Track(mixing::AUDIO));
+    }
+    gui::ToUi::ThrowStrips(strips)
 }
 
 /// What the Perform set's throws on tracks and submixes said (a Perform
@@ -2261,6 +2328,35 @@ mod tests {
         assert_eq!(fx.last(), Some(&app::Effect::Rec(Press::Rec)));
         assert!(!app.pads_chose_synth());
         assert_eq!(rec(&mut app, &mut time, &mut mix, &mut out), None);
+    }
+
+    /// The audio tracks rethink, phase 1b: an audio track's strip's M and
+    /// S are the track's mute and solo (a solo project-wide), set only
+    /// when they change; a note track's channel is left to the mixer.
+    #[test]
+    fn an_audio_track_s_strip_m_and_s_are_the_track_s() {
+        let mut p = mpfree_seq::Project::new();
+        p.tracks.push(mpfree_seq::Track::new("Track 1", 0));
+        p.tracks.push(mpfree_seq::Track::new_audio("Vocal", 0));
+        let mut time = time::TimeHost::with_project(44_100, 120.0, p).unwrap();
+        let mut mix = mixing::MixHost::new(44_100, 0.0, 6.0);
+        let mut tracks = crate::audiotracks::TrackHost::new(44_100, 1);
+        tracks.sync(time.project(), time.silenced(), true);
+        let ch = mix.track_channel(1);
+        assert_eq!(audio_track_on(&time, &mix, ch), Some(1));
+        assert_eq!(audio_track_on(&time, &mix, mix.track_channel(0)), None);
+        assert_eq!(audio_track_on(&time, &mix, mixing::AUDIO), None);
+        let said = audio_strip_switch(&mut time, &mut tracks, &mut mix, 1, true, true);
+        assert!(matches!(said, Some(Ok(_))), "{said:?}");
+        assert!(time.project().tracks[1].solo);
+        assert_eq!(time.silenced() & 0b11, 0b01, "the note track is left out");
+        let again = audio_strip_switch(&mut time, &mut tracks, &mut mix, 1, true, true);
+        assert_eq!(again, None, "soloed already");
+        audio_strip_switch(&mut time, &mut tracks, &mut mix, 1, false, true);
+        assert!(time.project().tracks[1].mute);
+        audio_strip_switch(&mut time, &mut tracks, &mut mix, 1, true, false);
+        assert!(!time.project().tracks[1].solo);
+        assert_eq!(time.silenced() & 0b11, 0b10, "muted");
     }
 
     /// Refactor C1: a track picked while REC's arm is pinned is selected
