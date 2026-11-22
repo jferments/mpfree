@@ -2288,6 +2288,13 @@ pub struct Player {
     status_start: Instant,
     /// Time since Dev > Status was last filled, s.
     status_drawn: f32,
+    /// What the watchers saw at their last look (status_watch.rs), and
+    /// how many looks there have been (the ports are looked at every 8th).
+    status_watch: crate::status_watch::Watch,
+    status_looks: u64,
+    /// Memory free (MemAvailable), from the screen thread's look at
+    /// /proc/meminfo every 2 s; None until then.
+    mem_free: Option<u64>,
     /// The Looper tab, and what it shows.
     // Boxed: it holds every loop's status and layer rows, and a Player is
     // moved by value often enough (sample_screens) that its size matters.
@@ -2818,6 +2825,9 @@ impl Player {
             status_clock: now,
             status_start: now,
             status_drawn: 0.0,
+            status_watch: crate::status_watch::Watch::default(),
+            status_looks: 0,
+            mem_free: None,
             looper_page,
             looper: LooperView::default(),
             play: PlayPage::default(),
@@ -7795,9 +7805,9 @@ impl Player {
     /// follows it while it shows.
     pub fn report_problem(&mut self, r: mpfree_status::Report) {
         self.status_board.apply(r, self.status_clock);
+        self.status_lines();
         if self.view == View::StatusBoard {
-            self.status_drawn = 0.0;
-            DebugPages::set_status(&mut self.ui, &self.status_board, self.status_start);
+            self.fill_status();
         }
     }
 
@@ -7808,13 +7818,110 @@ impl Player {
         let dt = dt.max(0.0);
         self.status_clock += Duration::from_secs_f32(dt);
         self.status_board.tick(self.status_clock);
+        self.status_lines();
         if self.view == View::StatusBoard {
             self.status_drawn += dt;
             if self.status_drawn >= 0.5 {
-                self.status_drawn = 0.0;
-                DebugPages::set_status(&mut self.ui, &self.status_board, self.status_start);
+                self.fill_status();
             }
         }
+    }
+
+    /// Dev > Status, from the board as it stands.
+    fn fill_status(&mut self) {
+        self.status_drawn = 0.0;
+        DebugPages::set_status(
+            &mut self.ui,
+            &self.status_board,
+            &self.status_watch,
+            self.status_start,
+        );
+    }
+
+    /// One log line for each problem that started showing or ended:
+    /// "status: + sound/dropout (3) The sound dropped out", "status: -
+    /// sound/dropout after 1.2 s", so the Console, the journal and the
+    /// test tools see what the board sees.
+    fn status_lines(&mut self) {
+        let watch = &self.status_watch;
+        let mut lines = Vec::new();
+        self.status_board.take_changes(|c| {
+            let about = match (c.subject, watch.subject_name(c.kind, c.subject)) {
+                (mpfree_status::Subject::NONE, _) => String::new(),
+                (_, Some(name)) => format!(" {name}"),
+                (s, None) => format!(" #{}", s.0),
+            };
+            let hidden = if c.hidden {
+                " (its cause is going)"
+            } else {
+                ""
+            };
+            lines.push(if c.started {
+                format!(
+                    "status: + {}{about} ({}) {}{hidden}",
+                    c.kind.id, c.times, c.kind.title
+                )
+            } else {
+                format!(
+                    "status: - {}{about} after {:.1} s",
+                    c.kind.id,
+                    c.lasted.as_secs_f32()
+                )
+            });
+        });
+        for l in lines {
+            println!("{l}");
+            #[cfg(test)]
+            self.said_all.push(l);
+        }
+    }
+
+    /// The watchers' look (status_watch.rs), each time the audio loop's
+    /// timing arrives: its counters, the period's verdict, memory, the
+    /// session, the project's left-out parts, the cores, and every 8th
+    /// look (2 s) the MIDI ports the project uses.
+    fn status_look(&mut self) {
+        self.status_looks += 1;
+        let missing = if self.ready && self.status_looks.is_multiple_of(8) {
+            self.io_model
+                .as_ref()
+                .and_then(|m| m.lock().ok().map(|m| m.missing_ports()))
+        } else {
+            None
+        };
+        let t = self.timing;
+        let look = crate::status_watch::Look {
+            underruns: t.underruns,
+            ends_lost: t.audio.ends_lost,
+            near_limit: self.engines.as_deref().and_then(crate::engines::near_limit),
+            free: self.mem_free,
+            ram_pct: self.ram_pct,
+            session_lost: Some(self.session.1 == Tone::Bad),
+            parts_missing: self.browser.as_ref().map(|b| !b.left_out_list().is_empty()),
+            one_core: self.engines.as_deref().and_then(|e| e.cores.fell_back()),
+            missing_ports: missing.as_deref(),
+        };
+        let mut reports = Vec::new();
+        self.status_watch.look(&look, &mut |r| reports.push(r));
+        for r in reports {
+            self.report_problem(r);
+        }
+    }
+
+    /// Memory free now (MemAvailable, bytes), for the status watcher.
+    pub fn set_free(&mut self, free: u64) {
+        self.mem_free = Some(free);
+    }
+
+    /// The problems shown this session that aren't in `allowed`, by id:
+    /// tests and the bench fail on any (System status).
+    #[cfg(test)]
+    pub fn status_unexpected(&self, allowed: &[&mpfree_status::Kind]) -> Vec<&'static str> {
+        self.status_board
+            .unexpected(allowed)
+            .iter()
+            .map(|k| k.id)
+            .collect()
     }
 
     /// Opens the number pad for `ask` over the page showing.
@@ -8864,6 +8971,7 @@ impl Player {
                 self.show_timing();
                 self.refresh_chips();
                 self.debug.set_audio(&mut self.ui, t.audio);
+                self.status_look();
             }
             ToUi::Map(m) => DebugPages::set_map(&mut self.ui, &m),
             ToUi::Engines(shared) => self.engines = Some(shared),
@@ -10008,6 +10116,13 @@ impl Player {
         let lines = self.sample.take_lines();
         if lines.is_empty() {
             return;
+        }
+        let refused = crate::status_watch::refused_for_memory(&lines);
+        if refused > 0 {
+            self.report_problem(mpfree_status::Report::happened(
+                &mpfree_status::kinds::NOT_ENOUGH_MEMORY,
+                refused,
+            ));
         }
         for l in lines {
             println!("{l}");
@@ -11979,8 +12094,7 @@ impl Player {
             }
             View::StatusBoard => {
                 DebugPages::set_strip(&mut self.ui, v);
-                self.status_drawn = 0.0;
-                DebugPages::set_status(&mut self.ui, &self.status_board, self.status_start);
+                self.fill_status();
                 crate::debug_page::STATUS_PAGE.to_string()
             }
             View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console => {
@@ -14415,6 +14529,8 @@ pub fn spawn(
             let (mut perf_at, mut perf_logged): (Option<Instant>, Option<Instant>) = (None, None);
             let mut ram_at: Option<Instant> = None;
             let mut memory_watch = crate::memory::Watch::default();
+            // The touchscreen stopped answering and hasn't opened again.
+            let mut touch_lost = false;
             // The Processes page: /proc once a second, only while it shows (a
             // fresh table each time the page opens, so CPU starts again).
             let mut procs: Option<(mpfree_prof::procs::ProcTable, Instant)> = None;
@@ -14474,6 +14590,11 @@ pub fn spawn(
                                 player.set_touch_status(&touch_status_text(&t, bell.as_ref()));
                                 touch_status = (Instant::now(), t.raw_events());
                                 touch = Some(t);
+                                if std::mem::take(&mut touch_lost) {
+                                    player.report_problem(mpfree_status::Report::ended(
+                                        &mpfree_status::kinds::TOUCH_STOPPED,
+                                    ));
+                                }
                             }
                             // Say why once, and again only if the reason changes.
                             Err(e) if first || e != touch_error => {
@@ -14520,6 +14641,13 @@ pub fn spawn(
                             ));
                             touch_total += t.contacts;
                             touch = None;
+                            // Touch stopped until the panel opens again
+                            // (System status; a reopen within a second
+                            // never shows).
+                            touch_lost = true;
+                            player.report_problem(mpfree_status::Report::began(
+                                &mpfree_status::kinds::TOUCH_STOPPED,
+                            ));
                         }
                     }
                 }
@@ -14531,6 +14659,9 @@ pub fn spawn(
                     if let Ok(m) = std::fs::read_to_string("/proc/meminfo") {
                         if let Some(p) = crate::perf::ram_used_pct(&m) {
                             player.set_ram(p);
+                        }
+                        if let Some(free) = crate::memory::free_in(&m) {
+                            player.set_free(free);
                         }
                         if let Some(line) = crate::memory::free_in(&m)
                             .and_then(|free| memory_watch.check(free, Instant::now()))
@@ -27948,6 +28079,133 @@ mod tests {
         // SHIFT + wheel reaches it on the Dev tab's strip, before Console.
         assert_eq!(crate::app::DEBUG_PAGES[6], View::StatusBoard);
         assert_eq!(View::StatusBoard.tab_view(), Some(View::Debug));
+    }
+
+    /// System status phase 1: the watchers' looks on each timing turn the
+    /// counters and states into problems, each start and end is one log
+    /// line, and the page names a missing port.
+    #[test]
+    fn the_watchers_turn_counters_and_states_into_problems() {
+        use mpfree_status::kinds;
+        let mut p = sample_player(Fonts::embedded());
+        let timing = |p: &mut Player, underruns: u64, ends_lost: u64| {
+            let mut t = Timing {
+                underruns,
+                ..Timing::default()
+            };
+            t.audio.ends_lost = ends_lost;
+            p.apply(ToUi::Timing(t));
+        };
+        let raw = |p: &Player| -> Vec<String> {
+            p.status_board
+                .raw()
+                .iter()
+                .map(|v| format!("{} {:?}", v.kind.id, v.state))
+                .collect()
+        };
+        timing(&mut p, 0, 0);
+        assert!(p.status_board.is_empty(), "all quiet");
+        timing(&mut p, 2, 0);
+        assert_eq!(raw(&p), ["sound/dropout Now"]);
+        assert!(p
+            .said_all
+            .iter()
+            .any(|l| l == "status: + sound/dropout (2) The sound dropped out"));
+        p.tick(3.5);
+        assert!(p
+            .said_all
+            .iter()
+            .any(|l| l == "status: - sound/dropout after 0.0 s"));
+        // A note ending lost: a bug, said at once.
+        timing(&mut p, 2, 1);
+        assert!(p.status_unexpected(&[&kinds::SOUND_DROPOUT]) == ["sound/note-may-hang"]);
+        // The session stops answering: shown once it has lasted a second,
+        // and its echoes stay hidden meanwhile.
+        p.apply(ToUi::Session("No reply".into(), Tone::Bad));
+        timing(&mut p, 2, 1);
+        p.tick(1.1);
+        timing(&mut p, 5, 1);
+        let lost = p
+            .status_board
+            .raw()
+            .into_iter()
+            .find(|v| v.kind == &kinds::NO_SESSION)
+            .unwrap();
+        assert!(lost.is_now());
+        let dropouts = p
+            .status_board
+            .raw()
+            .into_iter()
+            .find(|v| v.kind == &kinds::SOUND_DROPOUT)
+            .unwrap();
+        assert!(dropouts.hidden, "an echo of the lost session");
+        p.apply(ToUi::Session("Akai session".into(), Tone::Good));
+        timing(&mut p, 5, 1);
+        p.tick(3.1);
+        assert!(!p
+            .status_board
+            .raw()
+            .iter()
+            .any(|v| v.kind == &kinds::NO_SESSION && v.is_now()));
+        // Memory: under one and a half times the floor.
+        p.set_free(crate::status_watch::LOW_FREE - 1);
+        timing(&mut p, 5, 1);
+        p.tick(1.1);
+        assert!(p
+            .status_board
+            .raw()
+            .iter()
+            .any(|v| v.kind == &kinds::MEMORY_LOW && v.is_now()));
+        // Nothing reaches the hint line before phase 2.
+        assert!(p.told.is_none());
+    }
+
+    /// A MIDI port the project uses and isn't plugged into: on the board
+    /// after two looks at the ports (2 s apart), named on Dev > Status, and
+    /// gone when it is plugged in.
+    #[test]
+    fn a_missing_midi_port_reaches_the_board_by_its_name() {
+        use mpfree_status::kinds;
+        let mut p = sample_player(Fonts::embedded());
+        p.apply(ToUi::Settings(Settings {
+            debug_mode: true,
+            ..Settings::default()
+        }));
+        let model: mpfree_midi_ui::Shared = Default::default();
+        model.lock().unwrap().setup.tracks[0] =
+            Some(mpfree_midi::setup::TrackOut::new("Juno-X", 0));
+        p.apply(ToUi::IoModel(model.clone()));
+        let looks = |p: &mut Player, n: usize| {
+            for _ in 0..n {
+                p.apply(ToUi::Timing(Timing::default()));
+            }
+        };
+        looks(&mut p, 16);
+        assert_eq!(p.status_unexpected(&[]), ["midi/port-missing"]);
+        p.apply(ToUi::Show(View::StatusBoard));
+        let rows = p.ui.get_mut::<StatList>("statusopen").unwrap().rows.clone();
+        assert!(
+            rows.iter().any(|r| r.0 == "warn midi/port-missing Juno-X"),
+            "{rows:?}"
+        );
+        assert!(p
+            .said_all
+            .iter()
+            .any(|l| l == "status: + midi/port-missing Juno-X (1) A MIDI device isn't plugged in"));
+        {
+            let mut m = model.lock().unwrap();
+            let din = m.live.ports[0].clone();
+            m.live.ports.push(mpfree_midi_ui::PortLive {
+                name: "Juno-X".into(),
+                ..din
+            });
+        }
+        looks(&mut p, 8);
+        assert!(!p
+            .status_board
+            .raw()
+            .iter()
+            .any(|v| v.kind == &kinds::PORT_MISSING && v.is_now()));
     }
 
     #[test]
