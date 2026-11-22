@@ -76,6 +76,8 @@ A save is all or nothing. The project's new files are written to the side first 
 
 The last ten saves of each project are kept. Pick a project and press **Earlier saves** to see them by when they were saved, and open one to go back. Saving it then makes it the newest, and nothing is lost.
 
+Audio track takes you no longer use, in the song or in any of those ten earlier saves, go to the **Trash** when you save, so they stop taking room in the project, and the status line says how many (*Saved Night drive, and moved 2 takes it no longer uses to the Trash*). A take you erased stays as long as Undo or an earlier save can bring it back. Put one back from the Trash if you want it; emptying the Trash frees the space.
+
 ### Autosave
 
 While you have changes you haven't saved, MPFree saves them every 2 minutes into a project of its own, **Autosave** in the Projects place, even while it plays. It never saves over your project: your project changes only when you save it, and your work still counts as unsaved. Autosave keeps only its latest copy, with no earlier saves, and nothing on the screen changes when it saves. If you have a project of your own called Autosave, it uses Autosave 2 instead.

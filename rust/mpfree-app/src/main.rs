@@ -7441,6 +7441,19 @@ fn player_session(
         audio_memory.time(),
         audio_memory.megabytes(RATE)
     ));
+    // Dev's "Audio tracks from their files" (off by default): started
+    // before the takes record to files, so the writer waits for playback's
+    // reads; the screen opens projects without reading their takes then.
+    if app.settings.stream_audio {
+        if let Some(bytes) = tracks.stream(audio_memory.seconds()) {
+            out.say(&format!(
+                "audio tracks: takes play from their files (Dev, MENU: Audio tracks from their files), through a {} MB cache",
+                bytes >> 20
+            ));
+        }
+        app.settings.audio_streams = tracks.streams();
+        out.show(gui::ToUi::Settings(app.settings.clone()));
+    }
     out.show(gui::ToUi::Time(Box::new(time_state(&time, &tracks))));
     let (mut shown_transport, mut transport_shown_at) = (time.info(), Instant::now());
     let mut periods = app.settings.periods;
@@ -12035,6 +12048,7 @@ fn player_session(
                             + midi_out.ends_lost(),
                         peak_grains: c.peak_grains,
                         window_waits: c.window_waits,
+                        track_files: tracks.stream_numbers(),
                         faded_grains: c.faded_grains,
                         held_back_clouds: c.held_back_clouds,
                         crowded_s: c.crowded_ms as f32 / 1000.0,

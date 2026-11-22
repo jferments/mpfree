@@ -764,6 +764,16 @@ pub struct Settings {
     /// Prefs "Audio track memory": the audio tracks' size from the next
     /// start.
     pub audio_memory: crate::audiotracks::AudioMemory,
+    /// Dev's options "Audio tracks from their files": from the next start,
+    /// takes play from their files on the drive through the stream layer's
+    /// cache (as big as Audio track memory), so memory only holds what
+    /// records (the audio tracks rethink, phase 3b). Off by default, and on
+    /// the MPC until the stick tests have run with Jay's go.
+    pub stream_audio: bool,
+    /// Whether takes play from their files in this start (the switch above
+    /// as it was at start, if the stream layer started): a project opening
+    /// then reads only its takes' headers. Never saved.
+    pub audio_streams: bool,
     /// Prefs "At start": open the last project (true, the default since
     /// round 4 of the creator run: a restart lost the pads the owner had
     /// set) or start with a new one. The screen opens it once the sound is
@@ -833,6 +843,8 @@ impl Default for Settings {
             timing_strip: true,
             xy_effect: None,
             audio_memory: crate::audiotracks::AudioMemory::default(),
+            stream_audio: false,
+            audio_streams: false,
             open_last: true,
             export_mode: mpfree_export::Mode::Fast,
             export_bits: mpfree_fx::Bits::I24,
@@ -904,6 +916,8 @@ pub enum Item {
     Latch,
     ShowPressure,
     ClearLogs,
+    /// Dev's options: takes play from their files from the next start.
+    StreamAudio,
     ConsoleFollow,
     ClearConsole,
     LineInput,
@@ -4665,7 +4679,7 @@ impl App {
                 | View::StatusBoard,
             ) => {
                 // The MIDI page's monitor has its own Hold.
-                &[Item::ShowPressure, Item::ClearLogs]
+                &[Item::ShowPressure, Item::ClearLogs, Item::StreamAudio]
             }
             // The full-screen touch checks, also in Prefs > Touch screen.
             (_, View::Touch) => &[Item::CalibrateTouch, Item::TouchLab],
@@ -4776,6 +4790,16 @@ impl App {
                 if s.show_pressure { "Shown" } else { "Hidden" }.to_string(),
             ),
             Item::ClearLogs => ("Clear the MIDI and event logs", "Clear".to_string()),
+            Item::StreamAudio => (
+                "Audio tracks from their files",
+                match (s.stream_audio, s.stream_audio == s.audio_streams) {
+                    (true, true) => "On",
+                    (false, true) => "Off",
+                    (true, false) => "On (next start)",
+                    (false, false) => "Off (next start)",
+                }
+                .to_string(),
+            ),
             Item::ConsoleFollow => (
                 "Console",
                 if s.console_paused {
@@ -5011,6 +5035,13 @@ impl App {
                 "but not listed.",
             ],
             Item::ClearLogs => vec!["Empty the MIDI and event logs."],
+            Item::StreamAudio => vec![
+                "Takes play from their files on the drive",
+                "through a cache as big as Audio track",
+                "memory, which then only holds what records.",
+                "From the next start. A test: off on the MPC",
+                "until the stick tests have run.",
+            ],
             Item::ConsoleFollow => vec![
                 "Pause the console to read it; it keeps",
                 "collecting lines meanwhile.",
@@ -5534,6 +5565,16 @@ impl App {
                 fx.extend(self.arp_changed());
             }
             Item::ShowPressure => s.show_pressure = d > 0,
+            Item::StreamAudio => {
+                let on = d > 0;
+                if on != s.stream_audio {
+                    s.stream_audio = on;
+                    fx.push(Effect::Note(format!(
+                        "audio tracks: takes play from {} from the next start",
+                        if on { "their files" } else { "memory" }
+                    )));
+                }
+            }
             Item::SendsMidi => {
                 let on = d > 0;
                 if on != s.sends_midi {
@@ -7207,6 +7248,40 @@ mod tests {
             Effect::Looper(LoopAction::Command(LoopCommand::SetLatency(_)))
         )));
         assert!(!app.item_text(Item::LoopLatency).1.contains("estimated"));
+    }
+
+    /// The audio tracks rethink, phase 3b: Dev's options "Audio tracks
+    /// from their files", off by default, kept, from the next start.
+    #[test]
+    fn audio_tracks_from_their_files_is_a_dev_option_from_the_next_start() {
+        let mut app = App::new(44_100, false);
+        app.set_debug_mode(true);
+        app.debug_page(1);
+        let fx = app.button(MENU, true, 0.0);
+        assert!(fx.iter().any(|e| matches!(e, Effect::Menu(_))), "{fx:?}");
+        app.button(MENU, false, 0.0);
+        let at = row(&app, Item::StreamAudio);
+        assert_eq!(
+            app.item_text(Item::StreamAudio),
+            ("Audio tracks from their files", "Off".to_string())
+        );
+        let fx = app.step_item(at, 1);
+        assert!(app.settings.stream_audio);
+        assert_eq!(app.item_text(Item::StreamAudio).1, "On (next start)");
+        assert!(fx.contains(&Effect::Note(
+            "audio tracks: takes play from their files from the next start".into()
+        )));
+        // Kept; the next start turns it on and says no more.
+        let kept = app.app_settings();
+        assert_eq!(kept.get_bool("stream-audio"), Some(true));
+        let mut next = App::new(44_100, false);
+        next.restore(&kept, &mpfree_store::Settings::default());
+        assert!(next.settings.stream_audio && !next.settings.audio_streams);
+        next.settings.audio_streams = true;
+        assert_eq!(next.item_text(Item::StreamAudio).1, "On");
+        // Off again: from the next start too.
+        next.settings.stream_audio = false;
+        assert_eq!(next.item_text(Item::StreamAudio).1, "Off (next start)");
     }
 
     /// Layout spec 4c: Prefs "Audio track memory", right after Loop
