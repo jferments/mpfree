@@ -63,7 +63,7 @@ use mpfree_sampler_ui::levels_panel::{self, LevelsAction, LevelsModel, LevelsPan
 use mpfree_sampler_ui::recall::RecallFrom;
 use mpfree_synth_ui::view as synth_view;
 use mpfree_synth_ui::{SynthAction, SynthPanel, SynthState};
-use mpfree_time_ui::editor::{EditAction, Lens};
+use mpfree_time_ui::editor::{EditAction, Lens, Tool};
 use mpfree_time_ui::view::{
     self as time_view, AudioAction, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE,
 };
@@ -6167,6 +6167,16 @@ impl Player {
                     pad: *index as u8,
                 })))
             }
+            // A note of the note editor (the roll, the list, the
+            // tracker): it comes out (piano roll plan 1B.1, in place of
+            // the Erase tool).
+            (time_view::NOTES, EventKind::Toggle(i) | EventKind::Select(i)) => {
+                let rev = self.time.edit.as_ref().map_or(0, |e| e.rev);
+                Some(Some(FromUi::Time(TimeAction::Edit(EditAction::Erase {
+                    index: *i,
+                    rev,
+                }))))
+            }
             (time_view::CLIPS, EventKind::Select(i)) => {
                 let slots = mpfree_seq::SLOTS;
                 let (track, slot) = (i / slots, i % slots);
@@ -6913,8 +6923,12 @@ impl Player {
                 View::Play => format!("Tap a loop's ring: its next step, held: clear   ·   {WHEEL_HINT}   ·   PAD BANK: bank   ·   \
                                        NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
                 View::Sequencer if self.time.edit.is_some() => {
-                    time_view::edit_hint(self.time.edit.as_ref().map_or(Lens::Grid, |e| e.editor.lens))
-                        .to_string()
+                    let (lens, tool) = self
+                        .time
+                        .edit
+                        .as_ref()
+                        .map_or((Lens::Grid, Tool::Select), |e| (e.editor.lens, e.editor.tool));
+                    time_view::edit_hint(lens, tool).to_string()
                 }
                 // A kit's Steps: + Lane and the lock lanes (the redesign's
                 // step 5).
@@ -14298,8 +14312,10 @@ impl Player {
 
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
-        // What the Clips page asks of the time engine on its own (Snap
-        // Auto's division as the roll's zoom changes it).
+        // A finger held on a note of the roll picks it; what the Clips
+        // page asks of the time engine on its own (that pick, Snap Auto's
+        // division as the roll's zoom changes it).
+        self.time_page.tick(&mut self.ui, &self.time, dt);
         for a in self.time_page.take_asks() {
             self.outbox.push(FromUi::Time(a));
         }
@@ -21477,13 +21493,50 @@ mod tests {
         let grid = p.ui.get::<NoteGrid>(time_view::NOTES).unwrap();
         let note = grid.note_rect(area, 1).unwrap();
         let edit = grid.button_rects(area)[7];
+        let (nx, ny) = (note.x + note.w / 2, note.y + note.h / 2);
+        // A tap on a note goes as its finger lifts; a finger held there
+        // picks it, and its lift taps nothing (piano roll plan 1B.1).
         assert_eq!(
-            tap(&mut p, (note.x + note.w / 2, note.y + note.h / 2)),
-            Some(FromUi::Time(TimeAction::Edit(EditAction::Note {
+            tap(&mut p, (nx, ny)),
+            Some(FromUi::Time(TimeAction::Edit(EditAction::Tap {
                 index: 1,
                 rev: 0
             })))
         );
+        // What went to the time engine (the tick sends other things).
+        let timed = |p: &mut Player| -> Vec<FromUi> {
+            p.take_actions()
+                .into_iter()
+                .filter(|a| matches!(a, FromUi::Time(_)))
+                .collect()
+        };
+        timed(&mut p);
+        assert!(p.touch(1, Touch::Down, nx, ny).is_none());
+        p.tick(0.25);
+        assert!(timed(&mut p).is_empty());
+        p.tick(0.25);
+        assert_eq!(
+            timed(&mut p),
+            vec![FromUi::Time(TimeAction::Edit(EditAction::Note {
+                index: 1,
+                rev: 0
+            }))]
+        );
+        assert!(p.touch(1, Touch::Up, nx, ny).is_none());
+        assert!(timed(&mut p).is_empty());
+        // ERASE held + a tap takes the note out.
+        let mut held = p.status.clone();
+        held.erase = true;
+        p.apply(ToUi::Status(held.clone()));
+        assert_eq!(
+            tap(&mut p, (nx, ny)),
+            Some(FromUi::Time(TimeAction::Edit(EditAction::Erase {
+                index: 1,
+                rev: 0
+            })))
+        );
+        held.erase = false;
+        p.apply(ToUi::Status(held));
         // Edit opens the drawer of Edit options and takes (the page's
         // own), whose Correct corrects the timing; TC does too, once the
         // drawer shows (piano roll plan 1A.1).

@@ -2450,7 +2450,7 @@ impl TimeControl {
         }
         // `edit` has followed the clip.
         let at = Instant::now();
-        if let EditAction::Note { rev, .. } = a {
+        if let Some(rev) = a.rev() {
             if rev != self.edit_rev {
                 // The screen still shows the clip as it was: it gets the
                 // new one, and the tap goes nowhere.

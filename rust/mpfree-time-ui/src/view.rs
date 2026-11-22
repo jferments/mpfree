@@ -32,7 +32,7 @@ use std::collections::BTreeMap;
 use crate::editor::zoom::RollView;
 use crate::editor::{
     drop_of, edit_rows, pads, step_name, EditAction, Editor, Lens, LockMark, NoteBox, NoteGrid,
-    EDIT_BUTTON, PEN, SNAP_AUTO_T, STEP_FALLBACK,
+    Tool, EDIT_BUTTON, PEN, SNAP_AUTO_T, STEP_FALLBACK,
 };
 use crate::list::{
     ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LOOP, LIST_PLAY, LIST_REMOVE, LIST_SONG,
@@ -201,19 +201,23 @@ pub const EDIT_LAYOUT: &str =
 /// at the right, where the record settings are on the grid.
 pub const EDIT_DRAWER_LAYOUT: &str =
     "col(header:60, row(col(transport:44, row(notes:*, col(edit-options:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
-/// The hint line under the note editor's piano roll.
+/// The hint line under the note editor's piano roll, Draw off.
 pub const EDIT_HINT: &str =
-    "Tap a note to pick it, drag to move   ·   two fingers: zoom and scroll   ·   drag the ruler, keys or overview: scroll   ·   Edit, TC or the wheel: the options";
+    "Tap a note: pick it   ·   drag: move   ·   double tap: a new note   ·   ERASE + tap: erase   ·   two fingers: zoom and scroll   ·   Edit, TC or the wheel: the options";
+/// The hint line under the piano roll with Draw on (piano roll plan 1B.1).
+pub const EDIT_DRAW_HINT: &str =
+    "Draw: tap a note in, or a short one out   ·   drag: a long note   ·   hold a note: pick it   ·   two fingers: zoom and scroll   ·   Edit, TC or the wheel: the options";
 /// The hint line under the note editor's list.
 pub const EDIT_LIST_HINT: &str =
-    "Tap a row to pick its note   ·   SHIFT + wheel: scroll   ·   TC corrects the picked notes (all if none)   ·   Edit or the wheel: the options";
+    "Tap a row to pick its note   ·   ERASE + tap: erase   ·   SHIFT + wheel: scroll   ·   Edit, TC or the wheel: the options";
 /// The hint line under the note editor's tracker.
 pub const EDIT_TRACKER_HINT: &str =
-    "Tap a row to pick its note   ·   Draw: tap an empty step   ·   SHIFT + wheel: scroll   ·   Edit, TC or the wheel: the options";
+    "Tap a row to pick its note   ·   Draw: tap an empty step   ·   ERASE + tap: erase   ·   SHIFT + wheel: scroll   ·   Edit, TC or the wheel: the options";
 
-/// The hint line under the note editor showing `lens`.
-pub fn edit_hint(lens: Lens) -> &'static str {
+/// The hint line under the note editor showing `lens`, with `tool`.
+pub fn edit_hint(lens: Lens, tool: Tool) -> &'static str {
     match lens {
+        Lens::Grid if tool == Tool::Draw => EDIT_DRAW_HINT,
         Lens::Grid => EDIT_HINT,
         Lens::List => EDIT_LIST_HINT,
         Lens::Tracker => EDIT_TRACKER_HINT,
@@ -1920,23 +1924,35 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         // The page's own: the Edit button opens the drawer, and the view
         // is the screen's.
         (NOTES, EventKind::Tab(EDIT_BUTTON) | EventKind::View { .. }) => None,
-        (NOTES, kind) => Some(TimeAction::Edit(match *kind {
-            EventKind::Tab(k) => EditAction::Button(k),
-            EventKind::Select(i) => EditAction::Note {
-                index: i,
-                rev: st.edit.as_ref().map_or(0, |e| e.rev),
-            },
-            EventKind::Cell { row: PEN, col } => EditAction::Step(col as Tick),
-            EventKind::Cell { row, col } => EditAction::Empty {
-                tick: col as Tick,
-                note: u8::try_from(row).ok()?,
-            },
-            EventKind::Marker { frame, .. } => {
-                let (ticks, notes) = drop_of(frame);
-                EditAction::Drop { ticks, notes }
+        (NOTES, kind) => Some(TimeAction::Edit({
+            // A touch naming a note carries the picture it was made on.
+            let rev = st.edit.as_ref().map_or(0, |e| e.rev);
+            match *kind {
+                EventKind::Tab(k) => EditAction::Button(k),
+                EventKind::Select(i) => EditAction::Note { index: i, rev },
+                EventKind::Toggle(i) => EditAction::Tap { index: i, rev },
+                EventKind::Cell { row: PEN, col } => EditAction::Step(col as Tick),
+                EventKind::Cell { row, col } => EditAction::Empty {
+                    tick: col as Tick,
+                    note: u8::try_from(row).ok()?,
+                },
+                EventKind::Span { index, from, to } => EditAction::Draw {
+                    tick: from,
+                    note: u8::try_from(index).ok()?,
+                    len: to - from,
+                },
+                EventKind::Marker { index, frame } => {
+                    let (ticks, notes) = drop_of(frame);
+                    EditAction::Drop {
+                        index,
+                        rev,
+                        ticks,
+                        notes,
+                    }
+                }
+                EventKind::Value(v) => EditAction::Velocity(v),
+                _ => return None,
             }
-            EventKind::Value(v) => EditAction::Velocity(v),
-            _ => return None,
         })),
         (EDIT_OPTIONS, EventKind::Step { index, delta }) => {
             Some(TimeAction::Edit(EditAction::Row {
@@ -4598,6 +4614,28 @@ impl TimePage {
     /// send: Snap Auto's division when the roll's zoom changes it.
     pub fn take_asks(&mut self) -> Vec<TimeAction> {
         std::mem::take(&mut self.asks)
+    }
+
+    /// Time passing, `dt` seconds: a finger held on a note of the roll
+    /// picks it (piano roll plan 1B.1, [`NoteGrid::tick`]), asked of the
+    /// time engine through [`TimePage::take_asks`]. True when the roll
+    /// changed and wants drawing.
+    pub fn tick(&mut self, ui: &mut Ui, st: &TimeState, dt: f32) -> bool {
+        if self.edit_hidden || st.edit.is_none() {
+            return false;
+        }
+        // Quietly: the hold's timer draws nothing (the pick comes back
+        // with the clip), and `get_mut` every frame would redraw the roll
+        // every frame.
+        let Some(kind) = ui.get_mut_quiet::<NoteGrid>(NOTES).and_then(|g| g.tick(dt)) else {
+            return false;
+        };
+        let ev = UiEvent {
+            widget: NOTES.to_string(),
+            kind,
+        };
+        self.asks.extend(action(&ev, st));
+        true
     }
 
     /// The note editor shows with its drawer closed: open it (Edit, TC
