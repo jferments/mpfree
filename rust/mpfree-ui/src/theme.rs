@@ -231,7 +231,8 @@ impl Theme {
             accent2: Color::rgb(0x5B2A86),
             on_accent: Color::rgb(0xFFFFFF),
             good: Color::rgb(0x0B4F2C),
-            warn: Color::rgb(0x5C3A00),
+            // Dark enough that a warning on the hint line reads on `bg` (3.3:1).
+            warn: Color::rgb(0x452B00),
             bad: Color::rgb(0x7A1414),
             track: [
                 0x17437A, 0x12512F, 0x5A3B00, 0x4E2A85, 0x7E2F14, 0x08505C, 0x7A2350, 0x314A08,
