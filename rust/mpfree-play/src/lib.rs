@@ -51,7 +51,7 @@ pub use record::{
     Recorder, Taken, TakenLock, TakenMove, MAX_TOUCH_INPUT, MOVE_POINTS, TOUCH_BUFS, TOUCH_POINTS,
     TOUCH_ROOM,
 };
-pub use recorded::{Behind, Includes, Rec, Recent, RECENT};
+pub use recorded::{Behind, Decisions, Includes, Rec, Recent, RECENT};
 pub use steps::StepOrder;
 pub use takes::{
     ClipDrop, MovePut, MoveWrite, Recorded, Replaced, SceneEdit, SongChange, SongEdit, Take, Takes,

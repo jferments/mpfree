@@ -7806,6 +7806,110 @@ mod tests {
         }
     }
 
+    /// The timing contract (Arrange 2.5) through the halves: a launch the
+    /// control half decides before it has heard the audio half play a bar
+    /// line (as a control half on its own thread can be behind) starts at
+    /// once, in phase with that line, and Dev counts it; from there on it
+    /// plays as if the launch had come in time for the line. Decided with
+    /// every period heard, the same launch at the same moment waits for the
+    /// next line, as before.
+    #[test]
+    fn a_launch_decided_before_the_control_half_heard_a_line_lands_in_phase_with_it() {
+        use mpfree_seq::Note;
+        let bar = u64::from(RATE) * 4 / 5;
+        let line = 2 * bar;
+        // `act` launches B at the first period from that frame; the
+        // control half hears nothing from `deaf` until then.
+        let play = |frames: u32, act: u64, deaf: u64| {
+            let mut h = TimeHost::new(RATE, 300.0).unwrap();
+            let mut pads = Fake::default();
+            let mut a = Clip::new("A", 3840);
+            a.notes = (0..4).map(|i| Note::new(i * 960, 100, 0, 100)).collect();
+            // B: two bars, so a pass out of phase would put its second
+            // bar's note (3) elsewhere.
+            let mut b = Clip::new("B", 2 * 3840);
+            b.notes = (0..8)
+                .flat_map(|i| {
+                    [
+                        Note::new(i * 960, 100, 1, 100),
+                        Note::new(i * 960 + 480, 100, 2, 100),
+                    ]
+                })
+                .chain([Note::new(3840, 100, 3, 100)])
+                .collect();
+            h.control.project.tracks[0].slots[0] = Some(a);
+            h.control.project.tracks[0].slots[1] = Some(b);
+            h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+            h.command(Command::Play);
+            let mut acted = None;
+            while pads.frame < 5 * bar {
+                if acted.is_none() && pads.frame >= act {
+                    h.act(TimeAction::Launch { track: 0, slot: 1 }).unwrap();
+                    acted = Some(pads.frame);
+                }
+                if (deaf..act).contains(&pads.frame) {
+                    h.audio.run(frames, &mut pads, None);
+                } else {
+                    h.period(frames, &mut pads);
+                }
+                pads.frame += u64::from(frames);
+            }
+            let (c, q) = (h.audio.counts(), h.audio.cue_counts());
+            assert_eq!(
+                (
+                    c.lost,
+                    c.behind,
+                    c.kept,
+                    c.refused,
+                    q.stale,
+                    q.lost,
+                    h.dropped()
+                ),
+                (0, 0, 0, 0, 0, 0, 0)
+            );
+            let hits: Vec<_> = pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
+            (hits, acted.unwrap_or(0), q.late, h.control.describe())
+        };
+        for frames in [64u32, 128, 512] {
+            let f = u64::from(frames);
+            // The period that holds the line.
+            let holds = line / f * f;
+            // In time: launched a period before it, everything heard.
+            let (in_time, _, late, _) = play(frames, holds - f, u64::MAX);
+            assert_eq!(late, 0);
+            for held in 1..=4u64 {
+                let what = format!("{frames} frames, {held} periods unheard");
+                // Launched after the line, the last `held` periods unheard.
+                let act = holds + f;
+                let (hits, from, late, said) = play(frames, act, act - held * f);
+                assert_eq!(late, 1, "{what}");
+                assert!(
+                    said.contains("1 started after their line"),
+                    "{what}: {said}"
+                );
+                // From the period it came on, as in time; before it, A.
+                let after = |h: &[(u64, usize)]| -> Vec<_> {
+                    h.iter().filter(|e| e.0 >= from).copied().collect()
+                };
+                assert_eq!(after(&hits), after(&in_time), "{what}");
+                assert!(
+                    after(&hits).iter().any(|e| e.1 == 3),
+                    "{what}: B's second bar"
+                );
+                assert!(
+                    hits.iter()
+                        .all(|&(at, p)| (at < from) == (p == 0) || at < line),
+                    "{what}"
+                );
+                // Everything heard, the same launch waits for bar 4.
+                let (step, _, late, _) = play(frames, act, u64::MAX);
+                assert_eq!(late, 0, "{what}");
+                let b = step.iter().find(|e| e.1 != 0).map(|e| e.0);
+                assert_eq!(b, Some(3 * bar), "{what}");
+            }
+        }
+    }
+
     /// Split, the halves run on two threads: the control half on its own,
     /// launching a clip and starting the transport, then polling every
     /// millisecond; the audio half here. The clip plays from the period

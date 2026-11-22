@@ -136,7 +136,7 @@ use mpfree_transport::time::{Swing, Tick};
 use mpfree_transport::{Block, Mark, Marker, Span, State};
 
 use crate::steps::{first_pass, Steps, HALF, STEP};
-use crate::view::{ClipView, MuteLanded, NowPlaying, PlayView, Started, Switches};
+use crate::view::{ClipView, Due, MuteLanded, NowPlaying, PlayView, Started, Switches};
 
 /// Notes sounding at once, across all tracks.
 pub const MAX_ACTIVE: usize = 256;
@@ -302,6 +302,17 @@ pub struct Stats {
     /// Locks and moves left out because the sink had no room to hold
     /// another parameter this period ([`Sink::hold`]): a moment too busy.
     pub busy: u64,
+    /// The timing contract (Arrange 2.5), for a view that says when and in
+    /// which revision its cues were decided ([`crate::Includes`]): cues,
+    /// mute cues and scene program changes whose line played before their
+    /// view came, which started at once in phase with it; cues dropped as
+    /// older than one already carried out on their track; and switches
+    /// whose clip a newer cue took out of the view before the view showed
+    /// them (the track was silent until it did). All should stay 0 while
+    /// the control half keeps up.
+    pub late_cues: u64,
+    pub stale_cues: u64,
+    pub lost_switches: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -737,6 +748,7 @@ impl Player {
                 at: 0,
                 origin: 0,
                 from: 0,
+                rev: 0,
             }; MAX_TRACKS],
             n_started: 0,
             mute_landed: [None; MAX_TRACKS],
@@ -882,7 +894,7 @@ impl Player {
         self.replaced = *replaced;
         self.take = *take;
         self.erase_take = *erase_take;
-        self.switches = *switches;
+        self.switches.copy_from(switches);
         self.mute_landed = *mute_landed;
         self.last = *last;
         self.seen = *seen;
@@ -970,7 +982,12 @@ impl Player {
     }
 
     pub fn stats(&self) -> Stats {
-        self.stats
+        Stats {
+            late_cues: self.switches.late,
+            stale_cues: self.switches.stale,
+            lost_switches: self.switches.lost,
+            ..self.stats
+        }
     }
 
     /// Notes sounding now (started, not yet ended).
@@ -1038,7 +1055,9 @@ impl Player {
                 m += 1;
             }
             if matches!(span.state, State::Playing | State::Recording) {
-                self.play_span(view, span, out);
+                let ticks = span.ticks();
+                self.play_span(view, span, &ticks, out);
+                self.switches.played(span, &ticks);
             }
         }
         for marker in &markers[m..] {
@@ -1116,8 +1135,14 @@ impl Player {
         self.n_sounding = 0;
     }
 
-    fn play_span(&mut self, view: &PlayView, span: &Span, out: &mut impl Sink) {
-        let ticks = span.ticks();
+    fn play_span(
+        &mut self,
+        view: &PlayView,
+        span: &Span,
+        ticks: &Range<Tick>,
+        out: &mut impl Sink,
+    ) {
+        let ticks = ticks.clone();
         if ticks.is_empty() {
             return;
         }
@@ -1133,7 +1158,11 @@ impl Player {
             // span on its line: the track as it was up to it, then as the
             // cue has it.
             match self.mute_due(view, i, &ticks, bar) {
-                Some(m) => {
+                Some(due) => {
+                    let m = due.at;
+                    if due.late() {
+                        self.switches.late += 1;
+                    }
                     if m > ticks.start {
                         self.play_track(view, span, i, ticks.start..m);
                     }
@@ -1331,7 +1360,8 @@ impl Player {
             NO_ERASE
         };
         // A cue starting in this span: the clip so far plays up to it.
-        let switch = self.switches.due(view, i, &ticks, bar);
+        let due = self.switches.due(view, i, &ticks, bar);
+        let switch = due.map(|d| d.at);
         let before = switch.map_or(ticks.clone(), |at| ticks.start..at);
         let playing = self.switches.playing_from(view, i);
         // Song mode: a track with no clip launched plays its
@@ -1355,7 +1385,11 @@ impl Player {
         // The scene's program change (S5): on its line, or here once it
         // landed. The clip playing then (from a switch on or before it,
         // the cued one) sends its own instead, if it has one.
-        if let Some(at) = self.scene_due(view, i, &ticks, bar) {
+        if let Some(due) = self.scene_due(view, i, &ticks, bar) {
+            let at = due.at;
+            if due.late() {
+                self.switches.late += 1;
+            }
             let own = match switch {
                 Some(s) if s <= at => track.cue.as_ref().and_then(|c| c.clip.as_ref()),
                 _ if song => view.placed_at(i, at).map(|(_, c)| c),
@@ -1401,11 +1435,12 @@ impl Player {
         } else if song && !muted {
             self.collect_song(view, i, &before, switch, span.swing);
         }
-        let Some(at) = switch else { return };
+        let Some(due) = due else { return };
+        let at = due.at;
         // A track starts one cue a call at most, and there are at most
         // MAX_TRACKS tracks, so this always fits.
         if let (Some(s), Some(slot)) = (
-            self.switches.start(view, i, at),
+            self.switches.start(view, i, due),
             self.started.get_mut(self.n_started),
         ) {
             *slot = s;
@@ -1491,9 +1526,10 @@ impl Player {
     }
 
     /// Where the mute cue on track `i` lands in a span playing `ticks`, if
-    /// it does: the first line of its launch quantise among them. A cue
-    /// that landed already waits for the view to show it applied.
-    fn mute_due(&self, view: &PlayView, i: usize, ticks: &Range<Tick>, bar: Tick) -> Option<Tick> {
+    /// it does: the first line of its launch quantise among them, or at
+    /// once if its line played since it was decided (late, as a cue). A
+    /// cue that landed already waits for the view to show it applied.
+    fn mute_due(&self, view: &PlayView, i: usize, ticks: &Range<Tick>, bar: Tick) -> Option<Due> {
         let c = view.mute_cue(i)?;
         if self
             .mute_landed
@@ -1504,8 +1540,14 @@ impl Player {
         {
             return None;
         }
+        if let Some(line) = self.switches.crossed(Switches::mutes_decided(view), c.line) {
+            return Some(Due {
+                at: ticks.start,
+                line,
+            });
+        }
         let at = c.line.next(ticks.start, bar);
-        (at < ticks.end).then_some(at)
+        (at < ticks.end).then_some(Due { at, line: at })
     }
 
     /// Carry out the mute cue on track `i` at song tick `at`: going
@@ -1628,17 +1670,32 @@ impl Player {
     /// `ticks`, if it does: once a launch, on the first line of its line
     /// among them (bars of `bar` ticks); once it landed (or with no line),
     /// on the span's first tick after a stop or a jump.
-    fn scene_due(&self, view: &PlayView, i: usize, ticks: &Range<Tick>, bar: Tick) -> Option<Tick> {
+    fn scene_due(&self, view: &PlayView, i: usize, ticks: &Range<Tick>, bar: Tick) -> Option<Due> {
         let p = view.scene_program(i)?;
         if self.scene_sent.get(i).copied().flatten() == Some(p.id) {
             return None;
         }
         let landed = self.scene_landed.get(i).copied().flatten() == Some(p.id);
-        let at = match p.line {
-            Some(line) if !landed => line.next(ticks.start, bar),
-            _ => ticks.start,
+        let due = match p.line {
+            // Late, as the scene's cues are: at once.
+            Some(line) if !landed => {
+                match self.switches.crossed(Switches::decided(view, i), line) {
+                    Some(line) => Due {
+                        at: ticks.start,
+                        line,
+                    },
+                    None => {
+                        let at = line.next(ticks.start, bar);
+                        Due { at, line: at }
+                    }
+                }
+            }
+            _ => Due {
+                at: ticks.start,
+                line: ticks.start,
+            },
         };
-        (at < ticks.end).then_some(at)
+        (due.at < ticks.end).then_some(due)
     }
 
     /// Track `i`'s scene program change lands on song tick `at`: sent
