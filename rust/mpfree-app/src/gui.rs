@@ -11831,6 +11831,7 @@ impl Player {
                 rss_kb,
                 total_kb,
                 free_kb,
+                promised: crate::memory::promised(),
             });
             let fell = self.sample.recall_fallbacks();
             if fell > 0 {

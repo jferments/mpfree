@@ -669,13 +669,42 @@ without swapping; live test 3 had 1706 to 1718 MB of it with MPFree
 running):
 
 - `room_in(free, need)` refuses a load that would leave less than the
-  floor, with the reason: `not enough memory: needs about 120 MB, 300 MB
-  free, 256 MB kept spare`. Where /proc/meminfo can't be read (not Linux)
-  everything is let through.
-- What a load needs is estimated before it allocates: a sound file's
-  length times 3 (the file and its 16-bit samples as `f32`), times 5 for
-  FLAC (`decode_need`); a stretched copy's frames and the source part the
-  stretch thread is handed; an auto-sample's `Plan::estimate().bytes_most`.
+  floor beside the memory promised to loads still under way, with the
+  reason: `not enough memory: needs about 120 MB, 300 MB free, 40 MB set
+  aside for loads under way, 256 MB kept spare` (the promises only when
+  there are some). Where /proc/meminfo can't be read, everything is let
+  through off Linux (a desktop build); on Linux, where it is always there,
+  a load needing more than 64 MB (`BLIND_MOST`) is refused instead of let
+  through blind.
+- **Promises (the shared memory check, disk streaming's P3 step 1, 22
+  Nov).** Two loads checking at once could each see the same free memory
+  and both pass. So a load that allocates a lot calls `reserve(free,
+  need)` first: under one lock it reads the free memory, checks `need`
+  beside the floor and every promise still standing, and adds it. The
+  `Ticket` it gets back holds the promise until it is dropped, once the
+  memory is allocated (it then shows in `MemAvailable`) or the load has
+  failed. Memory already allocated isn't subtracted twice: MPFree locks its
+  memory (`mlockall`), so an allocation is real at once. Each engine keeps
+  its own memory; this only stops two big loads from counting on the same
+  free memory. Nothing here allocates for anyone, takes memory from one
+  engine for another, or runs on the sound thread. Dev > CPU by engine
+  shows "Set aside for loads under way" while any promise stands. Each
+  test thread has its own promises, so tests that set the free memory
+  exactly don't see each other's loads.
+- What a load needs is estimated before it allocates. `decode_peak` works
+  out a sound file's peak from its header: the file, its sound as `f32` (4
+  bytes a sample), and the copy the sound is kept in (2 bytes a sample for
+  16 bits or fewer, else 4). So a 16-bit WAV holds four times its size at
+  the peak, and a FLAC as much as its STREAMINFO's length says, since a
+  FLAC of silence is tiny beside its sound. A FLAC that doesn't give its
+  length is counted at the most a sound can be (64 million samples), its
+  floats doubling as they grow; a header that can't be read, as one sample
+  a byte. The Sample page's file loads still use the old guess,
+  `decode_need` (the file's length times 3, times 5 for FLAC), which misses
+  both; they move to `decode_peak` and hold a promise once they run on the
+  job lane (sampler step 7). A stretched copy's need is its frames and the
+  source part the stretch thread is handed; an auto-sample's,
+  `Plan::estimate().bytes_most`.
 - The pad player checks at each load: the browser's Load and preview
   (`read_one`, on their threads), each sound as a project's kits open (one
   that doesn't fit is left out, named in the log, and the hint says how
