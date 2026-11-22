@@ -9,7 +9,7 @@ use mpfree_analysis::{
     estimate_tempo, loop_tempo, note_name, pitch_track, root_pitch, Column, OnsetAnalysis,
     PeakPyramid, PitchSettings,
 };
-use mpfree_sampler::model::{Pcm, Source, SourceId};
+use mpfree_sampler::model::{MonoMix, Pcm, Source, SourceId};
 use mpfree_ui::wave::{Peaks, WaveColumn};
 
 /// A source's peak pyramid as the waveform widgets' [`Peaks`]: one lookup
@@ -64,8 +64,12 @@ pub struct SourceView {
     /// The same peaks when they are a pyramid (a sound of one or two
     /// channels, once [`SourceView::quick`] has run), for the cache file.
     pub pyramid: Option<Arc<PyramidPeaks>>,
-    /// The source mixed to mono, for snapping markers to zero crossings.
-    pub mono: Arc<[f32]>,
+    /// The source mixed to mono as it is read, for snapping markers to
+    /// zero crossings and finding its silences ([`MonoMix`]): no copy, so
+    /// a view holds only its peaks and hits beside the sound (the sampler
+    /// plan's step 8c; a view kept a whole mono copy before, 127 MB for a
+    /// 12-minute take at 44.1 kHz). None until [`SourceView::quick`].
+    pub mono: Option<MonoMix>,
     /// Beats per minute, detected (or set by the user), if it has a beat.
     pub tempo: Option<f64>,
     /// Its root note, such as "C#3", if it has a clear pitch.
@@ -82,7 +86,7 @@ pub struct SourceView {
     /// Whether the hits, tempo and root note are worked out. A view made
     /// off the screen thread comes in steps: [`SourceView::pending`] (a
     /// flat line of the right length), then [`SourceView::quick`] (the
-    /// peaks and mono mix), then [`SourceView::finish`] (the rest).
+    /// peaks), then [`SourceView::finish`] (the rest).
     pub ready: bool,
 }
 
@@ -90,7 +94,7 @@ pub struct SourceView {
 const ROOT_CONFIDENCE: f32 = 0.5;
 
 impl SourceView {
-    /// Analyses a source: peaks, mono mix, onsets, tempo and root note. Takes a
+    /// Analyses a source: peaks, onsets, tempo and root note. Takes a
     /// moment for a long source (about 0.2 s a minute of stereo on the
     /// workstation, several times that on the MPC), so run it on a worker,
     /// never on the audio thread; [`SourceView::quick`] and
@@ -109,7 +113,7 @@ impl SourceView {
                 channels: usize::from(s.channels()),
             }),
             pyramid: None,
-            mono: Arc::from([]),
+            mono: None,
             tempo: None,
             root: None,
             root_note: None,
@@ -119,20 +123,18 @@ impl SourceView {
         }
     }
 
-    /// The first step: the peaks and the mono mix, about a seventh of the
-    /// whole analysis, so the waveform shows long before the hits, tempo
-    /// and root note are known.
+    /// The first step: the peaks, about a seventh of the whole analysis,
+    /// so the waveform shows long before the hits, tempo and root note are
+    /// known.
     pub fn quick(s: &Source) -> SourceView {
         let ch = usize::from(s.channels());
-        let data = s.data();
-        let pyramid = PyramidPeaks::new(data.clone(), ch).map(Arc::new);
+        let pyramid = PyramidPeaks::new(s.data().clone(), ch).map(Arc::new);
         let peaks: Arc<dyn Peaks> = match &pyramid {
             Some(p) => p.clone(),
             None => Arc::new(Silent),
         };
-        let mono: Arc<[f32]> = data.mono(ch).into();
         SourceView {
-            mono,
+            mono: Some(s.mono_mix()),
             peaks,
             pyramid,
             ..SourceView::pending(s)
@@ -140,17 +142,13 @@ impl SourceView {
     }
 
     /// The second step: the hits, tempo and root note of `s`, with this
-    /// view's peaks and mono mix.
+    /// view's peaks.
     pub fn finish(&self, s: &Source) -> SourceView {
-        // The hits and the note are found in the mono mix, as they would
-        // be from the channels: this view's, or the sound's own.
-        let own;
-        let mono: &[f32] = if self.mono.len() as u64 == s.frames() {
-            &self.mono
-        } else {
-            own = s.data().mono(usize::from(s.channels()));
-            &own
-        };
+        // The hits and the note are found in the sound mixed to mono, as
+        // they would be from the channels: made here for the analysis and
+        // gone after it.
+        let mono = s.data().mono(usize::from(s.channels()));
+        let mono = mono.as_slice();
         let onsets = OnsetAnalysis::analyse(mono, 1, s.rate()).ok().map(Arc::new);
         let tempo = onsets.as_deref().and_then(|o| {
             let est = estimate_tempo(o)?.bpm;
@@ -170,7 +168,7 @@ impl SourceView {
             id: s.id(),
             peaks: self.peaks.clone(),
             pyramid: self.pyramid.clone(),
-            mono: self.mono.clone(),
+            mono: Some(s.mono_mix()),
             tempo,
             root,
             root_note,
@@ -180,15 +178,14 @@ impl SourceView {
         }
     }
 
-    /// The sound's pitch over time, followed in its mono mix at `rate` (the
-    /// sound's): about a fifth of a second a minute of sound on the
-    /// workstation, so the app runs it on its analysis worker. None while
-    /// there is no mono mix yet.
-    pub fn follow_pitch(&self, rate: u32) -> Option<Arc<PitchTrack>> {
-        if self.mono.is_empty() {
-            return None;
-        }
-        pitch_track(&self.mono, 1, rate).ok().map(Arc::new)
+    /// The pitch over time of `s`, this view's sound, followed in it mixed
+    /// to mono (made for this and gone after it): about a fifth of a second
+    /// a minute of sound on the workstation, so the app runs it on its
+    /// analysis worker. None before [`SourceView::quick`].
+    pub fn follow_pitch(&self, s: &Source) -> Option<Arc<PitchTrack>> {
+        self.mono.as_ref()?;
+        let mono = s.data().mono(usize::from(s.channels()));
+        pitch_track(&mono, 1, s.rate()).ok().map(Arc::new)
     }
 
     /// This view with its pitch followed.
@@ -223,8 +220,8 @@ impl SourceView {
     }
 
     /// The view of `s` read from its cache file, ready at once: the peaks,
-    /// hits, tempo and root note as they were worked out, and the mono mix
-    /// made again (one pass over the sound, a small part of the work).
+    /// hits, tempo and root note as they were worked out, without reading
+    /// the sound.
     /// None if the bytes are another sound's, of another version, or don't
     /// read; the sound is then analysed as if there were no file.
     pub fn from_cache(s: &Source, b: &[u8]) -> Option<SourceView> {
@@ -284,7 +281,7 @@ impl SourceView {
             id: s.id(),
             peaks: pyramid.clone(),
             pyramid: Some(pyramid),
-            mono: s.data().mono(ch).into(),
+            mono: Some(s.mono_mix()),
             tempo,
             root: root_note.map(note_name),
             root_note,

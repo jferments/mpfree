@@ -377,6 +377,32 @@ mod tests {
         }
     }
 
+    /// Step 8c: the screens read a sound mixed to mono as they go, where
+    /// each view kept a copy; it reads the same, bit for bit.
+    #[test]
+    fn a_mono_mix_read_as_it_goes_is_the_mono_copy_bit_for_bit() {
+        use crate::model::Source;
+        use mpfree_analysis::Samples;
+        let floats = noise(6_000, 5);
+        let sixteen: Vec<f32> = floats
+            .iter()
+            .map(|x| (x * 32_768.0).round().clamp(-32_768.0, 32_767.0) / 32_768.0 + 0.0)
+            .collect();
+        for (data, is16) in [(floats, false), (sixteen, true)] {
+            for channels in [1u8, 2] {
+                let s = Source::new("mix", 48_000, channels, data.clone()).unwrap();
+                assert_eq!(s.data().is_16_bit(), is16);
+                let copy = s.data().mono(usize::from(channels));
+                let mix = s.mono_mix();
+                assert_eq!(Samples::len(&mix), copy.len());
+                assert_eq!(copy.len() as u64, s.frames());
+                for (i, x) in copy.iter().enumerate() {
+                    assert_eq!(mix.at(i).to_bits(), x.to_bits(), "frame {i}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_sound_made_twice_is_held_once_until_the_last_goes() {
         let a = noise(4_096, 77);

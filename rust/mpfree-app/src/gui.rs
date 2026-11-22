@@ -34531,7 +34531,7 @@ mod tests {
                 .count();
         let peak = alloc_count::peak_bytes().max(0) as u64;
         println!(
-            "memory: at most {:.0} MB of {:.0} MB, {:.0} MB kept free; {} takes, {copies} copies, {refused} refusals",
+            "memory: at most {:.1} MB of {:.0} MB, {:.0} MB kept free; {} takes, {copies} copies, {refused} refusals",
             peak as f64 / 1e6,
             MPC_BYTES as f64 / 1e6,
             MPC_KEEP as f64 / 1e6,

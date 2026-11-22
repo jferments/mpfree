@@ -181,6 +181,42 @@ impl mpfree_analysis::Samples for Pcm {
     }
 }
 
+/// A sound's channels mixed to one as they are read ([`Source::mono_mix`]):
+/// what [`Pcm::mono`] makes, sample for sample and bit for bit, without
+/// making it. It shares the sound's samples, so it costs nothing to keep;
+/// snapping a marker to a zero crossing reads only the few frames around
+/// it. Frame `i` is its sample `i` ([`mpfree_analysis::Samples`]).
+#[derive(Clone, Debug)]
+pub struct MonoMix {
+    data: Pcm,
+    channels: usize,
+}
+
+impl MonoMix {
+    /// The whole mix as floats: a copy ([`Pcm::mono`]), for tests and
+    /// tools.
+    pub fn to_vec(&self) -> Vec<f32> {
+        self.data.mono(self.channels)
+    }
+}
+
+impl mpfree_analysis::Samples for MonoMix {
+    /// Frames: one sample a frame.
+    fn len(&self) -> usize {
+        self.data.len() / self.channels
+    }
+    #[inline]
+    fn at(&self, i: usize) -> f32 {
+        let (a, b) = (i * self.channels, (i + 1) * self.channels);
+        // The same sums as Pcm::mono, so the same bits.
+        let clean = |x: f32| if x.is_finite() { x } else { 0.0 };
+        match &self.data {
+            Pcm::F32(d) => d[a..b].iter().map(|x| clean(*x)).sum::<f32>() / self.channels as f32,
+            Pcm::I16(d) => d[a..b].iter().map(|x| x.f()).sum::<f32>() / self.channels as f32,
+        }
+    }
+}
+
 impl From<Vec<f32>> for Pcm {
     fn from(data: Vec<f32>) -> Pcm {
         Pcm::new(data)
@@ -251,6 +287,14 @@ impl Source {
     /// Its samples, interleaved when stereo.
     pub fn data(&self) -> &Pcm {
         &self.sound.data
+    }
+    /// Its channels mixed to one as they are read, sharing its samples
+    /// ([`MonoMix`]).
+    pub fn mono_mix(&self) -> MonoMix {
+        MonoMix {
+            data: self.sound.data.clone(),
+            channels: usize::from(self.sound.channels.max(1)),
+        }
     }
     /// Whether both are the one sound in the store (not just equal ones).
     pub fn same_sound(&self, other: &Source) -> bool {
