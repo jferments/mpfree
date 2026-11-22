@@ -101,6 +101,7 @@ The conditions are:
 While a step is picked, the bottom of the Steps view (where the throws are) shows everything about it:
 
 - **Its eight settings**, with the ones the Q-Links turn outlined: velocity, length, nudge, chance, condition, ratchet, ramp and **Tie / Slide**. Tie / Slide changes with a tap: **off**; **tie**, which joins the step's note to the same note before it with no new attack; or **slide**, which overlaps the note before so a synth set to glide slides into it.
+- **A ratchet's hits**, drawn as small bars beside its number, one per hit and as tall as it plays. Turn **Ramp** and you see a roll rise or fall before you hear it.
 - **Step**, **Trig** and **Sound**, which you can tap instead of pressing **Q-LINK**.
 - **Locks on this step**, each with a **×** that takes it off.
 - **On** and **Off**, which switch the step off and back on with everything kept (the title says "off" while it is). A tap on a step that is off also switches it back on.
@@ -108,6 +109,8 @@ While a step is picked, the bottom of the Steps view (where the throws are) show
 - **Clear**, which takes the step out.
 
 **UNDO** brings back whatever a tap there changed. Tap **×** at its top right to close it: the step stays, the throws come back, and **Q-LINK** reaches your macros again.
+
+{{shot: sequencer-step-ratchet | The step inspector on a hi-hat step of four hits, its ramp at +45: the bars in the Ratchet card rise from the first hit to the last.}}
 
 ## Locks: a step that changes the sound
 

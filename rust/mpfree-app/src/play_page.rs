@@ -989,6 +989,10 @@ pub struct Inspect {
     pub one: bool,
     /// Copy waits for the step that takes the copy.
     pub copying: bool,
+    /// A ratchet's hits, first to last, each at its velocity after the
+    /// ramp (`mpfree_seq::ramped`), drawn in the Ratchet chip (step
+    /// sequencer refactor D4); empty for a step of one hit.
+    pub hits: Vec<u8>,
 }
 
 /// How many chips the inspector shows.
@@ -1009,6 +1013,8 @@ pub const INSPECT_CHIPS: [Knob; INSPECT_N] = [
 
 /// Where the Tie / Slide chip is in [`INSPECT_CHIPS`]: a tap steps it.
 pub const INSPECT_JOIN_CHIP: usize = 7;
+/// Where the Ratchet chip is in [`INSPECT_CHIPS`]: it draws the hits.
+pub const INSPECT_RATCHET_CHIP: usize = 5;
 
 /// A tap on the step inspector.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1524,6 +1530,15 @@ impl PlayPage {
             })
             .unwrap_or_default();
         let one = self.group().is_none_or(|(_, steps)| steps.len() == 1);
+        // The ratchet's hits as the player plays them, ramp and all.
+        let hits = target
+            .filter(|(_, _, s)| s.ratchet > 1)
+            .map(|(_, _, s)| {
+                (0..s.ratchet)
+                    .map(|k| mpfree_seq::ramped(s.velocity, s.ramp, k, s.ratchet))
+                    .collect()
+            })
+            .unwrap_or_default();
         Some(Inspect {
             title,
             bank,
@@ -1534,6 +1549,7 @@ impl PlayPage {
             one: one && has_note,
             copying: self.copy_from == Some((pad, i)),
             on,
+            hits,
         })
     }
 

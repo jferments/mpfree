@@ -16313,6 +16313,26 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     let mut sizes = sample_play(fonts(), PlayView::Beats);
     sizes.toggle_size_list();
     out.push(("sequencer-step-size", sizes));
+    // A ratchet in the step inspector (refactor D4): the busiest lane's
+    // first step made four hits rising from 70, its bars in the Ratchet
+    // chip.
+    let mut roll = sample_play(fonts(), PlayView::Beats);
+    roll.play.selected = roll.play.steps.clip.as_mut().and_then(|c| {
+        let (pad, row) = c
+            .rows
+            .iter_mut()
+            .filter(|(p, _)| *p != crate::time::LINE)
+            .max_by_key(|(_, r)| r.iter().flatten().count())?;
+        let (i, s) = row
+            .iter_mut()
+            .enumerate()
+            .find_map(|(i, s)| s.as_mut().map(|s| (i, s)))?;
+        (s.velocity, s.ratchet, s.ramp) = (70, 4, 45);
+        Some((usize::from(*pad), i))
+    });
+    roll.refresh_play();
+    roll.refresh_qlinks();
+    out.push(("sequencer-step-ratchet", roll));
     // A track that plays outside gear (step 5b, board 4): its notes as
     // scale rows, its CC lanes under them (the gear's Cutoff opening over
     // the bar, a bend on step 7); then its Lanes list, the gear's CCs.
@@ -22836,6 +22856,46 @@ mod tests {
     /// a tap lists the six sizes with the steps the clip would have in
     /// each (its own marked); a tap or the wheel's push picks one, Back
     /// picks none.
+    /// Refactor D4: the inspector's Ratchet chip draws each hit at its
+    /// velocity after the ramp, as the player plays it; one hit draws
+    /// nothing.
+    #[test]
+    fn the_inspector_draws_a_ratchets_hits_with_their_ramp() {
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.take_actions();
+        let set = |p: &mut Player, velocity, ratchet, ramp| {
+            let c = p.play.steps.clip.as_mut().unwrap();
+            let (pad, row) = c
+                .rows
+                .iter_mut()
+                .find(|(_, r)| r.iter().any(Option::is_some))
+                .unwrap();
+            let (i, s) = row
+                .iter_mut()
+                .enumerate()
+                .find_map(|(i, s)| s.as_mut().map(|s| (i, s)))
+                .unwrap();
+            (s.velocity, s.ratchet, s.ramp) = (velocity, ratchet, ramp);
+            p.play.selected = Some((usize::from(*pad), i));
+            p.refresh_play();
+            p.ui.get::<StepInspector>(play_page::INSPECTOR)
+                .unwrap()
+                .inspect
+                .hits
+                .clone()
+        };
+        assert_eq!(set(&mut p, 90, 4, 30), [90, 100, 110, 120]);
+        // Falling, and kept in range: the last hit is 1, not below.
+        assert_eq!(set(&mut p, 90, 3, -126), [90, 27, 1]);
+        // No ramp: the hits are level.
+        assert_eq!(set(&mut p, 64, 2, 0), [64, 64]);
+        assert!(set(&mut p, 64, 1, 30).is_empty());
+        assert_eq!(
+            play_page::INSPECT_CHIPS[play_page::INSPECT_RATCHET_CHIP],
+            play_page::Knob::Ratchet
+        );
+    }
+
     /// Refactor D2: a tap on the head's length puts the wheel and - / +
     /// on it, a step at a time from the clip's own length; SHIFT + - / +
     /// doubles or halves it as the head's + and - do; the push lets go and

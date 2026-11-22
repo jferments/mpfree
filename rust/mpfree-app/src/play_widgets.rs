@@ -3285,6 +3285,34 @@ impl StepInspector {
     }
 }
 
+/// A ratchet hit's bar in the inspector's Ratchet chip, and the gap
+/// between bars.
+const HIT_W: i32 = 5;
+const HIT_GAP: i32 = 3;
+
+/// A ratchet's hits in its chip `c` (step sequencer refactor D4): a bar
+/// each at the chip's right, first to last, as tall as its velocity after
+/// the ramp, so a roll that rises or falls shows before it plays. Nothing
+/// for one hit.
+fn paint_hits(cx: &mut PaintCx, c: Rect, hits: &[u8]) {
+    let n = hits.len() as i32;
+    if n < 2 {
+        return;
+    }
+    let t = cx.theme.clone();
+    let w = n * HIT_W + (n - 1) * HIT_GAP;
+    let area = Rect::new(c.right() - 12 - w, c.y + 10, w, c.h - 20);
+    // The baseline, faint, then the bars on it.
+    cx.canvas
+        .fill_rect(Rect::new(area.x - 2, area.bottom(), w + 4, 1), t.text_faint);
+    for (k, &v) in hits.iter().enumerate() {
+        let h = (i32::from(v) * area.h / 127).max(3);
+        let x = area.x + k as i32 * (HIT_W + HIT_GAP);
+        cx.canvas
+            .fill_round_rect(Rect::new(x, area.bottom() - h, HIT_W, h), 1, t.accent);
+    }
+}
+
 impl Widget for StepInspector {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
@@ -3362,6 +3390,9 @@ impl Widget for StepInspector {
                 // A tap steps it: a small › at its top right says so.
                 let mark = Rect::new(c.right() - 26, c.y + 4, 20, 18);
                 cx.text(FontId::Bold, 13.0, mark, Align::Center, t.text_dim, "›");
+            }
+            if k == crate::play_page::INSPECT_RATCHET_CHIP {
+                paint_hits(cx, c, &i.hits);
             }
         }
         // On and Off: the one the step is lit (Off in the warn colour, as
