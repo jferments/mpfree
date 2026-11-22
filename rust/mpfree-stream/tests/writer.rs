@@ -368,9 +368,13 @@ fn when_capture_memory_runs_out_recording_stops_and_the_take_is_finished() {
         ..WriterConfig::default()
     });
     let no = b.arm(STEREO_FLOAT, 1);
-    // Playback leaves the stick no room: nothing commits.
-    b.gate.set_cushion(0.0);
-    b.run(1.5, STEP, |_| {});
+    // Capture memory holds 1.4 s of audio, less than an interval: it
+    // fills before the first round.
+    b.clock.advance(1.0);
+    b.capture();
+    b.passes();
+    b.clock.advance(1.0);
+    b.capture();
     let v = b.w.view(no).unwrap();
     assert_eq!(
         v.state,
@@ -379,10 +383,43 @@ fn when_capture_memory_runs_out_recording_stops_and_the_take_is_finished() {
     );
     assert_eq!(v.captured, (512 << 10) / 8);
     assert!(v.nearly_full);
-    // Playback lets go: the take is finished with what fitted.
+    // It is finished with what fitted.
+    b.passes();
+    b.check_saved(no);
+    assert_eq!(b.w.stats().waited, 0);
+}
+
+#[test]
+fn a_round_stops_waiting_for_playback_once_capture_memory_is_half_full() {
+    let mut b = Bench::new(WriterConfig {
+        limit: 2 << 20,
+        ..WriterConfig::default()
+    });
+    let no = b.arm(STEREO_FLOAT, 1);
+    b.gate.set_cushion(0.0);
+    b.run(2.0, STEP, |_| {});
+    let shared = b.gate.capture_fill();
+    assert_eq!(
+        shared,
+        768_000.0 / f64::from(2 << 20),
+        "shared with the coordinator"
+    );
+    let mut went = None;
+    b.run(2.0, STEP, |b| {
+        if went.is_none() && b.w.view(no).unwrap().committed > 0 {
+            went = Some(b.clock.now_s());
+        }
+    });
+    // 2 MiB at 384,000 bytes a second is half full at 2.73 s.
+    assert_eq!(went, Some(2.75), "recording moved up");
+    assert_eq!(b.w.stats().waited, 1);
+    assert_eq!(b.w.stats().forced, 0);
+    assert!(b.gate.capture_fill() < 0.5);
+    b.w.stop(no);
     b.gate.set_cushion(f64::INFINITY);
     b.passes();
     b.check_saved(no);
+    assert_eq!(b.gate.capture_fill(), 0.0, "nothing recording");
 }
 
 // ---- on its own thread ------------------------------------------------------
@@ -498,7 +535,7 @@ fn the_recorder_counts_capture_memory_while_the_stick_is_busy() {
         limit: 256 << 10,
         ..WriterConfig::default()
     };
-    // Playback leaves no room, so nothing commits until the longest wait.
+    // Playback leaves no room; capture memory past half moves up.
     let gate = Arc::new(Gate::new());
     gate.set_cushion(0.0);
     let mut r = Recorder::start(
@@ -527,10 +564,6 @@ fn the_recorder_counts_capture_memory_while_the_stick_is_busy() {
     wait_for(&r, no, "saved", saved);
     let path = r.final_path(no).expect("named");
     assert!(read_file(&path, STEREO_FLOAT) == audio(STEREO_FLOAT, 1, 0, took));
-    assert!(
-        r.stats().forced >= 1,
-        "the finish went after the longest wait"
-    );
     r.close();
 }
 

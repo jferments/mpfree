@@ -58,6 +58,9 @@ use crate::msg::{FromPlayer, Tag, ToPlayer, Where, MAX_SOURCES};
 use crate::player::{unit_frames, Config, UNIT};
 use crate::writer::Gate;
 
+/// Past this much of a recording's capture memory, background reads stop.
+pub const STOP_BACKGROUND: f64 = 0.75;
+
 /// How far ahead to read, and how reads are made.
 #[derive(Clone, Copy, Debug)]
 pub struct Plan {
@@ -1125,7 +1128,12 @@ impl Coordinator {
         if self.jobs.iter().any(|j| j.busy) {
             return false;
         }
-        let Some(i) = (0..self.jobs.len()).min_by_key(|&i| (self.jobs[i].tier, self.jobs[i].id))
+        // Recording pressure: past three quarters of capture memory,
+        // background work stops.
+        let pressed = self.gate.capture_fill() >= STOP_BACKGROUND;
+        let Some(i) = (0..self.jobs.len())
+            .filter(|&i| !pressed || self.jobs[i].tier == JobTier::NextSong)
+            .min_by_key(|&i| (self.jobs[i].tier, self.jobs[i].id))
         else {
             return false;
         };

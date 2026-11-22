@@ -650,3 +650,42 @@ fn whole_files_wait_while_playback_has_less_cushion_than_a_stall() {
     assert_eq!(got.expect("read once playback stopped").len(), 100_000);
     assert_eq!(rig.c.cushion(), f64::INFINITY);
 }
+
+#[test]
+fn background_reads_stop_past_three_quarters_of_capture_memory() {
+    let dir = folder("pressure");
+    let kit = dir.join("kit.bin");
+    fs::write(&kit, vec![5u8; 300_000]).expect("write");
+    let mut rig = Rig::new(small(), Plan::default());
+    rig.c.new_project();
+    let gate = rig.c.gate();
+    // A recording's capture memory is 80% full.
+    gate.set_capture_fill(0.8);
+    let later = rig.c.read_file(&kit, JobTier::Background).expect("opens");
+    let next = rig.c.read_file(&kit, JobTier::NextSong).expect("opens");
+    let mut got = None;
+    for _ in 0..100 {
+        rig.c.step();
+        assert!(rig.c.take_job(later).is_none(), "background work stopped");
+        if let Some(r) = rig.c.take_job(next) {
+            got = Some(r.expect("reads"));
+            break;
+        }
+    }
+    assert_eq!(got.expect("the next song still prepares").len(), 300_000);
+    for _ in 0..20 {
+        rig.c.step();
+        assert!(rig.c.take_job(later).is_none());
+    }
+    // The stick caught up: background work goes on.
+    gate.set_capture_fill(0.3);
+    let mut got = None;
+    for _ in 0..100 {
+        rig.c.step();
+        if let Some(r) = rig.c.take_job(later) {
+            got = Some(r.expect("reads"));
+            break;
+        }
+    }
+    assert_eq!(got.expect("read").len(), 300_000);
+}

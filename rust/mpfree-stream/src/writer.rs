@@ -6,7 +6,11 @@
 //!   time until a playing cursor needs a unit not yet cached, which the
 //!   coordinator shares through a [`Gate`]) is no longer than the stick's
 //!   worst commit time, but never more than [`WriterConfig::max_wait_s`]
-//!   past its time.
+//!   past its time, and not at all once its take's capture memory is half
+//!   full (recording moves up).
+//! - **Recording pressure** goes the other way through the same gate: the
+//!   fullest take's capture memory, so the coordinator stops background
+//!   reads past three quarters.
 //! - **Spreading.** Several takes' rounds are spread across the interval,
 //!   or run together ([`WriterConfig::spread`]; D4 measures which a real
 //!   stick likes better).
@@ -71,6 +75,7 @@ impl Clock for RealClock {
 #[derive(Debug)]
 pub struct Gate {
     cushion: AtomicU64,
+    capture: AtomicU64,
 }
 
 impl Gate {
@@ -78,6 +83,7 @@ impl Gate {
     pub fn new() -> Self {
         Gate {
             cushion: AtomicU64::new(f64::INFINITY.to_bits()),
+            capture: AtomicU64::new(0f64.to_bits()),
         }
     }
     pub fn set_cushion(&self, seconds: f64) {
@@ -86,6 +92,13 @@ impl Gate {
     /// Seconds until a playing cursor needs a unit not yet cached.
     pub fn cushion(&self) -> f64 {
         f64::from_bits(self.cushion.load(Ordering::Relaxed))
+    }
+    pub fn set_capture_fill(&self, fill: f64) {
+        self.capture.store(fill.to_bits(), Ordering::Relaxed);
+    }
+    /// How full the fullest recording take's capture memory is, 0 to 1.
+    pub fn capture_fill(&self) -> f64 {
+        f64::from_bits(self.capture.load(Ordering::Relaxed))
     }
 }
 
@@ -165,6 +178,9 @@ pub struct WriterStats {
 
 /// How often a round waiting for playback looks again.
 const WAIT_POLL: f64 = 0.02;
+/// Past this much of its capture memory a take's rounds stop waiting for
+/// playback.
+pub const MOVE_UP: f64 = 0.5;
 /// Rounds measured for the worst commit time.
 const MEASURED: usize = 64;
 /// Quick rounds in a row before a lengthened interval halves back.
@@ -415,6 +431,7 @@ impl Writer {
             }
             e.take.write_ready(&mut *self.fs);
         }
+        self.share_fill();
         let Some(i) = self.next_round() else {
             return 1.0;
         };
@@ -422,7 +439,7 @@ impl Writer {
         if due > now {
             return due - now;
         }
-        if self.gate.cushion() <= self.worst_commit() {
+        if self.gate.cushion() <= self.worst_commit() && self.takes[i].take.fill() < MOVE_UP {
             let waited = now - due;
             if waited < self.cfg.max_wait_s {
                 if !self.takes[i].waiting {
@@ -434,10 +451,23 @@ impl Writer {
             self.stats.forced += 1;
         }
         self.round(i, due);
+        self.share_fill();
         match self.next_round() {
             Some(j) => (self.takes[j].due - self.clock.now()).max(0.0),
             None => 1.0,
         }
+    }
+
+    /// Recording pressure for the coordinator: the fullest take's capture
+    /// memory.
+    fn share_fill(&self) {
+        let fill = self
+            .takes
+            .iter()
+            .filter(|e| e.take.state() != TakeState::Saved)
+            .map(|e| e.take.fill())
+            .fold(0.0, f64::max);
+        self.gate.set_capture_fill(fill);
     }
 
     /// The take whose round is due first.

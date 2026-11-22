@@ -746,6 +746,10 @@ impl Take {
     pub fn memory(&self) -> usize {
         self.units.len() * self.unit + self.part.len()
     }
+    /// How full capture memory is, 0 to 1.
+    pub fn fill(&self) -> f64 {
+        self.memory() as f64 / self.limit as f64
+    }
     /// Capture memory is at least 90% full: time to warn.
     pub fn nearly_full(&self) -> bool {
         self.memory() * 10 >= self.limit * 9
