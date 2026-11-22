@@ -1279,10 +1279,12 @@ fn paint_section(
     cx.canvas
         .stroke_round_rect(g.rect, t.radius, 1, pal.job.with_alpha(82));
     // The name in the job's colour (Voice's grey a little lighter, to read
-    // on the tint), the link or the note on the right.
+    // on the tint), the link or the note on the right. A job colour too
+    // pale or too dark for its tint (a light theme's bright track colours)
+    // is moved just far enough to read.
     let name_color = match s.job {
         Job::Voice => t.text_dim.mix(t.text, 0.4),
-        _ => pal.job,
+        _ => t.readable(pal.job, pal.tint),
     };
     let title = s.title.to_uppercase();
     let tw = cx.text(

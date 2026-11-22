@@ -835,13 +835,14 @@ impl Default for Settings {
 
 /// The themes Prefs > Appearance offers: the built-in name and its row.
 /// The same names, in the same order, as `mpfree_ui::theme::BUILTIN`.
-pub const THEMES: [(&str, &str); 6] = [
+pub const THEMES: [(&str, &str); 7] = [
     ("default", "Default"),
     ("slate", "Slate"),
     ("light", "Light"),
     ("console", "Console"),
     ("synthwave", "Synthwave"),
     ("spaceship", "Spaceship"),
+    ("abletown", "AbleTown"),
 ];
 
 /// The store owner whose files are the themes folder: theme files the
@@ -4831,10 +4832,10 @@ impl App {
             Item::Appearance => vec![
                 "The theme: the colours and the panels' style.",
                 "The arrows, - / + or SHIFT + wheel step through",
-                "Default, Slate, Light, Console, Synthwave and",
-                "Spaceship; the screen changes at once. The layout",
-                "and the font stay the same. It is kept for the",
-                "next start.",
+                "Default, Slate, Light, Console, Synthwave,",
+                "Spaceship and AbleTown; the screen changes at",
+                "once. The layout and the font stay the same. It",
+                "is kept for the next start.",
             ],
             Item::TouchSection => vec![
                 "The touch screen's settings: screen pad",
@@ -6556,8 +6557,10 @@ mod tests {
         assert_eq!(value(&app.step_item(at, 1)), "Console");
         app.step_item(at, 1);
         assert_eq!(value(&app.step_item(at, 1)), "Spaceship");
+        assert_eq!(value(&app.step_item(at, 1)), "AbleTown");
         // It stops at the ends.
-        assert_eq!(value(&app.step_item(at, 1)), "Spaceship");
+        assert_eq!(value(&app.step_item(at, 1)), "AbleTown");
+        assert_eq!(value(&app.step_item(at, -1)), "Spaceship");
         assert_eq!(value(&app.step_item(at, -1)), "Synthwave");
         // Kept (Keep under "Keep this theme?"), and it comes back at the
         // next start.
@@ -6827,7 +6830,7 @@ mod tests {
         assert!(lines[at_left + 1].starts_with("fog.theme: nothing could be read:"));
         assert!(!lines.iter().any(|l| l.starts_with("Sunrise:")));
         // On Sunrise (kept): its problem too, wrapped to the panel.
-        for _ in 0..6 {
+        for _ in 0..7 {
             app.step_item(at, 1);
         }
         assert_eq!(app.settings.theme, "sunrise.theme");
@@ -6862,10 +6865,10 @@ mod tests {
             Some(Effect::Menu(m)) => m.rows[at].1.clone(),
             _ => panic!("{fx:?}"),
         };
-        for _ in 0..5 {
+        for _ in 0..6 {
             app.step_item(at, 1);
         }
-        // Past Spaceship: the theme file, by its own name, then the end.
+        // Past AbleTown: the theme file, by its own name, then the end.
         assert_eq!(value(&app.step_item(at, 1)), "Sunrise");
         assert_eq!(app.settings.theme, "sunrise.theme");
         assert_eq!(value(&app.step_item(at, 1)), "Sunrise");

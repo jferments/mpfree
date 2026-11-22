@@ -147,13 +147,14 @@ pub struct Theme {
 }
 
 /// The built-in themes, by the name a theme file's `base` uses.
-pub const BUILTIN: [&str; 6] = [
+pub const BUILTIN: [&str; 7] = [
     "default",
     "slate",
     "light",
     "console",
     "synthwave",
     "spaceship",
+    "abletown",
 ];
 
 /// The least a theme's text and dim text must reach on the page, a panel
@@ -211,29 +212,29 @@ impl Theme {
         .with_roles(Theme::DEFAULT_ROLES)
     }
 
-    /// Slate: blue-grey panels from the owner's slate palette (#313B47,
-    /// #4B5B6C, #6D8196, #8FA8C1, #C2CDDC), between the default's near
-    /// black and Light's pale grey. Words stay light, so every tier of
-    /// text, the status colours and the track colours keep their contrast;
-    /// a teal accent stands apart from the blue-grey.
+    /// Slate: the owner's slate palette (#313B47, #4B5B6C, #6D8196,
+    /// #8FA8C1, #C2CDDC) at mid light, between the default's near black
+    /// and Light's pale grey: #6D8196 is the page, panels and buttons are
+    /// lighter, words are near black, and the accent, status and track
+    /// colours are deep enough to read on the grey (owner, 22 Nov).
     pub fn slate() -> Theme {
         Theme {
             name: "Slate".into(),
-            bg: Color::rgb(0x313B47),
-            surface: Color::rgb(0x3A4655),
-            raised: Color::rgb(0x4B5B6C),
-            outline: Color::rgb(0x5C6E82),
-            text: Color::rgb(0xEEF2F7),
-            text_dim: Color::rgb(0xC9D3E0),
-            text_faint: Color::rgb(0x9DB0C6),
-            accent: Color::rgb(0x4FD1C5),
-            accent2: Color::rgb(0xB9A4FF),
-            on_accent: Color::rgb(0x10181F),
-            good: Color::rgb(0x9EEB95),
-            warn: Color::rgb(0xF2C14E),
-            bad: Color::rgb(0xFF8A80),
+            bg: Color::rgb(0x6D8196),
+            surface: Color::rgb(0x8FA8C1),
+            raised: Color::rgb(0xC2CDDC),
+            outline: Color::rgb(0x4B5B6C),
+            text: Color::rgb(0x070A0E),
+            text_dim: Color::rgb(0x1B232D),
+            text_faint: Color::rgb(0x2B3746),
+            accent: Color::rgb(0x0F2F57),
+            accent2: Color::rgb(0x5B2A86),
+            on_accent: Color::rgb(0xFFFFFF),
+            good: Color::rgb(0x0B4F2C),
+            warn: Color::rgb(0x5C3A00),
+            bad: Color::rgb(0x7A1414),
             track: [
-                0x6FA8FF, 0x6BD49A, 0xF2C14E, 0xB9A4FF, 0xFF9A6B, 0x4FD1C5, 0xF58BC0, 0xB5DB6B,
+                0x17437A, 0x12512F, 0x5A3B00, 0x4E2A85, 0x7E2F14, 0x08505C, 0x7A2350, 0x314A08,
             ]
             .map(Color::rgb),
             radius: 14,
@@ -248,18 +249,86 @@ impl Theme {
             glow: 0,
             text_glow: 0,
             backdrop: Backdrop::Solid,
-            backdrop_to: Color::rgb(0x3A4655),
-            backdrop_line: Color::rgb(0x3A4655),
+            backdrop_to: Color::rgb(0x8FA8C1),
+            backdrop_line: Color::rgb(0x8FA8C1),
             backdrop_step: 40,
             face_body: sizes::FACE_BODY,
             face_title: sizes::FACE_TITLE,
             startup: Startup::Synthwave,
             tint: 0,
-            mode: Mode::Dark,
+            mode: Mode::Light,
             roles: [Color::rgb(0); ROLE_COUNT],
             sources: Vec::new(),
         }
-        .with_roles(&[(Role::Shadow, 0x000000)])
+        .with_roles(&[(Role::TextInverse, 0xF4F7FA)])
+    }
+
+    /// AbleTown: the owner's pick, after the colours of a well-known DAW
+    /// (22 Nov): mid greys, black words, near-black for what is picked
+    /// with white words on it, a bright orange as the second highlight,
+    /// and bright clip colours for tracks and pads. The Q-Links, graph
+    /// lines and status colours are deep versions of those, so they read
+    /// as lines and words on the grey.
+    pub fn abletown() -> Theme {
+        Theme {
+            name: "AbleTown".into(),
+            bg: Color::rgb(0x8F8F8F),
+            surface: Color::rgb(0xA5A5A5),
+            raised: Color::rgb(0xC2C2C2),
+            outline: Color::rgb(0x6E6E6E),
+            text: Color::rgb(0x0E0E0E),
+            text_dim: Color::rgb(0x2A2A2A),
+            text_faint: Color::rgb(0x3A3A3A),
+            accent: Color::rgb(0x1E1E1E),
+            accent2: Color::rgb(0xFFAD19),
+            on_accent: Color::rgb(0xFFFFFF),
+            good: Color::rgb(0x1A5501),
+            warn: Color::rgb(0x5E3600),
+            bad: Color::rgb(0xAB0000),
+            track: [
+                0xFF9F1A, 0xFFF034, 0x25FFA8, 0x18E9FF, 0x8BC5FF, 0xD86CE4, 0xFF94A6, 0xBAD074,
+            ]
+            .map(Color::rgb),
+            radius: 4,
+            gap: sizes::GAP,
+            pad: sizes::PAD,
+            size_brand: sizes::SIZE_BRAND,
+            size_title: sizes::SIZE_TITLE,
+            size_body: sizes::SIZE_BODY,
+            size_small: sizes::SIZE_SMALL,
+            size_mono: sizes::SIZE_MONO,
+            corners: Corners::Round,
+            glow: 0,
+            text_glow: 0,
+            backdrop: Backdrop::Solid,
+            backdrop_to: Color::rgb(0xA5A5A5),
+            backdrop_line: Color::rgb(0xA5A5A5),
+            backdrop_step: 40,
+            face_body: sizes::FACE_BODY,
+            face_title: sizes::FACE_TITLE,
+            startup: Startup::Synthwave,
+            tint: 0,
+            mode: Mode::Light,
+            roles: [Color::rgb(0); ROLE_COUNT],
+            sources: Vec::new(),
+        }
+        .with_roles(&[
+            (Role::Qlink1, 0x7B4700),
+            (Role::Qlink2, 0x5A5400),
+            (Role::Qlink3, 0x006039),
+            (Role::Qlink4, 0x005D67),
+            (Role::Series1, 0x7B4700),
+            (Role::Series2, 0x5A5400),
+            (Role::Series3, 0x006039),
+            (Role::Series4, 0x005D67),
+            (Role::Series5, 0x0052A4),
+            (Role::Series6, 0x8E1C9B),
+            (Role::Series7, 0xAD001D),
+            (Role::Series8, 0x4B5A1E),
+            (Role::TextInverse, 0xF2F2F2),
+            (Role::Highlight, 0xFFFFFF),
+            (Role::Handle, 0xE6E6E6),
+        ])
     }
 
     /// Light: the default's layout and blue accent on pale grey, for a
@@ -471,6 +540,7 @@ impl Theme {
             "console" => Some(Theme::console()),
             "synthwave" => Some(Theme::synthwave()),
             "spaceship" => Some(Theme::spaceship()),
+            "abletown" => Some(Theme::abletown()),
             _ => None,
         }
     }
@@ -1378,6 +1448,7 @@ mod tests {
             ("console", include_str!("../themes/console.theme")),
             ("synthwave", include_str!("../themes/synthwave.theme")),
             ("spaceship", include_str!("../themes/spaceship.theme")),
+            ("abletown", include_str!("../themes/abletown.theme")),
         ];
         for (name, text) in files {
             assert_eq!(
@@ -1463,12 +1534,11 @@ mod tests {
     #[test]
     fn every_built_in_theme_keeps_the_colours_its_screens_drew() {
         // Phase 0 of the theme plan changes no pixel: each role is the
-        // colour the screens it replaces drew before. Light and Slate came
-        // later, and Synthwave was redone on 22 Nov: their roles are on
-        // their rules.
+        // colour the screens it replaces drew before. Light, Slate and
+        // AbleTown came later, and Synthwave was redone on 22 Nov.
         for name in BUILTIN
             .into_iter()
-            .filter(|&n| !matches!(n, "light" | "slate" | "synthwave"))
+            .filter(|&n| !matches!(n, "light" | "slate" | "synthwave" | "abletown"))
         {
             let t = Theme::builtin(name).unwrap();
             assert_eq!(t.record(), Color::rgb(0xFF4D5E), "{name}");
