@@ -22,9 +22,11 @@
 //! audio half, which makes them to its view in place, whole or not at all
 //! ([`ToAudio::EditPart`], [`ToAudio::EditEnd`]; refactor A3).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use mpfree_audiotracks::{Piece, Retime, SongStep};
 use mpfree_capture::{keep, moves_for_clip, Capture, KeepError, Kept, Now, Pending};
 use mpfree_notefx::{Chain, TrackFx, MAX_FX};
 use mpfree_perform::{Perform, SceneMorph, SongRecorder, When};
@@ -226,6 +228,75 @@ pub struct MuteLight {
     pub launched: bool,
 }
 
+/// The audio tracks, as a song time edit sees them (the Arrange refactor's
+/// 3.4): what [`TimeControl::act_with_audio`] asks them before it edits
+/// the song, so a refusal changes nothing anywhere, and tells them after,
+/// so their regions move in the same period as the song.
+pub trait SongAudio {
+    /// Why they can't take any change now (a project's tracks going in, a
+    /// change waiting for the period), in the musician's words.
+    fn busy(&self) -> Option<String>;
+    /// Why they can't take the edit now (busy, a track recording, no room
+    /// for the cut regions).
+    fn refused(&self, r: &Retime) -> Option<String>;
+    /// Whether the edit moves any region.
+    fn moves(&self, r: &Retime) -> bool;
+    /// The edit, as song edit `song`'s undo step; false when it moves no
+    /// region (nothing to take back).
+    fn retime(&mut self, song: u32, r: Retime) -> bool;
+    /// Where song edit `song`'s step is, for UNDO (`undo`) or REDO.
+    fn step(&self, song: u32, undo: bool) -> SongStep;
+    /// Take back (`undo`) or bring back song edit `song`'s steps.
+    fn song_undo(&mut self, song: u32, undo: bool);
+}
+
+/// The edit a bars action makes (`b` ticks a bar), with the tick it
+/// starts on, how many ticks, and whether it puts bars in.
+fn bars_edit(
+    song: &mpfree_seq::arrange::Arrangement,
+    e: BarsEdit,
+    b: Tick,
+) -> Result<(TimeEdit, Tick, Tick, bool), String> {
+    let section = |k: usize| {
+        song.section(k, b)
+            .ok_or_else(|| "song: there's no such section".to_string())
+    };
+    Ok(match e {
+        BarsEdit::Insert { at, bars } => {
+            let len = Tick::from(bars) * b;
+            (TimeEdit::Insert { at, len }, at, len, true)
+        }
+        BarsEdit::RoomBefore(k) => {
+            let (at, _) = section(k)?;
+            (TimeEdit::Insert { at, len: b }, at, b, true)
+        }
+        BarsEdit::Delete { from, to } => (TimeEdit::Delete { from, to }, from, to - from, false),
+        BarsEdit::DeleteSection(k) => {
+            let (from, to) = section(k)?;
+            (TimeEdit::Delete { from, to }, from, to - from, false)
+        }
+    })
+}
+
+/// A song time edit for the audio tracks' regions: its pieces. None for
+/// one that moves nothing, or with more pieces than an edit has.
+pub fn retime_of(edit: &TimeEdit) -> Option<Retime> {
+    if edit.moves_nothing() {
+        return None;
+    }
+    let pieces: Vec<Piece> = edit
+        .pieces()
+        .ok()?
+        .into_iter()
+        .map(|(from, end, to)| Piece {
+            from,
+            end: end.unwrap_or(Tick::MAX),
+            to,
+        })
+        .collect();
+    Retime::new(&pieces)
+}
+
 pub struct TimeControl {
     pub(super) project: Project,
     pub(super) launches: Vec<Launch>,
@@ -332,6 +403,23 @@ pub struct TimeControl {
     /// pad rows on a clip of notes ([`TimeControl::set_pad_rows`]).
     pad_rows: Box<[PadRows; MAX_TRACKS]>,
     takes: Takes,
+    /// The song edits that moved the audio tracks' regions, by take
+    /// number, with each edit made (+ Bar pressed in a row joins one take):
+    /// their UNDO and REDO move the regions too (the Arrange refactor's
+    /// 3.4, [`TimeControl::act_with_audio`]).
+    audio_edits: HashMap<u32, Vec<Retime>>,
+    /// UNDOs of such an edit whose regions stayed where they were (the
+    /// audio tracks' history no longer reached it): a fallback, counted
+    /// and said.
+    audio_stayed: u32,
+    /// The song time edit being made moves audio regions: it is kept as a
+    /// take even where the song itself doesn't change (bars put in after
+    /// everything but the audio), so UNDO takes the regions back.
+    audio_moves: bool,
+    /// The audio regions changed since the last take's step on them: + Bar
+    /// pressed again is a take of its own, since one UNDO couldn't take
+    /// both presses back from the regions.
+    audio_apart: bool,
     /// REDOs done so far: a track that comes back with one is the one UNDO
     /// took away, and its kit comes back with it (`TrackKits::follow`).
     redos: u64,
@@ -516,6 +604,10 @@ impl TimeControl {
             notes_tracks: 0,
             pad_rows: Box::new([PadRows::PADS; MAX_TRACKS]),
             takes: Takes::default(),
+            audio_edits: HashMap::new(),
+            audio_stayed: 0,
+            audio_moves: false,
+            audio_apart: false,
             redos: 0,
             clipboard: None,
             lock_take: 0,
@@ -2444,6 +2536,165 @@ impl TimeControl {
         self.changed = true;
     }
 
+    /// The time edit a song action makes (a section moved or copied, bars
+    /// put in or taken out), if it makes one.
+    fn time_edit_of(&self, a: &TimeAction) -> Option<TimeEdit> {
+        let bar = self.info.meter.bar_ticks();
+        let song = &self.project.arrangement;
+        match *a {
+            TimeAction::MoveSection { marker, gap, copy } => {
+                song.section_edit(marker, gap, copy, bar)
+            }
+            TimeAction::SongBars(e) => bars_edit(song, e, bar.max(1)).ok().map(|x| x.0),
+            _ => None,
+        }
+    }
+
+    /// [`TimeControl::act`] with the audio tracks (the Arrange refactor's
+    /// 3.4): a song time edit moves their regions too, in the same period,
+    /// and UNDO and REDO of one move them back and on.
+    ///
+    /// - Before a time edit the tracks are asked; their refusal (a track
+    ///   recording, no room for the cut regions) refuses the edit and
+    ///   nothing changes anywhere. After it, they get the same edit as the
+    ///   song edit's undo step, numbered by its take.
+    /// - UNDO of such an edit takes the tracks' step back with it. With
+    ///   the tracks edited since (their step under others), UNDO waits:
+    ///   it says to take those back first. With the step gone (the tracks'
+    ///   history ran past it, or was cleared), the song goes back and the
+    ///   regions stay where they are: said, and counted (`audio_stayed`).
+    /// - REDO brings the step back with the song; gone (an audio edit
+    ///   since dropped what Redo could bring), the same edit is made again
+    ///   on the regions as they are now.
+    pub fn act_with_audio(
+        &mut self,
+        a: TimeAction,
+        audio: &mut dyn SongAudio,
+    ) -> Result<String, String> {
+        // Song edits the song's history no longer holds can't come back.
+        let takes = &self.takes;
+        self.audio_edits.retain(|&n, _| {
+            let held = |t: &mpfree_play::Take| t.edited && t.number == n;
+            takes.done().iter().chain(takes.undone()).any(held)
+        });
+        if matches!(a, TimeAction::Undo | TimeAction::Redo) {
+            return self.undo_with_audio(a == TimeAction::Undo, audio);
+        }
+        let Some(retime) = self.time_edit_of(&a).as_ref().and_then(retime_of) else {
+            return self.act(a);
+        };
+        if let Some(why) = audio.refused(&retime) {
+            return Err(format!("song: nothing moved: {why}"));
+        }
+        let moves = audio.moves(&retime);
+        let last = self
+            .takes
+            .done()
+            .last()
+            .filter(|t| t.edited && t.song.is_some());
+        let last = last
+            .map(|t| t.number)
+            .filter(|n| self.audio_edits.contains_key(n));
+        (self.audio_moves, self.audio_apart) = (
+            moves,
+            last.is_some_and(|n| audio.step(n, true) != SongStep::Next),
+        );
+        let r = self.act(a);
+        (self.audio_moves, self.audio_apart) = (false, false);
+        let said = r?;
+        if !moves {
+            return Ok(said);
+        }
+        // The edit's take: a new one, or the last one + Bar joined.
+        let take = self
+            .takes
+            .done()
+            .last()
+            .filter(|t| t.edited && t.song.is_some());
+        if let Some(n) = take.map(|t| t.number) {
+            if audio.retime(n, retime) {
+                self.audio_edits.entry(n).or_default().push(retime);
+            }
+        }
+        Ok(said)
+    }
+
+    /// UNDO (`undo`) or REDO with the audio tracks: see
+    /// [`TimeControl::act_with_audio`].
+    fn undo_with_audio(&mut self, undo: bool, audio: &mut dyn SongAudio) -> Result<String, String> {
+        let a = if undo {
+            TimeAction::Undo
+        } else {
+            TimeAction::Redo
+        };
+        let next = if undo {
+            self.takes.done().last()
+        } else {
+            self.takes.undone().last()
+        };
+        let Some(n) = next
+            .filter(|t| t.edited && t.song.is_some())
+            .map(|t| t.number)
+            .filter(|n| self.audio_edits.contains_key(n))
+        else {
+            return self.act(a);
+        };
+        // Refusals don't start "undo: ", which the screen says as "Undid".
+        let waits = if undo { "UNDO waits" } else { "REDO waits" };
+        if let Some(why) = audio.busy() {
+            return Err(format!("{waits}: {why}"));
+        }
+        match audio.step(n, undo) {
+            SongStep::Next => {
+                let said = self.act(a)?;
+                audio.song_undo(n, undo);
+                Ok(said)
+            }
+            SongStep::Under if undo => Err(format!(
+                "{waits}: the audio regions changed after this song edit; take that back \
+                 first (pick a region, then Undo)"
+            )),
+            SongStep::Under => Err(format!(
+                "{waits}: the audio regions have a change to bring back first (pick a \
+                 region, then SHIFT + Undo)"
+            )),
+            SongStep::Gone if undo => {
+                let said = self.act(a)?;
+                self.audio_stayed += 1;
+                Ok(format!(
+                    "{said}; the audio regions stay where they are (their Undo no longer \
+                     reaches this edit)"
+                ))
+            }
+            SongStep::Gone => {
+                let edits = self.audio_edits.get(&n).cloned().unwrap_or_default();
+                if let Some(why) = edits.first().and_then(|r| audio.refused(r)) {
+                    return Err(format!("{waits}: {why}"));
+                }
+                let said = self.act(a)?;
+                let moved = edits.into_iter().fold(false, |m, r| audio.retime(n, r) | m);
+                if !moved {
+                    self.audio_edits.remove(&n);
+                }
+                Ok(said)
+            }
+        }
+    }
+
+    /// Whether the song's UNDO (`undo`), or its REDO, still reaches song
+    /// edit `n`: for the audio tracks' own Undo and Redo, which stop at
+    /// its step while it does and forget the step once it doesn't
+    /// ([`mpfree_audiotracks::Command::ForgetSong`]).
+    pub fn song_reaches(&self, n: u32, undo: bool) -> bool {
+        let list = if undo {
+            self.takes.done()
+        } else {
+            self.takes.undone()
+        };
+        list.iter()
+            .any(|t| t.edited && t.song.is_some() && t.number == n)
+    }
+
     /// Carry out a touch on the time engine's screens. Returns a line for
     /// the log.
     pub fn act(&mut self, a: TimeAction) -> Result<String, String> {
@@ -3462,13 +3713,18 @@ impl TimeControl {
                 let bar = info.meter.bar_ticks();
                 let before = self.project.arrangement.clone();
                 // + Bar pressed again on the same section joins its take:
-                // presses in a row are one UNDO.
+                // presses in a row are one UNDO (not with the audio regions
+                // changed in between: [`TimeControl::act_with_audio`]).
                 let join = match a {
-                    TimeAction::SongBars(BarsEdit::RoomBefore(k)) => {
+                    TimeAction::SongBars(BarsEdit::RoomBefore(k)) if !self.audio_apart => {
                         Some(ROOM_BEFORE_JOIN | k as u64)
                     }
                     _ => None,
                 };
+                // A time edit that moves audio regions is a take even with
+                // the song unchanged ([`TimeControl::act_with_audio`]).
+                let audio = self.audio_moves
+                    && matches!(a, TimeAction::MoveSection { .. } | TimeAction::SongBars(_));
                 let edited = if matches!(
                     a,
                     TimeAction::ListTimes { .. }
@@ -3494,7 +3750,7 @@ impl TimeControl {
                     self.compile()?;
                     return Err(e);
                 }
-                if let Some(c) = change.filter(|_| self.project.arrangement != before) {
+                if let Some(c) = change.filter(|_| self.project.arrangement != before || audio) {
                     self.takes.song_edit_joining(&self.project, c, before, join);
                 }
                 self.changed = true;
@@ -3961,27 +4217,7 @@ impl TimeControl {
             }
             TimeAction::SongBars(e) => {
                 let b = bar.max(1);
-                let section = |k: usize| {
-                    song.section(k, b)
-                        .ok_or_else(|| "song: there's no such section".to_string())
-                };
-                let (edit, from, len, inserted) = match e {
-                    BarsEdit::Insert { at, bars } => {
-                        let len = Tick::from(bars) * b;
-                        (TimeEdit::Insert { at, len }, at, len, true)
-                    }
-                    BarsEdit::RoomBefore(k) => {
-                        let (at, _) = section(k)?;
-                        (TimeEdit::Insert { at, len: b }, at, b, true)
-                    }
-                    BarsEdit::Delete { from, to } => {
-                        (TimeEdit::Delete { from, to }, from, to - from, false)
-                    }
-                    BarsEdit::DeleteSection(k) => {
-                        let (from, to) = section(k)?;
-                        (TimeEdit::Delete { from, to }, from, to - from, false)
-                    }
-                };
+                let (edit, from, len, inserted) = bars_edit(song, e, b)?;
                 let n = if len % b == 0 {
                     format!("{}", len / b)
                 } else {
@@ -5647,6 +5883,14 @@ impl TimeControl {
                 "; cues whose view came late: {} started after their line, in time with it, \
                  {} older ones dropped, {} times a track was silent until the next view",
                 q.late, q.stale, q.lost
+            ));
+        }
+        // Song edits UNDO took back while the audio regions stayed (their
+        // history no longer held the edit; Arrange 3.4).
+        if self.audio_stayed > 0 {
+            line.push_str(&format!(
+                "; {} song edits undone with the audio regions left where they were",
+                self.audio_stayed
             ));
         }
         // What compiles and step edits cost (the device's numbers for the
