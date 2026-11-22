@@ -31,6 +31,9 @@
 //!   for any block size), `docs/dev/design/dsp-quality.md`.
 //! - [`reference`]: the same plan's Y8, each aliasing case against a
 //!   render at 8 times the rate brought down to 44.1 kHz.
+//! - [`filters`]: the same plan's Y1 and Y2, every synth and sampler
+//!   filter on its own against the curve its page draws: small signal,
+//!   driven, where the resonance peaks and how the singing ones sing.
 //! - [`programme`]: every stimulus in one recording with a sync chirp and
 //!   a schedule, for capturing a reference device and cutting it back up.
 //! - [`card`]: report cards over the registry, written as JSON.
@@ -47,6 +50,7 @@ pub mod dut;
 pub mod dynamics;
 pub mod echo;
 pub mod fft;
+pub mod filters;
 pub mod flutter;
 pub mod grain;
 pub mod harmonics;

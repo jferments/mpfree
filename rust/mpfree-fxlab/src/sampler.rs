@@ -237,6 +237,19 @@ fn play(project: &Project, rate: u32, events: &[(usize, Event)], frames: usize) 
     Stereo::new(l, r, rate)
 }
 
+/// `x` (mono, at `rate`) played once on a pad with `filter` (`None`: the
+/// pad's filter off), the left channel's first `frames` frames: for
+/// [`crate::filters`].
+pub(crate) fn through_pad(x: &[f64], filter: Option<Filter>, rate: u32, frames: usize) -> Vec<f64> {
+    let s = sound(x, rate);
+    let p = pad(&s, |p| {
+        if let Some(f) = filter {
+            p.filter = f;
+        }
+    });
+    play(&kit(vec![(s, p)]), rate, &[(0, hit(0))], frames).left
+}
+
 fn hit(pad: u8) -> Event {
     Event::NoteOn { pad, velocity: 127 }
 }

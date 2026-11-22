@@ -1025,7 +1025,9 @@ dependencies = [
  "mpfree-instruments",
  "mpfree-node",
  "mpfree-sampler",
+ "mpfree-sampler-ui",
  "mpfree-synth",
+ "mpfree-synth-ui",
 ]
 
 [[package]]

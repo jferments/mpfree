@@ -11,4 +11,6 @@ mpfree-fx = { path = "../mpfree-fx" }
 mpfree-grain = { path = "../mpfree-grain" }
 mpfree-instruments = { path = "../mpfree-instruments" }
 mpfree-sampler = { path = "../mpfree-sampler" }
+mpfree-sampler-ui = { path = "../mpfree-sampler-ui" }
 mpfree-synth = { path = "../mpfree-synth" }
+mpfree-synth-ui = { path = "../mpfree-synth-ui" }

@@ -707,6 +707,106 @@ pub fn attack_shape(t: f32) -> f32 {
     ATTACK_TARGET * (1.0 - (1.0 - 1.0 / ATTACK_TARGET).powf(t))
 }
 
+/// The filter's settings for **Resonance** `r` (0 to 1): the four-pole's
+/// feedback, the two-pole's damping, and the band-pass's gain (its peak
+/// grows as 1/damping; half of that, in dB, is kept).
+#[inline]
+fn resonance_coefs(r: f32) -> (f32, f32, f32) {
+    let damp = SVF_DAMP_MAX * (SVF_DAMP_MIN / SVF_DAMP_MAX).powf(r);
+    (K_MAX * r, damp, damp.sqrt())
+}
+
+/// The oscillators' gain into the filter at **Drive** `drive` (0 to 100).
+#[inline]
+fn drive_gain(drive: f32) -> f32 {
+    IN_GAIN * exp2_fast(DRIVE_OCT * drive / 100.0)
+}
+
+/// What the amplifier makes up after `filter` (0 is LP 24) at feedback
+/// `k`: half the four-pole's passband loss to resonance.
+#[inline]
+fn makeup(filter: u8, k: f32) -> f32 {
+    if filter == 0 {
+        (1.0 + k).sqrt()
+    } else {
+        1.0
+    }
+}
+
+/// The highest cutoff at `fs`.
+#[inline]
+fn cutoff_max(fs: f32) -> f32 {
+    (fs * 0.45).min(20_000.0)
+}
+
+/// The filter's prewarped gain for a cutoff of `fc` Hz at `fs`, held
+/// between 16 Hz and `fmax`.
+#[inline]
+fn cutoff_g(fc: f32, fs: f32, fmax: f32) -> f32 {
+    (PI * fc.clamp(16.0, fmax) / fs).tan()
+}
+
+/// One voice card's filter on its own, for fxlab's filter measures (DSP
+/// quality Y1 and Y2): the voice's own solve, coefficients, drive and
+/// make-up, set from the panel's values with no envelope, tracking or
+/// modulation, in and out at the oscillators' level (the voice's
+/// amplifier and output level left out).
+#[derive(Clone, Copy, Debug)]
+pub struct FilterProbe {
+    v: Voice,
+    fs: f32,
+    filter: u8,
+    g: f32,
+    k: f32,
+    damp: f32,
+    bp_gain: f32,
+    in_gain: f32,
+    out: f32,
+}
+
+impl FilterProbe {
+    /// A filter at rest at `rate`, set to LP 24 at 1 kHz.
+    pub fn new(rate: u32) -> FilterProbe {
+        let mut p = FilterProbe {
+            v: Voice::default(),
+            fs: rate.max(1) as f32,
+            filter: 0,
+            g: 0.0,
+            k: 0.0,
+            damp: 0.0,
+            bp_gain: 0.0,
+            in_gain: 1.0,
+            out: 1.0,
+        };
+        p.set(0.0, 1_000.0, 0.0, 0.0);
+        p
+    }
+
+    /// **Filter** `mode` (0 to 3: LP 24, LP 12, BP 12, HP 12), **Cutoff**
+    /// `cutoff` (Hz), **Resonance** and **Drive** (0 to 100). The state
+    /// carries on.
+    pub fn set(&mut self, mode: f32, cutoff: f32, resonance: f32, drive: f32) {
+        self.filter = (mode as u8).min(3);
+        (self.k, self.damp, self.bp_gain) = resonance_coefs(resonance / 100.0);
+        self.in_gain = drive_gain(drive);
+        self.out = makeup(self.filter, self.k) / self.in_gain;
+        self.g = cutoff_g(cutoff, self.fs, cutoff_max(self.fs));
+    }
+
+    /// One sample through the filter.
+    #[inline]
+    pub fn tick(&mut self, x: f32) -> f32 {
+        let x = x * self.in_gain;
+        let f = if self.filter == 0 {
+            self.v.ota(x, self.g, self.k)
+        } else {
+            self.v
+                .svf(x, self.g, self.damp, self.filter - 1, self.bp_gain)
+        };
+        f * self.out
+    }
+}
+
 /// The filter's small-signal gain at `hz` with the amplifier's make-up,
 /// for **Filter** `mode` (LP 24, LP 12, BP 12, HP 12), **Cutoff** `cutoff`
 /// (Hz) and **Resonance** `resonance` (0 to 100): four equal one-poles
@@ -1250,9 +1350,8 @@ impl Analog {
             0.0
         };
         let sync = self.v(SYNC) > 0.5;
-        let r = self.v(RESONANCE) / 100.0;
+        let (k, damp, bp_gain) = resonance_coefs(self.v(RESONANCE) / 100.0);
         let filter = (self.v(FILTER_TYPE) as u8).min(3);
-        let damp = SVF_DAMP_MAX * (SVF_DAMP_MIN / SVF_DAMP_MAX).powf(r);
         Frame {
             sh1: Shape::of(self.v(OSC1_WAVE)),
             sh2: Shape::of(self.v(OSC2_WAVE)),
@@ -1266,12 +1365,10 @@ impl Analog {
             pm_pw,
             pm_cut,
             filter,
-            k: K_MAX * r,
+            k,
             damp,
-            // The band-pass's peak grows as 1/damping; half of that (in dB)
-            // is kept.
-            bp_gain: damp.sqrt(),
-            in_gain: IN_GAIN * exp2_fast(DRIVE_OCT * self.v(DRIVE) / 100.0),
+            bp_gain,
+            in_gain: drive_gain(self.v(DRIVE)),
             g_max: (PI * 0.45).tan(),
         }
     }
@@ -1375,13 +1472,8 @@ impl Analog {
         let kt = self.v(KEY_TRACK) / 100.0;
         let vf = self.v(VEL_FILTER) / 100.0;
         let va = self.v(VEL_AMP) / 100.0;
-        let comp = if fr.filter == 0 {
-            (1.0 + fr.k).sqrt()
-        } else {
-            1.0
-        };
-        let out = OUT_GAIN * comp / fr.in_gain;
-        let fmax = (fs * 0.45).min(20_000.0);
+        let out = OUT_GAIN * makeup(fr.filter, fr.k) / fr.in_gain;
+        let fmax = cutoff_max(fs);
         let mut sounding = 0;
 
         for c in 0..CARDS {
@@ -1464,8 +1556,7 @@ impl Analog {
                 + pm_env_cut * fe
                 + press_cut * v.press
                 + TONE_CUT_OCT * v.ex.tone;
-            let fc = exp2_fast(oct).clamp(16.0, fmax);
-            let g = (PI * fc / fs).tan();
+            let g = cutoff_g(exp2_fast(oct), fs, fmax);
             if fresh {
                 v.g = g;
             }

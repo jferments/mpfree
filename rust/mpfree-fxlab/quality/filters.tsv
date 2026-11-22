@@ -1,0 +1,382 @@
+# The filter measures' ratchet (DSP quality Y1a, Y2a, Y2b): every number may stay or get better, never worse.
+# Written by `MPFREE_QUALITY_BLESS=1 cargo test --release --locked -p mpfree-fxlab --test filters`;
+# see docs/dev/design/dsp-quality.md. key<TAB>value
+filters/Analog BP 12[10 kHz, resonance 0.5]/below_cutoff_err_db	2.0175
+filters/Analog BP 12[10 kHz, resonance 0.5]/err_18_20k_db	13.6653
+filters/Analog BP 12[10 kHz, resonance 0.9]/below_cutoff_err_db	2.587
+filters/Analog BP 12[10 kHz, resonance 0.9]/err_18_20k_db	13.8715
+filters/Analog BP 12[10 kHz, resonance 0]/below_cutoff_err_db	1.6641
+filters/Analog BP 12[10 kHz, resonance 0]/err_18_20k_db	9.7097
+filters/Analog BP 12[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	0.0048
+filters/Analog BP 12[15 kHz, resonance 0.5]/below_cutoff_err_db	5.352
+filters/Analog BP 12[15 kHz, resonance 0.5]/err_18_20k_db	13.8299
+filters/Analog BP 12[15 kHz, resonance 0.9]/below_cutoff_err_db	6.679
+filters/Analog BP 12[15 kHz, resonance 0.9]/err_18_20k_db	15.044
+filters/Analog BP 12[15 kHz, resonance 0]/below_cutoff_err_db	4.611
+filters/Analog BP 12[15 kHz, resonance 0]/err_18_20k_db	5.3095
+filters/Analog BP 12[5 kHz, resonance 0.5]/below_cutoff_err_db	0.4652
+filters/Analog BP 12[5 kHz, resonance 0.5]/err_18_20k_db	13.3089
+filters/Analog BP 12[5 kHz, resonance 0.9]/below_cutoff_err_db	0.6047
+filters/Analog BP 12[5 kHz, resonance 0.9]/err_18_20k_db	13.3423
+filters/Analog BP 12[5 kHz, resonance 0]/below_cutoff_err_db	0.3764
+filters/Analog BP 12[5 kHz, resonance 0]/err_18_20k_db	12.3034
+filters/Analog HP 12[10 kHz, resonance 0.5]/below_cutoff_err_db	3.3241
+filters/Analog HP 12[10 kHz, resonance 0.5]/err_18_20k_db	2.3127
+filters/Analog HP 12[10 kHz, resonance 0.9]/below_cutoff_err_db	3.3351
+filters/Analog HP 12[10 kHz, resonance 0.9]/err_18_20k_db	2.5704
+filters/Analog HP 12[10 kHz, resonance 0]/below_cutoff_err_db	2.9773
+filters/Analog HP 12[10 kHz, resonance 0]/err_18_20k_db	1.8141
+filters/Analog HP 12[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	-0.9632
+filters/Analog HP 12[15 kHz, resonance 0.5]/below_cutoff_err_db	9.1795
+filters/Analog HP 12[15 kHz, resonance 0.5]/err_18_20k_db	5.2844
+filters/Analog HP 12[15 kHz, resonance 0.9]/below_cutoff_err_db	9.2015
+filters/Analog HP 12[15 kHz, resonance 0.9]/err_18_20k_db	7.034
+filters/Analog HP 12[15 kHz, resonance 0]/below_cutoff_err_db	8.4262
+filters/Analog HP 12[15 kHz, resonance 0]/err_18_20k_db	3.2464
+filters/Analog HP 12[5 kHz, resonance 0.5]/below_cutoff_err_db	0.7535
+filters/Analog HP 12[5 kHz, resonance 0.5]/err_18_20k_db	0.5449
+filters/Analog HP 12[5 kHz, resonance 0.9]/below_cutoff_err_db	0.7565
+filters/Analog HP 12[5 kHz, resonance 0.9]/err_18_20k_db	0.5823
+filters/Analog HP 12[5 kHz, resonance 0]/below_cutoff_err_db	0.6645
+filters/Analog HP 12[5 kHz, resonance 0]/err_18_20k_db	0.5366
+filters/Analog LP 12[10 kHz, resonance 0.5]/below_cutoff_err_db	1.1611
+filters/Analog LP 12[10 kHz, resonance 0.5]/err_18_20k_db	25.1778
+filters/Analog LP 12[10 kHz, resonance 0.9]/below_cutoff_err_db	2.1941
+filters/Analog LP 12[10 kHz, resonance 0.9]/err_18_20k_db	25.384
+filters/Analog LP 12[10 kHz, resonance 0]/below_cutoff_err_db	0.5592
+filters/Analog LP 12[10 kHz, resonance 0]/err_18_20k_db	21.2222
+filters/Analog LP 12[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	0.9612
+filters/Analog LP 12[15 kHz, resonance 0.5]/below_cutoff_err_db	2.976
+filters/Analog LP 12[15 kHz, resonance 0.5]/err_18_20k_db	22.3858
+filters/Analog LP 12[15 kHz, resonance 0.9]/below_cutoff_err_db	5.5822
+filters/Analog LP 12[15 kHz, resonance 0.9]/err_18_20k_db	23.5999
+filters/Analog LP 12[15 kHz, resonance 0]/below_cutoff_err_db	1.464
+filters/Analog LP 12[15 kHz, resonance 0]/err_18_20k_db	13.8654
+filters/Analog LP 12[5 kHz, resonance 0.5]/below_cutoff_err_db	0.2703
+filters/Analog LP 12[5 kHz, resonance 0.5]/err_18_20k_db	26.1155
+filters/Analog LP 12[5 kHz, resonance 0.9]/below_cutoff_err_db	0.5146
+filters/Analog LP 12[5 kHz, resonance 0.9]/err_18_20k_db	26.1489
+filters/Analog LP 12[5 kHz, resonance 0]/below_cutoff_err_db	0.1292
+filters/Analog LP 12[5 kHz, resonance 0]/err_18_20k_db	25.1101
+filters/Analog LP 24[10 kHz, resonance 0.5]/below_cutoff_err_db	1.4023
+filters/Analog LP 24[10 kHz, resonance 0.5]/err_18_20k_db	42.631
+filters/Analog LP 24[10 kHz, resonance 0.9]/below_cutoff_err_db	3.3281
+filters/Analog LP 24[10 kHz, resonance 0.9]/err_18_20k_db	42.7402
+filters/Analog LP 24[10 kHz, resonance 0]/below_cutoff_err_db	1.1183
+filters/Analog LP 24[10 kHz, resonance 0]/err_18_20k_db	42.4444
+filters/Analog LP 24[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	10.6963
+filters/Analog LP 24[110 Hz to 7 kHz, resonance 1]/sing_growth_worst_db	0.0021
+filters/Analog LP 24[110 Hz to 7 kHz, resonance 1]/sing_worst_cents	-180.5388
+filters/Analog LP 24[15 kHz, resonance 0.5]/below_cutoff_err_db	3.5169
+filters/Analog LP 24[15 kHz, resonance 0.5]/err_18_20k_db	29.8818
+filters/Analog LP 24[15 kHz, resonance 0.9]/below_cutoff_err_db	8.249
+filters/Analog LP 24[15 kHz, resonance 0.9]/err_18_20k_db	31.6566
+filters/Analog LP 24[15 kHz, resonance 0]/below_cutoff_err_db	2.928
+filters/Analog LP 24[15 kHz, resonance 0]/err_18_20k_db	27.7307
+filters/Analog LP 24[5 kHz, resonance 0.5]/below_cutoff_err_db	0.3267
+filters/Analog LP 24[5 kHz, resonance 0.9]/below_cutoff_err_db	0.7851
+filters/Analog LP 24[5 kHz, resonance 0]/below_cutoff_err_db	0.2584
+filters/Bass[10 kHz, resonance 0.5]/below_cutoff_err_db	0.3267
+filters/Bass[10 kHz, resonance 0.5]/err_18_20k_db	4.3472
+filters/Bass[10 kHz, resonance 0.9]/below_cutoff_err_db	0.7851
+filters/Bass[10 kHz, resonance 0.9]/err_18_20k_db	4.4538
+filters/Bass[10 kHz, resonance 0]/below_cutoff_err_db	0.2584
+filters/Bass[10 kHz, resonance 0]/err_18_20k_db	4.1835
+filters/Bass[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	2.8706
+filters/Bass[110 Hz to 7 kHz, resonance 1]/sing_growth_worst_db	-0.0016
+filters/Bass[110 Hz to 7 kHz, resonance 1]/sing_worst_cents	-190.1622
+filters/Bass[15 kHz, resonance 0.5]/below_cutoff_err_db	0.7572
+filters/Bass[15 kHz, resonance 0.5]/err_18_20k_db	2.7333
+filters/Bass[15 kHz, resonance 0.9]/below_cutoff_err_db	1.8016
+filters/Bass[15 kHz, resonance 0.9]/err_18_20k_db	3.4408
+filters/Bass[15 kHz, resonance 0]/below_cutoff_err_db	0.6002
+filters/Bass[15 kHz, resonance 0]/err_18_20k_db	2.0163
+filters/Bass[5 kHz, resonance 0.5]/below_cutoff_err_db	0.0802
+filters/Bass[5 kHz, resonance 0.9]/below_cutoff_err_db	0.194
+filters/Bass[5 kHz, resonance 0]/below_cutoff_err_db	0.0634
+filters/Poly BP 12[10 kHz, resonance 0.5]/below_cutoff_err_db	1.6722
+filters/Poly BP 12[10 kHz, resonance 0.5]/err_18_20k_db	12.2805
+filters/Poly BP 12[10 kHz, resonance 0.9]/below_cutoff_err_db	2.1748
+filters/Poly BP 12[10 kHz, resonance 0.9]/err_18_20k_db	13.7737
+filters/Poly BP 12[10 kHz, resonance 0]/below_cutoff_err_db	1.6684
+filters/Poly BP 12[10 kHz, resonance 0]/err_18_20k_db	9.7097
+filters/Poly BP 12[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	0.0082
+filters/Poly BP 12[15 kHz, resonance 0.5]/below_cutoff_err_db	4.627
+filters/Poly BP 12[15 kHz, resonance 0.5]/err_18_20k_db	9.3055
+filters/Poly BP 12[15 kHz, resonance 0.9]/below_cutoff_err_db	5.713
+filters/Poly BP 12[15 kHz, resonance 0.9]/err_18_20k_db	14.4302
+filters/Poly BP 12[15 kHz, resonance 0]/below_cutoff_err_db	4.6202
+filters/Poly BP 12[15 kHz, resonance 0]/err_18_20k_db	5.3095
+filters/Poly BP 12[5 kHz, resonance 0.5]/below_cutoff_err_db	0.3785
+filters/Poly BP 12[5 kHz, resonance 0.5]/err_18_20k_db	13.0432
+filters/Poly BP 12[5 kHz, resonance 0.9]/below_cutoff_err_db	0.5037
+filters/Poly BP 12[5 kHz, resonance 0.9]/err_18_20k_db	13.3266
+filters/Poly BP 12[5 kHz, resonance 0]/below_cutoff_err_db	0.3775
+filters/Poly BP 12[5 kHz, resonance 0]/err_18_20k_db	12.3034
+filters/Poly HP 12[10 kHz, resonance 0.5]/below_cutoff_err_db	3.2351
+filters/Poly HP 12[10 kHz, resonance 0.5]/err_18_20k_db	0.768
+filters/Poly HP 12[10 kHz, resonance 0.9]/below_cutoff_err_db	3.3299
+filters/Poly HP 12[10 kHz, resonance 0.9]/err_18_20k_db	2.4475
+filters/Poly HP 12[10 kHz, resonance 0]/below_cutoff_err_db	2.9773
+filters/Poly HP 12[10 kHz, resonance 0]/err_18_20k_db	1.8141
+filters/Poly HP 12[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	-8.1402
+filters/Poly HP 12[15 kHz, resonance 0.5]/below_cutoff_err_db	8.9978
+filters/Poly HP 12[15 kHz, resonance 0.5]/err_18_20k_db	0.7496
+filters/Poly HP 12[15 kHz, resonance 0.9]/below_cutoff_err_db	9.1912
+filters/Poly HP 12[15 kHz, resonance 0.9]/err_18_20k_db	5.9904
+filters/Poly HP 12[15 kHz, resonance 0]/below_cutoff_err_db	8.4262
+filters/Poly HP 12[15 kHz, resonance 0]/err_18_20k_db	3.2464
+filters/Poly HP 12[5 kHz, resonance 0.5]/below_cutoff_err_db	0.7302
+filters/Poly HP 12[5 kHz, resonance 0.5]/err_18_20k_db	0.2511
+filters/Poly HP 12[5 kHz, resonance 0.9]/below_cutoff_err_db	0.7551
+filters/Poly HP 12[5 kHz, resonance 0.9]/err_18_20k_db	0.5648
+filters/Poly HP 12[5 kHz, resonance 0]/below_cutoff_err_db	0.6645
+filters/Poly HP 12[5 kHz, resonance 0]/err_18_20k_db	0.5366
+filters/Poly LP 12[10 kHz, resonance 0.5]/below_cutoff_err_db	0.1936
+filters/Poly LP 12[10 kHz, resonance 0.5]/err_18_20k_db	23.793
+filters/Poly LP 12[10 kHz, resonance 0.9]/below_cutoff_err_db	1.4609
+filters/Poly LP 12[10 kHz, resonance 0.9]/err_18_20k_db	25.2862
+filters/Poly LP 12[10 kHz, resonance 0]/below_cutoff_err_db	0.5592
+filters/Poly LP 12[10 kHz, resonance 0]/err_18_20k_db	21.2222
+filters/Poly LP 12[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	7.9871
+filters/Poly LP 12[15 kHz, resonance 0.5]/below_cutoff_err_db	0.483
+filters/Poly LP 12[15 kHz, resonance 0.5]/err_18_20k_db	17.8614
+filters/Poly LP 12[15 kHz, resonance 0.9]/below_cutoff_err_db	3.7331
+filters/Poly LP 12[15 kHz, resonance 0.9]/err_18_20k_db	22.9861
+filters/Poly LP 12[15 kHz, resonance 0]/below_cutoff_err_db	1.464
+filters/Poly LP 12[15 kHz, resonance 0]/err_18_20k_db	13.8654
+filters/Poly LP 12[5 kHz, resonance 0.5]/below_cutoff_err_db	0.0456
+filters/Poly LP 12[5 kHz, resonance 0.5]/err_18_20k_db	25.8498
+filters/Poly LP 12[5 kHz, resonance 0.9]/below_cutoff_err_db	0.3409
+filters/Poly LP 12[5 kHz, resonance 0.9]/err_18_20k_db	26.1332
+filters/Poly LP 12[5 kHz, resonance 0]/below_cutoff_err_db	0.1292
+filters/Poly LP 12[5 kHz, resonance 0]/err_18_20k_db	25.1101
+filters/Poly LP 24[10 kHz, resonance 0.5]/below_cutoff_err_db	1.3254
+filters/Poly LP 24[10 kHz, resonance 0.5]/err_18_20k_db	42.6254
+filters/Poly LP 24[10 kHz, resonance 0.9]/below_cutoff_err_db	3.1425
+filters/Poly LP 24[10 kHz, resonance 0.9]/err_18_20k_db	42.7325
+filters/Poly LP 24[10 kHz, resonance 0]/below_cutoff_err_db	1.1183
+filters/Poly LP 24[10 kHz, resonance 0]/err_18_20k_db	42.4447
+filters/Poly LP 24[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	15.6543
+filters/Poly LP 24[15 kHz, resonance 0.5]/below_cutoff_err_db	3.3277
+filters/Poly LP 24[15 kHz, resonance 0.5]/err_18_20k_db	29.7997
+filters/Poly LP 24[15 kHz, resonance 0.9]/below_cutoff_err_db	7.8338
+filters/Poly LP 24[15 kHz, resonance 0.9]/err_18_20k_db	31.5166
+filters/Poly LP 24[15 kHz, resonance 0]/below_cutoff_err_db	2.928
+filters/Poly LP 24[15 kHz, resonance 0]/err_18_20k_db	27.7307
+filters/Poly LP 24[5 kHz, resonance 0.5]/below_cutoff_err_db	0.3087
+filters/Poly LP 24[5 kHz, resonance 0.9]/below_cutoff_err_db	0.7414
+filters/Poly LP 24[5 kHz, resonance 0]/below_cutoff_err_db	0.2584
+filters/Squelch[10 kHz, resonance 0.5]/below_cutoff_err_db	0.7667
+filters/Squelch[10 kHz, resonance 0.5]/err_18_20k_db	4.436
+filters/Squelch[10 kHz, resonance 0.9]/below_cutoff_err_db	7.8227
+filters/Squelch[10 kHz, resonance 0.9]/err_18_20k_db	4.6855
+filters/Squelch[10 kHz, resonance 0]/below_cutoff_err_db	0.2876
+filters/Squelch[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	-34.7259
+filters/Squelch[15 kHz, resonance 0.5]/below_cutoff_err_db	1.8114
+filters/Squelch[15 kHz, resonance 0.5]/err_18_20k_db	3.9055
+filters/Squelch[15 kHz, resonance 0.9]/below_cutoff_err_db	16.4983
+filters/Squelch[15 kHz, resonance 0.9]/err_18_20k_db	5.2327
+filters/Squelch[15 kHz, resonance 0]/below_cutoff_err_db	0.6847
+filters/Squelch[15 kHz, resonance 0]/err_18_20k_db	2.7966
+filters/Squelch[5 kHz, resonance 0.5]/below_cutoff_err_db	0.1838
+filters/Squelch[5 kHz, resonance 0.9]/below_cutoff_err_db	1.5236
+filters/Squelch[5 kHz, resonance 0]/below_cutoff_err_db	0.0695
+filters/sampler Comb[10 kHz, resonance 0.5]/below_cutoff_err_db	0.595
+filters/sampler Comb[10 kHz, resonance 0.5]/err_18_20k_db	4.5649
+filters/sampler Comb[10 kHz, resonance 0.9]/below_cutoff_err_db	3.6487
+filters/sampler Comb[10 kHz, resonance 0.9]/err_18_20k_db	14.9401
+filters/sampler Comb[10 kHz, resonance 0]/below_cutoff_err_db	0.0062
+filters/sampler Comb[10 kHz, resonance 0]/err_18_20k_db	0.0062
+filters/sampler Comb[15 kHz, resonance 0.5]/below_cutoff_err_db	0.2706
+filters/sampler Comb[15 kHz, resonance 0.5]/err_18_20k_db	0.4315
+filters/sampler Comb[15 kHz, resonance 0.9]/below_cutoff_err_db	1.7342
+filters/sampler Comb[15 kHz, resonance 0.9]/err_18_20k_db	0.5343
+filters/sampler Comb[15 kHz, resonance 0]/below_cutoff_err_db	0.0062
+filters/sampler Comb[15 kHz, resonance 0]/err_18_20k_db	0.0062
+filters/sampler Comb[5 kHz, resonance 0.5]/below_cutoff_err_db	0.0254
+filters/sampler Comb[5 kHz, resonance 0.5]/err_18_20k_db	1.6069
+filters/sampler Comb[5 kHz, resonance 0.9]/below_cutoff_err_db	0.1321
+filters/sampler Comb[5 kHz, resonance 0.9]/err_18_20k_db	6.4374
+filters/sampler Comb[5 kHz, resonance 0]/below_cutoff_err_db	0.0062
+filters/sampler Comb[5 kHz, resonance 0]/err_18_20k_db	0.0062
+filters/sampler Ladder[10 kHz, resonance 0.5]/below_cutoff_err_db	1.4535
+filters/sampler Ladder[10 kHz, resonance 0.5]/err_18_20k_db	42.6348
+filters/sampler Ladder[10 kHz, resonance 0.9]/below_cutoff_err_db	3.4518
+filters/sampler Ladder[10 kHz, resonance 0.9]/err_18_20k_db	42.744
+filters/sampler Ladder[10 kHz, resonance 0]/below_cutoff_err_db	1.1183
+filters/sampler Ladder[10 kHz, resonance 0]/err_18_20k_db	42.4442
+filters/sampler Ladder[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	7.4965
+filters/sampler Ladder[110 Hz to 7 kHz, resonance 1]/sing_growth_worst_db	0.0001
+filters/sampler Ladder[110 Hz to 7 kHz, resonance 1]/sing_worst_cents	-0.0926
+filters/sampler Ladder[15 kHz, resonance 0.5]/below_cutoff_err_db	3.642
+filters/sampler Ladder[15 kHz, resonance 0.5]/err_18_20k_db	29.9366
+filters/sampler Ladder[15 kHz, resonance 0.9]/below_cutoff_err_db	8.6079
+filters/sampler Ladder[15 kHz, resonance 0.9]/err_18_20k_db	31.7486
+filters/sampler Ladder[15 kHz, resonance 0]/below_cutoff_err_db	2.928
+filters/sampler Ladder[15 kHz, resonance 0]/err_18_20k_db	27.7307
+filters/sampler Ladder[5 kHz, resonance 0.5]/below_cutoff_err_db	0.3388
+filters/sampler Ladder[5 kHz, resonance 0.9]/below_cutoff_err_db	0.8116
+filters/sampler Ladder[5 kHz, resonance 0]/below_cutoff_err_db	0.2584
+filters/sampler Vowel[10 kHz, resonance 0.5]/below_cutoff_err_db	1.7102
+filters/sampler Vowel[10 kHz, resonance 0.5]/err_18_20k_db	13.2118
+filters/sampler Vowel[10 kHz, resonance 0.9]/below_cutoff_err_db	1.3347
+filters/sampler Vowel[10 kHz, resonance 0]/below_cutoff_err_db	1.7083
+filters/sampler Vowel[10 kHz, resonance 0]/err_18_20k_db	13.2105
+filters/sampler Vowel[15 kHz, resonance 0.5]/below_cutoff_err_db	1.9443
+filters/sampler Vowel[15 kHz, resonance 0.5]/err_18_20k_db	13.2118
+filters/sampler Vowel[15 kHz, resonance 0.9]/below_cutoff_err_db	1.3347
+filters/sampler Vowel[15 kHz, resonance 0]/below_cutoff_err_db	3.2492
+filters/sampler Vowel[15 kHz, resonance 0]/err_18_20k_db	13.2105
+filters/sampler Vowel[5 kHz, resonance 0.5]/below_cutoff_err_db	0.4378
+filters/sampler Vowel[5 kHz, resonance 0.5]/err_18_20k_db	13.2118
+filters/sampler Vowel[5 kHz, resonance 0.9]/below_cutoff_err_db	0.439
+filters/sampler Vowel[5 kHz, resonance 0]/below_cutoff_err_db	0.4345
+filters/sampler Vowel[5 kHz, resonance 0]/err_18_20k_db	13.2105
+filters/sampler band-pass 2-pole[10 kHz, resonance 0.5]/below_cutoff_err_db	1.6721
+filters/sampler band-pass 2-pole[10 kHz, resonance 0.5]/err_18_20k_db	12.2805
+filters/sampler band-pass 2-pole[10 kHz, resonance 0.9]/below_cutoff_err_db	2.1748
+filters/sampler band-pass 2-pole[10 kHz, resonance 0.9]/err_18_20k_db	13.7737
+filters/sampler band-pass 2-pole[10 kHz, resonance 0]/below_cutoff_err_db	1.6555
+filters/sampler band-pass 2-pole[10 kHz, resonance 0]/err_18_20k_db	9.7097
+filters/sampler band-pass 2-pole[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	0.0057
+filters/sampler band-pass 2-pole[15 kHz, resonance 0.5]/below_cutoff_err_db	4.6269
+filters/sampler band-pass 2-pole[15 kHz, resonance 0.5]/err_18_20k_db	9.3055
+filters/sampler band-pass 2-pole[15 kHz, resonance 0.9]/below_cutoff_err_db	5.713
+filters/sampler band-pass 2-pole[15 kHz, resonance 0.9]/err_18_20k_db	14.4302
+filters/sampler band-pass 2-pole[15 kHz, resonance 0]/below_cutoff_err_db	4.5927
+filters/sampler band-pass 2-pole[15 kHz, resonance 0]/err_18_20k_db	5.3095
+filters/sampler band-pass 2-pole[5 kHz, resonance 0.5]/below_cutoff_err_db	0.3785
+filters/sampler band-pass 2-pole[5 kHz, resonance 0.5]/err_18_20k_db	13.0432
+filters/sampler band-pass 2-pole[5 kHz, resonance 0.9]/below_cutoff_err_db	0.5037
+filters/sampler band-pass 2-pole[5 kHz, resonance 0.9]/err_18_20k_db	13.3266
+filters/sampler band-pass 2-pole[5 kHz, resonance 0]/below_cutoff_err_db	0.3741
+filters/sampler band-pass 2-pole[5 kHz, resonance 0]/err_18_20k_db	12.3034
+filters/sampler band-pass 4-pole[10 kHz, resonance 0.5]/below_cutoff_err_db	4.0519
+filters/sampler band-pass 4-pole[10 kHz, resonance 0.5]/err_18_20k_db	24.6573
+filters/sampler band-pass 4-pole[10 kHz, resonance 0.9]/below_cutoff_err_db	13.2363
+filters/sampler band-pass 4-pole[10 kHz, resonance 0.9]/err_18_20k_db	27.6425
+filters/sampler band-pass 4-pole[10 kHz, resonance 0]/below_cutoff_err_db	2.7637
+filters/sampler band-pass 4-pole[10 kHz, resonance 0]/err_18_20k_db	19.4195
+filters/sampler band-pass 4-pole[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	0.0057
+filters/sampler band-pass 4-pole[15 kHz, resonance 0.5]/below_cutoff_err_db	9.2728
+filters/sampler band-pass 4-pole[15 kHz, resonance 0.5]/err_18_20k_db	19.0458
+filters/sampler band-pass 4-pole[15 kHz, resonance 0.9]/below_cutoff_err_db	16.0241
+filters/sampler band-pass 4-pole[15 kHz, resonance 0.9]/err_18_20k_db	29.3198
+filters/sampler band-pass 4-pole[15 kHz, resonance 0]/below_cutoff_err_db	7.9921
+filters/sampler band-pass 4-pole[15 kHz, resonance 0]/err_18_20k_db	10.619
+filters/sampler band-pass 4-pole[5 kHz, resonance 0.5]/below_cutoff_err_db	3.3793
+filters/sampler band-pass 4-pole[5 kHz, resonance 0.5]/err_18_20k_db	26.1041
+filters/sampler band-pass 4-pole[5 kHz, resonance 0.9]/below_cutoff_err_db	13.2145
+filters/sampler band-pass 4-pole[5 kHz, resonance 0.9]/err_18_20k_db	26.6706
+filters/sampler band-pass 4-pole[5 kHz, resonance 0]/below_cutoff_err_db	0.6103
+filters/sampler band-pass 4-pole[5 kHz, resonance 0]/err_18_20k_db	24.6069
+filters/sampler high-pass 2-pole[10 kHz, resonance 0.5]/below_cutoff_err_db	3.2351
+filters/sampler high-pass 2-pole[10 kHz, resonance 0.5]/err_18_20k_db	0.768
+filters/sampler high-pass 2-pole[10 kHz, resonance 0.9]/below_cutoff_err_db	3.3299
+filters/sampler high-pass 2-pole[10 kHz, resonance 0.9]/err_18_20k_db	2.4475
+filters/sampler high-pass 2-pole[10 kHz, resonance 0]/below_cutoff_err_db	2.9773
+filters/sampler high-pass 2-pole[10 kHz, resonance 0]/err_18_20k_db	1.8141
+filters/sampler high-pass 2-pole[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	-8.1367
+filters/sampler high-pass 2-pole[15 kHz, resonance 0.5]/below_cutoff_err_db	8.9978
+filters/sampler high-pass 2-pole[15 kHz, resonance 0.5]/err_18_20k_db	0.7496
+filters/sampler high-pass 2-pole[15 kHz, resonance 0.9]/below_cutoff_err_db	9.1912
+filters/sampler high-pass 2-pole[15 kHz, resonance 0.9]/err_18_20k_db	5.9904
+filters/sampler high-pass 2-pole[15 kHz, resonance 0]/below_cutoff_err_db	8.4263
+filters/sampler high-pass 2-pole[15 kHz, resonance 0]/err_18_20k_db	3.2464
+filters/sampler high-pass 2-pole[5 kHz, resonance 0.5]/below_cutoff_err_db	0.7302
+filters/sampler high-pass 2-pole[5 kHz, resonance 0.5]/err_18_20k_db	0.2511
+filters/sampler high-pass 2-pole[5 kHz, resonance 0.9]/below_cutoff_err_db	0.7551
+filters/sampler high-pass 2-pole[5 kHz, resonance 0.9]/err_18_20k_db	0.5648
+filters/sampler high-pass 2-pole[5 kHz, resonance 0]/below_cutoff_err_db	0.6645
+filters/sampler high-pass 2-pole[5 kHz, resonance 0]/err_18_20k_db	0.5366
+filters/sampler high-pass 4-pole[10 kHz, resonance 0.5]/below_cutoff_err_db	6.575
+filters/sampler high-pass 4-pole[10 kHz, resonance 0.5]/err_18_20k_db	1.7401
+filters/sampler high-pass 4-pole[10 kHz, resonance 0.9]/below_cutoff_err_db	13.5633
+filters/sampler high-pass 4-pole[10 kHz, resonance 0.9]/err_18_20k_db	5.2192
+filters/sampler high-pass 4-pole[10 kHz, resonance 0]/below_cutoff_err_db	3.5498
+filters/sampler high-pass 4-pole[10 kHz, resonance 0]/err_18_20k_db	3.6282
+filters/sampler high-pass 4-pole[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	26.1021
+filters/sampler high-pass 4-pole[15 kHz, resonance 0.5]/below_cutoff_err_db	16.6
+filters/sampler high-pass 4-pole[15 kHz, resonance 0.5]/err_18_20k_db	1.934
+filters/sampler high-pass 4-pole[15 kHz, resonance 0.9]/below_cutoff_err_db	18.9626
+filters/sampler high-pass 4-pole[15 kHz, resonance 0.9]/err_18_20k_db	13.7118
+filters/sampler high-pass 4-pole[15 kHz, resonance 0]/below_cutoff_err_db	11.0103
+filters/sampler high-pass 4-pole[15 kHz, resonance 0]/err_18_20k_db	6.4928
+filters/sampler high-pass 4-pole[5 kHz, resonance 0.5]/below_cutoff_err_db	3.4758
+filters/sampler high-pass 4-pole[5 kHz, resonance 0.5]/err_18_20k_db	0.5599
+filters/sampler high-pass 4-pole[5 kHz, resonance 0.9]/below_cutoff_err_db	13.2226
+filters/sampler high-pass 4-pole[5 kHz, resonance 0.9]/err_18_20k_db	1.1861
+filters/sampler high-pass 4-pole[5 kHz, resonance 0]/below_cutoff_err_db	0.7592
+filters/sampler high-pass 4-pole[5 kHz, resonance 0]/err_18_20k_db	1.0732
+filters/sampler low-pass 2-pole[10 kHz, resonance 0.5]/below_cutoff_err_db	0.1936
+filters/sampler low-pass 2-pole[10 kHz, resonance 0.5]/err_18_20k_db	23.793
+filters/sampler low-pass 2-pole[10 kHz, resonance 0.9]/below_cutoff_err_db	1.4609
+filters/sampler low-pass 2-pole[10 kHz, resonance 0.9]/err_18_20k_db	25.2862
+filters/sampler low-pass 2-pole[10 kHz, resonance 0]/below_cutoff_err_db	0.5592
+filters/sampler low-pass 2-pole[10 kHz, resonance 0]/err_18_20k_db	21.2222
+filters/sampler low-pass 2-pole[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	7.9927
+filters/sampler low-pass 2-pole[15 kHz, resonance 0.5]/below_cutoff_err_db	0.483
+filters/sampler low-pass 2-pole[15 kHz, resonance 0.5]/err_18_20k_db	17.8614
+filters/sampler low-pass 2-pole[15 kHz, resonance 0.9]/below_cutoff_err_db	3.7331
+filters/sampler low-pass 2-pole[15 kHz, resonance 0.9]/err_18_20k_db	22.9861
+filters/sampler low-pass 2-pole[15 kHz, resonance 0]/below_cutoff_err_db	1.464
+filters/sampler low-pass 2-pole[15 kHz, resonance 0]/err_18_20k_db	13.8654
+filters/sampler low-pass 2-pole[5 kHz, resonance 0.5]/below_cutoff_err_db	0.0456
+filters/sampler low-pass 2-pole[5 kHz, resonance 0.5]/err_18_20k_db	25.8498
+filters/sampler low-pass 2-pole[5 kHz, resonance 0.9]/below_cutoff_err_db	0.3409
+filters/sampler low-pass 2-pole[5 kHz, resonance 0.9]/err_18_20k_db	26.1333
+filters/sampler low-pass 2-pole[5 kHz, resonance 0]/below_cutoff_err_db	0.1292
+filters/sampler low-pass 2-pole[5 kHz, resonance 0]/err_18_20k_db	25.1101
+filters/sampler low-pass 4-pole[10 kHz, resonance 0.5]/below_cutoff_err_db	3.3405
+filters/sampler low-pass 4-pole[10 kHz, resonance 0.5]/err_18_20k_db	47.6823
+filters/sampler low-pass 4-pole[10 kHz, resonance 0.9]/below_cutoff_err_db	13.1823
+filters/sampler low-pass 4-pole[10 kHz, resonance 0.9]/err_18_20k_db	50.6681
+filters/sampler low-pass 4-pole[10 kHz, resonance 0]/below_cutoff_err_db	1.1183
+filters/sampler low-pass 4-pole[10 kHz, resonance 0]/err_18_20k_db	42.4445
+filters/sampler low-pass 4-pole[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	-26.0935
+filters/sampler low-pass 4-pole[15 kHz, resonance 0.5]/below_cutoff_err_db	3.2183
+filters/sampler low-pass 4-pole[15 kHz, resonance 0.5]/err_18_20k_db	36.1576
+filters/sampler low-pass 4-pole[15 kHz, resonance 0.9]/below_cutoff_err_db	13.9777
+filters/sampler low-pass 4-pole[15 kHz, resonance 0.9]/err_18_20k_db	46.4316
+filters/sampler low-pass 4-pole[15 kHz, resonance 0]/below_cutoff_err_db	2.928
+filters/sampler low-pass 4-pole[15 kHz, resonance 0]/err_18_20k_db	27.7307
+filters/sampler low-pass 4-pole[5 kHz, resonance 0.5]/below_cutoff_err_db	3.3713
+filters/sampler low-pass 4-pole[5 kHz, resonance 0.9]/below_cutoff_err_db	13.2065
+filters/sampler low-pass 4-pole[5 kHz, resonance 0]/below_cutoff_err_db	0.2584
+filters/sampler notch 2-pole[10 kHz, resonance 0.5]/below_cutoff_err_db	3.0364
+filters/sampler notch 2-pole[10 kHz, resonance 0.5]/err_18_20k_db	1.8749
+filters/sampler notch 2-pole[10 kHz, resonance 0.9]/below_cutoff_err_db	2.9903
+filters/sampler notch 2-pole[10 kHz, resonance 0.9]/err_18_20k_db	0.1402
+filters/sampler notch 2-pole[10 kHz, resonance 0]/below_cutoff_err_db	2.902
+filters/sampler notch 2-pole[10 kHz, resonance 0]/err_18_20k_db	4.3828
+filters/sampler notch 2-pole[15 kHz, resonance 0.5]/below_cutoff_err_db	7.636
+filters/sampler notch 2-pole[15 kHz, resonance 0.5]/err_18_20k_db	7.1788
+filters/sampler notch 2-pole[15 kHz, resonance 0.9]/below_cutoff_err_db	7.2892
+filters/sampler notch 2-pole[15 kHz, resonance 0.9]/err_18_20k_db	1.2994
+filters/sampler notch 2-pole[15 kHz, resonance 0]/below_cutoff_err_db	7.4105
+filters/sampler notch 2-pole[15 kHz, resonance 0]/err_18_20k_db	9.8703
+filters/sampler notch 2-pole[5 kHz, resonance 0.5]/below_cutoff_err_db	0.7191
+filters/sampler notch 2-pole[5 kHz, resonance 0.5]/err_18_20k_db	0.3336
+filters/sampler notch 2-pole[5 kHz, resonance 0.9]/below_cutoff_err_db	0.713
+filters/sampler notch 2-pole[5 kHz, resonance 0.9]/err_18_20k_db	0.02
+filters/sampler notch 2-pole[5 kHz, resonance 0]/below_cutoff_err_db	0.6887
+filters/sampler notch 2-pole[5 kHz, resonance 0]/err_18_20k_db	1.1214
+filters/sampler notch 4-pole[10 kHz, resonance 0.5]/below_cutoff_err_db	1.9612
+filters/sampler notch 4-pole[10 kHz, resonance 0.5]/err_18_20k_db	3.4353
+filters/sampler notch 4-pole[10 kHz, resonance 0.9]/below_cutoff_err_db	7.1821
+filters/sampler notch 4-pole[10 kHz, resonance 0.9]/err_18_20k_db	0.1278
+filters/sampler notch 4-pole[10 kHz, resonance 0]/below_cutoff_err_db	4.5624
+filters/sampler notch 4-pole[10 kHz, resonance 0]/err_18_20k_db	8.7657
+filters/sampler notch 4-pole[15 kHz, resonance 0.5]/below_cutoff_err_db	9.2092
+filters/sampler notch 4-pole[15 kHz, resonance 0.5]/err_18_20k_db	12.943
+filters/sampler notch 4-pole[15 kHz, resonance 0.9]/below_cutoff_err_db	1.9818
+filters/sampler notch 4-pole[15 kHz, resonance 0.9]/err_18_20k_db	0.9526
+filters/sampler notch 4-pole[15 kHz, resonance 0]/below_cutoff_err_db	10.9033
+filters/sampler notch 4-pole[15 kHz, resonance 0]/err_18_20k_db	19.7406
+filters/sampler notch 4-pole[5 kHz, resonance 0.5]/below_cutoff_err_db	1.9752
+filters/sampler notch 4-pole[5 kHz, resonance 0.5]/err_18_20k_db	0.6096
+filters/sampler notch 4-pole[5 kHz, resonance 0.9]/below_cutoff_err_db	11.5275
+filters/sampler notch 4-pole[5 kHz, resonance 0.9]/err_18_20k_db	0.0184
+filters/sampler notch 4-pole[5 kHz, resonance 0]/below_cutoff_err_db	1.101
+filters/sampler notch 4-pole[5 kHz, resonance 0]/err_18_20k_db	2.2428

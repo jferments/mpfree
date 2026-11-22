@@ -368,6 +368,111 @@ impl Ap {
     }
 }
 
+/// Two samples at the inner rate down to one: the polyphase half-band,
+/// the later sample through one branch, the earlier through the other.
+#[inline(always)]
+fn half_band(even: &mut [Ap; 3], odd: &mut [Ap; 3], a: f32, b: f32) -> f32 {
+    let mut e = b;
+    let mut o = a;
+    for (s, c) in even.iter_mut().zip(HB_EVEN) {
+        e = s.run(c, e);
+    }
+    for (s, c) in odd.iter_mut().zip(HB_ODD) {
+        o = s.run(c, o);
+    }
+    0.5 * (e + o)
+}
+
+/// How many samples the voice runs a frame at `rate`: 2 below 64 kHz.
+fn oversampling(rate: u32) -> usize {
+    if rate < 64_000 {
+        2
+    } else {
+        1
+    }
+}
+
+/// The ladder's prewarped gain for a cutoff of `fc` Hz at the inner rate
+/// `fs`, held between 20 Hz and 0.3 of `fs` or 20 kHz.
+#[inline]
+fn cutoff_g(fc: f32, fs: f32) -> f32 {
+    let fc = fc.clamp(20.0, (fs * 0.3).min(20_000.0));
+    (PI * fc / SQRT_2 / fs).tan()
+}
+
+/// The feedback high-pass's `1 / (1 + g)` at the inner rate `fs`.
+fn loop_h(fs: f32) -> f32 {
+    1.0 / (1.0 + (PI * LOOP_HP_HZ / fs).tan())
+}
+
+/// The voice's filter on its own, for fxlab's filter measures (DSP
+/// quality Y1 and Y2): the diode ladder with its solve once a frame, at
+/// the voice's inner rate and down through its half-band, set from the
+/// panel's values with no envelope, accent or tracking, in and out at
+/// the oscillator's level with the amplifier's make-up (the output's
+/// high-pass, the drive and the level left out).
+#[derive(Clone, Copy, Debug)]
+pub struct FilterProbe {
+    ladder: Ladder,
+    hb_even: [Ap; 3],
+    hb_odd: [Ap; 3],
+    os: usize,
+    fs: f32,
+    g: f32,
+    k: f32,
+    loop_h: f32,
+    comp: f32,
+}
+
+impl FilterProbe {
+    /// A filter at rest at `rate`, set to 1 kHz with no resonance.
+    pub fn new(rate: u32) -> FilterProbe {
+        let os = oversampling(rate.max(1));
+        let fs = (rate.max(1) as usize * os) as f32;
+        let mut p = FilterProbe {
+            ladder: Ladder::default(),
+            hb_even: [Ap::default(); 3],
+            hb_odd: [Ap::default(); 3],
+            os,
+            fs,
+            g: 0.0,
+            k: 0.0,
+            loop_h: loop_h(fs),
+            comp: 1.0,
+        };
+        p.set(1_000.0, 0.0);
+        p
+    }
+
+    /// Samples a frame at the filter's own rate.
+    pub fn oversampling(&self) -> usize {
+        self.os
+    }
+
+    /// **Cutoff** `cutoff` (Hz) and **Resonance** `resonance` (0 to 100).
+    /// The state carries on.
+    pub fn set(&mut self, cutoff: f32, resonance: f32) {
+        self.g = cutoff_g(cutoff, self.fs);
+        self.k = K_MAX * (resonance / 100.0);
+        self.comp = (1.0 + self.k).sqrt();
+    }
+
+    /// One frame: `x` holds [`FilterProbe::oversampling`] samples at the
+    /// filter's rate (only the first two are read); the frame's sample
+    /// comes back.
+    pub fn frame(&mut self, x: &[f32]) -> f32 {
+        self.ladder.set(self.g, self.k, self.loop_h);
+        let mut y = |x: f32| self.ladder.step(x * IN_GAIN) * self.comp / IN_GAIN;
+        if self.os == 2 {
+            let a = y(x[0]);
+            let b = y(x[1]);
+            half_band(&mut self.hb_even, &mut self.hb_odd, a, b)
+        } else {
+            y(x[0])
+        }
+    }
+}
+
 /// The mono acid bass. See the module docs.
 pub struct Squelch {
     rate: u32,
@@ -830,8 +935,7 @@ impl Squelch {
             + a * ACCENT_OCT * ((1.0 - r) * acc + r * SWEEP_WEIGHT * self.sweep)
             + self.v(KEY_TRACK) / 100.0 * (self.pitch - 48.0) / 12.0;
         let fs = self.fs();
-        let fc = oct.exp2().clamp(20.0, (fs * 0.3).min(20_000.0));
-        self.g_to = (PI * fc / SQRT_2 / fs).tan();
+        self.g_to = cutoff_g(oct.exp2(), fs);
         self.dg = (self.g_to - self.g) / CTRL as f32;
         self.k = K_MAX * r;
 
@@ -931,17 +1035,7 @@ impl Squelch {
             let y = if self.os == 2 {
                 let a = self.sample();
                 let b = self.sample();
-                // The half-band: the later sample through one branch, the
-                // earlier through the other.
-                let mut e = b;
-                let mut o = a;
-                for (s, c) in self.hb_even.iter_mut().zip(HB_EVEN) {
-                    e = s.run(c, e);
-                }
-                for (s, c) in self.hb_odd.iter_mut().zip(HB_ODD) {
-                    o = s.run(c, o);
-                }
-                0.5 * (e + o)
+                half_band(&mut self.hb_even, &mut self.hb_odd, a, b)
             } else {
                 self.sample()
             };
@@ -991,7 +1085,7 @@ impl Node for Squelch {
 
     fn prepare(&mut self, rate: u32, _max_block: usize) {
         self.rate = rate.max(1);
-        self.os = if self.rate < 64_000 { 2 } else { 1 };
+        self.os = oversampling(self.rate);
         let r = self.rate as f32;
         let fs = self.fs();
         let cr = (self.rate / CTRL as u32).max(1);
@@ -999,7 +1093,7 @@ impl Node for Squelch {
         self.wave.set_time(cr, 10.0);
         self.out_l.set_time(cr, 10.0);
         self.out_r.set_time(cr, 10.0);
-        self.loop_h = 1.0 / (1.0 + (PI * LOOP_HP_HZ / fs).tan());
+        self.loop_h = loop_h(fs);
         self.ohp_h = 1.0 / (1.0 + (PI * OUT_HP_HZ / fs).tan());
         self.dc_a = (-std::f32::consts::TAU * DC_HZ / r).exp();
         self.update_times();
