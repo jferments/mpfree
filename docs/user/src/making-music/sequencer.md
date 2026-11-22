@@ -6,7 +6,7 @@ checked: 2026-11-19 a6fb29b2
 
 # The Sequencer: programming steps
 
-The **Sequencer** tab is where you build and fine-tune a pattern one step at a time. It shows the clip of the armed track (the one the pads play) in one of two views, switched at the right end of the transport bar:
+The **Sequencer** tab is where you build and fine-tune a pattern one step at a time. It shows a clip of the track you picked (the one the pads play): the clip that plays, or the one you pick with the clip chip (see [Edit another clip](#edit-another-clip)). There are two views, switched at the right end of the transport bar:
 
 - **Steps**: the pattern as a grid, one row per pad (or per note, on a synth), with your timing under it and the picked step's settings at the bottom. This chapter is about Steps.
 - **Notes**: the same clip as a piano roll, a list or a tracker, for fixing what you played in. See [Editing notes](editing-notes.md).
@@ -27,7 +27,15 @@ A **pattern** is a loop of steps, like a grid: each row is a pad, each column a 
 
 Changes play the next time the pattern comes round. **PLAY** starts the pattern on the screen when nothing else is playing, and a line moves across the grid to show where it is.
 
-The heading over the grid has, from the left: the red **Armed** pill, the pattern and track names, **+ Lane** (see [Lock lanes](#lock-lanes)), the page arrows **‹ 1/1 ›** and the length **– 16 steps +**.
+The heading over the grid has, from the left: the red **Armed** pill, the clip chip with the pattern's name, the track's name, **+ Lane** (see [Lock lanes](#lock-lanes)), the page arrows **‹ 1/1 ›** and the length **– 16 steps +**.
+
+### Edit another clip
+
+The Sequencer edits the clip that plays on the track. To work on another one without starting it, tap the clip chip (the pattern's name with a ▾) and pick it from the list. What plays keeps playing, so you can build Pattern 3 while Pattern 1 plays, then launch it from Arrange when it's ready. The heading then says which clip plays ("Pattern 1 plays"), and STEP SEQ and Notes edit the clip you picked too. Each edit is a take, so UNDO takes it back.
+
+The list starts with **What plays**, which goes back to editing the clip that plays. Turn the wheel and push to pick a row, or tap **Back** to keep the clip you edit. Picking another track also goes back to what plays.
+
+{{shot: sequencer-edit-clips | The clip chip's list: What plays (Pattern 1, edited now), then the track's clips with their slots, Pattern 1 playing.}}
 
 **Mute a row.** Each row's name is its mute button, with a speaker in the box beside it: tap the name to mute that pad, so you can drop the kick out and bring it back. Hold **ERASE** and tap a row's name to delete all of that sound's steps.
 

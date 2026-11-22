@@ -653,6 +653,10 @@ pub struct TimeState {
     /// None while the selection is the armed track: see
     /// [`TimeState::selected`].
     pub track_pick: Option<usize>,
+    /// The selected track's slot picked for the Sequencer to edit apart
+    /// from what plays ([`TimeAction::EditClip`]), or None while it edits
+    /// the clip that plays.
+    pub clip_pick: Option<usize>,
     /// The other armed tracks, a bit each (`TimeAction::ArmAlso`): a take
     /// records their notes with the armed track's. Never the armed one.
     pub also: u128,
@@ -899,6 +903,7 @@ impl TimeState {
             cues: Vec::new(),
             armed,
             track_pick: None,
+            clip_pick: None,
             also: 0,
             clipboard: None,
             done: takes.done().iter().map(TakeRow::of).collect(),
@@ -1040,6 +1045,12 @@ pub enum TimeAction {
     /// follow it, while REC still records the armed track. The armed
     /// track itself selects it again.
     Select(usize),
+    /// The clip the Sequencer edits on the selected track (refactor C2):
+    /// `Some(slot)` edits that slot's clip without launching it, so what
+    /// plays keeps playing; `None` edits the clip that plays again (its
+    /// first while none does). A track selected again goes back to what
+    /// plays.
+    EditClip(Option<usize>),
     /// Arm these tracks too, a bit each (track 0 the lowest), for one take
     /// over several tracks (the MPC's SHIFT + a track's arm): each records
     /// what its MIDI input sends it. The armed track is left out of it.

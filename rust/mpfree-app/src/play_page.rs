@@ -2741,7 +2741,15 @@ impl PlayPage {
         g.hold_picks = self.view == PlayView::Beats;
         let clip = self.steps.clip.as_ref();
         let first = clip.map_or("Pattern", |c| c.name.as_str());
-        let title = if self.steps.track_name.is_empty() {
+        // The Sequencer's Steps: the clip's name is a chip that lists the
+        // track's clips to edit (refactor C2), once there is a clip.
+        let chip = (self.sequencer && self.view == PlayView::Beats)
+            .then_some(clip)
+            .flatten()
+            .map(|c| c.name.clone());
+        let title = if chip.is_some() {
+            self.steps.track_name.clone()
+        } else if self.steps.track_name.is_empty() {
             first.to_string()
         } else {
             format!("{first} · {}", self.steps.track_name)
@@ -2755,6 +2763,9 @@ impl PlayPage {
             right.push_str(&format!(" · pads: page {} · BANK {letter}", s.page + 1));
         } else if clip.is_none() {
             right.push_str(" · tap a step to start one");
+        } else if let Some(other) = self.steps.playing.as_ref().filter(|_| chip.is_some()) {
+            // A clip picked to edit while another plays: which one is heard.
+            right.push_str(&format!(" · {other} plays"));
         } else if self.view == PlayView::Beats {
             right.push_str(" · hold a step to edit it");
         }
@@ -2773,6 +2784,9 @@ impl PlayPage {
         let lanes = self.lanes();
         if g.title != title {
             g.title = title;
+        }
+        if g.chip != chip {
+            g.chip = chip;
         }
         if g.right != right {
             g.right = right;

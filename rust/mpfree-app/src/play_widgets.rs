@@ -1172,8 +1172,12 @@ pub struct Marks {
 /// `Tab(HEAD_HIGHER)`).
 #[derive(Default)]
 pub struct StepGrid {
-    /// "Pattern 1 · Drums".
+    /// "Pattern 1 · Drums"; with the clip chip, only "Drums".
     pub title: String,
+    /// The Sequencer's clip chip (refactor C2): the clip's name, in a chip
+    /// with a ▾ before the title. A tap on it gives `Tab(HEAD_CLIP)`, for
+    /// the list of the track's clips to edit.
+    pub chip: Option<String>,
     /// "1/16 · 1 bar".
     pub right: String,
     /// Every lane there could be, most wanted first (sounds with notes,
@@ -1294,6 +1298,8 @@ pub const HEAD_FOLLOW: usize = 9;
 pub const HEAD_BANK: usize = 16;
 /// The Steps head's + Lane: `Tab(HEAD_LANE)`.
 pub const HEAD_LANE: usize = 11;
+/// The Steps head's clip chip: `Tab(HEAD_CLIP)`.
+pub const HEAD_CLIP: usize = 12;
 /// A lock lane's `pad`: this plus its number among the lock lanes. A tap
 /// on its step `col` gives `Cell { row: pad, col }`, its × `Toggle(pad)`,
 /// and a drag on (or the wheel turning) the step's cell `Step { index:
@@ -1328,6 +1334,7 @@ pub const MIN_STEPS: usize = 16;
 #[derive(Clone, Debug, PartialEq)]
 struct StepLook {
     title: String,
+    chip: Option<String>,
     right: String,
     lanes: Vec<Lane>,
     steps: usize,
@@ -1764,6 +1771,7 @@ impl StepGrid {
     fn look(&self) -> StepLook {
         StepLook {
             title: self.title.clone(),
+            chip: self.chip.clone(),
             right: self.right.clone(),
             lanes: self.lanes.clone(),
             steps: self.steps,
@@ -1790,6 +1798,51 @@ impl StepGrid {
     /// The pattern head, with + Lane where it shows.
     fn head(&self, r: Rect) -> Head {
         Head::of(r, self.pitched.is_some(), self.add_lane)
+    }
+
+    /// The clip chip's place in the heading (after the Arm pill), if it
+    /// shows: as wide as its name, at most as far as the title may go.
+    fn chip_rect(&self, r: Rect) -> Option<Rect> {
+        let name = self.chip.as_ref().filter(|_| self.bank.is_none())?;
+        let (h, _) = card_head(r);
+        let x = if self.arm.is_some() {
+            h.x + ARM_PILL_W + 10
+        } else {
+            h.x
+        };
+        let w = (name.chars().count() as i32 * 8 + 40).clamp(96, 240);
+        let room = (self.head(r).title.right() - x).max(0);
+        Some(Rect::new(x, h.y - 5, w.min(room), h.h + 10))
+    }
+
+    /// Paint the clip chip (its name and a ▾), then the title after it.
+    fn paint_chip(&self, cx: &mut PaintCx, r: Rect, chip: Rect) {
+        let t = cx.theme.clone();
+        let name = self.chip.as_deref().unwrap_or_default();
+        cx.canvas.fill_round_rect(chip, chip.h / 2, t.raised);
+        cx.text(
+            FontId::Bold,
+            draw::HEAD_PX,
+            Rect::new(chip.x + 12, chip.y, (chip.w - 30).max(0), chip.h),
+            Align::Left,
+            t.text,
+            name,
+        );
+        let (cx0, cy0) = (chip.right() - 16, chip.y + chip.h / 2 - 2);
+        for k in 0..5 {
+            cx.canvas
+                .fill_rect(Rect::new(cx0 - 4 + k, cy0 + k, 9 - 2 * k, 1), t.text_dim);
+        }
+        let (h, _) = card_head(r);
+        let x = chip.right() + 10;
+        cx.text(
+            FontId::Bold,
+            draw::HEAD_PX,
+            Rect::new(x, h.y, (self.head(r).title.right() - x).max(0), h.h),
+            Align::Left,
+            t.text_dim,
+            &self.title.to_uppercase(),
+        );
     }
 
     /// The middle of head control `k` (`HEAD_PREV` ...) with scale rows
@@ -1827,7 +1880,8 @@ impl StepGrid {
                 ARM_PILL_W + 10
             } else {
                 0
-            };
+            }
+            + self.chip_rect(r).map_or(0, |c| c.w + 10);
         let right_w = cx.measure(FontId::Sans, draw::HEAD_PX, &self.right);
         if !self.right.is_empty() && title_w + 16 + right_w <= hd.title.w {
             cx.text(
@@ -2385,6 +2439,21 @@ impl Widget for StepGrid {
             None if self.bank.is_some() => {
                 card(cx, r, "", "");
             }
+            // The Arm pill takes the heading's left, the clip chip and
+            // the title after it.
+            Some(pill) if self.chip_rect(r).is_some() => {
+                card(cx, r, "", "");
+                if let Some(chip) = self.chip_rect(r) {
+                    self.paint_chip(cx, r, chip);
+                }
+                paint_arm(cx, r, pill);
+            }
+            None if self.chip_rect(r).is_some() => {
+                card(cx, r, "", "");
+                if let Some(chip) = self.chip_rect(r) {
+                    self.paint_chip(cx, r, chip);
+                }
+            }
             // The Arm pill takes the heading's left, the title after it.
             Some(pill) => {
                 card(cx, r, "", "");
@@ -2608,6 +2677,9 @@ impl Widget for StepGrid {
                 Target::tap("head", HEAD_LANE, "+ Lane", h.lane).disabled_if(self.length == 0),
             );
         }
+        if let Some(chip) = self.chip_rect(r) {
+            out.push(Target::tap("head", HEAD_CLIP, "Clip to edit", chip));
+        }
         if self.pitched.is_some() && self.bank.is_none() {
             let (lower, higher) = self.octave_usable(g.rows);
             for (k, label, rect, can) in [
@@ -2752,6 +2824,9 @@ impl Widget for StepGrid {
             }
         } else if let Some(i) = self.head(r).at(x, y) {
             return Some(EventKind::Tab(i));
+        }
+        if self.chip_rect(r).is_some_and(|c| c.contains(x, y)) {
+            return Some(EventKind::Tab(HEAD_CLIP));
         }
         if self.arm.is_some() && arm_pill_hit(r).contains(x, y) {
             return Some(EventKind::Select(0));
