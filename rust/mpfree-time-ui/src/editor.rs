@@ -100,6 +100,16 @@ pub const EDIT_ROWS: [&str; 17] = [
 pub const EUCLID_ROW: usize = 13;
 /// A tracker step tapped: `Cell`'s row says the editor's sound.
 pub const PEN: usize = usize::MAX;
+/// A finger holding a note while another taps note `col`
+/// ([`EditAction::Add`]): `Cell`'s row says so (plan 1B.2).
+pub const ADD: usize = usize::MAX - 1;
+/// A box drawn on empty roll with Draw off ([`EditAction::Pick`]):
+/// `Span`'s index is this plus its lowest row times 256 plus its highest
+/// ([`box_of`]); a drawn note's `Span` names its row, under 128.
+pub const BOX: usize = 1 << 16;
+/// A handle dragged ([`EditAction::Resize`]): `Stretch`'s index is the
+/// note's, plus this for its start handle; `to` is the ticks it moved.
+pub const START_HANDLE: usize = 1 << 24;
 /// The step the tracker and the Euclidean fill use when the snap is off
 /// or finer than a grid allows (1/32): a 1/16.
 pub const STEP_FALLBACK: Tick = PPQ as Tick / 4;
@@ -211,6 +221,30 @@ pub enum EditAction {
     Tap { index: usize, rev: u64 },
     /// A note taken out: ERASE held + a tap.
     Erase { index: usize, rev: u64 },
+    /// A note added to the picks, or taken out of them when it was
+    /// picked (plan 1B.2: a finger holding a note while another taps one,
+    /// as holding steps does on the step pads).
+    Add { index: usize, rev: u64 },
+    /// The notes in a box picked in place of the others (plan 1B.2: a
+    /// drag on empty roll with Draw off): every note sounding somewhere
+    /// from tick `from` to `to` on a row from `low` to `high`. Found by
+    /// value, so it needs no picture.
+    Pick {
+        from: Tick,
+        to: Tick,
+        low: u8,
+        high: u8,
+    },
+    /// A handle of note `index` dragged `ticks`, as its finger lifted
+    /// (plan 1B.2): its start (`start`, the end staying, as Edit Start) or
+    /// its end. The picked notes change with it when it is one of them,
+    /// else it changes alone and is picked.
+    Resize {
+        index: usize,
+        rev: u64,
+        start: bool,
+        ticks: Tick,
+    },
     /// Empty space on the roll tapped: with Draw on a note one snap long
     /// goes in, with Draw off the picks are let go.
     Empty { tick: Tick, note: u8 },
@@ -255,6 +289,8 @@ impl EditAction {
             EditAction::Note { rev, .. }
             | EditAction::Tap { rev, .. }
             | EditAction::Erase { rev, .. }
+            | EditAction::Add { rev, .. }
+            | EditAction::Resize { rev, .. }
             | EditAction::Drop { rev, .. } => Some(rev),
             _ => None,
         }
@@ -598,8 +634,68 @@ impl Editor {
                 true,
                 format!("edit: note {} erased", note_name(clip.notes[i].note)),
             ),
-            EditAction::Note { .. } | EditAction::Tap { .. } | EditAction::Erase { .. } => {
-                return Done::default()
+            // A finger holding a note, another tapping: the note tapped
+            // joins the picks, or leaves them.
+            EditAction::Add { index: i, .. } if i < clip.notes.len() => {
+                self.sel = sel;
+                match self.sel.iter().position(|&s| s == i) {
+                    Some(k) => {
+                        self.sel.remove(k);
+                    }
+                    None => {
+                        self.sel.push(i);
+                        self.worked_on(clip.notes[i]);
+                    }
+                }
+                return Done::line(format!("edit: {} picked", self.sel.len()));
+            }
+            EditAction::Note { .. }
+            | EditAction::Tap { .. }
+            | EditAction::Erase { .. }
+            | EditAction::Add { .. } => return Done::default(),
+            // A box: the notes sounding in it, in place of the picks.
+            EditAction::Pick {
+                from,
+                to,
+                low,
+                high,
+            } => {
+                let (lo, hi) = (low.min(high), low.max(high));
+                let (a, b) = (from.min(to), from.max(to).max(from.min(to) + 1));
+                self.sel = (0..clip.notes.len())
+                    .filter(|&i| {
+                        let n = clip.notes[i];
+                        (lo..=hi).contains(&n.note) && n.tick < b && n.tick + n.len.max(1) > a
+                    })
+                    .collect();
+                if let Some(&i) = self.sel.first() {
+                    self.worked_on(clip.notes[i]);
+                }
+                return Done::line(format!("edit: {} picked", self.sel.len()));
+            }
+            // A handle: the start or the end of the picks, or of the note
+            // alone when it wasn't picked.
+            EditAction::Resize {
+                index,
+                start,
+                ticks,
+                ..
+            } => {
+                let alone = index < clip.notes.len() && !sel.contains(&index);
+                let changed = if alone { vec![index] } else { sel.clone() };
+                let (e, what) = if start {
+                    (notes::edit_start(clip, &changed, ticks), "starts")
+                } else {
+                    (notes::edit_end(clip, &changed, ticks), "ends")
+                };
+                // The picks a handle left as they were stay picked.
+                (
+                    e,
+                    None,
+                    true,
+                    !alone,
+                    format!("edit: {} notes' {what} moved", changed.len()),
+                )
             }
             EditAction::Empty { tick, note } => match self.tool {
                 Tool::Draw => match self.draw(clip, tick, note, self.step()) {
@@ -1152,6 +1248,13 @@ pub fn lane_velocity(v: f32) -> u8 {
     (1.0 + v.clamp(0.0, 1.0) * 126.0).round() as u8
 }
 
+/// A box pick's lowest and highest rows, from its `Span`'s index
+/// ([`BOX`]); None for a drawn note's.
+pub fn box_of(index: usize) -> Option<(u8, u8)> {
+    let k = index.checked_sub(BOX)?;
+    Some(((k >> 8 & 0x7F) as u8, (k & 0x7F) as u8))
+}
+
 /// The drag a `Marker`'s frame holds ([`drop_frame`]).
 pub fn drop_of(frame: u64) -> (Tick, i32) {
     let t = (frame & 0xFFFF_FFFF) as Tick - (1 << 31);
@@ -1405,6 +1508,22 @@ enum Hand {
         to: Tick,
         now: (i32, i32),
     },
+    /// A finger drawing a box on empty roll with Draw off (plan 1B.2):
+    /// the notes in it are picked when it lifts.
+    Box {
+        finger: u64,
+        at: (i32, i32),
+        now: (i32, i32),
+    },
+    /// A finger holding a note it picked (a hold) while others tap notes
+    /// (plan 1B.2): each tap adds its note to the picks or takes it out,
+    /// sent as the tapping finger lifts. `tap` is a finger down on note
+    /// `index` at `at`, until it lifts or moves away.
+    Holding {
+        finger: u64,
+        now: (i32, i32),
+        tap: Option<(u64, usize, (i32, i32))>,
+    },
     /// A finger on empty roll: its tap acts when it lifts (so a pinch
     /// starting there draws nothing), unless it moved away first.
     Wait {
@@ -1474,7 +1593,21 @@ struct Drag {
     /// The finger is in the velocity lane: the value under it, 0 to 1,
     /// shown on the picked notes and sent once, when it lifts.
     lane: Option<f32>,
+    /// The finger drags a handle (plan 1B.2): the note's start (true) or
+    /// its end, by `ticks`; `notes` stays 0.
+    handle: Option<bool>,
 }
+
+/// Handles (plan 1B.2) are this wide, outside a picked note's ends; on a
+/// note narrower than a 1/16 at the zoom they hang below it, this tall.
+const HANDLE_W: i32 = 28;
+const HANDLE_H: i32 = 22;
+/// Handles show while at most this many picked notes are in view; past
+/// that the Q-Links and the Length option do the work.
+const MAX_HANDLES: usize = 64;
+/// With Draw off a touch this close beside a note, in its row, gets it
+/// (the plan's near miss, up to about 3 mm).
+const NEAR: i32 = 24;
 
 const KEYS_W: i32 = 64;
 const RULER_H: i32 = 22;
@@ -1764,17 +1897,44 @@ impl NoteGrid {
     /// [`NoteGrid::note_rect`] in the roll's places `g`, worked out once
     /// for every note drawn or touched.
     fn note_rect_in(&self, g: &Geo, i: usize) -> Option<Rect> {
+        self.rect_of(g, i, true)
+    }
+
+    /// Where note `i` is drawn: with `dragged`, where a drag would leave
+    /// it (moved, or its start or end where a handle is), else where it
+    /// is in the clip.
+    fn rect_of(&self, g: &Geo, i: usize, dragged: bool) -> Option<Rect> {
         let n = self.notes.get(i)?;
-        let (dt, dn) = match self.drag {
-            Some(d) if self.moves(d, i) => (d.ticks, d.notes),
-            _ => (0, 0),
+        let (tick, len, note) = match self.drag {
+            Some(d) if dragged && self.moves(d, i) => self.dragged(d, n)?,
+            _ => (n.tick, n.len, n.note),
         };
-        let note = u8::try_from(i32::from(n.note) + dn).ok()?;
         let y = self.y_of(g, note)?;
-        let tick = (n.tick + dt).rem_euclid(self.length.max(1));
         let x0 = self.x_of(g, tick);
-        let x1 = self.x_of(g, (tick + n.len).min(self.length)).max(x0 + 3);
+        let x1 = self.x_of(g, (tick + len).min(self.length)).max(x0 + 3);
         Some(Rect::new(x0, y + 1, x1 - x0, g.v.row_h - 2))
+    }
+
+    /// Note `n`'s start, length and row with drag `d` (as the edit it
+    /// makes would leave it: `shift`, `edit_start`, `edit_end`); None
+    /// when it would go off the keys.
+    fn dragged(&self, d: Drag, n: &NoteBox) -> Option<(Tick, Tick, u8)> {
+        Some(match d.handle {
+            Some(true) => {
+                let end = n.tick + n.len.max(1);
+                let t = (n.tick + d.ticks).min(end - 1).max(0);
+                match t < self.length {
+                    true => (t, end - t, n.note),
+                    false => (n.tick, n.len, n.note),
+                }
+            }
+            Some(false) => (n.tick, (n.len + d.ticks).max(1), n.note),
+            None => (
+                (n.tick + d.ticks).rem_euclid(self.length.max(1)),
+                n.len,
+                u8::try_from(i32::from(n.note) + d.notes).ok()?,
+            ),
+        })
     }
 
     /// Where row `k` of the list or the tracker is (0 is the heading), if
@@ -1996,6 +2156,20 @@ impl NoteGrid {
             _ => *n,
         };
         let shown = self.in_view(g);
+        // While notes move or a handle drags, where they were: an outline
+        // under where they go (plan 1B.2).
+        if let Some(d) = self
+            .drag
+            .filter(|d| d.lane.is_none() && (d.ticks, d.notes) != (0, 0))
+        {
+            for &i in &shown {
+                if self.moves(d, i) {
+                    if let Some(was) = self.rect_of(g, i, false) {
+                        cx.canvas.stroke_round_rect(was, 3, 1, t.text_faint);
+                    }
+                }
+            }
+        }
         for &i in &shown {
             let Some(nr) = self.note_rect_in(g, i) else {
                 continue;
@@ -2027,6 +2201,26 @@ impl NoteGrid {
                 cx.canvas.stroke_round_rect(nr, 3, 2, top);
             }
         }
+        // A box being drawn with Draw off: the notes in it are picked
+        // when the finger lifts.
+        if let Hand::Box { at, now, .. } = self.hand {
+            let (x0, y0) = (at.0.min(now.0), at.1.min(now.1));
+            let b = Rect::new(x0, y0, (at.0 - now.0).abs(), (at.1 - now.1).abs());
+            cx.canvas.stroke_round_rect(b, 2, 2, top);
+        }
+        // The picked notes' handles (plan 1B.2): a grip each side, or
+        // under a short note.
+        let grip = top.mix(t.raised, 0.45);
+        for (_, hs) in self.handles(g) {
+            for h in hs {
+                cx.canvas.fill_round_rect(h.inset(3), 4, grip);
+                cx.canvas.fill_rect(
+                    Rect::new(h.x + h.w / 2 - 1, h.y + h.h / 4, 2, h.h / 2),
+                    t.ink_on(grip),
+                );
+            }
+        }
+        self.paint_readout(cx, g);
         cx.canvas.set_clip(was.intersect(Rect::new(
             g.keys.x,
             g.vel.y,
@@ -2084,6 +2278,50 @@ impl NoteGrid {
             );
         }
         cx.canvas.set_clip(was);
+    }
+
+    /// While a note moves or a handle drags (plan 1B.2), what it will be,
+    /// in words, above the finger: the moved note's position and row, or
+    /// the start and the length a handle leaves.
+    fn paint_readout(&self, cx: &mut PaintCx, g: &Geo) {
+        let Some(d) = self.drag.filter(|d| d.lane.is_none()) else {
+            return;
+        };
+        let Some((tick, len, note)) = self.notes.get(d.index).and_then(|n| self.dragged(d, n))
+        else {
+            return;
+        };
+        let text = match d.handle {
+            Some(true) => format!(
+                "Start {} · {}",
+                position_name(tick, self.bar),
+                length_name(len)
+            ),
+            Some(false) => format!("Length {}", length_name(len)),
+            None => format!(
+                "{} · {}",
+                position_name(tick, self.bar),
+                sound_name(note, self.pads)
+            ),
+        };
+        let t = cx.theme.clone();
+        let size = t.size_small;
+        let w = cx.measure(FontId::Sans, size, &text) + 20;
+        let h = 30;
+        // Above the finger, clear of it, kept on the roll.
+        let x = (d.now.0 - w / 2).clamp(g.roll.x, (g.roll.right() - w).max(g.roll.x));
+        let y = (d.now.1 - 64 - h).max(g.roll.y + 2);
+        let r = Rect::new(x, y, w, h);
+        cx.canvas.fill_round_rect(r, 6, t.raised);
+        cx.canvas.stroke_round_rect(r, 6, 1, t.outline);
+        cx.text(
+            FontId::Sans,
+            size,
+            r,
+            Align::Center,
+            t.ink_on(t.raised),
+            &text,
+        );
     }
 
     /// The overview strip: the whole clip, its notes as marks, the part
@@ -2537,6 +2775,18 @@ impl Widget for NoteGrid {
                 out.push(Target::tap("note", i, format!("note {}", i + 1), nr));
             }
         }
+        // The picked notes' handles: dragged out, a start earlier and an
+        // end later.
+        for (i, [a, b]) in self.handles(&g) {
+            out.push(
+                Target::drag("handle", 2 * i, format!("note {} start", i + 1), a)
+                    .towards(-2 * HANDLE_W, 0),
+            );
+            out.push(
+                Target::drag("handle", 2 * i + 1, format!("note {} end", i + 1), b)
+                    .towards(2 * HANDLE_W, 0),
+            );
+        }
         // An empty place on the roll adds a note: its top left corner,
         // where the sample clips leave room.
         let spot = Rect::new(g.roll.x + 2, g.roll.y + 2, 12, 12);
@@ -2565,6 +2815,36 @@ impl Widget for NoteGrid {
         let busy = self.finger_now().is_some() || matches!(self.hand, Hand::Pinch(_));
         match phase {
             Touch::Down if busy && !mine => {
+                // A finger holding a note it picked: another finger on a
+                // note taps it into the picks or out of them, as it lifts
+                // (plan 1B.2); a finger elsewhere does nothing then.
+                let held = match self.hand {
+                    Hand::Press {
+                        finger,
+                        now,
+                        picked: true,
+                        ..
+                    }
+                    | Hand::Holding {
+                        finger,
+                        now,
+                        tap: None,
+                    } => Some((finger, now)),
+                    _ => None,
+                };
+                if let Some((finger, now)) = held {
+                    if let Some(i) = self.note_under(&g, x, y) {
+                        self.hand = Hand::Holding {
+                            finger,
+                            now,
+                            tap: Some((f, i, (x, y))),
+                        };
+                        return None;
+                    }
+                }
+                if matches!(self.hand, Hand::Holding { .. }) {
+                    return None;
+                }
                 // A second finger, or a third.
                 let on_roll = self.lens == Lens::Grid
                     && [g.roll, g.ruler, g.keys, g.overview, g.vel]
@@ -2584,7 +2864,11 @@ impl Widget for NoteGrid {
                 };
                 None
             }
-            Touch::Move | Touch::Up | Touch::Cancel if busy && !mine && !self.pinched(f) => None,
+            Touch::Move | Touch::Up | Touch::Cancel
+                if busy && !mine && !self.pinched(f) && !self.tapping(f) =>
+            {
+                None
+            }
             Touch::Down => {
                 // This finger's own gesture that never heard its lift ends.
                 self.drag = None;
@@ -2614,10 +2898,56 @@ impl Widget for NoteGrid {
                             ticks: 0,
                             notes: 0,
                             lane: None,
+                            handle: None,
                         });
                     }
                     Hand::Press { ref mut now, .. } => {
                         *now = (x, y);
+                        return None;
+                    }
+                    // The holding finger moves; a tapping finger that
+                    // moves away taps nothing.
+                    Hand::Holding { finger, now, tap } => {
+                        self.hand = if f == finger {
+                            Hand::Holding {
+                                finger,
+                                now: (x, y),
+                                tap,
+                            }
+                        } else {
+                            let far =
+                                |at: (i32, i32)| (x - at.0).abs().max((y - at.1).abs()) >= TAP_SLOP;
+                            Hand::Holding {
+                                finger,
+                                now,
+                                tap: tap.filter(|&(_, _, at)| !far(at)),
+                            }
+                        };
+                        return None;
+                    }
+                    Hand::Box { finger, at, .. } => {
+                        self.hand = Hand::Box {
+                            finger,
+                            at,
+                            now: (x, y),
+                        };
+                        return None;
+                    }
+                    // With Draw off, a finger moved on empty roll draws a
+                    // box: its notes are picked when it lifts.
+                    Hand::Wait {
+                        finger,
+                        at,
+                        moved: false,
+                        ..
+                    } if self.tool == Tool::Select
+                        && (x - at.0).abs().max((y - at.1).abs()) >= TAP_SLOP =>
+                    {
+                        self.hand = Hand::Box {
+                            finger,
+                            at,
+                            now: (x, y),
+                        };
                         return None;
                     }
                     // With Draw on, a finger moved on empty roll draws a
@@ -2711,6 +3041,21 @@ impl Widget for NoteGrid {
                 }
                 let n = self.notes.get(d.index)?;
                 let raw = g.v.tick_at(g.roll, x) - g.v.tick_at(g.roll, d.x);
+                if let Some(start) = d.handle {
+                    // The edge moves by whole snaps with Snap Auto, onto a
+                    // line with a fixed snap.
+                    let edge = if start { n.tick } else { n.tick + n.len };
+                    let ticks = match self.snap {
+                        s if self.snap_auto && s > 0 => (raw as f64 / s as f64).round() as Tick * s,
+                        _ => self.snapped(edge + raw) - edge,
+                    };
+                    self.drag = Some(Drag {
+                        ticks,
+                        now: (x, y),
+                        ..d
+                    });
+                    return None;
+                }
                 let ticks = match self.snap {
                     s if self.snap_auto && s > 0 => (raw as f64 / s as f64).round() as Tick * s,
                     _ => self.snapped(n.tick + raw) - n.tick,
@@ -2739,6 +3084,29 @@ impl Widget for NoteGrid {
                     Hand::Spent { .. } => {
                         self.hand = Hand::Idle;
                         return None;
+                    }
+                    // The holding finger lifts: nothing more; a tapping
+                    // finger lifts: its note joins the picks or leaves.
+                    Hand::Holding { finger, now, tap } => {
+                        if f == finger {
+                            self.hand = Hand::Idle;
+                            return None;
+                        }
+                        self.hand = Hand::Holding {
+                            finger,
+                            now,
+                            tap: None,
+                        };
+                        return match tap {
+                            Some((t, i, _)) if t == f && up => {
+                                Some(EventKind::Cell { row: ADD, col: i })
+                            }
+                            _ => None,
+                        };
+                    }
+                    Hand::Box { at, now, .. } => {
+                        self.hand = Hand::Idle;
+                        return if up { self.boxed(&g, at, now) } else { None };
                     }
                     // A tap on a note, unless a hold picked it.
                     Hand::Press { index, picked, .. } => {
@@ -2792,6 +3160,13 @@ impl Widget for NoteGrid {
                 }
                 if let Some(v) = d.lane {
                     return Some(EventKind::Value(v));
+                }
+                if let Some(start) = d.handle {
+                    let flag = if start { START_HANDLE } else { 0 };
+                    return (d.ticks != 0).then_some(EventKind::Stretch {
+                        index: d.index + flag,
+                        to: d.ticks,
+                    });
                 }
                 ((d.ticks, d.notes) != (0, 0)).then(|| EventKind::Marker {
                     index: d.index,
@@ -2888,6 +3263,8 @@ impl NoteGrid {
         match self.hand {
             Hand::Press { finger, now, .. }
             | Hand::Pen { finger, now, .. }
+            | Hand::Box { finger, now, .. }
+            | Hand::Holding { finger, now, .. }
             | Hand::Wait { finger, now, .. }
             | Hand::Scroll { finger, now, .. }
             | Hand::Spent { finger, now } => Some((finger, now.0, now.1)),
@@ -2898,6 +3275,116 @@ impl NoteGrid {
     /// Finger `f` is one of a pinch's.
     fn pinched(&self, f: u64) -> bool {
         matches!(self.hand, Hand::Pinch(p) if p.has(f))
+    }
+
+    /// Finger `f` taps a note while another holds one.
+    fn tapping(&self, f: u64) -> bool {
+        matches!(self.hand, Hand::Holding { tap: Some((t, ..)), .. } if t == f)
+    }
+
+    /// The topmost note under (`x`, `y`) on the roll (drawn last).
+    fn note_under(&self, g: &Geo, x: i32, y: i32) -> Option<usize> {
+        if !g.roll.contains(x, y) {
+            return None;
+        }
+        self.in_view(g)
+            .into_iter()
+            .rev()
+            .find(|&i| self.note_rect_in(g, i).is_some_and(|nr| nr.contains(x, y)))
+    }
+
+    /// With Draw off, the note nearest (`x`, `y`) in its row, up to
+    /// [`NEAR`] beside it (the plan's near miss).
+    fn note_near(&self, g: &Geo, x: i32, y: i32) -> Option<usize> {
+        if self.tool != Tool::Select || !g.roll.contains(x, y) {
+            return None;
+        }
+        let row = self.note_at(g, y)?;
+        self.in_view(g)
+            .into_iter()
+            .filter(|&i| self.notes[i].note == row)
+            .filter_map(|i| {
+                let nr = self.note_rect_in(g, i)?;
+                let off = (nr.x - x).max(x - (nr.right() - 1)).max(0);
+                (off <= NEAR).then_some((off, i))
+            })
+            .min()
+            .map(|(_, i)| i)
+    }
+
+    /// A picked note's handles, its start's and its end's: outside its
+    /// ends, or under it when it is narrower than a 1/16 at the zoom.
+    fn handles_of(&self, g: &Geo, nr: Rect) -> [Rect; 2] {
+        let sixteenth = (PPQ as f64 / 4.0 * g.v.ppt).round() as i32;
+        if nr.w >= sixteenth {
+            [
+                Rect::new(nr.x - HANDLE_W, nr.y, HANDLE_W, nr.h),
+                Rect::new(nr.right(), nr.y, HANDLE_W, nr.h),
+            ]
+        } else {
+            let mid = nr.x + nr.w / 2;
+            let y = nr.bottom() + 1;
+            [
+                Rect::new(mid - HANDLE_W, y, HANDLE_W, HANDLE_H),
+                Rect::new(mid, y, HANDLE_W, HANDLE_H),
+            ]
+        }
+    }
+
+    /// The picked notes in view that show handles, with them: none while
+    /// more than [`MAX_HANDLES`] are, or while a note is moved.
+    fn handles(&self, g: &Geo) -> Vec<(usize, [Rect; 2])> {
+        if self.lens != Lens::Grid
+            || self
+                .drag
+                .is_some_and(|d| d.lane.is_none() && d.handle.is_none())
+        {
+            return Vec::new();
+        }
+        let picked: Vec<usize> = self
+            .in_view(g)
+            .into_iter()
+            .filter(|&i| self.notes[i].selected)
+            .collect();
+        if picked.len() > MAX_HANDLES {
+            return Vec::new();
+        }
+        picked
+            .into_iter()
+            .filter_map(|i| Some((i, self.handles_of(g, self.note_rect_in(g, i)?))))
+            .collect()
+    }
+
+    /// The handle under (`x`, `y`): its note, and whether it is the
+    /// start's.
+    fn handle_at(&self, g: &Geo, x: i32, y: i32) -> Option<(usize, bool)> {
+        self.handles(g).into_iter().rev().find_map(|(i, [a, b])| {
+            if a.contains(x, y) {
+                Some((i, true))
+            } else if b.contains(x, y) {
+                Some((i, false))
+            } else {
+                None
+            }
+        })
+    }
+
+    /// A box from `at` to `now` on the roll, as the finger lifts: the
+    /// ticks and rows it covers, `Span` with [`BOX`] (plan 1B.2).
+    fn boxed(&self, g: &Geo, at: (i32, i32), now: (i32, i32)) -> Option<EventKind> {
+        let clamp_x = |x: i32| x.clamp(g.roll.x, g.roll.right() - 1);
+        let clamp_y = |y: i32| y.clamp(g.roll.y, g.roll.bottom() - 1);
+        let (x0, x1) = (clamp_x(at.0.min(now.0)), clamp_x(at.0.max(now.0)));
+        let (y0, y1) = (clamp_y(at.1.min(now.1)), clamp_y(at.1.max(now.1)));
+        let high = self.note_at(g, y0)?;
+        let low = self.note_at(g, y1)?;
+        let from = g.v.tick_at(g.roll, x0).max(0);
+        let to = (g.v.tick_at(g.roll, x1) + 1).min(self.length);
+        Some(EventKind::Span {
+            index: BOX + (usize::from(low) << 8) + usize::from(high),
+            from,
+            to,
+        })
     }
 
     /// The view as an event, for the page when the fingers lift.
@@ -3042,19 +3529,35 @@ impl NoteGrid {
                 ticks: 0,
                 notes: 0,
                 lane: Some(lane_value(g, y)),
+                handle: None,
             });
             return None;
         }
         if !g.roll.contains(x, y) {
             return None;
         }
-        // The topmost note under the finger (drawn last).
-        if let Some(i) = self
-            .in_view(g)
-            .into_iter()
-            .rev()
-            .find(|&i| self.note_rect_in(g, i).is_some_and(|nr| nr.contains(x, y)))
-        {
+        // A picked note's handle (beside it, or under a short one), when
+        // no note is under the finger: its start or end follows the
+        // finger, and every picked note's with it.
+        if self.note_under(g, x, y).is_none() {
+            if let Some((i, start)) = self.handle_at(g, x, y) {
+                self.drag = Some(Drag {
+                    finger: f,
+                    index: i,
+                    x,
+                    y,
+                    now: (x, y),
+                    ticks: 0,
+                    notes: 0,
+                    lane: None,
+                    handle: Some(start),
+                });
+                return None;
+            }
+        }
+        // The topmost note under the finger (drawn last), or with Draw
+        // off the nearest beside it in its row.
+        if let Some(i) = self.note_under(g, x, y).or_else(|| self.note_near(g, x, y)) {
             // A tap, a hold or a drag: nothing goes until it is one.
             self.hand = Hand::Press {
                 finger: f,
@@ -3316,6 +3819,114 @@ mod tests {
         assert_eq!(c.notes.len(), 4);
         assert_eq!(EditAction::Tap { index: 0, rev: 9 }.rev(), Some(9));
         assert_eq!(EditAction::Empty { tick: 0, note: 1 }.rev(), None);
+    }
+
+    /// Picking (plan 1B.2): a box picks the notes sounding in it, in
+    /// place of the others; a note tapped while another is held joins the
+    /// picks or leaves them; a handle moves the picks' starts or ends, or
+    /// the note's alone when it wasn't picked.
+    #[test]
+    fn a_box_picks_a_held_note_adds_and_handles_change_starts_and_ends() {
+        let mut c = clip(&[
+            (0, 240, 60),
+            (240, 240, 62),
+            (960, 480, 64),
+            (1920, 240, 72),
+        ]);
+        let mut ed = Editor::new(0, 0, &c);
+        // A box over the first beat and a half, rows 60 to 64: the notes
+        // sounding there, whichever way it was drawn.
+        let done = ed.act(
+            EditAction::Pick {
+                from: 1200,
+                to: 100,
+                low: 64,
+                high: 60,
+            },
+            &c,
+        );
+        assert!(done.edit.is_empty());
+        assert_eq!(done.line, "edit: 3 picked");
+        assert_eq!(ticks_of(&c, &ed.sel), [(0, 60), (240, 62), (960, 64)]);
+        // A note that only sounds into the box counts; one past it doesn't.
+        ed.act(
+            EditAction::Pick {
+                from: 1000,
+                to: 1100,
+                low: 0,
+                high: 127,
+            },
+            &c,
+        );
+        assert_eq!(ticks_of(&c, &ed.sel), [(960, 64)]);
+        // Held and tapped: in, then out again.
+        ed.act(EditAction::Add { index: 3, rev: 0 }, &c);
+        assert_eq!(ticks_of(&c, &ed.sel), [(960, 64), (1920, 72)]);
+        assert_eq!(ed.sound, 72, "the note added is the one worked on");
+        ed.act(EditAction::Add { index: 2, rev: 0 }, &c);
+        assert_eq!(ticks_of(&c, &ed.sel), [(1920, 72)]);
+        assert_eq!(EditAction::Add { index: 0, rev: 4 }.rev(), Some(4));
+        // An end handle of a picked note: every pick's end, one edit.
+        ed.act(EditAction::Add { index: 0, rev: 0 }, &c);
+        let done = run(
+            &mut ed,
+            &mut c,
+            EditAction::Resize {
+                index: 0,
+                rev: 0,
+                start: false,
+                ticks: 240,
+            },
+        );
+        assert_eq!(done.line, "edit: 2 notes' ends moved");
+        let lens = |c: &Clip| -> Vec<(Tick, Tick, u8)> {
+            let mut v: Vec<_> = c.notes.iter().map(|n| (n.tick, n.len, n.note)).collect();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(
+            lens(&c),
+            [
+                (0, 480, 60),
+                (240, 240, 62),
+                (960, 480, 64),
+                (1920, 480, 72)
+            ]
+        );
+        assert_eq!(ed.sel.len(), 2, "they stay picked");
+        // A start handle of a note not picked: it alone, picked after;
+        // its end stays.
+        let i = c.notes.iter().position(|n| n.note == 64).unwrap();
+        run(
+            &mut ed,
+            &mut c,
+            EditAction::Resize {
+                index: i,
+                rev: 0,
+                start: true,
+                ticks: -240,
+            },
+        );
+        assert_eq!(
+            lens(&c),
+            [
+                (0, 480, 60),
+                (240, 240, 62),
+                (720, 720, 64),
+                (1920, 480, 72)
+            ]
+        );
+        assert_eq!(ticks_of(&c, &ed.sel), [(720, 64)]);
+        assert_eq!(
+            EditAction::Resize {
+                index: 0,
+                rev: 7,
+                start: true,
+                ticks: 1
+            }
+            .rev(),
+            Some(7)
+        );
     }
 
     #[test]
@@ -4183,10 +4794,117 @@ mod tests {
             }) => assert_eq!(to - from, 240),
             other => panic!("{other:?}"),
         }
-        // A drag on empty roll with Draw off sends nothing (yet).
+        // A drag on empty roll with Draw off draws a box (plan 1B.2).
         g.touch(7, Touch::Down, ex, ey, R);
         g.touch(7, Touch::Move, ex + beat, ey, R);
-        assert_eq!(g.touch(7, Touch::Up, ex + beat, ey, R), None);
+        assert!(matches!(
+            g.touch(7, Touch::Up, ex + beat, ey, R),
+            Some(EventKind::Span { index, .. }) if box_of(index) == Some((50, 50))
+        ));
+    }
+
+    /// Picking on the roll (plan 1B.2): a drag on empty roll with Draw off
+    /// draws a box and picks what it covers as it lifts; a finger holding
+    /// a note lets another tap notes into the picks or out; a picked
+    /// note's handles drag its start or end (under a short note), drawn
+    /// where they go over an outline of where they were, with a readout;
+    /// with Draw off a near miss beside a note gets it.
+    #[test]
+    fn a_box_a_held_note_and_handles_pick_and_change_notes() {
+        let mut g = grid();
+        let (n0, n1) = (g.note_rect(R, 0).unwrap(), g.note_rect(R, 1).unwrap());
+        let beat = (f64::from(g.geo(R).roll.w) / 4.0).round() as i32;
+        // A box from right of the picked note down to the first one.
+        let before = painted(&g);
+        let at = (n1.right() + 60, n1.y + 2);
+        assert_eq!(g.touch(1, Touch::Down, at.0, at.1, R), None);
+        assert_eq!(g.touch(1, Touch::Move, n0.x + 5, n0.bottom() - 2, R), None);
+        assert!(
+            differ_in(&before, &painted(&g), g.geo(R).roll),
+            "the box shows"
+        );
+        match g.touch(1, Touch::Up, n0.x + 5, n0.bottom() - 2, R) {
+            Some(EventKind::Span { index, from, to }) => {
+                assert_eq!(box_of(index), Some((50, 52)));
+                assert!(from < 240 && to > 1440, "{from}..{to}");
+            }
+            other => panic!("{other:?}"),
+        }
+        // Hold a note, then tap another: it joins or leaves the picks as
+        // the tapping finger lifts; a tap that moves away does nothing,
+        // and the holding finger's lift sends nothing.
+        let (x0, y0) = mid(n0);
+        let (x1, y1) = mid(n1);
+        g.touch(2, Touch::Down, x0, y0, R);
+        assert_eq!(g.tick(0.5), Some(EventKind::Select(0)));
+        assert_eq!(g.touch(3, Touch::Down, x1, y1, R), None);
+        assert_eq!(
+            g.touch(3, Touch::Up, x1, y1, R),
+            Some(EventKind::Cell { row: ADD, col: 1 })
+        );
+        g.touch(4, Touch::Down, x1, y1, R);
+        g.touch(4, Touch::Move, x1 + 2 * TAP_SLOP, y1, R);
+        assert_eq!(g.touch(4, Touch::Up, x1 + 2 * TAP_SLOP, y1, R), None);
+        assert_eq!(g.touch(2, Touch::Up, x0, y0, R), None);
+        // The picked note's end handle: a beat later, drawn as it goes,
+        // with its old place outlined and a readout.
+        let before = painted(&g);
+        let end = (n1.right() + HANDLE_W / 2, y1);
+        assert_eq!(g.touch(5, Touch::Down, end.0, end.1, R), None);
+        assert_eq!(g.touch(5, Touch::Move, end.0 + beat, end.1, R), None);
+        let grown = g.note_rect(R, 1).unwrap().right() - n1.right();
+        assert!((grown - beat).abs() <= 1, "{grown} {beat}");
+        assert!(differ_in(&before, &painted(&g), g.geo(R).roll));
+        assert_eq!(
+            g.touch(5, Touch::Up, end.0 + beat, end.1, R),
+            Some(EventKind::Stretch { index: 1, to: 960 })
+        );
+        assert_eq!(g.note_rect(R, 1), Some(n1), "back until the clip says");
+        // Its start handle, a beat earlier.
+        let start = (n1.x - HANDLE_W / 2, y1);
+        g.touch(6, Touch::Down, start.0, start.1, R);
+        g.touch(6, Touch::Move, start.0 - beat, start.1, R);
+        assert_eq!(
+            g.touch(6, Touch::Up, start.0 - beat, start.1, R),
+            Some(EventKind::Stretch {
+                index: 1 + START_HANDLE,
+                to: -960
+            })
+        );
+        // A note narrower than a 1/16: its handles hang below it.
+        g.notes[1].len = 60;
+        let short = g.note_rect(R, 1).unwrap();
+        let below = (
+            short.x + short.w / 2 + HANDLE_W / 2,
+            short.bottom() + HANDLE_H / 2,
+        );
+        g.touch(7, Touch::Down, below.0, below.1, R);
+        g.touch(7, Touch::Move, below.0 + beat, below.1, R);
+        assert!(matches!(
+            g.touch(7, Touch::Up, below.0 + beat, below.1, R),
+            Some(EventKind::Stretch { index: 1, .. })
+        ));
+        // Swept as controls: both handles of the picked note.
+        let handles: Vec<_> = g
+            .targets(R)
+            .into_iter()
+            .filter(|t| t.id == "handle")
+            .collect();
+        assert_eq!(handles.len(), 2);
+        // A near miss beside the first note, Draw off: that note.
+        let near = (n0.right() + NEAR / 2, y0);
+        g.touch(8, Touch::Down, near.0, near.1, R);
+        assert_eq!(
+            g.touch(8, Touch::Up, near.0, near.1, R),
+            Some(EventKind::Toggle(0))
+        );
+        // With Draw on the same place is empty: a note goes in there.
+        g.tool = Tool::Draw;
+        g.touch(9, Touch::Down, near.0, near.1, R);
+        assert!(matches!(
+            g.touch(9, Touch::Up, near.0, near.1, R),
+            Some(EventKind::Cell { row: 50, .. })
+        ));
     }
 
     #[test]

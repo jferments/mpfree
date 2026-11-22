@@ -31,8 +31,8 @@ use std::collections::BTreeMap;
 
 use crate::editor::zoom::RollView;
 use crate::editor::{
-    drop_of, edit_rows, pads, step_name, EditAction, Editor, Lens, LockMark, NoteBox, NoteGrid,
-    Tool, EDIT_BUTTON, PEN, SNAP_AUTO_T, STEP_FALLBACK,
+    box_of, drop_of, edit_rows, pads, step_name, EditAction, Editor, Lens, LockMark, NoteBox,
+    NoteGrid, Tool, ADD, EDIT_BUTTON, PEN, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK,
 };
 use crate::list::{
     ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LOOP, LIST_PLAY, LIST_REMOVE, LIST_SONG,
@@ -203,10 +203,10 @@ pub const EDIT_DRAWER_LAYOUT: &str =
     "col(header:60, row(col(transport:44, row(notes:*, col(edit-options:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
 /// The hint line under the note editor's piano roll, Draw off.
 pub const EDIT_HINT: &str =
-    "Tap a note: pick it   ·   drag: move   ·   double tap: a new note   ·   ERASE + tap: erase   ·   two fingers: zoom and scroll   ·   Edit, TC or the wheel: the options";
+    "Tap: pick   ·   drag: move   ·   drag empty space: box   ·   hold one, tap more: add   ·   handles: start, length   ·   double tap: new note   ·   ERASE + tap: erase   ·   two fingers: zoom";
 /// The hint line under the piano roll with Draw on (piano roll plan 1B.1).
 pub const EDIT_DRAW_HINT: &str =
-    "Draw: tap a note in, or a short one out   ·   drag: a long note   ·   hold a note: pick it   ·   two fingers: zoom and scroll   ·   Edit, TC or the wheel: the options";
+    "Draw: tap a note in, or a short one out   ·   drag: a long note   ·   hold a note: pick, tap more: add   ·   handles: start, length   ·   ERASE + tap: erase   ·   two fingers: zoom";
 /// The hint line under the note editor's list.
 pub const EDIT_LIST_HINT: &str =
     "Tap a row to pick its note   ·   ERASE + tap: erase   ·   SHIFT + wheel: scroll   ·   Edit, TC or the wheel: the options";
@@ -1932,14 +1932,29 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                 EventKind::Select(i) => EditAction::Note { index: i, rev },
                 EventKind::Toggle(i) => EditAction::Tap { index: i, rev },
                 EventKind::Cell { row: PEN, col } => EditAction::Step(col as Tick),
+                EventKind::Cell { row: ADD, col } => EditAction::Add { index: col, rev },
                 EventKind::Cell { row, col } => EditAction::Empty {
                     tick: col as Tick,
                     note: u8::try_from(row).ok()?,
                 },
-                EventKind::Span { index, from, to } => EditAction::Draw {
-                    tick: from,
-                    note: u8::try_from(index).ok()?,
-                    len: to - from,
+                EventKind::Span { index, from, to } => match box_of(index) {
+                    Some((low, high)) => EditAction::Pick {
+                        from,
+                        to,
+                        low,
+                        high,
+                    },
+                    None => EditAction::Draw {
+                        tick: from,
+                        note: u8::try_from(index).ok()?,
+                        len: to - from,
+                    },
+                },
+                EventKind::Stretch { index, to } => EditAction::Resize {
+                    index: index % START_HANDLE,
+                    rev,
+                    start: index >= START_HANDLE,
+                    ticks: to,
                 },
                 EventKind::Marker { index, frame } => {
                     let (ticks, notes) = drop_of(frame);
@@ -5116,6 +5131,75 @@ impl TimePage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Picking on the roll (piano roll plan 1B.2): a box, a note tapped
+    /// while another is held and a handle dragged become the editor's
+    /// actions; a drawn note's `Span` stays a drawn note.
+    #[test]
+    fn the_rolls_picks_and_handles_become_editor_actions() {
+        use crate::editor::BOX;
+        let st = TimeState::default();
+        let ev = |kind| {
+            action(
+                &UiEvent {
+                    widget: NOTES.into(),
+                    kind,
+                },
+                &st,
+            )
+        };
+        let edit = |a| Some(TimeAction::Edit(a));
+        assert_eq!(
+            ev(EventKind::Span {
+                index: BOX + (50 << 8) + 52,
+                from: 0,
+                to: 960
+            }),
+            edit(EditAction::Pick {
+                from: 0,
+                to: 960,
+                low: 50,
+                high: 52
+            })
+        );
+        assert_eq!(
+            ev(EventKind::Span {
+                index: 50,
+                from: 0,
+                to: 240
+            }),
+            edit(EditAction::Draw {
+                tick: 0,
+                note: 50,
+                len: 240
+            })
+        );
+        assert_eq!(
+            ev(EventKind::Cell { row: ADD, col: 3 }),
+            edit(EditAction::Add { index: 3, rev: 0 })
+        );
+        assert_eq!(
+            ev(EventKind::Stretch {
+                index: 2 + START_HANDLE,
+                to: -240
+            }),
+            edit(EditAction::Resize {
+                index: 2,
+                rev: 0,
+                start: true,
+                ticks: -240
+            })
+        );
+        assert_eq!(
+            ev(EventKind::Stretch { index: 2, to: 240 }),
+            edit(EditAction::Resize {
+                index: 2,
+                rev: 0,
+                start: false,
+                ticks: 240
+            })
+        );
+    }
     use mpfree_seq::{Clip, Note, Track};
     use mpfree_ui::widgets::{Header, Label};
     use mpfree_ui::{Align, Fonts, SoftCanvas, Theme};
