@@ -142,6 +142,17 @@ pub fn clips_card_hint(st: &TimeState) -> &str {
     st.converting().map_or(CLIPS_CARD_HINT, |c| c.line.as_str())
 }
 
+/// The hint line while COPY is held over the note editor (piano roll
+/// plan 1B.4).
+pub fn notes_copy_hint(st: &TimeState) -> String {
+    match &st.notes_copied {
+        Some(what) => format!(
+            "COPY held: tap empty space in any clip to paste {what} there   ·   tap a note: copy the picks instead   ·   UNDO takes it back"
+        ),
+        None => "COPY held: tap a note to copy the picked notes (or that one)   ·   then, COPY held again, empty space in any clip: the copy goes there".to_string(),
+    }
+}
+
 /// The hint line while COPY is held on the Clips grid: what a tap copies
 /// or pastes.
 pub fn copy_hint(st: &TimeState) -> String {
@@ -730,6 +741,10 @@ pub struct TimeState {
     /// The clip COPY + a clip copied last, by its name, for COPY + an
     /// empty slot to paste. The app sets it.
     pub clipboard: Option<String>,
+    /// The notes COPY + a note in the note editor copied last, as the
+    /// hint line says them ("4 notes from Verse"), for COPY + empty roll
+    /// to paste (piano roll plan 1B.4). The app sets it.
+    pub notes_copied: Option<String>,
     /// The takes that can be undone, oldest first, and the ones that can be
     /// redone, the next one last (as [`Takes`] keeps them).
     pub done: Vec<TakeRow>,
@@ -1051,6 +1066,7 @@ impl TimeState {
             clip_pick: None,
             also: 0,
             clipboard: None,
+            notes_copied: None,
             done: takes.done().iter().map(TakeRow::of).collect(),
             undone: takes.undone().iter().map(TakeRow::of).collect(),
             chips: Vec::new(),
