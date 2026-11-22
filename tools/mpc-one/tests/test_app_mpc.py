@@ -39,7 +39,10 @@ LINKED_SRC = (os.path.join(REPO, "rust", "mpfree-touch", "src"), os.path.join(RE
               # these; they only read (the disk image writer, ext2w, writes only through a WriteAt it is handed).
               os.path.join(REPO, "rust", "mpfree-factory", "src"), os.path.join(REPO, "rust", "mpfree-diskimage", "src"),
               # The Plugins place: mpcstore writes only under files/plugins/, mpcskin only reads.
-              os.path.join(REPO, "rust", "mpfree-mpcstore", "src"), os.path.join(REPO, "rust", "mpfree-mpcskin", "src"))
+              os.path.join(REPO, "rust", "mpfree-mpcstore", "src"), os.path.join(REPO, "rust", "mpfree-mpcskin", "src"),
+              # The audio tracks and the stream layer (audio tracks phase 3a, 22 Nov 2026): takes record to files
+              # under library/.work/audiotracks, and leftovers there move into the library's Recordings place.
+              os.path.join(REPO, "rust", "mpfree-audiotracks", "src"), os.path.join(REPO, "rust", "mpfree-stream", "src"))
 # The two writers the storage spec allows (approved by Jay 12 Nov 00:56Z): mpfree-store under the folder it is
 # given (settings/ and files/), and mpfree-library under the library/ folder in it. The library is linked since
 # the Pads tab's browser (12 Nov 2026); its write sites are reviewed line by line below.
@@ -171,7 +174,9 @@ LIBRARY_OPENS = (
 # mpfree-prof/alloc.rs holds the counting allocator, the crate's only unsafe code. It compiles only with the
 # crate's counting-alloc feature, which mpfree does not enable (mpfree-bench does), so it never
 # reaches the pad player and is left out of the scan.
-NOT_LINKED = ("mpfree-prof/alloc.rs",)
+# mpfree-stream's testkit (marked sounds, the model stick) is built only with its `testkit` feature, which only
+# its own tests and the audio tracks' tests turn on.
+NOT_LINKED = ("mpfree-prof/alloc.rs", "mpfree-stream/testkit.rs")
 NEW = "6.18.44-fake-rt6"
 APPLETS = ("sh", "cat", "grep", "readlink", "ls", "df", "tail", "sha256sum", "rm", "mkdir", "mv", "chmod", "sleep")
 
@@ -1319,7 +1324,19 @@ class StaticTests(unittest.TestCase):
                     # midi.log.1 there at 1 MiB, or when an earlier start left one. Its folder is never made.
                     # Save log goes through mpfree-store (files/midi-logs/ under --data).
                     ("mpfree-app/midi_log.rs",
-                     "fs::rename(self.dir.join(FILE), self.dir.join(OLD)).map_err(|e| self.say(e))?;")} \
+                     "fs::rename(self.dir.join(FILE), self.dir.join(OLD)).map_err(|e| self.say(e))?;"),
+                    # The stream layer's one file layer (mpfree-stream/fsio.rs, StdFs), which only the audio
+                    # tracks' recorder and its recovery use (mpfree-audiotracks/files.rs), on the folder the app
+                    # gives them: library/.work/audiotracks (Library::work_dir, under --data). A take's file is
+                    # finished by renaming it to NAME_ID.wav there, and its checkpoint is removed once it is done.
+                    ("mpfree-stream/fsio.rs", "fs::rename(from, to)"),
+                    ("mpfree-stream/fsio.rs", "fs::remove_file(path)"),
+                    # The audio tracks (files.rs): once a project save has copied a take into its samples/, the
+                    # take's copy in the work folder goes (only a file directly in that folder); at start, takes a
+                    # cut-off run left there are moved into the library's Recordings place under a free name
+                    # (never over a file), regular files only (symlink_metadata).
+                    ("mpfree-audiotracks/files.rs", "let _ = std::fs::remove_file(old);"),
+                    ("mpfree-audiotracks/files.rs", "std::fs::rename(&from, &to)?;")} \
                    | set(LIBRARY_NEEDLES) | set(PLUGIN_STORE_NEEDLES)
         for name, code in self.program_sources():
             for line in code.splitlines():
@@ -1383,6 +1400,13 @@ class StaticTests(unittest.TestCase):
             "let mut old = OpenOptions::new().append(true).open(self.dir.join(FILE)).map_err(|e| self.say(e))?;",
             "let f = OpenOptions::new().create(true).write(true).truncate(true).mode(0o644).open(self.dir.join(FILE))"
             ".map_err(|e| self.say(e))?;",
+            # mpfree-stream/fsio.rs (StdFs): the audio tracks' files in library/.work/audiotracks: a take's file
+            # and its checkpoint, made new (create_new); recovery's file for the stretch past a cut-off take's last
+            # checkpoint, beside it (create, truncate); and either opened again to write on
+            "let f = OpenOptions::new().read(true).write(true).open(path)?;",
+            "o.read(true).write(true);",
+            "o.create_new(true);",
+            "o.create(true).truncate(true);",
         )
         expected += LIBRARY_OPENS + PLUGIN_STORE_OPENS
         self.assertEqual(sorted(texts), sorted(expected), "\n".join(texts))
@@ -1391,7 +1415,7 @@ class StaticTests(unittest.TestCase):
                                  "mpfree-app/midi_log.rs",
                                  "mpfree-app/setup.rs", "mpfree-app/imagecopy.rs", "mpfree-store/lib.rs",
                                  "mpfree-library/lib.rs", "mpfree-library/project.rs", "mpfree-library/kit.rs",
-                                 "mpfree-mpcstore/install.rs"}, files)
+                                 "mpfree-mpcstore/install.rs", "mpfree-stream/fsio.rs"}, files)
         # The eMMC's content partition is only ever opened read-only, through its Paths field.
         setup = dict(self.program_sources())["mpfree-app/setup.rs"]
         code_lines = [ln.strip() for ln in setup.splitlines() if not ln.strip().startswith("//")]
