@@ -3,8 +3,10 @@
 //! One program, one step per run, paced from the workstation by
 //! tools/mpc-one/host_app_mpc.py:
 //!
-//!   inventory          read-only: sound cards, PCM and MIDI devices, input
-//!                      devices, framebuffer, panel rotation, RT limits
+//!   inventory          read-only: sound cards, PCM and MIDI devices, the
+//!                      sample rates the audio driver would accept (asked,
+//!                      never set), input devices, framebuffer, panel
+//!                      rotation, RT limits
 //!   screen             draws the mpfree card on /dev/fb0
 //!   touch --seconds N  reads the touchscreen (no grab) and shows the contacts
 //!   pads --seconds N [--keepalive]
@@ -146,6 +148,7 @@ mod presets;
 mod preview;
 mod project;
 mod qlink_touch;
+mod rate_probe;
 mod rec_arm;
 mod rec_list;
 mod remote;
@@ -914,7 +917,16 @@ fn inventory(o: &Options) -> Result<(), String> {
         }
     }
     match audio_card() {
-        Ok(n) => out.say(&format!("audio card for the click: {n} ({AUDIO_CARD_ID})")),
+        Ok(n) => {
+            out.say(&format!("audio card for the click: {n} ({AUDIO_CARD_ID})"));
+            // DSP quality step 0.3: which rates the driver would accept,
+            // asked with HW_REFINE only (rate_probe.rs keeps the rules).
+            for dir in ['p', 'c'] {
+                for line in rate_probe::probe_path(&format!("/dev/snd/pcmC{n}D0{dir}")) {
+                    out.say(&line);
+                }
+            }
+        }
         Err(e) => out.say(&format!("audio card: {e}")),
     }
     match midi_card() {
@@ -12223,6 +12235,12 @@ fn open_acva(out: &mut Out, periods: u32) -> Result<alsa::Pcm, String> {
     let path = format!("/dev/snd/pcmC{card}D0p");
     out.say(&format!("opening {path} ({AUDIO_CARD_ID})"));
     let pcm = alsa::Pcm::open_playback(&path).map_err(|e| format!("{path}: {e}"))?;
+    // DSP quality step 0.3: on a stick that starts the pad player at power-on
+    // it holds this device, so inventory sees it busy; ask the same read-only
+    // questions here, on the device just opened, before the stream is set up.
+    for line in rate_probe::probe(&pcm) {
+        out.say(&format!("rate probe {path}: {line}"));
+    }
     let mut hw = alsa::HwParams::stock_playback(periods);
     if let Err(e) = pcm.hw_params(&mut hw) {
         out.say(&format!("the stock stream settings were refused: {e}"));

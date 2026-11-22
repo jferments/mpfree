@@ -56,7 +56,7 @@ These buffer durations are **NOT end-to-end latency measurements**, and are not 
 
 **Do not confuse `S32_LE` with "32-bit acoustic precision":** it is the ALSA *container* format. The effective number of valid converter bits, converter noise floor and any software sign/bit alignment have **not** been established.
 
-**Do not confuse the configured 44.1 kHz stream with a driver capability matrix:** the supported rates, 16-bit vs 24-bit container formats, channel arrangements and period limits remain UNVERIFIED. A future controlled opt-in ALSA probe will enumerate capabilities only after the vendor application is safely released.
+**Do not confuse the configured 44.1 kHz stream with a driver capability matrix:** the supported rates, 16-bit vs 24-bit container formats, channel arrangements and period limits remain UNVERIFIED. A future controlled opt-in ALSA probe will enumerate capabilities only after the vendor application is safely released. That probe is now `mpfree inventory`'s rate probe ([DSP quality](../design/dsp-quality.md#the-rate-probe), step 0.3): HW_REFINE questions only, on our test stick where Akai's app is not running; it has not run on the MPC yet.
 
 ### Software thresholds need interpretation
 
