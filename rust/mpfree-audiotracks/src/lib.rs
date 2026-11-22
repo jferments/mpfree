@@ -27,6 +27,8 @@
 //!   start and plays on [`FADE`] frames past its end fading out (equal
 //!   power), so two regions that meet crossfade there: a punch in or out,
 //!   or a comp boundary, is seamless when the takes are of the same part.
+//!   Where the same take runs straight on (a Split), nothing fades, and a
+//!   gain change there ramps over [`FADE`] frames (`Join`).
 //! - **Time.** A region sits on song ticks, so it stays on its bar when the
 //!   tempo before it changes. Its audio plays at the rate it was recorded
 //!   at, from the region's start, as a DAW plays audio that is not warped:
@@ -911,6 +913,38 @@ fn fade_table() -> [f32; FADE + 1] {
         *v = ((j as f64 / FADE as f64) * std::f64::consts::FRAC_PI_2).sin() as f32;
     }
     t
+}
+
+/// How a region meets its neighbour on the lane.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Join {
+    /// Anything else (a comp boundary, a punch, another take): each side
+    /// fades over [`FADE`] frames, equal power.
+    Fade,
+    /// The same take running straight on at the same gain (a Split, or
+    /// rows cut from one region): no fade, so the audio is untouched.
+    Straight,
+    /// The same take running on at another gain: equal gain over
+    /// [`FADE`] frames, which on the same audio is a straight ramp from
+    /// one gain to the other. Equal power there would be 3 dB louder in
+    /// the middle.
+    Ramp,
+}
+
+/// How `b` meets `a`, the region before it, along `map`: the same take
+/// running on means `b` starts where `a` ends, on the frame `a` would
+/// play next, and neither fades there.
+fn join(a: &Region, b: &Region, map: &TempoMap, rate: u32) -> Join {
+    let runs_on = b.start == a.end
+        && b.take == a.take
+        && a.fade_out == 0
+        && b.fade_in == 0
+        && b.src == a.src + frames_from(map, a.start as f64, a.end as f64, rate).round() as i64;
+    match (runs_on, a.gain == b.gain) {
+        (false, _) => Join::Fade,
+        (true, true) => Join::Straight,
+        (true, false) => Join::Ramp,
+    }
 }
 
 /// The audio tracks: see the module notes.
@@ -2858,7 +2892,7 @@ impl AudioTracks {
             .regions()
             .partition_point(|r| r.end as f64 + tail <= tick0);
         let (regions, buf) = (&tr.regions[..tr.n], &mut tr.buf);
-        for r in &regions[first..] {
+        for (i, r) in regions.iter().enumerate().skip(first) {
             if r.start as f64 >= tick1 {
                 break;
             }
@@ -2869,7 +2903,20 @@ impl AudioTracks {
             // and the region's length in frames.
             let e0 = frames_from(map, r.start as f64, tick0, rate).round() as i64;
             let len_f = frames_from(map, r.start as f64, r.end as f64, rate).round() as i64;
-            let stop = len_f + FADE as i64;
+            // How it meets the regions either side ([`Join`]).
+            let before = match i.checked_sub(1) {
+                Some(h) => join(&regions[h], r, map, rate),
+                None => Join::Fade,
+            };
+            let after = regions
+                .get(i + 1)
+                .map_or(Join::Fade, |n| join(r, n, map, rate));
+            let stop = len_f
+                + if after == Join::Straight {
+                    0
+                } else {
+                    FADE as i64
+                };
             if e0 >= stop || e0 + len as i64 <= 0 {
                 continue;
             }
@@ -2882,10 +2929,19 @@ impl AudioTracks {
                 }
                 let mut g = r.gain;
                 if e < FADE as i64 {
-                    g *= fade[e as usize];
+                    match before {
+                        Join::Fade => g *= fade[e as usize],
+                        Join::Ramp => g *= e as f32 / FADE as f32,
+                        Join::Straight => {}
+                    }
                 }
                 if e >= len_f {
-                    g *= fade[(FADE as i64 - (e - len_f)) as usize];
+                    // Never Straight: then `stop` is `len_f`.
+                    let j = FADE as i64 - (e - len_f);
+                    match after {
+                        Join::Ramp => g *= j as f32 / FADE as f32,
+                        _ => g *= fade[j as usize],
+                    }
                 }
                 if fi > 0 && e < fi {
                     g *= e as f32 / fi as f32;
@@ -2896,7 +2952,11 @@ impl AudioTracks {
                 g
             };
             let dst = &mut buf[2 * off..2 * (off + len)];
-            let plain_from = (FADE as i64).max(fi);
+            let plain_from = if before == Join::Straight {
+                fi
+            } else {
+                (FADE as i64).max(fi)
+            };
             // The whole run past the fades: one gain.
             let plain = e0 >= plain_from && e0 + len as i64 <= len_f - fo;
             let (g, k) = (r.gain, r.src + e0);

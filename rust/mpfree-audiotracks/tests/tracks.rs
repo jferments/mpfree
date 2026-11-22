@@ -370,6 +370,48 @@ fn any_period_size_gives_the_same_output() {
     }
 }
 
+/// A Split in held audio leaves it untouched: the halves are one take
+/// running on, so neither fades there (equal power over the same audio
+/// would be 3 dB louder for a moment). A gain change there ramps.
+#[test]
+fn a_split_in_held_audio_plays_as_the_whole_region_did() {
+    let play = |splits: &[i64], right_gain: Option<f32>| {
+        let mut r = one_bar(128);
+        for &at in splits {
+            r.cmd(A::Split { track: 0, at });
+        }
+        if let Some(gain) = right_gain {
+            r.cmd(A::SetGain {
+                track: 0,
+                at: BAR_TICKS - 1,
+                gain,
+            });
+        }
+        r.run_to(r.frame + 1);
+        assert_eq!(r.a.regions(0).len(), splits.len() + 1);
+        let p = r.frame + 10;
+        r.at(p, T::PlayStart);
+        r.run_to(p + BAR + 1000);
+        (p, r.out, r.a.regions(0).to_vec())
+    };
+    let (p, whole, _) = play(&[], None);
+    let (q, split, _) = play(&[1001, BAR_TICKS / 2, BAR_TICKS / 2 + 7], None);
+    assert_eq!(p, q);
+    let span = 2 * p as usize..2 * (p + BAR) as usize;
+    assert!(whole[span.clone()] == split[span], "sample for sample");
+    // At half the gain past the split: a straight ramp from 1 to 0.5 over
+    // the fade, not a step and not a bump.
+    let (q, out, rs) = play(&[BAR_TICKS / 2], Some(0.5));
+    assert_eq!(p, q);
+    let at = p + rs[1].src as u64;
+    for j in 0..80u64 {
+        let x = (j as f32 / mpfree_audiotracks::FADE as f32).min(1.0);
+        let want = whole[2 * (at + j) as usize] * (1.0 - 0.5 * x);
+        let got = out[2 * (at + j) as usize];
+        assert!((got - want).abs() < 1e-6, "frame {j}: {got} vs {want}");
+    }
+}
+
 #[test]
 fn edits_split_move_erase_gain_and_fades() {
     let mut r = one_bar(256);

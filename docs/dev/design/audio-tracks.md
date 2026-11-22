@@ -41,7 +41,7 @@ The history keeps a step's snapshots together: each carries its step's number, a
 
 ## No clicks
 
-Every region fades in over `FADE` (64) frames from its start and plays on `FADE` frames past its end while fading out, both equal power. Two regions that meet therefore crossfade over the same 1.5 ms. A punch in fades from the older take into the new one, a punch out back again, and a comp boundary between two passes of the same part is seamless. The demo's comp boundaries show no larger sample-to-sample jump than the music around them.
+Every region fades in over `FADE` (64) frames from its start and plays on `FADE` frames past its end while fading out, both equal power. Two regions that meet therefore crossfade over the same 1.5 ms. A punch in fades from the older take into the new one, a punch out back again, and a comp boundary between two passes of the same part is seamless. The demo's comp boundaries show no larger sample-to-sample jump than the music around them. Where one take runs straight on into the next region (a Split, with no fades there and the next region starting on the frame the first would play next), nothing fades, so the audio is untouched; equal power over the same audio would be 3 dB louder for a moment. If the two halves have different gains, the join ramps from one to the other over `FADE` frames with equal-gain fades (`Join` in `lib.rs`; test `tracks.rs` `a_split_in_held_audio_plays_as_the_whole_region_did`).
 
 ## Time
 
