@@ -2371,7 +2371,7 @@ mod tests {
             Some((1, true))
         );
         // The project keeps the pick.
-        let text = crate::project::mixer_text(&r.h.mixer, r.h.pad_mutes(), r.h.pad_solos());
+        let text = crate::project::mixer_text(&r.h.mixer, r.h.pad_mutes());
         assert!(text.contains("key="), "{text}");
     }
 

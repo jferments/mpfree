@@ -3631,7 +3631,7 @@ impl App {
                     MuteKeys::Off => "TRACK MUTE: the pads play again".to_string(),
                     MuteKeys::Tracks => self.mute_bank_line(),
                     MuteKeys::Pads => {
-                        "SHIFT + TRACK MUTE: each pad mutes itself in the kit".to_string()
+                        "SHIFT + TRACK MUTE: each pad mutes itself on this track".to_string()
                     }
                 }),
                 // The PAD BANK lights show the mute bank, or the kit's again.

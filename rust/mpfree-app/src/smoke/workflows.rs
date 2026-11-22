@@ -1613,35 +1613,40 @@ mod tests {
         });
     }
 
-    /// The Kick's speaker on Play and Pad 1's M in the pad mixer are one
-    /// mute: each shows what the other did.
+    /// The Kick's speaker on Play mutes the Kick on the track the steps
+    /// show (step 10: a pad mute is the track's); Pad 1's M in the pad
+    /// mixer mutes kit 1's channel, for every track, and leaves the
+    /// speaker as it is.
     #[test]
-    fn a_speaker_on_play_and_m_in_the_pad_mixer_are_one_mute() {
+    fn a_speaker_on_play_mutes_the_tracks_pad_and_m_in_the_pad_mixer_its_channel() {
         on_big_stack(|| {
             let mut s = Session::new();
             s.play_view("Beats");
             let kick = lane(&s, "Kick").0;
+            let t = s.time.steps().track;
             s.press("steps", "mute", "Kick speaker");
-            assert!(
-                s.mix.play_levels().pad_mutes & (1 << kick) != 0,
-                "the speaker muted pad 1"
+            assert_eq!(
+                s.time.pad_mutes(t),
+                Some((1 << kick, 0)),
+                "the speaker muted the track's Kick"
             );
             assert!(lane(&s, "Kick").2, "drawn muted");
+            assert_eq!(s.mix.pad_mutes(), 0, "no channel muted");
 
             s.press("header", "tab", "Mix");
             s.press("mixer", "view", "Pads").run_for(0.1);
-            assert!(strip(&s, "Pad 1").mute, "the pad mixer shows Pad 1 muted");
+            assert!(!strip(&s, "Pad 1").mute, "Pad 1's channel plays");
             s.press("mixer", "mute", "Pad 1 M").run_for(0.1);
-            assert!(!strip(&s, "Pad 1").mute);
-            assert_eq!(
-                s.mix.play_levels().pad_mutes & (1 << kick),
-                0,
-                "M let it play"
-            );
+            assert!(strip(&s, "Pad 1").mute);
+            assert_eq!(s.mix.pad_mutes(), 1, "M muted the channel");
 
             s.press("header", "tab", "Play");
             assert_eq!(s.view(), View::Play);
-            assert!(!lane(&s, "Kick").2, "the speaker shows it playing");
+            assert!(lane(&s, "Kick").2, "the speaker shows the track's mute");
+            s.press("steps", "mute", "Kick speaker");
+            assert!(!lane(&s, "Kick").2, "the speaker let it play");
+            assert_eq!(s.time.pad_mutes(t), Some((0, 0)));
+            assert_eq!(s.mix.pad_mutes(), 1, "the channel stays muted");
         });
     }
 
@@ -4319,12 +4324,13 @@ mod tests {
         });
     }
 
-    /// The kit's pad mutes in Perform (sequencer S4): SHIFT + TRACK MUTE's
-    /// pads wait for the bar line as the tracks' do, and land in the mixer
-    /// there; held TRACK MUTE over them solos a pad of the kit (waiting
-    /// too) and leaves the pads the kit's; STOP lands a change that waits.
+    /// A track's pad mutes in Perform (sequencer S4; step 10): SHIFT +
+    /// TRACK MUTE's pads wait for the bar line as the tracks' do, and the
+    /// selected track takes them there, its own and no channel; held
+    /// TRACK MUTE over them solos a pad (waiting too) and leaves the pads
+    /// mute keys; STOP lands a change that waits.
     #[test]
-    fn in_perform_a_kit_pad_mute_waits_for_the_bar_and_held_it_solos() {
+    fn in_perform_a_tracks_pad_mute_waits_for_the_bar_and_held_it_solos() {
         on_big_stack(|| {
             let mut s = Session::new();
             s.play_view("Beats");
@@ -4336,44 +4342,40 @@ mod tests {
             assert!(s.time.project().perform);
             s.button_with("SHIFT", "TRACK MUTE");
             assert_eq!(s.app.mute_keys(), crate::app::MuteKeys::Pads);
+            let t = s.app.track();
+            let name = s.time.project().tracks[t].name.clone();
             s.pad(0, 100, 0.05);
-            assert!(s.time.pad_waiting(0), "it waits");
-            assert_eq!(s.mix.pad_mutes(), 0);
-            assert!(
-                s.said()
-                    .iter()
-                    .any(|l| l == "pad mute: pad 1 muted on the next bar"),
-                "{:?}",
-                s.said()
-            );
+            assert!(s.time.pad_waiting(t, 0), "it waits");
+            assert_eq!(s.time.pad_mutes(t), Some((0, 0)));
+            let said = format!("pad mute: {name} A1 muted on the next bar");
+            assert!(s.said().contains(&said), "{:?}", s.said());
             s.run_for(0.1);
             let reading = s.screen.time.waiting_reading();
-            assert_eq!(reading.as_deref(), Some("Pad 1 at 2.1"));
+            assert_eq!(reading, Some(format!("{name} A1 at 2.1")));
             s.run_for(2.0);
-            assert_eq!(s.mix.pad_mutes(), 1, "landed on bar 2");
-            assert!(!s.time.pad_waiting(0) && s.time.mute_wait().is_none());
+            assert_eq!(s.time.pad_mutes(t), Some((1, 0)), "landed on bar 2");
+            assert_eq!(s.mix.pad_mutes(), 0, "no channel muted");
+            assert!(!s.time.pad_waiting(t, 0) && s.time.mute_wait().is_none());
+            let landed = format!("pad mute: at 2.1, {name} A1 muted");
             assert!(
-                s.said()
-                    .iter()
-                    .any(|l| l.contains("pad mute: at 2.1, pad 1 muted")),
+                s.said().iter().any(|l| l.contains(&landed)),
                 "{:?}",
                 s.said()
             );
-            // Held TRACK MUTE + pad 3: its solo waits, and the pads stay the
-            // kit's once TRACK MUTE is let go.
+            // Held TRACK MUTE + pad 3: its solo waits, and the pads stay
+            // mute keys once TRACK MUTE is let go.
             s.button_edge("TRACK MUTE", true);
             s.pad(2, 100, 0.05);
             s.button_edge("TRACK MUTE", false);
             assert_eq!(s.app.mute_keys(), crate::app::MuteKeys::Pads);
-            assert!(s.time.pad_waiting(2));
+            assert!(s.time.pad_waiting(t, 2));
             s.run_for(2.0);
-            assert_eq!(s.mix.pad_solos(), 1 << 2, "soloed on bar 3");
-            assert_eq!(s.mix.solo_silent() & 1, 1, "the kick is silent by it");
+            assert_eq!(s.time.pad_mutes(t), Some((1, 1 << 2)), "soloed on bar 3");
             // STOP lands a change that waits.
             s.pad(0, 100, 0.05);
-            assert!(s.time.pad_waiting(0));
+            assert!(s.time.pad_waiting(t, 0));
             s.button("STOP").run_for(0.1);
-            assert_eq!(s.mix.pad_mutes(), 0, "STOP landed it");
+            assert_eq!(s.time.pad_mutes(t), Some((0, 1 << 2)), "STOP landed it");
             assert!(s.time.mute_wait().is_none());
             s.button("TRACK MUTE");
         });

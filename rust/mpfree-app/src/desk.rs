@@ -265,6 +265,11 @@ impl Desk<'_> {
                 mix.play(p);
                 let _ = tell_throw_said(mix, out);
             }
+            // A lane's speaker: the pad muted on its track (step 10).
+            gui::FromUi::PadMute { track, pad, mute } => {
+                let line = time.pad_mute_now(track, pad, mute).unwrap_or_else(|e| e);
+                out.note(&line);
+            }
             gui::FromUi::Steps(a) => {
                 // ERASE + a lane's name: said in place of the hint.
                 let erase = matches!(a, time::StepAction::ClearPad { .. });

@@ -1313,6 +1313,15 @@ pub struct Track {
     /// "Follows transpose": the pads' Transpose moves this track with the
     /// armed one, so a bass and its chords change key together.
     pub follows: bool,
+    /// Its kit's pads muted on this track alone (the instrument redesign's
+    /// step 10, Jay's card of 22 Nov: a pad mute belongs to one track, as
+    /// the MPC's Pad Mute does), a bit each by kit pad (A1 is bit 0, H16
+    /// bit 127): the player leaves out this track's hits of them, and
+    /// another track on the same kit still plays them.
+    pub pad_mutes: u128,
+    /// Its kit's pads soloed on this track (TRACK MUTE held over the pad
+    /// mutes): while any is, the track's other pads are silent.
+    pub pad_solos: u128,
     pub slots: [Option<Clip>; SLOTS],
 }
 
@@ -1423,6 +1432,8 @@ impl Track {
             kind: TrackKind::Notes,
             transpose: Transpose::NONE,
             follows: false,
+            pad_mutes: 0,
+            pad_solos: 0,
             slots: Default::default(),
         }
     }
@@ -1455,6 +1466,8 @@ impl Track {
             kind,
             transpose,
             follows,
+            pad_mutes,
+            pad_solos,
             slots,
         } = self;
         *dest == other.dest
@@ -1468,7 +1481,21 @@ impl Track {
             && *kind == other.kind
             && *transpose == other.transpose
             && *follows == other.follows
+            && *pad_mutes == other.pad_mutes
+            && *pad_solos == other.pad_solos
             && *slots == other.slots
+    }
+
+    /// The kit pads whose hits this track leaves out (step 10): the ones
+    /// muted, and while any pad is soloed every pad that isn't, a bit each
+    /// as [`Track::pad_mutes`]. A muted pad stays silent soloed.
+    pub fn silent_pads(&self) -> u128 {
+        let solo = if self.pad_solos == 0 {
+            0
+        } else {
+            !self.pad_solos
+        };
+        self.pad_mutes | solo
     }
 
     /// A Loop track's input; None for a note track.

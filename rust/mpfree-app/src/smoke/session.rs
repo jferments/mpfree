@@ -490,11 +490,7 @@ impl Session {
     pub fn defaults(&self) -> crate::project::Defaults {
         crate::project::Defaults {
             tempo: self.app.settings.bpm,
-            mixer: crate::project::mixer_text(
-                &self.mix.mixer,
-                self.mix.pad_mutes(),
-                self.mix.pad_solos(),
-            ),
+            mixer: crate::project::mixer_text(&self.mix.mixer, self.mix.pad_mutes()),
             modu: self.mix.modu.save(),
             synth: crate::project::synth_text(&self.app.synth_settings(), &self.synth.sounds()),
         }
@@ -1101,8 +1097,10 @@ impl Session {
             self.mute_pressed[pad] = true;
             let (tap, more) = self.app.mute_tap();
             self.fx.extend(more);
-            let why = crate::no_mutes(&self.track_kits, self.app.track(), self.app.pad_page());
-            let line = crate::mute_key(tap, pad, why, &mut self.time, &mut self.mix);
+            let notes = self.mix.instruments.note_tracks();
+            let why = crate::no_mutes(&self.track_kits, notes, self.app.track());
+            let (t, page) = (self.app.track(), self.app.pad_page());
+            let line = crate::mute_key(tap, pad, t, page, why, &mut self.time);
             self.out.note(&line);
             return;
         }
@@ -1669,7 +1667,6 @@ impl Session {
             &mut r,
         );
         // The kit's pads whose mute or solo came due, as main.rs lands them.
-        crate::land_pads(&mut self.time, &mut self.mix);
         if let Some(h) = self.heard.as_mut() {
             h.extend(l.iter().zip(&r).flat_map(|(a, b)| [*a, *b]));
         }
@@ -1797,11 +1794,7 @@ impl Session {
             tempo: self.app.settings.bpm,
             swing: self.time.info().swing,
             clips: self.time.project().clone(),
-            mixer: crate::project::mixer_text(
-                &self.mix.mixer,
-                self.mix.pad_mutes(),
-                self.mix.pad_solos(),
-            ),
+            mixer: crate::project::mixer_text(&self.mix.mixer, self.mix.pad_mutes()),
             modu: self.mix.modu.save(),
             synth: crate::project::synth_text(&self.app.synth_settings(), &self.synth.sounds()),
             arp: self.app.arp_part(),
@@ -1893,6 +1886,11 @@ impl Session {
             }
         }
         self.kit_to = Some(self.track_kits.entry(self.app.track()));
+        // An old project's kit 1 pad mutes, each kit 1 track's (step 10).
+        if let Some(line) = crate::carry_pad_mutes(&mut self.mix, &self.track_kits, &mut self.time)
+        {
+            self.out.note(&line);
+        }
         std::mem::swap(&mut self.instrument_list, &mut o.instrument_list);
         // As main.rs: the app has the list before the pads part names one.
         let fx = self.app.set_instrument_list(&self.instrument_list);

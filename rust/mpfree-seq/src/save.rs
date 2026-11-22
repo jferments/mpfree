@@ -170,6 +170,13 @@ pub fn to_text(p: &Project) -> String {
         if t.follows {
             let _ = writeln!(s, "follows");
         }
+        // Its pad mutes and solos (step 10), by Akai's pad names: written
+        // only when it has any, and skipped by builds before them.
+        for (word, pads) in [("padmutes", t.pad_mutes), ("padsolos", t.pad_solos)] {
+            if pads != 0 {
+                let _ = writeln!(s, "{word}{}", pad_names(pads));
+            }
+        }
         for (slot, c) in t.slots.iter().enumerate() {
             if let Some(c) = c {
                 let _ = writeln!(s, "clip {slot} {} {}", c.length, one_line(&c.name));
@@ -585,6 +592,12 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 last(&mut p).transpose = t
             }
             ("follows", At::Track) => last(&mut p).follows = true,
+            ("padmutes", At::Track) => {
+                last(&mut p).pad_mutes = read_pads(w).ok_or_else(|| bad("padmutes"))?
+            }
+            ("padsolos", At::Track) => {
+                last(&mut p).pad_solos = read_pads(w).ok_or_else(|| bad("padsolos"))?
+            }
             ("arp", At::Track) => {
                 last(&mut p).through_arp = flag(w.next()).ok_or_else(|| bad("arp"))?
             }
@@ -908,6 +921,33 @@ fn close(p: &mut Project, at: &mut At) -> Result<(), String> {
     }
 }
 
+/// The kit pads of `pads` (a bit each, A1 = bit 0) by Akai's names, each
+/// after a space: " A3 B5 H16".
+fn pad_names(pads: u128) -> String {
+    let mut s = String::new();
+    for p in (0..128u32).filter(|&p| pads >> p & 1 == 1) {
+        let bank = char::from(b'A' + (p / 16) as u8);
+        let _ = write!(s, " {bank}{}", p % 16 + 1);
+    }
+    s
+}
+
+/// The kit pads named by `words` ("A3", "H16"), a bit each; None if one
+/// isn't a pad's name.
+fn read_pads<'a>(words: impl Iterator<Item = &'a str>) -> Option<u128> {
+    let mut pads = 0u128;
+    for w in words {
+        let mut chars = w.chars();
+        let bank = chars.next()?;
+        let n: u32 = chars.as_str().parse().ok()?;
+        if !('A'..='H').contains(&bank) || !(1..=16).contains(&n) {
+            return None;
+        }
+        pads |= 1u128 << ((bank as u32 - 'A' as u32) * 16 + n - 1);
+    }
+    Some(pads)
+}
+
 fn last(p: &mut Project) -> &mut Track {
     p.tracks.last_mut().expect("a track line came first")
 }
@@ -1094,6 +1134,42 @@ mod track_id_tests {
             assert!(from_text(&t).is_err(), "{bad}");
         }
         assert!(from_text(&text.replace("nexttrack 4", "nexttrack 0")).is_err());
+    }
+
+    /// Instrument redesign step 10: a track's pad mutes and solos come
+    /// back by Akai's pad names, on every bank; a track with none writes
+    /// no line, so a project without them reads as before; a name that
+    /// isn't a pad is refused; a build before them skips the lines.
+    #[test]
+    fn a_tracks_pad_mutes_and_solos_come_back_by_pad_name() {
+        let mut p = Project::new();
+        for i in 0..2 {
+            p.tracks.push(Track::new(&format!("Track {}", i + 1), i));
+        }
+        assert!(!to_text(&p).contains("pad"), "none, no line");
+        p.tracks[1].pad_mutes = 1 << 2 | 1 << 20 | 1 << 127;
+        p.tracks[1].pad_solos = 1 << 16;
+        let text = to_text(&p);
+        assert!(text.contains("\npadmutes A3 B5 H16\n"), "{text}");
+        assert!(text.contains("\npadsolos B1\n"), "{text}");
+        assert_eq!(from_text(&text).unwrap(), p);
+        assert_eq!(
+            p.tracks[1].silent_pads(),
+            !(1u128 << 16) | 1 << 2 | 1 << 20 | 1 << 127
+        );
+        assert_eq!(p.tracks[0].silent_pads(), 0);
+        for bad in ["padmutes A0", "padmutes I1", "padmutes A17", "padmutes 3"] {
+            assert!(
+                from_text(&text.replace("padmutes A3 B5 H16", bad)).is_err(),
+                "{bad}"
+            );
+        }
+        // As a build before step 10 reads it: the lines are skipped.
+        let older = text
+            .replace("padmutes", "zzmutes")
+            .replace("padsolos", "zzsolos");
+        let back = from_text(&older).unwrap();
+        assert_eq!(back.tracks[1].pad_mutes | back.tracks[1].pad_solos, 0);
     }
 }
 

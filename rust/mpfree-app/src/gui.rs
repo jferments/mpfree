@@ -329,7 +329,7 @@ fn rec_ready_hint(c: &play_widgets::RecChip) -> String {
 fn track_mute_hint(bank: usize, tracks: usize) -> String {
     format!(
         "TRACK MUTE · {}   ·   PAD BANK: other tracks   ·   green: playing, red: muted   ·   \
-         SHIFT + TRACK MUTE: the kit's pads   ·   TRACK MUTE: the pads play again",
+         SHIFT + TRACK MUTE: the track's pads   ·   TRACK MUTE: the pads play again",
         crate::app::mute_bank_words(bank, tracks)
     )
 }
@@ -434,7 +434,7 @@ fn perform_chip(page: &str) -> String {
 }
 
 const PAD_MUTE_HINT: &str =
-    "SHIFT + TRACK MUTE:   a pad mutes and unmutes itself in the kit   ·   red: muted   ·   \
+    "SHIFT + TRACK MUTE:   a pad mutes and unmutes itself on this track   ·   red: muted   ·   \
                              TRACK MUTE: tracks   ·   SHIFT + TRACK MUTE: the pads play again";
 const SHIFT_SYNTH_HINT: &str =
     "SHIFT +   touch a knob: MIDI Learn   ·   wheel: page   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
@@ -832,31 +832,16 @@ fn played_name(h: crate::instruments::Held, from: Option<usize>) -> String {
     }
 }
 
-/// What a pad mute says on a track that plays kit `kit` (counted from
-/// 0, and not kit 1): its pads play through the track's channel, which
-/// has the mute. `what` starts the line ("steps", "pad mute").
-pub fn other_kit_mutes(what: &str, kit: usize) -> String {
-    format!(
-        "{what}: Kit {}'s pads play through their track's channel: mute the track",
-        kit + 1
-    )
-}
-
-/// Why a kit pad has no mute of its own, in a line starting `what`: on
-/// kit `kit` (the armed track's, counted from 0) past kit 1 its pads play
-/// through their track's channel; on page `page` past A (PAD BANK) they
-/// have no pad strips, which only kit 1's pads A1-A16 have until any pad
-/// can have its own channel. None for those 16, and for no kit (the
-/// synth's pads).
-pub fn no_pad_mutes(what: &str, kit: Option<usize>, page: usize) -> Option<String> {
-    match kit? {
-        0 if page == 0 => None,
-        0 => Some(format!(
-            "{what}: pads {}-{} have no mixer strips of their own yet (A1-A16 have): mute the track",
-            crate::app::kit_pad_name(page * 16),
-            crate::app::kit_pad_name(page * 16 + 15)
+/// Why a track's pads have no mutes, in a line starting `what`: it plays
+/// notes (the synth, or an instrument: `kit` None), and pad mutes are a
+/// kit's. None on a kit: any kit's pads, on any bank, mute on their track
+/// (the instrument redesign's step 10).
+pub fn no_pad_mutes(what: &str, kit: Option<usize>) -> Option<String> {
+    match kit {
+        Some(_) => None,
+        None => Some(format!(
+            "{what}: this track plays notes, and pad mutes are a kit's: mute the track"
         )),
-        k => Some(other_kit_mutes(what, k)),
     }
 }
 
@@ -1832,9 +1817,16 @@ pub enum FromUi {
     /// the next control moved on a keyboard or controller to take it. The
     /// same value again cancels.
     LearnValue(LearnValue),
-    /// The Play page: a filter, a send, a fader, a speaker, a throw or the
-    /// XY pad, for the mixer (`mixing.rs`).
+    /// The Play page: a filter, a send, a fader, a throw or the XY pad,
+    /// for the mixer (`mixing.rs`).
     PlayFx(PlayFx),
+    /// A pattern row's speaker: pad `pad` of `track`'s kit muted or let
+    /// play on that track, at once (the instrument redesign's step 10).
+    PadMute {
+        track: usize,
+        pad: usize,
+        mute: bool,
+    },
     /// The Play page's pattern: a step tapped or changed.
     Steps(StepAction),
     /// The sampler's line input: its writing end, for the audio thread to
@@ -5481,10 +5473,11 @@ impl Player {
     /// pattern, the throws, the XY pad and the timing. Only what changed
     /// is marked for drawing.
     fn refresh_play(&mut self) {
-        self.play.pad_strips = !matches!(
-            self.track_kits.kit_of(self.play.steps.track),
-            Some(k) if k > 0
-        );
+        self.play.pad_mutes = self
+            .time
+            .tracks
+            .get(self.play.steps.track)
+            .map_or(0, |t| t.pad_mutes);
         let mut look = self.play.transport_look();
         look.rec = Some(self.refresh_rec_chip());
         look.pads = self.pads_play();
@@ -12668,26 +12661,17 @@ impl Player {
                     }
                 }
             }
-            (play_page::STEPS, EventKind::Toggle(pad)) if pad < 16 && !self.play.pad_strips => {
-                self.tell(&other_kit_mutes(
-                    "steps",
-                    self.track_kits.kit_of(self.play.steps.track).unwrap_or(0),
-                ));
-                None
-            }
-            // Pads past A16 have no strip, so no mute, yet.
-            (play_page::STEPS, EventKind::Toggle(pad)) if pad >= 16 => {
-                let kit = self.track_kits.kit_of(self.play.steps.track);
-                if let Some(why) = no_pad_mutes("steps", kit.or(Some(0)), pad / 16) {
-                    self.tell(&why);
+            // A lane's speaker: its pad muted on the track the steps show,
+            // on any kit and bank (step 10).
+            (play_page::STEPS, EventKind::Toggle(pad)) if pad < 128 => {
+                let track = self.play.steps.track;
+                let mute = self.play.pad_mutes >> pad & 1 == 0;
+                // Shown at once; the engine's state says the same next.
+                if let Some(t) = self.time.tracks.get_mut(track) {
+                    t.pad_mutes ^= 1 << pad;
                 }
-                None
-            }
-            (play_page::STEPS, EventKind::Toggle(pad)) if pad < 16 => {
-                let mute = self.play.levels.pad_mutes & (1 << pad) == 0;
-                self.play.levels.pad_mutes ^= 1 << pad;
                 self.refresh_play();
-                Some(FromUi::PlayFx(PlayFx::PadMute { pad, mute }))
+                Some(FromUi::PadMute { track, pad, mute })
             }
             (play_page::INSPECTOR, EventKind::Tab(k)) if k < 3 => {
                 let bank = [HeldBank::Step, HeldBank::Trig, HeldBank::Sound][k];
@@ -14658,8 +14642,13 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
             limit_db: 1.2,
         });
     }
+    // Pad 8 muted on the track the steps show (step 10: the track's).
+    let shown = p.play.steps.track;
+    if let Some(t) = p.time.tracks.get_mut(shown) {
+        t.pad_mutes = 1 << 7;
+    }
+    p.play.pad_mutes = 1 << 7;
     let mut levels = p.play.levels;
-    levels.pad_mutes = 1 << 7;
     levels.drums_filter = -16.0;
     levels.loop_db = -3.0;
     levels.line_db = 6.0;
@@ -20426,7 +20415,14 @@ mod tests {
             p.ui.get::<StepGrid>(play_page::STEPS)
                 .unwrap()
                 .name_at(r, 0);
-        let mute = |m| vec![FromUi::PlayFx(PlayFx::PadMute { pad: 0, mute: m })];
+        let track = p.play.steps.track;
+        let mute = |mute| {
+            vec![FromUi::PadMute {
+                track,
+                pad: 0,
+                mute,
+            }]
+        };
         assert_eq!(finger(&mut p, &[Touch::Down, Touch::Up], name), mute(true));
         let (id, lane) = on(&p).unwrap();
         assert_eq!(id, "mute");
@@ -22045,19 +22041,16 @@ mod tests {
         let r = p.ui.rect_of(play_page::STEPS).unwrap();
         let g = p.ui.get::<StepGrid>(play_page::STEPS).unwrap();
         let (lane1, name1) = (g.lanes_shown(r)[1], g.name_at(r, 1));
-        let mutes = p.play.levels.pad_mutes;
+        let mutes = p.play.pad_mutes;
         assert_eq!(
             tap(&mut p, name1),
             Some(FromUi::Steps(StepAction::ClearPad { pad: lane1 as u8 }))
         );
-        assert_eq!(p.play.levels.pad_mutes, mutes, "no mute while erasing");
+        assert_eq!(p.play.pad_mutes, mutes, "no mute while erasing");
         // Let go of ERASE: the name mutes again.
         erase(&mut p, false);
         assert!(!hint(&p).starts_with("ERASE held"));
-        assert!(matches!(
-            tap(&mut p, name1),
-            Some(FromUi::PlayFx(PlayFx::PadMute { .. }))
-        ));
+        assert!(matches!(tap(&mut p, name1), Some(FromUi::PadMute { .. })));
         // Arrange: a clip is deleted; an empty slot says so and makes none.
         use mpfree_time_ui::widgets::ClipGrid;
         let mut p = sample_clips(Fonts::embedded()).unwrap();
@@ -22353,45 +22346,41 @@ mod tests {
         assert_eq!(on(&p), [false, false]);
     }
 
+    /// Step 10: a track on kit 2 mutes its own pads as one on kit 1
+    /// does: the speaker shows the track's mute, and a lane's name mutes
+    /// its pad on the track the steps show.
     #[test]
-    fn a_track_on_another_kit_shows_no_pad_mutes_and_says_why() {
+    fn a_track_on_another_kit_mutes_its_own_pads() {
         let mut p = sample_play(Fonts::embedded(), PlayView::All);
         p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
-        let muted = |p: &Player| {
+        let muted = |p: &Player, pad: usize| {
             p.ui.get::<StepGrid>(play_page::STEPS)
                 .unwrap()
                 .lanes
                 .iter()
-                .find(|l| l.pad == 7)
+                .find(|l| l.pad == pad)
                 .unwrap()
                 .muted
         };
-        assert!(muted(&p), "kit 1's clap is muted on its pad strip");
-        // Track 1 picks kit 2: its pads play through the track's channel,
-        // so kit 1's mutes aren't theirs.
+        assert!(muted(&p, 7), "the clap is muted on the track");
         let mut kits = crate::sampler::TrackKits::new(2);
         assert!(kits.set(0, 1));
         p.apply(ToUi::TrackKits(Box::new(kits)));
-        assert!(!muted(&p));
+        assert!(muted(&p, 7), "on kit 2 too: the track's mute");
         let r = p.ui.rect_of(play_page::STEPS).unwrap();
-        let (x, y) =
-            p.ui.get::<StepGrid>(play_page::STEPS)
-                .unwrap()
-                .name_at(r, 0);
+        let g = p.ui.get::<StepGrid>(play_page::STEPS).unwrap();
+        let (pad, (x, y)) = (g.lanes_shown(r)[0], g.name_at(r, 0));
+        let (track, was) = (p.play.steps.track, muted(&p, pad));
         let down = p.touch(1, Touch::Down, x, y);
         assert_eq!(
             down.or(p.touch(1, Touch::Up, x, y)),
-            None,
-            "no pad strip muted"
+            Some(FromUi::PadMute {
+                track,
+                pad,
+                mute: !was
+            })
         );
-        let told = p.told.as_ref().map(|t| t.0.clone()).unwrap_or_default();
-        assert!(
-            told.contains("Kit 2's pads play through their track's channel"),
-            "{told}"
-        );
-        // Back on kit 1: the mute shows again.
-        p.apply(ToUi::TrackKits(Box::new(crate::sampler::TrackKits::new(2))));
-        assert!(muted(&p));
+        assert_eq!(muted(&p, pad), !was, "shown at once");
     }
 
     /// R3 part 2b: PAD BANK B puts the kit's pads B1-B16 on the 16 pads:
@@ -22593,10 +22582,15 @@ mod tests {
                 velocity: play_page::TAP_VELOCITY
             }))
         );
-        // A speaker: the pad's mute, for the mixer.
+        // A speaker: the pad's mute on the track the steps show (step 10).
+        let track = p.play.steps.track;
         assert_eq!(
             tap(&mut p, speaker),
-            Some(FromUi::PlayFx(PlayFx::PadMute { pad: 2, mute: true }))
+            Some(FromUi::PadMute {
+                track,
+                pad: 2,
+                mute: true
+            })
         );
         // A throw held and let go: the performance effect on the master.
         let throws = p.ui.rect_of(play_page::THROWS).unwrap();
@@ -26144,7 +26138,7 @@ mod tests {
             tempo: 98.0,
             swing: mpfree_transport::time::Swing::new(240, 62).unwrap(),
             clips: clips.clone(),
-            mixer: project::mixer_text(&mix.mixer, 0, 0),
+            mixer: project::mixer_text(&mix.mixer, 0),
             modu: String::new(),
             synth: project::synth_text(&Default::default(), &synth.sounds()),
             arp: "mpfree-arp 1\ntrack 1\nmode = arp\n".to_string(),
@@ -26322,7 +26316,6 @@ mod tests {
                 mixer: project::mixer_text(
                     &crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer,
                     0,
-                    0,
                 ),
                 modu: String::new(),
                 synth: project::synth_text(&Default::default(), &synth.sounds()),
@@ -26450,8 +26443,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let lib = mpfree_library::Library::at(&dir).unwrap();
         let synth = crate::synth::Synth::new(44_100);
-        let mixer =
-            project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0, 0);
+        let mixer = project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0);
         let synth_text = project::synth_text(&Default::default(), &synth.sounds());
         let defaults = || {
             Box::new(Defaults {

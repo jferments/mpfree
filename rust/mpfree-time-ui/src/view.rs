@@ -475,6 +475,11 @@ pub struct TrackInfo {
     /// It plays notes, not a kit's pads: its own instrument, or the synth
     /// on the pads. Only such a track transposes. The screen fills it in.
     pub melodic: bool,
+    /// Its kit's pads muted and soloed on this track alone, a bit each by
+    /// kit pad (`Track::pad_mutes`, `Track::pad_solos`; the instrument
+    /// redesign's step 10).
+    pub pad_mutes: u128,
+    pub pad_solos: u128,
     pub slots: Vec<Option<ClipInfo>>,
 }
 
@@ -860,6 +865,8 @@ impl TimeState {
                 transpose: t.transpose,
                 follows: t.follows,
                 melodic: false,
+                pad_mutes: t.pad_mutes,
+                pad_solos: t.pad_solos,
                 slots: t
                     .slots
                     .iter()
@@ -3656,9 +3663,17 @@ pub struct MuteWait {
     pub line: LaunchGrid,
     /// Each track that changes: its mute and solo once the queue lands.
     pub want: Vec<(usize, bool, bool)>,
-    /// Each pad of the kit that changes (SHIFT + TRACK MUTE): its mute
-    /// and solo once the queue lands.
-    pub pads: Vec<(usize, bool, bool)>,
+    /// Each pad that changes on a track (SHIFT + TRACK MUTE; the
+    /// instrument redesign's step 10): the track, the kit pad (A1 = 0),
+    /// and its mute and solo there once the queue lands.
+    pub pads: Vec<(usize, usize, bool, bool)>,
+}
+
+/// A kit pad's name as Akai's MPC gives it: "A1" for pad 0, "B5" for pad
+/// 20, "H16" for pad 127.
+pub fn pad_name(pad: usize) -> String {
+    let bank = char::from(b'A' + (pad / 16).min(7) as u8);
+    format!("{bank}{}", pad % 16 + 1)
 }
 
 impl MuteWait {
@@ -3701,13 +3716,16 @@ impl TimeState {
         Some(format!("{what} in {}", countdown(left, tp.meter)))
     }
 
-    /// The transport bar's WAITING reading: the tracks and the kit's pads
-    /// waiting and where they land ("Hats, Vox at 18.1", "Pad 3 at 9.1").
-    /// None with nothing waiting.
+    /// The transport bar's WAITING reading: the tracks and the tracks'
+    /// pads waiting and where they land ("Hats, Vox at 18.1", "Drums B5
+    /// at 9.1"). None with nothing waiting.
     pub fn waiting_reading(&self) -> Option<String> {
         let q = self.mute_wait.as_ref().filter(|q| !q.is_empty())?;
         let tracks = q.want.iter().map(|w| self.track_name(w.0));
-        let pads = q.pads.iter().map(|w| format!("Pad {}", w.0 + 1));
+        let pads = q
+            .pads
+            .iter()
+            .map(|w| format!("{} {}", self.track_name(w.0), pad_name(w.1)));
         let names: Vec<String> = tracks.chain(pads).collect();
         let shown = if names.len() > 2 {
             format!("{}, {} +{}", names[0], names[1], names.len() - 2)
@@ -7060,18 +7078,22 @@ mod tests {
             st.waiting_reading().as_deref(),
             Some("Drums, Bass +1 at 7.1")
         );
-        // The kit's pads wait with them, named by number; alone, too.
+        // A track's pads wait with them, named by track and pad (step
+        // 10); alone, too.
         st.mute_wait = Some(MuteWait {
             want: vec![(1, true, false)],
-            pads: vec![(2, true, false)],
+            pads: vec![(0, 2, true, false)],
             ..MuteWait::new(LaunchGrid::Bars(1))
         });
-        assert_eq!(st.waiting_reading().as_deref(), Some("Bass, Pad 3 at 6.1"));
+        assert_eq!(
+            st.waiting_reading().as_deref(),
+            Some("Bass, Drums A3 at 6.1")
+        );
         st.mute_wait = Some(MuteWait {
-            pads: vec![(0, false, true)],
+            pads: vec![(2, 20, false, true)],
             ..MuteWait::new(LaunchGrid::Bars(1))
         });
-        assert_eq!(st.waiting_reading().as_deref(), Some("Pad 1 at 6.1"));
+        assert_eq!(st.waiting_reading().as_deref(), Some("Stab B5 at 6.1"));
         assert_eq!(st.mute_waiting(0), None, "a pad is no track's");
         // Solo: the soloed track is outlined, the others are silent.
         st.mute_wait = None;
