@@ -208,11 +208,16 @@ fn count(o: &Options) {
         for b in 0..warm {
             (c.block)(b, &mut l, &mut r);
         }
+        // The dump's name is made before the count starts: made between
+        // the two requests, its allocation was counted as the case's, and
+        // malloc's cost there depends on what the cases before left on the
+        // heap (up to 87,000 instructions, 435 a block over 200 blocks).
+        let why = vg::trigger(&format!("{COUNT_TAG}{}", c.name));
         vg::zero_stats();
         for b in warm..warm + n {
             (c.block)(b, &mut l, &mut r);
         }
-        vg::dump_stats_at(&format!("{COUNT_TAG}{}", c.name));
+        vg::dump_stats_at(&why);
         std::hint::black_box((&l, &r));
         println!("{}\t{n}", c.name);
     }

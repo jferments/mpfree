@@ -17,6 +17,8 @@
 //! - [`context`]: the [`MusicalContext`] itself, with the clips and
 //!   revisions it read, so a stale reading is never used, and the reading
 //!   budget.
+//! - [`listen`]: the listener: notes read as a key in words and a chord
+//!   timeline, inside the reading budget (phase 0C).
 //!
 //! Design: `docs/dev/design/compose.md`. Plain data: nothing here runs on
 //! the audio thread, and nothing else in mpfree depends on it yet.
@@ -27,6 +29,7 @@ pub mod context;
 pub mod groove;
 pub mod harmony;
 pub mod key;
+pub mod listen;
 
 pub use chord::{
     Chord, ChordAnswer, ChordSpan, ChordTimeline, Heard, Quality, TimelineError, Tone,
@@ -37,3 +40,4 @@ pub use harmony::{
     row_tick, Harmony, HarmonyAt, HarmonySource, Playing, Resolver, RowHarmony, Section,
 };
 pub use key::{pc_name, Candidate, Key, KeyReading, Mode, Sureness};
+pub use listen::{chord_of, Played, Reading};

@@ -564,6 +564,17 @@ pub struct CoreShared {
 }
 
 impl CoreShared {
+    /// Whether some part of the sound didn't get the core or priority it
+    /// asked for, so it plays on the audio thread's core (a set-up row in
+    /// red, past the denormals and NEON rows): System status's "Sound on
+    /// one core". None until the set-up is published.
+    pub fn fell_back(&self) -> Option<bool> {
+        let (_, _, rows) = self.setup.get()?;
+        Some(rows.iter().any(|(name, _, tone)| {
+            *tone == Tone::Bad && name != "Denormals" && name != "NEON kernels"
+        }))
+    }
+
     /// The counts, for the screen thread.
     fn counts(&self) -> Counts {
         let get = |i: usize| self.counts[i].load(Ordering::Relaxed);
