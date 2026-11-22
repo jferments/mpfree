@@ -172,8 +172,11 @@ pub struct DebugPages {
 }
 
 /// How long ago `t` was at `now`, short ("0.4 s", "12 s", "3:05").
-fn ago(now: std::time::Instant, t: std::time::Instant) -> String {
-    let s = now.saturating_duration_since(t).as_secs_f32();
+/// When `t` was, as time since `start` (MPFree's start): "4.0 s", "12 s",
+/// "1:10". It stands still, so the page redraws only when the board
+/// changes.
+fn at(start: std::time::Instant, t: std::time::Instant) -> String {
+    let s = t.saturating_duration_since(start).as_secs_f32();
     if s < 10.0 {
         format!("{s:.1} s")
     } else if s < 60.0 {
@@ -185,9 +188,9 @@ fn ago(now: std::time::Instant, t: std::time::Instant) -> String {
 }
 
 /// The Status page's rows: the problems (a summary line first), and the
-/// last reports.
-pub fn status_rows(board: &mpfree_status::Board, now: std::time::Instant) -> (Rows, Rows) {
-    use mpfree_status::{Level, Op, ProblemState};
+/// last reports, with times since `start`.
+pub fn status_rows(board: &mpfree_status::Board, start: std::time::Instant) -> (Rows, Rows) {
+    use mpfree_status::{Level, Op, ProblemState, Shape};
     let level_tone = |l: Level| match l {
         Level::Fail => Tone::Bad,
         Level::Warn => Tone::Warn,
@@ -225,16 +228,23 @@ pub fn status_rows(board: &mpfree_status::Board, now: std::time::Instant) -> (Ro
             ProblemState::Settling => "settling".to_string(),
             ProblemState::Now => "now".to_string(),
             ProblemState::Ended => match p.ended {
-                Some(t) => format!("ended {} ago", ago(now, t)),
+                Some(t) => format!("ended at {}", at(start, t)),
                 None => "ended".to_string(),
             },
         };
-        let mut value = format!(
-            "{state} · {}× · {} · {}",
-            p.times,
-            ago(now, p.first),
-            ago(now, p.last)
-        );
+        // A state that is going is last going now: its last time would
+        // move every look, so only its first is shown until it ends.
+        let going = p.kind.shape != Shape::Happens && p.state != ProblemState::Ended;
+        let mut value = if going {
+            format!("{state} · {}× · first at {}", p.times, at(start, p.first))
+        } else {
+            format!(
+                "{state} · {}× · first at {} · last at {}",
+                p.times,
+                at(start, p.first),
+                at(start, p.last)
+            )
+        };
         if !p.seen {
             value.push_str(" · not seen");
         }
@@ -276,7 +286,7 @@ pub fn status_rows(board: &mpfree_status::Board, now: std::time::Instant) -> (Ro
             };
             (
                 format!("{}{subject} {op}", e.kind.id),
-                format!("{} ago", ago(now, e.at)),
+                format!("at {}", at(start, e.at)),
                 Tone::Normal,
             )
         })
@@ -628,17 +638,30 @@ impl DebugPages {
     }
 
     /// The Status page from the board at `now` (its clock).
-    pub fn set_status(ui: &mut Ui, board: &mpfree_status::Board, now: std::time::Instant) {
-        let (open, events) = status_rows(board, now);
-        if let Some(l) = ui.get_mut::<StatList>("statusopen") {
-            l.set(open);
+    /// Fills the Status page from the board, times since `start`; a list
+    /// that hasn't changed isn't touched, so it doesn't redraw.
+    pub fn set_status(ui: &mut Ui, board: &mpfree_status::Board, start: std::time::Instant) {
+        let (open, events) = status_rows(board, start);
+        if ui
+            .get::<StatList>("statusopen")
+            .is_some_and(|l| l.rows != open)
+        {
+            if let Some(l) = ui.get_mut::<StatList>("statusopen") {
+                l.set(open);
+            }
         }
-        if let Some(l) = ui.get_mut::<StatList>("statusevents") {
-            l.title = match board.older() {
-                0 => "Last reports, newest first".to_string(),
-                n => format!("Last reports, newest first ({n} older)"),
-            };
-            l.set(events);
+        let title = match board.older() {
+            0 => "Last reports, newest first".to_string(),
+            n => format!("Last reports, newest first ({n} older)"),
+        };
+        if ui
+            .get::<StatList>("statusevents")
+            .is_some_and(|l| l.rows != events || l.title != title)
+        {
+            if let Some(l) = ui.get_mut::<StatList>("statusevents") {
+                l.title = title;
+                l.set(events);
+            }
         }
     }
 
@@ -888,7 +911,7 @@ mod tests {
         b.apply(Report::happened(&kinds::SOUND_DROPOUT, 3), t0);
         b.apply(Report::began(&kinds::PORT_MISSING).about(Subject(2)), s(1));
         b.tick(s(5));
-        let (open, events) = status_rows(&b, s(5));
+        let (open, events) = status_rows(&b, t0);
         assert_eq!(
             open[0],
             (
@@ -901,7 +924,7 @@ mod tests {
             open[1],
             (
                 "fail sound/dropout".to_string(),
-                "ended 5.0 s ago · 3× · 5.0 s · 5.0 s · not seen".to_string(),
+                "ended at 0.0 s · 3× · first at 0.0 s · last at 0.0 s · not seen".to_string(),
                 Tone::Bad
             )
         );
@@ -909,7 +932,7 @@ mod tests {
             open[2],
             (
                 "warn midi/port-missing #2".to_string(),
-                "now · 1× · 4.0 s · 0.0 s · not seen".to_string(),
+                "now · 1× · first at 1.0 s · not seen".to_string(),
                 Tone::Warn
             )
         );
@@ -918,19 +941,26 @@ mod tests {
             vec![
                 (
                     "midi/port-missing #2 began".to_string(),
-                    "4.0 s ago".to_string(),
+                    "at 1.0 s".to_string(),
                     Tone::Normal
                 ),
                 (
                     "sound/dropout +3".to_string(),
-                    "5.0 s ago".to_string(),
+                    "at 0.0 s".to_string(),
                     Tone::Normal
                 ),
             ]
         );
         b.seen(s(6));
-        let (open, _) = status_rows(&b, s(70));
-        assert_eq!(open[1].1, "ended 1:10 ago · 3× · 1:10 · 1:10");
+        b.apply(Report::happened(&kinds::SOUND_DROPOUT, 1), s(70));
+        b.tick(s(74));
+        let (open, _) = status_rows(&b, t0);
+        assert_eq!(
+            open[1].1,
+            "ended at 1:10 · 4× · first at 0.0 s · last at 1:10 · not seen"
+        );
+        b.seen(s(75));
+        let (open, _) = status_rows(&b, t0);
         assert_eq!(open[1].2, Tone::Normal, "seen and over");
     }
 }

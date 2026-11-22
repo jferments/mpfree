@@ -89,10 +89,10 @@ Phase 0 sends two kinds for real: a save that didn't work (`storage/save-failed`
 
 Dev > Debug's strip gains **Status**, between Touch and Console (`View::StatusBoard`, `debug_page::status_rows`). It shows the board raw, for developers, in engineer words:
 
-- Left, "Problems this session": the status colour first ("all good", or for example "fail, ring · 1 now · 1 ended, not seen"), then one row per problem, labelled by level and id (and `#n` for a subject), with its state, how many times, how long ago it first and last happened, and whether it is unseen or hidden by its cause.
-- Right, "Last reports, newest first": the last 40 reports, with the number of older ones in the title.
+- Left, "Problems this session": the status colour first ("all good", or for example "fail, ring · 1 now · 1 ended, not seen"), then one row per problem, labelled by level and id (and `#n` for a subject), with its state, how many times, when it first and last happened (a state that is going shows only when it began), and whether it is unseen or hidden by its cause.
+- Right, "Last reports, newest first": the last 40 reports, each with when it came, with the number of older ones in the title.
 
-The page refreshes twice a second while it shows, and at once when a report arrives. The golden screen `debug-status` draws it with a dropout, a missing MIDI port, voices given up and the sound settling near its limit.
+Times are since MPFree started ("at 3.5 s", "at 1:10"), not ages, so they stand still: the page looks twice a second while it shows, and at once when a report arrives, and redraws only when the board changed (`no_page_redraws_while_idle`). The golden screen `debug-status` draws it with a dropout, a missing MIDI port, voices given up and the sound settling near its limit.
 
 The `Player` keeps its own status clock, moved on by `tick(dt)`, so the board's timing in the app's tests is exact.
 

@@ -2190,6 +2190,10 @@ pub struct Player {
     /// on by [`Player::tick`], so tests drive it.
     status_board: mpfree_status::Board,
     status_clock: Instant,
+    /// The clock when the Player was made: Dev > Status gives times since
+    /// it, which stand still while nothing happens (so the page doesn't
+    /// redraw while idle).
+    status_start: Instant,
     /// Time since Dev > Status was last filled, s.
     status_drawn: f32,
     /// The Looper tab, and what it shows.
@@ -2548,6 +2552,7 @@ impl Player {
             full_held: false,
             tap_held: false,
         };
+        let now = Instant::now();
         let mut p = Player {
             save_sent: None,
             told: None,
@@ -2689,7 +2694,8 @@ impl Player {
             debug,
             engines: None,
             status_board: mpfree_status::Board::new(),
-            status_clock: Instant::now(),
+            status_clock: now,
+            status_start: now,
             status_drawn: 0.0,
             looper_page,
             looper: LooperView::default(),
@@ -6602,8 +6608,8 @@ impl Player {
                                           log every 30 s   ·   SHIFT + wheel: Dev page   ·   {stop}"),
                 View::Procs => format!("Every process on the MPC, read from /proc once a second while this page \
                                         shows   ·   SHIFT + wheel: Dev page   ·   {stop}"),
-                View::StatusBoard => format!("Every problem reported this session, as the status board holds it; the \
-                                              System status page will show them   ·   SHIFT + wheel: Dev page   ·   {stop}"),
+                View::StatusBoard => format!("Every problem reported this session, with times since MPFree started   ·   \
+                                              SHIFT + wheel: Dev page   ·   {stop}"),
                 View::Touch => "Touch the test area: it is measured before the tuning   ·   Wheel: pick a value   ·   - / +: change it \
                                 (applies at once)   ·   MENU: corner check, Touch lab   ·   SHIFT + wheel: Dev page".to_string(),
                 View::Map => "Tap a control, then press it   ·   Wheel: pick   ·   +: listen   ·   -: skip   ·   \
@@ -7356,12 +7362,13 @@ impl Player {
         self.status_board.apply(r, self.status_clock);
         if self.view == View::StatusBoard {
             self.status_drawn = 0.0;
-            DebugPages::set_status(&mut self.ui, &self.status_board, self.status_clock);
+            DebugPages::set_status(&mut self.ui, &self.status_board, self.status_start);
         }
     }
 
-    /// Moves the status board's clock on by `dt` s; Dev > Status refills
-    /// twice a second while it shows (its ages move).
+    /// Moves the status board's clock on by `dt` s; Dev > Status looks
+    /// twice a second while it shows, and redraws only what changed (a
+    /// problem settling or ending).
     fn status_tick(&mut self, dt: f32) {
         let dt = dt.max(0.0);
         self.status_clock += Duration::from_secs_f32(dt);
@@ -7370,7 +7377,7 @@ impl Player {
             self.status_drawn += dt;
             if self.status_drawn >= 0.5 {
                 self.status_drawn = 0.0;
-                DebugPages::set_status(&mut self.ui, &self.status_board, self.status_clock);
+                DebugPages::set_status(&mut self.ui, &self.status_board, self.status_start);
             }
         }
     }
@@ -11487,7 +11494,7 @@ impl Player {
             View::StatusBoard => {
                 DebugPages::set_strip(&mut self.ui, v);
                 self.status_drawn = 0.0;
-                DebugPages::set_status(&mut self.ui, &self.status_board, self.status_clock);
+                DebugPages::set_status(&mut self.ui, &self.status_board, self.status_start);
                 crate::debug_page::STATUS_PAGE.to_string()
             }
             View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console => {
@@ -17316,14 +17323,16 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         ..Settings::default()
     }));
     {
+        // The moments end before the page shows, so only the lasting
+        // state settles afterwards (the page then stays still).
         use mpfree_status::{kinds, Report, Subject};
         st.apply(ToUi::Problem(Report::happened(&kinds::SOUND_DROPOUT, 3)));
+        st.apply(ToUi::Problem(Report::happened(&kinds::VOICES_GIVEN_UP, 6)));
         st.tick(1.5);
         st.apply(ToUi::Problem(
             Report::began(&kinds::PORT_MISSING).about(Subject(2)),
         ));
         st.tick(2.0);
-        st.apply(ToUi::Problem(Report::happened(&kinds::VOICES_GIVEN_UP, 6)));
         st.apply(ToUi::Problem(Report::began(&kinds::NEAR_LIMIT)));
     }
     st.apply(ToUi::Show(View::StatusBoard));
@@ -26418,11 +26427,16 @@ mod tests {
         assert_eq!(r[1].0, "fail storage/save-failed");
         assert!(r[1].1.starts_with("now · 1×"), "{:?}", r[1]);
         // The board's clock is the Player's: a moment ends NOW_FOR later,
-        // and the page follows within half a second.
+        // and the page follows within half a second. Its times are since
+        // the start, so they stand still while nothing happens.
         p.tick(3.2);
         p.tick(0.5);
         let r = rows(&mut p);
-        assert!(r[1].1.starts_with("ended 3.7 s ago"), "{:?}", r[1]);
+        assert!(
+            r[1].1.starts_with("ended at 0.0 s · 1× · first at 0.0 s"),
+            "{:?}",
+            r[1]
+        );
         assert_eq!(r[0].1, "fail, ring · 0 now · 1 ended, not seen");
         // A report while the page shows lands at once.
         p.apply(ToUi::Problem(
