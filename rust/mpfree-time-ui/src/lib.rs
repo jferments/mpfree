@@ -13,6 +13,10 @@
 //!   placements on a timeline ([`song::SongLanes`]).
 //! - [`list`]: the song list, Arrange's third view: scenes and how many
 //!   times each plays ([`list::SongListView`]).
+//! - [`show`]: the Show view, Arrange's fourth view while a set is open
+//!   (live shows B1): the set column, the song playing and its parts, the
+//!   next-song card with Go, the song's notes, keyboards and click
+//!   ([`show::ShowView`]).
 //! - [`editor`]: the note editor of the Arrange page (a piano roll or a
 //!   list, with Timing Correct): [`editor::Editor`], [`editor::NoteGrid`].
 //! - [`lane`]: a lane of bars a finger draws, one value each (the
@@ -31,6 +35,7 @@ pub mod editor;
 pub mod lane;
 pub mod list;
 pub mod sample;
+pub mod show;
 pub mod song;
 pub mod view;
 pub mod widgets;

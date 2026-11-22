@@ -219,6 +219,10 @@ fn save_kit(
     library
         .save_project_with(&loc, &snap, KEEP_VERSIONS, &samples)
         .map_err(|e| format!("saving {}: {e}", path.display()))?;
+    // Its list of files, so its first open is checked (live shows A1).
+    library
+        .update_manifest(&loc)
+        .map_err(|e| format!("saving {}'s list of files: {e}", path.display()))?;
     lines.push(format!("project: {}", path.display()));
     Ok(path)
 }

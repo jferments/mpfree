@@ -169,6 +169,14 @@ pub enum Owner {
     /// moves the XY pad across or up as a finger does. Its parameter ids
     /// are in [`play`]. Locks, macros and the mod matrix never target it.
     Play,
+    /// A set being played, for MIDI Learn's remote control (live shows
+    /// B1, the Learn section's Show card): a learned footswitch or button
+    /// arms the next song or the one before, goes, cancels, goes back to
+    /// the set's order, stops everything (Panic) or turns the click on or
+    /// off. It acts in every project while a set is open. Its parameter
+    /// ids are in [`show`]. Locks, macros and the mod matrix never target
+    /// it.
+    Show,
 }
 
 /// [`Owner::Midi`]'s parameters: a track's controllers, pitch bend and
@@ -577,6 +585,46 @@ pub mod play {
     }
 }
 
+/// [`Owner::Show`]'s parameters: the set's controls, for MIDI Learn (live
+/// shows B1). Each is a press: it acts when the control goes on, once
+/// (a second press within 50 ms is the same press). Learned controls are
+/// saved with these numbers in the rig, so they never change: a new
+/// control takes the next number.
+pub mod show {
+    /// Arm the song after the one armed (or after the song playing); a
+    /// second press goes.
+    pub const NEXT_SONG: u16 = 0;
+    /// Arm the song before.
+    pub const PREVIOUS_SONG: u16 = 1;
+    /// Go to the armed song (during Let it finish: go now).
+    pub const GO: u16 = 2;
+    /// Drop the armed song, leaving the music as it is.
+    pub const CANCEL_NEXT: u16 = 3;
+    /// Arm the song after the one playing in the set's order.
+    pub const BACK_TO_ORDER: u16 = 4;
+    /// Stop everything, as SHIFT + STOP does, and send notes off on every
+    /// MIDI out.
+    pub const PANIC: u16 = 5;
+    /// Turn the click on or off, as SHIFT + PLAY START does.
+    pub const CLICK: u16 = 6;
+    /// Every one, in the order the Learn section's Show card lists them,
+    /// with its name.
+    pub const ALL: [(u16, &str); 7] = [
+        (NEXT_SONG, "Next song"),
+        (PREVIOUS_SONG, "Previous song"),
+        (GO, "Go"),
+        (CANCEL_NEXT, "Cancel next"),
+        (BACK_TO_ORDER, "Back to the set order"),
+        (PANIC, "Panic"),
+        (CLICK, "Click"),
+    ];
+
+    /// The name of parameter `id`, if it is one.
+    pub fn name(id: u16) -> Option<&'static str> {
+        ALL.iter().find(|(i, _)| *i == id).map(|(_, n)| *n)
+    }
+}
+
 /// What on a track a [`RelAddr`] names, without the track.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum OnTrack {
@@ -765,6 +813,7 @@ impl fmt::Display for Owner {
             Owner::Looper => f.write_str("looper"),
             Owner::Perform => f.write_str("perform"),
             Owner::Play => f.write_str("play"),
+            Owner::Show => f.write_str("show"),
             o => {
                 let (t, on) = o.split().expect("every other owner is on a track");
                 write!(f, "t{t}.{on}")
@@ -850,6 +899,7 @@ fn owner(words: &[&str]) -> Option<Owner> {
         ["looper"] => Some(Owner::Looper),
         ["perform"] => Some(Owner::Perform),
         ["play"] => Some(Owner::Play),
+        ["show"] => Some(Owner::Show),
         [w] => num(w, "macro")
             .map(Owner::Macro)
             .or_else(|| num(w, "mod").map(Owner::Mod))
@@ -928,6 +978,7 @@ mod tests {
             Owner::Looper,
             Owner::Perform,
             Owner::Play,
+            Owner::Show,
         ];
         for s in strips {
             v.push(Owner::Strip(s));
@@ -986,6 +1037,8 @@ mod tests {
             ),
             (ParamAddr::new(Owner::Play, play::SWING), "play.0"),
             (ParamAddr::new(Owner::Play, play::XY_UP), "play.3"),
+            (ParamAddr::new(Owner::Show, show::NEXT_SONG), "show.0"),
+            (ParamAddr::new(Owner::Show, show::CLICK), "show.6"),
         ];
         for (a, s) in cases {
             assert_eq!(a.to_string(), s);
@@ -1236,6 +1289,19 @@ mod tests {
         assert_eq!(play::name(play::XY_ACROSS), Some("XY across"));
         assert_eq!(play::name(4), None);
         assert_eq!(Owner::Play.track(), None);
+    }
+
+    /// The Show card's ids are a saved format too.
+    #[test]
+    fn shows_ids_stay_put() {
+        let ids: Vec<u16> = show::ALL.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, [0, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(
+            show::name(show::BACK_TO_ORDER),
+            Some("Back to the set order")
+        );
+        assert_eq!(show::name(7), None);
+        assert_eq!(Owner::Show.track(), None);
     }
 
     #[test]

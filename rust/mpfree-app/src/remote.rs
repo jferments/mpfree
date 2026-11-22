@@ -44,12 +44,17 @@
 //! where it rests: across in the middle, up at the bottom. Play's own
 //! touches stay as they are.
 //!
+//! A set's controls (the Learn section's Show card, live shows B1;
+//! `Owner::Show`, its ids in [`mpfree_play::mpfree_param::show`]) are
+//! presses: [`Remote::show_write`] gives each once as it goes down, for the
+//! set player.
+//!
 //! The MPC's own buttons never come here, and nothing here sends MIDI.
 
 use mpfree_node::{Curve, ParamInfo, Unit};
 use mpfree_play::mpfree_param::clips::{self, Clips};
 use mpfree_play::mpfree_param::looper::{self, Looper, Which};
-use mpfree_play::mpfree_param::{perform, play, transport};
+use mpfree_play::mpfree_param::{perform, play, show, transport};
 
 use crate::perform_pads::PadAction;
 
@@ -367,7 +372,12 @@ pub struct Remote {
     /// The mute last asked of each loop and when, until the looper has
     /// it ([`MUTE_ASK_S`]).
     mute_asked: [Option<(bool, f64)>; 8],
+    /// A set's controls held down now, bit `id` (the Show card's).
+    show_held: u8,
 }
+
+/// What a set's learned control says while no set is open.
+pub const NO_SET: &str = "No set is open: the Show controls work while a set plays";
 
 impl Remote {
     pub fn new() -> Remote {
@@ -511,6 +521,27 @@ impl Remote {
         }
     }
 
+    /// A learned control set a set's control `id` ([`show`]) to `value`:
+    /// the press, as it goes down (from the middle up), once until it
+    /// comes up again. The set player cleans a footswitch's bounce
+    /// (`show::DEBOUNCE_MS`) and ignores presses while a song changes.
+    pub fn show_write(&mut self, id: u16, value: f32) -> Option<u16> {
+        show::name(id)?;
+        let bit = 1u8 << (id & 7);
+        let held = self.show_held & bit != 0;
+        match (value >= 0.5, held) {
+            (true, false) => {
+                self.show_held |= bit;
+                Some(id)
+            }
+            (false, true) => {
+                self.show_held &= !bit;
+                None
+            }
+            _ => None,
+        }
+    }
+
     /// A controller went away (`MusicIn::take_unplugged`): its controls
     /// held down will never come up. The looper's keys and presses let go
     /// without acting: a key held then clears nothing, and its next press
@@ -522,6 +553,7 @@ impl Remote {
     pub fn let_go(&mut self) -> impl Iterator<Item = u16> {
         self.loop_keys = [None; 9];
         self.looper_held = 0;
+        self.show_held = 0;
         self.clips_held.clear();
         std::mem::take(&mut self.held)
             .into_iter()
@@ -644,6 +676,21 @@ mod tests {
         rolling: true,
         ..STOPPED
     };
+
+    /// A set's control presses once as it goes down, and again only after
+    /// it has come up; an unplugged controller lets go of it.
+    #[test]
+    fn a_sets_control_presses_once_a_press() {
+        let mut r = Remote::new();
+        assert_eq!(r.show_write(show::GO, 1.0), Some(show::GO));
+        assert_eq!(r.show_write(show::GO, 1.0), None, "still down");
+        assert_eq!(r.show_write(show::NEXT_SONG, 0.8), Some(show::NEXT_SONG));
+        assert_eq!(r.show_write(show::GO, 0.0), None);
+        assert_eq!(r.show_write(show::GO, 0.6), Some(show::GO));
+        assert_eq!(r.show_write(99, 1.0), None, "no such control");
+        let _ = r.let_go().count();
+        assert_eq!(r.show_write(show::NEXT_SONG, 1.0), Some(show::NEXT_SONG));
+    }
 
     #[test]
     fn a_button_presses_once_and_lets_go_once() {

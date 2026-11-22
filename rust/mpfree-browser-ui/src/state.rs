@@ -14,6 +14,13 @@ use std::path::PathBuf;
 
 use crate::export::{ExportChoice, ExportInput, ExportPanel, ExportPhase, ExportSetup};
 use crate::plugins::{PluginInput, PluginsScreen};
+use crate::sets::{SetInput, SetsScreen};
+use mpfree_library::{Found, Set};
+
+#[path = "set_place.rs"]
+mod set_place;
+pub use set_place::SET_NAME_MAX;
+use set_place::{SetKey, SetsPlace};
 
 /// The rows of the places column.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,8 +37,9 @@ pub enum Source {
 
 /// The places column, top to bottom. A gap is drawn before Recent and
 /// before Trash.
-pub const SOURCES: [Source; 11] = [
+pub const SOURCES: [Source; 12] = [
     Source::Place(Place::Projects),
+    Source::Place(Place::Sets),
     Source::Place(Place::Samples),
     Source::Place(Place::Kits),
     Source::Place(Place::Instruments),
@@ -43,6 +51,9 @@ pub const SOURCES: [Source; 11] = [
     Source::Factory,
     Source::Place(Place::Trash),
 ];
+
+/// Where the full browser opens: Samples.
+pub const SAMPLES: usize = 2;
 
 impl Source {
     pub fn label(self) -> &'static str {
@@ -346,6 +357,8 @@ pub enum Input {
     Export(ExportInput),
     /// A touch in the Plugins place.
     Plugins(PluginInput),
+    /// A touch in the Sets place.
+    Sets(SetInput),
     /// A finger on pad `pad` (0 to 15) of the pad map's bank shown,
     /// pressed (`down`) or lifted.
     MapPad {
@@ -501,10 +514,14 @@ pub enum BrowseAction {
         path: PathBuf,
     },
     StopAudition,
-    /// A project was read: give each engine its part.
+    /// A project was read: give each engine its part. `what_reads`: the
+    /// musician chose Open what reads, so what the open leaves out goes
+    /// in the list ([`Browser::left_out`]) rather than stopping it
+    /// (docs/dev/design/project-safety.md).
     ProjectOpened {
         loc: Loc,
         snap: Snapshot,
+        what_reads: bool,
     },
     /// A project was saved where it says.
     ProjectSaved {
@@ -539,6 +556,41 @@ pub enum BrowseAction {
     /// The Plugins place's touches, dial and buttons, for the app, which
     /// answers with [`Browser::set_plugins`].
     Plugins(PluginInput),
+    /// Play set on a set's card: open its first song and show the Show
+    /// view in Perform (live shows B1).
+    PlaySet {
+        loc: Loc,
+        set: Set,
+    },
+    /// The set's song asked for with [`Browser::open_set_song`] read whole
+    /// and checked: the [`BrowseAction::ProjectOpened`] right after this is
+    /// that song's. Open it without asking anything (nothing asks on
+    /// stage); if it can't open whole, it fails.
+    SetSongOpened {
+        loc: Loc,
+    },
+    /// The set's song asked for with [`Browser::open_set_song`] couldn't
+    /// open: why, in a few words. Nothing changed.
+    SetSongFailed {
+        song: String,
+        why: String,
+    },
+    /// The recovery copy asked for with [`Browser::on_stage_copy_with`] is
+    /// saved, here.
+    OnStageCopied {
+        loc: Loc,
+    },
+    /// The recovery copy couldn't be saved: why.
+    OnStageFailed {
+        why: String,
+    },
+    /// The set the Show view plays ([`Browser::set_playing`]) changed: a
+    /// check landed, a song's changes on stage were marked, or the Set
+    /// editor changed it. The set as it is now.
+    SetChanged {
+        loc: Loc,
+        set: Set,
+    },
     /// A finger on the pad map (the Selected column's pads): kit pad `pad`
     /// (0 is A1) pressed or lifted. The app picks it, as a hit on the
     /// MPC's pad does, so Load names it, and plays what is on it while the
@@ -556,6 +608,8 @@ pub enum Confirm {
     EmptyTrash,
     /// Open this project over unsaved changes.
     Open(Loc),
+    /// Play this set over unsaved changes (its first song opens).
+    PlaySet(Loc, Box<Set>),
     /// Open this earlier save of a project over unsaved changes.
     OpenVersion(Loc, String),
     /// Start a new, empty project over unsaved changes.
@@ -567,6 +621,27 @@ pub enum Confirm {
         name: String,
         text: String,
     },
+    /// Open a project that can't open whole with what reads (live shows
+    /// A1): a file it names is missing or damaged, or something of it
+    /// can't be made here.
+    OpenWhatReads(Box<OpenAsk>),
+}
+
+/// A job a set being played waits on ([`Browser::send_tracked`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Tracked {
+    /// A set's song opening: its name in the set.
+    SetSong(String),
+    OnStageCopy,
+}
+
+/// A project waiting for Open what reads ([`Confirm::OpenWhatReads`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct OpenAsk {
+    pub loc: Loc,
+    pub snap: Snapshot,
+    /// What it would leave out, a few words each.
+    pub left_out: Vec<String>,
 }
 
 /// What the keyboard is typing.
@@ -582,6 +657,23 @@ pub enum Purpose {
     PluginSearch,
     /// A name for the synth's sound, saved as a preset of the engine's.
     SavePreset(String),
+    /// A name for a new set.
+    NewSet,
+    /// A new name for this set.
+    RenameSet(Loc),
+    /// The notes of the song picked in the set being edited.
+    SetNotes,
+}
+
+impl Purpose {
+    /// The most characters it takes.
+    fn max_len(&self) -> usize {
+        match self {
+            Purpose::NewSet | Purpose::RenameSet(_) => SET_NAME_MAX,
+            Purpose::SetNotes => mpfree_library::sets::MAX_NOTES,
+            _ => mpfree_library::name::MAX_NAME,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -685,6 +777,8 @@ pub struct Screen {
     pub export: Option<ExportPanel>,
     /// The Plugins place, while it is the place shown.
     pub plugins: Option<PluginsScreen>,
+    /// The Sets place, while it is the place shown.
+    pub sets: Option<SetsScreen>,
     /// The track a kit's Load gives the kit to (the armed track's name,
     /// `"Drums"`), named on the button: Load on Drums.
     pub kit_on: Option<String>,
@@ -714,7 +808,7 @@ impl Screen {
     /// Nothing to show (before the browser has listed anything).
     pub fn empty() -> Screen {
         Screen {
-            source: 1,
+            source: SAMPLES,
             path: String::new(),
             can_go_back: false,
             rows: Vec::new(),
@@ -735,6 +829,7 @@ impl Screen {
             sort: Sort::Name,
             export: None,
             plugins: None,
+            sets: None,
             kit_on: None,
             load_on: None,
             pad_map: None,
@@ -769,6 +864,8 @@ struct BeforeOpen {
     recovering: bool,
     recent: Vec<Loc>,
     left_out: Vec<String>,
+    /// The open was Prefs > At start's (no one is there to ask).
+    at_start: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -815,6 +912,13 @@ pub struct Browser {
     /// id: not counted in `pending`, so the app neither keeps stepping the
     /// browser nor holds a power-off for them.
     quiet: Vec<u64>,
+    /// Jobs a set being played waits on (live shows B1), by their numbers,
+    /// so a failure answers the set player rather than only the status
+    /// line.
+    tracked: Vec<(u64, Tracked)>,
+    /// The job [`Browser::send_tracked`] runs inline (no worker), while it
+    /// runs.
+    tracking_inline: Option<Tracked>,
     modal: Modal,
     clip: Option<Clip>,
     recent: Vec<Loc>,
@@ -869,6 +973,8 @@ pub struct Browser {
     plugins: PluginsScreen,
     /// The rows the Plugins place's list has room for.
     plugin_rows: usize,
+    /// The Sets place: the sets, the one being edited, the rig.
+    sets: SetsPlace,
     /// Where Save kit was pressed: the folder [`Browser::save_kit`] saves into.
     kit_into: Option<Loc>,
     /// The sounds MPFree has put in the library, by their version
@@ -901,7 +1007,7 @@ impl Browser {
     fn with(exec: Exec) -> Browser {
         let mut b = Browser {
             exec,
-            source: 1,
+            source: SAMPLES,
             folder: Loc::top(Place::Samples),
             entries: Vec::new(),
             trash: Vec::new(),
@@ -918,6 +1024,8 @@ impl Browser {
             status: None,
             pending: 0,
             quiet: Vec::new(),
+            tracked: Vec::new(),
+            tracking_inline: None,
             modal: Modal::None,
             clip: None,
             recent: Vec::new(),
@@ -945,6 +1053,7 @@ impl Browser {
             export_last: None,
             plugins: PluginsScreen::default(),
             plugin_rows: 8,
+            sets: SetsPlace::default(),
             kit_into: None,
             bundled: None,
             kit_target: None,
@@ -997,6 +1106,58 @@ impl Browser {
         }
     }
 
+    /// Like `send`, for a job a set being played waits on: its failure
+    /// comes back as the set player's action ([`Browser::apply`]).
+    fn send_tracked(&mut self, job: Job, what: Tracked) {
+        match &mut self.exec {
+            Exec::Inline(_) => {
+                self.tracking_inline = Some(what);
+                self.send(job);
+                self.tracking_inline = None;
+            }
+            Exec::Thread(w, _) => match w.send(job) {
+                0 => self.tracked_failed(what, "the library is not running".into()),
+                id => {
+                    self.pending += 1;
+                    self.tracked.push((id, what));
+                }
+            },
+        }
+    }
+
+    /// A tracked job failed: the set player hears why.
+    fn tracked_failed(&mut self, what: Tracked, why: String) {
+        self.actions.push(match what {
+            Tracked::SetSong(song) => BrowseAction::SetSongFailed { song, why },
+            Tracked::OnStageCopy => BrowseAction::OnStageFailed { why },
+        });
+    }
+
+    /// Live shows B1: open a set's song, found by its lasting id wherever
+    /// it is now, read whole and checked. It comes as
+    /// [`BrowseAction::SetSongOpened`] then [`BrowseAction::ProjectOpened`],
+    /// or as [`BrowseAction::SetSongFailed`]; nothing asks (a song that
+    /// can't open whole fails, with why).
+    pub fn open_set_song(&mut self, song: &mpfree_library::SetSong) {
+        let what = Tracked::SetSong(song.name.clone());
+        self.send_tracked(Job::OpenSetSong(song.clone()), what);
+    }
+
+    /// Live shows B1: the song's changes made on stage saved as its
+    /// recovery copy (`snap` and its sounds, as a save has them), beside
+    /// it in Projects. The song itself stays as saved. It comes as
+    /// [`BrowseAction::OnStageCopied`] or [`BrowseAction::OnStageFailed`].
+    pub fn on_stage_copy_with(&mut self, song: &str, snap: Snapshot, samples: Vec<NewSample>) {
+        self.send_tracked(
+            Job::OnStageCopy {
+                song: song.to_string(),
+                snap,
+                samples,
+            },
+            Tracked::OnStageCopy,
+        );
+    }
+
     /// Like `send`, in a lane: a newer job of the same lane makes the worker
     /// skip this one if it hasn't started.
     fn send_in(&mut self, lane: Lane, job: Job) {
@@ -1033,8 +1194,20 @@ impl Browser {
     }
 
     fn apply(&mut self, d: Done) {
+        let tracked = match self.tracking_inline.take() {
+            Some(t) => Some(t),
+            None => self
+                .tracked
+                .iter()
+                .position(|(id, _)| *id == d.id && d.id != 0)
+                .map(|i| self.tracked.swap_remove(i).1),
+        };
+        if let (Some(what), Err(e)) = (tracked, &d.result) {
+            return self.tracked_failed(what, e.clone());
+        }
         match d.result {
             Err(e) => {
+                self.sets_failed();
                 if let Some((_, name, _)) = self.saving_preset.take() {
                     self.status = Some((format!("{name} wasn't saved: {e}"), true));
                     return;
@@ -1161,8 +1334,16 @@ impl Browser {
                     self.detail_meta = loc.parent().map(|p| (p, m));
                 }
             }
+            Ok(Outcome::At(loc)) if loc.place == Place::Sets && self.sets_waits_new() => {
+                self.sets_made(loc)
+            }
             Ok(Outcome::At(loc)) => {
-                self.status = Some((format!("Done: {}", loc.display()), false));
+                let what = match loc.place {
+                    // A set renamed or copied: by its name, as the place shows it.
+                    Place::Sets => loc.name().trim_end_matches(".set").to_string(),
+                    _ => loc.display(),
+                };
+                self.status = Some((format!("Done: {what}"), false));
                 if loc.parent().as_ref() == Some(&self.folder) {
                     self.select_name = Some(loc.name().to_string());
                 }
@@ -1182,6 +1363,41 @@ impl Browser {
             // The manifest a save asked for: nothing to say unless it
             // failed (the error says so on the status line).
             Ok(Outcome::Manifest(..)) => {}
+            // Sets (live shows B1): the Sets place and the Set editor.
+            Ok(Outcome::Sets(list)) => self.sets_listed(list),
+            Ok(Outcome::Songs(songs)) => self.sets_songs(songs),
+            Ok(Outcome::SetChecked(loc, checks)) => self.sets_checked(loc, checks),
+            // A set read or saved: the editor already has it.
+            Ok(Outcome::Set(..) | Outcome::SetSaved(..)) => {}
+            Ok(Outcome::SetSong(song, Err(why))) => {
+                self.actions.push(BrowseAction::SetSongFailed { song, why })
+            }
+            Ok(Outcome::SetSong(song, Ok((loc, snap, check)))) => {
+                // Nothing asks on stage: a song that can't open whole
+                // doesn't open, and says why.
+                let (missing, damaged) = check.gaps();
+                if let Some(f) = missing.first().or(damaged.first()) {
+                    let what = if missing.is_empty() {
+                        "damaged"
+                    } else {
+                        "missing"
+                    };
+                    let more = missing.len() + damaged.len() - 1;
+                    let why = match more {
+                        0 => format!("the file {f} is {what}"),
+                        n => format!("the file {f} is {what}, and {n} more"),
+                    };
+                    self.actions.push(BrowseAction::SetSongFailed { song, why });
+                    return;
+                }
+                self.actions
+                    .push(BrowseAction::SetSongOpened { loc: loc.clone() });
+                self.accept_open(loc, snap, false, Vec::new(), check.no_manifest);
+            }
+            Ok(Outcome::OnStageCopied(loc)) => {
+                self.actions.push(BrowseAction::OnStageCopied { loc })
+            }
+            Ok(Outcome::OnStageKept { copy, song }) => self.sets_kept(copy, song),
             Ok(Outcome::Autosaved(loc)) => {
                 self.actions.push(BrowseAction::Autosaved { loc });
                 if self.folder == Loc::top(Place::Projects) {
@@ -1213,7 +1429,7 @@ impl Browser {
                 // The list of its files a set list checks, off the save.
                 self.send_quiet(Job::UpdateManifest(loc));
             }
-            Ok(Outcome::Project(loc, snap)) if snap.meta.is_autosave() => {
+            Ok(Outcome::Project(loc, snap, _)) if snap.meta.is_autosave() => {
                 // Autosave's project opens as a new, unsaved one: SHIFT +
                 // BROWSE keeps it as a project of the musician's (named for
                 // the time), never as autosave's again.
@@ -1230,27 +1446,30 @@ impl Browser {
                 self.unsaved = true;
                 self.recovering = true;
                 self.left_out.clear();
-                self.actions.push(BrowseAction::ProjectOpened { loc, snap });
+                self.actions.push(BrowseAction::ProjectOpened {
+                    loc,
+                    snap,
+                    what_reads: false,
+                });
                 if self.pick.is_some() && !std::mem::take(&mut self.opening_last) {
                     self.close_pick(true);
                 }
             }
-            Ok(Outcome::Project(loc, snap)) => {
-                self.before_open = Some(self.as_before_open());
-                self.status = Some((format!("Opened {}", loc.name()), false));
-                self.project = Some(loc.clone());
-                self.last = Some(loc.clone());
-                self.created = snap.meta.created;
-                self.unsaved = false;
-                self.left_out.clear();
-                self.remember(loc.clone());
-                self.actions.push(BrowseAction::ProjectOpened { loc, snap });
-                // Opened at start (Prefs > At start), a picker opened
-                // meanwhile stays where it is.
-                let at_start = std::mem::take(&mut self.opening_last);
-                if self.pick.is_some() && !at_start {
-                    self.close_pick(true);
+            Ok(Outcome::Project(loc, snap, check)) => {
+                // Checked first (live shows A1): a file it names is gone or
+                // damaged, so it can't open whole. Nothing changes until
+                // the musician picks Open what reads.
+                let (missing, damaged) = check.gaps();
+                if !missing.is_empty() || !damaged.is_empty() {
+                    let why = files_why(missing.len(), damaged.len());
+                    let left_out = missing
+                        .iter()
+                        .map(|p| format!("the file {p} (missing)"))
+                        .chain(damaged.iter().map(|p| format!("the file {p} (damaged)")))
+                        .collect();
+                    return self.ask_what_reads(loc, snap, why, left_out);
                 }
+                self.accept_open(loc, snap, false, Vec::new(), check.no_manifest);
             }
             Ok(Outcome::Versions(loc, list)) => {
                 if matches!(&self.mode, Mode::Versions(l, _) if *l == loc) {
@@ -1275,7 +1494,11 @@ impl Browser {
                 self.unsaved = true;
                 self.left_out.clear();
                 self.remember(loc.clone());
-                self.actions.push(BrowseAction::ProjectOpened { loc, snap });
+                self.actions.push(BrowseAction::ProjectOpened {
+                    loc,
+                    snap,
+                    what_reads: false,
+                });
             }
             Ok(Outcome::Found(query, hits)) => {
                 if matches!(&self.mode, Mode::Found(q, _) if *q == query) {
@@ -1306,6 +1529,7 @@ impl Browser {
         }
         match self.current() {
             Source::Place(Place::Trash) => self.send(Job::Trash),
+            Source::Place(Place::Sets) => self.sets_refresh(),
             Source::Place(_) => self.send_in(Lane::List, Job::List(self.folder.clone())),
             _ => self.rebuild(),
         }
@@ -1676,6 +1900,9 @@ impl Browser {
         if SOURCES[i] == Source::Plugins {
             self.actions.push(BrowseAction::Plugins(PluginInput::Shown));
         }
+        if SOURCES[i] == Source::Place(Place::Sets) {
+            self.sets_reset();
+        }
         self.refresh();
     }
 
@@ -1739,7 +1966,7 @@ impl Browser {
 
     /// Up one folder (the - button, Back).
     pub fn back(&mut self) {
-        if self.send_plugins(PluginInput::Back) {
+        if self.send_plugins(PluginInput::Back) || self.send_sets(SetKey::Back) {
             return;
         }
         if self.export_shown().is_some() {
@@ -1773,7 +2000,7 @@ impl Browser {
 
     /// Into the selected folder (the + button).
     pub fn enter(&mut self) {
-        if self.send_plugins(PluginInput::Enter) {
+        if self.send_plugins(PluginInput::Enter) || self.send_sets(SetKey::Enter) {
             return;
         }
         let row = self.selected_row().cloned();
@@ -1808,7 +2035,7 @@ impl Browser {
                 return;
             }
         }
-        if self.send_plugins(PluginInput::Dial(delta)) {
+        if self.send_plugins(PluginInput::Dial(delta)) || self.send_sets(SetKey::Dial(delta)) {
             return;
         }
         if !matches!(self.modal, Modal::None) || self.rows.is_empty() {
@@ -1968,6 +2195,100 @@ impl Browser {
         self.before_open = None;
     }
 
+    /// A project read and checked goes in: the browser takes it as the
+    /// project worked on and hands the parts to the app. `what_reads`: the
+    /// musician chose Open what reads, and `left_out` is what it leaves
+    /// out (a save then goes beside it). `unchecked`: it has no manifest
+    /// yet, so its files weren't checked first, which the status line says.
+    fn accept_open(
+        &mut self,
+        loc: Loc,
+        snap: Snapshot,
+        what_reads: bool,
+        left_out: Vec<String>,
+        unchecked: bool,
+    ) {
+        let mut before = self.as_before_open();
+        let at_start = std::mem::take(&mut self.opening_last);
+        before.at_start = at_start;
+        self.before_open = Some(before);
+        let name = loc.name();
+        self.status = Some((
+            if what_reads {
+                format!("Opened what reads of {name}: saving puts it in a new project beside it")
+            } else if unchecked {
+                format!(
+                    "Opened {name}. Its files weren\u{2019}t checked first: it has no list of them yet (saving it makes one)"
+                )
+            } else {
+                format!("Opened {name}")
+            },
+            false,
+        ));
+        self.project = Some(loc.clone());
+        self.last = Some(loc.clone());
+        self.created = snap.meta.created;
+        self.unsaved = false;
+        self.left_out = left_out;
+        self.remember(loc.clone());
+        self.actions.push(BrowseAction::ProjectOpened {
+            loc,
+            snap,
+            what_reads,
+        });
+        // Opened at start (Prefs > At start), a picker opened meanwhile
+        // stays where it is.
+        if self.pick.is_some() && !at_start {
+            self.close_pick(true);
+        }
+    }
+
+    /// A project that can't open whole (`why`, in a few words): asks
+    /// whether to open what reads, with nothing changed meanwhile. At
+    /// start no one is there to ask, so it isn't opened and the app hears
+    /// why ([`BrowseAction::LastNotOpened`]).
+    fn ask_what_reads(&mut self, loc: Loc, snap: Snapshot, why: String, left_out: Vec<String>) {
+        let name = loc.name().to_string();
+        if std::mem::take(&mut self.opening_last) {
+            let line = format!(
+                "Didn\u{2019}t open {name}: {why}. Open it from Projects to open what reads"
+            );
+            self.actions.push(BrowseAction::LastNotOpened(line.clone()));
+            self.status = Some((line, true));
+            return;
+        }
+        self.status = Some((format!("{name} can\u{2019}t open whole: {why}"), true));
+        self.modal = Modal::Confirm {
+            text: format!(
+                "{name} can\u{2019}t open whole: {why}. Open what reads? Saving it then goes into a new project beside it, so {name} stays as it is"
+            ),
+            what: Confirm::OpenWhatReads(Box::new(OpenAsk {
+                loc,
+                snap,
+                left_out,
+            })),
+        };
+    }
+
+    /// The app found that the project just opened would leave things out
+    /// (an effect or instrument this stick can't make: `left_out`), so
+    /// nothing of it went in. What the open changed here goes back, as
+    /// for [`Browser::open_refused`], and the musician is asked whether to
+    /// open what reads (live shows A1).
+    pub fn open_would_leave_out(&mut self, loc: Loc, snap: Snapshot, left_out: Vec<String>) {
+        let at_start = self.before_open.as_ref().is_some_and(|b| b.at_start);
+        self.put_back_before_open();
+        self.opening_last = at_start;
+        let why = match left_out.as_slice() {
+            [] => "something of it can\u{2019}t be made here".to_string(),
+            [one] => format!("it would leave out {one}"),
+            [one, rest @ ..] => format!("it would leave out {one} and {} more", rest.len()),
+        };
+        // Opened with what reads, the app finds the same again and adds
+        // it to the list itself.
+        self.ask_what_reads(loc, snap, why, Vec::new());
+    }
+
     fn as_before_open(&self) -> BeforeOpen {
         BeforeOpen {
             project: self.project.clone(),
@@ -1977,6 +2298,7 @@ impl Browser {
             recovering: self.recovering,
             recent: self.recent.clone(),
             left_out: self.left_out.clone(),
+            at_start: false,
         }
     }
 
@@ -1988,6 +2310,12 @@ impl Browser {
     /// open can't be saved over the refused one; the status line says
     /// `line`.
     pub fn open_refused(&mut self, line: String) {
+        self.put_back_before_open();
+        self.status = Some((line, true));
+    }
+
+    /// What an open changed here goes back ([`BeforeOpen`]).
+    fn put_back_before_open(&mut self) {
         if let Some(b) = self.before_open.take() {
             let lists = b.recent != self.recent || b.last != self.last;
             self.project = b.project;
@@ -2002,7 +2330,6 @@ impl Browser {
                     .push(BrowseAction::SaveLists(self.lists_text()));
             }
         }
-        self.status = Some((line, true));
     }
 
     /// The dial's push: open a folder or project, load anything else, or
@@ -2021,7 +2348,7 @@ impl Browser {
             Modal::Keyboard { .. } => return self.input(Input::Key(Key::Done)),
             Modal::None => {}
         }
-        if self.send_plugins(PluginInput::Push) {
+        if self.send_plugins(PluginInput::Push) || self.send_sets(SetKey::Push) {
             return;
         }
         let Some(r) = self.selected_row().cloned() else {
@@ -2079,7 +2406,7 @@ impl Browser {
 
     /// ERASE while the browser is open: Delete (asks first).
     pub fn erase(&mut self) {
-        if self.plugins_shown() {
+        if self.plugins_shown() || self.send_sets(SetKey::Erase) {
             return;
         }
         self.button(Button::Delete);
@@ -2179,6 +2506,7 @@ impl Browser {
             Input::Plugins(p) => {
                 self.send_plugins(p);
             }
+            Input::Sets(i) => self.sets_input(i),
             Input::MapPad { pad, .. } => {
                 let p = self.map_bank * 16 + pad;
                 if pad < 16 && self.pad_map.as_ref().is_some_and(|m| p < m.pads.len()) {
@@ -2563,6 +2891,15 @@ impl Browser {
         let Modal::Confirm { what, .. } = std::mem::replace(&mut self.modal, Modal::None) else {
             return;
         };
+        if let (false, Confirm::OpenWhatReads(a)) = (yes, &what) {
+            self.status = Some((
+                format!(
+                    "Didn\u{2019}t open {}. The project you had open is unchanged",
+                    a.loc.name()
+                ),
+                false,
+            ));
+        }
         if let (false, Confirm::ReplacePreset { name, .. }) = (yes, &what) {
             self.status = Some((
                 format!("{name} wasn't saved: Save preset again with another name"),
@@ -2581,10 +2918,21 @@ impl Browser {
                 }
                 Confirm::EmptyTrash => self.send(Job::EmptyTrash),
                 Confirm::Open(loc) => self.send(Job::OpenProject(loc)),
+                Confirm::PlaySet(loc, set) => {
+                    self.actions.push(BrowseAction::PlaySet { loc, set: *set })
+                }
                 Confirm::OpenVersion(loc, id) => self.send(Job::OpenVersion(loc, id)),
                 Confirm::NewProject => self.start_new_project(),
                 Confirm::ReplacePreset { engine, name, text } => {
                     self.send_preset(engine, name, text, true)
+                }
+                Confirm::OpenWhatReads(a) => {
+                    let OpenAsk {
+                        loc,
+                        snap,
+                        left_out,
+                    } = *a;
+                    self.accept_open(loc, snap, true, left_out, false);
                 }
             }
         }
@@ -2602,13 +2950,13 @@ impl Browser {
         };
         match k {
             Key::Char(c) => {
-                if text.len() < mpfree_library::name::MAX_NAME {
+                if text.chars().count() < purpose.max_len() {
                     text.push(if *shift { c.to_ascii_uppercase() } else { c });
                     *shift = false;
                 }
             }
             Key::Space => {
-                if !text.is_empty() && text.len() < mpfree_library::name::MAX_NAME {
+                if !text.is_empty() && text.chars().count() < purpose.max_len() {
                     text.push(' ');
                 }
             }
@@ -2637,6 +2985,10 @@ impl Browser {
                     self.status = Some((format!("Searching for \u{201c}{name}\u{201d}"), false));
                     self.send(Job::Search(name, MAX_FOUND));
                     return;
+                }
+                if *purpose == Purpose::SetNotes {
+                    self.modal = Modal::None;
+                    return self.sets_notes_typed(name);
                 }
                 if !valid_name(&name) {
                     self.status = Some((
@@ -2670,7 +3022,8 @@ impl Browser {
                         self.actions
                             .push(BrowseAction::SavePresetRequested { engine, name });
                     }
-                    Purpose::Search | Purpose::PluginSearch => {}
+                    Purpose::NewSet | Purpose::RenameSet(_) => self.sets_named(purpose, name),
+                    Purpose::Search | Purpose::PluginSearch | Purpose::SetNotes => {}
                 }
             }
         }
@@ -3140,6 +3493,7 @@ impl Browser {
             sort: self.sort,
             export: self.export.clone().filter(|_| self.pick.is_none()),
             plugins: self.plugins_shown().then(|| self.plugins.clone()),
+            sets: self.sets_shown().then(|| self.sets_screen()),
             kit_on: self.kit_target.clone(),
             load_on: self.pad_target.clone(),
             pad_map: self.map_shown(),
@@ -3467,6 +3821,24 @@ fn trim_num(v: f64) -> String {
 }
 
 /// `"2026-11-11 21:04 UTC"`.
+/// Why a project's files keep it from opening whole, in a few words:
+/// "2 of its files are missing and 1 is damaged".
+fn files_why(missing: usize, damaged: usize) -> String {
+    let some = |n: usize, what: &str, one: &str, many: &str| match n {
+        1 => format!("{what}{one}"),
+        n => format!("{n} of its files {many}"),
+    };
+    match (missing, damaged) {
+        (m, 0) => some(m, "a file it needs ", "is missing", "are missing"),
+        (0, d) => some(d, "a file it needs ", "is damaged", "are damaged"),
+        (m, d) => format!(
+            "{} and {d} {} damaged",
+            some(m, "a file it needs ", "is missing", "are missing"),
+            if d == 1 { "is" } else { "are" }
+        ),
+    }
+}
+
 pub fn when(secs: u64) -> String {
     let (y, m, d, h, mi) = mpfree_library::project::civil(secs);
     format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02} UTC")
@@ -3493,6 +3865,7 @@ fn guess_kind(l: &Loc) -> Kind {
 pub fn kind_label(k: Kind) -> String {
     match k {
         Kind::Folder => "Folder".into(),
+        Kind::Set => "Set list".into(),
         Kind::Project => "Project".into(),
         Kind::Audio(f) => format!(
             "{} audio",

@@ -226,6 +226,12 @@ impl Meta {
         }
     }
 
+    /// Takes autosave's mark off: the work is saved into a project of
+    /// the musician's (a set's song keeping its changes made on stage).
+    pub fn clear_autosave(&mut self) {
+        self.extra.retain(|(k, _)| k != AUTOSAVE_KEY);
+    }
+
     pub fn to_text(&self) -> String {
         let mut s = format!(
             "{FORMAT}\nname = {}\ntempo = {}\ncreated = {}\nsaved = {}\napp = {}\n",

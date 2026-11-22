@@ -119,6 +119,16 @@ impl Desk<'_> {
         } = self;
         let max_db = *max_db;
         match a {
+            gui::FromUi::ShowState(open, showing) => app.set_show_state(open, showing),
+            // The Show view's Click switch: as a learned Click control.
+            gui::FromUi::ShowControl(id) => {
+                if let Some(e) = app.show_press(id) {
+                    fx.extend(e);
+                }
+            }
+            // The Show view's MENU > Open the Set editor: BROWSE, on the
+            // Sets place the screen has put up.
+            gui::FromUi::OpenSetEditor => fx.extend(app.open_browser()),
             gui::FromUi::LevelDb(db) => {
                 **level_db = db.clamp(LEVEL_MIN_DB, max_db);
                 mix.set_level(**level_db);
@@ -638,6 +648,8 @@ impl Desk<'_> {
             | gui::FromUi::SampleGrains(_)
             | gui::FromUi::SaveProject
             | gui::FromUi::OpenProject(_)
+            | gui::FromUi::SongEnd(_)
+            | gui::FromUi::SongEndReset
             | gui::FromUi::OpenLoops(_)
             | gui::FromUi::OpenAudio(_)
             | gui::FromUi::TrackInstrument(_)
@@ -807,6 +819,8 @@ impl Desk<'_> {
             app::Effect::ClearLogs => out.show(gui::ToUi::ClearLogs),
             app::Effect::ClearConsole => out.show(gui::ToUi::ClearConsole),
             app::Effect::TouchLab => out.show(gui::ToUi::TouchLab),
+            app::Effect::SetMenu(m) => out.show(gui::ToUi::SetMenu(m)),
+            app::Effect::ShowKey(k) => out.show(gui::ToUi::ShowKey(k)),
             app::Effect::CalibrateTouch => out.show(gui::ToUi::CalibrateTouch),
             app::Effect::TouchWheel(d) => out.show(gui::ToUi::TouchWheel(d)),
             app::Effect::TouchStep(d) => out.show(gui::ToUi::TouchStep(d)),

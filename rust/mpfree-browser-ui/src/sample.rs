@@ -5,11 +5,14 @@
 //! an item in the Trash.
 
 use crate::export::{ExportInput, ExportSetup};
+use crate::sets::{RigThing, SetButton, SetInput};
 use crate::state::{Browser, Button, Filter, Input, Key, Pick, SOURCES};
 use crate::view::BrowserView;
 use crate::{BROWSER, BROWSER_HINT, BROWSER_PAGE, PICKER_HINT};
 use mpfree_library::audio::{tone_aiff, tone_wav, wav_bytes};
-use mpfree_library::{Library, Loc, Meta, Place, Snapshot};
+use mpfree_library::{
+    Ends, Library, Loc, Meta, Need, Place, Set, SetSong, Snapshot, SongCheck, Starts,
+};
 use mpfree_ui::widgets::{Header, Label};
 use mpfree_ui::{Align, Fonts, Theme, Tone, Ui};
 use std::path::Path;
@@ -195,11 +198,19 @@ pub fn samples(fonts: impl Fn() -> Fonts, data: &Path) -> Result<Vec<Sample>, St
         };
         let hint = if name.contains("picker") {
             PICKER_HINT
+        } else if name.contains("set-add") {
+            crate::SET_ADD_HINT
+        } else if name.contains("set-") {
+            crate::SET_EDIT_HINT
+        } else if name.contains("sets") {
+            crate::SETS_HINT
         } else {
             BROWSER_HINT
         };
         let mut u = ui(fonts(), theme, tab, hint, &b)?;
         b.set_visible(BrowserView::rows_in(u.rect_of(BROWSER).unwrap_or_default()));
+        let (list, songs) = BrowserView::set_rows_in(u.rect_of(BROWSER).unwrap_or_default());
+        b.set_set_rows(list, songs);
         setup(&mut b);
         let _ = b.take_actions();
         crate::show(&mut u, &b);
@@ -417,7 +428,176 @@ pub fn samples(fonts: impl Fn() -> Fonts, data: &Path) -> Result<Vec<Sample>, St
             );
         },
     )?;
+    // Last, as they add songs and sets to the library.
+    fill_sets(&lib)?;
+    shot(
+        "21-sets",
+        "The Sets place: three sets with their last check, Friday at the Lantern picked: its songs, when it was checked and what isn't ready; Play set, Edit set, Check set, Rename, Copy, Delete, Check every file",
+        Theme::dark(),
+        &|b| {
+            b.set_rig(sample_rig());
+            b.go_source(source("Sets"));
+            b.input(Input::Sets(SetInput::Row(1)));
+        },
+    )?;
+    shot(
+        "22-set-song",
+        "Editing Friday at the Lantern, song 4 (Night drive) picked: Starts, Ends, Fade, Needs and its notes; Move up, Move down, Open in Make, Remove from set",
+        Theme::dark(),
+        &|b| {
+            b.set_rig(sample_rig());
+            b.go_source(source("Sets"));
+            b.input(Input::Sets(SetInput::Row(1)));
+            b.input(Input::Sets(SetInput::Button(SetButton::EditSet)));
+            b.input(Input::Sets(SetInput::Row(3)));
+        },
+    )?;
+    shot(
+        "23-set-add",
+        "Add songs: the projects in Projects, each with a + that puts it after the song picked",
+        Theme::dark(),
+        &|b| {
+            b.set_rig(sample_rig());
+            b.go_source(source("Sets"));
+            b.input(Input::Sets(SetInput::Row(2)));
+            b.input(Input::Sets(SetInput::Button(SetButton::EditSet)));
+            b.input(Input::Sets(SetInput::Button(SetButton::AddSongs)));
+            b.dial(3);
+        },
+    )?;
     Ok(out)
+}
+
+/// The rig the set samples know: two keyboards and a footswitch, the Nord
+/// not plugged in.
+pub fn sample_rig() -> Vec<RigThing> {
+    [
+        ("Keystep 37", true),
+        ("Nord Electro", false),
+        ("FS-6", true),
+    ]
+    .into_iter()
+    .map(|(name, connected)| RigThing {
+        name: name.into(),
+        connected,
+    })
+    .collect()
+}
+
+/// Songs and three sets for the Sets samples: Friday at the Lantern (nine
+/// songs, checked: one not ready, one with limits), Sunday rehearsal (all
+/// ready) and Festival short set (not checked yet). The checks are kept in
+/// the sets, at a fixed time, so the screens are the same every run.
+pub fn fill_sets(lib: &Library) -> Result<(), String> {
+    let e = |err: std::io::Error| err.to_string();
+    let p = Loc::top(Place::Projects);
+    let mut ids = std::collections::HashMap::new();
+    for (name, tempo) in [
+        ("Lanterns", 104.0),
+        ("Copper sky", 96.0),
+        ("Undertow", 78.0),
+        ("Glass harbour", 110.0),
+        ("Paper moons", 120.0),
+        ("Slow signal", 84.0),
+        ("Kite string", 100.0),
+        ("Night drive", 92.0),
+        ("Sunday chops", 88.0),
+    ] {
+        let loc = p.join(name).map_err(e)?;
+        let id = match lib.project_meta(&loc) {
+            Ok(m) if !m.id.is_empty() => m.id,
+            _ => {
+                let snap = Snapshot {
+                    meta: Meta {
+                        name: name.into(),
+                        tempo,
+                        created: 1_794_400_000,
+                        saved: 1_794_430_000,
+                        app: "preview".into(),
+                        ..Meta::default()
+                    },
+                    parts: vec![("transport".into(), format!("bpm = {tempo}\n"))],
+                };
+                lib.save_project(&loc, &snap, 10).map_err(e)?.id
+            }
+        };
+        ids.insert(name, (id, (tempo * 10.0) as u32));
+    }
+    const CHECKED: u64 = 1_794_510_000;
+    let song = |name: &str, starts: Starts, ends: Ends, check: Option<SongCheck>| {
+        let (id, tempo_x10) = ids.get(name).cloned().unwrap_or_default();
+        let mut s = SetSong::new(&id, name);
+        s.starts = starts;
+        s.ends = ends;
+        s.check = check.map(|c| (CHECKED, SongCheck { tempo_x10, ..c }));
+        s
+    };
+    let ready = || Some(SongCheck::default());
+    let mut night = song("Night drive", Starts::Stopped, Ends::Finish, ready());
+    night.needs = vec![Need {
+        name: "Keystep 37".into(),
+        needed: true,
+    }];
+    night.set_notes("F minor, count in 4 on the hats. Sam starts the Rhodes riff; drums come in at bar 9. Chorus twice at the end if the room is up for it.");
+    let mut moons = song(
+        "Paper moons",
+        Starts::CountIn,
+        Ends::Cut,
+        Some(SongCheck {
+            limits: vec!["Nord Electro isn\u{2019}t connected".into()],
+            ..SongCheck::default()
+        }),
+    );
+    moons.needs = vec![Need {
+        name: "Nord Electro".into(),
+        needed: false,
+    }];
+    let friday = Set {
+        songs: vec![
+            song("Lanterns", Starts::CountIn, Ends::Cut, ready()),
+            song("Copper sky", Starts::Playing, Ends::Finish, ready()),
+            song("Undertow", Starts::Stopped, Ends::Fade(6), ready()),
+            night,
+            song(
+                "Glass harbour",
+                Starts::Stopped,
+                Ends::Finish,
+                Some(SongCheck {
+                    not_ready: vec!["the file samples/strings.wav is missing".into()],
+                    ..SongCheck::default()
+                }),
+            ),
+            moons,
+            song("Slow signal", Starts::Stopped, Ends::Finish, ready()),
+            song("Sunday chops", Starts::Stopped, Ends::Finish, ready()),
+            song("Kite string", Starts::Playing, Ends::Cut, ready()),
+        ],
+        extra: Vec::new(),
+    };
+    let sunday = Set {
+        songs: vec![
+            song("Sunday chops", Starts::Stopped, Ends::Finish, ready()),
+            song("Slow signal", Starts::Stopped, Ends::Fade(4), ready()),
+            song("Kite string", Starts::Playing, Ends::Finish, ready()),
+        ],
+        extra: Vec::new(),
+    };
+    let festival = Set {
+        songs: vec![
+            song("Lanterns", Starts::CountIn, Ends::Cut, None),
+            song("Copper sky", Starts::Playing, Ends::Finish, None),
+        ],
+        extra: Vec::new(),
+    };
+    for (name, set) in [
+        ("Friday at the Lantern", friday),
+        ("Sunday rehearsal", sunday),
+        ("Festival short set", festival),
+    ] {
+        let loc = lib.new_set(name).map_err(e)?;
+        lib.save_set(&loc, &set).map_err(e)?;
+    }
+    Ok(())
 }
 
 /// What the app tells the Export panel in the samples.

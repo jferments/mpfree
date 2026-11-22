@@ -769,7 +769,11 @@ impl BrowserView {
     /// The pad map's pad under (x, y), while nothing is over the browser.
     fn map_hit(&self, r: Rect, x: i32, y: i32) -> Option<usize> {
         let s = &self.screen;
-        if !matches!(s.modal, Modal::None) || s.export.is_some() || s.plugins.is_some() {
+        if !matches!(s.modal, Modal::None)
+            || s.export.is_some()
+            || s.plugins.is_some()
+            || s.sets.is_some()
+        {
             return None;
         }
         Geo::new(r, s)
@@ -822,6 +826,16 @@ impl BrowserView {
         crate::plugins::rows_in(Geo::new(r, &Screen::empty()).list)
     }
 
+    /// The rows that fit in the Sets place's list in a browser drawn in
+    /// `r`: sets or projects, and a set's songs.
+    pub fn set_rows_in(r: Rect) -> (usize, usize) {
+        let list = Geo::new(r, &Screen::empty()).list;
+        (
+            crate::sets::rows_in(list, crate::sets::SetsView::List),
+            crate::sets::rows_in(list, crate::sets::SetsView::Edit),
+        )
+    }
+
     fn hit(&self, r: Rect, x: i32, y: i32) -> Option<Input> {
         let s = &self.screen;
         if let Some(p) = &s.export {
@@ -857,6 +871,9 @@ impl BrowserView {
         }
         if let Some(p) = &s.plugins {
             return crate::plugins::hit(g.list, g.detail, p, x, y).map(Input::Plugins);
+        }
+        if let Some(p) = &s.sets {
+            return crate::sets::hit(g.list, g.detail, p, x, y).map(Input::Sets);
         }
         if s.can_go_back && g.back.contains(x, y) {
             return Some(Input::Back);
@@ -929,6 +946,8 @@ impl Widget for BrowserView {
         }
         if let Some(p) = &s.plugins {
             crate::plugins::paint(cx, g.list, g.detail, p);
+        } else if let Some(p) = &s.sets {
+            crate::sets::paint(cx, g.list, g.detail, p);
         } else {
             paint_files(cx, &g, s);
         }
@@ -974,6 +993,10 @@ impl Widget for BrowserView {
         }
         if let Some(p) = &s.plugins {
             out.extend(crate::plugins::targets(g.list, g.detail, p));
+            return out;
+        }
+        if let Some(p) = &s.sets {
+            out.extend(crate::sets::targets(g.list, g.detail, p));
             return out;
         }
         if s.can_go_back {
@@ -1028,9 +1051,10 @@ impl Widget for BrowserView {
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let g = Geo::new(r, &self.screen);
         self.visible = g.visible();
-        let rows = match &self.screen.plugins {
-            Some(p) => crate::plugins::rows_rect(g.list, g.detail, p),
-            None => g.rows,
+        let rows = match (&self.screen.plugins, &self.screen.sets) {
+            (Some(p), _) => crate::plugins::rows_rect(g.list, g.detail, p),
+            (None, Some(p)) => crate::sets::rows_rect(g.list, g.detail, p),
+            (None, None) => g.rows,
         };
         let on_list = matches!(self.screen.modal, Modal::None)
             && self.screen.export.is_none()
@@ -1073,6 +1097,8 @@ impl Widget for BrowserView {
                 if want != done {
                     self.inputs.push(if self.screen.plugins.is_some() {
                         Input::Plugins(crate::plugins::PluginInput::Scroll(want - done))
+                    } else if self.screen.sets.is_some() {
+                        Input::Sets(crate::sets::SetInput::Scroll(want - done))
                     } else {
                         Input::Scroll(want - done)
                     });
@@ -1319,6 +1345,15 @@ fn kind_icon(cx: &mut PaintCx, r: Rect, k: Kind, c: Color) {
                     .fill_rect(Rect::new(x + dx - 1, y + dy - 1, 3, 3), c);
             }
         }
+        Kind::Set => {
+            // A list in order: three dots, three lines.
+            for k in 0..3 {
+                cx.canvas
+                    .fill_round_rect(Rect::new(x - 11, y - 9 + k * 8, 4, 3), 1, c);
+                cx.canvas
+                    .fill_round_rect(Rect::new(x - 4, y - 9 + k * 8, 15, 3), 1, c);
+            }
+        }
         Kind::Other => {
             cx.canvas
                 .stroke_round_rect(Rect::new(x - 8, y - 11, 16, 22), 2, 2, c);
@@ -1335,6 +1370,16 @@ fn source_icon(cx: &mut PaintCx, r: Rect, s: Source, c: Color) {
         Source::Place(Place::Patterns) => kind_icon(cx, r, Kind::Pattern, c),
         Source::Place(Place::Recordings) => {
             draw::dot(cx, r.x + r.w / 2, r.y + r.h / 2, 8, c);
+        }
+        // A list: three lines (set lists, live shows B1).
+        Source::Place(Place::Sets) => {
+            let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
+            for k in -1..=1 {
+                cx.canvas
+                    .fill_rect(Rect::new(x - 10, y + k * 7 - 1, 3, 3), c);
+                cx.canvas
+                    .fill_rect(Rect::new(x - 4, y + k * 7 - 1, 14, 3), c);
+            }
         }
         Source::Place(Place::Trash) => {
             let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
@@ -1628,7 +1673,10 @@ fn paint_over(cx: &mut PaintCx, r: Rect, s: &Screen) {
     match &s.modal {
         Modal::None => {}
         Modal::Keyboard {
-            title, text, shift, ..
+            title,
+            text,
+            shift,
+            purpose,
         } => {
             cx.canvas.fill_rect(r, t.bg.with_alpha(200));
             let k = keyboard_geo(r);
@@ -1643,24 +1691,56 @@ fn paint_over(cx: &mut PaintCx, r: Rect, s: &Screen) {
                 title,
             );
             cx.canvas.fill_round_rect(k.field, t.round(10), t.raised);
-            let tw = cx.text(
-                FontId::Sans,
-                t.size_title,
-                k.field.inset_xy(18, 0),
-                Align::Left,
-                t.text,
-                text,
-            );
-            let cx0 = k.field.x + 18 + tw + 2;
-            cx.canvas.fill_rect(
-                Rect::new(
-                    cx0.min(k.field.right() - 12),
-                    k.field.y + 16,
-                    2,
-                    k.field.h - 32,
-                ),
-                t.accent,
-            );
+            if *purpose == crate::state::Purpose::SetNotes {
+                // A song's notes run to 240 characters: the field shows
+                // the last three lines, with the count at its right.
+                let count = format!(
+                    "{} / {}",
+                    text.chars().count(),
+                    mpfree_library::sets::MAX_NOTES
+                );
+                let (num, body) = k.field.inset_xy(18, 2).take_right(90);
+                cx.text(
+                    FontId::Sans,
+                    t.size_small * 0.86,
+                    num,
+                    Align::Right,
+                    t.text_faint,
+                    &count,
+                );
+                let lines = wrap(cx, FontId::Sans, t.size_small, text, body.w - 12);
+                let lh = 20;
+                let shown = &lines[lines.len().saturating_sub(3)..];
+                let mut end = (body.x, body.y + 2);
+                for (i, l) in shown.iter().enumerate() {
+                    let r = Rect::new(body.x, body.y + 2 + i as i32 * lh, body.w, lh);
+                    let w = cx.text(FontId::Sans, t.size_small, r, Align::Left, t.text, l);
+                    end = (body.x + w + 2, r.y);
+                }
+                cx.canvas.fill_rect(
+                    Rect::new(end.0.min(body.right() - 4), end.1 + 2, 2, lh - 4),
+                    t.accent,
+                );
+            } else {
+                let tw = cx.text(
+                    FontId::Sans,
+                    t.size_title,
+                    k.field.inset_xy(18, 0),
+                    Align::Left,
+                    t.text,
+                    text,
+                );
+                let cx0 = k.field.x + 18 + tw + 2;
+                cx.canvas.fill_rect(
+                    Rect::new(
+                        cx0.min(k.field.right() - 12),
+                        k.field.y + 16,
+                        2,
+                        k.field.h - 32,
+                    ),
+                    t.accent,
+                );
+            }
             for (key, kr) in &k.keys {
                 let lit = *key == Key::Shift && *shift || *key == Key::Done;
                 button(cx, *kr, &key_label(*key, *shift), lit, false);
@@ -1685,7 +1765,9 @@ fn paint_over(cx: &mut PaintCx, r: Rect, s: &Screen) {
                 crate::state::Confirm::EmptyTrash => "Delete for good",
                 crate::state::Confirm::Open(_) | crate::state::Confirm::OpenVersion(..) => "Open",
                 crate::state::Confirm::NewProject => "New project",
+                crate::state::Confirm::PlaySet(..) => "Play set",
                 crate::state::Confirm::ReplacePreset { .. } => "Replace",
+                crate::state::Confirm::OpenWhatReads(_) => "Open what reads",
             };
             button(cx, a.yes, yes, false, true);
         }
