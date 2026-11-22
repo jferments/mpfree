@@ -1511,7 +1511,8 @@ mod looper {
                 .find(|l| l.starts_with("looper: Loop 1: your tap was "))
                 .unwrap_or_else(|| panic!("{:?}", s.said()));
             assert!(
-                line.contains(" ms late; smart loop end closed it on the end you played (best: "),
+                line.contains(" ms late; smart loop end closed it on the end you played")
+                    && line.contains(" (best: "),
                 "{line}"
             );
             assert_eq!(s.looper.looper.stats().ends_moved, 1);
@@ -1527,6 +1528,61 @@ mod looper {
                 "song at {}, loop at {loop_at}",
                 info.position
             );
+        });
+    }
+
+    /// Smart loop end step 1c, a smart start: on Auto, REC pressed 80 ms
+    /// before the first pad hit. The loop starts on the hit, not on the
+    /// press, is the length between the two hits, and the log says so.
+    #[test]
+    fn auto_starts_a_loop_on_the_first_hit_after_rec() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            s.press("header", "tab", "Looper");
+            s.app.settings.loop_tempo = true;
+            s.app.settings.smart_end = mpfree_looper::SmartEnd::Auto;
+            let free = at(&mut s, "leditor", "bars", 1);
+            s.press_target(&free).run_for(0.1);
+            s.button("REC");
+            s.run_for(0.08);
+            let first = s.time.next_frame();
+            s.pad(0, 120, 0.1);
+            s.run_for(2.0 - 0.1);
+            let again = s.time.next_frame();
+            s.pad_edge(0, 120, true);
+            s.run_for(0.04);
+            s.button("REC");
+            s.pad_edge(0, 0, false);
+            until_phase(&mut s, Phase::Playing, 1.0);
+            let st = status(&s);
+            let between = (again - first) as usize;
+            assert!(
+                st.frames.abs_diff(between) <= crate::PERIOD,
+                "{} frames, {between} between the hits",
+                st.frames
+            );
+            let b = st.bounds.expect("bounds");
+            let lead = b.start - b.captured.0;
+            // 80 ms, and the moment the session takes the pad in (its
+            // frame comes with the next screen frame, about 20 ms).
+            let want = (0.08 * f64::from(crate::RATE)) as i64;
+            assert!(
+                (want..want + (0.025 * f64::from(crate::RATE)) as i64).contains(&lead),
+                "started {lead} frames after REC"
+            );
+            assert_eq!(st.moved.map(|m| m.start), Some(lead));
+            let line = s
+                .said()
+                .into_iter()
+                .find(|l| l.starts_with("looper: Loop 1: your tap was "))
+                .unwrap_or_else(|| panic!("{:?}", s.said()));
+            assert!(
+                line.contains(", and started it on your first hit, ")
+                    && line.contains(" ms after REC (best: "),
+                "{line}"
+            );
+            assert_eq!(s.looper.looper.stats().starts_found, 1);
         });
     }
 
@@ -1558,12 +1614,12 @@ mod looper {
             let tap_bpm = s.time.info().bpm;
             s.run_for(0.2);
             let by = status(&s).offer.expect("an offer");
-            assert!(by < 0, "the tap was late");
+            assert!(by.end < 0, "the tap was late");
             assert_eq!(
                 s.looper.snap(mpfree_looper::Snap::Found),
                 "looper: Snap: Loop 1 changes on its next downbeat, with the tempo"
             );
-            let until_moved = |s: &mut Session, moved: Option<i64>| {
+            let until_moved = |s: &mut Session, moved: Option<mpfree_looper::Shift>| {
                 let end = s.t() + 3.0;
                 while status(s).moved != moved && s.t() < end {
                     s.run_periods(1);
@@ -1572,7 +1628,7 @@ mod looper {
             };
             until_moved(&mut s, Some(by));
             let st = status(&s);
-            assert_eq!(st.frames as i64, tap as i64 + by);
+            assert_eq!(st.frames as i64, tap as i64 + by.longer());
             let between = (again - first) as usize;
             assert!(
                 st.frames.abs_diff(between) <= crate::PERIOD,

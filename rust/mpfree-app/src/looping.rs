@@ -36,9 +36,9 @@ use mpfree_looper::print::{frames_at, PrintJob};
 use mpfree_looper::save::Saved;
 use mpfree_looper::{
     Bounce, Candidate, Command, Edit, History, LayerCommand, LayerInfo, LoopFile, Looper, Memory,
-    NoteStart, Phase, Print, Reading, SmartEnd, SmartNote, SmartOutcome, Snap, SnapDone, SnapPlan,
-    Starts, Stats, Status, Step, Sure, Take, HEARD_SECONDS, LOOP_MAX_BPM, LOOP_MIN_BPM, MAX_LAYERS,
-    MAX_LOOPS,
+    NoteStart, Phase, Print, Reading, Shift, SmartEnd, SmartNote, SmartOutcome, Snap, SnapDone,
+    SnapPlan, Starts, Stats, Status, Step, Sure, Take, HEARD_SECONDS, LOOP_MAX_BPM, LOOP_MIN_BPM,
+    MAX_LAYERS, MAX_LOOPS,
 };
 use mpfree_seq::loops::{LoopNow, LoopPlan};
 use mpfree_transport::time::{Tick, PPQ};
@@ -161,7 +161,8 @@ pub fn shortest_words(bars: Option<u32>) -> String {
 }
 
 /// How a free first loop's length read, for the log: "1 bar at 96.00
-/// BPM", and ", as Length set" when the bars were Length's.
+/// BPM", and ", as Length set" when the bars were Length's, or what the
+/// beat played into it said.
 pub fn reading_words(r: &Reading) -> String {
     format!(
         "{} at {:.2} BPM{}",
@@ -170,10 +171,19 @@ pub fn reading_words(r: &Reading) -> String {
         if r.said.is_some() && !r.overruled() {
             ", as Length set"
         } else {
-            ""
+            match r.beat {
+                None => "",
+                Some(_) if !r.bars.is_power_of_two() => ", from the beat you played",
+                Some(f) if f >= BEAT_FITS => ", which the beat you played fits",
+                Some(_) => ", which the beat you played fits only loosely",
+            }
         }
     )
 }
+
+/// How well the notes played into a free first loop must fall on its
+/// beats for the log to say the beat fits ([`Reading::beat`]).
+const BEAT_FITS: f64 = 0.6;
 
 /// What the screen should hear about a reading, besides its bars and
 /// tempo: a close call and the other reading, or a Length it couldn't
@@ -3318,8 +3328,9 @@ impl LoopHost {
             }
             + &if st.taps_kept + st.ends_moved + st.ends_offered > 0 {
                 format!(
-                    "; smart loop end: {} ends moved, {} offered, {} taps kept",
-                    st.ends_moved, st.ends_offered, st.taps_kept
+                    "; smart loop end: {} ends moved, {} offered, {} taps kept, {} starts on \
+                     the first hit, {} overdubs begun with what was played after the end",
+                    st.ends_moved, st.ends_offered, st.taps_kept, st.starts_found, st.handoffs
                 )
             } else {
                 String::new()
@@ -3903,7 +3914,7 @@ impl LoopHost {
 
     /// After the looper's period: what became of a snap given it
     /// ([`Looper::take_snap`]): the line for the log, said on the screen
-    /// too ("snapped 48 ms earlier: 2 bars at 120.00 BPM"), and the tempo
+    /// too ("snapped the end 48 ms earlier: 2 bars at 120.00 BPM"), and the tempo
     /// the song now plays at, for the app's (it changed with the loop, or
     /// already had when a loop changed first).
     pub fn take_snap(&mut self) -> (Option<(String, bool)>, Option<f64>) {
@@ -3928,13 +3939,13 @@ impl LoopHost {
             return (None, Some(p.bpm));
         };
         let bars = ticks_text(s.ticks, self.bar_ticks);
-        let ms = ms(p.by, self.rate);
-        let way = if p.by < 0 { "earlier" } else { "later" };
+        let moves = shift_text(p.by, self.rate);
         let what = match p.snap {
-            Snap::Found => format!("snapped {ms:.0} ms {way}"),
+            Snap::Found => format!("snapped {moves}"),
             Snap::Tap => "back to your tap".to_string(),
-            Snap::Undo => format!("Undo: the end {ms:.0} ms {way}"),
-            Snap::Redo => format!("Redo: the end {ms:.0} ms {way}"),
+            Snap::Press => "back to your press".to_string(),
+            Snap::Undo => format!("Undo: {moves}"),
+            Snap::Redo => format!("Redo: {moves}"),
         };
         (
             Some((
@@ -3954,7 +3965,7 @@ impl LoopHost {
     /// words for the screen.
     pub fn take_smart(&mut self) -> Option<(String, Option<String>)> {
         let note = self.looper.take_smart()?;
-        Some(smart_words(&note, self.rate))
+        Some(smart_words(&note, self.smart, self.rate))
     }
 
     /// The song can't start at the tempo loop `n` set (`why`): counted;
@@ -4128,6 +4139,7 @@ fn snap_name(s: Snap) -> &'static str {
     match s {
         Snap::Found => "Snap",
         Snap::Tap => "Use my tap",
+        Snap::Press => "Use my press",
         Snap::Undo => "Undo of the snap",
         Snap::Redo => "Redo of the snap",
     }
@@ -4138,6 +4150,7 @@ fn snap_verb(s: Snap) -> &'static str {
     match s {
         Snap::Found => "snap",
         Snap::Tap => "go back to your tap",
+        Snap::Press => "go back to your press",
         Snap::Undo => "undo the snap",
         Snap::Redo => "redo the snap",
     }
@@ -4157,6 +4170,28 @@ pub fn smart_end_text(m: SmartEnd) -> &'static str {
 /// `frames` at `rate` in whole milliseconds, without the sign.
 fn ms(frames: i64, rate: u32) -> f64 {
     (frames.unsigned_abs() as f64 * 1000.0 / f64::from(rate.max(1))).round()
+}
+
+/// A snap's moves, for the log: "the start 80 ms later and the end 61 ms
+/// earlier".
+fn shift_text(by: Shift, rate: u32) -> String {
+    let way = |f: i64| if f < 0 { "earlier" } else { "later" };
+    let mut parts = Vec::new();
+    if by.start != 0 {
+        parts.push(format!(
+            "the start {:.0} ms {}",
+            ms(by.start, rate),
+            way(by.start)
+        ));
+    }
+    if by.end != 0 || by.start == 0 {
+        parts.push(format!(
+            "the end {:.0} ms {}",
+            ms(by.end, rate),
+            way(by.end)
+        ));
+    }
+    parts.join(" and ")
 }
 
 /// Your tap was late or early by a move of `by` frames (negative: the
@@ -4190,8 +4225,25 @@ fn candidate_text(c: &Candidate, tap: u64, rate: u32) -> String {
 /// What smart loop end made of a closing tap ([`LoopHost::take_smart`]):
 /// the log line, with the best two ends scored, and when the tap stood,
 /// the words for the screen (every fallback is shown).
-fn smart_words(note: &SmartNote, rate: u32) -> (String, Option<String>) {
+fn smart_words(note: &SmartNote, mode: SmartEnd, rate: u32) -> (String, Option<String>) {
     let n = note.n + 1;
+    // A smart start: Auto started the loop on your first hit, Suggest
+    // offers to.
+    let after = format!(
+        "on your first hit, {:.0} ms after REC",
+        ms(note.start, rate)
+    );
+    let (started, start_words) = match (note.start, mode) {
+        (0, _) => (String::new(), String::new()),
+        (_, SmartEnd::Auto) => (
+            format!(", and started it {after}"),
+            format!(" Started {after}."),
+        ),
+        _ => (
+            format!(", and offers to start it {after}"),
+            format!(" Snap starts it {after}."),
+        ),
+    };
     let scored = match (note.best, note.second) {
         (Some(b), Some(s)) => format!(
             " (best: {}; next: {})",
@@ -4204,14 +4256,14 @@ fn smart_words(note: &SmartNote, rate: u32) -> (String, Option<String>) {
     match note.outcome {
         SmartOutcome::Moved(by) => (
             format!(
-                "looper: Loop {n}: {}; smart loop end closed it on the end you played{scored}",
+                "looper: Loop {n}: {}; smart loop end closed it on the end you played{started}{scored}",
                 tap_off(by, rate)
             ),
             None,
         ),
         SmartOutcome::Offered(by) => (
             format!(
-                "looper: Loop {n}: {}; smart loop end offers the end you played{scored}",
+                "looper: Loop {n}: {}; smart loop end offers the end you played{started}{scored}",
                 tap_off(by, rate)
             ),
             None,
@@ -4219,17 +4271,17 @@ fn smart_words(note: &SmartNote, rate: u32) -> (String, Option<String>) {
         SmartOutcome::Close(by) => (
             format!(
                 "looper: Loop {n}: smart loop end found the end you played {:.0} ms from your \
-                 tap, too near to hear, so it offers nothing{scored}",
+                 tap, too near to hear{started}{scored}",
                 ms(by, rate)
             ),
-            None,
+            (note.start != 0).then(|| start_words.trim_start().to_string()),
         ),
         SmartOutcome::Kept(why) => (
-            format!("looper: Loop {n}: smart loop end kept your tap: {why}{scored}"),
+            format!("looper: Loop {n}: smart loop end kept your tap: {why}{started}{scored}"),
             Some(if why == mpfree_looper::OVERDUB_AT_ONCE {
                 format!("Kept your tap: {why}. Auto can fix this before it does.")
             } else {
-                format!("Kept your tap: {why}.")
+                format!("Kept your tap: {why}.{start_words}")
             }),
         ),
     }
@@ -6209,5 +6261,30 @@ mod tests {
             p += 1;
         }
         assert_eq!(h.view(120.0).cell_waves[0], [0; CELL_WAVE]);
+    }
+
+    #[test]
+    fn the_log_says_what_the_beat_played_into_a_loop_said() {
+        let r = |bars, beat| Reading {
+            bars,
+            bpm: 100.0,
+            sure: Sure::Clear,
+            other: None,
+            said: None,
+            beat,
+        };
+        assert_eq!(reading_words(&r(1, None)), "1 bar at 100.00 BPM");
+        assert_eq!(
+            reading_words(&r(1, Some(0.9))),
+            "1 bar at 100.00 BPM, which the beat you played fits"
+        );
+        assert_eq!(
+            reading_words(&r(2, Some(0.3))),
+            "2 bars at 100.00 BPM, which the beat you played fits only loosely"
+        );
+        assert_eq!(
+            reading_words(&r(3, Some(0.9))),
+            "3 bars at 100.00 BPM, from the beat you played"
+        );
     }
 }

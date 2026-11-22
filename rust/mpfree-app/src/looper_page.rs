@@ -128,8 +128,18 @@ fn step_text(s: Step, layers: &[Option<LayerInfo>], rate: u32) -> String {
             |n| format!("From loop {} · {n}", from + 1),
         ),
         Step::Moved(_, to) => format!("Moved to loop {}", to + 1),
-        // Smart loop end's Snap or Use my tap, with the tempo.
-        Step::Snap(d) => format!("Snap · {}", edit_text(Edit::Resize(d), rate)),
+        // Smart loop end's Snap, Use my tap or Use my press, with the
+        // tempo.
+        Step::Snap(d) => {
+            let mut parts = Vec::new();
+            if d.start != 0 {
+                parts.push(edit_text(Edit::Move(d.start), rate).replacen("Move", "Start", 1));
+            }
+            if d.end != 0 || d.start == 0 {
+                parts.push(edit_text(Edit::Resize(d.end), rate));
+            }
+            format!("Snap · {}", parts.join(" · "))
+        }
     }
 }
 
@@ -2147,6 +2157,10 @@ mod tests {
         assert_eq!(text(Step::Edit(Edit::Move(-2_205))), "Move ← 50 ms");
         assert_eq!(text(Step::Edit(Edit::Resize(441))), "End → 10 ms");
         assert_eq!(text(Step::Edit(Edit::Turn(882))), "Bar 1 → 20 ms");
+        let snap = |start, end| text(Step::Snap(mpfree_looper::Shift { start, end }));
+        assert_eq!(snap(0, -2_205), "Snap · End ← 50 ms");
+        assert_eq!(snap(3_528, -441), "Snap · Start → 80 ms · End ← 10 ms");
+        assert_eq!(snap(-3_528, 0), "Snap · Start ← 80 ms");
         assert_eq!(text(Step::Merge(id(0))), "Merge layers");
         let (mut ui, mut page) = page();
         page.update(&mut ui, &v, &Settings::default());

@@ -559,6 +559,10 @@ fn free_pass_without_allocating(mode: SmartEnd) {
     let _ = l.command(L::TempoFromLoop(true));
     let _ = l.command(L::SetBars(None));
     let _ = l.command(L::SetSmartEnd(mode));
+    // Auto hands what was played after the end to the overdub.
+    if mode == SmartEnd::Auto {
+        let _ = l.command(L::SetAfter(After::Overdub));
+    }
     for i in 0..3000u64 {
         let f = t.frame();
         // A pad every few periods, more than the note log holds.
@@ -642,6 +646,9 @@ fn free_pass_without_allocating(mode: SmartEnd) {
     );
     assert_eq!(said > 0, mode != SmartEnd::Off, "{mode:?}");
     assert_eq!(tempos, 2, "two passes set the tempo");
+    if mode == SmartEnd::Auto {
+        assert!(l.stats().handoffs >= 1, "{:?}", l.stats());
+    }
     assert!(l.stats().aborted >= 1, "PLAY threw one away");
 }
 

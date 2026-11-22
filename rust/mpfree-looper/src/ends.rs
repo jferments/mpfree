@@ -226,6 +226,94 @@ impl NoteLog {
     }
 }
 
+/// The fewest notes inside a loop (after its opening hit) that make its
+/// beat evidence for the bar reading ([`InnerBeat`]).
+pub const MIN_BEAT_NOTES: usize = 4;
+
+/// The beat inside a loop: its notes, in frame order, from its opening
+/// hit, as evidence for how many bars it is ([`InnerBeat::fit`],
+/// [`crate::reading::read_bars_with`]). Allocation-free: the notes are
+/// copied onto the stack.
+pub struct InnerBeat {
+    notes: [NoteStart; HEAD + TAIL],
+    n: usize,
+    rate: u32,
+    /// The loop's opening hit (its grid starts there) and its length.
+    origin: u64,
+    len: usize,
+    /// Beats in a bar, by the meter.
+    beats: f64,
+}
+
+impl InnerBeat {
+    /// The notes of `log` in a loop of `len` frames from frame `from` (the
+    /// press, or the first hit), with bars of `bar` ticks and beats of
+    /// `beat`. Its grid starts on the opening hit: the first note within
+    /// the reach of `from`, else `from` itself. The opening's own notes
+    /// are left out: they fall on the grid whatever the bar count.
+    pub fn new(
+        log: &NoteLog,
+        rate: u32,
+        from: u64,
+        len: usize,
+        bar: Tick,
+        beat: Tick,
+    ) -> InnerBeat {
+        let mut all = [NoteStart::NONE; HEAD + TAIL];
+        let n = log.sorted(&mut all);
+        let all = &all[..n];
+        let reach = reach(rate, f64::NAN);
+        let open = all
+            .iter()
+            .position(|x| x.frame >= from && x.frame <= from + reach);
+        let origin = open.map_or(from, |i| all[i].frame);
+        let skip = open.map_or(0, |i| hit_at(all, i, frames(rate, TOGETHER_MS)).1);
+        let end = from + len as u64;
+        let mut notes = [NoteStart::NONE; HEAD + TAIL];
+        let mut k = 0;
+        for &x in all[skip..]
+            .iter()
+            .filter(|x| x.frame > origin && x.frame < end)
+        {
+            notes[k] = x;
+            k += 1;
+        }
+        InnerBeat {
+            notes,
+            n: k,
+            rate,
+            origin,
+            len,
+            beats: bar as f64 / beat.max(1) as f64,
+        }
+    }
+
+    /// How well the notes fall on the beats of `bars` bars over the loop,
+    /// weighted by accent, 0 to 1: each scores by how near a beat it falls
+    /// (a bell a twentieth of a beat wide, 10 to 30 ms), as the rhythm
+    /// part of a decision does. None with fewer than [`MIN_BEAT_NOTES`].
+    pub fn fit(&self, bars: u32) -> Option<f64> {
+        if self.n < MIN_BEAT_NOTES || bars == 0 {
+            return None;
+        }
+        let beat = self.len as f64 / (f64::from(bars) * self.beats);
+        if !(beat.is_finite() && beat > 1.0) {
+            return None;
+        }
+        let rate = f64::from(self.rate);
+        let sigma = (beat * 0.05).clamp(0.010 * rate, 0.030 * rate);
+        let (mut sum, mut wsum) = (0.0, 0.0);
+        for x in &self.notes[..self.n] {
+            let t = (x.frame - self.origin) as f64;
+            let off = t - (t / beat).round() * beat;
+            let w = x.weight();
+            sum += w * (-(off / sigma) * (off / sigma)).exp();
+            wsum += w;
+        }
+        (wsum > 0.0).then(|| sum / wsum)
+    }
+}
+
 /// The reach either side of a tap, in frames: [`REACH_MS`], or a 1/16
 /// note at `bpm` if that is shorter.
 pub fn reach(rate: u32, bpm: f64) -> u64 {
@@ -308,6 +396,13 @@ pub struct Decision {
     pub second: Option<Candidate>,
     /// The tap, scored.
     pub tap: Candidate,
+    /// Frames from the pass's start to its opening hit, when that came
+    /// within the reach of the start (a loop started on REC a moment
+    /// before your first hit): where a smart start puts the loop's start.
+    /// 0 otherwise. Every end here is measured from there: the loop is
+    /// `start + lead..end`, and from the press, as long, `start..end -
+    /// lead`.
+    pub lead: u64,
 }
 
 impl Decision {
@@ -326,17 +421,17 @@ pub fn decide(log: &NoteLog, ask: &Ask, bars_for: &dyn Fn(usize) -> Option<u32>)
     let n = log.sorted(&mut buf);
     let notes = &buf[..n];
     let together = frames(ask.rate, TOGETHER_MS);
-    let lo = ask.tap.saturating_sub(ask.reach).max(ask.start + 1);
-    let hi = (ask.tap + ask.reach).min(ask.heard_to);
     // The opening hit: the first notes from the pass's start, played
     // together, within the reach of the start.
     let open = notes
         .iter()
         .position(|x| x.frame >= ask.start && x.frame <= ask.start + ask.reach);
     let opening = open.map(|i| hit_at(notes, i, together));
-    // An end is where the opening hit comes round, less the frames from
-    // the start to it (a loop started on REC before its first hit).
+    // The loop is measured from it (a loop started on REC a moment before
+    // your first hit starts on the hit): an end is where it comes round.
     let lead = opening.map_or(0, |o| notes[o.0].frame - ask.start);
+    let lo = ask.tap.saturating_sub(ask.reach).max(ask.start + lead + 1);
+    let hi = (ask.tap + ask.reach).min(ask.heard_to);
     let ctx = Ctx {
         notes,
         ask,
@@ -354,20 +449,18 @@ pub fn decide(log: &NoteLog, ask: &Ask, bars_for: &dyn Fn(usize) -> Option<u32>)
             best: None,
             second: None,
             tap,
+            lead,
         };
     }
     // Candidates: each hit within the reach (the first note of each group
     // played together).
     let mut cands = [tap; MAX_CANDIDATES];
     let mut n_c = 0;
-    let mut i = notes.partition_point(|x| x.frame < lo + lead);
-    while i < notes.len() && notes[i].frame <= hi + lead && n_c < MAX_CANDIDATES {
+    let mut i = notes.partition_point(|x| x.frame < lo);
+    while i < notes.len() && notes[i].frame <= hi && n_c < MAX_CANDIDATES {
         let (first, last) = hit_at(notes, i, together);
-        let end = notes[first].frame - lead;
-        if end >= lo && end <= hi {
-            cands[n_c] = ctx.score(end, Some((first, last)));
-            n_c += 1;
-        }
+        cands[n_c] = ctx.score(notes[first].frame, Some((first, last)));
+        n_c += 1;
         i = last;
     }
     if n_c == 0 {
@@ -377,6 +470,7 @@ pub fn decide(log: &NoteLog, ask: &Ask, bars_for: &dyn Fn(usize) -> Option<u32>)
             best: None,
             second: None,
             tap,
+            lead,
         };
     }
     // The best, and the best of the rest with the tap.
@@ -404,6 +498,7 @@ pub fn decide(log: &NoteLog, ask: &Ask, bars_for: &dyn Fn(usize) -> Option<u32>)
         best: Some(best),
         second: Some(second),
         tap,
+        lead,
     }
 }
 
@@ -435,7 +530,7 @@ impl Ctx<'_> {
     fn score(&self, end: u64, hit: Option<(usize, usize)>) -> Candidate {
         let onset = hit.map_or(0.0, |h| self.onset(h));
         let rhythm = self.rhythm(end);
-        let context = self.context(end + self.lead);
+        let context = self.context(end);
         let dist = end.abs_diff(self.ask.tap) as f64;
         let prior = (1.0 - dist / self.ask.reach.max(1) as f64).max(0.0);
         let score = W_ONSET * onset + W_RHYTHM * rhythm + W_CONTEXT * context + W_PRIOR * prior;
@@ -476,7 +571,7 @@ impl Ctx<'_> {
     /// so the scores compare. The opening's own notes sit on the grid
     /// whatever the length, so they don't count. 0 when there are none.
     fn rhythm(&self, end: u64) -> f64 {
-        let len = end.saturating_sub(self.ask.start) as usize;
+        let len = end.saturating_sub(self.ask.start + self.lead) as usize;
         let Some(bars) = (self.bars_for)(len).filter(|&b| b > 0) else {
             return 0.0;
         };
@@ -659,9 +754,10 @@ mod tests {
         let d = decide(&log_of(&notes), &ask(5290.0, 5434.0, 90.0), &bars_at);
         assert_eq!(d.verdict, Verdict::Moved, "{d:?}");
         // The opening kick came 3 ms after the start and so did the
-        // downbeat's: the loop is the bars between them, from the start.
-        let want = 10_000 + ms(16.0 * 30_000.0 / 90.0 + wobble(16) - wobble(0));
+        // downbeat's: the loop is the bars between them, from the kick.
+        let want = 10_000 + ms(16.0 * 30_000.0 / 90.0 + wobble(16));
         assert!(d.end.abs_diff(want) <= 1, "{} against {want}", d.end);
+        assert_eq!(d.lead, ms(wobble(0)));
     }
 
     #[test]
@@ -744,8 +840,9 @@ mod tests {
     #[test]
     fn a_loop_started_on_rec_before_its_first_hit_keeps_that_lead() {
         // REC at 0 ms, the first kick at 80 ms, one bar at 120 BPM: the
-        // kick comes round at 2080 ms, so the loop (from the press) ends
-        // at 2000 ms. A tap 50 ms late of that.
+        // kick comes round at 2080 ms, where the loop from it ends. A tap
+        // 50 ms late of it, and further than the reach from where the loop
+        // from the press, as long, would end (2000 ms).
         let notes: Vec<NoteStart> = beat(120.0, 1, 200.0, &|_| 0.0)
             .into_iter()
             .map(|n| NoteStart {
@@ -753,8 +850,73 @@ mod tests {
                 ..n
             })
             .collect();
-        let d = decide(&log_of(&notes), &ask(2050.0, 2150.0, 120.0), &bars_at);
-        assert_eq!((d.verdict, d.end), (Verdict::Moved, 10_000 + ms(2000.0)));
+        let d = decide(&log_of(&notes), &ask(2130.0, 2230.0, 120.0), &bars_at);
+        assert_eq!(
+            (d.verdict, d.end, d.lead),
+            (Verdict::Moved, 10_000 + ms(2080.0), ms(80.0))
+        );
+    }
+
+    #[test]
+    fn the_beat_inside_says_three_bars_where_the_length_alone_says_four() {
+        use crate::reading::{read_bars, read_bars_with, Sure};
+        // Three bars of 4/4 at 100 BPM, kick, snare and hats: 7.2 s, which
+        // by its length alone reads as 4 bars at 133.
+        let notes = beat(100.0, 3, 0.0, &|_| 0.0);
+        let len = ms(7200.0) as usize;
+        let inner = InnerBeat::new(&log_of(&notes), RATE, 10_000, len, BAR, BEAT);
+        let fit = |b| inner.fit(b).unwrap();
+        assert!(fit(3) > fit(4) + 0.3, "3: {}, 4: {}", fit(3), fit(4));
+        assert!(fit(3) > fit(2) + 0.3, "3: {}, 2: {}", fit(3), fit(2));
+        let r = read_bars_with(len, RATE, BAR, None, None, &|b| inner.fit(b)).unwrap();
+        assert_eq!((r.bars, r.sure, r.other), (3, Sure::Clear, None), "{r:?}");
+        assert!((r.bpm - 100.0).abs() < 0.01);
+        assert_eq!(read_bars(len, RATE, BAR, None, None).unwrap().bars, 4);
+        // The same notes over 4 bars' length at 133 don't make 3 bars.
+        let len = ms(9600.0) as usize;
+        let inner = InnerBeat::new(&log_of(&notes), RATE, 10_000, len, BAR, BEAT);
+        let r = read_bars_with(len, RATE, BAR, None, None, &|b| inner.fit(b)).unwrap();
+        assert_eq!(r.bars, 4, "{r:?}");
+    }
+
+    #[test]
+    fn twice_the_bars_fits_about_as_well_so_the_preference_keeps_its_say() {
+        use crate::reading::{read_bars, read_bars_with};
+        // One bar at 100 BPM: its 8th-note hats are quarters of 2 bars at
+        // 200. The beat leaves the reading as the length alone has it.
+        let notes = beat(100.0, 1, 0.0, &|_| 0.0);
+        let len = ms(2400.0) as usize;
+        let inner = InnerBeat::new(&log_of(&notes), RATE, 10_000, len, BAR, BEAT);
+        let r = read_bars_with(len, RATE, BAR, None, None, &|b| inner.fit(b)).unwrap();
+        let plain = read_bars(len, RATE, BAR, None, None).unwrap();
+        assert_eq!((r.bars, r.sure), (plain.bars, plain.sure));
+        assert!(r.beat.unwrap() > 0.6, "{r:?}");
+        assert_eq!(plain.beat, None);
+        // Near the old edge (1 bar at 79 or 2 at 158) it stays a close
+        // call: the beat can't tell those apart.
+        let notes = beat(79.0, 1, 0.0, &|_| 0.0);
+        let len = ms(4.0 * 60_000.0 / 79.0) as usize;
+        let inner = InnerBeat::new(&log_of(&notes), RATE, 10_000, len, BAR, BEAT);
+        let r = read_bars_with(len, RATE, BAR, None, None, &|b| inner.fit(b)).unwrap();
+        assert_eq!(r.sure, crate::reading::Sure::Ambiguous, "{r:?}");
+    }
+
+    #[test]
+    fn a_few_notes_are_no_evidence() {
+        let notes: Vec<NoteStart> = beat(100.0, 1, 0.0, &|_| 0.0)
+            .into_iter()
+            .filter(|n| n.key == 36)
+            .collect();
+        // The opening kick, then only two more inside the bar.
+        let inner = InnerBeat::new(
+            &log_of(&notes),
+            RATE,
+            10_000,
+            ms(2400.0) as usize,
+            BAR,
+            BEAT,
+        );
+        assert_eq!(inner.fit(1), None);
     }
 
     #[test]
