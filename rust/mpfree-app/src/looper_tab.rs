@@ -1987,14 +1987,20 @@ impl LoopEditor {
         let fill = t.accent.mix(t.bg, if open { 0.6 } else { 0.8 });
         cx.canvas.fill_round_rect(chip, 16, fill);
         cx.canvas.stroke_round_rect(chip, 16, 1, t.accent);
-        let lit_ink = t.text.mix(t.accent, 0.25);
+        // Words on the chip's tint, moved only as far as it takes to read
+        // where the accent is dark (Slate's tint is a mid blue-grey).
+        let lit_ink = t.readable(t.text.mix(t.accent, 0.25), fill);
         let words = Rect::new(chip.x + 4, chip.y + 3, 10 + ww + 4, 26);
         cx.text(
             FontId::Bold,
             14.0,
             Rect::new(words.x + 10, words.y, ww + 2, words.h),
             Align::Left,
-            if open { t.text } else { lit_ink },
+            if open {
+                t.readable(t.text, fill)
+            } else {
+                lit_ink
+            },
             &c.words,
         );
         let b = Rect::new(words.right() + 10, chip.y + 3, bw, 26);
