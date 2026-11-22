@@ -178,6 +178,10 @@ pub enum To {
     /// instrument, without a pad layout) and none has this note. (A kit's
     /// 128 pads have every note.)
     NoPad { track: u8 },
+    /// Played the synth the pads play on their own, whichever track is
+    /// armed (the shared synth chosen for them, or one picked in the list
+    /// of synths).
+    Pads,
     /// A route (the Routing section's Tracks by channel) played this track
     /// (from 0), whichever track is armed.
     Routed { track: u8 },

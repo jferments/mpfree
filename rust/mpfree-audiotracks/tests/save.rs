@@ -1,10 +1,11 @@
 //! Audio tracks saved and opened again: three loop passes comped and
 //! mixed, saved through the text and a WAV a take, loaded into fresh
 //! tracks, play back the same sample for sample; loads copy in over a few
-//! periods and play nothing until done; bad loads are refused.
+//! periods and play nothing until done; bad loads are refused; each
+//! recording keeps its lasting id through saves, and no id is given twice.
 
 use mpfree_audiotracks::save::{from_text, from_wav, to_text, wav};
-use mpfree_audiotracks::{AudioTracks, Command as A, Input, Monitor, LOAD_SPEED};
+use mpfree_audiotracks::{AudioTracks, Command as A, Input, Monitor, RecordingId, LOAD_SPEED};
 use mpfree_transport::{Block, Command as T, Transport};
 
 const RATE: u32 = 22_050;
@@ -61,7 +62,7 @@ impl Rig {
 }
 
 /// Track 0 (mono) loop-records three passes of a bar, comped; track 2
-/// (stereo) records one bar in a punch; mixes set.
+/// (stereo) records one bar in a punch; a region's gain set.
 fn session() -> Rig {
     let mut r = Rig::new(AudioTracks::new(RATE, 20));
     r.a.command(A::Arm(0, true));
@@ -91,8 +92,7 @@ fn session() -> Rig {
         at: 600,
         gain: 0.8,
     });
-    r.a.command(A::SetPan(2, 0.4));
-    r.a.command(A::SetLevel(0, 1.5));
+    // No level or pan: a save doesn't hold them (the app's mixer does).
     r.live = false;
     r.run_to(r.frame + 10);
     r
@@ -224,4 +224,94 @@ fn bad_loads_are_refused() {
     let mut t = s.tracks[0].clone();
     t.regions.reverse();
     assert!(t.regions.len() < 2 || !fresh.load_track(&t));
+}
+
+/// Periods until every take has copied in.
+fn settle(r: &mut Rig) {
+    while r.a.loading() > 0 {
+        r.run_to(r.frame + 256);
+    }
+}
+
+/// Each recording is given a lasting id as it starts, kept by the save and
+/// by every open after it; a saved take without one is refused; a take
+/// recorded after a take was forgotten never gets the forgotten one's id,
+/// and two takes never share one.
+#[test]
+fn each_recording_keeps_its_lasting_id() {
+    let a = session();
+    let recs: Vec<RecordingId> = a.a.takes().map(|k| k.rec).collect();
+    assert_eq!(recs.len(), 4, "three passes and a punch");
+    assert!(recs.iter().all(|r| r.is_given()));
+    for (i, r) in recs.iter().enumerate() {
+        assert!(!recs[..i].contains(r), "two takes share {r}");
+        assert_eq!(a.a.take(a.a.take_of(*r).unwrap()).unwrap().rec, *r);
+    }
+    assert_eq!(a.a.take_of(RecordingId::NONE), None);
+
+    // Saved and opened, twice: the same ids, the same text.
+    let (text, files) = save(&a);
+    for r in &recs {
+        assert!(text.contains(&format!(" rec={r} ")), "{text}");
+    }
+    let mut b = open(&text, &files);
+    settle(&mut b);
+    let again: Vec<RecordingId> = b.a.takes().map(|k| k.rec).collect();
+    assert_eq!(again, recs);
+    assert_eq!(save(&b).0, text);
+
+    // A part whose take has no id is refused: every take saved has one.
+    let mut before = String::new();
+    for line in text.lines() {
+        let line = match line.find(" rec=") {
+            Some(i) => format!("{}{}", &line[..i], &line[i + 37..]),
+            None => line.to_string(),
+        };
+        before.push_str(&line);
+        before.push('\n');
+    }
+    assert!(!before.contains("rec="), "{before}");
+    let why = from_text(&before).unwrap_err();
+    assert!(why.contains("no rec"), "{why}");
+
+    // Forgotten, then recorded again: a new id, never the forgotten one.
+    let mut e = session();
+    let last = e.a.takes().last().unwrap();
+    e.a.command(A::ClearHistory);
+    e.a.command(A::Erase {
+        track: last.track,
+        from: 0,
+        to: i64::MAX / 2,
+    });
+    e.a.command(A::ClearHistory);
+    e.a.command(A::Forget(last.id));
+    e.run_to(e.frame + 10);
+    assert_eq!(e.a.take_of(last.rec), None, "forgotten");
+    e.live = true;
+    e.a.command(A::Arm(2, true));
+    let p = e.frame + 100;
+    e.t.command(p, T::Record);
+    e.t.command(p + BAR, T::Stop);
+    e.run_to(p + BAR + 200);
+    let newest = e.a.takes().map(|k| k.rec).collect::<Vec<_>>();
+    assert_eq!(newest.len(), 4);
+    assert!(!newest.contains(&last.rec));
+
+    // Loaded with an id another take has: a new one, so none is shared.
+    let (text, files) = save(&a);
+    let mut s = from_text(&text).unwrap();
+    let mut f = Rig::new(AudioTracks::new(RATE, 20));
+    let dup = recs[0];
+    for (i, k) in s.takes.drain(..).enumerate() {
+        let bytes = &files.iter().find(|(n, _)| *n == k.file).unwrap().1;
+        let mut k = k;
+        k.audio = from_wav(bytes).unwrap().0;
+        if i == 1 {
+            k.rec = dup;
+        }
+        assert!(f.a.load_take(k).is_ok());
+    }
+    let loaded: Vec<RecordingId> = f.a.takes().map(|k| k.rec).collect();
+    assert_eq!(loaded[0], dup);
+    assert!(loaded[1].is_given() && loaded[1] != dup);
 }
