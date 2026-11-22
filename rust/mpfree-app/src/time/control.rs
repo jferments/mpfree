@@ -3270,6 +3270,14 @@ impl TimeControl {
                 // Edits of the song alone, each one UNDO takes back.
                 let bar = info.meter.bar_ticks();
                 let before = self.project.arrangement.clone();
+                // + Bar pressed again on the same section joins its take:
+                // presses in a row are one UNDO.
+                let join = match a {
+                    TimeAction::SongBars(BarsEdit::RoomBefore(k)) => {
+                        Some(ROOM_BEFORE_JOIN | k as u64)
+                    }
+                    _ => None,
+                };
                 let edited = if matches!(
                     a,
                     TimeAction::ListTimes { .. }
@@ -3296,7 +3304,7 @@ impl TimeControl {
                     return Err(e);
                 }
                 if let Some(c) = change.filter(|_| self.project.arrangement != before) {
-                    self.takes.song_edit(&self.project, c, before);
+                    self.takes.song_edit_joining(&self.project, c, before, join);
                 }
                 self.changed = true;
                 Ok(line)
@@ -3762,12 +3770,24 @@ impl TimeControl {
             }
             TimeAction::SongBars(e) => {
                 let b = bar.max(1);
+                let section = |k: usize| {
+                    song.section(k, b)
+                        .ok_or_else(|| "song: there's no such section".to_string())
+                };
                 let (edit, from, len, inserted) = match e {
                     BarsEdit::Insert { at, bars } => {
                         let len = Tick::from(bars) * b;
                         (TimeEdit::Insert { at, len }, at, len, true)
                     }
+                    BarsEdit::RoomBefore(k) => {
+                        let (at, _) = section(k)?;
+                        (TimeEdit::Insert { at, len: b }, at, b, true)
+                    }
                     BarsEdit::Delete { from, to } => {
+                        (TimeEdit::Delete { from, to }, from, to - from, false)
+                    }
+                    BarsEdit::DeleteSection(k) => {
+                        let (from, to) = section(k)?;
                         (TimeEdit::Delete { from, to }, from, to - from, false)
                     }
                 };
@@ -3801,7 +3821,12 @@ impl TimeControl {
                         r => format!("song: {what}: {}", refused_said(r, at)),
                     }
                 })?;
-                self.section = None;
+                // + Bar keeps its section picked (the markers keep their
+                // order); anything else may have moved what the picks name.
+                self.section = match e {
+                    BarsEdit::RoomBefore(k) => Some(k),
+                    _ => None,
+                };
                 self.selected = None;
                 self.tempo_pick = None;
                 Ok((
@@ -5474,6 +5499,10 @@ fn next_filled(filled: &[usize], row: usize, delta: i32) -> Option<usize> {
             .copied()
     }
 }
+
+/// The join key of the Song view's + Bar on section `k` (this, or `k`):
+/// presses in a row on one section are one take.
+const ROOM_BEFORE_JOIN: u64 = 0xBA25 << 32;
 
 /// Why an edit of the song's time was refused, in a musician's words,
 /// with `at` naming a place in the song.

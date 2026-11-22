@@ -122,6 +122,8 @@ pub const GUARD_HOLD: f32 = 0.5;
 pub const STEP_HOLD: f32 = 0.4;
 /// What the hint line says when such a button is touched in Perform.
 pub const GUARD_HINT: &str = "Hold to delete";
+/// The longest name the text keyboard takes for a song marker.
+const MARKER_NAME_LEN: usize = 32;
 
 /// A finger holding a button that deletes or clears, in Perform (the
 /// guard): which finger, how long it has held (s), where it landed, and
@@ -150,6 +152,8 @@ fn guarded(widget: &str, t: &mpfree_ui::Target) -> bool {
         // and the note editor's Delete.
         (SONG, "button") | (NOTES, "button") => label == "Delete",
         (SONG, "region-button") => label == "Erase",
+        // A picked section's Delete bars (Arrange 3.3).
+        (SONG, "section-button") => label == "Delete bars",
         // The Looper tab's Clear, a layer's ×, and ½ (a ring's clear is
         // a second's hold already).
         (crate::looper_tab::EDITOR, "clear" | "layer-delete" | "half") => true,
@@ -722,6 +726,9 @@ enum TypeTo {
     /// A Perform set page's name (the Pads tab's Perform view's Name
     /// page).
     PerformPage(usize),
+    /// A song marker's name (the Song view's Rename, a section picked;
+    /// Arrange 3.3).
+    MarkerName(usize),
 }
 
 impl TypeTo {
@@ -729,7 +736,11 @@ impl TypeTo {
     fn is_text(self) -> bool {
         matches!(
             self,
-            TypeTo::SampleName | TypeTo::PortName | TypeTo::SceneName(_) | TypeTo::PerformPage(_)
+            TypeTo::SampleName
+                | TypeTo::PortName
+                | TypeTo::SceneName(_)
+                | TypeTo::PerformPage(_)
+                | TypeTo::MarkerName(_)
         )
     }
 }
@@ -7800,7 +7811,8 @@ impl Player {
             TypeTo::SampleName
             | TypeTo::PortName
             | TypeTo::SceneName(_)
-            | TypeTo::PerformPage(_) => None,
+            | TypeTo::PerformPage(_)
+            | TypeTo::MarkerName(_) => None,
         }
     }
 
@@ -7821,6 +7833,12 @@ impl Player {
             let acts = self.perform.rename(page, &name);
             self.perform_acts(acts);
             return None;
+        }
+        if let Some(TypeTo::MarkerName(index)) = to {
+            let (_, name) = names.into_iter().next()?;
+            return Some(FromUi::Time(TimeAction::SongMarker(
+                mpfree_time_ui::MarkerEdit::Rename { index, name },
+            )));
         }
         if let Some(TypeTo::SceneName(row)) = to {
             let (_, name) = names.into_iter().next()?;
@@ -9010,9 +9028,12 @@ impl Player {
             ToUi::Time(mut st) => {
                 // The lens the note editor shows, if it is open.
                 let lens = |t: &TimeState| t.edit.as_ref().map(|e| e.editor.lens);
+                // A block, section or tempo point picked or let go turns
+                // the Song view's hint too.
                 let swapped = st.song_view != self.time.song_view
                     || st.list_view != self.time.list_view
-                    || lens(&st) != lens(&self.time);
+                    || lens(&st) != lens(&self.time)
+                    || time_view::song_hint(&st) != time_view::song_hint(&self.time);
                 let switched = st.perform != self.time.perform;
                 // The note editor opened or closed: the Sequencer's Notes
                 // or Steps.
@@ -13058,6 +13079,24 @@ impl Player {
                 // own, nothing for the app but the hint line.
                 self.time_page.update(&mut self.ui, &self.time);
                 self.refresh_hint();
+                None
+            }
+            // The Song view's Rename, a section picked: the text keyboard,
+            // its name typed over the marker's (Arrange 3.3).
+            (time_view::SONG, EventKind::Tab(_))
+                if time_view::song_rename(&ev, &self.time).is_some() =>
+            {
+                let (k, name) = time_view::song_rename(&ev, &self.time)?;
+                self.open_textpad(
+                    vec![mpfree_ui::textpad::TextAsk {
+                        key: "marker".to_string(),
+                        label: "Marker".to_string(),
+                        title: "Name marker".to_string(),
+                        value: name,
+                        max_len: MARKER_NAME_LEN,
+                    }],
+                    TypeTo::MarkerName(k),
+                );
                 None
             }
             // The scene editor's Rename: the text keyboard, its name typed
@@ -17527,6 +17566,21 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("arrange-song sample: {e}"),
     }
+    // The same song with the Verse picked by a tap on its name (Arrange
+    // 3.3): its grip left of the marker and + Bar, Rename, Remove marker
+    // and Delete bars in place of the clip buttons.
+    match mpfree_time_ui::sample::busy_song_state() {
+        Ok(mut state) => {
+            state.selected = None;
+            state.section = Some(1);
+            let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-song-section", p));
+        }
+        Err(e) => eprintln!("arrange-song-section sample: {e}"),
+    }
     // The song's tempo points on the lane over the bars: 100 BPM from
     // bar 3 ramping to 128 at bar 6, the ramping point picked (its Ramp
     // and Delete in place of the clip buttons).
@@ -19319,6 +19373,141 @@ mod tests {
             a.into_iter().chain(p.take_actions()).collect::<Vec<_>>(),
             deleted
         );
+    }
+
+    /// The Song view's marker tools (Arrange 3.3): a tap on the free ruler
+    /// adds a marker; with a section picked, its grip moves where it
+    /// starts, + Bar, Remove marker and Delete bars send their edits, and
+    /// Rename types the name on the text keyboard; in Perform Delete bars
+    /// needs the half-second hold.
+    #[test]
+    fn markers_and_bars_are_edited_from_the_ruler_and_the_picked_sections_buttons() {
+        use mpfree_time_ui::{BarsEdit, MarkerEdit};
+        use mpfree_ui::textpad::{char_key, TextPad, KEY_CLEAR, KEY_ENTER};
+        const BAR: i64 = 3840;
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        let tap = |p: &mut Player, (x, y): (i32, i32)| -> Vec<FromUi> {
+            let down = p.touch(1, Touch::Down, x, y);
+            let up = down.or(p.touch(1, Touch::Up, x, y));
+            up.into_iter().chain(p.take_actions()).collect()
+        };
+        let find = |p: &Player, id: &str, label: Option<&str>| {
+            p.ui.targets()
+                .into_iter()
+                .find(|t| {
+                    t.widget == time_view::SONG
+                        && t.target.id == id
+                        && label.is_none_or(|l| t.target.label == l)
+                })
+                .unwrap_or_else(|| panic!("{id} {label:?}"))
+                .target
+        };
+        let mid = |r: mpfree_ui::Rect| (r.x + r.w / 2, r.y + r.h / 2);
+        let mut st = mpfree_time_ui::sample::song_state().unwrap();
+        st.selected = None;
+        let mut p = quiet_player(Fonts::embedded());
+        let mut c = SoftCanvas::new(1280, 800);
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        p.apply(ToUi::Show(View::Arrange));
+        p.ui.paint(&mut c);
+        assert_eq!(hint(&p), time_view::SONG_HINT);
+        // The ruler past the last name it shows (Scene 3's, bar 9): a
+        // marker on a bar line between it and Scene 4 (bar 17).
+        let (after, before) = (st.markers[2].0, st.markers[3].0);
+        let ruler = find(&p, "ruler", None).rect;
+        let got = tap(&mut p, mid(ruler));
+        assert!(
+            matches!(
+                got[..],
+                [FromUi::Time(TimeAction::SongMarker(MarkerEdit::Add(at)))]
+                    if after < at && at < before && at % BAR == 0
+            ),
+            "{got:?}"
+        );
+        // Verse picked: its grip, dragged a bar on, moves where it starts.
+        st.section = Some(1);
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        p.ui.paint(&mut c);
+        assert_eq!(hint(&p), time_view::SONG_SECTION_HINT);
+        let grip = find(&p, "section-grip", None);
+        let (gx, gy) = mid(grip.rect);
+        let (dx, _) = grip.towards;
+        assert!(dx > 0);
+        p.touch(1, Touch::Down, gx, gy);
+        p.touch(1, Touch::Move, gx + dx / 2, gy);
+        p.touch(1, Touch::Move, gx + dx, gy);
+        let got: Vec<FromUi> = p
+            .touch(1, Touch::Up, gx + dx, gy)
+            .into_iter()
+            .chain(p.take_actions())
+            .collect();
+        assert_eq!(
+            got,
+            [FromUi::Time(TimeAction::SongMarker(MarkerEdit::Move {
+                index: 1,
+                at: st.markers[1].0 + BAR
+            }))]
+        );
+        // + Bar and Remove marker: their edits, on Verse.
+        let button = |p: &Player, label| mid(find(p, "section-button", Some(label)).rect);
+        let plus = button(&p, "+ Bar");
+        assert_eq!(
+            tap(&mut p, plus),
+            [FromUi::Time(TimeAction::SongBars(BarsEdit::RoomBefore(1)))]
+        );
+        let remove = button(&p, "Remove marker");
+        assert_eq!(
+            tap(&mut p, remove),
+            [FromUi::Time(TimeAction::SongMarker(MarkerEdit::Delete(1)))]
+        );
+        // Rename: the keyboard on "Verse"; "Bridge" typed over it.
+        let rename = button(&p, "Rename");
+        let got = tap(&mut p, rename);
+        assert!(!got.iter().any(|a| matches!(a, FromUi::Time(_))), "{got:?}");
+        assert_eq!(p.page(), TEXTPAD_PAGE);
+        let r = p.ui.rect_of(TEXTPAD).unwrap();
+        {
+            let t = p.ui.get::<TextPad>(TEXTPAD).unwrap();
+            assert_eq!(
+                (t.text(), t.asks[0].title.as_str()),
+                ("Verse", "Name marker")
+            );
+        }
+        tap(&mut p, TextPad::key_at(r, KEY_CLEAR));
+        for ch in "Bridge".chars() {
+            tap(&mut p, TextPad::key_at(r, char_key(ch).unwrap().0));
+        }
+        let got = tap(&mut p, TextPad::key_at(r, KEY_ENTER));
+        assert!(
+            got.contains(&FromUi::Time(TimeAction::SongMarker(MarkerEdit::Rename {
+                index: 1,
+                name: "Bridge".into()
+            }))),
+            "{got:?}"
+        );
+        assert_ne!(p.page(), TEXTPAD_PAGE);
+        // Delete bars: one tap in Make.
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        p.ui.paint(&mut c);
+        let delete = button(&p, "Delete bars");
+        let deleted = [FromUi::Time(TimeAction::SongBars(BarsEdit::DeleteSection(
+            1,
+        )))];
+        assert_eq!(tap(&mut p, delete), deleted);
+        // In Perform: a tap only says to hold; the hold deletes.
+        st.perform = true;
+        p.apply(ToUi::Time(Box::new(st)));
+        p.ui.paint(&mut c);
+        let (x, y) = button(&p, "Delete bars");
+        assert!(tap(&mut p, (x, y)).is_empty());
+        assert_eq!(hint(&p), GUARD_HINT);
+        assert_eq!(p.touch(1, Touch::Down, x, y), None);
+        p.tick(0.3);
+        assert!(p.take_actions().is_empty());
+        p.tick(0.25);
+        assert_eq!(p.take_actions(), deleted);
+        p.touch(1, Touch::Up, x, y);
+        assert!(p.take_actions().is_empty());
     }
 
     /// The song list on Arrange (sequencer S4): MAIN in Perform goes

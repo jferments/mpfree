@@ -3433,6 +3433,52 @@ mod tests {
         assert_eq!(h.control.project.arrangement, after_insert);
         h.act(TimeAction::Undo).unwrap();
         assert_eq!(h.control.project.arrangement, start, "both undone");
+        // + Bar with the Verse picked, twice: two empty bars before it,
+        // the Verse still picked, and one UNDO for both.
+        let said = bars(&mut h, BarsEdit::RoomBefore(1)).unwrap();
+        assert_eq!(
+            said,
+            "song: 1 empty bar at bar 5; everything after moved on (UNDO takes them out)"
+        );
+        assert_eq!(h.control.state().section, Some(1), "the Verse stays picked");
+        let said = bars(&mut h, BarsEdit::RoomBefore(1)).unwrap();
+        assert!(said.starts_with("song: 1 empty bar at bar 6;"), "{said}");
+        let song = &h.control.project.arrangement;
+        assert_eq!(
+            (
+                song.markers[1].at,
+                song.placements[1].start,
+                song.tempo[0].at
+            ),
+            (6 * BAR, 6 * BAR, 6 * BAR)
+        );
+        let st = h.control.state();
+        let row = st.done.last().unwrap();
+        assert_eq!(
+            row.song,
+            Some(mpfree_play::takes::SongChange::Bars {
+                at: 4 * BAR,
+                len: 2 * BAR,
+                inserted: true
+            }),
+            "the undo list says 2 bars put in"
+        );
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.control.project.arrangement, start, "one UNDO for both");
+        // Delete bars on the Verse: its bars out, with its bass and
+        // marker (what would follow keeps the tempo it had); UNDO puts
+        // them back.
+        let said = bars(&mut h, BarsEdit::DeleteSection(1)).unwrap();
+        assert_eq!(
+            said,
+            "song: bars 5 to 6 taken out; everything after moved back (UNDO puts them back)"
+        );
+        let song = &h.control.project.arrangement;
+        assert_eq!((song.placements.len(), song.markers.len()), (1, 1));
+        let said = bars(&mut h, BarsEdit::DeleteSection(1)).unwrap_err();
+        assert!(said.starts_with("song: "), "{said}");
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.control.project.arrangement, start);
     }
 
     /// Markers added, renamed, moved and taken away (Arrange 3.3): only the

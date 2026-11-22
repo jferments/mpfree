@@ -38,7 +38,7 @@ use crate::list::{
 use crate::song::{
     AudioLane, SongBlocks, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, BARS_BACK, BARS_ON, INPUTS,
     MONITORS, NONE, PANEL, PANEL_CLOSE, PANEL_INPUT, PANEL_MONITOR, PANEL_MUTE, PANEL_SOLO,
-    PANEL_TAKES, REC, REGION_SLOTS, SECTION_TAP, TEMPO_ROW,
+    PANEL_TAKES, REC, REGION_SLOTS, RULER_ROW, SECTION_TAP, TEMPO_ROW,
 };
 use crate::widgets::{
     BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, TakeItem,
@@ -144,13 +144,13 @@ pub fn copy_hint(st: &TimeState) -> String {
 
 /// The hint line under the Song view.
 pub const SONG_HINT: &str =
-    "Tap a block to pick it   ·   drag a block or a section's name: move it (SHIFT as you lift: copy)   ·   Song on: the song plays where no clip is launched   ·   SHIFT + wheel: bars";
+    "Tap a block to pick it   ·   drag a block or a section's name: move it (SHIFT as you lift: copy)   ·   tap the ruler: add a marker   ·   SHIFT + wheel: bars";
 /// The hint line under the Song view with a block picked.
 pub const SONG_BLOCK_HINT: &str =
     "Drag the block: move it a bar at a time (SHIFT as you lift: copy)   ·   drag its end: longer or shorter   ·   push the wheel: move it a beat at a time   ·   SHIFT + wheel: bars";
 /// The hint line under the Song view with a section picked.
 pub const SONG_SECTION_HINT: &str =
-    "Drag the section's name: move it, the others close up (SHIFT as you lift: copy)   ·   push the wheel: move it a section at a time   ·   SHIFT + wheel: bars";
+    "Drag the name: move the section (SHIFT as you lift: copy)   ·   drag the grip: move where it starts   ·   + Bar: a bar of room before it   ·   push the wheel: move it a section at a time";
 /// The hint line under the Song view with a tempo point picked.
 pub const SONG_TEMPO_HINT: &str =
     "Drag the point: move it a bar at a time   ·   push the wheel: change its tempo   ·   Ramp: glide to the next point   ·   SHIFT + wheel: bars";
@@ -1401,6 +1401,12 @@ pub enum BarsEdit {
     /// The bars from song tick `from` to `to` taken out (bar lines), and
     /// everything after closed up.
     Delete { from: Tick, to: Tick },
+    /// The Song view's + Bar, section `k` picked: an empty bar put in just
+    /// before it. Presses in a row on the same section are one UNDO.
+    RoomBefore(usize),
+    /// The Song view's Delete bars, section `k` picked: its bars
+    /// (`Arrangement::section`) taken out.
+    DeleteSection(usize),
 }
 
 /// An edit of the song's markers (Arrange 3.3), each one UNDO takes back.
@@ -1813,6 +1819,39 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         ) => Some(TimeAction::SongTempo(TempoEdit::Pick(
             (st.tempo_pick != Some(*col)).then_some(*col),
         ))),
+        // The ruler: a tap where no name is adds a marker; the picked
+        // section's grip moves its marker alone (Arrange 3.3).
+        (
+            SONG,
+            EventKind::Place {
+                index: NONE,
+                row: RULER_ROW,
+                at,
+            },
+        ) => Some(TimeAction::SongMarker(MarkerEdit::Add(*at))),
+        (
+            SONG,
+            EventKind::Place {
+                index,
+                row: RULER_ROW,
+                at,
+            },
+        ) => Some(TimeAction::SongMarker(MarkerEdit::Move {
+            index: *index,
+            at: *at,
+        })),
+        // With a section picked, the last four buttons are + Bar, Rename
+        // (the app opens the text keyboard: `song_rename`), Remove marker
+        // and Delete bars.
+        (SONG, EventKind::Tab(k @ (2 | 4 | 5))) if section_buttons(st) => {
+            let s = st.section?;
+            Some(match k {
+                2 => TimeAction::SongBars(BarsEdit::RoomBefore(s)),
+                4 => TimeAction::SongMarker(MarkerEdit::Delete(s)),
+                _ => TimeAction::SongBars(BarsEdit::DeleteSection(s)),
+            })
+        }
+        (SONG, EventKind::Tab(3)) if section_buttons(st) => None,
         // With a point picked, the last two buttons are Ramp and Delete.
         (SONG, EventKind::Tab(k @ (4 | 5))) if st.region.is_none() && st.tempo_pick.is_some() => {
             let index = st.tempo_pick?;
@@ -3213,6 +3252,25 @@ pub fn rows_named(first: usize, last: usize) -> String {
     } else {
         format!("rows {} to {}", first + 1, last + 1)
     }
+}
+
+/// Whether the Song view's last four buttons are the picked section's
+/// (`song::SECTION_BUTTONS`): a section picked, no audio region or tempo
+/// point.
+pub fn section_buttons(st: &TimeState) -> bool {
+    st.region.is_none()
+        && st.tempo_pick.is_none()
+        && st.section.is_some_and(|k| k < st.markers.len())
+}
+
+/// The marker the Song view's Rename asks to name (button 4 with a
+/// section picked), with its name: the app opens the text keyboard.
+pub fn song_rename(ev: &UiEvent, st: &TimeState) -> Option<(usize, String)> {
+    if ev.widget != SONG || ev.kind != EventKind::Tab(3) || !section_buttons(st) || !st.song_view {
+        return None;
+    }
+    let k = st.section?;
+    Some((k, st.markers.get(k)?.1.clone()))
 }
 
 pub fn take_title(st: &TimeState, row: &TakeRow) -> String {

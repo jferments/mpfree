@@ -885,7 +885,27 @@ impl Takes {
         if joins {
             let take = self.done.last_mut().expect("checked");
             if let Some(e) = take.song.as_mut() {
-                e.change = change;
+                e.change = match (e.change, change) {
+                    // Bars put in one after the other (+ Bar pressed
+                    // again): the undo list says how many in all.
+                    (
+                        SongChange::Bars {
+                            at,
+                            len,
+                            inserted: true,
+                        },
+                        SongChange::Bars {
+                            at: next,
+                            len: more,
+                            inserted: true,
+                        },
+                    ) if next == at + len => SongChange::Bars {
+                        at,
+                        len: len + more,
+                        inserted: true,
+                    },
+                    (_, change) => change,
+                };
                 e.after = project.arrangement.clone();
             }
             return take.number;
