@@ -1,23 +1,47 @@
 #!/usr/bin/env python3
-"""mpfree-disktest on the test build: how fast and how steadily the stick's partition 4 streams audio. WRITES TEST FILES ON THE STICK'S PARTITION 4, THEN DELETES THEM.
+"""mpfree-disktest on the test build: how fast and how steadily the stick's partition 4 streams audio. Three ways to run it:
+
+  --survey-only   READ-ONLY. Steps 1 and 2 only: nothing is copied to or run on the MPC.
+  --read-only     RAM ONLY on the MPC. Copies the program into the test build's RAM and runs
+                  `mpfree-disktest --read-only`, which reads audio already on partition 4 and
+                  WRITES NOTHING THERE. Needs MPFREE_ACCEPT_DISKTEST=READ-ONLY (or YES).
+  (neither)       WRITES TEST FILES ON THE STICK'S PARTITION 4, THEN DELETES THEM.
+                  Needs MPFREE_ACCEPT_DISKTEST=YES.
 
 Run it while the test build runs from the USB stick (started at power-on by
 the boot hook on the installed 3.10.1, or by `collect-over-ssh.sh --kexec-boot`
 on 3.6.0). Like host_bench_mpc.py, it talks only to the test build:
 it uses the newest ~/mpfree-work/kexec-stick-* folder's known_hosts, so Akai's
 system (a different host key) is refused before anything runs. Each step after
-the first waits for you to press Enter:
+the second waits for you to press Enter:
 
   1. Workstation, read-only: checks that the program is a static ARM EABI5
-     hard-float executable:
+     hard-float executable (not with --survey-only):
        rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-disktest
   2. Test build, read-only: host_app_mpc.py's checks (the test build's
      release, no MMC device, kexec off, / read-only, /run has room and allows
      programs, Akai's app is not running, who holds the sound, MIDI, touch
-     and screen devices), then `df -k /run/mpfree-data`.
+     and screen devices), `df -k /run/mpfree-data`, then the streaming survey
+     (read-only-stream-survey.sh: the kernel, partition 4's mount, the stick's
+     block queue and USB path, writeback settings, memory, the USB interrupts
+     and their threads, the pad player's real-time threads, the CPUs, the
+     disk's I/O counters, what else from a disk is mounted, whether Akai's
+     disk service runs, and the kernel's messages about the stick; it reads
+     procfs, sysfs, unit files and the kernel log only).
   3. Test build RAM: copies the program to /run/mpfree-disktest and checks
      its hash there. A power-cycle clears it.
-  4. STICK, PARTITION 4: runs `mpfree-disktest` with no arguments, about 5
+  4a. With --read-only, READ-ONLY ON THE STICK: runs `mpfree-disktest
+     --read-only`, about 7 minutes. It refuses (exit code 3) unless
+     /run/mpfree-data is the mount of an ext4 file system labelled
+     MPFREE-DATA on partition 4 of a USB disk, mounted noatime (or
+     read-only), and no MMC device exists. It opens the audio files under
+     /run/mpfree-data/library and the files under /run/mpfree-data/backup
+     (a creator stick's eMMC backup, read as 64 MiB pieces) read-only
+     (O_NOFOLLOW, never a link, never off that file system) and drops only
+     the pages it is about to read from the cache. It creates, changes and
+     deletes nothing there, and prints counts and sizes, never a file's
+     name.
+  4b. Otherwise, STICK, PARTITION 4: runs `mpfree-disktest` with no arguments, about 5
      minutes. It refuses (exit code 3, nothing written) unless
      /run/mpfree-data is the mount of an ext4 file system labelled
      MPFREE-DATA on partition 4 of a USB disk, no MMC device exists, and at
@@ -27,10 +51,20 @@ the first waits for you to press Enter:
      and deletes that folder at the end, after an error, on Ctrl-C, or when
      the ssh session closes. It prints the free space before and after.
      It reads the partition's superblock (read-only) to check the label.
-     It runs as an ordinary process, so the pad player's audio thread, if
-     it is running, comes first.
+  Both run as an ordinary process, so the pad player's audio thread, if
+  it is running, comes first.
 
-What it measures, in 128 KiB blocks (the audio tracks' chunk): a sequential
+The read-only test (4a) reads like the streaming engine will: 4, 8, 16 and
+24 streams of 24-bit stereo at 44.1 kHz, each with 64, 128, 256 and 512 KiB
+reads, then 16 streams of 16-bit and of 32-bit float, 20 s each, after a
+sequential read. Each stream reads its own files, or 64 MiB pieces of one,
+paced, starting from a dropped cache. For each: p50, p99, p99.9, p99.99 and
+max time per read, how many took over 50, 100, 250 and 500 ms, the worst
+shortfall (how far a stream fell behind its schedule), the longest time a
+stream stayed behind, and the read-ahead window and RAM the plan's rule
+asks for.
+
+The writing test (4b) measures, in 128 KiB blocks (the audio tracks' chunk): a sequential
 write, a write paced at 3.1 MB/s (8 stereo tracks recording) for 60 s with
 fdatasync every second, reads with the file's pages dropped from the cache
 (sequential, then 8 paced streams), and 4 writing plus 4 reading streams at
@@ -38,7 +72,7 @@ once. For each: p50, p99 and max time per call, how many calls took over 50,
 100, 250 and 500 ms, and how far behind schedule it fell (the RAM buffer a
 recording or playback would need).
 
-If it is stopped hard (power off) mid-run, the folder stays on partition 4:
+If the writing test is stopped hard (power off) mid-run, its folder stays on partition 4:
 the next run deletes it first (only the tool's own file names; anything else
 in it stops the tool). To delete it by hand on the test build:
 rm -r /run/mpfree-data/mpfree-disktest
@@ -65,7 +99,7 @@ Stop = kexec.Stop
 
 PROGRAM = os.path.join(REPO_ROOT, "rust", "target", "armv7-unknown-linux-gnueabihf", "release", "mpfree-disktest")
 REMOTE_DIR = "/run/mpfree-disktest"
-# The one run: no arguments (the program picks /run/mpfree-data itself and refuses anything else).
+# No path arguments: the program picks /run/mpfree-data itself and refuses anything else.
 TIMEOUT = 900
 REFUSED = 3
 DEFAULT_SSH = {
@@ -95,22 +129,38 @@ RUN = r"""R=''
 cd "$R/run/mpfree-disktest" || exit 1
 exec "$R/run/mpfree-disktest/mpfree-disktest"
 """
+# Reads only, on partition 4.
+RUN_READ = r"""R=''
+cd "$R/run/mpfree-disktest" || exit 1
+exec "$R/run/mpfree-disktest/mpfree-disktest" --read-only
+"""
+# Read-only: the streaming survey (step D0 of docs/dev/design/disk-streaming.md).
+SURVEY = os.path.join(HERE, "read-only-stream-survey.sh")
 
 
 def check_program(out, path):
     """Step 1: the program's size, hash and ELF kind. Returns (path, sha256)."""
     path = os.path.realpath(path)
     if not os.path.isfile(path):
-        raise Stop(f"missing {path}: build it first (see docs/dev/design/audio-tracks.md)")
+        raise Stop(f"missing {path}: build it first (see docs/dev/design/disk-streaming.md)")
     with open(path, "rb") as fh:
         data = fh.read(app.PROGRAM_MAX + 1)
     problem = app.arm_static_problem(data)
     if problem:
-        raise Stop(f"{path} is {problem}; rebuild it as docs/dev/design/audio-tracks.md shows")
+        raise Stop(f"{path} is {problem}; rebuild it as docs/dev/design/disk-streaming.md shows")
     digest = hashlib.sha256(data).hexdigest()
     out.say(f"  {path}")
     out.say(f"    {len(data)} bytes, sha256 {digest}, static ARM EABI5 hard-float")
     return path, digest
+
+
+def survey_script():
+    """The streaming survey's text; every remote script starts with R=''."""
+    with open(SURVEY) as fh:
+        text = fh.read()
+    if not text.startswith("R=''\n"):
+        raise Stop(f"{SURVEY} does not start with R=''")
+    return text
 
 
 def main(argv):
@@ -122,23 +172,41 @@ def main(argv):
     p.add_argument("--work", default=os.environ.get("MPFREE_WORK_DIR", os.path.expanduser("~/mpfree-work")))
     p.add_argument("--program", default=PROGRAM)
     p.add_argument("--report")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--survey-only", action="store_true",
+                      help="read-only: the checks and the streaming survey; nothing is copied or run")
+    mode.add_argument("--read-only", action="store_true",
+                      help="copy the program to the test build's RAM and run its read-only test")
     args = p.parse_args(argv)
-    if os.environ.get("MPFREE_ACCEPT_DISKTEST") != "YES":
+    accept = os.environ.get("MPFREE_ACCEPT_DISKTEST")
+    if args.read_only and accept not in ("YES", "READ-ONLY"):
+        raise Stop("opt-in required (copies a program into the test build's RAM; reads audio on the stick's "
+                   "partition 4 and writes nothing there): "
+                   "MPFREE_ACCEPT_DISKTEST=READ-ONLY python3 tools/mpc-one/host_disktest_mpc.py --read-only")
+    if not args.read_only and not args.survey_only and accept != "YES":
         raise Stop("opt-in required (writes test files on the stick's partition 4, then deletes them): "
                    "MPFREE_ACCEPT_DISKTEST=YES python3 tools/mpc-one/host_disktest_mpc.py")
-    if not app.TESTING and not sys.stdin.isatty():
+    if not args.survey_only and not app.TESTING and not sys.stdin.isatty():
         raise Stop("run this from a terminal: each step waits for you to press Enter")
     out = kexec.Out(args.report)
-    out.say("MPFree disk test on the test build (RAM, and test files on the stick's partition 4 that it deletes)")
+    steps = 2 if args.survey_only else 4
+    if args.survey_only:
+        out.say("MPFree streaming survey on the test build (read-only; nothing is copied or run)")
+    elif args.read_only:
+        out.say("MPFree disk test on the test build, read-only (RAM, and reads of the audio on the stick's partition 4)")
+    else:
+        out.say("MPFree disk test on the test build (RAM, and test files on the stick's partition 4 that it deletes)")
 
-    out.say("\n[1/4] Workstation checks (read-only)")
-    path, digest = check_program(out, args.program)
+    out.say(f"\n[1/{steps}] Workstation checks (read-only)")
+    survey = survey_script()
+    if not args.survey_only:
+        path, digest = check_program(out, args.program)
     folder = kexec.newest_build(os.path.realpath(args.work))
     out.say(f"  test build: {folder}")
     releases = app.test_build_releases(folder)
     mpc = kexec.Mpc(args, os.path.join(folder, "known_hosts"))
 
-    out.say("\n[2/4] Checks on the test build (read-only; only its own host key is accepted)")
+    out.say(f"\n[2/{steps}] Checks and the streaming survey on the test build (read-only; only its own host key is accepted)")
     rc, text = mpc.run(app.check_script(*releases), test=True)
     for line in text.splitlines():
         out.say(f"  {line}")
@@ -149,6 +217,14 @@ def main(argv):
     rc, text = mpc.run(DF, test=True)
     for line in text.splitlines():
         out.say(f"  {line}")
+    rc, text = mpc.run(survey, test=True)
+    for line in text.splitlines():
+        out.say(f"  {line}")
+    if rc != 0 or "END OF STREAM SURVEY" not in text:
+        out.say(f"  (the survey ended early, exit code {rc}; nothing was changed)")
+    if args.survey_only:
+        out.say("\nRESULT: the survey ran (above); nothing was copied to or run on the MPC.")
+        return 0 if rc == 0 else 1
 
     signal.signal(signal.SIGINT, signal.default_int_handler)
     result = 1
@@ -167,19 +243,26 @@ def main(argv):
             raise Stop("the program on the MPC does not match the build")
         out.say("  copied; its hash on the MPC matches")
 
-        out.say("\n[4/4] The disk test: WRITES test files in /run/mpfree-data/mpfree-disktest "
-                "(stick partition 4), then deletes them")
-        answer = app.ready(out, "Takes about 5 minutes; the MPC can stay as it is.")
+        if args.read_only:
+            out.say("\n[4/4] The read-only disk test: READS the audio in /run/mpfree-data/library and the "
+                    "backup in /run/mpfree-data/backup (stick partition 4); writes nothing there")
+            answer = app.ready(out, "Takes about 7 minutes; the MPC can stay as it is.")
+        else:
+            out.say("\n[4/4] The disk test: WRITES test files in /run/mpfree-data/mpfree-disktest "
+                    "(stick partition 4), then deletes them")
+            answer = app.ready(out, "Takes about 5 minutes; the MPC can stay as it is.")
         if answer == "quit":
             raise Stop("stopped by you")
         if answer == "skip":
             out.say("  skipped: nothing was written on the stick")
             result = 0
         else:
-            rc, _ = app.stream(mpc, RUN, TIMEOUT, out)
+            rc, _ = app.stream(mpc, RUN_READ if args.read_only else RUN, TIMEOUT, out)
             if rc == REFUSED:
                 out.say("  the disk test refused (reason above); nothing was written on the stick")
                 result = 2
+            elif rc != 0 and args.read_only:
+                raise Stop(f"mpfree-disktest --read-only ended with exit code {rc}; it writes nothing on the stick")
             elif rc != 0:
                 raise Stop(f"mpfree-disktest ended with exit code {rc}; if it was cut off, the next run "
                            "deletes its folder first (or: rm -r /run/mpfree-data/mpfree-disktest)")
@@ -191,9 +274,11 @@ def main(argv):
     rc, text = mpc.run(DF, test=True)
     for line in text.splitlines():
         out.say(f"  {line}")
-    out.say("\nRESULT: " + {0: "the disk test ran (numbers above).",
-                            2: "refused by the disk test; nothing was written on the stick.",
-                            1: "stopped early."}[result])
+    ran = "the read-only disk test ran (numbers above); nothing was written on the stick." if args.read_only \
+        else "the disk test ran (numbers above)."
+    stopped = "stopped early; the read-only test writes nothing on the stick." if args.read_only else "stopped early."
+    out.say("\nRESULT: " + {0: ran, 2: "refused by the disk test; nothing was written on the stick.",
+                            1: stopped}[result])
     out.say("NEXT: carry on with the round, or switch the MPC off with its power switch, take out the stick,")
     out.say("wait 10 s, switch it on, and run the boot-map block to confirm nothing on the eMMC changed.")
     return 0 if result == 0 else 1

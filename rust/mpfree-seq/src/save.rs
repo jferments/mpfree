@@ -30,6 +30,7 @@
 //! once
 //! program 4 bank 2
 //! direction pingpong
+//! holds notes
 //! step 1/8T
 //! madefor mpfree.poly Poly
 //! madename 3 Cutoff
@@ -109,6 +110,12 @@
 //! for 1/16). It changes only what the Steps show, so an older build
 //! skips it, and this one a size it doesn't know, and shows 1/16 steps;
 //! the notes play the same either way.
+//!
+//! A clip's `holds notes` line says its notes are MIDI notes, each
+//! number a pitch (the instrument redesign's step 5c, [`crate::Holds`]);
+//! a clip without it holds pad hits, as every clip saved before did. An
+//! older build skips it, and a word it doesn't know, and plays the notes
+//! as pads.
 //!
 //! A clip's `madefor <node> <name>` line, and a `madename <id> <name>`
 //! line for each control, say what instrument its instrument locks were
@@ -300,6 +307,9 @@ fn clip_body(s: &mut String, c: &Clip) {
     }
     if c.direction != crate::Direction::Forward {
         let _ = writeln!(s, "direction {}", c.direction.word());
+    }
+    if c.holds != crate::Holds::Hits {
+        let _ = writeln!(s, "holds {}", c.holds.word());
     }
     if c.step != crate::steps::DEFAULT_SIZE {
         if let Some(name) = crate::steps::size_name(c.step) {
@@ -740,6 +750,11 @@ pub fn from_text(text: &str) -> Result<Project, String> {
             ("step", At::Clip(c, _)) => {
                 let word = w.next().ok_or_else(|| bad("step"))?;
                 c.step = crate::steps::size_named(word).unwrap_or(crate::steps::DEFAULT_SIZE);
+            }
+            // A newer build's kind of notes plays as pad hits here.
+            ("holds", At::Clip(c, _)) => {
+                let word = w.next().ok_or_else(|| bad("holds"))?;
+                c.holds = crate::Holds::from_word(word).unwrap_or_default();
             }
             // What its instrument locks were made for (refactor F1).
             ("madefor", At::Clip(c, _)) => {
@@ -1464,6 +1479,7 @@ mod tests {
         });
         c.direction = crate::Direction::PingPong;
         c.step = 320;
+        c.holds = crate::Holds::Notes;
         let pts: Vec<TouchPoint> = (0..150)
             .map(|k| TouchPoint {
                 at: k * 3,
@@ -1743,6 +1759,46 @@ mod tests {
         }
     }
 
+    /// What a clip's notes stand for (step 5c): `holds notes` reads back;
+    /// none is hits, as every clip saved before, and so is a newer build's
+    /// word; a clip of hits writes no line, so its text is as before; a
+    /// line with no word refuses the part.
+    #[test]
+    fn a_clip_of_notes_reads_back_and_one_of_hits_saves_as_before() {
+        use crate::Holds;
+        let text = to_text(&full());
+        assert!(text.contains("direction pingpong\nholds notes\n"), "{text}");
+        let holds = |t: &str| {
+            from_text(t).unwrap().tracks[0].slots[0]
+                .as_ref()
+                .unwrap()
+                .holds
+        };
+        assert_eq!(holds(&text), Holds::Notes);
+        let hits = text.replace("holds notes\n", "");
+        assert_eq!(holds(&hits), Holds::Hits);
+        assert_eq!(
+            holds(&text.replace("holds notes", "holds hits")),
+            Holds::Hits
+        );
+        assert_eq!(
+            holds(&text.replace("holds notes", "holds chords")),
+            Holds::Hits,
+            "a newer build's word"
+        );
+        assert_eq!(to_text(&from_text(&hits).unwrap()), hits, "hits: no line");
+        assert!(from_text(&text.replace("holds notes", "holds")).is_err());
+        // Every other clip holds hits.
+        let p = from_text(&text).unwrap();
+        let notes = p
+            .tracks
+            .iter()
+            .flat_map(|t| t.slots.iter())
+            .filter(|(_, c)| c.holds == Holds::Notes)
+            .count();
+        assert_eq!(notes, 1);
+    }
+
     /// A clip's play direction (S6): read back; none is forward, and so
     /// is a newer build's word; a line with no word refuses the part.
     #[test]
@@ -1784,7 +1840,7 @@ mod tests {
     #[test]
     fn a_clips_step_size_reads_back() {
         let text = to_text(&full());
-        assert!(text.contains("direction pingpong\nstep 1/8T\n"), "{text}");
+        assert!(text.contains("holds notes\nstep 1/8T\n"), "{text}");
         let step = |t: &str| {
             from_text(t).unwrap().tracks[0].slots[0]
                 .as_ref()

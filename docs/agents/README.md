@@ -41,6 +41,8 @@ python3 docs/tools/check_docs.py
 python3 docs/tools/doc_drift.py --base origin/main
 ```
 
+Screens take every colour from the theme: core colours, roles (`t.qlink(i)`, `t.record()`, `t.ink_on(fill)` for a label on a coloured fill) or `t.swatch(c)` for a content colour, never a hex number. The workspace tests check it (a fixed-colour count per file, and text contrast on every screen in every built-in theme); see [themes: checks](../dev/design/ui-themes.md#checks) for what to do when one fails.
+
 Full workspace test runs, long builds and anything over about ten minutes go on the project's self-hosted CI runners (push the branch and read its checks), not in a cloud session.
 
 [Testing and CI](../dev/guides/testing-and-ci.md) explains each job and the rules for tests: never skip or loosen a test to get green, new behaviour comes with tests, no test touches a device.

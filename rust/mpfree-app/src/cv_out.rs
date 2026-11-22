@@ -692,6 +692,7 @@ mod tests {
             track,
             dest: Default::default(),
             event,
+            notes: false,
         }
     }
 

@@ -802,6 +802,10 @@ pub enum Pick {
 pub struct EditInfo {
     pub editor: Editor,
     pub clip: Clip,
+    /// The clip's revision: it moves whenever the clip changes (an edit,
+    /// a recorded note, UNDO, an edit from Steps), and a tap on a note
+    /// carries the one it was made on ([`EditAction::Note`]).
+    pub rev: u64,
     pub track_name: String,
     /// A bar, in the clip's ticks.
     pub bar: Tick,
@@ -1718,7 +1722,10 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         }),
         (NOTES, kind) => Some(TimeAction::Edit(match *kind {
             EventKind::Tab(k) => EditAction::Button(k),
-            EventKind::Select(i) => EditAction::Note(i),
+            EventKind::Select(i) => EditAction::Note {
+                index: i,
+                rev: st.edit.as_ref().map_or(0, |e| e.rev),
+            },
             EventKind::Cell { row: PEN, col } => EditAction::Step(col as Tick),
             EventKind::Cell { row, col } => EditAction::Empty {
                 tick: col as Tick,
@@ -4006,7 +4013,15 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
         }
         Lens::Tracker => format!("tracker · {} steps", step_name(step)),
     };
-    g.legend = format!("{} notes · {} picked · {lens}", c.notes.len(), n_sel);
+    g.legend = if ed.cleared {
+        // Something else changed the clip and took a picked note with it.
+        format!(
+            "{} notes · the clip changed: picks cleared · {lens}",
+            c.notes.len()
+        )
+    } else {
+        format!("{} notes · {} picked · {lens}", c.notes.len(), n_sel)
+    };
     // Each note with its pressure: only the runs the notes name (the
     // clip keeps the runs of notes taken out too, for undo).
     g.notes = c
@@ -4713,6 +4728,7 @@ mod tests {
         let e = EditInfo {
             editor: crate::editor::Editor::new(0, 0, &c),
             clip: c,
+            rev: 0,
             track_name: "Drums".into(),
             bar: BAR,
         };
