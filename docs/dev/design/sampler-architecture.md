@@ -43,10 +43,23 @@ The engine stays as it is. Two new pieces sit around it: sampler commands, which
 
   The sound being edited comes first, and a newer job for the same sound replaces an older one. Each result carries the sound, the settings and the edit it was worked out for, and is thrown away (and counted) if any of them changed. Every job checks memory before it starts. Nothing falls back to working on the screen: an action waits, saying so, or says why it can't.
 - **Sounds held once** (step 8, built: [The sound store](#the-sound-store-step-8)). One store per project, each sound once by a 128-bit id, with its analysis beside it. Kits point at sounds, and old ids still load. The view's spare mono copy goes. The files on disk don't change.
-- **Grains shared by musical priority** (step 9). Before each part of a period the 256 grains are shared out in ranks: a new hit's first grains, then held pads and the master Grains FX, then ringing tails and the oldest clouds, which thin first. Nothing is cut without a fade.
+- **Grains shared by musical priority** (step 9, built: [Grains shared by musical priority](#grains-shared-by-musical-priority-step-9)). Before each part of a period the 256 grains are shared out in ranks: a new hit's first grains, then held pads and the master Grains FX, then ringing tails and the oldest clouds, which thin first. Nothing is cut without a fade.
 - **Shown to the musician** (step 10). When the sampler thins grains, steals voices or drops events, a short warning in plain words. The counts stay on Dev > Debug.
 - **The engine in modules** (step 11): events, voices, grains, routing, master effect and counters, with offline renders bit for bit the same.
 - **Kits as instruments** (phase 3). A kit gets a lasting instrument id and takes notes like any instrument, and automation names a pad by instrument and pad. Grain settings become `mpfree-mod` parameters.
+
+**What stays as it is:**
+
+- Rust, and today's crates.
+- One grain engine for the pads and Grains FX.
+- Sounds that never change once made, and engine views built off the audio thread and swapped in whole.
+- The fixed voice pool, the grain arrays made up front, and the two-core split.
+- Regions, layers and slices that never touch the sound, and undo per kit.
+- The one Sample page.
+- The grain level law, which gets measured, not replaced.
+- Warp's stretch.
+- The recorder.
+- `mpfree-mod` as the one modulation system.
 
 ### The refactor's phases
 
@@ -86,18 +99,20 @@ Built so far: the service (`mpfree_sampler::jobs`, `mpfree-sampler/src/jobs.rs`)
 - **Shown.** The Sample bar's short id ("Source 2f36…75") is the new id's first two and last byte; that is the only change on screen, on 17 golden Sample screens.
 - **Tests:** `store::tests` (the id changes with any change, a hundred thousand short sounds with distinct ids in each half, a sound made twice held once until the last goes, the mono mix bit for bit the copy it replaces); the Slice and Wave tab tests that snap to zero crossings and split on silence, unchanged; `mpfree-sampler-ui` `a_sound_saved_under_its_64_bit_id_keeps_its_files_and_its_cache_reads`; `gui::tests` `a_sound_loaded_into_two_kits_is_held_once` (one copy, shared octave copies, the page's memory count unchanged by the second load) and `an_older_projects_sounds_keep_their_files_and_open_the_same` (an older build's file names and cache: the same kit and samples, the analysis read, saved again under the same names).
 
-**What stays as it is:**
+### Grains shared by musical priority (step 9)
 
-- Rust, and today's crates.
-- One grain engine for the pads and Grains FX.
-- Sounds that never change once made, and engine views built off the audio thread and swapped in whole.
-- The fixed voice pool, the grain arrays made up front, and the two-core split.
-- Regions, layers and slices that never touch the sound, and undo per kit.
-- The one Sample page.
-- The grain level law, which gets measured, not replaced.
-- Warp's stretch.
-- The recorder.
-- `mpfree-mod` as the one modulation system.
+Before, the 256 grains (`GRAIN_BUDGET`) went first come, first served: the clouds playing kept them and a new pad got what was left. Over a crowd of held grain pads a new hit could wait a second or more for its first grain. Now `Engine::share_grains` shares them out before each part of a period (`mpfree-sampler/src/grain_share.rs`), from what the engine can see:
+
+- **Ranks** (`grain_share::rank_of`). A cloud in its first 50 ms is a **new hit**. A pad still held, under 10 s old, is **held**, and so are the master Grains FX's two clouds, which count as the youngest held cloud. A pad let go and ringing out, or one held longer than 10 s, is a **tail**.
+- **Shares** (`grain_share::share`). 16 grains are kept free for new hits (`RESERVE`). A new hit gets what it will have by the end of its first 50 ms (`GrainVoice::wants_within`), unshared. Each held cloud then gets a protected share of 8 grains (or what it wants, if less), the youngest first, and what is left evenly up to what each wants (`GrainVoice::wants`: its overlap, with headroom for random timing). The tails share what is left after that, evenly. Shares are even within a rank, not across ranks: a fresh snare outranks a texture that has played for 20 seconds. Past 30 held clouds the protected shares run out: the youngest keep theirs and the rest make no new grains and finish the ones they have, counted (`Stats::held_back_clouds`).
+- **Nothing changes while everything fits.** While every cloud's demand fits with the reserve to spare, every share is none (`MAX_GRAINS`) and each cloud plays exactly as before: `mpfree-grain` `tests/share.rs` `no_share_plays_exactly_as_before` renders bit for bit, and a session of four light clouds and the Grains FX shares nothing.
+- **A share thins evenly** (`GrainVoice::set_share`). The voice widens its gaps to fit its share as it does for `CAP_FIT` (its aim is the share times 54/64), at the same level, so a cloud thins rather than losing grains at random; at the share itself a new grain waits (`Stats::held_back`, counted with the budget's skipped grains). Thinning only slows new grains, so the grains playing finish. A cloud with no share keeps its usual gaps, so it starts again at once when a share comes back.
+- **Room by fading, never cutting** (`grain_share::make_room`, `GrainVoice::fade_oldest`). When fewer than 16 grains are free, counting those ending within 5 ms, the oldest grains of the lowest-ranked clouds over their shares fade out over 5 ms (`FADE_SECS`), along the falling side of their own windows from the same level, as grains do under a hit. Tails first, then held clouds; never a new hit's. Counted in `Stats::faded_grains`.
+- **Real time.** The claims (`Engine::claims`, `Engine::clouds`) are reserved for every voice and the master effect's two clouds when the engine is made, and the sharing is a few passes over them: no allocation (`tests/no_alloc.rs`, `tests/split_no_alloc.rs`). With no grain playing it returns at once (a cloud starts unshared, `GrainVoice::start`), so a kit with no grain pads pays only that check. Split, the lane's share takes part while it is home; away, it keeps the limit it left with. Against the engine before step 9, the workstation's instruction counts (`tools/ci/instr_gate.py`) for every sampler bench case move by 0.2 % or less.
+- **Shown.** `Stats::crowded_frames` (how long the clouds were shared out), `faded_grains` and `held_back_clouds` reach Dev > Debug ("Grains shared out · faded to make room · clouds held back") and the 30 s status line. Step 10 adds the musician's warning.
+- **Measured** (`mpfree-grain --demo`, its new `crowded.wav`: 64 held grain pads, one starting every 20 ms, under the master Grains FX, with a new hit at 40, 60 and 80 % of 8 s). Before: the new hits made their first grains after 196 ms, 1.7 s and 100 ms, and 27 of the 64 clouds had gaps of over 50 ms (the longest 560 ms) as grains went to whichever cloud asked first. After: each new hit's first grain within 0.7 ms; the 29 or 30 youngest clouds keep a share and never gap, and the other 34 or 35, the oldest, are held back as the plan says. The level law keeps each cloud's level as it thins.
+- **Tests:** `grain_share::tests` (no share while everything fits; a new hit first, then protected held shares, then tails; even shares within a rank; past 30 held clouds; room from the lowest rank and the oldest); `mpfree-grain` `tests/share.rs` (bit for bit with no share; `wants` against what a cloud keeps; a share of 16 caps the cloud at 16 grains, its level within 3 dB; no share finishes the grains playing and makes none; a fade's largest step stays under 1.5 times the steady cloud's, where cutting the same grains steps over three times it); `tests/grain_share.rs` (over 64 dense clouds and the Grains FX a new hit's first grain within one period, which before took longer than a period; the total never passes 256 and grains that make room fade, the largest step staying near a 20 Hz tone's own where cutting them would step about 11 %; a session that fits shares nothing); `tests/granular.rs` `stealing_and_the_budget_bound_the_grains` (eight crowded clouds keep room for a new hit).
+- **Not done until measured on the MPC** (step 13): the speed of the sharing and of a crowded block, and whether 256 stays, in a device round paced with the owner.
 
 ## Crates
 
@@ -392,7 +407,7 @@ From round 6 the pad player (`mpfree-app`, `src/sampler.rs`) plays through this 
 - A Grains kit plays the first kit's sounds as granular pads while they are held. Pressure moves density, grain size, position or pitch, one per row of pads.
 - Pad pressure from the controller goes to the engine as `Event::Pressure`, and Note Repeat's note-offs go to it as `Event::NoteOff`.
 - **Pads on the mixer.** `Engine::render_routed(frames, out)` renders each pad apart: every voice adds its sound into its own pad's pair from a `PadOut` (the mixer's pad channels, `mpfree_fx::Mixer::pad_input`), so each pad gets the mixer's fader, pan, mute, solo, sends, inserts and output. Events, voices and grains run as in `Engine::render`, and the pads' pairs add up to what it renders (`tests/routed.rs`). The engine never clears a pair (the mixer clears its own after each block). A pad with no pair (`None`) still plays, into a scratch buffer, so its voices end on time. The master grain effect works on the mixed pair, so it runs only in `Engine::render`; on the mixer a granular insert on the pads' track does its job. `sampler::Player::render_routed` passes it on for every kit: kit 1's 16 pads on pad channels 0 to 15, each going to the Drums track, and another kit's onto its track's channel (`MixHost::pads_homed`). `render_dry` stays for tests and previews. Routed renders run in `tests/no_alloc.rs` too.
-- The 30 s status line adds the engine's render time per period (mean and max, and as a share of the 2.9 ms period), steals, dropped events, and peak and skipped grains. On the RK3288, these figures set the voice and grain limits.
+- The 30 s status line adds the engine's render time per period (mean and max, and as a share of the 2.9 ms period), steals, dropped events, and peak and skipped grains, grains faded to make room and clouds held back ([step 9](#grains-shared-by-musical-priority-step-9)). On the RK3288, these figures set the voice and grain limits.
 
 ### As an instrument node (`node.rs`)
 
@@ -719,7 +734,7 @@ Jay, 2026-11-12: stutter and bus FX on pads. Worked out with the FX thread (no r
      s = hermite(buffer, pos); w = window_table[phase]; out_l += s·w·gain_l; out_r += s·w·gain_r
 ```
 
-- **Fixed arrays:** each granular voice has up to 64 grains; there is a global grain budget across voices (start at 256, set by measurement). Past the budget, new grains are skipped, never queued, so the period is never at risk.
+- **Fixed arrays:** each granular voice has up to 64 grains; there is a global grain budget across voices (start at 256, set by measurement), shared out by musical priority ([step 9](#grains-shared-by-musical-priority-step-9)). Past a cloud's share or the budget, new grains are skipped, never queued, so the period is never at risk.
 - **Windows** are 1024-entry tables (Hann, Tukey with a shape parameter, trapezoid, exponential, and one Shape control across them, R7 step B2), read with linear interpolation.
 - **Sources:** a region (granular playback mode) or a circular live buffer of 4-8 s (granular effect). Freeze stops writes to the live buffer.
 - **Sync:** density and size can lock to tempo divisions, using the transport's frame position.

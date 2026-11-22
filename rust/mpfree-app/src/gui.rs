@@ -15100,6 +15100,9 @@ pub fn sample_player(fonts: Fonts) -> Player {
             ends_lost: 0,
             peak_grains: 0,
             window_waits: 0,
+            faded_grains: 0,
+            held_back_clouds: 0,
+            crowded_s: 0.0,
         },
     }));
     p.set_screen_row(
@@ -18135,6 +18138,9 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                 ends_lost: 0,
                 peak_grains: 48,
                 window_waits: 0,
+                faded_grains: 0,
+                held_back_clouds: 0,
+                crowded_s: 0.0,
             },
             ..Timing::default()
         }));
