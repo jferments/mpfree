@@ -191,7 +191,7 @@ fn golden_every_case_sounds_as_it_did() {
     // own tests in cases.rs check them.
     for mut c in cases::all(RATE)
         .into_iter()
-        .filter(|c| c.module != cases::CONTROL)
+        .filter(|c| !cases::off_the_audio_path(c))
     {
         let blocks = blocks_for(&c);
         match fingerprint(&mut c, blocks) {

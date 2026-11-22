@@ -39,7 +39,7 @@
 
 use crate::app::step_pads::Pen;
 use crate::app::StepPads;
-use crate::time::{StepAction, StepClip, StepsData, TimeHost, LINE, STEP_TICKS};
+use crate::time::{Say, StepAction, StepClip, StepsData, TimeHost, LINE, STEP_TICKS};
 use mpfree_seq::steps::Change;
 
 /// What a press did.
@@ -416,7 +416,7 @@ impl StepKeys {
                 ..Pressed::default()
             };
         }
-        let r = time.step_action(if s.line() {
+        let a = if s.line() {
             let (keys, n) = pen.keys(velocity);
             StepAction::Enter { step, keys, n }
         } else {
@@ -425,20 +425,32 @@ impl StepKeys {
                 step,
                 velocity,
             }
-        });
-        let sounding = !p.rolling && r.as_ref().is_ok_and(|l| !l.is_empty());
+        };
+        // Apart (--time-thread) the tap goes to the editing side's thread
+        // and its answer is said when it comes (None here); the step
+        // sounds now, as the note it puts in.
+        let r = time.step_action_then(a, Say::NoteOrTell { err: "steps: " });
+        let sounding = !p.rolling
+            && r.as_ref()
+                .is_none_or(|r| r.as_ref().is_ok_and(|l| !l.is_empty()));
         let sounded = if sounding { pen } else { Pen::default() };
         self.hold(pad, s.sound, step, Kind::Set { remove: false }, sounded);
+        let sound = sounded.pads().iter().map(|&p| (p, velocity)).collect();
         match r {
-            Ok(log) => Pressed {
+            Some(Ok(log)) => Pressed {
                 log,
                 tell: None,
-                sound: sounded.pads().iter().map(|&p| (p, velocity)).collect(),
+                sound,
             },
-            Err(e) => Pressed {
+            Some(Err(e)) => Pressed {
                 log: String::new(),
                 tell: Some(format!("steps: {e}")),
                 sound: Vec::new(),
+            },
+            None => Pressed {
+                log: String::new(),
+                tell: None,
+                sound,
             },
         }
     }
