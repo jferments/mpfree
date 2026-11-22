@@ -779,10 +779,6 @@ pub struct Settings {
     pub export_rate: u32,
 }
 
-/// The note editor's Timing Correct button (`TC sel.` / `TC all`), which
-/// TC presses while the editor shows.
-pub const TC_BUTTON: usize = 7;
-
 /// Half Level's velocity until FULL LEVEL held and a pad hit set another.
 pub const HALF_LEVEL: u8 = 64;
 
@@ -1303,6 +1299,10 @@ pub enum Effect {
         delta: i32,
         scroll: bool,
     },
+    /// TC with the note editor open: the screen opens its Edit options'
+    /// drawer on Timing Correct's settings, or corrects the notes when the
+    /// drawer shows already (piano roll plan 1A.1).
+    EditTc,
     /// Keep this library text in the store as arp/patterns.txt (the store's
     /// own thread writes it).
     SavePatterns(String),
@@ -2863,9 +2863,10 @@ impl App {
     }
 
     /// TC (the MPC's Timing Correct): the note editor on the armed track's
-    /// clip, on the Sequencer tab, whose first rows are Timing Correct's
-    /// settings; pressed again with the editor showing, it corrects (TC
-    /// sel. or TC all), one take that UNDO takes back. SHIFT + TC (the
+    /// clip, on the Sequencer tab, with its Edit options' drawer open on
+    /// Timing Correct's settings; pressed again with the drawer showing, it
+    /// corrects (the picked notes, or all), one take that UNDO takes back
+    /// (the screen knows the drawer: `Effect::EditTc`). SHIFT + TC (the
     /// MPC's TC On/Off): the armed track's Quantise while recording, off
     /// or back on.
     fn tc_button(&mut self, shift: bool) -> Vec<Effect> {
@@ -2874,14 +2875,13 @@ impl App {
             return vec![Effect::RecordQuantiseToggle];
         }
         if self.view == View::Sequencer && self.notes_open {
-            return vec![Effect::Time(TimeAction::Edit(EditAction::Button(
-                TC_BUTTON,
-            )))];
+            return vec![Effect::EditTc];
         }
         let mut fx = self.go(View::Sequencer);
         if !self.notes_open {
             fx.push(Effect::Time(TimeAction::Edit(EditAction::Open)));
         }
+        fx.push(Effect::EditTc);
         fx.push(Effect::Note(
             "TC: the note editor, Timing Correct's settings first   ·   TC again: correct the notes"
                 .to_string(),
@@ -3657,7 +3657,7 @@ impl App {
                     MuteKeys::Off => "TRACK MUTE: the pads play again".to_string(),
                     MuteKeys::Tracks => self.mute_bank_line(),
                     MuteKeys::Pads => {
-                        "SHIFT + TRACK MUTE: each pad mutes itself in the kit".to_string()
+                        "SHIFT + TRACK MUTE: each pad mutes itself on this track".to_string()
                     }
                 }),
                 // The PAD BANK lights show the mute bank, or the kit's again.
@@ -6042,13 +6042,12 @@ mod tests {
         let fx = press(&mut app, button::TC);
         assert!(fx.contains(&Effect::Show(View::Sequencer)), "{fx:?}");
         assert!(fx.contains(&Effect::Time(TimeAction::Edit(EditAction::Open))));
-        app.set_notes_open(true);
-        assert_eq!(
-            press(&mut app, button::TC),
-            [Effect::Time(TimeAction::Edit(EditAction::Button(
-                TC_BUTTON
-            )))]
+        assert!(
+            fx.contains(&Effect::EditTc),
+            "the drawer opens on TC's settings"
         );
+        app.set_notes_open(true);
+        assert_eq!(press(&mut app, button::TC), [Effect::EditTc]);
         assert_eq!(
             held(&mut app, button::SHIFT, |a| press(a, button::TC)),
             [Effect::RecordQuantiseToggle]

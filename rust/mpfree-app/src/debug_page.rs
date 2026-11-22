@@ -195,9 +195,22 @@ fn at(start: std::time::Instant, t: std::time::Instant) -> String {
 }
 
 /// The Status page's rows: the problems (a summary line first), and the
-/// last reports, with times since `start`.
-pub fn status_rows(board: &mpfree_status::Board, start: std::time::Instant) -> (Rows, Rows) {
+/// last reports, with times since `start`. `names` names a subject where
+/// the watcher knows it (a port's name), else it shows as "#2".
+pub fn status_rows(
+    board: &mpfree_status::Board,
+    names: &crate::status_watch::Watch,
+    start: std::time::Instant,
+) -> (Rows, Rows) {
     use mpfree_status::{Level, Op, ProblemState, Shape};
+    let subject = |k: &mpfree_status::Kind, s: mpfree_status::Subject| match (
+        s.0,
+        names.subject_name(k, s),
+    ) {
+        (0, _) => String::new(),
+        (_, Some(name)) => format!(" {name}"),
+        (n, None) => format!(" #{n}"),
+    };
     let level_tone = |l: Level| match l {
         Level::Fail => Tone::Bad,
         Level::Warn => Tone::Warn,
@@ -227,10 +240,7 @@ pub fn status_rows(board: &mpfree_status::Board, start: std::time::Instant) -> (
         ));
     }
     for p in raw {
-        let subject = match p.subject.0 {
-            0 => String::new(),
-            n => format!(" #{n}"),
-        };
+        let subject = subject(p.kind, p.subject);
         let state = match p.state {
             ProblemState::Settling => "settling".to_string(),
             ProblemState::Now => "now".to_string(),
@@ -287,10 +297,7 @@ pub fn status_rows(board: &mpfree_status::Board, start: std::time::Instant) -> (
                 Op::Began => "began".to_string(),
                 Op::Ended => "ended".to_string(),
             };
-            let subject = match e.subject.0 {
-                0 => String::new(),
-                n => format!(" #{n}"),
-            };
+            let subject = subject(e.kind, e.subject);
             (
                 format!("{}{subject} {op}", e.kind.id),
                 format!("at {}", at(start, e.at)),
@@ -407,7 +414,12 @@ impl DebugPages {
             Vec::new(),
         );
         DebugPages::set_procs(ui, &procs::ProcView::default());
-        DebugPages::set_status(ui, &mpfree_status::Board::new(), std::time::Instant::now());
+        DebugPages::set_status(
+            ui,
+            &mpfree_status::Board::new(),
+            &Default::default(),
+            std::time::Instant::now(),
+        );
         Ok(d)
     }
 
@@ -656,11 +668,15 @@ impl DebugPages {
         }
     }
 
-    /// The Status page from the board at `now` (its clock).
     /// Fills the Status page from the board, times since `start`; a list
     /// that hasn't changed isn't touched, so it doesn't redraw.
-    pub fn set_status(ui: &mut Ui, board: &mpfree_status::Board, start: std::time::Instant) {
-        let (open, events) = status_rows(board, start);
+    pub fn set_status(
+        ui: &mut Ui,
+        board: &mpfree_status::Board,
+        names: &crate::status_watch::Watch,
+        start: std::time::Instant,
+    ) {
+        let (open, events) = status_rows(board, names, start);
         if ui
             .get::<StatList>("statusopen")
             .is_some_and(|l| l.rows != open)
@@ -910,7 +926,7 @@ mod tests {
         let t0 = Instant::now();
         let s = |x: u64| t0 + Duration::from_secs(x);
         let mut b = Board::new();
-        let (open, events) = status_rows(&b, t0);
+        let (open, events) = status_rows(&b, &Default::default(), t0);
         assert_eq!(
             open,
             vec![
@@ -930,7 +946,7 @@ mod tests {
         b.apply(Report::happened(&kinds::SOUND_DROPOUT, 3), t0);
         b.apply(Report::began(&kinds::PORT_MISSING).about(Subject(2)), s(1));
         b.tick(s(5));
-        let (open, events) = status_rows(&b, t0);
+        let (open, events) = status_rows(&b, &Default::default(), t0);
         assert_eq!(
             open[0],
             (
@@ -973,13 +989,13 @@ mod tests {
         b.seen(s(6));
         b.apply(Report::happened(&kinds::SOUND_DROPOUT, 1), s(70));
         b.tick(s(74));
-        let (open, _) = status_rows(&b, t0);
+        let (open, _) = status_rows(&b, &Default::default(), t0);
         assert_eq!(
             open[1].1,
             "ended at 1:10 · 4× · first at 0.0 s · last at 1:10 · not seen"
         );
         b.seen(s(75));
-        let (open, _) = status_rows(&b, t0);
+        let (open, _) = status_rows(&b, &Default::default(), t0);
         assert_eq!(open[1].2, Tone::Normal, "seen and over");
     }
 }

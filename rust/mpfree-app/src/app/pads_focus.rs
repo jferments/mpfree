@@ -328,6 +328,29 @@ impl App {
         self.pad_layout.is_none()
     }
 
+    /// Which of the pads play what `plays` picks out, for who plays (the
+    /// instrument redesign's step 8, "FM: pads bank B, Track 2"): `.0`
+    /// the pads' own choice does (every bank without one of its own), `.1`
+    /// a bit for each bank whose own does. The banks' own count only on a
+    /// kit's pages ([`App::banks_apply`]). Allocates nothing.
+    pub fn pads_who(&self, plays: impl Fn(PadFocus) -> bool) -> (bool, u8) {
+        if !self.banks_apply() {
+            return (plays(self.pads_focus), 0);
+        }
+        let every = self.bank_focus.iter().any(Option::is_none) && plays(self.pads_focus);
+        let banks = (0..super::KIT_PAGES)
+            .filter(|&b| self.bank_focus[b].is_some_and(&plays))
+            .fold(0u8, |bits, b| bits | 1 << b);
+        (every, banks)
+    }
+
+    /// The holder in the instrument host of instrument `id` of the
+    /// project's list, as the app last had it: a track's own or a free
+    /// place's; None for the shared synth, or one the list hasn't got.
+    pub fn instrument_holder(&self, id: InstrumentId) -> Option<usize> {
+        self.instrument_list.kind(id)?.holder()
+    }
+
     /// What bank `b` plays of its own (None: what every bank plays).
     #[cfg(test)]
     pub fn bank_focus(&self, b: usize) -> Option<PadFocus> {

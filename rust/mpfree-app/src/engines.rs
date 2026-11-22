@@ -188,6 +188,18 @@ pub fn cpu_chip(shared: &EngineShared) -> Option<(String, Tone)> {
     Some((format!("CPU {mean:.0} %"), t))
 }
 
+/// Whether the whole period's last window was Tight or Over against its
+/// budget (the CPU chip yellow or red): System status's "Sound near
+/// limit" while it lasts a second. None until the loop has published.
+pub fn near_limit(shared: &EngineShared) -> Option<bool> {
+    let (w, _) = read(shared)[PERIOD];
+    let w = w.filter(|w| w.blocks > 0)?;
+    Some(matches!(
+        judged(PERIOD, &w).1,
+        Some(Verdict::Tight | Verdict::Over)
+    ))
+}
+
 fn tone(v: Verdict) -> Tone {
     match v {
         Verdict::Fits => Tone::Good,
