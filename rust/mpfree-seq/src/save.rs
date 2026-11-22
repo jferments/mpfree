@@ -1738,8 +1738,8 @@ mod tests {
         let notes = p
             .tracks
             .iter()
-            .flat_map(|t| t.slots.iter().flatten())
-            .filter(|c| c.holds == Holds::Notes)
+            .flat_map(|t| t.slots.iter())
+            .filter(|(_, c)| c.holds == Holds::Notes)
             .count();
         assert_eq!(notes, 1);
     }
