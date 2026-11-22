@@ -264,6 +264,12 @@ pub struct TimeControl {
     scene_morph: SceneMorph,
     /// The note editor (the Sequencer tab's Notes view), while it is open.
     editor: Option<Editor>,
+    /// The editor's clip as the editor last knew it, and its revision,
+    /// which moves each time the clip differs from that copy (piano roll
+    /// plan 0A.1): the editor's own edits, and anything else that changed
+    /// it, which the picks follow ([`TimeControl::edit_follow`]).
+    edit_seen: Option<Clip>,
+    edit_rev: u64,
     /// The armed track: REC records it, and the audio half's recorder
     /// takes live notes only for it. Kept by its lasting id
     /// (`armed_id`), so a track added, taken away by UNDO or brought back
@@ -460,6 +466,8 @@ impl TimeControl {
             pass_take: None,
             scene_morph: SceneMorph::default(),
             editor: None,
+            edit_seen: None,
+            edit_rev: 0,
             armed: None,
             armed_id: TrackId::NONE,
             track_pick: None,
@@ -2095,7 +2103,9 @@ impl TimeControl {
 
     /// A touch on the note editor. Open takes the clip the Play page's
     /// steps show (the armed track's); an edit is one undoable take (a
-    /// row turned or the velocity lane dragged joins one).
+    /// row turned or the velocity lane dragged joins one). A tap on a
+    /// note made on an older picture of the clip is refused, and an edit
+    /// what plays can't follow is taken back (piano roll plan 0A.1).
     fn edit(&mut self, a: EditAction) -> Result<String, String> {
         if a == EditAction::Open {
             let (track, slot) = self.step_focus();
@@ -2108,8 +2118,21 @@ impl TimeControl {
             let clip = self.project.clip(track, slot).ok_or("edit: no such clip")?;
             let line = format!("edit: {} on {name}", clip.name);
             self.editor = Some(Editor::new(track, slot, clip));
+            self.edit_seen = Some(clip.clone());
+            self.edit_rev += 1;
             self.changed = true;
             return Ok(line);
+        }
+        self.edit_follow();
+        if let EditAction::Note { rev, .. } = a {
+            if rev != self.edit_rev {
+                // The screen still shows the clip as it was: it gets the
+                // new one, and the tap goes nowhere.
+                self.changed = true;
+                return Err(
+                    "edit: the clip changed under your finger, so the tap did nothing".into(),
+                );
+            }
         }
         let Some(mut ed) = self.editor.take() else {
             return Ok(String::new());
@@ -2118,29 +2141,78 @@ impl TimeControl {
             self.changed = true;
             return Err("edit: the clip is gone".into());
         };
+        let before = ed.clone();
         let done = ed.act(a, clip);
         self.changed = true;
         if done.close {
+            self.edit_seen = None;
             return Ok(done.line);
         }
         if !done.edit.is_empty() {
+            let (track, slot) = (ed.track, ed.slot);
+            let edits = self.takes.edits();
             let applied = self
                 .takes
-                .edit(&mut self.project, ed.track, ed.slot, &done.edit, done.join)
+                .edit(&mut self.project, track, slot, &done.edit, done.join)
                 .map_err(|e| format!("edit: {e:?}"));
             if let Err(e) = applied {
                 self.editor = Some(ed);
                 return Err(e);
             }
-            if let Some(clip) = self.project.clip(ed.track, ed.slot) {
+            if let Some(clip) = self.project.clip(track, slot) {
                 ed.applied(clip, &done);
             }
             self.editor = Some(ed);
-            self.compile()?;
+            if let Err(e) = self.compile() {
+                // What plays can't follow: the edit goes from the clip and
+                // the takes, the editor is as it was, and the view as it
+                // was is built again (as a step edit does).
+                let fresh = self.takes.edits() != edits;
+                let back = self.takes.withdraw(
+                    &mut self.project,
+                    (track, slot),
+                    &done.edit,
+                    done.join,
+                    fresh,
+                );
+                self.editor = Some(before);
+                let _ = self.compile();
+                return Err(match back {
+                    Ok(()) => format!("edit: {e}: the edit was taken back"),
+                    Err(b) => format!("edit: {e}: the edit could not be taken back ({b:?})"),
+                });
+            }
+            self.edit_seen = self.project.clip(track, slot).cloned();
+            self.edit_rev += 1;
         } else {
             self.editor = Some(ed);
         }
         Ok(done.line)
+    }
+
+    /// The note editor's clip changed since the editor last knew it, by
+    /// something other than the editor's own edit (a recorded note, UNDO,
+    /// an edit from Steps, a clip moved): its picks follow their notes
+    /// (cleared, and said, when one is gone) and the clip's revision
+    /// moves, so a tap on the old picture is refused.
+    fn edit_follow(&mut self) {
+        let Some(ed) = self.editor.as_mut() else {
+            self.edit_seen = None;
+            return;
+        };
+        let now = self.project.clip(ed.track, ed.slot);
+        if now == self.edit_seen.as_ref() {
+            return;
+        }
+        match (self.edit_seen.as_ref(), now) {
+            (Some(was), Some(now)) => {
+                ed.follow(was, now);
+            }
+            _ => ed.sel.clear(),
+        }
+        self.edit_seen = now.cloned();
+        self.edit_rev += 1;
+        self.changed = true;
     }
 
     /// Carry out a touch on the time engine's screens. Returns a line for
@@ -4996,6 +5068,11 @@ impl TimeControl {
     /// True once after the clips, launches or takes changed. Notes and
     /// locks being recorded are told at most every quarter second.
     pub fn take_changed(&mut self) -> bool {
+        if self.changed {
+            // The note editor's picks follow what changed, before the
+            // screens get it.
+            self.edit_follow();
+        }
         std::mem::take(&mut self.changed)
     }
 
@@ -5073,6 +5150,7 @@ impl TimeControl {
             Some(Box::new(EditInfo {
                 editor: ed.clone(),
                 clip: clip.clone(),
+                rev: self.edit_rev,
                 track_name: self.project.tracks[ed.track].name.clone(),
                 bar: bar.round() as Tick,
             }))

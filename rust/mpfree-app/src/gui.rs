@@ -19615,6 +19615,7 @@ mod tests {
         p.time.edit = Some(Box::new(time_view::EditInfo {
             editor: Editor::new(0, 0, &clip),
             clip,
+            rev: 0,
             track_name: "Track 1".into(),
             bar: 3840,
         }));
@@ -19634,7 +19635,10 @@ mod tests {
         let tc = grid.button_rects(area)[7];
         assert_eq!(
             tap(&mut p, (note.x + note.w / 2, note.y + note.h / 2)),
-            Some(FromUi::Time(TimeAction::Edit(EditAction::Note(1))))
+            Some(FromUi::Time(TimeAction::Edit(EditAction::Note {
+                index: 1,
+                rev: 0
+            })))
         );
         assert_eq!(
             tap(&mut p, (tc.x + tc.w / 2, tc.y + tc.h / 2)),
