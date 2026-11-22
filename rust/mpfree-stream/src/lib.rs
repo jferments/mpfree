@@ -32,6 +32,8 @@
 //!   them; [`publish`]: files published whole or not at all, never over
 //!   another; [`snapshot`]: a set's real versions, named by content, and
 //!   its checks; [`ready`]: how ready a set is, from what was tested.
+//! - [`storage`]: the stick and the SD card (only through the hardware
+//!   project's handle), insertion numbers, paths kept inside a library.
 
 #![forbid(unsafe_code)]
 
@@ -51,6 +53,7 @@ pub mod rec;
 pub mod recover;
 pub mod resample;
 pub mod snapshot;
+pub mod storage;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 pub mod writer;

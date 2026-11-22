@@ -13,12 +13,13 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use crate::coord::{Coordinator, Inline, Plan};
 use crate::cursor::Cursor;
 use crate::player::{Config, Player};
+use crate::storage::CardHandle;
 
 /// A fresh folder for one test's files.
 pub fn folder(name: &str) -> PathBuf {
@@ -224,6 +225,36 @@ impl Rig {
                 quiet = 0;
             }
         }
+    }
+}
+
+/// A stand-in for the hardware project's qualified-card handle: a
+/// folder as the card's library, holding until [`PretendCard::pull`].
+pub struct PretendCard {
+    root: PathBuf,
+    valid: AtomicBool,
+}
+
+impl PretendCard {
+    pub fn new(root: &Path) -> Arc<PretendCard> {
+        Arc::new(PretendCard {
+            root: root.to_path_buf(),
+            valid: AtomicBool::new(true),
+        })
+    }
+
+    /// The card is pulled: the handle is revoked, for good.
+    pub fn pull(&self) {
+        self.valid.store(false, Ordering::Release);
+    }
+}
+
+impl CardHandle for PretendCard {
+    fn root(&self) -> &Path {
+        &self.root
+    }
+    fn valid(&self) -> bool {
+        self.valid.load(Ordering::Acquire)
     }
 }
 

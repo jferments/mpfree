@@ -58,6 +58,7 @@ use crate::ledger::{Ledger, Pool};
 use crate::msg::{FromPlayer, Tag, ToPlayer, Where, MAX_SOURCES};
 use crate::player::{unit_frames, Config, UNIT};
 use crate::resample::Rate;
+use crate::storage::{Card, Located};
 use crate::writer::Gate;
 
 /// Past this much of a recording's capture memory, background reads stop.
@@ -247,6 +248,8 @@ pub struct Stats {
     pub no_room: u32,
     /// Units read again while already in the cache, and not filled again.
     pub duplicates: u32,
+    /// Reads and units dropped because the card they were for went.
+    pub card_gone: u32,
 }
 
 /// Whether what plays, what is held and what is reserved fits the cache.
@@ -330,6 +333,10 @@ struct Src {
     /// A file played at the engine's rate: its units are engine frames,
     /// made from the file's frames around them.
     rate: Option<Rate>,
+    /// The card it is on: read only while that insertion holds.
+    card: Option<Card>,
+    /// Its card went and that was reported ([`Coordinator::lost`]).
+    reported: bool,
     /// Where each cursor playing it last played.
     cursors: Vec<Where>,
 }
@@ -349,6 +356,11 @@ impl Src {
             Store::File { layout, .. } => Some(layout),
             Store::Memory { .. } => None,
         }
+    }
+
+    /// Its card went: nothing more is read for it.
+    fn lost(&self) -> bool {
+        self.card.as_ref().is_some_and(|c| !c.valid())
     }
 
     fn shape(&self) -> Option<Shape> {
@@ -389,11 +401,16 @@ struct Hold {
 struct Job {
     id: u32,
     tier: JobTier,
+    /// The card it reads from, if any.
+    card: Option<Card>,
     file: Arc<File>,
     len: u64,
     data: Vec<u8>,
     busy: bool,
 }
+
+/// Why a read from the card failed when the card went.
+const CARD_GONE: &str = "the SD card was removed";
 
 /// What a read in flight is for.
 enum Kind {
@@ -469,6 +486,8 @@ pub struct Coordinator {
     /// The cushion, shared with the recording writer's thread.
     gate: Arc<Gate>,
     admission: Admission,
+    /// Sources whose card went, not yet asked for.
+    lost: VecDeque<Tag>,
     stats: Stats,
 }
 
@@ -524,6 +543,7 @@ impl Coordinator {
             cushion_s: f64::INFINITY,
             gate: Arc::new(Gate::new()),
             admission: Admission::default(),
+            lost: VecDeque::new(),
             stats: Stats::default(),
         }
     }
@@ -722,7 +742,25 @@ impl Coordinator {
     /// Make `source` the sound in the file at `path` (replacing what it
     /// was, under a new generation).
     pub fn open(&mut self, source: u16, path: &Path) -> Result<Tag, String> {
-        self.open_as(source, path, false)
+        self.open_as(source, path, false, None)
+    }
+
+    /// Open `source` from a file the storage manager found
+    /// ([`crate::storage::Storage::locate`]), at the engine's rate if
+    /// `engine`. A file on the card is read only while its insertion
+    /// holds: once the card goes, nothing more is read for it, reads
+    /// already running are dropped, and what is in the cache plays out
+    /// ([`Coordinator::lost`]).
+    pub fn open_located(
+        &mut self,
+        source: u16,
+        loc: &Located,
+        engine: bool,
+    ) -> Result<Tag, String> {
+        if !loc.valid() {
+            return Err(format!("{}: the SD card isn't there", loc.path.display()));
+        }
+        self.open_as(source, &loc.path, engine, loc.card.clone())
     }
 
     /// Open `source` from a file played at the engine's rate
@@ -732,10 +770,16 @@ impl Coordinator {
     /// ([`Coordinator::frames`]); one already at the engine's rate opens
     /// as [`Coordinator::open`] does.
     pub fn open_at_engine_rate(&mut self, source: u16, path: &Path) -> Result<Tag, String> {
-        self.open_as(source, path, true)
+        self.open_as(source, path, true, None)
     }
 
-    fn open_as(&mut self, source: u16, path: &Path, engine: bool) -> Result<Tag, String> {
+    fn open_as(
+        &mut self,
+        source: u16,
+        path: &Path,
+        engine: bool,
+        card: Option<Card>,
+    ) -> Result<Tag, String> {
         let s = Self::check_source(source)?;
         let mut file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let layout = layout(&mut file).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -752,6 +796,8 @@ impl Coordinator {
                 layout,
             },
             rate,
+            card,
+            reported: false,
             cursors: Vec::new(),
         };
         let frames = src.shape().map_or(0, |sh| sh.frames);
@@ -786,6 +832,8 @@ impl Coordinator {
                 bytes: (data.len() * std::mem::size_of::<f32>()) as u64,
             },
             rate: None,
+            card: None,
+            reported: false,
             cursors: Vec::new(),
         });
         self.send(ToPlayer::Resident {
@@ -936,6 +984,13 @@ impl Coordinator {
                 }
             }
         }
+    }
+
+    /// The next source whose card went since last asked, each once, by
+    /// the tag it had: nothing more is read for it, and what is in the
+    /// cache plays out. Closing or replacing it is its owner's choice.
+    pub fn lost(&mut self) -> Option<Tag> {
+        self.lost.pop_front()
     }
 
     /// The next hold given back for room since last asked (a "ready"
@@ -1117,9 +1172,26 @@ impl Coordinator {
             busy = true;
             self.reply(r);
         }
+        self.note_lost();
         busy |= self.fill();
         busy |= self.ask();
         busy
+    }
+
+    /// Report each source whose card went, once; its reads in flight are
+    /// cancelled (a reply that comes anyway is dropped).
+    fn note_lost(&mut self) {
+        for src in self.sources.iter_mut().flatten() {
+            if !src.reported && src.lost() {
+                src.reported = true;
+                self.lost.push_back(src.tag);
+                for f in self.flights.values() {
+                    if matches!(f.kind, Kind::Units { tag, .. } if tag == src.tag) {
+                        f.cancel.store(true, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
     }
 
     fn reply(&mut self, r: ReadReply) {
@@ -1144,6 +1216,12 @@ impl Coordinator {
         }
         if !self.current(tag) {
             self.stats.stale += 1;
+            self.bytes.push(r.buf);
+            return;
+        }
+        if self.sources[usize::from(s)].as_ref().is_some_and(Src::lost) {
+            // Read for a card that went: whatever came back isn't used.
+            self.stats.card_gone += 1;
             self.bytes.push(r.buf);
             return;
         }
@@ -1208,6 +1286,13 @@ impl Coordinator {
         };
         let job = &mut self.jobs[i];
         job.busy = false;
+        if job.card.as_ref().is_some_and(|c| !c.valid()) {
+            let j = self.jobs.remove(i);
+            self.stats.card_gone += 1;
+            self.finished.insert(j.id, Err(CARD_GONE.into()));
+            self.bytes.push(r.buf);
+            return;
+        }
         let done = match r.got {
             _ if r.cancelled => false,
             Err(e) => {
@@ -1234,6 +1319,24 @@ impl Coordinator {
     /// Read the whole file at `path` through the device, behind every
     /// playback read; [`Coordinator::take_job`] gives it once done.
     pub fn read_file(&mut self, path: &Path, tier: JobTier) -> Result<JobId, String> {
+        self.read_file_from(path, tier, None)
+    }
+
+    /// [`Coordinator::read_file`] for a file the storage manager found: one
+    /// on the card fails as soon as the card goes.
+    pub fn read_located(&mut self, loc: &Located, tier: JobTier) -> Result<JobId, String> {
+        if !loc.valid() {
+            return Err(format!("{}: the SD card isn't there", loc.path.display()));
+        }
+        self.read_file_from(&loc.path, tier, loc.card.clone())
+    }
+
+    fn read_file_from(
+        &mut self,
+        path: &Path,
+        tier: JobTier,
+        card: Option<Card>,
+    ) -> Result<JobId, String> {
         let file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let len = file
             .metadata()
@@ -1247,6 +1350,7 @@ impl Coordinator {
             self.jobs.push(Job {
                 id,
                 tier,
+                card,
                 file: Arc::new(file),
                 len,
                 data: Vec::new(),
@@ -1277,6 +1381,17 @@ impl Coordinator {
     fn job_step(&mut self) -> bool {
         if self.jobs.iter().any(|j| j.busy) {
             return false;
+        }
+        // Jobs on a card that went fail now, not at their next step.
+        let gone: Vec<u32> = self
+            .jobs
+            .iter()
+            .filter(|j| j.card.as_ref().is_some_and(|c| !c.valid()))
+            .map(|j| j.id)
+            .collect();
+        for id in gone {
+            self.jobs.retain(|j| j.id != id);
+            self.finished.insert(id, Err(CARD_GONE.into()));
         }
         // Recording pressure: past three quarters of capture memory,
         // background work stops.
@@ -1359,6 +1474,14 @@ impl Coordinator {
                 break;
             };
             let (tag, unit, bytes) = self.ready.pop_front().expect("checked");
+            if self.sources[usize::from(tag.source)]
+                .as_ref()
+                .is_some_and(Src::lost)
+            {
+                self.stats.card_gone += 1;
+                self.bytes.push(bytes);
+                continue;
+            }
             if self.map.contains_key(&(tag.source, unit)) {
                 // Already in the cache (a read that crossed one already
                 // filled): filling it again would take the playing copy
@@ -1569,6 +1692,13 @@ impl Coordinator {
             self.ready.iter().map(|(t, u, _)| (t.source, *u)).collect();
         let mut missing: Vec<(f64, Tag, u32)> = Vec::new();
         for (&(s, u), &(deadline, tag)) in &wants {
+            if self.sources[usize::from(s)].as_ref().is_some_and(Src::lost) {
+                // Its card went: what is cached plays out, nothing is read.
+                if let Some(&slot) = self.map.get(&(s, u)) {
+                    self.mirror[slot].wanted = self.round;
+                }
+                continue;
+            }
             match self.map.get(&(s, u)) {
                 Some(&slot) => self.mirror[slot].wanted = self.round,
                 None if !self.asked.contains_key(&(s, u)) && !waiting.contains(&(s, u)) => {
@@ -1582,6 +1712,9 @@ impl Coordinator {
         for f in self.flights.values() {
             if let Kind::Units { tag, first, units } = f.kind {
                 let wanted = self.current(tag)
+                    && !self.sources[usize::from(tag.source)]
+                        .as_ref()
+                        .is_some_and(Src::lost)
                     && (first..first + units).any(|u| wants.contains_key(&(tag.source, u)));
                 f.cancel.store(!wanted, Ordering::Relaxed);
             }
