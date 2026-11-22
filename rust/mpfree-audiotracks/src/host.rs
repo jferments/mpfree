@@ -32,6 +32,17 @@
 //!   whole ([`crate::save::TakeFile::path`]); only takes without one are
 //!   read from memory. How each file stands comes back for the lanes
 //!   ([`AudioHost::file`]) and the log ([`AudioHost::take_event`]).
+//! - **Playing from files:** with [`AudioHost::stream`] (before
+//!   [`AudioHost::record_to`]), the worker starts the stream layer (see
+//!   [`crate::streaming`]): the player goes to the tracks, and the
+//!   coordinator runs on a thread of its own, the writer waiting for its
+//!   reads. Each recorded take's file is opened once the writer has
+//!   finished it, and the take moves to it ([`crate::Command::OnFile`]); a
+//!   project's takes open as their files with nothing copied in
+//!   ([`AudioHost::load`]; a save waits until they are in). A waveform or
+//!   a fit of a take on its file reads the file on the worker, behind
+//!   playback's reads, and one reading a take from memory when it moves
+//!   goes on from its file; a save copies it whole, as before.
 //!
 //! The channels to the worker are `std::sync::mpsc`: a message now and
 //! then can allocate a block of the channel, as in the looper's host. A
@@ -39,13 +50,18 @@
 
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
+use std::sync::Arc;
 use std::time::Duration;
+
+use mpfree_stream::player::Player;
+use mpfree_stream::writer::Gate;
 
 use mpfree_transport::time::TempoMap;
 use mpfree_transport::{Block, Tick};
 
 use crate::files::{self, FileEvent, FileView, Files, Name, Said, WriterConfig};
 use crate::save::{Saved, TakeFile};
+use crate::streaming::{self, Opened, Read, Stream, StreamConfig, ToStream};
 use crate::stretch::{fit_ratio, StretchJob};
 use crate::{
     AudioTracks, Command, Io, RecordingId, TakeInfo, CHUNK, MAX_TAKES, MAX_TRACKS, PEAK_BLOCK,
@@ -158,7 +174,11 @@ enum ToWorker {
         name: Name,
     },
     Disarm(RecordingId),
-    Start(RecordingId),
+    /// Take `take` started recording into `rec`'s files.
+    Start {
+        rec: RecordingId,
+        take: u16,
+    },
     /// Frames of a recording, interleaved: the first `len` samples of
     /// `buf`, which comes back.
     Push {
@@ -168,17 +188,45 @@ enum ToWorker {
     },
     /// The recording stopped and every frame was pushed.
     Stop(RecordingId),
-    /// A take opened with a project, and its file there.
+    /// Take `take` opened with a project, and its file there.
     Known {
         rec: RecordingId,
+        take: u16,
         name: String,
         path: Option<PathBuf>,
         frames: usize,
+        channels: usize,
     },
     /// The tracks were emptied.
     Clear,
     /// A project save finished into this `samples/`.
     SavedInto(PathBuf),
+    /// Start the stream layer: takes play from their files (boxed: sent
+    /// once, at start, and far bigger than the rest).
+    Stream(Box<StreamConfig>),
+    /// Close take `take`'s stream source, if still at generation `gen`.
+    Close {
+        take: u16,
+        gen: u32,
+    },
+    /// The tracks were emptied: every stream source goes.
+    Project,
+    /// Fit a take on its file: read the file, then stretch it.
+    FitFile {
+        take: TakeInfo,
+        ratio: f64,
+        bpm: f64,
+        gen: u32,
+    },
+    /// The waveform of a take on its file, in `columns` columns.
+    WaveFile {
+        take: TakeInfo,
+        columns: usize,
+    },
+    /// A whole file read for one of the two above (from the stream
+    /// thread).
+    Read(Read),
+    DropPlayer(Box<Player>),
 }
 
 enum FromWorker {
@@ -203,11 +251,21 @@ enum FromWorker {
     },
     /// Recording to files couldn't start: why.
     FilesFailed(String),
+    /// The stream layer's player, for the tracks.
+    Player(Box<Player>),
+    /// The stream layer couldn't start: why.
+    StreamFailed(String),
+    /// What came of opening a take's file (from the stream thread).
+    Opened(Opened),
+    /// A waveform read from a take's file.
+    WaveFile(TakeWave),
 }
 
 enum Waving {
     /// Waiting for room for `columns` columns.
     Sizing { id: u16, columns: usize },
+    /// Read from take `id`'s file on the worker.
+    File { id: u16 },
     /// Column `at` is next.
     Reading { wave: TakeWave, at: usize },
 }
@@ -282,6 +340,11 @@ pub struct AudioHost {
     /// Background results dropped because the tracks were emptied after
     /// they were asked for.
     pub stale: u64,
+    /// Takes play from their files ([`AudioHost::stream`]).
+    streaming: bool,
+    /// A project's takes waiting for their files to open (room for every
+    /// take, made once; a take here holds no audio, name or path).
+    opening: Vec<TakeFile>,
 }
 
 /// Why [`AudioHost::import`] could not take a sound.
@@ -302,9 +365,10 @@ impl AudioHost {
     pub fn new(rate: u32, seconds: u32) -> AudioHost {
         let (tx, jobs) = channel::<ToWorker>();
         let (done, rx) = channel();
+        let back = tx.clone();
         let spawned = std::thread::Builder::new()
             .name("mpfree-audiotracks".into())
-            .spawn(move || work(rate, &jobs, &done))
+            .spawn(move || work(rate, &jobs, &done, &back))
             .is_ok();
         AudioHost {
             tracks: AudioTracks::new(rate, seconds),
@@ -333,7 +397,35 @@ impl AudioHost {
             imports: 0,
             generation: 0,
             stale: 0,
+            streaming: false,
+            opening: Vec::with_capacity(MAX_TAKES),
         }
+    }
+
+    /// Play takes from their files from now on (see the module notes and
+    /// [`crate::streaming`]): the worker starts the stream layer with
+    /// `cfg`, and the tracks get its player a moment later. Call it once,
+    /// at start, before [`AudioHost::record_to`], so the writer waits for
+    /// playback's reads. False (nothing changed) once files are on, if it
+    /// is on already, or with no worker. Does not allocate.
+    pub fn stream(&mut self, cfg: StreamConfig) -> bool {
+        if self.tx.is_none() || self.streaming || self.tracks.records_to_files() {
+            return false;
+        }
+        self.streaming = true;
+        self.send(ToWorker::Stream(Box::new(cfg)));
+        true
+    }
+
+    /// Whether takes play from their files (asked for: the player may be
+    /// on its way).
+    pub fn streams(&self) -> bool {
+        self.streaming
+    }
+
+    /// Takes of a project opening still waiting for their files to open.
+    pub fn opening(&self) -> usize {
+        self.opening.len()
     }
 
     /// Record every take to a file of its own in `dir` (made if missing;
@@ -471,14 +563,39 @@ impl AudioHost {
     /// project (its `file`, and its `path` when the opener found it) goes
     /// to the worker, so a save names it again and copies it from there.
     /// Any audio not taken goes to the worker to drop.
+    ///
+    /// While takes play from their files, a take with a file (and a
+    /// lasting id of its own) opens as its file instead, its audio not
+    /// needed: it comes in once the file is open ([`AudioHost::opening`]),
+    /// and one whose file can't be opened is left out, said in the log.
     pub fn load(&mut self, mut saved: Saved) -> Result<(), String> {
         // Only a refusal allocates (its line); what is left of the part
         // goes to the worker to drop.
         let mut bad = Vec::new();
         for mut k in saved.takes.drain(..) {
-            let (id, frames) = (k.id, k.frames);
+            let (id, frames, channels) = (k.id, k.frames, k.channels);
             let name = std::mem::take(&mut k.file);
             let path = k.path.take();
+            let as_file = self.streaming
+                && path.is_some()
+                && k.rec.is_given()
+                && self.tracks.take_of(k.rec).is_none()
+                && !self.opening.iter().any(|o| o.rec == k.rec || o.id == k.id)
+                && self.opening.len() < self.opening.capacity();
+            if as_file {
+                self.tracks.reserve(id, true);
+                self.send(ToWorker::Drop(std::mem::take(&mut k.audio)));
+                self.send(ToWorker::Known {
+                    rec: k.rec,
+                    take: id,
+                    name,
+                    path,
+                    frames,
+                    channels,
+                });
+                self.opening.push(k);
+                continue;
+            }
             match self.tracks.load_take(k) {
                 Ok(()) => {
                     if let Some(t) = self.tracks.take(id) {
@@ -487,9 +604,11 @@ impl AudioHost {
                         }
                         self.send(ToWorker::Known {
                             rec: t.rec,
+                            take: id,
                             name,
                             path,
                             frames,
+                            channels,
                         });
                     }
                 }
@@ -499,9 +618,11 @@ impl AudioHost {
                     // Its name and path are dropped on the worker too.
                     self.send(ToWorker::Known {
                         rec: RecordingId::NONE,
+                        take: id,
                         name,
                         path,
                         frames: 0,
+                        channels,
                     });
                 }
             }
@@ -616,12 +737,33 @@ impl AudioHost {
         let Some(ratio) = fit_ratio(take.bpm, bpm).filter(|r| (r - 1.0).abs() > 1e-9) else {
             return false;
         };
+        if self.tracks.on_file(id) {
+            self.fit_from_file(take, ratio, bpm);
+            return true;
+        }
         self.send(ToWorker::Buffer {
             n: take.frames * take.channels,
             gen: self.generation,
         });
         self.fitting = Some(Fitting::Sizing { take, ratio, bpm });
         true
+    }
+
+    /// Fit `take` from its file, read and stretched on the worker.
+    fn fit_from_file(&mut self, take: TakeInfo, ratio: f64, bpm: f64) {
+        self.send(ToWorker::FitFile {
+            take,
+            ratio,
+            bpm,
+            gen: self.generation,
+        });
+        self.fitting = Some(Fitting::Stretching { take });
+    }
+
+    /// Whether `take` is still there, the same recording, now on its file
+    /// (it moved while it was read from memory).
+    fn moved_to_file(&self, take: u16, rec: RecordingId) -> bool {
+        self.tracks.on_file(take) && self.tracks.take(take).is_some_and(|t| t.rec == rec)
     }
 
     /// The take being fitted, while a fit is under way.
@@ -650,9 +792,20 @@ impl AudioHost {
             self.send(ToWorker::DropWave(wave));
         }
         let columns = columns.clamp(1, MAX_COLUMNS);
-        self.send(ToWorker::Wave(columns));
-        self.waving = Some(Waving::Sizing { id, columns });
+        match self.tracks.take(id).filter(|_| self.tracks.on_file(id)) {
+            Some(take) => self.wave_from_file(take, columns),
+            None => {
+                self.send(ToWorker::Wave(columns));
+                self.waving = Some(Waving::Sizing { id, columns });
+            }
+        }
         true
+    }
+
+    /// Read `take`'s waveform from its file on the worker.
+    fn wave_from_file(&mut self, take: TakeInfo, columns: usize) {
+        self.send(ToWorker::WaveFile { take, columns });
+        self.waving = Some(Waving::File { id: take.id });
     }
 
     /// A finished waveform.
@@ -690,7 +843,12 @@ impl AudioHost {
         }
         self.importing = None;
         self.files.views.fill(None);
+        // Takes still waiting for their files hold nothing to free.
+        self.opening.clear();
         self.send(ToWorker::Clear);
+        if self.streaming {
+            self.send(ToWorker::Project);
+        }
         true
     }
 
@@ -755,6 +913,25 @@ impl AudioHost {
                         });
                     }
                 }
+                FromWorker::Player(p) => {
+                    if let Some(old) = self.tracks.stream(Some(p)) {
+                        self.send(ToWorker::DropPlayer(old));
+                    }
+                }
+                FromWorker::StreamFailed(why) => {
+                    self.streaming = false;
+                    self.event(FileEvent::NoStream { why });
+                }
+                FromWorker::Opened(o) => self.opened(o),
+                FromWorker::WaveFile(w) => match self.waving {
+                    Some(Waving::File { id }) if id == w.id => {
+                        self.waving = None;
+                        if let Some(old) = self.wave.replace(w) {
+                            self.send(ToWorker::DropWave(old));
+                        }
+                    }
+                    _ => self.send(ToWorker::DropWave(w)),
+                },
                 FromWorker::FilesFailed(why) => {
                     // The tracks go on recording into memory only.
                     self.tracks.files(false);
@@ -837,6 +1014,62 @@ impl AudioHost {
         self.tend_save(budget);
         self.tend_fit(budget);
         self.tend_wave(WAVE_SPEED * frames.max(1));
+    }
+
+    /// What came of opening a take's file: a project's take comes in as
+    /// its file, a recorded one moves to it; a file no take wants any
+    /// more is closed.
+    fn opened(&mut self, o: Opened) {
+        match o {
+            Opened::Open { take, rec, gen } => {
+                if let Some(i) = self
+                    .opening
+                    .iter()
+                    .position(|k| k.id == take && k.rec == rec)
+                {
+                    let k = self.opening.swap_remove(i);
+                    if !self.tracks.add_file_take(&k, gen) {
+                        self.tracks.reserve(take, false);
+                        self.send(ToWorker::Close { take, gen });
+                        self.event(FileEvent::Unopened {
+                            track: k.track,
+                            why: "its place was taken".into(),
+                            kept: false,
+                        });
+                    }
+                } else if self
+                    .tracks
+                    .take(take)
+                    .is_some_and(|t| t.rec == rec && !t.recording)
+                    && !self.tracks.on_file(take)
+                {
+                    self.tracks.command(Command::OnFile { take, rec, gen });
+                } else {
+                    self.send(ToWorker::Close { take, gen });
+                }
+            }
+            Opened::Failed { take, rec, why } => {
+                if let Some(i) = self
+                    .opening
+                    .iter()
+                    .position(|k| k.id == take && k.rec == rec)
+                {
+                    let k = self.opening.swap_remove(i);
+                    self.tracks.reserve(take, false);
+                    self.event(FileEvent::Unopened {
+                        track: k.track,
+                        why,
+                        kept: false,
+                    });
+                } else if let Some(t) = self.tracks.take(take).filter(|t| t.rec == rec) {
+                    self.event(FileEvent::Unopened {
+                        track: t.track,
+                        why,
+                        kept: true,
+                    });
+                }
+            }
+        }
     }
 
     /// What the worker said about a file.
@@ -937,7 +1170,7 @@ impl AudioHost {
                             ..FileView::SAVED
                         },
                     ));
-                    self.send(ToWorker::Start(t.rec));
+                    self.send(ToWorker::Start { rec: t.rec, take });
                     if self.files.outs.len() < self.files.outs.capacity() {
                         self.files.outs.push(Out {
                             take,
@@ -953,9 +1186,7 @@ impl AudioHost {
                         self.tracks.written(take);
                     }
                 }
-                // The host opens no stream sources yet (the audio tracks
-                // rethink, phase 3b step 2), so it has none to close.
-                Io::Close { .. } => {}
+                Io::Close { take, gen } => self.send(ToWorker::Close { take, gen }),
             }
         }
         let mut budget = COPY_SAMPLES;
@@ -1042,6 +1273,12 @@ impl AudioHost {
             self.send(ToWorker::DropWave(wave(0, 0, 0)));
             return None;
         };
+        if self.tracks.on_file(id) {
+            // It moved to its file while the room was made.
+            self.send(ToWorker::DropWave(wave(0, 0, 0)));
+            self.wave_from_file(t, n);
+            return self.waving.take();
+        }
         // Whole blocks of the table to a column.
         let step = (PEAK_BLOCK / t.channels.max(1)).max(1);
         let fpc = t.frames.div_ceil(n).div_ceil(step).max(1) * step;
@@ -1064,8 +1301,18 @@ impl AudioHost {
             match self.tracks.peaks(wave.id, at, to) {
                 Some(p) => wave.columns.push(p),
                 None => {
-                    // Forgotten while it was read.
+                    // Forgotten while it was read, or moved to its file
+                    // (read from there instead).
+                    let n = wave.columns.capacity();
+                    let moved = self.tracks.take(wave.id).filter(|t| {
+                        self.tracks.on_file(t.id)
+                            && t.frames == wave.frames
+                            && t.channels == wave.channels
+                    });
                     self.send(ToWorker::DropWave(wave));
+                    if let Some(t) = moved {
+                        self.wave_from_file(t, n);
+                    }
                     return;
                 }
             }
@@ -1102,8 +1349,9 @@ impl AudioHost {
                 // room: nothing is made here, nor while a take records,
                 // loads, or is still on its way into its file (a save
                 // names only finished files: it waits while one is
-                // Saving).
-                let filled = if self.files_settled() {
+                // Saving), nor while a project's take waits for its file
+                // to open (it isn't in the tracks yet).
+                let filled = if self.files_settled() && self.opening.is_empty() {
                     self.tracks.save_into(&mut room)
                 } else {
                     None
@@ -1187,6 +1435,11 @@ impl AudioHost {
                     .tracks
                     .read_take(take.id, frame, &mut audio[frame * ch..to * ch])
                 {
+                    None if self.moved_to_file(take.id, take.rec) => {
+                        // Read from its file instead.
+                        self.send(ToWorker::Drop(audio));
+                        self.fit_from_file(take, ratio, bpm);
+                    }
                     None => {
                         self.fits_failed += 1;
                         self.send(ToWorker::Drop(audio));
@@ -1237,12 +1490,19 @@ impl AudioHost {
 }
 
 /// The worker thread: every big buffer made and dropped here, stretches,
-/// and the files (see the module notes). It wakes at least every 50 ms
-/// while the writer runs, to see how its takes stand.
-fn work(rate: u32, jobs: &Receiver<ToWorker>, done: &Sender<FromWorker>) {
-    let mut files = Files::new(rate);
+/// and the files (see the module notes). It wakes at least every 20 ms
+/// while the writer runs, to see how its takes stand. `back` is its own
+/// channel, for the stream thread's whole-file reads.
+fn work(rate: u32, jobs: &Receiver<ToWorker>, done: &Sender<FromWorker>, back: &Sender<ToWorker>) {
+    let mut w = Worker {
+        rate,
+        files: Files::new(rate),
+        stream: None,
+        wants: Vec::new(),
+        next_job: 1,
+    };
     loop {
-        let m = if files.writing() {
+        let m = if w.files.writing() {
             match jobs.recv_timeout(Duration::from_millis(20)) {
                 Ok(m) => Some(m),
                 Err(RecvTimeoutError::Timeout) => None,
@@ -1254,114 +1514,307 @@ fn work(rate: u32, jobs: &Receiver<ToWorker>, done: &Sender<FromWorker>) {
                 Err(_) => break,
             }
         };
-        let reply = m.and_then(|m| serve(rate, &mut files, m));
+        let reply = m.and_then(|m| w.serve(m, done, back));
         if let Some(r) = reply {
             if done.send(r).is_err() {
                 break;
             }
         }
-        for said in files.poll(false) {
+        for said in w.files.poll(false) {
             if done.send(FromWorker::Files(said)).is_err() {
                 return;
             }
         }
+        w.open_finished();
     }
 }
 
-/// One message to the worker, and its answer if it has one.
-fn serve(rate: u32, files: &mut Files, m: ToWorker) -> Option<FromWorker> {
-    Some(match m {
-        ToWorker::Room => FromWorker::Room(Saved::room(rate)),
-        ToWorker::Size {
-            mut saved,
-            tracks,
-            takes,
-        } => {
-            saved.tracks.truncate(tracks);
-            saved.takes.truncate(takes);
-            // The writer's latest word first, so a take just Saved is
-            // copied from its file.
-            let _ = files.poll(true);
-            let said = files.name_save(&mut saved.takes);
-            FromWorker::Sized(saved, said)
+/// What the worker waits for a take's file for.
+enum Want {
+    Fit {
+        take: TakeInfo,
+        ratio: f64,
+        bpm: f64,
+        gen: u32,
+    },
+    Wave {
+        take: TakeInfo,
+        columns: usize,
+    },
+}
+
+/// The worker's state.
+struct Worker {
+    rate: u32,
+    files: Files,
+    /// The stream layer, once started.
+    stream: Option<Stream>,
+    /// Whole-file reads asked of the stream thread, and what each is for.
+    wants: Vec<(u32, Want)>,
+    next_job: u32,
+}
+
+impl Worker {
+    /// Take files finished (recorded, or a project's) go to the stream
+    /// thread to open.
+    fn open_finished(&mut self) {
+        let Some(st) = &self.stream else {
+            return;
+        };
+        for (take, rec, path, channels, frames) in self.files.take_opens() {
+            let _ = st.tx.send(ToStream::Open {
+                take,
+                rec,
+                path,
+                channels,
+                frames,
+            });
         }
-        ToWorker::Buffer { n, gen } => FromWorker::Buffer {
-            audio: vec![0.0; n],
-            gen,
-        },
-        ToWorker::Stretch {
-            take,
-            audio,
-            ratio,
-            bpm,
-            id,
-            gen,
-        } => {
-            let out = StretchJob::new(take, audio, rate, ratio, bpm, id)
-                .ok()
-                .and_then(|mut j| {
+    }
+
+    fn to_stream(&self, m: ToStream) {
+        if let Some(st) = &self.stream {
+            let _ = st.tx.send(m);
+        }
+    }
+
+    /// Read recording `rec`'s file behind playback, for `want`; None if it
+    /// is being read, else the answer now (it has no file, or nothing
+    /// streams).
+    fn read_for(&mut self, rec: RecordingId, want: Want) -> Option<FromWorker> {
+        match (self.files.path_of(rec), &self.stream) {
+            (Some(path), Some(_)) => {
+                let job = self.next_job;
+                self.next_job = self.next_job.wrapping_add(1);
+                self.to_stream(ToStream::Read { job, path });
+                self.wants.push((job, want));
+                None
+            }
+            _ => Some(self.answer(want, Err("it has no file to read".into()))),
+        }
+    }
+
+    /// What a read of a take's file was for, done with its bytes.
+    fn answer(&self, want: Want, bytes: Result<Vec<u8>, String>) -> FromWorker {
+        let rate = self.rate;
+        let audio = |take: &TakeInfo| -> Option<Vec<f32>> {
+            let (audio, ch, r) = crate::save::from_wav(bytes.as_ref().ok()?).ok()?;
+            (ch == take.channels && r == rate && audio.len() == take.frames * ch).then_some(audio)
+        };
+        match want {
+            Want::Fit {
+                take,
+                ratio,
+                bpm,
+                gen,
+            } => {
+                let out = audio(&take).and_then(|a| {
+                    let mut j = StretchJob::new(take, a, rate, ratio, bpm, take.id).ok()?;
                     while !j.run(1 << 15).finished {}
                     j.finish()
                 });
-            FromWorker::Stretched { out, gen }
-        }
-        ToWorker::Wave(n) => FromWorker::Wave(Vec::with_capacity(n)),
-        ToWorker::Drop(v) => {
-            drop(v);
-            return None;
-        }
-        ToWorker::DropSaved(s) => {
-            drop(s);
-            return None;
-        }
-        ToWorker::DropWave(w) => {
-            drop(w);
-            return None;
-        }
-        ToWorker::Files { dir, cfg } => match files.start(dir, cfg) {
-            Ok(()) => return None,
-            Err(e) => FromWorker::FilesFailed(e.to_string()),
-        },
-        ToWorker::Arm {
-            track,
-            rec,
-            channels,
-            name,
-        } => FromWorker::Files(files.arm(track, rec, channels, name)?),
-        ToWorker::Disarm(rec) => {
-            files.disarm(rec);
-            return None;
-        }
-        ToWorker::Start(rec) => match files.start_take(rec) {
-            Ok(()) => return None,
-            Err(why) => FromWorker::NoFile { rec, why },
-        },
-        ToWorker::Push { rec, buf, len } => {
-            files.push(rec, &buf[..len.min(buf.len())]);
-            FromWorker::Spare(buf)
-        }
-        ToWorker::Stop(rec) => {
-            files.stop(rec);
-            return None;
-        }
-        ToWorker::Known {
-            rec,
-            name,
-            path,
-            frames,
-        } => {
-            if rec.is_given() {
-                files.known(rec, name, path, frames);
+                FromWorker::Stretched { out, gen }
             }
-            return None;
+            Want::Wave { take, columns } => {
+                let a = audio(&take).unwrap_or_default();
+                FromWorker::WaveFile(wave_of(&take, &a, columns))
+            }
         }
-        ToWorker::Clear => {
-            files.clear();
-            return None;
-        }
-        ToWorker::SavedInto(dir) => {
-            files.saved_into(&dir);
-            return None;
-        }
-    })
+    }
+
+    /// One message to the worker, and its answer if it has one.
+    fn serve(
+        &mut self,
+        m: ToWorker,
+        done: &Sender<FromWorker>,
+        back: &Sender<ToWorker>,
+    ) -> Option<FromWorker> {
+        let (rate, files) = (self.rate, &mut self.files);
+        Some(match m {
+            ToWorker::Room => FromWorker::Room(Saved::room(rate)),
+            ToWorker::Size {
+                mut saved,
+                tracks,
+                takes,
+            } => {
+                saved.tracks.truncate(tracks);
+                saved.takes.truncate(takes);
+                // The writer's latest word first, so a take just Saved is
+                // copied from its file.
+                let _ = files.poll(true);
+                let said = files.name_save(&mut saved.takes);
+                FromWorker::Sized(saved, said)
+            }
+            ToWorker::Buffer { n, gen } => FromWorker::Buffer {
+                audio: vec![0.0; n],
+                gen,
+            },
+            ToWorker::Stretch {
+                take,
+                audio,
+                ratio,
+                bpm,
+                id,
+                gen,
+            } => {
+                let out = StretchJob::new(take, audio, rate, ratio, bpm, id)
+                    .ok()
+                    .and_then(|mut j| {
+                        while !j.run(1 << 15).finished {}
+                        j.finish()
+                    });
+                FromWorker::Stretched { out, gen }
+            }
+            ToWorker::Wave(n) => FromWorker::Wave(Vec::with_capacity(n)),
+            ToWorker::Drop(v) => {
+                drop(v);
+                return None;
+            }
+            ToWorker::DropSaved(s) => {
+                drop(s);
+                return None;
+            }
+            ToWorker::DropWave(w) => {
+                drop(w);
+                return None;
+            }
+            ToWorker::DropPlayer(p) => {
+                drop(p);
+                return None;
+            }
+            ToWorker::Files { dir, cfg } => {
+                let gate = self
+                    .stream
+                    .as_ref()
+                    .map_or_else(|| Arc::new(Gate::new()), |st| st.gate.clone());
+                match files.start(dir, cfg, gate) {
+                    Ok(()) => return None,
+                    Err(e) => FromWorker::FilesFailed(e.to_string()),
+                }
+            }
+            ToWorker::Arm {
+                track,
+                rec,
+                channels,
+                name,
+            } => FromWorker::Files(files.arm(track, rec, channels, name)?),
+            ToWorker::Disarm(rec) => {
+                files.disarm(rec);
+                return None;
+            }
+            ToWorker::Start { rec, take } => match files.start_take(rec, take) {
+                Ok(()) => return None,
+                Err(why) => FromWorker::NoFile { rec, why },
+            },
+            ToWorker::Push { rec, buf, len } => {
+                files.push(rec, &buf[..len.min(buf.len())]);
+                FromWorker::Spare(buf)
+            }
+            ToWorker::Stop(rec) => {
+                files.stop(rec);
+                return None;
+            }
+            ToWorker::Known {
+                rec,
+                take,
+                name,
+                path,
+                frames,
+                channels,
+            } => {
+                if rec.is_given() {
+                    files.known(rec, take, name, path, (channels, frames));
+                }
+                return None;
+            }
+            ToWorker::Clear => {
+                files.clear();
+                return None;
+            }
+            ToWorker::SavedInto(dir) => {
+                files.saved_into(&dir);
+                return None;
+            }
+            ToWorker::Stream(cfg) => {
+                if self.stream.is_some() {
+                    return None;
+                }
+                let opened = {
+                    let done = done.clone();
+                    move |o| done.send(FromWorker::Opened(o)).is_ok()
+                };
+                let read = {
+                    let back = back.clone();
+                    move |r| back.send(ToWorker::Read(r)).is_ok()
+                };
+                match streaming::start(rate, *cfg, opened, read) {
+                    Ok((player, st)) => {
+                        files.stream();
+                        self.stream = Some(st);
+                        FromWorker::Player(player)
+                    }
+                    Err(e) => FromWorker::StreamFailed(e.to_string()),
+                }
+            }
+            ToWorker::Close { take, gen } => {
+                self.to_stream(ToStream::Close { take, gen });
+                return None;
+            }
+            ToWorker::Project => {
+                self.to_stream(ToStream::Project);
+                return None;
+            }
+            ToWorker::FitFile {
+                take,
+                ratio,
+                bpm,
+                gen,
+            } => {
+                let want = Want::Fit {
+                    take,
+                    ratio,
+                    bpm,
+                    gen,
+                };
+                return self.read_for(take.rec, want);
+            }
+            ToWorker::WaveFile { take, columns } => {
+                return self.read_for(take.rec, Want::Wave { take, columns });
+            }
+            ToWorker::Read(Read { job, bytes }) => {
+                let i = self.wants.iter().position(|(j, _)| *j == job)?;
+                let (_, want) = self.wants.swap_remove(i);
+                self.answer(want, bytes)
+            }
+        })
+    }
+}
+
+/// A take's waveform in about `columns` columns from its frames `audio`
+/// (empty if they couldn't be read: no columns), as
+/// [`AudioHost::wave`] reads it from the pool: a column covers whole
+/// blocks of [`PEAK_BLOCK`] samples.
+fn wave_of(take: &TakeInfo, audio: &[f32], columns: usize) -> TakeWave {
+    let ch = take.channels.max(1);
+    let frames = if audio.len() == take.frames * ch {
+        take.frames
+    } else {
+        0
+    };
+    let step = (PEAK_BLOCK / ch).max(1);
+    let fpc = take.frames.div_ceil(columns.max(1)).div_ceil(step).max(1) * step;
+    let mut out = Vec::with_capacity(frames.div_ceil(fpc));
+    let mut at = 0;
+    while at < frames {
+        let to = (at + fpc).min(frames);
+        out.push(crate::min_max(&audio[at * ch..to * ch]));
+        at = to;
+    }
+    TakeWave {
+        id: take.id,
+        frames,
+        channels: take.channels,
+        frames_per_column: fpc,
+        columns: out,
+    }
 }

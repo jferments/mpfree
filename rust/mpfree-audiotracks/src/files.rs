@@ -168,6 +168,17 @@ pub enum FileEvent {
     /// A take's file changed state: it is At risk or Stopped, or a take
     /// that was got over it (Saved after At risk).
     State { track: usize, state: TakeState },
+    /// A take's file couldn't be opened to play from (`why`): a take
+    /// recorded is `kept` in memory and plays from there; a take of a
+    /// project opening isn't in memory, so it is left out.
+    Unopened {
+        track: usize,
+        why: String,
+        kept: bool,
+    },
+    /// Playing takes from their files couldn't start (`why`): every take
+    /// plays from memory, as before.
+    NoStream { why: String },
 }
 
 impl FileEvent {
@@ -177,7 +188,9 @@ impl FileEvent {
             FileEvent::ArmFailed { track, .. }
             | FileEvent::NoFile { track, .. }
             | FileEvent::FromMemory { track, .. }
-            | FileEvent::State { track, .. } => *track,
+            | FileEvent::State { track, .. }
+            | FileEvent::Unopened { track, .. } => *track,
+            FileEvent::NoStream { .. } => 0,
         }
     }
 
@@ -220,6 +233,21 @@ impl FileEvent {
                     format!("audio tracks: {who}'s take is being written")
                 }
             },
+            FileEvent::Unopened {
+                why, kept: true, ..
+            } => format!(
+                "audio tracks: {who}'s take plays from memory, as its file couldn't be opened \
+                 ({why})"
+            ),
+            FileEvent::Unopened {
+                why, kept: false, ..
+            } => format!(
+                "audio tracks: a take of {who} was left out, as its file couldn't be opened ({why})"
+            ),
+            FileEvent::NoStream { why } => format!(
+                "audio tracks: takes play from memory, as playing them from the drive couldn't \
+                 start ({why})"
+            ),
         }
     }
 }
@@ -254,6 +282,8 @@ const POLL: Duration = Duration::from_millis(50);
 /// One recording's file, on the worker.
 struct FileRec {
     rec: RecordingId,
+    /// The take it is, once one records into it or opens with it.
+    id: Option<u16>,
     /// 0 for a take opened with a project (it wasn't recorded here).
     channels: u8,
     /// The writer's number for it, while the writer has it.
@@ -280,12 +310,20 @@ struct Writing {
     rec: Recorder,
 }
 
+/// A take's finished file to open as its stream source: the take, its
+/// lasting id, the file, and the channels and frames it must hold.
+pub(crate) type ToOpen = (u16, RecordingId, PathBuf, usize, usize);
+
 /// The worker's side of the files: see the module notes.
 pub(crate) struct Files {
     rate: u32,
     writing: Option<Writing>,
     recs: Vec<FileRec>,
     last_poll: Instant,
+    /// Takes play from their files (phase 3b): each take's file is to be
+    /// opened once finished ([`Files::take_opens`]).
+    streams: bool,
+    opens: Vec<ToOpen>,
 }
 
 impl Files {
@@ -295,7 +333,25 @@ impl Files {
             writing: None,
             recs: Vec::new(),
             last_poll: Instant::now(),
+            streams: false,
+            opens: Vec::new(),
         }
+    }
+
+    /// Takes play from their files from now on: each finished take file,
+    /// recorded or opened with a project, is to be opened.
+    pub fn stream(&mut self) {
+        self.streams = true;
+    }
+
+    /// The take files to open now, oldest first.
+    pub fn take_opens(&mut self) -> Vec<ToOpen> {
+        std::mem::take(&mut self.opens)
+    }
+
+    /// Where recording `rec`'s finished file is, if it has one.
+    pub fn path_of(&self, rec: RecordingId) -> Option<PathBuf> {
+        self.recs.iter().find(|f| f.rec == rec)?.path.clone()
     }
 
     /// Whether the writer runs (the worker then wakes to look at it).
@@ -303,8 +359,10 @@ impl Files {
         self.writing.is_some()
     }
 
-    /// Record into `dir` from now on (made if missing).
-    pub fn start(&mut self, dir: PathBuf, cfg: WriterConfig) -> io::Result<()> {
+    /// Record into `dir` from now on (made if missing), the writer's
+    /// rounds waiting for playback's reads through `gate` (the stream
+    /// coordinator's, while takes play from their files).
+    pub fn start(&mut self, dir: PathBuf, cfg: WriterConfig, gate: Arc<Gate>) -> io::Result<()> {
         std::fs::create_dir_all(&dir)?;
         if let Some(old) = self.writing.take() {
             old.rec.close();
@@ -312,7 +370,7 @@ impl Files {
         let rec = Recorder::start(
             Box::new(StdFs::new()),
             Arc::new(RealClock::new()),
-            Arc::new(Gate::new()),
+            gate,
             cfg,
         )?;
         self.writing = Some(Writing { dir, rec });
@@ -353,6 +411,7 @@ impl Files {
         );
         self.recs.push(FileRec {
             rec,
+            id: None,
             channels,
             no: Some(no),
             take: false,
@@ -377,12 +436,13 @@ impl Files {
         }
     }
 
-    /// A take started recording into `rec`'s files. None if it has none
-    /// (they failed, or the request was lost): why, for the musician.
-    pub fn start_take(&mut self, rec: RecordingId) -> Result<(), String> {
+    /// Take `id` started recording into `rec`'s files. None if it has
+    /// none (they failed, or the request was lost): why, for the musician.
+    pub fn start_take(&mut self, rec: RecordingId, id: u16) -> Result<(), String> {
         match self.find(rec) {
             Some(f) if f.no.is_some() => {
                 f.take = true;
+                f.id = Some(id);
                 Ok(())
             }
             _ => Err("its files weren't made".into()),
@@ -409,12 +469,24 @@ impl Files {
         }
     }
 
-    /// A take opened with a project: its file's name there, where it is,
-    /// and the frames it holds.
-    pub fn known(&mut self, rec: RecordingId, name: String, path: Option<PathBuf>, frames: usize) {
+    /// Take `id` opened with a project: its file's name there, where it
+    /// is, and the channels and frames it holds. While takes play from
+    /// their files, a take with a file is to be opened.
+    pub fn known(
+        &mut self,
+        rec: RecordingId,
+        id: u16,
+        name: String,
+        path: Option<PathBuf>,
+        (channels, frames): (usize, usize),
+    ) {
         self.recs.retain(|f| f.rec != rec);
+        if let (true, Some(p)) = (self.streams, &path) {
+            self.opens.push((id, rec, p.clone(), channels, frames));
+        }
         self.recs.push(FileRec {
             rec,
+            id: Some(id),
             channels: 0,
             no: None,
             take: true,
@@ -480,6 +552,10 @@ impl Files {
                         // The writer is done with it.
                         w.rec.forget(no);
                         f.no = None;
+                        if let (true, Some(id), Some(p)) = (self.streams, f.id, &f.path) {
+                            let ch = usize::from(f.channels);
+                            self.opens.push((id, f.rec, p.clone(), ch, f.frames));
+                        }
                     }
                     if f.shown.is_none_or(|s| view.differs(&s)) {
                         f.shown = Some(view);
@@ -708,6 +784,15 @@ mod tests {
         assert!(memory
             .line("Keys")
             .ends_with("as it has no file of its own"));
+        let left = FileEvent::Unopened {
+            track: 3,
+            why: "No such file or directory (os error 2)".into(),
+            kept: false,
+        };
+        assert_eq!(left.track(), 3);
+        assert!(left.line("Gtr").starts_with(
+            "audio tracks: a take of Gtr was left out, as its file couldn't be opened (No such"
+        ));
     }
 
     #[test]

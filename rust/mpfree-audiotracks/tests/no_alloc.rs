@@ -5,7 +5,8 @@
 //! change, comping, every edit, undo and redo, a song time edit with its
 //! undo and redo, forgetting takes, a full memory, latency changes and
 //! stops, a take loaded from a save and takes read for one, at period
-//! sizes from 1 to 4096; and takes played from their files.
+//! sizes from 1 to 4096; and takes played from their files, by the
+//! tracks alone and in the host.
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
@@ -408,6 +409,108 @@ fn the_host_period_hardly_allocates_while_recording_to_files() {
     assert!(calls <= 4, "{calls} allocations in the host's period");
 }
 
+/// Phase 3b step 2: with streaming on, the host's period hardly allocates
+/// either (the worker's and the stream thread's channels now and then):
+/// takes recorded to their files and moved to them, the song played from
+/// them, the tracks emptied (the files closed) and a project opened as its
+/// files, then played.
+#[test]
+fn the_host_period_hardly_allocates_while_takes_play_from_their_files() {
+    use mpfree_audiotracks::files::WriterConfig;
+    use mpfree_audiotracks::host::AudioHost;
+    use mpfree_audiotracks::streaming::StreamConfig;
+    use mpfree_stream::player::Config;
+    use std::time::{Duration, Instant};
+    const RATE: u32 = 22_050;
+    const BAR: u64 = 22_050; // 240 BPM
+    const P: usize = 256;
+    let dir = std::env::temp_dir().join(format!("mpfree-na-hstream-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut h = AudioHost::new(RATE, 40);
+    let cache = Config {
+        slots: 256,
+        ..Config::default()
+    };
+    assert!(h.stream(StreamConfig {
+        cache,
+        ..StreamConfig::default()
+    }));
+    let quick = WriterConfig {
+        interval_s: 0.05,
+        max_interval_s: 0.2,
+        commit_s: 0.01,
+        ..WriterConfig::default()
+    };
+    assert!(h.record_to(dir.clone(), quick).is_ok());
+    let mut t = Transport::new(RATE, 240.0).unwrap();
+    let mut b = Block::new();
+    let input: Vec<f32> = (0..2 * P)
+        .map(|j| ((j * 31) % 97) as f32 / 97.0 - 0.5)
+        .collect();
+    let mut out = vec![0.0f32; 2 * P];
+    let (mut frame, mut calls) = (0u64, 0usize);
+    // Periods until `done`, the threads given time between them; only
+    // the host's period is watched.
+    let mut run =
+        |h: &mut AudioHost, t: &mut Transport, done: &mut dyn FnMut(&AudioHost, u64) -> bool| {
+            let t0 = Instant::now();
+            while !done(h, frame) {
+                assert!(t0.elapsed() < Duration::from_secs(30), "timed out");
+                t.process(P as u32, &mut b);
+                let map = *t.tempo_map();
+                CALLS.with(|c| c.set(0));
+                watch(true);
+                h.period(&b, &map, &input, &mut out);
+                watch(false);
+                calls += CALLS.with(Cell::get);
+                frame += P as u64;
+                std::thread::sleep(Duration::from_micros(200));
+            }
+            frame
+        };
+    run(&mut h, &mut t, &mut |h, _| h.tracks.player().is_some());
+    h.command(A::Arm(0, true));
+    h.command(A::Arm(1, true));
+    h.command(A::SetInput(1, Input::Stereo));
+    let now = run(&mut h, &mut t, &mut |h, _| {
+        h.armed_file(0) == Some(true) && h.armed_file(1) == Some(true)
+    });
+    let at = now + BAR;
+    t.command(at, T::Record);
+    t.command(at + 4 * BAR, T::Stop);
+    run(&mut h, &mut t, &mut |_, f| f > at + 4 * BAR + 4 * P as u64);
+    h.command(A::Arm(0, false));
+    h.command(A::Arm(1, false));
+    let on_files = |h: &AudioHost| {
+        h.tracks.takes().count() == 2 && h.tracks.takes().all(|k| h.tracks.on_file(k.id))
+    };
+    let now = run(&mut h, &mut t, &mut |h, _| on_files(h));
+    // The song from its files.
+    t.command(now, T::Locate(0));
+    t.command(now, T::PlayStart);
+    let now = run(&mut h, &mut t, &mut |_, f| f > now + 6 * BAR);
+    t.command(now, T::StopAndRewind);
+    run(&mut h, &mut t, &mut |_, f| f > now + 4 * P as u64);
+    // Saved, emptied, and opened again as its files, then played.
+    assert!(h.save());
+    run(&mut h, &mut t, &mut |h, _| h.saving().is_none());
+    let saved = h.take_saved().expect("saved");
+    assert!(saved.takes.iter().all(|k| k.path.is_some()));
+    assert!(h.clear());
+    let now = run(&mut h, &mut t, &mut |_, f| f > now + 8 * P as u64);
+    assert!(h.load(saved).is_ok());
+    let now = run(&mut h, &mut t, &mut |h, f| h.opening() == 0 && f > now);
+    assert!(on_files(&h));
+    t.command(now, T::Locate(0));
+    t.command(now, T::PlayStart);
+    let now = run(&mut h, &mut t, &mut |_, f| f > now + 6 * BAR);
+    t.command(now, T::StopAndRewind);
+    run(&mut h, &mut t, &mut |_, f| f > now + 4 * P as u64);
+    drop(h);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(calls <= 4, "{calls} allocations in the host's period");
+}
+
 /// Phase 3b: playing takes from their files allocates nothing on the
 /// audio thread either: a take moving from the pool to its file while the
 /// song plays, a take opened as its file, frames the stick is late with,
@@ -435,7 +538,7 @@ fn playing_from_files_never_allocates() {
     };
     let mut c = Coordinator::new(cfg, plan, rx, tx, Box::<Inline>::default());
     let mut a = AudioTracks::new(RATE, 10);
-    assert!(a.stream(Some(p)).is_none());
+    assert!(a.stream(Some(Box::new(p))).is_none());
     let mut t = Transport::new(RATE, 240.0).unwrap();
     let mut b = Block::new();
     let input: Vec<f32> = (0..2 * P)

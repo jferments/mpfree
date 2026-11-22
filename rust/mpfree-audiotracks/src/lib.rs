@@ -84,6 +84,7 @@ pub mod host;
 mod pool;
 pub mod retime;
 pub mod save;
+pub mod streaming;
 pub mod stretch;
 
 use pool::Pool;
@@ -521,11 +522,11 @@ pub enum Io {
     /// reads a take while it records), finish its file once it has stopped
     /// recording, then tell [`AudioTracks::written`].
     Start { take: u16 },
-    /// Take `take`'s stream source is no longer played (the take was
-    /// forgotten or cleared, or its file didn't match it): close it. A
-    /// newer take may already have the id; its own source is opened
-    /// later, under a newer generation.
-    Close { take: u16 },
+    /// Take `take`'s stream source, at generation `gen`, is no longer
+    /// played (the take was forgotten or cleared, or its file didn't match
+    /// it): close it, if it is still that generation (a newer take may
+    /// have the id and its own source by then).
+    Close { take: u16, gen: u32 },
 }
 
 /// The memory gauge, in samples (a stereo frame is two).
@@ -959,11 +960,13 @@ pub struct AudioTracks {
     /// The stream layer's sound-thread side, for takes played from their
     /// files ([`AudioTracks::stream`]), and room for what a run reads
     /// through it.
-    player: Option<Player>,
+    player: Option<Box<Player>>,
     reads: Box<[f32]>,
     /// Where each track plays, or is about to (see [`AudioTracks::cue`]),
     /// a region in each of its two cursors.
     cues: [[Option<Cue>; 2]; MAX_TRACKS],
+    /// Take ids kept for takes on their way ([`AudioTracks::reserve`]).
+    reserved: [bool; MAX_TAKES],
 }
 
 /// One track's room in [`AudioTracks::inside_input`].
@@ -1005,6 +1008,7 @@ impl AudioTracks {
             player: None,
             reads: vec![0.0; 2 * RUN].into_boxed_slice(),
             cues: [[None; 2]; MAX_TRACKS],
+            reserved: [false; MAX_TAKES],
         }
     }
 
@@ -1142,7 +1146,23 @@ impl AudioTracks {
     /// An id no take has, for a take made off the audio thread (a stretch)
     /// to load under.
     pub fn free_take_id(&self) -> Option<u16> {
-        self.takes.iter().position(|t| !t.live).map(|i| i as u16)
+        self.free_id().map(|i| i as u16)
+    }
+
+    /// The first take id neither in use nor kept for a take on its way
+    /// ([`AudioTracks::reserve`]).
+    fn free_id(&self) -> Option<usize> {
+        (0..MAX_TAKES).find(|&i| !self.takes[i].live && !self.reserved[i])
+    }
+
+    /// Keep take id `id` for a take on its way (a project's take whose
+    /// file is opening: [`AudioTracks::add_file_take`] takes it), so no
+    /// recording or sound brought in gets it meanwhile; or let it go.
+    /// [`AudioTracks::clear`] lets every id go. Real-time safe.
+    pub fn reserve(&mut self, id: u16, keep: bool) {
+        if let Some(r) = self.reserved.get_mut(id as usize) {
+            *r = keep;
+        }
     }
 
     /// Every take, oldest id first.
@@ -1978,6 +1998,7 @@ impl AudioTracks {
             }
         }
         self.pending = [None; MAX_TRACKS];
+        self.reserved = [false; MAX_TAKES];
         self.groups = 0;
         self.h_done = 0;
         self.h_redo = 0;
@@ -2101,7 +2122,7 @@ impl AudioTracks {
     /// Start recording track `t` at absolute frame `g`, song tick `tick`
     /// (`bpm` there, for the latency).
     fn punch_in(&mut self, t: usize, g: u64, tick: f64, bpm: f64, group: u16, pass: u16) {
-        let Some(id) = self.takes.iter().position(|k| !k.live) else {
+        let Some(id) = self.free_id() else {
             self.stats.full += 1;
             self.tracks[t].blocked = true;
             return;
@@ -2440,10 +2461,10 @@ impl AudioTracks {
     // ---- playing from files -------------------------------------------
 
     /// Play takes from their files through `player`, the stream layer's
-    /// sound-thread side (made off the audio thread, with every buffer it
-    /// will use, its coordinator on a thread of its own), or stop (None).
-    /// The player given before comes back, to be dropped off the audio
-    /// thread. Real-time safe.
+    /// sound-thread side (made and boxed off the audio thread, with every
+    /// buffer it will use, its coordinator on a thread of its own), or stop
+    /// (None). The player given before comes back, to be dropped off the
+    /// audio thread. Real-time safe.
     ///
     /// A take's stream source is its id. A recorded take moves from the
     /// pool to its finished file with [`Command::OnFile`]; a saved take
@@ -2456,13 +2477,13 @@ impl AudioTracks {
     /// playing. Every frame that plays silence because it wasn't in the
     /// cache is counted ([`AudioTracks::missed`]). Without a player, file
     /// takes play silence, counted the same.
-    pub fn stream(&mut self, player: Option<Player>) -> Option<Player> {
+    pub fn stream(&mut self, player: Option<Box<Player>>) -> Option<Box<Player>> {
         std::mem::replace(&mut self.player, player)
     }
 
     /// The player, for its counters.
     pub fn player(&self) -> Option<&Player> {
-        self.player.as_ref()
+        self.player.as_deref()
     }
 
     /// Whether take `id` plays from its file (it holds no pool memory).
@@ -2518,6 +2539,7 @@ impl AudioTracks {
             store: Store::File { gen },
             ..NO_TAKE
         };
+        self.reserved[id] = false;
         self.groups = self.groups.max(f.group);
         true
     }
@@ -2526,8 +2548,8 @@ impl AudioTracks {
     /// if it has one.
     fn forget(&mut self, id: u16) {
         self.pool.release_take(id);
-        if self.takes[id as usize].store != Store::Pool {
-            self.ask(Io::Close { take: id });
+        if let Store::Moving { gen } | Store::File { gen } = self.takes[id as usize].store {
+            self.ask(Io::Close { take: id, gen });
         }
         self.takes[id as usize] = NO_TAKE;
     }
@@ -2642,7 +2664,7 @@ impl AudioTracks {
             if p.shape(id) != Some((u16::from(tk.channels), tk.frames as u64)) {
                 self.takes[id as usize].store = Store::Pool;
                 self.stats.mismatched += 1;
-                self.ask(Io::Close { take: id });
+                self.ask(Io::Close { take: id, gen });
                 continue;
             }
             let covered = self
@@ -2867,7 +2889,7 @@ impl AudioTracks {
             let (g, k) = (r.gain, r.src + e0);
             let missed = match tk.store {
                 Store::File { gen } => {
-                    let p = player.as_mut();
+                    let p = player.as_deref_mut();
                     if plain {
                         tk.add_from_file(p, r.take, gen, k, dst, reads, &|_| g)
                     } else {

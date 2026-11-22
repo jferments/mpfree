@@ -93,7 +93,7 @@ impl Rig {
                 ..Plan::default()
             };
             let (p, rx, tx) = Player::new(cfg);
-            assert!(a.stream(Some(p)).is_none());
+            assert!(a.stream(Some(Box::new(p))).is_none());
             let dev = Slow {
                 clock: clock.clone(),
                 delay,
@@ -434,7 +434,13 @@ fn a_file_that_doesnt_match_its_take_keeps_it_in_memory_and_is_closed() {
     r.run_to(r.frame + 8 * P as u64);
     assert_eq!(r.a.stats().mismatched, 1);
     assert!(!r.a.on_file(k.id));
-    assert_eq!(r.a.take_io(), Some(Io::Close { take: k.id }));
+    assert_eq!(
+        r.a.take_io(),
+        Some(Io::Close {
+            take: k.id,
+            gen: tag.gen
+        })
+    );
     assert_eq!(r.a.take_io(), None);
     let got = play_song(&mut r, |_| {});
     assert!(got == song, "still played from memory");
@@ -475,14 +481,20 @@ fn a_file_take_forgotten_or_cleared_is_closed() {
     // No regions play them: the first can go.
     r.a.command(A::Forget(takes[0].id));
     r.run_to(r.frame + P as u64);
-    assert_eq!(r.a.take_io(), Some(Io::Close { take: takes[0].id }));
+    assert_eq!(
+        r.a.take_io(),
+        Some(Io::Close {
+            take: takes[0].id,
+            gen: 1
+        })
+    );
     assert_eq!(r.a.take_io(), None);
     assert!(r.a.take(takes[0].id).is_none());
     assert!(r.a.clear());
     let closed: Vec<_> = std::iter::from_fn(|| r.a.take_io()).collect();
     let want: Vec<_> = takes[1..]
         .iter()
-        .map(|k| Io::Close { take: k.id })
+        .map(|k| Io::Close { take: k.id, gen: 1 })
         .collect();
     assert_eq!(closed, want);
     // Without a player a take can't open as its file.
