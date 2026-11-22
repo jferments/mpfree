@@ -2071,10 +2071,11 @@ fn pad_note_names() -> String {
         .join(", ")
 }
 
-/// How keys play the armed track: by note while the pads play notes (a
-/// synth pad layout, `key_notes`), the kit's own pads while it plays a kit
-/// (not the synth, nor an instrument of its own), else as the pad (1 to
-/// 16) the MPC gives each note.
+/// How keys play the armed track: by note while the pads press notes (a
+/// synth pad layout or the track's own synth's pad map, `key_notes`), the
+/// kit's own pads while it plays a kit (not the synth, nor an instrument of
+/// its own), else as the pad (1 to 16) the MPC gives each note (an
+/// instrument whose arp works in pads, such as the Drums engine).
 fn keys_play(synth_on: bool, key_notes: bool, own: bool) -> midi_in::KeysPlay {
     if key_notes {
         midi_in::KeysPlay::Notes
@@ -2730,6 +2731,10 @@ fn pads_instrument(
     use looping::Instrument;
     if app.pads_chose_synth() {
         return Instrument::Synth;
+    }
+    // An instrument of the host's chosen for the pads (step 6).
+    if let Some(h) = mix.instruments.pads_play_at() {
+        return Instrument::Own(h);
     }
     let t = app.track();
     if midi_out {
@@ -4608,6 +4613,230 @@ fn instrument_track(own: &instruments::Instruments, track: usize) -> usize {
     own.owner(track).unwrap_or(track)
 }
 
+/// Whose instrument the Synth tab shows and edits: the one the pads play
+/// by the host's pads player while the selected track doesn't play it
+/// (step 6, a synth picked in the list), else the selected track
+/// ([`instrument_track`] goes on from there).
+fn tab_who(app: &app::App, own: &instruments::Instruments) -> usize {
+    match own.pads_play_at() {
+        Some(h) if own.owner(app.track()) != Some(h) => h,
+        _ => app.track(),
+    }
+}
+
+/// Who plays the instrument the Synth tab shows (the instrument
+/// redesign's rule 13, "Poly: the pads, Track 2, Track 4", step 8b):
+/// None while only the pads, or only the selected track, play it, which
+/// the hint line already says. Tracks by their names, the first four,
+/// then how many more. Allocates only when called; the loop calls it a
+/// few times a second and sends it when it changes.
+fn who_plays(
+    app: &app::App,
+    own: &instruments::Instruments,
+    kits: &sampler::TrackKits,
+    names: &[mpfree_seq::Track],
+    synth_name: &str,
+) -> Option<String> {
+    let shown = instrument_track(own, tab_who(app, own));
+    let (name, tracks, pads) = match own.held(shown) {
+        // An instrument the host holds: its own track's, then those that
+        // send to it; the pads by their player or by following the track.
+        Some(h) => {
+            let mut bits = own.senders(shown);
+            if shown < instruments::TRACKS {
+                bits |= 1 << shown;
+            }
+            let pads = own.pads_play_at() == Some(shown)
+                || (app.pads_focus() == app::PadFocus::Track
+                    && own.owner(app.track()) == Some(shown));
+            (h.name, bits, pads)
+        }
+        // The shared synth: the tracks on the Synth kit; the pads while
+        // chosen for it or following such a track.
+        None => {
+            let bits = (0..instruments::TRACKS)
+                .filter(|&t| !own.plays(t) && kits.plays_synth(t))
+                .fold(0u128, |b, t| b | 1 << t);
+            let pads = app.pads_chose_synth()
+                || (app.pads_focus() == app::PadFocus::Track
+                    && !own.plays(app.track())
+                    && kits.plays_synth(app.track()));
+            (synth_name, bits, pads)
+        }
+    };
+    let count = tracks.count_ones() as usize + usize::from(pads);
+    if count < 2 {
+        return None;
+    }
+    let track_name = |t: usize| {
+        names
+            .get(t)
+            .map(|n| n.name.trim())
+            .filter(|n| !n.is_empty())
+            .map_or_else(|| format!("Track {}", t + 1), str::to_string)
+    };
+    let mut who: Vec<String> = Vec::new();
+    if pads {
+        who.push("the pads".to_string());
+    }
+    let listed: Vec<usize> = (0..instruments::TRACKS)
+        .filter(|&t| tracks >> t & 1 == 1)
+        .collect();
+    let room = 4 - who.len();
+    who.extend(listed.iter().take(room).map(|&t| track_name(t)));
+    if listed.len() > room {
+        who.push(format!("{} more", listed.len() - room));
+    }
+    Some(format!("{name}: {}", who.join(", ")))
+}
+
+/// What the pads play on their own, before the arp and the recorder,
+/// while the armed track plays something else (app/pads_focus.rs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PadsPreview {
+    /// The shared synth, chosen with Play on the pads.
+    Synth,
+    /// An instrument the host holds, by its pads player (step 6).
+    Host,
+}
+
+/// A keyboard's keys while the pads play a synth on their own (the
+/// instrument redesign's step 7b): they play it too, each key its own
+/// note, before the arp and the recorder, as the pads' hits do, so "Pads:
+/// FM" names what both play. Each held key remembers where it went, so
+/// its let-go, pressure and slide reach the same synth though the pads
+/// moved on meanwhile (rule 8). Main.rs and the test session both use it.
+/// Allocates nothing.
+struct KeysOnPads {
+    held: [Option<PadsPreview>; 128],
+}
+
+impl KeysOnPads {
+    fn new() -> KeysOnPads {
+        KeysOnPads { held: [None; 128] }
+    }
+
+    /// Key `k`, while the pads play `preview` on their own (None: they
+    /// play through the armed track): true when it went to the pads'
+    /// synth, so the armed track doesn't hear it. `v` shapes a velocity as
+    /// the pads' (`App::velocity`).
+    fn key(
+        &mut self,
+        k: midi_in::Key,
+        preview: Option<PadsPreview>,
+        v: impl Fn(u8) -> u8,
+        synth: &mut synth::Synth,
+        own: &mut instruments::Instruments,
+    ) -> bool {
+        use midi_in::Key;
+        let pads = instruments::THE_PADS;
+        let at = |note: u8| usize::from(note & 0x7F);
+        match k {
+            Key::Down { note, velocity } => {
+                let Some(p) = preview else {
+                    return false;
+                };
+                // A second note-on for a key held there is ignored.
+                if self.held[at(note)].is_some() {
+                    return true;
+                }
+                let vel = v(velocity);
+                match p {
+                    PadsPreview::Host => {
+                        own.note_on(pads, note, vel, 0);
+                    }
+                    PadsPreview::Synth => synth.note_on_note(note, vel, 0),
+                }
+                self.held[at(note)] = Some(p);
+                true
+            }
+            Key::Up { note } => match self.held[at(note)].take() {
+                Some(PadsPreview::Host) => {
+                    own.note_off(pads, note, 0);
+                    true
+                }
+                Some(PadsPreview::Synth) => {
+                    synth.note_off_note(note, 0);
+                    true
+                }
+                None => false,
+            },
+            Key::Pressure { note, value } => match self.held[at(note)] {
+                Some(PadsPreview::Host) => {
+                    own.note_pressure(pads, note, value);
+                    true
+                }
+                Some(PadsPreview::Synth) => {
+                    synth.pressure_note(note, value);
+                    true
+                }
+                None => false,
+            },
+            Key::Expr { note, kind, value } => match self.held[at(note)] {
+                Some(PadsPreview::Host) => {
+                    own.note_expression(pads, note, kind, value);
+                    true
+                }
+                Some(PadsPreview::Synth) => {
+                    synth.expression_note(note, kind, value);
+                    true
+                }
+                None => false,
+            },
+            Key::Bend { value } => match preview {
+                Some(PadsPreview::Host) => {
+                    own.bend(pads, value);
+                    true
+                }
+                Some(PadsPreview::Synth) => {
+                    synth.bend(value);
+                    true
+                }
+                None => false,
+            },
+            Key::Control { ctl, value } => KeysOnPads::control(preview, ctl, value, synth, own),
+        }
+    }
+
+    /// A pedal, the mod wheel or a breath for the pads' synth (also a
+    /// pedal coming up as the pads move on): true when it went there.
+    fn control(
+        to: Option<PadsPreview>,
+        ctl: mpfree_node::Ctl,
+        value: f32,
+        synth: &mut synth::Synth,
+        own: &mut instruments::Instruments,
+    ) -> bool {
+        match to {
+            Some(PadsPreview::Host) => {
+                own.control(instruments::THE_PADS, ctl, value, 0);
+                true
+            }
+            Some(PadsPreview::Synth) => {
+                synth.control(ctl, value, 0);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// How many keys play the pads' synth now (for the tests).
+    #[cfg(test)]
+    fn held(&self) -> usize {
+        self.held.iter().filter(|h| h.is_some()).count()
+    }
+}
+
+/// A holder's name for the screen: "Track 3", or "The pads' synth" for a
+/// free place's (step 6).
+fn holder_says(holder: usize) -> String {
+    if holder < instruments::TRACKS {
+        format!("Track {}", holder + 1)
+    } else {
+        "The pads' synth".to_string()
+    }
+}
+
 /// A project's sends (step 4), once its instruments are in: each track
 /// plays the other track's instrument it saved, or its kit, said. The
 /// lines for the log. Main.rs and the test session both run it.
@@ -4669,10 +4898,14 @@ fn sends_ended(senders: u128, owner: usize) -> Option<String> {
     } else {
         ("s", "play their kits")
     };
+    let gone = if owner < instruments::TRACKS {
+        format!("Track {}'s instrument", owner + 1)
+    } else {
+        "the pads' synth".to_string()
+    };
     Some(format!(
-        "Track{s} {} {verb} again: Track {}'s instrument is gone",
-        names.join(", "),
-        owner + 1
+        "Track{s} {} {verb} again: {gone} is gone",
+        names.join(", ")
     ))
 }
 
@@ -4776,7 +5009,13 @@ fn synth_tab(
     match (own.held(track), own.node(track)) {
         (Some(h), Some(node)) => {
             let engine = synth::Engine::from_node_id(h.id);
-            let label = format!("Track {}", track + 1);
+            // A free place's (step 6): the pads play it, and no track has
+            // it as its own.
+            let label = if track < instruments::TRACKS {
+                format!("Track {}", track + 1)
+            } else {
+                "Pads, no track".to_string()
+            };
             let mut st = synth.state_of(node, engine, &label, presets.index(track));
             st.own = presets.own(track).map(str::to_string);
             if engine.is_none() {
@@ -4806,7 +5045,7 @@ fn plugin_preset_name(p: &mpfree_plughost::Preset) -> String {
 /// Asks for the presets of every plugin synth a track has (listed once,
 /// on the builder thread), so they're there when the Synth tab opens.
 fn ask_plugin_presets(mix: &mut mixing::MixHost) {
-    for t in 0..instruments::TRACKS {
+    for t in 0..instruments::HOLDERS {
         if let Some(id) = mix.instruments.held(t).map(|h| h.id) {
             mix.ask_presets(id);
         }
@@ -4817,7 +5056,7 @@ fn ask_plugin_presets(mix: &mut mixing::MixHost) {
 /// tuning (Drums keeps its kit notes).
 fn own_follow_synth(synth: &synth::Synth, own: &mut instruments::Instruments) {
     let tuning = synth.tuning_now();
-    for t in 0..instruments::TRACKS {
+    for t in 0..instruments::HOLDERS {
         if let Some(h) = own.held(t) {
             let e = synth::Engine::from_node_id(h.id).unwrap_or(synth::Engine::Poly);
             own.set_pads(t, synth.pads_for(e));
@@ -4830,6 +5069,12 @@ fn own_follow_synth(synth: &synth::Synth, own: &mut instruments::Instruments) {
 /// `name` because [`instruments::SLOTS`] other tracks already have their
 /// own.
 fn full_note(track: usize, name: &str) -> String {
+    if track >= instruments::TRACKS {
+        return format!(
+            "No room for {name}: {} instruments are loaded, the most at once. Set a track to Kit first",
+            instruments::SLOTS
+        );
+    }
     format!(
         "Track {} plays the kit: {} tracks already have their own instrument, the most at once. Set one of them to Kit to give {name} its place",
         track + 1,
@@ -6191,6 +6436,10 @@ fn time_action(
             }
         }
         if !matches!(aa, AudioAction::Pick(_)) {
+            // What the panel's Mix offers comes from the mixer (step 9).
+            if matches!(aa, AudioAction::Mix { .. } | AudioAction::Panel(_)) {
+                tracks.offer(mix.inside_sources());
+            }
             match tracks.action(aa, &time.info(), looper.line.is_open()) {
                 Ok(line) if !line.is_empty() => out.note(&line),
                 Ok(_) => {}
@@ -6638,8 +6887,24 @@ fn player_session(
     // arp and the recorder; nothing records them. While the track plays
     // the synth, they play it through the track. The pads a hit started
     // there, so their let-go ends it there.
-    let mut preview_on = false;
-    let mut preview_held = [false; 16];
+    // From step 6, an instrument of the host's chosen for them (a free
+    // place's, picked in the list of synths) the same way, by the host's
+    // pads player (`instruments::THE_PADS`), while the armed track doesn't
+    // play it.
+    let mut pads_preview: Option<PadsPreview> = None;
+    // The name of the instrument the host's pads player plays, as the
+    // screen last heard it (step 6).
+    let mut pads_host_shown: Option<&'static str> = None;
+    // What the screen shows the pads play, and their bank's letter when it
+    // is the bank's own (step 6c).
+    let mut pads_shown: (app::PadFocus, Option<usize>) = (app::PadFocus::Track, None);
+    // Who plays the Synth tab's instrument, as last shown (step 8b), and
+    // when to look again.
+    let mut who_shown: Option<String> = None;
+    let mut who_at = 0.0f64;
+    let mut preview_held: [Option<PadsPreview>; 16] = [None; 16];
+    // The list of instruments changed since the app last had it (step 6).
+    let mut list_changed = true;
     // What each track plays: a kit, the Grains kit or the synth (kit 1 on
     // every track until a pick). The pads play the armed track's; each
     // track's clips play its own.
@@ -6673,7 +6938,7 @@ fn player_session(
     let mut synth_meters = synth.meters();
     // What each track plays, as the screen last heard it (the line under
     // its name on Arrange).
-    let mut sounds_shown: gui::TrackSounds = [None; instruments::TRACKS];
+    let mut sounds_shown: gui::TrackSounds = [None; instruments::HOLDERS];
     let mut sends_shown: gui::TrackSends = [None; instruments::TRACKS];
     // Where REC would record the pads' synth, as the REC chip last named it
     // (the recording plan, `desk::rec_plan`).
@@ -7246,8 +7511,13 @@ fn player_session(
     // The track the keys' expression last went to on MIDI out: when
     // another is armed, its gear's bend and pressure go back to rest.
     let mut expr_track = 0usize;
+    // And the synth the pads played on their own then (step 7b), whose
+    // pedals come up as the pads move on.
+    let mut expr_pads: Option<PadsPreview> = None;
     // The pedals the keys put down on it (`expr_track`).
     let mut pedals_down = midi_in::PedalsDown::default();
+    // Keys playing the pads' synth while the pads play it on their own.
+    let mut keys_on_pads = KeysOnPads::new();
     // The keys' expression on its gear, thinned for the recorder and the
     // move log (the MIDI plan's 3.7).
     let mut expr_rec = expr_rec::ExprRec::new();
@@ -7456,7 +7726,7 @@ fn player_session(
                 // The Pads tab's strip: the kit's bank on the pads, as PAD
                 // BANK turns it (the synth's pads have layouts, not banks).
                 gui::FromUi::PadBank(b) if b < app::KIT_PAGES && !synth_on => {
-                    app.set_pad_page(b);
+                    fx.extend(app.set_pad_page(b));
                     let kit = kit_to.unwrap_or(player.kit());
                     out.note(&pad_page_note(b, &kits[kit].name, player.sounds(kit)));
                     page_turned = true;
@@ -7568,14 +7838,16 @@ fn player_session(
                 // The selected track's own synth, when it has one; else the
                 // shared synth.
                 gui::FromUi::Synth(SynthAction::Set { id, value })
-                    if mix.instruments.plays(app.track()) =>
+                    if mix.instruments.plays(tab_who(&app, &mix.instruments)) =>
                 {
-                    mix.instruments.param(app.track(), id, value);
+                    let who = tab_who(&app, &mix.instruments);
+                    mix.instruments.param(who, id, value);
                 }
                 // A plugin skin showing asks for the plugin's values and
                 // texts (skin_page.rs).
                 gui::FromUi::SkinValues => {
-                    mix.ask_values(instrument_track(&mix.instruments, app.track()));
+                    let who = tab_who(&app, &mix.instruments);
+                    mix.ask_values(instrument_track(&mix.instruments, who));
                 }
                 gui::FromUi::Synth(SynthAction::Set { id, value }) => {
                     let from = synth.value(id);
@@ -7772,7 +8044,8 @@ fn player_session(
                             .iter()
                             .position(|l| l.as_ref().is_some_and(|l| l.track == track))
                     };
-                    for track in 0..instruments::TRACKS {
+                    // The tracks' own, then the free places' (step 6).
+                    for track in 0..instruments::HOLDERS {
                         track_presets.set_index(track, None);
                         if loaded_for(&o, track).is_some() || !mix.instruments.holds(track) {
                             continue;
@@ -7780,13 +8053,16 @@ fn player_session(
                         changed += 1;
                         if !mix.instruments.take_out(track) {
                             out.note(&format!(
-                                "project: track {} keeps its instrument (its last sound is still ringing out)",
-                                track + 1
+                                "project: {} keeps its instrument (its last sound is still ringing out)",
+                                holder_says(track)
                             ));
                         }
                         app.set_track_sound(track, mix.instruments.held(track));
                     }
-                    for track in 0..instruments::TRACKS {
+                    // The pads play the project's choice once its list is in
+                    // (below).
+                    mix.instruments.pads_play(None);
+                    for track in 0..instruments::HOLDERS {
                         let Some(k) = loaded_for(&o, track) else {
                             continue;
                         };
@@ -7816,8 +8092,8 @@ fn player_session(
                                     _ => "its last sound is still ringing out".to_string(),
                                 };
                                 out.note(&format!(
-                                    "project: track {}: {} not put in ({why}); it keeps what it had",
-                                    track + 1,
+                                    "project: {}: {} not put in ({why}); it keeps what it had",
+                                    holder_says(track),
                                     held.name
                                 ));
                             }
@@ -7886,8 +8162,11 @@ fn player_session(
                         out.note(&line);
                     }
                     fx.extend(perform_fx);
-                    // What the pads play: the project's, or the track.
+                    // What the pads play: the project's, or the track, once
+                    // the app has the project's list of instruments.
                     app.forget_copies();
+                    fx.extend(app.set_instrument_list(&listed));
+                    list_changed = false;
                     let (notes, pads_fx) = app.open_pads(o.pads.as_deref());
                     for line in notes {
                         out.note(&line);
@@ -7999,14 +8278,17 @@ fn player_session(
                 // the selected track's own synth (or the one it plays of
                 // another track's), else the synth on the pads.
                 gui::FromUi::Preset(ask) => {
-                    if !mix.instruments.plays(app.track()) && ask.changes_sound() {
+                    if !mix.instruments.plays(tab_who(&app, &mix.instruments))
+                        && ask.changes_sound()
+                    {
                         if let Some(line) = param_log.flush(&synth) {
                             out.note(&line);
                         }
                         // The turns were of the old sound.
                         synth_turns.clear();
                     }
-                    let track = instrument_track(&mix.instruments, app.track());
+                    let who = tab_who(&app, &mix.instruments);
+                    let track = instrument_track(&mix.instruments, who);
                     track_presets.act(ask, track, &mut synth, &mut mix, out);
                 }
                 // The preset picker's New track (step 4c): the new track's
@@ -8029,10 +8311,14 @@ fn player_session(
                 gui::FromUi::Synth(SynthAction::Preset(k))
                     if mix
                         .instruments
-                        .held(instrument_track(&mix.instruments, app.track()))
+                        .held(instrument_track(
+                            &mix.instruments,
+                            tab_who(&app, &mix.instruments),
+                        ))
                         .is_some_and(|h| plugins::Plugins::is_plugin(h.id)) =>
                 {
-                    let track = instrument_track(&mix.instruments, app.track());
+                    let who = tab_who(&app, &mix.instruments);
+                    let track = instrument_track(&mix.instruments, who);
                     if !mix.load_plugin_preset(track, k) {
                         let s = format!(
                             "Track {}: preset {} wasn't asked for: the plugin's presets aren't listed yet, or the builder is busy; try again in a moment",
@@ -8053,9 +8339,10 @@ fn player_session(
                 // another track's): a new copy with the preset's sound goes
                 // in, and the old one rings out.
                 gui::FromUi::Synth(SynthAction::Preset(k))
-                    if mix.instruments.plays(app.track()) =>
+                    if mix.instruments.plays(tab_who(&app, &mix.instruments)) =>
                 {
-                    let track = instrument_track(&mix.instruments, app.track());
+                    let who = tab_who(&app, &mix.instruments);
+                    let track = instrument_track(&mix.instruments, who);
                     let held = mix.instruments.held(track);
                     let engine = held.and_then(|h| synth::Engine::from_node_id(h.id));
                     match (held, engine.and_then(|e| synth.preset_values(e, k))) {
@@ -8125,11 +8412,15 @@ fn player_session(
         // developer tools are on.
         music.set_armed(
             app.track() as u8,
-            keys_play(
-                synth_on,
-                synth_on && app.arp_plays_notes(),
-                mix.instruments.plays(app.track()),
-            ),
+            if pads_preview.is_some() {
+                midi_in::KeysPlay::PadsSynth
+            } else {
+                keys_play(
+                    synth_on,
+                    app.keys_play_notes(),
+                    mix.instruments.plays(app.track()),
+                )
+            },
         );
         music.feed.debug = app.settings.debug_mode;
         // Prefs' "Send MIDI and CV out" turned on or off (and its kept
@@ -8573,7 +8864,7 @@ fn player_session(
             out.show(gui::ToUi::SynthValues(synth_tab_values(
                 &synth,
                 &mix,
-                app.track(),
+                tab_who(&app, &mix.instruments),
             )));
         }
         // The gear lanes' pink ~ (LFO to CC): what the mod matrix moves of
@@ -8671,27 +8962,41 @@ fn player_session(
                 keys.push(k);
             }
         }
-        // Keys play the armed track: by note while the pads play notes (a
-        // synth pad layout); on a kit, each note the kit pad that sends it
+        // Keys play the armed track: by note while the pads press notes (a
+        // synth pad layout, or the track's own synth's pad map, step 7); on
+        // a kit, each note the kit pad that sends it
         // (`profile::kit_pad_of_note`, A1 to H16 whatever bank the pads
         // show); else as the pad the MPC gives that note.
-        let key_notes = synth_on && app.arp_plays_notes();
+        let key_notes = app.keys_play_notes();
         let kit_keys = keys_play(synth_on, key_notes, mix.instruments.plays(armed))
             == midi_in::KeysPlay::KitPads;
-        if armed != expr_track {
+        if armed != expr_track || pads_preview != expr_pads {
             // Its gear's pedals come up with its expression; its
-            // instrument's and the synth's here, so nothing they held
-            // hangs.
+            // instrument's and the synth's here (or the pads' synth's, as
+            // the pads move on), so nothing they held hangs.
             midi_out.rest_expression(expr_track);
             cv_out.rest_expression(expr_track);
             for ctl in pedals_down.lift() {
-                if !mix.instruments.control(expr_track, ctl, 0.0, 0) {
+                let pads_had =
+                    KeysOnPads::control(expr_pads, ctl, 0.0, &mut synth, &mut mix.instruments);
+                if !pads_had && !mix.instruments.control(expr_track, ctl, 0.0, 0) {
                     synth.control(ctl, 0.0, 0);
                 }
             }
             expr_track = armed;
+            expr_pads = pads_preview;
         }
         for k in keys.drain(..) {
+            // While the pads play a synth on their own, the keys play it
+            // too, by note, and the armed track hears none of them (step
+            // 7b); a key held there lets go there.
+            let shape = |v| app.velocity(v);
+            if keys_on_pads.key(k, pads_preview, shape, &mut synth, &mut mix.instruments) {
+                if let midi_in::Key::Control { ctl, value } = k {
+                    pedals_down.key(ctl, value);
+                }
+                continue;
+            }
             // Expression out: the armed track's CV outputs, and its gear on
             // MIDI out, take the keys' wheel, pressure and MPE (the keys
             // going down and up say whose count).
@@ -9059,15 +9364,23 @@ fn player_session(
                     let own = &mix.instruments;
                     out.note(&transpose_pad(pad, &mut time, &synth, &track_kits, own));
                 }
-                // The synth chosen for the pads: it plays the hit, before
-                // the arp and the recorder; the armed track keeps its kit.
+                // The synth chosen for the pads (or, from step 6, an
+                // instrument of the host's): it plays the hit, before the
+                // arp and the recorder; the armed track keeps its kit.
                 Some(ControlEvent::PadDown { pad, velocity })
-                    if (pad as usize) < 16 && preview_on =>
+                    if (pad as usize) < 16 && pads_preview.is_some() =>
                 {
                     let pad = pad as usize;
                     let v = app.velocity(velocity);
-                    synth.note_on(pad, v, 0);
-                    preview_held[pad] = true;
+                    match pads_preview {
+                        Some(PadsPreview::Host) => {
+                            let none = mpfree_arp::scale::Shift::NONE;
+                            mix.instruments
+                                .pad_on_shifted(instruments::THE_PADS, pad, v, 0, &none);
+                        }
+                        _ => synth.note_on(pad, v, 0),
+                    }
+                    preview_held[pad] = pads_preview;
                     out.show(gui::ToUi::PadDown { pad, velocity: v });
                     if mute_shown.is_none() {
                         ports.send(
@@ -9077,20 +9390,30 @@ fn player_session(
                     }
                 }
                 Some(ControlEvent::PadUp { pad })
-                    if (pad as usize) < 16 && preview_held[pad as usize] =>
+                    if (pad as usize) < 16 && preview_held[pad as usize].is_some() =>
                 {
                     let pad = pad as usize;
-                    preview_held[pad] = false;
-                    synth.note_off(pad, 0);
+                    match preview_held[pad].take() {
+                        Some(PadsPreview::Host) => {
+                            mix.instruments.pad_off(instruments::THE_PADS, pad, 0);
+                        }
+                        _ => synth.note_off(pad, 0),
+                    }
                     out.show(gui::ToUi::PadUp(pad));
                     if mute_shown.is_none() {
                         ports.send(false, &akai::pad_colour(pad as u8, rest[pad]))?;
                     }
                 }
                 Some(ControlEvent::PadPressure { pad, pressure })
-                    if (pad as usize) < 16 && preview_held[pad as usize] =>
+                    if (pad as usize) < 16 && preview_held[pad as usize].is_some() =>
                 {
-                    synth.pressure(pad as usize, pressure);
+                    let pad = pad as usize;
+                    if preview_held[pad] == Some(PadsPreview::Host) {
+                        mix.instruments
+                            .pad_pressure(instruments::THE_PADS, pad, pressure, 0);
+                    } else {
+                        synth.pressure(pad, pressure);
+                    }
                 }
                 Some(ControlEvent::PadUp { pad })
                     if (pad as usize) < 16 && mute_pressed[pad as usize] =>
@@ -9435,7 +9758,7 @@ fn player_session(
                 app::Effect::Octave(d)
                     if synth_on
                         || kit_to == Some(synth_kit)
-                        || mix.instruments.plays(app.track()) =>
+                        || mix.instruments.plays(tab_who(&app, &mix.instruments)) =>
                 {
                     if synth.shift_octave(d) {
                         own_follow_synth(&synth, &mut mix.instruments);
@@ -9509,7 +9832,11 @@ fn player_session(
                         let senders = mix.instruments.senders(track);
                         match mix.instruments.take_out(track) {
                             true => {
-                                out.note(&format!("track {}: plays the kit", track + 1));
+                                if track < instruments::TRACKS {
+                                    out.note(&format!("track {}: plays the kit", track + 1));
+                                } else {
+                                    out.note(&format!("{}: put away", holder_says(track)));
+                                }
                                 if let Some(s) = sends_ended(senders, track) {
                                     out.note(&s);
                                     out.show(gui::ToUi::Tell(s));
@@ -9517,8 +9844,8 @@ fn player_session(
                             }
                             false => {
                                 let s = format!(
-                                    "Track {}: its last sound is still ringing out; try again in a moment",
-                                    track + 1
+                                    "{}: its last sound is still ringing out; try again in a moment",
+                                    holder_says(track)
                                 );
                                 out.note(&s);
                                 out.show(gui::ToUi::Tell(s));
@@ -9527,10 +9854,17 @@ fn player_session(
                         app.set_track_sound(track, mix.instruments.held(track));
                         app.set_track_sends(&sends_now(&mix.instruments));
                         track_presets.set_index(track, None);
+                        // The pads may play another now (a free place's
+                        // put away, step 6): the tab's from the next pass.
+                        let who = if track < instruments::TRACKS {
+                            track
+                        } else {
+                            app.track()
+                        };
                         out.show(gui::ToUi::Synth(synth_tab(
                             &synth,
                             &mix,
-                            track,
+                            who,
                             &track_presets,
                         )));
                     }
@@ -9545,8 +9879,8 @@ fn player_session(
                         let job = instrument_job(&synth, track, id, None);
                         if !mix.build_instrument(job) {
                             let s = format!(
-                                "Track {}: busy making another sound; {id} not made, try again",
-                                track + 1
+                                "{}: busy making another sound; {id} not made, try again",
+                                holder_says(track)
                             );
                             out.note(&s);
                             out.show(gui::ToUi::Tell(s));
@@ -9618,7 +9952,10 @@ fn player_session(
                 }
                 // What the pads play changed: the screen names it; the pads
                 // follow below, once the kit has.
-                app::Effect::PadsFocus(f) => out.show(gui::ToUi::PadsFocus(f)),
+                app::Effect::PadsFocus(f) => {
+                    out.show(gui::ToUi::PadsFocus(f));
+                    pads_shown.0 = f;
+                }
                 // REC while the pads play the synth (desk::rec_synth): the
                 // track plays the same synth from now on, as a pick of
                 // Synth in the list of kits; the selected one takes it at
@@ -9643,7 +9980,7 @@ fn player_session(
                     // kit is told how to play the synth instead.
                     if v == app::View::Synth
                         && !kit_to.map_or(synth_on, |k| k == synth_kit)
-                        && !mix.instruments.plays(app.track())
+                        && !mix.instruments.plays(tab_who(&app, &mix.instruments))
                     {
                         out.show(gui::ToUi::Tell(synth_tab_hint(app.track())));
                     }
@@ -9701,7 +10038,7 @@ fn player_session(
                 app::Effect::Bank { button, shift } => {
                     if button < 4 {
                         let page = app::bank_target(app.pad_page(), button, shift);
-                        app.set_pad_page(page);
+                        later.extend(app.set_pad_page(page));
                         let kit = kit_to.unwrap_or(player.kit());
                         out.note(&pad_page_note(page, &kits[kit].name, player.sounds(kit)));
                         page_turned = true;
@@ -9758,6 +10095,70 @@ fn player_session(
         // that plays something else: it plays the track's instrument, so
         // the pads follow the track.
         fx.extend(app.arp_ends_pads_synth());
+        // The list of instruments follows the tracks' own and the free
+        // places' (step 6): the app has it when it changes, so an
+        // instrument picked for the pads is theirs once it has an id, and
+        // a free place's that nothing plays goes away. The pads play the
+        // instrument chosen for them by the host's pads player once it is
+        // in. Nothing allocated while nothing changes.
+        list_changed |= listed.follow(mix.instruments.held_tracks())
+            | listed.follow_free(mix.instruments.held_free());
+        if std::mem::take(&mut list_changed) {
+            fx.extend(app.set_instrument_list(&listed));
+        }
+        fx.extend(app.put_away_free());
+        let pads_at = app.pads_holder().filter(|&h| mix.instruments.holds(h));
+        if mix.instruments.pads_play_at() != pads_at {
+            mix.instruments.pads_play(pads_at);
+            // The Synth tab shows the pads' instrument while they play it
+            // on their own.
+            out.show(gui::ToUi::Synth(synth_tab(
+                &synth,
+                &mix,
+                tab_who(&app, &mix.instruments),
+                &track_presets,
+            )));
+        }
+        // Its name for the screen's "Pads: FM", also when a second tap in
+        // the list put another synth in the same place.
+        let host_name = mix
+            .instruments
+            .pads_play_at()
+            .and_then(|h| mix.instruments.held(h))
+            .map(|h| h.name);
+        if host_name != pads_host_shown {
+            pads_host_shown = host_name;
+            out.show(gui::ToUi::PadsHost(host_name));
+        }
+        // What the pads play now and the bank whose own it is (step 6c):
+        // PAD BANK, the synth's layout coming or going, a bank's synth
+        // given its id. Nothing allocated while nothing changes.
+        let pads_now = (app.pads_focus(), app.pads_bank());
+        if pads_now != pads_shown {
+            if pads_now.0 != pads_shown.0 {
+                out.show(gui::ToUi::PadsFocus(pads_now.0));
+            }
+            if pads_now.1 != pads_shown.1 {
+                out.show(gui::ToUi::PadsBank(pads_now.1));
+            }
+            pads_shown = pads_now;
+        }
+        // Who plays the Synth tab's instrument (step 8b), a few times a
+        // second while the tab shows.
+        if app.view() == app::View::Synth && mt >= who_at {
+            who_at = mt + 0.25;
+            let who = who_plays(
+                &app,
+                &mix.instruments,
+                &track_kits,
+                &time.project().tracks,
+                synth.engine_name(),
+            );
+            if who != who_shown {
+                who_shown.clone_from(&who);
+                out.show(gui::ToUi::WhoPlays(who));
+            }
+        }
         let playing_kit = if synth_on { synth_kit } else { player.kit() };
         let mut kit_switched = false;
         if let Some(k) = kit_to.filter(|&k| k != playing_kit) {
@@ -9803,7 +10204,7 @@ fn player_session(
                 ));
                 // With the synth chosen for the pads, its colours stay
                 // (below).
-                if !app.pads_chose_synth() {
+                if !app.pads_chose_synth() && app.pads_holder().is_none() {
                     ports.send_batch(
                         out,
                         false,
@@ -9825,14 +10226,28 @@ fn player_session(
         // and through the track while it plays the synth; otherwise the
         // track's instrument. A pad still held on the synth ends its note
         // as the pads leave it, and its let-go is taken quietly (above).
-        let preview_now = app.pads_chose_synth() && !synth_on;
-        if preview_now != preview_on || (preview_now && kit_switched) {
-            if !preview_now {
-                for pad in (0..16).filter(|&p| preview_held[p]) {
+        // From step 6 the pads play an instrument of the host's chosen for
+        // them by its pads player (set where the app's effects are taken):
+        // on their own while the armed track doesn't play it.
+        let host_now = mix
+            .instruments
+            .pads_play_at()
+            .is_some_and(|h| mix.instruments.owner(app.track()) != Some(h));
+        let preview_now = if app.pads_chose_synth() && !synth_on {
+            Some(PadsPreview::Synth)
+        } else if host_now {
+            Some(PadsPreview::Host)
+        } else {
+            None
+        };
+        if preview_now != pads_preview || (preview_now.is_some() && kit_switched) {
+            if preview_now != Some(PadsPreview::Synth) {
+                for pad in (0..16).filter(|&p| preview_held[p] == Some(PadsPreview::Synth)) {
                     synth.note_off(pad, 0);
                 }
             }
-            preview_on = preview_now;
+            pads_preview = preview_now;
+            let preview_on = pads_preview.is_some();
             if preview_on {
                 rest = synth.pad_colours();
             } else if !synth_on {
@@ -9856,13 +10271,13 @@ fn player_session(
             // are in a mode (they come back with these) or play the synth
             // chosen for them (they come back with these once they follow
             // the track, above).
-            if !preview_on {
+            if pads_preview.is_none() {
                 rest = sound_colours(
                     player.page_sounds(player.kit(), app.pad_page()),
                     player.kit(),
                 );
             }
-            if mute_shown.is_none() && !preview_on {
+            if mute_shown.is_none() && pads_preview.is_none() {
                 ports.send_batch(
                     out,
                     false,
@@ -10040,12 +10455,16 @@ fn player_session(
             fx.extend(app.set_track(selected));
             // The pads play what the newly selected track plays.
             kit_follow = Some(track_kits.entry(selected));
-            // The Synth tab follows the selected track's own synth.
-            if mix.instruments.plays(selected) || mix.instruments.plays(before) {
+            // The Synth tab follows the selected track's own synth (or the
+            // pads' instrument of the host's, step 6).
+            if mix.instruments.plays(selected)
+                || mix.instruments.plays(before)
+                || mix.instruments.pads_play_at().is_some()
+            {
                 out.show(gui::ToUi::Synth(synth_tab(
                     &synth,
                     &mix,
-                    selected,
+                    tab_who(&app, &mix.instruments),
                     &track_presets,
                 )));
             }
@@ -10053,6 +10472,7 @@ fn player_session(
         // The pads press the notes of the selected track's own synth into
         // its arp while that plays notes (step 5d).
         let own_notes = !app.pads_chose_synth()
+            && pads_preview.is_none()
             && arp_on_notes(&mix.instruments, &track_kits, &midi_out, app.track())
             && mix.instruments.plays(app.track());
         app.set_arp_layout(
@@ -10069,9 +10489,15 @@ fn player_session(
         if let Some(landed) = mix.poll_instruments() {
             match landed {
                 mixing::Landed::Playing { track, name } => {
-                    out.note(&format!("track {}: plays {name}", track + 1));
+                    if track < instruments::TRACKS {
+                        out.note(&format!("track {}: plays {name}", track + 1));
+                    } else {
+                        let n = track - instruments::TRACKS + 1;
+                        out.note(&format!("free place {n}: plays {name}"));
+                    }
                     ask_plugin_presets(&mut mix);
-                    if track == app.track() {
+                    let shown = instrument_track(&mix.instruments, tab_who(&app, &mix.instruments));
+                    if track == shown || track == app.track() {
                         out.show(gui::ToUi::Synth(synth_tab(
                             &synth,
                             &mix,
@@ -10082,8 +10508,8 @@ fn player_session(
                 }
                 mixing::Landed::Failed { track, id } => {
                     let s = format!(
-                        "Track {}: {id} couldn't be made (see the Console); it keeps what it had",
-                        track + 1
+                        "{}: {id} couldn't be made (see the Console); it keeps what it had",
+                        holder_says(track)
                     );
                     out.note(&s);
                     out.show(gui::ToUi::Tell(s));
@@ -10661,9 +11087,11 @@ fn player_session(
         // project's, a followed clock's, or the song's tempo points and
         // ramps while song mode plays them.
         synth.start(i * PERIOD as u64, time.info().bpm);
-        // The list of instruments follows the tracks' own: a new one gets
-        // an id, one taken out loses its. Never allocates.
-        listed.follow(mix.instruments.held_tracks());
+        // The list of instruments follows the tracks' own and the free
+        // places': a new one gets an id, one taken out loses its (the app
+        // hears of it next period, above). Never allocates.
+        list_changed |= listed.follow(mix.instruments.held_tracks())
+            | listed.follow_free(mix.instruments.held_free());
         let homes = track_kits.homes(|t| !mix.instruments.plays(t) && !midi_out.takes(t as u16));
         let mut pads = mix.pads_homed(&homes);
         // With the drums split (Cores 3 and 2), the lane's voices are waited
@@ -10744,6 +11172,9 @@ fn player_session(
             Some(mpfree_export::Only::AudioTrack(t)) => Some(usize::from(t)),
             _ => None,
         });
+        // Tracks recording from inside the mix (step 9) take the mixer's
+        // last block for them, before they run.
+        tracks.feed_inside(&mut mix);
         tracks.period(
             time.block(),
             time.tempo_map(),
@@ -10876,7 +11307,7 @@ fn player_session(
             loops_saving = loops_held.is_none();
         }
         if audio_saving {
-            audio_held = tracks.host.take_saved();
+            audio_held = tracks.take_saved();
             audio_saving = audio_held.is_none();
         }
         if collect_now && !loops_saving && !audio_saving {

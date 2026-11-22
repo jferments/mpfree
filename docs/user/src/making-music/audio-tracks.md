@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-audiotracks rust/mpfree-time-ui/src/song.rs rust/mpfree-time-ui/src/widgets.rs rust/mpfree-app/src/audiotracks.rs
-checked: 2026-11-19 79fc6f63
+checked: 2026-11-20 699d044b
 -->
 
 # Recording audio tracks
@@ -44,10 +44,25 @@ Tap a track's name (or its input) to open its **track panel** over the lanes. Ta
 | Setting | What it does |
 |---|---|
 | **Arm**, **Mute**, **Solo** | Solo works among the audio tracks: a soloed track silences the other audio tracks, not the drums or the synth. |
-| **Input** | What the track records. **L** (the left jack, the default), **R**, **L+R** (both jacks mixed into one) or **ST** (stereo). It can't change while the track records. |
-| **Monitor** | When you hear the input through the track. **Auto** (the default) plays it while the track is armed, except during playback. **In** always plays it, armed or not. **Off** never does: use it when you hear your instrument another way, such as through a mixer. |
+| **Input** | What the track records. **L** (the left jack, the default), **R**, **L+R** (both jacks mixed into one), **ST** (stereo) or **Mix** (a sound from inside mpfree: see [Record what mpfree plays](#record-what-mpfree-plays)). It can't change while the track records. |
+| **Monitor** | When you hear the input through the track. **Auto** (the default) plays it while the track is armed, except during playback. **In** always plays it, armed or not. **Off** never does: use it when you hear your instrument another way, such as through a mixer. With **Mix** picked the panel says **Not played through** here instead: you already hear that sound. |
 | **Level**, **Pan** | With a step either way on screen. Q-Links 1 and 2 turn them too while the panel is open. |
 | **Takes** | Opens the track's take lanes (below). |
+
+## Record what mpfree plays
+
+An audio track can also record a sound from inside mpfree: a synth, a kit, a submix or the whole mix. Use it to turn a synth part into audio you can cut up and comp, or to print a performance with its effects.
+
+{{shot: arrange-song-panel-mix | The vocal's track panel recording FM, the synth the pads play, after its effects.}}
+
+1. Open the track panel and tap **Mix** in the **Input** row. A row more appears.
+2. **From** names what the track records. Tap **‹** or **›** to step through the synths and kits that are playing (each named for what it is, such as **FM · Pads** or **Poly · Track 2**), then **Drums**, **Synth** and the **Loop** track, each submix, and **Master**.
+3. **Effects**: **After** (the default) records the sound with its effects, **Before** without them. Either way the channel's fader doesn't change the recording.
+4. Arm the track and record as usual: **REC**, then **PLAY**, and play.
+
+The track records in stereo. It never plays the sound back while it records, so you don't hear it twice, and the take lines up with the song where you played it. Tap **L**, **R**, **L+R** or **ST** to record the INPUTS again; **Mix** brings back the sound you picked last. The project keeps what each track records from.
+
+If the sound you picked goes away (its channel is taken out of the mix), the track records silence and the log says so.
 
 ## Editing regions
 

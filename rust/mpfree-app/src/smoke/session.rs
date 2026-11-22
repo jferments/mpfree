@@ -229,6 +229,14 @@ pub struct Session {
     sends_shown: gui::TrackSends,
     /// Where REC would record the pads' synth, as the screen last heard it.
     plan_shown: Option<crate::app::RecPlan>,
+    /// The name of the instrument the host's pads player plays, as the
+    /// screen last heard it (step 6, as main.rs).
+    pads_host_shown: Option<&'static str>,
+    /// What the screen shows the pads play, and their bank's letter (step
+    /// 6c), as main.rs.
+    pads_shown: (crate::app::PadFocus, Option<usize>),
+    /// Who plays the Synth tab's instrument, as last shown (step 8b).
+    who_shown: Option<String>,
     /// The time engine's REDOs seen so far, as player_session keeps them.
     redos_seen: u64,
     /// Messages for the screen that found it gone (none expected).
@@ -244,6 +252,12 @@ pub struct Session {
     /// else, the pads held on it, and every hit it played (pad, velocity).
     preview_on: bool,
     preview_held: [bool; 16],
+    /// The pads held on the instrument the host's pads player plays (step
+    /// 6), as main.rs's.
+    host_held: [bool; 16],
+    /// Keys playing the pads' synth while the pads play it on their own
+    /// (step 7b, as main.rs).
+    keys_on_pads: crate::KeysOnPads,
     pub previewed: Vec<(usize, u8)>,
     /// Loop pads' hits waiting for the launch line (sampler R5.3b), as
     /// player_session keeps them: the pads pressed but not yet sounded,
@@ -379,7 +393,10 @@ impl Session {
             synth_on: false,
             track_kits: crate::sampler::TrackKits::new(n),
             instrument_list: crate::instrument_list::InstrumentList::new(),
-            sounds_shown: [None; crate::instruments::TRACKS],
+            sounds_shown: [None; crate::instruments::HOLDERS],
+            pads_host_shown: None,
+            pads_shown: (crate::app::PadFocus::Track, None),
+            who_shown: None,
             sends_shown: [None; crate::instruments::TRACKS],
             plan_shown: None,
             redos_seen: 0,
@@ -389,6 +406,8 @@ impl Session {
             mute_pressed: [false; 16],
             preview_on: false,
             preview_held: [false; 16],
+            host_held: [false; 16],
+            keys_on_pads: crate::KeysOnPads::new(),
             previewed: Vec::new(),
             awaiting: [false; 16],
             waits_full: 0,
@@ -873,6 +892,22 @@ impl Session {
     /// plays the synth by note, and with step pads of the line held it
     /// goes on them.
     pub fn key_edge(&mut self, note: u8, velocity: Option<u8>) -> &mut Session {
+        // While the pads play a synth on their own, the keys play it too,
+        // as main.rs (step 7b).
+        let key = match velocity {
+            Some(velocity) => crate::midi_in::Key::Down { note, velocity },
+            None => crate::midi_in::Key::Up { note },
+        };
+        let preview = self.pads_preview();
+        let app = &self.app;
+        let shape = |v| app.velocity(v);
+        let own = &mut self.mix.instruments;
+        if self
+            .keys_on_pads
+            .key(key, preview, shape, &mut self.synth, own)
+        {
+            return self.run_periods(2);
+        }
         match velocity {
             Some(v) => self.app.key_down(note, v),
             None => self.app.key_up(note),
@@ -892,6 +927,29 @@ impl Session {
             }
         }
         self.run_periods(2)
+    }
+
+    /// What the pads play on their own, as main.rs's `pads_preview`: the
+    /// synth chosen for them while the armed track plays a kit, or the
+    /// host's pads player's instrument while the armed track doesn't play
+    /// it.
+    fn pads_preview(&self) -> Option<crate::PadsPreview> {
+        let own = &self.mix.instruments;
+        if self.preview_on {
+            Some(crate::PadsPreview::Synth)
+        } else if own
+            .pads_play_at()
+            .is_some_and(|h| own.owner(self.app.track()) != Some(h))
+        {
+            Some(crate::PadsPreview::Host)
+        } else {
+            None
+        }
+    }
+
+    /// How many keys play the pads' synth now (step 7b).
+    pub fn keys_on_the_pads(&self) -> usize {
+        self.keys_on_pads.held()
     }
 
     /// Hit a pad on the controller (down, then up after `hold` seconds).
@@ -1061,6 +1119,31 @@ impl Session {
             self.out.note(&line);
             return;
         }
+        // A synth picked for the pads in the list of synths (step 6), as
+        // main.rs: the host's pads player plays the hit while the armed
+        // track doesn't play it, before the arp and the recorder.
+        let own = &self.mix.instruments;
+        let host = own
+            .pads_play_at()
+            .is_some_and(|h| own.owner(self.app.track()) != Some(h));
+        if down && pad < 16 && host && !self.preview_on {
+            let v = self.app.velocity(velocity);
+            let none = mpfree_arp::scale::Shift::NONE;
+            self.mix
+                .instruments
+                .pad_on_shifted(crate::instruments::THE_PADS, pad, v, 0, &none);
+            self.host_held[pad] = true;
+            self.previewed.push((pad, v));
+            self.out.show(ToUi::PadDown { pad, velocity: v });
+            return;
+        }
+        if !down && pad < 16 && std::mem::take(&mut self.host_held[pad]) {
+            self.mix
+                .instruments
+                .pad_off(crate::instruments::THE_PADS, pad, 0);
+            self.out.show(ToUi::PadUp(pad));
+            return;
+        }
         // The synth chosen for the pads, as main.rs: it plays the hit,
         // before the arp and the recorder; the armed track keeps its kit.
         if down && pad < 16 && self.preview_on {
@@ -1177,10 +1260,62 @@ impl Session {
 
     fn period(&mut self) {
         self.settle();
-        // The list of instruments follows the tracks' own, as main.rs's
-        // period does.
-        self.instrument_list
-            .follow(self.mix.instruments.held_tracks());
+        // The list of instruments follows the tracks' own and the free
+        // places' (step 6), as main.rs's period does: the app hears of it,
+        // a free place nothing plays is put away, and the pads play the
+        // instrument chosen for them by the host's pads player.
+        let changed = self
+            .instrument_list
+            .follow(self.mix.instruments.held_tracks())
+            | self
+                .instrument_list
+                .follow_free(self.mix.instruments.held_free());
+        if changed {
+            let fx = self.app.set_instrument_list(&self.instrument_list);
+            self.fx.extend(fx);
+        }
+        let fx = self.app.put_away_free();
+        self.fx.extend(fx);
+        let pads_at = self
+            .app
+            .pads_holder()
+            .filter(|&h| self.mix.instruments.holds(h));
+        if self.mix.instruments.pads_play_at() != pads_at {
+            self.mix.instruments.pads_play(pads_at);
+        }
+        let host_name = pads_at
+            .and_then(|h| self.mix.instruments.held(h))
+            .map(|h| h.name);
+        if host_name != self.pads_host_shown {
+            self.pads_host_shown = host_name;
+            self.out.show(ToUi::PadsHost(host_name));
+        }
+        // What the pads play now and their bank's letter (step 6c), as
+        // main.rs.
+        let pads_now = (self.app.pads_focus(), self.app.pads_bank());
+        if pads_now != self.pads_shown {
+            if pads_now.0 != self.pads_shown.0 {
+                self.out.show(ToUi::PadsFocus(pads_now.0));
+            }
+            if pads_now.1 != self.pads_shown.1 {
+                self.out.show(ToUi::PadsBank(pads_now.1));
+            }
+            self.pads_shown = pads_now;
+        }
+        // Who plays the Synth tab's instrument (step 8b), as main.rs.
+        if self.app.view() == crate::app::View::Synth {
+            let who = crate::who_plays(
+                &self.app,
+                &self.mix.instruments,
+                &self.track_kits,
+                &self.time.project().tracks,
+                self.synth.engine_name(),
+            );
+            if who != self.who_shown {
+                self.who_shown.clone_from(&who);
+                self.out.show(ToUi::WhoPlays(who));
+            }
+        }
         let t = self.t();
         // A loop key held for a second clears its loop, as player_session.
         for pad in self.keys_held.holds(t) {
@@ -1514,6 +1649,7 @@ impl Session {
             Some(mpfree_export::Only::AudioTrack(t)) => Some(usize::from(t)),
             _ => None,
         });
+        self.tracks.feed_inside(&mut self.mix);
         self.tracks.period(
             self.time.block(),
             self.time.tempo_map(),
@@ -1651,7 +1787,7 @@ impl Session {
             self.loops_saving = self.loops_held.is_none();
         }
         if self.audio_saving {
-            self.audio_held = self.tracks.host.take_saved();
+            self.audio_held = self.tracks.take_saved();
             self.audio_saving = self.audio_held.is_none();
         }
         if self.collect_now && !self.loops_saving && !self.audio_saving {
@@ -1768,6 +1904,9 @@ impl Session {
         }
         self.kit_to = Some(self.track_kits.entry(self.app.track()));
         std::mem::swap(&mut self.instrument_list, &mut o.instrument_list);
+        // As main.rs: the app has the list before the pads part names one.
+        let fx = self.app.set_instrument_list(&self.instrument_list);
+        self.fx.extend(fx);
         let (notes, fx) = self.app.open_arp(o.arp.as_deref());
         for line in notes {
             self.out.note(&line);
@@ -1832,7 +1971,8 @@ impl Session {
             FromUi::Audition { .. } => {}
             // The Pads tab's strip, as main.rs turns the page.
             FromUi::PadBank(b) if b < app::KIT_PAGES && !self.synth_on => {
-                self.app.set_pad_page(b);
+                let fx = self.app.set_pad_page(b);
+                self.fx.extend(fx);
                 self.out.note(&format!(
                     "pad bank {}: pads {}-{}",
                     app::bank_letter(b),
@@ -2120,7 +2260,10 @@ impl Session {
                     Effect::StopSounds => self.synth.stop(),
                     // What the pads play, as main.rs: the screen names it;
                     // the pads follow once the kit has (change_kit).
-                    Effect::PadsFocus(f) => self.out.show(ToUi::PadsFocus(f)),
+                    Effect::PadsFocus(f) => {
+                        self.out.show(ToUi::PadsFocus(f));
+                        self.pads_shown.0 = f;
+                    }
                     // REC with the synth chosen for the pads, as main.rs:
                     // the track plays the same synth from now on, as a pick
                     // of Synth.
@@ -2161,7 +2304,7 @@ impl Session {
                         } else {
                             // The kit's page, as main.rs turns it.
                             let page = app::bank_target(self.app.pad_page(), button, shift);
-                            self.app.set_pad_page(page);
+                            later.extend(self.app.set_pad_page(page));
                             self.out.note(&format!(
                                 "pad bank {}: pads {}-{}",
                                 app::bank_letter(page),
@@ -2215,6 +2358,33 @@ impl Session {
                         self.app.set_track_sound(track, held);
                         self.app
                             .set_track_sends(&crate::sends_now(&self.mix.instruments));
+                    }
+                    // A synth picked in the list of synths for the pads
+                    // (step 6): made at once, as the builder thread would,
+                    // in its free place.
+                    Effect::TrackSound {
+                        track,
+                        id: Some(id),
+                    } if track >= crate::instruments::TRACKS => {
+                        let engine = crate::synth::Engine::from_node_id(id)
+                            .unwrap_or(crate::synth::Engine::Poly);
+                        let (id, extras, values) = self.synth.sound_of(engine);
+                        let plugins = crate::plugins::Plugins::none();
+                        let made =
+                            crate::instruments::make(&plugins, id, &extras, &values, RATE, PERIOD)
+                                .expect("an engine's copy");
+                        let pads = self.synth.pads_for(engine);
+                        let tuning = self.synth.tuning_now();
+                        if self
+                            .mix
+                            .instruments
+                            .put(track, made, pads, &tuning)
+                            .is_err()
+                        {
+                            self.out.note("the pads' synth: not put in");
+                        }
+                        let held = self.mix.instruments.held(track);
+                        self.app.set_track_sound(track, held);
                     }
                     Effect::TrackSound { track, .. } => {
                         self.out.note(&format!(
