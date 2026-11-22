@@ -13,11 +13,11 @@ checked: 2026-11-14 97a6b00
 1. Press **BROWSE**, pick **Projects** on the left and press **Export**. The Export panel opens over the browser.
 2. Tick what to make (all three are ticked the first time; after that the panel remembers your last choice until MPFree restarts):
    - **Mixdown**: the whole song in one stereo file, as the speakers play it.
-   - **Stems**: a stereo file for each track (or each part of the mixer: see the next step), after its fader, pan and mute.
+   - **Stems**: a stereo file for each part of the mixer, so each instrument (or each track: see the next step), after its fader, pan and mute.
    - **MIDI file**: the notes and controls each track played.
 3. Pick what a stem is, under **Stems by** (see [Stems by track or by channel](#stems-by-track-or-by-channel)):
-   - **Track** (the default): one stem per track, as the MPC makes them.
-   - **Channel**: one stem per part of the mixer, in a single pass.
+   - **Channel** (the default): one stem per part of the mixer, in a single pass: each instrument (a kit, the synth, a synth of a track's own or one picked for the pads), the Loop, Audio and each return.
+   - **Track**: one stem per track, as the MPC makes them.
 4. Pick the **Range**:
    - **Arrangement**: the song on Arrange, from its start to its end. It is picked for you when the song has one.
    - **Bars**: the clips playing now, from the start of the bar the playhead is in, for the number of bars you set (8 to start with). Turn the data wheel, or tap **–** and **+** on the panel, to change it.
@@ -50,7 +50,7 @@ Some songs **always listen**, because part of their sound only exists in real ti
 
 ## Stems by track or by channel
 
-**Stems by Track** (the default) makes one stem for each track that plays, named after the track, as the MPC does:
+**Stems by Track** makes one stem for each track that plays, named after the track, as the MPC does:
 
 - A track with its own instrument plays through its own channel, so its stem comes straight from the first pass. Track 1's channel is Drums, which kit 1 plays into too: when another track plays kit 1 as well, track 1 gets a pass of its own, like the shared channels below.
 - Tracks that play the same kit, or the synth, play into the same channel: kit 1's is Drums, another kit's is the channel of the first track that plays it, and the synth's is Synth. To give each its own stem, the export plays the range again with only that track playing, once for each. The audio tracks share the Audio channel and get a pass each the same way. A track that is the only one on its channel needs no extra pass.
@@ -61,7 +61,7 @@ The panel says how many passes it takes ("Plays the range 6 times: 5 tracks shar
 
 If the drum kit's channel is frozen, its tracks can't be told apart, so it gets one stem, named after the channel.
 
-**Stems by Channel** makes one stem for each part of the mixer that plays (Drums, Synth, Loop, Audio, each track's own instrument, and each return) in a single pass. Those stems add up exactly to the mix.
+**Stems by Channel** (the default) makes one stem for each part of the mixer that plays (Drums, Synth, Loop, Audio, each track's own instrument, each synth picked for the pads, and each return) in a single pass. Each instrument sounds on a channel of its own, so this is a stem per instrument, however many tracks play it. Those stems add up exactly to the mix.
 
 ## What you get
 

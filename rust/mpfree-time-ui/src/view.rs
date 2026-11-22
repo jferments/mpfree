@@ -1402,6 +1402,20 @@ pub enum AudioAction {
         track: usize,
         monitor: Monitor,
     },
+    /// The panel's Mix and its From steps: record from inside the mix (the
+    /// instrument redesign's step 9), stepping through what the mix
+    /// offers, `step` either way (0, Mix itself: the one picked last, or
+    /// the first). The app keeps the list.
+    Mix {
+        track: usize,
+        step: i32,
+    },
+    /// The panel's Effects while the track records from the mix: before
+    /// or after the source's effects.
+    MixEffects {
+        track: usize,
+        after: bool,
+    },
     Mute {
         track: usize,
         on: bool,
@@ -1835,6 +1849,14 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                         monitor: MONITORS[k - PANEL_MONITOR].1,
                     }
                 }
+                crate::song::PANEL_MIX => AudioAction::Mix { track, step: 0 },
+                crate::song::PANEL_FROM_LESS => AudioAction::Mix { track, step: -1 },
+                crate::song::PANEL_FROM_MORE => AudioAction::Mix { track, step: 1 },
+                crate::song::PANEL_BEFORE => AudioAction::MixEffects {
+                    track,
+                    after: false,
+                },
+                crate::song::PANEL_AFTER => AudioAction::MixEffects { track, after: true },
                 _ => return None,
             }))
         }
@@ -5428,6 +5450,7 @@ mod tests {
             color: audio_color(2),
             armed: true,
             input: Input::Left,
+            mix: None,
             level: 0.3,
             volume: 1.0,
             pan: 0.0,
@@ -5539,6 +5562,7 @@ mod tests {
             color: audio_color(3),
             armed: false,
             input: Input::Left,
+            mix: None,
             level: 0.0,
             volume: 1.0,
             pan: 0.0,
@@ -5600,7 +5624,21 @@ mod tests {
                 monitor: Monitor::Off
             })
         );
-        assert_eq!(tab(PANEL_MONITOR + 3, &st), None, "past the last");
+        // Mix and its From steps and Effects (step 9).
+        use crate::song::{PANEL_AFTER, PANEL_BEFORE, PANEL_FROM_LESS, PANEL_FROM_MORE, PANEL_MIX};
+        let mix = |step| audio(AudioAction::Mix { track: 3, step });
+        assert_eq!(
+            tab(PANEL_MONITOR + 3, &st),
+            mix(0),
+            "Mix follows the monitors"
+        );
+        assert_eq!(tab(PANEL_MIX, &st), mix(0));
+        assert_eq!(tab(PANEL_FROM_LESS, &st), mix(-1));
+        assert_eq!(tab(PANEL_FROM_MORE, &st), mix(1));
+        let fx = |after| audio(AudioAction::MixEffects { track: 3, after });
+        assert_eq!(tab(PANEL_BEFORE, &st), fx(false));
+        assert_eq!(tab(PANEL_AFTER, &st), fx(true));
+        assert_eq!(tab(PANEL_AFTER + 1, &st), None, "past the last");
         let step = |index, delta, st: &TimeState| song(EventKind::Step { index, delta }, st);
         let turn = |knob, ticks, region| {
             audio(AudioAction::Turn {

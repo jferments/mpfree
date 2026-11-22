@@ -27,6 +27,13 @@
 //!   armed, measured each period without allocating
 //!   ([`TrackHost::take_levels`]); the screen gets the eight numbers on
 //!   their own, not a whole song state.
+//! - Recording from inside (the instrument redesign's step 9): a track
+//!   can record an instrument's strip, a submix or the master, before or
+//!   after its effects ([`TrackHost::set_inside`]). Each period, before
+//!   the tracks run, [`TrackHost::feed_inside`] copies the mixer's capture
+//!   point for it (`MixHost::audio_take`) into the engine and keeps the
+//!   engine's latency for it up to date. A track recording from inside
+//!   never plays its input through, so nothing is heard twice.
 //! - Waveforms are read a take at a time with [`AudioHost::wave`], at a
 //!   small fixed cost a period; a take that records is read again as it
 //!   grows.
@@ -41,9 +48,9 @@
 //! speed test (rule zero: it needs Jay's go).
 
 use mpfree_audiotracks::host::{AudioHost, ImportRefused, TakeWave, MAX_COLUMNS};
-use mpfree_audiotracks::save::Saved;
+use mpfree_audiotracks::save::{Saved, TrackFile};
 use mpfree_audiotracks::{Command, Input, Monitor, TakeInfo, MAX_TRACKS, PEAK_BLOCK};
-use mpfree_time_ui::song::{audio_blocks, take_lanes, AudioLane, MONITORS};
+use mpfree_time_ui::song::{audio_blocks, take_lanes, AudioLane, MixFrom, MONITORS};
 use mpfree_time_ui::view::{audio_color, AudioAction, RegionId, TimeState, TransportInfo};
 use mpfree_transport::{Block, TempoMap, Tick};
 use mpfree_ui::qlink::QLinkCard;
@@ -111,6 +118,16 @@ const CHECK_EVERY: u64 = 8;
 /// quarter of a second).
 const GROW_EVERY: u64 = 86;
 
+/// Where an audio track records from inside the mix (the instrument
+/// redesign's step 9): a strip (an instrument's, a submix or the master)
+/// and whether after its effects. Before its fader either way, so the
+/// strip's level never changes the take.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Inside {
+    pub strip: mpfree_fx::StripId,
+    pub after_effects: bool,
+}
+
 /// The audio tracks, their host and what the Song view was last given.
 pub struct TrackHost {
     pub host: AudioHost,
@@ -123,6 +140,22 @@ pub struct TrackHost {
     /// What each track records from (the engine keeps it too; this is for
     /// the header's chip).
     inputs: [Input; MAX_TRACKS],
+    /// The tracks recording from inside the mix ([`TrackHost::set_inside`]),
+    /// the name each was given, the latency last sent to the engine for
+    /// it, and whether its strip has gone from the mix (it records
+    /// silence, said once).
+    inside: [Option<Inside>; MAX_TRACKS],
+    inside_name: [String; MAX_TRACKS],
+    inside_lat: [Option<u32>; MAX_TRACKS],
+    inside_lost: [bool; MAX_TRACKS],
+    /// What each track recorded from inside the mix last, for the panel's
+    /// Mix, and what the mix offers, by name, as the app last gave it
+    /// ([`TrackHost::offer`]).
+    inside_last: [Option<Inside>; MAX_TRACKS],
+    sources: Vec<(String, mpfree_fx::StripId)>,
+    /// Periods a track recording from inside got silence because its
+    /// strip wasn't in the mix (counted, and said in the log).
+    pub inside_silent: u64,
     /// Each track's level (0 to 2) and balance (-1 to 1), monitor mode,
     /// mute and solo, as last sent.
     volume: [f32; MAX_TRACKS],
@@ -179,6 +212,13 @@ impl TrackHost {
             out: Box::new([0.0; 2 * PERIOD]),
             shown: 0,
             inputs: [Input::Left; MAX_TRACKS],
+            inside: [None; MAX_TRACKS],
+            inside_name: Default::default(),
+            inside_lat: [None; MAX_TRACKS],
+            inside_lost: [false; MAX_TRACKS],
+            inside_last: [None; MAX_TRACKS],
+            sources: Vec::new(),
+            inside_silent: 0,
             volume: [1.0; MAX_TRACKS],
             pan: [0.0; MAX_TRACKS],
             monitor: [Monitor::Auto; MAX_TRACKS],
@@ -242,6 +282,168 @@ impl TrackHost {
         }
     }
 
+    /// Track `t` records from inside the mix (`from`, with the name the
+    /// screen gives its strip), or the line input again (None). Refused
+    /// while the track records. The engine has the latency from the next
+    /// [`TrackHost::feed_inside`], which runs before the tracks, so a
+    /// recording that starts in the same period already takes from inside.
+    pub fn set_inside(&mut self, t: usize, from: Option<(Inside, &str)>) -> Result<String, String> {
+        let n = self.track_no(t)?;
+        if self.host.tracks.recording(t).is_some() {
+            return Err(format!(
+                "audio {n} is recording: change what it records after it stops"
+            ));
+        }
+        let line = match from {
+            None => {
+                self.send(Command::SetInside(t, None))?;
+                self.inside[t] = None;
+                format!("audio {n} records {}", input_words(self.inputs[t]))
+            }
+            Some((f, name)) => {
+                self.inside[t] = Some(f);
+                self.inside_last[t] = Some(f);
+                self.inside_name[t] = name.to_string();
+                let when = if f.after_effects { "after" } else { "before" };
+                format!("audio {n} records {name}, {when} its effects")
+            }
+        };
+        self.inside_lat[t] = None;
+        self.inside_lost[t] = false;
+        self.changed = true;
+        Ok(line)
+    }
+
+    /// The save [`AudioHost::save`] started, once it is read, with where
+    /// each track records from inside the mix (step 9) written in: a
+    /// track with only that set is saved too.
+    pub fn take_saved(&mut self) -> Option<Saved> {
+        let mut saved = self.host.take_saved()?;
+        for t in 0..MAX_TRACKS {
+            let Some(f) = self.inside[t] else { continue };
+            let from = inside_text(f);
+            match saved.tracks.iter_mut().find(|x| x.index == t) {
+                Some(x) => x.from = from,
+                None => {
+                    let Some(s) = self.host.tracks.settings(t) else {
+                        continue;
+                    };
+                    saved.tracks.push(TrackFile {
+                        index: t,
+                        input: s.input,
+                        monitor: s.monitor,
+                        level: s.level,
+                        pan: s.pan,
+                        muted: s.mute,
+                        solo: s.solo,
+                        from,
+                        regions: Vec::new(),
+                    });
+                }
+            }
+        }
+        saved.tracks.sort_by_key(|x| x.index);
+        Some(saved)
+    }
+
+    /// What the panel's Mix offers (step 9), by name, from the mixer
+    /// (`MixHost::inside_sources`), before an action that needs it: the
+    /// tracks recording from inside take their names from it again, so a
+    /// new sound on a strip shows. Allocates: for the screen's taps.
+    pub fn offer(&mut self, sources: Vec<(String, mpfree_fx::StripId)>) {
+        for t in 0..MAX_TRACKS {
+            let Some(f) = self.inside[t] else { continue };
+            if let Some((name, _)) = sources.iter().find(|s| s.1 == f.strip) {
+                if *name != self.inside_name[t] {
+                    self.inside_name[t] = name.clone();
+                    self.changed = true;
+                }
+            }
+        }
+        self.sources = sources;
+    }
+
+    /// The panel's Mix (`step` 0) and From steps: record from the mix,
+    /// the source picked last (or the first offered), or the one `step`
+    /// away from the source now, round the list.
+    fn mix_step(&mut self, t: usize, step: i32) -> Result<String, String> {
+        self.track_no(t)?;
+        let n = self.sources.len();
+        if n == 0 {
+            return Err("the mix offers nothing to record".into());
+        }
+        let at = |s: mpfree_fx::StripId| self.sources.iter().position(|x| x.1 == s);
+        let (k, after) = match (self.inside[t], step) {
+            (Some(f), _) => {
+                let k = at(f.strip).unwrap_or(0) as i64 + i64::from(step);
+                (k.rem_euclid(n as i64) as usize, f.after_effects)
+            }
+            (None, _) => match self.inside_last[t] {
+                Some(f) if at(f.strip).is_some() => (at(f.strip).unwrap_or(0), f.after_effects),
+                _ => (0, true),
+            },
+        };
+        if step == 0 && self.inside[t].is_some() {
+            return Ok(String::new());
+        }
+        let (name, strip) = self.sources[k].clone();
+        let f = Inside {
+            strip,
+            after_effects: after,
+        };
+        self.set_inside(t, Some((f, &name)))
+    }
+
+    /// What track `t` records from inside the mix, and the name it was
+    /// given; None while it records the line input.
+    #[cfg(test)]
+    pub fn inside(&self, t: usize) -> Option<(Inside, &str)> {
+        let f = (*self.inside.get(t)?)?;
+        Some((f, &self.inside_name[t]))
+    }
+
+    /// Before each [`TrackHost::period`]: each track recording from inside
+    /// gets the mixer's block for it ([`crate::mixing::MixHost::audio_take`]),
+    /// and the engine its latency when that changes (never while the track
+    /// records: the engine refuses it then, and the take keeps the latency
+    /// it started with). The tracks run before the mixer, so the block is
+    /// the last period's: one period later than the capture's own latency.
+    /// A track whose strip has gone records silence, said once and counted
+    /// ([`TrackHost::inside_silent`]). Real-time safe but for that line.
+    pub fn feed_inside(&mut self, mix: &mut crate::mixing::MixHost) {
+        for t in 0..MAX_TRACKS {
+            let from = self.inside[t];
+            let Some(into) = self.host.tracks.inside_input(t) else {
+                continue;
+            };
+            let n = (2 * PERIOD).min(into.len());
+            let got = mix.audio_take(t, from, &mut into[..n]);
+            if from.is_none() {
+                continue;
+            }
+            let Some(latency) = got else {
+                self.inside_silent += 1;
+                if !self.inside_lost[t] {
+                    self.inside_lost[t] = true;
+                    self.note = Some(format!(
+                        "audio {}: {} isn't in the mix, so it records silence",
+                        t + 1,
+                        self.inside_name[t]
+                    ));
+                }
+                continue;
+            };
+            self.inside_lost[t] = false;
+            let latency = latency + PERIOD as u32;
+            if self.inside_lat[t] != Some(latency)
+                && self.host.tracks.recording(t).is_none()
+                && self.host.command(Command::SetInside(t, Some(latency)))
+            {
+                self.inside_lat[t] = Some(latency);
+            }
+        }
+    }
+
     /// The level bars: each track's peak this period (its sound after its
     /// level, pan, mute and solo, and while it is armed the input it
     /// records), falling back at [`METER_FALL`] of the bar a second.
@@ -250,7 +452,11 @@ impl TrackHost {
         let peak = |s: &[f32]| s.iter().fold(0.0f32, |m, x| m.max(x.abs()));
         for t in 0..MAX_TRACKS {
             let mut p = peak(self.host.tracks.track_out(t, PERIOD));
-            if self.host.tracks.armed(t) {
+            if self.host.tracks.armed(t) && self.inside[t].is_some() {
+                if let Some(inside) = self.host.tracks.inside_input(t) {
+                    p = p.max(peak(&inside[..(2 * PERIOD).min(inside.len())]));
+                }
+            } else if self.host.tracks.armed(t) {
                 let (l, r) = match self.inputs[t] {
                     Input::Left => (true, false),
                     Input::Right => (false, true),
@@ -378,8 +584,23 @@ impl TrackHost {
         };
         let (tracks, takes) = (saved.tracks.len(), saved.takes.len());
         self.shown = saved.tracks.iter().map(|t| t.index + 1).max().unwrap_or(0);
+        let inside: Vec<(usize, Inside)> = saved
+            .tracks
+            .iter()
+            .filter_map(|x| Some((x.index, parse_inside(&x.from)?)))
+            .filter(|(t, _)| *t < MAX_TRACKS)
+            .collect();
         let r = self.host.load(saved);
         self.resync();
+        // Where tracks record from inside the mix: named as the mixer
+        // names the strip until the panel offers the mix again, and the
+        // engine has the latency from the next period.
+        for (t, f) in inside {
+            self.inside[t] = Some(f);
+            self.inside_last[t] = Some(f);
+            self.inside_name[t] = crate::mixing::name(f.strip);
+            self.inside_lat[t] = None;
+        }
         self.changed = true;
         self.note = Some(match r {
             Ok(()) if tracks == 0 => return,
@@ -406,6 +627,10 @@ impl TrackHost {
                 self.pan[t] = s.pan;
                 self.mute[t] = s.mute;
                 self.solo[t] = s.solo;
+            }
+            if !self.host.tracks.records_inside(t) {
+                self.inside[t] = None;
+                self.inside_lat[t] = None;
             }
         }
     }
@@ -533,6 +758,10 @@ impl TrackHost {
                 color: audio_color(t),
                 armed: tr.armed(t),
                 input: self.inputs[t],
+                mix: self.inside[t].map(|f| MixFrom {
+                    name: self.inside_name[t].clone(),
+                    after_effects: f.after_effects,
+                }),
                 level: self.meter[t],
                 volume: self.volume[t],
                 pan: self.pan[t],
@@ -590,6 +819,10 @@ impl TrackHost {
                 let n = track + 1;
                 match (on, line_open) {
                     (false, _) => format!("audio {n} disarmed"),
+                    (true, _) if self.inside[track].is_some() => format!(
+                        "audio {n} armed: REC records {} in song mode",
+                        self.inside_name[track]
+                    ),
                     (true, true) => format!("audio {n} armed: REC records it in song mode"),
                     (true, false) => format!(
                         "audio {n} armed, but the line input is off: turn on Prefs > Line input to record"
@@ -738,10 +971,29 @@ impl TrackHost {
                         "audio {n} is recording: change its input after it stops"
                     ));
                 }
+                if self.inside[track].is_some() {
+                    self.set_inside(track, None)?;
+                }
                 self.send(Command::SetInput(track, input))?;
                 self.inputs[track] = input;
                 self.changed = true;
                 format!("audio {n} records {}", input_words(input))
+            }
+            AudioAction::Mix { track, step } => self.mix_step(track, step)?,
+            AudioAction::MixEffects { track, after } => {
+                let n = self.track_no(track)?;
+                let Some(f) = self.inside[track] else {
+                    return Err(format!("audio {n} records the line input: pick Mix first"));
+                };
+                if f.after_effects == after {
+                    return Ok(String::new());
+                }
+                let name = self.inside_name[track].clone();
+                let f = Inside {
+                    after_effects: after,
+                    ..f
+                };
+                self.set_inside(track, Some((f, &name)))?
             }
             AudioAction::Monitor { track, monitor } => {
                 let n = self.track_no(track)?;
@@ -1229,6 +1481,28 @@ fn input_words(i: Input) -> &'static str {
     }
 }
 
+/// Where a track records from inside the mix, as the project saves it:
+/// the strip as the mixer's part writes it, then `:before` or `:after`
+/// its effects (`t12:after`).
+fn inside_text(f: Inside) -> String {
+    let when = if f.after_effects { "after" } else { "before" };
+    format!("{}:{when}", crate::project::strip_text(f.strip))
+}
+
+/// [`inside_text`] read back; None for the line input (empty) or words
+/// it doesn't know.
+fn parse_inside(w: &str) -> Option<Inside> {
+    let (strip, when) = w.split_once(':')?;
+    Some(Inside {
+        strip: crate::project::parse_strip(strip)?,
+        after_effects: match when {
+            "after" => true,
+            "before" => false,
+            _ => return None,
+        },
+    })
+}
+
 /// A monitor mode, for the log.
 fn monitor_words(m: Monitor) -> String {
     let name = MONITORS.iter().find(|x| x.1 == m).map_or("?", |x| x.0);
@@ -1404,6 +1678,127 @@ mod tests {
         r.command(T::Stop);
         r.song = true;
         r.periods(4);
+    }
+
+    /// Step 9's panel: Mix picks what the mix offers (the one picked last
+    /// on the way back), From steps round it, Effects turns before or
+    /// after, an input chip goes back to the line input, nothing changes
+    /// while the track records, and the project keeps it, a track with
+    /// only that set too.
+    #[test]
+    fn mix_and_from_pick_what_the_mix_offers_and_the_project_keeps_it() {
+        use mpfree_fx::StripId;
+        let mut r = Rig::new();
+        let act = |r: &mut Rig, a| r.h.action(a, &r.info(), true);
+        let e = act(&mut r, AudioAction::Mix { track: 0, step: 0 }).unwrap_err();
+        assert!(e.contains("offers nothing"), "{e}");
+        r.h.offer(vec![
+            ("Drums".into(), StripId::Track(0)),
+            ("FM · Pads".into(), StripId::Track(200)),
+            ("Master".into(), StripId::Master),
+        ]);
+        let e = act(
+            &mut r,
+            AudioAction::MixEffects {
+                track: 2,
+                after: false,
+            },
+        )
+        .unwrap_err();
+        assert!(e.contains("pick Mix first"), "{e}");
+        let line = act(&mut r, AudioAction::Mix { track: 2, step: 0 }).unwrap();
+        assert_eq!(line, "audio 3 records Drums, after its effects");
+        let line = act(&mut r, AudioAction::Mix { track: 2, step: -1 }).unwrap();
+        assert_eq!(
+            line, "audio 3 records Master, after its effects",
+            "round the list"
+        );
+        let line = act(&mut r, AudioAction::Mix { track: 2, step: 2 }).unwrap();
+        assert!(line.contains("FM · Pads"), "{line}");
+        let line = act(
+            &mut r,
+            AudioAction::MixEffects {
+                track: 2,
+                after: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(line, "audio 3 records FM · Pads, before its effects");
+        let (f, name) = r.h.inside(2).unwrap();
+        assert_eq!(
+            (f.strip, f.after_effects, name),
+            (StripId::Track(200), false, "FM · Pads")
+        );
+        // The name follows the strip when the mix is offered again.
+        r.h.offer(vec![("Poly · Pads".into(), StripId::Track(200))]);
+        assert_eq!(r.h.inside(2).unwrap().1, "Poly · Pads");
+        let mut st = r.state();
+        assert!(st.audio.is_empty(), "no lane shows yet");
+        act(&mut r, AudioAction::Add).unwrap();
+        act(&mut r, AudioAction::Add).unwrap();
+        act(&mut r, AudioAction::Add).unwrap();
+        st = r.state();
+        let m = st.audio[2].mix.clone().unwrap();
+        assert_eq!((m.name.as_str(), m.after_effects), ("Poly · Pads", false));
+        let line = act(&mut r, AudioAction::Arm { track: 2, on: true }).unwrap();
+        assert_eq!(line, "audio 3 armed: REC records Poly · Pads in song mode");
+        // The project keeps it: a track with only that set is saved too.
+        assert!(r.h.host.save());
+        let mut saved = None;
+        for _ in 0..4000 {
+            r.period();
+            saved = r.h.take_saved();
+            if saved.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_micros(50));
+        }
+        let saved = saved.expect("saved");
+        let t2 = saved
+            .tracks
+            .iter()
+            .find(|t| t.index == 2)
+            .expect("track 3 saved");
+        assert_eq!(t2.from, "t200:before");
+        assert!(t2.regions.is_empty());
+        let text = mpfree_audiotracks::save::to_text(&saved);
+        let back = mpfree_audiotracks::save::from_text(&text).unwrap();
+        assert_eq!(back.tracks, saved.tracks);
+        assert_eq!(
+            parse_inside("t200:before"),
+            Some(Inside {
+                strip: StripId::Track(200),
+                after_effects: false
+            })
+        );
+        assert_eq!(parse_inside(""), None);
+        assert_eq!(parse_inside("t200:sideways"), None);
+        // Opened again: it records from there, named as the mixer names
+        // the strip until the panel offers the mix.
+        r.h.clear();
+        r.periods(4);
+        assert!(
+            r.h.inside(2).is_none(),
+            "a new project records the line input"
+        );
+        r.h.open(back);
+        r.periods(4);
+        let (f, name) = r.h.inside(2).unwrap();
+        assert_eq!((f.strip, f.after_effects), (StripId::Track(200), false));
+        assert_eq!(name, crate::mixing::name(StripId::Track(200)));
+        // An input chip goes back to the line input.
+        act(
+            &mut r,
+            AudioAction::Input {
+                track: 2,
+                input: Input::Stereo,
+            },
+        )
+        .unwrap();
+        assert!(r.h.inside(2).is_none());
+        // Mix again brings back the one picked last.
+        let line = act(&mut r, AudioAction::Mix { track: 2, step: 0 }).unwrap();
+        assert!(line.contains("before its effects"), "{line}");
     }
 
     #[test]

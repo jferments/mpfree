@@ -43,6 +43,10 @@ pub struct TrackFile {
     pub pan: f32,
     pub muted: bool,
     pub solo: bool,
+    /// Where the track records from inside the mix, in the app's words
+    /// (the instrument redesign's step 9): kept for the app, which fills
+    /// it in. Empty: the line input. No spaces.
+    pub from: String,
     /// In order, never overlapping.
     pub regions: Vec<Region>,
 }
@@ -96,6 +100,7 @@ impl Saved {
                     pan: 0.0,
                     muted: false,
                     solo: false,
+                    from: String::new(),
                     regions: Vec::with_capacity(MAX_REGIONS),
                 })
                 .collect(),
@@ -153,6 +158,10 @@ pub fn to_text(saved: &Saved) -> String {
             flag(t.muted),
             flag(t.solo)
         ));
+        if !t.from.is_empty() && !t.from.contains(char::is_whitespace) {
+            s.pop();
+            s.push_str(&format!(" from={}\n", t.from));
+        }
         for r in &t.regions {
             s.push_str(&format!(
                 "region start={} end={} take={} src={} gain={} fade_in={} fade_out={}\n",
@@ -246,6 +255,7 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
                 pan: level(&kv, "pan", n, -1.0, 1.0)?,
                 muted: bit(&kv, "muted"),
                 solo: bit(&kv, "solo"),
+                from: get(&kv, "from").unwrap_or("").to_string(),
                 regions: Vec::new(),
             });
         } else if line.starts_with("region ") {
@@ -492,6 +502,7 @@ mod tests {
                     pan: -0.25,
                     muted: true,
                     solo: false,
+                    from: "t12:after".into(),
                     regions: vec![region(0, 1920, 0), region(1920, 3840, 1)],
                 },
                 TrackFile {
@@ -502,6 +513,7 @@ mod tests {
                     pan: 0.0,
                     muted: false,
                     solo: true,
+                    from: String::new(),
                     regions: vec![],
                 },
             ],

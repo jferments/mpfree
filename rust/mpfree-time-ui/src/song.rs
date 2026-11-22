@@ -35,7 +35,10 @@
 //!   `Tab(PANEL_CLOSE)`, Arm `Toggle(audio track)`, Mute, Solo and Takes
 //!   `Tab(PANEL_MUTE)` and so on, an input `Tab(PANEL_INPUT + k)` for
 //!   [`INPUTS`]`[k]`, a monitor mode `Tab(PANEL_MONITOR + k)` for
-//!   [`MONITORS`]`[k]`, and the level's and pan's steps `Step { index:
+//!   [`MONITORS`]`[k]`, Mix `Tab(PANEL_MIX)`, and while the track records
+//!   from the mix its From steps `Tab(PANEL_FROM_LESS)` and
+//!   `Tab(PANEL_FROM_MORE)` and its Effects `Tab(PANEL_BEFORE)` and
+//!   `Tab(PANEL_AFTER)`; the level's and pan's steps `Step { index:
 //!   PANEL_LEVEL or PANEL_PAN, delta: -1 or 1 }`.
 //!
 //! A drag up or down the name column scrolls the lanes when there are more
@@ -53,10 +56,14 @@
 //!
 //! **The track panel** (layout spec 4c) opens over the lanes, right of the
 //! names, for the track in [`SongLanes::panel`]: Arm, Mute, Solo and
-//! Takes, the input (L, R, L+R, ST), the monitor mode (Auto, In, Off), and
-//! the level and pan with a step either way (Q1 and Q2 turn them too). It
-//! covers the top lanes, so the audio lanes under the MIDI ones stay in
-//! view; touches on it go to it alone.
+//! Takes, the input (L, R, L+R, ST or Mix), the monitor mode (Auto, In,
+//! Off), and the level and pan with a step either way (Q1 and Q2 turn them
+//! too). Mix records from inside the mix (the instrument redesign's step
+//! 9, *proposed* in layout spec 4c): a row more, From (an instrument, a
+//! submix or the master, a step either way) and Effects (Before, After),
+//! and the monitor modes give way to a line saying the track never plays
+//! it through. It covers the top lanes, so the audio lanes under the MIDI
+//! ones stay in view; touches on it go to it alone.
 
 use crate::widgets::{rec_song_pill, REC_SONG_W};
 use mpfree_audiotracks::host::TakeWave;
@@ -115,6 +122,13 @@ pub const PANEL_INPUT: usize = PANEL_CLOSE + 4;
 /// The panel's monitor modes: `Tab(PANEL_MONITOR + k)` for
 /// [`MONITORS`]`[k]`.
 pub const PANEL_MONITOR: usize = PANEL_INPUT + INPUTS.len();
+/// The panel's Mix (record from inside the mix), its From steps and its
+/// Effects (step 9).
+pub const PANEL_MIX: usize = PANEL_MONITOR + MONITORS.len();
+pub const PANEL_FROM_LESS: usize = PANEL_MIX + 1;
+pub const PANEL_FROM_MORE: usize = PANEL_MIX + 2;
+pub const PANEL_BEFORE: usize = PANEL_MIX + 3;
+pub const PANEL_AFTER: usize = PANEL_MIX + 4;
 /// The `index` of the panel's level and pan steps.
 pub const PANEL_LEVEL: usize = 0;
 pub const PANEL_PAN: usize = 1;
@@ -211,6 +225,9 @@ pub struct AudioLane {
     pub armed: bool,
     /// What it records from: the input chip, "L", "R", "L+R" or "ST".
     pub input: Input,
+    /// What it records from inside the mix instead (step 9; the chip
+    /// reads "Mix"), None for the line input.
+    pub mix: Option<MixFrom>,
     /// The level bar along the header's bottom edge, 0 to 1.
     pub level: f32,
     /// The track's level, 0 to 2 (1 is as recorded), and its balance, -1
@@ -229,6 +246,16 @@ pub struct AudioLane {
     /// Recording: the punch in (the take's anchor). The red block runs
     /// from it to the playhead.
     pub recording: Option<Tick>,
+}
+
+/// What an audio track records from inside the mix (the instrument
+/// redesign's step 9), as the panel shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MixFrom {
+    /// The instrument, submix or master, by name.
+    pub name: String,
+    /// After its effects (else before them).
+    pub after_effects: bool,
 }
 
 /// The Song view: see the module notes.
@@ -369,9 +396,14 @@ pub struct PanelParts {
     pub mute: Rect,
     pub solo: Rect,
     pub takes: Rect,
-    /// A button for each of [`INPUTS`] and [`MONITORS`].
+    /// A button for each of [`INPUTS`] and [`MONITORS`], and Mix.
     pub inputs: [Rect; 4],
+    pub mix: Rect,
     pub monitors: [Rect; 3],
+    /// While the track records from the mix: From's step down, name and
+    /// step up, and Effects' Before and After.
+    pub from: Option<[Rect; 3]>,
+    pub effects: Option<[Rect; 2]>,
     /// The level's and the pan's step down, value and step up.
     pub level: [Rect; 3],
     pub pan: [Rect; 3],
@@ -827,8 +859,17 @@ impl SongLanes {
             .panel
             .filter(|&t| self.audio.iter().any(|l| l.track == t))?;
         let g = self.geo(r);
+        let mixed = self
+            .audio
+            .iter()
+            .any(|l| l.track == track && l.mix.is_some());
         let w = (g.lanes.w - NAME_W).min(PANEL_W);
-        let h = (g.lanes.h - 4).min(PANEL_H);
+        let rows_h = if mixed {
+            PANEL_H + PANEL_ROW + 6
+        } else {
+            PANEL_H
+        };
+        let h = (g.lanes.h - 4).min(rows_h);
         // Under the track's lane if it fits, else over it, so the lane
         // stays in view; else on the side with more room, and at the top
         // if the lane is scrolled away.
@@ -850,12 +891,22 @@ impl SongLanes {
         let mute = at(arm.right() + 8, 0, 72);
         let solo = at(mute.right() + 8, 0, 72);
         let takes = at(inner.right() - 90, 0, 90);
-        let inputs: [Rect; 4] = std::array::from_fn(|k| at(x1 + k as i32 * 52, 1, 48));
-        let mx = inputs[3].right() + 20 + PANEL_LABEL + 14;
-        let monitors = std::array::from_fn(|k| at(mx + k as i32 * 60, 1, 56));
-        let level = [at(x1, 2, 36), at(x1 + 40, 2, 84), at(x1 + 128, 2, 36)];
+        let inputs: [Rect; 4] = std::array::from_fn(|k| at(x1 + k as i32 * 48, 1, 44));
+        let mix = at(x1 + 4 * 48, 1, 44);
+        let mx = mix.right() + 16 + PANEL_LABEL + 12;
+        let monitors = std::array::from_fn(|k| at(mx + k as i32 * 54, 1, 50));
+        // Step 9: From and Effects take a row of their own, under Input.
+        let (from, effects) = if mixed {
+            let from = [at(x1, 2, 36), at(x1 + 40, 2, 160), at(x1 + 204, 2, 36)];
+            let ex = from[2].right() + 16 + 64 + 8;
+            (Some(from), Some([at(ex, 2, 72), at(ex + 76, 2, 72)]))
+        } else {
+            (None, None)
+        };
+        let lk = if mixed { 3 } else { 2 };
+        let level = [at(x1, lk, 36), at(x1 + 40, lk, 84), at(x1 + 128, lk, 36)];
         let px = level[2].right() + 30 + 20 + 40;
-        let pan = [at(px, 2, 36), at(px + 40, 2, 64), at(px + 108, 2, 36)];
+        let pan = [at(px, lk, 36), at(px + 40, lk, 64), at(px + 108, lk, 36)];
         Some(PanelParts {
             track,
             panel,
@@ -865,7 +916,10 @@ impl SongLanes {
             solo,
             takes,
             inputs,
+            mix,
             monitors,
+            from,
+            effects,
             level,
             pan,
         })
@@ -939,23 +993,57 @@ impl SongLanes {
         };
         let lab = |b: Rect| Rect::new(inner.x, b.y, PANEL_LABEL - 8, b.h);
         label(cx, lab(p.inputs[0]), "Input");
+        let line = lane.mix.is_none();
         for (k, b) in p.inputs.iter().enumerate() {
-            button(cx, *b, INPUTS[k].0, lane.input == INPUTS[k].1, t.accent);
+            let on = line && lane.input == INPUTS[k].1;
+            button(cx, *b, INPUTS[k].0, on, t.accent);
         }
+        button(cx, p.mix, "Mix", !line, t.accent);
         let mon = p.monitors[0];
-        label(
-            cx,
-            Rect::new(mon.x - PANEL_LABEL - 14, mon.y, PANEL_LABEL + 12, mon.h),
-            "Monitor",
-        );
-        for (k, b) in p.monitors.iter().enumerate() {
-            button(
-                cx,
-                *b,
-                MONITORS[k].0,
-                lane.monitor == MONITORS[k].1,
-                t.accent,
+        let mon_label = Rect::new(mon.x - PANEL_LABEL - 12, mon.y, PANEL_LABEL + 12, mon.h);
+        if let (Some(m), Some(from), Some(fx)) = (&lane.mix, p.from, p.effects) {
+            // A track recording from the mix never plays it through, so
+            // the monitor modes would change nothing: said in their place.
+            let said = Rect::new(
+                mon_label.x,
+                mon.y,
+                p.monitors[2].right() - mon_label.x,
+                mon.h,
             );
+            cx.text(
+                FontId::Sans,
+                t.size_small - 1.0,
+                said,
+                Align::Left,
+                t.text_dim,
+                "Not played through",
+            );
+            label(cx, lab(from[0]), "From");
+            button(cx, from[0], "‹", false, t.accent);
+            button(cx, from[2], "›", false, t.accent);
+            cx.canvas.fill_round_rect(from[1], 8, t.surface);
+            cx.text(
+                FontId::Bold,
+                t.size_small - 1.0,
+                from[1].inset_xy(6, 0),
+                Align::Center,
+                t.text,
+                &m.name,
+            );
+            label(cx, Rect::new(fx[0].x - 72, fx[0].y, 64, fx[0].h), "Effects");
+            button(cx, fx[0], "Before", !m.after_effects, t.accent);
+            button(cx, fx[1], "After", m.after_effects, t.accent);
+        } else {
+            label(cx, mon_label, "Monitor");
+            for (k, b) in p.monitors.iter().enumerate() {
+                button(
+                    cx,
+                    *b,
+                    MONITORS[k].0,
+                    lane.monitor == MONITORS[k].1,
+                    t.accent,
+                );
+            }
         }
         label(cx, lab(p.level[0]), "Level");
         let pan_label = Rect::new(p.pan[0].x - 40, p.pan[0].y, 36, p.pan[0].h);
@@ -1016,7 +1104,21 @@ impl SongLanes {
             tab(PANEL_TAKES)
         } else if let Some(k) = p.inputs.iter().position(hit) {
             tab(PANEL_INPUT + k)
-        } else if let Some(k) = p.monitors.iter().position(hit) {
+        } else if hit(&p.mix) {
+            tab(PANEL_MIX)
+        } else if let Some(from) = p.from.filter(|f| f.iter().any(hit)) {
+            match () {
+                _ if hit(&from[0]) => tab(PANEL_FROM_LESS),
+                _ if hit(&from[2]) => tab(PANEL_FROM_MORE),
+                _ => None,
+            }
+        } else if let Some(fx) = p.effects.filter(|f| f.iter().any(hit)) {
+            tab(if hit(&fx[0]) {
+                PANEL_BEFORE
+            } else {
+                PANEL_AFTER
+            })
+        } else if let Some(k) = p.monitors.iter().position(hit).filter(|_| p.from.is_none()) {
             tab(PANEL_MONITOR + k)
         } else if hit(&p.level[0]) {
             step(PANEL_LEVEL, -1)
@@ -1679,7 +1781,11 @@ impl SongLanes {
         } else {
             cx.canvas.stroke_round_rect(dot, 6, 2, t.text_dim);
         }
-        let word = input_chip(lane.input);
+        let word = if lane.mix.is_some() {
+            "Mix"
+        } else {
+            input_chip(lane.input)
+        };
         let chip_w = cx.measure(FontId::Bold, t.size_small - 3.0, word) + 10;
         let chip = Rect::new(h.right() - chip_w, h.y + h.h / 2 - 9, chip_w, 18);
         cx.canvas.fill_round_rect(chip, 5, t.raised);
@@ -2130,17 +2236,30 @@ impl Widget for SongLanes {
             out.push(Target::tap("panel-solo", 0, "Solo", p.solo));
             out.push(Target::tap("panel-takes", 0, "Takes", p.takes));
             // The input and monitor showing are lit: a tap changes nothing.
+            let line = lane.mix.is_none();
             for (k, b) in p.inputs.iter().enumerate() {
                 out.push(
                     Target::tap("panel-input", k, INPUTS[k].0, *b)
-                        .disabled_if(INPUTS[k].1 == lane.input),
+                        .disabled_if(line && INPUTS[k].1 == lane.input),
                 );
             }
-            for (k, b) in p.monitors.iter().enumerate() {
+            out.push(Target::tap("panel-mix", 0, "Mix", p.mix).disabled_if(!line));
+            if let (Some(m), Some(from), Some(fx)) = (&lane.mix, p.from, p.effects) {
+                out.push(Target::tap("panel-from-less", 0, "From -", from[0]));
+                out.push(Target::tap("panel-from-more", 0, "From +", from[2]));
                 out.push(
-                    Target::tap("panel-monitor", k, MONITORS[k].0, *b)
-                        .disabled_if(MONITORS[k].1 == lane.monitor),
+                    Target::tap("panel-effects", 0, "Before", fx[0]).disabled_if(!m.after_effects),
                 );
+                out.push(
+                    Target::tap("panel-effects", 1, "After", fx[1]).disabled_if(m.after_effects),
+                );
+            } else {
+                for (k, b) in p.monitors.iter().enumerate() {
+                    out.push(
+                        Target::tap("panel-monitor", k, MONITORS[k].0, *b)
+                            .disabled_if(MONITORS[k].1 == lane.monitor),
+                    );
+                }
             }
             out.push(Target::tap("panel-level-less", 0, "Level -", p.level[0]));
             out.push(Target::tap("panel-level-more", 0, "Level +", p.level[2]));
@@ -2679,6 +2798,7 @@ mod tests {
             color: Color::rgb(0x2EC4B6),
             armed: false,
             input: Input::Left,
+            mix: None,
             level: 0.5,
             volume: 1.0,
             pan: 0.0,
@@ -2882,6 +3002,74 @@ mod tests {
             s.touch(1, Touch::Up, h.x + 40, h.y + 5, r),
             Some(EventKind::Cell { row: 1, col: PANEL })
         );
+        let mut ui = mpfree_ui::Ui::new(
+            mpfree_ui::Theme::dark(),
+            mpfree_ui::Fonts::embedded(),
+            1280,
+            800,
+        );
+        ui.add("song", s);
+        ui.add_page("p", "song").unwrap();
+        ui.show("p").unwrap();
+        let mut c = mpfree_ui::SoftCanvas::new(1280, 800);
+        assert!(!ui.paint(&mut c).is_empty());
+    }
+
+    /// Mix (the instrument redesign's step 9, proposed in layout spec
+    /// 4c): the panel grows a row, From and Effects, inside it; the
+    /// monitor modes give way to a line (a track recording from the mix
+    /// never plays it through) and take no touch; the header's chip
+    /// reads "Mix".
+    #[test]
+    fn mix_gives_the_panel_from_and_effects_and_the_monitors_give_way() {
+        let mut s = lanes();
+        s.audio = vec![audio_lane(1, "Vocal", vec![block(0, 3840, 0)])];
+        s.panel = Some(1);
+        let r = Rect::new(12, 140, 814, 534);
+        let line = s.panel_parts(r).unwrap();
+        assert_eq!((line.from, line.effects), (None, None));
+        let tap = |s: &mut SongLanes, b: Rect| s.touch(1, Touch::Down, b.x + 3, b.y + 3, r);
+        assert_eq!(tap(&mut s, line.mix), Some(EventKind::Tab(PANEL_MIX)));
+        s.audio[0].mix = Some(MixFrom {
+            name: "FM · Pads".into(),
+            after_effects: true,
+        });
+        let p = s.panel_parts(r).unwrap();
+        assert_eq!(p.panel.h, line.panel.h + PANEL_ROW + 6, "a row more");
+        let (from, fx) = (p.from.unwrap(), p.effects.unwrap());
+        let every = [p.mix]
+            .into_iter()
+            .chain(p.inputs)
+            .chain(from)
+            .chain(fx)
+            .chain(p.level)
+            .chain(p.pan);
+        for b in every {
+            assert!(
+                p.panel.inset(4).contains(b.x, b.y)
+                    && b.right() <= p.panel.right() - 4
+                    && b.bottom() <= p.panel.bottom() - 4,
+                "{b:?} in {:?}",
+                p.panel
+            );
+        }
+        assert!(from[2].right() < fx[0].x, "From, then Effects");
+        assert!(p.level[0].y > from[0].y, "level and pan under them");
+        assert_eq!(tap(&mut s, from[0]), Some(EventKind::Tab(PANEL_FROM_LESS)));
+        assert_eq!(tap(&mut s, from[2]), Some(EventKind::Tab(PANEL_FROM_MORE)));
+        assert_eq!(tap(&mut s, from[1]), None, "the name only shows");
+        assert_eq!(tap(&mut s, fx[0]), Some(EventKind::Tab(PANEL_BEFORE)));
+        assert_eq!(tap(&mut s, fx[1]), Some(EventKind::Tab(PANEL_AFTER)));
+        assert_eq!(tap(&mut s, p.monitors[1]), None, "no monitor while mixed");
+        assert_eq!(tap(&mut s, p.inputs[0]), Some(EventKind::Tab(PANEL_INPUT)));
+        let t = s.targets(r);
+        let has = |id: &str| t.iter().any(|t| t.id == id);
+        assert!(has("panel-from-less") && has("panel-from-more") && has("panel-effects"));
+        assert!(!has("panel-monitor"));
+        let mix = t.iter().find(|t| t.id == "panel-mix").unwrap();
+        assert!(!mix.enabled, "Mix is lit: a tap changes nothing");
+        let input = t.iter().find(|t| t.id == "panel-input").unwrap();
+        assert!(input.enabled, "an input chip goes back to the line input");
         let mut ui = mpfree_ui::Ui::new(
             mpfree_ui::Theme::dark(),
             mpfree_ui::Fonts::embedded(),

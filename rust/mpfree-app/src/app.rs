@@ -35,6 +35,7 @@ mod pads_focus;
 pub mod saved;
 pub mod step_pads;
 mod synth_pads;
+mod synth_pick;
 
 pub use arp::{
     built_in_patterns, mode_label, ArpItem, ArpView, LiveMap, WorkspaceView, ARP_HEADER,
@@ -44,6 +45,7 @@ use mpfree_arp::scale::pads::Pad as PadNotes;
 pub use pads_focus::{synth_track, PadFocus, RecPlan, SynthTake};
 pub use step_pads::StepPads;
 pub use synth_pads::{sent_name, SynthItem};
+pub use synth_pick::SynthPickView;
 
 use crate::cores::SoundCores;
 use crate::looping::{LoopAction, LoopMemory, LoopSource};
@@ -1134,6 +1136,9 @@ pub enum Effect {
     /// whichever track is selected, or the selected track's instrument
     /// again (app/pads_focus.rs).
     PadsFocus(PadFocus),
+    /// The list of synths over the Synth tab (step 6, app/synth_pick.rs):
+    /// open as it draws, or closed (None).
+    SynthPick(Option<SynthPickView>),
     /// REC while the synth is chosen for the pads: this track plays the
     /// synth from now on (the Synth kit, as a pick in the list of kits), so
     /// the take plays the one instance that was heard (app/pads_focus.rs).
@@ -1550,7 +1555,9 @@ pub struct App {
     /// What each track plays as its own instrument (None: the kit), as
     /// the audio loop last said ([`App::set_track_sound`]); the Synth tab's
     /// Instrument row shows and sets the armed track's.
-    track_sounds: [Option<crate::instruments::Held>; mpfree_seq::MAX_TRACKS],
+    /// A free place's instrument (step 6) is here by its holder number
+    /// (`instruments::free`), past the tracks'.
+    track_sounds: [Option<crate::instruments::Held>; crate::instruments::HOLDERS],
     /// The track whose instrument each track plays though it has none of
     /// its own (step 4), as the audio loop last said
     /// ([`App::set_track_sends`]).
@@ -1634,6 +1641,23 @@ pub struct App {
     /// What the pads play: the selected track's instrument, or one chosen
     /// for them ([`App::pads_focus`]).
     pads_focus: PadFocus,
+    /// The project's list of instruments as the audio loop last said
+    /// ([`App::set_instrument_list`]): what an instrument chosen for the
+    /// pads is, and where it is held (step 6).
+    instrument_list: crate::instrument_list::InstrumentList,
+    /// A free place given a synth for the pads, waiting for its id in the
+    /// list: the pads play it once it has one (step 6).
+    pads_to: Option<usize>,
+    /// What each pad bank plays of its own (step 6c, the design's rule
+    /// 10, "a bank points at an instrument; it holds nothing"): None for
+    /// what every bank plays (`pads_focus`), else the track's instrument
+    /// or one of the list's ([`App::pads_focus`]).
+    bank_focus: [Option<PadFocus>; KIT_PAGES],
+    /// A free place given a synth for one bank, waiting for its id in the
+    /// list, as `pads_to` for every bank.
+    bank_to: [Option<usize>; KIT_PAGES],
+    /// The list of synths, while open (app/synth_pick.rs).
+    synth_pick: Option<synth_pick::SynthPick>,
     /// The tracks that play the shared synth, a bit each
     /// ([`App::set_synth_tracks`]).
     synth_tracks: u128,
@@ -1777,7 +1801,7 @@ impl App {
             custom_scales: Vec::new(),
             scale_pick: 0,
             synth_pads: Default::default(),
-            track_sounds: [None; mpfree_seq::MAX_TRACKS],
+            track_sounds: [None; crate::instruments::HOLDERS],
             track_sends: [None; mpfree_seq::MAX_TRACKS],
             track_copied: [None; mpfree_seq::MAX_TRACKS],
             plugin_synths: Vec::new(),
@@ -1809,6 +1833,11 @@ impl App {
             pad_layout: None,
             arp_layout: None,
             pads_focus: PadFocus::Track,
+            instrument_list: crate::instrument_list::InstrumentList::new(),
+            pads_to: None,
+            bank_focus: [None; KIT_PAGES],
+            bank_to: [None; KIT_PAGES],
+            synth_pick: None,
             synth_tracks: 0,
             configured: 0,
             pad_pressed: [PadNotes::default(); 16],
@@ -1962,9 +1991,13 @@ impl App {
     }
 
     /// PAD BANK picked page `page` of the kit (0 = A, up to 7 = H). Pads
-    /// held keep the kit pads they pressed until let go.
-    pub fn set_pad_page(&mut self, page: usize) {
+    /// held keep the kit pads they pressed until let go. A bank that plays
+    /// an instrument of its own (step 6c) puts it on the pads, said to the
+    /// screen; nothing allocated otherwise.
+    pub fn set_pad_page(&mut self, page: usize) -> Vec<Effect> {
+        let was = (self.pads_focus(), self.pads_bank());
         self.pad_page = page.min(KIT_PAGES - 1);
+        self.bank_moved(was)
     }
 
     /// The kit pad that pad `slot` (0 to 15) plays: the one it pressed
@@ -3931,6 +3964,11 @@ impl App {
         // changes, and Sample Recall with it.
         self.overlay = false;
         self.recall_open = false;
+        // The list of synths closes with the Synth tab, and the pads keep
+        // what they play (step 6, app/synth_pick.rs).
+        if v != View::Synth {
+            self.synth_pick = None;
+        }
         let was_editing = std::mem::take(&mut self.page_editing);
         if self.view != v
             && matches!(
@@ -5735,6 +5773,41 @@ mod tests {
         assert_eq!(notes(&mut app, 64), [3]);
     }
 
+    /// A keyboard plays a track's own synth by note, through its arp, as
+    /// it plays the shared synth (the instrument redesign's step 7): not
+    /// as the 16 pads the MPC gives its notes.
+    #[test]
+    fn keys_play_a_tracks_own_synth_by_note() {
+        use mpfree_arp::scale::pads::{layout, PadLayout, PadSetup};
+        let mut app = ready();
+        assert!(!app.keys_play_notes(), "a kit: keys hit its pads");
+        let pads = layout(&PadSetup {
+            layout: PadLayout::Chromatic,
+            ..PadSetup::default()
+        });
+        app.set_arp_layout(Some(pads));
+        assert!(app.keys_play_notes());
+        // A key plays its own note, one no pad has too.
+        app.key_down(97, 90);
+        app.key_down(61, 90);
+        let mut heard = notes(&mut app, 64);
+        heard.sort_unstable();
+        assert_eq!(heard, [61, 97]);
+        // A key on a kit pad's number does nothing while keys play notes.
+        assert!(app.kit_key_down(3, 100).is_empty());
+        app.key_up(97);
+        assert!(!app.eng().active().contains(97));
+        // The track goes back to a kit: the key still held lets go.
+        app.set_arp_layout(None);
+        assert!(app.eng().active().is_empty(), "nothing hangs");
+        assert!(!app.keys_play_notes());
+        app.key_down(62, 90);
+        assert!(
+            app.eng().active().is_empty(),
+            "a kit's keys hit pads instead"
+        );
+    }
+
     #[test]
     fn keys_play_notes_and_share_holds_with_pads() {
         use mpfree_arp::scale::pads::{layout, PadLayout, PadSetup};
@@ -7399,6 +7472,284 @@ mod tests {
         assert!(app.pads_chose_synth());
     }
 
+    /// The list of synths on its own (step 6): a tap fills a free place
+    /// and the pads play it once the audio loop lists it; opened again,
+    /// the one they play is kept for Cancel, so the next tap fills another;
+    /// Cancel gives it back and the synth tried goes once nothing plays it;
+    /// Follow track lets that one go too; and with every place taken a tap
+    /// says why.
+    #[test]
+    fn the_list_of_synths_fills_a_free_place_and_keeps_the_pads_one_for_cancel() {
+        use crate::instrument_list::InstrumentList;
+        use crate::instruments::{free, Held, SLOTS};
+        use crate::synth::Engine;
+        let mut app = ready();
+        assert!(app.open_synth_pick().is_empty(), "only on the Synth tab");
+        app.open_tab(View::Synth);
+        let view = |fx: &[Effect]| match fx.last() {
+            Some(Effect::SynthPick(v)) => v.clone(),
+            other => panic!("{other:?}"),
+        };
+        let v = view(&app.open_synth_pick()).expect("open");
+        assert_eq!(
+            v.choices[0],
+            ("Track 1's".into(), "The pads follow the track again".into())
+        );
+        assert_eq!(v.choices[2], ("FM".into(), "Electric pianos, bells".into()));
+        assert_eq!((v.now, v.had), (Some(0), Some(0)));
+        let fx = app.pick_pads_synth(2);
+        let fm_id = Some(Engine::Fm.node_id());
+        assert_eq!(
+            fx[0],
+            Effect::TrackSound {
+                track: free(0),
+                id: fm_id
+            }
+        );
+        assert_eq!(view(&fx).expect("open").now, Some(2));
+        // Listed: the pads play it. Keep.
+        let mut list = InstrumentList::new();
+        list.follow_free(1);
+        let fm = list.free_of(0).expect("an id");
+        assert_eq!(
+            app.set_instrument_list(&list),
+            [Effect::PadsFocus(PadFocus::Instrument(fm))]
+        );
+        assert_eq!(app.close_synth_pick(true), [Effect::SynthPick(None)]);
+        assert!(app.put_away_free().is_empty(), "the pads play it");
+        // Opened again: FM is kept for Cancel, so Pluck fills the next place.
+        app.open_synth_pick();
+        let fx = app.pick_pads_synth(4);
+        assert_eq!(
+            fx[0],
+            Effect::TrackSound {
+                track: free(1),
+                id: Some(Engine::Pluck.node_id())
+            }
+        );
+        assert!(app.put_away_free().is_empty(), "both kept while it is open");
+        // Cancel: FM again, and Pluck goes once nothing plays it.
+        assert_eq!(
+            app.close_synth_pick(false),
+            [
+                Effect::PadsFocus(PadFocus::Instrument(fm)),
+                Effect::SynthPick(None)
+            ]
+        );
+        let fx = app.put_away_free();
+        assert_eq!(
+            fx[0],
+            Effect::TrackSound {
+                track: free(1),
+                id: None
+            }
+        );
+        // Follow track (the button under the card): FM goes too.
+        app.toggle_pads_synth();
+        assert_eq!(app.pads_focus(), PadFocus::Track);
+        assert_eq!(
+            app.put_away_free()[0],
+            Effect::TrackSound {
+                track: free(0),
+                id: None
+            }
+        );
+        // Every place taken: a tap says why, and nothing changes.
+        let poly = Held {
+            id: Engine::Poly.node_id(),
+            name: "Poly",
+            instance: 0,
+        };
+        for t in 0..SLOTS {
+            app.set_track_sound(t, Some(poly));
+        }
+        app.open_synth_pick();
+        let fx = app.pick_pads_synth(2);
+        assert!(
+            matches!(&fx[0], Effect::Tell(t) if t.starts_with("No room for FM")),
+            "{fx:?}"
+        );
+        assert_eq!(app.track_sound(free(0)), None);
+        // Leaving the tab closes the list: the card opens it again.
+        app.open_tab(View::Play);
+        app.open_tab(View::Synth);
+        assert!(view(&app.open_synth_pick()).is_some());
+    }
+
+    /// Step 6c, banks point at instruments (the design's rule 10): with
+    /// "Bank B only" at the top of the list a tap gives the bank the pads
+    /// are on a synth of its own and the other banks play on; PAD BANK puts
+    /// it on the pads and takes it off, and nothing puts it away while the
+    /// bank points at it; it is saved and comes back (a bank line that
+    /// doesn't fit is said, the rest opens); All banks gives a bank's own
+    /// up and Cancel gives it back; the bank's first choice gives it to the
+    /// track whatever the other banks play; Follow track gives every bank
+    /// back; and a bank's synth gone from the list is said.
+    #[test]
+    fn bank_b_only_gives_one_bank_a_synth_of_its_own() {
+        use crate::instrument_list::InstrumentList;
+        use crate::instruments::free;
+        use crate::synth::Engine;
+        let mut app = ready();
+        app.open_tab(View::Synth);
+        let view = |fx: &[Effect]| match fx.last() {
+            Some(Effect::SynthPick(v)) => v.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert!(app.set_pad_page(1).is_empty(), "nothing of its own yet");
+        let v = view(&app.open_synth_pick()).expect("open");
+        assert_eq!(v.bank, Some(('B', false)), "All banks to start with");
+        let v = view(&app.synth_pick_scope(true)).expect("open");
+        assert_eq!(v.bank, Some(('B', true)));
+        assert_eq!(v.choices[0].1, "Bank B follows the track");
+        // FM on bank B alone: a free place, then its id.
+        let fx = app.pick_pads_synth(2);
+        assert_eq!(
+            fx[0],
+            Effect::TrackSound {
+                track: free(0),
+                id: Some(Engine::Fm.node_id())
+            }
+        );
+        assert!(
+            matches!(&fx[1], Effect::Note(n) if n.starts_with("Bank B plays FM · the other banks play as they did")),
+            "{fx:?}"
+        );
+        let mut list = InstrumentList::new();
+        list.follow_free(1);
+        let fm = list.free_of(0).expect("an id");
+        assert_eq!(
+            app.set_instrument_list(&list),
+            [Effect::PadsFocus(PadFocus::Instrument(fm))]
+        );
+        assert_eq!(
+            (app.pads_focus(), app.pads_bank(), app.pads_holder()),
+            (PadFocus::Instrument(fm), Some(1), Some(free(0)))
+        );
+        assert_eq!(view(&app.pick_pads_synth(2)).expect("open").now, Some(2));
+        assert_eq!(app.close_synth_pick(true), [Effect::SynthPick(None)]);
+        // Bank A plays the track's kit; FM stays while bank B points at it.
+        assert_eq!(app.set_pad_page(0), [Effect::PadsFocus(PadFocus::Track)]);
+        assert_eq!(
+            (app.pads_focus(), app.pads_bank(), app.pads_holder()),
+            (PadFocus::Track, None, None)
+        );
+        assert!(app.put_away_free().is_empty(), "bank B points at FM");
+        assert_eq!(
+            app.set_pad_page(1),
+            [Effect::PadsFocus(PadFocus::Instrument(fm))]
+        );
+        // Saved, and back.
+        let text = app.pads_part();
+        assert_eq!(
+            text,
+            format!("mpfree-pads 1\nplay track\nbank B instrument {fm}\n")
+        );
+        let mut other = ready();
+        other.set_instrument_list(&list);
+        let (notes, _) = other.open_pads(Some(&text));
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(other.bank_focus(1), Some(PadFocus::Instrument(fm)));
+        assert_eq!(other.pads_focus(), PadFocus::Track, "on bank A");
+        other.set_pad_page(1);
+        assert_eq!(other.pads_holder(), Some(free(0)));
+        let (notes, _) = other.open_pads(Some(
+            "mpfree-pads 1\nplay track\nbank B track\nbank C instrument 9\n",
+        ));
+        assert!(
+            matches!(&notes[..], [n] if n.contains("bank C's instrument 9 isn't in the project's list")),
+            "{notes:?}"
+        );
+        assert_eq!(other.bank_focus(1), Some(PadFocus::Track), "the rest opens");
+        assert_eq!(other.bank_focus(2), None);
+        for (bad, why) in [
+            ("mpfree-pads 1\nplay track\nbank I track\n", "doesn't read"),
+            ("mpfree-pads 1\nplay track\nbank B drums\n", "doesn't read"),
+            (
+                "mpfree-pads 1\nplay track\nbank B track\nbank B track\n",
+                "twice what bank B plays",
+            ),
+            ("mpfree-pads 1\nbank B track\n", "doesn't say"),
+        ] {
+            let (notes, _) = other.open_pads(Some(bad));
+            assert!(
+                matches!(&notes[..], [n] if n.contains(why)),
+                "{bad:?}: {notes:?}"
+            );
+            assert_eq!(other.bank_focus(1), None, "{bad:?}");
+        }
+        // Opened on bank B, the list starts on Bank B only. All banks:
+        // Pluck plays on every bank, bank B's own given up; FM's place is
+        // kept for Cancel.
+        let v = view(&app.open_synth_pick()).expect("open");
+        assert_eq!(v.bank, Some(('B', true)));
+        app.synth_pick_scope(false);
+        let fx = app.pick_pads_synth(4);
+        assert_eq!(
+            fx[0],
+            Effect::TrackSound {
+                track: free(1),
+                id: Some(Engine::Pluck.node_id())
+            }
+        );
+        assert_eq!(app.bank_focus(1), None);
+        // Cancel: bank B has FM again, and Pluck goes.
+        app.close_synth_pick(false);
+        assert_eq!(app.bank_focus(1), Some(PadFocus::Instrument(fm)));
+        assert_eq!(app.pads_focus(), PadFocus::Instrument(fm));
+        assert_eq!(
+            app.put_away_free()[0],
+            Effect::TrackSound {
+                track: free(1),
+                id: None
+            }
+        );
+        // Every bank plays the shared synth; bank B's first choice gives it
+        // to the track (a bank line of its own), and FM goes.
+        app.set_pad_page(0);
+        app.toggle_pads_synth();
+        assert!(app.pads_chose_synth());
+        app.set_pad_page(1);
+        assert_eq!(app.pads_focus(), PadFocus::Instrument(fm));
+        app.open_synth_pick();
+        let fx = app.pick_pads_synth(0);
+        assert!(
+            fx.contains(&Effect::Note(
+                "Bank B follows the track: Track 1's instrument".into()
+            )),
+            "{fx:?}"
+        );
+        assert_eq!(app.pads_focus(), PadFocus::Track);
+        app.close_synth_pick(true);
+        assert_eq!(
+            app.pads_part(),
+            "mpfree-pads 1\nplay instrument 1\nbank B track\n"
+        );
+        assert_eq!(
+            app.put_away_free()[0],
+            Effect::TrackSound {
+                track: free(0),
+                id: None
+            }
+        );
+        app.set_pad_page(0);
+        assert!(app.pads_chose_synth(), "bank A plays the shared synth");
+        // Follow track: every bank.
+        app.pads_follow_track();
+        assert_eq!(app.pads_part(), "mpfree-pads 1\nplay track\n");
+        // A bank's synth gone from the list: said, the bank plays what the
+        // others play.
+        other.open_pads(Some(&text));
+        let fx = other.set_instrument_list(&InstrumentList::new());
+        assert!(
+            fx.contains(&Effect::Note(
+                "Bank B's synth is gone: the bank plays what the other banks play".into()
+            )),
+            "{fx:?}"
+        );
+        assert_eq!(other.bank_focus(1), None);
+    }
+
     /// The pads part: what the pads play is saved with the project, and
     /// a part that doesn't read is said, the pads following the track.
     #[test]
@@ -7422,7 +7773,7 @@ mod tests {
             ("mpfree-pads 2\nplay track\n", "its first line is"),
             (
                 "mpfree-pads 1\nplay instrument 2\n",
-                "instrument 2 can't be chosen",
+                "instrument 2 isn't in the project's list",
             ),
             ("mpfree-pads 1\nplay instrument 0\n", "doesn't read"),
             ("mpfree-pads 1\nplay drums\n", "doesn't read"),
@@ -7437,6 +7788,14 @@ mod tests {
             );
             assert_eq!(fx, [Effect::PadsFocus(PadFocus::Track)], "{bad:?}");
         }
+        // An instrument the project's list has: a free place's (step 6).
+        let mut list = crate::instrument_list::InstrumentList::new();
+        list.follow_free(1);
+        other.set_instrument_list(&list);
+        let (notes, fx) = other.open_pads(Some("mpfree-pads 1\nplay instrument 2\n"));
+        assert!(notes.is_empty(), "{notes:?}");
+        let id = list.free_of(0).expect("an id");
+        assert_eq!(fx, [Effect::PadsFocus(PadFocus::Instrument(id))]);
     }
 
     /// Where REC records the pads' synth (the design review of 20 Nov,
@@ -7529,6 +7888,7 @@ mod tests {
         let plan = |take| RecPlan {
             take,
             synth: "Poly",
+            holder: None,
         };
         assert_eq!(plan(SynthTake::On(2)).chip(name), "Track 3 · Poly");
         assert_eq!(plan(SynthTake::On(1)).chip(name), "Bass · Poly");
