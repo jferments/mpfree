@@ -224,6 +224,9 @@ struct Options {
     sysfs: PathBuf,
     preview: Option<PathBuf>,
     display_lists: Option<PathBuf>,
+    /// `--check-theme FILE`: a theme file's problems and its unreadable
+    /// text on every sample screen ([`check_theme`]).
+    check_theme: Option<PathBuf>,
     font: Option<PathBuf>,
     bold_font: Option<PathBuf>,
     mono_font: Option<PathBuf>,
@@ -293,6 +296,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         sysfs: PathBuf::from("/sys/class/graphics/fb0"),
         preview: None,
         display_lists: None,
+        check_theme: None,
         font: None,
         bold_font: None,
         mono_font: None,
@@ -341,6 +345,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--sysfs" => o.sysfs = PathBuf::from(value()?),
             "--preview" => o.preview = Some(PathBuf::from(value()?)),
             "--display-lists" => o.display_lists = Some(PathBuf::from(value()?)),
+            "--check-theme" => o.check_theme = Some(PathBuf::from(value()?)),
             "--font" => o.font = Some(PathBuf::from(value()?)),
             "--bold-font" => o.bold_font = Some(PathBuf::from(value()?)),
             "--mono-font" => o.mono_font = Some(PathBuf::from(value()?)),
@@ -362,7 +367,11 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             _ => return Err(format!("unknown argument {arg}")),
         }
     }
-    if o.preview.is_none() && o.display_lists.is_none() && o.command.is_empty() {
+    if o.preview.is_none()
+        && o.display_lists.is_none()
+        && o.check_theme.is_none()
+        && o.command.is_empty()
+    {
         return Err(
             "usage: mpfree inventory|screen|touch|pads|lights|setup|drums|play|app|click [options]"
                 .to_string(),
@@ -12005,6 +12014,121 @@ fn display_lists(o: &Options) -> Result<(), String> {
     Ok(())
 }
 
+/// The runs of text under 3:1 on page `p` drawn in theme `t` (the
+/// contrast check's measure, `mpfree_ui::lint`).
+fn unreadable_runs(p: &mut gui::Player, t: &Theme) -> Result<Vec<mpfree_ui::lint::Run>, String> {
+    use mpfree_ui::lint::{text_runs, FLOOR};
+    p.ui.set_theme(t.clone());
+    let (w, h) = p.ui.size();
+    let mut rec = mpfree_ui::record::Recorder::new(w, h);
+    let mut bytes = Vec::new();
+    rec.begin_frame();
+    p.ui.paint(&mut rec);
+    rec.encode_frame(&mut bytes);
+    let frames = mpfree_ui::record::Frame::decode_all(&bytes)?;
+    Ok(text_runs(&frames[0])
+        .into_iter()
+        .filter(|r| r.ratio < FLOOR)
+        .collect())
+}
+
+/// `--check-theme FILE`: what someone writing a theme needs to know,
+/// without an MPC. Every problem the file has, by line (`Theme::load`);
+/// whether the app would offer it in Prefs > Appearance or leave it out
+/// (`Theme::parse`, the floor included); and every sample screen where
+/// more text is under 3:1 than in the theme the file starts from, each
+/// run with its colours and place. Only reads FILE; opens no devices.
+/// Ends with an error when the app would leave the file out.
+fn check_theme(o: &Options) -> Result<(), String> {
+    let path = o.check_theme.as_ref().unwrap();
+    let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (theme, problems) = Theme::load(&text);
+    let name = if theme.name.trim().is_empty() {
+        path.display().to_string()
+    } else {
+        theme.name.clone()
+    };
+    // The report is printed at the end, after the lines the sample
+    // screens print as they are built.
+    let mut out = vec![format!("theme {name} ({})", path.display())];
+    for p in &problems {
+        let kind = match p.kind {
+            mpfree_ui::theme::ProblemKind::Mistake => "mistake",
+            mpfree_ui::theme::ProblemKind::Unknown => "unknown key",
+            mpfree_ui::theme::ProblemKind::HardToRead => "hard to read",
+            mpfree_ui::theme::ProblemKind::Ignored => "ignored",
+            mpfree_ui::theme::ProblemKind::Unusable => "unusable",
+        };
+        out.push(format!("  {kind}: {p}"));
+    }
+    if problems.is_empty() {
+        out.push("  no problems".to_string());
+    }
+    let refused = Theme::parse(&text).err();
+    match &refused {
+        Some(e) => out.push(format!(
+            "the app leaves this file out of Prefs > Appearance: {e}"
+        )),
+        None => out.push("the app offers it in Prefs > Appearance".to_string()),
+    }
+    // The theme the file starts from, for a fair comparison: faint text
+    // that is under 3:1 there too is the screen's, not the file's.
+    let base = text
+        .lines()
+        .map(|l| l.split('#').next().unwrap_or("").trim())
+        .find(|l| !l.is_empty())
+        .and_then(|l| l.split_once('='))
+        .filter(|(k, _)| k.trim() == "base")
+        .and_then(|(_, v)| Theme::builtin(v.trim()).map(|t| (v.trim().to_string(), t)))
+        .unwrap_or_else(|| ("default".to_string(), Theme::dark()));
+    let fonts = || {
+        Fonts::with_files(
+            o.font.as_deref(),
+            o.bold_font.as_deref(),
+            o.mono_font.as_deref(),
+        )
+    };
+    fonts()?;
+    let (mut pages, mut worse, mut runs, mut base_runs) = (0, 0, 0, 0);
+    for (page, mut p) in gui::sample_screens(|| fonts().unwrap_or_else(|_| Fonts::embedded())) {
+        let mine = unreadable_runs(&mut p, &theme)?;
+        let theirs = unreadable_runs(&mut p, &base.1)?;
+        pages += 1;
+        runs += mine.len();
+        base_runs += theirs.len();
+        if mine.len() > theirs.len() {
+            worse += 1;
+            out.push(format!(
+                "{page}: {} run(s) of text under 3:1 ({}: {})",
+                mine.len(),
+                base.0,
+                theirs.len()
+            ));
+            for r in &mine {
+                out.push(format!(
+                    "  #{:06X} on #{:06X} at {},{} ({} glyph(s), {:.1}:1)",
+                    r.ink.xrgb(),
+                    r.under.xrgb(),
+                    r.x,
+                    r.y,
+                    r.glyphs,
+                    r.ratio
+                ));
+            }
+        }
+    }
+    out.push(format!(
+        "screens: {pages} drawn, {runs} run(s) of text under 3:1 ({}: {base_runs}), \
+         {worse} page(s) with more than {}",
+        base.0, base.0
+    ));
+    println!("{}", out.join("\n"));
+    match refused {
+        Some(e) => Err(format!("{}: {e}", path.display())),
+        None => Ok(()),
+    }
+}
+
 /// `--script FILE`: the workflow, read and checked before anything starts,
 /// and the run's length from it (a few seconds more, for the last status
 /// lines and the sounds' tails).
@@ -12046,6 +12170,9 @@ fn main() {
         }
         if o.display_lists.is_some() {
             return gui::on_screens_stack(|| display_lists(&o));
+        }
+        if o.check_theme.is_some() {
+            return gui::on_screens_stack(|| check_theme(&o));
         }
         match o.command.as_str() {
             "inventory" => inventory(&o),

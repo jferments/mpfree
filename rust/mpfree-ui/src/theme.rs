@@ -153,7 +153,7 @@ pub const BUILTIN: [&str; 5] = ["default", "light", "console", "synthwave", "spa
 /// and a button for MPFree to be usable in it at all: the line the
 /// contrast check calls unreadable. Below it, Prefs > Appearance itself
 /// couldn't be read to pick another theme ([`Theme::unusable`]).
-pub const FLOOR: f32 = 3.0;
+pub const FLOOR: f32 = crate::lint::FLOOR;
 
 impl Theme {
     /// The default: dark, for a studio, with one blue accent and status colours.
