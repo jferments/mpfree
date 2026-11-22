@@ -206,6 +206,20 @@ struct Seat {
     region: Region,
 }
 
+/// A Normalize waiting for its sound's loudness summary
+/// ([`SamplePage::normalize_later`]), or done at once.
+#[derive(Clone)]
+struct Leveling {
+    kit: usize,
+    pad: usize,
+    /// A take kept on the page, not pad `pad`.
+    take: Option<usize>,
+    layer: usize,
+    /// The region as it was when Normalize was pressed: a waiting
+    /// Normalize lands only while the region is still exactly this.
+    region: Region,
+}
+
 /// The region (Wave tab) or pad (Play tab) a drag or turn started from,
 /// for its log line.
 struct Gesture {
@@ -902,6 +916,13 @@ pub struct SamplePage {
     /// summary to find the loudest grain in (a fallback: counted, logged
     /// and shown).
     seat_fallbacks: u32,
+    /// Normalizes waiting for their sound's loudness summary: a long
+    /// region's peak is found in it ([`SamplePage::normalize_later`]).
+    levelings: Vec<Leveling>,
+    /// Normalizes of a long region whose sound has no summary, which read
+    /// every frame of it on the screen (a fallback: counted, logged and
+    /// shown).
+    normalize_fallbacks: u32,
     /// The take recording as the wave draws it (one-page step 2f, part 3),
     /// and the time to its next redraw.
     drawn: Option<mpfree_sampler_ui::live_take::LiveTake>,
@@ -1090,6 +1111,8 @@ impl SamplePage {
             seats: Vec::new(),
             heard: Playheads::default(),
             seat_fallbacks: 0,
+            levelings: Vec::new(),
+            normalize_fallbacks: 0,
             drawn: None,
             drawn_in: 0.0,
             recall: None,
@@ -2803,6 +2826,22 @@ impl SamplePage {
             );
             return;
         };
+        // What it holds at once (sampler plan, phase 1 step 5): the
+        // stretch as floats; when converted, a second copy as the sound to
+        // convert, and the converted floats twice over (made, then kept).
+        let bytes = (span.len() * 4) as u64;
+        let need = if s.rate() == self.rate {
+            bytes
+        } else {
+            let ratio = f64::from(self.rate) / f64::from(s.rate());
+            2 * bytes + (2.0 * bytes as f64 * ratio) as u64
+        };
+        if let Err(why) = crate::memory::room_in((self.mem_free)(), need) {
+            self.told.push(format!("Not put on an audio track: {why}"));
+            self.lines
+                .push(format!("sample: not put on an audio track: {why}"));
+            return;
+        }
         let mut audio = span.into_owned();
         let mut cuts: Vec<u64> = bounds[1..bounds.len() - 1]
             .iter()
@@ -4298,39 +4337,156 @@ impl SamplePage {
     /// region's loudest frame to 0 dBFS (a tenth of a dB under, rounded
     /// down, and within the Gain row's range), as one undo step. The log
     /// says the peak and the gain; a silent region is left as it is.
+    ///
+    /// Nothing long runs on the screen and nothing is copied (sampler
+    /// plan, phase 1 step 5): a region of up to [`model::SCAN_FRAMES`] is
+    /// read frame by frame where it is; a longer one is searched in its
+    /// sound's loudness summary ([`Region::peak_from`], the same peak),
+    /// and waits for the summary when it isn't worked out yet
+    /// ([`Self::normalize_later`]).
     fn normalize(&mut self, ui: &mut Ui, pad: usize, layer: usize) {
         self.lift();
         let kit = self.kit;
-        let at = self.pad_text(kit, pad);
-        let Some(project) = self.projects.get_mut(kit) else {
-            return;
-        };
-        let Some(region) = project
-            .pad(pad)
+        let Some(region) = self
+            .projects
+            .get(kit)
+            .and_then(|p| p.pad(pad))
             .and_then(|p| p.layers.get(layer))
             .map(|l| l.region.clone())
         else {
             return;
         };
-        let Some(peak) = project.source(region.source).map(|s| region.peak(s)) else {
+        self.level(
+            ui,
+            Leveling {
+                kit,
+                pad,
+                take: None,
+                layer,
+                region,
+            },
+        );
+    }
+
+    /// [`SamplePage::normalize`] for take `i`.
+    fn normalize_take(&mut self, ui: &mut Ui, i: usize, layer: usize) {
+        self.lift();
+        let kit = self.kit;
+        let Some(region) = self
+            .projects
+            .get(kit)
+            .and_then(|p| p.take(i))
+            .and_then(|t| t.layers.get(layer))
+            .map(|l| l.region.clone())
+        else {
             return;
         };
+        self.level(
+            ui,
+            Leveling {
+                kit,
+                pad: 0,
+                take: Some(i),
+                layer,
+                region,
+            },
+        );
+    }
+
+    /// "pad A5" or the take's name, and the same to begin a sentence.
+    fn leveling_text(&self, l: &Leveling) -> (String, String) {
+        match l.take {
+            Some(t) => {
+                let name = self
+                    .projects
+                    .get(l.kit)
+                    .and_then(|p| p.take(t))
+                    .map_or_else(|| format!("take {}", t + 1), |t| t.name.clone());
+                (name.clone(), name)
+            }
+            None => {
+                let at = self.pad_text(l.kit, l.pad);
+                (format!("pad {at}"), format!("Pad {at}"))
+            }
+        }
+    }
+
+    /// Normalize `l` now, or once its sound's summary is worked out.
+    fn level(&mut self, ui: &mut Ui, l: Leveling) {
+        let Some(source) = self
+            .projects
+            .get(l.kit)
+            .and_then(|p| p.source(l.region.source))
+        else {
+            return;
+        };
+        let (peak, read_all) = if l.region.frames() <= model::SCAN_FRAMES {
+            (l.region.peak(source), false)
+        } else {
+            match self.sources.summary(l.region.source) {
+                Summary::Ready(p) => match l.region.peak_from(source, p.pyramid()) {
+                    Some(peak) => (peak, false),
+                    None => (l.region.peak(source), true),
+                },
+                Summary::None => (l.region.peak(source), true),
+                Summary::Pending => {
+                    let (what, told) = self.leveling_text(&l);
+                    self.told
+                        .push(format!("{told} will normalize when its waveform is ready"));
+                    self.lines.push(format!(
+                        "sample: {what} normalizes once its sound's loudness summary is worked out"
+                    ));
+                    // A second press on the same layer replaces the first.
+                    self.levelings.retain(|w| {
+                        (w.kit, w.pad, w.take, w.layer) != (l.kit, l.pad, l.take, l.layer)
+                    });
+                    if self.levelings.len() >= MAX_SEATS {
+                        self.levelings.remove(0);
+                    }
+                    self.levelings.push(l);
+                    return;
+                }
+            }
+        };
+        if read_all {
+            self.normalize_fallbacks += 1;
+            let (what, _) = self.leveling_text(&l);
+            let line = format!(
+                "sample: fallback: {what}'s peak read from every frame on the screen: its sound has no loudness summary ({} so far)",
+                self.normalize_fallbacks
+            );
+            self.lines.push(line);
+        }
+        self.set_level(ui, &l, peak);
+    }
+
+    /// Normalize `l` to `peak`: its gain set, one undo step, and said.
+    fn set_level(&mut self, ui: &mut Ui, l: &Leveling, peak: f32) {
+        let (what, told) = self.leveling_text(l);
         let peak_db = 20.0 * peak.max(1e-12).log10();
         if peak_db < NORMALIZE_SILENT_DB {
-            let line = format!("sample: pad {at} not normalized: it is silent");
             self.told
-                .push(format!("Pad {at} is silent: nothing to normalize"));
-            self.lines.push(line);
+                .push(format!("{told} is silent: nothing to normalize"));
+            self.lines
+                .push(format!("sample: {what} not normalized: it is silent"));
             return;
         }
         let (lo, hi) = wave_tab::GAIN_RANGE_DB;
         let gain = ((-peak_db * 10.0).floor() / 10.0).clamp(lo, hi);
-        let was = region.gain_db;
-        let r = project.edit_pad(pad, None, |p| p.layers[layer].region.gain_db = gain);
+        let was = l.region.gain_db;
+        let Some(project) = self.projects.get_mut(l.kit) else {
+            return;
+        };
+        let layer = l.layer;
+        let set = move |p: &mut Pad| p.layers[layer].region.gain_db = gain;
+        let r = match l.take {
+            Some(t) => project.edit_take(t, None, set),
+            None => project.edit_pad(l.pad, None, set),
+        };
         match r {
             Ok(()) => {
                 self.edits += 1;
-                if let Some(d) = self.dirty.get_mut(kit) {
+                if let Some(d) = self.dirty.get_mut(l.kit) {
                     *d = true;
                 }
                 let most = if gain >= hi {
@@ -4339,14 +4495,59 @@ impl SamplePage {
                     String::new()
                 };
                 self.lines.push(format!(
-                    "sample: pad {at} normalized: its peak {peak_db:.1} dB, gain {was:+.1} -> {gain:+.1} dB{most}"
+                    "sample: {what} normalized: its peak {peak_db:.1} dB, gain {was:+.1} -> {gain:+.1} dB{most}"
                 ));
             }
-            Err(e) => self
-                .lines
-                .push(format!("sample: pad {at} not normalized ({e:?})")),
+            Err(e) => {
+                let line = format!("sample: {what} not normalized ({e:?})");
+                if l.take.is_some() {
+                    self.told.push(line.clone());
+                }
+                self.lines.push(line);
+            }
         }
         self.refresh(ui);
+    }
+
+    /// The Normalizes waiting for their sound's summary
+    /// ([`Self::level`]): each lands once the summary is there, as an
+    /// undo step of its own, while its region is still exactly as it was
+    /// when Normalize was pressed; one changed since is let go, and says
+    /// so.
+    fn normalize_later(&mut self, ui: &mut Ui) {
+        let mut i = 0;
+        while i < self.levelings.len() {
+            let l = self.levelings[i].clone();
+            let same = self.projects.get(l.kit).and_then(|p| {
+                match l.take {
+                    Some(t) => p.take(t),
+                    None => p.pad(l.pad),
+                }?
+                .layers
+                .get(l.layer)
+                .map(|x| x.region == l.region)
+            }) == Some(true);
+            let pending = matches!(self.sources.summary(l.region.source), Summary::Pending);
+            if same && pending {
+                i += 1;
+                continue;
+            }
+            self.levelings.remove(i);
+            if !same {
+                let (what, _) = self.leveling_text(&l);
+                self.lines.push(format!(
+                    "sample: {what} not normalized: it changed before its sound's loudness summary was worked out"
+                ));
+                continue;
+            }
+            self.level(ui, l);
+        }
+    }
+
+    /// Times Normalize read every frame of a long region on the screen
+    /// for want of its sound's summary.
+    pub fn normalize_fallbacks(&self) -> u32 {
+        self.normalize_fallbacks
     }
 
     /// Process: a new sound of layer `layer` of pad `pad`'s region, made on
@@ -6560,6 +6761,9 @@ impl SamplePage {
         if !self.seats.is_empty() {
             self.seat_later(ui);
         }
+        if !self.levelings.is_empty() {
+            self.normalize_later(ui);
+        }
     }
 
     /// The take running: what came in since the last poll, and it lands
@@ -8234,43 +8438,6 @@ impl SamplePage {
         } else {
             out.push(FromUi::SampleTake { kit, down: false });
         }
-    }
-
-    /// [`SamplePage::normalize`] for take `i`.
-    fn normalize_take(&mut self, ui: &mut Ui, i: usize, layer: usize) {
-        self.lift();
-        let kit = self.kit;
-        let Some(project) = self.projects.get_mut(kit) else {
-            return;
-        };
-        let Some((name, region)) = project
-            .take(i)
-            .and_then(|t| Some((t.name.clone(), t.layers.get(layer)?.region.clone())))
-        else {
-            return;
-        };
-        let Some(peak) = project.source(region.source).map(|s| region.peak(s)) else {
-            return;
-        };
-        let peak_db = 20.0 * peak.max(1e-12).log10();
-        if peak_db < NORMALIZE_SILENT_DB {
-            self.told
-                .push(format!("{name} is silent: nothing to normalize"));
-            self.lines
-                .push(format!("sample: {name} not normalized: it is silent"));
-            return;
-        }
-        let (lo, hi) = wave_tab::GAIN_RANGE_DB;
-        let gain = ((-peak_db * 10.0).floor() / 10.0).clamp(lo, hi);
-        let was = region.gain_db;
-        let r = project.edit_take(i, None, |t| t.layers[layer].region.gain_db = gain);
-        if r.is_ok() {
-            self.lines.push(format!(
-                "sample: {name} normalized: peak {peak_db:.1} dBFS, gain {was:+.1} → {gain:+.1} dB"
-            ));
-        }
-        self.edited_take(kit, i, r);
-        self.refresh(ui);
     }
 
     /// Send to pad with take `i` shown: the next pad hit takes it (a

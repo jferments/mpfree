@@ -1800,8 +1800,7 @@ mod tests {
         fn notes(s: &Session, t: usize) -> Vec<u8> {
             let mut n: Vec<u8> = s.time.project().tracks[t]
                 .slots
-                .iter()
-                .flatten()
+                .clips()
                 .flat_map(|c| c.notes.iter().map(|n| n.note))
                 .collect();
             n.sort_unstable();
@@ -1921,7 +1920,7 @@ mod tests {
             }
             s.button("STOP").settle();
             let tracks = s.time.project().tracks.clone();
-            assert!(tracks[0].slots.iter().any(Option::is_some), "the drum clip");
+            assert!(!tracks[0].slots.is_empty(), "the drum clip");
             // Poly chosen for the pads, on the Synth tab: named in the header.
             s.press("header", "tab", "Synth").settle();
             s.press("synth-pads-head", "play", "").settle();
@@ -2032,7 +2031,7 @@ mod tests {
             record(&mut s, &[0, 4]);
             s.button("STOP").settle();
             let drums = s.time.project().tracks[0].clone();
-            assert!(drums.slots.iter().any(Option::is_some), "the drum pattern");
+            assert!(!drums.slots.is_empty(), "the drum pattern");
             s.run_periods(2);
             assert_eq!(
                 s.looper.takes_from(),
@@ -2118,8 +2117,7 @@ mod tests {
             assert!(
                 s.time.project().tracks[1]
                     .slots
-                    .iter()
-                    .flatten()
+                    .clips()
                     .any(|c| !c.notes.is_empty()),
                 "REC took the notes"
             );
@@ -2595,8 +2593,7 @@ mod tests {
         fn notes(s: &Session) -> usize {
             s.time.project().tracks[0]
                 .slots
-                .iter()
-                .flatten()
+                .clips()
                 .map(|c| c.notes.len())
                 .sum()
         }
@@ -2814,8 +2811,7 @@ mod tests {
         fn notes(s: &Session) -> usize {
             s.time.project().tracks[0]
                 .slots
-                .iter()
-                .flatten()
+                .clips()
                 .map(|c| c.notes.len())
                 .sum()
         }
@@ -2963,8 +2959,7 @@ mod tests {
         fn notes(s: &Session, t: usize) -> Vec<u8> {
             s.time.project().tracks[t]
                 .slots
-                .iter()
-                .flatten()
+                .clips()
                 .flat_map(|c| c.notes.iter().map(|n| n.note))
                 .collect()
         }
@@ -3087,8 +3082,7 @@ mod tests {
         fn notes(s: &Session) -> usize {
             s.time.project().tracks[0]
                 .slots
-                .iter()
-                .flatten()
+                .clips()
                 .map(|c| c.notes.len())
                 .sum()
         }

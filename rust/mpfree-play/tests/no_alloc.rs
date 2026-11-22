@@ -211,14 +211,16 @@ fn playing_never_allocates() {
     let mut t5 = p.tracks[0].clone();
     t5.dest = 5;
     p.tracks.push(t5);
+    // Track 5's clips are copies of track 0's: ids of their own.
+    p.give_clip_ids();
     let song = &mut p.arrangement;
-    song.place(Placement::linked(5, 0, 0, 3000)).unwrap();
-    let mut own = Placement::linked(5, 9, 3000, 3700);
+    song.place(Placement::of(&p.tracks, 5, 0, 0, 3000)).unwrap();
+    let mut own = Placement::of(&p.tracks, 5, 9, 3000, 3700);
     own.offset = 100;
     song.place(own).unwrap();
-    song.place(Placement::linked(4, 4, 1000, 5000)).unwrap();
-    let tracks = p.tracks.clone();
-    p.arrangement.make_unique(&tracks, 2).unwrap();
+    song.place(Placement::of(&p.tracks, 4, 4, 1000, 5000))
+        .unwrap();
+    p.make_unique(2).unwrap();
     // The morph swept up and down every two bars, on the song's lane.
     let sweep: Vec<(f64, f32, Kind)> = (0..400)
         .map(|i| (f64::from(i) * 480.0, (i % 16) as f32 / 15.0, Kind::Ramp))
