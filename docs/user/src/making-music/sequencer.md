@@ -137,6 +137,10 @@ A **lock** makes one step play its sound differently: tuned up, shorter, darker 
 
 Hold a step and press **ERASE** to take its locks off and keep its note.
 
+A synth lock remembers which synth and which knob it was made for. If the track plays a different synth later, the pattern keeps those locks but doesn't play them, because the same knob number on another synth is a different control (Poly's Cutoff isn't FM's). Their lane goes faint and says so, for example "made for Poly's Cutoff, not playing on FM". Switch the track back and they play again, or tap the lane's **×** to take them off. While they are there, the pattern takes no locks for the new synth. Locks on the track's volume, pan and effects always play, whatever the track plays.
+
+{{shot: sequencer-silent-locks | Cutoff locks made on Poly, on a track that plays FM now: kept, faint, and the lane says why.}}
+
 When two tracks play the same instrument (the synth, or one track's instrument that another plays: see [Share one between tracks](synths.md#a-synth-for-each-track)) and both lock the same knob, one of them moves it at a time: the track you made first. The other track's locks wait and play once the first track's stop, the knob gliding over to them (a switch such as a waveform changes at once). Turning the knob yourself always wins: while you turn it and for half a second after, the locks wait, then the knob goes back to them.
 
 ### Lock lanes

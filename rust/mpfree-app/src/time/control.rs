@@ -56,7 +56,9 @@ use mpfree_transport::{Block, Command, State};
 
 use super::follow::FollowCounts;
 use super::link::{Counts, InPlace, PeriodEnd, Rx, ToAudio, ToControl, Tracks, Tx};
-use super::{StepAction, StepClip, StepsData, LINE, NEW_CLIP_BARS, RECORD_ROOM};
+use super::{
+    InstRef, SilentLocks, StepAction, StepClip, StepsData, LINE, NEW_CLIP_BARS, RECORD_ROOM,
+};
 
 /// The clip settings card's join keys for its takes, a row each (see
 /// `Takes::set_clip`).
@@ -375,6 +377,14 @@ pub struct TimeControl {
     steps_changed: bool,
     /// Recorded pressure a clip had no room for (`MAX_TOUCH_POINTS`).
     touch_lost: u64,
+    /// Recorded moves of an instrument's controls left out of clips whose
+    /// instrument locks were made for another instrument (refactor F1).
+    inst_refused: u64,
+    /// Each track's instrument as last told ([`TimeControl::set_instruments`]),
+    /// as the addresses of its node's info and controls and their count:
+    /// a preset that brings other controls under the same kind tells
+    /// again.
+    inst_told: Vec<(usize, usize, usize)>,
     /// Clips recorded pressure went into since the recording stopped
     /// last, to check against `TOUCH_RECLAIM_AT` once it has (B4b).
     touch_grew: Vec<(usize, usize)>,
@@ -496,6 +506,8 @@ impl TimeControl {
             tell_every: u64::from(rate / 4),
             steps_changed: true,
             touch_lost: 0,
+            inst_refused: 0,
+            inst_told: Vec::new(),
             touch_grew: Vec::new(),
             touch_freed: (0, 0),
             includes: Includes::default(),
@@ -898,9 +910,22 @@ impl TimeControl {
                 ToControl::Rec(number, rec) => {
                     self.includes.recorded = number;
                     self.pass_take = Some(rec.take());
+                    // A move of the instrument's control into a clip made
+                    // for another instrument stays out (refactor F1): the
+                    // next compile drops it from the view too.
+                    if self.rec_refused(&rec) {
+                        self.inst_refused += 1;
+                        self.touch.clear();
+                        self.moves.clear();
+                        self.compile_asked = true;
+                        continue;
+                    }
                     let done = self
                         .takes
                         .record(&mut self.project, &rec, &self.touch, &self.moves);
+                    if done.changed && rec_inst(&rec) {
+                        self.tag_clips(Some(rec.clip().0));
+                    }
                     if !self.touch.is_empty() && !self.touch_grew.contains(&rec.clip()) {
                         self.touch_grew.push(rec.clip());
                     }
@@ -1117,6 +1142,109 @@ impl TimeControl {
         self.touch_lost
     }
 
+    /// Recorded moves of an instrument's controls left out of clips made
+    /// for another instrument (refactor F1). The status line says it;
+    /// tests read it here.
+    #[allow(dead_code)]
+    pub fn inst_refused(&self) -> u64 {
+        self.inst_refused
+    }
+
+    /// The instrument each track plays now, by place (refactor F1),
+    /// told every period: a track's that changed is kept on the track
+    /// ([`mpfree_seq::Track::plays`]), its clips' tags are made true
+    /// ([`mpfree_seq::Clip::tag_inst`]), and what plays compiles again if
+    /// one of its clips there has instrument locks. Allocates only when
+    /// one changes.
+    pub fn set_instruments(&mut self, plays: &[Option<InstRef>]) {
+        let mut compile = false;
+        if self.inst_told.len() < plays.len() {
+            self.inst_told.resize(plays.len(), (0, 0, 0));
+        }
+        for (t, now) in plays.iter().enumerate() {
+            let Some(track) = self.project.tracks.get_mut(t) else {
+                break;
+            };
+            let told = now.map_or((0, 0, 0), |(info, params)| {
+                (
+                    std::ptr::from_ref(info) as usize,
+                    params.as_ptr() as usize,
+                    params.len(),
+                )
+            });
+            // A project loaded since has its tracks not told of.
+            if self.inst_told[t] == told && track.plays.node() == now.map(|(i, _)| i.id) {
+                continue;
+            }
+            self.inst_told[t] = told;
+            track.plays = mpfree_seq::inst::Plays(now.map(|(info, params)| {
+                std::sync::Arc::new(mpfree_seq::inst::Inst {
+                    node: info.id.to_string(),
+                    name: info.name.to_string(),
+                    params: params
+                        .iter()
+                        .filter(|p| !p.readonly)
+                        .map(|p| (p.id, p.name.to_string()))
+                        .collect(),
+                })
+            }));
+            self.tag_clips(Some(t));
+            self.steps_changed = true;
+            self.changed = true;
+            compile |= self.inst_shown(t);
+        }
+        if compile {
+            let _ = self.compile();
+        }
+    }
+
+    /// Whether a clip of track `t` that plays or waits to has instrument
+    /// locks (or move lanes), so what plays changes with its instrument.
+    fn inst_shown(&self, t: usize) -> bool {
+        let has = |slot: usize| {
+            self.project
+                .clip(t, slot)
+                .is_some_and(|c| c.inst_params().next().is_some())
+        };
+        self.launches.iter().any(|l| l.track == t && has(l.slot))
+            || self
+                .cues
+                .iter()
+                .any(|c| c.track == t && c.slot.is_some_and(has))
+            || self.song
+    }
+
+    /// Make the instrument tags true ([`mpfree_seq::Clip::tag_inst`]) on
+    /// track `track`'s clips, or every track's: after a change that may
+    /// have added or taken instrument locks (an edit, a take, UNDO). The
+    /// Steps hear of a change.
+    fn tag_clips(&mut self, track: Option<usize>) {
+        let mut changed = false;
+        for (t, tr) in self.project.tracks.iter_mut().enumerate() {
+            if track.is_some_and(|k| k != t) {
+                continue;
+            }
+            let plays = tr.plays.0.clone();
+            for (_, c) in tr.slots.iter_mut() {
+                changed |= c.tag_inst(plays.as_deref());
+            }
+        }
+        self.steps_changed |= changed;
+    }
+
+    /// Whether recorded change `rec` would put a move of the instrument's
+    /// control into a clip made for another instrument (refactor F1).
+    fn rec_refused(&self, rec: &mpfree_play::Rec) -> bool {
+        let Some(param) = rec_param(rec) else {
+            return false;
+        };
+        let (t, slot) = rec.clip();
+        let plays = self.project.tracks.get(t).and_then(|t| t.plays.get());
+        self.project
+            .clip(t, slot)
+            .is_some_and(|c| c.inst_refuses(param, plays).is_some())
+    }
+
     /// Out of recording, each clip played into whose pressure is past
     /// half its room frees the values no note can play again, its own,
     /// its Restore's or one an undo or redo would bring back
@@ -1235,7 +1363,15 @@ impl TimeControl {
             .project
             .clip(track, slot)
             .map_or((0, 0), |c| (c.notes.len(), c.locks.len()));
-        if !InPlace::fits(edit, notes, locks)
+        // Locks made for another instrument are not in the view, so what
+        // an edit does to them compiles (refactor F1).
+        let plays = self.project.tracks.get(track).and_then(|t| t.plays.get());
+        let silent = self
+            .project
+            .clip(track, slot)
+            .is_some_and(|c| c.inst_silent(plays).is_some());
+        if silent
+            || !InPlace::fits(edit, notes, locks)
             || self.unsent.is_some()
             || (self.armed != Some(track) && self.track_pick != Some(track))
             || matches!(self.info.state, State::Recording | State::CountIn)
@@ -1689,6 +1825,20 @@ impl TimeControl {
             let order =
                 launch.and_then(|l| mpfree_play::StepOrder::of(c, track, slot, l.origin, l.start));
             let shown = grid.shown(c, &mpfree_seq::steps::PAD_ROWS);
+            let plays = self.project.tracks.get(track).and_then(|t| t.plays.get());
+            let silent = c.inst_silent(plays).map(|made| {
+                let mut params: Vec<u16> = c
+                    .inst_params()
+                    .filter(|&id| !c.param_plays(id, plays))
+                    .collect();
+                params.sort_unstable();
+                params.dedup();
+                SilentLocks {
+                    made_for: made.clone(),
+                    params,
+                    now: plays.map_or_else(String::new, |p| p.name.clone()),
+                }
+            });
             Some(StepClip {
                 slot,
                 name: c.name.clone(),
@@ -1701,6 +1851,7 @@ impl TimeControl {
                 rows: shown.rows,
                 locks: shown.locks,
                 lock_values: shown.lock_values,
+                silent,
             })
         });
         let playing = self
@@ -1847,6 +1998,14 @@ impl TimeControl {
                 addr,
                 value,
             } => {
+                // A lock on the instrument goes in only where the clip's
+                // instrument locks were made for this one (refactor F1).
+                if value.is_some() && addr.on == mpfree_play::mpfree_param::OnTrack::Inst {
+                    let plays = self.project.tracks.get(track).and_then(|t| t.plays.get());
+                    if let Some(why) = clip.inst_refuses(addr.param, plays) {
+                        return Err(format!("steps: {why}"));
+                    }
+                }
                 let held = step_list(steps);
                 let sound = (pad != LINE).then_some(pad);
                 (
@@ -1993,6 +2152,9 @@ impl TimeControl {
                 None,
             ),
         };
+        // What its instrument locks were made for, after the edit (the
+        // first one's instrument; none with the last gone; refactor F1).
+        self.tag_clips(Some(track));
         let joined = matches!(a, StepAction::Lock { .. }) && take == self.lock_take;
         if matches!(a, StepAction::Lock { .. }) {
             self.lock_take = take;
@@ -2150,6 +2312,14 @@ impl TimeControl {
     /// Carry out a touch on the time engine's screens. Returns a line for
     /// the log.
     pub fn act(&mut self, a: TimeAction) -> Result<String, String> {
+        let r = self.act_in(a);
+        // An action may add or take instrument locks (UNDO, a paste, a
+        // clip copied to another track): the tags follow (refactor F1).
+        self.tag_clips(None);
+        r
+    }
+
+    fn act_in(&mut self, a: TimeAction) -> Result<String, String> {
         let info = self.info;
         match a {
             // A track picked arms it, unless the app found REC's arm
@@ -5153,6 +5323,14 @@ impl TimeControl {
                 self.also_full
             ));
         }
+        // Recorded moves of a synth's control kept out of a clip whose
+        // locks were made for another instrument (refactor F1).
+        if self.inst_refused > 0 {
+            line.push_str(&format!(
+                "; {} recorded moves left out of patterns with locks for another instrument",
+                self.inst_refused
+            ));
+        }
         // The fallbacks between the halves, when there are any.
         let lost = c.lost + self.lost();
         if lost + u64::from(c.behind + c.kept + c.refused + c.missed) > 0 {
@@ -5224,6 +5402,28 @@ pub(super) fn bar_beat(t: Tick, meter: mpfree_transport::time::Meter) -> String 
 
 /// The steps whose bits are set (step 0 the lowest).
 /// A step row as the log names it: "pad 5", or "the line".
+/// The instrument control recorded change `rec` locks or moves, if it
+/// is one (refactor F1).
+fn rec_param(rec: &mpfree_play::Rec) -> Option<u16> {
+    match rec {
+        mpfree_play::Rec::Lock(k) if mpfree_seq::inst::on_inst(&k.lock) => Some(k.lock.addr.param),
+        mpfree_play::Rec::Move(k) => match k.target {
+            mpfree_seq::mpfree_moves::Target::Track(a)
+                if a.on == mpfree_play::mpfree_param::OnTrack::Inst =>
+            {
+                Some(a.param)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether recorded change `rec` locks or moves an instrument control.
+fn rec_inst(rec: &mpfree_play::Rec) -> bool {
+    rec_param(rec).is_some()
+}
+
 fn row_name(pad: u8) -> String {
     if pad == LINE {
         "the line".to_string()

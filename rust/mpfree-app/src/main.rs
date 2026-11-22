@@ -5239,6 +5239,31 @@ fn synth_seen<'s>(
     kits.plays_synth(usize::from(track)).then_some(synth)
 }
 
+/// The instrument each track plays now (step sequencer refactor F1), into
+/// `plays` by track, as `SeqPads::lock_at` finds a lock's sound: the
+/// track's own instrument, the synth while it has the pads, or none (a
+/// kit, or a track MIDI Out takes, whose instrument locks reach nothing).
+/// Never allocates.
+fn track_instruments(
+    plays: &mut [Option<time::InstRef>],
+    own: &instruments::Instruments,
+    kits: &sampler::TrackKits,
+    synth: &synth::Synth,
+    midi: &midi_out::MidiOut,
+) {
+    for (t, p) in plays.iter_mut().enumerate() {
+        *p = if midi.takes(t as u16) {
+            None
+        } else if own.plays(t) {
+            own.node(t).map(|n| (n.info(), n.params()))
+        } else if kits.plays_synth(t) {
+            Some(synth.node_ref())
+        } else {
+            None
+        };
+    }
+}
+
 impl SeqPads<'_> {
     /// A clip's lock or lane on the track's own MIDI out control, from a
     /// track that plays ahead: MIDI out sends it, ahead or (missed by the
@@ -6582,6 +6607,9 @@ fn player_session(
     let mut loop_tempo: Option<f64> = None;
     // The port the tempo chip last said the tempo comes from.
     let mut clock_from: Option<String> = None;
+    // What each track's instrument is, told to the time engine each period.
+    let mut inst_now: [Option<time::InstRef>; mpfree_seq::MAX_TRACKS] =
+        [None; mpfree_seq::MAX_TRACKS];
     out.show(gui::ToUi::Macros(Box::new(panels.macros_state(&mix))));
     let mut shown_levels = mix.play_levels();
     out.show(gui::ToUi::PlayLevels(shown_levels));
@@ -9519,6 +9547,17 @@ fn player_session(
         // The tracks on gear slower than the sound's lead play their clips
         // that much ahead (sequencer S5).
         time.set_ahead(&midi_out.ahead());
+        // A clip's instrument locks play only on the kind of instrument
+        // they were made for (step sequencer refactor F1).
+        let n = time.track_count().min(inst_now.len());
+        track_instruments(
+            &mut inst_now[..n],
+            &mix.instruments,
+            &track_kits,
+            &synth,
+            &midi_out,
+        );
+        time.set_instruments(&inst_now[..n]);
         // CV out takes the outputs' jobs; run, reset and clock follow the
         // transport.
         cv_out.sync(&io_model);

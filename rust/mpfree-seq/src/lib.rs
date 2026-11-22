@@ -55,6 +55,7 @@
 #![forbid(unsafe_code)]
 
 pub mod arrange;
+pub mod inst;
 pub mod loops;
 pub mod mutate;
 pub mod notes;
@@ -892,6 +893,10 @@ pub struct Clip {
     /// Mutate (sequencer S6, [`mutate`]): what Restore puts back and each
     /// Mutate varies. None until it is mutated, and again once restored.
     pub original: Option<Box<Original>>,
+    /// The instrument its instrument locks were made for, with the names
+    /// of the controls they lock (step sequencer refactor F1,
+    /// [`inst`]); None while it has none.
+    pub made_for: Option<inst::Inst>,
 }
 
 /// A clip's settings that are not its notes: how fast it plays, its own
@@ -1059,6 +1064,7 @@ impl Clip {
             direction: Direction::Forward,
             step: steps::DEFAULT_SIZE,
             original: None,
+            made_for: None,
         }
     }
 
@@ -1358,6 +1364,11 @@ pub struct Track {
     pub follows: bool,
     /// Its clips by row, 0 to [`ROWS`] - 1 ([`Rows`]).
     pub slots: Rows,
+    /// The instrument it plays now, every control named (step sequencer
+    /// refactor F1, [`inst`]): told by the app, never saved, and left out
+    /// of comparisons. None when not told (a kit, MIDI out), and then its
+    /// clips' instrument locks play.
+    pub plays: inst::Plays,
 }
 
 /// A track's clips by row number (the Arrange refactor's 1.2): row `r`'s
@@ -1598,6 +1609,7 @@ impl Track {
             transpose: Transpose::NONE,
             follows: false,
             slots: Default::default(),
+            plays: inst::Plays::default(),
         }
     }
 
@@ -1630,6 +1642,7 @@ impl Track {
             transpose,
             follows,
             slots,
+            plays: _,
         } = self;
         *dest == other.dest
             && *swing == other.swing
