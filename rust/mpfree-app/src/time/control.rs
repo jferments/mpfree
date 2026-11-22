@@ -50,10 +50,11 @@ use mpfree_seq::{
 };
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::list::ListRow;
+use mpfree_time_ui::view::pad_name;
 use mpfree_time_ui::view::{
     bars_label, card_rows, clips_after, grid_name, rows_named, scene_rows, AudioAction, BarsEdit,
     EditAnswer, EditInfo, EditOutcome, FollowNext, MarkerEdit, MorphInfo, MuteWait, RegionId,
-    TakeRow, TempoEdit, TimeAction, TimeState, TransportInfo, SCENE_NAME,
+    Report, ReportRow, TakeRow, TempoEdit, TimeAction, TimeState, TransportInfo, SCENE_NAME,
 };
 use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_transport::{Block, Command, State};
@@ -84,17 +85,15 @@ struct Landed<'a> {
     soloing: bool,
 }
 
-/// The kit's pads (kit 1's, which have the mixer's pad strips).
-pub const PADS: usize = 16;
-
 /// A kit pad tapped as a mute key ([`TimeControl::pad_mute_or_solo`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PadTap {
     /// It waits in the mute queue (or its change was taken back): the
     /// line for the log.
     Waits(String),
-    /// At once: the pad's mute and solo now, for the mixer.
-    Now { mute: bool, solo: bool },
+    /// At once: the pad's mute and solo now on its track; the line for
+    /// the log.
+    Now(String),
 }
 
 /// What a pad's change does, for the log: "solo" (a solo plays the pad
@@ -344,6 +343,11 @@ pub struct TimeControl {
     /// wheel and the Ramp and Delete buttons; never set with `selected`,
     /// `region` or `section`.
     tempo_pick: Option<usize>,
+    /// The last conversion's report card, while it is open (the Arrange
+    /// refactor's 4.3): set by a conversion whose result plays
+    /// differently, closed by its Done (`TimeAction::CloseReport`), by
+    /// another conversion and by UNDO or REDO.
+    report: Option<Arc<Report>>,
     /// The project's tempo (the app's, [`TimeControl::project_tempo`]):
     /// the song's tempo before its first tempo point.
     project_bpm: f64,
@@ -472,9 +476,6 @@ pub struct TimeControl {
     mute_ids: u32,
     /// The current period's landed mute cues.
     landed: Vec<MuteLanded>,
-    /// The kit's pads whose change in the mute queue came due this period
-    /// (their mute and solo), for the mixer ([`TimeControl::take_pad_landings`]).
-    pad_landings: [Option<(bool, bool)>; PADS],
     /// Clips' saved states (Save state, sequencer S4), as (track, slot,
     /// the clip as it was): Reload clip puts one back. Kept while the
     /// project is open, not saved with it.
@@ -593,6 +594,7 @@ impl TimeControl {
             region: None,
             section: None,
             tempo_pick: None,
+            report: None,
             project_bpm: info.bpm,
             song_rec: SongRecorder::default(),
             song_take: SongTake::Idle,
@@ -639,7 +641,6 @@ impl TimeControl {
             mute_queue: None,
             mute_ids: 0,
             landed: Vec::with_capacity(MAX_TRACKS),
-            pad_landings: [None; PADS],
             saved: Vec::new(),
             reloads: Vec::new(),
             rate,
@@ -1246,10 +1247,9 @@ impl TimeControl {
             self.note_later(format!("{line} (STOP)"));
             compile = true;
         }
-        // The kit's pads in the queue land in the period before their
-        // line: the mixer takes them before it mixes the period that holds
-        // it.
-        self.pads_due(end.frames);
+        // The tracks' pads in the queue land in the period before their
+        // line: the view compiled now plays the period that holds it.
+        compile |= self.pads_due(end.frames);
         // Reloads land just before their line: the next period, which
         // holds the line, plays the saved state from its start.
         if !self.reloads.is_empty() {
@@ -2450,7 +2450,7 @@ impl TimeControl {
         }
         // `edit` has followed the clip.
         let at = Instant::now();
-        if let EditAction::Note { rev, .. } = a {
+        if let Some(rev) = a.rev() {
             if rev != self.edit_rev {
                 // The screen still shows the clip as it was: it gets the
                 // new one, and the tap goes nowhere.
@@ -2803,6 +2803,9 @@ impl TimeControl {
             },
             TimeAction::Undo => match self.takes.undo(&mut self.project) {
                 Some(_) => {
+                    // A conversion's card closes: what it said is gone or
+                    // no longer the last thing done.
+                    self.report = None;
                     let row = self.takes.undone().last().map(TakeRow::of);
                     if let Some(d) = row.and_then(|r| r.dropped) {
                         self.follow_launches(d, true);
@@ -2825,6 +2828,7 @@ impl TimeControl {
             },
             TimeAction::Redo => match self.takes.redo(&mut self.project) {
                 Some(_) => {
+                    self.report = None;
                     self.redos += 1;
                     // The Sequencer's first step launched the clip it made:
                     // back again, it plays again (unless its track has
@@ -3646,6 +3650,12 @@ impl TimeControl {
                 Err("morph: needs the mixer's mod engine (TimeHost::morph)".into())
             }
             TimeAction::Edit(e) => self.edit(e),
+            TimeAction::CloseReport => {
+                // What the conversion did stays; only its card goes.
+                self.report = None;
+                self.changed = true;
+                Ok(String::new())
+            }
             TimeAction::SongView(on) => {
                 self.song_view = on;
                 self.list_view = false;
@@ -3761,9 +3771,10 @@ impl TimeControl {
             }
             TimeAction::SongToScenes => {
                 // The rows change, not the song: one edit of whole rows,
-                // which UNDO takes back.
+                // which UNDO takes back. The last conversion's card closes.
                 let bar = info.meter.bar_ticks();
                 let before = self.project.clone();
+                self.report = None;
                 let line = match self.edit_song(a, bar) {
                     Ok((line, _)) => line,
                     Err(e) => {
@@ -3775,6 +3786,7 @@ impl TimeControl {
                     // Back as it was, but for the clip ids it gave: an id
                     // is never given twice.
                     let next = self.project.next_clip;
+                    self.report = None;
                     self.project = before;
                     self.project.next_clip = next;
                     self.compile()?;
@@ -3798,9 +3810,14 @@ impl TimeControl {
             | TimeAction::MoveSection { .. }
             | TimeAction::SongBars(_)
             | TimeAction::SongMarker(_) => {
-                // Edits of the song alone, each one UNDO takes back.
+                // Edits of the song alone, each one UNDO takes back. A
+                // conversion closes the last one's card.
                 let bar = info.meter.bar_ticks();
                 let before = self.project.arrangement.clone();
+                let converts = matches!(a, TimeAction::ListToSong | TimeAction::ScenesToSong);
+                if converts {
+                    self.report = None;
+                }
                 // + Bar pressed again on the same section joins its take:
                 // presses in a row are one UNDO (not with the audio regions
                 // changed in between: [`TimeControl::act_with_audio`]).
@@ -3836,6 +3853,9 @@ impl TimeControl {
                 };
                 if let Err(e) = self.compile() {
                     self.project.arrangement = before;
+                    if converts {
+                        self.report = None;
+                    }
                     self.compile()?;
                     return Err(e);
                 }
@@ -4455,11 +4475,16 @@ impl TimeControl {
                     return Err("scenes → song: no row has a clip".into());
                 }
                 let (at, how) = self
-                    .rows_to_song(&rows, bar)
+                    .rows_to_song(
+                        &rows,
+                        bar,
+                        "SCENES → SONG",
+                        "The song plays the rows, except:",
+                    )
                     .map_err(|e| format!("scenes → song: {e}"))?;
                 Ok((
                     format!(
-                        "scenes → song: {} rows from bar {}, {how}",
+                        "scenes → song: {} rows from bar {}{how}",
                         rows.len(),
                         at / bar.max(1) + 1
                     ),
@@ -4467,19 +4492,23 @@ impl TimeControl {
                 ))
             }
             TimeAction::SongToScenes => match song_to_scenes(&mut self.project, bar) {
-                Ok(done) if done.rows.is_empty() => {
-                    Ok(("song → scenes: the song is empty".into(), None))
-                }
+                // Nothing to make: said on the screen as a refusal is.
+                Ok(done) if done.rows.is_empty() => Err("song → scenes: the song is empty".into()),
                 Ok(done) => {
-                    let (how, which) = differences_said(&self.project, &done.differences, bar);
+                    let how = conversion_said(&self.project, &done.differences, bar);
                     let rows = &done.rows;
-                    Ok((
+                    let made = rows_named(rows[0], rows[rows.len() - 1]);
+                    self.report = report(
+                        "SONG → SCENES",
+                        made.clone(),
                         format!(
-                            "song → scenes: {}, {how} (UNDO takes it back){which}",
-                            rows_named(rows[0], rows[rows.len() - 1])
+                            "Launch row {} and the rows play the song, except:",
+                            rows[0] + 1
                         ),
-                        None,
-                    ))
+                        &done.differences,
+                        bar,
+                    );
+                    Ok((format!("song → scenes: {made}{how}"), None))
                 }
                 Err(ModelError::NoRoom) => {
                     Err("song → scenes: not enough empty rows in a run".into())
@@ -4606,11 +4635,16 @@ impl TimeControl {
                 }
                 let steps = self.project.arrangement.list.steps.clone();
                 let (at, how) = self
-                    .rows_to_song(&steps, bar)
+                    .rows_to_song(
+                        &steps,
+                        bar,
+                        "LIST → SONG",
+                        "The song plays the list, except:",
+                    )
                     .map_err(|e| format!("list → song: {e}"))?;
                 Ok((
                     format!(
-                        "list → song: {n} steps from bar {}, {how}",
+                        "list → song: {n} steps from bar {}{how}",
                         at / bar.max(1) + 1
                     ),
                     Some(SongChange::ListToSong { steps: n }),
@@ -4624,12 +4658,24 @@ impl TimeControl {
     /// song ([`super::offline`], plan D7) from the first bar line after the
     /// song's end, and what Rec song recorded put in the song, with each
     /// step's scene's name above where it started. Where they start, and
-    /// how the song plays differently from the rows ("exact", or the
-    /// differences and what each is), or why nothing changed.
-    fn rows_to_song(&mut self, steps: &[ListStep], bar: Tick) -> Result<(Tick, String), String> {
+    /// how the song plays differently from the rows (the end of the log
+    /// line: [`conversion_said`]), or why nothing changed; the report card
+    /// opens when it differs.
+    fn rows_to_song(
+        &mut self,
+        steps: &[ListStep],
+        bar: Tick,
+        title: &str,
+        lead: &str,
+    ) -> Result<(Tick, String), String> {
         let end = self.project.arrangement.end();
         let at = (end + bar - 1) / bar.max(1) * bar;
         let played = super::offline::play_rows(&self.project, steps, at, bar)?;
+        let made = format!(
+            "bars {} to {}",
+            at / bar.max(1) + 1,
+            (played.end + bar - 1) / bar.max(1)
+        );
         let mut song = self.project.arrangement.clone();
         let mut differences = Vec::new();
         for p in played.placements {
@@ -4657,8 +4703,8 @@ impl TimeControl {
         // New placements shift the indices.
         self.selected = None;
         self.section = None;
-        let (how, which) = differences_said(&self.project, &differences, bar);
-        Ok((at, format!("{how}{which}")))
+        self.report = report(title, made, lead.into(), &differences, bar);
+        Ok((at, conversion_said(&self.project, &differences, bar)))
     }
 
     /// The morph bar on the mixer's mod engine (`modu`): the rows, the
@@ -5448,42 +5494,54 @@ impl TimeControl {
                 (tr.mute, tr.solo) = (m, s);
             }
         }
-        for (p, m, s) in q.pads {
-            if let Some(l) = self.pad_landings.get_mut(p) {
-                *l = Some((m, s));
-            }
+        for (t, p, m, s) in q.pads {
+            self.set_pad(t, p, m, s);
         }
         true
     }
 
-    /// The kit's pads waiting in the mute queue land once their line is
-    /// within the next period (`frames` long), or at once with the
-    /// transport stopped: they go to [`TimeControl::take_pad_landings`]
-    /// for the mixer, and the log says so.
-    fn pads_due(&mut self, frames: u32) {
-        let Some((_, q)) = &self.mute_queue else {
+    /// Track `t`'s pad `pad` muted and soloed as `mute` and `solo` say
+    /// (step 10); nothing for a track or pad out of range. The caller
+    /// compiles.
+    fn set_pad(&mut self, t: usize, pad: usize, mute: bool, solo: bool) {
+        let (Some(tr), Some(bit)) = (
+            self.project.tracks.get_mut(t),
+            1u128.checked_shl(pad as u32),
+        ) else {
             return;
         };
+        tr.pad_mutes = (tr.pad_mutes & !bit) | if mute { bit } else { 0 };
+        tr.pad_solos = (tr.pad_solos & !bit) | if solo { bit } else { 0 };
+        self.changed = true;
+    }
+
+    /// The tracks' pads waiting in the mute queue land once their line is
+    /// within the next period (`frames` long), or at once with the
+    /// transport stopped: each track takes its pads' mutes and solos, and
+    /// the log says so. True when they landed (the caller compiles).
+    fn pads_due(&mut self, frames: u32) -> bool {
+        let Some((_, q)) = &self.mute_queue else {
+            return false;
+        };
         if q.pads.is_empty() {
-            return;
+            return false;
         }
         let pos = self.info.position;
         let line = q.line.next(pos, self.info.meter.bar_ticks());
         let rolling = self.info.state.rolling();
         if rolling && line > pos + self.period_ticks(frames) {
-            return;
+            return false;
         }
         let words = self.pads_line(if rolling { line } else { pos });
+        let mut pads = Vec::new();
         if let Some((_, q)) = &mut self.mute_queue {
-            for &(p, m, s) in &q.pads {
-                if let Some(l) = self.pad_landings.get_mut(p) {
-                    *l = Some((m, s));
-                }
-            }
-            q.pads.clear();
+            pads = std::mem::take(&mut q.pads);
             if q.is_empty() {
                 self.mute_queue = None;
             }
+        }
+        for (t, p, m, s) in pads {
+            self.set_pad(t, p, m, s);
         }
         self.changed = true;
         self.note_later(if rolling {
@@ -5491,6 +5549,7 @@ impl TimeControl {
         } else {
             format!("{words} (STOP)")
         });
+        true
     }
 
     /// The log's lines for the mute queue landing on `at`: its tracks'
@@ -5508,57 +5567,77 @@ impl TimeControl {
         }
     }
 
-    /// The log's line for the kit's pads in the queue landing on `at`:
-    /// "pad mute: at 5.1, pad 3 muted, pad 1 solo".
+    /// The log's line for the tracks' pads in the queue landing on `at`:
+    /// "pad mute: at 5.1, Drums A3 muted, Drums B1 solo".
     fn pads_line(&self, at: Tick) -> String {
         let p = self.info.meter.position(at);
         let mut line = format!("pad mute: at {}.{}", p.bar, p.beat);
         if let Some((_, q)) = &self.mute_queue {
-            for &(pad, m, s) in &q.pads {
-                line.push_str(&format!(", pad {} {}", pad + 1, pad_words(m, s)));
+            for &(t, pad, m, s) in &q.pads {
+                line.push_str(&format!(", {} {}", self.pad_label(t, pad), pad_words(m, s)));
             }
         }
         line
     }
 
-    /// The kit's pads whose change in the mute queue came due, each with
-    /// its mute and solo: the mixer takes them before its next period.
-    /// Allocates nothing.
-    pub fn take_pad_landings(&mut self) -> [Option<(bool, bool)>; PADS] {
-        std::mem::take(&mut self.pad_landings)
+    /// Track `t`'s pad `pad` as the log names it: "Drums B5".
+    fn pad_label(&self, t: usize, pad: usize) -> String {
+        let name = self
+            .project
+            .tracks
+            .get(t)
+            .map_or_else(|| format!("Track {}", t + 1), |tr| tr.name.clone());
+        format!("{name} {}", pad_name(pad))
     }
 
-    /// A pad of the kit tapped as a mute key (SHIFT + TRACK MUTE, kit 1's
-    /// pads): its mute toggled, or its solo with `solo`, from `now` (the
-    /// mixer's mute and solo for it) or from what waits for it. With
-    /// `wait` (Perform), the transport rolling and Launch not at once it
-    /// joins the mute queue and lands with it ([`PadTap::Waits`]); a tap
-    /// on a pad waiting takes its change back. Otherwise it acts at once
-    /// ([`PadTap::Now`]: the mixer sets it).
+    /// Pad `pad` of track `t`'s kit tapped as a mute key (SHIFT + TRACK
+    /// MUTE, the instrument redesign's step 10: a pad mute is the
+    /// track's alone): its mute toggled, or its solo with `solo`, from
+    /// the track's or from what waits for it. With `wait` (Perform), the
+    /// transport rolling and Launch not at once it joins the mute queue
+    /// and lands with it ([`PadTap::Waits`]); a tap on a pad waiting takes
+    /// its change back. Otherwise the track takes it at once
+    /// ([`PadTap::Now`]).
     pub fn pad_mute_or_solo(
         &mut self,
+        t: usize,
         pad: usize,
-        now: (bool, bool),
         wait: bool,
         solo: bool,
-    ) -> PadTap {
+    ) -> Result<PadTap, String> {
+        let tr = self
+            .project
+            .tracks
+            .get(t)
+            .ok_or_else(|| format!("pad mute: no track {}", t + 1))?;
+        let bit = 1u128
+            .checked_shl(pad as u32)
+            .ok_or_else(|| format!("pad mute: no pad {}", pad + 1))?;
+        let now = (tr.pad_mutes & bit != 0, tr.pad_solos & bit != 0);
+        let name = self.pad_label(t, pad);
         let queued = self
             .mute_queue
             .as_ref()
-            .and_then(|(_, q)| q.pads.iter().find(|w| w.0 == pad))
-            .map(|w| (w.1, w.2));
+            .and_then(|(_, q)| q.pads.iter().find(|w| (w.0, w.1) == (t, pad)))
+            .map(|w| (w.2, w.3));
         let (mut m, mut s) = queued.unwrap_or(now);
         if solo {
             s = !s;
         } else {
             m = !m;
         }
+        let what = match (solo, m, s) {
+            (true, _, true) => "solo",
+            (true, _, false) => "solo off",
+            (false, true, _) => "muted",
+            (false, false, _) => "plays",
+        };
         let line = self
             .mute_queue
             .as_ref()
             .map_or(self.project.launch, |(_, q)| q.line);
         if let Some((_, q)) = &mut self.mute_queue {
-            q.pads.retain(|w| w.0 != pad);
+            q.pads.retain(|w| (w.0, w.1) != (t, pad));
         }
         let waits = wait && self.info.state.rolling() && line != LaunchGrid::Now;
         if waits && (m, s) != now {
@@ -5567,37 +5646,79 @@ impl TimeControl {
                 *ids += 1;
                 (*ids, MuteWait::new(line))
             });
-            q.pads.push((pad, m, s));
+            q.pads.push((t, pad, m, s));
         }
         if self.mute_queue.as_ref().is_some_and(|(_, q)| q.is_empty()) {
             self.mute_queue = None;
         }
         self.changed = true;
-        match (waits, (m, s) == now) {
-            (true, true) => {
-                PadTap::Waits(format!("pad mute: pad {}: its change taken back", pad + 1))
-            }
-            (true, false) => PadTap::Waits(format!(
-                "pad mute: pad {} {} {}",
-                pad + 1,
-                match (solo, m, s) {
-                    (true, _, true) => "solo",
-                    (true, _, false) => "solo off",
-                    (false, true, _) => "muted",
-                    (false, false, _) => "plays",
-                },
-                line_words(line)
-            )),
-            (false, _) => PadTap::Now { mute: m, solo: s },
+        if waits {
+            return Ok(PadTap::Waits(if (m, s) == now {
+                format!("pad mute: {name}: its change taken back")
+            } else {
+                format!("pad mute: {name} {what} {}", line_words(line))
+            }));
         }
+        self.set_pad(t, pad, m, s);
+        if let Err(e) = self.compile() {
+            self.set_pad(t, pad, now.0, now.1);
+            return Err(e);
+        }
+        Ok(PadTap::Now(format!("pad mute: {name} {what}")))
     }
 
-    /// Whether a change waits for the kit's pad `pad` in the mute queue,
+    /// Pad `pad` of track `t` muted or let play at once (a pattern row's
+    /// speaker, step 10), its solo as it is; anything waiting for it in
+    /// the mute queue is dropped. The line for the log.
+    pub fn pad_mute_now(&mut self, t: usize, pad: usize, mute: bool) -> Result<String, String> {
+        let tr = self
+            .project
+            .tracks
+            .get(t)
+            .ok_or_else(|| format!("pad mute: no track {}", t + 1))?;
+        let bit = 1u128
+            .checked_shl(pad as u32)
+            .ok_or_else(|| format!("pad mute: no pad {}", pad + 1))?;
+        let was = (tr.pad_mutes & bit != 0, tr.pad_solos & bit != 0);
+        if let Some((_, q)) = &mut self.mute_queue {
+            q.pads.retain(|w| (w.0, w.1) != (t, pad));
+            if q.is_empty() {
+                self.mute_queue = None;
+            }
+        }
+        self.set_pad(t, pad, mute, was.1);
+        if let Err(e) = self.compile() {
+            self.set_pad(t, pad, was.0, was.1);
+            return Err(e);
+        }
+        let what = if mute { "muted" } else { "plays" };
+        Ok(format!("pad mute: {} {what}", self.pad_label(t, pad)))
+    }
+
+    /// The pad mutes and solos of each track in `tracks` (a bit each) set
+    /// whole: an old project's kit 1 pad mutes, carried over as it opens
+    /// (step 10). Compiled once; how many tracks took them.
+    pub fn carry_pad_mutes(&mut self, tracks: u128, mutes: u128, solos: u128) -> usize {
+        let mut n = 0;
+        for (t, tr) in self.project.tracks.iter_mut().enumerate().take(128) {
+            if tracks >> t & 1 == 1 {
+                (tr.pad_mutes, tr.pad_solos) = (mutes, solos);
+                n += 1;
+            }
+        }
+        if n > 0 {
+            self.changed = true;
+            let _ = self.compile();
+        }
+        n
+    }
+
+    /// Whether a change waits for track `t`'s pad `pad` in the mute queue,
     /// for its light.
-    pub fn pad_waiting(&self, pad: usize) -> bool {
+    pub fn pad_waiting(&self, t: usize, pad: usize) -> bool {
         self.mute_queue
             .as_ref()
-            .is_some_and(|(_, q)| q.pads.iter().any(|w| w.0 == pad))
+            .is_some_and(|(_, q)| q.pads.iter().any(|w| (w.0, w.1) == (t, pad)))
     }
 
     /// The mute queue waiting, for the screens.
@@ -5883,6 +6004,7 @@ impl TimeControl {
         st.section = self.section;
         st.tempo_base = self.project_bpm;
         st.tempo_pick = self.tempo_pick.filter(|&k| k < st.tempo_points.len());
+        st.report = self.report.clone();
         st.tempo_here = self.tempo_here();
         st.song_rec = self.song_rec.armed();
         st.song_with_take = self.song_with_take();
@@ -6372,18 +6494,54 @@ fn moves_over(gestures: &[mpfree_seq::mpfree_moves::Gesture], from: f64, to: f64
         .count()
 }
 
-/// How a conversion played out, for its log line (plan D7): "exact", or
-/// how many differences and each in words ("2 differences" and ": Bass,
-/// bar 9: a note held over the row change is cut there; …").
-fn differences_said(project: &Project, d: &[Difference], bar: Tick) -> (String, String) {
+/// The report card of a conversion whose result plays differently from
+/// what it was made from (the Arrange refactor's 4.3): its differences in
+/// song order, the song's own first in each bar. None for an exact one,
+/// which says so on its line alone.
+fn report(
+    title: &str,
+    made: String,
+    lead: String,
+    d: &[Difference],
+    bar: Tick,
+) -> Option<Arc<Report>> {
+    if d.is_empty() {
+        return None;
+    }
+    let mut rows: Vec<ReportRow> = d
+        .iter()
+        .map(|d| ReportRow {
+            track: d.track,
+            bar: d.bar(bar),
+            what: d.what_said(bar),
+        })
+        .collect();
+    rows.sort_by_key(|r| (r.bar, r.track));
+    Some(Arc::new(Report {
+        title: title.into(),
+        made,
+        lead,
+        rows,
+    }))
+}
+
+/// How an exact conversion's line ends: nothing opens, and the line shows
+/// in place of the hint as it is (layout spec 4n, main.rs `time_said`).
+pub const EXACT: &str = ", exact. UNDO takes it back.";
+
+/// How a conversion played out, the end of its log line (plan D7):
+/// [`EXACT`], or how many differences and each in words (", 2 differences
+/// (UNDO takes it back): Bass, bar 9: a note held over the row change is
+/// cut there; …"), which the report card shows too.
+fn conversion_said(project: &Project, d: &[Difference], bar: Tick) -> String {
     match d.len() {
-        0 => ("exact".into(), String::new()),
+        0 => EXACT.into(),
         n => {
             let each: Vec<String> = d.iter().map(|d| d.said(project, bar)).collect();
             let s = if n == 1 { "" } else { "s" };
-            (
-                format!("{n} difference{s}"),
-                format!(": {}", each.join("; ")),
+            format!(
+                ", {n} difference{s} (UNDO takes it back): {}",
+                each.join("; ")
             )
         }
     }

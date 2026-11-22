@@ -654,14 +654,14 @@ impl Widget for PlayTransport {
         for (i, (sr, name)) in segs.iter().zip(self.look.views).enumerate() {
             let on = i == self.look.view;
             if on {
-                cx.canvas.fill_round_rect(*sr, t.round(10), t.accent);
+                cx.canvas.fill_round_rect(*sr, t.round(10), t.picked());
             }
             cx.text(
                 FontId::Bold,
                 15.0,
                 *sr,
                 Align::Center,
-                if on { t.ink_on(t.accent) } else { t.text_dim },
+                if on { t.ink_on(t.picked()) } else { t.text_dim },
                 name,
             );
         }
@@ -949,10 +949,10 @@ impl Widget for MiniPads {
                     let lit = on == Some(i);
                     if lit {
                         cx.canvas
-                            .fill_round_rect(half.inset(2), (half.h - 4) / 2, t.accent);
+                            .fill_round_rect(half.inset(2), (half.h - 4) / 2, t.picked());
                     }
                     let ink = if lit {
-                        t.ink_on(t.accent)
+                        t.ink_on(t.picked())
                     } else if i == 1 && !s.scale {
                         t.text_faint
                     } else {
@@ -2159,7 +2159,7 @@ impl StepGrid {
             // Fold: lit while on.
             let face = Rect::new(hd.fold.x + 4, mid - 13, hd.fold.w - 8, 26);
             let (fill, ink) = if p.fold {
-                (t.accent, t.ink_on(t.accent))
+                (t.picked(), t.ink_on(t.picked()))
             } else {
                 (t.raised, t.text)
             };
@@ -2236,7 +2236,7 @@ impl StepGrid {
             let f = face(*br);
             let lit = b.bank == Some(i);
             let (fill, ink) = if lit {
-                (t.accent, t.ink_on(t.accent))
+                (t.picked(), t.ink_on(t.picked()))
             } else {
                 (t.raised, t.button_ink(b.bank.is_some()))
             };
@@ -2276,7 +2276,7 @@ impl StepGrid {
         // Follow, lit while on.
         let f = face(l.follow);
         let (fill, ink) = if b.follow {
-            (t.accent, t.ink_on(t.accent))
+            (t.picked(), t.ink_on(t.picked()))
         } else {
             (t.raised, t.text)
         };
@@ -3603,7 +3603,7 @@ impl Widget for StepInspector {
                 if k == 2 {
                     LOCKED
                 } else {
-                    t.accent
+                    t.picked()
                 }
             } else {
                 t.raised
@@ -3666,7 +3666,7 @@ impl Widget for StepInspector {
             for (k, b) in g.on.iter().enumerate() {
                 let lit = (k == 0) == on;
                 let fill = match (lit, k) {
-                    (true, 0) => t.accent,
+                    (true, 0) => t.picked(),
                     (true, _) => t.warn,
                     _ => t.raised,
                 };
@@ -3744,9 +3744,9 @@ impl Widget for StepInspector {
             (g.clear, "Clear", false),
         ] {
             cx.canvas
-                .fill_round_rect(b, t.round(8), if on { t.accent } else { t.raised });
+                .fill_round_rect(b, t.round(8), if on { t.picked() } else { t.raised });
             let ink = if on {
-                t.ink_on(t.accent)
+                t.ink_on(t.picked())
             } else {
                 t.button_ink(i.one)
             };

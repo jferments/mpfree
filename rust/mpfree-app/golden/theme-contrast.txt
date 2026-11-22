@@ -2,6 +2,46 @@
 # theme: THEME PAGE COUNT # REASON. Checked by tests/theme_contrast.rs; the
 # counts may only go down. Write them with
 #     MPFREE_LINT_BLESS=1 cargo test -p mpfree-app --test theme_contrast
+abletown arp-workspace-record 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown arrange-instruments 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown browser 2 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown browser-samples 6 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown chain 6 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown chain-comp 3 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown chain-notes 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown clips 7 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown clips-card 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown clips-card-direction 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown clips-card-mutate 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown clips-loops 3 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown clips-mutes 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown clips-perform 7 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown clips-scene 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown clips-scene-program 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown clips-solo 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown clips-tracks 5 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown clips-tracks-end 3 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown looper-empty 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown looper-free 2 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown looper-listening 2 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown looper-master-refused 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown looper-sources 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown looper-window 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown macros 4 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown mixer-io-learn 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown mixer-io-learn-clips 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown mixer-io-learn-looper 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown mixer-io-learn-play 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown mixer-io-monitor 2 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown mixer-io-port 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown sample-auto 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown sequencer-gear-lanes 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown synth 2 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown synth-on-kit 3 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown synth-pads-preview 3 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown synth-routes 12 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown synth-table 6 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown synth-voice 7 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 console arp-quick-band 1 # before the theme refactor (phase 0 baseline)
 console arrange-clips-audio 1 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
 console arrange-instruments 1 # before the theme refactor (phase 0 baseline)
@@ -263,12 +303,53 @@ light synth-on-kit 1 # Light (phase 4): faint text, under 3:1 in Default too
 light synth-pads-preview 1 # Light (phase 4): faint text, under 3:1 in Default too
 light synth-table 3 # Light (phase 4): faint text, under 3:1 in Default too
 light synth-voice 2 # Light (phase 4): faint text, under 3:1 in Default too
+slate arp-workspace-record 3 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate arrange-instruments 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate browser 2 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate browser-samples 6 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate chain 2 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate chain-comp 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate chain-notes 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate chain-sidechain 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate chain-sidechain-list 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate clips 6 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate clips-card 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate clips-card-direction 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate clips-card-mutate 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate clips-loops 3 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate clips-mutes 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate clips-perform 7 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate clips-scene 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate clips-scene-program 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate clips-solo 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate clips-tracks 5 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate clips-tracks-end 3 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate looper-empty 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate looper-free 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate looper-listening 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate looper-master-refused 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate looper-sources 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate looper-window 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate mixer-io-monitor 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate mixer-io-port 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate sample-auto 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate synth 2 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate synth-filter 3 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate synth-on-kit 2 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate synth-pads-preview 2 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate synth-routes 6 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate synth-table 6 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate synth-voice 7 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 spaceship arp-panel 5 # before the theme refactor (phase 0 baseline)
 spaceship arp-quick-band 18 # before the theme refactor (phase 0 baseline)
 spaceship arp-workspace-record 18 # before the theme refactor (phase 0 baseline)
 spaceship arrange-clips-audio 9 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
 spaceship arrange-instruments 67 # before the theme refactor (phase 0 baseline)
 spaceship arrange-list 39 # before the theme refactor (phase 0 baseline)
+spaceship arrange-report 12 # the report card (Arrange 4.3) over arrange-song with nothing picked: arrange-song's 10 runs plus the faint Make unique and Delete, all under the card's dimming; the card adds none
+spaceship arrange-report-exact 10 # arrange-song with the exact line on the hint (Arrange 4.3): the same 10 runs as arrange-song
+spaceship arrange-report-list 39 # the report card (Arrange 4.3) over arrange-list: the same 39 runs as arrange-list, under the dimming; the card adds none
+spaceship arrange-report-scrolls 12 # as arrange-report, with nine rows scrolling: the card adds none
 spaceship arrange-song 10 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-add 12 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
 spaceship arrange-song-audio 10 # before the theme refactor (phase 0 baseline)
@@ -406,108 +487,35 @@ spaceship synth-table 4 # before the theme refactor (phase 0 baseline)
 spaceship synth-track 1 # before the theme refactor (phase 0 baseline)
 spaceship synth-voice 4 # before the theme refactor (phase 0 baseline)
 spaceship undo-history 4 # before the theme refactor (phase 0 baseline)
-synthwave arp-quick-band 1 # before the theme refactor (phase 0 baseline)
-synthwave arrange-clips-audio 1 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
 synthwave arrange-instruments 1 # before the theme refactor (phase 0 baseline)
-synthwave browser 3 # before the theme refactor (phase 0 baseline)
-synthwave browser-kits 1 # before the theme refactor (phase 0 baseline)
-synthwave browser-samples 7 # before the theme refactor (phase 0 baseline)
+synthwave browser 2 # before the theme refactor (phase 0 baseline)
+synthwave browser-samples 6 # before the theme refactor (phase 0 baseline)
 synthwave chain 1 # before the theme refactor (phase 0 baseline)
-synthwave chain-notes 1 # before the theme refactor (phase 0 baseline)
-synthwave chain-sidechain-list 1 # before the theme refactor (phase 0 baseline)
 synthwave clips 6 # before the theme refactor (phase 0 baseline)
 synthwave clips-card 1 # before the theme refactor (phase 0 baseline)
 synthwave clips-card-direction 1 # before the theme refactor (phase 0 baseline)
 synthwave clips-card-mutate 1 # before the theme refactor (phase 0 baseline)
 synthwave clips-loops 3 # before the theme refactor (phase 0 baseline)
 synthwave clips-mutes 1 # before the theme refactor (phase 0 baseline)
-synthwave clips-perform 16 # before the theme refactor (phase 0 baseline)
+synthwave clips-perform 7 # before the theme refactor (phase 0 baseline)
 synthwave clips-scene 1 # before the theme refactor (phase 0 baseline)
 synthwave clips-scene-program 1 # before the theme refactor (phase 0 baseline)
-synthwave clips-solo 15 # before the theme refactor (phase 0 baseline)
+synthwave clips-solo 1 # before the theme refactor (phase 0 baseline)
 synthwave clips-tracks 5 # before the theme refactor (phase 0 baseline)
-synthwave clips-tracks-end 4 # before the theme refactor (phase 0 baseline)
+synthwave clips-tracks-end 3 # before the theme refactor (phase 0 baseline)
 synthwave looper-empty 1 # before the theme refactor (phase 0 baseline)
 synthwave looper-free 1 # before the theme refactor (phase 0 baseline)
 synthwave looper-listening 1 # before the theme refactor (phase 0 baseline)
 synthwave looper-master-refused 1 # before the theme refactor (phase 0 baseline)
 synthwave looper-sources 1 # before the theme refactor (phase 0 baseline)
 synthwave looper-window 1 # before the theme refactor (phase 0 baseline)
-synthwave mixer 11 # before the theme refactor (phase 0 baseline)
-synthwave mixer-audio-tracks 7 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
-synthwave mixer-effects 1 # before the theme refactor (phase 0 baseline)
-synthwave mixer-eq 1 # before the theme refactor (phase 0 baseline)
-synthwave mixer-instruments 6 # before the theme refactor (phase 0 baseline)
-synthwave mixer-io 1 # before the theme refactor (phase 0 baseline)
-synthwave mixer-io-controller 1 # before the theme refactor (phase 0 baseline)
-synthwave mixer-io-cv-moving 1 # before the theme refactor (phase 0 baseline)
-synthwave mixer-io-learn 2 # before the theme refactor (phase 0 baseline)
-synthwave mixer-io-learn-clips 2 # before the theme refactor (phase 0 baseline)
-synthwave mixer-io-learn-looper 2 # before the theme refactor (phase 0 baseline)
-synthwave mixer-io-learn-play 2 # before the theme refactor (phase 0 baseline)
-synthwave mixer-io-monitor 1 # before the theme refactor (phase 0 baseline)
-synthwave mixer-io-port 1 # before the theme refactor (phase 0 baseline)
-synthwave mixer-io-routing 1 # before the theme refactor (phase 0 baseline)
-synthwave mixer-io-routing-blocks 1 # before the theme refactor (phase 0 baseline)
-synthwave pads-edit 2 # before the theme refactor (phase 0 baseline)
-synthwave pads-edit-keys 7 # before the theme refactor (phase 0 baseline)
-synthwave pads-edit-keys-crossfade 5 # before the theme refactor (phase 0 baseline)
-synthwave pads-edit-keys-mapped 5 # before the theme refactor (phase 0 baseline)
-synthwave pads-edit-ladder 2 # before the theme refactor (phase 0 baseline)
-synthwave pads-edit-layers 6 # before the theme refactor (phase 0 baseline)
-synthwave pads-edit-levels 7 # before the theme refactor (phase 0 baseline)
-synthwave pads-edit-links 10 # before the theme refactor (phase 0 baseline)
-synthwave pads-edit-mono 2 # before the theme refactor (phase 0 baseline)
-synthwave pads-edit-movement 2 # before the theme refactor (phase 0 baseline)
-synthwave pads-edit-scenes 1 # before the theme refactor (phase 0 baseline)
-synthwave pads-edit-slices 2 # before the theme refactor (phase 0 baseline)
-synthwave pads-pad 3 # before the theme refactor (phase 0 baseline)
-synthwave pads-perform 6 # before the theme refactor (phase 0 baseline)
-synthwave pads-perform-knobs 6 # before the theme refactor (phase 0 baseline)
-synthwave pads-types 17 # before the theme refactor (phase 0 baseline)
-synthwave play 1 # before the theme refactor (phase 0 baseline)
-synthwave play-controller 1 # before the theme refactor (phase 0 baseline)
-synthwave play-loop 1 # before the theme refactor (phase 0 baseline)
-synthwave play-macros 1 # before the theme refactor (phase 0 baseline)
-synthwave play-pad-types 1 # before the theme refactor (phase 0 baseline)
-synthwave play-rec-both 1 # before the theme refactor (phase 0 baseline)
-synthwave play-rec-list 1 # before the theme refactor (phase 0 baseline)
-synthwave play-rec-pad 1 # before the theme refactor (phase 0 baseline)
-synthwave play-rec-ready 1 # before the theme refactor (phase 0 baseline)
-synthwave play-rec-tracks 1 # before the theme refactor (phase 0 baseline)
-synthwave play-synth 2 # before the theme refactor (phase 0 baseline)
-synthwave play-synth-chords 3 # before the theme refactor (phase 0 baseline)
-synthwave play-synth-in-key 1 # before the theme refactor (phase 0 baseline)
-synthwave sample 3 # before the theme refactor (phase 0 baseline)
-synthwave sample-chop 3 # before the theme refactor (phase 0 baseline)
-synthwave sample-chop-audio 6 # before the theme refactor (phase 0 baseline)
-synthwave sample-chop-keys 3 # before the theme refactor (phase 0 baseline)
-synthwave sample-chop-live 4 # before the theme refactor (phase 0 baseline)
-synthwave sample-chop-new-kit 6 # before the theme refactor (phase 0 baseline)
-synthwave sample-chop-on 4 # before the theme refactor (phase 0 baseline)
-synthwave sample-chop-one-pad 3 # before the theme refactor (phase 0 baseline)
-synthwave sample-chop-phrase 3 # before the theme refactor (phase 0 baseline)
-synthwave sample-chop-pitch 3 # before the theme refactor (phase 0 baseline)
-synthwave sample-grain 4 # before the theme refactor (phase 0 baseline)
-synthwave sample-grain-filter 4 # before the theme refactor (phase 0 baseline)
-synthwave sample-grain-movement 4 # before the theme refactor (phase 0 baseline)
-synthwave sample-grain-presets 4 # before the theme refactor (phase 0 baseline)
-synthwave sample-grain-shape 4 # before the theme refactor (phase 0 baseline)
-synthwave sample-recall 1 # before the theme refactor (phase 0 baseline)
-synthwave sample-recording 12 # before the theme refactor (phase 0 baseline)
-synthwave sample-warp 4 # before the theme refactor (phase 0 baseline)
-synthwave sample-zoomed 4 # before the theme refactor (phase 0 baseline)
-synthwave sequencer-gear-lane-lfo 1 # before the theme refactor (phase 0 baseline)
-synthwave sequencer-gear-lanes 1 # before the theme refactor (phase 0 baseline)
+synthwave pads-edit-layers 1 # before the theme refactor (phase 0 baseline)
+synthwave pads-edit-levels 1 # before the theme refactor (phase 0 baseline)
+synthwave pads-edit-links 1 # before the theme refactor (phase 0 baseline)
 synthwave sequencer-notes-tracker 4 # before the theme refactor (phase 0 baseline)
-synthwave sequencer-steps-synth 2 # before the theme refactor (phase 0 baseline)
 synthwave status-red-hint 1 # the Play page's own runs, as on play (System status phase 2)
-synthwave synth 2 # before the theme refactor (phase 0 baseline)
-synthwave synth-filter 1 # before the theme refactor (phase 0 baseline)
-synthwave synth-lfo-2 1 # before the theme refactor (phase 0 baseline)
+synthwave synth 1 # before the theme refactor (phase 0 baseline)
 synthwave synth-on-kit 1 # before the theme refactor (phase 0 baseline)
 synthwave synth-pads-preview 1 # before the theme refactor (phase 0 baseline)
-synthwave synth-routes 1 # before the theme refactor (phase 0 baseline)
-synthwave synth-table 4 # before the theme refactor (phase 0 baseline)
-synthwave synth-track 1 # before the theme refactor (phase 0 baseline)
-synthwave synth-voice 3 # before the theme refactor (phase 0 baseline)
+synthwave synth-table 3 # before the theme refactor (phase 0 baseline)
+synthwave synth-voice 2 # before the theme refactor (phase 0 baseline)

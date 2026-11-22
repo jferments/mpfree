@@ -1,0 +1,18 @@
+# An example dark theme: a blue-black page fading into the panels, an amber
+# accent with dark words on it, and square corners.
+base        = default
+name        = Midnight
+bg          = #070A12
+surface     = #0E1424
+raised      = #1A2238
+outline     = #2A3552
+# A bright accent reads best with dark words on it.
+accent      = #F2A93B
+on_accent   = #1A1206
+# The second accent half way between the amber and the record red.
+accent2     = mix({accent}, {bad}, 50%)
+corners     = square
+backdrop    = gradient
+backdrop_to = mix({bg}, {accent}, 8%)
+# The first Q-Link wears the accent; the other three keep Default's.
+qlink.1     = {accent}

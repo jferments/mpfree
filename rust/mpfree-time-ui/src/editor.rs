@@ -25,7 +25,14 @@
 //!   the move packed into `frame` ([`drop_frame`], [`drop_of`]);
 //! - the velocity lane: `Value(v)`, 0 to 1, as the finger goes down and
 //!   moves;
-//! - the buttons along the bottom: `Tab(k)` for [`EDIT_BUTTONS`]`[k]`.
+//! - the buttons along the bottom: `Tab(k)` for [`EDIT_BUTTONS`]`[k]`
+//!   (the last, Edit, opens the Edit options' drawer: the page's own);
+//! - the view moved (a pinch, two fingers, a finger on the ruler, the
+//!   keys or the overview, Fit): `View`, when the fingers lift, so the
+//!   page can keep it and Snap Auto follow it. The view itself
+//!   ([`zoom::RollView`]) is the screen's alone: nothing of it goes to the
+//!   time engine but the division Snap Auto picks
+//!   ([`EditAction::AutoSnap`]).
 //!
 //! On the roll, a note played with pad pressure shows it as a lighter
 //! contour along its bottom, as high as the pressure, from where each
@@ -34,8 +41,15 @@
 //! [`edit_rows`] fills the Edit options list; its `Step` and `Select`
 //! become [`EditAction::Row`] and [`EditAction::PickRow`].
 
+pub mod gesture;
+pub mod zoom;
+
 use std::cell::RefCell;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use gesture::Pinch;
+use zoom::RollView;
 
 use mpfree_seq::notes::{self, Snap, Tc, TcKind, Which, DIVISIONS};
 use mpfree_seq::steps::{Edit, Euclid, Grid, MAX_EUCLID_STEPS};
@@ -49,13 +63,16 @@ use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, W
 pub const EDIT_BUTTONS: [&str; 8] = [
     "‹ Steps",
     "Grid",
-    "Tool",
+    "Draw",
     "Snap",
     "All",
     "Duplicate",
     "Delete",
-    "TC",
+    "Edit",
 ];
+/// [`EDIT_BUTTONS`]' last: Edit, which opens the Edit options' drawer
+/// (the page's own; [`crate::view::TimePage::edit_drawer`]).
+pub const EDIT_BUTTON: usize = 7;
 /// The Edit options, top to bottom. The first six are Timing Correct's
 /// settings (TC applies them); the next seven change the selection at
 /// once; the last four are the Euclidean fill: the sound it writes, then
@@ -86,14 +103,28 @@ pub const PEN: usize = usize::MAX;
 /// The step the tracker and the Euclidean fill use when the snap is off
 /// or finer than a grid allows (1/32): a 1/16.
 pub const STEP_FALLBACK: Tick = PPQ as Tick / 4;
-/// The snaps the Snap button steps through: the divisions, then off.
-pub const SNAPS: usize = DIVISIONS.len() + 1;
-/// The snap a new editor starts with: 1/16.
-pub const DEFAULT_SNAP: usize = 6;
+/// [`Editor::snap`]: no snap.
+pub const SNAP_OFF: usize = DIVISIONS.len();
+/// [`Editor::snap`]: Snap Auto, the snap following the roll's zoom
+/// ([`zoom::auto_division`]) in straight divisions ...
+pub const SNAP_AUTO: usize = DIVISIONS.len() + 1;
+/// ... or in triplets (Auto triplets).
+pub const SNAP_AUTO_T: usize = DIVISIONS.len() + 2;
+/// The snaps the Snap button steps through: the divisions, off, Auto and
+/// Auto triplets.
+pub const SNAPS: usize = DIVISIONS.len() + 3;
+/// The snap a new editor starts with: Auto (piano roll plan 1A.1).
+pub const DEFAULT_SNAP: usize = SNAP_AUTO;
+/// The division Snap Auto starts on, and Timing Correct's: 1/16.
+const SIXTEENTH: usize = 6;
 /// The length of a note drawn with no snap: a 1/16.
 const FREE_LEN: Tick = PPQ as Tick / 4;
-/// The velocity a drawn note gets.
+/// The velocity a drawn note gets until another is used.
 const DRAW_VELOCITY: u8 = 100;
+/// A step, for a tap with Draw on (plan 1B.1, call 3): a note no longer
+/// than this comes out, as a tap on a lit step does; a longer one is
+/// picked. A 1/16, the Steps view's step.
+pub const TAP_STEP: Tick = PPQ as Tick / 4;
 /// Join keys, so turning a row or dragging the velocity lane makes one
 /// undoable take.
 const JOIN: u64 = 0xED17_0000_0000;
@@ -129,16 +160,19 @@ impl Lens {
     }
 }
 
-/// What a tap on the roll does.
+/// What a tap on the roll does: the Draw button, lit while Draw is on
+/// (piano roll plan 1B.1, the plan's call 2: one Draw button in place of
+/// the Select, Draw and Erase cycle; ERASE held + a tap erases).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tool {
-    /// Taps select; a drag moves the selection.
+    /// Draw off, editing: a tap picks a note, a drag moves the picked
+    /// notes, a double tap on empty space puts a note in.
     #[default]
     Select,
-    /// A tap on empty space puts a note there.
+    /// Draw on, the step feel: a tap on empty space puts a note in, a tap
+    /// on a note no longer than a step takes it out, a drag on empty space
+    /// draws a note as long as the drag.
     Draw,
-    /// A tap on a note takes it out.
-    Erase,
 }
 
 impl Tool {
@@ -146,15 +180,13 @@ impl Tool {
         match self {
             Tool::Select => "Select",
             Tool::Draw => "Draw",
-            Tool::Erase => "Erase",
         }
     }
 
     fn next(self) -> Tool {
         match self {
             Tool::Select => Tool::Draw,
-            Tool::Draw => Tool::Erase,
-            Tool::Erase => Tool::Select,
+            Tool::Draw => Tool::Select,
         }
     }
 }
@@ -166,26 +198,73 @@ pub enum EditAction {
     Open,
     /// Button `k` of [`EDIT_BUTTONS`].
     Button(usize),
-    /// A note tapped, by its index in the clip, on the picture of
-    /// revision `rev` ([`crate::EditInfo::rev`]). The app refuses it if
-    /// the clip has moved on since, so a tap never lands on another note
-    /// (piano roll plan 0A.1).
+    /// A note picked (a hold on the roll, a row of the list or the
+    /// tracker), by its index in the clip, on the picture of revision
+    /// `rev` ([`crate::EditInfo::rev`]). The app refuses every action
+    /// naming a note if the clip has moved on since, so a touch never
+    /// lands on another note (piano roll plan 0A.1). A note already
+    /// picked keeps the others with it.
     Note { index: usize, rev: u64 },
-    /// Empty space on the roll tapped.
+    /// A note on the roll tapped (plan 1B.1): with Draw on, a note no
+    /// longer than a step comes out ([`TAP_STEP`]) and a longer one is
+    /// picked; with Draw off it is picked in place of the others.
+    Tap { index: usize, rev: u64 },
+    /// A note taken out: ERASE held + a tap.
+    Erase { index: usize, rev: u64 },
+    /// Empty space on the roll tapped: with Draw on a note one snap long
+    /// goes in, with Draw off the picks are let go.
     Empty { tick: Tick, note: u8 },
+    /// A note `len` long put in at `tick`, whatever the tool: a drag on
+    /// empty space with Draw on, a double tap with Draw off. It stops at
+    /// the clip's end.
+    Draw { tick: Tick, note: u8, len: Tick },
     /// An empty step of the tracker tapped, by its line.
     Step(Tick),
-    /// The selection dragged by this many ticks and notes.
-    Drop { ticks: Tick, notes: i32 },
+    /// Note `index` dragged by this many ticks and notes, as its finger
+    /// lifted: the picked notes move with it when it is one of them, else
+    /// it is picked alone and moves.
+    Drop {
+        index: usize,
+        rev: u64,
+        ticks: Tick,
+        notes: i32,
+    },
     /// The velocity lane: the selection's velocity, 0 to 1.
     Velocity(f32),
     /// An Edit option stepped.
     Row { row: usize, delta: i32 },
     /// An Edit option picked (the wheel steps it).
     PickRow(usize),
-    /// The wheel: the roll's notes, or the list's rows.
+    /// The wheel: the list's or the tracker's rows (the roll scrolls on
+    /// the screen).
     Scroll(i32),
+    /// Snap Auto's division (an index into [`DIVISIONS`]), as the roll's
+    /// zoom picks it ([`zoom::auto_division`]): sent when it changes, once
+    /// the fingers lift. Not an edit.
+    AutoSnap(usize),
+    /// Timing Correct: the TC button, and Correct in the Edit options'
+    /// drawer. The picked notes, or all of them with none picked.
+    Correct,
 }
+
+impl EditAction {
+    /// The revision of the picture an action naming a note was made on
+    /// (the app refuses it if the clip has moved on).
+    pub fn rev(&self) -> Option<u64> {
+        match *self {
+            EditAction::Note { rev, .. }
+            | EditAction::Tap { rev, .. }
+            | EditAction::Erase { rev, .. }
+            | EditAction::Drop { rev, .. } => Some(rev),
+            _ => None,
+        }
+    }
+}
+
+/// An edit [`Editor::act`] works out: the change, its join key, whether
+/// the notes it puts in are picked after, whether the picked notes it
+/// leaves alone stay picked, and the log line.
+type Made = (Edit, Option<u64>, bool, bool, String);
 
 /// What [`Editor::act`] asks of the app.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -225,8 +304,12 @@ pub struct Editor {
     pub sel: Vec<usize>,
     pub lens: Lens,
     pub tool: Tool,
-    /// Index into the divisions, or [`DIVISIONS`]`.len()` for no snap.
+    /// Index into the divisions, or [`SNAP_OFF`], [`SNAP_AUTO`] or
+    /// [`SNAP_AUTO_T`].
     pub snap: usize,
+    /// Snap Auto's division now, an index into [`DIVISIONS`]: the screen
+    /// picks it from the roll's zoom ([`EditAction::AutoSnap`]).
+    pub auto: usize,
     pub tc: Tc,
     /// The Edit option picked (the wheel steps it).
     pub row: usize,
@@ -239,6 +322,9 @@ pub struct Editor {
     /// Euclidean fill writes it.
     pub sound: u8,
     pub euclid: Euclid,
+    /// The velocity last used (a note picked or drawn, the lane): the
+    /// next drawn note gets it.
+    pub velocity: u8,
     /// Something else changed the clip and took a picked note with it, so
     /// the picks were cleared ([`Editor::follow`]); the legend says so
     /// until the next touch.
@@ -274,23 +360,51 @@ impl Editor {
             lens: Lens::Grid,
             tool: Tool::Select,
             snap: DEFAULT_SNAP,
+            auto: SIXTEENTH,
             tc: Tc::default(),
             row: 0,
             low,
             first: 0,
             sound,
             euclid: Euclid::default(),
+            velocity: DRAW_VELOCITY,
             cleared: false,
+        }
+    }
+
+    /// The division the snap is now: its own, Snap Auto's, or none.
+    fn division(&self) -> Option<usize> {
+        match self.snap {
+            SNAP_AUTO | SNAP_AUTO_T => Some(self.auto),
+            s => (s < DIVISIONS.len()).then_some(s),
         }
     }
 
     /// The snap in ticks, or 0 for none.
     pub fn snap_ticks(&self) -> Tick {
-        DIVISIONS.get(self.snap).map_or(0, |d| d.0)
+        self.division()
+            .and_then(|d| DIVISIONS.get(d))
+            .map_or(0, |d| d.0)
     }
 
-    pub fn snap_name(&self) -> &'static str {
-        DIVISIONS.get(self.snap).map_or("Off", |d| d.1)
+    /// The snap as its chip says it: "1/16", "Off", "Auto · 1/16" or,
+    /// with Auto triplets, "Auto T · 1/16T".
+    pub fn snap_name(&self) -> String {
+        let name = self
+            .division()
+            .and_then(|d| DIVISIONS.get(d))
+            .map_or("Off", |d| d.1);
+        match self.snap {
+            SNAP_AUTO => format!("Auto · {name}"),
+            SNAP_AUTO_T => format!("Auto T · {name}"),
+            _ => name.to_string(),
+        }
+    }
+
+    /// Snap Auto is on (straight or triplets): the roll's zoom picks the
+    /// division.
+    pub fn snap_auto(&self) -> bool {
+        matches!(self.snap, SNAP_AUTO | SNAP_AUTO_T)
     }
 
     /// The steps of the tracker and the Euclidean fill: the snap, or a
@@ -312,6 +426,32 @@ impl Editor {
             0 => FREE_LEN,
             d => d,
         }
+    }
+
+    /// Note `n` was picked: its sound is the one worked on, and its
+    /// velocity the next drawn note's.
+    fn worked_on(&mut self, n: Note) {
+        self.sound = n.note;
+        self.velocity = n.velocity;
+    }
+
+    /// A note `len` long at `tick` on `note`, at the velocity last used,
+    /// stopping at the clip's end (plan 1B.1: a choice, not the model's
+    /// rule); picked after. None past the end.
+    fn draw(&mut self, clip: &Clip, tick: Tick, note: u8, len: Tick) -> Option<Made> {
+        if !(0..clip.length).contains(&tick) {
+            return None;
+        }
+        let len = len.max(1).min(clip.length - tick);
+        let n = Note::new(tick, len, note.min(127), self.velocity);
+        self.sound = n.note;
+        Some((
+            notes::add(clip, n),
+            None,
+            true,
+            false,
+            format!("edit: note {} drawn at tick {tick}", note_name(n.note)),
+        ))
     }
 
     /// The selection, in range and in order.
@@ -365,10 +505,19 @@ impl Editor {
             }
             EditAction::Button(2) => {
                 self.tool = self.tool.next();
-                return Done::line(format!("edit: tool {}", self.tool.name()));
+                let on = if self.tool == Tool::Draw { "on" } else { "off" };
+                return Done::line(format!("edit: draw {on}"));
             }
             EditAction::Button(3) => {
                 self.snap = (self.snap + 1) % SNAPS;
+                // Snap Auto's division moved onto its kind (1/16 and
+                // 1/16T): the roll asks for the one its zoom wants after.
+                let triplet = matches!(self.auto, 3 | 5 | 7 | 9 | 11);
+                self.auto = match self.snap {
+                    SNAP_AUTO_T if !triplet && self.auto >= 2 => self.auto + 1,
+                    SNAP_AUTO if triplet => self.auto - 1,
+                    _ => self.auto,
+                };
                 return Done::line(format!("edit: snap {}", self.snap_name()));
             }
             EditAction::Button(4) => {
@@ -394,7 +543,7 @@ impl Editor {
                 false,
                 format!("edit: {} notes deleted", sel.len()),
             ),
-            EditAction::Button(7) => {
+            EditAction::Correct => {
                 let which = if none {
                     Which::All
                 } else {
@@ -413,48 +562,63 @@ impl Editor {
                 )
             }
             EditAction::Button(_) => return Done::default(),
-            EditAction::Note { index: i, .. } if i < clip.notes.len() => match self.tool {
-                Tool::Erase => (
-                    notes::delete(clip, &[i]),
-                    None,
-                    false,
-                    true,
-                    format!("edit: note {} erased", i + 1),
-                ),
-                // A tap on a selected note keeps the group, so a drag
-                // moves it; on another note it selects that one. Its sound
-                // is the one worked on.
-                _ => {
-                    if !sel.contains(&i) {
-                        self.sel = vec![i];
-                    }
-                    self.sound = clip.notes[i].note;
-                    return Done::default();
+            // A note picked: one already picked keeps the others with it.
+            // Its sound is the one worked on, its velocity the next drawn.
+            EditAction::Note { index: i, .. } if i < clip.notes.len() => {
+                if !sel.contains(&i) {
+                    self.sel = vec![i];
                 }
-            },
-            EditAction::Note { .. } => return Done::default(),
-            EditAction::Empty { tick, note } => match self.tool {
-                Tool::Draw if tick < clip.length => {
-                    let n = Note::new(tick, self.step(), note.min(127), DRAW_VELOCITY);
+                self.worked_on(clip.notes[i]);
+                return Done::default();
+            }
+            // A tap with Draw on takes out a note no longer than a step,
+            // only the one tapped (never every note of its step and
+            // pitch); a longer one, or any with Draw off, is picked alone.
+            EditAction::Tap { index: i, .. } if i < clip.notes.len() => {
+                let n = clip.notes[i];
+                if self.tool == Tool::Draw && n.len <= TAP_STEP {
                     self.sound = n.note;
                     (
-                        notes::add(clip, n),
+                        notes::delete(clip, &[i]),
                         None,
-                        true,
                         false,
-                        format!("edit: note {} drawn at tick {tick}", note_name(note)),
+                        true,
+                        format!("edit: note {} taken out", note_name(n.note)),
                     )
+                } else {
+                    self.sel = vec![i];
+                    self.worked_on(n);
+                    return Done::default();
                 }
+            }
+            EditAction::Erase { index: i, .. } if i < clip.notes.len() => (
+                notes::delete(clip, &[i]),
+                None,
+                false,
+                true,
+                format!("edit: note {} erased", note_name(clip.notes[i].note)),
+            ),
+            EditAction::Note { .. } | EditAction::Tap { .. } | EditAction::Erase { .. } => {
+                return Done::default()
+            }
+            EditAction::Empty { tick, note } => match self.tool {
+                Tool::Draw => match self.draw(clip, tick, note, self.step()) {
+                    Some(d) => d,
+                    None => return Done::default(),
+                },
                 Tool::Select => {
                     self.sel.clear();
                     return Done::default();
                 }
-                _ => return Done::default(),
+            },
+            EditAction::Draw { tick, note, len } => match self.draw(clip, tick, note, len) {
+                Some(d) => d,
+                None => return Done::default(),
             },
             EditAction::Step(tick) => match self.tool {
                 // The editor's sound, a step long, on the step's line.
                 Tool::Draw if (0..clip.length).contains(&tick) => {
-                    let n = Note::new(tick, self.grid().size(), self.sound, DRAW_VELOCITY);
+                    let n = Note::new(tick, self.grid().size(), self.sound, self.velocity);
                     (
                         notes::add(clip, n),
                         None,
@@ -467,19 +631,38 @@ impl Editor {
                     self.sel.clear();
                     return Done::default();
                 }
-                _ => return Done::default(),
+                Tool::Draw => return Done::default(),
             },
-            EditAction::Drop { ticks, notes: by } => (
-                notes::shift(clip, &sel, ticks, by),
-                None,
-                true,
-                true,
-                format!("edit: {} notes moved", sel.len()),
-            ),
+            // The note dragged moves its picks with it, or alone when it
+            // wasn't picked.
+            EditAction::Drop {
+                index,
+                ticks,
+                notes: by,
+                ..
+            } => {
+                let moved = match index < clip.notes.len() && !sel.contains(&index) {
+                    true => vec![index],
+                    false => sel.clone(),
+                };
+                if let Some(&i) = moved.first() {
+                    self.sound = clip.notes[i].note;
+                }
+                (
+                    notes::shift(clip, &moved, ticks, by),
+                    None,
+                    true,
+                    false,
+                    format!("edit: {} notes moved", moved.len()),
+                )
+            }
             // One a drag of the velocity lane (sent when the finger lifts),
             // so each drag is its own take.
             EditAction::Velocity(v) => (
-                notes::set_velocity(clip, &sel, lane_velocity(v)),
+                notes::set_velocity(clip, &sel, {
+                    self.velocity = lane_velocity(v);
+                    self.velocity
+                }),
                 None,
                 true,
                 true,
@@ -596,6 +779,12 @@ impl Editor {
                     _ => return Done::default(),
                 }
             }
+            EditAction::AutoSnap(d) => {
+                if d < DIVISIONS.len() {
+                    self.auto = d;
+                }
+                return Done::default();
+            }
             EditAction::Scroll(d) => {
                 let rows = match self.lens {
                     Lens::Grid => 0,
@@ -688,7 +877,7 @@ impl Editor {
                 let at = DIVISIONS
                     .iter()
                     .position(|v| v.0 == tc.division)
-                    .unwrap_or(DEFAULT_SNAP) as i32;
+                    .unwrap_or(SIXTEENTH) as i32;
                 let to = (at + d).clamp(0, DIVISIONS.len() as i32 - 1) as usize;
                 tc.division = DIVISIONS[to].0;
             }
@@ -761,7 +950,11 @@ pub fn edit_rows(ed: &Editor, clip: &Clip) -> Vec<OptionRow> {
         if sel.is_empty() {
             "pick notes".into()
         } else {
-            format!("by {}", ed.snap_name())
+            // The division alone ("by 1/16", Snap Auto's too), to fit.
+            match ed.snap_ticks() {
+                0 => "by Off".into(),
+                t => format!("by {}", step_name(t)),
+            }
         },
         of_sel(&|n| i64::from(n.note), &|v| note_name(v as u8)),
         of_sel(&|n| i64::from(n.velocity), &|v| v.to_string()),
@@ -939,6 +1132,18 @@ pub fn drop_frame(ticks: Tick, notes: i32) -> u64 {
     let t = (ticks.clamp(-(1 << 30), 1 << 30) + (1 << 31)) as u64;
     let n = (notes.clamp(-127, 127) + 128) as u64;
     n << 32 | t
+}
+
+/// Note `i` of `old`, found in `new`: at the same place if it is still
+/// there, else the first equal note (its place, length, pitch and
+/// velocity), else none.
+fn refind(old: &[NoteBox], new: &[NoteBox], i: usize) -> Option<usize> {
+    let n = old.get(i)?;
+    let key = |m: &NoteBox| (m.tick, m.len, m.note, m.velocity);
+    if new.get(i).is_some_and(|m| key(m) == key(n)) {
+        return Some(i);
+    }
+    new.iter().position(|m| key(m) == key(n))
 }
 
 /// The velocity the lane's value `v` (0 to 1, [`EditAction::Velocity`])
@@ -1131,14 +1336,23 @@ pub struct NoteGrid {
     /// The clip's length and a bar, in clip ticks.
     pub length: Tick,
     pub bar: Tick,
-    /// The roll's lowest note.
-    pub low: u8,
+    /// What the roll shows and how big (piano roll plan 1A.1): the
+    /// screen's own, kept for each clip by the page and moved here by a
+    /// pinch, two fingers, the ruler, the keys, the overview or Fit.
+    pub view: RollView,
+    /// The Edit options' drawer is open (the page's): the Edit button is
+    /// lit.
+    pub drawer: bool,
     /// Pad rows (Pad 1 to 16) in place of note names.
     pub pads: bool,
     pub playhead: Option<Tick>,
     /// The snap in ticks (0: none), for the drag and the lines.
     pub snap: Tick,
     pub snap_name: String,
+    /// The snap is Snap Auto: a drag moves notes by whole snaps, each
+    /// keeping its distance from the grid (a fixed snap puts the dragged
+    /// note's start on a line, as before).
+    pub snap_auto: bool,
     pub tool: Tool,
     pub lens: Lens,
     /// The list's or the tracker's first row.
@@ -1152,8 +1366,96 @@ pub struct NoteGrid {
     /// in clip ticks from its note's start (as `Clip::touch`).
     pub touch: Vec<TouchPoint>,
     drag: Option<Drag>,
+    /// What the fingers that aren't dragging a note are doing.
+    hand: Hand,
+    /// When the overview was last tapped, for a double tap.
+    overview_tap: Option<Instant>,
+    /// When and where empty roll was last tapped with Draw off, for a
+    /// double tap (a note goes in).
+    empty_tap: Option<(Instant, (i32, i32))>,
     kept: Kept,
 }
+
+/// What fingers on the roll are doing, besides dragging a note or the
+/// velocity lane ([`Drag`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Hand {
+    Idle,
+    /// A finger on a note, not yet a tap, a hold or a drag (piano roll
+    /// plan 1B.1): nothing is sent until it lifts (a tap), stays down
+    /// [`HOLD`] seconds (a hold picks the note, [`NoteGrid::tick`]) or
+    /// moves [`TAP_SLOP`] (a drag).
+    Press {
+        finger: u64,
+        index: usize,
+        at: (i32, i32),
+        now: (i32, i32),
+        /// Seconds down so far.
+        held: f32,
+        /// The hold picked the note: its lift taps nothing.
+        picked: bool,
+    },
+    /// A finger drawing a note on empty roll with Draw on: from the cell
+    /// it went down on to the end of the cell under it now, at least a
+    /// snap long, sent when it lifts.
+    Pen {
+        finger: u64,
+        note: u8,
+        from: Tick,
+        to: Tick,
+        now: (i32, i32),
+    },
+    /// A finger on empty roll: its tap acts when it lifts (so a pinch
+    /// starting there draws nothing), unless it moved away first.
+    Wait {
+        finger: u64,
+        at: (i32, i32),
+        now: (i32, i32),
+        cell: (u8, Tick),
+        moved: bool,
+    },
+    /// One finger scrolling on the ruler, the keys or the overview.
+    Scroll {
+        finger: u64,
+        on: Strip,
+        at: (i32, i32),
+        now: (i32, i32),
+        from: RollView,
+        moved: bool,
+    },
+    /// Two fingers moving the view ([`gesture`]).
+    Pinch(Pinch),
+    /// A finger left from a pinch: it does nothing until it lifts, or a
+    /// second finger joins it for another pinch.
+    Spent {
+        finger: u64,
+        now: (i32, i32),
+    },
+}
+
+/// Where one finger scrolls the roll.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Strip {
+    /// In time.
+    Ruler,
+    /// In pitch.
+    Keys,
+    /// The window over the whole clip: a drag moves it, a tap jumps, a
+    /// double tap fits the whole clip.
+    Overview,
+}
+
+/// A finger moved this far (pixels) on the roll is no tap (the plan's
+/// 24 px, about 3 mm).
+const TAP_SLOP: i32 = 24;
+/// A finger moved this far on a strip starts scrolling.
+const STRIP_SLOP: i32 = 6;
+/// Two taps on the overview, or on empty roll with Draw off, this close
+/// together are a double tap.
+const DOUBLE_TAP: Duration = Duration::from_millis(400);
+/// A finger held this long on a note without moving [`TAP_SLOP`] picks
+/// it (seconds; the plan's 0.4 s, as on Steps).
+pub const HOLD: f32 = 0.4;
 
 /// A note being dragged: by which finger, which note, where the finger
 /// went down, and the move so far (snapped).
@@ -1164,6 +1466,9 @@ struct Drag {
     index: usize,
     x: i32,
     y: i32,
+    /// Where the finger is now (a second finger joining starts a pinch
+    /// from here).
+    now: (i32, i32),
     ticks: Tick,
     notes: i32,
     /// The finger is in the velocity lane: the value under it, 0 to 1,
@@ -1173,15 +1478,18 @@ struct Drag {
 
 const KEYS_W: i32 = 64;
 const RULER_H: i32 = 22;
+/// The overview strip over the ruler, with Fit under the keys and Follow
+/// at its right end.
+const OVERVIEW_H: i32 = 32;
+const FOLLOW_W: i32 = 104;
 const VEL_H: i32 = 64;
 const TOOLS_H: i32 = 48;
 const GAP: i32 = 6;
-const ROW_H: i32 = 18;
 /// About how many rows the roll shows in the note editor.
 pub const ROLL_ROWS: u8 = 22;
-const LIST_H: i32 = 34;
-/// A tracker row: tighter than the list's, so a bar of 1/16s shows.
-const TRACK_H: i32 = 26;
+const LIST_H: i32 = 40;
+/// A tracker row: as tall as the list's, for a fingertip (plan 1A.1).
+const TRACK_H: i32 = 40;
 /// The tracker's columns. A note's row fills them all; an empty step's
 /// row shows its position and dots.
 const TRACK_COLS: [(&str, i32); 9] = [
@@ -1213,11 +1521,13 @@ impl Default for NoteGrid {
             notes: Vec::new(),
             length: 4 * PPQ as Tick,
             bar: 4 * PPQ as Tick,
-            low: 48,
+            view: RollView::default(),
+            drawer: false,
             pads: false,
             playhead: None,
             snap: PPQ as Tick / 4,
             snap_name: "1/16".into(),
+            snap_auto: false,
             tool: Tool::Select,
             lens: Lens::Grid,
             first: 0,
@@ -1226,18 +1536,27 @@ impl Default for NoteGrid {
             locks: Vec::new(),
             touch: Vec::new(),
             drag: None,
+            hand: Hand::Idle,
+            overview_tap: None,
+            empty_tap: None,
             kept: Kept::default(),
         }
     }
 }
 
 struct Geo {
+    /// The overview strip (empty off the roll), Fit under the keys and
+    /// Follow at its right end.
+    overview: Rect,
+    fit: Rect,
+    follow: Rect,
     ruler: Rect,
     keys: Rect,
     roll: Rect,
     vel: Rect,
     tools: Rect,
-    rows: i32,
+    /// The view kept within this roll ([`RollView::clamp`]).
+    v: RollView,
 }
 
 /// The velocity lane's value at `y`, 0 (its bottom) to 1 (its top).
@@ -1256,11 +1575,12 @@ impl NoteGrid {
             && self.playhead == other.playhead
             && self.title == other.title
             && self.legend == other.legend
-            && (self.length, self.bar, self.low, self.pads)
-                == (other.length, other.bar, other.low, other.pads)
+            && (self.length, self.bar, self.pads, self.drawer)
+                == (other.length, other.bar, other.pads, other.drawer)
+            && self.view == other.view
             && (self.snap, self.tool, self.lens, self.first)
                 == (other.snap, other.tool, other.lens, other.first)
-            && self.snap_name == other.snap_name
+            && (&self.snap_name, self.snap_auto) == (&other.snap_name, other.snap_auto)
             && self.color == other.color
             && self.step == other.step
             && self.locks == other.locks
@@ -1275,10 +1595,33 @@ impl NoteGrid {
             .unwrap_or(&[])
     }
 
-    /// Show what `other` shows, keeping a drag in progress.
+    /// Show what `other` shows, keeping what the fingers are doing.
+    /// A finger on a note or dragging one follows its note to where it
+    /// now is in `other`'s notes (by value), or lets go of it when it is
+    /// gone, so its lift never acts on another note.
     pub fn show(&mut self, other: NoteGrid) {
-        let drag = self.drag;
-        *self = NoteGrid { drag, ..other };
+        let (mut drag, mut hand) = (self.drag, self.hand);
+        let refind = |i: usize| refind(&self.notes, &other.notes, i);
+        if let Some(d) = drag.as_mut().filter(|d| d.lane.is_none()) {
+            match refind(d.index) {
+                Some(i) => d.index = i,
+                None => drag = None,
+            }
+        }
+        if let Hand::Press { index, .. } = &mut hand {
+            match refind(*index) {
+                Some(i) => *index = i,
+                None => hand = Hand::Idle,
+            }
+        }
+        let (overview_tap, empty_tap) = (self.overview_tap, self.empty_tap);
+        *self = NoteGrid {
+            drag,
+            hand,
+            overview_tap,
+            empty_tap,
+            ..other
+        };
     }
 
     fn geo(&self, r: Rect) -> Geo {
@@ -1286,61 +1629,130 @@ impl NoteGrid {
         let body = r.inset(14).take_top(34).1;
         let (tools, rest) = body.take_bottom(TOOLS_H);
         let rest = Rect::new(rest.x, rest.y, rest.w, rest.h - GAP);
-        let (vel, rest) = if self.lens != Lens::Grid {
+        let roll_lens = self.lens == Lens::Grid;
+        let (vel, rest) = if !roll_lens {
             (Rect::new(rest.x, rest.bottom(), rest.w, 0), rest)
         } else {
             let (v, rest) = rest.take_bottom(VEL_H);
             (v, Rect::new(rest.x, rest.y, rest.w, rest.h - GAP))
         };
+        let (strip, rest) = if roll_lens {
+            let (o, rest) = rest.take_top(OVERVIEW_H);
+            (o, Rect::new(rest.x, rest.y + 4, rest.w, rest.h - 4))
+        } else {
+            (Rect::new(rest.x, rest.y, rest.w, 0), rest)
+        };
         let (ruler, rest) = rest.take_top(RULER_H);
         let (keys, roll) = rest.take_left(KEYS_W);
-        let rows = if self.pads {
-            16
-        } else {
-            (roll.h / ROW_H).max(1)
-        };
+        let follow = Rect::new(roll.right() - FOLLOW_W, strip.y, FOLLOW_W, strip.h);
         Geo {
+            overview: Rect::new(roll.x, strip.y, (roll.w - FOLLOW_W - 6).max(0), strip.h),
+            fit: Rect::new(keys.x, strip.y, keys.w - 6, strip.h),
+            follow: if roll_lens {
+                follow
+            } else {
+                Rect::new(0, 0, 0, 0)
+            },
             ruler: Rect::new(roll.x, ruler.y, roll.w, ruler.h),
             keys,
             roll,
             vel: Rect::new(roll.x, vel.y, roll.w, vel.h),
             tools,
-            rows,
+            v: self.view.clamped(roll, self.length, self.rows()),
         }
     }
 
-    fn row_h(&self, g: &Geo) -> i32 {
-        (g.roll.h / g.rows).max(1)
+    /// How many rows the roll has: 16 pads, or 128 notes.
+    fn rows(&self) -> u8 {
+        if self.pads {
+            16
+        } else {
+            128
+        }
     }
 
     /// The x of clip tick `t` on the roll.
     fn x_of(&self, g: &Geo, t: Tick) -> i32 {
-        let len = self.length.max(1) as f64;
-        g.roll.x + (t as f64 / len * f64::from(g.roll.w)).round() as i32
-    }
-
-    /// The clip tick at `x`, not snapped.
-    fn tick_at(&self, g: &Geo, x: i32) -> Tick {
-        let f = f64::from(x - g.roll.x) / f64::from(g.roll.w.max(1));
-        (f * self.length as f64)
-            .floor()
-            .clamp(0.0, (self.length - 1).max(0) as f64) as Tick
+        g.v.x_of(g.roll, t)
     }
 
     /// The note of the row at `y`, if it is on the roll.
     fn note_at(&self, g: &Geo, y: i32) -> Option<u8> {
-        let row = (g.roll.bottom() - 1 - y) / self.row_h(g);
-        let n = i32::from(self.low) + row;
-        (y >= g.roll.y && y < g.roll.bottom() && row < g.rows && (0..=127).contains(&n))
-            .then_some(n as u8)
+        g.v.note_at(g.roll, y, self.rows())
     }
 
-    /// The y of the top of `note`'s row, if it shows.
+    /// The y of the top of `note`'s row, if any of it shows.
     fn y_of(&self, g: &Geo, note: u8) -> Option<i32> {
-        let row = i32::from(note) - i32::from(self.low);
-        (0..g.rows)
-            .contains(&row)
-            .then(|| g.roll.bottom() - (row + 1) * self.row_h(g))
+        let y = g.v.row_top(g.roll, note);
+        (note < self.rows() && y + g.v.row_h > g.roll.y && y < g.roll.bottom()).then_some(y)
+    }
+
+    /// The view a clip opens with on this roll, in area `r` (the page
+    /// keeps it for the clip after: [`RollView::open`]).
+    pub fn open_view(&self, r: Rect) -> RollView {
+        let roll = NoteGrid {
+            lens: Lens::Grid,
+            ..NoteGrid::default()
+        }
+        .geo(r)
+        .roll;
+        RollView::open(
+            self.notes.iter().map(|n| (n.tick, n.note)),
+            self.length,
+            self.bar,
+            roll,
+            self.rows(),
+        )
+    }
+
+    /// The view as this roll in `r` shows it (kept within the clip).
+    pub fn view_in(&self, r: Rect) -> RollView {
+        self.geo(r).v
+    }
+
+    /// The roll's area in `r`.
+    pub fn roll_rect(&self, r: Rect) -> Rect {
+        self.geo(r).roll
+    }
+
+    /// Snap Auto's division at this roll's zoom in `r`, coming from
+    /// division `prev` ([`zoom::auto_division`]).
+    pub fn auto_division(&self, r: Rect, prev: usize, triplets: bool) -> usize {
+        zoom::auto_division(prev, self.view_in(r).ppt, triplets)
+    }
+
+    /// A finger is on the roll doing something (a drag, a pinch, a
+    /// scroll, a tap not yet lifted): the page leaves Snap Auto alone.
+    pub fn busy(&self) -> bool {
+        self.drag.is_some() || self.hand != Hand::Idle
+    }
+
+    /// Page the view on to show tick `t` while Follow is on, in area `r`:
+    /// true if it moved.
+    pub fn follow_to(&mut self, r: Rect, t: Tick) -> bool {
+        if !self.view.follow || self.busy() {
+            return false;
+        }
+        let g = self.geo(r);
+        let mut v = g.v;
+        let moved = v.follow_to(
+            g.roll,
+            self.length,
+            self.rows(),
+            t.rem_euclid(self.length.max(1)),
+        );
+        if moved {
+            self.view = v;
+        }
+        moved
+    }
+
+    /// Scroll the roll `d` rows up (down if negative): SHIFT + wheel.
+    pub fn scroll_rows(&mut self, r: Rect, d: i32) {
+        let g = self.geo(r);
+        let mut v = g.v;
+        v.lift += d * v.row_h;
+        self.view = v.clamped(g.roll, self.length, self.rows());
     }
 
     /// Where note `i` is drawn on the roll, if it shows (moved by a drag
@@ -1354,7 +1766,7 @@ impl NoteGrid {
     fn note_rect_in(&self, g: &Geo, i: usize) -> Option<Rect> {
         let n = self.notes.get(i)?;
         let (dt, dn) = match self.drag {
-            Some(d) if n.selected && d.lane.is_none() => (d.ticks, d.notes),
+            Some(d) if self.moves(d, i) => (d.ticks, d.notes),
             _ => (0, 0),
         };
         let note = u8::try_from(i32::from(n.note) + dn).ok()?;
@@ -1362,7 +1774,7 @@ impl NoteGrid {
         let tick = (n.tick + dt).rem_euclid(self.length.max(1));
         let x0 = self.x_of(g, tick);
         let x1 = self.x_of(g, (tick + n.len).min(self.length)).max(x0 + 3);
-        Some(Rect::new(x0, y + 1, x1 - x0, self.row_h(g) - 2))
+        Some(Rect::new(x0, y + 1, x1 - x0, g.v.row_h - 2))
     }
 
     /// Where row `k` of the list or the tracker is (0 is the heading), if
@@ -1426,8 +1838,8 @@ impl NoteGrid {
     /// view.
     fn in_view(&self, g: &Geo) -> Vec<usize> {
         let (from, to) = (
-            self.tick_at(g, g.roll.x),
-            self.tick_at(g, g.roll.right()) + 1,
+            g.v.tick_at(g.roll, g.roll.x),
+            g.v.tick_at(g.roll, g.roll.right()) + 1,
         );
         let dragging = self.drag.is_some_and(|d| d.lane.is_none());
         if dragging || (from <= 0 && to >= self.length) {
@@ -1452,10 +1864,10 @@ impl NoteGrid {
         let any = self.notes.iter().any(|n| n.selected);
         match k {
             1 => self.lens.name().into(),
-            2 => self.tool.name().into(),
+            // Snap Auto names itself ("Auto · 1/16").
+            3 if self.snap_name.starts_with("Auto") => self.snap_name.clone(),
             3 => format!("Snap {}", self.snap_name),
             4 => if any { "None" } else { "All" }.into(),
-            7 => if any { "TC sel." } else { "TC all" }.into(),
             _ => EDIT_BUTTONS.get(k).copied().unwrap_or("").into(),
         }
     }
@@ -1474,36 +1886,49 @@ impl NoteGrid {
 
     fn paint_roll(&self, cx: &mut PaintCx, g: &Geo) {
         let t = cx.theme.clone();
-        let rh = self.row_h(g);
-        // Rows: the black keys darker, C lines brighter.
-        for row in 0..g.rows {
-            let note = i32::from(self.low) + row;
-            if note > 127 {
-                break;
-            }
-            let y = g.roll.bottom() - (row + 1) * rh;
+        let v = g.v;
+        let rh = v.row_h;
+        let was = cx.canvas.clip();
+        // Rows: the black keys darker, C lines brighter; their names in
+        // the key column.
+        cx.canvas.set_clip(was.intersect(Rect::new(
+            g.keys.x,
+            g.roll.y,
+            g.keys.w + g.roll.w,
+            g.roll.h,
+        )));
+        for note in v.notes_shown(g.roll, self.rows()) {
+            let y = v.row_top(g.roll, note);
             let black = !self.pads && matches!(note % 12, 1 | 3 | 6 | 8 | 10);
             let fill = if black { t.bg } else { t.surface };
             cx.canvas
                 .fill_rect(Rect::new(g.roll.x, y, g.roll.w, rh), fill);
-            if self.pads || note % 12 == 0 || rh >= 14 {
-                cx.text(
-                    FontId::Sans,
-                    (t.size_small - 2.0).min(rh as f32),
-                    Rect::new(g.keys.x, y, g.keys.w - 6, rh),
-                    Align::Right,
-                    if note % 12 == 0 { t.text } else { t.text_faint },
-                    &self.row_name(note as u8),
-                );
-            }
+            cx.text(
+                FontId::Sans,
+                t.size_small - 2.0,
+                Rect::new(g.keys.x, y, g.keys.w - 6, rh),
+                Align::Right,
+                if note % 12 == 0 || self.pads {
+                    t.text
+                } else {
+                    t.text_faint
+                },
+                &self.row_name(note),
+            );
             if !self.pads && note % 12 == 0 {
                 cx.canvas
                     .fill_rect(Rect::new(g.roll.x, y + rh - 1, g.roll.w, 1), t.outline);
             }
         }
-        // Lines: bars, beats, and the snap when they are far enough apart.
+        // Lines: bars, beats, and the snap when they are far enough apart,
+        // over the ticks in view only.
+        cx.canvas.set_clip(was.intersect(g.roll));
         let beat = PPQ as Tick;
-        let px = |ticks: Tick| f64::from(g.roll.w) * ticks as f64 / self.length.max(1) as f64;
+        let (from, to) = (
+            v.tick_at(g.roll, g.roll.x),
+            v.tick_at(g.roll, g.roll.right()).min(self.length),
+        );
+        let px = |ticks: Tick| ticks as f64 * v.ppt;
         let mut lines: Vec<(Tick, Color, i32)> = Vec::new();
         if self.snap > 0 && px(self.snap) >= 6.0 {
             lines.push((self.snap, t.outline.mix(t.surface, 0.6), 1));
@@ -1513,28 +1938,54 @@ impl NoteGrid {
         }
         lines.push((self.bar.max(1), t.text_faint, 2));
         for (step, color, w) in lines {
-            let mut at = 0;
-            while at < self.length {
+            let mut at = from.div_euclid(step) * step;
+            while at <= to {
                 let x = self.x_of(g, at);
                 cx.canvas
                     .fill_rect(Rect::new(x, g.roll.y, w, g.roll.h), color);
                 at += step;
             }
         }
-        // The ruler: bar numbers.
-        let mut bar = 0;
-        while bar * self.bar.max(1) < self.length {
-            let x = self.x_of(g, bar * self.bar.max(1));
-            cx.text(
-                FontId::Sans,
-                t.size_small - 2.0,
-                Rect::new(x + 3, g.ruler.y, 60, g.ruler.h),
-                Align::Left,
-                t.text_faint,
-                &format!("{}", bar + 1),
-            );
-            bar += 1;
+        // The clip's end, when it shows.
+        if (from..=to).contains(&self.length) {
+            let x = self.x_of(g, self.length);
+            cx.canvas
+                .fill_rect(Rect::new(x - 1, g.roll.y, 2, g.roll.h), t.text);
         }
+        // The ruler: bar numbers as close as fit (every bar, or every 2nd,
+        // 4th ...), and beats too once a beat is wide enough.
+        cx.canvas.set_clip(was.intersect(g.ruler));
+        let bar = self.bar.max(1);
+        let mut every = 1;
+        while px(bar * every) < 36.0 && every < 1 << 12 {
+            every *= 2;
+        }
+        let beats = px(beat) >= 48.0;
+        let mut at = from.div_euclid(beat) * beat;
+        while at <= to {
+            let b = at / bar;
+            let label = if at % bar == 0 {
+                (b % every == 0).then(|| format!("{}", b + 1))
+            } else if beats {
+                Some(format!("{}.{}", b + 1, at % bar / beat + 1))
+            } else {
+                None
+            };
+            if let Some(label) = label {
+                cx.text(
+                    FontId::Sans,
+                    t.size_small - 2.0,
+                    Rect::new(self.x_of(g, at) + 3, g.ruler.y, 60, g.ruler.h),
+                    Align::Left,
+                    if at % bar == 0 { t.text } else { t.text_faint },
+                    &label,
+                );
+            }
+            at += beat;
+        }
+        cx.canvas.set_clip(was);
+        self.paint_overview(cx, g);
+        cx.canvas.set_clip(was.intersect(g.roll));
         // The notes as they will play, then the velocity lane under them.
         let top = t.accent;
         let shade = |v: u8| t.raised.mix(self.color, 0.35 + 0.65 * f32::from(v) / 127.0);
@@ -1565,6 +2016,23 @@ impl NoteGrid {
                 cx.canvas.stroke_round_rect(nr, 3, 2, top);
             }
         }
+        // A note being drawn with Draw on: where it goes when the finger
+        // lifts.
+        if let Hand::Pen { note, from, to, .. } = self.hand {
+            if let Some(y) = self.y_of(g, note) {
+                let x0 = self.x_of(g, from);
+                let x1 = self.x_of(g, to).max(x0 + 3);
+                let nr = Rect::new(x0, y + 1, x1 - x0, g.v.row_h - 2);
+                cx.canvas.fill_round_rect(nr, 3, shade(DRAW_VELOCITY));
+                cx.canvas.stroke_round_rect(nr, 3, 2, top);
+            }
+        }
+        cx.canvas.set_clip(was.intersect(Rect::new(
+            g.keys.x,
+            g.vel.y,
+            g.keys.w + g.vel.w,
+            g.vel.h,
+        )));
         cx.canvas.fill_round_rect(g.vel, 6, t.surface);
         let lane = |v: u8| (f32::from(v) / 127.0 * (g.vel.h - 6) as f32).round() as i32;
         for &i in &shown {
@@ -1604,9 +2072,84 @@ impl NoteGrid {
         );
         if let Some(p) = self.playhead {
             let x = self.x_of(g, p.rem_euclid(self.length.max(1)));
+            cx.canvas.set_clip(was.intersect(Rect::new(
+                g.roll.x,
+                g.ruler.y,
+                g.roll.w,
+                g.roll.bottom() - g.ruler.y,
+            )));
             cx.canvas.fill_rect(
                 Rect::new(x, g.ruler.y, 2, g.roll.bottom() - g.ruler.y),
                 t.good,
+            );
+        }
+        cx.canvas.set_clip(was);
+    }
+
+    /// The overview strip: the whole clip, its notes as marks, the part
+    /// on the roll outlined, the playhead; Fit under the keys and Follow
+    /// at its right end.
+    fn paint_overview(&self, cx: &mut PaintCx, g: &Geo) {
+        if g.overview.is_empty() {
+            return;
+        }
+        let t = cx.theme.clone();
+        let o = g.overview;
+        cx.canvas.fill_round_rect(o, 6, t.surface);
+        let len = self.length.max(1) as f64;
+        let ox = |tick: Tick| {
+            o.x + (tick.clamp(0, self.length) as f64 / len * f64::from(o.w)).round() as i32
+        };
+        // One mark a column, from its lowest note to its highest, so a
+        // clip of 8,192 notes costs a column's worth of drawing.
+        if let (Some(lo), Some(hi)) = (
+            self.notes.iter().map(|n| n.note).min(),
+            self.notes.iter().map(|n| n.note).max(),
+        ) {
+            let inner = (o.h - 8).max(1);
+            let span = f64::from(hi - lo).max(1.0);
+            let mut cols: Vec<Option<(i32, i32)>> = vec![None; o.w.max(0) as usize];
+            for n in &self.notes {
+                let y = o.bottom()
+                    - 4
+                    - (f64::from(n.note - lo) / span * f64::from(inner - 2)).round() as i32
+                    - 2;
+                let (a, b) = (ox(n.tick), ox(n.tick + n.len).max(ox(n.tick) + 1));
+                for x in a.max(o.x)..b.min(o.right()) {
+                    let c = &mut cols[(x - o.x) as usize];
+                    *c = Some(c.map_or((y, y + 2), |(top, bot)| (top.min(y), bot.max(y + 2))));
+                }
+            }
+            for (k, c) in cols.iter().enumerate() {
+                if let Some((top, bot)) = c {
+                    cx.canvas
+                        .fill_rect(Rect::new(o.x + k as i32, *top, 1, bot - top), t.text_faint);
+                }
+            }
+        }
+        let shown = g.v.ticks_shown(g.roll);
+        let (a, b) = (ox(g.v.start), ox(g.v.start + shown).max(ox(g.v.start) + 6));
+        cx.canvas
+            .stroke_round_rect(Rect::new(a, o.y, b - a, o.h), 4, 2, t.accent);
+        if let Some(p) = self.playhead {
+            let x = ox(p.rem_euclid(self.length.max(1)));
+            cx.canvas.fill_rect(Rect::new(x, o.y, 2, o.h), t.good);
+        }
+        // Fit and Follow.
+        for (r, label, lit) in [(g.fit, "Fit", false), (g.follow, "Follow", g.v.follow)] {
+            let (fill, ink) = if lit {
+                (t.picked(), t.on_picked())
+            } else {
+                (t.raised, t.text)
+            };
+            cx.canvas.fill_round_rect(r, 8, fill);
+            cx.text(
+                FontId::Bold,
+                t.size_small - 2.0,
+                r,
+                Align::Center,
+                ink,
+                label,
             );
         }
     }
@@ -1619,7 +2162,7 @@ impl NoteGrid {
     /// Nothing is allocated: the roll asks for every note on every frame.
     fn hit_rects(&self, g: &Geo, nr: Rect, n: &NoteBox) -> impl Iterator<Item = (Rect, u8)> {
         let hits = i32::from(n.ratchet.max(1));
-        let full = f64::from(g.roll.w) * n.len as f64 / self.length.max(1) as f64;
+        let full = n.len as f64 * g.v.ppt;
         let split = hits > 1 && full >= f64::from(2 * hits);
         let (velocity, ramp, ratchet) = (n.velocity, n.ramp, n.ratchet);
         let x_of = move |k: i32| nr.x + (full * f64::from(k) / f64::from(hits)).round() as i32;
@@ -1667,7 +2210,7 @@ impl NoteGrid {
             return;
         };
         let px = |ticks: i64| {
-            let x = nr.x as f64 + f64::from(g.roll.w) * ticks as f64 / self.length.max(1) as f64;
+            let x = nr.x as f64 + ticks as f64 * g.v.ppt;
             (x.round() as i32).clamp(nr.x, nr.right())
         };
         let room = (nr.h - 2).max(1);
@@ -1928,9 +2471,11 @@ impl Widget for NoteGrid {
             Lens::Tracker => self.paint_tracker(cx, r),
         }
         for (k, br) in self.button_rects(r).iter().enumerate() {
-            let lit = (k == 1 && self.lens != Lens::Grid) || (k == 2 && self.tool != Tool::Select);
-            let fill = if lit { t.accent } else { t.raised };
-            let ink = if lit { t.on_accent } else { t.text };
+            let lit = (k == 1 && self.lens != Lens::Grid)
+                || (k == 2 && self.tool != Tool::Select)
+                || (k == 7 && self.drawer);
+            let fill = if lit { t.picked() } else { t.raised };
+            let ink = if lit { t.on_picked() } else { t.text };
             cx.canvas.fill_round_rect(*br, t.round(10), fill);
             cx.text(
                 FontId::Bold,
@@ -1970,6 +2515,22 @@ impl Widget for NoteGrid {
         if !g.vel.is_empty() {
             out.push(Target::drag("velocity", 0, "velocity lane", g.vel).towards(0, -g.vel.h / 3));
         }
+        if !g.overview.is_empty() {
+            out.push(Target::tap("fit", 0, "Fit", g.fit));
+            out.push(Target::tap("follow", 0, "Follow", g.follow));
+            // The ruler and the overview scroll in time only while part
+            // of the clip shows; the keys while part of the rows do.
+            if g.v.ticks_shown(g.roll) < self.length {
+                out.push(
+                    Target::drag("overview", 0, "overview", g.overview)
+                        .towards(g.overview.w / 4, 0),
+                );
+                out.push(Target::drag("ruler", 0, "ruler", g.ruler).towards(-g.ruler.w / 4, 0));
+            }
+            if i32::from(self.rows()) * g.v.row_h > g.roll.h {
+                out.push(Target::drag("keys", 0, "keys", g.keys).towards(0, g.keys.h / 4));
+            }
+        }
         let shown = self.in_view(&g);
         for &i in &shown {
             if let Some(nr) = self.note_rect_in(&g, i) {
@@ -1989,113 +2550,246 @@ impl Widget for NoteGrid {
         out
     }
 
-    /// Touches are followed finger by finger: a drag (a note or the
-    /// velocity lane) is its finger's alone, so another finger's moves and
-    /// lift leave it be, and another finger coming down while it drags
-    /// stops it where it was and does nothing else: the drag sends nothing
-    /// when its finger lifts, and the notes stay put.
+    /// Touches are followed finger by finger. One finger edits notes: a
+    /// drag (a note or the velocity lane) is its finger's alone, and a tap
+    /// on empty roll acts when it lifts. One finger on the ruler, the keys
+    /// or the overview scrolls. A second finger anywhere on the roll turns
+    /// whatever the first was doing into a pinch or a two-finger scroll
+    /// with nothing sent (a drag stops where it was, a tap is no tap); the
+    /// view moves and nothing goes to the time engine, but `View` when
+    /// the fingers lift. A second finger on a button stops a drag and does
+    /// nothing else.
     fn touch(&mut self, f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let g = self.geo(r);
-        let others = self.drag.is_some_and(|d| d.finger != f);
+        let mine = self.finger_now().is_some_and(|(o, ..)| o == f);
+        let busy = self.finger_now().is_some() || matches!(self.hand, Hand::Pinch(_));
         match phase {
-            Touch::Down if others => {
+            Touch::Down if busy && !mine => {
+                // A second finger, or a third.
+                let on_roll = self.lens == Lens::Grid
+                    && [g.roll, g.ruler, g.keys, g.overview, g.vel]
+                        .iter()
+                        .any(|a| a.contains(x, y));
+                let first = self.finger_now();
                 self.drag = None;
+                self.hand = match (first, on_roll) {
+                    (Some((a, ax, ay)), true) => {
+                        Hand::Pinch(Pinch::new((a, ax, ay), (f, x, y), g.v))
+                    }
+                    (Some((a, ax, ay)), false) => Hand::Spent {
+                        finger: a,
+                        now: (ax, ay),
+                    },
+                    (None, _) => self.hand,
+                };
                 None
             }
-            Touch::Move | Touch::Up | Touch::Cancel if others => None,
+            Touch::Move | Touch::Up | Touch::Cancel if busy && !mine && !self.pinched(f) => None,
             Touch::Down => {
-                // This finger's own drag that never heard its lift ends.
+                // This finger's own gesture that never heard its lift ends.
                 self.drag = None;
-                if let Some(k) = self.button_rects(r).iter().position(|b| b.contains(x, y)) {
-                    return Some(EventKind::Tab(k));
-                }
-                if self.lens == Lens::Tracker {
-                    let rows = self.track_rows();
-                    let k = (1..)
-                        .map_while(|k| self.list_rect(r, k).map(|rr| (k, rr)))
-                        .find(|(_, rr)| rr.contains(x, y))?
-                        .0;
-                    let row = rows.get(self.first + k - 1)?;
-                    return Some(match row.note {
-                        Some(i) => EventKind::Select(i),
-                        None => EventKind::Cell {
-                            row: PEN,
-                            col: row.step * self.grid().size() as usize,
-                        },
-                    });
-                }
-                if self.lens == Lens::List {
-                    let order = self.list_order();
-                    let k = (1..)
-                        .map_while(|k| self.list_rect(r, k).map(|rr| (k, rr)))
-                        .find(|(_, rr)| rr.contains(x, y))?
-                        .0;
-                    return order.get(self.first + k - 1).map(|&i| EventKind::Select(i));
-                }
-                if g.vel.contains(x, y) {
-                    // Shown as the finger moves, sent once when it lifts:
-                    // one edit, one UNDO.
-                    self.drag = Some(Drag {
-                        finger: f,
-                        index: 0,
-                        x,
-                        y,
-                        ticks: 0,
-                        notes: 0,
-                        lane: Some(lane_value(&g, y)),
-                    });
-                    return None;
-                }
-                // The topmost note under the finger (drawn last).
-                if let Some(i) = self
-                    .in_view(&g)
-                    .into_iter()
-                    .rev()
-                    .find(|&i| self.note_rect_in(&g, i).is_some_and(|nr| nr.contains(x, y)))
-                {
-                    self.drag = Some(Drag {
-                        finger: f,
-                        index: i,
-                        x,
-                        y,
-                        ticks: 0,
-                        notes: 0,
-                        lane: None,
-                    });
-                    return Some(EventKind::Select(i));
-                }
-                let note = self.note_at(&g, y)?;
-                if !g.roll.contains(x, y) {
-                    return None;
-                }
-                let t = self.tick_at(&g, x);
-                let t = match self.snap {
-                    0 => t,
-                    s => t - t.rem_euclid(s),
-                };
-                Some(EventKind::Cell {
-                    row: usize::from(note),
-                    col: t as usize,
-                })
+                self.hand = Hand::Idle;
+                self.down(f, x, y, r, &g)
             }
             Touch::Move => {
+                if let Hand::Pinch(mut p) = self.hand {
+                    p.moved(f, x, y);
+                    self.view = p.view(g.roll, self.length, self.rows());
+                    self.view.follow = false;
+                    self.hand = Hand::Pinch(p);
+                    return None;
+                }
+                match self.hand {
+                    // A press that moves far enough is a drag of its note.
+                    Hand::Press {
+                        finger, index, at, ..
+                    } if (x - at.0).abs().max((y - at.1).abs()) >= TAP_SLOP => {
+                        self.hand = Hand::Idle;
+                        self.drag = Some(Drag {
+                            finger,
+                            index,
+                            x: at.0,
+                            y: at.1,
+                            now: (x, y),
+                            ticks: 0,
+                            notes: 0,
+                            lane: None,
+                        });
+                    }
+                    Hand::Press { ref mut now, .. } => {
+                        *now = (x, y);
+                        return None;
+                    }
+                    // With Draw on, a finger moved on empty roll draws a
+                    // note as long as its drag.
+                    Hand::Wait {
+                        finger,
+                        at,
+                        cell: (note, from),
+                        moved: false,
+                        ..
+                    } if self.tool == Tool::Draw
+                        && (x - at.0).abs().max((y - at.1).abs()) >= TAP_SLOP =>
+                    {
+                        self.hand = Hand::Pen {
+                            finger,
+                            note,
+                            from,
+                            to: self.pen_end(&g, from, x),
+                            now: (x, y),
+                        };
+                        return None;
+                    }
+                    Hand::Pen {
+                        finger, note, from, ..
+                    } => {
+                        self.hand = Hand::Pen {
+                            finger,
+                            note,
+                            from,
+                            to: self.pen_end(&g, from, x),
+                            now: (x, y),
+                        };
+                        return None;
+                    }
+                    Hand::Wait {
+                        finger,
+                        at,
+                        cell,
+                        moved,
+                        ..
+                    } => {
+                        let far = (x - at.0).abs().max((y - at.1).abs()) >= TAP_SLOP;
+                        self.hand = Hand::Wait {
+                            finger,
+                            at,
+                            now: (x, y),
+                            cell,
+                            moved: moved || far,
+                        };
+                        return None;
+                    }
+                    Hand::Scroll {
+                        finger,
+                        on,
+                        at,
+                        from,
+                        moved,
+                        ..
+                    } => {
+                        let moved = moved || (x - at.0).abs().max((y - at.1).abs()) >= STRIP_SLOP;
+                        if moved {
+                            self.view = self.scrolled(&g, on, from, (x - at.0, y - at.1));
+                        }
+                        self.hand = Hand::Scroll {
+                            finger,
+                            on,
+                            at,
+                            now: (x, y),
+                            from,
+                            moved,
+                        };
+                        return None;
+                    }
+                    Hand::Spent { finger, .. } => {
+                        self.hand = Hand::Spent {
+                            finger,
+                            now: (x, y),
+                        };
+                        return None;
+                    }
+                    _ => {}
+                }
                 let d = self.drag?;
                 if d.lane.is_some() {
                     self.drag = Some(Drag {
                         lane: Some(lane_value(&g, y)),
+                        now: (x, y),
                         ..d
                     });
                     return None;
                 }
                 let n = self.notes.get(d.index)?;
-                let raw = self.tick_at(&g, x) - self.tick_at(&g, d.x);
-                let ticks = self.snapped(n.tick + raw) - n.tick;
-                let notes = (d.y - y) / self.row_h(&g).max(1);
-                self.drag = Some(Drag { ticks, notes, ..d });
+                let raw = g.v.tick_at(g.roll, x) - g.v.tick_at(g.roll, d.x);
+                let ticks = match self.snap {
+                    s if self.snap_auto && s > 0 => (raw as f64 / s as f64).round() as Tick * s,
+                    _ => self.snapped(n.tick + raw) - n.tick,
+                };
+                let notes = (d.y - y) / g.v.row_h.max(1);
+                self.drag = Some(Drag {
+                    ticks,
+                    notes,
+                    now: (x, y),
+                    ..d
+                });
                 None
             }
-            Touch::Up => {
+            Touch::Up | Touch::Cancel => {
+                let up = phase == Touch::Up;
+                match self.hand {
+                    Hand::Pinch(p) => {
+                        // The other finger stays: it does nothing more
+                        // until it lifts or another finger joins it.
+                        self.hand = p.other(f).map_or(Hand::Idle, |(o, ox, oy)| Hand::Spent {
+                            finger: o,
+                            now: (ox, oy),
+                        });
+                        return Some(self.view_event());
+                    }
+                    Hand::Spent { .. } => {
+                        self.hand = Hand::Idle;
+                        return None;
+                    }
+                    // A tap on a note, unless a hold picked it.
+                    Hand::Press { index, picked, .. } => {
+                        self.hand = Hand::Idle;
+                        return (up && !picked).then_some(EventKind::Toggle(index));
+                    }
+                    Hand::Pen { note, from, to, .. } => {
+                        self.hand = Hand::Idle;
+                        return up.then_some(EventKind::Span {
+                            index: usize::from(note),
+                            from,
+                            to,
+                        });
+                    }
+                    Hand::Wait {
+                        at,
+                        cell: (note, tick),
+                        moved,
+                        ..
+                    } => {
+                        self.hand = Hand::Idle;
+                        if !up || moved {
+                            return None;
+                        }
+                        return Some(self.empty_tapped(at, note, tick));
+                    }
+                    Hand::Scroll {
+                        on,
+                        at,
+                        moved,
+                        from,
+                        ..
+                    } => {
+                        self.hand = Hand::Idle;
+                        if !up {
+                            return None;
+                        }
+                        if !moved && on == Strip::Overview {
+                            self.overview_tapped(&g, at.0);
+                        } else if !moved {
+                            self.view = from;
+                            return None;
+                        }
+                        return Some(self.view_event());
+                    }
+                    Hand::Idle => {}
+                }
                 let d = self.drag.take()?;
+                if !up {
+                    return None;
+                }
                 if let Some(v) = d.lane {
                     return Some(EventKind::Value(v));
                 }
@@ -2104,11 +2798,288 @@ impl Widget for NoteGrid {
                     frame: drop_frame(d.ticks, d.notes),
                 })
             }
-            Touch::Cancel => {
-                self.drag = None;
-                None
+        }
+    }
+}
+
+impl NoteGrid {
+    /// Time passing, `dt` seconds (from the app's tick): a finger held on
+    /// a note for [`HOLD`] without moving picks it, `Select(index)`, and
+    /// its lift then taps nothing (plan 1B.1, as holding a step on Steps).
+    pub fn tick(&mut self, dt: f32) -> Option<EventKind> {
+        let Hand::Press {
+            index,
+            ref mut held,
+            ref mut picked,
+            ..
+        } = self.hand
+        else {
+            return None;
+        };
+        if *picked {
+            return None;
+        }
+        *held += dt.max(0.0);
+        if *held < HOLD {
+            return None;
+        }
+        *picked = true;
+        Some(EventKind::Select(index))
+    }
+
+    /// Note `i` moves with drag `d`: the picked notes when the note
+    /// dragged is one of them, else the note dragged alone.
+    fn moves(&self, d: Drag, i: usize) -> bool {
+        if d.lane.is_some() {
+            return false;
+        }
+        match self.notes.get(d.index) {
+            Some(n) if n.selected => self.notes.get(i).is_some_and(|m| m.selected),
+            _ => i == d.index,
+        }
+    }
+
+    /// Where a note drawn from tick `from` ends with the finger at `x`:
+    /// the end of the snap's cell under the finger (the tick under it
+    /// with no snap), at least a snap on from `from`, and never past the
+    /// clip's end.
+    fn pen_end(&self, g: &Geo, from: Tick, x: i32) -> Tick {
+        let t = g.v.tick_at(g.roll, x);
+        let (end, unit) = match self.snap {
+            0 => (t, FREE_LEN),
+            s => ((t.div_euclid(s) + 1) * s, s),
+        };
+        end.max(from + unit).min(self.length.max(from + 1))
+    }
+
+    /// A tap on empty roll at `at`, on row `note` at the cell from
+    /// `tick`: `Cell` (with Draw on a note goes in, with Draw off the
+    /// picks go), or with Draw off a second tap there soon after a first:
+    /// a note one snap long, `Span`, without turning Draw on.
+    fn empty_tapped(&mut self, at: (i32, i32), note: u8, tick: Tick) -> EventKind {
+        let now = Instant::now();
+        let double = self.tool == Tool::Select
+            && self.empty_tap.is_some_and(|(t, p)| {
+                now.duration_since(t) <= DOUBLE_TAP
+                    && (p.0 - at.0).abs().max((p.1 - at.1).abs()) < TAP_SLOP
+            });
+        if double {
+            self.empty_tap = None;
+            let unit = if self.snap > 0 { self.snap } else { FREE_LEN };
+            return EventKind::Span {
+                index: usize::from(note),
+                from: tick,
+                to: (tick + unit).min(self.length),
+            };
+        }
+        self.empty_tap = (self.tool == Tool::Select).then_some((now, at));
+        EventKind::Cell {
+            row: usize::from(note),
+            col: tick as usize,
+        }
+    }
+
+    /// The one finger at work (a drag, a tap waiting, a scroll, or the
+    /// finger left from a pinch) and where it is now.
+    fn finger_now(&self) -> Option<(u64, i32, i32)> {
+        if let Some(d) = self.drag {
+            return Some((d.finger, d.now.0, d.now.1));
+        }
+        match self.hand {
+            Hand::Press { finger, now, .. }
+            | Hand::Pen { finger, now, .. }
+            | Hand::Wait { finger, now, .. }
+            | Hand::Scroll { finger, now, .. }
+            | Hand::Spent { finger, now } => Some((finger, now.0, now.1)),
+            Hand::Idle | Hand::Pinch(_) => None,
+        }
+    }
+
+    /// Finger `f` is one of a pinch's.
+    fn pinched(&self, f: u64) -> bool {
+        matches!(self.hand, Hand::Pinch(p) if p.has(f))
+    }
+
+    /// The view as an event, for the page when the fingers lift.
+    fn view_event(&self) -> EventKind {
+        EventKind::View {
+            start: self.view.start as f64,
+            frames_per_px: 1.0 / self.view.ppt,
+        }
+    }
+
+    /// The view `from` scrolled by a finger moved (`dx`, `dy`) on strip
+    /// `on`: the ruler and the keys follow the finger; the overview moves
+    /// its window, at the overview's scale. Follow goes off.
+    fn scrolled(&self, g: &Geo, on: Strip, from: RollView, (dx, dy): (i32, i32)) -> RollView {
+        let mut v = from;
+        match on {
+            Strip::Ruler => v.start = from.start - (f64::from(dx) / from.ppt).round() as Tick,
+            Strip::Keys => v.lift = from.lift + dy,
+            Strip::Overview => {
+                let per_px = self.length.max(1) as f64 / f64::from(g.overview.w.max(1));
+                v.start = from.start + (f64::from(dx) * per_px).round() as Tick;
             }
         }
+        v.follow = false;
+        v.clamped(g.roll, self.length, self.rows())
+    }
+
+    /// A tap on the overview at `x`: the window jumps to centre there, or,
+    /// a second tap soon after, the whole clip fits.
+    fn overview_tapped(&mut self, g: &Geo, x: i32) {
+        let now = Instant::now();
+        let double = self
+            .overview_tap
+            .is_some_and(|t| now.duration_since(t) <= DOUBLE_TAP);
+        self.overview_tap = (!double).then_some(now);
+        if double {
+            self.view =
+                g.v.zoom_time(g.roll, self.length, self.rows(), 0.0, 0.0, g.roll.x);
+            return;
+        }
+        let per_px = self.length.max(1) as f64 / f64::from(g.overview.w.max(1));
+        let at = (f64::from(x - g.overview.x) * per_px) as Tick;
+        let mut v = g.v;
+        v.start = at - v.ticks_shown(g.roll) / 2;
+        self.view = v.clamped(g.roll, self.length, self.rows());
+    }
+
+    /// Fit: the picked notes when some are, else every note, across the
+    /// roll and up it (an empty clip: the whole clip, the rows as they
+    /// are).
+    fn fit(&mut self, g: &Geo) {
+        let picked = self.notes.iter().any(|n| n.selected);
+        let which = || self.notes.iter().filter(move |n| !picked || n.selected);
+        let lo = which().map(|n| n.note).min();
+        let hi = which().map(|n| n.note).max();
+        let (from, to) = if picked {
+            (
+                which().map(|n| n.tick).min().unwrap_or(0),
+                which()
+                    .map(|n| n.tick + n.len.max(1))
+                    .max()
+                    .unwrap_or(self.length),
+            )
+        } else {
+            (0, self.length)
+        };
+        let rows = self.rows();
+        self.view = match (lo, hi) {
+            (Some(lo), Some(hi)) => g.v.fit(g.roll, self.length, rows, (from, to), (lo, hi)),
+            _ => g.v.zoom_time(g.roll, self.length, rows, 0.0, 0.0, g.roll.x),
+        };
+    }
+
+    /// A finger coming down alone.
+    fn down(&mut self, f: u64, x: i32, y: i32, r: Rect, g: &Geo) -> Option<EventKind> {
+        if let Some(k) = self.button_rects(r).iter().position(|b| b.contains(x, y)) {
+            return Some(EventKind::Tab(k));
+        }
+        if self.lens == Lens::Tracker {
+            let rows = self.track_rows();
+            let k = (1..)
+                .map_while(|k| self.list_rect(r, k).map(|rr| (k, rr)))
+                .find(|(_, rr)| rr.contains(x, y))?
+                .0;
+            let row = rows.get(self.first + k - 1)?;
+            return Some(match row.note {
+                Some(i) => EventKind::Select(i),
+                None => EventKind::Cell {
+                    row: PEN,
+                    col: row.step * self.grid().size() as usize,
+                },
+            });
+        }
+        if self.lens == Lens::List {
+            let order = self.list_order();
+            let k = (1..)
+                .map_while(|k| self.list_rect(r, k).map(|rr| (k, rr)))
+                .find(|(_, rr)| rr.contains(x, y))?
+                .0;
+            return order.get(self.first + k - 1).map(|&i| EventKind::Select(i));
+        }
+        if g.fit.contains(x, y) {
+            self.fit(g);
+            return Some(self.view_event());
+        }
+        if g.follow.contains(x, y) {
+            self.view = RollView {
+                follow: !g.v.follow,
+                ..g.v
+            };
+            return None;
+        }
+        let strip = if g.overview.contains(x, y) {
+            Some(Strip::Overview)
+        } else if g.ruler.contains(x, y) {
+            Some(Strip::Ruler)
+        } else if g.keys.contains(x, y) && y >= g.roll.y && y < g.roll.bottom() {
+            Some(Strip::Keys)
+        } else {
+            None
+        };
+        if let Some(on) = strip {
+            self.hand = Hand::Scroll {
+                finger: f,
+                on,
+                at: (x, y),
+                now: (x, y),
+                from: g.v,
+                moved: false,
+            };
+            return None;
+        }
+        if g.vel.contains(x, y) {
+            // Shown as the finger moves, sent once when it lifts: one
+            // edit, one UNDO.
+            self.drag = Some(Drag {
+                finger: f,
+                index: 0,
+                x,
+                y,
+                now: (x, y),
+                ticks: 0,
+                notes: 0,
+                lane: Some(lane_value(g, y)),
+            });
+            return None;
+        }
+        if !g.roll.contains(x, y) {
+            return None;
+        }
+        // The topmost note under the finger (drawn last).
+        if let Some(i) = self
+            .in_view(g)
+            .into_iter()
+            .rev()
+            .find(|&i| self.note_rect_in(g, i).is_some_and(|nr| nr.contains(x, y)))
+        {
+            // A tap, a hold or a drag: nothing goes until it is one.
+            self.hand = Hand::Press {
+                finger: f,
+                index: i,
+                at: (x, y),
+                now: (x, y),
+                held: 0.0,
+                picked: false,
+            };
+            return None;
+        }
+        // Empty roll: the cell under the finger, sent when it lifts.
+        let note = self.note_at(g, y)?;
+        let tick = g.v.cell_at(g.roll, x, self.snap);
+        if tick >= self.length {
+            return None;
+        }
+        self.hand = Hand::Wait {
+            finger: f,
+            at: (x, y),
+            now: (x, y),
+            cell: (note, tick),
+            moved: false,
+        };
+        None
     }
 }
 
@@ -2194,6 +3165,8 @@ mod tests {
             &mut ed,
             &mut c,
             EditAction::Drop {
+                index: 2,
+                rev: 0,
                 ticks: 240,
                 notes: 2,
             },
@@ -2203,6 +3176,22 @@ mod tests {
             ticks_of(&c, &ed.sel),
             vec![(240, 50), (720, 52), (1200, 54)]
         );
+        // A note that isn't picked moves alone, and is picked after.
+        let lone = c.notes.iter().position(|n| n.tick == 720).unwrap();
+        ed.sel = vec![(lone + 1) % 3];
+        let done = run(
+            &mut ed,
+            &mut c,
+            EditAction::Drop {
+                index: lone,
+                rev: 0,
+                ticks: 240,
+                notes: 0,
+            },
+        );
+        assert_eq!(done.line, "edit: 1 notes moved");
+        assert_eq!(ticks_of(&c, &ed.sel), vec![(960, 52)]);
+        assert_eq!(c.notes.len(), 3);
         // An empty tap with the select tool clears it.
         ed.act(
             EditAction::Empty {
@@ -2251,10 +3240,82 @@ mod tests {
         run(&mut ed, &mut c, EditAction::Button(6));
         assert_eq!(c.notes.len(), 2);
         assert!(ed.sel.is_empty());
-        ed.act(EditAction::Button(2), &c);
-        assert_eq!(ed.tool, Tool::Erase);
-        run(&mut ed, &mut c, EditAction::Note { index: 0, rev: 0 });
+        // ERASE + a tap, whatever the tool.
+        run(&mut ed, &mut c, EditAction::Erase { index: 0, rev: 0 });
         assert_eq!(c.notes.len(), 1);
+    }
+
+    /// Draw on is the step feel (piano roll plan 1B.1): a tap takes out a
+    /// note no longer than a step, only the one tapped, and picks a
+    /// longer one; Draw off, a tap picks the note alone. A drawn note
+    /// gets the velocity last used and stops at the clip's end.
+    #[test]
+    fn draw_on_taps_notes_out_or_picks_them_and_draws_to_the_end() {
+        // Two notes of one step and pitch, and a long one.
+        let mut c = clip(&[(0, 240, 60), (0, 120, 60), (480, 960, 62)]);
+        let mut ed = Editor::new(0, 0, &c);
+        ed.act(EditAction::Button(2), &c);
+        assert_eq!(ed.tool, Tool::Draw);
+        let done = run(&mut ed, &mut c, EditAction::Tap { index: 1, rev: 0 });
+        assert_eq!(done.line, "edit: note C3 taken out");
+        assert_eq!(c.notes.len(), 2, "only the note tapped");
+        assert_eq!((c.notes[0].tick, c.notes[0].len), (0, 240));
+        // The long note: picked, nothing taken out.
+        let long = c.notes.iter().position(|n| n.len == 960).unwrap();
+        let done = ed.act(
+            EditAction::Tap {
+                index: long,
+                rev: 0,
+            },
+            &c,
+        );
+        assert!(done.edit.is_empty());
+        assert_eq!(ed.sel, [long]);
+        // Its velocity is the next drawn note's.
+        c.notes[long].velocity = 77;
+        ed.act(
+            EditAction::Note {
+                index: long,
+                rev: 0,
+            },
+            &c,
+        );
+        assert_eq!(ed.velocity, 77);
+        // Drawn to past the end: it stops there.
+        run(
+            &mut ed,
+            &mut c,
+            EditAction::Draw {
+                tick: 3600,
+                note: 64,
+                len: 960,
+            },
+        );
+        let n = c.notes.iter().find(|n| n.note == 64).unwrap();
+        assert_eq!((n.tick, n.len, n.velocity), (3600, 240, 77));
+        assert_eq!(ticks_of(&c, &ed.sel), [(3600, 64)]);
+        // Draw off: a tap picks the note alone, even out of a group.
+        ed.act(EditAction::Button(2), &c);
+        assert_eq!(ed.tool, Tool::Select);
+        ed.sel = (0..c.notes.len()).collect();
+        let done = ed.act(EditAction::Tap { index: 0, rev: 0 }, &c);
+        assert!(done.edit.is_empty());
+        assert_eq!(ed.sel, [0]);
+        // An empty tap lets the picks go; Draw puts a note in anyway.
+        ed.act(EditAction::Empty { tick: 0, note: 70 }, &c);
+        assert!(ed.sel.is_empty());
+        run(
+            &mut ed,
+            &mut c,
+            EditAction::Draw {
+                tick: 960,
+                note: 70,
+                len: 240,
+            },
+        );
+        assert_eq!(c.notes.len(), 4);
+        assert_eq!(EditAction::Tap { index: 0, rev: 9 }.rev(), Some(9));
+        assert_eq!(EditAction::Empty { tick: 0, note: 1 }.rev(), None);
     }
 
     #[test]
@@ -2262,7 +3323,7 @@ mod tests {
         let mut c = clip(&[(10, 100, 36), (250, 100, 38), (500, 100, 40)]);
         let mut ed = Editor::new(0, 0, &c);
         ed.act(EditAction::Note { index: 1, rev: 0 }, &c);
-        let done = run(&mut ed, &mut c, EditAction::Button(7));
+        let done = run(&mut ed, &mut c, EditAction::Correct);
         assert_eq!(done.line, "edit: timing correct moved 1 notes");
         let mut ticks: Vec<Tick> = c.notes.iter().map(|n| n.tick).collect();
         ticks.sort_unstable();
@@ -2279,7 +3340,7 @@ mod tests {
         ed.act(EditAction::Row { row: 1, delta: -1 }, &c);
         ed.act(EditAction::Row { row: 1, delta: -1 }, &c);
         assert_eq!(ed.tc.division, 480);
-        run(&mut ed, &mut c, EditAction::Button(7));
+        run(&mut ed, &mut c, EditAction::Correct);
         let mut ticks: Vec<Tick> = c.notes.iter().map(|n| n.tick).collect();
         ticks.sort_unstable();
         assert_eq!(ticks, vec![5, 120, 490]);
@@ -2320,11 +3381,33 @@ mod tests {
     fn settings_buttons_and_scrolling() {
         let c = clip(&[(0, 240, 60)]);
         let mut ed = Editor::new(0, 0, &c);
-        assert_eq!(ed.snap_name(), "1/16");
-        for _ in 0..DIVISIONS.len() - DEFAULT_SNAP {
+        // Snap Auto first, on a 1/16 until the roll asks for another.
+        assert_eq!(ed.snap_name(), "Auto · 1/16");
+        assert!(ed.snap_auto());
+        ed.act(EditAction::AutoSnap(4), &c);
+        assert_eq!(
+            (ed.snap_name().as_str(), ed.snap_ticks()),
+            ("Auto · 1/8", 480)
+        );
+        // Auto triplets moves the division onto a triplet.
+        ed.act(EditAction::Button(3), &c);
+        assert_eq!(ed.snap_name(), "Auto T · 1/8T");
+        ed.act(EditAction::AutoSnap(99), &c);
+        assert_eq!(ed.snap_ticks(), 320, "no such division: kept");
+        // Then the fixed snaps, coarse to fine, then off, then Auto again.
+        ed.act(EditAction::Button(3), &c);
+        assert_eq!(ed.snap_name(), "1 bar");
+        for _ in 0..DIVISIONS.len() {
             ed.act(EditAction::Button(3), &c);
         }
-        assert_eq!((ed.snap_name(), ed.snap_ticks()), ("Off", 0));
+        assert_eq!((ed.snap_name().as_str(), ed.snap_ticks()), ("Off", 0));
+        ed.act(EditAction::Button(3), &c);
+        assert_eq!(
+            ed.snap_name(),
+            "Auto · 1/8",
+            "back on its straight division"
+        );
+        ed.act(EditAction::Button(3), &c);
         ed.act(EditAction::Button(3), &c);
         assert_eq!(ed.snap_name(), "1 bar");
         assert_eq!(ed.act(EditAction::Button(1), &c).line, "edit: list");
@@ -2361,7 +3444,6 @@ mod tests {
         assert_eq!(c.notes[2].len, 240);
         assert!(ed.act(EditAction::Step(3840), &c).edit.is_empty());
         // Select on an empty step lets the notes go.
-        ed.act(EditAction::Button(2), &c);
         ed.act(EditAction::Button(2), &c);
         assert_eq!(ed.tool, Tool::Select);
         ed.act(EditAction::Step(720), &c);
@@ -2674,6 +3756,161 @@ mod tests {
     /// it sounds in and cut at the clip's end; the tracker's rows, the
     /// list's order and the index are worked out once for a grid's notes
     /// and again for other notes.
+    /// An eight-bar clip on a roll of the page's width, opened as the
+    /// page opens it.
+    fn long_grid() -> (NoteGrid, Rect) {
+        let r = Rect::new(12, 128, 1116, 670);
+        let mut g = NoteGrid {
+            notes: vec![
+                NoteBox::of(&Note::new(0, 240, 60, 100), false),
+                NoteBox::of(&Note::new(3840, 480, 64, 90), false),
+                NoteBox::of(&Note::new(7 * 3840, 240, 67, 80), true),
+            ],
+            length: 8 * 3840,
+            bar: 3840,
+            ..NoteGrid::default()
+        };
+        g.view = g.open_view(r);
+        (g, r)
+    }
+
+    /// Two fingers zoom (the way their first movement picks) and scroll,
+    /// sending nothing until they lift, and then only the view; one
+    /// finger scrolls on the ruler (time) and the keys (pitch).
+    #[test]
+    fn two_fingers_zoom_and_one_scrolls_on_the_ruler_and_keys() {
+        let (mut g, r) = long_grid();
+        let geo = g.geo(r);
+        let v0 = geo.v;
+        assert_eq!(v0.row_h, geo.roll.h / 8, "C3 to G3 fill the rows");
+        let (cx, cy) = (geo.roll.x + 300, geo.roll.y + 200);
+        // A pinch across, starting on empty roll: no note is drawn.
+        assert_eq!(g.touch(1, Touch::Down, cx, cy, r), None);
+        assert_eq!(g.touch(2, Touch::Down, cx + 100, cy, r), None);
+        for k in 1..=10 {
+            assert_eq!(g.touch(2, Touch::Move, cx + 100 + 10 * k, cy + 1, r), None);
+        }
+        assert!(g.busy());
+        let v = g.view_in(r);
+        assert!((v.ppt / v0.ppt - 2.0).abs() < 0.01, "{} {}", v.ppt, v0.ppt);
+        assert_eq!(v.row_h, v0.row_h, "time only");
+        assert!(matches!(
+            g.touch(1, Touch::Up, cx, cy, r),
+            Some(EventKind::View { .. })
+        ));
+        assert_eq!(g.touch(2, Touch::Up, cx + 200, cy, r), None, "no tap");
+        assert!(!g.busy());
+        // The ruler: a finger dragged left shows later ticks.
+        let ruler = geo.ruler;
+        let before = g.view_in(r).start;
+        g.touch(3, Touch::Down, ruler.x + 400, ruler.y + 5, r);
+        g.touch(3, Touch::Move, ruler.x + 300, ruler.y + 5, r);
+        assert!(matches!(
+            g.touch(3, Touch::Up, ruler.x + 300, ruler.y + 5, r),
+            Some(EventKind::View { .. })
+        ));
+        let after = g.view_in(r);
+        assert!((after.start - before - (100.0 / after.ppt) as Tick).abs() <= 1);
+        // The keys: dragged down, higher rows show.
+        let keys = g.geo(r).keys;
+        let lift = g.view_in(r).lift;
+        g.touch(4, Touch::Down, keys.x + 20, keys.y + 100, r);
+        g.touch(4, Touch::Move, keys.x + 20, keys.y + 150, r);
+        g.touch(4, Touch::Up, keys.x + 20, keys.y + 150, r);
+        assert_eq!(g.view_in(r).lift, lift + 50);
+        // A tap on the ruler moves nothing.
+        let v = g.view_in(r);
+        assert_eq!(g.touch(5, Touch::Down, ruler.x + 10, ruler.y + 5, r), None);
+        assert_eq!(g.touch(5, Touch::Up, ruler.x + 10, ruler.y + 5, r), None);
+        assert_eq!(g.view_in(r), v);
+    }
+
+    /// The overview: a tap jumps there, a drag moves the window, a double
+    /// tap fits the whole clip. Fit fits the picked notes (or all), and
+    /// Follow is a switch the playhead pages by.
+    #[test]
+    fn the_overview_fit_and_follow() {
+        let (mut g, r) = long_grid();
+        let geo = g.geo(r);
+        let o = geo.overview;
+        let shown = geo.v.ticks_shown(geo.roll);
+        assert!(shown < g.length, "two bars of eight show");
+        // A tap three quarters along: the window centres there.
+        let x = o.x + o.w * 3 / 4;
+        g.touch(1, Touch::Down, x, o.y + 5, r);
+        assert!(matches!(
+            g.touch(1, Touch::Up, x, o.y + 5, r),
+            Some(EventKind::View { .. })
+        ));
+        let v = g.view_in(r);
+        let centre = v.start + shown / 2;
+        assert!(
+            (centre - g.length * 3 / 4).abs() <= g.length / i64::from(o.w),
+            "{v:?}"
+        );
+        // A second tap soon after: the whole clip.
+        g.touch(2, Touch::Down, x, o.y + 5, r);
+        g.touch(2, Touch::Up, x, o.y + 5, r);
+        let whole = g.view_in(r);
+        assert_eq!(
+            (whole.start, whole.x_of(geo.roll, g.length)),
+            (0, geo.roll.right())
+        );
+        // Fit: the picked note (in bar 8) across the roll.
+        g.touch(3, Touch::Down, geo.fit.x + 5, geo.fit.y + 5, r);
+        g.touch(3, Touch::Up, geo.fit.x + 5, geo.fit.y + 5, r);
+        let fit = g.view_in(r);
+        assert!(fit.start <= 7 * 3840 && fit.start + fit.ticks_shown(geo.roll) >= 7 * 3840 + 240);
+        assert!(fit.notes_shown(geo.roll, 128).contains(&67));
+        // Follow: lit, then the playhead pages the roll.
+        assert!(!g.view.follow);
+        g.touch(4, Touch::Down, geo.follow.x + 5, geo.follow.y + 5, r);
+        g.touch(4, Touch::Up, geo.follow.x + 5, geo.follow.y + 5, r);
+        assert!(g.view.follow);
+        g.view = RollView {
+            start: 0,
+            ..g.view_in(r)
+        };
+        assert!(g.follow_to(r, 5 * 3840));
+        let v = g.view_in(r);
+        assert!(v.start <= 5 * 3840 && 5 * 3840 < v.start + v.ticks_shown(geo.roll));
+        // A drag on the ruler turns it off.
+        let ruler = geo.ruler;
+        g.touch(5, Touch::Down, ruler.x + 400, ruler.y + 5, r);
+        g.touch(5, Touch::Move, ruler.x + 380, ruler.y + 5, r);
+        g.touch(5, Touch::Up, ruler.x + 380, ruler.y + 5, r);
+        assert!(!g.view.follow);
+        assert!(!g.follow_to(r, 0));
+        // Every one of them is a control the audit can find.
+        let ids: Vec<&str> = g.targets(r).iter().map(|t| t.id).collect();
+        for id in ["fit", "follow", "overview", "ruler", "keys"] {
+            assert!(ids.contains(&id), "{id}");
+        }
+    }
+
+    /// Snap Auto: a drag moves the notes by whole snaps, so a note played
+    /// a little late stays a little late; a fixed snap puts its start on
+    /// a line, as before.
+    #[test]
+    fn a_snap_auto_drag_keeps_each_notes_feel() {
+        let mut g = grid();
+        g.notes[1] = NoteBox::of(&Note::new(970, 480, 52, 64), true);
+        let n1 = g.note_rect(R, 1).unwrap();
+        let (x, y) = mid(n1);
+        let beat = (f64::from(g.geo(R).roll.w) / 4.0).round() as i32;
+        let drop = |g: &mut NoteGrid| {
+            g.touch(1, Touch::Down, x, y, R);
+            g.touch(1, Touch::Move, x + beat + 3, y, R);
+            match g.touch(1, Touch::Up, x + beat + 3, y, R) {
+                Some(EventKind::Marker { frame, .. }) => drop_of(frame).0,
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(drop(&mut g), 950, "fixed: onto the line at 1920");
+        g.snap_auto = true;
+        assert_eq!(drop(&mut g), 960, "Auto: a beat on, 10 ticks late still");
+    }
+
     #[test]
     fn the_note_index_and_what_the_grid_keeps() {
         let bar = 960;
@@ -2727,7 +3964,7 @@ mod tests {
         let n1 = g.note_rect(R, 1).unwrap();
         let (x, y) = mid(n1);
         let beat = (f64::from(g.geo(R).roll.w) / 4.0).round() as i32;
-        assert_eq!(g.touch(1, Touch::Down, x, y, R), Some(EventKind::Select(1)));
+        assert_eq!(g.touch(1, Touch::Down, x, y, R), None);
         // Another finger's moves and lift leave the drag be.
         assert_eq!(g.touch(2, Touch::Move, x + beat + 3, y, R), None);
         assert_eq!(g.note_rect(R, 1), Some(n1));
@@ -2736,22 +3973,36 @@ mod tests {
         assert_ne!(moved, n1);
         assert_eq!(g.touch(2, Touch::Up, x, y, R), None);
         assert_eq!(g.note_rect(R, 1), Some(moved), "still dragging");
-        // A second finger down: the drag stops where it was, nothing sent,
-        // and that finger does nothing (here, it would add a note).
+        // A second finger down: the drag stops where it was with nothing
+        // sent, and the two fingers move the view (a pinch), never a note.
         let n0 = g.note_rect(R, 0).unwrap();
         let empty = (n0.x + n0.w * 3, n0.y + n0.h / 2);
         assert_eq!(g.touch(2, Touch::Down, empty.0, empty.1, R), None);
         assert_eq!(g.note_rect(R, 1), Some(n1), "back in place");
+        let view = g.view;
         assert_eq!(g.touch(1, Touch::Move, x + 2 * beat, y, R), None);
-        assert_eq!(g.note_rect(R, 1), Some(n1));
-        assert_eq!(g.touch(1, Touch::Up, x + 2 * beat, y, R), None, "no drop");
-        assert_eq!(g.touch(2, Touch::Up, empty.0, empty.1, R), None);
-        // With every finger up, a tap works again.
+        assert_ne!(g.view, view, "zoomed in time");
+        assert!(
+            matches!(
+                g.touch(1, Touch::Up, x + 2 * beat, y, R),
+                Some(EventKind::View { .. })
+            ),
+            "no drop, only the view"
+        );
+        // The finger left does nothing until it lifts.
+        let zoomed = g.view;
+        assert_eq!(g.touch(2, Touch::Move, empty.0 + 90, empty.1, R), None);
+        assert_eq!(
+            (g.view, g.touch(2, Touch::Up, empty.0, empty.1, R)),
+            (zoomed, None)
+        );
+        g.view = view;
+        // With every finger up, a tap works again (when it lifts).
+        assert_eq!(g.touch(3, Touch::Down, empty.0, empty.1, R), None);
         assert!(matches!(
-            g.touch(3, Touch::Down, empty.0, empty.1, R),
+            g.touch(3, Touch::Up, empty.0, empty.1, R),
             Some(EventKind::Cell { row: 50, .. })
         ));
-        assert_eq!(g.touch(3, Touch::Up, empty.0, empty.1, R), None);
         // The velocity lane: a second finger stops it, and nothing is sent.
         let v = g.geo(R).vel;
         assert_eq!(g.touch(4, Touch::Down, v.x + 10, v.y + 3, R), None);
@@ -2759,11 +4010,16 @@ mod tests {
         assert_eq!(g.touch(5, Touch::Down, v.x + 40, v.y + 3, R), None);
         assert_eq!(g.drag, None);
         assert_eq!(g.touch(4, Touch::Move, v.x + 10, v.bottom(), R), None);
-        assert_eq!(g.touch(4, Touch::Up, v.x + 10, v.bottom(), R), None);
+        assert!(!matches!(
+            g.touch(4, Touch::Up, v.x + 10, v.bottom(), R),
+            Some(EventKind::Value(_))
+        ));
         assert_eq!(g.touch(5, Touch::Up, v.x + 40, v.y + 3, R), None);
+        g.view = view;
         // A finger whose lift was lost starts afresh when it comes down.
-        assert_eq!(g.touch(6, Touch::Down, x, y, R), Some(EventKind::Select(1)));
-        assert!(g.touch(6, Touch::Down, empty.0, empty.1, R).is_some());
+        assert_eq!(g.touch(6, Touch::Down, x, y, R), None);
+        assert_eq!(g.touch(6, Touch::Down, empty.0, empty.1, R), None);
+        assert!(g.touch(6, Touch::Up, empty.0, empty.1, R).is_some());
         assert_eq!(g.note_rect(R, 1), Some(n1));
     }
 
@@ -2789,7 +4045,12 @@ mod tests {
             ],
             length: 3840,
             bar: 3840,
-            low: 48,
+            // C2 at the bottom, 40 px rows (the clip fits across).
+            view: RollView {
+                lift: 48 * 40,
+                row_h: 40,
+                ..RollView::default()
+            },
             ..NoteGrid::default()
         }
     }
@@ -2810,12 +4071,15 @@ mod tests {
         let mut g = grid();
         let n1 = g.note_rect(R, 1).unwrap();
         let (x, y) = mid(n1);
-        assert_eq!(g.touch(1, Touch::Down, x, y, R), Some(EventKind::Select(1)));
-        assert_eq!(g.touch(1, Touch::Up, x, y, R), None, "a tap is not a drag");
-        // Empty space: the row's note and the tick snapped down.
+        // A note: nothing until the finger lifts, then a tap.
+        assert_eq!(g.touch(1, Touch::Down, x, y, R), None);
+        assert_eq!(g.touch(1, Touch::Up, x, y, R), Some(EventKind::Toggle(1)));
+        // Empty space: the row's note and the tick snapped down, when the
+        // finger lifts.
         let n0 = g.note_rect(R, 0).unwrap();
         let (x, y) = (n0.x + n0.w * 3, n0.y + n0.h / 2);
-        match g.touch(2, Touch::Down, x, y, R) {
+        assert_eq!(g.touch(2, Touch::Down, x, y, R), None);
+        match g.touch(2, Touch::Up, x, y, R) {
             Some(EventKind::Cell { row, col }) => {
                 assert_eq!(row, 50);
                 assert_eq!(col % 240, 0);
@@ -2828,8 +4092,101 @@ mod tests {
             g.touch(3, Touch::Down, mid(b[7]).0, mid(b[7]).1, R),
             Some(EventKind::Tab(7))
         );
-        assert_eq!(g.button_label(7), "TC sel.");
+        assert_eq!(g.button_label(7), "Edit");
+        assert_eq!(g.button_label(2), "Draw");
         assert_eq!(g.button_label(3), "Snap 1/16");
+        g.snap_name = "Auto · 1/8".into();
+        assert_eq!(g.button_label(3), "Auto · 1/8");
+    }
+
+    /// A finger on a note is a tap, a hold or a drag before anything
+    /// goes (piano roll plan 1B.1): a hold picks the note and its lift
+    /// taps nothing; a drag moves the note alone when it isn't picked.
+    /// With Draw on a drag on empty roll draws a note as long as the drag;
+    /// with Draw off a double tap there puts one in.
+    #[test]
+    fn a_finger_is_a_tap_a_hold_or_a_drag_before_anything_goes() {
+        let mut g = grid();
+        let n0 = g.note_rect(R, 0).unwrap();
+        let (x, y) = mid(n0);
+        // A hold: nothing until 0.4 s, then the pick; the lift taps nothing.
+        assert_eq!(g.touch(1, Touch::Down, x, y, R), None);
+        assert_eq!(g.tick(0.3), None);
+        assert_eq!(g.touch(1, Touch::Move, x + 10, y, R), None, "not far");
+        assert_eq!(g.tick(0.15), Some(EventKind::Select(0)));
+        assert_eq!(g.tick(1.0), None, "once");
+        assert_eq!(g.touch(1, Touch::Up, x + 10, y, R), None);
+        // A drag of a note that isn't picked: it moves alone.
+        let beat = (f64::from(g.geo(R).roll.w) / 4.0).round() as i32;
+        let n1 = g.note_rect(R, 1).unwrap();
+        assert_eq!(g.touch(2, Touch::Down, x, y, R), None);
+        assert_eq!(g.touch(2, Touch::Move, x + beat + 3, y, R), None);
+        assert_ne!(g.note_rect(R, 0), Some(n0), "the note dragged moves");
+        assert_eq!(g.note_rect(R, 1), Some(n1), "the picked one stays");
+        assert!(matches!(
+            g.touch(2, Touch::Up, x + beat + 3, y, R),
+            Some(EventKind::Marker { index: 0, .. })
+        ));
+        // A press follows its note when the notes change under it, and
+        // lets go when its note is gone.
+        assert_eq!(g.touch(3, Touch::Down, x, y, R), None);
+        let mut swapped = g.clone();
+        swapped.notes.swap(0, 1);
+        g.show(swapped.clone());
+        assert_eq!(g.touch(3, Touch::Up, x, y, R), Some(EventKind::Toggle(1)));
+        assert_eq!(g.touch(3, Touch::Down, x, y, R), None);
+        let mut gone = swapped;
+        gone.notes.remove(1);
+        g.show(gone);
+        assert_eq!(g.touch(3, Touch::Up, x, y, R), None);
+        // Draw on: a drag on empty roll draws, from the cell it started
+        // in to the end of the cell under the finger, shown as it goes.
+        let mut g = grid();
+        g.tool = Tool::Draw;
+        g.snap = 240;
+        let n0 = g.note_rect(R, 0).unwrap();
+        let (ex, ey) = (n0.x + n0.w * 3, n0.y + n0.h / 2);
+        let before = painted(&g);
+        assert_eq!(g.touch(4, Touch::Down, ex, ey, R), None);
+        assert_eq!(g.touch(4, Touch::Move, ex + beat, ey, R), None);
+        assert!(differ_in(&before, &painted(&g), g.geo(R).roll));
+        match g.touch(4, Touch::Up, ex + beat, ey, R) {
+            Some(EventKind::Span { index, from, to }) => {
+                assert_eq!(index, 50);
+                assert_eq!(from % 240, 0);
+                assert_eq!(to % 240, 0);
+                assert!(to - from >= 960, "{from}..{to}");
+            }
+            other => panic!("{other:?}"),
+        }
+        // A tap there with Draw on: a cell, twice (no double tap).
+        for _ in 0..2 {
+            assert_eq!(g.touch(5, Touch::Down, ex, ey, R), None);
+            assert!(matches!(
+                g.touch(5, Touch::Up, ex, ey, R),
+                Some(EventKind::Cell { row: 50, .. })
+            ));
+        }
+        // Draw off: the second of two quick taps puts a note in.
+        g.tool = Tool::Select;
+        g.touch(6, Touch::Down, ex, ey, R);
+        assert!(matches!(
+            g.touch(6, Touch::Up, ex, ey, R),
+            Some(EventKind::Cell { .. })
+        ));
+        g.touch(6, Touch::Down, ex + 5, ey, R);
+        match g.touch(6, Touch::Up, ex + 5, ey, R) {
+            Some(EventKind::Span {
+                index: 50,
+                from,
+                to,
+            }) => assert_eq!(to - from, 240),
+            other => panic!("{other:?}"),
+        }
+        // A drag on empty roll with Draw off sends nothing (yet).
+        g.touch(7, Touch::Down, ex, ey, R);
+        g.touch(7, Touch::Move, ex + beat, ey, R);
+        assert_eq!(g.touch(7, Touch::Up, ex + beat, ey, R), None);
     }
 
     #[test]
@@ -2840,7 +4197,7 @@ mod tests {
         g.touch(1, Touch::Down, x, y, R);
         // Right by about a beat and up two rows.
         let beat = (f64::from(g.geo(R).roll.w) / 4.0).round() as i32;
-        let rh = g.row_h(&g.geo(R));
+        let rh = g.geo(R).v.row_h;
         assert_eq!(
             g.touch(1, Touch::Move, x + beat + 3, y - 2 * rh - 2, R),
             None

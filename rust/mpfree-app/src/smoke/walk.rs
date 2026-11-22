@@ -288,9 +288,10 @@ pub fn check(s: &mut Session) -> Vec<String> {
             ));
         }
     }
-    // The step grid shows the armed track's clip, and the pads' mutes.
+    // The step grid shows the armed track's clip, and that track's pad
+    // mutes (step 10).
     let steps = s.time.steps();
-    let pad_mutes = s.mix.play_levels().pad_mutes;
+    let pad_mutes = s.time.pad_mutes(steps.track).map_or(0, |m| m.0);
     let shows_grid = s
         .controls()
         .iter()
@@ -303,19 +304,21 @@ pub fn check(s: &mut Session) -> Vec<String> {
             .ui
             .get::<crate::play_widgets::StepGrid>(crate::play_page::STEPS),
     ) {
-        // A synth's lanes and another kit's have no mutes of their own:
-        // only kit 1's pads have the mixer's pad strips.
-        let own_mutes =
-            g.pitched.is_none() && !matches!(s.track_kits.kit_of(steps.track), Some(k) if k > 0);
-        for lane in g.lanes.iter().filter(|l| l.pad < 16) {
-            if lane.muted != (own_mutes && pad_mutes & (1 << lane.pad) != 0) {
+        // A synth's lanes have no pad mutes (a clip of notes plays every
+        // note); any kit's, on any bank, have the track's.
+        let own_mutes = g.pitched.is_none();
+        for lane in g.lanes.iter().filter(|l| l.pad < 128) {
+            if lane.muted != (own_mutes && pad_mutes >> lane.pad & 1 == 1) {
                 bad.push(format!(
-                    "the step grid shows {} {} but the mixer has it {}",
+                    "the step grid shows {} {} but track {} has it {}",
                     lane.name,
                     if lane.muted { "muted" } else { "playing" },
+                    steps.track + 1,
                     if lane.muted { "playing" } else { "muted" }
                 ));
             }
+        }
+        for lane in g.lanes.iter().filter(|l| l.pad < 16) {
             // While REC replaces (no overdub), the grid hears of what it
             // takes away four times a second (`tell_every`) as the playhead
             // passes, so it is always a moment behind; with overdub, or

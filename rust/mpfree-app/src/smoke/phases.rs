@@ -1876,10 +1876,11 @@ mod track_mute {
 
     /// With 24 tracks: TRACK MUTE's pads are tracks 1-16, PAD BANK B makes
     /// them tracks 17-32 (17-24 here), and the pads stay mute keys on
-    /// another tab. SHIFT + TRACK MUTE: each pad mutes itself in the kit,
-    /// and a muted pad is silent; SHIFT + TRACK MUTE again: the pads play.
+    /// another tab. SHIFT + TRACK MUTE: each pad mutes itself on the
+    /// selected track (step 10: its clips' hits; played live it still
+    /// sounds); SHIFT + TRACK MUTE again: the pads play.
     #[test]
-    fn track_mute_banks_reach_past_16_tracks_and_shift_mutes_the_kits_pads() {
+    fn track_mute_banks_reach_past_16_tracks_and_shift_mutes_the_tracks_pads() {
         on_big_stack(|| {
             let mut s = Session::new();
             while s.time.track_count() < 24 {
@@ -1918,12 +1919,14 @@ mod track_mute {
             s.button("PAD BANK A/E");
             s.press("header", "tab", "Play");
 
-            // SHIFT + TRACK MUTE: the kit's pads.
+            // SHIFT + TRACK MUTE: the selected track's pads.
             s.make_sounds();
             s.button_with("SHIFT", "TRACK MUTE");
             assert_eq!(s.app.mute_keys(), MuteKeys::Pads);
+            let t = s.app.track();
             s.pad(4, 100, 0.05);
-            assert_eq!(s.mix.pad_mutes(), 1 << 4, "pad 5 muted in the kit");
+            assert_eq!(s.time.pad_mutes(t), Some((1 << 4, 0)), "A5 muted on it");
+            assert_eq!(s.mix.pad_mutes(), 0, "no channel muted");
             assert_eq!(s.time.muted(4), Some(false), "not track 5");
             s.button_with("SHIFT", "TRACK MUTE");
             assert_eq!(s.app.mute_keys(), MuteKeys::Off, "the pads play again");
@@ -1934,12 +1937,11 @@ mod track_mute {
                 h.iter().fold(0f32, |m, x| m.max(x.abs()))
             };
             assert!(loud(&mut s, 5) > 0.01, "pad 6 sounds");
-            assert!(loud(&mut s, 4) < 1e-4, "pad 5 is muted in the kit");
+            assert!(loud(&mut s, 4) > 0.01, "pad 5 played live still sounds");
             s.button_with("SHIFT", "TRACK MUTE");
             s.pad(4, 100, 0.05);
             s.button_with("SHIFT", "TRACK MUTE");
-            assert_eq!(s.mix.pad_mutes(), 0);
-            assert!(loud(&mut s, 4) > 0.01, "pad 5 sounds again");
+            assert_eq!(s.time.pad_mutes(t), Some((0, 0)), "and plays again");
         });
     }
 }

@@ -161,6 +161,22 @@ Each problem below starts with its colour. A **Note** is listed on the System st
 
 **Yellow.** The graphics chip didn't start, so the screen is drawn the slow way and may feel less smooth. **Try:** restart MPFree. If it keeps happening, please report it.
 
+### A theme file was left out
+
+**Yellow.** One of the theme files in the themes folder couldn't be used, so **Prefs > Appearance** doesn't offer it. **Try:** open **Prefs > Appearance** to see which file and why, then fix it or take it out of the folder. See [Making your own theme](making-a-theme.md).
+
+### A theme file has mistakes
+
+**Yellow.** Some lines of a theme file couldn't be used, so those colours come from the theme it starts from. **Try:** pick that theme in **Prefs > Appearance** to see the lines, then fix them in the file.
+
+### Your theme couldn't be used
+
+**Yellow.** The theme you picked couldn't be found or read when MPFree started, so the Default theme is showing. **Try:** pick a theme again in **Prefs > Appearance**.
+
+### Some pop-up colours were changed so they read
+
+**Yellow.** The theme's colours didn't read over a plugin's own screen, so MPFree changed the colours of its pop-ups there. **Try:** pick another theme, or give this one more difference between its words and its panels.
+
 ### The sound is running on fewer cores
 
 **Yellow.** MPFree couldn't give the sound all the cores it asked for, so it has less room before it runs late. **Try:** restart MPFree. If it keeps happening, please report it.
