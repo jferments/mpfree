@@ -1583,6 +1583,65 @@ impl TrackHost {
         .collect();
     }
 
+    /// To a cell (audio tracks phase 2): the audio clip that plays what
+    /// region `r` plays in the song, and the project track it goes on.
+    /// The clip holds one region of the region's recording on its own
+    /// ticks, with the region's gain and fades (and how much of a cut
+    /// region lies either side, so its fades stay exactly its share); it
+    /// is as long as the region, made at the tempo the song (`map`) has at
+    /// the region's start, its sound ending where the region's does, and
+    /// named after its track and bars ("Vocal 5–8", in `meter`'s bars);
+    /// with the words for where it was ("Vocal, bars 5 to 8"). Err says
+    /// why not: no such region, its take still recording, or its
+    /// track not in the project.
+    pub fn region_clip(
+        &self,
+        r: RegionId,
+        map: &TempoMap,
+        meter: mpfree_transport::time::Meter,
+    ) -> Result<(usize, mpfree_seq::Clip, String), String> {
+        let tr = &self.host.tracks;
+        let reg = region(tr, r)?;
+        let take = tr
+            .take(reg.take)
+            .filter(|t| !t.recording)
+            .ok_or("that region's take is still recording")?;
+        let track = self
+            .place(r.track)
+            .ok_or_else(|| format!("{} is not in the track list", self.who(r.track)))?;
+        let length = reg.end - reg.start;
+        let frames = map
+            .frames_between(reg.start as f64, reg.end as f64, self.rate)
+            .round() as i64;
+        let bar = meter.bar_ticks().max(1);
+        let (first, last) = (reg.start / bar + 1, (reg.end + bar - 1) / bar);
+        let who = self.who(r.track);
+        let (name, place) = if last > first {
+            (
+                format!("{who} {first}–{last}"),
+                format!("{who}, bars {first} to {last}"),
+            )
+        } else {
+            (format!("{who} {first}"), format!("{who}, bar {first}"))
+        };
+        let mut one = mpfree_seq::ClipRegion::new(0, length, RecId(take.rec.0), reg.src);
+        one.gain = reg.gain;
+        one.fade_in = reg.fade_in;
+        one.fade_out = reg.fade_out;
+        one.into = reg.into;
+        one.left = reg.left;
+        let mut clip = mpfree_seq::Clip::new(&name, length);
+        clip.audio = Some(mpfree_seq::AudioClip {
+            regions: vec![one],
+            bpm: map.bpm_at(reg.start),
+            gain: 1.0,
+            last_frame: reg.src + frames.max(1),
+        });
+        clip.check()
+            .map_err(|_| format!("{place} can't be a clip: it is longer than a clip holds"))?;
+        Ok((track, clip, place))
+    }
+
     /// What a touch on the Song view's audio lanes asked for. `t` is the
     /// transport now, `line_open` whether the line input is on. Ok is a
     /// line for the log (may be empty); Err says why nothing happened.
@@ -1668,6 +1727,9 @@ impl TrackHost {
                 region(tr, r)?;
                 "Q3 turns the region's gain, SHIFT for fine steps".into()
             }
+            // The clip goes to the time engine's cells: the app builds it
+            // with `region_clip` and puts it in (`main::time_action`).
+            AudioAction::ToCell(_) => return Err("To a cell goes through the clips".into()),
             AudioAction::Fades(r) => {
                 region(tr, r)?;
                 "Q4 turns the region's fades, SHIFT for fine steps".into()

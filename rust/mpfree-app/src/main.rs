@@ -6553,6 +6553,20 @@ fn time_action(
     }
     // The audio lanes' touches go to the audio tracks; a pick stays with
     // the time engine, which keeps the selection.
+    // To a cell (audio tracks phase 2): the picked region as an audio
+    // clip in its track's first empty cell; the song doesn't change.
+    if let TimeAction::Audio(AudioAction::ToCell(r)) = a {
+        let said = tracks
+            .region_clip(r, time.tempo_map(), time.info().meter)
+            .and_then(|(track, clip, place)| {
+                let row = time.put_audio_clip(track, clip)?;
+                Ok(format!("{place}: in row {} · UNDO takes it out", row + 1))
+            });
+        let line = said.unwrap_or_else(|e| format!("To a cell: {e}"));
+        out.note(&format!("audio tracks: {line}"));
+        out.show(gui::ToUi::Tell(line));
+        return Vec::new();
+    }
     if let TimeAction::Audio(aa) = a {
         // The audio tracks' own Undo and Redo at a song edit's step the
         // song no longer reaches: the step is forgotten (Arrange 3.4).
@@ -13643,6 +13657,140 @@ mod tests {
     #[test]
     fn a_clip_launch_that_waits_for_its_audio_lands_on_its_line_once_held() {
         clip_launch(true);
+    }
+
+    /// Audio tracks phase 2, step 2c: To a cell makes the picked region a
+    /// clip, in its track's first empty cell, that plays what the song
+    /// played there: exactly, past the entry fade (its first 64 frames,
+    /// never louder than the song) and before the song region's own fade
+    /// out at its end. The clip is named after the track and bar, and the
+    /// song keeps its region.
+    #[test]
+    fn a_region_put_in_a_cell_plays_what_the_song_played_there() {
+        use mpfree_audiotracks::RecordingId;
+        use mpfree_seq::{Project, Track};
+        use mpfree_time_ui::view::RegionId;
+        use mpfree_transport::Command;
+        struct Quiet;
+        impl time::Pads for Quiet {
+            fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
+                true
+            }
+            fn release_at(&mut self, _: u16, _: usize, _: u32) {}
+            fn stop_all(&mut self) {}
+            fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
+        }
+        /// Runs `periods` periods, keeping engine track `s`'s left channel
+        /// in `out`, and in `at` the frame song tick `tick` lands on.
+        fn run(
+            time: &mut time::TimeHost,
+            tracks: &mut audiotracks::TrackHost,
+            periods: usize,
+            s: usize,
+            tick: f64,
+            out: &mut Vec<f32>,
+            at: &mut Option<usize>,
+        ) {
+            let z = [0f32; PERIOD];
+            for _ in 0..periods {
+                time.advance(PERIOD as u32);
+                time.period(PERIOD as u32, &mut Quiet);
+                tracks.sync(time.project(), time.silenced(), true);
+                let t: &time::TimeHost = time;
+                tracks.period(
+                    t.block(),
+                    t.tempo_map(),
+                    t.song_on(),
+                    (&z, &z),
+                    Some(&|p| t.audio(p)),
+                );
+                for sp in t.block().spans() {
+                    if let (None, Some(o)) = (*at, sp.offset_of(tick)) {
+                        *at = Some(out.len() + o as usize);
+                    }
+                }
+                let o = tracks.host.tracks.track_out(s, PERIOD);
+                out.extend(o.chunks_exact(2).map(|f| f[0]));
+            }
+        }
+        let bar = 2 * RATE as usize;
+        let mut p = Project::new();
+        p.tracks.push(Track::new_audio("Vocal", 0));
+        p.give_track_ids();
+        let mut time = time::TimeHost::with_project(RATE, 120.0, p).unwrap();
+        let mut tracks = audiotracks::TrackHost::new(RATE, 10);
+        tracks.sync(time.project(), 0, true);
+        let s = (0..mpfree_audiotracks::MAX_TRACKS)
+            .find(|&s| tracks.place(s) == Some(0))
+            .expect("an engine track for Vocal");
+        // A bar of audio that changes every frame, recorded at bar 3.
+        let audio: Vec<f32> = (0..bar)
+            .map(|i| ((i % 97) as f32 / 97.0 - 0.5) * 0.8)
+            .collect();
+        let take = mpfree_audiotracks::save::TakeFile {
+            id: 0,
+            rec: RecordingId(42),
+            track: s,
+            group: 0,
+            pass: 0,
+            bpm: 120.0,
+            anchor: (2 * 3840) as f64,
+            frames: bar,
+            channels: 1,
+            file: String::new(),
+            path: None,
+            audio,
+        };
+        assert!(tracks.host.tracks.load_take(take).is_ok());
+        let (mut out, mut at) = (Vec::new(), None);
+        for _ in 0..100 {
+            if tracks.host.tracks.loading() == 0 {
+                break;
+            }
+            run(&mut time, &mut tracks, 10, s, 0.0, &mut out, &mut at);
+        }
+        let map = *time.tempo_map();
+        assert!(tracks.host.tracks.place(0, &[], &map));
+        // The song, bar 3.
+        time.act(TimeAction::SongMode(true)).unwrap();
+        time.act(TimeAction::Transport(Command::PlayStart)).unwrap();
+        let (mut song, mut line) = (Vec::new(), None);
+        let periods = 3 * bar / PERIOD + 4;
+        run(&mut time, &mut tracks, periods, s, 7680.0, &mut song, &mut line);
+        let line = line.expect("bar 3 came");
+        let song = song[line..line + bar].to_vec();
+        assert!(song[200..].iter().any(|&v| v != 0.0), "the song plays it");
+        time.act(TimeAction::Transport(Command::Stop)).unwrap();
+        time.act(TimeAction::SongMode(false)).unwrap();
+        let mut rest = Vec::new();
+        run(&mut time, &mut tracks, 4, s, 0.0, &mut rest, &mut None);
+        // To a cell.
+        let r = RegionId { track: s, index: 0 };
+        let (track, clip, place) = tracks
+            .region_clip(r, &map, time.info().meter)
+            .expect("a clip of it");
+        assert_eq!(
+            (track, clip.name.as_str(), place.as_str(), clip.length),
+            (0, "Vocal 3", "Vocal, bar 3", 3840)
+        );
+        let a = clip.audio.clone().expect("an audio clip");
+        assert_eq!((a.bpm, a.last_frame, a.regions.len()), (120.0, bar as i64, 1));
+        assert_eq!(time.put_audio_clip(track, clip), Ok(0));
+        assert_eq!(tracks.host.tracks.regions(s).len(), 1, "the song keeps it");
+        // PLAY launches it, the focused cell, from the first frame.
+        let said = time
+            .act(TimeAction::Transport(Command::PlayStart))
+            .unwrap();
+        assert!(said.contains("slot 1 of track 1 launched"), "{said}");
+        let (mut cell, mut start) = (Vec::new(), None);
+        run(&mut time, &mut tracks, bar / PERIOD + 4, s, 0.0, &mut cell, &mut start);
+        let start = start.expect("its line came");
+        let cell = &cell[start..start + bar];
+        for i in 0..64 {
+            assert!(cell[i].abs() <= song[i].abs() + 1e-6, "{i}: {} {}", cell[i], song[i]);
+        }
+        let first = (64..bar - 64).find(|&i| cell[i] != song[i]);
+        assert_eq!(first, None, "the clip plays what the song played");
     }
 
     /// [`an_audio_clip_launched_in_its_cell_plays_from_its_line`], with the

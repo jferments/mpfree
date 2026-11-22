@@ -1472,6 +1472,31 @@ impl TimeControl {
         Ok(())
     }
 
+    /// To a cell and Put in a cell (audio tracks phase 2): `clip`, an
+    /// audio clip, goes in audio track `track`'s first empty cell, top
+    /// down, as an edit UNDO takes away again. The row it went in, or why
+    /// not: no such audio track, no empty cell, or the clip's own
+    /// refusal. Nothing changes on an error.
+    pub fn put_audio_clip(&mut self, track: usize, clip: Clip) -> Result<usize, String> {
+        let t = self
+            .project
+            .tracks
+            .get(track)
+            .filter(|t| t.is_audio())
+            .ok_or_else(|| format!("there is no audio track {}", track + 1))?;
+        if clip.audio.is_none() {
+            return Err(format!("{} takes audio clips only", t.name));
+        }
+        let slot = (0..SLOTS)
+            .find(|&s| t.slots.get(s).is_some_and(Option::is_none))
+            .ok_or_else(|| format!("{} has no empty cell", t.name))?;
+        self.takes
+            .new_clip(&mut self.project, track, slot, clip, false)
+            .map_err(|e| format!("the clip: {e:?}"))?;
+        self.compile()?;
+        Ok(slot)
+    }
+
     /// Cues that launch audio wait until the app has held the start of
     /// their audio in memory (`on`: takes stream from their files), or go
     /// as they are (`audio_wait.rs`). Turned off, every cue waiting goes
@@ -3100,9 +3125,16 @@ impl TimeControl {
                 if t.is_loops() {
                     return Err(format!("paste: {} plays loops, not clips", t.name));
                 }
-                if t.is_audio() {
+                // Audio clips paste onto audio tracks only (phase 2).
+                if t.is_audio() && c.audio.is_none() {
                     return Err(format!(
-                        "paste: {} is an audio track: it takes no clips yet",
+                        "paste: {} is an audio track: it takes audio clips only",
+                        t.name
+                    ));
+                }
+                if !t.is_audio() && c.audio.is_some() {
+                    return Err(format!(
+                        "paste: {} plays notes: an audio clip goes on an audio track",
                         t.name
                     ));
                 }
@@ -3529,9 +3561,24 @@ impl TimeControl {
                 ))
             }
             TimeAction::DropClip { from, to, copy } => {
-                let audio = |t: usize| self.project.tracks.get(t).is_some_and(|t| t.is_audio());
-                if audio(from.0) || audio(to.0) {
-                    return Err("clips: an audio track takes no clips yet".to_string());
+                // Audio clips stay on audio tracks, and note clips and loops
+                // off them (audio tracks phase 2): the reason names the
+                // track it was dropped on.
+                let audio = |t: usize| self.project.tracks.get(t).map(|t| t.is_audio());
+                if audio(from.0) != audio(to.0) {
+                    let there = self.project.tracks.get(to.0);
+                    let name = there.map_or("", |t| t.name.as_str());
+                    return Err(match there {
+                        Some(t) if t.is_audio() => format!(
+                            "clips: {name} is an audio track: it takes audio clips only"
+                        ),
+                        Some(t) if t.is_loops() => format!(
+                            "clips: {name} is a Loop track: an audio clip goes on an audio track"
+                        ),
+                        _ => format!(
+                            "clips: {name} plays notes: an audio clip goes on an audio track"
+                        ),
+                    });
                 }
                 let loops = |t: usize| self.project.tracks.get(t).map(|t| t.is_loops());
                 if loops(from.0) != loops(to.0) {

@@ -1540,6 +1540,10 @@ pub enum AudioAction {
     /// Show the track's take lanes under its lane, or hide them if they
     /// show.
     Takes(usize),
+    /// To a cell (audio tracks phase 2): the region as an audio clip in
+    /// its track's first empty cell, the song unchanged (the app builds
+    /// the clip from the region and puts it in).
+    ToCell(RegionId),
     Undo,
     /// SHIFT + Undo on the audio row (the app sets it): bring back what
     /// Undo took.
