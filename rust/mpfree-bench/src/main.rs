@@ -201,13 +201,10 @@ fn count(o: &Options) {
         }
         // A step edit costs far more a block than an engine (a detent
         // compiles a full clip), and costs the same every block, so the
-        // step cases count a tenth of the blocks after a short warm-up;
-        // the listing tells the gate how many each case counted.
-        let (warm, n) = if c.module == cases::CONTROL {
-            (5, (blocks / 10).max(1))
-        } else {
-            (50, blocks)
-        };
+        // step cases count a tenth of the blocks after a short warm-up,
+        // and the big-song cases a hundredth (`cases::blocks_for`); the
+        // listing tells the gate how many each case counted.
+        let (warm, n) = cases::blocks_for(&c, blocks);
         for b in 0..warm {
             (c.block)(b, &mut l, &mut r);
         }
@@ -999,11 +996,17 @@ fn main() -> ExitCode {
         {
             continue;
         }
-        for b in 0..50 {
+        // The big-song cases take a fifth of a second a block: a few do.
+        let (warm, n) = if c.name.starts_with(cases::BIG_SONG) {
+            cases::blocks_for(&c, blocks)
+        } else {
+            (50, blocks)
+        };
+        for b in 0..warm {
             (c.block)(b, &mut l, &mut r);
         }
         let mut probe = Probe::new(MPC.ns());
-        for b in 50..50 + blocks {
+        for b in warm..warm + n {
             let span = Span::start();
             (c.block)(b, &mut l, &mut r);
             probe.stop(span, MPC.frames);
