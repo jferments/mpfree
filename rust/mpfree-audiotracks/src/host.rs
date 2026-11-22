@@ -80,8 +80,9 @@ const HEADS_EVERY: u64 = 32;
 const HEADS_SPAN: Tick = 16 * mpfree_transport::time::PPQ as Tick;
 /// The shortest start held, in seconds.
 const MIN_HEAD_S: f64 = 0.25;
-/// Takes being written to files at once (a sound brought in and a fit).
-const TO_WRITE: usize = 4;
+/// Takes being written to files at once: a sound brought in, a fit, or a
+/// project's takes converted from another rate (every take at most).
+const TO_WRITE: usize = MAX_TAKES;
 /// Periods between asks again while the cache holds only some of the
 /// starts (about 2.7 s at 128 frames): room may have come back.
 const HEADS_RETRY: u64 = 1024;
@@ -533,9 +534,12 @@ impl AudioHost {
     }
 
     /// Send `file` (whose audio is in `audio`) to be written to a file of
-    /// its own under a new lasting id, its take id kept for it meanwhile.
+    /// its own under its lasting id (a new one if it has none or another
+    /// take has it), its take id kept for it meanwhile.
     fn write_take(&mut self, mut file: TakeFile, audio: Vec<f32>) {
-        file.rec = self.tracks.fresh_rec();
+        if !file.rec.is_given() || self.tracks.take_of(file.rec).is_some() {
+            file.rec = self.tracks.fresh_rec();
+        }
         self.tracks.reserve(file.id, true);
         self.send(ToWorker::WriteTake {
             rec: file.rec,
@@ -820,6 +824,14 @@ impl AudioHost {
                 self.opening.push(k);
                 continue;
             }
+            if path.is_none() && !k.audio.is_empty() && self.writes_files() {
+                // A take no file holds (converted from another rate):
+                // written to one and played from it, as a sound brought
+                // in is.
+                let audio = std::mem::take(&mut k.audio);
+                self.write_take(k, audio);
+                continue;
+            }
             match self.tracks.load_take(k) {
                 Ok(()) => {
                     if let Some(t) = self.tracks.take(id) {
@@ -851,7 +863,7 @@ impl AudioHost {
                 }
             }
         }
-        if self.opening.is_empty() {
+        if self.opening.is_empty() && self.to_write.is_empty() {
             for t in &saved.tracks {
                 if !self.tracks.load_track(t) {
                     bad.push(format!("track {}", t.index + 1));
@@ -1423,6 +1435,8 @@ impl AudioHost {
                         });
                     }
                 }
+                // A project's tracks may have waited for it.
+                self.tracks_in();
             }
             // For tracks since emptied: the file stays in the work folder.
             (None, Ok(_)) => {}
@@ -1433,7 +1447,7 @@ impl AudioHost {
     /// A project's tracks go in once none of its takes is still opening:
     /// without the regions of the takes left out.
     fn tracks_in(&mut self) {
-        if !self.opening.is_empty() {
+        if !self.opening.is_empty() || !self.to_write.is_empty() {
             return;
         }
         let Some(mut saved) = self.waiting.take() else {

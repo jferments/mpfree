@@ -634,3 +634,57 @@ fn a_sound_whose_file_cant_be_written_comes_into_memory_and_is_said() {
         "audio tracks: Keys's new take plays from memory, as its file couldn't be written"
     ));
 }
+
+/// A project recorded at another rate, its takes converted as it opens
+/// ([`Saved::convert`]): each take is written to a file of its own and
+/// plays from there, the same as from memory, and the tracks wait for
+/// the files.
+#[test]
+fn a_project_s_converted_takes_are_written_to_files_and_play_from_them() {
+    let dir = scratch("convert");
+    let (mut mem, _) = from_memory();
+    // As if recorded at twice the rate, then opened here.
+    let mut saved = mem.save();
+    saved.convert(2 * RATE);
+    saved.convert(RATE);
+    assert!(saved
+        .takes
+        .iter()
+        .all(|k| k.path.is_none() && !k.audio.is_empty()));
+    let mut mem = Rig::new(None, false);
+    mem.live = false;
+    assert!(mem.h.load(saved.clone()).is_ok());
+    // Its takes copied in (a little each period) before it plays.
+    mem.run_until(|r| r.h.tracks.loading() == 0);
+    let want = mem.play_song();
+    assert!(want.iter().filter(|v| v.abs() > 1e-6).count() > BAR as usize);
+
+    let mut r = Rig::new(Some(&dir), true);
+    r.live = false;
+    assert!(r.h.load(saved.clone()).is_ok());
+    assert_eq!(r.h.opening(), 2);
+    assert!(
+        (0..2).all(|t| r.h.tracks.regions(t).is_empty()),
+        "the tracks wait"
+    );
+    r.run_until(|r| r.h.opening() == 0);
+    assert!(r.all_on_file());
+    assert_eq!(r.h.tracks.memory().used, 0, "no memory taken");
+    assert!((0..2).all(|t| r.h.tracks.regions(t).len() == 1));
+    let got = r.play_song();
+    assert!(got == want, "played from their files, the same");
+    assert_eq!(r.h.tracks.stats().missed, 0);
+    // A save copies each file whole, named for its new lasting id.
+    let again = r.save();
+    for (a, b) in again.takes.iter().zip(&saved.takes) {
+        assert_eq!((a.id, a.frames), (b.id, b.frames));
+        assert!(a.rec.is_given());
+        assert_eq!(a.file, format!("take_{}.wav", a.rec));
+        assert_eq!(a.path.as_ref(), Some(&dir.join(&a.file)));
+        let (audio, ch, rate) = from_wav(&std::fs::read(dir.join(&a.file)).unwrap()).unwrap();
+        assert_eq!((ch, rate), (b.channels, RATE));
+        assert!(audio == b.audio, "the converted sound, as it was");
+    }
+    assert!(r.events().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -943,6 +943,11 @@ pub fn audio_part(mut saved: mpfree_audiotracks::save::Saved) -> (String, Vec<Ta
 /// isn't read: its file's header is checked and the take opens as its
 /// file ([`mpfree_audiotracks::host::AudioHost::load`]). Takes recorded
 /// at another rate, and a second take of one recording, are still read.
+///
+/// Takes recorded at another rate are converted to `rate`
+/// ([`mpfree_audiotracks::save::Saved::convert`]), so they play at their
+/// own speed and pitch, and a line says so; with `streams` the host then
+/// writes each to a file of its own and plays it from there.
 pub fn audio_open(
     text: &str,
     rate: u32,
@@ -952,9 +957,10 @@ pub fn audio_open(
     let mut saved = mpfree_audiotracks::save::from_text(text)?;
     let mut notes = Vec::new();
     let mut left = Vec::new();
-    if saved.rate != rate {
+    let converts = saved.rate != rate;
+    if converts {
         notes.push(format!(
-            "project: the audio tracks were recorded at {} Hz and play at {rate} Hz, so they sound off-speed",
+            "project: the audio tracks were recorded at {} Hz; their takes were converted to {rate} Hz to play at their own speed",
             saved.rate
         ));
     }
@@ -998,6 +1004,11 @@ pub fn audio_open(
         for t in &mut saved.tracks {
             t.regions.retain(|r| !gone.contains(&r.take));
         }
+    }
+    if converts {
+        // Each take read whole (none by its header only): converted, and
+        // the regions playing it scaled with it.
+        saved.convert(rate);
     }
     Ok((saved, notes, left))
 }
@@ -3806,7 +3817,8 @@ mod tests {
         let recs: Vec<u128> = back.takes.iter().map(|k| k.rec.0).collect();
         assert_eq!(recs, vec![0x100, 0x101, 0x102]);
         // Take 1's file gone: it is left out with its region, and said;
-        // another rate is said too (not left out: the takes are there).
+        // another rate is said too (not left out: the takes are there,
+        // converted to the rate they play at).
         let (back, notes, left) = audio_open(&text, 48_000, false, |f| {
             if f == named {
                 Err("gone".into())
@@ -3817,7 +3829,17 @@ mod tests {
         .unwrap();
         assert_eq!(back.takes.len(), 2);
         assert_eq!(back.tracks[0].regions, vec![region(0, 960, 0)]);
-        assert!(notes[0].contains("44100 Hz"), "{notes:?}");
+        assert!(
+            notes[0].contains("recorded at 44100 Hz") && notes[0].contains("converted to 48000 Hz"),
+            "{notes:?}"
+        );
+        assert_eq!(back.rate, 48_000);
+        // 400 frames at 44.1 kHz are 435 at 48 kHz.
+        assert!(back.takes.iter().all(|k| k.frames == 435
+            && k.audio.len() == 435
+            && k.path.is_none()
+            && k.file.is_empty()
+            && k.rec == RecordingId::NONE));
         assert!(
             notes[1].starts_with("project: a take of audio 1 wasn't opened"),
             "{notes:?}"
@@ -3855,9 +3877,15 @@ mod tests {
         .unwrap();
         assert_eq!(back.takes.len(), 1);
         assert!(notes.iter().all(|n| n.contains("frames")), "{notes:?}");
-        // At another rate their sound is read, as before.
-        let (back, _, _) = audio_open(&text, 48_000, true, find).unwrap();
-        assert!(back.takes.iter().all(|k| !k.audio.is_empty()));
+        // At another rate their sound is read and converted, with no file
+        // holding it: the host writes each to a file of its own.
+        let (back, notes, left) = audio_open(&text, 48_000, true, find).unwrap();
+        assert_eq!((notes.len(), left.len()), (1, 0), "{notes:?}");
+        assert_eq!(back.takes.len(), 3);
+        assert!(back
+            .takes
+            .iter()
+            .all(|k| k.frames == 435 && k.audio.len() == 435 * k.channels && k.path.is_none()));
         assert!(audio_open("nope", 44_100, false, find).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
