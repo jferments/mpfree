@@ -69,6 +69,8 @@ Hold your finger on a lit square to pick it. The Q-Links now turn its four main 
 | 3 | **Nudge** | A little early or late, in milliseconds. |
 | 4 | **Chance** | How often it plays, for variations: 100 % always, 50 % half the time. |
 
+**Set several steps at once.** Hold **SHIFT** and tap lit squares on one row: each one is picked straight away, outlined, and a second SHIFT + tap leaves it out again. Now one turn of a Q-Link sets them all, so six hats get the same velocity with one turn, and one **UNDO** takes the whole turn back. The inspector's heading lists them ("Steps 1, 3, 5 · Hat · picked"), and its settings and locks go to every step picked. SHIFT + a tap on an empty square still puts a note there. Tapping a picked step without SHIFT takes it out, as always, and leaves the others picked. Holding a step picks it on its own, and the inspector's **×**, another page or another clip lets them all go. On the pads, holding several step pads does the same (see [The pads as steps](#the-pads-as-steps-step-seq)).
+
 Press **Q-LINK** for the next page, **Trig**: the step's **condition** (play only on some passes, or only with a fill), its **ratchet** (2 to 8 quick repeats within the step), a finer **nudge** in ticks and the ratchet's **ramp** (its repeats getting louder or softer). Press it again for **Sound**: the sound's tune, decay, filter and level on this one step (see [Locks](#locks-a-step-that-changes-the-sound)). Press it once more to come back to Step.
 
 The conditions are:

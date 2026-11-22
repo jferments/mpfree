@@ -256,6 +256,10 @@ const SHIFT_PERFORM_HINT: &str = "SHIFT + a pad: learn a key on your gear for it
 const SHIFT_CLIPS_HINT: &str =
     "SHIFT +   tap a clip, a scene or a track's name: MIDI Learn   ·   drag a clip: copy   ·   \
      + Track: Loop track   ·   MENU: Prefs   ·   STOP: back to bar 1";
+/// SHIFT held on the Sequencer's Steps (refactor C4).
+const SHIFT_SEQ_HINT: &str =
+    "SHIFT +   tap steps: pick several, one turn sets them all   ·   a lock's drag: fine   ·   \
+     wheel: synth octave   ·   MENU: Prefs   ·   STOP: back to bar 1";
 const SHIFT_HINT: &str =
     "SHIFT +   wheel: synth octave   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
 /// SHIFT held with the pads as steps.
@@ -6167,6 +6171,13 @@ impl Player {
             && (self.view != View::Mixer || mpfree_mixer_ui::io_hint(&self.ui).is_none())
         {
             SHIFT_LEARN_HINT.to_string()
+        } else if self.status.shift
+            && self.ready
+            && self.view == View::Sequencer
+            && self.play.view == PlayView::Beats
+            && self.time.edit.is_none()
+        {
+            SHIFT_SEQ_HINT.to_string()
         } else if self.status.shift && self.ready {
             SHIFT_HINT.to_string()
         } else if self.status.erase && self.ready && self.status.steps.is_some_and(|s| !s.picking) {
@@ -12317,6 +12328,23 @@ impl Player {
                     .map_or(0, |(r, g)| g.steps_last_top(r));
                 self.play.scroll_steps(delta, last);
                 self.refresh_play();
+                None
+            }
+            // SHIFT + a tap on a step with notes (the Sequencer's Steps,
+            // refactor C4): it is picked at once, with the steps picked on
+            // its lane already, or leaves them; the Q-Links and the
+            // inspector set them all. On an empty step it is a tap.
+            (play_page::STEPS, EventKind::Cell { row, col })
+                if self.status.shift
+                    && self.view == View::Sequencer
+                    && self.play.view == PlayView::Beats
+                    && self.play.shift_pick(row, col).is_some_and(|line| {
+                        println!("{line}");
+                        true
+                    }) =>
+            {
+                self.refresh_play();
+                self.refresh_qlinks();
                 None
             }
             (play_page::STEPS, EventKind::Cell { row, col }) => {
@@ -22435,6 +22463,100 @@ mod tests {
         assert!(p
             .take_actions()
             .contains(&FromUi::PlayFx(PlayFx::XyEffect(Some(1)))));
+    }
+
+    /// Refactor C4: on the Sequencer's Steps SHIFT + a tap picks a step
+    /// with notes at once; more taps add steps on its lane, a second tap
+    /// takes one out, and one Q-Link turn sets them all as one edit. A
+    /// tap that takes a step out leaves the picks too; SHIFT + an empty
+    /// step is a tap; a hold, a page turn or the inspector's × ends the
+    /// picks; SHIFT's hint says so.
+    #[test]
+    fn shift_and_taps_pick_several_steps_and_one_turn_sets_them_all() {
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.take_actions();
+        let hat = 4;
+        let lit = |p: &Player, i: usize| {
+            p.play
+                .steps
+                .clip
+                .as_ref()
+                .is_some_and(|c| c.row(hat as u8).get(i).copied().flatten().is_some())
+        };
+        let (a, b, c) = (0, 2, 4);
+        assert!(lit(&p, a) && lit(&p, b) && lit(&p, c) && !lit(&p, 1));
+        let tap = |p: &mut Player, col: usize| {
+            p.on_event(UiEvent {
+                widget: play_page::STEPS.into(),
+                kind: EventKind::Cell { row: hat, col },
+            })
+        };
+        p.status.shift = true;
+        p.refresh_hint();
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains("tap steps: pick several"), "{hint}");
+        // SHIFT + taps: one step, then three together (no step changes).
+        assert_eq!(tap(&mut p, a), None);
+        assert_eq!(p.play.selected, Some((hat, a)));
+        assert_eq!(tap(&mut p, b), None);
+        assert_eq!(tap(&mut p, c), None);
+        assert_eq!(p.play.picks, Some((hat as u8, vec![a, b, c])));
+        assert_eq!(p.play.selected, None);
+        assert!(p.take_actions().is_empty(), "picking edits nothing");
+        let title = p.play.inspect().unwrap().title;
+        assert!(
+            title.starts_with("Steps 1, 3, 5 · ") && title.ends_with(" · picked"),
+            "{title}"
+        );
+        // One turn of the velocity Q-Link sets the three as one edit.
+        let bits = (1u128 << a) | (1 << b) | (1 << c);
+        let knob = p.play.knobs()[0];
+        assert_eq!(knob, Knob::Velocity);
+        match p.play.turn_knob(knob, 2, false) {
+            Some(Turn::Step(StepAction::ChangeSteps { pad, steps, .. })) => {
+                assert_eq!((pad, steps), (hat as u8, bits));
+            }
+            t => panic!("{t:?}"),
+        }
+        // A second SHIFT + tap takes one out of the picks.
+        tap(&mut p, b);
+        assert_eq!(p.play.picks, Some((hat as u8, vec![a, c])));
+        // SHIFT + an empty step is a tap: a note goes in.
+        assert!(matches!(
+            tap(&mut p, 1),
+            Some(FromUi::Steps(StepAction::Tap { step: 1, .. }))
+        ));
+        // A plain tap taking a picked step out leaves the picks: one is
+        // left, the step picked.
+        p.status.shift = false;
+        assert!(matches!(
+            tap(&mut p, c),
+            Some(FromUi::Steps(StepAction::Tap { step: 4, .. }))
+        ));
+        assert_eq!(p.play.picks, None);
+        assert_eq!(p.play.selected, Some((hat, a)));
+        // Picked again, then the inspector's × lets them all go.
+        p.status.shift = true;
+        tap(&mut p, b);
+        assert!(p.play.picks.is_some());
+        p.play.inspector_tap(InspectTap::Close);
+        assert_eq!((p.play.picks.clone(), p.play.selected), (None, None));
+        // A hold picks one step alone; another clip shown lets picks go.
+        tap(&mut p, a);
+        tap(&mut p, b);
+        assert!(p.play.pick_step(hat, c));
+        assert_eq!(
+            (p.play.picks.clone(), p.play.selected),
+            (None, Some((hat, c)))
+        );
+        tap(&mut p, a);
+        assert!(p.play.picks.is_some());
+        let mut other = p.play.steps.clone();
+        if let Some(clip) = other.clip.as_mut() {
+            clip.slot += 1;
+        }
+        p.play.set_steps(other);
+        assert_eq!((p.play.picks.clone(), p.play.selected), (None, None));
     }
 
     /// Refactor C2: on the Sequencer's Steps the clip's name is a chip;
