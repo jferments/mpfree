@@ -38,6 +38,8 @@
 //! - [`flac`]: FLAC as a compressed source: its seek index (its own seek
 //!   table only if it checks out, else built), any run of frames decoded
 //!   into the cache's units, every jump checked.
+//! - [`status`]: what the musician is told: the layer's states turned into
+//!   System status reports (the Storage kinds), each change once.
 
 #![forbid(unsafe_code)]
 
@@ -59,6 +61,7 @@ pub mod rec;
 pub mod recover;
 pub mod resample;
 pub mod snapshot;
+pub mod status;
 pub mod storage;
 #[cfg(feature = "testkit")]
 pub mod testkit;

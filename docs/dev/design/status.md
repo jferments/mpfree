@@ -74,6 +74,26 @@ All of it is in `rust/mpfree-status`, std only, with no I/O and no drawing.
 
 `controls/no-session` hides the dropouts, skips, dropped notes, voices given up and near limit that it causes.
 
+## Disk streaming's kinds (phase 3)
+
+Reported through `mpfree_stream::status::Watch`; [disk-streaming.md](disk-streaming.md#what-the-musician-is-told-the-storage-kinds) says what feeds each and why it has its level. In page order, in Storage beside `storage/save-failed`:
+
+| Id | Level | Shape | Short words |
+|---|---|---|---|
+| `storage/stick-missing` | fail | stays | Stick missing |
+| `storage/recording-at-risk` | fail | lasts | Recording at risk |
+| `storage/recording-stopped` | fail | happens | Recording stopped |
+| `storage/card-removed` | fail | happens | Card removed |
+| `storage/stick-fell-behind` | fail | happens | Stick fell behind |
+| `storage/recording-may-stop` | warn | lasts | Recording may stop |
+| `storage/not-saved-yet` | warn | lasts | Not saved yet |
+| `storage/streaming-at-limit` | warn | lasts | Streaming at limit |
+| `storage/stick-nearly-full` | warn | lasts | Stick nearly full |
+| `storage/take-damaged` | warn | until seen | Take damaged |
+| `storage/take-recovered` | note | happens | Take recovered |
+
+`storage/stick-missing` hides the failed saves, the takes at risk or not saved yet, and the stick nearly full that it causes; `storage/recording-at-risk` hides Not saved yet.
+
 The catalogue's tests keep the words honest: every field filled, titles without a full stop, what happened and what to try ending with one, short words within 18 characters, no engineer words (underrun, buffer, lane, period, thread, DSP), ids unique with their system's prefix and a lower-case slug, manual anchors unique, `kinds::ALL` in page order, a button's words named in what to try, and every hidden effect a real kind.
 
 ## How a thread reports
