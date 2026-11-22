@@ -1115,7 +1115,7 @@ impl Default for NoteGrid {
             tool: Tool::Select,
             lens: Lens::Grid,
             first: 0,
-            color: Color::rgb(0x6EA8FE),
+            color: crate::view::track_color(2),
             step: STEP_FALLBACK,
             locks: Vec::new(),
             touch: Vec::new(),
@@ -1698,7 +1698,7 @@ impl NoteGrid {
             let picked = row.note.is_some_and(|i| self.notes[i].selected);
             if picked {
                 cx.canvas
-                    .fill_round_rect(rr, 6, t.raised.mix(t.accent, 0.3));
+                    .fill_round_rect(rr, t.round(6), t.raised.mix(t.accent, 0.3));
             } else if row.first && line % beat == 0 {
                 // Beats stand out, as a tracker's every fourth row does.
                 cx.canvas.fill_rect(rr, t.surface);
@@ -1761,7 +1761,7 @@ impl Widget for NoteGrid {
             let lit = (k == 1 && self.lens != Lens::Grid) || (k == 2 && self.tool != Tool::Select);
             let fill = if lit { t.accent } else { t.raised };
             let ink = if lit { t.on_accent } else { t.text };
-            cx.canvas.fill_round_rect(*br, 10, fill);
+            cx.canvas.fill_round_rect(*br, t.round(10), fill);
             cx.text(
                 FontId::Bold,
                 t.size_small,

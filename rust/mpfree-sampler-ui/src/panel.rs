@@ -30,7 +30,9 @@
 //! The approved mockups are the design canvas "Sample tab as an
 //! instrument" (`sampler/sample-tab-panel/` in the project files).
 
-use mpfree_ui::{Align, Color, EventKind, FontId, Fonts, PaintCx, Rect, Shape, Target, Touch};
+use mpfree_ui::{
+    Align, Color, EventKind, FontId, Fonts, PaintCx, Rect, Role, Shape, Target, Touch,
+};
 use std::f32::consts::PI;
 
 /// How one row looks in the panel.
@@ -908,11 +910,11 @@ pub fn paint(
 ) {
     let t = cx.theme.clone();
     for (s, sr) in panel.sections.iter().zip(panel.section_rects(r)) {
-        cx.canvas.fill_round_rect(sr, 12, t.surface);
+        cx.canvas.fill_round_rect(sr, t.round(12), t.surface);
         if s.lit {
-            cx.canvas.stroke_round_rect(sr, 12, 2, t.accent);
+            cx.canvas.stroke_round_rect(sr, t.round(12), 2, t.accent);
         } else {
-            cx.canvas.stroke_round_rect(sr, 12, 1, t.outline);
+            cx.canvas.stroke_round_rect(sr, t.round(12), 1, t.outline);
         }
         let head = sr.inset(PAD).take_top(HEAD_H).0;
         cx.text(
@@ -962,7 +964,9 @@ pub fn paint(
                         13.0,
                         at,
                         Align::Center,
-                        c.tint.filter(|_| !c.faint).unwrap_or(dim),
+                        c.tint
+                            .filter(|_| !c.faint)
+                            .map_or(dim, |tint| t.readable(tint, t.surface)),
                         line,
                     );
                 }
@@ -1004,8 +1008,11 @@ pub fn paint(
                 }
                 for (i, (o, b)) in options.iter().zip(&p.options).enumerate() {
                     let lit_one = i == *k && !c.faint;
-                    cx.canvas
-                        .fill_round_rect(*b, 8, if lit_one { t.accent } else { ctrl });
+                    cx.canvas.fill_round_rect(
+                        *b,
+                        t.round(8),
+                        if lit_one { t.accent } else { ctrl },
+                    );
                     let fg = if lit_one {
                         t.on_accent
                     } else if c.faint || off.contains(&i) {
@@ -1024,12 +1031,12 @@ pub fn paint(
                 let (less, mid, more) = p.arrows(&c.look);
                 let arrows = if on && editing { t.accent } else { dim };
                 if matches!(c.look, Look::Stepper) {
-                    cx.canvas.fill_round_rect(less, 8, ctrl);
-                    cx.canvas.fill_round_rect(more, 8, ctrl);
+                    cx.canvas.fill_round_rect(less, t.round(8), ctrl);
+                    cx.canvas.fill_round_rect(more, t.round(8), ctrl);
                     cx.text(FontId::Bold, 20.0, less, Align::Center, ink, "−");
                     cx.text(FontId::Bold, 20.0, more, Align::Center, ink, "+");
                 } else {
-                    cx.canvas.fill_round_rect(p.control, 8, ctrl);
+                    cx.canvas.fill_round_rect(p.control, t.round(8), ctrl);
                     cx.text(FontId::Bold, 18.0, less, Align::Center, arrows, "‹");
                     cx.text(FontId::Bold, 18.0, more, Align::Center, arrows, "›");
                 }
@@ -1066,7 +1073,7 @@ pub fn paint(
                     if c.faint {
                         t.text_faint
                     } else {
-                        Color::rgb(0xFFFFFF)
+                        t.role(Role::Handle)
                     },
                 );
             }
@@ -1080,7 +1087,7 @@ pub fn paint(
                     (true, true) => (ctrl, ink, 17.0),
                     _ => (ctrl, ink, 14.0),
                 };
-                cx.canvas.fill_round_rect(p.control, 10, fill);
+                cx.canvas.fill_round_rect(p.control, t.round(10), fill);
                 let px = fit(cx, FontId::Bold, px, 11.0, text, p.control.w - 16);
                 cx.text(
                     FontId::Bold,
@@ -1106,7 +1113,8 @@ pub fn paint(
                             };
                             cx.canvas.fill_round_rect(*b, 5, tint);
                             let px = fit(cx, FontId::Bold, 11.0, 9.0, &cell.text, b.w - 4);
-                            cx.text(FontId::Bold, px, *b, Align::Center, t.bg, &cell.text);
+                            let ink = t.ink_on(tint);
+                            cx.text(FontId::Bold, px, *b, Align::Center, ink, &cell.text);
                         }
                         None => {
                             let fill = if cell.used {
@@ -1119,8 +1127,12 @@ pub fn paint(
                         }
                     }
                     if cell.picked && !c.faint {
-                        cx.canvas
-                            .stroke_round_rect(b.inset(-2), 6, 2, Color::rgb(0xFFFFFF));
+                        cx.canvas.stroke_round_rect(
+                            b.inset(-2),
+                            t.round(6),
+                            2,
+                            t.role(Role::Highlight),
+                        );
                     }
                 }
             }
@@ -1148,7 +1160,7 @@ pub fn paint(
                     if c.faint {
                         t.text_faint
                     } else {
-                        Color::rgb(0xFFFFFF)
+                        t.role(Role::Handle)
                     },
                 );
             }
@@ -1163,7 +1175,7 @@ pub fn paint(
             } else {
                 t.outline.mix(t.accent, 0.6)
             };
-            cx.canvas.stroke_round_rect(ring, 12, 2, color);
+            cx.canvas.stroke_round_rect(ring, t.round(12), 2, color);
         }
     }
 }

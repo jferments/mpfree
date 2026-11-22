@@ -9,9 +9,6 @@ use std::collections::VecDeque;
 
 use mpfree_sampler::record::Input;
 
-/// The recording colour (the take being recorded, the record button's dot).
-pub const REC_COLOR: u32 = 0xFF4D5E;
-
 /// The input level the meters and the strip draw from (dBFS) up to 0.
 pub const FLOOR_DB: f32 = -60.0;
 

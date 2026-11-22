@@ -572,7 +572,7 @@ impl<F: Form> FormSection<F> {
         let fit = placed.iter().filter(|p| rows[p.0].is_item()).count();
         self.fit.set(fit.max(1));
         if let Some(b) = &banner {
-            cx.canvas.fill_round_rect(banner_r, 10, t.surface);
+            cx.canvas.fill_round_rect(banner_r, t.round(10), t.surface);
             cx.canvas.fill_round_rect(
                 Rect::new(banner_r.x, banner_r.y + 8, 4, banner_r.h - 16),
                 2,
@@ -615,7 +615,7 @@ impl<F: Form> FormSection<F> {
             }
             let on = sel.is_some_and(|s| s.0 == *i);
             cx.canvas
-                .fill_round_rect(*rr, 10, if on { t.raised } else { t.surface });
+                .fill_round_rect(*rr, t.round(10), if on { t.raised } else { t.surface });
             if on {
                 cx.canvas
                     .fill_round_rect(Rect::new(rr.x, rr.y + 10, 4, rr.h - 20), 2, t.accent);
@@ -657,9 +657,9 @@ impl<F: Form> FormSection<F> {
                 .enumerate()
             {
                 let picked = on && sel.is_some_and(|s| s.1 == c);
-                cx.canvas.fill_round_rect(fr, 8, t.bg);
+                cx.canvas.fill_round_rect(fr, t.round(8), t.bg);
                 if picked {
-                    cx.canvas.stroke_round_rect(fr, 8, 2, t.accent);
+                    cx.canvas.stroke_round_rect(fr, t.round(8), 2, t.accent);
                 }
                 let ink = if !f.enabled {
                     t.text_faint
@@ -694,7 +694,7 @@ impl<F: Form> FormSection<F> {
     fn paint_picker(&self, cx: &mut PaintCx, r: Rect, p: &Picker) {
         let t = cx.theme.clone();
         let (done, chips, heads) = Self::picker_layout(p, r);
-        cx.canvas.fill_round_rect(r, 12, t.surface);
+        cx.canvas.fill_round_rect(r, t.round(12), t.surface);
         let title = Rect::new(r.x + 16, r.y + 16, r.w - 160, 44);
         cx.text(
             FontId::Bold,
@@ -704,7 +704,7 @@ impl<F: Form> FormSection<F> {
             t.text,
             &p.title,
         );
-        cx.canvas.fill_round_rect(done, 10, t.accent);
+        cx.canvas.fill_round_rect(done, t.round(10), t.accent);
         cx.text(
             FontId::Bold,
             t.size_body,
@@ -732,7 +732,7 @@ impl<F: Form> FormSection<F> {
             } else {
                 (t.bg, t.text_faint)
             };
-            cx.canvas.fill_round_rect(cr, 8, fill);
+            cx.canvas.fill_round_rect(cr, t.round(8), fill);
             cx.text(
                 FontId::Sans,
                 t.size_body,

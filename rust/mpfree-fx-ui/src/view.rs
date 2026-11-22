@@ -25,7 +25,7 @@ use mpfree_synth_ui::widgets::{
     QCell, QLinkStrip, Tile, TileGrid, TileKind, TitleBar, Visuals, QLINK_COLORS,
 };
 use mpfree_ui::widgets::{ListItem, ListView};
-use mpfree_ui::{EventKind, Ui, UiEvent};
+use mpfree_ui::{EventKind, Paint, Ui, UiEvent};
 
 /// Widget names the panel adds. The app's own are `header` and `hint`.
 pub const TITLE: &str = "fx-title";
@@ -396,15 +396,13 @@ impl FxPanel {
             w.active = self.page;
         }
         if has_visuals(st.info.id) {
-            let theme = ui.theme.clone();
-            let strip = visual::strip(st, &page.name, self.focus, &self.scratch, &theme);
+            let strip = visual::strip(st, &page.name, self.focus, &self.scratch);
             self.card_pages = strip.pages;
             self.node_pages = strip.node_pages;
             if let Some(w) = ui.get_mut::<Visuals>(VISUALS) {
                 w.cards = strip.cards;
             }
         }
-        let theme = ui.theme.clone();
         if let Some(w) = ui.get_mut::<TileGrid>(TILES) {
             w.title = page.name.clone();
             w.caption = match locks {
@@ -416,9 +414,9 @@ impl FxPanel {
                 .params
                 .iter()
                 .map(|&i| {
-                    let mut t = tile(st, &page, i, qtargets.iter().position(|&q| q == i), &theme);
+                    let mut t = tile(st, &page, i, qtargets.iter().position(|&q| q == i));
                     if locks.is_some_and(|l| l.get(st.params[i].id).is_some()) {
-                        t.color = theme.warn;
+                        t.color = Paint::WARN;
                     }
                     t
                 })
@@ -518,7 +516,7 @@ fn label(st: &FxState, page: &Page, i: usize) -> String {
 }
 
 /// Parameter `i` as a tile.
-fn tile(st: &FxState, page: &Page, i: usize, qlink: Option<usize>, t: &mpfree_ui::Theme) -> Tile {
+fn tile(st: &FxState, page: &Page, i: usize, qlink: Option<usize>) -> Tile {
     let p = &st.params[i];
     let v = st.values[i];
     let (value, unit) = value_text(p, v);
@@ -539,8 +537,8 @@ fn tile(st: &FxState, page: &Page, i: usize, qlink: Option<usize>, t: &mpfree_ui
     };
     let color = match (qlink, &kind) {
         (Some(q), _) => QLINK_COLORS[q % 4],
-        (None, TileKind::Knob { .. }) => t.text_dim,
-        (None, _) => t.accent,
+        (None, TileKind::Knob { .. }) => Paint::TEXT_DIM,
+        (None, _) => Paint::ACCENT,
     };
     Tile {
         label: label(st, page, i),

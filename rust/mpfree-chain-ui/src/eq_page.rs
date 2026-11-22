@@ -29,7 +29,7 @@ use mpfree_fx::ids::eq as ids;
 use mpfree_fx::mpfree_node::Node;
 use mpfree_param::ParamAddr;
 use mpfree_synth_ui::draw::Mask;
-use mpfree_ui::{Align, Color, FontId, PaintCx, Rect, Target};
+use mpfree_ui::{Align, Color, FontId, PaintCx, Rect, Role, Target, Theme};
 
 use crate::state::ParamView;
 use crate::view::ChainAction;
@@ -59,20 +59,6 @@ const ROW_H: i32 = 44;
 /// The Quality chip, at the type row's end.
 const QUALITY_W: i32 = 112;
 
-/// A band's colour (bands 1 to 4 wear the Q-Links' colours).
-pub const BAND_COLORS: [Color; 8] = [
-    Color::rgb(0x6EA8FE),
-    Color::rgb(0x3DDC97),
-    Color::rgb(0xFFC145),
-    Color::rgb(0xD46CFF),
-    Color::rgb(0xFF8A65),
-    Color::rgb(0x4FC3C9),
-    Color::rgb(0xF06292),
-    Color::rgb(0xAED581),
-];
-/// The cuts' colour.
-const CUT_COLOR: Color = Color::rgb(0xB8C2D6);
-
 /// A dot on the graph: one of the eight bands, or a cut.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Band {
@@ -98,10 +84,12 @@ impl Band {
             Band::High => "High cut".into(),
         }
     }
-    pub fn color(self) -> Color {
+    /// Its colour on `t`: band `n` is the theme's `series.n`, the cuts its
+    /// `cut` colour.
+    pub fn color(self, t: &Theme) -> Color {
         match self {
-            Band::Band(b) => BAND_COLORS[b % BAND_COLORS.len()],
-            _ => CUT_COLOR,
+            Band::Band(b) => t.series(b),
+            _ => t.role(Role::Cut),
         }
     }
     /// The band a parameter id belongs to.
@@ -1076,7 +1064,7 @@ impl EqPage {
             let mut m = Mask::new(p);
             let alpha = if Some(*b) == picked { 0.30 } else { 0.10 };
             m.fill_under(&pts(shape), mid, alpha);
-            m.draw(cx.canvas, b.color());
+            m.draw(cx.canvas, b.color(&t));
         }
         if !self.curve.is_empty() {
             let mut m = Mask::new(p.inset_xy(-2, -2));
@@ -1095,10 +1083,21 @@ impl EqPage {
             }
             let mut m = Mask::new(l.graph);
             m.disc(x, y, rad);
-            let fill = if self.on(b) { b.color() } else { t.text_faint };
+            let fill = if self.on(b) {
+                b.color(&t)
+            } else {
+                t.text_faint
+            };
             m.draw(cx.canvas, fill);
             let lr = Rect::new(x as i32 - 14, y as i32 - 9, 28, 18);
-            cx.text(FontId::Bold, 12.0, lr, Align::Center, t.bg, &b.label());
+            cx.text(
+                FontId::Bold,
+                12.0,
+                lr,
+                Align::Center,
+                t.ink_on(fill),
+                &b.label(),
+            );
         }
         if let Some(b) = self.held() {
             let (x, y) = Self::to_screen(p, self.dot(b));
@@ -1111,8 +1110,9 @@ impl EqPage {
                 y as i32 + 26
             };
             let bubble = Rect::new(bx, by, w, 30);
-            cx.canvas.fill_round_rect(bubble, 8, t.raised);
-            cx.canvas.stroke_round_rect(bubble, 8, 1, t.outline);
+            cx.canvas.fill_round_rect(bubble, t.round(8), t.raised);
+            cx.canvas
+                .stroke_round_rect(bubble, t.round(8), 1, t.outline);
             cx.text(
                 FontId::Bold,
                 t.size_small - 1.0,
@@ -1154,12 +1154,12 @@ impl EqPage {
             t.size_small - 2.0,
             l.title,
             Align::Left,
-            b.color(),
+            b.color(&t),
             &self.title(b),
         );
         for (rect, (name, value, live)) in l.fields.iter().zip(self.fields(b)) {
             cx.canvas
-                .fill_round_rect(*rect, 8, t.bg.mix(t.surface, 0.5));
+                .fill_round_rect(*rect, t.round(8), t.bg.mix(t.surface, 0.5));
             let inner = rect.inset_xy(12, 0);
             let ink = if live { t.text } else { t.text_faint };
             cx.text(
@@ -1181,7 +1181,7 @@ impl EqPage {
                 let sel = picked == Some(b);
                 cx.canvas.fill_round_rect(
                     rect,
-                    8,
+                    t.round(8),
                     if sel {
                         t.raised
                     } else {
@@ -1189,13 +1189,26 @@ impl EqPage {
                     },
                 );
                 if sel {
-                    cx.canvas.stroke_round_rect(rect, 8, 2, b.color());
+                    cx.canvas
+                        .stroke_round_rect(rect, t.round(8), 2, b.color(&t));
                 }
                 let dot = Rect::new(rect.x + 8, rect.y + (rect.h - 22) / 2, 22, 22);
                 let mut m = Mask::new(dot.inset(-1));
                 m.disc(dot.x as f32 + 11.0, dot.y as f32 + 11.0, 11.0);
-                m.draw(cx.canvas, if self.on(b) { b.color() } else { t.text_faint });
-                cx.text(FontId::Bold, 11.0, dot, Align::Center, t.bg, &b.label());
+                let fill = if self.on(b) {
+                    b.color(&t)
+                } else {
+                    t.text_faint
+                };
+                m.draw(cx.canvas, fill);
+                cx.text(
+                    FontId::Bold,
+                    11.0,
+                    dot,
+                    Align::Center,
+                    t.ink_on(fill),
+                    &b.label(),
+                );
                 let text = Rect::new(
                     dot.right() + 6,
                     rect.y,
@@ -1210,7 +1223,7 @@ impl EqPage {
                 cx.text(FontId::Sans, 12.0, text, Align::Left, ink, kind);
             }
             Button::Add => {
-                cx.canvas.stroke_round_rect(rect, 8, 1, t.outline);
+                cx.canvas.stroke_round_rect(rect, t.round(8), 1, t.outline);
                 cx.text(
                     FontId::Bold,
                     t.size_small - 2.0,
@@ -1227,7 +1240,7 @@ impl EqPage {
                 } else {
                     (t.raised, if picked.is_some() { t.text } else { t.text_dim })
                 };
-                cx.canvas.fill_round_rect(rect, 8, fill);
+                cx.canvas.fill_round_rect(rect, t.round(8), fill);
                 cx.text(
                     FontId::Bold,
                     t.size_small - 3.0,
@@ -1268,7 +1281,7 @@ impl EqPage {
                     (Some(_), false) => (t.raised, t.text),
                     _ => (t.surface, t.text_dim),
                 };
-                cx.canvas.fill_round_rect(rect, 8, fill);
+                cx.canvas.fill_round_rect(rect, t.round(8), fill);
                 cx.text(
                     FontId::Bold,
                     t.size_small - 2.0,
@@ -1280,9 +1293,9 @@ impl EqPage {
             }
             Button::Quality => {
                 let hq = self.hq();
-                cx.canvas.fill_round_rect(rect, 8, t.raised);
+                cx.canvas.fill_round_rect(rect, t.round(8), t.raised);
                 if hq {
-                    cx.canvas.stroke_round_rect(rect, 8, 2, t.accent);
+                    cx.canvas.stroke_round_rect(rect, t.round(8), 2, t.accent);
                 }
                 cx.text(
                     FontId::Bold,
@@ -1294,7 +1307,7 @@ impl EqPage {
                 );
             }
             Button::Remove => {
-                cx.canvas.fill_round_rect(rect, 8, t.raised);
+                cx.canvas.fill_round_rect(rect, t.round(8), t.raised);
                 let ink = if picked.is_some() { t.text } else { t.text_dim };
                 cx.text(
                     FontId::Bold,

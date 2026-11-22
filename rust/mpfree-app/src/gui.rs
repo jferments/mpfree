@@ -3812,7 +3812,8 @@ impl Player {
             }
         });
         let wrap: fn(&str) -> String = match loaded {
-            Some(w) => {
+            Some(mut w) => {
+                w.set_theme(&self.ui.theme);
                 let tabs = skin_page::SkinTabs::new(&w.view.tabs());
                 // For the device round's log: the skin is drawn.
                 println!(
@@ -6714,6 +6715,10 @@ impl Player {
                     .map(|(_, t)| t.clone())
             };
             if let Some(t) = Theme::builtin(&s.theme).or_else(file) {
+                // A plugin's skin: MPFree's pop-ups over it follow too.
+                if let Some(w) = self.ui.get_mut::<skin_page::SkinWidget>(skin_page::SKIN) {
+                    w.set_theme(&t);
+                }
                 self.ui.set_theme(t);
             }
         }
@@ -11592,6 +11597,17 @@ impl Player {
                 memory.push((
                     "Sampler: Normalize read every frame (no summary)".to_string(),
                     format!("{read}×"),
+                    Tone::Warn,
+                ));
+            }
+            let moved = self
+                .ui
+                .get::<skin_page::SkinWidget>(skin_page::SKIN)
+                .map_or(0, |w| w.view.rescue_count());
+            if moved > 0 {
+                memory.push((
+                    "Skin pop-ups: colours moved so they read".to_string(),
+                    format!("{moved}×"),
                     Tone::Warn,
                 ));
             }
