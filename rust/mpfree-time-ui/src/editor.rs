@@ -62,9 +62,10 @@ use gesture::Pinch;
 use zoom::RollView;
 
 use crate::lane::{Bar, Lane, LaneStyle, LaneTouch};
+use mpfree_seq::mpfree_scale::{NOTE_NAMES, SCALES};
 use mpfree_seq::notes::{self, Field, Snap, Tc, TcKind, Which, DIVISIONS};
 use mpfree_seq::steps::{Edit, Euclid, Grid, MAX_EUCLID_STEPS};
-use mpfree_seq::{Clip, Cond, Join, Lock, Note, TouchPoint};
+use mpfree_seq::{Clip, Cond, Join, Lock, Note, Scale, TouchPoint};
 use mpfree_transport::time::{Tick, PPQ};
 use mpfree_ui::widgets::OptionRow;
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
@@ -88,7 +89,7 @@ pub const SELECT_BUTTON: usize = 4;
 /// to pick, Add to pick (a switch: taps and boxes add to the picks), Fit
 /// to picked (the view, the roll's own), then the filters, each picking
 /// from the whole clip.
-pub const SELECT_ITEMS: [&str; 13] = [
+pub const SELECT_ITEMS: [&str; 14] = [
     "All",
     "None",
     "Invert",
@@ -102,6 +103,7 @@ pub const SELECT_ITEMS: [&str; 13] = [
     "With a condition",
     "With repeats",
     "Overlapping",
+    "Off the scale",
 ];
 /// [`SELECT_ITEMS`]' Add to pick and Fit to picked; the filters start
 /// after them, in the menu's second column.
@@ -115,9 +117,10 @@ pub const MENU: usize = 100;
 pub const EDIT_BUTTON: usize = 7;
 /// The Edit options, top to bottom. The first six are Timing Correct's
 /// settings (TC applies them); the next seven change the selection at
-/// once; the last four are the Euclidean fill: the sound it writes, then
-/// its hits, steps and rotation, each turn writing the pattern.
-pub const EDIT_ROWS: [&str; 17] = [
+/// once; the next four are the Euclidean fill: the sound it writes, then
+/// its hits, steps and rotation, each turn writing the pattern; the last
+/// is Fit to scale (plan 2B.1).
+pub const EDIT_ROWS: [&str; 18] = [
     "Correct",
     "Division",
     "Swing",
@@ -135,9 +138,13 @@ pub const EDIT_ROWS: [&str; 17] = [
     "Hits",
     "Steps",
     "Rotate",
+    "Fit to scale",
 ];
 /// The first of the Euclidean fill's rows in [`EDIT_ROWS`].
 pub const EUCLID_ROW: usize = 13;
+/// [`EDIT_ROWS`]' Fit to scale (piano roll plan 2B.1): a turn either way
+/// brings the picks, or every note, onto the clip's scale.
+pub const FIT_ROW: usize = 17;
 /// A tracker step tapped: `Cell`'s row says the editor's sound.
 pub const PEN: usize = usize::MAX;
 /// A finger holding a note while another taps note `col`
@@ -174,6 +181,15 @@ const DRAW_VELOCITY: u8 = 100;
 /// The note inspector's knobs (piano roll plan 1C.1), Q1 to Q4, and
 /// their cards' names ([`EditAction::Knob`]).
 pub const KNOBS: [&str; 4] = ["Position", "Length", "Semitones", "Velocity"];
+
+/// Q-Link `k`'s card name: Q3 says Scale steps while the clip's scale is
+/// on (`scale`; SHIFT still moves a semitone), else [`KNOBS`]' own.
+pub fn knob_name(k: usize, scale: bool) -> &'static str {
+    match k {
+        2 if scale => "Scale steps",
+        k => KNOBS.get(k).copied().unwrap_or(""),
+    }
+}
 /// A Q-Link turn's join key, apart from every row's: a turn's detents on
 /// any knob make one undoable take, its number in the key's top bits.
 const TURN_KEY: u64 = 0x80;
@@ -298,12 +314,16 @@ pub enum EditAction {
     Step(Tick),
     /// Note `index` dragged by this many ticks and notes, as its finger
     /// lifted: the picked notes move with it when it is one of them, else
-    /// it is picked alone and moves.
+    /// it is picked alone and moves. With `scale` (the clip's scale on and
+    /// no SHIFT as the finger went down, plan 2B.1) `notes` counts notes
+    /// of the scale, each note moving by its own ([`notes::shift_in_scale`]),
+    /// else semitones.
     Drop {
         index: usize,
         rev: u64,
         ticks: Tick,
         notes: i32,
+        scale: bool,
     },
     /// A stroke along a lane under the roll, as its finger lifted (plan
     /// 2A.1): each note it changed, by its index on the picture of
@@ -342,9 +362,10 @@ pub enum EditAction {
     /// Q-Link `k` of the note inspector turned `ticks` detents while
     /// notes are picked (plan 1C.1, [`KNOBS`]): Q1 moves them a snap a
     /// detent (`fine`, SHIFT: 4 ticks), Q2 changes their length the same
-    /// way, Q3 moves them a semitone, Q4 changes their velocity keeping
-    /// the differences (`fine`: widens or narrows the gap between the soft
-    /// and loud ones). Every detent of turn `turn` (the app counts them,
+    /// way, Q3 moves them a note of the clip's scale (plan 2B.1; a
+    /// semitone with no scale, or `fine`), Q4 changes their velocity
+    /// keeping the differences (`fine`: widens or narrows the gap between
+    /// the soft and loud ones). Every detent of turn `turn` (the app counts them,
     /// from a knob touched to the last let go) joins one take.
     Knob {
         k: usize,
@@ -360,6 +381,11 @@ pub enum EditAction {
     /// line where the pads will write, this many snaps on (back if
     /// negative), round the clip.
     Cursor(i32),
+    /// The clip's scale picked on the Scale menu (plan 2B.1): None is Off.
+    /// A clip setting, one take.
+    Scale(Option<Scale>),
+    /// The clip's scale's root picked on the Scale menu (0 is C).
+    Root(u8),
 }
 
 impl EditAction {
@@ -403,6 +429,10 @@ pub struct Done {
     /// After the edit, select every note of this sound (the Euclidean
     /// fill), in place of the above.
     select_sound: Option<u8>,
+    /// The clip's scale changed to this (None: Off), one undoable take
+    /// joined by `join` (piano roll plan 2B.1): a clip setting, as its
+    /// step size is, for the app to set; no note changes with it.
+    pub scale: Option<Option<Scale>>,
 }
 
 impl Done {
@@ -410,6 +440,119 @@ impl Done {
         Done {
             line,
             ..Done::default()
+        }
+    }
+}
+
+/// The scales the Scale option offers (piano roll plan 2B.1), from the
+/// app: Off, the scale the selected track's pads play in on the Synth tab
+/// when they have one, the built-in scales but Chromatic (every row lit is
+/// no scale), then the owner's own. No project key is forced on a clip.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ScaleOffers {
+    /// The pads' scale on the Synth tab, root and all.
+    pub pads: Option<Scale>,
+    /// The owner's own scales: a name, the notes going up and coming down.
+    pub own: Vec<(String, u16, u16)>,
+}
+
+/// One of the Scale option's choices ([`ScaleOffers::choice`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ScaleChoice<'a> {
+    Off,
+    /// The pads' scale, root and all.
+    Pads(Scale),
+    /// A scale's name and notes (up, down), on the clip's root.
+    Notes(&'a str, u16, u16),
+}
+
+impl ScaleOffers {
+    /// How many choices the Scale menu has.
+    pub fn len(&self) -> usize {
+        1 + usize::from(self.pads.is_some()) + SCALES.len() - 1 + self.own.len()
+    }
+
+    /// Never: Off is always a choice.
+    pub fn is_empty(&self) -> bool {
+        false
+    }
+
+    /// Choice `i`: Off, the pads' scale, a built-in scale, one of the
+    /// owner's.
+    fn choice(&self, i: usize) -> Option<ScaleChoice<'_>> {
+        let pads = usize::from(self.pads.is_some());
+        match i {
+            0 => Some(ScaleChoice::Off),
+            1 if pads == 1 => self.pads.map(ScaleChoice::Pads),
+            i if i < pads + SCALES.len() => {
+                let d = &SCALES[i - pads];
+                Some(ScaleChoice::Notes(d.name, d.mask, d.down))
+            }
+            i => self
+                .own
+                .get(i - pads - SCALES.len())
+                .map(|(n, u, d)| ScaleChoice::Notes(n, *u, *d)),
+        }
+    }
+
+    /// Choice `i` as the menu says it: "Off", "Pads: D Dorian", a scale's
+    /// name.
+    pub fn choice_name(&self, i: usize) -> Option<String> {
+        Some(match self.choice(i)? {
+            ScaleChoice::Off => "Off".to_string(),
+            ScaleChoice::Pads(k) => format!("Pads: {}", self.label(Some(k))),
+            ScaleChoice::Notes(name, ..) => name.to_string(),
+        })
+    }
+
+    /// The scale choice `i` gives a clip whose scale is `now` (None for
+    /// no such choice): Off, the pads' scale, or a scale's notes on the
+    /// clip's root (the pads' root when the clip had none, else C).
+    pub fn scale_of(&self, i: usize, now: Option<Scale>) -> Option<Option<Scale>> {
+        let root = now.or(self.pads).map_or(0, |k| k.root);
+        Some(match self.choice(i)? {
+            ScaleChoice::Off => None,
+            ScaleChoice::Pads(k) => Some(k),
+            ScaleChoice::Notes(_, up, down) => Some(Scale::with_down(root, up, down)),
+        })
+    }
+
+    /// The choice that gives scale `k`, for the menu to light: the pads'
+    /// when it is theirs, root and all, else the first with its notes;
+    /// none for a scale from a file that none of them names.
+    pub fn index_of(&self, k: Option<Scale>) -> Option<usize> {
+        (0..self.len()).find(|&i| match (self.choice(i), k) {
+            (Some(ScaleChoice::Off), None) => true,
+            (Some(ScaleChoice::Pads(p)), Some(k)) => p == k,
+            (Some(ScaleChoice::Notes(_, up, down)), Some(k)) => (k.mask, k.down) == (up, down),
+            _ => false,
+        })
+    }
+
+    /// Scale `k`'s name without its root: "Dorian", the owner's name, or
+    /// "Own scale" for one none of the choices names.
+    pub fn name_of(&self, k: Scale) -> &str {
+        let built = SCALES[1..]
+            .iter()
+            .find(|d| (d.mask, d.down) == (k.mask, k.down));
+        if let Some(d) = built {
+            return d.name;
+        }
+        self.own
+            .iter()
+            .find(|(_, u, d)| (*u, *d) == (k.mask, k.down))
+            .map_or("Own scale", |(n, ..)| n.as_str())
+    }
+
+    /// The clip's scale as the Scale chip says it: "D Dorian", or "Off".
+    pub fn label(&self, k: Option<Scale>) -> String {
+        match k {
+            None => "Off".to_string(),
+            Some(k) => format!(
+                "{} {}",
+                NOTE_NAMES[usize::from(k.root % 12)],
+                self.name_of(k)
+            ),
         }
     }
 }
@@ -455,6 +598,9 @@ pub struct Editor {
     /// The cursor's tick (plan 1C.1): the line the wheel moves, where the
     /// pads will write.
     pub cursor: Tick,
+    /// The scales the Scale menu offers (the app's: the pads' scale and
+    /// the owner's own; plan 2B.1).
+    pub offers: Arc<ScaleOffers>,
 }
 
 impl Editor {
@@ -497,6 +643,7 @@ impl Editor {
             cleared: false,
             add: false,
             cursor: 0,
+            offers: Arc::default(),
         }
     }
 
@@ -724,6 +871,13 @@ impl Editor {
                 }
                 all.clone().filter(|&i| over[i]).collect()
             }
+            // Off the scale (plan 2B.1): the notes the roll marks.
+            13 => match clip.scale.filter(|_| !pads(clip)) {
+                Some(k) => which(&|n| !k.contains(i16::from(n.note))),
+                None => {
+                    return Done::line("edit: the clip has no scale: pick one with Scale".into())
+                }
+            },
             _ => return Done::default(),
         };
         if let Some(&i) = new.first() {
@@ -991,6 +1145,7 @@ impl Editor {
                 index,
                 ticks,
                 notes: by,
+                scale,
                 ..
             } => {
                 let moved = match index < clip.notes.len() && !sel.contains(&index) {
@@ -1000,8 +1155,12 @@ impl Editor {
                 if let Some(&i) = moved.first() {
                     self.sound = clip.notes[i].note;
                 }
+                let edit = match lit_scale(clip).filter(|_| scale) {
+                    Some(k) => notes::shift_in_scale(clip, &moved, ticks, by, k),
+                    None => notes::shift(clip, &moved, ticks, by),
+                };
                 (
-                    notes::shift(clip, &moved, ticks, by),
+                    edit,
                     None,
                     true,
                     false,
@@ -1066,8 +1225,12 @@ impl Editor {
                         notes::edit_end(clip, &sel, d * by)
                     }
                     // Past note 0 or 127 the whole move is refused, so a
-                    // chord keeps its shape.
-                    2 => notes::shift(clip, &sel, 0, ticks),
+                    // chord keeps its shape; with the clip's scale on, by
+                    // its notes (SHIFT: a semitone).
+                    2 => match lit_scale(clip).filter(|_| !fine) {
+                        Some(k) => notes::shift_in_scale(clip, &sel, 0, ticks, k),
+                        None => notes::shift(clip, &sel, 0, ticks),
+                    },
                     3 if fine => notes::velocity_spread(clip, &sel, ticks),
                     3 => notes::velocity_kept(clip, &sel, ticks),
                     _ => return Done::default(),
@@ -1210,13 +1373,35 @@ impl Editor {
                             // One key for the three rows: a run of turns is
                             // one take.
                             join: key(14),
-                            line: String::new(),
-                            close: false,
-                            select_added: false,
-                            kept: Vec::new(),
                             select_sound: Some(self.sound),
+                            ..Done::default()
                         };
                     }
+                    // Fit to scale: the picks, or every note, onto the
+                    // nearest scale note, one take a turn.
+                    FIT_ROW => match lit_scale(clip) {
+                        None => return Done::line("edit: pick a scale first".into()),
+                        Some(k) => {
+                            let which = if none {
+                                (0..clip.notes.len()).collect()
+                            } else {
+                                sel.clone()
+                            };
+                            let e = notes::fit_to_scale(clip, &which, k);
+                            let n = e.add.len();
+                            let notes = if n == 1 { "note" } else { "notes" };
+                            (
+                                e,
+                                None,
+                                !none,
+                                true,
+                                format!(
+                                    "edit: {n} {notes} fitted to {}",
+                                    self.offers.label(Some(k))
+                                ),
+                            )
+                        }
+                    },
                     _ => return Done::default(),
                 }
             }
@@ -1226,6 +1411,31 @@ impl Editor {
                 }
                 return Done::default();
             }
+            // The clip's scale: a setting, not an edit of its notes.
+            EditAction::Scale(_) | EditAction::Root(_) if pads(clip) && !clip.notes.is_empty() => {
+                return Done::line("edit: a clip of pads has no scale".into())
+            }
+            EditAction::Scale(k) => {
+                if k.is_some_and(|k| !mpfree_seq::scale_ok(k)) {
+                    return Done::default();
+                }
+                return Done {
+                    line: format!("edit: scale {}", self.offers.label(k)),
+                    scale: Some(k),
+                    ..Done::default()
+                };
+            }
+            EditAction::Root(r) => match clip.scale {
+                None => return Done::line("edit: pick a scale first".into()),
+                Some(k) => {
+                    let k = Scale::with_down(r % 12, k.mask, k.down);
+                    return Done {
+                        line: format!("edit: scale {}", self.offers.label(Some(k))),
+                        scale: Some(Some(k)),
+                        ..Done::default()
+                    };
+                }
+            },
             EditAction::Scroll(d) => {
                 let rows = match self.lens {
                     Lens::Grid => 0,
@@ -1249,6 +1459,7 @@ impl Editor {
             select_added,
             kept: if keep { kept } else { Vec::new() },
             select_sound: None,
+            scale: None,
         }
     }
 
@@ -1409,6 +1620,22 @@ pub fn edit_rows(ed: &Editor, clip: &Clip) -> Vec<OptionRow> {
         ed.euclid.hits.to_string(),
         format!("{} × {}", ed.euclid.steps, step_name(ed.grid().size())),
         ed.euclid.rotate.to_string(),
+        // How many notes Fit to scale would move (the picks, or every
+        // note).
+        match lit_scale(clip) {
+            None => "no scale".into(),
+            Some(k) => {
+                let off = |n: &&Note| !k.contains(i16::from(n.note));
+                let n = match sel.is_empty() {
+                    true => clip.notes.iter().filter(off).count(),
+                    false => sel.iter().copied().filter(off).count(),
+                };
+                match n {
+                    0 => "none off".into(),
+                    n => format!("{n} off"),
+                }
+            }
+        },
     ];
     EDIT_ROWS
         .iter()
@@ -1533,6 +1760,12 @@ fn locks_name(n: usize) -> String {
     }
 }
 
+/// The scale the Notes view lights and moves by: the clip's, but none on
+/// a clip of pads (plan 2B.1: Scale hides there).
+pub fn lit_scale(clip: &Clip) -> Option<Scale> {
+    clip.scale.filter(|_| !pads(clip))
+}
+
 /// The clip plays the pads (every note below 16, or none): the roll shows
 /// 16 pad rows.
 pub fn pads(clip: &Clip) -> bool {
@@ -1568,11 +1801,13 @@ pub fn position_name(tick: Tick, bar: Tick) -> String {
 }
 
 /// A drag packed into a `Marker`'s frame: ticks in the low 32 bits,
-/// notes in the next 16 (each offset so it is never negative).
-pub fn drop_frame(ticks: Tick, notes: i32) -> u64 {
+/// notes in the next 16 (each offset so it is never negative), and over
+/// them whether the notes are notes of the clip's scale
+/// ([`EditAction::Drop`]'s `scale`).
+pub fn drop_frame(ticks: Tick, notes: i32, scale: bool) -> u64 {
     let t = (ticks.clamp(-(1 << 30), 1 << 30) + (1 << 31)) as u64;
     let n = (notes.clamp(-127, 127) + 128) as u64;
-    n << 32 | t
+    u64::from(scale) << 48 | n << 32 | t
 }
 
 /// Note `i` of `old`, found in `new`: at the same place if it is still
@@ -1656,6 +1891,108 @@ impl Default for LaneShow {
     }
 }
 
+/// Which rows the roll shows (piano roll plan 2B.1): the Fold chip in its
+/// heading steps through them. The screen's own, kept by the page.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Fold {
+    /// Every row.
+    #[default]
+    All,
+    /// Only the rows with notes (Ableton's Fold).
+    Notes,
+    /// Only the rows of the clip's scale, while it has one.
+    Scale,
+}
+
+impl Fold {
+    /// The Fold chip's words.
+    pub fn name(self) -> &'static str {
+        match self {
+            Fold::All => "All rows",
+            Fold::Notes => "Rows with notes",
+            Fold::Scale => "Scale rows",
+        }
+    }
+
+    /// The next on the chip: Scale rows only while the clip has a scale.
+    fn next(self, scale: bool) -> Fold {
+        match self {
+            Fold::All => Fold::Notes,
+            Fold::Notes if scale => Fold::Scale,
+            _ => Fold::All,
+        }
+    }
+}
+
+/// The Scale menu (plan 2B.1), which the roll's Scale chip opens over the
+/// roll (the roll's own): a root tapped is `Tab(ROOT_MENU + root)` (0 is
+/// C), a scale `Tab(SCALE_MENU + i)`, `i` its place among the editor's
+/// offers ([`ScaleOffers::scale_of`]). The Fold chip and the chip counting
+/// hidden notes are the roll's own (`View`).
+pub const ROOT_MENU: usize = 300;
+pub const SCALE_MENU: usize = 400;
+/// The heading's chips: the Scale chip's width, the Fold chip's, and the
+/// hidden notes' chip's, which stands in for the legend while Fold hides
+/// notes.
+const SCALE_CHIP_W: i32 = 200;
+const FOLD_CHIP_W: i32 = 150;
+const HIDDEN_CHIP_W: i32 = 140;
+
+/// The roll's rows (plan 2B.1): how many, the note each shows, lowest
+/// first, and each note's row (-1 when Fold hides it). Every note, or the
+/// 16 pads, with nothing folded.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Rows {
+    n: u8,
+    note: [u8; 128],
+    row: [i16; 128],
+}
+
+impl Rows {
+    /// The first `n` notes, each on its own row.
+    fn all(n: u8) -> Rows {
+        let mut r = Rows {
+            n,
+            note: [0; 128],
+            row: [-1; 128],
+        };
+        for k in 0..n {
+            r.note[usize::from(k)] = k;
+            r.row[usize::from(k)] = i16::from(k);
+        }
+        r
+    }
+
+    /// The notes `keep` keeps, of the first `n`; every one when it keeps
+    /// none.
+    fn only(n: u8, keep: impl Fn(u8) -> bool) -> Rows {
+        let mut r = Rows {
+            n: 0,
+            note: [0; 128],
+            row: [-1; 128],
+        };
+        for k in (0..n).filter(|&k| keep(k)) {
+            r.note[usize::from(r.n)] = k;
+            r.row[usize::from(k)] = i16::from(r.n);
+            r.n += 1;
+        }
+        if r.n == 0 {
+            return Rows::all(n);
+        }
+        r
+    }
+
+    /// Note `note`'s row, if it shows.
+    fn of(&self, note: u8) -> Option<u8> {
+        u8::try_from(*self.row.get(usize::from(note))?).ok()
+    }
+
+    /// Row `row`'s note.
+    fn note_of(&self, row: u8) -> Option<u8> {
+        (row < self.n).then(|| self.note[usize::from(row)])
+    }
+}
+
 /// A finger drawing along the lane: the lane as it was when it went down
 /// (its bars, one for each place where notes start), and the notes each
 /// bar sets.
@@ -1674,10 +2011,10 @@ pub fn box_of(index: usize) -> Option<(u8, u8)> {
 }
 
 /// The drag a `Marker`'s frame holds ([`drop_frame`]).
-pub fn drop_of(frame: u64) -> (Tick, i32) {
+pub fn drop_of(frame: u64) -> (Tick, i32, bool) {
     let t = (frame & 0xFFFF_FFFF) as Tick - (1 << 31);
     let n = ((frame >> 32) & 0xFFFF) as i32 - 128;
-    (t, n)
+    (t, n, frame >> 48 & 1 == 1)
 }
 
 // ---------------------------------------------------------------- the widget
@@ -1898,8 +2235,22 @@ pub struct NoteGrid {
     /// and top edge change it here, and the page keeps it.
     pub lane: LaneShow,
     /// SHIFT was held as the last finger came down (the app's): a stroke
-    /// along the Repeats lane sets the ramp.
+    /// along the Repeats lane sets the ramp; a drag or a drawn note goes
+    /// by semitones with the clip's scale on.
     pub fine: bool,
+    /// The clip's scale (plan 2B.1; none on a clip of pads): its rows lit,
+    /// its roots marked, notes off it marked; drags and drawn notes go by
+    /// its notes.
+    pub scale: Option<Scale>,
+    /// The Scale chip's words: the scale ("D Dorian") or "Off".
+    pub scale_name: String,
+    /// What the Scale menu offers (the editor's).
+    pub offers: Arc<ScaleOffers>,
+    /// The Scale menu is open over the roll (the roll's own).
+    pub scale_menu: bool,
+    /// Which rows show (the page's, plan 2B.1): the Fold chip and the
+    /// hidden notes' chip change it here, and the page keeps it.
+    pub fold: Fold,
     /// A finger drawing along the lane.
     stroke: Option<Stroke>,
     drag: Option<Drag>,
@@ -2035,6 +2386,9 @@ struct Drag {
     /// The finger drags a handle (plan 1B.2): the note's start (true) or
     /// its end, by `ticks`; `notes` stays 0.
     handle: Option<bool>,
+    /// `notes` counts notes of the clip's scale (it was on, and SHIFT
+    /// wasn't held, as the finger went down; plan 2B.1), else semitones.
+    scale: bool,
 }
 
 /// Handles (plan 1B.2) are this wide, outside a picked note's ends; on a
@@ -2120,6 +2474,11 @@ impl Default for NoteGrid {
             touch: Vec::new(),
             lane: LaneShow::default(),
             fine: false,
+            scale: None,
+            scale_name: "Off".into(),
+            offers: Arc::default(),
+            scale_menu: false,
+            fold: Fold::All,
             stroke: None,
             drag: None,
             hand: Hand::Idle,
@@ -2147,6 +2506,14 @@ struct Geo {
     fold: Rect,
     edge: Rect,
     tools: Rect,
+    /// The heading's chips (plan 2B.1): Scale and Fold at its right end
+    /// (empty off the roll), and the one counting the notes Fold hides
+    /// (empty while it hides none).
+    scale_chip: Rect,
+    fold_chip: Rect,
+    hidden_chip: Rect,
+    /// The rows, as Fold leaves them.
+    rows: Rows,
     /// The view kept within this roll ([`RollView::clamp`]).
     v: RollView,
 }
@@ -2174,6 +2541,9 @@ impl NoteGrid {
             && self.locks == other.locks
             && self.touch == other.touch
             && self.lane == other.lane
+            && (self.scale, &self.scale_name, self.fold)
+                == (other.scale, &other.scale_name, other.fold)
+            && self.offers == other.offers
     }
 
     /// Note `i`'s pressure, empty for none.
@@ -2206,7 +2576,7 @@ impl NoteGrid {
             }
         }
         let (overview_tap, empty_tap, menu) = (self.overview_tap, self.empty_tap, self.menu);
-        let fine = self.fine;
+        let (fine, scale_menu) = (self.fine, self.scale_menu);
         *self = NoteGrid {
             stroke,
             fine,
@@ -2215,13 +2585,15 @@ impl NoteGrid {
             overview_tap,
             empty_tap,
             menu,
+            scale_menu,
             ..other
         };
     }
 
     fn geo(&self, r: Rect) -> Geo {
         // Matches PaintCx::titled_panel with the default theme's padding.
-        let body = r.inset(14).take_top(34).1;
+        let (head, body) = r.inset(14).take_top(34);
+        let rows = self.row_map();
         let (tools, rest) = body.take_bottom(TOOLS_H);
         let rest = Rect::new(rest.x, rest.y, rest.w, rest.h - GAP);
         let roll_lens = self.lens == Lens::Grid;
@@ -2243,7 +2615,19 @@ impl NoteGrid {
         let none = Rect::new(0, 0, 0, 0);
         let open = roll_lens && !self.lane.folded;
         let chip_h = if open { 28.min(vel.h) } else { vel.h };
+        // The heading's chips, right to left: Fold, Scale, and the notes
+        // Fold hides, each as tall as the title's line.
+        let chip = |right: i32, w: i32| Rect::new(right - w, head.y - 2, w, 26);
+        let fold_chip = chip(head.right(), FOLD_CHIP_W);
+        let scale_chip = chip(fold_chip.x - 6, SCALE_CHIP_W);
+        let hidden = roll_lens && self.hidden(&rows) > 0;
         Geo {
+            scale_chip: if roll_lens { scale_chip } else { none },
+            fold_chip: if roll_lens { fold_chip } else { none },
+            hidden_chip: match hidden {
+                true => chip(scale_chip.x - 6, HIDDEN_CHIP_W),
+                false => none,
+            },
             overview: Rect::new(roll.x, strip.y, (roll.w - FOLLOW_W - 6).max(0), strip.h),
             fit: Rect::new(keys.x, strip.y, keys.w - 6, strip.h),
             follow: if roll_lens {
@@ -2268,7 +2652,65 @@ impl NoteGrid {
                 false => none,
             },
             tools,
-            v: self.view.clamped(roll, self.length, self.rows()),
+            v: self.view.clamped(roll, self.length, rows.n),
+            rows,
+        }
+    }
+
+    /// The fold the roll shows: Scale rows only while the clip has a
+    /// scale, and only on the roll.
+    fn fold_now(&self) -> Fold {
+        match self.fold {
+            _ if self.lens != Lens::Grid => Fold::All,
+            Fold::Scale if self.scale.is_none() => Fold::All,
+            f => f,
+        }
+    }
+
+    /// The rows as Fold leaves them (plan 2B.1): every one; the rows with
+    /// notes; or the scale's rows, and any row with a picked note, which
+    /// never folds away.
+    fn row_map(&self) -> Rows {
+        let n = if self.pads { 16 } else { 128 };
+        let fold = self.fold_now();
+        if fold == Fold::All {
+            return Rows::all(n);
+        }
+        let mut with = [false; 128];
+        let mut picked = [false; 128];
+        for b in &self.notes {
+            with[usize::from(b.note & 127)] = true;
+            picked[usize::from(b.note & 127)] |= b.selected;
+        }
+        match (fold, self.scale) {
+            (Fold::Notes, _) => Rows::only(n, |k| with[usize::from(k)]),
+            (Fold::Scale, Some(s)) => {
+                Rows::only(n, |k| s.contains(i16::from(k)) || picked[usize::from(k)])
+            }
+            _ => Rows::all(n),
+        }
+    }
+
+    /// How many notes Fold hides on `rows`.
+    fn hidden(&self, rows: &Rows) -> usize {
+        if rows.n >= if self.pads { 16 } else { 128 } {
+            return 0;
+        }
+        self.notes
+            .iter()
+            .filter(|b| rows.of(b.note).is_none())
+            .count()
+    }
+
+    /// The note a finger on the row of `note` draws (plan 2B.1): with the
+    /// clip's scale on, the scale note nearest it (the lower when two
+    /// are as near), unless SHIFT was held.
+    fn drawn_note(&self, note: u8) -> u8 {
+        match self.scale.filter(|_| !self.fine && !self.pads) {
+            Some(s) => s
+                .snapped(i16::from(note), mpfree_seq::mpfree_scale::Snap::Nearest)
+                .map_or(note, |n| n.clamp(0, 127) as u8),
+            None => note,
         }
     }
 
@@ -2283,13 +2725,10 @@ impl NoteGrid {
         self.lane.h.clamp(LANE_MIN, most)
     }
 
-    /// How many rows the roll has: 16 pads, or 128 notes.
+    /// How many rows the roll has: 16 pads, or 128 notes, less what Fold
+    /// hides.
     fn rows(&self) -> u8 {
-        if self.pads {
-            16
-        } else {
-            128
-        }
+        self.row_map().n
     }
 
     /// The x of clip tick `t` on the roll.
@@ -2299,13 +2738,14 @@ impl NoteGrid {
 
     /// The note of the row at `y`, if it is on the roll.
     fn note_at(&self, g: &Geo, y: i32) -> Option<u8> {
-        g.v.note_at(g.roll, y, self.rows())
+        g.rows.note_of(g.v.note_at(g.roll, y, g.rows.n)?)
     }
 
-    /// The y of the top of `note`'s row, if any of it shows.
+    /// The y of the top of `note`'s row, if any of it shows (not while
+    /// Fold hides it).
     fn y_of(&self, g: &Geo, note: u8) -> Option<i32> {
-        let y = g.v.row_top(g.roll, note);
-        (note < self.rows() && y + g.v.row_h > g.roll.y && y < g.roll.bottom()).then_some(y)
+        let y = g.v.row_top(g.roll, g.rows.of(note)?);
+        (y + g.v.row_h > g.roll.y && y < g.roll.bottom()).then_some(y)
     }
 
     /// The view a clip opens with on this roll, in area `r` (the page
@@ -2317,12 +2757,15 @@ impl NoteGrid {
         }
         .geo(r)
         .roll;
+        let rows = self.row_map();
         RollView::open(
-            self.notes.iter().map(|n| (n.tick, n.note)),
+            self.notes
+                .iter()
+                .filter_map(|n| Some((n.tick, rows.of(n.note)?))),
             self.length,
             self.bar,
             roll,
-            self.rows(),
+            rows.n,
         )
     }
 
@@ -2461,7 +2904,12 @@ impl NoteGrid {
             None => (
                 (n.tick + d.ticks).rem_euclid(self.length.max(1)),
                 n.len,
-                u8::try_from(i32::from(n.note) + d.notes).ok()?,
+                u8::try_from(match self.scale.filter(|_| d.scale) {
+                    Some(k) => notes::scale_move(i32::from(n.note), d.notes, k),
+                    None => i32::from(n.note) + d.notes,
+                })
+                .ok()
+                .filter(|&p| p < 128)?,
             ),
         })
     }
@@ -2570,40 +3018,152 @@ impl NoteGrid {
         }
     }
 
+    /// The roll's heading (plan 2B.1): the Scale and Fold chips at its
+    /// right end, then the chip counting the notes Fold hides, or the
+    /// legend.
+    fn paint_head(&self, cx: &mut PaintCx, g: &Geo) {
+        let t = cx.theme.clone();
+        let ink = t.ink_on(t.raised);
+        let chip = |cx: &mut PaintCx, r: Rect, text: &str, fill: Color, ink: Color| {
+            cx.canvas.fill_round_rect(r, t.round(8), fill);
+            cx.text(
+                FontId::Sans,
+                t.size_small - 2.0,
+                Rect::new(r.x + 8, r.y, r.w - 22, r.h),
+                Align::Left,
+                ink,
+                text,
+            );
+            paint_caret(cx, r.right() - 12, r.y + r.h / 2, false, ink);
+        };
+        let scale = if self.pads {
+            "none on pads"
+        } else {
+            self.scale_name.as_str()
+        };
+        let lit = self.scale.is_some() && !self.pads;
+        let (fill, scale_ink) = match lit {
+            true => (
+                t.raised.mix(self.color, 0.35),
+                t.ink_on(t.raised.mix(self.color, 0.35)),
+            ),
+            false => (t.raised, ink),
+        };
+        chip(
+            cx,
+            g.scale_chip,
+            &format!("Scale: {scale}"),
+            fill,
+            scale_ink,
+        );
+        let fold = self.fold_now();
+        let (fill, fold_ink) = match fold {
+            Fold::All => (t.raised, ink),
+            _ => (
+                t.raised.mix(self.color, 0.35),
+                t.ink_on(t.raised.mix(self.color, 0.35)),
+            ),
+        };
+        chip(cx, g.fold_chip, fold.name(), fill, fold_ink);
+        let left = if g.hidden_chip.is_empty() {
+            g.scale_chip.x
+        } else {
+            let n = self.hidden(&g.rows);
+            let text = if n == 1 {
+                "1 note hidden".to_string()
+            } else {
+                format!("{n} notes hidden")
+            };
+            let fill = t.raised.mix(t.warn, 0.35);
+            cx.canvas.fill_round_rect(g.hidden_chip, t.round(8), fill);
+            cx.text(
+                FontId::Sans,
+                t.size_small - 2.0,
+                g.hidden_chip,
+                Align::Center,
+                t.ink_on(fill),
+                &text,
+            );
+            g.hidden_chip.x
+        };
+        if g.hidden_chip.is_empty() && !self.legend.is_empty() {
+            let head = Rect::new(
+                g.keys.x,
+                g.scale_chip.y,
+                left - 12 - g.keys.x,
+                g.scale_chip.h,
+            );
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                head,
+                Align::Right,
+                t.text_dim,
+                &self.legend,
+            );
+        }
+    }
+
     fn paint_roll(&self, cx: &mut PaintCx, g: &Geo) {
         let t = cx.theme.clone();
         let v = g.v;
         let rh = v.row_h;
         let was = cx.canvas.clip();
         // Rows: the black keys darker, C lines brighter; their names in
-        // the key column.
+        // the key column. With the clip's scale on (plan 2B.1) its rows
+        // are lit in place of the white keys, its roots the brightest with
+        // a mark in the key column and the line under them.
         cx.canvas.set_clip(was.intersect(Rect::new(
             g.keys.x,
             g.roll.y,
             g.keys.w + g.roll.w,
             g.roll.h,
         )));
-        for note in v.notes_shown(g.roll, self.rows()) {
-            let y = v.row_top(g.roll, note);
-            let black = !self.pads && matches!(note % 12, 1 | 3 | 6 | 8 | 10);
-            let fill = if black { t.bg } else { t.surface };
+        let scale = self.scale.filter(|_| !self.pads);
+        let lit = t.surface.mix(self.color, 0.10);
+        let root_fill = t.surface.mix(self.color, 0.22);
+        for row in v.notes_shown(g.roll, g.rows.n) {
+            let Some(note) = g.rows.note_of(row) else {
+                continue;
+            };
+            let y = v.row_top(g.roll, row);
+            let (fill, key_ink, line) = match scale {
+                Some(k) if k.is_root(i16::from(note)) => (root_fill, t.text, true),
+                Some(k) if k.contains(i16::from(note)) => (lit, t.text_dim, false),
+                // Faint, but never under the theme's floor for text.
+                Some(_) => (t.bg, t.readable(t.text_faint, t.bg), false),
+                None => {
+                    let black = !self.pads && matches!(note % 12, 1 | 3 | 6 | 8 | 10);
+                    let c = !self.pads && note % 12 == 0;
+                    let ink = if c || self.pads { t.text } else { t.text_faint };
+                    (if black { t.bg } else { t.surface }, ink, c)
+                }
+            };
             cx.canvas
                 .fill_rect(Rect::new(g.roll.x, y, g.roll.w, rh), fill);
+            if scale.is_some_and(|k| k.is_root(i16::from(note))) {
+                cx.canvas
+                    .fill_rect(Rect::new(g.keys.x, y + 2, 3, rh - 4), self.color);
+            }
             cx.text(
                 FontId::Sans,
                 t.size_small - 2.0,
                 Rect::new(g.keys.x, y, g.keys.w - 6, rh),
                 Align::Right,
-                if note % 12 == 0 || self.pads {
-                    t.text
-                } else {
-                    t.text_faint
-                },
+                key_ink,
                 &self.row_name(note),
             );
-            if !self.pads && note % 12 == 0 {
+            if line {
                 cx.canvas
                     .fill_rect(Rect::new(g.roll.x, y + rh - 1, g.roll.w, 1), t.outline);
+            }
+            // Fold left rows out under this one: a bolder line says so.
+            let below = row.checked_sub(1).and_then(|b| g.rows.note_of(b));
+            if below.is_some_and(|b| b + 1 != note) {
+                cx.canvas.fill_rect(
+                    Rect::new(g.keys.x, y + rh - 2, g.keys.w + g.roll.w, 2),
+                    t.text_faint,
+                );
             }
         }
         // Lines: bars, beats, and the snap when they are far enough apart,
@@ -2706,6 +3266,19 @@ impl NoteGrid {
             if n.selected {
                 cx.canvas.stroke_round_rect(nr, 3, 2, top);
             }
+            // Off the clip's scale (plan 2B.1): a small mark, where the
+            // note will land after a drag.
+            let landed = match self.drag {
+                Some(d) if self.moves(d, i) => self.dragged(d, n).map_or(n.note, |m| m.2),
+                _ => n.note,
+            };
+            if scale.is_some_and(|k| !k.contains(i16::from(landed))) {
+                let mark = match nr.w >= 14 {
+                    true => Rect::new(nr.x + 4, nr.y + 4, 6, 6),
+                    false => Rect::new(nr.x, nr.y, nr.w, 3),
+                };
+                cx.canvas.fill_round_rect(mark, 3.min(mark.h / 2), t.warn);
+            }
         }
         // A note being drawn with Draw on: where it goes when the finger
         // lifts.
@@ -2801,6 +3374,94 @@ impl NoteGrid {
     }
 
     /// The Select menu: a panel of its items, Add to pick lit while on.
+    /// The Scale menu's places (plan 2B.1), over the roll from its top:
+    /// the 12 roots in a row, then a button for each scale the editor
+    /// offers, six across (more when they would not fit), and the panel
+    /// round them.
+    fn scale_menu_rects(&self, r: Rect) -> (Vec<Rect>, Vec<Rect>, Rect) {
+        const PAD: i32 = 8;
+        const H: i32 = 34;
+        const GAP: i32 = 4;
+        let g = self.geo(r);
+        let area = Rect::new(
+            g.keys.x,
+            g.overview.y,
+            g.roll.right() - g.keys.x,
+            g.tools.y - 6 - g.overview.y,
+        );
+        let inner = area.inset(PAD);
+        let rw = (inner.w - 11 * GAP) / 12;
+        let roots: Vec<Rect> = (0..12)
+            .map(|k| Rect::new(inner.x + k * (rw + GAP), inner.y, rw, H))
+            .collect();
+        let n = self.offers.len() as i32;
+        let top = inner.y + H + 2 * PAD;
+        let fit = ((inner.bottom() - top + GAP) / (H + GAP)).max(1);
+        let cols = 6.max((n + fit - 1) / fit);
+        let rows = (n + cols - 1) / cols;
+        let cw = (inner.w - (cols - 1) * GAP) / cols;
+        let scales = (0..n)
+            .map(|i| {
+                Rect::new(
+                    inner.x + (i % cols) * (cw + GAP),
+                    top + (i / cols) * (H + GAP),
+                    cw,
+                    H,
+                )
+            })
+            .collect();
+        let bottom = top + rows * (H + GAP) - GAP + PAD;
+        (
+            roots,
+            scales,
+            Rect::new(area.x, area.y, area.w, bottom - area.y),
+        )
+    }
+
+    /// The Scale menu: the roots, the clip's lit (dim with no scale), and
+    /// the scales, the clip's lit.
+    fn paint_scale_menu(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        let (roots, scales, panel) = self.scale_menu_rects(r);
+        cx.canvas.fill_round_rect(panel, t.round(12), t.surface);
+        cx.canvas
+            .stroke_round_rect(panel, t.round(12), 1, t.outline);
+        let root = self.scale.map(|k| usize::from(k.root % 12));
+        for (k, m) in roots.iter().enumerate() {
+            let fill = match root {
+                Some(rk) if rk == k => t.accent,
+                _ => t.raised,
+            };
+            let ink = match root {
+                None => t.text_faint,
+                Some(_) => t.ink_on(fill),
+            };
+            cx.canvas.fill_round_rect(*m, t.round(8), fill);
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                *m,
+                Align::Center,
+                ink,
+                NOTE_NAMES[k],
+            );
+        }
+        let lit = self.offers.index_of(self.scale);
+        for (i, m) in scales.iter().enumerate() {
+            let fill = if lit == Some(i) { t.accent } else { t.raised };
+            let name = self.offers.choice_name(i).unwrap_or_default();
+            cx.canvas.fill_round_rect(*m, t.round(8), fill);
+            cx.text(
+                FontId::Sans,
+                t.size_small - 2.0,
+                *m,
+                Align::Center,
+                t.ink_on(fill),
+                &name,
+            );
+        }
+    }
+
     fn paint_menu(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         let items = self.menu_rects(r);
@@ -3406,8 +4067,17 @@ impl NoteGrid {
 impl Widget for NoteGrid {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        cx.titled_panel(r, &self.title, &self.legend);
         let g = self.geo(r);
+        // On the roll the legend moves left of the heading's chips.
+        let legend = if g.scale_chip.is_empty() {
+            self.legend.as_str()
+        } else {
+            ""
+        };
+        cx.titled_panel(r, &self.title, legend);
+        if !g.scale_chip.is_empty() {
+            self.paint_head(cx, &g);
+        }
         match self.lens {
             Lens::Grid => self.paint_roll(cx, &g),
             Lens::List => self.paint_list(cx, r),
@@ -3433,6 +4103,9 @@ impl Widget for NoteGrid {
         if self.menu {
             self.paint_menu(cx, r);
         }
+        if self.scale_menu && self.lens == Lens::Grid {
+            self.paint_scale_menu(cx, r);
+        }
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
@@ -3443,6 +4116,18 @@ impl Widget for NoteGrid {
             .enumerate()
             .map(|(k, b)| Target::tap("button", k, self.button_label(k), *b))
             .collect();
+        // The Scale menu covers the roll while it is open (plan 2B.1).
+        if self.scale_menu && self.lens == Lens::Grid {
+            let (roots, scales, _) = self.scale_menu_rects(r);
+            for (k, m) in roots.into_iter().enumerate() {
+                out.push(Target::tap("scale-root", k, NOTE_NAMES[k], m));
+            }
+            for (i, m) in scales.into_iter().enumerate() {
+                let name = self.offers.choice_name(i).unwrap_or_default();
+                out.push(Target::tap("scale-pick", i, name, m));
+            }
+            return out;
+        }
         // The Select menu covers the rest while it is open.
         if self.menu {
             for (k, mr) in self.menu_rects(r).into_iter().enumerate() {
@@ -3465,6 +4150,15 @@ impl Widget for NoteGrid {
                 ));
             }
             return out;
+        }
+        if !g.scale_chip.is_empty() && !self.pads {
+            out.push(Target::tap("scale-chip", 0, "Scale", g.scale_chip));
+        }
+        if !g.fold_chip.is_empty() {
+            out.push(Target::tap("fold-chip", 0, "Fold", g.fold_chip));
+        }
+        if !g.hidden_chip.is_empty() {
+            out.push(Target::tap("hidden-chip", 0, "notes hidden", g.hidden_chip));
         }
         if !g.vel.is_empty() && !self.lane.folded {
             // From near the foot to near the top, so the bars it crosses
@@ -3644,6 +4338,7 @@ impl Widget for NoteGrid {
                             ticks: 0,
                             notes: 0,
                             handle: None,
+                            scale: self.scale.is_some() && !self.fine && !self.pads,
                         });
                     }
                     Hand::Press { ref mut now, .. } => {
@@ -3810,7 +4505,21 @@ impl Widget for NoteGrid {
                     s if self.snap_auto && s > 0 => (raw as f64 / s as f64).round() as Tick * s,
                     _ => self.snapped(n.tick + raw) - n.tick,
                 };
-                let notes = (d.y - y) / g.v.row_h.max(1);
+                // Rows up or down, as Fold leaves them: the note on the row
+                // under the finger, or with the clip's scale on the scale
+                // note nearest it, counted in notes of the scale.
+                let by = (d.y - y) / g.v.row_h.max(1);
+                let notes = match g.rows.of(n.note) {
+                    Some(r0) => {
+                        let r1 = (i32::from(r0) + by).clamp(0, i32::from(g.rows.n) - 1);
+                        let to = i32::from(g.rows.note_of(r1 as u8).unwrap_or(n.note));
+                        match self.scale.filter(|_| d.scale) {
+                            Some(k) => notes::scale_steps(i32::from(n.note), to, k),
+                            None => to - i32::from(n.note),
+                        }
+                    }
+                    None => by,
+                };
                 self.drag = Some(Drag {
                     ticks,
                     notes,
@@ -3927,7 +4636,7 @@ impl Widget for NoteGrid {
                 }
                 ((d.ticks, d.notes) != (0, 0)).then(|| EventKind::Marker {
                     index: d.index,
-                    frame: drop_frame(d.ticks, d.notes),
+                    frame: drop_frame(d.ticks, d.notes, d.scale),
                 })
             }
         }
@@ -4183,14 +4892,42 @@ impl NoteGrid {
         self.view = v.clamped(g.roll, self.length, self.rows());
     }
 
+    /// Fold set to `fold` (plan 2B.1), in area `r`: the time shown stays,
+    /// and the note in the roll's middle stays there (or the next row up
+    /// that still shows); when every row fits, they fill the roll.
+    fn refold(&mut self, r: Rect, fold: Fold) {
+        let g = self.geo(r);
+        let mid = g.roll.y + g.roll.h / 2;
+        let at = self.note_at(&g, mid).unwrap_or(60);
+        self.fold = fold;
+        let g = self.geo(r);
+        let rows = g.rows;
+        let row = (at..128)
+            .find_map(|n| rows.of(n))
+            .or_else(|| (0..at).rev().find_map(|n| rows.of(n)))
+            .unwrap_or(0);
+        let mut v = g.v;
+        let rh = v.row_h;
+        if i32::from(rows.n) * zoom::ROW_OPEN <= g.roll.h {
+            let shown = v.ticks_shown(g.roll);
+            let ticks = (v.start, v.start + shown);
+            v = v.fit(g.roll, self.length, rows.n, ticks, (0, rows.n - 1));
+            v.start = ticks.0;
+        } else {
+            v.lift = mid - g.roll.bottom() + (i32::from(row) + 1) * rh - rh / 2;
+        }
+        self.view = v.clamped(g.roll, self.length, rows.n);
+    }
+
     /// Fit: the picked notes when some are, else every note, across the
     /// roll and up it (an empty clip: the whole clip, the rows as they
     /// are).
     fn fit(&mut self, g: &Geo) {
         let picked = self.notes.iter().any(|n| n.selected);
         let which = || self.notes.iter().filter(move |n| !picked || n.selected);
-        let lo = which().map(|n| n.note).min();
-        let hi = which().map(|n| n.note).max();
+        // The notes' rows, as Fold leaves them.
+        let lo = which().filter_map(|n| g.rows.of(n.note)).min();
+        let hi = which().filter_map(|n| g.rows.of(n.note)).max();
         let (from, to) = if picked {
             (
                 which().map(|n| n.tick).min().unwrap_or(0),
@@ -4202,7 +4939,7 @@ impl NoteGrid {
         } else {
             (0, self.length)
         };
-        let rows = self.rows();
+        let rows = g.rows.n;
         self.view = match (lo, hi) {
             (Some(lo), Some(hi)) => g.v.fit(g.roll, self.length, rows, (from, to), (lo, hi)),
             _ => g.v.zoom_time(g.roll, self.length, rows, 0.0, 0.0, g.roll.x),
@@ -4211,6 +4948,23 @@ impl NoteGrid {
 
     /// A finger coming down alone.
     fn down(&mut self, f: u64, x: i32, y: i32, r: Rect, g: &Geo) -> Option<EventKind> {
+        // The Scale menu, while open (plan 2B.1): a root or a scale, and
+        // it stays open for the other; a touch anywhere else closes it
+        // and does nothing more.
+        if self.scale_menu {
+            let (roots, scales, _) = self.scale_menu_rects(r);
+            if let Some(k) = roots.iter().position(|m| m.contains(x, y)) {
+                return self
+                    .scale
+                    .is_some()
+                    .then_some(EventKind::Tab(ROOT_MENU + k));
+            }
+            if let Some(i) = scales.iter().position(|m| m.contains(x, y)) {
+                return Some(EventKind::Tab(SCALE_MENU + i));
+            }
+            self.scale_menu = false;
+            return None;
+        }
         // The Select menu, while open: an item, or a touch anywhere else
         // closes it and does nothing more (plan 1B.3).
         if self.menu {
@@ -4232,6 +4986,23 @@ impl NoteGrid {
                 return None;
             }
             return Some(EventKind::Tab(k));
+        }
+        // The heading's chips (plan 2B.1): Scale opens the drawer on the
+        // Scale option (the page's); Fold and the hidden notes' chip are
+        // the roll's own.
+        if g.scale_chip.contains(x, y) {
+            self.scale_menu = !self.pads;
+            self.menu = false;
+            return None;
+        }
+        if g.fold_chip.contains(x, y) {
+            let next = self.fold_now().next(self.scale.is_some() && !self.pads);
+            self.refold(r, next);
+            return Some(self.view_event());
+        }
+        if g.hidden_chip.contains(x, y) {
+            self.refold(r, Fold::All);
+            return Some(self.view_event());
         }
         if self.lens == Lens::Tracker {
             let rows = self.track_rows();
@@ -4346,6 +5117,7 @@ impl NoteGrid {
                     ticks: 0,
                     notes: 0,
                     handle: Some(start),
+                    scale: false,
                 });
                 return None;
             }
@@ -4364,8 +5136,9 @@ impl NoteGrid {
             };
             return None;
         }
-        // Empty roll: the cell under the finger, sent when it lifts.
-        let note = self.note_at(g, y)?;
+        // Empty roll: the cell under the finger, sent when it lifts (on
+        // the scale's nearest note with the clip's scale on).
+        let note = self.drawn_note(self.note_at(g, y)?);
         let tick = g.v.cell_at(g.roll, x, self.snap);
         if tick >= self.length {
             return None;
@@ -4467,6 +5240,7 @@ mod tests {
                 rev: 0,
                 ticks: 240,
                 notes: 2,
+                scale: false,
             },
         );
         assert_eq!(done.line, "edit: 3 notes moved");
@@ -4485,6 +5259,7 @@ mod tests {
                 rev: 0,
                 ticks: 240,
                 notes: 0,
+                scale: false,
             },
         );
         assert_eq!(done.line, "edit: 1 notes moved");
@@ -5671,7 +6446,9 @@ mod tests {
         assert_eq!(length_name(240), "1/16");
         assert_eq!(length_name(250), "250 ticks");
         for (t, n) in [(0, 0), (-240, 3), (3840, -12), (-1, -127), (99_999, 127)] {
-            assert_eq!(drop_of(drop_frame(t, n)), (t, n));
+            for scale in [false, true] {
+                assert_eq!(drop_of(drop_frame(t, n, scale)), (t, n, scale));
+            }
         }
     }
 
@@ -6016,7 +6793,9 @@ mod tests {
         // The selected note is drawn where it would land.
         assert_eq!(g.note_rect(R, 1).unwrap().y, n1.y - 2 * rh);
         match g.touch(1, Touch::Up, x + beat + 3, y - 2 * rh - 2, R) {
-            Some(EventKind::Marker { index: 1, frame }) => assert_eq!(drop_of(frame), (960, 2)),
+            Some(EventKind::Marker { index: 1, frame }) => {
+                assert_eq!(drop_of(frame), (960, 2, false))
+            }
             other => panic!("{other:?}"),
         }
         assert_eq!(g.note_rect(R, 1), Some(n1), "back in place once dropped");
@@ -6157,5 +6936,379 @@ mod tests {
             let mut c = SoftCanvas::new(R.w, R.h);
             assert!(!ui.paint(&mut c).is_empty());
         }
+    }
+}
+
+/// The clip's scale on the note editor (piano roll plan 2B.1).
+#[cfg(test)]
+mod scale_tests {
+    use super::*;
+    use mpfree_seq::mpfree_scale::{DORIAN, MAJOR, MINOR};
+
+    const R: Rect = Rect {
+        x: 0,
+        y: 0,
+        w: 830,
+        h: 640,
+    };
+
+    fn clip(notes: &[(Tick, u8)]) -> Clip {
+        let mut c = Clip::new("Keys", 3840);
+        for &(t, n) in notes {
+            c.add_note(Note::new(t, 240, n, 100)).unwrap();
+        }
+        c
+    }
+
+    fn run(ed: &mut Editor, c: &mut Clip, a: EditAction) -> Done {
+        let done = ed.act(a, c);
+        c.apply(&done.edit).unwrap();
+        if let Some(k) = done.scale {
+            c.scale = k;
+        }
+        ed.applied(c, &done);
+        done
+    }
+
+    fn pitches(c: &Clip) -> Vec<u8> {
+        let mut p: Vec<u8> = c.notes.iter().map(|n| n.note).collect();
+        p.sort_unstable();
+        p
+    }
+
+    /// The Scale menu offers Off, the pads' scale first, every built-in
+    /// scale but Chromatic, then the owner's; a scale keeps the clip's
+    /// root (the pads' with none); the pads' choice is lit when the clip
+    /// has their scale, root and all.
+    #[test]
+    fn the_scale_menu_offers_the_pads_scale_first() {
+        let none = ScaleOffers::default();
+        assert_eq!(none.len(), 1 + SCALES.len() - 1);
+        assert_eq!(none.choice_name(0).as_deref(), Some("Off"));
+        assert_eq!(none.choice_name(1).as_deref(), Some("Major"));
+        assert_eq!(none.choice_name(none.len()), None);
+        let offers = ScaleOffers {
+            pads: Some(Scale::new(2, MINOR)),
+            own: vec![("Mine".into(), 0b1001_0001, 0b1001_0001)],
+        };
+        assert_eq!(offers.len(), 2 + SCALES.len());
+        assert_eq!(offers.choice_name(1).as_deref(), Some("Pads: D Minor"));
+        assert_eq!(offers.choice_name(2).as_deref(), Some("Major"));
+        assert_eq!(
+            offers.choice_name(offers.len() - 1).as_deref(),
+            Some("Mine")
+        );
+        assert_eq!(offers.scale_of(0, None), Some(None));
+        assert_eq!(offers.scale_of(1, None), Some(Some(Scale::new(2, MINOR))));
+        assert_eq!(
+            offers.scale_of(2, None),
+            Some(Some(Scale::new(2, MAJOR))),
+            "the pads' root"
+        );
+        let on_a = Some(Scale::new(9, DORIAN));
+        assert_eq!(
+            offers.scale_of(2, on_a),
+            Some(Some(Scale::new(9, MAJOR))),
+            "the clip's root"
+        );
+        assert_eq!(offers.scale_of(offers.len(), on_a), None);
+        assert_eq!(offers.index_of(Some(Scale::new(2, MINOR))), Some(1));
+        assert_eq!(
+            offers.index_of(Some(Scale::new(4, MINOR))),
+            offers.index_of(Some(Scale::new(0, MINOR)))
+        );
+        assert_ne!(offers.index_of(Some(Scale::new(4, MINOR))), Some(1));
+        assert_eq!(
+            offers.index_of(Some(Scale::new(0, 0b11))),
+            None,
+            "no choice names it"
+        );
+        assert_eq!(offers.label(on_a), "A Dorian");
+        assert_eq!(offers.label(Some(Scale::new(0, 0b1001_0001))), "C Mine");
+        assert_eq!(offers.label(Some(Scale::new(0, 0b11))), "C Own scale");
+        assert_eq!(offers.label(None), "Off");
+    }
+
+    /// The menu's picks change the clip's scale, a setting the app keeps
+    /// (no note moves); a root needs a scale; a clip of pads has none.
+    #[test]
+    fn the_scale_and_its_root_are_the_clips_settings() {
+        let mut c = clip(&[(0, 60), (240, 61)]);
+        let mut ed = Editor::new(0, 0, &c);
+        let done = ed.act(EditAction::Root(2), &c);
+        assert_eq!(
+            (done.scale, done.line.as_str()),
+            (None, "edit: pick a scale first")
+        );
+        let done = run(
+            &mut ed,
+            &mut c,
+            EditAction::Scale(Some(Scale::new(0, MAJOR))),
+        );
+        assert!(done.edit.is_empty());
+        assert_eq!(done.line, "edit: scale C Major");
+        assert_eq!(c.scale, Some(Scale::new(0, MAJOR)));
+        assert_eq!(pitches(&c), [60, 61], "no note moves");
+        let done = run(&mut ed, &mut c, EditAction::Root(9));
+        assert_eq!(done.line, "edit: scale A Major");
+        assert_eq!(c.scale, Some(Scale::new(9, MAJOR)));
+        run(&mut ed, &mut c, EditAction::Scale(None));
+        assert_eq!(c.scale, None);
+        let bad = Scale {
+            root: 12,
+            ..Scale::new(0, MAJOR)
+        };
+        assert_eq!(ed.act(EditAction::Scale(Some(bad)), &c).scale, None);
+        let pads = clip(&[(0, 3)]);
+        let done =
+            Editor::new(0, 0, &pads).act(EditAction::Scale(Some(Scale::new(0, MAJOR))), &pads);
+        assert_eq!(
+            (done.scale, done.line.as_str()),
+            (None, "edit: a clip of pads has no scale")
+        );
+        assert_eq!(lit_scale(&pads), None);
+    }
+
+    /// With the clip's scale on, a drag and Q3 move by its notes (a chord
+    /// keeps to the scale), SHIFT on Q3 by semitones; Fit to scale brings
+    /// the picks, or every note, onto it; Select's Off the scale picks
+    /// the notes the roll marks.
+    #[test]
+    fn moves_go_by_the_clips_scale_and_fit_brings_notes_onto_it() {
+        let mut c = clip(&[(0, 60), (0, 64), (0, 67), (960, 61)]);
+        c.scale = Some(Scale::new(0, MAJOR));
+        let mut ed = Editor::new(0, 0, &c);
+        ed.sel = vec![0, 1, 2];
+        run(
+            &mut ed,
+            &mut c,
+            EditAction::Drop {
+                index: 0,
+                rev: 0,
+                ticks: 0,
+                notes: 1,
+                scale: true,
+            },
+        );
+        assert_eq!(pitches(&c), [61, 62, 65, 69], "C E G a step up: D F A");
+        let turn = |k, ticks, fine| EditAction::Knob {
+            k,
+            ticks,
+            fine,
+            turn: 1,
+        };
+        run(&mut ed, &mut c, turn(2, -1, false));
+        assert_eq!(pitches(&c), [60, 61, 64, 67], "and back");
+        run(&mut ed, &mut c, turn(2, 1, true));
+        assert_eq!(pitches(&c), [61, 61, 65, 68], "SHIFT: a semitone");
+        run(&mut ed, &mut c, turn(2, -1, true));
+        // Off the scale: the C#.
+        ed.act(EditAction::Choose(13), &c);
+        assert_eq!(
+            ed.sel.iter().map(|&i| c.notes[i].note).collect::<Vec<_>>(),
+            [61]
+        );
+        let rows = edit_rows(&ed, &c);
+        assert_eq!(rows[FIT_ROW].name, "Fit to scale");
+        assert_eq!(rows[FIT_ROW].value, "1 off");
+        let done = run(
+            &mut ed,
+            &mut c,
+            EditAction::Row {
+                row: FIT_ROW,
+                delta: 1,
+            },
+        );
+        assert_eq!(done.line, "edit: 1 note fitted to C Major");
+        assert_eq!(pitches(&c), [60, 60, 64, 67]);
+        assert_eq!(edit_rows(&ed, &c)[FIT_ROW].value, "none off");
+        // A drag without the scale's flag (SHIFT as it went down) goes by
+        // semitones.
+        ed.sel = vec![];
+        let i = c.notes.iter().position(|n| n.tick == 960).unwrap();
+        run(
+            &mut ed,
+            &mut c,
+            EditAction::Drop {
+                index: i,
+                rev: 0,
+                ticks: 0,
+                notes: 1,
+                scale: false,
+            },
+        );
+        assert_eq!(pitches(&c), [60, 61, 64, 67]);
+        c.scale = None;
+        assert_eq!(edit_rows(&ed, &c)[FIT_ROW].value, "no scale");
+        assert_eq!(
+            ed.act(EditAction::Choose(13), &c).line,
+            "edit: the clip has no scale: pick one with Scale"
+        );
+        assert_eq!(knob_name(2, true), "Scale steps");
+        assert_eq!(knob_name(2, false), "Semitones");
+    }
+
+    fn roll(notes: &[(u8, bool)], scale: Option<Scale>) -> NoteGrid {
+        NoteGrid {
+            notes: notes
+                .iter()
+                .enumerate()
+                .map(|(k, &(n, picked))| {
+                    NoteBox::of(&Note::new(k as Tick * 480, 240, n, 100), picked)
+                })
+                .collect(),
+            length: 3840,
+            bar: 3840,
+            view: RollView {
+                lift: 57 * 40,
+                row_h: 40,
+                ..RollView::default()
+            },
+            scale,
+            scale_name: ScaleOffers::default().label(scale),
+            ..NoteGrid::default()
+        }
+    }
+
+    fn target(g: &NoteGrid, id: &str) -> Option<Rect> {
+        g.targets(R)
+            .into_iter()
+            .find(|t| t.id == id)
+            .map(|t| t.rect)
+    }
+
+    /// A finger down and up on `r`: what either sent.
+    fn tap(g: &mut NoteGrid, f: u64, r: Rect) -> Option<EventKind> {
+        let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
+        let down = g.touch(f, Touch::Down, x, y, R);
+        let up = g.touch(f, Touch::Up, x, y, R);
+        assert!(down.is_none() || up.is_none(), "one event a tap");
+        down.or(up)
+    }
+
+    /// A drag with the clip's scale on goes by its notes: the finger two
+    /// rows up from C lands on D, one scale step, sent with the scale's
+    /// flag; with SHIFT as it went down, by semitones.
+    #[test]
+    fn a_drag_on_the_roll_goes_by_the_scales_notes() {
+        for (fine, want) in [(false, (1, true)), (true, (2, false))] {
+            let mut g = roll(&[(60, false)], Some(Scale::new(0, MAJOR)));
+            g.fine = fine;
+            let nr = g.note_rect(R, 0).unwrap();
+            let (x, y) = (nr.x + 10, nr.y + nr.h / 2);
+            g.touch(1, Touch::Down, x, y, R);
+            g.touch(1, Touch::Move, x, y - 80, R);
+            let Some(EventKind::Marker { index: 0, frame }) = g.touch(1, Touch::Up, x, y - 80, R)
+            else {
+                panic!("a drag drops");
+            };
+            let (ticks, notes, scale) = drop_of(frame);
+            assert_eq!((ticks, (notes, scale)), (0, want), "fine {fine}");
+        }
+    }
+
+    /// A note drawn on a row off the scale goes on its nearest scale note
+    /// (the lower on a tie); with SHIFT, on the row.
+    #[test]
+    fn a_note_drawn_off_the_scale_lands_on_it() {
+        for (fine, want) in [(false, 60), (true, 61)] {
+            let mut g = roll(&[(64, false)], Some(Scale::new(0, MAJOR)));
+            g.tool = Tool::Draw;
+            g.fine = fine;
+            let nr = g.note_rect(R, 0).unwrap();
+            // The C# row, three rows under the E, past the note's end.
+            let (x, y) = (nr.right() + 60, nr.y + nr.h / 2 + 3 * 40);
+            g.touch(1, Touch::Down, x, y, R);
+            match g.touch(1, Touch::Up, x, y, R) {
+                Some(EventKind::Cell { row, .. }) => assert_eq!(row, want, "fine {fine}"),
+                e => panic!("a cell: {e:?}"),
+            }
+        }
+    }
+
+    /// Fold: rows with notes, or the scale's rows, a row with a picked
+    /// note never folding away; a chip counts the notes it hides and a
+    /// tap on it shows every row; the Fold chip steps through them,
+    /// Scale rows only while the clip has a scale.
+    #[test]
+    fn fold_hides_rows_and_a_chip_counts_the_notes_hidden() {
+        let major = Scale::new(0, MAJOR);
+        let mut g = roll(&[(60, false), (61, false), (64, false)], Some(major));
+        assert_eq!(g.rows(), 128);
+        assert_eq!(target(&g, "hidden-chip"), None);
+        g.fold = Fold::Notes;
+        assert_eq!(g.rows(), 3);
+        g.fold = Fold::Scale;
+        assert_eq!(
+            g.rows(),
+            (0..128).filter(|&n| major.contains(n)).count() as u8
+        );
+        let hidden = target(&g, "hidden-chip").expect("1 note hidden");
+        assert_eq!(g.row_map().of(61), None, "the C# has no row");
+        assert_eq!(tap(&mut g, 1, hidden), Some(g.view_event()));
+        assert_eq!((g.fold, g.rows()), (Fold::All, 128));
+        // Picked, the C# keeps its row.
+        let mut picked = roll(&[(60, false), (61, true), (64, false)], Some(major));
+        picked.fold = Fold::Scale;
+        assert!(picked.row_map().of(61).is_some());
+        assert_eq!(target(&picked, "hidden-chip"), None);
+        // Folding keeps the note in the roll's middle there.
+        let mut fold = roll(&[(60, false), (61, false), (64, false)], Some(major));
+        let g0 = fold.geo(R);
+        let at = fold.note_at(&g0, g0.roll.y + g0.roll.h / 2).unwrap();
+        fold.refold(R, Fold::Scale);
+        let g1 = fold.geo(R);
+        let now = fold.note_at(&g1, g1.roll.y + g1.roll.h / 2).unwrap();
+        assert!(major.contains(i16::from(now)) && (i16::from(now) - i16::from(at)).abs() <= 2);
+        // The chip: All, Notes, Scale, All; with no scale, All, Notes, All.
+        let chip = target(&g, "fold-chip").unwrap();
+        for want in [Fold::Notes, Fold::Scale, Fold::All] {
+            tap(&mut g, 2, chip);
+            assert_eq!(g.fold, want);
+        }
+        let mut plain = roll(&[(60, false)], None);
+        for want in [Fold::Notes, Fold::All] {
+            tap(&mut plain, 3, chip);
+            assert_eq!(plain.fold, want);
+        }
+        plain.fold = Fold::Scale;
+        assert_eq!(plain.rows(), 128, "no scale: every row");
+    }
+
+    /// The Scale chip opens the Scale menu over the roll: a root (with a
+    /// scale on) and a scale are its taps, and it stays open for the
+    /// other; a touch anywhere else closes it and does nothing more.
+    #[test]
+    fn the_scale_chip_opens_the_scale_menu() {
+        let mut g = roll(&[(60, false)], None);
+        let chip = target(&g, "scale-chip").unwrap();
+        assert_eq!(tap(&mut g, 1, chip), None);
+        assert!(g.scale_menu);
+        assert_eq!(target(&g, "scale-chip"), None, "the menu covers the roll");
+        let pick = |g: &NoteGrid, id: &str, k: usize| {
+            g.targets(R)
+                .into_iter()
+                .find(|t| t.id == id && t.index == k)
+                .map(|t| t.rect)
+                .unwrap()
+        };
+        let root = pick(&g, "scale-root", 2);
+        assert_eq!(tap(&mut g, 2, root), None, "no scale: no root");
+        let dorian = pick(&g, "scale-pick", 2);
+        assert_eq!(tap(&mut g, 3, dorian), Some(EventKind::Tab(SCALE_MENU + 2)));
+        g.scale = Some(Scale::new(0, DORIAN));
+        assert_eq!(tap(&mut g, 4, root), Some(EventKind::Tab(ROOT_MENU + 2)));
+        assert!(g.scale_menu);
+        let tools = g.button_rects(R)[0];
+        assert_eq!(
+            tap(&mut g, 5, tools),
+            None,
+            "a touch elsewhere only closes it"
+        );
+        assert!(!g.scale_menu);
+        // A clip of pads has no scale.
+        let mut pads = roll(&[(3, false)], None);
+        pads.pads = true;
+        assert_eq!(target(&pads, "scale-chip"), None);
     }
 }

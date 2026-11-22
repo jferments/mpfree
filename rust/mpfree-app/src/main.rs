@@ -11559,6 +11559,10 @@ fn player_session(
         // sequencer refactor E4).
         let n = time.track_count();
         time.set_notes_tracks(notes_tracks(&mix.instruments, &track_kits, &synth, n));
+        // The note editor's Scale option offers the pads' scale and the
+        // owner's own scales (piano roll plan 2B.1).
+        let (pads, own) = app.scale_offers();
+        time.set_scale_offers(pads, own);
         // A clip of notes shows each pad's note on the step grid's pad
         // rows: the root of what the pad plays on the track's own synth or
         // the shared synth, or a kit pad's note (step 5c).

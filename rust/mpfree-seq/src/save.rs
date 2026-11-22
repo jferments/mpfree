@@ -32,6 +32,7 @@
 //! direction pingpong
 //! holds notes
 //! step 1/8T
+//! scale D 0 2 3 5 7 9 10
 //! madefor mpfree.poly Poly
 //! madename 3 Cutoff
 //! touch 0:10 50:40
@@ -132,6 +133,15 @@
 //! for 1/16). It changes only what the Steps show, so an older build
 //! skips it, and this one a size it doesn't know, and shows 1/16 steps;
 //! the notes play the same either way.
+//!
+//! A clip's `scale` line is the scale the Notes view lights (piano roll
+//! plan 2B.1): its root's name, then the notes going up as semitones
+//! above it, and `/` and the notes coming down when they differ
+//! (`scale D 0 2 3 5 7 9 10`, `mpfree_scale::scale_text`); none for Off.
+//! It changes no note and nothing that plays, so an older build skips
+//! it. A `scale` line this build can't read (no root, a root it doesn't
+//! name, steps that make no scale) refuses the part, as a value out of
+//! range does: only a bug or a hand edit writes one.
 //!
 //! A clip's `holds notes` line says its notes are MIDI notes, each
 //! number a pitch (the instrument redesign's step 5c, [`crate::Holds`]);
@@ -378,6 +388,9 @@ fn clip_body(s: &mut String, c: &Clip) {
             let _ = writeln!(s, "step {name}");
         }
     }
+    if let Some(k) = c.scale {
+        let _ = writeln!(s, "scale {}", scale_text(k));
+    }
     // What its instrument locks were made for (refactor F1). A node id is
     // one word; one that isn't is not written, and its locks play.
     if let Some(m) = c.made_for.as_ref().filter(|m| is_word(&m.node)) {
@@ -579,6 +592,24 @@ fn program_text(p: crate::ClipProgram) -> String {
         Some(b) => format!("{} bank {b}", p.program),
         None => p.program.to_string(),
     }
+}
+
+/// A clip's scale as its line's words: `D 0 2 3 5 7 9 10`, or with the
+/// notes coming down after a `/` when they differ.
+fn scale_text(k: crate::Scale) -> String {
+    let root = mpfree_scale::NOTE_NAMES[usize::from(k.root % 12)];
+    format!("{root} {}", mpfree_scale::scale_text(k.mask, k.down))
+}
+
+/// The words after `scale`: a root's name (with a sharp, as written) and
+/// its notes ([`mpfree_scale::parse_steps`]); None when they don't make
+/// a scale.
+fn scale_from(text: &str) -> Option<crate::Scale> {
+    let (root, steps) = text.split_once(' ')?;
+    let root = mpfree_scale::NOTE_NAMES.iter().position(|n| *n == root)?;
+    let (up, down) = mpfree_scale::parse_steps(steps).ok()?;
+    let k = crate::Scale::with_down(root as u8, up, down);
+    crate::scale_ok(k).then_some(k)
 }
 
 fn follow_text(f: Follow) -> String {
@@ -825,6 +856,12 @@ pub fn from_text(text: &str) -> Result<Project, String> {
             ("step", At::Clip(c, _)) => {
                 let word = w.next().ok_or_else(|| bad("step"))?;
                 c.step = crate::steps::size_named(word).unwrap_or(crate::steps::DEFAULT_SIZE);
+            }
+            // A scale line this build can't read refuses the part, as a
+            // value out of range does: only a bug or a hand edit writes one.
+            ("scale", At::Clip(c, _)) => {
+                let text = w.collect::<Vec<_>>().join(" ");
+                c.scale = Some(scale_from(&text).ok_or_else(|| bad("scale"))?);
             }
             // A newer build's kind of notes plays as pad hits here.
             ("holds", At::Clip(c, _)) => {
@@ -1646,6 +1683,7 @@ mod tests {
         });
         c.direction = crate::Direction::PingPong;
         c.step = 320;
+        c.scale = Some(crate::Scale::new(2, mpfree_scale::DORIAN));
         c.holds = crate::Holds::Notes;
         let pts: Vec<TouchPoint> = (0..150)
             .map(|k| TouchPoint {
@@ -2065,6 +2103,51 @@ mod tests {
         assert!(!to_text(&full()).contains("madefor"));
         assert!(from_text(&text.replace("madefor mpfree.poly Poly synth\n", "")).is_err());
         assert!(from_text(&text.replace("madename 3 ", "madename x ")).is_err());
+    }
+
+    /// A clip's scale (piano roll plan 2B.1): its root's name and its
+    /// notes, read back as written, the notes coming down too when they
+    /// differ; none is Off; a line this build can't read refuses the
+    /// part.
+    #[test]
+    fn a_clips_scale_reads_back() {
+        use crate::Scale;
+        let text = to_text(&full());
+        assert!(
+            text.contains("step 1/8T\nscale D 0 2 3 5 7 9 10\n"),
+            "{text}"
+        );
+        let scale = |t: &str| {
+            from_text(t).unwrap().tracks[0].slots[0]
+                .as_ref()
+                .unwrap()
+                .scale
+        };
+        assert_eq!(scale(&text), Some(Scale::new(2, mpfree_scale::DORIAN)));
+        let classical = mpfree_scale::by_name("Mel. minor classical").unwrap();
+        for k in [
+            Scale::new(11, mpfree_scale::PENTATONIC_MINOR),
+            Scale::new(1, mpfree_scale::CHROMATIC),
+            Scale::of(9, classical),
+        ] {
+            let mut p = full();
+            p.tracks[0].slots[0].as_mut().unwrap().scale = Some(k);
+            let t = to_text(&p);
+            assert_eq!(scale(&t), Some(k), "{t}");
+        }
+        assert!(to_text(&{
+            let mut p = full();
+            p.tracks[0].slots[0].as_mut().unwrap().scale = Some(Scale::of(9, classical));
+            p
+        })
+        .contains("scale A 0 2 3 5 7 9 11 / 0 2 3 5 7 8 10\n"));
+        let off = text.replace("scale D 0 2 3 5 7 9 10\n", "");
+        assert_eq!(scale(&off), None);
+        assert!(!to_text(&from_text(&off).unwrap()).contains("\nscale "));
+        for odd in ["H 0 2 4", "D 0 2 x", "Db 0 3 7", "D", "D 0 2 12", ""] {
+            let t = text.replace("scale D 0 2 3 5 7 9 10", &format!("scale {odd}"));
+            assert!(from_text(&t).is_err(), "{odd}");
+        }
     }
 
     /// A mutated clip keeps its original (S6), lanes and all, read back

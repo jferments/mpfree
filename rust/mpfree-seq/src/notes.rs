@@ -55,12 +55,19 @@
 //! clip keeps one lock in each. Pad hits go only into a clip of pad hits,
 //! and notes into a clip of notes ([`Holds`]): a kit's pad 3 is no MIDI
 //! note 3.
+//!
+//! **Scales** (piano roll plan 2B.1): with the clip's scale on, the Notes
+//! view moves notes by notes of the scale ([`scale_move`],
+//! [`scale_steps`], [`shift_in_scale`]) and Fit to scale brings notes
+//! onto it ([`pitch_quantize`]). Only the notes going up count (the ones
+//! the roll lights), and a note off the scale stays where it is until it
+//! is moved: its first step goes to the scale note beside it.
 
 use crate::inst::Inst;
 use crate::steps::{moves_edit, Edit};
 use crate::{
-    touch_room, Clip, Holds, Lock, Note, Touch, TouchPoint, MAX_CLIP_TICKS, MAX_LOCKS, MAX_NOTES,
-    MIN_CLIP_TICKS,
+    touch_room, Clip, Holds, Lock, Note, Scale, Touch, TouchPoint, MAX_CLIP_TICKS, MAX_LOCKS,
+    MAX_NOTES, MIN_CLIP_TICKS,
 };
 use mpfree_notefx::TrackFx;
 use mpfree_param::{OnTrack, RelAddr};
@@ -1266,6 +1273,82 @@ pub fn pitch_quantize(clip: &Clip, sel: &[usize], root: u8, mask: u16, low: u8, 
     })
 }
 
+/// The scale `k` with only its notes going up: what the Notes view
+/// lights and moves by.
+fn lit(k: Scale) -> Scale {
+    Scale::new(k.root, k.mask)
+}
+
+/// `note` moved `steps` notes of the scale `k` up (down when negative), by
+/// its notes going up. A note off the scale counts the scale note beside
+/// it on that side as its first step. It may come out past 0 or 127; the
+/// caller keeps it in.
+pub fn scale_move(note: i32, steps: i32, k: Scale) -> i32 {
+    let k = lit(k);
+    let n = note.clamp(-1000, 1000) as i16;
+    let steps = steps.clamp(-1000, 1000) as i16;
+    i32::from(match steps {
+        0 => n,
+        s if s > 0 => k.walk(k.snap(n), s),
+        s => k.walk(k.snap_up(n), s),
+    })
+}
+
+/// How many notes of the scale `k` a note at `from` moves (negative:
+/// down) to land on the scale note nearest `to`, the one nearer `from`
+/// when two are as near: a finger dragging a note to the row `to`
+/// ([`scale_move`] of the answer is that note).
+pub fn scale_steps(from: i32, to: i32, k: Scale) -> i32 {
+    let k = lit(k);
+    if from == to {
+        return 0;
+    }
+    let (from, to) = (from.clamp(-1000, 1000), to.clamp(-1000, 1000));
+    let t = to as i16;
+    let (below, above) = (i32::from(k.snap(t)), i32::from(k.snap_up(t)));
+    let q = match (to - below).cmp(&(above - to)) {
+        std::cmp::Ordering::Less => below,
+        std::cmp::Ordering::Greater => above,
+        std::cmp::Ordering::Equal if to > from => below,
+        std::cmp::Ordering::Equal => above,
+    };
+    let count = |a: i32, b: i32| (a..=b).filter(|&n| k.contains(n as i16)).count() as i32;
+    match q.cmp(&from) {
+        std::cmp::Ordering::Greater => count(from + 1, q),
+        std::cmp::Ordering::Less => -count(q, from - 1),
+        std::cmp::Ordering::Equal => 0,
+    }
+}
+
+/// Move the `sel` notes by `ticks` and `steps` notes of the scale `k`
+/// together (a drag, Q3 with the clip's scale on): each by its own
+/// scale's steps, so a chord keeps to the scale (C E G a step up in C
+/// major is D F A). Each start wraps; a note past 0 or 127 refuses the
+/// whole move.
+pub fn shift_in_scale(clip: &Clip, sel: &[usize], ticks: Tick, steps: i32, k: Scale) -> Edit {
+    let ok = sel
+        .iter()
+        .filter_map(|&i| clip.notes.get(i))
+        .all(|n| (0..=127).contains(&scale_move(i32::from(n.note), steps, k)));
+    if !ok {
+        return Edit::default();
+    }
+    map(clip, sel, |n| {
+        Some(Note {
+            tick: wrap(n.tick + ticks, clip.length),
+            note: scale_move(i32::from(n.note), steps, k) as u8,
+            ..n
+        })
+    })
+}
+
+/// Fit to scale (piano roll plan 2B.1): the `sel` notes moved to the
+/// nearest note of the scale `k` going up, the lower when two are as
+/// near, as one edit ([`pitch_quantize`] over every note).
+pub fn fit_to_scale(clip: &Clip, sel: &[usize], k: Scale) -> Edit {
+    pitch_quantize(clip, sel, k.root, k.mask, 0, 127)
+}
+
 /// The `sel` notes that are in the clip, with their indexes.
 fn picked<'a>(clip: &'a Clip, sel: &'a [usize]) -> impl Iterator<Item = (usize, Note)> + 'a {
     let mut s: Vec<usize> = sel
@@ -1803,6 +1886,68 @@ mod tests {
         assert!(
             pitch_quantize(&c, &[0], 1, 1, 60, 60).is_empty(),
             "no C# in 60..=60"
+        );
+    }
+
+    /// Moves by notes of a scale (piano roll plan 2B.1): a scale note
+    /// steps to the next, a note off the scale first to the one beside it
+    /// on the way; a finger on a row lands on its nearest scale note,
+    /// the nearer one to where the note was on a tie; a chord moves each
+    /// note by its own steps; Fit to scale takes the nearest.
+    #[test]
+    fn moves_go_by_notes_of_the_clips_scale() {
+        let c_major = Scale::new(0, mpfree_scale::MAJOR);
+        // C D E F G A B.
+        assert_eq!(scale_move(60, 1, c_major), 62);
+        assert_eq!(scale_move(64, 1, c_major), 65);
+        assert_eq!(scale_move(60, -1, c_major), 59);
+        assert_eq!(scale_move(60, 7, c_major), 72);
+        assert_eq!(scale_move(61, 1, c_major), 62, "C# up: D");
+        assert_eq!(scale_move(61, -1, c_major), 60, "C# down: C");
+        assert_eq!(scale_move(61, 0, c_major), 61, "unmoved, it stays off");
+        // Only the notes going up count: the classical melodic minor
+        // moves by its rising notes both ways.
+        let classical = Scale::of(9, mpfree_scale::by_name("Mel. minor classical").unwrap());
+        assert_eq!(
+            scale_move(78, -1, classical),
+            76,
+            "F# down: E (F only comes down)"
+        );
+        assert_eq!(scale_steps(60, 62, c_major), 1);
+        assert_eq!(scale_steps(60, 61, c_major), 0, "C# is as near C as D: C");
+        assert_eq!(scale_steps(62, 61, c_major), 0);
+        assert_eq!(scale_steps(60, 63, c_major), 1, "D# is as near D as E: D");
+        assert_eq!(scale_steps(67, 63, c_major), -2, "... and from above, E");
+        assert_eq!(scale_steps(60, 72, c_major), 7);
+        assert_eq!(scale_steps(60, 48, c_major), -7);
+        assert_eq!(scale_steps(61, 62, c_major), 1);
+        assert_eq!(scale_steps(61, 60, c_major), -1);
+        for from in 40..80 {
+            for to in 40..80 {
+                let steps = scale_steps(from, to, c_major);
+                let landed = scale_move(from, steps, c_major);
+                if from != to {
+                    assert!(c_major.contains(landed as i16) || steps == 0, "{from} {to}");
+                    assert!((landed - to).abs() <= 1, "{from} → {to}: {landed}");
+                }
+            }
+        }
+        let c = clip(&[(0, Q, 60), (0, Q, 64), (0, Q, 67), (Q, Q, 61)]);
+        let up = applied(&c, &shift_in_scale(&c, &[0, 1, 2, 3], Q, 1, c_major));
+        let mut got: Vec<(Tick, u8)> = up.notes.iter().map(|n| (n.tick, n.note)).collect();
+        got.sort_unstable();
+        assert_eq!(got, vec![(Q, 62), (Q, 65), (Q, 69), (2 * Q, 62)]);
+        let high = clip(&[(0, Q, 127), (0, Q, 60)]);
+        assert!(shift_in_scale(&high, &[0, 1], 0, 1, c_major).is_empty());
+        let fit = applied(&c, &fit_to_scale(&c, &[3], c_major));
+        assert!(fit
+            .notes
+            .iter()
+            .all(|n| c_major.contains(i16::from(n.note))));
+        assert_eq!(
+            fit.notes.iter().filter(|n| n.note == 60).count(),
+            2,
+            "C# fits to C"
         );
     }
 

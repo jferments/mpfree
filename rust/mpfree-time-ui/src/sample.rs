@@ -1280,6 +1280,24 @@ pub fn notes_state(lens: crate::editor::Lens) -> Result<TimeState, String> {
     Ok(state)
 }
 
+/// The piano roll on the same clip with its scale on (piano roll plan
+/// 2B.1): C Dorian, so the G#2 of the second chord is off it and marked;
+/// the pads play C minor on the Synth tab, which the Scale menu offers
+/// first.
+pub fn notes_scale_state() -> Result<TimeState, String> {
+    use mpfree_seq::mpfree_scale::{DORIAN, MINOR};
+    let mut state = notes_state(crate::editor::Lens::Grid)?;
+    let e = state.edit.as_mut().ok_or("no editor")?;
+    let mut keys = (*e.clip).clone();
+    keys.scale = Some(mpfree_seq::Scale::new(0, DORIAN));
+    e.clip = keys.into();
+    e.editor.offers = std::sync::Arc::new(crate::editor::ScaleOffers {
+        pads: Some(mpfree_seq::Scale::new(0, MINOR)),
+        own: vec![("Hijaz".into(), 0b0101_1011_0011, 0b0101_1011_0011)],
+    });
+    Ok(state)
+}
+
 /// A bar of drums with a step's every setting in use: a nudged hat, a
 /// ghost snare at 50 %, a 1:2 hat, a ratchet, a FILL open hat and a lock
 /// on the second snare (what the tracker shows).

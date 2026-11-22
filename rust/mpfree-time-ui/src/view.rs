@@ -31,9 +31,10 @@ use std::collections::BTreeMap;
 
 use crate::editor::zoom::RollView;
 use crate::editor::{
-    box_of, drop_of, edit_rows, length_name, note_name, pads, position_name, step_name, EditAction,
-    Editor, LaneShow, Lens, LockMark, NoteBox, NoteGrid, Tool, ADD, EDIT_BUTTON, FIELDS, KNOBS,
-    MENU, PEN, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK,
+    box_of, drop_of, edit_rows, knob_name, length_name, lit_scale, note_name, pads, position_name,
+    step_name, EditAction, Editor, Fold, LaneShow, Lens, LockMark, NoteBox, NoteGrid, Tool, ADD,
+    EDIT_BUTTON, FIELDS, MENU, PEN, ROOT_MENU, SCALE_MENU, SNAP_AUTO_T, START_HANDLE,
+    STEP_FALLBACK,
 };
 use crate::list::{
     ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LOOP, LIST_PLAY, LIST_REMOVE, LIST_SONG,
@@ -198,8 +199,9 @@ pub fn note_cards(e: &EditInfo) -> Option<(String, [QLinkCard; 4])> {
         }
     };
     let vel = span(&|n| i64::from(n.velocity));
+    let in_scale = lit_scale(c).is_some();
     let mut cards: [QLinkCard; 4] =
-        std::array::from_fn(|k| QLinkCard::new(KNOBS[k], "Notes", "", 0.0));
+        std::array::from_fn(|k| QLinkCard::new(knob_name(k, in_scale), "Notes", "", 0.0));
     cards[0].value = position;
     cards[0].pos = at.0 as f32 / length as f32;
     cards[1].value = if lens.0 == lens.1 {
@@ -2080,6 +2082,15 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             // A touch naming a note carries the picture it was made on.
             let rev = st.edit.as_ref().map_or(0, |e| e.rev);
             match *kind {
+                // The Scale menu (plan 2B.1): a scale, by its place among
+                // the editor's offers, or a root.
+                EventKind::Tab(k) if k >= SCALE_MENU => {
+                    let e = st.edit.as_ref()?;
+                    EditAction::Scale(e.editor.offers.scale_of(k - SCALE_MENU, e.clip.scale)?)
+                }
+                EventKind::Tab(k) if k >= ROOT_MENU => {
+                    EditAction::Root(u8::try_from(k - ROOT_MENU).ok()?)
+                }
                 EventKind::Tab(k) if k >= MENU => EditAction::Choose(k - MENU),
                 EventKind::Tab(k) => EditAction::Button(k),
                 EventKind::Select(i) => EditAction::Note { index: i, rev },
@@ -2110,12 +2121,13 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                     ticks: to,
                 },
                 EventKind::Marker { index, frame } => {
-                    let (ticks, notes) = drop_of(frame);
+                    let (ticks, notes, scale) = drop_of(frame);
                     EditAction::Drop {
                         index,
                         rev,
                         ticks,
                         notes,
+                        scale,
                     }
                 }
                 EventKind::Values { index, ref set } => EditAction::Lane {
@@ -4642,6 +4654,10 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
     g.lens = ed.lens;
     g.first = ed.first;
     g.color = track_color(ed.track);
+    // The clip's scale (plan 2B.1): none shows on pads.
+    g.scale = lit_scale(c);
+    g.scale_name = ed.offers.label(c.scale);
+    g.offers = Arc::clone(&ed.offers);
     g
 }
 
@@ -4690,6 +4706,9 @@ pub struct TimePage {
     /// screen's own, so the zoom and scroll are as you left them when you
     /// come back to a clip (piano roll plan 1A.1). Never saved.
     views: BTreeMap<(usize, usize), RollView>,
+    /// Which rows the roll shows for each clip (plan 2B.1, the Fold
+    /// chip): the screen's own, kept with the clip's view. Never saved.
+    folds: BTreeMap<(usize, usize), Fold>,
     /// The lane under the roll: which, how tall, folded or not (plan
     /// 2A.1). The screen's own, the same for every clip; its chip, fold
     /// and top edge change it on the roll, which the page reads back.
@@ -5231,6 +5250,10 @@ impl TimePage {
             if let Some(v) = self.views.get_mut(&shown) {
                 *v = g.view;
             }
+            match g.fold {
+                Fold::All => self.folds.remove(&shown),
+                f => self.folds.insert(shown, f),
+            };
             self.edit_lane = g.lane;
         }
         match &st.edit {
@@ -5254,6 +5277,9 @@ impl TimePage {
                 grid.lane = self.edit_lane;
                 grid.view = key
                     .and_then(|k| self.views.get(&k).copied())
+                    .unwrap_or_default();
+                grid.fold = key
+                    .and_then(|k| self.folds.get(&k).copied())
                     .unwrap_or_default();
                 if ui.get::<NoteGrid>(NOTES).is_some_and(|g| !g.same(&grid)) {
                     if let Some(g) = ui.get_mut::<NoteGrid>(NOTES) {
@@ -5388,6 +5414,56 @@ impl TimePage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Scale menu's taps (piano roll plan 2B.1) become the clip's
+    /// scale, from the editor's offers on the clip's root, or its root.
+    #[test]
+    fn the_scale_menu_sets_the_clips_scale() {
+        use crate::editor::{ScaleOffers, ROOT_MENU, SCALE_MENU};
+        use mpfree_seq::mpfree_scale::{DORIAN, MAJOR, MINOR};
+        let mut st = crate::sample::notes_state(Lens::Grid).unwrap();
+        let e = st.edit.as_mut().unwrap();
+        let mut keys = (*e.clip).clone();
+        keys.scale = Some(mpfree_seq::Scale::new(9, DORIAN));
+        e.clip = keys.into();
+        e.editor.offers = Arc::new(ScaleOffers {
+            pads: Some(mpfree_seq::Scale::new(2, MINOR)),
+            own: Vec::new(),
+        });
+        let ev = |k| {
+            action(
+                &UiEvent {
+                    widget: NOTES.into(),
+                    kind: EventKind::Tab(k),
+                },
+                &st,
+            )
+        };
+        let set = |k| Some(TimeAction::Edit(EditAction::Scale(k)));
+        assert_eq!(ev(SCALE_MENU), set(None));
+        assert_eq!(
+            ev(SCALE_MENU + 1),
+            set(Some(mpfree_seq::Scale::new(2, MINOR)))
+        );
+        assert_eq!(
+            ev(SCALE_MENU + 2),
+            set(Some(mpfree_seq::Scale::new(9, MAJOR)))
+        );
+        assert_eq!(ev(SCALE_MENU + 999), None);
+        assert_eq!(
+            ev(ROOT_MENU + 4),
+            Some(TimeAction::Edit(EditAction::Root(4)))
+        );
+        assert_eq!(
+            ev(MENU + 13),
+            Some(TimeAction::Edit(EditAction::Choose(13)))
+        );
+        // The grid shows the clip's scale and offers.
+        let g = note_grid(st.edit.as_ref().unwrap(), &st);
+        assert_eq!(g.scale, Some(mpfree_seq::Scale::new(9, DORIAN)));
+        assert_eq!(g.scale_name, "A Dorian");
+        assert_eq!(g.offers.pads, Some(mpfree_seq::Scale::new(2, MINOR)));
+    }
 
     /// Picking on the roll (piano roll plan 1B.2): a box, a note tapped
     /// while another is held and a handle dragged become the editor's
@@ -5642,6 +5718,8 @@ mod tests {
         values.extend(edit_rows(&ed, &keys).into_iter().map(|r| r.value));
         ed.sel = vec![0, 1];
         values.extend(edit_rows(&ed, &keys).into_iter().map(|r| r.value));
+        // Fit to scale's (plan 2B.1).
+        values.extend(["no scale", "none off", "127 off"].map(String::from));
         // The clip settings card, at its longest words.
         let mut card = ClipSettings {
             speed: Speed::new(1, 8).unwrap(),
@@ -5663,6 +5741,7 @@ mod tests {
             // Its longest word.
             direction: Direction::PingPong,
             step: mpfree_seq::steps::DEFAULT_SIZE,
+            scale: None,
         };
         values.extend(card_rows(CARD_STEP, card).into_iter().map(|r| r.value));
         values.extend(card_rows(MAX_CLIP_TICKS, card).into_iter().map(|r| r.value));

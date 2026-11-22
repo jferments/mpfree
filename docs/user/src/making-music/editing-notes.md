@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-time-ui/src/editor.rs rust/mpfree-time-ui/src/editor/zoom.rs rust/mpfree-time-ui/src/editor/gesture.rs rust/mpfree-seq/src/notes.rs rust/mpfree-app/src/time.rs
+covers: rust/mpfree-time-ui/src/editor.rs rust/mpfree-time-ui/src/editor/zoom.rs rust/mpfree-time-ui/src/editor/gesture.rs rust/mpfree-seq/src/notes.rs rust/mpfree-seq/src/save.rs rust/mpfree-app/src/time.rs
 checked: 2026-11-22 829e1568
 -->
 
@@ -32,7 +32,7 @@ Notes are drawn as they will play. A note whose step is off (tapped off on Steps
 - **Draw on: tap a beat in.** With **Draw** lit, the roll works like the Steps view. Tap an empty spot to put a note there, one snap long and as loud as the last note you used. Tap a short note (a step long or less) to take it out again. A longer note is picked instead, so a quick tap never loses a long note. Drag along an empty row to draw a note as long as your drag. Hold a note for a moment to pick it without taking it out.
 - **Draw off: pick and change.** Tap a note to pick it, just that one. A tap just beside a note, in its row, picks it too, so you don't have to hit a short note exactly. Tap an empty spot to let the picks go, or tap it twice quickly to put a note there.
 - **Pick a group.** With Draw off, drag across an empty spot to draw a box: when you lift, every note sounding inside it is picked instead of the ones before. Or hold one note (with Draw on or off) and, still holding it, tap other notes: each tap adds a note to the picks, or takes it out if it was picked, as holding steps does on the step pads.
-- **The Select menu.** Tap **Select** for a menu over the roll. **All** picks every note, **None** lets them go, and **Invert** picks the notes that weren't picked instead of the ones that were. **Fit to picked** zooms the roll to the picked notes. The rest pick from the whole clip: **Same pitch** (every note at the pitch of the picked ones, or of the sound you last worked on), **Pitch range** (every note from the lowest picked note to the highest), **Time range** (every note starting from the first picked note to the end of the last; for both ranges, pick a few notes first), **Quiet notes** and **Loud notes** (softer, or harder, than halfway between the clip's softest and loudest), **With a condition**, **With repeats** (a ratchet) and **Overlapping** (notes that sound over another note of the same pitch). Tap anywhere else to close the menu.
+- **The Select menu.** Tap **Select** for a menu over the roll. **All** picks every note, **None** lets them go, and **Invert** picks the notes that weren't picked instead of the ones that were. **Fit to picked** zooms the roll to the picked notes. The rest pick from the whole clip: **Same pitch** (every note at the pitch of the picked ones, or of the sound you last worked on), **Pitch range** (every note from the lowest picked note to the highest), **Time range** (every note starting from the first picked note to the end of the last; for both ranges, pick a few notes first), **Quiet notes** and **Loud notes** (softer, or harder, than halfway between the clip's softest and loudest), **With a condition**, **With repeats** (a ratchet), **Overlapping** (notes that sound over another note of the same pitch) and **Off the scale** (notes off the clip's scale, see [Scale](#scale)). Tap anywhere else to close the menu.
 - **Add to pick.** In the Select menu, **Add to pick** is a switch: while it is on, it and **Select** stay lit. Then a tap on a note adds it to the picks or takes it out (with Draw on, a short note still comes out), a box adds the notes in it, and the menu's choices add to the picks you have, so you can gather notes of several kinds: **Same pitch**, then a box somewhere else. Tap it again to turn it off. **All**, **None** and **Invert** always replace the picks.
 - **Nothing happens until you lift.** A finger on a note is a tap when it lifts, a hold once it has stayed still for 0.4 seconds, or a drag once it moves about 3 mm. Nothing goes in or comes out before your finger lifts.
 - **Erase.** Hold **ERASE** and tap a note to take it out, with Draw on or off.
@@ -66,7 +66,7 @@ While notes are picked, the four Q-Links change them, and the Q-Link column says
 
 - **Q1 Position** moves the picked notes a snap each step of the knob. With **Auto** snap each note keeps its feel; with a fixed snap they land on lines. Hold **SHIFT** to move them 4 ticks a step, off the grid.
 - **Q2 Length** makes them a snap longer or shorter each step; with **SHIFT**, 4 ticks.
-- **Q3 Semitones** moves them up or down a semitone each step. If one would go past the lowest or the highest note, nothing moves, so a chord keeps its shape.
+- **Q3 Semitones** moves them up or down a semitone each step. If one would go past the lowest or the highest note, nothing moves, so a chord keeps its shape. With a [scale](#scale) on the clip it reads **Scale steps** and moves them a scale note each step; hold **SHIFT** for semitones.
 - **Q4 Velocity** makes them louder or softer, each keeping its difference from the others: the loudest stops at 127 and the softest at 1, and the rest stop with them. With **SHIFT** it widens or narrows the gap between the softest and the loudest, the notes in between keeping their places.
 - **One turn, one UNDO.** The Q-Links feel your fingers: from the first knob you touch to the last you let go is one turn, however many knobs you turn, and one **UNDO** takes it all back. Touching the screen, hitting a pad, pressing a button or 3 seconds without turning ends a turn too.
 - **Q-LINK** still shows Play's macro banks, over the note knobs; press it until the banks come round again to get **Note edit** back.
@@ -100,6 +100,30 @@ The zoom and scroll stay with each clip: go to Steps or another clip and back, a
 
 The snap is the grid moves and new notes land on, and the length of a drawn note. **Auto** (the snap to begin with) follows your zoom: it is the finest grid whose steps are still about 3 mm wide, and the button shows it (**Auto · 1/16**). It moves to a finer grid only once that grid's steps are a little wider still, so a small zoom doesn't make it flip back and forth, and it never changes while your fingers are down. **Auto T** does the same in triplets. Tap the snap button again for a fixed grid, from a bar to 1/64 with triplets, then off. Moves with Auto keep each note's feel; **Timing Correct** is the way to put notes on the grid.
 
+### Scale
+
+Each clip can have a scale of its own, so a melody stays in key while you move and draw notes. It is saved with the clip, like its step size, and changing it is a take: **UNDO** takes it back. A scale never moves a note by itself; it changes how the roll looks and how moves and new notes land.
+
+{{shot: sequencer-notes-scale | The roll with C Dorian on: the scale's rows lit, the C rows marked, and a G#2 marked as off the scale.}}
+
+- **Pick one.** Tap the **Scale** chip above the roll's top right ("Scale: Off" to begin with) for the Scale menu. Its top row is the 12 roots; under them come the scales: **Off**, then the scale the track's pads play in on the Synth tab ("Pads: D Minor", root and all) when they have one, then every scale you can pick for the pads, then the ones you made yourself. Tap a scale to give the clip it on the clip's root (or the pads' root, or C, for the first scale you pick), then tap a root to change the root. **Off** takes the scale away. Tap anywhere else to close the menu.
+- **What it shows.** The scale's rows are lit across the roll, and each root row (every C in C Dorian) is lit more strongly, with a mark in the keys. The rows off the scale are dark. A note off the scale has a small dot at its start, in the warning colour, so you can find the notes that clash.
+- **Moves stay in key.** Drag a note up or down and it goes from one scale note to the next, skipping the rows off the scale; **Q3** reads **Scale steps** and moves the picked notes a scale note each step. A chord keeps its shape in the scale: C, E and G in C major go up a step to D, F and A. A note off the scale counts the scale note beside it as its first step. Hold **SHIFT** as you start a drag, or while you turn **Q3**, to move by semitones instead. The **Transpose** row of the Edit options always moves by semitones.
+- **New notes land in key.** With a scale on, a note you draw or tap in on a row off the scale lands on the scale note nearest it (the lower one when two are as near). Hold **SHIFT** to put it exactly where you tap.
+- **Fit to scale.** The last row of the Edit options moves the picked notes, or every note when none are picked, onto the nearest scale note. Its value says how many notes are off the scale ("3 off"); turn the data wheel either way to fit them, and one **UNDO** takes it back.
+- **Find them.** **Off the scale** in the Select menu picks every note off the clip's scale.
+- **Pads.** A clip of pad hits has no scale: its chip says "Scale: none on pads".
+
+{{shot: sequencer-notes-scales | The Scale menu open over the roll: the roots along the top, then the pads' scale and every other scale.}}
+
+**Fold** sets which rows the roll shows. Tap the chip beside **Scale** to step through:
+
+- **All rows**: every pitch, as to begin with.
+- **Rows with notes**: only the rows that have a note on them, which is handy for a drum part played on keys, or a long part with a few pitches.
+- **Scale rows** (while the clip has a scale): only the scale's rows, so every row you tap is in key.
+
+Where rows are folded away, a bold line between the rows shows the gap. A row with a picked note always shows, so you never lose sight of what you are editing. When Fold hides notes (notes off the scale, with **Scale rows**), a chip says how many ("2 notes hidden"); tap it to show every row again. The roll keeps each clip's Fold.
+
 Every edit is a take, so **UNDO** takes it back and **SHIFT + UNDO** puts it back again.
 
 If the clip changes while you edit, because you're recording into it, pressed **UNDO**, or tapped a step on Steps, your picked notes stay picked wherever they now sit. If a picked note was taken out, the picks are let go and the line over the roll says "the clip changed: picks cleared". A tap on a note that landed just as the clip changed does nothing, so it never hits the wrong note: tap again. If an edit can't be played (rare), it is taken back and the log says so. Tap **‹ Steps**, or press **STEP SEQ**, to close the editor and see the clip as steps again. The editor stays open while you visit other tabs, and the Sequencer tab shows it again when you come back.
@@ -128,7 +152,7 @@ Timing Correct pulls notes toward the beat, so a part played a little loose sits
 - **Strength**: how far of the way each note moves. At 100 % it lands on the line. Lower values keep some of the feel.
 - **Shift**: moves the corrected notes a little early or late afterwards.
 
-The next rows act on the picked notes straight away: **Nudge** moves them a step, **Transpose** a semitone, **Velocity** up or down, **Length** longer or shorter, **Chance** 5 % at a time, **Condition** through the trig conditions (Always, 1:2 to 8:8, then FILL, !FILL, PRE, !PRE, NEI, !NEI, 1ST and !1ST), and **Ratchet** from 1 to 8 hits. A run of turns on the same row is one take, so one **UNDO** takes it all back.
+The next rows act on the picked notes straight away: **Nudge** moves them a step, **Transpose** a semitone, **Velocity** up or down, **Length** longer or shorter, **Chance** 5 % at a time, **Condition** through the trig conditions (Always, 1:2 to 8:8, then FILL, !FILL, PRE, !PRE, NEI, !NEI, 1ST and !1ST), and **Ratchet** from 1 to 8 hits. A run of turns on the same row is one take, so one **UNDO** takes it all back. **Fit to scale**, after the Euclidean fill's rows, moves notes onto the clip's scale (see [Scale](#scale)).
 
 ## Euclidean fill
 

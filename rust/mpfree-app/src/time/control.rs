@@ -49,7 +49,7 @@ use mpfree_seq::{
     Clip, ClipId, LaunchGrid, Lock, ModelError, Project, TouchPoint, TrackId, LOOPS, MAX_TRACKS,
     ROWS, SLOTS,
 };
-use mpfree_time_ui::editor::{Done, EditAction, Editor};
+use mpfree_time_ui::editor::{Done, EditAction, Editor, ScaleOffers};
 use mpfree_time_ui::list::ListRow;
 use mpfree_time_ui::view::pad_name;
 use mpfree_time_ui::view::{
@@ -451,6 +451,9 @@ pub struct TimeControl {
     /// What became of the editor's last touch, and how many touches it
     /// has had (plan 0C.2): sent with the clip ([`EditInfo::answer`]).
     edit_answer: EditAnswer,
+    /// The scales the editor's Scale option offers, from the host (piano
+    /// roll plan 2B.1, [`TimeControl::set_scale_offers`]).
+    scale_offers: Arc<ScaleOffers>,
     /// The armed track: REC records it, and the audio half's recorder
     /// takes live notes only for it. Kept by its lasting id
     /// (`armed_id`), so a track added, taken away by UNDO or brought back
@@ -691,6 +694,7 @@ impl TimeControl {
             edit_seen: None,
             edit_rev: 0,
             edit_answer: EditAnswer::default(),
+            scale_offers: Arc::default(),
             armed: None,
             armed_id: TrackId::NONE,
             track_pick: None,
@@ -782,6 +786,28 @@ impl TimeControl {
     /// notes (the instrument redesign's step 5c).
     pub fn set_notes_tracks(&mut self, tracks: u128) {
         self.notes_tracks = tracks;
+    }
+
+    /// The scales the note editor's Scale option offers (piano roll plan
+    /// 2B.1), from the host: the selected track's pads' scale on the Synth
+    /// tab, if any, and the owner's own scales (name, notes up, notes
+    /// down). Called often; it changes something only when they change.
+    pub fn set_scale_offers(
+        &mut self,
+        pads: Option<mpfree_seq::Scale>,
+        own: &[(String, u16, u16)],
+    ) {
+        if self.scale_offers.pads == pads && self.scale_offers.own == own {
+            return;
+        }
+        self.scale_offers = Arc::new(ScaleOffers {
+            pads,
+            own: own.to_vec(),
+        });
+        if let Some(ed) = self.editor.as_mut() {
+            ed.offers = Arc::clone(&self.scale_offers);
+            self.changed = true;
+        }
     }
 
     /// The notes each of track `track`'s 16 pads plays, from the host's
@@ -2714,7 +2740,9 @@ impl TimeControl {
             let slot = slot.ok_or_else(|| format!("edit: {name} has no clip"))?;
             let clip = self.project.clip(track, slot).ok_or("edit: no such clip")?;
             let line = format!("edit: {} on {name}", clip.name);
-            self.editor = Some(Editor::new(track, slot, clip));
+            let mut ed = Editor::new(track, slot, clip);
+            ed.offers = Arc::clone(&self.scale_offers);
+            self.editor = Some(ed);
             self.edit_seen = Some(Arc::new(clip.clone()));
             self.edit_rev += 1;
             self.changed = true;
@@ -2788,6 +2816,27 @@ impl TimeControl {
         if done.close {
             self.edit_seen = None;
             return Ok(done.line);
+        }
+        // The clip's scale (plan 2B.1): a clip setting, as the step size
+        // is, one take a run of turns; no note changes, so nothing
+        // compiles.
+        if let Some(scale) = done.scale {
+            let (track, slot) = (ed.track, ed.slot);
+            self.editor = Some(ed);
+            let settings = mpfree_seq::ClipSettings {
+                scale,
+                ..self
+                    .project
+                    .clip(track, slot)
+                    .ok_or("edit: the clip is gone")?
+                    .settings()
+            };
+            self.takes
+                .set_clip(&mut self.project, track, slot, settings, done.join)
+                .map_err(|e| format!("edit: {e:?}"))?;
+            self.edit_seen = self.project.clip(track, slot).cloned().map(Arc::new);
+            self.edit_rev += 1;
+            return Ok(format!("{} (UNDO takes it back)", done.line));
         }
         if !done.edit.is_empty() {
             let (track, slot) = (ed.track, ed.slot);
