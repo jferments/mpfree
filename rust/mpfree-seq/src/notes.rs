@@ -1404,6 +1404,44 @@ pub fn add_all(clip: &Clip, notes: &[Note]) -> Edit {
     }
 }
 
+/// Notes the pads write at the cursor (piano roll plan 1C.2): each in
+/// place of any note already starting on its tick at its pitch, so a pad
+/// hit again on the same line changes the note rather than doubling it.
+/// The notes it takes the place of keep their locks, which sit on the
+/// same step and row. In a clip of notes each note keeps the trigger
+/// group it comes with (a pad's, [`crate::groups::pad_group`], so a chord
+/// pad's chord plays whole or not at all, as its hit does) and joins what
+/// is left of that trigger on its tick, taking its chance, condition and
+/// on, as a pad tapped on its step does; a clip of pad hits has none
+/// ([`crate::groups::settle_new`]). None go in when one can't, or the
+/// clip would hold more than [`MAX_NOTES`].
+pub fn write(clip: &Clip, notes: &[Note]) -> Edit {
+    let erase: Vec<Note> = clip
+        .notes
+        .iter()
+        .filter(|n| notes.iter().any(|w| w.tick == n.tick && w.note == n.note))
+        .copied()
+        .collect();
+    let mut c = Clip::new("", clip.length);
+    if clip.notes.len() - erase.len() + notes.len() > MAX_NOTES
+        || notes.is_empty()
+        || notes.iter().any(|&n| c.add_note(n).is_err())
+    {
+        return Edit::default();
+    }
+    let mut add = notes.to_vec();
+    // Joining never runs out of numbers: a note takes its own number,
+    // into the trigger there when the tick has it.
+    if crate::groups::settle_new(clip, &erase, &mut add, true).is_err() {
+        return Edit::default();
+    }
+    Edit {
+        erase,
+        add,
+        ..Edit::default()
+    }
+}
+
 /// The `sel` notes in chords (plan 2B.2): the notes that sound together,
 /// each chord lowest first, the chords in time. Taken by their starts, a
 /// note joins a chord while it starts before the chord's first note ends,
@@ -2914,6 +2952,70 @@ mod tests {
         assert!(add_all(&c, &[Note::new(4 * 960, 240, 50, 90)])
             .add
             .is_empty());
+    }
+
+    /// The pads write in place of a note on the same tick and pitch (plan
+    /// 1C.2): hit again, a note changes rather than doubles; its lock
+    /// stays; a pad past the clip's end, or nothing, writes nothing.
+    #[test]
+    fn a_pad_writes_in_place_of_a_note_on_its_line() {
+        let mut c = clip(&[(0, 240, 36), (0, 480, 38), (480, 240, 36)]);
+        c.add_lock(Lock::new(0, Some(36), RelAddr::new(OnTrack::Inst, 1), 0.5))
+            .unwrap();
+        let e = write(&c, &[Note::new(0, 120, 36, 70)]);
+        assert_eq!(e.erase, [Note::new(0, 240, 36, 100)]);
+        assert!(e.erase_locks.is_empty(), "its lock stays");
+        let d = applied(&c, &e);
+        assert_eq!(d.notes.len(), 3);
+        assert!(d.notes.contains(&Note::new(0, 120, 36, 70)));
+        assert!(d.notes.contains(&Note::new(480, 240, 36, 100)));
+        // A chord: each of its notes in place of its own.
+        let e = write(&c, &[Note::new(0, 240, 38, 90), Note::new(0, 240, 42, 90)]);
+        assert_eq!(e.erase, [Note::new(0, 480, 38, 100)]);
+        assert_eq!(e.add.len(), 2);
+        assert!(write(&c, &[Note::new(4 * 960, 240, 36, 90)]).is_empty());
+        assert!(write(&c, &[]).is_empty());
+    }
+
+    /// The pads write their trigger groups (#827): in a clip of notes a
+    /// chord pad's notes are its trigger, its number plus one, as a
+    /// recorded hit's are; written again on its step, a note joins what
+    /// is left of the trigger there and takes its chance; another pad's
+    /// notes on the step are a trigger of their own; a clip of pad hits
+    /// has no groups.
+    #[test]
+    fn a_pad_writes_its_chord_as_one_trigger() {
+        let pad = |tick, note, g: u8| Note {
+            group: g,
+            ..Note::new(tick, 240, note, 90)
+        };
+        let g = crate::groups::pad_group(4);
+        let mut c = clip(&[]);
+        c.holds = Holds::Notes;
+        let chord = [pad(0, 60, g), pad(0, 64, g), pad(0, 67, g)];
+        let mut d = applied(&c, &write(&c, &chord));
+        assert!(d.notes.iter().all(|n| n.group == g));
+        // A chance on the trigger (all its notes), then the pad's E again
+        // with a softer hit: it joins the trigger and takes its chance.
+        for n in d.notes.iter_mut() {
+            n.chance = 40;
+        }
+        d.check().unwrap();
+        let e = write(&d, &[pad(0, 64, g)]);
+        assert_eq!(e.erase.len(), 1);
+        assert_eq!((e.add[0].group, e.add[0].chance), (g, 40));
+        let d = applied(&d, &e);
+        assert_eq!(d.check(), Ok(()));
+        // Another pad on the step: its own trigger, its own chance.
+        let h = crate::groups::pad_group(5);
+        let e = write(&d, &[pad(0, 72, h)]);
+        assert_eq!((e.add[0].group, e.add[0].chance), (h, 100));
+        assert_eq!(applied(&d, &e).check(), Ok(()));
+        // A clip of pad hits: none.
+        let mut hits = clip(&[]);
+        hits.holds = Holds::Hits;
+        let e = write(&hits, &[pad(0, 4, g)]);
+        assert_eq!(e.add[0].group, 0);
     }
 
     /// Chop cuts each picked note into equal pieces, each with its part

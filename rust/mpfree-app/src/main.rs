@@ -112,6 +112,7 @@ mod expr_rec;
 mod fxmodes;
 mod gui;
 mod hand;
+mod hearing;
 mod imagecopy;
 mod instrument_list;
 mod instruments;
@@ -3198,6 +3199,49 @@ fn erase_pad_notes(time: &mut time::TimeHost, pad: usize) -> app::Effect {
     })
 }
 
+/// The note editor's pads (piano roll plan 1C.2): pad `pad` (0 to 15)
+/// pressed or let go (`ev`, its kit pad's note-on or note-off), playing
+/// `notes` from its instrument's pad map, while the Sequencer shows the
+/// Notes view. With Pads write on, a pad going down writes at the
+/// editor's cursor, but not while the transport records (the take has the
+/// pads then); with it off, a pad picks its notes on a clip of pad hits.
+/// The pad plays either way, and its let-go always goes, so a chord ends.
+fn editor_pad(
+    app: &app::App,
+    time: &mut time::TimeHost,
+    out: &mut Out,
+    pad: usize,
+    ev: mpfree_play::Event,
+    notes: &[u8],
+) -> Vec<app::Effect> {
+    use mpfree_play::Event;
+    use mpfree_time_ui::editor::EditAction;
+    let (hit, velocity, down) = match ev {
+        Event::NoteOn { note, velocity } => (note, velocity, true),
+        Event::NoteOff { note } => (note, 0, false),
+        _ => return Vec::new(),
+    };
+    if !app.notes_shown() || !time.editing() {
+        return Vec::new();
+    }
+    let recording = time.info().state == mpfree_transport::State::Recording;
+    if down && recording && time.pads_write() {
+        return Vec::new();
+    }
+    let a = EditAction::Pad {
+        key: pad as u8,
+        hit,
+        notes: notes.to_vec(),
+        velocity,
+        down,
+    };
+    let say = time::Say::NoteOrTell { err: "" };
+    match time.act_then(TimeAction::Edit(a), say.clone()) {
+        Some(r) => time_said(out, say, r),
+        None => Vec::new(),
+    }
+}
+
 /// ERASE let go: live erase stops for every pad.
 fn live_erase_let_go(app: &app::App, time: &mut time::TimeHost) {
     if !app.erase_held() && time.erasing() {
@@ -3312,6 +3356,78 @@ fn audition(
             player.hit_at(pad, v, 0);
         }
         (false, false) => player.release_at(pad, 0),
+    }
+}
+
+/// What plays the notes the note editor hears (hearing.rs, piano roll
+/// plan 1C.2): a track's instrument (its own or another's) as the
+/// audition's own player; the synth on the pads by note number, counted
+/// with its other holders; a kit track's pad, as Steps' audition hits it.
+/// A track on MIDI out hears nothing: its notes are its gear's.
+struct HearOn<'a> {
+    own: &'a mut instruments::Instruments,
+    synth: &'a mut synth::Synth,
+    player: &'a mut sampler::Player,
+    kits: &'a sampler::TrackKits,
+    midi: &'a midi_out::MidiOut,
+}
+
+impl hearing::Sound for HearOn<'_> {
+    fn start(
+        &mut self,
+        track: usize,
+        hits: bool,
+        key: u8,
+        velocity: u8,
+        out: &mut Vec<(hearing::On, u8)>,
+    ) {
+        use hearing::On;
+        let v = velocity.max(1);
+        if u16::try_from(track).map_or(true, |t| self.midi.takes(t)) {
+            return;
+        }
+        let mut notes = [0u8; time::HEARD_NOTES];
+        let mut fill = |from: &[u8]| {
+            let n = from.len().min(notes.len());
+            notes[..n].copy_from_slice(&from[..n]);
+            n
+        };
+        if self.own.plays(track) {
+            // A pad: the notes its pad map plays, as written.
+            let n = match hits {
+                true => fill(self.own.pad_notes(track, usize::from(key))),
+                false => fill(&[key]),
+            };
+            for &note in &notes[..n] {
+                if self.own.audition_on(track, note, v) {
+                    out.push((On::Instrument, note));
+                }
+            }
+        } else if self.kits.plays_synth(track) {
+            let n = match hits {
+                true => fill(self.synth.notes(usize::from(key))),
+                false => fill(&[key]),
+            };
+            for &note in &notes[..n] {
+                self.synth.note_on_note(note, v, 0);
+                out.push((On::Synth, note));
+            }
+        } else if hits {
+            let kit = self.kits.kit_of(track).unwrap_or(0);
+            if self.player.hit_kit_at(kit, usize::from(key), v, 0) {
+                out.push((On::Kit(kit), key));
+            }
+        }
+    }
+
+    fn end(&mut self, on: hearing::On, key: u8) {
+        match on {
+            hearing::On::Instrument => {
+                self.own.audition_off(key);
+            }
+            hearing::On::Synth => self.synth.note_off_note(key, 0),
+            hearing::On::Kit(kit) => self.player.release_kit_at(kit, usize::from(key), 0),
+        }
     }
 }
 
@@ -7847,6 +7963,11 @@ fn player_session(
     let mut line_at = 0.0;
     let mut who_at = 0.0f64;
     let mut preview_held: [Option<PadsPreview>; 16] = [None; 16];
+    // The notes the note editor hears (piano roll plan 1C.2), and whether
+    // the transport rolled when they started: it starting or stopping
+    // lets them go.
+    let mut hearing = hearing::Hearing::default();
+    let mut hear_rolling = false;
     // The list of instruments changed since the app last had it (step 6).
     let mut list_changed = true;
     // What each track plays: a kit, the Grains kit or the synth (kit 1 on
@@ -8704,6 +8825,18 @@ fn player_session(
                     audition(pad, down, &mut player, &mut synth, synth_on);
                 }
                 gui::FromUi::Audition { .. } => {}
+                // The note editor hears notes picked, drawn or moved.
+                gui::FromUi::Hear(ask) => {
+                    let mut on = HearOn {
+                        own: &mut mix.instruments,
+                        synth: &mut synth,
+                        player: &mut player,
+                        kits: &track_kits,
+                        midi: &midi_out,
+                    };
+                    hearing.hear(&ask, t, &mut on);
+                    hear_rolling = time.info().state.rolling();
+                }
                 // The Pads tab's strip: the kit's bank on the pads, as PAD
                 // BANK turns it (the synth's pads have layouts, not banks).
                 gui::FromUi::PadBank(b) if b < app::KIT_PAGES && !synth_on => {
@@ -10557,6 +10690,8 @@ fn player_session(
                             // With the notes it plays, for a take of notes (step 5d).
                             let rows = pad_rows(&mix.instruments, &synth, &track_kits, app.track());
                             time.pad_pressed_notes(0, ev, rows.notes(pad));
+                            // The note editor's pads: write or pick.
+                            fx.extend(editor_pad(&app, &mut time, out, pad, ev, rows.notes(pad)));
                         }
                         // The pads' layers (step 11a) play the hit too.
                         if !m.music {
@@ -10586,6 +10721,7 @@ fn player_session(
                             // With the notes it plays, for a take of notes (step 5d).
                             let rows = pad_rows(&mix.instruments, &synth, &track_kits, app.track());
                             time.pad_pressed_notes(0, ev, rows.notes(pad));
+                            fx.extend(editor_pad(&app, &mut time, out, pad, ev, &[]));
                         }
                         fx.extend(app.pad_up(pad));
                         awaiting[pad] = false;
@@ -10767,6 +10903,22 @@ fn player_session(
         fx.extend(app.tick(t));
         // "Keep this theme?" counting down in Prefs > Appearance.
         fx.extend(app.theme_tick());
+        // The notes the note editor hears let go in time, and all at once
+        // when the transport starts or stops.
+        if !hearing.is_empty() {
+            let mut on = HearOn {
+                own: &mut mix.instruments,
+                synth: &mut synth,
+                player: &mut player,
+                kits: &track_kits,
+                midi: &midi_out,
+            };
+            if time.info().state.rolling() != hear_rolling {
+                hearing.stop(&mut on);
+            } else {
+                hearing.tick(t, &mut on);
+            }
+        }
         // As set, not rounded: the song plays at it, and a project saves it
         // as it is.
         if let Some(bpm) = loop_tempo.take() {

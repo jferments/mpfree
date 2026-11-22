@@ -1600,6 +1600,9 @@ pub enum FromUi {
         pad: usize,
         down: bool,
     },
+    /// The note editor hears notes picked, drawn or moved (piano roll
+    /// plan 1C.2), never recorded; none: what it hears lets go.
+    Hear(crate::hearing::Ask),
     /// A tap on bank `b` (0 to 7: A to H) of the Pads tab's strip: put
     /// that bank of the kit on the pads, as PAD BANK does.
     PadBank(usize),
@@ -2323,6 +2326,9 @@ pub struct Player {
     track_kits: crate::sampler::TrackKits,
     /// The note editor's lock lanes, as the Steps' lock lanes give them.
     edit_locks: EditLocks,
+    /// What the note editor asks to hear, and when (piano roll plan
+    /// 1C.2).
+    hear_ask: crate::hearing::Asker,
     /// STEP SEQ: the Synth tab's values from before steps were held, put
     /// back on it when they are let go (a knob turned there while they
     /// are held is a lock on them, not a change to the sound).
@@ -2998,6 +3004,7 @@ impl Player {
             track_sends: [None; crate::instruments::TRACKS],
             track_kits: crate::sampler::TrackKits::default(),
             edit_locks: EditLocks::default(),
+            hear_ask: crate::hearing::Asker::default(),
             held_synth: None,
             start_checked: false,
             crashed: false,
@@ -5171,6 +5178,44 @@ impl Player {
     /// that turn them (a lane no knob turns is left out), built again
     /// only when those change; and the editor's picture given them, and
     /// none when it no longer shows that clip.
+    /// The note editor's notes heard (piano roll plan 1C.2): what it
+    /// picked, drew or moved last, and a note dragged across rows, asked
+    /// of the sound loop while the Sequencer shows the Notes view and the
+    /// Sound chip lets them be heard; a stop when the view or the clip
+    /// changes, or a drag ends.
+    fn hear_tick(&mut self, dt: f32) {
+        let e = self
+            .time
+            .edit
+            .as_ref()
+            .filter(|_| self.view == View::Sequencer);
+        let grid = self.ui.get::<NoteGrid>(time_view::NOTES);
+        let hearing = grid.map_or(self.time_page.edit_hearing, |g| g.hearing);
+        let tr = &self.time.transport;
+        let hears = hearing.hears(tr.state.rolling());
+        // A clip tick's seconds, at the clip's speed (`EditInfo::bar` is
+        // the song's bar in clip ticks).
+        let spt = e.map_or(0.0, |e| {
+            let song_ticks = tr.meter.bar_ticks() as f64 / e.bar.max(1) as f64;
+            song_ticks * 60.0 / (tr.bpm.max(1.0) * f64::from(mpfree_transport::time::PPQ))
+        });
+        let hits = e.is_some_and(|e| e.clip.holds == mpfree_seq::Holds::Hits);
+        let clip = e.map(|e| (e.editor.track, e.editor.slot));
+        let heard = e.map_or((0, &[][..]), |e| {
+            (e.editor.heard.n, e.editor.heard.notes.as_slice())
+        });
+        let mut asks = Vec::new();
+        asks.extend(self.hear_ask.editor(clip, hits, spt, heard, hears));
+        let drag = e.zip(grid.and_then(NoteGrid::dragging)).map(|(e, n)| {
+            let note = mpfree_seq::Note::new(n.tick, n.len, n.note, n.velocity);
+            (e.editor.track, hits, note)
+        });
+        asks.extend(self.hear_ask.tick(dt, drag, spt, hears));
+        for a in asks {
+            self.outbox.push(FromUi::Hear(a));
+        }
+    }
+
     fn refresh_edit_locks(&mut self) {
         let steps = self
             .play
@@ -15117,6 +15162,7 @@ impl Player {
         for a in self.time_page.take_asks() {
             self.outbox.push(FromUi::Time(a));
         }
+        self.hear_tick(dt);
         self.status_tick(dt);
         self.power_tick(dt);
         self.script_hold_tick(dt);
@@ -19923,6 +19969,18 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("sequencer-notes-pressure", p));
         }
         Err(e) => eprintln!("sequencer-notes-pressure sample: {e}"),
+    }
+    // Pads write on (piano roll plan 1C.2), lit by Follow, the cursor
+    // where a pad writes; Sound on Stopped only.
+    match mpfree_time_ui::sample::notes_pads_state() {
+        Ok(state) => {
+            let mut p = quiet_player(fonts());
+            p.time_page.edit_hearing = mpfree_time_ui::editor::Hearing::Stopped;
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Sequencer));
+            out.push(("sequencer-notes-pads", p));
+        }
+        Err(e) => eprintln!("sequencer-notes-pads sample: {e}"),
     }
     // A lock lane (piano roll plan 3A.2): Cutoff's locks on three steps,
     // the second chord's shared and picked, the locked notes marked.
@@ -27094,6 +27152,93 @@ mod tests {
             .iter()
             .filter_map(|l| Some(format!("{} {}", l.name, l.lock.as_ref()?.sub)))
             .collect()
+    }
+
+    /// The note editor's Pads write chip asks the time engine to switch
+    /// it, and its Sound chip is the screen's own (plan 1C.2); a note it
+    /// says to hear is asked of the sound loop once, and leaving the
+    /// Notes view asks for a stop.
+    #[test]
+    fn the_note_editor_hears_its_notes_and_switches_pads_write() {
+        use mpfree_time_ui::editor::{Editor, Hearing};
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.apply(ToUi::Show(View::Sequencer));
+        let mut clip = mpfree_seq::Clip::new("Beat", 3840);
+        let note = mpfree_seq::Note::new(0, 960, 2, 100);
+        clip.add_note(note).unwrap();
+        let open = |p: &mut Player, ed: Editor| {
+            let mut st = Box::new(p.time.clone());
+            st.edit = Some(Box::new(time_view::EditInfo {
+                editor: ed,
+                clip: clip.clone().into(),
+                rev: 3,
+                track_name: "Track 1".into(),
+                bar: 3840,
+                answer: Default::default(),
+                locks: Default::default(),
+            }));
+            p.apply(ToUi::Time(st));
+        };
+        let mut ed = Editor::new(0, 0, &clip);
+        open(&mut p, ed.clone());
+        p.tick(0.1);
+        p.take_actions();
+        let tap = |p: &mut Player, id: &str| {
+            let t =
+                p.ui.targets()
+                    .into_iter()
+                    .find(|t| t.widget == time_view::NOTES && t.target.id == id)
+                    .unwrap_or_else(|| panic!("no {id}"));
+            let (x, y) = t.target.centre();
+            let down = p.touch(1, Touch::Down, x, y);
+            let up = p.touch(1, Touch::Up, x, y);
+            down.or(up)
+        };
+        assert_eq!(
+            tap(&mut p, "pads-write"),
+            Some(FromUi::Time(TimeAction::Edit(EditAction::PadsWrite)))
+        );
+        let hearing = |p: &Player| p.ui.get::<NoteGrid>(time_view::NOTES).unwrap().hearing;
+        tap(&mut p, "sound-chip");
+        assert_eq!(hearing(&p), Hearing::Stopped);
+        // The page keeps it when the roll is built again.
+        ed.pads_write = true;
+        open(&mut p, ed.clone());
+        assert_eq!(hearing(&p), Hearing::Stopped);
+        assert!(p.ui.get::<NoteGrid>(time_view::NOTES).unwrap().pads_write);
+        tap(&mut p, "sound-chip");
+        tap(&mut p, "sound-chip");
+        assert_eq!(hearing(&p), Hearing::On);
+        // A note to hear: asked once, a second long at 120 BPM's beat.
+        p.take_actions();
+        ed.heard.n += 1;
+        ed.heard.notes = vec![note];
+        open(&mut p, ed.clone());
+        p.tick(0.1);
+        let heard: Vec<crate::hearing::Ask> = p
+            .take_actions()
+            .into_iter()
+            .filter_map(|a| match a {
+                FromUi::Hear(a) => Some(a),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(heard.len(), 1, "{heard:?}");
+        assert_eq!((heard[0].track, heard[0].hits), (0, true));
+        let (n, v, secs) = heard[0].notes[0];
+        assert_eq!((n, v), (2, 100));
+        assert!(secs > 0.0 && secs <= crate::hearing::LONGEST, "{secs}");
+        p.tick(0.1);
+        assert!(!p
+            .take_actions()
+            .iter()
+            .any(|a| matches!(a, FromUi::Hear(_))));
+        // The Play tab: what sounds lets go.
+        p.apply(ToUi::Show(View::Play));
+        p.tick(0.1);
+        assert!(p
+            .take_actions()
+            .contains(&FromUi::Hear(crate::hearing::Ask::default())));
     }
 
     /// The note editor's lock lanes (piano roll plan 3A.2): open on the
