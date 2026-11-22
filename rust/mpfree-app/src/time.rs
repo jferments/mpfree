@@ -7394,11 +7394,15 @@ mod tests {
     /// readies a clip on each, the keys a route plays on each armed track
     /// record into its own clip, a routed track that isn't armed only
     /// plays, and one UNDO takes the take back on every track. The arm
-    /// can't change while the take records.
+    /// can't change while the take records. A track that records pressure
+    /// keeps its keys' pressure on their notes (refactor E3); one that
+    /// doesn't leaves it out, as the armed track's pads.
     #[test]
     fn armed_tracks_record_their_routed_keys_in_one_take() {
         let mut h = TimeHost::new(RATE, 120.0).unwrap();
         let mut pads = Fake::default();
+        // Track 3 doesn't record pressure (a track does unless told).
+        assert!(h.set_record_touch(2, false));
         h.act(TimeAction::Arm(Some(0))).unwrap();
         assert_eq!(
             h.act(TimeAction::ArmAlso(1 << 1 | 1 << 2 | 1 << 0))
@@ -7427,6 +7431,7 @@ mod tests {
             (BAR + 4500, 1, Event::Pressure { note: 5, value: 40 }),
             (BAR + 6000, 1, Event::NoteOff { note: 5 }),
             (BAR + 3000, 2, on(7)),
+            (BAR + 5000, 2, Event::Pressure { note: 7, value: 70 }),
             (BAR + 9000, 2, Event::NoteOff { note: 7 }),
             (BAR + 4000, 3, on(1)),
             (BAR + 5000, 3, Event::NoteOff { note: 1 }),
@@ -7455,11 +7460,17 @@ mod tests {
             notes(&h, 3).is_empty(),
             "a track that isn't armed only plays"
         );
-        // Pressure on another armed track isn't recorded yet: counted with
-        // the pressure values lost, and said on the status line.
-        assert_eq!(h.touch_dropped(), 1);
+        // Track 2 records pressure: its note keeps it. Track 3 doesn't.
+        let touch = |h: &TimeHost, t: usize| {
+            let c = h.control.project.tracks[t].slots.clips().next().unwrap();
+            let pts = c.touch_of(&c.notes[0]);
+            pts.iter().map(|p| p.value).collect::<Vec<u8>>()
+        };
+        assert_eq!(touch(&h, 1), vec![40]);
+        assert_eq!(touch(&h, 2), Vec::<u8>::new());
+        assert_eq!(h.touch_dropped(), 0, "nothing lost");
         let line = h.describe();
-        assert!(line.contains("1 pressure values lost"), "{line}");
+        assert!(line.contains("0 pressure values lost"), "{line}");
         assert!(!line.contains("left out of a take"), "{line}");
         let st = h.state();
         assert_eq!(st.done.len(), 1, "one take");
