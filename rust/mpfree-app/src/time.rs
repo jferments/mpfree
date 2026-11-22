@@ -2101,7 +2101,7 @@ mod tests {
             let (mut l, mut r) = ([0f32; crate::PERIOD], [0f32; crate::PERIOD]);
             for i in from..from + 40 {
                 let ctx = mpfree_fx::mpfree_node::Ctx::new(RATE, i * crate::PERIOD as u64);
-                mix.period(&ctx, (&z, &z), (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
+                mix.period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
             }
         };
         // The crossfader's first move loads rows 1 and 2.
@@ -3626,6 +3626,17 @@ mod tests {
         let said = h.act(mv(0, 1, 2 * BAR, false)).unwrap_err();
         assert!(said.contains("would run into another block"), "{said}");
         assert_eq!(h.control.project.arrangement, before);
+        // Onto an audio track's lane: refused, and it says why.
+        let dest = h.control.project.tracks[0].dest;
+        h.control
+            .project
+            .tracks
+            .push(mpfree_seq::Track::new_audio("Audio 1", dest));
+        let audio = h.control.project.tracks.len() - 1;
+        let said = h.act(mv(0, audio, 0, true)).unwrap_err();
+        assert!(said.contains("Audio 1 is an audio track"), "{said}");
+        assert_eq!(h.control.project.arrangement, before);
+        h.control.project.tracks.pop();
         // A copy onto the bass's lane stays linked to the beat and plays
         // through the bass (Arrange 1.3).
         let said = h.act(mv(0, 1, 6 * BAR, true)).unwrap();
@@ -10195,7 +10206,7 @@ mod tests {
     fn the_audio_half_allocates_nothing_in_any_period_while_the_control_half_works_on_its_own_thread(
     ) {
         use mpfree_seq::Note;
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         use std::sync::Arc;
         /// Pads that only count, so the test itself allocates nothing.
         #[derive(Default)]
@@ -10229,6 +10240,9 @@ mod tests {
         let (mut control, mut audio) = h.split();
         let done = Arc::new(AtomicBool::new(false));
         let stop = done.clone();
+        // The control half's actions so far, for the audio loop to wait on.
+        let acts = Arc::new(AtomicUsize::new(0));
+        let acted = acts.clone();
         let thread = std::thread::spawn(move || {
             let tap = |step| StepAction::Tap {
                 pad: 3,
@@ -10260,6 +10274,7 @@ mod tests {
                 };
                 lines += usize::from(r.is_ok());
                 k += 1;
+                acted.store(k, Ordering::Relaxed);
                 control.poll();
                 std::thread::sleep(std::time::Duration::from_micros(300));
             }
@@ -10268,11 +10283,24 @@ mod tests {
         });
         let mut pads = Count::default();
         let mut worst = (0, 0);
-        for period in 0..4000 {
+        // At least 4,000 periods, and on until the control half has made
+        // ACTIONS actions: counted, not timed, since a busy machine slows
+        // both sides (on a loaded CI runner 4,000 periods once saw only 959
+        // actions). The deadline only stops a hang.
+        const ACTIONS: usize = 1000;
+        let t0 = std::time::Instant::now();
+        let mut period = 0;
+        while period < 4000 || acts.load(Ordering::Relaxed) < ACTIONS {
+            assert!(
+                t0.elapsed() < std::time::Duration::from_secs(300),
+                "{} of {ACTIONS} actions after {period} periods",
+                acts.load(Ordering::Relaxed)
+            );
             let ((), n) = crate::sys::alloc_count::calls(|| audio.run(PERIOD, &mut pads, None));
             if n > worst.1 {
                 worst = (period, n);
             }
+            period += 1;
             std::thread::sleep(std::time::Duration::from_micros(100));
         }
         done.store(true, Ordering::Relaxed);
@@ -10282,7 +10310,7 @@ mod tests {
         control.poll();
         assert_eq!(worst, (0, 0), "(period, allocations and frees) at worst");
         assert!(
-            actions > 1000 && ok > actions / 4,
+            actions >= ACTIONS && ok > actions / 4,
             "{actions} actions, {ok} ok"
         );
         assert!(pads.0 > 200, "it played: {} hits", pads.0);
