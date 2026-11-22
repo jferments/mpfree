@@ -1312,16 +1312,17 @@ pub enum TimeAction {
     ListRemove(usize),
     /// The list goes round after its last step, or stops.
     ListLoop(bool),
-    /// The list onto the end of the song, each step its scene's clips its
-    /// times (`mpfree_seq::Arrangement::list_to_song`).
+    /// The list onto the end of the song, played offline through Rec song
+    /// (the Arrange refactor's 4.1, the app's time engine).
     ListToSong,
     /// Song mode on or off: the song plays on tracks with no clip launched.
     SongMode(bool),
     /// Make (false) or Perform (true): the top bar's chip, or SHIFT + MAIN
     /// (sequencer S4). Saved with the project; nothing playing changes.
     Perform(bool),
-    /// The rows with clips, in order, onto the end of the song
-    /// (`mpfree_seq::arrange::scenes_to_song`).
+    /// The rows with clips, in order, onto the end of the song, played
+    /// offline through Rec song (the Arrange refactor's 4.1, the app's
+    /// time engine).
     ScenesToSong,
     /// The song's sections into a run of empty rows, chained by follow
     /// actions (`mpfree_seq::arrange::song_to_scenes`).

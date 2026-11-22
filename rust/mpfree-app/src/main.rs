@@ -167,6 +167,7 @@ mod skin_page;
 #[cfg(test)]
 mod smoke;
 mod song_end;
+mod status_watch;
 mod step_keys;
 mod synth;
 mod sys;

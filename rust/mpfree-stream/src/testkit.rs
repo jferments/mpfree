@@ -228,6 +228,106 @@ impl Rig {
     }
 }
 
+/// A FLAC file of `frames` marked frames at `rate`: stereo, 24-bit, the
+/// same samples as [`wav`]'s 24-bit file, so it plays as [`played`]. Its
+/// frames are `blocks` sample frames long in turn (a variable-block stream
+/// when there is more than one size); each channel of a frame is stored
+/// verbatim, or as a constant when it holds one value, so frames differ in
+/// size. With `table`, a seek table points at the frame holding every
+/// `table`-th sample frame. Writes the file and gives its bytes.
+pub fn flac(
+    path: &Path,
+    rate: u32,
+    frames: u64,
+    marker: u32,
+    blocks: &[usize],
+    table: Option<u64>,
+) -> Vec<u8> {
+    fn utf8(out: &mut Vec<u8>, v: u64) {
+        if v < 0x80 {
+            out.push(v as u8);
+            return;
+        }
+        let n = (1..=6u32).find(|&n| v < 1 << (5 * n + 6)).expect("36 bits");
+        out.push(((0xFFu32 << (7 - n)) as u8) | (v >> (6 * n)) as u8);
+        for k in (0..n).rev() {
+            out.push(0x80 | ((v >> (6 * k)) & 0x3F) as u8);
+        }
+    }
+    let variable = blocks.len() > 1;
+    let mut body = Vec::new();
+    let mut starts: Vec<(u64, u64)> = Vec::new();
+    let (mut f, mut k) = (0u64, 0usize);
+    while f < frames {
+        let block = (blocks[k % blocks.len()] as u64).min(frames - f) as usize;
+        let start = body.len() as u64;
+        let mut h = vec![0xFF, 0xF8 | u8::from(variable), 0x70, 0x1C];
+        utf8(&mut h, if variable { f } else { k as u64 });
+        h.extend_from_slice(&((block - 1) as u16).to_be_bytes());
+        h.push(mpfree_flac::crc8(&h));
+        for c in 0..2 {
+            let v: Vec<u32> = (0..block as u64).map(|i| value(marker, f + i, c)).collect();
+            if v.iter().all(|&x| x == v[0]) {
+                h.push(0x00);
+                h.extend_from_slice(&v[0].to_be_bytes()[1..]);
+            } else {
+                h.push(0x02);
+                for x in v {
+                    h.extend_from_slice(&x.to_be_bytes()[1..]);
+                }
+            }
+        }
+        let crc = mpfree_flac::crc16(&h);
+        h.extend_from_slice(&crc.to_be_bytes());
+        body.extend_from_slice(&h);
+        starts.push((f, start));
+        f += block as u64;
+        k += 1;
+    }
+    let (lo, hi) = (
+        *blocks.iter().min().expect("a block size") as u16,
+        *blocks.iter().max().expect("a block size") as u16,
+    );
+    let mut info = Vec::new();
+    info.extend_from_slice(&lo.to_be_bytes());
+    info.extend_from_slice(&hi.to_be_bytes());
+    info.extend_from_slice(&[0; 6]);
+    let x = u64::from(rate) << 44 | 1 << 41 | 23 << 36 | frames;
+    info.extend_from_slice(&x.to_be_bytes());
+    info.extend_from_slice(&[0; 16]);
+    let mut seek = Vec::new();
+    if let Some(step) = table {
+        let mut last = None;
+        let mut t = 0;
+        while t < frames {
+            let i = starts.partition_point(|&(s, _)| s <= t) - 1;
+            if last != Some(i) {
+                let (s, o) = starts[i];
+                let block = starts.get(i + 1).map_or(frames, |n| n.0) - s;
+                seek.extend_from_slice(&s.to_be_bytes());
+                seek.extend_from_slice(&o.to_be_bytes());
+                seek.extend_from_slice(&(block as u16).to_be_bytes());
+                last = Some(i);
+            }
+            t += step;
+        }
+    }
+    let mut out = b"fLaC".to_vec();
+    let block_head = |out: &mut Vec<u8>, last: bool, kind: u8, len: usize| {
+        out.push(u8::from(last) << 7 | kind);
+        out.extend_from_slice(&(len as u32).to_be_bytes()[1..]);
+    };
+    block_head(&mut out, table.is_none(), 0, info.len());
+    out.extend_from_slice(&info);
+    if table.is_some() {
+        block_head(&mut out, true, 3, seek.len());
+        out.extend_from_slice(&seek);
+    }
+    out.extend_from_slice(&body);
+    fs::write(path, &out).expect("write flac");
+    out
+}
+
 /// A stand-in for the hardware project's qualified-card handle: a
 /// folder as the card's library, holding until [`PretendCard::pull`].
 pub struct PretendCard {
