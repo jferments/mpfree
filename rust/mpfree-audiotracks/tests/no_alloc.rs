@@ -357,6 +357,45 @@ fn streaming_never_allocates_on_the_audio_thread() {
     }
 }
 
+#[test]
+#[ignore = "finding 1: the host's period, streaming, allocates (a new take's file name, the messages to \
+            the disk thread); fixed by the fixed-size queues of mpfree-stream (P1)"]
+fn the_host_period_never_allocates_while_streaming() {
+    use mpfree_audiotracks::host::AudioHost;
+    const RATE: u32 = 22_050;
+    const BAR: u64 = 22_050; // 240 BPM
+    const P: usize = 256;
+    let dir = std::env::temp_dir().join(format!("mpfree-na-host-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut h = AudioHost::streaming(RATE, 4, dir.clone()).unwrap();
+    let mut t = Transport::new(RATE, 240.0).unwrap();
+    let mut b = Block::new();
+    let input: Vec<f32> = (0..2 * P)
+        .map(|j| ((j * 31) % 97) as f32 / 97.0 - 0.5)
+        .collect();
+    let mut out = vec![0.0f32; 2 * P];
+    h.command(A::Arm(0, true));
+    h.command(A::SetInput(0, Input::Left));
+    t.command(100, T::Record);
+    t.command(100 + 20 * BAR, T::Stop);
+    let mut frame = 0u64;
+    let mut calls = 0;
+    while frame < 22 * BAR {
+        t.process(P as u32, &mut b);
+        let map = *t.tempo_map();
+        CALLS.with(|c| c.set(0));
+        watch(true);
+        h.period(&b, &map, &input, &mut out);
+        watch(false);
+        calls += CALLS.with(Cell::get);
+        frame += P as u64;
+        std::thread::sleep(std::time::Duration::from_micros(100));
+    }
+    drop(h);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(calls, 0, "allocations in the host's period");
+}
+
 /// Phase 0.2: a save fills a room made off the audio thread
 /// (`Saved::room`) without allocating, and holds what `save_file` gives;
 /// while a track records it waits ("not settled"), still without
@@ -430,43 +469,4 @@ fn a_save_fills_its_room_without_allocating() {
     let before = small.clone();
     assert!(a.save_into(&mut small).is_none());
     assert_eq!(small, before);
-}
-
-#[test]
-#[ignore = "finding 1: the host's period, streaming, allocates (a new take's file name, the messages to \
-            the disk thread); fixed by the fixed-size queues of mpfree-stream (P1)"]
-fn the_host_period_never_allocates_while_streaming() {
-    use mpfree_audiotracks::host::AudioHost;
-    const RATE: u32 = 22_050;
-    const BAR: u64 = 22_050; // 240 BPM
-    const P: usize = 256;
-    let dir = std::env::temp_dir().join(format!("mpfree-na-host-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let mut h = AudioHost::streaming(RATE, 4, dir.clone()).unwrap();
-    let mut t = Transport::new(RATE, 240.0).unwrap();
-    let mut b = Block::new();
-    let input: Vec<f32> = (0..2 * P)
-        .map(|j| ((j * 31) % 97) as f32 / 97.0 - 0.5)
-        .collect();
-    let mut out = vec![0.0f32; 2 * P];
-    h.command(A::Arm(0, true));
-    h.command(A::SetInput(0, Input::Left));
-    t.command(100, T::Record);
-    t.command(100 + 20 * BAR, T::Stop);
-    let mut frame = 0u64;
-    let mut calls = 0;
-    while frame < 22 * BAR {
-        t.process(P as u32, &mut b);
-        let map = *t.tempo_map();
-        CALLS.with(|c| c.set(0));
-        watch(true);
-        h.period(&b, &map, &input, &mut out);
-        watch(false);
-        calls += CALLS.with(Cell::get);
-        frame += P as u64;
-        std::thread::sleep(std::time::Duration::from_micros(100));
-    }
-    drop(h);
-    let _ = std::fs::remove_dir_all(&dir);
-    assert_eq!(calls, 0, "allocations in the host's period");
 }
