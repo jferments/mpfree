@@ -81,7 +81,7 @@ use mpfree_play::mpfree_param::{OnTrack, RelAddr};
 use mpfree_sampler::autosample::{Finished, Gear, Job, Plan, PlanError};
 use mpfree_sampler::engine::{EngineView, PadField};
 use mpfree_sampler::export;
-use mpfree_sampler::jobs::{Config as JobsConfig, Jobs};
+use mpfree_sampler::jobs::{Config as JobsConfig, Jobs, Key, Lane, Order};
 use mpfree_sampler::keymap::{self, RootFrom};
 use mpfree_sampler::model::{
     self as model, ChannelPick, ChopSet, Fade, Layer, Levels, LoopMode, ModelError, Pad, PadsPlay,
@@ -205,6 +205,100 @@ struct Seat {
     /// The region as the switch left it: the start moves only while it is
     /// still exactly this.
     region: Region,
+}
+
+/// Put on audio track's jobs on the service.
+const TO_AUDIO: &str = "to-audio";
+
+/// A Put on audio track job's id: its sound and span, so the same span
+/// asked for again while waiting takes its place.
+fn to_audio_id(id: SourceId, start: u64, end: u64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (id.0, start, end).hash(&mut h);
+    h.finish()
+}
+
+/// What Put on audio track holds at once, in bytes, for `samples` samples
+/// of a sound at `from` Hz put on tracks at `to` Hz: the stretch as
+/// floats; when converted, a second copy as the sound to convert, and the
+/// converted floats twice over (made, then kept).
+pub fn to_audio_need(samples: u64, from: u32, to: u32) -> u64 {
+    let bytes = samples.saturating_mul(4);
+    if from == to {
+        bytes
+    } else {
+        let ratio = f64::from(to) / f64::from(from.max(1));
+        bytes
+            .saturating_mul(2)
+            .saturating_add((2.0 * bytes as f64 * ratio) as u64)
+    }
+}
+
+/// The frames Put on audio track copies out, its cuts (from `start`) and
+/// the sound's tempo.
+struct Span {
+    start: u64,
+    end: u64,
+    cuts: Vec<u64>,
+    bpm: f64,
+}
+
+/// What a Put on audio track job sends back.
+enum ToAudio {
+    Made(Box<crate::audiotracks::Sound>),
+    /// The sound's name, and why: refused for memory.
+    Refused(String, String),
+    /// The sound's name, and why it couldn't be made.
+    Failed(String, String),
+}
+
+/// Put on audio track's work, on the job service's sound lane: `span` of
+/// `s` as floats, at `rate` (converted when the sound's isn't, its cuts
+/// moved with it). Nothing when it was told to stop.
+fn copy_for_audio(
+    s: &Source,
+    span: Span,
+    rate: u32,
+    name: String,
+    run: &mpfree_sampler::jobs::Running,
+) -> Option<ToAudio> {
+    let ch = usize::from(s.channels());
+    let Some(frames) = s
+        .data()
+        .f32s(span.start as usize * ch..span.end as usize * ch)
+    else {
+        let why = "no sound between the slices' ends".to_string();
+        return Some(ToAudio::Failed(name, why));
+    };
+    let mut audio = frames.into_owned();
+    let mut cuts = span.cuts;
+    if run.cancelled() {
+        return None;
+    }
+    // The tracks play at the app's rate: a sound at another is converted,
+    // its cuts moved with it.
+    if s.rate() != rate {
+        match Source::new(&name, s.rate(), s.channels(), audio).and_then(|x| x.at_rate(rate)) {
+            Ok((x, r)) => {
+                for c in &mut cuts {
+                    *c = (*c as f64 * r.ratio).round() as u64;
+                }
+                audio = x.data().to_vec();
+            }
+            Err(e) => return Some(ToAudio::Failed(name, e.to_string())),
+        }
+        if run.cancelled() {
+            return None;
+        }
+    }
+    Some(ToAudio::Made(Box::new(crate::audiotracks::Sound {
+        name,
+        channels: ch,
+        audio,
+        cuts,
+        bpm: span.bpm,
+    })))
 }
 
 /// A Map to keys waiting for its sounds' notes ([`SamplePage::map_waits`]).
@@ -943,6 +1037,8 @@ pub struct SamplePage {
     /// Stretched copies thrown away because their pad changed while they
     /// were made.
     stale_copies: u32,
+    /// Put on audio track's sounds, made on the job service.
+    to_audio: (mpsc::Sender<ToAudio>, Receiver<ToAudio>),
     /// The take recording as the wave draws it (one-page step 2f, part 3),
     /// and the time to its next redraw.
     drawn: Option<mpfree_sampler_ui::live_take::LiveTake>,
@@ -1165,6 +1261,7 @@ impl SamplePage {
             normalize_fallbacks: 0,
             spawn_failed_told: 0,
             stale_copies: 0,
+            to_audio: mpsc::channel(),
             drawn: None,
             drawn_in: 0.0,
             recall: None,
@@ -2920,7 +3017,7 @@ impl SamplePage {
                 });
             }
             ChopAction::ToPads { .. } => self.put_slices(ui, &a, None, out),
-            ChopAction::ToAudio { .. } => self.send_to_audio(None, &a, out),
+            ChopAction::ToAudio { .. } => self.send_to_audio(None, &a),
             ChopAction::Export { pad, layer, cuts } => self.export(*pad, *layer, cuts),
         }
     }
@@ -2931,8 +3028,13 @@ impl SamplePage {
     /// for the sound loop to put on an audio track
     /// ([`crate::audiotracks::TrackHost::bring`], which says where it
     /// went). The sound as recorded: the pad's settings stay on the pad,
-    /// and the pads and the page stay as they are.
-    fn send_to_audio(&mut self, take: Option<usize>, a: &ChopAction, out: &mut Vec<FromUi>) {
+    /// and the pads and the page stay as they are. The copy, and the change
+    /// of rate when the sound's isn't the tracks', are made on the job
+    /// service's sound lane (plan phase 2 step 7e), never on the screen:
+    /// the sound comes on a later [`Self::take_to_audio`]. A sound never
+    /// changes once made, so what comes is right whatever was edited
+    /// meanwhile.
+    fn send_to_audio(&mut self, take: Option<usize>, a: &ChopAction) {
         let ChopAction::ToAudio {
             pad,
             layer,
@@ -2955,67 +3057,29 @@ impl SamplePage {
         let Some(s) = p
             .and_then(|p| p.layers.get(*layer))
             .and_then(|l| project.source(l.region.source))
+            .cloned()
         else {
             self.lines
                 .push("sample: not put on an audio track: the sound is missing".into());
             return;
         };
-        let ch = usize::from(s.channels());
+        let ch = u64::from(s.channels());
         let end = end.min(s.frames());
-        let span = (start < end && (1..=2).contains(&ch))
-            .then(|| s.data().f32s(start as usize * ch..end as usize * ch))
-            .flatten();
-        let Some(span) = span else {
+        if start >= end || !(1..=2).contains(&ch) {
             self.lines.push(
                 "sample: not put on an audio track: no sound between the slices' ends".into(),
             );
             return;
-        };
-        // What it holds at once (sampler plan, phase 1 step 5): the
-        // stretch as floats; when converted, a second copy as the sound to
-        // convert, and the converted floats twice over (made, then kept).
-        let bytes = (span.len() * 4) as u64;
-        let need = if s.rate() == self.rate {
-            bytes
-        } else {
-            let ratio = f64::from(self.rate) / f64::from(s.rate());
-            2 * bytes + (2.0 * bytes as f64 * ratio) as u64
-        };
-        if let Err(why) = crate::memory::room_in((self.mem_free)(), need) {
-            self.told.push(format!("Not put on an audio track: {why}"));
-            self.lines
-                .push(format!("sample: not put on an audio track: {why}"));
-            return;
         }
-        let mut audio = span.into_owned();
-        let mut cuts: Vec<u64> = bounds[1..bounds.len() - 1]
+        let cuts: Vec<u64> = bounds[1..bounds.len() - 1]
             .iter()
             .filter(|&&c| start < c && c < end)
             .map(|&c| c - start)
             .collect();
-        // The tracks play at the app's rate: a sound at another is
-        // converted, its cuts moved with it.
-        if s.rate() != self.rate {
-            match Source::new(name, s.rate(), s.channels(), audio)
-                .and_then(|x| x.at_rate(self.rate))
-            {
-                Ok((x, r)) => {
-                    for c in &mut cuts {
-                        *c = (*c as f64 * r.ratio).round() as u64;
-                    }
-                    audio = x.data().to_vec();
-                }
-                Err(e) => {
-                    self.lines
-                        .push(format!("sample: not put on an audio track: {e}"));
-                    return;
-                }
-            }
-        }
         // Its tempo, for the Song view's Fit to tempo.
         let bpm = self
             .sources
-            .get(s)
+            .get(&s)
             .tempo
             .filter(|b| b.is_finite() && *b > 0.0)
             .unwrap_or(0.0);
@@ -3023,13 +3087,53 @@ impl SamplePage {
             "" => "The sound".to_string(),
             n => n.to_string(),
         };
-        out.push(FromUi::SampleToAudio(Box::new(crate::audiotracks::Sound {
-            name,
-            channels: ch,
-            audio,
-            cuts,
-            bpm,
-        })));
+        let rate = self.rate;
+        let need = to_audio_need((end - start) * ch, s.rate(), rate);
+        let key = Key::new(TO_AUDIO, to_audio_id(s.id(), start, end));
+        let (tx, why) = (self.to_audio.0.clone(), self.to_audio.0.clone());
+        let (made, refused) = (name.clone(), name.clone());
+        self.jobs.submit(
+            mpfree_sampler::jobs::Job::new(Lane::Sound, key, move |run| {
+                let span = Span {
+                    start,
+                    end,
+                    cuts,
+                    bpm,
+                };
+                if let Some(t) = copy_for_audio(&s, span, rate, made, run) {
+                    let _ = tx.send(t);
+                }
+            })
+            .order(Order::First)
+            .needs(need, move |w| {
+                let _ = why.send(ToAudio::Refused(refused, w));
+            }),
+        );
+        self.told
+            .push(format!("Copying {name} out for an audio track"));
+        let kit = self.kit_text();
+        self.lines.push(format!(
+            "sample: {kit}: copying {name} out for an audio track"
+        ));
+    }
+
+    /// Put on audio track's sounds made since the last call
+    /// ([`Self::send_to_audio`]), for the sound loop. One refused for
+    /// memory, or that couldn't be made, says why on the hint line and in
+    /// the log, and nothing is sent.
+    pub fn take_to_audio(&mut self) -> Vec<FromUi> {
+        let mut out = Vec::new();
+        while let Ok(t) = self.to_audio.1.try_recv() {
+            match t {
+                ToAudio::Made(s) => out.push(FromUi::SampleToAudio(s)),
+                ToAudio::Refused(name, why) | ToAudio::Failed(name, why) => {
+                    self.told.push(format!("Not put on an audio track: {why}"));
+                    self.lines
+                        .push(format!("sample: {name} not put on an audio track: {why}"));
+                }
+            }
+        }
+        out
     }
 
     /// Put on's main button: the slices on the pads (on one pad, on keys
@@ -8555,7 +8659,7 @@ impl SamplePage {
             // Put on Audio track: the take's sound on a track (step 6); the
             // take stays on the page.
             WaveAction::Chop(a @ ChopAction::ToAudio { .. }) => {
-                self.send_to_audio(Some(i), &a, out);
+                self.send_to_audio(Some(i), &a);
                 None
             }
             // Live chop plays a pad (the tool says so before it gets here).
@@ -9121,6 +9225,46 @@ impl SamplePage {
 
 #[cfg(test)]
 mod tests {
+    /// Sampler plan step 7e: Put on audio track's copy, made on the job
+    /// service, brings a sound at another rate to the tracks' rate and
+    /// moves its cuts with it; its memory is what the copy and the change
+    /// of rate hold.
+    #[test]
+    fn put_on_audio_tracks_copy_converts_a_sound_at_another_rate_and_moves_its_cuts() {
+        use super::*;
+        let n = 22_050;
+        let data: Vec<f32> = (0..n * 2)
+            .map(|i| 0.5 * ((i / 2) as f32 * 0.01).sin())
+            .collect();
+        let s = Source::new("Half", 22_050, 2, data).unwrap();
+        let jobs = Jobs::in_place(JobsConfig::default());
+        let (tx, rx) = mpsc::channel();
+        jobs.submit(mpfree_sampler::jobs::Job::new(
+            Lane::Sound,
+            Key::new(TO_AUDIO, 1),
+            move |run| {
+                let span = Span {
+                    start: 1000,
+                    end: 21_000,
+                    cuts: vec![5000, 10_000],
+                    bpm: 120.0,
+                };
+                let _ = tx.send(copy_for_audio(&s, span, 44_100, "Half".into(), run));
+            },
+        ));
+        let Ok(Some(ToAudio::Made(m))) = rx.try_recv() else {
+            panic!("the copy wasn't made");
+        };
+        assert_eq!((m.name.as_str(), m.channels, m.bpm), ("Half", 2, 120.0));
+        assert_eq!(m.cuts, vec![10_000, 20_000]);
+        let frames = m.audio.len() / 2;
+        assert!((39_990..=40_010).contains(&frames), "{frames}");
+        // The same rate: the stretch as floats. Another: twice that, and
+        // the converted floats twice over.
+        assert_eq!(to_audio_need(1_000, 44_100, 44_100), 4_000);
+        assert_eq!(to_audio_need(1_000, 22_050, 44_100), 8_000 + 16_000);
+    }
+
     /// REC's second line on the recorder row (one-page step 2c) holds
     /// every reason REC can't start and every status, uncut, in the
     /// built-in font.

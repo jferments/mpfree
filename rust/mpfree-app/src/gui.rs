@@ -10782,6 +10782,9 @@ impl Player {
         // Flatten's hits go after the source it records from.
         let hits = self.sample.take_hits();
         self.outbox.extend(hits);
+        // Put on audio track's sounds, made on the job service.
+        let sounds = self.sample.take_to_audio();
+        self.outbox.extend(sounds);
         if self.sample.take_unsaved() {
             self.mark_unsaved();
         }
@@ -27586,14 +27589,18 @@ mod tests {
                 widget: wave_tab::REGION.into(),
                 kind: EventKind::Tab(Row::Chop.index()),
             });
-            let mut sent: Vec<_> = p
-                .take_actions()
-                .into_iter()
-                .filter_map(|a| match a {
+            // Made on the job service (sampler plan step 7e): it comes on
+            // a later frame.
+            let end = Instant::now() + WORKER_WAIT;
+            let mut sent = Vec::new();
+            while sent.is_empty() {
+                assert!(Instant::now() < end, "the sound never came");
+                sent.extend(p.take_actions().into_iter().filter_map(|a| match a {
                     FromUi::SampleToAudio(s) => Some(s),
                     _ => None,
-                })
-                .collect();
+                }));
+                std::thread::sleep(Duration::from_millis(2));
+            }
             assert_eq!(sent.len(), 1);
             sent.remove(0)
         };
@@ -27634,9 +27641,10 @@ mod tests {
         check(&p, &s, "Take 1");
         assert_eq!(p.sample.project(0).unwrap().takes().len(), 1);
         assert_eq!(p.sample.take_shown().as_deref(), Some("Take 1"));
-        // Too little memory for the copy (sampler plan, phase 1 step 5):
-        // nothing is sent, and it says why.
-        p.sample.set_mem_free(|| Some(crate::memory::FLOOR + 1000));
+        // Nothing is copied on the screen (sampler plan step 7e): with the
+        // job service held, the press returns with nothing sent and says
+        // what it is doing; the sound comes once the service goes on.
+        p.sample.hold_views(true);
         p.take_actions();
         p.on_event(UiEvent {
             widget: wave_tab::REGION.into(),
@@ -27647,12 +27655,53 @@ mod tests {
             .iter()
             .any(|a| matches!(a, FromUi::SampleToAudio(_))));
         assert!(
-            events_log(&p).iter().any(|l| l
-                .starts_with("sample: not put on an audio track: not enough memory: needs about")),
+            events_log(&p)
+                .iter()
+                .any(|l| l == "sample: kit 1 (Breaks): copying Take 1 out for an audio track"),
             "{:?}",
             events_log(&p)
         );
-        p.sample.set_mem_free(|| None);
+        let told = p.told.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+        assert_eq!(told, "Copying Take 1 out for an audio track");
+        p.sample.hold_views(false);
+        let end = Instant::now() + WORKER_WAIT;
+        while !p
+            .take_actions()
+            .iter()
+            .any(|a| matches!(a, FromUi::SampleToAudio(_)))
+        {
+            assert!(Instant::now() < end, "the sound never came");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        // Too little memory for the copy (sampler plan, phase 1 step 5;
+        // checked by the job service as it starts since step 7e): nothing
+        // is sent, and it says why.
+        p.sample.use_jobs(mpfree_sampler::jobs::Jobs::new(
+            mpfree_sampler::jobs::Config {
+                free: || Some(crate::memory::FLOOR + 1000),
+                ..sample_page::jobs_config()
+            },
+        ));
+        p.take_actions();
+        p.on_event(UiEvent {
+            widget: wave_tab::REGION.into(),
+            kind: EventKind::Tab(Row::Chop.index()),
+        });
+        let refused = "sample: Take 1 not put on an audio track: not enough memory: needs about";
+        let end = Instant::now() + WORKER_WAIT;
+        while !events_log(&p).iter().any(|l| l.starts_with(refused)) {
+            assert!(Instant::now() < end, "{:?}", events_log(&p));
+            assert!(!p
+                .take_actions()
+                .iter()
+                .any(|a| matches!(a, FromUi::SampleToAudio(_))));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let told = p.told.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+        assert!(
+            told.starts_with("Not put on an audio track: not enough memory"),
+            "{told}"
+        );
     }
 
     /// The Slice tool on a take kept on the page (one Sample page step 3):
