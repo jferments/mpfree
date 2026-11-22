@@ -425,6 +425,19 @@ impl Heard {
         n: 0,
     };
 
+    /// The trigger group its notes record in: its pad's
+    /// ([`mpfree_seq::groups::pad_group`]), so a pad of chords records one
+    /// trigger with one chance; 0 (each note on its own) for notes no pad
+    /// plays.
+    pub fn group(&self) -> u8 {
+        match self.pad {
+            Some(
+                Event::NoteOn { note, .. } | Event::NoteOff { note } | Event::Pressure { note, .. },
+            ) => mpfree_seq::groups::pad_group(note),
+            _ => 0,
+        }
+    }
+
     /// A host with no instruments: the pad, and the same number as its
     /// note.
     pub fn pad(event: Event) -> Heard {
@@ -5861,6 +5874,76 @@ mod tests {
         assert_eq!(notes(&h), vec![(60, 90), (62, 80), (64, 90), (67, 90)]);
     }
 
+    /// Trigger groups: a pad's step on a clip of notes is the pad's
+    /// trigger (its number plus one). A tap, a change, the Note knob and
+    /// keys on the line all give its notes the pad's group, so a chance on
+    /// the step rolls once for the whole chord; a chord written before
+    /// groups (each note on its own) becomes one trigger with the next
+    /// change to its step.
+    #[test]
+    fn a_pad_of_chords_step_is_one_trigger() {
+        use mpfree_seq::steps::Change;
+        use mpfree_seq::Note;
+        let mut rows = PadRows::PADS;
+        for p in 0..16 {
+            rows.set(p, &[60 + p as u8]);
+        }
+        rows.set(0, &[64, 67, 60]);
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.set_notes_tracks(1);
+        h.set_pad_rows(0, rows);
+        let on = |h: &TimeHost, tick: Tick| -> Vec<(u8, u8, u8)> {
+            let c = h.project().clip(0, 0).unwrap();
+            assert!(c.groups_ok());
+            let mut v: Vec<_> = c
+                .notes
+                .iter()
+                .filter(|n| n.tick == tick)
+                .map(|n| (n.note, n.group, n.chance))
+                .collect();
+            v.sort();
+            v
+        };
+        let tap = |pad, step| StepAction::Tap {
+            pad,
+            step,
+            velocity: 100,
+        };
+        let change = |pad, step, change| StepAction::Change { pad, step, change };
+        h.step_action(tap(0, 0)).unwrap();
+        assert_eq!(on(&h, 0), vec![(60, 1, 100), (64, 1, 100), (67, 1, 100)]);
+        h.step_action(change(0, 0, Change::Chance(50))).unwrap();
+        assert_eq!(on(&h, 0), vec![(60, 1, 50), (64, 1, 50), (67, 1, 50)]);
+        // The Note knob to pad 6 and back: each pad's group, the step's
+        // chance kept.
+        h.step_action(change(0, 0, Change::Note(5))).unwrap();
+        assert_eq!(on(&h, 0), vec![(65, 6, 50)]);
+        h.step_action(change(5, 0, Change::Note(0))).unwrap();
+        assert_eq!(on(&h, 0), vec![(60, 1, 50), (64, 1, 50), (67, 1, 50)]);
+        // Keys on the line: pad 1's chord and pad 3's note, each its pad's.
+        let mut keys = [(0, 0); MAX_PEN];
+        keys[0] = (0, 90);
+        keys[1] = (2, 80);
+        h.step_action(StepAction::Enter {
+            step: 1,
+            keys,
+            n: 2,
+        })
+        .unwrap();
+        assert_eq!(
+            on(&h, 240),
+            vec![(60, 1, 100), (62, 3, 100), (64, 1, 100), (67, 1, 100)]
+        );
+        // A chord from before groups on step 3: one trigger after a change.
+        let c = h.control.project.tracks[0].slots[0].as_mut().unwrap();
+        for pitch in [60, 64, 67] {
+            c.notes.push(Note::new(480, 120, pitch, 70));
+        }
+        assert_eq!(on(&h, 480), vec![(60, 0, 100), (64, 0, 100), (67, 0, 100)]);
+        h.step_action(change(0, 2, Change::Velocity(60))).unwrap();
+        assert_eq!(on(&h, 480), vec![(60, 1, 100), (64, 1, 100), (67, 1, 100)]);
+    }
+
     /// Pads as pressed with no notes to give a clip of notes (one through
     /// the arp) aren't recorded into it, and each is counted.
     #[test]
@@ -5935,6 +6018,8 @@ mod tests {
             vec![(60, vec![70]), (64, vec![70]), (67, vec![70])],
             "the pad's chord, each note with its pressure"
         );
+        // One trigger: pad 5's group.
+        assert!(clip.notes.iter().all(|n| n.group == 5), "{:?}", clip.notes);
         assert_eq!(h.dropped(), 0);
     }
 
@@ -5942,7 +6027,8 @@ mod tests {
     /// plays the same synth on another track, both through arps that work
     /// in notes. The take holds the pads' notes and never the clip's,
     /// whether the recording track's clips play through its arp (the pads
-    /// as pressed) or not (what its arp played).
+    /// as pressed, one trigger) or not (what its arp played, each note on
+    /// its own).
     #[test]
     fn a_take_of_the_pads_leaves_out_a_clip_playing_the_same_synth() {
         use mpfree_seq::{Holds, Note};
@@ -5994,9 +6080,16 @@ mod tests {
             assert!(pads.hits.iter().any(|&(_, n, _)| n == 50), "the clip plays");
             let clip = h.project().clip(1, 0).unwrap().clone();
             assert_eq!(clip.holds, Holds::Notes, "through {through}");
-            let mut notes: Vec<u8> = clip.notes.iter().map(|n| n.note).collect();
+            let mut notes: Vec<(u8, u8)> = clip.notes.iter().map(|n| (n.note, n.group)).collect();
             notes.sort();
-            assert_eq!(notes, vec![60, 64, 67], "through {through}");
+            // The pads as pressed are pad 5's trigger; what an arp played
+            // came with no pad, each note on its own.
+            let group = if through { 5 } else { 0 };
+            assert_eq!(
+                notes,
+                vec![(60, group), (64, group), (67, group)],
+                "through {through}"
+            );
             assert_eq!(h.dropped(), 0);
         }
     }
@@ -6537,6 +6630,7 @@ mod tests {
                     on: true,
                     ramp: 0,
                     join: mpfree_seq::Join::Attack,
+                    group: 0,
                 })
                 .collect();
             c
@@ -8622,7 +8716,13 @@ mod tests {
             .contains("beat is a kit's clip"));
         // Every reason it can't, at once; only Cancel; Convert refuses.
         let mut odd = hits.clone();
-        odd.notes[1].chance = 50;
+        // A chance alone converts now (trigger groups), but one pad hit
+        // twice on a step at two chances can't: as notes they are one
+        // trigger.
+        odd.notes.push(Note {
+            chance: 50,
+            ..odd.notes[0]
+        });
         odd.locks.push(Lock::new(
             960,
             Some(5),
@@ -8638,7 +8738,7 @@ mod tests {
             .unwrap();
         assert!(
             line.starts_with(
-                "Convert to notes can't keep what riff plays yet: 1 step with chance below 100 %"
+                "Convert to notes can't keep what riff plays yet: Pad A1 is hit twice on step 1 with a different chance or condition"
             ),
             "{line}"
         );
@@ -11571,6 +11671,7 @@ mod tests {
                 on: true,
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
+                group: 0,
             })
             .collect();
         h.control.project.tracks[0].slots[0] = Some(c);

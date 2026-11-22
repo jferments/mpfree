@@ -5072,6 +5072,7 @@ mod tests {
                 on: true,
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
+                group: 0,
             })
             .unwrap();
             t.slots[0] = Some(c);

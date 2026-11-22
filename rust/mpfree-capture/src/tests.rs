@@ -499,6 +499,7 @@ fn timed(notes: &[(Tick, f64)], length: Tick, song_start: Tick) -> Phrase {
                 on: true,
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
+                group: 0,
             },
             song: Some(song),
             track: ARMED,
@@ -602,6 +603,7 @@ fn kept_free_a_new_clip_starts_on_the_next_bar() {
                 on: true,
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
+                group: 0,
             },
             song: None,
             track: ARMED,
@@ -1112,14 +1114,17 @@ fn parts_kept_into_their_tracks_are_one_take() {
 const PAD_OF_NOTES: Took = Took {
     holds: Holds::Hits,
     paired: true,
+    group: 0,
 };
 const NOTE_OF_PAD: Took = Took {
     holds: Holds::Notes,
     paired: true,
+    group: 0,
 };
 const NOTE_ALONE: Took = Took {
     holds: Holds::Notes,
     paired: false,
+    group: 0,
 };
 
 #[test]
@@ -1234,6 +1239,113 @@ fn capture_over_a_playing_clip_keeps_that_clips_kind() {
     assert!(k.launch.is_some());
     assert_eq!(p.clip(1, 1).unwrap().holds, Holds::Notes);
     assert_eq!(pitches(&p, 1), vec![60, 60]);
+}
+
+/// Trigger groups: a chord pad's notes come with its group, the phrase
+/// keeps it, and they go into a clip of notes as one trigger: a new
+/// clip's, or the playing clip's, joining the trigger there with their
+/// settings and beside one with others.
+#[test]
+fn a_chord_pads_notes_are_kept_as_one_trigger() {
+    let mut r = Rig::new(128);
+    r.command(0, Command::Play);
+    let chord = Took {
+        group: 5,
+        ..NOTE_OF_PAD
+    };
+    for note in [60, 64, 67] {
+        r.note_of(chord, 0, BEAT as u64 * TICK, note, 100);
+    }
+    r.run_to(3 * BAR as u64 * TICK);
+    let p = r.capture.phrase().unwrap();
+    let groups: Vec<u8> = p.played.iter().map(|x| x.note.group).collect();
+    assert_eq!(groups, vec![5, 5, 5]);
+
+    let mut p = project();
+    let mut takes = Takes::default();
+    let mut phrase = timed_both(&[(BEAT, (4 * BAR + BEAT) as f64)], BAR, 4 * BAR);
+    for x in phrase.played.iter_mut().filter(|x| x.holds == Holds::Notes) {
+        x.note.group = 5;
+    }
+    // The playing clip of notes holds pad 5's trigger on that beat at
+    // half chance, and another on the next beat as recorded.
+    let c = p.tracks[1].slots[0].as_mut().unwrap();
+    c.holds = Holds::Notes;
+    c.notes = vec![
+        mpfree_seq::Note {
+            chance: 50,
+            group: 5,
+            ..mpfree_seq::Note::new(BEAT, 120, 64, 90)
+        },
+        mpfree_seq::Note {
+            group: 5,
+            ..mpfree_seq::Note::new(2 * BEAT, 120, 64, 90)
+        },
+    ];
+    let launches = [Launch {
+        track: 1,
+        slot: 0,
+        origin: 4 * BAR,
+        start: 4 * BAR,
+    }];
+    let kept = |p: &Project, slot: usize| -> Vec<(Tick, u8, u8)> {
+        p.clip(1, slot)
+            .unwrap()
+            .notes
+            .iter()
+            .map(|n| (n.tick, n.group, n.chance))
+            .collect()
+    };
+    keep(
+        &phrase,
+        &mut p,
+        &launches,
+        &mut takes,
+        1,
+        now(7 * BAR),
+        "c",
+        Holds::Notes,
+    )
+    .unwrap();
+    assert_eq!(
+        kept(&p, 0),
+        vec![(BEAT, 5, 50), (2 * BEAT, 5, 100), (BEAT, 129, 100)],
+        "beside the trigger with other settings"
+    );
+    assert!(p.clip(1, 0).unwrap().groups_ok());
+    // Over the trigger with its settings: it joins.
+    takes.undo(&mut p);
+    let mut later = phrase.clone();
+    for x in &mut later.played {
+        x.song = x.song.map(|s| s + BEAT as f64);
+    }
+    keep(
+        &later,
+        &mut p,
+        &launches,
+        &mut takes,
+        1,
+        now(7 * BAR),
+        "c",
+        Holds::Notes,
+    )
+    .unwrap();
+    assert_eq!(kept(&p, 0)[2], (2 * BEAT, 5, 100));
+    assert!(p.clip(1, 0).unwrap().groups_ok());
+    // No clip playing: a new clip, its trigger as played.
+    takes.undo(&mut p);
+    keep(
+        &phrase,
+        &mut p,
+        &[],
+        &mut takes,
+        1,
+        now(7 * BAR),
+        "c",
+        Holds::Notes,
+    )
+    .unwrap();
+    assert_eq!(kept(&p, 1), vec![(BEAT, 5, 100)]);
 }
 
 #[test]

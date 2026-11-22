@@ -102,7 +102,7 @@ fn hits() -> Clip {
 enum Way {
     /// Launched in its cell.
     Launched,
-    /// In a song, a block five bars long from bar 1.
+    /// In a song, a block from bar 1 a bar longer than it plays.
     Song,
     /// Launched, the project saved and opened again first.
     Reopened,
@@ -111,6 +111,11 @@ enum Way {
 /// `clip` on track 1 of a project of its own, from tick 0, for four
 /// passes, in periods of `size` frames.
 fn play(clip: Clip, size: u32, way: Way) -> Vec<Out> {
+    play_bars(clip, size, way, 4)
+}
+
+/// [`play`] for `bars` bars.
+fn play_bars(clip: Clip, size: u32, way: Way, bars: u64) -> Vec<Out> {
     let mut p = Project::new();
     p.tracks.push(Track::new("synth", 0));
     p.put_new_clip(0, 0, clip).unwrap();
@@ -125,7 +130,7 @@ fn play(clip: Clip, size: u32, way: Way) -> Vec<Out> {
     };
     let view = if way == Way::Song {
         p.arrangement
-            .place(Placement::of(&p.tracks, 0, 0, 0, 5 * 3840))
+            .place(Placement::of(&p.tracks, 0, 0, 0, (bars as i64 + 1) * 3840))
             .unwrap();
         let mut v = PlayView::compile(&p, &[]).unwrap();
         v.set_song(&p, true).unwrap();
@@ -138,8 +143,8 @@ fn play(clip: Clip, size: u32, way: Way) -> Vec<Out> {
     let mut player = Player::new();
     let mut block = Block::new();
     let mut log = Log::default();
-    // Four bars at 120 BPM: eight seconds.
-    let end = 8 * 44_100;
+    // A bar at 120 BPM is two seconds.
+    let end = bars * 2 * 44_100;
     while t.frame() < end {
         let n = size.min((end - t.frame()) as u32);
         t.process(n, &mut block);
@@ -217,5 +222,87 @@ fn a_converted_clip_plays_the_same_events_as_its_pad_hits() {
             .flat_map(|f| &f.1)
             .any(|e| e.starts_with("Pressure")));
         assert!(a.iter().flat_map(|f| &f.1).any(|e| e.starts_with("Lock")));
+    }
+}
+
+/// A bar of pad hits that roll: the chord pad at even odds, a pad after
+/// it on PRE and one on NOT PRE, a one-note pad hit twice on one step
+/// alike, and two pads that play one note on their own odds.
+fn rolls() -> Clip {
+    let mut c = Clip::new("rolls", 3840);
+    let notes = [
+        Note {
+            chance: 50,
+            ..Note::new(0, 240, 1, 100)
+        },
+        Note {
+            cond: Cond::Pre,
+            ..Note::new(480, 240, 2, 90)
+        },
+        Note {
+            cond: Cond::NotPre,
+            ..Note::new(960, 240, 2, 80)
+        },
+        Note {
+            chance: 30,
+            ..Note::new(1440, 120, 0, 100)
+        },
+        Note {
+            chance: 30,
+            ..Note::new(1440, 60, 0, 70)
+        },
+        Note {
+            chance: 70,
+            ..Note::new(1920, 240, 3, 100)
+        },
+        Note {
+            chance: 25,
+            cond: Cond::Every { a: 1, b: 2 },
+            ..Note::new(2880, 240, 1, 60)
+        },
+    ];
+    for n in notes {
+        c.add_note(n).unwrap();
+    }
+    c
+}
+
+/// Trigger groups (the trigger groups design): a clip whose hits roll
+/// plays the same after Convert, pass for pass, so a chord pad's chord
+/// still plays whole or not at all, and PRE still follows it.
+#[test]
+fn a_converted_clip_rolls_the_same_dice_as_its_pad_hits() {
+    let hits = rolls();
+    let made = hits.convert_to_notes(rows).expect("it converts");
+    assert!(made.clip.groups_ok());
+    for (way, size) in [Way::Launched, Way::Reopened]
+        .into_iter()
+        .flat_map(|w| [64u32, 4096].map(|s| (w, s)))
+    {
+        let size_way = format!("{way:?}, size {size}");
+        let before = by_frame(&play_bars(hits.clone(), size, way, 32));
+        let after = by_frame(&play_bars(made.clip.clone(), size, way, 32));
+        assert_eq!(before, after, "{size_way}");
+        // Each pass's chord on beat 1: all three notes or none, and both
+        // on some passes.
+        let bar = 2 * 44_100;
+        let chords: Vec<usize> = (0..32u64)
+            .map(|b| {
+                after
+                    .iter()
+                    .filter(|f| f.0 == b * bar)
+                    .flat_map(|f| &f.1)
+                    .filter(|e| e.starts_with("NoteOn"))
+                    .count()
+            })
+            .collect();
+        assert!(
+            chords.iter().all(|&n| n == 0 || n == 3),
+            "{size_way}: {chords:?}"
+        );
+        assert!(
+            chords.contains(&0) && chords.contains(&3),
+            "{size_way}: {chords:?}"
+        );
     }
 }

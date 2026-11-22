@@ -56,6 +56,7 @@
 
 pub mod arrange;
 pub mod convert;
+pub mod groups;
 pub mod inst;
 pub mod loops;
 pub mod mutate;
@@ -151,6 +152,16 @@ pub struct Note {
     /// How it starts: with its own attack, or joined to the note before it
     /// ([`Join`]; S6).
     pub join: Join,
+    /// Its trigger group, in a clip of notes: 0, it decides alone whether
+    /// it plays; else the notes of the clip on its tick with the same
+    /// number are one trigger, which decides once (its condition, then
+    /// its chance) and plays whole or not at all, as a chord pad's hit
+    /// does. A pad's notes take its number plus one
+    /// ([`groups::pad_group`]); Join takes a free number from
+    /// [`groups::JOINED_GROUPS`]. A trigger's notes share their chance,
+    /// condition and `on` ([`Clip::groups_ok`]). A clip of pad hits has
+    /// none. See [`groups`].
+    pub group: u8,
 }
 
 /// How a note starts ([`Note::join`]): with its own attack, or joined to
@@ -448,6 +459,7 @@ impl Note {
             on: true,
             ramp: 0,
             join: Join::Attack,
+            group: 0,
         }
     }
 
@@ -989,6 +1001,9 @@ pub enum ModelError {
     /// The clip's moves are not sound for its length, or not the ones an
     /// edit expected to change (see [`steps::Edit`]).
     BadMoves,
+    /// A trigger group's notes disagree on chance, condition or on, or a
+    /// clip of pad hits has group numbers ([`Clip::groups_ok`]).
+    BadGroup,
     /// A follow action waits 0 bars or more than 999, or its chance is
     /// over 100.
     BadFollow,
@@ -1326,6 +1341,9 @@ impl Clip {
         }
         if let Some(o) = &self.original {
             o.check(&self.touch)?;
+        }
+        if !self.groups_ok() {
+            return Err(ModelError::BadGroup);
         }
         let len = u32::try_from(self.length).map_err(|_| ModelError::ClipLength)?;
         self.moves.check(len).map_err(|_| ModelError::BadMoves)
@@ -2363,6 +2381,7 @@ mod tests {
             on: true,
             ramp: 0,
             join: Join::Attack,
+            group: 0,
         });
         assert_eq!(c.check(), Ok(()));
         c.notes.push(Note {
@@ -2377,6 +2396,7 @@ mod tests {
             on: true,
             ramp: 0,
             join: Join::Attack,
+            group: 0,
         });
         assert_eq!(c.check(), Err(ModelError::BadNote(1)));
         c.notes[1].tick = 100;
@@ -2506,6 +2526,7 @@ mod tests {
                 on: true,
                 ramp: 0,
                 join: Join::Attack,
+                group: 0,
             }),
             Ok(())
         );
@@ -2522,6 +2543,7 @@ mod tests {
                 on: true,
                 ramp: 0,
                 join: Join::Attack,
+                group: 0,
             }),
             Err(ModelError::BadNote(1))
         );
@@ -2538,6 +2560,7 @@ mod tests {
                 on: true,
                 ramp: 0,
                 join: Join::Attack,
+                group: 0,
             }),
             Err(ModelError::BadNote(1))
         );
@@ -2555,6 +2578,7 @@ mod tests {
                 on: true,
                 ramp: 0,
                 join: Join::Attack,
+                group: 0,
             };
             MAX_NOTES
         ];
@@ -2571,6 +2595,7 @@ mod tests {
                 on: true,
                 ramp: 0,
                 join: Join::Attack,
+                group: 0,
             }),
             Err(ModelError::TooManyNotes)
         );
@@ -2588,6 +2613,7 @@ mod tests {
             on: true,
             ramp: 0,
             join: Join::Attack,
+            group: 0,
         }));
         assert_eq!(c.notes.len(), MAX_NOTES - 1);
         assert!(!c.remove_note(&Note {
@@ -2602,6 +2628,7 @@ mod tests {
             on: true,
             ramp: 0,
             join: Join::Attack,
+            group: 0,
         }));
     }
 

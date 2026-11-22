@@ -6555,6 +6555,114 @@ pub(super) fn bar_beat(t: Tick, meter: mpfree_transport::time::Meter) -> String 
     }
 }
 
+/// Step action `a` on a clip of notes ([`on_rows`]), with the notes it
+/// puts on a pad's rows made that pad's trigger group (trigger groups,
+/// `mpfree_seq::groups`): on a pad row a step is the pad's trigger, so
+/// its notes take the pad's number and the root's chance, condition and
+/// on, and decide together as the pad's hit does. A tap that puts a
+/// chord's missing notes back joins the chord already on the step; other
+/// notes put where the pad's number is taken on their tick get a free
+/// one, so two gestures never merge. Refused (no change) when a tick has
+/// no number left.
+fn on_notes(
+    grid: Grid,
+    clip: &Clip,
+    a: StepAction,
+    rows: &PadRows,
+    act: impl Fn(StepAction) -> (mpfree_seq::steps::Edit, Option<u64>, String),
+) -> (mpfree_seq::steps::Edit, Option<u64>, String) {
+    let (mut edit, key, line) = on_rows(grid, clip, a, rows, act);
+    // The pads whose rows the action puts notes on, and whether a tap's
+    // notes join the pad's chord already there.
+    let (pads, join): (Vec<u8>, bool) = match a {
+        StepAction::Tap { pad, .. } if pad != LINE => (vec![pad], true),
+        StepAction::Change {
+            change: mpfree_seq::steps::Change::Note(to),
+            pad,
+            ..
+        }
+        | StepAction::ChangeSteps {
+            change: mpfree_seq::steps::Change::Note(to),
+            pad,
+            ..
+        } if pad != LINE => (vec![to], false),
+        StepAction::Change { pad, .. }
+        | StepAction::ChangeSteps { pad, .. }
+        | StepAction::Values { pad, .. }
+        | StepAction::CopySteps { pad, .. }
+            if pad != LINE =>
+        {
+            (vec![pad], false)
+        }
+        StepAction::Enter { keys, n, .. } | StepAction::Keys { keys, n, .. } => (
+            keys[..usize::from(n).min(super::MAX_PEN)]
+                .iter()
+                .map(|k| k.0)
+                .collect(),
+            false,
+        ),
+        _ => (Vec::new(), false),
+    };
+    if pads.is_empty() || edit.add.is_empty() {
+        return (edit, key, line);
+    }
+    // Each added note on a pad's rows: (index, the pad's number, whether
+    // it is the pad's root).
+    let mut claimed: Vec<(usize, u8, bool)> = Vec::new();
+    for &pad in &pads {
+        let notes = rows.notes(usize::from(pad));
+        if notes.is_empty() || usize::from(pad) >= 16 {
+            continue;
+        }
+        let root = notes.last().copied();
+        for (i, n) in edit.add.iter().enumerate() {
+            if notes.contains(&n.note) && !claimed.iter().any(|c| c.0 == i) {
+                claimed.push((i, mpfree_seq::groups::pad_group(pad), Some(n.note) == root));
+            }
+        }
+    }
+    if claimed.is_empty() {
+        return (edit, key, line);
+    }
+    // One trigger per pad and tick: the root's settings (the first note's
+    // where the root isn't put in).
+    type Shared = (u8, mpfree_seq::Cond, bool);
+    let mut model: Vec<((Tick, u8), Shared)> = Vec::new();
+    for pass in [true, false] {
+        for &(i, g, root) in &claimed {
+            let n = edit.add[i];
+            if root == pass && !model.iter().any(|(k, _)| *k == (n.tick, g)) {
+                model.push(((n.tick, g), (n.chance, n.cond, n.on)));
+            }
+        }
+    }
+    let mut mine: Vec<mpfree_seq::Note> = claimed
+        .iter()
+        .map(|&(i, g, _)| {
+            let n = edit.add[i];
+            let (chance, cond, on) = model
+                .iter()
+                .find(|(k, _)| *k == (n.tick, g))
+                .map(|(_, m)| *m)
+                .expect("each claimed note has its trigger");
+            mpfree_seq::Note {
+                group: g,
+                chance,
+                cond,
+                on,
+                ..n
+            }
+        })
+        .collect();
+    if mpfree_seq::groups::settle_new(clip, &edit.erase, &mut mine, join).is_err() {
+        return (mpfree_seq::steps::Edit::default(), key, line);
+    }
+    for (&(i, _, _), n) in claimed.iter().zip(mine) {
+        edit.add[i] = n;
+    }
+    (edit, key, line)
+}
+
 /// Step action `a` on a clip of notes, whose pad rows stand for the notes
 /// `rows` gives each pad (step 5c), as `act` takes an action on a clip of
 /// hits: on each of the pad's notes, root first, joined as one edit, with
@@ -6563,7 +6671,7 @@ pub(super) fn bar_beat(t: Tick, meter: mpfree_transport::time::Meter) -> String 
 /// Note knob puts the step on another pad's notes (`swap`); keys entered
 /// on the line are their pads' notes. The line and the rows of notes no
 /// pad plays go to `act` as they are.
-fn on_notes(
+fn on_rows(
     grid: Grid,
     clip: &Clip,
     a: StepAction,
@@ -6925,12 +7033,6 @@ fn refused_words(r: &mpfree_seq::convert::Refused, grid: Grid, length: Tick) -> 
     match *r {
         Refused::Notes => "it uses notes already".to_string(),
         Refused::Loop => "a loop's cell holds a loop".to_string(),
-        Refused::Chance { steps, original } => format!(
-            "{steps} step{} with chance below 100 %{}: as notes, a chord's notes would each roll their own: set {} to 100 % first",
-            if steps == 1 { "" } else { "s" },
-            kept(original),
-            if steps == 1 { "it" } else { "them" }
-        ),
         Refused::PadLock {
             pad: p,
             param,
@@ -6963,6 +7065,11 @@ fn refused_words(r: &mpfree_seq::convert::Refused, grid: Grid, length: Tick) -> 
             "{} and {} play the same root, so their locks on step {} would land on one row: take one off",
             pad(a),
             pad(b),
+            step(tick)
+        ),
+        Refused::Twice { pad: p, tick } => format!(
+            "{} is hit twice on step {} with a different chance or condition: as notes, a pad's notes on one step decide together, so take one off or set them alike",
+            pad(p),
             step(tick)
         ),
     }
