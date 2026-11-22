@@ -12,7 +12,7 @@ It says which crates hold what, which thread does what, how data moves between t
 4. **Every change is a command.** UI, hardware and MIDI all send the same commands to the control thread. Commands are logged for undo and are the only way to change a project.
 5. **Testable on the workstation.** Every crate except the device backends runs and is tested on x86 and as 32-bit ARM under qemu, as today.
 
-Principles 1, 2 and 5 hold, with the gaps in 2 listed under [As built](#as-built-22-nov). Principles 3 and 4 were not built as written: there is no control thread, and changes are not commands yet. The refactor keeps the model on the screen thread and puts sampler commands in front of it (step 12).
+Principles 1, 2 and 5 hold, with the gaps in 2 listed under [As built](#as-built-22-nov). Principles 3 and 4 were not built as written: there is no control thread, and changes were not commands. The refactor keeps the model on the screen thread and puts [sampler commands](#sampler-commands-step-12) in front of it, a family at a time (step 12): a pad's sound goes through them now.
 
 ## As built, and where it is going
 
@@ -21,7 +21,7 @@ The sampler was built in rounds (steps S1 to S7, rounds R1 to R7). An outside re
 ### As built (22 Nov)
 
 - **No control thread.** Each kit's model (`mpfree_sampler::model::Project`) lives on the screen thread, in the Sample page (`SamplePage::projects`). The pad player builds every kit before the sound starts and hands the projects over once (`Player::take_projects`). An edit builds the kit's engine view again on the screen thread and sends it to the audio thread in a `ViewSwap`; the old view comes back in the same box and is freed on the screen thread.
-- **Changes are method calls, not commands yet.** The Sample page calls the model's methods (`Project::map_to_keys` and the rest) directly. Each returns an undo step. Undo is per kit, kept in memory and not saved.
+- **Changes to a pad's sound are commands; the rest are method calls still.** A pad's sound, its layers, its name, what the kit's pads play and Map to keys go through [sampler commands](#sampler-commands-step-12) (step 12's first family). Grains, slices and Put on, the recorder, kits and takes still call the model's methods from the Sample page directly, until their families move. Each change is an undo step. Undo is per kit, kept in memory and not saved.
 - **Background work: the job service and two threads of their own.** The [job service](#the-job-service-step-7)'s sound lane (`mpfree-sound-1`) works out a sound's view (peaks, onsets, tempo, root note, and the pitch track when asked for; `mpfree-app/src/views.rs`), the hits of a sound a Stretch grain pad plays (`mpfree-sampler/src/hits.rs`), its octave copies (`bandlimit.rs`), Warp's stretched copies (`warp::Worker`), Process, Put on audio track's copy and Normalize's reads of every frame. Its file lane (`mpfree-file-1`) reads and decodes Load, a kit file and a project's kits. Two have their own thread still:
   - `preview-load`: the browser's preview, which mustn't wait behind a kit or a project opening;
   - `autosample`, which plays a copy of the synth in time.
@@ -36,7 +36,7 @@ The sampler was built in rounds (steps S1 to S7, rounds R1 to R7). An outside re
 
 The engine stays as it is. Two new pieces sit around it: sampler commands, which every control goes through, and one job service, which does all heavy work away from the screen and the sound. There is still no separate control thread: commands run on the screen thread, as the page's edits do today, and never do heavy work themselves.
 
-- **Sampler commands** (step 12). A `SamplerCommand` value, applied to a kit in one place that checks it, makes the change, groups the undo step and asks for any work. Each command names its kit by the instrument id of the [instrument redesign](instruments.md), never by track. The touch screen, Q-Links, MIDI learn, locks and later scripts all call it.
+- **Sampler commands** (step 12; [as built so far](#sampler-commands-step-12)). A command, applied to a kit in one place that checks it, makes the change, groups the undo step and asks for any work. Each command names its kit by the instrument id of the [instrument redesign](instruments.md), never by track. The touch screen, Q-Links, MIDI learn and later scripts all call it. (Locks stay live values on the engine: they move a sound while it plays and change no kit.)
 - **One job service** (step 7), in place of the threads each kind of work had of its own. One set of priorities, one memory account and one way to cancel, with two kinds of worker:
   - sound work (views, pitch, hits, octave copies, stretching, Process);
   - file work (loading sounds, opening kits), so a long analysis never holds up a load.
@@ -150,6 +150,25 @@ When the sound gives something up to keep going, it is counted, named and logged
 | `tests.rs` | The engine's own tests, unchanged |
 
 **Proved the same.** Every sampler bench case (45 renders: the pad mixes, the drum kits, held pads with each filter, movement and the clean read, every grain point, the native split and the two engines on one core, and the song case), 1,500 blocks each, hashed bit for bit before and after: all equal. The workstation's instruction counts for every sampler case are unchanged to the instruction, and the sampler, grain and app tests pass as before.
+
+### Sampler commands (step 12)
+
+A change to a kit is a command: one musical change and the kit it goes to. Every control that means the same change makes the same command, so a touch, a Q-Link and a MIDI Learn control can't drift apart, and each command runs in a test without the screen. The page keeps drawing, taking input and saying what happened; it doesn't change a kit itself. The commands come in families, one pull request each, in the plan's order.
+
+- **Two halves.** `mpfree_sampler_ui::command::Change` is what changes in one kit, and `Change::apply` is the one piece of code that makes it: one undo step, or part of the step before when it carries that step's gesture (one drag, one turn). The tabs' own actions (`PlayAction`, `PadsAction`, `WaveAction`) turn into a `Change` (`change()`) and apply through it, so the tabs' preview and tests take the same path as the app. `mpfree-app`'s `sampler_commands::Command` adds the kit and the gesture, and `sampler_commands::run` finds the kit and applies the change. The page runs every one through `SamplePage::command`, which does what any edit owes: the edit counted, the kit's new view owed to the audio thread, and the Play page told when a pad was renamed or replaced (`Change::renames`).
+- **A kit is named by its instrument id, never by a track.** So a command keeps its shape when kits join the project's list of instruments (phase 3). Until then the list has no kits, and kit `k` in the list of kits answers to a stand-in id (`sampler_commands::kit_id`): `2^31 + k`, past any number a list gives out, since a list counts up one at a time from 2. Stand-in ids are never saved or shown, and no instrument of the list is ever taken for a kit (`kit_of` knows only the stand-ins). Phase 3 swaps `kit_id` and `kit_of` for the list's own ids; nothing that makes or runs a command changes.
+- **Refused, nothing changes**, no undo step is left, and the caller says why in its own words, as before: `Refused` names the model's reason as the log lines always have (`not made (BadPad)`), or `NoKit`.
+- **Nothing a musician sees changed**: every control does what it did, with the same log and hint lines, and the golden screens are the same.
+
+| Family | Commands (`Change`) | Who calls them |
+|---|---|---|
+| A pad's sound (built) | `Pad` (put, copy, paste or clear), `Settings`, `Own`, `Turn`, `Region`, `Gain`, `Name`, `AddLayer`, `RemoveLayer`, `LayerSound`, `PadsPlay`, `KeyFade`, `MapToKeys` | The Pads tab's copy, paste, clear, put and rows; Edit pad (the Play tab) and the Sound section; the Sample page's wave, markers and rows; the Play page's Tune and Decay Q-Links; MIDI Learn; Normalize on a pad; the text keyboard's names; Map to keys |
+| Grains | to come | The Grain tool, the grain start found later (`seat_later`), grain presets |
+| Slices and Put on | to come | The Slice tool, Chop to pads, Put on audio track |
+| The recorder | to come | REC, a take kept, Flatten, Auto-sample's landing |
+| Kits and takes | to come | Loads and kit files, scenes, Recall, a take's own edits (Normalize on a take), undo and redo |
+
+- **Tests:** `mpfree_sampler_ui::command::tests` (`each_change_makes_its_change_and_one_undo_step`, undone as it was; `a_turn_in_one_gesture_is_one_undo_step`; `a_change_that_cant_be_made_changes_nothing`, leaving no step; `decay_turned_to_the_top_plays_out_and_turns_down_from_there`; `the_tabs_actions_make_the_same_changes`); `sampler_commands::tests` (`a_kit_answers_to_its_id_and_no_instrument_of_the_list_is_a_kit`, `a_command_changes_only_the_kit_its_id_names`, `a_refused_command_changes_no_kit_and_says_why_as_the_page_did`, `a_gesture_makes_one_step_across_commands`). The page's own tests and the golden screens pass unchanged.
 
 ### A worst-case grain bench (step 13)
 
@@ -282,7 +301,7 @@ struct Pad     { layers: Vec<Layer>, poly: Poly, choke: Option<u8>, choke_one_wa
 struct Program { kind: ProgramKind /* Drum | Keygroup */, pads: [Option<Pad>; 128], name: String }
 ```
 
-**Commands** are an enum (`SetRegionStart { region, frame }`, `AddMarker`, `Convert { chop, to }`, `AssignToPad`, `RecordStart`, ...). Each command applied to the model returns its inverse, which goes in the undo log. Live gestures (a knob turning) are merged into one undo step per gesture. **As built:** not yet. The Sample page calls the model's methods, each of which returns its undo step; the refactor's step 12 brings `SamplerCommand`.
+**Commands** are an enum (`SetRegionStart { region, frame }`, `AddMarker`, `Convert { chop, to }`, `AssignToPad`, `RecordStart`, ...). Each command applied to the model returns its inverse, which goes in the undo log. Live gestures (a knob turning) are merged into one undo step per gesture. **As built:** a pad's sound goes through [sampler commands](#sampler-commands-step-12) (`Change`, made by the model's methods, each of which keeps its own undo step); the other families follow in step 12.
 
 ## Recording
 
