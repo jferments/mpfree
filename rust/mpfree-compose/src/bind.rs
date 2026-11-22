@@ -127,6 +127,9 @@ pub fn revision(clip: &Clip) -> Revision {
         // Mutate's restore point: Restore changes the notes, which are in.
         original: _,
         holds,
+        // An audio clip's regions: the composer reads notes, and an audio
+        // clip has none.
+        audio: _,
     } = clip;
     let mut h = Fnv::new();
     h.word(*length as u64);

@@ -1,0 +1,195 @@
+//! Audio clips (the audio tracks rethink's phase 2, step 2a): a clip whose
+//! content is a short list of regions of recordings instead of notes, in
+//! a cell of an audio track (docs/dev/design/audio-tracks.md, "Phase 2").
+//!
+//! - **A clip of regions.** [`AudioClip`] holds up to [`MAX_CLIP_REGIONS`]
+//!   [`ClipRegion`]s: clip ticks `start..end` play recording `rec` from
+//!   frame `src`, at the rate it was recorded at. They are the song lane's
+//!   regions (`mpfree_audiotracks::Region`) on the clip's own ticks, naming
+//!   a recording by its lasting id ([`RecId`]) rather than the engine's
+//!   take number. A clip names its recordings; it never holds audio, so a
+//!   copy names the same ones.
+//! - **Fades kept through a cut.** A region cut out of a longer one (Song
+//!   to scenes at a section's edge) keeps exactly its share of that
+//!   region's fades: `into` and `left` are the frames of the region it was
+//!   cut from before and after it (0 for one never cut), and its fades are
+//!   measured on that whole region.
+//! - **Once.** A once clip stops at its length like any clip, and that
+//!   stop rings: what sounds plays on, the last region to
+//!   [`AudioClip::last_frame`], the frame it was made to end on. So a
+//!   backing track ends on its own last frame at any tempo.
+//! - **One place for the rules.** [`AudioClip::check`] holds the clip's
+//!   own; `Clip::check` adds that an audio clip holds nothing a note clip
+//!   holds, and `Project::check` that audio clips live on audio tracks and
+//!   only there. 16 regions is a budget for the MPC, not part of the
+//!   format: the save writes a line a region.
+//!
+//! Whether each recording named is in the project's recordings table, and
+//! has the frames named, is the audio tracks part's to say: that part is
+//! not this crate's ([`AudioClip::recordings`] lists what a clip names).
+
+use mpfree_transport::time::{valid_bpm, Tick};
+
+use crate::ModelError;
+
+/// The most regions an audio clip holds: a budget for the MPC's audio
+/// thread, not part of the saved format.
+pub const MAX_CLIP_REGIONS: usize = 16;
+
+/// The highest gain a region or a clip takes (+12 dB), as the song lane's
+/// regions.
+pub const MAX_GAIN: f32 = 4.0;
+
+/// A recording's lasting id, as `mpfree_audiotracks::RecordingId` gives
+/// it: what an audio clip names, so it survives saves, opens and the
+/// engine's take numbers changing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RecId(pub u128);
+
+/// One region of an audio clip: clip ticks `start..end` play recording
+/// `rec` from frame `src` (which may be below 0: those frames are silent).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClipRegion {
+    pub start: Tick,
+    pub end: Tick,
+    pub rec: RecId,
+    pub src: i64,
+    pub gain: f32,
+    /// Its fade in and fade out in frames, measured on the region it was
+    /// cut from (see `into` and `left`).
+    pub fade_in: u32,
+    pub fade_out: u32,
+    /// Frames of the region it was cut from before its start, and after
+    /// its end: 0 for a region never cut.
+    pub into: u32,
+    pub left: u32,
+}
+
+impl ClipRegion {
+    /// A region of `rec` from frame `src`, on clip ticks `start..end`, at
+    /// full gain with no fades.
+    pub fn new(start: Tick, end: Tick, rec: RecId, src: i64) -> ClipRegion {
+        ClipRegion {
+            start,
+            end,
+            rec,
+            src,
+            gain: 1.0,
+            fade_in: 0,
+            fade_out: 0,
+            into: 0,
+            left: 0,
+        }
+    }
+}
+
+/// An audio clip's content ([`crate::Clip::audio`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AudioClip {
+    /// In order, none overlapping, all inside the clip's length.
+    pub regions: Vec<ClipRegion>,
+    /// The tempo it was made at (BPM): what the card shows, and what Fit
+    /// to tempo fits from.
+    pub bpm: f64,
+    /// The clip's own gain, on top of each region's (the card's Gain row).
+    pub gain: f32,
+    /// The frame of the last region's recording its sound ends on: where
+    /// a once clip's ring stops.
+    pub last_frame: i64,
+}
+
+impl AudioClip {
+    /// A clip of one region: recording `rec` from frame `src` to frame
+    /// `last_frame`, on clip ticks `0..length`, made at `bpm`.
+    pub fn of(rec: RecId, src: i64, last_frame: i64, length: Tick, bpm: f64) -> AudioClip {
+        AudioClip {
+            regions: vec![ClipRegion::new(0, length, rec, src)],
+            bpm,
+            gain: 1.0,
+            last_frame,
+        }
+    }
+
+    /// Every value in range for a clip `length` ticks long: 1 to
+    /// [`MAX_CLIP_REGIONS`] regions, in order, none overlapping, each
+    /// inside `0..length` with ticks to play; gains 0 to [`MAX_GAIN`]; a
+    /// tempo MPFree plays; and `last_frame` past the last region's first
+    /// frame. `BadAudioClip` otherwise.
+    pub fn check(&self, length: Tick) -> Result<(), ModelError> {
+        let gain_ok = |g: f32| g.is_finite() && (0.0..=MAX_GAIN).contains(&g);
+        let ok = !self.regions.is_empty()
+            && self.regions.len() <= MAX_CLIP_REGIONS
+            && valid_bpm(self.bpm)
+            && gain_ok(self.gain)
+            && self
+                .regions
+                .iter()
+                .all(|r| 0 <= r.start && r.start < r.end && r.end <= length && gain_ok(r.gain))
+            && self.regions.windows(2).all(|w| w[0].end <= w[1].start)
+            && self.regions.last().is_some_and(|r| self.last_frame > r.src);
+        if ok {
+            Ok(())
+        } else {
+            Err(ModelError::BadAudioClip)
+        }
+    }
+
+    /// The recordings it names, in region order (one may repeat).
+    pub fn recordings(&self) -> impl Iterator<Item = RecId> + '_ {
+        self.regions.iter().map(|r| r.rec)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BAR: Tick = 4 * mpfree_transport::time::PPQ as Tick;
+
+    fn two_regions() -> AudioClip {
+        let mut a = AudioClip::of(RecId(7), 0, 88_200, 2 * BAR, 120.0);
+        a.regions[0].end = BAR;
+        a.regions
+            .push(ClipRegion::new(BAR, 2 * BAR, RecId(9), 44_100));
+        a.last_frame = 88_200;
+        a
+    }
+
+    #[test]
+    fn a_sound_clip_passes_and_each_bad_value_is_refused() {
+        let a = two_regions();
+        assert_eq!(a.check(2 * BAR), Ok(()));
+        assert_eq!(a.recordings().collect::<Vec<_>>(), [RecId(7), RecId(9)]);
+        let bad = |f: &dyn Fn(&mut AudioClip)| {
+            let mut b = two_regions();
+            f(&mut b);
+            b.check(2 * BAR)
+        };
+        let refused = Err(ModelError::BadAudioClip);
+        assert_eq!(bad(&|a| a.regions.clear()), refused, "no regions");
+        assert_eq!(
+            bad(&|a| a.regions = vec![ClipRegion::new(0, 10, RecId(1), 0); 17]),
+            refused,
+            "17 regions"
+        );
+        assert_eq!(bad(&|a| a.regions.swap(0, 1)), refused, "out of order");
+        assert_eq!(bad(&|a| a.regions[1].start = BAR - 1), refused, "overlap");
+        assert_eq!(
+            bad(&|a| a.regions[1].end = 2 * BAR + 1),
+            refused,
+            "past the end"
+        );
+        assert_eq!(bad(&|a| a.regions[0].start = -1), refused, "before 0");
+        assert_eq!(bad(&|a| a.regions[0].end = 0), refused, "no ticks");
+        assert_eq!(bad(&|a| a.regions[0].gain = f32::NAN), refused, "gain");
+        assert_eq!(bad(&|a| a.gain = MAX_GAIN * 2.0), refused, "clip gain");
+        assert_eq!(bad(&|a| a.bpm = 0.0), refused, "tempo");
+        assert_eq!(bad(&|a| a.last_frame = 44_100), refused, "last frame");
+        // 16 regions fit.
+        let mut full = two_regions();
+        full.regions = (0..16)
+            .map(|i| ClipRegion::new(i * 10, i * 10 + 10, RecId(1), 0))
+            .collect();
+        assert_eq!(full.check(2 * BAR), Ok(()));
+    }
+}

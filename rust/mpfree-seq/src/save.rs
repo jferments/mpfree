@@ -98,6 +98,13 @@
 //! skip the line and open the track as an empty note track; a part with
 //! none is still `mpfree-clips 2`.
 //!
+//! An audio track's clip (phase 2, [`crate::audio`]) has an `audioclip`
+//! line (the tempo it was made at, its gain and its last frame) and a
+//! `region` line a region: start and end ticks, the recording's lasting
+//! id (32 hex digits), its first frame, gain, fade in, fade out, `into`
+//! and `left`. A project with one needs `audio-clips` (the app's project
+//! gate), so a build from before refuses it before reading this part.
+//!
 //! A `tempo` line is a song's tempo point (tempo ramps): its tick, its
 //! tempo, and `ramp` when it glides to the next point. An older build
 //! skips them and plays the project's tempo.
@@ -326,6 +333,16 @@ fn clip_body(s: &mut String, c: &Clip) {
     if c.step != crate::steps::DEFAULT_SIZE {
         if let Some(name) = crate::steps::size_name(c.step) {
             let _ = writeln!(s, "step {name}");
+        }
+    }
+    if let Some(a) = &c.audio {
+        let _ = writeln!(s, "audioclip {} {} {}", a.bpm, a.gain, a.last_frame);
+        for r in &a.regions {
+            let _ = writeln!(
+                s,
+                "region {} {} {:032x} {} {} {} {} {} {}",
+                r.start, r.end, r.rec.0, r.src, r.gain, r.fade_in, r.fade_out, r.into, r.left
+            );
         }
     }
     // Pressure first: the notes name runs of it. Only what the notes and
@@ -761,6 +778,31 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 let word = w.next().ok_or_else(|| bad("holds"))?;
                 c.holds = crate::Holds::from_word(word).unwrap_or_default();
             }
+            // An audio clip (phase 2): its tempo, gain and last frame, then
+            // a line a region, checked with the clip at its end.
+            ("audioclip", At::Clip(c, _)) => {
+                let (bpm, gain, last_frame) = (num(w.next()), num(w.next()), num(w.next()));
+                let (Some(bpm), Some(gain), Some(last_frame)) = (bpm, gain, last_frame) else {
+                    return Err(bad("audioclip"));
+                };
+                if c.audio.is_some() {
+                    return Err(bad("audioclip"));
+                }
+                c.audio = Some(crate::AudioClip {
+                    regions: Vec::new(),
+                    bpm,
+                    gain,
+                    last_frame,
+                });
+            }
+            ("region", At::Clip(c, _)) => {
+                let a = c.audio.as_mut().ok_or_else(|| bad("region"))?;
+                if a.regions.len() >= crate::MAX_CLIP_REGIONS {
+                    return Err(bad("too many regions"));
+                }
+                a.regions
+                    .push(clip_region(&mut w).ok_or_else(|| bad("region"))?);
+            }
             ("launch", At::Top) => p.launch = launch(&mut w).ok_or_else(|| bad("launch"))?,
             ("touch", At::Clip(c, _)) => {
                 for x in w {
@@ -1174,6 +1216,28 @@ fn step_words<'a>(mut n: Note, w: impl Iterator<Item = &'a str>) -> Option<Note>
 
 fn num<T: FromStr>(w: Option<&str>) -> Option<T> {
     w?.parse().ok()
+}
+
+/// An audio clip's `region` line after its word: start and end ticks, the
+/// recording's lasting id (32 hex digits), its first frame, gain, fades,
+/// `into` and `left`.
+fn clip_region<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<crate::ClipRegion> {
+    let (start, end) = (num(w.next())?, num(w.next())?);
+    let rec = w
+        .next()
+        .filter(|h| h.len() == 32)
+        .and_then(|h| u128::from_str_radix(h, 16).ok())?;
+    Some(crate::ClipRegion {
+        start,
+        end,
+        rec: crate::RecId(rec),
+        src: num(w.next())?,
+        gain: num(w.next())?,
+        fade_in: num(w.next())?,
+        fade_out: num(w.next())?,
+        into: num(w.next())?,
+        left: num(w.next())?,
+    })
 }
 
 fn flag(w: Option<&str>) -> Option<bool> {
@@ -2091,6 +2155,78 @@ mod tests {
             .placements
             .push(Placement::new(1, id, 0, 3840));
         assert_eq!(placed.check(), Err(crate::ModelError::AudioTrack));
+    }
+
+    /// An audio clip (phase 2) reads back exactly, its regions' ids,
+    /// fades and cut counts included; one out of place or out of range is
+    /// refused.
+    #[test]
+    fn audio_clips_read_back_and_bad_ones_are_refused() {
+        use crate::{AudioClip, ClipRegion, RecId};
+        let mut p = full();
+        let mut a = Track::new_audio("Vocal", 5);
+        a.id = crate::TrackId(p.next_track.max(1));
+        p.next_track = a.id.0 + 1;
+        let rec = RecId(0x5b2f_0d9c_41e8_a776_3c0f_12ab_9e4d_8c01);
+        let mut clip = Clip::new("Hook", 7680);
+        let mut audio = AudioClip::of(rec, 1200, 90_000, 3840, 120.5);
+        audio.regions[0].fade_in = 300;
+        audio.regions.push(ClipRegion {
+            gain: 0.5,
+            fade_out: 64,
+            into: 22_050,
+            left: 7,
+            ..ClipRegion::new(3840, 7680, RecId(3), -40)
+        });
+        audio.gain = 0.75;
+        clip.audio = Some(audio);
+        clip.once = true;
+        a.slots[2] = Some(clip);
+        p.tracks.insert(1, a);
+        p.check().unwrap();
+        let text = to_text(&p);
+        assert!(
+            text.contains(
+                "clip 2 7680 Hook\nonce\naudioclip 120.5 0.75 90000\n\
+                 region 0 3840 5b2f0d9c41e8a7763c0f12ab9e4d8c01 1200 1 300 0 0 0\n\
+                 region 3840 7680 00000000000000000000000000000003 -40 0.5 0 64 22050 7\nend\n"
+            ),
+            "{text}"
+        );
+        assert_eq!(from_text(&text).unwrap(), p);
+        // Out of place: a region with no audioclip line before it, two
+        // audioclip lines, an id that isn't 32 hex digits, an audio clip
+        // on a note track, a note clip on an audio track, an audio clip
+        // that also holds a note, and one whose regions overlap.
+        let refused = |t: String, why: &str| assert!(from_text(&t).is_err(), "{why}");
+        refused(
+            text.replace("audioclip 120.5 0.75 90000\n", ""),
+            "no audioclip",
+        );
+        refused(
+            text.replace(
+                "audioclip 120.5 0.75 90000\n",
+                "audioclip 120.5 0.75 90000\naudioclip 1 1 1\n",
+            ),
+            "two",
+        );
+        refused(
+            text.replace("5b2f0d9c41e8a7763c0f12ab9e4d8c01", "5b2f"),
+            "short id",
+        );
+        let mut on_notes = p.clone();
+        let c = on_notes.tracks[1].slots[2].take();
+        on_notes.tracks[0].slots[5] = c;
+        assert_eq!(on_notes.check(), Err(crate::ModelError::AudioTrack));
+        let mut with_note = p.clone();
+        let c = with_note.tracks[1].slots[2].as_mut().unwrap();
+        c.notes.push(crate::Note::new(0, 240, 36, 100));
+        assert_eq!(with_note.check(), Err(crate::ModelError::BadAudioClip));
+        let mut overlap = p.clone();
+        let c = overlap.tracks[1].slots[2].as_mut().unwrap();
+        c.audio.as_mut().unwrap().regions[1].start = 3000;
+        assert_eq!(overlap.check(), Err(crate::ModelError::BadAudioClip));
+        refused(to_text(&overlap), "overlap");
     }
 
     #[test]

@@ -126,8 +126,8 @@ pub const FORMAT: u32 = 2;
 /// hasn't got, by feature, space-separated (`needs = audio-tracks`). A
 /// build that lacks one doesn't open the project, and says which
 /// ([`check`]; docs/dev/design/project-safety.md). Written while the
-/// project has a synth that no track has ([`SYNTHS_WITHOUT_TRACKS`]), or
-/// an audio track ([`AUDIO_TRACKS`]).
+/// project has a synth that no track has ([`SYNTHS_WITHOUT_TRACKS`]), an
+/// audio track ([`AUDIO_TRACKS`]), or an audio clip ([`AUDIO_CLIPS`]).
 pub const NEEDS_KEY: &str = "needs";
 /// A project with a synth in a free place (the instrument redesign's step
 /// 6: one picked for the pads, no track's): an older build would read the
@@ -140,8 +140,13 @@ pub const SYNTHS_WITHOUT_TRACKS: &str = "synths-without-tracks";
 /// The clips part is `mpfree-clips 3` too, which such a build doesn't
 /// read; the line says it in words before anything is read.
 pub const AUDIO_TRACKS: &str = "audio-tracks";
+/// A project with an audio clip in a cell (the audio tracks rethink,
+/// phase 2): a build from before would refuse the clips part only after
+/// starting to read it, or, before phase 1, open the clip as an empty note
+/// clip; the line says it in words before anything is read.
+pub const AUDIO_CLIPS: &str = "audio-clips";
 /// The features this build has, of those a project can need.
-pub const KNOWN_NEEDS: &[&str] = &[SYNTHS_WITHOUT_TRACKS, AUDIO_TRACKS];
+pub const KNOWN_NEEDS: &[&str] = &[SYNTHS_WITHOUT_TRACKS, AUDIO_TRACKS, AUDIO_CLIPS];
 
 // ------------------------------------------------------------ the loop's side
 
@@ -324,6 +329,12 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     if c.clips.tracks.iter().any(mpfree_seq::Track::is_audio) {
         needs.push(AUDIO_TRACKS);
     }
+    if c.clips
+        .cell_clips()
+        .any(|(_, _, clip)| clip.audio.is_some())
+    {
+        needs.push(AUDIO_CLIPS);
+    }
     if !needs.is_empty() {
         extra.push((NEEDS_KEY.to_string(), needs.join(" ")));
     }
@@ -348,6 +359,12 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
 /// ever, and things a build can't make (an effect, an instrument, a
 /// sound) are left out and said: neither stops the open.
 pub fn check(snap: &Snapshot) -> Result<u32, String> {
+    check_against(snap, KNOWN_NEEDS)
+}
+
+/// [`check`] for a build that has the features `known`: how an older
+/// build's gate answers, for the tests.
+fn check_against(snap: &Snapshot, known: &[&str]) -> Result<u32, String> {
     let format = match snap.meta.extra.iter().find(|(k, _)| k == FORMAT_KEY) {
         None => 1,
         Some((_, v)) => match v.trim().parse::<u32>() {
@@ -368,7 +385,7 @@ pub fn check(snap: &Snapshot) -> Result<u32, String> {
         .filter(|(k, _)| k == NEEDS_KEY)
         .flat_map(|(_, v)| v.split_whitespace())
     {
-        if !KNOWN_NEEDS.contains(&need) && !lacking.contains(&need) {
+        if !known.contains(&need) && !lacking.contains(&need) {
             lacking.push(need);
         }
     }
@@ -3093,6 +3110,49 @@ mod tests {
         assert_eq!(check(&snap), Ok(FORMAT));
     }
 
+    /// Phase 2: a project with an audio clip says it needs audio clips on
+    /// project.txt's needs line. Phase 1's gate (its features: synths
+    /// without tracks and audio tracks) refuses it in plain words before
+    /// reading any part, so the project open in that build stays as it
+    /// was (`opening` is the gate, and the app swaps only on its Ok); this
+    /// build opens it.
+    #[test]
+    fn a_project_with_an_audio_clip_needs_audio_clips_and_phase_1_refuses_it() {
+        let mut c = collected(String::new(), InstrumentList::new().text());
+        let mut t = mpfree_seq::Track::new_audio("Audio 1", 0);
+        c.clips.give_track_id(&mut t);
+        let mut clip = mpfree_seq::Clip::new("Hook", 3840);
+        clip.audio = Some(mpfree_seq::AudioClip::of(
+            mpfree_seq::RecId(5),
+            0,
+            88_200,
+            3840,
+            120.0,
+        ));
+        t.slots[0] = Some(clip);
+        c.clips.tracks.push(t);
+        c.clips.check().unwrap();
+        let snap = snapshot(&c, Vec::new());
+        let line = snap.meta.extra.iter().find(|(k, _)| k == NEEDS_KEY);
+        assert_eq!(
+            line.map(|(_, v)| v.as_str()),
+            Some("audio-tracks audio-clips")
+        );
+        assert_eq!(check(&snap), Ok(FORMAT));
+        let phase_1 = [SYNTHS_WITHOUT_TRACKS, AUDIO_TRACKS];
+        assert_eq!(
+            check_against(&snap, &phase_1),
+            Err(
+                "it needs audio-clips, which this MPFree hasn't got. Update MPFree to open it"
+                    .to_string()
+            )
+        );
+        // Without the clip, the line names audio tracks alone.
+        c.clips.tracks.last_mut().unwrap().slots[0] = None;
+        let snap = snapshot(&c, Vec::new());
+        assert_eq!(check_against(&snap, &phase_1), Ok(FORMAT));
+    }
+
     /// Phase 0's gate (docs/dev/design/project-safety.md): a project that
     /// needs something this build hasn't got, or has a part this build
     /// can't read (clips saved as `mpfree-clips 9` here, as an
@@ -3111,11 +3171,11 @@ mod tests {
         let mut needs = good.clone();
         needs.meta.extra.push((
             NEEDS_KEY.to_string(),
-            "audio-clips stretch audio-clips".to_string(),
+            "loop-points stretch loop-points".to_string(),
         ));
         assert_eq!(
             opening(&needs, 44_100, "x", none).err().as_deref(),
-            Some("it needs audio-clips, stretch, which this MPFree hasn't got. Update MPFree to open it")
+            Some("it needs loop-points, stretch, which this MPFree hasn't got. Update MPFree to open it")
         );
 
         let with_part = |name: &str, text: &str| {

@@ -51,10 +51,13 @@
 //! **Mutate** ([`mutate`]) makes a variation of a clip's notes and keeps
 //! the clip as it was beside it ([`Clip::original`]), for Restore.
 //!
-//! Audio clips come in a later roadmap step.
+//! **Audio clips** ([`audio`], the audio tracks rethink's phase 2) are
+//! clips of an audio track whose content is regions of its recordings
+//! ([`Clip::audio`]) instead of notes.
 #![forbid(unsafe_code)]
 
 pub mod arrange;
+pub mod audio;
 pub mod loops;
 pub mod mutate;
 pub mod notes;
@@ -64,6 +67,7 @@ pub mod steps;
 pub mod time_edit;
 
 pub use arrange::{Arrangement, Marker, MorphRows, Placement, SongClips, TempoPoint};
+pub use audio::{AudioClip, ClipRegion, RecId, MAX_CLIP_REGIONS};
 pub use mutate::{Amount, Original, Pitches};
 pub use scenes::{
     Follow, FollowAction, ListStep, Scene, SceneSettings, SongList, TrackProgram, MAX_SCENE_NAME,
@@ -931,6 +935,11 @@ pub struct Clip {
     pub original: Option<Box<Original>>,
     /// Whether its notes are pad hits or MIDI notes (step 5c).
     pub holds: Holds,
+    /// An audio track's clip: the regions of its recordings it plays
+    /// (the audio tracks rethink's phase 2, [`audio`]). Such a clip holds
+    /// nothing else a note clip holds, plays at normal speed, and lives on
+    /// an audio track; a clip on an audio track always has one.
+    pub audio: Option<AudioClip>,
 }
 
 /// A clip's settings that are not its notes: how fast it plays, its own
@@ -1006,11 +1015,16 @@ pub enum ModelError {
     /// A song's tempo point is before the start, out of range, too near
     /// another (a 1/16 at least) or one too many.
     BadTempo,
-    /// A clip or a song block on an audio track: until audio clips come
-    /// (the audio tracks rethink's phase 2), an audio track's cells are
-    /// empty and its song material is its regions, in the audio tracks
-    /// part.
+    /// A note or Loop clip, or a song block, on an audio track, or an
+    /// audio clip on another kind of track: an audio track's cells hold
+    /// audio clips only ([`Clip::audio`]), and its song material is its
+    /// regions, in the audio tracks part (song blocks of audio clips come
+    /// with phase 2's step 2d).
     AudioTrack,
+    /// An audio clip out of range ([`AudioClip::check`]), or one that also
+    /// holds what a note clip holds (notes, locks, pressure, moves, a
+    /// loop, a speed, swing, quantise, a direction or a program).
+    BadAudioClip,
 }
 
 impl Clip {
@@ -1104,6 +1118,7 @@ impl Clip {
             step: steps::DEFAULT_SIZE,
             original: None,
             holds: Holds::Hits,
+            audio: None,
         }
     }
 
@@ -1272,6 +1287,23 @@ impl Clip {
         }
         if let Some(o) = &self.original {
             o.check(&self.touch)?;
+        }
+        if let Some(a) = &self.audio {
+            let plain = self.notes.is_empty()
+                && self.locks.is_empty()
+                && self.touch.is_empty()
+                && self.moves.is_empty()
+                && self.original.is_none()
+                && self.looped.is_none()
+                && self.speed == Speed::NORMAL
+                && self.swing.is_none()
+                && self.quantise.is_none()
+                && self.direction == Direction::Forward
+                && self.program.is_none();
+            if !plain {
+                return Err(ModelError::BadAudioClip);
+            }
+            a.check(self.length)?;
         }
         let len = u32::try_from(self.length).map_err(|_| ModelError::ClipLength)?;
         self.moves.check(len).map_err(|_| ModelError::BadMoves)
@@ -1581,8 +1613,9 @@ pub enum TrackKind {
     /// line input or the mix and plays what it recorded on its own mixer
     /// channel. Its recordings, regions and settings (input, monitor) are
     /// the audio tracks part's (`mpfree-audiotracks`), found by the
-    /// track's id. It holds no note clip and no song block: until audio
-    /// clips come (phase 2) its cells stay empty ([`ModelError::AudioTrack`]).
+    /// track's id. Its cells hold audio clips ([`Clip::audio`], phase 2)
+    /// and nothing else, and it holds no song block until step 2d
+    /// ([`ModelError::AudioTrack`]).
     Audio,
 }
 
@@ -1915,10 +1948,10 @@ impl Project {
     pub fn check(&self) -> Result<(), ModelError> {
         self.check_tracks()?;
         for t in &self.tracks {
-            if t.is_audio() && t.slots.clips().next().is_some() {
-                return Err(ModelError::AudioTrack);
-            }
             for c in t.slots.clips() {
+                if c.audio.is_some() != t.is_audio() {
+                    return Err(ModelError::AudioTrack);
+                }
                 c.check()?;
                 if c.looped.is_some() != t.is_loops() {
                     return Err(ModelError::BadLoop);
