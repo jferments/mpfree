@@ -202,7 +202,7 @@ fn count(o: &Options) {
         // A step edit costs far more a block than an engine (a detent
         // compiles a full clip), and costs the same every block, so the
         // step cases count a tenth of the blocks after a short warm-up,
-        // and the big-song cases a hundredth (`cases::blocks_for`); the
+        // and the big cases one in 200 (`cases::blocks_for`); the
         // listing tells the gate how many each case counted.
         let (warm, n) = cases::blocks_for(&c, blocks);
         for b in 0..warm {
@@ -1001,8 +1001,9 @@ fn main() -> ExitCode {
         {
             continue;
         }
-        // The big-song cases take a fifth of a second a block: a few do.
-        let (warm, n) = if c.name.starts_with(cases::BIG_SONG) {
+        // The big-song cases take a fifth of a second a block, the note
+        // editor's biggest edit about a second: a few do.
+        let (warm, n) = if cases::big(&c) {
             cases::blocks_for(&c, blocks)
         } else {
             (50, blocks)

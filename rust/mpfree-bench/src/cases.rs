@@ -2003,6 +2003,18 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(arrange_step));
     v.push(measured(arrange_save));
     v.push(measured(song_view_frame));
+    for what in [
+        RollFrame::Built,
+        RollFrame::BuiltPressure,
+        RollFrame::Plays,
+        RollFrame::Scrolled,
+        RollFrame::Zoomed,
+        RollFrame::Switched,
+    ] {
+        v.push(measured(|| roll_frame(what)));
+    }
+    v.push(measured(|| note_edit(NoteEditCase::VelocityAndUndo)));
+    v.push(measured(|| note_edit(NoteEditCase::TransposeAll)));
     v.push(measured(|| live_arps(rate, 4)));
     v.push(measured(|| live_arps(rate, 16)));
     v.push(measured(|| looper(rate, 60)));
@@ -3198,13 +3210,29 @@ pub fn off_the_audio_path(c: &Case) -> bool {
 /// blocks than the rest ([`blocks_for`]).
 pub const BIG_SONG: &str = "Arrange: ";
 
+/// What the note editor's transpose of every note in a full clip is
+/// called (piano roll plan 0C.3). Its edit takes every note out and puts
+/// them back one at a time, in the clip and in the joined take, about a
+/// second a block on a desktop today, so it counts and times as few
+/// blocks as the big-song cases ([`blocks_for`]).
+pub const BIG_EDIT: &str = "Note editor: 8,192 notes, all picked";
+
+/// Whether `c` counts and times far fewer blocks than the rest: the
+/// big-song cases ([`BIG_SONG`]) and the note editor's biggest edit
+/// ([`BIG_EDIT`]).
+pub fn big(c: &Case) -> bool {
+    c.name.starts_with(BIG_SONG) || c.name.starts_with(BIG_EDIT)
+}
+
 /// Blocks to warm up for and then count, of `blocks` asked for: an engine
 /// counts every one after 50; the control half's step cases and the
 /// screen's cases a tenth of them after 5, since a step edit or a frame
-/// costs far more a block than an engine and the same every block; the big-song cases one in 200 (at least one)
-/// after one, since a block of theirs is billions of instructions.
+/// costs far more a block than an engine and the same every block; the
+/// big cases ([`big`]: the big song's and the note editor's biggest edit)
+/// one in 200 (at least one) after one, since a block of theirs is
+/// billions of instructions.
 pub fn blocks_for(c: &Case, blocks: u64) -> (u64, u64) {
-    if c.name.starts_with(BIG_SONG) {
+    if big(c) {
         (1, (blocks / 200).max(1))
     } else if off_the_audio_path(c) {
         (5, (blocks / 10).max(1))
@@ -3589,6 +3617,309 @@ fn song_view_frame() -> Case {
             r.fill(0.0);
             l[0] = drawn.len() as f32;
             r[0] = page.first_bar as f32;
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// What a piano roll case does each frame (piano roll plan 0C.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RollFrame {
+    /// A new copy of the clip each frame (the clip changed): the roll
+    /// built again from its notes and drawn.
+    Built,
+    /// The same, every note with a run of pad pressure.
+    BuiltPressure,
+    /// The playhead moved while the clip plays: only it moves.
+    Plays,
+    /// Two bars shown, scrolled on a sixteenth each frame, as a finger on
+    /// the ruler does.
+    Scrolled,
+    /// Zoomed a step each frame from a bar across the roll to the whole
+    /// clip and back, as a pinch does.
+    Zoomed,
+    /// Two full clips shown in turn, a frame each: the Sequencer's clip
+    /// switched, each keeping its own view.
+    Switched,
+}
+
+/// What [`roll_page`] sets up: the screen, the time page, its state, a
+/// canvas and the two clips' edit pictures.
+type RollPage = (
+    mpfree_ui::Ui,
+    mpfree_time_ui::view::TimePage,
+    mpfree_time_ui::view::TimeState,
+    mpfree_ui::SoftCanvas,
+    [Box<mpfree_time_ui::view::EditInfo>; 2],
+);
+
+/// The note editor's page on the full clip of [`step_song`] (8,192 notes,
+/// 8 bars), as the Sequencer shows it: the transport playing, the editor
+/// open with its drawer closed, painted once. With `pressure`, every note
+/// has a run of pad pressure (as many points each as the clip holds,
+/// [`mpfree_seq::MAX_TOUCH_POINTS`]); with `two`, slot 1 holds a copy.
+fn roll_page(pressure: bool, two: bool) -> RollPage {
+    use mpfree_play::Takes;
+    use mpfree_seq::TouchPoint;
+    use mpfree_time_ui::editor::Editor;
+    use mpfree_time_ui::view::{self as tv, EditInfo, TimePage, TimeState, TransportInfo};
+    use mpfree_ui::widgets::{Header, Label};
+    use mpfree_ui::{Align, Fonts, SoftCanvas, Theme, Tone, Ui};
+    use std::sync::Arc;
+    let (mut song, launches) = step_song();
+    if pressure {
+        let c = song.tracks[0].slots[0].as_mut().expect("the clip");
+        let each = (mpfree_seq::MAX_TOUCH_POINTS / c.notes.len()).clamp(1, 8);
+        for k in 0..c.notes.len() {
+            let len = c.notes[k].len.max(1) as u32;
+            let run: Vec<TouchPoint> = (0..each)
+                .map(|j| TouchPoint {
+                    at: len * j as u32 / each as u32,
+                    value: (40 + 80 * j / each) as u8,
+                })
+                .collect();
+            let t = c.add_touch(&run).expect("room for the pressure");
+            c.notes[k].touch = t;
+        }
+    }
+    if two {
+        let copy = song.tracks[0].slots[0].clone();
+        song.tracks[0].slots[1] = copy;
+    }
+    let playing = TransportInfo {
+        state: mpfree_transport::State::Playing,
+        ..TransportInfo::default()
+    };
+    let st = TimeState::from_engine(playing, &song, &launches, Some(0), &Takes::default());
+    let bar = 4 * i64::from(PPQ);
+    let info = |slot: usize, rev: u64| {
+        let clip = song.clip(0, slot).expect("the clip");
+        Box::new(EditInfo {
+            editor: Editor::new(0, slot, clip),
+            clip: Arc::new(clip.clone()),
+            rev,
+            track_name: "Keys".into(),
+            bar,
+            answer: Default::default(),
+        })
+    };
+    let infos = [info(0, 1), info(if two { 1 } else { 0 }, 2)];
+    let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+    ui.add("header", Header::new(&["Play", "Sequencer"]));
+    ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+    let mut page = TimePage::add_to(&mut ui).expect("the time page");
+    ui.show(tv::CLIPS_PAGE).expect("the clips page");
+    let mut st = st;
+    st.edit = Some(infos[0].clone());
+    let mut canvas = SoftCanvas::new(1280, 800);
+    // The roll gets its size on the first paint, then its opening view.
+    for _ in 0..2 {
+        page.update(&mut ui, &st);
+        ui.paint(&mut canvas);
+    }
+    (ui, page, st, canvas, infos)
+}
+
+/// The piano roll on a full clip of 8,192 notes, a frame a block, as the
+/// screen draws it (piano roll plan 0C.3; see [`RollFrame`]): the page
+/// updated and painted in software at the MPC's size.
+fn roll_frame(what: RollFrame) -> Case {
+    use mpfree_time_ui::editor::NoteGrid;
+    use mpfree_time_ui::view as tv;
+    use std::sync::Arc;
+    let (mut ui, mut page, mut st, mut canvas, infos) = roll_page(
+        what == RollFrame::BuiltPressure,
+        what == RollFrame::Switched,
+    );
+    // The clip's second copy, for a new one each frame.
+    let copies = [infos[0].clip.clone(), Arc::new((*infos[0].clip).clone())];
+    let area = ui.rect_of(tv::NOTES).expect("the roll's area");
+    let (length, bar) = (infos[0].clip.length, infos[0].bar);
+    // Scrolled: two bars across; zoomed: a bar across to the whole clip.
+    let roll = ui
+        .get::<NoteGrid>(tv::NOTES)
+        .map(|g| g.roll_rect(area))
+        .expect("the roll");
+    let roll_w = roll.w;
+    let ppt_of = move |ticks: i64| f64::from(roll_w) / ticks as f64;
+    if let Some(g) = ui.get_mut::<NoteGrid>(tv::NOTES) {
+        if what == RollFrame::Scrolled {
+            g.view = g
+                .view
+                .zoom_time(roll, length, 128, ppt_of(2 * bar), 0.0, roll.x);
+        }
+    }
+    page.update(&mut ui, &st);
+    ui.paint(&mut canvas);
+    let (name, what_text) = match what {
+        RollFrame::Built => (
+            "Piano roll: 8,192 notes, built and drawn",
+            "a new copy of the clip: the roll built again from its notes, updated and painted",
+        ),
+        RollFrame::BuiltPressure => (
+            "Piano roll: 8,192 notes with pressure, built and drawn",
+            "as built and drawn, every note with a run of pad pressure drawn along it",
+        ),
+        RollFrame::Plays => (
+            "Piano roll: 8,192 notes, a frame while it plays",
+            "the playhead moved: the roll's playhead set, the page painted",
+        ),
+        RollFrame::Scrolled => (
+            "Piano roll: 8,192 notes, scrolled a sixteenth a frame",
+            "two bars across, the view moved on a sixteenth, the page updated and painted",
+        ),
+        RollFrame::Zoomed => (
+            "Piano roll: 8,192 notes, zoomed from a bar to the whole clip",
+            "the view zoomed a step from a bar across to the whole clip and back, painted",
+        ),
+        RollFrame::Switched => (
+            "Piano roll: two clips of 8,192 notes, switched each frame",
+            "the other clip shown, its view kept: the roll built again and painted",
+        ),
+    };
+    Case {
+        name: name.to_string(),
+        module: SCREEN,
+        what: what_text,
+        block: Box::new(move |b, l, r| {
+            st.transport.position += i64::from(PPQ) / 8;
+            match what {
+                RollFrame::Built | RollFrame::BuiltPressure => {
+                    if let Some(e) = st.edit.as_mut() {
+                        e.clip = copies[(b % 2) as usize].clone();
+                        e.rev += 1;
+                    }
+                }
+                RollFrame::Plays => {}
+                RollFrame::Scrolled => {
+                    if let Some(g) = ui.get_mut::<NoteGrid>(tv::NOTES) {
+                        let mut v = g.view;
+                        v.start = (b as i64 * STEP) % (length - 2 * bar);
+                        g.view = v.clamped(roll, length, 128);
+                    }
+                }
+                RollFrame::Zoomed => {
+                    // 16 steps each way, a bar across to the whole clip.
+                    let k = (b % 32) as i64;
+                    let k = if k < 16 { k } else { 31 - k };
+                    let ticks = bar + (length - bar) * k / 15;
+                    if let Some(g) = ui.get_mut::<NoteGrid>(tv::NOTES) {
+                        let mid = (length / 2) as f64;
+                        g.view = g.view.zoom_time(
+                            roll,
+                            length,
+                            128,
+                            ppt_of(ticks),
+                            mid,
+                            roll.x + roll.w / 2,
+                        );
+                    }
+                }
+                RollFrame::Switched => st.edit = Some(infos[(b % 2) as usize].clone()),
+            }
+            page.update(&mut ui, &st);
+            let drawn = ui.paint(&mut canvas);
+            l.fill(0.0);
+            r.fill(0.0);
+            let g = ui.get::<NoteGrid>(tv::NOTES);
+            l[0] = drawn.len() as f32;
+            r[0] = g.map_or(0, |g| g.notes.len()) as f32;
+            r[1] = g.map_or(0.0, |g| g.view.ppt) as f32;
+            l[1] = g.map_or(0, |g| g.view.start) as f32;
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// What a note editor edit case does (piano roll plan 0C.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NoteEditCase {
+    /// One picked note's velocity set (a velocity lane drag, one edit on
+    /// the lift), then taken back by UNDO, a block each.
+    VelocityAndUndo,
+    /// Every note picked and transposed a semitone, up then down.
+    TransposeAll,
+}
+
+/// A note editor edit on the full clip of [`step_song`] while it plays,
+/// as `TimeControl::edit` makes it (piano roll plan 0C.3): the edit worked
+/// out (`Editor::act`), made to the clip and the takes (`Takes::edit`, one
+/// undo), the picks found again (`Editor::applied`), and the playing view
+/// edited in place when it fits (`InPlace::fits`) or compiled again. On a
+/// clip this full nothing fits: a velocity change is a note out and one
+/// in, which costs twice the clip's 8,192 notes in place, more than
+/// `IN_PLACE_WORK` (a step tap's one note change fits); a transpose of
+/// every note is 16,384 changes; UNDO always compiles in the app.
+fn note_edit(what: NoteEditCase) -> Case {
+    use mpfree_play::{InPlace, Takes, MAX_IN_PLACE};
+    use mpfree_time_ui::editor::{EditAction, Editor};
+    let (mut song, launches) = step_song();
+    let mut view = step_view(&mut song, &launches);
+    let mut takes = Takes::default();
+    let mut ed = Editor::new(0, 0, song.clip(0, 0).expect("the clip"));
+    let mut changes = [InPlace::EraseNote(Note::new(0, 1, 0, 1)); MAX_IN_PLACE];
+    let (mut in_place, mut compiled) = (0u64, 0u64);
+    let (name, what_text) = match what {
+        NoteEditCase::VelocityAndUndo => (
+            "Note editor: 8,192 notes, a velocity change and its UNDO, until it plays",
+            "a picked note's velocity set, then UNDO, a block each: the view compiled after each",
+        ),
+        NoteEditCase::TransposeAll => (
+            "Note editor: 8,192 notes, all picked and transposed, until it plays",
+            "every note moved a semitone, the picks found again, the view compiled",
+        ),
+    };
+    Case {
+        name: name.to_string(),
+        module: CONTROL,
+        what: what_text,
+        block: Box::new(move |b, l, r| {
+            let undo = what == NoteEditCase::VelocityAndUndo && b % 2 == 1;
+            if undo {
+                takes.undo(&mut song);
+                view = step_view(&mut song, &launches);
+                compiled += 1;
+            } else {
+                let clip = song.clip(0, 0).expect("the clip");
+                let a = match what {
+                    NoteEditCase::VelocityAndUndo => {
+                        ed.sel = vec![(b as usize * 37) % clip.notes.len()];
+                        EditAction::Velocity((b % 64) as f32 / 64.0)
+                    }
+                    NoteEditCase::TransposeAll => {
+                        ed.sel = (0..clip.notes.len()).collect();
+                        EditAction::Row {
+                            row: 7,
+                            delta: if b % 2 == 0 { 1 } else { -1 },
+                        }
+                    }
+                };
+                let done = ed.act(a, clip);
+                assert!(InPlace::count(&done.edit) > 0, "an edit");
+                takes
+                    .edit(&mut song, 0, 0, &done.edit, done.join)
+                    .expect("the edit");
+                let clip = song.clip(0, 0).expect("the clip");
+                ed.applied(clip, &done);
+                let (notes, locks) = (clip.notes.len(), clip.locks.len());
+                let n = InPlace::count(&done.edit);
+                if InPlace::fits(&done.edit, notes, locks) {
+                    for (slot, c) in changes.iter_mut().zip(InPlace::all(&done.edit)) {
+                        *slot = c;
+                    }
+                    assert!(view.edit_in_place(0, 0, &changes[..n]), "in place");
+                    in_place += 1;
+                } else {
+                    view = step_view(&mut song, &launches);
+                    compiled += 1;
+                }
+            }
+            l.fill(0.0);
+            r.fill(0.0);
+            l[0] = song.clip(0, 0).map_or(0, |c| c.notes.len()) as f32;
+            r[0] = view.notes() as f32;
+            l[1] = in_place as f32;
+            r[1] = compiled as f32;
         }),
         mem_bytes: 0,
     }
@@ -5304,6 +5635,71 @@ mod tests {
         assert_eq!(r[0], 1.0);
         assert!(off_the_audio_path(&c));
         assert_eq!(blocks_for(&c, 200), (5, 20));
+    }
+
+    #[test]
+    fn the_piano_roll_cases_draw_every_note_and_move_as_asked() {
+        let bar = 4.0 * PPQ as f32;
+        for what in [
+            RollFrame::Built,
+            RollFrame::BuiltPressure,
+            RollFrame::Plays,
+            RollFrame::Scrolled,
+            RollFrame::Zoomed,
+            RollFrame::Switched,
+        ] {
+            let mut c = measured(|| roll_frame(what));
+            assert_eq!(c.module, SCREEN);
+            assert!(off_the_audio_path(&c));
+            assert_eq!(blocks_for(&c, 200), (5, 20));
+            // (painted, notes in the roll, view start, view zoom) a block.
+            let seen: Vec<_> = (0..4)
+                .map(|b| {
+                    let (mut l, mut r) = (vec![0.0f32; 128], vec![0.0f32; 128]);
+                    (c.block)(b, &mut l, &mut r);
+                    (l[0], r[0], l[1], r[1])
+                })
+                .collect();
+            assert!(
+                seen.iter().all(|s| s.0 > 0.0 && s.1 == 8_192.0),
+                "{what:?}: {seen:?}"
+            );
+            let starts: Vec<f32> = seen.iter().map(|s| s.2).collect();
+            let zooms: Vec<f32> = seen.iter().map(|s| s.3).collect();
+            match what {
+                RollFrame::Scrolled => {
+                    assert_eq!(starts, [0.0, 240.0, 480.0, 720.0], "a sixteenth a frame");
+                    assert!(zooms.iter().all(|&z| z == zooms[0]));
+                }
+                RollFrame::Zoomed => {
+                    // A bar across, then wider each frame.
+                    assert!(zooms.windows(2).all(|w| w[1] < w[0]), "{zooms:?}");
+                    let roll_w = zooms[0] * bar;
+                    assert!(roll_w > 600.0, "{roll_w}");
+                }
+                _ => {
+                    assert!(starts.iter().all(|&s| s == 0.0), "{what:?}: {starts:?}");
+                    assert!(zooms.iter().all(|&z| z == zooms[0]), "{what:?}: {zooms:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_note_edit_cases_compile_a_clip_this_full() {
+        for what in [NoteEditCase::VelocityAndUndo, NoteEditCase::TransposeAll] {
+            let mut c = measured(|| note_edit(what));
+            assert_eq!(c.module, CONTROL);
+            assert!(off_the_audio_path(&c));
+            // The transpose of every note counts a block, as the big song.
+            let big_one = what == NoteEditCase::TransposeAll;
+            assert_eq!(big(&c), big_one);
+            assert_eq!(blocks_for(&c, 200), if big_one { (1, 1) } else { (5, 20) });
+            let (l, r) = run(&mut c, 4);
+            // Every note still there and playing; none went in place.
+            assert_eq!((l[0], r[0]), (8_192.0, 8_192.0), "{what:?}");
+            assert_eq!((l[1], r[1]), (0.0, 4.0), "{what:?}: in place, compiled");
+        }
     }
 
     #[test]
