@@ -294,22 +294,22 @@ impl Warps {
         Warps::spec(project, key)?.start()
     }
 
-    /// What the job for `key` needs, copied out of the project (the
-    /// region's frames once): quick, for the control thread to hand to a
-    /// [`Worker`].
+    /// What the job for `key` needs, taken from the project: the sound
+    /// itself, shared, and the region's span, whose frames are copied out
+    /// only as the job starts, on its worker (sampler plan phase 2 step
+    /// 7h): quick, for the control thread to hand to a [`Worker`].
     pub fn spec(project: &Project, key: &CopyKey) -> Result<JobSpec, StretchError> {
         let s = project.source(key.source).ok_or(StretchError::Empty)?;
-        let ch = usize::from(s.channels());
-        let (a, b) = (key.start as usize * ch, key.end as usize * ch);
-        let data = s.data().f32s(a..b).ok_or(StretchError::Empty)?;
+        if key.start >= key.end || key.end > s.frames() {
+            return Err(StretchError::Empty);
+        }
         let map = match Warps::pinned_warp(project, key) {
             Some(w) => TimeMap::new(CopyMap::new(&w, s.rate(), key).points().to_vec())?,
             None => TimeMap::to_length(key.end - key.start, key.frames)?,
         };
         Ok(JobSpec {
-            data: data.into(),
-            channels: s.channels(),
-            rate: s.rate(),
+            source: s.clone(),
+            span: key.start..key.end,
             map,
             settings: Settings {
                 semitones: (key.cents as f32 / 100.0).clamp(-24.0, 24.0),
@@ -340,17 +340,28 @@ impl Warps {
 
 /// Everything a stretch job needs, owned, so it can go to a worker.
 pub struct JobSpec {
-    pub data: Arc<[f32]>,
-    pub channels: u8,
-    pub rate: u32,
+    /// The sound, shared (a sound never changes once made).
+    pub source: Source,
+    /// The frames of it the job stretches: copied out as floats only when
+    /// it starts ([`JobSpec::start`]), on its worker, never on the screen.
+    pub span: std::ops::Range<u64>,
     pub map: TimeMap,
     pub settings: Settings,
 }
 
 impl JobSpec {
-    /// The job (finding the hits first).
+    /// The job: its span copied out of the sound, then the hits found.
     pub fn start(self) -> Result<Job, StretchError> {
-        Job::new(self.data, self.channels, self.rate, self.map, self.settings)
+        let ch = usize::from(self.source.channels());
+        let (a, b) = (self.span.start as usize * ch, self.span.end as usize * ch);
+        let data = self.source.data().f32s(a..b).ok_or(StretchError::Empty)?;
+        Job::new(
+            data.into(),
+            self.source.channels(),
+            self.source.rate(),
+            self.map,
+            self.settings,
+        )
     }
 }
 
@@ -546,16 +557,14 @@ impl Process {
         self.spec(project)?.start()
     }
 
-    /// What the job needs, owned, for a worker to start it there (finding
-    /// the hits is part of the work).
+    /// What the job needs, owned, for a worker to start it there (copying
+    /// the region's frames out and finding the hits are part of the work).
     pub fn spec(&self, project: &Project) -> Result<JobSpec, StretchError> {
         let r = self.region(project)?;
         let s = project.source(r.source).ok_or(StretchError::Empty)?;
-        let ch = usize::from(s.channels());
-        let data = s
-            .data()
-            .f32s(r.start as usize * ch..r.end as usize * ch)
-            .ok_or(StretchError::Empty)?;
+        if r.start >= r.end || r.end > s.frames() {
+            return Err(StretchError::Empty);
+        }
         // Pins a stretch would follow are made part of the new audio.
         let map = match r.warp.as_ref().filter(|w| w.pinned()) {
             Some(w) => {
@@ -570,9 +579,8 @@ impl Process {
             ..Settings::default()
         };
         Ok(JobSpec {
-            data: data.into(),
-            channels: s.channels(),
-            rate: s.rate(),
+            source: s.clone(),
+            span: r.start..r.end,
             map,
             settings,
         })

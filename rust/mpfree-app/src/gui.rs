@@ -31943,6 +31943,235 @@ mod tests {
         assert_eq!(gain_now(&p), -3.0);
     }
 
+    /// Sampler plan phase 2, step 7's timing test: no sampler action holds
+    /// the screen for work that grows with the sound. Each action is timed
+    /// as the screen runs it (its event, the page's tick, the frame's
+    /// actions and the kit view it builds), best of three, on a 1-second
+    /// take and on a 3-minute one; the long take may cost at most 16 ms
+    /// more than the short one. Copying the long take's frames out once
+    /// costs about 30 ms in a debug build, so any action that still did
+    /// fails. The times are printed with `--nocapture`. Not under qemu
+    /// (the ARM job), where the clock measures the emulator and seven
+    /// other tests at once.
+    #[test]
+    #[cfg_attr(
+        target_arch = "arm",
+        ignore = "timed natively: under qemu the clock measures the emulator"
+    )]
+    fn no_sampler_action_holds_the_screen_for_work_that_grows_with_the_sound() {
+        use mpfree_sampler::model::{Layer, Pad, PlayMode, Project, Region, Source};
+        use mpfree_sampler::wav;
+        use mpfree_sampler_ui::wave_tab::{self, Row as WaveRow, Tool};
+        use mpfree_sampler_ui::{pads_tab, slice_tool, warp_tool};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let rate = mpfree_sampler_ui::sample::RATE;
+        let dir = std::env::temp_dir().join(format!("mpfree-screen-time-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // 16-bit stereo: a hit every half second over a soft tone.
+        let take = |secs: usize| {
+            let n = secs * rate as usize;
+            let data: Vec<f32> = (0..2 * n)
+                .map(|i| {
+                    let f = i / 2;
+                    let k = (f % (rate as usize / 2)) as f32;
+                    let x = 0.6 * (-k / 800.0).exp() * (f as f32 * 0.05).sin()
+                        + 0.05 * (f as f32 * 0.0313).sin();
+                    (x * 32_768.0).round() / 32_768.0
+                })
+                .collect();
+            Source::new("Take", rate, 2, data).unwrap()
+        };
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            let _ = p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            });
+        };
+        let step = |p: &mut Player, index: usize, delta: i32| {
+            ev(p, wave_tab::REGION, EventKind::Step { index, delta });
+        };
+        // The frame's actions, the kit views among them handed back as the
+        // audio thread does, so the next frame builds the next view.
+        let frame = |p: &mut Player| {
+            let (sent, _) = views(p.take_actions());
+            for v in sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+        };
+        // The best of `runs` runs of `act`, each with the frame it lands in
+        // (the page's tick, its actions and the kit view it builds);
+        // `between` puts things back, untimed.
+        let time_n = |p: &mut Player,
+                      runs: usize,
+                      act: &dyn Fn(&mut Player),
+                      between: &dyn Fn(&mut Player)| {
+            let mut best = Duration::MAX;
+            for _ in 0..runs {
+                frame(p);
+                let t = Instant::now();
+                act(p);
+                p.tick(0.033);
+                let (sent, _) = views(p.take_actions());
+                best = best.min(t.elapsed());
+                for v in sent {
+                    p.apply(ToUi::SampleViewBack(v));
+                }
+                between(p);
+                frame(p);
+            }
+            best
+        };
+        let time = |p: &mut Player, act: &dyn Fn(&mut Player), between: &dyn Fn(&mut Player)| {
+            time_n(p, 3, act, between)
+        };
+        let run = |secs: usize| -> Vec<(&'static str, Duration)> {
+            let source = take(secs);
+            let path = dir.join(format!("Take {secs}.wav"));
+            std::fs::write(&path, wav::bytes(&source)).unwrap();
+            let mut project = Project::new();
+            project.add_source(source.clone());
+            let mut r = Region::whole(&source);
+            r.mode = PlayMode::OneShot;
+            project
+                .set_pad(pad, Some(Pad::new("Take", Layer::new(r))), None)
+                .unwrap();
+            let mut p = sample_player(Fonts::embedded());
+            p.apply(ToUi::SampleKits {
+                projects: vec![project],
+                rate,
+            });
+            p.apply(ToUi::PadDown { pad, velocity: 100 });
+            p.apply(ToUi::PadUp(pad));
+            p.apply(ToUi::Show(View::Sample));
+            settle_views(&mut p);
+            frame(&mut p);
+            let mut out = Vec::new();
+            let undo = |p: &mut Player| {
+                p.apply(ToUi::SampleLift);
+                p.apply(ToUi::SampleUndo(false));
+            };
+            out.push((
+                "Normalize",
+                time(
+                    &mut p,
+                    &|p| {
+                        ev(
+                            p,
+                            wave_tab::REGION,
+                            EventKind::Tab(WaveRow::Normalize.index()),
+                        )
+                    },
+                    &undo,
+                ),
+            ));
+            out.push((
+                "the switch to grains",
+                time(&mut p, &|p| pick_tool(p, Tool::Grain), &|p| {
+                    undo(p);
+                    pick_tool(p, Tool::Trim);
+                }),
+            ));
+            // Warp on, then tempo turns: each asks for a stretched copy.
+            pick_tool(&mut p, Tool::Warp);
+            step(&mut p, warp_tool::Row::Warp.index(), 1);
+            p.apply(ToUi::SampleLift);
+            frame(&mut p);
+            // The project's tempo turned: the warped pad asks for a new
+            // stretched copy.
+            let bpm = std::cell::Cell::new(120.0);
+            out.push((
+                "a project tempo turn",
+                time(
+                    &mut p,
+                    &|p| {
+                        bpm.set(bpm.get() + 1.0);
+                        p.sample.set_tempo(bpm.get());
+                    },
+                    &|_| {},
+                ),
+            ));
+            // Once: a second press stops it.
+            out.push((
+                "Process",
+                time_n(
+                    &mut p,
+                    1,
+                    &|p| {
+                        ev(
+                            p,
+                            wave_tab::REGION,
+                            EventKind::Tab(warp_tool::Row::Process.index()),
+                        )
+                    },
+                    &|p| {
+                        ev(
+                            p,
+                            wave_tab::REGION,
+                            EventKind::Tab(warp_tool::Row::Process.index()),
+                        )
+                    },
+                ),
+            ));
+            undo(&mut p);
+            // The Slice tool, its slices put on an audio track.
+            pick_tool(&mut p, Tool::Slice);
+            for _ in 0..6 {
+                if p.sample.slice().unwrap().0.put_text() == "Audio track" {
+                    break;
+                }
+                step(&mut p, slice_tool::Row::Put.index(), -1);
+            }
+            assert_eq!(p.sample.slice().unwrap().0.put_text(), "Audio track");
+            out.push((
+                "Put on audio track",
+                time(
+                    &mut p,
+                    &|p| {
+                        ev(
+                            p,
+                            wave_tab::REGION,
+                            EventKind::Tab(slice_tool::Row::Chop.index()),
+                        )
+                    },
+                    &|_| {},
+                ),
+            ));
+            let load = path.clone();
+            out.push((
+                "Load",
+                time(&mut p, &|p| p.sample.load_file(load.clone(), true), &|_| {}),
+            ));
+            open_pads(&mut p);
+            frame(&mut p);
+            out.push((
+                "Map to keys",
+                time(
+                    &mut p,
+                    &|p| ev(p, pads_tab::BUTTONS, EventKind::Tab(3)),
+                    &undo,
+                ),
+            ));
+            out
+        };
+        let short = run(1);
+        let long = run(180);
+        for ((what, a), (_, b)) in short.iter().zip(&long) {
+            println!(
+                "{what}: {:.2} ms on a 1 s take, {:.2} ms on a 3-minute take",
+                a.as_secs_f64() * 1e3,
+                b.as_secs_f64() * 1e3
+            );
+        }
+        for ((what, a), (_, b)) in short.iter().zip(&long) {
+            assert!(
+                *b <= *a + Duration::from_millis(16),
+                "{what} holds the screen {:.1} ms longer on a 3-minute take than on a 1 s one",
+                (b.as_secs_f64() - a.as_secs_f64()) * 1e3
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn the_grain_tools_device_checks_log_what_they_set_and_end_where_they_began() {
         use crate::app::RowKey;
