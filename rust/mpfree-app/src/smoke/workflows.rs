@@ -1936,8 +1936,7 @@ mod tests {
         fn notes(s: &Session, t: usize) -> Vec<u8> {
             let mut n: Vec<u8> = s.time.project().tracks[t]
                 .slots
-                .iter()
-                .flatten()
+                .clips()
                 .flat_map(|c| c.notes.iter().map(|n| n.note))
                 .collect();
             n.sort_unstable();
