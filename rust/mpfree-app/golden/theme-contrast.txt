@@ -239,6 +239,7 @@ spaceship arrange-song 10 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-audio 10 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-loops 12 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-panel 14 # before the theme refactor (phase 0 baseline)
+spaceship arrange-song-section 10 # arrange-song with the Verse picked (Arrange 3.3): its faint text, the same 10 runs as arrange-song
 spaceship arrange-song-takes 10 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-tempo 10 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-tracks 12 # before the theme refactor (phase 0 baseline)
