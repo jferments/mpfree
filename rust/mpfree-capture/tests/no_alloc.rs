@@ -107,7 +107,7 @@ fn capturing_never_allocates() {
                     } else {
                         Event::NoteOff { note: 60 }
                     };
-                    c.input_on(track, off, ev);
+                    c.input_on(track, off, ev, mpfree_capture::Took::PAD);
                 }
                 // Pressure on the held pads, every 8 frames, sometimes
                 // one step (left to settle).

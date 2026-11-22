@@ -1666,13 +1666,14 @@ impl TimeHost {
 
     /// Live erase (ERASE held on a pad while the transport plays, the
     /// MPC's way): from the coming period, while the transport records or
-    /// plays, the armed track's notes of sound `note` (a pad's number) are
-    /// erased as the playhead reaches them, with that sound's locks, into
-    /// the take being recorded, or while only playing a take of their own
-    /// for the hold (`mpfree_play::ERASE_TAKES`), so UNDO brings them back;
-    /// `on` false stops it.
-    pub fn erase_sound(&mut self, note: u8, on: bool) {
-        self.audio.erase_sound(note, on);
+    /// plays, the armed track's notes of pad `pad` are erased as the
+    /// playhead reaches them, with their locks, into the take being
+    /// recorded, or while only playing a take of their own for the hold
+    /// (`mpfree_play::ERASE_TAKES`), so UNDO brings them back; `on` false
+    /// stops it. On a clip of pad hits they are the pad's; on a clip of
+    /// notes, every note the pad plays on that track (refactor E4).
+    pub fn erase_sound(&mut self, pad: u8, on: bool) {
+        self.audio.erase_sound(pad, on);
     }
 
     /// Live erase off for every sound (ERASE let go).
@@ -1685,10 +1686,10 @@ impl TimeHost {
         self.audio.erasing() != 0
     }
 
-    /// Whether live erase is erasing sound `note`.
-    pub fn erases(&self, note: u8) -> bool {
+    /// Whether live erase holds pad `pad`.
+    pub fn erases(&self, pad: u8) -> bool {
         1u128
-            .checked_shl(u32::from(note))
+            .checked_shl(u32::from(pad))
             .is_some_and(|b| self.audio.erasing() & b != 0)
     }
 
@@ -11545,5 +11546,186 @@ mod tests {
         // An empty project has nothing armed.
         let none = TimeHost::with_project(RATE, 120.0, mpfree_seq::Project::new()).unwrap();
         assert_eq!(none.state().armed, None);
+    }
+
+    // ------------------------------- every synth path records notes (E4)
+
+    /// Step sequencer refactor E4: a second armed track whose instrument
+    /// plays notes gets a new clip of notes, and a key routed to it, which
+    /// comes as the pad that plays its note there, records the notes that
+    /// pad plays (a chord pad's every note), each with the key's pressure.
+    /// A pad that plays no note there is counted, not recorded.
+    #[test]
+    fn a_second_armed_synth_track_records_the_notes_its_routed_pads_play() {
+        use mpfree_seq::Holds;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        // Track 2 plays a synth: its pad 6 is a C major chord, pad 3 D4.
+        let mut rows = PadRows::PADS;
+        rows.set(5, &[64, 67, 60]);
+        rows.set(2, &[62]);
+        h.set_notes_tracks(1 << 1);
+        h.set_pad_rows(1, rows);
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        h.act(TimeAction::ArmAlso(1 << 1)).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        h.act(TimeAction::Transport(Command::Record)).unwrap();
+        run(&mut h, &mut pads, BAR / 2 + 4 * u64::from(PERIOD), &[]);
+        let on = |note| Event::NoteOn { note, velocity: 90 };
+        let keys = [
+            (BAR + 2000, on(5)),
+            (BAR + 4500, Event::Pressure { note: 5, value: 40 }),
+            (BAR + 6000, Event::NoteOff { note: 5 }),
+            (BAR + 7000, on(2)),
+            (BAR + 8000, Event::NoteOff { note: 2 }),
+            // Past the 16 pads a track's pad map holds.
+            (BAR + 9000, on(20)),
+            (BAR + 9500, Event::NoteOff { note: 20 }),
+        ];
+        while pads.frame < 2 * BAR {
+            let end = pads.frame + u64::from(PERIOD);
+            for &(at, ev) in &keys {
+                if (pads.frame..end).contains(&at) {
+                    h.routed_played(1, (at - pads.frame) as u32, ev);
+                }
+            }
+            run(&mut h, &mut pads, end, &[]);
+        }
+        let clip = h.control.project.tracks[1]
+            .slots
+            .clips()
+            .next()
+            .unwrap()
+            .clone();
+        assert_eq!(clip.holds, Holds::Notes);
+        let mut notes: Vec<(u8, Vec<u8>)> = clip
+            .notes
+            .iter()
+            .map(|n| (n.note, clip.touch_of(n).iter().map(|p| p.value).collect()))
+            .collect();
+        notes.sort();
+        assert_eq!(
+            notes,
+            vec![(60, vec![40]), (62, vec![]), (64, vec![40]), (67, vec![40])]
+        );
+        assert_eq!(h.dropped(), 1, "pad 21 has no note: counted");
+    }
+
+    /// Refactor E4: CAPTURE keeps what a take would record. On a track
+    /// whose instrument plays notes a new clip holds the notes played (a
+    /// chord pad's every note); over a playing clip, the notes go in in
+    /// that clip's kind, as an overdub would: the pad into a clip of pads,
+    /// the chord into a clip of notes.
+    #[test]
+    fn capture_on_a_synth_track_keeps_what_a_take_there_would() {
+        use mpfree_seq::Holds;
+        let capture = |playing: Option<Holds>| {
+            let mut h = TimeHost::new(RATE, 120.0).unwrap();
+            let mut pads = Fake {
+                chord: vec![0, 4, 7],
+                ..Fake::default()
+            };
+            let mut arps = TrackArps::new(RATE, 120.0);
+            h.set_notes_tracks(1);
+            if let Some(holds) = playing {
+                let mut c = Clip::new("beat", 3840);
+                c.holds = holds;
+                h.control.project.tracks[0].slots[0] = Some(c);
+                h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+            }
+            h.command(Command::Play);
+            let on = Event::NoteOn {
+                note: 4,
+                velocity: 100,
+            };
+            let off = Event::NoteOff { note: 4 };
+            while pads.frame < 3 * BAR + BAR / 2 {
+                let end = pads.frame + u64::from(PERIOD);
+                for (at, e) in [(BAR + 1000, on), (BAR + 3000, off)] {
+                    if (pads.frame..end).contains(&at) {
+                        arps.pad(0, (at - pads.frame) as u32, e);
+                    }
+                }
+                h.period_arps(PERIOD, &mut pads, &mut arps);
+                pads.frame += u64::from(PERIOD);
+            }
+            let line = h.act(TimeAction::Capture).unwrap();
+            assert_eq!(h.dropped(), 0);
+            let clip = h.project().clip(0, 0).unwrap();
+            let mut notes: Vec<u8> = clip.notes.iter().map(|n| n.note).collect();
+            notes.sort();
+            (line, clip.holds, notes)
+        };
+        let (line, holds, notes) = capture(None);
+        assert!(
+            line.starts_with("capture 1: 3 notes")
+                && line.ends_with("new clip in slot 1 of Track 1"),
+            "{line}"
+        );
+        assert_eq!(
+            (holds, notes),
+            (Holds::Notes, vec![4, 8, 11]),
+            "the pad's chord as notes"
+        );
+        let (line, holds, notes) = capture(Some(Holds::Hits));
+        assert!(
+            line.starts_with("capture 1: 1 notes")
+                && line.ends_with("into the clip in slot 1 of Track 1"),
+            "{line}"
+        );
+        assert_eq!(
+            (holds, notes),
+            (Holds::Hits, vec![4]),
+            "the pad, as an overdub records it"
+        );
+        let (line, holds, notes) = capture(Some(Holds::Notes));
+        assert!(line.starts_with("capture 1: 3 notes"), "{line}");
+        assert_eq!((holds, notes), (Holds::Notes, vec![4, 8, 11]));
+    }
+
+    /// Refactor E4: live erase on a clip of notes takes out the notes the
+    /// held pad plays (a chord pad's every note), not the note with the
+    /// pad's number.
+    #[test]
+    fn live_erase_on_a_clip_of_notes_takes_out_the_notes_its_pad_plays() {
+        use mpfree_seq::{Holds, Note};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut rows = PadRows::PADS;
+        rows.set(0, &[64, 67, 60]);
+        rows.set(1, &[62]);
+        h.set_notes_tracks(1);
+        h.set_pad_rows(0, rows);
+        let mut c = Clip::new("chords", 3840);
+        c.holds = Holds::Notes;
+        // Note 0 is a pitch here, not pad 1: it stays.
+        c.notes = vec![
+            Note::new(0, 100, 60, 100),
+            Note::new(0, 100, 64, 100),
+            Note::new(0, 100, 67, 100),
+            Note::new(960, 100, 62, 100),
+            Note::new(1920, 100, 0, 100),
+        ];
+        h.control.project.tracks[0].slots[0] = Some(c);
+        h.command(Command::SetLoop(Some((0, 3840))));
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        h.erase_sound(0, true);
+        assert!(h.erasing() && h.erases(0) && !h.erases(1));
+        run(&mut h, &mut pads, 2 * BAR - 1000, &[]);
+        h.erase_none();
+        let mut notes: Vec<u8> = h
+            .project()
+            .clip(0, 0)
+            .unwrap()
+            .notes
+            .iter()
+            .map(|n| n.note)
+            .collect();
+        notes.sort();
+        assert_eq!(notes, vec![0, 62], "pad 1's chord came out");
+        assert_eq!(h.dropped(), 0);
     }
 }

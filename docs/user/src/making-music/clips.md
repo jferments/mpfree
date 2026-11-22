@@ -76,9 +76,9 @@ Then press **REC** and **PLAY**, play, and press **STOP**. The new notes go into
 
 ### Erasing while you record
 
-Hit a wrong note? Keep recording, hold **ERASE** and hold that pad: its hits come out of the clip as the playhead passes them, on every pass, and the pad makes no sound while you hold it. The other pads play on. Let go of the pad, or of **ERASE**, and it stops. It erases on the armed track only, and the hits it took out are part of the take, so **UNDO** brings them back with it. With **STEP SEQ** on, **ERASE** and a pad clears that step instead.
+Hit a wrong note? Keep recording, hold **ERASE** and hold that pad: its notes come out of the clip as the playhead passes them, on every pass, and the pad makes no sound while you hold it. On a track that plays a synth, those are the notes the pad plays (a chord pad's every note), so a note another pad plays too comes out as well. The other pads play on. Let go of the pad, or of **ERASE**, and it stops. It erases on the armed track only, and the notes it took out are part of the take, so **UNDO** brings them back with it. With **STEP SEQ** on, **ERASE** and a pad clears that step instead.
 
-It works the same while the music only plays, without recording: hold **ERASE** and the pad for as long as you want its hits gone. Each time you hold **ERASE** is one **UNDO** step ("Erase 1"). With the music stopped, **ERASE** and a pad takes all of that pad's notes out of the clip at once, also one **UNDO** step.
+It works the same while the music only plays, without recording: hold **ERASE** and the pad for as long as you want its notes gone. Each time you hold **ERASE** is one **UNDO** step ("Erase 1"). With the music stopped, **ERASE** and a pad takes all of that pad's notes out of the clip at once, also one **UNDO** step.
 
 ### Knob moves while you record
 
@@ -163,9 +163,10 @@ You weren't recording, but you just played something great. Tap the **Capture** 
 MPFree is always listening to the pads, and to keyboards a route plays on other tracks (see [Playing several tracks from your keyboards](midi-and-cv.md#playing-several-tracks-from-your-keyboards)). Capture keeps your **last phrase**: everything since the last bar of silence, up to 32 bars, cut to whole bars and with your exact timing.
 
 - If you played it in time over a clip that was playing, the notes go into that clip.
+- It keeps what recording would: a new clip on a track that plays a synth gets the notes you played (a chord pad's every note), and on a kit the pads you hit. Over a clip that was playing, it adds in that clip's way, as recording into it would: the pads you hit into an older clip of pads on a synth track, notes into a clip of notes.
 - Otherwise it becomes a new clip, named "Capture 1", "Capture 2" and so on, and starts playing in time.
 - It keeps how hard you pressed the pads as you held them, as recording does (see [Pad pressure](#pad-pressure)), unless the track's **Pressure** setting is **Off**.
-- The pads' notes go into the armed track. What a keyboard played on another track through a route goes into that track, so a jam of drums on the pads and bass on a keyboard comes back as two clips that play together. Each key goes in as the pad that plays its note on that track; a note no pad plays there isn't kept. The FX moves you made over the phrase (the XY pad, the DJ knob) go with the armed track's notes; when only a keyboard played, on other tracks, they're left out and the line under the screen says so.
+- The pads' notes go into the armed track. What a keyboard played on another track through a route goes into that track, so a jam of drums on the pads and bass on a keyboard comes back as two clips that play together. On a track that plays a synth, each key goes in as the notes of the pad that plays it there; on a kit, as that pad. A key whose note no single pad plays on that track isn't kept yet. The FX moves you made over the phrase (the XY pad, the DJ knob) go with the armed track's notes; when only a keyboard played, on other tracks, they're left out and the line under the screen says so.
 
 UNDO takes a capture back like any other take, every track's part of it at once.
 
@@ -182,12 +183,11 @@ A MIDI file (`.mid`) from another sequencer, a computer or your MPC loads as cli
 
 Each track of the file becomes a clip in the first empty slot of a track: the first on the armed track, the next on the track after it, and so on. A file with all its parts on one track, as many are, gets a clip for each channel. The clips are as long as the file, in whole bars, and wait in their slots for you to play them. The line under the screen says how many clips came in, where, and what was left out. **UNDO** takes the whole file away again.
 
-**Its notes go on the pads that play them.** A clip holds pads, as a recording does, so each note goes on the pad of its track that plays that note:
+**Its notes go in as a recording would keep them.** On a track that plays a synth, each note goes in as it is; on a kit, each note goes on the pad that plays it:
 
 - **On a kit**, each note on the pad that sends it (see [A kit on a drum machine](midi-and-cv.md#a-kit-on-a-drum-machine)): C#2 is A1, C2 A2 and so on through bank A, as the MPC sends and receives them, and the other notes on banks B to H. So a drum track exported from an MPC comes back on bank A's pads, a drum part from a computer that uses those notes does too, and MPFree's own export of a kit comes back on the pads that played it, in every bank.
-- **On a synth** or a track's own instrument, by its pad layout: a note goes on the pad that plays that note. Set the layout to cover the notes first (a scale, the right octave), then load the file.
-
-A note no pad plays is left out, and counted. A melody that goes past what the 16 pads reach comes in as far as they reach.
+- **On a synth** or a track's own instrument, every note as it is, so a melody comes in whole, whatever the pad layout. The Sequencer shows the notes on the rows of the pads that play them; a note no pad plays still plays, but has no row until a pad plays it.
+- **On the Drums synth**, which plays pads, a note goes on the pad that plays it. A note no pad plays is left out, and counted.
 
 **Left out** for now: controllers, pitch bend, pressure and program changes (they come with lanes), and SysEx. The file's tempo is said but not set, so set the project's tempo to match if you want it. A file in clock time (made for video) is read at 120 BPM.
 

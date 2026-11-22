@@ -554,6 +554,8 @@ pub struct TimeControl {
     edit_id: u32,
     /// The tracks' settings the audio half has.
     tracks_sent: Tracks,
+    /// The tracks' pad rows the audio half has (refactor E4).
+    pad_rows_sent: Box<[PadRows; MAX_TRACKS]>,
     /// The tracks' MIDI effects the audio half has.
     note_fx_sent: Box<[TrackFx; MAX_TRACKS]>,
     /// Tracks the audio half has a chain of MIDI effects for (one is made
@@ -682,6 +684,7 @@ impl TimeControl {
             view_sent: 0,
             edit_id: 0,
             tracks_sent: tracks,
+            pad_rows_sent: Box::new([PadRows::PADS; MAX_TRACKS]),
             note_fx_sent: Box::new([TrackFx::default(); MAX_TRACKS]),
             chains_given: [false; MAX_TRACKS],
         };
@@ -1022,6 +1025,16 @@ impl TimeControl {
                 *was = *s;
             }
         }
+        for (t, (rows, was)) in self
+            .pad_rows
+            .iter()
+            .zip(self.pad_rows_sent.iter_mut())
+            .enumerate()
+        {
+            if rows != was && self.tx.send(ToAudio::Pads(t, *rows)).is_ok() {
+                *was = *rows;
+            }
+        }
         self.sync_note_fx();
     }
 
@@ -1106,9 +1119,11 @@ impl TimeControl {
         self.loop_at = [None; LOOPS];
         while let Some(m) = self.rx.recv() {
             match m {
-                ToControl::Played(offset, event) => self.capture.input(offset, event),
-                ToControl::PlayedOn(track, offset, event) => {
-                    self.capture.input_on(track, offset, event);
+                ToControl::Played(offset, event, took) => {
+                    self.capture.input_as(offset, event, took);
+                }
+                ToControl::PlayedOn(track, offset, event, took) => {
+                    self.capture.input_on(track, offset, event, took);
                 }
                 ToControl::Moved(offset, input) => self.move_log.input(offset, input),
                 ToControl::Started(st) => self.started.push(st),
@@ -1769,7 +1784,10 @@ impl TimeControl {
                 ));
                 continue;
             };
-            let clip = Clip::new(&format!("Clip {}", s + 1), length);
+            // On a track whose instrument plays notes it holds notes, as
+            // the armed track's does (refactor E4).
+            let mut clip = Clip::new(&format!("Clip {}", s + 1), length);
+            clip.holds = self.take_holds(track);
             self.project
                 .put_new_clip(track, s, clip)
                 .map_err(|e| format!("new clip: {e:?}"))?;
@@ -4950,6 +4968,8 @@ impl TimeControl {
         let mut left: Vec<String> = Vec::new();
         let mut first_error = None;
         for (track, part) in phrase.split(armed) {
+            // A new clip holds what a take there would (refactor E4).
+            let new = self.take_holds(track);
             let r = match kept.first().map(|k| k.take) {
                 None => keep(
                     &part,
@@ -4959,6 +4979,7 @@ impl TimeControl {
                     track,
                     now,
                     &name,
+                    new,
                 ),
                 // The other tracks join the first one's take.
                 Some(n) => self.takes.joining(n, |takes| {
@@ -4970,6 +4991,7 @@ impl TimeControl {
                         track,
                         now,
                         &name,
+                        new,
                     )
                 }),
             };
@@ -5057,6 +5079,20 @@ impl TimeControl {
             if phrase.touch_cut && k.touch > 0 {
                 pressure += "; the first notes' pressure was older than the history keeps";
             }
+            // A clip holds pads or notes, never both (refactor E4).
+            if k.left_out > 0 {
+                let (n, s) = (k.left_out, if k.left_out == 1 { "" } else { "s" });
+                pressure += &match k.holds {
+                    mpfree_seq::Holds::Notes => {
+                        format!("; {n} pad hit{s} left out: no note played there")
+                    }
+                    mpfree_seq::Holds::Hits => {
+                        format!(
+                            "; {n} note{s} left out: the clip holds pads, and no pad played them"
+                        )
+                    }
+                };
+            }
             let where_to = format!(
                 "{into} slot {} of {}",
                 k.slot + 1,
@@ -5095,6 +5131,12 @@ impl TimeControl {
             KeepError::NoTrack(_) => format!("{name} left out: there is no such track"),
             KeepError::NoSlot(_) => format!("{name} left out: every slot holds a clip"),
             KeepError::Nothing => format!("{name} left out: nothing played"),
+            KeepError::OtherKind(mpfree_seq::Holds::Notes) => {
+                format!("{name} left out: its clip holds notes, and the pads played none there")
+            }
+            KeepError::OtherKind(mpfree_seq::Holds::Hits) => {
+                format!("{name} left out: its clip holds pads, and no pad played its notes")
+            }
             KeepError::Model(m) => format!("{name} left out: {m:?}"),
         }
     }

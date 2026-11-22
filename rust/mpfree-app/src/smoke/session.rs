@@ -2071,7 +2071,9 @@ impl Session {
             FromUi::MidiFile(m) => {
                 let (synth, kits) = (&*self.synth, &self.track_kits);
                 let own = &self.mix.instruments;
-                let r = crate::midi_file::put(&mut self.time, &m, |t, n| {
+                let notes = crate::notes_tracks(own, kits, synth, self.time.track_count());
+                let notes_on = |t: usize| t < 128 && notes >> t & 1 == 1;
+                let r = crate::midi_file::put(&mut self.time, &m, notes_on, |t, n| {
                     let synth_has = kits.plays_synth(t).then_some(synth);
                     crate::midi_file::pad_on_track(own, synth_has, t, n)
                 });
