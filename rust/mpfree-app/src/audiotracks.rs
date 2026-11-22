@@ -130,6 +130,10 @@ const ARM_WINDOW: u64 = 1000;
 /// quarter of a second).
 const GROW_EVERY: u64 = 86;
 
+/// Room for each audio track's name in the lines (bytes; a longer name is
+/// cut short there).
+const NAME_ROOM: usize = 64;
+
 /// Which project track each of the audio engine's tracks plays (the audio
 /// tracks rethink, phase 1a: an audio track is a track in the project's
 /// one track list, [`mpfree_seq::TrackKind::Audio`]): the track's lasting
@@ -250,6 +254,10 @@ pub struct TrackHost {
     /// that track is in the track list as last found ([`TrackHost::sync`]).
     pub slots: Slots,
     place: [Option<usize>; MAX_TRACKS],
+    /// Each engine track's project track's name as last found, for the
+    /// hint and log lines ([`TrackHost::who`]); room made at start, so
+    /// [`TrackHost::sync`] never allocates. A track gone keeps its name.
+    names: [String; MAX_TRACKS],
     /// Each engine track silenced as last sent: its project track muted,
     /// left out by a solo, or gone (taken away by UNDO, its recordings
     /// kept for a REDO).
@@ -301,6 +309,7 @@ impl TrackHost {
             meter: [0.0; MAX_TRACKS],
             meter_shown: [0.0; MAX_TRACKS],
             slots: Slots::default(),
+            names: std::array::from_fn(|_| String::with_capacity(NAME_ROOM)),
             place: [None; MAX_TRACKS],
             silent: [false; MAX_TRACKS],
             arm_next: None,
@@ -353,6 +362,7 @@ impl TrackHost {
                     },
                 };
                 self.place[s] = Some(i);
+                self.keep_name(s, &t.name);
             }
             for s in 0..MAX_TRACKS {
                 if self.place[s].is_some() || !self.slots.0[s].is_given() {
@@ -575,21 +585,21 @@ impl TrackHost {
         let n = self.track_no(t)?;
         if self.host.tracks.recording(t).is_some() {
             return Err(format!(
-                "audio {n} is recording: change what it records after it stops"
+                "{n} is recording: change what it records after it stops"
             ));
         }
         let line = match from {
             None => {
                 self.send(Command::SetInside(t, None))?;
                 self.inside[t] = None;
-                format!("audio {n} records {}", input_words(self.inputs[t]))
+                format!("{n} records {}", input_words(self.inputs[t]))
             }
             Some((f, name)) => {
                 self.inside[t] = Some(f);
                 self.inside_last[t] = Some(f);
                 self.inside_name[t] = name.to_string();
                 let when = if f.after_effects { "after" } else { "before" };
-                format!("audio {n} records {name}, {when} its effects")
+                format!("{n} records {name}, {when} its effects")
             }
         };
         self.inside_lat[t] = None;
@@ -729,8 +739,8 @@ impl TrackHost {
                 if !self.inside_lost[t] {
                     self.inside_lost[t] = true;
                     self.note = Some(format!(
-                        "audio {}: {} isn't in the mix, so it records silence",
-                        t + 1,
+                        "{}: {} isn't in the mix, so it records silence",
+                        self.who(t),
                         self.inside_name[t]
                     ));
                 }
@@ -1145,16 +1155,16 @@ impl TrackHost {
                     return Err(format!("there is no audio track {}", track + 1));
                 }
                 self.send(Command::Arm(track, on))?;
-                let n = track + 1;
+                let n = self.who(track);
                 match (on, line_open) {
-                    (false, _) => format!("audio {n} disarmed"),
+                    (false, _) => format!("{n} disarmed"),
                     (true, _) if self.inside[track].is_some() => format!(
-                        "audio {n} armed: REC records {} in song mode",
+                        "{n} armed: REC records {} in song mode",
                         self.inside_name[track]
                     ),
-                    (true, true) => format!("audio {n} armed: REC records it in song mode"),
+                    (true, true) => format!("{n} armed: REC records it in song mode"),
                     (true, false) => format!(
-                        "audio {n} armed, but the line input is off: turn on Prefs > Line input to record"
+                        "{n} armed, but the line input is off: turn on Prefs > Line input to record"
                     ),
                 }
             }
@@ -1173,7 +1183,7 @@ impl TrackHost {
                     );
                 }
                 self.send(Command::Split { track: r.track, at })?;
-                format!("audio {}: region split", r.track + 1)
+                format!("{}: region split", self.who(r.track))
             }
             AudioAction::Erase(r) => {
                 let reg = region(tr, r)?;
@@ -1182,7 +1192,7 @@ impl TrackHost {
                     from: reg.start,
                     to: reg.end,
                 })?;
-                format!("audio {}: region erased (Undo brings it back)", r.track + 1)
+                format!("{}: region erased (Undo brings it back)", self.who(r.track))
             }
             AudioAction::Undo => {
                 if (0..MAX_TRACKS).any(|t| tr.recording(t).is_some()) {
@@ -1235,7 +1245,7 @@ impl TrackHost {
                 };
                 let picked = || {
                     reg.ok_or_else(|| {
-                        format!("Q{}: pick a region of audio {} first", knob + 1, t + 1)
+                        format!("Q{}: pick a region of {} first", knob + 1, self.who(t))
                     })
                 };
                 match knob {
@@ -1245,8 +1255,8 @@ impl TrackHost {
                     // and centre, so they never count twice.
                     0 | 1 => {
                         return Err(format!(
-                            "audio {}: its level and pan are its mixer strip's",
-                            t + 1
+                            "{}: its level and pan are its mixer strip's",
+                            self.who(t)
                         ))
                     }
                     2 => {
@@ -1298,9 +1308,7 @@ impl TrackHost {
             AudioAction::Input { track, input } => {
                 let n = self.track_no(track)?;
                 if tr.recording(track).is_some() {
-                    return Err(format!(
-                        "audio {n} is recording: change its input after it stops"
-                    ));
+                    return Err(format!("{n} is recording: change its input after it stops"));
                 }
                 if self.inside[track].is_some() {
                     self.set_inside(track, None)?;
@@ -1308,13 +1316,13 @@ impl TrackHost {
                 self.send(Command::SetInput(track, input))?;
                 self.inputs[track] = input;
                 self.changed = true;
-                format!("audio {n} records {}", input_words(input))
+                format!("{n} records {}", input_words(input))
             }
             AudioAction::Mix { track, step } => self.mix_step(track, step)?,
             AudioAction::MixEffects { track, after } => {
                 let n = self.track_no(track)?;
                 let Some(f) = self.inside[track] else {
-                    return Err(format!("audio {n} records the line input: pick Mix first"));
+                    return Err(format!("{n} records the line input: pick Mix first"));
                 };
                 if f.after_effects == after {
                     return Ok(String::new());
@@ -1331,7 +1339,7 @@ impl TrackHost {
                 self.send(Command::SetMonitor(track, monitor))?;
                 self.monitor[track] = monitor;
                 self.changed = true;
-                format!("audio {n} monitor: {}", monitor_words(monitor))
+                format!("{n} monitor: {}", monitor_words(monitor))
             }
             AudioAction::Takes(t) => {
                 let n = self.track_no(t)?;
@@ -1342,7 +1350,7 @@ impl TrackHost {
                 }
                 let count = tr.takes().filter(|k| k.track == t).count();
                 if count == 0 {
-                    return Err(format!("audio {n} has no takes yet: REC records one"));
+                    return Err(format!("{n} has no takes yet: REC records one"));
                 }
                 // The lanes go under the track's lane, where the panel
                 // may sit.
@@ -1350,7 +1358,7 @@ impl TrackHost {
                 self.panel = None;
                 self.changed = true;
                 format!(
-                    "audio {n}: {count} take{} under the lane: swipe across one to play that stretch, tap it to use it all",
+                    "{n}: {count} take{} under the lane: swipe across one to play that stretch, tap it to use it all",
                     if count == 1 { "" } else { "s" }
                 )
             }
@@ -1365,8 +1373,8 @@ impl TrackHost {
                     .ok_or_else(|| "that take is gone".to_string())?;
                 if tr.recording(k.track).is_some() {
                     return Err(format!(
-                        "audio {}: comping waits until the recording stops",
-                        k.track + 1
+                        "{}: comping waits until the recording stops",
+                        self.who(k.track)
                     ));
                 }
                 let (from, to) = if fine {
@@ -1377,8 +1385,8 @@ impl TrackHost {
                 let name = take_name(tr, take);
                 self.send(Command::Comp { take, from, to })?;
                 format!(
-                    "audio {}: {name} plays from {} to {}",
-                    k.track + 1,
+                    "{}: {name} plays from {} to {}",
+                    self.who(k.track),
                     bar_beat(from, t),
                     bar_beat(to, t)
                 )
@@ -1391,8 +1399,8 @@ impl TrackHost {
                 let reg = region(tr, r)?;
                 if tr.recording(r.track).is_some() {
                     return Err(format!(
-                        "audio {}: moving waits until the recording stops",
-                        r.track + 1
+                        "{}: moving waits until the recording stops",
+                        self.who(r.track)
                     ));
                 }
                 let to = if fine { to } else { snap(to) }.max(0);
@@ -1406,8 +1414,8 @@ impl TrackHost {
                 })?;
                 self.repick = Some((r.track, to));
                 format!(
-                    "audio {}: region moved to {} (Undo puts it back)",
-                    r.track + 1,
+                    "{}: region moved to {} (Undo puts it back)",
+                    self.who(r.track),
                     bar_beat(to, t)
                 )
             }
@@ -1417,8 +1425,8 @@ impl TrackHost {
                     .ok_or_else(|| "that take is gone".to_string())?;
                 if tr.recording(k.track).is_some() {
                     return Err(format!(
-                        "audio {}: comping waits until the recording stops",
-                        k.track + 1
+                        "{}: comping waits until the recording stops",
+                        self.who(k.track)
                     ));
                 }
                 let name = take_name(tr, take);
@@ -1429,8 +1437,8 @@ impl TrackHost {
                     to: Tick::MAX,
                 })?;
                 format!(
-                    "audio {}: {name} plays everywhere it has audio",
-                    k.track + 1
+                    "{}: {name} plays everywhere it has audio",
+                    self.who(k.track)
                 )
             }
             // The time engine keeps the pick (`TimeControl`).
@@ -1514,8 +1522,8 @@ impl TrackHost {
                     "it plays in song mode, and "
                 };
                 Ok(format!(
-                    "{what} on audio {} from bar {}; {song}the Song view's Undo takes it off",
-                    track + 1,
+                    "{what} on {} from bar {}; {song}the Song view's Undo takes it off",
+                    self.who(track),
                     at / bar + 1
                 ))
             }
@@ -1534,11 +1542,40 @@ impl TrackHost {
     }
 
     /// Track `t`'s number as the screen writes it, if there is one.
-    fn track_no(&self, t: usize) -> Result<usize, String> {
+    /// What the lines call engine track `t` ([`TrackHost::who`]), or why
+    /// there is no such track.
+    fn track_no(&self, t: usize) -> Result<String, String> {
         if t < MAX_TRACKS {
-            Ok(t + 1)
+            Ok(self.who(t))
         } else {
             Err(format!("there is no audio track {}", t + 1))
+        }
+    }
+
+    /// What the hint and log lines call engine track `s`: its project
+    /// track's name, as the musician named it, else "Audio N" (N the
+    /// engine track's number, as its lane says without a name).
+    fn who(&self, s: usize) -> String {
+        match self.names.get(s).map(|n| n.trim()) {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => format!("Audio {}", s + 1),
+        }
+    }
+
+    /// Keeps `name` as engine track `s`'s name without allocating: the
+    /// room was made at start ([`NAME_ROOM`]), and a longer name is cut
+    /// short on a character's edge.
+    fn keep_name(&mut self, s: usize, name: &str) {
+        let Some(room) = self.names.get_mut(s) else {
+            return;
+        };
+        let mut end = name.len().min(room.capacity());
+        while !name.is_char_boundary(end) {
+            end -= 1;
+        }
+        if room.as_str() != &name[..end] {
+            room.clear();
+            room.push_str(&name[..end]);
         }
     }
 
@@ -1902,11 +1939,11 @@ impl crate::time::SongAudio for TrackHost {
         }
         match self.host.tracks.retime_refused(r)? {
             RetimeRefused::Recording(t) => {
-                Some(format!("audio {} is recording (stop it first)", t + 1))
+                Some(format!("{} is recording (stop it first)", self.who(t)))
             }
             RetimeRefused::Full(t) => Some(format!(
-                "audio {} would be cut into more than {MAX_REGIONS} regions",
-                t + 1
+                "{} would be cut into more than {MAX_REGIONS} regions",
+                self.who(t)
             )),
         }
     }
@@ -2332,10 +2369,10 @@ mod tests {
         .unwrap_err();
         assert!(e.contains("pick Mix first"), "{e}");
         let line = act(&mut r, AudioAction::Mix { track: 2, step: 0 }).unwrap();
-        assert_eq!(line, "audio 3 records Drums, after its effects");
+        assert_eq!(line, "Audio 3 records Drums, after its effects");
         let line = act(&mut r, AudioAction::Mix { track: 2, step: -1 }).unwrap();
         assert_eq!(
-            line, "audio 3 records Master, after its effects",
+            line, "Audio 3 records Master, after its effects",
             "round the list"
         );
         let line = act(&mut r, AudioAction::Mix { track: 2, step: 2 }).unwrap();
@@ -2348,7 +2385,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(line, "audio 3 records FM · Pads, before its effects");
+        assert_eq!(line, "Audio 3 records FM · Pads, before its effects");
         let (f, name) = r.h.inside(2).unwrap();
         assert_eq!(
             (f.strip, f.after_effects, name),
@@ -2361,7 +2398,7 @@ mod tests {
         let m = st.audio[2].mix.clone().unwrap();
         assert_eq!((m.name.as_str(), m.after_effects), ("Poly · Pads", false));
         let line = act(&mut r, AudioAction::Arm { track: 2, on: true }).unwrap();
-        assert_eq!(line, "audio 3 armed: REC records Poly · Pads in song mode");
+        assert_eq!(line, "Audio 3 armed: REC records Poly · Pads in song mode");
         // The project keeps it: a track with only that set is saved too.
         assert!(r.h.host.save());
         let mut saved = None;
@@ -2456,11 +2493,14 @@ mod tests {
                 .unwrap_err();
         assert!(e.contains("playhead inside"), "{e}");
         r.command(T::Locate(1920));
-        r.periods(2);
+        // The line names the track as the musician named it.
+        let p = r.project.tracks.iter().position(|t| t.is_audio()).unwrap();
+        r.project.tracks[p].name = "Vocal".into();
+        r.periods(CHECK_EVERY as usize);
         assert_eq!(
             r.h.action(AudioAction::Split(reg), &r.info(), true)
                 .unwrap(),
-            "audio 1: region split"
+            "Vocal: region split"
         );
         r.periods(2);
         assert_eq!(r.h.host.tracks.regions(0).len(), 2);
@@ -2596,7 +2636,7 @@ mod tests {
             fine: false,
         };
         let err = r.h.action(bare(2), &r.info(), true).unwrap_err();
-        assert!(err.contains("pick a region of audio 1"), "{err}");
+        assert!(err.contains("pick a region of Audio 1"), "{err}");
         assert!(r.h.action(bare(3), &r.info(), true).is_err());
         assert_eq!(r.h.host.tracks.stats().refused, 0);
         // No region picked and no panel open: no cards.
@@ -2818,7 +2858,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(line, "audio 1: take 1 plays from 1.2 to 1.4");
+        assert_eq!(line, "Audio 1: take 1 plays from 1.2 to 1.4");
         assert_eq!(
             plays(&r),
             [(0, 960, new), (960, 2880, old), (2880, end, new)]
@@ -2841,7 +2881,7 @@ mod tests {
         assert_eq!(plays(&r), [(0, end, new)]);
         // A tap: the take everywhere it has audio.
         let line = act(&mut r, AudioAction::UseTake(old)).unwrap();
-        assert_eq!(line, "audio 1: take 1 plays everywhere it has audio");
+        assert_eq!(line, "Audio 1: take 1 plays everywhere it has audio");
         assert!(plays(&r).iter().all(|p| p.2 == old), "{:?}", plays(&r));
         assert!(r.h.take_changed());
         // Takes again closes them.
@@ -2901,7 +2941,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(line, "audio 1: region moved to 3.1 (Undo puts it back)");
+        assert_eq!(line, "Audio 1: region moved to 3.1 (Undo puts it back)");
         let g = r.h.host.tracks.regions(0)[0];
         assert_eq!((g.start, g.end), (7680, 7680 + len));
         assert_eq!(r.h.take_repick(), Some(reg));
@@ -3223,7 +3263,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             line,
-            "Break's 2 slices on audio 1 from bar 3; the Song view's Undo takes it off"
+            "Break's 2 slices on Audio 1 from bar 3; the Song view's Undo takes it off"
         );
         assert_eq!(
             r.h.bring(sound("Hit", 100, Vec::new()), &at(3)),
@@ -3247,7 +3287,7 @@ mod tests {
             assert_eq!(
                 line,
                 format!(
-                    "Hit on audio {} from bar 3; the Song view's Undo takes it off",
+                    "Hit on Audio {} from bar 3; the Song view's Undo takes it off",
                     k + 1
                 )
             );
@@ -3265,7 +3305,7 @@ mod tests {
         let line = r.h.bring(sound("Hit", 4410, Vec::new()), &at(9)).unwrap();
         assert_eq!(
             line,
-            "Hit on audio 1 from bar 9; the Song view's Undo takes it off"
+            "Hit on Audio 1 from bar 9; the Song view's Undo takes it off"
         );
         while r.h.host.importing().is_some() {
             r.period();
@@ -3282,7 +3322,7 @@ mod tests {
         let line = r.h.bring(sound("Hit", 4410, Vec::new()), &at(12)).unwrap();
         assert_eq!(
             line,
-            "Hit on audio 1 from bar 12; it plays in song mode, and the Song view's Undo takes it off"
+            "Hit on Audio 1 from bar 12; it plays in song mode, and the Song view's Undo takes it off"
         );
         while r.h.host.importing().is_some() {
             r.period();

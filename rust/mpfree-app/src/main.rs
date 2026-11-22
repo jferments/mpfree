@@ -13613,7 +13613,7 @@ mod tests {
         });
         assert_eq!(
             SongRig::told(&fx),
-            "song: nothing moved: audio 1 is recording (stop it first)"
+            "song: nothing moved: Audio 1 is recording (stop it first)"
         );
         r.period();
         assert!(r.time.project().arrangement == before);
