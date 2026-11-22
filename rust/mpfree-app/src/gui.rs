@@ -369,7 +369,7 @@ fn rec_ready_hint(c: &play_widgets::RecChip) -> String {
 fn track_mute_hint(bank: usize, tracks: usize) -> String {
     format!(
         "TRACK MUTE · {}   ·   PAD BANK: other tracks   ·   green: playing, red: muted   ·   \
-         SHIFT + TRACK MUTE: the kit's pads   ·   TRACK MUTE: the pads play again",
+         SHIFT + TRACK MUTE: the track's pads   ·   TRACK MUTE: the pads play again",
         crate::app::mute_bank_words(bank, tracks)
     )
 }
@@ -474,7 +474,7 @@ fn perform_chip(page: &str) -> String {
 }
 
 const PAD_MUTE_HINT: &str =
-    "SHIFT + TRACK MUTE:   a pad mutes and unmutes itself in the kit   ·   red: muted   ·   \
+    "SHIFT + TRACK MUTE:   a pad mutes and unmutes itself on this track   ·   red: muted   ·   \
                              TRACK MUTE: tracks   ·   SHIFT + TRACK MUTE: the pads play again";
 const SHIFT_SYNTH_HINT: &str =
     "SHIFT +   touch a knob: MIDI Learn   ·   wheel: page   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
@@ -939,31 +939,16 @@ fn played_name(h: crate::instruments::Held, from: Option<usize>) -> String {
     }
 }
 
-/// What a pad mute says on a track that plays kit `kit` (counted from
-/// 0, and not kit 1): its pads play through the track's channel, which
-/// has the mute. `what` starts the line ("steps", "pad mute").
-pub fn other_kit_mutes(what: &str, kit: usize) -> String {
-    format!(
-        "{what}: Kit {}'s pads play through their track's channel: mute the track",
-        kit + 1
-    )
-}
-
-/// Why a kit pad has no mute of its own, in a line starting `what`: on
-/// kit `kit` (the armed track's, counted from 0) past kit 1 its pads play
-/// through their track's channel; on page `page` past A (PAD BANK) they
-/// have no pad strips, which only kit 1's pads A1-A16 have until any pad
-/// can have its own channel. None for those 16, and for no kit (the
-/// synth's pads).
-pub fn no_pad_mutes(what: &str, kit: Option<usize>, page: usize) -> Option<String> {
-    match kit? {
-        0 if page == 0 => None,
-        0 => Some(format!(
-            "{what}: pads {}-{} have no mixer strips of their own yet (A1-A16 have): mute the track",
-            crate::app::kit_pad_name(page * 16),
-            crate::app::kit_pad_name(page * 16 + 15)
+/// Why a track's pads have no mutes, in a line starting `what`: it plays
+/// notes (the synth, or an instrument: `kit` None), and pad mutes are a
+/// kit's. None on a kit: any kit's pads, on any bank, mute on their track
+/// (the instrument redesign's step 10).
+pub fn no_pad_mutes(what: &str, kit: Option<usize>) -> Option<String> {
+    match kit {
+        Some(_) => None,
+        None => Some(format!(
+            "{what}: this track plays notes, and pad mutes are a kit's: mute the track"
         )),
-        k => Some(other_kit_mutes(what, k)),
     }
 }
 
@@ -1464,6 +1449,10 @@ pub enum ToUi {
         delta: i32,
         scroll: bool,
     },
+    /// TC with the note editor showing (piano roll plan 1A.1): its drawer
+    /// opens on Timing Correct's settings, or, open already, the notes are
+    /// corrected.
+    EditTc,
     /// The Map controls page (debug mode).
     Map(Box<MapView>),
     /// The audio loop's CPU by engine numbers, sent once at the start; the
@@ -1966,9 +1955,16 @@ pub enum FromUi {
     /// the next control moved on a keyboard or controller to take it. The
     /// same value again cancels.
     LearnValue(LearnValue),
-    /// The Play page: a filter, a send, a fader, a speaker, a throw or the
-    /// XY pad, for the mixer (`mixing.rs`).
+    /// The Play page: a filter, a send, a fader, a throw or the XY pad,
+    /// for the mixer (`mixing.rs`).
     PlayFx(PlayFx),
+    /// A pattern row's speaker: pad `pad` of `track`'s kit muted or let
+    /// play on that track, at once (the instrument redesign's step 10).
+    PadMute {
+        track: usize,
+        pad: usize,
+        mute: bool,
+    },
     /// The Play page's pattern: a step tapped or changed.
     Steps(StepAction),
     /// The sampler's line input: its writing end, for the audio thread to
@@ -2348,6 +2344,13 @@ pub struct Player {
     status_start: Instant,
     /// Time since Dev > Status was last filled, s.
     status_drawn: f32,
+    /// What the watchers saw at their last look (status_watch.rs), and
+    /// how many looks there have been (the ports are looked at every 8th).
+    status_watch: crate::status_watch::Watch,
+    status_looks: u64,
+    /// Memory free (MemAvailable), from the screen thread's look at
+    /// /proc/meminfo every 2 s; None until then.
+    mem_free: Option<u64>,
     /// The Looper tab, and what it shows.
     // Boxed: it holds every loop's status and layer rows, and a Player is
     // moved by value often enough (sample_screens) that its size matters.
@@ -2881,6 +2884,9 @@ impl Player {
             status_clock: now,
             status_start: now,
             status_drawn: 0.0,
+            status_watch: crate::status_watch::Watch::default(),
+            status_looks: 0,
+            mem_free: None,
             looper_page,
             looper: LooperView::default(),
             play: PlayPage::default(),
@@ -5955,10 +5961,11 @@ impl Player {
     /// pattern, the throws, the XY pad and the timing. Only what changed
     /// is marked for drawing.
     fn refresh_play(&mut self) {
-        self.play.pad_strips = !matches!(
-            self.track_kits.kit_of(self.play.steps.track),
-            Some(k) if k > 0
-        );
+        self.play.pad_mutes = self
+            .time
+            .tracks
+            .get(self.play.steps.track)
+            .map_or(0, |t| t.pad_mutes);
         let mut look = self.play.transport_look();
         look.rec = Some(self.refresh_rec_chip());
         look.pads = self.pads_play();
@@ -7859,9 +7866,9 @@ impl Player {
     /// follows it while it shows.
     pub fn report_problem(&mut self, r: mpfree_status::Report) {
         self.status_board.apply(r, self.status_clock);
+        self.status_lines();
         if self.view == View::StatusBoard {
-            self.status_drawn = 0.0;
-            DebugPages::set_status(&mut self.ui, &self.status_board, self.status_start);
+            self.fill_status();
         }
     }
 
@@ -7893,13 +7900,110 @@ impl Player {
         let dt = dt.max(0.0);
         self.status_clock += Duration::from_secs_f32(dt);
         self.status_board.tick(self.status_clock);
+        self.status_lines();
         if self.view == View::StatusBoard {
             self.status_drawn += dt;
             if self.status_drawn >= 0.5 {
-                self.status_drawn = 0.0;
-                DebugPages::set_status(&mut self.ui, &self.status_board, self.status_start);
+                self.fill_status();
             }
         }
+    }
+
+    /// Dev > Status, from the board as it stands.
+    fn fill_status(&mut self) {
+        self.status_drawn = 0.0;
+        DebugPages::set_status(
+            &mut self.ui,
+            &self.status_board,
+            &self.status_watch,
+            self.status_start,
+        );
+    }
+
+    /// One log line for each problem that started showing or ended:
+    /// "status: + sound/dropout (3) The sound dropped out", "status: -
+    /// sound/dropout after 1.2 s", so the Console, the journal and the
+    /// test tools see what the board sees.
+    fn status_lines(&mut self) {
+        let watch = &self.status_watch;
+        let mut lines = Vec::new();
+        self.status_board.take_changes(|c| {
+            let about = match (c.subject, watch.subject_name(c.kind, c.subject)) {
+                (mpfree_status::Subject::NONE, _) => String::new(),
+                (_, Some(name)) => format!(" {name}"),
+                (s, None) => format!(" #{}", s.0),
+            };
+            let hidden = if c.hidden {
+                " (its cause is going)"
+            } else {
+                ""
+            };
+            lines.push(if c.started {
+                format!(
+                    "status: + {}{about} ({}) {}{hidden}",
+                    c.kind.id, c.times, c.kind.title
+                )
+            } else {
+                format!(
+                    "status: - {}{about} after {:.1} s",
+                    c.kind.id,
+                    c.lasted.as_secs_f32()
+                )
+            });
+        });
+        for l in lines {
+            println!("{l}");
+            #[cfg(test)]
+            self.said_all.push(l);
+        }
+    }
+
+    /// The watchers' look (status_watch.rs), each time the audio loop's
+    /// timing arrives: its counters, the period's verdict, memory, the
+    /// session, the project's left-out parts, the cores, and every 8th
+    /// look (2 s) the MIDI ports the project uses.
+    fn status_look(&mut self) {
+        self.status_looks += 1;
+        let missing = if self.ready && self.status_looks.is_multiple_of(8) {
+            self.io_model
+                .as_ref()
+                .and_then(|m| m.lock().ok().map(|m| m.missing_ports()))
+        } else {
+            None
+        };
+        let t = self.timing;
+        let look = crate::status_watch::Look {
+            underruns: t.underruns,
+            ends_lost: t.audio.ends_lost,
+            near_limit: self.engines.as_deref().and_then(crate::engines::near_limit),
+            free: self.mem_free,
+            ram_pct: self.ram_pct,
+            session_lost: Some(self.session.1 == Tone::Bad),
+            parts_missing: self.browser.as_ref().map(|b| !b.left_out_list().is_empty()),
+            one_core: self.engines.as_deref().and_then(|e| e.cores.fell_back()),
+            missing_ports: missing.as_deref(),
+        };
+        let mut reports = Vec::new();
+        self.status_watch.look(&look, &mut |r| reports.push(r));
+        for r in reports {
+            self.report_problem(r);
+        }
+    }
+
+    /// Memory free now (MemAvailable, bytes), for the status watcher.
+    pub fn set_free(&mut self, free: u64) {
+        self.mem_free = Some(free);
+    }
+
+    /// The problems shown this session that aren't in `allowed`, by id:
+    /// tests and the bench fail on any (System status).
+    #[cfg(test)]
+    pub fn status_unexpected(&self, allowed: &[&mpfree_status::Kind]) -> Vec<&'static str> {
+        self.status_board
+            .unexpected(allowed)
+            .iter()
+            .map(|k| k.id)
+            .collect()
     }
 
     /// Opens the number pad for `ask` over the page showing.
@@ -8956,6 +9060,7 @@ impl Player {
                 self.show_timing();
                 self.refresh_chips();
                 self.debug.set_audio(&mut self.ui, t.audio);
+                self.status_look();
             }
             ToUi::Map(m) => DebugPages::set_map(&mut self.ui, &m),
             ToUi::Engines(shared) => self.engines = Some(shared),
@@ -9744,10 +9849,23 @@ impl Player {
                 delta,
                 scroll: true,
             } => {
-                if let Some(a) = self.time_page.scroll(&self.ui, delta) {
+                if let Some(a) = self.time_page.scroll(&mut self.ui, delta) {
                     self.outbox.push(FromUi::Time(a));
                 }
                 self.time_page.update(&mut self.ui, &self.time);
+            }
+            ToUi::EditTc => {
+                if self.time_page.edit_drawer && self.time.edit.is_some() {
+                    self.outbox
+                        .push(FromUi::Time(TimeAction::Edit(EditAction::Correct)));
+                } else {
+                    // Timing Correct's settings: the drawer's first rows.
+                    self.time_page.edit_drawer = true;
+                    self.outbox
+                        .push(FromUi::Time(TimeAction::Edit(EditAction::PickRow(0))));
+                    self.time_page.update(&mut self.ui, &self.time);
+                    self.refresh_hint();
+                }
             }
             ToUi::ClipsWheel {
                 delta,
@@ -9799,6 +9917,19 @@ impl Player {
     /// (`app::RowKey`): pick a row, step it, or open it for the wheel.
     fn rows(&mut self, k: crate::app::RowKey) {
         use crate::app::RowKey;
+        // The note editor with its drawer closed: the wheel, - / + and the
+        // push open it, and the wheel and - / + do nothing more that time
+        // (piano roll plan 1A.1).
+        if matches!(self.view, View::Arrange | View::Sequencer)
+            && !matches!(k, RowKey::Editing(false))
+            && self.time_page.open_drawer(&self.ui)
+        {
+            self.time_page.update(&mut self.ui, &self.time);
+            self.refresh_hint();
+            if !matches!(k, RowKey::Editing(true)) {
+                return;
+            }
+        }
         if let RowKey::Editing(on) = k {
             // The Song view with a block, a section or a tempo point
             // picked: the push grabs it for the wheel, and lets go again.
@@ -10100,6 +10231,13 @@ impl Player {
         let lines = self.sample.take_lines();
         if lines.is_empty() {
             return;
+        }
+        let refused = crate::status_watch::refused_for_memory(&lines);
+        if refused > 0 {
+            self.report_problem(mpfree_status::Report::happened(
+                &mpfree_status::kinds::NOT_ENOUGH_MEMORY,
+                refused,
+            ));
         }
         for l in lines {
             println!("{l}");
@@ -12071,8 +12209,7 @@ impl Player {
             }
             View::StatusBoard => {
                 DebugPages::set_strip(&mut self.ui, v);
-                self.status_drawn = 0.0;
-                DebugPages::set_status(&mut self.ui, &self.status_board, self.status_start);
+                self.fill_status();
                 crate::debug_page::STATUS_PAGE.to_string()
             }
             View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console => {
@@ -13587,26 +13724,17 @@ impl Player {
                     }
                 }
             }
-            (play_page::STEPS, EventKind::Toggle(pad)) if pad < 16 && !self.play.pad_strips => {
-                self.tell(&other_kit_mutes(
-                    "steps",
-                    self.track_kits.kit_of(self.play.steps.track).unwrap_or(0),
-                ));
-                None
-            }
-            // Pads past A16 have no strip, so no mute, yet.
-            (play_page::STEPS, EventKind::Toggle(pad)) if pad >= 16 => {
-                let kit = self.track_kits.kit_of(self.play.steps.track);
-                if let Some(why) = no_pad_mutes("steps", kit.or(Some(0)), pad / 16) {
-                    self.tell(&why);
+            // A lane's speaker: its pad muted on the track the steps show,
+            // on any kit and bank (step 10).
+            (play_page::STEPS, EventKind::Toggle(pad)) if pad < 128 => {
+                let track = self.play.steps.track;
+                let mute = self.play.pad_mutes >> pad & 1 == 0;
+                // Shown at once; the engine's state says the same next.
+                if let Some(t) = self.time.tracks.get_mut(track) {
+                    t.pad_mutes ^= 1 << pad;
                 }
-                None
-            }
-            (play_page::STEPS, EventKind::Toggle(pad)) if pad < 16 => {
-                let mute = self.play.levels.pad_mutes & (1 << pad) == 0;
-                self.play.levels.pad_mutes ^= 1 << pad;
                 self.refresh_play();
-                Some(FromUi::PlayFx(PlayFx::PadMute { pad, mute }))
+                Some(FromUi::PadMute { track, pad, mute })
             }
             (play_page::INSPECTOR, EventKind::Tab(k)) if k < 3 => {
                 let bank = [HeldBank::Step, HeldBank::Trig, HeldBank::Sound][k];
@@ -13884,6 +14012,7 @@ impl Player {
                 None
             }
             (time_view::CLIPS, EventKind::Toggle(_))
+            | (time_view::NOTES, EventKind::Tab(_) | EventKind::View { .. })
             | (
                 time_view::RECORD | time_view::CLIP_CARD | time_view::SCENE_CARD,
                 EventKind::Tab(_),
@@ -14030,6 +14159,11 @@ impl Player {
 
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
+        // What the Clips page asks of the time engine on its own (Snap
+        // Auto's division as the roll's zoom changes it).
+        for a in self.time_page.take_asks() {
+            self.outbox.push(FromUi::Time(a));
+        }
         self.status_tick(dt);
         self.power_tick(dt);
         self.script_hold_tick(dt);
@@ -14507,6 +14641,8 @@ pub fn spawn(
             let (mut perf_at, mut perf_logged): (Option<Instant>, Option<Instant>) = (None, None);
             let mut ram_at: Option<Instant> = None;
             let mut memory_watch = crate::memory::Watch::default();
+            // The touchscreen stopped answering and hasn't opened again.
+            let mut touch_lost = false;
             // The Processes page: /proc once a second, only while it shows (a
             // fresh table each time the page opens, so CPU starts again).
             let mut procs: Option<(mpfree_prof::procs::ProcTable, Instant)> = None;
@@ -14566,6 +14702,11 @@ pub fn spawn(
                                 player.set_touch_status(&touch_status_text(&t, bell.as_ref()));
                                 touch_status = (Instant::now(), t.raw_events());
                                 touch = Some(t);
+                                if std::mem::take(&mut touch_lost) {
+                                    player.report_problem(mpfree_status::Report::ended(
+                                        &mpfree_status::kinds::TOUCH_STOPPED,
+                                    ));
+                                }
                             }
                             // Say why once, and again only if the reason changes.
                             Err(e) if first || e != touch_error => {
@@ -14612,6 +14753,13 @@ pub fn spawn(
                             ));
                             touch_total += t.contacts;
                             touch = None;
+                            // Touch stopped until the panel opens again
+                            // (System status; a reopen within a second
+                            // never shows).
+                            touch_lost = true;
+                            player.report_problem(mpfree_status::Report::began(
+                                &mpfree_status::kinds::TOUCH_STOPPED,
+                            ));
                         }
                     }
                 }
@@ -14623,6 +14771,9 @@ pub fn spawn(
                     if let Ok(m) = std::fs::read_to_string("/proc/meminfo") {
                         if let Some(p) = crate::perf::ram_used_pct(&m) {
                             player.set_ram(p);
+                        }
+                        if let Some(free) = crate::memory::free_in(&m) {
+                            player.set_free(free);
                         }
                         if let Some(line) = crate::memory::free_in(&m)
                             .and_then(|free| memory_watch.check(free, Instant::now()))
@@ -15637,8 +15788,13 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
             limit_db: 1.2,
         });
     }
+    // Pad 8 muted on the track the steps show (step 10: the track's).
+    let shown = p.play.steps.track;
+    if let Some(t) = p.time.tracks.get_mut(shown) {
+        t.pad_mutes = 1 << 7;
+    }
+    p.play.pad_mutes = 1 << 7;
     let mut levels = p.play.levels;
-    levels.pad_mutes = 1 << 7;
     levels.drums_filter = -16.0;
     levels.loop_db = -3.0;
     levels.line_db = 6.0;
@@ -15888,6 +16044,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::Nav(n) => p.apply(ToUi::Nav(n)),
             Effect::Held { delta, fine } => p.apply(ToUi::Held { delta, fine }),
             Effect::ClipsWheel { delta, scroll } => p.apply(ToUi::ClipsWheel { delta, scroll }),
+            Effect::EditTc => p.apply(ToUi::EditTc),
             Effect::Map(m) => p.apply(ToUi::Map(Box::new(m))),
             Effect::SynthPage(d) => p.apply(ToUi::SynthPage(d)),
             Effect::SampleWheel(d) => p.apply(ToUi::SampleWheel(d)),
@@ -21064,7 +21221,7 @@ mod tests {
         let area = p.ui.rect_of(time_view::NOTES).unwrap();
         let grid = p.ui.get::<NoteGrid>(time_view::NOTES).unwrap();
         let note = grid.note_rect(area, 1).unwrap();
-        let tc = grid.button_rects(area)[7];
+        let edit = grid.button_rects(area)[7];
         assert_eq!(
             tap(&mut p, (note.x + note.w / 2, note.y + note.h / 2)),
             Some(FromUi::Time(TimeAction::Edit(EditAction::Note {
@@ -21072,10 +21229,67 @@ mod tests {
                 rev: 0
             })))
         );
+        // Edit opens the drawer of Edit options and takes (the page's
+        // own), whose Correct corrects the timing; TC does too, once the
+        // drawer shows (piano roll plan 1A.1).
         assert_eq!(
-            tap(&mut p, (tc.x + tc.w / 2, tc.y + tc.h / 2)),
-            Some(FromUi::Time(TimeAction::Edit(EditAction::Button(7))))
+            tap(&mut p, (edit.x + edit.w / 2, edit.y + edit.h / 2)),
+            None
         );
+        assert_eq!(
+            p.ui.layout_of(CLIPS_PAGE),
+            Some(time_view::EDIT_DRAWER_LAYOUT)
+        );
+        p.ui.paint(&mut SoftCanvas::new(1280, 800));
+        let options = p.ui.rect_of(time_view::EDIT_OPTIONS).unwrap();
+        let correct =
+            p.ui.get::<OptionList>(time_view::EDIT_OPTIONS)
+                .unwrap()
+                .button_rect(options, 0)
+                .unwrap();
+        assert_eq!(
+            tap(
+                &mut p,
+                (correct.x + correct.w / 2, correct.y + correct.h / 2)
+            ),
+            Some(FromUi::Time(TimeAction::Edit(EditAction::Correct)))
+        );
+        p.take_actions();
+        p.apply(ToUi::EditTc);
+        assert_eq!(
+            p.take_actions(),
+            vec![FromUi::Time(TimeAction::Edit(EditAction::Correct))]
+        );
+        // Edit (narrower with the drawer open) again closes it; then TC
+        // opens it on Timing Correct's settings, and the wheel or - / +
+        // open it too.
+        let area = p.ui.rect_of(time_view::NOTES).unwrap();
+        let edit =
+            p.ui.get::<NoteGrid>(time_view::NOTES)
+                .unwrap()
+                .button_rects(area)[7];
+        assert_eq!(
+            tap(&mut p, (edit.x + edit.w / 2, edit.y + edit.h / 2)),
+            None
+        );
+        assert_eq!(p.ui.layout_of(CLIPS_PAGE), Some(time_view::EDIT_LAYOUT));
+        p.apply(ToUi::EditTc);
+        assert_eq!(
+            p.ui.layout_of(CLIPS_PAGE),
+            Some(time_view::EDIT_DRAWER_LAYOUT)
+        );
+        assert_eq!(
+            p.take_actions(),
+            vec![FromUi::Time(TimeAction::Edit(EditAction::PickRow(0)))]
+        );
+        p.time_page.edit_drawer = false;
+        p.time_page.update(&mut p.ui, &p.time);
+        p.apply(ToUi::Rows(crate::app::RowKey::Step(1)));
+        assert_eq!(
+            p.ui.layout_of(CLIPS_PAGE),
+            Some(time_view::EDIT_DRAWER_LAYOUT)
+        );
+        assert!(p.take_actions().is_empty(), "the press only opened it");
         // The list and the tracker have hint lines of their own, which say
         // SHIFT + wheel scrolls them.
         let mut st = p.time.clone();
@@ -21877,7 +22091,14 @@ mod tests {
             p.ui.get::<StepGrid>(play_page::STEPS)
                 .unwrap()
                 .name_at(r, 0);
-        let mute = |m| vec![FromUi::PlayFx(PlayFx::PadMute { pad: 0, mute: m })];
+        let track = p.play.steps.track;
+        let mute = |mute| {
+            vec![FromUi::PadMute {
+                track,
+                pad: 0,
+                mute,
+            }]
+        };
         assert_eq!(finger(&mut p, &[Touch::Down, Touch::Up], name), mute(true));
         let (id, lane) = on(&p).unwrap();
         assert_eq!(id, "mute");
@@ -23505,19 +23726,16 @@ mod tests {
         let r = p.ui.rect_of(play_page::STEPS).unwrap();
         let g = p.ui.get::<StepGrid>(play_page::STEPS).unwrap();
         let (lane1, name1) = (g.lanes_shown(r)[1], g.name_at(r, 1));
-        let mutes = p.play.levels.pad_mutes;
+        let mutes = p.play.pad_mutes;
         assert_eq!(
             tap(&mut p, name1),
             Some(FromUi::Steps(StepAction::ClearPad { pad: lane1 as u8 }))
         );
-        assert_eq!(p.play.levels.pad_mutes, mutes, "no mute while erasing");
+        assert_eq!(p.play.pad_mutes, mutes, "no mute while erasing");
         // Let go of ERASE: the name mutes again.
         erase(&mut p, false);
         assert!(!hint(&p).starts_with("ERASE held"));
-        assert!(matches!(
-            tap(&mut p, name1),
-            Some(FromUi::PlayFx(PlayFx::PadMute { .. }))
-        ));
+        assert!(matches!(tap(&mut p, name1), Some(FromUi::PadMute { .. })));
         // Arrange: a clip is deleted; an empty slot says so and makes none.
         use mpfree_time_ui::widgets::ClipGrid;
         let mut p = sample_clips(Fonts::embedded()).unwrap();
@@ -23813,45 +24031,41 @@ mod tests {
         assert_eq!(on(&p), [false, false]);
     }
 
+    /// Step 10: a track on kit 2 mutes its own pads as one on kit 1
+    /// does: the speaker shows the track's mute, and a lane's name mutes
+    /// its pad on the track the steps show.
     #[test]
-    fn a_track_on_another_kit_shows_no_pad_mutes_and_says_why() {
+    fn a_track_on_another_kit_mutes_its_own_pads() {
         let mut p = sample_play(Fonts::embedded(), PlayView::All);
         p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
-        let muted = |p: &Player| {
+        let muted = |p: &Player, pad: usize| {
             p.ui.get::<StepGrid>(play_page::STEPS)
                 .unwrap()
                 .lanes
                 .iter()
-                .find(|l| l.pad == 7)
+                .find(|l| l.pad == pad)
                 .unwrap()
                 .muted
         };
-        assert!(muted(&p), "kit 1's clap is muted on its pad strip");
-        // Track 1 picks kit 2: its pads play through the track's channel,
-        // so kit 1's mutes aren't theirs.
+        assert!(muted(&p, 7), "the clap is muted on the track");
         let mut kits = crate::sampler::TrackKits::new(2);
         assert!(kits.set(0, 1));
         p.apply(ToUi::TrackKits(Box::new(kits)));
-        assert!(!muted(&p));
+        assert!(muted(&p, 7), "on kit 2 too: the track's mute");
         let r = p.ui.rect_of(play_page::STEPS).unwrap();
-        let (x, y) =
-            p.ui.get::<StepGrid>(play_page::STEPS)
-                .unwrap()
-                .name_at(r, 0);
+        let g = p.ui.get::<StepGrid>(play_page::STEPS).unwrap();
+        let (pad, (x, y)) = (g.lanes_shown(r)[0], g.name_at(r, 0));
+        let (track, was) = (p.play.steps.track, muted(&p, pad));
         let down = p.touch(1, Touch::Down, x, y);
         assert_eq!(
             down.or(p.touch(1, Touch::Up, x, y)),
-            None,
-            "no pad strip muted"
+            Some(FromUi::PadMute {
+                track,
+                pad,
+                mute: !was
+            })
         );
-        let told = p.told.as_ref().map(|t| t.0.clone()).unwrap_or_default();
-        assert!(
-            told.contains("Kit 2's pads play through their track's channel"),
-            "{told}"
-        );
-        // Back on kit 1: the mute shows again.
-        p.apply(ToUi::TrackKits(Box::new(crate::sampler::TrackKits::new(2))));
-        assert!(muted(&p));
+        assert_eq!(muted(&p, pad), !was, "shown at once");
     }
 
     /// R3 part 2b: PAD BANK B puts the kit's pads B1-B16 on the 16 pads:
@@ -24053,10 +24267,15 @@ mod tests {
                 velocity: play_page::TAP_VELOCITY
             }))
         );
-        // A speaker: the pad's mute, for the mixer.
+        // A speaker: the pad's mute on the track the steps show (step 10).
+        let track = p.play.steps.track;
         assert_eq!(
             tap(&mut p, speaker),
-            Some(FromUi::PlayFx(PlayFx::PadMute { pad: 2, mute: true }))
+            Some(FromUi::PadMute {
+                track,
+                pad: 2,
+                mute: true
+            })
         );
         // A throw held and let go: the performance effect on the master.
         let throws = p.ui.rect_of(play_page::THROWS).unwrap();
@@ -28325,6 +28544,133 @@ mod tests {
         assert_eq!(View::StatusBoard.tab_view(), Some(View::Debug));
     }
 
+    /// System status phase 1: the watchers' looks on each timing turn the
+    /// counters and states into problems, each start and end is one log
+    /// line, and the page names a missing port.
+    #[test]
+    fn the_watchers_turn_counters_and_states_into_problems() {
+        use mpfree_status::kinds;
+        let mut p = sample_player(Fonts::embedded());
+        let timing = |p: &mut Player, underruns: u64, ends_lost: u64| {
+            let mut t = Timing {
+                underruns,
+                ..Timing::default()
+            };
+            t.audio.ends_lost = ends_lost;
+            p.apply(ToUi::Timing(t));
+        };
+        let raw = |p: &Player| -> Vec<String> {
+            p.status_board
+                .raw()
+                .iter()
+                .map(|v| format!("{} {:?}", v.kind.id, v.state))
+                .collect()
+        };
+        timing(&mut p, 0, 0);
+        assert!(p.status_board.is_empty(), "all quiet");
+        timing(&mut p, 2, 0);
+        assert_eq!(raw(&p), ["sound/dropout Now"]);
+        assert!(p
+            .said_all
+            .iter()
+            .any(|l| l == "status: + sound/dropout (2) The sound dropped out"));
+        p.tick(3.5);
+        assert!(p
+            .said_all
+            .iter()
+            .any(|l| l == "status: - sound/dropout after 0.0 s"));
+        // A note ending lost: a bug, said at once.
+        timing(&mut p, 2, 1);
+        assert!(p.status_unexpected(&[&kinds::SOUND_DROPOUT]) == ["sound/note-may-hang"]);
+        // The session stops answering: shown once it has lasted a second,
+        // and its echoes stay hidden meanwhile.
+        p.apply(ToUi::Session("No reply".into(), Tone::Bad));
+        timing(&mut p, 2, 1);
+        p.tick(1.1);
+        timing(&mut p, 5, 1);
+        let lost = p
+            .status_board
+            .raw()
+            .into_iter()
+            .find(|v| v.kind == &kinds::NO_SESSION)
+            .unwrap();
+        assert!(lost.is_now());
+        let dropouts = p
+            .status_board
+            .raw()
+            .into_iter()
+            .find(|v| v.kind == &kinds::SOUND_DROPOUT)
+            .unwrap();
+        assert!(dropouts.hidden, "an echo of the lost session");
+        p.apply(ToUi::Session("Akai session".into(), Tone::Good));
+        timing(&mut p, 5, 1);
+        p.tick(3.1);
+        assert!(!p
+            .status_board
+            .raw()
+            .iter()
+            .any(|v| v.kind == &kinds::NO_SESSION && v.is_now()));
+        // Memory: under one and a half times the floor.
+        p.set_free(crate::status_watch::LOW_FREE - 1);
+        timing(&mut p, 5, 1);
+        p.tick(1.1);
+        assert!(p
+            .status_board
+            .raw()
+            .iter()
+            .any(|v| v.kind == &kinds::MEMORY_LOW && v.is_now()));
+        // Nothing reaches the hint line before phase 2.
+        assert!(p.told.is_none());
+    }
+
+    /// A MIDI port the project uses and isn't plugged into: on the board
+    /// after two looks at the ports (2 s apart), named on Dev > Status, and
+    /// gone when it is plugged in.
+    #[test]
+    fn a_missing_midi_port_reaches_the_board_by_its_name() {
+        use mpfree_status::kinds;
+        let mut p = sample_player(Fonts::embedded());
+        p.apply(ToUi::Settings(Settings {
+            debug_mode: true,
+            ..Settings::default()
+        }));
+        let model: mpfree_midi_ui::Shared = Default::default();
+        model.lock().unwrap().setup.tracks[0] =
+            Some(mpfree_midi::setup::TrackOut::new("Juno-X", 0));
+        p.apply(ToUi::IoModel(model.clone()));
+        let looks = |p: &mut Player, n: usize| {
+            for _ in 0..n {
+                p.apply(ToUi::Timing(Timing::default()));
+            }
+        };
+        looks(&mut p, 16);
+        assert_eq!(p.status_unexpected(&[]), ["midi/port-missing"]);
+        p.apply(ToUi::Show(View::StatusBoard));
+        let rows = p.ui.get_mut::<StatList>("statusopen").unwrap().rows.clone();
+        assert!(
+            rows.iter().any(|r| r.0 == "warn midi/port-missing Juno-X"),
+            "{rows:?}"
+        );
+        assert!(p
+            .said_all
+            .iter()
+            .any(|l| l == "status: + midi/port-missing Juno-X (1) A MIDI device isn't plugged in"));
+        {
+            let mut m = model.lock().unwrap();
+            let din = m.live.ports[0].clone();
+            m.live.ports.push(mpfree_midi_ui::PortLive {
+                name: "Juno-X".into(),
+                ..din
+            });
+        }
+        looks(&mut p, 8);
+        assert!(!p
+            .status_board
+            .raw()
+            .iter()
+            .any(|v| v.kind == &kinds::PORT_MISSING && v.is_now()));
+    }
+
     #[test]
     fn a_project_saves_opens_again_and_new_starts_empty() {
         use crate::project::{self, Collected, Defaults};
@@ -28445,7 +28791,7 @@ mod tests {
             tempo: 98.0,
             swing: mpfree_transport::time::Swing::new(240, 62).unwrap(),
             clips: clips.clone(),
-            mixer: project::mixer_text(&mix.mixer, 0, 0),
+            mixer: project::mixer_text(&mix.mixer, 0),
             modu: String::new(),
             synth: project::synth_text(&Default::default(), &synth.sounds()),
             arp: "mpfree-arp 1\ntrack 1\nmode = arp\n".to_string(),
@@ -28629,7 +28975,6 @@ mod tests {
                 mixer: project::mixer_text(
                     &crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer,
                     0,
-                    0,
                 ),
                 modu: String::new(),
                 synth: project::synth_text(&Default::default(), &synth.sounds()),
@@ -28772,7 +29117,7 @@ mod tests {
         let synth = crate::synth::Synth::new(44_100);
         let good = project::new_snapshot(&Defaults {
             tempo: 120.0,
-            mixer: project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0, 0),
+            mixer: project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0),
             modu: String::new(),
             synth: project::synth_text(&Default::default(), &synth.sounds()),
         });
@@ -28845,7 +29190,7 @@ mod tests {
         let synth = crate::synth::Synth::new(44_100);
         let good = project::new_snapshot(&Defaults {
             tempo: 120.0,
-            mixer: project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0, 0),
+            mixer: project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0),
             modu: String::new(),
             synth: project::synth_text(&Default::default(), &synth.sounds()),
         });
@@ -28928,8 +29273,7 @@ mod tests {
         p.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), "");
         p.take_actions();
         let synth = crate::synth::Synth::new(44_100);
-        let mixer =
-            project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0, 0);
+        let mixer = project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0);
         let synth_text = project::synth_text(&Default::default(), &synth.sounds());
         let mut song = project::new_snapshot(&Defaults {
             tempo: 120.0,
@@ -29066,8 +29410,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let lib = mpfree_library::Library::at(&dir).unwrap();
         let synth = crate::synth::Synth::new(44_100);
-        let mixer =
-            project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0, 0);
+        let mixer = project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0);
         let synth_text = project::synth_text(&Default::default(), &synth.sounds());
         let defaults = || {
             Box::new(Defaults {

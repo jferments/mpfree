@@ -888,8 +888,13 @@ python3 tools/ci/instr_gate.py [--filter TEXT] [--bless]
 
 `mpfree-bench --count` runs each case for 200 blocks (after the same 50-block
 warm-up) between two callgrind client requests (`rust/mpfree-bench/src/vg.rs`;
-outside Valgrind they do nothing). The step-edit cases (module `control`)
-count 20 blocks after 5: each costs the same every block, and a detent's
+outside Valgrind they do nothing). The harness allocates nothing between
+them: each dump's name is made before the count starts (`vg::trigger`).
+Until 22 Nov 2026 the name was made inside the count, and malloc's cost
+there depends on what the cases before left on the heap, up to 87,000
+instructions (435 a block): the instrument redesign's step 10 read +9.6 %
+on the trig conditions case for that, and +2.9 % once it was left out.
+The step-edit cases (module `control`) count 20 blocks after 5: each costs the same every block, and a detent's
 compile of a full clip is about 58 million instructions, so 250 of them
 would double the job's time. The bench lists each case with the blocks it
 counted, and the gate divides by that. `instr_gate.py` runs it under
