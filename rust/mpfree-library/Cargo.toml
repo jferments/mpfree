@@ -8,3 +8,6 @@ description = "The user's library on the test stick (projects, samples, kits, pa
 
 [dependencies]
 mpfree-flac = { path = "../mpfree-flac" }
+
+[dev-dependencies]
+mpfree-stream = { path = "../mpfree-stream", features = ["testkit"] }
