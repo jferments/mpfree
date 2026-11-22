@@ -31,8 +31,7 @@ the sound on cores 3 and 2 instead, for the device rounds to compare.
 | `mpfree-store` | Saved settings and patterns |
 | `mpfree-midilog` | The MIDI monitor's Save log (handed to `mpfree-store`) and, while the developer tools are on, its lines in `/run/mpfree-app/midi.log` for the workstation console; four times a second, holding the I/O model's lock only to take an ask or word new lines (the audio loop only `try_lock`s it) |
 | `mpfree-journal` | The console's log |
-| `mpfree-stretch`, the Sample tab's worker | Time-stretch jobs, at idle priority |
-| `mpfree-sound-1`, `mpfree-file-1` | The sampler's job service ([sampler-architecture.md](sampler-architecture.md#the-job-service-step-7)), each started with its lane's first job, off the sound's cores at background priority. The sound lane works out the Sample tab's views of its sounds (`views.rs`: peaks and mono mix, then hits, tempo and root note; the sound shown last first) and their pitch tracks, and the hits and octave copies of the sounds the pads play; the file lane is for loads, as they move onto it |
+| `mpfree-sound-1`, `mpfree-file-1` | The sampler's job service ([sampler-architecture.md](sampler-architecture.md#the-job-service-step-7)), each started with its lane's first job, off the sound's cores: the sound lane at idle priority, the file lane at the normal one. The sound lane works out the Sample tab's views of its sounds (`views.rs`: peaks and mono mix, then hits, tempo and root note; the sound shown last first) and their pitch tracks, the hits and octave copies of the sounds the pads play, Warp's stretched copies and Process; the file lane is for loads, as they move onto it |
 | `autosample` | An auto-sample: at idle priority for one of MPFree's instruments, at normal priority for external gear |
 
 ## The plan, in order
@@ -118,8 +117,8 @@ it could hold the core in the middle of a period. Two fixes:
   thread started from the audio thread starts at the normal policy. A lane
   asks for its own priority (`Config::fifo`, 69), so lanes are unchanged.
 - Every helper thread calls `cores::background()` first
-  (`mpfree_lanes::os::background`, which the sampler's `mpfree-stretch`
-  worker calls too): the normal policy, and once the audio thread is pinned
+  (`mpfree_lanes::os::background`, which the sampler's job service's
+  file lane calls too): the normal policy, and once the audio thread is pinned
   (`core3`, `two`, `three`), cores 0 and 1 only. The start lines say
   `sound cores: helper threads on cores 0 and 1, normal priority`, and the
   Dev tab's Sound cores page has a "Helper threads" row. In `shared` they
@@ -128,8 +127,9 @@ it could hold the core in the middle of a period. Two fixes:
   and the audio thread), so each message still leaves on its moment; if
   that is refused the log says so and they run at the normal priority.
 - **Long jobs at idle priority** (14 Nov). The helper threads that do long
-  work nobody waits on frame by frame (`mpfree-stretch`, `mpfree-print`,
-  and `autosample` for one of MPFree's instruments) call
+  work nobody waits on frame by frame (the sampler's job service's sound
+  lane, `mpfree-print`, and `autosample` for one of MPFree's instruments)
+  call
   `mpfree_lanes::os::idle_job` instead: the same, then SCHED_IDLE, so they
   run only when cores 0 and 1 have nothing else ready and the screen goes
   first. At the normal priority a busy job on the screen's core shares it

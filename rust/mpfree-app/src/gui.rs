@@ -11132,6 +11132,14 @@ impl Player {
                     Tone::Warn,
                 ));
             }
+            let stale = self.sample.stale_copies();
+            if stale > 0 {
+                memory.push((
+                    "Sampler: stretched copies thrown away (pad changed)".to_string(),
+                    format!("{stale}×"),
+                    Tone::Warn,
+                ));
+            }
             let jobs = self.sample.jobs_counts();
             if jobs.refused > 0 {
                 memory.push((
@@ -24860,6 +24868,56 @@ mod tests {
                 .unwrap()
                 .stretched_frames(),
             None
+        );
+    }
+
+    /// Sampler plan step 7c: a copy that comes after its pad changed (here
+    /// its tune, so the copy asked for is no longer the one it plays) is
+    /// thrown away and counted, never put in the copies it plays from.
+    #[test]
+    fn a_stretched_copy_that_comes_after_its_pad_changed_is_thrown_away() {
+        use mpfree_sampler_ui::warp_tool::Row;
+        use mpfree_sampler_ui::wave_tab::REGION as LIST;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        warp_page(&mut p);
+        // The page's job service holds the copy until the pad has changed.
+        p.sample.hold_views(true);
+        p.on_event(UiEvent {
+            widget: LIST.into(),
+            kind: EventKind::Step {
+                index: Row::Warp.index(),
+                delta: 1,
+            },
+        });
+        let (sent, _) = views(p.take_actions());
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        let kit = p.sample.kit();
+        let project = p.sample.project_mut(kit).unwrap();
+        let mut changed = project.pad(pad).unwrap().clone();
+        changed.tune_cents += 100;
+        project.set_pad(pad, Some(changed), None).unwrap();
+        p.sample.hold_views(false);
+        let t = Instant::now();
+        while p.sample.stale_copies() == 0 {
+            assert!(t.elapsed() < Duration::from_secs(30), "the copy never came");
+            std::thread::sleep(Duration::from_millis(5));
+            let _ = p.take_actions();
+        }
+        assert_eq!(p.sample.stale_copies(), 1);
+        assert!(
+            events_log(&p).iter().any(|l| l.starts_with(
+                "sample: a stretched copy came after its pad changed: thrown away (1×"
+            )),
+            "{:?}",
+            events_log(&p)
+        );
+        assert!(
+            !events_log(&p)
+                .iter()
+                .any(|l| l.starts_with("sample: stretched")),
+            "{:?}",
+            events_log(&p)
         );
     }
 

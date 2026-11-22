@@ -13,7 +13,7 @@
 //!   stretching, Process) and [`Lane::File`] (reading sounds and kits), so
 //!   a long analysis never holds up a load. Each lane has its own workers,
 //!   started the first time it gets a job, at the priority the app gives
-//!   them ([`Config::on_start`]).
+//!   its lane ([`Config::on_start`]).
 //! - **One order.** A job for the sound being edited or shown goes first
 //!   ([`Order::First`]); the rest wait their turn. Each job has a [`Key`]:
 //!   what it works out, for which sound. A newer job with the key of one
@@ -161,9 +161,11 @@ pub struct Config {
     pub sound_workers: usize,
     /// Workers on [`Lane::File`].
     pub file_workers: usize,
-    /// Run first on each worker's own thread: the app moves it off the
-    /// sound's cores, at background priority.
-    pub on_start: fn(),
+    /// Run first on each worker's own thread, with its lane: the app puts
+    /// the sound lane at idle priority (its work is long and nobody waits
+    /// on it frame by frame, so the screen goes first) and the file lane at
+    /// the normal one, both off the sound's cores.
+    pub on_start: fn(Lane),
     /// The memory free now, None where it can't be read.
     pub free: fn() -> Option<u64>,
     /// Whether taking `need` more of the memory free (None: unknown) leaves
@@ -179,7 +181,7 @@ impl Default for Config {
         Config {
             sound_workers: 1,
             file_workers: 1,
-            on_start: || {},
+            on_start: |_| {},
             free: || None,
             room: |_, _| Ok(()),
         }
@@ -451,7 +453,7 @@ impl Jobs {
             let spawned = std::thread::Builder::new()
                 .name(lane.thread_name(n))
                 .spawn(move || {
-                    (worker.config.on_start)();
+                    (worker.config.on_start)(lane);
                     work(&worker, lane);
                 });
             if spawned.is_err() {

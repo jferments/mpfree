@@ -929,6 +929,9 @@ pub struct SamplePage {
     normalize_fallbacks: u32,
     /// The job service's workers that couldn't start, as last logged.
     spawn_failed_told: u64,
+    /// Stretched copies thrown away because their pad changed while they
+    /// were made.
+    stale_copies: u32,
     /// The take recording as the wave draws it (one-page step 2f, part 3),
     /// and the time to its next redraw.
     drawn: Option<mpfree_sampler_ui::live_take::LiveTake>,
@@ -1036,15 +1039,20 @@ pub struct KitPads {
 }
 
 /// The config of the sampler's job service ([`mpfree_sampler::jobs`]): its
-/// workers off the sound's cores at background priority, and every job
-/// checked against the memory floor. `main` gives it to the process's
-/// service at the start.
+/// workers off the sound's cores, the sound lane's at idle priority once
+/// the app turns idle jobs on (so the screen goes first, as the stretch
+/// and Process threads did) and the file lane's at the normal one, and
+/// every job checked against the memory floor. `main` gives it to the
+/// process's service at the start.
 pub fn jobs_config() -> JobsConfig {
     JobsConfig {
         sound_workers: 1,
         file_workers: 1,
-        on_start: || {
-            let _ = crate::cores::background();
+        on_start: |lane| match lane {
+            mpfree_sampler::jobs::Lane::Sound => mpfree_lanes::os::idle_job(),
+            mpfree_sampler::jobs::Lane::File => {
+                let _ = crate::cores::background();
+            }
         },
         free: crate::memory::free_bytes,
         room: crate::memory::room_in,
@@ -1144,6 +1152,7 @@ impl SamplePage {
             levelings: Vec::new(),
             normalize_fallbacks: 0,
             spawn_failed_told: 0,
+            stale_copies: 0,
             drawn: None,
             drawn_in: 0.0,
             recall: None,
@@ -4580,6 +4589,12 @@ impl SamplePage {
         self.jobs.counts()
     }
 
+    /// Stretched copies thrown away because their pad changed while they
+    /// were made.
+    pub fn stale_copies(&self) -> u32 {
+        self.stale_copies
+    }
+
     /// Times Normalize read every frame of a long region on the screen
     /// for want of its sound's summary.
     pub fn normalize_fallbacks(&self) -> u32 {
@@ -4587,7 +4602,7 @@ impl SamplePage {
     }
 
     /// Process: a new sound of layer `layer` of pad `pad`'s region, made on
-    /// a thread of its own: stretched from its warp tempo to the project's
+    /// the job service: stretched from its warp tempo to the project's
     /// when it stretches (its pins made part of the audio), or repitched
     /// to it when it repitches (stretched, then moved by the semitones the
     /// tape would), and moved `semitones` more. When it is done it takes
@@ -4640,51 +4655,54 @@ impl SamplePage {
             }
         };
         let (tx, rx) = mpsc::channel();
+        let refused = tx.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let done = Arc::new(AtomicU32::new(0));
         let (stopped, made) = (stop.clone(), done.clone());
-        let run = std::thread::Builder::new()
-            .name("mpfree-process".into())
-            .spawn(move || {
-                // After the sound and the screen, as the warp copies are.
-                mpfree_lanes::os::idle_job();
-                let t = Instant::now();
-                let r = (|| {
-                    let mut job = spec.start().map_err(|e| e.to_string())?;
-                    loop {
-                        if stopped.load(Ordering::Relaxed) {
-                            return Err("stopped".to_string());
+        // On the job service's sound lane, after what waits there; its
+        // memory checked again as it starts, with the jobs running then.
+        self.jobs.submit(
+            mpfree_sampler::jobs::Job::new(
+                mpfree_sampler::jobs::Lane::Sound,
+                mpfree_sampler::jobs::Key::new("process", kit as u64),
+                move |run| {
+                    let t = Instant::now();
+                    let r = (|| {
+                        let mut job = spec.start().map_err(|e| e.to_string())?;
+                        loop {
+                            if stopped.load(Ordering::Relaxed) || run.cancelled() {
+                                return Err("stopped".to_string());
+                            }
+                            let p = job.run(PROCESS_STEP);
+                            made.store(p.done.to_bits(), Ordering::Relaxed);
+                            if p.finished {
+                                break;
+                            }
                         }
-                        let p = job.run(PROCESS_STEP);
-                        made.store(p.done.to_bits(), Ordering::Relaxed);
-                        if p.finished {
-                            break;
-                        }
-                    }
-                    job.into_output()
-                        .ok_or_else(|| "nothing came out".to_string())
-                })();
-                let _ = tx.send(r.map(|audio| (audio, t.elapsed())));
-            });
-        match run {
-            Ok(_) => {
-                self.lines
-                    .push(format!("sample: processing pad {at}: {text}"));
-                self.processing = Some(Processing {
-                    kit,
-                    what,
-                    at,
-                    text,
-                    rx,
-                    stop,
-                    done,
-                    shown: 0.0,
-                });
-                if let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) {
-                    tab.set_processing(ui, st, Some(0.0));
-                }
-            }
-            Err(e) => say_not(self, e.to_string()),
+                        job.into_output()
+                            .ok_or_else(|| "nothing came out".to_string())
+                    })();
+                    let _ = tx.send(r.map(|audio| (audio, t.elapsed())));
+                },
+            )
+            .needs(need, move |why| {
+                let _ = refused.send(Err(why));
+            }),
+        );
+        self.lines
+            .push(format!("sample: processing pad {at}: {text}"));
+        self.processing = Some(Processing {
+            kit,
+            what,
+            at,
+            text,
+            rx,
+            stop,
+            done,
+            shown: 0.0,
+        });
+        if let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) {
+            tab.set_processing(ui, st, Some(0.0));
         }
         self.refresh(ui);
     }
@@ -4710,7 +4728,7 @@ impl SamplePage {
                 }
                 return;
             }
-            Err(TryRecvError::Disconnected) => Err("its thread stopped".to_string()),
+            Err(TryRecvError::Disconnected) => Err("it stopped before it finished".to_string()),
         };
         let Some(p) = self.processing.take() else {
             return;
@@ -7278,7 +7296,7 @@ impl SamplePage {
         self.unstretched.clear();
     }
 
-    /// Copies kit `kit` needs at the tempo go to the stretch thread.
+    /// Copies kit `kit` needs at the tempo go to the job service.
     fn ask_for_copies(&mut self, kit: usize) {
         let Some(project) = self.projects.get(kit) else {
             return;
@@ -7292,16 +7310,10 @@ impl SamplePage {
         if missing.is_empty() {
             return;
         }
-        if self.stretcher.is_none() {
-            match Worker::spawn() {
-                Ok(w) => self.stretcher = Some(w),
-                Err(e) => {
-                    self.lines.push(format!("sample: no stretch thread: {e}"));
-                    return;
-                }
-            }
-        }
-        let Some(w) = &self.stretcher else { return };
+        let jobs = &self.jobs;
+        let w = self
+            .stretcher
+            .get_or_insert_with(|| Worker::on(jobs.clone()));
         for k in missing {
             // The copy, and the source's part the thread is handed.
             let ch = project
@@ -7319,7 +7331,7 @@ impl SamplePage {
             }
             match Warps::spec(project, &k) {
                 Ok(spec) => {
-                    if w.send(k, spec) {
+                    if w.send(k, spec, need) {
                         self.stretching.push(k);
                     }
                 }
@@ -7328,7 +7340,7 @@ impl SamplePage {
         }
     }
 
-    /// Takes in the copies the stretch thread has finished; the kits that
+    /// Takes in the copies the job service has finished; the kits that
     /// play them get new views.
     fn take_copies(&mut self) {
         let Some(w) = &self.stretcher else { return };
@@ -7340,6 +7352,20 @@ impl SamplePage {
             match d {
                 Done::Copy(key, data, took) => {
                     self.stretching.retain(|k| *k != key);
+                    // Out of date if no kit plays it any more (its pad
+                    // changed while it was made): thrown away, counted.
+                    let wanted = self
+                        .projects
+                        .iter()
+                        .any(|p| self.warps.wanted(p).contains(&key));
+                    if !wanted {
+                        self.stale_copies += 1;
+                        self.lines.push(format!(
+                            "sample: a stretched copy came after its pad changed: thrown away ({}× so far)",
+                            self.stale_copies
+                        ));
+                        continue;
+                    }
                     self.warps.insert_for(key, data, &self.projects);
                     for k in 0..self.projects.len() {
                         if self.warps.wanted(&self.projects[k]).contains(&key) {
@@ -7359,6 +7385,15 @@ impl SamplePage {
                     self.lines.push(format!("sample: stretch failed: {e}"));
                 }
                 Done::Cancelled(key) => self.stretching.retain(|k| *k != key),
+                Done::Refused(key, why) => {
+                    self.stretching.retain(|k| *k != key);
+                    self.unstretched.push(key);
+                    self.lines.push(format!(
+                        "sample: not stretched, the pad repitches instead ({why})"
+                    ));
+                    self.told
+                        .push(format!("Not stretched, the pad repitches instead: {why}"));
+                }
             }
         }
     }
