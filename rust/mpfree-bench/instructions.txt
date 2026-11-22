@@ -166,6 +166,13 @@
 48137	Poly Unison Lead, 8 voices
 47197	Poly Vowel Lead, 8 voices
 246021	Poly Worn Brass, 8 voices
+4215241	Project: all at once
+295686	Project: bass into the limiter
+1331926	Project: dense synths
+1599146	Project: distortion chain
+571852	Project: fast automation
+742130	Project: granular drums
+290797	Project: long stems
 12921	Ring mod
 145867	Room reverb
 108213	Rotary
@@ -207,6 +214,10 @@
 221035	Strings Init, 6 keys
 283218	Strings Orchestra, 6 keys
 133524	Supersaw saws: 8 voices, plain
+39041	Choir formants: 8 voices, plain
+334933	Poly Init, 8 voices, distortion 24 dB
+330290	Poly Init, 8 voices, drive 24 dB
+333709	Poly Table, 8 voices, sync 50
 31342	Talk box
 87944	Tape delay
 8952	Time with trig conditions and ratchets, 8 clips, arp
@@ -227,6 +238,7 @@
 2715695	Wavetable Init, 16 voices, both osc, unison 8
 361976	Wavetable Init, 8 voices
 1034441	Wavetable Init, 8 voices, both osc, unison 4
+413168	Wavetable Init, 8 voices, sync 50
 858613	Wavetable Morph Pad, 8 voices
 362861	Wavetable Organ, 8 voices
 553843	Wavetable Sync Sweep, 8 voices
