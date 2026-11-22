@@ -59,9 +59,11 @@ use mpfree_audiotracks::host::{AudioHost, ImportRefused, TakeWave, MAX_COLUMNS};
 use mpfree_audiotracks::save::{Saved, TrackFile};
 use mpfree_audiotracks::streaming::StreamConfig;
 use mpfree_audiotracks::{
-    Command, Input, Monitor, Retime, RetimeRefused, SongStep, TakeInfo, MAX_REGIONS, MAX_TAKES,
+    Answer, Change, ClipPlay, ClipRegion, Command, Input, Monitor, Plays, RecordingId, Retime,
+    RetimeRefused, SongStep, TakeInfo, MAX_CHANGES, MAX_CLIP_REGIONS, MAX_REGIONS, MAX_TAKES,
     MAX_TRACKS, PEAK_BLOCK,
 };
+use mpfree_play::{AudioAnswer, AudioPlays};
 use mpfree_seq::{RecId, TrackId};
 use mpfree_time_ui::song::{audio_blocks, input_chip, take_lanes, AudioLane, MixFrom, MONITORS};
 use mpfree_time_ui::view::{
@@ -217,6 +219,61 @@ pub struct Inside {
 }
 
 /// The audio tracks, their host and what the Song view was last given.
+const NO_CLIP_REGION: ClipRegion = ClipRegion {
+    start: 0,
+    end: 0,
+    rec: RecordingId::NONE,
+    src: 0,
+    gain: 1.0,
+    fade_in: 0,
+    fade_out: 0,
+    into: 0,
+    left: 0,
+};
+
+/// What the player's `p` says, in the engine's words: a clip's regions
+/// copied into `room` (the first [`MAX_CLIP_REGIONS`]), each naming its
+/// recording by the same lasting id.
+fn plays_in<'r>(p: &AudioPlays, room: &'r mut [ClipRegion; MAX_CLIP_REGIONS]) -> Plays<'r> {
+    match *p {
+        AudioPlays::Nothing => Plays::Nothing,
+        AudioPlays::Song => Plays::Song,
+        AudioPlays::Clip {
+            regions,
+            origin,
+            len,
+            last_frame,
+            gain,
+            clip,
+            stamp,
+        } => {
+            let n = regions.len().min(MAX_CLIP_REGIONS);
+            for (d, r) in room.iter_mut().zip(regions) {
+                *d = ClipRegion {
+                    start: r.start,
+                    end: r.end,
+                    rec: RecordingId(r.rec.0),
+                    src: r.src,
+                    gain: r.gain,
+                    fade_in: r.fade_in,
+                    fade_out: r.fade_out,
+                    into: r.into,
+                    left: r.left,
+                };
+            }
+            Plays::Clip(ClipPlay {
+                regions: &room[..n],
+                origin,
+                len,
+                last_frame,
+                gain,
+                clip: clip.0,
+                stamp,
+            })
+        }
+    }
+}
+
 pub struct TrackHost {
     pub host: AudioHost,
     rate: u32,
@@ -284,6 +341,10 @@ pub struct TrackHost {
     /// that track is in the track list as last found ([`TrackHost::sync`]).
     pub slots: Slots,
     place: [Option<usize>; MAX_TRACKS],
+    /// Room for what each track's clips play this period, at its start
+    /// and at each change: the player's regions, copied in the engine's
+    /// words ([`TrackHost::period`]).
+    clip_room: Box<[[[ClipRegion; MAX_CLIP_REGIONS]; 1 + MAX_CHANGES]; MAX_TRACKS]>,
     /// Each engine track's project track's name as last found, for the
     /// hint and log lines ([`TrackHost::who`]); room made at start, so
     /// [`TrackHost::sync`] never allocates. A track gone keeps its name.
@@ -367,6 +428,9 @@ impl TrackHost {
             slots: Slots::default(),
             names: std::array::from_fn(|_| String::with_capacity(NAME_ROOM)),
             place: [None; MAX_TRACKS],
+            clip_room: Box::new(
+                [[[NO_CLIP_REGION; MAX_CLIP_REGIONS]; 1 + MAX_CHANGES]; MAX_TRACKS],
+            ),
             silent: [false; MAX_TRACKS],
             arm_next: None,
             files_dir: None,
@@ -749,13 +813,19 @@ impl TrackHost {
     }
 
     /// One period: the line input (`line`) in, the tracks' sound out into
-    /// `out` (overwritten). `song_on` is song mode.
-    pub fn period(
+    /// `out` (overwritten). `song_on` is song mode: the tracks record and
+    /// play their song regions only then. `plays` says what a project
+    /// track (by its place in the track list) played in the period, as the
+    /// arranger's player has it ([`mpfree_play::Player::audio`]): its
+    /// clips, its song or nothing; None plays every track's song, as
+    /// before clips.
+    pub fn period<'a>(
         &mut self,
         block: &Block,
         map: &TempoMap,
         song_on: bool,
         line: (&[f32; PERIOD], &[f32; PERIOD]),
+        plays: Option<&dyn Fn(usize) -> AudioAnswer<'a>>,
     ) {
         if song_on != self.active && self.host.command(Command::SetActive(song_on)) {
             self.active = song_on;
@@ -765,10 +835,58 @@ impl TrackHost {
             self.input[2 * f + 1] = line.1[f];
         }
         self.out.fill(0.0);
+        // Each track's answer in the engine's words: its project track's,
+        // or its song for one with none.
+        let none = Change {
+            frame: 0,
+            tick: 0.0,
+            plays: Plays::Nothing,
+            muted: false,
+            ring: false,
+        };
+        let mut changes = [[none; MAX_CHANGES]; MAX_TRACKS];
+        let mut answers = [Answer::default(); MAX_TRACKS];
+        let mut n = 0;
+        if let Some(plays) = plays {
+            n = MAX_TRACKS;
+            let rows = self.clip_room.iter_mut().zip(changes.iter_mut());
+            for (s, ((rooms, ch), ans)) in rows.zip(answers.iter_mut()).enumerate() {
+                let Some(p) = self.place[s] else {
+                    continue;
+                };
+                let a = plays(p);
+                let (first, rest) = rooms.split_at_mut(1);
+                let start = plays_in(&a.start, &mut first[0]);
+                let mut k = 0;
+                for ((c, room), slot) in a.changes().iter().zip(rest.iter_mut()).zip(ch.iter_mut())
+                {
+                    *slot = Change {
+                        frame: c.frame,
+                        tick: c.tick,
+                        plays: plays_in(&c.plays, room),
+                        muted: c.muted,
+                        ring: c.ring,
+                    };
+                    k += 1;
+                }
+                let ch: &[Change] = ch;
+                *ans = Answer {
+                    start,
+                    muted: a.muted,
+                    changes: &ch[..k],
+                    superseded: a.superseded,
+                };
+            }
+        }
         // The engine's sum is no one's since phase 1b: each track plays
         // through its own channel (`play_into`).
-        self.host
-            .period(block, map, &self.input[..], &mut self.out[..]);
+        self.host.period_with(
+            block,
+            map,
+            &self.input[..],
+            &mut self.out[..],
+            &answers[..n],
+        );
         if let Some(sp) = block.spans().last() {
             self.time_sig = sp.meter;
         }
@@ -2325,7 +2443,7 @@ mod tests {
             let r = [0.0f32; PERIOD];
             self.t.process(PERIOD as u32, &mut self.b);
             let map = *self.t.tempo_map();
-            self.h.period(&self.b, &map, self.song, (&l, &r));
+            self.h.period(&self.b, &map, self.song, (&l, &r), None);
             // What the tracks played, each into its own channel.
             self.heard = (0..MAX_TRACKS)
                 .flat_map(|s| self.h.host.tracks.track_out(s, PERIOD).iter())

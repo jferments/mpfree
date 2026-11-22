@@ -11340,11 +11340,14 @@ fn player_session(
         // Tracks recording from inside the mix (step 9) take the mixer's
         // last block for them, before they run.
         tracks.feed_inside(&mut mix);
+        // What each audio track plays (its clips, its song or nothing)
+        // comes from the player's last period, on its frames.
         tracks.period(
             time.block(),
             time.tempo_map(),
             time.song_on(),
             looper.input(),
+            Some(&|p| time.audio(p)),
         );
         // Each audio track into its own channel (phase 1b).
         tracks.play_into(&mut mix);
@@ -13537,7 +13540,9 @@ mod tests {
             self.time.period(PERIOD as u32, &mut Quiet);
             let (block, map) = (self.time.block(), self.time.tempo_map());
             let song_on = self.time.song_on();
-            self.tracks.period(block, map, song_on, (&z, &z));
+            let time = &self.time;
+            self.tracks
+                .period(block, map, song_on, (&z, &z), Some(&|p| time.audio(p)));
             self.tracks.play_into(&mut self.mix);
         }
 
@@ -13590,6 +13595,138 @@ mod tests {
                 fx => panic!("{fx:?}"),
             }
         }
+    }
+
+    /// Audio tracks phase 2, step 2b: PLAY starts the focused cell's
+    /// audio clip (the Play page's pattern) from the first frame, with
+    /// the usual fade in, and a clip launched in another cell takes over
+    /// on the frame its bar line lands on, as the player says it (song
+    /// mode off: the clips play without it). The track host maps the
+    /// project track to its engine track.
+    #[test]
+    fn an_audio_clip_launched_in_its_cell_plays_from_its_line() {
+        use mpfree_seq::{AudioClip, Clip, Project, RecId, Track};
+        struct Quiet;
+        impl time::Pads for Quiet {
+            fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
+                true
+            }
+            fn release_at(&mut self, _: u16, _: usize, _: u32) {}
+            fn stop_all(&mut self) {}
+            fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
+        }
+        let bar_frames = 2 * RATE as usize;
+        let mut p = Project::new();
+        let mut t = Track::new_audio("Loop", 0);
+        for (slot, rec) in [(0, 7), (1, 8)] {
+            let mut clip = Clip::new("Loop", 3840);
+            clip.audio = Some(AudioClip::of(RecId(rec), 0, bar_frames as i64, 3840, 120.0));
+            t.slots[slot] = Some(clip);
+        }
+        p.tracks.push(t);
+        p.give_track_ids();
+        let at = p.tracks.len() - 1;
+        let mut time = time::TimeHost::with_project(RATE, 120.0, p).unwrap();
+        assert!(!time.song_on(), "clip mode");
+        let mut tracks = audiotracks::TrackHost::new(RATE, 10);
+        for (id, rec, level) in [(0, 7, 0.25), (1, 8, 0.5)] {
+            let take = mpfree_audiotracks::save::TakeFile {
+                id,
+                rec: mpfree_audiotracks::RecordingId(rec),
+                track: 0,
+                group: 0,
+                pass: id,
+                bpm: 120.0,
+                anchor: 0.0,
+                frames: bar_frames,
+                channels: 1,
+                file: String::new(),
+                path: None,
+                audio: vec![level; bar_frames],
+            };
+            assert!(tracks.host.tracks.load_take(take).is_ok());
+        }
+        /// Runs `periods` periods, keeping engine track `s`'s left
+        /// channel in `out` and the frame bar 2's line lands on in `line`.
+        fn run(
+            time: &mut time::TimeHost,
+            tracks: &mut audiotracks::TrackHost,
+            periods: usize,
+            s: usize,
+            out: &mut Vec<f32>,
+            line: &mut Option<usize>,
+        ) {
+            let z = [0f32; PERIOD];
+            for _ in 0..periods {
+                time.advance(PERIOD as u32);
+                time.period(PERIOD as u32, &mut Quiet);
+                tracks.sync(time.project(), time.silenced(), true);
+                let t: &time::TimeHost = time;
+                tracks.period(
+                    t.block(),
+                    t.tempo_map(),
+                    t.song_on(),
+                    (&z, &z),
+                    Some(&|p| t.audio(p)),
+                );
+                for sp in t.block().spans() {
+                    if let Some(o) = sp.offset_of(3840.0) {
+                        *line = Some(out.len() + o as usize);
+                    }
+                }
+                let o = tracks.host.tracks.track_out(s, PERIOD);
+                out.extend(o.chunks_exact(2).map(|f| f[0]));
+            }
+        }
+        let (mut out, mut line) = (Vec::new(), None);
+        for _ in 0..100 {
+            if tracks.host.tracks.loading() == 0 {
+                break;
+            }
+            run(&mut time, &mut tracks, 10, 0, &mut out, &mut line);
+        }
+        assert_eq!(tracks.host.tracks.loading(), 0);
+        assert!(out.iter().all(|&v| v == 0.0), "nothing plays while stopped");
+        // The takes sit on engine tracks 0 and 1, so the track gets
+        // another.
+        let s = (0..mpfree_audiotracks::MAX_TRACKS)
+            .find(|&s| tracks.place(s) == Some(at))
+            .expect("an engine track for it");
+        out.clear();
+        line = None;
+        let said = time
+            .act(TimeAction::Transport(mpfree_transport::Command::Play))
+            .unwrap();
+        assert!(said.contains("slot 1 of track 1 launched"), "{said}");
+        // Half a bar of the first clip, then the second one's launch
+        // waits for bar 2's line.
+        run(
+            &mut time,
+            &mut tracks,
+            bar_frames / 2 / PERIOD,
+            s,
+            &mut out,
+            &mut line,
+        );
+        assert!(out[0] < 0.25 && out[0] >= 0.0, "fading in: {}", out[0]);
+        assert!((out[200] - 0.25).abs() < 1e-6, "{}", out[200]);
+        time.act(TimeAction::Launch { track: at, slot: 1 }).unwrap();
+        run(
+            &mut time,
+            &mut tracks,
+            bar_frames / PERIOD + 20,
+            s,
+            &mut out,
+            &mut line,
+        );
+        let line = line.expect("bar 2's line came");
+        assert!(
+            out[200..line].iter().all(|&v| (v - 0.25).abs() < 1e-6),
+            "the first clip up to its line {line}: first change at {:?}",
+            (200..line).find(|&i| (out[i] - 0.25).abs() >= 1e-6)
+        );
+        assert!(out[line + 1] > 0.25, "fading over from its line");
+        assert!((out[line + 200] - 0.5).abs() < 1e-6, "{}", out[line + 200]);
     }
 
     /// Arrange 3.4: a section moved or + Bar moves the audio regions in it

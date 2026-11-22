@@ -609,8 +609,8 @@ impl Lane {
         }
     }
 
-    /// The transport stopped (or the tracks are off): nothing sounds, and
-    /// the next answer starts afresh.
+    /// The transport stopped: nothing sounds, and the next answer starts
+    /// afresh.
     pub(crate) fn stop(&mut self) {
         for v in &mut self.voices {
             v.on = false;

@@ -107,6 +107,7 @@ An audio track (the audio tracks rethink's phase 2, step 2b; [audio-tracks.md](a
 - **More than four changes** in a period (only with Launch at Now or a tiny grid, or across a loop jump): the last four stay on their frames and the earlier ones are dropped as superseded, counted in `AudioAnswer::superseded` and `Stats::audio_superseded`. Nothing is moved earlier.
 - **A period's start** is what played just before its first tick, so a block edge on that tick is a change on frame 0, ring and all. It differs from the last period's end only where a view swap or a jump falls between periods; the engine takes that as a change on frame 0.
 - **Cost.** The answer is kept per audio track in the player (`audio::Marks`, fixed arrays, no allocation); `copy_from` leaves it out, since each `process` makes its own.
+- **Which view.** Call `audio()` with the view the period was processed with: its `Source`s and the regions it lends point into that view. The one-thread host keeps it (`TimeAudio::played`) when the view compiled for a cue that started comes in straight after the period, until the next period starts; apart, the swap happens before `process` anyway.
 
 ## Parameter locks
 
@@ -392,4 +393,4 @@ Cues that start become launches right after the period they started in (`Started
 - The step sequencer's model is built (steps with velocity, length, nudge, chance, trig conditions, ratchets and parameter locks, 16 to a page and as many pages as the clip holds, chords, undoable edits): see [steps.md](steps.md). The Play page's step grid edits it (the app's `play_page.rs`), and the note editor's tracker lens shows it as rows ([note-editor.md](note-editor.md)).
 - Pad pressure: editing it in the note editor, and showing it in the list and the tracker ([note-editor.md](note-editor.md)). Buttons for half and double speed, which stretch the pressure with the notes.
 - The looper (T4) is built: [looper.md](looper.md).
-- Audio tracks run in the app on the transport's block and tempo map, after the looper, in song mode only (`TimeHost::tempo_map`, `TimeHost::song_on`): [audio-tracks.md](audio-tracks.md#in-the-pad-player).
+- Audio tracks run in the app on the transport's block and tempo map, after the looper (`TimeHost::tempo_map`): their song regions in song mode only (`TimeHost::song_on`), their clips as `TimeHost::audio` says: [audio-tracks.md](audio-tracks.md#in-the-pad-player).

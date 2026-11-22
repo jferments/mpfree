@@ -670,7 +670,20 @@ impl AudioHost {
     /// Run the tracks for one period (see [`AudioTracks::process`]), then
     /// look after the save, the fit and the buffers.
     pub fn period(&mut self, block: &Block, map: &TempoMap, input: &[f32], out: &mut [f32]) {
-        self.tracks.process(block, map, input, out);
+        self.period_with(block, map, input, out, &[]);
+    }
+
+    /// [`AudioHost::period`] with what each track plays from the
+    /// arranger's player ([`AudioTracks::process_with`]).
+    pub fn period_with(
+        &mut self,
+        block: &Block,
+        map: &TempoMap,
+        input: &[f32],
+        out: &mut [f32],
+        answers: &[crate::Answer],
+    ) {
+        self.tracks.process_with(block, map, input, out, answers);
         self.tend_import(map);
         self.tend(block.frames as usize);
         self.periods += 1;

@@ -81,6 +81,10 @@
 //!   because the stick was late is counted, a take at a time
 //!   ([`AudioTracks::missed`]). Without a player every take is in the
 //!   pool, as before.
+//! - **Clips.** Given what the arranger's player says each track plays
+//!   ([`AudioTracks::process_with`]), a track plays audio clips as well as
+//!   its song: each in a voice with its own copy of the clip's regions,
+//!   every change on its frame ([`clips`]).
 //!
 //! [`AudioTracks::command`] and [`AudioTracks::process`] never allocate,
 //! lock or panic, and give the same output for any period size.
@@ -211,9 +215,10 @@ pub enum Command {
     Solo(usize, bool),
     /// Input latency to make up for, in frames, for every track.
     SetLatency(u32),
-    /// Whether the tracks play and record (the host turns them off when
-    /// the song is not playing, say in clip launch mode). Monitoring goes
-    /// on either way.
+    /// Whether the tracks record and play their song regions (the host
+    /// turns them off when the song is not playing, say in clip launch
+    /// mode). Clips play either way, as the arranger's answer says
+    /// ([`AudioTracks::process_with`]), and so does monitoring.
     SetActive(bool),
     /// Play take `take` on its track from tick `from` to `to`, over what
     /// was there (clipped to where the take has audio).
@@ -1027,11 +1032,17 @@ enum Join {
 /// its fades on that frame is `b`'s. So the two parts of a Split, which
 /// keep their shares of one region's fades, play as that region did.
 fn join(a: &Region, b: &Region, map: &TempoMap, rate: u32) -> Join {
-    if b.start != a.end {
+    if b.start != a.end || b.take != a.take {
         return Join::Fade;
     }
+    // The lengths only where the audio may run on (every region is
+    // placed again each run).
     let frames = |r: &Region| frames_from(map, r.start as f64, r.end as f64, rate).round() as i64;
-    join_run(a, frames(a), b, frames(b))
+    let len_a = frames(a);
+    if b.src != a.src + len_a {
+        return Join::Fade;
+    }
+    ends_meet(a, len_a, b, frames(b))
 }
 
 /// How `b` meets `a` where it starts as `a` ends, `len_a` and `len_b`
@@ -1041,6 +1052,12 @@ fn join_run(a: &Region, len_a: i64, b: &Region, len_b: i64) -> Join {
     if b.take != a.take || b.src != a.src + len_a {
         return Join::Fade;
     }
+    ends_meet(a, len_a, b, len_b)
+}
+
+/// The audio runs on from `a` into `b`: straight on if their gains meet,
+/// else a ramp.
+fn ends_meet(a: &Region, len_a: i64, b: &Region, len_b: i64) -> Join {
     let end_a = a.gain * Envelope::of(a, len_a).at(len_a);
     let start_b = b.gain * Envelope::of(b, len_b).at(0);
     if end_a == start_b {
@@ -3047,9 +3064,6 @@ impl AudioTracks {
             return;
         }
         self.cues = [[None; 2]; MAX_TRACKS];
-        if !self.active {
-            return;
-        }
         let rate = self.rate;
         let tail = mpfree_transport::time::ticks_in(FADE as f64, bpm, rate) + 1.0;
         let ahead = CUE_S * f64::from(rate);
@@ -3067,6 +3081,7 @@ impl AudioTracks {
                     next = tr.lane.voices[voice].upcoming(tick, tail);
                 }
                 Mode::Nothing => {}
+                _ if !self.active => {}
                 _ => {
                     let first = tr
                         .regions()
@@ -3325,12 +3340,16 @@ impl AudioTracks {
                     Monitor::Auto => tr.armed && (span.state != State::Playing || !self.active),
                 };
             let recording = tr.rec.is_some();
-            if rolling && self.active {
+            if rolling {
                 if recording {
                     // Replace: its clips go on silently under the take.
                     self.tracks[t].lane.hold();
                 } else {
-                    self.play(t, map, span, tick0, f, off, len);
+                    // The song only while the tracks are on (song mode);
+                    // clips as the answer says.
+                    if self.active {
+                        self.play(t, map, span, tick0, f, off, len);
+                    }
                     self.play_clips(t, map, span, tick0, f, off, len);
                 }
             }
@@ -3521,7 +3540,7 @@ impl AudioTracks {
     /// The answers' starts and changes due at frame `f` (`off` of the
     /// period's `n`), in order, a track at a time: `next` and `begun` keep
     /// each track's place in its answer. Nothing plays while the
-    /// transport is stopped or the tracks are off.
+    /// transport is stopped.
     #[allow(clippy::too_many_arguments)]
     fn answer(
         &mut self,
@@ -3534,7 +3553,7 @@ impl AudioTracks {
         next: &mut [usize; MAX_TRACKS],
         begun: &mut [bool; MAX_TRACKS],
     ) {
-        let rolling = self.active && matches!(span.state, State::Playing | State::Recording);
+        let rolling = matches!(span.state, State::Playing | State::Recording);
         let tick = span.tick_at(f);
         for t in 0..MAX_TRACKS {
             let a = answers.get(t).copied().unwrap_or_default();
@@ -3775,20 +3794,30 @@ impl AudioTracks {
             let lv = if audible { tr.level } else { 0.0 };
             let target = [lv * (1.0 - tr.pan).min(1.0), lv * (1.0 + tr.pan).min(1.0)];
             let from = tr.gains;
-            let step = [
-                (target[0] - from[0]) / n.max(1) as f32,
-                (target[1] - from[1]) / n.max(1) as f32,
-            ];
-            for (j, (d, o)) in tr.buf[..2 * n]
+            let frames = tr.buf[..2 * n]
                 .chunks_exact_mut(2)
-                .zip(out.chunks_exact_mut(2))
-                .enumerate()
-            {
-                let k = (j + 1) as f32;
-                d[0] *= from[0] + step[0] * k;
-                d[1] *= from[1] + step[1] * k;
-                o[0] += d[0];
-                o[1] += d[1];
+                .zip(out.chunks_exact_mut(2));
+            if from == target {
+                // Steady (most periods): the same sound as the ramp, which
+                // adds a step of nothing.
+                for (d, o) in frames {
+                    d[0] *= from[0];
+                    d[1] *= from[1];
+                    o[0] += d[0];
+                    o[1] += d[1];
+                }
+            } else {
+                let step = [
+                    (target[0] - from[0]) / n.max(1) as f32,
+                    (target[1] - from[1]) / n.max(1) as f32,
+                ];
+                for (j, (d, o)) in frames.enumerate() {
+                    let k = (j + 1) as f32;
+                    d[0] *= from[0] + step[0] * k;
+                    d[1] *= from[1] + step[1] * k;
+                    o[0] += d[0];
+                    o[1] += d[1];
+                }
             }
             if n > 0 {
                 tr.gains = target;

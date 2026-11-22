@@ -1997,8 +1997,16 @@ impl TimeHost {
         self.audio.tempo_map()
     }
 
+    /// What audio track `track` (in the track list) played in the last
+    /// period: its clips, its song or nothing, each change on its frame
+    /// (audio tracks phase 2, step 2b). Call after [`TimeHost::period`].
+    pub fn audio(&self, track: usize) -> mpfree_play::AudioAnswer<'_> {
+        self.audio.audio(track)
+    }
+
     /// Song mode is on: the song plays on tracks with no clip launched.
-    /// Audio tracks play and record only then (layout spec 4c).
+    /// Audio tracks record only then (layout spec 4c), and play their song
+    /// regions only then; their clips play in both.
     pub fn song_on(&self) -> bool {
         match &self.control {
             Half::Here(c) => c.song_on(),

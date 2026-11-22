@@ -318,6 +318,7 @@ impl Rig {
             time.tempo_map(),
             time.song_on(),
             looper.input(),
+            Some(&|p| time.audio(p)),
         );
         tracks.play_into(mix);
         mix.follow(looper.line.is_open(), looper.monitor);
