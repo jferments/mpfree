@@ -308,7 +308,7 @@ impl LoopRow {
         let cap = &self.capture;
         let b = LoopRow::capture_rect(r);
         let (bg, fg) = if cap.lit {
-            (t.accent, t.on_accent)
+            (t.picked(), t.on_picked())
         } else if cap.works {
             (t.raised, t.text)
         } else {
@@ -328,7 +328,7 @@ impl LoopRow {
         // The Pads switch: lit while the pads are the loop keys.
         let b = LoopRow::pads_rect(r);
         let (bg, dot, ink) = if self.pads {
-            (t.accent, t.on_accent, t.on_accent)
+            (t.picked(), t.on_picked(), t.on_picked())
         } else {
             (t.raised, t.text_faint, t.text_dim)
         };
@@ -397,7 +397,7 @@ impl LoopRow {
             let (sx, sy) = (p.mute.x + p.mute.w / 2 + 2, p.mute.y + p.mute.h / 2);
             speaker_on(cx, sx, sy, if muted { t.bad } else { t.text }, muted, b);
             let (fill, ink) = if ch.solo {
-                (t.accent, t.on_accent)
+                (t.picked(), t.on_picked())
             } else {
                 (t.raised, t.text_dim)
             };

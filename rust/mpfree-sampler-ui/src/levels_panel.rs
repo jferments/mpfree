@@ -337,9 +337,9 @@ impl Widget for LevelsPanel {
             // Transpose has no pad to pick.
             let faint = i == 0 && m.transpose.is_some();
             cx.canvas
-                .fill_round_rect(*b, t.round(8), if armed { t.accent } else { t.raised });
+                .fill_round_rect(*b, t.round(8), if armed { t.picked() } else { t.raised });
             let color = match i {
-                _ if armed => t.on_accent,
+                _ if armed => t.on_picked(),
                 _ if faint => t.text_dim.mix(t.raised, 0.5),
                 2 => t.bad,
                 _ => t.text,

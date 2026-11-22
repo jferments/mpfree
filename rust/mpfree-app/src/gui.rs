@@ -1213,11 +1213,13 @@ pub enum ToUi {
     /// (what `Settings::theme` holds when one is picked) and the theme.
     ThemeFiles(Vec<(String, Theme)>),
     /// Theme safety nets at start, added to the Debug page's counts: theme
-    /// files left out (they didn't parse, or no one could read their
-    /// text) and starts where the default theme showed in place of the
-    /// saved one or the one `--theme` named.
+    /// files left out (no one could read their text, or they aren't text),
+    /// lines of theme files that used the base theme's value (a mistake,
+    /// an unknown key), and starts where the default theme showed in place
+    /// of the saved one or the one `--theme` named.
     ThemeFallbacks {
         left_out: u64,
+        lines_fell_back: u64,
         default_shown: u64,
     },
     ClearLogs,
@@ -1634,6 +1636,9 @@ pub enum FromUi {
     MenuSelect(usize),
     MenuStep(usize, i32),
     GuideButton(usize),
+    /// A button under Prefs' help: Keep (0) or Go back (1) while "Keep
+    /// this theme?" asks.
+    HelpButton(usize),
     /// A touch on the Arp panel or the quick band.
     Arp(ArpAction),
     /// A touch in the pattern workspace (its editor has changed already).
@@ -2082,9 +2087,10 @@ pub struct Player {
     settings: Settings,
     /// The themes folder's themes, for Prefs > Appearance.
     theme_files: Vec<(String, Theme)>,
-    /// Theme files left out at start and starts with the default theme
-    /// in place of the one asked for ([`ToUi::ThemeFallbacks`]).
-    theme_fallbacks: (u64, u64),
+    /// Theme files left out at start, their lines that used the base's
+    /// value, and starts with the default theme in place of the one asked
+    /// for ([`ToUi::ThemeFallbacks`]).
+    theme_fallbacks: (u64, u64, u64),
     session: (String, Tone),
     /// Lines for the Console page come from the system log (the app); in the
     /// timed step there is none, so the step's own lines go there.
@@ -2744,7 +2750,7 @@ impl Player {
             status,
             settings: Settings::default(),
             theme_files: Vec::new(),
-            theme_fallbacks: (0, 0),
+            theme_fallbacks: (0, 0, 0),
             session: ("Starting".to_string(), Tone::Dim),
             console_from_lines: timed,
             console_backlog: VecDeque::new(),
@@ -4205,7 +4211,8 @@ impl Player {
         });
         let wrap: fn(&str) -> String = match loaded {
             Some(mut w) => {
-                w.set_theme(&self.ui.theme);
+                let moved = w.set_theme(&self.ui.theme);
+                self.report_skin_colours(moved);
                 let tabs = skin_page::SkinTabs::new(&w.view.tabs());
                 // For the device round's log: the skin is drawn.
                 println!(
@@ -7188,10 +7195,17 @@ impl Player {
             };
             if let Some(t) = Theme::builtin(&s.theme).or_else(file) {
                 // A plugin's skin: MPFree's pop-ups over it follow too.
-                if let Some(w) = self.ui.get_mut::<skin_page::SkinWidget>(skin_page::SKIN) {
-                    w.set_theme(&t);
+                let moved = self
+                    .ui
+                    .get_mut::<skin_page::SkinWidget>(skin_page::SKIN)
+                    .map(|w| w.set_theme(&t));
+                if let Some(moved) = moved {
+                    self.report_skin_colours(moved);
                 }
                 self.ui.set_theme(t);
+                // The theme asked for shows now: the status board's "Your
+                // theme couldn't be used" ends, if it was going.
+                self.end_problem(&mpfree_status::kinds::THEME_NOT_FOUND);
             }
         }
         let timing = self.settings.timing_strip != s.timing_strip;
@@ -7809,6 +7823,31 @@ impl Player {
         self.told = Some((tell_text(line), TELL_SECONDS));
         self.tells += 1;
         self.refresh_hint();
+    }
+
+    /// A plugin skin's pop-ups took the theme with `moved` colours changed
+    /// so they read: yellow on the status board while any are, ended by a
+    /// theme that needs none.
+    fn report_skin_colours(&mut self, moved: usize) {
+        let kind = &mpfree_status::kinds::SKIN_COLOURS_MOVED;
+        if moved > 0 {
+            self.report_problem(mpfree_status::Report::began(kind));
+        } else {
+            self.end_problem(kind);
+        }
+    }
+
+    /// Ends `kind` (about the whole system) if it is going now, so a theme
+    /// switch with nothing to end adds nothing to Dev > Status's events.
+    fn end_problem(&mut self, kind: &'static mpfree_status::Kind) {
+        let going = self
+            .status_board
+            .problems(kind.system, mpfree_status::Window::Now)
+            .iter()
+            .any(|v| v.kind.id == kind.id && v.subject == mpfree_status::Subject::NONE);
+        if going {
+            self.report_problem(mpfree_status::Report::ended(kind));
+        }
     }
 
     /// A problem for the status board, at the board's clock. Dev > Status
@@ -9266,6 +9305,7 @@ impl Player {
                 if let Some(c) = self.ui.get_mut::<Card>("help") {
                     c.heading = m.help_heading;
                     c.lines = m.help.into_iter().map(|l| (l, Tone::Dim)).collect();
+                    c.buttons = m.help_buttons;
                 }
             }
             ToUi::Guide(g) => {
@@ -9322,10 +9362,25 @@ impl Player {
             ToUi::ThemeFiles(t) => self.theme_files = t,
             ToUi::ThemeFallbacks {
                 left_out,
+                lines_fell_back,
                 default_shown,
             } => {
                 self.theme_fallbacks.0 += left_out;
-                self.theme_fallbacks.1 += default_shown;
+                self.theme_fallbacks.1 += lines_fell_back;
+                self.theme_fallbacks.2 += default_shown;
+                // Yellow on the status board until the next start (theme
+                // files are read at the start); Prefs > Appearance says
+                // which file and why.
+                use mpfree_status::{kinds, Report};
+                for (n, kind) in [
+                    (left_out, &kinds::THEME_LEFT_OUT),
+                    (lines_fell_back, &kinds::THEME_MISTAKES),
+                    (default_shown, &kinds::THEME_NOT_FOUND),
+                ] {
+                    if n > 0 {
+                        self.report_problem(Report::began(kind));
+                    }
+                }
             }
             ToUi::ClearLogs => {
                 for name in ["midi", "events"] {
@@ -12123,6 +12178,7 @@ impl Player {
                 | FromUi::Tab(_)
                 | FromUi::MenuSelect(_)
                 | FromUi::GuideButton(_)
+                | FromUi::HelpButton(_)
                 | FromUi::UndoReady(_)
                 | FromUi::UndoHistory(_)
                 | FromUi::Overlay(_)
@@ -12452,7 +12508,14 @@ impl Player {
                     Tone::Warn,
                 ));
             }
-            let (left_out, default_shown) = self.theme_fallbacks;
+            let (left_out, fell_back, default_shown) = self.theme_fallbacks;
+            if fell_back > 0 {
+                memory.push((
+                    "Themes: theme file lines that used the base's value".to_string(),
+                    format!("{fell_back}×"),
+                    Tone::Warn,
+                ));
+            }
             if left_out > 0 {
                 memory.push((
                     "Themes: theme files left out (see the log)".to_string(),
@@ -13917,6 +13980,7 @@ impl Player {
             ("options", EventKind::Select(i)) => Some(FromUi::MenuSelect(i)),
             ("options", EventKind::Step { index, delta }) => Some(FromUi::MenuStep(index, delta)),
             ("guide", EventKind::Tab(i)) => Some(FromUi::GuideButton(i)),
+            ("help", EventKind::Tab(i)) => Some(FromUi::HelpButton(i)),
             ("header", EventKind::Select(i)) if Some(i) == self.arp_chip => Some(FromUi::ArpChip),
             ("header", EventKind::Select(i)) if Some(i) == self.level_chip => {
                 Some(FromUi::PadLevelOff)
@@ -18196,8 +18260,9 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     let mut l = crate::app::App::new(44_100, false);
     let mut fx = l.open_tab(View::Prefs);
     let at = l.row_of(crate::app::Item::Appearance).unwrap_or(0);
-    fx.extend(l.step_item(at, 1));
-    fx.extend(l.step_item(at, 1));
+    for _ in 0..3 {
+        fx.extend(l.step_item(at, 1));
+    }
     apply_effects(&mut look, fx);
     out.push(("prefs-appearance", look));
     // The guide from Prefs ("Find the buttons again"), PLAY pressed when it
@@ -28445,6 +28510,55 @@ mod tests {
         // SHIFT + wheel reaches it on the Dev tab's strip, before Console.
         assert_eq!(crate::app::DEBUG_PAGES[6], View::StatusBoard);
         assert_eq!(View::StatusBoard.tab_view(), Some(View::Debug));
+    }
+
+    /// The theme safety nets are yellow Screen problems: files left out,
+    /// lines that fell back and the default shown stay until the next start
+    /// (picking a theme ends the last), and a skin's pop-up colours moved
+    /// last while the theme needs them.
+    #[test]
+    fn theme_fallbacks_are_yellow_screen_problems() {
+        use mpfree_status::{kinds, System, Window};
+        let now = |p: &Player| -> Vec<&'static str> {
+            p.status_board
+                .problems(System::Screen, Window::Now)
+                .iter()
+                .map(|v| v.kind.id)
+                .collect()
+        };
+        let mut p = sample_player(Fonts::embedded());
+        assert!(now(&p).is_empty());
+        p.apply(ToUi::ThemeFallbacks {
+            left_out: 1,
+            lines_fell_back: 3,
+            default_shown: 1,
+        });
+        let going = now(&p);
+        for k in [
+            &kinds::THEME_LEFT_OUT,
+            &kinds::THEME_MISTAKES,
+            &kinds::THEME_NOT_FOUND,
+        ] {
+            assert_eq!(k.level, mpfree_status::Level::Warn);
+            assert!(going.contains(&k.id), "{going:?}");
+        }
+        // Still counted on the Debug page as before.
+        assert_eq!(p.theme_fallbacks, (1, 3, 1));
+        // Picking a theme in Prefs > Appearance ends "Your theme couldn't
+        // be used"; the theme files' two stay.
+        p.apply(ToUi::Settings(Settings {
+            theme: "light".into(),
+            ..Settings::default()
+        }));
+        let going = now(&p);
+        assert!(!going.contains(&kinds::THEME_NOT_FOUND.id), "{going:?}");
+        assert!(going.contains(&kinds::THEME_LEFT_OUT.id), "{going:?}");
+        // A skin whose pop-ups needed colours moved, then a theme that needs
+        // none.
+        p.report_skin_colours(2);
+        assert!(now(&p).contains(&kinds::SKIN_COLOURS_MOVED.id));
+        p.report_skin_colours(0);
+        assert!(!now(&p).contains(&kinds::SKIN_COLOURS_MOVED.id));
     }
 
     /// System status phase 1: the watchers' looks on each timing turn the
