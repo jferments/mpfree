@@ -857,6 +857,7 @@ impl Desk<'_> {
             app::Effect::ClipsWheel { delta, scroll } => {
                 out.show(gui::ToUi::ClipsWheel { delta, scroll })
             }
+            app::Effect::EditTc => out.show(gui::ToUi::EditTc),
             app::Effect::Map(m) => out.show(gui::ToUi::Map(Box::new(m))),
             app::Effect::LevelsWheel(d) => out.show(gui::ToUi::LevelsWheel(d)),
             // ERASE + PAD BANK with STEP SEQ on: said in place of the hint.

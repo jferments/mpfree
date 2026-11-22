@@ -1404,6 +1404,10 @@ pub enum ToUi {
         delta: i32,
         scroll: bool,
     },
+    /// TC with the note editor showing (piano roll plan 1A.1): its drawer
+    /// opens on Timing Correct's settings, or, open already, the notes are
+    /// corrected.
+    EditTc,
     /// The Map controls page (debug mode).
     Map(Box<MapView>),
     /// The audio loop's CPU by engine numbers, sent once at the start; the
@@ -9760,10 +9764,23 @@ impl Player {
                 delta,
                 scroll: true,
             } => {
-                if let Some(a) = self.time_page.scroll(&self.ui, delta) {
+                if let Some(a) = self.time_page.scroll(&mut self.ui, delta) {
                     self.outbox.push(FromUi::Time(a));
                 }
                 self.time_page.update(&mut self.ui, &self.time);
+            }
+            ToUi::EditTc => {
+                if self.time_page.edit_drawer && self.time.edit.is_some() {
+                    self.outbox
+                        .push(FromUi::Time(TimeAction::Edit(EditAction::Correct)));
+                } else {
+                    // Timing Correct's settings: the drawer's first rows.
+                    self.time_page.edit_drawer = true;
+                    self.outbox
+                        .push(FromUi::Time(TimeAction::Edit(EditAction::PickRow(0))));
+                    self.time_page.update(&mut self.ui, &self.time);
+                    self.refresh_hint();
+                }
             }
             ToUi::ClipsWheel {
                 delta,
@@ -9815,6 +9832,19 @@ impl Player {
     /// (`app::RowKey`): pick a row, step it, or open it for the wheel.
     fn rows(&mut self, k: crate::app::RowKey) {
         use crate::app::RowKey;
+        // The note editor with its drawer closed: the wheel, - / + and the
+        // push open it, and the wheel and - / + do nothing more that time
+        // (piano roll plan 1A.1).
+        if matches!(self.view, View::Arrange | View::Sequencer)
+            && !matches!(k, RowKey::Editing(false))
+            && self.time_page.open_drawer(&self.ui)
+        {
+            self.time_page.update(&mut self.ui, &self.time);
+            self.refresh_hint();
+            if !matches!(k, RowKey::Editing(true)) {
+                return;
+            }
+        }
         if let RowKey::Editing(on) = k {
             // The Song view with a block, a section or a tempo point
             // picked: the push grabs it for the wheel, and lets go again.
@@ -13906,6 +13936,7 @@ impl Player {
                 None
             }
             (time_view::CLIPS, EventKind::Toggle(_))
+            | (time_view::NOTES, EventKind::Tab(_) | EventKind::View { .. })
             | (
                 time_view::RECORD | time_view::CLIP_CARD | time_view::SCENE_CARD,
                 EventKind::Tab(_),
@@ -14052,6 +14083,11 @@ impl Player {
 
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
+        // What the Clips page asks of the time engine on its own (Snap
+        // Auto's division as the roll's zoom changes it).
+        for a in self.time_page.take_asks() {
+            self.outbox.push(FromUi::Time(a));
+        }
         self.status_tick(dt);
         self.power_tick(dt);
         self.script_hold_tick(dt);
@@ -15924,6 +15960,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::Nav(n) => p.apply(ToUi::Nav(n)),
             Effect::Held { delta, fine } => p.apply(ToUi::Held { delta, fine }),
             Effect::ClipsWheel { delta, scroll } => p.apply(ToUi::ClipsWheel { delta, scroll }),
+            Effect::EditTc => p.apply(ToUi::EditTc),
             Effect::Map(m) => p.apply(ToUi::Map(Box::new(m))),
             Effect::SynthPage(d) => p.apply(ToUi::SynthPage(d)),
             Effect::SampleWheel(d) => p.apply(ToUi::SampleWheel(d)),
@@ -20983,7 +21020,7 @@ mod tests {
         let area = p.ui.rect_of(time_view::NOTES).unwrap();
         let grid = p.ui.get::<NoteGrid>(time_view::NOTES).unwrap();
         let note = grid.note_rect(area, 1).unwrap();
-        let tc = grid.button_rects(area)[7];
+        let edit = grid.button_rects(area)[7];
         assert_eq!(
             tap(&mut p, (note.x + note.w / 2, note.y + note.h / 2)),
             Some(FromUi::Time(TimeAction::Edit(EditAction::Note {
@@ -20991,10 +21028,67 @@ mod tests {
                 rev: 0
             })))
         );
+        // Edit opens the drawer of Edit options and takes (the page's
+        // own), whose Correct corrects the timing; TC does too, once the
+        // drawer shows (piano roll plan 1A.1).
         assert_eq!(
-            tap(&mut p, (tc.x + tc.w / 2, tc.y + tc.h / 2)),
-            Some(FromUi::Time(TimeAction::Edit(EditAction::Button(7))))
+            tap(&mut p, (edit.x + edit.w / 2, edit.y + edit.h / 2)),
+            None
         );
+        assert_eq!(
+            p.ui.layout_of(CLIPS_PAGE),
+            Some(time_view::EDIT_DRAWER_LAYOUT)
+        );
+        p.ui.paint(&mut SoftCanvas::new(1280, 800));
+        let options = p.ui.rect_of(time_view::EDIT_OPTIONS).unwrap();
+        let correct =
+            p.ui.get::<OptionList>(time_view::EDIT_OPTIONS)
+                .unwrap()
+                .button_rect(options, 0)
+                .unwrap();
+        assert_eq!(
+            tap(
+                &mut p,
+                (correct.x + correct.w / 2, correct.y + correct.h / 2)
+            ),
+            Some(FromUi::Time(TimeAction::Edit(EditAction::Correct)))
+        );
+        p.take_actions();
+        p.apply(ToUi::EditTc);
+        assert_eq!(
+            p.take_actions(),
+            vec![FromUi::Time(TimeAction::Edit(EditAction::Correct))]
+        );
+        // Edit (narrower with the drawer open) again closes it; then TC
+        // opens it on Timing Correct's settings, and the wheel or - / +
+        // open it too.
+        let area = p.ui.rect_of(time_view::NOTES).unwrap();
+        let edit =
+            p.ui.get::<NoteGrid>(time_view::NOTES)
+                .unwrap()
+                .button_rects(area)[7];
+        assert_eq!(
+            tap(&mut p, (edit.x + edit.w / 2, edit.y + edit.h / 2)),
+            None
+        );
+        assert_eq!(p.ui.layout_of(CLIPS_PAGE), Some(time_view::EDIT_LAYOUT));
+        p.apply(ToUi::EditTc);
+        assert_eq!(
+            p.ui.layout_of(CLIPS_PAGE),
+            Some(time_view::EDIT_DRAWER_LAYOUT)
+        );
+        assert_eq!(
+            p.take_actions(),
+            vec![FromUi::Time(TimeAction::Edit(EditAction::PickRow(0)))]
+        );
+        p.time_page.edit_drawer = false;
+        p.time_page.update(&mut p.ui, &p.time);
+        p.apply(ToUi::Rows(crate::app::RowKey::Step(1)));
+        assert_eq!(
+            p.ui.layout_of(CLIPS_PAGE),
+            Some(time_view::EDIT_DRAWER_LAYOUT)
+        );
+        assert!(p.take_actions().is_empty(), "the press only opened it");
         // The list and the tracker have hint lines of their own, which say
         // SHIFT + wheel scrolls them.
         let mut st = p.time.clone();
