@@ -58,7 +58,7 @@ use mpfree_stream::player::Player;
 use mpfree_stream::writer::Gate;
 
 use mpfree_transport::time::TempoMap;
-use mpfree_transport::{Block, Tick};
+use mpfree_transport::{Block, Mark, Tick};
 
 use crate::files::{self, FileEvent, FileView, Files, Name, Said, WriterConfig};
 use crate::save::{Saved, TakeFile};
@@ -69,8 +69,9 @@ use crate::{
     PEAK_BLOCK,
 };
 
-/// The most region starts held in the cache: every region of every track.
-pub const MAX_HEADS: usize = MAX_TRACKS * MAX_REGIONS;
+/// The most starts held in the cache: every region of every track, and
+/// each track's frame at the loop's start.
+pub const MAX_HEADS: usize = MAX_TRACKS * (MAX_REGIONS + 1);
 /// Periods between looks at whether the regions' starts to hold have
 /// changed (about 93 ms at 128 frames).
 const HEADS_EVERY: u64 = 32;
@@ -381,6 +382,8 @@ pub struct AudioHost {
     heads_said: (usize, usize),
     periods: u64,
     heads_sent: u64,
+    /// The transport's loop, as its blocks last said.
+    loop_range: Option<(Tick, Tick)>,
     /// That project's tracks (its takes taken out), waiting until every
     /// take has come in or been left out: then they go in, without the
     /// regions of a take left out, so no region ever plays a take that
@@ -449,6 +452,7 @@ impl AudioHost {
             heads_said: (0, 0),
             periods: 0,
             heads_sent: 0,
+            loop_range: None,
         }
     }
 
@@ -565,23 +569,29 @@ impl AudioHost {
         self.tend_import(map);
         self.tend(block.frames as usize);
         self.periods += 1;
+        for m in block.markers() {
+            if let Mark::LoopSet(range) = m.mark {
+                self.loop_range = range;
+            }
+        }
         if self.streaming && self.periods.is_multiple_of(HEADS_EVERY) {
             if let Some(sp) = block.spans().last() {
-                self.tend_heads(sp.tick_at(sp.frame + u64::from(sp.len)) as Tick);
+                self.tend_heads(sp.tick_at(sp.frame + u64::from(sp.len)) as Tick, map);
             }
         }
     }
 
     /// Every region of a take on its file has its start held in the cache
-    /// (the stream thread's [`ToStream::Heads`]), so a jump or a region
-    /// after a gap never waits on the drive: once the regions, the takes
-    /// on their files or the playhead's four bars change, their starts
-    /// go to the stream thread, the ones ahead of the playhead first,
-    /// nearest first, then the ones behind it. If the cache can't hold
-    /// them all, the last are left out, the log says how many, and they
-    /// go again every few seconds in case room came back. Does not
-    /// allocate.
-    fn tend_heads(&mut self, now: Tick) {
+    /// (the stream thread's [`ToStream::Heads`]), and so has each track's
+    /// frame at the loop's start, so a jump, a loop going round or a region
+    /// after a gap never waits on the drive: once the regions, the takes on
+    /// their files, the loop, the tempo there or the playhead's four bars
+    /// change, the starts go to the stream thread, the ones ahead of the
+    /// playhead first, nearest first (the loop's start by when the loop
+    /// goes round), then the ones behind it. If the cache can't hold them
+    /// all, the last are left out, the log says how many, and they go
+    /// again every few seconds in case room came back. Does not allocate.
+    fn tend_heads(&mut self, now: Tick, map: &TempoMap) {
         let Some(mut heads) = self.heads.take() else {
             // The stream thread has the room.
             return;
@@ -595,6 +605,9 @@ impl AudioHost {
                     from = mix(from, v);
                 }
             }
+            if let Some((take, at)) = self.loop_head(t, map) {
+                from = mix(mix(from, u64::from(take)), at);
+            }
         }
         let retry =
             self.heads_held < self.heads_wanted && self.periods - self.heads_sent >= HEADS_RETRY;
@@ -605,31 +618,54 @@ impl AudioHost {
         self.heads_from = from;
         self.heads_sent = self.periods;
         heads.clear();
+        // The soonest first: ahead of the playhead by how far, then behind
+        // it by how long ago.
+        let order = |at: Tick, ahead: bool| {
+            if ahead {
+                (at - now).max(0)
+            } else {
+                Tick::MAX / 2 + (now - at).max(0)
+            }
+        };
+        let head = |take: u16, at: u64, order: Tick| {
+            let frames = tr.take(take)?.frames as u64;
+            (at < frames).then(|| Head {
+                order,
+                take,
+                from: at,
+                to: (at + self.head_frames).min(frames),
+            })
+        };
         for t in 0..MAX_TRACKS {
-            for r in tr.regions(t) {
-                let Some(k) = tr.take(r.take).filter(|_| tr.on_file(r.take)) else {
-                    continue;
-                };
-                let (start, frames) = (r.src.max(0) as u64, k.frames as u64);
-                if start >= frames || heads.len() == heads.capacity() {
-                    continue;
+            for r in tr.regions(t).iter().filter(|r| tr.on_file(r.take)) {
+                if let Some(h) = head(r.take, r.src.max(0) as u64, order(r.start, r.end > now)) {
+                    heads.push(h);
                 }
-                let order = if r.end > now {
-                    (r.start - now).max(0)
-                } else {
-                    Tick::MAX / 2 + (now - r.start)
-                };
-                heads.push(Head {
-                    order,
-                    take: r.take,
-                    from: start,
-                    to: (start + self.head_frames).min(frames),
-                });
+            }
+            if let (Some((take, at)), Some((_, end))) = (self.loop_head(t, map), self.loop_range) {
+                if let Some(h) = head(take, at, order(end, end > now)) {
+                    heads.push(h);
+                }
             }
         }
         heads.sort_unstable();
         self.heads_wanted = heads.len();
         self.send(ToWorker::Heads(heads));
+    }
+
+    /// Track `t`'s take and frame at the loop's start, if a region of a
+    /// take on its file plays there other than from its own start (which
+    /// is held anyway).
+    fn loop_head(&self, t: usize, map: &TempoMap) -> Option<(u16, u64)> {
+        let (start, _) = self.loop_range?;
+        let tr = &self.tracks;
+        let r = tr
+            .regions(t)
+            .iter()
+            .find(|r| r.contains(start) && r.start != start && tr.on_file(r.take))?;
+        let rate = self.tracks.rate();
+        let at = r.src + crate::frames_from(map, r.start as f64, start as f64, rate).round() as i64;
+        Some((r.take, at.max(0) as u64))
     }
 
     /// Start saving the audio tracks; the result comes in

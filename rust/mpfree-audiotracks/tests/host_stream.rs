@@ -9,8 +9,9 @@
 //! clearing closes the files, and a project opens again after; streaming
 //! can't start once recording to files has. Step 4: every region's start
 //! is held in the cache (so a jump to one never waits on the drive), and
-//! follows the regions as they change; a cache too small for them all
-//! holds the soonest and the log says so, once.
+//! follows the regions as they change; so is the loop's start, so going
+//! round never waits either; a cache too small for them all holds the
+//! soonest and the log says so, once.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -527,5 +528,34 @@ fn a_cache_too_small_for_every_start_holds_the_soonest_and_says_so_once() {
     }
     assert!(r.events().is_empty());
     assert_eq!(r.h.heads_held, 16);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_loop_s_start_is_held_too_so_going_round_never_waits() {
+    let dir = scratch("loop");
+    let mut r = Rig::with(Some(&dir), Some(cache(64)));
+    r.record_long(24);
+    let regions = r.split([6, 12, 18]);
+    r.run_until(|r| r.h.heads_wanted == 4 && r.h.heads_held == 4);
+    let k = regions[0].take;
+    // Bar 16, inside the third region: not held yet.
+    let at = regions[2].src + 3 * BAR as i64;
+    assert!(!r.cached(k, at, P));
+    r.t.command(r.frame, T::SetLoop(Some((15 * BAR_T, 17 * BAR_T))));
+    r.run_until(|r| r.h.heads_wanted == 5 && r.h.heads_held == 5);
+    r.run_until(|r| r.cached(k, at, BAR));
+    // Stopped at bar 17 until its frames are in, then on and round the
+    // loop: never a frame late.
+    r.t.command(r.frame, T::Locate(16 * BAR_T));
+    r.run_until(|r| r.cached(k, at + BAR as i64, BAR));
+    r.t.command(r.frame, T::Play);
+    r.run_to(r.frame + BAR + 8 * P);
+    assert_eq!(r.h.tracks.stats().missed, 0);
+    r.t.command(r.frame, T::StopAndRewind);
+    // No loop: only the regions' starts.
+    r.t.command(r.frame, T::SetLoop(None));
+    r.run_until(|r| r.h.heads_wanted == 4 && r.h.heads_held == 4);
+    assert!(r.events().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
