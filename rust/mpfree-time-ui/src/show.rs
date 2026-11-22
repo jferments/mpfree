@@ -82,7 +82,7 @@ pub enum SongMark {
     /// Still to come, and nothing to say about its check.
     #[default]
     Waiting,
-    /// Played already (faint).
+    /// Played already (sunk, its words dim).
     Played,
     /// The song playing, or loaded and waiting for PLAY.
     Now,
@@ -711,7 +711,7 @@ impl ShowView {
                 t.size_small - 1.0,
                 line,
                 Align::Left,
-                t.text_faint,
+                t.text_dim,
                 &more,
             );
         }
@@ -971,7 +971,7 @@ impl ShowView {
                 t.size_small,
                 Rect::new(body.x, body.y, body.w, 24),
                 Align::Left,
-                t.text_faint,
+                t.text_dim,
                 "No notes: add them to the song in the Set editor",
             );
             return;
@@ -1001,7 +1001,7 @@ impl ShowView {
                 t.size_small,
                 Rect::new(c.x + 16, top, c.w - 32, KEY_LINE),
                 Align::Left,
-                t.text_faint,
+                t.text_dim,
                 "No keyboards learned yet: plug one in and play it",
             );
             return;
@@ -1104,6 +1104,9 @@ fn paint_song(cx: &mut PaintCx, t: &Theme, row: Rect, k: usize, song: &SetRow) {
     let (fill, edge) = match &song.mark {
         SongMark::Now => (t.raised.mix(t.good, 0.22), Some(t.good)),
         SongMark::Next(_) => (t.raised, Some(t.warn)),
+        // Played: sunk toward the panel, as a played part's tile, its
+        // words dim (never faint: they must still read).
+        SongMark::Played => (t.surface.mix(t.raised, 0.35), None),
         _ => (t.raised, None),
     };
     cx.canvas.fill_round_rect(row, t.round(8), fill);
@@ -1116,7 +1119,7 @@ fn paint_song(cx: &mut PaintCx, t: &Theme, row: Rect, k: usize, song: &SetRow) {
         t.size_body - 1.0,
         Rect::new(row.x + 14, row.y, 26, row.h),
         Align::Left,
-        if played { t.text_faint } else { t.text_dim },
+        t.text_dim,
         &(k + 1).to_string(),
     );
     let right = row.right() - 14;
@@ -1159,7 +1162,7 @@ fn paint_song(cx: &mut PaintCx, t: &Theme, row: Rect, k: usize, song: &SetRow) {
                 t.size_small - 1.0,
                 Rect::new(right - 70, row.y, 70, row.h),
                 Align::Right,
-                t.text_faint,
+                t.text_dim,
                 "played",
             );
             w + 10
@@ -1183,7 +1186,7 @@ fn paint_song(cx: &mut PaintCx, t: &Theme, row: Rect, k: usize, song: &SetRow) {
         t.size_body,
         name,
         Align::Left,
-        if played { t.text_faint } else { t.text },
+        if played { t.text_dim } else { t.text },
         &song.name,
     );
 }
@@ -1215,7 +1218,7 @@ fn paint_part(cx: &mut PaintCx, t: &Theme, tile: Rect, part: &PartTile) {
         t.size_body - 1.0,
         Rect::new(tile.x + 18, tile.y + 9, tile.w - 24, 22),
         Align::Left,
-        if played { t.text_faint } else { t.text },
+        if played { t.text_dim } else { t.text },
         &part.name,
     );
     cx.text(
@@ -1223,7 +1226,7 @@ fn paint_part(cx: &mut PaintCx, t: &Theme, tile: Rect, part: &PartTile) {
         t.size_small - 1.0,
         Rect::new(tile.x + 10, tile.y + 32, tile.w - 16, 18),
         Align::Left,
-        if played { t.text_faint } else { t.text_dim },
+        t.text_dim,
         &part.meta,
     );
     match &part.mark {
