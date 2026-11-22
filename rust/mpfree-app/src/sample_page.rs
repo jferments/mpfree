@@ -1278,7 +1278,7 @@ impl SamplePage {
             stretcher: None,
             stretching: Vec::new(),
             unstretched: Vec::new(),
-            mem_free: crate::memory::free_bytes,
+            mem_free: crate::memory::free_for_new,
             rec_settings: rec_tab::RecSettings::default(),
             // A sixtieth of a second a column at 44.1 kHz.
             meter: Strip::new(735, 4),

@@ -35,6 +35,24 @@ pub fn free_bytes() -> Option<u64> {
     free_in(&text)
 }
 
+/// The memory free for new work: [`free_bytes`] less what the sampler's job
+/// service holds back (what its running jobs said they hold, and its
+/// claims; `Jobs::held_back`), so a load checked here and a job checked
+/// by the service never count the same memory twice. The Sample page's
+/// own checks read this; the service reads [`free_bytes`] and subtracts
+/// what it holds itself.
+pub fn free_for_new() -> Option<u64> {
+    less_held(
+        free_bytes(),
+        mpfree_sampler::jobs::Jobs::shared().held_back(),
+    )
+}
+
+/// `free` less `held`, None while `free` is unknown.
+fn less_held(free: Option<u64>, held: u64) -> Option<u64> {
+    free.map(|f| f.saturating_sub(held))
+}
+
 /// MemAvailable from /proc/meminfo's text, in bytes.
 pub fn free_in(meminfo: &str) -> Option<u64> {
     crate::perf::kb_field(meminfo, "MemAvailable").map(|kb| kb * 1024)
@@ -250,6 +268,18 @@ mod tests {
         let e = room_in(Some(200_000_000), 1).unwrap_err();
         assert!(e.starts_with(SHORT), "{e}");
         assert!(e.contains("200 MB free"), "{e}");
+    }
+
+    #[test]
+    fn a_check_outside_the_job_service_counts_what_it_holds_back() {
+        // A running job's need and a claim are taken off the memory free,
+        // so a load doesn't count them as free.
+        assert_eq!(less_held(Some(1_000), 300), Some(700));
+        assert_eq!(less_held(Some(100), 300), Some(0));
+        assert_eq!(less_held(None, 300), None, "unknown stays unknown");
+        let free = less_held(Some(FLOOR + 400_000_000), 300_000_000);
+        assert!(room_in(free, 200_000_000).is_err(), "300 MB held back");
+        assert!(room_in(free, 100_000_000).is_ok());
     }
 
     #[test]

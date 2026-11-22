@@ -22,8 +22,14 @@
 //!   only the last.
 //! - **One memory account.** A job says what it will hold
 //!   ([`Job::needs`]). It starts only when that leaves the floor free on
-//!   top of what the running jobs hold ([`Config::room`]); otherwise it
-//!   is refused, counted, and told why, and never starts.
+//!   top of what the running jobs hold and what is claimed
+//!   ([`Config::room`]); otherwise it is refused, counted, and told why,
+//!   and never starts. A [`Claim`] holds memory back for work that will
+//!   use it later (preparing a song, say), so nothing else takes it
+//!   meanwhile; it is given back as the work uses it, or when it is
+//!   dropped. Checks made outside the service subtract what it holds back
+//!   ([`Jobs::held_back`]), so a load and a job never count the same
+//!   memory twice.
 //! - **One way to cancel**: by key ([`Jobs::cancel`]) or by what a client
 //!   keeps ([`Jobs::retain`]).
 //! - **One a process.** [`Jobs::shared`] is the process's service, made on
@@ -217,6 +223,8 @@ struct State {
     live: [usize; 2],
     /// Memory the running jobs said they hold.
     reserved: u64,
+    /// Memory held back by claims ([`Claim`]).
+    claimed: u64,
     stop: bool,
     held: bool,
     counts: Counts,
@@ -431,6 +439,46 @@ impl Jobs {
         self.inner().lock().reserved
     }
 
+    /// Memory held back by claims ([`Jobs::claim`]).
+    pub fn claimed(&self) -> u64 {
+        self.inner().lock().claimed
+    }
+
+    /// What the service holds back from the memory free: what the running
+    /// jobs said they hold and what is claimed. A memory check made outside
+    /// the service subtracts it from the memory free, so it doesn't count
+    /// the same memory twice.
+    pub fn held_back(&self) -> u64 {
+        let s = self.inner().lock();
+        s.reserved + s.claimed
+    }
+
+    /// Holds `bytes` back for work that will use them later, if taking them
+    /// from the memory free, less what the running jobs hold and what is
+    /// claimed already, leaves the floor ([`Config::room`]); Err says why,
+    /// in a musician's words. Until it is given back ([`Claim::give_back`],
+    /// or dropped), every job and claim counts it. `what` names it for the
+    /// Debug page ("preparing the next song").
+    pub fn claim(&self, bytes: u64, what: &'static str) -> Result<Claim, String> {
+        let shared = self.inner();
+        let free = if bytes > 0 {
+            (shared.config.free)()
+        } else {
+            None
+        };
+        let mut s = shared.lock();
+        if bytes > 0 {
+            let left = free.map(|f| f.saturating_sub(s.reserved + s.claimed));
+            (shared.config.room)(left, bytes)?;
+        }
+        s.claimed += bytes;
+        Ok(Claim {
+            shared: shared.clone(),
+            bytes,
+            what,
+        })
+    }
+
     /// Starts `lane`'s workers up to its number. One that can't start is
     /// counted, and its jobs wait for the next try.
     fn start_workers(&self, lane: Lane) {
@@ -463,6 +511,58 @@ impl Jobs {
                 return;
             }
         }
+    }
+}
+
+/// Memory held back for work that will use it later ([`Jobs::claim`]):
+/// every job and claim counts it until it is given back, a part at a time
+/// as the work uses it ([`Claim::give_back`]) or the rest when it is
+/// dropped, so a claim forgotten can't hold memory for ever.
+pub struct Claim {
+    shared: Arc<Shared>,
+    bytes: u64,
+    what: &'static str,
+}
+
+impl Claim {
+    /// What it still holds back.
+    pub fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    /// What it is for.
+    pub fn what(&self) -> &'static str {
+        self.what
+    }
+
+    /// Names it again ("preparing" to "playing", say); what it holds stays.
+    pub fn rename(&mut self, what: &'static str) {
+        self.what = what;
+    }
+
+    /// Gives back up to `bytes` of it, as the work uses them (memory in use
+    /// is counted in the memory free already).
+    pub fn give_back(&mut self, bytes: u64) {
+        let n = bytes.min(self.bytes);
+        self.bytes -= n;
+        self.shared.lock().claimed -= n;
+        self.shared.cv.notify_all();
+    }
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        let n = self.bytes;
+        self.give_back(n);
+    }
+}
+
+impl std::fmt::Debug for Claim {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Claim")
+            .field("bytes", &self.bytes)
+            .field("what", &self.what)
+            .finish()
     }
 }
 
@@ -526,7 +626,7 @@ fn run_one(shared: &Shared, job: Job) {
     {
         let mut s = shared.lock();
         if need > 0 {
-            let left = free.map(|f| f.saturating_sub(s.reserved));
+            let left = free.map(|f| f.saturating_sub(s.reserved + s.claimed));
             if let Err(why) = (shared.config.room)(left, need) {
                 s.counts.refused += 1;
                 drop(s);
@@ -702,6 +802,62 @@ mod tests {
         go_tx.send(()).unwrap();
         settle(&jobs);
         assert_eq!(rx.try_iter().collect::<Vec<_>>(), vec!["view"]);
+    }
+
+    #[test]
+    fn a_claim_holds_memory_back_from_jobs_and_claims_until_given_back() {
+        // 1000 bytes free, 200 kept spare.
+        let config = Config {
+            free: || Some(1000),
+            room: |free, need| match free {
+                Some(f) if f.saturating_sub(need) >= 200 => Ok(()),
+                _ => Err(format!("not enough memory: needs {need}, {free:?} free")),
+            },
+            ..Config::default()
+        };
+        let jobs = Jobs::in_place(config);
+        let mut song = jobs.claim(500, "preparing the next song").unwrap();
+        assert_eq!((jobs.claimed(), jobs.held_back()), (500, 500));
+        assert_eq!(
+            (song.bytes(), song.what()),
+            (500, "preparing the next song")
+        );
+        // 400 more would leave 100: refused, for a job and a claim alike.
+        let why = jobs.claim(400, "another").unwrap_err();
+        assert!(why.contains("Some(500)"), "the claim counted: {why}");
+        let (tx, rx) = mpsc::channel();
+        jobs.submit(
+            Job::new(Lane::Sound, Key::new("view", 1), |_| panic!("refused")).needs(
+                400,
+                move |w| {
+                    let _ = tx.send(w);
+                },
+            ),
+        );
+        assert!(rx.try_recv().unwrap().contains("Some(500)"));
+        // Given back as the work uses it: 300 of it in use now.
+        song.give_back(300);
+        assert_eq!((song.bytes(), jobs.claimed()), (200, 200));
+        song.rename("playing");
+        assert_eq!(song.what(), "playing");
+        let (tx, rx) = mpsc::channel();
+        jobs.submit(
+            Job::new(Lane::Sound, Key::new("view", 1), move |_| {
+                let _ = tx.send(());
+            })
+            .needs(400, |w| panic!("{w}")),
+        );
+        rx.try_recv().unwrap();
+        // Giving back more than it holds gives back what it holds.
+        song.give_back(1_000);
+        assert_eq!(jobs.claimed(), 0);
+        // Dropped, the rest comes back.
+        let other = jobs.claim(600, "another").unwrap();
+        assert_eq!(jobs.held_back(), 600);
+        drop(other);
+        assert_eq!(jobs.held_back(), 0);
+        // Nothing to hold back never fails, with memory unknown or short.
+        assert!(jobs.claim(0, "nothing").is_ok());
     }
 
     #[test]
