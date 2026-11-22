@@ -32172,6 +32172,239 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Sampler plan phase 2, step 7's memory test: everything the sampler
+    /// holds at once (long takes, their waveforms, their stretched copies
+    /// and an undo history holding the takes they replaced) stays inside
+    /// the MPC's 2 GB with mpfree's 256 MB floor left free, not just each
+    /// part on its own. Scaled 1:8 (250 MB, 32 MB kept free, six takes of
+    /// a minute) so it runs anywhere. It counts every byte every
+    /// thread holds, so it runs alone, in a process of its own
+    /// ([`memory_together_alone`]).
+    #[test]
+    #[cfg_attr(
+        target_arch = "arm",
+        ignore = "runs itself again as a child process, which qemu's runner doesn't"
+    )]
+    fn everything_the_sampler_holds_at_once_fits_the_mpcs_memory() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "gui::tests::memory_together_alone",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("MPFREE_MEMORY_TOGETHER", "1")
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        for l in text.lines().filter(|l| l.starts_with("memory:")) {
+            println!("{l}");
+        }
+        assert!(
+            out.status.success() && text.contains("1 passed"),
+            "{text}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// The scaled MPC: its memory, and the floor mpfree keeps free.
+    const MPC_BYTES: u64 = 2_000_000_000 / 8;
+    const MPC_KEEP: u64 = crate::memory::FLOOR / 8;
+
+    /// The memory the scaled MPC has free, as the app's checks read it:
+    /// with its smaller floor made up to the app's own, so `room_in` keeps
+    /// [`MPC_KEEP`] free of [`MPC_BYTES`].
+    fn mpc_free() -> Option<u64> {
+        let held = crate::sys::alloc_count::live_bytes().max(0) as u64;
+        Some(
+            MPC_BYTES
+                .saturating_sub(held)
+                .saturating_sub(MPC_KEEP)
+                .saturating_add(crate::memory::FLOOR),
+        )
+    }
+
+    /// [`everything_the_sampler_holds_at_once_fits_the_mpcs_memory`]'s
+    /// body, run alone in a child process.
+    #[test]
+    #[ignore = "run by everything_the_sampler_holds_at_once_fits_the_mpcs_memory, alone"]
+    fn memory_together_alone() {
+        use crate::sys::alloc_count;
+        use mpfree_sampler::jobs::{Config, Jobs};
+        use mpfree_sampler::model::Source;
+        use mpfree_sampler::wav;
+        use mpfree_sampler_ui::warp_tool;
+        use mpfree_sampler_ui::wave_tab::{self, Tool};
+        if std::env::var_os("MPFREE_MEMORY_TOGETHER").is_none() {
+            return;
+        }
+        let rate = 44_100u32;
+        let dir = std::env::temp_dir().join(format!("mpfree-memory-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Eight 1-minute takes, 16-bit stereo, a hit every half second.
+        let files: Vec<std::path::PathBuf> = (1..=8)
+            .map(|k| {
+                let n = 60 * rate as usize;
+                let data: Vec<f32> = (0..2 * n)
+                    .map(|i| {
+                        let f = i / 2;
+                        let t = (f % (rate as usize / 2)) as f32;
+                        let x = 0.6 * (-t / 800.0).exp() * (f as f32 * 0.05 * k as f32).sin()
+                            + 0.05 * (f as f32 * 0.0313).sin();
+                        ((x * 32_768.0).round() + 0.0) / 32_768.0
+                    })
+                    .collect();
+                let s = Source::new("Long", rate, 2, data).unwrap();
+                assert!(s.data().is_16_bit());
+                let path = dir.join(format!("Long {k}.wav"));
+                std::fs::write(&path, wav::bytes(&s)).unwrap();
+                path
+            })
+            .collect();
+        let mut p = sample_player(Fonts::embedded());
+        p.sample.use_jobs(Jobs::new(Config {
+            free: mpc_free,
+            ..sample_page::jobs_config()
+        }));
+        p.sample.set_mem_free(mpc_free);
+        let (project, _) = mpfree_sampler_ui::sample::project();
+        p.apply(ToUi::SampleKits {
+            projects: vec![project],
+            rate,
+        });
+        p.apply(ToUi::Show(View::Sample));
+        let frame = |p: &mut Player| {
+            p.tick(0.033);
+            let (sent, _) = views(p.take_actions());
+            for v in sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+        };
+        let until = |p: &mut Player, what: &str, done: &dyn Fn(&Player) -> bool| {
+            let end = Instant::now() + WORKER_WAIT;
+            while !done(p) {
+                assert!(Instant::now() < end, "{what}: {:?}", events_log(p));
+                std::thread::sleep(Duration::from_millis(2));
+                frame(p);
+            }
+        };
+        let idle = |p: &Player| {
+            !p.sample.analysing() && !p.sample.jobs().busy() && p.sample.jobs().waiting() == 0
+        };
+        let name = |p: &Player, pad: usize| {
+            p.sample
+                .project(0)
+                .and_then(|k| k.pad(pad))
+                .map(|pd| pd.name.clone())
+        };
+        let show = |p: &mut Player, pad: usize| {
+            p.apply(ToUi::PadDown { pad, velocity: 100 });
+            p.apply(ToUi::PadUp(pad));
+            frame(p);
+        };
+        // File `k` onto pad `pad`, its waveform worked out: whether it
+        // was loaded.
+        let load = |p: &mut Player, pad: usize, k: usize| {
+            show(p, pad);
+            let before = events_log(p).len();
+            p.sample.load_file(files[k].clone(), false);
+            let want = format!("Long {}", k + 1);
+            until(p, "the load", &|p| {
+                name(p, pad).as_deref() == Some(want.as_str())
+                    || events_log(p)[before..]
+                        .iter()
+                        .any(|l| l.starts_with("sample: not loaded"))
+            });
+            until(p, "its waveform", &idle);
+            name(p, pad).as_deref() == Some(want.as_str())
+        };
+        // Warp on for pad `pad`: it asks for its stretched copy.
+        let warp = |p: &mut Player, pad: usize| {
+            show(p, pad);
+            pick_tool(p, Tool::Warp);
+            p.on_event(UiEvent {
+                widget: wave_tab::REGION.into(),
+                kind: EventKind::Step {
+                    index: warp_tool::Row::Warp.index(),
+                    delta: 1,
+                },
+            });
+            p.apply(ToUi::SampleLift);
+            frame(p);
+            frame(p);
+            pick_tool(p, Tool::Trim);
+        };
+        let held = |what: &str| {
+            println!(
+                "memory: {what}: {:.0} MB held, {:.0} MB at most",
+                alloc_count::live_bytes() as f64 / 1e6,
+                alloc_count::peak_bytes() as f64 / 1e6
+            );
+        };
+        frame(&mut p);
+        until(&mut p, "the kit's waveforms", &idle);
+        alloc_count::track_from_now();
+        // Two takes, each warped: their stretched copies made.
+        for pad in 0..2 {
+            assert!(load(&mut p, pad, pad), "take {} fits", pad + 1);
+            warp(&mut p, pad);
+            until(&mut p, "its stretched copy", &idle);
+            held(&format!("take {} and its copy", pad + 1));
+        }
+        // Two more onto A1: each one replaced stays in the undo history.
+        for k in [6, 7] {
+            assert!(load(&mut p, 0, k), "take {} fits", k + 1);
+            held(&format!(
+                "take {} onto A1, the one before kept for undo",
+                k + 1
+            ));
+        }
+        // Four more onto their own pads, as far as they fit.
+        let mut loaded = Vec::new();
+        for (pad, k) in (2..6).zip(2..6) {
+            if load(&mut p, pad, k) {
+                loaded.push(pad);
+            }
+            held(&format!("take {}", k + 1));
+        }
+        // Each warped while the service waits: their copies wait in line,
+        // then each is checked as it starts.
+        p.sample.hold_views(true);
+        for &pad in &loaded {
+            warp(&mut p, pad);
+        }
+        p.sample.hold_views(false);
+        until(&mut p, "the stretched copies", &idle);
+        held("their copies, as far as they fit");
+        let copies = events_log(&p)
+            .iter()
+            .filter(|l| l.starts_with("sample: stretched "))
+            .count();
+        let refused = p.sample.jobs_counts().refused as usize
+            + events_log(&p)
+                .iter()
+                .filter(|l| l.contains("not enough memory"))
+                .count();
+        let peak = alloc_count::peak_bytes().max(0) as u64;
+        println!(
+            "memory: at most {:.0} MB of {:.0} MB, {:.0} MB kept free; {} takes, {copies} copies, {refused} refusals",
+            peak as f64 / 1e6,
+            MPC_BYTES as f64 / 1e6,
+            MPC_KEEP as f64 / 1e6,
+            4 + loaded.len()
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(copies >= 2, "copies made: {copies}");
+        assert!(refused > 0, "the takes together are more than it holds");
+        assert!(
+            peak <= MPC_BYTES - MPC_KEEP,
+            "{:.0} MB held at once, over the {:.0} MB it may use",
+            peak as f64 / 1e6,
+            (MPC_BYTES - MPC_KEEP) as f64 / 1e6
+        );
+    }
+
     #[test]
     fn the_grain_tools_device_checks_log_what_they_set_and_end_where_they_began() {
         use crate::app::RowKey;

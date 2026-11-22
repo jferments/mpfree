@@ -216,15 +216,29 @@ pub fn forget_on_stop() {
 pub mod alloc_count {
     use std::alloc::{GlobalAlloc, Layout, System};
     use std::cell::Cell;
+    use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
     thread_local! {
         static WATCH: Cell<bool> = const { Cell::new(false) };
         static CALLS: Cell<usize> = const { Cell::new(0) };
     }
 
+    /// The bytes every thread holds, and the most they held, from
+    /// [`track_from_now`]: for a test run alone in its own process.
+    static TRACK: AtomicBool = AtomicBool::new(false);
+    static LIVE: AtomicI64 = AtomicI64::new(0);
+    static PEAK: AtomicI64 = AtomicI64::new(0);
+
     fn count() {
         if WATCH.with(Cell::get) {
             CALLS.with(|c| c.set(c.get() + 1));
+        }
+    }
+
+    fn held(bytes: i64) {
+        if TRACK.load(Ordering::Relaxed) {
+            let now = LIVE.fetch_add(bytes, Ordering::Relaxed) + bytes;
+            PEAK.fetch_max(now, Ordering::Relaxed);
         }
     }
 
@@ -234,16 +248,38 @@ pub mod alloc_count {
     unsafe impl GlobalAlloc for Counting {
         unsafe fn alloc(&self, l: Layout) -> *mut u8 {
             count();
+            held(l.size() as i64);
             unsafe { System.alloc(l) }
         }
         unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
             count();
+            held(-(l.size() as i64));
             unsafe { System.dealloc(p, l) }
         }
         unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
             count();
+            held(n as i64 - l.size() as i64);
             unsafe { System.realloc(p, l, n) }
         }
+    }
+
+    /// Counts the bytes every thread allocates and frees from now on, from
+    /// 0 (memory held before and freed later counts against it): for a
+    /// test that runs alone in a process of its own.
+    pub fn track_from_now() {
+        LIVE.store(0, Ordering::Relaxed);
+        PEAK.store(0, Ordering::Relaxed);
+        TRACK.store(true, Ordering::Relaxed);
+    }
+
+    /// Bytes held now, more than at [`track_from_now`].
+    pub fn live_bytes() -> i64 {
+        LIVE.load(Ordering::Relaxed)
+    }
+
+    /// The most [`live_bytes`] has been.
+    pub fn peak_bytes() -> i64 {
+        PEAK.load(Ordering::Relaxed)
     }
 
     #[global_allocator]
