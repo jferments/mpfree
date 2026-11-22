@@ -7872,27 +7872,6 @@ impl Player {
         }
     }
 
-    /// What the sound gave up ([`Trades`]) for the status board. The
-    /// console says why when its problem starts, not each time it happens
-    /// again while it shows.
-    fn report_trade(&mut self, r: mpfree_status::Report) {
-        let starts = r.op != mpfree_status::Op::Ended
-            && !self
-                .status_board
-                .raw()
-                .iter()
-                .any(|p| p.kind == r.kind && p.state != mpfree_status::ProblemState::Ended);
-        if starts {
-            self.push_console(&format!(
-                "sound, {}: {}. {}",
-                r.kind.level.word(),
-                r.kind.title,
-                r.kind.what
-            ));
-        }
-        self.report_problem(r);
-    }
-
     /// Moves the status board's clock on by `dt` s; Dev > Status looks
     /// twice a second while it shows, and redraws only what changed (a
     /// problem settling or ending).
@@ -9055,7 +9034,7 @@ impl Player {
                     .as_ref()
                     .map_or(0, |e| crate::cores::late(&e.cores));
                 for r in self.trades.note(&t.audio, late).into_iter().flatten() {
-                    self.report_trade(r);
+                    self.report_problem(r);
                 }
                 self.show_timing();
                 self.refresh_chips();
@@ -20354,8 +20333,9 @@ mod tests {
     #[test]
     fn what_the_sound_gives_up_goes_to_the_status_board_never_the_top_bar() {
         // Sampler plan step 10 (Jay, 22 Nov 2026: no chip of its own on
-        // the top bar): the trades go to the status board, and the console
-        // says why once as each problem starts.
+        // the top bar): the trades go to the status board, whose log line
+        // says each problem as it starts showing and as it ends, not each
+        // time it happens again while it shows.
         use mpfree_status::{kinds, Kind, ProblemState};
         let mut p = sample_player(Fonts::embedded());
         let chips = |p: &Player| {
@@ -20372,12 +20352,16 @@ mod tests {
                 ..Timing::default()
             })
         };
-        let console = |p: &Player| {
-            p.ui.get::<LogPanel>("syslog")
-                .unwrap()
-                .lines()
-                .filter(|l| l.0.starts_with("sound, "))
-                .count()
+        let said = |p: &Player| {
+            p.said_all
+                .iter()
+                .filter(|l| {
+                    l.starts_with("status: ")
+                        && (l.contains("sound/grains-thinned")
+                            || l.contains("sound/voices-given-up"))
+                })
+                .cloned()
+                .collect::<Vec<_>>()
         };
         let on_board = |p: &Player, k: &'static Kind| {
             p.status_board
@@ -20389,7 +20373,8 @@ mod tests {
         p.apply(timing(AudioNumbers::default()));
         let before = chips(&p);
         assert!(p.status_board.is_empty());
-        // The grain budget crowded: grains thinned begins, said once.
+        // The grain budget crowded: grains thinned begins and settles
+        // before it shows, so nothing is said yet.
         let mut a = AudioNumbers {
             crowded_s: 0.5,
             faded_grains: 12,
@@ -20397,20 +20382,29 @@ mod tests {
         };
         p.apply(timing(a));
         assert_eq!(chips(&p), before, "nothing new on the top bar");
-        assert_eq!(console(&p), 1);
         assert_eq!(
             on_board(&p, &kinds::GRAINS_THINNED).map(|v| v.0),
             Some(ProblemState::Settling)
         );
+        assert!(said(&p).is_empty());
+        p.tick(0.6);
+        p.tick(0.6);
+        assert_eq!(
+            said(&p),
+            ["status: + sound/grains-thinned (1) Grains thinned"]
+        );
         // Still thinning: nothing said again.
         a.faded_grains += 5;
         p.apply(timing(a));
-        assert_eq!(console(&p), 1);
-        // Two voices given up: one moment of two, said once.
+        assert_eq!(said(&p).len(), 1);
+        // Two voices given up: one moment of two, said as it starts.
         a.given_up += 2;
         a.faded_grains += 1;
         p.apply(timing(a));
-        assert_eq!(console(&p), 2);
+        assert_eq!(
+            said(&p)[1],
+            "status: + sound/voices-given-up (2) Some voices were faded out"
+        );
         assert_eq!(
             on_board(&p, &kinds::VOICES_GIVEN_UP),
             Some((ProblemState::Now, 2))
@@ -20418,13 +20412,13 @@ mod tests {
         a.given_up += 1;
         a.faded_grains += 1;
         p.apply(timing(a));
-        assert_eq!(console(&p), 2, "not said again while it shows");
+        assert_eq!(said(&p).len(), 2, "not said again while it shows");
         assert_eq!(
             on_board(&p, &kinds::VOICES_GIVEN_UP),
             Some((ProblemState::Now, 3))
         );
-        // The counts stop: grains thinned ends; once both are over, the
-        // next voices given up is said again.
+        // The counts stop: both end, each with its line; the next voices
+        // given up starts again.
         p.apply(timing(a));
         p.tick(1.0);
         p.tick(1.0);
@@ -20434,9 +20428,17 @@ mod tests {
             on_board(&p, &kinds::VOICES_GIVEN_UP).map(|v| v.0),
             Some(ProblemState::Ended)
         );
+        let ends = said(&p);
+        assert_eq!(ends.len(), 4, "{ends:?}");
+        assert!(ends[2..]
+            .iter()
+            .any(|l| l.starts_with("status: - sound/voices-given-up after ")));
+        assert!(ends[2..]
+            .iter()
+            .any(|l| l.starts_with("status: - sound/grains-thinned after ")));
         a.given_up += 1;
         p.apply(timing(a));
-        assert_eq!(console(&p), 3);
+        assert!(said(&p)[4].starts_with("status: + sound/voices-given-up ("));
         assert_eq!(chips(&p), before);
         // A late core and dropped notes are moments too, by how many.
         let mut t = Trades::default();
