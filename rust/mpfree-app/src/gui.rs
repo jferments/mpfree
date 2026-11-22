@@ -5079,7 +5079,7 @@ impl Player {
         let looped = if st.phase == Phase::Empty {
             "empty; starts on PLAY, or on the next bar line while playing".to_string()
         } else {
-            let bars = crate::looper_page::bars_of(st.ticks, self.looper.beats_per_bar);
+            let bars = crate::looper_page::bars_of(st.ticks, self.looper.bar_ticks);
             format!(
                 "{bars} bar{} · {} layer{}; REC overdubs it",
                 if bars == 1 { "" } else { "s" },

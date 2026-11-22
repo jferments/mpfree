@@ -1138,10 +1138,14 @@ pub struct LooperView {
     /// The recorded source's peaks since the last view, dBFS (-inf when
     /// silent).
     pub meter_db: [f32; 2],
-    /// The loop's place in the song: beats per bar and the frames of a
-    /// beat at the tempo it was recorded at, for the bar lines.
+    /// The loop's place in the song: beats per bar, the frames of one of
+    /// those beats (a quarter in 4/4, an eighth in 6/8) at the tempo it
+    /// was recorded at, for the bar lines, and the bar's length in ticks
+    /// ([`Meter::bar_ticks`](mpfree_transport::time::Meter::bar_ticks)),
+    /// for counting a loop's bars.
     pub beats_per_bar: u32,
     pub frames_per_beat: f64,
+    pub bar_ticks: Tick,
     /// The loop's layers in play order (the first pass first) with their
     /// mix, for the speakers; None past the last.
     pub layers: [Option<LayerInfo>; MAX_LAYERS],
@@ -1195,6 +1199,7 @@ impl Default for LooperView {
             meter_db: [f32::NEG_INFINITY; 2],
             beats_per_bar: 4,
             frames_per_beat: 0.0,
+            bar_ticks: 4 * PPQ as Tick,
             layers: [None; MAX_LAYERS],
             loops: [l.status(); MAX_LOOPS],
             selected: 0,
@@ -2481,11 +2486,10 @@ impl LoopHost {
         }
         match at {
             Some(t) => {
-                let bar = mpfree_transport::PPQ as i64 * i64::from(self.beats_per_bar.max(1));
                 format!(
                     "looper: loop {} {what} from bar {}",
                     n + 1,
-                    t.div_euclid(bar.max(1)) + 1
+                    t.div_euclid(self.bar_ticks.max(1)) + 1
                 )
             }
             None => format!("looper: loop {} {what}", n + 1),
@@ -2556,7 +2560,7 @@ impl LoopHost {
             return format!("looper: loop {} has no such layer now", from + 1);
         };
         let bars = |s: &Status| {
-            let b = (s.ticks as f64 / (960.0 * f64::from(self.beats_per_bar.max(1)))).round();
+            let b = (s.ticks as f64 / self.bar_ticks.max(1) as f64).round();
             format!("{b} bar{}", if b == 1.0 { "" } else { "s" })
         };
         let (layer, there, here) = (k + 1, to + 1, from + 1);
@@ -2929,7 +2933,7 @@ impl LoopHost {
                         Some(c) => format!(", cut at STOP after {:.2} s (silent to the bar line)", c as f64 / 44_100.0),
                         None => String::new(),
                     };
-                    format!("looper: loop of {} at {at}: {} frames ({:.2} s), playing{kept}", ticks_text(s.ticks, self.beats_per_bar),
+                    format!("looper: loop of {} at {at}: {} frames ({:.2} s), playing{kept}", ticks_text(s.ticks, self.bar_ticks),
                             s.frames, s.frames as f64 / 44_100.0)
                 }
                 Phase::Playing => format!("looper: playing at {at}, {} layers", s.layers),
@@ -3226,11 +3230,14 @@ impl LoopHost {
             }
         };
         let s = self.looper.status();
-        // A beat at the tempo the loop was recorded at, from its length.
+        // A beat of the meter (a quarter in 4/4, an eighth in 6/8) at the
+        // tempo the loop was recorded at, from its length; the tempo counts
+        // quarters.
+        let beat = self.bar_ticks.max(1) as f64 / f64::from(self.beats_per_bar.max(1));
         let frames_per_beat = if s.ticks > 0 {
-            s.frames as f64 * 960.0 / s.ticks as f64
+            s.frames as f64 * beat / s.ticks as f64
         } else {
-            f64::from(self.rate) * 60.0 / bpm.max(1.0)
+            f64::from(self.rate) * 60.0 / bpm.max(1.0) * beat / f64::from(PPQ)
         };
         let mut layers = [None; MAX_LAYERS];
         for (k, l) in layers.iter_mut().enumerate() {
@@ -3254,6 +3261,7 @@ impl LoopHost {
             meter_db: [db(m[0]), db(m[1])],
             beats_per_bar: self.beats_per_bar,
             frames_per_beat,
+            bar_ticks: self.bar_ticks,
             layers,
             loops,
             selected: self.looper.selected(),
@@ -3594,8 +3602,7 @@ impl LoopHost {
     pub fn take_tempo(&mut self) -> Option<(usize, u32, f64, u64)> {
         let (n, bpm, at) = self.looper.take_tempo()?;
         let s = self.looper.loop_status(n)?;
-        let bar = Tick::from(self.beats_per_bar.max(1)) * PPQ as Tick;
-        let bars = u32::try_from(s.ticks / bar.max(1)).unwrap_or(0);
+        let bars = u32::try_from(s.ticks / self.bar_ticks.max(1)).unwrap_or(0);
         Some((n, bars, bpm, at))
     }
 
@@ -3729,11 +3736,7 @@ impl LoopHost {
     /// live wave, and the wave so far when due.
     fn live_step(&mut self, sel: usize, s: &Status, period: u64) -> Option<Arc<LoopWave>> {
         if self.live.of != Some(sel) {
-            let bar = frames_at(
-                960 * i64::from(self.beats_per_bar.max(1)),
-                self.bpm.max(1.0),
-                self.rate,
-            );
+            let bar = frames_at(self.bar_ticks.max(1), self.bpm.max(1.0), self.rate);
             self.live
                 .start(sel, bar * s.bars.map_or(2, |b| b.max(1) as usize));
         }
@@ -3769,8 +3772,9 @@ pub fn overdubs_text(o: mpfree_looper::Overdubs) -> &'static str {
     }
 }
 
-fn ticks_text(ticks: i64, beats_per_bar: u32) -> String {
-    let bar = 960 * i64::from(beats_per_bar.max(1));
+/// A loop's length in bars of `bar` ticks, for the log.
+fn ticks_text(ticks: i64, bar: Tick) -> String {
+    let bar = bar.max(1);
     if ticks % bar == 0 {
         bars_text(Some((ticks / bar) as u32))
     } else {
@@ -3872,6 +3876,47 @@ mod tests {
         assert_eq!(c.max, 0.5);
         assert_eq!(w.column(0, 2000.0, 3000.0), WaveColumn::default());
         assert_eq!(w.column(2, 0.0, 10.0), WaveColumn::default());
+    }
+
+    /// In 6/8 a bar is six eighths (2880 ticks), not six quarters: a free
+    /// first loop of one bar says 1 bar (it said 0), the view's beat is an
+    /// eighth, and six of them make the loop.
+    #[test]
+    fn a_free_loop_counts_its_bars_by_the_meter() {
+        const RATE: u32 = 22_050;
+        let mut h = LoopHost::new(RATE, 20);
+        let mut t = Transport::new(RATE, 100.0).unwrap();
+        t.set_meter(mpfree_transport::Meter::new(6, 8).unwrap())
+            .unwrap();
+        let mut b = Block::new();
+        h.set_tempo_from_loop(true);
+        h.command(Command::SetBars(None));
+        let mut run = |h: &mut LoopHost, periods: usize| {
+            let mut took = None;
+            for _ in 0..periods {
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                h.period(&b, &mut l, &mut r);
+                took = took.or(h.take_tempo());
+            }
+            took
+        };
+        h.command(Command::Record);
+        // 1.5 s free: one bar of 6/8 at 120 BPM (three quarters).
+        assert_eq!(run(&mut h, (3 * RATE as usize / 2) / PERIOD), None);
+        h.command(Command::Record);
+        let (n, bars, bpm, _) = run(&mut h, 4).expect("the loop sets the tempo");
+        assert_eq!((n, bars), (0, 1), "one bar of 6/8, at {bpm:.2} BPM");
+        assert!((bpm - 120.0).abs() < 0.5, "{bpm}");
+        let v = h.view(bpm);
+        assert_eq!(v.bar_ticks, 3 * PPQ as Tick);
+        let six = v.frames_per_beat * f64::from(v.beats_per_bar);
+        assert!(
+            (six - v.status.frames as f64).abs() < 1.0,
+            "six eighths, {six} frames, make the loop's {}",
+            v.status.frames
+        );
+        assert_eq!(crate::looper_page::bars_of(v.status.ticks, v.bar_ticks), 1);
     }
 
     /// The looper on a real transport with the input closed: presses log,
