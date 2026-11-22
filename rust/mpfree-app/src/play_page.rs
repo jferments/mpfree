@@ -386,10 +386,10 @@ impl Widget for PadsBar {
             let lit = on == Some(i);
             if lit {
                 cx.canvas
-                    .fill_round_rect(half.inset(2), (half.h - 4) / 2, t.accent);
+                    .fill_round_rect(half.inset(2), (half.h - 4) / 2, t.picked());
             }
             let ink = if lit {
-                t.ink_on(t.accent)
+                t.ink_on(t.picked())
             } else if i == 1 && !s.scale {
                 t.text_faint
             } else {

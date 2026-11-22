@@ -1170,7 +1170,8 @@ pub enum Differs {
 }
 
 impl Difference {
-    fn song(at: Tick, what: Differs) -> Difference {
+    /// One that is the whole song's, at song tick `at`.
+    pub fn song(at: Tick, what: Differs) -> Difference {
         Difference {
             track: None,
             at,
@@ -1187,8 +1188,31 @@ impl Difference {
     }
 
     /// In a musician's words, with bars of `bar` ticks: "Bass, bar 9: a
-    /// note held over the row change is cut there".
+    /// note held over the row change is cut there" (the track, the bar
+    /// and [`Difference::what_said`]).
     pub fn said(&self, project: &Project, bar: Tick) -> String {
+        let what = self.what_said(bar);
+        let at = format!("bar {}", self.bar(bar));
+        match self.track {
+            Some(t) => {
+                let name = project
+                    .tracks
+                    .get(t)
+                    .map_or_else(|| format!("Track {}", t + 1), |t| t.name.clone());
+                format!("{name}, {at}: {what}")
+            }
+            None => format!("{at}: {what}"),
+        }
+    }
+
+    /// The bar it is in, from 1, with bars of `bar` ticks.
+    pub fn bar(&self, bar: Tick) -> Tick {
+        self.at.div_euclid(bar.max(1)) + 1
+    }
+
+    /// What is different, in a musician's words ("a note held over the
+    /// row change is cut there"), with bars of `bar` ticks.
+    pub fn what_said(&self, bar: Tick) -> String {
         let bar = bar.max(1);
         let bars = |t: Tick| {
             if t % bar != 0 {
@@ -1199,7 +1223,7 @@ impl Difference {
                 format!("{} bars", t / bar)
             }
         };
-        let what = match self.what {
+        match self.what {
             Differs::OffBar => {
                 "a part starts or ends off a bar line; the rows change on bar lines".into()
             }
@@ -1227,17 +1251,6 @@ impl Difference {
             Differs::SceneProgram => "the scene's program changes aren't in the song".into(),
             Differs::ClipFollow => "the clip's follow action isn't in the song; it plays on".into(),
             Differs::Legato => "the clip is legato; the song starts it from its top".into(),
-        };
-        let at = format!("bar {}", self.at.div_euclid(bar) + 1);
-        match self.track {
-            Some(t) => {
-                let name = project
-                    .tracks
-                    .get(t)
-                    .map_or_else(|| format!("Track {}", t + 1), |t| t.name.clone());
-                format!("{name}, {at}: {what}")
-            }
-            None => format!("{at}: {what}"),
         }
     }
 }

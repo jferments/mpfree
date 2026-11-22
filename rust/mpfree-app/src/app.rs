@@ -843,12 +843,14 @@ impl Default for Settings {
 
 /// The themes Prefs > Appearance offers: the built-in name and its row.
 /// The same names, in the same order, as `mpfree_ui::theme::BUILTIN`.
-pub const THEMES: [(&str, &str); 5] = [
+pub const THEMES: [(&str, &str); 7] = [
     ("default", "Default"),
+    ("slate", "Slate"),
     ("light", "Light"),
     ("console", "Console"),
     ("synthwave", "Synthwave"),
     ("spaceship", "Spaceship"),
+    ("abletown", "AbleTown"),
 ];
 
 /// The store owner whose files are the themes folder: theme files the
@@ -969,6 +971,49 @@ pub struct MenuView {
     pub editing: bool,
     pub help_heading: String,
     pub help: Vec<String>,
+    /// Buttons under the help ("Keep" and "Go back" while a theme is on
+    /// trial); a tap is `FromUi::HelpButton`.
+    pub help_buttons: Vec<String>,
+}
+
+/// How long "Keep this theme?" waits before it puts the old theme back.
+pub const THEME_TRIAL_S: f64 = 15.0;
+
+/// About as many characters as a line of Prefs' panel holds.
+const HELP_CHARS: usize = 48;
+
+/// The most lines of theme problems the Appearance panel lists after its
+/// help (the panel holds about 15 lines).
+const THEME_PROBLEM_LINES: usize = 10;
+
+/// `text` in lines of at most `width` characters, broken at spaces (a
+/// longer word gets a line of its own).
+fn wrap_line(text: &str, width: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > width {
+            out.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        out.push(line);
+    }
+    out
+}
+
+/// A theme picked in Prefs > Appearance and not kept yet: the theme to go
+/// back to, and when ([`THEME_TRIAL_S`] after the last step).
+#[derive(Clone, Debug, PartialEq)]
+struct ThemeTrial {
+    before: String,
+    until: f64,
+    /// The whole seconds left that the panel last showed.
+    shown: u32,
 }
 
 /// What the guide card shows.
@@ -1544,10 +1589,23 @@ pub struct App {
     /// `--data`): the file name, which is what `settings.theme` holds, and
     /// the theme's own name for the Appearance row. After [`THEMES`].
     pub theme_files: Vec<(String, String)>,
+    /// Each theme file's problems, by file name, as lines (a line it
+    /// couldn't use, an unknown key, an ignored line, a colour hard to
+    /// read): the Appearance panel lists them while that theme is in use.
+    pub theme_problems: Vec<(String, Vec<String>)>,
+    /// Theme files left out of Appearance at start, and why; the panel
+    /// names them.
+    pub themes_left_out: Vec<(String, String)>,
     /// Starts where the saved theme couldn't be used (its file gone, or
     /// left out) and the default theme showed: a fallback, logged by
     /// [`App::restore`] and counted on the Debug page.
     pub theme_fallbacks: u64,
+    /// Prefs > Appearance just changed the theme: "Keep this theme?" asks
+    /// until it is kept, or puts the old one back (owner, 22 Nov 07:17Z).
+    theme_trial: Option<ThemeTrial>,
+    /// The time [`App::tick`] was last given, in its seconds: when a
+    /// theme trial ends.
+    tick_t: f64,
     /// Tuning files found in the tunings folder at start (`files/tunings/`
     /// in `--data`), in the synth's order ([`crate::synth::Synth::tuning_files`]):
     /// each one's name and whether its keyboard map sets the root and
@@ -1871,7 +1929,11 @@ impl App {
             menu_editing: false,
             page_editing: false,
             theme_files: Vec::new(),
+            theme_problems: Vec::new(),
+            themes_left_out: Vec::new(),
             theme_fallbacks: 0,
+            theme_trial: None,
+            tick_t: 0.0,
             tuning_files: Vec::new(),
             sound_cores_now: SoundCores::Shared,
             loop_memory_now: LoopMemory::default(),
@@ -3856,6 +3918,7 @@ impl App {
     /// The TAP TEMPO light, on for the first fifth of each beat. Returns a
     /// light message only when it changes.
     pub fn tick(&mut self, t: f64) -> Option<Effect> {
+        self.tick_t = t;
         let note = self.map.tap_tempo?;
         let beats = (t - self.beat_zero) * self.settings.bpm / 60.0;
         let on = beats.rem_euclid(1.0) < 0.2;
@@ -3991,6 +4054,20 @@ impl App {
     /// Show `v`. The page left is remembered for going back, unless it is
     /// a menu, the guide or the workspace (whose Back goes to the panel).
     fn show(&mut self, v: View) -> Vec<Effect> {
+        // Leaving Prefs while "Keep this theme?" asks: the old theme.
+        let mut back = Vec::new();
+        if self.view == View::Prefs && v != View::Prefs && self.theme_trial.is_some() {
+            back = self.end_theme_trial(false);
+        }
+        let mut fx = self.show_inner(v);
+        if !back.is_empty() {
+            back.append(&mut fx);
+            fx = back;
+        }
+        fx
+    }
+
+    fn show_inner(&mut self, v: View) -> Vec<Effect> {
         self.menu_editing = false;
         // The screen closes a list or pad over the page when the page
         // changes, and Sample Recall with it.
@@ -4829,9 +4906,10 @@ impl App {
             Item::Appearance => vec![
                 "The theme: the colours and the panels' style.",
                 "The arrows, - / + or SHIFT + wheel step through",
-                "Default, Light, Console, Synthwave and Spaceship;",
-                "the screen changes at once. The layout and the",
-                "font stay the same. It is kept for the next start.",
+                "Default, Slate, Light, Console, Synthwave,",
+                "Spaceship and AbleTown; the screen changes at",
+                "once. The layout and the font stay the same. It",
+                "is kept for the next start.",
             ],
             Item::TouchSection => vec![
                 "The touch screen's settings: screen pad",
@@ -5069,6 +5147,20 @@ impl App {
             (_, b) => format!("{} options", b.tab_view().unwrap_or(View::Play).name()),
         };
         let (name, _) = self.item_text(items[selected]);
+        let (help_heading, help, help_buttons) = match self.theme_trial_help() {
+            Some(asks) => asks,
+            None => {
+                let mut help: Vec<String> = self
+                    .item_help(items[selected])
+                    .into_iter()
+                    .map(String::from)
+                    .collect();
+                if items[selected] == Item::Appearance {
+                    help.extend(self.theme_problem_lines());
+                }
+                (name.to_string(), help, Vec::new())
+            }
+        };
         Effect::Menu(MenuView {
             title,
             rows: items
@@ -5080,12 +5172,9 @@ impl App {
                 .collect(),
             selected,
             editing: self.menu_editing,
-            help_heading: name.to_string(),
-            help: self
-                .item_help(items[selected])
-                .into_iter()
-                .map(String::from)
-                .collect(),
+            help_heading,
+            help,
+            help_buttons,
         })
     }
 
@@ -5220,10 +5309,21 @@ impl App {
         }
         if self.menu_editing {
             self.menu_editing = false;
+            let items = self.items();
+            if items[self.selected.min(items.len() - 1)] == Item::Appearance
+                && self.theme_trial.is_some()
+            {
+                // Setting the open Appearance row keeps the theme too.
+                return self.end_theme_trial(true);
+            }
             return vec![self.menu_view()];
         }
         let items = self.items();
         let i = self.selected.min(items.len() - 1);
+        if items[i] == Item::Appearance && self.theme_trial.is_some() {
+            // "Keep this theme?": the push keeps it.
+            return self.end_theme_trial(true);
+        }
         if opens_something(items[i]) {
             return self.step_item(i, 1);
         }
@@ -5323,7 +5423,25 @@ impl App {
                     Some(i) => (i as i32 + d).clamp(0, themes.len() as i32 - 1) as usize,
                     None => 0,
                 };
-                s.theme = themes[next].clone();
+                let before = std::mem::replace(&mut s.theme, themes[next].clone());
+                // "Keep this theme?": 15 s from this step, back to the
+                // theme from before the first step; none once back on it.
+                let until = self.tick_t + THEME_TRIAL_S;
+                match &mut self.theme_trial {
+                    _ if s.theme == before => {}
+                    Some(t) if t.before == s.theme => self.theme_trial = None,
+                    Some(t) => {
+                        t.until = until;
+                        t.shown = THEME_TRIAL_S as u32;
+                    }
+                    None => {
+                        self.theme_trial = Some(ThemeTrial {
+                            before,
+                            until,
+                            shown: THEME_TRIAL_S as u32,
+                        })
+                    }
+                }
             }
             Item::PrefsBack => return self.leave_prefs_section(),
             Item::CalibrateTouch => return vec![Effect::CalibrateTouch],
@@ -5497,6 +5615,134 @@ impl App {
             fx.push(self.menu_view());
         }
         fx
+    }
+
+    // ------------------------------------------------------- theme trial
+
+    /// The help panel while "Keep this theme?" asks (on every row): its
+    /// heading, lines and buttons.
+    fn theme_trial_help(&self) -> Option<(String, Vec<String>, Vec<String>)> {
+        let t = self.theme_trial.as_ref()?;
+        let name = |file: &str| {
+            self.theme_choices()
+                .find(|c| c.0 == file)
+                .map_or(file.to_string(), |c| c.1.to_string())
+        };
+        let left = (t.until - self.tick_t).max(0.0).ceil() as u32;
+        Some((
+            format!("Keep {}?", name(&self.settings.theme)),
+            vec![
+                format!("Back to {} in {left} s.", name(&t.before)),
+                "Keep, or push the wheel on Appearance, keeps it.".to_string(),
+                "Go back or closing Prefs puts it back now.".to_string(),
+            ],
+            vec!["Keep".to_string(), "Go back".to_string()],
+        ))
+    }
+
+    /// The Appearance panel's lines after its help: the problems of the
+    /// theme file in use, then the theme files left out and why, each
+    /// wrapped to the panel, at most [`THEME_PROBLEM_LINES`] in all.
+    fn theme_problem_lines(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some((file, problems)) = self
+            .theme_problems
+            .iter()
+            .find(|(f, _)| *f == self.settings.theme)
+        {
+            let name = self
+                .theme_choices()
+                .find(|c| c.0 == file)
+                .map_or(file.as_str(), |c| c.1);
+            out.push(String::new());
+            out.push(format!(
+                "{name}: {} problem{}",
+                problems.len(),
+                if problems.len() == 1 { "" } else { "s" }
+            ));
+            for p in problems {
+                out.extend(wrap_line(p, HELP_CHARS));
+            }
+        }
+        if !self.themes_left_out.is_empty() {
+            out.push(String::new());
+            out.push("Left out:".to_string());
+            for (file, why) in &self.themes_left_out {
+                out.extend(wrap_line(&format!("{file}: {why}"), HELP_CHARS));
+            }
+        }
+        if out.len() > THEME_PROBLEM_LINES {
+            out.truncate(THEME_PROBLEM_LINES - 1);
+            out.push("More in the log (Dev tab, Console).".to_string());
+        }
+        out
+    }
+
+    /// Ends "Keep this theme?": `keep` keeps the theme on screen, else the
+    /// theme from before comes back. Either way it is said in the log.
+    fn end_theme_trial(&mut self, keep: bool) -> Vec<Effect> {
+        let Some(t) = self.theme_trial.take() else {
+            return Vec::new();
+        };
+        let name = |app: &App, file: &str| {
+            app.theme_choices()
+                .find(|c| c.0 == file)
+                .map_or(file.to_string(), |c| c.1.to_string())
+        };
+        let now = name(self, &self.settings.theme);
+        let note = if keep {
+            format!("theme: kept {now}")
+        } else {
+            let line = format!("theme: back to {} ({now} not kept)", name(self, &t.before));
+            self.settings.theme = t.before;
+            line
+        };
+        // What the next start opens with changes either way.
+        self.save_dirty = true;
+        let mut fx = vec![Effect::Note(note), Effect::Settings(self.settings.clone())];
+        if self.in_menu() {
+            fx.push(self.menu_view());
+        }
+        fx
+    }
+
+    /// The help panel's buttons while "Keep this theme?" asks: Keep (0) or
+    /// Go back (1).
+    pub fn help_button(&mut self, i: usize) -> Vec<Effect> {
+        if self.theme_trial.is_none() {
+            return Vec::new();
+        }
+        self.end_theme_trial(i == 0)
+    }
+
+    /// "Keep this theme?" counting down, from the screen loop after
+    /// [`App::tick`]: the panel each second, and the old theme back when
+    /// the time is up.
+    pub fn theme_tick(&mut self) -> Vec<Effect> {
+        let Some(t) = &mut self.theme_trial else {
+            return Vec::new();
+        };
+        if self.tick_t >= t.until {
+            return self.end_theme_trial(false);
+        }
+        let left = (t.until - self.tick_t).ceil() as u32;
+        if left == t.shown {
+            return Vec::new();
+        }
+        t.shown = left;
+        if self.in_menu() {
+            vec![self.menu_view()]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The theme the next start opens with: the one on screen, or while
+    /// "Keep this theme?" asks, the one it would go back to.
+    pub fn kept_theme(&self) -> &str {
+        self.theme_trial
+            .as_ref()
+            .map_or(&self.settings.theme, |t| &t.before)
     }
 
     // ------------------------------------------------------------ guide
@@ -6413,17 +6659,22 @@ mod tests {
         let fx = app.step_item(at, 1);
         assert!(
             fx.iter()
-                .any(|e| matches!(e, Effect::Settings(s) if s.theme == "light")),
+                .any(|e| matches!(e, Effect::Settings(s) if s.theme == "slate")),
             "{fx:?}"
         );
-        assert_eq!(value(&fx), "Light");
+        assert_eq!(value(&fx), "Slate");
+        assert_eq!(value(&app.step_item(at, 1)), "Light");
         assert_eq!(value(&app.step_item(at, 1)), "Console");
         app.step_item(at, 1);
         assert_eq!(value(&app.step_item(at, 1)), "Spaceship");
+        assert_eq!(value(&app.step_item(at, 1)), "AbleTown");
         // It stops at the ends.
-        assert_eq!(value(&app.step_item(at, 1)), "Spaceship");
+        assert_eq!(value(&app.step_item(at, 1)), "AbleTown");
+        assert_eq!(value(&app.step_item(at, -1)), "Spaceship");
         assert_eq!(value(&app.step_item(at, -1)), "Synthwave");
-        // It is kept, and comes back at the next start.
+        // Kept (Keep under "Keep this theme?"), and it comes back at the
+        // next start.
+        app.help_button(0);
         let kept = app.app_settings();
         assert_eq!(kept.get_str("theme"), Some("synthwave"));
         let mut next = App::new(44_100, false);
@@ -6534,14 +6785,14 @@ mod tests {
         let fx = press(&mut app, PUSH);
         assert_eq!((menu(&fx).selected, menu(&fx).editing), (at, true));
         let fx = app.wheel(1);
-        assert_eq!(menu(&fx).rows[at].1, "Light");
+        assert_eq!(menu(&fx).rows[at].1, "Slate");
         assert_eq!(menu(&fx).selected, at, "the row stays picked");
         let fx = app.wheel(1);
-        assert_eq!(menu(&fx).rows[at].1, "Console");
+        assert_eq!(menu(&fx).rows[at].1, "Light");
         // Push again: set, and the wheel moves between rows again.
         let fx = press(&mut app, PUSH);
         assert!(!menu(&fx).editing);
-        assert_eq!(app.settings.theme, "console");
+        assert_eq!(app.settings.theme, "light");
         let fx = app.wheel(-1);
         assert_eq!((menu(&fx).selected, menu(&fx).editing), (at - 1, false));
         // A tap on a row, or leaving Prefs, closes an open row.
@@ -6566,6 +6817,151 @@ mod tests {
         assert_eq!(press(&mut app, PUSH), vec![Effect::Nav(Nav::Push)]);
     }
 
+    /// Owner, 22 Nov 07:17Z: after a theme change, Prefs' panel asks "Keep
+    /// this theme?" for 15 s; Keep or the wheel's push keeps it, Go back,
+    /// closing Prefs or the time running out puts the old one back.
+    #[test]
+    fn keep_this_theme_asks_for_15_seconds_then_goes_back() {
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        app.button(button::SHIFT, true, 0.0);
+        press(&mut app, MENU);
+        app.button(button::SHIFT, false, 0.0);
+        let at = row(&app, Item::Appearance);
+        let menu = |fx: &[Effect]| match fx.iter().rev().find(|e| matches!(e, Effect::Menu(_))) {
+            Some(Effect::Menu(m)) => m.clone(),
+            _ => panic!("{fx:?}"),
+        };
+        app.tick(100.0);
+        let m = menu(&app.step_item(at, 1));
+        assert_eq!(app.settings.theme, "slate");
+        assert_eq!(m.help_heading, "Keep Slate?");
+        assert_eq!(m.help[0], "Back to Default in 15 s.");
+        assert_eq!(m.help_buttons, ["Keep", "Go back"]);
+        // Not kept yet: the next start would open with Default.
+        assert_eq!(app.app_settings().get_str("theme"), Some("default"));
+        // It counts down once a second, on any row.
+        app.tick(104.5);
+        let fx = app.theme_tick();
+        assert_eq!(menu(&fx).help[0], "Back to Default in 11 s.");
+        assert!(
+            app.theme_tick().is_empty(),
+            "nothing new in the same second"
+        );
+        let m = menu(&app.select(0));
+        assert_eq!(m.help_heading, "Keep Slate?");
+        // Another step starts the 15 s again, still back to Default.
+        app.select(at);
+        let m = menu(&app.step_item(at, 1));
+        assert_eq!(m.help_heading, "Keep Light?");
+        assert_eq!(m.help[0], "Back to Default in 15 s.");
+        // Time up: Default is back, and the log says so.
+        app.tick(119.4);
+        assert_eq!(menu(&app.theme_tick()).help[0], "Back to Default in 1 s.");
+        app.tick(119.5);
+        let fx = app.theme_tick();
+        assert_eq!(app.settings.theme, "default");
+        assert!(fx.contains(&Effect::Note(
+            "theme: back to Default (Light not kept)".into()
+        )));
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Settings(s) if s.theme == "default")));
+        assert_eq!(menu(&fx).help_heading, "Appearance");
+        assert!(menu(&fx).help_buttons.is_empty());
+        // Keep keeps it.
+        app.step_item(at, 1);
+        let fx = app.help_button(0);
+        assert!(fx.contains(&Effect::Note("theme: kept Slate".into())));
+        assert_eq!(app.settings.theme, "slate");
+        assert_eq!(app.app_settings().get_str("theme"), Some("slate"));
+        app.tick(200.0);
+        assert!(app.theme_tick().is_empty());
+        assert_eq!(app.settings.theme, "slate");
+        // Go back puts the old one back at once.
+        app.step_item(at, 1);
+        app.help_button(1);
+        assert_eq!(app.settings.theme, "slate");
+        // Stepping back to the theme from before ends the question.
+        app.step_item(at, 1);
+        let m = menu(&app.step_item(at, -1));
+        assert_eq!(m.help_heading, "Appearance");
+        // The wheel's push on Appearance keeps it.
+        app.step_item(at, 1);
+        app.select(at);
+        app.wheel_push();
+        assert_eq!(app.app_settings().get_str("theme"), Some("light"));
+        // Closing Prefs puts it back.
+        app.step_item(at, 1);
+        assert_eq!(app.settings.theme, "console");
+        let fx = press(&mut app, MENU);
+        assert_eq!(app.settings.theme, "light");
+        assert!(fx.contains(&Effect::Note(
+            "theme: back to Light (Console not kept)".into()
+        )));
+    }
+
+    /// Owner, 22 Nov 07:17Z: the Appearance panel lists the problems of the
+    /// theme file in use, and names the files left out and why.
+    #[test]
+    fn appearance_lists_a_theme_files_problems_and_the_files_left_out() {
+        let mut app = App::new(44_100, false);
+        app.theme_files = vec![("sunrise.theme".into(), "Sunrise".into())];
+        app.theme_problems = vec![(
+            "sunrise.theme".into(),
+            vec![
+                "line 3: accent: expected a colour (#RRGGBB, {name}, mix(), alpha() or \
+                 light_dark()), got \"blue\" (kept synthwave's #FF2E97)"
+                    .into(),
+            ],
+        )];
+        app.themes_left_out = vec![(
+            "fog.theme".into(),
+            "nothing could be read: text on panels (surface) 1.0:1, under the 3:1 \
+             every theme must reach"
+                .into(),
+        )];
+        app.map.menu = Some(MENU);
+        app.button(button::SHIFT, true, 0.0);
+        press(&mut app, MENU);
+        app.button(button::SHIFT, false, 0.0);
+        let at = row(&app, Item::Appearance);
+        let help = |fx: &[Effect]| match fx.iter().rev().find(|e| matches!(e, Effect::Menu(_))) {
+            Some(Effect::Menu(m)) => m.help.clone(),
+            _ => panic!("{fx:?}"),
+        };
+        // On Default: the help, then the files left out.
+        let lines = help(&app.select(at));
+        let at_left = lines
+            .iter()
+            .position(|l| l == "Left out:")
+            .expect("left out");
+        assert_eq!(lines[at_left - 1], "");
+        assert!(lines[at_left + 1].starts_with("fog.theme: nothing could be read:"));
+        assert!(!lines.iter().any(|l| l.starts_with("Sunrise:")));
+        // On Sunrise (kept): its problem too, wrapped to the panel.
+        for _ in 0..7 {
+            app.step_item(at, 1);
+        }
+        assert_eq!(app.settings.theme, "sunrise.theme");
+        let lines = help(&app.help_button(0));
+        let at_name = lines
+            .iter()
+            .position(|l| l == "Sunrise: 1 problem")
+            .expect("its problems");
+        assert!(lines[at_name + 1].starts_with("line 3: accent: expected a colour"));
+        assert!(
+            lines[at_name..]
+                .iter()
+                .all(|l| l.chars().count() <= HELP_CHARS),
+            "{lines:?}"
+        );
+        assert!(lines.iter().any(|l| l.ends_with("#FF2E97)")), "{lines:?}");
+        // Another row's help doesn't list them.
+        assert!(!help(&app.select(0)).iter().any(|l| l == "Left out:"));
+        assert_eq!(wrap_line("a bb ccc", 4), ["a bb", "ccc"]);
+    }
+
     #[test]
     fn appearance_offers_the_themes_folder_after_the_built_ins() {
         let mut app = App::new(44_100, false);
@@ -6579,14 +6975,15 @@ mod tests {
             Some(Effect::Menu(m)) => m.rows[at].1.clone(),
             _ => panic!("{fx:?}"),
         };
-        for _ in 0..4 {
+        for _ in 0..6 {
             app.step_item(at, 1);
         }
-        // Past Spaceship: the theme file, by its own name, then the end.
+        // Past AbleTown: the theme file, by its own name, then the end.
         assert_eq!(value(&app.step_item(at, 1)), "Sunrise");
         assert_eq!(app.settings.theme, "sunrise.theme");
         assert_eq!(value(&app.step_item(at, 1)), "Sunrise");
         // Kept by its file name, and restored while the file is there.
+        app.help_button(0);
         let kept = app.app_settings();
         assert_eq!(kept.get_str("theme"), Some("sunrise.theme"));
         let mut next = App::new(44_100, false);

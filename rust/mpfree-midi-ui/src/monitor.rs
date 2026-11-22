@@ -1006,7 +1006,7 @@ impl MonitorSection {
     fn chip(cx: &mut PaintCx, r: Rect, text: &str, on: bool) {
         let t = cx.theme.clone();
         let (fill, ink) = if on {
-            (t.accent, t.on_accent)
+            (t.picked(), t.on_picked())
         } else {
             (t.surface, t.text_dim)
         };
@@ -1417,14 +1417,15 @@ impl IoSection for MonitorSection {
                     }
                     let on = now == self.now_view;
                     if on {
-                        cx.canvas.fill_round_rect(cr.inset(3), t.round(8), t.accent);
+                        cx.canvas
+                            .fill_round_rect(cr.inset(3), t.round(8), t.picked());
                     }
                     cx.text(
                         FontId::Bold,
                         t.size_small,
                         cr,
                         Align::Center,
-                        if on { t.on_accent } else { t.text_dim },
+                        if on { t.on_picked() } else { t.text_dim },
                         if now { "Now" } else { "List" },
                     );
                 }
