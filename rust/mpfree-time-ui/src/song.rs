@@ -58,11 +58,13 @@
 //! covers the top lanes, so the audio lanes under the MIDI ones stay in
 //! view; touches on it go to it alone.
 
+use crate::view::PlacementInfo;
 use crate::widgets::{rec_song_pill, REC_SONG_W};
 use mpfree_audiotracks::host::TakeWave;
 use mpfree_audiotracks::{frames_from, Input, Monitor, Region, TakeInfo};
 use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// The buttons along the bottom, left to right.
@@ -164,6 +166,153 @@ pub struct SongBlock {
     pub unique: bool,
 }
 
+/// The song's blocks as the Song view keeps them (Arrange refactor 2.4):
+/// in the arrangement's order (it derefs to them), shared by every copy of
+/// the view the screen makes to compare, and found by lane and time, so a
+/// frame draws and hit-tests only the blocks in view and an update that
+/// changes no block copies none, however long the song.
+///
+/// Equal when they are the same blocks: a copy compares in one step.
+#[derive(Clone, Debug, Default)]
+pub struct SongBlocks(Arc<BlockIndex>);
+
+#[derive(Debug, Default)]
+struct BlockIndex {
+    all: Vec<SongBlock>,
+    /// Places in `all`, by track and then start.
+    order: Vec<u32>,
+    /// Where track `t`'s blocks are in `order`: `lanes[t]..lanes[t + 1]`.
+    lanes: Vec<usize>,
+    /// For each place in `order`, the latest end of its track's blocks up
+    /// to it: with the starts in order, the blocks between two ticks are
+    /// two binary searches away, whether or not blocks overlap.
+    reach: Vec<Tick>,
+    /// The latest end of all (0 with none).
+    end: Tick,
+    /// The app's list they were made from ([`SongBlocks::of`]).
+    from: Option<Arc<[PlacementInfo]>>,
+}
+
+impl SongBlocks {
+    pub fn new(all: Vec<SongBlock>) -> SongBlocks {
+        SongBlocks::index(all, None)
+    }
+
+    /// The blocks of the app's placements, kept with them: see
+    /// [`SongBlocks::made_from`].
+    pub fn of(placements: &Arc<[PlacementInfo]>) -> SongBlocks {
+        let all = placements
+            .iter()
+            .enumerate()
+            .map(|(index, p)| SongBlock {
+                index,
+                track: p.track,
+                start: p.start,
+                length: p.length,
+                name: p.name.clone(),
+                unique: p.unique,
+            })
+            .collect();
+        SongBlocks::index(all, Some(placements.clone()))
+    }
+
+    /// They were made from `placements`, the same list (not an equal one):
+    /// one comparison, whatever the song's length.
+    pub fn made_from(&self, placements: &Arc<[PlacementInfo]>) -> bool {
+        self.0
+            .from
+            .as_ref()
+            .is_some_and(|f| Arc::ptr_eq(f, placements))
+    }
+
+    fn index(all: Vec<SongBlock>, from: Option<Arc<[PlacementInfo]>>) -> SongBlocks {
+        let lanes_n = all.iter().map(|b| b.track + 1).max().unwrap_or(0);
+        let mut order: Vec<u32> = (0..all.len() as u32).collect();
+        // The arrangement keeps its placements so: then this is one pass.
+        order.sort_by_key(|&i| (all[i as usize].track, all[i as usize].start));
+        let mut lanes = vec![0; lanes_n + 1];
+        for b in &all {
+            lanes[b.track + 1] += 1;
+        }
+        for t in 0..lanes_n {
+            lanes[t + 1] += lanes[t];
+        }
+        let mut reach = Vec::with_capacity(order.len());
+        for (k, &i) in order.iter().enumerate() {
+            let b = &all[i as usize];
+            let before = if k > 0 && all[order[k - 1] as usize].track == b.track {
+                reach[k - 1]
+            } else {
+                Tick::MIN
+            };
+            reach.push(before.max(b.start + b.length));
+        }
+        let end = all.iter().map(|b| b.start + b.length).max().unwrap_or(0);
+        SongBlocks(Arc::new(BlockIndex {
+            all,
+            order,
+            lanes,
+            reach,
+            end,
+            from,
+        }))
+    }
+
+    /// Placement `index` (its index in the arrangement).
+    pub fn get(&self, index: usize) -> Option<&SongBlock> {
+        let all = &self.0.all;
+        match all.get(index) {
+            Some(b) if b.index == index => Some(b),
+            _ => all.iter().find(|b| b.index == index),
+        }
+    }
+
+    /// Track `track`'s blocks that play some of `from..to`, by start.
+    pub fn between(
+        &self,
+        track: usize,
+        from: Tick,
+        to: Tick,
+    ) -> impl Iterator<Item = &SongBlock> + '_ {
+        let ix = &*self.0;
+        let run = match (ix.lanes.get(track), ix.lanes.get(track + 1)) {
+            (Some(&a), Some(&b)) => a..b,
+            _ => 0..0,
+        };
+        let (order, reach) = (&ix.order[run.clone()], &ix.reach[run]);
+        let first = reach.partition_point(|&e| e <= from);
+        let last = order.partition_point(|&i| ix.all[i as usize].start < to);
+        order[first..last.max(first)]
+            .iter()
+            .map(|&i| &ix.all[i as usize])
+            .filter(move |b| b.start + b.length > from)
+    }
+
+    /// Where the last block ends (0 with none).
+    pub fn end(&self) -> Tick {
+        self.0.end
+    }
+}
+
+impl std::ops::Deref for SongBlocks {
+    type Target = [SongBlock];
+    fn deref(&self) -> &[SongBlock] {
+        &self.0.all
+    }
+}
+
+impl From<Vec<SongBlock>> for SongBlocks {
+    fn from(all: Vec<SongBlock>) -> SongBlocks {
+        SongBlocks::new(all)
+    }
+}
+
+impl PartialEq for SongBlocks {
+    fn eq(&self, o: &SongBlocks) -> bool {
+        Arc::ptr_eq(&self.0, &o.0) || self.0.all == o.0.all
+    }
+}
+
 /// An audio region as the Song view shows it: see [`audio_blocks`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioBlock {
@@ -243,7 +392,7 @@ pub struct SongLanes {
     pub tracks: Vec<(String, Color)>,
     /// What each track plays, under its name; empty shows only the name.
     pub sounds: Vec<String>,
-    pub blocks: Vec<SongBlock>,
+    pub blocks: SongBlocks,
     pub markers: Vec<(Tick, String)>,
     /// Ticks a bar.
     pub bar: Tick,
@@ -385,7 +534,7 @@ impl Default for SongLanes {
             alert: false,
             tracks: Vec::new(),
             sounds: Vec::new(),
-            blocks: Vec::new(),
+            blocks: SongBlocks::default(),
             markers: Vec::new(),
             bar: 3840,
             first_bar: 0,
@@ -1122,7 +1271,34 @@ impl SongLanes {
 
     /// Placement `index` (its index in the arrangement).
     fn block(&self, index: usize) -> Option<&SongBlock> {
-        self.blocks.iter().find(|b| b.index == index)
+        self.blocks.get(index)
+    }
+
+    /// The song ticks the view shows: its first bar to past its last.
+    fn ticks_shown(&self) -> (Tick, Tick) {
+        let bar = self.bar.max(1);
+        (
+            self.first_bar * bar,
+            (self.first_bar + self.bars.max(1)) * bar,
+        )
+    }
+
+    /// The blocks in view, lane by lane, with where each is drawn (clipped
+    /// to the view): the only blocks a frame draws or hit-tests (Arrange
+    /// refactor 2.4), found by lane and time, so a long song costs no more
+    /// than a short one.
+    fn blocks_in_view<'a>(
+        &'a self,
+        g: &'a Geo,
+    ) -> impl Iterator<Item = (&'a SongBlock, Rect)> + 'a {
+        let (from, to) = self.ticks_shown();
+        let first = self.first(g);
+        let lanes = first..(first + self.shown(g)).min(self.tracks.len());
+        lanes.flat_map(move |k| {
+            self.blocks
+                .between(k, from, to)
+                .filter_map(move |b| Some((b, self.span_rect(g, k, b.start, b.start + b.length)?)))
+        })
     }
 
     /// Section `k`'s name on the ruler, where a finger picks it up, if it
@@ -1167,12 +1343,7 @@ impl SongLanes {
             return Some(m.0);
         }
         let last = self.markers.last()?.0;
-        let end = self
-            .blocks
-            .iter()
-            .map(|b| b.start + b.length)
-            .max()
-            .unwrap_or(0);
+        let end = self.blocks.end();
         let bar = self.bar.max(1);
         Some(last + ((end - last).max(1) + bar - 1) / bar * bar)
     }
@@ -1468,12 +1639,7 @@ impl SongLanes {
                     // Red where it would run into another block (the app
                     // refuses it and says so).
                     let end = start + b.length;
-                    let clash = self.blocks.iter().any(|o| {
-                        o.index != index
-                            && o.track == k
-                            && o.start < end
-                            && start < o.start + o.length
-                    });
+                    let clash = self.blocks.between(k, start, end).any(|o| o.index != index);
                     let ink = if clash { t.bad } else { t.accent };
                     cx.canvas.stroke_round_rect(l.inset(-2), 8, 3, ink);
                 }
@@ -1905,10 +2071,7 @@ impl Widget for SongLanes {
                 None => {}
             }
         }
-        for b in &self.blocks {
-            let Some(br) = self.block_rect(r, b) else {
-                continue;
-            };
+        for (b, br) in self.blocks_in_view(&g) {
             let color = self.tracks.get(b.track).map_or(t.accent, |c| c.1);
             cx.canvas.fill_round_rect(br, 6, t.raised.mix(color, 0.42));
             if b.unique {
@@ -2101,8 +2264,9 @@ impl Widget for SongLanes {
                 }
             }
         }
-        for b in &self.blocks {
-            if let Some(br) = self.block_rect(r, b).and_then(&shown) {
+        let g = self.geo(r);
+        for (b, br) in self.blocks_in_view(&g) {
+            if let Some(br) = shown(br) {
                 out.push(Target::tap("block", b.index, b.name.clone(), br));
             }
         }
@@ -2336,13 +2500,13 @@ impl Widget for SongLanes {
             self.grip = Some(Grip::new(Held::Section { k, dt }, x, y));
             return None;
         }
-        if let Some(b) = self
-            .blocks
-            .iter()
-            .find(|b| self.block_rect(r, b).is_some_and(|br| br.contains(x, y)))
-        {
-            let dt = self.tick_at(g.lanes, x) - b.start;
-            self.grip = Some(Grip::new(Held::Block { index: b.index, dt }, x, y));
+        let hit = self
+            .blocks_in_view(&g)
+            .find(|(_, br)| br.contains(x, y))
+            .map(|(b, _)| (b.index, b.start));
+        if let Some((index, start)) = hit {
+            let dt = self.tick_at(g.lanes, x) - start;
+            self.grip = Some(Grip::new(Held::Block { index, dt }, x, y));
             return None;
         }
         for (a, lane) in self.audio.iter().enumerate() {
@@ -2390,7 +2554,7 @@ mod tests {
                 ("Drums".into(), Color::rgb(0xE8A33D)),
                 ("Bass".into(), Color::rgb(0x6EA8FE)),
             ],
-            blocks: vec![
+            blocks: SongBlocks::new(vec![
                 SongBlock {
                     index: 0,
                     track: 0,
@@ -2407,7 +2571,7 @@ mod tests {
                     name: "Late".into(),
                     unique: true,
                 },
-            ],
+            ]),
             ..SongLanes::default()
         }
     }
@@ -2561,7 +2725,9 @@ mod tests {
             (4 * bar, "Verse".into()),
             (8 * bar, "Out".into()),
         ];
-        s.blocks[1].start = 10 * bar;
+        let mut all = s.blocks.to_vec();
+        all[1].start = 10 * bar;
+        s.blocks = all.into();
         let r = Rect::new(12, 140, 814, 534);
         let bar_px = (r.w - 28 - NAME_W) / 16;
         let m = s.marker_rect(r, 1).unwrap();
@@ -2858,7 +3024,8 @@ mod tests {
         // Its empty space and its value read-outs take the touch and ask
         // for nothing, even with a block under them.
         assert_eq!(tap(p.level[1]), None);
-        low.blocks.push(SongBlock {
+        let mut all = low.blocks.to_vec();
+        all.push(SongBlock {
             index: 2,
             track: 3,
             start: 0,
@@ -2866,6 +3033,7 @@ mod tests {
             name: "Under".into(),
             unique: false,
         });
+        low.blocks = all.into();
         let under = low.block_rect(r, &low.blocks[2].clone()).unwrap();
         assert!(lp.panel.contains(under.x + 3, under.y + 3));
         assert_eq!(low.touch(1, Touch::Down, under.x + 3, under.y + 3, r), None);
@@ -3138,6 +3306,136 @@ mod tests {
             .map(input_chip)
             .collect();
         assert_eq!(chips, ["L", "R", "L+R", "ST"]);
+    }
+
+    /// The longest song (`MAX_PLACEMENTS`, 4,096 blocks): 16 tracks of 256
+    /// four-bar blocks end to end, by track and then start, as the
+    /// arrangement keeps them.
+    fn longest_song() -> SongLanes {
+        let bar = 3840;
+        SongLanes {
+            tracks: (0..16)
+                .map(|k| (format!("T{k}"), Color::rgb(0xE8A33D)))
+                .collect(),
+            blocks: SongBlocks::new(
+                (0..4096)
+                    .map(|i| SongBlock {
+                        index: i,
+                        track: i / 256,
+                        start: (i % 256) as Tick * 4 * bar,
+                        length: 4 * bar,
+                        name: format!("Clip {}", i % 32),
+                        unique: false,
+                    })
+                    .collect(),
+            ),
+            ..SongLanes::default()
+        }
+    }
+
+    #[test]
+    fn only_the_blocks_in_view_are_drawn_and_hit_tested() {
+        // Arrange refactor 2.4: a frame finds the blocks in view by lane
+        // and time, and they are the ones every block's own rectangle
+        // says show.
+        let mut s = longest_song();
+        let r = Rect::new(12, 140, 1256, 600);
+        for (first_bar, first_lane) in [(0, 0), (37, 0), (1000, 5), (1020, 9), (5000, 0)] {
+            s.first_bar = first_bar;
+            s.first_lane = first_lane;
+            let every: Vec<(usize, Rect)> = s
+                .blocks
+                .iter()
+                .filter_map(|b| Some((b.index, s.block_rect(r, b)?)))
+                .collect();
+            let hit: Vec<(usize, Rect)> = s
+                .targets(r)
+                .iter()
+                .filter(|t| t.id == "block")
+                .map(|t| (t.index, t.rect))
+                .collect();
+            assert_eq!(hit, every, "from bar {first_bar}, lane {first_lane}");
+            let g = s.geo(r);
+            // Five four-bar blocks at most in sixteen bars of each lane shown.
+            assert!(hit.len() <= 5 * s.shown(&g), "{}", hit.len());
+            if first_bar < 1024 {
+                assert!(!hit.is_empty());
+                let (index, br) = hit[hit.len() / 2];
+                assert_eq!(s.touch(1, Touch::Down, br.x + 3, br.y + 3, r), None);
+                assert_eq!(
+                    s.touch(1, Touch::Up, br.x + 3, br.y + 3, r),
+                    Some(EventKind::Select(index))
+                );
+            } else {
+                assert!(hit.is_empty(), "past the song's end");
+            }
+        }
+        // The song's end, for the last section's edge, is the last block's.
+        s.markers = vec![(0, "All".into())];
+        assert_eq!(s.edge_tick(1), Some(1024 * 3840));
+        // It paints.
+        s.first_bar = 300;
+        let mut ui = mpfree_ui::Ui::new(
+            mpfree_ui::Theme::dark(),
+            mpfree_ui::Fonts::embedded(),
+            1280,
+            800,
+        );
+        ui.add("song", s);
+        ui.add_page("p", "song").unwrap();
+        ui.show("p").unwrap();
+        let mut c = mpfree_ui::SoftCanvas::new(1280, 800);
+        assert!(!ui.paint(&mut c).is_empty());
+    }
+
+    #[test]
+    fn blocks_between_two_ticks_are_found_by_lane_overlapping_or_not() {
+        // In any order and overlapping (the arrangement allows neither, but
+        // the index does not rely on it), against looking at every block.
+        let mut seed = 7u32;
+        let mut next = |n: u32| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) % n
+        };
+        let mut all: Vec<SongBlock> = (0..300)
+            .map(|i| SongBlock {
+                index: i,
+                track: next(4) as usize,
+                start: Tick::from(next(2000)),
+                length: Tick::from(1 + next(300)),
+                name: String::new(),
+                unique: false,
+            })
+            .collect();
+        // Shuffled, so a block is not where its index says.
+        for i in (1..all.len()).rev() {
+            all.swap(i, next(i as u32 + 1) as usize);
+        }
+        let blocks = SongBlocks::new(all.clone());
+        for _ in 0..500 {
+            let (track, from) = (next(5) as usize, Tick::from(next(2400)) - 100);
+            let to = from + Tick::from(next(400));
+            let mut want: Vec<usize> = all
+                .iter()
+                .filter(|b| b.track == track && b.start < to && from < b.start + b.length)
+                .map(|b| b.index)
+                .collect();
+            let mut got: Vec<usize> = blocks.between(track, from, to).map(|b| b.index).collect();
+            want.sort_unstable();
+            got.sort_unstable();
+            assert_eq!(got, want, "track {track}, {from}..{to}");
+        }
+        for b in &all {
+            assert_eq!(blocks.get(b.index), Some(b));
+        }
+        assert_eq!(blocks.get(300), None);
+        let end = all.iter().map(|b| b.start + b.length).max();
+        assert_eq!(Some(blocks.end()), end);
+        assert_eq!(SongBlocks::default().end(), 0);
+        assert_eq!(SongBlocks::default().between(0, 0, 100).count(), 0);
+        // Equal by content, and a copy in one step.
+        assert_eq!(blocks, SongBlocks::new(all));
+        assert_ne!(blocks, SongBlocks::default());
     }
 
     #[test]

@@ -36,7 +36,7 @@ use crate::list::{
     LIST_TO_SONG, SCENE_STEP,
 };
 use crate::song::{
-    AudioLane, SongBlock, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, BARS_BACK, BARS_ON, INPUTS,
+    AudioLane, SongBlocks, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, BARS_BACK, BARS_ON, INPUTS,
     MONITORS, NONE, PANEL, PANEL_CLOSE, PANEL_INPUT, PANEL_MONITOR, PANEL_MUTE, PANEL_SOLO,
     PANEL_TAKES, REC, REGION_SLOTS, SECTION_TAP, TEMPO_ROW,
 };
@@ -62,6 +62,7 @@ use mpfree_transport::{Command, State, Transport};
 use mpfree_ui::qlink::QLinkColumn;
 use mpfree_ui::widgets::{Chip, OptionButton, OptionList, OptionRow};
 use mpfree_ui::{Color, EventKind, Tone, Ui, UiEvent};
+use std::sync::Arc;
 
 /// Widget names the page adds. The app's own are `header` and `hint`.
 pub const TRANSPORT: &str = "transport";
@@ -727,8 +728,11 @@ pub struct TimeState {
     /// The scene playing's follow action, for Perform's NEXT (S4). The
     /// app sets it.
     pub follow_next: Option<FollowNext>,
-    /// The arrangement's placements and markers.
-    pub placements: Vec<PlacementInfo>,
+    /// The arrangement's placements and markers. The placements are
+    /// shared: the screen keeps the same list from one transport update to
+    /// the next, so the Song view knows its blocks are the same without
+    /// comparing them (Arrange refactor 2.4).
+    pub placements: Arc<[PlacementInfo]>,
     pub markers: Vec<(Tick, String)>,
     /// The placement selected on the Song view. The app sets it.
     pub selected: Option<usize>,
@@ -949,7 +953,8 @@ impl TimeState {
                     // deleted clip the song still plays).
                     unique: project.arrangement.clips.get(p.clip).is_some(),
                 })
-                .collect(),
+                .collect::<Vec<_>>()
+                .into(),
             markers: project
                 .arrangement
                 .markers
@@ -3911,9 +3916,17 @@ pub fn min_sec(seconds: f64) -> String {
 /// waveforms are left out: [`TimePage::update`] copies `st.waves` only
 /// when they change, as they can be large.
 pub fn song_lanes(st: &TimeState, first_bar: i64) -> SongLanes {
+    song_lanes_with(st, first_bar, None)
+}
+
+/// [`song_lanes`], with `blocks` for the blocks when they were made from
+/// `st.placements` ([`SongBlocks::made_from`]), so an update that changes
+/// no block copies none (Arrange refactor 2.4).
+fn song_lanes_with(st: &TimeState, first_bar: i64, blocks: Option<SongBlocks>) -> SongLanes {
     let t = &st.transport;
     let bar = t.meter.bar_ticks();
-    let placed = st.placements.iter().map(|p| p.start + p.length);
+    let blocks = blocks.unwrap_or_else(|| SongBlocks::of(&st.placements));
+    let placed = std::iter::once(blocks.end());
     let audio = st
         .audio
         .iter()
@@ -3943,19 +3956,7 @@ pub fn song_lanes(st: &TimeState, first_bar: i64) -> SongLanes {
             .map(|(i, tr)| (tr.name.clone(), track_color(i)))
             .collect(),
         sounds: st.tracks.iter().map(|tr| tr.sound.clone()).collect(),
-        blocks: st
-            .placements
-            .iter()
-            .enumerate()
-            .map(|(index, p)| SongBlock {
-                index,
-                track: p.track,
-                start: p.start,
-                length: p.length,
-                name: p.name.clone(),
-                unique: p.unique,
-            })
-            .collect(),
+        blocks,
         markers: st.markers.clone(),
         bar,
         first_bar,
@@ -4351,7 +4352,16 @@ impl TimePage {
                 l.can_add = can_add;
             }
         }
-        let mut lanes = song_lanes(st, self.first_bar);
+        // The blocks shown, while the placements are the same list: a frame
+        // that only moves the playhead or scrolls copies and compares no
+        // block (Arrange refactor 2.4).
+        let blocks = ui
+            .get::<SongLanes>(SONG)
+            .map(|l| &l.blocks)
+            .filter(|b| b.made_from(&st.placements))
+            .cloned();
+        let kept = blocks.is_some();
+        let mut lanes = song_lanes_with(st, self.first_bar, blocks);
         let (same, same_waves) = ui.get::<SongLanes>(SONG).map_or((true, true), |l| {
             let waves = crate::song::same_waves(&l.waves, &st.waves);
             lanes.keep_scroll(l);
@@ -4365,6 +4375,13 @@ impl TimePage {
                 let waves = std::mem::take(&mut l.waves);
                 *l = lanes;
                 l.waves = if same_waves { waves } else { st.waves.clone() };
+            }
+        } else if !kept {
+            // The same blocks in a new list (a new state from the engine):
+            // kept as made from it, so the next frames know them in one
+            // step. Nothing drawn changes.
+            if let Some(l) = ui.get_mut_quiet::<SongLanes>(SONG) {
+                l.blocks = lanes.blocks;
             }
         }
         let m = st.morph;
@@ -4467,7 +4484,7 @@ mod tests {
     use super::*;
     use mpfree_seq::{Clip, Note, Track};
     use mpfree_ui::widgets::{Header, Label};
-    use mpfree_ui::{Align, Fonts, Theme};
+    use mpfree_ui::{Align, Fonts, SoftCanvas, Theme};
 
     const BAR: Tick = 3840;
 
@@ -5025,6 +5042,68 @@ mod tests {
     }
 
     #[test]
+    fn a_frame_that_moves_the_playhead_or_scrolls_copies_no_block() {
+        // Arrange refactor 2.4: while the placements are the same list, the
+        // Song view keeps its blocks, so a long song costs a frame no more
+        // than a short one; new placements are new blocks.
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Clips"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = state();
+        st.song_view = true;
+        let place = |n: usize| -> Arc<[PlacementInfo]> {
+            (0..n)
+                .map(|k| PlacementInfo {
+                    track: k % 3,
+                    start: (k / 3) as Tick * BAR,
+                    length: BAR,
+                    name: format!("Clip {k}"),
+                    unique: false,
+                })
+                .collect::<Vec<_>>()
+                .into()
+        };
+        st.placements = place(4096);
+        page.update(&mut ui, &st);
+        let blocks = |ui: &Ui| ui.get::<SongLanes>(SONG).unwrap().blocks.as_ptr();
+        let first = blocks(&ui);
+        for k in 0..4 {
+            st.transport.position += 960;
+            page.update(&mut ui, &st);
+            page.scroll(&ui, k);
+            page.update(&mut ui, &st);
+            let l = ui.get::<SongLanes>(SONG).unwrap();
+            assert_eq!(l.first_bar, (0..=k).sum::<i32>() as i64);
+            assert_eq!(l.playhead, Some(st.transport.position));
+            assert!(
+                std::ptr::eq(blocks(&ui), first),
+                "frame {k} copied the blocks"
+            );
+        }
+        // An equal list from the engine (a new state) is copied once, with
+        // nothing to draw, and the frames after it copy nothing.
+        let mut c = SoftCanvas::new(1280, 800);
+        ui.paint(&mut c);
+        st.placements = place(4096);
+        page.update(&mut ui, &st);
+        assert!(ui.paint(&mut c).is_empty(), "nothing changed on the screen");
+        let second = blocks(&ui);
+        assert!(!std::ptr::eq(second, first));
+        st.transport.position += 960;
+        page.update(&mut ui, &st);
+        page.update(&mut ui, &st);
+        assert!(std::ptr::eq(blocks(&ui), second));
+        // A changed one shows.
+        st.placements = place(5);
+        page.update(&mut ui, &st);
+        let l = ui.get::<SongLanes>(SONG).unwrap();
+        assert_eq!(l.blocks.len(), 5);
+        assert_eq!(l.blocks.get(4).map(|b| b.name.as_str()), Some("Clip 4"));
+    }
+
+    #[test]
     fn the_song_view_swaps_in_for_the_grid_and_its_buttons_act() {
         let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
         ui.add("header", Header::new(&["Play", "Clips"]));
@@ -5037,13 +5116,14 @@ mod tests {
             Some(TimeAction::SongView(true))
         );
         st.song_view = true;
-        st.placements.push(PlacementInfo {
+        st.placements = vec![PlacementInfo {
             track: 0,
             start: 3840,
             length: 7680,
             name: "Boom".into(),
             unique: false,
-        });
+        }]
+        .into();
         page.update(&mut ui, &st);
         assert!(ui.rect_of(SONG).is_some() && ui.rect_of(CLIPS).is_none());
         let lanes = ui.get::<SongLanes>(SONG).unwrap();

@@ -29,7 +29,7 @@ use mpfree_seq::TouchPoint;
 
 use crate::player::{Erased, ErasedLock};
 use crate::record::{Taken, TakenLock, TakenMove, MOVE_POINTS, TOUCH_POINTS};
-use crate::view::PlayView;
+use crate::view::{PlayView, Started};
 
 /// Recorded changes [`Recent`] keeps.
 pub const RECENT: usize = 1024;
@@ -80,16 +80,30 @@ impl Rec {
 }
 
 /// What a view includes, for a host that compiles it on another thread:
-/// the recorded changes made to the project before it compiled, and the
-/// cues started on each track that it shows as launches. Unset, a view
-/// follows the old rule (a started cue shows once the view's cue is gone),
-/// which suits a host that compiles in the same period.
+/// the recorded changes made to the project before it compiled, the cues
+/// started on each track that it shows as launches, and when and in which
+/// revision its cues were decided (the timing contract, Arrange 2.5).
+/// Unset, a view follows the old rule (a started cue shows once the view's
+/// cue is gone), which suits a host that compiles in the same period.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Includes {
     /// The number of the last [`Rec`] made to the project (0: none).
     pub recorded: u64,
     /// Cues started on each track and applied (`Started::apply`).
     pub switches: [u32; mpfree_seq::MAX_TRACKS],
+    /// The absolute frame the music had reached, as far as the host knew,
+    /// when it decided each track's cue and scene program change (0: not
+    /// said). A cue whose line the playhead played since then is late: it
+    /// starts at once, in phase with that line, and is counted.
+    pub decided: [u64; mpfree_seq::MAX_TRACKS],
+    /// The same for the mute queue's cues, which land together.
+    pub mutes_decided: u64,
+    /// The revision of each track's cue (0: not said): it rises with every
+    /// new decision for the track (a launch, a stop, a scene). A cue the
+    /// player carried out is not carried out again, a newer one takes the
+    /// place of one carried out that the view does not show yet, and an
+    /// older one is dropped and counted.
+    pub cues: [u32; mpfree_seq::MAX_TRACKS],
 }
 
 impl Default for Includes {
@@ -97,7 +111,95 @@ impl Default for Includes {
         Includes {
             recorded: 0,
             switches: [0; mpfree_seq::MAX_TRACKS],
+            decided: [0; mpfree_seq::MAX_TRACKS],
+            mutes_decided: 0,
+            cues: [0; mpfree_seq::MAX_TRACKS],
         }
+    }
+}
+
+/// The host's side of the timing contract (Arrange 2.5): each new
+/// decision on a track gets a revision, rising across the tracks, and the
+/// frame the host had heard when it made it, written into the views it
+/// compiles ([`Includes::cues`], [`Includes::decided`]). A track's cue or
+/// scene program change that differs from the last view's is a new
+/// decision, and so is a cue the player carried out ([`Started::rev`])
+/// that the host makes again. The mute queue's frame is the one the host
+/// had heard when the queue began ([`Includes::mutes_decided`]), so its
+/// cues land together.
+#[derive(Clone, Debug)]
+pub struct Decisions {
+    /// The last revision given (0: none yet).
+    rev: u32,
+    /// The newest revision the player carried out on each track.
+    done: [u32; mpfree_seq::MAX_TRACKS],
+    /// Each track's cue and scene program change in the last view.
+    seen: [Decision; mpfree_seq::MAX_TRACKS],
+    /// The mute queue in the last view.
+    mutes: Option<u32>,
+}
+
+/// What a track's cue lands as: its clip, mute, line and legato, and its
+/// scene program change.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Decision {
+    cue: Option<(Option<usize>, Option<bool>, mpfree_seq::LaunchGrid, bool)>,
+    program: Option<u32>,
+}
+
+impl Default for Decisions {
+    fn default() -> Decisions {
+        Decisions {
+            rev: 0,
+            done: [0; mpfree_seq::MAX_TRACKS],
+            seen: [Decision::default(); mpfree_seq::MAX_TRACKS],
+            mutes: None,
+        }
+    }
+}
+
+impl Decisions {
+    /// A cue the player carried out: call it for each [`Started`].
+    pub fn started(&mut self, st: &Started) {
+        if let Some(d) = self.done.get_mut(st.track) {
+            *d = (*d).max(st.rev);
+        }
+    }
+
+    /// Stamp a freshly compiled `view` with the revision and frame of each
+    /// new decision in it, having heard the music up to absolute frame
+    /// `heard` (0 says nothing): `includes`, which the host keeps for its
+    /// views, takes them, and the view takes `includes`.
+    pub fn stamp(&mut self, view: &mut PlayView, heard: u64, includes: &mut Includes) {
+        for (t, seen) in self.seen.iter_mut().enumerate() {
+            let now = view
+                .tracks
+                .get(t)
+                .map_or(Decision::default(), |tv| Decision {
+                    cue: tv.cue.as_ref().map(|c| (c.slot, c.mute, c.line, c.legato)),
+                    program: tv.scene_program.map(|p| p.id),
+                });
+            let rev = includes.cues[t];
+            let again = now.cue.is_some() && rev != 0 && rev <= self.done[t];
+            if now == *seen && !again {
+                continue;
+            }
+            *seen = now;
+            if now != Decision::default() {
+                // About 4 billion decisions: never in practice.
+                self.rev = self.rev.saturating_add(1);
+                includes.cues[t] = self.rev;
+                includes.decided[t] = heard;
+            }
+        }
+        let mutes = view.tracks.iter().find_map(|t| t.mute_cue.map(|m| m.id));
+        if mutes != self.mutes {
+            self.mutes = mutes;
+            if mutes.is_some() {
+                includes.mutes_decided = heard;
+            }
+        }
+        view.set_includes(*includes);
     }
 }
 
