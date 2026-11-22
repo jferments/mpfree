@@ -523,6 +523,8 @@ pub const TINT: f32 = 0.18;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Paint {
     Key(ColorKey),
+    /// A theme colour see-through: its own alpha times `.1` / 255.
+    Alpha(ColorKey, u8),
     /// `.0` mixed `.2` % of the way to `.1`, both the theme's.
     Mix(ColorKey, ColorKey, u8),
     Content(Color),
@@ -530,13 +532,59 @@ pub enum Paint {
 }
 
 impl Paint {
+    /// The core colours, for panels that build what they draw before they
+    /// know the theme.
+    pub const BG: Paint = Paint::Key(ColorKey::Bg);
+    pub const SURFACE: Paint = Paint::Key(ColorKey::Surface);
+    pub const RAISED: Paint = Paint::Key(ColorKey::Raised);
+    pub const OUTLINE: Paint = Paint::Key(ColorKey::Outline);
+    pub const TEXT: Paint = Paint::Key(ColorKey::Text);
+    pub const TEXT_DIM: Paint = Paint::Key(ColorKey::TextDim);
+    pub const TEXT_FAINT: Paint = Paint::Key(ColorKey::TextFaint);
+    pub const ACCENT: Paint = Paint::Key(ColorKey::Accent);
+    pub const ACCENT2: Paint = Paint::Key(ColorKey::Accent2);
+    pub const ON_ACCENT: Paint = Paint::Key(ColorKey::OnAccent);
+    pub const GOOD: Paint = Paint::Key(ColorKey::Good);
+    pub const WARN: Paint = Paint::Key(ColorKey::Warn);
+    pub const BAD: Paint = Paint::Key(ColorKey::Bad);
+
+    /// Track colour `i` (0 to 7).
+    pub const fn track(i: usize) -> Paint {
+        Paint::Key(ColorKey::Track((i % 8) as u8))
+    }
+
     /// The colour on `t`.
     pub fn on(self, t: &Theme) -> Color {
         match self {
             Paint::Key(k) => t.color(k),
+            Paint::Alpha(k, a) => {
+                let c = t.color(k);
+                c.with_alpha((c.a as u32 * a as u32 / 255) as u8)
+            }
             Paint::Mix(a, b, pct) => t.color(a).mix(t.color(b), pct as f32 / 100.0),
             Paint::Content(c) => t.content(c),
             Paint::Literal(c) => c,
+        }
+    }
+
+    /// The same colour drawn at alpha `a` (a theme colour's own alpha is
+    /// kept and multiplied by it). A mix stays opaque.
+    pub const fn with_alpha(self, a: u8) -> Paint {
+        match self {
+            Paint::Key(k) | Paint::Alpha(k, _) => Paint::Alpha(k, a),
+            Paint::Content(c) => Paint::Content(c.with_alpha(a)),
+            Paint::Literal(c) => Paint::Literal(c.with_alpha(a)),
+            Paint::Mix(..) => self,
+        }
+    }
+
+    /// The theme colour it names and the alpha it is drawn at, for a
+    /// theme colour plain or see-through.
+    pub const fn key(self) -> Option<(ColorKey, u8)> {
+        match self {
+            Paint::Key(k) => Some((k, 255)),
+            Paint::Alpha(k, a) => Some((k, a)),
+            _ => None,
         }
     }
 }
@@ -660,6 +708,20 @@ impl Theme {
         } else {
             a
         }
+    }
+
+    /// `ink` half see-through, for the text of a control that does nothing
+    /// as set, but never under 3:1 on `fill` (the floor for readable text):
+    /// where half would read less, it is drawn just solid enough. Text a
+    /// dark theme fades to half still reads there, so it comes back half.
+    pub fn faded(&self, ink: Color, fill: Color) -> Color {
+        let fill = over(fill, self.panel());
+        let reads = |a: u8| contrast(over(ink.with_alpha(a), fill), fill) >= 3.0;
+        let mut a = ink.a / 2;
+        while a < ink.a && !reads(a) {
+            a = a.saturating_add(4).min(ink.a);
+        }
+        ink.with_alpha(a)
     }
 
     /// `ink` for text on `fill`, moved just far enough towards the theme's
@@ -836,6 +898,22 @@ mod tests {
         let light = Theme::parse("bg = #E4E7EB\nsurface = #F4F5F7\ntext = #161A21").unwrap();
         let fixed = light.readable(blue, light.surface);
         assert!(contrast(fixed, light.surface) >= 4.5, "{fixed:?}");
+    }
+
+    #[test]
+    fn faded_text_is_half_but_never_under_three_to_one() {
+        let t = Theme::dark();
+        let ink = t.text_dim.mix(t.text, 0.3);
+        assert_eq!(t.faded(ink, t.surface), ink.with_alpha(127));
+        // Half of a dark ink on a light panel reads under 3:1: it is drawn
+        // more solid, just enough.
+        let light = Theme::parse("bg = #E4E7EB\nsurface = #F4F5F7\ntext = #161A21").unwrap();
+        let ink = light.text_dim.mix(light.text, 0.3);
+        let f = light.faded(ink, light.surface);
+        assert!(f.a > 127 && f.a < 255, "{f:?}");
+        let on = over(f, light.surface);
+        assert!(contrast(on, light.surface) >= 3.0);
+        assert!(contrast(over(f.with_alpha(f.a - 4), light.surface), light.surface) < 3.0);
     }
 
     #[test]

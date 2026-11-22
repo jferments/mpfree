@@ -27,10 +27,12 @@
 
 use crate::draw::Mask;
 use crate::sections::{Job, Tier};
-use crate::widgets::{knob, node_rect, paint_plot, themed, Card, QLINK_COLORS};
+use crate::widgets::{knob, node_rect, paint_plot, Card};
 use mpfree_ui::layout;
 use mpfree_ui::text::FontId;
-use mpfree_ui::{Align, Color, EventKind, PaintCx, Rect, Target, Theme, Touch, Widget};
+use mpfree_ui::{
+    Align, Color, ColorKey, EventKind, Paint, PaintCx, Rect, Target, Theme, Touch, Widget,
+};
 
 /// What a control is drawn as.
 #[derive(Clone, Debug, PartialEq)]
@@ -69,7 +71,7 @@ pub struct Control {
     pub dim: bool,
     /// A fill of its own over the job's (a drawbar's family), written as
     /// the default theme's colour.
-    pub tint: Option<Color>,
+    pub tint: Option<Paint>,
 }
 
 /// One section as the panel fills it in.
@@ -926,15 +928,20 @@ fn fade(c: Color, dim: bool) -> Color {
 
 /// A drawing's colours in a section: the Q-Link colours become shades of
 /// the section's own, so a page shows Q-Link colours only on its badges.
-fn shade(t: &Theme, job: Color, c: Color) -> Color {
-    let same = |a: Color| (a.r, a.g, a.b) == (c.r, c.g, c.b);
-    match QLINK_COLORS.iter().position(|&q| same(q)) {
-        Some(0) => job.with_alpha(c.a),
-        Some(1) => job.mix(t.text, 0.55).with_alpha(c.a),
-        Some(2) => job.mix(t.text, 0.3).with_alpha(c.a),
-        Some(_) => job.mix(t.bg, 0.35).with_alpha(c.a),
-        None => themed(t, c),
-    }
+/// An effect's drawing in the accent, good, warn and second accent colours
+/// (the default theme's Q-Link colours 1 to 4) is shaded the same way.
+fn shade(t: &Theme, job: Color, c: Paint) -> Color {
+    let Some((key, alpha)) = c.key() else {
+        return c.on(t);
+    };
+    let shade = match key {
+        ColorKey::Track(0) | ColorKey::Accent => job,
+        ColorKey::Track(1) | ColorKey::Good => job.mix(t.text, 0.55),
+        ColorKey::Track(2) | ColorKey::Warn => job.mix(t.text, 0.3),
+        ColorKey::Track(3) | ColorKey::Accent2 => job.mix(t.bg, 0.35),
+        _ => return c.on(t),
+    };
+    shade.with_alpha((t.color(key).a as u32 * alpha as u32 / 255) as u8)
 }
 
 impl Widget for SectionView {
@@ -1324,7 +1331,7 @@ fn paint_section(
         }
         let d = pill.h - 6;
         let kx = if on { pill.right() - 3 - d } else { pill.x + 3 };
-        let knob_c = if on { t.on_accent } else { t.text_dim };
+        let knob_c = if on { t.ink_on(pal.job) } else { t.text_dim };
         cx.canvas
             .fill_round_rect(Rect::new(kx, pill.y + 3, d, d), d / 2, knob_c);
     }
@@ -1332,7 +1339,7 @@ fn paint_section(
         let job = pal.job;
         let tt = t.clone();
         for (card, w) in s.cards.iter().zip(wells(d, s.cards.len())) {
-            cx.canvas.fill_round_rect(w, 10, pal.well);
+            cx.canvas.fill_round_rect(w, t.round(10), pal.well);
             paint_plot(cx, plot_rect(w), card, &|c| shade(&tt, job, c));
         }
     }
@@ -1351,7 +1358,7 @@ fn paint_section(
         if selected == Some(c.index) {
             cx.canvas.stroke_round_rect(
                 cg.cell.inset(-4),
-                10,
+                t.round(10),
                 if editing { 3 } else { 2 },
                 t.accent,
             );
@@ -1365,7 +1372,7 @@ fn paint_section(
 fn badge(cx: &mut PaintCx, t: &Theme, q: usize, right: i32, y: i32) {
     let b = Rect::new(right - 28, y, 28, 18);
     let fill = t.qlink(q);
-    cx.canvas.fill_round_rect(b, 6, fill);
+    cx.canvas.fill_round_rect(b, t.round(6), fill);
     cx.text(
         FontId::Bold,
         12.0,
@@ -1429,8 +1436,16 @@ fn paint_control(
     section: &str,
 ) {
     let dim = c.dim;
-    let fill = fade(c.tint.map_or(pal.fill, |k| themed(t, k)), dim);
-    let label_c = fade(t.text_dim.mix(t.text, 0.3), dim);
+    let fill = fade(c.tint.map_or(pal.fill, |k| k.on(t)), dim);
+    // Text on `fill`: measured on the fill as drawn over the section's
+    // tint (a faded fill is see-through).
+    let on_fill = t.ink_on(mpfree_ui::roles::over(fill, pal.tint));
+    let label_c = t.text_dim.mix(t.text, 0.3);
+    let label_c = if dim {
+        t.faded(label_c, pal.tint)
+    } else {
+        label_c
+    };
     let raised = t.raised.mix(pal.job, 0.08);
     let align = if g.inline { Align::Left } else { Align::Center };
     match &c.kind {
@@ -1478,7 +1493,7 @@ fn paint_control(
                 g.inline,
             );
             for (k, p) in g.parts.iter().enumerate().take(2) {
-                cx.canvas.fill_round_rect(*p, 8, fade(raised, dim));
+                cx.canvas.fill_round_rect(*p, t.round(8), fade(raised, dim));
                 cx.text(
                     FontId::Bold,
                     t.size_title,
@@ -1528,13 +1543,13 @@ fn paint_control(
             let r = g.cell;
             let bg = if *on { fill } else { fade(raised, dim) };
             cx.canvas.fill_round_rect(r, r.h / 2, bg);
-            let text_c = if *on { t.on_accent } else { fade(t.text, dim) };
+            let text_c = if *on { on_fill } else { fade(t.text, dim) };
             let dot = Rect::new(r.x + 14, r.y + r.h / 2 - 5, 10, 10);
             cx.canvas.fill_round_rect(
                 dot,
                 5,
                 if *on {
-                    t.on_accent
+                    on_fill
                 } else {
                     fade(t.text_faint, dim)
                 },
@@ -1564,7 +1579,7 @@ fn paint_control(
             }
             if g.chip {
                 for (k, p) in g.parts.iter().enumerate().take(2) {
-                    cx.canvas.fill_round_rect(*p, 8, fade(raised, dim));
+                    cx.canvas.fill_round_rect(*p, t.round(8), fade(raised, dim));
                     cx.text(
                         FontId::Bold,
                         t.size_title,
@@ -1576,7 +1591,7 @@ fn paint_control(
                 }
                 let mid = g.value;
                 cx.canvas
-                    .fill_round_rect(mid, 8, fade(t.bg.mix(pal.job, 0.08), dim));
+                    .fill_round_rect(mid, t.round(8), fade(t.bg.mix(pal.job, 0.08), dim));
                 cx.text(
                     FontId::Bold,
                     15.0,
@@ -1588,14 +1603,17 @@ fn paint_control(
             } else {
                 for (k, (p, name)) in g.parts.iter().zip(names).enumerate() {
                     let on = k == *index;
-                    cx.canvas
-                        .fill_round_rect(*p, 8, if on { fill } else { fade(raised, dim) });
+                    cx.canvas.fill_round_rect(
+                        *p,
+                        t.round(8),
+                        if on { fill } else { fade(raised, dim) },
+                    );
                     cx.text(
                         if on { FontId::Bold } else { FontId::Sans },
                         14.0,
                         *p,
                         Align::Center,
-                        if on { t.on_accent } else { fade(t.text, dim) },
+                        if on { on_fill } else { fade(t.text, dim) },
                         name,
                     );
                 }
@@ -1629,7 +1647,8 @@ fn paint_control(
             }
             let hw = (g.cell.w - 16).clamp(24, 40);
             let handle = Rect::new(tr.x + tr.w / 2 - hw / 2, at - 8, hw, 16);
-            cx.canvas.fill_round_rect(handle, 6, fade(t.text, dim));
+            cx.canvas
+                .fill_round_rect(handle, t.round(6), fade(t.text, dim));
             paint_value(cx, t, g.value, 15.0, &c.value, &c.unit, dim, false);
             if let Some(q) = c.qlink {
                 badge(cx, t, q, g.cell.right() - 2, tr.y - 4);
@@ -1646,20 +1665,13 @@ fn paint_control(
                 label_c,
                 &c.label,
             );
-            cx.canvas.fill_round_rect(tr, 6, fade(t.bg, dim));
+            cx.canvas.fill_round_rect(tr, t.round(6), fade(t.bg, dim));
             let len = (pos.clamp(0.0, 1.0) * tr.h as f32).round() as i32;
             let bar = Rect::new(tr.x + 3, tr.y, tr.w - 6, len.max(10));
             cx.canvas.fill_round_rect(bar, 5, fill);
             let knob_r = Rect::new(tr.x - 4, tr.y + len.max(10) - 4, tr.w + 8, 22);
-            cx.canvas.fill_round_rect(knob_r, 6, fill);
-            cx.text(
-                FontId::Bold,
-                13.0,
-                knob_r,
-                Align::Center,
-                t.on_accent,
-                &c.value,
-            );
+            cx.canvas.fill_round_rect(knob_r, t.round(6), fill);
+            cx.text(FontId::Bold, 13.0, knob_r, Align::Center, on_fill, &c.value);
             if let Some(q) = c.qlink {
                 badge(cx, t, q, g.cell.right() - 2, g.value.y);
             }
@@ -1796,8 +1808,8 @@ mod tests {
             x: 0.5,
             y: 0.5,
             label: label.into(),
-            fill: Color::rgb(0x202020),
-            text: Color::rgb(0xFFFFFF),
+            fill: mpfree_ui::Paint::RAISED,
+            text: mpfree_ui::Paint::TEXT,
             ring: None,
             dim: false,
             feedback: None,

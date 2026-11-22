@@ -37,7 +37,7 @@ use mpfree_synth_ui::widgets::{
     QCell, QLinkStrip, Tile, TileGrid, TileKind, TitleBar, QLINK_COLORS,
 };
 use mpfree_ui::text::FontId;
-use mpfree_ui::{Align, EventKind, PaintCx, Rect, Touch, Ui, UiEvent, Widget};
+use mpfree_ui::{Align, EventKind, Paint, PaintCx, Rect, Touch, Ui, UiEvent, Widget};
 
 pub const TITLE: &str = "perf-title";
 pub const PADS: &str = "perf-pads";
@@ -945,7 +945,6 @@ impl PerformPanel {
         }
         let ids = tile_ids(self.selected);
         let qids = self.qlink_ids();
-        let theme = ui.theme.clone();
         let fx_now = v(pf::slot(self.selected) + pf::EFFECT) as usize;
         if let Some(w) = ui.get_mut::<TileGrid>(TILES) {
             w.title = format!("Pad {}", self.selected + 1);
@@ -978,10 +977,10 @@ impl PerformPanel {
                         value,
                         unit: unit.to_string(),
                         color: match (q, &kind) {
-                            _ if locked => theme.warn,
+                            _ if locked => Paint::WARN,
                             (Some(q), _) => QLINK_COLORS[q],
-                            (None, TileKind::Knob { .. }) => theme.text_dim,
-                            (None, _) => theme.accent,
+                            (None, TileKind::Knob { .. }) => Paint::TEXT_DIM,
+                            (None, _) => Paint::ACCENT,
                         },
                         // A choice's arrows sit where the badge would.
                         qlink: q.filter(|_| !matches!(kind, TileKind::Choice { .. })),

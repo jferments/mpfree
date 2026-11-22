@@ -20,8 +20,6 @@ mpfree-mpcskin/src/view.rs 20 # plugin skin drawing, and MPFree's pop-ups over s
 mpfree-sampler-ui/src/sample.rs 3 # sample data for the preview screens
 mpfree-sampler-ui/src/widgets.rs 8 # content colours: the pads' palette (PAD_COLORS), shown through content() and swatch()
 mpfree-synth-ui/src/sample.rs 8 # sample data for the preview screens
-mpfree-synth-ui/src/sections.rs 5 # before theme roles (phase 0 baseline)
-mpfree-synth-ui/src/widgets.rs 8 # before theme roles (phase 0 baseline)
 mpfree-time-ui/src/editor.rs 1 # before theme roles (phase 0 baseline)
 mpfree-time-ui/src/view.rs 8 # before theme roles (phase 0 baseline)
 mpfree-ui/src/draw.rs 8 # content colours: the mockups' palette for kinds of sound and throws, shown through content() and swatch()

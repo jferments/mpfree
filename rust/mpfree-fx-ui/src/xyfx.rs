@@ -37,7 +37,7 @@ use mpfree_synth_ui::widgets::{
     QCell, QLinkStrip, Tile, TileGrid, TileKind, TitleBar, QLINK_COLORS,
 };
 use mpfree_ui::text::FontId;
-use mpfree_ui::{Align, EventKind, PaintCx, Rect, Target, Touch, Ui, UiEvent, Widget};
+use mpfree_ui::{Align, EventKind, Paint, PaintCx, Rect, Target, Touch, Ui, UiEvent, Widget};
 
 pub const TITLE: &str = "xyfx-title";
 pub const EFFECTS: &str = "xyfx-effects";
@@ -537,7 +537,6 @@ impl XyFxPanel {
             w.touched = touched;
             w.hold = hold;
         }
-        let theme = ui.theme.clone();
         let tiles: Vec<Tile> = TILE_IDS
             .iter()
             .filter_map(|&id| st.index(id))
@@ -567,10 +566,10 @@ impl XyFxPanel {
                     value,
                     unit: unit.to_string(),
                     color: match (q, &kind) {
-                        _ if locked => theme.warn,
+                        _ if locked => Paint::WARN,
                         (Some(q), _) => QLINK_COLORS[q],
-                        (None, TileKind::Knob { .. }) => theme.text_dim,
-                        (None, _) => theme.accent,
+                        (None, TileKind::Knob { .. }) => Paint::TEXT_DIM,
+                        (None, _) => Paint::ACCENT,
                     },
                     qlink: q.filter(|_| !matches!(kind, TileKind::Choice { .. })),
                     kind,
