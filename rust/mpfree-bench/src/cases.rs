@@ -41,6 +41,10 @@ use mpfree_track::{Instrument, Sum, TrackHost};
 use mpfree_transport::time::{Swing, PPQ};
 use mpfree_transport::{Block as TBlock, Command as T, Transport};
 
+use mpfree_stream::coord::{Coordinator, Inline, Plan as StreamPlan};
+use mpfree_stream::cursor::{Cursor as StreamCursor, Read};
+use mpfree_stream::player::{Config as StreamConfig, Player as StreamPlayer};
+
 use std::time::{Duration, Instant};
 
 pub type Block = Box<dyn FnMut(u64, &mut [f32], &mut [f32])>;
@@ -2107,6 +2111,11 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| audio_tracks(rate, 0, false)));
     v.push(measured(|| audio_tracks(rate, 2, false)));
     v.push(measured(|| audio_tracks(rate, 0, true)));
+    v.push(measured(|| stream_voices(rate, 64, Read::Hermite, 1.5)));
+    v.push(measured(|| stream_voices(rate, 64, Read::Sinc8, 1.5)));
+    v.push(measured(|| stream_voices(rate, 64, Read::Sinc8, 3.0)));
+    v.push(measured(|| stream_voices(rate, 64, Read::Sinc16, 1.5)));
+    v.push(measured(|| stream_voices(rate, 16, Read::Sinc8, 1.0)));
     v.push(measured(|| song(rate)));
     v
 }
@@ -5092,6 +5101,69 @@ fn beside(name: &str, rate: u32, lane: Option<LaneConfig>, wait: Duration) -> Ca
                     j.mix_into(l, r);
                 }
             }
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// `n` voices reading streamed sounds through `mpfree-stream`'s cursors at
+/// `speed`, with `read` (disk streaming's P3, step 3): what the sampler's
+/// streamed voices cost the sound thread, for its voice budget. Each
+/// voice reads its own source (sounds lent from memory, so the case
+/// counts the reads and not the disk), looping. At speed 1 from a whole
+/// frame a cursor copies: that is 16 stems at the engine's rate.
+fn stream_voices(rate: u32, n: usize, read: Read, speed: f64) -> Case {
+    let cfg = StreamConfig {
+        slots: 64,
+        ..StreamConfig::default()
+    };
+    let (mut p, rx, tx) = StreamPlayer::new(cfg);
+    let plan = StreamPlan {
+        rate,
+        ..StreamPlan::default()
+    };
+    let mut c = Coordinator::new(cfg, plan, rx, tx, Box::<Inline>::default());
+    c.new_project();
+    let frames = rate as usize * 4;
+    let data: std::sync::Arc<[f32]> = bench_sound(frames, false).into();
+    let mut voices: Vec<StreamCursor> = (0..n)
+        .map(|i| {
+            c.open_memory(i as u16, 2, data.clone()).expect("opens");
+            let mut k = StreamCursor::new(i as u16, i as u16);
+            k.set_read(read);
+            k.set_speed(speed);
+            k.set_loop(Some((1_000, frames as u64 - 1_000)));
+            k.seek(1_000 + i as u64 * 997);
+            k
+        })
+        .collect();
+    let mut out = vec![0.0f32; MAX_BLOCK * 2];
+    let read_name = match read {
+        Read::Hermite => "Hermite",
+        Read::Sinc8 => "band-limited",
+        Read::Sinc16 => "band-limited 16",
+    };
+    Case {
+        name: format!("Stream voices x{n} at {speed}x, {read_name}"),
+        module: "sampler",
+        what: "streamed voices read from the cache, looping",
+        block: Box::new(move |_, l, r| {
+            let frames = l.len();
+            p.begin();
+            l.fill(0.0);
+            r.fill(0.0);
+            for k in &mut voices {
+                let o = &mut out[..frames * 2];
+                k.play(&mut p, o);
+                for (j, f) in o.chunks_exact(2).enumerate() {
+                    l[j] += f[0];
+                    r[j] += f[1];
+                }
+            }
+            p.end(frames as u32);
+            // The coordinator is another thread's work: kept, not stepped
+            // (the notes the cursors post wait, or are counted as dropped).
+            let _ = &c;
         }),
         mem_bytes: 0,
     }

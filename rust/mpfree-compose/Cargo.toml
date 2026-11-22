@@ -1,0 +1,15 @@
+[package]
+name = "mpfree-compose"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The composer behind Continue, Add a part, Improvise and Answer: phrases of events with roles and sources, decisions kept apart from notes so a chord change re-fits instead of rewriting, stable dice, the timing contract, rule kinds, style components and instrument profiles; a pure library with no screen and no sound"
+
+[lib]
+name = "mpfree_compose"
+path = "src/lib.rs"
+
+[dependencies]
+mpfree-context = { path = "../mpfree-context" }
+mpfree-transport = { path = "../mpfree-transport" }
+mpfree-seq = { path = "../mpfree-seq" }

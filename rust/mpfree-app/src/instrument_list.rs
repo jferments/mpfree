@@ -21,6 +21,12 @@
 //!   part, which still names it by its track: a track has one at most, so
 //!   the list says which id is which track's ([`Kind::Own`]).
 //! - Step 2c gives tracks lasting ids.
+//! - **Step 6:** an instrument no track has, which the pads play (picked
+//!   in the list of synths), is in a free place (`instruments::FREE`):
+//!   it gets the next id when it goes into an empty place, keeps it while
+//!   the place holds an instrument, and loses it for good once taken out
+//!   ([`Kind::Free`], [`InstrumentList::follow_free`]). Its sound is in
+//!   the instruments part by its place.
 //!
 //! The list says what an instrument is, not how it sounds now or whether
 //! it is playing: the running engines are `synth::Synth` and the track
@@ -40,6 +46,9 @@ pub const FORMAT: &str = "mpfree-instrument-list 1";
 
 /// The tracks that can have their own instrument.
 pub const TRACKS: usize = crate::instruments::TRACKS;
+
+/// The free places (step 6).
+pub const FREE: usize = crate::instruments::FREE;
 
 // A bit for each track in `follow`.
 const _: () = assert!(TRACKS <= u128::BITS as usize);
@@ -74,6 +83,24 @@ pub enum Kind {
     /// block of the instruments part, and it sounds on the strip its slot
     /// feeds (`Instruments::strip`), the track's channel today.
     Own { track: usize },
+    /// The instrument in free place `place` (from 0): one no track has,
+    /// which the pads or tracks play by a send (step 6). Its sound is that
+    /// place's block of the instruments part, and it sounds on the place's
+    /// own strip (`mixing::free_channel`).
+    Free { place: usize },
+}
+
+impl Kind {
+    /// Its holder in the instrument host (`instruments::Instruments`): a
+    /// track, or a free place (`instruments::free`). None for the shared
+    /// synth, which the host doesn't hold.
+    pub fn holder(self) -> Option<usize> {
+        match self {
+            Kind::SharedSynth => None,
+            Kind::Own { track } => Some(track),
+            Kind::Free { place } => Some(crate::instruments::free(place)),
+        }
+    }
 }
 
 /// The project's instruments, each with its lasting id, and the number
@@ -82,6 +109,8 @@ pub enum Kind {
 pub struct InstrumentList {
     /// Track `t`'s own instrument's id (0: it has none).
     own: [u32; TRACKS],
+    /// Free place `n`'s instrument's id (0: it holds none).
+    free: [u32; FREE],
     /// The id the next instrument gets: past every id the project ever
     /// gave, so none is given twice.
     next: u32,
@@ -100,6 +129,7 @@ impl InstrumentList {
     pub fn new() -> InstrumentList {
         InstrumentList {
             own: [0; TRACKS],
+            free: [0; FREE],
             next: 2,
         }
     }
@@ -109,8 +139,28 @@ impl InstrumentList {
         if id == InstrumentId::SHARED_SYNTH {
             return Some(Kind::SharedSynth);
         }
-        let track = self.own.iter().position(|&o| o == id.0)?;
-        Some(Kind::Own { track })
+        if let Some(track) = self.own.iter().position(|&o| o == id.0) {
+            return Some(Kind::Own { track });
+        }
+        let place = self.free.iter().position(|&o| o == id.0)?;
+        Some(Kind::Free { place })
+    }
+
+    /// The id of the instrument in free place `place`, if it holds one.
+    pub fn free_of(&self, place: usize) -> Option<InstrumentId> {
+        self.free
+            .get(place)
+            .and_then(|&o| InstrumentId::from_number(o))
+    }
+
+    /// The id of the instrument holder `holder` has in the instrument
+    /// host: a track's own, or a free place's.
+    pub fn of_holder(&self, holder: usize) -> Option<InstrumentId> {
+        if holder < TRACKS {
+            self.own_of(holder)
+        } else {
+            self.free_of(holder - TRACKS)
+        }
     }
 
     /// The id of track `track`'s own instrument, if it has one.
@@ -144,6 +194,31 @@ impl InstrumentList {
         changed
     }
 
+    /// The free places that hold an instrument now (`held`, a bit each:
+    /// `Instruments::held_free`), as [`InstrumentList::follow`] does for
+    /// the tracks: a place that has just got one gives it the next id, one
+    /// whose instrument was taken out loses its id for good, and one that
+    /// still holds one keeps its id. True if any changed. Never
+    /// allocates.
+    pub fn follow_free(&mut self, held: u16) -> bool {
+        let mut changed = false;
+        for (n, o) in self.free.iter_mut().enumerate() {
+            match (held >> n & 1 == 1, *o) {
+                (true, 0) => {
+                    *o = self.next;
+                    self.next = self.next.saturating_add(1);
+                    changed = true;
+                }
+                (false, id) if id != 0 => {
+                    *o = 0;
+                    changed = true;
+                }
+                _ => {}
+            }
+        }
+        changed
+    }
+
     /// The list as its part's text, by id:
     ///
     /// ```text
@@ -152,9 +227,11 @@ impl InstrumentList {
     /// instrument 1 shared-synth
     /// instrument 2 own track 3
     /// instrument 3 own track 5
+    /// instrument 4 free 1
     /// ```
     ///
-    /// Tracks are numbered from 1, as the screen shows them.
+    /// Tracks and free places are numbered from 1, as the screen shows
+    /// them.
     pub fn text(&self) -> String {
         use std::fmt::Write as _;
         let mut s = format!(
@@ -162,13 +239,24 @@ impl InstrumentList {
             self.next,
             InstrumentId::SHARED_SYNTH
         );
-        let mut own: Vec<(u32, usize)> = (0..TRACKS)
+        // By id: (id, false, track) for a track's own, (id, true, place)
+        // for a free place's.
+        let mut all: Vec<(u32, bool, usize)> = (0..TRACKS)
             .filter(|&t| self.own[t] != 0)
-            .map(|t| (self.own[t], t))
+            .map(|t| (self.own[t], false, t))
+            .chain(
+                (0..FREE)
+                    .filter(|&n| self.free[n] != 0)
+                    .map(|n| (self.free[n], true, n)),
+            )
             .collect();
-        own.sort_unstable();
-        for (id, t) in own {
-            let _ = writeln!(s, "instrument {id} own track {}", t + 1);
+        all.sort_unstable();
+        for (id, free, at) in all {
+            if free {
+                let _ = writeln!(s, "instrument {id} free {}", at + 1);
+            } else {
+                let _ = writeln!(s, "instrument {id} own track {}", at + 1);
+            }
         }
         s
     }
@@ -214,6 +302,19 @@ impl InstrumentList {
                     }
                     _ => None,
                 },
+                ["instrument", n, "free", k] => {
+                    let place = k.parse::<usize>().ok().filter(|&k| (1..=FREE).contains(&k));
+                    match (id(n), place) {
+                        (Some(i), Some(k)) if i != InstrumentId::SHARED_SYNTH => {
+                            if list.free[k - 1] != 0 {
+                                return Err(format!("free place {k} holds two instruments"));
+                            }
+                            list.free[k - 1] = i.0;
+                            Some(i)
+                        }
+                        _ => None,
+                    }
+                }
                 _ => None,
             };
             let Some(id) = id else {
@@ -293,6 +394,48 @@ mod tests {
              instrument 3 own track 5\ninstrument 4 own track 3\ninstrument 5 own track 128\n"
         );
         assert_eq!(InstrumentList::parse(&l.text()), Ok(l));
+    }
+
+    /// Step 6: a free place's instrument gets the next id, keeps it while
+    /// the place holds one, and loses it for good once taken out, with
+    /// the tracks' own in one numbering; its text reads back.
+    #[test]
+    fn a_free_places_instrument_has_an_id_like_a_tracks_own() {
+        let mut l = InstrumentList::new();
+        assert!(!l.follow_free(0));
+        assert!(l.follow(1 << 3));
+        assert!(l.follow_free(1 << 1));
+        assert_eq!(l.free_of(1), Some(InstrumentId(3)));
+        assert_eq!(l.kind(InstrumentId(3)), Some(Kind::Free { place: 1 }));
+        assert_eq!(
+            Kind::Free { place: 1 }.holder(),
+            Some(crate::instruments::free(1))
+        );
+        assert_eq!(l.of_holder(crate::instruments::free(1)), l.free_of(1));
+        assert_eq!(l.of_holder(3), Some(InstrumentId(2)));
+        assert!(!l.follow_free(1 << 1), "the same places: nothing changes");
+        assert_eq!(
+            l.text(),
+            "mpfree-instrument-list 1\nnext 4\ninstrument 1 shared-synth\n\
+             instrument 2 own track 4\ninstrument 3 free 2\n"
+        );
+        assert_eq!(InstrumentList::parse(&l.text()), Ok(l.clone()));
+        assert!(l.follow_free(1 << 0), "place 2 emptied, place 1 filled");
+        assert_eq!((l.free_of(1), l.kind(InstrumentId(3))), (None, None));
+        assert_eq!(l.free_of(0), Some(InstrumentId(4)), "a new id");
+        let refused = |body: &str| InstrumentList::parse(&format!("{FORMAT}\n{body}")).unwrap_err();
+        let head = "next 9\ninstrument 1 shared-synth\n";
+        assert!(refused(&format!("{head}instrument 2 free 0\n")).contains("can't read"));
+        assert!(refused(&format!("{head}instrument 2 free 17\n")).contains("can't read"));
+        assert!(refused(&format!("{head}instrument 1 free 1\n")).contains("can't read"));
+        assert!(
+            refused(&format!("{head}instrument 2 free 1\ninstrument 3 free 1\n"))
+                .contains("two instruments")
+        );
+        assert!(refused(&format!(
+            "{head}instrument 2 free 1\ninstrument 2 own track 1\n"
+        ))
+        .contains("twice"));
     }
 
     /// The counter is kept: a list whose project once gave out higher ids
