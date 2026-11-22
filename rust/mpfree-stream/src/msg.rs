@@ -80,6 +80,10 @@ pub enum ToPlayer {
     },
     /// Slot `slot` goes free (the coordinator wants its room).
     Free { slot: u32 },
+    /// A file still being written now has `frames` frames (more than
+    /// before; the same generation). Units wholly below the old end stay;
+    /// the one cut short at the old end goes, to be filled again whole.
+    Grow { tag: Tag, frames: u64 },
 }
 
 /// Where a cursor plays and how it moves.

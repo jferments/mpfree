@@ -248,6 +248,34 @@ impl IoModel {
     pub fn profile_of(&self, port: mpfree_midi::PortId) -> Option<&Profile> {
         self.profile(self.monitor.own_name(port)?)
     }
+
+    /// The ports the project uses that aren't plugged in, by their own
+    /// names, each once, in order: a track's MIDI out, a track's input
+    /// route, the clock it follows, the Controller and Follow while on.
+    /// For System status ("Juno-X not plugged in").
+    pub fn missing_ports(&self) -> Vec<String> {
+        use mpfree_midi::setup::TempoSource;
+        let s = &self.setup;
+        let used = s
+            .tracks
+            .iter()
+            .flatten()
+            .map(|t| t.port.as_str())
+            .chain(s.routes.iter().map(|r| r.port.as_str()))
+            .chain(match &s.tempo {
+                TempoSource::Port(p) => Some(p.as_str()),
+                TempoSource::Internal => None,
+            })
+            .chain(s.controller.on.then_some(s.controller.port.as_str()))
+            .chain(s.follow.on.then_some(s.follow.port.as_str()));
+        let mut out: Vec<String> = Vec::new();
+        for p in used {
+            if !p.is_empty() && self.live.port(p).is_none() && !out.iter().any(|o| o == p) {
+                out.push(p.to_string());
+            }
+        }
+        out
+    }
 }
 
 /// What a section asks the app for (each is taken once).
@@ -398,6 +426,34 @@ pub const LIGHT: Duration = Duration::from_millis(250);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_ports_are_those_the_project_uses_and_isnt_plugged_into() {
+        use mpfree_midi::setup::{TempoSource, TrackOut};
+        let mut m = IoModel::default();
+        assert!(
+            m.missing_ports().is_empty(),
+            "the 5-pin jacks are always there"
+        );
+        let out = |port: &str| Some(TrackOut::new(port, 0));
+        m.setup.tracks[0] = out("Juno-X");
+        m.setup.tracks[1] = out(mpfree_midi::setup::DIN_NAME);
+        m.setup.tracks[2] = out("Juno-X");
+        m.setup.tempo = TempoSource::Port("Digitakt".into());
+        m.setup.controller.port = "Keystep 37".into();
+        assert_eq!(
+            m.missing_ports(),
+            ["Juno-X", "Digitakt"],
+            "each once; the Controller is off"
+        );
+        m.setup.controller.on = true;
+        assert_eq!(m.missing_ports(), ["Juno-X", "Digitakt", "Keystep 37"]);
+        m.live.ports.push(PortLive {
+            name: "Juno-X".into(),
+            ..m.live.ports[0].clone()
+        });
+        assert_eq!(m.missing_ports(), ["Digitakt", "Keystep 37"], "plugged in");
+    }
 
     #[test]
     fn the_part_saves_and_opens_and_keeps_what_it_cant_read() {

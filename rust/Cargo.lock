@@ -936,6 +936,7 @@ name = "mpfree-compose"
 version = "0.1.0"
 dependencies = [
  "mpfree-context",
+ "mpfree-play",
  "mpfree-seq",
  "mpfree-transport",
 ]
@@ -1384,6 +1385,9 @@ version = "0.1.0"
 name = "mpfree-stream"
 version = "0.1.0"
 dependencies = [
+ "libc",
+ "mpfree-flac",
+ "mpfree-status",
  "mpfree-stream",
  "sha2",
 ]

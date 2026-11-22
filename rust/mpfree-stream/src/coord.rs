@@ -53,6 +53,9 @@ use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use mpfree_flac::Decoder;
+
+use crate::flac::Index;
 use crate::format::{decode, layout, Layout};
 use crate::ledger::{Ledger, Pool};
 use crate::msg::{FromPlayer, Tag, ToPlayer, Where, MAX_SOURCES};
@@ -250,6 +253,9 @@ pub struct Stats {
     pub duplicates: u32,
     /// Reads and units dropped because the card they were for went.
     pub card_gone: u32,
+    /// FLAC units that couldn't be decoded: the index was stale, or the
+    /// file is damaged there. Their source stops ([`Coordinator::unplayable`]).
+    pub flac_failed: u32,
 }
 
 /// Whether what plays, what is held and what is reserved fits the cache.
@@ -321,6 +327,12 @@ enum Store {
         file: Arc<File>,
         layout: Layout,
     },
+    /// A FLAC file: its frames found through its index and decoded on the
+    /// coordinator's thread, never on the sound thread.
+    Flac {
+        file: Arc<File>,
+        index: Arc<Index>,
+    },
     /// Lent by the engine that holds it: its bytes, for the ledger.
     Memory {
         bytes: u64,
@@ -337,6 +349,9 @@ struct Src {
     card: Option<Card>,
     /// Its card went and that was reported ([`Coordinator::lost`]).
     reported: bool,
+    /// Why it can't be read any further, once it can't (a stale FLAC
+    /// index, a damaged FLAC file).
+    unplayable: Option<String>,
     /// Where each cursor playing it last played.
     cursors: Vec<Where>,
 }
@@ -351,9 +366,39 @@ struct Shape {
 }
 
 impl Src {
+    /// A WAV, RF64 or AIFF source's layout.
     fn layout(&self) -> Option<&Layout> {
         match &self.store {
             Store::File { layout, .. } => Some(layout),
+            Store::Flac { .. } | Store::Memory { .. } => None,
+        }
+    }
+
+    /// The file it reads, for a file source.
+    fn file(&self) -> Option<&Arc<File>> {
+        match &self.store {
+            Store::File { file, .. } | Store::Flac { file, .. } => Some(file),
+            Store::Memory { .. } => None,
+        }
+    }
+
+    /// The file's own channels and frames, for a file source.
+    fn native(&self) -> Option<(u16, u64)> {
+        match &self.store {
+            Store::File { layout, .. } => Some((layout.channels, layout.frames)),
+            Store::Flac { index, .. } => Some((u16::from(index.info.channels), index.frames)),
+            Store::Memory { .. } => None,
+        }
+    }
+
+    /// The bytes (`start..end`) holding the file's frames `a..b`.
+    fn bytes_of(&self, a: u64, b: u64) -> Option<(u64, u64)> {
+        match &self.store {
+            Store::File { layout, .. } => Some((layout.byte_of(a), layout.byte_of(b))),
+            Store::Flac { index, .. } => {
+                let (start, end, _) = index.span(a, b);
+                Some((start, end))
+            }
             Store::Memory { .. } => None,
         }
     }
@@ -363,11 +408,16 @@ impl Src {
         self.card.as_ref().is_some_and(|c| !c.valid())
     }
 
+    /// Nothing more is read for it: its card went, or it can't be read.
+    fn stopped(&self) -> bool {
+        self.lost() || self.unplayable.is_some()
+    }
+
     fn shape(&self) -> Option<Shape> {
-        let l = self.layout()?;
+        let (channels, frames) = self.native()?;
         Some(Shape {
-            channels: l.channels,
-            frames: self.rate.map_or(l.frames, |r| r.frames()),
+            channels,
+            frames: self.rate.map_or(frames, |r| r.frames()),
         })
     }
 
@@ -409,12 +459,23 @@ struct Job {
     busy: bool,
 }
 
+/// FLAC decoding's speed before any is measured, frames a second: about
+/// ten times real time at 44.1 kHz, a cautious guess for the MPC.
+const FLAC_FPS: f64 = 441_000.0;
+
 /// Why a read from the card failed when the card went.
 const CARD_GONE: &str = "the SD card was removed";
 
 /// What a read in flight is for.
 enum Kind {
-    Units { tag: Tag, first: u32, units: u32 },
+    Units {
+        tag: Tag,
+        first: u32,
+        units: u32,
+    },
+    /// Units read for a length that has since changed ([`Coordinator::grow`]):
+    /// whatever comes back is dropped.
+    Void,
     Job(u32),
 }
 
@@ -423,6 +484,9 @@ struct Flight {
     kind: Kind,
     cancel: Arc<AtomicBool>,
     bytes: usize,
+    /// Seconds decoding what it brings will take (FLAC), counted in its
+    /// deadline with the read.
+    decode_s: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -488,6 +552,10 @@ pub struct Coordinator {
     admission: Admission,
     /// Sources whose card went, not yet asked for.
     lost: VecDeque<Tag>,
+    /// Sources that can't be read any further, and why, not yet asked for.
+    unplayable: VecDeque<(Tag, String)>,
+    /// FLAC decoding's measured speed, frames a second.
+    flac_fps: f64,
     stats: Stats,
 }
 
@@ -544,6 +612,8 @@ impl Coordinator {
             gate: Arc::new(Gate::new()),
             admission: Admission::default(),
             lost: VecDeque::new(),
+            unplayable: VecDeque::new(),
+            flac_fps: FLAC_FPS,
             stats: Stats::default(),
         }
     }
@@ -603,7 +673,7 @@ impl Coordinator {
             .flatten()
             .map(|s| match s.store {
                 Store::Memory { bytes } => bytes,
-                Store::File { .. } => 0,
+                Store::File { .. } | Store::Flac { .. } => 0,
             })
             .sum();
         Ledger {
@@ -742,7 +812,129 @@ impl Coordinator {
     /// Make `source` the sound in the file at `path` (replacing what it
     /// was, under a new generation).
     pub fn open(&mut self, source: u16, path: &Path) -> Result<Tag, String> {
-        self.open_as(source, path, false, None)
+        self.open_as(source, path, false, None, None, None)
+    }
+
+    /// Make `source` the WAV or RF64 file at `path` that is still being
+    /// written (a take's `.recording` file), playing only its first
+    /// `frames` frames: what its writer has committed, never what the file
+    /// happens to hold now (a write in progress, or room set aside). Never
+    /// more than the file holds. It grows with [`Coordinator::grow`]. The
+    /// file may be renamed while it is open (the open file follows it),
+    /// but never shortened or rewritten below what it has committed.
+    pub fn open_growing(&mut self, source: u16, path: &Path, frames: u64) -> Result<Tag, String> {
+        self.open_as(source, path, false, None, None, Some(frames))
+    }
+
+    /// The source opened with [`Coordinator::open_growing`] now has
+    /// `frames` frames (its writer's committed count; only ever up), under
+    /// the same generation: units wholly below the old end stay cached, and
+    /// the one cut short at the old end is dropped (in the cache, and a
+    /// read of it in flight) and read again whole. Refused for less than
+    /// it has, for more than the file holds, and for a FLAC, memory or
+    /// engine-rate source.
+    pub fn grow(&mut self, source: u16, frames: u64) -> Result<(), String> {
+        let s = Self::check_source(source)?;
+        let src = self.sources[s]
+            .as_mut()
+            .ok_or_else(|| format!("source {source} isn't open"))?;
+        if src.rate.is_some() {
+            return Err("a source played at the engine's rate can't grow".into());
+        }
+        let Store::File { file, layout } = &mut src.store else {
+            return Err("only a WAV or RF64 file being written can grow".into());
+        };
+        let old = layout.frames;
+        if frames < old {
+            return Err(format!("{frames} frames: it has {old}, and only grows"));
+        }
+        if frames == old {
+            return Ok(());
+        }
+        let len = file.metadata().map_err(|e| e.to_string())?.len();
+        if layout.byte_of(frames) > len {
+            return Err(format!("{frames} frames: the file holds fewer"));
+        }
+        layout.frames = frames;
+        let (tag, uf) = (src.tag, unit_frames(layout.channels));
+        if !old.is_multiple_of(uf) {
+            // The unit cut short at the old end: dropped from the cache's
+            // books, from what waits to be filled, and from reads in
+            // flight, so it is asked for again whole.
+            let short = (old / uf) as u32;
+            if let Some(slot) = self.map.remove(&(source, short)) {
+                self.mirror[slot].held = Held::Free;
+            }
+            for (t, u, b) in std::mem::take(&mut self.ready) {
+                if t == tag && u == short {
+                    self.bytes.push(b);
+                } else {
+                    self.ready.push_back((t, u, b));
+                }
+            }
+            for (&request, f) in self.flights.iter_mut() {
+                let Kind::Units {
+                    tag: t,
+                    first,
+                    units,
+                } = f.kind
+                else {
+                    continue;
+                };
+                if t == tag && (first..first + units).contains(&short) {
+                    f.kind = Kind::Void;
+                    f.cancel.store(true, Ordering::Relaxed);
+                    for u in first..first + units {
+                        if self.asked.get(&(source, u)) == Some(&(tag.gen, request)) {
+                            self.asked.remove(&(source, u));
+                        }
+                    }
+                }
+            }
+        }
+        self.send(ToPlayer::Grow { tag, frames });
+        Ok(())
+    }
+
+    /// Make `source` the FLAC file at `path`, found through `index`
+    /// ([`crate::flac::Index`]: the file's own seek table, checked, or one
+    /// built for it), at the engine's rate if `engine`. Its frames are
+    /// decoded on the coordinator's thread into the same units as any
+    /// other file. An index that doesn't fit the file (its size and change
+    /// time) is refused: build it again. If a frame turns out not to be
+    /// where the index says, or is damaged, the source stops being read
+    /// and says so ([`Coordinator::unplayable`]); what is in the cache plays
+    /// out, and nothing wrong is ever played.
+    pub fn open_flac(
+        &mut self,
+        source: u16,
+        path: &Path,
+        index: Arc<Index>,
+        engine: bool,
+    ) -> Result<Tag, String> {
+        self.open_as(source, path, engine, None, Some(index), None)
+    }
+
+    /// [`Coordinator::open_flac`] for a file the storage manager found: one
+    /// on the card is read only while its insertion holds.
+    pub fn open_located_flac(
+        &mut self,
+        source: u16,
+        loc: &Located,
+        index: Arc<Index>,
+        engine: bool,
+    ) -> Result<Tag, String> {
+        if !loc.valid() {
+            return Err(format!("{}: the SD card isn't there", loc.path.display()));
+        }
+        self.open_as(
+            source,
+            &loc.path,
+            engine,
+            loc.card.clone(),
+            Some(index),
+            None,
+        )
     }
 
     /// Open `source` from a file the storage manager found
@@ -760,7 +952,7 @@ impl Coordinator {
         if !loc.valid() {
             return Err(format!("{}: the SD card isn't there", loc.path.display()));
         }
-        self.open_as(source, &loc.path, engine, loc.card.clone())
+        self.open_as(source, &loc.path, engine, loc.card.clone(), None, None)
     }
 
     /// Open `source` from a file played at the engine's rate
@@ -770,7 +962,7 @@ impl Coordinator {
     /// ([`Coordinator::frames`]); one already at the engine's rate opens
     /// as [`Coordinator::open`] does.
     pub fn open_at_engine_rate(&mut self, source: u16, path: &Path) -> Result<Tag, String> {
-        self.open_as(source, path, true, None)
+        self.open_as(source, path, true, None, None, None)
     }
 
     fn open_as(
@@ -779,33 +971,54 @@ impl Coordinator {
         path: &Path,
         engine: bool,
         card: Option<Card>,
+        flac: Option<Arc<Index>>,
+        growing: Option<u64>,
     ) -> Result<Tag, String> {
         let s = Self::check_source(source)?;
-        let mut file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let layout = layout(&mut file).map_err(|e| format!("{}: {e}", path.display()))?;
+        let say = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+        let mut file = File::open(path).map_err(|e| say(&e))?;
+        let (store, file_rate, frames) = match flac {
+            Some(index) => {
+                let now = crate::snapshot::meta(path).map_err(|e| say(&e))?;
+                if !index.fits(now) {
+                    return Err(say(&"its FLAC index is out of date: build it again"));
+                }
+                let (rate, frames) = (index.info.rate, index.frames);
+                let file = Arc::new(file);
+                (Store::Flac { file, index }, rate, frames)
+            }
+            None => {
+                let mut layout = layout(&mut file).map_err(|e| say(&e))?;
+                if let Some(committed) = growing {
+                    layout.frames = layout.frames.min(committed);
+                }
+                let file = Arc::new(file);
+                (Store::File { file, layout }, layout.rate, layout.frames)
+            }
+        };
         let rate = if engine {
-            Rate::new(layout.rate, self.plan.rate, layout.frames)
+            Rate::new(file_rate, self.plan.rate, frames)
         } else {
             None
         };
         let tag = self.next_tag(source);
         let src = Src {
             tag,
-            store: Store::File {
-                file: Arc::new(file),
-                layout,
-            },
+            store,
             rate,
             card,
             reported: false,
+            unplayable: None,
             cursors: Vec::new(),
         };
-        let frames = src.shape().map_or(0, |sh| sh.frames);
+        let Some(sh) = src.shape() else {
+            unreachable!("a file source has a shape");
+        };
         self.sources[s] = Some(src);
         self.send(ToPlayer::Open {
             tag,
-            channels: layout.channels,
-            frames,
+            channels: sh.channels,
+            frames: sh.frames,
         });
         Ok(tag)
     }
@@ -834,6 +1047,7 @@ impl Coordinator {
             rate: None,
             card: None,
             reported: false,
+            unplayable: None,
             cursors: Vec::new(),
         });
         self.send(ToPlayer::Resident {
@@ -991,6 +1205,20 @@ impl Coordinator {
     /// cache plays out. Closing or replacing it is its owner's choice.
     pub fn lost(&mut self) -> Option<Tag> {
         self.lost.pop_front()
+    }
+
+    /// The next source that can't be read any further since last asked,
+    /// each once, with why (a FLAC file whose index is stale, or that is
+    /// damaged): what is in the cache plays out. A stale index is built
+    /// again and the source opened again; that is its owner's step.
+    pub fn unplayable(&mut self) -> Option<(Tag, String)> {
+        self.unplayable.pop_front()
+    }
+
+    /// FLAC decoding's measured speed, in frames a second (a cautious
+    /// guess until a FLAC unit has been decoded).
+    pub fn flac_speed(&self) -> f64 {
+        self.flac_fps
     }
 
     /// The next hold given back for room since last asked (a "ready"
@@ -1194,6 +1422,24 @@ impl Coordinator {
         }
     }
 
+    /// `tag`'s source can't be read any further: say so once, cancel its
+    /// reads in flight and read nothing more for it.
+    fn stop_source(&mut self, tag: Tag, why: String) {
+        let Some(src) = self.sources[usize::from(tag.source)]
+            .as_mut()
+            .filter(|s| s.tag == tag && s.unplayable.is_none())
+        else {
+            return;
+        };
+        src.unplayable = Some(why.clone());
+        self.unplayable.push_back((tag, why));
+        for f in self.flights.values() {
+            if matches!(f.kind, Kind::Units { tag: t, .. } if t == tag) {
+                f.cancel.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+
     fn reply(&mut self, r: ReadReply) {
         let Some(fl) = self.flights.remove(&r.request) else {
             self.bytes.push(r.buf);
@@ -1202,6 +1448,11 @@ impl Coordinator {
         let (tag, first, units) = match fl.kind {
             Kind::Units { tag, first, units } => (tag, first, units),
             Kind::Job(id) => return self.job_reply(id, r),
+            Kind::Void => {
+                self.stats.stale += 1;
+                self.bytes.push(r.buf);
+                return;
+            }
         };
         let s = tag.source;
         for u in first..first + units {
@@ -1219,9 +1470,15 @@ impl Coordinator {
             self.bytes.push(r.buf);
             return;
         }
-        if self.sources[usize::from(s)].as_ref().is_some_and(Src::lost) {
-            // Read for a card that went: whatever came back isn't used.
-            self.stats.card_gone += 1;
+        if let Some(src) = self.sources[usize::from(s)]
+            .as_ref()
+            .filter(|s| s.stopped())
+        {
+            // Read for a card that went, or a source that can't be read
+            // any more: whatever came back isn't used.
+            if src.lost() {
+                self.stats.card_gone += 1;
+            }
             self.bytes.push(r.buf);
             return;
         }
@@ -1253,15 +1510,17 @@ impl Coordinator {
         }
         // A joined read: each unit it brought whole goes on.
         let src = self.sources[usize::from(s)].as_ref().expect("current");
-        let (Some(l), Some((start, _))) = (src.layout(), src.span(first)) else {
+        let Some((start, _)) = src.span(first).and_then(|(a, _)| src.bytes_of(a, a)) else {
             self.bytes.push(r.buf);
             return;
         };
-        let align = l.block_align();
+        // Each unit's own bytes (a FLAC unit's run from the index point
+        // before it, so neighbours can share some).
         let pieces: Vec<Option<(usize, usize)>> = (first..first + units)
             .map(|u| {
-                src.span(u)
-                    .map(|(a, b)| ((a - start) as usize * align, (b - a) as usize * align))
+                let (a, b) = src.span(u)?;
+                let (s, e) = src.bytes_of(a, b)?;
+                Some(((s - start) as usize, (e - s) as usize))
             })
             .collect();
         for (u, piece) in (first..).zip(pieces) {
@@ -1417,6 +1676,7 @@ impl Coordinator {
                 kind: Kind::Job(id),
                 cancel: cancel.clone(),
                 bytes: len,
+                decode_s: 0.0,
             },
         );
         self.dev.submit(ReadReq {
@@ -1438,14 +1698,27 @@ impl Coordinator {
         let Some(src) = self.sources[usize::from(source)].as_ref() else {
             return 0;
         };
-        let (Some(l), Some(a), Some(b)) = (
-            src.layout(),
-            src.span(first),
-            src.span(first + units.saturating_sub(1)),
-        ) else {
+        let (Some(a), Some(b)) = (src.span(first), src.span(first + units.saturating_sub(1)))
+        else {
             return 0;
         };
-        (b.1 - a.0) as usize * l.block_align()
+        src.bytes_of(a.0, b.1).map_or(0, |(s, e)| (e - s) as usize)
+    }
+
+    /// Seconds decoding units `first..first + units` of `source` takes: 0
+    /// but for FLAC, whose frames decode from the index point before them.
+    fn decode_time(&self, source: u16, first: u32, units: u32) -> f64 {
+        let Some(src) = self.sources[usize::from(source)].as_ref() else {
+            return 0.0;
+        };
+        let Store::Flac { index, .. } = &src.store else {
+            return 0.0;
+        };
+        let (Some(a), Some(b)) = (src.span(first), src.span(first + units.saturating_sub(1)))
+        else {
+            return 0.0;
+        };
+        (b.1 - index.point(a.0).sample) as f64 / self.flac_fps.max(1.0)
     }
 
     /// A slot for a new unit: a free one, else the one wanted longest ago
@@ -1474,11 +1747,13 @@ impl Coordinator {
                 break;
             };
             let (tag, unit, bytes) = self.ready.pop_front().expect("checked");
-            if self.sources[usize::from(tag.source)]
+            if let Some(src) = self.sources[usize::from(tag.source)]
                 .as_ref()
-                .is_some_and(Src::lost)
+                .filter(|s| s.stopped())
             {
-                self.stats.card_gone += 1;
+                if src.lost() {
+                    self.stats.card_gone += 1;
+                }
                 self.bytes.push(bytes);
                 continue;
             }
@@ -1493,25 +1768,57 @@ impl Coordinator {
             let src = self.sources[usize::from(tag.source)]
                 .as_ref()
                 .expect("a current file source");
-            let l = *src.layout().expect("a file source");
+            let (Some((a, b)), Some(sh)) = (src.span(unit), src.shape()) else {
+                self.bytes.push(bytes);
+                continue;
+            };
+            let ch = usize::from(sh.channels);
+            let first = u64::from(unit) * unit_frames(sh.channels);
             let mut buf = self.pool.pop().expect("checked");
-            let len = match (src.rate, src.span(unit), src.shape()) {
-                (Some(rate), Some((at, _)), Some(sh)) => {
-                    // Decode the file's frames, then make the unit's
-                    // engine frames from them.
-                    let samples = bytes.len() / l.sample.bytes();
-                    if self.scratch.len() < samples {
-                        self.scratch.resize(samples, 0.0);
+            // The file's frames a..b as floats: into the unit itself, or
+            // first into scratch for a source made at the engine's rate.
+            let out: &mut [f32] = if src.rate.is_some() {
+                let samples = (b - a) as usize * ch;
+                if self.scratch.len() < samples {
+                    self.scratch.resize(samples, 0.0);
+                }
+                &mut self.scratch[..samples]
+            } else {
+                &mut buf[..]
+            };
+            let decoded = match &src.store {
+                Store::File { layout: l, .. } => Ok(decode(l.sample, l.endian, &bytes, out)),
+                Store::Flac { index, .. } => {
+                    let started = Instant::now();
+                    let (_, _, from) = index.span(a, b);
+                    let mut dec = Decoder::new(index.info);
+                    let r = index.decode(&mut dec, &bytes, from, a, b, out);
+                    let secs = started.elapsed().as_secs_f64();
+                    if r.is_ok() && secs > 1e-4 {
+                        let fps = ((b - from) as f64 / secs).clamp(1.0e3, 1.0e9);
+                        self.flac_fps = 0.8 * self.flac_fps + 0.2 * fps;
                     }
-                    let got = decode(l.sample, l.endian, &bytes, &mut self.scratch);
-                    let uf = unit_frames(sh.channels);
-                    let first = u64::from(unit) * uf;
-                    let len = (sh.frames - first).min(uf) as usize * usize::from(sh.channels);
-                    let ch = usize::from(sh.channels);
-                    rate.run(ch, &self.scratch[..got], at, first, &mut buf[..len]);
+                    r.map_err(|e| e.to_string())
+                }
+                Store::Memory { .. } => Err("a memory source isn't read".to_string()),
+            };
+            let len = match (decoded, src.rate) {
+                (Ok(got), Some(rate)) => {
+                    // The unit's engine frames, made from the file's.
+                    let len = (sh.frames - first).min(unit_frames(sh.channels)) as usize * ch;
+                    rate.run(ch, &self.scratch[..got], a, first, &mut buf[..len]);
                     len
                 }
-                _ => decode(l.sample, l.endian, &bytes, &mut buf),
+                (Ok(got), None) => got,
+                (Err(why), _) => {
+                    // Not what the index says, or damaged: never played.
+                    // The source stops; what is cached plays out.
+                    self.stats.flac_failed += 1;
+                    self.pool.push(buf);
+                    self.bytes.push(bytes);
+                    self.stop_source(tag, why);
+                    continue;
+                }
             };
             self.bytes.push(bytes);
             if let Held::Unit { source, unit } = self.mirror[slot].held {
@@ -1692,8 +1999,12 @@ impl Coordinator {
             self.ready.iter().map(|(t, u, _)| (t.source, *u)).collect();
         let mut missing: Vec<(f64, Tag, u32)> = Vec::new();
         for (&(s, u), &(deadline, tag)) in &wants {
-            if self.sources[usize::from(s)].as_ref().is_some_and(Src::lost) {
-                // Its card went: what is cached plays out, nothing is read.
+            if self.sources[usize::from(s)]
+                .as_ref()
+                .is_some_and(Src::stopped)
+            {
+                // Its card went, or it can't be read: what is cached plays
+                // out, nothing is read.
                 if let Some(&slot) = self.map.get(&(s, u)) {
                     self.mirror[slot].wanted = self.round;
                 }
@@ -1714,7 +2025,7 @@ impl Coordinator {
                 let wanted = self.current(tag)
                     && !self.sources[usize::from(tag.source)]
                         .as_ref()
-                        .is_some_and(Src::lost)
+                        .is_some_and(Src::stopped)
                     && (first..first + units).any(|u| wants.contains_key(&(tag.source, u)));
                 f.cancel.store(!wanted, Ordering::Relaxed);
             }
@@ -1726,7 +2037,11 @@ impl Coordinator {
         });
         let missing_set: HashSet<(u16, u32)> =
             missing.iter().map(|&(_, t, u)| (t.source, u)).collect();
-        let mut queue_s: f64 = self.flights.values().map(|f| self.read_time(f.bytes)).sum();
+        let mut queue_s: f64 = self
+            .flights
+            .values()
+            .map(|f| self.read_time(f.bytes) + f.decode_s)
+            .sum();
         let mut busy = false;
         let mut all_asked = true;
         for i in 0..missing.len() {
@@ -1740,6 +2055,7 @@ impl Coordinator {
                 continue;
             }
             let mut bytes = self.read_bytes(s, unit, 1);
+            let mut decode_s = self.decode_time(s, unit, 1);
             // The next deadline that isn't one of this file's next units.
             let other = missing[i + 1..]
                 .iter()
@@ -1752,21 +2068,26 @@ impl Coordinator {
                     break;
                 }
                 let joined = self.read_bytes(s, unit, units + 1);
+                let decoded = self.decode_time(s, unit, units + 1);
                 if joined == 0
                     || joined > self.plan.join_bytes
-                    || queue_s + self.read_time(joined) > 0.5 * other
+                    || queue_s + self.read_time(joined) + decoded > 0.5 * other
                 {
                     break;
                 }
                 bytes = joined;
+                decode_s = decoded;
                 units += 1;
             }
             let src = self.sources[usize::from(s)].as_ref().expect("current");
-            let (file, l) = match &src.store {
-                Store::File { file, layout } => (file.clone(), *layout),
-                Store::Memory { .. } => continue,
+            let Some(file) = src.file().cloned() else {
+                continue;
             };
-            let Some((first, _)) = src.span(unit) else {
+            let Some(at) = src
+                .span(unit)
+                .and_then(|(first, _)| src.bytes_of(first, first))
+                .map(|(at, _)| at)
+            else {
                 continue;
             };
             self.request = self.request.wrapping_add(1);
@@ -1775,7 +2096,7 @@ impl Coordinator {
             let req = ReadReq {
                 request,
                 file,
-                at: l.byte_of(first),
+                at,
                 len: bytes,
                 buf: self.bytes.pop().unwrap_or_default(),
                 cancel: cancel.clone(),
@@ -1793,9 +2114,10 @@ impl Coordinator {
                     },
                     cancel,
                     bytes,
+                    decode_s,
                 },
             );
-            queue_s += self.read_time(bytes);
+            queue_s += self.read_time(bytes) + decode_s;
             self.stats.reads += 1;
             self.stats.joined += u64::from(units - 1);
             self.dev.submit(req);

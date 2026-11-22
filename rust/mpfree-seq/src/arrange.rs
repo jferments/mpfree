@@ -19,12 +19,17 @@
 //!
 //! Scenes and the arrangement convert both ways:
 //!
-//! - [`scenes_to_song`]: rows one after another, each as long as
-//!   [`scene_length`] (its follow's bars, else its longest clip in whole
-//!   bars), as linked placements, a marker on each named after the scene.
-//!   The scenes' mutes carry from row to row as they do when the rows
-//!   play (a muted track's clip is left out), and a one-shot clip's block
-//!   ends with its pass.
+//! - Scenes → song and List → song play the rows offline through Rec song
+//!   in the app's time engine (the Arrange refactor's 4.1, plan D7:
+//!   `mpfree-app`'s `time/offline.rs`), so whatever they do when they play
+//!   comes out right. [`scenes_to_song`] lays rows by rule instead, for
+//!   what can't run the engine (the screens' preview songs, tests): one
+//!   after another, each as long as [`scene_length`] (its follow's bars,
+//!   else its longest clip in whole bars), as linked placements, a marker
+//!   on each named after the scene. The scenes' mutes carry from row to
+//!   row as they do when the rows play (a muted track's clip is left out),
+//!   a one-shot clip's block ends with its pass, and what only playing
+//!   shows is named (a clip's follow action, legato).
 //! - [`song_to_scenes`]: each section of the song (between the places
 //!   anything starts or ends, and the markers) becomes a row in a run of
 //!   empty rows, chained by follow actions (Next after the section's
@@ -323,8 +328,8 @@ pub struct Arrangement {
     pub morphs: Vec<MorphRows>,
     /// The song list (sequencer S4): scenes in order, each so many times,
     /// the third way to see the song beside the grid and the timeline.
-    /// It plays on its own (`mpfree-perform`); List → song lays it on the
-    /// timeline ([`list_to_song`]).
+    /// It plays on its own (`mpfree-perform`); List → song plays it onto
+    /// the timeline (the app's time engine).
     pub list: SongList,
     /// The song's tempo points, in order, at least a 1/16 apart. None:
     /// the project's tempo throughout.
@@ -990,23 +995,6 @@ pub fn list_spans(project: &Project, bar: Tick) -> Vec<(Tick, Tick)> {
         .collect()
 }
 
-/// List → song: the song list laid on the timeline from song tick `at`,
-/// each step its scene's clips for its span (a clip shorter than the span
-/// repeats), with the scene's name above where it starts, as
-/// [`scenes_to_song`] lays rows (mutes carried from step to step, a
-/// one-shot's block ending with its pass). The caller adds it to the song.
-pub fn list_to_song(project: &Project, at: Tick, bar: Tick) -> Result<ToSong, ModelError> {
-    let rows: Vec<(usize, Tick)> = project
-        .arrangement
-        .list
-        .steps
-        .iter()
-        .zip(list_spans(project, bar))
-        .map(|(s, (_, len))| (s.row, len))
-        .collect();
-    scenes_to_song(project, &rows, at)
-}
-
 /// The song's sections: where anything starts or ends and the markers, in
 /// order, merged where the same placements play on, without the silent
 /// ones. Each is (start, end, the placement playing on each track).
@@ -1107,9 +1095,8 @@ pub struct ToScenes {
     pub differences: Vec<Difference>,
 }
 
-/// What Scenes → song and List → song make ([`scenes_to_song`],
-/// [`list_to_song`]): the blocks and markers to add to the song, and how
-/// they play differently from the rows (none: exact).
+/// What [`scenes_to_song`] makes: the blocks and markers to add to the
+/// song, and how they play differently from the rows (none: exact).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ToSong {
     pub song: Arrangement,
@@ -1118,8 +1105,8 @@ pub struct ToSong {
 
 /// One way a conversion plays differently from what it was made from
 /// (plan D7): what, where (a song tick: the song's for Song → scenes, the
-/// new blocks' for Scenes → song and List → song) and on which track
-/// (None: the whole song).
+/// new blocks' for Scenes → song, List → song and [`scenes_to_song`]) and
+/// on which track (None: the whole song).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Difference {
     pub track: Option<usize>,
@@ -1171,15 +1158,14 @@ pub enum Differs {
     /// Song → scenes: a note held over the section's start (or tied into
     /// a note on it), which the row change cuts there.
     HeldNote,
-    /// Scenes → song, List → song: the scene's program changes, which the
-    /// song doesn't send.
+    /// Scenes → song, List → song ([`scenes_to_song`] too): the scene's
+    /// program changes, which the song doesn't send.
     SceneProgram,
-    /// Scenes → song, List → song: the clip's own follow action, which
-    /// the song leaves out (the clip plays on for the row).
+    /// [`scenes_to_song`]: the clip's own follow action, which the song
+    /// leaves out (the clip plays on for the row).
     ClipFollow,
-    /// Scenes → song, List → song: a legato clip after a clip on its
-    /// track: the song starts it from its top instead of the other's
-    /// place.
+    /// [`scenes_to_song`]: a legato clip after a clip on its track: the
+    /// song starts it from its top instead of the other's place.
     Legato,
 }
 
@@ -1693,10 +1679,10 @@ mod tests {
     }
 
     /// The song list: each step's span is its scene's length times its
-    /// times; List → song lays them out in order, a scene that comes
-    /// twice twice; the list checks its steps.
+    /// times, one after another (List → song plays them: the app's time
+    /// engine); the list checks its steps.
     #[test]
-    fn the_song_list_has_spans_and_lays_out_as_a_song() {
+    fn the_song_list_has_spans_and_checks_its_steps() {
         use crate::scenes::{ListStep, MAX_TIMES};
         let mut p = project();
         let step = |row, times| ListStep { row, times };
@@ -1705,22 +1691,6 @@ mod tests {
             list_spans(&p, BAR),
             vec![(0, 2 * BAR), (2 * BAR, 2 * BAR), (4 * BAR, 3 * BAR)]
         );
-        let song = list_to_song(&p, 8 * BAR, BAR).unwrap().song;
-        let blocks: Vec<(usize, Tick, Tick)> = song
-            .placements
-            .iter()
-            .filter(|b| b.track == 0)
-            .map(|b| (row(&p, b).unwrap(), b.start, b.length))
-            .collect();
-        assert_eq!(
-            blocks,
-            vec![
-                (0, 8 * BAR, 2 * BAR),
-                (1, 10 * BAR, 2 * BAR),
-                (0, 12 * BAR, 3 * BAR)
-            ]
-        );
-        assert_eq!(song.markers.len(), 3);
         assert_eq!(p.check(), Ok(()));
         // Round: after the last, the first again; else none.
         assert_eq!(p.arrangement.list.after(1), Some(2));

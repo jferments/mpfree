@@ -68,8 +68,10 @@ mod audio;
 mod control;
 mod follow;
 pub mod link;
+mod offline;
 mod pad_wait;
 pub mod strips;
+mod timing;
 
 use mpfree_play::mpfree_param::{Owner, ParamAddr, RelAddr};
 use mpfree_play::room::{self, Table};
@@ -90,6 +92,7 @@ pub use follow::Follow;
 use link::Tracks;
 pub use mpfree_play::AheadCounts;
 pub use pad_wait::{DuePads, PadFrom, PadWait, MAX_WAITS};
+pub use timing::{Allowed, Answer, TimingChange};
 
 /// Tracks in a new project.
 pub const TRACKS: usize = 8;
@@ -1336,6 +1339,42 @@ impl TimeHost {
         self.audio.starts_refused()
     }
 
+    /// The song's timeline as it is now, for a timing change to be made
+    /// against ([`TimeAudio::timeline`]).
+    #[allow(dead_code)] // smart loop end, steps 1 and 2
+    pub fn timeline(&self) -> u64 {
+        self.audio.timeline()
+    }
+
+    /// Whether timing change `c` may be offered now: Safe, Ask (with
+    /// `audio`, recorded audio playing at its own speed, at a new tempo)
+    /// or Refused ([`TimeAudio::allowed`]).
+    #[allow(dead_code)] // smart loop end, steps 1 and 2
+    pub fn allowed(&self, c: &TimingChange, audio: bool) -> Allowed {
+        self.audio.allowed(c, audio)
+    }
+
+    /// Timing change `c`, on its frame: its ticket, or why not
+    /// ([`TimeAudio::timing_change`]). Called on the audio loop's thread,
+    /// as [`TimeHost::start_at`] is.
+    #[allow(dead_code)] // smart loop end, steps 1 and 2
+    pub fn timing_change(&mut self, c: TimingChange) -> Result<u32, &'static str> {
+        self.audio.timing_change(c)
+    }
+
+    /// Take back the timing change with `ticket` if it still waits.
+    #[allow(dead_code)] // smart loop end, steps 1 and 2
+    pub fn cancel_timing(&mut self, ticket: u32, why: &'static str) -> bool {
+        self.audio.cancel_timing(ticket, why)
+    }
+
+    /// What became of the timing change with `ticket`, if it is one of
+    /// the last few.
+    #[allow(dead_code)] // smart loop end, steps 1 and 2
+    pub fn timing_answer(&self, ticket: u32) -> Option<Answer> {
+        self.audio.timing_answer(ticket)
+    }
+
     /// Following another device's Start and Stop while it is stopped:
     /// PLAY waits for its Start, and a ready take records from it.
     pub fn clock_waits(&self) -> bool {
@@ -1954,6 +1993,23 @@ impl TimeHost {
         match &self.control {
             Half::Here(c) => c.song_on(),
             Half::Apart(a) => a.light.song_on,
+        }
+    }
+
+    /// The song list's step playing (together only: the rows played
+    /// offline, [`offline`]).
+    fn list_playing(&self) -> Option<mpfree_perform::ListPlaying> {
+        match &self.control {
+            Half::Here(c) => c.list_playing(),
+            Half::Apart(_) => None,
+        }
+    }
+
+    /// Rec song is armed (together only, as [`TimeHost::list_playing`]).
+    fn song_rec_armed(&self) -> bool {
+        match &self.control {
+            Half::Here(c) => c.song_rec_armed(),
+            Half::Apart(_) => false,
         }
     }
 
@@ -7415,6 +7471,104 @@ mod tests {
         assert_eq!((h.dropped(), song.dropped()), (0, 0));
     }
 
+    /// List → song plays the list offline through Rec song (Arrange 4.1,
+    /// plan D7), so what only playing shows comes out right: a clip's
+    /// follow action (track 2 moves to its next clip after a bar), a
+    /// legato clip taking over its track's place (track 3, two bars into
+    /// a three-bar clip), a one-shot (track 4), a scene's mute carried
+    /// into the next (row 2 mutes track 1, and row 3 leaves it), a silent
+    /// step (empty row 6) and a follow with a chance (track 5, the same
+    /// rolls each time). The song gives the same notes on the same frames
+    /// as the list at several period sizes, and the project converts the
+    /// same way twice.
+    #[test]
+    fn list_to_song_plays_what_the_list_played_at_every_period_size() {
+        use mpfree_seq::{Follow, FollowAction, ListStep, Note};
+        let clip = |bars: i64, pad: u8| {
+            let mut c = Clip::new("beats", bars * 3840);
+            c.notes = (0..4 * bars)
+                .map(|k| Note::new(k * 960, 100, pad + k as u8, 100))
+                .collect();
+            c
+        };
+        let mut p = TimeHost::new(RATE, 120.0).unwrap().project().clone();
+        let t = &mut p.tracks;
+        t[0].slots[0] = Some(clip(1, 10));
+        t[0].slots[2] = Some(clip(1, 20));
+        let mut a = clip(1, 30);
+        a.follow = Some(Follow::after(1, FollowAction::Next));
+        t[1].slots[0] = Some(a);
+        t[1].slots[1] = Some(clip(1, 40));
+        t[1].slots[2] = Some(clip(1, 50));
+        t[2].slots[0] = Some(clip(3, 60));
+        let mut legato = clip(4, 80);
+        legato.legato = true;
+        t[2].slots[1] = Some(legato);
+        let mut once = clip(1, 100);
+        once.length = 1920;
+        once.notes.truncate(2);
+        once.once = true;
+        t[3].slots[0] = Some(once);
+        let mut maybe = clip(1, 110);
+        maybe.follow = Some(Follow {
+            bars: 1,
+            action: FollowAction::Next,
+            other: FollowAction::Stay,
+            chance: 50,
+        });
+        t[4].slots[0] = Some(maybe);
+        t[4].slots[1] = Some(clip(1, 120));
+        let s = p.scene_mut(0).unwrap();
+        s.follow = Some(Follow::after(2, FollowAction::Next));
+        let s = p.scene_mut(1).unwrap();
+        s.mutes = Some(0b1);
+        s.follow = Some(Follow::after(2, FollowAction::Next));
+        p.arrangement.list.steps = [(0, 1), (1, 2), (5, 1), (2, 1)]
+            .into_iter()
+            .map(|(row, times)| ListStep { row, times })
+            .collect();
+        p.give_clip_ids();
+        // 2 + 2 × 2 + 1 + 1 bars, and the last notes' ends.
+        let to = 8 * BAR + 1000;
+        let mut songs = Vec::new();
+        for period in [7u32, 128, 1000] {
+            let by = |h: &mut TimeHost, pads: &mut Fake, to: u64| {
+                while pads.frame < to {
+                    h.period(period, pads);
+                    pads.frame += u64::from(period);
+                }
+            };
+            let mut live = TimeHost::with_project(RATE, 120.0, p.clone()).unwrap();
+            let mut heard = Fake::default();
+            live.act(TimeAction::ListPlay(0)).unwrap();
+            live.command(Command::Play);
+            by(&mut live, &mut heard, to);
+            let mut song = TimeHost::with_project(RATE, 120.0, p.clone()).unwrap();
+            let said = song.act(TimeAction::ListToSong).unwrap();
+            assert_eq!(said, "list → song: 4 steps from bar 1, exact");
+            song.act(TimeAction::SongMode(true)).unwrap();
+            let mut played = Fake::default();
+            song.command(Command::Play);
+            by(&mut song, &mut played, to);
+            assert_eq!(played.hits, heard.hits, "period {period}");
+            assert_eq!(played.releases, heard.releases, "period {period}");
+            assert_eq!((live.dropped(), song.dropped()), (0, 0));
+            songs.push(song.project().arrangement.clone());
+            // What only playing shows: track 2's follow, track 3's legato
+            // from two bars in (its third bar before its first), track 4's
+            // one-shot once, and track 1 muted in row 3 (row 3's clip on
+            // track 2 heard).
+            let first = |pad: usize| heard.hits.iter().find(|h| h.1 == pad).map(|h| h.0);
+            assert_eq!(first(40), Some(BAR));
+            assert_eq!(first(88), Some(2 * BAR));
+            assert_eq!(heard.hits.iter().filter(|h| h.1 == 100).count(), 1);
+            assert_eq!((first(20), first(50)), (None, Some(7 * BAR)));
+        }
+        assert!(songs.windows(2).all(|w| w[0] == w[1]), "the same twice");
+        let names: Vec<&str> = songs[0].markers.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["Scene 1", "Scene 2", "Scene 6", "Scene 3"]);
+    }
+
     /// Arrange 1.2: a clip and a scene in row 40, past the grid's 16,
     /// save, open, launch and play; the scene's follow action moves within
     /// its bank (rows 32 to 47), never to the grid's rows; the grid still
@@ -9492,6 +9646,340 @@ mod tests {
         assert_eq!((h.info().position, h.info().bpm), (pos, bpm));
     }
 
+    /// The frames a tick span takes at `bpm`.
+    fn frames_of(ticks: f64, bpm: f64) -> f64 {
+        ticks * 60.0 * f64::from(RATE) / (bpm * 960.0)
+    }
+
+    /// One timing change (smart loop end, step 0C), made while the song
+    /// plays: it waits for its frame and lands there in one piece. A tempo
+    /// alone takes over on its frame with no jump, so the notes sounding go
+    /// on and nothing replays or is skipped. With a position it is a jump
+    /// on its frame: each sounding note ends once there, and the song plays
+    /// on from the position at the new tempo. Stopped, one with PLAY starts
+    /// the song on its frame.
+    #[test]
+    fn a_timing_change_lands_on_its_frame_in_one_piece() {
+        use mpfree_transport::Mark;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        // A note held through bar 1 (pad 1), a short hit on every beat
+        // (pad 2), in a two-bar clip.
+        let mut clip = Clip::new("Held and hits", 2 * 3840);
+        clip.add_note(mpfree_seq::Note::new(0, 3840, 1, 100))
+            .unwrap();
+        for k in 0..8 {
+            clip.add_note(mpfree_seq::Note::new(k * 960, 120, 2, 100))
+                .unwrap();
+        }
+        h.put_clip(clip).unwrap();
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        assert!(h.command(Command::Play));
+        let mut pads = Fake::default();
+        run(&mut h, &mut pads, BAR / 4, &[]);
+        // Just into beat 2: pad 1 held, beat 2's hit sounding.
+        let at = h.next_frame() + 3 * u64::from(PERIOD) + 17;
+        let c = TimingChange {
+            at,
+            tempo: Some(100.0),
+            position: None,
+            play: false,
+            take: None,
+            made_against: h.timeline(),
+        };
+        assert_eq!(h.allowed(&c, false), Allowed::Safe);
+        assert_eq!(
+            h.allowed(&c, true),
+            Allowed::Ask("recorded audio would play at its old tempo")
+        );
+        let t = h.timing_change(c).unwrap();
+        assert_eq!(h.timing_answer(t), Some(Answer::Waiting));
+        // The first tick not yet played on `at` takes that frame, and the
+        // song goes on from it at 100 BPM.
+        let now = (0i64..)
+            .find(|&k| frames_of(k as f64, 120.0).round() as u64 >= at)
+            .unwrap();
+        let on = |tick: i64| at as f64 + frames_of((tick - now) as f64, 100.0);
+        let (hits, releases) = (pads.hits.len(), pads.releases.len());
+        let mut marks = Vec::new();
+        let end = on(3840) as u64 + 2 * u64::from(PERIOD);
+        while pads.frame < end {
+            h.period(PERIOD, &mut pads);
+            marks.extend(h.block().markers().iter().map(|m| (m.frame, m.mark)));
+            pads.frame += u64::from(PERIOD);
+        }
+        assert_eq!(h.timing_answer(t), Some(Answer::Committed(at)));
+        assert_eq!(h.info().bpm, 100.0);
+        assert!(marks.contains(&(at, Mark::Tempo(100.0))), "{marks:?}");
+        assert!(
+            !marks.iter().any(|m| matches!(m.1, Mark::Located { .. })),
+            "no jump: {marks:?}"
+        );
+        let near = |f: u64, want: f64| (f as f64 - want).abs() <= 1.0;
+        let ended = |pads: &Fake, from: usize, pad: usize| -> Vec<u64> {
+            pads.releases[from..]
+                .iter()
+                .filter(|r| r.1 == pad)
+                .map(|r| r.0)
+                .collect()
+        };
+        // Pad 1 sounds on and ends once, on bar 2 in the new timing; beat
+        // 2's hit ends on its own tick, the next beats land where 100 BPM
+        // puts them, and nothing replays.
+        let e1 = ended(&pads, releases, 1);
+        assert!(e1.len() == 1 && near(e1[0], on(3840)), "{e1:?}");
+        let e2 = ended(&pads, releases, 2);
+        assert!(near(e2[0], on(1080)), "{e2:?}");
+        let after: Vec<(u64, usize)> = pads.hits[hits..].iter().map(|&(f, p, _)| (f, p)).collect();
+        assert_eq!(after.len(), 3, "{after:?}");
+        for (k, &(f, p)) in after.iter().enumerate() {
+            assert!(p == 2 && near(f, on(1920 + 960 * k as i64)), "{after:?}");
+        }
+
+        // A tempo and a position: a jump to bar 1 on its frame, while beat
+        // 5's hit sounds.
+        let at = h.next_frame() + 2 * u64::from(PERIOD) + 5;
+        let t = h
+            .timing_change(TimingChange {
+                at,
+                tempo: Some(120.0),
+                position: Some(0),
+                play: false,
+                take: None,
+                made_against: h.timeline(),
+            })
+            .unwrap();
+        let (hits, releases) = (pads.hits.len(), pads.releases.len());
+        let mut jumps = Vec::new();
+        let end = at + frames_of(1000.0, 120.0) as u64;
+        while pads.frame < end {
+            h.period(PERIOD, &mut pads);
+            for m in h.block().markers() {
+                if let Mark::Located { to, .. } = m.mark {
+                    jumps.push((m.frame, to));
+                }
+            }
+            pads.frame += u64::from(PERIOD);
+        }
+        assert_eq!(h.timing_answer(t), Some(Answer::Committed(at)));
+        assert_eq!(jumps, vec![(at, 0)]);
+        assert_eq!(h.info().bpm, 120.0);
+        // Beat 5's hit ends once, on the jump; bar 1 plays from there:
+        // pad 1 and beat 1 on the jump's frame (beat 1 ending on its own
+        // tick), beat 2 a beat later.
+        let e2 = ended(&pads, releases, 2);
+        assert!(
+            e2.len() == 2 && e2[0] == at && near(e2[1], at as f64 + frames_of(120.0, 120.0)),
+            "{e2:?}"
+        );
+        let after: Vec<(u64, usize)> = pads.hits[hits..].iter().map(|&(f, p, _)| (f, p)).collect();
+        assert_eq!(after.len(), 3, "{after:?}");
+        assert!(after[..2].contains(&(at, 1)) && after[..2].contains(&(at, 2)));
+        assert!(
+            after[2].1 == 2 && near(after[2].0, at as f64 + frames_of(960.0, 120.0)),
+            "{after:?}"
+        );
+        assert_eq!(h.audio.timing_counts().committed, 2);
+
+        // Stopped: PLAY, a tempo and bar 1 on one frame.
+        assert!(h.command(Command::Stop));
+        h.period(PERIOD, &mut pads);
+        pads.frame += u64::from(PERIOD);
+        let at = h.next_frame() + 2 * u64::from(PERIOD) + 44;
+        let t = h
+            .timing_change(TimingChange {
+                at,
+                tempo: Some(110.0),
+                position: Some(0),
+                play: true,
+                take: None,
+                made_against: h.timeline(),
+            })
+            .unwrap();
+        let mut started = None;
+        for _ in 0..4 {
+            h.period(PERIOD, &mut pads);
+            pads.frame += u64::from(PERIOD);
+            let s = h.block().spans().iter().find(|s| s.state == State::Playing);
+            started = started.or(s.map(|s| (s.frame, s.ticks().start)));
+        }
+        assert_eq!(h.timing_answer(t), Some(Answer::Committed(at)));
+        assert_eq!(started, Some((at, 0)), "from bar 1, on its frame");
+        assert_eq!(h.info().bpm, 110.0);
+    }
+
+    /// Anything that moves time before a timing change's frame cancels
+    /// it, saying why, and one made against an older timeline is refused
+    /// for the same reason: a newer change, a locate, a tempo, STOP, a
+    /// song edit that moves time (not one that doesn't), its maker taking
+    /// it back, another project.
+    #[test]
+    fn a_timing_change_is_cancelled_by_anything_that_moves_time_first() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        assert!(h.command(Command::Play));
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        let change = |h: &TimeHost| TimingChange {
+            at: h.next_frame() + 10 * u64::from(PERIOD),
+            tempo: Some(90.0),
+            position: None,
+            play: false,
+            take: None,
+            made_against: h.timeline(),
+        };
+        let a = h.timing_change(change(&h)).unwrap();
+        let b = h.timing_change(change(&h)).unwrap();
+        assert_eq!(
+            h.timing_answer(a),
+            Some(Answer::Cancelled("a newer change came"))
+        );
+        assert_eq!(h.timing_answer(b), Some(Answer::Waiting));
+        assert!(h.cancel_timing(b, "the loop changed"));
+        assert!(!h.cancel_timing(b, "the loop changed"));
+        assert_eq!(
+            h.timing_answer(b),
+            Some(Answer::Cancelled("the loop changed"))
+        );
+        for (cmd, why) in [
+            (Command::Locate(3840), "the song moved"),
+            (Command::SetTempo(130.0), "the tempo changed"),
+            (Command::Stop, "the song stopped"),
+        ] {
+            let old = change(&h);
+            let t = h.timing_change(change(&h)).unwrap();
+            assert!(h.command(cmd));
+            assert_eq!(h.timing_answer(t), Some(Answer::Cancelled(why)));
+            assert_eq!(h.timing_change(old), Err(why), "made before it");
+            h.period(PERIOD, &mut pads);
+            pads.frame += u64::from(PERIOD);
+        }
+        // Song edits: one that doesn't move time leaves it waiting; song
+        // mode does, once its view comes.
+        let t = h.timing_change(change(&h)).unwrap();
+        h.act(TimeAction::Arm(Some(1))).unwrap();
+        h.period(PERIOD, &mut pads);
+        assert_eq!(h.timing_answer(t), Some(Answer::Waiting));
+        h.act(TimeAction::SongMode(true)).unwrap();
+        h.period(PERIOD, &mut pads);
+        assert_eq!(
+            h.timing_answer(t),
+            Some(Answer::Cancelled("the song was edited"))
+        );
+        // Another project's engine: another timeline, and the ticket is
+        // none of its own.
+        let other = TimeHost::new(RATE, 120.0).unwrap();
+        assert_ne!(other.timeline(), h.timeline());
+        assert_eq!(other.timing_answer(t), None);
+        let mut other = other;
+        assert_eq!(other.timing_change(change(&h)), Err("the song changed"));
+        assert!(h.audio.timing_counts().cancelled >= 6);
+    }
+
+    /// When a timing change can't be made, or can't land when its frame
+    /// comes, nothing of it goes in: refused while the song records,
+    /// counts in or follows the song's tempo points, for a frame already
+    /// played, and when its frame comes with no room in the transport's
+    /// queue for all of it.
+    #[test]
+    fn a_timing_change_lands_whole_or_not_at_all() {
+        use mpfree_time_ui::TempoEdit::Add;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        assert!(h.command(Command::Play));
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        let change = |h: &TimeHost, at: u64| TimingChange {
+            at,
+            tempo: Some(90.0),
+            position: None,
+            play: false,
+            take: None,
+            made_against: h.timeline(),
+        };
+        let past = change(&h, h.next_frame() - 1);
+        assert_eq!(
+            h.allowed(&past, false),
+            Allowed::Refused("its frame has played")
+        );
+        assert_eq!(h.timing_change(past), Err("its frame has played"));
+        // No room for it when its frame comes: refused, nothing changed.
+        let at = h.next_frame() + 2 * u64::from(PERIOD);
+        let t = h.timing_change(change(&h, at)).unwrap();
+        let far = h.next_frame() + 10_000_000;
+        while h.audio.queue_room() > 0 {
+            assert!(h.audio.command_at(far, Command::ToggleOverdub));
+        }
+        assert_eq!(h.timing_answer(t), Some(Answer::Waiting));
+        for _ in 0..4 {
+            h.period(PERIOD, &mut pads);
+            pads.frame += u64::from(PERIOD);
+            assert!(!h
+                .block()
+                .markers()
+                .iter()
+                .any(|m| matches!(m.mark, mpfree_transport::Mark::Located { .. })));
+        }
+        assert_eq!(
+            h.timing_answer(t),
+            Some(Answer::Refused("the transport's queue is full"))
+        );
+        assert_eq!(h.info().bpm, 120.0);
+        // Room in the queue but not in its period: fifteen commands due by
+        // its frame would leave its second command for the next period, so
+        // it is refused whole.
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        assert!(h.command(Command::Play));
+        h.period(PERIOD, &mut pads);
+        let at = h.next_frame() + 50;
+        let c = TimingChange {
+            position: Some(0),
+            ..change(&h, at)
+        };
+        let t = h.timing_change(c).unwrap();
+        for _ in 0..15 {
+            assert!(h.audio.command_at(at - 1, Command::SetCountIn(0)));
+        }
+        h.period(PERIOD, &mut pads);
+        assert_eq!(
+            h.timing_answer(t),
+            Some(Answer::Refused("too many commands land in its period"))
+        );
+        assert_eq!(h.info().bpm, 120.0);
+        // Recording (a punch-in): refused.
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        assert!(h.command(Command::Play));
+        h.period(PERIOD, &mut pads);
+        assert!(h.command(Command::Record));
+        h.period(PERIOD, &mut pads);
+        assert_eq!(h.info().state, State::Recording);
+        let c = change(&h, h.next_frame());
+        assert_eq!(
+            h.allowed(&c, false),
+            Allowed::Refused("the song is recording")
+        );
+        assert_eq!(h.timing_change(c), Err("the song is recording"));
+        // The song's tempo points lead: a tempo change while it plays is
+        // refused; a position alone is not.
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.act(TimeAction::SongTempo(Add(2 * 3840))).unwrap();
+        h.act(TimeAction::SongMode(true)).unwrap();
+        h.follow_tempo(120.0);
+        h.period(PERIOD, &mut pads);
+        assert!(h.command(Command::Play));
+        h.period(PERIOD, &mut pads);
+        let c = change(&h, h.next_frame());
+        assert_eq!(
+            h.allowed(&c, false),
+            Allowed::Refused("the song's tempo points lead")
+        );
+        assert_eq!(h.timing_change(c), Err("the song's tempo points lead"));
+        assert_eq!(h.audio.timing_counts().refused, 1);
+        let c = TimingChange {
+            tempo: None,
+            position: Some(3840),
+            ..c
+        };
+        assert_eq!(h.allowed(&c, true), Allowed::Safe);
+    }
+
     fn xorshift(mut x: u64) -> impl FnMut() -> u64 {
         move || {
             x ^= x << 13;
@@ -10229,6 +10717,53 @@ mod tests {
         assert!(h.mute_light(0).is_some_and(|l| !l.waiting && l.silent));
         let h = h.into_together().expect("back");
         assert_eq!(h.dropped(), 0);
+    }
+
+    /// Arrange 4.1, on the desktop: what Scenes → song and List → song
+    /// cost the thread they run on (the audio thread together) in the big
+    /// song's rows (16 tracks, 2 rows of 4-bar clips of 1,000 notes):
+    /// the rows once (8 bars), and a list of both rows 25 times each (200
+    /// bars). `cargo test --release -p mpfree-app --bin mpfree --
+    /// --ignored print_what_the_conversions_cost --nocapture`.
+    #[test]
+    #[ignore]
+    fn print_what_the_conversions_cost() {
+        use mpfree_seq::{ListStep, Note};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let len = 16 * 960i64;
+        for t in 0..16 {
+            if t > 0 {
+                h.act(TimeAction::AddTrack).unwrap();
+            }
+            for row in 0..2usize {
+                let mut c = Clip::new("c", len);
+                c.notes = (0..1000i64)
+                    .map(|k| {
+                        let pitch = 36 + (k * 7 + row as i64) % 48;
+                        Note::new(k * len / 1000, 8, pitch as u8, 100)
+                    })
+                    .collect();
+                h.control.project.tracks[t].slots[row] = Some(c);
+            }
+        }
+        h.control.project.give_clip_ids();
+        h.control.project.arrangement.list.steps = vec![
+            ListStep { row: 0, times: 25 },
+            ListStep { row: 1, times: 25 },
+        ];
+        for (name, a) in [
+            ("scenes → song, 8 bars", TimeAction::ScenesToSong),
+            ("list → song, 200 bars", TimeAction::ListToSong),
+        ] {
+            let mut worst = 0f64;
+            for _ in 0..5 {
+                let t0 = std::time::Instant::now();
+                h.act(a.clone()).unwrap();
+                worst = worst.max(t0.elapsed().as_secs_f64() * 1000.0);
+                h.act(TimeAction::Undo).unwrap();
+            }
+            println!("{name}: {worst:.1} ms at worst");
+        }
     }
 
     /// Arrange 2.6c, on the desktop: what each action costs the facade's
