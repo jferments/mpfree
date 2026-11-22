@@ -4349,6 +4349,8 @@ fn learn_describe(
         // A Perform pad is pressed, with no value to read.
         Owner::Perform => return None,
         Owner::Play => return remote::describe_play(addr.param, now),
+        // A set's control is pressed, with no value to read.
+        Owner::Show => return None,
         // A track's controller, bend or pressure out: where the engine has
         // it, else its default.
         Owner::Midi(_) => {
@@ -4439,6 +4441,10 @@ fn learn_label(
             return format!("Perform pads {}", name.as_deref().unwrap_or("?"));
         }
         Owner::Play => return format!("Play · {}", play::name(addr.param).unwrap_or("?")),
+        Owner::Show => {
+            let name = mpfree_play::mpfree_param::show::name(addr.param);
+            return format!("Show · {}", name.unwrap_or("?"));
+        }
         _ => return modpanels::label(mix, addr),
     };
     // As the time engine and the I/O view name the tracks.
@@ -8475,6 +8481,16 @@ fn player_session(
                     let now = desk::looper_now(&looper);
                     let act = remote.looper_write(w.target.param, w.value, now, t);
                     fx.extend(desk::looper_remote(&mut app, &time, &looper, out, act));
+                }
+                // A set's control (the Learn section's Show card): a press
+                // as it goes down, once. The set player takes them with the
+                // Show view; until a set is open, the hint line says so.
+                midi_in::Learning::Set(w)
+                    if w.target.owner == mpfree_play::mpfree_param::Owner::Show =>
+                {
+                    if remote.show_write(w.target.param, w.value).is_some() {
+                        out.show(gui::ToUi::Tell(remote::NO_SET.to_string()));
+                    }
                 }
                 // A Perform pad (Learn a key): played as a hit on it plays
                 // it, whatever the pads show, and let go of what it pressed.

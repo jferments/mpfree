@@ -25,7 +25,7 @@ These are saved on the stick as soon as you change them, and are back the next t
 
 | What | Where you set it |
 |---|---|
-| Your Prefs: pad velocity curve, how Latch keeps pads, the audio buffer, the loop memory, developer tools, the theme, what opens at start, how exports play, screen pad velocity | [Prefs](../reference/prefs.md) |
+| Your Prefs: pad velocity curve, how Latch keeps pads, Quick advance, the audio buffer, the loop memory, developer tools, the theme, what opens at start, how exports play, screen pad velocity | [Prefs](../reference/prefs.md) |
 | The metronome on or off, and its level | **SHIFT + PLAY START**, or the Play page's options (**MENU**) |
 | The Looper's level, and the line input's latency once you have set it by hand | The Looper tab's options (see [Recording loops](looping.md)) |
 | Whether the Sequencer's Steps view shows the timing strip | The Sequencer's or the Play page's options (**MENU**) |
@@ -110,7 +110,7 @@ MPFree opens the project you last saved or opened: once the sound is going, it o
 
 **BROWSE** opens the browser over the page you are on, and pressing it again goes back to that page. The folder at the right end of the top bar does the same, and the Pads tab's **Browse for** opens it to find a sound for the pad picked. It is a full file manager for MPFree's stick:
 
-- **Places** on the left: Projects, Samples, Kits, Instruments, Patterns and Recordings, plus Recent, Favourites, the Trash, and Factory (read-only kits). **Plugins** finds and installs MPC plugins (see [Getting plugins](plugins.md)).
+- **Places** on the left: Projects, Sets, Samples, Kits, Instruments, Patterns and Recordings, plus Recent, Favourites, the Trash, and Factory (read-only kits). **Sets** holds your set lists (see [Set lists](set-lists.md)). **Plugins** finds and installs MPC plugins (see [Getting plugins](plugins.md)).
 - **The list** in the middle, folders first, in natural order (Kick 2 before Kick 10), with filters for audio, projects and kits. Each row has a **star** at its right end: tap it to add the item to Favourites, and again to take it out.
 - **The selected item** on the right: a sound's length and waveform, a project's tempo and when it was saved, and buttons to Load (for a sound, **Load on A5**: the pad picked), Next pad hit, Audition, Rename, Copy, Cut and Delete. Under a sound, the kit's pads show what each pad holds; a finger on one picks it and plays it (see [Finding sounds](pads.md#finding-sounds-browse-for)).
 

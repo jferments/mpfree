@@ -2031,7 +2031,9 @@ pub struct Player {
     /// zips on the stick (plugin_page.rs).
     plugin_page: crate::plugin_page::PluginPage,
     /// The hint line shows the Plugins place's.
-    plugins_hinted: bool,
+    /// The browser place's own hint line last shown (Plugins, Sets, a set
+    /// being edited), or "".
+    plugins_hinted: &'static str,
     /// What each track plays ([`ToUi::TrackSounds`]), written under its
     /// name on Arrange.
     track_sounds: TrackSounds,
@@ -2612,7 +2614,7 @@ impl Player {
             project_defaults: None,
             project_plugins: std::sync::Arc::new(crate::plugins::Plugins::none()),
             plugin_page: crate::plugin_page::PluginPage::new(),
-            plugins_hinted: false,
+            plugins_hinted: "",
             track_sounds: [None; crate::instruments::TRACKS],
             track_sends: [None; crate::instruments::TRACKS],
             track_kits: crate::sampler::TrackKits::default(),
@@ -6617,9 +6619,12 @@ impl Player {
                 {
                     mpfree_browser_ui::EXPORT_HINT.to_string()
                 }
-                View::Browser if self.browser.as_ref().is_some_and(|b| b.plugins_shown()) => {
-                    mpfree_browser_ui::PLUGINS_HINT.to_string()
-                }
+                View::Browser if self.browser.as_deref().and_then(place_hint).is_some() => self
+                    .browser
+                    .as_deref()
+                    .and_then(place_hint)
+                    .unwrap_or_default()
+                    .to_string(),
                 View::Browser => mpfree_browser_ui::BROWSER_HINT.to_string(),
             }
         };
@@ -9598,13 +9603,39 @@ impl Player {
         b.set_pad_target(target);
         b.set_kit_target(kit_on);
         b.set_pad_map(map);
+        if b.sets_shown() {
+            // The rig, for a set song's Needs and the set's check: the
+            // ports the MIDI setup knows and the ones plugged in now, by
+            // the names the musician gave them.
+            let rig = self.io_model.as_ref().map(|m| {
+                let m = m.lock().unwrap_or_else(|e| e.into_inner());
+                let mut rig: Vec<mpfree_browser_ui::RigThing> = Vec::new();
+                let known = m.setup.ports.iter().map(|p| p.name.as_str());
+                for name in known.chain(m.live.ports.iter().map(|p| p.name.as_str())) {
+                    let shown = m.setup.shown(name).to_string();
+                    if !rig.iter().any(|r| r.name == shown) {
+                        rig.push(mpfree_browser_ui::RigThing {
+                            connected: m.live.ports.iter().any(|p| p.name == name),
+                            name: shown,
+                        });
+                    }
+                }
+                rig
+            });
+            if let (Some(rig), Some(b)) = (rig, self.browser.as_mut()) {
+                b.set_rig(rig);
+            }
+        }
+        let Some(b) = self.browser.as_mut() else {
+            return;
+        };
         for a in mpfree_browser_ui::step(&mut self.ui, b) {
             self.browse_action(a);
         }
-        // The Plugins place has its own hint line.
-        let plugins = self.browser.as_ref().is_some_and(|b| b.plugins_shown());
-        if plugins != self.plugins_hinted {
-            self.plugins_hinted = plugins;
+        // The Plugins and Sets places have their own hint lines.
+        let hint = self.browser.as_deref().and_then(place_hint).unwrap_or("");
+        if hint != self.plugins_hinted {
+            self.plugins_hinted = hint;
             self.refresh_hint();
         }
     }
@@ -9800,6 +9831,17 @@ impl Player {
                 }
                 self.plugin_page.input(pi, rows, &self.project_plugins);
                 self.show_plugins();
+            }
+            // Play set opens the Show view (live shows B1, next step).
+            A::PlaySet { loc, set } => {
+                // The Show view takes it with live shows B1's next step;
+                // until then the hint line says so, as the manual does.
+                self.tell("Play set comes with the Show view, which is still being built");
+                self.say(format!(
+                    "browser: Play set {} ({} songs): the Show view is not wired yet",
+                    loc.name(),
+                    set.songs.len()
+                ));
             }
             // Not wired yet; said, never dropped quietly.
             other => self.say(format!(
@@ -16201,6 +16243,41 @@ fn browser_projects(fonts: Fonts) -> Result<Player, String> {
     built
 }
 
+/// The whole browser (BROWSE) in its Sets place (live shows B1), over the
+/// sample sets: Friday at the Lantern picked (`edit` false), or open in
+/// the Set editor with song 4, Night drive, picked.
+fn browser_sets(fonts: Fonts, edit: bool) -> Result<Player, String> {
+    use mpfree_browser_ui::sample::{fill, fill_sets, sample_rig, source};
+    use mpfree_browser_ui::{Input, SetButton, SetInput};
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("mpfree-sets-{}-{nanos}", std::process::id()));
+    let built = (|| {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let lib = fill(&dir)?;
+        fill_sets(&lib)?;
+        let mut p = sample_sampler(fonts);
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib), "");
+        p.take_actions();
+        p.apply(ToUi::Show(View::Browser));
+        let b = p.browser.as_mut().ok_or("no browser")?;
+        b.set_rig(sample_rig());
+        b.go_source(source("Sets"));
+        b.input(Input::Sets(SetInput::Row(1)));
+        if edit {
+            b.input(Input::Sets(SetInput::Button(SetButton::EditSet)));
+            b.input(Input::Sets(SetInput::Row(3)));
+        }
+        p.step_browser();
+        p.take_actions();
+        Ok(p)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    built
+}
+
 /// The whole browser (BROWSE) in its Plugins place: a made-up catalog
 /// with two plugins installed and a zip on the stick, Mono Bass picked
 /// (installed, an update out), its own screen drawn from the test skin. Nothing is fetched or written. For
@@ -16300,6 +16377,22 @@ pub fn on_screens_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
 /// `hint` with what it says the Q-Links do ("Q-Links: rate, gate ...",
 /// "Q-Links 1-4: the marked knobs") changed to what they do in controller
 /// mode, which takes them on every page.
+/// The hint line of the browser's place, when it has its own: Plugins,
+/// Sets, or a set being edited.
+fn place_hint(b: &mpfree_browser_ui::Browser) -> Option<&'static str> {
+    if b.plugins_shown() {
+        Some(mpfree_browser_ui::PLUGINS_HINT)
+    } else if b.set_adding() {
+        Some(mpfree_browser_ui::SET_ADD_HINT)
+    } else if b.set_editing() {
+        Some(mpfree_browser_ui::SET_EDIT_HINT)
+    } else if b.sets_shown() {
+        Some(mpfree_browser_ui::SETS_HINT)
+    } else {
+        None
+    }
+}
+
 fn controller_qlinks_hint(hint: &str) -> String {
     let sep = if hint.contains("   ·   ") {
         "   ·   "
@@ -16876,6 +16969,29 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     let _ = play_card.take_actions();
     play_card.ui.invalidate();
     out.push(("mixer-io-learn-play", play_card));
+    // The Learn section's Show card (live shows B1, layout spec 4d): a
+    // footswitch on Next song kept in the rig, and the card open.
+    let next = "port FS-6 | ch 16 | cc 80 | show.0 | 0 1 | momentary | jump";
+    let l = mpfree_midi::learn::Saved::parse(next).expect("a learned control");
+    let mut rig = learn_rig();
+    rig.setup.learned_in(mpfree_midi::setup::Kept::Rig, l);
+    rig.live.learn_names.push("Show · Next song".into());
+    let mut show_card = io_section_screen(fonts(), &io_state, rig, mpfree_midi_ui::LEARN);
+    let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
+    show_card.ui.paint(&mut c);
+    if let Some(t) = show_card
+        .ui
+        .targets()
+        .into_iter()
+        .find(|t| t.widget == mpfree_mixer_ui::MIXER && t.target.id == "learn-show")
+    {
+        let (x, y) = t.target.centre();
+        show_card.touch(1, Touch::Down, x, y);
+        show_card.touch(1, Touch::Up, x, y);
+    }
+    let _ = show_card.take_actions();
+    show_card.ui.invalidate();
+    out.push(("mixer-io-learn-show", show_card));
     // The CV section with an envelope and two LFOs, each with its two
     // more rows.
     out.push((
@@ -18179,6 +18295,16 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     match browser_plugins(fonts()) {
         Ok(plugins) => out.push(("browser-plugins", plugins)),
         Err(e) => eprintln!("browser-plugins: not drawn ({e})"),
+    }
+    // The browser's Sets place (live shows B1, layout spec 4n), then the
+    // Set editor with a song picked.
+    match browser_sets(fonts(), false) {
+        Ok(sets) => out.push(("browser-sets", sets)),
+        Err(e) => eprintln!("browser-sets: not drawn ({e})"),
+    }
+    match browser_sets(fonts(), true) {
+        Ok(song) => out.push(("browser-set-song", song)),
+        Err(e) => eprintln!("browser-set-song: not drawn ({e})"),
     }
     // The Slice tool on the same pad: chopped at its hits, slice 3 picked
     // (Q-Link 2).

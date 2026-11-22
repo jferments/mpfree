@@ -748,21 +748,16 @@ fn taps_and_drags_on_the_widget() {
     tap(&mut ui, x, y0 + 52);
     step(&mut ui, &mut b);
     assert_eq!(b.screen().path, "Samples / Field recordings");
-    // Tap Trash in the places.
-    let trash_y = {
-        let mut y = r.y + 34 + 4;
-        for (i, s) in SOURCES.iter().enumerate() {
-            if i > 0 && matches!(s.label(), "Recent" | "Trash") {
-                y += 14;
-            }
-            if s.label() == "Trash" {
-                break;
-            }
-            y += 50;
-        }
-        y + 20
-    };
-    tap(&mut ui, r.x + 80, trash_y);
+    // Tap Trash in the places (the rows close up to fit them all).
+    let trash = ui
+        .targets()
+        .into_iter()
+        .find(|t| t.target.id == "place" && t.target.label == "Trash")
+        .unwrap()
+        .target;
+    assert!(trash.rect.h >= 40, "{:?}", trash.rect);
+    let (tx, ty) = trash.centre();
+    tap(&mut ui, tx, ty);
     step(&mut ui, &mut b);
     assert_eq!(b.screen().path, "Trash");
     // Draw it, every sample screen too, without a panic.

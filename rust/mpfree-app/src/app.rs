@@ -689,6 +689,10 @@ pub struct Settings {
     pub bpm: f64,
     /// How Latch keeps pads: Replace (a fresh press starts over) or Toggle.
     pub latch_mode: LatchMode,
+    /// Quick advance (live shows B1, layout spec 5): with a set playing
+    /// and the transport stopped, one press of Next song goes. Off, it
+    /// arms and a second press goes, stopped too.
+    pub quick_advance: bool,
     /// Audio buffer in periods of 128 frames: 3 as Akai's app, or 2.
     pub periods: u32,
     pub show_pressure: bool,
@@ -801,6 +805,7 @@ impl Default for Settings {
             rate: Rate::Sixteenth,
             bpm: 120.0,
             latch_mode: LatchMode::Replace,
+            quick_advance: false,
             periods: 3,
             show_pressure: false,
             midi_paused: false,
@@ -866,6 +871,8 @@ pub enum Item {
     Curve,
     ScreenVelocity,
     LatchMode,
+    /// Prefs: Quick advance, Off or On (live shows B1).
+    QuickAdvance,
     Buffer,
     FindButtons,
     /// Prefs: opens the touch screen section.
@@ -1681,6 +1688,7 @@ pub struct App {
 const PREFS_ROWS: &[Item] = &[
     Item::Curve,
     Item::LatchMode,
+    Item::QuickAdvance,
     Item::Buffer,
     Item::FindButtons,
     Item::DebugMode,
@@ -4556,6 +4564,10 @@ impl App {
                     _ => "Replace".to_string(),
                 },
             ),
+            Item::QuickAdvance => (
+                "Quick advance",
+                if s.quick_advance { "On" } else { "Off" }.to_string(),
+            ),
             Item::Buffer => (
                 "Audio buffer",
                 format!(
@@ -4733,6 +4745,13 @@ impl App {
                 "let go.",
                 "Replace: a fresh press starts a new set.",
                 "Toggle: each press adds or removes that pad.",
+            ],
+            Item::QuickAdvance => vec![
+                "While a set plays: how Next song goes.",
+                "Off: Next song arms the next song and a",
+                "second press goes, while stopped too.",
+                "On: with the transport stopped, one press",
+                "goes.",
             ],
             Item::Buffer => vec![
                 "How much sound is queued ahead of the speakers.",
@@ -5206,6 +5225,7 @@ impl App {
                 };
                 self.update_engine();
             }
+            Item::QuickAdvance => s.quick_advance = !s.quick_advance,
             Item::Buffer => {
                 let p = (s.periods as i32 + d).clamp(2, 3) as u32;
                 if p != s.periods {

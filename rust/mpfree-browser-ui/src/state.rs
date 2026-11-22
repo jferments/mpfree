@@ -14,6 +14,13 @@ use std::path::PathBuf;
 
 use crate::export::{ExportChoice, ExportInput, ExportPanel, ExportPhase, ExportSetup};
 use crate::plugins::{PluginInput, PluginsScreen};
+use crate::sets::{SetInput, SetsScreen};
+use mpfree_library::{Found, Set};
+
+#[path = "set_place.rs"]
+mod set_place;
+pub use set_place::SET_NAME_MAX;
+use set_place::{SetKey, SetsPlace};
 
 /// The rows of the places column.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,8 +37,9 @@ pub enum Source {
 
 /// The places column, top to bottom. A gap is drawn before Recent and
 /// before Trash.
-pub const SOURCES: [Source; 11] = [
+pub const SOURCES: [Source; 12] = [
     Source::Place(Place::Projects),
+    Source::Place(Place::Sets),
     Source::Place(Place::Samples),
     Source::Place(Place::Kits),
     Source::Place(Place::Instruments),
@@ -43,6 +51,9 @@ pub const SOURCES: [Source; 11] = [
     Source::Factory,
     Source::Place(Place::Trash),
 ];
+
+/// Where the full browser opens: Samples.
+pub const SAMPLES: usize = 2;
 
 impl Source {
     pub fn label(self) -> &'static str {
@@ -346,6 +357,8 @@ pub enum Input {
     Export(ExportInput),
     /// A touch in the Plugins place.
     Plugins(PluginInput),
+    /// A touch in the Sets place.
+    Sets(SetInput),
     /// A finger on pad `pad` (0 to 15) of the pad map's bank shown,
     /// pressed (`down`) or lifted.
     MapPad {
@@ -543,6 +556,12 @@ pub enum BrowseAction {
     /// The Plugins place's touches, dial and buttons, for the app, which
     /// answers with [`Browser::set_plugins`].
     Plugins(PluginInput),
+    /// Play set on a set's card: open its first song and show the Show
+    /// view in Perform (live shows B1).
+    PlaySet {
+        loc: Loc,
+        set: Set,
+    },
     /// A finger on the pad map (the Selected column's pads): kit pad `pad`
     /// (0 is A1) pressed or lifted. The app picks it, as a hit on the
     /// MPC's pad does, so Load names it, and plays what is on it while the
@@ -599,6 +618,23 @@ pub enum Purpose {
     PluginSearch,
     /// A name for the synth's sound, saved as a preset of the engine's.
     SavePreset(String),
+    /// A name for a new set.
+    NewSet,
+    /// A new name for this set.
+    RenameSet(Loc),
+    /// The notes of the song picked in the set being edited.
+    SetNotes,
+}
+
+impl Purpose {
+    /// The most characters it takes.
+    fn max_len(&self) -> usize {
+        match self {
+            Purpose::NewSet | Purpose::RenameSet(_) => SET_NAME_MAX,
+            Purpose::SetNotes => mpfree_library::sets::MAX_NOTES,
+            _ => mpfree_library::name::MAX_NAME,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -702,6 +738,8 @@ pub struct Screen {
     pub export: Option<ExportPanel>,
     /// The Plugins place, while it is the place shown.
     pub plugins: Option<PluginsScreen>,
+    /// The Sets place, while it is the place shown.
+    pub sets: Option<SetsScreen>,
     /// The track a kit's Load gives the kit to (the armed track's name,
     /// `"Drums"`), named on the button: Load on Drums.
     pub kit_on: Option<String>,
@@ -731,7 +769,7 @@ impl Screen {
     /// Nothing to show (before the browser has listed anything).
     pub fn empty() -> Screen {
         Screen {
-            source: 1,
+            source: SAMPLES,
             path: String::new(),
             can_go_back: false,
             rows: Vec::new(),
@@ -752,6 +790,7 @@ impl Screen {
             sort: Sort::Name,
             export: None,
             plugins: None,
+            sets: None,
             kit_on: None,
             load_on: None,
             pad_map: None,
@@ -888,6 +927,8 @@ pub struct Browser {
     plugins: PluginsScreen,
     /// The rows the Plugins place's list has room for.
     plugin_rows: usize,
+    /// The Sets place: the sets, the one being edited, the rig.
+    sets: SetsPlace,
     /// Where Save kit was pressed: the folder [`Browser::save_kit`] saves into.
     kit_into: Option<Loc>,
     /// The sounds MPFree has put in the library, by their version
@@ -920,7 +961,7 @@ impl Browser {
     fn with(exec: Exec) -> Browser {
         let mut b = Browser {
             exec,
-            source: 1,
+            source: SAMPLES,
             folder: Loc::top(Place::Samples),
             entries: Vec::new(),
             trash: Vec::new(),
@@ -964,6 +1005,7 @@ impl Browser {
             export_last: None,
             plugins: PluginsScreen::default(),
             plugin_rows: 8,
+            sets: SetsPlace::default(),
             kit_into: None,
             bundled: None,
             kit_target: None,
@@ -1054,6 +1096,7 @@ impl Browser {
     fn apply(&mut self, d: Done) {
         match d.result {
             Err(e) => {
+                self.sets_failed();
                 if let Some((_, name, _)) = self.saving_preset.take() {
                     self.status = Some((format!("{name} wasn't saved: {e}"), true));
                     return;
@@ -1180,8 +1223,16 @@ impl Browser {
                     self.detail_meta = loc.parent().map(|p| (p, m));
                 }
             }
+            Ok(Outcome::At(loc)) if loc.place == Place::Sets && self.sets_waits_new() => {
+                self.sets_made(loc)
+            }
             Ok(Outcome::At(loc)) => {
-                self.status = Some((format!("Done: {}", loc.display()), false));
+                let what = match loc.place {
+                    // A set renamed or copied: by its name, as the place shows it.
+                    Place::Sets => loc.name().trim_end_matches(".set").to_string(),
+                    _ => loc.display(),
+                };
+                self.status = Some((format!("Done: {what}"), false));
                 if loc.parent().as_ref() == Some(&self.folder) {
                     self.select_name = Some(loc.name().to_string());
                 }
@@ -1201,8 +1252,12 @@ impl Browser {
             // The manifest a save asked for: nothing to say unless it
             // failed (the error says so on the status line).
             Ok(Outcome::Manifest(..)) => {}
-            // Sets: the Set editor comes once its screens are approved.
-            Ok(Outcome::Set(..) | Outcome::SetSaved(..) | Outcome::SetChecked(..)) => {}
+            // Sets (live shows B1): the Sets place and the Set editor.
+            Ok(Outcome::Sets(list)) => self.sets_listed(list),
+            Ok(Outcome::Songs(songs)) => self.sets_songs(songs),
+            Ok(Outcome::SetChecked(loc, checks)) => self.sets_checked(loc, checks),
+            // A set read or saved: the editor already has it.
+            Ok(Outcome::Set(..) | Outcome::SetSaved(..)) => {}
             Ok(Outcome::Autosaved(loc)) => {
                 self.actions.push(BrowseAction::Autosaved { loc });
                 if self.folder == Loc::top(Place::Projects) {
@@ -1334,6 +1389,7 @@ impl Browser {
         }
         match self.current() {
             Source::Place(Place::Trash) => self.send(Job::Trash),
+            Source::Place(Place::Sets) => self.sets_refresh(),
             Source::Place(_) => self.send_in(Lane::List, Job::List(self.folder.clone())),
             _ => self.rebuild(),
         }
@@ -1704,6 +1760,9 @@ impl Browser {
         if SOURCES[i] == Source::Plugins {
             self.actions.push(BrowseAction::Plugins(PluginInput::Shown));
         }
+        if SOURCES[i] == Source::Place(Place::Sets) {
+            self.sets_reset();
+        }
         self.refresh();
     }
 
@@ -1767,7 +1826,7 @@ impl Browser {
 
     /// Up one folder (the - button, Back).
     pub fn back(&mut self) {
-        if self.send_plugins(PluginInput::Back) {
+        if self.send_plugins(PluginInput::Back) || self.send_sets(SetKey::Back) {
             return;
         }
         if self.export_shown().is_some() {
@@ -1801,7 +1860,7 @@ impl Browser {
 
     /// Into the selected folder (the + button).
     pub fn enter(&mut self) {
-        if self.send_plugins(PluginInput::Enter) {
+        if self.send_plugins(PluginInput::Enter) || self.send_sets(SetKey::Enter) {
             return;
         }
         let row = self.selected_row().cloned();
@@ -1836,7 +1895,7 @@ impl Browser {
                 return;
             }
         }
-        if self.send_plugins(PluginInput::Dial(delta)) {
+        if self.send_plugins(PluginInput::Dial(delta)) || self.send_sets(SetKey::Dial(delta)) {
             return;
         }
         if !matches!(self.modal, Modal::None) || self.rows.is_empty() {
@@ -2149,7 +2208,7 @@ impl Browser {
             Modal::Keyboard { .. } => return self.input(Input::Key(Key::Done)),
             Modal::None => {}
         }
-        if self.send_plugins(PluginInput::Push) {
+        if self.send_plugins(PluginInput::Push) || self.send_sets(SetKey::Push) {
             return;
         }
         let Some(r) = self.selected_row().cloned() else {
@@ -2207,7 +2266,7 @@ impl Browser {
 
     /// ERASE while the browser is open: Delete (asks first).
     pub fn erase(&mut self) {
-        if self.plugins_shown() {
+        if self.plugins_shown() || self.send_sets(SetKey::Erase) {
             return;
         }
         self.button(Button::Delete);
@@ -2307,6 +2366,7 @@ impl Browser {
             Input::Plugins(p) => {
                 self.send_plugins(p);
             }
+            Input::Sets(i) => self.sets_input(i),
             Input::MapPad { pad, .. } => {
                 let p = self.map_bank * 16 + pad;
                 if pad < 16 && self.pad_map.as_ref().is_some_and(|m| p < m.pads.len()) {
@@ -2747,13 +2807,13 @@ impl Browser {
         };
         match k {
             Key::Char(c) => {
-                if text.len() < mpfree_library::name::MAX_NAME {
+                if text.chars().count() < purpose.max_len() {
                     text.push(if *shift { c.to_ascii_uppercase() } else { c });
                     *shift = false;
                 }
             }
             Key::Space => {
-                if !text.is_empty() && text.len() < mpfree_library::name::MAX_NAME {
+                if !text.is_empty() && text.chars().count() < purpose.max_len() {
                     text.push(' ');
                 }
             }
@@ -2782,6 +2842,10 @@ impl Browser {
                     self.status = Some((format!("Searching for \u{201c}{name}\u{201d}"), false));
                     self.send(Job::Search(name, MAX_FOUND));
                     return;
+                }
+                if *purpose == Purpose::SetNotes {
+                    self.modal = Modal::None;
+                    return self.sets_notes_typed(name);
                 }
                 if !valid_name(&name) {
                     self.status = Some((
@@ -2815,7 +2879,8 @@ impl Browser {
                         self.actions
                             .push(BrowseAction::SavePresetRequested { engine, name });
                     }
-                    Purpose::Search | Purpose::PluginSearch => {}
+                    Purpose::NewSet | Purpose::RenameSet(_) => self.sets_named(purpose, name),
+                    Purpose::Search | Purpose::PluginSearch | Purpose::SetNotes => {}
                 }
             }
         }
@@ -3285,6 +3350,7 @@ impl Browser {
             sort: self.sort,
             export: self.export.clone().filter(|_| self.pick.is_none()),
             plugins: self.plugins_shown().then(|| self.plugins.clone()),
+            sets: self.sets_shown().then(|| self.sets_screen()),
             kit_on: self.kit_target.clone(),
             load_on: self.pad_target.clone(),
             pad_map: self.map_shown(),
@@ -3656,6 +3722,7 @@ fn guess_kind(l: &Loc) -> Kind {
 pub fn kind_label(k: Kind) -> String {
     match k {
         Kind::Folder => "Folder".into(),
+        Kind::Set => "Set list".into(),
         Kind::Project => "Project".into(),
         Kind::Audio(f) => format!(
             "{} audio",

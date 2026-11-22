@@ -14,6 +14,10 @@
 //! needs = <a keyboard or control's name>
 //! nice = <one it can do without>
 //! notes = <text, with \n for a new line and \\ for a backslash>
+//! checked = <seconds since 1970> <tempo then>
+//! not-ready = <why, from that check>
+//! limit = <what it plays without, from that check>
+//! unchecked = yes
 //! ```
 //!
 //! - **Saved whole.** [`Library::save_set`] writes `<name>.set.part`,
@@ -24,7 +28,8 @@
 //! - **The check** ([`Library::check_song`]) is the open's quick check
 //!   (live shows A1): the project reads, every file its manifest lists is
 //!   there and unchanged, and the keyboards and controls it needs are
-//!   connected.
+//!   connected. Each song keeps its last check (`checked` and the lines
+//!   after it), so the Sets place shows it after a restart.
 
 use crate::project::{write_synced, PARTS};
 use crate::{clean_name, unique_name, Entry, Library, Loc, Place};
@@ -124,6 +129,8 @@ pub struct SetSong {
     /// Shown big while it plays: key, cues, who starts. At most
     /// [`MAX_NOTES`] characters.
     pub notes: String,
+    /// Its last check: when (seconds since 1970) and what it said.
+    pub check: Option<(u64, SongCheck)>,
     /// Lines this build doesn't know, kept as they were.
     pub extra: Vec<String>,
 }
@@ -182,6 +189,18 @@ impl Set {
             }
             if !song.notes.is_empty() {
                 s.push_str(&format!("notes = {}\n", escape(&song.notes)));
+            }
+            if let Some((at, c)) = &song.check {
+                s.push_str(&format!("checked = {at} {}\n", tempo_word(c.tempo_x10)));
+                for w in &c.not_ready {
+                    s.push_str(&format!("not-ready = {}\n", one_line(w)));
+                }
+                for w in &c.limits {
+                    s.push_str(&format!("limit = {}\n", one_line(w)));
+                }
+                if c.unchecked {
+                    s.push_str("unchecked = yes\n");
+                }
             }
             for l in &song.extra {
                 s.push_str(l);
@@ -256,10 +275,48 @@ impl Set {
                     needed: key == "needs",
                 }),
                 "notes" => song.set_notes(&unescape(value)),
+                "checked" => {
+                    let (at, tempo) = value.split_once(' ').unwrap_or((value, ""));
+                    match at.parse::<u64>() {
+                        Ok(at) => {
+                            let tempo_x10 = tempo
+                                .trim()
+                                .parse::<f64>()
+                                .ok()
+                                .filter(|t| t.is_finite() && *t > 0.0 && *t < 1000.0)
+                                .map_or(0, |t| (t * 10.0).round() as u32);
+                            song.check = Some((
+                                at,
+                                SongCheck {
+                                    tempo_x10,
+                                    ..SongCheck::default()
+                                },
+                            ));
+                        }
+                        Err(_) => song.check = None,
+                    }
+                }
+                "not-ready" | "limit" | "unchecked" if song.check.is_some() => {
+                    let c = &mut song.check.as_mut().expect("checked").1;
+                    match key {
+                        "not-ready" => c.not_ready.push(value.to_string()),
+                        "limit" => c.limits.push(value.to_string()),
+                        _ => c.unchecked = value == "yes",
+                    }
+                }
                 _ => song.extra.push(line.to_string()),
             }
         }
         Ok(set)
+    }
+}
+
+/// A tempo kept to a tenth: "92", "92.5", or "0" for none.
+fn tempo_word(x10: u32) -> String {
+    if x10.is_multiple_of(10) {
+        (x10 / 10).to_string()
+    } else {
+        format!("{}.{}", x10 / 10, x10 % 10)
     }
 }
 
@@ -331,11 +388,19 @@ pub struct SongCheck {
     /// It has no list of its files yet, so they weren't checked (saving it
     /// makes one).
     pub unchecked: bool,
+    /// Its tempo when it was checked, in tenths of a BPM (0: it didn't
+    /// read).
+    pub tempo_x10: u32,
 }
 
 impl SongCheck {
     pub fn ready(&self) -> bool {
         self.not_ready.is_empty()
+    }
+
+    /// Its tempo as the Set editor shows it ("92 BPM"), if it read.
+    pub fn tempo(&self) -> Option<String> {
+        (self.tempo_x10 > 0).then(|| format!("{} BPM", tempo_word(self.tempo_x10)))
     }
 
     /// The chip the Set editor shows.
@@ -504,10 +569,13 @@ impl Library {
             );
             return (found, c);
         };
-        if let Err(e) = self.open_project(loc) {
-            c.not_ready
-                .insert(0, format!("it doesn\u{2019}t read: {e}"));
-            return (found, c);
+        match self.open_project(loc) {
+            Ok(snap) => c.tempo_x10 = (snap.meta.tempo.clamp(0.0, 999.9) * 10.0).round() as u32,
+            Err(e) => {
+                c.not_ready
+                    .insert(0, format!("it doesn\u{2019}t read: {e}"));
+                return (found, c);
+            }
         }
         match self.check_project(loc, deep) {
             Ok(check) if check.no_manifest => c.unchecked = true,
@@ -576,6 +644,15 @@ mod tests {
             },
         ];
         a.set_notes("F minor.\nSam starts \\ the Rhodes.");
+        a.check = Some((
+            1_763_836_800,
+            SongCheck {
+                not_ready: vec!["the file samples/strings.wav is missing".into()],
+                limits: vec!["FS-6 isn\u{2019}t connected".into()],
+                unchecked: false,
+                tempo_x10: 925,
+            },
+        ));
         let b = SetSong::new("", "Old song");
         let set = Set {
             songs: vec![a, b],
@@ -644,10 +721,16 @@ mod tests {
         lib.update_manifest(&night).unwrap();
         let song = SetSong::new(&saved.id, "Night drive");
         let yes = |_: &str| true;
+        let (found, check) = lib.check_song(&song, &yes);
+        assert_eq!(found, Found::At(night.clone()));
         assert_eq!(
-            lib.check_song(&song, &yes),
-            (Found::At(night.clone()), SongCheck::default())
+            check,
+            SongCheck {
+                tempo_x10: 1200,
+                ..SongCheck::default()
+            }
         );
+        assert_eq!(check.tempo().as_deref(), Some("120 BPM"));
 
         // Renamed: still found, still ready.
         let moved = lib.rename(&night, "Night drive (live)").unwrap();
@@ -705,14 +788,19 @@ mod tests {
         let lib = Library::at(&temp()).unwrap();
         let projects = Loc::top(Place::Projects);
         let night = projects.join("Night drive").unwrap();
-        let saved = lib.save_project(&night, &song_snap("Night drive"), 0).unwrap();
+        let saved = lib
+            .save_project(&night, &song_snap("Night drive"), 0)
+            .unwrap();
         // Autosave's project and plain folders aren't songs.
         let auto = lib.autosave_project().unwrap();
         let mut snap = song_snap("Autosave");
         snap.meta.mark_autosave();
         lib.save_project(&auto, &snap, 0).unwrap();
         lib.new_folder(&projects, "Old stuff").unwrap();
-        assert_eq!(lib.songs().unwrap(), [("Night drive".to_string(), saved.id.clone())]);
+        assert_eq!(
+            lib.songs().unwrap(),
+            [("Night drive".to_string(), saved.id.clone())]
+        );
 
         let friday = lib.new_set("Friday").unwrap();
         let set = Set {
