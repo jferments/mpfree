@@ -2,7 +2,7 @@
 
 Phase 0 of the [audio tracks rethink](https://claude.ai/artifact/2rrcXW5CTeSmEuMA6EWwu7), approved by the owner on 22 Nov 2026: the rules that keep a project from being half opened, half saved or saved over with things missing. They come before any change to the project format, because builds already on a stick can't be fixed afterwards.
 
-Code: `rust/mpfree-app/src/project.rs` (`check`, `completed`, `opening`), `rust/mpfree-app/src/gui.rs` (`Player::open_project`, `project_opening`, `open_refused`), `rust/mpfree-browser-ui/src/state.rs` (`Browser::open_refused`). The project's files and parts are in [The browser and projects](browser.md#the-parts).
+Code: `rust/mpfree-app/src/project.rs` (`check`, `completed`, `opening`), `rust/mpfree-app/src/gui.rs` (`Player::open_project`, `project_opening`, `open_refused`, `left_out`), `rust/mpfree-browser-ui/src/state.rs` (`Browser::open_refused`, `left_out`, `save_with`). The project's files and parts are in [The browser and projects](browser.md#the-parts).
 
 ## Opening is all or nothing (0.1, as built)
 
@@ -20,11 +20,35 @@ MPFree reads the whole project before anything of the open one changes. If any p
 
 **Not refused** (opens as before, and is said): lines a part doesn't know (a newer build's, skipped by every reader), and things this build can't make, such as a plugin whose file isn't on the stick, an effect it hasn't got or a track pointing at an instrument the list hasn't got. A format 2 project with no list of instruments opens with New's list, said. Lenient parts stay lenient: the Perform set skips a line it can't read, the MIDI setup and the arps' settings say what they left out, and a pads part that doesn't read (what the pads play is how you play, not the song) is said and the pads follow the track.
 
-**Still to come:** a project that opened with things left out is saved over only after MPFree says what would be lost, and "every recording found" waits for the shared streaming layer. Late results are 0.3, below.
+**Still to come:** "every recording found" waits for the shared streaming layer (the audio tracks' phase 1 builds recordings on `mpfree-stream`, agreed with the streaming thread on 22 Nov). Late results are 0.3, below; what happens to a project that opened with things left out is [Never saved over](#a-project-that-opened-with-things-left-out-is-never-saved-over-as-built), below.
 
 **Tests:** `project::tests::a_project_this_build_cant_read_whole_doesnt_open_and_says_why` (each part, the needs line, the missing parts), `the_project_format_and_the_list_are_written_and_a_problem_is_said`, and in the screen `gui::tests::a_project_this_build_cant_read_doesnt_open_and_the_open_one_stays`, which opens a project whose clips are `mpfree-clips 9` (as an `mpfree-clips 2` project is to a build from before it) and one of a newer format, and checks that nothing reaches the engines and the browser still saves to the project that was open.
 
 ## Saving
+
+### A project that opened with things left out is never saved over (as built)
+
+The plan said such a project "is saved over only after MPFree says what would be lost". As built it is never saved over by a plain save: SHIFT + BROWSE, the browser's Save and the power-off dialog's save all go through one path with no room for a question (the power-off one least of all), so the save goes into a new project beside it and says why. Nothing is lost and nothing waits on an answer; the musician can still save over it on purpose with Save as.
+
+**What counts as left out:** what the project names that a save would drop, never a note that changes nothing saved. Each source gives a few words for the musician, as it finds out:
+
+| Where | Left out | Code |
+|---|---|---|
+| The mixer (screen thread, at the open) | an effect this stick can't make; an effect that didn't take its settings | `mixer_load` → `MixLoad::left_out` |
+| The tracks' instruments (same) | an instrument that can't be made, one past the most at once or on no track, its settings, a Wavetable sound that didn't move to Poly, a sound's effects and macros | `instruments_read`, `design_in` |
+| What the tracks play (same) | a track pointing at an instrument the list hasn't got | `tracks_play` |
+| The kits (read on a thread) | each sound, chop, pad, take or scene the sampler left out (missing, or no room), or the whole kits part | `SamplePage::take_left_out` |
+| The loops (read on a thread) | each loop whose sound can't be read, or the whole part | `loops_open` (third list) |
+| The audio tracks (read on a thread) | each take whose file can't be read or isn't the take's, or the whole part | `audio_open` (third list) |
+| The audio tracks (audio loop) | takes or tracks `AudioHost::load` had no room for | `TrackHost::take_left_out` → `ToUi::LeftOut` |
+
+`project::opening` collects the first three in `Opening::left_out`; `Player::open_project` hands them to the browser before the box goes to the audio loop, and the rest follow through `Player::left_out` as they come. Not left out: a newer build's lines (the format and `needs` gate are for that), a lasting id given anew, takes recorded at another rate (they play off-speed but are all there), sounds converted to the sound's rate. The looper's own load can only keep a loop out if the loop wasn't empty, which the clear before it rules out; streaming's open errors (`AudioHost::open_errors`) join when the app streams.
+
+**The browser** (`Browser::left_out`, `rust/mpfree-browser-ui/src/state.rs`) keeps the list for the project open. `save_with` then saves into `Library::copy_project_name` (`Night drive 2`, the next free number), which becomes the project when the save lands, with the status line and hint line saying *Saved as Night drive 2: Night drive opened without the effect X on Master and 2 more, so it stays as it was* (the Events log has each line from the open). The list is cleared when a save lands (the new project holds all it has), when another project opens (an open takes its own list; a refused open puts back the list of the project still open, `BeforeOpen`), for New project and for Save as: a typed name is the musician's choice, even the project's own, and Save as offers the name beside it first. Autosave never saves over a project anyway, and its project opens as new, unsaved work.
+
+**A save waits for the kits.** Until the opened project's kits are read, the sampler still holds the last project's, so a save then would have put the last project's kits into this one. A save now waits (`SamplePage::opening`, "not saved, the kits are still opening"), as it already did for the loops and the audio tracks, and so does autosave.
+
+**Tests:** `tests/browser.rs` `a_project_whose_open_left_things_out_is_saved_beside_it` (the save beside, the original's parts and versions untouched, later saves into the new project, Save as over the original, a refused open, New), `gui::tests::a_project_that_opened_with_things_left_out_is_saved_beside_it` (a missing plugin effect, kit sounds whose files aren't there, a take the audio loop had no room for, the save refused while the kits are read), and the left-out lists in `project::tests` (`an_effect_this_build_cannot_make_is_left_out_and_said`, the loops' and takes' open tests).
 
 ### The audio tracks' save waits and never allocates on the sound thread (0.2, as built)
 
