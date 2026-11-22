@@ -529,3 +529,124 @@ fn whole_files_load_behind_playback_one_step_at_a_time() {
     });
     assert_eq!(missed, 0);
 }
+
+#[test]
+fn promoted_holds_move_up_whole_or_not_at_all_and_go_back_together() {
+    let dir = folder("promote");
+    let frames = 200_000u64;
+    let paths: Vec<_> = (1..=3u32)
+        .map(|m| {
+            let p = dir.join(format!("{m}.wav"));
+            wav(&p, Store::Float, 2, frames, m);
+            p
+        })
+        .collect();
+    let cfg = Config {
+        slots: 16,
+        ..Config::default()
+    };
+    let mut rig = Rig::new(cfg, Plan::default());
+    rig.c.new_project();
+    for (s, p) in paths.iter().enumerate() {
+        rig.c.open(s as u16, p).expect("opens");
+    }
+    let uf = unit_frames(2);
+    rig.c
+        .hold(0, 0, 6 * uf, None, HoldTier::Head)
+        .expect("fits");
+    // The next song's starts, held together, go back together.
+    let song = rig
+        .c
+        .hold_all(&[(1, 0, 3 * uf), (2, 0, 3 * uf)], None, HoldTier::Next)
+        .expect("fits");
+    rig.c.set_reserve(5);
+    assert_eq!(rig.c.given_back(), Some(song[0]));
+    assert_eq!(
+        rig.c.given_back(),
+        Some(song[1]),
+        "the whole song, not half"
+    );
+    assert_eq!(rig.c.given_back(), None);
+    rig.c.set_reserve(0);
+    let song = rig
+        .c
+        .hold_all(&[(1, 0, 3 * uf), (2, 0, 3 * uf)], None, HoldTier::Next)
+        .expect("fits");
+    // Go accepted: the switch promotes them to Cued, all or none.
+    let gone = rig
+        .c
+        .hold(2, 4 * uf, 5 * uf, None, HoldTier::Next)
+        .expect("fits");
+    rig.c.release_hold(gone);
+    assert_eq!(
+        rig.c.promote(&[song[0], gone], HoldTier::Cued),
+        Err(Refusal::Gone(gone))
+    );
+    assert_eq!(
+        rig.c.hold_tier(song[0]),
+        Some(HoldTier::Next),
+        "nothing changed"
+    );
+    rig.c.promote(&song, HoldTier::Cued).expect("promoted");
+    assert_eq!(rig.c.hold_tier(song[1]), Some(HoldTier::Cued));
+    // Room short again: the Head hold (below Cued) goes, the song stays.
+    rig.c.set_reserve(5);
+    let back = rig.c.given_back().expect("one gone");
+    assert!(!song.contains(&back));
+    assert!(song.iter().all(|&h| rig.c.is_held(h)));
+    // Promoting only part of a group makes that part its own group.
+    let pair = rig
+        .c
+        .hold_all(&[(0, 0, uf), (0, 2 * uf, 3 * uf)], None, HoldTier::Next)
+        .expect("fits");
+    rig.c.promote(&pair[..1], HoldTier::Head).expect("promoted");
+    // 6 song units + 1 + 1 + 9 reserved > 16: only the part left at
+    // Next goes; 6 + 1 + 9 fits.
+    rig.c.set_reserve(9);
+    assert_eq!(rig.c.given_back(), Some(pair[1]));
+    assert_eq!(rig.c.given_back(), None);
+    assert!(rig.c.is_held(pair[0]));
+}
+
+#[test]
+fn whole_files_wait_while_playback_has_less_cushion_than_a_stall() {
+    let dir = folder("cushion");
+    let song = dir.join("song.wav");
+    wav(&song, Store::Pcm24, 2, 400_000, 4);
+    let kit = dir.join("kit.bin");
+    fs::write(&kit, vec![7u8; 100_000]).expect("write");
+    // A stick that stalls longer than the 8 s window ahead.
+    let plan = Plan {
+        stall_s: 30.0,
+        ..Plan::default()
+    };
+    let mut rig = Rig::new(small(), plan);
+    rig.c.new_project();
+    rig.c.open(0, &song).expect("opens");
+    let mut k = Cursor::new(0, 0);
+    let mut outs = vec![vec![0.0; 512]];
+    rig.warm(&mut [&mut k], 400);
+    let job = rig.c.read_file(&kit, JobTier::NextSong).expect("opens");
+    for _ in 0..50 {
+        rig.period(&mut [&mut k], &mut outs);
+        k.seek(0);
+        assert!(
+            rig.c.take_job(job).is_none(),
+            "a step started with too little cushion"
+        );
+    }
+    assert!(rig.c.cushion() <= 8.0 && rig.c.stall() >= 30.0);
+    // Nothing plays (the player runs on with no cursor): the step goes.
+    let mut got = None;
+    for _ in 0..50 {
+        rig.p.begin();
+        rig.p.end(256);
+        rig.c.step();
+        if let Some(r) = rig.c.take_job(job) {
+            got = Some(r.expect("reads"));
+            break;
+        }
+    }
+    assert_eq!(got.expect("read once playback stopped").len(), 100_000);
+    assert_eq!(rig.c.cushion(), f64::INFINITY);
+}
