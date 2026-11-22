@@ -14,7 +14,7 @@
 use mpfree_looper::{
     read_bars, After, Command as L, Edit, Looper, NoteStart, Phase, Reading, Shift, SmartEnd,
     SmartOutcome, Snap, SnapPlan, Starts, Step, Sure, TempoHint, TempoKind, FADE, KEEP_AFTER,
-    LOOP_MAX_BPM,
+    KEEP_BEFORE, LOOP_MAX_BPM,
 };
 use mpfree_transport::time::PPQ;
 use mpfree_transport::{Block, Command as T, Meter, State, Transport};
@@ -771,6 +771,48 @@ fn suggest_closes_on_the_tap_then_offers_the_end_it_found() {
     let note = r.l.take_smart().unwrap();
     assert_eq!(note.outcome, SmartOutcome::Offered(by.end));
     assert_eq!(r.l.stats().ends_offered, 1);
+}
+
+/// The loop point view's audio: the first pass as it was kept, frame
+/// for frame what was played round the press and round the tap, with
+/// silence past what was kept; none once an overdub joins it.
+#[test]
+fn the_kept_audio_reads_round_the_press_and_the_tap() {
+    let (mut r, rec_from, tap) = late_tap(SmartEnd::Suggest, true);
+    r.until_playing(512);
+    r.run(tap + 2_205 + 256);
+    let mut out = vec![[0.0f32; 2]; 600];
+    let (start, len) = r.l.read_kept(0, 0, &mut out[..0]).unwrap();
+    assert_eq!((start, len as u64), (KEEP_BEFORE, tap - rec_from));
+    // Kept frame k was played on frame rec_from - KEEP_BEFORE + k.
+    let played = |k: i64| sound((rec_from as i64 - KEEP_BEFORE as i64 + k) as u64);
+    let from = start as i64 - 300;
+    r.l.read_kept(0, from, &mut out).unwrap();
+    for (i, x) in out.iter().enumerate() {
+        assert!(
+            close(*x, played(from + i as i64)),
+            "frame {i} round the press"
+        );
+    }
+    let from = (start + len) as i64 - 300;
+    r.l.read_kept(0, from, &mut out).unwrap();
+    for (i, x) in out.iter().enumerate() {
+        assert!(
+            close(*x, played(from + i as i64)),
+            "frame {i} round the tap"
+        );
+    }
+    // Before the first frame kept: silence, then the audio.
+    r.l.read_kept(0, -100, &mut out).unwrap();
+    assert!(out[..100].iter().all(|x| *x == [0.0; 2]));
+    assert!(close(out[100], played(0)));
+    // Far past the end: silence.
+    r.l.read_kept(0, 10_000_000, &mut out).unwrap();
+    assert!(out.iter().all(|x| *x == [0.0; 2]));
+    r.cmd(L::Overdub);
+    r.run(r.frame + 30_000);
+    assert_eq!(r.l.read_kept(0, from, &mut out), None);
+    assert!(out.iter().all(|x| *x == [0.0; 2]));
 }
 
 /// Suggest's offer taken: the loop's end and the song's tempo change

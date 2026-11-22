@@ -668,6 +668,9 @@ fn snaps_never_allocate() {
     let sizes = [1usize, 7, 128, 333, 64, 256];
     let mut snap: Option<SnapPlan> = None;
     let mut landed = 0;
+    // The loop point view's windows, read as the host reads them.
+    let mut kept = vec![[0.0f32; 2]; 6_615];
+    let mut read = 0;
     let mut want = [
         Snap::Found,
         Snap::Undo,
@@ -730,6 +733,9 @@ fn snaps_never_allocate() {
         if l.take_snap().is_some_and(|d| d.landed) {
             landed += 1;
         }
+        if i % 7 == 0 && l.read_kept(0, (i % 900) as i64 - 300, &mut kept).is_some() {
+            read += 1;
+        }
         // The next snap once the last has landed and the offer is in.
         let st = l.status();
         if snap.is_none() && st.snapping.is_none() && (st.offer.is_some() || st.moved.is_some()) {
@@ -740,6 +746,7 @@ fn snaps_never_allocate() {
     }
     watch(false);
     assert_eq!(calls(), 0, "allocated while snapping");
+    assert!(read > 0, "the kept audio was read");
     assert_eq!(
         landed, 6,
         "Snap, Undo, Redo, Use my tap, Read as and its Undo landed"

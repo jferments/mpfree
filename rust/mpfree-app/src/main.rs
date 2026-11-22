@@ -6329,6 +6329,38 @@ fn looper_action(
             Vec::new()
         }
         looping::LoopAction::Capture => vec![app::Effect::Tell(looper.capture())],
+        // Smart loop end's chip, the loop point view and the hint line's
+        // question.
+        looping::LoopAction::Snap(s) => {
+            out.note(&looper.snap(s));
+            Vec::new()
+        }
+        looping::LoopAction::Side(side, keep) => {
+            out.note(&looper.side(side, keep));
+            Vec::new()
+        }
+        looping::LoopAction::Ab(on) => {
+            let line = looper.set_ab(on);
+            out.note(&line);
+            vec![app::Effect::Tell(line)]
+        }
+        looping::LoopAction::Answer(anyway) => {
+            let line = if anyway {
+                looper.snap_anyway()
+            } else {
+                looper.snap_not_now()
+            };
+            line.map(|l| {
+                out.note(&l);
+                app::Effect::Tell(l)
+            })
+            .into_iter()
+            .collect()
+        }
+        looping::LoopAction::PointView(open) => {
+            looper.set_point_open(open);
+            Vec::new()
+        }
         looping::LoopAction::CaptureSpan(end, bars) => {
             out.note(&looper.set_capture_span(end, bars));
             Vec::new()

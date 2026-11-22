@@ -2884,6 +2884,36 @@ impl Looper {
         })
     }
 
+    /// Loop `n`'s first pass as it was kept, not through its edits:
+    /// frames `from..from + out.len()` of the audio it kept (frame 0 its
+    /// first, [`KEEP_BEFORE`] before Record), silence outside it; and where
+    /// the loop is in it now: its first frame and its length. For the loop
+    /// point view, which draws your press, your tap and what smart loop
+    /// end found, with the audio round them. None (`out` silent) unless
+    /// the first pass plays alone as a stretch of what it kept (an
+    /// overdub, a cut or a merge ends that). Allocation-free.
+    pub fn read_kept(&self, n: usize, from: i64, out: &mut [[f32; 2]]) -> Option<(usize, usize)> {
+        out.fill([0.0; 2]);
+        let l = self.loops.get(n)?;
+        let (start, _) = l.bounds_now()?;
+        let size = l.views[0].size();
+        let a = from.clamp(0, size as i64) as usize;
+        let b = from.saturating_add(out.len() as i64).clamp(0, size as i64) as usize;
+        if b > a {
+            let at = (a as i64 - from) as usize;
+            LayerView {
+                store: &self.store,
+                lp: n,
+                slot: 0,
+                len: b - a,
+                valid: l.slots[0].valid,
+                view: View::region(size, a, b - a, a)?,
+            }
+            .read(0, &mut out[at..at + (b - a)]);
+        }
+        Some((start, l.len))
+    }
+
     /// The selected loop's history, for the Looper tab's undo history.
     pub fn history(&self) -> History {
         self.loop_history(self.selected)

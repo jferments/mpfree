@@ -157,7 +157,7 @@ When you tap the ring (or press REC) again, the loop closes there and its length
 How many bars the loop is depends on its **Length**:
 
 - **1, 2, 4 or 8 bars** means that many bars at the tempo you play. Set Length to 2 bars, play two bars at whatever speed feels right, close the loop, and the tempo is whatever makes those two bars. Nothing is guessed.
-- **Free** (or **Pattern** with no pattern playing) lets MPFree work out the bars. A loop's length alone can't tell 1 bar at 80 BPM from 2 bars at 160, so it picks the likeliest: a 2.5-second riff becomes one bar at 96 BPM, and a 7-second one four bars at about 137 BPM. When two answers are close, such as 1 bar at 79 or 2 bars at 158, it still picks one so the music can start, and the screen says it was a close call and names the other. A coming update adds **Read as**, to switch to the other with one tap: the loop sounds just the same, and the tempo changes on its next downbeat. A tempo you set yourself before recording (tapped, typed or turned) counts towards the answer, so if you set 80 first, that loop is 1 bar at 79. When you play the loop on the pads or a keyboard, the beat you played counts too: hits that land on the beats of 3 bars, and not of 4, make it 3 bars, so a loop can also be 3, 5, 6 or 7 bars when what you played clearly says so. The log says when the beat decided it ("from the beat you played"). To be sure of the bars, set Length.
+- **Free** (or **Pattern** with no pattern playing) lets MPFree work out the bars. A loop's length alone can't tell 1 bar at 80 BPM from 2 bars at 160, so it picks the likeliest: a 2.5-second riff becomes one bar at 96 BPM, and a 7-second one four bars at about 137 BPM. When two answers are close, such as 1 bar at 79 or 2 bars at 158, it still picks one so the music can start, and the picked loop's header says **Close call** with a button for the other ("Read as 2 bars at 158 BPM"). One tap switches: the loop sounds just the same, and the tempo changes on its next downbeat. UNDO reads it as before. [The loop point view](#the-loop-point-view) has **Read as** too, for half or double the bars. A tempo you set yourself before recording (tapped, typed or turned) counts towards the answer, so if you set 80 first, that loop is 1 bar at 79. When you play the loop on the pads or a keyboard, the beat you played counts too: hits that land on the beats of 3 bars, and not of 4, make it 3 bars, so a loop can also be 3, 5, 6 or 7 bars when what you played clearly says so. The log says when the beat decided it ("from the beat you played"). To be sure of the bars, set Length.
 
 - **The tempo is exact,** to many decimal places, so the loop never drifts against the song; the project keeps it exactly when you save. The tempo chip shows it rounded.
 - **Closed too soon** (shorter than a bar at 300 BPM, 0.8 s in 4/4, or than your Length's bars at 300 BPM), the loop keeps recording and closes as soon as it is that long. The ring says **closing**.
@@ -182,15 +182,33 @@ Press **MENU** on the Looper tab for the rarer settings as a list, with an expla
 
 Closing a loop exactly on the beat is hard. Tap a little late and the loop is a little long, so the tempo comes out slow and the loop stumbles each time round. When you play that first loop on the pads or a keyboard, MPFree can listen to the notes you played around your tap and find the downbeat you meant. Most players hit the loop's first beat again as they close it, and that is what it looks for. Choose what it does with **Smart loop end** in the Looper tab's MENU:
 
-- **Suggest** (the default): the loop closes on your tap, as before. If you clearly played the downbeat a little off your tap, MPFree finds it. For now only the log says so ("your tap was 48 ms late"); a coming update adds **Snap**, to move the end there with one tap.
+- **Suggest** (the default): the loop closes on your tap, as before. If you clearly played the downbeat a little off your tap, MPFree finds it, and the picked loop's header says so in a chip after its length ("48 ms late") with **Snap** in it. Tap Snap and the end moves there on the loop's next downbeat, and the tempo with it. The chip then says what it did ("Snapped 48 ms earlier") and offers **Use my tap**, to put it back the same way. UNDO takes a snap back too.
 - **Auto**: after your tap the loop listens on for a moment (a tenth of a second at most; the ring says **closing**), then closes on the downbeat you played. The music starts in step with where the loop has got to, a little way into bar 1, so you hear no gap. With **Then: Overdub**, what you played while it listened on is the start of the overdub, so nothing you played is lost.
 - **Off**: the loop closes on your tap.
 
-The start gets the same care. If you started the loop a moment before your first hit (pressed REC, then played), that gap would otherwise sit at the start of every pass. With **Auto** the loop starts on your first hit instead, and the log says so ("started it on your first hit, 80 ms after REC"); with **Suggest** the log says the loop could, and Snap will do it. Your first hit counts as the start only when it comes within a tenth of a second of your start; later than that, the loop starts where you started it.
+The start gets the same care. If you started the loop a moment before your first hit (pressed REC, then played), that gap would otherwise sit at the start of every pass. With **Auto** the loop starts on your first hit instead, and the chip says so ("Started on your first hit, 80 ms after REC") with **Use my press** to put the start back; with **Suggest** the chip says the loop could ("first hit 80 ms after REC"), and Snap does it. Your first hit counts as the start only when it comes within a tenth of a second of your start; later than that, the loop starts where you started it.
 
 It only looks near your tap: within a tenth of a second, or a 1/16 note at very fast tempos. A hit wins when it sounds like the loop's first hit (the same pad or note, about as hard), fits the beat of what you played, and what follows it sounds like the start of the loop again. If no hit is clearly the one, your tap stands and the screen says why: "Kept your tap: no clear match near it."
 
 Smart loop end listens to the pads and MIDI notes, so it is off while the Looper records the line input or a mix. The beat you played still helps count the bars when Smart loop end is Off.
+
+The chip lasts until you keep a side (below), or the loop changes in another way: an overdub, an edit, a trim.
+
+##### The loop point view
+
+Tap the chip's words (not its button) and the loop point view opens in the lanes' place; tap them again, or **×**, to close it. Nothing else on the tab moves.
+
+- **Start** and **End**: the sound around your start and your tap, 300 ms of each, from the first pass as it was recorded. Your press (REC) and your tap are grey dashed lines; what smart loop end found is a line in the accent colour, with how far it is from you ("−48 ms"). What is outside the loop now is shaded.
+- The line under them says what the other side makes of the loop: "Snap makes it 1 bar at 97.87 BPM, from the loop's next downbeat. Your tap stays one tap away."
+- **Snap** and **Keep my tap**; once snapped, **Use my tap** (or **Use my press**) and **Keep the snap**. Each goes to that side on the loop's next downbeat, the tempo with it. A **Keep** button also puts the chip and the view away: you have decided.
+- **A/B** swaps between your tap and the snap on every downbeat, so you can hear which sits better. While it swaps, the buttons are **Keep the snap** and **Keep my tap**; tap one to stop there.
+- **Read as**: the loop's length read as other bars, such as half or double ("2 bars · 195.74 BPM"). The reading it is now is lit.
+
+When nothing was found and the only question is a close call, the view shows your press and your tap, **Keep my tap** and **Read as**.
+
+##### When a snap would move recorded audio
+
+A snap changes the song's tempo. If the audio tracks hold recordings, they would play out of step at the new tempo, so the hint line asks first ("Loop 1: that changes the tempo under the audio tracks' recordings. Snap anyway?"), with **Snap anyway** and **Not now** at its right end. **Snap anyway** goes ahead on the next downbeat (Read as, Undo and Redo say **Do it anyway**); **Not now** leaves everything as it is.
 
 ### Capture: keep what you just played
 

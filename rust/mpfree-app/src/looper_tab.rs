@@ -27,8 +27,8 @@
 //! trim it.
 
 use crate::looper_deck::{LoopDeck, DECK};
-use crate::looping::LoopWave;
-use mpfree_looper::LayerCommand;
+use crate::looping::{LoopWave, Side, POINT_BARS};
+use mpfree_looper::{LayerCommand, Snap};
 use mpfree_ui::draw::speaker_on;
 use mpfree_ui::{
     Align, Color, EventKind, FontId, PaintCx, Rect, Shape, Target, Theme, Touch, Ui, Widget,
@@ -39,6 +39,9 @@ use std::sync::Arc;
 /// The panels' widget names.
 pub const EDITOR: &str = "leditor";
 pub const QLINKS: &str = "lqlinks";
+/// Snap anyway and Not now, floated at the hint line's end while a snap
+/// asks ([`AskButtons`]).
+pub const ASK: &str = "lask";
 
 /// The loops' colours, loop 1 first: none red, amber or orange, which
 /// mean recording and overdubbing.
@@ -174,6 +177,82 @@ pub enum LoopAct {
     /// A layer let go on a loop that can't take it: the screen says why
     /// ([`DropSpot::refused`]).
     NoDrop(DropTo),
+    /// Smart loop end's chip's button, or the loop point view's Read as.
+    Chip(ChipAct),
+    /// The loop point view's Snap, Use my tap, Keep my tap or Keep the
+    /// snap: that side, and whether the chip is put away there.
+    Side(Side, bool),
+    /// The loop point view's A/B, on or off.
+    Ab(bool),
+    /// The loop point view opened (true) or closed: the chip's words, ×.
+    PointView(bool),
+    /// The hint line's Snap anyway (true) or Not now ([`AskButtons`]).
+    Answer(bool),
+}
+
+/// What smart loop end's chip's button does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ChipAct {
+    /// Snap, Use my tap, Use my press: that side.
+    Side(Side),
+    /// Read as: a snap of its own.
+    Snap(Snap),
+}
+
+/// Smart loop end's chip on the picked loop's header, after its length,
+/// while there is something to do: what it found or did, and its action
+/// as a button inside it (Jay's OK on the drawings, 22 Nov). A tap on
+/// the words opens the loop point view.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SmartChip {
+    /// "48 ms late", "Snapped 48 ms earlier", "Close call".
+    pub words: String,
+    /// The button's label, what it does, and whether it is filled with
+    /// the accent (Snap) or outlined (Use my tap, Use my press, Read as).
+    pub action: (String, ChipAct, bool),
+}
+
+/// One side of the loop point view: the start's or the end's window.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PointPane {
+    /// "Start", "End".
+    pub title: String,
+    /// "your first hit came 80 ms after REC", "on your tap".
+    pub note: String,
+    /// The audio's peaks, 0 to 255, left to right.
+    pub peaks: [u8; POINT_BARS],
+    /// Where the loop is now, 0 to 1 across, and whether the shade is
+    /// before it (the start) or after it (the end): outside the loop.
+    pub edge: (f32, bool),
+    /// Your press or tap (grey, dashed) and its label.
+    pub you: (f32, String),
+    /// Where smart loop end found or put it (the accent), its label, and
+    /// how far that is from you ("−48 ms"), when it isn't you.
+    pub found: Option<(f32, String, String)>,
+}
+
+/// The loop point view, in the lanes' place: the start and the end side
+/// by side with your press and tap and what was found, what Snap makes
+/// of it, the choice, A/B, and Read as.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PointLook {
+    /// "Now: your tap, 1 bar at 96.00 BPM".
+    pub now: String,
+    pub start: PointPane,
+    pub end: PointPane,
+    /// "Snap makes it 1 bar at 97.87 BPM, from the loop's next downbeat."
+    pub line: String,
+    /// The buttons, the first filled: label, side, and whether the chip
+    /// is put away there (Snap and Keep my tap; Use my tap and Keep the
+    /// snap; Keep the snap and Keep my tap during A/B; Keep my tap alone
+    /// when nothing was found).
+    pub pick: Vec<(String, Side, bool)>,
+    /// A/B, on or off; None when there aren't two sides to swap.
+    pub ab: Option<bool>,
+    /// Read as: each choice's words and bars, the loop's bars now among
+    /// them.
+    pub read_as: Vec<(String, u32)>,
+    pub bars_now: u32,
 }
 
 /// A finger held on a layer's lane moves this far before the lane lifts
@@ -308,6 +387,9 @@ pub fn take_actions(ui: &mut Ui) -> Vec<LoopAct> {
         acts.append(&mut w.acts);
     }
     if let Some(w) = ui.get_mut::<crate::loop_row::LoopRow>(crate::loop_row::LOOP_ROW) {
+        acts.append(&mut w.take());
+    }
+    if let Some(w) = ui.get_mut::<AskButtons>(ASK) {
         acts.append(&mut w.take());
     }
     acts
@@ -636,6 +718,33 @@ pub struct EditorParts {
     /// The layer map down the right, while more layers than fit.
     pub map: Rect,
     pub strip: Rect,
+    /// The loop point view: the ruler's, the lanes' and the map's place.
+    pub point: Rect,
+}
+
+/// The loop point view's parts ([`LoopEditor::point_parts`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PointParts {
+    /// "LOOP POINT" and what the loop is now.
+    pub head: Rect,
+    /// ×: close the view.
+    pub close: Rect,
+    /// The start's and the end's titles and notes.
+    pub titles: (Rect, Rect),
+    /// The start's and the end's windows.
+    pub start: Rect,
+    pub end: Rect,
+    /// What the other side makes of the loop.
+    pub line: Rect,
+    /// Snap and Keep my tap (or Use my tap and Keep the snap).
+    pub pick: Vec<Rect>,
+    /// A/B, when it shows.
+    pub ab: Option<Rect>,
+    /// The rule between A/B and Read as.
+    pub rule: Rect,
+    pub read_label: Rect,
+    /// Read as's choices.
+    pub read_as: Vec<Rect>,
 }
 
 /// A lane's parts.
@@ -693,6 +802,8 @@ struct EditorLook {
     feedback_held: bool,
     drag: Option<(usize, Rect, String, Option<DropSpot>)>,
     ready: Option<usize>,
+    chip: Option<SmartChip>,
+    point: Option<PointLook>,
 }
 
 /// The picked loop: header, ruler, lanes, layer map and the controls
@@ -759,6 +870,15 @@ pub struct LoopEditor {
     /// The wheel has picked layer `k` up and points at `drops[at]` (None:
     /// back in its place).
     wheel: Option<(usize, Option<usize>)>,
+    /// Smart loop end's chip, after the loop's length.
+    pub chip: Option<SmartChip>,
+    /// The loop point view's contents, while there is something to show.
+    pub point: Option<PointLook>,
+    /// The loop point view shows in the lanes' place.
+    point_open: bool,
+    /// Where the chip's words and button were drawn (they follow the
+    /// title and length, which only drawing can measure).
+    chip_at: RefCell<Option<(Rect, Rect)>>,
     drawn: RefCell<Option<(Rect, EditorLook, i32)>>,
     acts: Vec<LoopAct>,
 }
@@ -796,6 +916,10 @@ impl Default for LoopEditor {
             says: String::new(),
             press: None,
             wheel: None,
+            chip: None,
+            point: None,
+            point_open: false,
+            chip_at: RefCell::new(None),
             drawn: RefCell::new(None),
             acts: Vec::new(),
         }
@@ -840,6 +964,12 @@ impl LoopEditor {
         let map = Rect::new(lanes.right() + 8, lanes.y, map_w, lanes.h);
         let wave_x = lanes.x + LANE_HEAD + 8;
         let ruler = Rect::new(wave_x, r.y + 50, lanes.right() - wave_x, 18);
+        let point = Rect::new(
+            lanes.x,
+            ruler.y - 2,
+            map.right() - lanes.x,
+            lanes.bottom() - (ruler.y - 2),
+        );
         EditorParts {
             head,
             listen,
@@ -849,6 +979,7 @@ impl LoopEditor {
             lanes,
             map,
             strip,
+            point,
         }
     }
 
@@ -956,6 +1087,97 @@ impl LoopEditor {
     /// Records from's mixes, by name, as the Mix tab names them.
     pub fn set_mixes(&mut self, mixes: Vec<String>) {
         self.mixes = mixes;
+    }
+
+    /// Acts are waiting for [`take_actions`] (the loop point view closed
+    /// itself).
+    pub fn has_acts(&self) -> bool {
+        !self.acts.is_empty()
+    }
+
+    /// Whether the loop point view is open (it shows while there is
+    /// something in it, [`LoopEditor::point`]).
+    #[cfg(test)]
+    pub fn point_open(&self) -> bool {
+        self.point_open
+    }
+
+    /// Open the loop point view, as a tap on the chip's words does.
+    pub fn open_point(&mut self) {
+        if !self.point_open {
+            self.point_open = true;
+            self.acts.push(LoopAct::PointView(true));
+        }
+    }
+
+    /// Close the loop point view, and tell the looper it can stop reading
+    /// the audio for it. Nothing if it is closed.
+    pub fn close_point(&mut self) {
+        if self.point_open {
+            self.point_open = false;
+            self.acts.push(LoopAct::PointView(false));
+        }
+    }
+
+    /// The loop point view, while it shows in the lanes' place: open, with
+    /// something in it, and none of Records from, Send or the undo
+    /// history over it.
+    fn point_shown(&self) -> Option<&PointLook> {
+        self.point.as_ref().filter(|_| {
+            self.point_open && self.sources.is_none() && !self.send_open && self.history.is_none()
+        })
+    }
+
+    /// The loop point view's parts in `a` ([`EditorParts::point`]) for
+    /// `look`: its buttons left to right, then Read as's choices.
+    pub fn point_parts(a: Rect, look: &PointLook) -> PointParts {
+        let reads = look.read_as.len();
+        let head = Rect::new(a.x + 16, a.y + 8, a.w - 32, 36);
+        let close = Rect::new(head.right() - 36, head.y, 36, 36);
+        let pane_w = (head.w - 16) / 2;
+        let titles_y = head.bottom() + 6;
+        // What isn't the windows: the head, the titles, the line, the
+        // buttons and the gaps between them.
+        let win_h = (a.h - 8 - 36 - 6 - 17 - 4 - 6 - 22 - 6 - 44 - 10).clamp(40, 112);
+        let win_y = titles_y + 17 + 4;
+        let start = Rect::new(head.x, win_y, pane_w, win_h);
+        let end = Rect::new(head.right() - pane_w, win_y, pane_w, win_h);
+        let line = Rect::new(head.x, start.bottom() + 6, head.w, 22);
+        let row_y = line.bottom() + 6;
+        let mut x = head.x;
+        let mut next = |w: i32| {
+            let r = Rect::new(x, row_y, w, 44);
+            x += w + 10;
+            r
+        };
+        let pick = (0..look.pick.len())
+            .map(|i| next(if i == 0 { 140 } else { 148 }))
+            .collect();
+        let ab = look.ab.map(|_| next(72));
+        let rule = Rect::new(x + 8, row_y + 6, 1, 32);
+        let read_label = Rect::new(rule.right() + 18, row_y, 64, 44);
+        let well_x = read_label.right() + 10;
+        let n = reads.max(1) as i32;
+        let w = ((head.right() - well_x - 8 - 4 * (n - 1)) / n).clamp(0, 196);
+        let read_as = (0..reads as i32)
+            .map(|i| Rect::new(well_x + 4 + i * (w + 4), row_y + 4, w, 36))
+            .collect();
+        PointParts {
+            head,
+            close,
+            titles: (
+                Rect::new(start.x, titles_y, pane_w, 17),
+                Rect::new(end.x, titles_y, pane_w, 17),
+            ),
+            start,
+            end,
+            line,
+            pick,
+            ab,
+            rule,
+            read_label,
+            read_as,
+        }
     }
 
     /// Records from's choices in the lanes' space: the three side by side,
@@ -1396,6 +1618,8 @@ impl LoopEditor {
                 .drag()
                 .map(|(k, card)| (k, card, self.says.clone(), self.landing().cloned())),
             ready: self.press.filter(|p| p.ready && !p.lifted).map(|p| p.k),
+            chip: self.chip.clone(),
+            point: self.point.clone().filter(|_| self.point_open),
         }
     }
 
@@ -1522,6 +1746,118 @@ fn group_label(cx: &mut PaintCx, x: i32, y: i32, s: &str) {
     );
 }
 
+/// One of the loop point view's sides: its title and note over `title`,
+/// and in `win` the audio's peaks, the shade outside the loop, your press
+/// or tap (grey, dashed) and what was found (the accent), with how far
+/// apart they are.
+fn point_pane(cx: &mut PaintCx, pane: &PointPane, title: Rect, win: Rect) {
+    let t = cx.theme.clone();
+    let tw = cx.measure(FontId::Bold, 13.0, &pane.title);
+    cx.text(
+        FontId::Bold,
+        13.0,
+        Rect::new(title.x, title.y, tw + 2, title.h),
+        Align::Left,
+        t.text,
+        &pane.title,
+    );
+    let lit_ink = t.text.mix(t.accent, 0.25);
+    cx.text(
+        FontId::Sans,
+        13.0,
+        Rect::new(title.x + tw + 16, title.y, title.w - tw - 16, title.h),
+        Align::Right,
+        if pane.found.is_some() {
+            lit_ink
+        } else {
+            t.text_dim
+        },
+        &pane.note,
+    );
+    cx.canvas.fill_round_rect(win, 6, t.bg);
+    let old = cx.canvas.clip();
+    cx.canvas.set_clip(old.intersect(win));
+    // The peaks: a slice every `step` pixels, from 13 in.
+    let step = ((win.w - 26) / POINT_BARS as i32).max(1);
+    let x0 = win.x + 13;
+    let span = step * POINT_BARS as i32;
+    let tall = (win.h - 14).max(2) as f32;
+    for (i, &p) in pane.peaks.iter().enumerate() {
+        let h = ((f32::from(p) / 255.0 * tall).round() as i32).max(2);
+        let r = Rect::new(
+            x0 + i as i32 * step,
+            win.y + (win.h - h) / 2,
+            (step - 1).max(1),
+            h,
+        );
+        cx.canvas.fill_rect(r, t.accent);
+    }
+    let at = |f: f32| x0 + (f.clamp(-0.1, 1.1) * span as f32).round() as i32;
+    let (edge, before) = pane.edge;
+    let xe = at(edge);
+    let shade = if before {
+        Rect::new(win.x, win.y, xe - win.x, win.h)
+    } else {
+        Rect::new(xe, win.y, win.right() - xe, win.h)
+    };
+    cx.canvas.fill_rect(shade, t.bg.with_alpha(140));
+    let xy = at(pane.you.0);
+    let you_ink = t.text.mix(t.text_dim, 0.4);
+    fn label(cx: &mut PaintCx, x: i32, y: i32, left: bool, ink: Color, s: &str) {
+        let w = cx.measure(FontId::Bold, 12.0, s);
+        let x = if left { x - 6 - w } else { x + 6 };
+        // On a backing, to read over the peaks.
+        let back = cx.theme.bg.with_alpha(170);
+        cx.canvas
+            .fill_round_rect(Rect::new(x - 3, y - 1, w + 6, 16), 4, back);
+        cx.text(
+            FontId::Bold,
+            12.0,
+            Rect::new(x, y, w + 2, 14),
+            Align::Left,
+            ink,
+            s,
+        );
+    }
+    if let Some((f, name, gap)) = &pane.found {
+        let xf = at(*f);
+        let (l, r) = (xf.min(xy), xf.max(xy));
+        cx.canvas
+            .fill_rect(Rect::new(l, win.y, r - l, win.h), t.accent.with_alpha(41));
+        cx.canvas
+            .fill_rect(Rect::new(xf - 1, win.y, 2, win.h), t.accent);
+        // Each label on the side away from the other line.
+        label(cx, xf, win.y + 6, xf < xy, t.accent, name);
+        if !gap.is_empty() {
+            let gw = cx.measure(FontId::Bold, 12.0, gap);
+            let back = t.bg.with_alpha(170);
+            cx.canvas.fill_round_rect(
+                Rect::new((l + r - gw) / 2 - 3, win.bottom() - 25, gw + 6, 16),
+                4,
+                back,
+            );
+            cx.text(
+                FontId::Bold,
+                12.0,
+                Rect::new((l + r - gw) / 2, win.bottom() - 24, gw + 2, 14),
+                Align::Left,
+                lit_ink,
+                gap,
+            );
+        }
+    }
+    // Your press or tap: dashed.
+    let mut y = win.y;
+    while y < win.bottom() {
+        cx.canvas
+            .fill_rect(Rect::new(xy - 1, y, 2, 5.min(win.bottom() - y)), t.text_dim);
+        y += 9;
+    }
+    let left = pane.found.as_ref().is_some_and(|(f, _, _)| at(*f) > xy);
+    label(cx, xy, win.y + 6, left, you_ink, &pane.you.1);
+    cx.canvas.set_clip(old);
+}
+
 /// A knob: the 270-degree track, the value's arc and its pointer, the
 /// value in the middle.
 fn knob(cx: &mut PaintCx, centre: (i32, i32), d: i32, v: f32, lit: Color, value: &str) {
@@ -1597,15 +1933,23 @@ impl LoopEditor {
             t.text,
             &self.title,
         );
-        let sub_w = (p.listen.x - 12 - (h.x + 32 + nw + 16)).max(0);
+        let sub_x = h.x + 32 + nw + 16;
+        let sub_w = (p.listen.x - 12 - sub_x).max(0);
         cx.text(
             FontId::Sans,
             14.0,
-            Rect::new(h.x + 32 + nw + 16, h.y + 1, sub_w, h.h),
+            Rect::new(sub_x, h.y + 1, sub_w, h.h),
             Align::Left,
             t.text_dim,
             &self.sub,
         );
+        // Smart loop end's chip, after the length.
+        let sw = cx.measure(FontId::Sans, 14.0, &self.sub).min(sub_w);
+        let at = self
+            .chip
+            .as_ref()
+            .and_then(|c| self.paint_chip(cx, c, sub_x + sw + 10, p.listen.x - 12, h));
+        *self.chip_at.borrow_mut() = at;
         // Listen: the loop alone while the music is stopped.
         let (works, on) = self.listen;
         listen_button(cx, p.listen, works || on, on);
@@ -1617,6 +1961,129 @@ impl LoopEditor {
         };
         cx.canvas.stroke_round_rect(p.clear, t.round(10), 2, ink);
         cx.text(FontId::Bold, 14.0, p.clear, Align::Center, ink, "Clear");
+    }
+
+    /// Smart loop end's chip from `x`, ending by `right`, on the header
+    /// `h`: its words and its button, the words cut to fit (nothing if the
+    /// button doesn't). Where the two went, for a finger.
+    fn paint_chip(
+        &self,
+        cx: &mut PaintCx,
+        c: &SmartChip,
+        x: i32,
+        right: i32,
+        h: Rect,
+    ) -> Option<(Rect, Rect)> {
+        let t = cx.theme.clone();
+        let (label, _, filled) = &c.action;
+        let bw = cx.measure(FontId::Bold, 14.0, label) + 28;
+        let room = right - x - (4 + 10 + 4 + 10 + 3) - bw;
+        if room < 24 {
+            return None;
+        }
+        let ww = cx.measure(FontId::Bold, 14.0, &c.words).min(room);
+        let chip = Rect::new(x, h.y + 2, 4 + 10 + ww + 4 + 10 + bw + 3, 32);
+        let open = self.point_shown().is_some();
+        let fill = t.accent.mix(t.bg, if open { 0.6 } else { 0.8 });
+        cx.canvas.fill_round_rect(chip, 16, fill);
+        cx.canvas.stroke_round_rect(chip, 16, 1, t.accent);
+        let lit_ink = t.text.mix(t.accent, 0.25);
+        let words = Rect::new(chip.x + 4, chip.y + 3, 10 + ww + 4, 26);
+        cx.text(
+            FontId::Bold,
+            14.0,
+            Rect::new(words.x + 10, words.y, ww + 2, words.h),
+            Align::Left,
+            if open { t.text } else { lit_ink },
+            &c.words,
+        );
+        let b = Rect::new(words.right() + 10, chip.y + 3, bw, 26);
+        if *filled {
+            cx.canvas.fill_round_rect(b, 13, t.accent);
+            cx.text(FontId::Bold, 14.0, b, Align::Center, t.on_accent, label);
+        } else {
+            cx.canvas.stroke_round_rect(b, 13, 1, t.accent);
+            cx.text(FontId::Bold, 14.0, b, Align::Center, lit_ink, label);
+        }
+        // A finger has the header's height, split between the two.
+        let split = words.right() + 5;
+        Some((
+            Rect::new(chip.x, h.y, split - chip.x, h.h),
+            Rect::new(split, h.y, chip.right() - split, h.h),
+        ))
+    }
+
+    /// The loop point view in `a`: the start's and the end's windows
+    /// with your press and tap, what was found, what the other side
+    /// makes of the loop, the two choices, A/B and Read as (Jay's OK on
+    /// the drawings, 22 Nov).
+    fn paint_point(&self, cx: &mut PaintCx, a: Rect, look: &PointLook) {
+        let t = cx.theme.clone();
+        let pp = LoopEditor::point_parts(a, look);
+        cx.canvas.fill_round_rect(a, 10, t.surface);
+        cx.canvas.stroke_round_rect(a, 10, 1, t.outline);
+        let lw = cx.measure(FontId::Bold, 11.5, "LOOP POINT");
+        cx.text(
+            FontId::Bold,
+            11.5,
+            Rect::new(pp.head.x, pp.head.y, lw + 2, pp.head.h),
+            Align::Left,
+            t.text_dim,
+            "LOOP POINT",
+        );
+        cx.text(
+            FontId::Sans,
+            14.0,
+            Rect::new(
+                pp.head.x + lw + 14,
+                pp.head.y,
+                pp.close.x - 12 - (pp.head.x + lw + 14),
+                pp.head.h,
+            ),
+            Align::Left,
+            t.text_dim,
+            &look.now,
+        );
+        cx.canvas.fill_round_rect(pp.close, 8, t.raised);
+        cx.text(FontId::Sans, 18.0, pp.close, Align::Center, t.text, "×");
+        for (pane, title, win) in [
+            (&look.start, pp.titles.0, pp.start),
+            (&look.end, pp.titles.1, pp.end),
+        ] {
+            point_pane(cx, pane, title, win);
+        }
+        cx.text(
+            FontId::Sans,
+            13.0,
+            pp.line,
+            Align::Left,
+            t.text_dim,
+            &look.line,
+        );
+        for (i, (b, (label, _, _))) in pp.pick.iter().zip(&look.pick).enumerate() {
+            // The first is what the view is for, filled; alone (nothing
+            // to snap to), it isn't.
+            button(cx, *b, label, true, i == 0 && look.ab.is_some(), 15.0);
+        }
+        if let (Some(b), Some(on)) = (pp.ab, look.ab) {
+            button(cx, b, "A/B", true, on, 15.0);
+        }
+        cx.canvas.fill_rect(pp.rule, t.outline);
+        cx.text(
+            FontId::Bold,
+            11.5,
+            pp.read_label,
+            Align::Left,
+            t.text_dim,
+            "READ AS",
+        );
+        let items: Vec<(Rect, &str, bool)> = pp
+            .read_as
+            .iter()
+            .zip(&look.read_as)
+            .map(|(r, (label, bars))| (*r, label.as_str(), *bars == look.bars_now))
+            .collect();
+        segments(cx, &items);
     }
 
     fn paint_ruler(&self, cx: &mut PaintCx, p: &EditorParts) {
@@ -2290,6 +2757,8 @@ impl Widget for LoopEditor {
             if let Some(e) = &self.empty {
                 self.paint_empty(cx, p.lanes, e);
             }
+        } else if let Some(look) = self.point_shown() {
+            self.paint_point(cx, p.point, look);
         } else {
             self.paint_ruler(cx, &p);
             for (k, rr) in self.lane_rects(p.lanes) {
@@ -2327,7 +2796,8 @@ impl Widget for LoopEditor {
         let p = LoopEditor::parts(r);
         let wave_r = Rect::new(p.ruler.x, p.lanes.y, p.ruler.w, p.lanes.h);
         let new_x = self.play_x(wave_r.inset_xy(4, 0)).unwrap_or(-1);
-        if new_x == *old_x || self.layers.is_empty() {
+        // The loop point view has no playhead.
+        if new_x == *old_x || self.layers.is_empty() || self.point_shown().is_some() {
             return Some(Vec::new());
         }
         // A lane recording grows with the playhead: its lanes whole.
@@ -2359,6 +2829,10 @@ impl Widget for LoopEditor {
             Target::tap("send", 0, "Send", p.send).disabled_if(!self.has_sound),
             Target::tap("clear", 0, "Clear", p.clear).disabled_if(!self.has_sound),
         ];
+        if let (Some(c), Some((words, act))) = (&self.chip, *self.chip_at.borrow()) {
+            out.push(Target::tap("chip", 0, c.words.clone(), words));
+            out.push(Target::tap("chip-act", 0, c.action.0.clone(), act));
+        }
         for (c, b, label, on) in self.strip_controls(p.strip) {
             let t = match c {
                 Ctl::Feedback => Target::drag("feedback", 0, label, b),
@@ -2424,6 +2898,28 @@ impl Widget for LoopEditor {
                     let b = capture_button(p.lanes, a, b, &label);
                     out.push(Target::tap("capture", 0, label, b));
                 }
+            }
+            return out;
+        }
+        if let Some(look) = self.point_shown() {
+            let pp = LoopEditor::point_parts(p.point, look);
+            out.push(Target::tap(
+                "point-close",
+                0,
+                "Close the loop point view",
+                pp.close,
+            ));
+            for (i, (b, (label, _, _))) in pp.pick.iter().zip(&look.pick).enumerate() {
+                out.push(Target::tap("point-pick", i, label.clone(), *b));
+            }
+            if let Some(b) = pp.ab {
+                out.push(Target::tap("point-ab", 0, "A/B", b));
+            }
+            for (i, (r, (label, bars))) in pp.read_as.iter().zip(&look.read_as).enumerate() {
+                out.push(
+                    Target::tap("read-as", i, label.clone(), *r)
+                        .disabled_if(*bars == look.bars_now),
+                );
             }
             return out;
         }
@@ -2575,6 +3071,20 @@ impl Widget for LoopEditor {
                     self.acts.push(act);
                     return Some(EventKind::Tab(2));
                 }
+                // Smart loop end's chip: the words open or close the loop
+                // point view, the button does what it says.
+                let chip_at = *self.chip_at.borrow();
+                if let (Some(c), Some((words, act))) = (&self.chip, chip_at) {
+                    if words.contains(x, y) {
+                        self.point_open = !self.point_open;
+                        self.acts.push(LoopAct::PointView(self.point_open));
+                        return Some(EventKind::Tab(5));
+                    }
+                    if act.contains(x, y) {
+                        self.acts.push(LoopAct::Chip(c.action.1));
+                        return Some(EventKind::Tab(6));
+                    }
+                }
                 // The controls under the lanes.
                 if let Some((c, _, _, on)) = self
                     .strip_controls(p.strip)
@@ -2663,6 +3173,34 @@ impl Widget for LoopEditor {
                         self.acts.push(LoopAct::Capture);
                         return Some(EventKind::Tab(4));
                     }
+                    return None;
+                }
+                if let Some(look) = self.point_shown().cloned() {
+                    let pp = LoopEditor::point_parts(p.point, &look);
+                    if pp.close.contains(x, y) {
+                        self.close_point();
+                        return Some(EventKind::Tab(5));
+                    }
+                    if let Some(i) = pp.pick.iter().position(|b| b.contains(x, y)) {
+                        let (_, side, keep) = look.pick[i].clone();
+                        self.acts.push(LoopAct::Side(side, keep));
+                        return Some(EventKind::Select(i));
+                    }
+                    if let (Some(b), Some(on)) = (pp.ab, look.ab) {
+                        if b.contains(x, y) {
+                            self.acts.push(LoopAct::Ab(!on));
+                            return Some(EventKind::Tab(7));
+                        }
+                    }
+                    let read = pp.read_as.iter().position(|b| b.contains(x, y));
+                    if let Some((_, bars)) = read.and_then(|i| look.read_as.get(i)) {
+                        if *bars != look.bars_now {
+                            let act = LoopAct::Chip(ChipAct::Snap(Snap::Bars(*bars)));
+                            self.acts.push(act);
+                            return Some(EventKind::Tab(8));
+                        }
+                    }
+                    // The rest of the view is the view.
                     return None;
                 }
                 if let Some(ticks) = self.trim_ticks.filter(|&t| t > 0) {
@@ -2917,6 +3455,88 @@ impl Widget for LoopEditor {
     }
 }
 
+/// Snap anyway and Not now's float: its size, and how far it is from the
+/// screen's right and bottom edges (the approved drawing: the hint line's
+/// right end, 20 px in, its top 43 px from the bottom).
+pub const ASK_W: i32 = 240;
+pub const ASK_H: i32 = 36;
+pub const ASK_RIGHT: i32 = 20;
+pub const ASK_BOTTOM: i32 = 43;
+
+/// Snap anyway (or Do it anyway) and Not now at the hint line's end,
+/// floated over the Looper tab ([`ASK`], [`Ui::set_float`]) while a snap
+/// over recorded audio asks; the hint line says what it asks.
+#[derive(Default)]
+pub struct AskButtons {
+    /// The yes button's words.
+    pub yes: String,
+    acts: Vec<LoopAct>,
+}
+
+impl AskButtons {
+    /// The yes and the Not now buttons in `r`.
+    pub fn parts(r: Rect) -> (Rect, Rect) {
+        (
+            Rect::new(r.x, r.y, 132, r.h),
+            Rect::new(r.right() - 100, r.y, 100, r.h),
+        )
+    }
+
+    pub fn take(&mut self) -> Vec<LoopAct> {
+        std::mem::take(&mut self.acts)
+    }
+}
+
+impl Widget for AskButtons {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        let (yes, no) = AskButtons::parts(r);
+        // The gap between them is the hint line's.
+        cx.canvas.fill_rect(r, t.bg);
+        cx.canvas.fill_round_rect(yes, 8, t.accent);
+        cx.text(
+            FontId::Bold,
+            14.0,
+            yes,
+            Align::Center,
+            t.on_accent,
+            &self.yes,
+        );
+        cx.canvas.fill_round_rect(no, 8, t.raised);
+        cx.text(FontId::Bold, 14.0, no, Align::Center, t.text, "Not now");
+    }
+
+    /// The widgets under it redraw on their own: it is drawn again every
+    /// frame it shows, so it stays on top.
+    fn animating(&self) -> bool {
+        true
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let (yes, no) = AskButtons::parts(r);
+        vec![
+            Target::tap("ask-yes", 0, self.yes.clone(), yes),
+            Target::tap("ask-no", 0, "Not now", no),
+        ]
+    }
+
+    fn touch(&mut self, _finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        if phase != Touch::Down {
+            return None;
+        }
+        let (yes, no) = AskButtons::parts(r);
+        let answer = if yes.contains(x, y) {
+            true
+        } else if no.contains(x, y) {
+            false
+        } else {
+            return None;
+        };
+        self.acts.push(LoopAct::Answer(answer));
+        Some(EventKind::Toggle(usize::from(answer)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3000,6 +3620,162 @@ mod tests {
         let r = ui.rect_of(EDITOR).unwrap();
         let e = ui.get::<LoopEditor>(EDITOR).unwrap();
         e.lane_rects(LoopEditor::parts(r).lanes)
+    }
+
+    /// Loop 1 with smart loop end's chip (48 ms late, Snap) and the loop
+    /// point view's contents, the view closed.
+    fn smart_editor() -> LoopEditor {
+        let pane = |title: &str, found: Option<(f32, String, String)>| PointPane {
+            title: title.into(),
+            note: "on your tap".into(),
+            peaks: [128; POINT_BARS],
+            edge: (2.0 / 3.0, false),
+            you: (2.0 / 3.0, "your tap".into()),
+            found,
+        };
+        LoopEditor {
+            chip: Some(SmartChip {
+                words: "48 ms late".into(),
+                action: ("Snap".into(), ChipAct::Side(Side::Snap), true),
+            }),
+            point: Some(PointLook {
+                now: "Now: your tap, 4 bars at 92.00 BPM".into(),
+                start: pane("Start", None),
+                end: pane(
+                    "End",
+                    Some((0.5, "end found".into(), "\u{2212}48 ms".into())),
+                ),
+                line: "Snap makes it 4 bars at 92.43 BPM, from the loop's next downbeat.".into(),
+                pick: vec![
+                    ("Snap".into(), Side::Snap, false),
+                    ("Keep my tap".into(), Side::Tap, true),
+                ],
+                ab: Some(false),
+                read_as: vec![
+                    ("2 bars".into(), 2),
+                    ("4 bars".into(), 4),
+                    ("8 bars".into(), 8),
+                ],
+                bars_now: 4,
+            }),
+            ..editor(3)
+        }
+    }
+
+    fn target(ui: &Ui, id: &str, index: usize) -> Option<Target> {
+        ui.targets()
+            .into_iter()
+            .map(|t| t.target)
+            .find(|t| t.id == id && t.index == index)
+    }
+
+    fn tap_target(ui: &mut Ui, id: &str, index: usize) -> Vec<LoopAct> {
+        let t = target(ui, id, index).unwrap_or_else(|| panic!("no {id} {index}"));
+        let (x, y) = t.centre();
+        tap(ui, x, y);
+        ui.paint(&mut SoftCanvas::new(W, H));
+        acts(ui)
+    }
+
+    #[test]
+    fn the_chips_button_does_what_it_says_and_its_words_open_the_loop_point_view() {
+        let mut ui = page_of(EDITOR, smart_editor());
+        assert!(target(&ui, "point-close", 0).is_none(), "closed at first");
+        let chip = target(&ui, "chip", 0).expect("the chip's words");
+        let act = target(&ui, "chip-act", 0).expect("the chip's button");
+        assert_eq!(
+            (chip.label.as_str(), act.label.as_str()),
+            ("48 ms late", "Snap")
+        );
+        assert!(chip.rect.right() <= act.rect.x, "words, then the button");
+        let p = LoopEditor::parts(ui.rect_of(EDITOR).unwrap());
+        assert!(act.rect.right() <= p.listen.x - 12, "clear of Listen");
+        assert_eq!(
+            tap_target(&mut ui, "chip-act", 0),
+            vec![LoopAct::Chip(ChipAct::Side(Side::Snap))]
+        );
+        // The words: the view in the lanes' place, the lanes gone.
+        assert_eq!(
+            tap_target(&mut ui, "chip", 0),
+            vec![LoopAct::PointView(true)]
+        );
+        assert!(target(&ui, "point-close", 0).is_some());
+        assert!(target(&ui, "layer", 0).is_none(), "the lanes are under it");
+        assert!(target(&ui, "trim-start", 0).is_none());
+        assert_eq!(
+            tap_target(&mut ui, "point-pick", 0),
+            vec![LoopAct::Side(Side::Snap, false)]
+        );
+        assert_eq!(
+            tap_target(&mut ui, "point-pick", 1),
+            vec![LoopAct::Side(Side::Tap, true)]
+        );
+        assert_eq!(tap_target(&mut ui, "point-ab", 0), vec![LoopAct::Ab(true)]);
+        // Read as: another reading snaps; the one it is now can't.
+        assert_eq!(
+            tap_target(&mut ui, "read-as", 2),
+            vec![LoopAct::Chip(ChipAct::Snap(Snap::Bars(8)))]
+        );
+        assert!(!target(&ui, "read-as", 1).unwrap().enabled);
+        assert_eq!(tap_target(&mut ui, "read-as", 1), Vec::new());
+        // ×: closed, the lanes back.
+        assert_eq!(
+            tap_target(&mut ui, "point-close", 0),
+            vec![LoopAct::PointView(false)]
+        );
+        assert!(target(&ui, "layer", 0).is_some());
+        assert!(!ui.get::<LoopEditor>(EDITOR).unwrap().point_open());
+    }
+
+    #[test]
+    fn the_loop_point_view_fits_its_place_and_keeps_its_buttons_apart() {
+        let r = LoopEditor::parts(Rect::new(14, 336, 1112, 412)).point;
+        assert_eq!(r, Rect::new(24, 384, 1092, 280), "the drawing's place");
+        let look = smart_editor().point.unwrap();
+        let pp = LoopEditor::point_parts(r, &look);
+        let mut rects = pp.pick.clone();
+        rects.extend(pp.ab);
+        rects.extend(pp.read_as.iter().copied());
+        for w in rects.windows(2) {
+            assert!(w[0].right() <= w[1].x, "{:?} then {:?}", w[0], w[1]);
+        }
+        for b in &rects {
+            assert!(
+                b.h >= 36 && r.contains(b.x, b.y) && b.right() <= r.right() - 16,
+                "{b:?}"
+            );
+            assert!(b.bottom() <= r.bottom(), "{b:?}");
+        }
+        assert!(pp.start.right() < pp.end.x && pp.end.right() <= r.right() - 16);
+        assert_eq!(pp.start.h, 112);
+        // Nothing found: one button and no A/B, Read as moves up.
+        let alone = PointLook {
+            pick: vec![("Keep my tap".into(), Side::Tap, true)],
+            ab: None,
+            ..look
+        };
+        let pa = LoopEditor::point_parts(r, &alone);
+        assert!(pa.ab.is_none() && pa.read_as[0].x < pp.read_as[0].x);
+    }
+
+    #[test]
+    fn snap_anyway_and_not_now_answer() {
+        let mut ui = page_of(
+            ASK,
+            AskButtons {
+                yes: "Snap anyway".into(),
+                ..AskButtons::default()
+            },
+        );
+        let yes = target(&ui, "ask-yes", 0).unwrap();
+        assert_eq!(yes.label, "Snap anyway");
+        assert!(yes.rect.h >= 36);
+        let (x, y) = yes.centre();
+        tap(&mut ui, x, y);
+        assert_eq!(take_actions(&mut ui), vec![LoopAct::Answer(true)]);
+        let no = target(&ui, "ask-no", 0).unwrap().centre();
+        tap(&mut ui, no.0, no.1);
+        assert_eq!(take_actions(&mut ui), vec![LoopAct::Answer(false)]);
     }
 
     #[test]

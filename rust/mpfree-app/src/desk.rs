@@ -627,6 +627,17 @@ impl Desk<'_> {
             gui::FromUi::LoopSteps(n) => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Steps(n)))
             }
+            gui::FromUi::LoopSnap(s) => fx.push(app::Effect::Looper(looping::LoopAction::Snap(s))),
+            gui::FromUi::LoopSide(side, keep) => fx.push(app::Effect::Looper(
+                looping::LoopAction::Side(side, keep),
+            )),
+            gui::FromUi::LoopAb(on) => fx.push(app::Effect::Looper(looping::LoopAction::Ab(on))),
+            gui::FromUi::LoopAnswer(anyway) => fx.push(app::Effect::Looper(
+                looping::LoopAction::Answer(anyway),
+            )),
+            gui::FromUi::LoopPointView(open) => fx.push(app::Effect::Looper(
+                looping::LoopAction::PointView(open),
+            )),
             // The Pads tab's Browse for: the browser, as BROWSE opens it.
             gui::FromUi::PadsBrowse => fx.extend(app.open_browser()),
             // The Synth tab's preset picker: the browser over the page, and

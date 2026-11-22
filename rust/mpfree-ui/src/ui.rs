@@ -451,7 +451,9 @@ struct Page {
     name: String,
     spec: String,
     margin: bool,
+    /// The layout's slots, then the floats ([`Ui::set_float`]) over them.
     slots: Vec<(usize, Rect)>,
+    floats: Vec<(usize, Rect)>,
 }
 
 pub struct Ui {
@@ -644,11 +646,14 @@ impl Ui {
                 .ok_or_else(|| format!("page {name}: no widget called '{slot}'"))?;
             slots.push((i, r));
         }
+        let floats = self.floats_of(name);
+        slots.extend(floats.iter().copied());
         let page = Page {
             name: name.to_string(),
             spec: spec.to_string(),
             margin,
             slots,
+            floats,
         };
         match self.pages.iter().position(|p| p.name == name) {
             Some(i) => self.pages[i] = page,
@@ -672,17 +677,67 @@ impl Ui {
                 .ok_or_else(|| format!("page {name}: no widget called '{slot}'"))?;
             placed.push((i, r.intersect(screen)));
         }
+        let floats = self.floats_of(name);
+        placed.extend(floats.iter().copied());
         let page = Page {
             name: name.to_string(),
             spec: String::new(),
             margin: false,
             slots: placed,
+            floats,
         };
         match self.pages.iter().position(|p| p.name == name) {
             Some(i) => self.pages[i] = page,
             None => self.pages.push(page),
         }
         self.full = true;
+        Ok(())
+    }
+
+    /// The floats of page `name`, if it is there already: a page laid out
+    /// again keeps them.
+    fn floats_of(&self, name: &str) -> Vec<(usize, Rect)> {
+        self.pages
+            .iter()
+            .find(|p| p.name == name)
+            .map(|p| p.floats.clone())
+            .unwrap_or_default()
+    }
+
+    /// Widget `name` over page `page` at `rect` (screen coordinates), above
+    /// whatever the layout puts there, or taken away (None): a control that
+    /// comes and goes without moving anything (the Looper tab's Snap anyway
+    /// and Not now at the hint line's end). It is the page's topmost slot:
+    /// the first to get a touch, and drawn after the others. A widget
+    /// under it that redraws on its own can cover it until it is drawn
+    /// again, so a float says it is [`Widget::animating`] while it shows.
+    /// The page keeps it when it is laid out again.
+    pub fn set_float(&mut self, page: &str, name: &str, rect: Option<Rect>) -> Result<(), String> {
+        let wi = self
+            .widgets
+            .iter()
+            .position(|(n, _, _)| n == name)
+            .ok_or_else(|| format!("no widget called '{name}'"))?;
+        let screen = Rect::new(0, 0, self.size.0, self.size.1);
+        let pi = self
+            .pages
+            .iter()
+            .position(|p| p.name == page)
+            .ok_or_else(|| format!("no page called '{page}'"))?;
+        let p = &mut self.pages[pi];
+        let want = rect.map(|r| (wi, r.intersect(screen)));
+        if p.floats.iter().find(|(i, _)| *i == wi).copied() == want {
+            return Ok(());
+        }
+        let base = p.slots.len() - p.floats.len();
+        p.slots.truncate(base);
+        p.floats.retain(|(i, _)| *i != wi);
+        p.floats.extend(want);
+        p.slots.extend(p.floats.iter().copied());
+        if pi == self.current {
+            self.full = true;
+            self.fingers.retain(|&(_, w)| w != wi);
+        }
         Ok(())
     }
 
@@ -1428,6 +1483,48 @@ mod tests {
             paints: std::cell::Cell::new(0),
             touches: Vec::new(),
         }
+    }
+
+    /// A float sits over the page's layout without moving it: it gets the
+    /// touches where it is, is drawn after the slot under it, stays when
+    /// the page is laid out again, and goes with None.
+    #[test]
+    fn a_float_sits_over_the_layout_and_goes() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 200, 100);
+        ui.add("a", probe());
+        ui.add("b", probe());
+        ui.add("f", probe());
+        ui.add_page("p", "row(a, b)").unwrap();
+        ui.show("p").unwrap();
+        let (ra, rb) = (ui.rect_of("a").unwrap(), ui.rect_of("b").unwrap());
+        let over = Rect::new(rb.x - 10, rb.y + 10, 40, 20);
+        ui.set_float("p", "f", Some(over)).unwrap();
+        assert_eq!(ui.rect_of("a"), Some(ra));
+        assert_eq!(ui.rect_of("b"), Some(rb));
+        assert_eq!(ui.rect_of("f"), Some(over));
+        let mut c = SoftCanvas::new(200, 100);
+        ui.paint(&mut c);
+        let painted = |ui: &Ui, n: &str| ui.get::<Probe>(n).unwrap().paints.get();
+        assert_eq!((painted(&ui, "a"), painted(&ui, "f")), (1, 1));
+        let ev = ui.touch(1, Touch::Down, over.x + 2, over.y + 2).unwrap();
+        assert_eq!(ev.widget, "f");
+        ui.touch(1, Touch::Up, over.x + 2, over.y + 2);
+        let ev = ui.touch(2, Touch::Down, rb.right() - 2, rb.y + 2).unwrap();
+        assert_eq!(ev.widget, "b");
+        ui.touch(2, Touch::Up, rb.right() - 2, rb.y + 2);
+        // Laid out again: it stays, over the new layout.
+        ui.set_layout("p", "col(a, b)").unwrap();
+        assert_eq!(ui.rect_of("f"), Some(over));
+        assert_eq!(ui.slots().last().map(|s| s.0.clone()), Some("f".into()));
+        // The same again changes nothing; None takes it away.
+        ui.paint(&mut c);
+        ui.set_float("p", "f", Some(over)).unwrap();
+        assert!(!ui.needs_paint());
+        ui.set_float("p", "f", None).unwrap();
+        assert_eq!(ui.rect_of("f"), None);
+        assert!(ui.needs_paint());
+        assert!(ui.set_float("p", "nope", None).is_err());
+        assert!(ui.set_float("nope", "f", None).is_err());
     }
 
     /// Perform's guard (sequencer S4): a hold fill is drawn over its
@@ -2354,6 +2451,7 @@ mod tests {
                         spec: String::new(),
                         margin: true,
                         slots,
+                        floats: Vec::new(),
                     });
                     ui.show("p").unwrap();
                 }

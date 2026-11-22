@@ -1872,6 +1872,18 @@ pub enum FromUi {
     /// The Looper tab's undo history: back (below 0) or forward this many
     /// steps.
     LoopSteps(i32),
+    /// Smart loop end's chip and the loop point view's Read as: a snap on
+    /// the picked loop ([`crate::looping::LoopAction::Snap`]).
+    LoopSnap(mpfree_looper::Snap),
+    /// The loop point view's Snap, Use my tap, Keep my tap and Keep the
+    /// snap ([`crate::looping::LoopAction::Side`]).
+    LoopSide(crate::looping::Side, bool),
+    /// The loop point view's A/B.
+    LoopAb(bool),
+    /// The hint line's Snap anyway (true) or Not now.
+    LoopAnswer(bool),
+    /// The loop point view opened (true) or closed: its audio is wanted.
+    LoopPointView(bool),
     /// The Looper tab's Recording and input panel: a setting stepped (the
     /// same settings as the looper's options menu).
     LooperSetting(crate::app::Item, i32),
@@ -6070,6 +6082,38 @@ impl Player {
     fn refresh_looper(&mut self) {
         self.looper_page
             .update(&mut self.ui, &self.looper, &self.settings);
+        // Snap anyway and Not now at the hint line's end while a snap
+        // asks (the hint line says what).
+        let asking = self.looper.smart.asking;
+        if let (Some((snap, _)), Some(b)) = (
+            asking,
+            self.ui
+                .get_mut::<crate::looper_tab::AskButtons>(crate::looper_tab::ASK),
+        ) {
+            let yes = crate::looping::ask_button(snap);
+            if b.yes != yes {
+                b.yes = yes.to_string();
+            }
+        }
+        let (w, h) = self.ui.size();
+        let at = asking.map(|_| {
+            use crate::looper_tab::{ASK_BOTTOM, ASK_H, ASK_RIGHT, ASK_W};
+            mpfree_ui::Rect::new(w - ASK_RIGHT - ASK_W, h - ASK_BOTTOM, ASK_W, ASK_H)
+        });
+        let _ = self
+            .ui
+            .set_float(crate::looper_page::LOOPER_PAGE, crate::looper_tab::ASK, at);
+        // The loop point view closed itself (nothing left in it): the
+        // looper stops reading for it.
+        let closed = self
+            .ui
+            .get::<crate::looper_tab::LoopEditor>(crate::looper_tab::EDITOR)
+            .is_some_and(|e| e.has_acts());
+        if closed {
+            if let Some(f) = self.looper_acts() {
+                self.outbox.push(f);
+            }
+        }
     }
 
     /// A Q-Link on the Looper tab: the loops' levels (Q-LINK: loops 5 to
@@ -6338,6 +6382,18 @@ impl Player {
                     let why = self.looper_page.why_no_drop(&self.ui, to);
                     self.tell(&why);
                 }
+                // Smart loop end's chip, the loop point view and the
+                // hint line's question (step 2 screens).
+                LoopAct::Chip(crate::looper_tab::ChipAct::Side(side)) => {
+                    out.push(FromUi::LoopSide(side, false))
+                }
+                LoopAct::Chip(crate::looper_tab::ChipAct::Snap(snap)) => {
+                    out.push(FromUi::LoopSnap(snap))
+                }
+                LoopAct::Side(side, keep) => out.push(FromUi::LoopSide(side, keep)),
+                LoopAct::Ab(on) => out.push(FromUi::LoopAb(on)),
+                LoopAct::PointView(open) => out.push(FromUi::LoopPointView(open)),
+                LoopAct::Answer(anyway) => out.push(FromUi::LoopAnswer(anyway)),
             }
         }
         // The deck and the card follow a layer dragged out of the lanes.
@@ -6910,6 +6966,14 @@ impl Player {
                 View::Arrange if self.time_page.clip_card => time_view::CLIPS_CARD_HINT.to_string(),
                 View::Arrange if self.time_page.scene_card => time_view::SCENE_HINT.to_string(),
                 View::Arrange => CLIPS_HINT.to_string(),
+                // A snap over recorded audio asks: Snap anyway and Not
+                // now float at this line's end.
+                View::Looper if self.looper.smart.asking.is_some() => self
+                    .looper
+                    .smart
+                    .asking
+                    .map(|(snap, read)| crate::looping::ask_words(self.looper.selected, snap, read))
+                    .unwrap_or_default(),
                 View::Looper if self.looper_page.history_open() => format!("Tap a step: back or forward to it   ·   \
                                          drag: scroll   ·   Undo history: close   ·   UNDO: undo (SHIFT: redo)   ·   {stop}"),
                 View::Looper => format!("Tap a ring: record, play, overdub   ·   hold it: clear   ·   \
@@ -7076,8 +7140,10 @@ impl Player {
             Some(_) => controller_qlinks_hint(&text),
             None => text,
         };
+        let asking = self.view == View::Looper && self.looper.smart.asking.is_some();
         let (text, tone) = match &self.told {
             Some((t, _)) => (t.clone(), Tone::Warn),
+            None if asking => (text, Tone::Warn),
             None => (text, Tone::Dim),
         };
         if let Some(h) = self.ui.get_mut::<Label>("hint") {
@@ -8988,9 +9054,14 @@ impl Player {
                     self.undo_loop = true;
                 }
                 self.seen_loop = seen;
+                let asked = self.looper.smart.asking;
                 self.looper = *v;
                 if matches!(self.view, View::Looper | View::Play) {
                     self.refresh_looper();
+                }
+                // A snap asks, or was answered: the hint line says so.
+                if asked != self.looper.smart.asking {
+                    self.refresh_hint();
                 }
                 // The Loop tracks' cells follow the loops.
                 let loops = loops_info(&self.looper);
@@ -13093,7 +13164,10 @@ impl Player {
                 })
             }
             (
-                crate::looper_deck::DECK | crate::looper_tab::EDITOR | crate::loop_row::LOOP_ROW,
+                crate::looper_deck::DECK
+                | crate::looper_tab::EDITOR
+                | crate::loop_row::LOOP_ROW
+                | crate::looper_tab::ASK,
                 _,
             ) => self.looper_acts(),
             (crate::looper_tab::QLINKS, EventKind::Step { index, delta }) => {
@@ -16784,6 +16858,80 @@ fn looper_screen(fonts: Fonts, picked: usize, jam: bool) -> Result<Player, Strin
     Ok(p)
 }
 
+/// Smart loop end on [`sample_looper`]'s loop 1 for screen `name`: 48 ms
+/// found before your tap (the chip, Snap), snapped there (Use my tap),
+/// started on your first hit (Use my press), a close call (Read as), or a
+/// snap asking (Snap anyway, Not now); `open`, the loop point view open,
+/// with peaks as a hit round the press and one 48 ms before the tap.
+fn sample_smart_loop_end(p: &mut Player, name: &str, open: bool) {
+    use crate::looping::{LoopPoint, POINT_BARS, POINT_END_FROM_MS, POINT_MS, POINT_START_FROM_MS};
+    use mpfree_looper::{Shift, Snap};
+    let rate = p.looper.rate;
+    let ms = |m: f64| (m * f64::from(rate) / 1000.0).round() as i64;
+    let mut v = p.looper.clone();
+    let s = &mut v.status;
+    s.offer = None;
+    s.moved = None;
+    match name {
+        "looper-smart-snapped" | "looper-smart-point-snapped" => {
+            s.moved = Some(Shift {
+                start: 0,
+                end: ms(-48.0),
+            })
+        }
+        "looper-smart-start" => {
+            s.moved = Some(Shift {
+                start: ms(80.0),
+                end: 0,
+            })
+        }
+        "looper-smart-close-call" => v.smart.close_call = Some(8),
+        _ => {
+            s.offer = Some(Shift {
+                start: 0,
+                end: ms(-48.0),
+            })
+        }
+    }
+    if name == "looper-smart-ask" {
+        v.smart.asking = Some((Snap::Found, false));
+    }
+    v.loops[v.selected] = v.status;
+    // A hit 3 ms after the press, and again 48 ms before the tap: each
+    // a sharp attack that dies away, over a little noise.
+    let hits = |from: f64, hit: f64, floor: f32| {
+        let mut out = [0u8; POINT_BARS];
+        for (i, o) in out.iter_mut().enumerate() {
+            let t = from + i as f64 * POINT_MS / POINT_BARS as f64;
+            let noise = ((i as u64).wrapping_mul(2_654_435_761) >> 9) % 100;
+            let a = if t < hit {
+                floor * (0.6 + 0.008 * noise as f32)
+            } else {
+                (-(t - hit) / 85.0).exp() as f32 * (0.82 + 0.0018 * noise as f32)
+            };
+            *o = (a.clamp(0.0, 1.0) * 255.0) as u8;
+        }
+        out
+    };
+    if open {
+        v.smart.point = Some(LoopPoint {
+            start: hits(POINT_START_FROM_MS, 3.0, 0.02),
+            end: hits(POINT_END_FROM_MS, -48.0, 0.05),
+        });
+    }
+    p.apply(ToUi::Looper(Box::new(v)));
+    if open {
+        if let Some(e) =
+            p.ui.get_mut::<crate::looper_tab::LoopEditor>(crate::looper_tab::EDITOR)
+        {
+            e.open_point();
+        }
+    }
+    // (The tab telling the looper, for a desk there is none of here.)
+    let _ = crate::looper_tab::take_actions(&mut p.ui);
+    p.take_actions();
+}
+
 /// The chain editor (`View::Chain`) or the macros panel (`View::Macros`)
 /// with the chain-ui crate's sample song: the drum bus chain, Drive
 /// selected and its Tone touched, as the audio thread sends them.
@@ -18790,6 +18938,26 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("looper-sources", p));
         }
         Err(e) => eprintln!("looper sample: {e}"),
+    }
+    // Smart loop end's screens (Jay's OK on the drawings, 22 Nov): the
+    // chip on the picked loop's header, the loop point view in the lanes'
+    // place, and the hint line's question with Snap anyway and Not now.
+    for (name, open) in [
+        ("looper-smart-chip", false),
+        ("looper-smart-point", true),
+        ("looper-smart-snapped", false),
+        ("looper-smart-point-snapped", true),
+        ("looper-smart-start", false),
+        ("looper-smart-close-call", false),
+        ("looper-smart-ask", false),
+    ] {
+        match sample_looper_picking(fonts(), 0) {
+            Ok(mut p) => {
+                sample_smart_loop_end(&mut p, name, open);
+                out.push((name, p));
+            }
+            Err(e) => eprintln!("looper sample: {e}"),
+        }
     }
     // A take holds its source (the design review of 20 Nov, point 6):
     // Loop 6 records the pads, the master was picked while it
