@@ -89,8 +89,8 @@ roles! {
         "Q-Link knob 3.";
     Qlink4 "qlink.4" "Controls" Core "{track.4}"
         "Q-Link knob 4.";
-    TextInverse "text_inverse" "Text" Role "{bg}"
-        "Text on a fill too bright (or too dark) for `text`; ink_on() picks between the two.";
+    TextInverse "text_inverse" "Text" Role "light_dark({surface}, {bg})"
+        "Text on a fill too bright (or too dark) for `text`; ink_on() picks between the two. A light theme's is its palest colour.";
     Highlight "highlight" "Light and shade" Role "{text}"
         "Bright marks: what a pad or button flashes towards when it is hit, and the ring round a picked cell.";
     Shadow "shadow" "Light and shade" Role "light_dark({text}, {bg})"
@@ -895,7 +895,7 @@ mod tests {
         assert!(contrast(fixed, amber) >= 4.5, "{fixed:?}");
         assert!(contrast(fixed, amber) < contrast(t.bg, amber));
         // On a light theme the same blue on its panel darkens.
-        let light = Theme::parse("bg = #E4E7EB\nsurface = #F4F5F7\ntext = #161A21").unwrap();
+        let light = Theme::light();
         let fixed = light.readable(blue, light.surface);
         assert!(contrast(fixed, light.surface) >= 4.5, "{fixed:?}");
     }
@@ -907,7 +907,7 @@ mod tests {
         assert_eq!(t.faded(ink, t.surface), ink.with_alpha(127));
         // Half of a dark ink on a light panel reads under 3:1: it is drawn
         // more solid, just enough.
-        let light = Theme::parse("bg = #E4E7EB\nsurface = #F4F5F7\ntext = #161A21").unwrap();
+        let light = Theme::light();
         let ink = light.text_dim.mix(light.text, 0.3);
         let f = light.faded(ink, light.surface);
         assert!(f.a > 127 && f.a < 255, "{f:?}");

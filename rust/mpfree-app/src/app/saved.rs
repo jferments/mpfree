@@ -153,6 +153,7 @@ impl App {
         let mut notes = Vec::new();
         let mut skipped = Vec::new();
         let themes: Vec<String> = self.theme_choices().map(|t| t.0.to_string()).collect();
+        let mut theme_gone = None;
         let s = &mut self.settings;
         for (k, v) in app.iter() {
             let ok = match k {
@@ -263,11 +264,15 @@ impl App {
                     .map(|n| (s.loop_latency, s.loop_latency_set) = (n as u32, true))
                     .is_some(),
                 // Built in, or in the themes folder (listed before restore).
-                "theme" => themes
-                    .iter()
-                    .find(|t| *t == v)
-                    .map(|t| s.theme = t.clone())
-                    .is_some(),
+                // A theme file that is gone or was left out: the default
+                // theme shows, and the log says so (a fallback).
+                "theme" => {
+                    match themes.iter().find(|t| *t == v) {
+                        Some(t) => s.theme = t.clone(),
+                        None => theme_gone = Some(v.to_string()),
+                    }
+                    true
+                }
                 _ => false,
             };
             if !ok {
@@ -352,6 +357,13 @@ impl App {
                 "saved settings left out (not understood): {}",
                 skipped.join(", ")
             ));
+        }
+        if let Some(v) = theme_gone {
+            notes.push(format!(
+                "theme: the saved theme {v} can't be used now (its file is gone, or was left out: \
+                 see the themes lines), so the default theme shows"
+            ));
+            self.theme_fallbacks += 1;
         }
         // What was just read is what the store holds: nothing to save yet.
         self.saved = [self.app_settings().to_text(), self.map_settings().to_text()];
