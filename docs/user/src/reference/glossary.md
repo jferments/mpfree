@@ -10,7 +10,7 @@ checked: 2026-11-19 f0b39161
 
 **Arrange** — The tab where clips are recorded, kept as takes and launched, and laid out as a song.
 
-**Audio track** — A track that records sound from the INPUTS onto the song's timeline, under the clip lanes.
+**Audio track** — A track in the track list that records sound from the INPUTS (or from inside mpfree) onto the song's timeline, under the clip lanes.
 
 **BPM** — Beats per minute: the tempo.
 

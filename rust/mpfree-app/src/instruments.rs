@@ -88,9 +88,31 @@ pub fn make(
 /// The tracks that can play their own instrument: every sequencer track.
 pub const TRACKS: usize = mpfree_seq::MAX_TRACKS;
 
-/// The most tracks that play their own instrument at once; the others
-/// play the kit.
+/// The most instruments loaded at once (the redesign's rule 9): the
+/// tracks' own and the free ones together; the other tracks play the kit.
 pub const SLOTS: usize = 16;
+
+/// Free places: instruments no track has, which the pads play (the
+/// instrument redesign's step 6, picked in the list of synths). Each
+/// sounds on a mixer strip of its own ([`crate::mixing::free_channel`]).
+pub const FREE: usize = 16;
+
+/// Who can hold an instrument: each track (0 to [`TRACKS`] - 1), then
+/// each free place ([`free`]).
+pub const HOLDERS: usize = TRACKS + FREE;
+
+/// The pads, as a player: they play a held instrument by a send, as a
+/// track plays another's ([`Instruments::pads_play`]), so a note they
+/// start ends where it started when they move on. They never hold one.
+pub const THE_PADS: usize = HOLDERS;
+
+/// Every row: the holders, then the pads.
+const WHO: usize = HOLDERS + 1;
+
+/// Free place `n`'s holder number (from 0).
+pub const fn free(n: usize) -> usize {
+    TRACKS + n
+}
 
 /// The track host's slots: an instrument for each of [`SLOTS`] tracks, and
 /// as many again for old ones ringing out.
@@ -103,11 +125,14 @@ const NO_SLOT: u8 = u8::MAX;
 const NO_SEND: u8 = u8::MAX;
 
 const _: () = assert!(HOST_SLOTS < NO_SLOT as usize);
-const _: () = assert!(TRACKS <= NO_SEND as usize);
+const _: () = assert!(WHO <= NO_SEND as usize);
+// `held_free` and `free_in_use` have a bit for each free place.
+const _: () = assert!(FREE <= u16::BITS as usize);
 // `in_use` has a bit for each track.
 const _: () = assert!(TRACKS <= u128::BITS as usize);
-// Each track has its own mixer track after the shared ones.
-const _: () = assert!(crate::mixing::TRACKS + TRACKS <= mpfree_fx::MAX_TRACKS);
+// Each track has its own mixer track after the shared ones, then each
+// free place.
+const _: () = assert!(crate::mixing::TRACKS + HOLDERS <= mpfree_fx::MAX_TRACKS);
 
 /// The mixer track track 0's instrument feeds; track `t`'s feeds this plus
 /// `t`.
@@ -209,8 +234,9 @@ impl Default for Slot {
 pub struct Instruments {
     host: TrackHost,
     slots: [Slot; HOST_SLOTS],
-    /// The slot track `t`'s instrument is in ([`NO_SLOT`]: it has none).
-    slot_of: [u8; TRACKS],
+    /// The slot holder `h`'s instrument is in ([`NO_SLOT`]: it has none),
+    /// a track's or a free place's; the pads' row is always empty.
+    slot_of: [u8; WHO],
     /// Instruments put in that would not go (no room to retire the old
     /// one, or [`SLOTS`] tracks already had one): handed back, counted.
     refused: u64,
@@ -223,17 +249,18 @@ pub struct Instruments {
     /// Track 1's mixer channel: Drums, or its old own channel for a
     /// project saved with settings there ([`Instruments::set_first_channel`]).
     first: usize,
-    /// The track whose instrument track `t` plays though it has none of
-    /// its own ([`NO_SEND`]: none, it plays the pads).
-    sends: [u8; TRACKS],
-    /// The notes each track's pads started and haven't ended yet, by the
-    /// track that played them (not the slot), so two tracks on one
-    /// instrument each end their own.
-    started: Box<[[Started; PADS]; TRACKS]>,
-    /// The notes each track holds by number (a keyboard, the arp with a
+    /// The holder whose instrument player `p` plays though it has none of
+    /// its own ([`NO_SEND`]: none; a track then plays the pads): a track's,
+    /// and the pads' ([`THE_PADS`]). A free place never sends.
+    sends: [u8; WHO],
+    /// The notes each player's pads started and haven't ended yet, by the
+    /// player (not the slot), so two tracks on one instrument, or a track
+    /// and the pads, each end their own.
+    started: Box<[[Started; PADS]; WHO]>,
+    /// The notes each player holds by number (a keyboard, the arp with a
     /// layout), one bit each, so a send that moves ends them where they
     /// sound.
-    keys: Box<[u128; TRACKS]>,
+    keys: Box<[u128; WHO]>,
 }
 
 /// The key of track `track`'s parameter `id` in the lock table.
@@ -252,23 +279,26 @@ impl Instruments {
         Instruments {
             host,
             slots: [Slot::default(); HOST_SLOTS],
-            slot_of: [NO_SLOT; TRACKS],
+            slot_of: [NO_SLOT; WHO],
             refused: 0,
             cut: 0,
             locks: crate::locks::Under::new(rate),
             first: crate::mixing::track_channel(0),
-            sends: [NO_SEND; TRACKS],
-            started: Box::new([[Started::default(); PADS]; TRACKS]),
-            keys: Box::new([0; TRACKS]),
+            sends: [NO_SEND; WHO],
+            started: Box::new([[Started::default(); PADS]; WHO]),
+            keys: Box::new([0; WHO]),
         }
     }
 
-    /// Track `track`'s mixer channel, where its instrument plays.
-    pub fn channel(&self, track: usize) -> usize {
-        if track == 0 {
+    /// Holder `who`'s mixer channel, where its instrument plays: a
+    /// track's channel, or a free place's strip of its own.
+    pub fn channel(&self, who: usize) -> usize {
+        if who == 0 {
             self.first
+        } else if who < TRACKS {
+            crate::mixing::track_channel(who)
         } else {
-            crate::mixing::track_channel(track)
+            crate::mixing::free_channel((who - TRACKS).min(FREE - 1))
         }
     }
 
@@ -362,9 +392,10 @@ impl Instruments {
         }
     }
 
-    /// The tracks that play track `owner`'s instrument, one bit each.
+    /// The tracks that play holder `owner`'s instrument, one bit each (the
+    /// pads aren't counted: [`Instruments::pads_play_at`]).
     pub fn senders(&self, owner: usize) -> u128 {
-        self.sends
+        self.sends[..TRACKS]
             .iter()
             .enumerate()
             .filter(|&(_, &to)| usize::from(to) == owner)
@@ -377,12 +408,14 @@ impl Instruments {
         self.slot(self.owner(track)?)
     }
 
-    /// Track `track` plays track `to`'s instrument from now on (None:
-    /// the pads again). The notes it left sounding on the old one end
-    /// first. Refused while the track has its own instrument, and when
-    /// `to` has none. Never allocates.
+    /// Track `track` (or the pads, [`THE_PADS`]) plays holder `to`'s
+    /// instrument from now on (None: the pads again; the pads: nothing).
+    /// `to` is another track or a free place. The notes it left sounding
+    /// on the old one end first. Refused while the track has its own
+    /// instrument, and when `to` has none. Never allocates.
     pub fn set_send(&mut self, track: usize, to: Option<usize>) -> Result<(), SendRefused> {
-        if track >= TRACKS || to.is_some_and(|t| t >= TRACKS) {
+        let player = track < TRACKS || track == THE_PADS;
+        if !player || to.is_some_and(|t| t >= HOLDERS) {
             return Err(SendRefused::NoTrack);
         }
         if self.send(track) == to {
@@ -407,7 +440,7 @@ impl Instruments {
     /// Every send ends (a project opens with its own), each track's notes
     /// on the instrument it played ending first.
     pub fn clear_sends(&mut self) {
-        for t in 0..TRACKS {
+        for t in 0..WHO {
             if self.sends[t] != NO_SEND {
                 self.end_notes(t, 0);
                 self.sends[t] = NO_SEND;
@@ -418,7 +451,7 @@ impl Instruments {
     /// Ends the notes track `track` holds on the instrument it plays, its
     /// pads' and its keys', `offset` frames into the next block.
     fn end_notes(&mut self, track: usize, offset: u32) {
-        if track >= TRACKS {
+        if track >= WHO {
             return;
         }
         let started = std::mem::replace(&mut self.started[track], [Started::default(); PADS]);
@@ -440,7 +473,7 @@ impl Instruments {
     /// those of the tracks that send to it (its instrument went or was
     /// silenced).
     fn forget_notes(&mut self, owner: usize) {
-        for t in 0..TRACKS {
+        for t in 0..WHO {
             if t == owner || usize::from(self.sends[t]) == owner {
                 self.started[t] = [Started::default(); PADS];
                 self.keys[t] = 0;
@@ -469,23 +502,37 @@ impl Instruments {
     /// only ringing out an old one): what the project's list of
     /// instruments follows (`InstrumentList::follow`). Never allocates.
     pub fn held_tracks(&self) -> u128 {
-        self.slot_of
+        self.slot_of[..TRACKS]
             .iter()
             .enumerate()
             .filter(|&(_, &s)| s != NO_SLOT)
             .fold(0, |bits, (t, _)| bits | 1 << t)
     }
 
-    /// How many tracks play their own instrument.
-    pub fn count(&self) -> usize {
-        self.slot_of.iter().filter(|&&s| s != NO_SLOT).count()
+    /// The free places that hold an instrument, one bit each (place `n`:
+    /// bit `n`): what the project's list follows for them
+    /// (`InstrumentList::follow_free`). Never allocates.
+    pub fn held_free(&self) -> u16 {
+        self.slot_of[TRACKS..HOLDERS]
+            .iter()
+            .enumerate()
+            .filter(|&(_, &s)| s != NO_SLOT)
+            .fold(0, |bits, (n, _)| bits | 1 << n)
     }
 
-    /// Whether an instrument for track `track` would go in: it has one
-    /// already (the new one takes its place), or fewer than [`SLOTS`]
-    /// tracks have one.
+    /// How many instruments are loaded: the tracks' own and the free ones.
+    pub fn count(&self) -> usize {
+        self.slot_of[..HOLDERS]
+            .iter()
+            .filter(|&&s| s != NO_SLOT)
+            .count()
+    }
+
+    /// Whether an instrument for holder `track` would go in: it has one
+    /// already (the new one takes its place), or fewer than [`SLOTS`] are
+    /// loaded.
     pub fn has_room(&self, track: usize) -> bool {
-        track < TRACKS && (self.holds(track) || self.count() < SLOTS)
+        track < HOLDERS && (self.holds(track) || self.count() < SLOTS)
     }
 
     /// Voices sounding in the tracks' own instruments (a plugin counts
@@ -510,7 +557,31 @@ impl Instruments {
         (0..HOST_SLOTS)
             .filter(|&s| self.slots[s].held.is_some() || self.host.ringing(s))
             .filter_map(|s| self.slots[s].track)
+            .filter(|&t| t < TRACKS)
             .fold(0, |m, t| m | 1 << t)
+    }
+
+    /// The free places whose strips are in use, one bit each: holding an
+    /// instrument or still ringing out an old one.
+    pub fn free_in_use(&self) -> u16 {
+        (0..HOST_SLOTS)
+            .filter(|&s| self.slots[s].held.is_some() || self.host.ringing(s))
+            .filter_map(|s| self.slots[s].track)
+            .filter(|&t| (TRACKS..HOLDERS).contains(&t))
+            .fold(0, |m, t| m | 1 << (t - TRACKS))
+    }
+
+    /// The pads play holder `to`'s instrument from now on, by a send
+    /// (None: they play the track again), the notes they left sounding on
+    /// the old one ending first. False (nothing changes) when `to` holds
+    /// none.
+    pub fn pads_play(&mut self, to: Option<usize>) -> bool {
+        self.set_send(THE_PADS, to).is_ok()
+    }
+
+    /// The holder whose instrument the pads play, if they play one here.
+    pub fn pads_play_at(&self) -> Option<usize> {
+        self.owner(THE_PADS)
     }
 
     /// A slot to lend track `track`: an idle one (no instrument, nothing
@@ -525,9 +596,10 @@ impl Instruments {
             .or_else(|| empty().next())
     }
 
-    /// Puts `inst` in for track `track`, with `pads` as its pad map and
-    /// `tuning`: in the track's slot if it has one (the old instrument
-    /// rings out), else in a slot lent to it. Says why if it can't go in,
+    /// Puts `inst` in for holder `track` (a track, or a free place), with
+    /// `pads` as its pad map and `tuning`: in its slot if it has one (the
+    /// old instrument rings out), else in a slot lent to it, routed to its
+    /// channel ([`Instruments::channel`]). Says why if it can't go in,
     /// and hands `inst` back. Never allocates.
     pub fn put(
         &mut self,
@@ -537,7 +609,7 @@ impl Instruments {
         tuning: &Tuning,
     ) -> Result<(), (Refused, Option<Instrument>)> {
         let (inst, held) = inst;
-        if track >= TRACKS {
+        if track >= HOLDERS {
             return Err((Refused::NoTrack, Some(inst)));
         }
         let lend = self.slot(track).is_none();
@@ -1042,10 +1114,33 @@ impl Instruments {
                 st.resets
             ));
         }
+        for n in (0..FREE).filter(|&n| self.holds(free(n))) {
+            let (Some(h), st) = (self.held(free(n)), self.stats(free(n))) else {
+                continue;
+            };
+            parts.push(format!(
+                "free {} {} ({} notes, {} dropped, {} resets)",
+                n + 1,
+                h.name,
+                st.notes,
+                st.dropped,
+                st.resets
+            ));
+        }
+        let whose = |o: usize| {
+            if o < TRACKS {
+                format!("track {}'s", o + 1)
+            } else {
+                format!("free {}", o - TRACKS + 1)
+            }
+        };
         for t in (0..TRACKS).filter(|&t| !self.holds(t)) {
             if let Some(o) = self.owner(t) {
-                parts.push(format!("track {} plays track {}'s", t + 1, o + 1));
+                parts.push(format!("track {} plays {}", t + 1, whose(o)));
             }
+        }
+        if let Some(o) = self.pads_play_at() {
+            parts.push(format!("the pads play {}", whose(o)));
         }
         let locks = self.locks.describe();
         if parts.is_empty() && self.refused == 0 && self.cut == 0 && locks.is_none() {
@@ -1154,7 +1249,7 @@ mod tests {
 
     fn tracks() -> Tracks {
         Tracks {
-            bufs: vec![(vec![0.0; BLOCK], vec![0.0; BLOCK]); first_track() + TRACKS],
+            bufs: vec![(vec![0.0; BLOCK], vec![0.0; BLOCK]); first_track() + HOLDERS],
         }
     }
 
@@ -1307,6 +1402,56 @@ mod tests {
         assert!(!i.plays(5) && !i.pad_on(5, 0, 100, 0));
     }
 
+    /// Step 6: a free place holds an instrument no track has, on a mixer
+    /// strip of its own. The pads play it by their own player, a track can
+    /// play it by a send (heard on its strip), and taking it out empties
+    /// the place. The places count toward the [`SLOTS`] instruments.
+    #[test]
+    fn a_free_place_holds_an_instrument_the_pads_play_on_its_own_strip() {
+        let mut i = Instruments::new(RATE, BLOCK);
+        let place = free(0);
+        let strip = crate::mixing::free_channel(0);
+        assert!(!i.pads_play(Some(place)), "nothing there yet");
+        assert!(i
+            .put(HOLDERS, hum(), chromatic_from(60), &Tuning::standard())
+            .is_err());
+        i.put(place, hum(), chromatic_from(60), &Tuning::standard())
+            .unwrap();
+        assert_eq!(i.channel(place), strip);
+        assert_eq!((i.held_free(), i.held_tracks(), i.in_use()), (1, 0, 0));
+        assert_eq!((i.count(), i.free_in_use()), (1, 1));
+        assert!(!i.pad_on(THE_PADS, 0, 100, 0), "the pads play the track");
+        // The pads play it, into its strip only.
+        assert!(i.pads_play(Some(place)));
+        assert_eq!(i.pads_play_at(), Some(place));
+        assert!(i.pad_on(THE_PADS, 0, 100, 0));
+        let t = render_levels(&mut i);
+        assert_eq!(level(&t, strip), 0.5);
+        for other in (0..first_track() + HOLDERS).filter(|&k| k != strip) {
+            assert_eq!(level(&t, other), 0.0, "channel {other}");
+        }
+        assert!(i.pad_off(THE_PADS, 0, 0));
+        let t = render_levels(&mut i);
+        assert_eq!(level(&t, strip), 0.0);
+        // Track 6 plays it too, heard on its strip.
+        assert_eq!(i.set_send(5, Some(place)), Ok(()));
+        assert_eq!(i.heard_on(5), Some(strip));
+        assert_eq!(i.senders(place), 1 << 5, "a track's, not the pads'");
+        let said = i.describe().unwrap();
+        assert!(said.contains("free 1 Hum"), "{said}");
+        assert!(said.contains("track 6 plays free 1"), "{said}");
+        assert!(said.contains("the pads play free 1"), "{said}");
+        // The pads leave it, a note they left sounding ends; the track
+        // leaves it; out it goes.
+        i.pad_on(THE_PADS, 1, 100, 0);
+        assert!(i.pads_play(None));
+        let t = render_levels(&mut i);
+        assert_eq!(level(&t, strip), 0.0, "the pads' note ended");
+        assert_eq!(i.set_send(5, None), Ok(()));
+        assert!(i.take_out(place));
+        assert_eq!((i.held_free(), i.count()), (0, 0));
+    }
+
     /// Where a track is heard while it plays an instrument, for a clip's
     /// "this track's strip" (time/strips.rs): its own instrument's strip,
     /// or that of the instrument it plays; nowhere of this table's while
@@ -1336,7 +1481,9 @@ mod tests {
         assert_eq!(i.set_send(5, Some(5)), Err(SendRefused::Itself));
         assert_eq!(i.set_send(5, Some(7)), Err(SendRefused::NothingThere));
         assert_eq!(i.set_send(TRACKS, Some(2)), Err(SendRefused::NoTrack));
-        assert_eq!(i.set_send(5, Some(TRACKS)), Err(SendRefused::NoTrack));
+        // A free place (step 6) with nothing in it, and past them.
+        assert_eq!(i.set_send(5, Some(TRACKS)), Err(SendRefused::NothingThere));
+        assert_eq!(i.set_send(5, Some(HOLDERS)), Err(SendRefused::NoTrack));
         // No chains: a track that sends has no instrument to send to.
         i.set_send(5, Some(2)).unwrap();
         assert_eq!(i.set_send(6, Some(5)), Err(SendRefused::NothingThere));
@@ -1748,7 +1895,7 @@ mod tests {
             assert_eq!(level(&t, other), 0.0, "track {other}");
         }
         assert_eq!(i.stats(last).notes, 1);
-        assert_eq!(put(&mut i, TRACKS), Err(Refused::NoTrack));
+        assert_eq!(put(&mut i, HOLDERS), Err(Refused::NoTrack));
     }
 
     /// The project's list of instruments follows the tracks' own (step 2b

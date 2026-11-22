@@ -2395,7 +2395,7 @@ fn last_through(m: &IoModel, w: &Whose, port: &str, blocks: Blocks) -> Option<Sa
         }
         let ours = match (w, s.to) {
             (_, To::Nothing) => true,
-            (Whose::Port(_), To::Track { .. } | To::NoPad { .. }) => true,
+            (Whose::Port(_), To::Track { .. } | To::NoPad { .. } | To::Pads) => true,
             (Whose::Route(i), To::Routed { track }) => m.setup.routes[*i].track == track,
             (Whose::Thru(_), To::Thru { to }) => Some(to) == to_id,
             _ => false,
@@ -2403,10 +2403,16 @@ fn last_through(m: &IoModel, w: &Whose, port: &str, blocks: Blocks) -> Option<Sa
         if !ours {
             continue;
         }
+        // A key on the pads' synth (the pads play it on their own) isn't
+        // the armed track's.
+        let where_to = match s.to {
+            To::Pads => "played the pads' synth".to_string(),
+            _ => where_to.clone(),
+        };
         return Some(Said {
             came: msg,
             went: blocks.run(msg),
-            where_to: where_to.clone(),
+            where_to,
             t: s.t,
         });
     }

@@ -1,0 +1,14 @@
+[package]
+name = "mpfree-context"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The Musical Context: one reading of what was played (key odds said in words, a chord timeline with no clear chord as an answer, the groove as residual timing, which clips and revisions it read) and the one harmony question every part asks; plain data"
+
+[lib]
+name = "mpfree_context"
+path = "src/lib.rs"
+
+[dependencies]
+mpfree-transport = { path = "../mpfree-transport" }
+mpfree-scale = { path = "../mpfree-scale" }

@@ -10,9 +10,6 @@
 203488	Analog Poly Brass, 8 voices
 320632	Analog Warm Pad, 8 voices
 465556	Analog Worn Cards, 16 voices
-60954	Bass Distorted 808, a line
-92689	Bass Init, a line
-128021	Bass Reese, a line
 9679	Arps: 16 latched arps at 32nds
 3183	Arps: 4 latched arps at 32nds
 128876	Arrange: a step tap in song mode, 512 blocks of 32 clips: until it plays
@@ -23,6 +20,9 @@
 54516	Audio tracks: 8 streaming comped takes
 26033	Auto wah
 21329	Auto-pan
+60954	Bass Distorted 808, a line
+92689	Bass Init, a line
+128021	Bass Reese, a line
 339781	Chain: drive, filter, delay, comp
 104245	Character (Console)
 120120	Character (Iron)
@@ -31,6 +31,7 @@
 618597	Choir Big Choir, 8 keys
 212507	Choir Init, 1 keys
 358682	Choir Init, 6 keys
+39041	Choir formants: 8 voices, plain
 99180	Chorus (2 voices)
 147067	Chorus (4 voices)
 991771	Cloud reverb (Cloud)
@@ -196,14 +197,17 @@
 485970	Steps: a tap, 8,192 notes: the edit
 711323	Steps: a tap, 8,192 notes: until it plays
 1568091	Steps: the grid rebuilt, 8,192 notes in 64 rows
+65219	Stream voices x16 at 1x, band-limited
+1105482	Stream voices x64 at 1.5x, Hermite
+6410634	Stream voices x64 at 1.5x, band-limited
+11812490	Stream voices x64 at 1.5x, band-limited 16
+8220268	Stream voices x64 at 3x, band-limited
 153829	Strings Init, 1 keys
 385402	Strings Init, 49 keys
 221035	Strings Init, 6 keys
 283218	Strings Orchestra, 6 keys
 133524	Supersaw saws: 8 voices, plain
-39041	Choir formants: 8 voices, plain
 31342	Talk box
-111176	Vocoder
 87944	Tape delay
 8952	Time with trig conditions and ratchets, 8 clips, arp
 29520	Time: 16 tracks of ratchets, 8 locks a step
@@ -215,6 +219,7 @@
 27052	Transient shaper
 11340	Tremolo
 32159	Tuner
+111176	Vocoder
 476604	Wavetable Digital Bell, 8 voices
 479074	Wavetable FM Keys, 8 voices
 77780	Wavetable Growl Bass, 8 voices

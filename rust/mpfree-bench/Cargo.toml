@@ -12,6 +12,7 @@ mpfree-synth = { path = "../mpfree-synth" }
 mpfree-fx = { path = "../mpfree-fx" }
 mpfree-grain = { path = "../mpfree-grain" }
 mpfree-sampler = { path = "../mpfree-sampler" }
+mpfree-status = { path = "../mpfree-status" }
 mpfree-transport = { path = "../mpfree-transport" }
 mpfree-seq = { path = "../mpfree-seq" }
 mpfree-play = { path = "../mpfree-play" }
@@ -26,4 +27,5 @@ mpfree-lanes = { path = "../mpfree-lanes" }
 mpfree-instruments = { path = "../mpfree-instruments" }
 mpfree-simd = { path = "../mpfree-simd" }
 mpfree-time-ui = { path = "../mpfree-time-ui" }
+mpfree-stream = { path = "../mpfree-stream" }
 mpfree-ui = { path = "../mpfree-ui" }

@@ -976,16 +976,17 @@ fn lane_text(s: &LaneSetup, what: &str) -> (String, Tone) {
     (format!("{core}, {prio}: {what}"), tone)
 }
 
-/// The Dev page's rows: how the sound's cores started, and (`two`,
-/// `three`) the lanes' parts and late ones. Empty until the audio loop has
-/// set up.
 /// Times since the start a lane was late with its part of the sound (left
 /// out for that period) or waited for past the next deadline, every lane's:
-/// what the top bar's "Sound skipped" chip watches (sampler plan step 10).
+/// what the status board's "Part of the sound was skipped" counts (sampler
+/// plan step 10).
 pub fn late(shared: &CoreShared) -> u64 {
     shared.counts().late()
 }
 
+/// The Dev page's rows: how the sound's cores started, and (`two`,
+/// `three`) the lanes' parts and late ones. Empty until the audio loop has
+/// set up.
 pub fn rows(shared: &CoreShared) -> Vec<Row> {
     let Some((mode, lanes, setup)) = shared.setup.get() else {
         return Vec::new();

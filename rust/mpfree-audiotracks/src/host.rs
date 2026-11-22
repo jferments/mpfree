@@ -577,6 +577,8 @@ impl AudioHost {
         let frames = audio.len().checked_div(channels).unwrap_or(0);
         let file = TakeFile {
             id,
+            // A sound brought in is a new recording: the tracks give its id.
+            rec: crate::RecordingId::NONE,
             track,
             group,
             pass: 0,
