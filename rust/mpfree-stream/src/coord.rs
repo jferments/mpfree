@@ -468,7 +468,14 @@ const CARD_GONE: &str = "the SD card was removed";
 
 /// What a read in flight is for.
 enum Kind {
-    Units { tag: Tag, first: u32, units: u32 },
+    Units {
+        tag: Tag,
+        first: u32,
+        units: u32,
+    },
+    /// Units read for a length that has since changed ([`Coordinator::grow`]):
+    /// whatever comes back is dropped.
+    Void,
     Job(u32),
 }
 
@@ -805,7 +812,88 @@ impl Coordinator {
     /// Make `source` the sound in the file at `path` (replacing what it
     /// was, under a new generation).
     pub fn open(&mut self, source: u16, path: &Path) -> Result<Tag, String> {
-        self.open_as(source, path, false, None, None)
+        self.open_as(source, path, false, None, None, None)
+    }
+
+    /// Make `source` the WAV or RF64 file at `path` that is still being
+    /// written (a take's `.recording` file), playing only its first
+    /// `frames` frames: what its writer has committed, never what the file
+    /// happens to hold now (a write in progress, or room set aside). Never
+    /// more than the file holds. It grows with [`Coordinator::grow`]. The
+    /// file may be renamed while it is open (the open file follows it),
+    /// but never shortened or rewritten below what it has committed.
+    pub fn open_growing(&mut self, source: u16, path: &Path, frames: u64) -> Result<Tag, String> {
+        self.open_as(source, path, false, None, None, Some(frames))
+    }
+
+    /// The source opened with [`Coordinator::open_growing`] now has
+    /// `frames` frames (its writer's committed count; only ever up), under
+    /// the same generation: units wholly below the old end stay cached, and
+    /// the one cut short at the old end is dropped (in the cache, and a
+    /// read of it in flight) and read again whole. Refused for less than
+    /// it has, for more than the file holds, and for a FLAC, memory or
+    /// engine-rate source.
+    pub fn grow(&mut self, source: u16, frames: u64) -> Result<(), String> {
+        let s = Self::check_source(source)?;
+        let src = self.sources[s]
+            .as_mut()
+            .ok_or_else(|| format!("source {source} isn't open"))?;
+        if src.rate.is_some() {
+            return Err("a source played at the engine's rate can't grow".into());
+        }
+        let Store::File { file, layout } = &mut src.store else {
+            return Err("only a WAV or RF64 file being written can grow".into());
+        };
+        let old = layout.frames;
+        if frames < old {
+            return Err(format!("{frames} frames: it has {old}, and only grows"));
+        }
+        if frames == old {
+            return Ok(());
+        }
+        let len = file.metadata().map_err(|e| e.to_string())?.len();
+        if layout.byte_of(frames) > len {
+            return Err(format!("{frames} frames: the file holds fewer"));
+        }
+        layout.frames = frames;
+        let (tag, uf) = (src.tag, unit_frames(layout.channels));
+        if !old.is_multiple_of(uf) {
+            // The unit cut short at the old end: dropped from the cache's
+            // books, from what waits to be filled, and from reads in
+            // flight, so it is asked for again whole.
+            let short = (old / uf) as u32;
+            if let Some(slot) = self.map.remove(&(source, short)) {
+                self.mirror[slot].held = Held::Free;
+            }
+            for (t, u, b) in std::mem::take(&mut self.ready) {
+                if t == tag && u == short {
+                    self.bytes.push(b);
+                } else {
+                    self.ready.push_back((t, u, b));
+                }
+            }
+            for (&request, f) in self.flights.iter_mut() {
+                let Kind::Units {
+                    tag: t,
+                    first,
+                    units,
+                } = f.kind
+                else {
+                    continue;
+                };
+                if t == tag && (first..first + units).contains(&short) {
+                    f.kind = Kind::Void;
+                    f.cancel.store(true, Ordering::Relaxed);
+                    for u in first..first + units {
+                        if self.asked.get(&(source, u)) == Some(&(tag.gen, request)) {
+                            self.asked.remove(&(source, u));
+                        }
+                    }
+                }
+            }
+        }
+        self.send(ToPlayer::Grow { tag, frames });
+        Ok(())
     }
 
     /// Make `source` the FLAC file at `path`, found through `index`
@@ -824,7 +912,7 @@ impl Coordinator {
         index: Arc<Index>,
         engine: bool,
     ) -> Result<Tag, String> {
-        self.open_as(source, path, engine, None, Some(index))
+        self.open_as(source, path, engine, None, Some(index), None)
     }
 
     /// [`Coordinator::open_flac`] for a file the storage manager found: one
@@ -839,7 +927,14 @@ impl Coordinator {
         if !loc.valid() {
             return Err(format!("{}: the SD card isn't there", loc.path.display()));
         }
-        self.open_as(source, &loc.path, engine, loc.card.clone(), Some(index))
+        self.open_as(
+            source,
+            &loc.path,
+            engine,
+            loc.card.clone(),
+            Some(index),
+            None,
+        )
     }
 
     /// Open `source` from a file the storage manager found
@@ -857,7 +952,7 @@ impl Coordinator {
         if !loc.valid() {
             return Err(format!("{}: the SD card isn't there", loc.path.display()));
         }
-        self.open_as(source, &loc.path, engine, loc.card.clone(), None)
+        self.open_as(source, &loc.path, engine, loc.card.clone(), None, None)
     }
 
     /// Open `source` from a file played at the engine's rate
@@ -867,7 +962,7 @@ impl Coordinator {
     /// ([`Coordinator::frames`]); one already at the engine's rate opens
     /// as [`Coordinator::open`] does.
     pub fn open_at_engine_rate(&mut self, source: u16, path: &Path) -> Result<Tag, String> {
-        self.open_as(source, path, true, None, None)
+        self.open_as(source, path, true, None, None, None)
     }
 
     fn open_as(
@@ -877,6 +972,7 @@ impl Coordinator {
         engine: bool,
         card: Option<Card>,
         flac: Option<Arc<Index>>,
+        growing: Option<u64>,
     ) -> Result<Tag, String> {
         let s = Self::check_source(source)?;
         let say = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
@@ -892,7 +988,10 @@ impl Coordinator {
                 (Store::Flac { file, index }, rate, frames)
             }
             None => {
-                let layout = layout(&mut file).map_err(|e| say(&e))?;
+                let mut layout = layout(&mut file).map_err(|e| say(&e))?;
+                if let Some(committed) = growing {
+                    layout.frames = layout.frames.min(committed);
+                }
                 let file = Arc::new(file);
                 (Store::File { file, layout }, layout.rate, layout.frames)
             }
@@ -1349,6 +1448,11 @@ impl Coordinator {
         let (tag, first, units) = match fl.kind {
             Kind::Units { tag, first, units } => (tag, first, units),
             Kind::Job(id) => return self.job_reply(id, r),
+            Kind::Void => {
+                self.stats.stale += 1;
+                self.bytes.push(r.buf);
+                return;
+            }
         };
         let s = tag.source;
         for u in first..first + units {
