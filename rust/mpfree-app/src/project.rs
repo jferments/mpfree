@@ -3231,7 +3231,9 @@ mod tests {
     #[test]
     fn a_tempo_from_a_loop_comes_back_exactly() {
         let bar = 4 * mpfree_transport::time::PPQ as i64;
-        let (_, from_loop) = mpfree_looper::free_tempo(123_457, 44_100, bar).unwrap();
+        let from_loop = mpfree_looper::read_bars(123_457, 44_100, bar, None, None)
+            .unwrap()
+            .bpm;
         for tempo in [117.3456, from_loop] {
             let c = Collected {
                 tempo,

@@ -74,6 +74,15 @@ fn edit_text(e: Edit, rate: u32) -> String {
             format!("{} × 1/16", n.abs())
         }
     };
+    // A boundary moved, later or earlier, by so many ms.
+    let moved = |what: &str, frames: i64| {
+        let ms = seam_text(frames.unsigned_abs() as usize, rate);
+        if frames < 0 {
+            format!("{what} ← {ms}")
+        } else {
+            format!("{what} → {ms}")
+        }
+    };
     match e {
         Edit::Half => "½ length".to_string(),
         Edit::Double => "× 2".to_string(),
@@ -83,6 +92,9 @@ fn edit_text(e: Edit, rate: u32) -> String {
         Edit::Trim { .. } => "Trim".to_string(),
         Edit::SeamFade(f) => format!("Seam fade {}", seam_text(f as usize, rate)),
         Edit::Speed(v) => format!("Speed {}", speed_text(v)),
+        Edit::Move(d) => moved("Move", d),
+        Edit::Resize(d) => moved("End", d),
+        Edit::Turn(d) => moved("Bar 1", d),
     }
 }
 
@@ -476,7 +488,7 @@ impl LooperPage {
         let src = v.selected;
         let s = &v.status;
         let len = |l: &Status| {
-            let b = bars_of(l.ticks, v.beats_per_bar);
+            let b = bars_of(l.ticks, v.bar_ticks);
             format!("{b} bar{}", if b == 1 { "" } else { "s" })
         };
         let busy = |l: &Status| l.merging.is_some() || l.copying.is_some() || l.fitting.is_some();
@@ -975,10 +987,11 @@ impl LooperPage {
     fn refresh_deck(&mut self, ui: &mut Ui, v: &LooperView) {
         let t = &self.transport;
         let beats = usize::from(t.meter.beats.max(1));
-        let bar_ticks = mpfree_transport::time::PPQ as i64 * beats as i64;
+        // The meter's own bar and beat (an eighth in 6/8), not quarters.
+        let bar_ticks = t.meter.bar_ticks();
         let running = matches!(t.state, State::Playing | State::Recording);
         let pos = t.position.max(0);
-        let beat = (pos / mpfree_transport::time::PPQ as i64) as usize % beats;
+        let beat = (pos / t.meter.beat_ticks().max(1)) as usize % beats;
         let bar = pos / bar_ticks.max(1);
         let head = DeckHead {
             beat: running.then_some((beat, beats)),
@@ -1002,7 +1015,7 @@ impl LooperPage {
         let channels: Vec<Channel> = (0..MAX_LOOPS)
             .map(|n| {
                 let l = &v.loops[n];
-                let bars = bars_of(l.ticks, v.beats_per_bar);
+                let bars = bars_of(l.ticks, v.bar_ticks);
                 let length = if bars == 0 || l.phase == Phase::Empty {
                     String::new()
                 } else {
@@ -1203,12 +1216,13 @@ impl LooperPage {
                     parts.push(format!("waits for you to play · {records}"))
                 }
                 Phase::Armed => parts.push(format!("waits for the bar line · {records}")),
-                Phase::Recording if s.free => {
-                    parts.push("recording free · its length sets the tempo".to_string())
-                }
+                Phase::Recording if s.free => parts.push(format!(
+                    "recording {} · its length sets the tempo",
+                    crate::looping::free_words(s.bars)
+                )),
                 Phase::Recording => parts.push("recording the first pass".to_string()),
                 _ => {
-                    let bars = bars_of(s.ticks, v.beats_per_bar);
+                    let bars = bars_of(s.ticks, v.bar_ticks);
                     if bars > 0 {
                         parts.push(bars_word(bars));
                     }
@@ -1333,7 +1347,7 @@ impl LooperPage {
                 },
                 reversed,
                 speed: (s.speed.clamp(-1, 1) + 1) as u8,
-                length: bars_word(bars_of(s.ticks, v.beats_per_bar)),
+                length: bars_word(bars_of(s.ticks, v.bar_ticks)),
                 edits: editable(s),
                 chips,
                 undo: !h.done().is_empty() || s.phase == Phase::Overdubbing,
@@ -1377,13 +1391,16 @@ impl LooperPage {
                     n + 1
                 ),
                 Phase::Recording if s.free && s.ending => format!(
-                    "Loop {} closes once it is a bar at 160 BPM: then its length sets the tempo",
-                    n + 1
+                    "Loop {} closes once it is {} at {:.0} BPM: then its length sets the tempo",
+                    n + 1,
+                    crate::looping::shortest_words(s.bars),
+                    mpfree_looper::LOOP_MAX_BPM
                 ),
                 Phase::Recording if s.free => format!(
-                    "Loop {} records free: REC again closes it, and its length sets the tempo \
-                     (80 to 160 BPM) and starts the song",
-                    n + 1
+                    "Loop {} records {}: REC again closes it, and its length sets the tempo \
+                     and starts the song",
+                    n + 1,
+                    crate::looping::free_words(s.bars)
                 ),
                 Phase::Armed if s.listening && s.free => format!(
                     "Loop {} records free when you play: {} starts it, and REC again sets \
@@ -1412,21 +1429,24 @@ impl LooperPage {
                     n + 1
                 ),
                 Phase::Empty if s.free && !v.resample => format!(
-                    "Tap Loop {}'s ring or press REC: it {records} free, and its length sets \
+                    "Tap Loop {}'s ring or press REC: it {records} {}, and its length sets \
                      the tempo",
-                    n + 1
+                    n + 1,
+                    crate::looping::free_words(s.bars)
                 ),
                 _ => format!("Tap Loop {}'s ring or press REC: it {records}", n + 1),
             },
             waits: match s.phase {
-                Phase::Recording if s.free && s.ending => Some("Closing at 1 bar".to_string()),
+                Phase::Recording if s.free && s.ending => Some(match s.bars {
+                    Some(b) if b > 1 => format!("Closing at {b} bars"),
+                    _ => "Closing at 1 bar".to_string(),
+                }),
                 Phase::Recording if s.free => Some("REC again sets the tempo".to_string()),
                 Phase::Armed if s.listening => Some("REC starts when you play".to_string()),
                 Phase::Armed => Some(match self.transport.state {
                     State::Playing | State::Recording => {
-                        let beats = i64::from(self.transport.meter.beats.max(1));
                         let bar = self.transport.position.max(0)
-                            / (mpfree_transport::time::PPQ as i64 * beats);
+                            / self.transport.meter.bar_ticks().max(1);
                         format!("REC starts on bar {}", bar + 2)
                     }
                     _ => "REC starts when PLAY does".to_string(),
@@ -1460,7 +1480,7 @@ impl LooperPage {
             (None, Some((_, _, at))) => Some(at),
             (None, None) => (!empty && s.frames > 0).then_some(s.position),
         };
-        let bars = live.map_or_else(|| bars_of(s.ticks, v.beats_per_bar), |(_, b)| b);
+        let bars = live.map_or_else(|| bars_of(s.ticks, v.bar_ticks), |(_, b)| b);
         let picked = self.layer.min(s.layers.saturating_sub(1));
         let send_built = [false, false, false, self.place(n).is_some()];
         let colour = LOOP_COLOURS[n % LOOP_COLOURS.len()];
@@ -1656,13 +1676,13 @@ fn live_place(v: &LooperView, wave: Option<&Arc<LoopWave>>) -> Option<(f32, usiz
 }
 
 /// Bars in a loop of `ticks`, rounded (0 before it has a length).
-pub(crate) fn bars_of(ticks: i64, beats_per_bar: u32) -> usize {
+/// A loop's length in whole bars of `bar` ticks (the meter's bar), at
+/// least 1 for a loop with any length.
+pub(crate) fn bars_of(ticks: i64, bar: i64) -> usize {
     if ticks <= 0 {
         return 0;
     }
-    (ticks as f64 / (960.0 * f64::from(beats_per_bar.max(1))))
-        .round()
-        .max(1.0) as usize
+    (ticks as f64 / bar.max(1) as f64).round().max(1.0) as usize
 }
 
 /// The memory gauge's times: "37 s" under a minute, "1:42" above, and the
@@ -2122,6 +2142,9 @@ mod tests {
         assert_eq!(text(Step::Edit(Edit::Half)), "½ length");
         assert_eq!(text(Step::Edit(Edit::Speed(-1))), "Speed ½×");
         assert_eq!(text(Step::Edit(Edit::Speed(1))), "Speed 2×");
+        assert_eq!(text(Step::Edit(Edit::Move(-2_205))), "Move ← 50 ms");
+        assert_eq!(text(Step::Edit(Edit::Resize(441))), "End → 10 ms");
+        assert_eq!(text(Step::Edit(Edit::Turn(882))), "Bar 1 → 20 ms");
         assert_eq!(text(Step::Merge(id(0))), "Merge layers");
         let (mut ui, mut page) = page();
         page.update(&mut ui, &v, &Settings::default());
@@ -2388,8 +2411,23 @@ mod tests {
         assert_eq!(pan_text(0.0), "C");
         assert_eq!(pan_text(-0.24), "L 12");
         assert_eq!(pan_text(0.6), "R 30");
-        assert_eq!(bars_of(0, 4), 0);
-        assert_eq!(bars_of(4 * 960, 4), 1);
-        assert_eq!(bars_of(7 * 960, 4), 2);
+    }
+
+    #[test]
+    fn a_loops_bars_count_by_the_meter() {
+        assert_eq!(bars_of(0, 4 * 960), 0);
+        assert_eq!(bars_of(4 * 960, 4 * 960), 1);
+        assert_eq!(bars_of(7 * 960, 4 * 960), 2);
+        // 6/8: a bar is six eighths, three quarters' worth of ticks.
+        let six_eight = mpfree_transport::time::Meter::new(6, 8)
+            .unwrap()
+            .bar_ticks();
+        assert_eq!(six_eight, 3 * 960);
+        assert_eq!(
+            bars_of(six_eight, six_eight),
+            1,
+            "not 0, as four quarters a bar made it"
+        );
+        assert_eq!(bars_of(2 * six_eight, six_eight), 2);
     }
 }

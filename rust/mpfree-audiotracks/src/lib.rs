@@ -62,11 +62,13 @@
 mod disk;
 pub mod host;
 mod pool;
+pub mod retime;
 pub mod save;
 pub mod stretch;
 
 pub use pool::CHUNK;
 use pool::{Pool, State as SlotState};
+pub use retime::{Piece, Retime};
 use std::collections::VecDeque;
 
 use save::{Saved, TakeFile, TrackFile};
@@ -87,8 +89,9 @@ pub const FADE: usize = 64;
 /// A loaded take's audio copies in at this many frames for each frame
 /// that plays (a minute of audio in about a second).
 pub const LOAD_SPEED: usize = 64;
-/// Edits and recordings Undo can take back.
-pub const HISTORY: usize = 32;
+/// Edits and recordings Undo can take back, counted a track at a time (a
+/// song time edit is one step of a track each).
+pub const HISTORY: usize = 64;
 /// Commands waiting for the next period.
 const QUEUE: usize = 64;
 /// The most frames the tracks run in one go.
@@ -229,6 +232,53 @@ pub enum Command {
         new: u16,
         ratio: f64,
     },
+    /// A song time edit (the Arrange refactor's 3.4, [`retime`]): every
+    /// track's regions move with the stretch of song they sit in, as one
+    /// undo step that belongs to song edit `song` (not 0). Only
+    /// [`Command::SongUndo`] and [`Command::SongRedo`] take that step back
+    /// and bring it back; [`Command::Undo`] and [`Command::Redo`] stop at
+    /// it. The cuts use the tempo map of the period before (the one the
+    /// regions were placed on: the edit's own view brings the new one).
+    /// Refused, nothing changing, while a track records or when a track's
+    /// regions would not fit ([`AudioTracks::retime_refused`] says first).
+    Retime {
+        song: u32,
+        retime: Retime,
+    },
+    /// Take back, or bring back, song edit `song`'s steps (one a
+    /// [`Command::Retime`] it was made of: + Bar pressed in a row is one
+    /// song edit): refused unless they are the steps Undo, or Redo, would
+    /// take next.
+    SongUndo(u32),
+    SongRedo(u32),
+    /// The song can no longer take back, or bring back, song edit `song`
+    /// (its history moved on past it): its steps go, with every step
+    /// Undo or Redo could only reach through them, so the regions never
+    /// go back to where they sat on a song that is gone. Changes no
+    /// region.
+    ForgetSong(u32),
+}
+
+/// Why the tracks can't take a song time edit ([`AudioTracks::retime_refused`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RetimeRefused {
+    /// The track records.
+    Recording(usize),
+    /// The track's regions, cut at the edit's edges, would be more than
+    /// [`MAX_REGIONS`].
+    Full(usize),
+}
+
+/// Whether a song edit's step can be taken back or brought back
+/// ([`AudioTracks::song_step`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SongStep {
+    /// It is the step Undo (or Redo) takes next.
+    Next,
+    /// Other steps lie on top of it (audio edits made since).
+    Under,
+    /// The history no longer holds it (it ran past it, or was cleared).
+    Gone,
 }
 
 /// A stretch of song ticks playing a stretch of a take: tick `start`
@@ -615,12 +665,30 @@ impl Track {
     }
 }
 
-/// One step of the history: a track's regions before (or, once undone,
-/// after) an edit.
+/// One track of a step of the history: its regions before (or, once
+/// undone, after) an edit.
 struct Snap {
     track: usize,
     n: usize,
+    /// The step it belongs to: the snaps of one step share it (a song time
+    /// edit changes several tracks at once), and it goes up by one a step.
+    step: u32,
+    /// The song edit the step belongs to (0: none): see
+    /// [`Command::Retime`].
+    song: u32,
     regions: [Region; MAX_REGIONS],
+}
+
+impl Snap {
+    fn new() -> Snap {
+        Snap {
+            track: 0,
+            n: 0,
+            step: 0,
+            song: 0,
+            regions: [Region::EMPTY; MAX_REGIONS],
+        }
+    }
 }
 
 /// Frames from tick `a` to tick `b` (fractional) along the tempo map, as
@@ -666,6 +734,11 @@ pub struct AudioTracks {
     h_base: usize,
     h_done: usize,
     h_redo: usize,
+    /// The last step's number ([`Snap::step`]).
+    step: u32,
+    /// The tempo map of the last period run: the one the regions were
+    /// placed on, for a song time edit whose view brings a new one.
+    last_map: TempoMap,
     stats: Stats,
     /// Takes whose saved audio is copying in (room for all, made once).
     loads: Vec<(u16, Vec<f32>)>,
@@ -697,14 +770,7 @@ impl AudioTracks {
     /// (twice that of mono takes), all allocated here.
     pub fn new(rate: u32, seconds: u32) -> AudioTracks {
         let samples = rate as usize * seconds as usize * 2;
-        let mut hist = Vec::with_capacity(HISTORY);
-        for _ in 0..HISTORY {
-            hist.push(Snap {
-                track: 0,
-                n: 0,
-                regions: [Region::EMPTY; MAX_REGIONS],
-            });
-        }
+        let hist = (0..HISTORY).map(|_| Snap::new()).collect();
         AudioTracks {
             rate,
             only: None,
@@ -717,11 +783,9 @@ impl AudioTracks {
             active: true,
             groups: 0,
             hist,
-            scratch: Box::new(Snap {
-                track: 0,
-                n: 0,
-                regions: [Region::EMPTY; MAX_REGIONS],
-            }),
+            scratch: Box::new(Snap::new()),
+            step: 0,
+            last_map: TempoMap::constant(120.0).expect("a valid tempo"),
             pending: [None; MAX_TRACKS],
             h_base: 0,
             h_done: 0,
@@ -956,20 +1020,32 @@ impl AudioTracks {
         self.stats.refused += 1;
     }
 
-    /// Save the scratch copy (a track's regions before an edit) as an undo
-    /// step, dropping the oldest when full and anything Redo could bring
-    /// back.
-    fn push_history(&mut self) {
+    /// A new step's number, for the snaps [`AudioTracks::push_history`]
+    /// puts in it.
+    fn next_step(&mut self) -> u32 {
+        self.step = self.step.wrapping_add(1);
+        self.step
+    }
+
+    /// Save the scratch copy (a track's regions before an edit) in undo
+    /// step `step`, of song edit `song` (0: none), dropping anything Redo
+    /// could bring back and, when full, the oldest step (all its tracks).
+    fn push_history(&mut self, step: u32, song: u32) {
+        if self.h_done == HISTORY {
+            let oldest = self.hist[self.h_base].step;
+            while self.h_done > 0 && self.hist[self.h_base].step == oldest {
+                self.h_base = (self.h_base + 1) % HISTORY;
+                self.h_done -= 1;
+            }
+        }
         let idx = (self.h_base + self.h_done) % HISTORY;
         let (src, dst) = (&*self.scratch, &mut self.hist[idx]);
         dst.track = src.track;
         dst.n = src.n;
+        dst.step = step;
+        dst.song = song;
         dst.regions[..src.n].copy_from_slice(&src.regions[..src.n]);
-        if self.h_done == HISTORY {
-            self.h_base = (self.h_base + 1) % HISTORY;
-        } else {
-            self.h_done += 1;
-        }
+        self.h_done += 1;
         self.h_redo = 0;
     }
 
@@ -981,6 +1057,182 @@ impl AudioTracks {
             std::mem::swap(&mut s.regions[i], &mut t.regions[i]);
         }
         std::mem::swap(&mut s.n, &mut t.n);
+    }
+
+    /// The snap Undo takes next and the one Redo brings next.
+    fn undo_snap(&self) -> Option<&Snap> {
+        let i = self.h_done.checked_sub(1)?;
+        Some(&self.hist[(self.h_base + i) % HISTORY])
+    }
+
+    fn redo_snap(&self) -> Option<&Snap> {
+        (self.h_redo > 0).then(|| &self.hist[(self.h_base + self.h_done) % HISTORY])
+    }
+
+    /// Take back the step on top, every track of it.
+    fn undo_step(&mut self) {
+        let Some(step) = self.undo_snap().map(|s| s.step) else {
+            return;
+        };
+        while self.undo_snap().is_some_and(|s| s.step == step) {
+            self.h_done -= 1;
+            self.h_redo += 1;
+            self.swap_history((self.h_base + self.h_done) % HISTORY);
+        }
+    }
+
+    /// Bring back the step Redo brings next, every track of it.
+    fn redo_step(&mut self) {
+        let Some(step) = self.redo_snap().map(|s| s.step) else {
+            return;
+        };
+        while self.redo_snap().is_some_and(|s| s.step == step) {
+            self.swap_history((self.h_base + self.h_done) % HISTORY);
+            self.h_done += 1;
+            self.h_redo -= 1;
+        }
+    }
+
+    /// The song edit whose step Undo would take next (Undo stops there:
+    /// it is the app's UNDO's), if it is one.
+    pub fn undo_is_song(&self) -> Option<u32> {
+        self.undo_snap().map(|s| s.song).filter(|&s| s != 0)
+    }
+
+    /// The same for Redo.
+    pub fn redo_is_song(&self) -> Option<u32> {
+        self.redo_snap().map(|s| s.song).filter(|&s| s != 0)
+    }
+
+    /// Where song edit `song`'s step is: next for Undo (`undo`) or Redo,
+    /// under other steps, or gone.
+    pub fn song_step(&self, song: u32, undo: bool) -> SongStep {
+        let next = if undo {
+            self.undo_snap()
+        } else {
+            self.redo_snap()
+        };
+        if song != 0 && next.is_some_and(|s| s.song == song) {
+            return SongStep::Next;
+        }
+        let (from, n) = if undo {
+            (0, self.h_done)
+        } else {
+            (self.h_done, self.h_redo)
+        };
+        let held = (from..from + n).any(|i| self.hist[(self.h_base + i) % HISTORY].song == song);
+        if song != 0 && held {
+            SongStep::Under
+        } else {
+            SongStep::Gone
+        }
+    }
+
+    /// Drop song edit `song`'s steps and every step only reachable
+    /// through them: on the Undo side the newest of them and all older
+    /// steps, on the Redo side the first of them and all steps redone
+    /// after it ([`Command::ForgetSong`]).
+    fn forget_song(&mut self, song: u32) {
+        if song == 0 {
+            return self.refuse();
+        }
+        let at = |i: usize| self.hist[(self.h_base + i) % HISTORY].song == song;
+        let undo = (0..self.h_done).rev().find(|&i| at(i));
+        let redo = (self.h_done..self.h_done + self.h_redo).find(|&i| at(i));
+        if undo.is_none() && redo.is_none() {
+            return self.refuse();
+        }
+        if let Some(j) = redo {
+            self.h_redo = j - self.h_done;
+        }
+        if let Some(i) = undo {
+            self.h_base = (self.h_base + i + 1) % HISTORY;
+            self.h_done -= i + 1;
+        }
+    }
+
+    /// Whether a command sent now might not do what the tracks say now
+    /// ([`AudioTracks::retime_refused`], [`AudioTracks::song_step`]): one
+    /// waiting for the next period changes the regions or the history
+    /// (or may: an arm can end a recording), or the queue is full.
+    /// Settings waiting (input, monitor, level, pan, mute, solo, latency)
+    /// don't count.
+    pub fn busy(&self) -> bool {
+        self.q_len == QUEUE
+            || self.queue[..self.q_len].iter().flatten().any(|c| {
+                !matches!(
+                    c,
+                    Command::SetInput(..)
+                        | Command::SetMonitor(..)
+                        | Command::SetLevel(..)
+                        | Command::SetPan(..)
+                        | Command::Mute(..)
+                        | Command::Solo(..)
+                        | Command::SetLatency(_)
+                )
+            })
+    }
+
+    /// Whether any step of the history, done or undone, belongs to a song
+    /// edit.
+    pub fn has_song_steps(&self) -> bool {
+        (0..self.h_done + self.h_redo).any(|i| self.hist[(self.h_base + i) % HISTORY].song != 0)
+    }
+
+    /// Whether any track holds a region.
+    pub fn has_regions(&self) -> bool {
+        self.tracks.iter().any(|t| t.n > 0)
+    }
+
+    /// Why the tracks can't take song time edit `r` now, if they can't: a
+    /// track records, or a track's regions would not fit. For the app to
+    /// ask before it edits the song, so a refusal changes nothing
+    /// anywhere.
+    pub fn retime_refused(&self, r: &Retime) -> Option<RetimeRefused> {
+        for (k, t) in self.tracks.iter().enumerate() {
+            if t.rec.is_some() {
+                return Some(RetimeRefused::Recording(k));
+            }
+            if r.count(t.regions()) > MAX_REGIONS {
+                return Some(RetimeRefused::Full(k));
+            }
+        }
+        None
+    }
+
+    /// Song time edit `r` of song edit `song` on every track it changes,
+    /// as one step (see [`Command::Retime`]). False, nothing changed, when
+    /// a track records or one's regions would not fit.
+    fn retime(&mut self, song: u32, r: &Retime) -> bool {
+        if song == 0 || self.retime_refused(r).is_some() {
+            return false;
+        }
+        let step = self.next_step();
+        let (map, rate) = (self.last_map, self.rate);
+        for k in 0..MAX_TRACKS {
+            if !r.changes(self.tracks[k].regions()) {
+                continue;
+            }
+            {
+                let (t, s) = (&self.tracks[k], &mut *self.scratch);
+                s.track = k;
+                s.n = t.n;
+                s.regions[..t.n].copy_from_slice(t.regions());
+            }
+            let s = &*self.scratch;
+            let t = &mut self.tracks[k];
+            match r.apply(&s.regions[..s.n], &map, rate, &mut t.regions) {
+                Some(n) => t.n = n,
+                // Checked above: it fits.
+                None => {
+                    t.regions[..s.n].copy_from_slice(&s.regions[..s.n]);
+                    t.n = s.n;
+                    continue;
+                }
+            }
+            self.push_history(step, song);
+        }
+        true
     }
 
     /// An edit of one track's regions: `f` changes them and says whether it
@@ -1003,7 +1255,8 @@ impl AudioTracks {
         }
         let rate = self.rate;
         if f(&mut self.tracks[track], map, rate) {
-            self.push_history();
+            let step = self.next_step();
+            self.push_history(step, 0);
         } else {
             let (t, s) = (&mut self.tracks[track], &*self.scratch);
             t.n = s.n;
@@ -1164,21 +1417,39 @@ impl AudioTracks {
                 );
             }
             Command::Undo => {
-                if self.h_done == 0 || self.any_recording() {
+                if self.h_done == 0 || self.any_recording() || self.undo_is_song().is_some() {
                     return self.refuse();
                 }
-                self.h_done -= 1;
-                self.h_redo += 1;
-                self.swap_history((self.h_base + self.h_done) % HISTORY);
+                self.undo_step();
             }
             Command::Redo => {
-                if self.h_redo == 0 || self.any_recording() {
+                if self.h_redo == 0 || self.any_recording() || self.redo_is_song().is_some() {
                     return self.refuse();
                 }
-                self.swap_history((self.h_base + self.h_done) % HISTORY);
-                self.h_done += 1;
-                self.h_redo -= 1;
+                self.redo_step();
             }
+            Command::Retime { song, retime } => {
+                if !self.retime(song, &retime) {
+                    self.refuse();
+                }
+            }
+            Command::SongUndo(song) => {
+                if self.any_recording() || self.song_step(song, true) != SongStep::Next {
+                    return self.refuse();
+                }
+                while self.undo_is_song() == Some(song) {
+                    self.undo_step();
+                }
+            }
+            Command::SongRedo(song) => {
+                if self.any_recording() || self.song_step(song, false) != SongStep::Next {
+                    return self.refuse();
+                }
+                while self.redo_is_song() == Some(song) {
+                    self.redo_step();
+                }
+            }
+            Command::ForgetSong(song) => self.forget_song(song),
             Command::Forget(id) => {
                 let ok = self
                     .takes
@@ -1893,6 +2164,7 @@ impl AudioTracks {
                 self.plan(map);
             }
         }
+        self.last_map = *map;
     }
 
     // ---- streaming -----------------------------------------------------
