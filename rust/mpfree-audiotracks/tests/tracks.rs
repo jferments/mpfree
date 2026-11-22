@@ -645,6 +645,57 @@ fn forget_gives_memory_back_only_when_nothing_plays_the_take() {
     assert!(r.a.take(0).is_none());
 }
 
+/// A take a clip keeps (the audio tracks rethink, phase 2): Forget is
+/// refused while it is kept, even with no region or undo step on it, and
+/// letting it go forgets it once nothing else uses it; a take a region
+/// still plays stays when let go.
+#[test]
+fn a_take_a_clip_keeps_stays_until_let_go() {
+    let mut r = one_bar(256);
+    r.cmd(A::Keep {
+        take: 0,
+        keep: true,
+    });
+    r.run_to(r.frame + 1);
+    assert!(r.a.kept(0) && r.a.in_use(0));
+    // Let go while its region plays it: it stays.
+    r.cmd(A::Keep {
+        take: 0,
+        keep: false,
+    });
+    r.run_to(r.frame + 1);
+    assert!(!r.a.kept(0) && r.a.take(0).is_some());
+    // Kept again, its region erased and the history forgotten.
+    r.cmd(A::Keep {
+        take: 0,
+        keep: true,
+    });
+    r.cmd(A::Erase {
+        track: 0,
+        from: 0,
+        to: BAR_TICKS,
+    });
+    r.cmd(A::ClearHistory);
+    r.cmd(A::Forget(0));
+    r.run_to(r.frame + 1);
+    assert_eq!(r.a.stats().refused, 1, "a kept take can't be forgotten");
+    assert!(r.a.take(0).is_some() && r.a.memory().used > 0);
+    r.cmd(A::Keep {
+        take: 0,
+        keep: false,
+    });
+    r.run_to(r.frame + 1);
+    assert!(r.a.take(0).is_none(), "let go, nothing uses it: forgotten");
+    assert_eq!(r.a.memory().used, 0);
+    // No take there to keep.
+    r.cmd(A::Keep {
+        take: 0,
+        keep: true,
+    });
+    r.run_to(r.frame + 1);
+    assert_eq!(r.a.stats().refused, 2);
+}
+
 #[test]
 fn disarming_ends_the_recording() {
     let mut r = Rig::new(10, 100);

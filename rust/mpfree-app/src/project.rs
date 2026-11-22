@@ -670,8 +670,10 @@ pub fn opening(
                     "project: {given} of its clips had no lasting id, or shared one; they have new ones"
                 ));
             }
-            // The audio tracks in the track list (phase 1a).
+            // The audio tracks in the track list (phase 1a), and the
+            // recordings their clips name (phase 2).
             audio = audio_slots(&p, snap.part(AUDIOTRACKS))?;
+            audio_clips(&mut p, snap.part(AUDIOTRACKS), rate)?;
             let mut fx = Box::new([mpfree_notefx::TrackFx::default(); mpfree_seq::MAX_TRACKS]);
             for (t, tr) in p.tracks.iter().enumerate().take(mpfree_seq::MAX_TRACKS) {
                 fx[t] = tr.note_fx;
@@ -1081,6 +1083,80 @@ pub fn audio_slots(
         slots.0[s] = t.id;
     }
     Ok(slots)
+}
+
+/// The audio clips of `p` against the project's recordings (the take
+/// lines of the audio tracks part, `part`): every recording a clip names
+/// is there, and the last region's has the frame the clip ends on, or the
+/// open stops, saying which clip. Recordings made at another rate are
+/// converted to `rate` as they go in (`audio_open`), so the clips' frame
+/// counts are scaled to match ([`mpfree_seq::AudioClip::convert`]).
+pub fn audio_clips(
+    p: &mut mpfree_seq::Project,
+    part: Option<&str>,
+    rate: u32,
+) -> Result<(), String> {
+    let saved = match part.map(mpfree_audiotracks::save::from_text) {
+        Some(Ok(s)) => Some(s),
+        // Said by `audio_slots`.
+        Some(Err(_)) => return Ok(()),
+        None => None,
+    };
+    let frames_of = |rec: mpfree_seq::RecId| {
+        saved
+            .as_ref()?
+            .takes
+            .iter()
+            .find(|k| k.rec.0 == rec.0)
+            .map(|k| k.frames)
+    };
+    let clips = p
+        .cell_clips()
+        .map(|(_, _, c)| c)
+        .chain(p.arrangement.clips.iter());
+    for c in clips {
+        let Some(a) = &c.audio else { continue };
+        if a.recordings().any(|r| frames_of(r).is_none()) {
+            return Err(format!(
+                "its audio clip \"{}\" names a recording the project hasn't got",
+                c.name
+            ));
+        }
+        let last = a.regions.last().map(|r| r.rec).and_then(frames_of);
+        if last.is_some_and(|n| a.last_frame > n as i64) {
+            return Err(format!(
+                "its audio clip \"{}\" ends past the end of its recording",
+                c.name
+            ));
+        }
+    }
+    if let Some(s) = saved.filter(|s| s.rate != rate) {
+        for t in &mut p.tracks {
+            for (_, c) in t.slots.iter_mut() {
+                if let Some(a) = &mut c.audio {
+                    a.convert(s.rate, rate);
+                }
+            }
+        }
+        let song: Vec<_> = p
+            .arrangement
+            .clips
+            .iter()
+            .filter(|c| c.audio.is_some())
+            .map(|c| c.id)
+            .collect();
+        for id in song {
+            if let Some(a) = p
+                .arrangement
+                .clips
+                .get_mut(id)
+                .and_then(|c| c.audio.as_mut())
+            {
+                a.convert(s.rate, rate);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// New project: the parts the app started with, and an empty song.
@@ -3018,6 +3094,69 @@ mod tests {
         // Format 1 with no list is an old project: nothing to say.
         let o = with(None, None).unwrap();
         assert!(instrument_notes(&o).is_empty(), "{:?}", o.notes);
+    }
+
+    /// Phase 2: every recording an audio clip names must be among the
+    /// project's recordings, with the frame its clip ends on, or the open
+    /// stops naming the clip; recordings at another rate convert, and the
+    /// clips' frames with them.
+    #[test]
+    fn audio_clips_need_their_recordings_and_follow_a_rate_change() {
+        use mpfree_audiotracks::save::{to_text, Saved, TakeFile};
+        use mpfree_audiotracks::RecordingId;
+        use mpfree_seq::{AudioClip, Clip, Project, RecId, Track};
+        let mut p = Project::new();
+        let mut t = Track::new_audio("Vocal", 0);
+        let mut clip = Clip::new("Hook", 3840);
+        clip.audio = Some(AudioClip::of(RecId(5), 4410, 88_200, 3840, 120.0));
+        t.slots[0] = Some(clip);
+        p.tracks.push(t);
+        p.give_track_ids();
+        let part = |rec: u128, frames: usize| {
+            to_text(&Saved {
+                rate: 44_100,
+                tracks: Vec::new(),
+                takes: vec![TakeFile {
+                    id: 0,
+                    rec: RecordingId(rec),
+                    track: 0,
+                    group: 0,
+                    pass: 0,
+                    bpm: 120.0,
+                    anchor: 0.0,
+                    frames,
+                    channels: 1,
+                    file: "a.wav".into(),
+                    path: None,
+                    audio: Vec::new(),
+                }],
+            })
+        };
+        let open = |text: Option<&str>, rate| {
+            let mut q = p.clone();
+            audio_clips(&mut q, text, rate).map(|()| q)
+        };
+        let q = open(Some(&part(5, 88_200)), 44_100).unwrap();
+        assert_eq!(q, p);
+        let missing = "its audio clip \"Hook\" names a recording the project hasn't got";
+        assert_eq!(
+            open(Some(&part(6, 88_200)), 44_100).err().as_deref(),
+            Some(missing)
+        );
+        assert_eq!(open(None, 44_100).err().as_deref(), Some(missing));
+        assert_eq!(
+            open(Some(&part(5, 88_199)), 44_100).err().as_deref(),
+            Some("its audio clip \"Hook\" ends past the end of its recording")
+        );
+        // Recordings made at 44.1 kHz opened at 48: the clip's frames scale.
+        let q = open(Some(&part(5, 88_200)), 48_000).unwrap();
+        let a = q.tracks[0].slots[0]
+            .as_ref()
+            .unwrap()
+            .audio
+            .as_ref()
+            .unwrap();
+        assert_eq!((a.regions[0].src, a.last_frame), (4800, 96_000));
     }
 
     /// Phase 1a: the audio tracks part names its tracks by id, each an

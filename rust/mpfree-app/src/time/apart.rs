@@ -38,7 +38,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use mpfree_seq::loops::{LoopNow, LoopPlan};
-use mpfree_seq::{Project, LOOPS, MAX_TRACKS};
+use mpfree_seq::{Project, RecId, LOOPS, MAX_TRACKS};
 use mpfree_time_ui::view::{MuteWait, TimeState};
 
 use super::control::{MuteLight, TimeControl, PADS};
@@ -169,6 +169,8 @@ pub struct Heavy {
     pub mute_wait: Option<MuteWait>,
     /// The time engine's part of the status line.
     pub describe: String,
+    /// The recordings audio clips name ([`TimeControl::recordings`]).
+    pub recordings: Vec<RecId>,
 }
 
 impl Heavy {
@@ -179,6 +181,7 @@ impl Heavy {
             state: c.state(),
             mute_wait: c.mute_wait().cloned(),
             describe: c.describe(),
+            recordings: c.recordings(),
         }
     }
 }

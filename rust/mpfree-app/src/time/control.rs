@@ -45,8 +45,8 @@ use mpfree_seq::time_edit::Refused;
 use mpfree_seq::ListStep;
 use mpfree_seq::TimeEdit;
 use mpfree_seq::{
-    Clip, ClipId, LaunchGrid, ModelError, Project, TouchPoint, TrackId, LOOPS, MAX_TRACKS, ROWS,
-    SLOTS,
+    Clip, ClipId, LaunchGrid, ModelError, Project, RecId, TouchPoint, TrackId, LOOPS, MAX_TRACKS,
+    ROWS, SLOTS,
 };
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::list::ListRow;
@@ -5787,6 +5787,22 @@ impl TimeControl {
     /// Whether REDO has anything to do.
     pub fn can_redo(&self) -> bool {
         !self.takes.undone().is_empty()
+    }
+
+    /// The recordings its audio clips name (the audio tracks rethink,
+    /// phase 2), sorted, each once: in the project, in what UNDO or REDO
+    /// could bring back, and in the clip COPY holds. The audio tracks keep
+    /// their takes while they are named ([`crate::audiotracks::TrackHost::keep_named`]).
+    pub fn recordings(&self) -> Vec<RecId> {
+        let mut v: Vec<RecId> = self
+            .project
+            .recordings()
+            .chain(self.takes.recordings())
+            .chain(self.clipboard.iter().flat_map(Clip::recordings))
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
     }
 
     /// The project's tracks, for TRACK MUTE's banks.

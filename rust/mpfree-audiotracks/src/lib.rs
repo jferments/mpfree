@@ -254,9 +254,19 @@ pub enum Command {
     Undo,
     Redo,
     /// Give a take's memory back. Refused while it records or while a
-    /// region, or a step Undo or Redo could bring back, plays it (see
-    /// [`AudioTracks::in_use`]); [`Command::ClearHistory`] first.
+    /// region, or a step Undo or Redo could bring back, plays it, or a
+    /// clip keeps it (see [`AudioTracks::in_use`]);
+    /// [`Command::ClearHistory`] first.
     Forget(u16),
+    /// Keep take `take` while a clip, or an undo step holding one, names
+    /// its recording (the audio tracks rethink, phase 2: the app says
+    /// which, [`AudioTracks::kept`]), or let it go. A take kept can't be
+    /// forgotten; one let go is forgotten at once if nothing else uses it
+    /// and it is free to go (not recording, loading or being written).
+    Keep {
+        take: u16,
+        keep: bool,
+    },
     /// Forget the undo history (so takes only it used can be forgotten).
     ClearHistory,
     /// Play take `new` wherever take `old` plays, its frames `ratio` times
@@ -612,6 +622,9 @@ struct Take {
     /// can't be forgotten, nor the tracks cleared, until the host says
     /// [`AudioTracks::written`].
     writing: bool,
+    /// A clip, or an undo step holding one, names it ([`Command::Keep`]):
+    /// it can't be forgotten.
+    kept: bool,
     store: Store,
     /// Frames played from its file that played silence (see
     /// [`Stats::missed`]), and the song tick of the latest.
@@ -633,6 +646,7 @@ const NO_TAKE: Take = Take {
     cut_short: false,
     loading: false,
     writing: false,
+    kept: false,
     store: Store::Pool,
     missed: 0,
     miss_tick: 0.0,
@@ -1290,6 +1304,14 @@ impl AudioTracks {
         })
     }
 
+    /// Whether a clip, or an undo step holding one, keeps the take
+    /// ([`Command::Keep`]).
+    pub fn kept(&self, id: u16) -> bool {
+        self.takes
+            .get(id as usize)
+            .is_some_and(|t| t.live && t.kept)
+    }
+
     /// The take whose lasting id is `rec`, if it is here.
     pub fn take_of(&self, rec: RecordingId) -> Option<u16> {
         if !rec.is_given() {
@@ -1394,10 +1416,12 @@ impl AudioTracks {
         (self.h_done, self.h_redo)
     }
 
-    /// Whether a region, or a step of the history, plays this take.
+    /// Whether a region, or a step of the history, plays this take, or a
+    /// clip keeps it ([`Command::Keep`]).
     pub fn in_use(&self, id: u16) -> bool {
         let uses = |rs: &[Region]| rs.iter().any(|r| r.take == id);
-        self.tracks.iter().any(|t| uses(t.regions()))
+        self.kept(id)
+            || self.tracks.iter().any(|t| uses(t.regions()))
             || (0..self.h_done + self.h_redo).any(|i| {
                 let s = &self.hist[(self.h_base + i) % HISTORY];
                 uses(&s.regions[..s.n])
@@ -1882,14 +1906,19 @@ impl AudioTracks {
             }
             Command::ForgetSong(song) => self.forget_song(song),
             Command::Forget(id) => {
-                let ok = self
-                    .takes
-                    .get(id as usize)
-                    .is_some_and(|t| t.live && !t.recording && !t.loading && !t.writing);
-                if !ok || self.in_use(id) {
+                if !self.free_to_forget(id) || self.in_use(id) {
                     return self.refuse();
                 }
                 self.forget(id);
+            }
+            Command::Keep { take, keep } => {
+                let Some(t) = self.takes.get_mut(take as usize).filter(|t| t.live) else {
+                    return self.refuse();
+                };
+                t.kept = keep;
+                if !keep && self.free_to_forget(take) && !self.in_use(take) {
+                    self.forget(take);
+                }
             }
             Command::OnFile {
                 take,
@@ -2771,6 +2800,14 @@ impl AudioTracks {
 
     /// Take `id` goes: its pool memory back, and its stream source closed
     /// if it has one.
+    /// Whether take `id` is here and free to go: not recording, loading or
+    /// being written to its file.
+    fn free_to_forget(&self, id: u16) -> bool {
+        self.takes
+            .get(id as usize)
+            .is_some_and(|t| t.live && !t.recording && !t.loading && !t.writing)
+    }
+
     fn forget(&mut self, id: u16) {
         self.pool.release_take(id);
         if let Store::Part { gen, .. } | Store::File { gen } = self.takes[id as usize].store {

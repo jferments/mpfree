@@ -10963,6 +10963,9 @@ fn player_session(
         }
         // `|`, not `||`: both flags are taken.
         if time.take_changed() | tracks.take_changed() {
+            // The takes the clips name stay (the audio tracks rethink,
+            // phase 2); the next look tells the tracks.
+            tracks.keep_named(time.recordings());
             out.show(gui::ToUi::Time(Box::new(time_state(&time, &tracks))));
             (shown_transport, transport_shown_at) = (time.info(), Instant::now());
         } else {

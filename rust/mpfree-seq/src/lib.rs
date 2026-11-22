@@ -1131,6 +1131,12 @@ impl Clip {
         }
     }
 
+    /// The recordings it names, if it is an audio clip ([`Clip::audio`]),
+    /// in region order (one may repeat). A copy names the same ones.
+    pub fn recordings(&self) -> impl Iterator<Item = RecId> + '_ {
+        self.audio.iter().flat_map(AudioClip::recordings)
+    }
+
     /// A Loop track's cell for loop `n` (0 based), `ticks` long: named
     /// after its loop ("Loop 2"), with no notes.
     pub fn new_loop(n: u8, ticks: Tick) -> Clip {
@@ -1858,6 +1864,16 @@ impl Project {
             .max()
             .unwrap_or(0)
             .max(song)
+    }
+
+    /// The recordings its audio clips name, in their cells and the song's
+    /// own clips (each as often as it is named): what the project keeps
+    /// while it holds them (the audio tracks rethink, phase 2).
+    pub fn recordings(&self) -> impl Iterator<Item = RecId> + '_ {
+        self.cell_clips()
+            .map(|(_, _, c)| c)
+            .chain(self.arrangement.clips.iter())
+            .flat_map(Clip::recordings)
     }
 
     /// Every clip in a cell, as (track, row, clip), in track and row

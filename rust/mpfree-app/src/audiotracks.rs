@@ -62,7 +62,7 @@ use mpfree_audiotracks::{
     Command, Input, Monitor, Retime, RetimeRefused, SongStep, TakeInfo, MAX_REGIONS, MAX_TAKES,
     MAX_TRACKS, PEAK_BLOCK,
 };
-use mpfree_seq::TrackId;
+use mpfree_seq::{RecId, TrackId};
 use mpfree_time_ui::song::{audio_blocks, input_chip, take_lanes, AudioLane, MixFrom, MONITORS};
 use mpfree_time_ui::view::{
     audio_color, track_color, AudioAction, RegionId, TimeState, TransportInfo,
@@ -302,6 +302,9 @@ pub struct TrackHost {
     /// Frames each take on its file has played as silence, as last said
     /// in the log ([`TrackHost::take_file_line`]).
     silent_seen: [u64; MAX_TAKES],
+    /// The recordings the project's audio clips, and the clips its undo
+    /// steps could bring back, name, sorted ([`TrackHost::keep_named`]).
+    named: Vec<RecId>,
     /// The song's meter, for the bar a dropout was at.
     time_sig: mpfree_transport::time::Meter,
 }
@@ -368,6 +371,7 @@ impl TrackHost {
             arm_next: None,
             files_dir: None,
             silent_seen: [0; MAX_TAKES],
+            named: Vec::new(),
             time_sig: mpfree_transport::time::Meter::default(),
         }
     }
@@ -558,6 +562,38 @@ impl TrackHost {
             if quiet != self.silent[s] && self.host.command(Command::Mute(s, quiet)) {
                 self.silent[s] = quiet;
                 self.changed = true;
+            }
+        }
+        if look && !self.clearing && self.pending.is_none() {
+            self.keep_takes();
+        }
+    }
+
+    /// The recordings the project's audio clips name, with the clips its
+    /// undo steps could bring back and the clip COPY holds (the audio
+    /// tracks rethink, phase 2: [`crate::time::TimeHost::recordings`]),
+    /// sorted. Their takes are kept from the next look on, and a take no
+    /// longer named is let go: forgotten if nothing else uses it.
+    pub fn keep_named(&mut self, names: Vec<RecId>) {
+        debug_assert!(names.windows(2).all(|w| w[0] < w[1]));
+        self.named = names;
+    }
+
+    /// Each take kept while [`TrackHost::keep_named`]'s recordings name
+    /// it, and let go once they don't ([`Command::Keep`]): told at each
+    /// look, so takes that come in later (an open) are kept too. Nothing
+    /// allocates.
+    fn keep_takes(&mut self) {
+        for id in 0..MAX_TAKES as u16 {
+            let Some(k) = self.host.tracks.take(id) else {
+                continue;
+            };
+            let named = self.named.binary_search(&RecId(k.rec.0)).is_ok();
+            if named != self.host.tracks.kept(id) {
+                let _ = self.host.command(Command::Keep {
+                    take: id,
+                    keep: named,
+                });
             }
         }
     }
@@ -2337,6 +2373,43 @@ mod tests {
                 std::thread::sleep(Duration::from_micros(100));
             }
         }
+    }
+
+    /// Takes the project's audio clips name stay (the audio tracks
+    /// rethink, phase 2): kept from the next look, so a Forget is refused
+    /// with no region or undo step on them; let go once nothing names
+    /// them, and forgotten then.
+    #[test]
+    fn takes_named_by_clips_are_kept_until_none_names_them() {
+        let mut r = Rig::with(1);
+        r.h.action(AudioAction::Arm { track: 0, on: true }, &r.info(), false)
+            .unwrap();
+        r.periods(CHECK_EVERY as usize);
+        r.live = true;
+        r.command(T::Record);
+        while r.t.position() < 960 {
+            r.period();
+        }
+        r.command(T::Stop);
+        r.live = false;
+        r.periods(20);
+        let k = r.h.host.tracks.takes().next().expect("a take");
+        // Only a clip names it: its region erased, the history forgotten.
+        assert!(r.h.host.command(Command::Erase {
+            track: 0,
+            from: 0,
+            to: 100 * 3840,
+        }));
+        assert!(r.h.host.command(Command::ClearHistory));
+        r.h.keep_named(vec![RecId(k.rec.0)]);
+        r.periods(2 * CHECK_EVERY as usize);
+        assert!(r.h.host.tracks.kept(k.id));
+        assert!(r.h.host.command(Command::Forget(k.id)));
+        r.periods(2);
+        assert!(r.h.host.tracks.take(k.id).is_some(), "a kept take stays");
+        r.h.keep_named(Vec::new());
+        r.periods(2 * CHECK_EVERY as usize);
+        assert!(r.h.host.tracks.take(k.id).is_none(), "let go: forgotten");
     }
 
     #[test]

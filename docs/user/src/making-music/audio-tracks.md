@@ -75,10 +75,10 @@ If the sound you picked goes away (its channel is taken out of the mix), the tra
 
 Tap a region to pick it. The buttons along the bottom become **Split**, **Erase**, **Fades**, **Gain**, **Takes** and **Undo** for that region; tap empty space to go back to the song's own buttons.
 
-- **Split** cuts the region at the playhead, so put the playhead inside it first.
+- **Split** cuts the region at the playhead, so put the playhead inside it first. Nothing you hear changes: a fade the cut goes through carries on across it, each part showing its share of the slope.
 - **Erase** takes the region out.
 - **Drag** a region sideways to move it. It snaps to sixteenth notes; hold **SHIFT** to move it freely. It stays picked where it lands.
-- **Gain** and **Fades** are on the Q-Links. While a region is picked, the four knobs turn the track's **Level** (Q1) and **Pan** (Q2), which are its mixer strip's, and the region's **Gain** (Q3) and **Fades** (Q4, the fade in and the fade out together). Hold **SHIFT** for fine steps. A fade shows as a slope on the region.
+- **Gain** and **Fades** are on the Q-Links. While a region is picked, the four knobs turn the track's **Level** (Q1) and **Pan** (Q2), which are its mixer strip's, and the region's **Gain** (Q3) and **Fades** (Q4, the fade in and the fade out together). Hold **SHIFT** for fine steps. A fade shows as a slope on the region. On a part cut from a longer region (by **Split**, a punch in, or moving the song's bars), the fades you set are its own, at its own ends.
 - **Undo** takes back the last change, and **SHIFT + Undo** redoes what Undo took back.
 - **Moving a section, + Bar and Delete bars** on the Song view move the regions with the song (see [Audio in the song](arranging.md#audio-in-the-song)). Undo here stops at such an edit and says so: **UNDO** takes it back, with the song, and **SHIFT + UNDO** puts it back.
 

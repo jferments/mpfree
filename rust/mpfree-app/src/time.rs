@@ -1762,6 +1762,16 @@ impl TimeHost {
         }
     }
 
+    /// The recordings the project's audio clips, the clips UNDO or REDO
+    /// could bring back and the clip COPY holds name, sorted, each once
+    /// ([`TimeControl::recordings`]; apart, as last published).
+    pub fn recordings(&self) -> Vec<mpfree_seq::RecId> {
+        match &self.control {
+            Half::Here(c) => c.recordings(),
+            Half::Apart(a) => a.heavy.recordings.clone(),
+        }
+    }
+
     /// The tracks silent now, muted or left out by a solo, a bit a track
     /// ([`TimeControl::silenced`]): a track gone silent ends what its kit's
     /// Instrument and MIDI out pads hold, which no strip of its mutes.

@@ -1522,6 +1522,7 @@ impl Session {
         }
         // `|`, not `||`: both flags are taken.
         if self.time.take_changed() | self.tracks.take_changed() {
+            self.tracks.keep_named(self.time.recordings());
             self.out.show(ToUi::Time(Box::new(crate::time_state(
                 &self.time,
                 &self.tracks,

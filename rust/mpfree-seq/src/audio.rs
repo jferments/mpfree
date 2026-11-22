@@ -25,8 +25,11 @@
 //!   format: the save writes a line a region.
 //!
 //! Whether each recording named is in the project's recordings table, and
-//! has the frames named, is the audio tracks part's to say: that part is
-//! not this crate's ([`AudioClip::recordings`] lists what a clip names).
+//! has the frames named, is the audio tracks part's to say, which is not
+//! this crate's: the app checks it as a project opens (`mpfree-app`
+//! `project::audio_clips`), and keeps the recordings while a clip, or a
+//! clip an undo step holds, names them ([`AudioClip::recordings`],
+//! `Project::recordings`, `mpfree_play::Takes::recordings`).
 
 use mpfree_transport::time::{valid_bpm, Tick};
 
@@ -138,6 +141,24 @@ impl AudioClip {
     pub fn recordings(&self) -> impl Iterator<Item = RecId> + '_ {
         self.regions.iter().map(|r| r.rec)
     }
+
+    /// Its frame counts, made at `from` frames a second, as at `to`: for
+    /// recordings converted to the rate MPFree runs at as a project opens
+    /// (`mpfree_audiotracks::save::Saved::convert`, which scales the song
+    /// lane's regions the same way). Its ticks stay.
+    pub fn convert(&mut self, from: u32, to: u32) {
+        if from == to || from == 0 || to == 0 {
+            return;
+        }
+        let scale = |n: f64| (n * f64::from(to) / f64::from(from)).round();
+        let frames = |n: u32| scale(f64::from(n)) as u32;
+        for r in &mut self.regions {
+            r.src = scale(r.src as f64) as i64;
+            (r.fade_in, r.fade_out) = (frames(r.fade_in), frames(r.fade_out));
+            (r.into, r.left) = (frames(r.into), frames(r.left));
+        }
+        self.last_frame = scale(self.last_frame as f64) as i64;
+    }
 }
 
 #[cfg(test)]
@@ -191,5 +212,22 @@ mod tests {
             .map(|i| ClipRegion::new(i * 10, i * 10 + 10, RecId(1), 0))
             .collect();
         assert_eq!(full.check(2 * BAR), Ok(()));
+    }
+
+    #[test]
+    fn its_frames_convert_to_another_rate_and_its_ticks_stay() {
+        let mut a = two_regions();
+        a.regions[1].fade_in = 441;
+        a.regions[1].into = 4410;
+        a.convert(44_100, 48_000);
+        let r = a.regions[1];
+        assert_eq!((r.start, r.end), (BAR, 2 * BAR));
+        assert_eq!(
+            (r.src, r.fade_in, r.into, a.last_frame),
+            (48_000, 480, 4800, 96_000)
+        );
+        let again = a.clone();
+        a.convert(48_000, 48_000);
+        assert_eq!(a, again);
     }
 }

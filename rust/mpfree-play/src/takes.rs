@@ -82,7 +82,7 @@ use mpfree_seq::arrange::Arrangement;
 use mpfree_seq::mpfree_moves::{Kind, Map, Point, Target};
 use mpfree_seq::steps::{Edit, MovesEdit};
 use mpfree_seq::{
-    touch_room, Clip, ClipId, ClipSettings, DestId, Lock, ModelError, Note, Project, Scene,
+    touch_room, Clip, ClipId, ClipSettings, DestId, Lock, ModelError, Note, Project, RecId, Scene,
     SceneSettings, Touch, TouchKeep, TouchPoint, Track, MAX_TRACKS, ROWS,
 };
 use mpfree_transport::time::Tick;
@@ -295,6 +295,24 @@ pub struct Take {
     /// their scenes, before and after. The clips are in `made` and
     /// `removed`.
     pub rows: Option<Box<RowsEdit>>,
+}
+
+impl Take {
+    /// The clips it holds: put in, taken out (a drop's, a replace's and
+    /// Song to scenes' among them), a track it added, and the song before
+    /// and after a song edit.
+    fn clips(&self) -> impl Iterator<Item = &Clip> + '_ {
+        let cells = self.made.iter().chain(&self.removed).map(|(_, _, c)| c);
+        let song = self
+            .song
+            .iter()
+            .flat_map(|e| e.before.clips.iter().chain(e.after.clips.iter()));
+        let track = self
+            .track_added
+            .iter()
+            .flat_map(|(_, t)| t.slots.iter().map(|(_, c)| c));
+        cells.chain(song).chain(track)
+    }
 }
 
 /// Why a take put a whole clip in place of another ([`Take::replaced`]).
@@ -1576,6 +1594,23 @@ impl Takes {
     pub fn clear(&mut self) {
         self.done.clear();
         self.undone.clear();
+        self.evicted = None;
+        self.cleared.clear();
+    }
+
+    /// The recordings the audio clips of its takes name (the audio tracks
+    /// rethink, phase 2): what UNDO or REDO could bring back, or taking
+    /// back an edit that could not go in ([`Takes::withdraw`]), each as
+    /// often as it is named. With [`Project::recordings`], what the audio
+    /// tracks keep.
+    pub fn recordings(&self) -> impl Iterator<Item = RecId> + '_ {
+        self.done
+            .iter()
+            .chain(&self.undone)
+            .chain(&self.evicted)
+            .chain(&self.cleared)
+            .flat_map(Take::clips)
+            .flat_map(Clip::recordings)
     }
 
     /// The entry for recorded take `number`: an earlier one still being
@@ -1700,6 +1735,50 @@ mod tests {
         t.slots[0] = Some(Clip::new("c", 3840));
         p.tracks.push(t);
         p
+    }
+
+    /// A deleted audio clip's recording stays named while UNDO, REDO or
+    /// a withdraw could bring the clip back, and goes once the history
+    /// lets go of it; a copy names the same recording.
+    #[test]
+    fn a_deleted_clips_recording_stays_while_undo_can_bring_it_back() {
+        use mpfree_seq::{AudioClip, RecId};
+        let mut p = Project::new();
+        let mut t = Track::new_audio("a", 0);
+        let mut clip = Clip::new("v", 3840);
+        clip.audio = Some(AudioClip::of(RecId(7), 0, 88_200, 3840, 120.0));
+        t.slots[0] = Some(clip.clone());
+        p.tracks.push(t);
+        p.check().unwrap();
+        let names = |p: &Project, k: &Takes| {
+            let mut v: Vec<RecId> = p.recordings().chain(k.recordings()).collect();
+            v.sort();
+            v.dedup();
+            v
+        };
+        let mut k = Takes::new(1);
+        assert_eq!(names(&p, &k), [RecId(7)]);
+        // A copy names the same recording.
+        k.paste_clip(&mut p, 0, 1, clip.copied()).unwrap();
+        assert_eq!(p.recordings().collect::<Vec<_>>(), [RecId(7), RecId(7)]);
+        k.remove_clip(&mut p, 0, 1).unwrap();
+        k.remove_clip(&mut p, 0, 0).unwrap();
+        assert_eq!(p.recordings().count(), 0);
+        assert_eq!(names(&p, &k), [RecId(7)], "UNDO could bring it back");
+        k.undo(&mut p);
+        assert_eq!(p.recordings().collect::<Vec<_>>(), [RecId(7)]);
+        k.redo(&mut p);
+        assert_eq!(names(&p, &k), [RecId(7)], "and again");
+        // The next edit puts the removal out of a history of one (a
+        // withdraw could still bring it back); the one after lets it go.
+        let mut n = Clip::new("n", 3840);
+        n.audio = Some(AudioClip::of(RecId(9), 0, 44_100, 3840, 120.0));
+        k.paste_clip(&mut p, 0, 2, n.clone()).unwrap();
+        assert_eq!(names(&p, &k), [RecId(7), RecId(9)]);
+        k.paste_clip(&mut p, 0, 3, n).unwrap();
+        assert_eq!(names(&p, &k), [RecId(9)], "the history let go of it");
+        k.clear();
+        assert_eq!(k.recordings().count(), 0);
     }
 
     fn taken(tick: i64, take: u32) -> Taken {
