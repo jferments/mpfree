@@ -68,6 +68,7 @@ mod audio;
 mod control;
 mod follow;
 pub mod link;
+mod offline;
 mod pad_wait;
 pub mod strips;
 
@@ -1954,6 +1955,23 @@ impl TimeHost {
         match &self.control {
             Half::Here(c) => c.song_on(),
             Half::Apart(a) => a.light.song_on,
+        }
+    }
+
+    /// The song list's step playing (together only: the rows played
+    /// offline, [`offline`]).
+    fn list_playing(&self) -> Option<mpfree_perform::ListPlaying> {
+        match &self.control {
+            Half::Here(c) => c.list_playing(),
+            Half::Apart(_) => None,
+        }
+    }
+
+    /// Rec song is armed (together only, as [`TimeHost::list_playing`]).
+    fn song_rec_armed(&self) -> bool {
+        match &self.control {
+            Half::Here(c) => c.song_rec_armed(),
+            Half::Apart(_) => false,
         }
     }
 
@@ -7404,6 +7422,104 @@ mod tests {
         assert_eq!((h.dropped(), song.dropped()), (0, 0));
     }
 
+    /// List → song plays the list offline through Rec song (Arrange 4.1,
+    /// plan D7), so what only playing shows comes out right: a clip's
+    /// follow action (track 2 moves to its next clip after a bar), a
+    /// legato clip taking over its track's place (track 3, two bars into
+    /// a three-bar clip), a one-shot (track 4), a scene's mute carried
+    /// into the next (row 2 mutes track 1, and row 3 leaves it), a silent
+    /// step (empty row 6) and a follow with a chance (track 5, the same
+    /// rolls each time). The song gives the same notes on the same frames
+    /// as the list at several period sizes, and the project converts the
+    /// same way twice.
+    #[test]
+    fn list_to_song_plays_what_the_list_played_at_every_period_size() {
+        use mpfree_seq::{Follow, FollowAction, ListStep, Note};
+        let clip = |bars: i64, pad: u8| {
+            let mut c = Clip::new("beats", bars * 3840);
+            c.notes = (0..4 * bars)
+                .map(|k| Note::new(k * 960, 100, pad + k as u8, 100))
+                .collect();
+            c
+        };
+        let mut p = TimeHost::new(RATE, 120.0).unwrap().project().clone();
+        let t = &mut p.tracks;
+        t[0].slots[0] = Some(clip(1, 10));
+        t[0].slots[2] = Some(clip(1, 20));
+        let mut a = clip(1, 30);
+        a.follow = Some(Follow::after(1, FollowAction::Next));
+        t[1].slots[0] = Some(a);
+        t[1].slots[1] = Some(clip(1, 40));
+        t[1].slots[2] = Some(clip(1, 50));
+        t[2].slots[0] = Some(clip(3, 60));
+        let mut legato = clip(4, 80);
+        legato.legato = true;
+        t[2].slots[1] = Some(legato);
+        let mut once = clip(1, 100);
+        once.length = 1920;
+        once.notes.truncate(2);
+        once.once = true;
+        t[3].slots[0] = Some(once);
+        let mut maybe = clip(1, 110);
+        maybe.follow = Some(Follow {
+            bars: 1,
+            action: FollowAction::Next,
+            other: FollowAction::Stay,
+            chance: 50,
+        });
+        t[4].slots[0] = Some(maybe);
+        t[4].slots[1] = Some(clip(1, 120));
+        let s = p.scene_mut(0).unwrap();
+        s.follow = Some(Follow::after(2, FollowAction::Next));
+        let s = p.scene_mut(1).unwrap();
+        s.mutes = Some(0b1);
+        s.follow = Some(Follow::after(2, FollowAction::Next));
+        p.arrangement.list.steps = [(0, 1), (1, 2), (5, 1), (2, 1)]
+            .into_iter()
+            .map(|(row, times)| ListStep { row, times })
+            .collect();
+        p.give_clip_ids();
+        // 2 + 2 × 2 + 1 + 1 bars, and the last notes' ends.
+        let to = 8 * BAR + 1000;
+        let mut songs = Vec::new();
+        for period in [7u32, 128, 1000] {
+            let by = |h: &mut TimeHost, pads: &mut Fake, to: u64| {
+                while pads.frame < to {
+                    h.period(period, pads);
+                    pads.frame += u64::from(period);
+                }
+            };
+            let mut live = TimeHost::with_project(RATE, 120.0, p.clone()).unwrap();
+            let mut heard = Fake::default();
+            live.act(TimeAction::ListPlay(0)).unwrap();
+            live.command(Command::Play);
+            by(&mut live, &mut heard, to);
+            let mut song = TimeHost::with_project(RATE, 120.0, p.clone()).unwrap();
+            let said = song.act(TimeAction::ListToSong).unwrap();
+            assert_eq!(said, "list → song: 4 steps from bar 1, exact");
+            song.act(TimeAction::SongMode(true)).unwrap();
+            let mut played = Fake::default();
+            song.command(Command::Play);
+            by(&mut song, &mut played, to);
+            assert_eq!(played.hits, heard.hits, "period {period}");
+            assert_eq!(played.releases, heard.releases, "period {period}");
+            assert_eq!((live.dropped(), song.dropped()), (0, 0));
+            songs.push(song.project().arrangement.clone());
+            // What only playing shows: track 2's follow, track 3's legato
+            // from two bars in (its third bar before its first), track 4's
+            // one-shot once, and track 1 muted in row 3 (row 3's clip on
+            // track 2 heard).
+            let first = |pad: usize| heard.hits.iter().find(|h| h.1 == pad).map(|h| h.0);
+            assert_eq!(first(40), Some(BAR));
+            assert_eq!(first(88), Some(2 * BAR));
+            assert_eq!(heard.hits.iter().filter(|h| h.1 == 100).count(), 1);
+            assert_eq!((first(20), first(50)), (None, Some(7 * BAR)));
+        }
+        assert!(songs.windows(2).all(|w| w[0] == w[1]), "the same twice");
+        let names: Vec<&str> = songs[0].markers.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["Scene 1", "Scene 2", "Scene 6", "Scene 3"]);
+    }
+
     /// Arrange 1.2: a clip and a scene in row 40, past the grid's 16,
     /// save, open, launch and play; the scene's follow action moves within
     /// its bank (rows 32 to 47), never to the grid's rows; the grid still
@@ -10201,6 +10317,53 @@ mod tests {
         assert!(h.mute_light(0).is_some_and(|l| !l.waiting && l.silent));
         let h = h.into_together().expect("back");
         assert_eq!(h.dropped(), 0);
+    }
+
+    /// Arrange 4.1, on the desktop: what Scenes → song and List → song
+    /// cost the thread they run on (the audio thread together) in the big
+    /// song's rows (16 tracks, 2 rows of 4-bar clips of 1,000 notes):
+    /// the rows once (8 bars), and a list of both rows 25 times each (200
+    /// bars). `cargo test --release -p mpfree-app --bin mpfree --
+    /// --ignored print_what_the_conversions_cost --nocapture`.
+    #[test]
+    #[ignore]
+    fn print_what_the_conversions_cost() {
+        use mpfree_seq::{ListStep, Note};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let len = 16 * 960i64;
+        for t in 0..16 {
+            if t > 0 {
+                h.act(TimeAction::AddTrack).unwrap();
+            }
+            for row in 0..2usize {
+                let mut c = Clip::new("c", len);
+                c.notes = (0..1000i64)
+                    .map(|k| {
+                        let pitch = 36 + (k * 7 + row as i64) % 48;
+                        Note::new(k * len / 1000, 8, pitch as u8, 100)
+                    })
+                    .collect();
+                h.control.project.tracks[t].slots[row] = Some(c);
+            }
+        }
+        h.control.project.give_clip_ids();
+        h.control.project.arrangement.list.steps = vec![
+            ListStep { row: 0, times: 25 },
+            ListStep { row: 1, times: 25 },
+        ];
+        for (name, a) in [
+            ("scenes → song, 8 bars", TimeAction::ScenesToSong),
+            ("list → song, 200 bars", TimeAction::ListToSong),
+        ] {
+            let mut worst = 0f64;
+            for _ in 0..5 {
+                let t0 = std::time::Instant::now();
+                h.act(a.clone()).unwrap();
+                worst = worst.max(t0.elapsed().as_secs_f64() * 1000.0);
+                h.act(TimeAction::Undo).unwrap();
+            }
+            println!("{name}: {worst:.1} ms at worst");
+        }
     }
 
     /// Arrange 2.6c, on the desktop: what each action costs the facade's
