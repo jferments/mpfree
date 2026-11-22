@@ -71,6 +71,7 @@ The pads can play up to four synths at once, such as a soft pad sound and a bass
   - A new track that REC added for a layer goes away with its own UNDO, after the take's.
   - When the project holds no more tracks, or 16 tracks already record at once, the line says which layer isn't recorded, and the rest record.
   - A keyboard's key goes into a layer's track as the pad that plays its note on that synth; a note no pad plays alone sounds but isn't kept, as on a track a keyboard is routed to.
+  - A keyboard routed to a synth no track plays (see [Playing several tracks from your keyboards](midi-and-cv.md#playing-several-tracks-from-your-keyboards)) records the same way: its synth gets a track of its own in the same take, counted on the chip.
 - **Looping layers.** To loop all the layers with the Looper, record from a mix that has them all (the Looper tab's **Records from**), such as Master: **Records from: Pads** takes the first synth's channel.
 
 ## The twelve synths

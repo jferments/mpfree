@@ -3420,7 +3420,10 @@ mod tests {
         s.qlink_turn(1, -1, false);
         assert_eq!(route().synth, Some(1));
         s.qlink_turn(1, -1, false);
-        assert_eq!((route().synth, usize::from(route().track)), (None, tracks - 1));
+        assert_eq!(
+            (route().synth, usize::from(route().track)),
+            (None, tracks - 1)
+        );
         // Four other synths named already: a fifth is refused.
         {
             let mut v = m.lock().unwrap();
@@ -3435,7 +3438,10 @@ mod tests {
         }
         s.qlink_turn(1, 1, false);
         assert_eq!(route().synth, None);
-        assert!(s.take_note().unwrap().contains("4 synths can have routes at once"));
+        assert!(s
+            .take_note()
+            .unwrap()
+            .contains("4 synths can have routes at once"));
     }
 
     #[test]

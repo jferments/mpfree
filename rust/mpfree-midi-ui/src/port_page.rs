@@ -359,12 +359,16 @@ fn view(m: &IoModel, name: &str, now: f64) -> View {
             let ch = r
                 .channel
                 .map_or("All channels".to_string(), |c| format!("Ch {}", c + 1));
-            let t = m
-                .live
-                .tracks
-                .get(usize::from(r.track))
-                .cloned()
-                .unwrap_or_else(|| format!("Track {}", u16::from(r.track) + 1));
+            // A route that names a synth (step 11e) says the synth.
+            let t = match r.synth {
+                Some(id) => crate::synth_name(m, id),
+                None => m
+                    .live
+                    .tracks
+                    .get(usize::from(r.track))
+                    .cloned()
+                    .unwrap_or_else(|| format!("Track {}", u16::from(r.track) + 1)),
+            };
             format!("{ch} → {t}")
         })
         .collect();
