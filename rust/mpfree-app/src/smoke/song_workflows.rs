@@ -646,6 +646,81 @@ mod tests {
         });
     }
 
+    /// Layers (the instrument redesign's step 11a and 11b): FM picked for
+    /// the pads, then Layer and Pluck in the list of synths. Each hit and
+    /// each key plays both, each on its own strip; the header reads "Pads:
+    /// FM + Pluck". The project keeps them in a part of its own, and a new
+    /// project has none.
+    #[test]
+    fn layers_play_two_synths_from_the_pads_and_save_with_the_project() {
+        on_big_stack(|| {
+            use crate::instruments::{free, layer};
+            let mut l = lab("pad-layers");
+            let s = &mut l.s;
+            let name = "Night Market";
+            let lib = s.library.clone().expect("a library");
+            let loc = mpfree_library::Loc::top(mpfree_library::Place::Projects)
+                .join(name)
+                .expect("a project's place");
+            open(s, name);
+            s.press("header", "tab", "Synth");
+            s.press("synth-inst", "card", "").settle();
+            s.press("synth-pick", "synth", "FM").run_periods(4).settle();
+            s.press("synth-pick", "layer", "Layer").settle();
+            s.press("synth-pick", "synth", "Pluck")
+                .run_periods(4)
+                .settle();
+            s.press("synth-pick", "keep", "").run_periods(2).settle();
+            let (fm, pluck) = (free(0), free(1));
+            assert_eq!(s.mix.instruments.pads_play_at(), Some(fm));
+            assert_eq!(s.mix.instruments.layer_at(0), Some(pluck), "{}", s.hint());
+            assert!(
+                s.control("header", "chip", "Pads: FM + Pluck").is_some(),
+                "{}",
+                s.hint()
+            );
+            // A hit, and a key: both synths.
+            let notes = |s: &Session| {
+                (
+                    s.mix.instruments.stats(fm).notes,
+                    s.mix.instruments.stats(pluck).notes,
+                )
+            };
+            let before = notes(s);
+            s.pad(2, 90, 0.05);
+            s.key_edge(64, Some(100));
+            assert!(s.mix.instruments.key_held(layer(0), 64));
+            s.key_edge(64, None);
+            let after = notes(s);
+            assert_eq!(
+                (after.0 - before.0, after.1 - before.1),
+                (2, 2),
+                "{after:?}"
+            );
+            assert!(!s.mix.instruments.key_held(layer(0), 64), "nothing hangs");
+            // Saved in their own part.
+            s.button_with("SHIFT", "BROWSE");
+            let saved = format!("project: saved {name}");
+            assert!(s.until_said(&saved, 5.0), "{saved}: {:?}", s.said());
+            let snap = lib.open_project(&loc).expect("it opens");
+            let part = snap.part(crate::project::PAD_LAYERS).expect("the part");
+            assert!(
+                part.starts_with("mpfree-pad-layers 1\nlayer instrument "),
+                "{part}"
+            );
+            // New project: none.
+            s.button("BROWSE");
+            s.press("browser", "place", "Projects");
+            s.press("browser", "button", "New project");
+            s.run_for(0.3);
+            assert!(!s.app.has_layers());
+            assert_eq!(s.mix.instruments.layer_at(0), None);
+            // Opening it again is main.rs's to check: the test session
+            // builds no instruments at an open (app.rs's tests read the
+            // part back with the list).
+        });
+    }
+
     /// Instrument redesign step 4: a track plays another track's own
     /// instrument. In Night Market, Track 2 (Perc) gets its own Poly; with
     /// Track 3 (Bass) selected, the Synth tab's Instrument row offers

@@ -50,6 +50,25 @@ Tap the synth's card at the top left of the **Synth** tab (its name, the track a
 - **The project remembers it.** Saved with FM on the pads, or on bank B, the project opens with FM there again.
 - **Not while the arp plays the pads** (NOTE REPEAT, Latch or the Arp panel): it plays through the selected track, so let go of it first.
 
+### Layers: more than one synth on the pads
+
+The pads can play up to four synths at once, such as a soft pad sound and a bass under it. Each hit plays every one of them at the same velocity, and so does each key of a keyboard.
+
+1. Open the list of synths (tap the instrument card).
+2. Tap **Layer** at the top of the list, beside Cancel, so it lights up.
+3. Tap the synths you want: each tap adds one to what the pads play, outlined and tagged **ON THE PADS**. Tap one again to take it off.
+4. Tap **Keep layers**.
+
+- **The top of the screen names them all**: **Pads: FM + Pluck**.
+- **Each synth plays on its own mixer channel** ("FM · Pads", "Pluck · Pads"), so you can turn one down, mute it or solo it in the Mix tab.
+- **The first tile, Track 1's**, adds the selected track's own synth, or the shared Poly when the track plays it. A kit can't be a layer: if the pads follow a track that plays a kit, the first synth you tap is what they play, and the next one is layered on it.
+- **Taking off the first** makes the next one the first. The last one stays: **Follow track** gives the pads back to the track, and the layers go with it.
+- **With Layer off**, a tap plays that one synth alone again, and the layers go.
+- **Layers are for every bank.** **Layer** and **Bank B only** don't go together: picking one turns the other off. A bank with a synth of its own plays that synth alone.
+- **Not while the arp plays the pads**: the arp plays through the selected track, where layers can't follow, so starting it gives the pads back to the track.
+- **The project remembers them.** An older MPFree opening the project plays the first synth only.
+- **Recording.** REC records the first synth on a free track, as above. To loop all the layers with the Looper, record from a mix that has them all (the Looper tab's **Records from**), such as Master: **Records from: Pads** takes the first synth's channel.
+
 ## The twelve synths
 
 Any of the twelve can be a track's own instrument (see [A synth for each track](#a-synth-for-each-track)), and any track can have a different one.

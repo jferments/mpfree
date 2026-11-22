@@ -184,6 +184,11 @@ impl Instrument {
     /// Its name for the log.
     pub fn name(self) -> String {
         match self {
+            // A free place's (the instrument redesign's step 6): a synth
+            // picked for the pads, which no track has.
+            Instrument::Own(t) if t >= crate::instruments::TRACKS => {
+                "the pads' own synth".to_string()
+            }
             Instrument::Own(t) => format!("Track {}'s own instrument", t + 1),
             Instrument::Kit(k) => format!("Kit {}", k + 1),
             Instrument::Synth => "the synth".to_string(),

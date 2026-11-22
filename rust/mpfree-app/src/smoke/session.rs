@@ -258,6 +258,10 @@ pub struct Session {
     /// Keys playing the pads' synth while the pads play it on their own
     /// (step 7b, as main.rs).
     keys_on_pads: crate::KeysOnPads,
+    /// The pads' layers beyond the first (step 11a), as main.rs's.
+    pad_layers: crate::PadLayers,
+    /// What the pads play with their layers, as the screen last heard it.
+    layers_shown: [Option<&'static str>; crate::instruments::PAD_LAYERS],
     pub previewed: Vec<(usize, u8)>,
     /// Loop pads' hits waiting for the launch line (sampler R5.3b), as
     /// player_session keeps them: the pads pressed but not yet sounded,
@@ -405,6 +409,8 @@ impl Session {
             preview_held: [false; 16],
             host_held: [false; 16],
             keys_on_pads: crate::KeysOnPads::new(),
+            pad_layers: crate::PadLayers::new(),
+            layers_shown: [None; crate::instruments::PAD_LAYERS],
             previewed: Vec::new(),
             awaiting: [false; 16],
             waits_full: 0,
@@ -895,6 +901,8 @@ impl Session {
         let app = &self.app;
         let shape = |v| app.velocity(v);
         let own = &mut self.mix.instruments;
+        // The pads' layers play each key too, by note (step 11a).
+        self.pad_layers.key(key, shape, &mut self.synth, own);
         if self
             .keys_on_pads
             .key(key, preview, shape, &mut self.synth, own)
@@ -943,6 +951,12 @@ impl Session {
     /// How many keys play the pads' synth now (step 7b).
     pub fn keys_on_the_pads(&self) -> usize {
         self.keys_on_pads.held()
+    }
+
+    /// Whether a pad or key plays the shared synth as a layer now (step
+    /// 11a).
+    pub fn layer_synth_held(&self) -> bool {
+        self.pad_layers.holds_synth()
     }
 
     /// Hit a pad on the controller (down, then up after `hold` seconds).
@@ -1040,6 +1054,12 @@ impl Session {
     /// it over (the step pads, then the mute keys and 16 Levels' Transpose
     /// first).
     pub fn pad_edge(&mut self, pad: usize, velocity: u8, down: bool) {
+        // The pads' layers (step 11a), as main.rs: a let-go reaches the
+        // notes its hit started there, whatever takes it below.
+        if !down && pad < 16 {
+            let own = &mut self.mix.instruments;
+            self.pad_layers.pad_off(pad, &mut self.synth, own);
+        }
         if down && self.app.pads_are_steps() {
             let v = self.app.velocity(velocity);
             let rolling = self.time.info().state.rolling();
@@ -1127,6 +1147,8 @@ impl Session {
             self.mix
                 .instruments
                 .pad_on_shifted(crate::instruments::THE_PADS, pad, v, 0, &none);
+            let own = &mut self.mix.instruments;
+            self.pad_layers.pad_on(pad, v, &mut self.synth, own);
             self.host_held[pad] = true;
             self.previewed.push((pad, v));
             self.out.show(ToUi::PadDown { pad, velocity: v });
@@ -1144,6 +1166,8 @@ impl Session {
         if down && pad < 16 && self.preview_on {
             let v = self.app.velocity(velocity);
             self.synth.note_on(pad, v, 0);
+            let own = &mut self.mix.instruments;
+            self.pad_layers.pad_on(pad, v, &mut self.synth, own);
             self.preview_held[pad] = true;
             self.previewed.push((pad, v));
             self.out.show(ToUi::PadDown { pad, velocity: v });
@@ -1198,6 +1222,12 @@ impl Session {
             self.time.pad_pressed(0, ev);
         }
         if down {
+            // The pads' layers play the hit too (step 11a).
+            if pad < 16 {
+                let v = self.app.velocity(velocity);
+                let own = &mut self.mix.instruments;
+                self.pad_layers.pad_on(pad, v, &mut self.synth, own);
+            }
             let fx = self.app.pad_down(pad, velocity);
             self.fx.extend(fx);
         } else {
@@ -1278,12 +1308,24 @@ impl Session {
         if self.mix.instruments.pads_play_at() != pads_at {
             self.mix.instruments.pads_play(pads_at);
         }
+        self.pad_layers.follow(
+            self.app.pads_layer_holders(),
+            self.app.pads_layer_synth(),
+            &mut self.synth,
+            &mut self.mix.instruments,
+        );
         let host_name = pads_at
             .and_then(|h| self.mix.instruments.held(h))
             .map(|h| h.name);
         if host_name != self.pads_host_shown {
             self.pads_host_shown = host_name;
             self.out.show(ToUi::PadsHost(host_name));
+        }
+        let layers_now = self.app.pads_layer_list();
+        if layers_now != self.layers_shown {
+            self.layers_shown = layers_now;
+            let names = crate::app::layer_names(&layers_now);
+            self.out.show(ToUi::PadsLayers(names));
         }
         // What the pads play now and their bank's letter (step 6c), as
         // main.rs.
@@ -1808,6 +1850,7 @@ impl Session {
             ),
             instrument_list: self.instrument_list.text(),
             pads: self.app.pads_part(),
+            pad_layers: self.app.pad_layers_part(),
             loops,
             audio,
         };
@@ -1909,6 +1952,9 @@ impl Session {
         self.app.forget_copies();
         let (notes, fx) = self.app.open_pads(o.pads.as_deref());
         for line in notes {
+            self.out.note(&line);
+        }
+        for line in self.app.open_pad_layers(o.pad_layers.as_deref()) {
             self.out.note(&line);
         }
         self.fx.extend(fx);

@@ -329,12 +329,16 @@ impl App {
     /// instrument redesign's step 8, "FM: pads bank B, Track 2"): `.0`
     /// the pads' own choice does (every bank without one of its own), `.1`
     /// a bit for each bank whose own does. The banks' own count only on a
-    /// kit's pages ([`App::banks_apply`]). Allocates nothing.
+    /// kit's pages ([`App::banks_apply`]). A layer (step 11b) counts as
+    /// the pads' own choice. Allocates nothing.
     pub fn pads_who(&self, plays: impl Fn(PadFocus) -> bool) -> (bool, u8) {
+        // What every bank plays, its layers too (step 11b).
+        let all =
+            plays(self.pads_focus) || self.pad_layers().any(|id| plays(PadFocus::Instrument(id)));
         if !self.banks_apply() {
-            return (plays(self.pads_focus), 0);
+            return (all, 0);
         }
-        let every = self.bank_focus.iter().any(Option::is_none) && plays(self.pads_focus);
+        let every = self.bank_focus.iter().any(Option::is_none) && all;
         let banks = (0..super::KIT_PAGES)
             .filter(|&b| self.bank_focus[b].is_some_and(&plays))
             .fold(0u8, |bits, b| bits | 1 << b);
@@ -445,6 +449,10 @@ impl App {
                 }));
             }
         }
+        // A layer's synth that has its id now, or one gone (step 11a); none
+        // left to say once the pads' own synth went (Follow track gave
+        // them up).
+        fx.extend(self.layers_follow_list());
         if self.pads_focus() != was && !fx.iter().any(|e| matches!(e, Effect::PadsFocus(_))) {
             fx.insert(0, Effect::PadsFocus(self.pads_focus()));
         }
@@ -475,6 +483,7 @@ impl App {
                 || sent
                 || self.keeps_free(n)
                 || self.banks_hold(holder)
+                || self.layers_hold(holder)
             {
                 continue;
             }
@@ -613,6 +622,9 @@ impl App {
                 .pads_holder()
                 .is_some_and(|h| self.track_owner(self.track) != Some(h)),
         };
+        // Layers (step 11a) play the pads as pressed, which the arp
+        // doesn't.
+        let over = over || (self.has_layers() && self.layers_apply());
         if !over || !self.generating() {
             return Vec::new();
         }
@@ -678,6 +690,8 @@ impl App {
         let mut notes = Vec::new();
         self.pads_to = None;
         self.bank_to = [None; super::KIT_PAGES];
+        // The layers come after, from their own part (`open_pad_layers`).
+        self.clear_layers();
         let listed = |f: &PadFocus| match f {
             PadFocus::Instrument(id) => self.instrument_list.kind(*id).is_some(),
             PadFocus::Track => true,
@@ -727,15 +741,20 @@ impl App {
     pub(super) fn pads_back(&mut self, why: impl FnOnce(usize) -> String) -> Vec<Effect> {
         let banks =
             self.bank_focus.iter().any(Option::is_some) || self.bank_to.iter().any(Option::is_some);
-        if self.pads_focus == PadFocus::Track && self.pads_to.is_none() && !banks {
+        if self.pads_focus == PadFocus::Track
+            && self.pads_to.is_none()
+            && !banks
+            && !self.has_layers()
+        {
             return Vec::new();
         }
-        // Every bank too (step 6c): Follow track is the pads following the
-        // track.
+        // Every bank too (step 6c), and the layers (step 11a): Follow
+        // track is the pads following the track.
         self.pads_focus = PadFocus::Track;
         self.pads_to = None;
         self.bank_focus = [None; super::KIT_PAGES];
         self.bank_to = [None; super::KIT_PAGES];
+        self.clear_layers();
         self.project_edit = true;
         vec![
             Effect::PadsFocus(PadFocus::Track),

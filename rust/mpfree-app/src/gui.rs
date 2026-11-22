@@ -1213,6 +1213,10 @@ pub enum ToUi {
     /// 6c, 0 = A), for "Pads B: FM"; None: what every bank plays. Sent
     /// when it changes.
     PadsBank(Option<usize>),
+    /// What the pads play with their layers (step 11b, app/pad_layers.rs),
+    /// "FM + Pluck", for "Pads: FM + Pluck"; None while they play one
+    /// synth. Sent when it changes.
+    PadsLayers(Option<String>),
     /// Who plays the instrument the Synth tab shows, when more than one
     /// does ("Poly: the pads, Track 2, Track 4", step 8b), for its hint
     /// line; None: only the pads or one track. Sent when it changes.
@@ -1508,6 +1512,9 @@ pub enum FromUi {
     /// The list's "Bank B only" (true) or "All banks" (false): where a tap
     /// puts its synth (step 6c).
     SynthPickScope(bool),
+    /// The list's Layer switch on or off (step 11b): a tap adds a synth to
+    /// what the pads play or takes it off.
+    SynthPickLayer(bool),
     /// The Synth tab's gear: its options, as MENU opens them; on the
     /// options, their Back button: back to the page.
     OptionsButton,
@@ -2020,6 +2027,9 @@ pub struct Player {
     /// The instrument the pads play by the host's pads player
     /// ([`ToUi::PadsHost`], step 6): "FM".
     pads_host: Option<&'static str>,
+    /// What the pads play with their layers ([`ToUi::PadsLayers`], step
+    /// 11b): "FM + Pluck".
+    pads_layers: Option<String>,
     /// The bank whose own the pads play now ([`ToUi::PadsBank`], step 6c).
     pads_bank: Option<usize>,
     /// Who plays the Synth tab's instrument ([`ToUi::WhoPlays`]).
@@ -2623,6 +2633,7 @@ impl Player {
             pads_focus: crate::app::PadFocus::Track,
             pads_chip: None,
             pads_host: None,
+            pads_layers: None,
             pads_bank: None,
             who_plays: None,
             rec_plan: None,
@@ -3801,8 +3812,10 @@ impl Player {
         // A synth picked in the list (step 6): the button is Follow track,
         // whatever the selected track plays.
         let picked = self.pads_picked();
-        let playing = (self.pads_chose_synth() && on_kit.is_some()) || picked.is_some();
-        let play = if let Some(name) = picked {
+        let playing = (self.pads_chose_synth() && on_kit.is_some())
+            || picked.is_some()
+            || self.pads_layers.is_some();
+        let play = if let Some(name) = self.pads_layers.as_deref().or(picked) {
             Some((
                 "Follow track".to_string(),
                 format!("{} {name} on every track", self.who_pads()),
@@ -3885,6 +3898,8 @@ impl Player {
                 w.now = v.now;
                 w.had = v.had;
                 w.bank = v.bank;
+                w.layer = v.layer;
+                w.layers = v.layers.clone();
             }
         }
         let was = self.synth_pick.is_some();
@@ -5042,6 +5057,12 @@ impl Player {
         // why nothing goes), in the chip's amber.
         if let Some(c) = &self.controller {
             return Some(play_widgets::PadsPlay::controller(&c.chip));
+        }
+        // Layers (step 11b): "Pads: FM + Pluck".
+        if let Some(layers) = &self.pads_layers {
+            let mut play = play_widgets::PadsPlay::chosen(layers.clone());
+            play.track = self.pads_word();
+            return Some(play);
         }
         // The synth chosen for the pads: "Pads: Poly · C3 to D#4", whichever
         // track Play's rows show (app/pads_focus.rs).
@@ -6297,7 +6318,10 @@ impl Player {
         // named on every page, since it stays whichever track is selected;
         // a tap is Follow track.
         self.pads_chip = None;
-        let chosen = if self.pads_chose_synth() {
+        let chosen = if let Some(layers) = self.pads_layers.clone() {
+            // Layers (step 11b): "Pads: FM + Pluck".
+            Some(layers)
+        } else if self.pads_chose_synth() {
             Some(self.shared_synth_name())
         } else {
             // Or a synth picked in the list of synths (step 6).
@@ -6640,8 +6664,15 @@ impl Player {
                 View::Synth if self.skin_showing() => format!("{}'s own screen   ·   tap a control: pick it   ·   Wheel: pick one, push and turn: change it   ·   \
                                         Q-Links 1-4: the skin's knobs   ·   MPFree page: MPFree's own page   ·   {stop}",
                                        self.synth.as_ref().map_or("The plugin", |p| p.state.info.name)),
+                View::Synth if self.synth_pick.as_ref().is_some_and(|p| p.layer) => format!("Layer: a tap adds a synth to the pads or takes it off, up to 4   ·   \
+                                        Keep: the pads keep them   ·   Cancel: what they played   ·   No track changes   ·   {stop}"),
                 View::Synth if self.synth_pick.is_some() => format!("Tap a synth: the pads play it now   ·   \
                                         Keep: the pads keep it   ·   Cancel: what they played   ·   No track changes   ·   {stop}"),
+                View::Synth if self.pads_layers.is_some() => {
+                    let names = self.pads_layers.as_deref().unwrap_or_default();
+                    format!("The pads play {names} on every track, each on its own strip   ·   \
+                             Follow track: the button   ·   Q-Links 1-4: the marked knobs   ·   {stop}")
+                }
                 // Once a track plays it too, who plays it (step 8b).
                 View::Synth if self.pads_picked().is_some() && self.who_plays.is_some() => {
                     format!("{}   ·   Follow track: the button   ·   Q-Links 1-4: the marked knobs   ·   {stop}",
@@ -8756,6 +8787,13 @@ impl Player {
             }
             ToUi::PadsBank(b) => {
                 self.pads_bank = b;
+                self.refresh_synth_button();
+                self.refresh_pads_play();
+                self.refresh_chips();
+                self.refresh_hint();
+            }
+            ToUi::PadsLayers(names) => {
+                self.pads_layers = names;
                 self.refresh_synth_button();
                 self.refresh_pads_play();
                 self.refresh_chips();
@@ -12363,6 +12401,10 @@ impl Player {
                         k == mpfree_synth_ui::pick::BANK_ONLY,
                     ))
                 }
+                // Layer (step 11b): on or off.
+                EventKind::Tab(mpfree_synth_ui::pick::LAYER) => Some(FromUi::SynthPickLayer(
+                    !self.synth_pick.as_ref().is_some_and(|p| p.layer),
+                )),
                 EventKind::Tab(k) => Some(FromUi::SynthPickClose(k == mpfree_synth_ui::pick::KEEP)),
                 _ => None,
             };
@@ -18219,6 +18261,25 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     bank.apply(ToUi::PadsHost(Some("FM")));
     bank.apply(ToUi::PadsBank(a.pads_bank()));
     out.push(("synth-pick-bank", bank));
+    // Layer on in the list (step 11b): FM first, Pluck layered on it, both
+    // outlined, "Pads: FM + Pluck" in the header.
+    let mut layers = sample_player(fonts());
+    let mut a = sample_app();
+    let mut fx = a.open_tab(View::Synth);
+    fx.extend(a.open_synth_pick());
+    fx.extend(a.pick_pads_synth(2));
+    let mut two = crate::instrument_list::InstrumentList::new();
+    two.follow_free(1);
+    fx.extend(a.set_instrument_list(&two));
+    fx.extend(a.synth_pick_layer(true));
+    fx.extend(a.pick_pads_synth(4));
+    two.follow_free(0b11);
+    fx.extend(a.set_instrument_list(&two));
+    fx.extend(a.synth_pick_layer(true));
+    apply_effects(&mut layers, fx);
+    layers.apply(ToUi::PadsHost(Some("FM")));
+    layers.apply(ToUi::PadsLayers(a.pads_layer_names()));
+    out.push(("synth-pick-layers", layers));
     // The mixer with two tracks playing their own instruments: Poly on
     // track 1 in the Drums strip, named "Track 1" for it, and FM on track 2
     // in its own channel after Synth, Loop and Audio.
@@ -26670,6 +26731,7 @@ mod tests {
             track_kits: String::new(),
             instrument_list: crate::instrument_list::InstrumentList::new().text(),
             pads: String::new(),
+            pad_layers: String::new(),
             perform: String::new(),
             loops: Some(loops),
             audio: Some(audio),
@@ -27073,6 +27135,7 @@ mod tests {
                 track_kits: String::new(),
                 instrument_list: crate::instrument_list::InstrumentList::new().text(),
                 pads: String::new(),
+                pad_layers: String::new(),
                 perform: String::new(),
                 loops: None,
                 audio: None,

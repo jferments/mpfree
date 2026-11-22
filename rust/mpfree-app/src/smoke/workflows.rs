@@ -2150,6 +2150,60 @@ mod tests {
         });
     }
 
+    /// Layers with the shared synth (the instrument redesign's step 11a
+    /// and 11b): Track 1 plays the synth, so Layer and FM in the list of
+    /// synths make "Poly + FM", the hit going through the track to Poly
+    /// and to FM beside it. "Track 1's" again takes Poly off (FM is the
+    /// first now), and once more adds Poly as a layer, which the audio
+    /// loop plays itself; a hit's let-go ends it there.
+    #[test]
+    fn the_shared_synth_layers_with_a_synth_picked_in_the_list() {
+        use crate::instruments::free;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.pick_synth();
+            s.press("header", "tab", "Synth").settle();
+            s.press("synth-inst", "card", "").settle();
+            s.press("synth-pick", "layer", "Layer").settle();
+            s.press("synth-pick", "synth", "FM").run_periods(4).settle();
+            assert_eq!(s.mix.instruments.layer_at(0), Some(free(0)), "{}", s.hint());
+            assert_eq!(s.app.pads_layer_names().as_deref(), Some("Poly + FM"));
+            assert!(
+                s.control("header", "chip", "Pads: Poly + FM").is_some(),
+                "{}",
+                s.hint()
+            );
+            let fm = |s: &Session| s.mix.instruments.stats(free(0)).notes;
+            let before = fm(&s);
+            s.pad(3, 90, 0.05);
+            assert_eq!(fm(&s), before + 1, "FM beside Poly");
+            // Poly off: FM is what the pads play.
+            s.press("synth-pick", "synth", "Track 1's")
+                .run_periods(2)
+                .settle();
+            assert_eq!(s.mix.instruments.pads_play_at(), Some(free(0)));
+            assert!(!s.app.has_layers());
+            // Poly as a layer: the loop plays it.
+            s.press("synth-pick", "synth", "Track 1's")
+                .run_periods(2)
+                .settle();
+            assert!(s.app.pads_layer_synth(), "{}", s.hint());
+            assert_eq!(s.app.pads_layer_names().as_deref(), Some("FM + Poly"));
+            s.pad_edge(3, 90, true);
+            s.run_periods(1);
+            assert!(s.layer_synth_held());
+            s.pad_edge(3, 0, false);
+            s.run_periods(1);
+            assert!(!s.layer_synth_held(), "ended where it started");
+            // Keep, then Follow track: the layers go too.
+            s.press("synth-pick", "keep", "").run_periods(2).settle();
+            s.press("header", "chip", "Pads: FM + Poly")
+                .run_periods(2)
+                .settle();
+            assert!(!s.app.has_layers() && s.mix.instruments.layer_at(0).is_none());
+        });
+    }
+
     /// A keyboard plays what the pads play (the instrument redesign's step
     /// 7b): a synth picked in the list, then the shared synth chosen for
     /// them, each key its own note, while Track 1's kit hears none of it. A
