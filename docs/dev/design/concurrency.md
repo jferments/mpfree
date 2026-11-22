@@ -32,7 +32,7 @@ the sound on cores 3 and 2 instead, for the device rounds to compare.
 | `mpfree-midilog` | The MIDI monitor's Save log (handed to `mpfree-store`) and, while the developer tools are on, its lines in `/run/mpfree-app/midi.log` for the workstation console; four times a second, holding the I/O model's lock only to take an ask or word new lines (the audio loop only `try_lock`s it) |
 | `mpfree-journal` | The console's log |
 | `mpfree-stretch`, the Sample tab's worker | Time-stretch jobs, at idle priority |
-| `mpfree-sound-1`, `mpfree-file-1` | The sampler's job service ([sampler-architecture.md](sampler-architecture.md#the-job-service-step-7)), each started with its lane's first job, off the sound's cores at background priority. The sound lane works out the Sample tab's views of its sounds (`views.rs`: peaks and mono mix, then hits, tempo and root note; the sound shown last first) and their pitch tracks; the file lane is for loads, as they move onto it |
+| `mpfree-sound-1`, `mpfree-file-1` | The sampler's job service ([sampler-architecture.md](sampler-architecture.md#the-job-service-step-7)), each started with its lane's first job, off the sound's cores at background priority. The sound lane works out the Sample tab's views of its sounds (`views.rs`: peaks and mono mix, then hits, tempo and root note; the sound shown last first) and their pitch tracks, and the hits and octave copies of the sounds the pads play; the file lane is for loads, as they move onto it |
 | `autosample` | An auto-sample: at idle priority for one of MPFree's instruments, at normal priority for external gear |
 
 ## The plan, in order
