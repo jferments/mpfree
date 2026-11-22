@@ -295,14 +295,14 @@ impl Widget for StatusPage {
             );
             if s.badge > 0 {
                 let b = Rect::new(row.right() - 52, row.y + row.h / 2 - 14, 36, 28);
-                cx.canvas
-                    .fill_round_rect(b, 14, s.tone.map_or(t.raised, |k| t.tone(k)));
+                let fill = s.tone.map_or(t.raised, |k| t.tone(k));
+                cx.canvas.fill_round_rect(b, 14, fill);
                 cx.text(
                     FontId::Bold,
                     t.size_small,
                     b,
                     Align::Center,
-                    t.bg,
+                    t.ink_on(fill),
                     &s.badge.to_string(),
                 );
             }

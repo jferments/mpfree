@@ -2554,7 +2554,10 @@ impl Player {
         ui.add("guide", Card::new("Button guide"));
         ui.add("found", StatList::new("Buttons"));
         // The hint line starts where the panels do (the mockups).
-        ui.add("hint", Label::new("", Tone::Dim, Align::Left).inset(18));
+        ui.add(
+            "hint",
+            Label::new("", Tone::Dim, Align::Left).inset(18).on_bg(),
+        );
         ui.add("syssw", StatList::new("MPFree and the system"));
         ui.add(
             crate::status_screen::WIDGET,

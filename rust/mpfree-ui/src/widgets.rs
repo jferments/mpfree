@@ -977,6 +977,11 @@ pub struct Label {
     pub align: Align,
     /// Room left and right of the text, px.
     pub inset: i32,
+    /// The label sits on the page's own background (`bg`), so a status
+    /// tone (good, warn, bad) is kept readable there: a theme whose red
+    /// doesn't read on its background gets it moved just far enough
+    /// ([`crate::Theme::readable`]). The hint line is one.
+    pub on_bg: bool,
 }
 
 impl Label {
@@ -986,6 +991,7 @@ impl Label {
             tone,
             align,
             inset: 6,
+            on_bg: false,
         }
     }
 
@@ -994,11 +1000,20 @@ impl Label {
         self.inset = inset;
         self
     }
+
+    /// The same, on the page's background ([`Label::on_bg`]).
+    pub fn on_bg(mut self) -> Label {
+        self.on_bg = true;
+        self
+    }
 }
 
 impl Widget for Label {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
-        let (px, c) = (cx.theme.size_small, cx.theme.tone(self.tone));
+        let (px, mut c) = (cx.theme.size_small, cx.theme.tone(self.tone));
+        if self.on_bg && matches!(self.tone, Tone::Good | Tone::Warn | Tone::Bad) {
+            c = cx.theme.readable(c, cx.theme.bg);
+        }
         cx.text(
             FontId::Sans,
             px,
