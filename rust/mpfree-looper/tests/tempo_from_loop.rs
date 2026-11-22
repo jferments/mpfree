@@ -859,6 +859,65 @@ fn a_snap_lands_on_the_loops_downbeat_with_the_tempo_and_goes_back_the_same_way(
     );
 }
 
+/// Read as: the loop is read as other bars at the same length, the
+/// song's tempo changing with it on the loop's downbeat, so it plays on
+/// sample for sample (nothing to crossfade). Undo and Redo land the same
+/// way, and bar 1 is on the downbeat it landed on, so undoing 3 bars back
+/// to 4 doesn't jump.
+#[test]
+fn read_as_other_bars_keeps_every_frame_and_changes_the_tempo_on_the_downbeat() {
+    let (mut r, rec_from, tap) = late_tap(SmartEnd::Off, true);
+    r.until_playing(512);
+    r.run(tap + 5_000);
+    let len = tap - rec_from;
+    let tap_bpm = r.tempo.unwrap().1;
+    let s = r.l.status();
+    assert_eq!((s.frames as u64, s.ticks), (len, 2 * BAR_TICKS));
+    assert_eq!(
+        r.l.snap_plan(0, Snap::Bars(2), r.frame),
+        Err("the loop is already read as that")
+    );
+    assert_eq!(
+        r.l.snap_plan(0, Snap::Bars(0), r.frame),
+        Err("a loop is at least 1 bar")
+    );
+    assert_eq!(
+        r.l.snap_plan(0, Snap::Bars(16), r.frame),
+        Err("its tempo would be out of range")
+    );
+    // Every landing: the tempo and the ticks it planned, bar 1 on its
+    // downbeat, and from there the two bars as recorded.
+    let land = |r: &mut Rig, s: Snap, ticks: i64, bpm: f64| {
+        let p = r.l.snap_plan(0, s, r.frame).unwrap();
+        let was = r.l.status();
+        assert_eq!((p.by, p.ticks), (Shift::NONE, ticks));
+        assert!((p.bpm - bpm).abs() < 1e-9, "{} {bpm}", p.bpm);
+        assert_eq!((p.tick - was.origin).rem_euclid(was.ticks), 0, "a downbeat");
+        r.snap = Some(p);
+        r.run(p.at + 60_000);
+        assert_eq!(r.l.take_snap().map(|d| d.landed), Some(true));
+        let s = r.l.status();
+        assert_eq!((s.frames as u64, s.ticks, s.origin), (len, ticks, p.tick));
+        assert_eq!(r.t.bpm(), p.bpm);
+        for j in [0, 1, FADE as u64, 5_000, 59_999] {
+            assert!(
+                close(r.out_at(p.at + j), sound(rec_from + j)),
+                "{s:?} frame {j}"
+            );
+        }
+        p
+    };
+    land(&mut r, Snap::Bars(4), 4 * BAR_TICKS, 2.0 * tap_bpm);
+    assert_eq!(r.l.history().done().last(), Some(&Step::Bars(4)));
+    land(&mut r, Snap::Undo, 2 * BAR_TICKS, tap_bpm);
+    assert_eq!(r.l.history().redo(), &[Step::Bars(4)]);
+    land(&mut r, Snap::Redo, 4 * BAR_TICKS, 2.0 * tap_bpm);
+    land(&mut r, Snap::Bars(3), 3 * BAR_TICKS, 1.5 * tap_bpm);
+    land(&mut r, Snap::Undo, 4 * BAR_TICKS, 2.0 * tap_bpm);
+    assert_eq!(r.l.history().redo(), &[Step::Bars(3)]);
+    assert_eq!(r.l.stats().refused, 0);
+}
+
 /// REC pressed `early` frames before the first hit of two bars at 120
 /// BPM on the pads, and Record again 60 ms after the downbeat that ends
 /// them. The rig, the press's frame and the tap.

@@ -140,6 +140,8 @@ fn step_text(s: Step, layers: &[Option<LayerInfo>], rate: u32) -> String {
             }
             format!("Snap · {}", parts.join(" · "))
         }
+        // Read as: the loop's length kept, its bars and the tempo changed.
+        Step::Bars(b) => format!("Read as {}", crate::looping::bars_words_n(b)),
     }
 }
 
@@ -2161,6 +2163,8 @@ mod tests {
         assert_eq!(snap(0, -2_205), "Snap · End ← 50 ms");
         assert_eq!(snap(3_528, -441), "Snap · Start → 80 ms · End ← 10 ms");
         assert_eq!(snap(-3_528, 0), "Snap · Start ← 80 ms");
+        assert_eq!(text(Step::Bars(4)), "Read as 4 bars");
+        assert_eq!(text(Step::Bars(1)), "Read as 1 bar");
         assert_eq!(text(Step::Merge(id(0))), "Merge layers");
         let (mut ui, mut page) = page();
         page.update(&mut ui, &v, &Settings::default());

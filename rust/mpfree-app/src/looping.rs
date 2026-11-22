@@ -2077,16 +2077,13 @@ impl LoopHost {
 
     /// A press or a setting, with its `looper:` line for the log.
     pub fn command(&mut self, c: Command) -> String {
-        // UNDO or REDO of a snap lands on the loop's downbeat with the
-        // tempo, as the snap did.
+        // UNDO or REDO of a snap or of Read as lands on the loop's
+        // downbeat with the tempo, as the step did.
         let h = self.looper.history();
+        let tempo = |s: Option<&Step>| matches!(s, Some(Step::Snap(_) | Step::Bars(_)));
         match c {
-            Command::Undo if matches!(h.done().last(), Some(Step::Snap(_))) => {
-                return self.snap(Snap::Undo);
-            }
-            Command::Redo if matches!(h.redo().first(), Some(Step::Snap(_))) => {
-                return self.snap(Snap::Redo);
-            }
+            Command::Undo if tempo(h.done().last()) => return self.snap(Snap::Undo),
+            Command::Redo if tempo(h.redo().first()) => return self.snap(Snap::Redo),
             _ => {}
         }
         // The app's latency is the line input's; the pads have their own.
@@ -3809,20 +3806,31 @@ impl LoopHost {
     }
 
     /// Smart loop end's Snap ([`Snap::Found`]), Use my tap ([`Snap::Tap`]),
-    /// or UNDO or REDO of a snap, on the picked loop: the loop's end and
-    /// the song's tempo change together on its next downbeat. Worked out
-    /// and asked of the time engine at the next period
-    /// ([`LoopHost::tend_snap`]); what it did, or why not, comes after.
-    /// The line for the log now.
+    /// Use my press, Read as ([`Snap::Bars`]), or UNDO or REDO of one, on
+    /// the picked loop: the loop and the song's tempo change together on
+    /// its next downbeat. Worked out and asked of the time engine at the
+    /// next period ([`LoopHost::tend_snap`]); what it did, or why not,
+    /// comes after. The line for the log now.
     pub fn snap(&mut self, s: Snap) -> String {
         let n = self.looper.selected();
         self.snap_ask = None;
         self.snap_want = Some((n, s, false));
         format!(
             "looper: {}: Loop {} changes on its next downbeat, with the tempo",
-            snap_name(s),
+            snap_name(s, self.reads_again(s)),
             n + 1
         )
+    }
+
+    /// Whether snap `s` is an Undo or a Redo of Read as, before it lands.
+    fn reads_again(&self, s: Snap) -> bool {
+        let h = self.looper.history();
+        let step = match s {
+            Snap::Undo => h.done().last(),
+            Snap::Redo => h.redo().first(),
+            _ => None,
+        };
+        matches!(step, Some(Step::Bars(_)))
     }
 
     /// The snap waiting on the question "... anyway?" (it would change
@@ -3844,7 +3852,7 @@ impl LoopHost {
         self.snap_want = Some((n, s, true));
         Some(format!(
             "looper: {} anyway: Loop {} changes on its next downbeat, with the tempo",
-            snap_name(s),
+            snap_name(s, self.reads_again(s)),
             n + 1
         ))
     }
@@ -3931,7 +3939,7 @@ impl LoopHost {
             Allowed::Ask(_) if anyway => {}
             Allowed::Ask(_) => {
                 self.snap_ask = Some((n, s));
-                let verb = snap_verb(s);
+                let verb = snap_verb(s, self.reads_again(s));
                 let mut c = verb.chars();
                 let verb = c
                     .next()
@@ -3962,7 +3970,11 @@ impl LoopHost {
     fn snap_refused(&mut self, n: usize, s: Snap, why: &str) -> (String, bool) {
         self.snaps_refused += 1;
         (
-            format!("looper: Loop {}: can't {}: {why}", n + 1, snap_verb(s)),
+            format!(
+                "looper: Loop {}: can't {}: {why}",
+                n + 1,
+                snap_verb(s, self.reads_again(s))
+            ),
             true,
         )
     }
@@ -3983,7 +3995,7 @@ impl LoopHost {
                 Some((
                     format!(
                         "looper: Loop {n}: {} didn't land: the loop changed (the tempo did)",
-                        snap_name(p.snap)
+                        snap_name(p.snap, self.reads_again(p.snap))
                     ),
                     true,
                 )),
@@ -3995,10 +4007,16 @@ impl LoopHost {
         };
         let bars = ticks_text(s.ticks, self.bar_ticks);
         let moves = shift_text(p.by, self.rate);
+        // Landed: an Undo's step is the next Redo's now, and the other way.
+        let h = self.looper.history();
+        let read = |s: Option<&Step>| matches!(s, Some(Step::Bars(_)));
         let what = match p.snap {
             Snap::Found => format!("snapped {moves}"),
             Snap::Tap => "back to your tap".to_string(),
             Snap::Press => "back to your press".to_string(),
+            Snap::Bars(_) => "read again".to_string(),
+            Snap::Undo if read(h.redo().first()) => "Undo: read as before".to_string(),
+            Snap::Redo if read(h.done().last()) => "Redo: read again".to_string(),
             Snap::Undo => format!("Undo: {moves}"),
             Snap::Redo => format!("Redo: {moves}"),
         };
@@ -4189,25 +4207,31 @@ pub fn overdubs_text(o: mpfree_looper::Overdubs) -> &'static str {
     }
 }
 
-/// A snap as the log names it.
-fn snap_name(s: Snap) -> &'static str {
+/// A snap as the log names it; `read`: an Undo or Redo is of Read as.
+fn snap_name(s: Snap, read: bool) -> String {
     match s {
-        Snap::Found => "Snap",
-        Snap::Tap => "Use my tap",
-        Snap::Press => "Use my press",
-        Snap::Undo => "Undo of the snap",
-        Snap::Redo => "Redo of the snap",
+        Snap::Found => "Snap".to_string(),
+        Snap::Tap => "Use my tap".to_string(),
+        Snap::Press => "Use my press".to_string(),
+        Snap::Bars(b) => format!("Read as {}", bars_words_n(b)),
+        Snap::Undo if read => "Undo of Read as".to_string(),
+        Snap::Redo if read => "Redo of Read as".to_string(),
+        Snap::Undo => "Undo of the snap".to_string(),
+        Snap::Redo => "Redo of the snap".to_string(),
     }
 }
 
-/// A snap as "can't ..." says it.
-fn snap_verb(s: Snap) -> &'static str {
+/// A snap as "can't ..." says it; `read` as for [`snap_name`].
+fn snap_verb(s: Snap, read: bool) -> String {
     match s {
-        Snap::Found => "snap",
-        Snap::Tap => "go back to your tap",
-        Snap::Press => "go back to your press",
-        Snap::Undo => "undo the snap",
-        Snap::Redo => "redo the snap",
+        Snap::Found => "snap".to_string(),
+        Snap::Tap => "go back to your tap".to_string(),
+        Snap::Press => "go back to your press".to_string(),
+        Snap::Bars(b) => format!("read it as {}", bars_words_n(b)),
+        Snap::Undo if read => "undo Read as".to_string(),
+        Snap::Redo if read => "redo Read as".to_string(),
+        Snap::Undo => "undo the snap".to_string(),
+        Snap::Redo => "redo the snap".to_string(),
     }
 }
 

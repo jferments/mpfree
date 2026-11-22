@@ -1586,11 +1586,6 @@ mod looper {
         });
     }
 
-    /// Smart loop end step 1b, the whole way through: Suggest closes on
-    /// a tap 40 ms after the hit played again, then offers the end it
-    /// heard. Snap (what the screens will offer) changes the loop's end
-    /// and the song's tempo together on the loop's next downbeat, the
-    /// app's tempo follows, and UNDO takes it back the same way.
     /// A free first loop on the pads closed 40 ms late with Suggest: the
     /// end offered, the loop's frames and tempo at the tap, and the frames
     /// between the two hits.
@@ -1618,6 +1613,11 @@ mod looper {
         (by, tap, tap_bpm, (again - first) as usize)
     }
 
+    /// Smart loop end step 1b, the whole way through: Suggest closes on
+    /// a tap 40 ms after the hit played again, then offers the end it
+    /// heard. Snap (what the screens will offer) changes the loop's end
+    /// and the song's tempo together on the loop's next downbeat, the
+    /// app's tempo follows, and UNDO takes it back the same way.
     #[test]
     fn a_snap_changes_the_loop_and_the_tempo_on_its_downbeat_and_undo_takes_it_back() {
         on_big_stack(|| {
@@ -1661,6 +1661,61 @@ mod looper {
             assert_eq!(status(&s).offer, Some(by), "on offer again");
             assert!((s.time.info().bpm - tap_bpm).abs() < 1e-9);
             assert_eq!(s.app.settings.bpm, s.time.info().bpm);
+            assert_eq!(s.looper.snaps_refused, 0);
+        });
+    }
+
+    /// Smart loop end plan, step 2: Read as 2 bars keeps the loop's
+    /// length and doubles the song's tempo on its next downbeat, the app's
+    /// tempo following; the history says so, and UNDO reads it as before
+    /// the same way.
+    #[test]
+    fn read_as_two_bars_doubles_the_tempo_on_the_downbeat_and_undo_reads_it_as_before() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let (_, tap, tap_bpm, _) = closed_late(&mut s);
+            let bar = 4 * i64::from(mpfree_transport::time::PPQ);
+            assert_eq!(status(&s).ticks, bar);
+            assert_eq!(
+                s.looper.snap(mpfree_looper::Snap::Bars(2)),
+                "looper: Read as 2 bars: Loop 1 changes on its next downbeat, with the tempo"
+            );
+            let until_ticks = |s: &mut Session, ticks: i64| {
+                let end = s.t() + 3.0;
+                while status(s).ticks != ticks && s.t() < end {
+                    s.run_periods(1);
+                }
+                assert_eq!(status(s).ticks, ticks, "{:?}", s.said());
+                s.run_for(0.1);
+            };
+            until_ticks(&mut s, 2 * bar);
+            assert_eq!(status(&s).frames, tap, "the length stays");
+            let said = s.said();
+            assert!(
+                said.iter()
+                    .any(|l| l.starts_with("looper: Loop 1: read again: 2 bars at ")),
+                "{said:?}"
+            );
+            assert!((s.time.info().bpm - 2.0 * tap_bpm).abs() < 1e-9);
+            assert_eq!(
+                s.app.settings.bpm,
+                s.time.info().bpm,
+                "the app's tempo follows"
+            );
+            assert_eq!(
+                s.looper.looper.history().done().last(),
+                Some(&mpfree_looper::Step::Bars(2))
+            );
+            // UNDO reads it as before, on a downbeat, with the tap's tempo.
+            s.button("UNDO");
+            until_ticks(&mut s, bar);
+            let said = s.said();
+            assert!(
+                said.iter()
+                    .any(|l| l.starts_with("looper: Loop 1: Undo: read as before: 1 bar at ")),
+                "{said:?}"
+            );
+            assert!((s.time.info().bpm - tap_bpm).abs() < 1e-9);
             assert_eq!(s.looper.snaps_refused, 0);
         });
     }

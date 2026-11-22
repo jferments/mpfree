@@ -653,8 +653,9 @@ fn free_pass_without_allocating(mode: SmartEnd) {
 }
 
 /// Smart loop end's snaps: Suggest offers the downbeat played before a
-/// late tap, and a snap to it, its Undo and Redo, and Use my tap, each
-/// worked out, given and landed at odd period sizes, allocate nothing.
+/// late tap, and a snap to it, its Undo and Redo, Use my tap, and Read as
+/// 4 bars and its Undo, each worked out, given and landed at odd period
+/// sizes, allocate nothing.
 #[test]
 fn snaps_never_allocate() {
     const RATE: u32 = 22_050;
@@ -667,7 +668,15 @@ fn snaps_never_allocate() {
     let sizes = [1usize, 7, 128, 333, 64, 256];
     let mut snap: Option<SnapPlan> = None;
     let mut landed = 0;
-    let mut want = [Snap::Found, Snap::Undo, Snap::Redo, Snap::Tap].into_iter();
+    let mut want = [
+        Snap::Found,
+        Snap::Undo,
+        Snap::Redo,
+        Snap::Tap,
+        Snap::Bars(4),
+        Snap::Undo,
+    ]
+    .into_iter();
     let _ = l.command(L::TempoFromLoop(true));
     let _ = l.command(L::SetBars(None));
     let _ = l.command(L::SetSmartEnd(SmartEnd::Suggest));
@@ -731,5 +740,8 @@ fn snaps_never_allocate() {
     }
     watch(false);
     assert_eq!(calls(), 0, "allocated while snapping");
-    assert_eq!(landed, 4, "Snap, Undo, Redo and Use my tap landed");
+    assert_eq!(
+        landed, 6,
+        "Snap, Undo, Redo, Use my tap, Read as and its Undo landed"
+    );
 }

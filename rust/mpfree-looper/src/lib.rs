@@ -508,6 +508,9 @@ pub enum Step {
     /// Smart loop end moved the loop's start and end this much, with the
     /// song's tempo, on the loop's downbeat ([`Looper::snap_at`]).
     Snap(Shift),
+    /// Read as: the loop was read as this many bars, its length and its
+    /// sound kept, with the song's tempo, on its downbeat ([`Snap::Bars`]).
+    Bars(u32),
 }
 
 /// A loop's history: the steps Undo takes back and the ones Redo brings
@@ -752,7 +755,10 @@ pub enum Snap {
     Tap,
     /// Put the start back on your press: Use my press.
     Press,
-    /// Undo the last step, a snap ([`Step::Snap`]).
+    /// Read as: read the loop as this many bars of the song's meter. Its
+    /// length and its sound stay; the tempo changes so they fit it.
+    Bars(u32),
+    /// Undo the last step, a snap ([`Step::Snap`], [`Step::Bars`]).
     Undo,
     /// Redo the next step, a snap.
     Redo,
@@ -767,6 +773,8 @@ pub struct SnapPlan {
     pub snap: Snap,
     /// How far the start and the end move.
     pub by: Shift,
+    /// The loop's length in song ticks once it lands: Read as changes it.
+    pub ticks: Tick,
     /// The tempo at which the loop's bars are its new length exactly.
     pub bpm: f64,
     /// The loop's next downbeat, as a song tick and a frame.
@@ -1112,6 +1120,9 @@ enum Kind {
     /// (an [`Edit::Move`] and an [`Edit::Resize`] at once, made on the
     /// loop's downbeat).
     Snap,
+    /// Read as: the loop's bars changed, its length and sound kept, with
+    /// the tempo, on its downbeat.
+    Bars,
 }
 
 /// The other loop's side of a layer copied between loops: the loop and
@@ -1143,6 +1154,8 @@ struct Act {
     link: Option<Link>,
     /// A snap's move ([`Kind::Snap`]).
     shift: Shift,
+    /// The bars Read as made ([`Kind::Bars`]).
+    bars: u32,
 }
 
 const NO_ACT: Act = Act {
@@ -1153,6 +1166,7 @@ const NO_ACT: Act = Act {
     ages: [1.0; MAX_LAYERS],
     link: None,
     shift: Shift::NONE,
+    bars: 0,
 };
 
 impl Act {
@@ -1166,15 +1180,23 @@ impl Act {
             Kind::Added => Step::Added(self.slot, self.link.map_or(0, |l| l.lp as usize)),
             Kind::Edit => Step::Edit(self.edit.unwrap_or(Edit::Half)),
             Kind::Snap => Step::Snap(self.shift),
+            Kind::Bars => Step::Bars(self.bars),
             Kind::Merge => Step::Merge(self.slot),
             Kind::Fit => Step::Fit(self.slot),
         }
     }
 
+    /// Whether taking its shape, or giving it back, crossfades: Read as
+    /// keeps every frame where it was (only the bars and the tempo change),
+    /// so there is nothing to fade.
+    fn fades(&self) -> bool {
+        self.kind != Kind::Bars
+    }
+
     /// Where the act keeps a shape, if it does.
     fn shape(&self) -> Option<usize> {
         match self.kind {
-            Kind::Edit | Kind::Snap => Some(self.slot as usize),
+            Kind::Edit | Kind::Snap | Kind::Bars => Some(self.slot as usize),
             Kind::Merge | Kind::Fit => Some(self.index as usize),
             Kind::Overdub | Kind::Delete | Kind::Added => None,
         }
@@ -3167,15 +3189,16 @@ impl Looper {
 
     /// Snap `s` on loop `n` ([`Snap`]), worked out against where the song
     /// was going at the end of the last period: how far the start and the
-    /// end move,
-    /// the tempo at which the loop's bars are its new length exactly, and
-    /// the loop's next downbeat on or after frame `after` (the transport's
-    /// next frame, which may be a period on from the looper's), its tick
-    /// and frame. The host asks the time engine for that tempo on that
-    /// frame and, once committed, gives the plan to [`Looper::snap_at`].
-    /// Or why it can't: the song isn't playing, the loop isn't playing as
-    /// it was left, it plays at another speed, or the new length is
-    /// outside what was kept or the tempo range. Changes nothing.
+    /// end move, the loop's length in song ticks after it (Read as's bars
+    /// of the song's meter), the tempo at which those ticks are its new
+    /// length exactly, and the loop's next downbeat on or after frame
+    /// `after` (the transport's next frame, which may be a period on from
+    /// the looper's), its tick and frame. The host asks the time engine
+    /// for that tempo on that frame and, once committed, gives the plan to
+    /// [`Looper::snap_at`]. Or why it can't: the song isn't playing, the
+    /// loop isn't playing as it was left, it plays at another speed, it is
+    /// already read as those bars, or the new length is outside what was
+    /// kept or the tempo range. Changes nothing.
     pub fn snap_plan(&self, n: usize, s: Snap, after: u64) -> Result<SnapPlan, &'static str> {
         let l = self.loops.get(n).ok_or("there is no such loop")?;
         let span = self
@@ -3189,15 +3212,16 @@ impl Looper {
             return Err("the loop plays at another speed");
         }
         let by = l.snap_by(s)?;
+        let ticks = l.snap_ticks(s, span.meter.bar_ticks())?;
         let len = l.len as i64 + by.longer();
         let fits = match s {
             Snap::Found | Snap::Tap | Snap::Press => l.shifted(by).is_some(),
-            Snap::Undo | Snap::Redo => true,
+            Snap::Bars(_) | Snap::Undo | Snap::Redo => true,
         };
-        if !fits || len <= 0 || l.len_ticks <= 0 {
+        if !fits || len <= 0 || ticks <= 0 || l.len_ticks <= 0 {
             return Err("that end is outside what the loop kept");
         }
-        let bpm = 60.0 * f64::from(self.rate) * l.len_ticks as f64 / (f64::from(PPQ) * len as f64);
+        let bpm = 60.0 * f64::from(self.rate) * ticks as f64 / (f64::from(PPQ) * len as f64);
         if !(LOOP_MIN_BPM..=LOOP_MAX_BPM).contains(&bpm) {
             return Err("its tempo would be out of range");
         }
@@ -3217,6 +3241,7 @@ impl Looper {
             n,
             snap: s,
             by,
+            ticks,
             bpm,
             tick,
             at: at.max(next),
@@ -4269,7 +4294,7 @@ impl Loop {
     /// Whether undoing or redoing `a` can bring back `slot`'s layer.
     fn brings_back(&self, a: &Act, slot: usize) -> bool {
         match a.kind {
-            Kind::Edit | Kind::Snap => false,
+            Kind::Edit | Kind::Snap | Kind::Bars => false,
             Kind::Overdub | Kind::Delete | Kind::Added => a.slot as usize == slot,
             Kind::Merge | Kind::Fit => {
                 let kept = &self.shapes[a.index as usize];
@@ -4480,6 +4505,7 @@ impl Loop {
                     ages: [1.0; MAX_LAYERS],
                     link: None,
                     shift: Shift::NONE,
+                    bars: 0,
                 });
                 self.slots[slot].leaving = true;
             }
@@ -4695,6 +4721,25 @@ impl Loop {
         )
     }
 
+    /// Read as `bars` bars, `ticks` song ticks in all ([`Kind::Bars`]), as
+    /// a step Undo takes back: the loop's length, layers and sound stay.
+    /// False (counted) if it can't be made.
+    fn make_bars(&mut self, stats: &mut Stats, bars: u32, ticks: Tick) -> bool {
+        let new = (self.editable() && ticks > 0).then(|| Shape {
+            len_ticks: ticks,
+            ..self.shape()
+        });
+        self.take_shape(
+            stats,
+            new,
+            Act {
+                kind: Kind::Bars,
+                bars,
+                ..NO_ACT
+            },
+        )
+    }
+
     /// Playing, nothing recording: an edit can be made.
     fn editable(&self) -> bool {
         self.phase == Phase::Playing
@@ -4723,7 +4768,9 @@ impl Loop {
             index: 0,
             ..act
         });
-        self.crossfade_from(i);
+        if act.fades() {
+            self.crossfade_from(i);
+        }
         true
     }
 
@@ -4920,13 +4967,15 @@ impl Loop {
     }
 
     /// Swap the shape now with the one kept at `i` (Undo and Redo of an
-    /// edit), crossfading from it.
-    fn swap_shape(&mut self, i: usize) {
+    /// edit), crossfading from it if `fade`.
+    fn swap_shape(&mut self, i: usize, fade: bool) {
         let now = self.shape();
         let kept = self.shapes[i];
         self.set_shape(&kept);
         self.shapes[i] = now;
-        self.crossfade_from(i);
+        if fade {
+            self.crossfade_from(i);
+        }
     }
 
     /// Crossfade from the shape kept at `i` (the loop's position is still
@@ -5172,6 +5221,7 @@ impl Loop {
                 tied: self.ad_move,
             }),
             shift: Shift::NONE,
+            bars: 0,
         });
         self.in_order += 1;
         self.mixing = true;
@@ -5205,6 +5255,7 @@ impl Loop {
                 tied: true,
             }),
             shift: Shift::NONE,
+            bars: 0,
         });
         self.slots[l.slot as usize].leaving = true;
         self.mixing = true;
@@ -5285,6 +5336,7 @@ impl Loop {
             ages: [1.0; MAX_LAYERS],
             link: None,
             shift: Shift::NONE,
+            bars: 0,
         });
         if std::mem::take(&mut self.fit_overdub) {
             self.open_overdub(store, stats, me, FADE);
@@ -5510,6 +5562,7 @@ impl Loop {
             ages: [1.0; MAX_LAYERS],
             link: None,
             shift: Shift::NONE,
+            bars: 0,
         });
     }
 
@@ -5549,6 +5602,7 @@ impl Loop {
             ages: [1.0; MAX_LAYERS],
             link: None,
             shift: Shift::NONE,
+            bars: 0,
         });
     }
 
@@ -5570,7 +5624,7 @@ impl Loop {
                 self.keep_clear = false;
             }
             Kind::Added => self.slots[a.slot as usize].leaving = true,
-            Kind::Edit | Kind::Snap => self.swap_shape(a.slot as usize),
+            Kind::Edit | Kind::Snap | Kind::Bars => self.swap_shape(a.slot as usize, a.fades()),
             Kind::Merge => self.unmerge(a),
             Kind::Fit => self.start_swap(a.index as usize),
         }
@@ -5585,7 +5639,7 @@ impl Loop {
         match a.kind {
             Kind::Delete => self.slots[a.slot as usize].leaving = true,
             Kind::Overdub | Kind::Added => self.restore(a),
-            Kind::Edit | Kind::Snap => self.swap_shape(a.slot as usize),
+            Kind::Edit | Kind::Snap | Kind::Bars => self.swap_shape(a.slot as usize, a.fades()),
             Kind::Merge => self.remerge(a),
             Kind::Fit => self.start_swap(a.index as usize),
         }
@@ -5759,9 +5813,11 @@ impl Loop {
     fn snap_by(&self, s: Snap) -> Result<Shift, &'static str> {
         let top = |acts: &[Act]| match acts.last() {
             Some(a) if a.kind == Kind::Snap => Some(a.shift),
+            Some(a) if a.kind == Kind::Bars => Some(Shift::NONE),
             _ => None,
         };
         match s {
+            Snap::Bars(_) => Ok(Shift::NONE),
             Snap::Found | Snap::Tap | Snap::Press => {
                 let (found, moved) = self.smart_now().ok_or("the loop has changed since")?;
                 let to = match s {
@@ -5792,10 +5848,32 @@ impl Loop {
         }
     }
 
-    /// Land the snap waiting, on its frame: the end moves (a step Undo
-    /// takes back, [`Kind::Snap`]), or the step is undone or redone. The
-    /// tempo changed on the same frame. Not if the loop changed since it
-    /// was worked out (said, [`SnapDone`]).
+    /// The loop's length in song ticks once snap `s` lands: Read as's
+    /// bars of `bar` ticks each, the other side of the step for Undo and
+    /// Redo (the shape it keeps), or as now. Or why Read as can't be made.
+    fn snap_ticks(&self, s: Snap, bar: Tick) -> Result<Tick, &'static str> {
+        let kept = |acts: &[Act]| {
+            acts.last()
+                .and_then(Act::shape)
+                .map(|i| self.shapes[i].len_ticks)
+        };
+        match s {
+            Snap::Bars(0) => Err("a loop is at least 1 bar"),
+            Snap::Bars(b) => match Tick::from(b) * bar {
+                t if t == self.len_ticks => Err("the loop is already read as that"),
+                t => Ok(t),
+            },
+            Snap::Undo => kept(&self.done[..self.n_done]).ok_or("the last step isn't a snap"),
+            Snap::Redo => kept(&self.undone[..self.n_undone]).ok_or("the next step isn't a snap"),
+            Snap::Found | Snap::Tap | Snap::Press => Ok(self.len_ticks),
+        }
+    }
+
+    /// Land the snap waiting, on its frame: the end moves or the loop is
+    /// read as other bars (a step Undo takes back, [`Kind::Snap`],
+    /// [`Kind::Bars`]), or the step is undone or redone. The tempo changed
+    /// on the same frame, and bar 1 is on it from now on. Not if the loop
+    /// changed since it was worked out (said, [`SnapDone`]).
     #[cold]
     #[inline(never)]
     fn land_snap(&mut self, stats: &mut Stats) {
@@ -5808,6 +5886,7 @@ impl Loop {
             && self.snap_by(p.snap) == Ok(p.by)
             && match p.snap {
                 Snap::Found | Snap::Tap | Snap::Press => self.make_shift(stats, p.by),
+                Snap::Bars(b) => self.make_bars(stats, b, p.ticks),
                 Snap::Undo => {
                     self.undo();
                     true
@@ -5818,6 +5897,10 @@ impl Loop {
                 }
             };
         if landed {
+            // The loop's downbeat: its new bars count from here (after a
+            // reading of other bars, or its undo, the old bar 1 may not
+            // fall on it).
+            self.origin = p.tick;
             self.moved = self.moved + p.by;
             self.touch();
             self.smart_version = self.version;
@@ -6450,6 +6533,7 @@ impl Loop {
             ages,
             link: None,
             shift: Shift::NONE,
+            bars: 0,
         });
 
         self.in_order += 1;
