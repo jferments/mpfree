@@ -7471,6 +7471,107 @@ mod tests {
         assert_eq!((h.dropped(), song.dropped()), (0, 0));
     }
 
+    /// The conversion report card (Arrange 4.3): a conversion whose result
+    /// plays differently opens it, each difference by track and bar in song
+    /// order; its Done closes it and keeps what the conversion did, UNDO
+    /// closes it and takes the conversion back, and another conversion
+    /// replaces it (an exact one leaves it closed).
+    #[test]
+    fn a_conversion_that_plays_differently_opens_its_report_card() {
+        use mpfree_seq::arrange::Placement;
+        use mpfree_seq::{ClipProgram, Direction, ListStep, Note, TrackProgram};
+        use mpfree_time_ui::view::{Report, ReportRow};
+        const BAR: i64 = 3840;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut four = Clip::new("four", 4 * BAR);
+        four.notes = (0..4).map(|k| Note::new(k * BAR, 100, 10, 100)).collect();
+        four.direction = Direction::Random;
+        let mut bass = Clip::new("bass", BAR);
+        bass.notes = vec![Note::new(0, 100, 40, 100)];
+        let p = &mut h.control.project;
+        p.tracks[0].slots[2] = Some(four);
+        p.tracks[1].slots[0] = Some(bass);
+        p.give_clip_ids();
+        let s = &mut p.arrangement;
+        s.place(Placement::of(&p.tracks, 0, 2, 0, 8 * BAR)).unwrap();
+        s.place(Placement::of(&p.tracks, 1, 0, 2 * BAR, 6 * BAR))
+            .unwrap();
+        assert_eq!(h.state().report, None);
+        // Song → scenes: the drums' Random order rolls again in each copy.
+        let before = h.control.project.clone();
+        let said = h.act(TimeAction::SongToScenes).unwrap();
+        assert!(said.contains("2 differences"), "{said}");
+        let random = "plays in Random order; the copy rolls its own order";
+        let row = |bar| ReportRow {
+            track: Some(0),
+            bar,
+            what: random.into(),
+        };
+        let want = Report {
+            title: "SONG → SCENES".into(),
+            made: "rows 4 to 5".into(),
+            lead: "Launch row 4 and the rows play the song, except:".into(),
+            rows: vec![row(1), row(3)],
+        };
+        assert_eq!(h.state().report.as_deref(), Some(&want));
+        // Done: the card goes, the rows stay.
+        let after = h.control.project.clone();
+        assert_eq!(h.act(TimeAction::CloseReport).unwrap(), "");
+        assert_eq!(h.state().report, None);
+        assert_eq!(h.control.project, after);
+        // UNDO with the card open: the card goes with the rows.
+        h.act(TimeAction::Undo).unwrap();
+        h.act(TimeAction::SongToScenes).unwrap();
+        assert!(h.state().report.is_some());
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.state().report, None);
+        let mut was = before.clone();
+        was.next_clip = h.control.project.next_clip;
+        assert_eq!(h.control.project, was);
+        // REDO brings the rows back, not the card.
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(h.state().report, None);
+        h.act(TimeAction::Undo).unwrap();
+        // List → song with a scene's program change: its card replaces
+        // the last one; an exact one after it leaves it closed.
+        h.act(TimeAction::SongToScenes).unwrap();
+        let p = &mut h.control.project;
+        p.arrangement = Default::default();
+        p.scene_mut(0).unwrap().programs = vec![TrackProgram {
+            track: 0,
+            program: ClipProgram {
+                program: 11,
+                bank: None,
+            },
+        }];
+        p.arrangement.list.steps =
+            vec![ListStep { row: 2, times: 1 }, ListStep { row: 0, times: 1 }];
+        let said = h.act(TimeAction::ListToSong).unwrap();
+        assert!(said.contains("1 difference"), "{said}");
+        let st = h.state();
+        let r = st.report.as_deref().unwrap();
+        assert_eq!(
+            (r.title.as_str(), r.made.as_str(), r.lead.as_str()),
+            (
+                "LIST → SONG",
+                "bars 1 to 5",
+                "The song plays the list, except:"
+            )
+        );
+        assert_eq!(
+            r.rows,
+            [ReportRow {
+                track: None,
+                bar: 5,
+                what: "the scene's program changes aren't in the song".into(),
+            }]
+        );
+        h.control.project.arrangement.list.steps = vec![ListStep { row: 2, times: 1 }];
+        let said = h.act(TimeAction::ListToSong).unwrap();
+        assert!(said.ends_with(", exact"), "{said}");
+        assert_eq!(h.state().report, None);
+    }
+
     /// List → song plays the list offline through Rec song (Arrange 4.1,
     /// plan D7), so what only playing shows comes out right: a clip's
     /// follow action (track 2 moves to its next clip after a bar), a

@@ -784,10 +784,39 @@ pub struct TimeState {
     pub tempo_base: f64,
     /// The tempo point picked on the Song view. The app sets it.
     pub tempo_pick: Option<usize>,
+    /// The last conversion's report while its card is open (the Arrange
+    /// refactor's 4.3): only when its result plays differently.
+    pub report: Option<Arc<Report>>,
     /// While song mode plays the song's tempo points: the tempo of the
     /// point in effect at the playhead (None before the first), which the
     /// Tempo row steps from. None otherwise. The app sets it.
     pub tempo_here: Option<f64>,
+}
+
+/// What a conversion (Scenes → song, List → song, Song → scenes) made
+/// and how its result plays differently from what it was made from, for
+/// the report card (the Arrange refactor's 4.3, plan D7). Made only when
+/// something differs; an exact conversion says so in one line.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Report {
+    /// The conversion, as the card's title: "SONG → SCENES".
+    pub title: String,
+    /// What it made: "rows 9 to 11", "bars 1 to 76".
+    pub made: String,
+    /// One line in plain words: "Launch row 9 and the rows play the song,
+    /// except:".
+    pub lead: String,
+    /// Each difference, in song order.
+    pub rows: Vec<ReportRow>,
+}
+
+/// One difference in a [`Report`]: its track (None: the whole song's),
+/// its bar (from 1) and what is different, in the log's words.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReportRow {
+    pub track: Option<usize>,
+    pub bar: Tick,
+    pub what: String,
 }
 
 /// An audio region: region `index` of audio track `track`
@@ -1021,6 +1050,7 @@ impl TimeState {
                 .collect(),
             tempo_base: transport.bpm,
             tempo_pick: None,
+            report: None,
             tempo_here: None,
         }
     }
@@ -1268,6 +1298,9 @@ pub enum TimeAction {
     SaveScene(usize),
     /// Show the Song view (the timeline) or the grid.
     SongView(bool),
+    /// The conversion report card closes (its Done, a tap outside it, MENU
+    /// or a page change); what the conversion did stays ([`Report`]).
+    CloseReport,
     /// The scene editor's row (its Scene row's ‹ ›).
     SceneFocus(usize),
     /// The scene editor: row `row` given `settings` (its name, mutes and
