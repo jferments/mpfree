@@ -102,6 +102,22 @@ pub enum Job {
         name: String,
         bytes: Vec<u8>,
     },
+    /// A new empty set under a name not taken ([`Library::new_set`]).
+    NewSet(String),
+    /// A set read ([`Library::load_set`]).
+    LoadSet(Loc),
+    /// A set written whole over the one at `loc` ([`Library::save_set`]).
+    SaveSet {
+        loc: Loc,
+        set: crate::Set,
+    },
+    /// The quick check of every song in a set ([`Library::check_song`]),
+    /// with the names of the keyboards and controls connected now.
+    CheckSet {
+        loc: Loc,
+        set: crate::Set,
+        connected: Vec<String>,
+    },
 }
 
 /// What a job gave.
@@ -141,6 +157,13 @@ pub enum Outcome {
     Emptied(u64),
     /// A preset saved, or its name found taken.
     Preset(PresetSave),
+    /// A set read.
+    Set(Loc, crate::Set),
+    /// A set saved.
+    SetSaved(Loc),
+    /// A set checked: where each song is and what its check says, in the
+    /// set's order.
+    SetChecked(Loc, Vec<(crate::Found, crate::SongCheck)>),
 }
 
 /// A job's number and what came of it (or why it failed, in words).
@@ -313,6 +336,24 @@ pub fn run(lib: &Library, job: Job) -> std::io::Result<Outcome> {
             text,
             replace,
         } => Outcome::Preset(lib.save_preset(&engine, &name, &text, replace)?),
+        Job::NewSet(name) => Outcome::At(lib.new_set(&name)?),
+        Job::LoadSet(l) => {
+            let set = lib.load_set(&l)?;
+            Outcome::Set(l, set)
+        }
+        Job::SaveSet { loc, set } => {
+            lib.save_set(&loc, &set)?;
+            Outcome::SetSaved(loc)
+        }
+        Job::CheckSet {
+            loc,
+            set,
+            connected,
+        } => {
+            let on = |n: &str| connected.iter().any(|c| c == n);
+            let checks = set.songs.iter().map(|s| lib.check_song(s, &on)).collect();
+            Outcome::SetChecked(loc, checks)
+        }
     })
 }
 

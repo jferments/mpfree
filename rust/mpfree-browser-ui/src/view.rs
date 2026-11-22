@@ -1336,6 +1336,16 @@ fn source_icon(cx: &mut PaintCx, r: Rect, s: Source, c: Color) {
         Source::Place(Place::Recordings) => {
             draw::dot(cx, r.x + r.w / 2, r.y + r.h / 2, 8, c);
         }
+        // A list: three lines (set lists, live shows B1).
+        Source::Place(Place::Sets) => {
+            let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
+            for k in -1..=1 {
+                cx.canvas
+                    .fill_rect(Rect::new(x - 10, y + k * 7 - 1, 3, 3), c);
+                cx.canvas
+                    .fill_rect(Rect::new(x - 4, y + k * 7 - 1, 14, 3), c);
+            }
+        }
         Source::Place(Place::Trash) => {
             let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
             cx.canvas.fill_rect(Rect::new(x - 10, y - 9, 20, 2), c);

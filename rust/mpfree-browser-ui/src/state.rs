@@ -1201,6 +1201,8 @@ impl Browser {
             // The manifest a save asked for: nothing to say unless it
             // failed (the error says so on the status line).
             Ok(Outcome::Manifest(..)) => {}
+            // Sets: the Set editor comes once its screens are approved.
+            Ok(Outcome::Set(..) | Outcome::SetSaved(..) | Outcome::SetChecked(..)) => {}
             Ok(Outcome::Autosaved(loc)) => {
                 self.actions.push(BrowseAction::Autosaved { loc });
                 if self.folder == Loc::top(Place::Projects) {

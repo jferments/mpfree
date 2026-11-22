@@ -34,6 +34,7 @@ pub mod manifest;
 pub mod name;
 pub mod preset;
 pub mod project;
+pub mod sets;
 pub mod worker;
 
 pub use audio::{read_info, AudioFormat, AudioInfo};
@@ -42,6 +43,7 @@ pub use manifest::{Check, Manifest, ManifestDone, MANIFEST_FILE};
 pub use name::{clean_name, natural_cmp, unique_folder_name, unique_name, valid_name};
 pub use preset::{preset_name, PresetSave, MAX_PRESET_TEXT, PRESET_EXT};
 pub use project::{Meta, NewSample, Part, SampleData, Saved, Snapshot, Version};
+pub use sets::{Ends, Found, Need, Set, SetSong, SongCheck, Starts, SET_EXT};
 pub use worker::{Done, Job, Outcome, Worker};
 
 use std::fs::{self, DirBuilder, File, OpenOptions};
@@ -75,6 +77,8 @@ pub const PROJECT_FILE: &str = "project.txt";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Place {
     Projects,
+    /// Set lists (live shows B1), one `.set` file each ([`sets`]).
+    Sets,
     Samples,
     Kits,
     /// User presets, one folder per engine by its display name
@@ -89,8 +93,9 @@ pub enum Place {
 impl Place {
     /// The places a person keeps things in, in the order the browser lists
     /// them (the Trash is apart).
-    pub const ALL: [Place; 6] = [
+    pub const ALL: [Place; 7] = [
         Place::Projects,
+        Place::Sets,
         Place::Samples,
         Place::Kits,
         Place::Instruments,
@@ -102,6 +107,7 @@ impl Place {
     pub fn folder(self) -> &'static str {
         match self {
             Place::Projects => "Projects",
+            Place::Sets => "Sets",
             Place::Samples => "Samples",
             Place::Kits => "Kits",
             Place::Instruments => "Instruments",
