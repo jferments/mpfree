@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-looper rust/mpfree-app/src/looping.rs rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/loop_row.rs rust/mpfree-app/src/play_page.rs
-checked: 2026-11-20 4b71b1a9
+checked: 2026-11-22 2d9518ab
 -->
 
 # Your first loop

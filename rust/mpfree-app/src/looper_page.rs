@@ -74,6 +74,15 @@ fn edit_text(e: Edit, rate: u32) -> String {
             format!("{} × 1/16", n.abs())
         }
     };
+    // A boundary moved, later or earlier, by so many ms.
+    let moved = |what: &str, frames: i64| {
+        let ms = seam_text(frames.unsigned_abs() as usize, rate);
+        if frames < 0 {
+            format!("{what} ← {ms}")
+        } else {
+            format!("{what} → {ms}")
+        }
+    };
     match e {
         Edit::Half => "½ length".to_string(),
         Edit::Double => "× 2".to_string(),
@@ -83,6 +92,9 @@ fn edit_text(e: Edit, rate: u32) -> String {
         Edit::Trim { .. } => "Trim".to_string(),
         Edit::SeamFade(f) => format!("Seam fade {}", seam_text(f as usize, rate)),
         Edit::Speed(v) => format!("Speed {}", speed_text(v)),
+        Edit::Move(d) => moved("Move", d),
+        Edit::Resize(d) => moved("End", d),
+        Edit::Turn(d) => moved("Bar 1", d),
     }
 }
 
@@ -2130,6 +2142,9 @@ mod tests {
         assert_eq!(text(Step::Edit(Edit::Half)), "½ length");
         assert_eq!(text(Step::Edit(Edit::Speed(-1))), "Speed ½×");
         assert_eq!(text(Step::Edit(Edit::Speed(1))), "Speed 2×");
+        assert_eq!(text(Step::Edit(Edit::Move(-2_205))), "Move ← 50 ms");
+        assert_eq!(text(Step::Edit(Edit::Resize(441))), "End → 10 ms");
+        assert_eq!(text(Step::Edit(Edit::Turn(882))), "Bar 1 → 20 ms");
         assert_eq!(text(Step::Merge(id(0))), "Merge layers");
         let (mut ui, mut page) = page();
         page.update(&mut ui, &v, &Settings::default());

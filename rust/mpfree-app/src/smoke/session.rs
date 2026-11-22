@@ -356,7 +356,10 @@ impl Session {
             mix,
             time,
             panels,
-            looper: looping::LoopHost::new(RATE, 20),
+            // Room for the looper phases' 4-second loops: three layers,
+            // one more Redo can bring back, and what each first pass keeps
+            // around it, with one more layer to move.
+            looper: looping::LoopHost::new(RATE, 22),
             tracks: audiotracks::TrackHost::new(RATE, 2),
             music,
             synth,
