@@ -30,6 +30,7 @@
 pub mod editor;
 pub mod lane;
 pub mod list;
+pub mod report;
 pub mod sample;
 pub mod song;
 pub mod view;

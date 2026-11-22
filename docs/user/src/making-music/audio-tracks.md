@@ -107,7 +107,15 @@ When an older take plays, its region on the track says which one ("take 1"). Tap
 
 ## Saving
 
-The audio tracks are saved with the project (**SHIFT + BROWSE**): every take, the regions you comped from them, and each track's input, monitor, mute and solo; its level, pan and effects are saved with its mixer strip. If a track is recording when you save, the save waits until it stops. Opening a project ends any recording and brings in the project's audio tracks; **New project** empties them. See [Saving your work](saving.md).
+The audio tracks are saved with the project (**SHIFT + BROWSE**): every take, the regions you comped from them, and each track's input, monitor, mute and solo; its level, pan and effects are saved with its mixer strip. If a track is recording when you save, the save waits until it stops and its take is safely on the drive. Opening a project ends any recording and brings in the project's audio tracks; **New project** empties them. See [Saving your work](saving.md).
+
+### Every take goes to the drive as you record
+
+You don't have to save to keep a take safe. Each take is written to a file of its own on the drive while you record, a little at a time, named after its track: a take on **Vocal** becomes a file like `Vocal_1f3a…wav`. The file is made as soon as you arm the track, so if the drive can't take it (it's full, or not there), the track doesn't arm and the log says why. When you save the project, each take's file is copied into the project's `samples` folder as it is.
+
+If mpfree stops while you record (a crash, or the power goes), the take is not lost. At the next start, mpfree finishes it up to the last moment that reached the drive (usually all but the last two seconds or so) and puts it in **Recordings** in the browser. Takes you recorded but never saved in a project go there too. The log says what was found, and the screen tells you when takes were recovered. To use one again, load it on the Sample tab and put it on an audio track, as in [A sound from the Sample tab](#record-your-first-take).
+
+If a take's file runs into trouble while you record (the drive gets full or falls behind), the log says so in plain words. The take keeps recording into memory, and saving the project still keeps it.
 
 > [!MPC]
 > On the MPC, audio tracks sit in the same sequence as MIDI tracks and each has its own mixer channel. In MPFree they are in the same track list as your other tracks too, each with its own mixer strip, and you record them on the Song view's timeline, each in its own lane among your tracks.

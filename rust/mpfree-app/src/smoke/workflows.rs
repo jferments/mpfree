@@ -2343,6 +2343,149 @@ mod tests {
         });
     }
 
+    /// Recording to files (the audio tracks rethink, phase 3a), the whole
+    /// path: at start a take a cut-off run left in the work folder goes
+    /// into Recordings, and the log says so; then a take recorded on an
+    /// audio track goes to a file of its own there, named for the track and
+    /// the take's id; a save copies that file whole into the project's
+    /// `samples/`, and the work folder's copy goes; the next save copies it
+    /// from the project.
+    #[test]
+    fn a_take_records_to_its_own_file_and_a_save_copies_it_into_the_project() {
+        use crate::gui::FromUi;
+        use mpfree_audiotracks::files::TakeState;
+        use mpfree_time_ui::view::AudioAction;
+        use mpfree_time_ui::TimeAction;
+        on_big_stack(|| {
+            let dir =
+                std::env::temp_dir().join(format!("mpfree-take-files-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("a scratch folder");
+            let mut s = Session::with_library(&dir);
+            let lib = s.library.clone().unwrap();
+            let work = lib.work_dir(crate::project::AUDIOTRACKS).unwrap();
+            let recordings = lib.root().join(mpfree_library::Place::Recordings.folder());
+            // A finished take a session never saved left behind.
+            let old = format!("Bass_{:032x}.wav", 7);
+            let tone: Vec<f32> = (0..2000).map(|k| (k as f32 * 0.05).sin() * 0.5).collect();
+            std::fs::write(
+                work.join(&old),
+                mpfree_audiotracks::save::wav(&tone, 1, crate::RATE),
+            )
+            .unwrap();
+            let until = |s: &mut Session, what: &str, done: &dyn Fn(&Session) -> bool| {
+                let wall = std::time::Instant::now() + std::time::Duration::from_secs(20);
+                while !done(s) {
+                    assert!(std::time::Instant::now() < wall, "timed out: {what}");
+                    s.run_periods(4);
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+            };
+            // At start, as open_library does: the recovery, then files on.
+            s.screen.recover_audio_files();
+            until(&mut s, "files on", &|s| {
+                s.tracks.host.tracks.records_to_files()
+            });
+            assert!(recordings.join(&old).exists(), "kept in Recordings");
+            assert!(!work.join(&old).exists());
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l.contains("1 take not saved in a project was kept in Recordings")),
+                "{:?}",
+                s.said()
+            );
+            // An audio track, armed as it is added, with a tone on the line
+            // input; its next take's file is made as it arms.
+            s.line_in(Some(440.0));
+            s.press("header", "tab", "Arrange").settle();
+            s.press("clips", "song", "Song").settle();
+            s.press("song", "button", "Play song").settle();
+            s.press("song", "add-track", "+ Track").settle();
+            s.press("song", "add-kind", "Audio track")
+                .run_periods(2)
+                .settle();
+            assert!(s.tracks.host.tracks.armed(0));
+            until(&mut s, "its file made", &|s| {
+                s.tracks.host.armed_file(0) == Some(true)
+            });
+            let (rec, _) = s.tracks.host.tracks.next_recording(0).unwrap();
+            let name = format!("Audio 1_{rec}.wav");
+            assert!(work.join(format!("{name}.recording")).exists());
+            // A second of it.
+            s.time.command(mpfree_transport::Command::Record);
+            s.run_for(1.0);
+            s.time.command(mpfree_transport::Command::Stop);
+            s.run_periods(20).settle();
+            // Disarmed, its next take's files go.
+            s.route(FromUi::Time(TimeAction::Audio(AudioAction::Arm {
+                track: 0,
+                on: false,
+            })));
+            s.run_periods(2).settle();
+            let take = s.tracks.host.tracks.takes().next().expect("a take");
+            assert_eq!(
+                take.rec, rec,
+                "it recorded under the id its file was made for"
+            );
+            until(&mut s, "its file finished", &|s| {
+                s.tracks
+                    .host
+                    .file(take.id)
+                    .is_some_and(|f| f.state == TakeState::Saved)
+            });
+            let recorded = work.join(&name);
+            let bytes = std::fs::read(&recorded).unwrap();
+            let (audio, ch, _) = mpfree_audiotracks::save::from_wav(&bytes).unwrap();
+            assert_eq!(
+                (ch, audio.len()),
+                (take.channels, take.frames * take.channels)
+            );
+            let mut mem = vec![0.0; audio.len()];
+            s.tracks
+                .host
+                .tracks
+                .read_take(take.id, 0, &mut mem)
+                .unwrap();
+            assert!(audio == mem, "the file is the take, frame for frame");
+            assert!(audio.iter().any(|x| x.abs() > 0.1), "the tone is in it");
+            // The save copies the file whole; the work folder's copy goes.
+            s.button_with("SHIFT", "BROWSE");
+            let project = (0..400)
+                .find_map(|_| {
+                    s.run_for(0.05);
+                    s.said()
+                        .into_iter()
+                        .find_map(|l| l.strip_prefix("project: saved ").map(str::to_string))
+                })
+                .expect("saved");
+            let loc = mpfree_library::Loc::top(mpfree_library::Place::Projects)
+                .join(&project)
+                .unwrap();
+            let samples = lib.samples_dir(&loc).unwrap();
+            assert_eq!(std::fs::read(samples.join(&name)).unwrap(), bytes);
+            until(&mut s, "the work copy gone", &|_| !recorded.exists());
+            // The next save copies it from the project, with nothing in the
+            // work folder.
+            s.button_with("SHIFT", "BROWSE");
+            let saves = |s: &Session| {
+                s.said()
+                    .iter()
+                    .filter(|l| l.starts_with("project: saved "))
+                    .count()
+            };
+            until(&mut s, "saved again", &|s| saves(s) == 2);
+            assert_eq!(std::fs::read(samples.join(&name)).unwrap(), bytes);
+            let left: Vec<_> = std::fs::read_dir(&work)
+                .unwrap()
+                .filter_map(Result::ok)
+                .map(|e| e.file_name())
+                .collect();
+            assert!(left.is_empty(), "{left:?}");
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
     /// Pad focus (the instrument redesign's step 3, the design's proof): a
     /// drum clip plays on Track 1 while the pads play Poly, chosen on the
     /// Synth tab. Selecting other tracks and tapping a row of REC's list

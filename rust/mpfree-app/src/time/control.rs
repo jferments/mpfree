@@ -54,7 +54,7 @@ use mpfree_time_ui::view::pad_name;
 use mpfree_time_ui::view::{
     bars_label, card_rows, clips_after, grid_name, rows_named, scene_rows, AudioAction, BarsEdit,
     EditAnswer, EditInfo, EditOutcome, FollowNext, MarkerEdit, MorphInfo, MuteWait, RegionId,
-    TakeRow, TempoEdit, TimeAction, TimeState, TransportInfo, SCENE_NAME,
+    Report, ReportRow, TakeRow, TempoEdit, TimeAction, TimeState, TransportInfo, SCENE_NAME,
 };
 use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_transport::{Block, Command, State};
@@ -346,6 +346,11 @@ pub struct TimeControl {
     /// wheel and the Ramp and Delete buttons; never set with `selected`,
     /// `region` or `section`.
     tempo_pick: Option<usize>,
+    /// The last conversion's report card, while it is open (the Arrange
+    /// refactor's 4.3): set by a conversion whose result plays
+    /// differently, closed by its Done (`TimeAction::CloseReport`), by
+    /// another conversion and by UNDO or REDO.
+    report: Option<Arc<Report>>,
     /// The project's tempo (the app's, [`TimeControl::project_tempo`]):
     /// the song's tempo before its first tempo point.
     project_bpm: f64,
@@ -600,6 +605,7 @@ impl TimeControl {
             region: None,
             section: None,
             tempo_pick: None,
+            report: None,
             project_bpm: info.bpm,
             song_rec: SongRecorder::default(),
             song_take: SongTake::Idle,
@@ -2614,7 +2620,7 @@ impl TimeControl {
         }
         // `edit` has followed the clip.
         let at = Instant::now();
-        if let EditAction::Note { rev, .. } = a {
+        if let Some(rev) = a.rev() {
             if rev != self.edit_rev {
                 // The screen still shows the clip as it was: it gets the
                 // new one, and the tap goes nowhere.
@@ -2975,6 +2981,9 @@ impl TimeControl {
             },
             TimeAction::Undo => match self.takes.undo(&mut self.project) {
                 Some(_) => {
+                    // A conversion's card closes: what it said is gone or
+                    // no longer the last thing done.
+                    self.report = None;
                     let row = self.takes.undone().last().map(TakeRow::of);
                     if let Some(d) = row.and_then(|r| r.dropped) {
                         self.follow_launches(d, true);
@@ -2997,6 +3006,7 @@ impl TimeControl {
             },
             TimeAction::Redo => match self.takes.redo(&mut self.project) {
                 Some(_) => {
+                    self.report = None;
                     self.redos += 1;
                     // The Sequencer's first step launched the clip it made:
                     // back again, it plays again (unless its track has
@@ -3818,6 +3828,12 @@ impl TimeControl {
                 Err("morph: needs the mixer's mod engine (TimeHost::morph)".into())
             }
             TimeAction::Edit(e) => self.edit(e),
+            TimeAction::CloseReport => {
+                // What the conversion did stays; only its card goes.
+                self.report = None;
+                self.changed = true;
+                Ok(String::new())
+            }
             TimeAction::SongView(on) => {
                 self.song_view = on;
                 self.list_view = false;
@@ -3933,9 +3949,10 @@ impl TimeControl {
             }
             TimeAction::SongToScenes => {
                 // The rows change, not the song: one edit of whole rows,
-                // which UNDO takes back.
+                // which UNDO takes back. The last conversion's card closes.
                 let bar = info.meter.bar_ticks();
                 let before = self.project.clone();
+                self.report = None;
                 let line = match self.edit_song(a, bar) {
                     Ok((line, _)) => line,
                     Err(e) => {
@@ -3947,6 +3964,7 @@ impl TimeControl {
                     // Back as it was, but for the clip ids it gave: an id
                     // is never given twice.
                     let next = self.project.next_clip;
+                    self.report = None;
                     self.project = before;
                     self.project.next_clip = next;
                     self.compile()?;
@@ -3970,9 +3988,14 @@ impl TimeControl {
             | TimeAction::MoveSection { .. }
             | TimeAction::SongBars(_)
             | TimeAction::SongMarker(_) => {
-                // Edits of the song alone, each one UNDO takes back.
+                // Edits of the song alone, each one UNDO takes back. A
+                // conversion closes the last one's card.
                 let bar = info.meter.bar_ticks();
                 let before = self.project.arrangement.clone();
+                let converts = matches!(a, TimeAction::ListToSong | TimeAction::ScenesToSong);
+                if converts {
+                    self.report = None;
+                }
                 // + Bar pressed again on the same section joins its take:
                 // presses in a row are one UNDO (not with the audio regions
                 // changed in between: [`TimeControl::act_with_audio`]).
@@ -4008,6 +4031,9 @@ impl TimeControl {
                 };
                 if let Err(e) = self.compile() {
                     self.project.arrangement = before;
+                    if converts {
+                        self.report = None;
+                    }
                     self.compile()?;
                     return Err(e);
                 }
@@ -4627,11 +4653,16 @@ impl TimeControl {
                     return Err("scenes → song: no row has a clip".into());
                 }
                 let (at, how) = self
-                    .rows_to_song(&rows, bar)
+                    .rows_to_song(
+                        &rows,
+                        bar,
+                        "SCENES → SONG",
+                        "The song plays the rows, except:",
+                    )
                     .map_err(|e| format!("scenes → song: {e}"))?;
                 Ok((
                     format!(
-                        "scenes → song: {} rows from bar {}, {how}",
+                        "scenes → song: {} rows from bar {}{how}",
                         rows.len(),
                         at / bar.max(1) + 1
                     ),
@@ -4639,19 +4670,23 @@ impl TimeControl {
                 ))
             }
             TimeAction::SongToScenes => match song_to_scenes(&mut self.project, bar) {
-                Ok(done) if done.rows.is_empty() => {
-                    Ok(("song → scenes: the song is empty".into(), None))
-                }
+                // Nothing to make: said on the screen as a refusal is.
+                Ok(done) if done.rows.is_empty() => Err("song → scenes: the song is empty".into()),
                 Ok(done) => {
-                    let (how, which) = differences_said(&self.project, &done.differences, bar);
+                    let how = conversion_said(&self.project, &done.differences, bar);
                     let rows = &done.rows;
-                    Ok((
+                    let made = rows_named(rows[0], rows[rows.len() - 1]);
+                    self.report = report(
+                        "SONG → SCENES",
+                        made.clone(),
                         format!(
-                            "song → scenes: {}, {how} (UNDO takes it back){which}",
-                            rows_named(rows[0], rows[rows.len() - 1])
+                            "Launch row {} and the rows play the song, except:",
+                            rows[0] + 1
                         ),
-                        None,
-                    ))
+                        &done.differences,
+                        bar,
+                    );
+                    Ok((format!("song → scenes: {made}{how}"), None))
                 }
                 Err(ModelError::NoRoom) => {
                     Err("song → scenes: not enough empty rows in a run".into())
@@ -4778,11 +4813,16 @@ impl TimeControl {
                 }
                 let steps = self.project.arrangement.list.steps.clone();
                 let (at, how) = self
-                    .rows_to_song(&steps, bar)
+                    .rows_to_song(
+                        &steps,
+                        bar,
+                        "LIST → SONG",
+                        "The song plays the list, except:",
+                    )
                     .map_err(|e| format!("list → song: {e}"))?;
                 Ok((
                     format!(
-                        "list → song: {n} steps from bar {}, {how}",
+                        "list → song: {n} steps from bar {}{how}",
                         at / bar.max(1) + 1
                     ),
                     Some(SongChange::ListToSong { steps: n }),
@@ -4796,12 +4836,24 @@ impl TimeControl {
     /// song ([`super::offline`], plan D7) from the first bar line after the
     /// song's end, and what Rec song recorded put in the song, with each
     /// step's scene's name above where it started. Where they start, and
-    /// how the song plays differently from the rows ("exact", or the
-    /// differences and what each is), or why nothing changed.
-    fn rows_to_song(&mut self, steps: &[ListStep], bar: Tick) -> Result<(Tick, String), String> {
+    /// how the song plays differently from the rows (the end of the log
+    /// line: [`conversion_said`]), or why nothing changed; the report card
+    /// opens when it differs.
+    fn rows_to_song(
+        &mut self,
+        steps: &[ListStep],
+        bar: Tick,
+        title: &str,
+        lead: &str,
+    ) -> Result<(Tick, String), String> {
         let end = self.project.arrangement.end();
         let at = (end + bar - 1) / bar.max(1) * bar;
         let played = super::offline::play_rows(&self.project, steps, at, bar)?;
+        let made = format!(
+            "bars {} to {}",
+            at / bar.max(1) + 1,
+            (played.end + bar - 1) / bar.max(1)
+        );
         let mut song = self.project.arrangement.clone();
         let mut differences = Vec::new();
         for p in played.placements {
@@ -4829,8 +4881,8 @@ impl TimeControl {
         // New placements shift the indices.
         self.selected = None;
         self.section = None;
-        let (how, which) = differences_said(&self.project, &differences, bar);
-        Ok((at, format!("{how}{which}")))
+        self.report = report(title, made, lead.into(), &differences, bar);
+        Ok((at, conversion_said(&self.project, &differences, bar)))
     }
 
     /// The morph bar on the mixer's mod engine (`modu`): the rows, the
@@ -6130,6 +6182,7 @@ impl TimeControl {
         st.section = self.section;
         st.tempo_base = self.project_bpm;
         st.tempo_pick = self.tempo_pick.filter(|&k| k < st.tempo_points.len());
+        st.report = self.report.clone();
         st.tempo_here = self.tempo_here();
         st.song_rec = self.song_rec.armed();
         st.song_with_take = self.song_with_take();
@@ -6649,18 +6702,54 @@ fn moves_over(gestures: &[mpfree_seq::mpfree_moves::Gesture], from: f64, to: f64
         .count()
 }
 
-/// How a conversion played out, for its log line (plan D7): "exact", or
-/// how many differences and each in words ("2 differences" and ": Bass,
-/// bar 9: a note held over the row change is cut there; …").
-fn differences_said(project: &Project, d: &[Difference], bar: Tick) -> (String, String) {
+/// The report card of a conversion whose result plays differently from
+/// what it was made from (the Arrange refactor's 4.3): its differences in
+/// song order, the song's own first in each bar. None for an exact one,
+/// which says so on its line alone.
+fn report(
+    title: &str,
+    made: String,
+    lead: String,
+    d: &[Difference],
+    bar: Tick,
+) -> Option<Arc<Report>> {
+    if d.is_empty() {
+        return None;
+    }
+    let mut rows: Vec<ReportRow> = d
+        .iter()
+        .map(|d| ReportRow {
+            track: d.track,
+            bar: d.bar(bar),
+            what: d.what_said(bar),
+        })
+        .collect();
+    rows.sort_by_key(|r| (r.bar, r.track));
+    Some(Arc::new(Report {
+        title: title.into(),
+        made,
+        lead,
+        rows,
+    }))
+}
+
+/// How an exact conversion's line ends: nothing opens, and the line shows
+/// in place of the hint as it is (layout spec 4n, main.rs `time_said`).
+pub const EXACT: &str = ", exact. UNDO takes it back.";
+
+/// How a conversion played out, the end of its log line (plan D7):
+/// [`EXACT`], or how many differences and each in words (", 2 differences
+/// (UNDO takes it back): Bass, bar 9: a note held over the row change is
+/// cut there; …"), which the report card shows too.
+fn conversion_said(project: &Project, d: &[Difference], bar: Tick) -> String {
     match d.len() {
-        0 => ("exact".into(), String::new()),
+        0 => EXACT.into(),
         n => {
             let each: Vec<String> = d.iter().map(|d| d.said(project, bar)).collect();
             let s = if n == 1 { "" } else { "s" };
-            (
-                format!("{n} difference{s}"),
-                format!(": {}", each.join("; ")),
+            format!(
+                ", {n} difference{s} (UNDO takes it back): {}",
+                each.join("; ")
             )
         }
     }
