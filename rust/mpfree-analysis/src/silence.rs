@@ -31,8 +31,8 @@ impl Default for SilenceSettings {
 
 /// The sounding parts of interleaved audio, as (start, end) frames, end
 /// exclusive, in order and never overlapping.
-pub fn sound_spans(
-    data: &[f32],
+pub fn sound_spans<S: crate::Samples + ?Sized>(
+    data: &S,
     channels: usize,
     rate: u32,
     s: SilenceSettings,
@@ -49,11 +49,7 @@ pub fn sound_spans(
     let frames = data.len() / channels;
     let level = 10f32.powf(s.threshold_db / 20.0);
     let ms = |m: f32| (m.max(0.0) / 1000.0 * rate as f32) as usize;
-    let loud = |f: usize| {
-        data[f * channels..(f + 1) * channels]
-            .iter()
-            .any(|x| x.abs() > level)
-    };
+    let loud = |f: usize| (f * channels..(f + 1) * channels).any(|i| data.at(i).abs() > level);
     // Runs of loud frames, joined across short gaps.
     let mut spans: Vec<(usize, usize)> = Vec::new();
     let mut f = 0;
@@ -129,6 +125,6 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        assert!(sound_spans(&[0.0; 3], 2, 44_100, SilenceSettings::default()).is_err());
+        assert!(sound_spans(&[0.0f32; 3][..], 2, 44_100, SilenceSettings::default()).is_err());
     }
 }

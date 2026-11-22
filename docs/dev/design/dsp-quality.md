@@ -27,10 +27,24 @@ From the ratchet files on main (`rust/mpfree-fxlab/quality/synth.tsv`, `sampler.
 | Poly drive 24 dB / distortion 24 dB | -50 / -45 and -45 / -40 dB | the curve runs per voice at 1x |
 | Sampler, a semitone up, 9 kHz out | spur -31.5 dB | the Hermite read for small pitch changes |
 | Sampler, a fifth down, 9 kHz out | spur -43.6 dB, 1.1 dB quiet | the same read pitched down |
+| Sampler, an octave down, 9 kHz out (Y5) | spur -7.7 dB, 3.0 dB quiet | the same read pitched down: its images fold into the band |
+| Sampler, a fifth down, 13.5 kHz out (Y5) | spur -3.4 dB, 4.6 dB quiet | the same |
 
 Nobody has measured the synth filters above 4 kHz, their self-oscillation pitch, or what each engine does with block sizes other than 128. Phase 0 adds those measures.
 
 The ratchets guard an approved baseline within tolerances, not a promise that numbers only improve: a few rows were blessed worse on purpose, each with its reason in its pull request. Step 0.1 reruns them all.
+
+### The rerun (step 0.1)
+
+Every ratchet was run again at main e5518efc with this page's new rows, its numbers written fresh and compared with the baselines: quality (1,594 rows, release), synth (5,323, release), sampler (74, debug) and grain (115, debug). This run was on an x86-64 cloud machine; the runners run the same four ratchets on every pull request in the merge train. **Every row is within its tolerance.** All but 29 rows read exactly as blessed. The 29 that moved:
+
+| Rows | Baseline | Fresh | Why |
+|---|---|---|---|
+| EQ `drawn_vs_heard_db`, and its HQ 2x row | 0.0266 and 0.0043 dB | 0.0042 and 0.0014 dB | fxlab's response measure changed after the bless ([FX quality](fx-quality.md), Measured differently, already gives 0.004) |
+| Grain G13, the LFO on position and on spray (8 rows) | swing -0.26 to +1.25 dB further, level -0.23 to +0.03 LU | swing -0.20 to +0.84 dB, level -0.24 to +0.05 LU | two grain changes after the bless (each grain keeps its window for its whole life; the edges of a sound) move a random cloud's draws. The largest moves are the pad's swing with position swept, 0.23 dB more (its tolerance is 0.5), and pink's with spray swept, 0.41 dB less. |
+| Crush's off-grid rows (16) and three synth rows | | the same to 0.002 dB | no code under them changed since the bless; most likely the machine's maths library, as the full-project check allows for |
+
+The ratchet files keep the older baselines, which are looser than the fresh numbers for the EQ and the grain rows; blessing them would tighten the ratchet and change no sound.
 
 ## Rules for DSP work
 
@@ -105,6 +119,19 @@ New measures join fxlab and its ratchets in steps 0.2 and 0.5. As today, a targe
 | Y6 | A 96 kHz file's 30 kHz tone played an octave down | Original read (3.2): heard at 15 kHz within 1 dB. Copy fallback: under -50 dB, and reported as a fallback |
 | Y7 | Each engine's output at block sizes 1, 37 and 128 against 128, with the same event times and start state. Four classes: bit-exact; within a stated tolerance; equal by ear only; block-dependent by design (the last two documented) | The bit-exact class is a **gate**; the rest reported |
 | Y8 | Reference: the engine at 44.1 kHz against its own 8x render brought down with a long linear-phase filter. Fizz energy, error in the intended harmonics, spectral envelope, level; error over time only where phase is fixed | Set per step in 0.5, once 8x and 16x agree |
+
+### First results (Y4 to Y8)
+
+Built in `rust/mpfree-fxlab`: `src/robust.rs` and `tests/robust.rs` for Y4 and Y7, `src/reference.rs` and `tests/reference.rs` for Y8 (all release only, in one CI step, about 50 s on four cores), and Y5 and Y6 in `src/sampler.rs` (the sampler ratchet, `quality/sampler.tsv`). Measured at e5518efc.
+
+- **Y4: every subject stays finite.** 62 subjects (the 12 engines with their first preset's settings and no effects, the first drum kit, every registered effect), 20,208 renders. Each render is 0.6 s. An instrument plays notes 0 and 127 at velocities 1 and 127, a chord, bends to both ends, full pressure, the mod wheel and breath. An effect gets silence, full-scale white noise, a full-scale sine sweep and silence again. The layers are: the defaults; each control alone at its bottom, top and middle; all at the bottom, all at the top, alternating; 16 seeded random settings; every pair of controls in one group at their tops; each control swept from bottom to top and back in 0.3 s. No render held a NaN or an infinity. The loudest finite peaks (shown, not gated) come from gains at their tops: the channel strip +49 dBFS, multiband +49, Drums +34, Analog +33.
+- **Y7: almost everything is bit-exact for any block size.** Notes and a seeded parameter move every 700 to 4,700 frames, rendered in blocks of 1 and 37 frames, against 128. Every engine, the drums and 46 of the 49 effects are bit-exact, and `tests/robust.rs` now holds all 59 to it. Not bit-exact: the chorus (-2.4 dB against the peak) and the phaser (-16 dB), whose LFO takes a new rate and re-syncs only at the start of a block (a defect to fix, not a design); the rotary differs only by rounding (below -400 dB).
+- **Y5: the sampler's read fails pitch-downs near the top.** At 3 kHz out, everything meets -50 dB except an octave down (-44.5). At 9 kHz out: a semitone and two semitones down -28.9 and -26.3, two up -34.8, an octave down -7.7 dB with the tone 3.0 dB quiet. At 13.5 kHz out: -13.5 to -19.0 dB at one and two semitones each way, and a fifth down -3.4 dB with the tone 4.6 dB quiet. These are the read's images folding back into the band. Step 1.4's target covers every row.
+- **Y6: the engine reads a 96 kHz sound at its own rate.** Its 30 kHz tone played an octave down is heard at -4.1 dB. The lab hands the engine a 96 kHz sound directly; whether loading a file keeps it at 96 kHz is what step 3.1 checks. The 4 dB loss is the read's own response that high, which step 1.4 also covers.
+- **Y8: the 8x reference has converged in 55 of the 96 cases.** Each A1 case (31 engines and settings at C5, C6 and C7) is played as A1 plays it, at 44.1 kHz and at 8 and 16 times the rate, after as long a settle in seconds. The high renders come down to 44.1 kHz through a Kaiser linear-phase filter (flat within 0.001 dB to 20 kHz, more than 115 dB down from 24.1 kHz; 671 taps at 8x). The 8x reference counts as converged when its harmonics are within 1 dB of the 16x one's and its fizz within 3 dB, or both under the -80 dB floor of the measure. `tests/reference.rs` holds the 55 to that; `fxlab reference --sixteen` prints the table. Y8's fizz is all the energy off the harmonics, so it reads higher than A1's loudest single product (Poly's saw at C5: -67.7 dB against a converged reference at -86.2).
+  - **Converged:** the clean oscillators of Poly, Squelch, Bass and Wavetable, Poly's table, Wind, Choir, Drawbar's combo flute, and Poly's distortion and Squelch's and Bass's drive.
+  - **Not converged:** Poly's drive and Analog's drive 100 still fold at 8x (the drive's fizz 6 dB lower at 16x; Analog's harmonics 2.5 to 4.2 dB apart); sync (harmonics 1.3 to 6 dB apart); Squelch's square; every FM case (feedback 7 is noise by design); Analog's saw at C6 and C7 (fizz 3.7 dB apart, just above the floor). Strings and Drawbar's combo reed are a different case: their harmonics agree within 0.3 dB, but their energy off the harmonics grows by about 8 dB from 8x to 16x, so it is not folding but something that depends on the rate. Both play the divide-down bank (`mpfree-synth/src/bank.rs`), the first place to look. Steps 1.1 and 2.1 set their Y8 targets against the 16x render, or after the cause is found.
+  - **What the converged references show beyond fizz:** below 16 kHz, Poly's saw, pulse and tables are 4 to 6.5 dB brighter at 44.1 kHz than their references. The plain patch's filter is set to 20 kHz: at 8x it takes 12 dB off at 20 kHz, as an analog four-pole would, but at 44.1 kHz, that close to Nyquist, the same setting lets nearly everything through below 16 kHz (step 2.2's question: which one is intended). Strings and the combo reed go the other way, 14 to 17 dB darker near 15 kHz, and Choir 6 to 11 dB. Wind is 1.4 to 3.1 dB quieter at 44.1 kHz: the bore models change with the rate. From 16 to 20 kHz, Poly's oscillators keep no harmonics above about 16.7 kHz, where their references keep them all; that top-end loss is what step 1.2's "harmonic loss" is measured by.
 
 **Fizz targets by kind:**
 

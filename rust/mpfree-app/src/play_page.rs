@@ -834,11 +834,11 @@ pub struct PlayPage {
     pub last_pad: usize,
     pub pads: Vec<PadInfo>,
     pub levels: PlayLevels,
-    /// The armed track plays kit 1, whose pads have channels of their own
-    /// (the mixer's pad strips): its lanes show and change their mutes.
-    /// Another kit plays through its track's channel, so its pads have no
-    /// mutes of their own, as a synth's haven't.
-    pub pad_strips: bool,
+    /// The pads muted on the track the steps show, a bit each by kit pad
+    /// (`Track::pad_mutes`; the instrument redesign's step 10: a pad mute
+    /// is the track's, on any kit and bank). Its lanes' speakers show
+    /// them; a synth's pads have none.
+    pub pad_mutes: u128,
     /// The kit's page on the pads (PAD BANK A = 0): its empty pads fill
     /// the lanes left after the sounds.
     pub pad_page: usize,
@@ -1058,9 +1058,8 @@ impl Default for PlayPage {
                 drums_filter: 0.0,
                 loop_filter: 0.0,
                 fx_mix: 1.0,
-                pad_mutes: 0,
             },
-            pad_strips: true,
+            pad_mutes: 0,
             pad_page: 0,
             turned_at: None,
             transport: TransportInfo::default(),
@@ -2172,8 +2171,6 @@ impl PlayPage {
         let fresh = self.turned_at.is_none_or(|t| t.elapsed() >= HOLD_TURNED);
         if fresh {
             self.levels = l;
-        } else {
-            self.levels.pad_mutes = l.pad_mutes;
         }
     }
 
@@ -2991,13 +2988,9 @@ impl PlayPage {
                 })
                 .and_then(PadInfo::color)
                 .unwrap_or(draw::FX),
-            // A synth's pads have no mutes of their own (the kit's are
-            // the drums'), nor have another kit's (they share their
-            // track's channel).
-            muted: p < 16
-                && !self.pitched()
-                && self.pad_strips
-                && self.levels.pad_mutes & (1 << p) != 0,
+            // A synth's pads have no mutes (they play notes); a kit's
+            // are the track's, on any bank (step 10).
+            muted: !self.pitched() && p < 128 && self.pad_mutes >> p & 1 == 1,
             steps: (from..from + PAGE)
                 .map(|i| row.get(i).copied().flatten().map_or(0, |s| s.velocity))
                 .collect(),
@@ -4183,7 +4176,7 @@ mod tests {
             ]
         );
         // The synth's pads have no mutes: the kit's are the drums'.
-        p.levels.pad_mutes = 0b11;
+        p.pad_mutes = 0b11;
         p.fill_steps(&mut g);
         assert!(g.lanes.iter().all(|l| !l.muted));
         // An octave up: A4 (pad 8) at the bottom; then as high as it

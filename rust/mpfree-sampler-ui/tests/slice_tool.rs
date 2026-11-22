@@ -273,7 +273,7 @@ fn split_merge_and_moving_a_cut_make_the_chop_manual() {
         step(&mut s, Row::Amount, -1);
     }
     assert_eq!(s.tab.slice().slices(), 4);
-    let mono = s.state.source.mono.clone();
+    let mono = s.state.source.mono.as_ref().unwrap().to_vec();
     // Q-Link 1 picks slice 2; Split cuts it near its middle, on a zero crossing.
     qlink(&mut s, 1, 1, false);
     assert_eq!(s.tab.slice().selected(), 1);
@@ -1198,7 +1198,7 @@ fn pitch_chops_a_sung_line_where_its_notes_change() {
     };
     assert_eq!(value(&s), "1 semi");
     near(&s, &[1, 2, 4, 5]);
-    let mono = &s.state.source.mono;
+    let mono = s.state.source.mono.as_ref().unwrap().to_vec();
     let b = s.tab.slice().bounds(cs(&s.state));
     for &c in &b[1..b.len() - 1] {
         let (x, y) = (mono[c as usize - 1], mono[c as usize]);
@@ -1233,7 +1233,7 @@ fn pitch_chops_a_sung_line_where_its_notes_change() {
     let v = d.state.source.clone();
     set_source(
         &mut d.state,
-        Arc::new(v.with_pitch(v.follow_pitch(RATE).unwrap())),
+        Arc::new(v.with_pitch(v.follow_pitch(d.project.source(v.id).unwrap()).unwrap())),
     );
     method(&mut d, Method::Pitch);
     assert!(
