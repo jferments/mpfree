@@ -325,6 +325,8 @@ impl Theme {
             (Role::Series6, 0x8E1C9B),
             (Role::Series7, 0xAD001D),
             (Role::Series8, 0x4B5A1E),
+            (Role::Picked, 0xFFAD19),
+            (Role::OnPicked, 0x0E0E0E),
             (Role::TextInverse, 0xF2F2F2),
             (Role::Highlight, 0xFFFFFF),
             (Role::Handle, 0xE6E6E6),
@@ -867,9 +869,13 @@ impl Theme {
             (got, cycles) = resolve(&theme, &sources, light);
         }
         let mut by_line: Vec<(usize, String)> = Vec::new();
+        // Only the file's own lines are mistakes: a role the file leaves
+        // alone, following a colour that went wrong, follows the colour
+        // kept in its place (resolve_roles below).
         for (k, why) in &cycles {
-            let n = colours.get(k).map_or(0, |(n, _)| *n);
-            by_line.push((n, format!("{}: {why}", k.name())));
+            if let Some((n, _)) = colours.get(k) {
+                by_line.push((*n, format!("{}: {why}", k.name())));
+            }
         }
         by_line.sort();
         for (n, text) in by_line {
@@ -1158,6 +1164,11 @@ impl Theme {
         let r = contrast(self.on_accent, self.accent);
         if r < 3.0 {
             out.push(format!("on_accent on accent: contrast {r:.1}:1, below 3:1"));
+        }
+        let (picked, on_picked) = (self.role(Role::Picked), self.role(Role::OnPicked));
+        let r = contrast(on(on_picked, picked), on(picked, surface));
+        if r < 3.0 {
+            out.push(format!("on_picked on picked: contrast {r:.1}:1, below 3:1"));
         }
         // Roles drawn as lines and labels on panels: 3:1, as accents.
         for &r in Role::ALL {

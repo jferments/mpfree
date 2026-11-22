@@ -43,5 +43,7 @@ series.6      = {track.6}
 series.7      = {track.7}
 series.8      = {track.8}
 handle        = #FFFFFF
+picked        = {accent}
+on_picked     = {on_accent}
 cut           = {text_dim}
 grain         = #B967FF

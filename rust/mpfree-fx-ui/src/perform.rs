@@ -126,9 +126,9 @@ impl Widget for PerformPads {
         cx.titled_panel(r, "Perform pads", &right);
         for (i, p) in self.pads.iter().enumerate() {
             let c = PerformPads::cell(r, i);
-            let lit = t.accent;
+            let lit = t.picked();
             let (fill, ink, dim) = match p.state {
-                2 => (lit, t.on_accent, t.on_accent),
+                2 => (lit, t.on_picked(), t.on_picked()),
                 3 => (t.raised.mix(lit, 0.45), t.text, t.text),
                 _ if p.effect.is_empty() => {
                     (t.surface.mix(t.raised, 0.5), t.text_faint, t.text_faint)

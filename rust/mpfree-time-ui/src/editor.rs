@@ -1778,8 +1778,8 @@ impl Widget for NoteGrid {
         }
         for (k, br) in self.button_rects(r).iter().enumerate() {
             let lit = (k == 1 && self.lens != Lens::Grid) || (k == 2 && self.tool != Tool::Select);
-            let fill = if lit { t.accent } else { t.raised };
-            let ink = if lit { t.on_accent } else { t.text };
+            let fill = if lit { t.picked() } else { t.raised };
+            let ink = if lit { t.on_picked() } else { t.text };
             cx.canvas.fill_round_rect(*br, t.round(10), fill);
             cx.text(
                 FontId::Bold,

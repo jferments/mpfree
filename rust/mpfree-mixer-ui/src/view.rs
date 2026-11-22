@@ -1744,14 +1744,14 @@ impl MixerView {
         for (half, look) in look_halves(l.look).into_iter().zip(Look::ALL) {
             let on = look == self.look;
             if on {
-                cx.canvas.fill_round_rect(half, t.round(8), t.accent);
+                cx.canvas.fill_round_rect(half, t.round(8), t.picked());
             }
             cx.text(
                 if on { FontId::Bold } else { FontId::Sans },
                 t.size_small,
                 half,
                 Align::Center,
-                if on { t.on_accent } else { t.text_dim },
+                if on { t.on_picked() } else { t.text_dim },
                 look.label(),
             );
         }
@@ -2048,7 +2048,7 @@ impl MixerView {
             let bs = buttons(p.buttons, n);
             let spec = [
                 ("M", s.mute, t.warn),
-                ("S", s.solo, t.accent),
+                ("S", s.solo, t.picked()),
                 ("R", arm.unwrap_or(false), t.bad),
             ];
             for (i, b) in bs.iter().enumerate() {
@@ -2068,11 +2068,14 @@ impl MixerView {
         // Output.
         if s.has_output() {
             let open = self.picker == Some(s.id);
-            cx.canvas
-                .fill_round_rect(p.output, t.round(8), if open { t.accent } else { t.raised });
+            cx.canvas.fill_round_rect(
+                p.output,
+                t.round(8),
+                if open { t.picked() } else { t.raised },
+            );
             let none = s.output == output::NONE as u8;
             let c = if open {
-                t.on_accent
+                t.on_picked()
             } else if none {
                 t.warn
             } else {
@@ -2703,13 +2706,13 @@ impl MixerView {
         for ((out, track), b) in self.picker_buttons(l, s) {
             let on = cur == Some((out, track));
             cx.canvas
-                .fill_round_rect(b, t.round(10), if on { t.accent } else { t.raised });
+                .fill_round_rect(b, t.round(10), if on { t.picked() } else { t.raised });
             cx.text(
                 FontId::Sans,
                 t.size_body,
                 b,
                 Align::Center,
-                if on { t.on_accent } else { t.text },
+                if on { t.on_picked() } else { t.text },
                 &output_label(out, track),
             );
         }
@@ -3357,15 +3360,18 @@ impl MixerView {
             );
             let open = self.picker == Some(s.id);
             let none = s.output == output::NONE as u8;
-            cx.canvas
-                .fill_round_rect(p.output, t.round(8), if open { t.accent } else { t.raised });
+            cx.canvas.fill_round_rect(
+                p.output,
+                t.round(8),
+                if open { t.picked() } else { t.raised },
+            );
             cx.text(
                 FontId::Sans,
                 t.size_body,
                 p.output.inset_xy(12, 0),
                 Align::Left,
                 if open {
-                    t.bg
+                    t.on_picked()
                 } else if none {
                     t.warn
                 } else {

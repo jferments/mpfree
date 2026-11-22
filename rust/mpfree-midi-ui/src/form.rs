@@ -726,7 +726,7 @@ impl<F: Form> FormSection<F> {
         for (g, i, cr) in chips {
             let c = &p.groups[g].choices[i];
             let (fill, ink) = if c.on {
-                (t.accent, t.on_accent)
+                (t.picked(), t.on_picked())
             } else if c.enabled {
                 (t.raised, t.text)
             } else {

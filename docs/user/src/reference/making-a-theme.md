@@ -66,6 +66,8 @@ A few more colours have their own keys, and each follows the colours above unles
 | `shadow` | Drop shadows, drawn see-through. | `text` on a light theme, `bg` on a dark one |
 | `series.1` to `series.8` | Graph lines and EQ bands, in order. | `track.1` to `track.8` |
 | `handle` | A switch's knob, a slider's handle. | `surface` on a light theme, `text` on a dark one |
+| `picked` | The fill of what is picked or on: a chosen button, pill, tab or step. Set it when your accent is too pale to read as words, such as an orange on grey. | `accent` |
+| `on_picked` | Words and marks on a `picked` fill. | `on_accent` |
 | `cut` | The EQ's low and high cuts. | `text_dim` |
 | `grain` | The Sample page's grain window. | `accent2` |
 

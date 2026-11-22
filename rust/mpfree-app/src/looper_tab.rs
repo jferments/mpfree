@@ -1007,22 +1007,22 @@ impl LoopEditor {
         for (i, (b, name)) in rects.iter().skip(fixed).zip(&self.mixes).enumerate() {
             let lit = fixed + i == now;
             cx.canvas
-                .fill_round_rect(*b, t.round(10), if lit { t.accent } else { t.raised });
+                .fill_round_rect(*b, t.round(10), if lit { t.picked() } else { t.raised });
             cx.text(
                 FontId::Bold,
                 15.0,
                 b.inset_xy(8, 0),
                 Align::Center,
-                if lit { t.on_accent } else { t.text },
+                if lit { t.on_picked() } else { t.text },
                 name,
             );
         }
         for (i, (b, (title, what))) in rects.into_iter().zip(SOURCE_CHOICES).enumerate() {
             let lit = i == now;
             cx.canvas
-                .fill_round_rect(b, t.round(12), if lit { t.accent } else { t.raised });
+                .fill_round_rect(b, t.round(12), if lit { t.picked() } else { t.raised });
             let (ink, dim) = if lit {
-                (t.on_accent, t.on_accent)
+                (t.on_picked(), t.on_picked())
             } else {
                 (t.text, t.text_dim)
             };
@@ -1435,8 +1435,12 @@ pub(crate) fn play_icon(cx: &mut PaintCx, x: f32, y: f32, h: f32, c: Color) {
 fn listen_button(cx: &mut PaintCx, b: Rect, works: bool, on: bool) {
     let t = cx.theme.clone();
     cx.canvas
-        .fill_round_rect(b, t.round(10), if on { t.accent } else { t.raised });
-    let ink = if on { t.on_accent } else { t.button_ink(works) };
+        .fill_round_rect(b, t.round(10), if on { t.picked() } else { t.raised });
+    let ink = if on {
+        t.on_picked()
+    } else {
+        t.button_ink(works)
+    };
     let label = if on { "Stop" } else { "Listen" };
     let lw = cx.measure(FontId::Bold, 14.0, label);
     let total = 12 + 8 + lw;
@@ -1461,8 +1465,8 @@ fn listen_button(cx: &mut PaintCx, b: Rect, works: bool, on: bool) {
 fn button(cx: &mut PaintCx, b: Rect, label: &str, on: bool, lit: bool, px: f32) {
     let t = cx.theme.clone();
     cx.canvas
-        .fill_round_rect(b, t.round(10), if lit { t.accent } else { t.raised });
-    let ink = if lit { t.on_accent } else { t.button_ink(on) };
+        .fill_round_rect(b, t.round(10), if lit { t.picked() } else { t.raised });
+    let ink = if lit { t.on_picked() } else { t.button_ink(on) };
     cx.text(FontId::Bold, px, b, Align::Center, ink, label);
 }
 
@@ -1481,9 +1485,9 @@ fn segments(cx: &mut PaintCx, items: &[(Rect, &str, bool)]) {
     }
     for (r, label, chosen) in items {
         if *chosen {
-            cx.canvas.fill_round_rect(*r, t.round(8), t.accent);
+            cx.canvas.fill_round_rect(*r, t.round(8), t.picked());
         }
-        let ink = if *chosen { t.on_accent } else { t.text };
+        let ink = if *chosen { t.on_picked() } else { t.text };
         cx.text(FontId::Bold, 14.0, *r, Align::Center, ink, label);
     }
 }
@@ -1731,10 +1735,10 @@ impl LoopEditor {
         cx.canvas.fill_round_rect(
             p.listen,
             t.round(8),
-            if l.listening { t.accent } else { t.raised },
+            if l.listening { t.picked() } else { t.raised },
         );
         let ink = if l.listening {
-            t.on_accent
+            t.on_picked()
         } else {
             t.button_ink(self.listen.0)
         };
@@ -1752,14 +1756,17 @@ impl LoopEditor {
                 ink,
             );
         }
-        cx.canvas
-            .fill_round_rect(p.solo, t.round(8), if l.solo { t.accent } else { t.raised });
+        cx.canvas.fill_round_rect(
+            p.solo,
+            t.round(8),
+            if l.solo { t.picked() } else { t.raised },
+        );
         cx.text(
             FontId::Bold,
             14.0,
             p.solo,
             Align::Center,
-            if l.solo { t.on_accent } else { t.text },
+            if l.solo { t.on_picked() } else { t.text },
             "S",
         );
         // The wave, with the bar lines and the playhead.
@@ -2219,7 +2226,7 @@ impl LoopEditor {
                     group_label(cx, m.x, s.y, "MONITOR");
                     let sw = Rect::new(m.x, m.y + (m.h - 34) / 2, 62, 34);
                     cx.canvas
-                        .fill_round_rect(sw, 17, if *on { t.accent } else { t.raised });
+                        .fill_round_rect(sw, 17, if *on { t.picked() } else { t.raised });
                     let kx = if *on { sw.x + 32 } else { sw.x + 4 };
                     cx.canvas
                         .fill_round_rect(Rect::new(kx, sw.y + 4, 26, 26), 13, t.text);
