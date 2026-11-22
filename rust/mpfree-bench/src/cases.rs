@@ -3443,29 +3443,33 @@ fn arrange_compile() -> Case {
 
 /// A step tapped on one of the big song's clips in song mode (Arrange
 /// refactor 2.1), a block each, as `TimeControl::step_action` makes it: the
-/// edit worked out on the grid and made to the clip and the takes, then,
-/// since a song-mode edit can't go in place today (`TimeControl::in_place`),
-/// the view compiled again. Phase 2.3 puts song-mode edits in place.
+/// edit worked out on the grid and made to the clip and the takes, then
+/// made to the view in place, as the audio half makes it
+/// (`PlayView::edit_in_place`), in the one copy all 16 of the clip's blocks
+/// play (2.3; before it, the view compiled again).
 fn arrange_step() -> Case {
-    use mpfree_play::Takes;
+    use mpfree_play::{InPlace, Takes};
     use mpfree_seq::steps::Grid;
     let mut song = arrange_song();
     let mut view = arrange_view(&song);
+    // The room the control half makes on the armed track (RECORD_ROOM).
+    view.make_room_on(0, 64, 64);
     let mut takes = Takes::default();
     let grid = Grid::new(STEP).expect("a sixteenth");
     Case {
         name: "Arrange: a step tap in song mode, 512 blocks of 32 clips: until it plays"
             .to_string(),
         module: CONTROL,
-        what: "a step's note out, then back in, on a clip 16 blocks play; then the view compiled",
+        what:
+            "a step's note out, then back in, on a clip 16 blocks play, made to the view in place",
         block: Box::new(move |b, l, r| {
             let clip = song.clip(0, 0).expect("the clip");
             let k = b / 2;
             let step = (k * 7 % 64) as usize;
             let edit = grid.toggle(clip, 60, step, 100);
             takes.edit(&mut song, 0, 0, &edit, None).expect("the edit");
-            let old = std::mem::replace(&mut view, arrange_view(&song));
-            drop(old);
+            let changes: Vec<InPlace> = InPlace::all(&edit).collect();
+            assert!(view.edit_in_place(0, 0, &changes), "in place");
             l.fill(0.0);
             r.fill(0.0);
             l[0] = song.clip(0, 0).map_or(0, |c| c.notes.len()) as f32;
@@ -5126,15 +5130,16 @@ mod tests {
 
     #[test]
     fn the_big_song_cases_compile_edit_and_save_the_whole_song() {
-        // The view plays every block's 1,000 notes, 512 blocks.
+        // The view holds each clip's 1,000 notes once, however many of
+        // the 512 blocks play it (2.3; before it, 512,000).
         let (l, _) = run(&mut arrange_compile(), 1);
-        assert_eq!(l[0], 512_000.0);
-        // A tap takes a note out and the view plays it in all 16 of the
-        // clip's blocks; the next block puts it back.
+        assert_eq!(l[0], 32_000.0);
+        // A tap puts a note in the one copy all 16 of the clip's blocks
+        // play; the next block takes it out again.
         let (l, r) = run(&mut measured(arrange_step), 1);
-        assert_eq!((l[0], r[0]), (1_001.0, 512_016.0));
+        assert_eq!((l[0], r[0]), (1_001.0, 32_001.0));
         let (l, r) = run(&mut measured(arrange_step), 2);
-        assert_eq!((l[0], r[0]), (1_000.0, 512_000.0));
+        assert_eq!((l[0], r[0]), (1_000.0, 32_000.0));
         let (l, r) = run(&mut measured(arrange_save), 1);
         assert!(l[0] > 0.0);
         assert_eq!(r[0], 512.0);

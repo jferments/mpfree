@@ -1,8 +1,10 @@
 //! Editing a clip while it plays in several places (Arrange refactor 2.2,
 //! design D2): a clip launched on one track and named by song blocks on two
 //! others, edited while the song plays, the new view taken between two
-//! periods as the app's audio half takes it. Written to pass on today's
-//! full compile, so that one compiled copy a clip (2.3) keeps every rule:
+//! periods as the app's audio half takes it. Written to pass on the full
+//! compile before one compiled copy a clip (2.3), which keeps every rule,
+//! and since 2.3 also run with the edit made to the playing view in place
+//! (a song-mode tap), which must play the same:
 //!
 //! - every place the clip plays hears the change from the next note the
 //!   player reads;
@@ -12,7 +14,7 @@
 //!
 //! Each holds at periods of 1 to 4,096 frames.
 
-use mpfree_play::{Event, Launch, Out, PlayView, Player, Sink};
+use mpfree_play::{Event, InPlace, Launch, Out, PlayView, Player, Sink};
 use mpfree_seq::{Clip, Note, Placement, Project, Track};
 use mpfree_transport::{Block, Command, Transport};
 
@@ -72,15 +74,41 @@ fn view(p: &Project, launches: &[Launch]) -> PlayView {
     v
 }
 
+/// The step edit that turns clip A of `p` into clip A of `q`, as
+/// `Clip::apply` makes it: the notes erased, then those added.
+fn changes(p: &Project, q: &Project) -> Vec<InPlace> {
+    let a = &p.tracks[0].slots[0].as_ref().unwrap().notes;
+    let b = &q.tracks[0].slots[0].as_ref().unwrap().notes;
+    let erased = a.iter().filter(|n| !b.contains(n));
+    let added = b.iter().filter(|n| !a.contains(n));
+    erased
+        .map(|&n| InPlace::EraseNote(n))
+        .chain(added.map(|&n| InPlace::AddNote(n)))
+        .collect()
+}
+
 /// Four bars at `period`, the view of `edited` taken at the first period
 /// boundary at or after [`EDIT_AT`]. The events, and the tick the new view
 /// came in on.
 fn run(edit: impl Fn(&mut Clip), period: u32) -> (Vec<(i64, u16, Event)>, i64) {
+    run_with(edit, period, false)
+}
+
+/// [`run`], or with `in_place` the edit made there to the view playing
+/// (`PlayView::edit_in_place`, as the audio half makes a song-mode tap
+/// since 2.3), which must then be what a compile gives.
+fn run_with(
+    edit: impl Fn(&mut Clip),
+    period: u32,
+    in_place: bool,
+) -> (Vec<(i64, u16, Event)>, i64) {
     let (p, launches) = project();
     let mut q = p.clone();
     edit(q.tracks[0].slots[0].as_mut().unwrap());
-    let before = view(&p, &launches);
+    let mut before = view(&p, &launches);
+    before.make_room_on(0, 64, 64);
     let after = view(&q, &launches);
+    let edit = changes(&p, &q);
     let mut t = Transport::new(RATE, 120.0).unwrap();
     assert!(t.command(0, Command::Play));
     let (mut player, mut block, mut log) = (Player::new(), Block::new(), Log::default());
@@ -91,10 +119,18 @@ fn run(edit: impl Fn(&mut Clip), period: u32) -> (Vec<(i64, u16, Event)>, i64) {
         let f = t.frame();
         if swapped.is_none() && f >= swap_frame {
             swapped = Some(f);
+            if in_place {
+                assert!(before.edit_in_place(0, 0, &edit), "in place");
+                assert!(before == after, "in place, as a compile makes it");
+            }
         }
         let n = period.min((end - f) as u32);
         assert!(t.process(n, &mut block));
-        let v = if swapped.is_some() { &after } else { &before };
+        let v = if swapped.is_some() && !in_place {
+            &after
+        } else {
+            &before
+        };
         player.process(v, &block, &mut log);
     }
     assert_eq!(player.stats().dropped + player.stats().late_offs, 0);
@@ -220,6 +256,32 @@ fn a_note_added_behind_the_playhead_plays_on_each_places_next_pass() {
 }
 
 #[test]
+fn an_edit_made_in_place_plays_as_the_new_view_does() {
+    type Edit = fn(&mut Clip);
+    let edits: [(&str, Edit); 4] = [
+        ("a velocity", |c| c.notes[2].velocity = 50),
+        ("a note sounding, deleted", |c| {
+            c.notes.retain(|n| n.note != 61)
+        }),
+        ("a note to come, deleted", |c| {
+            c.notes.retain(|n| n.note != 63)
+        }),
+        ("a note behind the playhead, added", |c| {
+            c.notes.push(Note::new(BEAT / 2, BEAT / 4, 70, 90));
+            c.notes.sort_by_key(|n| n.tick);
+        }),
+    ];
+    for (what, edit) in edits {
+        for period in PERIODS {
+            let (in_place, at) = run_with(edit, period, true);
+            let (swapped, at_swap) = run_with(edit, period, false);
+            assert_eq!(at, at_swap);
+            assert_eq!(in_place, swapped, "{what}, period {period}");
+        }
+    }
+}
+
+#[test]
 fn a_clip_on_two_tracks_swings_with_each_tracks_swing_through_an_edit() {
     use mpfree_transport::time::Swing;
     // Track 1 swings sixteenths at 66; track 2 plays straight. A note on
@@ -227,7 +289,7 @@ fn a_clip_on_two_tracks_swings_with_each_tracks_swing_through_an_edit() {
     let swing = Swing::new(240, 66).unwrap();
     let late = swing.apply(240.0).round() as i64;
     assert!(late > 240);
-    for period in PERIODS {
+    for (period, in_place) in PERIODS.iter().flat_map(|&p| [(p, false), (p, true)]) {
         let (p, launches) = project();
         let mut q = p.clone();
         q.tracks[1].swing = Some(swing);
@@ -236,7 +298,11 @@ fn a_clip_on_two_tracks_swings_with_each_tracks_swing_through_an_edit() {
         let c = q.tracks[0].slots[0].as_mut().unwrap();
         c.notes.push(Note::new(240, 60, 72, 90));
         c.notes.sort_by_key(|n| n.tick);
-        let (before, after) = (view(&p, &launches), view(&q, &launches));
+        let (mut before, after) = (view(&p, &launches), view(&q, &launches));
+        // Tracks 1 and 2 swing apart, so the song keeps a copy for each.
+        before.make_room_on(0, 64, 64);
+        let edit = changes(&p, &q);
+        let mut edited = false;
         let mut t = Transport::new(RATE, 120.0).unwrap();
         assert!(t.command(0, Command::Play));
         let (mut player, mut block, mut log) = (Player::new(), Block::new(), Log::default());
@@ -245,11 +311,13 @@ fn a_clip_on_two_tracks_swings_with_each_tracks_swing_through_an_edit() {
             let f = t.frame();
             let n = period.min((end - f) as u32);
             assert!(t.process(n, &mut block));
-            let v = if f >= EDIT_AT as u64 * TICK {
-                &after
-            } else {
-                &before
-            };
+            let due = f >= EDIT_AT as u64 * TICK;
+            if due && in_place && !edited {
+                edited = true;
+                assert!(before.edit_in_place(0, 0, &edit), "in place");
+                assert!(before == after, "both copies, as a compile makes them");
+            }
+            let v = if due && !in_place { &after } else { &before };
             player.process(v, &block, &mut log);
         }
         let played: Vec<(i64, u16, Event)> = log
@@ -266,6 +334,10 @@ fn a_clip_on_two_tracks_swings_with_each_tracks_swing_through_an_edit() {
                 [(at + 240, 0), (at + late, 1), (at + 240, 2)]
             })
             .collect();
-        assert_eq!(sorted(on), sorted(want), "period {period}");
+        assert_eq!(
+            sorted(on),
+            sorted(want),
+            "period {period}, in place {in_place}"
+        );
     }
 }

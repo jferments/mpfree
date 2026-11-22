@@ -508,12 +508,35 @@ pub(crate) struct CueView {
     pub legato: bool,
 }
 
-/// A placement of the song, compiled: its clip (from `clip.start`, with
-/// its origin) until `end`.
-#[derive(Clone, Debug, PartialEq)]
+/// A placement of the song, compiled: its song clip
+/// ([`PlayView::song_clips`]) from `start`, in step with `origin`, until
+/// `end`. Every block of a clip shares one compiled copy (Arrange 2.3,
+/// D2), so a block costs its few ticks and the song's view the clips it
+/// plays, not its blocks.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RegionView {
+    pub start: Tick,
     pub end: Tick,
-    pub clip: ClipView,
+    pub origin: Tick,
+    pub clip: usize,
+}
+
+/// What a song clip is compiled from, kept beside it
+/// ([`PlayView::song_clips`]): sorted, so a cell's copies sit together
+/// and an edit to the cell finds them by a search.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct SongKey {
+    /// The cell the clip lives in (track, row), or None for one of the
+    /// song's own clips.
+    pub cell: Option<(usize, usize)>,
+    pub id: ClipId,
+    /// What the player keys it by: its row for blocks on its own cell's
+    /// lane, else a number past every row, [`ROWS`] + its id, the same
+    /// for all its blocks and through edits that add blocks.
+    pub slot: usize,
+    /// The swing it plays with: its own, else its lane's track's (grid,
+    /// amount). Tracks that swing alike share a copy.
+    pub swing: Option<(u32, u8)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -538,7 +561,7 @@ impl TrackView {
     /// The region playing at `tick`.
     pub fn region_at(&self, tick: Tick) -> Option<&RegionView> {
         let k = self.regions.partition_point(|r| r.end <= tick);
-        self.regions.get(k).filter(|r| r.clip.start <= tick)
+        self.regions.get(k).filter(|r| r.start <= tick)
     }
 }
 
@@ -616,6 +639,13 @@ pub struct PlayView {
     pub(crate) song: bool,
     /// The song's own lanes (the morph), played in song mode.
     pub(crate) song_lanes: Option<ClipView>,
+    /// In song mode, each clip the song's blocks play, compiled once
+    /// (per swing, [`SongKey`]); the blocks ([`RegionView`]) name them by
+    /// place. An edit to a clip goes into its copies here in place, so
+    /// every block hears it.
+    pub(crate) song_clips: Vec<ClipView>,
+    /// What each of [`PlayView::song_clips`] is, in the same order.
+    pub(crate) song_keys: Vec<SongKey>,
     /// What it includes, when its host says ([`PlayView::set_includes`]).
     pub(crate) includes: Option<Includes>,
     /// The song's tempo map while song mode plays its tempo points
@@ -635,6 +665,7 @@ impl PartialEq for PlayView {
             self.also,
             self.song,
             &self.song_lanes,
+            &self.song_clips,
             &self.tempo,
             self.launch,
         ) == (
@@ -643,6 +674,7 @@ impl PartialEq for PlayView {
             other.also,
             other.song,
             &other.song_lanes,
+            &other.song_clips,
             &other.tempo,
             other.launch,
         )
@@ -717,6 +749,8 @@ impl PlayView {
             also: 0,
             song: false,
             song_lanes: None,
+            song_clips: Vec::new(),
+            song_keys: Vec::new(),
             includes: None,
             tempo: None,
             launch: project.launch,
@@ -755,6 +789,8 @@ impl PlayView {
         }
         self.song = on;
         self.song_lanes = None;
+        self.song_clips.clear();
+        self.song_keys.clear();
         if !on {
             return Ok(());
         }
@@ -807,35 +843,75 @@ impl PlayView {
             song.stamp = stamp_of(&song);
             self.song_lanes = Some(song);
         }
-        for (i, p) in project.arrangement.placements.iter().enumerate() {
+        // Each block's clip, wherever it lives, keyed by where it lives,
+        // the slot the player knows it by and its swing. A block whose
+        // clip is gone is silent until it comes back.
+        let mut blocks: Vec<(usize, SongKey, RegionView)> = Vec::new();
+        for p in &project.arrangement.placements {
             let track = project
                 .tracks
                 .get(p.track)
                 .ok_or(CompileError::NoTrack(p.track))?;
-            // The block's clip, wherever it lives, keyed for the player
-            // by its row when it is a cell's of the block's own lane, else
-            // by a number past every row. A block whose clip is gone is
-            // silent until it comes back.
-            let (clip, slot) = match cells.get(&p.clip) {
+            let past = ROWS + p.clip.0 as usize;
+            let (clip, cell, slot) = match cells.get(&p.clip) {
                 Some(&(t, r)) => match project.clip(t, r) {
-                    Some(c) if t == p.track => (c, r),
-                    Some(c) => (c, ROWS + i),
+                    Some(c) => (c, Some((t, r)), if t == p.track { r } else { past }),
                     None => continue,
                 },
                 None => match project.arrangement.clips.get(p.clip) {
-                    Some(c) => (c, ROWS + i),
+                    Some(c) => (c, None, past),
                     None => continue,
                 },
             };
-            let view = view_of(clip, track.swing, slot, p.origin(clip), p.start);
-            if let Some(t) = self.tracks.get_mut(p.track) {
-                t.regions.push(RegionView {
-                    end: p.end(),
-                    clip: view,
-                });
+            let swing = clip.swing.or(track.swing).map(|w| (w.grid, w.amount));
+            let key = SongKey {
+                cell,
+                id: p.clip,
+                slot,
+                swing,
+            };
+            let region = RegionView {
+                start: p.start,
+                end: p.end(),
+                origin: p.origin(clip),
+                clip: 0,
+            };
+            blocks.push((p.track, key, region));
+        }
+        let mut keys: Vec<SongKey> = blocks.iter().map(|&(_, k, _)| k).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        self.song_clips.reserve_exact(keys.len());
+        for k in &keys {
+            let clip = match k.cell {
+                Some((t, r)) => project.clip(t, r),
+                None => project.arrangement.clips.get(k.id),
+            };
+            // Every key came from a clip found above, in the same project.
+            let Some(clip) = clip else {
+                return Err(CompileError::Model(ModelError::BadPlacement));
+            };
+            let swing = k.swing.map(|(grid, amount)| Swing { grid, amount });
+            self.song_clips.push(view_of(clip, swing, k.slot, 0, 0));
+        }
+        self.song_keys = keys;
+        for (track, key, mut region) in blocks {
+            // Each block's key is one of them.
+            let Ok(k) = self.song_keys.binary_search(&key) else {
+                continue;
+            };
+            region.clip = k;
+            if let Some(t) = self.tracks.get_mut(track) {
+                t.regions.push(region);
             }
         }
         Ok(())
+    }
+
+    /// The block of `track` playing at `tick`, with the clip it plays.
+    pub(crate) fn placed_at(&self, track: usize, tick: Tick) -> Option<(&RegionView, &ClipView)> {
+        let r = self.tracks.get(track)?.region_at(tick)?;
+        Some((r, self.song_clips.get(r.clip)?))
     }
 
     /// Whether song mode is on.
@@ -930,7 +1006,7 @@ impl PlayView {
     /// longer holds (an edit took it out), needs nothing.
     pub fn record(&mut self, rec: &Rec, touch: &[TouchPoint], moves: &[(f64, f32, Kind)]) -> bool {
         let (track, slot) = rec.clip();
-        let mut shown = self.shown(track, slot).into_iter().flatten();
+        let mut shown = self.shown(track, slot);
         match rec {
             Rec::Note(k) => shown.all(|c| c.record_note(k.note, touch)),
             Rec::Lock(k) => shown.all(|c| c.record_lock(&k.lock)),
@@ -963,15 +1039,30 @@ impl PlayView {
             .sum()
     }
 
-    /// Notes the view holds for the song's blocks: a copy of its clip's
-    /// notes for every block (the Arrange refactor's bench, 2.1; 2.3 keeps
-    /// one copy a clip).
+    /// Notes the view holds for the song's blocks: one copy of each
+    /// clip's notes, however many blocks play it (Arrange 2.3; before it,
+    /// a copy for every block).
     pub fn song_notes(&self) -> usize {
-        self.tracks
-            .iter()
-            .flat_map(|t| t.regions.iter())
-            .map(|r| r.clip.notes.len())
-            .sum()
+        self.song_clips.iter().map(|c| c.notes.len()).sum()
+    }
+
+    /// The song clips compiled from cell `(track, slot)`: one, or one
+    /// for each swing its blocks play with.
+    fn song_copies(&self, track: usize, slot: usize) -> Range<usize> {
+        let cell = Some((track, slot));
+        let lo = self.song_keys.partition_point(|k| k.cell < cell);
+        lo..lo + self.song_keys[lo..].partition_point(|k| k.cell == cell)
+    }
+
+    /// The song clips compiled from any of `track`'s cells.
+    fn song_copies_on(&self, track: usize) -> Range<usize> {
+        let lo = self
+            .song_keys
+            .partition_point(|k| k.cell < Some((track, 0)));
+        let hi = self
+            .song_keys
+            .partition_point(|k| k.cell < Some((track + 1, 0)));
+        lo..hi.max(lo)
     }
 
     /// Parameter locks in the playing clips.
@@ -1004,7 +1095,14 @@ impl PlayView {
     /// track the Sequencer edits apart from the arm (step sequencer
     /// refactor C3), so its step edits go in place as the armed track's
     /// do. Call it on the control thread, after compiling.
+    /// In song mode, the song's copies of the track's clips get the
+    /// same room, so an edit to one goes into every block that plays it
+    /// (Arrange 2.3).
     pub fn make_room_on(&mut self, track: usize, notes: usize, locks: usize) {
+        let copies = self.song_copies_on(track);
+        for c in &mut self.song_clips[copies] {
+            c.make_room(notes, locks);
+        }
         let Some(t) = self.tracks.get_mut(track) else {
             return;
         };
@@ -1017,19 +1115,26 @@ impl PlayView {
     }
 
     /// The compiled clips that show clip `slot` of `track`: the one
-    /// playing and the one cued. When an edit cannot go into one of them
-    /// in place, the host compiles, so the other need not be edited.
-    fn shown(&mut self, track: usize, slot: usize) -> [Option<&mut ClipView>; 2] {
-        let Some(t) = self.tracks.get_mut(track) else {
-            return [None, None];
+    /// playing, the one cued, and in song mode its copies the song's
+    /// blocks play. When an edit cannot go into one of them in place, the
+    /// host compiles, so the others need not be edited.
+    fn shown(&mut self, track: usize, slot: usize) -> impl Iterator<Item = &mut ClipView> {
+        let copies = self.song_copies(track, slot);
+        let PlayView {
+            tracks, song_clips, ..
+        } = self;
+        let (playing, cue) = match tracks.get_mut(track) {
+            Some(t) => (t.clip.as_mut(), t.cue.as_mut()),
+            None => (None, None),
         };
-        let playing = t.clip.as_mut().filter(|c| c.slot == slot);
-        let cued = t
-            .cue
-            .as_mut()
+        let playing = playing.filter(|c| c.slot == slot);
+        let cued = cue
             .filter(|c| c.slot == Some(slot))
             .and_then(|c| c.clip.as_mut());
-        [playing, cued]
+        playing
+            .into_iter()
+            .chain(cued)
+            .chain(song_clips[copies].iter_mut())
     }
 
     /// Note `n` was added to clip `slot` of `track`, at the end of its
@@ -1039,10 +1144,7 @@ impl PlayView {
     /// room for it ([`PlayView::make_room`]); then compile instead. A clip
     /// the view does not show needs nothing.
     pub fn add_note(&mut self, track: usize, slot: usize, n: &Note) -> bool {
-        self.shown(track, slot)
-            .into_iter()
-            .flatten()
-            .all(|c| c.add_note(n))
+        self.shown(track, slot).all(|c| c.add_note(n))
     }
 
     /// A note's pressure run went into clip `slot` of `track` at `touch`
@@ -1057,26 +1159,22 @@ impl PlayView {
         touch: Touch,
         points: &[TouchPoint],
     ) -> bool {
-        touch.is_none()
-            || self
-                .shown(track, slot)
-                .into_iter()
-                .flatten()
-                .all(|c| c.add_touch(touch, points))
+        touch.is_none() || self.shown(track, slot).all(|c| c.add_touch(touch, points))
     }
 
     /// The pad pressure of clip `slot` of `track` as compiled: the clip
-    /// playing, the one cued, or a placement of it in the song (a
-    /// placement's own clip goes by its number past the slots).
+    /// playing, the one cued, or the song's copy one of its blocks plays
+    /// (a block not on its cell's lane goes by its number past the rows).
     pub(crate) fn touch_of(&self, track: usize, slot: usize) -> &[TouchPoint] {
         let Some(t) = self.tracks.get(track) else {
             return &[];
         };
         let cued = t.cue.as_ref().and_then(|c| c.clip.as_ref());
+        let placed = t.regions.iter().filter_map(|r| self.song_clips.get(r.clip));
         t.clip
             .iter()
             .chain(cued)
-            .chain(t.regions.iter().map(|r| &r.clip))
+            .chain(placed)
             .find(|c| c.slot == slot)
             .map_or(&[], |c| c.touch.as_slice())
     }
@@ -1086,10 +1184,7 @@ impl PlayView {
     /// Real-time safe. False when the view does not hold it; then compile
     /// instead.
     pub fn remove_note(&mut self, track: usize, slot: usize, n: &Note) -> bool {
-        self.shown(track, slot)
-            .into_iter()
-            .flatten()
-            .all(|c| c.remove_note(n))
+        self.shown(track, slot).all(|c| c.remove_note(n))
     }
 
     /// Lock `l` was put in clip `slot` of `track` (as
@@ -1105,10 +1200,7 @@ impl PlayView {
         l: &Lock,
         replaced: Option<&Lock>,
     ) -> bool {
-        self.shown(track, slot)
-            .into_iter()
-            .flatten()
-            .all(|c| c.add_lock(l, replaced))
+        self.shown(track, slot).all(|c| c.add_lock(l, replaced))
     }
 
     /// A recorded gesture was written into clip `slot` of `track` (as
@@ -1125,8 +1217,6 @@ impl PlayView {
         len: u32,
     ) -> bool {
         self.shown(track, slot)
-            .into_iter()
-            .flatten()
             .all(|c| c.put_move(target, map, points, len))
     }
 
@@ -1134,10 +1224,7 @@ impl PlayView {
     /// [`crate::Takes::erase_lock`] does): take it out of this view too.
     /// Real-time safe. False when the view does not hold it.
     pub fn remove_lock(&mut self, track: usize, slot: usize, l: &Lock) -> bool {
-        self.shown(track, slot)
-            .into_iter()
-            .flatten()
-            .all(|c| c.remove_lock(l))
+        self.shown(track, slot).all(|c| c.remove_lock(l))
     }
 
     /// A step edit made to clip `slot` of `track` (`Clip::apply`: its
@@ -1148,12 +1235,11 @@ impl PlayView {
     /// or what it erases is not there); then compile instead. Real-time
     /// safe: costs [`InPlace::work`].
     pub fn edit_in_place(&mut self, track: usize, slot: usize, changes: &[InPlace]) -> bool {
-        let shown = self.shown(track, slot);
-        if !shown.iter().flatten().all(|c| c.fits(changes)) {
+        if !self.shown(track, slot).all(|c| c.fits(changes)) {
             return false;
         }
         let mut all = true;
-        for c in shown.into_iter().flatten() {
+        for c in self.shown(track, slot) {
             for change in changes {
                 all &= c.make(change);
             }
@@ -2097,6 +2183,53 @@ mod tests {
             }
             stamps.push((s, what));
         }
+    }
+
+    #[test]
+    fn the_song_compiles_each_clip_once_however_many_blocks_play_it() {
+        use mpfree_seq::Placement;
+        let mut p = project();
+        p.tracks.push(Track::new("keys", 5));
+        let swing = Swing::new(240, 66).unwrap();
+        p.tracks[2].swing = Some(swing);
+        p.give_clip_ids();
+        let id = p.clip(0, 2).unwrap().id;
+        // Three blocks on its own lane, two on track 1's, one on track 2's.
+        for (track, start) in [(0, 0), (0, 3840), (0, 7680), (1, 0), (1, 3840), (2, 0)] {
+            let mut b = Placement::of(&p.tracks, 0, 2, start, 1920);
+            b.track = track;
+            p.arrangement.place(b).unwrap();
+        }
+        let song = |p: &Project| {
+            let mut v = PlayView::compile(p, &[]).unwrap();
+            v.set_song(p, true).unwrap();
+            v
+        };
+        let mut v = song(&p);
+        // A copy for its own lane (by its row), one for track 1 (past the
+        // rows, by its id) and one for track 2, which swings.
+        let past = ROWS + id.0 as usize;
+        let copies: Vec<_> = v.song_clips.iter().map(|c| (c.slot, c.swing)).collect();
+        assert_eq!(copies, [(2, None), (past, None), (past, Some(swing))]);
+        let blocks: Vec<_> = v
+            .tracks
+            .iter()
+            .flat_map(|t| &t.regions)
+            .map(|r| r.clip)
+            .collect();
+        assert_eq!(blocks, [0, 0, 0, 1, 1, 2]);
+        assert_eq!(v.song_notes(), 9, "three copies of three notes, not six");
+        // An edit to the cell goes into every copy, in place, and the view
+        // is what a compile of the edited project gives.
+        v.make_room_on(0, 4, 4);
+        let n = Note::new(240, 10, 3, 70);
+        assert!(v.edit_in_place(0, 2, &[InPlace::AddNote(n)]));
+        p.tracks[0].slots[2].as_mut().unwrap().notes.push(n);
+        assert_eq!(v, song(&p));
+        assert_eq!(v.song_notes(), 12);
+        // Another track's row is none of them.
+        assert!(v.edit_in_place(1, 2, &[InPlace::EraseNote(n)]));
+        assert_eq!(v, song(&p));
     }
 
     #[test]

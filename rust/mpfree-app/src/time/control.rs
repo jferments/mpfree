@@ -1089,10 +1089,11 @@ impl TimeControl {
 
     /// Step edit `edit` of clip `slot` of `track`, already made to the
     /// project, sent to the audio half to make to its view in place, so a
-    /// tap or a turn needs no compile. A clip the view does not play or
-    /// cue needs nothing sent. False when it must compile instead: an edit
-    /// of the clip's length, pressure or moves; song mode, where the
-    /// song's placements play clips too; while recording or counting in,
+    /// tap or a turn needs no compile. A clip the view does not play, cue
+    /// or (in song mode) place in the song needs nothing sent; one the
+    /// song places goes into the one copy every block of it plays (Arrange
+    /// 2.3). False when it must compile instead: an edit of the clip's
+    /// length, pressure or moves; while recording or counting in,
     /// when the audio half edits the view itself; a view still waiting to
     /// go; a track neither armed nor selected apart from the arm, whose
     /// clips the view has no room in; an edit too big; or a queue that fills (the audio half
@@ -1104,7 +1105,6 @@ impl TimeControl {
             .clip(track, slot)
             .map_or((0, 0), |c| (c.notes.len(), c.locks.len()));
         if !InPlace::fits(edit, notes, locks)
-            || self.song
             || self.unsent.is_some()
             || (self.armed != Some(track) && self.track_pick != Some(track))
             || matches!(self.info.state, State::Recording | State::CountIn)
@@ -1118,7 +1118,8 @@ impl TimeControl {
             || self
                 .cues
                 .iter()
-                .any(|c| c.track == track && c.slot == Some(slot));
+                .any(|c| c.track == track && c.slot == Some(slot))
+            || (self.song && self.song_places(track, slot));
         if !shown {
             return true;
         }
@@ -1143,6 +1144,21 @@ impl TimeControl {
             n,
         };
         self.tx.send(end).is_ok()
+    }
+
+    /// Whether a block of the song plays clip `slot` of `track`, on any
+    /// lane.
+    fn song_places(&self, track: usize, slot: usize) -> bool {
+        let Some(id) = self.project.clip(track, slot).map(|c| c.id) else {
+            return false;
+        };
+        id.is_given()
+            && self
+                .project
+                .arrangement
+                .placements
+                .iter()
+                .any(|p| p.clip == id)
     }
 
     /// The view of the project as it is, with what it includes and room
