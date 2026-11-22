@@ -164,7 +164,7 @@ impl Engine {
 
     /// A fresh engine at `rate` with factory preset `preset`'s engine
     /// settings loaded, and no effects.
-    fn engine_with(self, preset: usize, rate: u32) -> Box<dyn Node> {
+    pub(crate) fn engine_with(self, preset: usize, rate: u32) -> Box<dyn Node> {
         match self {
             Engine::Poly => {
                 let mut n = Poly::new(rate);
@@ -342,13 +342,13 @@ fn is_bass(engine: Engine, name: &str) -> bool {
 // ---------------------------------------------------------------------------
 // Playing.
 
-fn frames(secs: f64, rate: u32) -> usize {
+pub(crate) fn frames(secs: f64, rate: u32) -> usize {
     (secs * f64::from(rate)).round() as usize
 }
 
 /// A score: notes `(note, velocity, start s, length s)`, sorted, a
 /// note-off before a note-on on the same frame.
-fn score(rate: u32, notes: &[(u8, u8, f64, f64)]) -> Vec<(usize, NodeEvent)> {
+pub(crate) fn score(rate: u32, notes: &[(u8, u8, f64, f64)]) -> Vec<(usize, NodeEvent)> {
     let mut s = Vec::new();
     for &(note, velocity, at, len) in notes {
         s.push((frames(at, rate), NodeEvent::NoteOn { note, velocity }));
@@ -361,20 +361,32 @@ fn score(rate: u32, notes: &[(u8, u8, f64, f64)]) -> Vec<(usize, NodeEvent)> {
 /// Silent blocks played before every render, so parameters set just
 /// before it (a preset, a patch) have finished gliding to their values,
 /// as they have when a player picks a preset and then plays.
-const SETTLE_BLOCKS: usize = 100;
+pub(crate) const SETTLE_BLOCKS: usize = 100;
 
 /// `len` frames of `node` in blocks of [`BLOCK`] on absolute frames, each
 /// event on its frame (`events` sorted by frame), after
 /// [`SETTLE_BLOCKS`] silent blocks.
 pub fn render(node: &mut dyn Node, rate: u32, len: usize, events: &[(usize, NodeEvent)]) -> Stereo {
+    render_after(node, rate, len, events, SETTLE_BLOCKS)
+}
+
+/// [`render`] after `settle` silent blocks instead of [`SETTLE_BLOCKS`]:
+/// a render at a higher rate settles for as long in seconds.
+pub(crate) fn render_after(
+    node: &mut dyn Node,
+    rate: u32,
+    len: usize,
+    events: &[(usize, NodeEvent)],
+    settle: usize,
+) -> Stereo {
     let (mut l, mut r) = (Vec::with_capacity(len), Vec::with_capacity(len));
     let (mut bl, mut br) = ([0.0f32; BLOCK], [0.0f32; BLOCK]);
-    for b in 0..SETTLE_BLOCKS {
+    for b in 0..settle {
         bl.fill(0.0);
         br.fill(0.0);
         node.process(&Ctx::new(rate, (b * BLOCK) as u64), &[], &mut bl, &mut br);
     }
-    let start = SETTLE_BLOCKS * BLOCK;
+    let start = settle * BLOCK;
     let mut timed = Vec::new();
     let (mut at, mut next) = (0, 0);
     while at < len {
@@ -397,7 +409,14 @@ pub fn render(node: &mut dyn Node, rate: u32, len: usize, events: &[(usize, Node
 }
 
 /// One note held `held` seconds in a render `secs` long.
-fn note(node: &mut dyn Node, rate: u32, key: u8, vel: u8, held: f64, secs: f64) -> Stereo {
+pub(crate) fn note(
+    node: &mut dyn Node,
+    rate: u32,
+    key: u8,
+    vel: u8,
+    held: f64,
+    secs: f64,
+) -> Stereo {
     let s = score(rate, &[(key, vel, 0.0, held)]);
     render(node, rate, frames(secs, rate), &s)
 }
@@ -543,7 +562,7 @@ fn lufs(s: &Stereo) -> f64 {
 }
 
 /// A 4-term Blackman-Harris window (sidelobes −92 dB).
-fn blackman_harris(n: usize) -> Vec<f64> {
+pub(crate) fn blackman_harris(n: usize) -> Vec<f64> {
     let m = (n - 1) as f64;
     (0..n)
         .map(|i| {
@@ -600,7 +619,7 @@ fn amp_at(x: &[f64], w: &[f64], f: f64, rate: u32) -> f64 {
 /// the peak of a Blackman-Harris spectrum within ±60 cents, then refined
 /// by the phase it turns through over a second. None when that peak is
 /// more than 40 dB under the spectrum's loudest, or `x` is too short.
-fn freq_near(x: &[f64], rate: u32, near: f64, from: usize) -> Option<f64> {
+pub(crate) fn freq_near(x: &[f64], rate: u32, near: f64, from: usize) -> Option<f64> {
     const N: usize = 32_768;
     const W: usize = 8_192;
     let hop = rate as usize;
@@ -1590,10 +1609,10 @@ fn tuning(rows: &mut Vec<Row>, rate: u32) {
 
 /// An aliasing case: a name, the engine and what to set on its plain
 /// patch.
-type AliasCase = (&'static str, Engine, Vec<(u16, f32)>);
+pub(crate) type AliasCase = (&'static str, Engine, Vec<(u16, f32)>);
 
 /// The aliasing cases.
-fn alias_cases() -> Vec<AliasCase> {
+pub(crate) fn alias_cases() -> Vec<AliasCase> {
     vec![
         ("Poly saw", Engine::Poly, vec![]),
         ("Poly pulse", Engine::Poly, vec![(0, 1.0)]),
