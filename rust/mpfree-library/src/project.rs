@@ -446,6 +446,16 @@ impl Library {
         })
     }
 
+    /// A name for a new project beside project `name`, kept as it was:
+    /// `Night drive 2`, or ` 3` ... if taken.
+    pub fn copy_project_name(&self, name: &str) -> String {
+        crate::unique_folder_name(name, |n| {
+            Loc::top(Place::Projects)
+                .join(n)
+                .is_ok_and(|l| self.exists(&l))
+        })
+    }
+
     /// The project autosave writes to: `Projects/Autosave` when it is not
     /// there yet or is autosave's own (`autosave = yes`), else `Autosave 2`,
     /// `Autosave 3` ...: autosave never writes over a project of the
@@ -1178,6 +1188,13 @@ mod tests {
         lib.new_folder(&Loc::top(Place::Projects), "Project 2026-11-11 21.04")
             .unwrap();
         assert_eq!(lib.new_project_name(t), "Project 2026-11-11 21.04 2");
+        // A copy beside a project: the next free number.
+        lib.new_folder(&Loc::top(Place::Projects), "Night drive")
+            .unwrap();
+        assert_eq!(lib.copy_project_name("Night drive"), "Night drive 2");
+        lib.new_folder(&Loc::top(Place::Projects), "Night drive 2")
+            .unwrap();
+        assert_eq!(lib.copy_project_name("Night drive"), "Night drive 3");
     }
 
     /// A sound that writes `bytes`, counting how often it is written, or
