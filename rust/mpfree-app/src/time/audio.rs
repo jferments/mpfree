@@ -31,6 +31,7 @@ use super::link::{
 };
 use super::pad_wait::{DuePads, PadFrom, PadWait, PadWaits};
 use super::strips::{Ev, Sent, StripLocks};
+use super::timing::{next_timeline, Allowed, Answer, Answers, Pending, TimingChange};
 use super::{
     Click, Heard, HitInfo, LaneOut, LockOut, Pads, Table, HEARD_NOTES, MAX_HITS, MAX_LANES,
     MAX_LOCKS,
@@ -41,6 +42,33 @@ use super::{
 const RETURNS: usize = 8;
 /// Why a start on a note was refused when the transport's queue is full.
 const QUEUE_FULL: &str = "the transport's queue is full";
+/// Why a timing change was refused when the commands due in its period
+/// would leave some of its own for the next one.
+const PERIOD_FULL: &str = "too many commands land in its period";
+
+/// Why a transport command moves the song's timeline, if it does: a
+/// timing change made before it is cancelled for that reason.
+fn moves_time(cmd: Command) -> Option<&'static str> {
+    match cmd {
+        Command::Play | Command::PlayStart => Some("the song started"),
+        Command::Stop | Command::StopAndRewind => Some("the song stopped"),
+        Command::Record => Some("recording started or stopped"),
+        Command::Locate(_) => Some("the song moved"),
+        Command::SetTempo(_) | Command::TempoNow(_) => Some("the tempo changed"),
+        Command::ToggleOverdub
+        | Command::SetSwing(_)
+        | Command::SetLoop(_)
+        | Command::SetCountIn(_) => None,
+    }
+}
+
+/// Timing changes committed, cancelled and refused so far.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TimingCounts {
+    pub committed: u64,
+    pub cancelled: u64,
+    pub refused: u64,
+}
 
 /// MIDI effect settings the mod engine can hold at once on one track.
 pub const NOTE_MODS: usize = 16;
@@ -174,6 +202,19 @@ pub struct TimeAudio {
     map_asked: Option<TempoMap>,
     /// Starts on a note refused ([`TimeAudio::start_at`]).
     starts_refused: u64,
+    /// The song's timeline (step 0C): a fresh revision whenever something
+    /// moves time, and why the last one came. A timing change made against
+    /// an older one is cancelled for that reason.
+    timeline: u64,
+    timeline_why: &'static str,
+    /// The view's own timeline revision, as last seen
+    /// ([`mpfree_play::Includes::timeline`]).
+    view_timeline: u64,
+    /// The timing change waiting for its frame, and the last answers.
+    pending: Option<Pending>,
+    answers: Answers,
+    /// Timing changes committed, cancelled and refused so far.
+    timing_counts: TimingCounts,
     /// The look-ahead for tracks on slow gear (sequencer S5).
     ahead: Ahead,
     /// Live pad hits waiting for the launch line (sampler R5.3b).
@@ -245,6 +286,12 @@ impl TimeAudio {
             tempo_asked: None,
             map_asked: None,
             starts_refused: 0,
+            timeline: next_timeline(),
+            timeline_why: "the song changed",
+            view_timeline: 0,
+            pending: None,
+            answers: Answers::new(),
+            timing_counts: TimingCounts::default(),
             ahead,
             waits: PadWaits::default(),
         }
@@ -357,6 +404,15 @@ impl TimeAudio {
                 self.give_back(old);
                 self.asked = false;
                 self.view_n = n;
+                // A song edit that moved time. The first view says only
+                // where its timeline starts: the engine's own is new.
+                let t = self.view.includes().map_or(0, |i| i.timeline);
+                if t != 0 && t != self.view_timeline {
+                    if self.view_timeline != 0 {
+                        self.moved("the song was edited");
+                    }
+                    self.view_timeline = t;
+                }
             }
             Err(_) => {
                 self.behind += 1;
@@ -504,9 +560,12 @@ impl TimeAudio {
             }
         }
         let at = self.transport.frame();
-        if let Command::SetTempo(bpm) = cmd {
+        if let Command::SetTempo(bpm) | Command::TempoNow(bpm) = cmd {
             self.tempo_asked = Some((at, bpm));
             self.map_asked = None;
+        }
+        if let Some(why) = moves_time(cmd) {
+            self.moved(why);
         }
         self.transport.command(at, cmd)
     }
@@ -522,9 +581,12 @@ impl TimeAudio {
     /// full.
     pub fn command_at(&mut self, at: u64, cmd: Command) -> bool {
         let at = at.max(self.transport.frame());
-        if let Command::SetTempo(bpm) = cmd {
+        if let Command::SetTempo(bpm) | Command::TempoNow(bpm) = cmd {
             self.tempo_asked = Some((at, bpm));
             self.map_asked = None;
+        }
+        if let Some(why) = moves_time(cmd) {
+            self.moved(why);
         }
         self.transport.command(at, cmd)
     }
@@ -551,6 +613,7 @@ impl TimeAudio {
                 if self.transport.change_tempo_map(self.transport.frame(), map) {
                     self.map_asked = Some(map);
                     self.tempo_asked = None;
+                    self.moved("the tempo changed");
                 } else {
                     self.refused += 1;
                 }
@@ -602,32 +665,24 @@ impl TimeAudio {
             }
             return Err(why);
         }
-        let at = at.max(self.transport.frame());
-        let (pos, start) = self.bar_start();
-        let mut sent = true;
-        if start != pos {
-            sent &= self.transport.command(at, Command::Locate(start));
-        }
-        if let Some(bpm) = bpm {
-            self.tempo_asked = Some((at, bpm));
-            self.map_asked = None;
-            sent &= self.transport.command(at, Command::SetTempo(bpm));
-        }
-        if take.is_some_and(|add| add != self.transport.overdub()) {
-            sent &= self.transport.command(at, Command::ToggleOverdub);
-        }
-        sent &= self.transport.command(at, Command::Play);
-        if take.is_some() {
-            sent &= self.transport.command(at, Command::Record);
-        }
-        // start_refusal counted the room, so this can't happen; counted if
-        // it ever does.
-        if !sent {
-            self.refused += 1;
-            self.starts_refused += 1;
-            return Err(QUEUE_FULL);
-        }
-        Ok(())
+        // A timing change's stopped case, landing at once (there is
+        // nothing to wait for: the song is stopped and nothing else moves
+        // it before `at`). Back to the start of the bar it stopped in.
+        let (_, start) = self.bar_start();
+        let c = TimingChange {
+            at: at.max(self.transport.frame()),
+            tempo: bpm,
+            position: Some(start),
+            play: true,
+            take,
+            made_against: self.timeline,
+        };
+        // start_refusal counted the room on the coming period's first
+        // frame, so this fails only when other commands are queued between
+        // it and `at`; counted if it does.
+        self.commit(&c)
+            .map(|_| ())
+            .inspect_err(|_| self.starts_refused += 1)
     }
 
     /// Why [`TimeAudio::start_at`] would refuse a start with this tempo
@@ -648,7 +703,11 @@ impl TimeAudio {
                 + usize::from(take.is_some_and(|add| add != self.transport.overdub()))
                 + 1
                 + usize::from(take.is_some());
-            (self.transport.queue_room() < commands).then_some(QUEUE_FULL)
+            if self.transport.queue_room() < commands {
+                Some(QUEUE_FULL)
+            } else {
+                (self.transport.room_on(self.transport.frame()) < commands).then_some(PERIOD_FULL)
+            }
         })
     }
 
@@ -656,6 +715,224 @@ impl TimeAudio {
     #[cfg(test)]
     pub fn queue_room(&self) -> usize {
         self.transport.queue_room()
+    }
+
+    /// The song's timeline as it is now: a timing change is made against
+    /// it, and anything that moves time (a locate, a tempo or tempo map,
+    /// PLAY, STOP or REC, a song edit that moves time, a timing change
+    /// landing) gives it a new revision. Another project's engine never
+    /// has the same one ([`super::timing::next_timeline`]).
+    pub fn timeline(&self) -> u64 {
+        self.timeline
+    }
+
+    /// Something moved time: a new timeline, and a timing change waiting
+    /// is cancelled for this reason.
+    fn moved(&mut self, why: &'static str) {
+        self.timeline = next_timeline();
+        self.timeline_why = why;
+        if let Some(p) = self.pending.take() {
+            self.answers.put(p.ticket, Answer::Cancelled(why));
+            self.timing_counts.cancelled += 1;
+        }
+    }
+
+    /// Why timing change `c` can't be made now, or None.
+    fn timing_refusal(&self, c: &TimingChange) -> Option<&'static str> {
+        let rolling = self.transport.state().rolling();
+        let why = match self.transport.state() {
+            _ if self.follower.bpm().is_some() => Some("the song follows another device's clock"),
+            _ if self.follower.waits() => Some("PLAY waits for the leader's Start"),
+            State::CountIn => Some("the song is counting in"),
+            State::Recording => Some("the song is recording"),
+            _ => None,
+        };
+        why.or_else(|| {
+            if c.at < self.transport.frame() {
+                Some("its frame has played")
+            } else if rolling && c.tempo.is_some() && self.song_tempo() {
+                Some("the song's tempo points lead")
+            } else if rolling && c.take.is_some() {
+                Some("a take starts only with the song")
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Whether timing change `c` may be offered now: Refused (and why)
+    /// while the song records or counts in, while another device's clock
+    /// leads, while the song's tempo points lead a tempo change, or when
+    /// its frame has played; Ask when it changes the tempo and `audio`
+    /// (recorded audio playing at its own speed, which the app knows:
+    /// audio regions, other loops) would play out of step; else Safe.
+    /// Changes nothing.
+    pub fn allowed(&self, c: &TimingChange, audio: bool) -> Allowed {
+        if let Some(why) = self.timing_refusal(c) {
+            return Allowed::Refused(why);
+        }
+        let now = self.tempo_asked.map_or(self.transport.bpm(), |(_, b)| b);
+        let new_tempo = c
+            .tempo
+            .filter(|_| !self.song_tempo())
+            .is_some_and(|b| (b - now).abs() > 1e-9);
+        if new_tempo && audio {
+            Allowed::Ask("recorded audio would play at its old tempo")
+        } else {
+            Allowed::Safe
+        }
+    }
+
+    /// Timing change `c`: it waits for its frame (a newer one cancels it,
+    /// and so does anything that moves time first), then lands as one
+    /// piece. Its ticket for [`TimeAudio::timing_answer`], or why it was
+    /// refused (counted): see [`TimeAudio::allowed`], or the timeline it
+    /// was made against has moved on (that reason). Real-time safe.
+    pub fn timing_change(&mut self, c: TimingChange) -> Result<u32, &'static str> {
+        if let Some(why) = self.timing_refusal(&c) {
+            self.timing_counts.refused += 1;
+            return Err(why);
+        }
+        if c.made_against != self.timeline {
+            self.timing_counts.cancelled += 1;
+            return Err(self.timeline_why);
+        }
+        if let Some(p) = self.pending.take() {
+            self.answers
+                .put(p.ticket, Answer::Cancelled("a newer change came"));
+            self.timing_counts.cancelled += 1;
+        }
+        let ticket = self.answers.open();
+        self.pending = Some(Pending { ticket, change: c });
+        Ok(ticket)
+    }
+
+    /// Take back the timing change with `ticket` if it still waits (its
+    /// maker's half went: the loop it was for changed). True if it did.
+    pub fn cancel_timing(&mut self, ticket: u32, why: &'static str) -> bool {
+        if self.pending.is_none_or(|p| p.ticket != ticket) {
+            return false;
+        }
+        self.pending = None;
+        self.answers.put(ticket, Answer::Cancelled(why));
+        self.timing_counts.cancelled += 1;
+        true
+    }
+
+    /// What became of the timing change with `ticket`, if it is one of
+    /// the last few this engine had. None for one it never had: one made
+    /// on the engine of a project since closed went with it, unapplied.
+    pub fn timing_answer(&self, ticket: u32) -> Option<Answer> {
+        self.answers.get(ticket)
+    }
+
+    /// Timing changes committed, cancelled and refused so far.
+    #[allow(dead_code)] // the status lines, with smart loop end
+    pub fn timing_counts(&self) -> TimingCounts {
+        self.timing_counts
+    }
+
+    /// The change waiting, if its frame falls in the coming period of
+    /// `frames`: it lands, or is refused, before the transport runs it.
+    fn commit_due(&mut self, frames: u32) {
+        let Some(p) = self.pending else {
+            return;
+        };
+        if p.change.at >= self.transport.frame() + u64::from(frames) {
+            return;
+        }
+        self.pending = None;
+        let a = if p.change.made_against != self.timeline {
+            self.timing_counts.cancelled += 1;
+            Answer::Cancelled(self.timeline_why)
+        } else {
+            match self.commit(&p.change) {
+                Ok(at) => {
+                    self.timing_counts.committed += 1;
+                    Answer::Committed(at)
+                }
+                Err(why) => {
+                    self.timing_counts.refused += 1;
+                    Answer::Refused(why)
+                }
+            }
+        };
+        self.answers.put(p.ticket, a);
+    }
+
+    /// Timing change `c` into the transport's queue on its frame, every
+    /// command or none, and all applied in one period
+    /// ([`Transport::room_on`]). Playing: the tempo on that frame
+    /// (`Command::TempoNow`, no jump), then a jump to the position if one
+    /// was given. Stopped: the position, the tempo (before PLAY, so the
+    /// whole song takes it), the overdub mode for a take, PLAY, then REC
+    /// for a take. The frame it landed on, or why not.
+    fn commit(&mut self, c: &TimingChange) -> Result<u64, &'static str> {
+        if let Some(why) = self.timing_refusal(c) {
+            return Err(why);
+        }
+        let rolling = self.transport.state().rolling();
+        let at = c.at.max(self.transport.frame());
+        // While song mode plays the song's tempo points, a start leaves
+        // its tempo out (they lead; playing, a tempo was refused above).
+        let tempo = c.tempo.filter(|_| !self.song_tempo());
+        let position = c
+            .position
+            .filter(|&p| rolling || p != self.transport.position());
+        let take = c.take.filter(|_| !rolling);
+        let toggle = take.is_some_and(|add| add != self.transport.overdub());
+        let play = c.play && !rolling;
+        let n = usize::from(tempo.is_some())
+            + usize::from(position.is_some())
+            + usize::from(toggle)
+            + usize::from(play)
+            + usize::from(take.is_some());
+        if self.transport.queue_room() < n {
+            self.refused += 1;
+            return Err(QUEUE_FULL);
+        }
+        if self.transport.room_on(at) < n {
+            self.refused += 1;
+            return Err(PERIOD_FULL);
+        }
+        let mut sent = true;
+        if let Some(bpm) = tempo {
+            self.tempo_asked = Some((at, bpm));
+            self.map_asked = None;
+        }
+        if rolling {
+            if let Some(bpm) = tempo {
+                sent &= self.transport.command(at, Command::TempoNow(bpm));
+            }
+            if let Some(p) = position {
+                sent &= self.transport.command(at, Command::Locate(p));
+            }
+        } else {
+            if let Some(p) = position {
+                sent &= self.transport.command(at, Command::Locate(p));
+            }
+            if let Some(bpm) = tempo {
+                sent &= self.transport.command(at, Command::SetTempo(bpm));
+            }
+            if toggle {
+                sent &= self.transport.command(at, Command::ToggleOverdub);
+            }
+            if play {
+                sent &= self.transport.command(at, Command::Play);
+            }
+            if take.is_some() {
+                sent &= self.transport.command(at, Command::Record);
+            }
+        }
+        // The room was counted, so this can't happen; counted if it does.
+        if !sent {
+            self.refused += 1;
+            return Err(QUEUE_FULL);
+        }
+        if n > 0 {
+            self.moved("a timing change landed");
+        }
+        Ok(at)
     }
 
     /// The song position and the start of the bar it is in.
@@ -1023,6 +1300,8 @@ impl TimeAudio {
 
     /// The transport runs the coming period, after the follower's turn.
     fn process(&mut self, frames: u32) -> bool {
+        // A timing change due in this period lands first (step 0C).
+        self.commit_due(frames);
         self.follower.period(&mut self.transport);
         let ok = self.transport.process(frames, &mut self.block);
         // A tempo asked for is in once the transport plays at it. A change
