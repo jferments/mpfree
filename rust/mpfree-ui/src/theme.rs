@@ -1324,6 +1324,21 @@ mod tests {
         assert_eq!(ex.backdrop_line, Color::rgb(0xFF6C11).with_alpha(0x66));
         assert_eq!(ex.qlink(0), ex.accent);
         assert!(ex.check().is_empty(), "{:?}", ex.check());
+        // The other commented examples: a light one and a dark one, both
+        // with nothing hard to read.
+        for (text, name, light) in [
+            (include_str!("../themes/example-paper.theme"), "Paper", true),
+            (
+                include_str!("../themes/example-midnight.theme"),
+                "Midnight",
+                false,
+            ),
+        ] {
+            let ex = Theme::parse(text).unwrap();
+            assert_eq!(ex.name, name);
+            assert_eq!(ex.is_light(), light, "{name}");
+            assert!(ex.check().is_empty(), "{name}: {:?}", ex.check());
+        }
     }
 
     #[test]

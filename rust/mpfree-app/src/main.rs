@@ -227,6 +227,9 @@ struct Options {
     /// `--check-theme FILE`: a theme file's problems and its unreadable
     /// text on every sample screen ([`check_theme`]).
     check_theme: Option<PathBuf>,
+    /// `--contact-sheet DIR`: every sample screen in `--theme` beside the
+    /// theme it starts from, with a page to look at them ([`contact_sheet`]).
+    contact_sheet: Option<PathBuf>,
     font: Option<PathBuf>,
     bold_font: Option<PathBuf>,
     mono_font: Option<PathBuf>,
@@ -297,6 +300,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         preview: None,
         display_lists: None,
         check_theme: None,
+        contact_sheet: None,
         font: None,
         bold_font: None,
         mono_font: None,
@@ -346,6 +350,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--preview" => o.preview = Some(PathBuf::from(value()?)),
             "--display-lists" => o.display_lists = Some(PathBuf::from(value()?)),
             "--check-theme" => o.check_theme = Some(PathBuf::from(value()?)),
+            "--contact-sheet" => o.contact_sheet = Some(PathBuf::from(value()?)),
             "--font" => o.font = Some(PathBuf::from(value()?)),
             "--bold-font" => o.bold_font = Some(PathBuf::from(value()?)),
             "--mono-font" => o.mono_font = Some(PathBuf::from(value()?)),
@@ -370,6 +375,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     if o.preview.is_none()
         && o.display_lists.is_none()
         && o.check_theme.is_none()
+        && o.contact_sheet.is_none()
         && o.command.is_empty()
     {
         return Err(
@@ -12032,6 +12038,129 @@ fn unreadable_runs(p: &mut gui::Player, t: &Theme) -> Result<Vec<mpfree_ui::lint
         .collect())
 }
 
+/// The built-in theme a theme file starts from (its first line's `base`),
+/// by name, or the default theme.
+fn base_theme(text: &str) -> (String, Theme) {
+    text.lines()
+        .map(|l| l.split('#').next().unwrap_or("").trim())
+        .find(|l| !l.is_empty())
+        .and_then(|l| l.split_once('='))
+        .filter(|(k, _)| k.trim() == "base")
+        .and_then(|(_, v)| {
+            let v = v.trim().to_ascii_lowercase();
+            Theme::builtin(&v).map(|t| (v, t))
+        })
+        .unwrap_or_else(|| ("default".to_string(), Theme::dark()))
+}
+
+/// The page `--contact-sheet` writes: each screen's name over the two
+/// pictures, `theme/NAME.png` (labelled `theme`) and `base/NAME.png`
+/// (labelled `base`), side by side. One self-contained file with no
+/// scripts, readable in light and dark browsers, that opens from disk.
+fn contact_sheet_html(theme: &str, base: &str, names: &[&str]) -> String {
+    let esc = |t: &str| {
+        t.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    };
+    let (theme, base) = (esc(theme), esc(base));
+    let mut html = format!(
+        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
+         <title>{theme} beside {base}</title>\n<style>\n\
+         :root {{ color-scheme: light dark; --bg: #EEF0F3; --card: #FFFFFF; --line: #D3D8E0; --fg: #161A21; --dim: #4D5565; }}\n\
+         @media (prefers-color-scheme: dark) {{ :root {{ --bg: #0F1217; --card: #181C23; --line: #2A303B; --fg: #E8EBF0; --dim: #A2AABA; }} }}\n\
+         body {{ margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }}\n\
+         main {{ max-width: 1480px; margin: 0 auto; padding: 24px 16px 48px; }}\n\
+         h1 {{ font-size: 26px; margin: 0 0 6px; }}\n\
+         p {{ margin: 0 0 18px; color: var(--dim); }}\n\
+         .grid {{ display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 640px), 1fr)); }}\n\
+         section {{ background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }}\n\
+         h2 {{ font: 500 14px ui-monospace, monospace; margin: 0 0 8px; }}\n\
+         .pair {{ display: grid; gap: 8px; grid-template-columns: 1fr 1fr; }}\n\
+         @media (max-width: 560px) {{ .pair {{ grid-template-columns: 1fr; }} }}\n\
+         figure {{ margin: 0; }}\n\
+         img {{ display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; }}\n\
+         figcaption {{ font: 12px ui-monospace, monospace; color: var(--dim); margin-top: 4px; }}\n\
+         </style></head><body><main>\n\
+         <h1>{theme} beside {base}</h1>\n\
+         <p>Every sample screen MPFree draws ({n}), {theme} on the left and {base} on the right. \
+         Open a picture for its full size (1280 &times; 800).</p>\n<div class=\"grid\">\n",
+        n = names.len()
+    );
+    for name in names {
+        let name = esc(name);
+        html.push_str(&format!(
+            "<section><h2>{name}</h2><div class=\"pair\">\
+             <figure><a href=\"theme/{name}.png\"><img loading=\"lazy\" src=\"theme/{name}.png\" alt=\"{name} in {theme}\"></a><figcaption>{theme}</figcaption></figure>\
+             <figure><a href=\"base/{name}.png\"><img loading=\"lazy\" src=\"base/{name}.png\" alt=\"{name} in {base}\"></a><figcaption>{base}</figcaption></figure>\
+             </div></section>\n"
+        ));
+    }
+    html.push_str("</div>\n</main></body></html>\n");
+    html
+}
+
+/// `--contact-sheet DIR` with `--theme NAME|FILE`: every sample screen in
+/// the theme and in the theme it starts from (a file's `base`, else
+/// Default; Light for Default itself), as new PNG files in DIR/theme and
+/// DIR/base, and DIR/index.html to look at them side by side. What a
+/// theme writer looks over before sharing a theme, and what the owner saw
+/// Light on. Writes only new files; opens no devices.
+fn contact_sheet(o: &Options) -> Result<(), String> {
+    let dir = o.contact_sheet.as_ref().unwrap();
+    let theme = load_theme(o)?;
+    let given = o.theme.clone().unwrap_or_else(|| "default".to_string());
+    let (base_name, base) = match Theme::builtin(&given) {
+        Some(_) if given.eq_ignore_ascii_case("default") => ("light".to_string(), Theme::light()),
+        Some(_) => ("default".to_string(), Theme::dark()),
+        None => base_theme(&fs::read_to_string(&given).map_err(|e| format!("{given}: {e}"))?),
+    };
+    let label = if theme.name.trim().is_empty() {
+        given.clone()
+    } else {
+        theme.name.clone()
+    };
+    let base_label = Theme::builtin(&base_name).map_or(base_name.clone(), |t| t.name);
+    let fonts = || {
+        Fonts::with_files(
+            o.font.as_deref(),
+            o.bold_font.as_deref(),
+            o.mono_font.as_deref(),
+        )
+    };
+    fonts()?;
+    for sub in ["theme", "base"] {
+        let d = dir.join(sub);
+        fs::create_dir_all(&d).map_err(|e| format!("{}: {e}", d.display()))?;
+    }
+    let mut names = Vec::new();
+    for (name, mut p) in gui::sample_screens(|| fonts().unwrap_or_else(|_| Fonts::embedded())) {
+        for (sub, t) in [("theme", &theme), ("base", &base)] {
+            p.ui.set_theme(t.clone());
+            let (w, h) = p.ui.size();
+            let mut canvas = SoftCanvas::new(w, h);
+            p.ui.paint(&mut canvas);
+            write_png(&dir.join(sub).join(format!("{name}.png")), &canvas)?;
+        }
+        names.push(name);
+    }
+    let page = dir.join("index.html");
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&page)
+        .and_then(|mut f| f.write_all(contact_sheet_html(&label, &base_label, &names).as_bytes()))
+        .map_err(|e| format!("{}: {e}", page.display()))?;
+    println!(
+        "contact sheet written: {} screens, {label} beside {base_label}, {}",
+        names.len(),
+        page.display()
+    );
+    Ok(())
+}
+
 /// `--check-theme FILE`: what someone writing a theme needs to know,
 /// without an MPC. Every problem the file has, by line (`Theme::load`);
 /// whether the app would offer it in Prefs > Appearance or leave it out
@@ -12073,14 +12202,7 @@ fn check_theme(o: &Options) -> Result<(), String> {
     }
     // The theme the file starts from, for a fair comparison: faint text
     // that is under 3:1 there too is the screen's, not the file's.
-    let base = text
-        .lines()
-        .map(|l| l.split('#').next().unwrap_or("").trim())
-        .find(|l| !l.is_empty())
-        .and_then(|l| l.split_once('='))
-        .filter(|(k, _)| k.trim() == "base")
-        .and_then(|(_, v)| Theme::builtin(v.trim()).map(|t| (v.trim().to_string(), t)))
-        .unwrap_or_else(|| ("default".to_string(), Theme::dark()));
+    let base = base_theme(&text);
     let fonts = || {
         Fonts::with_files(
             o.font.as_deref(),
@@ -12173,6 +12295,9 @@ fn main() {
         }
         if o.check_theme.is_some() {
             return gui::on_screens_stack(|| check_theme(&o));
+        }
+        if o.contact_sheet.is_some() {
+            return gui::on_screens_stack(|| contact_sheet(&o));
         }
         match o.command.as_str() {
             "inventory" => inventory(&o),
@@ -13134,6 +13259,29 @@ mod tests {
         // No store, no files.
         assert!(load_tuning_files(&mpfree_store::Store::none()).0.is_empty());
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_contact_sheet_pairs_each_screen_with_its_base() {
+        let html = contact_sheet_html("Sunrise <2>", "Synthwave", &["play", "mixer-eq"]);
+        assert!(html.starts_with("<!doctype html>"));
+        assert!(html.contains("<title>Sunrise &lt;2&gt; beside Synthwave</title>"));
+        assert!(html.contains("Every sample screen MPFree draws (2)"));
+        for name in ["play", "mixer-eq"] {
+            assert!(
+                html.contains(&format!("src=\"theme/{name}.png\"")),
+                "{name}"
+            );
+            assert!(html.contains(&format!("src=\"base/{name}.png\"")), "{name}");
+        }
+        assert!(!html.contains("<script"));
+        // The base is the file's first line, else Default.
+        assert_eq!(
+            base_theme("# mine\nbase = Light\naccent = #FF0000\n").0,
+            "light"
+        );
+        assert_eq!(base_theme("accent = #FF0000\nbase = light\n").0, "default");
+        assert_eq!(base_theme("base = vaporwave\n").0, "default");
     }
 
     #[test]
