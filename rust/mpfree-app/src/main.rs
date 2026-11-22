@@ -49,7 +49,9 @@
 //!   --display-lists DIR
 //!                      host only: records each sample page's first two frames
 //!                      as display lists, new NAME.mpdl files in DIR (for
-//!                      mpfree-gpu-bench, which times them on the MPC's GPU)
+//!                      mpfree-gpu-bench, which times them on the MPC's GPU);
+//!                      with --theme all, once per built-in theme, in
+//!                      DIR/THEME/NAME.mpdl (for the contrast check)
 //!
 //! `--sound-cores shared|core3|two|three` (play and app) picks where the
 //! sound runs for this run, in place of Prefs' saved "Sound cores" (shared
@@ -11447,11 +11449,12 @@ fn preview(o: &Options) -> Result<(), String> {
 /// Each sample page's first two frames as display lists (mpfree_ui::record's
 /// wire format), one new NAME.mpdl file per page: the page as first drawn,
 /// then what it redraws a tick (33 ms) later. mpfree-gpu-bench plays them on
-/// the MPC's GPU and in software. No devices are opened; it writes only new
-/// files.
+/// the MPC's GPU and in software. With `--theme all` each page is drawn in
+/// every built-in theme in turn, into DIR/THEME/NAME.mpdl, building the
+/// screens once (tests/theme_contrast.rs). No devices are opened; it writes
+/// only new files.
 fn display_lists(o: &Options) -> Result<(), String> {
     let dir = o.display_lists.as_ref().unwrap();
-    fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let fonts = || {
         Fonts::with_files(
             o.font.as_deref(),
@@ -11459,28 +11462,40 @@ fn display_lists(o: &Options) -> Result<(), String> {
             o.mono_font.as_deref(),
         )
     };
-    let theme = load_theme(o)?;
+    let themes: Vec<(PathBuf, Theme)> = if o.theme.as_deref() == Some("all") {
+        mpfree_ui::theme::BUILTIN
+            .iter()
+            .filter_map(|&n| Some((dir.join(n), Theme::builtin(n)?)))
+            .collect()
+    } else {
+        vec![(dir.clone(), load_theme(o)?)]
+    };
+    for (d, _) in &themes {
+        fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+    }
     fonts()?;
     let mut pages = 0;
     for (name, mut p) in gui::sample_screens(|| fonts().unwrap_or_else(|_| Fonts::embedded())) {
-        p.ui.set_theme(theme.clone());
-        let (w, h) = p.ui.size();
-        let mut rec = mpfree_ui::record::Recorder::new(w, h);
-        let mut bytes = Vec::new();
-        rec.begin_frame();
-        p.ui.paint(&mut rec);
-        rec.encode_frame(&mut bytes);
-        p.tick(0.033);
-        rec.begin_frame();
-        p.ui.paint(&mut rec);
-        rec.encode_frame(&mut bytes);
-        let path = dir.join(format!("{name}.mpdl"));
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .and_then(|mut f| f.write_all(&bytes))
-            .map_err(|e| format!("{}: {e}", path.display()))?;
+        for (d, theme) in &themes {
+            p.ui.set_theme(theme.clone());
+            let (w, h) = p.ui.size();
+            let mut rec = mpfree_ui::record::Recorder::new(w, h);
+            let mut bytes = Vec::new();
+            rec.begin_frame();
+            p.ui.paint(&mut rec);
+            rec.encode_frame(&mut bytes);
+            p.tick(0.033);
+            rec.begin_frame();
+            p.ui.paint(&mut rec);
+            rec.encode_frame(&mut bytes);
+            let path = d.join(format!("{name}.mpdl"));
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .and_then(|mut f| f.write_all(&bytes))
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+        }
         pages += 1;
     }
     println!("display lists written: {pages} pages in {}", dir.display());

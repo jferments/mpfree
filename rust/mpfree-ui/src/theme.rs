@@ -13,7 +13,9 @@
 //! as a small text file that starts from any of them; see [`Theme::parse`].
 
 use crate::color::Color;
+use crate::roles::{hex, ColorKey, Expr, Mode, Role, ROLES, ROLE_COUNT};
 use crate::text::FontId;
+use std::collections::HashMap;
 
 /// What a piece of text or a status means; the theme picks its colour.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -125,6 +127,14 @@ pub struct Theme {
     /// pulled towards `accent` on screen, 0 (as they are) to 255. The pads'
     /// own lights are not changed.
     pub tint: u8,
+    /// Light or dark, for `light_dark()` rules ([`Mode::Auto`] works it
+    /// out from `bg` and `text`).
+    pub mode: Mode,
+    /// Each role's colour, worked out from `sources` ([`Theme::role`]).
+    pub(crate) roles: [Color; ROLE_COUNT],
+    /// Each role's rule or colour: the table's rule unless the theme sets
+    /// its own.
+    sources: Vec<Expr>,
 }
 
 /// The built-in themes, by the name a theme file's `base` uses.
@@ -172,7 +182,11 @@ impl Theme {
             face_title: FontId::Bold,
             startup: Startup::Synthwave,
             tint: 0,
+            mode: Mode::Auto,
+            roles: [Color::rgb(0); ROLE_COUNT],
+            sources: Vec::new(),
         }
+        .with_roles(Theme::DEFAULT_ROLES)
     }
 
     /// Green on black, glowing like a phosphor screen.
@@ -215,7 +229,11 @@ impl Theme {
             face_title: FontId::Bold,
             startup: Startup::Console,
             tint: 170,
+            mode: Mode::Auto,
+            roles: [Color::rgb(0); ROLE_COUNT],
+            sources: Vec::new(),
         }
+        .with_roles(Theme::FIXED_ROLES)
     }
 
     /// 80s neon: hot pink and cyan on deep purple, over a perspective-free
@@ -259,7 +277,11 @@ impl Theme {
             face_title: FontId::Bold,
             startup: Startup::Synthwave,
             tint: 70,
+            mode: Mode::Auto,
+            roles: [Color::rgb(0); ROLE_COUNT],
+            sources: Vec::new(),
         }
+        .with_roles(Theme::FIXED_ROLES)
     }
 
     /// A dark ship's console: black, white and violet, cut corners, thin
@@ -303,7 +325,11 @@ impl Theme {
             face_title: FontId::Bold,
             startup: Startup::Spaceship,
             tint: 110,
+            mode: Mode::Auto,
+            roles: [Color::rgb(0); ROLE_COUNT],
+            sources: Vec::new(),
         }
+        .with_roles(Theme::FIXED_ROLES)
     }
 
     /// A built-in theme by name (see [`BUILTIN`]).
@@ -352,100 +378,372 @@ impl Theme {
         self.track[i % self.track.len()]
     }
 
+    /// The roles every built-in theme sets to the colours its screens
+    /// drew before roles existed (phase 0 of the theme plan keeps every
+    /// built-in theme pixel for pixel the same): the sampler's record red,
+    /// the EQ's band colours, and the white flash and black shadow of the
+    /// Play page's pads. The default theme's Q-Link colours are its first
+    /// four track colours, which its rule gives anyway.
+    const DEFAULT_ROLES: &'static [(Role, u32)] = &[
+        (Role::Record, 0xFF4D5E),
+        (Role::Highlight, 0xFFFFFF),
+        (Role::Shadow, 0x000000),
+        (Role::Series1, 0x6EA8FE),
+        (Role::Series2, 0x3DDC97),
+        (Role::Series3, 0xFFC145),
+        (Role::Series4, 0xD46CFF),
+        (Role::Series5, 0xFF8A65),
+        (Role::Series6, 0x4FC3C9),
+        (Role::Series7, 0xF06292),
+        (Role::Series8, 0xAED581),
+    ];
+
+    /// The other built-in themes: the same, and the default theme's Q-Link
+    /// colours, which every theme drew until now.
+    const FIXED_ROLES: &'static [(Role, u32)] = &[
+        (Role::Record, 0xFF4D5E),
+        (Role::Highlight, 0xFFFFFF),
+        (Role::Shadow, 0x000000),
+        (Role::Series1, 0x6EA8FE),
+        (Role::Series2, 0x3DDC97),
+        (Role::Series3, 0xFFC145),
+        (Role::Series4, 0xD46CFF),
+        (Role::Series5, 0xFF8A65),
+        (Role::Series6, 0x4FC3C9),
+        (Role::Series7, 0xF06292),
+        (Role::Series8, 0xAED581),
+        (Role::Qlink1, 0x6EA8FE),
+        (Role::Qlink2, 0x3DDC97),
+        (Role::Qlink3, 0xFFC145),
+        (Role::Qlink4, 0xD46CFF),
+    ];
+
+    /// The theme with every role on its table rule except `fixed`, worked
+    /// out.
+    fn with_roles(mut self, fixed: &[(Role, u32)]) -> Theme {
+        self.sources = Role::ALL.iter().map(|r| r.rule()).collect();
+        for &(r, c) in fixed {
+            self.sources[r as usize] = Expr::Hex(Color::rgb(c));
+        }
+        self.resolve_roles();
+        self
+    }
+
+    /// A role's rule or colour as this theme has it.
+    pub fn role_source(&self, r: Role) -> &Expr {
+        &self.sources[r as usize]
+    }
+
+    /// Sets a role to a colour or rule and works every role out again.
+    /// A rule that would go round in a circle is refused.
+    pub fn set_role(&mut self, r: Role, e: Expr) -> Result<(), String> {
+        let old = std::mem::replace(&mut self.sources[r as usize], e);
+        let problems = self.resolve_roles();
+        if let Some((_, p)) = problems.into_iter().next() {
+            self.sources[r as usize] = old;
+            self.resolve_roles();
+            return Err(p);
+        }
+        Ok(())
+    }
+
+    /// Works out every role from its source. A role in a circle of rules
+    /// takes its table rule instead (the table's rules only read core
+    /// colours, so that always works); each one that did is returned with
+    /// why.
+    fn resolve_roles(&mut self) -> Vec<(Role, String)> {
+        let mut sources: HashMap<ColorKey, Expr> = HashMap::new();
+        for &r in Role::ALL {
+            sources.insert(ColorKey::Role(r), self.sources[r as usize].clone());
+        }
+        let light = self.is_light();
+        let (got, cycles) = resolve(self, &sources, light);
+        let mut problems = Vec::new();
+        for &r in Role::ALL {
+            let k = ColorKey::Role(r);
+            self.roles[r as usize] = match got.get(&k) {
+                Some(&c) => c,
+                None => {
+                    let rule = r.rule();
+                    problems.push((
+                        r,
+                        format!(
+                            "{}: {}; used its usual rule {rule}",
+                            r.def().key,
+                            cycles.get(&k).cloned().unwrap_or_default()
+                        ),
+                    ));
+                    rule.eval(light, &mut |k| match k {
+                        ColorKey::Role(_) => self.text,
+                        k => self.color(k),
+                    })
+                }
+            };
+        }
+        problems
+    }
+
     /// A theme from a theme file: `key = value` lines, `#` comments. The
     /// first setting may be `base = NAME` (a built-in theme, `default` if
-    /// left out); every other key changes one token of it, so a file only
-    /// lists what it changes:
+    /// left out); every other key changes one colour, role or effect of
+    /// it, so a file only lists what it changes:
     ///
     /// ```text
     /// name = Midnight
     /// base = synthwave
     /// accent = #FF6C11
+    /// accent2 = mix({accent}, #FFFFFF, 30%)
     /// corners = chamfer
     /// backdrop = dots
     /// ```
     ///
-    /// Colours are `#RRGGBB` or `#RRGGBBAA`; `track` takes up to eight.
-    /// Unknown keys and bad values are errors that name the line.
+    /// Colours are `#RRGGBB` or `#RRGGBBAA`, or follow and mix others
+    /// (see [`crate::roles`]); `track` takes up to eight, and `track.N`
+    /// sets one. This is the strict reading for the app's themes folder:
+    /// any mistake or unknown key is an error that names the line (see
+    /// [`Theme::load`] for the forgiving one).
     pub fn parse(text: &str) -> Result<Theme, String> {
-        let mut theme = Theme::dark();
-        let mut first = true;
+        let (theme, problems) = Theme::load(text);
+        match problems
+            .into_iter()
+            .find(|p| p.kind != ProblemKind::HardToRead)
+        {
+            Some(p) => Err(match p.line {
+                Some(n) => format!("theme line {n}: {}", p.text),
+                None => p.text,
+            }),
+            None => Ok(theme),
+        }
+    }
+
+    /// A theme from a theme file, never failing: a line with a mistake
+    /// leaves what it would have changed as the base theme has it, an
+    /// unknown key (from a newer MPFree, say) is skipped, and each is
+    /// listed by line with what was used instead, followed by the theme's
+    /// readability warnings ([`Theme::check`]).
+    pub fn load(text: &str) -> (Theme, Vec<Problem>) {
+        let mut problems = Vec::new();
+        let mistake = |line: usize, text: String, used: Option<String>| Problem {
+            line: Some(line),
+            kind: ProblemKind::Mistake,
+            text,
+            used,
+        };
+        // Every setting with its line number, comments gone.
+        let mut lines = Vec::new();
         for (n, raw) in text.lines().enumerate() {
             let line = strip_comment(raw).trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let at = |e: String| format!("theme line {}: {e}", n + 1);
-            let (k, v) = line
-                .split_once('=')
-                .ok_or_else(|| at(format!("expected key = value, got {line:?}")))?;
-            let (k, v) = (k.trim(), v.trim());
-            if k == "base" {
-                if !first {
-                    return Err(at("base must come first".into()));
-                }
-                theme = Theme::builtin(v).ok_or_else(|| {
-                    at(format!(
-                        "no built-in theme {v:?} (try {})",
-                        BUILTIN.join(", ")
-                    ))
-                })?;
-            } else {
-                theme.set(k, v).map_err(at)?;
+            match line.split_once('=') {
+                Some((k, v)) => lines.push((n + 1, k.trim(), v.trim())),
+                None => problems.push(mistake(
+                    n + 1,
+                    format!("expected key = value, got {line:?}"),
+                    Some("skipped the line".into()),
+                )),
             }
-            first = false;
         }
-        Ok(theme)
+        let mut theme = Theme::dark();
+        let mut base_name = "default".to_string();
+        if let Some(&(n, "base", v)) = lines.first() {
+            match Theme::builtin(v) {
+                Some(t) => {
+                    theme = t;
+                    base_name = v.trim().to_ascii_lowercase();
+                }
+                None => problems.push(mistake(
+                    n,
+                    format!("no built-in theme {v:?} (try {})", BUILTIN.join(", ")),
+                    Some("started from default".into()),
+                )),
+            }
+        }
+        // Colours wait until every line is read (one may follow another
+        // set further down); everything else is set as it comes.
+        let mut colours: HashMap<ColorKey, (usize, Expr)> = HashMap::new();
+        for (i, &(n, k, v)) in lines.iter().enumerate() {
+            if k == "base" {
+                if i > 0 {
+                    problems.push(mistake(
+                        n,
+                        "base must come first".into(),
+                        Some(format!("kept {base_name} as the base")),
+                    ));
+                }
+                continue;
+            }
+            if k == "track" {
+                match split_top(v)
+                    .iter()
+                    .map(|c| Expr::parse(c))
+                    .collect::<Result<Vec<_>, _>>()
+                {
+                    Ok(cs) if !cs.is_empty() && cs.len() <= 8 => {
+                        for i in 0..8 {
+                            colours.insert(ColorKey::Track(i as u8), (n, cs[i % cs.len()].clone()));
+                        }
+                    }
+                    Ok(_) => problems.push(mistake(
+                        n,
+                        "track: give 1 to 8 colours".into(),
+                        Some(format!("kept {base_name}'s track colours")),
+                    )),
+                    Err(e) => problems.push(mistake(
+                        n,
+                        format!("track: {e}"),
+                        Some(format!("kept {base_name}'s track colours")),
+                    )),
+                }
+                continue;
+            }
+            if let Some(key) = ColorKey::from_name(k) {
+                match Expr::parse(v) {
+                    Ok(e) => {
+                        colours.insert(key, (n, e));
+                    }
+                    Err(e) => problems.push(mistake(
+                        n,
+                        format!("{k}: {e}"),
+                        Some(format!("kept {base_name}'s {}", hex(theme.color(key)))),
+                    )),
+                }
+                continue;
+            }
+            let before = theme.clone();
+            match theme.set_plain(k, v) {
+                Ok(()) => {}
+                Err(SetError::Unknown) => problems.push(Problem {
+                    line: Some(n),
+                    kind: ProblemKind::Unknown,
+                    text: format!("unknown key {k:?}"),
+                    used: Some("skipped the line".into()),
+                }),
+                Err(SetError::Bad(e)) => {
+                    theme = before;
+                    problems.push(mistake(n, e, Some(format!("kept {base_name}'s value"))));
+                }
+            }
+        }
+        // Each colour from the file, or the base theme's.
+        let mut sources: HashMap<ColorKey, Expr> = HashMap::new();
+        for k in ColorKey::all() {
+            let e = match (colours.get(&k), k) {
+                (Some((_, e)), _) => e.clone(),
+                (None, ColorKey::Role(r)) => theme.sources[r as usize].clone(),
+                (None, k) => Expr::Hex(theme.color(k)),
+            };
+            sources.insert(k, e);
+        }
+        // Worked out once on the base's light or dark, then again if the
+        // file's own bg and text turned it round (mode auto).
+        let mut light = theme.is_light();
+        let (mut got, mut cycles) = resolve(&theme, &sources, light);
+        let mut probe = theme.clone();
+        apply(&mut probe, &got);
+        if probe.is_light() != light {
+            light = probe.is_light();
+            (got, cycles) = resolve(&theme, &sources, light);
+        }
+        let mut by_line: Vec<(usize, String)> = Vec::new();
+        for (k, why) in &cycles {
+            let n = colours.get(k).map_or(0, |(n, _)| *n);
+            by_line.push((n, format!("{}: {why}", k.name())));
+        }
+        by_line.sort();
+        for (n, text) in by_line {
+            problems.push(mistake(n, text, Some(format!("kept {base_name}'s colour"))));
+        }
+        apply(&mut theme, &got);
+        for &r in Role::ALL {
+            let k = ColorKey::Role(r);
+            if let (Some((_, e)), true) = (colours.get(&k), got.contains_key(&k)) {
+                theme.sources[r as usize] = e.clone();
+            }
+        }
+        theme.resolve_roles();
+        problems.sort_by_key(|p| p.line);
+        for w in theme.check() {
+            problems.push(Problem {
+                line: None,
+                kind: ProblemKind::HardToRead,
+                text: w,
+                used: None,
+            });
+        }
+        (theme, problems)
     }
 
-    /// Change one token by its theme-file key.
+    /// Change one setting by its theme-file key: a colour or role (any
+    /// colour expression, read against the theme as it is) or an effect.
     pub fn set(&mut self, key: &str, v: &str) -> Result<(), String> {
+        if key == "track" {
+            let cs = split_top(v)
+                .iter()
+                .map(|c| Expr::parse(c).map(|e| self.eval(&e)))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("track: {e}"))?;
+            if cs.is_empty() || cs.len() > 8 {
+                return Err("track: give 1 to 8 colours".into());
+            }
+            for i in 0..8 {
+                self.track[i] = cs[i % cs.len()];
+            }
+            self.resolve_roles();
+            return Ok(());
+        }
+        if let Some(k) = ColorKey::from_name(key) {
+            let e = Expr::parse(v).map_err(|e| format!("{key}: {e}"))?;
+            return match k {
+                ColorKey::Role(r) => self.set_role(r, e).map_err(|e| format!("{key}: {e}")),
+                k => {
+                    let c = self.eval(&e);
+                    set_core(self, k, c);
+                    self.resolve_roles();
+                    Ok(())
+                }
+            };
+        }
+        match self.set_plain(key, v) {
+            Ok(()) => Ok(()),
+            Err(SetError::Unknown) => Err(format!("unknown key {key:?}")),
+            Err(SetError::Bad(e)) => Err(e),
+        }
+    }
+
+    /// `e`'s colour on this theme as it is.
+    pub fn eval(&self, e: &Expr) -> Color {
+        e.eval(self.is_light(), &mut |k| self.color(k))
+    }
+
+    /// Change one setting that isn't a colour.
+    fn set_plain(&mut self, key: &str, v: &str) -> Result<(), SetError> {
+        let bad = SetError::Bad;
         let num = |v: &str| {
             v.parse::<i32>()
-                .map_err(|_| format!("{key}: expected a whole number, got {v:?}"))
+                .map_err(|_| bad(format!("{key}: expected a whole number, got {v:?}")))
         };
         let size = |v: &str| match v.parse::<f32>() {
             Ok(x) if (6.0..=200.0).contains(&x) => Ok(x),
-            _ => Err(format!("{key}: expected a size from 6 to 200, got {v:?}")),
+            _ => Err(bad(format!(
+                "{key}: expected a size from 6 to 200, got {v:?}"
+            ))),
         };
         let byte = |v: &str| {
             v.parse::<u8>()
-                .map_err(|_| format!("{key}: expected 0 to 255, got {v:?}"))
+                .map_err(|_| bad(format!("{key}: expected 0 to 255, got {v:?}")))
         };
-        let col = |v: &str| parse_color(v).map_err(|e| format!("{key}: {e}"));
         let face = |v: &str| match v {
             "sans" => Ok(FontId::Sans),
             "bold" => Ok(FontId::Bold),
             "mono" => Ok(FontId::Mono),
-            _ => Err(format!("{key}: expected sans, bold or mono, got {v:?}")),
+            _ => Err(bad(format!(
+                "{key}: expected sans, bold or mono, got {v:?}"
+            ))),
         };
         match key {
             "name" => self.name = v.to_string(),
-            "bg" => self.bg = col(v)?,
-            "surface" => self.surface = col(v)?,
-            "raised" => self.raised = col(v)?,
-            "outline" => self.outline = col(v)?,
-            "text" => self.text = col(v)?,
-            "text_dim" => self.text_dim = col(v)?,
-            "text_faint" => self.text_faint = col(v)?,
-            "accent" => self.accent = col(v)?,
-            "accent2" => self.accent2 = col(v)?,
-            "on_accent" => self.on_accent = col(v)?,
-            "good" => self.good = col(v)?,
-            "warn" => self.warn = col(v)?,
-            "bad" => self.bad = col(v)?,
-            "track" => {
-                let cs = v
-                    .split_whitespace()
-                    .map(col)
-                    .collect::<Result<Vec<_>, _>>()?;
-                if cs.is_empty() || cs.len() > 8 {
-                    return Err("track: give 1 to 8 colours".into());
-                }
-                for i in 0..8 {
-                    self.track[i] = cs[i % cs.len()];
-                }
-            }
             "radius" => self.radius = num(v)?.clamp(0, 40),
             "gap" => self.gap = num(v)?.clamp(0, 40),
             "pad" => self.pad = num(v)?.clamp(0, 40),
@@ -460,9 +758,9 @@ impl Theme {
                     "chamfer" => Corners::Chamfer,
                     "square" => Corners::Square,
                     _ => {
-                        return Err(format!(
+                        return Err(bad(format!(
                             "corners: expected round, chamfer or square, got {v:?}"
-                        ))
+                        )))
                     }
                 }
             }
@@ -477,14 +775,12 @@ impl Theme {
                     "dots" => Backdrop::Dots,
                     "scanlines" => Backdrop::Scanlines,
                     _ => {
-                        return Err(format!(
+                        return Err(bad(format!(
                         "backdrop: expected solid, gradient, grid, dots or scanlines, got {v:?}"
-                    ))
+                    )))
                     }
                 }
             }
-            "backdrop_to" => self.backdrop_to = col(v)?,
-            "backdrop_line" => self.backdrop_line = col(v)?,
             "backdrop_step" => self.backdrop_step = num(v)?.clamp(2, 400),
             "face_body" => self.face_body = face(v)?,
             "face_title" => self.face_title = face(v)?,
@@ -495,13 +791,26 @@ impl Theme {
                     "synthwave" => Startup::Synthwave,
                     "spaceship" => Startup::Spaceship,
                     _ => {
-                        return Err(format!(
+                        return Err(bad(format!(
                             "startup: expected galaxy, console, synthwave or spaceship, got {v:?}"
-                        ))
+                        )))
                     }
                 }
             }
-            _ => return Err(format!("unknown key {key:?}")),
+            "mode" => {
+                self.mode = match v {
+                    "auto" => Mode::Auto,
+                    "light" => Mode::Light,
+                    "dark" => Mode::Dark,
+                    _ => {
+                        return Err(bad(format!(
+                            "mode: expected auto, light or dark, got {v:?}"
+                        )))
+                    }
+                };
+                self.resolve_roles();
+            }
+            _ => return Err(SetError::Unknown),
         }
         Ok(())
     }
@@ -509,13 +818,6 @@ impl Theme {
     /// The whole theme as a theme file, every key written out: a starting
     /// point for a user's own theme. [`Theme::parse`] reads it back exactly.
     pub fn to_text(&self) -> String {
-        let c = |c: Color| {
-            if c.a == 255 {
-                format!("#{:06X}", c.xrgb())
-            } else {
-                format!("#{:06X}{:02X}", c.xrgb(), c.a)
-            }
-        };
         let face = |f: FontId| match f {
             FontId::Sans => "sans",
             FontId::Bold => "bold",
@@ -541,13 +843,13 @@ impl Theme {
             ("warn", self.warn),
             ("bad", self.bad),
         ] {
-            kv(k, c(v));
+            kv(k, hex(v));
         }
         kv(
             "track",
             self.track
                 .iter()
-                .map(|&t| c(t))
+                .map(|&t| hex(t))
                 .collect::<Vec<_>>()
                 .join(" "),
         );
@@ -572,12 +874,16 @@ impl Theme {
         kv("tint", self.tint.to_string());
         kv("text_glow", self.text_glow.to_string());
         kv("backdrop", format!("{:?}", self.backdrop).to_lowercase());
-        kv("backdrop_to", c(self.backdrop_to));
-        kv("backdrop_line", c(self.backdrop_line));
+        kv("backdrop_to", hex(self.backdrop_to));
+        kv("backdrop_line", hex(self.backdrop_line));
         kv("backdrop_step", self.backdrop_step.to_string());
         kv("face_body", face(self.face_body).into());
         kv("face_title", face(self.face_title).into());
         kv("startup", format!("{:?}", self.startup).to_lowercase());
+        kv("mode", format!("{:?}", self.mode).to_lowercase());
+        for (d, e) in ROLES.iter().zip(&self.sources) {
+            kv(d.key, e.to_string());
+        }
         s
     }
 
@@ -635,8 +941,221 @@ impl Theme {
         if r < 3.0 {
             out.push(format!("on_accent on accent: contrast {r:.1}:1, below 3:1"));
         }
+        // Roles drawn as lines and labels on panels: 3:1, as accents.
+        for &r in Role::ALL {
+            if !matches!(
+                r,
+                Role::Record
+                    | Role::Qlink1
+                    | Role::Qlink2
+                    | Role::Qlink3
+                    | Role::Qlink4
+                    | Role::Series1
+                    | Role::Series2
+                    | Role::Series3
+                    | Role::Series4
+                    | Role::Series5
+                    | Role::Series6
+                    | Role::Series7
+                    | Role::Series8
+            ) {
+                continue;
+            }
+            let c = contrast(on(self.role(r), surface), surface);
+            if c < 3.0 {
+                out.push(format!(
+                    "{} on surface: contrast {c:.1}:1, below 3:1",
+                    r.def().key
+                ));
+            }
+        }
         out
     }
+}
+
+/// What went wrong in a theme file ([`Theme::load`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Problem {
+    /// The file's line (from 1), or None for the theme as a whole.
+    pub line: Option<usize>,
+    pub kind: ProblemKind,
+    /// What is wrong, naming the key.
+    pub text: String,
+    /// What was used instead, when something was.
+    pub used: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProblemKind {
+    /// A value that can't be used, a circle of rules or a misplaced line.
+    Mistake,
+    /// A key this MPFree doesn't know.
+    Unknown,
+    /// Text or lines too close to what they sit on ([`Theme::check`]).
+    HardToRead,
+}
+
+impl std::fmt::Display for Problem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(n) = self.line {
+            write!(f, "line {n}: ")?;
+        }
+        f.write_str(&self.text)?;
+        if let Some(u) = &self.used {
+            write!(f, " ({u})")?;
+        }
+        Ok(())
+    }
+}
+
+enum SetError {
+    Unknown,
+    Bad(String),
+}
+
+/// Splits on spaces outside brackets (a `track` line's colours).
+fn split_top(v: &str) -> Vec<String> {
+    let (mut out, mut cur, mut depth) = (Vec::new(), String::new(), 0i32);
+    for ch in v.chars() {
+        match ch {
+            '(' | '{' => depth += 1,
+            ')' | '}' => depth -= 1,
+            _ => {}
+        }
+        if ch.is_whitespace() && depth <= 0 {
+            if !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+        } else {
+            cur.push(ch);
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Sets one core (non-role) colour.
+fn set_core(t: &mut Theme, k: ColorKey, c: Color) {
+    match k {
+        ColorKey::Bg => t.bg = c,
+        ColorKey::Surface => t.surface = c,
+        ColorKey::Raised => t.raised = c,
+        ColorKey::Outline => t.outline = c,
+        ColorKey::Text => t.text = c,
+        ColorKey::TextDim => t.text_dim = c,
+        ColorKey::TextFaint => t.text_faint = c,
+        ColorKey::Accent => t.accent = c,
+        ColorKey::Accent2 => t.accent2 = c,
+        ColorKey::OnAccent => t.on_accent = c,
+        ColorKey::Good => t.good = c,
+        ColorKey::Warn => t.warn = c,
+        ColorKey::Bad => t.bad = c,
+        ColorKey::Track(i) => t.track[i as usize % 8] = c,
+        ColorKey::BackdropTo => t.backdrop_to = c,
+        ColorKey::BackdropLine => t.backdrop_line = c,
+        ColorKey::Role(r) => t.roles[r as usize] = c,
+    }
+}
+
+/// Every resolved colour into `t` (core fields and role values).
+fn apply(t: &mut Theme, got: &HashMap<ColorKey, Color>) {
+    for (&k, &c) in got {
+        set_core(t, k, c);
+    }
+}
+
+/// Works out every key in `sources`, each read from its source, the keys
+/// it names worked out first; a key missing from `sources` reads `t`'s
+/// colour. Keys in a circle are left out of the result and listed with
+/// the circle.
+fn resolve(
+    t: &Theme,
+    sources: &HashMap<ColorKey, Expr>,
+    light: bool,
+) -> (HashMap<ColorKey, Color>, HashMap<ColorKey, String>) {
+    #[derive(Clone, Copy, PartialEq)]
+    enum State {
+        Working,
+        Done,
+        Failed,
+    }
+    struct Cx<'a> {
+        t: &'a Theme,
+        sources: &'a HashMap<ColorKey, Expr>,
+        light: bool,
+        state: HashMap<ColorKey, State>,
+        got: HashMap<ColorKey, Color>,
+        failed: HashMap<ColorKey, String>,
+        stack: Vec<ColorKey>,
+    }
+    fn visit(cx: &mut Cx, k: ColorKey) -> bool {
+        match cx.state.get(&k) {
+            Some(State::Done) => return true,
+            Some(State::Failed) => return false,
+            Some(State::Working) => {
+                let from = cx.stack.iter().position(|&s| s == k).unwrap_or(0);
+                let names: Vec<String> = cx.stack[from..]
+                    .iter()
+                    .chain(std::iter::once(&k))
+                    .map(|k| k.name())
+                    .collect();
+                let why = format!("goes round in a circle ({})", names.join(" → "));
+                for &s in &cx.stack[from..] {
+                    cx.failed.entry(s).or_insert_with(|| why.clone());
+                }
+                return false;
+            }
+            None => {}
+        }
+        let Some(e) = cx.sources.get(&k) else {
+            cx.got.insert(k, cx.t.color(k));
+            cx.state.insert(k, State::Done);
+            return true;
+        };
+        cx.state.insert(k, State::Working);
+        cx.stack.push(k);
+        let mut deps = Vec::new();
+        e.keys(&mut deps);
+        let mut ok = true;
+        for d in deps {
+            if !visit(cx, d) {
+                ok = false;
+                cx.failed
+                    .entry(k)
+                    .or_insert_with(|| format!("follows {}, which can't be worked out", d.name()));
+            }
+        }
+        cx.stack.pop();
+        if ok {
+            let got = &cx.got;
+            let c = e.eval(cx.light, &mut |d| got.get(&d).copied().unwrap_or(cx.t.text));
+            cx.got.insert(k, c);
+            cx.state.insert(k, State::Done);
+        } else {
+            cx.state.insert(k, State::Failed);
+        }
+        ok
+    }
+    let mut cx = Cx {
+        t,
+        sources,
+        light,
+        state: HashMap::new(),
+        got: HashMap::new(),
+        failed: HashMap::new(),
+        stack: Vec::new(),
+    };
+    let mut keys: Vec<ColorKey> = sources.keys().copied().collect();
+    keys.sort();
+    for k in keys {
+        visit(&mut cx, k);
+    }
+    for k in cx.failed.keys() {
+        cx.got.remove(k);
+    }
+    (cx.got, cx.failed)
 }
 
 impl Default for Theme {
@@ -661,15 +1180,7 @@ fn strip_comment(line: &str) -> &str {
 
 /// `#RRGGBB` or `#RRGGBBAA`.
 pub fn parse_color(v: &str) -> Result<Color, String> {
-    let h = v
-        .strip_prefix('#')
-        .ok_or_else(|| format!("expected #RRGGBB, got {v:?}"))?;
-    let n = u32::from_str_radix(h, 16).map_err(|_| format!("expected #RRGGBB, got {v:?}"))?;
-    match h.len() {
-        6 => Ok(Color::rgb(n)),
-        8 => Ok(Color::rgb(n >> 8).with_alpha(n as u8)),
-        _ => Err(format!("expected #RRGGBB or #RRGGBBAA, got {v:?}")),
-    }
+    crate::roles::parse_hex(v)
 }
 
 /// WCAG contrast ratio between two opaque colours (1 to 21).
@@ -719,6 +1230,9 @@ mod tests {
         }
         let ex = Theme::parse(include_str!("../themes/example-sunrise.theme")).unwrap();
         assert_eq!(ex.name, "Sunrise");
+        assert_eq!(ex.outline, Color::rgb(0xFF6C11).with_alpha(0xAA));
+        assert_eq!(ex.backdrop_line, Color::rgb(0xFF6C11).with_alpha(0x66));
+        assert_eq!(ex.qlink(0), ex.accent);
         assert!(ex.check().is_empty(), "{:?}", ex.check());
     }
 
@@ -748,7 +1262,7 @@ mod tests {
     fn mistakes_name_the_line() {
         assert_eq!(
             Theme::parse("accent = blue").unwrap_err(),
-            "theme line 1: accent: expected #RRGGBB, got \"blue\""
+            "theme line 1: accent: expected a colour (#RRGGBB, {name}, mix(), alpha() or light_dark()), got \"blue\""
         );
         assert_eq!(
             Theme::parse("\nfoo = 1").unwrap_err(),
@@ -771,5 +1285,190 @@ mod tests {
             "{:?}",
             t.check()
         );
+    }
+
+    #[test]
+    fn every_built_in_theme_keeps_the_colours_its_screens_drew() {
+        // Phase 0 of the theme plan changes no pixel: each role is the
+        // colour the screens it replaces drew before.
+        for name in BUILTIN {
+            let t = Theme::builtin(name).unwrap();
+            assert_eq!(t.record(), Color::rgb(0xFF4D5E), "{name}");
+            assert_eq!(
+                (0..4).map(|i| t.qlink(i)).collect::<Vec<_>>(),
+                crate::draw::KNOB.to_vec(),
+                "{name}"
+            );
+            assert_eq!(t.role(Role::TextInverse), t.bg, "{name}");
+            assert_eq!(t.role(Role::Highlight), Color::rgb(0xFFFFFF), "{name}");
+            assert_eq!(t.role(Role::Shadow), Color::rgb(0), "{name}");
+            let eq = [
+                0x6EA8FE, 0x3DDC97, 0xFFC145, 0xD46CFF, 0xFF8A65, 0x4FC3C9, 0xF06292, 0xAED581,
+            ];
+            for (i, c) in eq.iter().enumerate() {
+                assert_eq!(t.series(i), Color::rgb(*c), "{name} series {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn colours_can_follow_and_mix_others() {
+        let t = Theme::parse(
+            "base = default\n\
+             accent = #FF6C11\n\
+             accent2 = {accent}\n\
+             outline = alpha({accent}, 40%)\n\
+             raised = mix(surface, {text}, 10%)\n\
+             track = {accent} mix({good}, #000000, 20%) #112233\n\
+             track.8 = {bad}\n",
+        )
+        .unwrap();
+        assert_eq!(t.accent2, Color::rgb(0xFF6C11));
+        assert_eq!(t.outline, Color::rgb(0xFF6C11).with_alpha(102));
+        assert_eq!(t.raised, t.surface.mix(t.text, 0.1));
+        assert_eq!(t.track[0], t.accent);
+        assert_eq!(t.track[1], t.good.mix(Color::rgb(0), 0.2));
+        assert_eq!(t.track[2], Color::rgb(0x112233));
+        assert_eq!(t.track[3], t.accent, "a short list repeats");
+        assert_eq!(t.track[7], t.bad, "track.8 wins over the list");
+        // A colour may follow one set further down the file.
+        let t = Theme::parse("accent2 = {accent}\naccent = #00FF00\n").unwrap();
+        assert_eq!(t.accent2, Color::rgb(0x00FF00));
+    }
+
+    #[test]
+    fn roles_follow_their_rules_until_a_theme_sets_them() {
+        // Default's Q-Links are its first four tracks, by rule: new track
+        // colours move them too.
+        let t = Theme::parse("track = #112233 #445566 #778899 #AABBCC").unwrap();
+        assert_eq!(t.qlink(0), Color::rgb(0x112233));
+        assert_eq!(t.qlink(3), Color::rgb(0xAABBCC));
+        // Inverse text follows bg.
+        let t = Theme::parse("bg = #202020").unwrap();
+        assert_eq!(t.role(Role::TextInverse), Color::rgb(0x202020));
+        // A role set in the file, to a colour or a rule.
+        let t = Theme::parse("qlink.2 = #00FF00\nrecord = mix({bad}, {text}, 10%)").unwrap();
+        assert_eq!(t.qlink(1), Color::rgb(0x00FF00));
+        assert_eq!(t.record(), t.bad.mix(t.text, 0.1));
+        // light_dark() follows the mode, worked out from bg and text.
+        let light = "bg = #F0F0F0\nsurface = #FFFFFF\nraised = #E0E0E0\ntext = #101010\n\
+                     text_dim = #404040\naccent = #2050C0\non_accent = #FFFFFF\n";
+        let t = Theme::parse(light).unwrap();
+        assert!(t.is_light());
+        assert_eq!(
+            t.role(Role::Shadow),
+            Theme::dark().role(Role::Shadow),
+            "kept from base"
+        );
+        let t = Theme::parse(&format!("{light}shadow = light_dark({{text}}, {{bg}})")).unwrap();
+        assert_eq!(t.role(Role::Shadow), t.text);
+        let t = Theme::parse(&format!(
+            "{light}mode = dark\nshadow = light_dark({{text}}, {{bg}})"
+        ))
+        .unwrap();
+        assert_eq!(t.role(Role::Shadow), t.bg);
+    }
+
+    #[test]
+    fn a_circle_of_colours_is_a_mistake_that_names_its_lines() {
+        let (t, problems) = Theme::load("accent = {accent2}\naccent2 = {accent}\ngood = #00FF00\n");
+        let mistakes: Vec<String> = problems
+            .iter()
+            .filter(|p| p.kind == ProblemKind::Mistake)
+            .map(|p| p.to_string())
+            .collect();
+        assert_eq!(mistakes.len(), 2, "{mistakes:?}");
+        assert!(
+            mistakes[0].starts_with("line 1: accent: goes round in a circle"),
+            "{mistakes:?}"
+        );
+        assert!(
+            mistakes[1].starts_with("line 2: accent2: goes round in a circle"),
+            "{mistakes:?}"
+        );
+        // Both keep the base's colours; the rest of the file still counts.
+        assert_eq!(
+            (t.accent, t.accent2),
+            (Theme::dark().accent, Theme::dark().accent2)
+        );
+        assert_eq!(t.good, Color::rgb(0x00FF00));
+        // A role in a circle takes its usual rule.
+        let (t, problems) = Theme::load("qlink.1 = {qlink.2}\nqlink.2 = {qlink.1}\n");
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert_eq!(t.qlink(0), t.track[0]);
+        let mut t = Theme::dark();
+        assert!(t
+            .set("qlink.1", "{qlink.1}")
+            .unwrap_err()
+            .contains("circle"));
+        assert_eq!(t, Theme::dark(), "a refused rule changes nothing");
+    }
+
+    #[test]
+    fn load_keeps_going_past_mistakes_and_says_what_it_used() {
+        let text = "base = synthwave\n\
+                    name = Dusk\n\
+                    accent = blue\n\
+                    glow = lots\n\
+                    sparkle = 3\n\
+                    good = #00FF00\n\
+                    base = console\n\
+                    track = #112233 nope\n\
+                    just some words\n";
+        let (t, problems) = Theme::load(text);
+        let lines: Vec<String> = problems.iter().map(|p| p.to_string()).collect();
+        assert_eq!(t.name, "Dusk");
+        assert_eq!(t.accent, Theme::synthwave().accent);
+        assert_eq!(t.glow, Theme::synthwave().glow);
+        assert_eq!(t.track, Theme::synthwave().track);
+        assert_eq!(t.good, Color::rgb(0x00FF00));
+        assert_eq!(
+            lines,
+            [
+                "line 3: accent: expected a colour (#RRGGBB, {name}, mix(), alpha() or light_dark()), got \"blue\" (kept synthwave's #FF2E97)",
+                "line 4: glow: expected 0 to 255, got \"lots\" (kept synthwave's value)",
+                "line 5: unknown key \"sparkle\" (skipped the line)",
+                "line 7: base must come first (kept synthwave as the base)",
+                "line 8: track: expected a colour (#RRGGBB, {name}, mix(), alpha() or light_dark()), got \"nope\" (kept synthwave's track colours)",
+                "line 9: expected key = value, got \"just some words\" (skipped the line)",
+            ]
+        );
+        assert_eq!(problems[2].kind, ProblemKind::Unknown);
+        // The strict reading stops at the first.
+        assert!(Theme::parse(text)
+            .unwrap_err()
+            .starts_with("theme line 3: accent:"));
+        // Hard-to-read colours are listed after, as warnings, and don't
+        // stop the strict reading.
+        let (_, problems) = Theme::load("text = #151922\nqlink.3 = #1A1F2A\n");
+        assert!(problems
+            .iter()
+            .all(|p| p.kind == ProblemKind::HardToRead && p.line.is_none()));
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.text.starts_with("text on surface")),
+            "{problems:?}"
+        );
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.text.starts_with("qlink.3 on surface")),
+            "{problems:?}"
+        );
+        assert!(Theme::parse("text = #151922\nqlink.3 = #1A1F2A\n").is_ok());
+    }
+
+    #[test]
+    fn to_text_writes_roles_as_rules_and_reads_them_back() {
+        let t = Theme::parse("accent = #FF6C11\nqlink.1 = mix({accent}, {text}, 25%)").unwrap();
+        let text = t.to_text();
+        assert!(
+            text.contains("qlink.1       = mix({accent}, {text}, 25%)\n"),
+            "{text}"
+        );
+        assert!(text.contains("qlink.2       = {track.2}\n"), "{text}");
+        assert!(text.contains("mode          = auto\n"), "{text}");
+        assert_eq!(Theme::parse(&text).unwrap(), t);
     }
 }
