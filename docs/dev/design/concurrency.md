@@ -24,7 +24,7 @@ the sound on cores 3 and 2 instead, for the device rounds to compare.
 | `mpfree-report` | The report's lines (`/run/mpfree-app/report.txt`), queued by the audio loop |
 | `mpfree-build` | Builds the chain editor's effects, and drops the ones edits take out |
 | `midi-out`, `midi-out-usb`, `cv-out` | MIDI Out, MIDI out to each USB device and CV out to other gear (`port_writer.rs`), SCHED_FIFO 60 on the MPC. Started from the audio loop when Prefs' Send MIDI and CV out goes on (and for a USB device plugged in while it is on); a `midi-out-usb` thread opens its device's output itself, so the loop never waits for it. When the switch goes off or a device is unplugged, each is set aside (`Closing`) and let go once its last messages have left, never joined from the loop |
-| `usb-midi-scan`, `sample-open`, `sample-load`, `preview-load` | Helper threads: USB MIDI devices (every input of each, opened read only, handed to the audio loop), loading sounds |
+| `usb-midi-scan`, `preview-load` | Helper threads: USB MIDI devices (every input of each, opened read only, handed to the audio loop), and the browser's preview of a sound |
 | `mpfree-print` | The looper's prints and buffers, at idle priority ([below](#the-control-side-and-helper-threads)) |
 | `mpfree-screen` | Touch, the raster, the framebuffer. Ticks the pages every 33 ms and sleeps between ([profiling.md](profiling.md#the-screens-cost)) |
 | `mpfree-touch-bell` | The touchscreen's doorbell: sleeps in read(2) on a second read-only handle on the panel and wakes `mpfree-screen` when it sends something |
@@ -32,8 +32,7 @@ the sound on cores 3 and 2 instead, for the device rounds to compare.
 | `mpfree-store` | Saved settings and patterns |
 | `mpfree-midilog` | The MIDI monitor's Save log (handed to `mpfree-store`) and, while the developer tools are on, its lines in `/run/mpfree-app/midi.log` for the workstation console; four times a second, holding the I/O model's lock only to take an ask or word new lines (the audio loop only `try_lock`s it) |
 | `mpfree-journal` | The console's log |
-| `mpfree-stretch`, the Sample tab's worker | Time-stretch jobs, at idle priority |
-| `mpfree-analyse` | The Sample tab's views of its sounds (`views.rs`): peaks and mono mix, then hits, tempo and root note, off the sound's cores at background priority; the sound shown last first |
+| `mpfree-sound-1`, `mpfree-file-1` | The sampler's job service ([sampler-architecture.md](sampler-architecture.md#the-job-service-step-7)), each started with its lane's first job, off the sound's cores: the sound lane at idle priority, the file lane at the normal one. The sound lane works out the Sample tab's views of its sounds (`views.rs`: peaks and mono mix, then hits, tempo and root note; the sound shown last first) and their pitch tracks, the hits and octave copies of the sounds the pads play, Warp's stretched copies, Process, Put on audio track's copy and Normalize's reads of every frame; the file lane reads and decodes Load, a kit file and a project's kits, so a long analysis never holds them up |
 | `autosample` | An auto-sample: at idle priority for one of MPFree's instruments, at normal priority for external gear |
 
 ## The plan, in order
@@ -124,8 +123,8 @@ it could hold the core in the middle of a period. Two fixes:
   thread started from the audio thread starts at the normal policy. A lane
   asks for its own priority (`Config::fifo`, 69), so lanes are unchanged.
 - Every helper thread calls `cores::background()` first
-  (`mpfree_lanes::os::background`, which the sampler's `mpfree-stretch`
-  worker calls too): the normal policy, and once the audio thread is pinned
+  (`mpfree_lanes::os::background`, which the sampler's job service's
+  file lane calls too): the normal policy, and once the audio thread is pinned
   (`core3`, `two`, `three`), cores 0 and 1 only. The start lines say
   `sound cores: helper threads on cores 0 and 1, normal priority`, and the
   Dev tab's Sound cores page has a "Helper threads" row. In `shared` they
@@ -134,8 +133,9 @@ it could hold the core in the middle of a period. Two fixes:
   and the audio thread), so each message still leaves on its moment; if
   that is refused the log says so and they run at the normal priority.
 - **Long jobs at idle priority** (14 Nov). The helper threads that do long
-  work nobody waits on frame by frame (`mpfree-stretch`, `mpfree-print`,
-  and `autosample` for one of MPFree's instruments) call
+  work nobody waits on frame by frame (the sampler's job service's sound
+  lane, `mpfree-print`, and `autosample` for one of MPFree's instruments)
+  call
   `mpfree_lanes::os::idle_job` instead: the same, then SCHED_IDLE, so they
   run only when cores 0 and 1 have nothing else ready and the screen goes
   first. At the normal priority a busy job on the screen's core shares it

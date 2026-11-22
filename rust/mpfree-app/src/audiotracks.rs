@@ -42,7 +42,10 @@
 
 use mpfree_audiotracks::host::{AudioHost, ImportRefused, TakeWave, MAX_COLUMNS};
 use mpfree_audiotracks::save::Saved;
-use mpfree_audiotracks::{Command, Input, Monitor, TakeInfo, MAX_TRACKS, PEAK_BLOCK};
+use mpfree_audiotracks::{
+    Command, Input, Monitor, Retime, RetimeRefused, SongStep, TakeInfo, MAX_REGIONS, MAX_TRACKS,
+    PEAK_BLOCK,
+};
 use mpfree_time_ui::song::{audio_blocks, take_lanes, AudioLane, MONITORS};
 use mpfree_time_ui::view::{audio_color, AudioAction, RegionId, TimeState, TransportInfo};
 use mpfree_transport::{Block, TempoMap, Tick};
@@ -110,6 +113,13 @@ const CHECK_EVERY: u64 = 8;
 /// Periods between new reads of a recording take's waveform (about a
 /// quarter of a second).
 const GROW_EVERY: u64 = 86;
+
+/// Why the audio tracks' own Undo, and Redo, stop at a song edit's step
+/// (the Arrange refactor's 3.4): the song's UNDO and REDO move them.
+const SONG_UNDO: &str =
+    "the next undo is the song edit that moved the regions: UNDO takes it back, with the song";
+const SONG_REDO: &str = "the next redo is the song edit that moved the regions: SHIFT + UNDO \
+                         brings it back, with the song";
 
 /// The audio tracks, their host and what the Song view was last given.
 pub struct TrackHost {
@@ -632,6 +642,9 @@ impl TrackHost {
                 if tr.history().0 == 0 {
                     return Err("nothing to undo".into());
                 }
+                if tr.undo_is_song().is_some() {
+                    return Err(SONG_UNDO.into());
+                }
                 self.send(Command::Undo)?;
                 "audio tracks: undone (SHIFT + Undo redoes)".into()
             }
@@ -641,6 +654,9 @@ impl TrackHost {
                 }
                 if tr.history().1 == 0 {
                     return Err("nothing to redo".into());
+                }
+                if tr.redo_is_song().is_some() {
+                    return Err(SONG_REDO.into());
                 }
                 self.send(Command::Redo)?;
                 "audio tracks: redone".into()
@@ -967,6 +983,33 @@ impl TrackHost {
         }
     }
 
+    /// Before the audio tracks' own Undo (`undo`) or Redo: a song edit's
+    /// step next that the song's UNDO, or REDO, no longer reaches
+    /// (`reaches`) is forgotten, with the steps only reachable through
+    /// it, and the line says why there is nothing to take back (None:
+    /// Undo goes on as usual). See [`Command::ForgetSong`].
+    pub fn forget_song_step(
+        &mut self,
+        undo: bool,
+        reaches: impl FnOnce(u32) -> bool,
+    ) -> Option<String> {
+        let tr = &self.host.tracks;
+        let song = if undo {
+            tr.undo_is_song()
+        } else {
+            tr.redo_is_song()
+        }?;
+        if tr.busy() || reaches(song) {
+            return None;
+        }
+        self.send(Command::ForgetSong(song)).ok()?;
+        Some(if undo {
+            "nothing to undo: the song edit that moved the regions can no longer be undone".into()
+        } else {
+            "nothing to redo: the song edit that moved the regions can no longer be redone".into()
+        })
+    }
+
     fn send(&mut self, c: Command) -> Result<(), String> {
         if self.host.command(c) {
             Ok(())
@@ -1252,6 +1295,62 @@ impl Fnv {
             self.0 ^= u64::from(b);
             self.0 = self.0.wrapping_mul(0x0100_0000_01b3);
         }
+    }
+}
+
+/// The audio tracks as a song time edit sees them (the Arrange refactor's
+/// 3.4): asked before the song changes, so their refusal changes nothing
+/// anywhere, and sent the edit after, applied at the start of the next
+/// period, the one the song's edit starts in.
+impl crate::time::SongAudio for TrackHost {
+    fn busy(&self) -> Option<String> {
+        if self.opening() {
+            return Some("the project's audio tracks are still going in".into());
+        }
+        // What the tracks say now must hold when the change applies.
+        if self.host.tracks.busy() {
+            return Some("the audio tracks are taking the last change; try again".into());
+        }
+        None
+    }
+
+    fn refused(&self, r: &Retime) -> Option<String> {
+        if let Some(why) = self.busy() {
+            return Some(why);
+        }
+        match self.host.tracks.retime_refused(r)? {
+            RetimeRefused::Recording(t) => {
+                Some(format!("audio {} is recording (stop it first)", t + 1))
+            }
+            RetimeRefused::Full(t) => Some(format!(
+                "audio {} would be cut into more than {MAX_REGIONS} regions",
+                t + 1
+            )),
+        }
+    }
+
+    fn moves(&self, r: &Retime) -> bool {
+        let tr = &self.host.tracks;
+        (0..MAX_TRACKS).any(|t| r.changes(tr.regions(t)))
+    }
+
+    fn retime(&mut self, song: u32, r: Retime) -> bool {
+        // There is room: asked first (refused).
+        self.moves(&r) && self.send(Command::Retime { song, retime: r }).is_ok()
+    }
+
+    fn step(&self, song: u32, undo: bool) -> SongStep {
+        self.host.tracks.song_step(song, undo)
+    }
+
+    fn song_undo(&mut self, song: u32, undo: bool) {
+        let c = if undo {
+            Command::SongUndo(song)
+        } else {
+            Command::SongRedo(song)
+        };
+        // There is room: asked first (busy).
+        let _ = self.send(c);
     }
 }
 

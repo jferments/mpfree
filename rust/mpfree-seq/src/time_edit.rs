@@ -178,6 +178,22 @@ impl TimeEdit {
         })
     }
 
+    /// The stretches of the old song the edited one is made of, in order:
+    /// each `(from, end, to)`, song ticks `from..end` (to the song's end
+    /// for None) starting on tick `to` after the edit. An insert's room is
+    /// in none. For what has a time outside the song (the audio tracks'
+    /// regions, the Arrange refactor's 3.4). `BadRange` for no such range.
+    pub fn pieces(&self) -> Result<Vec<(Tick, Option<Tick>, Tick)>, Refused> {
+        Ok(self
+            .parts()?
+            .into_iter()
+            .filter_map(|p| match p {
+                Part::Piece { from, end, to } => Some((from, end, to)),
+                Part::Gap { .. } => None,
+            })
+            .collect())
+    }
+
     /// The parts of the edited song, in order, none empty: see the module
     /// notes. `BadRange` for no such range.
     fn parts(&self) -> Result<Vec<Part>, Refused> {
@@ -957,6 +973,65 @@ mod tests {
                 at: b(3),
             },
         ]
+    }
+
+    /// The pieces the audio tracks' regions follow (Arrange 3.4): the old
+    /// song's stretches in the edited song's order, an insert's room in
+    /// none, and empty ones left out.
+    #[test]
+    fn the_pieces_say_where_each_stretch_of_the_old_song_goes() {
+        let pieces = |e: TimeEdit| e.pieces().unwrap();
+        assert_eq!(
+            pieces(TimeEdit::Insert {
+                at: b(2),
+                len: b(1)
+            }),
+            [(0, Some(b(2)), 0), (b(2), None, b(3))]
+        );
+        assert_eq!(
+            pieces(TimeEdit::Insert { at: 0, len: b(1) }),
+            [(0, None, b(1))]
+        );
+        assert_eq!(
+            pieces(TimeEdit::Delete {
+                from: b(2),
+                to: b(4)
+            }),
+            [(0, Some(b(2)), 0), (b(4), None, b(2))]
+        );
+        assert_eq!(
+            pieces(TimeEdit::Move {
+                from: b(4),
+                to: b(6),
+                at: b(1)
+            }),
+            [
+                (0, Some(b(1)), 0),
+                (b(4), Some(b(6)), b(1)),
+                (b(1), Some(b(4)), b(3)),
+                (b(6), None, b(6))
+            ]
+        );
+        assert_eq!(
+            pieces(TimeEdit::Copy {
+                from: b(1),
+                to: b(2),
+                at: b(2)
+            }),
+            [
+                (0, Some(b(2)), 0),
+                (b(1), Some(b(2)), b(2)),
+                (b(2), None, b(3))
+            ]
+        );
+        assert_eq!(
+            TimeEdit::Delete {
+                from: b(2),
+                to: b(2)
+            }
+            .pieces(),
+            Err(Refused::BadRange)
+        );
     }
 
     #[test]

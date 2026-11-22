@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-looper rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/loop_row.rs rust/mpfree-app/src/looper_deck.rs rust/mpfree-app/src/looper_tab.rs rust/mpfree-app/src/looping.rs rust/mpfree-seq/src/loops.rs
-checked: 2026-11-20 4b71b1a9
+checked: 2026-11-22 e7409223
 -->
 
 # Recording loops
@@ -17,7 +17,7 @@ The looper is part of the song, not a separate machine running beside it:
 - **It starts and ends on bar lines.** Press Record and the loop waits for the next bar line, then records. You always get at least a beat to get ready: press it in the last beat before a bar line and it waits for the bar after, and the loop's ring counts down the beats in the last bar ("3 beats to REC"). It records until you press Record again, when it ends on the next bar line. Press **STOP** instead and it stops at once and keeps what you played: the loop runs on to the next bar line, silent after the stop (if you press STOP just after a bar line, within a sixteenth note, it ends on that bar line instead). With a set length (**First pass**, below) it ends by itself after that many bars. So the loop is always a whole number of bars, and always in time with your patterns.
 - **It follows the song's position.** Stop and start the transport and the loop picks up exactly where the song is. It is silent while the transport is stopped, and its playhead stops too, at the place the song will start from again (press STOP twice and it goes back to the start of the loop, with the song).
 - **The tempo is the song's tempo.** Change the tempo and a playing loop follows it and keeps its pitch. MPFree re-makes the loop at the new tempo in the background, which takes a fraction of a second; until it is ready, the loop plays faster or slower, like tape. Overdub over a loop at its new tempo and MPFree first fits the loop to that tempo, so the new layer lines up. The fit is its own step: UNDO takes back the overdub, then the fit.
-- **There are no clicks.** The end of the loop is blended into its start, and every start, stop, punch in and out, mute and undo is faded in a few milliseconds.
+- **There are no clicks.** A new loop keeps a moment of what you played just before it started and just after it closed (about half a second in all). At the loop point its end fades into what you played just before its start, so it joins as you played it, and the **seam fade** Q-Link ([below](#the-q-links)) sets how long that fade is, from a hard cut to the longest fade; nothing is written into your recording, so you can change it any time. Every start, stop, punch in and out, mute and undo is faded in a few milliseconds.
 
 ## Layers
 
@@ -25,7 +25,7 @@ The first pass is the loop's first **layer**. Each overdub adds another, up to 1
 
 To get rid of a whole loop, first pass included, use **Clear** on the Looper tab, or hold the loop's ring for a second (on the Looper tab or Play's loop row). The **×** on a loop's last remaining layer does the same. **UNDO brings a cleared loop back** as it was, layers, history and all, until you record into that loop again or the memory is needed for another loop's layers (the oldest cleared loop goes first). In Perform, **Clear** and **×** take a half-second hold, so a stray touch can't clear a loop mid-set (see [Make and Perform](playing-live.md#make-and-perform)); the ring's hold is a second long already.
 
-The looper holds five minutes of stereo sound across all its loops and layers (the Looper tab shows how much is left). At 120 BPM a bar lasts two seconds, so that is room for about 37 four-bar layers, spread over up to eight loops of up to 16 layers each. If you need more or less, **Loop memory** in [Prefs](../reference/prefs.md) (also in the Looper tab's MENU) sets it from 1 to 20 minutes. The memory is set aside when MPFree starts, so a new size takes effect from the next start; the row says "(next start)" until then, and shows how many megabytes it uses (with the 60 seconds the looper keeps for [Capture](#capture-keep-what-you-just-played): 131 MB for five minutes).
+The looper holds five minutes of stereo sound across all its loops and layers (the Looper tab shows how much is left). At 120 BPM a bar lasts two seconds, so that is room for about 37 four-bar layers, spread over up to eight loops of up to 16 layers each (a little less, as each loop's first pass also keeps the moment around it). If you need more or less, **Loop memory** in [Prefs](../reference/prefs.md) (also in the Looper tab's MENU) sets it from 1 to 20 minutes. The memory is set aside when MPFree starts, so a new size takes effect from the next start; the row says "(next start)" until then, and shows how many megabytes it uses (with the 60 seconds the looper keeps for [Capture](#capture-keep-what-you-just-played): 131 MB for five minutes).
 
 ## The buttons
 
@@ -150,14 +150,20 @@ With **Starts: When I play**, tap the ring (or press REC) and the loop waits for
 
 #### Tempo from the first loop
 
-To play in your own time and have everything follow you, turn on **Tempo from the first loop** in the Looper tab's MENU. Then, with the music stopped and every loop empty, a loop on **Length: Free** (or **Pattern** with no pattern playing) doesn't wait for a bar line: tap its ring (or press REC) and it records from that moment, or, with **Starts: When I play**, from your first note. The ring says **Free** and counts the seconds.
+To play in your own time and have everything follow you, turn on **Tempo from the first loop** in the Looper tab's MENU. Then, with the music stopped and every loop empty, the first loop doesn't wait for a bar line: tap its ring (or press REC) and it records from that moment, or, with **Starts: When I play**, from your first note. The ring says **Free** and counts the seconds.
 
-When you tap the ring (or press REC) again, the loop closes there and its length sets the tempo. MPFree picks the number of bars (1, 2, 4, 8 and so on) that puts the tempo between 80 and 160 BPM, so a 2.5-second riff becomes one bar at 96 BPM, and a 7-second one four bars at about 137 BPM. The music starts at that tempo just as the loop comes round, from the start of the bar it stopped in, so the loop, the sequencer and the metronome all follow it. If notes are armed and ready to record, they record from there too.
+When you tap the ring (or press REC) again, the loop closes there and its length sets the tempo. The music starts at that tempo just as the loop comes round, from the start of the bar it stopped in, so the loop, the sequencer and the metronome all follow it. If notes are armed and ready to record, they record from there too.
+
+How many bars the loop is depends on its **Length**:
+
+- **1, 2, 4 or 8 bars** means that many bars at the tempo you play. Set Length to 2 bars, play two bars at whatever speed feels right, close the loop, and the tempo is whatever makes those two bars. Nothing is guessed.
+- **Free** (or **Pattern** with no pattern playing) lets MPFree work out the bars. A loop's length alone can't tell 1 bar at 80 BPM from 2 bars at 160, so it picks the likeliest: a 2.5-second riff becomes one bar at 96 BPM, and a 7-second one four bars at about 137 BPM. When two answers are close, such as 1 bar at 79 or 2 bars at 158, it still picks one so the music can start, and the screen says it was a close call and names the other. A tempo you set yourself before recording (tapped, typed or turned) counts towards the answer, so if you set 80 first, that loop is 1 bar at 79. To be sure of the bars, set Length.
 
 - **The tempo is exact,** to many decimal places, so the loop never drifts against the song; the project keeps it exactly when you save. The tempo chip shows it rounded.
-- **Closed too soon** (shorter than a bar at 160 BPM, 1.5 s in 4/4), the loop keeps recording and closes as soon as it is that long. The ring says **closing**.
+- **Closed too soon** (shorter than a bar at 300 BPM, 0.8 s in 4/4, or than your Length's bars at 300 BPM), the loop keeps recording and closes as soon as it is that long. The ring says **closing**.
+- **Too long for its Length** (2 bars set, but so long that 2 bars would be slower than 30 BPM), MPFree works out the bars instead and the screen says so.
 - **PLAY while it records** throws the free loop away (the screen counts it), since the music would start at the old tempo. Close the loop with its ring or REC instead.
-- It is off while another device's clock leads, the song has more than one tempo, or an export is running. A loop with a set Length, a second loop, or a loop recorded with the music playing keeps to the bars as usual.
+- It is off while another device's clock leads, the song has more than one tempo, or an export is running. A second loop, or a loop recorded with the music playing, keeps to the bars as usual.
 - If the music still can't start at the new tempo, the screen says why, and the loop plays at the song's tempo when the music starts.
 
 {{shot: looper-free | Loop 1 recording free with the music stopped: closing it sets the tempo.}}
@@ -327,7 +333,7 @@ Recording MPFree's own pads needs nothing made up: they are already in time. For
 
 - **A loop's block from its own start**: a block that starts the loop from its top wherever it sits, and **Print to audio track**, turning a loop's blocks into regions on an audio track.
 - **To a pad**: send a loop to a pad as a sample on the Sample tab. You will also be able to drag a single layer onto it.
-- **Save loop**: keep it on the stick with its layers. Your loops are also saved with your project, every layer with its mix (see [Saving your work](saving.md)).
+- **Save loop**: keep it on the stick with its layers. Your loops are also saved with your project, every layer with its mix (see [Saving your work](saving.md)). A loop is saved as it sounds, its loop point and seam fade included; it opens again sounding the same, without the moment kept around it.
 
 > [!MPC]
 > On the MPC the Looper is a separate screen with one loop, which can run free of the transport and start when the input passes a threshold. MPFree has up to eight loops with a mixable lane per layer, and Capture keeps what you played even when you didn't press Record. Its loops always follow the song's bars and tempo, can record MPFree's own pads and synth as well as the inputs, and make up for the input's latency so overdubs land in time.

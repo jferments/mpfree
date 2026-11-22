@@ -356,7 +356,10 @@ impl Session {
             mix,
             time,
             panels,
-            looper: looping::LoopHost::new(RATE, 20),
+            // Room for the looper phases' 4-second loops: three layers,
+            // one more Redo can bring back, and what each first pass keeps
+            // around it, with one more layer to move.
+            looper: looping::LoopHost::new(RATE, 22),
             tracks: audiotracks::TrackHost::new(RATE, 2),
             music,
             synth,
@@ -1213,6 +1216,7 @@ impl Session {
         }
         if let Some(bpm) = self.loop_tempo.take() {
             self.fx.extend(self.app.set_tempo(bpm));
+            self.app.tempo_by_hand = false;
         }
         self.effects();
         self.change_kit();
@@ -1436,6 +1440,7 @@ impl Session {
                 &self.time,
                 self.export.running(),
             ));
+        self.looper.set_tempo_meant(self.app.tempo_by_hand);
         if let Some(line) = self.looper.run(self.time.block(), &mut ll, &mut lr) {
             self.out.note(&line);
         }
@@ -1717,6 +1722,7 @@ impl Session {
             let fx = self.app.set_tempo(bpm);
             self.fx.extend(fx);
         }
+        self.app.tempo_by_hand = false;
         if let Some(mut t) = o.time.take() {
             (t.metronome, t.click_gain) = (self.time.metronome, self.time.click_gain);
             std::mem::swap(&mut self.time, &mut *t);
