@@ -15,9 +15,16 @@
 //! - [`recover_into`]: at start, before anything records, takes left in the
 //!   work folder by a crash, a power cut or a session never saved are
 //!   finished and moved where the musician finds them. Nothing is deleted.
+//! - [`Problem`]: what System status hears of the takes' files and the
+//!   drive, through `mpfree-stream`'s [`Watch`] (phase 3b step 5d): each
+//!   take as the writer shows it (at risk, not saved yet, may stop,
+//!   stopped), the drive's data folder looked at every few seconds on a
+//!   thread of its own ([`watch_drive`]: missing, nearly full), and what
+//!   recovery found ([`Recovered`]).
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -26,8 +33,11 @@ use mpfree_stream::player::UNIT;
 use mpfree_stream::rec::{recording_path, Meta, RecFormat, RecId};
 pub use mpfree_stream::rec::{TakeState, Why};
 use mpfree_stream::recover::{check_whole, checked, recover, Found};
+use mpfree_stream::status::{Drive, Watch};
 pub use mpfree_stream::writer::WriterConfig;
 use mpfree_stream::writer::{Gate, RealClock, Recorder, Status, TakeNo, TakeView};
+
+use mpfree_status::{Report, Subject};
 
 use crate::host::TakeWave;
 use crate::save::TakeFile;
@@ -336,6 +346,8 @@ const POLL: Duration = Duration::from_millis(50);
 /// One recording's file, on the worker.
 struct FileRec {
     rec: RecordingId,
+    /// The engine track it was armed on (0 for a take a project opened).
+    track: u8,
     /// The take it is, once one records into it or opens with it.
     id: Option<u16>,
     /// 0 for a take opened with a project (it wasn't recorded here).
@@ -420,6 +432,12 @@ pub(crate) struct Files {
     streams: bool,
     opens: Vec<ToOpen>,
     grows: Vec<Growing>,
+    /// The takes' problems for System status, and those not taken yet.
+    watch: Watch,
+    problems: Vec<Problem>,
+    /// Bytes a second the takes armed or recording take (for the drive's
+    /// look: nearly full by what is armed).
+    armed: Arc<AtomicU64>,
 }
 
 impl Files {
@@ -432,7 +450,21 @@ impl Files {
             streams: false,
             opens: Vec::new(),
             grows: Vec::new(),
+            watch: Watch::new(),
+            problems: Vec::new(),
+            armed: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// What System status is to hear of the takes since last asked.
+    pub fn take_problems(&mut self) -> Vec<Problem> {
+        std::mem::take(&mut self.problems)
+    }
+
+    /// Bytes a second the takes armed or recording take, kept up to date
+    /// as the writer is looked at.
+    pub fn armed(&self) -> Arc<AtomicU64> {
+        self.armed.clone()
     }
 
     /// Takes play from their files from now on: each finished take file,
@@ -519,6 +551,7 @@ impl Files {
         );
         self.recs.push(FileRec {
             rec,
+            track,
             id: None,
             channels,
             no: Some(no),
@@ -636,6 +669,7 @@ impl Files {
         }
         self.recs.push(FileRec {
             rec,
+            track: 0,
             id: Some(id),
             channels: 0,
             no: None,
@@ -656,13 +690,22 @@ impl Files {
     /// stay where they are). Files still only armed are left for their
     /// [`Files::disarm`].
     pub fn clear(&mut self) {
-        let Files { writing, recs, .. } = self;
+        let Files {
+            writing,
+            recs,
+            watch,
+            problems,
+            ..
+        } = self;
         recs.retain(|f| {
             if !f.take {
                 return true;
             }
             if let (Some(w), Some(no)) = (writing.as_mut(), f.no) {
                 w.rec.forget(no);
+                watch.take_gone(track_subject(f.track), &mut |r| {
+                    problems.push(Problem::of(r))
+                });
             }
             false
         });
@@ -679,15 +722,28 @@ impl Files {
         }
         self.last_poll = Instant::now();
         let mut gone = Vec::new();
+        let rate = u64::from(self.rate);
+        let bytes: u64 = self
+            .recs
+            .iter()
+            .filter(|f| f.no.is_some())
+            .map(|f| u64::from(f.channels) * 4 * rate)
+            .sum();
+        self.armed.store(bytes, Ordering::Relaxed);
+        let problems = &mut self.problems;
+        let mut report = |r: Report| problems.push(Problem::of(r));
         for f in &mut self.recs {
             let Some(no) = f.no else { continue };
+            let subject = track_subject(f.track);
             match w.rec.status(no) {
                 None | Some(Status::Arming) => {}
                 Some(Status::Failed(why)) => {
                     out.push(Said::Failed { rec: f.rec, why });
                     w.rec.disarm(no);
                     f.no = None;
-                    if !f.take {
+                    if f.take {
+                        self.watch.take_gone(subject, &mut report);
+                    } else {
                         gone.push(f.rec);
                     }
                 }
@@ -700,6 +756,7 @@ impl Files {
                         continue;
                     }
                     let view = FileView::of(&v);
+                    self.watch.take(subject, &v, &mut report);
                     let ch = usize::from(f.channels);
                     // Whole units of the cache committed: the file plays
                     // them from now on, and their memory goes.
@@ -730,6 +787,7 @@ impl Files {
                         // The writer is done with it.
                         w.rec.forget(no);
                         f.no = None;
+                        self.watch.take_gone(subject, &mut report);
                         if let (true, Some(id), Some(p)) = (self.streams, f.id, &f.path) {
                             if f.grown > 0 {
                                 // Opened as it grew, and named in place:
@@ -885,6 +943,92 @@ fn read_frames(path: &Path, channels: usize, out: &mut [f32]) -> Result<(), Stri
     Ok(())
 }
 
+/// A report for System status about the takes' files or the drive, and
+/// the engine track it is about, if any: the app names it
+/// (`Subject::audio_track` with the track's lasting id), as only it
+/// knows which project track an engine track plays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Problem {
+    pub report: Report,
+    pub track: Option<usize>,
+}
+
+impl Problem {
+    /// A watch's report: about an engine track when its subject is one
+    /// ([`track_subject`]), else about the whole system.
+    pub(crate) fn of(r: Report) -> Problem {
+        let track = (r.subject != Subject::NONE).then(|| r.subject.0 as usize - 1);
+        Problem {
+            report: Report {
+                subject: Subject::NONE,
+                ..r
+            },
+            track,
+        }
+    }
+}
+
+/// The subject the watch keeps engine track `track`'s takes under (one
+/// take records on a track at a time, and a take's problems end before
+/// the next begins); [`Problem::of`] takes it off again.
+fn track_subject(track: u8) -> Subject {
+    Subject(u32::from(track) + 1)
+}
+
+/// What a look at the drive holding the work folder found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Room {
+    /// It answered and isn't read-only.
+    pub writable: bool,
+    /// Bytes free for MPFree.
+    pub free: u64,
+}
+
+/// Looks at the drive holding a folder (`statvfs`, in the app): None if
+/// it couldn't (the drive isn't there). It may wait on a failing drive,
+/// so it runs on a thread of its own ([`watch_drive`]).
+pub type DriveProbe = fn(&Path) -> Option<Room>;
+
+/// How often the drive is looked at.
+pub const DRIVE_EVERY: Duration = Duration::from_secs(3);
+
+/// Look at the drive holding `dir` every [`DRIVE_EVERY`], on a thread of
+/// its own, until `stop`'s sender goes: Stick missing (it didn't answer,
+/// or is read-only) and Stick nearly full (under 1 GB free, or ten
+/// minutes of what `armed` says the armed takes record, a second), each to
+/// `report` as it begins and ends. False from `report`: the host is gone.
+pub fn watch_drive(
+    dir: PathBuf,
+    probe: DriveProbe,
+    armed: Arc<AtomicU64>,
+    stop: std::sync::mpsc::Receiver<()>,
+    report: impl Fn(Problem) -> bool + Send + 'static,
+) -> io::Result<()> {
+    std::thread::Builder::new()
+        .name("mpfree-at-drive".into())
+        .spawn(move || {
+            let mut watch = Watch::new();
+            loop {
+                let room = probe(&dir);
+                let d = Drive {
+                    writable: room.is_some_and(|r| r.writable),
+                    free: room.map_or(0, |r| r.free),
+                    armed_bytes_per_s: armed.load(Ordering::Relaxed),
+                };
+                let mut live = true;
+                watch.drive(&d, &mut |r| live &= report(Problem::of(r)));
+                if !live {
+                    return;
+                }
+                match stop.recv_timeout(DRIVE_EVERY) {
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    _ => return,
+                }
+            }
+        })
+        .map(|_| ())
+}
+
 /// How far ahead of the playhead the cache must be before a take file is
 /// written a piece further ([`write_take`]), and the longest it waits for
 /// that, a piece at a time.
@@ -985,16 +1129,32 @@ pub fn write_take(
     Ok((name, path))
 }
 
+/// What [`recover_into`] found: the log's lines, System status's reports
+/// (Take recovered for each take it finished; Take damaged, about
+/// [`Subject::found_take`], for each whose whole check failed), and the
+/// name each found take's subject stands for (`found[n - 1]` for
+/// `found_take(n)`: its file's name in Recordings).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Recovered {
+    pub lines: Vec<String>,
+    pub reports: Vec<Report>,
+    pub found: Vec<String>,
+}
+
 /// Takes found in a work folder at start: finished, checked, and moved
 /// into `keep` (the library's Recordings place), each named as it was.
-/// The lines say what was found, in the musician's words. A take whose
+/// What was found is said in the musician's words, and to System status. A take whose
 /// checks can't run yet stays for the next start; nothing is deleted.
-pub fn recover_into(work: &Path, keep: &Path) -> io::Result<Vec<String>> {
+pub fn recover_into(work: &Path, keep: &Path) -> io::Result<Recovered> {
     let mut fs = StdFs::new();
     let mut lines = Vec::new();
+    let mut out = Recovered::default();
+    let mut watch = Watch::new();
     let found = recover(&mut fs, work)?;
-    let mut doubtful = Vec::new();
+    // Each take whose whole check failed, and its found take's number.
+    let mut doubtful: Vec<(PathBuf, u32)> = Vec::new();
     for f in &found {
+        watch.found(f, &mut |r| out.reports.push(r));
         match f {
             Found::CutOff { stem, record, .. } => lines.push(format!(
                 "audio tracks: {} was cut off while it recorded; recovered up to {}",
@@ -1019,7 +1179,10 @@ pub fn recover_into(work: &Path, keep: &Path) -> io::Result<Vec<String>> {
             match check_whole(&mut fs, path, record) {
                 Ok(true) => checked(&mut fs, work, f.stem())?,
                 Ok(false) => {
-                    doubtful.push(path.to_path_buf());
+                    out.found.push(show_stem(f.stem()));
+                    let n = out.found.len() as u32;
+                    watch.checked(Subject::found_take(n), false, &mut |r| out.reports.push(r));
+                    doubtful.push((path.to_path_buf(), n));
                     checked(&mut fs, work, f.stem())?;
                 }
                 // Tried again next start, its checkpoint kept.
@@ -1044,13 +1207,17 @@ pub fn recover_into(work: &Path, keep: &Path) -> io::Result<Vec<String>> {
             continue;
         }
         // A take whose whole check failed is kept as unverified.
-        let base = if doubtful.contains(&from) {
+        let failed = doubtful.iter().find(|(p, _)| *p == from).map(|&(_, n)| n);
+        let base = if failed.is_some() {
             format!("{stem}.unverified.wav")
         } else {
             n.clone()
         };
         let to = free_name(keep, &base);
         std::fs::rename(&from, &to)?;
+        if let (Some(k), Some(name)) = (failed, to.file_name()) {
+            out.found[k as usize - 1] = name.to_string_lossy().into_owned();
+        }
         if base.contains(".unverified.") {
             apart += 1;
         } else {
@@ -1075,7 +1242,8 @@ pub fn recover_into(work: &Path, keep: &Path) -> io::Result<Vec<String>> {
             if apart == 1 { "was" } else { "were" }
         ));
     }
-    Ok(lines)
+    out.lines = lines;
+    Ok(out)
 }
 
 /// `name` in `dir`, or `name 2`, `name 3`... before its extension when
@@ -1169,6 +1337,20 @@ mod tests {
         )));
     }
 
+    /// A watch's report about an engine track's takes comes out naming
+    /// the track, for the app to name as the musician does; one about the
+    /// whole system names none.
+    #[test]
+    fn a_problem_names_the_engine_track_its_take_records_on() {
+        use mpfree_status::kinds::{RECORDING_AT_RISK, STICK_MISSING};
+        let p = Problem::of(Report::began(&RECORDING_AT_RISK).about(track_subject(3)));
+        assert_eq!(p.track, Some(3));
+        assert_eq!(p.report, Report::began(&RECORDING_AT_RISK));
+        let p = Problem::of(Report::began(&STICK_MISSING));
+        assert_eq!(p.track, None);
+        assert_ne!(track_subject(0), Subject::NONE);
+    }
+
     /// A take whose file was opened as it grew: a save reads what reached
     /// the file from there (the tracks fill in the rest from memory), and
     /// says so; a file that can't be read leaves that part silent, and
@@ -1183,6 +1365,7 @@ mod tests {
         std::fs::write(&path, crate::save::wav(&on_file, 1, 48_000)).unwrap();
         let rec = |n: u128, path: Option<PathBuf>| FileRec {
             rec: RecordingId(n),
+            track: 0,
             id: Some(0),
             channels: 1,
             no: None,

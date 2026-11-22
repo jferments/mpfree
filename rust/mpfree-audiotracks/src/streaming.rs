@@ -30,17 +30,22 @@
 //!   so when the cache runs short the last are given back first; the
 //!   answer says how many are held, and so does a later give-back (what
 //!   plays always comes first).
+//! - **System status**: every [`LOOK`] the coordinator's admission (Streaming
+//!   at limit, while not even the least safe read-ahead fits) and the
+//!   sources whose card went (Card removed) go through a [`Watch`] to the
+//!   audio thread as [`FromStream::Problem`] (phase 3b step 5d).
 
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mpfree_stream::coord::{Coordinator, HoldId, HoldTier, IoThread, JobId, JobTier, Plan};
 use mpfree_stream::format::Layout;
 use mpfree_stream::msg::MAX_SOURCES;
 use mpfree_stream::player::{Config, Player, UNIT};
+use mpfree_stream::status::Watch;
 use mpfree_stream::writer::Gate;
 
 use crate::RecordingId;
@@ -178,8 +183,13 @@ pub(crate) struct Head {
 /// it runs short of room.
 const HEADS_A_HOLD: usize = 16;
 
+/// How often the stream thread tells System status how it stands.
+const LOOK: Duration = Duration::from_millis(250);
+
 /// What the stream thread answers the audio thread.
 pub(crate) enum FromStream {
+    /// For System status: streaming at its limit, or a card gone.
+    Problem(mpfree_status::Report),
     /// Take `take`'s file is open as its source, at generation `gen`:
     /// still being written if `growing`.
     Open {
@@ -254,6 +264,8 @@ fn run(
         recs: vec![RecordingId::NONE; MAX_SOURCES],
         reading: Vec::new(),
         heads: Vec::new(),
+        watch: Watch::new(),
+        looked: Instant::now(),
     };
     loop {
         let mut busy = false;
@@ -270,7 +282,7 @@ fn run(
             }
         }
         busy |= s.c.step();
-        if !s.finish_reads(&read) || !s.heads_given_back(&answer) {
+        if !s.finish_reads(&read) || !s.heads_given_back(&answer) || !s.look(&answer) {
             return;
         }
         if !busy {
@@ -299,9 +311,30 @@ struct Side {
     reading: Vec<(u32, JobId)>,
     /// The holds on regions' starts.
     heads: Vec<HoldId>,
+    /// What System status was last told, and when.
+    watch: Watch,
+    looked: Instant,
 }
 
 impl Side {
+    /// Every [`LOOK`]: the coordinator's admission and the sources whose
+    /// card went, for System status. False once the answer can't go.
+    fn look(&mut self, answer: &impl Fn(FromStream) -> bool) -> bool {
+        if self.looked.elapsed() < LOOK {
+            return true;
+        }
+        self.looked = Instant::now();
+        let mut lost = 0;
+        while self.c.lost().is_some() {
+            lost += 1;
+        }
+        let mut live = true;
+        let mut tell = |r| live &= answer(FromStream::Problem(r));
+        self.watch.admission(&self.c.admission(), &mut tell);
+        self.watch.card_lost(lost, &mut tell);
+        live
+    }
+
     /// One message. False once the answer can't go (the host is gone).
     fn handle(
         &mut self,

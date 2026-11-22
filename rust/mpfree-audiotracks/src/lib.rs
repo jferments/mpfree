@@ -1114,6 +1114,12 @@ impl AudioTracks {
         self.stats
     }
 
+    /// The stream player's own counters, while takes play from their
+    /// files (for System status: frames played as silence).
+    pub fn player_stats(&self) -> Option<mpfree_stream::player::Stats> {
+        self.player.as_ref().map(|p| p.stats())
+    }
+
     pub fn memory(&self) -> Memory {
         Memory {
             used: self.pool.used(),

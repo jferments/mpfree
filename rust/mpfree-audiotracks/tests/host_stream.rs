@@ -511,6 +511,43 @@ fn the_starts_of_regions_on_their_files_are_held_so_a_jump_to_one_plays_at_once(
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Step 5d: frames a take on its file played as silence because the drive
+/// was late reach System status as Stick fell behind, about no track.
+#[test]
+fn the_drive_falling_behind_is_told_to_system_status() {
+    use mpfree_audiotracks::files::Problem;
+    use mpfree_status::{kinds, Report};
+    let dir = scratch("behind");
+    let mut r = Rig::with(Some(&dir), Some(cache(64)));
+    r.record_long(24);
+    r.run_until(|r| r.all_on_file());
+    let before: Vec<Problem> = std::iter::from_fn(|| r.h.take_problem()).collect();
+    assert!(
+        !before
+            .iter()
+            .any(|p| p.report.kind == &kinds::STICK_FELL_BEHIND),
+        "{before:?}"
+    );
+    // A jump into the middle of the take, which the cache can't have yet.
+    r.t.command(r.frame, T::Locate(15 * BAR_T));
+    r.run_to(r.frame + 2 * P);
+    r.t.command(r.frame, T::PlayStart);
+    r.run_to(r.frame + 2 * P);
+    assert!(r.h.tracks.stats().missed > 0);
+    // The player's counters go to System status every 64 periods.
+    r.run_to(r.frame + 70 * P);
+    let after: Vec<Problem> = std::iter::from_fn(|| r.h.take_problem()).collect();
+    assert!(
+        after.contains(&Problem {
+            report: Report::happened(&kinds::STICK_FELL_BEHIND, 1),
+            track: None,
+        }),
+        "{after:?}"
+    );
+    assert_eq!(r.h.problems_lost, 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_cache_too_small_for_every_start_holds_the_soonest_and_says_so_once() {
     let dir = scratch("short");

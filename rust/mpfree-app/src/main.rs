@@ -11440,6 +11440,9 @@ fn player_session(
         if let Some(line) = tracks.take_file_line() {
             out.note(&line);
         }
+        while let Some(r) = tracks.take_problem() {
+            out.show(gui::ToUi::Problem(r));
+        }
         if let Some(what) = tracks.take_left_out() {
             out.left_out(what);
         }

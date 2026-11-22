@@ -332,7 +332,7 @@ For the audio tracks' phase 3b (takes longer than memory), in `mpfree-stream` (`
 
 ## What the musician is told: the Storage kinds
 
-Phase 3 of [System status](status.md): this layer's problems are entries in the catalogue (`rust/mpfree-status/src/kinds.rs`, Storage), agreed with the status thread on 22 Nov. `mpfree_stream::status::Watch` decides when each begins, ends or happens, so every caller says the same thing about the same state, and hands each report to a callback (in the app, `ToUi::Problem`). It allocates nothing once its list has grown to the problems going at once, and does no I/O. Tested in `tests/status.rs` with a writer on the model stick, and through the status board.
+Phase 3 of [System status](status.md): this layer's problems are entries in the catalogue (`rust/mpfree-status/src/kinds.rs`, Storage), agreed with the status thread on 22 Nov. `mpfree_stream::status::Watch` decides when each begins, ends or happens, so every caller says the same thing about the same state, and hands each report to a callback (in the app, `ToUi::Problem`). It allocates nothing once its list has grown to the problems going at once, and does no I/O. Tested in `tests/status.rs` with a writer on the model stick, and through the status board. The audio tracks feed it in the app ([audio-tracks.md](audio-tracks.md), step 5d).
 
 | Kind | Level, shape | Fed | Why this level |
 |---|---|---|---|

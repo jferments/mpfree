@@ -2193,8 +2193,12 @@ pub struct Player {
     /// The audio tracks' recovery at start, on its own thread: their work
     /// folder and the lines it says ([`Player::recover_audio_files`]).
     #[allow(clippy::type_complexity)]
-    audio_recover:
-        Option<std::sync::mpsc::Receiver<(std::path::PathBuf, std::io::Result<Vec<String>>)>>,
+    audio_recover: Option<
+        std::sync::mpsc::Receiver<(
+            std::path::PathBuf,
+            std::io::Result<mpfree_audiotracks::files::Recovered>,
+        )>,
+    >,
     /// The browser's preview level, in dB (its Q-Link 3).
     preview_db: f32,
     /// A sound file being read for the preview.
@@ -7914,6 +7918,14 @@ impl Player {
             one_core: self.engines.as_deref().and_then(|e| e.cores.fell_back()),
             missing_ports: missing.as_deref(),
         };
+        // Audio tracks by lasting id, for problems about one.
+        self.status_watch.set_audio_tracks(
+            self.time
+                .tracks
+                .iter()
+                .filter(|t| t.audio)
+                .map(|t| (t.id.0, t.name.as_str())),
+        );
         let mut reports = Vec::new();
         self.status_watch.look(&look, &mut |r| reports.push(r));
         for r in reports {
@@ -10247,13 +10259,19 @@ impl Player {
         };
         self.audio_recover = None;
         match r {
-            Ok(lines) => {
-                let kept = !lines.is_empty();
-                for l in lines {
+            Ok(found) => {
+                let kept = !found.lines.is_empty();
+                for l in found.lines {
                     self.say(l);
                 }
                 if kept {
                     self.tell("Takes from last time were recovered into Recordings");
+                }
+                // System status: what was recovered, and any take whose
+                // check failed, by its name in Recordings.
+                self.status_watch.set_found_takes(found.found);
+                for r in found.reports {
+                    self.report_problem(r);
                 }
             }
             // Recording to files goes on: a take whose file can't be made

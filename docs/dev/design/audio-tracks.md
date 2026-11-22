@@ -224,6 +224,16 @@ Phase 3b plays takes from their files through the [stream layer](disk-streaming.
 
 **Cost.** With no player the tracks skip it. With one, each period looks at the takes partly on their files and their cues; the perf gate measures it before the step's pull request.
 
+**Step 5d, problems for System status** ([`files.rs`](../../../rust/mpfree-audiotracks/src/files.rs) `Problem`, `watch_drive`, `Recovered`; [`streaming.rs`](../../../rust/mpfree-audiotracks/src/streaming.rs) `Side::look`; [`host.rs`](../../../rust/mpfree-audiotracks/src/host.rs) `take_problem`): the audio tracks are where the app first records and streams through `mpfree-stream`, so they feed its `status::Watch` ([disk-streaming.md](disk-streaming.md#what-the-musician-is-told-the-storage-kinds)), one watch per place:
+
+- **Each take**, as the worker looks at the writer (every 50 ms): Recording at risk, Not saved yet, Recording may stop, Recording stopped. A take's problems end once its file is finished, it fails, or the tracks are emptied, before the next take on its track begins.
+- **The drive**, every 3 s on a thread of its own (`mpfree-at-drive`), because `statvfs` can wait on a failing stick: Stick missing (no answer, or read-only) and Stick nearly full (under 1 GB, or ten minutes of what the armed takes record). The app gives the look (`sys::drive_room`, `statvfs` through the `libc` crate, reads only).
+- **The stream thread**, every 250 ms: Streaming at limit (the coordinator's admission) and Card removed (sources `lost` gave).
+- **The player**, every 64 periods on the audio thread: Stick fell behind when frames played as silence. It allocates nothing there.
+- **At start**, recovery's findings (`recover_into` returns `Recovered`): Take recovered for each take it finished, and Take damaged for each whose whole check failed, about `Subject::found_take(n)`, named by its file in Recordings.
+
+The host keeps the reports in room made at start (64; more are counted in `problems_lost`). A report about a take carries its engine track (`Problem::track`), and the app makes it about the project track that engine track plays, by its lasting id (`Subject::audio_track`, `Slots::name_problem`); the page names it from the track list (`TrackInfo::id`, `status_watch::Watch::subject_name`). Tests: `tests/files.rs` (the drive going and coming back), `tests/host_stream.rs` (the drive falling behind), `files.rs` (a take's problem names its engine track), the app's `audiotracks.rs` (the project track by lasting id, the drive's room) and `status_watch.rs` (names by tag). The kinds' own rules are tested in `mpfree-stream`'s `tests/status.rs`.
+
 ## In the pad player
 
 [`rust/mpfree-app/src/audiotracks.rs`](../../../rust/mpfree-app/src/audiotracks.rs) holds `TrackHost`, which owns the `AudioHost` in the app's audio loop.

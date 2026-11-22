@@ -55,12 +55,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mpfree_stream::player::Player;
+use mpfree_stream::status::Watch;
 use mpfree_stream::writer::Gate;
 
 use mpfree_transport::time::TempoMap;
 use mpfree_transport::{Block, Mark, Tick};
 
-use crate::files::{self, FileEvent, FileView, Files, Growing, Name, Said, WriterConfig};
+use crate::files::{
+    self, DriveProbe, FileEvent, FileView, Files, Growing, Name, Problem, Said, WriterConfig,
+};
 use crate::save::{Saved, TakeFile};
 use crate::streaming::{self, FromStream, Head, Read, Stream, StreamConfig, ToStream};
 use crate::stretch::{fit_ratio, StretchJob};
@@ -98,6 +101,10 @@ pub const COPY_SAMPLES: usize = 8192;
 const SPARE: usize = 32;
 /// Events for the log waiting to be taken, at most.
 const EVENTS: usize = 64;
+/// Room for System status's reports between looks (made at start).
+const PROBLEMS: usize = 64;
+/// The player's counters go to System status every this many periods.
+const PLAYER_LOOK_EVERY: u64 = 64;
 
 /// A take recording to its file: how far it has been copied out, and the
 /// buffer filling for the worker.
@@ -125,6 +132,8 @@ struct FileSide {
     /// made.
     armed: [Option<(RecordingId, bool)>; MAX_TRACKS],
     events: Vec<FileEvent>,
+    /// Reports for System status not taken yet ([`AudioHost::take_problem`]).
+    problems: Vec<Problem>,
 }
 
 /// Frames of a take a save or a fit reads for each frame that plays.
@@ -153,6 +162,8 @@ pub struct TakeWave {
 enum ToWorker {
     /// Room for a save (`Saved::room`), for the audio thread to fill.
     Room,
+    /// Look at the drive takes record to with this, once they do.
+    WatchDrive(DriveProbe),
     /// A filled room: trimmed to its first `tracks` and `takes`, each
     /// take named for its file, and room made for the audio of those
     /// whose file can't be copied whole ([`Files::name_save`]).
@@ -265,6 +276,8 @@ enum ToWorker {
 
 enum FromWorker {
     Room(Saved),
+    /// For System status (the takes' files, the drive).
+    Problem(Problem),
     Sized(Saved, Vec<FileEvent>),
     Buffer {
         audio: Vec<f32>,
@@ -413,6 +426,10 @@ pub struct AudioHost {
     /// regions of a take left out, so no region ever plays a take that
     /// won't come.
     waiting: Option<Saved>,
+    /// The stream player's counters as System status last heard them.
+    watch: Watch,
+    /// Reports for System status that found no room (taken too slowly).
+    pub problems_lost: u64,
 }
 
 /// Why [`AudioHost::import`] could not take a sound.
@@ -457,7 +474,10 @@ impl AudioHost {
                 views: vec![None; MAX_TAKES],
                 armed: [None; MAX_TRACKS],
                 events: Vec::with_capacity(EVENTS),
+                problems: Vec::with_capacity(PROBLEMS),
             },
+            watch: Watch::new(),
+            problems_lost: 0,
             fits: 0,
             fits_failed: 0,
             importing: None,
@@ -614,6 +634,29 @@ impl AudioHost {
         }
     }
 
+    /// The next report for System status about the takes' files, the
+    /// drive and streaming (phase 3b step 5d), oldest first: the engine
+    /// track it is about, if any, for the app to name. Does not allocate.
+    pub fn take_problem(&mut self) -> Option<Problem> {
+        if self.files.problems.is_empty() {
+            None
+        } else {
+            Some(self.files.problems.remove(0))
+        }
+    }
+
+    fn problem(&mut self, p: Problem) {
+        keep_problem(&mut self.files.problems, &mut self.problems_lost, p);
+    }
+
+    /// Look at the drive takes record to with `probe` every few seconds,
+    /// on a thread of its own, for System status (missing, nearly full),
+    /// once takes record to files ([`AudioHost::record_to`]). Allocates
+    /// the message: between periods.
+    pub fn watch_drive(&self, probe: DriveProbe) {
+        self.send(ToWorker::WatchDrive(probe));
+    }
+
     fn send(&self, m: ToWorker) {
         if let Some(tx) = &self.tx {
             let _ = tx.send(m);
@@ -631,6 +674,13 @@ impl AudioHost {
         self.tend_import(map);
         self.tend(block.frames as usize);
         self.periods += 1;
+        if self.periods.is_multiple_of(PLAYER_LOOK_EVERY) {
+            if let Some(st) = self.tracks.player_stats() {
+                let (room, lost) = (&mut self.files.problems, &mut self.problems_lost);
+                self.watch
+                    .player(&st, &mut |r| keep_problem(room, lost, Problem::of(r)));
+            }
+        }
         for m in block.markers() {
             if let Mark::LoopSet(range) = m.mark {
                 self.loop_range = range;
@@ -1188,6 +1238,7 @@ impl AudioHost {
                 }
                 FromWorker::Spare(buf) => self.files.spare.push(buf),
                 FromWorker::Files(said) => self.heard(said),
+                FromWorker::Problem(p) => self.problem(p),
                 FromWorker::NoFile { rec, why } => {
                     if let Some(t) = self.tracks.take_of(rec).and_then(|id| self.tracks.take(id)) {
                         self.event(FileEvent::NoFile {
@@ -1335,6 +1386,7 @@ impl AudioHost {
     /// closed; and how many regions' starts the cache holds.
     fn stream_said(&mut self, o: FromStream) {
         match o {
+            FromStream::Problem(r) => self.problem(Problem::of(r)),
             // For tracks since emptied: its source goes.
             FromStream::Open { era, take, gen, .. } if era != self.generation => {
                 self.send(ToWorker::Close { take, gen });
@@ -1940,6 +1992,15 @@ impl AudioHost {
     }
 }
 
+/// `p` kept for System status if there is room, else counted.
+fn keep_problem(room: &mut Vec<Problem>, lost: &mut u64, p: Problem) {
+    if room.len() < PROBLEMS {
+        room.push(p);
+    } else {
+        *lost += 1;
+    }
+}
+
 /// The worker thread: every big buffer made and dropped here, stretches,
 /// and the files (see the module notes). It wakes at least every 20 ms
 /// while the writer runs, to see how its takes stand. `back` is its own
@@ -1952,6 +2013,8 @@ fn work(rate: u32, jobs: &Receiver<ToWorker>, done: &Sender<FromWorker>, back: &
         wants: Vec::new(),
         next_job: 1,
         era: 0,
+        drive: None,
+        drive_stop: None,
     };
     loop {
         let m = if w.files.writing() {
@@ -1974,6 +2037,11 @@ fn work(rate: u32, jobs: &Receiver<ToWorker>, done: &Sender<FromWorker>, back: &
         }
         for said in w.files.poll(false) {
             if done.send(FromWorker::Files(said)).is_err() {
+                return;
+            }
+        }
+        for p in w.files.take_problems() {
+            if done.send(FromWorker::Problem(p)).is_err() {
                 return;
             }
         }
@@ -2008,9 +2076,31 @@ struct Worker {
     /// file opened carries it, so an answer for tracks since emptied is
     /// told apart.
     era: u32,
+    /// How to look at the drive, and the end of the thread looking at it
+    /// (dropped, it stops).
+    drive: Option<DriveProbe>,
+    drive_stop: Option<Sender<()>>,
 }
 
 impl Worker {
+    /// Look at the drive the takes record to, once there is a folder and
+    /// a way to look: a thread of its own (any earlier one stops).
+    fn look_at_drive(&mut self, done: &Sender<FromWorker>) {
+        let (Some(probe), Some(dir)) = (self.drive, self.files.work_dir()) else {
+            return;
+        };
+        let (stop, stopped) = channel();
+        let done = done.clone();
+        let started = crate::files::watch_drive(
+            dir.to_path_buf(),
+            probe,
+            self.files.armed(),
+            stopped,
+            move |p| done.send(FromWorker::Problem(p)).is_ok(),
+        );
+        self.drive_stop = started.is_ok().then_some(stop);
+    }
+
     /// Take files finished (recorded, or a project's) go to the stream
     /// thread to open, and recordings' files to open or grow as they are
     /// written.
@@ -2185,9 +2275,17 @@ impl Worker {
                     .as_ref()
                     .map_or_else(|| Arc::new(Gate::new()), |st| st.gate.clone());
                 match files.start(dir, cfg, gate) {
-                    Ok(()) => return None,
+                    Ok(()) => {
+                        self.look_at_drive(done);
+                        return None;
+                    }
                     Err(e) => FromWorker::FilesFailed(e.to_string()),
                 }
+            }
+            ToWorker::WatchDrive(probe) => {
+                self.drive = Some(probe);
+                self.look_at_drive(done);
+                return None;
             }
             ToWorker::Arm {
                 track,
