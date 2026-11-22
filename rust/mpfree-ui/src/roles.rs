@@ -895,7 +895,7 @@ mod tests {
         assert!(contrast(fixed, amber) >= 4.5, "{fixed:?}");
         assert!(contrast(fixed, amber) < contrast(t.bg, amber));
         // On a light theme the same blue on its panel darkens.
-        let light = Theme::parse("bg = #E4E7EB\nsurface = #F4F5F7\ntext = #161A21").unwrap();
+        let light = Theme::light();
         let fixed = light.readable(blue, light.surface);
         assert!(contrast(fixed, light.surface) >= 4.5, "{fixed:?}");
     }
@@ -907,7 +907,7 @@ mod tests {
         assert_eq!(t.faded(ink, t.surface), ink.with_alpha(127));
         // Half of a dark ink on a light panel reads under 3:1: it is drawn
         // more solid, just enough.
-        let light = Theme::parse("bg = #E4E7EB\nsurface = #F4F5F7\ntext = #161A21").unwrap();
+        let light = Theme::light();
         let ink = light.text_dim.mix(light.text, 0.3);
         let f = light.faded(ink, light.surface);
         assert!(f.a > 127 && f.a < 255, "{f:?}");

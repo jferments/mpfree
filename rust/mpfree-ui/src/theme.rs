@@ -13,7 +13,7 @@
 //! as a small text file that starts from any of them; see [`Theme::parse`].
 
 use crate::color::Color;
-use crate::roles::{hex, ColorKey, Expr, Mode, Role, ROLES, ROLE_COUNT};
+use crate::roles::{hex, over, ColorKey, Expr, Mode, Role, ROLES, ROLE_COUNT};
 use crate::sizes;
 use crate::text::FontId;
 use std::collections::HashMap;
@@ -148,6 +148,12 @@ pub struct Theme {
 
 /// The built-in themes, by the name a theme file's `base` uses.
 pub const BUILTIN: [&str; 5] = ["default", "light", "console", "synthwave", "spaceship"];
+
+/// The least a theme's text and dim text must reach on the page, a panel
+/// and a button for MPFree to be usable in it at all: the line the
+/// contrast check calls unreadable. Below it, Prefs > Appearance itself
+/// couldn't be read to pick another theme ([`Theme::unusable`]).
+pub const FLOOR: f32 = 3.0;
 
 impl Theme {
     /// The default: dark, for a studio, with one blue accent and status colours.
@@ -567,8 +573,9 @@ impl Theme {
     /// Colours are `#RRGGBB` or `#RRGGBBAA`, or follow and mix others
     /// (see [`crate::roles`]); `track` takes up to eight, and `track.N`
     /// sets one. This is the strict reading for the app's themes folder:
-    /// any mistake or unknown key is an error that names the line (see
-    /// [`Theme::load`] for the forgiving one).
+    /// any mistake or unknown key is an error that names the line, and so
+    /// is a theme no one could read ([`Theme::unusable`]); see
+    /// [`Theme::load`] for the forgiving one.
     pub fn parse(text: &str) -> Result<Theme, String> {
         let (theme, problems) = Theme::load(text);
         match problems
@@ -586,8 +593,9 @@ impl Theme {
     /// A theme from a theme file, never failing: a line with a mistake
     /// leaves what it would have changed as the base theme has it, an
     /// unknown key (from a newer MPFree, say) is skipped, and each is
-    /// listed by line with what was used instead, followed by the theme's
-    /// readability warnings ([`Theme::check`]).
+    /// listed by line with what was used instead, followed by whether the
+    /// theme is [`Theme::unusable`] and its readability warnings
+    /// ([`Theme::check`]).
     pub fn load(text: &str) -> (Theme, Vec<Problem>) {
         let mut problems = Vec::new();
         let mistake = |line: usize, text: String, used: Option<String>| Problem {
@@ -740,6 +748,14 @@ impl Theme {
         }
         theme.resolve_roles();
         problems.sort_by_key(|p| p.line);
+        if let Some(why) = theme.unusable() {
+            problems.push(Problem {
+                line: None,
+                kind: ProblemKind::Unusable,
+                text: why,
+                used: None,
+            });
+        }
         for w in theme.check() {
             problems.push(Problem {
                 line: None,
@@ -934,6 +950,37 @@ impl Theme {
         }
     }
 
+    /// Why MPFree can't be used in this theme, if it can't: its text or dim
+    /// text under [`FLOOR`] on the page (`bg`), a panel (`surface`, as it
+    /// shows over `bg`) or a button (`raised`, over the panel), so nothing
+    /// could be read, Prefs > Appearance included. The app leaves such a
+    /// theme file out and shows the default theme instead. [`Theme::check`]
+    /// is stricter (4.5:1 for text); a theme between the two still loads,
+    /// with its warnings.
+    pub fn unusable(&self) -> Option<String> {
+        let panel = self.panel();
+        let button = over(self.raised, panel);
+        let mut short = Vec::new();
+        for (what, ink) in [("text", self.text), ("text_dim", self.text_dim)] {
+            for (name, under) in [
+                ("the page (bg)", self.bg),
+                ("panels (surface)", panel),
+                ("buttons (raised)", button),
+            ] {
+                let r = contrast(over(ink, under), under);
+                if r < FLOOR {
+                    short.push(format!("{what} on {name} {r:.1}:1"));
+                }
+            }
+        }
+        (!short.is_empty()).then(|| {
+            format!(
+                "nothing could be read: {}, under the {FLOOR}:1 every theme must reach",
+                short.join(", ")
+            )
+        })
+    }
+
     /// Readability problems: text that is too close to what it sits on
     /// (WCAG contrast below 4.5:1 for text, 3:1 for dim text and accents).
     /// A user theme can still be used; the picker shows these as warnings.
@@ -1031,6 +1078,9 @@ pub enum ProblemKind {
     /// A key themes no longer set (text sizes, `gap`, `pad`, faces): the
     /// line is ignored, and an older theme file still loads.
     Ignored,
+    /// Text or dim text under [`FLOOR`] on the page, panels or buttons
+    /// ([`Theme::unusable`]): the app won't use the theme.
+    Unusable,
 }
 
 impl std::fmt::Display for Problem {
@@ -1319,7 +1369,7 @@ mod tests {
 
     #[test]
     fn low_contrast_is_reported() {
-        let t = Theme::parse("text = #151922").unwrap();
+        let t = Theme::parse("text = #787878").unwrap();
         assert!(
             t.check().iter().any(|w| w.starts_with("text on surface")),
             "{:?}",
@@ -1482,8 +1532,8 @@ mod tests {
             .unwrap_err()
             .starts_with("theme line 3: accent:"));
         // Hard-to-read colours are listed after, as warnings, and don't
-        // stop the strict reading.
-        let (_, problems) = Theme::load("text = #151922\nqlink.3 = #1A1F2A\n");
+        // stop the strict reading (text at 3.1:1 to 4.2:1: over the floor).
+        let (_, problems) = Theme::load("text = #787878\nqlink.3 = #1A1F2A\n");
         assert!(problems
             .iter()
             .all(|p| p.kind == ProblemKind::HardToRead && p.line.is_none()));
@@ -1499,7 +1549,7 @@ mod tests {
                 .any(|p| p.text.starts_with("qlink.3 on surface")),
             "{problems:?}"
         );
-        assert!(Theme::parse("text = #151922\nqlink.3 = #1A1F2A\n").is_ok());
+        assert!(Theme::parse("text = #787878\nqlink.3 = #1A1F2A\n").is_ok());
     }
 
     #[test]
@@ -1518,6 +1568,51 @@ mod tests {
     /// Text sizes, spacing and faces are the layout's (owner, 22 Nov): every
     /// theme has them, and a theme file that sets them, as files from before
     /// did, still loads with each line noted and ignored.
+    #[test]
+    fn every_built_in_theme_is_over_the_floor() {
+        for name in BUILTIN {
+            let t = Theme::builtin(name).unwrap();
+            assert_eq!(t.unusable(), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_theme_no_one_could_read_is_refused() {
+        // Text the colour of the panels: Prefs > Appearance couldn't be
+        // read to pick another theme.
+        let text = "name = Fog\ntext = #151922\n";
+        let (t, problems) = Theme::load(text);
+        assert_eq!(t.name, "Fog");
+        let p = problems
+            .iter()
+            .find(|p| p.kind == ProblemKind::Unusable)
+            .expect("unusable");
+        assert_eq!(p.line, None);
+        assert!(
+            p.text.contains("text on panels (surface) 1.0:1"),
+            "{}",
+            p.text
+        );
+        assert!(
+            p.text.ends_with("under the 3:1 every theme must reach"),
+            "{}",
+            p.text
+        );
+        let e = Theme::parse(text).unwrap_err();
+        assert!(
+            e.starts_with("nothing could be read: text on the page (bg)"),
+            "{e}"
+        );
+        // Dim text counts too, and so do see-through panels, measured as
+        // they show over the page.
+        assert!(Theme::parse("text_dim = #2A3040\n").is_err());
+        assert!(Theme::parse("surface = #E9ECF2F0\n").is_err());
+        // Hard to read but over the floor: it loads, with its warnings.
+        let t = Theme::parse("text = #787878\n").unwrap();
+        assert_eq!(t.unusable(), None);
+        assert!(!t.check().is_empty());
+    }
+
     #[test]
     fn sizes_spacing_and_faces_are_the_same_in_every_theme() {
         for name in BUILTIN {

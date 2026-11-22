@@ -730,10 +730,12 @@ const MAX_THEME_FILES: usize = 32;
 /// The themes folder's `NAME.theme` files that parse, in name order (at
 /// most [`MAX_THEME_FILES`]), each with its theme. A theme without its own
 /// `name`, or named like a built-in one, is shown by its file name. A file
-/// that doesn't parse is left out with a line saying why (the second list,
-/// lines for the log). Only reads.
-fn load_theme_files(store: &mpfree_store::Store) -> (Vec<(String, Theme)>, Vec<String>) {
-    let (mut found, mut notes) = (Vec::new(), Vec::new());
+/// that doesn't parse, or whose text no one could read
+/// ([`Theme::unusable`]), is left out with a line saying why (the second
+/// list, lines for the log), and counted (the third, for the Debug page).
+/// Only reads.
+fn load_theme_files(store: &mpfree_store::Store) -> (Vec<(String, Theme)>, Vec<String>, u64) {
+    let (mut found, mut notes, mut left_out) = (Vec::new(), Vec::new(), 0);
     for file in store.list(app::THEMES_FOLDER) {
         let Some(stem) = file.strip_suffix(".theme").filter(|s| !s.is_empty()) else {
             continue;
@@ -758,15 +760,21 @@ fn load_theme_files(store: &mpfree_store::Store) -> (Vec<(String, Theme)>, Vec<S
                 }
                 found.push((file, t));
             }
-            Some(Err(e)) => notes.push(format!("themes: {file} left out: {e}")),
-            None => notes.push(format!("themes: {file} left out: not readable text")),
+            Some(Err(e)) => {
+                notes.push(format!("themes: {file} left out: {e}"));
+                left_out += 1;
+            }
+            None => {
+                notes.push(format!("themes: {file} left out: not readable text"));
+                left_out += 1;
+            }
         }
     }
     if !found.is_empty() {
         let names: Vec<&str> = found.iter().map(|(_, t)| t.name.as_str()).collect();
         notes.push(format!("themes: found {}", names.join(", ")));
     }
-    (found, notes)
+    (found, notes, left_out)
 }
 
 /// The built-in fonts, or files given with --font, --bold-font, --mono-font.
@@ -3751,7 +3759,13 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
     }
     match load_theme(o) {
         Ok(t) => player.ui.set_theme(t),
-        Err(e) => out.say(&format!("{e}; using the default theme")),
+        Err(e) => {
+            out.say(&format!("{e}; using the default theme"));
+            player.apply(gui::ToUi::ThemeFallbacks {
+                left_out: 0,
+                default_shown: 1,
+            });
+        }
     }
     let (to_ui, from_audio) = sync_channel::<gui::ToUi>(4096);
     let (to_audio, from_ui) = sync_channel::<gui::FromUi>(256);
@@ -6753,7 +6767,7 @@ fn player_session(
     // The themes folder: theme files the user put in files/themes/ (read
     // only), offered in Prefs > Appearance after the built-in themes. Listed
     // before restore so a saved theme file comes back.
-    let (theme_files, notes) = load_theme_files(&store);
+    let (theme_files, notes, themes_left_out) = load_theme_files(&store);
     for line in notes {
         out.say(&line);
     }
@@ -6836,6 +6850,14 @@ fn player_session(
         app.settings.theme = t.clone();
     }
     out.show(gui::ToUi::Settings(app.settings.clone()));
+    // Theme files left out, and a saved theme that couldn't be used (the
+    // default shows): counted on the Debug page.
+    if themes_left_out > 0 || app.theme_fallbacks > 0 {
+        out.show(gui::ToUi::ThemeFallbacks {
+            left_out: themes_left_out,
+            default_shown: app.theme_fallbacks,
+        });
+    }
     // A new project's Perform set, for the Pads tab's Perform view (a
     // project opened brings its own).
     out.show(gui::ToUi::PerformSet {
@@ -13001,9 +13023,12 @@ mod tests {
         .unwrap();
         fs::write(t.join("plain.theme"), "base = console\n").unwrap();
         fs::write(t.join("broken.theme"), "accent = blue\n").unwrap();
+        // Text the colour of the panels: no one could read it.
+        fs::write(t.join("fog.theme"), "text = #151922\n").unwrap();
         fs::write(t.join("notes.txt"), "not a theme\n").unwrap();
         let store = mpfree_store::Store::at(&d, |_| {});
-        let (found, notes) = load_theme_files(&store);
+        let (found, notes, left_out) = load_theme_files(&store);
+        assert_eq!(left_out, 2);
         let names: Vec<(&str, &str)> = found
             .iter()
             .map(|(f, t)| (f.as_str(), t.name.as_str()))
@@ -13017,6 +13042,12 @@ mod tests {
             notes
                 .iter()
                 .any(|n| n.starts_with("themes: broken.theme left out")),
+            "{notes:?}"
+        );
+        assert!(
+            notes.iter().any(
+                |n| n.starts_with("themes: fog.theme left out: nothing could be read: text on")
+            ),
             "{notes:?}"
         );
         assert!(
