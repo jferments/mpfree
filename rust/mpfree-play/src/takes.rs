@@ -324,6 +324,9 @@ pub enum Replaced {
     Mutate,
     /// Restore: the clip as it was before its first Mutate (S6).
     Restore,
+    /// Fit to tempo on an audio clip's card: the clip on fitted copies of
+    /// its recordings, made at the project's tempo (audio tracks phase 2).
+    Fit,
 }
 
 /// A scene editor change: row `row`'s settings before and after.

@@ -607,6 +607,7 @@ impl TakeRow {
                 Replaced::Reload => "reload",
                 Replaced::Mutate => "mutate",
                 Replaced::Restore => "restore",
+                Replaced::Fit => "fit",
             }
         } else if self.deleted {
             "delete"
@@ -1257,6 +1258,13 @@ pub enum TimeAction {
     /// Restore (S6): the clip as it was before its first Mutate, at once,
     /// as an edit UNDO takes back.
     Restore {
+        track: usize,
+        slot: usize,
+    },
+    /// Fit to tempo on an audio clip's card (audio tracks phase 2): the
+    /// clip on fitted copies of its recordings, made at the project's
+    /// tempo, once they are in, as an edit UNDO takes back.
+    FitClip {
         track: usize,
         slot: usize,
     },
@@ -3499,6 +3507,7 @@ fn take_detail(st: &TimeState, row: &TakeRow) -> String {
         (Some(Replaced::Mutate), Some(n)) => return format!("variant {n}"),
         (Some(Replaced::Mutate), None) => return "a variation".into(),
         (Some(Replaced::Restore), _) => return "the original".into(),
+        (Some(Replaced::Fit), _) => return "to tempo".into(),
         (None, _) => {}
     }
     if row.deleted {

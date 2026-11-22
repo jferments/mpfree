@@ -1084,6 +1084,20 @@ impl TimeHost {
         self.sent(r)
     }
 
+    /// Fit to tempo's end (audio tracks phase 2): clip `slot` of `track`,
+    /// if still clip `id`, plays `audio`, as one edit UNDO takes back
+    /// (see `TimeControl::fit_clip`). Its name, or why not.
+    pub fn fit_clip(
+        &mut self,
+        track: usize,
+        slot: usize,
+        id: mpfree_seq::ClipId,
+        audio: mpfree_seq::AudioClip,
+    ) -> Result<String, String> {
+        let r = self.with(|c| c.fit_clip(track, slot, id, audio));
+        self.sent(r)
+    }
+
     /// A track's MIDI effects, as the chain editor's Notes stage set them
     /// (see `TimeControl::set_note_fx`). False if there is no such note
     /// track.
@@ -11806,7 +11820,11 @@ mod tests {
             assert_eq!(drums, Err("there is no audio track 1".to_string()));
             let notes = h.put_audio_clip(GUITAR, Clip::new("Notes", 3840));
             assert_eq!(notes, Err("Guitar takes audio clips only".to_string()));
-            assert!(h.control.project.tracks[GUITAR].slots.iter().next().is_none());
+            assert!(h.control.project.tracks[GUITAR]
+                .slots
+                .iter()
+                .next()
+                .is_none());
         }
 
         #[test]
@@ -11820,7 +11838,10 @@ mod tests {
                 h.control.project.clip(VOCAL, 0).unwrap().clone(),
                 h.control.project.clip(GUITAR, 2).unwrap().clone(),
             );
-            assert_eq!((a.audio.as_ref(), a.name.as_str()), (b.audio.as_ref(), "Verse"));
+            assert_eq!(
+                (a.audio.as_ref(), a.name.as_str()),
+                (b.audio.as_ref(), "Verse")
+            );
             assert_ne!(a.id, b.id);
             // Moved within the audio tracks.
             h.act(drop((GUITAR, 2), (VOCAL, 4), false)).unwrap();
@@ -11828,25 +11849,55 @@ mod tests {
             assert_eq!(name_at(&h, GUITAR, 2), None);
             // Never between an audio track and a note track, either way.
             let e = h.act(drop((VOCAL, 0), (DRUMS, 3), false)).unwrap_err();
-            assert_eq!(e, "clips: Drums plays notes: an audio clip goes on an audio track");
+            assert_eq!(
+                e,
+                "clips: Drums plays notes: an audio clip goes on an audio track"
+            );
             let e = h.act(drop((DRUMS, 0), (GUITAR, 3), true)).unwrap_err();
-            assert_eq!(e, "clips: Guitar is an audio track: it takes audio clips only");
-            assert_eq!((name_at(&h, DRUMS, 3), name_at(&h, GUITAR, 3)), (None, None));
+            assert_eq!(
+                e,
+                "clips: Guitar is an audio track: it takes audio clips only"
+            );
+            assert_eq!(
+                (name_at(&h, DRUMS, 3), name_at(&h, GUITAR, 3)),
+                (None, None)
+            );
             // UNDO twice: the move, then the copy.
             h.act(TimeAction::Undo).unwrap();
             h.act(TimeAction::Undo).unwrap();
-            assert_eq!((name_at(&h, VOCAL, 4), name_at(&h, GUITAR, 2)), (None, None));
+            assert_eq!(
+                (name_at(&h, VOCAL, 4), name_at(&h, GUITAR, 2)),
+                (None, None)
+            );
             // COPY and paste the same way.
-            h.act(TimeAction::CopyClip { track: VOCAL, slot: 0 }).unwrap();
-            h.act(TimeAction::PasteClip { track: GUITAR, slot: 5 }).unwrap();
+            h.act(TimeAction::CopyClip {
+                track: VOCAL,
+                slot: 0,
+            })
+            .unwrap();
+            h.act(TimeAction::PasteClip {
+                track: GUITAR,
+                slot: 5,
+            })
+            .unwrap();
             assert_eq!(name_at(&h, GUITAR, 5).as_deref(), Some("Verse"));
-            let e = h.act(TimeAction::PasteClip { track: DRUMS, slot: 5 });
+            let e = h.act(TimeAction::PasteClip {
+                track: DRUMS,
+                slot: 5,
+            });
             assert_eq!(
                 e.unwrap_err(),
                 "paste: Drums plays notes: an audio clip goes on an audio track"
             );
-            h.act(TimeAction::CopyClip { track: DRUMS, slot: 0 }).unwrap();
-            let e = h.act(TimeAction::PasteClip { track: VOCAL, slot: 5 });
+            h.act(TimeAction::CopyClip {
+                track: DRUMS,
+                slot: 0,
+            })
+            .unwrap();
+            let e = h.act(TimeAction::PasteClip {
+                track: VOCAL,
+                slot: 5,
+            });
             assert_eq!(
                 e.unwrap_err(),
                 "paste: Vocal is an audio track: it takes audio clips only"

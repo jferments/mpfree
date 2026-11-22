@@ -390,6 +390,17 @@ enum Fitting {
     },
 }
 
+/// A fitted copy made for a clip ([`AudioHost::fit_copy`]): recording
+/// `to`, recording `from` stretched by `ratio` (its frames per one of
+/// `from`'s) to the tempo asked for, keeping its pitch. The song still
+/// plays `from`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FitCopy {
+    pub from: RecordingId,
+    pub to: RecordingId,
+    pub ratio: f64,
+}
+
 /// The audio tracks with their worker; see the module notes.
 pub struct AudioHost {
     pub tracks: AudioTracks,
@@ -407,6 +418,10 @@ pub struct AudioHost {
     /// Fits swapped in, and ones that could not be made or loaded.
     pub fits: u64,
     pub fits_failed: u64,
+    /// The fit under way makes a copy for a clip ([`AudioHost::fit_copy`]):
+    /// loaded, it is said in `fitted`, not played in the song.
+    fit_copy: bool,
+    fitted: Option<FitCopy>,
     /// A sound brought in ([`AudioHost::import`]) copying in: its take,
     /// placed once it is in, and where it is cut (kept, not freed, here).
     importing: Option<u16>,
@@ -514,6 +529,8 @@ impl AudioHost {
             problems_lost: 0,
             fits: 0,
             fits_failed: 0,
+            fit_copy: false,
+            fitted: None,
             importing: None,
             import_cuts: Vec::new(),
             imports: 0,
@@ -1171,15 +1188,51 @@ impl AudioHost {
     /// a fit is under way, the take is not there or records, its tempo is
     /// not known or already `bpm`, or there is no worker.
     pub fn fit(&mut self, id: u16, bpm: f64) -> bool {
+        let from = self.tracks.take(id).map_or(0.0, |t| t.bpm);
+        self.start_fit(id, from, bpm, false)
+    }
+
+    /// Fit to tempo on an audio clip's card (audio tracks phase 2): a
+    /// fitted copy of take `id`, its audio made at `from` BPM stretched to
+    /// `bpm`, keeping its pitch, as a take of its own that the song does
+    /// not play (the song keeps the original). Once it is in (copied in,
+    /// or written to its file and open) [`AudioHost::fitted_copy`] says
+    /// so, and the clip is pointed at it. False as for
+    /// [`AudioHost::fit`], or if `from` is not a tempo.
+    pub fn fit_copy(&mut self, id: u16, from: f64, bpm: f64) -> bool {
+        self.start_fit(id, from, bpm, true)
+    }
+
+    /// The fitted copy that has come in since the last ask, if any.
+    pub fn fitted_copy(&mut self) -> Option<FitCopy> {
+        self.fitted.take()
+    }
+
+    /// How far the fit under way has got, 0 to 1, roughly: reading the
+    /// take is the first half, stretching it takes it to 0.9 (the worker
+    /// says nothing until it is done), copying it in the rest.
+    pub fn fit_progress(&self) -> Option<f32> {
+        Some(match self.fitting.as_ref()? {
+            Fitting::Sizing { .. } => 0.0,
+            Fitting::Reading { take, frame, .. } => {
+                0.5 * (*frame as f32 / take.frames.max(1) as f32).min(1.0)
+            }
+            Fitting::Stretching { .. } => 0.5,
+            Fitting::Loading { .. } => 0.9,
+        })
+    }
+
+    fn start_fit(&mut self, id: u16, from: f64, bpm: f64, copy: bool) -> bool {
         if self.fitting.is_some() || self.tx.is_none() {
             return false;
         }
         let Some(take) = self.tracks.take(id).filter(|t| !t.recording) else {
             return false;
         };
-        let Some(ratio) = fit_ratio(take.bpm, bpm).filter(|r| (r - 1.0).abs() > 1e-9) else {
+        let Some(ratio) = fit_ratio(from, bpm).filter(|r| (r - 1.0).abs() > 1e-9) else {
             return false;
         };
+        self.fit_copy = copy;
         if self.plays_from_file(id) {
             self.fit_from_file(take, ratio, bpm);
             return true;
@@ -2109,7 +2162,19 @@ impl AudioHost {
             }
             Some(Fitting::Loading { new, swap }) => {
                 if self.tracks.take(new).is_some() && self.tracks.loading() == 0 {
-                    self.tracks.command(swap);
+                    // A copy for a clip is said, and the song keeps the
+                    // take it plays.
+                    match (self.fit_copy, swap) {
+                        (true, Command::Swap { old, new, ratio }) => {
+                            let rec = |id| self.tracks.take(id).map(|t| t.rec);
+                            if let (Some(from), Some(to)) = (rec(old), rec(new)) {
+                                self.fitted = Some(FitCopy { from, to, ratio });
+                            }
+                        }
+                        _ => {
+                            self.tracks.command(swap);
+                        }
+                    }
                     self.fits += 1;
                 } else if self.tracks.take(new).is_some() || self.coming(new) {
                     self.fitting = Some(Fitting::Loading { new, swap });

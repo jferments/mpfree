@@ -1493,8 +1493,37 @@ impl TimeControl {
         self.takes
             .new_clip(&mut self.project, track, slot, clip, false)
             .map_err(|e| format!("the clip: {e:?}"))?;
-        self.compile()?;
+        if let Err(e) = self.compile() {
+            self.takes.undo(&mut self.project);
+            self.takes.forget_undone();
+            return Err(e);
+        }
         Ok(slot)
+    }
+
+    /// Fit to tempo's end on an audio clip's card (audio tracks phase 2):
+    /// clip `slot` of `track`, if it is still clip `id`, plays `audio`
+    /// (its regions on fitted copies of its recordings, made at the
+    /// project's tempo), as one edit UNDO takes back. Its name, or why
+    /// not: the cell changed meanwhile, or the clip's own refusal. Nothing
+    /// changes on an error.
+    pub fn fit_clip(
+        &mut self,
+        track: usize,
+        slot: usize,
+        id: mpfree_seq::ClipId,
+        audio: mpfree_seq::AudioClip,
+    ) -> Result<String, String> {
+        let c = self
+            .project
+            .clip(track, slot)
+            .filter(|c| c.id == id && c.audio.is_some())
+            .ok_or_else(|| "fit: the clip changed while it fitted".to_string())?;
+        let mut clip = c.clone();
+        clip.audio = Some(audio);
+        let name = clip.name.clone();
+        self.replace(track, slot, clip, Replaced::Fit)?;
+        Ok(name)
     }
 
     /// Cues that launch audio wait until the app has held the start of
@@ -3569,9 +3598,9 @@ impl TimeControl {
                     let there = self.project.tracks.get(to.0);
                     let name = there.map_or("", |t| t.name.as_str());
                     return Err(match there {
-                        Some(t) if t.is_audio() => format!(
-                            "clips: {name} is an audio track: it takes audio clips only"
-                        ),
+                        Some(t) if t.is_audio() => {
+                            format!("clips: {name} is an audio track: it takes audio clips only")
+                        }
                         Some(t) if t.is_loops() => format!(
                             "clips: {name} is a Loop track: an audio clip goes on an audio track"
                         ),
@@ -3899,6 +3928,9 @@ impl TimeControl {
             // The audio tracks' engine is the app's to wire (AudioHost);
             // until it takes these, say so rather than drop them quietly.
             TimeAction::Audio(a) => Err(format!("audio tracks: {a:?} is not wired yet")),
+            // The fitted copies are the audio tracks' to make (the app,
+            // `main::time_action`); the clip comes back through `fit_clip`.
+            TimeAction::FitClip { .. } => Err("Fit to tempo goes through the audio tracks".into()),
             TimeAction::SongTempo(TempoEdit::Pick(k)) => {
                 self.tempo_pick = k.filter(|&k| k < self.project.arrangement.tempo.len());
                 if self.tempo_pick.is_some() {
@@ -5464,6 +5496,7 @@ impl TimeControl {
             Replaced::Reload => "reload",
             Replaced::Mutate => "mutate",
             Replaced::Restore => "restore",
+            Replaced::Fit => "fit",
         };
         self.takes
             .replace_clip(&mut self.project, track, slot, clip, why)
