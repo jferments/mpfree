@@ -3446,12 +3446,7 @@ mod tests {
         let shown: Vec<&str> = st.strips.iter().map(|v| v.name.as_str()).collect();
         assert_eq!(
             shown,
-            [
-                "Poly \u{b7} Track 1",
-                "Synth",
-                "Loop",
-                "FM \u{b7} Track 3"
-            ]
+            ["Poly \u{b7} Track 1", "Synth", "Loop", "FM \u{b7} Track 3"]
         );
         // Perform's On and the Looper's Records from: the track's own name
         // when it has one.

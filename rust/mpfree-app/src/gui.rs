@@ -16303,8 +16303,12 @@ fn sample_audio_track_mixer() -> mpfree_mixer_ui::MixState {
     use mpfree_fx::{ids::mixer as mx, StripId};
     let mut project = mpfree_seq::Project::new();
     project.tracks.push(mpfree_seq::Track::new("Drums", 0));
-    project.tracks.push(mpfree_seq::Track::new_audio("Vocal", 0));
-    project.tracks.push(mpfree_seq::Track::new_audio("Guitar", 0));
+    project
+        .tracks
+        .push(mpfree_seq::Track::new_audio("Vocal", 0));
+    project
+        .tracks
+        .push(mpfree_seq::Track::new_audio("Guitar", 0));
     project.give_track_ids();
     let mut tracks = crate::audiotracks::TrackHost::new(44_100, 1);
     tracks.sync(&project, 0, true);
@@ -16319,7 +16323,8 @@ fn sample_audio_track_mixer() -> mpfree_mixer_ui::MixState {
     let mut mix = crate::mixing::MixHost::new(44_100, -18.0, -12.0);
     let (vocal_ch, guitar_ch) = (mix.track_channel(1), mix.track_channel(2));
     mix.audio_tracks = 0b110;
-    mix.mixer.set_now(StripId::Track(guitar_ch), mx::VOLUME, -3.0);
+    mix.mixer
+        .set_now(StripId::Track(guitar_ch), mx::VOLUME, -3.0);
     mix.mixer.set_now(StripId::Track(guitar_ch), mx::PAN, 30.0);
     let silent = [0f32; crate::PERIOD];
     let (mut l, mut r) = ([0f32; crate::PERIOD], [0f32; crate::PERIOD]);
