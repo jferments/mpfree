@@ -54,8 +54,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::format::{decode, layout, Layout};
+use crate::ledger::{Ledger, Pool};
 use crate::msg::{FromPlayer, Tag, ToPlayer, Where, MAX_SOURCES};
 use crate::player::{unit_frames, Config, UNIT};
+use crate::resample::Rate;
+use crate::storage::{Card, Located};
 use crate::writer::Gate;
 
 /// Past this much of a recording's capture memory, background reads stop.
@@ -80,6 +83,10 @@ pub struct Plan {
     /// only while every playing cursor has at least this long, or the
     /// longest stall seen lately, before it needs a unit not yet in hand.
     pub stall_s: f64,
+    /// The stall comes from measuring this stick (the stick test, D1), not
+    /// from a default. Until it does, admission calls a workload untested
+    /// ([`crate::policy::Cover::Untested`]).
+    pub measured: bool,
 }
 
 impl Default for Plan {
@@ -91,6 +98,7 @@ impl Default for Plan {
             in_flight: 8,
             join_bytes: 512 * 1024,
             stall_s: 0.5,
+            measured: false,
         }
     }
 }
@@ -99,13 +107,11 @@ impl Plan {
     /// The plan's window rule for a device whose worst shortfall measured
     /// `worst_s` seconds: twice that and one more, never under 4 s.
     pub fn for_shortfall(worst_s: f64) -> Plan {
-        let w = if worst_s.is_finite() && worst_s > 0.0 {
-            2.0 * worst_s + 1.0
-        } else {
-            0.0
-        };
+        let measured = worst_s.is_finite() && worst_s > 0.0;
+        let w = if measured { 2.0 * worst_s + 1.0 } else { 0.0 };
         Plan {
             window_s: w.max(4.0),
+            measured,
             ..Plan::default()
         }
     }
@@ -240,6 +246,10 @@ pub struct Stats {
     pub refused: u32,
     /// Times a read waited because no slot could be given up.
     pub no_room: u32,
+    /// Units read again while already in the cache, and not filled again.
+    pub duplicates: u32,
+    /// Reads and units dropped because the card they were for went.
+    pub card_gone: u32,
 }
 
 /// Whether what plays, what is held and what is reserved fits the cache.
@@ -307,23 +317,73 @@ pub enum Refusal {
 }
 
 enum Store {
-    File { file: Arc<File>, layout: Layout },
-    Memory,
+    File {
+        file: Arc<File>,
+        layout: Layout,
+    },
+    /// Lent by the engine that holds it: its bytes, for the ledger.
+    Memory {
+        bytes: u64,
+    },
 }
 
 struct Src {
     tag: Tag,
     store: Store,
+    /// A file played at the engine's rate: its units are engine frames,
+    /// made from the file's frames around them.
+    rate: Option<Rate>,
+    /// The card it is on: read only while that insertion holds.
+    card: Option<Card>,
+    /// Its card went and that was reported ([`Coordinator::lost`]).
+    reported: bool,
     /// Where each cursor playing it last played.
     cursors: Vec<Where>,
+}
+
+/// The frames a file source plays in: the file's own, or the engine's
+/// for one played at the engine's rate. Units, holds, readiness and
+/// cursors all count in these, never in the other.
+#[derive(Clone, Copy)]
+struct Shape {
+    channels: u16,
+    frames: u64,
 }
 
 impl Src {
     fn layout(&self) -> Option<&Layout> {
         match &self.store {
             Store::File { layout, .. } => Some(layout),
-            Store::Memory => None,
+            Store::Memory { .. } => None,
         }
+    }
+
+    /// Its card went: nothing more is read for it.
+    fn lost(&self) -> bool {
+        self.card.as_ref().is_some_and(|c| !c.valid())
+    }
+
+    fn shape(&self) -> Option<Shape> {
+        let l = self.layout()?;
+        Some(Shape {
+            channels: l.channels,
+            frames: self.rate.map_or(l.frames, |r| r.frames()),
+        })
+    }
+
+    /// The file frames (`start..end`) unit `unit` is made from.
+    fn span(&self, unit: u32) -> Option<(u64, u64)> {
+        let sh = self.shape()?;
+        let uf = unit_frames(sh.channels);
+        let first = u64::from(unit) * uf;
+        let n = sh.frames.saturating_sub(first).min(uf);
+        if n == 0 {
+            return None;
+        }
+        Some(match self.rate {
+            Some(r) => r.span(first, n),
+            None => (first, first + n),
+        })
     }
 }
 
@@ -341,11 +401,16 @@ struct Hold {
 struct Job {
     id: u32,
     tier: JobTier,
+    /// The card it reads from, if any.
+    card: Option<Card>,
     file: Arc<File>,
     len: u64,
     data: Vec<u8>,
     busy: bool,
 }
+
+/// Why a read from the card failed when the card went.
+const CARD_GONE: &str = "the SD card was removed";
 
 /// What a read in flight is for.
 enum Kind {
@@ -397,7 +462,12 @@ pub struct Coordinator {
     finished: HashMap<u32, Result<Vec<u8>, String>>,
     reserve: usize,
     pool: Vec<Vec<f32>>,
+    /// Buffers made at start (in the pool or out with a fill).
+    buffers: usize,
     bytes: Vec<Vec<u8>>,
+    /// A resampled unit's file frames, decoded (it grows to the largest
+    /// unit read).
+    scratch: Vec<f32>,
     /// Units read whole, waiting for a buffer or a slot.
     ready: VecDeque<(Tag, u32, Vec<u8>)>,
     /// Messages waiting for room on the way to the sound thread.
@@ -416,6 +486,8 @@ pub struct Coordinator {
     /// The cushion, shared with the recording writer's thread.
     gate: Arc<Gate>,
     admission: Admission,
+    /// Sources whose card went, not yet asked for.
+    lost: VecDeque<Tag>,
     stats: Stats,
 }
 
@@ -457,7 +529,9 @@ impl Coordinator {
             finished: HashMap::new(),
             reserve: 0,
             pool: (0..cfg.buffers).map(|_| vec![0.0; UNIT]).collect(),
+            buffers: cfg.buffers,
             bytes: Vec::new(),
+            scratch: Vec::new(),
             ready: VecDeque::new(),
             out: VecDeque::new(),
             round: 1,
@@ -469,6 +543,7 @@ impl Coordinator {
             cushion_s: f64::INFINITY,
             gate: Arc::new(Gate::new()),
             admission: Admission::default(),
+            lost: VecDeque::new(),
             stats: Stats::default(),
         }
     }
@@ -500,6 +575,53 @@ impl Coordinator {
     /// Whether the workload fits, as of the last planning round.
     pub fn admission(&self) -> Admission {
         self.admission
+    }
+
+    /// The memory streaming holds, for the shared memory check and the
+    /// screen ([`crate::ledger`]).
+    pub fn ledger(&self) -> Ledger {
+        const UNIT_BYTES: u64 = (UNIT * std::mem::size_of::<f32>()) as u64;
+        let units = |n: usize| n as u64 * UNIT_BYTES;
+        let allocated = units(self.mirror.len());
+        let in_use = units(self.mirror.iter().filter(|m| m.held != Held::Free).count());
+        // Every tier: Next is the last.
+        let held = self.held_units(HoldTier::Next);
+        let idle = self.bytes.iter().map(Vec::capacity).sum::<usize>();
+        let raw = idle
+            + self.ready.iter().map(|(.., b)| b.capacity()).sum::<usize>()
+            + self.flights.values().map(|f| f.bytes).sum::<usize>();
+        let floats = units(self.buffers) + (self.scratch.capacity() * 4) as u64;
+        let jobs = self.jobs.iter().map(|j| j.data.capacity()).sum::<usize>()
+            + self
+                .finished
+                .values()
+                .map(|r| r.as_ref().map_or(0, Vec::capacity))
+                .sum::<usize>();
+        let lent = self
+            .sources
+            .iter()
+            .flatten()
+            .map(|s| match s.store {
+                Store::Memory { bytes } => bytes,
+                Store::File { .. } => 0,
+            })
+            .sum();
+        Ledger {
+            cache: Pool {
+                allocated,
+                in_use,
+                reserved: units(self.reserve + held.len()).min(allocated),
+                reclaimable: 0,
+            },
+            buffers: Pool {
+                allocated: floats + raw as u64,
+                in_use: units(self.buffers.saturating_sub(self.pool.len())) + (raw - idle) as u64,
+                reserved: 0,
+                reclaimable: 0,
+            },
+            jobs: jobs as u64,
+            lent,
+        }
     }
 
     /// Seconds until a playing cursor needs a unit that isn't in the cache
@@ -620,22 +742,70 @@ impl Coordinator {
     /// Make `source` the sound in the file at `path` (replacing what it
     /// was, under a new generation).
     pub fn open(&mut self, source: u16, path: &Path) -> Result<Tag, String> {
+        self.open_as(source, path, false, None)
+    }
+
+    /// Open `source` from a file the storage manager found
+    /// ([`crate::storage::Storage::locate`]), at the engine's rate if
+    /// `engine`. A file on the card is read only while its insertion
+    /// holds: once the card goes, nothing more is read for it, reads
+    /// already running are dropped, and what is in the cache plays out
+    /// ([`Coordinator::lost`]).
+    pub fn open_located(
+        &mut self,
+        source: u16,
+        loc: &Located,
+        engine: bool,
+    ) -> Result<Tag, String> {
+        if !loc.valid() {
+            return Err(format!("{}: the SD card isn't there", loc.path.display()));
+        }
+        self.open_as(source, &loc.path, engine, loc.card.clone())
+    }
+
+    /// Open `source` from a file played at the engine's rate
+    /// ([`Plan::rate`]): a stem or a clip. A file at another rate is
+    /// resampled ahead into engine-rate units ([`crate::resample`]), so
+    /// its frames, holds, loop points and cursors count in engine frames
+    /// ([`Coordinator::frames`]); one already at the engine's rate opens
+    /// as [`Coordinator::open`] does.
+    pub fn open_at_engine_rate(&mut self, source: u16, path: &Path) -> Result<Tag, String> {
+        self.open_as(source, path, true, None)
+    }
+
+    fn open_as(
+        &mut self,
+        source: u16,
+        path: &Path,
+        engine: bool,
+        card: Option<Card>,
+    ) -> Result<Tag, String> {
         let s = Self::check_source(source)?;
         let mut file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let layout = layout(&mut file).map_err(|e| format!("{}: {e}", path.display()))?;
+        let rate = if engine {
+            Rate::new(layout.rate, self.plan.rate, layout.frames)
+        } else {
+            None
+        };
         let tag = self.next_tag(source);
-        self.sources[s] = Some(Src {
+        let src = Src {
             tag,
             store: Store::File {
                 file: Arc::new(file),
                 layout,
             },
+            rate,
+            card,
+            reported: false,
             cursors: Vec::new(),
-        });
+        };
+        let frames = src.shape().map_or(0, |sh| sh.frames);
+        self.sources[s] = Some(src);
         self.send(ToPlayer::Open {
             tag,
             channels: layout.channels,
-            frames: layout.frames,
+            frames,
         });
         Ok(tag)
     }
@@ -658,7 +828,12 @@ impl Coordinator {
         let tag = self.next_tag(source);
         self.sources[s] = Some(Src {
             tag,
-            store: Store::Memory,
+            store: Store::Memory {
+                bytes: (data.len() * std::mem::size_of::<f32>()) as u64,
+            },
+            rate: None,
+            card: None,
+            reported: false,
             cursors: Vec::new(),
         });
         self.send(ToPlayer::Resident {
@@ -682,13 +857,26 @@ impl Coordinator {
         self.send(ToPlayer::Close { tag: src.tag });
     }
 
-    /// A file source's layout.
+    /// A file source's layout: the file's own frames and rate.
     pub fn layout(&self, source: u16) -> Option<Layout> {
         self.sources
             .get(usize::from(source))?
             .as_ref()?
             .layout()
             .copied()
+    }
+
+    /// The frames a file source plays: engine frames for one opened with
+    /// [`Coordinator::open_at_engine_rate`] at another rate, else the
+    /// file's.
+    pub fn frames(&self, source: u16) -> Option<u64> {
+        Some(
+            self.sources
+                .get(usize::from(source))?
+                .as_ref()?
+                .shape()?
+                .frames,
+        )
     }
 
     fn current(&self, tag: Tag) -> bool {
@@ -700,7 +888,7 @@ impl Coordinator {
                 .is_some_and(|s| s.tag == tag)
     }
 
-    fn units_of(l: &Layout, from: u64, to: u64) -> std::ops::Range<u32> {
+    fn units_of(l: Shape, from: u64, to: u64) -> std::ops::Range<u32> {
         let uf = unit_frames(l.channels);
         let to = to.min(l.frames);
         if from >= to {
@@ -732,7 +920,7 @@ impl Coordinator {
                 .get(usize::from(source))
                 .and_then(Option::as_ref)
                 .ok_or(Refusal::NotOpen(source))?;
-            let l = src.layout().ok_or(Refusal::NotOpen(source))?;
+            let l = src.shape().ok_or(Refusal::NotOpen(source))?;
             for u in Self::units_of(l, from, to) {
                 new.insert((source, u));
             }
@@ -798,6 +986,13 @@ impl Coordinator {
         }
     }
 
+    /// The next source whose card went since last asked, each once, by
+    /// the tag it had: nothing more is read for it, and what is in the
+    /// cache plays out. Closing or replacing it is its owner's choice.
+    pub fn lost(&mut self) -> Option<Tag> {
+        self.lost.pop_front()
+    }
+
     /// The next hold given back for room since last asked (a "ready"
     /// answer that counted on it no longer stands).
     pub fn given_back(&mut self) -> Option<HoldId> {
@@ -833,7 +1028,7 @@ impl Coordinator {
                 .ok_or(Refusal::Gone(*id))?;
             let l = self.sources[usize::from(h.tag.source)]
                 .as_ref()
-                .and_then(Src::layout)
+                .and_then(Src::shape)
                 .ok_or(Refusal::Gone(*id))?;
             for u in Self::units_of(l, h.from, h.to) {
                 units.insert((h.tag.source, u));
@@ -887,7 +1082,7 @@ impl Coordinator {
         for h in self.holds.iter().filter(|h| h.tier <= tier) {
             let Some(l) = self.sources[usize::from(h.tag.source)]
                 .as_ref()
-                .and_then(Src::layout)
+                .and_then(Src::shape)
             else {
                 continue;
             };
@@ -909,7 +1104,7 @@ impl Coordinator {
         else {
             return false;
         };
-        match src.layout() {
+        match src.shape() {
             None => true,
             Some(l) => Self::units_of(l, from, to).all(|u| self.map.contains_key(&(source, u))),
         }
@@ -977,9 +1172,26 @@ impl Coordinator {
             busy = true;
             self.reply(r);
         }
+        self.note_lost();
         busy |= self.fill();
         busy |= self.ask();
         busy
+    }
+
+    /// Report each source whose card went, once; its reads in flight are
+    /// cancelled (a reply that comes anyway is dropped).
+    fn note_lost(&mut self) {
+        for src in self.sources.iter_mut().flatten() {
+            if !src.reported && src.lost() {
+                src.reported = true;
+                self.lost.push_back(src.tag);
+                for f in self.flights.values() {
+                    if matches!(f.kind, Kind::Units { tag, .. } if tag == src.tag) {
+                        f.cancel.store(true, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
     }
 
     fn reply(&mut self, r: ReadReply) {
@@ -1004,6 +1216,12 @@ impl Coordinator {
         }
         if !self.current(tag) {
             self.stats.stale += 1;
+            self.bytes.push(r.buf);
+            return;
+        }
+        if self.sources[usize::from(s)].as_ref().is_some_and(Src::lost) {
+            // Read for a card that went: whatever came back isn't used.
+            self.stats.card_gone += 1;
             self.bytes.push(r.buf);
             return;
         }
@@ -1034,18 +1252,28 @@ impl Coordinator {
             return;
         }
         // A joined read: each unit it brought whole goes on.
-        let mut at = 0;
-        for u in first..first + units {
-            let want = self.unit_bytes(s, u);
-            if at + want <= n {
-                let mut b = self.bytes.pop().unwrap_or_default();
-                b.clear();
-                b.extend_from_slice(&r.buf[at..at + want]);
-                self.ready.push_back((tag, u, b));
-            } else {
-                self.stats.short_reads += 1;
+        let src = self.sources[usize::from(s)].as_ref().expect("current");
+        let (Some(l), Some((start, _))) = (src.layout(), src.span(first)) else {
+            self.bytes.push(r.buf);
+            return;
+        };
+        let align = l.block_align();
+        let pieces: Vec<Option<(usize, usize)>> = (first..first + units)
+            .map(|u| {
+                src.span(u)
+                    .map(|(a, b)| ((a - start) as usize * align, (b - a) as usize * align))
+            })
+            .collect();
+        for (u, piece) in (first..).zip(pieces) {
+            match piece {
+                Some((at, want)) if at + want <= n => {
+                    let mut b = self.bytes.pop().unwrap_or_default();
+                    b.clear();
+                    b.extend_from_slice(&r.buf[at..at + want]);
+                    self.ready.push_back((tag, u, b));
+                }
+                _ => self.stats.short_reads += 1,
             }
-            at += want;
         }
         self.bytes.push(r.buf);
     }
@@ -1058,6 +1286,13 @@ impl Coordinator {
         };
         let job = &mut self.jobs[i];
         job.busy = false;
+        if job.card.as_ref().is_some_and(|c| !c.valid()) {
+            let j = self.jobs.remove(i);
+            self.stats.card_gone += 1;
+            self.finished.insert(j.id, Err(CARD_GONE.into()));
+            self.bytes.push(r.buf);
+            return;
+        }
         let done = match r.got {
             _ if r.cancelled => false,
             Err(e) => {
@@ -1084,6 +1319,24 @@ impl Coordinator {
     /// Read the whole file at `path` through the device, behind every
     /// playback read; [`Coordinator::take_job`] gives it once done.
     pub fn read_file(&mut self, path: &Path, tier: JobTier) -> Result<JobId, String> {
+        self.read_file_from(path, tier, None)
+    }
+
+    /// [`Coordinator::read_file`] for a file the storage manager found: one
+    /// on the card fails as soon as the card goes.
+    pub fn read_located(&mut self, loc: &Located, tier: JobTier) -> Result<JobId, String> {
+        if !loc.valid() {
+            return Err(format!("{}: the SD card isn't there", loc.path.display()));
+        }
+        self.read_file_from(&loc.path, tier, loc.card.clone())
+    }
+
+    fn read_file_from(
+        &mut self,
+        path: &Path,
+        tier: JobTier,
+        card: Option<Card>,
+    ) -> Result<JobId, String> {
         let file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let len = file
             .metadata()
@@ -1097,6 +1350,7 @@ impl Coordinator {
             self.jobs.push(Job {
                 id,
                 tier,
+                card,
                 file: Arc::new(file),
                 len,
                 data: Vec::new(),
@@ -1127,6 +1381,17 @@ impl Coordinator {
     fn job_step(&mut self) -> bool {
         if self.jobs.iter().any(|j| j.busy) {
             return false;
+        }
+        // Jobs on a card that went fail now, not at their next step.
+        let gone: Vec<u32> = self
+            .jobs
+            .iter()
+            .filter(|j| j.card.as_ref().is_some_and(|c| !c.valid()))
+            .map(|j| j.id)
+            .collect();
+        for id in gone {
+            self.jobs.retain(|j| j.id != id);
+            self.finished.insert(id, Err(CARD_GONE.into()));
         }
         // Recording pressure: past three quarters of capture memory,
         // background work stops.
@@ -1165,16 +1430,22 @@ impl Coordinator {
         true
     }
 
-    fn unit_bytes(&self, source: u16, unit: u32) -> usize {
-        let Some(l) = self.sources[usize::from(source)]
-            .as_ref()
-            .and_then(Src::layout)
-        else {
+    /// The file bytes a read of units `first..first + units` of `source`
+    /// takes: from where the first one's frames start to where the last
+    /// one's end (a resampled source's units share the frames at their
+    /// edges, read once). 0 if the last one is past the end.
+    fn read_bytes(&self, source: u16, first: u32, units: u32) -> usize {
+        let Some(src) = self.sources[usize::from(source)].as_ref() else {
             return 0;
         };
-        let uf = unit_frames(l.channels);
-        let first = u64::from(unit) * uf;
-        (l.frames.saturating_sub(first).min(uf)) as usize * l.block_align()
+        let (Some(l), Some(a), Some(b)) = (
+            src.layout(),
+            src.span(first),
+            src.span(first + units.saturating_sub(1)),
+        ) else {
+            return 0;
+        };
+        (b.1 - a.0) as usize * l.block_align()
     }
 
     /// A slot for a new unit: a free one, else the one wanted longest ago
@@ -1203,12 +1474,45 @@ impl Coordinator {
                 break;
             };
             let (tag, unit, bytes) = self.ready.pop_front().expect("checked");
-            let l = *self.sources[usize::from(tag.source)]
+            if self.sources[usize::from(tag.source)]
                 .as_ref()
-                .and_then(Src::layout)
+                .is_some_and(Src::lost)
+            {
+                self.stats.card_gone += 1;
+                self.bytes.push(bytes);
+                continue;
+            }
+            if self.map.contains_key(&(tag.source, unit)) {
+                // Already in the cache (a read that crossed one already
+                // filled): filling it again would take the playing copy
+                // away while the new one is copied in.
+                self.stats.duplicates += 1;
+                self.bytes.push(bytes);
+                continue;
+            }
+            let src = self.sources[usize::from(tag.source)]
+                .as_ref()
                 .expect("a current file source");
+            let l = *src.layout().expect("a file source");
             let mut buf = self.pool.pop().expect("checked");
-            let len = decode(l.sample, l.endian, &bytes, &mut buf);
+            let len = match (src.rate, src.span(unit), src.shape()) {
+                (Some(rate), Some((at, _)), Some(sh)) => {
+                    // Decode the file's frames, then make the unit's
+                    // engine frames from them.
+                    let samples = bytes.len() / l.sample.bytes();
+                    if self.scratch.len() < samples {
+                        self.scratch.resize(samples, 0.0);
+                    }
+                    let got = decode(l.sample, l.endian, &bytes, &mut self.scratch);
+                    let uf = unit_frames(sh.channels);
+                    let first = u64::from(unit) * uf;
+                    let len = (sh.frames - first).min(uf) as usize * usize::from(sh.channels);
+                    let ch = usize::from(sh.channels);
+                    rate.run(ch, &self.scratch[..got], at, first, &mut buf[..len]);
+                    len
+                }
+                _ => decode(l.sample, l.endian, &bytes, &mut buf),
+            };
             self.bytes.push(bytes);
             if let Held::Unit { source, unit } = self.mirror[slot].held {
                 self.map.remove(&(source, unit));
@@ -1250,7 +1554,7 @@ impl Coordinator {
             let Some(src) = src.as_ref() else {
                 continue;
             };
-            let Some(l) = src.layout() else {
+            let Some(l) = src.shape() else {
                 continue;
             };
             let uf = unit_frames(l.channels);
@@ -1366,7 +1670,7 @@ impl Coordinator {
         for h in &self.holds {
             let Some(l) = self.sources[usize::from(h.tag.source)]
                 .as_ref()
-                .and_then(Src::layout)
+                .and_then(Src::shape)
             else {
                 continue;
             };
@@ -1381,12 +1685,25 @@ impl Coordinator {
                 }
             }
         }
-        // Mark what is cached; list what is missing.
+        // Mark what is cached; list what is missing. A unit read and
+        // waiting for a buffer isn't missing: asking again would read it
+        // twice, and its second fill would replace a copy already playing.
+        let waiting: HashSet<(u16, u32)> =
+            self.ready.iter().map(|(t, u, _)| (t.source, *u)).collect();
         let mut missing: Vec<(f64, Tag, u32)> = Vec::new();
         for (&(s, u), &(deadline, tag)) in &wants {
+            if self.sources[usize::from(s)].as_ref().is_some_and(Src::lost) {
+                // Its card went: what is cached plays out, nothing is read.
+                if let Some(&slot) = self.map.get(&(s, u)) {
+                    self.mirror[slot].wanted = self.round;
+                }
+                continue;
+            }
             match self.map.get(&(s, u)) {
                 Some(&slot) => self.mirror[slot].wanted = self.round,
-                None if !self.asked.contains_key(&(s, u)) => missing.push((deadline, tag, u)),
+                None if !self.asked.contains_key(&(s, u)) && !waiting.contains(&(s, u)) => {
+                    missing.push((deadline, tag, u))
+                }
                 None => {}
             }
         }
@@ -1395,6 +1712,9 @@ impl Coordinator {
         for f in self.flights.values() {
             if let Kind::Units { tag, first, units } = f.kind {
                 let wanted = self.current(tag)
+                    && !self.sources[usize::from(tag.source)]
+                        .as_ref()
+                        .is_some_and(Src::lost)
                     && (first..first + units).any(|u| wants.contains_key(&(tag.source, u)));
                 f.cancel.store(!wanted, Ordering::Relaxed);
             }
@@ -1419,7 +1739,7 @@ impl Coordinator {
             if self.asked.contains_key(&(s, unit)) {
                 continue;
             }
-            let mut bytes = self.unit_bytes(s, unit);
+            let mut bytes = self.read_bytes(s, unit, 1);
             // The next deadline that isn't one of this file's next units.
             let other = missing[i + 1..]
                 .iter()
@@ -1431,22 +1751,24 @@ impl Coordinator {
                 if !missing_set.contains(&(s, next)) || self.asked.contains_key(&(s, next)) {
                     break;
                 }
-                let more = self.unit_bytes(s, next);
-                if more == 0
-                    || bytes + more > self.plan.join_bytes
-                    || queue_s + self.read_time(bytes + more) > 0.5 * other
+                let joined = self.read_bytes(s, unit, units + 1);
+                if joined == 0
+                    || joined > self.plan.join_bytes
+                    || queue_s + self.read_time(joined) > 0.5 * other
                 {
                     break;
                 }
-                bytes += more;
+                bytes = joined;
                 units += 1;
             }
             let src = self.sources[usize::from(s)].as_ref().expect("current");
             let (file, l) = match &src.store {
                 Store::File { file, layout } => (file.clone(), *layout),
-                Store::Memory => continue,
+                Store::Memory { .. } => continue,
             };
-            let first = u64::from(unit) * unit_frames(l.channels);
+            let Some((first, _)) = src.span(unit) else {
+                continue;
+            };
             self.request = self.request.wrapping_add(1);
             let request = self.request;
             let cancel = Arc::new(AtomicBool::new(false));
