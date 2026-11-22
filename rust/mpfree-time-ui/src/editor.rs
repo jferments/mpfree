@@ -473,16 +473,15 @@ impl Editor {
                 true,
                 format!("edit: {} notes moved", sel.len()),
             ),
-            EditAction::Velocity(v) => {
-                let v = (1.0 + v.clamp(0.0, 1.0) * 126.0).round() as u8;
-                (
-                    notes::set_velocity(clip, &sel, v),
-                    key(1),
-                    true,
-                    true,
-                    String::new(),
-                )
-            }
+            // One a drag of the velocity lane (sent when the finger lifts),
+            // so each drag is its own take.
+            EditAction::Velocity(v) => (
+                notes::set_velocity(clip, &sel, lane_velocity(v)),
+                None,
+                true,
+                true,
+                String::new(),
+            ),
             EditAction::PickRow(r) => {
                 self.row = r.min(EDIT_ROWS.len() - 1);
                 return Done::default();
@@ -939,6 +938,12 @@ pub fn drop_frame(ticks: Tick, notes: i32) -> u64 {
     n << 32 | t
 }
 
+/// The velocity the lane's value `v` (0 to 1, [`EditAction::Velocity`])
+/// sets: 1 to 127.
+pub fn lane_velocity(v: f32) -> u8 {
+    (1.0 + v.clamp(0.0, 1.0) * 126.0).round() as u8
+}
+
 /// The drag a `Marker`'s frame holds ([`drop_frame`]).
 pub fn drop_of(frame: u64) -> (Tick, i32) {
     let t = (frame & 0xFFFF_FFFF) as Tick - (1 << 31);
@@ -1061,8 +1066,9 @@ struct Drag {
     y: i32,
     ticks: Tick,
     notes: i32,
-    /// The finger is in the velocity lane.
-    velocity: bool,
+    /// The finger is in the velocity lane: the value under it, 0 to 1,
+    /// shown on the picked notes and sent once, when it lifts.
+    lane: Option<f32>,
 }
 
 const KEYS_W: i32 = 64;
@@ -1131,6 +1137,11 @@ struct Geo {
     vel: Rect,
     tools: Rect,
     rows: i32,
+}
+
+/// The velocity lane's value at `y`, 0 (its bottom) to 1 (its top).
+fn lane_value(g: &Geo, y: i32) -> f32 {
+    f32::from((g.vel.bottom() - 3 - y).clamp(0, g.vel.h - 6) as u16) / (g.vel.h - 6).max(1) as f32
 }
 
 impl NoteGrid {
@@ -1237,7 +1248,7 @@ impl NoteGrid {
         let g = self.geo(r);
         let n = self.notes.get(i)?;
         let (dt, dn) = match self.drag {
-            Some(d) if n.selected && !d.velocity => (d.ticks, d.notes),
+            Some(d) if n.selected && d.lane.is_none() => (d.ticks, d.notes),
             _ => (0, 0),
         };
         let note = u8::try_from(i32::from(n.note) + dn).ok()?;
@@ -1379,10 +1390,17 @@ impl NoteGrid {
         // The notes as they will play, then the velocity lane under them.
         let top = t.accent;
         let shade = |v: u8| t.raised.mix(self.color, 0.35 + 0.65 * f32::from(v) / 127.0);
+        // The velocity lane dragged: the picked notes as they would be.
+        let preview = self.drag.and_then(|d| d.lane).map(lane_velocity);
+        let vel_of = |n: &NoteBox| match preview {
+            Some(v) if n.selected => NoteBox { velocity: v, ..*n },
+            _ => *n,
+        };
         for (i, n) in self.notes.iter().enumerate() {
             let Some(nr) = self.note_rect(r, i) else {
                 continue;
             };
+            let n = &vel_of(n);
             let fill = shade(n.velocity);
             if !n.on {
                 // Off: its place and settings kept, nothing played.
@@ -1401,6 +1419,7 @@ impl NoteGrid {
         cx.canvas.fill_round_rect(g.vel, 6, t.surface);
         let lane = |v: u8| (f32::from(v) / 127.0 * (g.vel.h - 6) as f32).round() as i32;
         for n in &self.notes {
+            let n = &vel_of(n);
             let x = self.x_of(g, n.tick);
             let h = lane(n.velocity);
             let c = if n.selected {
@@ -1862,6 +1881,8 @@ impl Widget for NoteGrid {
                     return order.get(self.first + k - 1).map(|&i| EventKind::Select(i));
                 }
                 if g.vel.contains(x, y) {
+                    // Shown as the finger moves, sent once when it lifts:
+                    // one edit, one UNDO.
                     self.drag = Some(Drag {
                         finger: f,
                         index: 0,
@@ -1869,11 +1890,9 @@ impl Widget for NoteGrid {
                         y,
                         ticks: 0,
                         notes: 0,
-                        velocity: true,
+                        lane: Some(lane_value(&g, y)),
                     });
-                    let v = f32::from((g.vel.bottom() - 3 - y).clamp(0, g.vel.h - 6) as u16)
-                        / (g.vel.h - 6).max(1) as f32;
-                    return Some(EventKind::Value(v));
+                    return None;
                 }
                 // The topmost note under the finger (drawn last).
                 if let Some(i) = (0..self.notes.len())
@@ -1887,7 +1906,7 @@ impl Widget for NoteGrid {
                         y,
                         ticks: 0,
                         notes: 0,
-                        velocity: false,
+                        lane: None,
                     });
                     return Some(EventKind::Select(i));
                 }
@@ -1907,10 +1926,12 @@ impl Widget for NoteGrid {
             }
             Touch::Move => {
                 let d = self.drag?;
-                if d.velocity {
-                    let v = f32::from((g.vel.bottom() - 3 - y).clamp(0, g.vel.h - 6) as u16)
-                        / (g.vel.h - 6).max(1) as f32;
-                    return Some(EventKind::Value(v));
+                if d.lane.is_some() {
+                    self.drag = Some(Drag {
+                        lane: Some(lane_value(&g, y)),
+                        ..d
+                    });
+                    return None;
                 }
                 let n = self.notes.get(d.index)?;
                 let raw = self.tick_at(&g, x) - self.tick_at(&g, d.x);
@@ -1921,7 +1942,10 @@ impl Widget for NoteGrid {
             }
             Touch::Up => {
                 let d = self.drag.take()?;
-                (!d.velocity && (d.ticks, d.notes) != (0, 0)).then(|| EventKind::Marker {
+                if let Some(v) = d.lane {
+                    return Some(EventKind::Value(v));
+                }
+                ((d.ticks, d.notes) != (0, 0)).then(|| EventKind::Marker {
                     index: d.index,
                     frame: drop_frame(d.ticks, d.notes),
                 })
@@ -2524,13 +2548,12 @@ mod tests {
             Some(EventKind::Cell { row: 50, .. })
         ));
         assert_eq!(g.touch(3, Touch::Up, empty.0, empty.1, R), None);
-        // The velocity lane: a second finger stops it changing.
+        // The velocity lane: a second finger stops it, and nothing is sent.
         let v = g.geo(R).vel;
-        assert!(matches!(
-            g.touch(4, Touch::Down, v.x + 10, v.y + 3, R),
-            Some(EventKind::Value(_))
-        ));
+        assert_eq!(g.touch(4, Touch::Down, v.x + 10, v.y + 3, R), None);
+        assert!(g.drag.is_some());
         assert_eq!(g.touch(5, Touch::Down, v.x + 40, v.y + 3, R), None);
+        assert_eq!(g.drag, None);
         assert_eq!(g.touch(4, Touch::Move, v.x + 10, v.bottom(), R), None);
         assert_eq!(g.touch(4, Touch::Up, v.x + 10, v.bottom(), R), None);
         assert_eq!(g.touch(5, Touch::Up, v.x + 40, v.y + 3, R), None);
@@ -2631,15 +2654,22 @@ mod tests {
     fn the_velocity_lane_and_the_list() {
         let mut g = grid();
         let v = g.geo(R).vel;
-        match g.touch(1, Touch::Down, v.x + 10, v.y + 3, R) {
-            Some(EventKind::Value(x)) => assert!(x > 0.95, "{x}"),
-            other => panic!("{other:?}"),
-        }
-        match g.touch(1, Touch::Move, v.x + 10, v.bottom(), R) {
-            Some(EventKind::Value(x)) => assert_eq!(x, 0.0),
-            other => panic!("{other:?}"),
-        }
-        assert_eq!(g.touch(1, Touch::Up, v.x + 10, v.bottom(), R), None);
+        // A drag of the lane is shown on the picked notes as the finger
+        // moves, and sent once, as the finger lifts: one edit.
+        let painted_before = painted(&g);
+        assert_eq!(g.touch(1, Touch::Down, v.x + 10, v.y + 3, R), None);
+        assert_eq!(g.drag.and_then(|d| d.lane).map(lane_velocity), Some(127));
+        assert_eq!(g.touch(1, Touch::Move, v.x + 10, v.bottom(), R), None);
+        assert_eq!(g.drag.and_then(|d| d.lane), Some(0.0));
+        assert!(
+            differ_in(&painted_before, &painted(&g), v),
+            "the picked note's bar follows the finger"
+        );
+        assert_eq!(
+            g.touch(1, Touch::Up, v.x + 10, v.bottom(), R),
+            Some(EventKind::Value(0.0))
+        );
+        assert_eq!(g.drag, None);
         g.lens = Lens::List;
         // Row 1 is the first note in time order.
         let row = g.list_rect(R, 2).unwrap();
