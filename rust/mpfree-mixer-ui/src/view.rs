@@ -1672,7 +1672,7 @@ impl MixerView {
             let c = l.chips[i];
             let on = *v == self.state.view;
             cx.canvas
-                .fill_round_rect(c, 10, if on { t.raised } else { t.surface });
+                .fill_round_rect(c, t.round(10), if on { t.raised } else { t.surface });
             if on {
                 cx.canvas.fill_round_rect(
                     Rect::new(c.x + 20, c.bottom() - 4, c.w - 40, 3),
@@ -1713,7 +1713,7 @@ impl MixerView {
         let [back, on] = self.arrows(l);
         for (b, s, live) in [(l.prev, "<", back), (l.next, ">", on)] {
             cx.canvas
-                .fill_round_rect(b, 10, if live { t.raised } else { t.surface });
+                .fill_round_rect(b, t.round(10), if live { t.raised } else { t.surface });
             cx.text(
                 FontId::Bold,
                 t.size_title,
@@ -1740,11 +1740,11 @@ impl MixerView {
             &page,
         );
         // The three looks, where the mixer's CPU chip was.
-        cx.canvas.fill_round_rect(l.look, 12, t.surface);
+        cx.canvas.fill_round_rect(l.look, t.round(12), t.surface);
         for (half, look) in look_halves(l.look).into_iter().zip(Look::ALL) {
             let on = look == self.look;
             if on {
-                cx.canvas.fill_round_rect(half, 8, t.accent);
+                cx.canvas.fill_round_rect(half, t.round(8), t.accent);
             }
             cx.text(
                 if on { FontId::Bold } else { FontId::Sans },
@@ -1793,9 +1793,9 @@ impl MixerView {
         let p = parts(sr);
         let master = s.id == StripId::Master;
         let selected = self.state.selected == Some(s.id);
-        cx.canvas.fill_round_rect(sr, 12, t.surface);
+        cx.canvas.fill_round_rect(sr, t.round(12), t.surface);
         if selected {
-            cx.canvas.stroke_round_rect(sr, 12, 2, t.accent);
+            cx.canvas.stroke_round_rect(sr, t.round(12), 2, t.accent);
         }
         let ink = if s.audible { t.text } else { t.text_faint };
         // Name over a colour stripe.
@@ -1822,7 +1822,7 @@ impl MixerView {
                 } else {
                     ("Mon", choice(mx::MONITOR, inp.monitor))
                 };
-                cx.canvas.fill_round_rect(*row, 6, t.raised);
+                cx.canvas.fill_round_rect(*row, t.round(6), t.raised);
                 cx.text(
                     FontId::Sans,
                     t.size_small,
@@ -1843,7 +1843,7 @@ impl MixerView {
             }
             let more = s.inserts.len() > 4 && i == 3;
             if more {
-                cx.canvas.stroke_round_rect(*row, 6, 1, t.outline);
+                cx.canvas.stroke_round_rect(*row, t.round(6), 1, t.outline);
                 cx.text(
                     FontId::Sans,
                     t.size_small,
@@ -1855,7 +1855,7 @@ impl MixerView {
             } else if let Some(ins) = s.inserts.get(i) {
                 cx.canvas.fill_round_rect(
                     *row,
-                    6,
+                    t.round(6),
                     if ins.on {
                         t.raised
                     } else {
@@ -1908,8 +1908,8 @@ impl MixerView {
                 // test 3: "+ Insert" was too small and unclear).
                 let last = if s.input.is_some() { 1 } else { 3 };
                 let b = Rect::new(row.x, row.y, row.w, p.inserts[last].bottom() - row.y);
-                cx.canvas.fill_round_rect(b, 6, t.raised);
-                cx.canvas.stroke_round_rect(b, 6, 1, t.outline);
+                cx.canvas.fill_round_rect(b, t.round(6), t.raised);
+                cx.canvas.stroke_round_rect(b, t.round(6), 1, t.outline);
                 cx.text(FontId::Bold, t.size_small, b, Align::Center, t.text, "+ FX");
             }
         }
@@ -1928,7 +1928,7 @@ impl MixerView {
                         t.size_small - 2.0,
                         letter,
                         Align::Center,
-                        t.bg,
+                        t.ink_on(t.warn),
                         l,
                     );
                 } else {
@@ -2025,7 +2025,7 @@ impl MixerView {
         if master {
             let red = self.state.safety.reduction_db;
             let tone = if red < -6.0 { t.warn } else { t.text_dim };
-            cx.canvas.fill_round_rect(p.buttons, 8, t.raised);
+            cx.canvas.fill_round_rect(p.buttons, t.round(8), t.raised);
             cx.text(
                 FontId::Sans,
                 t.size_small,
@@ -2054,13 +2054,13 @@ impl MixerView {
             for (i, b) in bs.iter().enumerate() {
                 let (txt, on, c) = spec[i];
                 cx.canvas
-                    .fill_round_rect(*b, 8, if on { c } else { t.raised });
+                    .fill_round_rect(*b, t.round(8), if on { c } else { t.raised });
                 cx.text(
                     FontId::Bold,
                     t.size_body,
                     *b,
                     Align::Center,
-                    if on { t.bg } else { t.text_dim },
+                    if on { t.ink_on(c) } else { t.text_dim },
                     txt,
                 );
             }
@@ -2069,10 +2069,10 @@ impl MixerView {
         if s.has_output() {
             let open = self.picker == Some(s.id);
             cx.canvas
-                .fill_round_rect(p.output, 8, if open { t.accent } else { t.raised });
+                .fill_round_rect(p.output, t.round(8), if open { t.accent } else { t.raised });
             let none = s.output == output::NONE as u8;
             let c = if open {
-                t.bg
+                t.on_accent
             } else if none {
                 t.warn
             } else {
@@ -2193,7 +2193,7 @@ impl MixerView {
             if let Some(ins) = s.inserts.get(k) {
                 cx.canvas.fill_round_rect(
                     c,
-                    10,
+                    t.round(10),
                     if ins.on {
                         t.raised
                     } else {
@@ -2256,23 +2256,23 @@ impl MixerView {
                     );
                 }
                 if self.pick == Some((s.id, k)) && drop.is_none() {
-                    cx.canvas.stroke_round_rect(c, 10, 2, t.accent);
+                    cx.canvas.stroke_round_rect(c, t.round(10), 2, t.accent);
                 }
                 match drop {
                     Some((from, _)) if from == k => {
-                        cx.canvas.stroke_round_rect(c, 10, 1, t.text_dim);
+                        cx.canvas.stroke_round_rect(c, t.round(10), 1, t.text_dim);
                     }
                     Some((_, to)) if to == k => {
-                        cx.canvas.stroke_round_rect(c, 10, 2, t.accent);
+                        cx.canvas.stroke_round_rect(c, t.round(10), 2, t.accent);
                     }
                     _ => {}
                 }
             } else if k == s.inserts.len() {
-                cx.canvas.fill_round_rect(c, 10, t.raised);
+                cx.canvas.fill_round_rect(c, t.round(10), t.raised);
                 cx.text(FontId::Bold, t.size_small, c, Align::Center, t.text, "+ FX");
             } else {
                 cx.canvas
-                    .stroke_round_rect(c, 10, 1, t.outline.mix(t.surface, 0.5));
+                    .stroke_round_rect(c, t.round(10), 1, t.outline.mix(t.surface, 0.5));
             }
         }
     }
@@ -2358,7 +2358,7 @@ impl MixerView {
         self.paint_row_name(cx, s, name);
         let Some(slot) = s.eq_slot() else {
             cx.canvas
-                .stroke_round_rect(graph, 8, 1, t.outline.mix(t.surface, 0.3));
+                .stroke_round_rect(graph, t.round(8), 1, t.outline.mix(t.surface, 0.3));
             let full = s.inserts.len() >= s.slots;
             let note = if full {
                 "the chain is full".to_string()
@@ -2375,7 +2375,7 @@ impl MixerView {
             let x0 = graph.x + (graph.w - bw - 10 - nw) / 2;
             if !full {
                 let b = Rect::new(x0, graph.y + (graph.h - 32) / 2, bw, 32);
-                cx.canvas.fill_round_rect(b, 8, t.raised);
+                cx.canvas.fill_round_rect(b, t.round(8), t.raised);
                 cx.text(
                     FontId::Bold,
                     t.size_small - 2.0,
@@ -2401,7 +2401,7 @@ impl MixerView {
         let picked = self.pick == Some((s.id, slot));
         let on = ins.on && s.audible;
         cx.canvas
-            .fill_round_rect(graph, 8, t.bg.mix(t.surface, 0.4));
+            .fill_round_rect(graph, t.round(8), t.bg.mix(t.surface, 0.4));
         let p = eq_look::plot(graph);
         let mid = eq_look::db_y(p, 0.0);
         cx.canvas
@@ -2447,7 +2447,7 @@ impl MixerView {
             let mut m = mpfree_ui::Shape::new(graph);
             m.disc(x, y, rad);
             let ink = if on && eq_look::heard(&vals, d) {
-                d.color()
+                d.color(&t)
             } else {
                 t.text_faint
             };
@@ -2455,7 +2455,7 @@ impl MixerView {
         }
         cx.canvas.set_clip(clip);
         if picked {
-            cx.canvas.stroke_round_rect(graph, 8, 2, t.accent);
+            cx.canvas.stroke_round_rect(graph, t.round(8), 2, t.accent);
         }
         let (a, b) = eq_look::summary(&vals, slot, ins.on);
         let (top, bottom) = summary.inset_xy(0, 6).take_top(20);
@@ -2482,8 +2482,8 @@ impl MixerView {
     fn paint_row_name(&self, cx: &mut PaintCx, s: &StripView, name: Rect) {
         let t = cx.theme.clone();
         if self.state.selected == Some(s.id) {
-            cx.canvas.fill_round_rect(name, 10, t.raised);
-            cx.canvas.stroke_round_rect(name, 10, 2, t.accent);
+            cx.canvas.fill_round_rect(name, t.round(10), t.raised);
+            cx.canvas.stroke_round_rect(name, t.round(10), 2, t.accent);
         }
         let color = strip_color(&t, s.id);
         let stripe = Rect::new(name.x + 6, name.y + (name.h - 36) / 2, 4, 36);
@@ -2539,7 +2539,7 @@ impl MixerView {
         let t = cx.theme.clone();
         let sf = &self.state.safety;
         cx.canvas
-            .fill_round_rect(area, 8, t.raised.mix(t.surface, 0.5));
+            .fill_round_rect(area, t.round(8), t.raised.mix(t.surface, 0.5));
         let rows = area.inset_xy(8, 4);
         let h = rows.h / 4;
         let row = |i: i32| Rect::new(rows.x, rows.y + i * h, rows.w, h);
@@ -2703,13 +2703,13 @@ impl MixerView {
         for ((out, track), b) in self.picker_buttons(l, s) {
             let on = cur == Some((out, track));
             cx.canvas
-                .fill_round_rect(b, 10, if on { t.accent } else { t.raised });
+                .fill_round_rect(b, t.round(10), if on { t.accent } else { t.raised });
             cx.text(
                 FontId::Sans,
                 t.size_body,
                 b,
                 Align::Center,
-                if on { t.bg } else { t.text },
+                if on { t.on_accent } else { t.text },
                 &output_label(out, track),
             );
         }
@@ -2742,7 +2742,7 @@ impl MixerView {
         );
         for (m, b) in self.menu_buttons(l, s) {
             let (label, line) = m.text(v);
-            cx.canvas.fill_round_rect(b, 10, t.raised);
+            cx.canvas.fill_round_rect(b, t.round(10), t.raised);
             let inner = b.inset_xy(16, 7);
             let (top, bottom) = inner.take_top(24);
             cx.text(FontId::Bold, t.size_body, top, Align::Left, t.text, label);
@@ -2764,8 +2764,8 @@ impl MixerView {
             return;
         }
         cx.canvas
-            .fill_round_rect(area, 8, t.surface.mix(t.accent, 0.12));
-        cx.canvas.stroke_round_rect(area, 8, 1, t.accent);
+            .fill_round_rect(area, t.round(8), t.surface.mix(t.accent, 0.12));
+        cx.canvas.stroke_round_rect(area, t.round(8), 1, t.accent);
         let inner = area.inset_xy(8, 8);
         let (title, rest) = inner.take_top(24);
         match s.take {
@@ -3288,7 +3288,7 @@ impl MixerView {
         for (i, (b, name)) in il.list.iter().zip(self.io.labels()).enumerate() {
             let on = i == self.io.sel;
             cx.canvas
-                .fill_round_rect(*b, 10, if on { t.raised } else { t.surface });
+                .fill_round_rect(*b, t.round(10), if on { t.raised } else { t.surface });
             if on {
                 cx.canvas
                     .fill_round_rect(Rect::new(b.x, b.y + 10, 4, b.h - 20), 2, t.accent);
@@ -3336,9 +3336,9 @@ impl MixerView {
         for (i, row) in self.io_rows(panel) {
             let s = &self.state.strips[i];
             let selected = self.state.selected == Some(s.id);
-            cx.canvas.fill_round_rect(row, 10, t.surface);
+            cx.canvas.fill_round_rect(row, t.round(10), t.surface);
             if selected {
-                cx.canvas.stroke_round_rect(row, 10, 2, t.accent);
+                cx.canvas.stroke_round_rect(row, t.round(10), 2, t.accent);
             }
             let p = io::row_parts(row);
             let ink = if s.audible { t.text } else { t.text_faint };
@@ -3358,7 +3358,7 @@ impl MixerView {
             let open = self.picker == Some(s.id);
             let none = s.output == output::NONE as u8;
             cx.canvas
-                .fill_round_rect(p.output, 8, if open { t.accent } else { t.raised });
+                .fill_round_rect(p.output, t.round(8), if open { t.accent } else { t.raised });
             cx.text(
                 FontId::Sans,
                 t.size_body,
@@ -3382,7 +3382,7 @@ impl MixerView {
                     (p.source, choice(mx::SOURCE, inp.source)),
                     (p.monitor, choice(mx::MONITOR, inp.monitor)),
                 ] {
-                    cx.canvas.fill_round_rect(r, 8, t.raised);
+                    cx.canvas.fill_round_rect(r, t.round(8), t.raised);
                     cx.text(
                         FontId::Sans,
                         t.size_body,
@@ -3412,7 +3412,7 @@ impl Widget for IoIcon {
         let side = 44.min(r.h).min(r.w);
         let b = Rect::new(r.x + (r.w - side) / 2, r.y + (r.h - side) / 2, side, side);
         cx.canvas
-            .fill_round_rect(b, 10, if self.open { t.raised } else { t.surface });
+            .fill_round_rect(b, t.round(10), if self.open { t.raised } else { t.surface });
         if self.open {
             cx.canvas.fill_round_rect(
                 Rect::new(b.x + 10, b.bottom() - 4, b.w - 20, 3),

@@ -11,7 +11,7 @@
 
 use mpfree_fx::ids::eq as ids;
 use mpfree_fx::mpfree_node::Node;
-use mpfree_ui::{Color, Rect};
+use mpfree_ui::{Color, Rect, Role, Theme};
 
 /// The graph's axes.
 const F_LO: f32 = 20.0;
@@ -25,20 +25,6 @@ pub const LIFT: i32 = 12;
 pub const HIT: f32 = 22.0;
 /// The space a row keeps right of its curve for what the EQ is.
 const SUMMARY_W: i32 = 206;
-
-/// A band's colour: as on the EQ's page (bands 1 to 4 wear the Q-Links'
-/// colours).
-pub const BAND_COLORS: [Color; 8] = [
-    Color::rgb(0x6EA8FE),
-    Color::rgb(0x3DDC97),
-    Color::rgb(0xFFC145),
-    Color::rgb(0xD46CFF),
-    Color::rgb(0xFF8A65),
-    Color::rgb(0x4FC3C9),
-    Color::rgb(0xF06292),
-    Color::rgb(0xAED581),
-];
-pub const CUT_COLOR: Color = Color::rgb(0xB8C2D6);
 
 /// A dot: band 0 to 7, or a cut.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,10 +49,12 @@ impl Dot {
             Dot::High => "High cut".into(),
         }
     }
-    pub fn color(self) -> Color {
+    /// Its colour on `t`: band `n` is the theme's `series.n`, the cuts its
+    /// `cut` colour.
+    pub fn color(self, t: &Theme) -> Color {
         match self {
-            Dot::Band(b) => BAND_COLORS[b % BAND_COLORS.len()],
-            _ => CUT_COLOR,
+            Dot::Band(b) => t.series(b),
+            _ => t.role(Role::Cut),
         }
     }
     /// The parameter picking the dot focuses: what its dot moves up and

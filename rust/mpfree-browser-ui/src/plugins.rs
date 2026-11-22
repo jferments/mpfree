@@ -386,7 +386,7 @@ pub fn paint(cx: &mut PaintCx, list: Rect, detail: Rect, s: &PluginsScreen) {
         &title,
     );
     if let (Some(b), Some(br)) = (s.list_button, g.list_button) {
-        cx.canvas.fill_round_rect(br, 10, t.raised);
+        cx.canvas.fill_round_rect(br, t.round(10), t.raised);
         cx.text(
             FontId::Sans,
             t.size_small,
@@ -399,7 +399,7 @@ pub fn paint(cx: &mut PaintCx, list: Rect, detail: Rect, s: &PluginsScreen) {
     for (v, vr) in &g.views {
         let on = *v == s.view;
         cx.canvas
-            .fill_round_rect(*vr, 10, if on { t.accent } else { t.raised });
+            .fill_round_rect(*vr, t.round(10), if on { t.accent } else { t.raised });
         cx.text(
             if on { FontId::Bold } else { FontId::Sans },
             t.size_small,
@@ -459,7 +459,8 @@ pub fn paint(cx: &mut PaintCx, list: Rect, detail: Rect, s: &PluginsScreen) {
             if !d.picture_label.is_empty() {
                 let w = cx.measure(FontId::Sans, t.size_small, &d.picture_label) + 16;
                 let lr = Rect::new(g.picture.right() - w - 6, g.picture.y + 6, w, 24);
-                cx.canvas.fill_round_rect(lr, 12, t.bg.with_alpha(190));
+                cx.canvas
+                    .fill_round_rect(lr, t.round(12), t.bg.with_alpha(190));
                 cx.text(
                     FontId::Sans,
                     t.size_small,
@@ -471,7 +472,7 @@ pub fn paint(cx: &mut PaintCx, list: Rect, detail: Rect, s: &PluginsScreen) {
             }
         }
         None => {
-            cx.canvas.fill_round_rect(g.picture, 10, t.raised);
+            cx.canvas.fill_round_rect(g.picture, t.round(10), t.raised);
             cx.text(
                 FontId::Sans,
                 t.size_small,
@@ -629,7 +630,7 @@ pub fn targets(list: Rect, detail: Rect, s: &PluginsScreen) -> Vec<mpfree_ui::Ta
 fn paint_row(cx: &mut PaintCx, rr: Rect, row: &PluginRow, selected: bool) {
     let t = cx.theme.clone();
     if selected {
-        cx.canvas.fill_round_rect(rr, 10, t.raised);
+        cx.canvas.fill_round_rect(rr, t.round(10), t.raised);
         cx.canvas
             .fill_round_rect(Rect::new(rr.x, rr.y + 12, 4, rr.h - 24), 2, t.accent);
     }
@@ -688,7 +689,7 @@ fn paint_row(cx: &mut PaintCx, rr: Rect, row: &PluginRow, selected: bool) {
 fn button(cx: &mut PaintCx, r: Rect, label: &str, lit: bool, danger: bool) {
     let t = cx.theme.clone();
     cx.canvas
-        .fill_round_rect(r, 10, if lit { t.accent } else { t.raised });
+        .fill_round_rect(r, t.round(10), if lit { t.accent } else { t.raised });
     let ink = if lit {
         t.on_accent
     } else if danger {

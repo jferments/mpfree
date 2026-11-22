@@ -36,6 +36,8 @@ pub(crate) struct Slot {
     /// Its blocks' peaks are kept (a chunk read from the disk has none:
     /// the disk side keeps those).
     pub noted: bool,
+    /// Writes of it that failed (a dirty slot).
+    pub tries: u8,
 }
 
 const EMPTY: u64 = u64::MAX;
@@ -84,6 +86,7 @@ impl Pool {
                     state: State::Free,
                     last: 0,
                     noted: false,
+                    tries: 0,
                 };
                 n
             ],
@@ -200,6 +203,7 @@ impl Pool {
             state,
             last: self.clock,
             noted: state == State::Dirty,
+            tries: 0,
         };
         self.insert(key(take, chunk), s);
         Some(s as usize)

@@ -93,7 +93,7 @@ impl Widget for XyList {
             t.text_dim,
             "Tap one: the pad plays it on the master, under one finger.",
         );
-        cx.canvas.fill_round_rect(close, 10, t.raised);
+        cx.canvas.fill_round_rect(close, t.round(10), t.raised);
         cx.text(FontId::Bold, 15.0, close, Align::Center, t.text, "Close");
         let mut hits = self.hits.borrow_mut();
         hits.clear();
@@ -106,7 +106,7 @@ impl Widget for XyList {
             } else {
                 (t.raised, t.text, t.text_dim)
             };
-            cx.canvas.fill_round_rect(tr, 10, fill);
+            cx.canvas.fill_round_rect(tr, t.round(10), fill);
             let text = tr.inset_xy(16, 8);
             let (top, bottom) = text.take_top(text.h / 2);
             cx.text(FontId::Bold, 16.0, top, Align::Left, ink, name);

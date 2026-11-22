@@ -23,6 +23,7 @@ use crate::color::Color;
 use crate::draw;
 use crate::geom::Rect;
 use crate::text::{Align, FontId};
+use crate::theme::Theme;
 use crate::ui::{EventKind, PaintCx, Target, Touch, Widget};
 
 /// The column's width on every page that has it, in pixels (168 until
@@ -32,10 +33,6 @@ pub const COLUMN_WIDTH: i32 = 128;
 pub const MASTER_WIDTH: i32 = 66;
 /// Pixels of drag per detent of a card's knob.
 pub const DRAG_DETENT: i32 = 8;
-
-/// Each knob's colour when its target has none of its own: blue, green,
-/// yellow and pink, as in the Play mockups.
-pub const KNOB_COLOURS: [Color; 4] = draw::KNOB;
 
 /// One knob's card.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -159,9 +156,10 @@ impl QLinkColumn {
             .position(|c| c.contains(x, y))
     }
 
-    /// The colour knob `k`'s card draws in.
-    pub fn colour(&self, k: usize) -> Color {
-        self.cards[k].color.unwrap_or(KNOB_COLOURS[k % 4])
+    /// The colour knob `k`'s card draws in on `t`: its target's own, or
+    /// the theme's colour for the knob.
+    pub fn colour(&self, t: &Theme, k: usize) -> Color {
+        self.cards[k].color.unwrap_or_else(|| t.qlink(k))
     }
 }
 
@@ -171,7 +169,7 @@ impl Widget for QLinkColumn {
         cx.canvas.fill_rect(r, t.bg);
         for (k, cr) in QLinkColumn::card_rects(r).into_iter().enumerate() {
             let card = &self.cards[k];
-            let col = self.colour(k);
+            let col = self.colour(&t, k);
             let on = self.touched[k];
             cx.canvas
                 .fill_round_rect(cr, t.radius, if on { t.raised } else { t.surface });
@@ -201,7 +199,10 @@ impl Widget for QLinkColumn {
             }
             cx.canvas
                 .fill_round_rect(Rect::new(cr.x, cr.y + 14, 4, (cr.h - 28).max(0)), 2, col);
-            let rest = card_head(cx, inner, k, &card.name, col, t.text);
+            // The number in the knob's colour, kept readable on the card
+            // (a light theme darkens a pastel).
+            let number = t.readable(col, if on { t.raised } else { t.surface });
+            let rest = card_head(cx, inner, k, &card.name, number, t.text);
             // The knob: 270 degrees of dots, open at the bottom.
             let d = rest.h.min(rest.w - 10).max(20);
             let (ox, oy) = (rest.x + rest.w / 2, rest.y + rest.h / 2 + 2);
@@ -533,8 +534,9 @@ mod tests {
         let mut q = QLinkColumn::new();
         q.cards[0] = QLinkCard::new("Wash", "Macro 1", "80 %", 0.8);
         q.cards[0].color = Some(Color::rgb(0xC77DBA));
-        assert_eq!(q.colour(0), Color::rgb(0xC77DBA));
-        assert_eq!(q.colour(1), KNOB_COLOURS[1]);
+        let t = Theme::dark();
+        assert_eq!(q.colour(&t, 0), Color::rgb(0xC77DBA));
+        assert_eq!(q.colour(&t, 1), t.qlink(1));
         assert!(q.cards[2].is_free());
     }
 

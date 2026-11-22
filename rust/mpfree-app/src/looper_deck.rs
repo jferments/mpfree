@@ -27,7 +27,7 @@ use crate::looper_tab::{
     card_in, landing_fill, level_frac, level_of_frac, level_text, paint_card, paint_spots, DropTo,
     LayerDrag, LoopAct,
 };
-use mpfree_ui::draw::speaker;
+use mpfree_ui::draw::speaker_on;
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Shape, Target, Touch, Widget};
 use std::cell::RefCell;
 use std::f32::consts::PI;
@@ -580,7 +580,7 @@ impl LoopDeck {
         // the one picked, the take's under "This take", and the pick as the
         // next take's when that fits.
         let pill = LoopDeck::input_rect(r).inset_xy(0, 3);
-        cx.canvas.fill_round_rect(pill, 8, t.raised);
+        cx.canvas.fill_round_rect(pill, t.round(8), t.raised);
         let (word, level) = &self.head.input;
         let meter_w = 5 * 7;
         let ww = cx.measure(FontId::Bold, 14.0, word);
@@ -682,14 +682,17 @@ impl LoopDeck {
             .fill_rect(p.card.inset(-GAP / 2).intersect(r_body(r)), t.surface);
         let fill = landing_fill(&t, self.drag.as_ref(), DropTo::Loop(i))
             .unwrap_or_else(|| t.surface.mix(t.raised, 0.4));
-        cx.canvas.fill_round_rect(p.card, 12, fill);
+        cx.canvas.fill_round_rect(p.card, t.round(12), fill);
         if look.picked {
-            cx.canvas.stroke_round_rect(p.card, 12, 2, t.accent);
+            cx.canvas
+                .stroke_round_rect(p.card, t.round(12), 2, t.accent);
         } else {
-            cx.canvas.stroke_round_rect(p.card, 12, 1, t.outline);
+            cx.canvas
+                .stroke_round_rect(p.card, t.round(12), 1, t.outline);
         }
         if look.lit && look.landing.is_none() {
-            cx.canvas.stroke_round_rect(p.card, 12, 2, t.accent);
+            cx.canvas
+                .stroke_round_rect(p.card, t.round(12), 2, t.accent);
         }
         // The name and the length.
         let mut s = Shape::new(Rect::new(p.name.x + 6, p.name.y + 8, 14, 14));
@@ -740,16 +743,16 @@ impl LoopDeck {
             } else {
                 t.raised
             };
-            cx.canvas.fill_round_rect(p.mute, 10, b);
+            cx.canvas.fill_round_rect(p.mute, t.round(10), b);
             let (sx, sy) = (p.mute.x + p.mute.w / 2, p.mute.y + p.mute.h / 2);
-            speaker(cx, sx, sy, if muted { t.bad } else { t.text }, muted);
+            speaker_on(cx, sx, sy, if muted { t.bad } else { t.text }, muted, b);
             // The solo: lit while this loop is soloed.
             let (fill, ink) = if ch.solo {
                 (t.accent, t.on_accent)
             } else {
                 (t.raised, t.text_dim)
             };
-            cx.canvas.fill_round_rect(p.solo, 10, fill);
+            cx.canvas.fill_round_rect(p.solo, t.round(10), fill);
             cx.text(FontId::Bold, 15.0, p.solo, Align::Center, ink, "S");
         } else {
             // What it records from, on two lines when it doesn't fit on
