@@ -1,22 +1,40 @@
 //! Audio tracks saved with a project.
 //!
 //! The text ([`to_text`], [`from_text`]) is the audio tracks' part of a
-//! project (`parts/audiotracks.txt`): each track's settings and regions,
-//! and each take's place, named by its audio file. Each take's audio is a
+//! project (`parts/audiotracks.txt`): each track's input, monitor and
+//! regions, and each take's place, named by its audio file. Each take's audio is a
 //! WAV file ([`wav`], [`from_wav`]: 32-bit float, mono or stereo, as
 //! recorded) that the project keeps with its samples.
 //!
 //! ```text
-//! mpfree-audiotracks 1
+//! mpfree-audiotracks 2
 //! rate=44100
-//! track=0 input=left monitor=auto level=1 pan=0 muted=0 solo=0
+//! track=0 id=9 input=left monitor=auto
 //! region start=0 end=3840 take=3 src=0 gain=1 fade_in=0 fade_out=0
-//! take=3 track=0 group=1 pass=0 bpm=120 anchor=-12.5 frames=44100 channels=1 file=3f0c.wav
+//! take=3 rec=5b2f0d9c41e8a7763c0f12ab9e4d8c01 track=0 group=1 pass=0 bpm=120 anchor=-12.5 frames=44100 channels=1 file=3f0c.wav
 //! ```
 //!
 //! A line is `key=value` words; `file=` comes last and takes the rest of
 //! the line. Unknown keys and lines are skipped, so a newer build's text
 //! still loads. A region line belongs to the track line above it.
+//!
+//! A track line's `id` is the lasting id of its track in the project's
+//! track list (the audio tracks rethink, phase 1: an audio track is a
+//! track like any other); its `track` number only ties the takes to it in
+//! this file. A track's level, pan, mute and solo aren't here: the level
+//! and pan are its mixer strip's, and mute and solo its track's. That is
+//! `mpfree-audiotracks 2`. An `mpfree-audiotracks 1` part, saved before
+//! audio tracks were tracks, is refused in plain words: mpfree is early
+//! enough that correctness comes before older files (Jay, 22 Nov).
+//!
+//! The take lines are the project's table of recordings (phase 1c): a
+//! take line's `rec` is the recording's lasting id
+//! ([`crate::RecordingId`], 32 hex digits), saved and never given to
+//! another; its `take` number is only the engine place the regions above
+//! name. Every recording is the project's own, its file in the project's
+//! `samples/`, at the part's `rate`; recordings from outside the project,
+//! and files at their own rates, come with streaming (the rethink's
+//! phase 3).
 //!
 //! Saving: [`crate::AudioTracks::save_into`] fills a [`Saved::room`] made
 //! off the audio thread with the settings, regions and takes without
@@ -28,21 +46,35 @@
 
 use mpfree_transport::time::Tick;
 
-use crate::{Input, Monitor, Region, MAX_REGIONS, MAX_TAKES, MAX_TRACKS};
+use crate::{Input, Monitor, RecordingId, Region, MAX_REGIONS, MAX_TAKES, MAX_TRACKS};
 
 /// The first line of the text.
-pub const FORMAT: &str = "mpfree-audiotracks 1";
+pub const FORMAT: &str = "mpfree-audiotracks 2";
+/// The first line of a part saved before audio tracks were tracks, which
+/// is refused ([`OLDER`]).
+pub const FORMAT_1: &str = "mpfree-audiotracks 1";
+
+/// Why an [`FORMAT_1`] part is refused, in the musician's words.
+pub const OLDER: &str =
+    "saved by an older mpfree, before audio tracks were tracks; this mpfree doesn't open them";
 
 /// A track as saved.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrackFile {
+    /// Its place among the engine's tracks: in the text, only what ties
+    /// the takes to it.
     pub index: usize,
+    /// The lasting id of its track in the project's track list, which the
+    /// app fills in: 0 for none, as in what
+    /// [`crate::AudioTracks::save_into`] gives. The text has no `id` for
+    /// 0. Which tracks need one is the app's to check.
+    pub id: u32,
     pub input: Input,
     pub monitor: Monitor,
-    pub level: f32,
-    pub pan: f32,
-    pub muted: bool,
-    pub solo: bool,
+    /// Where the track records from inside the mix, in the app's words
+    /// (the instrument redesign's step 9): kept for the app, which fills
+    /// it in. Empty: the line input. No spaces.
+    pub from: String,
     /// In order, never overlapping.
     pub regions: Vec<Region>,
 }
@@ -50,7 +82,12 @@ pub struct TrackFile {
 /// A take as saved.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TakeFile {
+    /// Its place in the engine, which the regions name.
     pub id: u16,
+    /// Its lasting id: always given in the text; [`RecordingId::NONE`] for
+    /// a new take (a sound brought in, a stretched copy), which gets one
+    /// as it loads.
+    pub rec: RecordingId,
     pub track: usize,
     pub group: u16,
     pub pass: u16,
@@ -90,18 +127,17 @@ impl Saved {
             tracks: (0..MAX_TRACKS)
                 .map(|index| TrackFile {
                     index,
+                    id: 0,
                     input: Input::Left,
                     monitor: Monitor::Auto,
-                    level: 1.0,
-                    pan: 0.0,
-                    muted: false,
-                    solo: false,
+                    from: String::new(),
                     regions: Vec::with_capacity(MAX_REGIONS),
                 })
                 .collect(),
             takes: (0..MAX_TAKES)
                 .map(|id| TakeFile {
                     id: id as u16,
+                    rec: RecordingId::NONE,
                     track: 0,
                     group: 0,
                     pass: 0,
@@ -115,10 +151,6 @@ impl Saved {
                 .collect(),
         }
     }
-}
-
-fn flag(b: bool) -> u8 {
-    u8::from(b)
 }
 
 fn input_word(i: Input) -> &'static str {
@@ -139,20 +171,25 @@ fn monitor_word(m: Monitor) -> &'static str {
 }
 
 /// The text for `saved` (the takes' audio is not in it: each take's
-/// `file` names it).
+/// `file` names it). Every take must have its lasting id.
 pub fn to_text(saved: &Saved) -> String {
     let mut s = format!("{FORMAT}\nrate={}\n", saved.rate);
     for t in &saved.tracks {
         s.push_str(&format!(
-            "track={} input={} monitor={} level={} pan={} muted={} solo={}\n",
+            "track={}{} input={} monitor={}\n",
             t.index,
+            if t.id != 0 {
+                format!(" id={}", t.id)
+            } else {
+                String::new()
+            },
             input_word(t.input),
             monitor_word(t.monitor),
-            t.level,
-            t.pan,
-            flag(t.muted),
-            flag(t.solo)
         ));
+        if !t.from.is_empty() && !t.from.contains(char::is_whitespace) {
+            s.pop();
+            s.push_str(&format!(" from={}\n", t.from));
+        }
         for r in &t.regions {
             s.push_str(&format!(
                 "region start={} end={} take={} src={} gain={} fade_in={} fade_out={}\n",
@@ -162,8 +199,8 @@ pub fn to_text(saved: &Saved) -> String {
     }
     for k in &saved.takes {
         s.push_str(&format!(
-            "take={} track={} group={} pass={} bpm={} anchor={} frames={} channels={} file={}\n",
-            k.id, k.track, k.group, k.pass, k.bpm, k.anchor, k.frames, k.channels, k.file
+            "take={} rec={} track={} group={} pass={} bpm={} anchor={} frames={} channels={} file={}\n",
+            k.id, k.rec, k.track, k.group, k.pass, k.bpm, k.anchor, k.frames, k.channels, k.file
         ));
     }
     s
@@ -200,10 +237,6 @@ fn level(kv: &[(&str, &str)], key: &str, line: usize, lo: f32, hi: f32) -> Resul
     Ok(v.clamp(lo, hi))
 }
 
-fn bit(kv: &[(&str, &str)], key: &str) -> bool {
-    get(kv, key) == Some("1")
-}
-
 /// The part from its text. The takes come back without audio: load each
 /// one's `file`. Checks that regions are in order and name saved takes of
 /// their own track.
@@ -211,6 +244,7 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
     let mut lines = text.lines().enumerate();
     match lines.next() {
         Some((_, l)) if l.trim_end() == FORMAT => {}
+        Some((_, l)) if l.trim_end() == FORMAT_1 => return Err(OLDER.into()),
         _ => return Err(format!("not an audio tracks part (no \"{FORMAT}\")")),
     }
     let mut saved = Saved {
@@ -229,8 +263,16 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
             if index >= MAX_TRACKS || saved.tracks.iter().any(|t| t.index == index) {
                 return Err(format!("line {n}: track {index} is past the last or twice"));
             }
+            let id: u32 = match get(&kv, "id") {
+                Some(_) => num(&kv, "id", n)?,
+                None => 0,
+            };
+            if id != 0 && saved.tracks.iter().any(|t| t.id == id) {
+                return Err(format!("line {n}: track id {id} twice"));
+            }
             saved.tracks.push(TrackFile {
                 index,
+                id,
                 input: match get(&kv, "input") {
                     Some("right") => Input::Right,
                     Some("stereo") => Input::Stereo,
@@ -242,10 +284,7 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
                     Some("in") => Monitor::In,
                     _ => Monitor::Auto,
                 },
-                level: level(&kv, "level", n, 0.0, 2.0)?,
-                pan: level(&kv, "pan", n, -1.0, 1.0)?,
-                muted: bit(&kv, "muted"),
-                solo: bit(&kv, "solo"),
+                from: get(&kv, "from").unwrap_or("").to_string(),
                 regions: Vec::new(),
             });
         } else if line.starts_with("region ") {
@@ -288,8 +327,15 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
             if file.is_empty() {
                 return Err(format!("line {n}: a take with no file"));
             }
+            let v = get(&kv, "rec").ok_or_else(|| format!("line {n}: no rec"))?;
+            let rec = RecordingId::parse(v)
+                .ok_or_else(|| format!("line {n}: rec={v} is not a recording id"))?;
+            if saved.takes.iter().any(|k| k.rec == rec) {
+                return Err(format!("line {n}: recording {rec} twice"));
+            }
             saved.takes.push(TakeFile {
                 id,
+                rec,
                 track,
                 group: num(&kv, "group", n)?,
                 pass: num(&kv, "pass", n)?,
@@ -471,6 +517,7 @@ mod tests {
         };
         let take = |id, track, file: &str| TakeFile {
             id,
+            rec: RecordingId(0xabc0_0000_0000_0000_0000_0000_0000_0000 + u128::from(id)),
             track,
             group: 2,
             pass: id,
@@ -486,22 +533,18 @@ mod tests {
             tracks: vec![
                 TrackFile {
                     index: 0,
+                    id: 12,
                     input: Input::Stereo,
                     monitor: Monitor::Off,
-                    level: 0.7,
-                    pan: -0.25,
-                    muted: true,
-                    solo: false,
+                    from: "t12:after".into(),
                     regions: vec![region(0, 1920, 0), region(1920, 3840, 1)],
                 },
                 TrackFile {
                     index: 3,
+                    id: 4,
                     input: Input::Left,
                     monitor: Monitor::Auto,
-                    level: 1.0,
-                    pan: 0.0,
-                    muted: false,
-                    solo: true,
+                    from: String::new(),
                     regions: vec![],
                 },
             ],
@@ -517,8 +560,56 @@ mod tests {
     fn the_text_comes_back_as_it_was() {
         let s = saved();
         let t = to_text(&s);
-        assert!(t.starts_with("mpfree-audiotracks 1\n"));
+        assert!(t.starts_with("mpfree-audiotracks 2\n"));
+        assert!(t.contains("\ntrack=3 id=4 input=left "), "{t}");
         assert_eq!(from_text(&t), Ok(s));
+    }
+
+    /// A part saved before audio tracks were tracks is refused in plain
+    /// words; a track's id is never there twice, and a track line holds
+    /// no level, pan, mute or solo (its strip's and its track's).
+    #[test]
+    fn a_part_from_before_audio_tracks_were_tracks_is_refused() {
+        let v2 = to_text(&saved());
+        let old = v2.replace("mpfree-audiotracks 2", "mpfree-audiotracks 1");
+        assert_eq!(from_text(&old), Err(OLDER.to_string()));
+        assert_eq!(from_text(&v2.replace(" id=4", "")).unwrap().tracks[1].id, 0);
+        assert!(from_text(&v2.replace(" id=4", " id=x")).is_err());
+        assert!(from_text(&v2.replace(" id=4", " id=12")).is_err());
+        for word in ["level=", "pan=", "muted=", "solo="] {
+            assert!(!v2.contains(word), "{v2}");
+        }
+    }
+
+    /// The take lines are the project's recordings: each keeps its lasting
+    /// id, which every line has; an id is 32 hex digits, not 0, and never
+    /// there twice.
+    #[test]
+    fn each_recording_keeps_its_lasting_id() {
+        let t = to_text(&saved());
+        assert!(
+            t.contains("\ntake=5 rec=abc00000000000000000000000000005 track=3 "),
+            "{t}"
+        );
+        let s = from_text(&t).unwrap();
+        assert_eq!(s.takes[2].rec, RecordingId(0xabc << 116 | 5));
+        let none = t.replace(" rec=abc00000000000000000000000000001", "");
+        assert!(from_text(&none).unwrap_err().contains("no rec"));
+        let one = "abc00000000000000000000000000001";
+        for bad in [
+            "abc",
+            "zbc00000000000000000000000000001",
+            "00000000000000000000000000000000",
+        ] {
+            let e = from_text(&t.replace(one, bad)).unwrap_err();
+            assert!(e.contains("is not a recording id"), "{e}");
+        }
+        let e = from_text(&t.replace(one, "abc00000000000000000000000000000")).unwrap_err();
+        assert!(e.contains("twice"), "{e}");
+        assert_eq!(
+            RecordingId::parse(one).map(|r| r.to_string()),
+            Some(one.into())
+        );
     }
 
     #[test]
@@ -540,12 +631,10 @@ mod tests {
         .unwrap_err();
         assert!(e.contains("line 7"), "{e}");
         assert!(from_text(&t.replace("track=3", "track=0")).is_err());
-        assert!(from_text(&t.replace("track=3 input", "track=8 input")).is_err());
+        assert!(from_text(&t.replace("track=3 id", "track=8 id")).is_err());
         assert!(from_text(&t.replace(" file=d.wav", "")).is_err());
         assert!(from_text(&t.replace("start=1920", "start=1000")).is_err());
         assert!(from_text(&t.replace("take=1 src", "take=5 src")).is_err());
-        let s = from_text(&t.replace("level=0.7", "level=9")).unwrap();
-        assert_eq!(s.tracks[0].level, 2.0);
     }
 
     #[test]

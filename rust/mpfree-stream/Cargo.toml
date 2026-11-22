@@ -10,6 +10,9 @@ name = "mpfree_stream"
 path = "src/lib.rs"
 
 [dependencies]
+# Content hashes for prepared copies and snapshots; already in the
+# workspace (mpfree-stick, mpfree-factory).
+sha2 = "0.10"
 
 [features]
 # Marked sounds and the frame checker, for tests built on the layer.
