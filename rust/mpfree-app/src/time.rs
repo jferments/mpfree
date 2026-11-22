@@ -9609,6 +9609,92 @@ mod tests {
     /// clip's pressure is past half its room, the next period tidies it
     /// (refactor B4b): the picks stay, and UNDO and REDO still find each
     /// stroke's pressure.
+    /// The note editor's lock lanes (piano roll plan 3A.2): a stroke
+    /// sets the lock where each note plays, as the Steps' lock lanes do
+    /// (notes in one step share a whole-step lock), one take that UNDO
+    /// takes back; ERASE + a tap takes it off; the picks stay.
+    #[test]
+    fn locks_set_on_notes_are_the_steps_locks_and_one_take() {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_time_ui::editor::EditAction as E;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.step_action(StepAction::Tap {
+            pad: 0,
+            step: 0,
+            velocity: 100,
+        })
+        .unwrap();
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        // A second note on step 1, and one on step 5.
+        for (tick, note) in [(0, 7), (960, 0)] {
+            h.act(TimeAction::Edit(E::Draw {
+                tick,
+                note,
+                len: 120,
+            }))
+            .unwrap();
+        }
+        let edit = |h: &mut TimeHost| {
+            h.take_changed();
+            h.state().edit.unwrap()
+        };
+        let cutoff = RelAddr::new(OnTrack::Inst, 3);
+        let locks = |h: &mut TimeHost| -> Vec<(i64, Option<u8>, f32)> {
+            let mut v: Vec<_> = edit(h)
+                .clip
+                .locks
+                .iter()
+                .filter(|l| l.addr == cutoff)
+                .map(|l| (l.tick, l.sound, l.value))
+                .collect();
+            v.sort_by_key(|l| l.0);
+            v
+        };
+        let e = edit(&mut h);
+        let at = |t: i64| e.clip.notes.iter().position(|n| n.tick == t).unwrap();
+        let (first, later) = (at(0), at(960));
+        let picks = e.editor.sel.clone();
+        let line = h
+            .act(TimeAction::Edit(E::Lock {
+                rev: e.rev,
+                addr: cutoff,
+                set: vec![(first, 800.0), (later, 1200.0)],
+            }))
+            .unwrap();
+        assert_eq!(line, "edit: 2 locks set");
+        assert_eq!(
+            locks(&mut h),
+            [(0, None, 800.0), (960, None, 1200.0)],
+            "a whole-step lock each"
+        );
+        assert_eq!(edit(&mut h).editor.sel, picks, "the picks stay");
+        // ERASE + a tap on step 5's bar.
+        let e = edit(&mut h);
+        let line = h
+            .act(TimeAction::Edit(E::Unlock {
+                rev: e.rev,
+                addr: cutoff,
+                notes: vec![later],
+            }))
+            .unwrap();
+        assert_eq!(line, "edit: lock taken off");
+        assert_eq!(locks(&mut h), [(0, None, 800.0)]);
+        // UNDO, UNDO: each a take.
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(locks(&mut h).len(), 2);
+        h.act(TimeAction::Undo).unwrap();
+        assert!(locks(&mut h).is_empty());
+        // A stale picture: refused.
+        let rev = edit(&mut h).rev;
+        assert!(h
+            .act(TimeAction::Edit(E::Lock {
+                rev: rev - 1,
+                addr: cutoff,
+                set: vec![(first, 1.0)],
+            }))
+            .is_err());
+    }
+
     #[test]
     fn pressure_drawn_is_one_take_a_stroke_and_survives_a_tidy() {
         use mpfree_seq::TouchPoint;

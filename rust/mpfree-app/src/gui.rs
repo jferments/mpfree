@@ -948,6 +948,44 @@ pub fn no_pad_mutes(what: &str, kit: Option<usize>) -> Option<String> {
 /// And which tracks play notes, so transpose moves them
 /// (`TrackInfo::melodic`): one with an instrument (not the drum engine),
 /// or one that plays the synth while it plays notes (`synth_notes`).
+/// The note editor's lock lanes (piano roll plan 3A.2): the Steps' lock
+/// lanes on the clip at (track, slot), each with the knob that turns its
+/// setting, and the settings the roll is given for them, built again
+/// only when the knobs change.
+#[derive(Default)]
+struct EditLocks {
+    clip: Option<(usize, usize)>,
+    knobs: Vec<play_page::SoundKnob>,
+    settings: std::sync::Arc<Vec<mpfree_time_ui::editor::LockSetting>>,
+}
+
+/// The most values a lock lane offers: a knob's whole travel, detent by
+/// detent, is far fewer.
+const LOCK_VALUES_MAX: usize = 512;
+
+/// A lock lane's setting for the roll (piano roll plan 3A.2): the
+/// values knob `k` turns through, a detent at a time from its lowest,
+/// in its card's words, and what a step with no lock plays.
+fn lock_setting(k: &play_page::SoundKnob) -> mpfree_time_ui::editor::LockSetting {
+    let mut v = k.kind.turn(k.own, -1_000_000, false);
+    let mut values = vec![(v, k.kind.read(v).0)];
+    while values.len() < LOCK_VALUES_MAX {
+        let next = k.kind.turn(v, 1, false);
+        if next.partial_cmp(&v) != Some(std::cmp::Ordering::Greater) {
+            break;
+        }
+        v = next;
+        values.push((v, k.kind.read(v).0));
+    }
+    mpfree_time_ui::editor::LockSetting {
+        addr: k.addr,
+        name: k.name.clone(),
+        own: k.own,
+        values,
+        centred: k.kind.read(k.own).2,
+    }
+}
+
 fn fill_sounds(
     st: &mut TimeState,
     sounds: &TrackSounds,
@@ -2283,6 +2321,8 @@ pub struct Player {
     /// What each track without its own instrument plays
     /// ([`ToUi::TrackKits`]), written under its name too.
     track_kits: crate::sampler::TrackKits,
+    /// The note editor's lock lanes, as the Steps' lock lanes give them.
+    edit_locks: EditLocks,
     /// STEP SEQ: the Synth tab's values from before steps were held, put
     /// back on it when they are let go (a knob turned there while they
     /// are held is a lock on them, not a change to the sound).
@@ -2957,6 +2997,7 @@ impl Player {
             track_sounds: [None; crate::instruments::HOLDERS],
             track_sends: [None; crate::instruments::TRACKS],
             track_kits: crate::sampler::TrackKits::default(),
+            edit_locks: EditLocks::default(),
             held_synth: None,
             start_checked: false,
             crashed: false,
@@ -5122,6 +5163,57 @@ impl Player {
         let (knobs, gear) = self.lock_knobs();
         self.play.lock_knobs = knobs;
         self.play.gear = gear;
+        self.refresh_edit_locks();
+    }
+
+    /// The note editor's lock lanes (piano roll plan 3A.2): while it is
+    /// open on the clip the Steps show, their lock lanes with the knobs
+    /// that turn them (a lane no knob turns is left out), built again
+    /// only when those change; and the editor's picture given them, and
+    /// none when it no longer shows that clip.
+    fn refresh_edit_locks(&mut self) {
+        let steps = self
+            .play
+            .steps
+            .clip
+            .as_ref()
+            .map(|c| (self.play.steps.track, c.slot));
+        let open = self
+            .time
+            .edit
+            .as_ref()
+            .map(|e| (e.editor.track, e.editor.slot))
+            .filter(|&o| Some(o) == steps);
+        let knobs: Vec<play_page::SoundKnob> = match open {
+            Some(_) => self
+                .play
+                .lock_lanes()
+                .iter()
+                .filter_map(|l| self.play.lock_knobs.iter().find(|k| k.addr == l.addr))
+                .cloned()
+                .collect(),
+            None => Vec::new(),
+        };
+        // Told only when they change: while the editor shows another
+        // clip, what it has is left be.
+        let changed = (open, &knobs) != (self.edit_locks.clip, &self.edit_locks.knobs);
+        if changed {
+            self.edit_locks = EditLocks {
+                clip: open,
+                settings: std::sync::Arc::new(knobs.iter().map(lock_setting).collect()),
+                knobs,
+            };
+        } else if open.is_none() {
+            return;
+        }
+        let settings = &self.edit_locks.settings;
+        let Some(e) = self.time.edit.as_mut() else {
+            return;
+        };
+        if !(std::sync::Arc::ptr_eq(&e.locks, settings) || e.locks == *settings) {
+            e.locks = settings.clone();
+            self.time_page.update(&mut self.ui, &self.time);
+        }
     }
 
     /// What the Sequencer's lock lanes turn (the Play, Pads and Sequencer
@@ -6504,6 +6596,22 @@ impl Player {
                 Some(Some(FromUi::Steps(StepAction::ClearPad {
                     pad: *index as u8,
                 })))
+            }
+            // A bar of the note editor's lock lane: the lock where its
+            // notes play comes off (piano roll plan 3A.2).
+            (time_view::NOTES, EventKind::Values { index, set })
+                if *index >= mpfree_time_ui::editor::LOCK_LANES =>
+            {
+                let e = self.time.edit.as_ref()?;
+                let addr = e
+                    .locks
+                    .get(index - mpfree_time_ui::editor::LOCK_LANES)?
+                    .addr;
+                Some(Some(FromUi::Time(TimeAction::Edit(EditAction::Unlock {
+                    rev: e.rev,
+                    addr,
+                    notes: set.iter().map(|&(i, _)| i).collect(),
+                }))))
             }
             // A note of the note editor (the roll, the list, the
             // tracker): it comes out (piano roll plan 1B.1, in place of
@@ -10376,6 +10484,13 @@ impl Player {
                     synth,
                 );
                 st.loops = loops_info(&self.looper);
+                // The note editor's lock lanes, as last built for its clip
+                // (refresh_edit_locks builds them again when they change).
+                if let Some(e) = st.edit.as_mut() {
+                    if self.edit_locks.clip == Some((e.editor.track, e.editor.slot)) {
+                        e.locks = self.edit_locks.settings.clone();
+                    }
+                }
                 // The bar's REC chip is the screen's own (refresh_play).
                 st.chips = std::mem::take(&mut self.time.chips);
                 self.time = *st;
@@ -19809,6 +19924,40 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("sequencer-notes-pressure sample: {e}"),
     }
+    // A lock lane (piano roll plan 3A.2): Cutoff's locks on three steps,
+    // the second chord's shared and picked, the locked notes marked.
+    match mpfree_time_ui::sample::notes_locks_state() {
+        Ok(state) => {
+            let mut p = quiet_player(fonts());
+            let addr = state
+                .edit
+                .as_ref()
+                .and_then(|e| e.locks.first())
+                .map(|s| s.addr);
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Sequencer));
+            let r = p.ui.rect_of(time_view::NOTES);
+            if let (Some(r), Some(g), Some(addr)) =
+                (r, p.ui.get_mut::<NoteGrid>(time_view::NOTES), addr)
+            {
+                g.lane.kind = mpfree_time_ui::editor::LaneKind::Lock(addr);
+                // The first bar and a beat across (the picked chord's
+                // handles in sight), folded to the rows with notes so
+                // every note of the bar is in sight.
+                g.fold = mpfree_time_ui::editor::Fold::Notes;
+                let roll = g.roll_rect(r);
+                g.view = mpfree_time_ui::editor::zoom::RollView {
+                    start: 0,
+                    ppt: f64::from(roll.w) / (g.bar + g.bar / 4).max(1) as f64,
+                    lift: 22,
+                    row_h: 32,
+                    follow: false,
+                };
+            }
+            out.push(("sequencer-notes-locks", p));
+        }
+        Err(e) => eprintln!("sequencer-notes-locks sample: {e}"),
+    }
     // The Arrange page's Song view: rows made into a song, song mode on,
     // Rec song armed.
     match mpfree_time_ui::sample::busy_song_state() {
@@ -22599,6 +22748,7 @@ mod tests {
             track_name: "Track 1".into(),
             bar: 3840,
             answer: Default::default(),
+            locks: Default::default(),
         }));
         p.time_page.update(&mut p.ui, &p.time);
         assert_eq!(
@@ -22807,6 +22957,7 @@ mod tests {
             track_name: "Track 1".into(),
             bar: 3840,
             answer: Default::default(),
+            locks: Default::default(),
         }));
         p.apply(ToUi::Show(View::Sequencer));
         p.ui.paint(&mut SoftCanvas::new(1280, 800));
@@ -22887,6 +23038,7 @@ mod tests {
             track_name: "Track 1".into(),
             bar: 3840,
             answer: Default::default(),
+            locks: Default::default(),
         }));
         p.apply(ToUi::Show(View::Sequencer));
         assert_eq!(p.ui.layout_of(CLIPS_PAGE), Some(time_view::EDIT_LAYOUT));
@@ -26942,6 +27094,113 @@ mod tests {
             .iter()
             .filter_map(|l| Some(format!("{} {}", l.name, l.lock.as_ref()?.sub)))
             .collect()
+    }
+
+    /// The note editor's lock lanes (piano roll plan 3A.2): open on the
+    /// clip the Steps show, the roll is given their lock lanes, each with
+    /// its knob's values in its words; a stroke on one sets the lock where
+    /// its notes play, and with ERASE held a tap takes it off. On another
+    /// clip it has none.
+    #[test]
+    fn the_note_editor_gets_the_steps_lock_lanes() {
+        use mpfree_play::mpfree_param::OnTrack;
+        use mpfree_time_ui::editor::{Editor, LOCK_LANES};
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.take_actions();
+        let track = p.play.steps.track;
+        let slot = p.play.steps.clip.as_ref().unwrap().slot;
+        let lane = p.play.lock_lanes()[0];
+        let OnTrack::Pad(pad) = lane.addr.on else {
+            panic!("a pad's tune");
+        };
+        let mut clip = mpfree_seq::Clip::new("Beat", 3840);
+        clip.add_note(mpfree_seq::Note::new(0, 240, pad, 100))
+            .unwrap();
+        let open = |p: &mut Player, track: usize, slot: usize, clip: &mpfree_seq::Clip| {
+            let mut st = Box::new(p.time.clone());
+            st.edit = Some(Box::new(time_view::EditInfo {
+                editor: Editor::new(track, slot, clip),
+                clip: clip.clone().into(),
+                rev: 3,
+                track_name: "Track 1".into(),
+                bar: 3840,
+                answer: Default::default(),
+                locks: Default::default(),
+            }));
+            p.apply(ToUi::Time(st));
+        };
+        open(&mut p, track, slot, &clip);
+        let locks = p.time.edit.as_ref().unwrap().locks.clone();
+        let names: Vec<&str> = locks.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["Tune", "Tune", "Tune"], "Kick's, Snare's, Perc's");
+        let tune = &locks[0];
+        assert_eq!(tune.addr, lane.addr);
+        assert!(tune.centred, "a tune goes either way");
+        let words: Vec<&str> = tune.values.iter().map(|v| v.1.as_str()).collect();
+        assert_eq!(words.first(), Some(&"-24 st"));
+        assert!(
+            words.contains(&"0 st") && words.contains(&"+12 st"),
+            "{words:?}"
+        );
+        assert_eq!(words.len(), 49, "a semitone a detent");
+        // The roll has them too.
+        let grid = p.ui.get::<NoteGrid>(time_view::NOTES).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&grid.lock_settings, &locks));
+        // Unchanged, the same list again: nothing new to tell the roll.
+        open(&mut p, track, slot, &clip);
+        assert!(std::sync::Arc::ptr_eq(
+            &p.time.edit.as_ref().unwrap().locks,
+            &locks
+        ));
+        // A stroke on Kick's lane: +12 st where the note plays.
+        let up = tune.values.iter().position(|v| v.1 == "+12 st").unwrap();
+        let stroke = |k: usize| UiEvent {
+            widget: time_view::NOTES.into(),
+            kind: EventKind::Values {
+                index: LOCK_LANES,
+                set: vec![(0, k as i32)],
+            },
+        };
+        p.take_actions();
+        assert_eq!(
+            p.on_event(stroke(up)),
+            Some(FromUi::Time(TimeAction::Edit(EditAction::Lock {
+                rev: 3,
+                addr: lane.addr,
+                set: vec![(0, 1200.0)],
+            })))
+        );
+        // ERASE held: the lock there comes off.
+        let mut held = p.status.clone();
+        held.erase = true;
+        p.apply(ToUi::Status(held.clone()));
+        assert_eq!(
+            p.on_event(stroke(up)),
+            Some(FromUi::Time(TimeAction::Edit(EditAction::Unlock {
+                rev: 3,
+                addr: lane.addr,
+                notes: vec![0],
+            })))
+        );
+        held.erase = false;
+        p.apply(ToUi::Status(held));
+        // Locked at +12 st already: a stroke that leaves it there
+        // changes nothing; one step down sets +11 st.
+        clip.locks
+            .push(mpfree_seq::Lock::new(0, Some(pad), lane.addr, 1200.0));
+        open(&mut p, track, slot, &clip);
+        assert_eq!(p.on_event(stroke(up)), None);
+        assert_eq!(
+            p.on_event(stroke(up - 1)),
+            Some(FromUi::Time(TimeAction::Edit(EditAction::Lock {
+                rev: 3,
+                addr: lane.addr,
+                set: vec![(0, 1100.0)],
+            })))
+        );
+        // Another clip: no lock lanes.
+        open(&mut p, track, slot + 1, &clip);
+        assert!(p.time.edit.as_ref().unwrap().locks.is_empty());
     }
 
     #[test]

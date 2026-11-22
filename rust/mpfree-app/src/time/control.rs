@@ -7090,6 +7090,7 @@ impl TimeControl {
                 track_name: self.project.tracks[ed.track].name.clone(),
                 bar: bar.round() as Tick,
                 answer: self.edit_answer.clone(),
+                locks: Default::default(),
             }))
         });
         st

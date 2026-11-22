@@ -44,6 +44,13 @@
 //! ([`draw_touch`], piano roll plan 3A.1) gives each note it crosses a
 //! new run the same way; the note's old one stays behind for undo.
 //!
+//! **Locks on notes** (piano roll plan 3A.2): a lock belongs to a step
+//! and a row, as the Steps view has it ([`steps_grid`]). The roll's lock
+//! lanes read and set the lock where each note plays it ([`lock_place`]):
+//! on the note's own pitch when one sits there already, else on its pad
+//! for a pad's setting, else on the whole step. Notes that share a step
+//! and a row share the lock ([`lock_notes`], [`unlock_notes`]).
+//!
 //! **Copying between clips** ([`copy`], [`carry`]; piano roll plan 1B.4)
 //! takes the notes out as a [`Copied`] of their own, with their pressure
 //! and the locks they own, so the copy holds whatever happens to the clip
@@ -79,7 +86,7 @@
 //! each note on toward the next start by a share of the gap.
 
 use crate::inst::Inst;
-use crate::steps::{moves_edit, Edit};
+use crate::steps::{moves_edit, Edit, Grid, DEFAULT_SIZE, SIZES};
 use crate::{
     touch_room, Clip, Holds, Lock, Note, Scale, Touch, TouchPoint, MAX_CLIP_TICKS, MAX_LOCKS,
     MAX_NOTES, MIN_CLIP_TICKS,
@@ -1793,6 +1800,98 @@ fn push_point(run: &mut Vec<TouchPoint>, at: u32, value: u8) {
     run.push(TouchPoint { at, value });
 }
 
+/// The clip's steps as the Steps view cuts them (its step size, or a
+/// 1/16 for a size it doesn't know): where its locks sit.
+pub fn steps_grid(clip: &Clip) -> Grid {
+    Grid::new(clip.step)
+        .filter(|_| SIZES.contains(&clip.step))
+        .or_else(|| Grid::new(DEFAULT_SIZE))
+        .expect("a 1/16 is a step size")
+}
+
+/// Where a lock of `addr` on a note of pitch `note` sits (piano roll plan
+/// 3A.2), as (step row) for [`Grid::lock`]: the note's own pitch when
+/// `own` (a lock of that setting already sits on its pitch in its step),
+/// else a pad's setting on its own pad's row, else the whole step (a
+/// synth's or the track's setting, as the Steps' lock lanes set them).
+/// None: a pad's setting and a note of another pad, which it doesn't
+/// play.
+pub fn lock_row(addr: RelAddr, note: u8, own: bool) -> Option<Option<u8>> {
+    if own {
+        return Some(Some(note));
+    }
+    match addr.on {
+        OnTrack::Pad(p) if p == note => Some(Some(p)),
+        OnTrack::Pad(_) => None,
+        _ => Some(None),
+    }
+}
+
+/// Note `n`'s step and the row its lock of `addr` sits on in `clip`
+/// ([`lock_row`]); None when the setting isn't its.
+pub fn lock_place(clip: &Clip, n: &Note, addr: RelAddr) -> Option<(usize, Option<u8>)> {
+    let g = steps_grid(clip);
+    let step = g.place(clip.length, n.tick).0;
+    let own = clip.locks.iter().any(|l| {
+        l.addr == addr && l.sound == Some(n.note) && g.place(clip.length, l.tick).0 == step
+    });
+    Some((step, lock_row(addr, n.note, own)?))
+}
+
+/// The value of `addr` locked where note `n` plays it, if any.
+pub fn lock_of(clip: &Clip, n: &Note, addr: RelAddr) -> Option<f32> {
+    let (step, row) = lock_place(clip, n, addr)?;
+    let g = steps_grid(clip);
+    clip.locks
+        .iter()
+        .find(|l| l.addr == addr && l.sound == row && g.place(clip.length, l.tick).0 == step)
+        .map(|l| l.value)
+}
+
+/// Locks drawn on a lock lane under the roll (plan 3A.2): `addr` set to
+/// each value where each note of `set` (by index) plays it, the step's
+/// lock on its row ([`lock_place`]), as the Steps' lock lanes set it, so
+/// notes that share a step and a row share the lock (the last value for
+/// it wins). Notes the setting isn't for are left out; empty when
+/// nothing changes.
+pub fn lock_notes(clip: &Clip, addr: RelAddr, set: &[(usize, f32)]) -> Edit {
+    let g = steps_grid(clip);
+    let mut places: Vec<((usize, Option<u8>), f32)> = Vec::new();
+    for &(i, v) in set {
+        let Some(place) = clip.notes.get(i).and_then(|n| lock_place(clip, n, addr)) else {
+            continue;
+        };
+        match places.iter_mut().find(|(p, _)| *p == place) {
+            Some(e) => e.1 = v,
+            None => places.push((place, v)),
+        }
+    }
+    let mut e = Edit::default();
+    for ((step, row), v) in places {
+        e.join(g.lock(clip, row, step, addr, v));
+    }
+    e
+}
+
+/// The locks of `addr` taken off where the `sel` notes play it: ERASE +
+/// a tap on a lock lane (plan 3A.2).
+pub fn unlock_notes(clip: &Clip, addr: RelAddr, sel: &[usize]) -> Edit {
+    let g = steps_grid(clip);
+    let mut places: Vec<(usize, Option<u8>)> = Vec::new();
+    for (_, n) in picked(clip, sel) {
+        if let Some(p) = lock_place(clip, &n, addr) {
+            if !places.contains(&p) {
+                places.push(p);
+            }
+        }
+    }
+    let mut e = Edit::default();
+    for (step, row) in places {
+        e.join(g.unlock(clip, row, step, addr));
+    }
+    e
+}
+
 /// The `sel` notes that are in the clip, with their indexes.
 fn picked<'a>(clip: &'a Clip, sel: &'a [usize]) -> impl Iterator<Item = (usize, Note)> + 'a {
     let mut s: Vec<usize> = sel
@@ -2947,6 +3046,60 @@ mod tests {
         }
         let d = applied(&hits, &chop(&hits, &[0, 1, 2], 2, false));
         assert!(d.notes.iter().all(|n| n.group == 0));
+    }
+
+    /// Lock lanes (plan 3A.2): the chord's notes share the step's lock;
+    /// a note with its own lock on its pitch reads and sets that one; two
+    /// notes of one pitch in one step share it; a pad's setting is only
+    /// its pad's; ERASE + a tap takes the lock off; undo puts it back.
+    #[test]
+    fn locks_on_notes_are_the_steps_on_their_rows() {
+        let synth = RelAddr::new(OnTrack::Inst, 7);
+        // A chord at step 0 (C, E, and a second E 5 ticks late), G at
+        // step 4; a whole-step lock on step 0.
+        let mut c = clip(&[(0, 240, 60), (0, 240, 64), (5, 200, 64), (960, 240, 67)]);
+        c.add_lock(Lock::new(0, None, synth, 0.3)).unwrap();
+        let of = |c: &Clip, i: usize| lock_of(c, &c.notes[i], synth);
+        assert_eq!(
+            (of(&c, 0), of(&c, 1), of(&c, 3)),
+            (Some(0.3), Some(0.3), None)
+        );
+        assert_eq!(lock_place(&c, &c.notes[0], synth), Some((0, None)));
+        // Set on C: the step's lock, which E shares.
+        let d = applied(&c, &lock_notes(&c, synth, &[(0, 0.5)]));
+        assert_eq!(d.locks.len(), 1);
+        assert_eq!(of(&d, 1), Some(0.5), "shared");
+        // G's step gets a lock of its own, on its first note's tick.
+        let d = applied(&c, &lock_notes(&c, synth, &[(3, 0.8)]));
+        assert_eq!((of(&d, 3), d.locks.len()), (Some(0.8), 2));
+        assert!(d.locks.iter().any(|l| (l.tick, l.sound) == (960, None)));
+        // E's own lock on its pitch: both Es read and set it, C the
+        // step's.
+        c.add_lock(Lock::new(0, Some(64), synth, 0.9)).unwrap();
+        assert_eq!(
+            (of(&c, 0), of(&c, 1), of(&c, 2)),
+            (Some(0.3), Some(0.9), Some(0.9))
+        );
+        let d = applied(&c, &lock_notes(&c, synth, &[(2, 0.1)]));
+        assert_eq!((of(&d, 0), of(&d, 1)), (Some(0.3), Some(0.1)));
+        // Both Es named: one lock, the last value.
+        let e = lock_notes(&c, synth, &[(1, 0.2), (2, 0.4)]);
+        assert_eq!(e.add_locks.len(), 1);
+        assert_eq!(e.add_locks[0].value, 0.4);
+        // The same value again: nothing.
+        assert!(lock_notes(&c, synth, &[(0, 0.3)]).is_empty());
+        // ERASE + a tap on C: the step's lock comes off; the Es keep
+        // their own.
+        let d = applied(&c, &unlock_notes(&c, synth, &[0]));
+        assert_eq!((of(&d, 0), of(&d, 1)), (None, Some(0.9)));
+        assert!(unlock_notes(&c, synth, &[3]).is_empty(), "G has none");
+        // A pad's setting: only its pad's notes, on its row.
+        let pad = RelAddr::new(OnTrack::Pad(2), 1);
+        let k = clip(&[(0, 120, 2), (0, 120, 3)]);
+        assert_eq!(lock_place(&k, &k.notes[0], pad), Some((0, Some(2))));
+        assert_eq!(lock_place(&k, &k.notes[1], pad), None);
+        let e = lock_notes(&k, pad, &[(0, 6.0), (1, 9.0)]);
+        assert_eq!(e.add_locks, [Lock::new(0, Some(2), pad, 6.0)]);
     }
 
     /// Pressure drawn on the lane (plan 3A.1): each picked note under
