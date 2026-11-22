@@ -5,7 +5,7 @@ checked: 2026-11-22 26165526
 
 # Recording files that survive a power cut
 
-**Status:** approved by the owner on 2026-11-22, after a review whose ten points are all in (the [Review decisions](#review-decisions-22-nov) table holds the five answers). The file protocol, its writer and recovery are built in `mpfree-stream` (`rec`, `recover`, `fsio`, `crc32c`) and tested against a model stick. The library browser and the sampler read the finished files, RF64 included. **Not built yet:** syncs on a thread of their own, scheduled with the reads; rounds spread across the interval; the interval lengthening by itself; the capture reserve from measured commit times; the lane's "Unsaved" seconds. Nothing records with this in the app yet: the audio tracks rethink switches recording to it in its phase 3, and the 12 Nov engine's writer stays until then.
+**Status:** approved by the owner on 2026-11-22, after a review whose ten points are all in (the [Review decisions](#review-decisions-22-nov) table holds the five answers). The file protocol, its writer and recovery are built in `mpfree-stream` (`rec`, `recover`, `fsio`, `crc32c`) and tested against a model stick. The library browser and the sampler read the finished files, RF64 included. The second step is built too (`writer`): writes and syncs on a thread of their own, waiting for playback's reads; rounds spread across the interval; the interval lengthening when rounds fall behind; the capture reserve from measured commit times; the lane's "Unsaved" seconds. Nothing records with this in the app yet: the audio tracks rethink switches recording to it in its phase 3, and the 12 Nov engine's writer stays until then.
 
 **Owner:** the disk streaming thread ([disk-streaming.md](disk-streaming.md), step P1).
 
@@ -95,7 +95,21 @@ Every interval (2 s by default; one round in flight per take):
 
 - **Capture memory** holds every frame until it is committed, not just written. After a failed sync (Linux can drop the pages and report it once) every unit in it counts as unwritten and is written again before the next try. **Write buffers** live only for their write. **The playback cache** plays the rest; being cached never counts as saved.
 - **Checks** come from capture memory, never from reading the file back.
-- **Not built yet** (the second recording step): syncs run on a thread of their own and are scheduled with the reads' deadlines (a round waits for playback reads due within the stick's worst sync time, never past 10 s); several takes' rounds are spread across the interval (D4 measures that against all at once); the interval doubles, up to 10 s, when rounds fall behind, counted in Dev; the lane shows "Unsaved: N s" past twice the interval; the capture reserve is the data rate x (worst measured commit time + one interval). D2 and D4 try 1, 2, 5 and 10 s intervals.
+
+## Scheduling the rounds (the second step)
+
+`writer::Writer` holds the takes and runs every file operation; `writer::Recorder` runs one on a thread of its own, so the sound thread, the coordinator and the screen never wait for the stick.
+
+- **Waiting for playback.** The coordinator shares its cushion (the time until a playing cursor needs a unit not yet cached; no limit when nothing plays) through a `Gate`. A round waits while the cushion is no longer than the stick's worst commit time, and never more than 10 s past its time; then it goes anyway. Waits and rounds that went anyway are counted for Dev. Writing filled units doesn't wait: on Linux a write lands in memory, and the sync is the slow part.
+- **The worst commit time** is the longest of the last 64 rounds that touched the stick (a round with nothing to commit measures nothing), and 1 s until there is one.
+- **Spreading.** A new take's first round goes in the middle of the widest gap between the other takes' rounds, so four takes armed together commit at a quarter of the interval apart; set `spread` off and they all go together. D4 measures which a real stick prefers.
+- **Falling behind.** A round that starts more than an interval late, or takes longer than one, doubles the interval, up to 10 s. After 16 rounds in a row on time, each under a quarter of the interval, it halves back towards the one set. Both are counted for Dev. (The spec said the interval doubles; coming back is this page's choice, so that one slow moment doesn't double what a cut can cost for the rest of the set.)
+- **The capture reserve** is, for each take still recording, its data rate x (the worst commit time + the interval), given to the coordinator in cache units (`reserve_units`, for `Coordinator::set_reserve`).
+- **"Unsaved: N s"** shows on a take's lane (`TakeView::show_unsaved`) once more than twice the interval is uncommitted.
+- **Capture memory across the threads.** `Recorder::push` counts what it has sent and not yet seen taken, plus what the take holds; once that would pass the take's limit it takes no more frames and the take stops by itself (Stopped, memory) and is finished. A stick that stops answering can't fill memory unseen.
+- **Stopping.** A stop makes the take's finish due at once (still waiting for playback, like a round). A take that stopped by itself is finished the same way. Arming happens on the writer's thread too; until its files are made the take's status is Arming, and a take that can't be armed says why.
+
+D2 and D4 try 1, 2, 5 and 10 s intervals.
 
 ## Stopping
 
@@ -150,6 +164,7 @@ When a later round succeeds the take goes back to Recording or Saving. Errors ar
 - `rec::Take::arm(fs, dir, name, id, format, meta, capture_limit)` runs S1 to S3; then `push` (capture), `write_ready` (full units out), `checkpoint` (one round), `stop` and `finish` (P1 to P5, carrying on from a failed step when called again), `disarm`. `state`, `committed`, `unsaved`, `memory`, `nearly_full`, `stats`.
 - `recover::recover(fs, dir)` gives a `Found` per take: `Finished`, `CutOff`, `Unchecked`, `Unverified`, `Removed`, `Newer`, `Failed` (a step failed; nothing lost; tried again next start). `WholeCheck` / `check_whole`, then `checked`.
 - `fsio::Fs` is the one file layer (create, write, read, length, sync, folder sync, rename, remove, list); `StdFs` is the real one.
+- `writer::Recorder::start(fs, clock, gate, config)`, then `arm` (gives a `TakeNo` at once), `push`, `stop`, `disarm`, `forget`; `status` (`Arming`, `Failed`, or a `TakeView`: state, captured, committed, unsaved seconds, `show_unsaved`, memory, `nearly_full`, the take's counts), `final_path`, `reserve_units`, `interval`, `worst_commit`, `stats`; `close`. `writer::Writer` is the same without the thread, driven by `tick`. `Coordinator::gate` gives the gate.
 
 ## How it is tested
 
@@ -162,6 +177,8 @@ When a later round succeeds the take goes back to Recording or Saving. Errors ar
 5. Round trips through the real file system: 24-bit and float, mono and stereo, read back exactly by `mpfree-stream`, the library browser and the sampler (`mpfree-library/tests/recordings.rs`, `mpfree-sampler/tests/recordings.rs`), in RIFF and in RF64 form; just under and just over the RIFF limit with sparse files; `fact` present and right.
 
 Seven planted bugs were each caught: no rewrite after a failed sync, sequence 1 in slot 0, no audio sync before the record, no tail kept, recovery trusting the header's id, a record not synced, and no folder sync before removing the checkpoint.
+
+`tests/writer.rs` drives the writer on a made-up clock, with a model stick whose syncs can move that clock on (a slow stick): rounds on the interval and "Unsaved" never shown; a round waiting while playback has half a second of cushion, "Unsaved" shown just past twice the interval, the round going 10 s late and the interval doubling; four takes spread to a quarter interval apart, or together; 5 s rounds taking the interval from 2 to 4 to 8 s, quick rounds bringing it back to 2, never past 10; the reserve from the assumed and then the measured commit time, for one take and two, and none once stopped; capture memory running out while playback keeps the stick busy, then the take finished with exactly what fitted. Then the recorder on its own thread with real files: a take recorded, stopped and read back exactly; a take that can't be armed; capture memory counted on the caller's side while nothing can commit. Ten planted bugs were each caught: no spreading, no waiting for playback, no longest wait, no lengthening, no coming back, a reserve without the measured time, no limit on the caller's side, no finishing a take that stopped by itself, "Unsaved" at one interval, and rounds with nothing to commit counted as measured.
 
 On the MPC, later and each with its own go: the cut test D6, and D2 and D4 for intervals, sync times and spreading.
 

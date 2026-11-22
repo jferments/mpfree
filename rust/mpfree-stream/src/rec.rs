@@ -750,6 +750,18 @@ impl Take {
     pub fn nearly_full(&self) -> bool {
         self.memory() * 10 >= self.limit * 9
     }
+    /// Stopped by the musician (or by [`Take::refuse_more`] and then
+    /// stopped): [`Take::finish`] makes the file.
+    pub fn stopping(&self) -> bool {
+        self.stopping
+    }
+    /// Capture memory counted elsewhere is full: recording stops at the
+    /// frames taken so far, as when [`Take::push`] finds it full.
+    pub fn refuse_more(&mut self) {
+        if !self.stopping && self.state != TakeState::Saved {
+            self.state = TakeState::Stopped(Why::Memory);
+        }
+    }
     /// Where the finished take is (once Saved).
     pub fn final_path(&self) -> PathBuf {
         final_path(&self.dir, &self.stem)

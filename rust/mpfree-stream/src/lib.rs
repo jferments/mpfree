@@ -17,6 +17,8 @@
 //!   power cut, and finishing them after one (the recording file
 //!   protocol), through the small file layer [`fsio`]; checksums in
 //!   [`crc32c`].
+//! - [`writer`]: the takes' writes and checkpoint rounds on a thread of
+//!   their own, waiting for playback's reads, spread across the interval.
 
 #![forbid(unsafe_code)]
 
@@ -31,3 +33,4 @@ pub mod rec;
 pub mod recover;
 #[cfg(feature = "testkit")]
 pub mod testkit;
+pub mod writer;

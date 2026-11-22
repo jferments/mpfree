@@ -383,6 +383,83 @@ pub struct ModelStick {
     pub pulled: bool,
     /// Errors handed out.
     pub errors: u64,
+    /// Each sync moves this clock on by this many seconds: a slow stick.
+    pub sync_cost: Option<(Arc<FakeClock>, f64)>,
+}
+
+/// A clock the tests move by hand.
+#[derive(Debug, Default)]
+pub struct FakeClock {
+    bits: std::sync::atomic::AtomicU64,
+}
+
+impl FakeClock {
+    pub fn new() -> Arc<FakeClock> {
+        Arc::new(FakeClock::default())
+    }
+    pub fn advance(&self, seconds: f64) {
+        let now = self.now_s() + seconds;
+        self.bits.store(now.to_bits(), Ordering::Relaxed);
+    }
+    pub fn now_s(&self) -> f64 {
+        f64::from_bits(self.bits.load(Ordering::Relaxed))
+    }
+}
+
+impl crate::writer::Clock for FakeClock {
+    fn now(&self) -> f64 {
+        self.now_s()
+    }
+}
+
+/// A [`ModelStick`] shared between a writer (which owns its file layer)
+/// and the test that looks at it.
+#[derive(Clone, Debug, Default)]
+pub struct SharedStick(pub Arc<std::sync::Mutex<ModelStick>>);
+
+impl SharedStick {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with<R>(&self, f: impl FnOnce(&mut ModelStick) -> R) -> R {
+        f(&mut self.0.lock().expect("stick"))
+    }
+}
+
+impl Fs for SharedStick {
+    fn create(&mut self, path: &Path, new_only: bool) -> io::Result<()> {
+        self.with(|s| s.create(path, new_only))
+    }
+    fn write_at(&mut self, path: &Path, at: u64, bytes: &[u8]) -> io::Result<()> {
+        self.with(|s| s.write_at(path, at, bytes))
+    }
+    fn read_at(&mut self, path: &Path, at: u64, buf: &mut [u8]) -> io::Result<usize> {
+        self.with(|s| s.read_at(path, at, buf))
+    }
+    fn len(&mut self, path: &Path) -> io::Result<u64> {
+        self.with(|s| s.len(path))
+    }
+    fn set_len(&mut self, path: &Path, len: u64) -> io::Result<()> {
+        self.with(|s| s.set_len(path, len))
+    }
+    fn sync(&mut self, path: &Path) -> io::Result<()> {
+        self.with(|s| s.sync(path))
+    }
+    fn sync_dir(&mut self, dir: &Path) -> io::Result<()> {
+        self.with(|s| s.sync_dir(dir))
+    }
+    fn rename(&mut self, from: &Path, to: &Path) -> io::Result<()> {
+        self.with(|s| s.rename(from, to))
+    }
+    fn remove(&mut self, path: &Path) -> io::Result<()> {
+        self.with(|s| s.remove(path))
+    }
+    fn list(&mut self, dir: &Path) -> io::Result<Vec<String>> {
+        self.with(|s| s.list(dir))
+    }
+    fn exists(&mut self, path: &Path) -> bool {
+        self.with(|s| s.exists(path))
+    }
 }
 
 fn err(kind: io::ErrorKind, why: &str) -> io::Error {
@@ -651,6 +728,9 @@ impl Fs for ModelStick {
     }
 
     fn sync(&mut self, path: &Path) -> io::Result<()> {
+        if let Some((clock, s)) = &self.sync_cost {
+            clock.advance(*s);
+        }
         let fail = self.op()?;
         let i = self.inode(path)?;
         let n = &mut self.inodes[i];

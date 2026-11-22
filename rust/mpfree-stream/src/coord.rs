@@ -56,6 +56,7 @@ use std::time::{Duration, Instant};
 use crate::format::{decode, layout, Layout};
 use crate::msg::{FromPlayer, Tag, ToPlayer, Where, MAX_SOURCES};
 use crate::player::{unit_frames, Config, UNIT};
+use crate::writer::Gate;
 
 /// How far ahead to read, and how reads are made.
 #[derive(Clone, Copy, Debug)]
@@ -409,6 +410,8 @@ pub struct Coordinator {
     /// Seconds until a playing cursor needs a unit not in hand, as of the
     /// last round.
     cushion_s: f64,
+    /// The cushion, shared with the recording writer's thread.
+    gate: Arc<Gate>,
     admission: Admission,
     stats: Stats,
 }
@@ -461,6 +464,7 @@ impl Coordinator {
             speed: 2.0e6,
             took: VecDeque::with_capacity(64),
             cushion_s: f64::INFINITY,
+            gate: Arc::new(Gate::new()),
             admission: Admission::default(),
             stats: Stats::default(),
         }
@@ -501,6 +505,12 @@ impl Coordinator {
     /// stall.
     pub fn cushion(&self) -> f64 {
         self.cushion_s
+    }
+
+    /// The cushion, shared: the recording writer's syncs wait while it is
+    /// shorter than the stick's worst commit time.
+    pub fn gate(&self) -> Arc<Gate> {
+        Arc::clone(&self.gate)
     }
 
     /// The stall whole-file reads leave room for: the plan's, or the
@@ -1342,6 +1352,7 @@ impl Coordinator {
                 .map(|(_, &(d, _))| d)
                 .fold(window, f64::min)
         };
+        self.gate.set_cushion(self.cushion_s);
         // Holds: by their deadline, or after everything playing.
         let now = Instant::now();
         for h in &self.holds {
