@@ -150,6 +150,24 @@ impl HwParams {
         put(&mut self.0, at, 1 << (value % 32));
     }
 
+    /// Also allow `value` for a mask parameter (a test driver's answer).
+    #[cfg(test)]
+    pub fn allow_mask(&mut self, param: usize, value: u32) {
+        assert!(param <= PARAM_SUBFORMAT && value < 256);
+        let at = HW_MASKS + param * 32 + (value as usize / 32) * 4;
+        let w = get(&self.0, at) | 1 << (value % 32);
+        put(&mut self.0, at, w);
+    }
+
+    /// `min..=max` for an interval parameter (a test driver's answer).
+    #[cfg(test)]
+    pub fn set_range(&mut self, param: usize, min: u32, max: u32) {
+        let at = Self::interval_at(param);
+        put(&mut self.0, at, min);
+        put(&mut self.0, at + 4, max);
+        put(&mut self.0, at + 8, 0);
+    }
+
     pub fn mask_has(&self, param: usize, value: u32) -> bool {
         let at = HW_MASKS + param * 32 + (value as usize / 32) * 4;
         get(&self.0, at) & (1 << (value % 32)) != 0
@@ -270,6 +288,18 @@ impl Pcm {
     /// It stays non-blocking: reads return what has arrived (or nothing),
     /// so the playback loop never waits on the input.
     pub fn open_capture(path: &str) -> io::Result<Pcm> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(sys::O_NONBLOCK)
+            .open(path)?;
+        Ok(Pcm { file })
+    }
+
+    /// Open a device without waiting if something else holds it, and keep
+    /// it non-blocking: for asking questions (the rate probe), never for a
+    /// stream.
+    pub fn open_nonblocking(path: &str) -> io::Result<Pcm> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
