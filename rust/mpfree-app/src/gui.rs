@@ -1559,6 +1559,13 @@ pub enum FromUi {
     /// An opened project's audio tracks with their takes' audio, read on
     /// their own thread: they go in once the old ones are emptied.
     OpenAudio(Box<mpfree_audiotracks::save::Saved>),
+    /// The audio tracks record each take to a file of its own in this
+    /// folder (the library's work folder for them) from now on: sent once
+    /// at start, after what a cut-off run left there is recovered.
+    AudioFiles(std::path::PathBuf),
+    /// A project save finished into this folder (the project's
+    /// `samples/`): the audio tracks keep their takes' files from there.
+    AudioSavedInto(std::path::PathBuf),
     /// The Pads tab's Browse for: open the browser, whose Load puts a
     /// sound on the pad picked.
     PadsBrowse,
@@ -2179,6 +2186,11 @@ pub struct Player {
     /// An opened project's audio tracks being read (the takes' files can
     /// be big).
     audio_load: Option<std::sync::mpsc::Receiver<AudioRead>>,
+    /// The audio tracks' recovery at start, on its own thread: their work
+    /// folder and the lines it says ([`Player::recover_audio_files`]).
+    #[allow(clippy::type_complexity)]
+    audio_recover:
+        Option<std::sync::mpsc::Receiver<(std::path::PathBuf, std::io::Result<Vec<String>>)>>,
     /// The browser's preview level, in dB (its Q-Link 3).
     preview_db: f32,
     /// A sound file being read for the preview.
@@ -2772,6 +2784,7 @@ impl Player {
             loops_load: None,
             file_saves: Vec::new(),
             audio_load: None,
+            audio_recover: None,
             preview_db: crate::preview::LEVEL_DB,
             preview_load: None,
             midi_load: None,
@@ -10194,12 +10207,90 @@ impl Player {
                 let root = lib.root().display().to_string();
                 self.set_browser(mpfree_browser_ui::Browser::new(lib), lists);
                 self.say(format!("browser: the library is {root}"));
+                self.recover_audio_files();
             }
             Err(e) => self.say(format!(
                 "browser: no library in {} ({e}); the Pads tab's Browse view says so",
                 dir.display()
             )),
         }
+    }
+
+    /// At start, with the library open: what a cut-off run left in the
+    /// audio tracks' work folder (a crash, a power cut, takes never saved
+    /// in a project) is finished and moved into Recordings, on a thread of
+    /// its own, and then the audio tracks record each take to a file there
+    /// (`poll_audio_recover`). Without a work folder they record into
+    /// memory only, and the line says why.
+    pub(crate) fn recover_audio_files(&mut self) {
+        let Some(lib) = self.browser.as_ref().map(|b| b.library().clone()) else {
+            return;
+        };
+        let work = match lib.work_dir(crate::project::AUDIOTRACKS) {
+            Ok(w) => w,
+            Err(e) => {
+                self.say(format!(
+                    "audio tracks: takes record into memory only, as their folder couldn't be made ({e})"
+                ));
+                return;
+            }
+        };
+        let keep = lib.root().join(mpfree_library::Place::Recordings.folder());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("audio-recover".into())
+            .spawn(move || {
+                let r = mpfree_audiotracks::files::recover_into(&work, &keep);
+                let _ = tx.send((work, r));
+            });
+        match spawned {
+            Ok(_) => self.audio_recover = Some(rx),
+            Err(e) => self.say(format!(
+                "audio tracks: takes record into memory only, as the recovery couldn't start ({e})"
+            )),
+        }
+    }
+
+    /// The recovery at start, once done: its lines, then recording to
+    /// files from now on.
+    fn poll_audio_recover(&mut self) {
+        let Some(rx) = &self.audio_recover else {
+            return;
+        };
+        let (work, r) = match rx.try_recv() {
+            Ok(got) => got,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.audio_recover = None;
+                self.say(
+                    "audio tracks: takes record into memory only, as the recovery stopped".into(),
+                );
+                return;
+            }
+        };
+        self.audio_recover = None;
+        match r {
+            Ok(lines) => {
+                let kept = !lines.is_empty();
+                for l in lines {
+                    self.say(l);
+                }
+                if kept {
+                    self.tell("Takes from last time were recovered into Recordings");
+                }
+            }
+            // Recording to files goes on: a take whose file can't be made
+            // doesn't arm, and says why.
+            Err(e) => self.say(format!(
+                "audio tracks: the takes left from last time couldn't be looked at ({e}); \
+                 they are tried again next start"
+            )),
+        }
+        self.say(format!(
+            "audio tracks: each take is saved to a file as it records, in {}",
+            work.display()
+        ));
+        self.outbox.push(FromUi::AudioFiles(work));
     }
 
     /// The Pads tab's browser is `b`, with its Recent and Favourites from
@@ -10416,6 +10507,15 @@ impl Player {
             A::ProjectOpened { loc, snap } => self.open_project(&loc, &snap),
             A::ProjectSaved { loc } => {
                 self.say(format!("project: saved {}", loc.name()));
+                // The audio tracks' takes copied into it are kept from
+                // there now; their copies in the work folder go.
+                if let Some(dir) = self
+                    .browser
+                    .as_ref()
+                    .and_then(|b| b.library().samples_dir(&loc).ok())
+                {
+                    self.outbox.push(FromUi::AudioSavedInto(dir));
+                }
                 if let Some((at, sounds, parts)) = self.save_sent.take() {
                     self.say(format!(
                         "project: the save took {:.1} s ({sounds} sounds, {parts} parts)",
@@ -10922,19 +11022,27 @@ impl Player {
                 )
             }));
         }
-        // The audio tracks: their part, and a WAV a take, written a piece
-        // at a time.
+        // The audio tracks: their part, and a take's file copied whole
+        // (a take recorded to its file, or one the project opened), else
+        // a WAV written from its samples a piece at a time.
         if let Some(audio) = c.audio.take() {
             let rate = audio.rate;
             let (text, files) = crate::project::audio_part(audio);
             extra.push((crate::project::AUDIOTRACKS.to_string(), text));
-            samples.extend(files.into_iter().map(|(file, audio, channels)| {
-                mpfree_library::NewSample::new(
+            samples.extend(files.into_iter().map(|f| match f {
+                crate::project::TakeAudio::Copy { file, from } => {
+                    mpfree_library::NewSample::file(file, from)
+                }
+                crate::project::TakeAudio::Write {
+                    file,
+                    audio,
+                    channels,
+                } => mpfree_library::NewSample::new(
                     file,
                     std::sync::Arc::new(move |w: &mut dyn std::io::Write| {
                         mpfree_audiotracks::save::write_wav(w, &audio, channels, rate)
                     }),
-                )
+                ),
             }));
         }
         let snap = crate::project::snapshot(&c, extra);
@@ -11041,9 +11149,7 @@ impl Player {
                 .name("audio-open".into())
                 .spawn(move || {
                     let r = crate::project::audio_open(&text, rate, |f| {
-                        lib.sample_path(&loc, f)
-                            .and_then(std::fs::read)
-                            .map_err(|e| e.to_string())
+                        lib.sample_path(&loc, f).map_err(|e| e.to_string())
                     });
                     let _ = tx.send(r);
                 });
@@ -12010,6 +12116,8 @@ impl Player {
                 | FromUi::OpenProject(_)
                 | FromUi::OpenLoops(_)
                 | FromUi::OpenAudio(_)
+                | FromUi::AudioFiles(_)
+                | FromUi::AudioSavedInto(_)
                 | FromUi::Kit(_)
                 | FromUi::LevelDb(_)
                 | FromUi::Tab(_)
@@ -14277,6 +14385,7 @@ impl Player {
         self.poll_midi();
         self.poll_loops();
         self.poll_audio();
+        self.poll_audio_recover();
         self.open_at_start();
         self.bundle_tick();
         self.autosave_tick(dt);
@@ -28578,6 +28687,7 @@ mod tests {
                 frames: 4410,
                 channels: 1,
                 file: String::new(),
+                path: None,
                 audio: take.clone(),
             }],
         };
@@ -28700,12 +28810,14 @@ mod tests {
         // The recording keeps its lasting id (phase 1c).
         assert_eq!(k.rec, mpfree_audiotracks::RecordingId(0x77));
         assert_eq!(k.audio, take);
-        assert!(
-            k.file.starts_with("take-") && k.file.ends_with(".wav"),
-            "{}",
-            k.file
+        // Named for its lasting id (phase 3a: it had no file of its own),
+        // and read from where the project keeps it, so the next save
+        // copies it from there.
+        assert_eq!(k.file, format!("take_{}.wav", k.rec));
+        assert_eq!(
+            k.path.as_ref(),
+            lib.sample_path(&loc, &k.file).ok().as_ref()
         );
-        assert!(lib.sample_path(&loc, &k.file).is_ok());
         assert!(!p.browser.as_ref().unwrap().unsaved());
         // Once the open settles, a pad played isn't an edit; a new clip is.
         p.opened_at = None;

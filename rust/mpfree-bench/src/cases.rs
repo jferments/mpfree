@@ -2010,7 +2010,7 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| looper_loops(rate, 60, true)));
     v.push(measured(|| audio_tracks(rate, 0, false)));
     v.push(measured(|| audio_tracks(rate, 2, false)));
-    v.push(measured(|| audio_tracks(rate, 0, true)));
+    v.push(measured(|| audio_tracks(rate, 2, true)));
     v.push(measured(|| stream_voices(rate, 64, Read::Hermite, 1.5)));
     v.push(measured(|| stream_voices(rate, 64, Read::Sinc8, 1.5)));
     v.push(measured(|| stream_voices(rate, 64, Read::Sinc8, 3.0)));
@@ -3931,12 +3931,10 @@ fn looper_loops(rate: u32, seconds: u32, edited: bool) -> Case {
 /// bars, with `recording` of them recording the input again (punching in
 /// and out every 2 bars) while the rest play.
 ///
-/// `streaming`: the same with 60 s of memory (the app's default) streaming
-/// from a disk (a map here, answering at once): each block runs the
-/// planning and copies in at most `host::COPY_SAMPLES` samples of read
-/// chunks, as the host does on the audio thread. The three passes in play
-/// on every track are 24 streams at once, the worst case for the cache.
-fn audio_tracks(rate: u32, recording: usize, streaming: bool) -> Case {
+/// `files`: recording to files on (phase 3a): each take recorded is copied
+/// out of the memory as it records, at most `host::COPY_SAMPLES` samples a
+/// block, as the host does on the audio thread for the writer.
+fn audio_tracks(rate: u32, recording: usize, files: bool) -> Case {
     const BARS: i64 = 8;
     let bar = 4 * i64::from(PPQ);
     let beat = i64::from(PPQ);
@@ -3944,46 +3942,33 @@ fn audio_tracks(rate: u32, recording: usize, streaming: bool) -> Case {
     let mut t = Transport::new(rate, 120.0).expect("transport");
     // 8 bars at 120 BPM: 16 s a pass; three passes on 8 mono tracks are
     // 384 s of mono, and the recording tracks need more on top.
-    let mut a = AudioTracks::new(rate, if streaming { 60 } else { 300 });
-    a.stream(streaming);
-    let mut disk: std::collections::HashMap<(u16, u32), Vec<f32>> = Default::default();
-    let mut reads: std::collections::VecDeque<(u16, u32, usize)> =
-        std::collections::VecDeque::with_capacity(4096);
-    // The disk thread's part: writes at once; read chunks copy in `limit`
-    // samples a block (the host's part).
-    let serve = |a: &mut AudioTracks,
-                 disk: &mut std::collections::HashMap<(u16, u32), Vec<f32>>,
-                 reads: &mut std::collections::VecDeque<(u16, u32, usize)>,
-                 limit: usize| {
+    let mut a = AudioTracks::new(rate, 300);
+    // The host's part: every take recording copied out, `limit` samples a
+    // block, into a buffer made once.
+    let mut copied = vec![0usize; mpfree_audiotracks::MAX_TAKES];
+    let mut writing: Vec<u16> = Vec::with_capacity(mpfree_audiotracks::MAX_TAKES);
+    let mut buf = vec![0.0f32; COPY_SAMPLES];
+    let mut serve = move |a: &mut AudioTracks, limit: usize| {
         while let Some(r) = a.take_io() {
-            match r {
-                TrackIo::Write { take, chunk } | TrackIo::Rewrite { take, chunk } => {
-                    if let Some(c) = a.chunk(take, chunk) {
-                        disk.insert((take, chunk), c.to_vec());
-                    }
-                    a.written(take, chunk);
-                }
-                TrackIo::Read { take, chunk } => reads.push_back((take, chunk, 0)),
-                TrackIo::Finish { .. } => {}
+            if let TrackIo::Start { take } = r {
+                writing.push(take);
             }
         }
         let mut budget = limit;
-        while budget > 0 {
-            let Some((take, chunk, done)) = reads.pop_front() else {
-                break;
-            };
-            let Some(d) = disk.get(&(take, chunk)) else {
-                a.fill_failed(take, chunk);
-                continue;
-            };
-            let k = budget.min(d.len() - done);
-            let last = done + k == d.len();
-            let kept = a.fill_part(take, chunk, done, &d[done..done + k], last);
-            budget -= k;
-            if kept && !last {
-                reads.push_front((take, chunk, done + k));
+        writing.retain(|&id| {
+            let Some(k) = a.take(id) else { return false };
+            let room = (budget.min(buf.len()) / k.channels) * k.channels;
+            let n = a
+                .read_take(id, copied[id as usize], &mut buf[..room])
+                .unwrap_or(0);
+            copied[id as usize] += n;
+            budget -= n * k.channels;
+            let done = !k.recording && copied[id as usize] >= k.frames;
+            if done {
+                a.written(id);
             }
-        }
+            !done
+        });
     };
     let mut block = TBlock::new();
     let n = MAX_BLOCK;
@@ -4005,7 +3990,6 @@ fn audio_tracks(rate: u32, recording: usize, streaming: bool) -> Case {
         let map = *t.tempo_map();
         a.process(&block, &map, line_in, out);
         *frame += n as u64;
-        serve(a, &mut disk, &mut reads, usize::MAX);
     };
     // Record three passes on every track at once.
     for k in 0..MAX_TRACKS {
@@ -4039,6 +4023,8 @@ fn audio_tracks(rate: u32, recording: usize, streaming: bool) -> Case {
         // Apply the queue (it holds 64) before the next track.
         step(&mut frame, &mut t, &mut a, &mut line_in, &mut out);
     }
+    // Files from here on: the passes above were set up in memory.
+    a.files(files);
     for k in 0..recording {
         a.command(TrackCommand::Arm(k, true));
     }
@@ -4051,11 +4037,11 @@ fn audio_tracks(rate: u32, recording: usize, streaming: bool) -> Case {
         name: format!(
             "Audio tracks: {} {} comped takes{}",
             MAX_TRACKS - recording,
-            if streaming { "streaming" } else { "playing" },
-            if recording > 0 {
-                format!(", {recording} recording")
-            } else {
-                String::new()
+            "playing",
+            match (recording, files) {
+                (0, _) => String::new(),
+                (k, false) => format!(", {k} recording"),
+                (k, true) => format!(", {k} recording to files"),
             }
         ),
         module: "looper",
@@ -4075,8 +4061,8 @@ fn audio_tracks(rate: u32, recording: usize, streaming: bool) -> Case {
             let map = *tr.tempo_map();
             a.process(&block, &map, &line_in[..2 * n], &mut out[..2 * n]);
             frame += n as u64;
-            if streaming {
-                serve(&mut a, &mut disk, &mut reads, COPY_SAMPLES);
+            if files {
+                serve(&mut a, COPY_SAMPLES);
             }
             for (i, (x, y)) in ol.iter_mut().zip(or.iter_mut()).enumerate() {
                 *x = out[2 * i];
