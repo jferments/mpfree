@@ -36,9 +36,7 @@ use mpfree_play::{
     Takes,
 };
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
-use mpfree_seq::arrange::{
-    list_spans, list_to_song, scene_length, scenes_to_song, song_to_scenes, Difference,
-};
+use mpfree_seq::arrange::{list_spans, song_to_scenes, Difference, Differs};
 use mpfree_seq::loops::{self, LoopNow, LoopPlan};
 use mpfree_seq::mpfree_moves::{Kind, MoveLog};
 use mpfree_seq::scenes::{MAX_LIST_STEPS, MAX_TIMES};
@@ -4446,34 +4444,22 @@ impl TimeControl {
                 }
             }
             TimeAction::ScenesToSong => {
-                // Every row with a clip, in order, after the song's end
-                // (every row the project keeps, not only the grid's).
-                let rows: Vec<(usize, Tick)> = (0..ROWS)
+                // Every row with a clip, in order, once each, after the
+                // song's end (every row the project keeps, not only the
+                // grid's).
+                let rows: Vec<ListStep> = (0..ROWS)
                     .filter(|&r| self.project.row_filled(r))
-                    .map(|r| (r, scene_length(&self.project, r, bar)))
+                    .map(|row| ListStep { row, times: 1 })
                     .collect();
                 if rows.is_empty() {
                     return Err("scenes → song: no row has a clip".into());
                 }
-                let end = self.project.arrangement.end();
-                let at = (end + bar - 1) / bar.max(1) * bar;
-                let add = scenes_to_song(&self.project, &rows, at)
-                    .map_err(|e| format!("scenes → song: {e:?}"))?;
-                let (how, which) = differences_said(&self.project, &add.differences, bar);
-                // New placements shift the indices.
-                self.selected = None;
-                let song = &mut self.project.arrangement;
-                for p in add.song.placements {
-                    song.place(p).map_err(|e| format!("scenes → song: {e:?}"))?;
-                }
-                for m in add.song.markers {
-                    song.mark(m.at, &m.name)
-                        .map_err(|e| format!("scenes → song: {e:?}"))?;
-                }
-                self.section = None;
+                let (at, how) = self
+                    .rows_to_song(&rows, bar)
+                    .map_err(|e| format!("scenes → song: {e}"))?;
                 Ok((
                     format!(
-                        "scenes → song: {} rows from bar {}, {how}{which}",
+                        "scenes → song: {} rows from bar {}, {how}",
                         rows.len(),
                         at / bar.max(1) + 1
                     ),
@@ -4618,24 +4604,13 @@ impl TimeControl {
                 if n == 0 {
                     return Err("list → song: the list is empty".into());
                 }
-                let end = self.project.arrangement.end();
-                let at = (end + bar - 1) / bar.max(1) * bar;
-                let add = list_to_song(&self.project, at, bar)
-                    .map_err(|e| format!("list → song: {e:?}"))?;
-                let (how, which) = differences_said(&self.project, &add.differences, bar);
-                self.selected = None;
-                self.section = None;
-                let song = &mut self.project.arrangement;
-                for p in add.song.placements {
-                    song.place(p).map_err(|e| format!("list → song: {e:?}"))?;
-                }
-                for m in add.song.markers {
-                    song.mark(m.at, &m.name)
-                        .map_err(|e| format!("list → song: {e:?}"))?;
-                }
+                let steps = self.project.arrangement.list.steps.clone();
+                let (at, how) = self
+                    .rows_to_song(&steps, bar)
+                    .map_err(|e| format!("list → song: {e}"))?;
                 Ok((
                     format!(
-                        "list → song: {n} steps from bar {}, {how}{which}",
+                        "list → song: {n} steps from bar {}, {how}",
                         at / bar.max(1) + 1
                     ),
                     Some(SongChange::ListToSong { steps: n }),
@@ -4643,6 +4618,47 @@ impl TimeControl {
             }
             _ => Ok((String::new(), None)),
         }
+    }
+
+    /// Scenes → song and List → song: `steps` played offline through Rec
+    /// song ([`super::offline`], plan D7) from the first bar line after the
+    /// song's end, and what Rec song recorded put in the song, with each
+    /// step's scene's name above where it started. Where they start, and
+    /// how the song plays differently from the rows ("exact", or the
+    /// differences and what each is), or why nothing changed.
+    fn rows_to_song(&mut self, steps: &[ListStep], bar: Tick) -> Result<(Tick, String), String> {
+        let end = self.project.arrangement.end();
+        let at = (end + bar - 1) / bar.max(1) * bar;
+        let played = super::offline::play_rows(&self.project, steps, at, bar)?;
+        let mut song = self.project.arrangement.clone();
+        let mut differences = Vec::new();
+        for p in played.placements {
+            song.place(p).map_err(|e| format!("{e:?}"))?;
+        }
+        for &(t, row) in &played.starts {
+            let scene = self.project.scene(row);
+            // The one thing the song doesn't play (plan D7).
+            if scene.is_some_and(|s| !s.programs.is_empty()) {
+                differences.push(Difference {
+                    track: None,
+                    at: t,
+                    what: Differs::SceneProgram,
+                });
+            }
+            let name = scene
+                .map(|s| s.name.clone())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| format!("Scene {}", row + 1));
+            song.mark(t, &name).map_err(|e| format!("{e:?}"))?;
+        }
+        song.check(&self.project.tracks)
+            .map_err(|e| format!("{e:?}"))?;
+        self.project.arrangement = song;
+        // New placements shift the indices.
+        self.selected = None;
+        self.section = None;
+        let (how, which) = differences_said(&self.project, &differences, bar);
+        Ok((at, format!("{how}{which}")))
     }
 
     /// The morph bar on the mixer's mod engine (`modu`): the rows, the
@@ -5803,6 +5819,17 @@ impl TimeControl {
     /// The project is in Perform, not Make (`Project::perform`).
     pub fn perform(&self) -> bool {
         self.project.perform
+    }
+
+    /// The song list's step playing, or waiting for its line (Scenes →
+    /// song and List → song follow it, [`super::offline`]).
+    pub(super) fn list_playing(&self) -> Option<mpfree_perform::ListPlaying> {
+        self.perform.list()
+    }
+
+    /// Rec song is armed (it disarms itself when the song would be full).
+    pub(super) fn song_rec_armed(&self) -> bool {
+        self.song_rec.armed()
     }
 
     /// Everything the screens show.
