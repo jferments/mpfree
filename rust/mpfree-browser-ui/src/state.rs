@@ -501,10 +501,14 @@ pub enum BrowseAction {
         path: PathBuf,
     },
     StopAudition,
-    /// A project was read: give each engine its part.
+    /// A project was read: give each engine its part. `what_reads`: the
+    /// musician chose Open what reads, so what the open leaves out goes
+    /// in the list ([`Browser::left_out`]) rather than stopping it
+    /// (docs/dev/design/project-safety.md).
     ProjectOpened {
         loc: Loc,
         snap: Snapshot,
+        what_reads: bool,
     },
     /// A project was saved where it says.
     ProjectSaved {
@@ -567,6 +571,19 @@ pub enum Confirm {
         name: String,
         text: String,
     },
+    /// Open a project that can't open whole with what reads (live shows
+    /// A1): a file it names is missing or damaged, or something of it
+    /// can't be made here.
+    OpenWhatReads(Box<OpenAsk>),
+}
+
+/// A project waiting for Open what reads ([`Confirm::OpenWhatReads`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct OpenAsk {
+    pub loc: Loc,
+    pub snap: Snapshot,
+    /// What it would leave out, a few words each.
+    pub left_out: Vec<String>,
 }
 
 /// What the keyboard is typing.
@@ -769,6 +786,8 @@ struct BeforeOpen {
     recovering: bool,
     recent: Vec<Loc>,
     left_out: Vec<String>,
+    /// The open was Prefs > At start's (no one is there to ask).
+    at_start: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1213,7 +1232,7 @@ impl Browser {
                 // The list of its files a set list checks, off the save.
                 self.send_quiet(Job::UpdateManifest(loc));
             }
-            Ok(Outcome::Project(loc, snap)) if snap.meta.is_autosave() => {
+            Ok(Outcome::Project(loc, snap, _)) if snap.meta.is_autosave() => {
                 // Autosave's project opens as a new, unsaved one: SHIFT +
                 // BROWSE keeps it as a project of the musician's (named for
                 // the time), never as autosave's again.
@@ -1230,27 +1249,30 @@ impl Browser {
                 self.unsaved = true;
                 self.recovering = true;
                 self.left_out.clear();
-                self.actions.push(BrowseAction::ProjectOpened { loc, snap });
+                self.actions.push(BrowseAction::ProjectOpened {
+                    loc,
+                    snap,
+                    what_reads: false,
+                });
                 if self.pick.is_some() && !std::mem::take(&mut self.opening_last) {
                     self.close_pick(true);
                 }
             }
-            Ok(Outcome::Project(loc, snap)) => {
-                self.before_open = Some(self.as_before_open());
-                self.status = Some((format!("Opened {}", loc.name()), false));
-                self.project = Some(loc.clone());
-                self.last = Some(loc.clone());
-                self.created = snap.meta.created;
-                self.unsaved = false;
-                self.left_out.clear();
-                self.remember(loc.clone());
-                self.actions.push(BrowseAction::ProjectOpened { loc, snap });
-                // Opened at start (Prefs > At start), a picker opened
-                // meanwhile stays where it is.
-                let at_start = std::mem::take(&mut self.opening_last);
-                if self.pick.is_some() && !at_start {
-                    self.close_pick(true);
+            Ok(Outcome::Project(loc, snap, check)) => {
+                // Checked first (live shows A1): a file it names is gone or
+                // damaged, so it can't open whole. Nothing changes until
+                // the musician picks Open what reads.
+                let (missing, damaged) = check.gaps();
+                if !missing.is_empty() || !damaged.is_empty() {
+                    let why = files_why(missing.len(), damaged.len());
+                    let left_out = missing
+                        .iter()
+                        .map(|p| format!("the file {p} (missing)"))
+                        .chain(damaged.iter().map(|p| format!("the file {p} (damaged)")))
+                        .collect();
+                    return self.ask_what_reads(loc, snap, why, left_out);
                 }
+                self.accept_open(loc, snap, false, Vec::new(), check.no_manifest);
             }
             Ok(Outcome::Versions(loc, list)) => {
                 if matches!(&self.mode, Mode::Versions(l, _) if *l == loc) {
@@ -1275,7 +1297,11 @@ impl Browser {
                 self.unsaved = true;
                 self.left_out.clear();
                 self.remember(loc.clone());
-                self.actions.push(BrowseAction::ProjectOpened { loc, snap });
+                self.actions.push(BrowseAction::ProjectOpened {
+                    loc,
+                    snap,
+                    what_reads: false,
+                });
             }
             Ok(Outcome::Found(query, hits)) => {
                 if matches!(&self.mode, Mode::Found(q, _) if *q == query) {
@@ -1968,6 +1994,100 @@ impl Browser {
         self.before_open = None;
     }
 
+    /// A project read and checked goes in: the browser takes it as the
+    /// project worked on and hands the parts to the app. `what_reads`: the
+    /// musician chose Open what reads, and `left_out` is what it leaves
+    /// out (a save then goes beside it). `unchecked`: it has no manifest
+    /// yet, so its files weren't checked first, which the status line says.
+    fn accept_open(
+        &mut self,
+        loc: Loc,
+        snap: Snapshot,
+        what_reads: bool,
+        left_out: Vec<String>,
+        unchecked: bool,
+    ) {
+        let mut before = self.as_before_open();
+        let at_start = std::mem::take(&mut self.opening_last);
+        before.at_start = at_start;
+        self.before_open = Some(before);
+        let name = loc.name();
+        self.status = Some((
+            if what_reads {
+                format!("Opened what reads of {name}: saving puts it in a new project beside it")
+            } else if unchecked {
+                format!(
+                    "Opened {name}. Its files weren\u{2019}t checked first: it has no list of them yet (saving it makes one)"
+                )
+            } else {
+                format!("Opened {name}")
+            },
+            false,
+        ));
+        self.project = Some(loc.clone());
+        self.last = Some(loc.clone());
+        self.created = snap.meta.created;
+        self.unsaved = false;
+        self.left_out = left_out;
+        self.remember(loc.clone());
+        self.actions.push(BrowseAction::ProjectOpened {
+            loc,
+            snap,
+            what_reads,
+        });
+        // Opened at start (Prefs > At start), a picker opened meanwhile
+        // stays where it is.
+        if self.pick.is_some() && !at_start {
+            self.close_pick(true);
+        }
+    }
+
+    /// A project that can't open whole (`why`, in a few words): asks
+    /// whether to open what reads, with nothing changed meanwhile. At
+    /// start no one is there to ask, so it isn't opened and the app hears
+    /// why ([`BrowseAction::LastNotOpened`]).
+    fn ask_what_reads(&mut self, loc: Loc, snap: Snapshot, why: String, left_out: Vec<String>) {
+        let name = loc.name().to_string();
+        if std::mem::take(&mut self.opening_last) {
+            let line = format!(
+                "Didn\u{2019}t open {name}: {why}. Open it from Projects to open what reads"
+            );
+            self.actions.push(BrowseAction::LastNotOpened(line.clone()));
+            self.status = Some((line, true));
+            return;
+        }
+        self.status = Some((format!("{name} can\u{2019}t open whole: {why}"), true));
+        self.modal = Modal::Confirm {
+            text: format!(
+                "{name} can\u{2019}t open whole: {why}. Open what reads? Saving it then goes into a new project beside it, so {name} stays as it is"
+            ),
+            what: Confirm::OpenWhatReads(Box::new(OpenAsk {
+                loc,
+                snap,
+                left_out,
+            })),
+        };
+    }
+
+    /// The app found that the project just opened would leave things out
+    /// (an effect or instrument this stick can't make: `left_out`), so
+    /// nothing of it went in. What the open changed here goes back, as
+    /// for [`Browser::open_refused`], and the musician is asked whether to
+    /// open what reads (live shows A1).
+    pub fn open_would_leave_out(&mut self, loc: Loc, snap: Snapshot, left_out: Vec<String>) {
+        let at_start = self.before_open.as_ref().is_some_and(|b| b.at_start);
+        self.put_back_before_open();
+        self.opening_last = at_start;
+        let why = match left_out.as_slice() {
+            [] => "something of it can\u{2019}t be made here".to_string(),
+            [one] => format!("it would leave out {one}"),
+            [one, rest @ ..] => format!("it would leave out {one} and {} more", rest.len()),
+        };
+        // Opened with what reads, the app finds the same again and adds
+        // it to the list itself.
+        self.ask_what_reads(loc, snap, why, Vec::new());
+    }
+
     fn as_before_open(&self) -> BeforeOpen {
         BeforeOpen {
             project: self.project.clone(),
@@ -1977,6 +2097,7 @@ impl Browser {
             recovering: self.recovering,
             recent: self.recent.clone(),
             left_out: self.left_out.clone(),
+            at_start: false,
         }
     }
 
@@ -1988,6 +2109,12 @@ impl Browser {
     /// open can't be saved over the refused one; the status line says
     /// `line`.
     pub fn open_refused(&mut self, line: String) {
+        self.put_back_before_open();
+        self.status = Some((line, true));
+    }
+
+    /// What an open changed here goes back ([`BeforeOpen`]).
+    fn put_back_before_open(&mut self) {
         if let Some(b) = self.before_open.take() {
             let lists = b.recent != self.recent || b.last != self.last;
             self.project = b.project;
@@ -2002,7 +2129,6 @@ impl Browser {
                     .push(BrowseAction::SaveLists(self.lists_text()));
             }
         }
-        self.status = Some((line, true));
     }
 
     /// The dial's push: open a folder or project, load anything else, or
@@ -2563,6 +2689,15 @@ impl Browser {
         let Modal::Confirm { what, .. } = std::mem::replace(&mut self.modal, Modal::None) else {
             return;
         };
+        if let (false, Confirm::OpenWhatReads(a)) = (yes, &what) {
+            self.status = Some((
+                format!(
+                    "Didn\u{2019}t open {}. The project you had open is unchanged",
+                    a.loc.name()
+                ),
+                false,
+            ));
+        }
         if let (false, Confirm::ReplacePreset { name, .. }) = (yes, &what) {
             self.status = Some((
                 format!("{name} wasn't saved: Save preset again with another name"),
@@ -2585,6 +2720,14 @@ impl Browser {
                 Confirm::NewProject => self.start_new_project(),
                 Confirm::ReplacePreset { engine, name, text } => {
                     self.send_preset(engine, name, text, true)
+                }
+                Confirm::OpenWhatReads(a) => {
+                    let OpenAsk {
+                        loc,
+                        snap,
+                        left_out,
+                    } = *a;
+                    self.accept_open(loc, snap, true, left_out, false);
                 }
             }
         }
@@ -3467,6 +3610,24 @@ fn trim_num(v: f64) -> String {
 }
 
 /// `"2026-11-11 21:04 UTC"`.
+/// Why a project's files keep it from opening whole, in a few words:
+/// "2 of its files are missing and 1 is damaged".
+fn files_why(missing: usize, damaged: usize) -> String {
+    let some = |n: usize, what: &str, one: &str, many: &str| match n {
+        1 => format!("{what}{one}"),
+        n => format!("{n} of its files {many}"),
+    };
+    match (missing, damaged) {
+        (m, 0) => some(m, "a file it needs ", "is missing", "are missing"),
+        (0, d) => some(d, "a file it needs ", "is damaged", "are damaged"),
+        (m, d) => format!(
+            "{} and {d} {} damaged",
+            some(m, "a file it needs ", "is missing", "are missing"),
+            if d == 1 { "is" } else { "are" }
+        ),
+    }
+}
+
 pub fn when(secs: u64) -> String {
     let (y, m, d, h, mi) = mpfree_library::project::civil(secs);
     format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02} UTC")

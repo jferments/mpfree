@@ -7741,6 +7741,12 @@ fn player_session(
                                 "project: track {} keeps its instrument (its last sound is still ringing out)",
                                 track + 1
                             ));
+                            // The last project's instrument plays on in
+                            // this one: never saved over it (live shows A1).
+                            out.left_out(format!(
+                                "track {}'s instrument (the last project's was still ringing out)",
+                                track + 1
+                            ));
                         }
                         app.set_track_sound(track, mix.instruments.held(track));
                     }
@@ -7778,6 +7784,7 @@ fn player_session(
                                     track + 1,
                                     held.name
                                 ));
+                                out.left_out(format!("{} on track {}", held.name, track + 1));
                             }
                         }
                         app.set_track_sound(track, mix.instruments.held(track));

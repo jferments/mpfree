@@ -718,6 +718,9 @@ pub fn put(
         .map_err(|e| format!("{}: {e:?}", song.name))?;
     lib.save_project(&loc, &snap, 10)
         .map_err(|e| format!("{}: {e:?}", song.name))?;
+    // Its list of files, so its first open is checked (live shows A1).
+    lib.update_manifest(&loc)
+        .map_err(|e| format!("{}: its list of files: {e:?}", song.name))?;
     Ok(loc)
 }
 

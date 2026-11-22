@@ -129,7 +129,9 @@ pub enum Outcome {
     Autosaved(Loc),
     /// A project's manifest brought up to date.
     Manifest(Loc, crate::ManifestDone),
-    Project(Loc, Snapshot),
+    /// A project read, and its files checked against its manifest
+    /// ([`Library::check_project`], quick).
+    Project(Loc, Snapshot, crate::Check),
     Versions(Loc, Vec<Version>),
     /// An earlier save, read: the project, the version's id, its parts.
     Version(Loc, String, Snapshot),
@@ -268,7 +270,18 @@ pub fn run(lib: &Library, job: Job) -> std::io::Result<Outcome> {
                 .map_err(|e| std::io::Error::new(e.kind(), format!("autosave: {e}")))?;
             Outcome::Autosaved(loc)
         }
-        Job::OpenProject(l) => Outcome::Project(l.clone(), lib.open_project(&l)?),
+        Job::OpenProject(l) => {
+            let snap = lib.open_project(&l)?;
+            // Its files checked against its manifest before anything
+            // changes (live shows A1): quick, only files whose time
+            // changed are read. Autosave's project has none.
+            let check = if snap.meta.is_autosave() {
+                crate::Check::default()
+            } else {
+                lib.check_project(&l, false)?
+            };
+            Outcome::Project(l, snap, check)
+        }
         Job::UpdateManifest(l) => {
             let done = lib.update_manifest(&l).map_err(|e| {
                 std::io::Error::new(

@@ -9752,7 +9752,11 @@ impl Player {
             // Projects (project.rs).
             A::SaveRequested => self.ask_save(),
             A::NewProject => self.new_project(),
-            A::ProjectOpened { loc, snap } => self.open_project(&loc, &snap),
+            A::ProjectOpened {
+                loc,
+                snap,
+                what_reads,
+            } => self.open_project(&loc, &snap, what_reads),
             A::ProjectSaved { loc } => {
                 self.say(format!("project: saved {}", loc.name()));
                 if let Some((at, sounds, parts)) = self.save_sent.take() {
@@ -10310,7 +10314,16 @@ impl Player {
     /// MPFree, or a part that doesn't read) is refused before anything
     /// changes, so the project open stays as it was. A part the project
     /// hasn't got opens as New has it, never as the last project left it.
-    fn open_project(&mut self, loc: &mpfree_library::Loc, snap: &mpfree_library::Snapshot) {
+    ///
+    /// One that would leave something out (an effect or instrument this
+    /// stick can't make) doesn't open either, unless the musician chose
+    /// Open what reads (`what_reads`): the browser asks (live shows A1).
+    fn open_project(
+        &mut self,
+        loc: &mpfree_library::Loc,
+        snap: &mpfree_library::Snapshot,
+        what_reads: bool,
+    ) {
         if self.opens_out >= OPENS_ON_THEIR_WAY {
             return self.open_refused(loc.name(), OPENS_BUSY);
         }
@@ -10318,6 +10331,32 @@ impl Player {
             Ok(o) => o,
             Err(why) => return self.open_refused(loc.name(), &why),
         };
+        if !what_reads && !o.left_out.is_empty() {
+            let what = std::mem::take(&mut o.left_out);
+            // Built here, freed here: nothing reached the audio loop.
+            drop(o);
+            self.say(format!(
+                "project: {} wasn't opened: it would leave out {}. Asked whether to open what reads",
+                loc.name(),
+                what.join(", ")
+            ));
+            if let Some(b) = self.browser.as_mut() {
+                b.open_would_leave_out(loc.clone(), snap.clone(), what);
+                mpfree_browser_ui::show(&mut self.ui, b);
+            }
+            return;
+        }
+        if what_reads {
+            if let Some(b) = self.browser.as_ref() {
+                let files = b.left_out_list().join(", ");
+                if !files.is_empty() {
+                    self.say(format!(
+                        "project: opening what reads of {}; left out: {files}",
+                        loc.name()
+                    ));
+                }
+            }
+        }
         // What it left out keeps it from being saved over; the parts read
         // after (the kits, the loops, the takes) add theirs as they come.
         self.left_out(std::mem::take(&mut o.left_out));
@@ -26935,6 +26974,41 @@ mod tests {
         select(b, "Song");
         b.push();
         p.step_browser();
+        // Live shows A1: it can't open whole, so it doesn't open; the
+        // browser asks whether to open what reads.
+        let verb = format!(
+            "the effect clap:com.example.verb on {}",
+            crate::mixing::name(mpfree_fx::StripId::Master)
+        );
+        assert!(!p
+            .take_actions()
+            .iter()
+            .any(|a| matches!(a, FromUi::OpenProject(_))));
+        assert!(
+            events_log(&p).iter().any(|l| l
+                == &format!(
+                    "project: Song wasn't opened: it would leave out {verb}. Asked whether to open what reads"
+                )),
+            "{:?}",
+            events_log(&p)
+        );
+        let b = p.browser.as_mut().unwrap();
+        assert_eq!(b.project(), None);
+        match &b.screen().modal {
+            mpfree_browser_ui::state::Modal::Confirm { text, what } => {
+                assert!(
+                    matches!(what, mpfree_browser_ui::state::Confirm::OpenWhatReads(_)),
+                    "{what:?}"
+                );
+                assert_eq!(
+                    text,
+                    &format!("Song can\u{2019}t open whole: it would leave out {verb}. Open what reads? Saving it then goes into a new project beside it, so Song stays as it is")
+                );
+            }
+            m => panic!("{m:?}"),
+        }
+        b.push();
+        p.step_browser();
         let o = p
             .take_actions()
             .into_iter()
@@ -26942,13 +27016,9 @@ mod tests {
                 FromUi::OpenProject(o) => Some(o),
                 _ => None,
             })
-            .expect("Song opens");
+            .expect("Song opens with what reads");
         // What was left out stayed on the screen side, with the browser.
         assert!(o.left_out.is_empty());
-        let verb = format!(
-            "the effect clap:com.example.verb on {}",
-            crate::mixing::name(mpfree_fx::StripId::Master)
-        );
         assert_eq!(
             p.browser.as_ref().unwrap().left_out_list(),
             std::slice::from_ref(&verb)

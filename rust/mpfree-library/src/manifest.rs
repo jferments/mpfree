@@ -151,6 +151,20 @@ impl Check {
     pub fn whole(&self) -> bool {
         !self.no_manifest && self.missing.is_empty() && self.changed.is_empty()
     }
+
+    /// What would keep the project from opening whole (live shows A1):
+    /// every file missing, and every sound, take or loop whose bytes
+    /// changed (damaged: they are named for what they hold). A part
+    /// changed by hand isn't one: the open reads it, or refuses it.
+    pub fn gaps(&self) -> (Vec<&str>, Vec<&str>) {
+        let damaged = self
+            .changed
+            .iter()
+            .filter(|p| p.starts_with(&format!("{SAMPLES}/")))
+            .map(String::as_str)
+            .collect();
+        (self.missing.iter().map(String::as_str).collect(), damaged)
+    }
 }
 
 /// A file's size and time, if it is a plain file.
@@ -272,7 +286,8 @@ impl Library {
     /// and only one whose time changed is read. Deep: every file is read.
     pub fn check_project(&self, project: &Loc, deep: bool) -> io::Result<Check> {
         let dir = self.project_dir(project)?;
-        let Some(m) = self.manifest(project)? else {
+        // A manifest that can't be read is a cache gone: none.
+        let Some(m) = self.manifest(project).ok().flatten() else {
             return Ok(Check {
                 no_manifest: true,
                 ..Check::default()
@@ -285,9 +300,11 @@ impl Library {
                 None => c.missing.push(f.path.clone()),
                 Some((bytes, _)) if bytes != f.bytes => c.changed.push(f.path.clone()),
                 Some((_, changed)) if !deep && changed == f.changed && changed != 0 => {}
+                // A file that can't be read counts as changed: it can't
+                // give the bytes listed.
                 Some(_) => {
                     c.read += 1;
-                    if hash_file(&p)? != f.hash {
+                    if hash_file(&p).ok().as_deref() != Some(f.hash.as_str()) {
                         c.changed.push(f.path.clone());
                     }
                 }
