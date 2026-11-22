@@ -40,6 +40,7 @@ use mpfree_seq::loops::{self, LoopNow, LoopPlan};
 use mpfree_seq::mpfree_moves::{Kind, MoveLog};
 use mpfree_seq::scenes::{MAX_LIST_STEPS, MAX_TIMES};
 use mpfree_seq::steps::{Edit, Grid};
+use mpfree_seq::time_edit::Refused;
 use mpfree_seq::ListStep;
 use mpfree_seq::{
     Clip, ClipId, LaunchGrid, ModelError, Project, TouchPoint, TrackId, LOOPS, MAX_TRACKS, ROWS,
@@ -3624,6 +3625,7 @@ impl TimeControl {
         bar: Tick,
     ) -> Result<(String, Option<SongChange>), String> {
         let meter = self.info.meter;
+        let bpm = self.project_bpm;
         let tracks = &self.project.tracks;
         let song = &mut self.project.arrangement;
         let named = |song: &mpfree_seq::arrange::Arrangement, i: usize| {
@@ -3705,20 +3707,12 @@ impl TimeControl {
                     .markers
                     .get(marker)
                     .map_or_else(String::new, |m| m.name.clone());
-                match song.move_section(tracks, marker, gap, copy, bar) {
-                    Ok(()) => {}
-                    Err(ModelError::BadMoves) if !song.tempo.is_empty() => {
-                        return Err(format!(
-                            "song: {name} can't move while the song has tempo points: they would stay where they are"
-                        ))
-                    }
-                    Err(ModelError::BadMoves) => {
-                        return Err(format!(
-                            "song: {name} can't move while the song has morph moves: they would stay where they are"
-                        ))
-                    }
-                    Err(_) => return Err(format!("song: {name} can't go there")),
-                }
+                // Its tempo, morph moves and rows go with it (Arrange 3.2).
+                song.move_section(tracks, marker, gap, copy, bar, bpm)
+                    .map_err(|r| match r {
+                        Refused::BadRange => format!("song: {name} can't go there"),
+                        r => format!("song: {name} can't go there: {}", refused_said(r, at)),
+                    })?;
                 let now = if copy {
                     gap
                 } else if gap > marker + 1 {
@@ -5325,6 +5319,26 @@ fn next_filled(filled: &[usize], row: usize, delta: i32) -> Option<usize> {
             .find(|&&r| r < row)
             .or_else(|| filled.last())
             .copied()
+    }
+}
+
+/// Why an edit of the song's time was refused, in a musician's words,
+/// with `at` naming a place in the song.
+fn refused_said(r: Refused, at: impl Fn(Tick) -> String) -> String {
+    use mpfree_seq::arrange::{MAX_MARKERS, MAX_MORPHS, MAX_PLACEMENTS, MAX_TEMPO_POINTS};
+    match r {
+        Refused::BadRange => "there's no such stretch of the song".to_string(),
+        Refused::Blocks => format!("the song would hold more than {MAX_PLACEMENTS} blocks"),
+        Refused::Markers => format!("the song would hold more than {MAX_MARKERS} markers"),
+        Refused::TempoPoints => {
+            format!("the song would need more than {MAX_TEMPO_POINTS} tempo points")
+        }
+        Refused::TempoTooClose(t) => {
+            format!("two tempo points would be closer than a 1/16 at {}", at(t))
+        }
+        Refused::Lanes => "the song's moves would have too many points".to_string(),
+        Refused::Morphs => format!("the morph would change rows more than {MAX_MORPHS} times"),
+        Refused::Check(e) => format!("the song wouldn't add up ({e:?})"),
     }
 }
 

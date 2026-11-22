@@ -3296,6 +3296,64 @@ mod tests {
         assert_eq!(h.control.project.arrangement.placements.len(), 2);
     }
 
+    /// A section moves with its tempo points (Arrange 3.2), one UNDO
+    /// takes the whole move back, and a refusal says why in plain words.
+    #[test]
+    fn a_section_moves_with_its_tempo_and_undo_takes_it_back() {
+        use mpfree_seq::arrange::Placement;
+        const BAR: i64 = 3840;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.control.project.tracks[0].slots[0] = Some(Clip::new("Beat", BAR));
+        h.control.project.give_clip_ids();
+        let tracks = h.control.project.tracks.clone();
+        let song = &mut h.control.project.arrangement;
+        song.place(Placement::of(&tracks, 0, 0, 0, 4 * BAR))
+            .unwrap();
+        song.mark(0, "Intro").unwrap();
+        song.mark(2 * BAR, "Verse").unwrap();
+        song.set_tempo(2 * BAR, 90.0, None).unwrap();
+        let start = h.control.project.arrangement.clone();
+        let said = h
+            .act(TimeAction::MoveSection {
+                marker: 1,
+                gap: 0,
+                copy: false,
+            })
+            .unwrap();
+        assert!(said.contains("Verse moved to bar 1"), "{said}");
+        let song = &h.control.project.arrangement;
+        let tempo: Vec<_> = song.tempo.iter().map(|p| (p.at, p.bpm)).collect();
+        // The Verse's 90 BPM from bar 1, the Intro's 120 after it, and
+        // past the song's end the 90 it had there.
+        assert_eq!(tempo, [(0, 90.0), (2 * BAR, 120.0), (4 * BAR, 90.0)]);
+        assert_eq!(song.placements.len(), 1, "the beat stays one block");
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.control.project.arrangement, start);
+        // The most tempo points a song holds, the Verse starting between
+        // two: refused, nothing changes.
+        let song = &mut h.control.project.arrangement;
+        song.tempo.clear();
+        for k in 0..mpfree_seq::arrange::MAX_TEMPO_POINTS as i64 {
+            let bpm = if k % 2 == 0 { 100.0 } else { 110.0 };
+            song.set_tempo(k * 240, bpm, None).unwrap();
+        }
+        song.markers[1].at = 3 * 240 + 120;
+        let before = h.control.project.arrangement.clone();
+        let said = h
+            .act(TimeAction::MoveSection {
+                marker: 1,
+                gap: 0,
+                copy: false,
+            })
+            .unwrap_err();
+        // The Verse's start and the place it left each need a point.
+        assert_eq!(
+            said,
+            "song: Verse can't go there: the song would need more than 31 tempo points"
+        );
+        assert_eq!(h.control.project.arrangement, before);
+    }
+
     #[test]
     fn plus_track_adds_an_armed_track_up_to_128_and_undo_takes_it_away() {
         let mut h = TimeHost::new(RATE, 120.0).unwrap();

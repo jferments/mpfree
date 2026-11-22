@@ -21,10 +21,12 @@
 //!   from where its clip had got to (as [`Arrangement::clear`] cuts), and
 //!   go with their part. A block never changes lane. Where two parts meet
 //!   after the edit (a seam: where a delete closes up, either side of a
-//!   moved or copied range), a block that meets its own clip again exactly
-//!   where it had got to is one block again, so an insert and its delete
-//!   leave the song as it was, and a long block of a one-bar loop stays one
-//!   block when whole bars move.
+//!   moved or copied range), two pieces of one block that meet with its
+//!   clip exactly where it had got to are one block again, so a long block
+//!   of a one-bar loop stays one block when whole bars move. Blocks placed
+//!   apart stay apart, even where they meet in phase: an insert and its
+//!   delete leave the song playing as it did, but a block the insert cut
+//!   stays two.
 //! - **Markers** go with their part, keeping their names (a copied range's
 //!   are copied); a deleted range's go.
 //! - **Tempo**: each part takes the tempo in effect at its start with it, as
@@ -282,14 +284,16 @@ impl Arrangement {
     }
 
     /// The blocks, each part's cut at its edges and moved with it, then
-    /// joined again at the seams where a block meets itself in phase.
+    /// joined again at the seams where two pieces of one block meet in
+    /// phase.
     fn edit_blocks(
         &self,
         tracks: &[Track],
         parts: &[Part],
         seams: &[Tick],
     ) -> Result<Vec<Placement>, Refused> {
-        let mut out: Vec<Placement> = Vec::with_capacity(self.placements.len() + 64);
+        // Each piece with the block it came from.
+        let mut out: Vec<(usize, Placement)> = Vec::with_capacity(self.placements.len() + 64);
         for part in parts {
             let Part::Piece {
                 from: a,
@@ -300,7 +304,7 @@ impl Arrangement {
                 continue;
             };
             let b = end.unwrap_or(Tick::MAX);
-            for p in &self.placements {
+            for (i, p) in self.placements.iter().enumerate() {
                 if p.end() <= a || p.start >= b {
                     continue;
                 }
@@ -316,18 +320,16 @@ impl Arrangement {
                 if out.len() >= MAX_PLACEMENTS {
                     return Err(Refused::Blocks);
                 }
-                out.push(q);
+                out.push((i, q));
             }
         }
-        out.sort_by_key(|p| (p.track, p.start));
-        // Joined at the seams: the same clip on, from where it had got to.
-        let mut joined: Vec<Placement> = Vec::with_capacity(out.len());
-        for q in out {
-            if let Some(p) = joined.last_mut() {
-                let meets = p.track == q.track
-                    && p.end() == q.start
-                    && p.clip == q.clip
-                    && seams.contains(&q.start);
+        out.sort_by_key(|(_, p)| (p.track, p.start));
+        // Joined at the seams: a piece of the same block on, from where
+        // its clip had got to. Blocks placed apart stay apart.
+        let mut joined: Vec<(usize, Placement)> = Vec::with_capacity(out.len());
+        for (i, q) in out {
+            if let Some((j, p)) = joined.last_mut() {
+                let meets = *j == i && p.end() == q.start && seams.contains(&q.start);
                 if meets {
                     if let Some(clip) = p.clip(tracks, &self.clips) {
                         if p.from(Some(clip), p.end()).offset == q.offset {
@@ -337,9 +339,9 @@ impl Arrangement {
                     }
                 }
             }
-            joined.push(q);
+            joined.push((i, q));
         }
-        Ok(joined)
+        Ok(joined.into_iter().map(|(_, p)| p).collect())
     }
 
     /// The markers, moved (or copied) with their parts.
@@ -1104,11 +1106,12 @@ mod tests {
         );
     }
 
-    /// An insert and the delete of what it inserted leave the song as it
-    /// was: blocks it cut are one again, the tempo points it added go,
-    /// and the lanes play as they did.
+    /// An insert and the delete of what it inserted leave the song playing
+    /// as it did: the markers, tempo points and rows as they were, the
+    /// lanes heard the same, and the blocks too, but those the insert cut
+    /// are two (blocks placed apart stay apart).
     #[test]
-    fn an_insert_and_its_delete_leave_the_song_as_it_was() {
+    fn an_insert_and_its_delete_leave_the_song_playing_as_it_did() {
         let p = project();
         let old = &p.arrangement;
         for (at, len) in [
@@ -1132,7 +1135,27 @@ mod tests {
                     BPM,
                 )
                 .unwrap();
-            assert_eq!(back.placements, old.placements, "{at} {len}");
+            // The blocks as they were, but those the insert cut: two,
+            // the second playing on from where the first got to.
+            let cut: Vec<Placement> = old
+                .placements
+                .iter()
+                .flat_map(|q| {
+                    if q.start < at && at < q.end() {
+                        let rest = q.from(q.clip(&p.tracks, &old.clips), at);
+                        vec![
+                            Placement {
+                                length: at - q.start,
+                                ..q.clone()
+                            },
+                            rest,
+                        ]
+                    } else {
+                        vec![q.clone()]
+                    }
+                })
+                .collect();
+            assert_eq!(back.placements, cut, "{at} {len}");
             assert_eq!(back.markers, old.markers, "{at} {len}");
             assert_eq!(back.tempo, old.tempo, "{at} {len}");
             assert_eq!(back.morphs, old.morphs, "{at} {len}");
