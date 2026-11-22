@@ -187,6 +187,10 @@ pub struct Session {
     /// The audio tracks on the Song view's lanes (a short memory: the
     /// tests record no takes).
     pub tracks: audiotracks::TrackHost,
+    /// What a snap is told of recorded audio, for a test that needs the
+    /// audio tracks to hold recordings without recording one (None: the
+    /// audio tracks' own answer).
+    pub recorded_audio: Option<bool>,
     pub music: midi_in::MusicIn,
     pub synth: cores::SynthSlot,
     pub level_db: f32,
@@ -375,6 +379,7 @@ impl Session {
             // around it, with one more layer to move.
             looper: looping::LoopHost::new(RATE, 22),
             tracks: audiotracks::TrackHost::new(RATE, 2),
+            recorded_audio: None,
             music,
             synth,
             level_db,
@@ -1577,6 +1582,19 @@ impl Session {
                 self.export.running(),
             ));
         self.looper.set_tempo_meant(self.app.tempo_by_hand);
+        self.looper.set_smart_end(self.app.settings.smart_end);
+        // The period's notes, for smart loop end, as main.rs gives them.
+        if let Some(at) = self
+            .time
+            .take_notes(|frame, track, key, velocity| self.looper.note(frame, track, key, velocity))
+        {
+            self.looper.notes_lost(at);
+        }
+        let audio = self
+            .recorded_audio
+            .unwrap_or_else(|| self.tracks.host.tracks.has_regions());
+        let said = self.looper.tend_snap(&mut self.time, audio);
+        self.out.loop_start(said);
         if let Some(line) = self.looper.run(self.time.block(), &mut ll, &mut lr) {
             self.out.note(&line);
         }
@@ -1591,7 +1609,10 @@ impl Session {
         let (said, tempo) =
             crate::loop_sets_tempo(&mut self.looper, &mut self.time, take, exporting);
         self.out.loop_start(said);
-        self.loop_tempo = tempo.or(self.loop_tempo);
+        self.out.smart_end(self.looper.take_smart());
+        let (said, snapped) = self.looper.take_snap();
+        self.out.loop_start(said);
+        self.loop_tempo = tempo.or(snapped).or(self.loop_tempo);
         // The Looper tab and the Play page's strip follow the loop, as
         // main.rs shows them: its wave a slice at a time, its changes in
         // the log, and the loop's view about as often as the transport card

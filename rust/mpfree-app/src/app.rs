@@ -52,6 +52,7 @@ use crate::looping::{LoopAction, LoopMemory, LoopSource};
 use mpfree_arp::{Events, LatchMode, Mode, Pattern, Rate, RecordMode, Recorder};
 use mpfree_controller::mpc_one::button;
 use mpfree_looper::Command as LoopCommand;
+use mpfree_looper::SmartEnd;
 use mpfree_play::TrackArps;
 use mpfree_time_ui::TimeAction;
 use mpfree_transport::Command;
@@ -736,6 +737,12 @@ pub struct Settings {
     /// stopped, a first loop recorded on Free length sets the tempo (and
     /// starts the song) when it closes. Off by default; kept in Prefs.
     pub loop_tempo: bool,
+    /// The looper's options "Smart loop end": when tempo from the first
+    /// loop closes a loop played on the pads, Suggest (the default)
+    /// closes on your tap and offers the downbeat you played, Auto
+    /// listens a moment on and closes on it, Off keeps your tap. Kept in
+    /// Prefs.
+    pub smart_end: SmartEnd,
     /// Prefs > Appearance: the theme in use, a built-in name (see
     /// [`THEMES`]); `--theme` can also set a theme file for one run.
     pub theme: String,
@@ -792,6 +799,18 @@ pub struct Settings {
 /// Half Level's velocity until FULL LEVEL held and a pad hit set another.
 pub const HALF_LEVEL: u8 = 64;
 
+/// Smart loop end's choices, in the order the MENU steps them.
+pub const SMART_ENDS: [SmartEnd; 3] = [SmartEnd::Off, SmartEnd::Suggest, SmartEnd::Auto];
+
+/// Smart loop end's choice as the MENU and the settings file name it.
+pub fn smart_end_name(m: SmartEnd) -> &'static str {
+    match m {
+        SmartEnd::Off => "Off",
+        SmartEnd::Suggest => "Suggest",
+        SmartEnd::Auto => "Auto",
+    }
+}
+
 /// The rates Prefs > Export rate steps through.
 pub const EXPORT_RATES: [u32; 2] = [44_100, 48_000];
 
@@ -834,6 +853,7 @@ impl Default for Settings {
             loop_latency_set: false,
             loop_level_db: 0.0,
             loop_tempo: false,
+            smart_end: SmartEnd::Suggest,
             theme: "default".to_string(),
             sound_cores: SoundCores::Shared,
             loop_memory: LoopMemory::default(),
@@ -930,6 +950,8 @@ pub enum Item {
     LoopLevel,
     /// The looper's options: tempo from the first loop, on or off.
     LoopTempo,
+    /// The looper's options: smart loop end, Off, Suggest or Auto.
+    SmartEnd,
     /// Prefs and the looper's options: the looper's size from the next
     /// start.
     LoopMemory,
@@ -4667,6 +4689,7 @@ impl App {
                 Item::LoopLatency,
                 Item::LoopLevel,
                 Item::LoopTempo,
+                Item::SmartEnd,
                 Item::LoopMemory,
             ],
             (
@@ -4851,6 +4874,7 @@ impl App {
                 "Tempo from the first loop",
                 if s.loop_tempo { "On" } else { "Off" }.to_string(),
             ),
+            Item::SmartEnd => ("Smart loop end", smart_end_name(s.smart_end).to_string()),
             Item::LoopMemory => (
                 "Loop memory",
                 if s.loop_memory == self.loop_memory_now {
@@ -5099,6 +5123,15 @@ impl App {
                 "says so). The song starts as the loop comes",
                 "round. Not while another device's clock leads,",
                 "the song has more than one tempo, or exporting.",
+            ],
+            Item::SmartEnd => vec![
+                "When tempo from the first loop closes a loop",
+                "you played on the pads or keys. Suggest: it",
+                "closes on your tap, then offers the downbeat",
+                "you played if your tap was off it. Auto: it",
+                "listens a moment past your tap and closes on",
+                "the downbeat you played; the song starts in",
+                "step. Off: it closes on your tap.",
             ],
             Item::LoopMemory => vec![
                 "How much sound the loops can hold, all",
@@ -5642,6 +5675,7 @@ impl App {
                 )));
             }
             Item::LoopTempo => s.loop_tempo = d > 0,
+            Item::SmartEnd => s.smart_end = cycle(&SMART_ENDS, s.smart_end, d),
             Item::LoopLevel => {
                 s.loop_level_db = (s.loop_level_db + d as f32).clamp(-24.0, 6.0);
                 fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetLevel(
@@ -7140,6 +7174,36 @@ mod tests {
         );
         app.step_item(at, -1);
         assert!(!app.settings.loop_tempo);
+    }
+
+    /// Smart loop end step 1: the looper's options pick Off, Suggest (at
+    /// first) or Auto, under Tempo from the first loop, kept between
+    /// starts.
+    #[test]
+    fn smart_loop_end_is_in_the_looper_options_and_kept() {
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        app.open_tab(View::Looper);
+        press(&mut app, MENU);
+        let at = row(&app, Item::SmartEnd);
+        assert_eq!(at, row(&app, Item::LoopTempo) + 1);
+        assert_eq!(
+            app.item_text(Item::SmartEnd),
+            ("Smart loop end", "Suggest".to_string())
+        );
+        app.step_item(at, 1);
+        assert_eq!(app.settings.smart_end, SmartEnd::Auto);
+        app.step_item(at, 1);
+        assert_eq!(app.settings.smart_end, SmartEnd::Auto, "the last stays");
+        let kept = app.app_settings();
+        assert_eq!(kept.get_str("smart-loop-end"), Some("auto"));
+        let mut next = App::new(44_100, false);
+        let notes = next.restore(&kept, &mpfree_store::Settings::default());
+        assert_eq!(next.settings.smart_end, SmartEnd::Auto);
+        assert!(notes[0].contains(", smart loop end auto,"), "{notes:?}");
+        app.step_item(at, -1);
+        app.step_item(at, -1);
+        assert_eq!(app.item_text(Item::SmartEnd).1, "Off");
     }
 
     /// Live test 2: a minute of loops was too little. Prefs (and the

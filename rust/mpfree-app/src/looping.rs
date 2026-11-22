@@ -31,12 +31,14 @@
 //! MPC: it waits for the owner's go in the round 6 runbook.
 
 use crate::alsa;
+use crate::time::{Allowed, Answer, TimeHost, TimingChange};
 use mpfree_looper::print::{frames_at, PrintJob};
 use mpfree_looper::save::Saved;
 use mpfree_looper::{
-    Bounce, Command, Edit, History, LayerCommand, LayerInfo, LoopFile, Looper, Memory, Phase,
-    Print, Reading, Starts, Stats, Status, Step, Sure, Take, HEARD_SECONDS, LOOP_MAX_BPM,
-    LOOP_MIN_BPM, MAX_LAYERS, MAX_LOOPS,
+    Bounce, Candidate, Command, Edit, History, LayerCommand, LayerInfo, LoopFile, Looper, Memory,
+    NoteStart, Phase, Print, Reading, Shift, SmartEnd, SmartNote, SmartOutcome, Snap, SnapDone,
+    SnapPlan, Starts, Stats, Status, Step, Sure, Take, HEARD_SECONDS, LOOP_MAX_BPM, LOOP_MIN_BPM,
+    MAX_LAYERS, MAX_LOOPS,
 };
 use mpfree_seq::loops::{LoopNow, LoopPlan};
 use mpfree_transport::time::{Tick, PPQ};
@@ -159,7 +161,8 @@ pub fn shortest_words(bars: Option<u32>) -> String {
 }
 
 /// How a free first loop's length read, for the log: "1 bar at 96.00
-/// BPM", and ", as Length set" when the bars were Length's.
+/// BPM", and ", as Length set" when the bars were Length's, or what the
+/// beat played into it said.
 pub fn reading_words(r: &Reading) -> String {
     format!(
         "{} at {:.2} BPM{}",
@@ -168,10 +171,19 @@ pub fn reading_words(r: &Reading) -> String {
         if r.said.is_some() && !r.overruled() {
             ", as Length set"
         } else {
-            ""
+            match r.beat {
+                None => "",
+                Some(_) if !r.bars.is_power_of_two() => ", from the beat you played",
+                Some(f) if f >= BEAT_FITS => ", which the beat you played fits",
+                Some(_) => ", which the beat you played fits only loosely",
+            }
         }
     )
 }
+
+/// How well the notes played into a free first loop must fall on its
+/// beats for the log to say the beat fits ([`Reading::beat`]).
+const BEAT_FITS: f64 = 0.6;
 
 /// What the screen should hear about a reading, besides its bars and
 /// tempo: a close call and the other reading, or a Length it couldn't
@@ -415,6 +427,68 @@ pub enum LoopAction {
     /// Capture: the last bars heard become a loop, or one capturing is
     /// called off ([`LoopHost::capture`]).
     Capture,
+    /// Smart loop end's chip and the loop point view: a snap on the
+    /// picked loop (Read as, [`LoopHost::snap`]).
+    Snap(Snap),
+    /// The loop point view's Snap, Use my tap, Keep my tap and Keep the
+    /// snap: that side, and whether the chip is put away there
+    /// ([`LoopHost::side`]).
+    Side(Side, bool),
+    /// The loop point view's A/B ([`LoopHost::set_ab`]).
+    Ab(bool),
+    /// The hint line's Snap anyway (true) or Not now
+    /// ([`LoopHost::snap_anyway`], [`LoopHost::snap_not_now`]).
+    Answer(bool),
+    /// The loop point view opened or closed
+    /// ([`LoopHost::set_point_open`]).
+    PointView(bool),
+}
+
+/// The loop point view's windows: how many slices each draws.
+pub const POINT_BARS: usize = 120;
+/// Each window's length, ms: the start's from 100 ms before your press,
+/// the end's from 200 ms before your tap ([`POINT_START_FROM_MS`],
+/// [`POINT_END_FROM_MS`]), so what smart loop end looks at (a tenth of a
+/// second each way) is in view.
+pub const POINT_MS: f64 = 300.0;
+pub const POINT_START_FROM_MS: f64 = -100.0;
+pub const POINT_END_FROM_MS: f64 = -200.0;
+
+/// The audio round a loop's start and end as smart loop end left it, for
+/// the loop point view: each window's peaks, 0 to 255 (full scale), in
+/// [`POINT_BARS`] slices. Plain data, so a view holds it without
+/// allocating.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoopPoint {
+    pub start: [u8; POINT_BARS],
+    pub end: [u8; POINT_BARS],
+}
+
+/// Smart loop end on the picked loop, besides what its [`Status`] says
+/// (the offer and where the loop is from your press and tap).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SmartView {
+    /// The reading was a close call: Read as the other bars, while the
+    /// loop is as it was read.
+    pub close_call: Option<u32>,
+    /// Keep my tap or Keep the snap: the chip is put away until the loop
+    /// changes.
+    pub kept: bool,
+    /// The snap waiting on "... anyway?" ([`LoopHost::snap_asking`]),
+    /// and whether it is an Undo or a Redo of Read as ([`ask_words`]).
+    pub asking: Option<(Snap, bool)>,
+    /// A/B: the loop swaps your tap and the snap on each downbeat.
+    pub ab: bool,
+    /// The loop point view's audio, while the view is open.
+    pub point: Option<LoopPoint>,
+}
+
+/// A side of smart loop end's choice: the loop as you closed it (your
+/// press and tap), or as it found (the snap).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Tap,
+    Snap,
 }
 
 /// What the line input counted since it was opened.
@@ -1176,6 +1250,9 @@ impl LiveWave {
 /// What the Looper tab shows (sent with the timing, and on changes).
 #[derive(Clone, Debug, PartialEq)]
 pub struct LooperView {
+    /// Smart loop end on the picked loop, for its chip and the loop point
+    /// view.
+    pub smart: SmartView,
     pub status: Status,
     pub stats: Stats,
     /// Records from as picked: what the next take records.
@@ -1242,6 +1319,7 @@ impl Default for LooperView {
     fn default() -> Self {
         let l = Looper::new(44_100, 0);
         LooperView {
+            smart: SmartView::default(),
             status: l.status(),
             stats: l.stats(),
             source: LoopSource::Pads,
@@ -1326,6 +1404,49 @@ pub struct LoopHost {
     /// The song's tempo was set by hand, as the looper was last told
     /// ([`LoopHost::set_tempo_meant`]).
     tempo_meant: bool,
+    /// Smart loop end, as the looper was last told
+    /// ([`LoopHost::set_smart_end`]).
+    smart: SmartEnd,
+    /// Periods whose notes didn't all reach smart loop end
+    /// ([`LoopHost::notes_lost`]): counted, logged and said.
+    pub notes_lost: u64,
+    /// A snap asked for (Snap, Use my tap, or UNDO or REDO of a snap),
+    /// for a loop, until the next period works it out
+    /// ([`LoopHost::tend_snap`]); then the plan, waiting for the time
+    /// engine's answer to its tempo. True: asked and answered with
+    /// Snap anyway ([`LoopHost::snap_anyway`]).
+    snap_want: Option<(usize, Snap, bool)>,
+    snap_wait: Option<(SnapPlan, u32)>,
+    /// A snap that would change the tempo under recorded audio (the audio
+    /// tracks' recordings), waiting for Snap anyway or Not now: the hint
+    /// line asks ([`LoopHost::snap_asking`]).
+    snap_ask: Option<(usize, Snap)>,
+    /// A side picked for a loop (the loop point view's Snap, Keep my tap,
+    /// Use my tap, Keep the snap, and A/B's swaps): the snap that gets
+    /// there is worked out when no other is under way
+    /// ([`LoopHost::side`]); true: the chip is put away once there.
+    side_want: Option<(usize, Side, bool)>,
+    /// A/B on loop `n`: each snap that lands asks for the other side on
+    /// the next downbeat ([`LoopHost::set_ab`]).
+    ab: Option<usize>,
+    /// Keep my tap or Keep the snap: the chip is put away while loop `n`
+    /// is at this version.
+    kept: Option<(usize, u64)>,
+    /// The last reading that was a close call: its loop, the loop's
+    /// version, and the other reading's bars, for Read as.
+    close_call: Option<(usize, u64, u32)>,
+    /// The loop point view is open: the picked loop's audio round its
+    /// start and end is read for it ([`LoopHost::set_point_open`]).
+    point_open: bool,
+    /// That audio, for the loop, its version and where smart loop end
+    /// left it, until one changes.
+    point: Option<(usize, u64, Shift, LoopPoint)>,
+    /// Where it is read into: a window at the fastest rate, allocated
+    /// once.
+    point_buf: Vec<[f32; 2]>,
+    /// Snaps that couldn't be made or didn't land: counted, logged and
+    /// said.
+    pub snaps_refused: u64,
     /// Free first passes whose Length bars would have been slower than
     /// [`LOOP_MIN_BPM`], so the length was read instead
     /// ([`Reading::overruled`]): counted, logged and said.
@@ -1725,6 +1846,19 @@ impl LoopHost {
             starts_refused: 0,
             free_tempo: false,
             tempo_meant: false,
+            smart: SmartEnd::Off,
+            notes_lost: 0,
+            snap_want: None,
+            snap_ask: None,
+            snap_wait: None,
+            side_want: None,
+            ab: None,
+            kept: None,
+            close_call: None,
+            point_open: false,
+            point: None,
+            point_buf: vec![[0.0; 2]; point_frames(rate)],
+            snaps_refused: 0,
             readings_overruled: 0,
             tempos_refused: 0,
             match_pattern: false,
@@ -2039,6 +2173,15 @@ impl LoopHost {
 
     /// A press or a setting, with its `looper:` line for the log.
     pub fn command(&mut self, c: Command) -> String {
+        // UNDO or REDO of a snap or of Read as lands on the loop's
+        // downbeat with the tempo, as the step did.
+        let h = self.looper.history();
+        let tempo = |s: Option<&Step>| matches!(s, Some(Step::Snap(_) | Step::Bars(_)));
+        match c {
+            Command::Undo if tempo(h.done().last()) => return self.snap(Snap::Undo),
+            Command::Redo if tempo(h.redo().first()) => return self.snap(Snap::Redo),
+            _ => {}
+        }
         // The app's latency is the line input's; the pads have their own.
         // Records from: Loops makes a new loop a resample.
         let empty = self
@@ -2223,6 +2366,7 @@ impl LoopHost {
                     "off"
                 }
             ),
+            (Command::SetSmartEnd(m), _) => format!("smart loop end: {}", smart_end_text(m)),
             (Command::TempoMeant(on), _) => format!(
                 "the song's tempo counts as {} when a free first loop's length is read",
                 if on {
@@ -3281,6 +3425,28 @@ impl LoopHost {
             } else {
                 String::new()
             }
+            + &if st.taps_kept + st.ends_moved + st.ends_offered > 0 {
+                format!(
+                    "; smart loop end: {} ends moved, {} offered, {} taps kept, {} starts on \
+                     the first hit, {} overdubs begun with what was played after the end",
+                    st.ends_moved, st.ends_offered, st.taps_kept, st.starts_found, st.handoffs
+                )
+            } else {
+                String::new()
+            }
+            + &if self.snaps_refused > 0 {
+                format!("; {} snaps refused or not landed", self.snaps_refused)
+            } else {
+                String::new()
+            }
+            + &if self.notes_lost > 0 {
+                format!(
+                    "; {} periods with more notes than smart loop end could follow",
+                    self.notes_lost
+                )
+            } else {
+                String::new()
+            }
             + &if self.readings_overruled > 0 {
                 format!(
                     "; {} loops too long for their Length's bars (read instead)",
@@ -3331,7 +3497,9 @@ impl LoopHost {
                 *l = st;
             }
         }
+        let smart = self.smart_view(&s);
         LooperView {
+            smart,
             status: s,
             stats: self.looper.stats(),
             source: self.chosen,
@@ -3692,12 +3860,453 @@ impl LoopHost {
     /// ([`Looper::take_tempo`]): its loop, how its length read (its bars
     /// and tempo, how sure) and that frame. A Length the reading couldn't
     /// keep is counted ([`LoopHost::readings_overruled`]).
-    pub fn take_tempo(&mut self) -> Option<(usize, Reading, u64)> {
-        let (n, r, at) = self.looper.take_tempo()?;
+    pub fn take_tempo(&mut self) -> Option<(usize, Reading, u64, Tick)> {
+        let (n, r, at, into) = self.looper.take_tempo()?;
         if r.overruled() {
             self.readings_overruled += 1;
         }
-        Some((n, r, at))
+        let version = self.looper.loop_status(n).map_or(0, |s| s.version);
+        self.close_call = match (r.sure, r.other) {
+            (Sure::Ambiguous, Some((bars, _))) => Some((n, version, bars)),
+            _ => None,
+        };
+        Some((n, r, at, into))
+    }
+
+    /// Smart loop end (the MENU setting, [`Command::SetSmartEnd`]): it
+    /// follows the pads and MIDI notes, so it's Off while takes record
+    /// from the line input or a mix. Cheap to call every period: the
+    /// looper is told when it changes.
+    pub fn set_smart_end(&mut self, m: SmartEnd) {
+        let m = if self.source == LoopSource::Pads {
+            m
+        } else {
+            SmartEnd::Off
+        };
+        if m != self.smart && self.looper.command(Command::SetSmartEnd(m)) {
+            self.smart = m;
+        }
+    }
+
+    /// A note started on `track` (a pad hit or a MIDI note-on), on the
+    /// song's frame clock: smart loop end weighs it. Every note of a
+    /// period, before [`LoopHost::run`].
+    pub fn note(&mut self, frame: u64, track: u16, key: u8, velocity: u8) {
+        self.looper.note(NoteStart {
+            frame,
+            source: track,
+            key,
+            velocity,
+        });
+    }
+
+    /// Notes started, the newest on `at`, that the time engine had no
+    /// room to pass on: counted ([`LoopHost::notes_lost`]), and smart
+    /// loop end keeps a tap whose reach they fall in.
+    pub fn notes_lost(&mut self, at: u64) {
+        self.notes_lost += 1;
+        self.looper.notes_lost(at);
+    }
+
+    /// Smart loop end's Snap ([`Snap::Found`]), Use my tap ([`Snap::Tap`]),
+    /// Use my press, Read as ([`Snap::Bars`]), or UNDO or REDO of one, on
+    /// the picked loop: the loop and the song's tempo change together on
+    /// its next downbeat. Worked out and asked of the time engine at the
+    /// next period ([`LoopHost::tend_snap`]); what it did, or why not,
+    /// comes after. The line for the log now.
+    pub fn snap(&mut self, s: Snap) -> String {
+        let n = self.looper.selected();
+        self.snap_ask = None;
+        self.ab = None;
+        self.side_want = None;
+        self.snap_want = Some((n, s, false));
+        format!(
+            "looper: {}: Loop {} changes on its next downbeat, with the tempo",
+            snap_name(s, self.reads_again(s)),
+            n + 1
+        )
+    }
+
+    /// The loop point view's Snap and Use my tap (or press), Keep my tap
+    /// and Keep the snap: the picked loop goes to that side of smart loop
+    /// end's choice on its next downbeat, with the tempo, by the snap that
+    /// gets there (worked out once no other is under way,
+    /// [`LoopHost::tend_snap`]); already there, it stays. `keep`: the chip
+    /// is put away once there. A/B stops. The line for the log.
+    pub fn side(&mut self, side: Side, keep: bool) -> String {
+        let n = self.looper.selected();
+        self.snap_ask = None;
+        self.ab = None;
+        self.side_want = Some((n, side, keep));
+        let what = match (side, keep) {
+            (Side::Snap, false) => "Snap",
+            (Side::Snap, true) => "Keep the snap",
+            (Side::Tap, false) => "Use my tap",
+            (Side::Tap, true) => "Keep my tap",
+        };
+        format!(
+            "looper: {what}: Loop {} goes there on its next downbeat, if it isn't there",
+            n + 1
+        )
+    }
+
+    /// A/B on the picked loop: it swaps between your tap and the snap on
+    /// each downbeat, with the tempo, until a side is picked
+    /// ([`LoopHost::side`]) or A/B goes off (it stays where it is). The
+    /// line for the log, or why not.
+    pub fn set_ab(&mut self, on: bool) -> String {
+        let n = self.looper.selected();
+        if !on {
+            self.ab = None;
+            self.side_want = None;
+            return format!("looper: A/B off: Loop {} stays as it is", n + 1);
+        }
+        let Some(now) = self.side_of(n) else {
+            return format!(
+                "looper: Loop {}: A/B needs your tap and a snap to swap between",
+                n + 1
+            );
+        };
+        self.snap_ask = None;
+        self.ab = Some(n);
+        self.side_want = Some((n, other_side(now), false));
+        format!(
+            "looper: A/B: Loop {} swaps your tap and the snap on each downbeat",
+            n + 1
+        )
+    }
+
+    /// The loop point view opened or closed: while open, the picked
+    /// loop's audio round its start and end is read for it.
+    pub fn set_point_open(&mut self, open: bool) {
+        self.point_open = open;
+        if !open {
+            self.point = None;
+        }
+    }
+
+    /// Which side of smart loop end's choice loop `n` is on: your tap
+    /// while something is on offer, the snap while smart loop end or a
+    /// snap moved it and nothing is. None when it is neither (it changed
+    /// in another way, or nothing was found).
+    fn side_of(&self, n: usize) -> Option<Side> {
+        let s = self.looper.loop_status(n)?;
+        match (s.offer, s.moved) {
+            (Some(_), _) => Some(Side::Tap),
+            (None, Some(m)) if !m.is_none() => Some(Side::Snap),
+            _ => None,
+        }
+    }
+
+    /// The snap that takes loop `n` to `side`: Redo or Snap to the snap,
+    /// Undo (of a snap) or Use my tap (or press) back. None if it is there
+    /// already (or neither side).
+    fn snap_to(&self, n: usize, side: Side) -> Option<Snap> {
+        let now = self.side_of(n)?;
+        if now == side {
+            return None;
+        }
+        let s = self.looper.loop_status(n)?;
+        let h = self.looper.loop_history(n)?;
+        Some(match side {
+            Side::Snap if matches!(h.redo().first(), Some(Step::Snap(_))) => Snap::Redo,
+            Side::Snap => Snap::Found,
+            Side::Tap if matches!(h.done().last(), Some(Step::Snap(_))) => Snap::Undo,
+            Side::Tap if s.moved.is_some_and(|m| m.end != 0) => Snap::Tap,
+            Side::Tap => Snap::Press,
+        })
+    }
+
+    /// Smart loop end on the picked loop, for the screen: the close call
+    /// while the loop is as it was read, the chip put away, the question
+    /// waiting, A/B, and the loop point view's audio while the view is
+    /// open (read again only when the loop, or where smart loop end left
+    /// it, changes; kept while a snap lands).
+    fn smart_view(&mut self, s: &Status) -> SmartView {
+        let n = self.looper.selected();
+        if self.point_open {
+            self.read_point(n, s);
+        }
+        SmartView {
+            close_call: self
+                .close_call
+                .filter(|c| c.0 == n && c.1 == s.version)
+                .map(|c| c.2),
+            kept: self.kept.is_some_and(|k| k == (n, s.version)),
+            asking: self
+                .snap_ask
+                .filter(|a| a.0 == n)
+                .map(|a| (a.1, self.reads_again(a.1))),
+            ab: self.ab == Some(n),
+            point: self
+                .point
+                .filter(|p| self.point_open && p.0 == n)
+                .map(|p| p.3),
+        }
+    }
+
+    /// The loop point view's audio for loop `n` (status `s`): the windows
+    /// round your press and your tap, from the first pass as it was kept.
+    fn read_point(&mut self, n: usize, s: &Status) {
+        // (Not moved is None.)
+        let moved = s.moved.unwrap_or(Shift::NONE);
+        if self
+            .point
+            .is_some_and(|p| p.0 == n && p.1 == s.version && p.2 == moved)
+        {
+            return;
+        }
+        let frames = point_frames(self.rate).min(self.point_buf.len());
+        let buf = &mut self.point_buf[..frames];
+        let Some((start, len)) = self.looper.read_kept(n, 0, &mut buf[..0]) else {
+            return;
+        };
+        let ms = |m: f64| (m * f64::from(self.rate) / 1000.0).round() as i64;
+        let press = start as i64 - moved.start;
+        let tap = (start + len) as i64 - moved.end;
+        let mut point = LoopPoint {
+            start: [0; POINT_BARS],
+            end: [0; POINT_BARS],
+        };
+        self.looper
+            .read_kept(n, press + ms(POINT_START_FROM_MS), buf);
+        peaks_into(buf, &mut point.start);
+        self.looper.read_kept(n, tap + ms(POINT_END_FROM_MS), buf);
+        peaks_into(buf, &mut point.end);
+        self.point = Some((n, s.version, moved, point));
+    }
+
+    /// Whether snap `s` is an Undo or a Redo of Read as, before it lands.
+    fn reads_again(&self, s: Snap) -> bool {
+        let h = self.looper.history();
+        let step = match s {
+            Snap::Undo => h.done().last(),
+            Snap::Redo => h.redo().first(),
+            _ => None,
+        };
+        matches!(step, Some(Step::Bars(_)))
+    }
+
+    /// The snap waiting on the question "... anyway?" (it would change
+    /// the tempo under recorded audio), if one is: its loop and kind, for
+    /// the tests (the screen reads [`SmartView::asking`]).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn snap_asking(&self) -> Option<(usize, Snap)> {
+        self.snap_ask
+    }
+
+    /// Snap anyway: the snap that asked goes ahead, as [`LoopHost::snap`]
+    /// does, the audio tracks' recordings left at their old tempo. The
+    /// line for the log, or None if none asked.
+    pub fn snap_anyway(&mut self) -> Option<String> {
+        let (n, s) = self.snap_ask.take()?;
+        self.snap_want = Some((n, s, true));
+        Some(format!(
+            "looper: {} anyway: Loop {} changes on its next downbeat, with the tempo",
+            snap_name(s, self.reads_again(s)),
+            n + 1
+        ))
+    }
+
+    /// Not now: the snap that asked is dropped and nothing changes. The
+    /// line for the log, or None if none asked.
+    pub fn snap_not_now(&mut self) -> Option<String> {
+        let (n, _) = self.snap_ask.take()?;
+        Some(format!(
+            "looper: Loop {}: not now: it stays as it is",
+            n + 1
+        ))
+    }
+
+    /// Every period, after the time engine's and before
+    /// [`LoopHost::run`]: a snap asked for is worked out
+    /// ([`Looper::snap_plan`]) and its tempo asked of the time engine on
+    /// the loop's next downbeat ([`TimeHost::timing_change`]): refused
+    /// while another loop has sound (its tempo would change under it), or
+    /// whatever the time engine refuses. While `audio` (recorded audio,
+    /// the audio tracks' regions, would play out of step) it asks first
+    /// ([`LoopHost::snap_asking`]) and goes ahead on Snap anyway. Once the
+    /// time engine commits it, the loop is told to change on the same
+    /// frame ([`Looper::snap_at`]); if the loop changes first, the tempo is
+    /// taken back. A refusal: the line for the log and the screen,
+    /// counted.
+    pub fn tend_snap(&mut self, time: &mut TimeHost, audio: bool) -> Option<(String, bool)> {
+        if let Some((p, ticket)) = self.snap_wait {
+            if self
+                .looper
+                .loop_status(p.n)
+                .is_none_or(|s| s.version != p.version)
+            {
+                self.snap_wait = None;
+                time.cancel_timing(ticket, "the loop changed");
+                return Some(self.snap_refused(
+                    p.n,
+                    p.snap,
+                    "the loop changed before its downbeat",
+                ));
+            }
+            match time.timing_answer(ticket) {
+                Some(Answer::Waiting) => return None,
+                Some(Answer::Committed(at)) => {
+                    self.snap_wait = None;
+                    // Said once it has landed (take_snap).
+                    self.looper.snap_at(SnapPlan { at, ..p });
+                    return None;
+                }
+                Some(Answer::Cancelled(why) | Answer::Refused(why)) => {
+                    self.snap_wait = None;
+                    return Some(self.snap_refused(p.n, p.snap, why));
+                }
+                None => {
+                    self.snap_wait = None;
+                    return Some(self.snap_refused(p.n, p.snap, "the time engine lost it"));
+                }
+            }
+        }
+        if self.snap_want.is_none() {
+            let (n, side, keep) = self.side_want?;
+            match self.snap_to(n, side) {
+                Some(s) => self.snap_want = Some((n, s, false)),
+                None => {
+                    // There already (or neither side any more).
+                    self.side_want = None;
+                    if keep {
+                        let v = self.looper.loop_status(n).map_or(0, |s| s.version);
+                        self.kept = Some((n, v));
+                    }
+                    return None;
+                }
+            }
+        }
+        let (n, s, anyway) = self.snap_want.take()?;
+        let others = (0..MAX_LOOPS)
+            .filter(|&k| k != n)
+            .filter_map(|k| self.looper.loop_status(k))
+            .any(|st| st.phase != Phase::Empty);
+        if others {
+            return Some(self.snap_refused(n, s, "another loop has sound"));
+        }
+        let p = match self.looper.snap_plan(n, s, time.next_frame()) {
+            Ok(p) => p,
+            Err(why) => return Some(self.snap_refused(n, s, why)),
+        };
+        let c = TimingChange {
+            at: p.at,
+            tempo: Some(p.bpm),
+            position: None,
+            play: false,
+            take: None,
+            made_against: time.timeline(),
+        };
+        match time.allowed(&c, audio) {
+            Allowed::Safe => {}
+            Allowed::Ask(_) if anyway => {}
+            Allowed::Ask(_) => {
+                self.snap_ask = Some((n, s));
+                self.side_want = None;
+                self.ab = None;
+                return Some((
+                    format!("looper: {}", ask_words(n, s, self.reads_again(s))),
+                    true,
+                ));
+            }
+            Allowed::Refused(why) => return Some(self.snap_refused(n, s, why)),
+        }
+        match time.timing_change(c) {
+            Ok(ticket) => {
+                self.snap_wait = Some((p, ticket));
+                None
+            }
+            Err(why) => Some(self.snap_refused(n, s, why)),
+        }
+    }
+
+    /// Snap `s` on loop `n` can't be made (`why`): counted; the line for
+    /// the log and the screen.
+    fn snap_refused(&mut self, n: usize, s: Snap, why: &str) -> (String, bool) {
+        self.snaps_refused += 1;
+        // A side asked for, and A/B, stop there.
+        self.side_want = None;
+        self.ab = None;
+        (
+            format!(
+                "looper: Loop {}: can't {}: {why}",
+                n + 1,
+                snap_verb(s, self.reads_again(s))
+            ),
+            true,
+        )
+    }
+
+    /// After the looper's period: what became of a snap given it
+    /// ([`Looper::take_snap`]): the line for the log, said on the screen
+    /// too ("snapped the end 48 ms earlier: 2 bars at 120.00 BPM"), and the tempo
+    /// the song now plays at, for the app's (it changed with the loop, or
+    /// already had when a loop changed first).
+    pub fn take_snap(&mut self) -> (Option<(String, bool)>, Option<f64>) {
+        let Some(SnapDone { plan: p, landed }) = self.looper.take_snap() else {
+            return (None, None);
+        };
+        let n = p.n + 1;
+        if !landed {
+            self.snaps_refused += 1;
+            return (
+                Some((
+                    format!(
+                        "looper: Loop {n}: {} didn't land: the loop changed (the tempo did)",
+                        snap_name(p.snap, self.reads_again(p.snap))
+                    ),
+                    true,
+                )),
+                Some(p.bpm),
+            );
+        }
+        let Some(s) = self.looper.loop_status(p.n) else {
+            return (None, Some(p.bpm));
+        };
+        // A/B: the other side on the next downbeat. Its swaps go in the
+        // log, not on the screen.
+        let swapping = self.ab == Some(p.n);
+        if swapping {
+            match self.side_of(p.n) {
+                Some(now) => self.side_want = Some((p.n, other_side(now), false)),
+                None => self.ab = None,
+            }
+        }
+        let bars = ticks_text(s.ticks, self.bar_ticks);
+        let moves = shift_text(p.by, self.rate);
+        // Landed: an Undo's step is the next Redo's now, and the other way.
+        let h = self.looper.history();
+        let read = |s: Option<&Step>| matches!(s, Some(Step::Bars(_)));
+        let what = match p.snap {
+            Snap::Found => format!("snapped {moves}"),
+            Snap::Tap => "back to your tap".to_string(),
+            Snap::Press => "back to your press".to_string(),
+            Snap::Bars(_) => "read again".to_string(),
+            Snap::Undo if read(h.redo().first()) => "Undo: read as before".to_string(),
+            Snap::Redo if read(h.done().last()) => "Redo: read again".to_string(),
+            Snap::Undo => format!("Undo: {moves}"),
+            Snap::Redo => format!("Redo: {moves}"),
+        };
+        (
+            Some((
+                format!(
+                    "looper: Loop {n}: {what}: {bars} at {:.2} BPM, from its downbeat",
+                    p.bpm
+                ),
+                !swapping,
+            )),
+            Some(p.bpm),
+        )
+    }
+
+    /// After the looper's period: what smart loop end made of a closing
+    /// tap ([`Looper::take_smart`]), once a pass. The line for the log
+    /// (with the best two ends, scored) and, when your tap stood, the
+    /// words for the screen.
+    pub fn take_smart(&mut self) -> Option<(String, Option<String>)> {
+        let note = self.looper.take_smart()?;
+        Some(smart_words(&note, self.smart, self.rate))
     }
 
     /// The song can't start at the tempo loop `n` set (`why`): counted;
@@ -3866,6 +4475,217 @@ pub fn overdubs_text(o: mpfree_looper::Overdubs) -> &'static str {
     }
 }
 
+/// The other side of smart loop end's choice.
+fn other_side(s: Side) -> Side {
+    match s {
+        Side::Tap => Side::Snap,
+        Side::Snap => Side::Tap,
+    }
+}
+
+/// The frames of a loop point window at `rate`.
+fn point_frames(rate: u32) -> usize {
+    (f64::from(rate) * POINT_MS / 1000.0).round() as usize
+}
+
+/// `audio`'s peaks in `out.len()` slices, each its loudest sample, 0 to
+/// 255 at full scale.
+fn peaks_into(audio: &[[f32; 2]], out: &mut [u8]) {
+    let n = out.len().max(1);
+    for (i, o) in out.iter_mut().enumerate() {
+        let (a, b) = (i * audio.len() / n, (i + 1) * audio.len() / n);
+        let peak = audio[a..b]
+            .iter()
+            .fold(0.0f32, |m, x| m.max(x[0].abs()).max(x[1].abs()));
+        *o = (peak.min(1.0) * 255.0).round() as u8;
+    }
+}
+
+/// A snap as the log names it; `read`: an Undo or Redo is of Read as.
+fn snap_name(s: Snap, read: bool) -> String {
+    match s {
+        Snap::Found => "Snap".to_string(),
+        Snap::Tap => "Use my tap".to_string(),
+        Snap::Press => "Use my press".to_string(),
+        Snap::Bars(b) => format!("Read as {}", bars_words_n(b)),
+        Snap::Undo if read => "Undo of Read as".to_string(),
+        Snap::Redo if read => "Redo of Read as".to_string(),
+        Snap::Undo => "Undo of the snap".to_string(),
+        Snap::Redo => "Redo of the snap".to_string(),
+    }
+}
+
+/// The question a snap over recorded audio asks, on the hint line while
+/// it waits ([`LoopHost::snap_asking`]): loop `n`, snap `s`, `read` as
+/// for [`snap_name`].
+pub fn ask_words(n: usize, s: Snap, read: bool) -> String {
+    let verb = snap_verb(s, read);
+    let mut c = verb.chars();
+    let verb = c
+        .next()
+        .map(|f| f.to_uppercase().chain(c).collect::<String>())
+        .unwrap_or_default();
+    format!(
+        "Loop {}: that changes the tempo under the audio tracks' recordings. {verb} anyway?",
+        n + 1
+    )
+}
+
+/// The hint line's button that answers yes to [`ask_words`]: Snap
+/// anyway for a snap, Do it anyway for the rest (Read as, an Undo or a
+/// Redo).
+pub fn ask_button(s: Snap) -> &'static str {
+    match s {
+        Snap::Found | Snap::Tap | Snap::Press => "Snap anyway",
+        Snap::Bars(_) | Snap::Undo | Snap::Redo => "Do it anyway",
+    }
+}
+
+/// A snap as "can't ..." says it; `read` as for [`snap_name`].
+fn snap_verb(s: Snap, read: bool) -> String {
+    match s {
+        Snap::Found => "snap".to_string(),
+        Snap::Tap => "go back to your tap".to_string(),
+        Snap::Press => "go back to your press".to_string(),
+        Snap::Bars(b) => format!("read it as {}", bars_words_n(b)),
+        Snap::Undo if read => "undo Read as".to_string(),
+        Snap::Redo if read => "redo Read as".to_string(),
+        Snap::Undo => "undo the snap".to_string(),
+        Snap::Redo => "redo the snap".to_string(),
+    }
+}
+
+/// Smart loop end's setting, as the log says it.
+pub fn smart_end_text(m: SmartEnd) -> &'static str {
+    match m {
+        SmartEnd::Off => "Off (the loop closes on your tap)",
+        SmartEnd::Suggest => "Suggest (it closes on your tap, then offers the end you played)",
+        SmartEnd::Auto => {
+            "Auto (it listens a moment past your tap, then closes on the end you played)"
+        }
+    }
+}
+
+/// `frames` at `rate` in whole milliseconds, without the sign.
+fn ms(frames: i64, rate: u32) -> f64 {
+    (frames.unsigned_abs() as f64 * 1000.0 / f64::from(rate.max(1))).round()
+}
+
+/// A snap's moves, for the log: "the start 80 ms later and the end 61 ms
+/// earlier".
+fn shift_text(by: Shift, rate: u32) -> String {
+    let way = |f: i64| if f < 0 { "earlier" } else { "later" };
+    let mut parts = Vec::new();
+    if by.start != 0 {
+        parts.push(format!(
+            "the start {:.0} ms {}",
+            ms(by.start, rate),
+            way(by.start)
+        ));
+    }
+    if by.end != 0 || by.start == 0 {
+        parts.push(format!(
+            "the end {:.0} ms {}",
+            ms(by.end, rate),
+            way(by.end)
+        ));
+    }
+    parts.join(" and ")
+}
+
+/// Your tap was late or early by a move of `by` frames (negative: the
+/// end found is earlier, so the tap was late).
+fn tap_off(by: i64, rate: u32) -> String {
+    format!(
+        "your tap was {:.0} ms {}",
+        ms(by, rate),
+        if by < 0 { "late" } else { "early" }
+    )
+}
+
+/// One scored end, for the log: where it is from the tap and its score.
+fn candidate_text(c: &Candidate, tap: u64, rate: u32) -> String {
+    let at = if c.end == tap {
+        "your tap".to_string()
+    } else {
+        let by = c.end as i64 - tap as i64;
+        format!(
+            "{:.0} ms {} your tap",
+            ms(by, rate),
+            if by < 0 { "before" } else { "after" }
+        )
+    };
+    format!(
+        "{at}, score {:.2} (onset {:.2}, rhythm {:.2}, context {:.2}, prior {:.2})",
+        c.score, c.onset, c.rhythm, c.context, c.prior
+    )
+}
+
+/// What smart loop end made of a closing tap ([`LoopHost::take_smart`]):
+/// the log line, with the best two ends scored, and when the tap stood,
+/// the words for the screen (every fallback is shown).
+fn smart_words(note: &SmartNote, mode: SmartEnd, rate: u32) -> (String, Option<String>) {
+    let n = note.n + 1;
+    // A smart start: Auto started the loop on your first hit, Suggest
+    // offers to.
+    let after = format!(
+        "on your first hit, {:.0} ms after REC",
+        ms(note.start, rate)
+    );
+    let (started, start_words) = match (note.start, mode) {
+        (0, _) => (String::new(), String::new()),
+        (_, SmartEnd::Auto) => (
+            format!(", and started it {after}"),
+            format!(" Started {after}."),
+        ),
+        _ => (
+            format!(", and offers to start it {after}"),
+            format!(" Snap starts it {after}."),
+        ),
+    };
+    let scored = match (note.best, note.second) {
+        (Some(b), Some(s)) => format!(
+            " (best: {}; next: {})",
+            candidate_text(&b, note.tap, rate),
+            candidate_text(&s, note.tap, rate)
+        ),
+        (Some(b), None) => format!(" (best: {})", candidate_text(&b, note.tap, rate)),
+        _ => String::new(),
+    };
+    match note.outcome {
+        SmartOutcome::Moved(by) => (
+            format!(
+                "looper: Loop {n}: {}; smart loop end closed it on the end you played{started}{scored}",
+                tap_off(by, rate)
+            ),
+            None,
+        ),
+        SmartOutcome::Offered(by) => (
+            format!(
+                "looper: Loop {n}: {}; smart loop end offers the end you played{started}{scored}",
+                tap_off(by, rate)
+            ),
+            None,
+        ),
+        SmartOutcome::Close(by) => (
+            format!(
+                "looper: Loop {n}: smart loop end found the end you played {:.0} ms from your \
+                 tap, too near to hear{started}{scored}",
+                ms(by, rate)
+            ),
+            (note.start != 0).then(|| start_words.trim_start().to_string()),
+        ),
+        SmartOutcome::Kept(why) => (
+            format!("looper: Loop {n}: smart loop end kept your tap: {why}{started}{scored}"),
+            Some(if why == mpfree_looper::OVERDUB_AT_ONCE {
+                format!("Kept your tap: {why}. Auto can fix this before it does.")
+            } else {
+                format!("Kept your tap: {why}.{start_words}")
+            }),
+        ),
+    }
+}
+
 /// A loop's length in bars of `bar` ticks, for the log.
 fn ticks_text(ticks: i64, bar: Tick) -> String {
     let bar = bar.max(1);
@@ -3991,7 +4811,7 @@ mod tests {
                 assert!(t.process(PERIOD as u32, &mut b));
                 let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
                 h.period(&b, &mut l, &mut r);
-                took = took.or(h.take_tempo());
+                took = took.or(h.take_tempo().map(|(n, r, at, _)| (n, r, at)));
             }
             took
         };
@@ -5840,5 +6660,30 @@ mod tests {
             p += 1;
         }
         assert_eq!(h.view(120.0).cell_waves[0], [0; CELL_WAVE]);
+    }
+
+    #[test]
+    fn the_log_says_what_the_beat_played_into_a_loop_said() {
+        let r = |bars, beat| Reading {
+            bars,
+            bpm: 100.0,
+            sure: Sure::Clear,
+            other: None,
+            said: None,
+            beat,
+        };
+        assert_eq!(reading_words(&r(1, None)), "1 bar at 100.00 BPM");
+        assert_eq!(
+            reading_words(&r(1, Some(0.9))),
+            "1 bar at 100.00 BPM, which the beat you played fits"
+        );
+        assert_eq!(
+            reading_words(&r(2, Some(0.3))),
+            "2 bars at 100.00 BPM, which the beat you played fits only loosely"
+        );
+        assert_eq!(
+            reading_words(&r(3, Some(0.9))),
+            "3 bars at 100.00 BPM, from the beat you played"
+        );
     }
 }

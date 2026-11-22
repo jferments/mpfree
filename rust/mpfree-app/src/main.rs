@@ -610,6 +610,18 @@ impl Out {
         }
     }
 
+    /// What smart loop end made of a closing tap
+    /// ([`looping::LoopHost::take_smart`]): the log, and the screen when
+    /// your tap stood.
+    fn smart_end(&mut self, said: Option<(String, Option<String>)>) {
+        if let Some((line, tell)) = said {
+            self.note(&line);
+            if let Some(words) = tell {
+                self.show(gui::ToUi::Tell(words));
+            }
+        }
+    }
+
     /// Something for the pad player's screen only (nothing printed).
     fn show(&mut self, msg: gui::ToUi) {
         if let Some(s) = self.sink.as_ref() {
@@ -2914,7 +2926,7 @@ fn pad_starts_loop(
         // starts the song (loop_sets_tempo).
         line.push_str(", free: REC again closes it and sets the tempo");
     } else if time.info().state == mpfree_transport::State::Stopped {
-        match start_song_on_note(time, at, None, take, exporting) {
+        match start_song_on_note(time, at, None, take, exporting, 0) {
             Ok(more) => {
                 line.push_str(", and the song with it");
                 if let Some(m) = more {
@@ -3048,7 +3060,7 @@ fn loop_starts_song(
 ) -> LoopStart {
     let n = looper.take_start()?;
     Some(
-        match start_song_on_note(time, time.next_frame(), None, take, exporting) {
+        match start_song_on_note(time, time.next_frame(), None, take, exporting, 0) {
             Ok(more) => (
                 format!(
                     "looper: Loop {} heard you: the song starts on your note{}",
@@ -3062,20 +3074,21 @@ fn loop_starts_song(
     )
 }
 
-/// The song starts on a note on frame `at` (at tempo `bpm`, if given),
-/// unless an export runs (the transport's own refusals:
-/// [`time::TimeHost::start_at`]).
+/// The song starts on a note on frame `at` (at tempo `bpm`, if given,
+/// `into` ticks into the bar it stopped in), unless an export runs (the
+/// transport's own refusals: [`time::TimeHost::start_at`]).
 fn start_song_on_note(
     time: &mut time::TimeHost,
     at: u64,
     bpm: Option<f64>,
     take: Option<bool>,
     exporting: bool,
+    into: mpfree_transport::time::Tick,
 ) -> Result<Option<String>, String> {
     if exporting {
         return Err("an export is running".to_string());
     }
-    time.start_at(at, bpm, take)
+    time.start_at(at, bpm, take, into)
 }
 
 /// Tempo from the first loop (the looper's options): whether the song can
@@ -3102,10 +3115,10 @@ fn loop_sets_tempo(
     take: Option<bool>,
     exporting: bool,
 ) -> (LoopStart, Option<f64>) {
-    let Some((n, r, at)) = looper.take_tempo() else {
+    let Some((n, r, at, into)) = looper.take_tempo() else {
         return (None, None);
     };
-    match start_song_on_note(time, at, Some(r.bpm), take, exporting) {
+    match start_song_on_note(time, at, Some(r.bpm), take, exporting, into) {
         Ok(more) => {
             // A close call, or a Length it couldn't keep: on the screen too.
             let note = looping::reading_note(&r);
@@ -6403,6 +6416,38 @@ fn looper_action(
             Vec::new()
         }
         looping::LoopAction::Capture => vec![app::Effect::Tell(looper.capture())],
+        // Smart loop end's chip, the loop point view and the hint line's
+        // question.
+        looping::LoopAction::Snap(s) => {
+            out.note(&looper.snap(s));
+            Vec::new()
+        }
+        looping::LoopAction::Side(side, keep) => {
+            out.note(&looper.side(side, keep));
+            Vec::new()
+        }
+        looping::LoopAction::Ab(on) => {
+            let line = looper.set_ab(on);
+            out.note(&line);
+            vec![app::Effect::Tell(line)]
+        }
+        looping::LoopAction::Answer(anyway) => {
+            let line = if anyway {
+                looper.snap_anyway()
+            } else {
+                looper.snap_not_now()
+            };
+            line.map(|l| {
+                out.note(&l);
+                app::Effect::Tell(l)
+            })
+            .into_iter()
+            .collect()
+        }
+        looping::LoopAction::PointView(open) => {
+            looper.set_point_open(open);
+            Vec::new()
+        }
         looping::LoopAction::CaptureSpan(end, bars) => {
             out.note(&looper.set_capture_span(end, bars));
             Vec::new()
@@ -11438,6 +11483,16 @@ fn player_session(
             export.running(),
         ));
         looper.set_tempo_meant(app.tempo_by_hand);
+        looper.set_smart_end(app.settings.smart_end);
+        // The period's notes, for smart loop end.
+        if let Some(at) =
+            time.take_notes(|frame, track, key, velocity| looper.note(frame, track, key, velocity))
+        {
+            looper.notes_lost(at);
+        }
+        // A snap: its tempo asked of the time engine, or, committed, the
+        // loop told to change on the same frame.
+        out.loop_start(looper.tend_snap(&mut time, tracks.host.tracks.has_regions()));
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);
         // A loop that heard the line input with the song stopped starts it.
         let take = app.rec.ready.map(|take| take == rec_arm::Take::Add);
@@ -11450,7 +11505,11 @@ fn player_session(
         // A free first loop closed: the song starts at its tempo.
         let (said, tempo) = loop_sets_tempo(&mut looper, &mut time, take, export.running());
         out.loop_start(said);
-        loop_tempo = tempo.or(loop_tempo);
+        out.smart_end(looper.take_smart());
+        // A snap landed: the song's tempo changed with the loop.
+        let (said, snapped) = looper.take_snap();
+        out.loop_start(said);
+        loop_tempo = tempo.or(snapped).or(loop_tempo);
         // The audio tracks record the same line input onto the Song view's
         // lanes, and each plays into its own mixer channel (song mode only).
         tracks.follow_latency(app.settings.loop_latency);
