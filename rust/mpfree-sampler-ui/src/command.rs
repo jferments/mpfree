@@ -14,9 +14,11 @@
 //! ([`crate::PlayAction`], [`crate::PadsAction`], [`crate::WaveAction`])
 //! apply through here too.
 //!
-//! The commands come in families, one pull request each: a pad's sound
-//! (this one), grains, slices and Put on, the recorder, kits and takes.
-//! Nothing here touches the screen or the audio thread.
+//! The commands came in families, one pull request each: a pad's sound,
+//! grains, slices and Put on, the recorder, and kits and takes (a take's
+//! edits, loading a pad, the scene strip). Undo and redo stay the kit's
+//! own (`Project::undo`). Nothing here touches the screen or the audio
+//! thread.
 
 use std::ops::Range;
 
@@ -168,6 +170,74 @@ pub enum Change {
     /// An auto-sampled instrument landed on the kit's pads from `to`, its
     /// keygroups playing notes. One undo step.
     AutoSampled { inst: Box<AutoSampled>, to: usize },
+    /// Layer `layer` of pad `pad` plays `sound`, a Process's new sound made
+    /// from its region (`warp::Process::sound`), `scale` of its frames to
+    /// each of the region's: its loop, fades and warp tempo moved to match,
+    /// one undo step with the sound's adding (`Project::use_processed`).
+    Processed {
+        pad: usize,
+        layer: usize,
+        sound: Recorded,
+        scale: f64,
+    },
+    /// One of a pad's own changes (its settings, a layer's region, gain or
+    /// grain start, its layers) made to take `take` on the Sample page
+    /// instead, as to a pad, the change's pad number unused: one undo
+    /// step, or part of its gesture's. Refused for any other change.
+    OnTake { take: usize, change: Box<Change> },
+    /// Take `take` named `name`, trimmed; it must keep a character.
+    NameTake { take: usize, name: String },
+    /// Take `take` put on pad `pad`, replacing what the pad had, and let go
+    /// from the page: one undo step (Send to pad).
+    PutTake { take: usize, pad: usize },
+    /// A pad read back from its files (a loaded sound with its sidecar) on
+    /// pad `pad`: `to`, with the sounds it plays and its chops on them, as
+    /// one undo step. Sounds the kit has already are used as they are.
+    LoadPad {
+        pad: usize,
+        sounds: Vec<Recorded>,
+        to: Box<Pad>,
+        chops: Vec<ChopSet>,
+    },
+    /// The kit's pads stored as scene A or B of the scene strip: saved with
+    /// the kit, no undo step (storing again replaces it).
+    SceneStore(SceneSlot),
+    /// Back to scene A: every pad that differs from it put back as one
+    /// undo step, those whose sounds are gone left as they are
+    /// ([`Made::put_back`]). Nothing stored, or nothing changed since,
+    /// changes nothing.
+    SceneReturn,
+}
+
+/// Scene A or B of the scene strip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SceneSlot {
+    A,
+    B,
+}
+
+impl SceneSlot {
+    /// Its place in `Project::scenes`.
+    pub fn index(self) -> usize {
+        match self {
+            SceneSlot::A => 0,
+            SceneSlot::B => 1,
+        }
+    }
+}
+
+/// What a change made that the kit doesn't show by itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Made {
+    /// The kit was already as the change asks: nothing changed and no undo
+    /// step was made (a take given the name it has, a return to scene A
+    /// with nothing changed since).
+    pub nothing: bool,
+    /// The take a recorded sound became, its place in `Project::takes`.
+    pub take: Option<usize>,
+    /// Back to scene A: the pads put back, and those left as they are
+    /// because their sounds are gone.
+    pub put_back: Option<(usize, usize)>,
 }
 
 /// A recorded sound, as a change carries it: two are the same change when
@@ -218,6 +288,9 @@ pub struct Lands {
     /// of its own (`Pad::replacing`), and an empty pad becomes a kit's new
     /// pad ([`kit_pad`]).
     pub flattened: bool,
+    /// The name its undo step goes by in the undo history
+    /// (`Project::tag_last`; a Recall's); 0, the usual.
+    pub tag: u8,
 }
 
 impl Lands {
@@ -368,51 +441,33 @@ impl Chop {
 
 impl Change {
     /// Makes the change in `p`: one undo step, or part of the step before
-    /// when `gesture` is that step's on the same pad. A change of the whole
-    /// kit is always a step of its own. Refused (nothing changed) when the
-    /// pad, layer or sound isn't there, or the result isn't a pad the model
-    /// takes.
+    /// when `gesture` is that step's on the same pad (or take). A change of
+    /// the whole kit is always a step of its own. Refused (nothing changed)
+    /// when the pad, take, layer or sound isn't there, or the result isn't
+    /// a pad the model takes.
     pub fn apply(&self, p: &mut Project, gesture: Option<u64>) -> Result<(), ModelError> {
+        self.make(p, gesture).map(|_| ())
+    }
+
+    /// [`Change::apply`], saying what it made that the kit doesn't show:
+    /// the take a recorded sound became, the pads a return to scene A put
+    /// back, or that nothing changed.
+    pub fn make(&self, p: &mut Project, gesture: Option<u64>) -> Result<Made, ModelError> {
+        let made = Made::default();
         match self {
-            Change::Pad { pad, to } => p.set_pad(*pad, to.as_deref().cloned(), gesture),
-            Change::Settings { pad, to } => {
+            Change::Pad { pad, to } => p.set_pad(*pad, to.as_deref().cloned(), gesture)?,
+            Change::Settings { pad, .. }
+            | Change::Own { pad, .. }
+            | Change::Turn { pad, .. }
+            | Change::Region { pad, .. }
+            | Change::Gain { pad, .. }
+            | Change::GrainStart { pad, .. }
+            | Change::AddLayer { pad, .. }
+            | Change::RemoveLayer { pad, .. }
+            | Change::LayerSound { pad, .. } => {
                 let now = p.pad(*pad).ok_or(ModelError::BadPad)?;
-                let next = with_regions_of(to, now)?;
-                p.set_pad(*pad, Some(next), gesture)
-            }
-            Change::Own { pad, field, value } => {
-                let (field, value) = (*field, *value);
-                p.edit_pad(*pad, gesture, move |pd| scene::set_own(pd, field, value))
-            }
-            Change::Turn {
-                pad,
-                knob,
-                detents,
-                fine,
-            } => {
-                let (knob, detents, fine) = (*knob, *detents, *fine);
-                p.edit_pad(*pad, gesture, move |pd| turned(pd, knob, detents, fine))
-            }
-            Change::Region { pad, layer, region } => {
-                let layer = has_layer(p, *pad, *layer)?;
-                let region = (**region).clone();
-                p.edit_pad(*pad, gesture, move |pd| pd.layers[layer].region = region)
-            }
-            Change::Gain { pad, layer, db } => {
-                let (layer, db) = (has_layer(p, *pad, *layer)?, *db);
-                p.edit_pad(*pad, gesture, move |pd| {
-                    pd.layers[layer].region.gain_db = db
-                })
-            }
-            Change::GrainStart { pad, layer, at } => {
-                let layer = has_layer(p, *pad, *layer)?;
-                if !(0.0..=1.0).contains(at) {
-                    return Err(ModelError::BadRegion("grain start"));
-                }
-                let at = *at;
-                p.edit_pad(*pad, gesture, move |pd| {
-                    pd.layers[layer].region.grain.position = at
-                })
+                let next = self.next_pad(p, now).unwrap_or(Err(ModelError::BadPad))?;
+                p.set_pad(*pad, Some(next), gesture)?;
             }
             Change::Name {
                 pad,
@@ -433,69 +488,174 @@ impl Change {
                 p.rename(
                     pad_name.as_deref().map(|n| (*pad, n)),
                     source.zip(sound_name.as_deref()),
-                )
+                )?;
             }
-            Change::AddLayer { pad, after } => {
-                let now = p.pad(*pad).ok_or(ModelError::BadPad)?;
-                if now.layers.len() >= MAX_LAYERS {
-                    return Err(ModelError::TooManyLayers);
-                }
-                let next = with_layer_added(now, *after).ok_or(ModelError::BadPad)?;
-                p.set_pad(*pad, Some(next), gesture)
+            Change::PadsPlay(play) => p.set_pads_play(*play)?,
+            Change::KeyFade(fade) => p.set_key_fade(*fade)?,
+            Change::MapToKeys { roots } => {
+                p.map_to_keys(roots)?;
             }
-            Change::RemoveLayer { pad, layer } => {
-                let now = p.pad(*pad).ok_or(ModelError::BadPad)?;
-                if now.layers.len() < 2 || *layer >= now.layers.len() {
-                    return Err(ModelError::BadPad);
-                }
-                let mut next = now.clone();
-                next.layers.remove(*layer);
-                p.set_pad(*pad, Some(next), gesture)
-            }
-            Change::LayerSound { pad, layer, source } => {
-                let frames = p.source(*source).ok_or(ModelError::UnknownSource)?.frames();
-                let mut next = p.pad(*pad).ok_or(ModelError::BadPad)?.clone();
-                let l = next.layers.get_mut(*layer).ok_or(ModelError::BadPad)?;
-                l.region = sound_region(Some(&l.region), *source, frames);
-                p.set_pad(*pad, Some(next), gesture)
-            }
-            Change::PadsPlay(play) => p.set_pads_play(*play),
-            Change::KeyFade(fade) => p.set_key_fade(*fade),
-            Change::MapToKeys { roots } => p.map_to_keys(roots).map(|_| ()),
             Change::Chop {
                 from: Chopped::Pad(pad),
                 chop,
             } => {
                 let made_from = p.pad(*pad).ok_or(ModelError::BadPad)?.clone();
-                chop.place(p, &made_from)
+                chop.place(p, &made_from)?;
             }
             Change::Chop {
                 from: Chopped::Take(i),
                 chop,
-            } => p.chop_take(*i, |p, take| chop.place(p, take)),
+            } => p.chop_take(*i, |p, take| chop.place(p, take))?,
             Change::KeepChop { source, mode, cuts } => {
                 let s = p.source(*source).ok_or(ModelError::UnknownSource)?;
                 let c = ChopSet::from_markers(KEPT_CHOP, s, *mode, cuts.iter().copied())?;
-                p.keep_chop(c)
+                p.keep_chop(c)?;
             }
-            Change::Keep {
+            Change::Keep { sound, onto, lands } => {
+                let take = match onto {
+                    Landing::Pad(pad) => {
+                        p.put_source_as(*pad, sound.0.clone(), |name, layer, old| {
+                            lands.pad(name, layer, old)
+                        })?;
+                        None
+                    }
+                    Landing::Take => Some(p.add_take_of(sound.0.clone(), |name, layer| {
+                        lands.pad(name, layer, None)
+                    })?),
+                };
+                if lands.tag != 0 {
+                    p.tag_last(lands.tag);
+                }
+                return Ok(Made { take, ..made });
+            }
+            Change::AutoSampled { inst, to } => inst.0.clone().put(p, *to)?,
+            Change::Processed {
+                pad,
+                layer,
                 sound,
-                onto: Landing::Pad(pad),
-                lands,
-            } => p
-                .put_source_as(*pad, sound.0.clone(), |name, layer, old| {
-                    lands.pad(name, layer, old)
-                })
-                .map(|_| ()),
-            Change::Keep {
-                sound,
-                onto: Landing::Take,
-                lands,
-            } => p
-                .add_take_of(sound.0.clone(), |name, layer| lands.pad(name, layer, None))
-                .map(|_| ()),
-            Change::AutoSampled { inst, to } => inst.0.clone().put(p, *to),
+                scale,
+            } => {
+                p.use_processed(*pad, *layer, sound.0.clone(), *scale)?;
+            }
+            Change::OnTake { take, change } => {
+                let now = p.take(*take).ok_or(ModelError::BadTake)?;
+                let next = change
+                    .next_pad(p, now)
+                    .unwrap_or(Err(ModelError::BadTake))?;
+                p.edit_take(*take, gesture, move |t| *t = next)?;
+            }
+            Change::NameTake { take, name } => {
+                let name = name.trim();
+                let now = p.take(*take).ok_or(ModelError::BadTake)?;
+                if name.is_empty() {
+                    return Err(ModelError::BadName);
+                }
+                if now.name == name {
+                    return Ok(Made {
+                        nothing: true,
+                        ..made
+                    });
+                }
+                p.edit_take(*take, None, |t| t.name = name.to_string())?;
+            }
+            Change::PutTake { take, pad } => p.put_take_on(*take, *pad)?,
+            Change::LoadPad {
+                pad,
+                sounds,
+                to,
+                chops,
+            } => {
+                let sounds = sounds.iter().map(|s| s.0.clone()).collect();
+                p.put_pad_with(*pad, sounds, (**to).clone(), chops.clone())?;
+            }
+            Change::SceneStore(slot) => p.scenes[slot.index()] = Some(scene::Scene::of(p)),
+            Change::SceneReturn => {
+                let Some(a) = p.scenes[0].clone() else {
+                    return Ok(Made {
+                        nothing: true,
+                        ..made
+                    });
+                };
+                let (n, left) = p.return_to(&a);
+                return Ok(Made {
+                    nothing: n == 0,
+                    put_back: Some((n, left)),
+                    ..made
+                });
+            }
         }
+        Ok(made)
+    }
+
+    /// For one of a pad's own changes, what `now` (a pad or take of `p`)
+    /// becomes; None for any other change.
+    fn next_pad(&self, p: &Project, now: &Pad) -> Option<Result<Pad, ModelError>> {
+        let layer = |l: usize| {
+            if l < now.layers.len() {
+                Ok(l)
+            } else {
+                Err(ModelError::BadPad)
+            }
+        };
+        let mut next = now.clone();
+        let made = match self {
+            Change::Settings { to, .. } => return Some(with_regions_of(to, now)),
+            Change::Own { field, value, .. } => {
+                scene::set_own(&mut next, *field, *value);
+                Ok(())
+            }
+            Change::Turn {
+                knob,
+                detents,
+                fine,
+                ..
+            } => {
+                turned(&mut next, *knob, *detents, *fine);
+                Ok(())
+            }
+            Change::Region {
+                layer: l, region, ..
+            } => layer(*l).map(|l| next.layers[l].region = (**region).clone()),
+            Change::Gain { layer: l, db, .. } => {
+                layer(*l).map(|l| next.layers[l].region.gain_db = *db)
+            }
+            Change::GrainStart { layer: l, at, .. } => layer(*l).and_then(|l| {
+                if (0.0..=1.0).contains(at) {
+                    next.layers[l].region.grain.position = *at;
+                    Ok(())
+                } else {
+                    Err(ModelError::BadRegion("grain start"))
+                }
+            }),
+            Change::AddLayer { after, .. } => {
+                if now.layers.len() >= MAX_LAYERS {
+                    return Some(Err(ModelError::TooManyLayers));
+                }
+                return Some(with_layer_added(now, *after).ok_or(ModelError::BadPad));
+            }
+            Change::RemoveLayer { layer: l, .. } => {
+                if now.layers.len() < 2 {
+                    Err(ModelError::BadPad)
+                } else {
+                    layer(*l).map(|l| {
+                        next.layers.remove(l);
+                    })
+                }
+            }
+            Change::LayerSound {
+                layer: l, source, ..
+            } => p
+                .source(*source)
+                .ok_or(ModelError::UnknownSource)
+                .and_then(|s| {
+                    let l = layer(*l)?;
+                    let r = &mut next.layers[l].region;
+                    *r = sound_region(Some(&*r), *source, s.frames());
+                    Ok(())
+                }),
+            _ => return None,
+        };
+        Some(made.map(|()| next))
     }
 
     /// The pad it changes, or None for a change of the whole kit (a chop
@@ -512,13 +672,20 @@ impl Change {
             | Change::GrainStart { pad, .. }
             | Change::AddLayer { pad, .. }
             | Change::RemoveLayer { pad, .. }
-            | Change::LayerSound { pad, .. } => Some(*pad),
+            | Change::LayerSound { pad, .. }
+            | Change::PutTake { pad, .. }
+            | Change::LoadPad { pad, .. }
+            | Change::Processed { pad, .. } => Some(*pad),
             Change::PadsPlay(_)
             | Change::KeyFade(_)
             | Change::MapToKeys { .. }
             | Change::Chop { .. }
             | Change::KeepChop { .. }
-            | Change::AutoSampled { .. } => None,
+            | Change::AutoSampled { .. }
+            | Change::OnTake { .. }
+            | Change::NameTake { .. }
+            | Change::SceneStore(_)
+            | Change::SceneReturn => None,
             Change::Keep { onto, .. } => match onto {
                 Landing::Pad(pad) => Some(*pad),
                 Landing::Take => None,
@@ -530,7 +697,12 @@ impl Change {
     /// the Play page's pad names show.
     pub fn renames(&self) -> bool {
         match self {
-            Change::Pad { .. } | Change::Chop { .. } | Change::AutoSampled { .. } => true,
+            Change::Pad { .. }
+            | Change::Chop { .. }
+            | Change::AutoSampled { .. }
+            | Change::PutTake { .. }
+            | Change::LoadPad { .. }
+            | Change::SceneReturn => true,
             Change::Keep { onto, .. } => matches!(onto, Landing::Pad(_)),
             Change::Name { pad_name, .. } => pad_name.is_some(),
             _ => false,
@@ -543,14 +715,6 @@ impl Change {
     /// to the audio thread again. A chop kept changes only what is saved.
     pub fn plays(&self) -> bool {
         !matches!(self, Change::KeepChop { .. })
-    }
-}
-
-/// `layer` if pad `pad` of `p` has it.
-fn has_layer(p: &Project, pad: usize, layer: usize) -> Result<usize, ModelError> {
-    match p.pad(pad) {
-        Some(pd) if layer < pd.layers.len() => Ok(layer),
-        _ => Err(ModelError::BadPad),
     }
 }
 
@@ -611,12 +775,23 @@ mod tests {
     }
 
     /// Whether a change was made.
-    type Made = Box<dyn Fn(&Project) -> bool>;
+    type Shows = Box<dyn Fn(&Project) -> bool>;
 
-    /// Whether two kits' pads and what they play are the same.
+    /// Whether two kits' pads, takes and what they play are the same.
     fn same(a: &Project, b: &Project) -> bool {
         (0..mpfree_sampler::model::PADS).all(|i| a.pad(i) == b.pad(i))
             && a.pads_play() == b.pads_play()
+            && a.takes() == b.takes()
+    }
+
+    /// `base` with a copy of its pad 0 kept as a take on the page, and no
+    /// undo history.
+    fn with_take(base: &Project) -> Project {
+        let mut p = base.clone();
+        let take = p.pad(0).cloned().expect("pad 0");
+        p.add_take(take).expect("a take");
+        p.clear_history();
+        p
     }
 
     fn steps(p: &mut Project) -> usize {
@@ -635,7 +810,7 @@ mod tests {
         quiet.level_db = -12.0;
         let mut short = pad0.layers[0].region.clone();
         short.end = 1000;
-        let cases: Vec<(Change, Made)> = vec![
+        let cases: Vec<(Change, Shows)> = vec![
             (
                 Change::Pad {
                     pad: 3,
@@ -1048,9 +1223,266 @@ mod tests {
             .apply(&mut t, None)
             .expect("a take");
         assert_eq!(t.takes().len(), 1);
-        assert!(same(&t, &base), "no pad changed");
+        assert!(
+            (0..mpfree_sampler::model::PADS).all(|i| t.pad(i) == base.pad(i)),
+            "no pad changed"
+        );
         assert!(keep(Landing::Pad(0), Lands::default()).renames());
         assert!(!keep(Landing::Take, Lands::default()).renames());
+        // A Recall's step goes by its name in the undo history.
+        let mut rc = base.clone();
+        let recall = Lands {
+            tag: 1,
+            ..Lands::default()
+        };
+        keep(Landing::Take, recall)
+            .apply(&mut rc, None)
+            .expect("recalled");
+        assert_eq!(rc.history().0.last().map(|i| i.tag), Some(1));
+        assert_eq!(steps(&mut rc.clone()), steps(&mut base.clone()) + 1);
+    }
+
+    #[test]
+    fn a_pads_own_change_made_to_a_take_changes_the_take_as_it_would_the_pad() {
+        let (base, _, other) = kit();
+        let t0 = with_take(&base);
+        let on_take = |change: Change| Change::OnTake {
+            take: 0,
+            change: Box::new(change),
+        };
+        let gain = |db| {
+            on_take(Change::Gain {
+                pad: 0,
+                layer: 1,
+                db,
+            })
+        };
+        // One turn on the take: one step, no pad touched.
+        let mut p = t0.clone();
+        gain(-3.0).apply(&mut p, Some(5)).expect("on the take");
+        gain(-6.0).apply(&mut p, Some(5)).expect("the same turn");
+        assert_eq!(p.take(0).unwrap().layers[1].region.gain_db, -6.0);
+        assert!(
+            (0..mpfree_sampler::model::PADS).all(|i| p.pad(i) == t0.pad(i)),
+            "no pad changed"
+        );
+        assert_eq!(steps(&mut p.clone()), 1, "one turn, one step");
+        assert!(p.undo());
+        assert!(same(&p, &t0), "undone");
+        // Each of a pad's own changes makes of the take what it makes of
+        // the pad the take was copied from.
+        let mut quiet = base.pad(0).unwrap().clone();
+        quiet.level_db = -12.0;
+        let mut short = quiet.layers[0].region.clone();
+        short.end = 1000;
+        let changes = [
+            Change::Settings {
+                pad: 0,
+                to: Box::new(quiet),
+            },
+            Change::Own {
+                pad: 0,
+                field: PadField::Pan,
+                value: 0.25,
+            },
+            Change::Turn {
+                pad: 0,
+                knob: PadKnob::Decay,
+                detents: -4,
+                fine: true,
+            },
+            Change::Region {
+                pad: 0,
+                layer: 1,
+                region: Box::new(short),
+            },
+            Change::GrainStart {
+                pad: 0,
+                layer: 0,
+                at: 0.5,
+            },
+            Change::AddLayer { pad: 0, after: 1 },
+            Change::RemoveLayer { pad: 0, layer: 0 },
+            Change::LayerSound {
+                pad: 0,
+                layer: 1,
+                source: other,
+            },
+        ];
+        for change in changes {
+            let (mut a, mut b) = (base.clone(), t0.clone());
+            change.apply(&mut a, None).expect("on the pad");
+            on_take(change.clone())
+                .apply(&mut b, None)
+                .unwrap_or_else(|e| panic!("{change:?} on the take: {e:?}"));
+            assert_eq!(b.take(0), a.pad(0), "{change:?}");
+            assert_eq!(b.pad(0), base.pad(0), "{change:?} left the pad");
+        }
+        // No take there, no such layer, or not a pad's own change: refused,
+        // nothing changed.
+        for change in [
+            Change::OnTake {
+                take: 3,
+                change: Box::new(Change::Gain {
+                    pad: 0,
+                    layer: 0,
+                    db: 1.0,
+                }),
+            },
+            on_take(Change::Gain {
+                pad: 0,
+                layer: 9,
+                db: 1.0,
+            }),
+            on_take(Change::PadsPlay(PadsPlay::Keys { from: 48 })),
+            on_take(Change::Pad { pad: 0, to: None }),
+        ] {
+            let mut p = t0.clone();
+            assert!(change.apply(&mut p, None).is_err(), "{change:?} refused");
+            assert!(same(&p, &t0) && steps(&mut p) == 0, "{change:?}");
+        }
+        assert_eq!((gain(1.0).pad(), gain(1.0).renames()), (None, false));
+    }
+
+    #[test]
+    fn a_take_is_named_and_sent_to_a_pad_one_step_each() {
+        let (base, ..) = kit();
+        let mut p = with_take(&base);
+        let name = |n: &str| Change::NameTake {
+            take: 0,
+            name: n.to_string(),
+        };
+        let made = name("  Vox ").make(&mut p, None).expect("named");
+        assert!(!made.nothing);
+        assert_eq!(p.take(0).unwrap().name, "Vox");
+        assert_eq!(steps(&mut p.clone()), 1);
+        // The name it has already: nothing changes, no step.
+        assert!(name("Vox").make(&mut p, None).expect("the same").nothing);
+        assert_eq!(steps(&mut p.clone()), 1);
+        assert!(matches!(
+            name("   ").apply(&mut p, None),
+            Err(ModelError::BadName)
+        ));
+        let none = Change::NameTake {
+            take: 4,
+            name: "X".into(),
+        };
+        assert!(matches!(none.apply(&mut p, None), Err(ModelError::BadTake)));
+        // Send to pad: on the pad, off the page, one step.
+        let put = Change::PutTake { take: 0, pad: 5 };
+        put.apply(&mut p, None).expect("on pad 6");
+        assert_eq!(p.pad(5).map(|pd| pd.name.as_str()), Some("Vox"));
+        assert!(p.takes().is_empty());
+        assert_eq!(steps(&mut p.clone()), 2);
+        assert!(p.undo());
+        assert_eq!((p.takes().len(), p.pad(5)), (1, None));
+        assert_eq!((put.pad(), put.renames()), (Some(5), true));
+        assert!(Change::PutTake {
+            take: 0,
+            pad: mpfree_sampler::model::PADS
+        }
+        .apply(&mut p, None)
+        .is_err());
+    }
+
+    #[test]
+    fn a_pad_loads_with_its_sounds_and_chops_as_one_step() {
+        let (base, ..) = kit();
+        let wave =
+            |n: usize, f: f32| -> Vec<f32> { (0..n).map(|i| (i as f32 * f).sin() * 0.4).collect() };
+        let s = Source::new("Loop", RATE, 1, wave(4800, 0.02)).expect("a sound");
+        let stray = Source::new("Stray", RATE, 1, wave(2400, 0.03)).expect("a sound");
+        let chop =
+            ChopSet::from_markers("Loop", &s, ChopMode::Manual, [1200, 2400]).expect("a chop");
+        let pad = kit_pad("Loop", Layer::new(Region::whole(&s)));
+        let load = |sounds: Vec<Source>, chops: Vec<ChopSet>| Change::LoadPad {
+            pad: 7,
+            sounds: sounds.into_iter().map(Recorded).collect(),
+            to: Box::new(pad.clone()),
+            chops,
+        };
+        let mut p = base.clone();
+        let before = steps(&mut p.clone());
+        let loaded = load(vec![s.clone()], vec![chop.clone()]);
+        loaded.apply(&mut p, None).expect("loaded");
+        assert_eq!(p.pad(7), Some(&pad));
+        assert!(p.source(s.id()).is_some());
+        assert_eq!(steps(&mut p.clone()), before + 1);
+        assert_eq!((loaded.pad(), loaded.renames()), (Some(7), true));
+        assert!(p.undo());
+        assert!(
+            same(&p, &base) && p.source(s.id()).is_none(),
+            "undone, sound and all"
+        );
+        // Without the sound it plays, or with a chop on a sound it doesn't
+        // bring: refused, and no sound is left behind.
+        let stray_chop =
+            ChopSet::from_markers("Stray", &stray, ChopMode::Manual, [1200]).expect("a chop");
+        for bad in [
+            load(vec![], vec![]),
+            load(vec![s.clone()], vec![stray_chop]),
+        ] {
+            let mut p = base.clone();
+            assert!(bad.apply(&mut p, None).is_err());
+            assert!(same(&p, &base) && p.source(s.id()).is_none());
+            assert_eq!(steps(&mut p), before);
+        }
+    }
+
+    #[test]
+    fn a_processed_sound_takes_its_layers_place_in_one_step() {
+        let (base, hit, _) = kit();
+        let data: Vec<f32> = (0..9600).map(|i| (i as f32 * 0.025).sin() * 0.5).collect();
+        let new = Source::new("Hit x2.00", RATE, 1, data).expect("the new sound");
+        let mut p = base.clone();
+        let before = steps(&mut p.clone());
+        let used = Change::Processed {
+            pad: 0,
+            layer: 1,
+            sound: Recorded(new.clone()),
+            scale: 2.0,
+        };
+        used.apply(&mut p, None).expect("used");
+        let pd = p.pad(0).unwrap();
+        assert_eq!(pd.layers[1].region.source, new.id());
+        assert_eq!(pd.layers[1].region.end, new.frames());
+        assert_eq!(pd.layers[0].region.source, hit, "the other layer as it was");
+        assert_eq!(steps(&mut p.clone()), before + 1);
+        assert!(p.undo());
+        assert!(same(&p, &base) && p.source(new.id()).is_none(), "undone");
+        assert_eq!((used.pad(), used.renames()), (Some(0), false));
+    }
+
+    #[test]
+    fn scene_a_comes_back_in_one_step_and_storing_is_no_step() {
+        let (base, ..) = kit();
+        let mut p = base.clone();
+        let before = steps(&mut p.clone());
+        let back = Change::SceneReturn
+            .make(&mut p, None)
+            .expect("nothing stored");
+        assert!(back.nothing && back.put_back.is_none());
+        Change::SceneStore(SceneSlot::A)
+            .apply(&mut p, None)
+            .expect("stored");
+        assert!(p.scenes[0].is_some() && p.scenes[1].is_none());
+        assert_eq!(steps(&mut p.clone()), before, "storing is no undo step");
+        let stored = p.clone();
+        Change::Own {
+            pad: 0,
+            field: PadField::Pan,
+            value: 0.5,
+        }
+        .apply(&mut p, None)
+        .expect("panned");
+        let back = Change::SceneReturn.make(&mut p, None).expect("back");
+        assert_eq!((back.nothing, back.put_back), (false, Some((1, 0))));
+        assert!(same(&p, &stored));
+        assert_eq!(steps(&mut p.clone()), before + 2);
+        let again = Change::SceneReturn.make(&mut p, None).expect("again");
+        assert_eq!((again.nothing, again.put_back), (true, Some((0, 0))));
+        assert_eq!(steps(&mut p.clone()), before + 2);
+        assert!(Change::SceneReturn.renames() && Change::SceneStore(SceneSlot::B).plays());
     }
 
     #[test]

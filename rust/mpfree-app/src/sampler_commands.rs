@@ -23,7 +23,7 @@ use std::ops::Range;
 
 use mpfree_sampler::engine::MAX_KITS;
 use mpfree_sampler::model::{ModelError, Project};
-pub use mpfree_sampler_ui::command::{Change, Chopped, Landing};
+pub use mpfree_sampler_ui::command::{Change, Chopped, Landing, SceneSlot};
 
 use crate::instrument_list::InstrumentId;
 
@@ -126,6 +126,13 @@ pub struct Done {
     pub pads: Option<Range<usize>>,
     /// The take a recorded sound became, kept on the Sample page.
     pub take: Option<usize>,
+    /// Something changed. False when the kit was already as the command
+    /// asked (a take given its own name, back to scene A with nothing
+    /// changed since): no undo step, nothing owed to the audio thread.
+    pub changed: bool,
+    /// Back to scene A: the pads put back, and those left as they are
+    /// because their sounds are gone.
+    pub put_back: Option<(usize, usize)>,
 }
 
 /// Runs `cmd` on `kits` (the list of kits): the kit its id names makes the
@@ -143,6 +150,8 @@ pub fn run(kits: &mut [Project], cmd: &Command) -> Result<Done, Refused> {
         renamed: cmd.change.renames(),
         pads,
         take: None,
+        changed: true,
+        put_back: None,
     };
     match (&cmd.change, onto) {
         (_, Some(to)) if to == kit => Err(Refused::OntoAnotherKit),
@@ -157,24 +166,21 @@ pub fn run(kits: &mut [Project], cmd: &Command) -> Result<Done, Refused> {
         }
         (_, Some(_)) => Err(Refused::OntoAnotherKit),
         (change, None) => {
-            change
-                .apply(&mut kits[kit], cmd.gesture)
+            let made = change
+                .make(&mut kits[kit], cmd.gesture)
                 .map_err(Refused::Model)?;
             let pads = match change {
                 Change::Chop { chop, .. } => Some(chop.pads()),
                 _ => None,
             };
-            let take = match change {
-                // A new take goes after the others.
-                Change::Keep {
-                    onto: Landing::Take,
-                    ..
-                } => kits[kit].takes().len().checked_sub(1),
-                _ => None,
-            };
+            let done = done(kit, pads);
             Ok(Done {
-                take,
-                ..done(kit, pads)
+                take: made.take,
+                put_back: made.put_back,
+                changed: !made.nothing,
+                plays: done.plays && !made.nothing,
+                renamed: done.renamed && !made.nothing,
+                ..done
             })
         }
     }
@@ -252,6 +258,8 @@ mod tests {
                 renamed: false,
                 pads: None,
                 take: None,
+                changed: true,
+                put_back: None,
             })
         );
         assert_eq!(k[1].pad(0).map(|p| p.level_db), Some(-6.0));
@@ -329,6 +337,48 @@ mod tests {
         let fade = Command::to_kit(0, Change::KeyFade(1)).onto(1);
         assert_eq!(run(&mut k, &fade), Err(Refused::OntoAnotherKit));
         assert_eq!(k[1].pad(0), before[1].pad(0));
+    }
+
+    #[test]
+    fn a_command_that_finds_its_kit_as_it_asks_changes_nothing_and_owes_nothing() {
+        let mut k = kits();
+        let store = Command::to_kit(1, Change::SceneStore(SceneSlot::A));
+        let done = run(&mut k, &store).expect("stored");
+        assert!(done.changed && done.plays, "saved with the kit, a new view");
+        let back = Command::to_kit(1, Change::SceneReturn);
+        let done = run(&mut k, &back).expect("back to A");
+        assert_eq!(
+            (done.changed, done.plays, done.renamed, done.put_back),
+            (false, false, false, Some((0, 0))),
+            "nothing changed since A"
+        );
+        let pan = Command::to_kit(
+            1,
+            Change::Own {
+                pad: 0,
+                field: PadField::Pan,
+                value: 0.5,
+            },
+        );
+        run(&mut k, &pan).expect("panned");
+        let done = run(&mut k, &back).expect("back to A");
+        assert_eq!(
+            (done.changed, done.plays, done.renamed, done.put_back),
+            (true, true, true, Some((1, 0)))
+        );
+        // A take's edit goes to the take of the kit the id names.
+        let take = k[2].pad(0).cloned().expect("pad 0");
+        k[2].add_take(take).expect("a take");
+        let named = Command::to_kit(
+            2,
+            Change::NameTake {
+                take: 0,
+                name: "Vox".to_string(),
+            },
+        );
+        assert!(run(&mut k, &named).expect("named").changed);
+        assert_eq!(k[2].take(0).map(|t| t.name.as_str()), Some("Vox"));
+        assert!(!run(&mut k, &named).expect("the same name").changed);
     }
 
     #[test]
