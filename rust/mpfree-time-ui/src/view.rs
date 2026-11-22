@@ -816,6 +816,35 @@ pub struct EditInfo {
     pub track_name: String,
     /// A bar, in the clip's ticks.
     pub bar: Tick,
+    /// What became of the editor's last touch (piano roll plan 0C.2).
+    pub answer: EditAnswer,
+}
+
+/// What became of the note editor's last touch, in the copy of the clip
+/// the screen reads (piano roll plan 0C.2), so a roll showing an edit
+/// before it goes in knows when it did and where its notes landed, or
+/// why it didn't.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EditAnswer {
+    /// Which touch: the editor's touches counted by the time engine from
+    /// its start, so a new number is a new answer (0: none yet).
+    pub n: u64,
+    /// The clip's revision the touch was carried out on.
+    pub from: u64,
+    pub outcome: EditOutcome,
+}
+
+/// See [`EditAnswer`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum EditOutcome {
+    /// The clip was left as it was: a pick, a tool, a scroll, a setting.
+    #[default]
+    Unchanged,
+    /// The edit went in: the clip is at revision `rev` and the notes it
+    /// made are at `landed`, which are the picks after it.
+    Taken { rev: u64, landed: Vec<usize> },
+    /// Refused or taken back, and why.
+    Refused(String),
 }
 
 /// A placement as the screens show it.
@@ -4790,6 +4819,7 @@ mod tests {
             rev: 0,
             track_name: "Drums".into(),
             bar: BAR,
+            answer: EditAnswer::default(),
         };
         let g = note_grid(&e, &state());
         assert_eq!(g.touch, [point(0, 90), point(40, 30)]);
@@ -4816,6 +4846,7 @@ mod tests {
             rev: 1,
             track_name: "Drums".into(),
             bar: BAR,
+            answer: EditAnswer::default(),
         }));
         page.update(&mut ui, &st);
         let e = st.edit.clone().unwrap();

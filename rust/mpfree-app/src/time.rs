@@ -8287,6 +8287,63 @@ mod tests {
         assert!(Arc::ptr_eq(&d.clip, &info(&mut h).clip));
     }
 
+    /// Piano roll plan 0C.2: the copy of the clip the screen reads carries
+    /// the answer to the editor's last touch, numbered: taken with the new
+    /// revision and where its notes landed, refused with why, or nothing
+    /// changed.
+    #[test]
+    fn the_note_editors_copy_answers_each_touch() {
+        use mpfree_time_ui::editor::EditAction as E;
+        use mpfree_time_ui::view::EditOutcome as O;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        for step in [0, 4, 8] {
+            h.step_action(StepAction::Tap {
+                pad: 0,
+                step,
+                velocity: 100,
+            })
+            .unwrap();
+        }
+        let answer = |h: &mut TimeHost| {
+            h.take_changed();
+            h.state().edit.unwrap().answer
+        };
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        let a = answer(&mut h);
+        assert_eq!((a.n, a.outcome), (1, O::Unchanged));
+        let rev = h.state().edit.unwrap().rev;
+        // A pick: nothing changed.
+        h.act(TimeAction::Edit(E::Note { index: 1, rev })).unwrap();
+        assert_eq!(answer(&mut h).outcome, O::Unchanged);
+        // A move: taken, at a new revision, the note where it landed.
+        h.act(TimeAction::Edit(E::Drop {
+            ticks: 240,
+            notes: 2,
+        }))
+        .unwrap();
+        let a = answer(&mut h);
+        let st = h.state().edit.unwrap();
+        assert_eq!(a.n, 3);
+        assert_eq!(a.from, rev);
+        let O::Taken { rev: now, landed } = a.outcome else {
+            panic!("{a:?}")
+        };
+        assert_eq!(now, st.rev);
+        assert!(now > rev);
+        assert_eq!(landed.len(), 1);
+        let n = st.clip.notes[landed[0]];
+        assert_eq!((n.tick, n.note), (4 * STEP_TICKS + 240, 2));
+        // A tap on the old picture: refused, and why.
+        h.act(TimeAction::Edit(E::Note { index: 0, rev }))
+            .unwrap_err();
+        let a = answer(&mut h);
+        assert_eq!(a.n, 4);
+        assert!(
+            matches!(&a.outcome, O::Refused(why) if why.contains("the clip changed")),
+            "{a:?}"
+        );
+    }
+
     /// An editor edit that what plays can't follow (the play view would not
     /// build) is taken back from the clip and the takes, as a step edit is.
     #[test]
