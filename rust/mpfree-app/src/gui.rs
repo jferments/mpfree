@@ -11132,6 +11132,21 @@ impl Player {
                     Tone::Warn,
                 ));
             }
+            let jobs = self.sample.jobs_counts();
+            if jobs.refused > 0 {
+                memory.push((
+                    "Sampler: work refused for want of memory".to_string(),
+                    format!("{}×", jobs.refused),
+                    Tone::Warn,
+                ));
+            }
+            if jobs.spawn_failed > 0 {
+                memory.push((
+                    "Sampler: background workers that couldn't start".to_string(),
+                    format!("{}×", jobs.spawn_failed),
+                    Tone::Warn,
+                ));
+            }
             DebugPages::set_engines(&mut self.ui, &snap, memory, rows);
         }
     }

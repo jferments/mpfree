@@ -11513,6 +11513,8 @@ fn main() {
         Path::new(REPORT_DIR).join("report.txt"),
         Path::new(REPORT_DIR).join(crash::RUNNING),
     );
+    // The sampler's job service, before anything asks it for work.
+    mpfree_sampler::jobs::configure(sample_page::jobs_config());
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = parse_args(&args).and_then(read_script).and_then(|o| {
         // Both draw every sample screen, whose one frame needs more stack

@@ -81,6 +81,7 @@ use mpfree_play::mpfree_param::{OnTrack, RelAddr};
 use mpfree_sampler::autosample::{Finished, Gear, Job, Plan, PlanError};
 use mpfree_sampler::engine::{EngineView, PadField};
 use mpfree_sampler::export;
+use mpfree_sampler::jobs::{Config as JobsConfig, Jobs};
 use mpfree_sampler::keymap::{self, RootFrom};
 use mpfree_sampler::model::{
     self as model, ChannelPick, ChopSet, Fade, Layer, Levels, LoopMode, ModelError, Pad, PadsPlay,
@@ -746,6 +747,9 @@ pub struct SamplePage {
     /// off the screen thread the first time a pad using the source is
     /// shown ([`crate::views`]).
     sources: crate::views::Views,
+    /// The job service the views (and, step by step, the rest of the
+    /// sampler's heavy work) run on ([`mpfree_sampler::jobs`]).
+    jobs: Jobs,
     kit: usize,
     pad: usize,
     tab: Option<WaveTab>,
@@ -923,6 +927,8 @@ pub struct SamplePage {
     /// every frame of it on the screen (a fallback: counted, logged and
     /// shown).
     normalize_fallbacks: u32,
+    /// The job service's workers that couldn't start, as last logged.
+    spawn_failed_told: u64,
     /// The take recording as the wave draws it (one-page step 2f, part 3),
     /// and the time to its next redraw.
     drawn: Option<mpfree_sampler_ui::live_take::LiveTake>,
@@ -1029,18 +1035,42 @@ pub struct KitPads {
     pub tags: Vec<Option<&'static str>>,
 }
 
+/// The config of the sampler's job service ([`mpfree_sampler::jobs`]): its
+/// workers off the sound's cores at background priority, and every job
+/// checked against the memory floor. `main` gives it to the process's
+/// service at the start.
+pub fn jobs_config() -> JobsConfig {
+    JobsConfig {
+        sound_workers: 1,
+        file_workers: 1,
+        on_start: || {
+            let _ = crate::cores::background();
+        },
+        free: crate::memory::free_bytes,
+        room: crate::memory::room_in,
+    }
+}
+
 impl SamplePage {
     /// Adds the page for a pad without a sound to `ui` (the Wave tab's page
     /// is added with the first sound shown).
     pub fn add(ui: &mut Ui) -> Result<SamplePage, String> {
         ui.add(EMPTY, Card::new("Sample"));
         ui.add_page(EMPTY_PAGE, EMPTY_LAYOUT)?;
+        // The sampler's one job service (plan phase 2 step 7), configured
+        // at the program's start ([`jobs_config`]). A test's page has one
+        // of its own, so one test holding it holds no other.
+        #[cfg(not(test))]
+        let jobs = Jobs::shared();
+        #[cfg(test)]
+        let jobs = Jobs::new(jobs_config());
         let mut p = SamplePage {
             projects: Vec::new(),
             names: Vec::new(),
             factory: None,
             rate: 44_100,
-            sources: crate::views::Views::new(),
+            sources: crate::views::Views::new(jobs.clone()),
+            jobs,
             kit: 0,
             pad: 0,
             tab: None,
@@ -1113,6 +1143,7 @@ impl SamplePage {
             seat_fallbacks: 0,
             levelings: Vec::new(),
             normalize_fallbacks: 0,
+            spawn_failed_told: 0,
             drawn: None,
             drawn_in: 0.0,
             recall: None,
@@ -4544,6 +4575,11 @@ impl SamplePage {
         }
     }
 
+    /// What the sampler's job service has done: for Dev > Debug.
+    pub fn jobs_counts(&self) -> mpfree_sampler::jobs::Counts {
+        self.jobs.counts()
+    }
+
     /// Times Normalize read every frame of a long region on the screen
     /// for want of its sound's summary.
     pub fn normalize_fallbacks(&self) -> u32 {
@@ -6757,6 +6793,14 @@ impl SamplePage {
             } else {
                 self.stale = true;
             }
+        }
+        self.lines.extend(self.sources.take_lines());
+        let failed = self.jobs.counts().spawn_failed;
+        if failed > self.spawn_failed_told {
+            self.spawn_failed_told = failed;
+            self.lines.push(format!(
+                "sample: a background worker couldn't start ({failed}× so far); the waveforms wait for it, tried again with the next one"
+            ));
         }
         if !self.seats.is_empty() {
             self.seat_later(ui);

@@ -1,6 +1,7 @@
 //! The Sample tab's views of its sounds ([`SourceView`]: peaks, mono mix,
-//! hits, tempo and root note), worked out on a thread of their own so a
-//! long sound never holds up the screen.
+//! hits, tempo and root note), worked out on the sampler's job service
+//! ([`mpfree_sampler::jobs`], its sound lane) so a long sound never holds
+//! up the screen.
 //!
 //! A sound shown for the first time gets a flat line of its length at
 //! once, then its peaks (about a seventh of the work), then the rest; each
@@ -10,13 +11,22 @@
 //! loaded again, is never analysed twice while it stays loaded.
 //!
 //! A sound's pitch over time (for the Slice tool's Pitch method) is followed
-//! only when asked for ([`Views::follow_pitch`]), on the same worker, and
+//! only when asked for ([`Views::follow_pitch`]), on the same lane, and
 //! lands in the sound's view the same way.
+//!
+//! Each job says the memory it holds: a view, its mono mix twice over for
+//! a moment and its peaks; a pitch, its sound brought down to 8 kHz. One
+//! the floor can't spare is refused: the sound keeps its flat line, the
+//! log says why once, and it is asked for again every [`RETRY`] while it
+//! is loaded. Nothing is ever worked out on the screen instead, not even
+//! when the service's workers can't start: the jobs wait for them.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use mpfree_sampler::jobs::{Job, Jobs, Key, Lane, Order};
 use mpfree_sampler::model::{Source, SourceId};
 use mpfree_sampler_ui::source::{PitchTrack, PyramidPeaks, SourceView};
 
@@ -30,40 +40,48 @@ pub enum Summary {
     None,
 }
 
-/// What the worker does for a sound.
-enum Job {
-    /// Its view: the peaks, then the rest.
-    View(Source),
-    /// Its pitch over time, in its view's mono mix at its rate.
-    Pitch(Arc<SourceView>, u32),
+/// A view's jobs on the service.
+const VIEW: &str = "view";
+/// A pitch's jobs on the service.
+const PITCH: &str = "pitch";
+
+/// How long a sound refused for memory waits before it is asked for again.
+pub const RETRY: Duration = Duration::from_secs(5);
+
+/// Memory a job holds beyond what is worked out from the sound's length.
+const SLACK: u64 = 1_000_000;
+
+/// What working out a sound's view holds, in bytes: its mono mix as floats
+/// twice over (made, then moved into the view), and its peaks (three
+/// 16-bit numbers a channel every 64 frames, and the coarser levels).
+pub fn view_need(frames: u64, channels: u8) -> u64 {
+    frames
+        .saturating_mul(8)
+        .saturating_add(frames.saturating_mul(u64::from(channels)) / 8)
+        .saturating_add(SLACK)
 }
 
-impl Job {
-    fn id(&self) -> SourceId {
-        match self {
-            Job::View(s) => s.id(),
-            Job::Pitch(v, _) => v.id,
-        }
-    }
+/// What following a sound's pitch holds: its mono mix brought down to about
+/// 8 kHz, as floats.
+pub fn pitch_need(frames: u64) -> u64 {
+    frames.saturating_add(SLACK)
 }
 
-/// What the worker sends back.
+fn view_key(id: SourceId) -> Key {
+    Key::new(VIEW, id.0)
+}
+
+fn pitch_key(id: SourceId) -> Key {
+    Key::new(PITCH, id.0)
+}
+
+/// What a job sends back.
 enum Done {
     View(Arc<SourceView>),
     Pitch(SourceId, Option<Arc<PitchTrack>>),
+    /// Refused for memory: why, in a musician's words, and the sound's name.
+    Refused(SourceId, String, String),
 }
-
-/// The sounds waiting for the worker, the first next.
-#[derive(Default)]
-struct Queue {
-    jobs: VecDeque<Job>,
-    stop: bool,
-    /// The worker takes no job while set: tests hold it to see the page
-    /// before a view comes ([`Views::hold`]).
-    held: bool,
-}
-
-type Shared = Arc<(Mutex<Queue>, Condvar)>;
 
 /// Boxed, so the page (and every `Player` the screen tests build in one
 /// debug-build stack frame) stays as small as with the plain map before.
@@ -73,36 +91,39 @@ pub struct Inner {
     made: HashMap<SourceId, Arc<SourceView>>,
     /// Sounds whose pitch is asked for and not yet followed.
     pitch_asked: HashSet<SourceId>,
-    queue: Shared,
+    /// Sounds whose view was refused for memory, and when to ask again.
+    refused: HashMap<SourceId, Instant>,
+    /// Sounds whose refusal is logged already: logged once each.
+    told: HashSet<SourceId>,
+    /// The sounds themselves, to ask for them again.
+    waiting: HashMap<SourceId, Source>,
+    jobs: Jobs,
+    tx: Sender<Done>,
     rx: Receiver<Done>,
-    /// False when the worker couldn't start: views are then worked out
-    /// in [`Views::get`], as before.
-    worker: bool,
     /// A view came from a cache file since the last [`Views::take_done`].
     fresh: bool,
+    /// Log lines for the page to write ([`Views::take_lines`]).
+    lines: Vec<String>,
+    /// How long a refused sound waits ([`RETRY`]; tests shorten it).
+    retry: Duration,
 }
 
 impl Views {
-    /// Starts the worker (`mpfree-analyse`), off the sound's cores and at
-    /// the background priority the loaders use.
-    pub fn new() -> Views {
-        let queue: Shared = Arc::default();
+    /// Views worked out on `jobs`, the page's job service.
+    pub fn new(jobs: Jobs) -> Views {
         let (tx, rx) = mpsc::channel();
-        let q = queue.clone();
-        let worker = std::thread::Builder::new()
-            .name("mpfree-analyse".into())
-            .spawn(move || {
-                let _ = crate::cores::background(); // off the sound's cores and priority
-                work(&q, &tx);
-            })
-            .is_ok();
         Views(Box::new(Inner {
             made: HashMap::new(),
             pitch_asked: HashSet::new(),
-            queue,
+            refused: HashMap::new(),
+            told: HashSet::new(),
+            waiting: HashMap::new(),
+            jobs,
+            tx,
             rx,
-            worker,
             fresh: false,
+            lines: Vec::new(),
+            retry: RETRY,
         }))
     }
 }
@@ -125,14 +146,10 @@ impl Inner {
     /// and the rest asked for, ahead of anything else waiting.
     pub fn get(&mut self, s: &Source) -> Arc<SourceView> {
         if let Some(v) = self.made.get(&s.id()) {
+            let v = v.clone();
             if !v.ready {
                 self.ask(s);
             }
-            return v.clone();
-        }
-        if !self.worker {
-            let v = Arc::new(SourceView::analyse(s));
-            self.made.insert(s.id(), v.clone());
             return v;
         }
         let v = Arc::new(SourceView::pending(s));
@@ -143,13 +160,16 @@ impl Inner {
 
     /// The whole view of `s` now, worked out here if the worker hasn't
     /// finished it: for a step that needs the result at once (Map to keys
-    /// needs the note heard).
+    /// needs the note heard). The last analysis on the screen: plan step 7
+    /// moves Map to keys onto the service, to wait instead.
     pub fn full(&mut self, s: &Source) -> Arc<SourceView> {
         match self.made.get(&s.id()) {
             Some(v) if v.ready => v.clone(),
             _ => {
                 let v = Arc::new(SourceView::analyse(s));
                 self.made.insert(s.id(), v.clone());
+                self.settled(s.id());
+                self.jobs.cancel(view_key(s.id()));
                 v
             }
         }
@@ -163,11 +183,8 @@ impl Inner {
         if !v.ready || self.made.get(&v.id).is_some_and(|old| old.ready) {
             return;
         }
-        let (lock, _) = &*self.queue;
-        if let Ok(mut q) = lock.lock() {
-            q.jobs
-                .retain(|j| !matches!(j, Job::View(s) if s.id() == v.id));
-        }
+        self.settled(v.id);
+        self.jobs.cancel(view_key(v.id));
         self.made.insert(v.id, v);
         self.fresh = true;
     }
@@ -192,7 +209,7 @@ impl Inner {
         self.made.get(&id).filter(|v| v.ready).cloned()
     }
 
-    /// Follows the pitch of `s` (rate and mono mix) on the worker, once,
+    /// Follows the pitch of `s` (rate and mono mix) on the service, once,
     /// for the Slice tool's Pitch method: the view with it lands on a later
     /// [`Views::take_done`]. Nothing while the sound has no mono mix yet
     /// (asked again when it has), or once it is followed or asked for.
@@ -203,30 +220,24 @@ impl Inner {
         if v.pitch.is_some() || v.mono.is_empty() || self.pitch_asked.contains(&s.id()) {
             return;
         }
-        if !self.worker {
-            if let Some(t) = v.follow_pitch(s.rate()) {
-                self.made.insert(s.id(), Arc::new(v.with_pitch(t)));
-                self.fresh = true;
-            }
-            return;
-        }
-        let (lock, cv) = &*self.queue;
-        let Ok(mut q) = lock.lock() else {
-            return;
-        };
         self.pitch_asked.insert(s.id());
+        let (id, rate, name) = (s.id(), s.rate(), s.name.clone());
+        let (tx, why) = (self.tx.clone(), self.tx.clone());
         // After the sound's own view, if that is waiting: else first.
-        let at = q
-            .jobs
-            .iter()
-            .position(|j| matches!(j, Job::View(w) if w.id() == s.id()))
-            .map_or(0, |i| i + 1);
-        q.jobs.insert(at, Job::Pitch(v, s.rate()));
-        cv.notify_one();
+        self.jobs.submit(
+            Job::new(Lane::Sound, pitch_key(id), move |_| {
+                let _ = tx.send(Done::Pitch(id, v.follow_pitch(rate)));
+            })
+            .order(Order::After(view_key(id)))
+            .needs(pitch_need(s.frames()), move |w| {
+                let _ = why.send(Done::Refused(id, w, format!("{name}'s pitch")));
+            }),
+        );
     }
 
-    /// Takes in what the worker finished since the last call. True when a
-    /// view changed, for the page to show it.
+    /// Takes in what the jobs finished since the last call, and asks again
+    /// for sounds refused for memory a while ago. True when a view changed,
+    /// for the page to show it.
     pub fn take_done(&mut self) -> bool {
         let mut changed = std::mem::take(&mut self.fresh);
         while let Ok(d) = self.rx.try_recv() {
@@ -237,10 +248,15 @@ impl Inner {
                     // pitch followed meanwhile stays with it.
                     if let Some(old) = self.made.get_mut(&v.id) {
                         if !old.ready {
+                            let ready = v.ready;
                             *old = match (&old.pitch, &v.pitch) {
                                 (Some(p), None) => Arc::new(v.with_pitch(p.clone())),
                                 _ => v,
                             };
+                            if ready {
+                                let id = old.id;
+                                self.settled(id);
+                            }
                             changed = true;
                         }
                     }
@@ -254,9 +270,16 @@ impl Inner {
                         }
                     }
                 }
+                Done::Refused(id, why, what) => self.refused_for(id, &why, &what),
             }
         }
+        self.ask_again();
         changed
+    }
+
+    /// The log lines since the last call, for the page to write.
+    pub fn take_lines(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.lines)
     }
 
     /// Forgets the views of sounds not in `keep`, and stops waiting for
@@ -264,99 +287,128 @@ impl Inner {
     pub fn keep_only(&mut self, keep: &HashSet<SourceId>) {
         self.made.retain(|id, _| keep.contains(id));
         self.pitch_asked.retain(|id| keep.contains(id));
-        let (lock, _) = &*self.queue;
-        if let Ok(mut q) = lock.lock() {
-            q.jobs.retain(|j| keep.contains(&j.id()));
-        }
+        self.refused.retain(|id, _| keep.contains(id));
+        self.told.retain(|id| keep.contains(id));
+        self.waiting.retain(|id, _| keep.contains(id));
+        self.jobs
+            .retain(|k| (k.kind != VIEW && k.kind != PITCH) || keep.contains(&SourceId(k.id)));
     }
 
-    /// Holds the worker (`true`) before its next job, or lets it go on.
+    /// Holds the service's workers (`true`) before their next job, or lets
+    /// them go on.
     #[cfg(test)]
     pub fn hold(&self, held: bool) {
-        let (lock, cv) = &*self.queue;
-        if let Ok(mut q) = lock.lock() {
-            q.held = held;
-        }
-        cv.notify_one();
+        self.jobs.hold(held);
     }
 
-    /// Whether any view asked for (or pitch) is still being worked out.
+    /// Whether any view asked for (or pitch) is still being worked out: a
+    /// sound refused for memory isn't, until it is asked for again.
     #[allow(dead_code)] // the tests wait on it
     pub fn busy(&self) -> bool {
-        self.made.values().any(|v| !v.ready) || !self.pitch_asked.is_empty()
+        self.made
+            .values()
+            .any(|v| !v.ready && !self.refused.contains_key(&v.id))
+            || !self.pitch_asked.is_empty()
     }
 
-    /// Puts `s` first in the worker's queue (once).
-    fn ask(&self, s: &Source) {
-        let (lock, cv) = &*self.queue;
-        let Ok(mut q) = lock.lock() else {
+    /// How many sounds wait for memory to work out their view.
+    #[cfg(test)]
+    pub fn refused_now(&self) -> usize {
+        self.refused.len()
+    }
+
+    /// Shortens [`RETRY`], for a test.
+    #[cfg(test)]
+    pub fn set_retry(&mut self, d: Duration) {
+        self.retry = d;
+    }
+
+    /// Puts `s` first on the service (once): a job already waiting moves to
+    /// the front, and one running is left to finish. A sound refused for
+    /// memory waits for its turn to be asked again.
+    fn ask(&mut self, s: &Source) {
+        if self.refused.contains_key(&s.id()) {
             return;
-        };
-        if let Some(i) = q
-            .jobs
-            .iter()
-            .position(|j| matches!(j, Job::View(w) if w.id() == s.id()))
-        {
-            if i == 0 {
-                return;
-            }
-            q.jobs.remove(i);
         }
-        q.jobs.push_front(Job::View(s.clone()));
-        cv.notify_one();
+        self.waiting.insert(s.id(), s.clone());
+        if self.jobs.promote(view_key(s.id())) {
+            return;
+        }
+        let (tx, why) = (self.tx.clone(), self.tx.clone());
+        let (id, name) = (s.id(), s.name.clone());
+        let sound = s.clone();
+        self.jobs.submit(
+            Job::new(Lane::Sound, view_key(id), move |run| {
+                let quick = Arc::new(SourceView::quick(&sound));
+                if tx.send(Done::View(quick.clone())).is_err() || run.cancelled() {
+                    return;
+                }
+                let _ = tx.send(Done::View(Arc::new(quick.finish(&sound))));
+            })
+            .order(Order::First)
+            .needs(view_need(s.frames(), s.channels()), move |w| {
+                let _ = why.send(Done::Refused(id, w, format!("{name}'s waveform")));
+            }),
+        );
+    }
+
+    /// A refusal from the service: logged the first time for the sound,
+    /// then asked for again after [`RETRY`] while it is loaded.
+    fn refused_for(&mut self, id: SourceId, why: &str, what: &str) {
+        if what.ends_with("'s pitch") {
+            self.pitch_asked.remove(&id);
+            self.lines.push(format!(
+                "sample: {what} not followed: {why}; asked for again when the Slice tool next needs it"
+            ));
+            return;
+        }
+        if !self.made.contains_key(&id) {
+            return;
+        }
+        self.refused.insert(id, Instant::now() + self.retry);
+        if self.told.insert(id) {
+            self.lines.push(format!(
+                "sample: {what} waits: {why}; asked for again every {} s while it is loaded",
+                self.retry.as_secs().max(1)
+            ));
+        }
+    }
+
+    /// Asks again for each refused sound whose wait is over.
+    fn ask_again(&mut self) {
+        if self.refused.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let due: Vec<SourceId> = self
+            .refused
+            .iter()
+            .filter(|(_, at)| **at <= now)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in due {
+            // Not logged again if the service refuses it once more: the
+            // wait starts over then.
+            self.refused.remove(&id);
+            if let Some(s) = self.waiting.get(&id).cloned() {
+                self.ask(&s);
+            }
+        }
+    }
+
+    /// The sound's view is worked out: it waits for nothing more.
+    fn settled(&mut self, id: SourceId) {
+        self.refused.remove(&id);
+        self.told.remove(&id);
+        self.waiting.remove(&id);
     }
 }
 
 impl Drop for Inner {
-    /// The worker stops after the sound it is on.
+    /// The views' jobs still waiting are dropped, and the one running is
+    /// told to stop.
     fn drop(&mut self) {
-        let (lock, cv) = &*self.queue;
-        if let Ok(mut q) = lock.lock() {
-            q.stop = true;
-            q.jobs.clear();
-        }
-        cv.notify_all();
-    }
-}
-
-/// The worker: each sound's peaks, then the rest, sent as each is done;
-/// or a sound's pitch.
-fn work(queue: &Shared, tx: &Sender<Done>) {
-    let (lock, cv) = &**queue;
-    loop {
-        let job = {
-            let Ok(mut q) = lock.lock() else { return };
-            loop {
-                if q.stop {
-                    return;
-                }
-                if !q.held {
-                    if let Some(j) = q.jobs.pop_front() {
-                        break j;
-                    }
-                }
-                q = match cv.wait(q) {
-                    Ok(q) => q,
-                    Err(_) => return,
-                };
-            }
-        };
-        let s = match job {
-            Job::View(s) => s,
-            Job::Pitch(v, rate) => {
-                if tx.send(Done::Pitch(v.id, v.follow_pitch(rate))).is_err() {
-                    return;
-                }
-                continue;
-            }
-        };
-        let quick = Arc::new(SourceView::quick(&s));
-        if tx.send(Done::View(quick.clone())).is_err() {
-            return;
-        }
-        if tx.send(Done::View(Arc::new(quick.finish(&s)))).is_err() {
-            return;
-        }
+        self.jobs.retain(|k| k.kind != VIEW && k.kind != PITCH);
     }
 }
 
@@ -378,6 +430,10 @@ mod tests {
         Source::new(name, 44_100, 2, data).unwrap()
     }
 
+    fn views() -> Views {
+        Views::new(Jobs::new(mpfree_sampler::jobs::Config::default()))
+    }
+
     fn settle(v: &mut Views) {
         let end = Instant::now() + Duration::from_secs(20);
         while v.busy() {
@@ -390,7 +446,7 @@ mod tests {
     #[test]
     fn a_sound_shows_a_flat_line_at_once_then_its_peaks_then_the_rest() {
         let s = clicks("Break", 8, 0.8);
-        let mut v = Views::new();
+        let mut v = views();
         let first = v.get(&s);
         assert!(!first.ready);
         assert_eq!(first.peaks.frames(), s.frames());
@@ -429,7 +485,7 @@ mod tests {
         };
         let data: Vec<f32> = tone(220.0, 44_100).chain(tone(440.0, 44_100)).collect();
         let s = Source::new("Line", 44_100, 1, data).unwrap();
-        let mut v = Views::new();
+        let mut v = views();
         // Asked before the view is made, nothing is queued.
         v.follow_pitch(&s);
         assert!(!v.busy());
@@ -459,7 +515,7 @@ mod tests {
 
     #[test]
     fn the_sound_shown_last_is_worked_out_first() {
-        let mut v = Views::new();
+        let mut v = views();
         let long: Vec<Source> = (0..4)
             .map(|i| clicks(&format!("Long {i}"), 20, 0.5 + 0.1 * i as f32))
             .collect();
@@ -468,14 +524,15 @@ mod tests {
         }
         let short = clicks("Hit", 1, 0.9);
         v.get(&short);
+        // Watched without asking again (which would move it first anyway).
         let end = Instant::now() + Duration::from_secs(20);
-        while !v.get(&short).ready {
+        while v.ready(short.id()).is_none() {
             assert!(Instant::now() < end);
             std::thread::sleep(Duration::from_millis(1));
             v.take_done();
         }
         // At most the long sound the worker was already on came first.
-        let ready = long.iter().filter(|s| v.get(s).ready).count();
+        let ready = long.iter().filter(|s| v.ready(s.id()).is_some()).count();
         assert!(ready <= 1, "{ready} long sounds before the one shown");
         settle(&mut v);
     }
@@ -483,7 +540,7 @@ mod tests {
     #[test]
     fn sounds_no_longer_loaded_are_forgotten() {
         let (a, b) = (clicks("A", 1, 0.7), clicks("B", 1, 0.6));
-        let mut v = Views::new();
+        let mut v = views();
         v.get(&a);
         v.get(&b);
         settle(&mut v);
@@ -501,7 +558,7 @@ mod tests {
     fn a_view_from_a_cache_file_is_ready_at_once_and_never_worked_out_again() {
         let s = clicks("Loop", 4, 0.8);
         let bytes = SourceView::analyse(&s).to_cache().unwrap();
-        let mut v = Views::new();
+        let mut v = views();
         // Shown first (the worker is asked), then its cache comes in.
         assert!(!v.get(&s).ready);
         let cached = Arc::new(SourceView::from_cache(&s, &bytes).unwrap());
@@ -530,7 +587,7 @@ mod tests {
     #[test]
     fn the_whole_view_can_be_had_at_once() {
         let s = clicks("Keys", 2, 0.8);
-        let mut v = Views::new();
+        let mut v = views();
         let whole = v.full(&s);
         assert!(whole.ready);
         assert!(Arc::ptr_eq(&whole, &v.get(&s)));
@@ -538,5 +595,130 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         v.take_done();
         assert!(Arc::ptr_eq(&whole, &v.get(&s)));
+    }
+
+    /// Memory just short: a job that needs more than a megabyte is refused.
+    fn short_service() -> Jobs {
+        Jobs::new(mpfree_sampler::jobs::Config {
+            free: || Some(257_000_000),
+            room: crate::memory::room_in,
+            ..mpfree_sampler::jobs::Config::default()
+        })
+    }
+
+    #[test]
+    fn a_view_the_floor_cant_spare_keeps_its_flat_line_says_why_once_and_is_asked_again() {
+        // 257 MB free, 256 MB kept spare: a 2-second take's view needs
+        // about 1.7 MB.
+        let s = clicks("Take", 2, 0.8);
+        let jobs = short_service();
+        let mut v = Views::new(jobs.clone());
+        v.set_retry(Duration::from_millis(20));
+        assert!(!v.get(&s).ready);
+        let end = Instant::now() + Duration::from_secs(20);
+        while v.refused_now() == 0 {
+            assert!(Instant::now() < end, "never refused");
+            std::thread::sleep(Duration::from_millis(1));
+            v.take_done();
+        }
+        let lines = v.take_lines();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].starts_with("sample: Take's waveform waits: not enough memory: needs about"),
+            "{}",
+            lines[0]
+        );
+        assert!(!v.busy(), "a refused sound isn't being worked out");
+        assert!(matches!(v.summary(s.id()), Summary::Pending));
+        assert!(!v.get(&s).ready, "asked again only after the wait");
+        // After the wait it is asked again, refused again, and not logged
+        // again; nothing is ever worked out on the screen.
+        let end = Instant::now() + Duration::from_secs(20);
+        while jobs.counts().refused < 3 {
+            assert!(Instant::now() < end, "never asked again");
+            std::thread::sleep(Duration::from_millis(5));
+            v.take_done();
+        }
+        assert!(v.take_lines().is_empty());
+        assert!(!v.get(&s).ready);
+        assert_eq!(jobs.counts().done, 0);
+        // Once gone from the kits, it isn't asked for any more.
+        v.keep_only(&HashSet::new());
+        assert_eq!(v.refused_now(), 0);
+    }
+
+    /// Whether [`free_then_more`] says memory is short.
+    static SHORT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+    fn free_then_more() -> Option<u64> {
+        Some(if SHORT.load(std::sync::atomic::Ordering::Relaxed) {
+            100_000_000
+        } else {
+            4_000_000_000
+        })
+    }
+
+    #[test]
+    fn a_refused_view_comes_once_memory_is_free_again() {
+        let s = clicks("Loop", 2, 0.8);
+        let jobs = Jobs::new(mpfree_sampler::jobs::Config {
+            free: free_then_more,
+            room: crate::memory::room_in,
+            ..mpfree_sampler::jobs::Config::default()
+        });
+        let mut v = Views::new(jobs.clone());
+        v.set_retry(Duration::from_millis(10));
+        v.get(&s);
+        let end = Instant::now() + Duration::from_secs(20);
+        while v.refused_now() == 0 {
+            assert!(Instant::now() < end);
+            std::thread::sleep(Duration::from_millis(1));
+            v.take_done();
+        }
+        SHORT.store(false, std::sync::atomic::Ordering::Relaxed);
+        let end = Instant::now() + Duration::from_secs(20);
+        while !v.get(&s).ready {
+            assert!(Instant::now() < end, "never worked out");
+            std::thread::sleep(Duration::from_millis(2));
+            v.take_done();
+        }
+        assert_eq!(v.refused_now(), 0);
+        assert_eq!(v.take_lines().len(), 1, "the one refusal, logged once");
+        let whole = SourceView::analyse(&s);
+        assert_eq!(v.get(&s).tempo, whole.tempo);
+    }
+
+    #[test]
+    fn a_views_need_is_its_mono_mix_twice_and_its_peaks() {
+        // 25 minutes of stereo at 44.1 kHz: 529 MB of floats twice, 16.5 MB
+        // of peaks.
+        let frames = 66_150_000;
+        assert_eq!(view_need(frames, 2), 529_200_000 + 16_537_500 + SLACK);
+        assert_eq!(view_need(frames, 1), 529_200_000 + 8_268_750 + SLACK);
+        assert_eq!(pitch_need(frames), 66_150_000 + SLACK);
+    }
+
+    #[test]
+    fn views_are_worked_out_on_the_services_sound_lane() {
+        let jobs = Jobs::new(mpfree_sampler::jobs::Config::default());
+        let mut v = Views::new(jobs.clone());
+        jobs.hold(true);
+        let s = clicks("Hit", 1, 0.9);
+        v.get(&s);
+        assert!(jobs.has(Key::new(VIEW, s.id().0)));
+        // Shown again: still one job.
+        v.get(&s);
+        assert_eq!(jobs.waiting(), 1);
+        jobs.hold(false);
+        settle(&mut v);
+        assert!(v.get(&s).ready);
+        assert_eq!(jobs.counts().done, 1);
+        // The views go: their jobs go with them.
+        let t = clicks("Other", 1, 0.5);
+        jobs.hold(true);
+        v.get(&t);
+        drop(v);
+        assert!(!jobs.has(Key::new(VIEW, t.id().0)));
+        jobs.hold(false);
     }
 }
