@@ -25,7 +25,7 @@ The Notes view has the Arrange tab's transport bar along the top (**Stop**, **Pl
 
 ## The piano roll
 
-The notes are bars on a piano roll: higher notes higher up, time running left to right, longer notes longer. A drum clip shows its 16 pads instead of keys. Under the roll, a lane shows how hard each note plays, or how likely it is to play, or how many times it repeats (see [The lane under the roll](#the-lane-under-the-roll)). A note played with [pad pressure](clips.md#pad-pressure) shows it as a lighter shape along its bottom: it rises where you pressed harder and falls where you let up.
+The notes are bars on a piano roll: higher notes higher up, time running left to right, longer notes longer. A drum clip shows its 16 pads instead of keys; a clip of notes on a synth track shows the keys even while it is empty. Under the roll, a lane shows how hard each note plays, or how likely it is to play, or how many times it repeats (see [The lane under the roll](#the-lane-under-the-roll)). A note played with [pad pressure](clips.md#pad-pressure) shows it as a lighter shape along its bottom: it rises where you pressed harder and falls where you let up.
 
 Notes are drawn as they will play. A note whose step is off (tapped off on Steps) is only an outline: it keeps its place and settings and plays nothing. A note that repeats (a ratchet) shows each hit, lighter or darker as its velocity ramps, and each hit shows in the velocity lane too. A tied note has a short level mark just before it, and a sliding note a short slanting one.
 
@@ -62,7 +62,7 @@ Draw with one finger along the lane: every bar you pass takes the height under y
 
 ### Change notes with the Q-Links
 
-While notes are picked, the four Q-Links change them, and the Q-Link column says so: its top reads **Note edit** with how many notes are picked, and its four cards, in the same colour, show what each knob changes and the value now, or the range across the picked notes ("80–104").
+While notes are picked, the four Q-Links change them, and the Q-Link column says so: its top reads **Note edit** with how many notes are picked (and the chord they make, see [Chords](#chords)), and its four cards, in the same colour, show what each knob changes and the value now, or the range across the picked notes ("80–104").
 
 - **Q1 Position** moves the picked notes a snap each step of the knob. With **Auto** snap each note keeps its feel; with a fixed snap they land on lines. Hold **SHIFT** to move them 4 ticks a step, off the grid.
 - **Q2 Length** makes them a snap longer or shorter each step; with **SHIFT**, 4 ticks.
@@ -124,6 +124,26 @@ Each clip can have a scale of its own, so a melody stays in key while you move a
 
 Where rows are folded away, a bold line between the rows shows the gap. A row with a picked note always shows, so you never lose sight of what you are editing. When Fold hides notes (notes off the scale, with **Scale rows**), a chip says how many ("2 notes hidden"); tap it to show every row again. The roll keeps each clip's Fold.
 
+### Chords
+
+With the **Chord** chip on, a note you draw puts in a whole chord, built up from the row you touch.
+
+{{shot: sequencer-notes-chords | The Chord menu open over the roll on Seventh, with Major lit; a chord is picked and the Q-Link column names it: "4 notes · G#".}}
+
+- **Pick a shape.** Tap the **Chord** chip, left of **Scale** ("Chord: Off" to begin with), for the Chord menu: **Off**, **Triad**, **Seventh**, **Sus2**, **Sus4**, **Power** (the root and the fifth), **Octave**, and **Pads** while the pads have a scale. A shape closes the menu; tap anywhere else to close it without changing anything.
+- **In key.** With a [scale](#scale) on the clip, a Triad or a Seventh takes the scale's own notes, as the Chord pads do: in C major, a D gives D F A (D minor) and a G gives G B D F (G7). With no scale, the menu also has **Major** and **Minor**, and the Triad and the Seventh follow them (the chip says "Chord: Minor triad"). Sus2, Sus4, Power and Octave are the same shape in any key.
+- **Pads** puts in the triad the Chord pads play: in the scale the track's pads use on the Synth tab, starting from the scale note nearest the row you touch.
+- **Draw.** With **Draw** on, tap an empty spot for a chord one snap long, or drag along a row for a chord as long as your drag; with Draw off, tap twice. While you drag, the whole chord shows where it will go. The chord's notes are picked afterwards, so the Q-Links, a drag or **Delete** act on the whole chord, and one **UNDO** takes it all back. Each note is its own note: a tap with Draw on takes just that one out.
+- **Its name.** When the picked notes make a chord, the top of the Q-Link column names it after the count ("3 notes · Dm7", or "C/E" when the lowest note isn't the root).
+- **It plays whole.** A chord you draw plays all together or not at all, like a chord pad's: with a chance or a condition, the whole chord rolls once. Drawn on a step that has a chord already, it is a chord of its own there.
+- A clip of pad hits takes no chords: it has no Chord chip.
+
+**Strum**, **Invert** and **Spread** are the last rows of the Edit options. Each changes every chord among the picked notes (notes that sound together) at once, and a run of turns is one take, so one **UNDO** takes it all back:
+
+- **Strum** starts each note of a chord a little after the one under it, about 5 ms more at 120 BPM for each turn to the right, as a strummed guitar does. Turn it left to strum down: the highest note goes first. Each note keeps its end. The value shows the gap between the notes ("↑ 20t", "↓ 20t", "none") in ticks. A strummed chord's notes start apart, so each then rolls its own chance.
+- **Invert** takes a chord's lowest note up an octave for each turn to the right, or its highest note down an octave to the left. The value names the first chord ("C/E").
+- **Spread** takes the note above a chord's lowest up an octave for each turn to the right, for an open chord (C E G becomes C G E). Turn it left to close it again: the highest note comes down an octave while it stays above the lowest. The value says "open" or "close". Spread needs chords of three notes or more.
+
 Every edit is a take, so **UNDO** takes it back and **SHIFT + UNDO** puts it back again.
 
 If the clip changes while you edit, because you're recording into it, pressed **UNDO**, or tapped a step on Steps, your picked notes stay picked wherever they now sit. If a picked note was taken out, the picks are let go and the line over the roll says "the clip changed: picks cleared". A tap on a note that landed just as the clip changed does nothing, so it never hits the wrong note: tap again. If an edit can't be played (rare), it is taken back and the log says so. Tap **‹ Steps**, or press **STEP SEQ**, to close the editor and see the clip as steps again. The editor stays open while you visit other tabs, and the Sequencer tab shows it again when you come back.
@@ -152,7 +172,7 @@ Timing Correct pulls notes toward the beat, so a part played a little loose sits
 - **Strength**: how far of the way each note moves. At 100 % it lands on the line. Lower values keep some of the feel.
 - **Shift**: moves the corrected notes a little early or late afterwards.
 
-The next rows act on the picked notes straight away: **Nudge** moves them a step, **Transpose** a semitone, **Velocity** up or down, **Length** longer or shorter, **Chance** 5 % at a time, **Condition** through the trig conditions (Always, 1:2 to 8:8, then FILL, !FILL, PRE, !PRE, NEI, !NEI, 1ST and !1ST), and **Ratchet** from 1 to 8 hits. A run of turns on the same row is one take, so one **UNDO** takes it all back. **Fit to scale**, after the Euclidean fill's rows, moves notes onto the clip's scale (see [Scale](#scale)).
+The next rows act on the picked notes straight away: **Nudge** moves them a step, **Transpose** a semitone, **Velocity** up or down, **Length** longer or shorter, **Chance** 5 % at a time, **Condition** through the trig conditions (Always, 1:2 to 8:8, then FILL, !FILL, PRE, !PRE, NEI, !NEI, 1ST and !1ST), and **Ratchet** from 1 to 8 hits. A run of turns on the same row is one take, so one **UNDO** takes it all back. **Fit to scale**, after the Euclidean fill's rows, moves notes onto the clip's scale (see [Scale](#scale)), and **Strum**, **Invert** and **Spread** change the picked chords (see [Chords](#chords)).
 
 ## Euclidean fill
 

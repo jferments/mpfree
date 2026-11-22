@@ -62,6 +62,14 @@
 //! onto it ([`pitch_quantize`]). Only the notes going up count (the ones
 //! the roll lights), and a note off the scale stays where it is until it
 //! is moved: its first step goes to the scale note beside it.
+//!
+//! **Chords** (piano roll plan 2B.2): a chord drawn goes in whole
+//! ([`add_all`]). Strum, Invert and Spread work on the picked notes'
+//! chords ([`chords_of`]: notes that sound together), so a run of chords
+//! changes chord by chord: [`strum`] starts each note of a chord a little
+//! after the one under it (or over it), [`invert`] takes the lowest note
+//! up an octave (or the highest down), and [`spread`] opens a chord by
+//! taking the note over its lowest up an octave.
 
 use crate::inst::Inst;
 use crate::steps::{moves_edit, Edit};
@@ -1349,6 +1357,189 @@ pub fn fit_to_scale(clip: &Clip, sel: &[usize], k: Scale) -> Edit {
     pitch_quantize(clip, sel, k.root, k.mask, 0, 127)
 }
 
+/// Notes put in together, as a chord drawn on the roll is (plan 2B.2):
+/// none of them when one can't go in, or the clip would hold more than
+/// [`MAX_NOTES`]. In a clip of notes, the notes that start on one tick
+/// roll as one (a trigger group, [`crate::groups`]): they take a joined
+/// number, a free one where the tick has it already, so a drawn chord
+/// plays whole or not at all and never joins a chord there; none go in
+/// when the tick has no number left.
+pub fn add_all(clip: &Clip, notes: &[Note]) -> Edit {
+    let mut c = Clip::new("", clip.length);
+    if clip.notes.len() + notes.len() > MAX_NOTES || notes.iter().any(|&n| c.add_note(n).is_err()) {
+        return Edit::default();
+    }
+    let mut add = notes.to_vec();
+    let mut on_tick: HashMap<Tick, usize> = HashMap::new();
+    for n in &add {
+        *on_tick.entry(n.tick).or_default() += 1;
+    }
+    for n in add.iter_mut() {
+        n.group = if on_tick[&n.tick] > 1 {
+            *crate::groups::JOINED_GROUPS.start()
+        } else {
+            0
+        };
+    }
+    if crate::groups::settle_new(clip, &[], &mut add, false).is_err() {
+        return Edit::default();
+    }
+    Edit {
+        add,
+        ..Edit::default()
+    }
+}
+
+/// The `sel` notes in chords (plan 2B.2): the notes that sound together,
+/// each chord lowest first, the chords in time. Taken by their starts, a
+/// note joins a chord while it starts before the chord's first note ends,
+/// so a strummed chord stays one, and a chord starting as the last one
+/// ends is the next.
+pub fn chords_of(clip: &Clip, sel: &[usize]) -> Vec<Vec<usize>> {
+    let mut by_start: Vec<(usize, Note)> = picked(clip, sel).collect();
+    by_start.sort_by_key(|&(i, n)| (n.tick, n.note, i));
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    let mut end = Tick::MIN;
+    for (i, n) in by_start {
+        match out.last_mut() {
+            Some(chord) if n.tick < end => chord.push(i),
+            _ => {
+                end = n.tick + n.len;
+                out.push(vec![i]);
+            }
+        }
+    }
+    for chord in &mut out {
+        chord.sort_by_key(|&i| (clip.notes[i].note, clip.notes[i].tick, i));
+    }
+    out
+}
+
+/// How far apart a chord's notes start (plan 2B.2): the ticks from its
+/// lowest note's start to its highest's, over the steps between them;
+/// below 0 when the chord strums down. `chord` is lowest first, as
+/// [`chords_of`] gives it.
+pub fn strum_of(clip: &Clip, chord: &[usize]) -> Tick {
+    match (chord.first(), chord.last()) {
+        (Some(&lo), Some(&hi)) if chord.len() > 1 => {
+            (clip.notes[hi].tick - clip.notes[lo].tick) / (chord.len() as Tick - 1)
+        }
+        _ => 0,
+    }
+}
+
+/// Each chord of the `sel` notes strummed `by` ticks more (plan 2B.2):
+/// the chord's gap ([`strum_of`]) grows by `by`, and each note starts its
+/// place in the chord (lowest first, or highest first when the gap is
+/// below 0) times the gap after the chord's first start, its end staying,
+/// so a chord strummed back to 0 is as it was. Refused whole when a note
+/// would not keep a tick of length.
+pub fn strum(clip: &Clip, sel: &[usize], by: Tick) -> Edit {
+    let mut pairs = Vec::new();
+    for chord in chords_of(clip, sel) {
+        let n = chord.len() as Tick;
+        if n < 2 {
+            continue;
+        }
+        let base = chord.iter().map(|&i| clip.notes[i].tick).min().unwrap_or(0);
+        let gap = strum_of(clip, &chord) + by;
+        for (r, &i) in chord.iter().enumerate() {
+            let r = r as Tick;
+            let old = clip.notes[i];
+            let at = base
+                + if gap >= 0 {
+                    r * gap
+                } else {
+                    (n - 1 - r) * -gap
+                };
+            let end = old.tick + old.len;
+            if at >= end || at >= clip.length {
+                return Edit::default();
+            }
+            pairs.push((
+                old,
+                Note {
+                    tick: at,
+                    len: end - at,
+                    ..old
+                },
+            ));
+        }
+    }
+    replace(clip, pairs)
+}
+
+/// The most times a turn inverts or spreads a chord.
+const MAX_TIMES: u32 = 16;
+
+/// Each chord of two or more `sel` notes with its pitches changed by
+/// `step` `times` over, refused whole when a note would leave 0..=127.
+fn revoice(
+    clip: &Clip,
+    sel: &[usize],
+    least: usize,
+    times: u32,
+    step: impl Fn(&mut [(i32, usize)]),
+) -> Edit {
+    let mut pairs = Vec::new();
+    for chord in chords_of(clip, sel) {
+        if chord.len() < least {
+            continue;
+        }
+        let mut pitch: Vec<(i32, usize)> = chord
+            .iter()
+            .map(|&i| (i32::from(clip.notes[i].note), i))
+            .collect();
+        for _ in 0..times.min(MAX_TIMES) {
+            pitch.sort_unstable();
+            step(&mut pitch);
+        }
+        for (p, i) in pitch {
+            if !(0..=127).contains(&p) {
+                return Edit::default();
+            }
+            let old = clip.notes[i];
+            pairs.push((
+                old,
+                Note {
+                    note: p as u8,
+                    ..old
+                },
+            ));
+        }
+    }
+    replace(clip, pairs)
+}
+
+/// Each chord of the `sel` notes inverted `times` (plan 2B.2): its lowest
+/// note up an octave each time, or, with `times` below 0, its highest
+/// down one. A note alone stays; refused whole when a note would leave
+/// 0..=127.
+pub fn invert(clip: &Clip, sel: &[usize], times: i32) -> Edit {
+    revoice(clip, sel, 2, times.unsigned_abs(), |p| {
+        let k = if times > 0 { 0 } else { p.len() - 1 };
+        p[k].0 += if times > 0 { 12 } else { -12 };
+    })
+}
+
+/// Each chord of three or more `sel` notes spread `times` (plan 2B.2):
+/// the note over its lowest goes up an octave each time, for an open
+/// chord; with `times` below 0 it closes, the highest note coming down an
+/// octave while it stays over the lowest. Refused whole when a note
+/// would pass 127.
+pub fn spread(clip: &Clip, sel: &[usize], times: i32) -> Edit {
+    revoice(clip, sel, 3, times.unsigned_abs(), |p| {
+        if times > 0 {
+            p[1].0 += 12;
+        } else {
+            let (lo, k) = (p[0].0, p.len() - 1);
+            if p[k].0 - 12 > lo {
+                p[k].0 -= 12;
+            }
+        }
+    })
+}
+
 /// The `sel` notes that are in the clip, with their indexes.
 fn picked<'a>(clip: &'a Clip, sel: &'a [usize]) -> impl Iterator<Item = (usize, Note)> + 'a {
     let mut s: Vec<usize> = sel
@@ -2207,5 +2398,162 @@ mod tests {
             "made for what isn't known: its own track only"
         );
         assert!(!inst(Some(&cutoff), None, false) && inst(Some(&cutoff), None, true));
+    }
+
+    /// Chords (plan 2B.2): notes that sound together are a chord, a
+    /// strummed one too, and the next chord starts as it ends; strum
+    /// starts each note a gap after the one under it (or over it), ends
+    /// staying, and strummed back it is as it was; invert and spread move
+    /// notes by octaves, chord by chord; a chord drawn goes in whole.
+    #[test]
+    fn a_drawn_chord_rolls_as_one_and_a_strummed_one_note_by_note() {
+        let mut c = clip(&[(0, Q, 48)]);
+        c.holds = Holds::Notes;
+        let chord = |tick: Tick| -> Vec<Note> {
+            [60, 64, 67]
+                .iter()
+                .map(|&k| Note::new(tick, Q, k, 100))
+                .collect()
+        };
+        // Drawn together, the chord's notes are one trigger.
+        let e = add_all(&c, &chord(0));
+        assert!(e
+            .add
+            .iter()
+            .all(|n| n.group == e.add[0].group && n.group != 0));
+        let mut d = c.clone();
+        d.apply(&e).unwrap();
+        assert!(d.groups_ok());
+        let g = e.add[0].group;
+        assert_eq!(d.trigger(0, g).len(), 3);
+        // A second chord drawn on the same tick is a trigger of its own.
+        let e2 = add_all(&d, &[Note::new(0, Q, 72, 100), Note::new(0, Q, 76, 100)]);
+        assert!(e2.add.iter().all(|n| n.group != g && n.group != 0));
+        // One note drawn alone decides alone, as before.
+        assert_eq!(add_all(&c, &[Note::new(Q, Q, 50, 100)]).add[0].group, 0);
+        // In a clip of pad hits nothing is grouped.
+        let mut hits = clip(&[]);
+        hits.holds = Holds::Hits;
+        assert!(add_all(&hits, &chord(0)).add.iter().all(|n| n.group == 0));
+        // Strummed, the chord's notes start apart and each rolls alone:
+        // no tick holds more than one of them in a trigger.
+        let sel: Vec<usize> = (0..d.notes.len())
+            .filter(|&i| d.notes[i].group == g)
+            .collect();
+        let e = strum(&d, &sel, 20);
+        let mut s = d.clone();
+        s.apply(&e).unwrap();
+        assert!(s.groups_ok());
+        for n in s.notes.iter().filter(|n| n.note >= 60) {
+            assert!(
+                n.group == 0 || s.trigger(n.tick, n.group).len() == 1,
+                "{n:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn chords_strum_invert_and_spread_chord_by_chord() {
+        // C E G for a beat, then F A C, and a strummed D F A.
+        let c = clip(&[
+            (0, 960, 60),
+            (0, 960, 64),
+            (0, 960, 67),
+            (960, 960, 65),
+            (960, 960, 69),
+            (960, 960, 72),
+            (1920, 960, 62),
+            (1950, 930, 66),
+            (1980, 900, 70),
+        ]);
+        let all: Vec<usize> = (0..c.notes.len()).collect();
+        let names = |c: &Clip, chord: &[usize]| -> Vec<u8> {
+            chord.iter().map(|&i| c.notes[i].note).collect()
+        };
+        let chords = chords_of(&c, &all);
+        assert_eq!(chords.len(), 3);
+        assert_eq!(names(&c, &chords[0]), [60, 64, 67]);
+        assert_eq!(names(&c, &chords[2]), [62, 66, 70]);
+        assert_eq!(strum_of(&c, &chords[0]), 0);
+        assert_eq!(strum_of(&c, &chords[2]), 30);
+        // Strum up 20: the first chord 0, 20, 40, the third 50 apart.
+        let d = applied(&c, &strum(&c, &all, 20));
+        assert_eq!(
+            (by(&d, 60).tick, by(&d, 64).tick, by(&d, 67).tick),
+            (0, 20, 40)
+        );
+        assert_eq!(by(&d, 67).tick + by(&d, 67).len, 960, "the end stays");
+        assert_eq!((by(&d, 66).tick, by(&d, 70).tick), (1970, 2020));
+        // Down: the highest first.
+        let d = applied(&c, &strum(&c, &all[..3], -20));
+        assert_eq!(
+            (by(&d, 67).tick, by(&d, 64).tick, by(&d, 60).tick),
+            (0, 20, 40)
+        );
+        // Back to 0: as it was.
+        let up = applied(&c, &strum(&c, &all[..3], 20));
+        let all_up: Vec<usize> = (0..up.notes.len()).collect();
+        let back = applied(&up, &strum(&up, &all_up, -20));
+        for n in [60, 64, 67] {
+            assert_eq!(by(&back, n), by(&c, n));
+        }
+        // A strum past a note's length is refused whole.
+        assert!(strum(&c, &all, 500).add.is_empty());
+        // A note alone doesn't strum.
+        assert!(strum(&c, &[0], 20).add.is_empty());
+        // Invert: C E G to E G C, and back down.
+        let d = applied(&c, &invert(&c, &all[..3], 1));
+        let mut got: Vec<u8> = d
+            .notes
+            .iter()
+            .filter(|n| n.tick == 0)
+            .map(|n| n.note)
+            .collect();
+        got.sort_unstable();
+        assert_eq!(got, [64, 67, 72]);
+        let d = applied(&c, &invert(&c, &all[..3], -1));
+        let mut got: Vec<u8> = d
+            .notes
+            .iter()
+            .filter(|n| n.tick == 0)
+            .map(|n| n.note)
+            .collect();
+        got.sort_unstable();
+        assert_eq!(got, [55, 60, 64]);
+        assert!(invert(&c, &[0], 1).add.is_empty(), "a note alone stays");
+        // Spread: C G E', then closed again.
+        let d = applied(&c, &spread(&c, &all[..3], 1));
+        let mut got: Vec<u8> = d
+            .notes
+            .iter()
+            .filter(|n| n.tick == 0)
+            .map(|n| n.note)
+            .collect();
+        got.sort_unstable();
+        assert_eq!(got, [60, 67, 76]);
+        let d_all: Vec<usize> = (0..d.notes.len()).collect();
+        let d0: Vec<usize> = d_all
+            .iter()
+            .copied()
+            .filter(|&i| d.notes[i].tick == 0)
+            .collect();
+        let e = applied(&d, &spread(&d, &d0, -1));
+        let mut got: Vec<u8> = e
+            .notes
+            .iter()
+            .filter(|n| n.tick == 0)
+            .map(|n| n.note)
+            .collect();
+        got.sort_unstable();
+        assert_eq!(got, [60, 64, 67]);
+        // Past 127, refused whole.
+        let high = clip(&[(0, 960, 120), (0, 960, 124), (0, 960, 127)]);
+        assert!(invert(&high, &[0, 1, 2], 1).add.is_empty());
+        // A chord drawn goes in whole, or not at all past the clip's end.
+        let chord = [Note::new(0, 240, 50, 90), Note::new(0, 240, 53, 90)];
+        assert_eq!(add_all(&c, &chord).add, chord);
+        assert!(add_all(&c, &[Note::new(4 * 960, 240, 50, 90)])
+            .add
+            .is_empty());
     }
 }

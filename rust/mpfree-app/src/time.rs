@@ -9497,6 +9497,84 @@ mod tests {
         assert_eq!(notes, [0, 62, 64]);
     }
 
+    /// Piano roll plan 2B.2: with the Chord chip on, a note drawn puts in
+    /// the chord, picked, and one UNDO takes the whole chord back; a run
+    /// of Strum turns is one take; the inspector names the picked chord.
+    #[test]
+    fn the_note_editor_draws_chords_and_strums_them_one_take_a_run() {
+        use mpfree_time_ui::editor::{ChordShape, EditAction as E, STRUM_ROW, STRUM_TICKS};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.step_action(StepAction::Tap {
+            pad: 0,
+            step: 0,
+            velocity: 100,
+        })
+        .unwrap();
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        h.act(TimeAction::Edit(E::Draw {
+            tick: 960,
+            note: 48,
+            len: 240,
+        }))
+        .unwrap();
+        let line = h
+            .act(TimeAction::Edit(E::Chord {
+                shape: ChordShape::Triad,
+                minor: false,
+            }))
+            .unwrap();
+        assert!(
+            line.starts_with("edit: drawing chords: Major triad"),
+            "{line}"
+        );
+        let edit = |h: &mut TimeHost| {
+            h.take_changed();
+            h.state().edit.unwrap()
+        };
+        let line = h
+            .act(TimeAction::Edit(E::Draw {
+                tick: 1920,
+                note: 62,
+                len: 960,
+            }))
+            .unwrap();
+        assert!(line.starts_with("edit: chord D drawn"), "{line}");
+        let e = edit(&mut h);
+        let mut picked: Vec<u8> = e.editor.sel.iter().map(|&i| e.clip.notes[i].note).collect();
+        picked.sort_unstable();
+        assert_eq!(picked, [62, 66, 69], "D F# A, picked");
+        assert_eq!(
+            mpfree_time_ui::view::note_cards(&e)
+                .map(|(head, _)| head)
+                .as_deref(),
+            Some("3 notes · D")
+        );
+        // Two turns of Strum, one take.
+        for _ in 0..2 {
+            h.act(TimeAction::Edit(E::Row {
+                row: STRUM_ROW,
+                delta: 1,
+            }))
+            .unwrap();
+        }
+        let e = edit(&mut h);
+        let at = |e: &mpfree_time_ui::view::EditInfo, n: u8| {
+            e.clip.notes.iter().find(|x| x.note == n).map(|x| x.tick)
+        };
+        assert_eq!(at(&e, 69), Some(1920 + 4 * STRUM_TICKS));
+        h.act(TimeAction::Undo).unwrap();
+        let e = edit(&mut h);
+        assert_eq!(
+            (at(&e, 62), at(&e, 66), at(&e, 69)),
+            (Some(1920), Some(1920), Some(1920))
+        );
+        // One UNDO takes the whole chord back.
+        h.act(TimeAction::Undo).unwrap();
+        let e = edit(&mut h);
+        assert_eq!((at(&e, 62), at(&e, 66), at(&e, 69)), (None, None, None));
+        assert_eq!(at(&e, 48), Some(960));
+    }
+
     /// Piano roll plan 0C.2: the copy of the clip the screen reads carries
     /// the answer to the editor's last touch, numbered: taken with the new
     /// revision and where its notes landed, refused with why, or nothing

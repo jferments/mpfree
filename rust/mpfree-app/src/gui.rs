@@ -19518,6 +19518,20 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             Err(e) => eprintln!("{name} sample: {e}"),
         }
     }
+    // The Chord menu open over the roll (piano roll plan 2B.2), a chord
+    // picked and named by the inspector.
+    match mpfree_time_ui::sample::notes_chord_state() {
+        Ok(state) => {
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Sequencer));
+            if let Some(g) = p.ui.get_mut::<NoteGrid>(time_view::NOTES) {
+                g.chord_menu = true;
+            }
+            out.push(("sequencer-notes-chords", p));
+        }
+        Err(e) => eprintln!("sequencer-notes-chords sample: {e}"),
+    }
     // The Arrange page's Song view: rows made into a song, song mode on,
     // Rec song armed.
     match mpfree_time_ui::sample::busy_song_state() {
