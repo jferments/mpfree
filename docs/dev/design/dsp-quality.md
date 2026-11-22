@@ -172,6 +172,23 @@ The limits below are **first limits**, set before building. When a better candid
 
 NEON kernels stay bit-exact with their plain loops (no fused multiply-add on ARMv7), as the supersaw, the Choir's formants and the banks already are, so every ratchet and golden file stays valid. A tolerance only if a kernel truly can't be.
 
+### What each limit is judged on (step 0.4)
+
+Each first limit is checked on named bench cases (`rust/mpfree-bench`), counted per 128-frame block by the instruction gate on CI and timed on the MPC in the device bench round (`tools/mpc-one/host_bench_mpc.py`: alone, then split over cores with `--lanes`). The projects of step 0.6 give the full-project view. Counts below are today's, in thousands of x86-64 instructions a block (`instructions.txt`); they decide nothing about the device by themselves.
+
+| Step | Cases (today, k instructions a block) |
+|---|---|
+| 1.1 Sync | Poly Table, 8 voices, sync 50 (334) against Poly Table Init (247); Wavetable Init, 8 voices, sync 50 (413) against Wavetable Init (362). Sync off must not move the Init cases |
+| 1.2 Analog | Analog Init (265), Poly Brass (203), Warm Pad (321) at 8 voices; Worn Cards at 16 (466) |
+| 1.3 Squelch | Squelch Square Acid (64) and Acid Line (59) |
+| 1.4 Sampler read | Sampler, 20 pads (1,435); the x16 held cases (547 to 1,774); plain copies: the drum kit cases (42 to 79), which must not move |
+| 2.1 Poly's drive | Poly Init, 8 voices, drive 24 dB (330) and distortion 24 dB (335) against Poly Init (194). Today's drive already costs 1.7 times the plain voice, more than the first limit of 1.3 times, so step 2.1 has to make it cheaper or bring the trade to the owner |
+| 2.2 Synth filters | The Analog cases above and every Poly preset case |
+| 2.3 FX cost | Drive Eco 2x (203) and HQ 4x (430), Amp (320, 342), Fuzz (386), Character's Iron (120) and Soften (97), EQ HQ 2x (188), Multi filter Hard (80), drive (144) and ladder (92), Lo-fi (222), Ring mod (13), Rotary (108), Limiter with true peak (98), Master safety (30) |
+| Every step | The seven "Project:" cases: dense synths (1,332), distortion chain (1,599), granular drums (742), long stems (291), bass into the limiter (296), fast automation (572), all at once (4,215) |
+
+The four cases this step added (sync on Poly's Table wave and on Wavetable, Poly's drive and distortion) have golden fingerprints and instruction baselines like the rest. The device run is the next device bench round, with its own go; nothing here runs on the MPC.
+
 ## The rate probe
 
 The supported sample rates of the MPC One's converters are not known ([Audio runtime](../hardware/audio-runtime.md) records only 44.1 kHz). The codec is `inmusic,acva-audio-codec`, configured by pins with no control bus, behind the RK3288's I2S block. Step 0.3 asks the driver, read-only:

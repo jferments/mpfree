@@ -30,7 +30,8 @@ use mpfree_sampler::model::*;
 use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
 use mpfree_seq::{Clip, Lock, Note, Project as Song, Quantise, Speed, Track};
 use mpfree_synth::params::{
-    OSC1_LEVEL, OSC1_WAVE, OSC2_LEVEL, OSC2_WAVE, POLYPHONY, UNISON, VOICE_MODE, WAVE_TABLE,
+    DIST, DRIVE, OSC1_LEVEL, OSC1_POS, OSC1_WARP, OSC1_WARP_MODE, OSC1_WAVE, OSC2_LEVEL, OSC2_WAVE,
+    POLYPHONY, UNISON, VOICE_MODE, WAVE_TABLE,
 };
 use mpfree_synth::wavetable::params as wt;
 use mpfree_synth::{
@@ -1417,6 +1418,48 @@ pub fn all(rate: u32) -> Vec<Case> {
                     (UNISON, unison),
                 ],
                 voices,
+            )
+        }));
+    }
+    // The voices the DSP quality plan's first limits are judged on (step
+    // 0.4, docs/dev/design/dsp-quality.md): hard sync on Poly's Table wave
+    // and on Wavetable (step 1.1, against "Poly Table Init" and "Wavetable
+    // Init"), and Poly's per-voice drive and distortion (step 2.1, against
+    // "Poly Init"), each at 8 voices.
+    v.push(measured(|| {
+        synth(
+            "Poly Table, 8 voices, sync 50".to_string(),
+            rate,
+            &[
+                (OSC1_WAVE, WAVE_TABLE as f32),
+                (OSC1_POS, 100.0),
+                (OSC1_WARP_MODE, 2.0),
+                (OSC1_WARP, 50.0),
+            ],
+            8,
+        )
+    }));
+    v.push(measured(|| {
+        chords(
+            "Wavetable Init, 8 voices, sync 50".to_string(),
+            rate,
+            Box::new(Wavetable::new(rate)),
+            &[
+                (wt::osc_id(0, wt::POSITION), 100.0),
+                (wt::osc_id(0, wt::WARP_MODE), 2.0),
+                (wt::osc_id(0, wt::WARP), 50.0),
+            ],
+            Some(wt::POLYPHONY),
+            8,
+        )
+    }));
+    for (name, id) in [("drive", DRIVE), ("distortion", DIST)] {
+        v.push(measured(|| {
+            synth(
+                format!("Poly Init, 8 voices, {name} 24 dB"),
+                rate,
+                &[(id, 24.0)],
+                8,
             )
         }));
     }
