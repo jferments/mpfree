@@ -34,6 +34,18 @@ Nobody has measured the synth filters above 4 kHz, their self-oscillation pitch,
 
 The ratchets guard an approved baseline within tolerances, not a promise that numbers only improve: a few rows were blessed worse on purpose, each with its reason in its pull request. Step 0.1 reruns them all.
 
+### The rerun (step 0.1)
+
+Every ratchet was run again at main e5518efc with this page's new rows, its numbers written fresh and compared with the baselines: quality (1,594 rows, release), synth (5,323, release), sampler (74, debug) and grain (115, debug). This run was on an x86-64 cloud machine; the runners run the same four ratchets on every pull request in the merge train. **Every row is within its tolerance.** All but 29 rows read exactly as blessed. The 29 that moved:
+
+| Rows | Baseline | Fresh | Why |
+|---|---|---|---|
+| EQ `drawn_vs_heard_db`, and its HQ 2x row | 0.0266 and 0.0043 dB | 0.0042 and 0.0014 dB | fxlab's response measure changed after the bless ([FX quality](fx-quality.md), Measured differently, already gives 0.004) |
+| Grain G13, the LFO on position and on spray (8 rows) | swing -0.26 to +1.25 dB further, level -0.23 to +0.03 LU | swing -0.20 to +0.84 dB, level -0.24 to +0.05 LU | two grain changes after the bless (each grain keeps its window for its whole life; the edges of a sound) move a random cloud's draws. The largest moves are the pad's swing with position swept, 0.23 dB more (its tolerance is 0.5), and pink's with spray swept, 0.41 dB less. |
+| Crush's off-grid rows (16) and three synth rows | | the same to 0.002 dB | no code under them changed since the bless; most likely the machine's maths library, as the full-project check allows for |
+
+The ratchet files keep the older baselines, which are looser than the fresh numbers for the EQ and the grain rows; blessing them would tighten the ratchet and change no sound.
+
 ## Rules for DSP work
 
 Every new synth or effect follows these, and each step below is held to them. Over all of them sits one principle (from the second outside review):
