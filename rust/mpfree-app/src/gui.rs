@@ -19481,7 +19481,8 @@ mod tests {
             length: 7680,
             name: "Beat".into(),
             unique: false,
-        }];
+        }]
+        .into();
         p.time.markers = vec![(0, "Intro".into()), (7680, "Verse".into())];
         p.time_page.update(&mut p.ui, &p.time);
         p.ui.paint(&mut SoftCanvas::new(1280, 800));

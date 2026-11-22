@@ -1085,11 +1085,11 @@ fn main() -> ExitCode {
         }
         println!("Wrote {path}");
     }
-    // The step edits are the control half's, which may allocate (they show
-    // ALLOCATES all the same).
+    // The step edits are the control half's and the Song view's frame the
+    // screen's, which may allocate (they show ALLOCATES all the same).
     let allocating: Vec<&str> = rows
         .iter()
-        .filter(|r| r.s.allocs > 0 && r.module != cases::CONTROL)
+        .filter(|r| r.s.allocs > 0 && r.module != cases::CONTROL && r.module != cases::SCREEN)
         .map(|r| r.name.as_str())
         .collect();
     if o.check_allocs && !allocating.is_empty() {

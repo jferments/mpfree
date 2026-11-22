@@ -270,6 +270,18 @@ impl Desk<'_> {
                 let erase = matches!(a, time::StepAction::ClearPad { .. });
                 // The pattern's length: said in place of the hint too.
                 let length = matches!(a, time::StepAction::Length { .. });
+                if !erase && !length {
+                    // A tap or a turn: apart (--time-thread) it goes to the
+                    // editing side's thread and is said when it answers.
+                    let say = time::Say::Note {
+                        ok: "",
+                        err: "steps: ",
+                    };
+                    if let Some(r) = time.step_action_then(a, say.clone()) {
+                        let _ = crate::time_said(out, say, r);
+                    }
+                    return None;
+                }
                 match time.step_action(a) {
                     Ok(line) if length && !line.is_empty() => fx.push(app::Effect::Tell(line)),
                     Err(e) if length => fx.push(app::Effect::Tell(format!("steps: {e}"))),
@@ -859,10 +871,13 @@ impl Desk<'_> {
                 out.show(knobs);
             }
             app::Effect::TrackMute { track, wait } => {
-                let line = time
-                    .mute_or_solo(track, wait, false)
-                    .unwrap_or_else(|e| format!("track mute: {e}"));
-                out.note(&format!("perform: {line}"));
+                let say = time::Say::Note {
+                    ok: "perform: ",
+                    err: "perform: track mute: ",
+                };
+                if let Some(r) = time.mute_or_solo_then(track, wait, false, say.clone()) {
+                    let _ = crate::time_said(out, say, r);
+                }
             }
             // The audio loop's own, named one by one as above.
             e @ (app::Effect::Light(..)
