@@ -111,6 +111,7 @@ mod export;
 mod expr_rec;
 mod fxmodes;
 mod gui;
+mod hand;
 mod imagecopy;
 mod instrument_list;
 mod instruments;
@@ -10556,6 +10557,9 @@ fn player_session(
                 }
                 Some(ControlEvent::DataWheel { delta }) => fx.extend(app.wheel(delta as i32)),
                 Some(ControlEvent::QLinkTurn { knob, delta }) => {
+                    // A turn with no finger on the knob (MIDI Follow) lets
+                    // go half a second after the last (qlink_touch.rs).
+                    touch_hold.turned(knob as usize, t);
                     // On the Synth page Q-Links 1-4 turn the marked knobs; while NOTE REPEAT is held
                     // or the Arp panel is open they set the arp; otherwise Q-Link 1 is the level.
                     let public = MIDI_PORTS[m.port].1 == "Public" && m.bytes.len() == 3;
@@ -10665,8 +10669,9 @@ fn player_session(
             parts.item(parts::MIDI_IN, t_item, &event);
         }
         parts.lap(parts::MIDI_IN);
-        // Letting go of a Q-Link unlights its card, and ends a turn on the
-        // Sample page (one undo step).
+        // Letting go of a Q-Link unlights its card, ends a turn on the
+        // Sample page (one undo step) and lets go of a knob's setting; so
+        // do turns with no finger, half a second after the last.
         for (k, _) in touch_hold.due(t).iter().enumerate().filter(|(_, &d)| d) {
             out.show(gui::ToUi::QLinkTouch(k, false));
             if app.view().sampler() {
