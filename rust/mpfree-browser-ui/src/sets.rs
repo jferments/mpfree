@@ -49,6 +49,10 @@ pub enum SetButton {
     ConfirmRemove,
     /// The Needs list: back to the song.
     NeedsDone,
+    /// A song that changed on stage: its recovery copy goes into it.
+    KeepChanges,
+    /// A song that changed on stage: its recovery copies go to the Trash.
+    ThrowChanges,
 }
 
 impl SetButton {
@@ -70,17 +74,22 @@ impl SetButton {
             SetButton::Remove => "Remove from set",
             SetButton::ConfirmRemove => "Tap again to remove",
             SetButton::NeedsDone => "Done",
+            SetButton::KeepChanges => "Keep the changes",
+            SetButton::ThrowChanges => "Throw them away",
         }
     }
 
     fn primary(self) -> bool {
-        matches!(self, SetButton::PlaySet)
+        matches!(self, SetButton::PlaySet | SetButton::KeepChanges)
     }
 
     fn danger(self) -> bool {
         matches!(
             self,
-            SetButton::Delete | SetButton::Remove | SetButton::ConfirmRemove
+            SetButton::Delete
+                | SetButton::Remove
+                | SetButton::ConfirmRemove
+                | SetButton::ThrowChanges
         )
     }
 }
@@ -500,7 +509,7 @@ fn ink(cx: &PaintCx, tone: Tone) -> mpfree_ui::Color {
         Tone::Plain => t.text,
         Tone::Good => t.good,
         Tone::Warn => t.warn,
-        Tone::Accent => t.accent2,
+        Tone::Accent | Tone::Accent2 => t.accent2,
         Tone::Bad => t.bad,
     }
 }

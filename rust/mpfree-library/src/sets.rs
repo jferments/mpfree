@@ -31,7 +31,7 @@
 //!   connected. Each song keeps its last check (`checked` and the lines
 //!   after it), so the Sets place shows it after a restart.
 
-use crate::project::{write_synced, PARTS};
+use crate::project::{write_synced, NewSample, Snapshot, PARTS, SAMPLES};
 use crate::{clean_name, unique_name, Entry, Library, Loc, Place};
 use std::fs;
 use std::io;
@@ -44,6 +44,12 @@ pub const SET_EXT: &str = ".set";
 pub const MAX_SONGS: usize = 200;
 /// The most characters a song's notes hold.
 pub const MAX_NOTES: usize = 240;
+/// Recovery copies a song keeps at most (one for each time it was played
+/// with changes, until they are kept or thrown away).
+pub const MAX_ON_STAGE: usize = 16;
+/// What a song's recovery copy is called in Projects: "Night drive on
+/// stage", " 2" ... if taken.
+pub const ON_STAGE: &str = "on stage";
 /// The most a set's file is read for.
 const MAX_SET_BYTES: u64 = 256 * 1024;
 /// A fade's length, in seconds: the default and the range.
@@ -131,6 +137,10 @@ pub struct SetSong {
     pub notes: String,
     /// Its last check: when (seconds since 1970) and what it said.
     pub check: Option<(u64, SongCheck)>,
+    /// It changed on stage (live shows B1): the recovery copies of its
+    /// changes, each a project in Projects ([`Library::on_stage_copy`]),
+    /// oldest first, until the musician keeps or throws them away.
+    pub on_stage: Vec<String>,
     /// Lines this build doesn't know, kept as they were.
     pub extra: Vec<String>,
 }
@@ -201,6 +211,9 @@ impl Set {
                 if c.unchecked {
                     s.push_str("unchecked = yes\n");
                 }
+            }
+            for c in &song.on_stage {
+                s.push_str(&format!("changed = {}\n", one_line(c)));
             }
             for l in &song.extra {
                 s.push_str(l);
@@ -275,6 +288,9 @@ impl Set {
                     needed: key == "needs",
                 }),
                 "notes" => song.set_notes(&unescape(value)),
+                "changed" if crate::valid_name(value) && song.on_stage.len() < MAX_ON_STAGE => {
+                    song.on_stage.push(value.to_string())
+                }
                 "checked" => {
                     let (at, tempo) = value.split_once(' ').unwrap_or((value, ""));
                     match at.parse::<u64>() {
@@ -611,6 +627,71 @@ impl Library {
     }
 }
 
+impl Library {
+    /// A song's changes made on stage (live shows B1): saved whole as a
+    /// recovery copy, a project of its own beside it named "Night drive on
+    /// stage" (or " 2" ...), never over anything. The copy is marked as
+    /// autosave's work, so it has no lasting id of its own (it isn't the
+    /// song) and opens as unsaved work. The song stays as it was saved.
+    pub fn on_stage_copy(
+        &self,
+        song: &str,
+        snap: &Snapshot,
+        samples: &[NewSample],
+    ) -> io::Result<Loc> {
+        // Room for " on stage" and a " 99" after it, the song's name cut
+        // to fit.
+        let room = crate::name::MAX_NAME - ON_STAGE.len() - 4;
+        let mut cut = String::new();
+        for c in song.chars() {
+            if cut.len() + c.len_utf8() > room {
+                break;
+            }
+            cut.push(c);
+        }
+        let base = clean_name(&format!("{} {ON_STAGE}", cut.trim_end()), ON_STAGE);
+        let name = crate::unique_folder_name(&base, |n| {
+            Loc::top(Place::Projects)
+                .join(n)
+                .is_ok_and(|l| self.exists(&l))
+        });
+        let loc = Loc::top(Place::Projects).join(&name)?;
+        let mut snap = snap.clone();
+        snap.meta.mark_autosave();
+        self.save_project_with(&loc, &snap, 0, samples)?;
+        Ok(loc)
+    }
+
+    /// Keep the changes (the Set editor, after a set): the recovery copy
+    /// `copy` is saved into the song `song` as its newest save, so its
+    /// Earlier saves keep the version from before (`keep` of them), with
+    /// any sound the song doesn't have yet; then the copy goes to the
+    /// Trash. The song keeps its own lasting id.
+    pub fn keep_on_stage(&self, copy: &Loc, song: &Loc, keep: usize) -> io::Result<()> {
+        let mut snap = self.open_project(copy)?;
+        snap.meta.clear_autosave();
+        snap.meta.name = song.name().to_string();
+        let from = self.project_dir(copy)?.join(SAMPLES);
+        let have = self.project_dir(song)?.join(SAMPLES);
+        let mut samples = Vec::new();
+        if let Ok(rd) = fs::read_dir(&from) {
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let is_file = e.file_type().is_ok_and(|t| t.is_file());
+                if is_file && crate::valid_name(&name) && !have.join(&name).exists() {
+                    samples.push(NewSample::file(name, e.path()));
+                }
+            }
+        }
+        self.save_project_with(song, &snap, keep, &samples)?;
+        // The list of its files that set lists check: a failure here only
+        // leaves the song unchecked until its next save.
+        let _ = self.update_manifest(song);
+        self.delete(copy)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -814,5 +895,69 @@ mod tests {
         assert_eq!(names, ["Broken.set", "Friday.set"]);
         assert!(all[0].1.is_err());
         assert_eq!(all[1].1.as_ref().unwrap().songs.len(), 1);
+    }
+
+    /// Live shows B1: a song's changes made on stage go into a recovery
+    /// copy beside it, never into the song, and never over anything; the
+    /// set remembers the copies; keeping them saves the copy into the song
+    /// (its Earlier saves keep the version before) and the copy goes.
+    #[test]
+    fn changes_on_stage_go_into_a_copy_that_can_be_kept() {
+        let lib = Library::at(&temp()).unwrap();
+        let projects = Loc::top(Place::Projects);
+        let night = projects.join("Night drive").unwrap();
+        let saved = lib
+            .save_project(&night, &song_snap("Night drive"), 0)
+            .unwrap();
+        let mut changed = song_snap("Night drive");
+        changed.parts[0].1 = "clip b\n".into();
+        let take = NewSample::new(
+            "take-1.wav",
+            std::sync::Arc::new(|w: &mut dyn std::io::Write| w.write_all(b"RIFF take")),
+        );
+        let copy = lib.on_stage_copy("Night drive", &changed, &[take]).unwrap();
+        assert_eq!(copy.name(), "Night drive on stage");
+        let again = lib.on_stage_copy("Night drive", &changed, &[]).unwrap();
+        assert_eq!(again.name(), "Night drive on stage 2", "never over a copy");
+        // The song is as it was saved; the copy is unsaved work, not a song.
+        assert_eq!(lib.open_project(&night).unwrap().parts[0].1, "clip a\n");
+        assert!(lib.open_project(&copy).unwrap().meta.is_autosave());
+        assert_eq!(
+            lib.songs().unwrap(),
+            [("Night drive".to_string(), saved.id.clone())]
+        );
+        // A long name keeps "on stage".
+        let long = "L".repeat(120);
+        let l = lib.on_stage_copy(&long, &changed, &[]).unwrap();
+        assert!(l.name().ends_with(" on stage"), "{}", l.name());
+
+        // The set remembers the copies.
+        let mut song = SetSong::new(&saved.id, "Night drive");
+        song.on_stage = vec![copy.name().to_string(), again.name().to_string()];
+        let set = Set {
+            songs: vec![song],
+            extra: vec![],
+        };
+        let text = set.to_text();
+        assert!(
+            text.contains("changed = Night drive on stage 2\n"),
+            "{text}"
+        );
+        assert_eq!(Set::parse(&text).unwrap(), set);
+
+        // Kept: the song has the changes and the take, keeps its id, and
+        // its last save is an earlier save; the copy is in the Trash.
+        lib.keep_on_stage(&copy, &night, 5).unwrap();
+        let back = lib.open_project(&night).unwrap();
+        assert_eq!(back.parts[0].1, "clip b\n");
+        assert!(!back.meta.is_autosave());
+        assert_eq!(back.meta.id, saved.id);
+        assert_eq!(
+            fs::read(lib.sample_path(&night, "take-1.wav").unwrap()).unwrap(),
+            b"RIFF take"
+        );
+        assert_eq!(lib.versions(&night).unwrap().len(), 1);
+        assert!(!lib.exists(&copy));
+        assert_eq!(lib.find_song(&set.songs[0]), Found::At(night));
     }
 }

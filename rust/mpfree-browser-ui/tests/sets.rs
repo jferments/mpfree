@@ -449,3 +449,115 @@ fn the_sets_place_draws_and_answers_touches() {
     );
     assert_eq!(sets(&b).view, SetsView::List);
 }
+
+/// Live shows B1, the browser's part of playing a set: a song opens by its
+/// id without asking anything (or says why not), a song's changes made on
+/// stage go into a recovery copy the set remembers, and the Set editor
+/// keeps or throws away those changes afterwards.
+#[test]
+fn a_played_sets_songs_open_and_their_changes_on_stage_are_kept() {
+    let lib = fill(&temp()).unwrap();
+    fill_sets(&lib).unwrap();
+    let mut b = Browser::inline(lib.clone());
+    b.set_rig(sample_rig());
+    let sunday_loc = Loc::top(Place::Sets).join("Sunday rehearsal.set").unwrap();
+    let sunday = set_at(&lib, "Sunday rehearsal.set");
+    b.set_playing(Some((sunday_loc.clone(), sunday.clone())));
+    let chops = Loc::top(Place::Projects).join("Sunday chops").unwrap();
+
+    // A song opens: the marker, then the open itself.
+    let _ = b.take_actions();
+    b.open_set_song(&sunday.songs[0]);
+    let acts = b.take_actions();
+    let k = acts
+        .iter()
+        .position(|a| matches!(a, BrowseAction::SetSongOpened { loc } if *loc == chops))
+        .expect("the marker");
+    let next_open = acts[k + 1..]
+        .iter()
+        .find(|a| matches!(a, BrowseAction::ProjectOpened { .. }));
+    assert!(
+        matches!(next_open, Some(BrowseAction::ProjectOpened { loc, .. }) if *loc == chops),
+        "{acts:?}"
+    );
+    assert!(!b.unsaved());
+
+    // A song that is gone says why, and nothing asks.
+    let mut gone = sunday.songs[1].clone();
+    gone.id = String::new();
+    gone.name = "Not here".into();
+    b.open_set_song(&gone);
+    let acts = b.take_actions();
+    assert!(
+        acts.iter().any(|a| matches!(a,
+            BrowseAction::SetSongFailed { song, why }
+                if song == "Not here" && why.contains("isn\u{2019}t in Projects"))),
+        "{acts:?}"
+    );
+    assert!(matches!(b.screen().modal, Modal::None));
+
+    // Its changes on stage: a recovery copy beside it, remembered by the
+    // set, which says so to the Show view.
+    let mut snap = lib.open_project(&chops).unwrap();
+    snap.parts = vec![("transport".into(), "bpm = 140\n".into())];
+    b.on_stage_copy_with("Sunday chops", snap, Vec::new());
+    let copy = b
+        .take_actions()
+        .into_iter()
+        .find_map(|a| match a {
+            BrowseAction::OnStageCopied { loc } => Some(loc),
+            _ => None,
+        })
+        .expect("copied");
+    assert_eq!(copy.name(), "Sunday chops on stage");
+    b.mark_on_stage(&sunday_loc, 0, copy.name());
+    let acts = b.take_actions();
+    assert!(acts.iter().any(|a| matches!(a,
+        BrowseAction::SetChanged { loc, set }
+            if *loc == sunday_loc && set.songs[0].on_stage == [copy.name().to_string()])));
+    assert_eq!(
+        set_at(&lib, "Sunday rehearsal.set").songs[0].on_stage,
+        [copy.name().to_string()]
+    );
+    b.set_playing(None);
+
+    // After the show, the Set editor says it changed on stage and keeps it.
+    b.go_source(src("Sets"));
+    let r = row_of(&b, "Sunday rehearsal");
+    tap(&mut b, SetInput::Row(r));
+    press(&mut b, SetButton::EditSet);
+    tap(&mut b, SetInput::Row(0));
+    let s = sets(&b);
+    assert_eq!(s.rows[0].sub, "changed on stage");
+    assert_eq!(s.detail.lists[0].0, "Changed on stage");
+    assert_eq!(
+        &s.detail.buttons[..2],
+        [SetButton::KeepChanges, SetButton::ThrowChanges]
+    );
+    press(&mut b, SetButton::KeepChanges);
+    assert_eq!(
+        lib.open_project(&chops).unwrap().part("transport"),
+        Some("bpm = 140\n")
+    );
+    assert!(lib.project_meta(&copy).is_err(), "the copy is in the Trash");
+    assert!(set_at(&lib, "Sunday rehearsal.set").songs[0]
+        .on_stage
+        .is_empty());
+    assert_ne!(sets(&b).rows[0].sub, "changed on stage");
+
+    // Play set over unsaved work asks first.
+    b.set_unsaved(true);
+    tap(&mut b, SetInput::Back);
+    let _ = b.take_actions();
+    press(&mut b, SetButton::PlaySet);
+    assert!(matches!(b.screen().modal, Modal::Confirm { .. }));
+    assert!(!b
+        .take_actions()
+        .iter()
+        .any(|a| matches!(a, BrowseAction::PlaySet { .. })));
+    b.input(Input::ConfirmYes);
+    assert!(b
+        .take_actions()
+        .iter()
+        .any(|a| matches!(a, BrowseAction::PlaySet { .. })));
+}

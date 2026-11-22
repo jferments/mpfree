@@ -34,6 +34,10 @@ pub(super) struct SetsPlace {
     new_set: bool,
     /// The rows the list has room for: sets or projects, and songs.
     rows: (usize, usize),
+    /// The set the Show view plays (live shows B1), kept in step with the
+    /// place's: a check or a song's changes on stage land on it even when
+    /// the place hasn't listed the sets.
+    playing: Option<(Loc, Set)>,
 }
 
 /// The set being edited.
@@ -234,6 +238,71 @@ impl Browser {
         }
     }
 
+    /// The set the Show view plays now, or none (live shows B1). Its
+    /// changes come back as [`BrowseAction::SetChanged`].
+    pub fn set_playing(&mut self, playing: Option<(Loc, Set)>) {
+        self.sets.playing = playing;
+    }
+
+    /// The set at `loc` as the place has it now: the editor's, the list's,
+    /// or the one playing.
+    fn set_at(&self, loc: &Loc) -> Option<Set> {
+        match &self.sets.editing {
+            Some(e) if e.loc == *loc => return Some(e.set.clone()),
+            _ => {}
+        }
+        if let Some((_, Ok(s))) = self.sets.sets.iter().find(|(e, _)| e.name == loc.name()) {
+            return Some(s.clone());
+        }
+        self.sets
+            .playing
+            .as_ref()
+            .filter(|(l, _)| l == loc)
+            .map(|(_, s)| s.clone())
+    }
+
+    /// Check the set at `loc` now (the Show view's MENU, and Play set),
+    /// as Check set does. It comes back as [`BrowseAction::SetChanged`].
+    pub fn check_set_now(&mut self, loc: &Loc) {
+        let Some(set) = self.set_at(loc) else {
+            return;
+        };
+        if set.songs.is_empty() || self.sets.checking.is_some() {
+            return;
+        }
+        let connected = self
+            .sets
+            .rig
+            .iter()
+            .filter(|r| r.connected)
+            .map(|r| r.name.clone())
+            .collect();
+        self.sets.checking = Some(loc.clone());
+        self.send(Job::CheckSet {
+            loc: loc.clone(),
+            set,
+            connected,
+            deep: false,
+        });
+    }
+
+    /// Song `song` of the set at `loc` changed on stage: its recovery copy
+    /// is `copy` (a project in Projects). The set remembers it, so the Set
+    /// editor offers Keep the changes and Throw them away after the show.
+    pub fn mark_on_stage(&mut self, loc: &Loc, song: usize, copy: &str) {
+        let Some(mut set) = self.set_at(loc) else {
+            return;
+        };
+        let Some(s) = set.songs.get_mut(song) else {
+            return;
+        };
+        if s.on_stage.len() >= mpfree_library::sets::MAX_ON_STAGE {
+            s.on_stage.remove(0);
+        }
+        s.on_stage.push(copy.to_string());
+        self.sets_keep(loc, set);
+    }
+
     /// Reads every set again (and the projects, while adding).
     pub(super) fn sets_refresh(&mut self) {
         self.send_in(Lane::List, Job::Sets);
@@ -291,12 +360,8 @@ impl Browser {
             self.sets.checking = None;
         }
         let now = now_utc();
-        let mut set = match &self.sets.editing {
-            Some(e) if e.loc == loc => e.set.clone(),
-            _ => match self.sets.sets.iter().find(|(e, _)| e.name == loc.name()) {
-                Some((_, Ok(s))) => s.clone(),
-                _ => return,
-            },
+        let Some(mut set) = self.set_at(&loc) else {
+            return;
         };
         if set.songs.len() != checks.len() {
             // The set changed while it was checked: the check is stale.
@@ -315,6 +380,51 @@ impl Browser {
         let words = tally_words(&set);
         self.status = Some((format!("Checked {}: {words}", stem(loc.name())), false));
         self.sets_keep(&loc, set);
+    }
+
+    /// A recovery copy is in its song (Keep the changes): no set lists it
+    /// any more.
+    pub(super) fn sets_kept(&mut self, copy: Loc, song: Loc) {
+        self.status = Some((
+            format!(
+                "Kept the changes from the show in {}: its Earlier saves have the version from before",
+                song.name()
+            ),
+            false,
+        ));
+        let mut changed = Vec::new();
+        let editing = self
+            .sets
+            .editing
+            .as_ref()
+            .map(|e| (e.loc.clone(), e.set.clone()));
+        let playing = self.sets.playing.clone();
+        let listed = self.sets.sets.iter().filter_map(|(e, s)| {
+            let s = s.as_ref().ok()?;
+            Some((Loc::top(Place::Sets).join(&e.name).ok()?, s.clone()))
+        });
+        for (loc, mut set) in editing
+            .into_iter()
+            .chain(playing)
+            .chain(listed.collect::<Vec<_>>())
+        {
+            if changed.iter().any(|(l, _)| *l == loc) {
+                continue;
+            }
+            let mut any = false;
+            for s in &mut set.songs {
+                let before = s.on_stage.len();
+                s.on_stage.retain(|c| c != copy.name());
+                any |= s.on_stage.len() != before;
+            }
+            if any {
+                changed.push((loc, set));
+            }
+        }
+        for (loc, set) in changed {
+            self.sets_keep(&loc, set);
+        }
+        self.forget(&copy);
     }
 
     /// A set made by New set: it opens in the editor.
@@ -354,10 +464,18 @@ impl Browser {
 
     // ------------------------------------------------------------ saving
 
-    /// `set` is now the set at `loc`: in the editor, in the list, and saved.
+    /// `set` is now the set at `loc`: in the editor, in the list, in the
+    /// Show view, and saved.
     fn sets_keep(&mut self, loc: &Loc, set: Set) {
         if let Some(e) = self.sets.editing.as_mut().filter(|e| e.loc == *loc) {
             e.set = set.clone();
+        }
+        if let Some((_, s)) = self.sets.playing.as_mut().filter(|(l, _)| l == loc) {
+            *s = set.clone();
+            self.actions.push(BrowseAction::SetChanged {
+                loc: loc.clone(),
+                set: set.clone(),
+            });
         }
         if let Some((_, s)) = self
             .sets
@@ -604,6 +722,16 @@ impl Browser {
                     ));
                     return;
                 }
+                if self.unsaved {
+                    self.modal = Modal::Confirm {
+                        text: format!(
+                            "Unsaved changes. Play \u{201c}{}\u{201d} anyway?",
+                            stem(loc.name())
+                        ),
+                        what: Confirm::PlaySet(loc, Box::new(set)),
+                    };
+                    return;
+                }
                 self.actions.push(BrowseAction::PlaySet { loc, set });
             }
             SetButton::EditSet => {
@@ -721,6 +849,60 @@ impl Browser {
                 e.set.songs.swap(k, to);
                 e.picked = Some(to);
                 e.top = in_view(e.picked, e.top, rows, e.set.songs.len());
+                self.sets_save();
+            }
+            SetButton::KeepChanges | SetButton::ThrowChanges => {
+                let keep = b == SetButton::KeepChanges;
+                let Some(e) = self.sets.editing.as_mut() else {
+                    return;
+                };
+                let Some(song) = e.picked.and_then(|k| e.set.songs.get_mut(k)) else {
+                    return;
+                };
+                let mut copies = std::mem::take(&mut song.on_stage);
+                let name = song.name.clone();
+                let Some(newest) = copies.pop() else {
+                    return;
+                };
+                let to_trash: Vec<String> = if keep {
+                    copies
+                } else {
+                    copies.into_iter().chain([newest.clone()]).collect()
+                };
+                for c in &to_trash {
+                    if let Ok(l) = Loc::top(Place::Projects).join(c) {
+                        self.send(Job::Delete(l));
+                    }
+                }
+                if keep {
+                    match (
+                        Loc::top(Place::Projects).join(&newest),
+                        Loc::top(Place::Projects).join(&name),
+                    ) {
+                        (Ok(copy), Ok(song)) => {
+                            // The copy stays listed until it is in.
+                            if let Some(s) = self
+                                .sets
+                                .editing
+                                .as_mut()
+                                .and_then(|e| e.picked.and_then(|k| e.set.songs.get_mut(k)))
+                            {
+                                s.on_stage = vec![newest.clone()];
+                            }
+                            self.status =
+                                Some((format!("Keeping the changes in {name}\u{2026}"), false));
+                            self.send(Job::KeepOnStage { copy, song });
+                        }
+                        _ => return,
+                    }
+                } else {
+                    self.status = Some((
+                        format!(
+                            "Threw away {name}\u{2019}s changes from the show: they\u{2019}re in the Trash"
+                        ),
+                        false,
+                    ));
+                }
                 self.sets_save();
             }
             SetButton::OpenInMake => {
@@ -1100,13 +1282,20 @@ impl Browser {
             .songs
             .iter()
             .enumerate()
-            .map(|(i, song)| SetRow {
-                number: Some(i + 1),
-                name: song.name.clone(),
-                sub: song_sub(song),
-                sub_tone: Tone::Dim,
-                chip: Some(chip(song.check.as_ref().map(|(_, c)| c))),
-                add: false,
+            .map(|(i, song)| {
+                let changed = !song.on_stage.is_empty();
+                SetRow {
+                    number: Some(i + 1),
+                    name: song.name.clone(),
+                    sub: if changed {
+                        "changed on stage".into()
+                    } else {
+                        song_sub(song)
+                    },
+                    sub_tone: if changed { Tone::Accent2 } else { Tone::Dim },
+                    chip: Some(chip(song.check.as_ref().map(|(_, c)| c))),
+                    add: false,
+                }
             })
             .collect();
         s.selected = e.picked;
@@ -1236,6 +1425,27 @@ impl Browser {
                 SetButton::Remove
             },
         ];
+        // Changed on stage (live shows B1): its changes wait in a recovery
+        // copy until they are kept or thrown away.
+        if let Some(newest) = song.on_stage.last() {
+            let mut lines = vec![format!(
+                "Its changes from the show are in Projects as \u{201c}{newest}\u{201d}."
+            )];
+            if song.on_stage.len() > 1 {
+                lines.push(format!(
+                    "It changed {} times: Keep the changes keeps the last, and the others go to the Trash.",
+                    song.on_stage.len()
+                ));
+            }
+            lines.push(
+                "Keep the changes puts them in the song; its Earlier saves keep the version from before."
+                    .into(),
+            );
+            d.lists
+                .push(("Changed on stage".into(), Tone::Accent2, lines));
+            d.buttons
+                .splice(0..0, [SetButton::KeepChanges, SetButton::ThrowChanges]);
+        }
         if k == 0 {
             d.faint.push(SetButton::MoveUp);
         }

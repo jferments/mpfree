@@ -124,6 +124,23 @@ pub enum Job {
     Sets,
     /// The projects a set can hold ([`Library::songs`]).
     Songs,
+    /// A set's song, found by its lasting id ([`Library::find_song`]),
+    /// read, and its files checked as [`Job::OpenProject`] checks them
+    /// (live shows B1: Play set and a song change).
+    OpenSetSong(crate::SetSong),
+    /// A song's changes made on stage, saved as its recovery copy
+    /// ([`Library::on_stage_copy`]).
+    OnStageCopy {
+        song: String,
+        snap: Snapshot,
+        samples: Vec<NewSample>,
+    },
+    /// Keep the changes: the recovery copy saved into the song
+    /// ([`Library::keep_on_stage`]).
+    KeepOnStage {
+        copy: Loc,
+        song: Loc,
+    },
 }
 
 /// What a job gave.
@@ -174,6 +191,17 @@ pub enum Outcome {
     Sets(Vec<(Entry, Result<crate::Set, String>)>),
     /// The projects a set can hold: folder name and lasting id.
     Songs(Vec<(String, String)>),
+    /// A set's song (its name in the set): where it is, read and checked,
+    /// or why it couldn't be found or read.
+    SetSong(String, Result<(Loc, Snapshot, crate::Check), String>),
+    /// A song's recovery copy saved, here.
+    OnStageCopied(Loc),
+    /// A recovery copy kept: saved into the song, and the copy in the
+    /// Trash.
+    OnStageKept {
+        copy: Loc,
+        song: Loc,
+    },
 }
 
 /// A job's number and what came of it (or why it failed, in words).
@@ -315,6 +343,34 @@ pub fn run(lib: &Library, job: Job) -> std::io::Result<Outcome> {
             };
             Outcome::Project(l, snap, check)
         }
+        Job::OpenSetSong(song) => {
+            let name = song.name.clone();
+            let Some(l) = lib.find_song(&song).loc().cloned() else {
+                return Ok(Outcome::SetSong(
+                    name.clone(),
+                    Err(format!("the project {name} isn\u{2019}t in Projects")),
+                ));
+            };
+            let read = lib
+                .open_project(&l)
+                .map_err(|e| format!("it doesn\u{2019}t read: {e}"))
+                .and_then(|snap| {
+                    let check = lib
+                        .check_project(&l, false)
+                        .map_err(|e| format!("its files couldn\u{2019}t be checked: {e}"))?;
+                    Ok((l, snap, check))
+                });
+            Outcome::SetSong(name, read)
+        }
+        Job::OnStageCopy {
+            song,
+            snap,
+            samples,
+        } => Outcome::OnStageCopied(lib.on_stage_copy(&song, &snap, &samples)?),
+        Job::KeepOnStage { copy, song } => {
+            lib.keep_on_stage(&copy, &song, crate::project::KEEP_VERSIONS)?;
+            Outcome::OnStageKept { copy, song }
+        }
         Job::UpdateManifest(l) => {
             let done = lib.update_manifest(&l).map_err(|e| {
                 std::io::Error::new(
@@ -408,6 +464,42 @@ mod tests {
         let back = lib.open_project(&at).unwrap();
         assert!(back.meta.is_autosave());
         assert_eq!(back.part("transport"), Some("bpm = 100\n"));
+    }
+
+    /// A set's song opens by its lasting id wherever it is now, checked;
+    /// one that is gone says so, as an answer for that song, not an error.
+    #[test]
+    fn a_sets_song_opens_by_its_id_or_says_why_not() {
+        let d = temp();
+        let lib = Library::at(&d).unwrap();
+        let snap = Snapshot {
+            meta: crate::Meta {
+                name: "Night drive".into(),
+                saved: 9,
+                ..Default::default()
+            },
+            parts: vec![("transport".into(), "bpm = 92\n".into())],
+        };
+        let night = Loc::top(Place::Projects).join("Night drive").unwrap();
+        let saved = lib.save_project(&night, &snap, 0).unwrap();
+        let moved = lib.rename(&night, "Night drive (live)").unwrap();
+        let song = crate::SetSong::new(&saved.id, "Night drive");
+        match run(&lib, Job::OpenSetSong(song.clone())).unwrap() {
+            Outcome::SetSong(name, Ok((at, snap, _))) => {
+                assert_eq!(name, "Night drive");
+                assert_eq!(at, moved);
+                assert_eq!(snap.part("transport"), Some("bpm = 92\n"));
+            }
+            other => panic!("{other:?}"),
+        }
+        lib.delete(&moved).unwrap();
+        assert_eq!(
+            run(&lib, Job::OpenSetSong(song)).unwrap(),
+            Outcome::SetSong(
+                "Night drive".into(),
+                Err("the project Night drive isn\u{2019}t in Projects".into())
+            )
+        );
     }
 
     /// Of several jobs queued in one lane before the worker gets to them,

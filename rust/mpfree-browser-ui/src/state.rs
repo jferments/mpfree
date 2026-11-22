@@ -562,6 +562,35 @@ pub enum BrowseAction {
         loc: Loc,
         set: Set,
     },
+    /// The set's song asked for with [`Browser::open_set_song`] read whole
+    /// and checked: the [`BrowseAction::ProjectOpened`] right after this is
+    /// that song's. Open it without asking anything (nothing asks on
+    /// stage); if it can't open whole, it fails.
+    SetSongOpened {
+        loc: Loc,
+    },
+    /// The set's song asked for with [`Browser::open_set_song`] couldn't
+    /// open: why, in a few words. Nothing changed.
+    SetSongFailed {
+        song: String,
+        why: String,
+    },
+    /// The recovery copy asked for with [`Browser::on_stage_copy_with`] is
+    /// saved, here.
+    OnStageCopied {
+        loc: Loc,
+    },
+    /// The recovery copy couldn't be saved: why.
+    OnStageFailed {
+        why: String,
+    },
+    /// The set the Show view plays ([`Browser::set_playing`]) changed: a
+    /// check landed, a song's changes on stage were marked, or the Set
+    /// editor changed it. The set as it is now.
+    SetChanged {
+        loc: Loc,
+        set: Set,
+    },
     /// A finger on the pad map (the Selected column's pads): kit pad `pad`
     /// (0 is A1) pressed or lifted. The app picks it, as a hit on the
     /// MPC's pad does, so Load names it, and plays what is on it while the
@@ -579,6 +608,8 @@ pub enum Confirm {
     EmptyTrash,
     /// Open this project over unsaved changes.
     Open(Loc),
+    /// Play this set over unsaved changes (its first song opens).
+    PlaySet(Loc, Box<Set>),
     /// Open this earlier save of a project over unsaved changes.
     OpenVersion(Loc, String),
     /// Start a new, empty project over unsaved changes.
@@ -594,6 +625,14 @@ pub enum Confirm {
     /// A1): a file it names is missing or damaged, or something of it
     /// can't be made here.
     OpenWhatReads(Box<OpenAsk>),
+}
+
+/// A job a set being played waits on ([`Browser::send_tracked`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Tracked {
+    /// A set's song opening: its name in the set.
+    SetSong(String),
+    OnStageCopy,
 }
 
 /// A project waiting for Open what reads ([`Confirm::OpenWhatReads`]).
@@ -873,6 +912,13 @@ pub struct Browser {
     /// id: not counted in `pending`, so the app neither keeps stepping the
     /// browser nor holds a power-off for them.
     quiet: Vec<u64>,
+    /// Jobs a set being played waits on (live shows B1), by their numbers,
+    /// so a failure answers the set player rather than only the status
+    /// line.
+    tracked: Vec<(u64, Tracked)>,
+    /// The job [`Browser::send_tracked`] runs inline (no worker), while it
+    /// runs.
+    tracking_inline: Option<Tracked>,
     modal: Modal,
     clip: Option<Clip>,
     recent: Vec<Loc>,
@@ -978,6 +1024,8 @@ impl Browser {
             status: None,
             pending: 0,
             quiet: Vec::new(),
+            tracked: Vec::new(),
+            tracking_inline: None,
             modal: Modal::None,
             clip: None,
             recent: Vec::new(),
@@ -1058,6 +1106,58 @@ impl Browser {
         }
     }
 
+    /// Like `send`, for a job a set being played waits on: its failure
+    /// comes back as the set player's action ([`Browser::apply`]).
+    fn send_tracked(&mut self, job: Job, what: Tracked) {
+        match &mut self.exec {
+            Exec::Inline(_) => {
+                self.tracking_inline = Some(what);
+                self.send(job);
+                self.tracking_inline = None;
+            }
+            Exec::Thread(w, _) => match w.send(job) {
+                0 => self.tracked_failed(what, "the library is not running".into()),
+                id => {
+                    self.pending += 1;
+                    self.tracked.push((id, what));
+                }
+            },
+        }
+    }
+
+    /// A tracked job failed: the set player hears why.
+    fn tracked_failed(&mut self, what: Tracked, why: String) {
+        self.actions.push(match what {
+            Tracked::SetSong(song) => BrowseAction::SetSongFailed { song, why },
+            Tracked::OnStageCopy => BrowseAction::OnStageFailed { why },
+        });
+    }
+
+    /// Live shows B1: open a set's song, found by its lasting id wherever
+    /// it is now, read whole and checked. It comes as
+    /// [`BrowseAction::SetSongOpened`] then [`BrowseAction::ProjectOpened`],
+    /// or as [`BrowseAction::SetSongFailed`]; nothing asks (a song that
+    /// can't open whole fails, with why).
+    pub fn open_set_song(&mut self, song: &mpfree_library::SetSong) {
+        let what = Tracked::SetSong(song.name.clone());
+        self.send_tracked(Job::OpenSetSong(song.clone()), what);
+    }
+
+    /// Live shows B1: the song's changes made on stage saved as its
+    /// recovery copy (`snap` and its sounds, as a save has them), beside
+    /// it in Projects. The song itself stays as saved. It comes as
+    /// [`BrowseAction::OnStageCopied`] or [`BrowseAction::OnStageFailed`].
+    pub fn on_stage_copy_with(&mut self, song: &str, snap: Snapshot, samples: Vec<NewSample>) {
+        self.send_tracked(
+            Job::OnStageCopy {
+                song: song.to_string(),
+                snap,
+                samples,
+            },
+            Tracked::OnStageCopy,
+        );
+    }
+
     /// Like `send`, in a lane: a newer job of the same lane makes the worker
     /// skip this one if it hasn't started.
     fn send_in(&mut self, lane: Lane, job: Job) {
@@ -1094,6 +1194,17 @@ impl Browser {
     }
 
     fn apply(&mut self, d: Done) {
+        let tracked = match self.tracking_inline.take() {
+            Some(t) => Some(t),
+            None => self
+                .tracked
+                .iter()
+                .position(|(id, _)| *id == d.id && d.id != 0)
+                .map(|i| self.tracked.swap_remove(i).1),
+        };
+        if let (Some(what), Err(e)) = (tracked, &d.result) {
+            return self.tracked_failed(what, e.clone());
+        }
         match d.result {
             Err(e) => {
                 self.sets_failed();
@@ -1258,6 +1369,35 @@ impl Browser {
             Ok(Outcome::SetChecked(loc, checks)) => self.sets_checked(loc, checks),
             // A set read or saved: the editor already has it.
             Ok(Outcome::Set(..) | Outcome::SetSaved(..)) => {}
+            Ok(Outcome::SetSong(song, Err(why))) => {
+                self.actions.push(BrowseAction::SetSongFailed { song, why })
+            }
+            Ok(Outcome::SetSong(song, Ok((loc, snap, check)))) => {
+                // Nothing asks on stage: a song that can't open whole
+                // doesn't open, and says why.
+                let (missing, damaged) = check.gaps();
+                if let Some(f) = missing.first().or(damaged.first()) {
+                    let what = if missing.is_empty() {
+                        "damaged"
+                    } else {
+                        "missing"
+                    };
+                    let more = missing.len() + damaged.len() - 1;
+                    let why = match more {
+                        0 => format!("the file {f} is {what}"),
+                        n => format!("the file {f} is {what}, and {n} more"),
+                    };
+                    self.actions.push(BrowseAction::SetSongFailed { song, why });
+                    return;
+                }
+                self.actions
+                    .push(BrowseAction::SetSongOpened { loc: loc.clone() });
+                self.accept_open(loc, snap, false, Vec::new(), check.no_manifest);
+            }
+            Ok(Outcome::OnStageCopied(loc)) => {
+                self.actions.push(BrowseAction::OnStageCopied { loc })
+            }
+            Ok(Outcome::OnStageKept { copy, song }) => self.sets_kept(copy, song),
             Ok(Outcome::Autosaved(loc)) => {
                 self.actions.push(BrowseAction::Autosaved { loc });
                 if self.folder == Loc::top(Place::Projects) {
@@ -2778,6 +2918,9 @@ impl Browser {
                 }
                 Confirm::EmptyTrash => self.send(Job::EmptyTrash),
                 Confirm::Open(loc) => self.send(Job::OpenProject(loc)),
+                Confirm::PlaySet(loc, set) => {
+                    self.actions.push(BrowseAction::PlaySet { loc, set: *set })
+                }
                 Confirm::OpenVersion(loc, id) => self.send(Job::OpenVersion(loc, id)),
                 Confirm::NewProject => self.start_new_project(),
                 Confirm::ReplacePreset { engine, name, text } => {

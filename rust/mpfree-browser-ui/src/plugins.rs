@@ -71,6 +71,8 @@ pub enum Tone {
     Warn,
     Accent,
     Bad,
+    /// The theme's second accent: a set's song that changed on stage.
+    Accent2,
 }
 
 fn ink(cx: &PaintCx, tone: Tone) -> Color {
@@ -82,6 +84,7 @@ fn ink(cx: &PaintCx, tone: Tone) -> Color {
         Tone::Warn => t.warn,
         Tone::Accent => t.accent,
         Tone::Bad => t.bad,
+        Tone::Accent2 => t.accent2,
     }
 }
 

@@ -1765,6 +1765,7 @@ fn paint_over(cx: &mut PaintCx, r: Rect, s: &Screen) {
                 crate::state::Confirm::EmptyTrash => "Delete for good",
                 crate::state::Confirm::Open(_) | crate::state::Confirm::OpenVersion(..) => "Open",
                 crate::state::Confirm::NewProject => "New project",
+                crate::state::Confirm::PlaySet(..) => "Play set",
                 crate::state::Confirm::ReplacePreset { .. } => "Replace",
                 crate::state::Confirm::OpenWhatReads(_) => "Open what reads",
             };
