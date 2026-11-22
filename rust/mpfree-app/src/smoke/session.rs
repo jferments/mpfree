@@ -1496,7 +1496,7 @@ impl Session {
         let plan = crate::desk::rec_plan(&self.app, &self.time, &self.mix);
         if plan != self.plan_shown {
             self.plan_shown = plan;
-            self.out.show(ToUi::RecPlan(plan));
+            self.out.show(ToUi::RecPlan(plan.map(Box::new)));
         }
         let (loop_rec, loop_dub) = self.looper.recording();
         let info = self.time.info();

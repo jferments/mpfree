@@ -12497,7 +12497,7 @@ fn player_session(
             let plan = desk::rec_plan(&app, &time, &mix);
             if plan != plan_shown {
                 plan_shown = plan;
-                out.show(gui::ToUi::RecPlan(plan));
+                out.show(gui::ToUi::RecPlan(plan.map(Box::new)));
             }
             if track_kits != kits_shown {
                 kits_shown = track_kits.clone();

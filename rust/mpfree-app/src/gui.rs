@@ -1237,8 +1237,9 @@ pub enum ToUi {
     /// line; None: only the pads or one track. Sent when it changes.
     WhoPlays(Option<String>),
     /// Where REC would record the pads' synth (the recording plan,
-    /// `desk::rec_plan`), when it changes: the REC chip names it.
-    RecPlan(Option<crate::app::RecPlan>),
+    /// `desk::rec_plan`), when it changes: the REC chip names it. Boxed:
+    /// with the layers and the routes' synths it is the biggest message.
+    RecPlan(Option<Box<crate::app::RecPlan>>),
     /// The kits' sampler projects, for the Sample tab (once, after
     /// loading), and the rate to build their engine views for.
     SampleKits {
@@ -8832,7 +8833,7 @@ impl Player {
                 self.refresh_hint();
             }
             ToUi::RecPlan(p) => {
-                self.rec_plan = p;
+                self.rec_plan = p.map(|p| *p);
                 self.refresh_rec_chip();
             }
             ToUi::TrackKits(k) => {
