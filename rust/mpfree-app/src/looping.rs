@@ -35,7 +35,8 @@ use mpfree_looper::print::{frames_at, PrintJob};
 use mpfree_looper::save::Saved;
 use mpfree_looper::{
     Bounce, Command, Edit, History, LayerCommand, LayerInfo, LoopFile, Looper, Memory, Phase,
-    Print, Starts, Stats, Status, Step, Take, HEARD_SECONDS, MAX_LAYERS, MAX_LOOPS,
+    Print, Reading, Starts, Stats, Status, Step, Sure, Take, HEARD_SECONDS, LOOP_MAX_BPM,
+    LOOP_MIN_BPM, MAX_LAYERS, MAX_LOOPS,
 };
 use mpfree_seq::loops::{LoopNow, LoopPlan};
 use mpfree_transport::time::{Tick, PPQ};
@@ -139,6 +140,59 @@ impl Default for HeardWave {
 }
 
 /// "1 bar", "2 bars".
+/// How a first pass with Tempo from the first loop records: "free", or
+/// with Length's bars set, "2 bars at the tempo you play".
+pub fn free_words(bars: Option<u32>) -> String {
+    match bars {
+        Some(n) if n > 0 => format!("{} at the tempo you play", bars_words_n(n)),
+        _ => "free".to_string(),
+    }
+}
+
+/// The shortest a free first pass closes at, before [`LOOP_MAX_BPM`]: "a
+/// bar", or Length's "2 bars".
+pub fn shortest_words(bars: Option<u32>) -> String {
+    match bars {
+        Some(n) if n > 1 => format!("{n} bars"),
+        _ => "a bar".to_string(),
+    }
+}
+
+/// How a free first loop's length read, for the log: "1 bar at 96.00
+/// BPM", and ", as Length set" when the bars were Length's.
+pub fn reading_words(r: &Reading) -> String {
+    format!(
+        "{} at {:.2} BPM{}",
+        bars_words_n(r.bars),
+        r.bpm,
+        if r.said.is_some() && !r.overruled() {
+            ", as Length set"
+        } else {
+            ""
+        }
+    )
+}
+
+/// What the screen should hear about a reading, besides its bars and
+/// tempo: a close call and the other reading, or a Length it couldn't
+/// keep. None for a clear reading.
+pub fn reading_note(r: &Reading) -> Option<String> {
+    if let Some(n) = r.said.filter(|_| r.overruled()) {
+        return Some(format!(
+            "Length was {}, but that would be slower than {LOOP_MIN_BPM:.0} BPM, \
+             so the bars were read from the loop",
+            bars_words_n(n)
+        ));
+    }
+    match (r.sure, r.other) {
+        (Sure::Ambiguous, Some((b, bpm))) => Some(format!(
+            "a close call: it could be {} at {bpm:.2} BPM",
+            bars_words_n(b)
+        )),
+        _ => None,
+    }
+}
+
 pub fn bars_words_n(bars: u32) -> String {
     if bars == 1 {
         "1 bar".to_string()
@@ -1269,6 +1323,13 @@ pub struct LoopHost {
     /// Tempo from the first loop, as the looper was last told
     /// ([`LoopHost::set_tempo_from_loop`]).
     free_tempo: bool,
+    /// The song's tempo was set by hand, as the looper was last told
+    /// ([`LoopHost::set_tempo_meant`]).
+    tempo_meant: bool,
+    /// Free first passes whose Length bars would have been slower than
+    /// [`LOOP_MIN_BPM`], so the length was read instead
+    /// ([`Reading::overruled`]): counted, logged and said.
+    pub readings_overruled: u64,
     /// Tempos from a free first pass the song couldn't start at
     /// ([`LoopHost::tempo_refused`]): counted, logged and said.
     pub tempos_refused: u64,
@@ -1663,6 +1724,8 @@ impl LoopHost {
             played_at: None,
             starts_refused: 0,
             free_tempo: false,
+            tempo_meant: false,
+            readings_overruled: 0,
             tempos_refused: 0,
             match_pattern: false,
             starts: Starts::Bar,
@@ -2039,27 +2102,30 @@ impl LoopHost {
                     "Record: armed, the first pass starts when you play {} ({})",
                     self.first_note(),
                     if s.free {
-                        "free: REC again closes it, and its length sets the tempo".to_string()
+                        format!(
+                            "{}: REC again closes it, and its length sets the tempo",
+                            free_words(s.bars)
+                        )
                     } else {
                         bars_text(s.bars)
                     }
                 )
             }
-            (Command::Record, Phase::Empty) if s.free && !self.resample => {
-                "Record: the first pass records free from now: REC again closes it, \
-                 and its length sets the tempo and starts the song"
-                    .to_string()
-            }
+            (Command::Record, Phase::Empty) if s.free && !self.resample => format!(
+                "Record: the first pass records {} from now: REC again closes it, \
+                 and its length sets the tempo and starts the song",
+                free_words(s.bars)
+            ),
             (Command::Record, Phase::Empty) => format!(
                 "Record: armed, the first pass starts on the next bar line ({})",
                 bars_text(s.bars)
             ),
             (Command::Record, Phase::Armed) => "Record again: disarmed".to_string(),
-            (Command::Record, Phase::Recording) if s.free => {
-                "Record during the free first pass: it closes (once it is a bar at \
-                 160 BPM), and its length sets the tempo"
-                    .to_string()
-            }
+            (Command::Record, Phase::Recording) if s.free => format!(
+                "Record during the free first pass: it closes (once it is {} at \
+                 {LOOP_MAX_BPM:.0} BPM), and its length sets the tempo",
+                shortest_words(s.bars)
+            ),
             (Command::Record, Phase::Recording) => {
                 "Record during the first pass: it ends on the next bar line".to_string()
             }
@@ -2155,6 +2221,14 @@ impl LoopHost {
                     "on (a free first pass with the song stopped sets the tempo)"
                 } else {
                     "off"
+                }
+            ),
+            (Command::TempoMeant(on), _) => format!(
+                "the song's tempo counts as {} when a free first loop's length is read",
+                if on {
+                    "set by hand"
+                } else {
+                    "left from before"
                 }
             ),
             (Command::SetFadeOld(k), _) => format!("fade old: {:.0} % kept a pass", 100.0 * k),
@@ -3207,6 +3281,14 @@ impl LoopHost {
             } else {
                 String::new()
             }
+            + &if self.readings_overruled > 0 {
+                format!(
+                    "; {} loops too long for their Length's bars (read instead)",
+                    self.readings_overruled
+                )
+            } else {
+                String::new()
+            }
             + &if self.dropouts > 0 {
                 format!("; {} times a take's source was lost while it recorded (silence)", self.dropouts)
             } else {
@@ -3588,6 +3670,16 @@ impl LoopHost {
         }
     }
 
+    /// The song's tempo was set by hand since the project opened
+    /// ([`Command::TempoMeant`]): a free first loop's reading counts it
+    /// strongly, a tempo left from before only lightly. Cheap to call
+    /// every period: the looper is told when it changes.
+    pub fn set_tempo_meant(&mut self, on: bool) {
+        if on != self.tempo_meant && self.looper.command(Command::TempoMeant(on)) {
+            self.tempo_meant = on;
+        }
+    }
+
     /// Loop `n` listening for a pad records free when it hears one
     /// ([`Status::free`]): the note doesn't start the song; closing the
     /// pass does.
@@ -3597,13 +3689,15 @@ impl LoopHost {
 
     /// After the looper's period: a free first pass closed, so the song
     /// starts at the tempo its length sets, on the frame it comes round
-    /// ([`Looper::take_tempo`]): its loop, its bars, the tempo and that
-    /// frame.
-    pub fn take_tempo(&mut self) -> Option<(usize, u32, f64, u64)> {
-        let (n, bpm, at) = self.looper.take_tempo()?;
-        let s = self.looper.loop_status(n)?;
-        let bars = u32::try_from(s.ticks / self.bar_ticks.max(1)).unwrap_or(0);
-        Some((n, bars, bpm, at))
+    /// ([`Looper::take_tempo`]): its loop, how its length read (its bars
+    /// and tempo, how sure) and that frame. A Length the reading couldn't
+    /// keep is counted ([`LoopHost::readings_overruled`]).
+    pub fn take_tempo(&mut self) -> Option<(usize, Reading, u64)> {
+        let (n, r, at) = self.looper.take_tempo()?;
+        if r.overruled() {
+            self.readings_overruled += 1;
+        }
+        Some((n, r, at))
     }
 
     /// The song can't start at the tempo loop `n` set (`why`): counted;
@@ -3905,8 +3999,9 @@ mod tests {
         // 1.5 s free: one bar of 6/8 at 120 BPM (three quarters).
         assert_eq!(run(&mut h, (3 * RATE as usize / 2) / PERIOD), None);
         h.command(Command::Record);
-        let (n, bars, bpm, _) = run(&mut h, 4).expect("the loop sets the tempo");
-        assert_eq!((n, bars), (0, 1), "one bar of 6/8, at {bpm:.2} BPM");
+        let (n, reading, _) = run(&mut h, 4).expect("the loop sets the tempo");
+        let bpm = reading.bpm;
+        assert_eq!((n, reading.bars), (0, 1), "one bar of 6/8, at {bpm:.2} BPM");
         assert!((bpm - 120.0).abs() < 0.5, "{bpm}");
         let v = h.view(bpm);
         assert_eq!(v.bar_ticks, 3 * PPQ as Tick);

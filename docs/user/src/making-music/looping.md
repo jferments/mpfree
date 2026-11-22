@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-looper rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/loop_row.rs rust/mpfree-app/src/looper_deck.rs rust/mpfree-app/src/looper_tab.rs rust/mpfree-app/src/looping.rs rust/mpfree-seq/src/loops.rs
-checked: 2026-11-20 4b71b1a9
+checked: 2026-11-22 e7409223
 -->
 
 # Recording loops
@@ -150,14 +150,20 @@ With **Starts: When I play**, tap the ring (or press REC) and the loop waits for
 
 #### Tempo from the first loop
 
-To play in your own time and have everything follow you, turn on **Tempo from the first loop** in the Looper tab's MENU. Then, with the music stopped and every loop empty, a loop on **Length: Free** (or **Pattern** with no pattern playing) doesn't wait for a bar line: tap its ring (or press REC) and it records from that moment, or, with **Starts: When I play**, from your first note. The ring says **Free** and counts the seconds.
+To play in your own time and have everything follow you, turn on **Tempo from the first loop** in the Looper tab's MENU. Then, with the music stopped and every loop empty, the first loop doesn't wait for a bar line: tap its ring (or press REC) and it records from that moment, or, with **Starts: When I play**, from your first note. The ring says **Free** and counts the seconds.
 
-When you tap the ring (or press REC) again, the loop closes there and its length sets the tempo. MPFree picks the number of bars (1, 2, 4, 8 and so on) that puts the tempo between 80 and 160 BPM, so a 2.5-second riff becomes one bar at 96 BPM, and a 7-second one four bars at about 137 BPM. The music starts at that tempo just as the loop comes round, from the start of the bar it stopped in, so the loop, the sequencer and the metronome all follow it. If notes are armed and ready to record, they record from there too.
+When you tap the ring (or press REC) again, the loop closes there and its length sets the tempo. The music starts at that tempo just as the loop comes round, from the start of the bar it stopped in, so the loop, the sequencer and the metronome all follow it. If notes are armed and ready to record, they record from there too.
+
+How many bars the loop is depends on its **Length**:
+
+- **1, 2, 4 or 8 bars** means that many bars at the tempo you play. Set Length to 2 bars, play two bars at whatever speed feels right, close the loop, and the tempo is whatever makes those two bars. Nothing is guessed.
+- **Free** (or **Pattern** with no pattern playing) lets MPFree work out the bars. A loop's length alone can't tell 1 bar at 80 BPM from 2 bars at 160, so it picks the likeliest: a 2.5-second riff becomes one bar at 96 BPM, and a 7-second one four bars at about 137 BPM. When two answers are close, such as 1 bar at 79 or 2 bars at 158, it still picks one so the music can start, and the screen says it was a close call and names the other. A tempo you set yourself before recording (tapped, typed or turned) counts towards the answer, so if you set 80 first, that loop is 1 bar at 79. To be sure of the bars, set Length.
 
 - **The tempo is exact,** to many decimal places, so the loop never drifts against the song; the project keeps it exactly when you save. The tempo chip shows it rounded.
-- **Closed too soon** (shorter than a bar at 160 BPM, 1.5 s in 4/4), the loop keeps recording and closes as soon as it is that long. The ring says **closing**.
+- **Closed too soon** (shorter than a bar at 300 BPM, 0.8 s in 4/4, or than your Length's bars at 300 BPM), the loop keeps recording and closes as soon as it is that long. The ring says **closing**.
+- **Too long for its Length** (2 bars set, but so long that 2 bars would be slower than 30 BPM), MPFree works out the bars instead and the screen says so.
 - **PLAY while it records** throws the free loop away (the screen counts it), since the music would start at the old tempo. Close the loop with its ring or REC instead.
-- It is off while another device's clock leads, the song has more than one tempo, or an export is running. A loop with a set Length, a second loop, or a loop recorded with the music playing keeps to the bars as usual.
+- It is off while another device's clock leads, the song has more than one tempo, or an export is running. A second loop, or a loop recorded with the music playing, keeps to the bars as usual.
 - If the music still can't start at the new tempo, the screen says why, and the loop plays at the song's tempo when the music starts.
 
 {{shot: looper-free | Loop 1 recording free with the music stopped: closing it sets the tempo.}}

@@ -1204,9 +1204,10 @@ impl LooperPage {
                     parts.push(format!("waits for you to play · {records}"))
                 }
                 Phase::Armed => parts.push(format!("waits for the bar line · {records}")),
-                Phase::Recording if s.free => {
-                    parts.push("recording free · its length sets the tempo".to_string())
-                }
+                Phase::Recording if s.free => parts.push(format!(
+                    "recording {} · its length sets the tempo",
+                    crate::looping::free_words(s.bars)
+                )),
                 Phase::Recording => parts.push("recording the first pass".to_string()),
                 _ => {
                     let bars = bars_of(s.ticks, v.bar_ticks);
@@ -1378,13 +1379,16 @@ impl LooperPage {
                     n + 1
                 ),
                 Phase::Recording if s.free && s.ending => format!(
-                    "Loop {} closes once it is a bar at 160 BPM: then its length sets the tempo",
-                    n + 1
+                    "Loop {} closes once it is {} at {:.0} BPM: then its length sets the tempo",
+                    n + 1,
+                    crate::looping::shortest_words(s.bars),
+                    mpfree_looper::LOOP_MAX_BPM
                 ),
                 Phase::Recording if s.free => format!(
-                    "Loop {} records free: REC again closes it, and its length sets the tempo \
-                     (80 to 160 BPM) and starts the song",
-                    n + 1
+                    "Loop {} records {}: REC again closes it, and its length sets the tempo \
+                     and starts the song",
+                    n + 1,
+                    crate::looping::free_words(s.bars)
                 ),
                 Phase::Armed if s.listening && s.free => format!(
                     "Loop {} records free when you play: {} starts it, and REC again sets \
@@ -1413,14 +1417,18 @@ impl LooperPage {
                     n + 1
                 ),
                 Phase::Empty if s.free && !v.resample => format!(
-                    "Tap Loop {}'s ring or press REC: it {records} free, and its length sets \
+                    "Tap Loop {}'s ring or press REC: it {records} {}, and its length sets \
                      the tempo",
-                    n + 1
+                    n + 1,
+                    crate::looping::free_words(s.bars)
                 ),
                 _ => format!("Tap Loop {}'s ring or press REC: it {records}", n + 1),
             },
             waits: match s.phase {
-                Phase::Recording if s.free && s.ending => Some("Closing at 1 bar".to_string()),
+                Phase::Recording if s.free && s.ending => Some(match s.bars {
+                    Some(b) if b > 1 => format!("Closing at {b} bars"),
+                    _ => "Closing at 1 bar".to_string(),
+                }),
                 Phase::Recording if s.free => Some("REC again sets the tempo".to_string()),
                 Phase::Armed if s.listening => Some("REC starts when you play".to_string()),
                 Phase::Armed => Some(match self.transport.state {

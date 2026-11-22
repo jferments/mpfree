@@ -580,8 +580,8 @@ fn a_free_pass_setting_the_tempo_never_allocates() {
         assert!(t.process(n as u32, &mut b));
         l.process(&b, &input[..2 * n], &mut out[..2 * n]);
         // The host: the tempo, then PLAY, on the frame asked.
-        if let Some((_, bpm, at)) = l.take_tempo() {
-            let _ = t.command(at, T::SetTempo(bpm));
+        if let Some((_, r, at)) = l.take_tempo() {
+            let _ = t.command(at, T::SetTempo(r.bpm));
             let _ = t.command(at, T::Play);
             tempos += 1;
         }
