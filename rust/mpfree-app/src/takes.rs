@@ -801,15 +801,8 @@ mod tests {
             };
             let z = [0.0f32; PERIOD];
             let (mut l, mut r) = ([0.0f32; PERIOD], [0.0f32; PERIOD]);
-            self.mix.period(
-                &ctx,
-                (&synth, &synth),
-                (&z, &z),
-                (&z, &z),
-                (&z, &z),
-                &mut l,
-                &mut r,
-            );
+            self.mix
+                .period(&ctx, (&synth, &synth), (&z, &z), (&z, &z), &mut l, &mut r);
             let watched = self
                 .mix
                 .mixer
