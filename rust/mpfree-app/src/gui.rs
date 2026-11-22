@@ -199,6 +199,11 @@ pub const EDIT_CLIPS_PAGE: &str = "Edit clip";
 pub const EDIT_CLIPS_LAYOUT: &str =
     "col(header:60, row(edit-clips:*, edit-clips-card:440):*, hint:26)";
 const EDIT_CLIPS_HINT: &str = "Tap a clip, or turn the wheel and push: the Sequencer edits it and nothing starts   ·   Back or a tab: close the list";
+/// The Sequencer's step size chip's list (step sequencer refactor D1).
+pub const STEP_SIZE_PAGE: &str = "Step size";
+pub const STEP_SIZE_LAYOUT: &str =
+    "col(header:60, row(step-size:*, step-size-card:440):*, hint:26)";
+const STEP_SIZE_HINT: &str = "Tap a step size, or turn the wheel and push: the steps take it and no note moves   ·   Back or a tab: close the list";
 
 const CONSOLE_HINT: &str =
     "Switch the MPC off with its power switch to return to the stock firmware";
@@ -2088,6 +2093,9 @@ pub struct Player {
     /// and the slot each of its rows picks (None: what plays).
     clip_list: bool,
     clip_rows: Vec<Option<usize>>,
+    /// The Sequencer's step size chip's list is over the page (refactor
+    /// D1); its rows are `mpfree_seq::steps::SIZES`, in order.
+    size_list: bool,
     /// The Lanes list's rows: each a setting, its name, and what it is on.
     lane_rows: Vec<(play_page::LockLane, String, String)>,
     /// A track asked of the time engine for a kit ("+ Kit track", or a
@@ -2309,6 +2317,22 @@ impl Player {
         ];
         clips_card.buttons = vec!["Back".to_string()];
         ui.add("edit-clips-card", clips_card);
+        ui.add("step-size", ListView::new("Step size"));
+        let mut size_card = Card::new("Step size");
+        size_card.heading = "Step size".to_string();
+        size_card.lines = vec![
+            (
+                "Each step of the grid lasts this long.".to_string(),
+                Tone::Normal,
+            ),
+            ("No note moves: each keeps its time.".to_string(), Tone::Dim),
+            ("The clip keeps its length:".to_string(), Tone::Dim),
+            ("16 sixteenths are 8 eighths.".to_string(), Tone::Dim),
+            ("UNDO puts the step size back.".to_string(), Tone::Dim),
+            ("Back keeps the step size.".to_string(), Tone::Dim),
+        ];
+        size_card.buttons = vec!["Back".to_string()];
+        ui.add("step-size-card", size_card);
         ui.add("timing", StatList::new("Timing"));
         ui.add(play_page::TRANSPORT, PlayTransport::default());
         ui.add(play_page::MASTER, MasterBar::new());
@@ -2393,6 +2417,8 @@ impl Player {
         ui.add_page(LANES_PAGE, LANES_LAYOUT).expect("lanes layout");
         ui.add_page(EDIT_CLIPS_PAGE, EDIT_CLIPS_LAYOUT)
             .expect("edit clips layout");
+        ui.add_page(STEP_SIZE_PAGE, STEP_SIZE_LAYOUT)
+            .expect("step size layout");
         ui.add_page("System info", SYSTEM_LAYOUT)
             .expect("system info layout");
         let patterns = crate::app::built_in_patterns();
@@ -2600,6 +2626,7 @@ impl Player {
             lane_list: false,
             clip_list: false,
             clip_rows: Vec::new(),
+            size_list: false,
             lane_rows: Vec::new(),
             kit_track: None,
             chip_why: Vec::new(),
@@ -3202,6 +3229,66 @@ impl Player {
             self.show_view(self.view);
         }
         Some(FromUi::Time(TimeAction::EditClip(slot)))
+    }
+
+    /// The step size chip's list again (refactor D1): each step size,
+    /// with the steps the clip would have in it, the clip's own marked.
+    fn refresh_size_list(&mut self) {
+        let Some(c) = self.play.steps.clip.as_ref() else {
+            return;
+        };
+        let length = (c.song_length * c.step as f64 / c.song_step.max(1e-9)).round() as i64;
+        let items: Vec<ListItem> = mpfree_seq::steps::SIZES
+            .iter()
+            .map(|&size| {
+                let steps = (length.max(1) + size - 1) / size;
+                let mut detail = format!("{steps} steps");
+                if size == c.step {
+                    detail.push_str(" · now");
+                }
+                ListItem {
+                    text: mpfree_seq::steps::size_name(size).unwrap_or("").to_string(),
+                    detail,
+                    color: None,
+                }
+            })
+            .collect();
+        let selected = mpfree_seq::steps::SIZES
+            .iter()
+            .position(|&size| size == c.step)
+            .unwrap_or(0);
+        if let Some(l) = self.ui.get_mut::<ListView>("step-size") {
+            l.items = items;
+            l.selected = selected;
+        }
+    }
+
+    /// The Sequencer's step size chip: the list of step sizes over the
+    /// page, or the page again.
+    fn toggle_size_list(&mut self) {
+        if self.size_list {
+            self.show_view(self.view);
+            return;
+        }
+        if self.play.steps.clip.is_none() {
+            self.tell("steps: tap a step to start a pattern first");
+            return;
+        }
+        self.close_touch_page();
+        self.refresh_size_list();
+        self.switch_page(STEP_SIZE_PAGE);
+        self.size_list = true;
+        self.refresh_hint();
+    }
+
+    /// Row `row` of the step size list picked: the list closes and the
+    /// clip's steps take that size.
+    fn pick_step_size(&mut self, row: usize) -> Option<FromUi> {
+        let size = *mpfree_seq::steps::SIZES.get(row)?;
+        if self.size_list {
+            self.show_view(self.view);
+        }
+        Some(FromUi::Time(TimeAction::StepSize(size)))
     }
 
     /// A setting picked on the Lanes list: its lock lane shows (with no
@@ -5311,6 +5398,7 @@ impl Player {
         if let Some(old) = self.ui.get::<StepGrid>(play_page::STEPS) {
             g.title.clone_from(&old.title);
             g.chip.clone_from(&old.chip);
+            g.size.clone_from(&old.size);
             g.right.clone_from(&old.right);
             g.lanes.clone_from(&old.lanes);
             g.steps = old.steps;
@@ -5346,11 +5434,13 @@ impl Player {
                     && old.rows_open == g.rows_open
                     && old.hold_picks == g.hold_picks
                     && old.chip == g.chip
+                    && old.size == g.size
             });
         if !same {
             if let Some(w) = self.ui.get_mut::<StepGrid>(play_page::STEPS) {
                 w.title = g.title;
                 w.chip = g.chip;
+                w.size = g.size;
                 w.right = g.right;
                 w.lanes = g.lanes;
                 w.steps = g.steps;
@@ -5371,6 +5461,9 @@ impl Player {
         }
         if self.clip_list {
             self.refresh_clip_list();
+        }
+        if self.size_list {
+            self.refresh_size_list();
         }
         let mut th = Throws::default();
         self.play.fill_throws(&mut th);
@@ -6122,6 +6215,8 @@ impl Player {
             LANES_HINT.to_string()
         } else if self.clip_list {
             EDIT_CLIPS_HINT.to_string()
+        } else if self.size_list {
+            STEP_SIZE_HINT.to_string()
         } else if let Some(name) = &self.learning {
             learning_hint(name)
         } else if let Some(bank) = self.status.main_held.filter(|_| self.ready) {
@@ -6826,6 +6921,26 @@ impl Player {
     /// control to control, press the control it is on, or grab a value and
     /// turn it.
     fn nav(&mut self, n: Nav) {
+        // The step size list takes the wheel: it moves the row picked,
+        // and the push gives the steps that size.
+        if self.size_list {
+            match n {
+                Nav::Turn(d) | Nav::Step(d) | Nav::Fine(d) => {
+                    if let Some(l) = self.ui.get_mut::<ListView>("step-size") {
+                        let last = l.items.len().saturating_sub(1) as i64;
+                        l.selected = (l.selected as i64 + i64::from(d)).clamp(0, last) as usize;
+                    }
+                }
+                Nav::Push => {
+                    let row = self.ui.get::<ListView>("step-size").map(|l| l.selected);
+                    if let Some(a) = row.and_then(|r| self.pick_step_size(r)) {
+                        self.outbox.push(a);
+                    }
+                }
+            }
+            self.refresh_hint();
+            return;
+        }
         // The clip chip's list takes the wheel: it moves the row picked,
         // and the push edits that clip.
         if self.clip_list {
@@ -11049,6 +11164,7 @@ impl Player {
         self.kit_list = false;
         self.lane_list = false;
         self.clip_list = false;
+        self.size_list = false;
         let notes = v == View::Sequencer && self.time.edit.is_some();
         if v != self.view || notes || !matches!(v, View::Play | View::Sequencer) {
             self.rec_list = false;
@@ -12085,6 +12201,12 @@ impl Player {
                 self.show_view(self.view);
                 None
             }
+            // The step size chip's list (refactor D1): a size; Back.
+            ("step-size", EventKind::Select(row)) => self.pick_step_size(row),
+            ("step-size-card", EventKind::Tab(_)) => {
+                self.show_view(self.view);
+                None
+            }
             (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_BPM)) => {
                 Some(FromUi::TapTempo)
             }
@@ -12234,6 +12356,12 @@ impl Player {
             // without starting it.
             (play_page::STEPS, EventKind::Tab(play_widgets::HEAD_CLIP)) => {
                 self.toggle_clip_list();
+                None
+            }
+            // The step size chip (refactor D1): the step sizes, to cut the
+            // clip into steps of another size.
+            (play_page::STEPS, EventKind::Tab(play_widgets::HEAD_SIZE)) => {
+                self.toggle_size_list();
                 None
             }
             // A gear lane's mod rows (LFO to CC, layout spec 4m): its name
@@ -16129,6 +16257,10 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }
     clips.toggle_clip_list();
     out.push(("sequencer-edit-clips", clips));
+    // The step size chip's list (refactor D1): the six sizes, 1/16 now.
+    let mut sizes = sample_play(fonts(), PlayView::Beats);
+    sizes.toggle_size_list();
+    out.push(("sequencer-step-size", sizes));
     // A track that plays outside gear (step 5b, board 4): its notes as
     // scale rows, its CC lanes under them (the gear's Cutoff opening over
     // the bar, a bend on step 7); then its Lanes list, the gear's CCs.
@@ -20775,7 +20907,10 @@ mod tests {
         assert!(grid(&p).2.ends_with("pads: page 2 · BANK B"));
         apply_effects(&mut p, click(&mut app, button::PAD_BANK[0]));
         let r = p.ui.rect_of(play_page::STEPS).unwrap();
-        let (x, y) = StepGrid::head_at(r, HEAD_NEXT, false);
+        let (x, y) =
+            p.ui.get::<StepGrid>(play_page::STEPS)
+                .unwrap()
+                .head_at(r, HEAD_NEXT);
         let a = p.touch(3, Touch::Down, x, y);
         p.touch(3, Touch::Up, x, y);
         assert_eq!(a, Some(FromUi::StepPage(1)));
@@ -20808,7 +20943,10 @@ mod tests {
         p.take_actions();
         let r = p.ui.rect_of(play_page::STEPS).unwrap();
         let tap = |p: &mut Player, k: usize| {
-            let (x, y) = StepGrid::head_at(r, k, true);
+            let (x, y) =
+                p.ui.get::<StepGrid>(play_page::STEPS)
+                    .unwrap()
+                    .head_at(r, k);
             let a = p.touch(3, Touch::Down, x, y);
             p.touch(3, Touch::Up, x, y);
             a
@@ -20874,7 +21012,10 @@ mod tests {
         p.take_actions();
         let r = p.ui.rect_of(play_page::STEPS).unwrap();
         let tap = |p: &mut Player, k: usize| {
-            let (x, y) = StepGrid::head_at(r, k, false);
+            let (x, y) =
+                p.ui.get::<StepGrid>(play_page::STEPS)
+                    .unwrap()
+                    .head_at(r, k);
             let a = p.touch(3, Touch::Down, x, y);
             p.touch(3, Touch::Up, x, y);
             a
@@ -20931,7 +21072,7 @@ mod tests {
         st.clip.as_mut().unwrap().steps = 16;
         p.apply(ToUi::Steps(Box::new(st)));
         assert_eq!(tap(&mut p, HEAD_SHORTER), None);
-        assert!(hint(&p).contains("16 steps is the fewest"), "{}", hint(&p));
+        assert!(hint(&p).contains("halves down to 16 steps"), "{}", hint(&p));
     }
 
     /// Jay after live test 3: hold UNDO to see the page's history and
@@ -22636,6 +22777,84 @@ mod tests {
             None
         );
         assert_ne!(p.page(), EDIT_CLIPS_PAGE);
+        assert!(p.take_actions().is_empty());
+    }
+
+    /// The Sequencer's step size chip (refactor D1): left of the length,
+    /// a tap lists the six sizes with the steps the clip would have in
+    /// each (its own marked); a tap or the wheel's push picks one, Back
+    /// picks none.
+    #[test]
+    fn the_step_size_chip_lists_the_sizes_and_picks_one() {
+        use mpfree_ui::Widget as _;
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.take_actions();
+        let grid = p.ui.get::<StepGrid>(play_page::STEPS).unwrap();
+        assert_eq!(grid.size.as_deref(), Some("1/16"));
+        assert!(!grid.right.contains("1/16"), "{}", grid.right);
+        let r = p.ui.rect_of(play_page::STEPS).unwrap();
+        let chip = grid
+            .targets(r)
+            .into_iter()
+            .find(|t| t.id == "head" && t.index == play_widgets::HEAD_SIZE)
+            .unwrap()
+            .rect;
+        let (x, y) = (chip.x + chip.w / 2, chip.y + chip.h / 2);
+        let page = p.page().to_string();
+        p.touch(7, Touch::Down, x, y);
+        p.touch(7, Touch::Up, x, y);
+        assert_eq!(p.page(), STEP_SIZE_PAGE);
+        let list = p.ui.get::<ListView>("step-size").unwrap();
+        let rows: Vec<(String, String)> = list
+            .items
+            .iter()
+            .map(|i| (i.text.clone(), i.detail.clone()))
+            .collect();
+        let steps = p.play.steps.clip.as_ref().unwrap().steps;
+        assert_eq!(
+            rows[3],
+            ("1/16".to_string(), format!("{steps} steps · now"))
+        );
+        assert_eq!(
+            rows[1],
+            ("1/8".to_string(), format!("{} steps", steps.div_ceil(2)))
+        );
+        assert_eq!(
+            rows.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(),
+            ["1/4", "1/8", "1/8T", "1/16", "1/16T", "1/32"]
+        );
+        assert_eq!(list.selected, 3);
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains("no note moves"), "{hint}");
+        // A tap on 1/8: the list closes.
+        assert_eq!(
+            p.on_event(UiEvent {
+                widget: "step-size".into(),
+                kind: EventKind::Select(1),
+            }),
+            Some(FromUi::Time(TimeAction::StepSize(480)))
+        );
+        assert_eq!(p.page(), page);
+        // The wheel: down two rows from 1/16, and the push picks 1/32.
+        p.toggle_size_list();
+        p.take_actions();
+        p.nav(Nav::Turn(2));
+        p.nav(Nav::Push);
+        assert!(p
+            .take_actions()
+            .contains(&FromUi::Time(TimeAction::StepSize(120))));
+        assert_ne!(p.page(), STEP_SIZE_PAGE);
+        // Back picks nothing.
+        p.toggle_size_list();
+        p.take_actions();
+        assert_eq!(
+            p.on_event(UiEvent {
+                widget: "step-size-card".into(),
+                kind: EventKind::Tab(0),
+            }),
+            None
+        );
+        assert_ne!(p.page(), STEP_SIZE_PAGE);
         assert!(p.take_actions().is_empty());
     }
 

@@ -130,8 +130,10 @@ pub struct StepsData {
 pub struct StepClip {
     pub slot: usize,
     pub name: String,
-    /// Steps in the clip (16 a bar).
+    /// Steps in the clip (16 a bar at its first step size).
     pub steps: usize,
+    /// A step, in the clip's ticks: its step size (refactor D1).
+    pub step: Tick,
     /// The clip's length and a step's, in song ticks (after its speed).
     pub song_length: f64,
     pub song_step: f64,
@@ -186,8 +188,14 @@ impl StepClip {
             return None;
         }
         if let Some(order) = self.order {
-            let big = ((pos - origin) as f64 / self.song_step).floor() as i64;
-            return Some(order.step(big).min(self.steps.saturating_sub(1)));
+            // A play direction moves by 1/16s whatever the step size
+            // (`DIRECTION_STEP`): the step lit is the one holding the
+            // 1/16 heard.
+            let dir = mpfree_seq::DIRECTION_STEP;
+            let song_dir = self.song_step * dir as f64 / self.step.max(1) as f64;
+            let big = ((pos - origin) as f64 / song_dir).floor() as i64;
+            let tick = order.step(big) as Tick * dir;
+            return Some(((tick / self.step.max(1)) as usize).min(self.steps.saturating_sub(1)));
         }
         let at = ((pos - origin) as f64).rem_euclid(self.song_length);
         Some(((at / self.song_step) as usize).min(self.steps.saturating_sub(1)))
@@ -2375,6 +2383,121 @@ mod tests {
         assert!(h.act(TimeAction::EditClip(Some(9))).is_err());
         h.act(TimeAction::Arm(None)).unwrap();
         assert!(h.act(TimeAction::EditClip(Some(0))).is_err());
+    }
+
+    /// The step size (refactor D1) cuts the same clip into steps of
+    /// another size: its length and every note's time stay, nothing
+    /// compiles, a tap lands on the new grid, and UNDO puts the size back.
+    #[test]
+    fn the_step_size_cuts_the_clip_into_other_steps_and_no_note_moves() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        // 13 sixteenths, notes on 1/16 steps 1 and 3 and one nudged later.
+        let mut beat = Clip::new("Bass", 13 * STEP_TICKS);
+        for (tick, pitch) in [(0, 36), (480, 36), (600, 38)] {
+            beat.notes
+                .push(mpfree_seq::Note::new(tick, 120, pitch, 100));
+        }
+        h.control.project.tracks[0].slots[0] = Some(beat);
+        h.control.project.give_clip_ids();
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 4, &[]);
+        let before = h.project().clip(0, 0).unwrap().notes.clone();
+        let compiles = h.control.costs.compiles;
+        let said = h.act(TimeAction::StepSize(480)).unwrap();
+        assert_eq!(said, "steps: Bass in 1/8 steps (7)");
+        let clip = h.project().clip(0, 0).unwrap();
+        assert_eq!((clip.step, clip.length), (480, 13 * STEP_TICKS));
+        assert_eq!(clip.notes, before, "no note moves");
+        assert_eq!(h.control.costs.compiles, compiles, "nothing compiled");
+        assert_eq!(*h.audio.view, h.control.view().unwrap());
+        let steps = h.steps().clip.unwrap();
+        assert_eq!((steps.steps, steps.step), (7, 480));
+        // Step 2 of 1/8 holds the note on 1/16 step 3 and the one 120
+        // ticks after it, nudged.
+        let kick = steps.row(36)[1].unwrap();
+        assert_eq!((kick.nudge, kick.len), (0, 120));
+        assert_eq!(steps.row(38)[1].map(|s| s.nudge), Some(120));
+        // A tap on 1/8 step 4 puts a note on tick 1440.
+        h.step_action(StepAction::Tap {
+            pad: 0,
+            step: 3,
+            velocity: 100,
+        })
+        .unwrap();
+        let added: Vec<_> = h
+            .project()
+            .clip(0, 0)
+            .unwrap()
+            .notes
+            .iter()
+            .filter(|n| !before.contains(n))
+            .map(|n| n.tick)
+            .collect();
+        assert_eq!(added, [1440]);
+        // Triplets: 3,120 ticks is 10 steps of 1/8T, the last one short.
+        h.act(TimeAction::StepSize(320)).unwrap();
+        assert_eq!(h.steps().clip.unwrap().steps, 10);
+        // The head's length counts the clip's steps (12 triplet eighths
+        // are a bar); the clip card's Length row still counts sixteenths.
+        let said = h
+            .step_action(StepAction::Length {
+                steps: 12,
+                copy: false,
+            })
+            .unwrap();
+        assert!(said.contains("is 12 steps (1 bar)"), "{said}");
+        assert_eq!(h.project().clip(0, 0).unwrap().length, 16 * STEP_TICKS);
+        h.act(TimeAction::ClipLength {
+            track: 0,
+            slot: 0,
+            steps: 8,
+            copy: false,
+        })
+        .unwrap();
+        assert_eq!(h.project().clip(0, 0).unwrap().length, 8 * STEP_TICKS);
+        h.act(TimeAction::Undo).unwrap();
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.project().clip(0, 0).unwrap().length, 13 * STEP_TICKS);
+        // UNDO: the triplets go, then the tap, then the eighths.
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.project().clip(0, 0).unwrap().step, 480);
+        h.act(TimeAction::Undo).unwrap();
+        h.act(TimeAction::Undo).unwrap();
+        let clip = h.project().clip(0, 0).unwrap();
+        assert_eq!((clip.step, &clip.notes), (240, &before));
+        assert_eq!(h.steps().clip.unwrap().steps, 13);
+        // Not a step size; a track with no clip.
+        assert!(h.act(TimeAction::StepSize(200)).is_err());
+        h.act(TimeAction::Arm(Some(1))).unwrap();
+        assert!(h.act(TimeAction::StepSize(480)).is_err());
+    }
+
+    /// A play direction moves by 1/16s whatever the step size (refactor
+    /// D1): the playhead lights the step of the 1/16 heard. Reversed, 8
+    /// sixteenths as 4 eighths light 4, 4, 3, 3 ... from the start.
+    #[test]
+    fn a_play_direction_lights_the_step_heard_at_any_step_size() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut clip = Clip::new("Hats", 8 * STEP_TICKS);
+        clip.notes.push(mpfree_seq::Note::new(0, 120, 36, 100));
+        clip.direction = mpfree_seq::Direction::Reverse;
+        clip.step = 480;
+        h.control.project.tracks[0].slots[0] = Some(clip);
+        h.control.project.give_clip_ids();
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 4, &[]);
+        let c = h.steps().clip.unwrap();
+        assert!(c.order.is_some());
+        let o = c.origin.unwrap();
+        let lit: Vec<_> = (0..8).map(|k| c.playing(o + k * STEP_TICKS + 10)).collect();
+        let want: Vec<_> = [3, 3, 2, 2, 1, 1, 0, 0].into_iter().map(Some).collect();
+        assert_eq!(lit, want);
     }
 
     /// A change the view can't make in place (here, a note it erases that

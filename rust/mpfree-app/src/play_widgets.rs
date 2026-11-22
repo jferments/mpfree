@@ -1178,7 +1178,11 @@ pub struct StepGrid {
     /// with a ▾ before the title. A tap on it gives `Tab(HEAD_CLIP)`, for
     /// the list of the track's clips to edit.
     pub chip: Option<String>,
-    /// "1/16 · 1 bar".
+    /// The Sequencer's step size chip (refactor D1): the clip's step size
+    /// ("1/16"), left of the length. A tap gives `Tab(HEAD_SIZE)`, for the
+    /// list of step sizes.
+    pub size: Option<String>,
+    /// "1/16 · 1 bar"; with the step size chip, "1 bar".
     pub right: String,
     /// Every lane there could be, most wanted first (sounds with notes,
     /// the pad hit last, then the kit's other sounds).
@@ -1300,6 +1304,8 @@ pub const HEAD_BANK: usize = 16;
 pub const HEAD_LANE: usize = 11;
 /// The Steps head's clip chip: `Tab(HEAD_CLIP)`.
 pub const HEAD_CLIP: usize = 12;
+/// The Steps head's step size chip: `Tab(HEAD_SIZE)` (refactor D1).
+pub const HEAD_SIZE: usize = 13;
 /// A lock lane's `pad`: this plus its number among the lock lanes. A tap
 /// on its step `col` gives `Cell { row: pad, col }`, its × `Toggle(pad)`,
 /// and a drag on (or the wheel turning) the step's cell `Step { index:
@@ -1335,6 +1341,7 @@ pub const MIN_STEPS: usize = 16;
 struct StepLook {
     title: String,
     chip: Option<String>,
+    size: Option<String>,
     right: String,
     lanes: Vec<Lane>,
     steps: usize,
@@ -1370,13 +1377,17 @@ struct Head {
     higher: Rect,
     /// + Lane, left of the page (empty without it).
     lane: Rect,
+    /// The step size chip, left of the length (empty without it).
+    size: Rect,
 }
 
 /// A head button's width.
 const HEAD_BTN: i32 = 56;
+/// The step size chip's width: "1/16T" and its ▾.
+const SIZE_CHIP_W: i32 = 84;
 
 impl Head {
-    fn of(r: Rect, pitched: bool, add_lane: bool) -> Head {
+    fn of(r: Rect, pitched: bool, add_lane: bool, size: bool) -> Head {
         let (h, body) = card_head(r);
         let band = Rect::new(h.x, r.y, h.w, body.y - 2 - r.y);
         let mut x = h.right();
@@ -1387,6 +1398,12 @@ impl Head {
         let longer = take(HEAD_BTN);
         let length = take(78);
         let shorter = take(HEAD_BTN);
+        let size = if size {
+            take(6);
+            take(SIZE_CHIP_W)
+        } else {
+            Rect::new(shorter.x, band.y, 0, 0)
+        };
         take(14);
         let next = take(HEAD_BTN);
         let page = take(52);
@@ -1429,12 +1446,14 @@ impl Head {
             octave,
             higher,
             lane,
+            size,
         }
     }
 
     /// The control under (`x`, `y`), as its `Tab` index.
     fn at(&self, x: i32, y: i32) -> Option<usize> {
         [
+            (self.size, HEAD_SIZE),
             (self.lane, HEAD_LANE),
             (self.prev, HEAD_PREV),
             (self.next, HEAD_NEXT),
@@ -1772,6 +1791,7 @@ impl StepGrid {
         StepLook {
             title: self.title.clone(),
             chip: self.chip.clone(),
+            size: self.size.clone(),
             right: self.right.clone(),
             lanes: self.lanes.clone(),
             steps: self.steps,
@@ -1797,7 +1817,12 @@ impl StepGrid {
 
     /// The pattern head, with + Lane where it shows.
     fn head(&self, r: Rect) -> Head {
-        Head::of(r, self.pitched.is_some(), self.add_lane)
+        Head::of(
+            r,
+            self.pitched.is_some(),
+            self.add_lane,
+            self.size.is_some(),
+        )
     }
 
     /// The clip chip's place in the heading (after the Arm pill), if it
@@ -1845,11 +1870,11 @@ impl StepGrid {
         );
     }
 
-    /// The middle of head control `k` (`HEAD_PREV` ...) with scale rows
-    /// (`pitched`) or without, for the app's tests.
+    /// The middle of head control `k` (`HEAD_PREV` to `HEAD_HIGHER`) as
+    /// this grid lays its head out in `r`, for the app's tests.
     #[cfg(test)]
-    pub fn head_at(r: Rect, k: usize, pitched: bool) -> (i32, i32) {
-        let h = Head::of(r, pitched, false);
+    pub fn head_at(&self, r: Rect, k: usize) -> (i32, i32) {
+        let h = self.head(r);
         let b = [
             h.prev, h.next, h.shorter, h.longer, h.fold, h.lower, h.higher,
         ][k];
@@ -1924,6 +1949,24 @@ impl StepGrid {
                 "+ Lane",
             );
         }
+        if let Some(size) = self.size.as_deref().filter(|_| hd.size.w > 0) {
+            // The step size chip: the size and a ▾, raised as a button.
+            let face = Rect::new(hd.size.x + 2, mid - 13, hd.size.w - 4, 26);
+            cx.canvas.fill_round_rect(face, 13, t.raised);
+            cx.text(
+                FontId::Bold,
+                14.0,
+                Rect::new(face.x + 10, face.y, (face.w - 28).max(0), face.h),
+                Align::Center,
+                t.button_ink(self.length > 0),
+                size,
+            );
+            let (vx, vy) = (face.right() - 14, mid - 2);
+            for k in 0..5 {
+                cx.canvas
+                    .fill_rect(Rect::new(vx - 4 + k, vy + k, 9 - 2 * k, 1), t.text_dim);
+            }
+        }
         let row = |b: Rect| Rect::new(b.x, h.y, b.w, h.h);
         if let Some(p) = self.pitched {
             let rows = self.geom(r).rows;
@@ -1957,7 +2000,13 @@ impl StepGrid {
             t.text_dim,
             &page,
         );
-        let length = format!("{} steps", self.length.max(MIN_STEPS));
+        // The clip's steps at its step size; a new pattern's 16 before one.
+        let n = if self.length == 0 {
+            MIN_STEPS
+        } else {
+            self.length
+        };
+        let length = format!("{n} steps");
         cx.text(
             FontId::Bold,
             draw::HEAD_PX,
@@ -2034,7 +2083,11 @@ impl StepGrid {
                 label,
             );
         }
-        let total = self.length.max(MIN_STEPS);
+        let total = if self.length == 0 {
+            MIN_STEPS
+        } else {
+            self.length
+        };
         let from = (self.page * 16 + 1).min(total);
         let to = (self.page * 16 + self.steps.max(1)).min(total);
         cx.text(
@@ -2679,6 +2732,11 @@ impl Widget for StepGrid {
         }
         if let Some(chip) = self.chip_rect(r) {
             out.push(Target::tap("head", HEAD_CLIP, "Clip to edit", chip));
+        }
+        if h.size.w > 0 && self.bank.is_none() {
+            out.push(
+                Target::tap("head", HEAD_SIZE, "Step size", h.size).disabled_if(self.length == 0),
+            );
         }
         if self.pitched.is_some() && self.bank.is_none() {
             let (lower, higher) = self.octave_usable(g.rows);
@@ -4509,7 +4567,7 @@ mod tests {
         );
         // The head: Fold, then the octave's ‹ and ›, before the page's.
         for k in [HEAD_FOLD, HEAD_LOWER, HEAD_HIGHER, HEAD_PREV, HEAD_LONGER] {
-            let (x, y) = StepGrid::head_at(r, k, true);
+            let (x, y) = g.head_at(r, k);
             assert_eq!(g.touch(7, Touch::Down, x, y, r), Some(EventKind::Tab(k)));
         }
         let t = g.targets(r);
@@ -4517,8 +4575,8 @@ mod tests {
         assert!(!t.iter().any(|t| t.id == "mute" && t.index < 16));
         assert!(t.iter().any(|t| t.id == "head" && t.label == "Fold"));
         // A kit's lanes: no Fold, no octave.
+        let (x, y) = g.head_at(r, HEAD_FOLD);
         g.pitched = None;
-        let (x, y) = StepGrid::head_at(r, HEAD_FOLD, true);
         assert_eq!(g.touch(8, Touch::Down, x, y, r), None);
     }
 

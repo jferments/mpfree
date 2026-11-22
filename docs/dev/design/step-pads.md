@@ -36,6 +36,8 @@ This builds on the [step sequencer](steps.md): steps are a view of a clip's note
 
 Pad 1, bottom left, is the page's first step. With no clip, the first tap on page 1 makes a one-bar clip in the track's first empty slot and launches it, as a tap on Beats does; a tap past the clip's end says how long the clip is.
 
+A step is the clip's step size (`Clip::step`, step sequencer refactor D1; a 1/16 unless the Sequencer's step size chip changed it), so with 1/8 steps the 16 pads are two bars and a one-bar clip has eight of them. The pages, the lead-in a step plays early from and a held step's nudge all count in that size.
+
 ## Where it lives
 
 - **The app** (`app/step_pads.rs`) keeps the mode, the sound, the page and Follow, and answers the buttons: STEP SEQ's press and release (`App::button` calls `step_seq_up` on the release), PAD BANK while the pads are steps, ERASE + PAD BANK as `Effect::Steps(StepAction::ClearSteps)`. The pad played last comes from `App::pad_down`. `App::step_pads` is what the screen and the audio loop read (`Status::steps`); `App::pads_are_steps` is true while a press is a step edit (on, and STEP SEQ not held).
@@ -84,7 +86,7 @@ On a synth track the pattern's lanes are notes, as the design's mockup B draws t
 - **Which rows** (`PlayPage::note_rows`): every pad with a note (`PadInfo::pitch`, from `KitView::pitches`, which `Synth::pad_pitches` fills with each pad's note, a chord's root, and whether its light is the root's; empty for a kit and the Drums engine, whose pads are sounds), sorted by note, any pad with steps but no note of its own below them. **Fold** on the pattern's head keeps only the rows the clip uses, or all of them while it uses none.
 - **The window** (`PlayPage::low_row`, `play_widgets::Pitched`): the grid shows as many rows as fit (six on Beats with the timing strip, eight without it), from the root at or under the lowest note used, within an octave; with no notes, from the lowest root. The head's ‹ and › round "Oct 3" (`HEAD_LOWER`, `HEAD_HIGHER`) move it an octave down or up (`PlayPage::turn_octave`: to the row an octave from the lowest shown, stopping at the ends, which the hint line says); "Oct 3" names the lowest row's octave (48, C3, is octave 3). Fold, or another layout or scale on the pads, starts the window again from the notes. `StepGrid::shown` clamps it to the rows there are.
 - **A row's name plays its note** while a finger is on it (`EventKind::Pad` down and up, `FromUi::Audition`: the synth's pad on and off in `main.rs`, never recorded and never a step press; the smoke session renders no sound). With ERASE held, a row's name clears that note's steps, as a sound's lane does. A synth's pads have no mutes of their own (the kit's pad mutes are the drums'), so the rows have no speaker.
-- **The head** adds Fold and the octave before the page's ‹ and ›; the head's details ("1/16 · 1 bar", "pads: page 2 · BANK B") give way when they would crowd the title.
+- **The head** adds Fold and the octave before the page's ‹ and ›; the head's details ("1 bar", "pads: page 2 · BANK B"; the step size has its own chip since refactor D1, and is in the details only where the chip isn't) give way when they would crowd the title.
 - **With STEP SEQ** the line's lane stays on top, above the window of notes, as the lane on the pads.
 
 ## The step inspector and the cells

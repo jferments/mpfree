@@ -67,6 +67,25 @@ pub const PAGE: usize = 16;
 /// 1/16 triplet and 1/32.
 pub const SIZES: [Tick; 6] = [960, 480, 320, 240, 160, 120];
 
+/// A clip's step size until it is changed: a 1/16 ([`crate::Clip::step`]).
+pub const DEFAULT_SIZE: Tick = 240;
+
+/// A step size's name ("1/8T"), for the screen and the saved clip; None
+/// for a size that isn't one of [`SIZES`].
+pub fn size_name(size: Tick) -> Option<&'static str> {
+    SIZES.contains(&size).then(|| {
+        crate::notes::DIVISIONS
+            .iter()
+            .find(|d| d.0 == size)
+            .map_or("", |d| d.1)
+    })
+}
+
+/// The step size named `name` ("1/8T"), if it is one of [`SIZES`].
+pub fn size_named(name: &str) -> Option<Tick> {
+    SIZES.into_iter().find(|&s| size_name(s) == Some(name))
+}
+
 /// A clip cut into steps of one size.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Grid {

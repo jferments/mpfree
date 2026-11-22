@@ -27,7 +27,7 @@ A **pattern** is a loop of steps, like a grid: each row is a pad, each column a 
 
 Changes play the next time the pattern comes round. **PLAY** starts the pattern on the screen when nothing else is playing, and a line moves across the grid to show where it is.
 
-The heading over the grid has, from the left: the red **Armed** pill, the clip chip with the pattern's name, the track's name, **+ Lane** (see [Lock lanes](#lock-lanes)), the page arrows **‹ 1/1 ›** and the length **– 16 steps +**.
+The heading over the grid has, from the left: the red **Armed** pill, the clip chip with the pattern's name, the track's name, **+ Lane** (see [Lock lanes](#lock-lanes)), the page arrows **‹ 1/1 ›**, the step size chip **1/16 ▾** (see [Change the step size](#change-the-step-size)) and the length **– 16 steps +**.
 
 ### Edit another clip
 
@@ -39,9 +39,19 @@ The list starts with **What plays**, which goes back to editing the clip that pl
 
 **Mute a row.** Each row's name is its mute button, with a speaker in the box beside it: tap the name to mute that pad, so you can drop the kick out and bring it back. Hold **ERASE** and tap a row's name to delete all of that sound's steps.
 
-**Make it longer.** A pattern starts at 16 steps, one bar of 16ths. Tap **+** at the top right of the pattern to double it to 32 steps, then 64, then 128 (eight bars). The new steps repeat the ones you have, so the beat carries on and you change what you want in the copy. **‹** and **›** turn the pages of 16 steps, and the number between them says which page you're on. **–** halves the pattern again, down to 16 steps; press **UNDO** if you want the steps it took off back.
+**Make it longer.** A pattern starts at 16 steps, one bar of 16ths. Tap **+** at the top right of the pattern to double it to 32 steps, then 64, then 128 (eight bars of 16ths). The new steps repeat the ones you have, so the beat carries on and you change what you want in the copy. **‹** and **›** turn the pages of 16 steps, and the number between them says which page you're on. **–** halves the pattern again, down to 16 steps; press **UNDO** if you want the steps it took off back.
 
 With more rows than fit, swipe the rows up and down; the bar at the right shows where you are. Turning **Timing strip** off in the Sequencer's options (**MENU**) gives the pattern more rows.
+
+### Change the step size
+
+Each step is a 16th note to begin with. For a slow bass line in 8ths, hi-hats in 32nds or a shuffle in triplets, tap the step size chip (**1/16 ▾**, left of the length) and pick a size: **1/4**, **1/8**, **1/8T**, **1/16**, **1/16T** or **1/32** (T is a triplet). Each row says how many steps the pattern has at that size.
+
+No note moves and the pattern keeps its length: a one-bar pattern of 16 sixteenths becomes 8 eighths or 32 thirty-seconds, and the notes that fall between the new steps stay where they are, as a nudge on the nearest step. New taps go on the new steps. Each pattern keeps its own step size, it's saved with the song, and **UNDO** puts the old size back. With **STEP SEQ** on, the step pads follow the size too.
+
+Turn the wheel and push to pick a row, or tap **Back** to keep the size you have. The chip is greyed until the track has a pattern: tap a step first.
+
+{{shot: sequencer-step-size | The step size list: 1/4 to 1/32 with the steps each gives, 1/16 the size now.}}
 
 ### Reading the pattern
 

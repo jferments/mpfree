@@ -1086,8 +1086,7 @@ impl Default for PlayPage {
 /// note that lasts into the next step (a tie), the empty steps a note
 /// lasts over, and a step switched off but kept. An off step's note
 /// doesn't play, so it lasts over nothing.
-fn marks(row: &[Option<Step>], locks: &[usize], from: usize) -> Vec<Marks> {
-    let size = STEP_TICKS;
+fn marks(row: &[Option<Step>], locks: &[usize], from: usize, size: Tick) -> Vec<Marks> {
     // Where the last note so far ends, from the row's start.
     let mut reach: Tick = 0;
     let mut held = vec![false; row.len()];
@@ -1264,6 +1263,12 @@ pub fn position_text(t: &TransportInfo) -> String {
 }
 
 impl PlayPage {
+    /// A step of the pattern shown, in its clip's ticks: the clip's step
+    /// size (refactor D1), a 1/16 before it has a clip.
+    pub fn step_ticks(&self) -> Tick {
+        self.steps.clip.as_ref().map_or(STEP_TICKS, |c| c.step)
+    }
+
     /// The Q-Links' targets on the view shown: a held step pad's, on any
     /// view.
     pub fn knobs(&self) -> [Knob; 4] {
@@ -1877,7 +1882,7 @@ impl PlayPage {
                             "Nudge",
                             &scope,
                             &format!("{:+} ticks", s.nudge).replace("+0 ticks", "0 ticks"),
-                            (0.5 + s.nudge as f32 / STEP_TICKS as f32).clamp(0.0, 1.0),
+                            (0.5 + s.nudge as f32 / self.step_ticks() as f32).clamp(0.0, 1.0),
                         );
                         c.bipolar = true;
                         c
@@ -1906,7 +1911,7 @@ impl PlayPage {
                             "Nudge",
                             &scope,
                             &format!("{ms:+.0} ms").replace("+0 ms", "0 ms"),
-                            (0.5 + s.nudge as f32 / STEP_TICKS as f32).clamp(0.0, 1.0),
+                            (0.5 + s.nudge as f32 / self.step_ticks() as f32).clamp(0.0, 1.0),
                         );
                         c.bipolar = true;
                         c
@@ -2112,6 +2117,7 @@ impl PlayPage {
         let Some(clip) = self.steps.clip.as_mut() else {
             return;
         };
+        let size = clip.step;
         let Some((_, row)) = clip.rows.iter_mut().find(|(p, _)| *p == pad) else {
             return;
         };
@@ -2123,7 +2129,7 @@ impl PlayPage {
                 Change::Velocity(v) => s.velocity = v,
                 Change::Length(t) => s.len = t,
                 Change::Nudge(n) => {
-                    let half = STEP_TICKS / 2;
+                    let half = size / 2;
                     s.nudge = n.clamp(-half, half - 1);
                 }
                 Change::Chance(c) => s.chance = c,
@@ -2745,7 +2751,7 @@ impl PlayPage {
             steps: (from..from + PAGE)
                 .map(|i| row.get(i).copied().flatten().map_or(0, |s| s.velocity))
                 .collect(),
-            marks: marks(row, locks, from),
+            marks: marks(row, locks, from, self.step_ticks()),
             note: pitch.map(|x| x.note),
             root: pitch.is_some_and(|x| x.root),
             label: None,
@@ -2796,9 +2802,24 @@ impl PlayPage {
         } else {
             format!("{first} · {}", self.steps.track_name)
         };
-        let bars = clip.map_or(1, |c| c.steps.div_ceil(16).max(1));
+        // The step size chip (refactor D1): the clip's step size, on the
+        // Sequencer's Steps once there is a clip.
+        let size_name = clip.and_then(|c| mpfree_seq::steps::size_name(c.step));
+        let size = chip.as_ref().and(size_name).map(str::to_string);
+        // Bars of the meter, from the clip's length (its steps of its own
+        // size, the last one perhaps short).
+        let bar = self.transport.meter.bar_ticks().max(1);
+        let bars = clip.map_or(1, |c| {
+            let length = (c.song_length * c.step as f64 / c.song_step.max(1e-9)).round() as Tick;
+            (length.max(1) + bar - 1) / bar
+        });
         let pages = clip.map_or(1, |c| c.steps.div_ceil(PAGE).max(1));
-        let mut right = format!("1/16 · {bars} bar{}", if bars == 1 { "" } else { "s" });
+        let bars_text = format!("{bars} bar{}", if bars == 1 { "" } else { "s" });
+        let mut right = match (&size, size_name) {
+            (Some(_), _) => bars_text,
+            (None, Some(n)) => format!("{n} · {bars_text}"),
+            (None, None) => format!("1/16 · {bars_text}"),
+        };
         if let Some(s) = self.on_pads {
             // STEP SEQ: which page the pads are, and its PAD BANK.
             let letter = (b'A' + (s.page % 4) as u8) as char;
@@ -2829,6 +2850,9 @@ impl PlayPage {
         }
         if g.chip != chip {
             g.chip = chip;
+        }
+        if g.size != size {
+            g.size = size;
         }
         if g.right != right {
             g.right = right;
@@ -2962,7 +2986,9 @@ impl PlayPage {
             })
         } else {
             if n <= MIN_STEPS {
-                return Err(format!("steps: {MIN_STEPS} steps is the fewest here"));
+                return Err(format!(
+                    "steps: – halves down to {MIN_STEPS} steps; this pattern has {n}"
+                ));
             }
             Ok(StepAction::Length {
                 steps: (n / 2).max(MIN_STEPS),
@@ -3567,6 +3593,7 @@ mod tests {
             slot: 0,
             name: "Pattern 1".into(),
             steps: 16,
+            step: STEP_TICKS,
             song_length: 3840.0,
             song_step: 240.0,
             origin: None,
@@ -3820,7 +3847,7 @@ mod tests {
         assert_eq!(on(&p, 4), Some(false), "shown at once");
         let i = p.inspect().unwrap();
         assert!(i.title.ends_with("· off") && i.on == Some(false), "{i:?}");
-        let m = &marks(p.steps.clip.as_ref().unwrap().row(0), &[], 0)[4];
+        let m = &marks(p.steps.clip.as_ref().unwrap().row(0), &[], 0, STEP_TICKS)[4];
         assert!(m.off && !m.tie);
         assert!(matches!(
             p.inspector_tap(InspectTap::Join),
