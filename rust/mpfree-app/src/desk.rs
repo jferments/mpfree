@@ -348,9 +348,13 @@ impl Desk<'_> {
                         return None;
                     }
                 }
-                let picked = matches!(a, mpfree_time_ui::TimeAction::Arm(Some(_)));
+                let picked = matches!(
+                    a,
+                    mpfree_time_ui::TimeAction::Arm(Some(_)) | mpfree_time_ui::TimeAction::Pick(_)
+                );
                 fx.extend(crate::time_action(out, time, tracks, looper, app, mix, a));
-                // Picking a track arms its notes, as Bitwig's auto-arm.
+                // Picking a track arms its notes, as Bitwig's auto-arm
+                // (not while the arm is pinned: `arm` leaves it).
                 if picked {
                     fx.extend(arm(
                         app,
@@ -2070,5 +2074,49 @@ mod tests {
         assert_eq!(fx.last(), Some(&app::Effect::Rec(Press::Rec)));
         assert!(!app.pads_chose_synth());
         assert_eq!(rec(&mut app, &mut time, &mut mix, &mut out), None);
+    }
+
+    /// Refactor C1: a track picked while REC's arm is pinned is selected
+    /// alone (the Sequencer edits it and the pads follow it) and REC stays
+    /// on the pinned track; unpinned, a pick arms it too; a row tapped in
+    /// REC's list (an arm, not a pick) moves even a pinned arm, and the
+    /// selection with it.
+    #[test]
+    fn a_track_picked_with_the_arm_pinned_is_selected_and_rec_stays() {
+        use mpfree_time_ui::TimeAction;
+        let (tx, _rx) = std::sync::mpsc::sync_channel::<gui::ToUi>(64);
+        let mut out = Out {
+            console: None,
+            sink: Some(tx),
+            dropped: 0,
+            report: None,
+            queued: None,
+            last_draw: std::time::Instant::now(),
+        };
+        let mut app = app::App::new(44_100, false);
+        let mut time = time::TimeHost::new(44_100, 92.0).unwrap();
+        let looper = looping::LoopHost::new(44_100, 8);
+        let mut tracks = audiotracks::TrackHost::new(44_100, 10);
+        let mut mix = mixing::MixHost::new(44_100, 0.0, 6.0);
+        let mut act = |app: &mut app::App, time: &mut time::TimeHost, a| {
+            crate::time_action(&mut out, time, &mut tracks, &looper, app, &mut mix, a)
+        };
+        assert_eq!((time.armed(), time.selected()), (Some(0), Some(0)));
+        app.rec.pinned = true;
+        act(&mut app, &mut time, TimeAction::Pick(2));
+        assert_eq!((time.armed(), time.selected()), (Some(0), Some(2)));
+        assert_eq!(
+            rec_now(&time, &looper).notes,
+            "Track 1",
+            "the REC chip still names it"
+        );
+        assert_eq!(time.steps().track, 2, "the Sequencer edits the pick");
+        // A row of REC's list is an arm: it moves even a pinned arm.
+        act(&mut app, &mut time, TimeAction::Arm(Some(3)));
+        assert_eq!((time.armed(), time.selected()), (Some(3), Some(3)));
+        // Unpinned, a pick arms and selects.
+        app.rec.pinned = false;
+        act(&mut app, &mut time, TimeAction::Pick(5));
+        assert_eq!((time.armed(), time.selected()), (Some(5), Some(5)));
     }
 }

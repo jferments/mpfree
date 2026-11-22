@@ -245,8 +245,11 @@ with `--quick`) at 128 frames and 44.1 kHz:
   the module out and the golden check skips it (no sound); there is no
   budget line for it. Today the control half runs on the audio thread
   ([time-threads.md](time-threads.md), step 3), so these are also what a
-  touch costs there. The instruction gate guards them against slowdowns;
-  the targets come from the MPC's next device round.
+  touch costs there. The instruction gate guards them against slowdowns
+  (CI's own counts went into `instructions.txt` after train 132, 20 Nov:
+  a tap 485,970 for the edit and 711,323 until it plays, a detent 375,783
+  and 387,476, the grid 1,568,091, and the dense time case 29,520 a
+  block); the targets come from the MPC's next device round.
 - **looper:** 60 s of looper memory, recording a 2-bar first pass from the
   input, then overdubbing layer after layer with an undo every 30 s.
 - **mix:** the mixer (from the FX thread) idle, and routing 12 tracks and 8

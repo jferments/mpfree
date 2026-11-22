@@ -63,7 +63,13 @@ MPFree is written mainly in Rust. On a Linux computer with stable Rust installed
 cargo test --manifest-path rust/Cargo.toml --workspace --locked
 ~~~
 
-[Testing and CI](docs/dev/guides/testing-and-ci.md) covers the rest of the tests, and [mpfree on the test build](docs/dev/guides/mpfree-app.md) covers running it on an MPC One.
+To build the USB creator for Linux with this clone's MPFree inside it, the way a release builds it:
+
+~~~sh
+tools/build-usb-creator.sh
+~~~
+
+It ends with the creator as one file and the line to open it ([Building the USB creator](docs/dev/guides/build-usb-creator.md)). [Testing and CI](docs/dev/guides/testing-and-ci.md) covers the rest of the tests, and [mpfree on the test build](docs/dev/guides/mpfree-app.md) covers running it on an MPC One.
 
 ## License
 

@@ -22,6 +22,7 @@
 //! ([`PlayView::set_includes`]), so a view a little late, or one that cues
 //! the same clip again, is never taken for the switch.
 
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use mpfree_param::RelAddr;
@@ -29,8 +30,8 @@ use mpfree_seq::arrange::SONG_LANE_LEN;
 use mpfree_seq::mpfree_moves::{Kind, Map, Moves, Target};
 use mpfree_seq::steps::Edit;
 use mpfree_seq::{
-    touch_fits, Clip, ClipProgram, DestId, Direction, LaunchGrid, Lock, ModelError, Note, Project,
-    Quantise, Source, Speed, Touch, TouchPoint, MAX_LOCKS, MAX_NOTES, MAX_TRACKS, SLOTS,
+    touch_fits, Clip, ClipId, ClipProgram, DestId, Direction, LaunchGrid, Lock, ModelError, Note,
+    Project, Quantise, Speed, Touch, TouchPoint, MAX_LOCKS, MAX_NOTES, MAX_TRACKS, ROWS,
 };
 use mpfree_transport::time::{Swing, TempoMap, Tick};
 
@@ -770,15 +771,21 @@ impl PlayView {
             .arrangement
             .check(&project.tracks)
             .map_err(CompileError::Model)?;
-        // The slots placed (a placement's own clip is checked with the
-        // arrangement), each checked once however often it is placed.
-        let mut seen = [[false; SLOTS]; MAX_TRACKS];
+        // Where each cell's clip is, by id, for the blocks to find theirs
+        // (the song's own clips are checked with the arrangement); each
+        // cell's clip is checked once however often it is placed.
+        let mut cells: HashMap<ClipId, (usize, usize)> = HashMap::new();
+        for (t, r, c) in project.cell_clips() {
+            if c.id.is_given() {
+                cells.entry(c.id).or_insert((t, r));
+            }
+        }
+        let mut checked: HashSet<ClipId> = HashSet::new();
         for p in &project.arrangement.placements {
-            if let (Source::Slot(s), Some(clip)) = (&p.source, p.clip(&project.tracks)) {
-                if let Some(done) = seen.get_mut(p.track).and_then(|t| t.get_mut(*s)) {
-                    if !*done {
+            if let Some(&(t, r)) = cells.get(&p.clip) {
+                if checked.insert(p.clip) {
+                    if let Some(clip) = project.clip(t, r) {
                         clip.check().map_err(CompileError::Model)?;
-                        *done = true;
                     }
                 }
             }
@@ -815,15 +822,20 @@ impl PlayView {
                 .tracks
                 .get(p.track)
                 .ok_or(CompileError::NoTrack(p.track))?;
-            // Linked to a slot emptied since: silent until it has a clip.
-            let Some(clip) = p.clip(&project.tracks) else {
-                continue;
-            };
-            // A placement's own clip is named by a number past the slots,
-            // for the player's keys.
-            let slot = match p.source {
-                Source::Slot(s) => s,
-                Source::Own(_) => SLOTS + i,
+            // The block's clip, wherever it lives, keyed for the player
+            // by its row when it is a cell's of the block's own lane, else
+            // by a number past every row. A block whose clip is gone is
+            // silent until it comes back.
+            let (clip, slot) = match cells.get(&p.clip) {
+                Some(&(t, r)) => match project.clip(t, r) {
+                    Some(c) if t == p.track => (c, r),
+                    Some(c) => (c, ROWS + i),
+                    None => continue,
+                },
+                None => match project.arrangement.clips.get(p.clip) {
+                    Some(c) => (c, ROWS + i),
+                    None => continue,
+                },
             };
             let view = view_of(clip, track.swing, slot, p.origin(clip), p.start);
             if let Some(t) = self.tracks.get_mut(p.track) {
@@ -983,15 +995,23 @@ impl PlayView {
         while bits != 0 {
             let i = bits.trailing_zeros() as usize;
             bits &= bits - 1;
-            let Some(t) = self.tracks.get_mut(i) else {
-                continue;
-            };
-            if let Some(c) = t.clip.as_mut() {
-                c.make_room(notes, locks);
-            }
-            if let Some(c) = t.cue.as_mut().and_then(|c| c.clip.as_mut()) {
-                c.make_room(notes, locks);
-            }
+            self.make_room_on(i, notes, locks);
+        }
+    }
+
+    /// [`PlayView::make_room`] for track `track` alone, armed or not: the
+    /// track the Sequencer edits apart from the arm (step sequencer
+    /// refactor C3), so its step edits go in place as the armed track's
+    /// do. Call it on the control thread, after compiling.
+    pub fn make_room_on(&mut self, track: usize, notes: usize, locks: usize) {
+        let Some(t) = self.tracks.get_mut(track) else {
+            return;
+        };
+        if let Some(c) = t.clip.as_mut() {
+            c.make_room(notes, locks);
+        }
+        if let Some(c) = t.cue.as_mut().and_then(|c| c.clip.as_mut()) {
+            c.make_room(notes, locks);
         }
     }
 
@@ -1226,7 +1246,7 @@ fn clip_view(
         .slots
         .get(slot)
         .and_then(Option::as_ref)
-        .filter(|_| slot < SLOTS)
+        .filter(|_| slot < ROWS)
         .ok_or(CompileError::EmptySlot { track, slot })?;
     clip.check().map_err(CompileError::Model)?;
     Ok(view_of(clip, t.swing, slot, origin, start))
@@ -1878,9 +1898,10 @@ mod tests {
         );
         // Placed in the song, it is refused once song mode is on.
         let mut v = PlayView::compile(&p, &[]).unwrap();
+        p.give_clip_ids();
         p.arrangement
             .placements
-            .push(mpfree_seq::Placement::linked(1, 3, 0, 3840));
+            .push(mpfree_seq::Placement::of(&p.tracks, 1, 3, 0, 3840));
         assert!(v.set_song(&p, false).is_ok());
         assert_eq!(
             v.set_song(&p, true),

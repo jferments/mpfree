@@ -1615,10 +1615,11 @@ fn notes_action(
         }
         NoteOut::PlaysOn => app.open_io(),
         NoteOut::OpenArp => {
-            let armed = time.armed();
-            if armed == Some(t) {
+            // The arp panel shows the selected track's arp.
+            if time.selected() == Some(t) {
                 return app.arp_action(mpfree_arp_ui::view::ArpAction::OpenPanel);
             }
+            let armed = time.armed();
             if recording {
                 return vec![Effect::Tell(format!(
                     "notes: recording on track {}: stop to open track {}'s arp",
@@ -1626,7 +1627,7 @@ fn notes_action(
                     t + 1
                 ))];
             }
-            let mut fx = vec![Effect::Time(mpfree_time_ui::TimeAction::Arm(Some(t)))];
+            let mut fx = vec![Effect::Time(mpfree_time_ui::TimeAction::Pick(t))];
             fx.extend(app.arp_action(mpfree_arp_ui::view::ArpAction::OpenPanel));
             fx
         }
@@ -2054,7 +2055,7 @@ mod tests {
         let fx = act(&mut p, &mut app, &mut time, &mut r, NoteAction::OpenArp);
         assert_eq!(
             fx.first(),
-            Some(&Effect::Time(mpfree_time_ui::TimeAction::Arm(Some(SYNTH)))),
+            Some(&Effect::Time(mpfree_time_ui::TimeAction::Pick(SYNTH))),
             "{fx:?}"
         );
         assert_eq!(app.view(), View::Arp);

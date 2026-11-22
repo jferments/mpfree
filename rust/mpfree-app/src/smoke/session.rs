@@ -1434,12 +1434,13 @@ impl Session {
         let rolled =
             crate::desk::pad_rolled(&mut self.app, &self.time, &self.looper, &mut self.out);
         self.fx.extend(rolled);
-        let armed = self.time.armed().unwrap_or(0);
-        if armed != self.app.track() {
-            let fx = self.app.set_track(armed);
+        // As main.rs: the pads follow the selected track.
+        let selected = self.time.selected().unwrap_or(0);
+        if selected != self.app.track() {
+            let fx = self.app.set_track(selected);
             self.fx.extend(fx);
-            // The pads play what the newly armed track plays.
-            self.kit_to = Some(self.track_kits.entry(armed));
+            // The pads play what the newly selected track plays.
+            self.kit_to = Some(self.track_kits.entry(selected));
         }
         if let Some(Effect::Arp(v)) = self.app.arp_poll() {
             self.out.show(ToUi::Arp(Box::new(v)));
@@ -2052,12 +2053,12 @@ impl Session {
             FromUi::SampleGain(db) => self.rec_gain.1 = 10f32.powf(db / 20.0),
             FromUi::SampleGrains(c) => self.cloud = Some(c),
             // A tap on a track's sound line on Arrange, as main.rs: the
-            // track is armed and the Synth tab's MENU opens on its
+            // track is picked and the Synth tab's MENU opens on its
             // Instrument row, showing that track's instrument.
             FromUi::TrackInstrument(track) if track < self.time.project().tracks.len() => {
-                if self.time.armed() != Some(track) {
-                    let arm = mpfree_time_ui::TimeAction::Arm(Some(track));
-                    self.fx.push(Effect::Time(arm));
+                if self.time.selected() != Some(track) {
+                    let pick = mpfree_time_ui::TimeAction::Pick(track);
+                    self.fx.push(Effect::Time(pick));
                 }
                 let e = self.app.open_track_instrument(track);
                 self.fx.extend(e);

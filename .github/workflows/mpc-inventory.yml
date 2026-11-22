@@ -91,6 +91,7 @@ jobs:
           sh -n tools/fxprobe/fxprobe.sh
           bash -n tools/mpc-one/lib/neighbor-identity.sh
           bash -n tools/mpc-one/tests/test-neighbor-identity.sh
+          bash -n tools/build-usb-creator.sh
       - name: Test neighbor MAC extraction against deterministic fixtures
         run: bash tools/mpc-one/tests/test-neighbor-identity.sh
       - name: Test the eMMC backup against a fake MPC under BusyBox (no device)
@@ -147,6 +148,8 @@ jobs:
           python3 tools/mpc-import/tests/test_inspect_xpj.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_read_stick_logs.py
           python3 tools/ci/test_store.py
+      - name: The one-command USB creator build, against stand-in tools
+        run: python3 tools/tests/test_build_usb_creator.py
       - name: The USB creator release's file hand-over, tested against a fake GitHub (node)
         # tools/ci/release_assets.js runs inside actions/github-script; any node 18 or newer
         # runs its tests: the machine's own, else the newest of the runner's bundled ones that

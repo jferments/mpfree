@@ -6,9 +6,7 @@
 //! size.
 
 use mpfree_play::{Event, Launch, Out, PlayView, Player, Recorder, Sink, Taken, Takes};
-use mpfree_seq::{
-    Clip, Note, Placement, Project, Quantise, Source, Speed, Touch, TouchPoint, Track,
-};
+use mpfree_seq::{Clip, Note, Placement, Project, Quantise, Speed, Touch, TouchPoint, Track};
 use mpfree_transport::{Block, Command, Transport};
 
 /// Frames per tick at 120 BPM and 44.1 kHz.
@@ -64,6 +62,7 @@ fn session(clip: Clip) -> Session {
     let mut t = Track::new("keys", 0);
     t.slots[0] = Some(clip);
     p.tracks.push(t);
+    p.give_clip_ids();
     Session {
         project: p,
         commands: vec![(0, Command::Play)],
@@ -256,18 +255,21 @@ fn pressure_plays_on_its_note_wherever_quantise_puts_it() {
     }
 }
 
-/// Live to song places the clips it heard, linked to their slots, so
-/// their pressure plays from the song too; a placement's own copy (made
-/// unique) plays its own.
+/// Live to song places the clips it heard, each block naming its clip, so
+/// their pressure plays from the song too; a song clip (made unique)
+/// plays its own.
 #[test]
 fn a_song_placement_plays_its_clips_pressure() {
     const BAR: i64 = 3840;
     let mut p = session(pressed_clip()).project;
     p.arrangement
-        .place(Placement::linked(0, 0, BAR, BAR))
+        .place(Placement::of(&p.tracks, 0, 0, BAR, BAR))
         .unwrap();
-    let mut own = Placement::linked(0, 0, 3 * BAR, BAR);
-    own.source = Source::Own(Box::new(pressed_clip()));
+    // A block of its own copy (made unique) plays the copy's pressure.
+    let mut copy = pressed_clip();
+    copy.id = p.new_clip_id();
+    let own = Placement::new(0, copy.id, 3 * BAR, BAR);
+    p.arrangement.clips.keep(copy).unwrap();
     p.arrangement.place(own).unwrap();
     let mut want = vec![];
     for bar in [BAR, 3 * BAR] {

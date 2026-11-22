@@ -36,10 +36,11 @@
 
 use mpfree_param::ParamAddr;
 
-use crate::{ClipProgram, ModelError, MAX_TRACKS, SLOTS};
+use crate::{ClipProgram, ModelError, MAX_TRACKS, ROWS};
 
-/// Scenes in a project: one per row of slots.
-pub const SCENES: usize = SLOTS;
+/// Scenes in a project: one per row it keeps ([`ROWS`], the Arrange
+/// refactor's 1.2), kept as a list as long as the last one set up.
+pub const SCENES: usize = ROWS;
 /// The longest a follow action waits, in bars.
 pub const MAX_FOLLOW_BARS: u16 = 999;
 /// Values one scene can store for the morph.

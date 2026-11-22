@@ -968,8 +968,7 @@ mod looper {
         fn notes(s: &Session) -> usize {
             s.time.project().tracks[0]
                 .slots
-                .iter()
-                .flatten()
+                .clips()
                 .map(|c| c.notes.len())
                 .sum()
         }
@@ -2716,8 +2715,7 @@ mod device_log {
             let pads_in = |s: &Session| {
                 let mut n: Vec<u8> = s.time.project().tracks[0]
                     .slots
-                    .iter()
-                    .flatten()
+                    .clips()
                     .flat_map(|c| c.notes.iter().map(|n| n.note))
                     .collect();
                 n.sort();
@@ -2793,8 +2791,7 @@ mod device_log {
             let locks = |s: &Session| -> Vec<(RelAddr, f32)> {
                 s.time.project().tracks[0]
                     .slots
-                    .iter()
-                    .flatten()
+                    .clips()
                     .flat_map(|c| c.locks.iter().map(|l| (l.addr, l.value)))
                     .collect()
             };
