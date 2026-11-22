@@ -36,10 +36,12 @@ pub enum StemsBy {
     /// One per track, as the MPC makes them: a track that shares its
     /// mixer strip (the drum kit's tracks) needs the range played again
     /// with only that track.
-    #[default]
     Track,
     /// One per mixer channel (each engine's strip, each track instrument,
-    /// each return), from the one pass: they add up to the mix.
+    /// each return), from the one pass: they add up to the mix. The
+    /// default, since each instrument sounds on a channel of its own (the
+    /// instrument redesign's rule 7: stems per instrument by default).
+    #[default]
     Channel,
 }
 
@@ -183,7 +185,7 @@ impl ExportPanel {
                     ExportRange::Arrangement => DEFAULT_BARS,
                 },
             ),
-            None => (true, true, true, StemsBy::Track, DEFAULT_BARS),
+            None => (true, true, true, StemsBy::default(), DEFAULT_BARS),
         };
         let range = match (&setup.arrangement, last.map(|c| c.range)) {
             (Some(_), Some(ExportRange::Bars(n))) => ExportRange::Bars(n),
@@ -356,7 +358,8 @@ mod tests {
     #[test]
     fn stems_by_track_or_channel_say_how_many_passes() {
         let mut p = ExportPanel::new(setup(true), None);
-        assert_eq!(p.by, StemsBy::Track, "by track unless picked");
+        assert_eq!(p.by, StemsBy::Channel, "by channel unless picked");
+        p.pick(ExportInput::ByTrack);
         assert_eq!(p.stem_count(), (7, 4));
         assert_eq!(
             p.by_words(),
@@ -377,6 +380,7 @@ mod tests {
             ..setup(true)
         };
         let mut p = ExportPanel::new(one.clone(), None);
+        p.pick(ExportInput::ByTrack);
         assert_eq!(
             p.by_words(),
             "Plays the range 2 times: 1 track shares a channel"
