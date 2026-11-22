@@ -222,6 +222,8 @@ impl Drawing {
             ),
         );
         self.reason = Some(why.to_string());
+        // Until the next start (System status).
+        player.report_problem(mpfree_status::Report::began(&mpfree_status::kinds::NO_GPU));
         // The GPU process has put the CRTC back on the framebuffer (or the
         // kernel has, as its last file closed); ask the kernel to show it
         // too, then paint every pixel again.
