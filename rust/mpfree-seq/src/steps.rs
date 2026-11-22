@@ -187,8 +187,10 @@ impl Edit {
     }
 
     /// Both edits made from the same clip: `other`'s new pressure runs go
-    /// after this one's, and its notes name them there.
-    fn join(&mut self, mut other: Edit) {
+    /// after this one's, and its notes name them there. The app joins a
+    /// pad's notes' edits this way on a clip of notes (instrument redesign
+    /// step 5c).
+    pub fn join(&mut self, mut other: Edit) {
         if self.touch.is_empty() {
             self.touch_at = other.touch_at;
         } else if !other.touch.is_empty() {

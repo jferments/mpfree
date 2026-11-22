@@ -412,8 +412,9 @@ fn the_preset_picker_tries_each_preset_and_cancel_puts_the_old_one_back() {
     assert!(!s.can_go_back);
     assert_eq!(s.path, "Yours \u{b7} FM");
     assert_eq!(names(&b), ["Glass bell", "Metal bass", "Soft keys"]);
-    // Only loading: nothing is renamed or deleted (the row's star stars it).
-    assert_eq!(s.detail.buttons, [Button::Load]);
+    // Loading, or a new track with it: nothing is renamed or deleted (the
+    // row's star stars it).
+    assert_eq!(s.detail.buttons, [Button::Load, Button::NewTrackSound]);
     b.erase();
     b.go_source(src("Samples"));
     assert_eq!(b.screen().modal, Modal::None);
@@ -1334,7 +1335,7 @@ fn the_preset_picker_opens_on_the_engines_own_presets_and_tries_them() {
         .detail
         .lines
         .contains(&("You had".into(), "Reed Bite (edited)".into())));
-    assert_eq!(s.detail.buttons, [Button::Load]);
+    assert_eq!(s.detail.buttons, [Button::Load, Button::NewTrackSound]);
     // Opening asks for nothing: the sound only changes when it turns.
     assert!(b.take_actions().is_empty());
     b.dial(-1);
@@ -1395,6 +1396,59 @@ fn the_preset_picker_opens_on_the_engines_own_presets_and_tries_them() {
     b.open_preset_picker("Plugin", Vec::new(), keys_now("", Some(0)));
     b.input(Input::Source(src("Factory")));
     assert!(b.screen().detail.kind.contains("no presets of its own"));
+}
+
+#[test]
+fn new_track_with_this_sound_puts_the_tried_sound_back_and_asks_for_a_track() {
+    use mpfree_browser_ui::PresetFrom;
+    let (mut b, lib) = browser();
+    let own: Vec<String> = ["Init", "Soft Tines", "Bright Tines", "Reed Bite"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    // One of the engine's own, tried by the wheel first: its track gets
+    // its sound back, and a new track is asked for with the one picked.
+    b.open_preset_picker("Keys", own, keys_now("Reed Bite", Some(3)));
+    b.dial(-1);
+    b.take_actions();
+    b.input(Input::Button(Button::NewTrackSound));
+    assert_eq!(
+        b.take_actions(),
+        [
+            BrowseAction::RevertPreset,
+            BrowseAction::NewTrackWithPreset {
+                engine: "Keys".into(),
+                name: "Bright Tines".into(),
+                from: PresetFrom::Factory(2),
+            },
+            BrowseAction::PickerClosed { loaded: true },
+        ]
+    );
+    assert!(b.picking().is_none());
+    // One of the musician's, by its file; nothing tried, nothing put back.
+    b.open_preset_picker("FM", vec!["Init".into()], keys_now("Metal bass", None));
+    b.take_actions();
+    b.input(Input::Button(Button::NewTrackSound));
+    let path = lib
+        .root()
+        .join("Instruments")
+        .join("FM")
+        .join("Metal bass.preset");
+    assert_eq!(
+        b.take_actions(),
+        [
+            BrowseAction::NewTrackWithPreset {
+                engine: "FM".into(),
+                name: "Metal bass".into(),
+                from: PresetFrom::File(path),
+            },
+            // Like Load, a file used goes in Recent.
+            BrowseAction::SaveLists("recent = Instruments/FM/Metal bass.preset\n".into()),
+            BrowseAction::PickerClosed { loaded: true },
+        ]
+    );
+    // BROWSE's own Instruments place has no such button: the picker's.
+    assert!(!b.screen().detail.buttons.contains(&Button::NewTrackSound));
 }
 
 #[test]

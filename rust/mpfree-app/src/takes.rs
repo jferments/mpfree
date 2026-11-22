@@ -1182,6 +1182,7 @@ mod tests {
             stamp: 1,
             muted: false,
             repeats,
+            holds_notes: false,
         };
         let random = |t: usize| Some(playing(t != 0, 3840.0));
         let song = Song {

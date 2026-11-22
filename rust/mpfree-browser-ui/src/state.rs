@@ -151,7 +151,8 @@ impl Pick {
         matches!(
             b,
             Button::Load | Button::Open | Button::Audition | Button::Favourite | Button::Cancel
-        ) || (b == Button::SavePreset && matches!(self, Pick::Preset { .. }))
+        ) || (matches!(b, Button::SavePreset | Button::NewTrackSound)
+            && matches!(self, Pick::Preset { .. }))
     }
 
     /// A place's name in it: a preset picker calls the engine's folder
@@ -274,6 +275,9 @@ pub enum Button {
     /// A kit: a new track (as + Track adds one, armed) that plays it, in
     /// an empty kit of its own.
     NewTrack,
+    /// A preset picker's: a new track (as + Track adds one, armed) with
+    /// its own synth playing the preset picked (New instrument track).
+    NewTrackSound,
 }
 
 impl Button {
@@ -301,6 +305,7 @@ impl Button {
             Button::SaveKit => "Save kit",
             Button::SavePreset => "Save preset",
             Button::NewTrack => "New track with this kit",
+            Button::NewTrackSound => "New track",
         }
     }
 }
@@ -376,6 +381,15 @@ fn now_utc() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// Where a preset for a new track comes from.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PresetFrom {
+    /// One of the engine's own, by its place in the picker's Factory list.
+    Factory(usize),
+    /// One of the musician's, by its file.
+    File(PathBuf),
+}
+
 /// What the app must do (the browser does everything else itself).
 #[derive(Clone, Debug, PartialEq)]
 pub enum BrowseAction {
@@ -397,6 +411,17 @@ pub enum BrowseAction {
     LoadKit {
         loc: Loc,
         path: PathBuf,
+    },
+    /// New track, in a preset picker (New instrument track, the instrument
+    /// redesign's step 4c): the app adds a track, as "+ Track" does, and
+    /// once it is there and armed gives it a synth of its own, `engine`
+    /// (the picker's folder: `Poly`, `FM` ...), playing this preset
+    /// (`name`, from `from`). The track the picker tried presets on has its
+    /// sound back first ([`BrowseAction::RevertPreset`]).
+    NewTrackWithPreset {
+        engine: String,
+        name: String,
+        from: PresetFrom,
     },
     /// New track with this kit: the app adds a track, as + Track does,
     /// and once it is there and armed loads this kit (`path`, as for
@@ -733,6 +758,18 @@ pub const OVERVIEW_COLUMNS: usize = 360;
 pub const MAX_FOUND: usize = 200;
 
 /// What the list holds besides a place's folder.
+/// What an open of a project changed here, as it was before
+/// ([`Browser::open_refused`] puts it back).
+#[derive(Clone, Debug, PartialEq)]
+struct BeforeOpen {
+    project: Option<Loc>,
+    last: Option<Loc>,
+    created: u64,
+    unsaved: bool,
+    recovering: bool,
+    recent: Vec<Loc>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum Mode {
     /// The folder (or Recent, Favourites, Factory, Trash).
@@ -807,6 +844,9 @@ pub struct Browser {
     /// An open of autosave's project is under way: still unsaved once it
     /// lands ([`Browser::open_landed`]).
     recovering: bool,
+    /// What the last open of a project changed, until the app takes the
+    /// project or refuses it ([`Browser::open_refused`]).
+    before_open: Option<BeforeOpen>,
     mode: Mode,
     sort: Sort,
     /// The Export panel while it is open (it stays through a picker and
@@ -884,6 +924,7 @@ impl Browser {
             saving_preset: None,
             unsaved: false,
             recovering: false,
+            before_open: None,
             mode: Mode::Folder,
             sort: Sort::Name,
             export: None,
@@ -1126,6 +1167,7 @@ impl Browser {
                 // Autosave's project opens as a new, unsaved one: SHIFT +
                 // BROWSE keeps it as a project of the musician's (named for
                 // the time), never as autosave's again.
+                self.before_open = Some(self.as_before_open());
                 self.status = Some((
                     format!(
                         "Opened the work autosaved {}. SHIFT + BROWSE saves it as a new project",
@@ -1143,6 +1185,7 @@ impl Browser {
                 }
             }
             Ok(Outcome::Project(loc, snap)) => {
+                self.before_open = Some(self.as_before_open());
                 self.status = Some((format!("Opened {}", loc.name()), false));
                 self.project = Some(loc.clone());
                 self.last = Some(loc.clone());
@@ -1164,6 +1207,7 @@ impl Browser {
                 }
             }
             Ok(Outcome::Version(loc, _id, snap)) => {
+                self.before_open = Some(self.as_before_open());
                 self.status = Some((
                     format!(
                         "Opened {} as saved {}. SHIFT + BROWSE saves it as the newest",
@@ -1868,6 +1912,42 @@ impl Browser {
     /// work is still to be saved as a project of the musician's.
     pub fn open_landed(&mut self) {
         self.unsaved = std::mem::take(&mut self.recovering);
+        self.before_open = None;
+    }
+
+    fn as_before_open(&self) -> BeforeOpen {
+        BeforeOpen {
+            project: self.project.clone(),
+            last: self.last.clone(),
+            created: self.created,
+            unsaved: self.unsaved,
+            recovering: self.recovering,
+            recent: self.recent.clone(),
+        }
+    }
+
+    /// The app refused the project just opened
+    /// ([`BrowseAction::ProjectOpened`]): it was saved by a newer MPFree,
+    /// or a part of it can't be read, so nothing of it went in. Where
+    /// SHIFT + BROWSE saves, the project Prefs > At start opens, Recent and
+    /// the unsaved mark go back to what they were, so the project still
+    /// open can't be saved over the refused one; the status line says
+    /// `line`.
+    pub fn open_refused(&mut self, line: String) {
+        if let Some(b) = self.before_open.take() {
+            let lists = b.recent != self.recent || b.last != self.last;
+            self.project = b.project;
+            self.last = b.last;
+            self.created = b.created;
+            self.unsaved = b.unsaved;
+            self.recovering = b.recovering;
+            self.recent = b.recent;
+            if lists {
+                self.actions
+                    .push(BrowseAction::SaveLists(self.lists_text()));
+            }
+        }
+        self.status = Some((line, true));
     }
 
     /// The dial's push: open a folder or project, load anything else, or
@@ -2235,6 +2315,40 @@ impl Browser {
                     }
                     _ => self.status = Some((format!("{} is not a sound", r.name), true)),
                 }
+            }
+            Button::NewTrackSound => {
+                let (Some(r), Some(Pick::Preset { engine })) = (row, &self.pick) else {
+                    return;
+                };
+                if r.kind != Kind::Preset {
+                    return;
+                }
+                let from = match (r.factory, &loc) {
+                    (Some(i), _) => PresetFrom::Factory(i),
+                    (None, Some(l)) => match self.library().file_path(l) {
+                        Ok(path) => PresetFrom::File(path),
+                        Err(_) => {
+                            self.status =
+                                Some((format!("{}: {} is not there", b.label(), r.name), true));
+                            return;
+                        }
+                    },
+                    (None, None) => return,
+                };
+                let engine = engine.clone();
+                if self.tried {
+                    self.actions.push(BrowseAction::RevertPreset);
+                }
+                self.actions.push(BrowseAction::NewTrackWithPreset {
+                    engine,
+                    name: r.name.clone(),
+                    from,
+                });
+                self.status = Some((format!("A new track for {}", r.name), false));
+                if let Some(l) = loc {
+                    self.remember(l);
+                }
+                self.close_pick(true);
             }
             Button::NewTrack => {
                 let Some(r) = row.filter(|r| r.kind == Kind::Kit) else {
@@ -3045,8 +3159,10 @@ impl Browser {
             if !self.preset_now.name.is_empty() {
                 d.lines.push(("You had".into(), self.preset_now.label()));
             }
+            d.lines
+                .push(("New track".into(), "Its own synth, with this sound".into()));
             // The row's star stars one of the musician's.
-            d.buttons = vec![Button::Load];
+            d.buttons = vec![Button::Load, Button::NewTrackSound];
             return d;
         }
         if r.factory.is_some() {

@@ -72,6 +72,8 @@ pub fn built_in_patterns() -> Vec<(String, Pattern)> {
 const QLINK_UNITS: [i32; 4] = [3, 1, 1, 4];
 /// The panel's mode tabs, and the modes NOTE REPEAT can turn on.
 mod part;
+/// The arp part's first line, for the project opener's check.
+pub use part::HEADER as ARP_HEADER;
 
 const MODES: [Mode; 4] = [Mode::Direct, Mode::Repeat, Mode::Arp, Mode::Pattern];
 const GENERATING: [Mode; 3] = [Mode::Repeat, Mode::Arp, Mode::Pattern];
@@ -1047,14 +1049,45 @@ impl App {
     /// layout to another keeps them, and each lets go of what it pressed.
     pub fn set_pad_layout(&mut self, layout: Option<[PadNotes; 16]>) {
         if self.pad_layout.is_some() != layout.is_some() {
+            let press = layout.is_some() || self.arp_layout.is_some();
+            self.press_change(press);
+        }
+        self.pad_layout = layout;
+        self.arp_dirty = true;
+    }
+
+    /// The selected track's own synth's pad map while it plays notes, or
+    /// None (a kit, the Drums engine, MIDI out, the shared synth): with
+    /// one, the pads press its notes into the track's arp, which then
+    /// works in notes (`TrackArps::set_on_notes`, the instrument
+    /// redesign's step 5d), as the synth's layout does; nothing else
+    /// about the pads changes. Allocates nothing. Pads held across a
+    /// change between pads and notes are let go, as with the synth's.
+    pub fn set_arp_layout(&mut self, layout: Option<[PadNotes; 16]>) {
+        if self.arp_layout.is_some() != layout.is_some() {
+            let press = layout.is_some() || self.pad_layout.is_some();
+            self.press_change(press);
+        }
+        self.arp_layout = layout;
+    }
+
+    /// What the pads press into the arp: the synth's layout's notes, or
+    /// the track's own synth's, or kit pads (None).
+    pub(crate) fn press_layout(&self) -> Option<&[PadNotes; 16]> {
+        self.pad_layout.as_ref().or(self.arp_layout.as_ref())
+    }
+
+    /// The pads go from pressing pads to notes or back (`press`: what they
+    /// will press is notes): what they and the keys hold is let go first,
+    /// since its old numbers mean something else now.
+    fn press_change(&mut self, press: bool) {
+        if self.press_layout().is_some() != press {
             for slot in 0..16 {
                 self.release_pad(slot);
             }
             self.release_keys();
             self.kit_held = [None; 16];
         }
-        self.pad_layout = layout;
-        self.arp_dirty = true;
     }
 
     /// What the audio loop needs to treat the arps' notes as live playing
@@ -1065,7 +1098,7 @@ impl App {
             pad_level: self.pad_level,
             half: self.settings.half_level,
             curve: self.settings.curve,
-            layout: self.pad_layout,
+            layout: self.pad_layout.or(self.arp_layout),
         }
     }
 
@@ -1083,8 +1116,7 @@ impl App {
 
     /// The first pad whose layout plays `note`, to flash on the screen.
     pub fn pad_of_note(&self, note: u8) -> Option<usize> {
-        self.pad_layout
-            .as_ref()?
+        self.press_layout()?
             .iter()
             .position(|p| p.notes().contains(&note))
     }
@@ -1093,7 +1125,7 @@ impl App {
     /// a Loop pad's hit that waited for the launch line plays the pad it
     /// was made on, though the bank turned since (sampler R5.3b).
     pub(crate) fn press_pad_on(&mut self, slot: usize, on: Option<u8>, velocity: u8) {
-        let Some(layout) = &self.pad_layout else {
+        let Some(layout) = self.press_layout() else {
             // A kit: the pad of the page, kept until it is let go (a pad
             // pressed again first lets go of what it pressed).
             if slot >= self.kit_held.len() {
@@ -1225,7 +1257,7 @@ impl App {
     }
 
     pub(crate) fn release_pad(&mut self, slot: usize) {
-        if self.pad_layout.is_none() {
+        if self.press_layout().is_none() {
             // The kit pad it pressed, once.
             if let Some(pad) = self.kit_held.get_mut(slot).and_then(Option::take) {
                 self.let_go_kit_pad(pad);
@@ -1341,7 +1373,7 @@ impl App {
         // What the pads play stays (the instrument redesign's rule 2): the
         // new track's instrument while they follow the track, the synth
         // chosen for them otherwise (app/pads_focus.rs).
-        if self.pad_layout.is_some() {
+        if self.press_layout().is_some() {
             for slot in 0..16 {
                 self.release_pad(slot);
             }
