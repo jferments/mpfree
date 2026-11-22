@@ -63,7 +63,7 @@ use mpfree_sampler_ui::levels_panel::{self, LevelsAction, LevelsModel, LevelsPan
 use mpfree_sampler_ui::recall::RecallFrom;
 use mpfree_synth_ui::view as synth_view;
 use mpfree_synth_ui::{SynthAction, SynthPanel, SynthState};
-use mpfree_time_ui::editor::{EditAction, Lens};
+use mpfree_time_ui::editor::{EditAction, Lens, Tool};
 use mpfree_time_ui::view::{
     self as time_view, AudioAction, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE,
 };
@@ -1213,11 +1213,13 @@ pub enum ToUi {
     /// (what `Settings::theme` holds when one is picked) and the theme.
     ThemeFiles(Vec<(String, Theme)>),
     /// Theme safety nets at start, added to the Debug page's counts: theme
-    /// files left out (they didn't parse, or no one could read their
-    /// text) and starts where the default theme showed in place of the
-    /// saved one or the one `--theme` named.
+    /// files left out (no one could read their text, or they aren't text),
+    /// lines of theme files that used the base theme's value (a mistake,
+    /// an unknown key), and starts where the default theme showed in place
+    /// of the saved one or the one `--theme` named.
     ThemeFallbacks {
         left_out: u64,
+        lines_fell_back: u64,
         default_shown: u64,
     },
     ClearLogs,
@@ -1634,6 +1636,9 @@ pub enum FromUi {
     MenuSelect(usize),
     MenuStep(usize, i32),
     GuideButton(usize),
+    /// A button under Prefs' help: Keep (0) or Go back (1) while "Keep
+    /// this theme?" asks.
+    HelpButton(usize),
     /// A touch on the Arp panel or the quick band.
     Arp(ArpAction),
     /// A touch in the pattern workspace (its editor has changed already).
@@ -2094,9 +2099,10 @@ pub struct Player {
     settings: Settings,
     /// The themes folder's themes, for Prefs > Appearance.
     theme_files: Vec<(String, Theme)>,
-    /// Theme files left out at start and starts with the default theme
-    /// in place of the one asked for ([`ToUi::ThemeFallbacks`]).
-    theme_fallbacks: (u64, u64),
+    /// Theme files left out at start, their lines that used the base's
+    /// value, and starts with the default theme in place of the one asked
+    /// for ([`ToUi::ThemeFallbacks`]).
+    theme_fallbacks: (u64, u64, u64),
     session: (String, Tone),
     /// Lines for the Console page come from the system log (the app); in the
     /// timed step there is none, so the step's own lines go there.
@@ -2371,6 +2377,10 @@ pub struct Player {
     /// The finger whose SHIFT + touch armed MIDI Learn: it does nothing
     /// else until it lifts.
     learn_finger: Option<u64>,
+    /// A finger that went down outside the conversion report card: it
+    /// closed the card, and nothing else hears it until it lifts (layout
+    /// spec 4n).
+    report_finger: Option<u64>,
     /// What MIDI Learn waits to give a control, from the app
     /// ([`ToUi::Learning`]): the hint line says so.
     learning: Option<String>,
@@ -2710,6 +2720,7 @@ impl Player {
             step_hold: None,
             guard_done: None,
             learn_finger: None,
+            report_finger: None,
             learning: None,
             history: None,
             recall: None,
@@ -2756,7 +2767,7 @@ impl Player {
             status,
             settings: Settings::default(),
             theme_files: Vec::new(),
-            theme_fallbacks: (0, 0),
+            theme_fallbacks: (0, 0, 0),
             session: ("Starting".to_string(), Tone::Dim),
             console_from_lines: timed,
             console_backlog: VecDeque::new(),
@@ -4217,7 +4228,8 @@ impl Player {
         });
         let wrap: fn(&str) -> String = match loaded {
             Some(mut w) => {
-                w.set_theme(&self.ui.theme);
+                let moved = w.set_theme(&self.ui.theme);
+                self.report_skin_colours(moved);
                 let tabs = skin_page::SkinTabs::new(&w.view.tabs());
                 // For the device round's log: the skin is drawn.
                 println!(
@@ -6206,6 +6218,16 @@ impl Player {
                     pad: *index as u8,
                 })))
             }
+            // A note of the note editor (the roll, the list, the
+            // tracker): it comes out (piano roll plan 1B.1, in place of
+            // the Erase tool).
+            (time_view::NOTES, EventKind::Toggle(i) | EventKind::Select(i)) => {
+                let rev = self.time.edit.as_ref().map_or(0, |e| e.rev);
+                Some(Some(FromUi::Time(TimeAction::Edit(EditAction::Erase {
+                    index: *i,
+                    rev,
+                }))))
+            }
             (time_view::CLIPS, EventKind::Select(i)) => {
                 let slots = mpfree_seq::SLOTS;
                 let (track, slot) = (i / slots, i % slots);
@@ -6964,8 +6986,12 @@ impl Player {
                 View::Play => format!("Tap a loop's ring: its next step, held: clear   ·   {WHEEL_HINT}   ·   PAD BANK: bank   ·   \
                                        NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
                 View::Sequencer if self.time.edit.is_some() => {
-                    time_view::edit_hint(self.time.edit.as_ref().map_or(Lens::Grid, |e| e.editor.lens))
-                        .to_string()
+                    let (lens, tool) = self
+                        .time
+                        .edit
+                        .as_ref()
+                        .map_or((Lens::Grid, Tool::Select), |e| (e.editor.lens, e.editor.tool));
+                    time_view::edit_hint(lens, tool).to_string()
                 }
                 // A kit's Steps: + Lane and the lock lanes (the redesign's
                 // step 5).
@@ -6977,6 +7003,12 @@ impl Player {
                 View::Sequencer => format!("Tap a step: in or out   ·   hold a step: edit it   ·   Notes: the clip's notes   ·   \
                                             + Lane: a lock lane   ·   STEP SEQ: steps on the pads   ·   PAD BANK: bank   ·   \
                                             MENU: options   ·   {stop}"),
+                // The conversion report card (layout spec 4n).
+                View::Arrange if self.time_page.report_on(&self.ui).is_some() => self
+                    .time
+                    .report
+                    .as_deref()
+                    .map_or_else(String::new, time_view::report_hint),
                 View::Arrange if self.time_page.adding => mpfree_time_ui::song::ADD_HINT.to_string(),
                 View::Arrange if self.time.list_view => time_view::LIST_HINT.to_string(),
                 View::Arrange if self.time.song_view => time_view::song_hint(&self.time).to_string(),
@@ -7261,10 +7293,17 @@ impl Player {
             };
             if let Some(t) = Theme::builtin(&s.theme).or_else(file) {
                 // A plugin's skin: MPFree's pop-ups over it follow too.
-                if let Some(w) = self.ui.get_mut::<skin_page::SkinWidget>(skin_page::SKIN) {
-                    w.set_theme(&t);
+                let moved = self
+                    .ui
+                    .get_mut::<skin_page::SkinWidget>(skin_page::SKIN)
+                    .map(|w| w.set_theme(&t));
+                if let Some(moved) = moved {
+                    self.report_skin_colours(moved);
                 }
                 self.ui.set_theme(t);
+                // The theme asked for shows now: the status board's "Your
+                // theme couldn't be used" ends, if it was going.
+                self.end_problem(&mpfree_status::kinds::THEME_NOT_FOUND);
             }
         }
         let timing = self.settings.timing_strip != s.timing_strip;
@@ -7882,6 +7921,31 @@ impl Player {
         self.told = Some((tell_text(line), TELL_SECONDS));
         self.tells += 1;
         self.refresh_hint();
+    }
+
+    /// A plugin skin's pop-ups took the theme with `moved` colours changed
+    /// so they read: yellow on the status board while any are, ended by a
+    /// theme that needs none.
+    fn report_skin_colours(&mut self, moved: usize) {
+        let kind = &mpfree_status::kinds::SKIN_COLOURS_MOVED;
+        if moved > 0 {
+            self.report_problem(mpfree_status::Report::began(kind));
+        } else {
+            self.end_problem(kind);
+        }
+    }
+
+    /// Ends `kind` (about the whole system) if it is going now, so a theme
+    /// switch with nothing to end adds nothing to Dev > Status's events.
+    fn end_problem(&mut self, kind: &'static mpfree_status::Kind) {
+        let going = self
+            .status_board
+            .problems(kind.system, mpfree_status::Window::Now)
+            .iter()
+            .any(|v| v.kind.id == kind.id && v.subject == mpfree_status::Subject::NONE);
+        if going {
+            self.report_problem(mpfree_status::Report::ended(kind));
+        }
     }
 
     /// A problem for the status board, at the board's clock. Dev > Status
@@ -9344,6 +9408,7 @@ impl Player {
                 if let Some(c) = self.ui.get_mut::<Card>("help") {
                     c.heading = m.help_heading;
                     c.lines = m.help.into_iter().map(|l| (l, Tone::Dim)).collect();
+                    c.buttons = m.help_buttons;
                 }
             }
             ToUi::Guide(g) => {
@@ -9400,10 +9465,25 @@ impl Player {
             ToUi::ThemeFiles(t) => self.theme_files = t,
             ToUi::ThemeFallbacks {
                 left_out,
+                lines_fell_back,
                 default_shown,
             } => {
                 self.theme_fallbacks.0 += left_out;
-                self.theme_fallbacks.1 += default_shown;
+                self.theme_fallbacks.1 += lines_fell_back;
+                self.theme_fallbacks.2 += default_shown;
+                // Yellow on the status board until the next start (theme
+                // files are read at the start); Prefs > Appearance says
+                // which file and why.
+                use mpfree_status::{kinds, Report};
+                for (n, kind) in [
+                    (left_out, &kinds::THEME_LEFT_OUT),
+                    (lines_fell_back, &kinds::THEME_MISTAKES),
+                    (default_shown, &kinds::THEME_NOT_FOUND),
+                ] {
+                    if n > 0 {
+                        self.report_problem(Report::began(kind));
+                    }
+                }
             }
             ToUi::ClearLogs => {
                 for name in ["midi", "events"] {
@@ -9935,7 +10015,9 @@ impl Player {
             let picked = self.time.selected.is_some()
                 || self.time.section.is_some()
                 || self.time.tempo_pick.is_some();
-            let song = self.view == View::Arrange && self.time.song_view;
+            let song = self.view == View::Arrange
+                && self.time.song_view
+                && self.time_page.report_on(&self.ui).is_none();
             if song && ((on && picked) || (!on && self.song_grab)) {
                 self.song_grab = on;
                 let name = self.song_picked_name();
@@ -9985,6 +10067,14 @@ impl Player {
                 if let Some(l) = self.ui.get_mut::<OptionList>(list) {
                     l.editing = on;
                 }
+            }
+            return;
+        }
+        // The conversion report card: the wheel scrolls its rows (when
+        // there are more than five) and nothing under it.
+        if self.view == View::Arrange && self.time_page.report_on(&self.ui).is_some() {
+            if let RowKey::Pick(d) | RowKey::Step(d) = k {
+                let _ = self.time_page.scroll(&mut self.ui, d);
             }
             return;
         }
@@ -12201,6 +12291,7 @@ impl Player {
                 | FromUi::Tab(_)
                 | FromUi::MenuSelect(_)
                 | FromUi::GuideButton(_)
+                | FromUi::HelpButton(_)
                 | FromUi::UndoReady(_)
                 | FromUi::UndoHistory(_)
                 | FromUi::Overlay(_)
@@ -12233,6 +12324,11 @@ impl Player {
             if let Some(c) = self.ui.get_mut::<synth_view::InstCard>(synth_view::INST) {
                 c.open = false;
             }
+        }
+        // Another page (MENU's options too) closes the conversion report
+        // card and keeps what the conversion did (layout spec 4n).
+        if self.view == View::Arrange && v != View::Arrange && self.time.report.is_some() {
+            self.outbox.push(FromUi::Time(TimeAction::CloseReport));
         }
         if v == View::Pads && self.view != View::Pads && self.perform.shown {
             // Back on the Perform view: the app sends its throws' settings
@@ -12530,7 +12626,14 @@ impl Player {
                     Tone::Warn,
                 ));
             }
-            let (left_out, default_shown) = self.theme_fallbacks;
+            let (left_out, fell_back, default_shown) = self.theme_fallbacks;
+            if fell_back > 0 {
+                memory.push((
+                    "Themes: theme file lines that used the base's value".to_string(),
+                    format!("{fell_back}×"),
+                    Tone::Warn,
+                ));
+            }
             if left_out > 0 {
                 memory.push((
                     "Themes: theme files left out (see the log)".to_string(),
@@ -12655,6 +12758,10 @@ impl Player {
         // Perform's guard: a button that deletes or clears needs a hold.
         if self.watch_guard(finger, phase, x, y) {
             return None;
+        }
+        // The conversion report card: a touch outside it only closes it.
+        if let Some(a) = self.report_guard(finger, phase, x, y) {
+            return a;
         }
         // SHIFT + a touch on a value: MIDI Learn waits for a control to
         // move it (layout spec 4d). That finger does nothing else until it
@@ -12908,6 +13015,35 @@ impl Player {
             Touch::Move => self.chain_page.moved(finger, y),
             Touch::Up | Touch::Cancel => self.chain_page.lifted(finger),
         }
+    }
+
+    /// The conversion report card (layout spec 4n) while it shows: a finger
+    /// that goes down outside it closes it and keeps what the conversion
+    /// did, and does nothing else until it lifts. Some(the action) for a
+    /// finger it took; None for one that goes on as usual (on the card, or
+    /// no card).
+    fn report_guard(
+        &mut self,
+        finger: u64,
+        phase: Touch,
+        x: i32,
+        y: i32,
+    ) -> Option<Option<FromUi>> {
+        if self.report_finger == Some(finger) {
+            if matches!(phase, Touch::Up | Touch::Cancel) {
+                self.report_finger = None;
+            }
+            return Some(None);
+        }
+        if phase != Touch::Down || finger == WHEEL_FINGER || self.view != View::Arrange {
+            return None;
+        }
+        let card = self.time_page.report_rect(&self.ui)?;
+        if card.contains(x, y) {
+            return None;
+        }
+        self.report_finger = Some(finger);
+        Some(Some(FromUi::Time(TimeAction::CloseReport)))
     }
 
     /// Perform's guard (sequencer decision 5): in Perform, a finger down
@@ -13998,6 +14134,7 @@ impl Player {
             ("options", EventKind::Select(i)) => Some(FromUi::MenuSelect(i)),
             ("options", EventKind::Step { index, delta }) => Some(FromUi::MenuStep(index, delta)),
             ("guide", EventKind::Tab(i)) => Some(FromUi::GuideButton(i)),
+            ("help", EventKind::Tab(i)) => Some(FromUi::HelpButton(i)),
             ("header", EventKind::Select(i)) if Some(i) == self.arp_chip => Some(FromUi::ArpChip),
             ("header", EventKind::Select(i)) if Some(i) == self.level_chip => {
                 Some(FromUi::PadLevelOff)
@@ -14256,8 +14393,10 @@ impl Player {
 
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
-        // What the Clips page asks of the time engine on its own (Snap
-        // Auto's division as the roll's zoom changes it).
+        // A finger held on a note of the roll picks it; what the Clips
+        // page asks of the time engine on its own (that pick, Snap Auto's
+        // division as the roll's zoom changes it).
+        self.time_page.tick(&mut self.ui, &self.time, dt);
         for a in self.time_page.take_asks() {
             self.outbox.push(FromUi::Time(a));
         }
@@ -17546,6 +17685,68 @@ fn io_section_screen(
     p
 }
 
+/// The song list sample (sequencer S4, mockup D), in Perform: seven
+/// steps, the fourth playing its third pass of four, the fifth picked.
+fn sample_list_state() -> Result<TimeState, String> {
+    use mpfree_time_ui::list::ListRow;
+    let mut st = mpfree_time_ui::sample::playing()?.state();
+    st.perform = true;
+    st.list_view = true;
+    st.song_view = false;
+    let steps = [
+        ("Intro", 0, 2, 4),
+        ("Verse", 1, 4, 4),
+        ("Verse B", 2, 2, 4),
+        ("Drop", 3, 4, 4),
+        ("Break", 4, 1, 8),
+        ("Drop", 3, 4, 4),
+        ("Outro", 5, 1, 4),
+    ];
+    let mut starts = 1;
+    st.list = steps
+        .iter()
+        .enumerate()
+        .map(|(k, &(name, row, times, len))| {
+            let r = ListRow {
+                name: name.to_string(),
+                row,
+                times,
+                bars: i64::from(times) * len,
+                starts,
+                playing: (k == 3).then_some((3, 0.62)),
+                waiting: false,
+            };
+            starts += r.bars;
+            r
+        })
+        .collect();
+    st.list_pick = Some(4);
+    Ok(st)
+}
+
+/// A conversion report (the Arrange refactor's 4.3) for the sample
+/// screens: each row's track (None: the song's), bar and words.
+fn sample_report(
+    title: &str,
+    made: &str,
+    lead: &str,
+    rows: &[(Option<usize>, i64, &str)],
+) -> std::sync::Arc<mpfree_time_ui::view::Report> {
+    std::sync::Arc::new(mpfree_time_ui::view::Report {
+        title: title.into(),
+        made: made.into(),
+        lead: lead.into(),
+        rows: rows
+            .iter()
+            .map(|&(track, bar, what)| mpfree_time_ui::view::ReportRow {
+                track,
+                bar,
+                what: what.into(),
+            })
+            .collect(),
+    })
+}
+
 pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> {
     let mut out = Vec::new();
     let mut loading = Player::new(fonts(), SCREEN, false, None);
@@ -18351,8 +18552,9 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     let mut l = crate::app::App::new(44_100, false);
     let mut fx = l.open_tab(View::Prefs);
     let at = l.row_of(crate::app::Item::Appearance).unwrap_or(0);
-    fx.extend(l.step_item(at, 1));
-    fx.extend(l.step_item(at, 1));
+    for _ in 0..3 {
+        fx.extend(l.step_item(at, 1));
+    }
     apply_effects(&mut look, fx);
     out.push(("prefs-appearance", look));
     // The guide from Prefs ("Find the buttons again"), PLAY pressed when it
@@ -18740,42 +18942,9 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }
     // The song list (sequencer S4, mockup D), in Perform: seven steps, the
     // fourth playing its third pass of four, the fifth picked.
-    match mpfree_time_ui::sample::playing() {
-        Ok(s) => {
-            use mpfree_time_ui::list::ListRow;
+    match sample_list_state() {
+        Ok(st) => {
             let mut p = quiet_player(fonts());
-            let mut st = s.state();
-            st.perform = true;
-            st.list_view = true;
-            st.song_view = false;
-            let steps = [
-                ("Intro", 0, 2, 4),
-                ("Verse", 1, 4, 4),
-                ("Verse B", 2, 2, 4),
-                ("Drop", 3, 4, 4),
-                ("Break", 4, 1, 8),
-                ("Drop", 3, 4, 4),
-                ("Outro", 5, 1, 4),
-            ];
-            let mut starts = 1;
-            st.list = steps
-                .iter()
-                .enumerate()
-                .map(|(k, &(name, row, times, len))| {
-                    let r = ListRow {
-                        name: name.to_string(),
-                        row,
-                        times,
-                        bars: i64::from(times) * len,
-                        starts,
-                        playing: (k == 3).then_some((3, 0.62)),
-                        waiting: false,
-                    };
-                    starts += r.bars;
-                    r
-                })
-                .collect();
-            st.list_pick = Some(4);
             p.apply(ToUi::Time(Box::new(st)));
             p.apply(ToUi::Show(View::Arrange));
             out.push(("arrange-list", p));
@@ -18980,6 +19149,87 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("arrange-song-panel-mix", p));
         }
         Err(e) => eprintln!("arrange-song-panel-mix sample: {e}"),
+    }
+    // The conversion report card (the Arrange refactor's 4.3, layout spec
+    // 4n), its four boards: Song → scenes with four differences over the
+    // Song view; List → song with its one over the song list; an exact
+    // one, said in place of the hint; nine, the rows scrolling.
+    let random = "plays in Random order; the copy rolls its own order";
+    let chance = "notes with a chance; the copy rolls them its own way";
+    let held = "a note held over the row change is cut there";
+    let tempo = "the song's tempo changes; the rows play at the project's tempo";
+    let lead = "Launch row 9 and the rows play the song, except:";
+    let four = [
+        (None, 1, tempo),
+        (Some(1), 5, held),
+        (Some(2), 9, random),
+        (Some(3), 9, chance),
+    ];
+    let nine = [
+        (None, 1, tempo),
+        (None, 1, "the song's morph moves; the rows don't play them"),
+        (
+            Some(0),
+            5,
+            "its A:B, 1ST, PRE and NEI conditions count again from here",
+        ),
+        (Some(1), 5, held),
+        (Some(2), 9, random),
+        (Some(3), 9, chance),
+        (Some(0), 13, "its play direction starts again here"),
+        (Some(1), 13, held),
+        (Some(2), 17, random),
+    ];
+    for (name, rows) in [
+        ("arrange-report", &four[..]),
+        ("arrange-report-scrolls", &nine[..]),
+    ] {
+        match mpfree_time_ui::sample::busy_song_state() {
+            Ok(mut state) => {
+                state.selected = None;
+                let made = if rows.len() > 5 {
+                    "rows 9 to 14"
+                } else {
+                    "rows 9 to 11"
+                };
+                state.report = Some(sample_report("SONG → SCENES", made, lead, rows));
+                let mut p = quiet_player(fonts());
+                busy_sounds(&mut p);
+                p.apply(ToUi::Time(Box::new(state)));
+                p.apply(ToUi::Show(View::Arrange));
+                out.push((name, p));
+            }
+            Err(e) => eprintln!("{name} sample: {e}"),
+        }
+    }
+    match sample_list_state() {
+        Ok(mut st) => {
+            st.report = Some(sample_report(
+                "LIST → SONG",
+                "bars 1 to 76",
+                "The song plays the list, except:",
+                &[(None, 33, "the scene's program changes aren't in the song")],
+            ));
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-report-list", p));
+        }
+        Err(e) => eprintln!("arrange-report-list sample: {e}"),
+    }
+    match mpfree_time_ui::sample::busy_song_state() {
+        Ok(state) => {
+            let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            p.tell(&format!(
+                "song → scenes: rows 9 to 11{}",
+                crate::time::EXACT
+            ));
+            out.push(("arrange-report-exact", p));
+        }
+        Err(e) => eprintln!("arrange-report-exact sample: {e}"),
     }
     // The vocal's take lanes open under its lane (layout spec 4c): take 2
     // plays over bars 5-8, take 1 everywhere else.
@@ -20929,6 +21179,124 @@ mod tests {
         assert!(p.take_actions().is_empty());
     }
 
+    /// The conversion report card (the Arrange refactor's 4.3, layout spec
+    /// 4n) over the Song view: its own hint; Done closes it and UNDO takes
+    /// the conversion back; the wheel scrolls its rows and nothing under
+    /// it; a tap outside it only closes it (that finger does nothing else
+    /// until it lifts), and a tap on the card between its controls does
+    /// nothing; another page closes it. Over the song list the same, and
+    /// with the report gone the Song view is as it was.
+    #[test]
+    fn the_conversion_report_card_closes_on_done_a_tap_outside_or_a_page_change() {
+        use crate::app::RowKey;
+        use mpfree_time_ui::song::SongLanes;
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        let tap = |p: &mut Player, (x, y): (i32, i32)| -> Vec<FromUi> {
+            let down = p.touch(1, Touch::Down, x, y);
+            let up = down.or(p.touch(1, Touch::Up, x, y));
+            up.into_iter().chain(p.take_actions()).collect()
+        };
+        let at = |p: &Player, id: &str| {
+            p.ui.targets()
+                .into_iter()
+                .find(|t| t.target.id == id)
+                .unwrap_or_else(|| panic!("{id}"))
+                .target
+                .centre()
+        };
+        let held = "a note held over the row change is cut there";
+        let rows: Vec<(Option<usize>, i64, &str)> = (0..9)
+            .map(|k| (Some(k % 3), 1 + 4 * k as i64, held))
+            .collect();
+        let mut st = mpfree_time_ui::sample::busy_song_state().unwrap();
+        st.selected = None;
+        let song = st.clone();
+        st.report = Some(sample_report(
+            "SONG → SCENES",
+            "rows 9 to 14",
+            "Launch row 9 and the rows play the song, except:",
+            &rows,
+        ));
+        let mut p = quiet_player(Fonts::embedded());
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        p.apply(ToUi::Show(View::Arrange));
+        let _ = p.take_actions();
+        assert!(
+            hint(&p).starts_with(
+                "Done: close it and keep the rows   ·   UNDO: take it all back   ·   drag the list"
+            ),
+            "{}",
+            hint(&p)
+        );
+        // Only the card's controls on the Song view.
+        let ids: Vec<&str> =
+            p.ui.targets()
+                .into_iter()
+                .filter(|t| t.widget == time_view::SONG)
+                .map(|t| t.target.id)
+                .collect();
+        assert_eq!(ids, ["report-undo", "report-done", "report-rows"]);
+        let done = at(&p, "report-done");
+        assert_eq!(tap(&mut p, done), [FromUi::Time(TimeAction::CloseReport)]);
+        let undo = at(&p, "report-undo");
+        assert_eq!(tap(&mut p, undo), [FromUi::Time(TimeAction::Undo)]);
+        // The wheel: the rows, to the last five; nothing else moves.
+        let top = |p: &Player| {
+            p.ui.get::<SongLanes>(time_view::SONG)
+                .and_then(|l| l.report.as_ref())
+                .map(|c| c.top)
+        };
+        p.apply(ToUi::Rows(RowKey::Pick(2)));
+        p.apply(ToUi::Rows(RowKey::Pick(9)));
+        assert_eq!(top(&p), Some(4));
+        assert!(p.take_actions().is_empty());
+        // A tap between the card's controls: nothing. Outside it (the
+        // Record panel's Mode row): the card closes, and that's all.
+        let card = p.time_page.report_rect(&p.ui).unwrap();
+        assert!(tap(&mut p, (card.x + 30, card.y + 30)).is_empty());
+        let outside = (1000, 271);
+        assert!(!card.contains(outside.0, outside.1));
+        assert_eq!(
+            p.touch(2, Touch::Down, outside.0, outside.1),
+            Some(FromUi::Time(TimeAction::CloseReport))
+        );
+        assert_eq!(p.touch(2, Touch::Move, outside.0 + 80, outside.1), None);
+        assert_eq!(p.touch(2, Touch::Up, outside.0 + 80, outside.1), None);
+        assert!(p.take_actions().is_empty());
+        // Another page closes it.
+        p.apply(ToUi::Show(View::Play));
+        assert!(p
+            .take_actions()
+            .contains(&FromUi::Time(TimeAction::CloseReport)));
+        // Over the song list: List → song's card keeps the song.
+        st.song_view = false;
+        st.list_view = true;
+        st.report = Some(sample_report(
+            "LIST → SONG",
+            "bars 1 to 8",
+            "The song plays the list, except:",
+            &[(None, 5, "the scene's program changes aren't in the song")],
+        ));
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        p.apply(ToUi::Show(View::Arrange));
+        let _ = p.take_actions();
+        assert_eq!(
+            hint(&p),
+            "Done: close it and keep the song   ·   UNDO, here or on the MPC: take it all back   ·   a tap outside or a page change keeps it"
+        );
+        let done = at(&p, "report-done");
+        assert_eq!(tap(&mut p, done), [FromUi::Time(TimeAction::CloseReport)]);
+        // Closed: the Song view as it was, and a tap outside is its own.
+        p.apply(ToUi::Time(Box::new(song)));
+        assert_eq!(p.time_page.report_rect(&p.ui), None);
+        assert_eq!(hint(&p), time_view::song_hint(&p.time));
+        assert!(p
+            .ui
+            .targets()
+            .into_iter()
+            .any(|t| t.widget == time_view::SONG && t.target.id == "block"));
+    }
+
     /// The song list on Arrange (sequencer S4): MAIN in Perform goes
     /// Clips, Song, List and round; its hint; a tap on a step picks it;
     /// Remove needs the hold in Perform.
@@ -21300,13 +21668,50 @@ mod tests {
         let grid = p.ui.get::<NoteGrid>(time_view::NOTES).unwrap();
         let note = grid.note_rect(area, 1).unwrap();
         let edit = grid.button_rects(area)[7];
+        let (nx, ny) = (note.x + note.w / 2, note.y + note.h / 2);
+        // A tap on a note goes as its finger lifts; a finger held there
+        // picks it, and its lift taps nothing (piano roll plan 1B.1).
         assert_eq!(
-            tap(&mut p, (note.x + note.w / 2, note.y + note.h / 2)),
-            Some(FromUi::Time(TimeAction::Edit(EditAction::Note {
+            tap(&mut p, (nx, ny)),
+            Some(FromUi::Time(TimeAction::Edit(EditAction::Tap {
                 index: 1,
                 rev: 0
             })))
         );
+        // What went to the time engine (the tick sends other things).
+        let timed = |p: &mut Player| -> Vec<FromUi> {
+            p.take_actions()
+                .into_iter()
+                .filter(|a| matches!(a, FromUi::Time(_)))
+                .collect()
+        };
+        timed(&mut p);
+        assert!(p.touch(1, Touch::Down, nx, ny).is_none());
+        p.tick(0.25);
+        assert!(timed(&mut p).is_empty());
+        p.tick(0.25);
+        assert_eq!(
+            timed(&mut p),
+            vec![FromUi::Time(TimeAction::Edit(EditAction::Note {
+                index: 1,
+                rev: 0
+            }))]
+        );
+        assert!(p.touch(1, Touch::Up, nx, ny).is_none());
+        assert!(timed(&mut p).is_empty());
+        // ERASE held + a tap takes the note out.
+        let mut held = p.status.clone();
+        held.erase = true;
+        p.apply(ToUi::Status(held.clone()));
+        assert_eq!(
+            tap(&mut p, (nx, ny)),
+            Some(FromUi::Time(TimeAction::Edit(EditAction::Erase {
+                index: 1,
+                rev: 0
+            })))
+        );
+        held.erase = false;
+        p.apply(ToUi::Status(held));
         // Edit opens the drawer of Edit options and takes (the page's
         // own), whose Correct corrects the timing; TC does too, once the
         // drawer shows (piano roll plan 1A.1).
@@ -28620,6 +29025,55 @@ mod tests {
         // SHIFT + wheel reaches it on the Dev tab's strip, before Console.
         assert_eq!(crate::app::DEBUG_PAGES[6], View::StatusBoard);
         assert_eq!(View::StatusBoard.tab_view(), Some(View::Debug));
+    }
+
+    /// The theme safety nets are yellow Screen problems: files left out,
+    /// lines that fell back and the default shown stay until the next start
+    /// (picking a theme ends the last), and a skin's pop-up colours moved
+    /// last while the theme needs them.
+    #[test]
+    fn theme_fallbacks_are_yellow_screen_problems() {
+        use mpfree_status::{kinds, System, Window};
+        let now = |p: &Player| -> Vec<&'static str> {
+            p.status_board
+                .problems(System::Screen, Window::Now)
+                .iter()
+                .map(|v| v.kind.id)
+                .collect()
+        };
+        let mut p = sample_player(Fonts::embedded());
+        assert!(now(&p).is_empty());
+        p.apply(ToUi::ThemeFallbacks {
+            left_out: 1,
+            lines_fell_back: 3,
+            default_shown: 1,
+        });
+        let going = now(&p);
+        for k in [
+            &kinds::THEME_LEFT_OUT,
+            &kinds::THEME_MISTAKES,
+            &kinds::THEME_NOT_FOUND,
+        ] {
+            assert_eq!(k.level, mpfree_status::Level::Warn);
+            assert!(going.contains(&k.id), "{going:?}");
+        }
+        // Still counted on the Debug page as before.
+        assert_eq!(p.theme_fallbacks, (1, 3, 1));
+        // Picking a theme in Prefs > Appearance ends "Your theme couldn't
+        // be used"; the theme files' two stay.
+        p.apply(ToUi::Settings(Settings {
+            theme: "light".into(),
+            ..Settings::default()
+        }));
+        let going = now(&p);
+        assert!(!going.contains(&kinds::THEME_NOT_FOUND.id), "{going:?}");
+        assert!(going.contains(&kinds::THEME_LEFT_OUT.id), "{going:?}");
+        // A skin whose pop-ups needed colours moved, then a theme that needs
+        // none.
+        p.report_skin_colours(2);
+        assert!(now(&p).contains(&kinds::SKIN_COLOURS_MOVED.id));
+        p.report_skin_colours(0);
+        assert!(!now(&p).contains(&kinds::SKIN_COLOURS_MOVED.id));
     }
 
     /// System status phase 1: the watchers' looks on each timing turn the

@@ -63,6 +63,21 @@ impl Mode {
         }
     }
 
+    /// The mode's seven steps above the home note, in semitones.
+    pub const fn steps(self) -> [u8; 7] {
+        let mut s = [0u8; 7];
+        let mut i = 0;
+        let mut pc = 0;
+        while pc < 12 {
+            if self.mask() & (1 << pc) != 0 && i < 7 {
+                s[i] = pc as u8;
+                i += 1;
+            }
+            pc += 1;
+        }
+        s
+    }
+
     /// A minor third above the tonic.
     pub const fn minorish(self) -> bool {
         self.mask() & (1 << 3) != 0
@@ -268,6 +283,7 @@ mod tests {
         );
         assert!(Key::new(2, Mode::Dorian).scale().contains(71));
         assert!(Mode::Dorian.minorish() && !Mode::Mixolydian.minorish());
+        assert_eq!(Mode::Dorian.steps(), [0, 2, 3, 5, 7, 9, 10]);
     }
 
     #[test]

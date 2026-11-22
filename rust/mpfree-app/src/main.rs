@@ -228,6 +228,12 @@ struct Options {
     sysfs: PathBuf,
     preview: Option<PathBuf>,
     display_lists: Option<PathBuf>,
+    /// `--check-theme FILE`: a theme file's problems and its unreadable
+    /// text on every sample screen ([`check_theme`]).
+    check_theme: Option<PathBuf>,
+    /// `--contact-sheet DIR`: every sample screen in `--theme` beside the
+    /// theme it starts from, with a page to look at them ([`contact_sheet`]).
+    contact_sheet: Option<PathBuf>,
     font: Option<PathBuf>,
     bold_font: Option<PathBuf>,
     mono_font: Option<PathBuf>,
@@ -297,6 +303,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         sysfs: PathBuf::from("/sys/class/graphics/fb0"),
         preview: None,
         display_lists: None,
+        check_theme: None,
+        contact_sheet: None,
         font: None,
         bold_font: None,
         mono_font: None,
@@ -345,6 +353,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--sysfs" => o.sysfs = PathBuf::from(value()?),
             "--preview" => o.preview = Some(PathBuf::from(value()?)),
             "--display-lists" => o.display_lists = Some(PathBuf::from(value()?)),
+            "--check-theme" => o.check_theme = Some(PathBuf::from(value()?)),
+            "--contact-sheet" => o.contact_sheet = Some(PathBuf::from(value()?)),
             "--font" => o.font = Some(PathBuf::from(value()?)),
             "--bold-font" => o.bold_font = Some(PathBuf::from(value()?)),
             "--mono-font" => o.mono_font = Some(PathBuf::from(value()?)),
@@ -366,7 +376,12 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             _ => return Err(format!("unknown argument {arg}")),
         }
     }
-    if o.preview.is_none() && o.display_lists.is_none() && o.command.is_empty() {
+    if o.preview.is_none()
+        && o.display_lists.is_none()
+        && o.check_theme.is_none()
+        && o.contact_sheet.is_none()
+        && o.command.is_empty()
+    {
         return Err(
             "usage: mpfree inventory|screen|touch|pads|lights|setup|drums|play|app|click [options]"
                 .to_string(),
@@ -743,54 +758,100 @@ fn load_tuning_files(store: &mpfree_store::Store) -> (Vec<synth::TuningFile>, Ve
 /// The most theme files the themes folder offers.
 const MAX_THEME_FILES: usize = 32;
 
-/// The themes folder's `NAME.theme` files that parse, in name order (at
-/// most [`MAX_THEME_FILES`]), each with its theme. A theme without its own
-/// `name`, or named like a built-in one, is shown by its file name. A file
-/// that doesn't parse, or whose text no one could read
-/// ([`Theme::unusable`]), is left out with a line saying why (the second
-/// list, lines for the log), and counted (the third, for the Debug page).
-/// Only reads.
-fn load_theme_files(store: &mpfree_store::Store) -> (Vec<(String, Theme)>, Vec<String>, u64) {
-    let (mut found, mut notes, mut left_out) = (Vec::new(), Vec::new(), 0);
+/// What the themes folder holds, read at start ([`load_theme_files`]).
+#[derive(Default)]
+struct ThemeFolder {
+    /// The file name and theme of each theme offered, in name order.
+    found: Vec<(String, Theme)>,
+    /// Each offered file's problems, as Prefs > Appearance lists them:
+    /// lines it couldn't use, unknown keys, ignored lines, colours hard to
+    /// read.
+    problems: Vec<(String, Vec<String>)>,
+    /// Files left out, and why.
+    left_out: Vec<(String, String)>,
+    /// Lines of offered files that couldn't be used (a mistake, an unknown
+    /// key): each used the base theme's value, a fallback.
+    lines_fell_back: u64,
+    /// Lines for the log.
+    notes: Vec<String>,
+}
+
+/// The themes folder's `NAME.theme` files, in name order (at most
+/// [`MAX_THEME_FILES`]), each read the forgiving way ([`Theme::load`]): a
+/// line with a mistake uses the base theme's value, an unknown key is
+/// skipped, and each such line is logged, counted and kept for Prefs >
+/// Appearance to list (owner, 22 Nov 07:17Z). Only a theme no one could
+/// read ([`Theme::unusable`]), or a file that isn't text, is left out, with
+/// a line saying why. A theme without its own `name`, or named like a
+/// built-in one, is shown by its file name. Only reads.
+fn load_theme_files(store: &mpfree_store::Store) -> ThemeFolder {
+    use mpfree_ui::theme::ProblemKind;
+    let mut folder = ThemeFolder::default();
     for file in store.list(app::THEMES_FOLDER) {
         let Some(stem) = file.strip_suffix(".theme").filter(|s| !s.is_empty()) else {
             continue;
         };
-        if found.len() == MAX_THEME_FILES {
-            notes.push(format!(
+        if folder.found.len() == MAX_THEME_FILES {
+            folder.notes.push(format!(
                 "themes: only the first {MAX_THEME_FILES} theme files are offered"
             ));
             break;
         }
-        let text = store
+        let Some(text) = store
             .read(app::THEMES_FOLDER, &file)
-            .and_then(|b| String::from_utf8(b).ok());
-        match text.map(|t| Theme::parse(&t)) {
-            Some(Ok(mut t)) => {
-                if app::THEMES
-                    .iter()
-                    .any(|b| b.1.eq_ignore_ascii_case(t.name.trim()))
-                    || t.name.trim().is_empty()
-                {
-                    t.name = stem.to_string();
-                }
-                found.push((file, t));
-            }
-            Some(Err(e)) => {
-                notes.push(format!("themes: {file} left out: {e}"));
-                left_out += 1;
-            }
-            None => {
-                notes.push(format!("themes: {file} left out: not readable text"));
-                left_out += 1;
-            }
+            .and_then(|b| String::from_utf8(b).ok())
+        else {
+            folder
+                .notes
+                .push(format!("themes: {file} left out: not readable text"));
+            folder
+                .left_out
+                .push((file, "not readable text".to_string()));
+            continue;
+        };
+        let (mut t, problems) = Theme::load(&text);
+        if let Some(why) = problems
+            .iter()
+            .find(|p| p.kind == ProblemKind::Unusable)
+            .map(|p| p.text.clone())
+        {
+            folder.notes.push(format!("themes: {file} left out: {why}"));
+            folder.left_out.push((file, why));
+            continue;
         }
+        if app::THEMES
+            .iter()
+            .any(|b| b.1.eq_ignore_ascii_case(t.name.trim()))
+            || t.name.trim().is_empty()
+        {
+            t.name = stem.to_string();
+        }
+        let mut lines = Vec::new();
+        for p in &problems {
+            let kind = match p.kind {
+                ProblemKind::Mistake | ProblemKind::Unknown => {
+                    folder.lines_fell_back += 1;
+                    "used the base for"
+                }
+                ProblemKind::Ignored => "ignored",
+                ProblemKind::HardToRead => "hard to read",
+                ProblemKind::Unusable => unreachable!("left out above"),
+            };
+            folder.notes.push(format!("themes: {file}: {kind}: {p}"));
+            lines.push(p.to_string());
+        }
+        if !lines.is_empty() {
+            folder.problems.push((file.clone(), lines));
+        }
+        folder.found.push((file, t));
     }
-    if !found.is_empty() {
-        let names: Vec<&str> = found.iter().map(|(_, t)| t.name.as_str()).collect();
-        notes.push(format!("themes: found {}", names.join(", ")));
+    if !folder.found.is_empty() {
+        let names: Vec<&str> = folder.found.iter().map(|(_, t)| t.name.as_str()).collect();
+        folder
+            .notes
+            .push(format!("themes: found {}", names.join(", ")));
     }
-    (found, notes, left_out)
+    folder
 }
 
 /// The built-in fonts, or files given with --font, --bold-font, --mono-font.
@@ -3808,6 +3869,7 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
             out.say(&format!("{e}; using the default theme"));
             player.apply(gui::ToUi::ThemeFallbacks {
                 left_out: 0,
+                lines_fell_back: 0,
                 default_shown: 1,
             });
         }
@@ -6686,9 +6748,14 @@ fn time_action(
         a,
         TimeAction::AddAudioTrack | TimeAction::Undo | TimeAction::Redo
     );
+    let convert = matches!(
+        a,
+        TimeAction::ScenesToSong | TimeAction::ListToSong | TimeAction::SongToScenes
+    );
     let say = match waiting {
         Some(leader) => time::Say::Waiting(leader),
         None if erase => time::Say::Tell,
+        None if convert => time::Say::Convert,
         None if undo => time::Say::Undo,
         None => time::Say::Note {
             ok: "time: ",
@@ -6766,6 +6833,21 @@ fn time_said(out: &mut Out, say: time::Say, r: Result<String, String>) -> Vec<ap
             Vec::new()
         }
         (time::Say::NoteOrTell { err }, Err(e)) => vec![app::Effect::Tell(format!("{err}{e}"))],
+        // An exact conversion opens nothing: its line shows in place of the
+        // hint. One with differences opens the report card (the time
+        // engine's `TimeState::report`), whose own hint shows.
+        (time::Say::Convert, Ok(line)) => {
+            out.note(&format!("time: {line}"));
+            if line.ends_with(time::EXACT) {
+                vec![app::Effect::Tell(line)]
+            } else {
+                Vec::new()
+            }
+        }
+        (time::Say::Convert, Err(e)) => {
+            out.note(&format!("time: {e}"));
+            vec![app::Effect::Tell(e)]
+        }
     }
 }
 
@@ -7259,15 +7341,20 @@ fn player_session(
     // The themes folder: theme files the user put in files/themes/ (read
     // only), offered in Prefs > Appearance after the built-in themes. Listed
     // before restore so a saved theme file comes back.
-    let (theme_files, notes, themes_left_out) = load_theme_files(&store);
-    for line in notes {
-        out.say(&line);
+    let folder = load_theme_files(&store);
+    for line in &folder.notes {
+        out.say(line);
     }
-    app.theme_files = theme_files
+    app.theme_files = folder
+        .found
         .iter()
         .map(|(f, t)| (f.clone(), t.name.clone()))
         .collect();
-    out.show(gui::ToUi::ThemeFiles(theme_files));
+    app.theme_problems = folder.problems;
+    app.themes_left_out = folder.left_out;
+    let themes_left_out = app.themes_left_out.len() as u64;
+    let theme_lines_fell_back = folder.lines_fell_back;
+    out.show(gui::ToUi::ThemeFiles(folder.found));
     // The library in the data folder (its places are made there if they
     // are missing), for the Pads tab's browser, with its Recent and
     // Favourites from the store. Without --data the browser says so.
@@ -7344,9 +7431,10 @@ fn player_session(
     out.show(gui::ToUi::Settings(app.settings.clone()));
     // Theme files left out, and a saved theme that couldn't be used (the
     // default shows): counted on the Debug page.
-    if themes_left_out > 0 || app.theme_fallbacks > 0 {
+    if themes_left_out > 0 || theme_lines_fell_back > 0 || app.theme_fallbacks > 0 {
         out.show(gui::ToUi::ThemeFallbacks {
             left_out: themes_left_out,
+            lines_fell_back: theme_lines_fell_back,
             default_shown: app.theme_fallbacks,
         });
     }
@@ -9907,6 +9995,8 @@ fn player_session(
             }
         }
         fx.extend(app.tick(t));
+        // "Keep this theme?" counting down in Prefs > Appearance.
+        fx.extend(app.theme_tick());
         // As set, not rounded: the song plays at it, and a project saves it
         // as it is.
         if let Some(bpm) = loop_tempo.take() {
@@ -12721,6 +12811,243 @@ fn display_lists(o: &Options) -> Result<(), String> {
     Ok(())
 }
 
+/// The runs of text under 3:1 on page `p` drawn in theme `t` (the
+/// contrast check's measure, `mpfree_ui::lint`).
+fn unreadable_runs(p: &mut gui::Player, t: &Theme) -> Result<Vec<mpfree_ui::lint::Run>, String> {
+    use mpfree_ui::lint::{text_runs, FLOOR};
+    p.ui.set_theme(t.clone());
+    let (w, h) = p.ui.size();
+    let mut rec = mpfree_ui::record::Recorder::new(w, h);
+    let mut bytes = Vec::new();
+    rec.begin_frame();
+    p.ui.paint(&mut rec);
+    rec.encode_frame(&mut bytes);
+    let frames = mpfree_ui::record::Frame::decode_all(&bytes)?;
+    Ok(text_runs(&frames[0])
+        .into_iter()
+        .filter(|r| r.ratio < FLOOR)
+        .collect())
+}
+
+/// The built-in theme a theme file starts from (its first line's `base`),
+/// by name, or the default theme.
+fn base_theme(text: &str) -> (String, Theme) {
+    text.lines()
+        .map(|l| l.split('#').next().unwrap_or("").trim())
+        .find(|l| !l.is_empty())
+        .and_then(|l| l.split_once('='))
+        .filter(|(k, _)| k.trim() == "base")
+        .and_then(|(_, v)| {
+            let v = v.trim().to_ascii_lowercase();
+            Theme::builtin(&v).map(|t| (v, t))
+        })
+        .unwrap_or_else(|| ("default".to_string(), Theme::dark()))
+}
+
+/// The page `--contact-sheet` writes: each screen's name over the two
+/// pictures, `theme/NAME.png` (labelled `theme`) and `base/NAME.png`
+/// (labelled `base`), side by side. One self-contained file with no
+/// scripts, readable in light and dark browsers, that opens from disk.
+fn contact_sheet_html(theme: &str, base: &str, names: &[&str]) -> String {
+    let esc = |t: &str| {
+        t.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    };
+    let (theme, base) = (esc(theme), esc(base));
+    let mut html = format!(
+        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
+         <title>{theme} beside {base}</title>\n<style>\n\
+         :root {{ color-scheme: light dark; --bg: #EEF0F3; --card: #FFFFFF; --line: #D3D8E0; --fg: #161A21; --dim: #4D5565; }}\n\
+         @media (prefers-color-scheme: dark) {{ :root {{ --bg: #0F1217; --card: #181C23; --line: #2A303B; --fg: #E8EBF0; --dim: #A2AABA; }} }}\n\
+         body {{ margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }}\n\
+         main {{ max-width: 1480px; margin: 0 auto; padding: 24px 16px 48px; }}\n\
+         h1 {{ font-size: 26px; margin: 0 0 6px; }}\n\
+         p {{ margin: 0 0 18px; color: var(--dim); }}\n\
+         .grid {{ display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 640px), 1fr)); }}\n\
+         section {{ background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }}\n\
+         h2 {{ font: 500 14px ui-monospace, monospace; margin: 0 0 8px; }}\n\
+         .pair {{ display: grid; gap: 8px; grid-template-columns: 1fr 1fr; }}\n\
+         @media (max-width: 560px) {{ .pair {{ grid-template-columns: 1fr; }} }}\n\
+         figure {{ margin: 0; }}\n\
+         img {{ display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; }}\n\
+         figcaption {{ font: 12px ui-monospace, monospace; color: var(--dim); margin-top: 4px; }}\n\
+         </style></head><body><main>\n\
+         <h1>{theme} beside {base}</h1>\n\
+         <p>Every sample screen MPFree draws ({n}), {theme} on the left and {base} on the right. \
+         Open a picture for its full size (1280 &times; 800).</p>\n<div class=\"grid\">\n",
+        n = names.len()
+    );
+    for name in names {
+        let name = esc(name);
+        html.push_str(&format!(
+            "<section><h2>{name}</h2><div class=\"pair\">\
+             <figure><a href=\"theme/{name}.png\"><img loading=\"lazy\" src=\"theme/{name}.png\" alt=\"{name} in {theme}\"></a><figcaption>{theme}</figcaption></figure>\
+             <figure><a href=\"base/{name}.png\"><img loading=\"lazy\" src=\"base/{name}.png\" alt=\"{name} in {base}\"></a><figcaption>{base}</figcaption></figure>\
+             </div></section>\n"
+        ));
+    }
+    html.push_str("</div>\n</main></body></html>\n");
+    html
+}
+
+/// `--contact-sheet DIR` with `--theme NAME|FILE`: every sample screen in
+/// the theme and in the theme it starts from (a file's `base`, else
+/// Default; Light for Default itself), as new PNG files in DIR/theme and
+/// DIR/base, and DIR/index.html to look at them side by side. What a
+/// theme writer looks over before sharing a theme, and what the owner saw
+/// Light on. Writes only new files; opens no devices.
+fn contact_sheet(o: &Options) -> Result<(), String> {
+    let dir = o.contact_sheet.as_ref().unwrap();
+    let theme = load_theme(o)?;
+    let given = o.theme.clone().unwrap_or_else(|| "default".to_string());
+    let (base_name, base) = match Theme::builtin(&given) {
+        Some(_) if given.eq_ignore_ascii_case("default") => ("light".to_string(), Theme::light()),
+        Some(_) => ("default".to_string(), Theme::dark()),
+        None => base_theme(&fs::read_to_string(&given).map_err(|e| format!("{given}: {e}"))?),
+    };
+    let label = if theme.name.trim().is_empty() {
+        given.clone()
+    } else {
+        theme.name.clone()
+    };
+    let base_label = Theme::builtin(&base_name).map_or(base_name.clone(), |t| t.name);
+    let fonts = || {
+        Fonts::with_files(
+            o.font.as_deref(),
+            o.bold_font.as_deref(),
+            o.mono_font.as_deref(),
+        )
+    };
+    fonts()?;
+    for sub in ["theme", "base"] {
+        let d = dir.join(sub);
+        fs::create_dir_all(&d).map_err(|e| format!("{}: {e}", d.display()))?;
+    }
+    let mut names = Vec::new();
+    for (name, mut p) in gui::sample_screens(|| fonts().unwrap_or_else(|_| Fonts::embedded())) {
+        for (sub, t) in [("theme", &theme), ("base", &base)] {
+            p.ui.set_theme(t.clone());
+            let (w, h) = p.ui.size();
+            let mut canvas = SoftCanvas::new(w, h);
+            p.ui.paint(&mut canvas);
+            write_png(&dir.join(sub).join(format!("{name}.png")), &canvas)?;
+        }
+        names.push(name);
+    }
+    let page = dir.join("index.html");
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&page)
+        .and_then(|mut f| f.write_all(contact_sheet_html(&label, &base_label, &names).as_bytes()))
+        .map_err(|e| format!("{}: {e}", page.display()))?;
+    println!(
+        "contact sheet written: {} screens, {label} beside {base_label}, {}",
+        names.len(),
+        page.display()
+    );
+    Ok(())
+}
+
+/// `--check-theme FILE`: what someone writing a theme needs to know,
+/// without an MPC. Every problem the file has, by line (`Theme::load`);
+/// whether the app would offer it in Prefs > Appearance or leave it out
+/// (as [`load_theme_files`] does: only below the floor); and every sample
+/// screen where
+/// more text is under 3:1 than in the theme the file starts from, each
+/// run with its colours and place. Only reads FILE; opens no devices.
+/// Ends with an error when the app would leave the file out.
+fn check_theme(o: &Options) -> Result<(), String> {
+    let path = o.check_theme.as_ref().unwrap();
+    let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (theme, problems) = Theme::load(&text);
+    let name = if theme.name.trim().is_empty() {
+        path.display().to_string()
+    } else {
+        theme.name.clone()
+    };
+    // The report is printed at the end, after the lines the sample
+    // screens print as they are built.
+    let mut out = vec![format!("theme {name} ({})", path.display())];
+    for p in &problems {
+        let kind = match p.kind {
+            mpfree_ui::theme::ProblemKind::Mistake => "mistake",
+            mpfree_ui::theme::ProblemKind::Unknown => "unknown key",
+            mpfree_ui::theme::ProblemKind::HardToRead => "hard to read",
+            mpfree_ui::theme::ProblemKind::Ignored => "ignored",
+            mpfree_ui::theme::ProblemKind::Unusable => "unusable",
+        };
+        out.push(format!("  {kind}: {p}"));
+    }
+    if problems.is_empty() {
+        out.push("  no problems".to_string());
+    }
+    // As the themes folder reads it: only a theme no one could read is
+    // left out; a line with a mistake uses the base's value.
+    let refused = problems
+        .iter()
+        .find(|p| p.kind == mpfree_ui::theme::ProblemKind::Unusable)
+        .map(|p| p.text.clone());
+    match &refused {
+        Some(e) => out.push(format!(
+            "the app leaves this file out of Prefs > Appearance: {e}"
+        )),
+        None => out.push("the app offers it in Prefs > Appearance".to_string()),
+    }
+    // The theme the file starts from, for a fair comparison: faint text
+    // that is under 3:1 there too is the screen's, not the file's.
+    let base = base_theme(&text);
+    let fonts = || {
+        Fonts::with_files(
+            o.font.as_deref(),
+            o.bold_font.as_deref(),
+            o.mono_font.as_deref(),
+        )
+    };
+    fonts()?;
+    let (mut pages, mut worse, mut runs, mut base_runs) = (0, 0, 0, 0);
+    for (page, mut p) in gui::sample_screens(|| fonts().unwrap_or_else(|_| Fonts::embedded())) {
+        let mine = unreadable_runs(&mut p, &theme)?;
+        let theirs = unreadable_runs(&mut p, &base.1)?;
+        pages += 1;
+        runs += mine.len();
+        base_runs += theirs.len();
+        if mine.len() > theirs.len() {
+            worse += 1;
+            out.push(format!(
+                "{page}: {} run(s) of text under 3:1 ({}: {})",
+                mine.len(),
+                base.0,
+                theirs.len()
+            ));
+            for r in &mine {
+                out.push(format!(
+                    "  #{:06X} on #{:06X} at {},{} ({} glyph(s), {:.1}:1)",
+                    r.ink.xrgb(),
+                    r.under.xrgb(),
+                    r.x,
+                    r.y,
+                    r.glyphs,
+                    r.ratio
+                ));
+            }
+        }
+    }
+    out.push(format!(
+        "screens: {pages} drawn, {runs} run(s) of text under 3:1 ({}: {base_runs}), \
+         {worse} page(s) with more than {}",
+        base.0, base.0
+    ));
+    println!("{}", out.join("\n"));
+    match refused {
+        Some(e) => Err(format!("{}: {e}", path.display())),
+        None => Ok(()),
+    }
+}
+
 /// `--script FILE`: the workflow, read and checked before anything starts,
 /// and the run's length from it (a few seconds more, for the last status
 /// lines and the sounds' tails).
@@ -12764,6 +13091,12 @@ fn main() {
         }
         if o.display_lists.is_some() {
             return gui::on_screens_stack(|| display_lists(&o));
+        }
+        if o.check_theme.is_some() {
+            return gui::on_screens_stack(|| check_theme(&o));
+        }
+        if o.contact_sheet.is_some() {
+            return gui::on_screens_stack(|| contact_sheet(&o));
         }
         match o.command.as_str() {
             "inventory" => inventory(&o),
@@ -14151,6 +14484,29 @@ mod tests {
     }
 
     #[test]
+    fn a_contact_sheet_pairs_each_screen_with_its_base() {
+        let html = contact_sheet_html("Sunrise <2>", "Synthwave", &["play", "mixer-eq"]);
+        assert!(html.starts_with("<!doctype html>"));
+        assert!(html.contains("<title>Sunrise &lt;2&gt; beside Synthwave</title>"));
+        assert!(html.contains("Every sample screen MPFree draws (2)"));
+        for name in ["play", "mixer-eq"] {
+            assert!(
+                html.contains(&format!("src=\"theme/{name}.png\"")),
+                "{name}"
+            );
+            assert!(html.contains(&format!("src=\"base/{name}.png\"")), "{name}");
+        }
+        assert!(!html.contains("<script"));
+        // The base is the file's first line, else Default.
+        assert_eq!(
+            base_theme("# mine\nbase = Light\naccent = #FF0000\n").0,
+            "light"
+        );
+        assert_eq!(base_theme("accent = #FF0000\nbase = light\n").0, "default");
+        assert_eq!(base_theme("base = vaporwave\n").0, "default");
+    }
+
+    #[test]
     fn the_themes_folder_offers_theme_files_that_parse() {
         let d = std::env::temp_dir().join(format!("mpfree-themes-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
@@ -14168,32 +14524,55 @@ mod tests {
         fs::write(t.join("fog.theme"), "text = #151922\n").unwrap();
         fs::write(t.join("notes.txt"), "not a theme\n").unwrap();
         let store = mpfree_store::Store::at(&d, |_| {});
-        let (found, notes, left_out) = load_theme_files(&store);
-        assert_eq!(left_out, 2);
-        let names: Vec<(&str, &str)> = found
+        let folder = load_theme_files(&store);
+        let names: Vec<(&str, &str)> = folder
+            .found
             .iter()
             .map(|(f, t)| (f.as_str(), t.name.as_str()))
             .collect();
-        // Named like a built-in theme (Console, from its base): its file name.
+        // Named like a built-in theme (Console, from its base), or with no
+        // name: its file name. A mistake in a line doesn't leave the file
+        // out: that line uses the base's value, and it is listed.
         assert_eq!(
             names,
-            vec![("plain.theme", "plain"), ("sunrise.theme", "Sunrise")]
+            vec![
+                ("broken.theme", "broken"),
+                ("plain.theme", "plain"),
+                ("sunrise.theme", "Sunrise")
+            ]
+        );
+        assert_eq!(folder.lines_fell_back, 1);
+        assert_eq!(folder.problems.len(), 1);
+        assert_eq!(folder.problems[0].0, "broken.theme");
+        assert!(
+            folder.problems[0].1[0].starts_with("line 1: accent: expected a colour"),
+            "{:?}",
+            folder.problems
         );
         assert!(
-            notes
-                .iter()
-                .any(|n| n.starts_with("themes: broken.theme left out")),
-            "{notes:?}"
+            folder.notes.iter().any(|n| n.starts_with(
+                "themes: broken.theme: used the base for: line 1: accent: expected a colour"
+            )),
+            "{:?}",
+            folder.notes
         );
+        // Only a theme no one could read is left out.
+        assert_eq!(folder.left_out.len(), 1);
+        assert_eq!(folder.left_out[0].0, "fog.theme");
         assert!(
-            notes.iter().any(
+            folder.notes.iter().any(
                 |n| n.starts_with("themes: fog.theme left out: nothing could be read: text on")
             ),
-            "{notes:?}"
+            "{:?}",
+            folder.notes
         );
         assert!(
-            notes.iter().any(|n| n == "themes: found plain, Sunrise"),
-            "{notes:?}"
+            folder
+                .notes
+                .iter()
+                .any(|n| n == "themes: found broken, plain, Sunrise"),
+            "{:?}",
+            folder.notes
         );
         let _ = fs::remove_dir_all(&d);
     }

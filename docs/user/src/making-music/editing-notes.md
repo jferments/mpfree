@@ -16,7 +16,7 @@ The Notes view has the Arrange tab's transport bar along the top (**Stop**, **Pl
 |---|---|
 | **‹ Steps** | Back to the Steps view (so does **STEP SEQ**). |
 | **Grid** | Which view shows: Grid, List or Tracker. Tap it for the next. |
-| **Select** | The tool: Select, Draw or Erase. Tap it for the next. |
+| **Draw** | Draw on (lit) or off. With Draw on, the roll works like Steps: tap notes in and out. With it off, a tap picks a note so you can change it. |
 | **Auto · 1/16** | The snap: the grid that moves and new notes land on. **Auto** follows your zoom (see [Snap](#snap)); tap for Auto triplets, then a fixed grid from a bar to 1/64, then off. |
 | **All** or **None** | Picks every note, or lets them go. |
 | **Duplicate** | Copies the picked notes to just after them. |
@@ -29,11 +29,13 @@ The notes are bars on a piano roll: higher notes higher up, time running left to
 
 Notes are drawn as they will play. A note whose step is off (tapped off on Steps) is only an outline: it keeps its place and settings and plays nothing. A note that repeats (a ratchet) shows each hit, lighter or darker as its velocity ramps, and each hit shows in the velocity lane too. A tied note has a short level mark just before it, and a sliding note a short slanting one.
 
-- **Pick notes.** Tap a note to pick it. **All** picks every note, and **None** lets them go.
-- **Move them.** Drag a picked note and every picked note moves with it, along time and up or down in pitch. With **Auto** snap a move goes by whole grid steps and each note keeps its feel: a note played a little late stays a little late. With a fixed snap, the note you drag lands on a line.
+- **Draw on: tap a beat in.** With **Draw** lit, the roll works like the Steps view. Tap an empty spot to put a note there, one snap long and as loud as the last note you used. Tap a short note (a step long or less) to take it out again. A longer note is picked instead, so a quick tap never loses a long note. Drag along an empty row to draw a note as long as your drag. Hold a note for a moment to pick it without taking it out.
+- **Draw off: pick and change.** Tap a note to pick it, just that one. Tap an empty spot to let the picks go, or tap it twice quickly to put a note there. **All** picks every note, and **None** lets them go.
+- **Nothing happens until you lift.** A finger on a note is a tap when it lifts, a hold once it has stayed still for 0.4 seconds, or a drag once it moves about 3 mm. Nothing goes in or comes out before your finger lifts.
+- **Erase.** Hold **ERASE** and tap a note to take it out, with Draw on or off.
+- **Move them.** Drag a note to move it, along time and up or down in pitch. If it is picked, every picked note moves with it; if not, it moves on its own and is picked after. With **Auto** snap a move goes by whole grid steps and each note keeps its feel: a note played a little late stays a little late. With a fixed snap, the note you drag lands on a line.
 - **Velocity.** Slide a finger along the velocity lane to set the picked notes' velocity. Their bars follow your finger, and the new velocity goes in when you lift it, so **UNDO** takes back the whole slide.
 - **One finger edits, two move the view.** A drag belongs to the finger that started it. If a second finger touches the roll while you drag, the drag stops, the notes stay where they were, and the two fingers zoom and scroll instead (see below).
-- **Draw and erase.** The tool button switches between Select, Draw and Erase. With Draw, tap an empty spot to add a note there, one snap long: it goes in when you lift your finger, so a pinch that starts on an empty spot adds nothing. With Erase, tap a note to take it out.
 - **Duplicate** copies the picked notes to just after them. **Delete** takes them out (in Perform, hold it for half a second).
 - **Grid, List, Tracker.** The second button says which view is showing (**Grid** to begin with) and switches to the next. **List** shows the notes as a list, one row per note, with its position, note, velocity, length and chance. An off note's row is faint and its note says "off"; a tied or sliding note's says "tie" or "slide". **Tracker** shows every step, described below.
 
@@ -69,7 +71,7 @@ The tracker shows the clip as a list of steps from top to bottom, empty steps in
 
 - **One row per step**, at the snap's size (with Auto, the grid your roll's zoom picked). A step with several notes, such as a kick and a hat together, gives each note a row of its own under the step. An empty step shows dots. Rows are 40 pixels tall, as are the list's, so a tap lands on the row you meant.
 - **The columns**: the step (bar.beat.step), the pad or note, velocity, length, nudge (how many ticks early or late), chance, condition, ratchet (with its velocity ramp when it has one: "×4 -40" is four hits, the last 40 softer than the first), and how many parameter locks the step has. A setting left at its default shows as a faint dot, so what you changed stands out. A note whose step is off has a faint row and says "off" after its name; a tied or sliding note says "tie" or "slide".
-- **Tap a note's row** to pick it, then change it with the Edit options. With the Draw tool, tap an empty step to put a note there: the sound of the last note you tapped, a step long. With Erase, tap a note's row to take it out.
+- **Tap a note's row** to pick it, then change it with the Edit options. With **Draw** on, tap an empty step to put a note there: the sound of the last note you tapped, a step long. Hold **ERASE** and tap a note's row to take it out.
 - The step on each beat is shaded, a bar starts with a line, and a green mark shows the step playing.
 
 With the snap off, or finer than 1/32, the tracker uses 1/16 steps, and its title line says so. The names of the parameters a step locks are coming; for now it shows how many there are.

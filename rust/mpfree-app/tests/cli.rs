@@ -334,6 +334,51 @@ fn preview_draws_every_screen_in_light() {
     check_screens(&dir, &names, "light");
 }
 
+/// `--check-theme FILE` lists a theme file's problems, says whether the app
+/// would use it, and names each screen with more unreadable text than the
+/// theme it starts from. A theme whose dim text no one could read is
+/// refused, and the run ends with STOP (x86_64 only, like Light's preview).
+#[test]
+fn check_theme_reports_problems_and_unreadable_screens() {
+    if !cfg!(target_arch = "x86_64") {
+        return;
+    }
+    if Path::new(REPORT_DIR).exists() {
+        eprintln!("skipped: {REPORT_DIR} exists, and a STOP line would be appended there");
+        return;
+    }
+    let dir = folder("check-theme");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("pale.theme");
+    std::fs::write(&file, "base = light\nname = Pale\ntext_dim = #8A93A3\n").unwrap();
+    let out = hello(&["--check-theme", file.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    let report = &stdout[stdout.find("theme Pale (").expect("report")..];
+    for want in [
+        "  unusable: nothing could be read: text_dim on the page (bg) 2.5:1",
+        "the app leaves this file out of Prefs > Appearance: nothing could be read",
+    ] {
+        assert!(report.contains(want), "{want:?} in\n{report}");
+    }
+    // Every sample screen is drawn (their number grows with the app).
+    assert!(
+        report.lines().any(|l| l
+            .strip_prefix("screens: ")
+            .and_then(|l| l.split_once(" drawn,"))
+            .and_then(|(n, _)| n.parse::<usize>().ok())
+            .is_some_and(|n| n > 100)),
+        "{report}"
+    );
+    assert!(
+        report
+            .lines()
+            .any(|l| l.starts_with("play: ") && l.ends_with("run(s) of text under 3:1 (light: 0)")),
+        "{report}"
+    );
+    assert!(stdout.contains("STOP:"), "{stdout}");
+}
+
 #[test]
 fn preview_never_overwrites_a_picture() {
     if Path::new(REPORT_DIR).exists() {

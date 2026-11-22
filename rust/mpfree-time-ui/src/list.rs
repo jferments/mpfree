@@ -16,6 +16,8 @@ use std::cell::Cell;
 
 use mpfree_ui::{Align, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
+use crate::report::ReportCard;
+
 /// One step as the list shows it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ListRow {
@@ -82,6 +84,9 @@ pub struct SongListView {
     pub looped: bool,
     /// Room for another step.
     pub can_add: bool,
+    /// The last conversion's report card, open over the list (the
+    /// Arrange refactor's 4.3): it takes the list's touches and targets.
+    pub report: Option<ReportCard>,
     /// The first step in view, and the pick it last followed.
     top: Cell<usize>,
     followed: Cell<Option<Option<usize>>>,
@@ -396,9 +401,15 @@ impl Widget for SongListView {
                 BUTTONS[k].0,
             );
         }
+        if let Some(card) = &self.report {
+            card.paint(cx, r);
+        }
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
+        if let Some(card) = &self.report {
+            return card.targets(r);
+        }
         let [looped, clips, song] = SongListView::head_rects(r);
         let mut out = vec![
             Target::tap("loop", 0, "Loop the list", looped),
@@ -454,6 +465,9 @@ impl Widget for SongListView {
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        if let Some(card) = self.report.as_mut() {
+            return card.touch(finger, phase, x, y, r);
+        }
         match phase {
             Touch::Down => {}
             Touch::Move => {
