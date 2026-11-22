@@ -643,6 +643,17 @@ impl Theme {
         }
     }
 
+    /// `ink` for text on `fill`, moved just far enough towards the theme's
+    /// text or inverse text (whichever reads on `fill`) to reach 4.5:1.
+    /// Text that already reads comes back as it is, so a theme whose
+    /// colours read draws exactly what it chose. Use it for text in a
+    /// colour of its own (a knob's number, a marker's label) on a fill the
+    /// theme doesn't choose.
+    pub fn readable(&self, ink: Color, fill: Color) -> Color {
+        let fill = over(fill, self.panel());
+        reach(ink, self.ink_on(fill), fill, 4.5)
+    }
+
     /// A content colour in its five forms ([`Swatch`]) for this theme.
     pub fn swatch(&self, c: Color) -> Swatch {
         let fill = self.content(c);
@@ -770,6 +781,23 @@ mod tests {
         assert!(contrast(s.line, t.panel()) < contrast(s.text, t.panel()));
         assert_eq!(s.ink, t.text);
         assert_eq!(s.tint, t.panel().mix(navy, TINT));
+    }
+
+    #[test]
+    fn readable_leaves_text_that_reads_and_moves_text_that_doesnt() {
+        let t = Theme::dark();
+        let blue = Color::rgb(0x6EA8FE);
+        assert_eq!(t.readable(blue, t.surface), blue);
+        // Blue on amber is under 2:1; it moves towards the dark ink that
+        // reads on amber, just far enough.
+        let amber = Color::rgb(0xFFC145);
+        let fixed = t.readable(blue, amber);
+        assert!(contrast(fixed, amber) >= 4.5, "{fixed:?}");
+        assert!(contrast(fixed, amber) < contrast(t.bg, amber));
+        // On a light theme the same blue on its panel darkens.
+        let light = Theme::parse("bg = #E4E7EB\nsurface = #F4F5F7\ntext = #161A21").unwrap();
+        let fixed = light.readable(blue, light.surface);
+        assert!(contrast(fixed, light.surface) >= 4.5, "{fixed:?}");
     }
 
     #[test]

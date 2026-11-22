@@ -912,8 +912,15 @@ impl Widget for Waveform {
             let w = (cx.measure(FontId::Bold, 13.0, &m.label) + 18).max(24);
             let tab = self.tab_rect(r, i, w);
             if let Some(tab) = tab {
-                cx.canvas.fill_round_rect(tab, 6, c);
-                cx.text(FontId::Bold, 13.0, tab, Align::Center, t.bg, &m.label);
+                cx.canvas.fill_round_rect(tab, t.round(6), c);
+                cx.text(
+                    FontId::Bold,
+                    13.0,
+                    tab,
+                    Align::Center,
+                    t.ink_on(c),
+                    &m.label,
+                );
             }
             tabs.push(tab);
         }
@@ -930,9 +937,9 @@ impl Widget for Waveform {
                 }
                 let cell = Rect::new(xa + 1, lane.y, xb - xa - 2, lane.h);
                 let fill = c.color.with_alpha(if c.lit { 84 } else { 46 });
-                cx.canvas.fill_round_rect(cell, 6, fill);
+                cx.canvas.fill_round_rect(cell, t.round(6), fill);
                 if c.picked {
-                    cx.canvas.stroke_round_rect(cell, 6, 1, c.color);
+                    cx.canvas.stroke_round_rect(cell, t.round(6), 1, c.color);
                 }
                 if cx.measure(FontId::Bold, 13.0, &c.text) + 6 <= cell.w {
                     cx.text(FontId::Bold, 13.0, cell, Align::Center, c.color, &c.text);
@@ -1273,12 +1280,14 @@ impl Widget for WaveOverview {
             (xb.min(inner.right()) - xa.max(inner.x)).max(4) + 4,
             r.h - 6,
         );
-        cx.canvas.fill_round_rect(b, 6, t.accent.with_alpha(40));
-        cx.canvas.stroke_round_rect(b, 6, 2, t.accent);
+        cx.canvas
+            .fill_round_rect(b, t.round(6), t.accent.with_alpha(40));
+        cx.canvas.stroke_round_rect(b, t.round(6), 2, t.accent);
         if !self.label.is_empty() {
             let w = cx.measure(FontId::Sans, 11.0, &self.label) + 12;
             let tag = Rect::new(r.right() - w - 4, r.y + 4, w, 16);
-            cx.canvas.fill_round_rect(tag, 6, t.surface.with_alpha(220));
+            cx.canvas
+                .fill_round_rect(tag, t.round(6), t.surface.with_alpha(220));
             cx.text(
                 FontId::Sans,
                 11.0,

@@ -1296,7 +1296,9 @@ mod tests {
             assert_eq!(t.record(), Color::rgb(0xFF4D5E), "{name}");
             assert_eq!(
                 (0..4).map(|i| t.qlink(i)).collect::<Vec<_>>(),
-                crate::draw::KNOB.to_vec(),
+                [0x6EA8FE, 0x3DDC97, 0xFFC145, 0xD46CFF]
+                    .map(Color::rgb)
+                    .to_vec(),
                 "{name}"
             );
             assert_eq!(t.role(Role::TextInverse), t.bg, "{name}");

@@ -727,19 +727,19 @@ pub const THROW_LIST: [ThrowDef; 8] = [
     ThrowDef {
         name: "Delay throw",
         sub: "1/8 dotted",
-        color: draw::KNOB[0],
+        color: draw::BLUE,
         fx: Some(ThrowFx::Delay),
     },
     ThrowDef {
         name: "Reverb wash",
         sub: "long, dark",
-        color: draw::KNOB[3],
+        color: draw::PURPLE,
         fx: Some(ThrowFx::Reverb),
     },
     ThrowDef {
         name: "Stutter",
         sub: "1/16",
-        color: draw::KNOB[2],
+        color: draw::YELLOW,
         fx: Some(ThrowFx::Stutter),
     },
     ThrowDef {
@@ -751,7 +751,7 @@ pub const THROW_LIST: [ThrowDef; 8] = [
     ThrowDef {
         name: "Filter dip",
         sub: "sweep down",
-        color: draw::KNOB[1],
+        color: draw::GREEN,
         fx: Some(ThrowFx::FilterDip),
     },
     ThrowDef {

@@ -18,7 +18,7 @@
 use crate::play_page::{SynthPads, LAYOUT_SWITCH, LOCKED};
 use mpfree_arp::scale::pads::PadLayout;
 use mpfree_seq::Cond;
-use mpfree_ui::draw::{self, card, card_head, dot, pill, speaker, KNOB};
+use mpfree_ui::draw::{self, card, card_head, dot, pill, speaker};
 use mpfree_ui::widgets::{Pad, PadGrid};
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Tone, Touch, Widget};
 use std::cell::RefCell;
@@ -3694,7 +3694,7 @@ impl Widget for XyPad {
                 pad.y + ((1.0 - fy.clamp(0.0, 1.0)) * pad.h as f32) as i32,
             )
         };
-        let c = KNOB[0];
+        let c = t.qlink(0);
         let n = self.trail.len();
         for (k, &(tx, ty)) in self.trail.iter().enumerate() {
             let f = (k + 1) as f32 / (n + 1) as f32;
@@ -4130,7 +4130,7 @@ mod tests {
         Lane {
             pad,
             name: format!("Pad {}", pad + 1),
-            color: KNOB[0],
+            color: draw::BLUE,
             muted: false,
             steps: steps.to_vec(),
             marks: Vec::new(),
@@ -4286,7 +4286,7 @@ mod tests {
             bank: Some(BankHead {
                 track: "Drums".into(),
                 sub: "Track 1 · armed".into(),
-                color: KNOB[0],
+                color: draw::BLUE,
                 switch: true,
                 bank: Some(0),
                 follow: false,
@@ -4602,7 +4602,7 @@ mod tests {
                 .map(|i| Throw {
                     name: format!("T{i}"),
                     sub: String::new(),
-                    color: KNOB[0],
+                    color: draw::BLUE,
                     on: false,
                 })
                 .collect(),

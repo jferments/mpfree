@@ -33,7 +33,7 @@ mpfree-synth-ui/src/sections.rs 5 # before theme roles (phase 0 baseline)
 mpfree-synth-ui/src/widgets.rs 8 # before theme roles (phase 0 baseline)
 mpfree-time-ui/src/editor.rs 1 # before theme roles (phase 0 baseline)
 mpfree-time-ui/src/view.rs 8 # before theme roles (phase 0 baseline)
-mpfree-ui/src/draw.rs 12 # before theme roles (phase 0 baseline)
+mpfree-ui/src/draw.rs 8 # content colours: the mockups' palette for kinds of sound and throws, shown through content() and swatch()
 mpfree-ui/src/png.rs * # PNG checksums, not colours
 mpfree-ui/src/theme.rs * # the built-in themes: where colours are written down
 mpfree-ui/src/widgets.rs 1 # a random seed, not a colour

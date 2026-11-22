@@ -620,7 +620,7 @@ fn action_color(a: PadAction) -> Color {
             c[usize::from(n) % c.len()]
         }
         PadAction::Mute(_) => mpfree_ui::draw::FX,
-        PadAction::Scene(_) => mpfree_ui::draw::KNOB[1],
+        PadAction::Scene(_) => mpfree_ui::draw::GREEN,
         PadAction::Macro { .. } => MACRO_COLOR,
     }
 }

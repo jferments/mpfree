@@ -1360,18 +1360,18 @@ fn paint_section(
 }
 
 /// A Q-Link badge ("Q1" in Q-Link 1's colour) at (x, y), its right edge.
-/// The knobs' colours are the app's, under every theme, so a badge matches
-/// its card in the Q-Link column.
+/// The knobs' colours are the theme's, so a badge matches its card in the
+/// Q-Link column.
 fn badge(cx: &mut PaintCx, t: &Theme, q: usize, right: i32, y: i32) {
     let b = Rect::new(right - 28, y, 28, 18);
-    cx.canvas
-        .fill_round_rect(b, 6, mpfree_ui::draw::KNOB[q % 4]);
+    let fill = t.qlink(q);
+    cx.canvas.fill_round_rect(b, 6, fill);
     cx.text(
         FontId::Bold,
         12.0,
         b,
         Align::Center,
-        t.on_accent,
+        t.ink_on(fill),
         &format!("Q{}", q + 1),
     );
 }

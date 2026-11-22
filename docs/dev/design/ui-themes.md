@@ -61,7 +61,8 @@ What screens call:
 - `t.role(Role::X)`, or the helpers `t.qlink(i)`, `t.series(i)`, `t.record()`; `t.color(key)` reads any colour by its key.
 - `t.ink_on(fill)`: the label colour for any coloured fill, `text` or `text_inverse`, whichever reads better on it. It replaces `t.bg` used as dark text, and `on_accent` anywhere but on the accent.
 - `t.swatch(c)` for a content colour (a kit's, a pad's, a track's own): `fill` (as the theme shows it, through `t.content`), `tint` (18 % of it over the panel, for big areas), `line` (moved towards `text` just far enough for 3:1 on panels), `text` (the same for 4.5:1) and `ink` (`ink_on(fill)`). A colour that already reads comes back unchanged, which is why Default's pastels keep their pixels.
-- `t.round(r)`: a corner radius drawn for Default's 14 px radius, scaled to the theme's, so one number, `radius`, sets every corner. Default gets `r` back.
+- `t.readable(ink, fill)`: text in a colour of its own (a Q-Link knob's number, a macro's) on a fill the theme doesn't choose, moved towards whichever of `text` and `text_inverse` reads on the fill just far enough for 4.5:1. Text that already reads comes back unchanged.
+- `t.round(r)`: a corner radius drawn for Default's 14 px radius, scaled to the theme's, so one number, `radius`, sets every corner. Default gets `r` back. Circles, dots and pills keep their own radius.
 - `Paint` (a colour key, a content colour, or a literal for artwork) for widgets built before they know the theme; `paint.on(&theme)` resolves it when drawn. It replaces `mpfree-synth-ui`'s `themed()`, which matches colours by value, in phase 2.
 - `t.is_light()`: the theme's `mode`, or on `auto`, whether `bg` is brighter than `text`.
 
@@ -111,8 +112,8 @@ Asked for on 2026-11-22 (a Reddit request for a light theme; the owner's go the 
 
 | Phase | What | State |
 | --- | --- | --- |
-| 0 | Roles table and helpers, theme files that follow and mix colours, `Theme::load` with problems, the contrast and fixed-colour checks | this change |
-| 1 | Shared widgets (`mpfree-ui`, the app's frame): Q-Link colours as `qlink` roles, `t.bg`-as-text through `ink_on`, corners through `t.round` | next |
+| 0 | Roles table and helpers, theme files that follow and mix colours, `Theme::load` with problems, the contrast and fixed-colour checks | #762 |
+| 1 | Shared widgets (`mpfree-ui`, the app's frame): Q-Link colours as `qlink` roles (`draw::KNOB` is gone; the Q-Link column's numbers through `t.readable`), labels on coloured fills (pills, wave markers, pads) through `ink_on`, card corners through `t.round`. Default draws the same display lists; in the other built-in themes the shared widgets' corners follow `radius`. A trial light palette's unreadable runs fall from 1,063 to about 400, the rest in feature crates | this change |
 | 2 | One pull request per feature crate (sampler, chain and mixer EQ, time, synth and FX with `Paint`, MIDI, arp and browser, the app's Play, Perform and Looper, and `mpfree-mpcskin`) | |
 | 3 | Text sizes, `gap` and `pad` leave themes (owner, 22 Nov: consistent sizes everywhere so no theme can break a layout); the 8 touch areas that assume 14 px padding are fixed | |
 | 4 | `Theme::light()` and `themes/light.theme`, Light after Default in Prefs > Appearance, golden screens for Light, the manual page "Making your own theme" (shown to the owner on contact sheets first) | |
@@ -184,9 +185,9 @@ What is automatic, for any crate that draws through `PaintCx`: colours that come
 
 What each crate should change (small, mechanical):
 
-1. **No hex colours in drawing code** (the [fixed-colour check](#checks) holds the line). Use core colours and roles; for a set of distinct colours use `t.track(i)` or `t.series(i)`, for the Q-Links `t.qlink(i)`. `mpfree-synth-ui`'s panels build tiles and cards before they know the theme, so they name a colour by meaning (`QLINK_COLORS`, `TEXT`, `TEXT_DIM`, `TEXT_FAINT`, `ON_FILL`, the default theme's values) and `widgets::themed` swaps in the shown theme's token when painting (see [synths.md](synths.md)); in phase 2 they keep a `Paint` instead. That also covers `mpfree-fx-ui`, which uses the same widgets.
+1. **No hex colours in drawing code** (the [fixed-colour check](#checks) holds the line). Use core colours and roles; for a set of distinct colours use `t.track(i)` or `t.series(i)`, for the Q-Links `t.qlink(i)` (with `t.readable(t.qlink(i), fill)` for a knob's number as text). `mpfree-synth-ui`'s panels build tiles and cards before they know the theme, so they name a colour by meaning (`QLINK_COLORS`, `TEXT`, `TEXT_DIM`, `TEXT_FAINT`, `ON_FILL`, the default theme's values) and `widgets::themed` swaps in the shown theme's token when painting (see [synths.md](synths.md)); in phase 2 they keep a `Paint` instead. That also covers `mpfree-fx-ui`, which uses the same widgets.
 2. **Content colours through `t.swatch(c)`** (kit colours, pad colours, user-chosen track colours): `.fill` for fills (it goes through `t.content(c)`, so tinting themes can pull them in), `.text` for text in the colour, `.ink` for a label on it.
-3. **Panels with `cx.panel(r)` / `cx.titled_panel(..)`**, buttons and pads with `fill_round_rect` at `t.radius` (or a little less): the corner style follows.
+3. **Panels with `cx.panel(r)` / `cx.titled_panel(..)`**, buttons and pads with `fill_round_rect` at `t.radius` (or a little less): the corner style follows. A corner drawn at a fixed size goes through `t.round(n)`; a circle, dot or pill keeps its own radius.
 4. **`t.bg` means "background".** A fill in exactly `t.bg` becomes the theme's backdrop. To paint a solid colour that happens to look like the background, use `t.surface` or a token, not `t.bg`.
 5. **Text colour on accent fills is `t.on_accent`;** on any other coloured fill it is `t.ink_on(fill)`, never `t.bg`.
 6. Previews: add `--theme` to the crate's preview binary and render every theme in tests (cheap, catches unreadable combinations).

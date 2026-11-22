@@ -4,8 +4,10 @@
 //! Play page mockups' own helpers (Jay approved those pictures, 10:05Z),
 //! moved here so the app's widgets draw exactly what the mockups drew.
 //!
-//! Colours come from the theme, except the few fixed ones the mockups use
-//! for knobs and kinds of sound ([`KNOB`], [`sound_color`]).
+//! Colours come from the theme (a Q-Link knob's is [`Theme::qlink`]),
+//! except the kinds of sound ([`sound_color`]): those are content colours,
+//! like a pad's own, which screens show through [`Theme::content`] and
+//! [`Theme::swatch`].
 
 use crate::color::Color;
 use crate::geom::Rect;
@@ -13,23 +15,27 @@ use crate::text::{Align, FontId};
 use crate::theme::Theme;
 use crate::ui::PaintCx;
 
-/// The four Q-Link knobs' colours, knob 1 first: blue, green, yellow, pink.
-pub const KNOB: [Color; 4] = [
-    Color::rgb(0x6EA8FE),
-    Color::rgb(0x3DDC97),
-    Color::rgb(0xFFC145),
-    Color::rgb(0xD46CFF),
-];
+/// The mockups' content colours, for things with a colour of their own (a
+/// kind of sound, a throw): content colours (see the module docs), never
+/// a theme's.
+pub const RED: Color = Color::rgb(0xFF6B6B);
+pub const YELLOW: Color = Color::rgb(0xFFC145);
+pub const GREEN: Color = Color::rgb(0x3DDC97);
+pub const CYAN: Color = Color::rgb(0x4FD1E8);
+pub const BLUE: Color = Color::rgb(0x6EA8FE);
+pub const PURPLE: Color = Color::rgb(0xD46CFF);
+pub const PINK: Color = Color::rgb(0xFF8FD8);
+pub const GREY: Color = Color::rgb(0xA0A8B8);
 
 /// Kinds of sound, as the mockups colour them.
-pub const KICK: Color = Color::rgb(0xFF6B6B);
-pub const SNARE: Color = Color::rgb(0xFFC145);
-pub const HAT: Color = Color::rgb(0x3DDC97);
-pub const PERC: Color = Color::rgb(0x4FD1E8);
-pub const BASS: Color = Color::rgb(0x6EA8FE);
-pub const CHOP: Color = Color::rgb(0xD46CFF);
-pub const VOX: Color = Color::rgb(0xFF8FD8);
-pub const FX: Color = Color::rgb(0xA0A8B8);
+pub const KICK: Color = RED;
+pub const SNARE: Color = YELLOW;
+pub const HAT: Color = GREEN;
+pub const PERC: Color = CYAN;
+pub const BASS: Color = BLUE;
+pub const CHOP: Color = PURPLE;
+pub const VOX: Color = PINK;
+pub const FX: Color = GREY;
 
 /// The kinds of sound: the words a name of each has, its colour and the
 /// group it belongs to (what a loop layer of them is called).
@@ -111,8 +117,9 @@ pub fn card_head(r: Rect) -> (Rect, Rect) {
     (h, body.take_top(8).1)
 }
 
-/// A rounded pill with `text`: filled with `tone`, or raised with a dot of
-/// `tone` before the text. Returns its width.
+/// A rounded pill with `text`: filled with `tone` (the text in the ink
+/// that reads on it), or raised with a dot of `tone` before the text.
+/// Returns its width.
 pub fn pill(
     cx: &mut PaintCx,
     x: i32,
@@ -127,7 +134,7 @@ pub fn pill(
     let r = Rect::new(x, y, w, h);
     if filled {
         cx.canvas.fill_round_rect(r, h / 2, tone);
-        cx.text(FontId::Bold, 14.0, r, Align::Center, t.bg, text);
+        cx.text(FontId::Bold, 14.0, r, Align::Center, t.ink_on(tone), text);
     } else {
         cx.canvas.fill_round_rect(r, h / 2, t.raised);
         dot(cx, x + 17, y + h / 2, 5, tone);
