@@ -353,14 +353,22 @@ with `--quick`) at 128 frames and 44.1 kHz:
   container's compiler, 22 Nov), instructions a frame: built 21.2 million
   (19.8 million of it the paint, as a frame while it plays shows), with
   pressure 27.0 million, scrolled 20.7 million, zoomed 46.0 million,
-  switched 21.2 million.
+  switched 21.2 million. The value lanes (piano roll plan 2A.1, 23 Nov)
+  cut every one by a quarter to a half. The old velocity lane drew a bar
+  for every note in view and each repeat's hit; the new lane draws one
+  bar for each place where notes start (`NoteGrid::lane_of`), far fewer in
+  a wide view, which is most likely the saving (not profiled further):
+  built 13.9 million, with pressure 19.8 million, while
+  it plays 12.5 million, scrolled 13.0 million, zoomed 22.7 million,
+  switched 13.9 million. The bench's test still checks that the roll
+  draws all 8,192 notes.
 - **control, note editor edits (piano roll plan 0C.3):** two "Note editor:
   ..." cases make an editor edit on the same clip while it plays, as
   `TimeControl::edit` does (`note_edit` in the bench): the edit worked out
   (`Editor::act`), made to the clip and the takes (`Takes::edit`), the
   picks found again (`Editor::applied`), and the playing view edited in
   place when `InPlace::fits` allows it, else compiled. "a velocity change
-  and its UNDO" sets one picked note's velocity (a velocity lane lift) and
+  and its UNDO" sets one note's velocity (a stroke along the velocity lane) and
   takes it back with UNDO, a block each; "all picked and transposed" moves
   every note a semitone. On a clip this full neither goes in place: a
   velocity change is a note out and one in, twice the clip's notes of

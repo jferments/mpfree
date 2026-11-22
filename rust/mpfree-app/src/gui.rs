@@ -63,7 +63,7 @@ use mpfree_sampler_ui::levels_panel::{self, LevelsAction, LevelsModel, LevelsPan
 use mpfree_sampler_ui::recall::RecallFrom;
 use mpfree_synth_ui::view as synth_view;
 use mpfree_synth_ui::{SynthAction, SynthPanel, SynthState};
-use mpfree_time_ui::editor::{EditAction, Lens, Tool};
+use mpfree_time_ui::editor::{EditAction, Lens, NoteGrid, Tool};
 use mpfree_time_ui::view::{
     self as time_view, AudioAction, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE,
 };
@@ -13087,6 +13087,12 @@ impl Player {
     pub fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32) -> Option<FromUi> {
         if matches!(phase, Touch::Down) {
             self.note_turn.end();
+            // SHIFT held as a finger goes down on the note editor's
+            // Repeats lane draws the ramp (piano roll plan 2A.1).
+            let shift = self.status.shift;
+            if let Some(g) = self.ui.get_mut::<NoteGrid>(time_view::NOTES) {
+                g.fine = shift;
+            }
         }
         let waiting = self.outbox.len();
         let action = self
@@ -22471,6 +22477,86 @@ mod tests {
     /// detent; Q-LINK's macro banks go over it. With the drawer closed,
     /// the – / + buttons nudge the picks, SHIFT + – / + zoom time and the
     /// wheel moves the cursor; open, they step the options as before.
+    /// The lane under the roll (piano roll plan 2A.1): a stroke across it
+    /// sends each note it crossed with its own value as one action; the
+    /// chip steps to Repeats and the page keeps that through a rebuild;
+    /// SHIFT held as the finger goes down draws the ramp.
+    #[test]
+    fn the_lane_under_the_roll_sets_each_note_and_shift_draws_the_ramp() {
+        use mpfree_seq::notes::Field;
+        use mpfree_time_ui::editor::{EditAction, Editor, NoteGrid};
+        let mut p = sample_clips(Fonts::embedded()).unwrap();
+        let mut clip = mpfree_seq::Clip::new("Beat", 3840);
+        let mut repeats = mpfree_seq::Note::new(960, 480, 64, 80);
+        repeats.ratchet = 3;
+        clip.notes = vec![mpfree_seq::Note::new(0, 240, 60, 100), repeats];
+        p.time.edit = Some(Box::new(time_view::EditInfo {
+            editor: Editor::new(0, 0, &clip),
+            clip: clip.into(),
+            rev: 0,
+            track_name: "Track 1".into(),
+            bar: 3840,
+            answer: Default::default(),
+        }));
+        p.apply(ToUi::Show(View::Sequencer));
+        p.ui.paint(&mut SoftCanvas::new(1280, 800));
+        let find = |p: &Player, id: &str| {
+            p.ui.targets()
+                .into_iter()
+                .find(|t| t.widget == time_view::NOTES && t.target.id == id)
+                .map(|t| t.target.rect)
+                .unwrap_or_else(|| panic!("no {id}"))
+        };
+        let timed = |p: &mut Player| -> Vec<FromUi> {
+            p.take_actions()
+                .into_iter()
+                .filter(|a| matches!(a, FromUi::Time(_)))
+                .collect()
+        };
+        timed(&mut p);
+        let stroke = |p: &mut Player, f: u64| {
+            let lane = find(p, "lane");
+            let (foot, top) = (lane.bottom() - 2, lane.y - 50);
+            assert_eq!(p.touch(f, Touch::Down, lane.x + 1, foot), None);
+            assert_eq!(p.touch(f, Touch::Move, lane.right() - 2, top), None);
+            p.touch(f, Touch::Up, lane.right() - 2, top)
+        };
+        let Some(FromUi::Time(TimeAction::Edit(EditAction::Lane { field, rev, set }))) =
+            stroke(&mut p, 1)
+        else {
+            panic!("a stroke is one action");
+        };
+        assert_eq!((field, rev), (Field::Velocity, 0));
+        let ids: Vec<usize> = set.iter().map(|s| s.0).collect();
+        assert_eq!(ids, [0, 1], "both notes, each its own value: {set:?}");
+        assert!(set[0].1 < set[1].1, "a rising stroke");
+        // The chip: Chance, then Repeats, kept by the page through a new
+        // picture of the clip.
+        for f in [2, 3] {
+            let chip = find(&p, "lane-chip");
+            let (x, y) = (chip.x + chip.w / 2, chip.y + chip.h / 2);
+            p.touch(f, Touch::Down, x, y);
+            p.touch(f, Touch::Up, x, y);
+        }
+        let mut st = p.time.clone();
+        st.edit.as_mut().unwrap().editor.sel = vec![1];
+        st.edit.as_mut().unwrap().rev = 1;
+        p.apply(ToUi::Time(Box::new(st)));
+        let grid = |p: &Player| p.ui.get::<NoteGrid>(time_view::NOTES).unwrap().clone();
+        assert_eq!(grid(&p).lane.field, Field::Repeats);
+        assert!(grid(&p).notes[1].selected, "the new picture shows");
+        // SHIFT as the finger goes down: the ramp.
+        p.status.shift = true;
+        let Some(FromUi::Time(TimeAction::Edit(EditAction::Lane { field, rev, .. }))) =
+            stroke(&mut p, 4)
+        else {
+            panic!("a stroke is one action");
+        };
+        assert_eq!((field, rev), (Field::Ramp, 1));
+        p.status.shift = false;
+        assert!(timed(&mut p).is_empty(), "nothing else went");
+    }
+
     #[test]
     fn the_note_inspector_turns_notes_one_turn_at_a_time() {
         use crate::app::RowKey;

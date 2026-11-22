@@ -2669,7 +2669,8 @@ impl TimeControl {
 
     /// A touch on the note editor. Open takes the clip the Play page's
     /// steps show (the armed track's); an edit is one undoable take (a
-    /// row turned or the velocity lane dragged joins one). A tap on a
+    /// row turned or a Q-Link turn joins one; a stroke along a lane is
+    /// one). A tap on a
     /// note made on an older picture of the clip is refused, and an edit
     /// what plays can't follow is taken back (piano roll plan 0A.1).
     fn edit(&mut self, a: EditAction) -> Result<String, String> {
@@ -2677,9 +2678,10 @@ impl TimeControl {
         // revision it was carried out on and what became of it.
         self.edit_follow();
         let from = self.edit_rev;
+        let open = a == EditAction::Open;
         let r = self.edit_touch(a);
         // The revision moves on Open, and on an edit that went in.
-        let took = r.is_ok() && a != EditAction::Open && self.edit_rev != from;
+        let took = r.is_ok() && !open && self.edit_rev != from;
         let outcome = match &r {
             Err(why) => EditOutcome::Refused(why.clone()),
             Ok(_) if took => EditOutcome::Taken {
@@ -2744,6 +2746,7 @@ impl TimeControl {
             return Err("edit: the clip is gone".into());
         };
         let before = ed.clone();
+        let copying = matches!(a, EditAction::Copy { .. });
         let done = match pasted {
             Some(Ok(done)) => done,
             Some(Err(why)) => {
@@ -2755,7 +2758,7 @@ impl TimeControl {
         };
         // COPY + a note: the editor picked what goes, and the copy is
         // kept here, apart from the clip (plan 1B.4).
-        let copied = matches!(a, EditAction::Copy { .. }).then(|| {
+        let copied = copying.then(|| {
             let made = clip.made_for.clone();
             (notes::copy(clip, &ed.sel), clip.name.clone(), made)
         });

@@ -9343,8 +9343,8 @@ mod tests {
 
     /// Piano roll plan 0C.1: an editor edit on the playing clip goes into
     /// the view in place, as a step edit does (no compile, the view just
-    /// what a compile gives, timed for the status line); a drag of the
-    /// velocity lane, sent once as the finger lifts, is one take; and the
+    /// what a compile gives, timed for the status line); a stroke along
+    /// the velocity lane, sent once as the finger lifts, is one take; and the
     /// screens get one shared copy of the clip, the same while it is
     /// unchanged, a new one when it changed.
     #[test]
@@ -9373,8 +9373,16 @@ mod tests {
         let compiles = h.control.costs.compiles;
         h.act(TimeAction::Edit(E::Button(4))).unwrap();
         let takes = h.state().done.len();
-        for v in [0.5, 1.0] {
-            h.act(TimeAction::Edit(E::Velocity(v))).unwrap();
+        for v in [64, 127] {
+            // A stroke along the velocity lane over the picked notes.
+            let e = info(&mut h);
+            let set = e.editor.sel.iter().map(|&i| (i, v)).collect();
+            let lane = E::Lane {
+                field: mpfree_seq::notes::Field::Velocity,
+                rev: e.rev,
+                set,
+            };
+            h.act(TimeAction::Edit(lane)).unwrap();
             h.audio.receive();
             assert_eq!(
                 *h.audio.view,
@@ -9382,7 +9390,7 @@ mod tests {
                 "in place, as a compile gives"
             );
         }
-        assert_eq!(h.state().done.len(), takes + 2, "a take a drag");
+        assert_eq!(h.state().done.len(), takes + 2, "a take a stroke");
         let c = h.control.costs;
         assert_eq!(
             (c.compiles, c.notes_in_place, c.notes_compiled),
@@ -11490,7 +11498,7 @@ mod tests {
     /// (`time_action`'s `act_then`) and answer as together does, in the
     /// same order and words: a pick, a move, a tap made on the picture
     /// from before the move's answer came back (refused: the clip changed
-    /// under the finger), a velocity drag, Draw, a drawn note, ERASE + a
+    /// under the finger), a stroke along the velocity lane, Draw, a drawn note, ERASE + a
     /// tap, UNDO. The copy the screen reads comes to match together's:
     /// the clip, its revision, the picks and the last touch's answer.
     #[test]
@@ -11529,7 +11537,15 @@ mod tests {
         };
         touch(&mut together, drop, &note);
         touch(&mut together, E::Tap { index: 0, rev }, &note);
-        touch(&mut together, E::Velocity(0.5), &note);
+        // A stroke along the velocity lane over the picks (plan 2A.1).
+        let now = info(&mut together);
+        let lane = E::Lane {
+            field: mpfree_seq::notes::Field::Velocity,
+            rev: now.rev,
+            set: now.editor.sel.iter().map(|&i| (i, 64)).collect(),
+        };
+        assert!(!now.editor.sel.is_empty());
+        touch(&mut together, lane, &note);
         touch(&mut together, E::Button(2), &note);
         touch(&mut together, E::Empty { tick: 480, note: 5 }, &note);
         let drawn = info(&mut together);

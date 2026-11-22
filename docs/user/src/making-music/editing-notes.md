@@ -25,7 +25,7 @@ The Notes view has the Arrange tab's transport bar along the top (**Stop**, **Pl
 
 ## The piano roll
 
-The notes are bars on a piano roll: higher notes higher up, time running left to right, longer notes longer. A drum clip shows its 16 pads instead of keys. Under the roll, the velocity lane shows how hard each note plays. A note played with [pad pressure](clips.md#pad-pressure) shows it as a lighter shape along its bottom: it rises where you pressed harder and falls where you let up.
+The notes are bars on a piano roll: higher notes higher up, time running left to right, longer notes longer. A drum clip shows its 16 pads instead of keys. Under the roll, a lane shows how hard each note plays, or how likely it is to play, or how many times it repeats (see [The lane under the roll](#the-lane-under-the-roll)). A note played with [pad pressure](clips.md#pad-pressure) shows it as a lighter shape along its bottom: it rises where you pressed harder and falls where you let up.
 
 Notes are drawn as they will play. A note whose step is off (tapped off on Steps) is only an outline: it keeps its place and settings and plays nothing. A note that repeats (a ratchet) shows each hit, lighter or darker as its velocity ramps, and each hit shows in the velocity lane too. A tied note has a short level mark just before it, and a sliding note a short slanting one.
 
@@ -39,12 +39,26 @@ Notes are drawn as they will play. A note whose step is off (tapped off on Steps
 - **Copy and paste.** Hold **COPY** and tap a note: the picked notes are copied, or just that note if it isn't picked. Then hold **COPY** again and tap an empty spot, in this clip or in another track's clip: the copy goes in starting where you tap, each note keeping its pitch and its place after the first. The notes bring their pad pressure and their locks. A lock on the instrument comes into another track's clip when that track plays the same kind of instrument the lock was made for, so it turns the same control there; a clip's instrument locks are all for one instrument, so it doesn't come into a clip whose instrument locks are for another. A lock on a kit pad, an insert or MIDI out comes only into another clip of the same track, since another track may play another kit or send to other gear. The hint line says how many locks were left out and what they were on, and for instrument locks which instrument they were made for ("made for Poly, Lead plays FM"). Pad hits paste only into a clip of pad hits, and notes into a clip of notes. A chord whose notes play together or not at all (a chord pad's) stays one when you copy all of it, and stays apart from a chord already where it lands; copy only some of its notes and each of them rolls its own chance. The pasted notes are picked, and one **UNDO** takes the paste back. The copy stays until you copy again, so you can paste it as many times as you like. In the tracker, tap an empty line to paste there.
 - **Move them.** Drag a note to move it, along time and up or down in pitch. If it is picked, every picked note moves with it; if not, it moves on its own and is picked after. With **Auto** snap a move goes by whole grid steps and each note keeps its feel: a note played a little late stays a little late. With a fixed snap, the note you drag lands on a line. While you drag, the notes show where they will land, an outline shows where they were, and a box above your finger says where the note you hold lands ("2.3.000 · D3").
 - **Change their length.** A picked note has a handle at each end, just outside it; on a note too short to grab, the two handles hang just under it. Drag the right handle to change where the picked notes end, or the left one to change where they start (their ends stay put). The box above your finger shows the new length or start, and it all goes in when you lift. Handles show while up to 64 picked notes are on the screen; for more, use the **Length** option.
-- **Velocity.** Slide a finger along the velocity lane to set the picked notes' velocity. Their bars follow your finger, and the new velocity goes in when you lift it, so **UNDO** takes back the whole slide.
+- **Velocity, chance and repeats.** Draw along the lane under the roll: each note you pass takes the height under your finger (see below).
 - **One finger edits, two move the view.** A drag belongs to the finger that started it. If a second finger touches the roll while you drag, the drag stops, the notes stay where they were, and the two fingers zoom and scroll instead (see below).
 - **Duplicate** copies the picked notes to just after them. **Delete** takes them out (in Perform, hold it for half a second).
 - **Grid, List, Tracker.** The second button says which view is showing (**Grid** to begin with) and switches to the next. **List** shows the notes as a list, one row per note, with its position, note, velocity, length and chance. An off note's row is faint and its note says "off"; a tied or sliding note's says "tie" or "slide". **Tracker** shows every step, described below.
 
 {{shot: sequencer-notes-list | The same notes as a list, the picked ones lit.}}
+
+### The lane under the roll
+
+Under the roll, each place where notes start has a bar in the lane, as tall as their value, with the number over it when there is room. The chip at the lane's left says which lane shows; tap it to step through them:
+
+- **Vel** (velocity): how hard each note plays, 1 to 127. A note that repeats also shows each later hit as a thin bar beside it, at the velocity its ramp gives it.
+- **Chance**: how likely each note is to play on a pass, 1 to 100 %. A note that never plays is an off note (tapped off on Steps), not 0 %. A chord whose notes play together or not at all (a chord pad's) has one chance, so drawing across it sets the whole chord to the last value you drew on it.
+- **Repeats**: how many times each note plays (a ratchet), 1 to 8. An arrow after the number says its ramp rises (↑) or falls (↓).
+
+Draw with one finger along the lane: every bar you pass takes the height under your finger, so a crescendo or a fade is one stroke. The bars follow your finger, and nothing changes until you lift it; then the stroke is one change, and one **UNDO** takes it back. A second finger on the screen calls the stroke off.
+
+- **Notes that start together** (a chord, or a strum close together) share one bar, and a stroke sets them all. To set just one of them, pick it first: then only the picked notes there change.
+- **The ramp.** Hold **SHIFT** as your finger goes down on the Repeats lane to draw each note's ramp instead: up from the middle line makes its later hits louder, down makes them softer. Only notes that repeat take a ramp.
+- **Room.** Drag the lane's top edge (the short grip over it) up to make it taller, or down to make it shorter. Tap the **▾** under the chip to fold the lane away and give the roll its room; tap the chip to open it again. The lane stays as you leave it, for every clip.
 
 ### Change notes with the Q-Links
 
