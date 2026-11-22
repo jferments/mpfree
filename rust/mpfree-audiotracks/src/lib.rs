@@ -3085,8 +3085,10 @@ impl AudioTracks {
                 if fi > 0 && e < fi {
                     g *= e as f32 / fi as f32;
                 }
-                if fo > 0 && e >= len_f - fo && e < len_f {
-                    g *= (len_f - e) as f32 / fo as f32;
+                // Its fade out reaches nothing at its end, and the
+                // crossfade past the end goes on from there.
+                if fo > 0 && e >= len_f - fo {
+                    g *= (len_f - e).max(0) as f32 / fo as f32;
                 }
                 g
             };

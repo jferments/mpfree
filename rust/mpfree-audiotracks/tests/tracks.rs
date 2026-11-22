@@ -412,6 +412,30 @@ fn a_split_in_held_audio_plays_as_the_whole_region_did() {
     }
 }
 
+/// A region that fades out is silent from its end: the crossfade past
+/// its end goes on from where its fade out got to, which is nothing.
+#[test]
+fn a_faded_out_region_is_silent_past_its_end() {
+    let mut r = one_bar(128);
+    r.cmd(A::SetFades {
+        track: 0,
+        at: 0,
+        fade_in: 0,
+        fade_out: 1000,
+    });
+    r.run_to(r.frame + 1);
+    let p = r.frame + 10;
+    r.at(p, T::PlayStart);
+    r.run_to(p + BAR + 1000);
+    // Halfway through the fade out, half the level.
+    let k = BAR - 500;
+    assert!((r.l(p + k) - 0.5 * sig(START + k)).abs() < 1e-6);
+    let tail: Vec<f32> = (0..2 * mpfree_audiotracks::FADE as u64)
+        .map(|j| r.l(p + BAR + j))
+        .collect();
+    assert!(tail.iter().all(|&v| v == 0.0), "{tail:?}");
+}
+
 #[test]
 fn edits_split_move_erase_gain_and_fades() {
     let mut r = one_bar(256);
