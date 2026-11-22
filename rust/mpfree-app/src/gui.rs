@@ -28733,7 +28733,7 @@ mod tests {
             if short {
                 // Room to read the file, not for its converted copy.
                 p.sample
-                    .set_mem_free(|| Some(crate::memory::FLOOR + 300_000));
+                    .set_mem_free(|| Some(crate::memory::FLOOR + 450_000));
             }
             p.sample.open_kit(folder.clone());
             tick_until(&mut p, |p| {

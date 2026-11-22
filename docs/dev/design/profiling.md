@@ -706,10 +706,10 @@ running):
   FLAC of silence is tiny beside its sound. A FLAC that doesn't give its
   length is counted at the most a sound can be (64 million samples), its
   floats doubling as they grow; a header that can't be read, as one sample
-  a byte. The Sample page's file loads still use the old guess,
-  `decode_need` (the file's length times 3, times 5 for FLAC), which misses
-  both; they move to `decode_peak` and hold a promise once they run on the
-  job lane (sampler step 7). A stretched copy's need is its frames and the
+  a byte. The Sample page's file loads (the browser's Load and preview,
+  a kit file, a project's kits) use it on the job lane and hold a promise
+  while each sound is decoded; the old guess from the file's length
+  (`decode_need`) is gone. A stretched copy's need is its frames and the
   source part the stretch thread is handed; an auto-sample's,
   `Plan::estimate().bytes_most`.
 - The pad player checks at each load: the browser's Load and preview

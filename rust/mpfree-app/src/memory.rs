@@ -9,18 +9,6 @@
 //! resident memory less what the rows count, so a leak shows there. All
 //! megabytes are 1 000 000 bytes, as Prefs' Loop memory says them.
 
-// The promises and `decode_peak` are new (disk streaming's P3 step 1, 22
-// Nov): the Sample page's file loads move onto them once they run on the job
-// lane (sampler step 7), and streaming's ledger uses them next. Until then
-// only the tests call them; the expectation fails, and goes, once they do.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the promises and decode_peak are wired up after sampler step 7"
-    )
-)]
-
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -106,13 +94,6 @@ pub struct Ticket {
     bytes: u64,
 }
 
-impl Ticket {
-    /// The bytes promised.
-    pub fn bytes(&self) -> u64 {
-        self.bytes
-    }
-}
-
 impl Drop for Ticket {
     fn drop(&mut self) {
         let mut held = self.from.lock();
@@ -194,20 +175,6 @@ fn fits(free: Option<u64>, promised: u64, need: u64) -> Result<(), String> {
         mb_round(free),
         mb_round(FLOOR)
     ))
-}
-
-/// The old estimate of what reading and decoding a sound file of `len`
-/// bytes holds: the file and its sound as 32-bit floats, guessed from the
-/// file's size (a 16-bit WAV or AIFF doubles; a FLAC, taken as half the size
-/// of its WAV, quadruples). It misses the copy the sound is kept in, and a
-/// FLAC that compresses well: [`decode_peak`] works it out from the header.
-/// The Sample page's loads move over to it once they run on the job lane
-/// (sampler step 7).
-pub fn decode_need(name: &str, len: u64) -> u64 {
-    let flac = name
-        .rsplit_once('.')
-        .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("flac"));
-    len.saturating_mul(if flac { 5 } else { 3 })
 }
 
 /// The most samples (frames × channels) a sound decodes to: the sampler
@@ -511,7 +478,7 @@ mod tests {
         let song = p.reserve(free, 250_000_000).unwrap();
         let synth = p.reserve(free, 300_000_000).unwrap();
         assert_eq!(p.held(), 550_000_000);
-        assert_eq!(song.bytes(), 250_000_000);
+        assert_eq!(song.bytes, 250_000_000);
         // Alone it would fit; beside the others it doesn't.
         assert_eq!(Promises::default().room(free(), 250_000_000), Ok(()));
         assert_eq!(
@@ -547,16 +514,6 @@ mod tests {
         drop(t);
         assert_eq!(promised(), 0);
         assert_eq!(room_in(free(), 100_000_000), Ok(()));
-    }
-
-    #[test]
-    fn the_old_estimate_guesses_from_the_files_size() {
-        assert_eq!(decode_need("Break 92.wav", 1_000_000), 3_000_000);
-        assert_eq!(decode_need("/x/Pad.AIF", 10), 30);
-        assert_eq!(decode_need("Loop.flac", 1_000_000), 5_000_000);
-        assert_eq!(decode_need("LOOP.FLAC", 2), 10);
-        assert_eq!(decode_need("no extension", 7), 21);
-        assert_eq!(decode_need("x.wav", u64::MAX), u64::MAX);
     }
 
     /// A WAV of `frames` frames: 16-bit PCM, or 32-bit float.
