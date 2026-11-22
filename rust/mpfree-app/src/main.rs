@@ -176,7 +176,9 @@ mod touch_dev;
 mod touchlab_page;
 mod undo;
 mod views;
+mod waiting;
 mod xy_list;
+mod xy_slot;
 
 use mpfree_arp::scale::{pads::MAX_PAD_NOTES, Shift};
 use mpfree_controller::midi::{Message, Parser};
@@ -3801,6 +3803,9 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
     }
     let (to_ui, from_audio) = sync_channel::<gui::ToUi>(4096);
     let (to_audio, from_ui) = sync_channel::<gui::FromUi>(256);
+    // The screen's XY pad as one value beside that queue (xy_slot.rs).
+    let xy = std::sync::Arc::new(xy_slot::XySlot::default());
+    player.set_xy_slot(std::sync::Arc::clone(&xy));
     // The power button: only when the system can act on a request
     // (`--power-request`, the stick's root path unit). Read-only, not
     // grabbed, on a thread of its own (power.rs).
@@ -3843,7 +3848,7 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
     if !timed {
         follow_journal(to_ui.clone());
     }
-    let result = player_session(o, &mut out, timed, &from_ui);
+    let result = player_session(o, &mut out, timed, &from_ui, &xy);
     if let Err(e) = &result {
         // On the screen only: main prints the STOP line as for every step.
         out.show(gui::ToUi::Session("Stopped".into(), Tone::Bad));
@@ -6932,6 +6937,7 @@ fn player_session(
     out: &mut Out,
     timed: bool,
     from_ui: &Receiver<gui::FromUi>,
+    xy: &xy_slot::XySlot,
 ) -> Result<(), String> {
     // The store (--data: the stick's partition 4) opens first, before the
     // first start writes anything there: it marks a new, empty data folder as
@@ -8556,6 +8562,14 @@ fn player_session(
                 _ => {}
             }
             parts.item_named(parts::SCREEN_ACTIONS, t_item, &item);
+        }
+        // The screen's XY pad as it stands: a lift whose action never came
+        // lets go here (xy_slot.rs).
+        if mix.screen_xy(xy.read()) {
+            out.note(&format!(
+                "XY pad: let go from the screen's state, its lift never came ({} so far)",
+                mix.xy_found_up()
+            ));
         }
         // MIDI Learn listens only while the chain editor's learn is armed:
         // Back or closing the editor stops it too. The I/O view's Learn
