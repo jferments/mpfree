@@ -56,6 +56,10 @@ use std::time::{Duration, Instant};
 use crate::format::{decode, layout, Layout};
 use crate::msg::{FromPlayer, Tag, ToPlayer, Where, MAX_SOURCES};
 use crate::player::{unit_frames, Config, UNIT};
+use crate::writer::Gate;
+
+/// Past this much of a recording's capture memory, background reads stop.
+pub const STOP_BACKGROUND: f64 = 0.75;
 
 /// How far ahead to read, and how reads are made.
 #[derive(Clone, Copy, Debug)]
@@ -71,6 +75,11 @@ pub struct Plan {
     pub in_flight: usize,
     /// The most bytes one joined read takes.
     pub join_bytes: usize,
+    /// The longest the device has been seen to stall on one read, in
+    /// seconds (the stick test measures it). A whole-file read step starts
+    /// only while every playing cursor has at least this long, or the
+    /// longest stall seen lately, before it needs a unit not yet in hand.
+    pub stall_s: f64,
 }
 
 impl Default for Plan {
@@ -81,6 +90,7 @@ impl Default for Plan {
             min_window_s: 4.0,
             in_flight: 8,
             join_bytes: 512 * 1024,
+            stall_s: 0.5,
         }
     }
 }
@@ -289,6 +299,9 @@ pub enum JobTier {
 pub enum Refusal {
     /// The source isn't an open file source.
     NotOpen(u16),
+    /// The hold is no longer held (given back, released, or its source
+    /// closed).
+    Gone(HoldId),
     /// The group needs `need` more units with `room` left.
     OverBudget { need: usize, room: usize },
 }
@@ -316,6 +329,8 @@ impl Src {
 
 struct Hold {
     id: u32,
+    /// Holds made (or promoted) together are given back together.
+    group: u32,
     tag: Tag,
     from: u64,
     to: u64,
@@ -393,6 +408,13 @@ pub struct Coordinator {
     request: u32,
     /// The device's measured speed, bytes a second.
     speed: f64,
+    /// How long the last reads took, newest last (at most 64).
+    took: VecDeque<f64>,
+    /// Seconds until a playing cursor needs a unit not in hand, as of the
+    /// last round.
+    cushion_s: f64,
+    /// The cushion, shared with the recording writer's thread.
+    gate: Arc<Gate>,
     admission: Admission,
     stats: Stats,
 }
@@ -443,6 +465,9 @@ impl Coordinator {
             request: 0,
             // A slow stick, until measured.
             speed: 2.0e6,
+            took: VecDeque::with_capacity(64),
+            cushion_s: f64::INFINITY,
+            gate: Arc::new(Gate::new()),
             admission: Admission::default(),
             stats: Stats::default(),
         }
@@ -475,6 +500,26 @@ impl Coordinator {
     /// Whether the workload fits, as of the last planning round.
     pub fn admission(&self) -> Admission {
         self.admission
+    }
+
+    /// Seconds until a playing cursor needs a unit that isn't in the cache
+    /// yet, as of the last round (the window when all it wants is there;
+    /// infinite when nothing plays): the cushion playback has against a
+    /// stall.
+    pub fn cushion(&self) -> f64 {
+        self.cushion_s
+    }
+
+    /// The cushion, shared: the recording writer's syncs wait while it is
+    /// shorter than the stick's worst commit time.
+    pub fn gate(&self) -> Arc<Gate> {
+        Arc::clone(&self.gate)
+    }
+
+    /// The stall whole-file reads leave room for: the plan's, or the
+    /// longest of the last 64 reads if longer.
+    pub fn stall(&self) -> f64 {
+        self.took.iter().copied().fold(self.plan.stall_s, f64::max)
     }
 
     /// Cache units kept for recordings (their capture memory). Holds that
@@ -707,11 +752,13 @@ impl Coordinator {
         }
         let by = by.map(|d| Instant::now() + d);
         let mut ids = Vec::with_capacity(parts.len());
+        let group = self.next_hold;
         for (&(_, from, to), tag) in parts.iter().zip(tags) {
             let id = self.next_hold;
             self.next_hold += 1;
             self.holds.push(Hold {
                 id,
+                group,
                 tag,
                 from,
                 to,
@@ -738,8 +785,16 @@ impl Coordinator {
             let worst = (0..self.holds.len())
                 .max_by_key(|&i| (self.holds[i].tier, self.holds[i].id))
                 .expect("not empty");
-            let h = self.holds.remove(worst);
-            self.given_back.push_back(HoldId(h.id));
+            let group = self.holds[worst].group;
+            let mut i = 0;
+            while i < self.holds.len() {
+                if self.holds[i].group == group {
+                    let h = self.holds.remove(i);
+                    self.given_back.push_back(HoldId(h.id));
+                } else {
+                    i += 1;
+                }
+            }
         }
     }
 
@@ -759,6 +814,60 @@ impl Coordinator {
         tier: HoldTier,
     ) -> Result<HoldId, Refusal> {
         self.hold_all(&[(source, from, to)], by, tier).map(|v| v[0])
+    }
+
+    /// Move holds to another tier, all or none: they must all still be
+    /// held, and fit beside what plays (at the least safe window), what is
+    /// reserved and what is held at the new tier or above. On refusal
+    /// nothing changes. Moved holds become a group of their own (given
+    /// back together); holds below the new tier that no longer fit are
+    /// given back. A song switch moves its next song's holds from Next to
+    /// Cued once Go is accepted, then to Head once it plays.
+    pub fn promote(&mut self, ids: &[HoldId], tier: HoldTier) -> Result<(), Refusal> {
+        let mut units: HashSet<(u16, u32)> = HashSet::new();
+        for id in ids {
+            let h = self
+                .holds
+                .iter()
+                .find(|h| h.id == id.0)
+                .ok_or(Refusal::Gone(*id))?;
+            let l = self.sources[usize::from(h.tag.source)]
+                .as_ref()
+                .and_then(Src::layout)
+                .ok_or(Refusal::Gone(*id))?;
+            for u in Self::units_of(l, h.from, h.to) {
+                units.insert((h.tag.source, u));
+            }
+        }
+        let mut have = self.held_units(tier);
+        have.extend(self.wants(self.plan.min_window_s).into_keys());
+        let before = have.len() + self.reserve;
+        have.extend(units);
+        let need = have.len() + self.reserve - before;
+        let budget = self.mirror.len();
+        if before + need > budget {
+            return Err(Refusal::OverBudget {
+                need,
+                room: budget.saturating_sub(before),
+            });
+        }
+        let group = self.next_hold;
+        self.next_hold += 1;
+        for h in self
+            .holds
+            .iter_mut()
+            .filter(|h| ids.contains(&HoldId(h.id)))
+        {
+            h.tier = tier;
+            h.group = group;
+        }
+        self.fit_holds();
+        Ok(())
+    }
+
+    /// The tier a hold is held at, if it still is.
+    pub fn hold_tier(&self, id: HoldId) -> Option<HoldTier> {
+        self.holds.iter().find(|h| h.id == id.0).map(|h| h.tier)
     }
 
     /// Let a hold go (its units may be given up when room is needed).
@@ -833,6 +942,11 @@ impl Coordinator {
                 FromPlayer::Back(b) => self.pool.push(b),
                 // A memory sound back: freed here, off the sound thread.
                 FromPlayer::Resident(d) => drop(d),
+                FromPlayer::Round(r) => {
+                    if r.wrapping_sub(self.heard) < u32::MAX / 2 {
+                        self.heard = r;
+                    }
+                }
                 FromPlayer::Where(w) => {
                     if w.round.wrapping_sub(self.heard) < u32::MAX / 2 {
                         self.heard = w.round;
@@ -902,6 +1016,10 @@ impl Coordinator {
             }
         };
         let secs = r.took.as_secs_f64();
+        if self.took.len() == 64 {
+            self.took.pop_front();
+        }
+        self.took.push_back(secs);
         if n >= 16 * 1024 && secs > 0.0 {
             let sample = (n as f64 / secs).clamp(1.0e5, 1.0e10);
             self.speed = 0.8 * self.speed + 0.2 * sample;
@@ -1010,7 +1128,12 @@ impl Coordinator {
         if self.jobs.iter().any(|j| j.busy) {
             return false;
         }
-        let Some(i) = (0..self.jobs.len()).min_by_key(|&i| (self.jobs[i].tier, self.jobs[i].id))
+        // Recording pressure: past three quarters of capture memory,
+        // background work stops.
+        let pressed = self.gate.capture_fill() >= STOP_BACKGROUND;
+        let Some(i) = (0..self.jobs.len())
+            .filter(|&i| !pressed || self.jobs[i].tier == JobTier::NextSong)
+            .min_by_key(|&i| (self.jobs[i].tier, self.jobs[i].id))
         else {
             return false;
         };
@@ -1226,6 +1349,18 @@ impl Coordinator {
             covered,
             safe: window >= self.plan.min_window_s,
         };
+        // The cushion: how long until a playing cursor needs a unit not in
+        // hand (cached, not just asked for); the window when all of it is.
+        self.cushion_s = if wants.is_empty() {
+            f64::INFINITY
+        } else {
+            wants
+                .iter()
+                .filter(|(k, _)| !self.map.contains_key(k))
+                .map(|(_, &(d, _))| d)
+                .fold(window, f64::min)
+        };
+        self.gate.set_cushion(self.cushion_s);
         // Holds: by their deadline, or after everything playing.
         let now = Instant::now();
         for h in &self.holds {
@@ -1345,9 +1480,11 @@ impl Coordinator {
             busy = true;
         }
         // Whole-file reads: only once every playback read wanted is asked
-        // for, and one step at a time, so a playback read never waits
-        // behind more than one step.
-        if all_asked && self.flights.len() < self.plan.in_flight {
+        // for, one step at a time, so a playback read never waits behind
+        // more than one step, and only while playback's cushion is longer
+        // than a stall: a step capped at 512 KiB still stalls as long as
+        // the stick does.
+        if all_asked && self.flights.len() < self.plan.in_flight && self.cushion_s > self.stall() {
             busy |= self.job_step();
         }
         busy

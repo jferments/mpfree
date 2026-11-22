@@ -48,6 +48,11 @@ struct Run {
 
 fn run(s: &Session, period: u32, apply: Option<usize>) -> Run {
     let mut t = Transport::new(RATE, 120.0).unwrap();
+    // The song's tempo points, as song mode plays them.
+    if !s.project.arrangement.tempo.is_empty() {
+        let map = s.project.arrangement.tempo_map(120.0).unwrap();
+        t.set_tempo_map(map).unwrap();
+    }
     for &(f, c) in &s.commands {
         assert!(t.command(f, c));
     }
@@ -513,4 +518,148 @@ fn each_placement_sends_its_clips_program_as_it_starts() {
             }
         ]
     );
+}
+
+/// A section moved (Arrange 3.2, one `TimeEdit`) sounds the same in its
+/// new place, tempo included: every note on the same frame from the
+/// section's start, give or take a millisecond where a ramp was cut, each
+/// section as long as it was to the frame, the morph lane going with it,
+/// and a block across every edge playing on in phase. The same at every
+/// period size.
+#[test]
+fn a_moved_section_sounds_the_same_in_its_new_place_tempo_included() {
+    let mut s = session(at(10 * BAR));
+    // A bass track: a bar of notes 20 to 23, in one block across the song.
+    let mut bass = Track::new("bass", 1);
+    let mut c = Clip::new("C", BAR);
+    c.notes = (0..4)
+        .map(|i| Note::new(i * 960, 480, 20 + i as u8, 90))
+        .collect();
+    bass.slots[0] = Some(c);
+    s.project.tracks.push(bass);
+    s.project.give_clip_ids();
+    let tracks = s.project.tracks.clone();
+    let song = &mut s.project.arrangement;
+    for (track, row, start, length) in [
+        (0, 0, 0, 2 * BAR),
+        (0, 1, 2 * BAR, 2 * BAR),
+        (0, 0, 4 * BAR, 2 * BAR),
+        (1, 0, 0, 6 * BAR),
+    ] {
+        song.place(Placement::of(&tracks, track, row, start, length))
+            .unwrap();
+    }
+    for (at, name) in [(0, "Intro"), (2 * BAR, "Verse"), (4 * BAR, "Chorus")] {
+        song.mark(at, name).unwrap();
+    }
+    // The Intro ramps up into the Verse; the Verse ramps down from bar 4
+    // into the Chorus, cut by its end.
+    song.set_tempo(0, 100.0, Some(true)).unwrap();
+    song.set_tempo(2 * BAR, 140.0, None).unwrap();
+    song.set_tempo(3 * BAR, 90.0, Some(true)).unwrap();
+    song.set_tempo(5 * BAR, 130.0, None).unwrap();
+    let b = BAR as f64;
+    song.put_morph(
+        &[
+            (0.0, 0.0, Kind::Ramp),
+            (2.0 * b, 1.0, Kind::Step),
+            (3.0 * b, 0.25, Kind::Ramp),
+            (6.0 * b, 0.75, Kind::Step),
+        ],
+        &[MorphRows { at: 0, a: 0, b: 1 }],
+        0,
+        6 * BAR,
+    )
+    .unwrap();
+    let mut moved = s.clone();
+    // The Verse before the Intro.
+    moved
+        .project
+        .arrangement
+        .move_section(&tracks, 1, 0, false, BAR, 120.0)
+        .unwrap();
+    let new = &moved.project.arrangement;
+    assert_eq!(
+        new.markers
+            .iter()
+            .map(|m| (m.at, m.name.as_str()))
+            .collect::<Vec<_>>(),
+        [(0, "Verse"), (2 * BAR, "Intro"), (4 * BAR, "Chorus")]
+    );
+    assert_eq!(
+        new.on_track(1)
+            .iter()
+            .map(|p| (p.start, p.length, p.offset))
+            .collect::<Vec<_>>(),
+        [(0, 6 * BAR, 0)],
+        "the bass stays one block"
+    );
+    let (was, now) = (
+        same_applied(&s, &[Some(0)]),
+        same_applied(&moved, &[Some(0)]),
+    );
+    // Each section's stretch of frames in a song, by name.
+    let spans = |song: &mpfree_seq::arrange::Arrangement, name: &str| {
+        let k = song.markers.iter().position(|m| m.name == name).unwrap();
+        let (a, b) = song.section(k, BAR).unwrap();
+        let map = song.tempo_map(120.0).unwrap();
+        let f = |t: i64| map.frames_between(0.0, t as f64, RATE);
+        (f(a), f(b))
+    };
+    // What a section plays, frames from its start: note-ons and lane
+    // values from its start, a note-off at its end its own.
+    let heard = |r: &Run, (fa, fb): (f64, f64)| -> Vec<(f64, u16, Event)> {
+        r.played
+            .iter()
+            .filter(|&&(f, _, e)| {
+                let f = f as f64;
+                match e {
+                    Event::NoteOff { .. } => fa + 2.0 < f && f <= fb + 2.0,
+                    _ => fa - 2.0 <= f && f < fb - 2.0,
+                }
+            })
+            .map(|&(f, t, e)| (f as f64 - fa, t, e))
+            .collect()
+    };
+    let mut worst: f64 = 0.0;
+    for name in ["Verse", "Intro", "Chorus"] {
+        let (old, new) = (spans(&s.project.arrangement, name), spans(new, name));
+        assert!(
+            ((old.1 - old.0) - (new.1 - new.0)).abs() <= 1.0,
+            "{name} is as long as it was: {old:?} {new:?}"
+        );
+        let (then, here) = (heard(&was, old), heard(&now, new));
+        let notes = |h: &[(f64, u16, Event)]| -> Vec<(f64, u16, Event)> {
+            h.iter()
+                .filter(|e| matches!(e.2, Event::NoteOn { .. } | Event::NoteOff { .. }))
+                .copied()
+                .collect()
+        };
+        let (a, b) = (notes(&then), notes(&here));
+        assert!(!a.is_empty());
+        assert_eq!(a.len(), b.len(), "{name}: {a:?} {b:?}");
+        for (x, y) in a.iter().zip(&b) {
+            assert_eq!((x.1, x.2), (y.1, y.2), "{name}");
+            worst = worst.max((x.0 - y.0).abs());
+            assert!((x.0 - y.0).abs() <= 48.0, "{name}: {x:?} {y:?}");
+        }
+        // The morph lane: the value heard every 1,000 frames the same.
+        let lane = |h: &[(f64, u16, Event)], f: f64| {
+            h.iter()
+                .rev()
+                .filter(|e| e.1 == SONG_TRACK && e.0 <= f)
+                .find_map(|e| match e.2 {
+                    Event::Lane { value, .. } => Some(value),
+                    _ => None,
+                })
+        };
+        let mut f = 100.0;
+        while f < new.1 - new.0 - 100.0 {
+            let (x, y) = (lane(&then, f), lane(&here, f));
+            let near = matches!((x, y), (Some(x), Some(y)) if (x - y).abs() < 0.02);
+            assert!(near, "{name}, {f} frames in: {x:?} {y:?}");
+            f += 1000.0;
+        }
+    }
+    println!("worst note: {worst} frames from where it was");
 }

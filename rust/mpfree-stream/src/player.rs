@@ -639,6 +639,11 @@ impl Player {
             return;
         }
         self.since_plan = 0;
+        if self.noted.is_empty() && self.held.is_empty() {
+            // Nothing played: the round alone, if there is room (a full
+            // queue tries again next round).
+            let _ = self.tx.try_send(FromPlayer::Round(self.round));
+        }
         for i in 0..self.noted.len() {
             let c = usize::from(self.noted[i]);
             if let Some(mut w) = self.wants[c].take() {

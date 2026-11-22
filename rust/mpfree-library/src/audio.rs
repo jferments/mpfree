@@ -108,6 +108,9 @@ fn u16le(b: &[u8]) -> u16 {
 fn u32le(b: &[u8]) -> u32 {
     u32::from_le_bytes([b[0], b[1], b[2], b[3]])
 }
+fn u64le(b: &[u8]) -> u64 {
+    u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
+}
 fn u16be(b: &[u8]) -> u16 {
     u16::from_be_bytes([b[0], b[1]])
 }
@@ -125,7 +128,8 @@ pub fn read_info<R: Read + Seek>(r: &mut R) -> io::Result<AudioInfo> {
     }
     r.read_exact(&mut magic[4..])?;
     match (&magic[..4], &magic[8..]) {
-        (b"RIFF", b"WAVE") => wav(r),
+        (b"RIFF", b"WAVE") => wav(r, false),
+        (b"RF64" | b"BW64", b"WAVE") => wav(r, true),
         (b"FORM", b"AIFF") => aiff(r, false),
         (b"FORM", b"AIFC") => aiff(r, true),
         _ => Err(bad("not a WAV, AIFF or FLAC file")),
@@ -135,9 +139,35 @@ pub fn read_info<R: Read + Seek>(r: &mut R) -> io::Result<AudioInfo> {
 /// The most chunks looked at before giving up.
 const MAX_CHUNKS: usize = 64;
 
-fn wav<R: Read + Seek>(r: &mut R) -> io::Result<AudioInfo> {
+/// The true size of a WAV data chunk whose size field says `size`, its
+/// body starting where `r` is: an RF64 file's `FFFFFFFF` means the size in
+/// its `ds64` chunk (`big`); a plain RIFF file's means "to the end of the
+/// file" (a recording still being written, or a recorder's).
+fn data_size<R: Read + Seek>(r: &mut R, size: u64, big: Option<u64>) -> io::Result<u64> {
+    if size != 0xFFFF_FFFF {
+        return Ok(size);
+    }
+    if let Some(d) = big {
+        return Ok(d);
+    }
+    let here = r.stream_position()?;
+    let end = r.seek(SeekFrom::End(0))?;
+    r.seek(SeekFrom::Start(here))?;
+    Ok(end.saturating_sub(here))
+}
+
+/// An RF64 `ds64` chunk's data size (EBU Tech 3306), its body starting
+/// where `r` is.
+fn ds64<R: Read>(r: &mut R) -> io::Result<u64> {
+    let mut b = [0u8; 28];
+    r.read_exact(&mut b)?;
+    Ok(u64le(&b[8..]))
+}
+
+fn wav<R: Read + Seek>(r: &mut R, rf64: bool) -> io::Result<AudioInfo> {
     let mut fmt: Option<(u16, u16, u32, u16, u16)> = None;
     let mut data: Option<u64> = None;
+    let mut big: Option<u64> = None;
     for _ in 0..MAX_CHUNKS {
         let mut h = [0u8; 8];
         if r.read_exact(&mut h).is_err() {
@@ -145,6 +175,10 @@ fn wav<R: Read + Seek>(r: &mut R) -> io::Result<AudioInfo> {
         }
         let size = u64::from(u32le(&h[4..]));
         match &h[..4] {
+            b"ds64" if rf64 && size >= 28 => {
+                big = Some(ds64(r)?);
+                r.seek(SeekFrom::Current((size - 28 + (size & 1)) as i64))?;
+            }
             b"fmt " => {
                 if size < 16 {
                     return Err(bad("WAV fmt chunk too short"));
@@ -162,6 +196,7 @@ fn wav<R: Read + Seek>(r: &mut R) -> io::Result<AudioInfo> {
                 ))?;
             }
             b"data" => {
+                let size = data_size(r, size, big)?;
                 data = Some(size);
                 if fmt.is_some() {
                     break;
@@ -328,7 +363,8 @@ pub fn overview<R: Read + Seek>(r: &mut R, columns: usize) -> Option<Vec<(f32, f
         return mpfree_flac::overview(r, columns, 512);
     }
     let (enc, channels, start, frames) = match (&h[..4], &h[8..]) {
-        (b"RIFF", b"WAVE") => wav_layout(r)?,
+        (b"RIFF", b"WAVE") => wav_layout(r, false)?,
+        (b"RF64" | b"BW64", b"WAVE") => wav_layout(r, true)?,
         (b"FORM", b"AIFF") => aiff_layout(r, false)?,
         (b"FORM", b"AIFC") => aiff_layout(r, true)?,
         _ => return None,
@@ -337,9 +373,10 @@ pub fn overview<R: Read + Seek>(r: &mut R, columns: usize) -> Option<Vec<(f32, f
 }
 
 /// A WAV's encoding, channels, where its samples start and how many frames.
-fn wav_layout<R: Read + Seek>(r: &mut R) -> Option<(Enc, usize, u64, u64)> {
+fn wav_layout<R: Read + Seek>(r: &mut R, rf64: bool) -> Option<(Enc, usize, u64, u64)> {
     let mut fmt: Option<(u16, usize, usize, usize)> = None;
     let mut data: Option<(u64, u64)> = None;
+    let mut big: Option<u64> = None;
     for _ in 0..MAX_CHUNKS {
         let mut c = [0u8; 8];
         r.read_exact(&mut c).ok()?;
@@ -360,7 +397,8 @@ fn wav_layout<R: Read + Seek>(r: &mut R) -> Option<(Enc, usize, u64, u64)> {
                     usize::from(u16le(&b[14..])),
                 ));
             }
-            b"data" => data = Some((here, size)),
+            b"ds64" if rf64 && size >= 28 => big = Some(ds64(r).ok()?),
+            b"data" => data = Some((here, data_size(r, size, big).ok()?)),
             _ => {}
         }
         if fmt.is_some() && data.is_some() {
