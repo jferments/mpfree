@@ -155,6 +155,16 @@ impl SetPlay {
         self.step
     }
 
+    /// The samples' set (sample screens): in as if the songs before `k`
+    /// were played and song `k` plays now.
+    pub fn sample_at(&mut self, k: usize) {
+        self.step = Step::Idle;
+        self.show.start_at(k);
+        for p in self.played.iter_mut().take(k) {
+            *p = true;
+        }
+    }
+
     pub fn now(&self) -> usize {
         self.show.now()
     }

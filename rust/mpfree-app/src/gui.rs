@@ -17360,6 +17360,49 @@ fn io_section_screen(
     p
 }
 
+/// The samples' set (live shows B1): nine songs, each with its Starts and
+/// Ends, the checks of the approved mockup.
+fn sample_set() -> mpfree_library::Set {
+    use mpfree_library::{Ends, Need, SetSong, SongCheck, Starts};
+    let song = |name: &str, starts: Starts, ends: Ends| {
+        let mut s = SetSong::new("", name);
+        s.starts = starts;
+        s.ends = ends;
+        s.check = Some((0, SongCheck::default()));
+        s
+    };
+    let mut night = song("Night drive", Starts::Stopped, Ends::Finish);
+    night.needs = vec![Need {
+        name: "Keystep 37".into(),
+        needed: true,
+    }];
+    night.set_notes(
+        "F minor, count in 4 on the hats. Sam starts the Rhodes riff; drums come in at bar 9.",
+    );
+    let mut glass = song("Glass harbour", Starts::Stopped, Ends::Finish);
+    glass.check = Some((
+        0,
+        SongCheck {
+            not_ready: vec!["the file samples/strings.wav is missing".into()],
+            ..SongCheck::default()
+        },
+    ));
+    mpfree_library::Set {
+        songs: vec![
+            song("Lanterns", Starts::CountIn, Ends::Cut),
+            song("Copper sky", Starts::Playing, Ends::Finish),
+            song("Undertow", Starts::Stopped, Ends::Fade(6)),
+            night,
+            song("Paper moons", Starts::CountIn, Ends::Cut),
+            glass,
+            song("Slow signal", Starts::Stopped, Ends::Finish),
+            song("Sunday chops", Starts::Stopped, Ends::Finish),
+            song("Kite string", Starts::Playing, Ends::Cut),
+        ],
+        extra: Vec::new(),
+    }
+}
+
 pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> {
     let mut out = Vec::new();
     let mut loading = Player::new(fonts(), SCREEN, false, None);
@@ -18588,9 +18631,29 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                 })
                 .collect();
             st.list_pick = Some(4);
-            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Time(Box::new(st.clone())));
             p.apply(ToUi::Show(View::Arrange));
             out.push(("arrange-list", p));
+            // The Show view (live shows B1, the approved mockup): a set of
+            // nine, Night drive playing its song list, Paper moons armed
+            // for a cold change.
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(st)));
+            let (mut sp, _) = crate::set_play::SetPlay::new(
+                mpfree_library::Loc::top(mpfree_library::Place::Sets)
+                    .join("Friday at the Lantern.set")
+                    .expect("a set's name"),
+                sample_set(),
+            );
+            sp.sample_at(3);
+            p.set_play = Some(sp);
+            p.time_page.set_open = true;
+            p.time_page.show = true;
+            p.time.transport.state = mpfree_transport::State::Playing;
+            p.apply(ToUi::Show(View::Arrange));
+            p.set_press(crate::show::Press::Arm(4), crate::set_play::TAP);
+            p.take_actions();
+            out.push(("arrange-show", p));
         }
         Err(e) => eprintln!("arrange-list sample: {e}"),
     }
