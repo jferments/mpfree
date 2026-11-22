@@ -164,6 +164,7 @@ mod shed;
 mod skin_page;
 #[cfg(test)]
 mod smoke;
+mod status_screen;
 mod status_watch;
 mod step_keys;
 mod synth;
