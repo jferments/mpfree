@@ -201,6 +201,8 @@ Phase 3b plays takes from their files through the [stream layer](disk-streaming.
 
 **Tests** (`tests/host_stream.rs`): a 24-bar take cut in four has its four starts in the cache and not the middle of a region; playing, a jump into the middle of a region plays silence for a moment but a jump to a region's start doesn't; moving a region over the next moves the starts held. With a loop set inside a region, the frames at its start are held too, so going round never plays a frame late (without them it does), and clearing the loop lets them go. With a cache of 24 units and 24 regions, the first 16 starts from the playhead are held and the last 8 not, said once, and asking again a few seconds on says nothing more. The app's Performance numbers show the start held.
 
+**Step 4, unused takes** ([`mpfree-library/src/project.rs`](../../../rust/mpfree-library/src/project.rs) `clear_takes`): a save moves to the Trash the take files no part of it or of the ten earlier saves it keeps names, once the earliest save that named them goes; the musician can put one back. The plan said "once a save has finished: take files neither the save nor an undo step names". Two things are added: the earlier saves kept name takes too (opening one must find them), and the files go to the Trash rather than being deleted, as everything else the browser deletes does. A take the undo history can bring back is in every save (the tracks keep a take while any undo step uses it). Only files named as takes by an audio tracks part, by the tracks' own naming, in `samples/` and not a link, ever move; autosave's saves move nothing. See [browser.md](browser.md#projects) for the rules and tests. It applies whether or not takes play from their files, as takes have been files since 3a.
+
 ## In the pad player
 
 [`rust/mpfree-app/src/audiotracks.rs`](../../../rust/mpfree-app/src/audiotracks.rs) holds `TrackHost`, which owns the `AudioHost` in the app's audio loop.
@@ -278,8 +280,8 @@ The plan keeps recordings, clips, tracks and players apart: a recording is sound
 
 ## Not built yet
 
-- Playing takes from their files, the rest of steps 4 and 5 of phase 3b: unused files cleared, outside files and their own rates, and imports and fitted takes written to files; and takes longer than memory. Streaming is behind Dev's switch until then.
+- Playing takes from their files, the rest of steps 4 and 5 of phase 3b: outside files and their own rates, and imports and fitted takes written to files; and takes longer than memory. Streaming is behind Dev's switch until then.
 - The take states on the lanes ("Unsaved: N s", At risk, Stopped) wait for the layout spec; until then they go to the log, and the status monitor will count them.
-- Clearing out files in a project's `samples/` that no save names any more. Takes never saved in a project are not deleted: the next start moves them into Recordings.
+- Clearing out sounds other than takes in a project's `samples/` that no save names any more. Takes no kept save names go to the Trash (step 4, below); takes never saved in a project are not deleted: the next start moves them into Recordings.
 - Fitting takes on its own when the tempo changes. The host fits one take when asked; deciding when to ask is the app's call.
 - Device runs. Opening the line input on the MPC needs Jay's go, step by step (rule zero).

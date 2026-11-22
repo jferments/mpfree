@@ -3774,6 +3774,13 @@ mod tests {
         };
         assert_eq!((file, audio.len(), *channels), (&named, 800, 2));
         assert!(text.contains(&vocal) && text.contains(&named), "{text}");
+        // The library knows them as takes, by name and in the part, so it
+        // can move them to the Trash once no kept save names them.
+        let in_part: Vec<&str> = mpfree_library::project::take_files(&text).collect();
+        assert_eq!(in_part, [vocal.as_str(), named.as_str(), vocal.as_str()]);
+        assert!(in_part
+            .iter()
+            .all(|f| mpfree_library::project::is_take_file(f)));
         // The project's samples/ as a save leaves it.
         std::fs::write(dir.join(&named), wav(audio, 2, 44_100)).unwrap();
         let find = |f: &str| {
