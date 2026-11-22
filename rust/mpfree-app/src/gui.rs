@@ -17107,7 +17107,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     undo.tick(UNDO_HOLD);
     undo.apply(ToUi::Rows(crate::app::RowKey::Pick(-1)));
     out.push(("undo-history", undo));
-    // Prefs with the Appearance row selected, stepped to Synthwave.
+    // Prefs with the Appearance row selected, stepped to Console.
     let mut look = sample_player(fonts());
     let mut l = crate::app::App::new(44_100, false);
     let mut fx = l.open_tab(View::Prefs);

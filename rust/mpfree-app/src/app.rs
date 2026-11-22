@@ -4755,9 +4755,9 @@ impl App {
             Item::Appearance => vec![
                 "The theme: the colours and the panels' style.",
                 "The arrows, - / + or SHIFT + wheel step through",
-                "Default, Console, Synthwave and Spaceship; the",
-                "screen changes at once. The layout and the font",
-                "stay the same. It is kept for the next start.",
+                "Default, Light, Console, Synthwave and Spaceship;",
+                "the screen changes at once. The layout and the",
+                "font stay the same. It is kept for the next start.",
             ],
             Item::TouchSection => vec![
                 "The touch screen's settings: screen pad",
