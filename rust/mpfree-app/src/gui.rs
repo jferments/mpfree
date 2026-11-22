@@ -25512,6 +25512,8 @@ mod tests {
         clip.add_note(mpfree_seq::Note::new(0, 240, 36, 100))
             .unwrap();
         clips.tracks[0].slots[0] = Some(clip);
+        // Its lasting id, as a project in the app has it (Arrange 1.1).
+        clips.give_clip_ids();
         let synth = crate::synth::Synth::new(44_100);
         // Loop 2 with one layer, as the looper's save gives it.
         let layer: Vec<f32> = (0..2 * 4410).map(|k| (k % 97) as f32 / 200.0).collect();
@@ -25782,10 +25784,7 @@ mod tests {
         assert_eq!(keystep(), PortInput::LearnOnly);
         let song = fresh.time.as_ref().unwrap().project();
         assert_eq!(song.tracks.len(), crate::time::TRACKS);
-        assert!(song
-            .tracks
-            .iter()
-            .all(|t| t.slots.iter().all(Option::is_none)));
+        assert!(song.tracks.iter().all(|t| t.slots.is_empty()));
         assert!(fresh.notes.is_empty(), "{:?}", fresh.notes);
         assert!(p.browser.as_ref().unwrap().project().is_none());
         assert!(!p.browser.as_ref().unwrap().unsaved());

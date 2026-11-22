@@ -1,5 +1,6 @@
 //! The time engine's model: a project holds tracks, a track holds clips in
-//! 16 slots, a clip holds notes. Plain data, edited only on the control
+//! rows (64, the grid showing 16 at a time), a clip holds notes, and the
+//! song's blocks name clips by their lasting ids. Plain data, edited only on the control
 //! thread and compiled into a read-only play view by `mpfree-play`.
 //!
 //! Everything is a clip: a step pattern, a recorded phrase and (later) a
@@ -61,7 +62,7 @@ pub mod save;
 pub mod scenes;
 pub mod steps;
 
-pub use arrange::{Arrangement, Marker, MorphRows, Placement, Source, TempoPoint};
+pub use arrange::{Arrangement, Marker, MorphRows, Placement, SongClips, TempoPoint};
 pub use mutate::{Amount, Original, Pitches};
 pub use scenes::{
     Follow, FollowAction, ListStep, Scene, SceneSettings, SongList, TrackProgram, MAX_SCENE_NAME,
@@ -74,8 +75,23 @@ pub use mpfree_param;
 use mpfree_param::{OnTrack, RelAddr};
 use mpfree_transport::time::{Swing, Tick, PPQ};
 
-/// Clip slots per track, one per pad.
+/// The rows the Clips grid shows: one bank of clip slots per track, one
+/// per pad. A project keeps up to [`ROWS`]; the grid shows these until
+/// scene banks come (the Arrange refactor's phase 5), and what looks for
+/// a free row on the grid (recording, a capture, Song → scenes) and a row
+/// dragged stay within them.
 pub const SLOTS: usize = 16;
+/// The most rows a project keeps clips and scenes in (the Arrange
+/// refactor's 1.2): four banks of [`SLOTS`]. A track keeps its clips by
+/// row number ([`Rows`]), so rows past its last clip cost nothing.
+pub const ROWS: usize = 4 * SLOTS;
+
+/// The rows of the bank of [`SLOTS`] that holds `row`: 0 to 15 for the
+/// grid's rows. Follow actions move within a clip's or a scene's bank.
+pub fn bank(row: usize) -> std::ops::Range<usize> {
+    let first = row / SLOTS * SLOTS;
+    first..first + SLOTS
+}
 /// Tracks in a project at most, as on Akai's MPC (Jay, 14 Nov 2026: up to
 /// 128). Engines keep a little state per track in fixed tables of this
 /// size, and do work only for the tracks a project has.
@@ -826,6 +842,9 @@ impl Lock {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Clip {
+    /// Its lasting id ([`ClipId`]), given by its project as it goes in;
+    /// [`ClipId::NONE`] until then.
+    pub id: ClipId,
     pub name: String,
     /// Length in the clip's own ticks.
     pub length: Tick,
@@ -1007,6 +1026,7 @@ impl Clip {
     /// An empty clip of `length` ticks at normal speed.
     pub fn new(name: &str, length: Tick) -> Clip {
         Clip {
+            id: ClipId::NONE,
             name: name.to_string(),
             length,
             speed: Speed::NORMAL,
@@ -1024,6 +1044,15 @@ impl Clip {
             program: None,
             direction: Direction::Forward,
             original: None,
+        }
+    }
+
+    /// A copy of it, with no id: a copy is a clip of its own, and gets a
+    /// new id as it goes into a project ([`Project::put_new_clip`]).
+    pub fn copied(&self) -> Clip {
+        Clip {
+            id: ClipId::NONE,
+            ..self.clone()
         }
     }
 
@@ -1230,6 +1259,40 @@ impl TrackId {
     }
 }
 
+/// A clip's lasting number in its project (the Arrange refactor's D1):
+/// one id space for every kind of clip, note clips and Loop track cells
+/// alike. A clip keeps its id when it moves (a drag to another cell, a
+/// row dragged) and when UNDO or REDO brings it back; a copy is a clip of
+/// its own and gets a new one. A project gives each new clip the next
+/// number ([`Project::next_clip`]) and never gives one twice, so
+/// something that names a clip can't reach another clip by mistake.
+/// [`ClipId::NONE`] (0) is a clip that has none yet: one just made, or
+/// read from a project saved before clips had ids, until
+/// [`Project::give_clip_ids`]. A clip lives in one place, a cell or the
+/// song's own clips ([`arrange::SongClips`]), and song blocks name it by
+/// its id ([`Placement::clip`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ClipId(pub u32);
+
+impl ClipId {
+    /// No id given yet.
+    pub const NONE: ClipId = ClipId(0);
+
+    /// Whether it is a given id (not [`ClipId::NONE`]).
+    pub fn is_given(self) -> bool {
+        self != ClipId::NONE
+    }
+}
+
+/// Where a clip is in its project ([`Project::find_clip`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipAt {
+    /// In a cell: track `track`, row `row`.
+    Cell { track: usize, row: usize },
+    /// Among the song's own clips ([`Arrangement::clips`]).
+    Song,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Track {
     /// Its lasting id ([`TrackId`]), given by its project.
@@ -1275,7 +1338,138 @@ pub struct Track {
     /// "Follows transpose": the pads' Transpose moves this track with the
     /// armed one, so a bass and its chords change key together.
     pub follows: bool,
-    pub slots: [Option<Clip>; SLOTS],
+    /// Its clips by row, 0 to [`ROWS`] - 1 ([`Rows`]).
+    pub slots: Rows,
+}
+
+/// A track's clips by row number (the Arrange refactor's 1.2): row `r`'s
+/// clip or none, for rows 0 to [`ROWS`] - 1, kept as a list as long as
+/// its last clip, so rows past it cost nothing.
+///
+/// `rows[r]` reads row `r` (none past the last clip) and `rows[r] = ...`
+/// writes it (a row past [`ROWS`] panics, as an index past an array's end
+/// does). [`Rows::get`] and [`Rows::get_mut`] are the same, None past
+/// [`ROWS`]. [`Rows::iter`] lists the clips with their rows;
+/// [`Rows::shown`] the rows the grid shows, empty ones too. Two are equal
+/// when they hold the same clips in the same rows.
+#[derive(Clone, Default)]
+pub struct Rows {
+    cells: Vec<Option<Clip>>,
+}
+
+/// What an empty row reads as.
+static NO_CLIP: Option<Clip> = None;
+
+impl Rows {
+    /// Row `row`: its clip or none. None past [`ROWS`]. Never allocates.
+    pub fn get(&self, row: usize) -> Option<&Option<Clip>> {
+        (row < ROWS).then(|| self.cells.get(row).unwrap_or(&NO_CLIP))
+    }
+
+    /// Row `row` to change. None past [`ROWS`]. Allocates when the row
+    /// is past the last one kept.
+    pub fn get_mut(&mut self, row: usize) -> Option<&mut Option<Clip>> {
+        if row >= ROWS {
+            return None;
+        }
+        if self.cells.len() <= row {
+            self.cells.resize_with(row + 1, || None);
+        }
+        self.cells.get_mut(row)
+    }
+
+    /// Every clip with its row, in row order.
+    pub fn iter(&self) -> impl Iterator<Item = (usize, &Clip)> + '_ {
+        self.cells
+            .iter()
+            .enumerate()
+            .filter_map(|(r, c)| c.as_ref().map(|c| (r, c)))
+    }
+
+    /// Every clip with its row, in row order, to change.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (usize, &mut Clip)> + '_ {
+        self.cells
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(r, c)| c.as_mut().map(|c| (r, c)))
+    }
+
+    /// Every clip, in row order.
+    pub fn clips(&self) -> impl Iterator<Item = &Clip> + '_ {
+        self.cells.iter().flatten()
+    }
+
+    /// Every clip, in row order, to change.
+    pub fn clips_mut(&mut self) -> impl Iterator<Item = &mut Clip> + '_ {
+        self.cells.iter_mut().flatten()
+    }
+
+    /// The rows the Clips grid shows ([`SLOTS`]), empty ones too, in order.
+    pub fn shown(&self) -> impl Iterator<Item = &Option<Clip>> + '_ {
+        (0..SLOTS).map(|r| &self[r])
+    }
+
+    /// The row of the clip with id `id`, if this track has it.
+    pub fn row_of(&self, id: ClipId) -> Option<usize> {
+        if !id.is_given() {
+            return None;
+        }
+        self.iter().find(|(_, c)| c.id == id).map(|(r, _)| r)
+    }
+
+    /// The first empty row the grid shows; None when they are all full.
+    pub fn first_free(&self) -> Option<usize> {
+        self.shown().position(Option::is_none)
+    }
+
+    /// No clip in any row.
+    pub fn is_empty(&self) -> bool {
+        self.cells.iter().all(Option::is_none)
+    }
+
+    /// Every row emptied.
+    pub fn clear(&mut self) {
+        self.cells.clear();
+    }
+
+    /// Empty every row whose clip `gone` picks. How many were emptied.
+    pub fn empty_where(&mut self, gone: impl Fn(&Clip) -> bool) -> usize {
+        let mut n = 0;
+        for cell in &mut self.cells {
+            if cell.as_ref().is_some_and(&gone) {
+                *cell = None;
+                n += 1;
+            }
+        }
+        n
+    }
+}
+
+impl std::ops::Index<usize> for Rows {
+    type Output = Option<Clip>;
+
+    fn index(&self, row: usize) -> &Option<Clip> {
+        self.cells.get(row).unwrap_or(&NO_CLIP)
+    }
+}
+
+impl std::ops::IndexMut<usize> for Rows {
+    fn index_mut(&mut self, row: usize) -> &mut Option<Clip> {
+        assert!(row < ROWS, "row {row} past the {ROWS} rows a track keeps");
+        self.get_mut(row).expect("checked")
+    }
+}
+
+impl PartialEq for Rows {
+    fn eq(&self, other: &Rows) -> bool {
+        self.iter().eq(other.iter())
+    }
+}
+
+impl std::fmt::Debug for Rows {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_map().entries(self.iter()).finish()
+    }
 }
 
 /// The furthest a track's transpose goes either way: two octaves of
@@ -1466,6 +1660,11 @@ pub struct Project {
     /// after one UNDO took away. 0 before any was given (a project saved
     /// before tracks had ids).
     pub next_track: u32,
+    /// The id the next clip gets ([`ClipId`]): past every id the project
+    /// ever gave, so none is given twice, even to a clip made after an
+    /// UNDO took one away. UNDO and REDO never wind it back. 0 before any
+    /// was given (a project saved before clips had ids).
+    pub next_clip: u32,
 }
 
 impl Project {
@@ -1517,6 +1716,102 @@ impl Project {
         given
     }
 
+    /// The next clip id, never given before: past [`Project::next_clip`]
+    /// and every id a clip of the project has. Never allocates.
+    pub fn new_clip_id(&mut self) -> ClipId {
+        let next = self
+            .next_clip
+            .max(self.highest_clip_id().saturating_add(1))
+            .max(1);
+        self.next_clip = next.saturating_add(1);
+        ClipId(next)
+    }
+
+    /// The highest id a clip has, in a cell or the song's (0 for none).
+    fn highest_clip_id(&self) -> u32 {
+        let song = self.arrangement.clips.iter().last().map_or(0, |c| c.id.0);
+        self.cell_clips()
+            .map(|(_, _, c)| c.id.0)
+            .max()
+            .unwrap_or(0)
+            .max(song)
+    }
+
+    /// Every clip in a cell, as (track, row, clip), in track and row
+    /// order.
+    pub fn cell_clips(&self) -> impl Iterator<Item = (usize, usize, &Clip)> {
+        self.tracks
+            .iter()
+            .enumerate()
+            .flat_map(|(t, tr)| tr.slots.iter().map(move |(r, c)| (t, r, c)))
+    }
+
+    /// Put `clip`, a new clip or a copy, in the empty cell `row` of
+    /// `track`, with a new id ([`Project::new_clip_id`]), whatever id it
+    /// had. Its id, or `BadSlot` (changing nothing) for no such cell or one
+    /// that holds a clip.
+    pub fn put_new_clip(
+        &mut self,
+        track: usize,
+        row: usize,
+        mut clip: Clip,
+    ) -> Result<ClipId, ModelError> {
+        let free = self
+            .tracks
+            .get(track)
+            .and_then(|t| t.slots.get(row))
+            .is_some_and(Option::is_none);
+        if !free {
+            return Err(ModelError::BadSlot);
+        }
+        clip.id = self.new_clip_id();
+        let id = clip.id;
+        self.tracks[track].slots[row] = Some(clip);
+        Ok(id)
+    }
+
+    /// Gives every clip in a cell that has no id, or has one an earlier
+    /// clip has too (in track and row order), the next id, then the song's
+    /// own clips the same way; the rest keep theirs. How many were given.
+    /// A project saved before clips had ids gets 1, 2, 3 ... in track and
+    /// row order. Allocates a list of the ids seen.
+    pub fn give_clip_ids(&mut self) -> usize {
+        let mut next = self
+            .next_clip
+            .max(self.highest_clip_id().saturating_add(1))
+            .max(1);
+        let mut seen = std::collections::HashSet::new();
+        let mut given = 0;
+        for tr in &mut self.tracks {
+            for c in tr.slots.clips_mut() {
+                if !c.id.is_given() || !seen.insert(c.id) {
+                    c.id = ClipId(next);
+                    seen.insert(c.id);
+                    next = next.saturating_add(1);
+                    given += 1;
+                }
+            }
+        }
+        given += self
+            .arrangement
+            .clips
+            .give_ids(&mut next, |id| seen.contains(&id));
+        self.next_clip = next;
+        given
+    }
+
+    /// Where the clip with id `id` is now. None for [`ClipId::NONE`] or
+    /// an id no clip of the project has.
+    pub fn find_clip(&self, id: ClipId) -> Option<ClipAt> {
+        if !id.is_given() {
+            return None;
+        }
+        self.cell_clips()
+            .find(|(_, _, c)| c.id == id)
+            .map(|(track, row, _)| ClipAt::Cell { track, row })
+            .or_else(|| self.arrangement.clips.get(id).map(|_| ClipAt::Song))
+    }
+
     /// Where the track with id `id` is now.
     pub fn track_with(&self, id: TrackId) -> Option<usize> {
         if !id.is_given() {
@@ -1525,11 +1820,12 @@ impl Project {
         self.tracks.iter().position(|t| t.id == id)
     }
 
-    /// Every track and clip in range.
+    /// Every track and clip in range, and no clip of the song's own with
+    /// an id a cell's clip has (a clip lives in one place).
     pub fn check(&self) -> Result<(), ModelError> {
         self.check_tracks()?;
         for t in &self.tracks {
-            for c in t.slots.iter().flatten() {
+            for c in t.slots.clips() {
                 c.check()?;
                 if c.looped.is_some() != t.is_loops() {
                     return Err(ModelError::BadLoop);
@@ -1544,6 +1840,10 @@ impl Project {
         }
         if !self.launch.ok() {
             return Err(ModelError::BadLaunch);
+        }
+        let song = &self.arrangement.clips;
+        if !song.is_empty() && self.cell_clips().any(|(_, _, c)| song.get(c.id).is_some()) {
+            return Err(ModelError::BadPlacement);
         }
         self.arrangement.check(&self.tracks)
     }
@@ -1646,6 +1946,111 @@ mod track_id_tests {
         t.id = TrackId(40);
         q.give_track_id(&mut t);
         assert_eq!((t.id, q.next_track), (TrackId(40), 41));
+    }
+
+    /// Arrange 1.1: clips get lasting ids in track and row order, loop
+    /// cells too; a new clip or a copy gets the next one, whatever id it
+    /// carried; a clip sharing an id gets a new one; and an id is never
+    /// given twice, even after its clip is gone.
+    #[test]
+    fn clips_get_lasting_ids_that_are_never_given_twice() {
+        let mut p = Project::new();
+        p.tracks.push(Track::new("Drums", 0));
+        p.tracks.push(Track::new_loops("Loops", 1));
+        p.tracks[0].slots[3] = Some(Clip::new("b", 3840));
+        p.tracks[0].slots[1] = Some(Clip::new("a", 3840));
+        p.tracks[1].slots[0] = Some(Clip::new_loop(0, 3840));
+        assert_eq!(p.give_clip_ids(), 3);
+        let ids: Vec<(usize, usize, u32)> =
+            p.cell_clips().map(|(t, r, c)| (t, r, c.id.0)).collect();
+        assert_eq!(ids, [(0, 1, 1), (0, 3, 2), (1, 0, 3)]);
+        assert_eq!(p.next_clip, 4);
+        assert_eq!(p.give_clip_ids(), 0, "they keep theirs");
+        assert_eq!(
+            p.find_clip(ClipId(2)),
+            Some(ClipAt::Cell { track: 0, row: 3 })
+        );
+        assert_eq!(p.find_clip(ClipId::NONE), None);
+        assert_eq!(p.find_clip(ClipId(9)), None);
+        // A copy has no id until it goes in; then the next one.
+        let copy = p.clip(0, 1).unwrap().copied();
+        assert_eq!((copy.id, copy.name.as_str()), (ClipId::NONE, "a"));
+        assert_eq!(p.put_new_clip(0, 2, copy), Ok(ClipId(4)));
+        // Put in with the id of a clip there already, it still gets a new one.
+        let twin = p.clip(0, 1).unwrap().clone();
+        assert_eq!(p.put_new_clip(0, 5, twin.clone()), Ok(ClipId(5)));
+        assert_eq!(p.put_new_clip(0, 5, twin), Err(ModelError::BadSlot));
+        assert_eq!(
+            p.put_new_clip(0, ROWS, Clip::new("x", 3840)),
+            Err(ModelError::BadSlot)
+        );
+        assert_eq!(
+            p.put_new_clip(7, 0, Clip::new("x", 3840)),
+            Err(ModelError::BadSlot)
+        );
+        assert_eq!(p.next_clip, 6, "a refusal gives none");
+        // Gone, its id is never given again.
+        p.tracks[0].slots[5] = None;
+        assert_eq!(p.new_clip_id(), ClipId(6));
+        // Two that share one (a damaged file): the later one gets a new id.
+        p.tracks[1].slots[0].as_mut().unwrap().id = ClipId(1);
+        assert_eq!(p.give_clip_ids(), 1);
+        assert_eq!(p.clip(1, 0).unwrap().id, ClipId(7));
+        assert_eq!(p.clip(0, 1).unwrap().id, ClipId(1), "the first keeps it");
+        // A clip read with a high id keeps it, and the next id moves past it.
+        let mut q = Project::new();
+        q.tracks.push(Track::new("t", 0));
+        let mut c = Clip::new("kept", 3840);
+        c.id = ClipId(40);
+        q.tracks[0].slots[0] = Some(c);
+        assert_eq!(q.give_clip_ids(), 0);
+        assert_eq!((q.next_clip, q.new_clip_id()), (41, ClipId(41)));
+    }
+
+    /// Arrange 1.2: a track keeps its clips by row, up to ROWS; a row
+    /// past its last clip reads empty; two tracks' rows are equal when
+    /// they hold the same clips in the same rows; the grid's rows are
+    /// the first SLOTS, and a free one is looked for there.
+    #[test]
+    fn a_track_keeps_its_clips_by_row_up_to_64() {
+        let mut r = Rows::default();
+        assert!(r.is_empty() && r[40].is_none() && r.get(40) == Some(&None));
+        assert_eq!(r.get(ROWS), None);
+        r[40] = Some(Clip::new("far", 3840));
+        r[2] = Some(Clip::new("near", 3840));
+        let rows: Vec<(usize, &str)> = r.iter().map(|(k, c)| (k, c.name.as_str())).collect();
+        assert_eq!(rows, [(2, "near"), (40, "far")]);
+        assert_eq!(r.shown().count(), SLOTS);
+        assert_eq!(r.first_free(), Some(0));
+        assert!(r.get_mut(ROWS).is_none());
+        // An empty row written and left empty changes nothing.
+        let mut same = r.clone();
+        *same.get_mut(63).unwrap() = None;
+        assert_eq!(same, r);
+        assert_eq!(format!("{r:?}").matches("Clip {").count(), 2);
+        // The grid full, past its rows is not a free one.
+        for k in 0..SLOTS {
+            r[k] = Some(Clip::new("x", 960));
+        }
+        assert_eq!(r.first_free(), None);
+        assert_eq!(r.empty_where(|c| c.name == "x"), SLOTS);
+        assert_eq!(r.clips().count(), 1);
+        // Banks of SLOTS rows.
+        assert_eq!((bank(0), bank(15), bank(40)), (0..16, 0..16, 32..48));
+        // A project's checks and scenes go to row 63, no further.
+        let mut p = Project::new();
+        p.tracks.push(Track::new("t", 0));
+        p.tracks[0].slots[63] = Some(Clip::new("last", 960));
+        assert!(p.scene_mut(63).is_some() && p.scene_mut(ROWS).is_none());
+        assert_eq!(p.check(), Ok(()));
+        assert!(p.row_filled(63) && !p.row_empty(63));
+    }
+
+    #[test]
+    #[should_panic(expected = "past the 64 rows")]
+    fn a_row_past_64_is_not_a_row() {
+        let mut r = Rows::default();
+        r[ROWS] = Some(Clip::new("x", 960));
     }
 
     /// Two tracks with the same settings and clips match whatever their

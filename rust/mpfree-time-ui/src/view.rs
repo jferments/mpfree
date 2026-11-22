@@ -53,8 +53,8 @@ use mpfree_play::{anchored, ClipDrop, Cue, Launch, Replaced, SongChange, Take, T
 use mpfree_seq::scenes::MAX_FOLLOW_BARS;
 use mpfree_seq::{
     direction_steps, Clip, ClipProgram, ClipSettings, Direction, Follow, FollowAction, LaunchGrid,
-    Project, Quantise, SceneSettings, Source, Speed, TrackProgram, Transpose, LAUNCH_GRIDS,
-    MAX_CLIP_TICKS, MAX_TRACKS, MAX_TRANSPOSE, SLOTS,
+    Project, Quantise, SceneSettings, Speed, TrackProgram, Transpose, LAUNCH_GRIDS, MAX_CLIP_TICKS,
+    MAX_TRACKS, MAX_TRANSPOSE, SLOTS,
 };
 use mpfree_transport::time::{Meter, Swing, Tick, MAX_BPM, MIN_BPM, PPQ};
 use mpfree_transport::transport::MAX_COUNT_IN;
@@ -860,9 +860,11 @@ impl TimeState {
                 transpose: t.transpose,
                 follows: t.follows,
                 melodic: false,
+                // The rows the grid shows (Arrange 1.2: a project keeps
+                // more, for scene banks to come).
                 slots: t
                     .slots
-                    .iter()
+                    .shown()
                     .map(|s| {
                         s.as_ref().map(|c| ClipInfo {
                             name: c.name.clone(),
@@ -918,10 +920,12 @@ impl TimeState {
                     track: p.track,
                     start: p.start,
                     length: p.length,
-                    name: p
-                        .clip(&project.tracks)
+                    name: project
+                        .block_clip(p)
                         .map_or_else(|| "(empty)".to_string(), |c| c.name.clone()),
-                    unique: matches!(p.source, Source::Own(_)),
+                    // Its clip is the song's own (made unique, or a
+                    // deleted clip the song still plays).
+                    unique: project.arrangement.clips.get(p.clip).is_some(),
                 })
                 .collect(),
             markers: project
