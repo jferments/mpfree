@@ -327,6 +327,13 @@ with `--quick`) at 128 frames and 44.1 kHz:
   grains, an 8-voice Supersaw and the Sub Bass (a mono preset), the mixer with a
   song's inserts, the time engine and the looper. It answers "does a whole
   song fit", including what the engines cost each other in the caches.
+  The "Project:" cases are the DSP quality plan's fixed test projects
+  (`src/projects.rs`, [DSP quality](dsp-quality.md), step 0.6): seven
+  songs played from fixed scores through the whole chain, the synths in
+  the track host into the mixer's tracks and the sampler's pads into its
+  pad channels. Their own release test compares each render with
+  `golden/projects.txt`; the soak and the coarser golden test leave them
+  out.
 
 It prints mean, p99 and worst per block as microseconds and as a share of
 the period, and **mem MB**: what the engine holds once built (its buffers,

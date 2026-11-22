@@ -2017,6 +2017,11 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| stream_voices(rate, 64, Read::Sinc16, 1.5)));
     v.push(measured(|| stream_voices(rate, 16, Read::Sinc8, 1.0)));
     v.push(measured(|| song(rate)));
+    // The DSP quality plan's fixed test projects (step 0.6), each through
+    // the whole chain.
+    for name in crate::projects::ALL {
+        v.push(measured(|| crate::projects::case(name, rate)));
+    }
     v
 }
 

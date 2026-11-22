@@ -159,6 +159,13 @@
 48137	Poly Unison Lead, 8 voices
 47197	Poly Vowel Lead, 8 voices
 246021	Poly Worn Brass, 8 voices
+4215241	Project: all at once
+295686	Project: bass into the limiter
+1331926	Project: dense synths
+1599146	Project: distortion chain
+571852	Project: fast automation
+742130	Project: granular drums
+290797	Project: long stems
 12921	Ring mod
 145867	Room reverb
 108213	Rotary

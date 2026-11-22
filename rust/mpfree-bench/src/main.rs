@@ -82,6 +82,7 @@
 mod cases;
 #[cfg(test)]
 mod golden;
+mod projects;
 mod vg;
 
 use std::fmt::Write as _;
@@ -317,7 +318,9 @@ fn soak(o: &Options) -> ExitCode {
     for mut c in cases::all(MPC.rate) {
         let wanted = match &o.filter {
             Some(f) => c.name.to_lowercase().contains(f) || c.module.contains(f.as_str()),
-            None => c.module == "period",
+            // The song, not the fixed test projects (step 0.6 of the DSP
+            // quality plan), which their own render check covers.
+            None => c.module == "period" && !c.name.starts_with(projects::PROJECT),
         };
         if !wanted {
             continue;
