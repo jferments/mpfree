@@ -811,6 +811,10 @@ pub struct Browser {
     detail_meta: Option<(Loc, Meta)>,
     status: Option<(String, bool)>,
     pending: usize,
+    /// Jobs whose answers nothing waits for (a manifest after a save), by
+    /// id: not counted in `pending`, so the app neither keeps stepping the
+    /// browser nor holds a power-off for them.
+    quiet: Vec<u64>,
     modal: Modal,
     clip: Option<Clip>,
     recent: Vec<Loc>,
@@ -913,6 +917,7 @@ impl Browser {
             detail_meta: None,
             status: None,
             pending: 0,
+            quiet: Vec::new(),
             modal: Modal::None,
             clip: None,
             recent: Vec::new(),
@@ -980,6 +985,18 @@ impl Browser {
         }
     }
 
+    /// Like `send`, for a job nothing waits for ([`Browser::busy`] stays
+    /// as it is): its answer lands whenever the browser is next stepped.
+    fn send_quiet(&mut self, job: Job) {
+        match &mut self.exec {
+            Exec::Inline(_) => self.send(job),
+            Exec::Thread(w, _) => match w.send(job) {
+                0 => self.status = Some(("The library is not running".into(), true)),
+                id => self.quiet.push(id),
+            },
+        }
+    }
+
     /// Like `send`, in a lane: a newer job of the same lane makes the worker
     /// skip this one if it hasn't started.
     fn send_in(&mut self, lane: Lane, job: Job) {
@@ -1004,7 +1021,12 @@ impl Browser {
         };
         let any = !done.is_empty();
         for d in done {
-            self.pending = self.pending.saturating_sub(1);
+            match self.quiet.iter().position(|&q| q == d.id) {
+                Some(i) => {
+                    self.quiet.swap_remove(i);
+                }
+                None => self.pending = self.pending.saturating_sub(1),
+            }
             self.apply(d);
         }
         any
@@ -1157,16 +1179,25 @@ impl Browser {
                 self.status = Some((format!("Trash emptied: {} freed", size(bytes)), false));
                 self.refresh();
             }
+            // The manifest a save asked for: nothing to say unless it
+            // failed (the error says so on the status line).
+            Ok(Outcome::Manifest(..)) => {}
             Ok(Outcome::Autosaved(loc)) => {
                 self.actions.push(BrowseAction::Autosaved { loc });
                 if self.folder == Loc::top(Place::Projects) {
                     self.refresh();
                 }
             }
-            Ok(Outcome::Saved(loc)) => {
-                let line = match self.saving_beside.take() {
-                    Some((name, why)) => format!("Saved as {name}: {why}"),
-                    None => format!("Saved {}", loc.name()),
+            Ok(Outcome::Saved(loc, saved)) => {
+                // A folder copied outside mpfree carried its original's
+                // id; it has its own now, so a set list tells them apart.
+                let line = match (self.saving_beside.take(), &saved.copy_of) {
+                    (Some((name, why)), _) => format!("Saved as {name}: {why}"),
+                    (None, Some(of)) => format!(
+                        "Saved {}. It was a copy of {of}, so from now on it counts as a song of its own",
+                        loc.name()
+                    ),
+                    (None, None) => format!("Saved {}", loc.name()),
                 };
                 self.status = Some((line, false));
                 // The project saved holds all it has: nothing left out to
@@ -1176,8 +1207,11 @@ impl Browser {
                 self.project = Some(loc.clone());
                 self.last = Some(loc.clone());
                 self.remember(loc.clone());
-                self.actions.push(BrowseAction::ProjectSaved { loc });
+                self.actions
+                    .push(BrowseAction::ProjectSaved { loc: loc.clone() });
                 self.refresh();
+                // The list of its files a set list checks, off the save.
+                self.send_quiet(Job::UpdateManifest(loc));
             }
             Ok(Outcome::Project(loc, snap)) if snap.meta.is_autosave() => {
                 // Autosave's project opens as a new, unsaved one: SHIFT +
