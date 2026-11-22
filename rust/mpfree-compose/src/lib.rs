@@ -37,6 +37,11 @@
 //! `tests/playback.rs` plays results through the real play view and
 //! player and keeps them with the real take undo.
 //!
+//! Phase 0C, the engine:
+//!
+//! - [`read`]: clips read into a Musical Context as they play, each at its
+//!   revision (the listener itself is `mpfree_context::listen`).
+//!
 //! Nothing here runs on the audio thread. The composer runs as an
 //! idle-priority background job (phase 0C onwards).
 #![forbid(unsafe_code)]
@@ -47,6 +52,7 @@ pub mod event;
 pub mod keep;
 pub mod preview;
 pub mod profile;
+pub mod read;
 pub mod realize;
 pub mod refit;
 pub mod rules;
@@ -59,6 +65,7 @@ pub use event::{Event, MotifRef, Motion, NoteDecision, Part, PartId, Role, Sourc
 pub use keep::{clip_notes, continuation, KeepError};
 pub use preview::{Arrival, Preview, Proposal, Refusal, State};
 pub use profile::{Articulation, InstrumentKind, Profile};
+pub use read::{read, LeftOut, ToRead};
 pub use realize::{decisions_of, realize, Fit, PlainNote};
 pub use refit::{action, effect, misfits, Action, Aspects, Change, Effect, How, Target};
 pub use rules::{RangeSetting, Rule, RuleKind, Suggestion, Unmet, Weights};

@@ -551,6 +551,10 @@ pub(crate) struct SongKey {
 pub(crate) struct TrackView {
     pub dest: DestId,
     pub mute: bool,
+    /// The kit pads whose hits this track leaves out, a bit each
+    /// (`Track::silent_pads`: its pad mutes, and the pads its pad solos
+    /// silence; the instrument redesign's step 10).
+    pub pads: u128,
     pub clip: Option<ClipView>,
     pub cue: Option<CueView>,
     /// The track's placements, in order, in song mode (else none).
@@ -718,6 +722,7 @@ impl PlayView {
             .map(|(i, t)| TrackView {
                 dest: t.dest,
                 mute: project.silent(i),
+                pads: t.silent_pads(),
                 clip: None,
                 cue: None,
                 regions: Vec::new(),

@@ -77,11 +77,11 @@ pub struct Key {
     /// The kind of work, such as "view" or "pitch".
     pub kind: &'static str,
     /// The sound (its id) or other thing it is for.
-    pub id: u64,
+    pub id: u128,
 }
 
 impl Key {
-    pub fn new(kind: &'static str, id: u64) -> Key {
+    pub fn new(kind: &'static str, id: u128) -> Key {
         Key { kind, id }
     }
 }
@@ -574,7 +574,7 @@ mod tests {
     /// A job that sends `n` when it runs.
     fn say(lane: Lane, kind: &'static str, n: u64, tx: &mpsc::Sender<u64>) -> Job {
         let tx = tx.clone();
-        Job::new(lane, Key::new(kind, n), move |_| {
+        Job::new(lane, Key::new(kind, u128::from(n)), move |_| {
             let _ = tx.send(n);
         })
     }

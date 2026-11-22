@@ -1,15 +1,19 @@
 //! Zero crossings, for snapping markers so slices start and end without a
-//! click. Works on a mono mix (see [`crate::mono`]) or one channel.
+//! click. Works on a mono mix (see [`crate::mono`]) or one channel: floats,
+//! or any [`Samples`] of one channel, such as a sound mixed to mono as it
+//! is read, with no copy of it made.
+
+use crate::Samples;
 
 /// True when the signal crosses or touches zero between `i - 1` and `i`.
-fn crosses(x: &[f32], i: usize) -> bool {
-    let (a, b) = (x[i - 1], x[i]);
+fn crosses<S: Samples + ?Sized>(x: &S, i: usize) -> bool {
+    let (a, b) = (x.at(i - 1), x.at(i));
     b == 0.0 || (a < 0.0) != (b < 0.0)
 }
 
 /// Of the two samples around a crossing, the one closer to zero.
-fn quieter(x: &[f32], i: usize) -> usize {
-    if x[i - 1].abs() < x[i].abs() {
+fn quieter<S: Samples + ?Sized>(x: &S, i: usize) -> usize {
+    if x.at(i - 1).abs() < x.at(i).abs() {
         i - 1
     } else {
         i
@@ -18,7 +22,11 @@ fn quieter(x: &[f32], i: usize) -> usize {
 
 /// The zero crossing nearest to `at`, no more than `radius` frames away.
 /// Ties go to the earlier one.
-pub fn nearest_zero_crossing(x: &[f32], at: usize, radius: usize) -> Option<usize> {
+pub fn nearest_zero_crossing<S: Samples + ?Sized>(
+    x: &S,
+    at: usize,
+    radius: usize,
+) -> Option<usize> {
     if x.len() < 2 {
         return None;
     }
@@ -36,13 +44,25 @@ pub fn nearest_zero_crossing(x: &[f32], at: usize, radius: usize) -> Option<usiz
 }
 
 /// The last zero crossing at or before `at`, no more than `radius` frames back.
-pub fn previous_zero_crossing(x: &[f32], at: usize, radius: usize) -> Option<usize> {
+pub fn previous_zero_crossing<S: Samples + ?Sized>(
+    x: &S,
+    at: usize,
+    radius: usize,
+) -> Option<usize> {
     if x.len() < 2 {
         return None;
     }
     let at = at.min(x.len() - 1);
     (at.saturating_sub(radius).max(1)..=at)
         .rev()
+        .find(|&i| crosses(x, i))
+        .map(|i| quieter(x, i))
+}
+
+/// The next zero crossing at or after `at`, no more than `ahead` frames on.
+pub fn next_zero_crossing<S: Samples + ?Sized>(x: &S, at: usize, ahead: usize) -> Option<usize> {
+    let end = x.len().min(at.saturating_add(ahead).saturating_add(1));
+    (at.max(1)..end)
         .find(|&i| crosses(x, i))
         .map(|i| quieter(x, i))
 }
@@ -62,7 +82,10 @@ mod tests {
         assert_eq!(nearest_zero_crossing(&x, 125, 10), None);
         assert_eq!(previous_zero_crossing(&x, 149, 100), Some(100));
         assert_eq!(previous_zero_crossing(&x, 220, 10), None);
-        assert_eq!(nearest_zero_crossing(&[0.5], 0, 5), None);
+        assert_eq!(nearest_zero_crossing(&[0.5f32][..], 0, 5), None);
         assert_eq!(previous_zero_crossing(&x, 10_000, 60), Some(350));
+        assert_eq!(next_zero_crossing(&x, 140, 30), Some(150));
+        assert_eq!(next_zero_crossing(&x, 151, 30), None);
+        assert_eq!(next_zero_crossing(&x, 151, 60), Some(200));
     }
 }

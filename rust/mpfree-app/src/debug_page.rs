@@ -96,6 +96,13 @@ pub struct AudioNumbers {
     /// Audio track takes played from their files (Dev's "Audio tracks
     /// from their files"); None while they play from memory.
     pub track_files: Option<crate::audiotracks::StreamNumbers>,
+    /// Grains faded out early to keep room for new hits, and times a cloud
+    /// got no share of a crowded grain budget (sampler plan step 9).
+    pub faded_grains: u64,
+    pub held_back_clouds: u64,
+    /// How long the grain budget was crowded, so every cloud got a share
+    /// and thinned to fit it, seconds.
+    pub crowded_s: f32,
 }
 
 /// The period: 128 frames at 44.1 kHz, in µs.
@@ -537,6 +544,18 @@ impl DebugPages {
                 "Most grains at once".to_string(),
                 a.peak_grains.to_string(),
                 Tone::Normal,
+            ),
+            (
+                "Grains shared out · faded to make room · clouds held back".to_string(),
+                format!(
+                    "{:.1} s · {} · {}",
+                    a.crowded_s, a.faded_grains, a.held_back_clouds
+                ),
+                if a.faded_grains + a.held_back_clouds == 0 {
+                    Tone::Normal
+                } else {
+                    Tone::Warn
+                },
             ),
             (
                 "Shape turns that waited for grains to end".to_string(),

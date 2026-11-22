@@ -511,6 +511,12 @@ impl GrainFx {
         }
     }
 
+    /// Its two grain voices, the cloud and the repeat's: for sharing the
+    /// grain budget out among every cloud (the sampler plan's step 9).
+    pub fn clouds_mut(&mut self) -> [&mut GrainVoice; 2] {
+        [&mut self.voice, &mut self.rvoice]
+    }
+
     /// Runs the effect on `left` and `right` in place. `transport_frame`
     /// is the absolute frame of `left[0]` (for grains synced to the tempo);
     /// `budget` is the grain budget shared with every other grain voice.

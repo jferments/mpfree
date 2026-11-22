@@ -39,7 +39,7 @@
 use crate::recorder::{self, Recorder, RecorderAction, RecorderView, INPUT_ROWS, RECORDER};
 use std::sync::Arc;
 
-use mpfree_analysis::{nearest_zero_crossing, previous_zero_crossing};
+use mpfree_analysis::{nearest_zero_crossing, next_zero_crossing, previous_zero_crossing, Samples};
 use mpfree_sampler::model::{
     ChannelPick, ChopMode, Fade, Loop, LoopMode, ModelError, PlayMode, Project, Region, SourceId,
     WARP_BPM,
@@ -661,20 +661,6 @@ pub fn moved(r: &Region, m: Mark, to: u64, frames: u64, rate: u32) -> Region {
         r.warp = Some(w.moved(old, (r.start, r.end), rate));
     }
     r
-}
-
-/// The next zero crossing at or after `at`, within `ahead` frames.
-pub(crate) fn next_zero_crossing(x: &[f32], at: usize, ahead: usize) -> Option<usize> {
-    let end = x.len().min(at.saturating_add(ahead).saturating_add(1));
-    (at.max(1)..end)
-        .find(|&i| x[i] == 0.0 || (x[i - 1] < 0.0) != (x[i] < 0.0))
-        .map(|i| {
-            if x[i - 1].abs() < x[i].abs() {
-                i - 1
-            } else {
-                i
-            }
-        })
 }
 
 /// Which edit an undo step belongs to.
@@ -2366,7 +2352,9 @@ impl WaveTab {
                 ((k * grid).round() as u64).min(st.frames)
             }
             Snap::ZeroCrossing => {
-                let x = &st.source.mono;
+                let Some(x) = &st.source.mono else {
+                    return to;
+                };
                 if x.len() < 2 || to >= x.len() as u64 {
                     return to;
                 }
