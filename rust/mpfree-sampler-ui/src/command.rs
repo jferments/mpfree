@@ -20,9 +20,11 @@
 
 use std::ops::Range;
 
+use mpfree_sampler::autosample::Instrument;
 use mpfree_sampler::engine::PadField;
 use mpfree_sampler::model::{
-    ChopMode, ChopSet, ModelError, Pad, PadsPlay, Project, Region, SourceId, KEPT_CHOP, MAX_LAYERS,
+    ChopMode, ChopSet, Fade, GrainParams, Layer, ModelError, Pad, PadsPlay, PlayMode, Project,
+    Region, Source, SourceId, Warp, KEPT_CHOP, MAX_LAYERS,
 };
 use mpfree_sampler::scene;
 
@@ -38,6 +40,27 @@ pub const DECAY_SHORTEST_MS: f32 = 10.0;
 
 /// A pad's tuning range, in cents either way.
 pub const TUNE_CENTS: i32 = 2400;
+
+/// A kit's new pad plays this many voices at once: four copies of one
+/// sound is already more than the ear tells apart, and a lock on a long
+/// sound repeated can't fill the whole pool (round 4).
+pub const KIT_POLYPHONY: u8 = 4;
+
+/// The engine pans a centred sound −3 dB a side. A kit's new pad is
+/// raised by this much, so it plays at the level the round 3 mixer played
+/// it.
+pub const CENTRE_DB: f32 = 3.010_3;
+
+/// A new pad as the kits' own play: centred at the level a kit plays at,
+/// [`KIT_POLYPHONY`] voices. A loaded or recorded sound on an empty pad
+/// gets one, so it plays as loud as the kit's (a plain `Pad::new` is 3 dB
+/// quieter: the engine's centre pan).
+pub fn kit_pad(name: &str, layer: Layer) -> Pad {
+    let mut pad = Pad::new(name, layer);
+    pad.polyphony = KIT_POLYPHONY;
+    pad.level_db = CENTRE_DB;
+    pad
+}
 
 /// What a Play page Q-Link turns on the pad hit last.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -134,6 +157,101 @@ pub enum Change {
         mode: ChopMode,
         cuts: Vec<u64>,
     },
+    /// A recorded sound kept (a take, a Flatten, a Recall, a grains
+    /// capture): on a pad, or as a take on the Sample page, playing as
+    /// `lands` says. One undo step, the sound added to the kit with it.
+    Keep {
+        sound: Recorded,
+        onto: Landing,
+        lands: Lands,
+    },
+    /// An auto-sampled instrument landed on the kit's pads from `to`, its
+    /// keygroups playing notes. One undo step.
+    AutoSampled { inst: Box<AutoSampled>, to: usize },
+}
+
+/// A recorded sound, as a change carries it: two are the same change when
+/// they hold the same audio under the same name.
+#[derive(Clone, Debug)]
+pub struct Recorded(pub Source);
+
+impl PartialEq for Recorded {
+    fn eq(&self, other: &Recorded) -> bool {
+        self.0.id() == other.0.id() && self.0.name == other.0.name
+    }
+}
+
+/// An auto-sampled instrument, as a change carries it: two are the same
+/// change when they have the same name and takes.
+#[derive(Clone, Debug)]
+pub struct AutoSampled(pub Instrument);
+
+impl PartialEq for AutoSampled {
+    fn eq(&self, other: &AutoSampled) -> bool {
+        let ids = |i: &Instrument| i.sources.iter().map(Source::id).collect::<Vec<_>>();
+        self.0.name == other.0.name && ids(&self.0) == ids(&other.0)
+    }
+}
+
+/// Where a recorded sound lands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Landing {
+    /// Pad `pad` of the kit.
+    Pad(usize),
+    /// A new take kept on the Sample page (Onto on Stay here).
+    Take,
+}
+
+/// How a recorded sound plays once it lands, and how its pad is made.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Lands {
+    /// Warped at the tempo it was played at (whole bars played to the
+    /// project's tempo), following the project's from then on.
+    pub warp: Option<Warp>,
+    /// Faded in and out over this many frames (Recall's); 0, no fades.
+    pub fade: u32,
+    /// Plays as grains with these settings (a grains capture).
+    pub grains: Option<GrainParams>,
+    /// A Flatten's pad: a kit's new pad keeping only the old pad's mute
+    /// group, chokes and polyphony, since the sound already has the rest in
+    /// it. Otherwise the pad there keeps its settings, the sound in place
+    /// of its own (`Pad::replacing`), and an empty pad becomes a kit's new
+    /// pad ([`kit_pad`]).
+    pub flattened: bool,
+}
+
+impl Lands {
+    /// The new sound's layer, set as it plays.
+    fn set(&self, layer: &mut Layer) {
+        layer.region.warp = self.warp.clone();
+        if self.fade > 0 {
+            layer.region.fade_in = Fade {
+                frames: self.fade,
+                ..Fade::NONE
+            };
+            layer.region.fade_out = layer.region.fade_in;
+        }
+        if let Some(g) = self.grains {
+            layer.region.mode = PlayMode::Granular;
+            layer.region.grain = g;
+        }
+    }
+
+    /// The pad the new sound's layer goes on, `old` the pad there before.
+    fn pad(&self, name: &str, mut layer: Layer, old: Option<&Pad>) -> Pad {
+        self.set(&mut layer);
+        match old {
+            Some(old) if self.flattened => {
+                let mut new = kit_pad(name, layer);
+                new.mute_group = old.mute_group;
+                new.chokes = old.chokes.clone();
+                new.polyphony = old.polyphony;
+                new
+            }
+            Some(_) => Pad::replacing(name, layer, old),
+            None => kit_pad(name, layer),
+        }
+    }
 }
 
 /// What slices are made from.
@@ -360,6 +478,23 @@ impl Change {
                 let c = ChopSet::from_markers(KEPT_CHOP, s, *mode, cuts.iter().copied())?;
                 p.keep_chop(c)
             }
+            Change::Keep {
+                sound,
+                onto: Landing::Pad(pad),
+                lands,
+            } => p
+                .put_source_as(*pad, sound.0.clone(), |name, layer, old| {
+                    lands.pad(name, layer, old)
+                })
+                .map(|_| ()),
+            Change::Keep {
+                sound,
+                onto: Landing::Take,
+                lands,
+            } => p
+                .add_take_of(sound.0.clone(), |name, layer| lands.pad(name, layer, None))
+                .map(|_| ()),
+            Change::AutoSampled { inst, to } => inst.0.clone().put(p, *to),
         }
     }
 
@@ -382,7 +517,12 @@ impl Change {
             | Change::KeyFade(_)
             | Change::MapToKeys { .. }
             | Change::Chop { .. }
-            | Change::KeepChop { .. } => None,
+            | Change::KeepChop { .. }
+            | Change::AutoSampled { .. } => None,
+            Change::Keep { onto, .. } => match onto {
+                Landing::Pad(pad) => Some(*pad),
+                Landing::Take => None,
+            },
         }
     }
 
@@ -390,7 +530,8 @@ impl Change {
     /// the Play page's pad names show.
     pub fn renames(&self) -> bool {
         match self {
-            Change::Pad { .. } | Change::Chop { .. } => true,
+            Change::Pad { .. } | Change::Chop { .. } | Change::AutoSampled { .. } => true,
+            Change::Keep { onto, .. } => matches!(onto, Landing::Pad(_)),
             Change::Name { pad_name, .. } => pad_name.is_some(),
             _ => false,
         }
@@ -450,7 +591,6 @@ pub fn turned(p: &mut Pad, knob: PadKnob, detents: i32, fine: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mpfree_sampler::model::{Layer, Source};
 
     const RATE: u32 = 48_000;
 
@@ -828,6 +968,89 @@ mod tests {
         assert_eq!((kept.name.as_str(), kept.mode), (KEPT_CHOP, ChopMode::Grid));
         assert_eq!(steps(&mut p), before, "no undo step");
         assert!(Change::KeyFade(1).plays());
+    }
+
+    #[test]
+    fn a_recorded_sound_lands_on_a_pad_or_as_a_take_playing_as_it_says() {
+        let (base, ..) = kit();
+        let data: Vec<f32> = (0..2400).map(|i| (i as f32 * 0.01).sin() * 0.3).collect();
+        let take = Source::new("Take 1", RATE, 1, data).expect("a take");
+        let keep = |onto, lands| Change::Keep {
+            sound: Recorded(take.clone()),
+            onto,
+            lands,
+        };
+        // On an empty pad: a kit's new pad, warped and faded.
+        let mut p = base.clone();
+        let before = steps(&mut p.clone());
+        let lands = Lands {
+            warp: Some(Warp::new(92.0)),
+            fade: 48,
+            ..Lands::default()
+        };
+        keep(Landing::Pad(6), lands)
+            .apply(&mut p, None)
+            .expect("kept");
+        let pd = p.pad(6).expect("the new pad");
+        assert_eq!(
+            (pd.name.as_str(), pd.polyphony, pd.level_db),
+            ("Take 1", KIT_POLYPHONY, CENTRE_DB)
+        );
+        let r = &pd.layers[0].region;
+        assert_eq!(r.warp.as_ref().map(|w| w.bpm), Some(92.0));
+        assert_eq!((r.fade_in.frames, r.fade_out.frames), (48, 48));
+        assert!(p.source(take.id()).is_some(), "the sound joins the kit");
+        assert_eq!(steps(&mut p.clone()), before + 1);
+        // On a pad in use: it keeps its settings; a Flatten keeps only its
+        // mute group, chokes and polyphony.
+        let mut old = base.pad(0).unwrap().clone();
+        old.level_db = -9.0;
+        old.mute_group = Some(2);
+        old.polyphony = 2;
+        let mut q = base.clone();
+        q.set_pad(0, Some(old), None).expect("the old pad");
+        let mut r1 = q.clone();
+        keep(Landing::Pad(0), Lands::default())
+            .apply(&mut r1, None)
+            .expect("replacing");
+        assert_eq!(r1.pad(0).map(|pd| pd.level_db), Some(-9.0));
+        let mut r2 = q.clone();
+        let flat = Lands {
+            flattened: true,
+            ..Lands::default()
+        };
+        keep(Landing::Pad(0), flat)
+            .apply(&mut r2, None)
+            .expect("flattened");
+        let pd = r2.pad(0).unwrap();
+        assert_eq!(
+            (pd.level_db, pd.mute_group, pd.polyphony),
+            (CENTRE_DB, Some(2), 2)
+        );
+        // A grains capture plays as grains.
+        let mut g = base.clone();
+        let grains = GrainParams {
+            density: 40.0,
+            ..GrainParams::default()
+        };
+        let lands = Lands {
+            grains: Some(grains),
+            ..Lands::default()
+        };
+        keep(Landing::Pad(9), lands)
+            .apply(&mut g, None)
+            .expect("captured");
+        let r = &g.pad(9).unwrap().layers[0].region;
+        assert_eq!((r.mode, r.grain.density), (PlayMode::Granular, 40.0));
+        // As a take on the page: after the takes there.
+        let mut t = base.clone();
+        keep(Landing::Take, Lands::default())
+            .apply(&mut t, None)
+            .expect("a take");
+        assert_eq!(t.takes().len(), 1);
+        assert!(same(&t, &base), "no pad changed");
+        assert!(keep(Landing::Pad(0), Lands::default()).renames());
+        assert!(!keep(Landing::Take, Lands::default()).renames());
     }
 
     #[test]

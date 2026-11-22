@@ -28986,8 +28986,8 @@ mod tests {
         assert_eq!(rim.name, "Rim");
         // On an empty pad it plays as a kit's pads do: as loud (centred)
         // and with as many voices.
-        assert_eq!(rim.level_db, crate::sampler::CENTRE_DB);
-        assert_eq!(rim.polyphony, crate::sampler::KIT_POLYPHONY);
+        assert_eq!(rim.level_db, mpfree_sampler_ui::command::CENTRE_DB);
+        assert_eq!(rim.polyphony, mpfree_sampler_ui::command::KIT_POLYPHONY);
         assert_eq!(p.kits[0].pads[9].as_deref(), Some("Rim"));
         // A FLAC loads too, onto the pad shown (now the one just hit),
         // known by what it holds; one cut short says so.
@@ -33727,8 +33727,9 @@ mod tests {
     /// its own, the pad picked.
     #[test]
     fn flatten_records_the_pads_own_channel_as_it_plays_once_and_keeps_it_on_the_next_pad() {
-        use crate::sampler::{RecSource, CENTRE_DB};
+        use crate::sampler::RecSource;
         use mpfree_fx::{CapturePoint, StripId};
+        use mpfree_sampler_ui::command::CENTRE_DB;
         use mpfree_sampler_ui::rec_tab::{self, Onto};
         use mpfree_sampler_ui::recorder::RECORDER;
         use mpfree_sampler_ui::sample::{feed_input, PAD};

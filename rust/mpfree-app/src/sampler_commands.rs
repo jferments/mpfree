@@ -23,7 +23,7 @@ use std::ops::Range;
 
 use mpfree_sampler::engine::MAX_KITS;
 use mpfree_sampler::model::{ModelError, Project};
-pub use mpfree_sampler_ui::command::{Change, Chopped};
+pub use mpfree_sampler_ui::command::{Change, Chopped, Landing};
 
 use crate::instrument_list::InstrumentId;
 
@@ -124,6 +124,8 @@ pub struct Done {
     pub renamed: bool,
     /// The pads a chop filled.
     pub pads: Option<Range<usize>>,
+    /// The take a recorded sound became, kept on the Sample page.
+    pub take: Option<usize>,
 }
 
 /// Runs `cmd` on `kits` (the list of kits): the kit its id names makes the
@@ -140,6 +142,7 @@ pub fn run(kits: &mut [Project], cmd: &Command) -> Result<Done, Refused> {
         plays: cmd.change.plays(),
         renamed: cmd.change.renames(),
         pads,
+        take: None,
     };
     match (&cmd.change, onto) {
         (_, Some(to)) if to == kit => Err(Refused::OntoAnotherKit),
@@ -161,7 +164,18 @@ pub fn run(kits: &mut [Project], cmd: &Command) -> Result<Done, Refused> {
                 Change::Chop { chop, .. } => Some(chop.pads()),
                 _ => None,
             };
-            Ok(done(kit, pads))
+            let take = match change {
+                // A new take goes after the others.
+                Change::Keep {
+                    onto: Landing::Take,
+                    ..
+                } => kits[kit].takes().len().checked_sub(1),
+                _ => None,
+            };
+            Ok(Done {
+                take,
+                ..done(kit, pads)
+            })
         }
     }
 }
@@ -237,6 +251,7 @@ mod tests {
                 plays: true,
                 renamed: false,
                 pads: None,
+                take: None,
             })
         );
         assert_eq!(k[1].pad(0).map(|p| p.level_db), Some(-6.0));

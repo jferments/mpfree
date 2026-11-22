@@ -84,7 +84,7 @@ use mpfree_sampler::export;
 use mpfree_sampler::jobs::{Config as JobsConfig, Jobs, Key, Lane, Order};
 use mpfree_sampler::keymap::{self, RootFrom};
 use mpfree_sampler::model::{
-    self as model, ChannelPick, Fade, Layer, Levels, LoopMode, ModelError, Pad, PadsPlay, PlayMode,
+    self as model, ChannelPick, Fade, Levels, LoopMode, ModelError, Pad, PadsPlay, PlayMode,
     Project, Region, Source, SourceId, Warp, PADS, SLICE_KEYS_FROM, WARP_BPM,
 };
 use mpfree_sampler::phrase::Phrase;
@@ -121,9 +121,10 @@ use crate::gui::FromUi;
 use crate::mixing::Captured;
 use crate::modpanels::PadFx;
 use crate::sampler::{Cloud, Playheads, RecFeed, RecSource, ViewSwap};
-use crate::sampler_commands::{self, Change, Command};
+use crate::sampler_commands::{self, Change, Command, Landing};
 use crate::views::Summary;
 use mpfree_fx::{CapturePoint, StripId};
+use mpfree_sampler_ui::command::{Lands, Recorded};
 
 /// The Wave tab's page.
 pub const PAGE: &str = "Sample";
@@ -5848,9 +5849,9 @@ impl SamplePage {
                     src,
                     "grains capture",
                     ", playing as grains",
-                    |l| {
-                        l.region.mode = PlayMode::Granular;
-                        l.region.grain = grain;
+                    Lands {
+                        grains: Some(grain),
+                        ..Lands::default()
                     },
                 );
                 self.told
@@ -5911,13 +5912,15 @@ impl SamplePage {
         bpm: Option<f64>,
     ) {
         let (warp, warped) = warp_at(bpm);
-        self.keep_as(ui, kit, pad, src, what, &warped, |layer| {
-            layer.region.warp = warp
-        });
+        let lands = Lands {
+            warp,
+            ..Lands::default()
+        };
+        self.keep_as(ui, kit, pad, src, what, &warped, lands);
     }
 
-    /// [`Self::keep`] with `set` changing the new layer first, and `after`
-    /// at the end of the line that says so.
+    /// [`Self::keep`] playing as `lands` says, and `after` at the end of the
+    /// line that says so.
     // The sound and where it goes, then what to say and do: one call each.
     #[allow(clippy::too_many_arguments)]
     fn keep_as(
@@ -5928,27 +5931,21 @@ impl SamplePage {
         src: Source,
         what: &str,
         after: &str,
-        set: impl FnOnce(&mut Layer),
+        lands: Lands,
     ) {
         let (name, frames, rate, ch) = (src.name.clone(), src.frames(), src.rate(), src.channels());
-        let Some(project) = self.projects.get_mut(kit) else {
+        if kit >= self.projects.len() {
             self.lines
                 .push(format!("sample: {what} not kept (the kit is gone)"));
             return;
+        }
+        let keep = Change::Keep {
+            sound: Recorded(src),
+            onto: Landing::Pad(pad),
+            lands,
         };
-        match project.put_source_as(pad, src, |name, mut layer, old| {
-            set(&mut layer);
-            match old {
-                Some(_) => Pad::replacing(name, layer, old),
-                None => crate::sampler::kit_pad_with(name, layer),
-            }
-        }) {
+        match self.command(&Command::to_kit(kit, keep)) {
             Ok(_) => {
-                self.edits += 1;
-                if let Some(d) = self.dirty.get_mut(kit) {
-                    *d = true;
-                }
-                self.mark_renamed(kit);
                 let text = format!(
                     "{name}, {} {} on pad {}",
                     duration_text(frames, rate),
@@ -5964,7 +5961,7 @@ impl SamplePage {
                 }
                 self.refresh(ui);
             }
-            Err(e) => self.lines.push(format!("sample: {what} not kept ({e:?})")),
+            Err(e) => self.lines.push(format!("sample: {what} not kept ({e})")),
         }
     }
 
@@ -6626,24 +6623,18 @@ impl SamplePage {
         match t.rec.finish(&name, t.pick) {
             Some(Ok(src)) => {
                 let (frames, rate) = (src.frames(), src.rate());
-                let put = self.projects.get_mut(kit).map(|p| {
-                    p.put_source_as(pad, src, |name, layer, old| {
-                        let mut new = crate::sampler::kit_pad_with(name, layer);
-                        if let Some(old) = old {
-                            new.mute_group = old.mute_group;
-                            new.chokes = old.chokes.clone();
-                            new.polyphony = old.polyphony;
-                        }
-                        new
-                    })
-                });
+                let keep = Change::Keep {
+                    sound: Recorded(src),
+                    onto: Landing::Pad(pad),
+                    lands: Lands {
+                        flattened: true,
+                        ..Lands::default()
+                    },
+                };
+                let put =
+                    (kit < self.projects.len()).then(|| self.command(&Command::to_kit(kit, keep)));
                 match put {
                     Some(Ok(_)) => {
-                        self.edits += 1;
-                        if let Some(d) = self.dirty.get_mut(kit) {
-                            *d = true;
-                        }
-                        self.mark_renamed(kit);
                         let text = format!(
                             "{name}, {} on pad {}",
                             duration_text(frames, rate),
@@ -6658,7 +6649,7 @@ impl SamplePage {
                         }
                         self.refresh(ui);
                     }
-                    Some(Err(e)) => self.end_flatten(ui, &format!("not kept ({e:?})")),
+                    Some(Err(e)) => self.end_flatten(ui, &format!("not kept ({e})")),
                     None => self.end_flatten(ui, "not kept (the kit is gone)"),
                 }
             }
@@ -7035,13 +7026,12 @@ impl SamplePage {
             inst.bytes() as f64 / 1e6,
         );
         let cancelled = f.state == mpfree_sampler::autosample::State::Cancelled;
-        match inst.put(project, to) {
-            Ok(()) => {
-                self.edits += 1;
-                if let Some(d) = self.dirty.get_mut(kit) {
-                    *d = true;
-                }
-                self.mark_renamed(kit);
+        let land = Change::AutoSampled {
+            inst: Box::new(mpfree_sampler_ui::command::AutoSampled(inst)),
+            to,
+        };
+        match self.command(&Command::to_kit(kit, land)) {
+            Ok(_) => {
                 let pads = if n == 1 {
                     self.pad_text(kit, to)
                 } else {
@@ -7077,9 +7067,9 @@ impl SamplePage {
                 self.refresh(ui);
             }
             Err(e) => {
-                self.auto_last = format!("Not kept: {e:?}");
+                self.auto_last = format!("Not kept: {e}");
                 self.lines
-                    .push(format!("sample: auto-sample not kept ({e:?})"));
+                    .push(format!("sample: auto-sample not kept ({e})"));
                 self.refresh_auto_state(ui);
             }
         }
@@ -7486,19 +7476,14 @@ impl SamplePage {
         let edits = self.edits;
         let bpm = r.warps().then(|| self.tempo());
         let (warp, warped) = warp_at(bpm);
-        let set = |layer: &mut Layer| {
-            layer.region.warp = warp;
-            if fade > 0 {
-                layer.region.fade_in = Fade {
-                    frames: fade,
-                    ..Fade::NONE
-                };
-                layer.region.fade_out = layer.region.fade_in;
-            }
+        let lands = Lands {
+            warp,
+            fade,
+            ..Lands::default()
         };
         match onto {
-            Some(pad) => self.keep_as(ui, kit, pad, src, &what, &warped, set),
-            None => self.keep_take_as(ui, kit, src, &what, &warped, set),
+            Some(pad) => self.keep_as(ui, kit, pad, src, &what, &warped, lands),
+            None => self.keep_take_as(ui, kit, src, &what, &warped, lands),
         }
         if self.edits == edits {
             return Err("not kept: the log says why".to_string());
@@ -8955,13 +8940,15 @@ impl SamplePage {
     /// warped at `bpm` when given, one undo step; the Wave page shows it.
     fn keep_take(&mut self, ui: &mut Ui, kit: usize, src: Source, what: &str, bpm: Option<f64>) {
         let (warp, warped) = warp_at(bpm);
-        self.keep_take_as(ui, kit, src, what, &warped, |layer| {
-            layer.region.warp = warp
-        });
+        let lands = Lands {
+            warp,
+            ..Lands::default()
+        };
+        self.keep_take_as(ui, kit, src, what, &warped, lands);
     }
 
-    /// [`Self::keep_take`] with `set` changing the new layer first, and
-    /// `after` said after what was kept.
+    /// [`Self::keep_take`] playing as `lands` says, and `warped` said after
+    /// what was kept.
     fn keep_take_as(
         &mut self,
         ui: &mut Ui,
@@ -8969,24 +8956,23 @@ impl SamplePage {
         src: Source,
         what: &str,
         warped: &str,
-        set: impl FnOnce(&mut Layer),
+        lands: Lands,
     ) {
         let (frames, rate, ch) = (src.frames(), src.rate(), src.channels());
-        let Some(project) = self.projects.get_mut(kit) else {
+        if kit >= self.projects.len() {
             self.lines
                 .push(format!("sample: {what} not kept (the kit is gone)"));
             return;
+        }
+        let keep = Change::Keep {
+            sound: Recorded(src),
+            onto: Landing::Take,
+            lands,
         };
-        let made = project.add_take_of(src, |name, mut layer| {
-            set(&mut layer);
-            crate::sampler::kit_pad_with(name, layer)
-        });
+        let made = self.command(&Command::to_kit(kit, keep));
         match made {
-            Ok(i) => {
-                self.edits += 1;
-                if let Some(d) = self.dirty.get_mut(kit) {
-                    *d = true;
-                }
+            Ok(done) => {
+                let i = done.take.unwrap_or(0);
                 let name = self.projects[kit].take(i).map_or("", |t| t.name.as_str());
                 let text = format!(
                     "{name}, {} {} stays on the Sample page",
@@ -9003,7 +8989,7 @@ impl SamplePage {
                 }
                 self.refresh(ui);
             }
-            Err(ModelError::BadTake) => {
+            Err(sampler_commands::Refused::Model(ModelError::BadTake)) => {
                 let why = format!(
                     "The page keeps {} takes: put some on pads first",
                     mpfree_sampler::model::MAX_TAKES
