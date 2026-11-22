@@ -1347,9 +1347,14 @@ pub struct LoopHost {
     /// A snap asked for (Snap, Use my tap, or UNDO or REDO of a snap),
     /// for a loop, until the next period works it out
     /// ([`LoopHost::tend_snap`]); then the plan, waiting for the time
-    /// engine's answer to its tempo.
-    snap_want: Option<(usize, Snap)>,
+    /// engine's answer to its tempo. True: asked and answered with
+    /// Snap anyway ([`LoopHost::snap_anyway`]).
+    snap_want: Option<(usize, Snap, bool)>,
     snap_wait: Option<(SnapPlan, u32)>,
+    /// A snap that would change the tempo under recorded audio (the audio
+    /// tracks' recordings), waiting for Snap anyway or Not now: the hint
+    /// line asks ([`LoopHost::snap_asking`]).
+    snap_ask: Option<(usize, Snap)>,
     /// Snaps that couldn't be made or didn't land: counted, logged and
     /// said.
     pub snaps_refused: u64,
@@ -1755,6 +1760,7 @@ impl LoopHost {
             smart: SmartEnd::Off,
             notes_lost: 0,
             snap_want: None,
+            snap_ask: None,
             snap_wait: None,
             snaps_refused: 0,
             readings_overruled: 0,
@@ -3810,7 +3816,8 @@ impl LoopHost {
     /// The line for the log now.
     pub fn snap(&mut self, s: Snap) -> String {
         let n = self.looper.selected();
-        self.snap_want = Some((n, s));
+        self.snap_ask = None;
+        self.snap_want = Some((n, s, false));
         format!(
             "looper: {}: Loop {} changes on its next downbeat, with the tempo",
             snap_name(s),
@@ -3818,13 +3825,50 @@ impl LoopHost {
         )
     }
 
+    /// The snap waiting on the question "... anyway?" (it would change
+    /// the tempo under recorded audio), if one is: its loop and kind, for
+    /// the hint line's Snap anyway and Not now.
+    // The hint line's Snap anyway and Not now call it (step 2 screens).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn snap_asking(&self) -> Option<(usize, Snap)> {
+        self.snap_ask
+    }
+
+    /// Snap anyway: the snap that asked goes ahead, as [`LoopHost::snap`]
+    /// does, the audio tracks' recordings left at their old tempo. The
+    /// line for the log, or None if none asked.
+    // The hint line's Snap anyway and Not now call it (step 2 screens).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn snap_anyway(&mut self) -> Option<String> {
+        let (n, s) = self.snap_ask.take()?;
+        self.snap_want = Some((n, s, true));
+        Some(format!(
+            "looper: {} anyway: Loop {} changes on its next downbeat, with the tempo",
+            snap_name(s),
+            n + 1
+        ))
+    }
+
+    /// Not now: the snap that asked is dropped and nothing changes. The
+    /// line for the log, or None if none asked.
+    // The hint line's Snap anyway and Not now call it (step 2 screens).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn snap_not_now(&mut self) -> Option<String> {
+        let (n, _) = self.snap_ask.take()?;
+        Some(format!(
+            "looper: Loop {}: not now: it stays as it is",
+            n + 1
+        ))
+    }
+
     /// Every period, after the time engine's and before
     /// [`LoopHost::run`]: a snap asked for is worked out
     /// ([`Looper::snap_plan`]) and its tempo asked of the time engine on
     /// the loop's next downbeat ([`TimeHost::timing_change`]): refused
-    /// while another loop has sound (its tempo would change under it), and
-    /// for now while `audio` (recorded audio, the audio tracks' regions,
-    /// would play out of step; the screens will ask first). Once the
+    /// while another loop has sound (its tempo would change under it), or
+    /// whatever the time engine refuses. While `audio` (recorded audio,
+    /// the audio tracks' regions, would play out of step) it asks first
+    /// ([`LoopHost::snap_asking`]) and goes ahead on Snap anyway. Once the
     /// time engine commits it, the loop is told to change on the same
     /// frame ([`Looper::snap_at`]); if the loop changes first, the tempo is
     /// taken back. A refusal: the line for the log and the screen,
@@ -3862,7 +3906,7 @@ impl LoopHost {
                 }
             }
         }
-        let (n, s) = self.snap_want.take()?;
+        let (n, s, anyway) = self.snap_want.take()?;
         let others = (0..MAX_LOOPS)
             .filter(|&k| k != n)
             .filter_map(|k| self.looper.loop_status(k))
@@ -3884,12 +3928,23 @@ impl LoopHost {
         };
         match time.allowed(&c, audio) {
             Allowed::Safe => {}
+            Allowed::Ask(_) if anyway => {}
             Allowed::Ask(_) => {
-                return Some(self.snap_refused(
-                    n,
-                    s,
-                    "the audio tracks would play at their old tempo",
-                ))
+                self.snap_ask = Some((n, s));
+                let verb = snap_verb(s);
+                let mut c = verb.chars();
+                let verb = c
+                    .next()
+                    .map(|f| f.to_uppercase().chain(c).collect::<String>())
+                    .unwrap_or_default();
+                return Some((
+                    format!(
+                        "looper: Loop {}: that changes the tempo under the audio tracks' \
+                         recordings. {verb} anyway?",
+                        n + 1
+                    ),
+                    true,
+                ));
             }
             Allowed::Refused(why) => return Some(self.snap_refused(n, s, why)),
         }

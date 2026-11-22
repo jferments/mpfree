@@ -1591,30 +1591,38 @@ mod looper {
     /// heard. Snap (what the screens will offer) changes the loop's end
     /// and the song's tempo together on the loop's next downbeat, the
     /// app's tempo follows, and UNDO takes it back the same way.
+    /// A free first loop on the pads closed 40 ms late with Suggest: the
+    /// end offered, the loop's frames and tempo at the tap, and the frames
+    /// between the two hits.
+    fn closed_late(s: &mut Session) -> (mpfree_looper::Shift, usize, f64, usize) {
+        s.make_sounds();
+        s.press("header", "tab", "Looper");
+        s.app.settings.loop_tempo = true;
+        let free = at(s, "leditor", "bars", 1);
+        s.press_target(&free).run_for(0.1);
+        s.button("REC");
+        let first = s.time.next_frame();
+        s.pad(0, 120, 0.1);
+        s.run_for(2.0 - 0.1);
+        let again = s.time.next_frame();
+        s.pad_edge(0, 120, true);
+        s.run_for(0.04);
+        s.button("REC");
+        s.pad_edge(0, 0, false);
+        until_phase(s, Phase::Playing, 1.0);
+        let tap = status(s).frames;
+        let tap_bpm = s.time.info().bpm;
+        s.run_for(0.2);
+        let by = status(s).offer.expect("an offer");
+        assert!(by.end < 0, "the tap was late");
+        (by, tap, tap_bpm, (again - first) as usize)
+    }
+
     #[test]
     fn a_snap_changes_the_loop_and_the_tempo_on_its_downbeat_and_undo_takes_it_back() {
         on_big_stack(|| {
             let mut s = Session::new();
-            s.make_sounds();
-            s.press("header", "tab", "Looper");
-            s.app.settings.loop_tempo = true;
-            let free = at(&mut s, "leditor", "bars", 1);
-            s.press_target(&free).run_for(0.1);
-            s.button("REC");
-            let first = s.time.next_frame();
-            s.pad(0, 120, 0.1);
-            s.run_for(2.0 - 0.1);
-            let again = s.time.next_frame();
-            s.pad_edge(0, 120, true);
-            s.run_for(0.04);
-            s.button("REC");
-            s.pad_edge(0, 0, false);
-            until_phase(&mut s, Phase::Playing, 1.0);
-            let tap = status(&s).frames;
-            let tap_bpm = s.time.info().bpm;
-            s.run_for(0.2);
-            let by = status(&s).offer.expect("an offer");
-            assert!(by.end < 0, "the tap was late");
+            let (by, tap, tap_bpm, between) = closed_late(&mut s);
             assert_eq!(
                 s.looper.snap(mpfree_looper::Snap::Found),
                 "looper: Snap: Loop 1 changes on its next downbeat, with the tempo"
@@ -1629,7 +1637,6 @@ mod looper {
             until_moved(&mut s, Some(by));
             let st = status(&s);
             assert_eq!(st.frames as i64, tap as i64 + by.longer());
-            let between = (again - first) as usize;
             assert!(
                 st.frames.abs_diff(between) <= crate::PERIOD,
                 "{}",
@@ -1654,6 +1661,51 @@ mod looper {
             assert_eq!(status(&s).offer, Some(by), "on offer again");
             assert!((s.time.info().bpm - tap_bpm).abs() < 1e-9);
             assert_eq!(s.app.settings.bpm, s.time.info().bpm);
+            assert_eq!(s.looper.snaps_refused, 0);
+        });
+    }
+
+    /// Smart loop end plan, step 2: a snap that would change the tempo
+    /// under the audio tracks' recordings asks first, and nothing moves
+    /// until Snap anyway; Not now drops it.
+    #[test]
+    fn a_snap_over_recorded_audio_asks_first() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let (by, tap, _, _) = closed_late(&mut s);
+            s.recorded_audio = Some(true);
+            // Not now: nothing changes.
+            s.looper.snap(mpfree_looper::Snap::Found);
+            s.run_for(0.1);
+            let said = s.said();
+            assert!(
+                said.iter().any(|l| l
+                    == "looper: Loop 1: that changes the tempo under the audio tracks' \
+                        recordings. Snap anyway?"),
+                "{said:?}"
+            );
+            assert_eq!(
+                s.looper.snap_asking(),
+                Some((0, mpfree_looper::Snap::Found))
+            );
+            assert_eq!(
+                s.looper.snap_not_now().as_deref(),
+                Some("looper: Loop 1: not now: it stays as it is")
+            );
+            assert_eq!(s.looper.snap_asking(), None);
+            s.run_for(2.5);
+            assert_eq!(status(&s).frames, tap);
+            assert_eq!(status(&s).offer, Some(by), "still on offer");
+            // Snap anyway: it lands on the downbeat, as any snap.
+            s.looper.snap(mpfree_looper::Snap::Found);
+            s.run_for(0.1);
+            assert!(s.looper.snap_anyway().is_some());
+            let end = s.t() + 3.0;
+            while status(&s).moved != Some(by) && s.t() < end {
+                s.run_periods(1);
+            }
+            assert_eq!(status(&s).moved, Some(by), "{:?}", s.said());
+            assert_eq!(status(&s).frames as i64, tap as i64 + by.longer());
             assert_eq!(s.looper.snaps_refused, 0);
         });
     }

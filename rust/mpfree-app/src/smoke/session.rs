@@ -187,6 +187,10 @@ pub struct Session {
     /// The audio tracks on the Song view's lanes (a short memory: the
     /// tests record no takes).
     pub tracks: audiotracks::TrackHost,
+    /// What a snap is told of recorded audio, for a test that needs the
+    /// audio tracks to hold recordings without recording one (None: the
+    /// audio tracks' own answer).
+    pub recorded_audio: Option<bool>,
     pub music: midi_in::MusicIn,
     pub synth: cores::SynthSlot,
     pub level_db: f32,
@@ -375,6 +379,7 @@ impl Session {
             // around it, with one more layer to move.
             looper: looping::LoopHost::new(RATE, 22),
             tracks: audiotracks::TrackHost::new(RATE, 2),
+            recorded_audio: None,
             music,
             synth,
             level_db,
@@ -1584,9 +1589,10 @@ impl Session {
         {
             self.looper.notes_lost(at);
         }
-        let said = self
-            .looper
-            .tend_snap(&mut self.time, self.tracks.host.tracks.has_regions());
+        let audio = self
+            .recorded_audio
+            .unwrap_or_else(|| self.tracks.host.tracks.has_regions());
+        let said = self.looper.tend_snap(&mut self.time, audio);
         self.out.loop_start(said);
         if let Some(line) = self.looper.run(self.time.block(), &mut ll, &mut lr) {
             self.out.note(&line);
