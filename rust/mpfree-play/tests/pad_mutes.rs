@@ -122,8 +122,9 @@ fn a_placement_leaves_its_tracks_muted_pads_out() {
     t.slots[0] = Some(clip(Holds::Hits));
     t.pad_mutes = 1 << 127;
     p.tracks.push(t);
+    p.give_clip_ids();
     p.arrangement
-        .place(Placement::linked(0, 0, 0, 2 * BAR))
+        .place(Placement::of(&p.tracks, 0, 0, 0, 2 * BAR))
         .unwrap();
     let played = same_at_any_period(&p, &[], &[], true);
     assert_eq!(of(&played, 0), [2, 5, 20, 2, 5, 20], "H16 muted");
