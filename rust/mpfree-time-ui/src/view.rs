@@ -77,6 +77,9 @@ pub const MORPH: &str = "morph";
 pub const SONG: &str = "song";
 /// The song list (sequencer S4): Arrange's third view.
 pub const SONG_LIST: &str = "song-list";
+/// The Show view (live shows B1): Arrange's fourth view, while a set is
+/// open. Its widget is [`crate::show::ShowView`]; the app fills it.
+pub const SHOW: &str = "show";
 /// Play's Q-Link column, at Arrange's right edge too: the app's
 /// `QLinkColumn` (its `play_page::QLINKS`), one widget on both pages.
 pub const QLINKS: &str = "qlinks";
@@ -107,6 +110,11 @@ pub const SONG_SCENE_LAYOUT: &str =
     "col(header:60, row(col(transport:44, row(col(song:*, morph:64):*, col(scene-card:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
 pub const LIST_SCENE_LAYOUT: &str =
     "col(header:60, row(col(transport:44, row(song-list:*, col(scene-card:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
+/// The Show view (live shows B1, layout spec 4n): the bar over the view,
+/// in the place of the grid and the Record panel, and the Q-Link column at
+/// the right. No Record panel and no Takes.
+pub const SHOW_LAYOUT: &str =
+    "col(header:60, row(col(transport:44, show:*):*, qlinks:128):*, hint:26)";
 /// The hint line with the Record panel's Scene tab.
 pub const SCENE_HINT: &str =
     "Scene: the one playing, or pick one on its first row   ·   wheel: pick a row, - / +: change it   ·   Mutes now: the mutes as they are now   ·   UNDO takes a change back";
@@ -4252,6 +4260,12 @@ pub struct TimePage {
     /// while it is open the Clips page keeps the grid, the song or the
     /// list, and the editor's layout comes back once this is false again.
     pub edit_hidden: bool,
+    /// A set is open (live shows B1): the Clips grid's, the Song view's
+    /// and the song list's title lines have Show. The app sets it.
+    pub set_open: bool,
+    /// The Show view is the view shown (it needs [`TimePage::set_open`]).
+    /// The app sets it, and fills the view's widget itself.
+    pub show: bool,
     /// What the note editor's roll and options were last built from: an
     /// update with the same clip and editor moves only the playhead
     /// (piano roll plan 0C.1), so the playing transport costs the screen
@@ -4296,6 +4310,7 @@ impl TimePage {
         ui.add(MORPH, MorphBar::new());
         ui.add(SONG, SongLanes::new());
         ui.add(SONG_LIST, SongListView::new());
+        ui.add(SHOW, crate::show::ShowView::new());
         ui.add(NOTES, NoteGrid::new());
         ui.add(EDIT_OPTIONS, OptionList::new("Edit"));
         ui.add_page(CLIPS_PAGE, CLIPS_LAYOUT)?;
@@ -4477,6 +4492,7 @@ impl TimePage {
                 && g.song_rec == st.song_rec
                 && g.can_add == can_add
                 && g.back_to_song == st.over_song()
+                && g.show_button == self.set_open
         });
         if !same_grid {
             if let Some(g) = ui.get_mut::<ClipGrid>(CLIPS) {
@@ -4490,12 +4506,14 @@ impl TimePage {
                 g.song_rec = st.song_rec;
                 g.can_add = can_add;
                 g.back_to_song = st.over_song();
+                g.show_button = self.set_open;
             }
         }
         // The grid, the song or the note editor, as the app has it.
         let editing = st.edit.is_some() && !self.edit_hidden;
         let want = match (editing, st.song_view, self.clip_card) {
             (true, ..) => EDIT_LAYOUT,
+            _ if self.show && self.set_open => SHOW_LAYOUT,
             _ if st.list_view && self.scene_card => LIST_SCENE_LAYOUT,
             _ if st.list_view && self.clip_card => LIST_CARD_LAYOUT,
             _ if st.list_view => LIST_LAYOUT,
@@ -4518,6 +4536,7 @@ impl TimePage {
                 && l.picked == st.list_pick
                 && l.looped == st.list_looped
                 && l.can_add == can_add
+                && l.show_button == self.set_open
         });
         if !same_list {
             if let Some(l) = ui.get_mut::<SongListView>(SONG_LIST) {
@@ -4526,6 +4545,7 @@ impl TimePage {
                 l.picked = st.list_pick;
                 l.looped = st.list_looped;
                 l.can_add = can_add;
+                l.show_button = self.set_open;
             }
         }
         // The blocks shown, while the placements are the same list: a frame
@@ -4538,6 +4558,7 @@ impl TimePage {
             .cloned();
         let kept = blocks.is_some();
         let mut lanes = song_lanes_with(st, self.first_bar, blocks);
+        lanes.show_button = self.set_open;
         let (same, same_waves) = ui.get::<SongLanes>(SONG).map_or((true, true), |l| {
             let waves = crate::song::same_waves(&l.waves, &st.waves);
             lanes.keep_scroll(l);
@@ -5431,6 +5452,53 @@ mod tests {
     /// grid and the morph; its title counts the steps, bars and time;
     /// each touch is its action or says why not; NEXT names the next
     /// step.
+    /// Live shows B1: with a set open, the title lines have Show, and the
+    /// Show view takes the place of the grid and the Record panel (layout
+    /// spec 4n), over any of the three views.
+    #[test]
+    fn the_show_view_swaps_in_while_a_set_is_open() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Clips"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = state();
+        page.update(&mut ui, &st);
+        assert!(!ui.get::<ClipGrid>(CLIPS).unwrap().show_button);
+        // Show without a set changes nothing.
+        page.show = true;
+        page.update(&mut ui, &st);
+        assert_eq!(ui.layout_of(CLIPS_PAGE), Some(CLIPS_LAYOUT));
+        page.show = false;
+        page.set_open = true;
+        page.update(&mut ui, &st);
+        assert!(ui.get::<ClipGrid>(CLIPS).unwrap().show_button);
+        assert!(ui.get::<SongListView>(SONG_LIST).unwrap().show_button);
+        st.song_view = true;
+        page.update(&mut ui, &st);
+        assert!(ui.get::<SongLanes>(SONG).unwrap().show_button);
+        for (song, list) in [(false, false), (true, false), (false, true)] {
+            (st.song_view, st.list_view) = (song, list);
+            page.show = true;
+            page.update(&mut ui, &st);
+            assert_eq!(ui.layout_of(CLIPS_PAGE), Some(SHOW_LAYOUT));
+            assert_eq!(
+                ui.rect_of(SHOW),
+                Some(mpfree_ui::Rect::new(12, 140, 1116, 610))
+            );
+            assert!(ui.rect_of(RECORD).is_none() && ui.rect_of(TAKES).is_none());
+            assert!(ui.rect_of(TRANSPORT).is_some() && ui.rect_of(QLINKS).is_some());
+            page.show = false;
+            page.update(&mut ui, &st);
+            assert_ne!(ui.layout_of(CLIPS_PAGE), Some(SHOW_LAYOUT));
+        }
+        // The set closed: Show goes from the title lines.
+        page.set_open = false;
+        st.song_view = false;
+        page.update(&mut ui, &st);
+        assert!(!ui.get::<ClipGrid>(CLIPS).unwrap().show_button);
+    }
+
     #[test]
     fn the_song_list_swaps_in_and_its_touches_act() {
         let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);

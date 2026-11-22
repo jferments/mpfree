@@ -153,6 +153,9 @@ pub const ADD_TRACK: usize = 0x100;
 pub const LIST: usize = 0x310;
 /// The List button's width.
 const LIST_W: i32 = 64;
+/// What Tab reports for Show, left of List while a set is open: back to
+/// the Show view (live shows B1).
+pub const SHOW_VIEW: usize = 0x311;
 /// A region drag's `Marker` index is the audio track times this, plus
 /// the region's index (`mpfree_audiotracks::MAX_REGIONS`).
 pub const REGION_SLOTS: usize = mpfree_audiotracks::MAX_REGIONS;
@@ -413,6 +416,9 @@ pub struct SongLanes {
     pub on: bool,
     /// Live to song armed.
     pub rec: bool,
+    /// A set is open (live shows B1): **Show** (72 px), left of List,
+    /// gives `Tab(`[`SHOW_VIEW`]`)`.
+    pub show_button: bool,
     /// The audio lanes, under the MIDI lanes.
     pub audio: Vec<AudioLane>,
     /// The waveforms read so far, a take each.
@@ -555,6 +561,7 @@ impl Default for SongLanes {
             selected: None,
             on: false,
             rec: false,
+            show_button: false,
             audio: Vec::new(),
             waves: Vec::new(),
             region: None,
@@ -724,6 +731,7 @@ impl SongLanes {
             selected: self.selected,
             on: self.on,
             rec: self.rec,
+            show_button: self.show_button,
             audio: self.audio.clone(),
             waves,
             region: self.region,
@@ -961,6 +969,14 @@ impl SongLanes {
     pub fn list_rect(&self, r: Rect) -> Rect {
         let rec = self.rec_rect(r);
         Rect::new(rec.x - 8 - LIST_W, rec.y, LIST_W, rec.h)
+    }
+
+    /// Where Show is, while a set is open: left of List.
+    pub fn show_rect(&self, r: Rect) -> Option<Rect> {
+        let list = self.list_rect(r);
+        let w = crate::widgets::SHOW_W;
+        self.show_button
+            .then(|| Rect::new(list.x - 8 - w, list.y, w, list.h))
     }
 
     /// The buttons along the bottom (the audio region's while one is
@@ -1974,11 +1990,13 @@ impl Widget for SongLanes {
         // The legend, then List and Rec song.
         let rec = self.rec_rect(r);
         let list = self.list_rect(r);
+        let show = self.show_rect(r);
         let head = r.inset(14).take_top(26).0;
+        let end = show.map_or(list.x, |s| s.x);
         cx.text(
             FontId::Sans,
             t.size_small,
-            Rect::new(head.x, head.y, list.x - head.x - 12, head.h),
+            Rect::new(head.x, head.y, end - head.x - 12, head.h),
             Align::Right,
             if self.alert { t.warn } else { t.text_dim },
             &self.legend,
@@ -1992,6 +2010,10 @@ impl Widget for SongLanes {
             t.text,
             "List",
         );
+        if let Some(b) = show {
+            cx.canvas.fill_round_rect(b, t.round(10), t.raised);
+            cx.text(FontId::Bold, t.size_small, b, Align::Center, t.text, "Show");
+        }
         rec_song_pill(cx, rec, self.rec);
         let g = self.geo(r);
         // The ruler: bar numbers, then the markers' names over them.
@@ -2349,6 +2371,9 @@ impl Widget for SongLanes {
         }
         out.push(Target::tap("rec-song", 0, "Rec song", self.rec_rect(r)));
         out.push(Target::tap("list", 0, "List", self.list_rect(r)));
+        if let Some(b) = self.show_rect(r) {
+            out.push(Target::tap("show-view", 0, "Show", b));
+        }
         if let Some(b) = self.add_track_rect(r) {
             out.push(Target::tap("add-track", 0, "+ Track", b));
         }
@@ -2575,6 +2600,9 @@ impl Widget for SongLanes {
         if self.list_rect(r).contains(x, y) {
             return Some(EventKind::Tab(LIST));
         }
+        if self.show_rect(r).is_some_and(|b| b.contains(x, y)) {
+            return Some(EventKind::Tab(SHOW_VIEW));
+        }
         if self.add_rect(r).is_some_and(|b| b.contains(x, y)) {
             return Some(EventKind::Tab(ADD_AUDIO));
         }
@@ -2759,6 +2787,17 @@ mod tests {
         assert_eq!(
             s.touch(1, Touch::Down, list.x + 3, list.y + 3, r),
             Some(EventKind::Tab(LIST))
+        );
+        // While a set is open, Show sits left of List (live shows B1).
+        assert_eq!(s.show_rect(r), None);
+        assert!(s.targets(r).iter().all(|t| t.id != "show-view"));
+        s.show_button = true;
+        let show = s.show_rect(r).unwrap();
+        assert!(show.right() < list.x && show.w == 72, "{show:?}");
+        assert!(s.targets(r).iter().any(|t| t.id == "show-view"));
+        assert_eq!(
+            s.touch(1, Touch::Down, show.x + 3, show.y + 3, r),
+            Some(EventKind::Tab(SHOW_VIEW))
         );
     }
 

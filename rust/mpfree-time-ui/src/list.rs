@@ -43,6 +43,9 @@ pub const LIST_ADD: usize = 3;
 pub const LIST_TO_SONG: usize = 4;
 pub const LIST_PLAY: usize = 5;
 pub const LIST_REMOVE: usize = 6;
+/// Show, left of the loop switch while a set is open: back to the Show
+/// view (live shows B1).
+pub const LIST_SHOW: usize = 7;
 /// `Step { index: SCENE_STEP + k, delta }` steps step `k`'s scene;
 /// `Step { index: k, delta }` its times.
 pub const SCENE_STEP: usize = 0x1000;
@@ -82,6 +85,8 @@ pub struct SongListView {
     pub looped: bool,
     /// Room for another step.
     pub can_add: bool,
+    /// A set is open (live shows B1): Show, left of the loop switch.
+    pub show_button: bool,
     /// The first step in view, and the pick it last followed.
     top: Cell<usize>,
     followed: Cell<Option<Option<usize>>>,
@@ -196,6 +201,14 @@ impl SongListView {
         [looped, clips, song]
     }
 
+    /// Where Show is, while a set is open: left of the loop switch.
+    pub fn show_rect(&self, r: Rect) -> Option<Rect> {
+        let [looped, ..] = SongListView::head_rects(r);
+        let w = crate::widgets::SHOW_W;
+        self.show_button
+            .then(|| Rect::new(looped.x - 8 - w, looped.y, w, looped.h))
+    }
+
     /// The buttons under the list: List → song, Play from here, Remove.
     pub fn button_rects(r: Rect) -> [Rect; 3] {
         SongListView::geo(r).buttons
@@ -219,7 +232,10 @@ impl Widget for SongListView {
             ),
             (clips, "Clips", false),
             (song, "Song", false),
-        ] {
+        ]
+        .into_iter()
+        .chain(self.show_rect(r).map(|b| (b, "Show", false)))
+        {
             cx.canvas.fill_round_rect(b, t.round(10), t.raised);
             if lit {
                 cx.canvas.stroke_round_rect(b, t.round(10), 2, t.accent);
@@ -405,6 +421,9 @@ impl Widget for SongListView {
             Target::tap("lens", 0, "Clips", clips),
             Target::tap("lens", 1, "Song", song),
         ];
+        if let Some(b) = self.show_rect(r) {
+            out.push(Target::tap("show-view", 0, "Show", b));
+        }
         for (k, row) in self.rows.iter().enumerate() {
             let (Some(line), Some((scene, times))) = (self.line_rect(r, k), self.boxes(r, k))
             else {
@@ -486,6 +505,9 @@ impl Widget for SongListView {
             if b.contains(x, y) {
                 return Some(EventKind::Toggle(k));
             }
+        }
+        if self.show_rect(r).is_some_and(|b| b.contains(x, y)) {
+            return Some(EventKind::Toggle(LIST_SHOW));
         }
         for (k, b) in SongListView::button_rects(r).iter().enumerate() {
             if b.contains(x, y) {
@@ -604,6 +626,18 @@ mod tests {
             tap(&mut l, song.x + 3, song.y + 3),
             Some(EventKind::Toggle(LIST_SONG))
         );
+        // While a set is open, Show sits left of the loop switch.
+        assert_eq!(l.show_rect(r), None);
+        l.show_button = true;
+        let show = l.show_rect(r).unwrap();
+        assert!(show.right() < lp.x && show.w == 72, "{show:?}");
+        assert!(show.x > r.x + 200, "clear of the title: {show:?}");
+        assert!(l.targets(r).iter().any(|t| t.id == "show-view"));
+        assert_eq!(
+            tap(&mut l, show.x + 3, show.y + 3),
+            Some(EventKind::Toggle(LIST_SHOW))
+        );
+        l.show_button = false;
         // Every step and button is a target.
         let t = l.targets(r);
         assert_eq!(t.iter().filter(|t| t.id == "step").count(), 3);
