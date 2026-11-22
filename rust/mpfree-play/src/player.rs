@@ -1143,8 +1143,10 @@ impl Player {
     }
 
     /// End every sounding note, in the order they started, and drop the
-    /// ratchet hits to come.
-    fn end_all(&mut self, offset: u32, frame: u64, out: &mut impl Sink) {
+    /// ratchet hits to come: each note gets exactly one note-off. The
+    /// player does it on every jump, loop wrap and stop; a host switching
+    /// songs on a frame calls it for the old song's notes there.
+    pub fn end_all(&mut self, offset: u32, frame: u64, out: &mut impl Sink) {
         self.n_hits = 0;
         self.n_touching = 0;
         for s in &self.sounding[..self.n_sounding] {

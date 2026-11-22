@@ -27,9 +27,12 @@
 //! same way. Tapping what is cued takes the cue back. While stopped, a tap
 //! launches or stops at once.
 
+use std::collections::BTreeMap;
+
+use crate::editor::zoom::RollView;
 use crate::editor::{
     drop_of, edit_rows, pads, step_name, EditAction, Editor, Lens, LockMark, NoteBox, NoteGrid,
-    PEN, STEP_FALLBACK,
+    EDIT_BUTTON, PEN, SNAP_AUTO_T, STEP_FALLBACK,
 };
 use crate::list::{
     ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LOOP, LIST_PLAY, LIST_REMOVE, LIST_SONG,
@@ -167,19 +170,25 @@ pub fn song_hint(st: &TimeState) -> &'static str {
         SONG_HINT
     }
 }
-/// The same page with the note editor (a piano roll or a list) in place
-/// of the grid, and the Edit options in place of the record settings.
+/// The same page with the note editor (a piano roll, a list or a
+/// tracker) in place of the grid, across the page: the Edit options and
+/// the takes are in a drawer that Edit, TC or the wheel opens (piano roll
+/// plan 1A.1).
 pub const EDIT_LAYOUT: &str =
+    "col(header:60, row(col(transport:44, notes:*):*, qlinks:128):*, hint:26)";
+/// The note editor with its drawer open: the Edit options and the takes
+/// at the right, where the record settings are on the grid.
+pub const EDIT_DRAWER_LAYOUT: &str =
     "col(header:60, row(col(transport:44, row(notes:*, col(edit-options:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
 /// The hint line under the note editor's piano roll.
 pub const EDIT_HINT: &str =
-    "Tap a note to pick it, drag to move   ·   Tool: select, draw, erase   ·   TC corrects the picked notes (all if none)   ·   wheel: pick an option, - / +: change it";
+    "Tap a note to pick it, drag to move   ·   two fingers: zoom and scroll   ·   drag the ruler, keys or overview: scroll   ·   Edit, TC or the wheel: the options";
 /// The hint line under the note editor's list.
 pub const EDIT_LIST_HINT: &str =
-    "Tap a row to pick its note   ·   SHIFT + wheel: scroll   ·   TC corrects the picked notes (all if none)   ·   wheel: pick an option, - / +: change it";
+    "Tap a row to pick its note   ·   SHIFT + wheel: scroll   ·   TC corrects the picked notes (all if none)   ·   Edit or the wheel: the options";
 /// The hint line under the note editor's tracker.
 pub const EDIT_TRACKER_HINT: &str =
-    "Tap a row to pick its note   ·   Draw: tap an empty step   ·   SHIFT + wheel: scroll   ·   wheel: pick an option, - / +: change it";
+    "Tap a row to pick its note   ·   Draw: tap an empty step   ·   SHIFT + wheel: scroll   ·   Edit, TC or the wheel: the options";
 
 /// The hint line under the note editor showing `lens`.
 pub fn edit_hint(lens: Lens) -> &'static str {
@@ -1311,16 +1320,17 @@ pub enum TimeAction {
     ListRemove(usize),
     /// The list goes round after its last step, or stops.
     ListLoop(bool),
-    /// The list onto the end of the song, each step its scene's clips its
-    /// times (`mpfree_seq::Arrangement::list_to_song`).
+    /// The list onto the end of the song, played offline through Rec song
+    /// (the Arrange refactor's 4.1, the app's time engine).
     ListToSong,
     /// Song mode on or off: the song plays on tracks with no clip launched.
     SongMode(bool),
     /// Make (false) or Perform (true): the top bar's chip, or SHIFT + MAIN
     /// (sequencer S4). Saved with the project; nothing playing changes.
     Perform(bool),
-    /// The rows with clips, in order, onto the end of the song
-    /// (`mpfree_seq::arrange::scenes_to_song`).
+    /// The rows with clips, in order, onto the end of the song, played
+    /// offline through Rec song (the Arrange refactor's 4.1, the app's
+    /// time engine).
     ScenesToSong,
     /// The song's sections into a run of empty rows, chained by follow
     /// actions (`mpfree_seq::arrange::song_to_scenes`).
@@ -1853,6 +1863,9 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             to: (to / SLOTS, to % SLOTS),
             copy: false,
         }),
+        // The page's own: the Edit button opens the drawer, and the view
+        // is the screen's.
+        (NOTES, EventKind::Tab(EDIT_BUTTON) | EventKind::View { .. }) => None,
         (NOTES, kind) => Some(TimeAction::Edit(match *kind {
             EventKind::Tab(k) => EditAction::Button(k),
             EventKind::Select(i) => EditAction::Note {
@@ -1878,6 +1891,8 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             }))
         }
         (EDIT_OPTIONS, EventKind::Select(i)) => Some(TimeAction::Edit(EditAction::PickRow(*i))),
+        // The drawer's Correct: Timing Correct, as TC.
+        (EDIT_OPTIONS, EventKind::Toggle(0)) => Some(TimeAction::Edit(EditAction::Correct)),
         // The tempo lane: a tap adds a point, a tap on one picks it (again:
         // lets go), a drag moves it.
         (
@@ -4299,11 +4314,11 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
     g.locks = c.locks.iter().map(LockMark::of).collect();
     g.length = c.length;
     g.bar = e.bar;
-    g.low = ed.low;
     g.pads = pads(c);
     g.playhead = playhead;
     g.snap = ed.snap_ticks();
-    g.snap_name = ed.snap_name().to_string();
+    g.snap_name = ed.snap_name();
+    g.snap_auto = ed.snap_auto();
     g.tool = ed.tool;
     g.lens = ed.lens;
     g.first = ed.first;
@@ -4349,6 +4364,19 @@ pub struct TimePage {
     /// (piano roll plan 0C.1), so the playing transport costs the screen
     /// no rebuild of 8,192 notes a frame.
     edit_built: Option<Box<EditInfo>>,
+    /// The note editor's Edit options and takes show, in a drawer at the
+    /// right ([`EDIT_DRAWER_LAYOUT`]): Edit, TC and the wheel open it.
+    pub edit_drawer: bool,
+    /// The roll's view for each clip (track, slot) it has shown: the
+    /// screen's own, so the zoom and scroll are as you left them when you
+    /// come back to a clip (piano roll plan 1A.1). Never saved.
+    views: BTreeMap<(usize, usize), RollView>,
+    /// What the page asks of the time engine on its own (Snap Auto's
+    /// division); the app sends them ([`TimePage::take_asks`]).
+    asks: Vec<TimeAction>,
+    /// Snap Auto's division last asked for, and for which clip, so it is
+    /// asked once while the answer comes.
+    auto_asked: Option<((usize, usize), usize)>,
 }
 
 impl TimePage {
@@ -4451,6 +4479,14 @@ impl TimePage {
                 self.first_bar = (self.first_bar + d).max(0);
                 return true;
             }
+            // The note editor's Edit button: the drawer.
+            (NOTES, EventKind::Tab(EDIT_BUTTON)) => {
+                self.edit_drawer = !self.edit_drawer;
+                return true;
+            }
+            // The roll's view moved: the roll keeps it; the page keeps it
+            // for the clip and lets Snap Auto follow ([`TimePage::update`]).
+            (NOTES, EventKind::View { .. }) => return true,
             (RECORD | CLIP_CARD | SCENE_CARD, EventKind::Tab(k)) => {
                 // The Record panel's tabs: the record settings, the clip
                 // settings card or the scene editor.
@@ -4487,11 +4523,43 @@ impl TimePage {
         }
     }
 
+    /// What the page asks of the time engine on its own, for the app to
+    /// send: Snap Auto's division when the roll's zoom changes it.
+    pub fn take_asks(&mut self) -> Vec<TimeAction> {
+        std::mem::take(&mut self.asks)
+    }
+
+    /// The note editor shows with its drawer closed: open it (Edit, TC
+    /// and the wheel do). True if it opened; call [`TimePage::update`]
+    /// after.
+    pub fn open_drawer(&mut self, ui: &Ui) -> bool {
+        if ui.layout_of(CLIPS_PAGE) != Some(EDIT_LAYOUT) {
+            return false;
+        }
+        self.edit_drawer = true;
+        true
+    }
+
     /// Scroll the grid `delta` rows down (up if negative), or on the Song
-    /// view the timeline `delta` bars on. In the note editor the editor
-    /// scrolls: the action for the app.
-    pub fn scroll(&mut self, ui: &Ui, delta: i32) -> Option<TimeAction> {
-        if ui.layout_of(CLIPS_PAGE) == Some(EDIT_LAYOUT) {
+    /// view the timeline `delta` bars on. In the note editor the roll
+    /// scrolls its rows itself (its view is the screen's); the list and
+    /// the tracker are the editor's: the action for the app.
+    pub fn scroll(&mut self, ui: &mut Ui, delta: i32) -> Option<TimeAction> {
+        if matches!(
+            ui.layout_of(CLIPS_PAGE),
+            Some(EDIT_LAYOUT | EDIT_DRAWER_LAYOUT)
+        ) {
+            let r = ui.rect_of(NOTES);
+            if let (Some(r), true) = (
+                r,
+                ui.get::<NoteGrid>(NOTES)
+                    .is_some_and(|g| g.lens == Lens::Grid),
+            ) {
+                if let Some(g) = ui.get_mut::<NoteGrid>(NOTES) {
+                    g.scroll_rows(r, -delta);
+                }
+                return None;
+            }
             return Some(TimeAction::Edit(EditAction::Scroll(delta)));
         }
         if matches!(
@@ -4519,7 +4587,7 @@ impl TimePage {
     /// the record settings.
     pub fn wheel_list(&self, ui: &Ui) -> &'static str {
         match ui.layout_of(CLIPS_PAGE) {
-            Some(EDIT_LAYOUT) => EDIT_OPTIONS,
+            Some(EDIT_LAYOUT | EDIT_DRAWER_LAYOUT) => EDIT_OPTIONS,
             Some(CLIPS_CARD_LAYOUT | SONG_CARD_LAYOUT | LIST_CARD_LAYOUT) => CLIP_CARD,
             Some(CLIPS_SCENE_LAYOUT | SONG_SCENE_LAYOUT | LIST_SCENE_LAYOUT) => SCENE_CARD,
             _ => RECORD,
@@ -4641,6 +4709,7 @@ impl TimePage {
         // The grid, the song or the note editor, as the app has it.
         let editing = st.edit.is_some() && !self.edit_hidden;
         let want = match (editing, st.song_view, self.clip_card) {
+            (true, ..) if self.edit_drawer => EDIT_DRAWER_LAYOUT,
             (true, ..) => EDIT_LAYOUT,
             _ if st.list_view && self.scene_card => LIST_SCENE_LAYOUT,
             _ if st.list_view && self.clip_card => LIST_CARD_LAYOUT,
@@ -4726,37 +4795,89 @@ impl TimePage {
                 *b = bar;
             }
         }
+        // The roll's view is kept for each clip it has shown on a roll
+        // with a size: first the roll's own (a pinch or a scroll moves it
+        // there) for the clip it was showing.
+        let key = st.edit.as_ref().map(|e| (e.editor.track, e.editor.slot));
+        if let (Some(b), Some(g)) = (&self.edit_built, ui.get::<NoteGrid>(NOTES)) {
+            let shown = (b.editor.track, b.editor.slot);
+            if let Some(v) = self.views.get_mut(&shown) {
+                *v = g.view;
+            }
+        }
         match &st.edit {
             Some(e) if self.edit_built.as_ref().is_some_and(|b| same_edit(b, e)) => {
-                // Only the playhead can have moved.
+                // Only the playhead can have moved; with Follow on, the
+                // roll pages along with it.
                 let at = note_playhead(e, st);
+                let r = ui.rect_of(NOTES);
                 if ui.get::<NoteGrid>(NOTES).is_some_and(|g| g.playhead != at) {
                     if let Some(g) = ui.get_mut::<NoteGrid>(NOTES) {
                         g.playhead = at;
+                        if let (Some(r), Some(t)) = (r, at) {
+                            g.follow_to(r, t);
+                        }
                     }
                 }
             }
             Some(e) => {
-                let grid = note_grid(e, st);
+                let mut grid = note_grid(e, st);
+                grid.drawer = self.edit_drawer;
+                grid.view = key
+                    .and_then(|k| self.views.get(&k).copied())
+                    .unwrap_or_default();
                 if ui.get::<NoteGrid>(NOTES).is_some_and(|g| !g.same(&grid)) {
                     if let Some(g) = ui.get_mut::<NoteGrid>(NOTES) {
                         g.show(grid);
                     }
                 }
                 let rows = edit_rows(&e.editor, &e.clip);
-                if ui
-                    .get::<OptionList>(EDIT_OPTIONS)
-                    .is_some_and(|l| l.rows != rows || l.selected != e.editor.row)
-                {
+                let picked = e.editor.sel.iter().any(|&i| i < e.clip.notes.len());
+                let buttons = vec![OptionButton::new(
+                    if picked {
+                        "Correct picked"
+                    } else {
+                        "Correct all"
+                    },
+                    true,
+                )];
+                if ui.get::<OptionList>(EDIT_OPTIONS).is_some_and(|l| {
+                    l.rows != rows || l.selected != e.editor.row || l.buttons != buttons
+                }) {
                     if let Some(l) = ui.get_mut::<OptionList>(EDIT_OPTIONS) {
                         l.rows = rows;
                         l.selected = e.editor.row;
                         l.right = "wheel or arrows".to_string();
+                        l.buttons = buttons;
                     }
                 }
                 self.edit_built = Some(e.clone());
             }
             None => self.edit_built = None,
+        }
+        if let (Some(e), Some(r)) = (&st.edit, ui.rect_of(NOTES)) {
+            let key = (e.editor.track, e.editor.slot);
+            // A clip on a roll with a size for the first time: the view it
+            // opens with ([`NoteGrid::open_view`]).
+            if let std::collections::btree_map::Entry::Vacant(slot) = self.views.entry(key) {
+                if let Some(g) = ui.get_mut::<NoteGrid>(NOTES) {
+                    g.view = g.open_view(r);
+                    slot.insert(g.view);
+                }
+            }
+            if let Some(g) = ui.get::<NoteGrid>(NOTES) {
+                // Snap Auto follows the zoom once the fingers lift: the
+                // division goes to the editor only when it changes.
+                if e.editor.snap_auto() && !g.busy() {
+                    let want = g.auto_division(r, e.editor.auto, e.editor.snap == SNAP_AUTO_T);
+                    if want == e.editor.auto {
+                        self.auto_asked = None;
+                    } else if self.auto_asked != Some((key, want)) {
+                        self.auto_asked = Some((key, want));
+                        self.asks.push(TimeAction::Edit(EditAction::AutoSnap(want)));
+                    }
+                }
+            }
         }
         let rows = record_rows(st);
         let tabs = panel_tabs(st);
@@ -4956,7 +5077,7 @@ mod tests {
             (SONG_LAYOUT, SONG, RECORD),
             (CLIPS_CARD_LAYOUT, CLIPS, CLIP_CARD),
             (SONG_CARD_LAYOUT, SONG, CLIP_CARD),
-            (EDIT_LAYOUT, NOTES, EDIT_OPTIONS),
+            (EDIT_DRAWER_LAYOUT, NOTES, EDIT_OPTIONS),
         ] {
             ui.set_layout(CLIPS_PAGE, layout).unwrap();
             // Where Play has it (play_page's frame test): x 1140, y 84.
@@ -4972,6 +5093,12 @@ mod tests {
             let b = ui.rect_of(body).unwrap();
             assert_eq!((b.x, b.right()), (12, 866), "{layout}");
         }
+        // The note editor with its drawer closed: the roll across the
+        // page, up to the Q-Link column.
+        ui.set_layout(CLIPS_PAGE, EDIT_LAYOUT).unwrap();
+        let b = ui.rect_of(NOTES).unwrap();
+        assert_eq!((b.x, b.right()), (12, 1128));
+        assert_eq!(ui.rect_of(EDIT_OPTIONS), None);
         // Without the app, the samples get an empty column.
         let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
         ui.add("header", Header::new(&["Play", "Arrange"]));
@@ -5097,6 +5224,151 @@ mod tests {
     /// Piano roll plan 0C.1: while the note editor's clip (one shared
     /// copy) and the editor stay the same, an update moves only the roll's
     /// playhead and builds none of its notes again; a new copy builds it.
+    /// The note editor's view is the screen's: kept for each clip and
+    /// found again on coming back, Snap Auto's division asked for when the
+    /// zoom changes it (once, with no finger down), and the Edit button
+    /// opens and closes the drawer of Edit options and takes (piano roll
+    /// plan 1A.1).
+    #[test]
+    fn the_note_editor_keeps_each_clips_view_and_its_drawer() {
+        use crate::editor::{EDIT_BUTTON, SNAP_AUTO};
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Clips"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = state();
+        let info = |slot: usize, bars: Tick| {
+            let mut c = Clip::new("A", bars * BAR);
+            c.add_note(Note::new(0, 240, 60, 100)).unwrap();
+            c.add_note(Note::new(BAR, 240, 64, 100)).unwrap();
+            Box::new(EditInfo {
+                editor: crate::editor::Editor::new(0, slot, &c),
+                clip: c.into(),
+                rev: 1,
+                track_name: "Keys".into(),
+                bar: BAR,
+                answer: EditAnswer::default(),
+            })
+        };
+        st.edit = Some(info(0, 4));
+        page.update(&mut ui, &st);
+        assert_eq!(
+            ui.layout_of(CLIPS_PAGE),
+            Some(EDIT_LAYOUT),
+            "the drawer starts closed"
+        );
+        let r = ui.rect_of(NOTES).unwrap();
+        let g = ui.get::<NoteGrid>(NOTES).unwrap();
+        let opened = g.open_view(r);
+        assert_eq!(g.view, opened, "the clip's opening view");
+        assert!(g.view.row_h >= 40);
+        // Two of its four bars across the wide roll: a 1/16 is 32 px,
+        // Snap Auto's own; nothing to ask.
+        assert!(page.take_asks().is_empty());
+        // Zoomed out to the whole clip (as a pinch would, fingers up):
+        // Snap Auto asks for a 1/8 once, however many updates come before
+        // the answer.
+        let zoomed = RollView {
+            ppt: g.view.ppt / 2.0,
+            ..g.view
+        };
+        ui.get_mut::<NoteGrid>(NOTES).unwrap().view = zoomed;
+        page.update(&mut ui, &st);
+        page.update(&mut ui, &st);
+        assert_eq!(
+            page.take_asks(),
+            vec![TimeAction::Edit(EditAction::AutoSnap(4))],
+            "a 1/8, asked once"
+        );
+        st.edit.as_mut().unwrap().editor.auto = 4;
+        page.update(&mut ui, &st);
+        assert!(page.take_asks().is_empty());
+        // Another clip opens on its own view; coming back finds the zoom
+        // as it was left.
+        st.edit = Some(info(1, 16));
+        page.update(&mut ui, &st);
+        let other = ui.get::<NoteGrid>(NOTES).unwrap().view;
+        assert_ne!(other, zoomed);
+        st.edit = Some(info(0, 4));
+        st.edit.as_mut().unwrap().editor.auto = 4;
+        page.update(&mut ui, &st);
+        assert_eq!(ui.get::<NoteGrid>(NOTES).unwrap().view, zoomed);
+        // A fixed snap asks nothing.
+        st.edit.as_mut().unwrap().editor.snap = 6;
+        ui.get_mut::<NoteGrid>(NOTES).unwrap().view = opened;
+        page.update(&mut ui, &st);
+        assert!(page.take_asks().is_empty());
+        st.edit.as_mut().unwrap().editor.snap = SNAP_AUTO;
+        // Edit opens the drawer (the page's own, nothing for the app) and
+        // closes it again.
+        let edit = ev(NOTES, EventKind::Tab(EDIT_BUTTON));
+        assert_eq!(action(&edit, &st), None);
+        assert!(page.page_tracks(&edit, &st));
+        page.update(&mut ui, &st);
+        assert_eq!(ui.layout_of(CLIPS_PAGE), Some(EDIT_DRAWER_LAYOUT));
+        assert!(ui.get::<NoteGrid>(NOTES).unwrap().drawer, "Edit lit");
+        let options = ui.get::<OptionList>(EDIT_OPTIONS).unwrap();
+        assert_eq!(options.buttons[0].label, "Correct all");
+        assert_eq!(
+            action(&ev(EDIT_OPTIONS, EventKind::Toggle(0)), &st),
+            Some(TimeAction::Edit(EditAction::Correct))
+        );
+        assert!(!page.open_drawer(&ui), "open already");
+        assert!(page.page_tracks(&edit, &st));
+        page.update(&mut ui, &st);
+        assert_eq!(ui.layout_of(CLIPS_PAGE), Some(EDIT_LAYOUT));
+        assert!(page.open_drawer(&ui), "the wheel opens it");
+        // The view moving is the page's too.
+        let moved = ev(
+            NOTES,
+            EventKind::View {
+                start: 0.0,
+                frames_per_px: 4.0,
+            },
+        );
+        assert_eq!(action(&moved, &st), None);
+        assert!(page.page_tracks(&moved, &st));
+    }
+
+    /// With Follow on, the roll pages along with the playhead; off, it
+    /// stays.
+    #[test]
+    fn the_roll_follows_the_playhead_when_asked() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Clips"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = state();
+        let mut c = Clip::new("A", 16 * BAR);
+        c.add_note(Note::new(0, 240, 1, 100)).unwrap();
+        st.edit = Some(Box::new(EditInfo {
+            editor: crate::editor::Editor::new(0, 0, &c),
+            clip: c.into(),
+            rev: 1,
+            track_name: "Drums".into(),
+            bar: BAR,
+            answer: EditAnswer::default(),
+        }));
+        page.update(&mut ui, &st);
+        let start = ui.get::<NoteGrid>(NOTES).unwrap().view.start;
+        assert_eq!(start, 0, "two bars from the first note");
+        let e = st.edit.clone().unwrap();
+        // Play on past the two bars on screen: no Follow, no paging.
+        while note_playhead(&e, &st).is_some_and(|t| t < 3 * BAR) {
+            st.transport.position += 960;
+        }
+        page.update(&mut ui, &st);
+        assert_eq!(ui.get::<NoteGrid>(NOTES).unwrap().view.start, 0);
+        ui.get_mut::<NoteGrid>(NOTES).unwrap().view.follow = true;
+        st.transport.position += 960;
+        page.update(&mut ui, &st);
+        let v = ui.get::<NoteGrid>(NOTES).unwrap().view;
+        let at = note_playhead(&e, &st).unwrap();
+        assert!(v.start <= at && at < v.start + 2 * BAR + 960, "{v:?} {at}");
+    }
+
     #[test]
     fn the_note_editor_moves_only_its_playhead_while_its_clip_is_the_same() {
         let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
@@ -5469,7 +5741,7 @@ mod tests {
         for k in 0..4 {
             st.transport.position += 960;
             page.update(&mut ui, &st);
-            page.scroll(&ui, k);
+            page.scroll(&mut ui, k);
             page.update(&mut ui, &st);
             let l = ui.get::<SongLanes>(SONG).unwrap();
             assert_eq!(l.first_bar, (0..=k).sum::<i32>() as i64);
@@ -5528,7 +5800,7 @@ mod tests {
             (lanes.blocks.len(), lanes.legend.as_str()),
             (1, "3 bars · from bar 1")
         );
-        page.scroll(&ui, 4);
+        page.scroll(&mut ui, 4);
         assert_eq!(page.first_bar, 4, "the wheel scrolls bars");
         let song = |k: EventKind, st: &TimeState| action(&ev(SONG, k), st);
         assert_eq!(
@@ -7180,7 +7452,7 @@ mod tests {
         st.song_view = true;
         page.update(&mut ui, &st);
         assert_eq!(ui.layout_of(CLIPS_PAGE), Some(SONG_CARD_LAYOUT));
-        assert_eq!(page.scroll(&ui, 2), None);
+        assert_eq!(page.scroll(&mut ui, 2), None);
         assert_eq!(page.first_bar, 2);
         // Another clip focused: the card follows.
         st.armed = Some(1);

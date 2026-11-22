@@ -87,6 +87,12 @@ pub enum Command {
     /// on the next tempo-grid line (a 1/16 by default), or at the loop jump
     /// if that comes first.
     SetTempo(f64),
+    /// The tempo changes on this very frame instead of the next grid line.
+    /// Rolling, the song takes it from the tick due on the frame, with no
+    /// jump: the notes sounding go on (a timing change, smart loop end
+    /// step 0C). Stopped, as `SetTempo`. A tempo or map still waiting for
+    /// its line is replaced.
+    TempoNow(f64),
     SetSwing(Swing),
     /// Loop the song between two ticks, or stop looping. The loop is at
     /// least a 1/16 long. A loop that ends before the playhead does not
@@ -601,6 +607,21 @@ impl Transport {
         MAX_COMMANDS - self.queued
     }
 
+    /// How many more commands queued now for frame `at` of the coming
+    /// period would all apply on it: room in the queue, and in the
+    /// period's [`MAX_COMMANDS_PER_PERIOD`] after those due by `at` (the
+    /// rest would wait for the next period). For a caller whose commands
+    /// must land together or not at all. For a later period it counts
+    /// every command queued before `at`, so it errs on the side of less.
+    pub fn room_on(&self, at: u64) -> usize {
+        let due = self.queue[..self.queued]
+            .iter()
+            .take_while(|q| q.0 <= at)
+            .count();
+        self.queue_room()
+            .min(MAX_COMMANDS_PER_PERIOD.saturating_sub(due))
+    }
+
     /// Queue a command for absolute frame `at`. Commands on the same frame
     /// apply in the order given. Returns false if the queue is full.
     pub fn command(&mut self, at: u64, cmd: Command) -> bool {
@@ -999,6 +1020,16 @@ impl Transport {
                     self.new_tempo(at, NewTempo::Bpm(bpm));
                 } else {
                     self.stats.rejected += 1;
+                }
+            }
+            Command::TempoNow(bpm) => {
+                if !valid_bpm(bpm) {
+                    self.stats.rejected += 1;
+                } else if self.state.rolling() {
+                    self.pending_tempo = None;
+                    self.live_tempo(at, now, NewTempo::Bpm(bpm));
+                } else {
+                    self.new_tempo(at, NewTempo::Bpm(bpm));
                 }
             }
             Command::SetSwing(s) => {
@@ -1455,6 +1486,53 @@ mod tests {
         let b = run(&mut t, 128);
         assert_eq!(b.markers().len(), 4);
         assert_eq!(b.markers()[0].frame, 384);
+    }
+
+    #[test]
+    fn a_tempo_now_takes_over_on_its_own_frame() {
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        t.command(0, Command::Play);
+        // A tempo waiting for its 1/16 (tick 240) is replaced. Tick 100 is
+        // at frame 2297: the song takes 90 BPM from there, with no jump.
+        t.command(1000, Command::SetTempo(140.0));
+        t.command(2297, Command::TempoNow(90.0));
+        let b = run(&mut t, 8192);
+        assert_eq!(
+            marks(&b),
+            vec![(0, Mark::Started { tick: 0 }), (2297, Mark::Tempo(90.0))]
+        );
+        let last = b.spans().last().unwrap();
+        assert_eq!(
+            (last.anchor_tick, last.anchor_frame, last.bpm),
+            (100, 2297, 90.0)
+        );
+        // Each tick still plays once: the spans join.
+        let ticks: Vec<_> = b.spans().iter().map(|s| s.ticks()).collect();
+        assert!(ticks.windows(2).all(|w| w[0].end == w[1].start));
+        // Stopped, as SetTempo; a bad tempo is rejected.
+        t.command(t.frame(), Command::Stop);
+        t.command(t.frame(), Command::TempoNow(100.0));
+        t.command(t.frame(), Command::TempoNow(0.0));
+        run(&mut t, 64);
+        assert_eq!(t.bpm(), 100.0);
+        assert_eq!(t.stats().rejected, 1);
+    }
+
+    #[test]
+    fn room_on_a_frame_counts_the_queue_and_the_period() {
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        assert_eq!(t.room_on(0), MAX_COMMANDS_PER_PERIOD);
+        for _ in 0..10 {
+            t.command(100, Command::ToggleOverdub);
+        }
+        // Ten due by frame 100 leave six on it; those after it don't count.
+        assert_eq!(t.room_on(100), MAX_COMMANDS_PER_PERIOD - 10);
+        assert_eq!(t.room_on(99), MAX_COMMANDS_PER_PERIOD);
+        for _ in 0..50 {
+            t.command(5000, Command::ToggleOverdub);
+        }
+        assert_eq!(t.room_on(0), MAX_COMMANDS - 60);
+        assert_eq!(t.room_on(5000), 0);
     }
 
     /// A block rebuilt from another's spans, as a host on another thread

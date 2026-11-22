@@ -69,7 +69,7 @@ Every button works as soon as MPFree starts, with nothing to learn: the develope
 
 | Control | What it does | When |
 |---|---|---|
-| **Data wheel** | Picks a row of the Record settings, or of the Edit options while the note editor is open. **–** and **+** change it; push the wheel and the wheel changes it. | Works |
+| **Data wheel** | Picks a row of the Record settings, or of the Edit options while the note editor is open (with their drawer closed, the wheel, **–**, **+** or a push opens it first). **–** and **+** change it; push the wheel and the wheel changes it. | Works |
 | **SHIFT + data wheel** | Scrolls the clip grid, the song, or the note editor's roll, list or tracker. | Works |
 | **Q-Link knobs 1-4** | The same knobs as on the Play page, as the cards on the right show; Q-LINK steps to the macro banks. See [Clips and patterns](../making-music/clips.md#the-q-links-on-arrange). | Works |
 
@@ -131,7 +131,7 @@ The mode buttons along the top of the MPC go to the MPFree page that does the sa
 | **BROWSE** | Opens the browser over the page, and goes back to the page. **SHIFT + BROWSE** saves the project, on any page. See [Saving your work](../making-music/saving.md). | Works |
 | **The data wheel's push** | See [Everywhere](#everywhere). | Works |
 | **COPY** | With **STEP SEQ** on: hold **COPY**, hit a step pad, then hit the steps it should go to. Or hold **COPY**, press a **PAD BANK** button, then the **PAD BANK** button it should go to, to copy a whole page of the sound's steps. **UNDO** takes a copy back. See [Your first beat](../making-music/sequencer.md#the-pads-as-steps-step-seq). On the Arrange tab: hold **COPY** and tap a clip to copy it, then hold **COPY** and tap an empty slot for a copy there (see [Clips and patterns](../making-music/clips.md#tracks-and-slots)). **Hold COPY and hit a pad, then other pads**: the first pad's sound, with all its settings, goes onto each pad you hit after it, on any page while the pads play the kit. **Hold SHIFT + COPY and hit a pad** to empty it. While COPY is held the pads make no sound, and **UNDO** takes each copy or emptied pad back. | Works (pads: new, needs a device check) |
-| **TC** | Timing Correct: opens the note editor on the Sequencer tab for the track you are on, with Timing Correct's settings as its first rows; press **TC** again to pull the notes toward the grid (the picked notes, or all of them). **UNDO** takes it back. See [Timing Correct](../making-music/editing-notes.md#timing-correct). **SHIFT + TC** turns **Quantise** while recording on or off for the track you are on (the Record tab's Quantise row: off, or back to the grid it had, 1/16 the first time). | Works (new: needs a device check) |
+| **TC** | Timing Correct: opens the note editor on the Sequencer tab for the track you are on, with its drawer of Edit options open on Timing Correct's settings; press **TC** again to pull the notes toward the grid (the picked notes, or all of them). **UNDO** takes it back. See [Timing Correct](../making-music/editing-notes.md#timing-correct). **SHIFT + TC** turns **Quantise** while recording on or off for the track you are on (the Record tab's Quantise row: off, or back to the grid it had, 1/16 the first time). | Works (new: needs a device check) |
 
 ## For developers
 

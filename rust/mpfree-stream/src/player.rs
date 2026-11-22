@@ -468,6 +468,27 @@ impl Player {
                     self.free(slot as usize);
                 }
             }
+            ToPlayer::Grow { tag, frames } => {
+                let s = usize::from(tag.source);
+                if !self.current(tag) || self.resident[s].is_some() {
+                    self.stats.stale += 1;
+                    return;
+                }
+                let src = self.sources[s];
+                if frames <= src.frames {
+                    return;
+                }
+                // The unit cut short at the old end, if one was, goes.
+                // Messages are taken only between copies, so a fill of it
+                // sent before this has finished copying in, and goes too.
+                let uf = unit_frames(src.channels);
+                if !src.frames.is_multiple_of(uf) {
+                    if let Some(slot) = self.find(tag.source, (src.frames / uf) as u32) {
+                        self.free(slot);
+                    }
+                }
+                self.sources[s].frames = frames;
+            }
             ToPlayer::Fill {
                 tag,
                 unit,

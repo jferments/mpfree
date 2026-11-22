@@ -164,6 +164,7 @@ mod shed;
 mod skin_page;
 #[cfg(test)]
 mod smoke;
+mod status_watch;
 mod step_keys;
 mod synth;
 mod sys;
@@ -4003,7 +4004,7 @@ fn sampler_status(player: &sampler::Player, time: &RenderTime) -> String {
     let c = player.counters();
     format!(
         "sampler: {}, {} steals, {} events dropped ({} hits), {} let-gos kept aside, {} values merged, \
-         at most {} grains ({} skipped)",
+         at most {} grains ({} skipped, {} faded to make room, {} clouds held back)",
         time.describe(),
         c.steals,
         c.dropped_events,
@@ -4011,7 +4012,9 @@ fn sampler_status(player: &sampler::Player, time: &RenderTime) -> String {
         c.late_let_gos,
         c.merged_values,
         c.peak_grains,
-        c.skipped_grains
+        c.skipped_grains,
+        c.faded_grains,
+        c.held_back_clouds
     )
 }
 
@@ -12627,6 +12630,9 @@ fn player_session(
                             + midi_out.ends_lost(),
                         peak_grains: c.peak_grains,
                         window_waits: c.window_waits,
+                        faded_grains: c.faded_grains,
+                        held_back_clouds: c.held_back_clouds,
+                        crowded_s: c.crowded_ms as f32 / 1000.0,
                     }
                 },
             }));

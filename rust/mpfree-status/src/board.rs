@@ -21,6 +21,9 @@
 //!   while its cause is going is kept but not shown.
 //! - **Worst first:** red before yellow, then one happening now before one
 //!   that ended, then the most recent.
+//! - **Every start and end is a [`Change`]** ([`Board::take_changes`]), so
+//!   the screen thread writes one log line for each and the Console, the
+//!   journal and the test tools see what the page sees.
 
 use crate::{Kind, Level, Op, Report, Shape, Subject, System};
 use std::time::{Duration, Instant};
@@ -35,6 +38,8 @@ pub const SETTLE_ON: Duration = Duration::from_secs(1);
 pub const SETTLE_OFF: Duration = Duration::from_secs(3);
 /// A moment counts as happening now this long after it last happened.
 pub const NOW_FOR: Duration = Duration::from_secs(3);
+/// How many starts and ends wait for [`Board::take_changes`] at most.
+pub const CHANGES: usize = 128;
 
 /// Which problems a list shows: only those happening now, or everything
 /// since MPFree started (the page's Now | This session switch).
@@ -116,6 +121,21 @@ pub struct SystemView {
     pub earlier: usize,
 }
 
+/// A problem started showing or ended: one log line each.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Change {
+    pub kind: &'static Kind,
+    pub subject: Subject,
+    /// Started (true) or ended.
+    pub started: bool,
+    /// How many times so far (a moment's count, or the spells shown).
+    pub times: u64,
+    /// For an end: how long it was going, from when it started showing.
+    pub lasted: Duration,
+    /// Its cause was going when it started (it is hidden on the page).
+    pub hidden: bool,
+}
+
 /// One report as it arrived, for the Dev page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EventView {
@@ -141,6 +161,8 @@ struct Entry {
     state: ProblemState,
     seen: bool,
     hidden: bool,
+    /// When this spell started showing (for the end's line).
+    showing_since: Instant,
 }
 
 impl Entry {
@@ -179,6 +201,8 @@ pub struct Board {
     next: usize,
     older: u64,
     lost: u64,
+    changes: Vec<Change>,
+    changes_lost: u64,
 }
 
 impl Default for Board {
@@ -196,6 +220,8 @@ impl Board {
             next: 0,
             older: 0,
             lost: 0,
+            changes: Vec::with_capacity(CHANGES),
+            changes_lost: 0,
         }
     }
 
@@ -223,6 +249,7 @@ impl Board {
                     state: ProblemState::Ended,
                     seen: true,
                     hidden: false,
+                    showing_since: now,
                 });
                 self.open.len() - 1
             }
@@ -231,6 +258,7 @@ impl Board {
         let e = &mut self.open[i];
         match r.op {
             Op::Happened { times } => {
+                let started = e.state != ProblemState::Now;
                 e.times += u64::from(times);
                 e.last = now;
                 e.ended = None;
@@ -238,6 +266,10 @@ impl Board {
                 e.state = ProblemState::Now;
                 e.seen = false;
                 e.hidden = hidden;
+                if started {
+                    e.showing_since = now;
+                    self.change(i, true, now);
+                }
             }
             // Already going: nothing new.
             Op::Began if e.kind.shape == Shape::Lasts && e.going() => {}
@@ -255,6 +287,7 @@ impl Board {
                 }
             }
             Op::Began => {
+                e.last = now;
                 if e.state != ProblemState::Now {
                     e.times += 1;
                     e.going_since = Some(now);
@@ -264,8 +297,9 @@ impl Board {
                     e.state = ProblemState::Now;
                     e.seen = false;
                     e.hidden = hidden;
+                    e.showing_since = now;
+                    self.change(i, true, now);
                 }
-                e.last = now;
             }
             Op::Ended => match e.kind.shape {
                 Shape::Lasts if e.going() && e.state == ProblemState::Now => {
@@ -287,6 +321,7 @@ impl Board {
                     e.state = ProblemState::Ended;
                     e.ended = Some(now);
                     e.last = now;
+                    self.change(i, false, now);
                 }
                 Shape::Happens | Shape::Lasts | Shape::Stays | Shape::UntilSeen => {}
             },
@@ -308,8 +343,9 @@ impl Board {
             let hidden = settled && self.hidden_now(self.open[i].kind, i);
             let e = &mut self.open[i];
             if settled {
+                let since = e.going_since.unwrap_or(now);
                 if !e.shown {
-                    e.first = e.going_since.unwrap_or(now);
+                    e.first = since;
                 }
                 e.shown = true;
                 e.times += 1;
@@ -317,28 +353,41 @@ impl Board {
                 e.state = ProblemState::Now;
                 e.seen = false;
                 e.hidden = e.hidden || hidden;
+                e.showing_since = since;
+                self.change(i, true, since);
             }
+            let e = &mut self.open[i];
             if e.state != ProblemState::Now {
                 continue;
             }
-            match e.kind.shape {
-                Shape::Happens => {
-                    if now.duration_since(e.last) >= NOW_FOR {
-                        e.state = ProblemState::Ended;
-                        e.ended = Some(e.last);
-                    }
+            let ended = match e.kind.shape {
+                Shape::Happens if now.duration_since(e.last) >= NOW_FOR => {
+                    e.state = ProblemState::Ended;
+                    e.ended = Some(e.last);
+                    Some(e.last)
                 }
+                Shape::Happens => None,
                 Shape::Lasts => match e.stopped_at {
                     Some(t) if now.duration_since(t) >= SETTLE_OFF => {
                         e.state = ProblemState::Ended;
                         e.ended = Some(t);
                         e.going_since = None;
                         e.stopped_at = None;
+                        Some(t)
                     }
-                    Some(_) => {}
-                    None => e.last = now,
+                    Some(_) => None,
+                    None => {
+                        e.last = now;
+                        None
+                    }
                 },
-                Shape::Stays | Shape::UntilSeen => e.last = now,
+                Shape::Stays | Shape::UntilSeen => {
+                    e.last = now;
+                    None
+                }
+            };
+            if let Some(t) = ended {
+                self.change(i, false, t);
             }
         }
     }
@@ -347,14 +396,31 @@ impl Board {
     /// is seen, so ended ones stop colouring the chip, and problems that
     /// stay until seen end.
     pub fn seen(&mut self, now: Instant) {
-        for e in &mut self.open {
+        for i in 0..self.open.len() {
+            let e = &mut self.open[i];
             e.seen = true;
             if e.kind.shape == Shape::UntilSeen && e.state == ProblemState::Now {
                 e.state = ProblemState::Ended;
                 e.ended = Some(now);
                 e.going_since = None;
+                self.change(i, false, now);
             }
         }
+    }
+
+    /// Hands each start and end since the last call to `f`, oldest first,
+    /// and forgets them (no allocation).
+    pub fn take_changes(&mut self, mut f: impl FnMut(&Change)) {
+        for c in &self.changes {
+            f(c);
+        }
+        self.changes.clear();
+    }
+
+    /// Starts and ends that found [`CHANGES`] waiting already, and so went
+    /// unlogged.
+    pub fn changes_lost(&self) -> u64 {
+        self.changes_lost
     }
 
     /// The status colour from the problems (see [`ChipView`]).
@@ -463,6 +529,27 @@ impl Board {
 
     pub fn is_empty(&self) -> bool {
         self.open.is_empty()
+    }
+
+    /// Entry `i` started showing (at `at`) or ended (at `at`).
+    fn change(&mut self, i: usize, started: bool, at: Instant) {
+        if self.changes.len() == CHANGES {
+            self.changes_lost += 1;
+            return;
+        }
+        let e = &self.open[i];
+        self.changes.push(Change {
+            kind: e.kind,
+            subject: e.subject,
+            started,
+            times: e.times,
+            lasted: if started {
+                Duration::ZERO
+            } else {
+                at.saturating_duration_since(e.showing_since)
+            },
+            hidden: e.hidden,
+        });
     }
 
     fn find(&self, kind: &Kind, subject: Subject) -> Option<usize> {
@@ -858,9 +945,102 @@ mod tests {
             if i % 50 == 0 {
                 b.seen(t);
             }
+            if i % 7 == 0 {
+                b.take_changes(|_| {});
+            }
         }
         assert_eq!((b.open.capacity(), b.events.capacity()), (open, events));
+        assert_eq!(b.changes.capacity(), CHANGES);
         assert!(b.len() <= OPEN);
+    }
+
+    /// The changes waiting, as "+ id (times)" and "- id after s".
+    fn changes(b: &mut Board) -> Vec<String> {
+        let mut out = Vec::new();
+        b.take_changes(|c| {
+            out.push(if c.started {
+                format!("+ {} ({})", c.kind.id, c.times)
+            } else {
+                format!("- {} after {:.1} s", c.kind.id, c.lasted.as_secs_f32())
+            })
+        });
+        out
+    }
+
+    #[test]
+    fn each_start_and_end_is_one_change() {
+        let t0 = Instant::now();
+        let mut b = Board::new();
+        b.apply(Report::happened(&SOUND_DROPOUT, 3), t0);
+        b.apply(Report::happened(&SOUND_DROPOUT, 1), at(t0, 1.0));
+        assert_eq!(
+            changes(&mut b),
+            ["+ sound/dropout (3)"],
+            "one line, not one a report"
+        );
+        go(&mut b, t0, 4.5);
+        assert_eq!(
+            changes(&mut b),
+            ["- sound/dropout after 1.0 s"],
+            "from its first to its last"
+        );
+        b.apply(Report::began(&NEAR_LIMIT), at(t0, 5.0));
+        go(&mut b, t0, 5.5);
+        assert!(
+            changes(&mut b).is_empty(),
+            "settling: not shown, not logged"
+        );
+        go(&mut b, t0, 6.1);
+        assert_eq!(changes(&mut b), ["+ sound/near-limit (1)"]);
+        b.apply(Report::ended(&NEAR_LIMIT), at(t0, 8.0));
+        b.apply(Report::began(&NEAR_LIMIT), at(t0, 9.0));
+        b.apply(Report::ended(&NEAR_LIMIT), at(t0, 10.0));
+        go(&mut b, t0, 12.0);
+        assert!(
+            changes(&mut b).is_empty(),
+            "back within SETTLE_OFF: the same spell"
+        );
+        go(&mut b, t0, 13.1);
+        assert_eq!(changes(&mut b), ["- sound/near-limit after 5.0 s"]);
+    }
+
+    #[test]
+    fn a_short_state_is_never_logged_and_stays_log_when_told() {
+        let t0 = Instant::now();
+        let mut b = Board::new();
+        b.apply(Report::began(&MEMORY_LOW), t0);
+        b.apply(Report::ended(&MEMORY_LOW), at(t0, 0.5));
+        go(&mut b, t0, 5.0);
+        assert!(changes(&mut b).is_empty());
+        b.apply(Report::began(&PORT_MISSING).about(Subject(2)), t0);
+        b.apply(Report::began(&PORT_MISSING).about(Subject(2)), at(t0, 1.0));
+        b.apply(Report::ended(&PORT_MISSING).about(Subject(2)), at(t0, 7.0));
+        assert_eq!(
+            changes(&mut b),
+            ["+ midi/port-missing (1)", "- midi/port-missing after 7.0 s"]
+        );
+        b.apply(Report::began(&TAKE_DAMAGED), t0);
+        b.seen(at(t0, 2.0));
+        assert_eq!(
+            changes(&mut b),
+            [
+                "+ storage/take-damaged (1)",
+                "- storage/take-damaged after 2.0 s"
+            ]
+        );
+    }
+
+    #[test]
+    fn changes_past_the_cap_are_counted_not_kept() {
+        let t0 = Instant::now();
+        let mut b = Board::new();
+        for i in 0..(CHANGES as u32 + 5) {
+            let t = at(t0, i as f32 * 4.0);
+            b.apply(Report::happened(&SOUND_DROPOUT, 1), t);
+            b.tick(at(t0, i as f32 * 4.0 + 3.5));
+        }
+        assert_eq!(changes(&mut b).len(), CHANGES);
+        assert_eq!(b.changes_lost(), (CHANGES as u64 + 5) * 2 - CHANGES as u64);
     }
 
     #[test]
