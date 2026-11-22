@@ -6658,6 +6658,12 @@ impl Player {
                     notes: set.iter().map(|&(i, _)| i).collect(),
                 }))))
             }
+            // Another clip's faint note (piano roll plan 4.1): not this
+            // clip's to erase, and its clip doesn't open either.
+            (time_view::NOTES, EventKind::Tab(k)) if *k >= mpfree_time_ui::editor::GHOST_TAP => {
+                self.tell("ERASE: that faint note is another clip's: tap it without ERASE to open that clip");
+                Some(None)
+            }
             // A note of the note editor (the roll, the list, the
             // tracker): it comes out (piano roll plan 1B.1, in place of
             // the Erase tool).
@@ -6700,6 +6706,14 @@ impl Player {
                 // tracker's line (`PEN`); not a held note's add.
                 EventKind::Cell { row, col } if row < 128 || row == mpfree_time_ui::editor::PEN => {
                     EditAction::Paste { tick: col as i64 }
+                }
+                // Another clip's faint note (plan 4.1): empty space for
+                // this clip, so the paste goes where it was tapped.
+                EventKind::Tab(k) if k >= mpfree_time_ui::editor::GHOST_TAP => {
+                    let grid = self.ui.get::<NoteGrid>(time_view::NOTES);
+                    EditAction::Paste {
+                        tick: grid.map_or(0, |g| g.ghost_cell.1),
+                    }
                 }
                 _ => return None,
             };
@@ -19982,6 +19996,37 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("sequencer-notes-pads sample: {e}"),
     }
+    // Other clips faintly behind (piano roll plan 4.1): the stab's pluck
+    // that plays with the keys and their first take for reference, the
+    // roll at its closest from A3, where the three meet; then the Show
+    // menu open on them.
+    for (name, menu) in [
+        ("sequencer-notes-ghosts", false),
+        ("sequencer-notes-show", true),
+    ] {
+        match mpfree_time_ui::sample::notes_ghosts_state() {
+            Ok(state) => {
+                let mut p = quiet_player(fonts());
+                p.apply(ToUi::Time(Box::new(state)));
+                p.apply(ToUi::Show(View::Sequencer));
+                let r = p.ui.rect_of(time_view::NOTES);
+                if let (Some(r), Some(g)) = (r, p.ui.get_mut::<NoteGrid>(time_view::NOTES)) {
+                    let roll = g.roll_rect(r);
+                    let row_h = mpfree_time_ui::editor::zoom::ROW_MIN;
+                    g.view = mpfree_time_ui::editor::zoom::RollView {
+                        start: 0,
+                        ppt: f64::from(roll.w) / g.length.max(1) as f64,
+                        lift: 57 * row_h,
+                        row_h,
+                        follow: false,
+                    };
+                    g.show_menu = menu;
+                }
+                out.push((name, p));
+            }
+            Err(e) => eprintln!("{name} sample: {e}"),
+        }
+    }
     // A lock lane (piano roll plan 3A.2): Cutoff's locks on three steps,
     // the second chord's shared and picked, the locked notes marked.
     match mpfree_time_ui::sample::notes_locks_state() {
@@ -22807,6 +22852,7 @@ mod tests {
             bar: 3840,
             answer: Default::default(),
             locks: Default::default(),
+            ghosts: Default::default(),
         }));
         p.time_page.update(&mut p.ui, &p.time);
         assert_eq!(
@@ -23016,6 +23062,7 @@ mod tests {
             bar: 3840,
             answer: Default::default(),
             locks: Default::default(),
+            ghosts: Default::default(),
         }));
         p.apply(ToUi::Show(View::Sequencer));
         p.ui.paint(&mut SoftCanvas::new(1280, 800));
@@ -23097,6 +23144,7 @@ mod tests {
             bar: 3840,
             answer: Default::default(),
             locks: Default::default(),
+            ghosts: Default::default(),
         }));
         p.apply(ToUi::Show(View::Sequencer));
         assert_eq!(p.ui.layout_of(CLIPS_PAGE), Some(time_view::EDIT_LAYOUT));
@@ -27176,6 +27224,7 @@ mod tests {
                 bar: 3840,
                 answer: Default::default(),
                 locks: Default::default(),
+                ghosts: Default::default(),
             }));
             p.apply(ToUi::Time(st));
         };
@@ -27271,6 +27320,7 @@ mod tests {
                 bar: 3840,
                 answer: Default::default(),
                 locks: Default::default(),
+                ghosts: Default::default(),
             }));
             p.apply(ToUi::Time(st));
         };

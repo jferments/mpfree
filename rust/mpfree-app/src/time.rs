@@ -9766,6 +9766,64 @@ mod tests {
         assert!(!h.pads_write());
     }
 
+    /// Show (piano roll plan 4.1): the editor's other clips go to the
+    /// screen with their notes, one copy while unchanged; a faint note's
+    /// tap opens its clip, selects its track, and leaves the clip it left
+    /// showing in its place.
+    #[test]
+    fn show_sends_other_clips_and_a_faint_notes_tap_opens_its_clip() {
+        use mpfree_time_ui::editor::EditAction as E;
+        let mut h = host_with_a_clip();
+        h.act(TimeAction::AddTrack).unwrap();
+        let mut line = Clip::new("line", 3840);
+        line.notes = vec![mpfree_seq::Note::new(0, 480, 1, 90)];
+        h.control.project.tracks[1].slots[0] = Some(line);
+        h.control.project.give_clip_ids();
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        let edit = |h: &mut TimeHost| {
+            h.take_changed();
+            h.state().edit.unwrap()
+        };
+        let e = edit(&mut h);
+        assert_eq!((e.editor.track, e.editor.slot), (0, 0));
+        assert!(e.ghosts.is_empty());
+        h.act(TimeAction::Edit(E::Show { track: 1, slot: 0 }))
+            .unwrap();
+        let e = edit(&mut h);
+        assert_eq!(e.editor.show, [(1, 0)]);
+        assert_eq!(e.ghosts.len(), 1);
+        assert_eq!(
+            (
+                e.ghosts[0].clip.name.as_str(),
+                e.ghosts[0].track_name.as_str()
+            ),
+            ("line", h.state().tracks[1].name.as_str())
+        );
+        // Unchanged: the same copy.
+        h.act(TimeAction::Edit(E::Cursor(1))).unwrap();
+        let again = edit(&mut h);
+        assert!(std::sync::Arc::ptr_eq(
+            &e.ghosts[0].clip,
+            &again.ghosts[0].clip
+        ));
+        // The faint note's tap: that clip opens, its track selected, the
+        // beat behind it.
+        h.act(TimeAction::Edit(E::Switch { track: 1, slot: 0 }))
+            .unwrap();
+        let e = edit(&mut h);
+        assert_eq!((e.editor.track, e.editor.slot), (1, 0));
+        assert_eq!(e.editor.show, [(0, 0)]);
+        assert_eq!(e.ghosts[0].clip.name, "beat");
+        assert_eq!(h.state().track_pick, Some(1));
+        // A clip that's gone shows no more, and can't be opened.
+        h.act(TimeAction::DeleteClip { track: 0, slot: 0 }).unwrap();
+        assert!(edit(&mut h).ghosts.is_empty());
+        assert!(h
+            .act(TimeAction::Edit(E::Switch { track: 0, slot: 0 }))
+            .is_err());
+    }
+
     #[test]
     fn pressure_drawn_is_one_take_a_stroke_and_survives_a_tidy() {
         use mpfree_seq::TouchPoint;
