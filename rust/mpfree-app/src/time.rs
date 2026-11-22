@@ -1758,33 +1758,53 @@ impl TimeHost {
         }
     }
 
-    /// A pad of the kit tapped as a mute key: at once, or waiting in the
-    /// mute queue ([`TimeControl::pad_mute_or_solo`]).
+    /// Pad `pad` of track `t`'s kit tapped as a mute key: at once, or
+    /// waiting in the mute queue ([`TimeControl::pad_mute_or_solo`]; the
+    /// instrument redesign's step 10).
     pub fn pad_mute_or_solo(
         &mut self,
+        t: usize,
         pad: usize,
-        now: (bool, bool),
         wait: bool,
         solo: bool,
-    ) -> PadTap {
-        let r = self.with(|c| c.pad_mute_or_solo(pad, now, wait, solo));
+    ) -> Result<PadTap, String> {
+        let r = self.with(|c| c.pad_mute_or_solo(t, pad, wait, solo));
         self.sent(r)
     }
 
-    /// The kit's pads whose change in the mute queue came due, for the
-    /// mixer before its next period ([`TimeControl::take_pad_landings`]).
-    pub fn take_pad_landings(&mut self) -> [Option<(bool, bool)>; control::PADS] {
-        match &mut self.control {
-            Half::Here(c) => c.take_pad_landings(),
-            Half::Apart(a) => a.take_landings(),
-        }
+    /// Pad `pad` of track `t` muted or let play at once, from a pattern
+    /// row's speaker ([`TimeControl::pad_mute_now`]).
+    pub fn pad_mute_now(&mut self, t: usize, pad: usize, mute: bool) -> Result<String, String> {
+        let r = self.with(|c| c.pad_mute_now(t, pad, mute));
+        self.sent(r)
     }
 
-    /// Whether a change waits for the kit's pad `pad`, for its light.
-    pub fn pad_waiting(&self, pad: usize) -> bool {
+    /// An old project's kit 1 pad mutes and solos set on each track in
+    /// `tracks` ([`TimeControl::carry_pad_mutes`]): how many took them.
+    pub fn carry_pad_mutes(&mut self, tracks: u128, mutes: u128, solos: u128) -> usize {
+        let r = self.with(|c| c.carry_pad_mutes(tracks, mutes, solos));
+        self.sent(r)
+    }
+
+    /// Track `t`'s pad mutes and solos, a bit each by kit pad, as the
+    /// project has them (apart, its published copy).
+    pub fn pad_mutes(&self, t: usize) -> Option<(u128, u128)> {
+        self.project()
+            .tracks
+            .get(t)
+            .map(|tr| (tr.pad_mutes, tr.pad_solos))
+    }
+
+    /// Whether a change waits for track `t`'s pad `pad`, for its light.
+    /// Apart, the published copy has the selected track's pads only (the
+    /// keys light those), so another track's say none wait.
+    pub fn pad_waiting(&self, t: usize, pad: usize) -> bool {
         match &self.control {
-            Half::Here(c) => c.pad_waiting(pad),
-            Half::Apart(a) => a.light.pad_waiting.get(pad).copied().unwrap_or(false),
+            Half::Here(c) => c.pad_waiting(t, pad),
+            Half::Apart(a) => {
+                a.light.selected == Some(t)
+                    && a.light.pad_waiting.get(pad).copied().unwrap_or(false)
+            }
         }
     }
 
@@ -4197,6 +4217,8 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         hits: Vec<(u64, usize, u8)>,
+        /// The track of each of `hits`.
+        hit_tracks: Vec<u16>,
         /// (absolute frame, pad) of each release.
         releases: Vec<(u64, usize)>,
         frame: u64,
@@ -4226,9 +4248,10 @@ mod tests {
                 .find(|(t, _)| *t == track)
                 .map(|&(_, s)| s)
         }
-        fn hit_at(&mut self, _track: u16, pad: usize, velocity: u8, offset: u32) -> bool {
+        fn hit_at(&mut self, track: u16, pad: usize, velocity: u8, offset: u32) -> bool {
             self.hits
                 .push((self.frame + u64::from(offset), pad, velocity));
+            self.hit_tracks.push(track);
             true
         }
         fn release_at(&mut self, _track: u16, pad: usize, offset: u32) {
@@ -7410,82 +7433,99 @@ mod tests {
         assert_eq!(h.dropped(), 0);
     }
 
-    /// The kit's pads in the mute queue (SHIFT + TRACK MUTE in Perform):
-    /// a tap waits with the tracks' taps, a second takes it back, and a
-    /// solo waits too. Each comes due in the period before its line, so
-    /// the mixer has it from the period that holds the line; STOP lands
-    /// what waits, and stopped a tap acts at once.
+    /// A track's pads in the mute queue (SHIFT + TRACK MUTE in Perform;
+    /// step 10, a pad mute is the track's alone): a tap waits with the
+    /// tracks' taps, a second takes it back, and a solo waits too. Each
+    /// comes due in the period before its line, so the view compiled then
+    /// plays the period that holds it; another track on the same pads
+    /// plays on. STOP lands what waits, and stopped a tap acts at once.
     #[test]
-    fn the_kits_pad_mutes_wait_for_the_line_and_come_due_just_before_it() {
+    fn a_tracks_pad_mutes_wait_for_the_line_and_leave_its_hits_out_alone() {
         let mut h = TimeHost::new(RATE, 120.0).unwrap();
         let mut pads = Fake::default();
-        let mut c = Clip::new("beat", 3840);
-        c.notes = vec![mpfree_seq::Note::new(0, 100, 4, 100)];
-        h.control.project.tracks[0].slots[0] = Some(c);
-        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        // Tracks 1 and 2 hit A5 and B5; track 3 hits B15.
+        for (t, hits) in [(0, [4u8, 20]), (1, [4, 20]), (2, [30, 30])] {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = vec![
+                mpfree_seq::Note::new(0, 100, hits[0], 100),
+                mpfree_seq::Note::new(960, 100, hits[1], 100),
+            ];
+            h.control.project.tracks[t].slots[0] = Some(c);
+            h.act(TimeAction::Launch { track: t, slot: 0 }).unwrap();
+        }
         h.command(Command::Play);
         run(&mut h, &mut pads, BAR / 2, &[]);
-        let plays = (false, false);
-        let waits = |s: &str| PadTap::Waits(s.to_string());
+        let waits = |s: &str| Ok(PadTap::Waits(s.to_string()));
         assert_eq!(
-            h.pad_mute_or_solo(2, plays, true, false),
-            waits("pad mute: pad 3 muted on the next bar")
+            h.pad_mute_or_solo(0, 20, true, false),
+            waits("pad mute: Track 1 B5 muted on the next bar")
         );
         assert_eq!(
-            h.pad_mute_or_solo(5, plays, true, false),
-            waits("pad mute: pad 6 muted on the next bar")
+            h.pad_mute_or_solo(0, 4, true, false),
+            waits("pad mute: Track 1 A5 muted on the next bar")
         );
         assert_eq!(
-            h.pad_mute_or_solo(5, plays, true, false),
-            waits("pad mute: pad 6: its change taken back")
+            h.pad_mute_or_solo(0, 4, true, false),
+            waits("pad mute: Track 1 A5: its change taken back")
         );
-        assert!(h.pad_waiting(2) && !h.pad_waiting(5));
+        assert!(h.pad_waiting(0, 20) && !h.pad_waiting(0, 4) && !h.pad_waiting(1, 20));
         // A track joins the same line.
-        h.mute_or_solo(0, true, false).unwrap();
+        h.mute_or_solo(2, true, false).unwrap();
         assert_eq!(
             h.state().waiting_reading().as_deref(),
-            Some("Track 1, Pad 3 at 2.1")
+            Some("Track 3, Track 1 B5 at 2.1")
         );
-        let mut due = None;
-        while pads.frame < BAR + BAR / 2 {
+        let (mut due, mut notes) = (None, Vec::new());
+        while pads.frame < 2 * BAR + BAR / 2 {
             let to = pads.frame + u64::from(PERIOD);
             run(&mut h, &mut pads, to, &[]);
-            let l = h.take_pad_landings();
-            if l.iter().any(Option::is_some) {
-                assert!(due.is_none(), "once");
-                due = Some((pads.frame, l));
+            if due.is_none() && h.pad_mutes(0) == Some((1 << 20, 0)) {
+                due = Some(pads.frame);
             }
+            notes.extend(h.take_later_note());
         }
-        let (at, l) = due.unwrap();
-        // The mixer has it from `at`: never after bar 2, and at most a
+        // The view has it from `at`: never after bar 2, and at most a
         // period and a tick before it (the period's ticks round up).
+        let at = due.unwrap();
         let tick = BAR.div_ceil(3840);
         assert!(at <= BAR && BAR - at <= u64::from(PERIOD) + tick, "{at}");
-        assert_eq!(l[2], Some((true, false)));
-        assert_eq!(l.iter().flatten().count(), 1);
-        assert!(!h.pad_waiting(2) && h.mute_wait().is_none());
-        assert_eq!(h.muted(0), Some(true), "the track landed on the line");
-        let note = h.take_later_note().unwrap();
-        assert!(note.starts_with("pad mute: at 2.1, pad 3 muted"), "{note}");
+        assert_eq!(h.pad_mutes(1), Some((0, 0)), "track 2's B5 untouched");
+        assert!(!h.pad_waiting(0, 20) && h.mute_wait().is_none());
+        assert_eq!(h.muted(2), Some(true), "the track landed on the line");
+        assert!(
+            notes[0].starts_with("pad mute: at 2.1, Track 1 B5 muted"),
+            "{notes:?}"
+        );
+        let at = |track: u16, pad: usize| {
+            pads.hits
+                .iter()
+                .zip(&pads.hit_tracks)
+                .filter(|&(&(_, p, _), &t)| p == pad && t == track)
+                .map(|(&(f, _, _), _)| (f + BAR / 8) / (BAR / 4))
+                .collect::<Vec<u64>>()
+        };
+        assert_eq!(at(0, 4), [0, 4, 8], "track 1's A5 plays on");
+        assert_eq!(at(0, 20), [1], "track 1's B5 left out from bar 2");
+        assert_eq!(at(1, 20), [1, 5, 9], "track 2's B5 plays on");
+        assert_eq!(at(2, 30), [0, 1], "track 3 muted from bar 2");
         // A solo waits, and STOP lands it.
         assert_eq!(
-            h.pad_mute_or_solo(0, plays, true, true),
-            waits("pad mute: pad 1 solo on the next bar")
+            h.pad_mute_or_solo(1, 4, true, true),
+            waits("pad mute: Track 2 A5 solo on the next bar")
         );
         h.command(Command::Stop);
         let to = pads.frame + 4 * u64::from(PERIOD);
         run(&mut h, &mut pads, to, &[]);
-        assert_eq!(h.take_pad_landings()[0], Some((false, true)));
-        assert!(h.take_later_note().unwrap().ends_with("pad 1 solo (STOP)"));
-        // Stopped, at once: the mixer sets it.
+        assert_eq!(h.pad_mutes(1), Some((0, 1 << 4)));
+        let note = h.take_later_note().unwrap();
+        assert!(note.ends_with("Track 2 A5 solo (STOP)"), "{note}");
+        // Stopped, at once.
         assert_eq!(
-            h.pad_mute_or_solo(2, (true, false), true, false),
-            PadTap::Now {
-                mute: false,
-                solo: false
-            }
+            h.pad_mute_or_solo(0, 20, true, false),
+            Ok(PadTap::Now("pad mute: Track 1 B5 plays".to_string()))
         );
         assert!(h.mute_wait().is_none());
+        assert_eq!(h.pad_mutes(0), Some((0, 0)));
     }
 
     /// Song → scenes on a song in the exact set (plan D7): the rows,
@@ -8688,7 +8728,7 @@ mod tests {
         };
         let ticks = |h: &TimeHost| -> Vec<Tick> { sorted(h).iter().map(|n| n.tick).collect() };
         assert_eq!(
-            h.act(TimeAction::Edit(E::Button(7))).unwrap(),
+            h.act(TimeAction::Edit(E::Correct)).unwrap(),
             "edit: timing correct moved 3 notes"
         );
         assert_eq!(ticks(&h), [0, 960, 1920]);
@@ -9428,6 +9468,7 @@ mod tests {
         let mut h = TimeHost::new(RATE, 120.0).unwrap();
         let mut pads = Fake {
             hits: Vec::with_capacity(100_000),
+            hit_tracks: Vec::with_capacity(100_000),
             releases: Vec::with_capacity(100_000),
             ..Fake::default()
         };
@@ -11346,6 +11387,7 @@ mod tests {
         let mut h = TimeHost::new(RATE, 120.0).unwrap();
         let mut pads = Fake {
             hits: Vec::with_capacity(1000),
+            hit_tracks: Vec::with_capacity(1000),
             releases: Vec::with_capacity(1000),
             ..Fake::default()
         };

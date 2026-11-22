@@ -107,6 +107,7 @@ cd rust && cargo build --release -p mpfree-fxlab
 ./target/release/fxlab quality --out /tmp/quality               # the FX quality report (fx-quality.md)
 ./target/release/fxlab synth --renders --out /tmp/synth         # the synth baseline and renders (synth-quality.md)
 ./target/release/fxlab synth --engine Pluck --out /tmp/pluck    # one engine's presets and its own rows
+./target/release/fxlab reference --sixteen --out /tmp/y8       # Y8: aliasing cases against 8x and 16x renders (dsp-quality.md)
 ./target/release/fxlab plan --effect mpfree.fx.flanger --gains 0,-12 --out /tmp/plan
 ./target/release/fxlab sweep --effect mpfree.fx.drive --out /tmp/sweep
 ./target/release/fxlab programme --short --out /tmp/prog         # short.wav + short.tsv

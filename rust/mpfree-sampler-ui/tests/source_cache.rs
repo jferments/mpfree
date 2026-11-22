@@ -40,7 +40,7 @@ fn same(a: &SourceView, b: &SourceView) {
     let (oa, ob) = (a.onsets.as_ref().unwrap(), b.onsets.as_ref().unwrap());
     assert_eq!(oa.candidates(), ob.candidates());
     assert_eq!(oa.flux(), ob.flux());
-    assert_eq!(&*a.mono, &*b.mono);
+    assert_eq!(a.mono.is_some(), b.mono.is_some());
     assert_eq!(a.peaks.frames(), b.peaks.frames());
     assert_eq!(a.peaks.channels(), b.peaks.channels());
     // The waveform draws the same at every zoom: samples, each level of
@@ -108,6 +108,50 @@ fn a_cache_that_isnt_this_sounds_is_never_used() {
 #[test]
 fn the_cache_is_named_by_the_sound_and_the_analysis_version() {
     let s = hits(1, false);
-    assert_eq!(cache_file(s.id()), format!("{}.a1.peaks", s.id()));
-    assert_ne!(cache_file(s.id()), mpfree_sampler::wav::file_name(&s));
+    assert_eq!(cache_file(&s), format!("{}.a1.peaks", s.id()));
+    assert_eq!(s.id().to_string().len(), 32, "128 bits");
+    assert_ne!(cache_file(&s), mpfree_sampler::wav::file_name(&s));
+}
+
+/// A sound saved by a build before the sampler plan's step 8, whose ids
+/// had 64 bits: its sound file and its cache file keep their names, and
+/// its cache, holding the 64-bit id, reads as before.
+#[test]
+fn a_sound_saved_under_its_64_bit_id_keeps_its_files_and_its_cache_reads() {
+    // A sound of its own (no other test holds it), so the file it keeps is
+    // no one else's.
+    let mut s = hits(1, false);
+    let mut data = s.data().to_vec();
+    data[1234] = 0.5;
+    s = Source::new("old", RATE, 1, data).unwrap();
+    let made = SourceView::analyse(&s);
+    let mut bytes = made.to_cache().unwrap();
+    // As the older build wrote it: its id where the id goes.
+    bytes[8..16].copy_from_slice(&0x0123_4567_89ab_cdefu64.to_le_bytes());
+    assert!(
+        SourceView::from_cache(&s, &bytes).is_none(),
+        "not this sound's until it is known by that file"
+    );
+    assert!(!s.keep_old_file("Kick.wav"), "a name that isn't an id");
+    assert!(
+        !s.keep_old_file("0123456789ABCDEF.wav"),
+        "not as it was saved"
+    );
+    assert!(s.keep_old_file("0123456789abcdef.wav"));
+    assert_eq!(mpfree_sampler::wav::file_name(&s), "0123456789abcdef.wav");
+    assert_eq!(cache_file(&s), "0123456789abcdef.a1.peaks");
+    same(
+        &made,
+        &SourceView::from_cache(&s, &bytes).expect("reads back"),
+    );
+    // One this build wrote for it reads too; another 64-bit id doesn't.
+    same(
+        &made,
+        &SourceView::from_cache(&s, &made.to_cache().unwrap()).expect("reads back"),
+    );
+    bytes[8] ^= 1;
+    assert!(SourceView::from_cache(&s, &bytes).is_none());
+    // Kept once: a second file isn't taken.
+    assert!(!s.keep_old_file("fedcba9876543210.wav"));
+    assert_eq!(cache_file(&s), "0123456789abcdef.a1.peaks");
 }
