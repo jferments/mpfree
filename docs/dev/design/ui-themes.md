@@ -50,11 +50,13 @@ The roles are one table, `ROLES` in [`roles.rs`](../../../rust/mpfree-ui/src/rol
 | `record` | Status | `{bad}` | Recording: the record button, armed inputs, the level while recording |
 | `qlink.1` to `qlink.4` | Controls | `{track.1}` to `{track.4}` | The four Q-Link knobs: rings, Q1 to Q4 labels, what each moves |
 | `text_inverse` | Text | `{bg}` | Text on a fill too bright (or too dark) for `text` |
-| `highlight` | Light and shade | `{text}` | What a pad or button flashes towards when hit |
+| `highlight` | Light and shade | `{text}` | Bright marks: what a pad or button flashes towards when hit, the ring round a picked cell |
 | `shadow` | Light and shade | `light_dark({text}, {bg})` | Drop shadows (drawn see-through) |
 | `series.1` to `series.8` | Palettes | `{track.1}` to `{track.8}` | Graph lines and EQ bands, in order |
+| `handle` | Controls | `light_dark({surface}, {text})` | A switch's knob, a slider's handle |
+| `grain` | Sampler | `{accent2}` | The grain window over the wave and its GRAIN and SIZE marks |
 
-Every built-in theme sets some roles to the exact colours its screens drew before roles existed (the sampler's record red `#FF4D5E`, the EQ's band colours, the Play page's white flash and black shadow, and outside Default the default Q-Link colours), so moving a screen onto roles changes no pixel. Light (phase 4) uses the rules.
+Every built-in theme sets some roles to the exact colours its screens drew before roles existed (the sampler's record red `#FF4D5E` and grain purple `#C77DFF`, the EQ's band colours, the Play page's white flash and black shadow, the white of switch knobs and slider handles, and outside Default the default Q-Link colours), so moving a screen onto roles changes no pixel. Light (phase 4) uses the rules. A theme file with `base = default` copies those colours too, like everything else the base sets; a line such as `record = {bad}` puts a role back on its rule.
 
 What screens call:
 
@@ -63,7 +65,8 @@ What screens call:
 - `t.swatch(c)` for a content colour (a kit's, a pad's, a track's own): `fill` (as the theme shows it, through `t.content`), `tint` (18 % of it over the panel, for big areas), `line` (moved towards `text` just far enough for 3:1 on panels), `text` (the same for 4.5:1) and `ink` (`ink_on(fill)`). A colour that already reads comes back unchanged, which is why Default's pastels keep their pixels.
 - `t.readable(ink, fill)`: text in a colour of its own (a Q-Link knob's number, a macro's) on a fill the theme doesn't choose, moved towards whichever of `text` and `text_inverse` reads on the fill just far enough for 4.5:1. Text that already reads comes back unchanged.
 - `t.round(r)`: a corner radius drawn for Default's 14 px radius, scaled to the theme's, so one number, `radius`, sets every corner. Default gets `r` back. Circles, dots and pills keep their own radius.
-- `Paint` (a colour key, a content colour, or a literal for artwork) for widgets built before they know the theme; `paint.on(&theme)` resolves it when drawn. It replaces `mpfree-synth-ui`'s `themed()`, which matches colours by value, in phase 2.
+- `t.keys()`: a piano keyboard's white, black and marked keys, the right way round on a light or dark theme (white keys a quarter of the way from `text` to `bg` on a dark one, `surface` on a light one). Label a key with `ink_on(key)`.
+- `Paint` (a colour key, two keys mixed, a content colour, or a literal for artwork) for widgets built before they know the theme; `paint.on(&theme)` resolves it when drawn, so a page shown before the theme changed still draws in the new one. The sampler's knob cards, pad bar, wave marks, lane cells and grain window keep one. It replaces `mpfree-synth-ui`'s `themed()`, which matches colours by value, in phase 2.
 - `t.is_light()`: the theme's `mode`, or on `auto`, whether `bg` is brighter than `text`.
 
 ## Theme files
@@ -114,7 +117,7 @@ Asked for on 2026-11-22 (a Reddit request for a light theme; the owner's go the 
 | --- | --- | --- |
 | 0 | Roles table and helpers, theme files that follow and mix colours, `Theme::load` with problems, the contrast and fixed-colour checks | #762 |
 | 1 | Shared widgets (`mpfree-ui`, the app's frame): Q-Link colours as `qlink` roles (`draw::KNOB` is gone; the Q-Link column's numbers through `t.readable`), labels on coloured fills (pills, wave markers, pads) through `ink_on`, card corners through `t.round`. Default draws the same display lists; in the other built-in themes the shared widgets' corners follow `radius`. A trial light palette's unreadable runs fall from 1,063 to about 400, the rest in feature crates | this change |
-| 2 | One pull request per feature crate (sampler, chain and mixer EQ, time, synth and FX with `Paint`, MIDI, arp and browser, the app's Play, Perform and Looper, and `mpfree-mpcskin`) | |
+| 2 | One pull request per feature crate (sampler, chain and mixer EQ, time, synth and FX with `Paint`, MIDI, arp and browser, the app's Play, Perform and Looper, and `mpfree-mpcskin`) | sampler: this change (its two palettes one, record red and grain purple from roles, knob cards, marks and lane cells keep a `Paint`, labels on fills through `ink_on`, keyboards through `t.keys()`; every Sample page reads in the trial light palette) |
 | 3 | Text sizes, `gap` and `pad` leave themes (owner, 22 Nov: consistent sizes everywhere so no theme can break a layout); the 8 touch areas that assume 14 px padding are fixed | |
 | 4 | `Theme::light()` and `themes/light.theme`, Light after Default in Prefs > Appearance, golden screens for Light, the manual page "Making your own theme" (shown to the owner on contact sheets first) | |
 | 5 | Theme writers' tools: problems on the Appearance row, `--check-theme`, a contact sheet script, commented example themes | |

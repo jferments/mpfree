@@ -20,14 +20,8 @@ mpfree-midi-ui/src/now.rs 4 # before theme roles (phase 0 baseline)
 mpfree-mixer-ui/src/eq_look.rs 9 # before theme roles (phase 0 baseline)
 mpfree-mpcskin/src/model.rs 5 # plugin skin defaults from Akai's skin format
 mpfree-mpcskin/src/view.rs 20 # plugin skin drawing, and MPFree's pop-ups over skins (to follow the theme in phase 2, Joshi 22 Nov)
-mpfree-sampler-ui/src/grain_widgets.rs 1 # before theme roles (phase 0 baseline)
-mpfree-sampler-ui/src/pads_tab.rs 1 # before theme roles (phase 0 baseline)
-mpfree-sampler-ui/src/panel.rs 3 # before theme roles (phase 0 baseline)
-mpfree-sampler-ui/src/play_tab.rs 9 # before theme roles (phase 0 baseline)
-mpfree-sampler-ui/src/rec_widgets.rs 1 # before theme roles (phase 0 baseline)
 mpfree-sampler-ui/src/sample.rs 3 # sample data for the preview screens
-mpfree-sampler-ui/src/wave_tab.rs 8 # before theme roles (phase 0 baseline)
-mpfree-sampler-ui/src/widgets.rs 1 # before theme roles (phase 0 baseline)
+mpfree-sampler-ui/src/widgets.rs 8 # content colours: the pads' palette (PAD_COLORS), shown through content() and swatch()
 mpfree-synth-ui/src/sample.rs 8 # sample data for the preview screens
 mpfree-synth-ui/src/sections.rs 5 # before theme roles (phase 0 baseline)
 mpfree-synth-ui/src/widgets.rs 8 # before theme roles (phase 0 baseline)

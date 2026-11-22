@@ -92,7 +92,7 @@ roles! {
     TextInverse "text_inverse" "Text" Role "{bg}"
         "Text on a fill too bright (or too dark) for `text`; ink_on() picks between the two.";
     Highlight "highlight" "Light and shade" Role "{text}"
-        "What a pad or button flashes towards when it is hit.";
+        "Bright marks: what a pad or button flashes towards when it is hit, and the ring round a picked cell.";
     Shadow "shadow" "Light and shade" Role "light_dark({text}, {bg})"
         "Drop shadows under lifted things (drawn see-through).";
     Series1 "series.1" "Palettes" Role "{track.1}"
@@ -111,6 +111,10 @@ roles! {
         "The seventh.";
     Series8 "series.8" "Palettes" Role "{track.8}"
         "The eighth.";
+    Handle "handle" "Controls" Role "light_dark({surface}, {text})"
+        "The knob of a switch and the handle of a slider.";
+    Grain "grain" "Sampler" Role "{accent2}"
+        "The sampler's grain window over the wave and its GRAIN and SIZE marks.";
 }
 
 /// How many roles there are.
@@ -498,6 +502,16 @@ pub struct Swatch {
     pub ink: Color,
 }
 
+/// A piano keyboard's colours on a theme ([`Theme::keys`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Keys {
+    pub white: Color,
+    pub black: Color,
+    /// A root (or otherwise marked) white key, tinted with the accent.
+    pub white_root: Color,
+    pub black_root: Color,
+}
+
 /// How much of the colour a [`Swatch::tint`] has over the panel.
 pub const TINT: f32 = 0.18;
 
@@ -507,6 +521,8 @@ pub const TINT: f32 = 0.18;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Paint {
     Key(ColorKey),
+    /// `.0` mixed `.2` % of the way to `.1`, both the theme's.
+    Mix(ColorKey, ColorKey, u8),
     Content(Color),
     Literal(Color),
 }
@@ -516,6 +532,7 @@ impl Paint {
     pub fn on(self, t: &Theme) -> Color {
         match self {
             Paint::Key(k) => t.color(k),
+            Paint::Mix(a, b, pct) => t.color(a).mix(t.color(b), pct as f32 / 100.0),
             Paint::Content(c) => t.content(c),
             Paint::Literal(c) => c,
         }
@@ -652,6 +669,25 @@ impl Theme {
     pub fn readable(&self, ink: Color, fill: Color) -> Color {
         let fill = over(fill, self.panel());
         reach(ink, self.ink_on(fill), fill, 4.5)
+    }
+
+    /// A piano keyboard's colours: white keys in the theme's light colour
+    /// (`text` on a dark theme, a quarter of the way to `bg` so they don't
+    /// glare; `surface` on a light one), black keys in its dark colour,
+    /// and marked keys tinted with the accent. Label a key with
+    /// `ink_on(key)`.
+    pub fn keys(&self) -> Keys {
+        let (light, dark, dim) = if self.is_light() {
+            (self.surface, self.text, 0.0)
+        } else {
+            (self.text, self.bg, 0.25)
+        };
+        Keys {
+            white: light.mix(dark, dim),
+            black: dark,
+            white_root: light.mix(self.accent, 0.35),
+            black_root: dark.mix(self.accent, 0.7),
+        }
     }
 
     /// A content colour in its five forms ([`Swatch`]) for this theme.
@@ -824,6 +860,8 @@ mod tests {
         let kit = Color::rgb(0xFF6B6B);
         assert_eq!(Paint::Content(kit).on(&b), b.content(kit));
         assert_eq!(Paint::Literal(kit).on(&b), kit);
+        let p = Paint::Mix(ColorKey::Accent, ColorKey::Bad, 55);
+        assert_eq!(p.on(&b), b.accent.mix(b.bad, 0.55));
     }
 
     #[test]

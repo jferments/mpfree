@@ -50,7 +50,7 @@ pub mod widgets;
 pub use canvas::{Canvas, Image, SoftCanvas};
 pub use color::Color;
 pub use geom::Rect;
-pub use roles::{ColorKey, Paint, Role, Swatch};
+pub use roles::{ColorKey, Keys, Paint, Role, Swatch};
 pub use shape::{Part, Shape};
 pub use style::Styled;
 pub use text::{Align, FontId, Fonts};
