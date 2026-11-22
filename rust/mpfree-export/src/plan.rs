@@ -46,13 +46,11 @@ pub enum Only {
     /// The sequencer's track `k` (from 0): the other tracks that play
     /// into the same engine (the drum kit, the synth) are quiet.
     Track(u16),
-    /// Audio track `k` (from 0): the other audio tracks are quiet.
-    AudioTrack(u8),
 }
 
 /// A stem made by playing the range again with only its track (`only`)
 /// playing: for a track that shares its mixer strip with other tracks
-/// (the drum kit's, the synth's, the audio tracks' sum), where the first
+/// (the drum kit's, the synth's), where the first
 /// pass can't tell them apart. Its file is the strip's sound, lined up
 /// with the first pass's files and as long as them.
 #[derive(Clone, Debug, PartialEq, Eq)]

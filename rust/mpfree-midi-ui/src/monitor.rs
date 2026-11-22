@@ -470,6 +470,7 @@ pub(crate) fn went_to(m: &IoModel, to: To) -> (String, Went) {
             Went::Took,
         ),
         To::NoPad { track: t } => (format!("nothing: no pad on {}", track(t)), Went::Nothing),
+        To::Pads => ("the pads' synth".to_string(), Went::Took),
         To::Routed { track: t } => (format!("{}, by its route", track(t)), Went::Took),
         // Thru sends only while MIDI out is on.
         To::Thru { to: p } if m.live.built.notes_out => (

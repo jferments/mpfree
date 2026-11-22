@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use mpfree_stream::coord::{Coordinator, Device, HoldTier, IoThread, Plan, ReadReply, ReadReq};
-use mpfree_stream::cursor::Cursor;
+use mpfree_stream::cursor::{Cursor, Read};
 use mpfree_stream::player::{unit_frames, Config, Player};
 use mpfree_stream::testkit::{
     files, folder, marker, memory, played, played16, wav, Expect, Rig, Store,
@@ -97,8 +97,11 @@ fn loops_seeks_and_speed_land_on_the_right_frames() {
     rig.c.open(0, &path).expect("opens");
     let at = |f: u64| [played(3, f, 0), played(3, f, 1)];
 
-    // A loop crossing a unit's edge, entered from before it.
+    // A loop crossing a unit's edge, entered from before it. Where the
+    // cursor lands is the point here: Hermite gives a whole frame's own
+    // sample at any speed (the band-limited read's are in tests/rate.rs).
     let mut k = Cursor::new(0, 0);
+    k.set_read(Read::Hermite);
     let (ls, le) = (7_000u64, 9_500u64);
     k.set_loop(Some((ls, le)));
     rig.warm(&mut [&mut k], 400);

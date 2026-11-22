@@ -486,6 +486,10 @@ pub struct GridTrack {
     pub waiting: Option<String>,
     /// A Loop track: a wave mark before what it records, under its name.
     pub loops: bool,
+    /// An audio track (layout spec 4f): a wave mark before its input,
+    /// under its name, and its cells empty and dashed until audio clips
+    /// come.
+    pub audio: bool,
     pub cells: Vec<GridCell>,
 }
 
@@ -519,6 +523,11 @@ pub struct ClipGrid {
     pub song_rec: bool,
     /// The project has room for another track: "+ Track" is lit.
     pub can_add: bool,
+    /// The "+ Track" chooser is open under it (the app's, from a tap on
+    /// "+ Track"): its rows give `Toggle(slots + `[`ADD_KIND`]` + k)` for
+    /// `song::ADD_KINDS[k]`, and a touch anywhere else
+    /// `Toggle(slots + `[`ADD_DISMISS`]`)`.
+    pub adding: bool,
     /// Clips launched over the song (song mode on): "Back to song" shows
     /// on the title line, left of the pager or "+ Track" (sequencer S4,
     /// mockup C), and gives `Toggle(slots + `[`BACK_TO_SONG`]`)`.
@@ -580,6 +589,7 @@ struct Drawn {
     scenes: (Option<usize>, Option<usize>),
     song_rec: bool,
     can_add: bool,
+    adding: bool,
     big: bool,
     back_to_song: bool,
     /// Where a dragged clip or row was drawn.
@@ -600,6 +610,12 @@ pub const ROWS_ON: usize = 8;
 /// `Toggle(slots + BACK_TO_SONG)`: "Back to song", every track back to the
 /// arrangement on the launch line.
 pub const BACK_TO_SONG: usize = 9;
+/// `Toggle(slots + ADD_KIND + k)`: the "+ Track" chooser's row `k`
+/// (`song::ADD_KINDS`: Note track, Audio track, Loop track).
+pub const ADD_KIND: usize = 10;
+/// `Toggle(slots + ADD_DISMISS)`: a touch off the open chooser, which
+/// only closes it.
+pub const ADD_DISMISS: usize = 13;
 /// "Back to song"'s width.
 const BACK_W: i32 = 124;
 /// Pixels a finger travels along the track names to page.
@@ -675,6 +691,7 @@ impl ClipGrid {
             scene_cued: None,
             song_rec: false,
             can_add: false,
+            adding: false,
             big: false,
             back_to_song: false,
             drawn: RefCell::new(None),
@@ -902,6 +919,17 @@ impl ClipGrid {
         Rect::new(edit.x - 8 - ADD_W, edit.y, ADD_W, edit.h)
     }
 
+    /// The "+ Track" chooser's rows while it is open: under "+ Track",
+    /// its right edge with the button's.
+    pub fn chooser_rects(&self, r: Rect) -> Option<[Rect; 3]> {
+        if !self.adding {
+            return None;
+        }
+        let add = self.add_rect(r);
+        let x = (add.right() - crate::song::CHOOSER_W).max(r.x);
+        Some(crate::song::chooser_rows(x, add.bottom() + 6))
+    }
+
     /// Where the pager's ‹ and › are, left of "+ Track" with its label
     /// between them, while it shows.
     pub fn pager_rects(&self, r: Rect) -> Option<(Rect, Rect)> {
@@ -1024,6 +1052,7 @@ impl Widget for ClipGrid {
             || d.scenes != (self.scene_playing, self.scene_cued)
             || d.song_rec != self.song_rec
             || d.can_add != self.can_add
+            || d.adding != self.adding
             || d.big != self.big
             || d.back_to_song != self.back_to_song
             || d.dragged.is_some()
@@ -1041,6 +1070,7 @@ impl Widget for ClipGrid {
                 || old.waiting != new.waiting
                 || old.sound != new.sound
                 || old.loops != new.loops
+                || old.audio != new.audio
                 || old.cells.len() != new.cells.len()
             {
                 return None;
@@ -1062,6 +1092,7 @@ impl Widget for ClipGrid {
             scenes: (self.scene_playing, self.scene_cued),
             song_rec: self.song_rec,
             can_add: self.can_add,
+            adding: self.adding,
             big: self.big,
             back_to_song: self.back_to_song,
             dragged: self.dragged_now(),
@@ -1259,8 +1290,9 @@ impl Widget for ClipGrid {
             } else if two {
                 let mut sound = Rect::new(head.x + 10, head.y + 22, head.w - 16, 18);
                 let dim = if track.mute { t.text_faint } else { t.text_dim };
-                if track.loops {
-                    // A Loop track's mark: a little wave before its input.
+                if track.loops || track.audio {
+                    // A Loop or audio track's mark: a little wave before
+                    // its input.
                     let cy = sound.y + sound.h / 2;
                     for (k, h) in [6, 10, 5].into_iter().enumerate() {
                         let x = sound.x + 3 * k as i32;
@@ -1294,15 +1326,33 @@ impl Widget for ClipGrid {
                 let Some(cr) = self.cell_rect(r, ti, slot) else {
                     continue;
                 };
+                if track.audio {
+                    // No audio clips yet (layout spec 4f): empty, dashed.
+                    dashed_rect(cx, cr, t.outline);
+                    continue;
+                }
                 paint_cell(cx, cr, cell, base);
             }
         }
         if let Some(gr) = self.grip.filter(|g| g.lifted) {
             self.paint_drag(cx, r, &gr);
         }
+        if let Some(rows) = self.chooser_rects(r) {
+            crate::song::paint_chooser(cx, &rows);
+        }
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
+        // The chooser open: its rows, and anywhere else closes it.
+        if let Some(rows) = self.chooser_rects(r) {
+            let mut out: Vec<Target> = rows
+                .iter()
+                .enumerate()
+                .map(|(k, b)| Target::tap("add-kind", k, crate::song::ADD_KINDS[k].0, *b))
+                .collect();
+            out.push(Target::tap("add-close", 0, "Close", r));
+            return out;
+        }
         let mut out = vec![
             Target::tap("song", 0, "Song", self.song_rect(r)),
             Target::tap("rec-song", 0, "Rec song", self.rec_rect(r)),
@@ -1350,6 +1400,19 @@ impl Widget for ClipGrid {
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        // The "+ Track" chooser open: a row adds that kind of track, and a
+        // touch anywhere else only closes it.
+        if self.adding {
+            if phase != Touch::Down {
+                return None;
+            }
+            let kind = self
+                .chooser_rects(r)
+                .and_then(|rows| rows.iter().position(|b| b.contains(x, y)));
+            return Some(EventKind::Toggle(
+                self.slots + kind.map_or(ADD_DISMISS, |k| ADD_KIND + k),
+            ));
+        }
         // A finger on a clip or a row's number: a tap on the lift, or
         // dragged, a drop where it lifts.
         if let Some(mut g) = self.grip {
@@ -1723,6 +1786,28 @@ impl Widget for MorphBar {
             )),
             _ => None,
         }
+    }
+}
+
+/// A dashed outline round `r`: 6 px on, 5 px off along each side, clear
+/// of the corners.
+fn dashed_rect(cx: &mut PaintCx, r: Rect, color: Color) {
+    let (on, off, inset) = (6, 5, 8);
+    let mut x = r.x + inset;
+    while x < r.right() - inset {
+        let w = on.min(r.right() - inset - x);
+        cx.canvas.fill_rect(Rect::new(x, r.y, w, 1), color);
+        cx.canvas
+            .fill_rect(Rect::new(x, r.bottom() - 1, w, 1), color);
+        x += on + off;
+    }
+    let mut y = r.y + inset;
+    while y < r.bottom() - inset {
+        let h = on.min(r.bottom() - inset - y);
+        cx.canvas.fill_rect(Rect::new(r.x, y, 1, h), color);
+        cx.canvas
+            .fill_rect(Rect::new(r.right() - 1, y, 1, h), color);
+        y += on + off;
     }
 }
 
@@ -2345,6 +2430,7 @@ mod tests {
                 solo: false,
                 waiting: None,
                 loops: false,
+                audio: false,
                 cells,
             });
         }

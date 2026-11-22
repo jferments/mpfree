@@ -47,6 +47,9 @@ mpfree-chain-ui = { path = "../mpfree-chain-ui" }
 mpfree-fx-ui = { path = "../mpfree-fx-ui" }
 # Profiling (block timing, /proc process table). Not its counting-alloc feature.
 mpfree-prof = { path = "../mpfree-prof" }
+# System status: the catalogue of problems, the reports other
+# threads send and the board the Dev > Status page shows (phase 0; gui.rs).
+mpfree-status = { path = "../mpfree-status" }
 # Pinning the audio thread to a core (`--sound-cores`, cores.rs); the lanes
 # themselves live in the sampler and the mixer.
 mpfree-lanes = { path = "../mpfree-lanes" }
@@ -67,6 +70,9 @@ mpfree-mpcskin = { path = "../mpfree-mpcskin" }
 # Open MPC plugins from the catalog or zips on the stick (plugin_store.rs).
 mpfree-mpcstore = { path = "../mpfree-mpcstore" }
 mpfree-browser-ui = { path = "../mpfree-browser-ui" }
+# Sound file headers: memory.rs works out what decoding a file will hold
+# from its header (memory.rs `decode_need`).
+mpfree-stream = { path = "../mpfree-stream" }
 # Export: the mixdown, the stems and the MIDI file (export.rs).
 mpfree-export = { path = "../mpfree-export" }
 # The first start on a creator stick (setup.rs): the MPC's own kits and

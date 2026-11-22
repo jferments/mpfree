@@ -41,6 +41,10 @@ use mpfree_track::{Instrument, Sum, TrackHost};
 use mpfree_transport::time::{Swing, PPQ};
 use mpfree_transport::{Block as TBlock, Command as T, Transport};
 
+use mpfree_stream::coord::{Coordinator, Inline, Plan as StreamPlan};
+use mpfree_stream::cursor::{Cursor as StreamCursor, Read};
+use mpfree_stream::player::{Config as StreamConfig, Player as StreamPlayer};
+
 use std::time::{Duration, Instant};
 
 pub type Block = Box<dyn FnMut(u64, &mut [f32], &mut [f32])>;
@@ -625,7 +629,7 @@ fn pluck(preset: &str, rate: u32, voices: usize) -> Case {
 #[derive(Clone, Copy, Default)]
 struct Allow {
     /// Voices taken over for new hits (a pad past its polyphony, a full
-    /// pool).
+    /// pool): normal playing, which the status board never hears of.
     steals: bool,
     /// Grains thinned, faded or held back for the grain budget.
     grains: bool,
@@ -634,9 +638,12 @@ struct Allow {
 }
 
 /// A bench case's sampler engine, checked as its case ends against what
-/// it may trade ([`Allow`]): dropped notes and given-up voices always fail,
-/// steals, thinned grains and a late core unless allowed. The check runs
-/// when the case is dropped, after it is counted, so it costs the counts
+/// it may trade ([`Allow`]). Its counts go to a status board as the app
+/// sends them, and [`Board::unexpected`](mpfree_status::Board::unexpected)
+/// names what was shown that the case doesn't allow: notes dropped and
+/// voices given up always fail, grains thinned and a skipped part of the
+/// sound unless allowed, and steals unless allowed. The check runs when
+/// the case is dropped, after it is counted, so it costs the counts
 /// nothing.
 struct Watched {
     e: Engine,
@@ -653,24 +660,59 @@ impl Watched {
         }
     }
 
-    /// The trades the case made that it may not, by name and count.
-    fn unexpected(&self) -> Vec<(&'static str, u64)> {
+    /// The trades the case made that it may not, with how many.
+    fn unexpected(&self) -> Vec<String> {
+        use mpfree_status::{kinds, Board, Report, SETTLE_ON};
         let st = self.e.stats();
         let a = self.allow;
-        [
-            ("dropped events", st.dropped_events, false),
-            ("voices given up", st.culls, false),
-            ("steals", st.steals, a.steals),
-            ("skipped grains", st.skipped_grains, a.grains),
-            ("crowded frames", st.crowded_frames, a.grains),
-            ("faded grains", st.faded_grains, a.grains),
-            ("held-back clouds", st.held_back_clouds, a.grains),
-            ("late parts", st.lane_late, a.late),
-        ]
-        .into_iter()
-        .filter(|&(_, n, ok)| n > 0 && !ok)
-        .map(|(what, n, _)| (what, n))
-        .collect()
+        let mut board = Board::new();
+        let t0 = std::time::Instant::now();
+        for (kind, n) in [
+            (&kinds::NOTES_DROPPED, st.dropped_events),
+            (&kinds::VOICES_GIVEN_UP, st.culls),
+            (&kinds::SOUND_SKIPPED, st.lane_late),
+        ] {
+            if n > 0 {
+                let times = u32::try_from(n).unwrap_or(u32::MAX);
+                board.apply(Report::happened(kind, times), t0);
+            }
+        }
+        let thinned = [
+            st.skipped_grains,
+            st.crowded_frames,
+            st.faded_grains,
+            st.held_back_clouds,
+        ];
+        if thinned.iter().any(|&n| n > 0) {
+            board.apply(Report::began(&kinds::GRAINS_THINNED), t0);
+            board.tick(t0 + SETTLE_ON);
+        }
+        let mut allowed = Vec::new();
+        if a.grains {
+            allowed.push(&kinds::GRAINS_THINNED);
+        }
+        if a.late {
+            allowed.push(&kinds::SOUND_SKIPPED);
+        }
+        let mut bad: Vec<String> = board
+            .unexpected(&allowed)
+            .into_iter()
+            .map(|k| match k.id {
+                "sound/grains-thinned" => format!("{} {thinned:?}", k.title),
+                _ => {
+                    let n = board
+                        .raw()
+                        .iter()
+                        .find(|v| v.kind == k)
+                        .map_or(0, |v| v.times);
+                    format!("{}: {n}", k.title)
+                }
+            })
+            .collect();
+        if st.steals > 0 && !a.steals {
+            bad.push(format!("Voices stolen: {}", st.steals));
+        }
+        bad
     }
 }
 
@@ -2107,6 +2149,11 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| audio_tracks(rate, 0, false)));
     v.push(measured(|| audio_tracks(rate, 2, false)));
     v.push(measured(|| audio_tracks(rate, 0, true)));
+    v.push(measured(|| stream_voices(rate, 64, Read::Hermite, 1.5)));
+    v.push(measured(|| stream_voices(rate, 64, Read::Sinc8, 1.5)));
+    v.push(measured(|| stream_voices(rate, 64, Read::Sinc8, 3.0)));
+    v.push(measured(|| stream_voices(rate, 64, Read::Sinc16, 1.5)));
+    v.push(measured(|| stream_voices(rate, 16, Read::Sinc8, 1.0)));
     v.push(measured(|| song(rate)));
     v
 }
@@ -5097,6 +5144,69 @@ fn beside(name: &str, rate: u32, lane: Option<LaneConfig>, wait: Duration) -> Ca
     }
 }
 
+/// `n` voices reading streamed sounds through `mpfree-stream`'s cursors at
+/// `speed`, with `read` (disk streaming's P3, step 3): what the sampler's
+/// streamed voices cost the sound thread, for its voice budget. Each
+/// voice reads its own source (sounds lent from memory, so the case
+/// counts the reads and not the disk), looping. At speed 1 from a whole
+/// frame a cursor copies: that is 16 stems at the engine's rate.
+fn stream_voices(rate: u32, n: usize, read: Read, speed: f64) -> Case {
+    let cfg = StreamConfig {
+        slots: 64,
+        ..StreamConfig::default()
+    };
+    let (mut p, rx, tx) = StreamPlayer::new(cfg);
+    let plan = StreamPlan {
+        rate,
+        ..StreamPlan::default()
+    };
+    let mut c = Coordinator::new(cfg, plan, rx, tx, Box::<Inline>::default());
+    c.new_project();
+    let frames = rate as usize * 4;
+    let data: std::sync::Arc<[f32]> = bench_sound(frames, false).into();
+    let mut voices: Vec<StreamCursor> = (0..n)
+        .map(|i| {
+            c.open_memory(i as u16, 2, data.clone()).expect("opens");
+            let mut k = StreamCursor::new(i as u16, i as u16);
+            k.set_read(read);
+            k.set_speed(speed);
+            k.set_loop(Some((1_000, frames as u64 - 1_000)));
+            k.seek(1_000 + i as u64 * 997);
+            k
+        })
+        .collect();
+    let mut out = vec![0.0f32; MAX_BLOCK * 2];
+    let read_name = match read {
+        Read::Hermite => "Hermite",
+        Read::Sinc8 => "band-limited",
+        Read::Sinc16 => "band-limited 16",
+    };
+    Case {
+        name: format!("Stream voices x{n} at {speed}x, {read_name}"),
+        module: "sampler",
+        what: "streamed voices read from the cache, looping",
+        block: Box::new(move |_, l, r| {
+            let frames = l.len();
+            p.begin();
+            l.fill(0.0);
+            r.fill(0.0);
+            for k in &mut voices {
+                let o = &mut out[..frames * 2];
+                k.play(&mut p, o);
+                for (j, f) in o.chunks_exact(2).enumerate() {
+                    l[j] += f[0];
+                    r[j] += f[1];
+                }
+            }
+            p.end(frames as u32);
+            // The coordinator is another thread's work: kept, not stepped
+            // (the notes the cursors post wait, or are counted as dropped).
+            let _ = &c;
+        }),
+        mem_bytes: 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5329,7 +5439,7 @@ mod tests {
         assert!(
             e.unexpected()
                 .iter()
-                .any(|&(what, _)| what == "crowded frames"),
+                .any(|what| what.starts_with("Grains thinned")),
             "{:?}",
             e.unexpected()
         );
