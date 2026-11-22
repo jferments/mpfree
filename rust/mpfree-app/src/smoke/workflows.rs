@@ -2027,7 +2027,9 @@ mod tests {
     /// Track 1 keeps its kit. PAD BANK A gives the pads the kit again (FM
     /// stays, as bank B points at it) and B gives them FM; REC there
     /// records FM on a free track, and the project's pads part keeps the
-    /// bank's line.
+    /// bank's line. The Synth tab's hint then says who plays FM: "the
+    /// pads, Track 2" while Track 2 is picked (the pads follow it on the
+    /// other banks), "pads bank B, Track 2" once Track 1 is again.
     #[test]
     fn bank_b_only_plays_fm_on_bank_b_and_the_kit_on_the_others() {
         use crate::instruments::free;
@@ -2090,6 +2092,27 @@ mod tests {
                 s.app.pads_part().contains("\nbank B instrument "),
                 "{}",
                 s.app.pads_part()
+            );
+            // Who plays FM (step 8). REC picked Track 2, so the other
+            // banks follow it to FM: the pads, every bank.
+            s.button("STOP").settle();
+            s.run_for(crate::gui::TELL_SECONDS as f64 + 0.5).settle();
+            assert!(
+                s.hint().starts_with("FM: the pads, Track 2"),
+                "{}",
+                s.hint()
+            );
+            // Track 1 picked again: bank B alone of the pads, and Track 2.
+            let pick = mpfree_time_ui::TimeAction::Pick(0);
+            s.route(crate::gui::FromUi::Time(pick));
+            s.run_periods(2).settle();
+            assert_eq!(s.app.track(), 0);
+            assert_eq!(s.mix.instruments.pads_play_at(), Some(free(0)));
+            s.run_for(crate::gui::TELL_SECONDS as f64 + 0.5).settle();
+            assert!(
+                s.hint().starts_with("FM: pads bank B, Track 2"),
+                "{}",
+                s.hint()
             );
         });
     }

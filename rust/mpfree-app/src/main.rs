@@ -4600,18 +4600,21 @@ fn who_plays(
     names: &[mpfree_seq::Track],
     synth_name: &str,
 ) -> Option<String> {
+    use app::PadFocus;
     let shown = instrument_track(own, tab_who(app, own));
-    let (name, tracks, pads) = match own.held(shown) {
+    let (name, tracks, (every, banks)) = match own.held(shown) {
         // An instrument the host holds: its own track's, then those that
-        // send to it; the pads by their player or by following the track.
+        // send to it; the pads by their choice (a bank's own too) or by
+        // following the track.
         Some(h) => {
             let mut bits = own.senders(shown);
             if shown < instruments::TRACKS {
                 bits |= 1 << shown;
             }
-            let pads = own.pads_play_at() == Some(shown)
-                || (app.pads_focus() == app::PadFocus::Track
-                    && own.owner(app.track()) == Some(shown));
+            let pads = app.pads_who(|f| match f {
+                PadFocus::Instrument(id) => app.instrument_holder(id) == Some(shown),
+                PadFocus::Track => own.owner(app.track()) == Some(shown),
+            });
             (h.name, bits, pads)
         }
         // The shared synth: the tracks on the Synth kit; the pads while
@@ -4620,13 +4623,14 @@ fn who_plays(
             let bits = (0..instruments::TRACKS)
                 .filter(|&t| !own.plays(t) && kits.plays_synth(t))
                 .fold(0u128, |b, t| b | 1 << t);
-            let pads = app.pads_chose_synth()
-                || (app.pads_focus() == app::PadFocus::Track
-                    && !own.plays(app.track())
-                    && kits.plays_synth(app.track()));
+            let pads = app.pads_who(|f| match f {
+                PadFocus::Instrument(_) => f == PadFocus::SYNTH,
+                PadFocus::Track => !own.plays(app.track()) && kits.plays_synth(app.track()),
+            });
             (synth_name, bits, pads)
         }
     };
+    let pads = every || banks != 0;
     let count = tracks.count_ones() as usize + usize::from(pads);
     if count < 2 {
         return None;
@@ -4639,8 +4643,20 @@ fn who_plays(
             .map_or_else(|| format!("Track {}", t + 1), str::to_string)
     };
     let mut who: Vec<String> = Vec::new();
-    if pads {
+    if every {
         who.push("the pads".to_string());
+    } else if banks != 0 {
+        // Only banks with one of their own (step 6c): "pads bank B",
+        // "pads banks B and D", "pads banks A, B and D".
+        let letters: Vec<String> = (0..8)
+            .filter(|&b| banks >> b & 1 == 1)
+            .map(|b| app::bank_letter(b).to_string())
+            .collect();
+        who.push(match letters.split_last() {
+            Some((last, [])) => format!("pads bank {last}"),
+            Some((last, rest)) => format!("pads banks {} and {last}", rest.join(", ")),
+            None => String::new(),
+        });
     }
     let listed: Vec<usize> = (0..instruments::TRACKS)
         .filter(|&t| tracks >> t & 1 == 1)
