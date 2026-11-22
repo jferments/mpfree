@@ -28029,6 +28029,7 @@ mod tests {
                 frames: 4410,
                 channels: 1,
                 file: String::new(),
+                path: None,
                 audio: take.clone(),
             }],
         };

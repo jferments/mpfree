@@ -13434,6 +13434,7 @@ mod tests {
                 frames,
                 channels: 1,
                 file: String::new(),
+                path: None,
                 audio: vec![0.25; frames],
             };
             assert!(r.tracks.host.tracks.load_take(take).is_ok());

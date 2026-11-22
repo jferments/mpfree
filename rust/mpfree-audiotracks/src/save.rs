@@ -98,7 +98,13 @@ pub struct TakeFile {
     pub channels: usize,
     /// Its audio's file in the project; empty until named.
     pub file: String,
-    /// Interleaved, `frames * channels` long (empty in the text).
+    /// Where its audio is as a finished file that holds all of it, when it
+    /// has one (not in the text): a take recorded to its file and saved
+    /// there, or one opened from a project. A save copies that file
+    /// whole, and `audio` is then empty.
+    pub path: Option<std::path::PathBuf>,
+    /// Interleaved, `frames * channels` long (empty in the text, and when
+    /// `path` gives it).
     pub audio: Vec<f32>,
 }
 
@@ -111,9 +117,9 @@ pub struct Saved {
     pub takes: Vec<TakeFile>,
 }
 
-/// Room for a take's file name in a [`Saved::room`] (a streamed take's
-/// name, `<stamp>-<n>.wav`, is at most 45 bytes).
-pub const NAME_ROOM: usize = 64;
+/// Room for a take's file name in a [`Saved::room`] (`NAME_ID.wav` is at
+/// most 85 bytes: [`crate::files::NAME_MAX`] and the id's 32 digits).
+pub const NAME_ROOM: usize = 96;
 
 impl Saved {
     /// Room for the most a save can hold: [`MAX_TRACKS`] tracks of
@@ -146,6 +152,7 @@ impl Saved {
                     frames: 0,
                     channels: 1,
                     file: String::with_capacity(NAME_ROOM),
+                    path: None,
                     audio: Vec::new(),
                 })
                 .collect(),
@@ -347,6 +354,7 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
                 frames,
                 channels,
                 file,
+                path: None,
                 audio: Vec::new(),
             });
         }
@@ -526,6 +534,7 @@ mod tests {
             frames: 44_100,
             channels: 1 + id as usize % 2,
             file: file.to_string(),
+            path: None,
             audio: Vec::new(),
         };
         Saved {

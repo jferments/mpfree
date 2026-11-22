@@ -3656,6 +3656,7 @@ mod tests {
             frames: audio.len() / channels,
             channels,
             file: String::new(),
+            path: None,
             audio,
         };
         let region = |start, end, take| Region {

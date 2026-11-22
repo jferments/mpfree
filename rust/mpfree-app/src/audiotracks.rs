@@ -1513,9 +1513,6 @@ impl TrackHost {
                 ))
             }
             Err(ImportRefused::Busy) => Err("another sound is still going onto its track: a moment".into()),
-            Err(ImportRefused::Streaming) => {
-                Err("the audio tracks stream from the disk: a sound can't go on them now".into())
-            }
             Err(ImportRefused::NoTake) => Err(format!(
                 "the audio tracks hold {} takes, the most: forget some takes first",
                 mpfree_audiotracks::MAX_TAKES

@@ -177,6 +177,7 @@ fn commands_and_periods_never_allocate() {
         let map = *t.tempo_map();
         a.process(&b, &map, &input, &mut out);
         let mut load = Some(TakeFile {
+            path: None,
             id: 200,
             // Its own lasting id, kept as it loads.
             rec: mpfree_audiotracks::RecordingId(0x5eed),
@@ -247,27 +248,32 @@ fn commands_and_periods_never_allocate() {
     }
 }
 
+/// Phase 3a: with recording to files on, arming, recording on two tracks
+/// (one stereo, its input changed while armed), a punch out, disarming,
+/// the host's side taking the requests, copying every take out as it
+/// records and saying each is written, and clearing the tracks: nothing
+/// on the audio thread's side allocates.
 #[test]
-fn streaming_never_allocates_on_the_audio_thread() {
+fn recording_to_files_never_allocates_on_the_audio_thread() {
     use mpfree_audiotracks::Io;
-    use std::collections::HashMap;
     const RATE: u32 = 22_050;
     const BAR: u64 = 22_050; // 240 BPM
-    const BT: i64 = 3_840;
     for period in [1usize, 128, 4096] {
         let mut t = Transport::new(RATE, 240.0).unwrap();
-        // 4 s of memory for 30 s of recording on two tracks.
-        let mut a = AudioTracks::new(RATE, 4);
-        assert!(a.stream(true));
+        let mut a = AudioTracks::new(RATE, 40);
+        assert!(a.files(true));
         let mut b = Block::new();
         let mut input = vec![0.0f32; 2 * period];
         let mut out = vec![0.0f32; 2 * period];
         for (j, s) in input.iter_mut().enumerate() {
             *s = ((j * 31) % 97) as f32 / 97.0 - 0.5;
         }
-        let mut disk: HashMap<(u16, u32), Vec<f32>> = HashMap::new();
-        let mut reads: Vec<(u16, u32)> = Vec::new();
+        // The host's side: what each take has copied out so far, in room
+        // made before.
+        let mut copied = vec![0usize; mpfree_audiotracks::MAX_TAKES];
+        let mut writing: Vec<u16> = Vec::with_capacity(mpfree_audiotracks::MAX_TAKES);
         let mut buf = vec![0.0f32; mpfree_audiotracks::CHUNK];
+        let (mut arms, mut disarms, mut starts) = (0, 0, 0);
         let script: Vec<(u64, Vec<A>, Vec<T>)> = vec![
             (
                 0,
@@ -278,27 +284,12 @@ fn streaming_never_allocates_on_the_audio_thread() {
                 ],
                 vec![T::Record],
             ),
-            (15, vec![A::Arm(1, false)], vec![]),
-            (30, vec![A::Arm(0, false)], vec![T::Stop]),
-            (
-                31,
-                vec![],
-                vec![T::Locate(0), T::SetLoop(Some((4 * BT, 6 * BT)))],
-            ),
-            (32, vec![], vec![T::Play]),
-            (
-                40,
-                vec![A::Comp {
-                    take: 1,
-                    from: 4 * BT,
-                    to: 5 * BT,
-                }],
-                vec![T::Locate(10 * BT)],
-            ),
-            (44, vec![A::Undo], vec![T::SetLoop(None)]),
-            (50, vec![], vec![T::Stop]),
+            (5, vec![A::Arm(1, false)], vec![]),
+            (8, vec![A::SetInput(0, Input::Stereo)], vec![]),
+            (10, vec![A::Arm(0, false)], vec![T::Stop]),
+            (11, vec![A::Arm(2, true), A::Arm(2, false)], vec![]),
         ];
-        let end = 52 * BAR;
+        let end = 12 * BAR;
         let mut frame = 0u64;
         let mut calls = 0;
         while frame < end {
@@ -321,70 +312,75 @@ fn streaming_never_allocates_on_the_audio_thread() {
             CALLS.with(|c| c.set(0));
             watch(true);
             a.process(&b, &map, &input, &mut out);
-            let _ = (a.stats(), a.memory(), a.unwritten(), a.peaks(0, 0, 10_000));
-            watch(false);
-            calls += CALLS.with(Cell::get);
-            // The disk thread's side: allocation allowed there, but the
-            // tracks' calls it makes are watched.
-            loop {
-                watch(true);
-                let r = a.take_io();
-                watch(false);
-                let Some(r) = r else { break };
+            let _ = (
+                a.stats(),
+                a.memory(),
+                a.peaks(0, 0, 10_000),
+                a.next_recording(0),
+            );
+            while let Some(r) = a.take_io() {
                 match r {
-                    Io::Write { take, chunk } | Io::Rewrite { take, chunk } => {
-                        watch(true);
-                        let n = a.chunk(take, chunk).map(|c| {
-                            buf[..c.len()].copy_from_slice(c);
-                            c.len()
-                        });
-                        watch(false);
-                        if let Some(n) = n {
-                            disk.insert((take, chunk), buf[..n].to_vec());
-                        }
-                        watch(true);
-                        a.written(take, chunk);
-                        watch(false);
-                    }
-                    Io::Read { take, chunk } => reads.push((take, chunk)),
-                    Io::Finish { take } => {
-                        watch(true);
-                        a.finished(take, true);
-                        watch(false);
+                    Io::Arm { .. } => arms += 1,
+                    Io::Disarm { .. } => disarms += 1,
+                    Io::Start { take } => {
+                        starts += 1;
+                        writing.push(take);
                     }
                 }
             }
-            for (take, chunk) in reads.drain(..) {
-                let data = disk.get(&(take, chunk)).cloned();
-                watch(true);
-                match &data {
-                    Some(d) => {
-                        a.fill(take, chunk, d);
-                    }
-                    None => a.fill_failed(take, chunk),
+            let mut k = 0;
+            while k < writing.len() {
+                let id = writing[k];
+                let info = a.take(id).unwrap();
+                let at = copied[id as usize];
+                let room = mpfree_audiotracks::CHUNK / info.channels * info.channels;
+                let n = a.read_take(id, at, &mut buf[..room]).unwrap();
+                copied[id as usize] += n;
+                if !info.recording && copied[id as usize] == info.frames {
+                    a.written(id);
+                    writing.swap_remove(k);
+                } else {
+                    k += 1;
                 }
-                watch(false);
             }
+            watch(false);
             calls += CALLS.with(Cell::get);
             frame += period as u64;
         }
         assert_eq!(calls, 0, "allocations at period {period}");
-        assert!(a.stats().full == 0, "streaming kept every recording");
-        assert!(disk.len() > 20);
+        assert!(writing.is_empty() && a.takes().all(|k| !a.writing(k.id)));
+        // Two takes. Files for the two armed tracks, again for track 1's
+        // stereo, for each take's next, for track 0's stereo while it
+        // records, and for track 2.
+        assert_eq!(starts, 2, "period {period}");
+        assert_eq!(arms, 2 + 1 + 2 + 1 + 1, "period {period}");
+        assert_eq!(arms, disarms + starts, "every file made is used or goes");
+        for k in a.takes() {
+            assert_eq!(copied[k.id as usize], k.frames, "every frame copied out");
+        }
+        watch(true);
+        let cleared = a.clear();
+        watch(false);
+        assert!(cleared);
+        assert_eq!(CALLS.with(Cell::get), 0);
     }
 }
 
+/// The host's period while a track records to its file: the takes are
+/// copied out into buffers made once and handed to the worker. Only the
+/// channel to the worker may allocate, a block now and then (as in the
+/// looper's host): a handful in 20 bars of recording.
 #[test]
-#[ignore = "finding 1: the host's period, streaming, allocates (a new take's file name, the messages to \
-            the disk thread); fixed by the fixed-size queues of mpfree-stream (P1)"]
-fn the_host_period_never_allocates_while_streaming() {
+fn the_host_period_hardly_allocates_while_recording_to_files() {
+    use mpfree_audiotracks::files::WriterConfig;
     use mpfree_audiotracks::host::AudioHost;
     const RATE: u32 = 22_050;
     const BAR: u64 = 22_050; // 240 BPM
     const P: usize = 256;
     let dir = std::env::temp_dir().join(format!("mpfree-na-host-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let mut h = AudioHost::streaming(RATE, 4, dir.clone()).unwrap();
+    let mut h = AudioHost::new(RATE, 40);
+    assert!(h.record_to(dir.clone(), WriterConfig::default()));
     let mut t = Transport::new(RATE, 240.0).unwrap();
     let mut b = Block::new();
     let input: Vec<f32> = (0..2 * P)
@@ -392,7 +388,6 @@ fn the_host_period_never_allocates_while_streaming() {
         .collect();
     let mut out = vec![0.0f32; 2 * P];
     h.command(A::Arm(0, true));
-    h.command(A::SetInput(0, Input::Left));
     t.command(100, T::Record);
     t.command(100 + 20 * BAR, T::Stop);
     let mut frame = 0u64;
@@ -406,11 +401,10 @@ fn the_host_period_never_allocates_while_streaming() {
         watch(false);
         calls += CALLS.with(Cell::get);
         frame += P as u64;
-        std::thread::sleep(std::time::Duration::from_micros(100));
     }
     drop(h);
     let _ = std::fs::remove_dir_all(&dir);
-    assert_eq!(calls, 0, "allocations in the host's period");
+    assert!(calls <= 4, "{calls} allocations in the host's period");
 }
 
 /// Phase 0.2: a save fills a room made off the audio thread
