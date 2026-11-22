@@ -169,6 +169,13 @@ impl Slots {
     }
 }
 
+/// Why the audio tracks' own Undo, and Redo, stop at a song edit's step
+/// (the Arrange refactor's 3.4): the song's UNDO and REDO move them.
+const SONG_UNDO: &str =
+    "the next undo is the song edit that moved the regions: UNDO takes it back, with the song";
+const SONG_REDO: &str = "the next redo is the song edit that moved the regions: SHIFT + UNDO \
+                         brings it back, with the song";
+
 /// Where an audio track records from inside the mix (the instrument
 /// redesign's step 9): a strip (an instrument's, a submix or the master)
 /// and whether after its effects. Before its fader either way, so the
@@ -178,13 +185,6 @@ pub struct Inside {
     pub strip: mpfree_fx::StripId,
     pub after_effects: bool,
 }
-
-/// Why the audio tracks' own Undo, and Redo, stop at a song edit's step
-/// (the Arrange refactor's 3.4): the song's UNDO and REDO move them.
-const SONG_UNDO: &str =
-    "the next undo is the song edit that moved the regions: UNDO takes it back, with the song";
-const SONG_REDO: &str = "the next redo is the song edit that moved the regions: SHIFT + UNDO \
-                         brings it back, with the song";
 
 /// The audio tracks, their host and what the Song view was last given.
 pub struct TrackHost {
