@@ -11,14 +11,16 @@
 //! is held in the cache (so a jump to one never waits on the drive), and
 //! follows the regions as they change; so is the loop's start, so going
 //! round never waits either; a cache too small for them all holds the
-//! soonest and the log says so, once.
+//! soonest and the log says so, once. A sound brought in and a stretched
+//! copy are written to files of their own and play from them, or come
+//! into memory if they can't be written.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use mpfree_audiotracks::files::{FileEvent, TakeState, WriterConfig};
 use mpfree_audiotracks::host::AudioHost;
-use mpfree_audiotracks::save::Saved;
+use mpfree_audiotracks::save::{from_wav, Saved};
 use mpfree_audiotracks::streaming::StreamConfig;
 use mpfree_audiotracks::Command as A;
 use mpfree_stream::player::Config;
@@ -356,16 +358,29 @@ fn a_waveform_and_a_fit_of_a_take_on_its_file_are_those_from_memory() {
     assert!(r.h.fit(1, 180.0));
     mem.run_until(|m| m.h.fits == 1);
     r.run_until(|r| r.h.fits == 1);
-    let fitted = |r: &Rig| {
-        let k = r.h.tracks.takes().find(|k| k.id > 1).unwrap();
-        let mut audio = vec![0.0; k.frames * k.channels];
-        assert_eq!(r.h.tracks.read_take(k.id, 0, &mut audio), Some(k.frames));
-        (k.frames, audio)
-    };
-    let (want, got) = (fitted(&mem), fitted(&r));
-    assert!(want.0 > 2 * BAR as usize);
-    assert!(got == want, "the fit read from its file");
+    let k = mem.h.tracks.takes().find(|k| k.id > 1).unwrap();
+    let mut want = vec![0.0; k.frames * k.channels];
+    assert_eq!(mem.h.tracks.read_take(k.id, 0, &mut want), Some(k.frames));
+    assert!(k.frames > 2 * BAR as usize);
+    // The stretched copy was written to a file of its own and plays from
+    // it, taking no memory: the same audio.
+    let new = r.h.tracks.takes().find(|k| k.id > 1).unwrap();
+    assert_eq!((new.frames, new.channels), (k.frames, k.channels));
+    r.run_until(|r| r.h.tracks.on_file(new.id));
+    assert_eq!(r.h.tracks.memory().used, 0);
+    let saved = r.save();
+    let file = saved.takes.iter().find(|t| t.id == new.id).unwrap();
+    assert_eq!(file.file, format!("take_{}.wav", new.rec));
+    let path = file.path.as_ref().expect("copied whole from its file");
+    assert!(path.starts_with(&dir));
+    let (got, ch, rate) = from_wav(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!((ch, rate), (2, RATE));
+    assert!(
+        got == want,
+        "the fit read from its file, written to its own"
+    );
     assert_eq!(r.h.fits_failed, 0);
+    assert!(r.events().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -558,4 +573,64 @@ fn the_loop_s_start_is_held_too_so_going_round_never_waits() {
     r.run_until(|r| r.h.heads_wanted == 4 && r.h.heads_held == 4);
     assert!(r.events().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two bars of stereo, as the Sample page would bring in.
+fn a_sound() -> Vec<f32> {
+    (0..2 * BAR).flat_map(|g| [sig(g, 0), sig(g, 1)]).collect()
+}
+
+#[test]
+fn a_sound_brought_in_is_written_to_its_file_and_plays_from_it() {
+    let dir = scratch("import");
+    let bring = |r: &mut Rig| {
+        r.live = false;
+        let id = r.h.import(1, 0, 2, a_sound(), vec![BAR], 120.0).unwrap();
+        r.run_until(|r| r.h.importing().is_none());
+        assert_eq!(r.h.tracks.regions(1).len(), 2, "a region a slice");
+        id
+    };
+    let mut mem = Rig::new(None, false);
+    bring(&mut mem);
+    let want = mem.play_song();
+    assert!(want.iter().filter(|v| v.abs() > 1e-6).count() > BAR as usize);
+
+    let mut r = Rig::new(Some(&dir), true);
+    let id = bring(&mut r);
+    assert!(r.h.tracks.on_file(id));
+    assert_eq!(r.h.tracks.memory().used, 0, "no memory taken");
+    assert_eq!(r.h.opening(), 0);
+    let got = r.play_song();
+    assert!(got == want, "played from its file, the same");
+    assert_eq!(r.h.tracks.stats().missed, 0);
+    // A save copies its file whole, named for its lasting id.
+    let saved = r.save();
+    let rec = r.h.tracks.take(id).unwrap().rec;
+    assert_eq!(saved.takes[0].file, format!("take_{rec}.wav"));
+    let path = saved.takes[0].path.as_ref().expect("copied from its file");
+    assert_eq!(path, &dir.join(format!("take_{rec}.wav")));
+    assert!(r.events().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_sound_whose_file_cant_be_written_comes_into_memory_and_is_said() {
+    let dir = scratch("unwritten");
+    let mut r = Rig::new(Some(&dir), true);
+    r.live = false;
+    // The folder is gone: the file can't be written.
+    std::fs::remove_dir_all(&dir).unwrap();
+    let id = r.h.import(1, 0, 2, a_sound(), vec![], 120.0).unwrap();
+    r.run_until(|r| r.h.importing().is_none());
+    assert!(!r.h.tracks.on_file(id));
+    assert_eq!(r.h.tracks.regions(1).len(), 1);
+    assert!(r.h.tracks.memory().used >= 4 * BAR as usize, "in memory");
+    let ev = r.events();
+    assert!(
+        matches!(&ev[..], [FileEvent::Unwritten { track: 1, why }] if why.contains("No such file")),
+        "{ev:?}"
+    );
+    assert!(ev[0].line("Keys").starts_with(
+        "audio tracks: Keys's new take plays from memory, as its file couldn't be written"
+    ));
 }

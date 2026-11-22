@@ -80,6 +80,8 @@ const HEADS_EVERY: u64 = 32;
 const HEADS_SPAN: Tick = 16 * mpfree_transport::time::PPQ as Tick;
 /// The shortest start held, in seconds.
 const MIN_HEAD_S: f64 = 0.25;
+/// Takes being written to files at once (a sound brought in and a fit).
+const TO_WRITE: usize = 4;
 /// Periods between asks again while the cache holds only some of the
 /// starts (about 2.7 s at 128 frames): room may have come back.
 const HEADS_RETRY: u64 = 1024;
@@ -226,6 +228,15 @@ enum ToWorker {
     Stream(Box<StreamConfig>),
     /// Hold these regions' starts in the cache (the room comes back).
     Heads(Vec<Head>),
+    /// Write a sound brought in, or a stretched copy, as recording
+    /// `rec`'s take file in the work folder, for the tracks of generation
+    /// `gen` (the audio is dropped once written, or comes back).
+    WriteTake {
+        rec: RecordingId,
+        channels: usize,
+        audio: Vec<f32>,
+        gen: u32,
+    },
     /// Close take `take`'s stream source, if still at generation `gen`.
     Close {
         take: u16,
@@ -281,6 +292,13 @@ enum FromWorker {
     Stream(FromStream),
     /// A waveform read from a take's file.
     WaveFile(TakeWave),
+    /// What came of a [`ToWorker::WriteTake`]: the file's name and path,
+    /// or why not with the audio back.
+    TakeWritten {
+        rec: RecordingId,
+        gen: u32,
+        out: Result<(String, PathBuf), (String, Vec<f32>)>,
+    },
 }
 
 enum Waving {
@@ -365,8 +383,13 @@ pub struct AudioHost {
     /// Takes play from their files ([`AudioHost::stream`]).
     streaming: bool,
     /// A project's takes waiting for their files to open (room for every
-    /// take, made once; a take here holds no audio, name or path).
+    /// take, made once; a take here holds no audio, name or path), and
+    /// sounds brought in or stretched copies whose files were written.
     opening: Vec<TakeFile>,
+    /// Sounds brought in and stretched copies being written to files
+    /// while takes play from theirs (no audio here: it went to the
+    /// worker); once written they open as a project's takes do.
+    to_write: Vec<TakeFile>,
     /// Room for the starts of the regions of takes on their files, to
     /// hold in the cache (made when streaming starts; away while the
     /// stream thread holds them), what they were last made from, and how
@@ -443,6 +466,7 @@ impl AudioHost {
             stale: 0,
             streaming: false,
             opening: Vec::with_capacity(MAX_TAKES),
+            to_write: Vec::with_capacity(TO_WRITE),
             waiting: None,
             heads: None,
             heads_from: 0,
@@ -483,9 +507,43 @@ impl AudioHost {
         self.streaming
     }
 
-    /// Takes of a project opening still waiting for their files to open.
+    /// Takes still on their way: a project's waiting for their files to
+    /// open, and sounds brought in or stretched being written to theirs.
     pub fn opening(&self) -> usize {
-        self.opening.len()
+        self.opening.len() + self.to_write.len()
+    }
+
+    /// Whether a take made off the audio thread is written to a file and
+    /// played from it: takes play from their files, the player is here,
+    /// takes record to files (so there is a folder), and there is room.
+    fn writes_files(&self) -> bool {
+        self.streaming
+            && self.tracks.player().is_some()
+            && self.tracks.records_to_files()
+            && self.to_write.len() < self.to_write.capacity()
+            && self.opening.len() < self.opening.capacity()
+    }
+
+    /// Whether take `id` is on its way (being written, or opening).
+    fn coming(&self, id: u16) -> bool {
+        self.to_write
+            .iter()
+            .chain(&self.opening)
+            .any(|k| k.id == id)
+    }
+
+    /// Send `file` (whose audio is in `audio`) to be written to a file of
+    /// its own under a new lasting id, its take id kept for it meanwhile.
+    fn write_take(&mut self, mut file: TakeFile, audio: Vec<f32>) {
+        file.rec = self.tracks.fresh_rec();
+        self.tracks.reserve(file.id, true);
+        self.send(ToWorker::WriteTake {
+            rec: file.rec,
+            channels: file.channels,
+            audio,
+            gen: self.generation,
+        });
+        self.to_write.push(file);
     }
 
     /// Record every take to a file of its own in `dir` (made if missing;
@@ -852,7 +910,7 @@ impl AudioHost {
             .max()
             .map_or(0, |g| g + 1);
         let frames = audio.len().checked_div(channels).unwrap_or(0);
-        let file = TakeFile {
+        let mut file = TakeFile {
             id,
             // A sound brought in is a new recording: the tracks give its id.
             rec: crate::RecordingId::NONE,
@@ -867,6 +925,22 @@ impl AudioHost {
             path: None,
             audio,
         };
+        if self.writes_files() {
+            if track >= MAX_TRACKS
+                || !(1..=2).contains(&channels)
+                || frames == 0
+                || file.audio.len() != frames * channels
+                || !file.anchor.is_finite()
+            {
+                return refuse(self, file.audio, ImportRefused::NoRoom);
+            }
+            // Written to its file and played from it: no memory taken.
+            let audio = std::mem::take(&mut file.audio);
+            self.write_take(file, audio);
+            self.importing = Some(id);
+            self.import_cuts = cuts;
+            return Ok(id);
+        }
         match self.tracks.load_take(file) {
             Ok(()) => {
                 self.importing = Some(id);
@@ -882,14 +956,18 @@ impl AudioHost {
         self.importing
     }
 
-    /// A sound brought in that has copied in goes on its track.
+    /// A sound brought in that has copied in (or opened as its file)
+    /// goes on its track.
     fn tend_import(&mut self, map: &TempoMap) {
         let Some(id) = self.importing else {
             return;
         };
         if self.tracks.take(id).is_none() {
-            // Gone (the tracks were cleared meanwhile).
-            self.importing = None;
+            if !self.coming(id) {
+                // Gone (the tracks were cleared, or its file didn't open).
+                self.importing = None;
+                self.import_cuts.clear();
+            }
         } else if self.tracks.loading() == 0 {
             self.importing = None;
             if self.tracks.place(id, &self.import_cuts, map) {
@@ -1021,6 +1099,9 @@ impl AudioHost {
         // Takes still waiting for their files hold nothing to free; their
         // tracks go to the worker.
         self.opening.clear();
+        // Being written: their files stay in the work folder (moved into
+        // Recordings at the next start), and their answers are dropped.
+        self.to_write.clear();
         if let Some(w) = self.waiting.take() {
             self.send(ToWorker::DropSaved(w));
         }
@@ -1117,6 +1198,7 @@ impl AudioHost {
                     self.event(FileEvent::NoStream { why });
                 }
                 FromWorker::Stream(o) => self.stream_said(o),
+                FromWorker::TakeWritten { rec, gen, out } => self.take_written(rec, gen, out),
                 FromWorker::WaveFile(w) => match self.waving {
                     Some(Waving::File { id }) if id == w.id => {
                         self.waving = None;
@@ -1193,6 +1275,12 @@ impl AudioHost {
                     };
                     file.id = new;
                     let swap = Command::Swap { old, new, ratio };
+                    if self.writes_files() {
+                        let audio = std::mem::take(&mut file.audio);
+                        self.write_take(file, audio);
+                        self.fitting = Some(Fitting::Loading { new, swap });
+                        continue;
+                    }
                     match self.tracks.load_take(file) {
                         Ok(()) => self.fitting = Some(Fitting::Loading { new, swap }),
                         Err(f) => {
@@ -1292,6 +1380,53 @@ impl AudioHost {
                     });
                 }
             }
+        }
+    }
+
+    /// A take written to its file (a sound brought in, or a stretched
+    /// copy) opens as a project's take does; one that couldn't be written
+    /// comes into memory instead, as it would have with takes in memory,
+    /// and the log says why.
+    fn take_written(
+        &mut self,
+        rec: RecordingId,
+        gen: u32,
+        out: Result<(String, PathBuf), (String, Vec<f32>)>,
+    ) {
+        let i = self.to_write.iter().position(|k| k.rec == rec);
+        match (i.filter(|_| gen == self.generation), out) {
+            (Some(i), Ok((name, path))) => {
+                let k = self.to_write.swap_remove(i);
+                self.send(ToWorker::Known {
+                    rec,
+                    take: k.id,
+                    name,
+                    path: Some(path),
+                    frames: k.frames,
+                    channels: k.channels,
+                });
+                self.opening.push(k);
+            }
+            (Some(i), Err((why, audio))) => {
+                let mut k = self.to_write.swap_remove(i);
+                self.tracks.reserve(k.id, false);
+                let track = k.track;
+                k.audio = audio;
+                match self.tracks.load_take(k) {
+                    Ok(()) => self.event(FileEvent::Unwritten { track, why }),
+                    Err(k) => {
+                        self.send(ToWorker::Drop(k.audio));
+                        self.event(FileEvent::Unopened {
+                            track,
+                            why: format!("{why}; nor was there room in memory"),
+                            kept: false,
+                        });
+                    }
+                }
+            }
+            // For tracks since emptied: the file stays in the work folder.
+            (None, Ok(_)) => {}
+            (None, Err((_, audio))) => self.send(ToWorker::Drop(audio)),
         }
     }
 
@@ -1597,7 +1732,10 @@ impl AudioHost {
                 // names only finished files: it waits while one is
                 // Saving), nor while a project's take waits for its file
                 // to open (it isn't in the tracks yet).
-                let filled = if self.files_settled() && self.opening.is_empty() {
+                let filled = if self.files_settled()
+                    && self.opening.is_empty()
+                    && self.to_write.is_empty()
+                {
                     self.tracks.save_into(&mut room)
                 } else {
                     None
@@ -1726,8 +1864,11 @@ impl AudioHost {
                 if self.tracks.take(new).is_some() && self.tracks.loading() == 0 {
                     self.tracks.command(swap);
                     self.fits += 1;
-                } else {
+                } else if self.tracks.take(new).is_some() || self.coming(new) {
                     self.fitting = Some(Fitting::Loading { new, swap });
+                } else {
+                    // Its file didn't open, nor could it come into memory.
+                    self.fits_failed += 1;
                 }
             }
             other => self.fitting = other,
@@ -2012,6 +2153,29 @@ impl Worker {
             ToWorker::Heads(heads) => {
                 self.to_stream(ToStream::Heads(heads));
                 return None;
+            }
+            ToWorker::WriteTake {
+                rec,
+                channels,
+                audio,
+                gen,
+            } => {
+                let written = match (files.work_dir(), &self.stream) {
+                    (Some(dir), Some(st)) => {
+                        files::write_take(dir, rec, channels, rate, &audio, &st.gate)
+                            .map_err(|e| e.to_string())
+                    }
+                    (None, _) => Err("there is no folder to record into".into()),
+                    (_, None) => Err("takes don't play from their files".into()),
+                };
+                let out = match written {
+                    Ok(file) => {
+                        drop(audio);
+                        Ok(file)
+                    }
+                    Err(why) => Err((why, audio)),
+                };
+                FromWorker::TakeWritten { rec, gen, out }
             }
             ToWorker::Close { take, gen } => {
                 self.to_stream(ToStream::Close { take, gen });

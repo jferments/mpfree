@@ -1143,6 +1143,14 @@ impl AudioTracks {
         }
     }
 
+    /// A new lasting id, never given before in this run, for a take made
+    /// off the audio thread whose file is named for it before it comes in
+    /// (a sound brought in, or a stretched copy, while takes play from
+    /// their files). Does not allocate.
+    pub fn fresh_rec(&mut self) -> RecordingId {
+        self.ids.fresh()
+    }
+
     /// An id no take has, for a take made off the audio thread (a stretch)
     /// to load under.
     pub fn free_take_id(&self) -> Option<u16> {

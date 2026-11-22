@@ -185,6 +185,9 @@ pub enum FileEvent {
     /// The cache holds the starts of only `held` of the `of` regions
     /// playing from the drive: the others may start late.
     HeadsShort { held: usize, of: usize },
+    /// A sound brought in, or a stretched copy, plays from memory, as its
+    /// file couldn't be written.
+    Unwritten { track: usize, why: String },
 }
 
 impl FileEvent {
@@ -196,6 +199,7 @@ impl FileEvent {
             | FileEvent::FromMemory { track, .. }
             | FileEvent::State { track, .. }
             | FileEvent::Unopened { track, .. }
+            | FileEvent::Unwritten { track, .. }
             | FileEvent::TrackLeftOut { track } => *track,
             FileEvent::NoStream { .. } | FileEvent::HeadsShort { .. } => 0,
         }
@@ -250,6 +254,10 @@ impl FileEvent {
                 why, kept: false, ..
             } => format!(
                 "audio tracks: a take of {who} was left out, as its file couldn't be opened ({why})"
+            ),
+            FileEvent::Unwritten { why, .. } => format!(
+                "audio tracks: {who}'s new take plays from memory, as its file couldn't be \
+                 written ({why})"
             ),
             FileEvent::NoStream { why } => format!(
                 "audio tracks: takes play from memory, as playing them from the drive couldn't \
@@ -362,6 +370,11 @@ impl Files {
     /// The take files to open now, oldest first.
     pub fn take_opens(&mut self) -> Vec<ToOpen> {
         std::mem::take(&mut self.opens)
+    }
+
+    /// The folder takes record into, once there is one.
+    pub fn work_dir(&self) -> Option<&Path> {
+        self.writing.as_ref().map(|w| w.dir.as_path())
     }
 
     /// Where recording `rec`'s finished file is, if it has one.
@@ -646,6 +659,106 @@ impl Files {
             f.path = Some(there);
         }
     }
+}
+
+/// How far ahead of the playhead the cache must be before a take file is
+/// written a piece further ([`write_take`]), and the longest it waits for
+/// that, a piece at a time.
+const WRITE_CUSHION_S: f64 = 1.0;
+const WRITE_WAIT: Duration = Duration::from_secs(1);
+/// A take file is written this many bytes at a time.
+const WRITE_PIECE: usize = 1 << 20;
+
+/// Write a sound brought in, or a stretched copy, as recording `rec`'s
+/// take file in `dir`: `take_ID.wav`, 32-bit float at `rate` (as a
+/// recorded take's), written to a hidden `.part` file made new, synced,
+/// then renamed, so its name never holds half a file. Through the stream
+/// layer's file layer, as every take file is (a `.part` a cut-off write
+/// left goes first). A piece at a time, each once the cache is
+/// [`WRITE_CUSHION_S`] ahead of what plays (or after [`WRITE_WAIT`]), so
+/// playback's reads come first as the writer's do. Its name and path.
+pub fn write_take(
+    dir: &Path,
+    rec: RecordingId,
+    channels: usize,
+    rate: u32,
+    audio: &[f32],
+    gate: &Gate,
+) -> io::Result<(String, PathBuf)> {
+    use std::io::Write;
+    /// Bytes written on at the end of a file, through the file layer.
+    struct At<'a> {
+        fs: &'a mut StdFs,
+        path: &'a Path,
+        at: u64,
+    }
+    impl Write for At<'_> {
+        fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+            self.fs.write_at(self.path, self.at, b)?;
+            self.at += b.len() as u64;
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    /// Writes in pieces, each once playback's cushion allows.
+    struct Gated<'a, W: Write> {
+        w: std::io::BufWriter<W>,
+        gate: &'a Gate,
+        since: usize,
+    }
+    impl<W: Write> Write for Gated<'_, W> {
+        fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+            if self.since >= WRITE_PIECE {
+                self.w.flush()?;
+                self.since = 0;
+                let t0 = Instant::now();
+                while self.gate.cushion() < WRITE_CUSHION_S && t0.elapsed() < WRITE_WAIT {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            let n = self.w.write(b)?;
+            self.since += n;
+            Ok(n)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.w.flush()
+        }
+    }
+    let name = format!("take_{rec}.wav");
+    let path = dir.join(&name);
+    let part = dir.join(format!(".{name}.part"));
+    let mut fs = StdFs::new();
+    if fs.exists(&part) {
+        let _ = fs.remove(&part);
+    }
+    let written = (|| {
+        fs.create(&part, true)?;
+        let mut w = Gated {
+            w: std::io::BufWriter::with_capacity(
+                1 << 16,
+                At {
+                    fs: &mut fs,
+                    path: &part,
+                    at: 0,
+                },
+            ),
+            gate,
+            since: 0,
+        };
+        crate::save::write_wav(&mut w, audio, channels, rate)?;
+        w.flush()?;
+        drop(w);
+        fs.sync(&part)?;
+        fs.rename(&part, &path)?;
+        fs.sync_dir(dir)
+    })();
+    if let Err(e) = written {
+        let _ = fs.remove(&part);
+        return Err(e);
+    }
+    Ok((name, path))
 }
 
 /// Takes found in a work folder at start: finished, checked, and moved
