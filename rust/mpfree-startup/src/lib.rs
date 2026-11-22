@@ -69,9 +69,10 @@ pub fn scene(kind: Startup, w: i32, h: i32) -> Option<Box<dyn Scene>> {
 /// "synthwave", "spaceship"; "default" for synthwave).
 ///
 /// Only reads, and only those two files; follows no symlinks, never makes
-/// a folder, never writes. Anything missing, unreadable, too big, not a
-/// theme, or the galaxy (which is mpfree-splash) gives None, so the caller
-/// shows the default: a startup screen must always come up.
+/// a folder, never writes. Anything missing, unreadable, too big, a theme
+/// no one could read (`Theme::unusable`, which the app leaves out), or the
+/// galaxy (which is mpfree-splash) gives None, so the caller shows the
+/// default: a startup screen must always come up.
 pub fn saved_theme(data: &Path) -> Option<String> {
     let app = read_plain(data, &["settings", "app.conf"])?;
     let name = mpfree_store::Settings::parse(&app)
@@ -85,7 +86,14 @@ pub fn saved_theme(data: &Path) -> Option<String> {
         return None;
     }
     let text = read_plain(data, &["files", "themes", &name])?;
-    match Theme::parse(&text).ok()?.startup {
+    // Read as the app reads the themes folder: a line with a mistake uses
+    // the base's value; a theme no one could read is left out, and the
+    // app shows the default theme, so its startup screen goes too.
+    let (theme, _) = Theme::load(&text);
+    if theme.unusable().is_some() {
+        return None;
+    }
+    match theme.startup {
         Startup::Galaxy => None,
         Startup::Console => Some("console".into()),
         Startup::Synthwave => Some("synthwave".into()),
@@ -162,8 +170,20 @@ mod tests {
         assert_eq!(saved_theme(&d).as_deref(), Some("console"));
         fs::write(d.join("files/themes/sunrise.theme"), "startup = galaxy\n").unwrap();
         assert_eq!(saved_theme(&d), None, "the galaxy is mpfree-splash");
-        fs::write(d.join("files/themes/sunrise.theme"), "accent = blue\n").unwrap();
-        assert_eq!(saved_theme(&d), None, "not a theme");
+        // A mistake in a line: that line uses the base's value, as in the
+        // app. A theme no one could read: the app shows Default.
+        fs::write(
+            d.join("files/themes/sunrise.theme"),
+            "base = spaceship\naccent = blue\n",
+        )
+        .unwrap();
+        assert_eq!(saved_theme(&d).as_deref(), Some("spaceship"));
+        fs::write(
+            d.join("files/themes/sunrise.theme"),
+            "base = spaceship\ntext = #000000\n",
+        )
+        .unwrap();
+        assert_eq!(saved_theme(&d), None, "no one could read it");
         let _ = fs::remove_dir_all(&d);
     }
 

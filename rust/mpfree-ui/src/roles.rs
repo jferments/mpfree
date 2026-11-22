@@ -113,6 +113,10 @@ roles! {
         "The eighth.";
     Handle "handle" "Controls" Role "light_dark({surface}, {text})"
         "The knob of a switch and the handle of a slider.";
+    Picked "picked" "Controls" Role "{accent}"
+        "The fill of what is picked or on: a chosen button, pill, tab or step.";
+    OnPicked "on_picked" "Controls" Role "{on_accent}"
+        "Words and marks on a `picked` fill.";
     Cut "cut" "Palettes" Role "{text_dim}"
         "The EQ's low and high cuts, beside its bands' series colours.";
     Grain "grain" "Sampler" Role "{accent2}"
@@ -544,6 +548,10 @@ impl Paint {
     pub const ACCENT: Paint = Paint::Key(ColorKey::Accent);
     pub const ACCENT2: Paint = Paint::Key(ColorKey::Accent2);
     pub const ON_ACCENT: Paint = Paint::Key(ColorKey::OnAccent);
+    /// The fill of what is picked or on ([`Theme::picked`]).
+    pub const PICKED: Paint = Paint::Key(ColorKey::Role(Role::Picked));
+    /// Words and marks on it.
+    pub const ON_PICKED: Paint = Paint::Key(ColorKey::Role(Role::OnPicked));
     pub const GOOD: Paint = Paint::Key(ColorKey::Good);
     pub const WARN: Paint = Paint::Key(ColorKey::Warn);
     pub const BAD: Paint = Paint::Key(ColorKey::Bad);
@@ -679,6 +687,18 @@ impl Theme {
     /// The recording colour.
     pub fn record(&self) -> Color {
         self.role(Role::Record)
+    }
+
+    /// The fill of what is picked or on (a chosen button, pill, tab or
+    /// step). The accent unless the theme sets `picked`, so a theme can
+    /// fill picked things with a colour too pale to draw words in.
+    pub fn picked(&self) -> Color {
+        self.role(Role::Picked)
+    }
+
+    /// Words and marks on [`Theme::picked`].
+    pub fn on_picked(&self) -> Color {
+        self.role(Role::OnPicked)
     }
 
     /// Whether the theme is light: its `mode`, or, left on auto, whether

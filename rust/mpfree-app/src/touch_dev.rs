@@ -412,10 +412,10 @@ impl Widget for TouchTest {
         for (i, (cell, name)) in Self::bar_cells(bar).into_iter().zip(MODES).enumerate() {
             let on = i == active;
             cx.canvas
-                .fill_round_rect(cell, t.radius, if on { t.accent } else { t.raised });
+                .fill_round_rect(cell, t.radius, if on { t.picked() } else { t.raised });
             // Clear is faint while there is nothing to clear.
             let ink = if on {
-                t.on_accent
+                t.on_picked()
             } else if i == 3 && !self.mode_does_something(3) {
                 t.text_faint
             } else {
@@ -755,14 +755,14 @@ impl Widget for TuneList {
         for (i, (b, name)) in self.action_rects(body).into_iter().zip(ACTIONS).enumerate() {
             let sel = self.selected == self.rows.len() + i;
             cx.canvas
-                .fill_round_rect(b, t.radius, if sel { t.accent } else { t.raised });
+                .fill_round_rect(b, t.radius, if sel { t.picked() } else { t.raised });
             cx.canvas.stroke_round_rect(b, t.radius, 1, t.outline);
             cx.text(
                 FontId::Bold,
                 t.size_body,
                 b,
                 Align::Center,
-                if sel { t.on_accent } else { t.text },
+                if sel { t.on_picked() } else { t.text },
                 name,
             );
         }

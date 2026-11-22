@@ -87,6 +87,7 @@ use std::f32::consts::TAU;
 pub use apart::Say;
 use apart::{Apart, Told};
 pub use audio::TimeAudio;
+pub use control::EXACT;
 pub use control::{MuteLight, PadTap, SongAudio, TimeControl};
 pub use follow::Follow;
 use link::Tracks;
@@ -7573,7 +7574,7 @@ mod tests {
             let said = h.act(TimeAction::SongToScenes).unwrap();
             assert_eq!(
                 said,
-                "song → scenes: rows 4 to 6, exact (UNDO takes it back)"
+                "song → scenes: rows 4 to 6, exact. UNDO takes it back."
             );
             // The rows alone, from the first, in a fresh host.
             let mut r = TimeHost::new(RATE, 120.0).unwrap();
@@ -7634,7 +7635,10 @@ mod tests {
         );
         // The song they make.
         let said = song.act(TimeAction::ScenesToSong).unwrap();
-        assert_eq!(said, "scenes → song: 3 rows from bar 1, exact");
+        assert_eq!(
+            said,
+            "scenes → song: 3 rows from bar 1, exact. UNDO takes it back."
+        );
         song.act(TimeAction::SongMode(true)).unwrap();
         let mut played = Fake::default();
         song.command(Command::Play);
@@ -7642,6 +7646,107 @@ mod tests {
         assert_eq!(played.hits, live.hits);
         assert_eq!(played.releases, live.releases);
         assert_eq!((h.dropped(), song.dropped()), (0, 0));
+    }
+
+    /// The conversion report card (Arrange 4.3): a conversion whose result
+    /// plays differently opens it, each difference by track and bar in song
+    /// order; its Done closes it and keeps what the conversion did, UNDO
+    /// closes it and takes the conversion back, and another conversion
+    /// replaces it (an exact one leaves it closed).
+    #[test]
+    fn a_conversion_that_plays_differently_opens_its_report_card() {
+        use mpfree_seq::arrange::Placement;
+        use mpfree_seq::{ClipProgram, Direction, ListStep, Note, TrackProgram};
+        use mpfree_time_ui::view::{Report, ReportRow};
+        const BAR: i64 = 3840;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut four = Clip::new("four", 4 * BAR);
+        four.notes = (0..4).map(|k| Note::new(k * BAR, 100, 10, 100)).collect();
+        four.direction = Direction::Random;
+        let mut bass = Clip::new("bass", BAR);
+        bass.notes = vec![Note::new(0, 100, 40, 100)];
+        let p = &mut h.control.project;
+        p.tracks[0].slots[2] = Some(four);
+        p.tracks[1].slots[0] = Some(bass);
+        p.give_clip_ids();
+        let s = &mut p.arrangement;
+        s.place(Placement::of(&p.tracks, 0, 2, 0, 8 * BAR)).unwrap();
+        s.place(Placement::of(&p.tracks, 1, 0, 2 * BAR, 6 * BAR))
+            .unwrap();
+        assert_eq!(h.state().report, None);
+        // Song → scenes: the drums' Random order rolls again in each copy.
+        let before = h.control.project.clone();
+        let said = h.act(TimeAction::SongToScenes).unwrap();
+        assert!(said.contains("2 differences"), "{said}");
+        let random = "plays in Random order; the copy rolls its own order";
+        let row = |bar| ReportRow {
+            track: Some(0),
+            bar,
+            what: random.into(),
+        };
+        let want = Report {
+            title: "SONG → SCENES".into(),
+            made: "rows 4 to 5".into(),
+            lead: "Launch row 4 and the rows play the song, except:".into(),
+            rows: vec![row(1), row(3)],
+        };
+        assert_eq!(h.state().report.as_deref(), Some(&want));
+        // Done: the card goes, the rows stay.
+        let after = h.control.project.clone();
+        assert_eq!(h.act(TimeAction::CloseReport).unwrap(), "");
+        assert_eq!(h.state().report, None);
+        assert_eq!(h.control.project, after);
+        // UNDO with the card open: the card goes with the rows.
+        h.act(TimeAction::Undo).unwrap();
+        h.act(TimeAction::SongToScenes).unwrap();
+        assert!(h.state().report.is_some());
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.state().report, None);
+        let mut was = before.clone();
+        was.next_clip = h.control.project.next_clip;
+        assert_eq!(h.control.project, was);
+        // REDO brings the rows back, not the card.
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(h.state().report, None);
+        h.act(TimeAction::Undo).unwrap();
+        // List → song with a scene's program change: its card replaces
+        // the last one; an exact one after it leaves it closed.
+        h.act(TimeAction::SongToScenes).unwrap();
+        let p = &mut h.control.project;
+        p.arrangement = Default::default();
+        p.scene_mut(0).unwrap().programs = vec![TrackProgram {
+            track: 0,
+            program: ClipProgram {
+                program: 11,
+                bank: None,
+            },
+        }];
+        p.arrangement.list.steps =
+            vec![ListStep { row: 2, times: 1 }, ListStep { row: 0, times: 1 }];
+        let said = h.act(TimeAction::ListToSong).unwrap();
+        assert!(said.contains("1 difference"), "{said}");
+        let st = h.state();
+        let r = st.report.as_deref().unwrap();
+        assert_eq!(
+            (r.title.as_str(), r.made.as_str(), r.lead.as_str()),
+            (
+                "LIST → SONG",
+                "bars 1 to 5",
+                "The song plays the list, except:"
+            )
+        );
+        assert_eq!(
+            r.rows,
+            [ReportRow {
+                track: None,
+                bar: 5,
+                what: "the scene's program changes aren't in the song".into(),
+            }]
+        );
+        h.control.project.arrangement.list.steps = vec![ListStep { row: 2, times: 1 }];
+        let said = h.act(TimeAction::ListToSong).unwrap();
+        assert!(said.ends_with(EXACT), "{said}");
+        assert_eq!(h.state().report, None);
     }
 
     /// List → song plays the list offline through Rec song (Arrange 4.1,
@@ -7718,7 +7823,10 @@ mod tests {
             by(&mut live, &mut heard, to);
             let mut song = TimeHost::with_project(RATE, 120.0, p.clone()).unwrap();
             let said = song.act(TimeAction::ListToSong).unwrap();
-            assert_eq!(said, "list → song: 4 steps from bar 1, exact");
+            assert_eq!(
+                said,
+                "list → song: 4 steps from bar 1, exact. UNDO takes it back."
+            );
             song.act(TimeAction::SongMode(true)).unwrap();
             let mut played = Fake::default();
             song.command(Command::Play);
@@ -7818,7 +7926,7 @@ mod tests {
         // Row 6 has a clip too: three rows, bars 1, 2 and 3.
         assert_eq!(
             h.act(TimeAction::ScenesToSong).unwrap(),
-            "scenes → song: 3 rows from bar 1, exact"
+            "scenes → song: 3 rows from bar 1, exact. UNDO takes it back."
         );
         let st = h.state();
         assert_eq!(st.placements.len(), 5);
@@ -7846,7 +7954,7 @@ mod tests {
         let takes = h.state().done.len();
         assert_eq!(
             h.act(TimeAction::SongToScenes).unwrap(),
-            "song → scenes: rows 3 to 5, exact (UNDO takes it back)"
+            "song → scenes: rows 3 to 5, exact. UNDO takes it back."
         );
         let p = &h.control.project;
         // Copies of the clips the song played, each with an id of its own.
@@ -8308,7 +8416,10 @@ mod tests {
         h.command(Command::Stop);
         run(&mut h, &mut pads, 6 * BAR, &[]);
         let said = h.act(TimeAction::ListToSong).unwrap();
-        assert_eq!(said, "list → song: 2 steps from bar 1, exact");
+        assert_eq!(
+            said,
+            "list → song: 2 steps from bar 1, exact. UNDO takes it back."
+        );
         let song = &h.control.project.arrangement;
         assert_eq!(song.markers.len(), 2);
         assert_eq!(song.end(), 3 * 3840);
@@ -8778,18 +8889,16 @@ mod tests {
         };
         let old = info(&mut h);
         assert_eq!(old.clip.notes.len(), 3);
-        // Erase picked, then step 1 taken off on Steps: the notes move up.
-        h.act(TimeAction::Edit(E::Button(2))).unwrap();
-        h.act(TimeAction::Edit(E::Button(2))).unwrap();
+        // Step 1 taken off on Steps: the notes move up.
         let mid = info(&mut h);
-        assert_eq!(mid.editor.tool, mpfree_time_ui::editor::Tool::Erase);
         let gone = notes(&h)[0];
         h.step_action(tap(0)).unwrap();
         assert!(!notes(&h).contains(&gone));
-        // A tap made on the picture before: refused, nothing erased.
+        // ERASE + a tap made on the picture before: refused, nothing
+        // erased.
         let before = notes(&h);
         let said = h
-            .act(TimeAction::Edit(E::Note {
+            .act(TimeAction::Edit(E::Erase {
                 index: 0,
                 rev: mid.rev,
             }))
@@ -8799,19 +8908,35 @@ mod tests {
             "{said}"
         );
         assert_eq!(notes(&h), before);
-        // The new picture's tap erases the note it showed.
+        // The new picture's erase takes the note it showed.
         let now = info(&mut h);
         assert!(now.rev > mid.rev);
         let hit = now.clip.notes[1];
-        h.act(TimeAction::Edit(E::Note {
+        h.act(TimeAction::Edit(E::Erase {
             index: 1,
             rev: now.rev,
         }))
         .unwrap();
         assert!(!notes(&h).contains(&hit));
         assert_eq!(notes(&h).len(), 1);
-        // Picks follow: two kicks back, the last one picked by Select...
-        h.act(TimeAction::Edit(E::Button(2))).unwrap();
+        // The same for a move and a tap on an old picture (piano roll
+        // plan 1B.1: every action naming a note carries its picture).
+        for a in [
+            E::Tap {
+                index: 0,
+                rev: mid.rev,
+            },
+            E::Drop {
+                index: 0,
+                rev: mid.rev,
+                ticks: 240,
+                notes: 0,
+            },
+        ] {
+            assert!(h.act(TimeAction::Edit(a)).is_err());
+            assert_eq!(notes(&h).len(), 1);
+        }
+        // Picks follow: two kicks back, the last one picked...
         for step in [0, 12] {
             h.step_action(tap(step)).unwrap();
         }
@@ -8943,6 +9068,8 @@ mod tests {
         assert_eq!(answer(&mut h).outcome, O::Unchanged);
         // A move: taken, at a new revision, the note where it landed.
         h.act(TimeAction::Edit(E::Drop {
+            index: 1,
+            rev,
             ticks: 240,
             notes: 2,
         }))

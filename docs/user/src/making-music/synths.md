@@ -390,7 +390,7 @@ The Q-Links take Vowel, Singers, Detune and Brightness on the Choir page; Attack
 
 From a keyboard on MIDI in, Choir answers the sustain and sostenuto pedals, the soft pedal (6 dB quieter and darker), the mod wheel (more vibrato) and a breath controller or expression pedal (volume). See [Pedals and the mod wheel](midi-and-cv.md#pedals-and-the-mod-wheel).
 
-The Synth tab takes its colours from the theme picked in **Prefs > Appearance**, like the rest of MPFree: the sections' colours, the curves and the boxes in the pictures all change with it. The Q-Links keep their own four colours (blue, green, amber and purple) under every theme; Light draws deeper shades of them, so they read on its pale panels.
+The Synth tab takes its colours from the theme picked in **Prefs > Appearance**, like the rest of MPFree: the sections' colours, the curves and the boxes in the pictures all change with it. The Q-Links keep four colours of their own: blue, green, amber and purple in most themes, deeper shades of them in Light, Slate and AbleTown so they read on their paler panels, and pink, cyan, amber and violet in Synthwave.
 
 {{shot: synth-fm | The FM synth: the algorithm diagram shows which operators modulate which, and the levels show the six operators.}}
 

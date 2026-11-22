@@ -847,6 +847,7 @@ name = "mpfree-audiotracks"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "mpfree-stream",
  "mpfree-stretch",
  "mpfree-transport",
 ]

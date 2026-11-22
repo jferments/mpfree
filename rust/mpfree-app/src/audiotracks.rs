@@ -42,10 +42,18 @@
 //!   empties the tracks ([`TrackHost::clear`], once nothing records) and
 //!   the project's part goes in when it has been read
 //!   ([`TrackHost::open`]).
+//! - Recording to files (the audio tracks rethink, phase 3a): once the
+//!   screen has recovered what a cut-off run left in the library's work
+//!   folder, [`TrackHost::record_to`] has every take recorded to a file of
+//!   its own there as it records (`NAME_ID.wav`, NAME the track's name,
+//!   kept up to date by [`TrackHost::sync`]). A save copies the finished
+//!   files into the project, and [`TrackHost::saved_into`] tells the host
+//!   where they went. What happens to a take's file goes to the log
+//!   ([`TrackHost::take_file_line`]).
 //!
 //! The memory is set aside when MPFree starts ([`SECONDS`] of stereo). The
-//! takes stay in RAM: streaming them from the stick waits for the stick
-//! speed test (rule zero: it needs Jay's go).
+//! takes also stay in RAM until streaming plays them from their files
+//! (phase 3b).
 
 use mpfree_audiotracks::host::{AudioHost, ImportRefused, TakeWave, MAX_COLUMNS};
 use mpfree_audiotracks::save::{Saved, TrackFile};
@@ -133,6 +141,12 @@ const GROW_EVERY: u64 = 86;
 /// Room for each audio track's name in the lines (bytes; a longer name is
 /// cut short there).
 const NAME_ROOM: usize = 64;
+
+/// What a take's file is named for on an engine track whose project track
+/// has no name, as its lane says.
+const AUDIO_N: [&str; MAX_TRACKS] = [
+    "Audio 1", "Audio 2", "Audio 3", "Audio 4", "Audio 5", "Audio 6", "Audio 7", "Audio 8",
+];
 
 /// Which project track each of the audio engine's tracks plays (the audio
 /// tracks rethink, phase 1a: an audio track is a track in the project's
@@ -266,6 +280,9 @@ pub struct TrackHost {
     /// track given an engine track (within [`ARM_WINDOW`]) is armed
     /// (layout spec 4c).
     arm_next: Option<u64>,
+    /// The folder to record takes into, until the host takes it
+    /// ([`TrackHost::record_to`]: it waits while a track records).
+    files_dir: Option<std::path::PathBuf>,
 }
 
 impl TrackHost {
@@ -313,7 +330,41 @@ impl TrackHost {
             place: [None; MAX_TRACKS],
             silent: [false; MAX_TRACKS],
             arm_next: None,
+            files_dir: None,
         }
+    }
+
+    /// Record every take to a file of its own in `dir` (the library's work
+    /// folder for the audio tracks, after the screen has recovered what a
+    /// cut-off run left there), from the next armed track on. If a track
+    /// records now, it starts once nothing does. Does not allocate.
+    pub fn record_to(&mut self, dir: std::path::PathBuf) {
+        self.files_dir = Some(dir);
+        self.tend_files();
+    }
+
+    fn tend_files(&mut self) {
+        if let Some(dir) = self.files_dir.take() {
+            let cfg = mpfree_audiotracks::files::WriterConfig::default();
+            if let Err(dir) = self.host.record_to(dir, cfg) {
+                self.files_dir = Some(dir);
+            }
+        }
+    }
+
+    /// A project save finished into `samples` (the project's `samples/`):
+    /// the takes it copied a file of are kept from there from now on, and
+    /// their copies in the work folder go. Not for an autosave.
+    pub fn saved_into(&self, samples: std::path::PathBuf) {
+        self.host.saved_into(samples);
+    }
+
+    /// The next line for the log about a take's file (it couldn't be made,
+    /// it is at risk, a save took a take from memory), naming the track as
+    /// the musician named it. Allocates only when there is one.
+    pub fn take_file_line(&mut self) -> Option<String> {
+        let e = self.host.take_event()?;
+        Some(e.line(&self.who(e.track())))
     }
 
     /// A project opening, or New: which project track each engine track
@@ -565,6 +616,9 @@ impl TrackHost {
         self.measure();
         self.periods += 1;
         self.tend_open();
+        if self.files_dir.is_some() {
+            self.tend_files();
+        }
         self.take_wave();
         if self.periods.is_multiple_of(CHECK_EVERY) {
             self.tend_waves();
@@ -1513,9 +1567,6 @@ impl TrackHost {
                 ))
             }
             Err(ImportRefused::Busy) => Err("another sound is still going onto its track: a moment".into()),
-            Err(ImportRefused::Streaming) => {
-                Err("the audio tracks stream from the disk: a sound can't go on them now".into())
-            }
             Err(ImportRefused::NoTake) => Err(format!(
                 "the audio tracks hold {} takes, the most: forget some takes first",
                 mpfree_audiotracks::MAX_TAKES
@@ -1562,6 +1613,13 @@ impl TrackHost {
             room.clear();
             room.push_str(&name[..end]);
         }
+        // Its next takes' files are named for it too, "Audio N" as its
+        // lane says when it has no name.
+        let file = match name.trim() {
+            "" => AUDIO_N.get(s).copied().unwrap_or("Audio"),
+            n => n,
+        };
+        self.host.set_name(s, file);
     }
 
     /// Before the audio tracks' own Undo (`undo`) or Redo: a song edit's

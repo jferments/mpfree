@@ -69,19 +69,6 @@ impl Mode {
             Mode::Lydian => 0.15,
         }
     }
-
-    /// The mode's seven steps above the home note.
-    fn steps(self) -> [u8; 7] {
-        let mut s = [0u8; 7];
-        let mut i = 0;
-        for pc in 0..12u8 {
-            if self.mask() & (1 << pc) != 0 && i < 7 {
-                s[i] = pc;
-                i += 1;
-            }
-        }
-        s
-    }
 }
 
 /// A note's weight: how long it sounds (a quarter to two beats) and where
