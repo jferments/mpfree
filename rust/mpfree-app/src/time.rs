@@ -10715,6 +10715,114 @@ mod tests {
         assert_eq!(h.project(), together.project());
     }
 
+    /// Piano roll plan 0B (on Arrange 2.6b): apart, the note editor's
+    /// touches go to the editing side's thread as the screen sends them
+    /// (`time_action`'s `act_then`) and answer as together does, in the
+    /// same order and words: a pick, a move, a tap made on the picture
+    /// from before the move's answer came back (refused: the clip changed
+    /// under the finger), a velocity drag, Draw, a drawn note, ERASE + a
+    /// tap, UNDO. The copy the screen reads comes to match together's:
+    /// the clip, its revision, the picks and the last touch's answer.
+    #[test]
+    fn apart_the_note_editor_answers_as_together_and_its_copy_follows() {
+        use mpfree_time_ui::editor::EditAction as E;
+        use mpfree_time_ui::view::EditOutcome as O;
+        let note = Say::Note {
+            ok: "time: ",
+            err: "time: ",
+        };
+        // Together: each touch made on the picture the screen has after
+        // the touch before it was answered, but the stale tap, made on
+        // the picture before the move.
+        let mut together = host_with_a_clip();
+        let info = |h: &mut TimeHost| {
+            h.take_changed();
+            *h.state().edit.expect("the editor is open")
+        };
+        let mut sent: Vec<(TimeAction, Say)> = Vec::new();
+        let mut want = Vec::new();
+        let mut touch = |h: &mut TimeHost, a: E, say: &Say| {
+            let a = TimeAction::Edit(a);
+            let r = h.act_then(a.clone(), say.clone()).expect("together");
+            sent.push((a, say.clone()));
+            want.push((say.clone(), r));
+        };
+        touch(&mut together, E::Open, &note);
+        let first = info(&mut together);
+        let rev = first.rev;
+        touch(&mut together, E::Note { index: 1, rev }, &note);
+        let drop = E::Drop {
+            index: 1,
+            rev,
+            ticks: 240,
+            notes: 2,
+        };
+        touch(&mut together, drop, &note);
+        touch(&mut together, E::Tap { index: 0, rev }, &note);
+        touch(&mut together, E::Velocity(0.5), &note);
+        touch(&mut together, E::Button(2), &note);
+        touch(&mut together, E::Empty { tick: 480, note: 5 }, &note);
+        let drawn = info(&mut together);
+        let index = drawn
+            .clip
+            .notes
+            .iter()
+            .position(|n| (n.tick, n.note) == (480, 5))
+            .expect("the drawn note");
+        let rev = drawn.rev;
+        touch(&mut together, E::Erase { index, rev }, &note);
+        touch(&mut together, E::Note { index: 0, rev }, &note);
+        let r = together
+            .act_then(TimeAction::Undo, Say::Undo)
+            .expect("together");
+        sent.push((TimeAction::Undo, Say::Undo));
+        want.push((Say::Undo, r));
+        let refused = |r: &Result<String, String>| {
+            r.as_ref()
+                .is_err_and(|why| why.contains("the clip changed under your finger"))
+        };
+        assert_eq!(
+            want.iter().filter(|(_, r)| refused(r)).count(),
+            2,
+            "the tap from before the move and the pick from before the erase: {want:?}"
+        );
+        // UNDO took the erase back: the drawn note is there again.
+        let end = info(&mut together);
+        assert!(end.clip.notes.iter().any(|n| (n.tick, n.note) == (480, 5)));
+        // Apart: every touch sent at once, as a quick hand does.
+        let (mut h, why) = host_with_a_clip().into_apart();
+        assert_eq!(why, None);
+        let mut pads = Fake::default();
+        for (a, say) in sent {
+            assert_eq!(h.act_then(a, say), None, "apart, the answer comes later");
+        }
+        assert_eq!(answers(&mut h, &mut pads, want.len()), want);
+        until(&mut h, &mut pads, |h| {
+            h.project() == together.project()
+                && h.state().edit.as_deref() == Some(&end)
+                && h.editing()
+        });
+        let a = h.state().edit.expect("open").answer;
+        assert_eq!(a, end.answer);
+        assert!(
+            matches!(a.outcome, O::Refused(_)),
+            "the last editor touch was the stale pick: {a:?}"
+        );
+        // A new copy for something else (a track added) shares the clip
+        // while it is unchanged (plan 0C.1), so the roll isn't built again.
+        let shown = h.state().edit.expect("open").clip;
+        let tracks = h.project().tracks.len();
+        assert_eq!(h.act_then(TimeAction::AddTrack, note.clone()), None);
+        assert!(answers(&mut h, &mut pads, 1)[0].1.is_ok());
+        until(&mut h, &mut pads, |h| {
+            h.project().tracks.len() == tracks + 1
+        });
+        let again = h.state().edit.expect("open").clip;
+        assert!(std::sync::Arc::ptr_eq(&shown, &again), "the same copy");
+        let h = h.into_together().expect("the control half comes back");
+        assert_eq!(h.project().tracks.len(), tracks + 1);
+    }
+
     /// Arrange 2.6b: apart, a call that isn't an ask borrows the control
     /// half back for the call (a lend): its answer is the same as
     /// together's, and what the facade reads straight after (the armed
