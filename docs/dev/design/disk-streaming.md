@@ -1,11 +1,11 @@
 <!--
-covers: rust/mpfree-audiotracks/src/bin/disktest.rs rust/mpfree-audiotracks/src/bin/disktest/read.rs rust/mpfree-audiotracks/src/host.rs rust/mpfree-audiotracks/src/disk.rs tools/mpc-one/host_disktest_mpc.py tools/mpc-one/read-only-stream-survey.sh
+covers: rust/mpfree-stream rust/mpfree-audiotracks/src/bin/disktest.rs rust/mpfree-audiotracks/src/bin/disktest/read.rs rust/mpfree-audiotracks/src/host.rs rust/mpfree-audiotracks/src/disk.rs tools/mpc-one/host_disktest_mpc.py tools/mpc-one/read-only-stream-survey.sh
 checked: 2026-11-22 829e1568
 -->
 
 # Disk streaming from the USB stick and the SD card
 
-**Status:** plan approved by the owner on 2026-11-22 (phases P0 to P1.5 on the workstation; every step on the MPC waits for its own go). P0's measuring tools are built: the streaming survey (D0) and the read-only stick test (D1), neither run on the MPC yet. P0.5's fault fixes in the old engine are built, with the fault tests (below). Nothing streams in the app yet: the audio tracks' engine is still the 12 Nov one, switched off.
+**Status:** plan approved by the owner on 2026-11-22 (phases P0 to P1.5 on the workstation; every step on the MPC waits for its own go). P0's measuring tools are built: the streaming survey (D0) and the read-only stick test (D1), neither run on the MPC yet. P0.5's fault fixes in the old engine are built, with the fault tests (below). P1's first part is built: the new crate `mpfree-stream` with file formats, the sound thread's cache, cursors and the coordinator, and its unload-while-playing tests ([below](#p1-the-stream-layer)). Nothing streams in the app yet: the audio tracks' engine is still the 12 Nov one, switched off.
 
 **Owner:** the disk streaming thread. What plays and when belongs to the audio tracks ([audio-tracks.md](audio-tracks.md)); this layer makes sure it is in RAM in time. The SD card's switching on and its safety testing (steps S0 and S1) belong to the [SD card plan](../hardware/sd-card-and-internal-drive.md) and the owner's hardware project.
 
@@ -196,3 +196,36 @@ The fault tests were written first and failed against the old engine; these chan
 - **The WAV length (finding 7, in part).** A finish whose length doesn't fit a WAV header (`WAV_MAX_DATA`, about 3 hours of stereo at 48 kHz) fails instead of writing a wrong length; the sizes are worked out in 64 bits, so a 32-bit MPC never wraps them.
 - **Fault knobs.** `DiskStats` has `fail_writes`, `fail_finishes` and `short_reads` (the next so many of each fail) and counts the long jobs' steps.
 - **Tests.** `tests/faults.rs` (a fake disk) and `tests/host_faults.rs` (the real disk thread, its knobs, and a take file cut short under it) check every sample played against what was recorded; the disk thread's unit tests cover the long jobs and the WAV limit. Ignored, each naming its finding, until P1 fixes it: the host's period allocates (1, in `tests/no_alloc.rs`), an old reply lands in a new project's take (5), a sound can't be brought in while streaming (6), a recording's file has no usable header until it ends (7).
+
+## P1: the stream layer
+
+`rust/mpfree-stream`, built a piece at a time. The first part plays files from disk through a cache the sound thread owns; recording (after its spec page is reviewed), decoding workers and the audio tracks' move come next.
+
+- **`format`**: where a WAV, RF64 or AIFF file's audio starts, how long it is and how it is stored (8, 16, 24 or 32-bit, float or double, either byte order), so it is read in its own format and turned into float as it arrives. A file cut short is read to its end and says so; anything it can't stream (more than 2 channels, a rate outside 8 to 192 kHz, a compressed AIFF) is refused with its reason.
+- **`msg`**: what goes between the sound thread and the coordinator. Every message says who asked (`Tag`: the project's generation, the source, the source's generation).
+- **`player`**: the sound thread's side. `begin` takes at most a set number of messages a period and copies at most a set number of samples into the cache; `read` copies a source's frames out (silence where a unit isn't ready, counted as missed); `playing` and `end` post where each cursor plays once a planning round.
+- **`cursor`**: one voice's place in a source: exact seeks, a speed up to 4 file frames an output frame, loops (a cursor before a loop plays into it; one past its end plays on), several cursors on one source. It gathers the frames it will pass round the loop, then reads them with 4-point Hermite interpolation: at speed 1 from a whole frame, the file's own samples bit for bit. The band-limited read for rate changes comes with stems (P3).
+- **`coord`**: the coordinator, on its own thread. It opens files, gives each source a new generation, plans reads earliest deadline first over a window ahead of every cursor (round its loop once, scaled by its speed), asks an I/O thread that only reads, decodes, and sends fills. A cursor not heard of for two rounds has stopped. A read that fails or comes back short is counted and asked for again; nothing short is sent to be played.
+
+### Who owns a chunk
+
+These are the rules the code keeps, and the tests check:
+
+1. **The sound thread owns its cache outright.** No other thread reads or writes it. There is no shared memory and no unsafe code (`#![forbid(unsafe_code)]`).
+2. **The coordinator owns only the buffers in flight.** A buffer goes to the sound thread inside a fill and always comes back (`FromPlayer::Back`), whether the fill was used or refused. Neither side frees a buffer the other made. If the way back is full, the sound thread holds the buffer in a queue made at start, big enough for every buffer there is.
+3. **The coordinator chooses every slot, and keeps a mirror of the cache.** Only its own messages change the cache, and the sound thread applies them in the order sent, so the mirror is exact. A slot goes to a unit that is free, else to the one wanted longest ago and not in the last round.
+4. **A slot goes Free, Filling, Ready.** A fill marks it Filling and takes it out of what plays at once; the copy can take several periods; only when every sample is in does it become Ready. A read of a Filling slot is silence, counted as missed: never half a unit.
+5. **Generations only go up.** A source's new generation (a replace) or a close drops its cached units and any fill being copied, on the sound thread, before anything else is applied. A fill or a reply for an older generation, or an older project, is dropped and counted on whichever side sees it first; both sides check.
+6. **Neither side blocks or allocates on the channels.** Both are bounded std channels made at start; the sound thread only uses `try_send` and `try_recv`, and the coordinator only polls, so a send never has to wake a waiting thread.
+
+Handing slots over without the copy (Published and Retired states) comes only if the worst-period tests show the copy matters, under the rules in [The sound thread's side](#the-sound-threads-side).
+
+### The interface for the sampler and the launcher
+
+A player that wants a sound from disk needs four things: `Coordinator::open(source, path)` (gives the source's `Tag`) and `close(source)` on the coordinator's side; a `Cursor::new(source, id)` made off the sound thread; and `Cursor::play(&mut player, out)` once a period on the sound thread, with `seek`, `set_speed` and `set_loop` between periods. The sound thread calls `Player::begin` at the start of each period and `Player::end` at its end, once for all the cursors.
+
+### Tests
+
+- `tests/format.rs`: every kind of WAV and AIFF built byte by byte and decoded exactly.
+- `tests/stream.rs`: every format played back exactly through the coordinator and the cache; loops crossing a unit's edge, seeks into a unit, speeds 0.5, 1.5 and 2 landing on the right frames; two cursors sharing a source; a cold start silent and counted, never wrong; a device that fails, comes up short and answers out of order, never played; and **the unload and replace test**, in one thread (6,000 periods of random replaces, closes, new projects, seeks, loops and moves over a cache too small for what plays) and with real threads (the coordinator and its I/O thread replacing and closing sources while this thread plays). Every sample of every file says which file and frame it is, so each frame played is checked: silence, or exactly the frame it should be of the generation the sound thread has now. Planting either bug (a replace that keeps the old units, or a slot Ready before it is copied) makes both fail.
+- `tests/no_alloc.rs`: the sound thread's calls never allocate or free, through a busy run with periods from 1 to 4096 frames.
