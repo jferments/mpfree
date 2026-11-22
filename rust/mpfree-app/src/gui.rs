@@ -45,7 +45,7 @@ use crate::play_widgets::{
 use crate::sample_page::{self, SamplePage};
 use crate::sampler::{Cloud, Playheads, ViewSwap};
 use crate::skin_page;
-use crate::time::{HitInfo, StepAction, StepsData};
+use crate::time::{HitInfo, NoteValue, StepAction, StepsData};
 use crate::touch_bell::Doorbell;
 use crate::touch_dev::{self, TouchTest, TuneList};
 use crate::touchlab_page::{TouchLabView, TouchPage};
@@ -122,6 +122,8 @@ pub const GUARD_HOLD: f32 = 0.5;
 pub const STEP_HOLD: f32 = 0.4;
 /// What the hint line says when such a button is touched in Perform.
 pub const GUARD_HINT: &str = "Hold to delete";
+/// The longest name the text keyboard takes for a song marker.
+const MARKER_NAME_LEN: usize = 32;
 
 /// Opens on their way to the audio loop and back at once, at most (live
 /// shows A2). The audio loop holds the engines each one replaced until
@@ -161,6 +163,8 @@ fn guarded(widget: &str, t: &mpfree_ui::Target) -> bool {
         // and the note editor's Delete.
         (SONG, "button") | (NOTES, "button") => label == "Delete",
         (SONG, "region-button") => label == "Erase",
+        // A picked section's Delete bars (Arrange 3.3).
+        (SONG, "section-button") => label == "Delete bars",
         // The Looper tab's Clear, a layer's ×, and ½ (a ring's clear is
         // a second's hold already).
         (crate::looper_tab::EDITOR, "clear" | "layer-delete" | "half") => true,
@@ -172,6 +176,14 @@ fn guarded(widget: &str, t: &mpfree_ui::Target) -> bool {
         _ => false,
     }
 }
+/// A row of the Sequencer's Lanes list: a setting's lock lane, or a
+/// sound's Velocity or Chance (step sequencer refactor D3).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum LaneChoice {
+    Lock(play_page::LockLane),
+    Value(u8, NoteValue),
+}
+
 /// The undo history (Jay after live test 3: hold UNDO to see the page's
 /// history and jump back several steps at once), over the page it was
 /// opened from.
@@ -204,12 +216,19 @@ const LANES_HINT: &str = "Tap a setting, or turn the wheel and push: its lock la
 /// that plays outside gear (with its Another CC button).
 const LANES_PAD_LINE: &str = "Hit a pad first to list its sound's settings.";
 const LANES_GEAR_LINE: &str = "Another CC: any control of the gear, by number.";
+const LANES_VALUE_LINE: &str = "Velocity and Chance: drag a finger across the hits.";
+const LANES_NO_VALUE_LINE: &str = "Velocity and Chance lanes: on a kit's sounds.";
 /// The Sequencer's clip chip (refactor C2): the selected track's clips,
 /// over the page, to pick the one the Sequencer edits without starting it.
 pub const EDIT_CLIPS_PAGE: &str = "Edit clip";
 pub const EDIT_CLIPS_LAYOUT: &str =
     "col(header:60, row(edit-clips:*, edit-clips-card:440):*, hint:26)";
 const EDIT_CLIPS_HINT: &str = "Tap a clip, or turn the wheel and push: the Sequencer edits it and nothing starts   ·   Back or a tab: close the list";
+/// The Sequencer's step size chip's list (step sequencer refactor D1).
+pub const STEP_SIZE_PAGE: &str = "Step size";
+pub const STEP_SIZE_LAYOUT: &str =
+    "col(header:60, row(step-size:*, step-size-card:440):*, hint:26)";
+const STEP_SIZE_HINT: &str = "Tap a step size, or turn the wheel and push: the steps take it and no note moves   ·   Back or a tab: close the list";
 
 const CONSOLE_HINT: &str =
     "Switch the MPC off with its power switch to return to the stock firmware";
@@ -733,6 +752,9 @@ enum TypeTo {
     /// A Perform set page's name (the Pads tab's Perform view's Name
     /// page).
     PerformPage(usize),
+    /// A song marker's name (the Song view's Rename, a section picked;
+    /// Arrange 3.3).
+    MarkerName(usize),
 }
 
 impl TypeTo {
@@ -740,7 +762,11 @@ impl TypeTo {
     fn is_text(self) -> bool {
         matches!(
             self,
-            TypeTo::SampleName | TypeTo::PortName | TypeTo::SceneName(_) | TypeTo::PerformPage(_)
+            TypeTo::SampleName
+                | TypeTo::PortName
+                | TypeTo::SceneName(_)
+                | TypeTo::PerformPage(_)
+                | TypeTo::MarkerName(_)
         )
     }
 }
@@ -2145,8 +2171,12 @@ pub struct Player {
     /// and the slot each of its rows picks (None: what plays).
     clip_list: bool,
     clip_rows: Vec<Option<usize>>,
-    /// The Lanes list's rows: each a setting, its name, and what it is on.
-    lane_rows: Vec<(play_page::LockLane, String, String)>,
+    /// The Sequencer's step size chip's list is over the page (refactor
+    /// D1); its rows are `mpfree_seq::steps::SIZES`, in order.
+    size_list: bool,
+    /// The Lanes list's rows: each a setting (or the pad's Velocity or
+    /// Chance, refactor D3), its name, and what it is on.
+    lane_rows: Vec<(LaneChoice, String, String)>,
     /// A track asked of the time engine for a kit ("+ Kit track", or a
     /// chop to a new kit): once the new track is armed it gets its kit.
     kit_track: Option<KitTrackAsk>,
@@ -2325,7 +2355,7 @@ impl Player {
         kits_card.buttons = vec!["Back".to_string()];
         ui.add("kits-card", kits_card);
         ui.add("lanes", ListView::new("Lanes"));
-        let mut lanes_card = Card::new("Add a lock lane");
+        let mut lanes_card = Card::new("Add a lane");
         lanes_card.heading = "Lanes".to_string();
         lanes_card.lines = vec![
             (
@@ -2341,6 +2371,7 @@ impl Player {
                 Tone::Dim,
             ),
             (LANES_PAD_LINE.to_string(), Tone::Dim),
+            (LANES_VALUE_LINE.to_string(), Tone::Dim),
             ("Back adds nothing.".to_string(), Tone::Dim),
         ];
         lanes_card.buttons = vec!["Back".to_string()];
@@ -2369,6 +2400,22 @@ impl Player {
         ];
         clips_card.buttons = vec!["Back".to_string()];
         ui.add("edit-clips-card", clips_card);
+        ui.add("step-size", ListView::new("Step size"));
+        let mut size_card = Card::new("Step size");
+        size_card.heading = "Step size".to_string();
+        size_card.lines = vec![
+            (
+                "Each step of the grid lasts this long.".to_string(),
+                Tone::Normal,
+            ),
+            ("No note moves: each keeps its time.".to_string(), Tone::Dim),
+            ("The clip keeps its length:".to_string(), Tone::Dim),
+            ("16 sixteenths are 8 eighths.".to_string(), Tone::Dim),
+            ("UNDO puts the step size back.".to_string(), Tone::Dim),
+            ("Back keeps the step size.".to_string(), Tone::Dim),
+        ];
+        size_card.buttons = vec!["Back".to_string()];
+        ui.add("step-size-card", size_card);
         ui.add("timing", StatList::new("Timing"));
         ui.add(play_page::TRANSPORT, PlayTransport::default());
         ui.add(play_page::MASTER, MasterBar::new());
@@ -2453,6 +2500,8 @@ impl Player {
         ui.add_page(LANES_PAGE, LANES_LAYOUT).expect("lanes layout");
         ui.add_page(EDIT_CLIPS_PAGE, EDIT_CLIPS_LAYOUT)
             .expect("edit clips layout");
+        ui.add_page(STEP_SIZE_PAGE, STEP_SIZE_LAYOUT)
+            .expect("step size layout");
         ui.add_page("System info", SYSTEM_LAYOUT)
             .expect("system info layout");
         let patterns = crate::app::built_in_patterns();
@@ -2662,6 +2711,7 @@ impl Player {
             lane_list: false,
             clip_list: false,
             clip_rows: Vec::new(),
+            size_list: false,
             lane_rows: Vec::new(),
             kit_track: None,
             sound_track: None,
@@ -3235,23 +3285,40 @@ impl Player {
     fn refresh_lane_list(&mut self) {
         // The knobs as they are now (a kit edited or sliced since).
         self.refresh_lock_knobs();
-        let choices = self.play.lane_choices();
+        // The pad's Velocity and Chance first (refactor D3), then the
+        // settings to lock.
+        let choices: Vec<(LaneChoice, String, String, bool)> = self
+            .play
+            .value_choices()
+            .into_iter()
+            .map(|(row, k, on, shown)| (LaneChoice::Value(row, k), k.name().to_string(), on, shown))
+            .chain(
+                self.play
+                    .lane_choices()
+                    .into_iter()
+                    .map(|(l, name, on, shown)| (LaneChoice::Lock(l), name, on, shown)),
+            )
+            .collect();
         let items = choices
             .iter()
-            .map(|(_, name, on, shown)| ListItem {
+            .map(|(c, name, on, shown)| ListItem {
                 text: name.clone(),
                 detail: if *shown {
                     format!("{on} · showing")
                 } else {
                     on.clone()
                 },
-                color: Some(play_page::LOCKED),
+                color: Some(match c {
+                    LaneChoice::Lock(_) => play_page::LOCKED,
+                    LaneChoice::Value(row, _) => self.play.sound_color(*row),
+                }),
             })
             .collect();
         if let Some(l) = self.ui.get_mut::<ListView>("lanes") {
             l.items = items;
             l.selected = choices.iter().position(|c| !c.3).unwrap_or(0);
         }
+        let values = choices.iter().any(|c| matches!(c.0, LaneChoice::Value(..)));
         self.lane_rows = choices
             .into_iter()
             .map(|(l, name, on, _)| (l, name, on))
@@ -3271,6 +3338,16 @@ impl Player {
             };
             if let Some(l) = c.lines.get_mut(3) {
                 l.0 = line.to_string();
+            }
+            // Velocity and Chance only where the list has them (a
+            // sound's; a synth's scale rows have none).
+            if let Some(l) = c.lines.get_mut(4) {
+                l.0 = if values {
+                    LANES_VALUE_LINE
+                } else {
+                    LANES_NO_VALUE_LINE
+                }
+                .to_string();
             }
         }
     }
@@ -3387,13 +3464,135 @@ impl Player {
         Some(FromUi::Time(TimeAction::EditClip(slot)))
     }
 
+    /// The step size chip's list again (refactor D1): each step size,
+    /// with the steps the clip would have in it, the clip's own marked.
+    fn refresh_size_list(&mut self) {
+        let Some(c) = self.play.steps.clip.as_ref() else {
+            return;
+        };
+        let length = (c.song_length * c.step as f64 / c.song_step.max(1e-9)).round() as i64;
+        let items: Vec<ListItem> = mpfree_seq::steps::SIZES
+            .iter()
+            .map(|&size| {
+                let steps = (length.max(1) + size - 1) / size;
+                let mut detail = format!("{steps} steps");
+                if size == c.step {
+                    detail.push_str(" · now");
+                }
+                ListItem {
+                    text: mpfree_seq::steps::size_name(size).unwrap_or("").to_string(),
+                    detail,
+                    color: None,
+                }
+            })
+            .collect();
+        let selected = mpfree_seq::steps::SIZES
+            .iter()
+            .position(|&size| size == c.step)
+            .unwrap_or(0);
+        if let Some(l) = self.ui.get_mut::<ListView>("step-size") {
+            l.items = items;
+            l.selected = selected;
+        }
+    }
+
+    /// The Sequencer's step size chip: the list of step sizes over the
+    /// page, or the page again.
+    fn toggle_size_list(&mut self) {
+        if self.size_list {
+            self.show_view(self.view);
+            return;
+        }
+        if self.play.steps.clip.is_none() {
+            self.tell("steps: tap a step to start a pattern first");
+            return;
+        }
+        self.close_touch_page();
+        self.refresh_size_list();
+        self.switch_page(STEP_SIZE_PAGE);
+        self.size_list = true;
+        self.refresh_hint();
+    }
+
+    /// A tap on the Steps head's length (refactor D2): the outline,
+    /// already on it from the finger, is grabbed, so the wheel and - / +
+    /// set it a step at a time until a push or a tap elsewhere.
+    fn grab_length(&mut self) {
+        if self.play.steps.clip.is_none() {
+            self.tell("steps: tap a step to start a pattern first");
+            return;
+        }
+        let on = self
+            .ui
+            .focused()
+            .is_some_and(|f| f.widget == play_page::STEPS && f.target.id == "length");
+        if on {
+            self.ui.set_focus_grabbed(true);
+            self.tell(
+                "Length: the wheel or – and + add or take a step · SHIFT + – or +: twice or half · push: done",
+            );
+        }
+    }
+
+    /// Row `row` of the step size list picked: the list closes and the
+    /// clip's steps take that size.
+    fn pick_step_size(&mut self, row: usize) -> Option<FromUi> {
+        let size = *mpfree_seq::steps::SIZES.get(row)?;
+        if self.size_list {
+            self.show_view(self.view);
+        }
+        Some(FromUi::Time(TimeAction::StepSize(size)))
+    }
+
     /// A setting picked on the Lanes list: its lock lane shows (with no
     /// locks yet) and the Steps swipe to it.
     fn add_lane(&mut self, row: usize) {
         let Some((l, name, _)) = self.lane_rows.get(row).cloned() else {
             return;
         };
-        self.add_lane_of(l, &name);
+        match l {
+            LaneChoice::Lock(l) => self.add_lane_of(l, &name),
+            LaneChoice::Value(pad, kind) => self.add_value_lane_of(pad, kind),
+        }
+    }
+
+    /// Pad `pad`'s Velocity or Chance picked on the Lanes list (refactor
+    /// D3): its lane shows under the sound and the Steps swipe to it.
+    fn add_value_lane_of(&mut self, pad: u8, kind: NoteValue) {
+        let shown = self.play.value_lanes().contains(&(pad, kind));
+        let Some(id) = self.play.add_value_lane(pad, kind) else {
+            self.tell("+ Lane: tap a step to start a pattern first");
+            return;
+        };
+        self.refresh_play();
+        self.swipe_to_lane(play_widgets::LOCK_LANE + id);
+        let sound = self.play.pad_name(usize::from(pad));
+        let line = if shown {
+            format!(
+                "steps: the {} lane under {sound} is there already",
+                kind.name()
+            )
+        } else {
+            format!(
+                "steps: {} lane under {sound}: drag a finger across its steps to set them",
+                kind.name()
+            )
+        };
+        println!("{line}");
+        self.tell(&line);
+    }
+
+    /// The Steps swiped so lane `lane` shows, if it doesn't.
+    fn swipe_to_lane(&mut self, lane: usize) {
+        let top = self
+            .ui
+            .rect_of(play_page::STEPS)
+            .zip(self.ui.get::<StepGrid>(play_page::STEPS))
+            .and_then(|(r, g)| g.top_showing(r, lane));
+        if let Some(top) = top.filter(|&t| t != self.play.steps_top) {
+            self.play.steps_top = top;
+            self.refresh_play();
+        }
     }
 
     /// The Lanes card's Another CC (a track that plays outside gear): the
@@ -3441,16 +3640,7 @@ impl Player {
             return;
         };
         self.refresh_play();
-        let lane = play_widgets::LOCK_LANE + id;
-        let top = self
-            .ui
-            .rect_of(play_page::STEPS)
-            .zip(self.ui.get::<StepGrid>(play_page::STEPS))
-            .and_then(|(r, g)| g.top_showing(r, lane));
-        if let Some(top) = top.filter(|&t| t != self.play.steps_top) {
-            self.play.steps_top = top;
-            self.refresh_play();
-        }
+        self.swipe_to_lane(play_widgets::LOCK_LANE + id);
         let under = if l.row == crate::time::LINE {
             "on the track".to_string()
         } else {
@@ -5513,6 +5703,7 @@ impl Player {
         if let Some(old) = self.ui.get::<StepGrid>(play_page::STEPS) {
             g.title.clone_from(&old.title);
             g.chip.clone_from(&old.chip);
+            g.size.clone_from(&old.size);
             g.right.clone_from(&old.right);
             g.lanes.clone_from(&old.lanes);
             g.steps = old.steps;
@@ -5548,11 +5739,13 @@ impl Player {
                     && old.rows_open == g.rows_open
                     && old.hold_picks == g.hold_picks
                     && old.chip == g.chip
+                    && old.size == g.size
             });
         if !same {
             if let Some(w) = self.ui.get_mut::<StepGrid>(play_page::STEPS) {
                 w.title = g.title;
                 w.chip = g.chip;
+                w.size = g.size;
                 w.right = g.right;
                 w.lanes = g.lanes;
                 w.steps = g.steps;
@@ -5573,6 +5766,9 @@ impl Player {
         }
         if self.clip_list {
             self.refresh_clip_list();
+        }
+        if self.size_list {
+            self.refresh_size_list();
         }
         let mut th = Throws::default();
         self.play.fill_throws(&mut th);
@@ -6324,6 +6520,8 @@ impl Player {
             LANES_HINT.to_string()
         } else if self.clip_list {
             EDIT_CLIPS_HINT.to_string()
+        } else if self.size_list {
+            STEP_SIZE_HINT.to_string()
         } else if let Some(name) = &self.learning {
             learning_hint(name)
         } else if let Some(bank) = self.status.main_held.filter(|_| self.ready) {
@@ -7032,6 +7230,26 @@ impl Player {
     /// control to control, press the control it is on, or grab a value and
     /// turn it.
     fn nav(&mut self, n: Nav) {
+        // The step size list takes the wheel: it moves the row picked,
+        // and the push gives the steps that size.
+        if self.size_list {
+            match n {
+                Nav::Turn(d) | Nav::Step(d) | Nav::Fine(d) => {
+                    if let Some(l) = self.ui.get_mut::<ListView>("step-size") {
+                        let last = l.items.len().saturating_sub(1) as i64;
+                        l.selected = (l.selected as i64 + i64::from(d)).clamp(0, last) as usize;
+                    }
+                }
+                Nav::Push => {
+                    let row = self.ui.get::<ListView>("step-size").map(|l| l.selected);
+                    if let Some(a) = row.and_then(|r| self.pick_step_size(r)) {
+                        self.outbox.push(a);
+                    }
+                }
+            }
+            self.refresh_hint();
+            return;
+        }
         // The clip chip's list takes the wheel: it moves the row picked,
         // and the push edits that clip.
         if self.clip_list {
@@ -7820,7 +8038,8 @@ impl Player {
             TypeTo::SampleName
             | TypeTo::PortName
             | TypeTo::SceneName(_)
-            | TypeTo::PerformPage(_) => None,
+            | TypeTo::PerformPage(_)
+            | TypeTo::MarkerName(_) => None,
         }
     }
 
@@ -7841,6 +8060,12 @@ impl Player {
             let acts = self.perform.rename(page, &name);
             self.perform_acts(acts);
             return None;
+        }
+        if let Some(TypeTo::MarkerName(index)) = to {
+            let (_, name) = names.into_iter().next()?;
+            return Some(FromUi::Time(TimeAction::SongMarker(
+                mpfree_time_ui::MarkerEdit::Rename { index, name },
+            )));
         }
         if let Some(TypeTo::SceneName(row)) = to {
             let (_, name) = names.into_iter().next()?;
@@ -9031,9 +9256,12 @@ impl Player {
             ToUi::Time(mut st) => {
                 // The lens the note editor shows, if it is open.
                 let lens = |t: &TimeState| t.edit.as_ref().map(|e| e.editor.lens);
+                // A block, section or tempo point picked or let go turns
+                // the Song view's hint too.
                 let swapped = st.song_view != self.time.song_view
                     || st.list_view != self.time.list_view
-                    || lens(&st) != lens(&self.time);
+                    || lens(&st) != lens(&self.time)
+                    || time_view::song_hint(&st) != time_view::song_hint(&self.time);
                 let switched = st.perform != self.time.perform;
                 // The note editor opened or closed: the Sequencer's Notes
                 // or Steps.
@@ -11384,6 +11612,7 @@ impl Player {
         self.kit_list = false;
         self.lane_list = false;
         self.clip_list = false;
+        self.size_list = false;
         let notes = v == View::Sequencer && self.time.edit.is_some();
         if v != self.view || notes || !matches!(v, View::Play | View::Sequencer) {
             self.rec_list = false;
@@ -12431,6 +12660,12 @@ impl Player {
                 self.show_view(self.view);
                 None
             }
+            // The step size chip's list (refactor D1): a size; Back.
+            ("step-size", EventKind::Select(row)) => self.pick_step_size(row),
+            ("step-size-card", EventKind::Tab(_)) => {
+                self.show_view(self.view);
+                None
+            }
             (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_BPM)) => {
                 Some(FromUi::TapTempo)
             }
@@ -12582,6 +12817,44 @@ impl Player {
                 self.toggle_clip_list();
                 None
             }
+            // The step size chip (refactor D1): the step sizes, to cut the
+            // clip into steps of another size.
+            (play_page::STEPS, EventKind::Tab(play_widgets::HEAD_SIZE)) => {
+                self.toggle_size_list();
+                None
+            }
+            // The length (refactor D2): a tap puts the wheel and - / + on
+            // it, a step at a time; SHIFT + - / + doubles or halves it.
+            (play_page::STEPS, EventKind::Tab(play_widgets::HEAD_LENGTH)) => {
+                self.grab_length();
+                None
+            }
+            (
+                play_page::STEPS,
+                EventKind::Step {
+                    index: play_widgets::LENGTH_TURN,
+                    delta,
+                },
+            ) => {
+                if self.play.steps.clip.is_none() {
+                    self.tell("steps: tap a step to start a pattern first");
+                    return None;
+                }
+                Some(FromUi::Steps(StepAction::LengthBy { steps: delta }))
+            }
+            (
+                play_page::STEPS,
+                EventKind::Step {
+                    index: play_widgets::LENGTH_TWICE,
+                    delta,
+                },
+            ) => match self.play.length_action(delta > 0) {
+                Ok(a) => Some(FromUi::Steps(a)),
+                Err(why) => {
+                    self.tell(&why);
+                    None
+                }
+            },
             // A gear lane's mod rows (LFO to CC, layout spec 4m): its name
             // opens them over the pattern; + LFO adds a row from LFO 1, a
             // finger on a row's bar sets its depth, its × takes it off,
@@ -12638,10 +12911,46 @@ impl Player {
                 if index >= play_widgets::LOCK_LANE =>
             {
                 let fine = self.status.shift;
+                let cell = index - play_widgets::LOCK_LANE;
+                let r = if self
+                    .play
+                    .value_lane_at(cell / mpfree_seq::steps::PAGE)
+                    .is_some()
+                {
+                    self.play.turn_value(cell, delta, fine)
+                } else {
+                    self.play.turn_lock(cell, delta, fine)
+                };
+                self.lock_done(r)
+            }
+            // A finger's stroke over a Velocity or Chance lane lifted
+            // (refactor D3): the steps it crossed, one edit.
+            (play_page::STEPS, EventKind::Tab(play_widgets::VALUE_DONE)) => {
+                let (pad, changed) = self
+                    .ui
+                    .get_mut::<StepGrid>(play_page::STEPS)?
+                    .stroke_done
+                    .take()?;
                 let r = self
                     .play
-                    .turn_lock(index - play_widgets::LOCK_LANE, delta, fine);
+                    .value_stroke(pad.checked_sub(play_widgets::LOCK_LANE)?, &changed);
                 self.lock_done(r)
+            }
+            (play_page::STEPS, EventKind::Toggle(lane))
+                if lane >= play_widgets::LOCK_LANE
+                    && self
+                        .play
+                        .value_lane_at(lane - play_widgets::LOCK_LANE)
+                        .is_some() =>
+            {
+                let line = self.play.clear_value_lane(lane - play_widgets::LOCK_LANE);
+                if let Some(line) = line {
+                    println!("{line}");
+                    self.tell(&line);
+                }
+                self.refresh_play();
+                self.refresh_qlinks();
+                None
             }
             (play_page::STEPS, EventKind::Toggle(lane)) if lane >= play_widgets::LOCK_LANE => {
                 let id = lane - play_widgets::LOCK_LANE;
@@ -13101,6 +13410,24 @@ impl Player {
                 // own, nothing for the app but the hint line.
                 self.time_page.update(&mut self.ui, &self.time);
                 self.refresh_hint();
+                None
+            }
+            // The Song view's Rename, a section picked: the text keyboard,
+            // its name typed over the marker's (Arrange 3.3).
+            (time_view::SONG, EventKind::Tab(_))
+                if time_view::song_rename(&ev, &self.time).is_some() =>
+            {
+                let (k, name) = time_view::song_rename(&ev, &self.time)?;
+                self.open_textpad(
+                    vec![mpfree_ui::textpad::TextAsk {
+                        key: "marker".to_string(),
+                        label: "Marker".to_string(),
+                        title: "Name marker".to_string(),
+                        value: name,
+                        max_len: MARKER_NAME_LEN,
+                    }],
+                    TypeTo::MarkerName(k),
+                );
                 None
             }
             // The scene editor's Rename: the text keyboard, its name typed
@@ -16479,6 +16806,51 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }
     clips.toggle_clip_list();
     out.push(("sequencer-edit-clips", clips));
+    // The step size chip's list (refactor D1): the six sizes, 1/16 now.
+    let mut sizes = sample_play(fonts(), PlayView::Beats);
+    sizes.toggle_size_list();
+    out.push(("sequencer-step-size", sizes));
+    // A ratchet in the step inspector (refactor D4): the busiest lane's
+    // first step made four hits rising from 70, its bars in the Ratchet
+    // chip.
+    let mut roll = sample_play(fonts(), PlayView::Beats);
+    roll.play.selected = roll.play.steps.clip.as_mut().and_then(|c| {
+        let (pad, row) = c
+            .rows
+            .iter_mut()
+            .filter(|(p, _)| *p != crate::time::LINE)
+            .max_by_key(|(_, r)| r.iter().flatten().count())?;
+        let (i, s) = row
+            .iter_mut()
+            .enumerate()
+            .find_map(|(i, s)| s.as_mut().map(|s| (i, s)))?;
+        (s.velocity, s.ratchet, s.ramp) = (70, 4, 45);
+        Some((usize::from(*pad), i))
+    });
+    roll.refresh_play();
+    roll.refresh_qlinks();
+    out.push(("sequencer-step-ratchet", roll));
+    // A Velocity lane (refactor D3) under the busiest sound, its steps
+    // accented every beat, on the Lanes list's first row.
+    let mut vel = sample_play(fonts(), PlayView::Beats);
+    let busiest = vel.play.steps.clip.as_mut().and_then(|c| {
+        let (pad, row) = c
+            .rows
+            .iter_mut()
+            .filter(|(p, _)| *p != crate::time::LINE)
+            .max_by_key(|(_, r)| r.iter().flatten().count())?;
+        for (i, s) in row.iter_mut().enumerate() {
+            if let Some(s) = s {
+                s.velocity = [118, 52, 84, 60][i % 4];
+            }
+        }
+        Some(*pad)
+    });
+    if let Some(pad) = busiest {
+        vel.play.last_pad = usize::from(pad);
+        vel.add_value_lane_of(pad, NoteValue::Velocity);
+    }
+    out.push(("sequencer-value-lanes", vel));
     // A track that plays outside gear (step 5b, board 4): its notes as
     // scale rows, its CC lanes under them (the gear's Cutoff opening over
     // the bar, a bend on step 7); then its Lanes list, the gear's CCs.
@@ -17569,6 +17941,21 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("arrange-song", p));
         }
         Err(e) => eprintln!("arrange-song sample: {e}"),
+    }
+    // The same song with the Verse picked by a tap on its name (Arrange
+    // 3.3): its grip left of the marker and + Bar, Rename, Remove marker
+    // and Delete bars in place of the clip buttons.
+    match mpfree_time_ui::sample::busy_song_state() {
+        Ok(mut state) => {
+            state.selected = None;
+            state.section = Some(1);
+            let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-song-section", p));
+        }
+        Err(e) => eprintln!("arrange-song-section sample: {e}"),
     }
     // The song's tempo points on the lane over the bars: 100 BPM from
     // bar 3 ramping to 128 at bar 6, the ramping point picked (its Ramp
@@ -19364,6 +19751,141 @@ mod tests {
         );
     }
 
+    /// The Song view's marker tools (Arrange 3.3): a tap on the free ruler
+    /// adds a marker; with a section picked, its grip moves where it
+    /// starts, + Bar, Remove marker and Delete bars send their edits, and
+    /// Rename types the name on the text keyboard; in Perform Delete bars
+    /// needs the half-second hold.
+    #[test]
+    fn markers_and_bars_are_edited_from_the_ruler_and_the_picked_sections_buttons() {
+        use mpfree_time_ui::{BarsEdit, MarkerEdit};
+        use mpfree_ui::textpad::{char_key, TextPad, KEY_CLEAR, KEY_ENTER};
+        const BAR: i64 = 3840;
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        let tap = |p: &mut Player, (x, y): (i32, i32)| -> Vec<FromUi> {
+            let down = p.touch(1, Touch::Down, x, y);
+            let up = down.or(p.touch(1, Touch::Up, x, y));
+            up.into_iter().chain(p.take_actions()).collect()
+        };
+        let find = |p: &Player, id: &str, label: Option<&str>| {
+            p.ui.targets()
+                .into_iter()
+                .find(|t| {
+                    t.widget == time_view::SONG
+                        && t.target.id == id
+                        && label.is_none_or(|l| t.target.label == l)
+                })
+                .unwrap_or_else(|| panic!("{id} {label:?}"))
+                .target
+        };
+        let mid = |r: mpfree_ui::Rect| (r.x + r.w / 2, r.y + r.h / 2);
+        let mut st = mpfree_time_ui::sample::song_state().unwrap();
+        st.selected = None;
+        let mut p = quiet_player(Fonts::embedded());
+        let mut c = SoftCanvas::new(1280, 800);
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        p.apply(ToUi::Show(View::Arrange));
+        p.ui.paint(&mut c);
+        assert_eq!(hint(&p), time_view::SONG_HINT);
+        // The ruler past the last name it shows (Scene 3's, bar 9): a
+        // marker on a bar line between it and Scene 4 (bar 17).
+        let (after, before) = (st.markers[2].0, st.markers[3].0);
+        let ruler = find(&p, "ruler", None).rect;
+        let got = tap(&mut p, mid(ruler));
+        assert!(
+            matches!(
+                got[..],
+                [FromUi::Time(TimeAction::SongMarker(MarkerEdit::Add(at)))]
+                    if after < at && at < before && at % BAR == 0
+            ),
+            "{got:?}"
+        );
+        // Verse picked: its grip, dragged a bar on, moves where it starts.
+        st.section = Some(1);
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        p.ui.paint(&mut c);
+        assert_eq!(hint(&p), time_view::SONG_SECTION_HINT);
+        let grip = find(&p, "section-grip", None);
+        let (gx, gy) = mid(grip.rect);
+        let (dx, _) = grip.towards;
+        assert!(dx > 0);
+        p.touch(1, Touch::Down, gx, gy);
+        p.touch(1, Touch::Move, gx + dx / 2, gy);
+        p.touch(1, Touch::Move, gx + dx, gy);
+        let got: Vec<FromUi> = p
+            .touch(1, Touch::Up, gx + dx, gy)
+            .into_iter()
+            .chain(p.take_actions())
+            .collect();
+        assert_eq!(
+            got,
+            [FromUi::Time(TimeAction::SongMarker(MarkerEdit::Move {
+                index: 1,
+                at: st.markers[1].0 + BAR
+            }))]
+        );
+        // + Bar and Remove marker: their edits, on Verse.
+        let button = |p: &Player, label| mid(find(p, "section-button", Some(label)).rect);
+        let plus = button(&p, "+ Bar");
+        assert_eq!(
+            tap(&mut p, plus),
+            [FromUi::Time(TimeAction::SongBars(BarsEdit::RoomBefore(1)))]
+        );
+        let remove = button(&p, "Remove marker");
+        assert_eq!(
+            tap(&mut p, remove),
+            [FromUi::Time(TimeAction::SongMarker(MarkerEdit::Delete(1)))]
+        );
+        // Rename: the keyboard on "Verse"; "Bridge" typed over it.
+        let rename = button(&p, "Rename");
+        let got = tap(&mut p, rename);
+        assert!(!got.iter().any(|a| matches!(a, FromUi::Time(_))), "{got:?}");
+        assert_eq!(p.page(), TEXTPAD_PAGE);
+        let r = p.ui.rect_of(TEXTPAD).unwrap();
+        {
+            let t = p.ui.get::<TextPad>(TEXTPAD).unwrap();
+            assert_eq!(
+                (t.text(), t.asks[0].title.as_str()),
+                ("Verse", "Name marker")
+            );
+        }
+        tap(&mut p, TextPad::key_at(r, KEY_CLEAR));
+        for ch in "Bridge".chars() {
+            tap(&mut p, TextPad::key_at(r, char_key(ch).unwrap().0));
+        }
+        let got = tap(&mut p, TextPad::key_at(r, KEY_ENTER));
+        assert!(
+            got.contains(&FromUi::Time(TimeAction::SongMarker(MarkerEdit::Rename {
+                index: 1,
+                name: "Bridge".into()
+            }))),
+            "{got:?}"
+        );
+        assert_ne!(p.page(), TEXTPAD_PAGE);
+        // Delete bars: one tap in Make.
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        p.ui.paint(&mut c);
+        let delete = button(&p, "Delete bars");
+        let deleted = [FromUi::Time(TimeAction::SongBars(BarsEdit::DeleteSection(
+            1,
+        )))];
+        assert_eq!(tap(&mut p, delete), deleted);
+        // In Perform: a tap only says to hold; the hold deletes.
+        st.perform = true;
+        p.apply(ToUi::Time(Box::new(st)));
+        p.ui.paint(&mut c);
+        let (x, y) = button(&p, "Delete bars");
+        assert!(tap(&mut p, (x, y)).is_empty());
+        assert_eq!(hint(&p), GUARD_HINT);
+        assert_eq!(p.touch(1, Touch::Down, x, y), None);
+        p.tick(0.3);
+        assert!(p.take_actions().is_empty());
+        p.tick(0.25);
+        assert_eq!(p.take_actions(), deleted);
+        p.touch(1, Touch::Up, x, y);
+        assert!(p.take_actions().is_empty());
+    }
+
     /// The song list on Arrange (sequencer S4): MAIN in Perform goes
     /// Clips, Song, List and round; its hint; a tap on a step picks it;
     /// Remove needs the hold in Perform.
@@ -19719,6 +20241,7 @@ mod tests {
             rev: 0,
             track_name: "Track 1".into(),
             bar: 3840,
+            answer: Default::default(),
         }));
         p.time_page.update(&mut p.ui, &p.time);
         assert_eq!(
@@ -21130,7 +21653,10 @@ mod tests {
         assert!(grid(&p).2.ends_with("pads: page 2 · BANK B"));
         apply_effects(&mut p, click(&mut app, button::PAD_BANK[0]));
         let r = p.ui.rect_of(play_page::STEPS).unwrap();
-        let (x, y) = StepGrid::head_at(r, HEAD_NEXT, false);
+        let (x, y) =
+            p.ui.get::<StepGrid>(play_page::STEPS)
+                .unwrap()
+                .head_at(r, HEAD_NEXT);
         let a = p.touch(3, Touch::Down, x, y);
         p.touch(3, Touch::Up, x, y);
         assert_eq!(a, Some(FromUi::StepPage(1)));
@@ -21163,7 +21689,10 @@ mod tests {
         p.take_actions();
         let r = p.ui.rect_of(play_page::STEPS).unwrap();
         let tap = |p: &mut Player, k: usize| {
-            let (x, y) = StepGrid::head_at(r, k, true);
+            let (x, y) =
+                p.ui.get::<StepGrid>(play_page::STEPS)
+                    .unwrap()
+                    .head_at(r, k);
             let a = p.touch(3, Touch::Down, x, y);
             p.touch(3, Touch::Up, x, y);
             a
@@ -21229,7 +21758,10 @@ mod tests {
         p.take_actions();
         let r = p.ui.rect_of(play_page::STEPS).unwrap();
         let tap = |p: &mut Player, k: usize| {
-            let (x, y) = StepGrid::head_at(r, k, false);
+            let (x, y) =
+                p.ui.get::<StepGrid>(play_page::STEPS)
+                    .unwrap()
+                    .head_at(r, k);
             let a = p.touch(3, Touch::Down, x, y);
             p.touch(3, Touch::Up, x, y);
             a
@@ -21286,7 +21818,7 @@ mod tests {
         st.clip.as_mut().unwrap().steps = 16;
         p.apply(ToUi::Steps(Box::new(st)));
         assert_eq!(tap(&mut p, HEAD_SHORTER), None);
-        assert!(hint(&p).contains("16 steps is the fewest"), "{}", hint(&p));
+        assert!(hint(&p).contains("halves down to 16 steps"), "{}", hint(&p));
     }
 
     /// Jay after live test 3: hold UNDO to see the page's history and
@@ -22994,6 +23526,187 @@ mod tests {
         assert!(p.take_actions().is_empty());
     }
 
+    /// The Sequencer's step size chip (refactor D1): left of the length,
+    /// a tap lists the six sizes with the steps the clip would have in
+    /// each (its own marked); a tap or the wheel's push picks one, Back
+    /// picks none.
+    /// Refactor D4: the inspector's Ratchet chip draws each hit at its
+    /// velocity after the ramp, as the player plays it; one hit draws
+    /// nothing.
+    #[test]
+    fn the_inspector_draws_a_ratchets_hits_with_their_ramp() {
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.take_actions();
+        let set = |p: &mut Player, velocity, ratchet, ramp| {
+            let c = p.play.steps.clip.as_mut().unwrap();
+            let (pad, row) = c
+                .rows
+                .iter_mut()
+                .find(|(_, r)| r.iter().any(Option::is_some))
+                .unwrap();
+            let (i, s) = row
+                .iter_mut()
+                .enumerate()
+                .find_map(|(i, s)| s.as_mut().map(|s| (i, s)))
+                .unwrap();
+            (s.velocity, s.ratchet, s.ramp) = (velocity, ratchet, ramp);
+            p.play.selected = Some((usize::from(*pad), i));
+            p.refresh_play();
+            p.ui.get::<StepInspector>(play_page::INSPECTOR)
+                .unwrap()
+                .inspect
+                .hits
+                .clone()
+        };
+        assert_eq!(set(&mut p, 90, 4, 30), [90, 100, 110, 120]);
+        // Falling, and kept in range: the last hit is 1, not below.
+        assert_eq!(set(&mut p, 90, 3, -126), [90, 27, 1]);
+        // No ramp: the hits are level.
+        assert_eq!(set(&mut p, 64, 2, 0), [64, 64]);
+        assert!(set(&mut p, 64, 1, 30).is_empty());
+        assert_eq!(
+            play_page::INSPECT_CHIPS[play_page::INSPECT_RATCHET_CHIP],
+            play_page::Knob::Ratchet
+        );
+    }
+
+    /// Refactor D2: a tap on the head's length puts the wheel and - / +
+    /// on it, a step at a time from the clip's own length; SHIFT + - / +
+    /// doubles or halves it as the head's + and - do; the push lets go and
+    /// the wheel moves the outline again.
+    #[test]
+    fn a_tap_on_the_length_puts_the_wheel_on_it_a_step_at_a_time() {
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.take_actions();
+        let r = p.ui.rect_of(play_page::STEPS).unwrap();
+        let (x, y) =
+            p.ui.get::<StepGrid>(play_page::STEPS)
+                .unwrap()
+                .head_at(r, play_widgets::HEAD_LENGTH);
+        assert_eq!(p.touch(7, Touch::Down, x, y), None);
+        p.touch(7, Touch::Up, x, y);
+        let f = p.ui.focused().unwrap();
+        assert_eq!(
+            (f.widget.as_str(), f.target.id),
+            (play_page::STEPS, "length")
+        );
+        assert!(p.ui.focus_grabbed());
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains("add or take a step"), "{hint}");
+        let len = |a: Vec<FromUi>| -> Vec<StepAction> {
+            a.into_iter()
+                .filter_map(|a| match a {
+                    FromUi::Steps(s) => Some(s),
+                    _ => None,
+                })
+                .collect()
+        };
+        // The wheel: a step a detent, each asked of the clip's length.
+        p.nav(Nav::Turn(-1));
+        p.nav(Nav::Turn(-1));
+        assert_eq!(
+            len(p.take_actions()),
+            [StepAction::LengthBy { steps: -1 }; 2]
+        );
+        // - and + too.
+        p.nav(Nav::Step(1));
+        assert_eq!(len(p.take_actions()), [StepAction::LengthBy { steps: 1 }]);
+        // SHIFT + +: twice the steps, repeating them; SHIFT + - at 16
+        // says why not.
+        p.nav(Nav::Fine(1));
+        assert_eq!(
+            len(p.take_actions()),
+            [StepAction::Length {
+                steps: 32,
+                copy: true
+            }]
+        );
+        p.nav(Nav::Fine(-1));
+        assert!(len(p.take_actions()).is_empty());
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains("halves down to 16 steps"), "{hint}");
+        // The push lets go: the wheel moves the outline again.
+        p.nav(Nav::Push);
+        assert!(!p.ui.focus_grabbed());
+        p.nav(Nav::Turn(1));
+        assert!(len(p.take_actions()).is_empty());
+        assert_ne!(p.ui.focused().map(|f| f.target.id), Some("length"));
+    }
+
+    #[test]
+    fn the_step_size_chip_lists_the_sizes_and_picks_one() {
+        use mpfree_ui::Widget as _;
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.take_actions();
+        let grid = p.ui.get::<StepGrid>(play_page::STEPS).unwrap();
+        assert_eq!(grid.size.as_deref(), Some("1/16"));
+        assert!(!grid.right.contains("1/16"), "{}", grid.right);
+        let r = p.ui.rect_of(play_page::STEPS).unwrap();
+        let chip = grid
+            .targets(r)
+            .into_iter()
+            .find(|t| t.id == "head" && t.index == play_widgets::HEAD_SIZE)
+            .unwrap()
+            .rect;
+        let (x, y) = (chip.x + chip.w / 2, chip.y + chip.h / 2);
+        let page = p.page().to_string();
+        p.touch(7, Touch::Down, x, y);
+        p.touch(7, Touch::Up, x, y);
+        assert_eq!(p.page(), STEP_SIZE_PAGE);
+        let list = p.ui.get::<ListView>("step-size").unwrap();
+        let rows: Vec<(String, String)> = list
+            .items
+            .iter()
+            .map(|i| (i.text.clone(), i.detail.clone()))
+            .collect();
+        let steps = p.play.steps.clip.as_ref().unwrap().steps;
+        assert_eq!(
+            rows[3],
+            ("1/16".to_string(), format!("{steps} steps · now"))
+        );
+        assert_eq!(
+            rows[1],
+            ("1/8".to_string(), format!("{} steps", steps.div_ceil(2)))
+        );
+        assert_eq!(
+            rows.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(),
+            ["1/4", "1/8", "1/8T", "1/16", "1/16T", "1/32"]
+        );
+        assert_eq!(list.selected, 3);
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains("no note moves"), "{hint}");
+        // A tap on 1/8: the list closes.
+        assert_eq!(
+            p.on_event(UiEvent {
+                widget: "step-size".into(),
+                kind: EventKind::Select(1),
+            }),
+            Some(FromUi::Time(TimeAction::StepSize(480)))
+        );
+        assert_eq!(p.page(), page);
+        // The wheel: down two rows from 1/16, and the push picks 1/32.
+        p.toggle_size_list();
+        p.take_actions();
+        p.nav(Nav::Turn(2));
+        p.nav(Nav::Push);
+        assert!(p
+            .take_actions()
+            .contains(&FromUi::Time(TimeAction::StepSize(120))));
+        assert_ne!(p.page(), STEP_SIZE_PAGE);
+        // Back picks nothing.
+        p.toggle_size_list();
+        p.take_actions();
+        assert_eq!(
+            p.on_event(UiEvent {
+                widget: "step-size-card".into(),
+                kind: EventKind::Tab(0),
+            }),
+            None
+        );
+        assert_ne!(p.page(), STEP_SIZE_PAGE);
+        assert!(p.take_actions().is_empty());
+    }
+
     /// The Sequencer's lock lanes (the redesign's step 5, board 3): the
     /// clip's Tune locks have lanes; + Lane opens the Lanes list (Kick's
     /// settings, then the track's); Decay picked hangs under Kick; a tap
@@ -23071,8 +23784,10 @@ mod tests {
                 .map(|i| format!("{} · {}", i.text, i.detail))
                 .collect();
         assert_eq!(
-            items[..4],
+            items[..6],
             [
+                "Velocity · Kick · the pad hit last · drawn with a finger",
+                "Chance · Kick · the pad hit last · drawn with a finger",
                 "Tune · Kick · the pad hit last · showing",
                 "Decay · Kick · the pad hit last",
                 "Filter · Kick · the pad hit last",
@@ -23091,7 +23806,7 @@ mod tests {
         assert_eq!(
             p.on_event(UiEvent {
                 widget: "lanes".into(),
-                kind: EventKind::Select(1),
+                kind: EventKind::Select(3),
             }),
             None
         );
@@ -23217,6 +23932,135 @@ mod tests {
             kind: EventKind::Tab(0),
         });
         assert!(p.page().starts_with("Play"));
+    }
+
+    /// A Velocity lane (step sequencer refactor D3): first on the Lanes
+    /// list for the pad hit last; it hangs under Kick with a bar on each
+    /// of Kick's steps; a finger dragged across sets each step it crosses
+    /// and its lift sends them all as one step action (one UNDO); a
+    /// second finger calls the stroke off; the wheel sets one step; the ×
+    /// takes the lane away and the steps keep their values.
+    #[test]
+    fn a_velocity_lane_is_drawn_with_a_finger_in_one_edit() {
+        use mpfree_ui::Rect;
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.take_actions();
+        let b = steps_target(&p, "head", play_widgets::HEAD_LANE);
+        assert_eq!(steps_tap(&mut p, b), None);
+        let items = lane_items(&p);
+        assert_eq!(
+            items[..2],
+            [
+                "Velocity · Kick · the pad hit last · drawn with a finger",
+                "Chance · Kick · the pad hit last · drawn with a finger"
+            ]
+        );
+        assert_eq!(
+            p.on_event(UiEvent {
+                widget: "lanes".into(),
+                kind: EventKind::Select(0),
+            }),
+            None
+        );
+        assert!(p.page().starts_with("Play"));
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains("drag a finger across its steps"), "{hint}");
+        // Under Kick, after the pattern's lock lanes: lane id 3.
+        let id = p.play.lock_lanes().len();
+        assert_eq!(p.play.value_lane_at(id), Some((0, NoteValue::Velocity)));
+        let names = lock_lane_names(&p);
+        assert_eq!(names.last().map(String::as_str), Some("Velocity Kick"));
+        let kick: Vec<usize> = {
+            let c = p.play.steps.clip.as_ref().unwrap();
+            (0..16).filter(|&i| c.row(0)[i].is_some()).collect()
+        };
+        assert!(kick.len() >= 2, "{kick:?}");
+        let (a, b) = (kick[0], kick[1]);
+        let cell = |p: &Player, st: usize| steps_target(p, "value", id * 16 + st);
+        let (ca, cb) = (cell(&p, a), cell(&p, b));
+        // Low on Kick's first step, up to the top over its second.
+        let low = |c: Rect| (c.x + c.w / 2, c.bottom() - 3);
+        let high = |c: Rect| (c.x + c.w / 2, c.y + 2);
+        p.take_actions();
+        assert_eq!(p.touch(7, Touch::Down, low(ca).0, low(ca).1), None);
+        p.touch(7, Touch::Move, high(cb).0, high(cb).1);
+        let sent = p.take_actions();
+        assert!(
+            !sent.iter().any(|a| matches!(a, FromUi::Steps(_))),
+            "nothing sent while it draws: {sent:?}"
+        );
+        let up = p.touch(7, Touch::Up, high(cb).0, high(cb).1);
+        let Some(FromUi::Steps(StepAction::Values {
+            pad: 0,
+            from: 0,
+            kind: NoteValue::Velocity,
+            values,
+        })) = up
+        else {
+            panic!("{up:?}");
+        };
+        assert!(values[a] > 0 && values[a] < 30, "{values:?}");
+        assert_eq!(values[b], 127, "{values:?}");
+        assert!(
+            values
+                .iter()
+                .enumerate()
+                .all(|(i, v)| *v == 0 || kick.contains(&i)),
+            "only Kick's steps: {values:?}"
+        );
+        // The Steps show it at once.
+        let c = p.play.steps.clip.as_ref().unwrap();
+        assert_eq!(c.row(0)[b].unwrap().velocity, values[b]);
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains("Velocity of Kick on"), "{hint}");
+        // A second finger on the Steps calls a stroke off: nothing sent.
+        p.take_actions();
+        p.touch(8, Touch::Down, low(ca).0, low(ca).1);
+        p.touch(8, Touch::Move, high(cb).0, low(cb).1);
+        p.touch(9, Touch::Down, high(ca).0, high(ca).1);
+        assert_eq!(p.touch(8, Touch::Up, high(cb).0, low(cb).1), None);
+        p.touch(9, Touch::Up, high(ca).0, high(ca).1);
+        assert!(
+            !p.take_actions()
+                .iter()
+                .any(|a| matches!(a, FromUi::Steps(StepAction::Values { .. }))),
+            "called off"
+        );
+        // A finger held on Kick's first step and the wheel: five up a
+        // detent, and the lift sets nothing more.
+        let was = p.play.steps.clip.as_ref().unwrap().row(0)[a]
+            .unwrap()
+            .velocity;
+        p.take_actions();
+        let (x, y) = low(ca);
+        p.touch(10, Touch::Down, x, y);
+        assert!(p.take_actions().contains(&FromUi::Held(true)));
+        p.apply(ToUi::Held {
+            delta: 1,
+            fine: false,
+        });
+        let turned = p.take_actions();
+        assert!(
+            turned.iter().any(|t| matches!(t, FromUi::Steps(StepAction::Values { values, .. }) if values[a] == was + 5)),
+            "{turned:?}"
+        );
+        assert_eq!(p.touch(10, Touch::Up, x, y), None);
+        assert!(
+            !p.take_actions()
+                .iter()
+                .any(|a| matches!(a, FromUi::Steps(_))),
+            "the lift sets nothing"
+        );
+        // The ×: the lane goes, the steps keep their values.
+        let off = steps_target(&p, "lock-lane-off", id);
+        assert_eq!(steps_tap(&mut p, off), None);
+        assert!(p.play.value_lanes().is_empty());
+        assert_ne!(
+            lock_lane_names(&p).last().map(String::as_str),
+            Some("Velocity Kick")
+        );
+        let c = p.play.steps.clip.as_ref().unwrap();
+        assert_eq!(c.row(0)[a].unwrap().velocity, was + 5);
     }
 
     /// The Steps' target `id`, `index` (a lane's head, a lock cell).
@@ -23354,12 +24198,15 @@ mod tests {
         p.apply(ToUi::IoModel(io.clone()));
         p.take_actions();
         // No profile: the CCs most gear agrees on, the bend and pressure;
-        // nothing of the kit (the gear plays the track instead).
+        // nothing of the kit (the gear plays the track instead), after
+        // the hit pad's Velocity and Chance (the notes the gear gets).
         let b = steps_target(&p, "head", play_widgets::HEAD_LANE);
         steps_tap(&mut p, b);
         assert_eq!(p.page(), LANES_PAGE);
         let gear = io.lock().unwrap().setup.tracks[0].clone().unwrap().label();
-        let items = lane_items(&p);
+        let all = lane_items(&p);
+        assert!(all[0].starts_with("Velocity ") && all[1].starts_with("Chance "));
+        let items = all[2..].to_vec();
         assert_eq!(items[0], format!("Mod wheel · {gear} · CC 1"));
         for want in ["Cutoff", "Bend", "Pressure"] {
             assert!(
@@ -23377,11 +24224,11 @@ mod tests {
         assert_eq!(card.buttons, ["Back", "Another CC"]);
         // The wheel moves down the list past what a finger reaches; the
         // push adds the row picked (Pressure, the last).
-        let last = items.len() as i32 - 1;
+        let last = all.len() as i32 - 1;
         p.apply(ToUi::Nav(Nav::Turn(last + 3)));
         assert_eq!(
             p.ui.get::<ListView>("lanes").unwrap().selected,
-            items.len() - 1
+            all.len() - 1
         );
         p.apply(ToUi::Nav(Nav::Push));
         assert!(p.page().starts_with("Play"));
@@ -23438,7 +24285,7 @@ mod tests {
         let b = steps_target(&p, "head", play_widgets::HEAD_LANE);
         steps_tap(&mut p, b);
         assert_eq!(
-            lane_items(&p)[..4],
+            lane_items(&p)[2..6],
             [
                 "Cutoff · Mono synth · CC 43",
                 "Resonance · Mono synth · CC 44",

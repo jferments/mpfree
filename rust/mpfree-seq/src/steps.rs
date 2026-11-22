@@ -67,6 +67,25 @@ pub const PAGE: usize = 16;
 /// 1/16 triplet and 1/32.
 pub const SIZES: [Tick; 6] = [960, 480, 320, 240, 160, 120];
 
+/// A clip's step size until it is changed: a 1/16 ([`crate::Clip::step`]).
+pub const DEFAULT_SIZE: Tick = 240;
+
+/// A step size's name ("1/8T"), for the screen and the saved clip; None
+/// for a size that isn't one of [`SIZES`].
+pub fn size_name(size: Tick) -> Option<&'static str> {
+    SIZES.contains(&size).then(|| {
+        crate::notes::DIVISIONS
+            .iter()
+            .find(|d| d.0 == size)
+            .map_or("", |d| d.1)
+    })
+}
+
+/// The step size named `name` ("1/8T"), if it is one of [`SIZES`].
+pub fn size_named(name: &str) -> Option<Tick> {
+    SIZES.into_iter().find(|&s| size_name(s) == Some(name))
+}
+
 /// A clip cut into steps of one size.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Grid {
@@ -828,6 +847,22 @@ impl Grid {
         let mut edit = Edit::default();
         let mut done: Vec<usize> = Vec::new();
         for &i in steps {
+            if !done.contains(&i) {
+                done.push(i);
+                edit.join(self.change(clip, pitch, i, change));
+            }
+        }
+        edit
+    }
+
+    /// Change several steps of sound `pitch`, each its own way (a lane's
+    /// stroke on the Sequencer's Steps, step sequencer refactor D3), as
+    /// one edit: each as [`Grid::change`] does. A step listed twice takes
+    /// its first change; empty steps are left out.
+    pub fn change_each(self, clip: &Clip, pitch: u8, changes: &[(usize, Change)]) -> Edit {
+        let mut edit = Edit::default();
+        let mut done: Vec<usize> = Vec::new();
+        for &(i, change) in changes {
             if !done.contains(&i) {
                 done.push(i);
                 edit.join(self.change(clip, pitch, i, change));
@@ -2001,6 +2036,45 @@ mod tests {
         for (i, a) in keys.iter().enumerate() {
             assert!(keys[i + 1..].iter().all(|b| a != b));
         }
+    }
+
+    #[test]
+    fn a_lanes_stroke_changes_each_step_its_own_way_in_one_edit() {
+        let g = Grid::new(240).unwrap();
+        let mut c = clip(BAR, &[(0, 36), (480, 36), (960, 36), (480, 38)]);
+        let before = c.clone();
+        let e = g.change_each(
+            &c,
+            36,
+            &[
+                (0, Change::Velocity(30)),
+                (2, Change::Velocity(90)),
+                (4, Change::Velocity(127)),
+                // An empty step, and a step listed twice: its first wins.
+                (5, Change::Velocity(10)),
+                (0, Change::Velocity(50)),
+            ],
+        );
+        c.apply(&e).unwrap();
+        let row: Vec<Option<u8>> = g
+            .row(&c, 36)
+            .iter()
+            .map(|s| s.map(|s| s.velocity))
+            .collect();
+        assert_eq!(&row[..6], [Some(30), None, Some(90), None, Some(127), None]);
+        assert_eq!(
+            g.row(&c, 38)[2].map(|s| s.velocity),
+            Some(100),
+            "other rows stay"
+        );
+        c.apply(&e.inverse()).unwrap();
+        let sorted = |c: &Clip| {
+            let mut n = c.notes.clone();
+            n.sort_by_key(|n| (n.tick, n.note));
+            n
+        };
+        assert_eq!(sorted(&c), sorted(&before), "one edit takes it all back");
+        assert!(g.change_each(&c, 36, &[(1, Change::Chance(5))]).is_empty());
     }
 
     #[test]
