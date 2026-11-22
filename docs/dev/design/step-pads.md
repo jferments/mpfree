@@ -11,7 +11,7 @@ This builds on the [step sequencer](steps.md): steps are a view of a clip's note
 
 ## The rule
 
-**The lit mode button says what the pads are.** With STEP SEQ lit, the 16 pads are 16 steps of one sound of the clip Beats shows (the armed track's playing clip, else its first), on every page, until STEP SEQ is pressed again. TRACK MUTE works the same way, and there is one pad mode at a time: STEP SEQ, TRACK MUTE and 16 LEVEL each turn the others off.
+**The lit mode button says what the pads are.** With STEP SEQ lit, the 16 pads are 16 steps of one sound of the clip Beats shows (the selected track's playing clip, else its first: the armed track's, unless another track was picked while REC's arm is pinned, as [rec-arm.md](rec-arm.md) says), on every page, until STEP SEQ is pressed again. TRACK MUTE works the same way, and there is one pad mode at a time: STEP SEQ, TRACK MUTE and 16 LEVEL each turn the others off.
 
 | Press | Does |
 | --- | --- |

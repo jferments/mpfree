@@ -194,7 +194,11 @@ fn a_row_saves_the_sound_and_stores_turns_made_while_morphing() {
     // Three targets and eight macros.
     assert_eq!(save_scene(&e, &mut p, 3), Some(11));
     assert_eq!(p.scene(3).unwrap().value(mix()), Some(20.0));
-    assert_eq!(save_scene(&e, &mut p, 16), None, "no such row");
+    assert_eq!(
+        save_scene(&e, &mut p, mpfree_seq::SCENES),
+        None,
+        "no such row"
+    );
     let mut p = project();
     let mut m = SceneMorph::default();
     m.load(&mut e, &p, 0, 2).unwrap();
@@ -222,5 +226,5 @@ fn values_for_parameters_the_engine_lacks_are_counted_not_loaded() {
     let mut m = SceneMorph::default();
     let l = m.load(&mut e, &p, 0, 2).unwrap();
     assert_eq!((l.morphing, l.unknown), (3, 1));
-    assert!(m.load(&mut e, &p, 0, 16).is_err());
+    assert!(m.load(&mut e, &p, 0, mpfree_seq::SCENES).is_err());
 }

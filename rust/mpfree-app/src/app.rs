@@ -2864,7 +2864,8 @@ impl App {
     }
 
     /// Pad `pad` (0 to 15) hit while MAIN is held: that track of the bank
-    /// is picked (armed), as a tap on its name on Arrange; past the last
+    /// is picked (selected, and armed unless the arm is pinned), as a tap
+    /// on its name on Arrange; past the last
     /// track, the hint line says so. Nothing when MAIN isn't held.
     pub fn main_pick(&mut self, pad: usize) -> Vec<Effect> {
         let tracks = self.track_count;
@@ -2879,7 +2880,7 @@ impl App {
                 t + 1
             ))];
         }
-        vec![Effect::Time(TimeAction::Arm(Some(t)))]
+        vec![Effect::Time(TimeAction::Pick(t))]
     }
 
     /// FULL LEVEL let go: with no pad hit while it was held, Full Level
@@ -5901,12 +5902,12 @@ mod tests {
         app.button(button::MAIN, true, 0.0);
         assert_eq!(app.main_held(), Some(0));
         assert_eq!(app.status_now().main_held, Some(0));
-        assert_eq!(app.main_pick(2), [Effect::Time(TimeAction::Arm(Some(2)))]);
+        assert_eq!(app.main_pick(2), [Effect::Time(TimeAction::Pick(2))]);
         // PAD BANK B: tracks 17-32; track 21 isn't there.
         app.button(button::PAD_BANK[1], true, 0.0);
         app.button(button::PAD_BANK[1], false, 0.0);
         assert_eq!(app.main_held(), Some(1));
-        assert_eq!(app.main_pick(3), [Effect::Time(TimeAction::Arm(Some(19)))]);
+        assert_eq!(app.main_pick(3), [Effect::Time(TimeAction::Pick(19))]);
         assert!(matches!(&app.main_pick(4)[..], [Effect::Tell(t)] if t.contains("no track 21")));
         let fx = app.button(button::MAIN, false, 0.0);
         assert!(!fx.iter().any(|e| matches!(e, Effect::Show(_))), "{fx:?}");

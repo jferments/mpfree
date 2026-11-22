@@ -1268,6 +1268,13 @@ impl TimeAudio {
         self.send(ToControl::Period(end));
     }
 
+    /// The armed track as the audio half has it: its recorder takes live
+    /// notes for it alone.
+    #[cfg(test)]
+    pub(super) fn armed(&self) -> Option<usize> {
+        self.tracks.armed
+    }
+
     pub fn counts(&self) -> Counts {
         Counts {
             dropped: self.recorder.dropped()
