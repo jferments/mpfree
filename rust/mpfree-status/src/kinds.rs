@@ -11,9 +11,9 @@
 //! 4. **A new kind joins here, not on the screen.** The design page of the
 //!    feature that reports it says which level it is and why.
 //!
-//! These are the phase 1 kinds; disk streaming, themes, plugins and the
-//! MIDI clock add theirs in phase 3 (`docs/dev/design/status.md`). The
-//! words are drafts; any can change.
+//! These are the phase 1 kinds and the themes' four; disk streaming,
+//! plugins and the MIDI clock add theirs in phase 3
+//! (`docs/dev/design/status.md`). The words are drafts; any can change.
 
 use crate::{Action, Kind, Level, Shape, System};
 
@@ -291,6 +291,73 @@ pub static NO_GPU: Kind = Kind {
     hides: &[],
 };
 
+/// A theme file in the themes folder couldn't be used (no one could read
+/// its colours, or it isn't text), so Prefs > Appearance leaves it out.
+/// Theme files are read at the start, so it stays until the next one
+/// (docs/dev/design/ui-themes.md).
+pub static THEME_LEFT_OUT: Kind = Kind {
+    id: "screen/theme-left-out",
+    system: System::Screen,
+    level: Level::Warn,
+    shape: Shape::Stays,
+    short: "Theme left out",
+    title: "A theme file was left out",
+    what: "One of the theme files in the themes folder couldn't be used, so Prefs > Appearance doesn't offer it.",
+    to_try: "Open Prefs > Appearance to see which file and why, then fix it or take it out of the folder.",
+    action: None,
+    manual: "a-theme-file-was-left-out",
+    hides: &[],
+};
+
+/// Lines of a theme file had a mistake (or a key MPFree doesn't know), so
+/// those colours came from the theme it starts from.
+pub static THEME_MISTAKES: Kind = Kind {
+    id: "screen/theme-mistakes",
+    system: System::Screen,
+    level: Level::Warn,
+    shape: Shape::Stays,
+    short: "Theme has mistakes",
+    title: "A theme file has mistakes",
+    what: "Some lines of a theme file couldn't be used, so those colours come from the theme it starts from.",
+    to_try: "Pick that theme in Prefs > Appearance to see the lines, then fix them in the file.",
+    action: None,
+    manual: "a-theme-file-has-mistakes",
+    hides: &[],
+};
+
+/// The theme picked last time (or named with --theme) couldn't be found or
+/// read at the start, so the default theme shows. Picking a theme ends it.
+pub static THEME_NOT_FOUND: Kind = Kind {
+    id: "screen/theme-not-found",
+    system: System::Screen,
+    level: Level::Warn,
+    shape: Shape::Stays,
+    short: "Theme not found",
+    title: "Your theme couldn't be used",
+    what: "The theme you picked couldn't be found or read when MPFree started, so the Default theme is showing.",
+    to_try: "Pick a theme again in Prefs > Appearance.",
+    action: None,
+    manual: "your-theme-couldnt-be-used",
+    hides: &[],
+};
+
+/// The theme's colours didn't read on a plugin's own screen, so MPFree's
+/// pop-ups over it were given colours that do (mpfree-mpcskin's guards).
+/// A theme that needs no change ends it.
+pub static SKIN_COLOURS_MOVED: Kind = Kind {
+    id: "screen/skin-colours-moved",
+    system: System::Screen,
+    level: Level::Warn,
+    shape: Shape::Stays,
+    short: "Colours fixed",
+    title: "Some pop-up colours were changed so they read",
+    what: "The theme's colours didn't read over a plugin's own screen, so MPFree changed the colours of its pop-ups there.",
+    to_try: "Pick another theme, or give this one more difference between its words and its panels.",
+    action: None,
+    manual: "some-pop-up-colours-were-changed-so-they-read",
+    hides: &[],
+};
+
 // ---------------------------------------------------------------- The MPC
 
 /// A strict sound helper couldn't get its core or priority, so its part
@@ -327,6 +394,10 @@ pub static ALL: &[&Kind] = &[
     &CRASH_RESTART,
     &PARTS_MISSING,
     &NO_GPU,
+    &THEME_LEFT_OUT,
+    &THEME_MISTAKES,
+    &THEME_NOT_FOUND,
+    &SKIN_COLOURS_MOVED,
     &ONE_CORE,
 ];
 
