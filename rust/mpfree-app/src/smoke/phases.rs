@@ -1442,7 +1442,9 @@ mod looper {
             until_phase(&mut s, Phase::Playing, 1.0);
             let st = status(&s);
             let bar = 4 * PPQ as i64;
-            let (bars, bpm) = mpfree_looper::free_tempo(st.frames, crate::RATE, bar).unwrap();
+            let reading =
+                mpfree_looper::read_bars(st.frames, crate::RATE, bar, None, None).unwrap();
+            let (bars, bpm) = (reading.bars, reading.bpm);
             assert_eq!((bars, st.ticks, st.origin), (1, bar, 0), "bar 1, one bar");
             assert!((90.0..100.0).contains(&bpm), "{bpm}");
             let said =
@@ -1456,6 +1458,90 @@ mod looper {
             assert_eq!(s.time.tempo_map().segments().len(), 1);
             assert_eq!(s.looper.tempos_refused, 0);
         });
+    }
+
+    /// Smart loop end plan, step 0B: with Tempo from the first loop on,
+    /// Length 2 bars means 2 bars at the tempo you play (it records free
+    /// from REC, and nothing is read). On Free, a loop near the old 80 BPM
+    /// edge reads as a close call and says so on the screen; the same
+    /// loop with the tempo set by hand to 80 first is 1 bar at 79.
+    #[test]
+    fn with_length_set_the_first_loop_is_its_bars_at_your_tempo() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            s.press("header", "tab", "Looper");
+            s.app.settings.loop_tempo = true;
+            let two = at(&mut s, "leditor", "bars", 3);
+            assert_eq!(two.label, "2");
+            s.press_target(&two).run_for(0.1);
+            assert!(status(&s).free, "Length 2 bars records free too");
+            s.button("REC").run_for(0.1);
+            assert!(
+                s.said().iter().any(|l| l
+                    == "looper: Record: the first pass records 2 bars at the tempo you play \
+                        from now: REC again closes it, and its length sets the tempo and \
+                        starts the song"),
+                "{:?}",
+                s.said()
+            );
+            s.run_for(3.5);
+            s.button("REC");
+            until_phase(&mut s, Phase::Playing, 1.0);
+            let st = status(&s);
+            let bar = 4 * PPQ as i64;
+            assert_eq!(st.ticks, 2 * bar, "2 bars, as Length set");
+            s.run_for(0.2);
+            let bpm = s.time.info().bpm;
+            let want = 2.0 * 4.0 * 60.0 * f64::from(crate::RATE) / st.frames as f64;
+            assert!((bpm - want).abs() < 1e-9, "{bpm}, {want}");
+            assert!((125.0..140.0).contains(&bpm), "{bpm}");
+            let said = format!(
+                "looper: Loop 1 is 2 bars at {bpm:.2} BPM, as Length set: the song starts at \
+                 that tempo"
+            );
+            assert!(s.said().contains(&said), "{:?}", s.said());
+        });
+        // Free, about 3.04 s: 1 bar at 79 or 2 at 158.
+        for by_hand in [false, true] {
+            on_big_stack(move || {
+                let mut s = Session::new();
+                s.make_sounds();
+                s.press("header", "tab", "Looper");
+                s.app.settings.loop_tempo = true;
+                if by_hand {
+                    s.fx.extend(s.app.set_tempo_by_hand(80.0));
+                }
+                s.run_for(0.1);
+                let free = at(&mut s, "leditor", "bars", 1);
+                s.press_target(&free).run_for(0.1);
+                s.button("REC");
+                s.run_for(3.04);
+                s.button("REC");
+                until_phase(&mut s, Phase::Playing, 1.0);
+                let st = status(&s);
+                let bar = 4 * PPQ as i64;
+                let r = s
+                    .said()
+                    .into_iter()
+                    .find(|l| l.starts_with("looper: Loop 1 is "))
+                    .expect("the reading said");
+                if by_hand {
+                    assert_eq!(st.ticks, bar, "{r}");
+                    assert!(r.contains("1 bar at 7"), "{r}");
+                    assert!(!r.contains("close call"), "{r}");
+                } else {
+                    assert_eq!(st.ticks, 2 * bar, "{r}");
+                    assert!(r.contains("2 bars at 15"), "{r}");
+                    assert!(r.contains("(a close call: it could be 1 bar at 7"), "{r}");
+                    assert!(
+                        s.hint().contains("close call"),
+                        "on the screen: {}",
+                        s.hint()
+                    );
+                }
+            });
+        }
     }
 
     #[test]

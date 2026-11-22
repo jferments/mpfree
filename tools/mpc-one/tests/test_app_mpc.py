@@ -91,6 +91,11 @@ LIBRARY_NEEDLES = (
     ("mpfree-library/project.rs", "let _ = fs::remove_file(t);"),
     ("mpfree-library/project.rs", "let _ = fs::remove_file(e.path());"),
     ("mpfree-library/project.rs", "fs::rename(&tmp, &dst)"),                            # a part file written
+    # A project's manifest (manifest.rs; live shows A3, 22 Nov 2026): after a save lands (or when an open finds
+    # it missing), Library::update_manifest writes manifest.txt.part in the project's own folder in Projects
+    # (Library::path, links refused) through write_synced (project.rs's O_NOFOLLOW open above), then renames
+    # it over manifest.txt. Nothing else in the folder is touched; a cut-off .part is overwritten next time.
+    ("mpfree-library/manifest.rs", "fs::rename(&part, dir.join(MANIFEST_FILE))?;"),
     # Kit files (kit.rs; the browser thread, 16 Nov 2026): Save kit in BROWSE's Kits place or the Pads tab's
     # picker builds the kit in a hidden .kit-<id>-<name> folder beside where it goes (in Kits, Samples ...;
     # never Projects or the Trash: check_writable), each file made new (create_new, O_NOFOLLOW) with a name

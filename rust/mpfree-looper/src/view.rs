@@ -56,6 +56,41 @@ impl View {
         v
     }
 
+    /// `len` frames of audio of `size` frames, from frame `start`,
+    /// forwards, played from frame `src` (in them) on and round to
+    /// `start`: a loop over part of a longer recording whose bar 1 is
+    /// `src`. None unless `start <= src < start + len <= size`.
+    pub fn region(size: usize, start: usize, len: usize, src: usize) -> Option<View> {
+        let end = start.checked_add(len)?;
+        if len == 0 || src < start || src >= end || end > size || size > u32::MAX as usize {
+            return None;
+        }
+        let mut v = View {
+            size: size as u32,
+            ..View::EMPTY
+        };
+        v.push(Piece {
+            start: src as u32,
+            len: (end - src) as u32,
+            back: false,
+        });
+        v.push(Piece {
+            start: start as u32,
+            len: (src - start) as u32,
+            back: false,
+        });
+        Some(v)
+    }
+
+    /// One piece, forwards, that ends before the audio does: the audio
+    /// frame it starts on (playback frame `p` plays audio frame
+    /// `start + p`). A whole view is one too.
+    pub fn forward(&self) -> Option<usize> {
+        let p = &self.pieces[0];
+        (self.n == 1 && !p.back && u64::from(p.start) + u64::from(p.len) <= u64::from(self.size))
+            .then_some(p.start as usize)
+    }
+
     /// Frames it plays.
     pub fn len(&self) -> usize {
         self.len as usize
@@ -378,6 +413,28 @@ mod tests {
         // Doubling the whole audio is one piece, twice round.
         let d = View::whole(1000).then(&View::whole(1000)).unwrap();
         assert_eq!((d.pieces().len(), d.len()), (1, 2000));
+    }
+
+    #[test]
+    fn a_region_plays_part_of_its_audio_from_its_downbeat() {
+        let v = View::region(100, 20, 50, 20).unwrap();
+        assert_eq!(frames(&v), (20..70).collect::<Vec<_>>());
+        assert_eq!(v.forward(), Some(20));
+        assert!(v.cut_after(0), "frame 69 back to frame 20");
+        assert_eq!(
+            v.frame(&v.pieces()[0], -3),
+            17,
+            "before it is what came before"
+        );
+        // Bar 1 later in the same audio: the start plays at the end.
+        let t = View::region(100, 20, 50, 30).unwrap();
+        assert_eq!(Some(t), v.rotate(-10));
+        assert_eq!(t.forward(), None);
+        assert!(t.cut_after(0) && !t.cut_after(1));
+        assert_eq!(View::whole(40).forward(), Some(0));
+        for (start, len, src) in [(20, 50, 70), (20, 50, 19), (60, 50, 60), (0, 0, 0)] {
+            assert_eq!(View::region(100, start, len, src), None);
+        }
     }
 
     #[test]
