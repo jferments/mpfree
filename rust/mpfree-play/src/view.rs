@@ -963,6 +963,17 @@ impl PlayView {
             .sum()
     }
 
+    /// Notes the view holds for the song's blocks: a copy of its clip's
+    /// notes for every block (the Arrange refactor's bench, 2.1; 2.3 keeps
+    /// one copy a clip).
+    pub fn song_notes(&self) -> usize {
+        self.tracks
+            .iter()
+            .flat_map(|t| t.regions.iter())
+            .map(|r| r.clip.notes.len())
+            .sum()
+    }
+
     /// Parameter locks in the playing clips.
     pub fn locks(&self) -> usize {
         self.tracks

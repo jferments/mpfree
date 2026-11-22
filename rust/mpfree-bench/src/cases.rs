@@ -1995,6 +1995,9 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| step_edit(StepTouch::Detent, false)));
     v.push(measured(|| step_edit(StepTouch::Detent, true)));
     v.push(measured(step_grid));
+    v.push(arrange_compile());
+    v.push(measured(arrange_step));
+    v.push(measured(arrange_save));
     v.push(measured(|| live_arps(rate, 4)));
     v.push(measured(|| live_arps(rate, 16)));
     v.push(measured(|| looper(rate, 60)));
@@ -3166,6 +3169,27 @@ fn time_record(rate: u32, tracks: usize, armed: usize) -> Case {
 /// `--check-allocs` leaves it out.
 pub const CONTROL: &str = "control";
 
+/// What the big-song cases' names start with (Arrange refactor 2.1). Each
+/// of their blocks compiles or saves a whole song, about a fifth of a
+/// second a block on a desktop today, so they count and time far fewer
+/// blocks than the rest ([`blocks_for`]).
+pub const BIG_SONG: &str = "Arrange: ";
+
+/// Blocks to warm up for and then count, of `blocks` asked for: an engine
+/// counts every one after 50; the control half's step cases a tenth of
+/// them after 5, since a step edit costs far more a block than an engine
+/// and the same every block; the big-song cases one in 200 (at least one)
+/// after one, since a block of theirs is billions of instructions.
+pub fn blocks_for(c: &Case, blocks: u64) -> (u64, u64) {
+    if c.name.starts_with(BIG_SONG) {
+        (1, (blocks / 200).max(1))
+    } else if c.module == CONTROL {
+        (5, (blocks / 10).max(1))
+    } else {
+        (50, blocks)
+    }
+}
+
 /// A step on the step cases' grid: a sixteenth (the app's `STEP_TICKS`).
 const STEP: i64 = 240;
 /// Rows of the step cases' clip.
@@ -3336,6 +3360,138 @@ fn step_grid() -> Case {
                 .map(|(_, row)| row.iter().flatten().count())
                 .sum::<usize>() as f32;
             r[0] = shown.rows.len() as f32;
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// Tracks of the arrangement cases' song (Arrange refactor 2.1).
+const ARR_TRACKS: usize = 16;
+/// Blocks a track in the arrangement cases' song: 512 in all.
+const ARR_BLOCKS: i64 = 32;
+/// Notes in each of the arrangement cases' 32 clips.
+const ARR_NOTES: i64 = 1_000;
+
+/// The arrangement cases' big song (Arrange refactor 2.1): 16 tracks, each
+/// with two 4-bar clips of 1,000 notes in rows 0 and 1 (32 clips), and a
+/// song of 512 blocks, 32 a track, each 4 bars and each naming one of its
+/// track's two clips, so every clip plays in 16 blocks.
+fn arrange_song() -> Song {
+    use mpfree_seq::Placement;
+    let len = 16 * i64::from(PPQ);
+    let mut song = Song::new();
+    for t in 0..ARR_TRACKS {
+        let mut tr = Track::new("t", t as u16);
+        for row in 0..2usize {
+            let mut c = Clip::new("c", len);
+            c.notes = (0..ARR_NOTES)
+                .map(|k| {
+                    let pitch = 36 + (k * 7 + row as i64) % 48;
+                    Note::new(k * len / ARR_NOTES, 8, pitch as u8, 100)
+                })
+                .collect();
+            tr.slots[row] = Some(c);
+        }
+        song.tracks.push(tr);
+    }
+    song.give_clip_ids();
+    for t in 0..ARR_TRACKS {
+        for k in 0..ARR_BLOCKS {
+            let b = Placement::of(&song.tracks, t, (k % 2) as usize, k * len, len);
+            song.arrangement.place(b).expect("room for the block");
+        }
+    }
+    song
+}
+
+/// The view of the big song in song mode, as `TimeControl::view` builds it.
+fn arrange_view(song: &Song) -> PlayView {
+    let mut v = PlayView::compile_cued(song, &[], &[]).expect("view");
+    v.set_song(song, true).expect("song");
+    v
+}
+
+/// The big song's view (Arrange refactor 2.1), a block each: compiled as the
+/// control half compiles it after an edit in song mode, taken by the audio
+/// half (`Recent::catch_up`, then the swap), and the view it played freed,
+/// as the control half frees it when it comes back. Its bytes are the
+/// view's alone. Phase 2.3 (one compiled copy per clip) is judged by it.
+fn arrange_compile() -> Case {
+    use mpfree_play::Recent;
+    let song = arrange_song();
+    let (view, bytes) = alloc::bytes_in(|| Box::new(arrange_view(&song)));
+    let mut view = view;
+    let mut recent = Box::new(Recent::new());
+    Case {
+        name: "Arrange: the big song's view, 512 blocks of 32 clips: compiled and swapped"
+            .to_string(),
+        module: CONTROL,
+        what: "the song-mode view built, caught up and swapped in, and the old one freed",
+        block: Box::new(move |_, l, r| {
+            let mut next = Box::new(arrange_view(&song));
+            let after = recent.last();
+            recent.catch_up(&mut next, after).expect("caught up");
+            let old = std::mem::replace(&mut view, next);
+            drop(old);
+            l.fill(0.0);
+            r.fill(0.0);
+            l[0] = view.song_notes() as f32;
+        }),
+        mem_bytes: bytes,
+    }
+}
+
+/// A step tapped on one of the big song's clips in song mode (Arrange
+/// refactor 2.1), a block each, as `TimeControl::step_action` makes it: the
+/// edit worked out on the grid and made to the clip and the takes, then,
+/// since a song-mode edit can't go in place today (`TimeControl::in_place`),
+/// the view compiled again. Phase 2.3 puts song-mode edits in place.
+fn arrange_step() -> Case {
+    use mpfree_play::Takes;
+    use mpfree_seq::steps::Grid;
+    let mut song = arrange_song();
+    let mut view = arrange_view(&song);
+    let mut takes = Takes::default();
+    let grid = Grid::new(STEP).expect("a sixteenth");
+    Case {
+        name: "Arrange: a step tap in song mode, 512 blocks of 32 clips: until it plays"
+            .to_string(),
+        module: CONTROL,
+        what: "a step's note out, then back in, on a clip 16 blocks play; then the view compiled",
+        block: Box::new(move |b, l, r| {
+            let clip = song.clip(0, 0).expect("the clip");
+            let k = b / 2;
+            let step = (k * 7 % 64) as usize;
+            let edit = grid.toggle(clip, 60, step, 100);
+            takes.edit(&mut song, 0, 0, &edit, None).expect("the edit");
+            let old = std::mem::replace(&mut view, arrange_view(&song));
+            drop(old);
+            l.fill(0.0);
+            r.fill(0.0);
+            l[0] = song.clip(0, 0).map_or(0, |c| c.notes.len()) as f32;
+            r[0] = view.song_notes() as f32;
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// The big song's clips part saved and opened again (Arrange refactor 2.1),
+/// a block each: `mpfree_seq::save::to_text` and `from_text`, as a project
+/// save and open do for the time engine's part.
+fn arrange_save() -> Case {
+    use mpfree_seq::save;
+    let song = arrange_song();
+    Case {
+        name: "Arrange: the big song saved and opened, 512 blocks of 32 clips".to_string(),
+        module: CONTROL,
+        what: "the clips part written as text and read back",
+        block: Box::new(move |_, l, r| {
+            let text = save::to_text(&song);
+            let back = save::from_text(&text).expect("it opens");
+            l.fill(0.0);
+            r.fill(0.0);
+            l[0] = text.len() as f32;
+            r[0] = back.arrangement.placements.len() as f32;
         }),
         mem_bytes: 0,
     }
@@ -4966,6 +5122,26 @@ mod tests {
         let (l, r) = run(&mut measured(step_grid), 1);
         // 64 rows of 128 steps, and the whole line's 128.
         assert_eq!((l[0], r[0]), (8_320.0, 65.0));
+    }
+
+    #[test]
+    fn the_big_song_cases_compile_edit_and_save_the_whole_song() {
+        // The view plays every block's 1,000 notes, 512 blocks.
+        let (l, _) = run(&mut arrange_compile(), 1);
+        assert_eq!(l[0], 512_000.0);
+        // A tap takes a note out and the view plays it in all 16 of the
+        // clip's blocks; the next block puts it back.
+        let (l, r) = run(&mut measured(arrange_step), 1);
+        assert_eq!((l[0], r[0]), (1_001.0, 512_016.0));
+        let (l, r) = run(&mut measured(arrange_step), 2);
+        assert_eq!((l[0], r[0]), (1_000.0, 512_000.0));
+        let (l, r) = run(&mut measured(arrange_save), 1);
+        assert!(l[0] > 0.0);
+        assert_eq!(r[0], 512.0);
+        // A block of theirs is billions of instructions: few are counted.
+        let c = arrange_save();
+        assert_eq!(blocks_for(&c, 200), (1, 1));
+        assert_eq!(blocks_for(&step_grid(), 200), (5, 20));
     }
 
     #[test]
