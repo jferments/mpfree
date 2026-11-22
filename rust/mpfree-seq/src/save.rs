@@ -89,6 +89,14 @@
 //! cell: it plays nothing, as it did), and each `own` block's clip
 //! becomes a song clip with an id of its own, in order.
 //!
+//! A track's `audio` line makes it an audio track (the audio tracks
+//! rethink, phase 1, [`TrackKind::Audio`]): its recordings and regions
+//! are in the audio tracks part, found by the track's `id`, and it holds
+//! no clip or song block. A part with one starts `mpfree-clips 3`
+//! ([`FORMAT_3`]), which an older build doesn't open, since it would
+//! skip the line and open the track as an empty note track; a part with
+//! none is still `mpfree-clips 2`.
+//!
 //! A `tempo` line is a song's tempo point (tempo ramps): its tick, its
 //! tempo, and `ramp` when it glides to the next point. An older build
 //! skips them and plays the project's tempo.
@@ -141,6 +149,11 @@ use crate::{
 
 /// The first line.
 pub const FORMAT: &str = "mpfree-clips 2";
+/// The first line of a part with an audio track (the audio tracks
+/// rethink, phase 1): an older build would skip the track's `audio` line
+/// and open it as an empty note track, so it must not open the part. A
+/// part with no audio track is still [`FORMAT`].
+pub const FORMAT_3: &str = "mpfree-clips 3";
 /// The first line of a part saved before song blocks named their clip by
 /// its id (Arrange 1.3), which still opens.
 pub const FORMAT_1: &str = "mpfree-clips 1";
@@ -150,7 +163,11 @@ const TOUCH_PER_LINE: usize = 64;
 /// The project as text.
 pub fn to_text(p: &Project) -> String {
     let mut s = String::with_capacity(4096);
-    s.push_str(FORMAT);
+    s.push_str(if p.tracks.iter().any(Track::is_audio) {
+        FORMAT_3
+    } else {
+        FORMAT
+    });
     s.push('\n');
     if p.perform {
         s.push_str("perform\n");
@@ -195,6 +212,9 @@ pub fn to_text(p: &Project) -> String {
         }
         if let Some(input) = t.loops() {
             let _ = writeln!(s, "loops {}", input.word());
+        }
+        if t.is_audio() {
+            s.push_str("audio\n");
         }
         if !t.transpose.is_none() {
             let key = if t.transpose.in_key { " key" } else { "" };
@@ -545,7 +565,7 @@ struct LaneAt {
 pub fn from_text(text: &str) -> Result<Project, String> {
     let mut lines = text.lines().enumerate();
     match lines.next() {
-        Some((_, l)) if l.trim() == FORMAT || l.trim() == FORMAT_1 => {}
+        Some((_, l)) if [FORMAT, FORMAT_1, FORMAT_3].contains(&l.trim()) => {}
         _ => return Err(format!("not an {FORMAT} part")),
     }
     let mut p = Project::new();
@@ -676,6 +696,7 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 let input = w.next().and_then(LoopInput::from_word);
                 last(&mut p).kind = TrackKind::Loops(input.ok_or_else(|| bad("loops"))?)
             }
+            ("audio", At::Track) => last(&mut p).kind = TrackKind::Audio,
             ("clip", At::Track) => {
                 let slot: usize = num(w.next()).ok_or_else(|| bad("slot"))?;
                 let length: Tick = num(w.next()).ok_or_else(|| bad("length"))?;
@@ -1985,6 +2006,43 @@ mod tests {
         assert!(from_text(&past).is_err());
         let moved = text.replace("loops line\n", "");
         assert!(from_text(&moved).is_err(), "a loop cell on a note track");
+    }
+
+    /// The audio tracks rethink, phase 1: an audio track is saved as a
+    /// track with an `audio` line, and the part is then `mpfree-clips 3`;
+    /// with none it stays `mpfree-clips 2`. A clip or a song block on an
+    /// audio track is refused.
+    #[test]
+    fn audio_tracks_read_back_in_a_part_of_their_own_format() {
+        let mut p = full();
+        assert!(to_text(&p).starts_with("mpfree-clips 2\n"));
+        let mut a = Track::new_audio("Vocal", 5);
+        a.id = crate::TrackId(p.next_track.max(1));
+        p.next_track = a.id.0 + 1;
+        p.tracks.insert(1, a);
+        p.check().unwrap();
+        let text = to_text(&p);
+        assert!(text.starts_with("mpfree-clips 3\n"), "{text}");
+        assert!(text.contains("track Vocal\nid "), "{text}");
+        assert!(text.contains("rectouch 1\naudio\n"), "{text}");
+        let back = from_text(&text).unwrap();
+        assert_eq!(back, p);
+        assert!(back.tracks[1].is_audio() && !back.tracks[1].plays_notes());
+        assert_eq!(back.tracks[1].loops(), None);
+        // A clip in an audio track's cell, or a block on its lane.
+        let mut cell = p.clone();
+        cell.tracks[1].slots[0] = Some(Clip::new("Beat", 3840));
+        assert_eq!(cell.check(), Err(crate::ModelError::AudioTrack));
+        assert!(from_text(&to_text(&cell)).is_err());
+        let mut placed = p.clone();
+        placed.arrangement.placements.clear();
+        placed.arrangement.clips = Default::default();
+        let id = placed.tracks[0].slots.clips().next().map(|c| c.id).unwrap();
+        placed
+            .arrangement
+            .placements
+            .push(Placement::new(1, id, 0, 3840));
+        assert_eq!(placed.check(), Err(crate::ModelError::AudioTrack));
     }
 
     #[test]

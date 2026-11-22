@@ -373,6 +373,9 @@ impl Arrangement {
             if p.length <= 0 || p.start < 0 || p.offset < 0 || p.track >= tracks.len() {
                 return Err(ModelError::BadPlacement);
             }
+            if tracks[p.track].is_audio() {
+                return Err(ModelError::AudioTrack);
+            }
             if self
                 .clip_of(tracks, p)
                 .is_some_and(|c| c.looped.is_some() != tracks[p.track].is_loops())
@@ -682,6 +685,9 @@ impl Arrangement {
         let loops = |t: usize| tracks.get(t).is_some_and(Track::is_loops);
         if track != p.track && (loops(track) || loops(p.track)) {
             return Err(ModelError::BadLoop);
+        }
+        if tracks[track].is_audio() {
+            return Err(ModelError::AudioTrack);
         }
         let mut moved = p.clone();
         moved.track = track;

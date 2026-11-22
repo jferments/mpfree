@@ -2504,7 +2504,7 @@ fn transpose_pad(
 
 /// Track `track` (`t`) plays notes, so its live transpose moves them: its
 /// own instrument, or the synth if the track plays it (`kits`), but not
-/// the Drums engine, a kit's sounds or loops.
+/// the Drums engine, a kit's sounds, loops or an audio track.
 fn plays_notes(
     t: &mpfree_seq::Track,
     track: usize,
@@ -2513,7 +2513,7 @@ fn plays_notes(
     own: &instruments::Instruments,
 ) -> bool {
     match t.kind {
-        mpfree_seq::TrackKind::Loops(_) => false,
+        mpfree_seq::TrackKind::Loops(_) | mpfree_seq::TrackKind::Audio => false,
         mpfree_seq::TrackKind::Notes if own.plays(track) => own.plays_notes(track),
         mpfree_seq::TrackKind::Notes => kits.plays_synth(track) && synth.plays_notes(),
     }
