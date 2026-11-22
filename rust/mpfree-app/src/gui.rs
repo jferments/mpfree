@@ -17130,8 +17130,9 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     let mut l = crate::app::App::new(44_100, false);
     let mut fx = l.open_tab(View::Prefs);
     let at = l.row_of(crate::app::Item::Appearance).unwrap_or(0);
-    fx.extend(l.step_item(at, 1));
-    fx.extend(l.step_item(at, 1));
+    for _ in 0..3 {
+        fx.extend(l.step_item(at, 1));
+    }
     apply_effects(&mut look, fx);
     out.push(("prefs-appearance", look));
     // The guide from Prefs ("Find the buttons again"), PLAY pressed when it

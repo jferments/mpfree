@@ -147,7 +147,14 @@ pub struct Theme {
 }
 
 /// The built-in themes, by the name a theme file's `base` uses.
-pub const BUILTIN: [&str; 5] = ["default", "light", "console", "synthwave", "spaceship"];
+pub const BUILTIN: [&str; 6] = [
+    "default",
+    "slate",
+    "light",
+    "console",
+    "synthwave",
+    "spaceship",
+];
 
 /// The least a theme's text and dim text must reach on the page, a panel
 /// and a button for MPFree to be usable in it at all: the line the
@@ -204,7 +211,57 @@ impl Theme {
         .with_roles(Theme::DEFAULT_ROLES)
     }
 
-    /// Green on black, glowing like a phosphor screen.
+    /// Slate: blue-grey panels from the owner's slate palette (#313B47,
+    /// #4B5B6C, #6D8196, #8FA8C1, #C2CDDC), between the default's near
+    /// black and Light's pale grey. Words stay light, so every tier of
+    /// text, the status colours and the track colours keep their contrast;
+    /// a teal accent stands apart from the blue-grey.
+    pub fn slate() -> Theme {
+        Theme {
+            name: "Slate".into(),
+            bg: Color::rgb(0x313B47),
+            surface: Color::rgb(0x3A4655),
+            raised: Color::rgb(0x4B5B6C),
+            outline: Color::rgb(0x5C6E82),
+            text: Color::rgb(0xEEF2F7),
+            text_dim: Color::rgb(0xC9D3E0),
+            text_faint: Color::rgb(0x9DB0C6),
+            accent: Color::rgb(0x4FD1C5),
+            accent2: Color::rgb(0xB9A4FF),
+            on_accent: Color::rgb(0x10181F),
+            good: Color::rgb(0x9EEB95),
+            warn: Color::rgb(0xF2C14E),
+            bad: Color::rgb(0xFF8A80),
+            track: [
+                0x6FA8FF, 0x6BD49A, 0xF2C14E, 0xB9A4FF, 0xFF9A6B, 0x4FD1C5, 0xF58BC0, 0xB5DB6B,
+            ]
+            .map(Color::rgb),
+            radius: 14,
+            gap: sizes::GAP,
+            pad: sizes::PAD,
+            size_brand: sizes::SIZE_BRAND,
+            size_title: sizes::SIZE_TITLE,
+            size_body: sizes::SIZE_BODY,
+            size_small: sizes::SIZE_SMALL,
+            size_mono: sizes::SIZE_MONO,
+            corners: Corners::Round,
+            glow: 0,
+            text_glow: 0,
+            backdrop: Backdrop::Solid,
+            backdrop_to: Color::rgb(0x3A4655),
+            backdrop_line: Color::rgb(0x3A4655),
+            backdrop_step: 40,
+            face_body: sizes::FACE_BODY,
+            face_title: sizes::FACE_TITLE,
+            startup: Startup::Synthwave,
+            tint: 0,
+            mode: Mode::Dark,
+            roles: [Color::rgb(0); ROLE_COUNT],
+            sources: Vec::new(),
+        }
+        .with_roles(&[(Role::Shadow, 0x000000)])
+    }
+
     /// Light: the default's layout and blue accent on pale grey, for a
     /// bright room or daylight. Every role is on its table rule, turned
     /// for a light theme; status and track colours are darkened so they
@@ -255,6 +312,7 @@ impl Theme {
         .with_roles(&[])
     }
 
+    /// Green on black, glowing like a phosphor screen.
     pub fn console() -> Theme {
         Theme {
             name: "Console".into(),
@@ -302,23 +360,25 @@ impl Theme {
     }
 
     /// 80s neon: hot pink and cyan on deep purple, over a perspective-free
-    /// grid, everything glowing.
+    /// grid. Outlines are a quiet violet so the pink marks what is picked;
+    /// errors are a sunset red, not the accent's pink; the Q-Links, graphs
+    /// and EQ bands take the theme's own neon colours (22 Nov).
     pub fn synthwave() -> Theme {
         Theme {
             name: "Synthwave".into(),
-            bg: Color::rgb(0x12052A),
-            surface: Color::rgb(0x1E0B3D).with_alpha(225),
-            raised: Color::rgb(0x3A1466),
-            outline: Color::rgb(0xFF2E97).with_alpha(170),
+            bg: Color::rgb(0x10042A),
+            surface: Color::rgb(0x241048).with_alpha(230),
+            raised: Color::rgb(0x351363),
+            outline: Color::rgb(0x6B3FA0),
             text: Color::rgb(0xFCE7FF),
-            text_dim: Color::rgb(0xC39BE0),
-            text_faint: Color::rgb(0x7E5AA6),
+            text_dim: Color::rgb(0xC9A6E8),
+            text_faint: Color::rgb(0x9D7CC6),
             accent: Color::rgb(0xFF2E97),
             accent2: Color::rgb(0x2DE2E6),
             on_accent: Color::rgb(0x12052A),
-            good: Color::rgb(0x2DE2E6),
+            good: Color::rgb(0x50FFB1),
             warn: Color::rgb(0xFFB443),
-            bad: Color::rgb(0xFF3864),
+            bad: Color::rgb(0xFF4D3D),
             track: [
                 0xFF2E97, 0x2DE2E6, 0xFFB443, 0xB967FF, 0xF9F871, 0xFF6C11, 0x01CDFE, 0xFF71CE,
             ]
@@ -332,11 +392,11 @@ impl Theme {
             size_small: sizes::SIZE_SMALL,
             size_mono: sizes::SIZE_MONO,
             corners: Corners::Round,
-            glow: 190,
+            glow: 170,
             text_glow: 0,
             backdrop: Backdrop::Grid,
             backdrop_to: Color::rgb(0x2B0B4A),
-            backdrop_line: Color::rgb(0xFF2E97).with_alpha(46),
+            backdrop_line: Color::rgb(0xFF2E97).with_alpha(51),
             backdrop_step: 40,
             face_body: sizes::FACE_BODY,
             face_title: sizes::FACE_TITLE,
@@ -346,7 +406,12 @@ impl Theme {
             roles: [Color::rgb(0); ROLE_COUNT],
             sources: Vec::new(),
         }
-        .with_roles(Theme::FIXED_ROLES)
+        .with_roles(&[
+            (Role::Highlight, 0xFFFFFF),
+            (Role::Shadow, 0x000000),
+            (Role::Handle, 0xFFFFFF),
+            (Role::Grain, 0xB967FF),
+        ])
     }
 
     /// A dark ship's console: black, white and violet, cut corners, thin
@@ -401,6 +466,7 @@ impl Theme {
     pub fn builtin(name: &str) -> Option<Theme> {
         match name.trim().to_ascii_lowercase().as_str() {
             "default" | "dark" => Some(Theme::dark()),
+            "slate" => Some(Theme::slate()),
             "light" => Some(Theme::light()),
             "console" => Some(Theme::console()),
             "synthwave" => Some(Theme::synthwave()),
@@ -1307,6 +1373,8 @@ mod tests {
     fn the_theme_files_match_the_builtins() {
         let files = [
             ("default", include_str!("../themes/default.theme")),
+            ("slate", include_str!("../themes/slate.theme")),
+            ("light", include_str!("../themes/light.theme")),
             ("console", include_str!("../themes/console.theme")),
             ("synthwave", include_str!("../themes/synthwave.theme")),
             ("spaceship", include_str!("../themes/spaceship.theme")),
@@ -1395,9 +1463,13 @@ mod tests {
     #[test]
     fn every_built_in_theme_keeps_the_colours_its_screens_drew() {
         // Phase 0 of the theme plan changes no pixel: each role is the
-        // colour the screens it replaces drew before. Light came later and
-        // has every role on its rule.
-        for name in BUILTIN.into_iter().filter(|&n| n != "light") {
+        // colour the screens it replaces drew before. Light and Slate came
+        // later, and Synthwave was redone on 22 Nov: their roles are on
+        // their rules.
+        for name in BUILTIN
+            .into_iter()
+            .filter(|&n| !matches!(n, "light" | "slate" | "synthwave"))
+        {
             let t = Theme::builtin(name).unwrap();
             assert_eq!(t.record(), Color::rgb(0xFF4D5E), "{name}");
             assert_eq!(

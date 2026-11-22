@@ -835,8 +835,9 @@ impl Default for Settings {
 
 /// The themes Prefs > Appearance offers: the built-in name and its row.
 /// The same names, in the same order, as `mpfree_ui::theme::BUILTIN`.
-pub const THEMES: [(&str, &str); 5] = [
+pub const THEMES: [(&str, &str); 6] = [
     ("default", "Default"),
+    ("slate", "Slate"),
     ("light", "Light"),
     ("console", "Console"),
     ("synthwave", "Synthwave"),
@@ -4830,9 +4831,10 @@ impl App {
             Item::Appearance => vec![
                 "The theme: the colours and the panels' style.",
                 "The arrows, - / + or SHIFT + wheel step through",
-                "Default, Light, Console, Synthwave and Spaceship;",
-                "the screen changes at once. The layout and the",
-                "font stay the same. It is kept for the next start.",
+                "Default, Slate, Light, Console, Synthwave and",
+                "Spaceship; the screen changes at once. The layout",
+                "and the font stay the same. It is kept for the",
+                "next start.",
             ],
             Item::TouchSection => vec![
                 "The touch screen's settings: screen pad",
@@ -6546,10 +6548,11 @@ mod tests {
         let fx = app.step_item(at, 1);
         assert!(
             fx.iter()
-                .any(|e| matches!(e, Effect::Settings(s) if s.theme == "light")),
+                .any(|e| matches!(e, Effect::Settings(s) if s.theme == "slate")),
             "{fx:?}"
         );
-        assert_eq!(value(&fx), "Light");
+        assert_eq!(value(&fx), "Slate");
+        assert_eq!(value(&app.step_item(at, 1)), "Light");
         assert_eq!(value(&app.step_item(at, 1)), "Console");
         app.step_item(at, 1);
         assert_eq!(value(&app.step_item(at, 1)), "Spaceship");
@@ -6669,14 +6672,14 @@ mod tests {
         let fx = press(&mut app, PUSH);
         assert_eq!((menu(&fx).selected, menu(&fx).editing), (at, true));
         let fx = app.wheel(1);
-        assert_eq!(menu(&fx).rows[at].1, "Light");
+        assert_eq!(menu(&fx).rows[at].1, "Slate");
         assert_eq!(menu(&fx).selected, at, "the row stays picked");
         let fx = app.wheel(1);
-        assert_eq!(menu(&fx).rows[at].1, "Console");
+        assert_eq!(menu(&fx).rows[at].1, "Light");
         // Push again: set, and the wheel moves between rows again.
         let fx = press(&mut app, PUSH);
         assert!(!menu(&fx).editing);
-        assert_eq!(app.settings.theme, "console");
+        assert_eq!(app.settings.theme, "light");
         let fx = app.wheel(-1);
         assert_eq!((menu(&fx).selected, menu(&fx).editing), (at - 1, false));
         // A tap on a row, or leaving Prefs, closes an open row.
@@ -6718,8 +6721,8 @@ mod tests {
         };
         app.tick(100.0);
         let m = menu(&app.step_item(at, 1));
-        assert_eq!(app.settings.theme, "light");
-        assert_eq!(m.help_heading, "Keep Light?");
+        assert_eq!(app.settings.theme, "slate");
+        assert_eq!(m.help_heading, "Keep Slate?");
         assert_eq!(m.help[0], "Back to Default in 15 s.");
         assert_eq!(m.help_buttons, ["Keep", "Go back"]);
         // Not kept yet: the next start would open with Default.
@@ -6733,11 +6736,11 @@ mod tests {
             "nothing new in the same second"
         );
         let m = menu(&app.select(0));
-        assert_eq!(m.help_heading, "Keep Light?");
+        assert_eq!(m.help_heading, "Keep Slate?");
         // Another step starts the 15 s again, still back to Default.
         app.select(at);
         let m = menu(&app.step_item(at, 1));
-        assert_eq!(m.help_heading, "Keep Console?");
+        assert_eq!(m.help_heading, "Keep Light?");
         assert_eq!(m.help[0], "Back to Default in 15 s.");
         // Time up: Default is back, and the log says so.
         app.tick(119.4);
@@ -6746,7 +6749,7 @@ mod tests {
         let fx = app.theme_tick();
         assert_eq!(app.settings.theme, "default");
         assert!(fx.contains(&Effect::Note(
-            "theme: back to Default (Console not kept)".into()
+            "theme: back to Default (Light not kept)".into()
         )));
         assert!(fx
             .iter()
@@ -6756,16 +6759,16 @@ mod tests {
         // Keep keeps it.
         app.step_item(at, 1);
         let fx = app.help_button(0);
-        assert!(fx.contains(&Effect::Note("theme: kept Light".into())));
-        assert_eq!(app.settings.theme, "light");
-        assert_eq!(app.app_settings().get_str("theme"), Some("light"));
+        assert!(fx.contains(&Effect::Note("theme: kept Slate".into())));
+        assert_eq!(app.settings.theme, "slate");
+        assert_eq!(app.app_settings().get_str("theme"), Some("slate"));
         app.tick(200.0);
         assert!(app.theme_tick().is_empty());
-        assert_eq!(app.settings.theme, "light");
+        assert_eq!(app.settings.theme, "slate");
         // Go back puts the old one back at once.
         app.step_item(at, 1);
         app.help_button(1);
-        assert_eq!(app.settings.theme, "light");
+        assert_eq!(app.settings.theme, "slate");
         // Stepping back to the theme from before ends the question.
         app.step_item(at, 1);
         let m = menu(&app.step_item(at, -1));
@@ -6774,14 +6777,14 @@ mod tests {
         app.step_item(at, 1);
         app.select(at);
         app.wheel_push();
-        assert_eq!(app.app_settings().get_str("theme"), Some("console"));
+        assert_eq!(app.app_settings().get_str("theme"), Some("light"));
         // Closing Prefs puts it back.
         app.step_item(at, 1);
-        assert_eq!(app.settings.theme, "synthwave");
-        let fx = press(&mut app, MENU);
         assert_eq!(app.settings.theme, "console");
+        let fx = press(&mut app, MENU);
+        assert_eq!(app.settings.theme, "light");
         assert!(fx.contains(&Effect::Note(
-            "theme: back to Console (Synthwave not kept)".into()
+            "theme: back to Light (Console not kept)".into()
         )));
     }
 
@@ -6824,7 +6827,7 @@ mod tests {
         assert!(lines[at_left + 1].starts_with("fog.theme: nothing could be read:"));
         assert!(!lines.iter().any(|l| l.starts_with("Sunrise:")));
         // On Sunrise (kept): its problem too, wrapped to the panel.
-        for _ in 0..5 {
+        for _ in 0..6 {
             app.step_item(at, 1);
         }
         assert_eq!(app.settings.theme, "sunrise.theme");
@@ -6859,7 +6862,7 @@ mod tests {
             Some(Effect::Menu(m)) => m.rows[at].1.clone(),
             _ => panic!("{fx:?}"),
         };
-        for _ in 0..4 {
+        for _ in 0..5 {
             app.step_item(at, 1);
         }
         // Past Spaceship: the theme file, by its own name, then the end.
