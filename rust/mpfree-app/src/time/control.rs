@@ -41,7 +41,8 @@ use mpfree_seq::scenes::{MAX_LIST_STEPS, MAX_TIMES};
 use mpfree_seq::steps::{Edit, Grid};
 use mpfree_seq::ListStep;
 use mpfree_seq::{
-    Clip, LaunchGrid, ModelError, Project, TouchPoint, TrackId, LOOPS, MAX_TRACKS, ROWS, SLOTS,
+    Clip, ClipId, LaunchGrid, ModelError, Project, TouchPoint, TrackId, LOOPS, MAX_TRACKS, ROWS,
+    SLOTS,
 };
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::list::ListRow;
@@ -263,6 +264,12 @@ pub struct TimeControl {
     scene_morph: SceneMorph,
     /// The note editor (the Sequencer tab's Notes view), while it is open.
     editor: Option<Editor>,
+    /// The editor's clip as the editor last knew it, and its revision,
+    /// which moves each time the clip differs from that copy (piano roll
+    /// plan 0A.1): the editor's own edits, and anything else that changed
+    /// it, which the picks follow ([`TimeControl::edit_follow`]).
+    edit_seen: Option<Clip>,
+    edit_rev: u64,
     /// The armed track: REC records it, and the audio half's recorder
     /// takes live notes only for it. Kept by its lasting id
     /// (`armed_id`), so a track added, taken away by UNDO or brought back
@@ -275,6 +282,13 @@ pub struct TimeControl {
     /// (`pick_id`) too.
     track_pick: Option<usize>,
     pick_id: TrackId,
+    /// The clip of the selected track the Sequencer edits apart from what
+    /// plays (`TimeAction::EditClip`, refactor C2): the track's lasting
+    /// id, the clip's lasting id (so a scene put in above it or a clip
+    /// moved to another row keeps it) and its row when it was picked (for
+    /// a clip never given an id). It goes when another track is selected
+    /// or the clip is gone: [`TimeControl::clip_picked`].
+    clip_pick: Option<(TrackId, ClipId, usize)>,
     /// The other armed tracks, a bit each (`TimeAction::ArmAlso`): a take
     /// records each one's notes too. Never a Loop track; the armed one is
     /// left out of the view's set. Cleared when the tracks change.
@@ -452,10 +466,13 @@ impl TimeControl {
             pass_take: None,
             scene_morph: SceneMorph::default(),
             editor: None,
+            edit_seen: None,
+            edit_rev: 0,
             armed: None,
             armed_id: TrackId::NONE,
             track_pick: None,
             pick_id: TrackId::NONE,
+            clip_pick: None,
             also: 0,
             also_n: 0,
             also_full: 0,
@@ -552,18 +569,48 @@ impl TimeControl {
     /// Arm `track` (or none), by its lasting id. A track armed is selected
     /// too: the selection follows the arm again.
     fn set_armed(&mut self, track: Option<usize>) {
+        let was = self.selected();
         self.armed = track.filter(|&t| t < self.project.tracks.len());
         self.armed_id = self.id_of(self.armed);
         self.track_pick = None;
         self.pick_id = TrackId::NONE;
+        self.selection_moved(was);
     }
 
     /// Select `track` apart from the arm, by its lasting id; the armed
     /// track (or no such track) selects the armed one again.
     fn set_pick(&mut self, track: usize) {
+        let was = self.selected();
         let pick = Some(track).filter(|&t| t < self.project.tracks.len() && Some(t) != self.armed);
         self.track_pick = pick;
         self.pick_id = self.id_of(pick);
+        self.selection_moved(was);
+    }
+
+    /// Another track selected than `was`: the Sequencer edits what plays
+    /// on it, not a clip picked on the one before (refactor C2).
+    fn selection_moved(&mut self, was: Option<usize>) {
+        if self.selected() != was {
+            self.clip_pick = None;
+        }
+    }
+
+    /// The row of the selected track's clip picked for the Sequencer to
+    /// edit apart from what plays (refactor C2), where that clip is now,
+    /// while that track is still selected and has the clip. Found by the
+    /// clip's lasting id; a clip never given one, by its row.
+    pub fn clip_picked(&self) -> Option<usize> {
+        let track = self.selected()?;
+        let t = self.project.tracks.get(track)?;
+        let (on, clip, row) = self.clip_pick?;
+        if on != t.id {
+            return None;
+        }
+        if clip.is_given() {
+            t.slots.row_of(clip)
+        } else {
+            self.project.clip(track, row).is_some().then_some(row)
+        }
     }
 
     /// The lasting id of track `track`, if there is one.
@@ -571,6 +618,53 @@ impl TimeControl {
         track
             .and_then(|t| self.project.tracks.get(t))
             .map_or(TrackId::NONE, |t| t.id)
+    }
+
+    /// `TimeAction::EditClip`: the Sequencer edits slot `slot`'s clip of
+    /// the selected track without launching it, or (None) the clip that
+    /// plays again. Nothing plays or stops: what plays keeps playing.
+    fn edit_clip(&mut self, slot: Option<usize>) -> Result<String, String> {
+        let track = self.selected().ok_or("edit: no track is selected")?;
+        let t = self
+            .project
+            .tracks
+            .get(track)
+            .ok_or("edit: no such track")?;
+        if t.is_loops() {
+            return Err(format!("edit: {} plays loops, it has no steps", t.name));
+        }
+        let (id, name) = (t.id, t.name.clone());
+        let playing = self
+            .launches
+            .iter()
+            .find(|l| l.track == track)
+            .and_then(|l| Some((l.slot, &self.project.clip(track, l.slot)?.name)));
+        let line = match slot {
+            Some(s) => {
+                let clip = self
+                    .project
+                    .clip(track, s)
+                    .ok_or_else(|| format!("edit: slot {} of {name} is empty", s + 1))?;
+                let line = match playing {
+                    Some((p, other)) if p != s => {
+                        format!("editing {} on {name} ({other} plays)", clip.name)
+                    }
+                    _ => format!("editing {} on {name}", clip.name),
+                };
+                self.clip_pick = Some((id, clip.id, s));
+                line
+            }
+            None => {
+                self.clip_pick = None;
+                match playing {
+                    Some((_, clip)) => format!("editing what plays on {name}: {clip}"),
+                    None => format!("editing what plays on {name}"),
+                }
+            }
+        };
+        self.changed = true;
+        self.steps_changed = true;
+        Ok(line)
     }
 
     /// After the tracks changed (one added, taken away by UNDO or brought
@@ -597,6 +691,11 @@ impl TimeControl {
             if self.track_pick.is_none() {
                 self.pick_id = TrackId::NONE;
             }
+        }
+        // A clip picked to edit that is gone (or whose track is no longer
+        // the selected one): the Sequencer edits what plays.
+        if self.clip_picked().is_none() {
+            self.clip_pick = None;
         }
     }
 
@@ -1144,10 +1243,11 @@ impl TimeControl {
 
     /// Step edit `edit` of clip `slot` of `track`, already made to the
     /// project, sent to the audio half to make to its view in place, so a
-    /// tap or a turn needs no compile. A clip the view does not play or
-    /// cue needs nothing sent. False when it must compile instead: an edit
-    /// of the clip's length, pressure or moves; song mode, where the
-    /// song's placements play clips too; while recording or counting in,
+    /// tap or a turn needs no compile. A clip the view does not play, cue
+    /// or (in song mode) place in the song needs nothing sent; one the
+    /// song places goes into the one copy every block of it plays (Arrange
+    /// 2.3). False when it must compile instead: an edit of the clip's
+    /// length, pressure or moves; while recording or counting in,
     /// when the audio half edits the view itself; a view still waiting to
     /// go; a track neither armed nor selected apart from the arm, whose
     /// clips the view has no room in; an edit too big; or a queue that fills (the audio half
@@ -1159,7 +1259,6 @@ impl TimeControl {
             .clip(track, slot)
             .map_or((0, 0), |c| (c.notes.len(), c.locks.len()));
         if !InPlace::fits(edit, notes, locks)
-            || self.song
             || self.unsent.is_some()
             || (self.armed != Some(track) && self.track_pick != Some(track))
             || matches!(self.info.state, State::Recording | State::CountIn)
@@ -1173,7 +1272,8 @@ impl TimeControl {
             || self
                 .cues
                 .iter()
-                .any(|c| c.track == track && c.slot == Some(slot));
+                .any(|c| c.track == track && c.slot == Some(slot))
+            || (self.song && self.song_places(track, slot));
         if !shown {
             return true;
         }
@@ -1198,6 +1298,21 @@ impl TimeControl {
             n,
         };
         self.tx.send(end).is_ok()
+    }
+
+    /// Whether a block of the song plays clip `slot` of `track`, on any
+    /// lane.
+    fn song_places(&self, track: usize, slot: usize) -> bool {
+        let Some(id) = self.project.clip(track, slot).map(|c| c.id) else {
+            return false;
+        };
+        id.is_given()
+            && self
+                .project
+                .arrangement
+                .placements
+                .iter()
+                .any(|p| p.clip == id)
     }
 
     /// The view of the project as it is, with what it includes and room
@@ -1554,9 +1669,16 @@ impl TimeControl {
         self.focus_of(self.selected().unwrap_or(0))
     }
 
-    /// Track `track`'s clip the Play page's pattern would show: its
+    /// Track `track`'s clip the Play page's pattern would show: on the
+    /// selected track the clip picked to edit (refactor C2), else its
     /// launched clip, else its first.
     fn focus_of(&self, track: usize) -> (usize, Option<usize>) {
+        if let Some(slot) = self
+            .clip_picked()
+            .filter(|_| self.selected() == Some(track))
+        {
+            return (track, Some(slot));
+        }
         let launched = self
             .launches
             .iter()
@@ -1627,10 +1749,17 @@ impl TimeControl {
                     .collect(),
             })
         });
+        let playing = self
+            .launches
+            .iter()
+            .find(|l| l.track == track && Some(l.slot) != slot)
+            .and_then(|l| Some(self.project.clip(track, l.slot)?.name.clone()));
         StepsData {
             track,
             track_name,
             clip,
+            picked: slot.is_some() && slot == self.clip_picked(),
+            playing,
         }
     }
 
@@ -1974,7 +2103,9 @@ impl TimeControl {
 
     /// A touch on the note editor. Open takes the clip the Play page's
     /// steps show (the armed track's); an edit is one undoable take (a
-    /// row turned or the velocity lane dragged joins one).
+    /// row turned or the velocity lane dragged joins one). A tap on a
+    /// note made on an older picture of the clip is refused, and an edit
+    /// what plays can't follow is taken back (piano roll plan 0A.1).
     fn edit(&mut self, a: EditAction) -> Result<String, String> {
         if a == EditAction::Open {
             let (track, slot) = self.step_focus();
@@ -1987,8 +2118,21 @@ impl TimeControl {
             let clip = self.project.clip(track, slot).ok_or("edit: no such clip")?;
             let line = format!("edit: {} on {name}", clip.name);
             self.editor = Some(Editor::new(track, slot, clip));
+            self.edit_seen = Some(clip.clone());
+            self.edit_rev += 1;
             self.changed = true;
             return Ok(line);
+        }
+        self.edit_follow();
+        if let EditAction::Note { rev, .. } = a {
+            if rev != self.edit_rev {
+                // The screen still shows the clip as it was: it gets the
+                // new one, and the tap goes nowhere.
+                self.changed = true;
+                return Err(
+                    "edit: the clip changed under your finger, so the tap did nothing".into(),
+                );
+            }
         }
         let Some(mut ed) = self.editor.take() else {
             return Ok(String::new());
@@ -1997,29 +2141,78 @@ impl TimeControl {
             self.changed = true;
             return Err("edit: the clip is gone".into());
         };
+        let before = ed.clone();
         let done = ed.act(a, clip);
         self.changed = true;
         if done.close {
+            self.edit_seen = None;
             return Ok(done.line);
         }
         if !done.edit.is_empty() {
+            let (track, slot) = (ed.track, ed.slot);
+            let edits = self.takes.edits();
             let applied = self
                 .takes
-                .edit(&mut self.project, ed.track, ed.slot, &done.edit, done.join)
+                .edit(&mut self.project, track, slot, &done.edit, done.join)
                 .map_err(|e| format!("edit: {e:?}"));
             if let Err(e) = applied {
                 self.editor = Some(ed);
                 return Err(e);
             }
-            if let Some(clip) = self.project.clip(ed.track, ed.slot) {
+            if let Some(clip) = self.project.clip(track, slot) {
                 ed.applied(clip, &done);
             }
             self.editor = Some(ed);
-            self.compile()?;
+            if let Err(e) = self.compile() {
+                // What plays can't follow: the edit goes from the clip and
+                // the takes, the editor is as it was, and the view as it
+                // was is built again (as a step edit does).
+                let fresh = self.takes.edits() != edits;
+                let back = self.takes.withdraw(
+                    &mut self.project,
+                    (track, slot),
+                    &done.edit,
+                    done.join,
+                    fresh,
+                );
+                self.editor = Some(before);
+                let _ = self.compile();
+                return Err(match back {
+                    Ok(()) => format!("edit: {e}: the edit was taken back"),
+                    Err(b) => format!("edit: {e}: the edit could not be taken back ({b:?})"),
+                });
+            }
+            self.edit_seen = self.project.clip(track, slot).cloned();
+            self.edit_rev += 1;
         } else {
             self.editor = Some(ed);
         }
         Ok(done.line)
+    }
+
+    /// The note editor's clip changed since the editor last knew it, by
+    /// something other than the editor's own edit (a recorded note, UNDO,
+    /// an edit from Steps, a clip moved): its picks follow their notes
+    /// (cleared, and said, when one is gone) and the clip's revision
+    /// moves, so a tap on the old picture is refused.
+    fn edit_follow(&mut self) {
+        let Some(ed) = self.editor.as_mut() else {
+            self.edit_seen = None;
+            return;
+        };
+        let now = self.project.clip(ed.track, ed.slot);
+        if now == self.edit_seen.as_ref() {
+            return;
+        }
+        match (self.edit_seen.as_ref(), now) {
+            (Some(was), Some(now)) => {
+                ed.follow(was, now);
+            }
+            _ => ed.sel.clear(),
+        }
+        self.edit_seen = now.cloned();
+        self.edit_rev += 1;
+        self.changed = true;
     }
 
     /// Carry out a touch on the time engine's screens. Returns a line for
@@ -2468,6 +2661,7 @@ impl TimeControl {
                     _ => format!("selected: {name}"),
                 })
             }
+            TimeAction::EditClip(slot) => self.edit_clip(slot),
             TimeAction::Arm(track) => {
                 self.set_armed(track);
                 self.compile()?;
@@ -4874,6 +5068,11 @@ impl TimeControl {
     /// True once after the clips, launches or takes changed. Notes and
     /// locks being recorded are told at most every quarter second.
     pub fn take_changed(&mut self) -> bool {
+        if self.changed {
+            // The note editor's picks follow what changed, before the
+            // screens get it.
+            self.edit_follow();
+        }
         std::mem::take(&mut self.changed)
     }
 
@@ -4897,6 +5096,7 @@ impl TimeControl {
             &self.takes,
         );
         st.track_pick = self.track_pick;
+        st.clip_pick = self.clip_picked();
         st.also = self.also();
         st.capture = self.pending.map(|p| bars_label(p.bars));
         st.clipboard = self.clipboard.as_ref().map(|c| c.name.clone());
@@ -4950,6 +5150,7 @@ impl TimeControl {
             Some(Box::new(EditInfo {
                 editor: ed.clone(),
                 clip: clip.clone(),
+                rev: self.edit_rev,
                 track_name: self.project.tracks[ed.track].name.clone(),
                 bar: bar.round() as Tick,
             }))

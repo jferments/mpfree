@@ -653,6 +653,10 @@ pub struct TimeState {
     /// None while the selection is the armed track: see
     /// [`TimeState::selected`].
     pub track_pick: Option<usize>,
+    /// The selected track's slot picked for the Sequencer to edit apart
+    /// from what plays ([`TimeAction::EditClip`]), or None while it edits
+    /// the clip that plays.
+    pub clip_pick: Option<usize>,
     /// The other armed tracks, a bit each (`TimeAction::ArmAlso`): a take
     /// records their notes with the armed track's. Never the armed one.
     pub also: u128,
@@ -798,6 +802,10 @@ pub enum Pick {
 pub struct EditInfo {
     pub editor: Editor,
     pub clip: Clip,
+    /// The clip's revision: it moves whenever the clip changes (an edit,
+    /// a recorded note, UNDO, an edit from Steps), and a tap on a note
+    /// carries the one it was made on ([`EditAction::Note`]).
+    pub rev: u64,
     pub track_name: String,
     /// A bar, in the clip's ticks.
     pub bar: Tick,
@@ -899,6 +907,7 @@ impl TimeState {
             cues: Vec::new(),
             armed,
             track_pick: None,
+            clip_pick: None,
             also: 0,
             clipboard: None,
             done: takes.done().iter().map(TakeRow::of).collect(),
@@ -1040,6 +1049,12 @@ pub enum TimeAction {
     /// follow it, while REC still records the armed track. The armed
     /// track itself selects it again.
     Select(usize),
+    /// The clip the Sequencer edits on the selected track (refactor C2):
+    /// `Some(slot)` edits that slot's clip without launching it, so what
+    /// plays keeps playing; `None` edits the clip that plays again (its
+    /// first while none does). A track selected again goes back to what
+    /// plays.
+    EditClip(Option<usize>),
     /// Arm these tracks too, a bit each (track 0 the lowest), for one take
     /// over several tracks (the MPC's SHIFT + a track's arm): each records
     /// what its MIDI input sends it. The armed track is left out of it.
@@ -1717,7 +1732,10 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         }),
         (NOTES, kind) => Some(TimeAction::Edit(match *kind {
             EventKind::Tab(k) => EditAction::Button(k),
-            EventKind::Select(i) => EditAction::Note(i),
+            EventKind::Select(i) => EditAction::Note {
+                index: i,
+                rev: st.edit.as_ref().map_or(0, |e| e.rev),
+            },
             EventKind::Cell { row: PEN, col } => EditAction::Step(col as Tick),
             EventKind::Cell { row, col } => EditAction::Empty {
                 tick: col as Tick,
@@ -4013,7 +4031,15 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
         }
         Lens::Tracker => format!("tracker · {} steps", step_name(step)),
     };
-    g.legend = format!("{} notes · {} picked · {lens}", c.notes.len(), n_sel);
+    g.legend = if ed.cleared {
+        // Something else changed the clip and took a picked note with it.
+        format!(
+            "{} notes · the clip changed: picks cleared · {lens}",
+            c.notes.len()
+        )
+    } else {
+        format!("{} notes · {} picked · {lens}", c.notes.len(), n_sel)
+    };
     // Each note with its pressure: only the runs the notes name (the
     // clip keeps the runs of notes taken out too, for undo).
     g.notes = c
@@ -4719,6 +4745,7 @@ mod tests {
         let e = EditInfo {
             editor: crate::editor::Editor::new(0, 0, &c),
             clip: c,
+            rev: 0,
             track_name: "Drums".into(),
             bar: BAR,
         };

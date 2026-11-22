@@ -163,8 +163,11 @@ pub enum EditAction {
     Open,
     /// Button `k` of [`EDIT_BUTTONS`].
     Button(usize),
-    /// A note tapped, by its index in the clip.
-    Note(usize),
+    /// A note tapped, by its index in the clip, on the picture of
+    /// revision `rev` ([`crate::EditInfo::rev`]). The app refuses it if
+    /// the clip has moved on since, so a tap never lands on another note
+    /// (piano roll plan 0A.1).
+    Note { index: usize, rev: u64 },
     /// Empty space on the roll tapped.
     Empty { tick: Tick, note: u8 },
     /// An empty step of the tracker tapped, by its line.
@@ -233,6 +236,10 @@ pub struct Editor {
     /// Euclidean fill writes it.
     pub sound: u8,
     pub euclid: Euclid,
+    /// Something else changed the clip and took a picked note with it, so
+    /// the picks were cleared ([`Editor::follow`]); the legend says so
+    /// until the next touch.
+    pub cleared: bool,
 }
 
 impl Editor {
@@ -270,6 +277,7 @@ impl Editor {
             first: 0,
             sound,
             euclid: Euclid::default(),
+            cleared: false,
         }
     }
 
@@ -320,6 +328,7 @@ impl Editor {
     /// settings change here; the clip changes when the app applies the
     /// edit.
     pub fn act(&mut self, a: EditAction, clip: &Clip) -> Done {
+        self.cleared = false;
         let sel = self.picked(clip);
         let kept: Vec<Note> = sel.iter().map(|&i| clip.notes[i]).collect();
         let none = sel.is_empty();
@@ -401,7 +410,7 @@ impl Editor {
                 )
             }
             EditAction::Button(_) => return Done::default(),
-            EditAction::Note(i) if i < clip.notes.len() => match self.tool {
+            EditAction::Note { index: i, .. } if i < clip.notes.len() => match self.tool {
                 Tool::Erase => (
                     notes::delete(clip, &[i]),
                     None,
@@ -420,7 +429,7 @@ impl Editor {
                     return Done::default();
                 }
             },
-            EditAction::Note(_) => return Done::default(),
+            EditAction::Note { .. } => return Done::default(),
             EditAction::Empty { tick, note } => match self.tool {
                 Tool::Draw if tick < clip.length => {
                     let n = Note::new(tick, self.step(), note.min(127), DRAW_VELOCITY);
@@ -639,16 +648,29 @@ impl Editor {
         if done.select_added {
             want.extend(done.edit.add.iter().copied());
         }
-        let mut used = vec![false; clip.notes.len()];
-        let mut sel = Vec::with_capacity(want.len());
-        for n in &want {
-            if let Some(i) = (0..clip.notes.len()).find(|&i| !used[i] && clip.notes[i] == *n) {
-                used[i] = true;
-                sel.push(i);
-            }
-        }
+        let mut sel: Vec<usize> = find_notes(clip, &want).into_iter().flatten().collect();
         sel.sort_unstable();
         self.sel = sel;
+    }
+
+    /// After something other than the editor's own edit changed the clip
+    /// from `was` to `now` (a recorded note, UNDO, an edit from Steps):
+    /// each pick follows its note, found again by its values. If a picked
+    /// note is gone, every pick is cleared and [`Editor::cleared`] says
+    /// so, since half a selection would surprise. True when cleared.
+    pub fn follow(&mut self, was: &Clip, now: &Clip) -> bool {
+        let want: Vec<Note> = self.picked(was).iter().map(|&i| was.notes[i]).collect();
+        let found = find_notes(now, &want);
+        if found.iter().all(Option::is_some) {
+            let mut sel: Vec<usize> = found.into_iter().flatten().collect();
+            sel.sort_unstable();
+            self.sel = sel;
+            false
+        } else {
+            self.sel.clear();
+            self.cleared = true;
+            true
+        }
     }
 
     fn step_tc(&mut self, row: usize, d: i32) {
@@ -674,6 +696,36 @@ impl Editor {
             _ => tc.shift = (tc.shift + Tick::from(d)).clamp(-(PPQ as Tick), PPQ as Tick),
         }
     }
+}
+
+/// Where each of `want` is in `clip`, by value, each of the clip's notes
+/// matched at most once (two notes equal in every way sound the same, so
+/// either will do); None for one that isn't there. The clip's notes are
+/// sorted by start and pitch once, so a big selection costs a sort, not a
+/// search of the clip per note.
+fn find_notes(clip: &Clip, want: &[Note]) -> Vec<Option<usize>> {
+    if want.is_empty() {
+        return Vec::new();
+    }
+    let key = |n: &Note| (n.tick, n.note);
+    let mut order: Vec<usize> = (0..clip.notes.len()).collect();
+    order.sort_unstable_by_key(|&i| key(&clip.notes[i]));
+    let mut used = vec![false; clip.notes.len()];
+    want.iter()
+        .map(|w| {
+            let k = key(w);
+            let from = order.partition_point(|&i| key(&clip.notes[i]) < k);
+            let at = order[from..]
+                .iter()
+                .copied()
+                .take_while(|&i| key(&clip.notes[i]) == k)
+                .find(|&i| !used[i] && clip.notes[i] == *w);
+            if let Some(i) = at {
+                used[i] = true;
+            }
+            at
+        })
+        .collect()
 }
 
 /// The Edit options as the list shows them, for `ed` on `clip`.
@@ -1790,6 +1842,38 @@ mod tests {
         v
     }
 
+    /// Picks follow their notes when something else changes the clip: two
+    /// equal notes are matched once each, a note moved in the clip's list
+    /// is found again, and one picked note gone clears every pick and says
+    /// so until the next touch.
+    #[test]
+    fn picks_follow_their_notes_or_are_cleared() {
+        let was = clip(&[(0, 240, 60), (480, 240, 62), (480, 240, 62), (960, 240, 64)]);
+        let mut ed = Editor::new(0, 0, &was);
+        ed.sel = vec![1, 2, 3];
+        // The first note taken out and a new one added at the end: the
+        // picked notes are now at 0, 1 and 2.
+        let mut now = was.clone();
+        now.notes.remove(0);
+        now.add_note(Note::new(0, 240, 67, 100)).unwrap();
+        assert!(!ed.follow(&was, &now));
+        assert_eq!(ed.sel, [0, 1, 2]);
+        assert_eq!(ticks_of(&now, &ed.sel), [(480, 62), (480, 62), (960, 64)]);
+        assert!(!ed.cleared);
+        // One of the two equal notes taken out: one pick has nowhere to go.
+        let mut gone = now.clone();
+        gone.notes.remove(1);
+        assert!(ed.follow(&now, &gone));
+        assert!(ed.sel.is_empty());
+        assert!(ed.cleared);
+        // The next touch ends the notice.
+        ed.act(EditAction::Scroll(1), &gone);
+        assert!(!ed.cleared);
+        // Nothing picked: nothing to clear.
+        assert!(!ed.follow(&gone, &was));
+        assert!(!ed.cleared);
+    }
+
     #[test]
     fn a_drag_moves_the_selection_and_it_stays_selected() {
         let mut c = clip(&[(0, 240, 48), (480, 240, 50), (960, 240, 52)]);
@@ -1798,14 +1882,14 @@ mod tests {
         // From G2 to D#4 does not fit from C2: the roll starts at G2.
         let wide = clip(&[(0, 240, 55), (480, 240, 75)]);
         assert_eq!(Editor::new(1, 0, &wide).low, 55);
-        ed.act(EditAction::Note(1), &c);
+        ed.act(EditAction::Note { index: 1, rev: 0 }, &c);
         assert_eq!(ed.sel, vec![1]);
         ed.act(EditAction::Button(4), &c);
         assert!(ed.sel.is_empty(), "All with some selected selects none");
         ed.act(EditAction::Button(4), &c);
         assert_eq!(ed.sel, vec![0, 1, 2]);
         // A tap on one of the group keeps the group.
-        ed.act(EditAction::Note(2), &c);
+        ed.act(EditAction::Note { index: 2, rev: 0 }, &c);
         assert_eq!(ed.sel.len(), 3);
         let done = run(
             &mut ed,
@@ -1836,7 +1920,7 @@ mod tests {
         let mut c = clip(&[(0, 240, 3)]);
         let mut ed = Editor::new(0, 0, &c);
         assert_eq!(ed.low, 0, "a pad clip starts on the pads");
-        ed.act(EditAction::Note(0), &c);
+        ed.act(EditAction::Note { index: 0, rev: 0 }, &c);
         ed.act(EditAction::Button(2), &c);
         assert_eq!(ed.tool, Tool::Draw);
         run(&mut ed, &mut c, EditAction::Empty { tick: 480, note: 5 });
@@ -1870,7 +1954,7 @@ mod tests {
         assert!(ed.sel.is_empty());
         ed.act(EditAction::Button(2), &c);
         assert_eq!(ed.tool, Tool::Erase);
-        run(&mut ed, &mut c, EditAction::Note(0));
+        run(&mut ed, &mut c, EditAction::Note { index: 0, rev: 0 });
         assert_eq!(c.notes.len(), 1);
     }
 
@@ -1878,7 +1962,7 @@ mod tests {
     fn timing_correct_takes_the_selection_or_everything() {
         let mut c = clip(&[(10, 100, 36), (250, 100, 38), (500, 100, 40)]);
         let mut ed = Editor::new(0, 0, &c);
-        ed.act(EditAction::Note(1), &c);
+        ed.act(EditAction::Note { index: 1, rev: 0 }, &c);
         let done = run(&mut ed, &mut c, EditAction::Button(7));
         assert_eq!(done.line, "edit: timing correct moved 1 notes");
         let mut ticks: Vec<Tick> = c.notes.iter().map(|n| n.tick).collect();
@@ -1967,9 +2051,9 @@ mod tests {
         let mut c = clip(&[(0, 240, 1), (960, 240, 3)]);
         let mut ed = Editor::new(0, 0, &c);
         assert_eq!(ed.sound, 1, "the lowest sound to begin with");
-        ed.act(EditAction::Note(1), &c);
+        ed.act(EditAction::Note { index: 1, rev: 0 }, &c);
         assert_eq!(ed.sound, 3, "the note tapped");
-        ed.act(EditAction::Note(0), &c);
+        ed.act(EditAction::Note { index: 0, rev: 0 }, &c);
         // Draw on an empty step puts the sound there, a step long.
         ed.act(EditAction::Button(2), &c);
         let done = run(&mut ed, &mut c, EditAction::Step(480));
@@ -2058,7 +2142,7 @@ mod tests {
         let mut c = clip(&notes);
         c.add_note(Note::new(0, 120, 64, 100)).unwrap();
         let mut ed = Editor::new(0, 0, &c);
-        ed.act(EditAction::Note(10), &c);
+        ed.act(EditAction::Note { index: 10, rev: 0 }, &c);
         ed.act(EditAction::Button(1), &c);
         ed.act(EditAction::Button(1), &c);
         assert_eq!(ed.lens, Lens::Tracker);

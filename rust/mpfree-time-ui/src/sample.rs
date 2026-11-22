@@ -1252,6 +1252,7 @@ pub fn notes_state(lens: crate::editor::Lens) -> Result<TimeState, String> {
     state.edit = Some(Box::new(crate::view::EditInfo {
         editor,
         clip: keys,
+        rev: 0,
         track_name: "Chords".into(),
         bar: BAR,
     }));
@@ -1321,6 +1322,7 @@ pub fn tracker_state() -> Result<TimeState, String> {
     state.edit = Some(Box::new(crate::view::EditInfo {
         editor,
         clip: drums,
+        rev: 0,
         track_name: "Drums".into(),
         bar: BAR,
     }));

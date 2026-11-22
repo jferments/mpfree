@@ -329,6 +329,13 @@ when an effect's mode switch moved the controls a Q-Link had learned.
   is the same: `MPFREE_GOLDEN_BLESS=1 cargo test -p mpfree-app --test cli`
   (references are x86-64; the ARMv7 run under qemu checks only that the
   pictures are valid).
+- **Themes keep every screen readable.** `mpfree-app`'s `theme_contrast` test
+  measures every run of text on every sample screen in every built-in theme,
+  and `mpfree-ui`'s `fixed_colours` test counts hex colours in drawing code.
+  Both hold counts that may go down but not up; a meant change writes the
+  list with `MPFREE_LINT_BLESS=1` (`-p mpfree-app --test theme_contrast` or
+  `-p mpfree-ui --test fixed_colours`) and gives its line a reason
+  ([themes: checks](../design/ui-themes.md#checks)).
 - **Audio-thread code doesn't allocate or block.** Each engine proves this
   with a counting allocator (`tests/no_alloc.rs`), CI runs
   `mpfree-bench --check-allocs` over the profiled engines, and

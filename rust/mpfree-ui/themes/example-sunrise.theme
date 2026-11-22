@@ -1,9 +1,12 @@
 # An example user theme: synthwave's grid and glow with an orange accent,
 # cut corners and a dot backdrop. A theme file only lists what it changes.
-base       = synthwave
-name       = Sunrise
-accent     = #FF6C11
-outline    = #FF6C11AA
-backdrop   = dots
-backdrop_line = #FF6C1166
-corners    = chamfer
+# Colours can follow another ({accent}) and be mixed or faded: change the
+# accent and the outline, the dots and the first Q-Link change with it.
+base          = synthwave
+name          = Sunrise
+accent        = #FF6C11
+outline       = alpha({accent}, 66.7%)
+backdrop      = dots
+backdrop_line = alpha({accent}, 40%)
+corners       = chamfer
+qlink.1       = {accent}

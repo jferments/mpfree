@@ -758,6 +758,18 @@ pub const OVERVIEW_COLUMNS: usize = 360;
 pub const MAX_FOUND: usize = 200;
 
 /// What the list holds besides a place's folder.
+/// What an open of a project changed here, as it was before
+/// ([`Browser::open_refused`] puts it back).
+#[derive(Clone, Debug, PartialEq)]
+struct BeforeOpen {
+    project: Option<Loc>,
+    last: Option<Loc>,
+    created: u64,
+    unsaved: bool,
+    recovering: bool,
+    recent: Vec<Loc>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum Mode {
     /// The folder (or Recent, Favourites, Factory, Trash).
@@ -832,6 +844,9 @@ pub struct Browser {
     /// An open of autosave's project is under way: still unsaved once it
     /// lands ([`Browser::open_landed`]).
     recovering: bool,
+    /// What the last open of a project changed, until the app takes the
+    /// project or refuses it ([`Browser::open_refused`]).
+    before_open: Option<BeforeOpen>,
     mode: Mode,
     sort: Sort,
     /// The Export panel while it is open (it stays through a picker and
@@ -909,6 +924,7 @@ impl Browser {
             saving_preset: None,
             unsaved: false,
             recovering: false,
+            before_open: None,
             mode: Mode::Folder,
             sort: Sort::Name,
             export: None,
@@ -1151,6 +1167,7 @@ impl Browser {
                 // Autosave's project opens as a new, unsaved one: SHIFT +
                 // BROWSE keeps it as a project of the musician's (named for
                 // the time), never as autosave's again.
+                self.before_open = Some(self.as_before_open());
                 self.status = Some((
                     format!(
                         "Opened the work autosaved {}. SHIFT + BROWSE saves it as a new project",
@@ -1168,6 +1185,7 @@ impl Browser {
                 }
             }
             Ok(Outcome::Project(loc, snap)) => {
+                self.before_open = Some(self.as_before_open());
                 self.status = Some((format!("Opened {}", loc.name()), false));
                 self.project = Some(loc.clone());
                 self.last = Some(loc.clone());
@@ -1189,6 +1207,7 @@ impl Browser {
                 }
             }
             Ok(Outcome::Version(loc, _id, snap)) => {
+                self.before_open = Some(self.as_before_open());
                 self.status = Some((
                     format!(
                         "Opened {} as saved {}. SHIFT + BROWSE saves it as the newest",
@@ -1893,6 +1912,42 @@ impl Browser {
     /// work is still to be saved as a project of the musician's.
     pub fn open_landed(&mut self) {
         self.unsaved = std::mem::take(&mut self.recovering);
+        self.before_open = None;
+    }
+
+    fn as_before_open(&self) -> BeforeOpen {
+        BeforeOpen {
+            project: self.project.clone(),
+            last: self.last.clone(),
+            created: self.created,
+            unsaved: self.unsaved,
+            recovering: self.recovering,
+            recent: self.recent.clone(),
+        }
+    }
+
+    /// The app refused the project just opened
+    /// ([`BrowseAction::ProjectOpened`]): it was saved by a newer MPFree,
+    /// or a part of it can't be read, so nothing of it went in. Where
+    /// SHIFT + BROWSE saves, the project Prefs > At start opens, Recent and
+    /// the unsaved mark go back to what they were, so the project still
+    /// open can't be saved over the refused one; the status line says
+    /// `line`.
+    pub fn open_refused(&mut self, line: String) {
+        if let Some(b) = self.before_open.take() {
+            let lists = b.recent != self.recent || b.last != self.last;
+            self.project = b.project;
+            self.last = b.last;
+            self.created = b.created;
+            self.unsaved = b.unsaved;
+            self.recovering = b.recovering;
+            self.recent = b.recent;
+            if lists {
+                self.actions
+                    .push(BrowseAction::SaveLists(self.lists_text()));
+            }
+        }
+        self.status = Some((line, true));
     }
 
     /// The dial's push: open a folder or project, load anything else, or
