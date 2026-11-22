@@ -41,7 +41,7 @@ use mpfree_seq::scenes::{MAX_LIST_STEPS, MAX_TIMES};
 use mpfree_seq::steps::{Edit, Grid};
 use mpfree_seq::ListStep;
 use mpfree_seq::{
-    Clip, LaunchGrid, ModelError, Project, TouchPoint, LOOPS, MAX_TRACKS, ROWS, SLOTS,
+    Clip, LaunchGrid, ModelError, Project, TouchPoint, TrackId, LOOPS, MAX_TRACKS, ROWS, SLOTS,
 };
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::list::ListRow;
@@ -261,7 +261,18 @@ pub struct TimeControl {
     scene_morph: SceneMorph,
     /// The note editor (the Sequencer tab's Notes view), while it is open.
     editor: Option<Editor>,
+    /// The armed track: REC records it, and the audio half's recorder
+    /// takes live notes only for it. Kept by its lasting id
+    /// (`armed_id`), so a track added, taken away by UNDO or brought back
+    /// by REDO never moves the arm to another track (refactor C1).
     pub(super) armed: Option<usize>,
+    armed_id: TrackId,
+    /// The track selected apart from the arm (`TimeAction::Select`: a
+    /// track picked while REC's arm is pinned), or None while the
+    /// selected track is the armed one. Kept by its lasting id
+    /// (`pick_id`) too.
+    track_pick: Option<usize>,
+    pick_id: TrackId,
     /// The other armed tracks, a bit each (`TimeAction::ArmAlso`): a take
     /// records each one's notes too. Never a Loop track; the armed one is
     /// left out of the view's set. Cleared when the tracks change.
@@ -431,7 +442,10 @@ impl TimeControl {
             pass_take: None,
             scene_morph: SceneMorph::default(),
             editor: None,
-            armed: tracks.armed,
+            armed: None,
+            armed_id: TrackId::NONE,
+            track_pick: None,
+            pick_id: TrackId::NONE,
             also: 0,
             also_n: 0,
             also_full: 0,
@@ -485,14 +499,72 @@ impl TimeControl {
             note_fx_sent: Box::new([TrackFx::default(); MAX_TRACKS]),
             chains_given: [false; MAX_TRACKS],
         };
+        c.set_armed(tracks.armed);
         c.compile()?;
         Ok(c)
     }
 
-    /// The armed track (the one the pads, the arp panel and recording
-    /// follow), if any.
+    /// The armed track (the one REC records), if any.
     pub fn armed(&self) -> Option<usize> {
         self.armed
+    }
+
+    /// The selected track: the one the Sequencer's Steps, Notes and STEP
+    /// SEQ edit and the pads follow (refactor C1). The armed track unless
+    /// one was selected apart from it while the arm is pinned.
+    pub fn selected(&self) -> Option<usize> {
+        self.track_pick.or(self.armed)
+    }
+
+    /// Arm `track` (or none), by its lasting id. A track armed is selected
+    /// too: the selection follows the arm again.
+    fn set_armed(&mut self, track: Option<usize>) {
+        self.armed = track.filter(|&t| t < self.project.tracks.len());
+        self.armed_id = self.id_of(self.armed);
+        self.track_pick = None;
+        self.pick_id = TrackId::NONE;
+    }
+
+    /// Select `track` apart from the arm, by its lasting id; the armed
+    /// track (or no such track) selects the armed one again.
+    fn set_pick(&mut self, track: usize) {
+        let pick = Some(track).filter(|&t| t < self.project.tracks.len() && Some(t) != self.armed);
+        self.track_pick = pick;
+        self.pick_id = self.id_of(pick);
+    }
+
+    /// The lasting id of track `track`, if there is one.
+    fn id_of(&self, track: Option<usize>) -> TrackId {
+        track
+            .and_then(|t| self.project.tracks.get(t))
+            .map_or(TrackId::NONE, |t| t.id)
+    }
+
+    /// After the tracks changed (one added, taken away by UNDO or brought
+    /// back by REDO): the armed and the selected track found again by
+    /// their lasting ids. An armed track that is gone leaves the arm on
+    /// the last track that isn't a Loop track; a selected one that is
+    /// gone leaves the selection on the armed track.
+    fn find_arm_and_pick(&mut self) {
+        let project = &self.project;
+        if self.armed.is_some() {
+            let found = project.track_with(self.armed_id).or_else(|| {
+                // No id (only a track never given one): its place, if it
+                // is still there.
+                self.armed
+                    .filter(|&t| !self.armed_id.is_given() && t < project.tracks.len())
+            });
+            let armed = found.or_else(|| project.tracks.iter().rposition(|t| !t.is_loops()));
+            self.armed = armed;
+            self.armed_id = self.id_of(armed);
+        }
+        if self.track_pick.is_some() {
+            let found = self.project.track_with(self.pick_id);
+            self.track_pick = found.filter(|&t| Some(t) != self.armed);
+            if self.track_pick.is_none() {
+                self.pick_id = TrackId::NONE;
+            }
+        }
     }
 
     /// The other armed tracks, a bit each, without the armed one
@@ -964,9 +1036,7 @@ impl TimeControl {
                 && c.slot
                     .is_none_or(|slot| project.clip(c.track, slot).is_some())
         });
-        if self.armed.is_some_and(|t| t >= n) {
-            self.armed = project.tracks.iter().rposition(|t| !t.is_loops());
-        }
+        self.find_arm_and_pick();
         // Tracks added or taken away: the other armed tracks let go.
         if self.also != 0 && self.also_n != n {
             self.also = 0;
@@ -1024,8 +1094,8 @@ impl TimeControl {
     /// of the clip's length, pressure or moves; song mode, where the
     /// song's placements play clips too; while recording or counting in,
     /// when the audio half edits the view itself; a view still waiting to
-    /// go; a track other than the armed one, whose clips the view has no
-    /// room in; an edit too big; or a queue that fills (the audio half
+    /// go; a track neither armed nor selected apart from the arm, whose
+    /// clips the view has no room in; an edit too big; or a queue that fills (the audio half
     /// makes none of the changes that went: an edit goes in whole or not
     /// at all, and the compiled view brings it).
     fn in_place(&mut self, track: usize, slot: usize, edit: &Edit) -> bool {
@@ -1036,7 +1106,7 @@ impl TimeControl {
         if !InPlace::fits(edit, notes, locks)
             || self.song
             || self.unsent.is_some()
-            || self.armed != Some(track)
+            || (self.armed != Some(track) && self.track_pick != Some(track))
             || matches!(self.info.state, State::Recording | State::CountIn)
         {
             return false;
@@ -1116,6 +1186,11 @@ impl TimeControl {
         }
         v.set_includes(self.includes);
         v.make_room(RECORD_ROOM, RECORD_ROOM);
+        // The track selected apart from the arm gets the same room, so
+        // its step edits go in place too (refactor C3).
+        if let Some(t) = self.track_pick {
+            v.make_room_on(t, RECORD_ROOM, RECORD_ROOM);
+        }
         Ok(v)
     }
 
@@ -1138,8 +1213,6 @@ impl TimeControl {
         true
     }
 
-    /// The clip the Play page's pattern edits: the armed track's (track 1
-    /// if none is armed) launched clip, else its first clip.
     /// REC with nothing to record into (a fresh project, found by the UI
     /// audit): the armed track's clip the pattern shows is launched, or a
     /// new clip goes in its first empty slot, as a tap on an empty slot on
@@ -1219,7 +1292,7 @@ impl TimeControl {
             return Ok(None);
         }
         let info = self.info;
-        let (slot, line) = match self.step_focus().1 {
+        let (slot, line) = match self.focus_of(track).1 {
             Some(s) => (s, format!("slot {} of track {} launched", s + 1, track + 1)),
             None => {
                 let bar = info.meter.bar_ticks();
@@ -1417,8 +1490,16 @@ impl TimeControl {
         }
     }
 
+    /// The clip the Play page's pattern shows and the Sequencer's Steps,
+    /// Notes and STEP SEQ edit: the selected track's (track 1 if none is
+    /// selected), as [`TimeControl::focus_of`].
     fn step_focus(&self) -> (usize, Option<usize>) {
-        let track = self.armed.unwrap_or(0);
+        self.focus_of(self.selected().unwrap_or(0))
+    }
+
+    /// Track `track`'s clip the Play page's pattern would show: its
+    /// launched clip, else its first.
+    fn focus_of(&self, track: usize) -> (usize, Option<usize>) {
         let launched = self
             .launches
             .iter()
@@ -1838,6 +1919,9 @@ impl TimeControl {
     pub fn act(&mut self, a: TimeAction) -> Result<String, String> {
         let info = self.info;
         match a {
+            // A track picked arms it, unless the app found REC's arm
+            // pinned and sent `Select` instead (refactor C1).
+            TimeAction::Pick(t) => self.act(TimeAction::Arm(Some(t))),
             // Waiting for another device's Start, a take records from it
             // (REC readies it, follow.rs starts it): not now.
             TimeAction::Transport(Command::Record)
@@ -2241,8 +2325,43 @@ impl TimeControl {
                     format!("armed too: {}", names.join(", "))
                 })
             }
+            TimeAction::Select(t) if self.project.tracks.get(t).is_some_and(|t| t.is_loops()) => {
+                // A Loop track has no steps: the Sequencer stays where it is.
+                let name = &self.project.tracks[t].name;
+                Ok(
+                    match self.selected().and_then(|s| self.project.tracks.get(s)) {
+                        Some(s) => format!("{name} plays loops: the Sequencer stays on {}", s.name),
+                        None => format!("{name} plays loops"),
+                    },
+                )
+            }
+            TimeAction::Select(t) => {
+                let name = self
+                    .project
+                    .tracks
+                    .get(t)
+                    .ok_or_else(|| format!("no track {}", t + 1))?
+                    .name
+                    .clone();
+                let was = self.track_pick;
+                self.set_pick(t);
+                // The steps, the note editor's clip and the pads follow.
+                // A new pick compiles, so the view has room for its step
+                // edits to go in place (refactor C3).
+                if self.track_pick != was && self.track_pick.is_some() {
+                    self.compile()?;
+                }
+                self.changed = true;
+                self.steps_changed = true;
+                Ok(match self.armed.and_then(|a| self.project.tracks.get(a)) {
+                    Some(a) if self.armed != Some(t) => {
+                        format!("selected: {name} (REC stays on {}, pinned)", a.name)
+                    }
+                    _ => format!("selected: {name}"),
+                })
+            }
             TimeAction::Arm(track) => {
-                self.armed = track.filter(|&t| t < self.project.tracks.len());
+                self.set_armed(track);
                 self.compile()?;
                 Ok(match self.armed {
                     Some(t) => format!("armed: {}", self.project.tracks[t].name),
@@ -2379,7 +2498,7 @@ impl TimeControl {
                         Clip::new(&format!("Clip {}", slot + 1), length),
                     )
                     .map_err(|e| format!("new clip: {e:?}"))?;
-                self.armed = Some(track);
+                self.set_armed(Some(track));
                 (self.launches, self.cues) =
                     clips_after(&self.project, &self.launches, &self.cues, &a, &info);
                 self.compile()?;
@@ -2512,7 +2631,7 @@ impl TimeControl {
                     .takes
                     .add_track(&mut self.project, &name)
                     .map_err(|_| format!("{MAX_TRACKS} tracks is the most a project holds"))?;
-                self.armed = Some(index);
+                self.set_armed(Some(index));
                 self.compile()?;
                 Ok(format!("{name} added and armed (UNDO takes it away)"))
             }
@@ -4670,6 +4789,7 @@ impl TimeControl {
             self.armed,
             &self.takes,
         );
+        st.track_pick = self.track_pick;
         st.also = self.also();
         st.capture = self.pending.map(|p| bars_label(p.bars));
         st.clipboard = self.clipboard.as_ref().map(|c| c.name.clone());

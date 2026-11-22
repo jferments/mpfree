@@ -1484,7 +1484,8 @@ pub struct KitTrack {
     /// kit").
     pub kit: String,
     pub color: Color,
-    /// The armed track: the pads play its kit.
+    /// The selected track (the armed one, unless a track was picked while
+    /// REC's arm is pinned): the pads play its kit.
     pub armed: bool,
     /// It plays a kit, so a tap arms it; a track without one is faint.
     pub enabled: bool,

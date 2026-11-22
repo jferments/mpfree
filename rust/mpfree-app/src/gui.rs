@@ -2653,7 +2653,8 @@ impl Player {
             if info.loops.is_some() {
                 continue;
             }
-            let armed = self.time.armed == Some(t);
+            // The selected track's kit is the one the pads play.
+            let armed = self.time.selected() == Some(t);
             let clips = info.slots.iter().any(Option::is_some);
             let own = played(&self.track_sounds, &self.track_sends, t);
             let (kit, color, enabled) = match (own, self.track_kits.kit_of(t)) {
@@ -3206,7 +3207,7 @@ impl Player {
     /// loading never changes another track's sound; Err says why not when
     /// none is left.
     fn kit_for_load(&self) -> Result<Option<usize>, String> {
-        let armed = self.time.armed;
+        let armed = self.time.selected();
         let shared: Vec<usize> = (0..self.time.tracks.len())
             .filter(|&t| Some(t) != armed && self.track_kits.kit_of(t) == Some(self.kit))
             .filter(|&t| played(&self.track_sounds, &self.track_sends, t).is_none())
@@ -3424,7 +3425,7 @@ impl Player {
     /// play the synth the Synth tab shows through the track
     /// (app/pads_focus.rs): the track and the synth's name.
     fn synth_tab_on_kit(&self) -> Option<(usize, &'static str)> {
-        let track = self.time.armed.unwrap_or(0);
+        let track = self.time.selected().unwrap_or(0);
         let state = &self.synth.as_ref()?.state;
         // The tab shows the selected track's own instrument, or the one it
         // plays of another track's (named for its track, main.rs's
@@ -9216,7 +9217,7 @@ impl Player {
         let target = self.sample.load_target();
         let kit_on = self
             .kit_page()
-            .and(self.time.armed)
+            .and(self.time.selected())
             .and_then(|t| self.time.tracks.get(t))
             .map(|t| t.name.clone());
         let map = target.as_ref().and_then(|_| self.browser_pad_map());
@@ -11743,12 +11744,12 @@ impl Player {
                     None
                 }
                 // A track while the set shows: its kit's pads again (and
-                // the track armed, if it wasn't).
+                // the track picked, if it wasn't).
                 EventKind::Select(t) if self.perform.shown => {
                     self.perform_view(false);
-                    (self.time.armed != Some(t)).then_some(FromUi::Time(TimeAction::Arm(Some(t))))
+                    (self.time.selected() != Some(t)).then_some(FromUi::Time(TimeAction::Pick(t)))
                 }
-                EventKind::Select(t) => Some(FromUi::Time(TimeAction::Arm(Some(t)))),
+                EventKind::Select(t) => Some(FromUi::Time(TimeAction::Pick(t))),
                 EventKind::Tab(_) => self.add_kit_track(),
                 _ => None,
             };
@@ -12176,8 +12177,8 @@ impl Player {
                 self.refresh_play();
                 None
             }
-            // Play's head: the track switch arms the track before or after
-            // the armed one (Loop tracks have no pads, so it skips them).
+            // Play's head: the track switch picks the track before or after
+            // the selected one (Loop tracks have no pads, so it skips them).
             (play_page::STEPS, EventKind::Tab(k))
                 if k == play_widgets::HEAD_TRACK_PREV || k == play_widgets::HEAD_TRACK_NEXT =>
             {
@@ -12187,7 +12188,7 @@ impl Player {
                     1
                 };
                 match self.next_track(d) {
-                    Some(t) => Some(FromUi::Time(TimeAction::Arm(Some(t)))),
+                    Some(t) => Some(FromUi::Time(TimeAction::Pick(t))),
                     None => {
                         self.tell("tracks: no other track with pads (Arrange's + Track adds one)");
                         None
@@ -21704,11 +21705,11 @@ mod tests {
         // The switch: the next track, round the ends.
         assert_eq!(
             tap(&mut p, head(play_widgets::HEAD_TRACK_NEXT)),
-            Some(FromUi::Time(TimeAction::Arm(Some(1))))
+            Some(FromUi::Time(TimeAction::Pick(1)))
         );
         assert_eq!(
             tap(&mut p, head(play_widgets::HEAD_TRACK_PREV)),
-            Some(FromUi::Time(TimeAction::Arm(Some(crate::time::TRACKS - 1))))
+            Some(FromUi::Time(TimeAction::Pick(crate::time::TRACKS - 1)))
         );
         // A bank: PAD BANK's; the rows follow the pads' page from its top.
         assert_eq!(
@@ -24668,7 +24669,7 @@ mod tests {
         };
         assert_eq!(
             p.on_event(ev(EventKind::Select(2))),
-            Some(FromUi::Time(TimeAction::Arm(Some(2))))
+            Some(FromUi::Time(TimeAction::Pick(2)))
         );
         // + Kit track adds a track; once it comes back armed it gets the
         // empty kit.

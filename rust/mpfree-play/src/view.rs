@@ -985,15 +985,23 @@ impl PlayView {
         while bits != 0 {
             let i = bits.trailing_zeros() as usize;
             bits &= bits - 1;
-            let Some(t) = self.tracks.get_mut(i) else {
-                continue;
-            };
-            if let Some(c) = t.clip.as_mut() {
-                c.make_room(notes, locks);
-            }
-            if let Some(c) = t.cue.as_mut().and_then(|c| c.clip.as_mut()) {
-                c.make_room(notes, locks);
-            }
+            self.make_room_on(i, notes, locks);
+        }
+    }
+
+    /// [`PlayView::make_room`] for track `track` alone, armed or not: the
+    /// track the Sequencer edits apart from the arm (step sequencer
+    /// refactor C3), so its step edits go in place as the armed track's
+    /// do. Call it on the control thread, after compiling.
+    pub fn make_room_on(&mut self, track: usize, notes: usize, locks: usize) {
+        let Some(t) = self.tracks.get_mut(track) else {
+            return;
+        };
+        if let Some(c) = t.clip.as_mut() {
+            c.make_room(notes, locks);
+        }
+        if let Some(c) = t.cue.as_mut().and_then(|c| c.clip.as_mut()) {
+            c.make_room(notes, locks);
         }
     }
 
