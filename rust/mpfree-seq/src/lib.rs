@@ -918,6 +918,11 @@ pub struct Clip {
     pub program: Option<ClipProgram>,
     /// The order it plays its steps in (sequencer S6).
     pub direction: Direction,
+    /// The length of a step on its step grid, in ticks: one of
+    /// [`steps::SIZES`], [`steps::DEFAULT_SIZE`] (a 1/16) unless changed
+    /// (step sequencer refactor D1). It changes what the Steps, Notes and
+    /// STEP SEQ show and edit, never when a note plays.
+    pub step: Tick,
     /// Its notes, locks, length and moves as they were before its first
     /// Mutate (sequencer S6, [`mutate`]): what Restore puts back and each
     /// Mutate varies. None until it is mutated, and again once restored.
@@ -945,6 +950,8 @@ pub struct ClipSettings {
     pub program: Option<ClipProgram>,
     /// Its play direction (S6).
     pub direction: Direction,
+    /// Its step size on the step grid (refactor D1).
+    pub step: Tick,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -988,6 +995,8 @@ pub enum ModelError {
     BadLaunch,
     /// A clip's program or bank is out of range ([`ClipProgram::ok`]).
     BadProgram,
+    /// A clip's step size isn't one of [`steps::SIZES`].
+    BadStep,
     /// A loop cell names no loop or holds notes, or a clip is on a track
     /// of the other kind (a loop cell on a note track, a note clip on a
     /// Loop track).
@@ -1011,13 +1020,14 @@ impl Clip {
             once: self.once,
             program: self.program,
             direction: self.direction,
+            step: self.step,
         }
     }
 
     /// Change its speed, swing, quantise, follow action, launch quantise,
-    /// legato and program, all or none: `BadSpeed`, `BadSwing`,
-    /// `BadQuantise`, `BadLaunch`, `BadProgram` or the follow action's own
-    /// refusal leaves the clip as it was.
+    /// legato, program, direction and step size, all or none: `BadSpeed`,
+    /// `BadSwing`, `BadQuantise`, `BadLaunch`, `BadProgram`, `BadStep` or
+    /// the follow action's own refusal leaves the clip as it was.
     pub fn set_settings(&mut self, s: ClipSettings) -> Result<(), ModelError> {
         if Speed::new(s.speed.num, s.speed.den).is_none() {
             return Err(ModelError::BadSpeed);
@@ -1041,6 +1051,9 @@ impl Clip {
         if s.program.is_some_and(|p| !p.ok()) {
             return Err(ModelError::BadProgram);
         }
+        if !steps::SIZES.contains(&s.step) {
+            return Err(ModelError::BadStep);
+        }
         self.speed = s.speed;
         self.swing = s.swing;
         self.quantise = s.quantise;
@@ -1050,6 +1063,7 @@ impl Clip {
         self.once = s.once;
         self.program = s.program;
         self.direction = s.direction;
+        self.step = s.step;
         Ok(())
     }
 
@@ -1080,6 +1094,7 @@ impl Clip {
             once: false,
             program: None,
             direction: Direction::Forward,
+            step: steps::DEFAULT_SIZE,
             original: None,
             holds: Holds::Hits,
         }
@@ -1215,6 +1230,9 @@ impl Clip {
         }
         if self.launch.is_some_and(|g| !g.ok()) {
             return Err(ModelError::BadLaunch);
+        }
+        if !steps::SIZES.contains(&self.step) {
+            return Err(ModelError::BadStep);
         }
         if self.program.is_some_and(|p| !p.ok()) {
             return Err(ModelError::BadProgram);

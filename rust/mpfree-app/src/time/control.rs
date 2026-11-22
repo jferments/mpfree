@@ -40,7 +40,7 @@ use mpfree_seq::arrange::{
 use mpfree_seq::loops::{self, LoopNow, LoopPlan};
 use mpfree_seq::mpfree_moves::{Kind, MoveLog};
 use mpfree_seq::scenes::{MAX_LIST_STEPS, MAX_TIMES};
-use mpfree_seq::steps::{Edit, Grid};
+use mpfree_seq::steps::{size_name, Edit, Grid, DEFAULT_SIZE};
 use mpfree_seq::ListStep;
 use mpfree_seq::{
     Clip, ClipId, LaunchGrid, ModelError, Project, TouchPoint, TrackId, LOOPS, MAX_TRACKS, ROWS,
@@ -60,9 +60,7 @@ use super::follow::FollowCounts;
 use super::link::{
     Counts, CueCounts, InPlace, PeriodEnd, Rx, StripCounts, ToAudio, ToControl, Tracks, Tx,
 };
-use super::{
-    PadRows, StepAction, StepClip, StepsData, LINE, NEW_CLIP_BARS, RECORD_ROOM, STEP_TICKS,
-};
+use super::{PadRows, StepAction, StepClip, StepsData, LINE, NEW_CLIP_BARS, RECORD_ROOM};
 
 /// The clip settings card's join keys for its takes, a row each (see
 /// `Takes::set_clip`).
@@ -654,6 +652,46 @@ impl TimeControl {
         track
             .and_then(|t| self.project.tracks.get(t))
             .map_or(TrackId::NONE, |t| t.id)
+    }
+
+    /// `TimeAction::StepSize`: the step size of the clip the Sequencer
+    /// edits (refactor D1), a clip setting UNDO takes back. The clip keeps
+    /// its length and every note its time: only the grid cuts it into
+    /// steps of another size (13 sixteenths show as 7 eighths, the last
+    /// one short), so nothing compiles and nothing sounds different.
+    fn step_size(&mut self, size: Tick) -> Result<String, String> {
+        let name =
+            size_name(size).ok_or_else(|| format!("steps: {size} ticks is not a step size"))?;
+        let (track, slot) = self.step_focus();
+        let t = self
+            .project
+            .tracks
+            .get(track)
+            .ok_or("steps: no such track")?;
+        if t.is_loops() {
+            return Err(format!("steps: {} plays loops, it has no steps", t.name));
+        }
+        let slot =
+            slot.ok_or_else(|| format!("steps: {} has no clip yet: tap a step first", t.name))?;
+        let c = self
+            .project
+            .clip(track, slot)
+            .ok_or("steps: the clip is gone")?;
+        let clip = c.name.clone();
+        let settings = mpfree_seq::ClipSettings {
+            step: size,
+            ..c.settings()
+        };
+        self.takes
+            .set_clip(&mut self.project, track, slot, settings, None)
+            .map_err(|e| format!("steps: {clip}: {e:?}"))?;
+        let steps = self
+            .project
+            .clip(track, slot)
+            .map_or(0, |c| grid_of(c).steps(c.length));
+        self.changed = true;
+        self.steps_changed = true;
+        Ok(format!("steps: {clip} in {name} steps ({steps})"))
     }
 
     /// `TimeAction::EditClip`: the Sequencer edits slot `slot`'s clip of
@@ -1746,9 +1784,9 @@ impl TimeControl {
             .tracks
             .get(track)
             .map_or(String::new(), |t| t.name.clone());
-        let grid = Grid::new(STEP_TICKS).expect("a sixteenth is a step size");
         let clip = slot.and_then(|slot| {
             let c = self.project.clip(track, slot)?;
+            let grid = grid_of(c);
             let launch = self
                 .launches
                 .iter()
@@ -1771,8 +1809,9 @@ impl TimeControl {
                 slot,
                 name: c.name.clone(),
                 steps: grid.steps(c.length),
+                step: grid.size(),
                 song_length: c.speed.to_song(c.length as f64),
-                song_step: c.speed.to_song(STEP_TICKS as f64),
+                song_step: c.speed.to_song(grid.size() as f64),
                 origin,
                 order,
                 rows: shown
@@ -1822,7 +1861,13 @@ impl TimeControl {
     /// the edit, the edit is taken back from the clip and the takes (and
     /// the launches as they were), and the error says so.
     pub fn step_action(&mut self, a: StepAction) -> Result<String, String> {
-        let grid = Grid::new(STEP_TICKS).expect("a sixteenth is a step size");
+        self.step_action_in(a, false)
+    }
+
+    /// [`Self::step_action`], with `sixteenths` cutting the clip into 1/16
+    /// steps whatever its step size (refactor D1): the clip card's Length
+    /// row counts sixteenths.
+    fn step_action_in(&mut self, a: StepAction, sixteenths: bool) -> Result<String, String> {
         let (track, slot) = self.step_focus();
         let (slot, made) = match slot {
             Some(s) => (s, None),
@@ -1841,7 +1886,8 @@ impl TimeControl {
                 // Not in the slot yet: it goes in with its first notes. On
                 // a track that plays notes it holds notes, as a take does.
                 let name = format!("Pattern {}", s + 1);
-                let mut c = Clip::new(&name, grid.page_length());
+                let page = Grid::new(DEFAULT_SIZE).expect("a 1/16 is a step size");
+                let mut c = Clip::new(&name, page.page_length());
                 c.holds = self.take_holds(track);
                 (s, Some(c))
             }
@@ -1849,6 +1895,39 @@ impl TimeControl {
         let clip = match &made {
             Some(c) => c,
             None => self.project.clip(track, slot).ok_or("the clip is gone")?,
+        };
+        // The clip's own steps (refactor D1): its step size cuts it.
+        let grid = if sixteenths {
+            Grid::new(DEFAULT_SIZE).expect("a 1/16 is a step size")
+        } else {
+            grid_of(clip)
+        };
+        let speed = clip.speed;
+        // A step at a time, from the clip's own length (refactor D2), so
+        // detents that come before the screen hears back all count: the
+        // length it comes to.
+        let a = match a {
+            StepAction::LengthBy { steps: by } => {
+                let n = grid.steps(clip.length);
+                let to = if by > 0 {
+                    // A longer clip (recorded) is never cut by a +.
+                    (n + by.unsigned_abs() as usize).min(super::MAX_STEPS.max(n))
+                } else {
+                    n.saturating_sub(by.unsigned_abs() as usize).max(1)
+                };
+                if to == n {
+                    return Err(if by > 0 {
+                        format!("steps: {} steps is the most here", super::MAX_STEPS)
+                    } else {
+                        "steps: 1 step is the fewest".into()
+                    });
+                }
+                StepAction::Length {
+                    steps: to,
+                    copy: false,
+                }
+            }
+            a => a,
         };
         // The pads name the rows; on a clip of notes each pad's row stands
         // for the pad's notes (step 5c), and the log names its root.
@@ -2016,12 +2095,42 @@ impl TimeControl {
             StepAction::Length { steps, copy } => {
                 (grid.resize(clip, steps, copy), None, clip.name.clone())
             }
+            // A lane's stroke (refactor D3): each step its own value, one
+            // edit.
+            StepAction::Values {
+                pad,
+                from,
+                kind,
+                values,
+            } => {
+                let changes: Vec<(usize, mpfree_seq::steps::Change)> = values
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, v)| **v > 0)
+                    .map(|(k, &v)| (from + k, kind.change(v)))
+                    .filter(|(i, _)| !grid.notes(clip, pad, *i).is_empty())
+                    .collect();
+                let n = changes.len();
+                (
+                    grid.change_each(clip, pad, &changes),
+                    None,
+                    format!(
+                        "{} of {} on {n} step{}",
+                        kind.name(),
+                        row(pad),
+                        if n == 1 { "" } else { "s" }
+                    ),
+                )
+            }
+            // Made a Length above.
+            StepAction::LengthBy { .. } => (Edit::default(), None, String::new()),
         };
         let (edit, join, what) = if notes {
             on_notes(grid, clip, a, &rows, act)
         } else {
             act(a)
         };
+        let resized = edit.length;
         // A step past the clip's end, or a change to nothing: no take, and
         // on an empty track no clip either.
         if edit.is_empty() {
@@ -2095,6 +2204,7 @@ impl TimeControl {
                 format!("steps: {what} erased")
             }
             (None, StepAction::CopySteps { .. }) => format!("steps: {what} copied"),
+            (None, StepAction::Values { .. }) => format!("steps: {what}"),
             // One line a turn, at its first detent.
             (None, StepAction::Lock { .. }) if joined => String::new(),
             (None, StepAction::Lock { .. }) => format!("steps: {what}"),
@@ -2124,15 +2234,24 @@ impl TimeControl {
                     ..
                 },
             ) => format!("steps: {what}"),
-            (None, StepAction::Length { steps, copy }) => {
-                let bars = steps.div_ceil(16);
+            (None, StepAction::Length { .. } | StepAction::LengthBy { .. }) => {
+                let copy = matches!(a, StepAction::Length { copy: true, .. });
+                let (old, new) = resized.unwrap_or_default();
+                let steps = grid.steps(new);
+                let st = if steps == 1 { "step" } else { "steps" };
+                // Bars of the song's meter, at the clip's step size.
+                let bar = self.info.meter.bar_ticks().max(1) as f64;
+                let song = speed.to_song(new as f64);
+                let bars = ((song / bar) - 1e-9).ceil().max(1.0) as usize;
                 let s = if bars == 1 { "" } else { "s" };
                 let how = if copy {
                     " · the new steps repeat the ones before them"
-                } else {
+                } else if new < old {
                     " · UNDO brings the rest back"
+                } else {
+                    " · the new steps are empty"
                 };
-                format!("steps: {what} is {steps} steps ({bars} bar{s}){how}")
+                format!("steps: {what} is {steps} {st} ({bars} bar{s}){how}")
             }
             (None, _) => String::new(),
         })
@@ -2484,7 +2603,7 @@ impl TimeControl {
                 if self.step_focus() != (track, Some(slot)) {
                     return Err("clip: the focused clip changed: try again".into());
                 }
-                self.step_action(StepAction::Length { steps, copy })
+                self.step_action_in(StepAction::Length { steps, copy }, true)
             }
             TimeAction::CopyClip { track, slot } => {
                 let c = self.project.clip(track, slot).ok_or_else(|| {
@@ -2723,6 +2842,7 @@ impl TimeControl {
                 })
             }
             TimeAction::EditClip(slot) => self.edit_clip(slot),
+            TimeAction::StepSize(size) => self.step_size(size),
             TimeAction::Arm(track) => {
                 self.set_armed(track);
                 self.compile()?;
@@ -5507,6 +5627,18 @@ fn on_notes(
         StepAction::ClearLocks { pad, steps } if pad != LINE => {
             each(&of(pad), &|n| StepAction::ClearLocks { pad: n, steps })
         }
+        // A lane's stroke (refactor D3) on each of the pad's notes.
+        StepAction::Values {
+            pad,
+            from,
+            kind,
+            values,
+        } if pad != LINE => each(&of(pad), &|n| StepAction::Values {
+            pad: n,
+            from,
+            kind,
+            values,
+        }),
         StepAction::ClearPad { pad } if pad != LINE => {
             each(&of(pad), &|n| StepAction::ClearPad { pad: n })
         }
@@ -5657,4 +5789,20 @@ fn differences_said(project: &Project, d: &[Difference], bar: Tick) -> (String, 
             )
         }
     }
+}
+
+/// The step grid of clip `c`: steps of its own size (refactor D1). A
+/// clip can't hold another size (`Clip::check`, an opened project, and
+/// `Clip::set_settings` refuse it); one written past them shows 1/16
+/// steps, which debug builds refuse.
+pub(crate) fn grid_of(c: &Clip) -> Grid {
+    debug_assert!(
+        mpfree_seq::steps::SIZES.contains(&c.step),
+        "step {}",
+        c.step
+    );
+    Grid::new(c.step)
+        .filter(|_| mpfree_seq::steps::SIZES.contains(&c.step))
+        .or_else(|| Grid::new(DEFAULT_SIZE))
+        .expect("a 1/16 is a step size")
 }

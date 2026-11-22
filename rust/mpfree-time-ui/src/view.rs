@@ -1063,6 +1063,10 @@ pub enum TimeAction {
     /// first while none does). A track selected again goes back to what
     /// plays.
     EditClip(Option<usize>),
+    /// The step size of the clip the Sequencer edits, in ticks: one of
+    /// `mpfree_seq::steps::SIZES` (refactor D1). A clip setting UNDO takes
+    /// back; the clip's length and its notes' times stay.
+    StepSize(Tick),
     /// Arm these tracks too, a bit each (track 0 the lowest), for one take
     /// over several tracks (the MPC's SHIFT + a track's arm): each records
     /// what its MIDI input sends it. The armed track is left out of it.
@@ -4717,6 +4721,7 @@ mod tests {
             }),
             // Its longest word.
             direction: Direction::PingPong,
+            step: mpfree_seq::steps::DEFAULT_SIZE,
         };
         values.extend(card_rows(CARD_STEP, card).into_iter().map(|r| r.value));
         values.extend(card_rows(MAX_CLIP_TICKS, card).into_iter().map(|r| r.value));
