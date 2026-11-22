@@ -46,7 +46,6 @@ struct Rig {
     drums: [[f32; PERIOD]; 2],
     synth_out: [[f32; PERIOD]; 2],
     loop_out: [[f32; PERIOD]; 2],
-    audio_out: [[f32; PERIOD]; 2],
     pads_out: [[f32; PERIOD]; 2],
     peak: f32,
     /// Notes the arp started, and hits the clip played.
@@ -114,7 +113,6 @@ impl Rig {
             drums: [[0.0; PERIOD]; 2],
             synth_out: [[0.0; PERIOD]; 2],
             loop_out: [[0.0; PERIOD]; 2],
-            audio_out: [[0.0; PERIOD]; 2],
             pads_out: [[0.0; PERIOD]; 2],
             peak: 0.0,
             arp_notes: 0,
@@ -170,7 +168,6 @@ impl Rig {
             drums,
             synth_out,
             loop_out,
-            audio_out,
             pads_out,
             arp_notes,
             clip_hits,
@@ -315,15 +312,14 @@ impl Rig {
         let [loop_l, loop_r] = loop_out;
         let note = looper.run(time.block(), loop_l, loop_r);
         assert!(note.is_none(), "period {i}: {note:?}");
-        let [audio_l, audio_r] = audio_out;
         tracks.follow_latency(app.settings.loop_latency);
         tracks.period(
             time.block(),
             time.tempo_map(),
             time.song_on(),
             looper.input(),
-            (audio_l, audio_r),
         );
+        tracks.play_into(mix);
         mix.follow(looper.line.is_open(), looper.monitor);
         let ctx = mixing::ctx(RATE, i * PERIOD as u64, time.info().bpm, time.block());
         mix.mixer.set_lane_deadline(Some(until));
@@ -333,7 +329,6 @@ impl Rig {
             &ctx,
             (synth_l, synth_r),
             (loop_l, loop_r),
-            (audio_l, audio_r),
             looper.input(),
             left,
             right,
@@ -523,7 +518,7 @@ fn own_instrument(sound_cores: cores::SoundCores) {
     rig.mix.show(Some(mpfree_mixer_ui::MixView::Tracks));
     let st = rig.mix.poll_state(std::time::Instant::now()).unwrap();
     let names: Vec<&str> = st.strips.iter().map(|v| v.name.as_str()).collect();
-    assert_eq!(names, vec!["Poly \u{b7} Track 1", "Synth", "Loop", "Audio"]);
+    assert_eq!(names, vec!["Poly \u{b7} Track 1", "Synth", "Loop"]);
     assert_eq!(st.strips[0].id, mpfree_fx::StripId::Track(mixing::DRUMS));
     assert!(st.strips[0].peak[0] > 0.0, "{:?}", st.strips[0].peak);
     // On two cores the lane played it every period (late ones allowed, as

@@ -87,9 +87,15 @@ enum SoundChoice {
 }
 
 /// Track `owner`'s instrument `name` as a track that plays it names it,
-/// on the Synth tab and under the track on Arrange: "Track 3's FM".
+/// on the Synth tab and under the track on Arrange: "Track 3's FM". An
+/// instrument no track has (step 6, a free place's, from a take of a synth
+/// picked for the pads) is its name alone: "FM".
 pub fn sent_name(owner: usize, name: &str) -> String {
-    format!("Track {}'s {name}", owner + 1)
+    if owner < crate::instruments::TRACKS {
+        format!("Track {}'s {name}", owner + 1)
+    } else {
+        name.to_string()
+    }
 }
 
 fn layout_key(l: PadLayout) -> &'static str {
@@ -619,7 +625,9 @@ impl App {
         if let Some(t) = self.track_sounds.get_mut(track) {
             // Another instrument (or none): not the copy any more.
             if t.map(|h| h.id) != held.map(|h| h.id) {
-                self.track_copied[track] = None;
+                if let Some(c) = self.track_copied.get_mut(track) {
+                    *c = None;
+                }
             }
             *t = held;
         }

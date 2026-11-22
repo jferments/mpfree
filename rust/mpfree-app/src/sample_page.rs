@@ -6064,12 +6064,14 @@ impl SamplePage {
             move |_| {
                 // Each sound only while it leaves the memory MPFree keeps
                 // free; one that doesn't is left out and the log says why.
+                // The promise holds while it is decoded.
                 let r = save::from_text(&text, &mut |f| {
                     let bytes = read(f)?;
-                    crate::memory::room_in(
-                        free(),
-                        crate::memory::decode_need(f, bytes.len() as u64),
-                    )?;
+                    let need = crate::memory::decode_peak(
+                        &mut std::io::Cursor::new(&bytes),
+                        bytes.len() as u64,
+                    );
+                    let _promise = crate::memory::reserve(free, need)?;
                     wav::read(f, &bytes)
                 });
                 let _ = tx.send(r.map(|o| {
@@ -6160,8 +6162,8 @@ impl SamplePage {
             Lane::File,
             Key::new(KIT, 0),
             move |_| {
-                let r = read_kit_file(&dir, &mut |f, len| {
-                    crate::memory::room_in(free(), crate::memory::decode_need(f, len))
+                let r = read_kit_file(&dir, &mut |p, len| {
+                    crate::memory::reserve(free, crate::memory::decode_peak_at(p, len))
                 });
                 let _ = tx.send(r.map(|o| opened_at_rate(o, rate, free)));
             },
@@ -8531,8 +8533,8 @@ fn read_one(path: &Path, free: fn() -> Option<u64>) -> Loaded {
     if len > wav::MAX_SAMPLES as u64 * 8 + (1 << 20) {
         return Err("too long to hold in memory".to_string());
     }
-    let file = path.to_string_lossy();
-    crate::memory::room_in(free(), crate::memory::decode_need(&file, len))?;
+    // The promise holds until the sound is decoded.
+    let _promise = crate::memory::reserve(free, crate::memory::decode_peak_at(path, len))?;
     let name = path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -8589,11 +8591,12 @@ pub fn kit_file_of(name: &str, p: &Project) -> (String, Vec<(String, Source)>) {
 }
 
 /// Reads a kit folder: its `kit.txt` (the sampler's part, one kit) and the
-/// sounds it names, each only if `room(file, bytes)` says it fits in
-/// memory. Files are looked for in the folder only (no links, no paths).
+/// sounds it names, each only if `room(path, bytes)` promises the memory
+/// it needs, held while it is decoded. Files are looked for in the folder
+/// only (no links, no paths).
 fn read_kit_file(
     dir: &std::path::Path,
-    room: &mut dyn FnMut(&str, u64) -> Result<(), String>,
+    room: &mut dyn FnMut(&Path, u64) -> Result<crate::memory::Ticket, String>,
 ) -> Result<Opened, String> {
     let text_path = dir.join(mpfree_library::KIT_FILE);
     let m = std::fs::symlink_metadata(&text_path).map_err(|e| format!("kit.txt: {e}"))?;
@@ -8610,7 +8613,7 @@ fn read_kit_file(
         if !m.is_file() {
             return Err("not a file".to_string());
         }
-        room(f, m.len())?;
+        let _promise = room(&p, m.len())?;
         let bytes = std::fs::read(&p).map_err(|e| e.to_string())?;
         wav::read(f, &bytes)
     })

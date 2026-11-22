@@ -1853,6 +1853,10 @@ pub enum KeysPlay {
     /// (`mpc_one::pad_index`): the synth or a track's own instrument
     /// without a pad layout.
     Pads,
+    /// By note, on the synth the pads play on their own (the shared synth
+    /// chosen for them, or one picked in the list of synths): the
+    /// instrument redesign's step 7b.
+    PadsSynth,
 }
 
 /// Where a key went, for the monitor: the armed track, by note or as the
@@ -1860,6 +1864,7 @@ pub enum KeysPlay {
 fn armed_to((track, play): (u8, KeysPlay), note: u8) -> To {
     let pad = match play {
         KeysPlay::Notes => return To::Track { track, pad: None },
+        KeysPlay::PadsSynth => return To::Pads,
         KeysPlay::KitPads => Some(mpfree_midi::profile::kit_pad_of_note(note) as u8),
         KeysPlay::Pads => mpfree_controller::mpc_one::pad_index(note),
     };
