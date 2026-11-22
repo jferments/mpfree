@@ -1160,66 +1160,90 @@ impl AudioTracks {
 
     // ---- saving and loading --------------------------------------------
 
-    /// The tracks' settings and regions and every take's place, for a
-    /// save (see [`save`]): None while any track records or a take is
-    /// still loading. Tracks with nothing to keep (no regions, no takes,
-    /// settings as new) are left out. The takes' audio is not in it: read
-    /// each with [`AudioTracks::read_take`]. Allocates: not on the audio
-    /// thread.
-    pub fn save_file(&self) -> Option<Saved> {
-        if self
+    /// Whether every take has settled for a save: no track records or has
+    /// a recording's tail still coming, and no take is loading. Does not
+    /// allocate.
+    pub fn settled(&self) -> bool {
+        !self
             .tracks
             .iter()
             .any(|t| t.rec.is_some() || t.tail.is_some())
-            || self.takes.iter().any(|t| t.loading)
+            && !self.takes.iter().any(|t| t.loading)
+    }
+
+    /// The tracks' settings and regions and every take's place, for a
+    /// save (see [`save`]): None until every take has settled
+    /// ([`AudioTracks::settled`]). Tracks with nothing to keep (no
+    /// regions, no takes, settings as new) are left out. The takes' audio
+    /// is not in it: read each with [`AudioTracks::read_take`]. Allocates:
+    /// not on the audio thread (that fills a room with
+    /// [`AudioTracks::save_into`]).
+    pub fn save_file(&self) -> Option<Saved> {
+        let mut s = Saved::room(self.rate);
+        let (tracks, takes) = self.save_into(&mut s)?;
+        s.tracks.truncate(tracks);
+        s.takes.truncate(takes);
+        Some(s)
+    }
+
+    /// [`AudioTracks::save_file`] into `room` ([`Saved::room`]), without
+    /// allocating: the first `tracks` of `room.tracks` and `takes` of
+    /// `room.takes` are the save, the rest is room to be trimmed off the
+    /// audio thread. None until every take has settled, or if `room` is
+    /// smaller than a [`Saved::room`] (it is left as it was). Each take's
+    /// `file` is emptied, keeping its room.
+    pub fn save_into(&self, room: &mut Saved) -> Option<(usize, usize)> {
+        if !self.settled()
+            || room.tracks.len() < MAX_TRACKS
+            || room.takes.len() < MAX_TAKES
+            || room
+                .tracks
+                .iter()
+                .any(|t| t.regions.capacity() < MAX_REGIONS)
         {
             return None;
         }
-        let takes: Vec<TakeFile> = self
-            .takes()
-            .map(|k| TakeFile {
-                id: k.id,
-                track: k.track,
-                group: k.group,
-                pass: k.pass,
-                bpm: k.bpm,
-                anchor: k.anchor,
-                frames: k.frames,
-                channels: k.channels,
-                file: String::new(),
-                audio: Vec::new(),
-            })
-            .collect();
-        let tracks = self
-            .tracks
-            .iter()
-            .enumerate()
-            .filter(|(i, t)| {
-                t.n > 0
-                    || takes.iter().any(|k| k.track == *i)
-                    || t.input != Input::Left
-                    || t.monitor != Monitor::Auto
-                    || t.level != 1.0
-                    || t.pan != 0.0
-                    || t.mute
-                    || t.solo
-            })
-            .map(|(i, t)| TrackFile {
-                index: i,
-                input: t.input,
-                monitor: t.monitor,
-                level: t.level,
-                pan: t.pan,
-                muted: t.mute,
-                solo: t.solo,
-                regions: t.regions().to_vec(),
-            })
-            .collect();
-        Some(Saved {
-            rate: self.rate,
-            tracks,
-            takes,
-        })
+        room.rate = self.rate;
+        let mut takes = 0;
+        for k in self.takes() {
+            let f = &mut room.takes[takes];
+            f.id = k.id;
+            f.track = k.track;
+            f.group = k.group;
+            f.pass = k.pass;
+            f.bpm = k.bpm;
+            f.anchor = k.anchor;
+            f.frames = k.frames;
+            f.channels = k.channels;
+            f.file.clear();
+            takes += 1;
+        }
+        let mut tracks = 0;
+        for (i, t) in self.tracks.iter().enumerate() {
+            let keep = t.n > 0
+                || room.takes[..takes].iter().any(|k| k.track == i)
+                || t.input != Input::Left
+                || t.monitor != Monitor::Auto
+                || t.level != 1.0
+                || t.pan != 0.0
+                || t.mute
+                || t.solo;
+            if !keep {
+                continue;
+            }
+            let f = &mut room.tracks[tracks];
+            f.index = i;
+            f.input = t.input;
+            f.monitor = t.monitor;
+            f.level = t.level;
+            f.pan = t.pan;
+            f.muted = t.mute;
+            f.solo = t.solo;
+            f.regions.clear();
+            f.regions.extend_from_slice(t.regions());
+            tracks += 1;
+        }
+        Some((tracks, takes))
     }
 
     /// Copy frames `from..` of a take into `out` (interleaved, the take's
