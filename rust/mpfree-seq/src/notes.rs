@@ -70,6 +70,11 @@
 //! after the one under it (or over it), [`invert`] takes the lowest note
 //! up an octave (or the highest down), and [`spread`] opens a chord by
 //! taking the note over its lowest up an octave.
+//!
+//! **Tools** (piano roll plan 2B.3): [`chop`] cuts each note into equal
+//! pieces, each keeping its part of the pressure as a run of its own
+//! (unlike [`split`], whose later parts have none), and [`legato`] runs
+//! each note on toward the next start by a share of the gap.
 
 use crate::inst::Inst;
 use crate::steps::{moves_edit, Edit};
@@ -1428,13 +1433,15 @@ pub fn strum_of(clip: &Clip, chord: &[usize]) -> Tick {
     }
 }
 
-/// Each chord of the `sel` notes strummed `by` ticks more (plan 2B.2):
-/// the chord's gap ([`strum_of`]) grows by `by`, and each note starts its
-/// place in the chord (lowest first, or highest first when the gap is
-/// below 0) times the gap after the chord's first start, its end staying,
-/// so a chord strummed back to 0 is as it was. Refused whole when a note
-/// would not keep a tick of length.
-pub fn strum(clip: &Clip, sel: &[usize], by: Tick) -> Edit {
+/// Each chord of the `sel` notes strummed `by` ticks further apart
+/// (plans 2B.2 and 2B.3; closer below 0, as far as together), lowest note
+/// first or, with `down`, highest first; `down` None keeps each chord's
+/// way ([`strum_of`]'s sign; together counts as up). Each note starts its
+/// place in the chord times the gap after the chord's first start, its
+/// end staying, so a chord strummed back to 0 is as it was; a chord asked
+/// for no change is left as it is. Refused whole when a note would not
+/// keep a tick of length.
+pub fn strum(clip: &Clip, sel: &[usize], by: Tick, down: Option<bool>) -> Edit {
     let mut pairs = Vec::new();
     for chord in chords_of(clip, sel) {
         let n = chord.len() as Tick;
@@ -1442,16 +1449,18 @@ pub fn strum(clip: &Clip, sel: &[usize], by: Tick) -> Edit {
             continue;
         }
         let base = chord.iter().map(|&i| clip.notes[i].tick).min().unwrap_or(0);
-        let gap = strum_of(clip, &chord) + by;
+        let was = strum_of(clip, &chord);
+        let apart = (was.abs() + by).max(0);
+        let down = down.unwrap_or(was < 0);
+        // No change asked: the chord stays as it is, evenly strummed or
+        // not.
+        if by == 0 && down == (was < 0) {
+            continue;
+        }
         for (r, &i) in chord.iter().enumerate() {
             let r = r as Tick;
             let old = clip.notes[i];
-            let at = base
-                + if gap >= 0 {
-                    r * gap
-                } else {
-                    (n - 1 - r) * -gap
-                };
+            let at = base + if down { (n - 1 - r) * apart } else { r * apart };
             let end = old.tick + old.len;
             if at >= end || at >= clip.length {
                 return Edit::default();
@@ -1537,6 +1546,147 @@ pub fn spread(clip: &Clip, sel: &[usize], times: i32) -> Edit {
                 p[k].0 -= 12;
             }
         }
+    })
+}
+
+/// The most pieces [`chop`] cuts a note into.
+pub const MAX_PIECES: u32 = 16;
+
+/// Each `sel` note chopped into `pieces` equal notes (plan 2B.3), each
+/// keeping its part of the pressure: the points inside it, from the value
+/// held at its cut, as new runs (the first piece keeps the note's own
+/// run; what falls past its end does not play). With `reset` no piece
+/// carries pressure. Refused (empty) for fewer than 2 pieces or more than
+/// [`MAX_PIECES`], a note shorter than its pieces, too many notes, or no
+/// room for the pressure.
+pub fn chop(clip: &Clip, sel: &[usize], pieces: u32, reset: bool) -> Edit {
+    let parts = Tick::from(pieces);
+    let notes: Vec<Note> = picked(clip, sel).map(|(_, n)| n).collect();
+    if !(2..=MAX_PIECES).contains(&pieces)
+        || notes.iter().any(|n| n.len < parts)
+        || clip.notes.len() + notes.len() * (pieces as usize - 1) > MAX_NOTES
+    {
+        return Edit::default();
+    }
+    let touch_at = clip.touch.len() as u32;
+    let mut e = Edit {
+        touch_at,
+        ..Edit::default()
+    };
+    // Each piece `k` of the notes, made from them: a trigger chopped
+    // whole is a trigger at each piece, as `split`'s parts are.
+    let mut rows: Vec<Vec<Note>> = vec![Vec::with_capacity(notes.len()); parts as usize];
+    for &n in &notes {
+        e.erase.push(n);
+        let each = n.len / parts;
+        let points = clip.touch_of(&n);
+        for (k, row) in rows.iter_mut().enumerate() {
+            let k = k as Tick;
+            let from = each * k;
+            let len = if k == parts - 1 { n.len - from } else { each };
+            let touch = if reset {
+                Touch::NONE
+            } else if k == 0 {
+                n.touch
+            } else {
+                // The last piece takes every point after its cut, as the
+                // note did; the others, the points up to the next cut.
+                let to = if k == parts - 1 {
+                    u32::MAX
+                } else {
+                    (from + len) as u32
+                };
+                let run = piece_run(points, from as u32, to);
+                let t = Touch {
+                    first: touch_at + e.touch.len() as u32,
+                    len: run.len() as u32,
+                };
+                e.touch.extend(run);
+                if t.len == 0 {
+                    Touch::NONE
+                } else {
+                    t
+                }
+            };
+            row.push(Note {
+                tick: wrap(n.tick + from, clip.length),
+                len,
+                touch,
+                ..n
+            });
+        }
+    }
+    if !touch_room(clip.touch.len(), &e.touch) {
+        return Edit::default();
+    }
+    // The first pieces keep their notes' ticks (and triggers); the rest
+    // are copies settled beside them.
+    let mut settled = Vec::with_capacity(notes.len() * parts as usize);
+    for (k, mut row) in rows.into_iter().enumerate() {
+        let ok = if k == 0 {
+            crate::groups::settle_moved(clip, &e.erase, &notes, &mut row)
+        } else {
+            crate::groups::settle_copied_beside(clip, &e.erase, &settled, &notes, &mut row)
+        };
+        if ok.is_err() {
+            return Edit::default();
+        }
+        settled.extend(row);
+    }
+    // In the order they were made: each note's pieces together.
+    let n = notes.len();
+    e.add = (0..n)
+        .flat_map(|i| (0..parts as usize).map(move |k| (k, i)))
+        .map(|(k, i)| settled[k * n + i])
+        .collect();
+    e
+}
+
+/// The part of a note's pressure run from `from` to `to` ticks after its
+/// start, as a run of its own starting at 0: the value held at `from`
+/// (the last point before it, when no point falls on it), then the
+/// points inside.
+fn piece_run(points: &[TouchPoint], from: u32, to: u32) -> Vec<TouchPoint> {
+    let mut run = Vec::new();
+    if !points.iter().any(|p| p.at == from) {
+        if let Some(held) = points.iter().rev().find(|p| p.at < from) {
+            run.push(TouchPoint {
+                at: 0,
+                value: held.value,
+            });
+        }
+    }
+    run.extend(
+        points
+            .iter()
+            .filter(|p| (from..to).contains(&p.at))
+            .map(|p| TouchPoint {
+                at: p.at - from,
+                value: p.value,
+            }),
+    );
+    run
+}
+
+/// Each `sel` note held on toward the next start of a picked note after
+/// its own (plan 2B.3): its end moves `fill` percent (0 to 100) of the way
+/// to that start, so 100 is Timing Correct's Legato (one that ran past it
+/// comes back to it). Notes starting together go to the same start; the
+/// last ones keep their length.
+pub fn legato(clip: &Clip, sel: &[usize], fill: u8) -> Edit {
+    let fill = Tick::from(fill.min(100));
+    let mut starts: Vec<Tick> = picked(clip, sel).map(|(_, n)| n.tick).collect();
+    starts.sort_unstable();
+    starts.dedup();
+    map(clip, sel, |n| {
+        let &next = starts.iter().find(|&&s| s > n.tick)?;
+        let gap = next - (n.tick + n.len);
+        // Rounded half away from 0, so a turn either way moves alike.
+        let by = (gap * fill + gap.signum() * 50) / 100;
+        Some(Note {
+            len: fit_len(n.len + by),
+            ..n
+        })
     })
 }
 
@@ -2440,7 +2590,7 @@ mod tests {
         let sel: Vec<usize> = (0..d.notes.len())
             .filter(|&i| d.notes[i].group == g)
             .collect();
-        let e = strum(&d, &sel, 20);
+        let e = strum(&d, &sel, 20, None);
         let mut s = d.clone();
         s.apply(&e).unwrap();
         assert!(s.groups_ok());
@@ -2477,7 +2627,7 @@ mod tests {
         assert_eq!(strum_of(&c, &chords[0]), 0);
         assert_eq!(strum_of(&c, &chords[2]), 30);
         // Strum up 20: the first chord 0, 20, 40, the third 50 apart.
-        let d = applied(&c, &strum(&c, &all, 20));
+        let d = applied(&c, &strum(&c, &all, 20, None));
         assert_eq!(
             (by(&d, 60).tick, by(&d, 64).tick, by(&d, 67).tick),
             (0, 20, 40)
@@ -2485,22 +2635,29 @@ mod tests {
         assert_eq!(by(&d, 67).tick + by(&d, 67).len, 960, "the end stays");
         assert_eq!((by(&d, 66).tick, by(&d, 70).tick), (1970, 2020));
         // Down: the highest first.
-        let d = applied(&c, &strum(&c, &all[..3], -20));
+        let d = applied(&c, &strum(&c, &all[..3], 20, Some(true)));
         assert_eq!(
             (by(&d, 67).tick, by(&d, 64).tick, by(&d, 60).tick),
             (0, 20, 40)
         );
         // Back to 0: as it was.
-        let up = applied(&c, &strum(&c, &all[..3], 20));
+        let up = applied(&c, &strum(&c, &all[..3], 20, None));
         let all_up: Vec<usize> = (0..up.notes.len()).collect();
-        let back = applied(&up, &strum(&up, &all_up, -20));
+        let back = applied(&up, &strum(&up, &all_up, -20, None));
         for n in [60, 64, 67] {
             assert_eq!(by(&back, n), by(&c, n));
         }
+        // Closer than together stops there; turned over, down keeps the
+        // gap.
+        let flat = applied(&up, &strum(&up, &all_up, -50, None));
+        assert_eq!(strum_of(&flat, &chords_of(&flat, &all_up)[0]), 0);
+        let over = applied(&up, &strum(&up, &all_up, 0, Some(true)));
+        let chord = &chords_of(&over, &all_up)[0];
+        assert_eq!(strum_of(&over, chord), -20);
         // A strum past a note's length is refused whole.
-        assert!(strum(&c, &all, 500).add.is_empty());
+        assert!(strum(&c, &all, 500, None).add.is_empty());
         // A note alone doesn't strum.
-        assert!(strum(&c, &[0], 20).add.is_empty());
+        assert!(strum(&c, &[0], 20, None).add.is_empty());
         // Invert: C E G to E G C, and back down.
         let d = applied(&c, &invert(&c, &all[..3], 1));
         let mut got: Vec<u8> = d
@@ -2555,5 +2712,137 @@ mod tests {
         assert!(add_all(&c, &[Note::new(4 * 960, 240, 50, 90)])
             .add
             .is_empty());
+    }
+
+    /// Chop cuts each picked note into equal pieces, each with its part
+    /// of the pressure from the value held at its cut (Reset: none);
+    /// Legato runs each note toward the next start by a share of the gap.
+    #[test]
+    fn chop_shares_the_pressure_and_legato_fills_part_of_the_gap() {
+        use crate::TouchPoint;
+        let p = |at, value| TouchPoint { at, value };
+        let mut c = clip(&[(0, 960, 60), (960, 240, 62)]);
+        let run = c
+            .add_touch(&[p(0, 10), p(100, 40), p(500, 90), p(700, 20)])
+            .unwrap();
+        c.notes[0].touch = run;
+        type Runs = Vec<(Tick, Tick, Vec<(u32, u8)>)>;
+        let runs = |d: &Clip| -> Runs {
+            let mut r: Vec<_> = d
+                .notes
+                .iter()
+                .filter(|n| n.note == 60)
+                .map(|n| {
+                    (
+                        n.tick,
+                        n.len,
+                        d.touch_of(n).iter().map(|q| (q.at, q.value)).collect(),
+                    )
+                })
+                .collect();
+            r.sort();
+            r
+        };
+        // Four pieces of 240: the first keeps the note's run; the second
+        // holds 40 (since 100); the third starts at 40, then 90 and 20 at
+        // 500 and 700 (20 and 220 into it); the last holds 20.
+        let d = applied(&c, &chop(&c, &[0], 4, false));
+        assert_eq!(
+            runs(&d),
+            [
+                (0, 240, vec![(0, 10), (100, 40), (500, 90), (700, 20)]),
+                (240, 240, vec![(0, 40)]),
+                (480, 240, vec![(0, 40), (20, 90), (220, 20)]),
+                (720, 240, vec![(0, 20)]),
+            ]
+        );
+        assert_eq!(d.touch.len(), 4 + 1 + 3 + 1, "new runs at the end");
+        // A point on a cut starts that piece by itself.
+        let mut e = clip(&[(0, 960, 60)]);
+        e.notes[0].touch = e.add_touch(&[p(0, 5), p(480, 70)]).unwrap();
+        let f = applied(&e, &chop(&e, &[0], 2, false));
+        assert_eq!(runs(&f)[1], (480, 480, vec![(0, 70)]));
+        // Reset: no piece carries pressure; the other note is left.
+        let d = applied(&c, &chop(&c, &[0], 3, true));
+        assert!(runs(&d).iter().all(|(_, _, r)| r.is_empty()));
+        assert_eq!(d.notes.len(), 4);
+        assert_eq!(d.touch.len(), 4, "nothing added");
+        // The last piece takes what is left over.
+        let d = applied(&c, &chop(&c, &[1], 7, false));
+        let mut lens: Vec<Tick> = d
+            .notes
+            .iter()
+            .filter(|n| n.note == 62)
+            .map(|n| n.len)
+            .collect();
+        lens.sort_unstable();
+        assert_eq!(lens, [34, 34, 34, 34, 34, 34, 36]);
+        // Refused: one piece, past the most, a note shorter than its
+        // pieces.
+        assert!(chop(&c, &[0], 1, false).is_empty());
+        assert!(chop(&c, &[0], MAX_PIECES + 1, false).is_empty());
+        let short = clip(&[(0, 3, 60)]);
+        assert!(chop(&short, &[0], 4, false).is_empty());
+
+        // Legato: C (0, 240) and E (0, 120) toward G at 960; G alone
+        // after stays.
+        let c = clip(&[(0, 240, 60), (0, 120, 64), (960, 240, 67), (480, 960, 69)]);
+        let all: Vec<usize> = (0..c.notes.len()).collect();
+        let d = applied(&c, &legato(&c, &all, 50));
+        // The next start after 0 is A's 480: C 240 + 120, E 120 + 180.
+        assert_eq!((by(&d, 60).len, by(&d, 64).len), (360, 300));
+        // A ran past G's start: half the way back.
+        assert_eq!(by(&d, 69).len, 960 - 240);
+        assert_eq!(by(&d, 67), by(&c, 67), "the last keeps its length");
+        let d = applied(&c, &legato(&c, &all, 100));
+        assert_eq!(
+            (by(&d, 60).len, by(&d, 64).len, by(&d, 69).len),
+            (480, 480, 480)
+        );
+        assert!(legato(&c, &all, 0).is_empty());
+        // Only the picks count: C alone has no next start.
+        assert!(legato(&c, &[0], 100).is_empty());
+    }
+
+    /// Chop and trigger groups (#827): a chord that rolls as one, chopped
+    /// whole, rolls as one at each piece; one of its notes chopped alone
+    /// keeps its trigger in its first piece, and its other pieces decide
+    /// alone. A clip of pad hits has no groups.
+    #[test]
+    fn a_chopped_trigger_stays_one_at_each_piece() {
+        let mut c = clip(&[(0, 960, 60), (0, 960, 64), (0, 960, 67)]);
+        c.holds = Holds::Notes;
+        for n in c.notes.iter_mut() {
+            n.group = 129;
+            n.chance = 50;
+        }
+        c.check().unwrap();
+        let groups = |d: &Clip| -> Vec<(Tick, u8, u8)> {
+            let mut g: Vec<_> = d.notes.iter().map(|n| (n.tick, n.note, n.group)).collect();
+            g.sort_unstable();
+            g
+        };
+        let d = applied(&c, &chop(&c, &[0, 1, 2], 2, false));
+        let mut want = Vec::new();
+        for tick in [0, 480] {
+            for note in [60, 64, 67] {
+                want.push((tick, note, 129));
+            }
+        }
+        assert_eq!(groups(&d), want);
+        // E alone: its first piece stays in the chord's trigger.
+        let d = applied(&c, &chop(&c, &[1], 2, false));
+        assert_eq!(
+            groups(&d),
+            [(0, 60, 129), (0, 64, 129), (0, 67, 129), (480, 64, 0)]
+        );
+        assert_eq!(d.check(), Ok(()));
+        let mut hits = c.clone();
+        hits.holds = Holds::Hits;
+        for n in hits.notes.iter_mut() {
+            n.group = 0;
+        }
+        let d = applied(&hits, &chop(&hits, &[0, 1, 2], 2, false));
+        assert!(d.notes.iter().all(|n| n.group == 0));
     }
 }

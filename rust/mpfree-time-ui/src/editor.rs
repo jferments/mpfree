@@ -4,7 +4,9 @@
 //! piano roll, a list, or a tracker (one row per step, empty steps
 //! included). The tools run along the bottom, and beside it the Edit
 //! options: Timing Correct; the selection's nudge, transpose, velocity,
-//! length, chance, condition and ratchet; and the Euclidean fill.
+//! length, chance, condition and ratchet; the Euclidean fill; Fit to
+//! scale; and the tools (Strum, Invert, Spread, Chop, Legato, Humanize),
+//! each previewed on the roll until Done or Cancel.
 //!
 //! [`Editor`] is the editor's state (the clip, the selection, the lens,
 //! the tool, the snap, the Timing Correct settings, the sound being
@@ -31,6 +33,10 @@
 //!   are the screen's own (`View`);
 //! - the buttons along the bottom: `Tab(k)` for [`EDIT_BUTTONS`]`[k]`
 //!   (the last, Edit, opens the Edit options' drawer: the page's own);
+//!   while a tool is open (piano roll plan 2B.3, [`NoteTool`]), its bar
+//!   in their place: `Tab(`[`TOOL_BUTTONS`]` + k)` for Cancel, its own
+//!   button and Done, the roll showing the tool's preview
+//!   ([`Editor::preview`]) and only moving the view;
 //! - the view moved (a pinch, two fingers, a finger on the ruler, the
 //!   keys or the overview, Fit): `View`, when the fingers lift, so the
 //!   page can keep it and Snap Auto follow it. The view itself
@@ -120,9 +126,9 @@ pub const EDIT_BUTTON: usize = 7;
 /// settings (TC applies them); the next seven change the selection at
 /// once; the next four are the Euclidean fill: the sound it writes, then
 /// its hits, steps and rotation, each turn writing the pattern; then Fit
-/// to scale (plan 2B.1), and the chord tools Strum, Invert and Spread
-/// (plan 2B.2).
-pub const EDIT_ROWS: [&str; 21] = [
+/// to scale (plan 2B.1), and the tools Strum, Invert and Spread (plan
+/// 2B.2), Chop, Legato and Humanize (plan 2B.3), each opening its tool.
+pub const EDIT_ROWS: [&str; 24] = [
     "Correct",
     "Division",
     "Swing",
@@ -144,20 +150,34 @@ pub const EDIT_ROWS: [&str; 21] = [
     "Strum",
     "Invert",
     "Spread",
+    "Chop",
+    "Legato",
+    "Humanize",
 ];
 /// The first of the Euclidean fill's rows in [`EDIT_ROWS`].
 pub const EUCLID_ROW: usize = 13;
 /// [`EDIT_ROWS`]' Fit to scale (piano roll plan 2B.1): a turn either way
 /// brings the picks, or every note, onto the clip's scale.
 pub const FIT_ROW: usize = 17;
-/// [`EDIT_ROWS`]' Strum, Invert and Spread (piano roll plan 2B.2): a turn
-/// changes each chord of the picked notes ([`notes::chords_of`]).
+/// [`EDIT_ROWS`]' tools (piano roll plans 2B.2 and 2B.3), in
+/// [`ToolKind::ALL`]'s order: a step or the wheel on one opens its tool
+/// ([`NoteTool`]); on the open tool's row it turns Q1.
 pub const STRUM_ROW: usize = 18;
 pub const INVERT_ROW: usize = 19;
 pub const SPREAD_ROW: usize = 20;
-/// How much a turn of Strum moves a chord's notes apart: about 5 ms at
-/// 120 BPM.
+pub const CHOP_ROW: usize = 21;
+pub const LEGATO_ROW: usize = 22;
+pub const HUMANIZE_ROW: usize = 23;
+/// How much a detent of Strum's Apart moves a chord's notes apart: about
+/// 5 ms at 120 BPM (SHIFT: a tick).
 pub const STRUM_TICKS: Tick = PPQ as Tick / 96;
+/// The tool bar's buttons (plan 2B.3): `Tab`'s index is this plus the
+/// button's place along the bottom ([`TOOL_CANCEL`], [`TOOL_OPTION`],
+/// [`TOOL_DONE`]).
+pub const TOOL_BUTTONS: usize = 600;
+pub const TOOL_CANCEL: usize = 0;
+pub const TOOL_OPTION: usize = 1;
+pub const TOOL_DONE: usize = 7;
 /// A tracker step tapped: `Cell`'s row says the editor's sound.
 pub const PEN: usize = usize::MAX;
 /// A finger holding a note while another taps note `col`
@@ -403,6 +423,268 @@ pub enum EditAction {
     /// note or a chord of `shape`, `minor` for a Triad or a Seventh with
     /// no scale. The editor's own, not the clip's: nothing changes.
     Chord { shape: ChordShape, minor: bool },
+    /// The open tool's bar (plan 2B.3): Done, Cancel or its own button.
+    Tool(ToolAct),
+}
+
+/// What the open tool's bar sends ([`EditAction::Tool`], plan 2B.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolAct {
+    /// The preview goes in: one take, one UNDO, the tool closes.
+    Done,
+    /// The tool closes and the clip stays as it was.
+    Cancel,
+    /// The tool's own button: Chop's Reset pressure (on and off),
+    /// Humanize's Again (another roll of the dice).
+    Option,
+}
+
+/// The tools (piano roll plans 2B.2 and 2B.3), opened from their rows of
+/// the Edit options on the picked notes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolKind {
+    Strum,
+    Invert,
+    Spread,
+    Chop,
+    Legato,
+    Humanize,
+}
+
+impl ToolKind {
+    /// In [`EDIT_ROWS`]' order, from [`STRUM_ROW`].
+    pub const ALL: [ToolKind; 6] = [
+        ToolKind::Strum,
+        ToolKind::Invert,
+        ToolKind::Spread,
+        ToolKind::Chop,
+        ToolKind::Legato,
+        ToolKind::Humanize,
+    ];
+
+    /// The tool on Edit option `row`, if one is.
+    pub fn of_row(row: usize) -> Option<ToolKind> {
+        ToolKind::ALL.get(row.checked_sub(STRUM_ROW)?).copied()
+    }
+
+    pub fn row(self) -> usize {
+        STRUM_ROW + ToolKind::ALL.iter().position(|&k| k == self).unwrap_or(0)
+    }
+
+    pub fn name(self) -> &'static str {
+        EDIT_ROWS[self.row()]
+    }
+
+    /// The least notes sounding together the picks need (a chord), or 1.
+    fn least(self) -> usize {
+        match self {
+            ToolKind::Strum | ToolKind::Invert => 2,
+            ToolKind::Spread => 3,
+            _ => 1,
+        }
+    }
+}
+
+/// The most times Invert and Spread go either way.
+const MAX_TURNS: i32 = 8;
+
+/// A tool open on the picked notes (piano roll plan 2B.3): its settings,
+/// which Q1 to Q4 turn ([`NoteTool::cards`]). Its edit
+/// ([`NoteTool::edit`]) is worked out afresh from the clip and the picks
+/// each time, so the roll's preview ([`Editor::preview`]) is the edit Done
+/// makes, and nothing goes into the clip until then.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NoteTool {
+    pub kind: ToolKind,
+    /// Q1 to Q4: Strum's ticks further apart and its way (0 as each chord
+    /// is, 1 up, 2 down); Invert's and Spread's times (below 0 down, or
+    /// closer); Chop's pieces; Legato's share of the gap (%); Humanize's
+    /// timing (ticks), velocity and length (%), and ahead or behind (-100
+    /// to 100).
+    pub q: [i32; 4],
+    /// Humanize's dice: Again moves it on.
+    pub seed: u64,
+    /// Chop's Reset pressure: the pieces carry none.
+    pub reset: bool,
+}
+
+impl NoteTool {
+    /// `kind` as it opens: Strum, Invert and Spread at no change, Chop in
+    /// two, Legato all the way, Humanize a little.
+    pub fn new(kind: ToolKind) -> NoteTool {
+        let q = match kind {
+            ToolKind::Chop => [2, 0, 0, 0],
+            ToolKind::Legato => [100, 0, 0, 0],
+            ToolKind::Humanize => [20, 10, 10, 0],
+            _ => [0; 4],
+        };
+        NoteTool {
+            kind,
+            q,
+            seed: 1,
+            reset: false,
+        }
+    }
+
+    /// Q-Link `k` turned `ticks` detents; `fine` (SHIFT) by the least
+    /// step. False when it had no setting to change.
+    pub fn turn(&mut self, k: usize, ticks: i32, fine: bool) -> bool {
+        let Some(&(step, fine_step, lo, hi)) = self.ranges().get(k) else {
+            return false;
+        };
+        if step == 0 {
+            return false;
+        }
+        let by = if fine { fine_step } else { step };
+        let q = &mut self.q[k];
+        let was = *q;
+        *q = (*q + ticks * by).clamp(lo, hi);
+        *q != was
+    }
+
+    /// Each card's step, SHIFT's step, least and most (a 0 step: none).
+    fn ranges(&self) -> &'static [(i32, i32, i32, i32)] {
+        const STRUM: i32 = STRUM_TICKS as i32;
+        const BEAT: i32 = PPQ as i32;
+        match self.kind {
+            ToolKind::Strum => &[(STRUM, 1, -BEAT / 2, BEAT / 2), (1, 1, 0, 2)],
+            ToolKind::Invert | ToolKind::Spread => &[(1, 1, -MAX_TURNS, MAX_TURNS)],
+            ToolKind::Chop => &[(1, 1, 2, notes::MAX_PIECES as i32)],
+            ToolKind::Legato => &[(5, 1, 0, 100)],
+            ToolKind::Humanize => &[
+                (5, 1, 0, BEAT / 4),
+                (5, 1, 0, 100),
+                (5, 1, 0, 100),
+                (10, 1, -100, 100),
+            ],
+        }
+    }
+
+    /// The edit the tool makes on the `sel` notes of `clip` (empty at no
+    /// change, or when refused).
+    pub fn edit(&self, clip: &Clip, sel: &[usize]) -> Edit {
+        let q = self.q;
+        match self.kind {
+            ToolKind::Strum => {
+                let down = match q[1] {
+                    1 => Some(false),
+                    2 => Some(true),
+                    _ => None,
+                };
+                notes::strum(clip, sel, Tick::from(q[0]), down)
+            }
+            ToolKind::Invert => notes::invert(clip, sel, q[0]),
+            ToolKind::Spread => notes::spread(clip, sel, q[0]),
+            ToolKind::Chop => notes::chop(clip, sel, q[0].max(0) as u32, self.reset),
+            ToolKind::Legato => notes::legato(clip, sel, q[0].clamp(0, 100) as u8),
+            ToolKind::Humanize => notes::humanize(
+                clip,
+                sel,
+                notes::Humanize {
+                    time: Tick::from(q[0]),
+                    velocity: q[1].clamp(0, 100) as u8,
+                    length: q[2].clamp(0, 100) as u8,
+                    eagerness: q[3].clamp(-100, 100) as i8,
+                },
+                self.seed,
+            ),
+        }
+    }
+
+    /// Why the tool changes nothing on the `sel` notes at these settings.
+    pub fn why_not(&self, clip: &Clip, sel: &[usize]) -> &'static str {
+        let q = self.q;
+        let chords = notes::chords_of(clip, sel);
+        let chord = |least: usize| chords.iter().any(|c| c.len() >= least);
+        match self.kind {
+            _ if sel.is_empty() => "no notes picked",
+            k if !chord(k.least()) && k.least() == 3 => "no chord of three notes or more picked",
+            k if !chord(k.least()) => "no chord picked: notes that sound together",
+            ToolKind::Strum if q[0] == 0 && q[1] == 0 => "nothing changes yet",
+            ToolKind::Strum if q[0] > 0 => "a note would be too short",
+            ToolKind::Strum => "nothing changes",
+            ToolKind::Invert | ToolKind::Spread if q[0] == 0 => "nothing changes yet",
+            ToolKind::Spread if q[0] < 0 => "the chords are as close as they go",
+            ToolKind::Invert | ToolKind::Spread => {
+                "a note would go past the lowest or highest note"
+            }
+            ToolKind::Chop => "a note is too short, or the clip too full",
+            ToolKind::Legato if q[0] == 0 => "nothing changes yet",
+            ToolKind::Legato => "no picked note starts after another",
+            ToolKind::Humanize => "nothing changes",
+        }
+    }
+
+    /// Q1 to Q4's names and values, "" for a blank card.
+    pub fn cards(&self) -> [(&'static str, String); 4] {
+        let q = self.q;
+        let signed = |v: i32, up: &str, down: &str| match v {
+            0 => "None".to_string(),
+            v if v > 0 => format!("{up} {v}"),
+            v => format!("{down} {}", -v),
+        };
+        let blank = || ("", String::new());
+        match self.kind {
+            ToolKind::Strum => [
+                ("Apart", format!("{:+}t", q[0]).replace("+0t", "0t")),
+                (
+                    "Way",
+                    ["As it is", "Up", "Down"][q[1].clamp(0, 2) as usize].to_string(),
+                ),
+                blank(),
+                blank(),
+            ],
+            ToolKind::Invert => [
+                ("Inversions", signed(q[0], "Up", "Down")),
+                blank(),
+                blank(),
+                blank(),
+            ],
+            ToolKind::Spread => [
+                ("Spread", signed(q[0], "Open", "Close")),
+                blank(),
+                blank(),
+                blank(),
+            ],
+            ToolKind::Chop => [("Pieces", q[0].to_string()), blank(), blank(), blank()],
+            ToolKind::Legato => [("Fill", format!("{}%", q[0])), blank(), blank(), blank()],
+            ToolKind::Humanize => [
+                ("Timing", format!("±{}t", q[0])),
+                ("Velocity", format!("±{}%", q[1])),
+                ("Length", format!("±{}%", q[2])),
+                (
+                    "Ahead/behind",
+                    signed(q[3], "Behind", "Ahead").replace("None", "Even"),
+                ),
+            ],
+        }
+    }
+
+    /// Where card `k`'s setting sits in its range, 0 to 1.
+    pub fn pos(&self, k: usize) -> f32 {
+        match self.ranges().get(k) {
+            Some(&(step, _, lo, hi)) if step != 0 && hi > lo => {
+                (self.q[k] - lo) as f32 / (hi - lo) as f32
+            }
+            _ => 0.0,
+        }
+    }
+
+    /// Card `k` turns both ways from 0 (Strum's Apart, Invert, Spread,
+    /// ahead or behind).
+    pub fn bipolar(&self, k: usize) -> bool {
+        self.ranges().get(k).is_some_and(|r| r.0 != 0 && r.2 < 0)
+    }
+
+    /// The tool's own button's words and whether it is lit: Chop's Reset
+    /// pressure, Humanize's Again; None for the others.
+    pub fn option(&self) -> Option<(&'static str, bool)> {
+        match self.kind {
+            ToolKind::Chop => Some(("Reset pressure", self.reset)),
+            ToolKind::Humanize => Some(("Again", false)),
+            _ => None,
+        }
+    }
 }
 
 impl EditAction {
@@ -622,6 +904,9 @@ pub struct Editor {
     /// chord on it; `minor` for a Triad or a Seventh with no scale.
     pub chord: ChordShape,
     pub minor: bool,
+    /// The tool open on the picks (plan 2B.3): the roll previews its edit
+    /// and the Q-Links turn its settings until Done or Cancel.
+    pub open_tool: Option<NoteTool>,
 }
 
 /// The Chord chip's shapes (piano roll plan 2B.2): Off draws one note.
@@ -763,6 +1048,7 @@ impl Editor {
             offers: Arc::default(),
             chord: ChordShape::Off,
             minor: false,
+            open_tool: None,
         }
     }
 
@@ -1033,6 +1319,26 @@ impl Editor {
         let none = sel.is_empty();
         let base = JOIN | (self.track as u64) << 24 | (self.slot as u64) << 8;
         let key = move |k: u64| Some(base | k);
+        // A tool open (plan 2B.3) takes the Q-Links and its bar; settings
+        // and the view still change, another tool's row opens that one in
+        // its place, and every other edit waits for Done or Cancel.
+        if let Some(tool) = self.open_tool {
+            let keeps = matches!(
+                a,
+                EditAction::Open
+                    | EditAction::AutoSnap(_)
+                    | EditAction::Scroll(_)
+                    | EditAction::Cursor(_)
+                    | EditAction::PickRow(_)
+                    | EditAction::Chord { .. }
+                    | EditAction::Tool(_)
+                    | EditAction::Knob { .. }
+                    | EditAction::Row { row: 0..=5, .. }
+            ) || matches!(a, EditAction::Row { row, .. } if ToolKind::of_row(row).is_some());
+            if !keeps {
+                return Done::line(format!("edit: Done or Cancel {} first", tool.kind.name()));
+            }
+        }
         // The edit, its join key, whether the notes it puts in are
         // selected after, whether the selected notes it leaves alone stay
         // selected, and the log line.
@@ -1335,6 +1641,79 @@ impl Editor {
                 return Done::default();
             }
             EditAction::Paste { .. } => return Done::default(),
+            // The open tool's settings: the preview changes, the clip
+            // doesn't.
+            EditAction::Knob { k, ticks, fine, .. } if self.open_tool.is_some() => {
+                if let Some(t) = self.open_tool.as_mut() {
+                    t.turn(k, ticks, fine);
+                }
+                return Done::default();
+            }
+            EditAction::Tool(act) => {
+                let Some(mut tool) = self.open_tool else {
+                    return Done::default();
+                };
+                let name = tool.kind.name();
+                match act {
+                    ToolAct::Cancel => {
+                        self.open_tool = None;
+                        return Done::line(format!(
+                            "edit: {name} cancelled: the clip is as it was"
+                        ));
+                    }
+                    ToolAct::Option => {
+                        match tool.kind {
+                            ToolKind::Chop => tool.reset = !tool.reset,
+                            ToolKind::Humanize => tool.seed = tool.seed.wrapping_add(1),
+                            _ => return Done::default(),
+                        }
+                        self.open_tool = Some(tool);
+                        return Done::default();
+                    }
+                    ToolAct::Done => {
+                        self.open_tool = None;
+                        let e = tool.edit(clip, &sel);
+                        if e.is_empty() {
+                            return Done::line(format!(
+                                "edit: {name}: {}, so nothing changed",
+                                tool.why_not(clip, &sel)
+                            ));
+                        }
+                        let least = tool.kind.least();
+                        let chords = notes::chords_of(clip, &sel)
+                            .iter()
+                            .filter(|c| c.len() >= least)
+                            .count();
+                        let (n, q) = (sel.len(), tool.q[0]);
+                        let them = |n: usize, one: &str, many: &str| {
+                            format!("{n} {}", if n == 1 { one } else { many })
+                        };
+                        let line = match tool.kind {
+                            ToolKind::Strum => {
+                                format!("{} strummed", them(chords, "chord", "chords"))
+                            }
+                            ToolKind::Invert => {
+                                format!("{} inverted", them(chords, "chord", "chords"))
+                            }
+                            ToolKind::Spread if q < 0 => {
+                                format!("{} closed", them(chords, "chord", "chords"))
+                            }
+                            ToolKind::Spread => {
+                                format!("{} spread", them(chords, "chord", "chords"))
+                            }
+                            ToolKind::Chop => {
+                                format!("{} chopped in {q}", them(n, "note", "notes"))
+                            }
+                            ToolKind::Legato => {
+                                format!("{} held on, {q}% of the gap", them(n, "note", "notes"))
+                            }
+                            ToolKind::Humanize => format!("{} humanized", them(n, "note", "notes")),
+                        };
+                        // One take of its own, the notes it made picked.
+                        (e, None, true, true, format!("edit: {line}"))
+                    }
+                }
+            }
             EditAction::Knob { .. } | EditAction::Nudge { .. } if none => {
                 return Done::line("edit: pick notes first".into())
             }
@@ -1530,39 +1909,18 @@ impl Editor {
                             )
                         }
                     },
-                    // The chord tools (plan 2B.2): each chord of the picks,
-                    // a run of turns one take.
-                    STRUM_ROW | INVERT_ROW | SPREAD_ROW => {
-                        let least = if row == SPREAD_ROW { 3 } else { 2 };
-                        if !notes::chords_of(clip, &sel)
-                            .iter()
-                            .any(|c| c.len() >= least)
-                        {
-                            return Done::line(match least {
-                                3 => "edit: pick a chord of three notes or more".into(),
-                                _ => "edit: pick a chord: notes that sound together".into(),
-                            });
-                        }
-                        let e = match row {
-                            STRUM_ROW => notes::strum(clip, &sel, Tick::from(d) * STRUM_TICKS),
-                            INVERT_ROW => notes::invert(clip, &sel, d),
-                            _ => notes::spread(clip, &sel, d),
-                        };
-                        let line = match (e.add.is_empty(), row) {
-                            (false, _) => String::new(),
-                            (true, STRUM_ROW) => {
-                                "edit: a note is too short to strum further".into()
+                    // A tool's row (plan 2B.3): opens it, or turns its Q1
+                    // while it is open.
+                    r => match ToolKind::of_row(r) {
+                        Some(kind) => match self.open_tool.as_mut() {
+                            Some(t) if t.kind == kind => {
+                                t.turn(0, delta, false);
+                                return Done::default();
                             }
-                            (true, SPREAD_ROW) if d < 0 => {
-                                "edit: the chords are as close as they go".into()
-                            }
-                            (true, _) => {
-                                "edit: a note would go past the lowest or highest note".into()
-                            }
-                        };
-                        (e, key(row as u64), true, true, line)
-                    }
-                    _ => return Done::default(),
+                            _ => return self.open(kind, clip, &sel),
+                        },
+                        None => return Done::default(),
+                    },
                 }
             }
             EditAction::AutoSnap(d) => {
@@ -1634,6 +1992,45 @@ impl Editor {
         }
     }
 
+    /// Open `kind` on the `sel` notes of `clip` (plan 2B.3), in place of
+    /// a tool already open; refused, with why, without the notes it
+    /// needs.
+    fn open(&mut self, kind: ToolKind, clip: &Clip, sel: &[usize]) -> Done {
+        if sel.is_empty() {
+            return Done::line("edit: pick notes first".into());
+        }
+        let least = kind.least();
+        if least > 1 && !notes::chords_of(clip, sel).iter().any(|c| c.len() >= least) {
+            return Done::line(match least {
+                3 => "edit: pick a chord of three notes or more".into(),
+                _ => "edit: pick a chord: notes that sound together".into(),
+            });
+        }
+        self.open_tool = Some(NoteTool::new(kind));
+        Done::line(format!(
+            "edit: {}: turn the Q-Links, then Done or Cancel",
+            kind.name()
+        ))
+    }
+
+    /// The open tool's preview (plan 2B.3): a copy of `clip` with the
+    /// tool's edit in it, and the picks in that copy as Done leaves them
+    /// (the notes the edit put in, and the picks it left alone). None with
+    /// no tool open, or nothing to change.
+    pub fn preview(&self, clip: &Clip) -> Option<(Clip, Vec<usize>)> {
+        let tool = self.open_tool?;
+        let sel = self.picked(clip);
+        let edit = tool.edit(clip, &sel);
+        if edit.is_empty() {
+            return None;
+        }
+        let mut copy = clip.clone();
+        copy.apply(&edit).ok()?;
+        let kept: Vec<Note> = sel.iter().map(|&i| clip.notes[i]).collect();
+        let picks = picks_after(&copy, &edit, &kept, true);
+        Some((copy, picks))
+    }
+
     /// The editor's sound as the rows name it: a pad or a note.
     fn sound_name(&self, clip: &Clip) -> String {
         sound_name(self.sound, pads(clip))
@@ -1649,22 +2046,7 @@ impl Editor {
                 .collect();
             return;
         }
-        let mut want: Vec<Note> = Vec::new();
-        let mut erased = done.edit.erase.clone();
-        for n in &done.kept {
-            match erased.iter().position(|e| e == n) {
-                Some(j) => {
-                    erased.swap_remove(j);
-                }
-                None => want.push(*n),
-            }
-        }
-        if done.select_added {
-            want.extend(done.edit.add.iter().copied());
-        }
-        let mut sel: Vec<usize> = find_notes(clip, &want).into_iter().flatten().collect();
-        sel.sort_unstable();
-        self.sel = sel;
+        self.sel = picks_after(clip, &done.edit, &done.kept, done.select_added);
     }
 
     /// After something other than the editor's own edit changed the clip
@@ -1681,8 +2063,10 @@ impl Editor {
             self.sel = sel;
             false
         } else {
+            // An open tool closes with its picks (plan 2B.3).
             self.sel.clear();
             self.cleared = true;
+            self.open_tool = None;
             true
         }
     }
@@ -1710,6 +2094,27 @@ impl Editor {
             _ => tc.shift = (tc.shift + Tick::from(d)).clamp(-(PPQ as Tick), PPQ as Tick),
         }
     }
+}
+
+/// The picks in `clip` after `edit` went in: the `kept` notes it left
+/// alone and, with `added`, the notes it put in.
+fn picks_after(clip: &Clip, edit: &Edit, kept: &[Note], added: bool) -> Vec<usize> {
+    let mut want: Vec<Note> = Vec::new();
+    let mut erased = edit.erase.clone();
+    for n in kept {
+        match erased.iter().position(|e| e == n) {
+            Some(j) => {
+                erased.swap_remove(j);
+            }
+            None => want.push(*n),
+        }
+    }
+    if added {
+        want.extend(edit.add.iter().copied());
+    }
+    let mut sel: Vec<usize> = find_notes(clip, &want).into_iter().flatten().collect();
+    sel.sort_unstable();
+    sel
 }
 
 /// Where each of `want` is in `clip`, by value, each of the clip's notes
@@ -1837,7 +2242,16 @@ pub fn edit_rows(ed: &Editor, clip: &Clip) -> Vec<OptionRow> {
                 _ => "open".into(),
             }
         }),
+        // Chop, Legato and Humanize (plan 2B.3) open on the picks.
+        tool_value(&picks),
+        tool_value(&picks),
+        tool_value(&picks),
     ];
+    // The open tool's row says so.
+    let mut values = values;
+    if let Some(t) = ed.open_tool {
+        values[t.kind.row()] = "on".into();
+    }
     EDIT_ROWS
         .iter()
         .zip(values)
@@ -1846,6 +2260,15 @@ pub fn edit_rows(ed: &Editor, clip: &Clip) -> Vec<OptionRow> {
             value,
         })
         .collect()
+}
+
+/// Chop's, Legato's and Humanize's value (plan 2B.3): "open" with notes
+/// picked, else "pick notes".
+fn tool_value(picks: &[usize]) -> String {
+    match picks.is_empty() {
+        true => "pick notes".into(),
+        false => "open".into(),
+    }
 }
 
 /// A chord tool's value (plan 2B.2): `show` of the first chord of at
@@ -2418,6 +2841,18 @@ fn kept<T: ?Sized>(
     }
 }
 
+/// The open tool's bar along the bottom of the note editor (piano roll
+/// plan 2B.3; [`NoteGrid::tool_bar`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ToolBar {
+    pub name: &'static str,
+    /// What turning the Q-Links does, or why the tool changes nothing.
+    pub hint: String,
+    /// The tool's own button's words and whether it is lit (Chop's Reset
+    /// pressure, Humanize's Again).
+    pub option: Option<(&'static str, bool)>,
+}
+
 /// The roll or the list (see the module notes).
 #[derive(Clone, Debug, PartialEq)]
 pub struct NoteGrid {
@@ -2490,6 +2925,11 @@ pub struct NoteGrid {
     /// Which rows show (the page's, plan 2B.1): the Fold chip and the
     /// hidden notes' chip change it here, and the page keeps it.
     pub fold: Fold,
+    /// The open tool's bar (plan 2B.3), in place of the buttons: Cancel,
+    /// the tool's own button, what it shows, Done. While it shows, the
+    /// notes are the tool's preview, and the roll and the lane only move
+    /// the view.
+    pub tool_bar: Option<ToolBar>,
     /// A finger drawing along the lane.
     stroke: Option<Stroke>,
     drag: Option<Drag>,
@@ -2721,6 +3161,7 @@ impl Default for NoteGrid {
             minor: false,
             chord_menu: false,
             fold: Fold::All,
+            tool_bar: None,
             stroke: None,
             drag: None,
             hand: Hand::Idle,
@@ -2788,6 +3229,7 @@ impl NoteGrid {
                 == (other.scale, &other.scale_name, other.fold)
             && self.offers == other.offers
             && (self.chord, self.minor) == (other.chord, other.minor)
+            && self.tool_bar == other.tool_bar
     }
 
     /// Note `i`'s pressure, empty for none.
@@ -2821,6 +3263,9 @@ impl NoteGrid {
         }
         let (overview_tap, empty_tap, menu) = (self.overview_tap, self.empty_tap, self.menu);
         let (fine, scale_menu, chord_menu) = (self.fine, self.scale_menu, self.chord_menu);
+        // A tool's bar closes the menus over the roll (plan 2B.3).
+        let open = other.tool_bar.is_none();
+        let (menu, scale_menu, chord_menu) = (menu && open, scale_menu && open, chord_menu && open);
         *self = NoteGrid {
             stroke,
             fine,
@@ -3266,8 +3711,34 @@ impl NoteGrid {
         out
     }
 
+    /// The open tool's bar (plan 2B.3): Cancel where the first button
+    /// is, the tool's own button over the next two (none without one),
+    /// what it shows across those up to the last, and Done there.
+    fn tool_rects(&self, r: Rect) -> (Rect, Option<Rect>, Rect, Rect) {
+        let b = self.button_rects(r);
+        let span = |a: Rect, z: Rect| Rect::new(a.x, a.y, z.right() - a.x, a.h);
+        let option = self
+            .tool_bar
+            .as_ref()
+            .and_then(|t| t.option)
+            .map(|_| span(b[1], b[2]));
+        let hint = match option {
+            Some(_) => span(b[3], b[6]),
+            None => span(b[1], b[6]),
+        };
+        (b[TOOL_CANCEL], option, hint, b[TOOL_DONE])
+    }
+
     /// What button `k` says: some show a state.
     pub fn button_label(&self, k: usize) -> String {
+        if let Some(t) = &self.tool_bar {
+            return match k {
+                TOOL_CANCEL => "Cancel".into(),
+                TOOL_OPTION => t.option.map_or("", |o| o.0).into(),
+                TOOL_DONE => "Done".into(),
+                _ => String::new(),
+            };
+        }
         match k {
             1 => self.lens.name().into(),
             // Snap Auto names itself ("Auto · 1/16").
@@ -3385,13 +3856,22 @@ impl NoteGrid {
                 left - 12 - g.keys.x,
                 g.scale_chip.h,
             );
+            // Clear of the title: the whole legend, or without its count
+            // of notes, or none on a narrow roll (the drawer open).
+            let title = cx.measure(FontId::Bold, t.size_small, &self.title.to_uppercase());
+            let room = head.w - title - 16;
+            let short = self.legend.split_once(" · ").map_or("", |(_, rest)| rest);
+            let legend = [self.legend.as_str(), short]
+                .into_iter()
+                .find(|l| cx.measure(FontId::Sans, t.size_small, l) <= room)
+                .unwrap_or("");
             cx.text(
                 FontId::Sans,
                 t.size_small,
                 head,
                 Align::Right,
                 t.text_dim,
-                &self.legend,
+                legend,
             );
         }
     }
@@ -3878,6 +4358,42 @@ impl NoteGrid {
     /// makes them, the stroke's while a finger draws. On Velocity a
     /// ratchet's later hits stand beside their note's bar, thinner, at
     /// their own velocities.
+    /// The open tool's bar (plan 2B.3): Done lit, the tool's own button
+    /// lit while on, and the tool's name and what it shows between.
+    fn paint_tool_bar(&self, cx: &mut PaintCx, r: Rect, tb: &ToolBar) {
+        let t = cx.theme.clone();
+        let (cancel, option, hint, done) = self.tool_rects(r);
+        let button = |cx: &mut PaintCx, br: Rect, text: &str, lit: bool| {
+            let (fill, ink) = match lit {
+                true => (t.accent, t.on_accent),
+                false => (t.raised, t.text),
+            };
+            cx.canvas.fill_round_rect(br, t.round(10), fill);
+            cx.text(FontId::Bold, t.size_small, br, Align::Center, ink, text);
+        };
+        button(cx, cancel, "Cancel", false);
+        if let (Some(o), Some((name, lit))) = (option, tb.option) {
+            button(cx, o, name, lit);
+        }
+        button(cx, done, "Done", true);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            Rect::new(hint.x + 8, hint.y, hint.w - 16, hint.h / 2 + 2),
+            Align::Left,
+            t.text,
+            tb.name,
+        );
+        cx.text(
+            FontId::Sans,
+            t.size_small - 2.0,
+            Rect::new(hint.x + 8, hint.y + hint.h / 2 - 2, hint.w - 16, hint.h / 2),
+            Align::Left,
+            t.text_dim,
+            &tb.hint,
+        );
+    }
+
     fn paint_lane(&self, cx: &mut PaintCx, g: &Geo) {
         let t = cx.theme.clone();
         let field = self.stroke.as_ref().map_or(self.lane.field, |s| s.field);
@@ -4453,7 +4969,13 @@ impl Widget for NoteGrid {
             Lens::List => self.paint_list(cx, r),
             Lens::Tracker => self.paint_tracker(cx, r),
         }
+        if let Some(tb) = &self.tool_bar {
+            self.paint_tool_bar(cx, r, tb);
+        }
         for (k, br) in self.button_rects(r).iter().enumerate() {
+            if self.tool_bar.is_some() {
+                break;
+            }
             let lit = (k == 1 && self.lens != Lens::Grid)
                 || (k == 2 && self.tool != Tool::Select)
                 || (k == SELECT_BUTTON && (self.menu || self.add))
@@ -4483,12 +5005,25 @@ impl Widget for NoteGrid {
 
     fn targets(&self, r: Rect) -> Vec<Target> {
         let g = self.geo(r);
-        let mut out: Vec<Target> = self
-            .button_rects(r)
-            .iter()
-            .enumerate()
-            .map(|(k, b)| Target::tap("button", k, self.button_label(k), *b))
-            .collect();
+        let mut out: Vec<Target> = match &self.tool_bar {
+            // A tool's bar (plan 2B.3): its buttons, then only what moves
+            // the view.
+            Some(tb) => {
+                let (cancel, option, _, done) = self.tool_rects(r);
+                let mut v = vec![Target::tap("tool-cancel", 0, "Cancel", cancel)];
+                if let (Some(o), Some((name, _))) = (option, tb.option) {
+                    v.push(Target::tap("tool-option", 0, name, o));
+                }
+                v.push(Target::tap("tool-done", 0, "Done", done));
+                v
+            }
+            None => self
+                .button_rects(r)
+                .iter()
+                .enumerate()
+                .map(|(k, b)| Target::tap("button", k, self.button_label(k), *b))
+                .collect(),
+        };
         // The Scale menu covers the roll while it is open (plan 2B.1).
         if self.scale_menu && self.lens == Lens::Grid {
             let (roots, scales, _) = self.scale_menu_rects(r);
@@ -4520,6 +5055,10 @@ impl Widget for NoteGrid {
             }
             return out;
         }
+        let tool = self.tool_bar.is_some();
+        if tool && self.lens != Lens::Grid {
+            return out;
+        }
         if matches!(self.lens, Lens::Tracker | Lens::List) {
             let id = if self.lens == Lens::Tracker {
                 "tracker-row"
@@ -4536,10 +5075,10 @@ impl Widget for NoteGrid {
             }
             return out;
         }
-        if !g.scale_chip.is_empty() && !self.pads {
+        if !g.scale_chip.is_empty() && !self.pads && !tool {
             out.push(Target::tap("scale-chip", 0, "Scale", g.scale_chip));
         }
-        if !g.chord_chip.is_empty() {
+        if !g.chord_chip.is_empty() && !tool {
             out.push(Target::tap("chord-chip", 0, "Chord", g.chord_chip));
         }
         if !g.fold_chip.is_empty() {
@@ -4553,7 +5092,11 @@ impl Widget for NoteGrid {
             // change.
             let body = lane_body(&g);
             let foot = Rect::new(body.x, body.bottom() - 8, body.w, 6);
-            out.push(Target::drag("lane", 0, self.lane.field.name(), foot).towards(0, 10 - body.h));
+            if !tool {
+                out.push(
+                    Target::drag("lane", 0, self.lane.field.name(), foot).towards(0, 10 - body.h),
+                );
+            }
             out.push(Target::drag("lane-edge", 0, "lane's top edge", g.edge).towards(0, -24));
         }
         if !g.chip.is_empty() {
@@ -4577,6 +5120,9 @@ impl Widget for NoteGrid {
             if i32::from(self.rows()) * g.v.row_h > g.roll.h {
                 out.push(Target::drag("keys", 0, "keys", g.keys).towards(0, g.keys.h / 4));
             }
+        }
+        if tool {
+            return out;
         }
         let shown = self.in_view(&g);
         for &i in &shown {
@@ -5186,7 +5732,10 @@ impl NoteGrid {
     /// The picked notes in view that show handles, with them: none while
     /// more than [`MAX_HANDLES`] are, or while a note is moved.
     fn handles(&self, g: &Geo) -> Vec<(usize, [Rect; 2])> {
-        if self.lens != Lens::Grid || self.drag.is_some_and(|d| d.handle.is_none()) {
+        if self.lens != Lens::Grid
+            || self.drag.is_some_and(|d| d.handle.is_none())
+            || self.tool_bar.is_some()
+        {
             return Vec::new();
         }
         let picked: Vec<usize> = self
@@ -5379,7 +5928,31 @@ impl NoteGrid {
                 None => None,
             };
         }
-        if let Some(k) = self.button_rects(r).iter().position(|b| b.contains(x, y)) {
+        // A tool's bar (plan 2B.3): Cancel, its own button and Done; the
+        // roll and the lane only move the view, and the rest that would
+        // edit is still.
+        if self.tool_bar.is_some() {
+            let (cancel, option, _, done) = self.tool_rects(r);
+            let k = if cancel.contains(x, y) {
+                Some(TOOL_CANCEL)
+            } else if option.is_some_and(|o| o.contains(x, y)) {
+                Some(TOOL_OPTION)
+            } else if done.contains(x, y) {
+                Some(TOOL_DONE)
+            } else {
+                None
+            };
+            if let Some(k) = k {
+                return Some(EventKind::Tab(TOOL_BUTTONS + k));
+            }
+            if g.tools.contains(x, y)
+                || g.scale_chip.contains(x, y)
+                || g.chord_chip.contains(x, y)
+                || self.lens != Lens::Grid
+            {
+                return None;
+            }
+        } else if let Some(k) = self.button_rects(r).iter().position(|b| b.contains(x, y)) {
             // Select opens its menu: the roll's own.
             if k == SELECT_BUTTON {
                 self.menu = true;
@@ -5485,6 +6058,15 @@ impl NoteGrid {
                 now: (x, y),
                 y0: y,
                 from: g.vel.h,
+            };
+            return None;
+        }
+        // A tool open: a finger on the roll or the lane edits nothing, but
+        // a second one joins it to move the view.
+        if self.tool_bar.is_some() && (g.vel.contains(x, y) || g.roll.contains(x, y)) {
+            self.hand = Hand::Spent {
+                finger: f,
+                now: (x, y),
             };
             return None;
         }
@@ -7758,10 +8340,14 @@ mod chord_tests {
         c
     }
 
+    /// As the time engine does: an edit that changes something goes in
+    /// and the picks follow it.
     fn run(ed: &mut Editor, c: &mut Clip, a: EditAction) -> Done {
         let done = ed.act(a, c);
-        c.apply(&done.edit).unwrap();
-        ed.applied(c, &done);
+        if !done.edit.is_empty() {
+            c.apply(&done.edit).unwrap();
+            ed.applied(c, &done);
+        }
         done
     }
 
@@ -7861,11 +8447,13 @@ mod chord_tests {
         assert_eq!(picked(&ed, &drums), [(480, 5)]);
     }
 
-    /// Strum, Invert and Spread change each chord of the picks, a run of
-    /// turns one take; their values read the first chord; with nothing
-    /// picked, or no chord among the picks, they say so.
+    /// The tools on chords (plans 2B.2 and 2B.3): a row opens its tool on
+    /// the picks; Q1 to Q4 (and the wheel on the row, Q1) change its
+    /// settings and the preview, never the clip; other edits wait; Done
+    /// makes it one take with the notes it made picked, and Cancel leaves
+    /// the clip; another tool's row opens that one in its place.
     #[test]
-    fn strum_invert_and_spread_change_each_chord_of_the_picks() {
+    fn strum_invert_and_spread_preview_until_done() {
         let mut c = keys(&[
             (0, 960, 60),
             (0, 960, 64),
@@ -7874,133 +8462,218 @@ mod chord_tests {
             (960, 960, 69),
             (960, 960, 72),
         ]);
+        let was = c.clone();
         let mut ed = Editor::new(0, 0, &c);
         let value = |ed: &Editor, c: &Clip, row: usize| edit_rows(ed, c)[row].value.clone();
+        let row = |row, delta| EditAction::Row { row, delta };
+        let knob = |k, ticks| EditAction::Knob {
+            k,
+            ticks,
+            fine: false,
+            turn: 1,
+        };
         assert_eq!(EDIT_ROWS[STRUM_ROW], "Strum");
         assert_eq!(value(&ed, &c, STRUM_ROW), "pick notes");
-        let done = run(
-            &mut ed,
-            &mut c,
-            EditAction::Row {
-                row: STRUM_ROW,
-                delta: 1,
-            },
-        );
-        assert!(done.edit.add.is_empty());
+        let done = run(&mut ed, &mut c, row(STRUM_ROW, 1));
+        assert_eq!(done.line, "edit: pick notes first");
+        assert_eq!(ed.open_tool, None);
+        ed.sel = vec![0, 3];
+        let done = run(&mut ed, &mut c, row(STRUM_ROW, 1));
         assert_eq!(done.line, "edit: pick a chord: notes that sound together");
         ed.sel = (0..6).collect();
         assert_eq!(value(&ed, &c, STRUM_ROW), "none");
         assert_eq!(value(&ed, &c, INVERT_ROW), "C");
         assert_eq!(value(&ed, &c, SPREAD_ROW), "close");
-        let a = run(
-            &mut ed,
-            &mut c,
-            EditAction::Row {
-                row: STRUM_ROW,
-                delta: 1,
-            },
+        // Strum opens at no change: no preview.
+        let done = run(&mut ed, &mut c, row(STRUM_ROW, 1));
+        assert_eq!(
+            done.line,
+            "edit: Strum: turn the Q-Links, then Done or Cancel"
         );
-        let b = run(
-            &mut ed,
-            &mut c,
-            EditAction::Row {
-                row: STRUM_ROW,
-                delta: 1,
-            },
-        );
-        assert!(
-            a.join.is_some() && a.join == b.join,
-            "a run of turns is one take"
-        );
-        assert_eq!(value(&ed, &c, STRUM_ROW), format!("↑ {}t", 2 * STRUM_TICKS));
-        assert_eq!(ed.picked(&c).len(), 6, "the picks stay");
+        assert_eq!(ed.open_tool.map(|t| t.kind), Some(ToolKind::Strum));
+        assert_eq!(value(&ed, &c, STRUM_ROW), "on");
+        assert_eq!(ed.preview(&c), None);
+        let tool = ed.open_tool.unwrap();
+        assert_eq!(tool.why_not(&c, &ed.sel), "nothing changes yet");
+        // Q1 two detents, the wheel on the row one more: 30 ticks apart,
+        // on the preview only.
+        assert!(run(&mut ed, &mut c, knob(0, 2)).edit.is_empty());
+        assert!(run(&mut ed, &mut c, row(STRUM_ROW, 1)).edit.is_empty());
+        assert_eq!(c, was, "the clip is as it was");
+        let g = 3 * STRUM_TICKS;
+        assert_eq!(ed.open_tool.unwrap().cards()[0].1, format!("+{g}t"));
         let starts = |c: &Clip| -> Vec<Tick> {
             let mut s: Vec<(u8, Tick)> = c.notes.iter().map(|n| (n.note, n.tick)).collect();
             s.sort_unstable();
             s.into_iter().map(|(_, t)| t).collect()
         };
-        let g = 2 * STRUM_TICKS;
-        assert_eq!(starts(&c), [0, g, 960, 2 * g, 960 + g, 960 + 2 * g]);
-        // Back down past 0: the highest first.
-        for _ in 0..4 {
-            run(
-                &mut ed,
-                &mut c,
-                EditAction::Row {
-                    row: STRUM_ROW,
-                    delta: -1,
-                },
-            );
-        }
+        let (p, picks) = ed.preview(&c).unwrap();
+        assert_eq!(starts(&p), [0, g, 960, 2 * g, 960 + g, 960 + 2 * g]);
+        assert_eq!(picks.len(), 6, "the notes it makes are picked");
+        // Q2 to Down: the highest first.
+        run(&mut ed, &mut c, knob(1, 2));
+        assert_eq!(ed.open_tool.unwrap().cards()[1].1, "Down");
+        let (p, _) = ed.preview(&c).unwrap();
+        assert_eq!(starts(&p), [2 * g, g, 960 + 2 * g, 0, 960 + g, 960]);
+        // Other edits wait for Done or Cancel.
+        let done = run(&mut ed, &mut c, EditAction::Button(6));
+        assert_eq!(done.line, "edit: Done or Cancel Strum first");
+        assert_eq!(c, was);
+        // Done: one take of its own, picked after; the tool closes.
+        let done = run(&mut ed, &mut c, EditAction::Tool(ToolAct::Done));
+        assert_eq!(done.line, "edit: 2 chords strummed");
+        assert_eq!(done.join, None);
+        assert_eq!(starts(&c), [2 * g, g, 960 + 2 * g, 0, 960 + g, 960]);
+        assert_eq!(ed.open_tool, None);
+        assert_eq!(ed.picked(&c).len(), 6);
         assert_eq!(value(&ed, &c, STRUM_ROW), format!("↓ {g}t"));
-        for _ in 0..2 {
-            run(
-                &mut ed,
-                &mut c,
-                EditAction::Row {
-                    row: STRUM_ROW,
-                    delta: 1,
-                },
-            );
-        }
-        // Invert: C/E and F/A, the value naming the first.
-        run(
-            &mut ed,
-            &mut c,
-            EditAction::Row {
-                row: INVERT_ROW,
-                delta: 1,
-            },
-        );
-        assert_eq!(value(&ed, &c, INVERT_ROW), "C/E");
-        run(
-            &mut ed,
-            &mut c,
-            EditAction::Row {
-                row: INVERT_ROW,
-                delta: -1,
-            },
-        );
-        assert_eq!(value(&ed, &c, INVERT_ROW), "C");
-        // Spread opens each chord, then closes it.
-        run(
-            &mut ed,
-            &mut c,
-            EditAction::Row {
-                row: SPREAD_ROW,
-                delta: 1,
-            },
-        );
+        // Invert: Q1 up one previews C/E; Cancel leaves the clip.
+        let strummed = c.clone();
+        run(&mut ed, &mut c, row(INVERT_ROW, -1));
+        run(&mut ed, &mut c, knob(0, 1));
+        let (p, picks) = ed.preview(&c).unwrap();
+        assert_eq!(value(&ed, &p, INVERT_ROW), "on");
+        let notes: Vec<u8> = picks.iter().map(|&i| p.notes[i].note).collect();
+        assert!(notes.contains(&72) && !notes.contains(&60), "{notes:?}");
+        let done = run(&mut ed, &mut c, EditAction::Tool(ToolAct::Cancel));
+        assert_eq!(done.line, "edit: Invert cancelled: the clip is as it was");
+        assert_eq!(c, strummed);
+        assert_eq!(ed.open_tool, None);
+        // Down one, then Spread's row opens Spread in its place.
+        run(&mut ed, &mut c, row(INVERT_ROW, 1));
+        run(&mut ed, &mut c, knob(0, -1));
+        assert_eq!(ed.open_tool.unwrap().cards()[0].1, "Down 1");
+        run(&mut ed, &mut c, row(SPREAD_ROW, 1));
+        assert_eq!(ed.open_tool.map(|t| t.kind), Some(ToolKind::Spread));
+        run(&mut ed, &mut c, knob(0, 1));
+        assert_eq!(ed.open_tool.unwrap().cards()[0].1, "Open 1");
+        let done = run(&mut ed, &mut c, EditAction::Tool(ToolAct::Done));
+        assert_eq!(done.line, "edit: 2 chords spread");
         assert_eq!(value(&ed, &c, SPREAD_ROW), "open");
-        let mut p: Vec<u8> = c
-            .notes
-            .iter()
-            .filter(|n| n.tick == 0)
-            .map(|n| n.note)
-            .collect();
-        p.sort_unstable();
-        assert_eq!(p, [60, 67, 76]);
-        run(
-            &mut ed,
-            &mut c,
-            EditAction::Row {
-                row: SPREAD_ROW,
-                delta: -1,
-            },
-        );
+        // Closed: as close as they go, then no closer (refused at Done,
+        // and said why).
+        run(&mut ed, &mut c, row(SPREAD_ROW, 1));
+        run(&mut ed, &mut c, knob(0, -3));
+        let done = run(&mut ed, &mut c, EditAction::Tool(ToolAct::Done));
+        assert_eq!(done.line, "edit: 2 chords closed");
         assert_eq!(value(&ed, &c, SPREAD_ROW), "close");
-        let done = run(
-            &mut ed,
-            &mut c,
-            EditAction::Row {
-                row: SPREAD_ROW,
-                delta: -1,
-            },
+        run(&mut ed, &mut c, row(SPREAD_ROW, 1));
+        run(&mut ed, &mut c, knob(0, -1));
+        assert_eq!(ed.preview(&c), None);
+        let before = c.clone();
+        let done = run(&mut ed, &mut c, EditAction::Tool(ToolAct::Done));
+        assert_eq!(c, before);
+        assert_eq!(
+            done.line,
+            "edit: Spread: the chords are as close as they go, so nothing changed"
         );
-        assert_eq!(done.line, "edit: the chords are as close as they go");
+        // Settings past their ends stop there.
+        let mut t = NoteTool::new(ToolKind::Invert);
+        assert!(t.turn(0, 100, false));
+        assert_eq!(t.q[0], MAX_TURNS);
+        assert!(!t.turn(0, 1, false));
+        assert!(!t.turn(1, 1, false), "Invert has no Q2");
         // One note picked: no chord.
         ed.sel = vec![0];
         assert_eq!(value(&ed, &c, STRUM_ROW), "no chord");
+        let done = run(&mut ed, &mut c, row(SPREAD_ROW, 1));
+        assert_eq!(done.line, "edit: pick a chord of three notes or more");
+    }
+
+    /// Chop, Legato and Humanize (plan 2B.3): their rows open them on the
+    /// picks; Chop's Reset pressure and Humanize's Again are the tools' own
+    /// button; Legato fills a share of the gap; the same dice give the same
+    /// humanize. Something else taking a pick closes the tool.
+    #[test]
+    fn chop_legato_and_humanize_preview_until_done() {
+        let mut c = keys(&[(0, 960, 60), (1920, 480, 62)]);
+        c.notes[0].touch = c
+            .add_touch(&[
+                TouchPoint { at: 0, value: 10 },
+                TouchPoint { at: 600, value: 90 },
+            ])
+            .unwrap();
+        let was = c.clone();
+        let mut ed = Editor::new(0, 0, &c);
+        let value = |ed: &Editor, c: &Clip, row: usize| edit_rows(ed, c)[row].value.clone();
+        let row = |row| EditAction::Row { row, delta: 1 };
+        let knob = |k, ticks| EditAction::Knob {
+            k,
+            ticks,
+            fine: false,
+            turn: 1,
+        };
+        assert_eq!(value(&ed, &c, CHOP_ROW), "pick notes");
+        assert_eq!(
+            run(&mut ed, &mut c, row(CHOP_ROW)).line,
+            "edit: pick notes first"
+        );
+        ed.sel = vec![0];
+        assert_eq!(value(&ed, &c, CHOP_ROW), "open");
+        // Chop opens in two; Q1 makes it four; the pieces share the
+        // pressure.
+        run(&mut ed, &mut c, row(CHOP_ROW));
+        let (p, picks) = ed.preview(&c).unwrap();
+        assert_eq!((p.notes.len(), picks.len()), (3, 2));
+        run(&mut ed, &mut c, knob(0, 2));
+        let (p, picks) = ed.preview(&c).unwrap();
+        assert_eq!(picks.len(), 4);
+        let last = picks
+            .iter()
+            .map(|&i| p.notes[i])
+            .max_by_key(|n| n.tick)
+            .unwrap();
+        assert_eq!(p.touch_of(&last), [TouchPoint { at: 0, value: 90 }]);
+        // Reset pressure: none on the pieces, lit on the bar.
+        run(&mut ed, &mut c, EditAction::Tool(ToolAct::Option));
+        assert_eq!(
+            ed.open_tool.unwrap().option(),
+            Some(("Reset pressure", true))
+        );
+        let (p, picks) = ed.preview(&c).unwrap();
+        assert!(picks.iter().all(|&i| p.notes[i].touch.is_none()));
+        assert_eq!(c, was);
+        let done = run(&mut ed, &mut c, EditAction::Tool(ToolAct::Done));
+        assert_eq!(done.line, "edit: 1 note chopped in 4");
+        assert_eq!((c.notes.len(), ed.picked(&c).len()), (5, 4));
+        // Legato on every note: half the gap to the next start.
+        ed.sel = (0..c.notes.len()).collect();
+        run(&mut ed, &mut c, row(LEGATO_ROW));
+        assert_eq!(
+            ed.open_tool.unwrap().cards()[0],
+            ("Fill", "100%".to_string())
+        );
+        run(&mut ed, &mut c, knob(0, -10));
+        let (p, _) = ed.preview(&c).unwrap();
+        let mut lens: Vec<(Tick, Tick)> = p.notes.iter().map(|n| (n.tick, n.len)).collect();
+        lens.sort_unstable();
+        assert_eq!(
+            lens,
+            [(0, 240), (240, 240), (480, 240), (720, 720), (1920, 480)]
+        );
+        run(&mut ed, &mut c, EditAction::Tool(ToolAct::Cancel));
+        // Humanize: a little at once; Again rolls again; the same dice,
+        // the same result.
+        run(&mut ed, &mut c, row(HUMANIZE_ROW));
+        let first = ed.preview(&c).unwrap();
+        assert_eq!(ed.preview(&c).unwrap(), first);
+        run(&mut ed, &mut c, EditAction::Tool(ToolAct::Option));
+        assert_ne!(ed.preview(&c).unwrap(), first);
+        let cards = ed.open_tool.unwrap().cards();
+        assert_eq!(
+            cards.clone().map(|(name, _)| name),
+            ["Timing", "Velocity", "Length", "Ahead/behind"]
+        );
+        assert_eq!(cards[3].1, "Even");
+        run(&mut ed, &mut c, knob(3, -3));
+        assert_eq!(ed.open_tool.unwrap().cards()[3].1, "Ahead 30");
+        assert!(ed.open_tool.unwrap().bipolar(3));
+        // A recorded note leaves the picks; UNDO taking one closes the
+        // tool with the picks.
+        let now = keys(&[(0, 960, 60)]);
+        ed.follow(&c, &now);
+        assert_eq!(ed.open_tool, None);
+        assert!(ed.cleared);
     }
 
     fn roll(chord: ChordShape, minor: bool, scale: Option<Scale>) -> NoteGrid {
@@ -8090,5 +8763,88 @@ mod chord_tests {
         pads.pads = true;
         assert_eq!(target(&pads, "chord-chip", 0), None);
         assert_eq!(pads.chord_on(3), [3]);
+    }
+
+    /// A tool's bar (plan 2B.3) takes the buttons' place: Cancel, its own
+    /// button and Done send the bar's tabs; the notes, their handles, the
+    /// lane, the Scale and Chord chips and the gaps of the bar do nothing,
+    /// but a second finger on the roll still moves the view; it closes
+    /// the menus over the roll.
+    #[test]
+    fn a_tools_bar_takes_the_buttons_and_the_roll_only_moves_the_view() {
+        let mut g = roll(ChordShape::Off, false, None);
+        g.notes[0].selected = true;
+        assert!(target(&g, "handle", 0).is_some());
+        g.menu = true;
+        let bar = ToolBar {
+            name: "Chop",
+            hint: "Turn the Q-Links: the roll shows the result".into(),
+            option: Some(("Reset pressure", false)),
+        };
+        g.show(NoteGrid {
+            tool_bar: Some(bar.clone()),
+            ..g.clone()
+        });
+        assert!(!g.menu, "the bar closes the menus");
+        let ids: Vec<&str> = g.targets(R).iter().map(|t| t.id).collect();
+        for gone in [
+            "button",
+            "note",
+            "handle",
+            "lane",
+            "roll",
+            "scale-chip",
+            "chord-chip",
+        ] {
+            assert!(!ids.contains(&gone), "{gone} in {ids:?}");
+        }
+        for id in [
+            "tool-cancel",
+            "tool-option",
+            "tool-done",
+            "fit",
+            "lane-chip",
+        ] {
+            assert!(ids.contains(&id), "{id} not in {ids:?}");
+        }
+        assert_eq!(
+            (g.button_label(0), g.button_label(1), g.button_label(7)),
+            ("Cancel".into(), "Reset pressure".into(), "Done".into())
+        );
+        let tab = |k| Some(EventKind::Tab(TOOL_BUTTONS + k));
+        let cancel = target(&g, "tool-cancel", 0).unwrap();
+        assert_eq!(tap(&mut g, 1, cancel), tab(TOOL_CANCEL));
+        let option = target(&g, "tool-option", 0).unwrap();
+        assert_eq!(tap(&mut g, 2, option), tab(TOOL_OPTION));
+        let done = target(&g, "tool-done", 0).unwrap();
+        assert_eq!(tap(&mut g, 3, done), tab(TOOL_DONE));
+        // Between them, nothing; the note and the handle, nothing.
+        let gap = g.button_rects(R)[4];
+        assert_eq!(tap(&mut g, 4, gap), None);
+        let note = g.note_rect(R, 0).unwrap();
+        assert_eq!(tap(&mut g, 5, note), None);
+        let (x, y) = (note.right() + HANDLE_W / 2, note.y + note.h / 2);
+        assert_eq!(g.touch(6, Touch::Down, x, y, R), None);
+        assert_eq!(g.touch(6, Touch::Move, x + 80, y, R), None);
+        assert_eq!(g.touch(6, Touch::Up, x + 80, y, R), None);
+        // A second finger on the roll: a pinch.
+        let roll = g.roll_rect(R);
+        let (x, y) = (roll.x + 200, roll.y + 100);
+        g.touch(7, Touch::Down, x, y, R);
+        g.touch(8, Touch::Down, x + 100, y, R);
+        assert!(matches!(g.hand, Hand::Pinch(_)));
+        g.touch(8, Touch::Move, x + 300, y, R);
+        let up = g
+            .touch(8, Touch::Up, x + 300, y, R)
+            .or(g.touch(7, Touch::Up, x, y, R));
+        assert!(matches!(up, Some(EventKind::View { .. })), "{up:?}");
+        // No option button without one: the hint takes its room.
+        g.tool_bar = Some(ToolBar {
+            option: None,
+            ..bar
+        });
+        assert_eq!(target(&g, "tool-option", 0), None);
+        let gap = g.button_rects(R)[1];
+        assert_eq!(tap(&mut g, 9, gap), None);
     }
 }

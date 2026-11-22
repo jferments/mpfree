@@ -1320,6 +1320,23 @@ pub fn notes_chord_state() -> Result<TimeState, String> {
     Ok(state)
 }
 
+/// Chop open on the two long melody notes (piano roll plan 2B.3), in four
+/// pieces: the roll previews the pieces, each with its share of the
+/// pressure, and the tool's bar takes the buttons' place.
+pub fn notes_tool_state() -> Result<TimeState, String> {
+    use crate::editor::{NoteTool, ToolKind};
+    let mut state = notes_state(crate::editor::Lens::Grid)?;
+    let e = state.edit.as_mut().ok_or("no editor")?;
+    e.editor.sel = (0..e.clip.notes.len())
+        .filter(|&i| !e.clip.notes[i].touch.is_none())
+        .collect();
+    let mut chop = NoteTool::new(ToolKind::Chop);
+    chop.q[0] = 4;
+    e.editor.open_tool = Some(chop);
+    e.editor.row = crate::editor::CHOP_ROW;
+    Ok(state)
+}
+
 /// A bar of drums with a step's every setting in use: a nudged hat, a
 /// ghost snare at 50 %, a 1:2 hat, a ratchet, a FILL open hat and a lock
 /// on the second snare (what the tracker shows).
