@@ -270,3 +270,42 @@ fn a_fit_and_a_waveform_work_from_the_files() {
     assert!((stretched.len() as f64 / audio.len() as f64 - 2.0).abs() < 0.01);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// Phase 0.3, streaming: a fit whose take is still being read from its
+/// file when the tracks are emptied (a project opening) never reaches the
+/// new project's takes: the disk's answer is dropped as it comes and
+/// counted, and a fit asked for afterwards works on the new take.
+#[test]
+fn a_fit_read_from_before_a_project_opened_is_dropped() {
+    let dir = scratch("stale-fit");
+    let mut r = Rig::new(6, &dir);
+    r.record(4);
+    r.t.command(r.frame, T::SetTempo(120.0));
+    r.run_to(r.frame + 10);
+    assert!(r.h.fit(0, 120.0));
+    // At once, before the disk has answered.
+    assert!(r.h.clear());
+    assert_eq!(r.h.fitting(), None);
+    // The new project's own take 0, two bars recorded at 120.
+    r.live = true;
+    let at = r.frame + 1000;
+    r.h.command(A::Arm(0, true));
+    r.t.command(at, T::Locate(0));
+    r.t.command(at, T::Record);
+    r.t.command(at + 2 * BAR, T::Stop);
+    r.run_to(at + 2 * BAR + 500);
+    r.h.command(A::Arm(0, false));
+    r.live = false;
+    r.run_until(|r| r.h.stale == 1 && r.h.tracks.unwritten() == 0);
+    let takes: Vec<_> = r.h.tracks.takes().collect();
+    assert_eq!(takes.len(), 1, "{takes:?}");
+    assert_eq!((takes[0].id, takes[0].bpm), (0, 120.0));
+    assert_eq!(r.h.fits + r.h.fits_failed, 0);
+    // A fit of the new take now: its own answer, not dropped.
+    r.t.command(r.frame, T::SetTempo(60.0));
+    r.run_to(r.frame + 10);
+    assert!(r.h.fit(0, 60.0));
+    r.run_until(|r| r.h.fits + r.h.fits_failed > 0);
+    assert_eq!((r.h.fits, r.h.fits_failed, r.h.stale), (1, 0, 1));
+    std::fs::remove_dir_all(&dir).unwrap();
+}

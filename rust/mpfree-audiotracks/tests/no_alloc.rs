@@ -352,3 +352,78 @@ fn streaming_never_allocates_on_the_audio_thread() {
         assert!(disk.len() > 20);
     }
 }
+
+/// Phase 0.2: a save fills a room made off the audio thread
+/// (`Saved::room`) without allocating, and holds what `save_file` gives;
+/// while a track records it waits ("not settled"), still without
+/// allocating, and a second save into the same room allocates nothing
+/// either.
+#[test]
+fn a_save_fills_its_room_without_allocating() {
+    use mpfree_audiotracks::save::Saved;
+    const RATE: u32 = 22_050;
+    const BAR: u64 = 22_050; // 240 BPM
+    let period = 256usize;
+    let mut t = Transport::new(RATE, 240.0).unwrap();
+    let mut a = AudioTracks::new(RATE, 6);
+    let mut b = Block::new();
+    let input: Vec<f32> = (0..2 * period)
+        .map(|j| ((j * 31) % 97) as f32 / 97.0 - 0.5)
+        .collect();
+    let mut out = vec![0.0f32; 2 * period];
+    let mut room = Saved::room(RATE);
+    for c in [
+        A::Arm(0, true),
+        A::Arm(2, true),
+        A::SetInput(2, Input::Stereo),
+        A::SetLevel(5, 0.5),
+        A::SetMonitor(6, Monitor::In),
+    ] {
+        a.command(c);
+    }
+    t.command(0, T::Record);
+    t.command(2 * BAR, T::Stop);
+    let mut frame = 0u64;
+    let mut waited = 0;
+    while frame < 3 * BAR {
+        t.process(period as u32, &mut b);
+        let map = *t.tempo_map();
+        a.process(&b, &map, &input, &mut out);
+        CALLS.store(0, Ordering::Relaxed);
+        watch(true);
+        let filled = a.save_into(&mut room);
+        watch(false);
+        assert_eq!(CALLS.load(Ordering::Relaxed), 0, "at frame {frame}");
+        if frame + (period as u64) <= 2 * BAR {
+            assert!(filled.is_none(), "recording at frame {frame}");
+            waited += 1;
+        }
+        frame += period as u64;
+    }
+    assert!(waited > 0);
+    a.command(A::Arm(0, false));
+    a.command(A::Arm(2, false));
+    for _ in 0..2 {
+        CALLS.store(0, Ordering::Relaxed);
+        watch(true);
+        let filled = a.save_into(&mut room);
+        watch(false);
+        assert_eq!(CALLS.load(Ordering::Relaxed), 0, "settled");
+        let (tracks, takes) = filled.expect("settled");
+        let mut got = room.clone();
+        got.tracks.truncate(tracks);
+        got.takes.truncate(takes);
+        assert_eq!(Some(got), a.save_file());
+        assert_eq!(
+            (tracks, takes),
+            (4, 2),
+            "tracks 1, 3, 6, 7; a take each on 1 and 3"
+        );
+    }
+    // A room too small is left as it was.
+    let mut small = Saved::room(RATE);
+    small.takes.pop();
+    let before = small.clone();
+    assert!(a.save_into(&mut small).is_none());
+    assert_eq!(small, before);
+}

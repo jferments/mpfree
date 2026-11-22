@@ -283,8 +283,32 @@ with `--quick`) at 128 frames and 44.1 kHz:
   it plays, 129 thousand instructions (the case now makes the edit in place
   with `PlayView::edit_in_place`, as the audio half does). From 2.1 to
   here: the view 15 times smaller, its compile 500 times cheaper, a tap
-  27,000 times. Their counts go into `instructions.txt` from CI's first
-  run, as the step cases' did.
+  27,000 times. Their counts are in `instructions.txt`, from CI's first
+  run (train 135), as the step cases' were.
+- **screen, the Song view (Arrange refactor 2.4):** "Song view: 4,096
+  blocks, a frame while the song plays" is the screen thread's frame with
+  the longest song (`MAX_PLACEMENTS`: 16 tracks of 256 four-bar blocks):
+  the playhead moved, as `ToUi::Transport` does 30 times a second while
+  the song plays, the time page updated (`TimePage::update`) and the page
+  painted in software at the MPC's size; every 8th frame scrolls a bar, as
+  the wheel does. Like the control half's cases, the `screen` module has
+  no budget line, may allocate and is left out of `--check-allocs` and the
+  golden check (`cases::off_the_audio_path`). Before 2.4 a frame copied
+  every block twice (the Song view's contents built again from the
+  placements, and the old contents copied to compare), then drew and
+  hit-tested every block, working out the view's geometry for each:
+  10.9 million instructions and about 17,000 allocations a frame, a
+  0.97 ms desktop mean. 2.4 keeps the blocks while the placements are the
+  same list (`SongBlocks::made_from`) and finds the ones in view by lane
+  and time (`SongBlocks::between`): 5.5 million instructions, about 800
+  allocations (the rest of the page's update and the text), 0.53 ms. A
+  song of 16 blocks costs 3.8 million, so the longest song now costs only
+  for the extra blocks it shows (about 60 in view, against 16). Most of
+  what is left is the whole page painted again for a playhead that moved;
+  drawing the playhead alone is a later step. Its count in
+  `instructions.txt` was taken with CI's pinned toolchain on the build
+  container, which gave the three Arrange cases' counts to within 0.05 %
+  of CI's.
 - **looper:** 60 s of looper memory, recording a 2-bar first pass from the
   input, then overdubbing layer after layer with an undo every 30 s.
 - **mix:** the mixer (from the FX thread) idle, and routing 12 tracks and 8

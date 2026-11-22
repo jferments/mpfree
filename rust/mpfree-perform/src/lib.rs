@@ -891,6 +891,7 @@ mod tests {
             origin: 2 * BAR,
             mute: None,
             from: 2 * BAR,
+            rev: 0,
         };
         perf.started(&mut p, &st);
         st.apply(&mut launches, &mut cues);
@@ -1054,6 +1055,7 @@ mod tests {
             origin: BAR,
             mute: None,
             from: BAR,
+            rev: 0,
         };
         perf.started(&mut p, &st);
         cues.clear();
@@ -1118,6 +1120,7 @@ mod tests {
                     origin: at,
                     mute: None,
                     from: at,
+                    rev: 0,
                 },
             );
         };
@@ -1219,6 +1222,7 @@ mod tests {
                 origin: 4 * BAR,
                 mute: None,
                 from: 4 * BAR,
+                rev: 0,
             };
             perf.started(&mut p, &st);
             st.apply(&mut launches, &mut cues);
@@ -1390,6 +1394,7 @@ mod tests {
             origin: BAR,
             mute: Some(true),
             from: BAR,
+            rev: 0,
         };
         perf.started(&mut p, &st);
         assert!(p.tracks[1].mute);

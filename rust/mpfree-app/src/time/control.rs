@@ -29,7 +29,8 @@ use mpfree_notefx::{Chain, TrackFx, MAX_FX};
 use mpfree_perform::{Perform, SceneMorph, SongRecorder, When};
 use mpfree_play::Replaced;
 use mpfree_play::{
-    ClipDrop, Cue, Includes, Launch, MuteCue, MuteLanded, PlayView, SongChange, Started, Takes,
+    ClipDrop, Cue, Decisions, Includes, Launch, MuteCue, MuteLanded, PlayView, SongChange, Started,
+    Takes,
 };
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
 use mpfree_seq::arrange::{
@@ -55,7 +56,9 @@ use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_transport::{Block, Command, State};
 
 use super::follow::FollowCounts;
-use super::link::{Counts, InPlace, PeriodEnd, Rx, StripCounts, ToAudio, ToControl, Tracks, Tx};
+use super::link::{
+    Counts, CueCounts, InPlace, PeriodEnd, Rx, StripCounts, ToAudio, ToControl, Tracks, Tx,
+};
 use super::{PadRows, StepAction, StepClip, StepsData, LINE, NEW_CLIP_BARS, RECORD_ROOM};
 
 /// The clip settings card's join keys for its takes, a row each (see
@@ -395,9 +398,19 @@ pub struct TimeControl {
     /// Pressure values no note could play again, freed so far, and how
     /// many times (refactor B4b).
     touch_freed: (u64, u64),
-    /// What the views include: the recorded changes made so far, and the
-    /// started cues applied on each track.
+    /// What the views include: the recorded changes made so far, the
+    /// started cues applied on each track, and each track's newest
+    /// decision with the frame it was made at (Arrange 2.5).
     pub(super) includes: Includes,
+    /// The control half's side of the timing contract: which cues are new
+    /// decisions (Arrange 2.5).
+    decisions: Box<Decisions>,
+    /// The absolute frame the music had reached as far as the control half
+    /// has heard: the end of the last period it took.
+    heard: u64,
+    /// What the audio half's player counted for the contract, as last
+    /// sent.
+    cue_counts: CueCounts,
     tx: Tx<ToAudio>,
     rx: Rx<ToControl>,
     /// A view the audio half's full queue handed back, sent again on the
@@ -518,6 +531,9 @@ impl TimeControl {
             touch_grew: Vec::new(),
             touch_freed: (0, 0),
             includes: Includes::default(),
+            decisions: Box::default(),
+            heard: 0,
+            cue_counts: CueCounts::default(),
             tx,
             rx,
             unsent: None,
@@ -979,6 +995,7 @@ impl TimeControl {
                     }
                 }
                 ToControl::Follow(c) => self.follow = c,
+                ToControl::Cues(c) => self.cue_counts = c,
                 ToControl::Strips(c) => self.strips = c,
                 ToControl::Period(end) => self.period(end),
                 ToControl::Done(v) => drop(v),
@@ -996,6 +1013,7 @@ impl TimeControl {
         self.fresh = true;
         self.block.start_frame = end.start_frame;
         self.block.frames = end.frames;
+        self.heard = end.start_frame + u64::from(end.frames);
         self.info = end.info;
         self.counts = end.counts;
         // Out of recording: a take UNDO threw away goes now that all of
@@ -1054,6 +1072,7 @@ impl TimeControl {
             }
             self.perform.started(&mut self.project, &st);
             st.apply(&mut self.launches, &mut self.cues);
+            self.decisions.started(&st);
             if let Some(n) = self.includes.switches.get_mut(st.track) {
                 *n = n.wrapping_add(1);
             }
@@ -1233,7 +1252,11 @@ impl TimeControl {
         if self.also != 0 && self.also_n != n {
             self.also = 0;
         }
-        let v = self.view()?;
+        let mut v = self.view()?;
+        // Each new decision in it gets its revision and the frame the
+        // music had reached when it was made: a cue whose line played
+        // before the view came lands late, in phase (Arrange 2.5).
+        self.decisions.stamp(&mut v, self.heard, &mut self.includes);
         // Room to record into every armed track's clips without
         // allocating.
         let mut armed = self.armed_set();
@@ -5363,6 +5386,17 @@ impl TimeControl {
                  {} views kept unfreed, {} transport commands refused, {} step edits \
                  compiled again",
                 c.behind, c.kept, c.refused, c.missed
+            ));
+        }
+        // The timing contract (Arrange 2.5): cues the audio half carried
+        // out after their line, in phase with it, because their view came
+        // late; older ones it dropped; clips a newer cue took away first.
+        let q = &self.cue_counts;
+        if q.late + q.stale + q.lost > 0 {
+            line.push_str(&format!(
+                "; cues whose view came late: {} started after their line, in time with it, \
+                 {} older ones dropped, {} times a track was silent until the next view",
+                q.late, q.stale, q.lost
             ));
         }
         // What compiles and step edits cost (the device's numbers for the

@@ -201,6 +201,58 @@ fn a_fit_through_the_host_fills_the_bar_at_the_new_tempo() {
     assert_eq!(r.h.tracks.regions(0)[0].take, 0);
 }
 
+/// Phase 0.3: a fit still under way when the tracks are emptied (a
+/// project opening) never reaches the new project's takes, though take ids
+/// come back after a clear: whatever the worker still sends for it is
+/// dropped as it comes and counted. Tried with the clear at every stage of
+/// the fit (the worker's buffer, the reading, the stretch, the swap).
+#[test]
+fn a_fit_from_before_a_project_opened_never_reaches_the_new_takes() {
+    let mut dropped = 0;
+    for periods in [0u64, 1, 2, 4, 8, 16, 32, 64] {
+        let mut r = Rig::new();
+        r.record_bar();
+        r.t.command(r.frame, T::SetTempo(120.0));
+        r.run_to(r.frame + 10);
+        assert!(r.h.fit(0, 120.0));
+        for _ in 0..periods {
+            r.period(P);
+        }
+        // The new project: emptied, then a bar of its own recorded at 120,
+        // which gets take 0 again.
+        assert!(r.h.clear(), "after {periods} periods");
+        assert_eq!(r.h.fitting(), None);
+        assert_eq!(r.h.tracks.takes().count(), 0);
+        r.live = true;
+        let at = r.frame + 1000;
+        r.h.command(A::Arm(0, true));
+        r.t.command(at, T::Locate(0));
+        r.t.command(at, T::Record);
+        r.t.command(at + 2 * BAR, T::Stop);
+        r.run_to(at + 2 * BAR + 500);
+        r.h.command(A::Arm(0, false));
+        r.live = false;
+        // Time for anything the worker still had to come back.
+        let until = Instant::now() + Duration::from_millis(300);
+        r.run_until(|_| Instant::now() > until);
+        let takes: Vec<_> = r.h.tracks.takes().collect();
+        assert_eq!(takes.len(), 1, "after {periods} periods: {takes:?}");
+        assert_eq!(
+            (takes[0].id, takes[0].bpm),
+            (0, 120.0),
+            "after {periods} periods"
+        );
+        assert_eq!(r.h.tracks.regions(0).len(), 1, "after {periods} periods");
+        assert_eq!(r.h.tracks.regions(0)[0].take, 0, "after {periods} periods");
+        assert_eq!(r.h.fits, 0, "after {periods} periods");
+        dropped += r.h.stale;
+    }
+    assert!(
+        dropped > 0,
+        "a result from before the clear came and was dropped"
+    );
+}
+
 #[test]
 fn a_waveform_read_through_the_host_matches_the_take() {
     let mut r = Rig::new();
