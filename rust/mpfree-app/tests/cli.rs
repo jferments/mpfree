@@ -358,10 +358,18 @@ fn check_theme_reports_problems_and_unreadable_screens() {
     for want in [
         "  unusable: nothing could be read: text_dim on the page (bg) 2.5:1",
         "the app leaves this file out of Prefs > Appearance: nothing could be read",
-        "screens: 171 drawn,",
     ] {
         assert!(report.contains(want), "{want:?} in\n{report}");
     }
+    // Every sample screen is drawn (their number grows with the app).
+    assert!(
+        report.lines().any(|l| l
+            .strip_prefix("screens: ")
+            .and_then(|l| l.split_once(" drawn,"))
+            .and_then(|(n, _)| n.parse::<usize>().ok())
+            .is_some_and(|n| n > 100)),
+        "{report}"
+    );
     assert!(
         report
             .lines()

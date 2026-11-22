@@ -108,7 +108,7 @@ corners       = chamfer
   play: 45 run(s) of text under 3:1 (light: 0)
     #8A93A3 on #E4E7EB at 104,34 (40 glyph(s), 2.5:1)
   ...
-  screens: 171 drawn, 5216 run(s) of text under 3:1 (light: 59), 171 page(s) with more than light
+  screens: 175 drawn, 5332 run(s) of text under 3:1 (light: 59), 175 page(s) with more than light
   STOP: pale.theme: nothing could be read: ...
   ```
 - `mpfree --contact-sheet DIR --theme NAME|FILE` draws every sample screen in the theme and in the theme it starts from (a file's `base`, else Default; Light beside Default itself) as new PNG files in `DIR/theme/` and `DIR/base/`, and writes `DIR/index.html`, one page with no scripts that shows each screen's pair side by side and opens from disk. It is what a theme writer looks over before sharing a theme (Light's approval sheet was made the same way). About 30 s.
