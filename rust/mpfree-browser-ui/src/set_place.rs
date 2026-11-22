@@ -286,6 +286,33 @@ impl Browser {
         });
     }
 
+    /// The Set editor on the set at `loc` (the Show view's MENU, live
+    /// shows B1): the Sets place, its editor open on that set.
+    pub fn edit_set(&mut self, loc: &Loc) {
+        let Some(at) = SOURCES
+            .iter()
+            .position(|s| *s == Source::Place(Place::Sets))
+        else {
+            return;
+        };
+        self.go_source(at);
+        let Some(set) = self.set_at(loc) else {
+            return;
+        };
+        self.select_name = Some(loc.name().to_string());
+        let picked = (!set.songs.is_empty()).then_some(0);
+        self.sets.editing = Some(Editing {
+            loc: loc.clone(),
+            set,
+            picked,
+            top: 0,
+            adding: None,
+            focus: None,
+            needs: false,
+            armed: false,
+        });
+    }
+
     /// Song `song` of the set at `loc` changed on stage: its recovery copy
     /// is `copy` (a project in Projects). The set remembers it, so the Set
     /// editor offers Keep the changes and Throw them away after the show.

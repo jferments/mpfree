@@ -18,9 +18,6 @@
 //! - A song the check found Not ready can be armed (to see why) but Go
 //!   does nothing.
 
-// The Show view and the Set editor use it once their screens are approved.
-#![cfg_attr(not(test), allow(dead_code))]
-
 /// A second press of the same control within this many milliseconds is
 /// the same press (a footswitch's bounce).
 pub const DEBOUNCE_MS: u64 = 50;
@@ -100,6 +97,15 @@ impl Show {
             going: None,
             last: Vec::new(),
         }
+    }
+
+    /// The set changed while it plays: the song playing is song `k` of the
+    /// new list, and nothing is armed.
+    pub fn start_at(&mut self, k: usize) {
+        self.now = k.min(self.songs().saturating_sub(1));
+        self.armed = None;
+        self.going = None;
+        self.change = Change::Idle;
     }
 
     pub fn now(&self) -> usize {

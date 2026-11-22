@@ -160,6 +160,11 @@ impl Pill {
         Pill::new(&format!("FINISHING · {secs} s"), Tone::Warn, "")
     }
 
+    /// The song fades out over its Fade, `secs` in all.
+    pub fn fading(secs: u32) -> Pill {
+        Pill::new(&format!("FADING · {secs} s"), Tone::Warn, "")
+    }
+
     pub fn saving_takes() -> Pill {
         Pill::new("SAVING TAKES", Tone::Accent2, "")
     }
@@ -182,8 +187,8 @@ impl Pill {
     }
 }
 
-/// How the song playing ends when the next one takes over: the next song's
-/// Ends in the set.
+/// How the song playing ends when the next one takes over: its own Ends
+/// in the set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ending {
     /// Let it finish: no new notes, and what still rings rings out.
@@ -314,6 +319,19 @@ impl NextCard {
             meaning: format!("{now} is ringing out: {secs} s at most"),
             go_line: "Go again: go now.".into(),
             go: ("Go now".into(), true),
+            ..NextCard::not_armed(of, name, None)
+        }
+    }
+
+    /// The song playing fades out over its Fade seconds (Ends: Fade), then
+    /// the song opens. Presses wait.
+    pub fn fading(of: &str, name: &str, now: &str, secs: u32) -> NextCard {
+        NextCard {
+            label: "Next song".into(),
+            border: Some(Tone::Warn),
+            word: Some(("FADING".into(), Tone::Warn)),
+            name_faint: false,
+            meaning: format!("{now} fades out over {secs} s, then {name} opens"),
             ..NextCard::not_armed(of, name, None)
         }
     }
@@ -471,6 +489,16 @@ pub struct Geo {
 impl ShowView {
     pub fn new() -> ShowView {
         ShowView::default()
+    }
+
+    /// Everything the app fills in, from `v`, keeping where the set column
+    /// is scrolled to and a finger on it.
+    pub fn fill(&mut self, v: ShowView) {
+        let (top, followed, grab) = (self.top.get(), self.followed.get(), self.grab.take());
+        *self = v;
+        self.top.set(top);
+        self.followed.set(followed);
+        self.grab = grab;
     }
 
     /// Where everything is in `r` (1116 × 610 on the MPC's screen).
