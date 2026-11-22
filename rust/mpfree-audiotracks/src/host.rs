@@ -317,7 +317,9 @@ impl AudioHost {
             waving: None,
             wave: None,
             files: FileSide {
-                spare: Vec::new(),
+                // The buffers for copying takes out, made now so turning
+                // files on later never allocates.
+                spare: (0..SPARE).map(|_| vec![0.0; CHUNK]).collect(),
                 outs: Vec::with_capacity(MAX_TAKES),
                 names: [Name::default(); MAX_TRACKS],
                 views: vec![None; MAX_TAKES],
@@ -336,19 +338,18 @@ impl AudioHost {
 
     /// Record every take to a file of its own in `dir` (made if missing;
     /// the library's work folder for the audio tracks), from the next
-    /// armed track on (see [`crate::files`]). Allocates (the buffers for
-    /// copying takes out): call it once, at start. False (nothing
-    /// changed) while a track records or a take is still being written,
-    /// or with no worker.
-    pub fn record_to(&mut self, dir: PathBuf, cfg: WriterConfig) -> bool {
+    /// armed track on (see [`crate::files`]). Call it once, at start,
+    /// after anything a cut-off run left there is recovered
+    /// ([`crate::files::recover_into`]). Does not allocate (the message
+    /// carries `dir`). Refused, with `dir` given back to try again later,
+    /// while a track records or a take is still being written, or with no
+    /// worker.
+    pub fn record_to(&mut self, dir: PathBuf, cfg: WriterConfig) -> Result<(), PathBuf> {
         if self.tx.is_none() || !self.tracks.files(true) {
-            return false;
-        }
-        if self.files.spare.is_empty() {
-            self.files.spare = (0..SPARE).map(|_| vec![0.0; CHUNK]).collect();
+            return Err(dir);
         }
         self.send(ToWorker::Files { dir, cfg });
-        true
+        Ok(())
     }
 
     /// Track `track`'s name for its next takes' files (see

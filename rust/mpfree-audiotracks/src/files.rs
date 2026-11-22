@@ -170,6 +170,73 @@ pub enum FileEvent {
     State { track: usize, state: TakeState },
 }
 
+impl FileEvent {
+    /// Engine track the event is about.
+    pub fn track(&self) -> usize {
+        match self {
+            FileEvent::ArmFailed { track, .. }
+            | FileEvent::NoFile { track, .. }
+            | FileEvent::FromMemory { track, .. }
+            | FileEvent::State { track, .. } => *track,
+        }
+    }
+
+    /// The log's line for it, in the musician's words; `who` names the
+    /// track as the musician named it.
+    pub fn line(&self, who: &str) -> String {
+        match self {
+            FileEvent::ArmFailed { why, .. } => format!(
+                "audio tracks: {who} wasn't armed: its take's file couldn't be made ({why})"
+            ),
+            FileEvent::NoFile { why, .. } => format!(
+                "audio tracks: {who}'s take records into memory only, as its file couldn't be \
+                 made ({why}); saving the project keeps it"
+            ),
+            FileEvent::FromMemory { state, .. } => {
+                let file = match state {
+                    Some(TakeState::AtRisk(w) | TakeState::Stopped(w)) => {
+                        format!("its file stopped short ({})", why_words(*w))
+                    }
+                    _ => "it has no file of its own".to_string(),
+                };
+                format!("audio tracks: a take of {who} was saved from memory, as {file}")
+            }
+            FileEvent::State { state, .. } => match state {
+                TakeState::AtRisk(w) => format!(
+                    "audio tracks: {who}'s take is at risk ({}): if the power goes now, what \
+                     isn't on the drive yet is lost; it goes on recording into memory",
+                    why_words(*w)
+                ),
+                TakeState::Stopped(w) => format!(
+                    "audio tracks: {who}'s take stopped going to the drive ({}); it goes on \
+                     recording into memory, and saving the project keeps it",
+                    why_words(*w)
+                ),
+                // Raised only after At risk.
+                TakeState::Saved => {
+                    format!("audio tracks: {who}'s take is safe on the drive again")
+                }
+                TakeState::Recording | TakeState::Saving => {
+                    format!("audio tracks: {who}'s take is being written")
+                }
+            },
+        }
+    }
+}
+
+/// Why a take's file got into trouble, in a few words.
+pub fn why_words(w: Why) -> &'static str {
+    match w {
+        Why::Writes => "writing to the drive keeps failing",
+        Why::Syncs => "the drive doesn't finish its writes",
+        Why::Records => "its safety notes can't be written",
+        Why::Full => "the drive is full",
+        Why::Gone => "the drive is gone",
+        Why::Finish => "the finished file couldn't be named",
+        Why::Memory => "the drive fell too far behind",
+    }
+}
+
 /// What the worker tells the audio thread about the files.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Said {
@@ -614,6 +681,34 @@ fn minutes(frames: u64, rate: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_event_has_a_line_in_plain_words() {
+        let at_risk = FileEvent::State {
+            track: 1,
+            state: TakeState::AtRisk(Why::Full),
+        };
+        assert_eq!(at_risk.track(), 1);
+        assert_eq!(
+            at_risk.line("Vocal"),
+            "audio tracks: Vocal's take is at risk (the drive is full): if the power goes now, \
+             what isn't on the drive yet is lost; it goes on recording into memory"
+        );
+        let failed = FileEvent::ArmFailed {
+            track: 0,
+            why: "No such file or directory (os error 2)".into(),
+        };
+        assert!(failed.line("Bass").starts_with(
+            "audio tracks: Bass wasn't armed: its take's file couldn't be made (No such file"
+        ));
+        let memory = FileEvent::FromMemory {
+            track: 2,
+            state: None,
+        };
+        assert!(memory
+            .line("Keys")
+            .ends_with("as it has no file of its own"));
+    }
 
     #[test]
     fn a_track_name_becomes_a_file_name_without_allocating() {

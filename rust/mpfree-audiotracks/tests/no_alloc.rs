@@ -380,7 +380,7 @@ fn the_host_period_hardly_allocates_while_recording_to_files() {
     let dir = std::env::temp_dir().join(format!("mpfree-na-host-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let mut h = AudioHost::new(RATE, 40);
-    assert!(h.record_to(dir.clone(), WriterConfig::default()));
+    assert!(h.record_to(dir.clone(), WriterConfig::default()).is_ok());
     let mut t = Transport::new(RATE, 240.0).unwrap();
     let mut b = Block::new();
     let input: Vec<f32> = (0..2 * P)

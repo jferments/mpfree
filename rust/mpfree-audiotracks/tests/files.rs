@@ -58,7 +58,7 @@ struct Rig {
 impl Rig {
     fn new(dir: &Path) -> Rig {
         let mut h = AudioHost::new(RATE, 30);
-        assert!(h.record_to(dir.to_path_buf(), quick()));
+        assert!(h.record_to(dir.to_path_buf(), quick()).is_ok());
         Rig {
             t: Transport::new(RATE, 240.0).unwrap(),
             h,

@@ -1,5 +1,5 @@
 <!--
-covers: rust/mpfree-stream rust/mpfree-audiotracks/src/bin/disktest.rs rust/mpfree-audiotracks/src/bin/disktest/read.rs rust/mpfree-audiotracks/src/host.rs rust/mpfree-audiotracks/src/disk.rs tools/mpc-one/host_disktest_mpc.py tools/mpc-one/read-only-stream-survey.sh
+covers: rust/mpfree-stream rust/mpfree-audiotracks/src/bin/disktest.rs rust/mpfree-audiotracks/src/bin/disktest/read.rs rust/mpfree-audiotracks/src/host.rs rust/mpfree-audiotracks/src/files.rs tools/mpc-one/host_disktest_mpc.py tools/mpc-one/read-only-stream-survey.sh
 checked: 2026-11-22 829e1568
 -->
 
@@ -22,7 +22,7 @@ The order of what matters: recordings are never lost silently, then steady timin
 1. **The sound thread does disk bookkeeping.** `AudioTrackHost::period()` calls `tend()` ([host.rs](../../../rust/mpfree-audiotracks/src/host.rs)), whose `tend_disk()` builds file names with `format!` and whose `tend_save()` builds the whole save (`save_file()`) every period while settled.
 2. **A short read becomes silence counted as success.** `fill_part` ([lib.rs](../../../rust/mpfree-audiotracks/src/lib.rs)) zero-pads whatever didn't arrive and marks the chunk clean.
 3. **A failed write is only counted.** `write_failed` adds to `write_errors`; the take carries on as if saved.
-4. **One serial disk thread.** `serve()` ([disk.rs](../../../rust/mpfree-audiotracks/src/disk.rs)) handles one job at a time, so reading a whole file or building peaks blocks the playback reads behind it.
+4. **One serial disk thread.** `serve()` (the old `disk.rs`) handles one job at a time, so reading a whole file or building peaks blocks the playback reads behind it.
 5. **Replies are matched by take and chunk.** Take numbers are reused after a project change, so an old reply can land in a new take.
 6. **Importing refuses while streaming** (`ImportRefused::Streaming`).
 7. **The WAV header and the sync come only at the end.** A cut mid-take leaves a file with no usable header. `finish()` also computes the data size as a `u32`, which overflows after about 3 h 23 min of stereo float.
@@ -187,7 +187,7 @@ Both run on the test build (MPFree's system on the stick, port 2222) through [`t
 
 ## P0.5: the old engine's fault fixes
 
-The fault tests were written first and failed against the old engine; these changes make them pass. The audio tracks' page has the details ([audio-tracks.md](audio-tracks.md#streaming-from-the-stick)).
+The fault tests were written first and failed against the old engine; these changes make them pass. The audio tracks' phase 3a (22 Nov) then removed the old engine's streaming whole, with these tests: its takes record through `mpfree-stream`'s writer ([audio-tracks.md](audio-tracks.md#recording-to-files-phase-3a)), and play from their files in phase 3b. What follows is the record of P0.5.
 
 - **Short reads (finding 2).** A chunk that comes back shorter than the take's audio there is counted (`Stats::short_reads`), never played, and asked for again when next wanted. A failed read is too, as before.
 - **Failed writes (finding 3).** A failed write is asked for again (`Io::Rewrite`, always into the take's own file, never a new one, even for chunk 0), and the file finished again once the take is recorded; a failed finish is tried again too. After `WRITE_TRIES` (3) tries, or when a request is lost to a full queue, the take is **at risk**: its unwritten chunks stay dirty in memory, so it still plays and nothing else takes their room.

@@ -11,7 +11,7 @@
 //! rate=44100
 //! track=0 id=9 input=left monitor=auto
 //! region start=0 end=3840 take=3 src=0 gain=1 fade_in=0 fade_out=0
-//! take=3 rec=5b2f0d9c41e8a7763c0f12ab9e4d8c01 track=0 group=1 pass=0 bpm=120 anchor=-12.5 frames=44100 channels=1 file=3f0c.wav
+//! take=3 rec=5b2f0d9c41e8a7763c0f12ab9e4d8c01 track=0 group=1 pass=0 bpm=120 anchor=-12.5 frames=44100 channels=1 file=Vocal_5b2f0d9c41e8a7763c0f12ab9e4d8c01.wav
 //! ```
 //!
 //! A line is `key=value` words; `file=` comes last and takes the rest of
@@ -34,7 +34,14 @@
 //! name. Every recording is the project's own, its file in the project's
 //! `samples/`, at the part's `rate`; recordings from outside the project,
 //! and files at their own rates, come with streaming (the rethink's
-//! phase 3).
+//! phase 3b).
+//!
+//! A take's `file` is the name the host gives it as it saves
+//! ([`crate::files`], phase 3a): a take recorded to a file of its own is
+//! named for its track and its id (`NAME_ID.wav`), and its finished file
+//! is copied in whole ([`TakeFile::path`], no audio read); a take opened
+//! keeps its file's name; any other is `take_ID.wav`, written from its
+//! samples.
 //!
 //! Saving: [`crate::AudioTracks::save_into`] fills a [`Saved::room`] made
 //! off the audio thread with the settings, regions and takes without

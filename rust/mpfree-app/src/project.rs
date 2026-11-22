@@ -874,37 +874,74 @@ pub type Read<T> = (T, Vec<String>, Vec<String>);
 
 // ------------------------------------------------------------ the audio tracks
 
-/// A take's audio for the project's `samples/`: its file name, its
-/// samples (interleaved) and channels.
-pub type TakeAudio = (String, Vec<f32>, usize);
+/// A take's sound for the project's `samples/`, under the name its take
+/// line gives.
+#[derive(Debug, PartialEq)]
+pub enum TakeAudio {
+    /// A finished file that holds the whole take, copied in as it is: a
+    /// take recorded to its file, or one a project opened
+    /// (`mpfree_audiotracks::save::TakeFile::path`).
+    Copy {
+        file: String,
+        from: std::path::PathBuf,
+    },
+    /// Samples (interleaved) to write as a WAV, with their channels: a take
+    /// with no finished file of its own.
+    Write {
+        file: String,
+        audio: Vec<f32>,
+        channels: usize,
+    },
+}
+
+impl TakeAudio {
+    pub fn file(&self) -> &str {
+        match self {
+            TakeAudio::Copy { file, .. } | TakeAudio::Write { file, .. } => file,
+        }
+    }
+}
 
 /// The audio tracks' part and their takes' sounds for the project's
-/// `samples/`, each take named for its audio (`take-<id>.wav`), so a take
-/// saved before is not written again. The audio is moved, not copied.
+/// `samples/`, each under the name the audio tracks gave it: a recorded
+/// take's file, `NAME_ID.wav`; a take opened keeps its name; any other is
+/// `take_ID.wav` (ID its lasting id). A name the project already has is
+/// not written again by the save. The audio is moved, not copied.
 pub fn audio_part(mut saved: mpfree_audiotracks::save::Saved) -> (String, Vec<TakeAudio>) {
     let mut files: Vec<TakeAudio> = Vec::new();
     for k in &mut saved.takes {
-        let audio = std::mem::take(&mut k.audio);
-        // The channels count in the name: the same samples as mono and as
-        // stereo are two sounds.
-        let tag = saved.rate ^ ((k.channels as u32) << 30);
-        k.file = format!("take-{}.wav", audio_id(&audio, tag));
-        if !files.iter().any(|(name, _, _)| *name == k.file) {
-            files.push((k.file.clone(), audio, k.channels));
+        if k.file.is_empty() {
+            k.file = format!("take_{}.wav", k.rec);
         }
+        let audio = std::mem::take(&mut k.audio);
+        if files.iter().any(|f| f.file() == k.file) {
+            continue;
+        }
+        files.push(match k.path.take() {
+            Some(from) => TakeAudio::Copy {
+                file: k.file.clone(),
+                from,
+            },
+            None => TakeAudio::Write {
+                file: k.file.clone(),
+                audio,
+                channels: k.channels,
+            },
+        });
     }
     (mpfree_audiotracks::save::to_text(&saved), files)
 }
 
-/// Reads the audio tracks' part and each take's sound (`read` gives a
-/// file's bytes from the project's `samples/`); `rate` is the sound's.
-/// The files can be big: run it off the screen thread. A take whose sound
-/// can't be read, or isn't the take's, is left out with the regions
+/// Reads the audio tracks' part and each take's sound (`find` gives where
+/// a file of the project's `samples/` is); `rate` is the sound's. Each
+/// take keeps where its file is (`path`), so a later save copies it from
+/// there. The files can be big: run it off the screen thread. A take whose
+/// sound can't be read, or isn't the take's, is left out with the regions
 /// playing it, and a line says so (and the third list).
 pub fn audio_open(
     text: &str,
     rate: u32,
-    read: impl Fn(&str) -> Result<Vec<u8>, String>,
+    find: impl Fn(&str) -> Result<std::path::PathBuf, String>,
 ) -> Result<Read<mpfree_audiotracks::save::Saved>, String> {
     let mut saved = mpfree_audiotracks::save::from_text(text)?;
     let mut notes = Vec::new();
@@ -917,18 +954,20 @@ pub fn audio_open(
     }
     let mut gone = Vec::new();
     saved.takes.retain_mut(|k| {
-        let got = read(&k.file)
-            .and_then(|b| mpfree_audiotracks::save::from_wav(&b))
-            .and_then(|(audio, ch, _)| {
-                if ch != k.channels || audio.len() != k.frames * k.channels {
-                    Err("not this take's sound".to_string())
-                } else {
-                    Ok(audio)
-                }
-            });
+        let got = find(&k.file).and_then(|path| {
+            let (audio, ch, _) = std::fs::read(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|b| mpfree_audiotracks::save::from_wav(&b))?;
+            if ch != k.channels || audio.len() != k.frames * k.channels {
+                Err("not this take's sound".to_string())
+            } else {
+                Ok((audio, path))
+            }
+        });
         match got {
-            Ok(audio) => {
+            Ok((audio, path)) => {
                 k.audio = audio;
+                k.path = Some(path);
                 true
             }
             Err(e) => {
@@ -3642,22 +3681,33 @@ mod tests {
     }
 
     #[test]
-    fn audio_takes_are_named_for_their_audio_and_a_missing_one_is_said() {
-        use mpfree_audiotracks::save::{Saved, TakeFile, TrackFile};
-        use mpfree_audiotracks::{Input, Monitor, Region};
-        let take = |id: u16, channels: usize, audio: Vec<f32>| TakeFile {
-            id,
-            rec: mpfree_audiotracks::RecordingId(0x100 + u128::from(id)),
-            track: 0,
-            group: 1,
-            pass: id,
-            bpm: 120.0,
-            anchor: 0.0,
-            frames: audio.len() / channels,
-            channels,
-            file: String::new(),
-            path: None,
-            audio,
+    fn audio_takes_keep_the_names_the_tracks_gave_and_a_missing_one_is_said() {
+        use mpfree_audiotracks::save::{wav, Saved, TakeFile, TrackFile};
+        use mpfree_audiotracks::{Input, Monitor, RecordingId, Region};
+        let dir = std::env::temp_dir().join(format!("mpfree-audio-takes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let rec = |id: u16| RecordingId(0x100 + u128::from(id));
+        let take = |id: u16, channels: usize, frames: usize, file: &str, path: Option<_>| {
+            let audio = if path.is_some() {
+                Vec::new()
+            } else {
+                (0..frames * channels).map(|k| k as f32 / 800.0).collect()
+            };
+            TakeFile {
+                id,
+                rec: rec(id),
+                track: 0,
+                group: 1,
+                pass: id,
+                bpm: 120.0,
+                anchor: 0.0,
+                frames,
+                channels,
+                file: file.to_string(),
+                path,
+                audio,
+            }
         };
         let region = |start, end, take| Region {
             start,
@@ -3668,7 +3718,14 @@ mod tests {
             fade_in: 0,
             fade_out: 0,
         };
+        // Take 0 was recorded to its file, which holds all of it: copied
+        // whole. Take 1 has no file: written from its samples, named for
+        // its id. Take 2 shares take 0's file (a project opened that kept
+        // one file for both): one copy.
         let a: Vec<f32> = (0..400).map(|k| k as f32 / 400.0).collect();
+        let vocal = mpfree_audiotracks::files::file_name("Vocal", rec(0));
+        let recorded = dir.join(&vocal);
+        std::fs::write(&recorded, wav(&a, 1, 44_100)).unwrap();
         let saved = Saved {
             rate: 44_100,
             tracks: vec![TrackFile {
@@ -3677,53 +3734,65 @@ mod tests {
                 input: Input::Stereo,
                 monitor: Monitor::In,
                 from: String::new(),
-                regions: vec![region(0, 960, 0), region(960, 1920, 2)],
+                regions: vec![region(0, 960, 0), region(960, 1920, 1)],
             }],
-            // Take 1 has take 0's samples (one file for both); take 2 the
-            // same samples as stereo (a sound of its own).
             takes: vec![
-                take(0, 1, a.clone()),
-                take(1, 1, a.clone()),
-                take(2, 2, a.clone()),
+                take(0, 1, 400, &vocal, Some(recorded.clone())),
+                take(1, 2, 400, "", None),
+                take(2, 1, 400, &vocal, Some(recorded.clone())),
             ],
         };
         let (text, files) = audio_part(saved);
-        assert_eq!(files.len(), 2);
-        assert!(files.iter().all(|(f, _, _)| f.starts_with("take-")));
-        assert_ne!(files[0].0, files[1].0);
-        assert_eq!((files[1].1.len(), files[1].2), (400, 2));
-        let wavs: Vec<(String, Vec<u8>)> = files
-            .iter()
-            .map(|(f, audio, ch)| {
-                let mut w = Vec::new();
-                mpfree_audiotracks::save::write_wav(&mut w, audio, *ch, 44_100).unwrap();
-                (f.clone(), w)
-            })
-            .collect();
-        let read = |f: &str| {
-            wavs.iter()
-                .find(|(n, _)| n == f)
-                .map(|(_, b)| b.clone())
-                .ok_or_else(|| "not there".to_string())
+        let named = format!("take_{}.wav", rec(1));
+        assert_eq!(files.len(), 2, "{files:?}");
+        assert_eq!(
+            files[0],
+            TakeAudio::Copy {
+                file: vocal.clone(),
+                from: recorded.clone()
+            }
+        );
+        let TakeAudio::Write {
+            file,
+            audio,
+            channels,
+        } = &files[1]
+        else {
+            panic!("{:?}", files[1]);
         };
-        let (back, notes, left) = audio_open(&text, 44_100, read).unwrap();
+        assert_eq!((file, audio.len(), *channels), (&named, 800, 2));
+        assert!(text.contains(&vocal) && text.contains(&named), "{text}");
+        // The project's samples/ as a save leaves it.
+        std::fs::write(dir.join(&named), wav(audio, 2, 44_100)).unwrap();
+        let find = |f: &str| {
+            let p = dir.join(f);
+            if p.exists() {
+                Ok(p)
+            } else {
+                Err("not there".to_string())
+            }
+        };
+        let (back, notes, left) = audio_open(&text, 44_100, find).unwrap();
         assert!(notes.is_empty() && left.is_empty(), "{notes:?}");
         assert_eq!(back.takes.len(), 3);
-        assert_eq!(back.takes[1].audio, a);
-        assert_eq!(back.takes[2].channels, 2);
+        assert_eq!(back.takes[0].audio, a);
         assert_eq!(back.takes[2].audio, a);
+        assert_eq!(back.takes[1].channels, 2);
+        assert_eq!(back.takes[1].audio.len(), 800);
+        // Each keeps where its file is, for the next save to copy.
+        assert_eq!(back.takes[0].path, Some(recorded.clone()));
+        assert_eq!(back.takes[1].path, Some(dir.join(&named)));
         assert_eq!(back.tracks[0].input, Input::Stereo);
         assert_eq!(back.tracks[0].regions.len(), 2);
-        // Each recording keeps its lasting id, though two share a file.
         let recs: Vec<u128> = back.takes.iter().map(|k| k.rec.0).collect();
         assert_eq!(recs, vec![0x100, 0x101, 0x102]);
-        // Take 2's file gone: it is left out with its region, and said;
+        // Take 1's file gone: it is left out with its region, and said;
         // another rate is said too (not left out: the takes are there).
         let (back, notes, left) = audio_open(&text, 48_000, |f| {
-            if f == files[1].0 {
+            if f == named {
                 Err("gone".into())
             } else {
-                read(f)
+                find(f)
             }
         })
         .unwrap();
@@ -3736,18 +3805,20 @@ mod tests {
         );
         assert_eq!(left, vec!["a take of audio 1".to_string()]);
         // A file that isn't the take's sound (another length) is refused.
-        let short = mpfree_audiotracks::save::wav(&a[..100], 1, 44_100);
+        let short = dir.join("short.wav");
+        std::fs::write(&short, wav(&a[..100], 1, 44_100)).unwrap();
         let (back, notes, _) = audio_open(&text, 44_100, |f| {
-            if f == files[0].0 {
+            if f == vocal {
                 Ok(short.clone())
             } else {
-                read(f)
+                find(f)
             }
         })
         .unwrap();
         assert_eq!(back.takes.len(), 1);
         assert!(notes.iter().all(|n| n.contains("not this take's sound")));
-        assert!(audio_open("nope", 44_100, read).is_err());
+        assert!(audio_open("nope", 44_100, find).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
