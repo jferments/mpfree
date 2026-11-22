@@ -5269,7 +5269,7 @@ impl Player {
         let looped = if st.phase == Phase::Empty {
             "empty; starts on PLAY, or on the next bar line while playing".to_string()
         } else {
-            let bars = crate::looper_page::bars_of(st.ticks, self.looper.beats_per_bar);
+            let bars = crate::looper_page::bars_of(st.ticks, self.looper.bar_ticks);
             format!(
                 "{bars} bar{} · {} layer{}; REC overdubs it",
                 if bars == 1 { "" } else { "s" },
@@ -11504,6 +11504,9 @@ impl Player {
         // Flatten's hits go after the source it records from.
         let hits = self.sample.take_hits();
         self.outbox.extend(hits);
+        // Put on audio track's sounds, made on the job service.
+        let sounds = self.sample.take_to_audio();
+        self.outbox.extend(sounds);
         if self.sample.take_unsaved() {
             self.mark_unsaved();
         }
@@ -11853,6 +11856,29 @@ impl Player {
                 memory.push((
                     "Sampler: Normalize read every frame (no summary)".to_string(),
                     format!("{read}×"),
+                    Tone::Warn,
+                ));
+            }
+            let stale = self.sample.stale_copies();
+            if stale > 0 {
+                memory.push((
+                    "Sampler: stretched copies thrown away (pad changed)".to_string(),
+                    format!("{stale}×"),
+                    Tone::Warn,
+                ));
+            }
+            let jobs = self.sample.jobs_counts();
+            if jobs.refused > 0 {
+                memory.push((
+                    "Sampler: work refused for want of memory".to_string(),
+                    format!("{}×", jobs.refused),
+                    Tone::Warn,
+                ));
+            }
+            if jobs.spawn_failed > 0 {
+                memory.push((
+                    "Sampler: background workers that couldn't start".to_string(),
+                    format!("{}×", jobs.spawn_failed),
                     Tone::Warn,
                 ));
             }
@@ -26430,6 +26456,56 @@ mod tests {
         );
     }
 
+    /// Sampler plan step 7c: a copy that comes after its pad changed (here
+    /// its tune, so the copy asked for is no longer the one it plays) is
+    /// thrown away and counted, never put in the copies it plays from.
+    #[test]
+    fn a_stretched_copy_that_comes_after_its_pad_changed_is_thrown_away() {
+        use mpfree_sampler_ui::warp_tool::Row;
+        use mpfree_sampler_ui::wave_tab::REGION as LIST;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        warp_page(&mut p);
+        // The page's job service holds the copy until the pad has changed.
+        p.sample.hold_views(true);
+        p.on_event(UiEvent {
+            widget: LIST.into(),
+            kind: EventKind::Step {
+                index: Row::Warp.index(),
+                delta: 1,
+            },
+        });
+        let (sent, _) = views(p.take_actions());
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        let kit = p.sample.kit();
+        let project = p.sample.project_mut(kit).unwrap();
+        let mut changed = project.pad(pad).unwrap().clone();
+        changed.tune_cents += 100;
+        project.set_pad(pad, Some(changed), None).unwrap();
+        p.sample.hold_views(false);
+        let t = Instant::now();
+        while p.sample.stale_copies() == 0 {
+            assert!(t.elapsed() < Duration::from_secs(30), "the copy never came");
+            std::thread::sleep(Duration::from_millis(5));
+            let _ = p.take_actions();
+        }
+        assert_eq!(p.sample.stale_copies(), 1);
+        assert!(
+            events_log(&p).iter().any(|l| l.starts_with(
+                "sample: a stretched copy came after its pad changed: thrown away (1×"
+            )),
+            "{:?}",
+            events_log(&p)
+        );
+        assert!(
+            !events_log(&p)
+                .iter()
+                .any(|l| l.starts_with("sample: stretched")),
+            "{:?}",
+            events_log(&p)
+        );
+    }
+
     /// Item 6 of the 14 Nov review: a stretched copy that would leave less
     /// than the memory MPFree keeps free isn't made; the pad repitches,
     /// and that is said once, until the tempo changes.
@@ -26572,6 +26648,52 @@ mod tests {
         p.sample.set_mem_free(|| None);
         p.sample.load_file(path, false);
         tick_until(&mut p, |p| name(p).as_deref() == Some("Clap 3"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Sampler plan step 7g: a Load runs on the job service's file lane,
+    /// so a long piece of work on its sound lane (a long take's waveform, a
+    /// stretch) never holds it up.
+    #[test]
+    fn a_load_lands_while_long_work_holds_the_sound_lane() {
+        use mpfree_sampler::jobs::{Job, Key, Lane};
+        use mpfree_sampler::model::Source;
+        use mpfree_sampler::wav;
+        let dir = std::env::temp_dir().join(format!("mpfree-sample-lanes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let s = Source::new("x", 44_100, 1, vec![0.25; 44_100]).unwrap();
+        let path = dir.join("Clap 4.wav");
+        std::fs::write(&path, wav::bytes(&s)).unwrap();
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        // Work on the sound lane that runs until it is let go.
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        let (started, running) = std::sync::mpsc::channel::<()>();
+        p.sample
+            .jobs()
+            .submit(Job::new(Lane::Sound, Key::new("long", 1), move |_| {
+                let _ = started.send(());
+                // Until let go, or the test ends.
+                let _ = wait.recv();
+            }));
+        running
+            .recv_timeout(WORKER_WAIT)
+            .expect("the sound lane's work started");
+        p.sample.load_file(path, false);
+        let end = Instant::now() + Duration::from_secs(20);
+        while !p
+            .sample
+            .project(0)
+            .unwrap()
+            .pad(pad)
+            .is_some_and(|pd| pd.name == "Clap 4")
+        {
+            assert!(Instant::now() < end, "held up: {:?}", events_log(&p));
+            std::thread::sleep(Duration::from_millis(5));
+            p.tick(0.033);
+        }
+        assert!(p.sample.jobs().busy(), "the sound lane is still busy");
+        let _ = go.send(());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -29517,14 +29639,18 @@ mod tests {
                 widget: wave_tab::REGION.into(),
                 kind: EventKind::Tab(Row::Chop.index()),
             });
-            let mut sent: Vec<_> = p
-                .take_actions()
-                .into_iter()
-                .filter_map(|a| match a {
+            // Made on the job service (sampler plan step 7e): it comes on
+            // a later frame.
+            let end = Instant::now() + WORKER_WAIT;
+            let mut sent = Vec::new();
+            while sent.is_empty() {
+                assert!(Instant::now() < end, "the sound never came");
+                sent.extend(p.take_actions().into_iter().filter_map(|a| match a {
                     FromUi::SampleToAudio(s) => Some(s),
                     _ => None,
-                })
-                .collect();
+                }));
+                std::thread::sleep(Duration::from_millis(2));
+            }
             assert_eq!(sent.len(), 1);
             sent.remove(0)
         };
@@ -29565,9 +29691,10 @@ mod tests {
         check(&p, &s, "Take 1");
         assert_eq!(p.sample.project(0).unwrap().takes().len(), 1);
         assert_eq!(p.sample.take_shown().as_deref(), Some("Take 1"));
-        // Too little memory for the copy (sampler plan, phase 1 step 5):
-        // nothing is sent, and it says why.
-        p.sample.set_mem_free(|| Some(crate::memory::FLOOR + 1000));
+        // Nothing is copied on the screen (sampler plan step 7e): with the
+        // job service held, the press returns with nothing sent and says
+        // what it is doing; the sound comes once the service goes on.
+        p.sample.hold_views(true);
         p.take_actions();
         p.on_event(UiEvent {
             widget: wave_tab::REGION.into(),
@@ -29578,12 +29705,53 @@ mod tests {
             .iter()
             .any(|a| matches!(a, FromUi::SampleToAudio(_))));
         assert!(
-            events_log(&p).iter().any(|l| l
-                .starts_with("sample: not put on an audio track: not enough memory: needs about")),
+            events_log(&p)
+                .iter()
+                .any(|l| l == "sample: kit 1 (Breaks): copying Take 1 out for an audio track"),
             "{:?}",
             events_log(&p)
         );
-        p.sample.set_mem_free(|| None);
+        let told = p.told.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+        assert_eq!(told, "Copying Take 1 out for an audio track");
+        p.sample.hold_views(false);
+        let end = Instant::now() + WORKER_WAIT;
+        while !p
+            .take_actions()
+            .iter()
+            .any(|a| matches!(a, FromUi::SampleToAudio(_)))
+        {
+            assert!(Instant::now() < end, "the sound never came");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        // Too little memory for the copy (sampler plan, phase 1 step 5;
+        // checked by the job service as it starts since step 7e): nothing
+        // is sent, and it says why.
+        p.sample.use_jobs(mpfree_sampler::jobs::Jobs::new(
+            mpfree_sampler::jobs::Config {
+                free: || Some(crate::memory::FLOOR + 1000),
+                ..sample_page::jobs_config()
+            },
+        ));
+        p.take_actions();
+        p.on_event(UiEvent {
+            widget: wave_tab::REGION.into(),
+            kind: EventKind::Tab(Row::Chop.index()),
+        });
+        let refused = "sample: Take 1 not put on an audio track: not enough memory: needs about";
+        let end = Instant::now() + WORKER_WAIT;
+        while !events_log(&p).iter().any(|l| l.starts_with(refused)) {
+            assert!(Instant::now() < end, "{:?}", events_log(&p));
+            assert!(!p
+                .take_actions()
+                .iter()
+                .any(|a| matches!(a, FromUi::SampleToAudio(_))));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let told = p.told.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+        assert!(
+            told.starts_with("Not put on an audio track: not enough memory"),
+            "{told}"
+        );
     }
 
     /// The Slice tool on a take kept on the page (one Sample page step 3):
@@ -33703,6 +33871,518 @@ mod tests {
         assert_eq!(gain_now(&p), gain);
         assert!(said(&p, done) && !said(&p, waits), "{:?}", events_log(&p));
         assert_eq!(p.sample.normalize_fallbacks(), 0);
+
+        // Plan phase 2 step 7f: its waveform waits for memory, and its
+        // summary with it, so Normalize doesn't wait for them: the peak is
+        // read from every frame on the job service instead (reading needs
+        // no memory), the same peak, never on the screen. Pressed while
+        // the waveform is still on its way, and pressed once it waits.
+        let refused = "sample: Long take's waveform waits: not enough memory";
+        let instead = "sample: pad A5's waveform waits for memory, so its peak is read from \
+                       every frame instead, off the screen";
+        let short = |p: &mut Player| {
+            p.sample.use_jobs(mpfree_sampler::jobs::Jobs::new(
+                mpfree_sampler::jobs::Config {
+                    free: || Some(crate::memory::FLOOR + 1000),
+                    ..sample_page::jobs_config()
+                },
+            ));
+        };
+        let wait = |p: &mut Player, until: &dyn Fn(&Player) -> bool| {
+            let end = Instant::now() + WORKER_WAIT;
+            while !until(p) {
+                assert!(Instant::now() < end, "{:?}", events_log(p));
+                std::thread::sleep(Duration::from_millis(2));
+                p.tick(0.0);
+            }
+        };
+        for known in [false, true] {
+            let mut p = sample_player(Fonts::embedded());
+            short(&mut p);
+            p.sample.hold_views(!known);
+            p.apply(ToUi::SampleKits {
+                projects: vec![project.clone()],
+                rate,
+            });
+            p.apply(ToUi::PadDown { pad, velocity: 100 });
+            p.apply(ToUi::PadUp(pad));
+            p.apply(ToUi::Show(View::Sample));
+            if known {
+                wait(&mut p, &|p| said(p, refused));
+            }
+            press(&mut p);
+            assert_eq!(gain_now(&p), 0.0, "nothing read on the screen");
+            assert!(said(&p, if known { instead } else { waits }));
+            p.sample.hold_views(false);
+            wait(&mut p, &|p| gain_now(p) == gain);
+            assert!(said(&p, instead) && said(&p, done), "{:?}", events_log(&p));
+            assert_eq!(p.sample.normalize_fallbacks(), 0, "not a fallback");
+        }
+
+        // Changed while its peak was read: let go, and said.
+        let mut p = sample_player(Fonts::embedded());
+        short(&mut p);
+        p.apply(ToUi::SampleKits {
+            projects: vec![project.clone()],
+            rate,
+        });
+        p.apply(ToUi::PadDown { pad, velocity: 100 });
+        p.apply(ToUi::PadUp(pad));
+        p.apply(ToUi::Show(View::Sample));
+        wait(&mut p, &|p| said(p, refused));
+        p.sample.hold_views(true);
+        press(&mut p);
+        p.sample
+            .project_mut(0)
+            .unwrap()
+            .edit_pad(pad, None, |pd| pd.layers[0].region.gain_db = -3.0)
+            .unwrap();
+        p.sample.hold_views(false);
+        wait(&mut p, &|p| {
+            said(
+                p,
+                "sample: pad A5 not normalized: it changed before its peak was found",
+            )
+        });
+        assert_eq!(gain_now(&p), -3.0);
+    }
+
+    /// Sampler plan phase 2, step 7's timing test: no sampler action holds
+    /// the screen for work that grows with the sound. Each action is timed
+    /// as the screen runs it (its event, the page's tick, the frame's
+    /// actions and the kit view it builds), best of three, on a 1-second
+    /// take and on a 3-minute one; the long take may cost at most 16 ms
+    /// more than the short one. Copying the long take's frames out once
+    /// costs about 30 ms in a debug build, so any action that still did
+    /// fails. The times are printed with `--nocapture`. Not under qemu
+    /// (the ARM job), where the clock measures the emulator and seven
+    /// other tests at once.
+    #[test]
+    #[cfg_attr(
+        target_arch = "arm",
+        ignore = "timed natively: under qemu the clock measures the emulator"
+    )]
+    fn no_sampler_action_holds_the_screen_for_work_that_grows_with_the_sound() {
+        use mpfree_sampler::model::{Layer, Pad, PlayMode, Project, Region, Source};
+        use mpfree_sampler::wav;
+        use mpfree_sampler_ui::wave_tab::{self, Row as WaveRow, Tool};
+        use mpfree_sampler_ui::{pads_tab, slice_tool, warp_tool};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let rate = mpfree_sampler_ui::sample::RATE;
+        let dir = std::env::temp_dir().join(format!("mpfree-screen-time-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // 16-bit stereo: a hit every half second over a soft tone.
+        let take = |secs: usize| {
+            let n = secs * rate as usize;
+            let data: Vec<f32> = (0..2 * n)
+                .map(|i| {
+                    let f = i / 2;
+                    let k = (f % (rate as usize / 2)) as f32;
+                    let x = 0.6 * (-k / 800.0).exp() * (f as f32 * 0.05).sin()
+                        + 0.05 * (f as f32 * 0.0313).sin();
+                    (x * 32_768.0).round() / 32_768.0
+                })
+                .collect();
+            Source::new("Take", rate, 2, data).unwrap()
+        };
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            let _ = p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            });
+        };
+        let step = |p: &mut Player, index: usize, delta: i32| {
+            ev(p, wave_tab::REGION, EventKind::Step { index, delta });
+        };
+        // The frame's actions, the kit views among them handed back as the
+        // audio thread does, so the next frame builds the next view.
+        let frame = |p: &mut Player| {
+            let (sent, _) = views(p.take_actions());
+            for v in sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+        };
+        // The best of `runs` runs of `act`, each with the frame it lands in
+        // (the page's tick, its actions and the kit view it builds);
+        // `between` puts things back, untimed.
+        let time_n = |p: &mut Player,
+                      runs: usize,
+                      act: &dyn Fn(&mut Player),
+                      between: &dyn Fn(&mut Player)| {
+            let mut best = Duration::MAX;
+            for _ in 0..runs {
+                frame(p);
+                let t = Instant::now();
+                act(p);
+                p.tick(0.033);
+                let (sent, _) = views(p.take_actions());
+                best = best.min(t.elapsed());
+                for v in sent {
+                    p.apply(ToUi::SampleViewBack(v));
+                }
+                between(p);
+                frame(p);
+            }
+            best
+        };
+        let time = |p: &mut Player, act: &dyn Fn(&mut Player), between: &dyn Fn(&mut Player)| {
+            time_n(p, 3, act, between)
+        };
+        let run = |secs: usize| -> Vec<(&'static str, Duration)> {
+            let source = take(secs);
+            let path = dir.join(format!("Take {secs}.wav"));
+            std::fs::write(&path, wav::bytes(&source)).unwrap();
+            let mut project = Project::new();
+            project.add_source(source.clone());
+            let mut r = Region::whole(&source);
+            r.mode = PlayMode::OneShot;
+            project
+                .set_pad(pad, Some(Pad::new("Take", Layer::new(r))), None)
+                .unwrap();
+            let mut p = sample_player(Fonts::embedded());
+            p.apply(ToUi::SampleKits {
+                projects: vec![project],
+                rate,
+            });
+            p.apply(ToUi::PadDown { pad, velocity: 100 });
+            p.apply(ToUi::PadUp(pad));
+            p.apply(ToUi::Show(View::Sample));
+            settle_views(&mut p);
+            frame(&mut p);
+            let mut out = Vec::new();
+            let undo = |p: &mut Player| {
+                p.apply(ToUi::SampleLift);
+                p.apply(ToUi::SampleUndo(false));
+            };
+            out.push((
+                "Normalize",
+                time(
+                    &mut p,
+                    &|p| {
+                        ev(
+                            p,
+                            wave_tab::REGION,
+                            EventKind::Tab(WaveRow::Normalize.index()),
+                        )
+                    },
+                    &undo,
+                ),
+            ));
+            out.push((
+                "the switch to grains",
+                time(&mut p, &|p| pick_tool(p, Tool::Grain), &|p| {
+                    undo(p);
+                    pick_tool(p, Tool::Trim);
+                }),
+            ));
+            // Warp on, then tempo turns: each asks for a stretched copy.
+            pick_tool(&mut p, Tool::Warp);
+            step(&mut p, warp_tool::Row::Warp.index(), 1);
+            p.apply(ToUi::SampleLift);
+            frame(&mut p);
+            // The project's tempo turned: the warped pad asks for a new
+            // stretched copy.
+            let bpm = std::cell::Cell::new(120.0);
+            out.push((
+                "a project tempo turn",
+                time(
+                    &mut p,
+                    &|p| {
+                        bpm.set(bpm.get() + 1.0);
+                        p.sample.set_tempo(bpm.get());
+                    },
+                    &|_| {},
+                ),
+            ));
+            // Once: a second press stops it.
+            out.push((
+                "Process",
+                time_n(
+                    &mut p,
+                    1,
+                    &|p| {
+                        ev(
+                            p,
+                            wave_tab::REGION,
+                            EventKind::Tab(warp_tool::Row::Process.index()),
+                        )
+                    },
+                    &|p| {
+                        ev(
+                            p,
+                            wave_tab::REGION,
+                            EventKind::Tab(warp_tool::Row::Process.index()),
+                        )
+                    },
+                ),
+            ));
+            undo(&mut p);
+            // The Slice tool, its slices put on an audio track.
+            pick_tool(&mut p, Tool::Slice);
+            for _ in 0..6 {
+                if p.sample.slice().unwrap().0.put_text() == "Audio track" {
+                    break;
+                }
+                step(&mut p, slice_tool::Row::Put.index(), -1);
+            }
+            assert_eq!(p.sample.slice().unwrap().0.put_text(), "Audio track");
+            out.push((
+                "Put on audio track",
+                time(
+                    &mut p,
+                    &|p| {
+                        ev(
+                            p,
+                            wave_tab::REGION,
+                            EventKind::Tab(slice_tool::Row::Chop.index()),
+                        )
+                    },
+                    &|_| {},
+                ),
+            ));
+            let load = path.clone();
+            out.push((
+                "Load",
+                time(&mut p, &|p| p.sample.load_file(load.clone(), true), &|_| {}),
+            ));
+            open_pads(&mut p);
+            frame(&mut p);
+            out.push((
+                "Map to keys",
+                time(
+                    &mut p,
+                    &|p| ev(p, pads_tab::BUTTONS, EventKind::Tab(3)),
+                    &undo,
+                ),
+            ));
+            out
+        };
+        let short = run(1);
+        let long = run(180);
+        for ((what, a), (_, b)) in short.iter().zip(&long) {
+            println!(
+                "{what}: {:.2} ms on a 1 s take, {:.2} ms on a 3-minute take",
+                a.as_secs_f64() * 1e3,
+                b.as_secs_f64() * 1e3
+            );
+        }
+        for ((what, a), (_, b)) in short.iter().zip(&long) {
+            assert!(
+                *b <= *a + Duration::from_millis(16),
+                "{what} holds the screen {:.1} ms longer on a 3-minute take than on a 1 s one",
+                (b.as_secs_f64() - a.as_secs_f64()) * 1e3
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The scaled MPC: its memory, and the floor mpfree keeps free.
+    const MPC_BYTES: u64 = 2_000_000_000 / 8;
+    const MPC_KEEP: u64 = crate::memory::FLOOR / 8;
+
+    /// The memory the scaled MPC has free, as the app's checks read it:
+    /// with its smaller floor made up to the app's own, so `room_in` keeps
+    /// [`MPC_KEEP`] free of [`MPC_BYTES`].
+    fn mpc_free() -> Option<u64> {
+        let held = crate::sys::alloc_count::live_bytes().max(0) as u64;
+        Some(
+            MPC_BYTES
+                .saturating_sub(held)
+                .saturating_sub(MPC_KEEP)
+                .saturating_add(crate::memory::FLOOR),
+        )
+    }
+
+    /// Sampler plan phase 2, step 7's memory test: everything the sampler
+    /// holds at once (long takes, their waveforms, their stretched copies
+    /// and an undo history holding the takes they replaced) stays inside
+    /// the MPC's 2 GB with mpfree's 256 MB floor left free, not just each
+    /// part on its own. Scaled 1:8 (250 MB, 32 MB kept free, six takes of
+    /// a minute) so it runs anywhere. It counts every byte its own threads
+    /// hold (this one and its job service's workers:
+    /// `alloc_count::track_from_now`), so the tests beside it don't add to
+    /// the count.
+    #[test]
+    #[cfg_attr(
+        target_arch = "arm",
+        ignore = "eight minute-long takes stretched: measured on the host, not under emulation"
+    )]
+    fn everything_the_sampler_holds_at_once_fits_the_mpcs_memory() {
+        use crate::sys::alloc_count;
+        use mpfree_sampler::jobs::{Config, Jobs};
+        use mpfree_sampler::model::Source;
+        use mpfree_sampler::wav;
+        use mpfree_sampler_ui::warp_tool;
+        use mpfree_sampler_ui::wave_tab::{self, Tool};
+        let rate = 44_100u32;
+        let dir = std::env::temp_dir().join(format!("mpfree-memory-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Eight 1-minute takes, 16-bit stereo, a hit every half second.
+        let files: Vec<std::path::PathBuf> = (1..=8)
+            .map(|k| {
+                let n = 60 * rate as usize;
+                let data: Vec<f32> = (0..2 * n)
+                    .map(|i| {
+                        let f = i / 2;
+                        let t = (f % (rate as usize / 2)) as f32;
+                        let x = 0.6 * (-t / 800.0).exp() * (f as f32 * 0.05 * k as f32).sin()
+                            + 0.05 * (f as f32 * 0.0313).sin();
+                        ((x * 32_768.0).round() + 0.0) / 32_768.0
+                    })
+                    .collect();
+                let s = Source::new("Long", rate, 2, data).unwrap();
+                assert!(s.data().is_16_bit());
+                let path = dir.join(format!("Long {k}.wav"));
+                std::fs::write(&path, wav::bytes(&s)).unwrap();
+                path
+            })
+            .collect();
+        let mut p = sample_player(Fonts::embedded());
+        // The service's workers count with this thread.
+        p.sample.use_jobs(Jobs::new(Config {
+            free: mpc_free,
+            on_start: |lane| {
+                (sample_page::jobs_config().on_start)(lane);
+                alloc_count::track_this_thread();
+            },
+            ..sample_page::jobs_config()
+        }));
+        p.sample.set_mem_free(mpc_free);
+        let (project, _) = mpfree_sampler_ui::sample::project();
+        p.apply(ToUi::SampleKits {
+            projects: vec![project],
+            rate,
+        });
+        p.apply(ToUi::Show(View::Sample));
+        let frame = |p: &mut Player| {
+            p.tick(0.033);
+            let (sent, _) = views(p.take_actions());
+            for v in sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+        };
+        let until = |p: &mut Player, what: &str, done: &dyn Fn(&Player) -> bool| {
+            let end = Instant::now() + WORKER_WAIT;
+            while !done(p) {
+                assert!(Instant::now() < end, "{what}: {:?}", events_log(p));
+                std::thread::sleep(Duration::from_millis(2));
+                frame(p);
+            }
+        };
+        let idle = |p: &Player| {
+            !p.sample.analysing() && !p.sample.jobs().busy() && p.sample.jobs().waiting() == 0
+        };
+        let name = |p: &Player, pad: usize| {
+            p.sample
+                .project(0)
+                .and_then(|k| k.pad(pad))
+                .map(|pd| pd.name.clone())
+        };
+        let show = |p: &mut Player, pad: usize| {
+            p.apply(ToUi::PadDown { pad, velocity: 100 });
+            p.apply(ToUi::PadUp(pad));
+            frame(p);
+        };
+        // File `k` onto pad `pad`, its waveform worked out: whether it
+        // was loaded.
+        let load = |p: &mut Player, pad: usize, k: usize| {
+            show(p, pad);
+            let before = events_log(p).len();
+            p.sample.load_file(files[k].clone(), false);
+            let want = format!("Long {}", k + 1);
+            until(p, "the load", &|p| {
+                name(p, pad).as_deref() == Some(want.as_str())
+                    || events_log(p)[before..]
+                        .iter()
+                        .any(|l| l.starts_with("sample: not loaded"))
+            });
+            until(p, "its waveform", &idle);
+            name(p, pad).as_deref() == Some(want.as_str())
+        };
+        // Warp on for pad `pad`: it asks for its stretched copy.
+        let warp = |p: &mut Player, pad: usize| {
+            show(p, pad);
+            pick_tool(p, Tool::Warp);
+            p.on_event(UiEvent {
+                widget: wave_tab::REGION.into(),
+                kind: EventKind::Step {
+                    index: warp_tool::Row::Warp.index(),
+                    delta: 1,
+                },
+            });
+            p.apply(ToUi::SampleLift);
+            frame(p);
+            frame(p);
+            pick_tool(p, Tool::Trim);
+        };
+        let held = |what: &str| {
+            println!(
+                "memory: {what}: {:.0} MB held, {:.0} MB at most",
+                alloc_count::live_bytes() as f64 / 1e6,
+                alloc_count::peak_bytes() as f64 / 1e6
+            );
+        };
+        frame(&mut p);
+        until(&mut p, "the kit's waveforms", &idle);
+        alloc_count::track_from_now();
+        // Two takes, each warped: their stretched copies made.
+        for pad in 0..2 {
+            assert!(load(&mut p, pad, pad), "take {} fits", pad + 1);
+            warp(&mut p, pad);
+            until(&mut p, "its stretched copy", &idle);
+            held(&format!("take {} and its copy", pad + 1));
+        }
+        // Two more onto A1: each one replaced stays in the undo history.
+        for k in [6, 7] {
+            assert!(load(&mut p, 0, k), "take {} fits", k + 1);
+            held(&format!(
+                "take {} onto A1, the one before kept for undo",
+                k + 1
+            ));
+        }
+        // Four more onto their own pads, as far as they fit.
+        let mut loaded = Vec::new();
+        for (pad, k) in (2..6).zip(2..6) {
+            if load(&mut p, pad, k) {
+                loaded.push(pad);
+            }
+            held(&format!("take {}", k + 1));
+        }
+        // Each warped while the service waits: their copies wait in line,
+        // then each is checked as it starts.
+        p.sample.hold_views(true);
+        for &pad in &loaded {
+            warp(&mut p, pad);
+        }
+        p.sample.hold_views(false);
+        until(&mut p, "the stretched copies", &idle);
+        held("their copies, as far as they fit");
+        let copies = events_log(&p)
+            .iter()
+            .filter(|l| l.starts_with("sample: stretched "))
+            .count();
+        let refused = p.sample.jobs_counts().refused as usize
+            + events_log(&p)
+                .iter()
+                .filter(|l| l.contains("not enough memory"))
+                .count();
+        let peak = alloc_count::peak_bytes().max(0) as u64;
+        println!(
+            "memory: at most {:.0} MB of {:.0} MB, {:.0} MB kept free; {} takes, {copies} copies, {refused} refusals",
+            peak as f64 / 1e6,
+            MPC_BYTES as f64 / 1e6,
+            MPC_KEEP as f64 / 1e6,
+            4 + loaded.len()
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(copies >= 2, "copies made: {copies}");
+        assert!(refused > 0, "the takes together are more than it holds");
+        assert!(
+            peak <= MPC_BYTES - MPC_KEEP,
+            "{:.0} MB held at once, over the {:.0} MB it may use",
+            peak as f64 / 1e6,
+            (MPC_BYTES - MPC_KEEP) as f64 / 1e6
+        );
     }
 
     #[test]
@@ -35281,6 +35961,121 @@ mod tests {
         assert_eq!(p.page(), sample_page::PAGE);
         p.apply(ToUi::Show(View::Pads));
         assert_eq!(p.page(), sample_page::PLAY_PAGE);
+    }
+
+    /// Sampler plan step 7d: Map to keys never works a sound's note out on
+    /// the screen. A sound not worked out yet goes first on the job service
+    /// and the kit is mapped once it is in; a kit changed meanwhile isn't
+    /// mapped, and a sound whose waveform waits for memory says so.
+    #[test]
+    fn map_to_keys_waits_for_its_sounds_notes_to_be_worked_out_off_the_screen() {
+        use mpfree_sampler::jobs::{Config, Jobs};
+        use mpfree_sampler::model::{Layer, Pad, Project, Region, Source};
+        use mpfree_sampler_ui::pads_tab;
+        let rate = 44_100;
+        // Two seconds of A3 (220 Hz) under a name with no note in it: its
+        // note can only be heard.
+        let data: Vec<f32> = (0..2 * rate as usize)
+            .map(|i| 0.5 * (i as f32 / rate as f32 * 220.0 * std::f32::consts::TAU).sin())
+            .collect();
+        let source = Source::new("Tone", rate, 1, data).unwrap();
+        let mut project = Project::new();
+        project.add_source(source.clone());
+        project
+            .set_pad(
+                0,
+                Some(Pad::new("Tone", Layer::new(Region::whole(&source)))),
+                None,
+            )
+            .unwrap();
+        let start = |jobs: Option<Jobs>| {
+            let mut p = sample_player(Fonts::embedded());
+            match jobs {
+                Some(j) => p.sample.use_jobs(j),
+                None => p.sample.hold_views(true),
+            }
+            let mut kits = p.kits.clone();
+            kits[0].name = "Tones".to_string();
+            kits[0].pads = (0..16)
+                .map(|i| (i == 0).then(|| "Tone".to_string()))
+                .collect();
+            p.apply(ToUi::Kits(kits));
+            p.apply(ToUi::SampleKits {
+                projects: vec![project.clone()],
+                rate,
+            });
+            open_pads(&mut p);
+            let _ = p.take_actions();
+            p
+        };
+        let press = |p: &mut Player| {
+            p.on_event(UiEvent {
+                widget: pads_tab::BUTTONS.into(),
+                kind: EventKind::Tab(3),
+            })
+        };
+        let keys = |p: &Player| p.sample.project(0).unwrap().pad(0).unwrap().keys;
+        let waits = "sample: kit 1 (Tones): map to keys waits for 1 sound to be worked out";
+
+        // Pressed before the tone is worked out: it waits, says so once,
+        // and maps when it is in.
+        let mut p = start(None);
+        press(&mut p);
+        assert_eq!(keys(&p), None, "nothing worked out on the screen");
+        press(&mut p);
+        assert_eq!(events_log(&p).iter().filter(|l| *l == waits).count(), 1);
+        let told = p.told.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+        assert_eq!(told, "Map to keys waits for 1 sound to be worked out");
+        p.sample.hold_views(false);
+        settle_views(&mut p);
+        p.tick(0.0);
+        assert_eq!(keys(&p).map(|k| k.root), Some(57), "A3, heard");
+        assert!(
+            events_log(&p).iter().any(|l| l
+                == "sample: kit 1 (Tones): mapped to keys: 1 pad from A3 to A3 \
+                    (1 by its pitch), the pads play notes"),
+            "{:?}",
+            events_log(&p)
+        );
+
+        // The kit changed while it waited (its pad cleared): not mapped.
+        let mut p = start(None);
+        press(&mut p);
+        p.on_event(UiEvent {
+            widget: pads_tab::BUTTONS.into(),
+            kind: EventKind::Tab(2),
+        });
+        p.sample.hold_views(false);
+        settle_views(&mut p);
+        p.tick(0.0);
+        assert!(p.sample.project(0).unwrap().pad(0).is_none());
+        assert!(
+            events_log(&p).iter().any(|l| l
+                == "sample: kit 1 (Tones): not mapped to keys: \
+                    the kit changed while its sounds were worked out"),
+            "{:?}",
+            events_log(&p)
+        );
+
+        // No memory to spare for the tone's waveform: Map to keys says why
+        // and maps nothing.
+        let mut p = start(Some(Jobs::new(Config {
+            free: || Some(0),
+            ..sample_page::jobs_config()
+        })));
+        press(&mut p);
+        let end = Instant::now() + WORKER_WAIT;
+        let refused = "sample: kit 1 (Tones): not mapped to keys: \
+                       Tone's waveform waits for memory, so its note isn't known yet";
+        while !events_log(&p).iter().any(|l| l == refused) {
+            assert!(Instant::now() < end, "{:?}", events_log(&p));
+            std::thread::sleep(Duration::from_millis(2));
+            p.tick(0.0);
+        }
+        assert_eq!(keys(&p), None);
+        press(&mut p);
+        let told = p.told.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+        assert_eq!(told, "Not mapped to keys: Tone's waveform waits for memory");
     }
 
     #[test]

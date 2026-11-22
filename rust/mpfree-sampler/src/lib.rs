@@ -37,6 +37,7 @@ pub mod export;
 pub mod grain_clip;
 pub mod grain_presets;
 pub mod hits;
+pub mod jobs;
 pub mod keymap;
 pub mod model;
 pub mod node;

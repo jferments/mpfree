@@ -21,17 +21,17 @@
 //! the sinc more than twice, so it costs 16 to 32 taps a frame.
 //!
 //! Copies are made off the audio thread ([`prepare`]): at once for short
-//! sounds, on a thread of their own for longer ones. A voice more than an
-//! octave up with no copy to read (it started before they were made, or a
-//! live tune took a pad there that the view didn't expect) reads the sound
-//! itself with the sinc stretched twice: what folds stays above about
+//! sounds, on the sampler's job service ([`crate::jobs`]) for longer ones.
+//! A voice more than an octave up with no copy to read (it started before
+//! they were made, or a live tune took a pad there that the view didn't
+//! expect) reads the sound itself with the sinc stretched twice: what folds stays above about
 //! 16 kHz up to two and a half times the speed, and comes lower past that.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Sender};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use crate::dsp::Sample;
+use crate::jobs::{Job, Jobs, Key, Lane, Order};
 use crate::model::Pcm;
 
 /// Zero crossings of the read's sinc on each side of the read position,
@@ -426,38 +426,33 @@ impl OctaveCell {
     }
 }
 
-struct Job {
-    cell: Arc<OctaveCell>,
-    data: Pcm,
-    channels: usize,
+/// What making the octave copies of a sound of `frames` frames and
+/// `channels` channels holds: the copies, as floats, half the sound each
+/// time, under the sound's length as floats in all.
+pub fn need(frames: usize, channels: usize) -> u64 {
+    (frames as u64)
+        .saturating_mul(4 * channels as u64)
+        .saturating_add(1_000_000)
 }
 
-static BUILDER: OnceLock<Option<Mutex<Sender<Job>>>> = OnceLock::new();
-
-fn builder() -> Option<&'static Mutex<Sender<Job>>> {
-    BUILDER
-        .get_or_init(|| {
-            let (tx, rx) = channel::<Job>();
-            std::thread::Builder::new()
-                .name("mpfree-octaves".into())
-                .spawn(move || {
-                    for job in rx {
-                        let o = Octaves::make_from(&job.data, job.channels);
-                        let _ = job.cell.built.set(o);
-                    }
-                })
-                .ok()
-                .map(|_| Mutex::new(tx))
-        })
-        .as_ref()
+/// The service's key for a sound's copies: its cell, which the job holds.
+fn key(cell: &Arc<OctaveCell>) -> Key {
+    Key::new("octaves", Arc::as_ptr(cell) as usize as u64)
 }
 
 /// Makes sure a sound's octave copies are made or on their way: at once
-/// for a sound of up to [`SYNC_FRAMES`] frames, on the copies' own thread
-/// for a longer one, never for one longer than [`MAX_FRAMES`]. Does
-/// nothing if they are made or asked for already. Off the audio thread
-/// only (it may allocate, and briefly wait for the copies' queue).
+/// for a sound of up to [`SYNC_FRAMES`] frames, on the process's job
+/// service ([`Jobs::shared`]) for a longer one, never for one longer than
+/// [`MAX_FRAMES`]. Does nothing if they are made or asked for already.
+/// Copies the memory floor can't spare are refused (and counted by the
+/// service), and a later call asks again. Off the audio thread only (it may
+/// allocate, and briefly wait for the service's lock).
 pub fn prepare(cell: &Arc<OctaveCell>, data: &Pcm, channels: u8) {
+    prepare_on(&Jobs::shared(), cell, data, channels);
+}
+
+/// [`prepare`] on `jobs`.
+fn prepare_on(jobs: &Jobs, cell: &Arc<OctaveCell>, data: &Pcm, channels: u8) {
     if cell.built.get().is_some() {
         return;
     }
@@ -473,17 +468,18 @@ pub fn prepare(cell: &Arc<OctaveCell>, data: &Pcm, channels: u8) {
     if cell.asked.swap(true, Ordering::AcqRel) {
         return;
     }
-    let job = Job {
-        cell: cell.clone(),
-        data: data.clone(),
-        channels,
-    };
-    let sent = builder().is_some_and(|b| b.lock().map(|tx| tx.send(job).is_ok()).unwrap_or(false));
-    if !sent {
-        // No thread for it: leave the sound without copies, and let a
-        // later call try again.
-        cell.asked.store(false, Ordering::Release);
-    }
+    let (built, refused) = (cell.clone(), cell.clone());
+    let data = data.clone();
+    jobs.submit(
+        Job::new(Lane::Sound, key(cell), move |_| {
+            let _ = built.built.set(Octaves::make_from(&data, channels));
+        })
+        .order(Order::First)
+        .needs(need(frames, channels), move |_| {
+            // Left without copies for now: the next view built asks again.
+            refused.asked.store(false, Ordering::Release);
+        }),
+    );
 }
 
 /// Makes a sound's octave copies here and now (any length up to
@@ -637,6 +633,41 @@ mod tests {
         for j in 100..900 {
             assert!((l2[j] - x[4 * j]).abs() < 4e-3, "{j}");
         }
+    }
+
+    #[test]
+    fn a_long_sounds_copies_are_made_on_the_job_service_unless_memory_is_short() {
+        let long = Pcm::F32(vec![0.1f32; SYNC_FRAMES + 10].into());
+        // 1 MB more than the floor free: the copies' 1.1 MB is refused.
+        let short = Jobs::new(crate::jobs::Config {
+            free: || Some(257_000_000),
+            room: |free, need| match free {
+                Some(f) if f.saturating_sub(need) >= 256_000_000 => Ok(()),
+                _ => Err("not enough memory".into()),
+            },
+            ..crate::jobs::Config::default()
+        });
+        let cell = Arc::new(OctaveCell::default());
+        prepare_on(&short, &cell, &long, 1);
+        let t = std::time::Instant::now();
+        while short.counts().refused == 0 {
+            assert!(t.elapsed().as_secs() < 20, "never refused");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(cell.get().is_none());
+        assert!(
+            !cell.asked.load(Ordering::Acquire),
+            "a later call asks again"
+        );
+        let jobs = Jobs::new(crate::jobs::Config::default());
+        prepare_on(&jobs, &cell, &long, 1);
+        let t = std::time::Instant::now();
+        while cell.get().is_none() {
+            assert!(t.elapsed().as_secs() < 20, "the copies never came");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(jobs.counts().done, 1);
+        assert!(!jobs.has(key(&cell)));
     }
 
     #[test]

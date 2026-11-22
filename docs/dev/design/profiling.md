@@ -674,8 +674,8 @@ running):
   everything is let through.
 - What a load needs is estimated before it allocates: a sound file's
   length times 3 (the file and its 16-bit samples as `f32`), times 5 for
-  FLAC (`decode_need`); a stretched copy's frames and the source part the
-  stretch thread is handed; an auto-sample's `Plan::estimate().bytes_most`.
+  FLAC (`decode_need`); a stretched copy's frames and the source part its
+  job is handed; an auto-sample's `Plan::estimate().bytes_most`.
 - The pad player checks at each load: the browser's Load and preview
   (`read_one`, on their threads), each sound as a project's kits open (one
   that doesn't fit is left out, named in the log, and the hint says how
