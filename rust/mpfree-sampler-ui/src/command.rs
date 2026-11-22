@@ -80,6 +80,12 @@ pub enum Change {
     },
     /// Layer `layer` of pad `pad`'s gain set to `db`: Normalize.
     Gain { pad: usize, layer: usize, db: f32 },
+    /// Layer `layer` of pad `pad` starts its grains at `at` (0 to 1 of its
+    /// region, the Grain tool's Position): the grain start found at the
+    /// sound's loudest grain once its summary is in. Every other grain
+    /// setting is part of the layer's region ([`Change::Region`]), which
+    /// the Grain tool sends.
+    GrainStart { pad: usize, layer: usize, at: f32 },
     /// Pad `pad` named `pad_name`, the sound its layer `layer` plays named
     /// `sound_name`, or both, as one step (the Sample page's text keyboard).
     /// Names are trimmed and must keep a character; a sound's name is every
@@ -151,6 +157,16 @@ impl Change {
                     pd.layers[layer].region.gain_db = db
                 })
             }
+            Change::GrainStart { pad, layer, at } => {
+                let layer = has_layer(p, *pad, *layer)?;
+                if !(0.0..=1.0).contains(at) {
+                    return Err(ModelError::BadRegion("grain start"));
+                }
+                let at = *at;
+                p.edit_pad(*pad, gesture, move |pd| {
+                    pd.layers[layer].region.grain.position = at
+                })
+            }
             Change::Name {
                 pad,
                 layer,
@@ -212,6 +228,7 @@ impl Change {
             | Change::Region { pad, .. }
             | Change::Gain { pad, .. }
             | Change::Name { pad, .. }
+            | Change::GrainStart { pad, .. }
             | Change::AddLayer { pad, .. }
             | Change::RemoveLayer { pad, .. }
             | Change::LayerSound { pad, .. } => Some(*pad),
@@ -373,6 +390,14 @@ mod tests {
                 Box::new(|p: &Project| p.pad(0).unwrap().layers[0].region.gain_db == 4.5),
             ),
             (
+                Change::GrainStart {
+                    pad: 0,
+                    layer: 1,
+                    at: 0.25,
+                },
+                Box::new(|p: &Project| p.pad(0).unwrap().layers[1].region.grain.position == 0.25),
+            ),
+            (
                 Change::Name {
                     pad: 0,
                     layer: 0,
@@ -481,6 +506,16 @@ mod tests {
                 db: 1.0,
             },
             Change::RemoveLayer { pad: 0, layer: 4 },
+            Change::GrainStart {
+                pad: 0,
+                layer: 0,
+                at: 1.5,
+            },
+            Change::GrainStart {
+                pad: 0,
+                layer: 3,
+                at: 0.5,
+            },
             Change::Name {
                 pad: 0,
                 layer: 0,

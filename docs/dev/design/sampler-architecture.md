@@ -12,7 +12,7 @@ It says which crates hold what, which thread does what, how data moves between t
 4. **Every change is a command.** UI, hardware and MIDI all send the same commands to the control thread. Commands are logged for undo and are the only way to change a project.
 5. **Testable on the workstation.** Every crate except the device backends runs and is tested on x86 and as 32-bit ARM under qemu, as today.
 
-Principles 1, 2 and 5 hold, with the gaps in 2 listed under [As built](#as-built-22-nov). Principles 3 and 4 were not built as written: there is no control thread, and changes were not commands. The refactor keeps the model on the screen thread and puts [sampler commands](#sampler-commands-step-12) in front of it, a family at a time (step 12): a pad's sound goes through them now.
+Principles 1, 2 and 5 hold, with the gaps in 2 listed under [As built](#as-built-22-nov). Principles 3 and 4 were not built as written: there is no control thread, and changes were not commands. The refactor keeps the model on the screen thread and puts [sampler commands](#sampler-commands-step-12) in front of it, a family at a time (step 12): a pad's sound and its grains go through them now.
 
 ## As built, and where it is going
 
@@ -21,7 +21,7 @@ The sampler was built in rounds (steps S1 to S7, rounds R1 to R7). An outside re
 ### As built (22 Nov)
 
 - **No control thread.** Each kit's model (`mpfree_sampler::model::Project`) lives on the screen thread, in the Sample page (`SamplePage::projects`). The pad player builds every kit before the sound starts and hands the projects over once (`Player::take_projects`). An edit builds the kit's engine view again on the screen thread and sends it to the audio thread in a `ViewSwap`; the old view comes back in the same box and is freed on the screen thread.
-- **Changes to a pad's sound are commands; the rest are method calls still.** A pad's sound, its layers, its name, what the kit's pads play and Map to keys go through [sampler commands](#sampler-commands-step-12) (step 12's first family). Grains, slices and Put on, the recorder, kits and takes still call the model's methods from the Sample page directly, until their families move. Each change is an undo step. Undo is per kit, kept in memory and not saved.
+- **Changes to a pad's sound and its grains are commands; the rest are method calls still.** A pad's sound, its layers, its name, its grains, what the kit's pads play and Map to keys go through [sampler commands](#sampler-commands-step-12) (step 12's first two families). Slices and Put on, the recorder, kits and takes still call the model's methods from the Sample page directly, until their families move. Each change is an undo step. Undo is per kit, kept in memory and not saved.
 - **Background work: the job service and two threads of their own.** The [job service](#the-job-service-step-7)'s sound lane (`mpfree-sound-1`) works out a sound's view (peaks, onsets, tempo, root note, and the pitch track when asked for; `mpfree-app/src/views.rs`), the hits of a sound a Stretch grain pad plays (`mpfree-sampler/src/hits.rs`), its octave copies (`bandlimit.rs`), Warp's stretched copies (`warp::Worker`), Process, Put on audio track's copy and Normalize's reads of every frame. Its file lane (`mpfree-file-1`) reads and decodes Load, a kit file and a project's kits. Two have their own thread still:
   - `preview-load`: the browser's preview, which mustn't wait behind a kit or a project opening;
   - `autosample`, which plays a copy of the synth in time.
@@ -163,7 +163,7 @@ A change to a kit is a command: one musical change and the kit it goes to. Every
 | Family | Commands (`Change`) | Who calls them |
 |---|---|---|
 | A pad's sound (built) | `Pad` (put, copy, paste or clear), `Settings`, `Own`, `Turn`, `Region`, `Gain`, `Name`, `AddLayer`, `RemoveLayer`, `LayerSound`, `PadsPlay`, `KeyFade`, `MapToKeys` | The Pads tab's copy, paste, clear, put and rows; Edit pad (the Play tab) and the Sound section; the Sample page's wave, markers and rows; the Play page's Tune and Decay Q-Links; MIDI Learn; Normalize on a pad; the text keyboard's names; Map to keys |
-| Grains | to come | The Grain tool, the grain start found later (`seat_later`), grain presets |
+| Grains (built) | `GrainStart`; every other grain setting, and a preset, is part of the layer's region, so the Grain tool sends `Region` | The Grain tool and its presets (through the wave's `Region`, with the grain start found at once folded in, `seat_grains`); the grain start found once the sound's loudness summary is in (`seat_later`) |
 | Slices and Put on | to come | The Slice tool, Chop to pads, Put on audio track |
 | The recorder | to come | REC, a take kept, Flatten, Auto-sample's landing |
 | Kits and takes | to come | Loads and kit files, scenes, Recall, a take's own edits (Normalize on a take), undo and redo |
@@ -301,7 +301,7 @@ struct Pad     { layers: Vec<Layer>, poly: Poly, choke: Option<u8>, choke_one_wa
 struct Program { kind: ProgramKind /* Drum | Keygroup */, pads: [Option<Pad>; 128], name: String }
 ```
 
-**Commands** are an enum (`SetRegionStart { region, frame }`, `AddMarker`, `Convert { chop, to }`, `AssignToPad`, `RecordStart`, ...). Each command applied to the model returns its inverse, which goes in the undo log. Live gestures (a knob turning) are merged into one undo step per gesture. **As built:** a pad's sound goes through [sampler commands](#sampler-commands-step-12) (`Change`, made by the model's methods, each of which keeps its own undo step); the other families follow in step 12.
+**Commands** are an enum (`SetRegionStart { region, frame }`, `AddMarker`, `Convert { chop, to }`, `AssignToPad`, `RecordStart`, ...). Each command applied to the model returns its inverse, which goes in the undo log. Live gestures (a knob turning) are merged into one undo step per gesture. **As built:** a pad's sound and its grains go through [sampler commands](#sampler-commands-step-12) (`Change`, made by the model's methods, each of which keeps its own undo step); the other families follow in step 12.
 
 ## Recording
 

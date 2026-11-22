@@ -5302,22 +5302,39 @@ impl SamplePage {
                 self.seat_fell_back(&seat);
                 continue;
             };
-            let Some(project) = self.projects.get_mut(seat.kit) else {
-                continue;
-            };
-            let layer = seat.layer;
-            let set = move |p: &mut Pad| p.layers[layer].region.grain.position = at;
             let r = match seat.take {
-                Some(t) => project.edit_take(t, Some(seat.gesture), set),
-                None => project.edit_pad(seat.pad, Some(seat.gesture), set),
+                // A take's own edits become commands with the takes (step
+                // 12's last family).
+                Some(t) => {
+                    let Some(project) = self.projects.get_mut(seat.kit) else {
+                        continue;
+                    };
+                    let layer = seat.layer;
+                    let set = move |p: &mut Pad| p.layers[layer].region.grain.position = at;
+                    let r = project
+                        .edit_take(t, Some(seat.gesture), set)
+                        .map_err(|e| e.to_string());
+                    if r.is_ok() {
+                        self.edits += 1;
+                        if let Some(d) = self.dirty.get_mut(seat.kit) {
+                            *d = true;
+                        }
+                    }
+                    r
+                }
+                None => {
+                    let start = Change::GrainStart {
+                        pad: seat.pad,
+                        layer: seat.layer,
+                        at,
+                    };
+                    let cmd = Command::to_kit(seat.kit, start).in_gesture(Some(seat.gesture));
+                    self.command(&cmd).map(|_| ()).map_err(|e| e.to_string())
+                }
             };
             let what = self.seat_text(&seat);
             match r {
                 Ok(()) => {
-                    self.edits += 1;
-                    if let Some(d) = self.dirty.get_mut(seat.kit) {
-                        *d = true;
-                    }
                     self.lines.push(format!(
                         "sample: {what} plays its grains from its loudest grain now, at {:.1} %",
                         at * 100.0
@@ -5326,7 +5343,7 @@ impl SamplePage {
                 }
                 Err(e) => self
                     .lines
-                    .push(format!("sample: {what}'s grain start not moved ({e:?})")),
+                    .push(format!("sample: {what}'s grain start not moved ({e})")),
             }
         }
         if moved {
