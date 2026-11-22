@@ -84,8 +84,8 @@ use mpfree_sampler::export;
 use mpfree_sampler::jobs::{Config as JobsConfig, Jobs, Key, Lane, Order};
 use mpfree_sampler::keymap::{self, RootFrom};
 use mpfree_sampler::model::{
-    self as model, ChannelPick, ChopSet, Fade, Layer, Levels, LoopMode, ModelError, Pad, PadsPlay,
-    PlayMode, Project, Region, Source, SourceId, Warp, KEPT_CHOP, PADS, SLICE_KEYS_FROM, WARP_BPM,
+    self as model, ChannelPick, Fade, Levels, LoopMode, ModelError, Pad, PadsPlay, PlayMode,
+    Project, Region, Source, SourceId, Warp, PADS, SLICE_KEYS_FROM, WARP_BPM,
 };
 use mpfree_sampler::phrase::Phrase;
 use mpfree_sampler::record::{self, Input, Looped, Progress, Recording};
@@ -121,8 +121,10 @@ use crate::gui::FromUi;
 use crate::mixing::Captured;
 use crate::modpanels::PadFx;
 use crate::sampler::{Cloud, Playheads, RecFeed, RecSource, ViewSwap};
+use crate::sampler_commands::{self, Change, Command, Landing, SceneSlot};
 use crate::views::Summary;
 use mpfree_fx::{CapturePoint, StripId};
+use mpfree_sampler_ui::command::{Lands, Recorded};
 
 /// The Wave tab's page.
 pub const PAGE: &str = "Sample";
@@ -381,13 +383,7 @@ enum Before {
 }
 
 /// What a Play page Q-Link turns on the pad hit last.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PadKnob {
-    /// Semitones (SHIFT: 10 cents).
-    Tune,
-    /// The amp envelope's decay to silence; at the top the sound plays out.
-    Decay,
-}
+pub use mpfree_sampler_ui::command::PadKnob;
 
 /// The sampler's page on show: one of the Pads tab's (the pads, or Edit
 /// pad) or one of the Sample tab's (the page, or Auto-sample over it).
@@ -2353,15 +2349,11 @@ impl SamplePage {
         let what = if roots.is_empty() {
             "no pad has a note to map to keys (none in its name, no clear pitch)".to_string()
         } else {
-            let Some(project) = self.projects.get_mut(kit) else {
-                return;
+            let map = Change::MapToKeys {
+                roots: roots.clone(),
             };
-            match project.map_to_keys(&roots) {
+            match self.command(&Command::to_kit(kit, map)) {
                 Ok(_) => {
-                    self.edits += 1;
-                    if let Some(d) = self.dirty.get_mut(kit) {
-                        *d = true;
-                    }
                     let lo = roots.iter().map(|r| r.1).min().unwrap_or(0);
                     let hi = roots.iter().map(|r| r.1).max().unwrap_or(0);
                     let by = from
@@ -2384,7 +2376,7 @@ impl SamplePage {
                     }
                     what
                 }
-                Err(e) => format!("not mapped to keys ({e:?})"),
+                Err(e) => format!("not mapped to keys ({e})"),
             }
         };
         // On the hint line too, mapped or not: the Pads view the button is
@@ -2991,22 +2983,26 @@ impl SamplePage {
             return;
         };
         let id = st.source.id;
-        let Some(project) = self.projects.get_mut(self.kit) else {
+        let kit = self.kit;
+        if self.projects.get(kit).and_then(|p| p.source(id)).is_none() {
             return;
+        }
+        let keep = Change::KeepChop {
+            source: id,
+            mode,
+            cuts: cuts.into_iter().collect(),
         };
-        let Some(source) = project.source(id) else {
-            return;
-        };
-        let kept =
-            ChopSet::from_markers(KEPT_CHOP, source, mode, cuts).and_then(|c| project.keep_chop(c));
-        match kept {
-            Ok(()) => {
-                if let Some(cs) = st.chop.as_mut() {
-                    Arc::make_mut(cs).kept = project.kept_chop(id).cloned();
+        // The work is unsaved; the audio thread's view is the same.
+        match self.command(&Command::to_kit(kit, keep)) {
+            Ok(_) => {
+                let kept = self
+                    .projects
+                    .get(kit)
+                    .and_then(|p| p.kept_chop(id))
+                    .cloned();
+                if let Some(cs) = self.state.as_mut().and_then(|st| st.chop.as_mut()) {
+                    Arc::make_mut(cs).kept = kept;
                 }
-                // The work is unsaved; the audio thread's view is the same.
-                self.edits += 1;
-                self.unsaved = true;
             }
             Err(e) => self
                 .lines
@@ -3232,32 +3228,29 @@ impl SamplePage {
         let new_name = (to_kit != kit).then(|| self.new_kit_name(&name, to_kit));
         // Worked out before the pads change: the chop's source stays.
         let phrase = a.phrase(project);
-        let made = match (take, to_kit == kit) {
-            (None, true) => a.apply(&mut self.projects[kit]),
-            (Some(i), true) => a.apply_take(&mut self.projects[kit], i),
-            (None, false) => {
-                let (from, to) = two_mut(&mut self.projects, kit, to_kit);
-                a.apply_to(from, to)
-            }
-            (Some(i), false) => {
-                let (from, to) = two_mut(&mut self.projects, kit, to_kit);
-                // The take goes from its kit's page too, an undo step there.
-                a.apply_take_to(from, i, to).and_then(|pads| {
-                    self.projects[kit].remove_take(i)?;
-                    Ok(pads)
-                })
-            }
+        let Some((from, chop)) = a.chop(take) else {
+            return;
         };
+        let mut cmd = Command::to_kit(
+            kit,
+            Change::Chop {
+                from,
+                chop: Box::new(chop),
+            },
+        );
+        if to_kit != kit {
+            // The take goes from its kit's page too, an undo step there.
+            cmd = cmd.onto(to_kit);
+        }
+        let made = self
+            .command(&cmd)
+            .map(|done| done.pads.unwrap_or(0..0))
+            .map_err(|e| e.to_string());
         match made {
             Ok(pads) => {
-                self.edits += 1;
-                if let Some(d) = self.dirty.get_mut(to_kit) {
-                    *d = true;
-                }
                 if let (Some(n), Some(new)) = (self.names.get_mut(to_kit), new_name) {
                     *n = new;
                 }
-                self.mark_renamed(to_kit);
                 let n = bounds.len() - 1;
                 let to = if pads.len() == 1 {
                     self.pad_text(to_kit, pads.start)
@@ -3347,9 +3340,9 @@ impl SamplePage {
                 }
             }
             Err(e) => self.lines.push(match take {
-                Some(_) => format!("sample: chop of {name} not made ({e:?})"),
+                Some(_) => format!("sample: chop of {name} not made ({e})"),
                 None => format!(
-                    "sample: chop of pad {} not made ({e:?})",
+                    "sample: chop of pad {} not made ({e})",
                     self.pad_text(kit, *pad)
                 ),
             }),
@@ -3508,25 +3501,16 @@ impl SamplePage {
                         before: Before::Slot(before),
                     });
                 }
-                let Some(project) = self.projects.get_mut(kit) else {
+                let Some((change, gesture)) = a.change() else {
                     return;
                 };
-                match a.apply(project) {
-                    Ok(()) => {
-                        self.edits += 1;
-                        if let Some(d) = self.dirty.get_mut(kit) {
-                            *d = true;
-                        }
-                        self.mark_renamed(kit);
-                    }
-                    Err(e) => {
-                        let line = format!(
-                            "sample: edit of pad {} not made ({e:?})",
-                            self.pad_text(kit, pad)
-                        );
-                        self.told.push(line.clone());
-                        self.lines.push(line);
-                    }
+                if let Err(e) = self.command(&Command::to_kit(kit, change).in_gesture(gesture)) {
+                    let line = format!(
+                        "sample: edit of pad {} not made ({e})",
+                        self.pad_text(kit, pad)
+                    );
+                    self.told.push(line.clone());
+                    self.lines.push(line);
                 }
                 if one_step {
                     // Copy, paste, clear and put are a step each: log it now.
@@ -3554,29 +3538,20 @@ impl SamplePage {
             PlayAction::PadsPlay(play) => {
                 self.lift();
                 let kit = self.kit;
-                let Some(project) = self.projects.get_mut(kit) else {
-                    return;
-                };
-                let what = match a.apply(project) {
-                    Ok(()) => {
-                        self.edits += 1;
-                        if let Some(d) = self.dirty.get_mut(kit) {
-                            *d = true;
-                        }
-                        match play {
-                            PadsPlay::Pads => "the pads play their own sounds".to_string(),
-                            PadsPlay::Keys { from } => format!(
-                                "the pads play notes, pad 1 {}",
-                                mpfree_sampler_ui::note_name(*from)
-                            ),
-                            PadsPlay::Levels { pad, by } => format!(
-                                "the pads play 16 Levels of pad {} by {}",
-                                self.pad_text(kit, usize::from(*pad)),
-                                by.label().to_lowercase()
-                            ),
-                        }
-                    }
-                    Err(e) => format!("pads play not changed ({e:?})"),
+                let what = match self.command(&Command::to_kit(kit, Change::PadsPlay(*play))) {
+                    Ok(_) => match play {
+                        PadsPlay::Pads => "the pads play their own sounds".to_string(),
+                        PadsPlay::Keys { from } => format!(
+                            "the pads play notes, pad 1 {}",
+                            mpfree_sampler_ui::note_name(*from)
+                        ),
+                        PadsPlay::Levels { pad, by } => format!(
+                            "the pads play 16 Levels of pad {} by {}",
+                            self.pad_text(kit, usize::from(*pad)),
+                            by.label().to_lowercase()
+                        ),
+                    },
+                    Err(e) => format!("pads play not changed ({e})"),
                 };
                 let kit = self.kit_text_of(kit);
                 self.lines.push(format!("sample: {kit}: {what}"));
@@ -3585,26 +3560,13 @@ impl SamplePage {
             PlayAction::KeyFade(fade) => {
                 self.lift();
                 let kit = self.kit;
-                let Some(project) = self.projects.get_mut(kit) else {
-                    return;
-                };
-                let what = match a.apply(project) {
-                    Ok(()) => {
-                        self.edits += 1;
-                        if let Some(d) = self.dirty.get_mut(kit) {
-                            *d = true;
-                        }
-                        match fade {
-                            0 => "key fade off, the zones edge to edge".to_string(),
-                            1 => {
-                                "key fade 1 note, the zones that meet crossfade over it".to_string()
-                            }
-                            n => format!(
-                                "key fade {n} notes, the zones that meet crossfade over them"
-                            ),
-                        }
-                    }
-                    Err(e) => format!("key fade not changed ({e:?})"),
+                let what = match self.command(&Command::to_kit(kit, Change::KeyFade(*fade))) {
+                    Ok(_) => match fade {
+                        0 => "key fade off, the zones edge to edge".to_string(),
+                        1 => "key fade 1 note, the zones that meet crossfade over it".to_string(),
+                        n => format!("key fade {n} notes, the zones that meet crossfade over them"),
+                    },
+                    Err(e) => format!("key fade not changed ({e})"),
                 };
                 let kit = self.kit_text_of(kit);
                 self.lines.push(format!("sample: {kit}: {what}"));
@@ -3616,21 +3578,17 @@ impl SamplePage {
             | PlayAction::LayerSound { pad, .. } => {
                 self.lift();
                 let (kit, pad) = (self.kit, *pad);
-                let Some(project) = self.projects.get_mut(kit) else {
+                let Some((change, gesture)) = a.change() else {
                     return;
                 };
-                let before = project.pad(pad).cloned();
-                let what = match a.apply(project) {
-                    Ok(()) => {
-                        self.edits += 1;
-                        if let Some(d) = self.dirty.get_mut(kit) {
-                            *d = true;
-                        }
-                        layers_text(&a, before.as_ref(), project)
-                    }
-                    Err(e) => {
+                let before = self.projects.get(kit).and_then(|p| p.pad(pad)).cloned();
+                let done = self.command(&Command::to_kit(kit, change).in_gesture(gesture));
+                let what = match (done, self.projects.get(kit)) {
+                    (Ok(_), Some(project)) => layers_text(&a, before.as_ref(), project),
+                    (Ok(_), None) => return,
+                    (Err(e), _) => {
                         let line = format!(
-                            "sample: layers of pad {} not changed ({e:?})",
+                            "sample: layers of pad {} not changed ({e})",
                             self.pad_text(kit, pad)
                         );
                         self.told.push(line.clone());
@@ -3662,28 +3620,48 @@ impl SamplePage {
                         });
                     }
                 }
-                let Some(project) = self.projects.get_mut(kit) else {
+                let Some((change, gesture)) = a.change() else {
                     return;
                 };
-                match a.apply(project) {
-                    Ok(()) => {
-                        self.edits += 1;
-                        if let Some(d) = self.dirty.get_mut(kit) {
-                            *d = true;
-                        }
-                    }
-                    Err(e) => {
-                        let line = format!(
-                            "sample: edit of pad {} not made ({e:?})",
-                            self.pad_text(kit, pad)
-                        );
-                        self.told.push(line.clone());
-                        self.lines.push(line);
-                    }
+                if let Err(e) = self.command(&Command::to_kit(kit, change).in_gesture(gesture)) {
+                    let line = format!(
+                        "sample: edit of pad {} not made ({e})",
+                        self.pad_text(kit, pad)
+                    );
+                    self.told.push(line.clone());
+                    self.lines.push(line);
                 }
                 self.refresh(ui);
             }
         }
+    }
+
+    /// Runs a sampler command on the page's kits ([`sampler_commands`],
+    /// the sampler refactor's step 12): the one way the page's touches,
+    /// the Play page's Q-Links and MIDI Learn change a kit. A change made
+    /// is an edit, the kit's new view is owed to the audio thread, and a
+    /// pad renamed or replaced tells the Play page. A command that found
+    /// the kit already as it asks changes nothing and is no edit. Refused,
+    /// nothing changes, and the caller says why in its own words.
+    fn command(
+        &mut self,
+        cmd: &Command,
+    ) -> Result<sampler_commands::Done, sampler_commands::Refused> {
+        let done = sampler_commands::run(&mut self.projects, cmd)?;
+        if !done.changed {
+            return Ok(done);
+        }
+        self.edits += 1;
+        if !done.plays {
+            // Saved, but nothing that plays changed: no view goes.
+            self.unsaved = true;
+        } else if let Some(d) = self.dirty.get_mut(done.kit) {
+            *d = true;
+        }
+        if done.renamed {
+            self.mark_renamed(done.kit);
+        }
+        Ok(done)
     }
 
     /// Kit `kit`'s pad names changed: the Play page is told
@@ -3849,36 +3827,16 @@ impl SamplePage {
             }
         };
         self.last_turn = Some(Instant::now());
-        let edit = |p: &mut Pad| match which {
-            PadKnob::Tune => {
-                let step = if fine { 10 } else { 100 };
-                p.tune_cents = (p.tune_cents + d * step).clamp(-2400, 2400);
-            }
-            PadKnob::Decay => {
-                let max = crate::play_page::DECAY_MAX_MS;
-                let open = p.amp.sustain >= 0.999;
-                let ms = if open { max } else { p.amp.decay_ms.max(10.0) };
-                let per = if fine { 32.0 } else { 8.0 };
-                let to = (ms * (d as f32 / per).exp2()).round().clamp(10.0, max);
-                if to >= max && d > 0 {
-                    p.amp.sustain = 1.0;
-                    p.amp.decay_ms = 0.0;
-                } else {
-                    p.amp.sustain = 0.0;
-                    p.amp.decay_ms = to;
-                }
-            }
+        let turn = Change::Turn {
+            pad,
+            knob: which,
+            detents: d,
+            fine,
         };
-        match self.projects[kit].edit_pad(pad, Some(id), edit) {
-            Ok(()) => {
-                self.edits += 1;
-                if let Some(dirty) = self.dirty.get_mut(kit) {
-                    *dirty = true;
-                }
-                self.stale = true;
-            }
+        match self.command(&Command::to_kit(kit, turn).in_gesture(Some(id))) {
+            Ok(_) => self.stale = true,
             Err(e) => self.lines.push(format!(
-                "sample: pad {} not changed ({e:?})",
+                "sample: pad {} not changed ({e})",
                 self.pad_text(kit, pad)
             )),
         }
@@ -3924,16 +3882,11 @@ impl SamplePage {
                 id
             }
         };
-        match self.projects[kit].edit_pad(pad, Some(id), |p| *p = after) {
-            Ok(()) => {
-                self.edits += 1;
-                if let Some(dirty) = self.dirty.get_mut(kit) {
-                    *dirty = true;
-                }
-                self.stale = true;
-            }
+        let own = Change::Own { pad, field, value };
+        match self.command(&Command::to_kit(kit, own).in_gesture(Some(id))) {
+            Ok(_) => self.stale = true,
             Err(e) => self.lines.push(format!(
-                "sample: pad {} not changed by MIDI Learn ({e:?})",
+                "sample: pad {} not changed by MIDI Learn ({e})",
                 self.pad_text(kit, pad)
             )),
         }
@@ -4049,24 +4002,16 @@ impl SamplePage {
                         });
                     }
                 }
-                let Some(project) = self.projects.get_mut(kit) else {
+                let Some((change, gesture)) = a.change() else {
                     return;
                 };
-                match a.apply(project) {
-                    Ok(()) => {
-                        self.edits += 1;
-                        if let Some(d) = self.dirty.get_mut(kit) {
-                            *d = true;
-                        }
-                    }
-                    Err(e) => {
-                        let line = format!(
-                            "sample: edit of pad {} not made ({e:?})",
-                            self.pad_text(kit, pad)
-                        );
-                        self.told.push(line.clone());
-                        self.lines.push(line);
-                    }
+                if let Err(e) = self.command(&Command::to_kit(kit, change).in_gesture(gesture)) {
+                    let line = format!(
+                        "sample: edit of pad {} not made ({e})",
+                        self.pad_text(kit, pad)
+                    );
+                    self.told.push(line.clone());
+                    self.lines.push(line);
                 }
                 self.refresh(ui);
             }
@@ -4843,21 +4788,24 @@ impl SamplePage {
         let (lo, hi) = wave_tab::GAIN_RANGE_DB;
         let gain = ((-peak_db * 10.0).floor() / 10.0).clamp(lo, hi);
         let was = l.region.gain_db;
-        let Some(project) = self.projects.get_mut(l.kit) else {
-            return;
+        let set = Change::Gain {
+            pad: l.pad,
+            layer: l.layer,
+            db: gain,
         };
-        let layer = l.layer;
-        let set = move |p: &mut Pad| p.layers[layer].region.gain_db = gain;
-        let r = match l.take {
-            Some(t) => project.edit_take(t, None, set),
-            None => project.edit_pad(l.pad, None, set),
+        let set = match l.take {
+            Some(take) => Change::OnTake {
+                take,
+                change: Box::new(set),
+            },
+            None => set,
         };
+        let r = self
+            .command(&Command::to_kit(l.kit, set))
+            .map(|_| ())
+            .map_err(|e| e.to_string());
         match r {
             Ok(()) => {
-                self.edits += 1;
-                if let Some(d) = self.dirty.get_mut(l.kit) {
-                    *d = true;
-                }
                 let most = if gain >= hi {
                     format!(" (the most), its peak now {:.1} dB", peak_db + gain)
                 } else {
@@ -4868,7 +4816,7 @@ impl SamplePage {
                 ));
             }
             Err(e) => {
-                let line = format!("sample: {what} not normalized ({e:?})");
+                let line = format!("sample: {what} not normalized ({e})");
                 if l.take.is_some() {
                     self.told.push(line.clone());
                 }
@@ -5059,16 +5007,27 @@ impl SamplePage {
         };
         match r {
             Ok((audio, took)) => {
-                let Some(project) = self.projects.get_mut(p.kit) else {
+                let Some(project) = self.projects.get(p.kit) else {
                     return;
                 };
-                match p.what.finish(project, audio) {
+                // The new sound, then a command puts it in the layer's
+                // place.
+                let made = p.what.sound(project, audio).map_err(|e| e.to_string());
+                let r = made.and_then(|(sound, scale)| {
+                    let id = sound.id();
+                    let use_it = Change::Processed {
+                        pad: p.what.pad,
+                        layer: p.what.layer,
+                        sound: Recorded(sound),
+                        scale,
+                    };
+                    self.command(&Command::to_kit(p.kit, use_it))
+                        .map(|_| id)
+                        .map_err(|e| e.to_string())
+                });
+                match r {
                     Ok(id) => {
-                        self.edits += 1;
-                        if let Some(d) = self.dirty.get_mut(p.kit) {
-                            *d = true;
-                        }
-                        let made = project.source(id).map_or(String::new(), |s| {
+                        let made = self.projects[p.kit].source(id).map_or(String::new(), |s| {
                             format!(": {}, {}", s.name, duration_text(s.frames(), s.rate()))
                         });
                         self.lines.push(format!(
@@ -5079,7 +5038,7 @@ impl SamplePage {
                         ));
                     }
                     Err(e) => self.lines.push(format!(
-                        "sample: pad {} not processed (it changed meanwhile: {e:?})",
+                        "sample: pad {} not processed (it changed meanwhile: {e})",
                         p.at
                     )),
                 }
@@ -5171,16 +5130,14 @@ impl SamplePage {
         let pad = self.pad;
         let at = self.pad_text(kit, pad);
         let layer = self.layer();
-        let Some(project) = self.projects.get_mut(kit) else {
+        let has_sound = self
+            .projects
+            .get(kit)
+            .and_then(|p| p.pad(pad))
+            .is_some_and(|p| p.layers.get(layer).is_some());
+        if !has_sound {
             return;
-        };
-        let Some(source) = project
-            .pad(pad)
-            .and_then(|p| p.layers.get(layer))
-            .map(|l| l.region.source)
-        else {
-            return;
-        };
+        }
         let typed = |key: &str| {
             names
                 .iter()
@@ -5189,15 +5146,14 @@ impl SamplePage {
         };
         let pad_name = typed(NAME_PAD);
         let sound_name = typed(NAME_SOUND);
-        match project.rename(pad_name.map(|n| (pad, n)), sound_name.map(|n| (source, n))) {
-            Ok(()) => {
-                self.edits += 1;
-                if let Some(d) = self.dirty.get_mut(kit) {
-                    *d = true;
-                }
-                if pad_name.is_some() {
-                    self.mark_renamed(kit);
-                }
+        let name = Change::Name {
+            pad,
+            layer,
+            pad_name: pad_name.map(str::to_string),
+            sound_name: sound_name.map(str::to_string),
+        };
+        match self.command(&Command::to_kit(kit, name)) {
+            Ok(_) => {
                 let line = match (pad_name, sound_name) {
                     (Some(p), Some(s)) => format!("pad {at} named {p}, its sound {s}"),
                     (Some(p), None) => format!("pad {at} named {p}"),
@@ -5207,9 +5163,7 @@ impl SamplePage {
                 self.told.push(format!("P{}", &line[1..]));
                 self.lines.push(format!("sample: {line}"));
             }
-            Err(e) => self
-                .lines
-                .push(format!("sample: pad {at} not named ({e:?})")),
+            Err(e) => self.lines.push(format!("sample: pad {at} not named ({e})")),
         }
         self.refresh(ui);
     }
@@ -5361,22 +5315,23 @@ impl SamplePage {
                 self.seat_fell_back(&seat);
                 continue;
             };
-            let Some(project) = self.projects.get_mut(seat.kit) else {
-                continue;
+            let start = Change::GrainStart {
+                pad: seat.pad,
+                layer: seat.layer,
+                at,
             };
-            let layer = seat.layer;
-            let set = move |p: &mut Pad| p.layers[layer].region.grain.position = at;
-            let r = match seat.take {
-                Some(t) => project.edit_take(t, Some(seat.gesture), set),
-                None => project.edit_pad(seat.pad, Some(seat.gesture), set),
+            let start = match seat.take {
+                Some(take) => Change::OnTake {
+                    take,
+                    change: Box::new(start),
+                },
+                None => start,
             };
+            let cmd = Command::to_kit(seat.kit, start).in_gesture(Some(seat.gesture));
+            let r = self.command(&cmd).map(|_| ()).map_err(|e| e.to_string());
             let what = self.seat_text(&seat);
             match r {
                 Ok(()) => {
-                    self.edits += 1;
-                    if let Some(d) = self.dirty.get_mut(seat.kit) {
-                        *d = true;
-                    }
                     self.lines.push(format!(
                         "sample: {what} plays its grains from its loudest grain now, at {:.1} %",
                         at * 100.0
@@ -5385,7 +5340,7 @@ impl SamplePage {
                 }
                 Err(e) => self
                     .lines
-                    .push(format!("sample: {what}'s grain start not moved ({e:?})")),
+                    .push(format!("sample: {what}'s grain start not moved ({e})")),
             }
         }
         if moved {
@@ -5883,9 +5838,9 @@ impl SamplePage {
                     src,
                     "grains capture",
                     ", playing as grains",
-                    |l| {
-                        l.region.mode = PlayMode::Granular;
-                        l.region.grain = grain;
+                    Lands {
+                        grains: Some(grain),
+                        ..Lands::default()
                     },
                 );
                 self.told
@@ -5946,13 +5901,15 @@ impl SamplePage {
         bpm: Option<f64>,
     ) {
         let (warp, warped) = warp_at(bpm);
-        self.keep_as(ui, kit, pad, src, what, &warped, |layer| {
-            layer.region.warp = warp
-        });
+        let lands = Lands {
+            warp,
+            ..Lands::default()
+        };
+        self.keep_as(ui, kit, pad, src, what, &warped, lands);
     }
 
-    /// [`Self::keep`] with `set` changing the new layer first, and `after`
-    /// at the end of the line that says so.
+    /// [`Self::keep`] playing as `lands` says, and `after` at the end of the
+    /// line that says so.
     // The sound and where it goes, then what to say and do: one call each.
     #[allow(clippy::too_many_arguments)]
     fn keep_as(
@@ -5963,27 +5920,21 @@ impl SamplePage {
         src: Source,
         what: &str,
         after: &str,
-        set: impl FnOnce(&mut Layer),
+        lands: Lands,
     ) {
         let (name, frames, rate, ch) = (src.name.clone(), src.frames(), src.rate(), src.channels());
-        let Some(project) = self.projects.get_mut(kit) else {
+        if kit >= self.projects.len() {
             self.lines
                 .push(format!("sample: {what} not kept (the kit is gone)"));
             return;
+        }
+        let keep = Change::Keep {
+            sound: Recorded(src),
+            onto: Landing::Pad(pad),
+            lands,
         };
-        match project.put_source_as(pad, src, |name, mut layer, old| {
-            set(&mut layer);
-            match old {
-                Some(_) => Pad::replacing(name, layer, old),
-                None => crate::sampler::kit_pad_with(name, layer),
-            }
-        }) {
+        match self.command(&Command::to_kit(kit, keep)) {
             Ok(_) => {
-                self.edits += 1;
-                if let Some(d) = self.dirty.get_mut(kit) {
-                    *d = true;
-                }
-                self.mark_renamed(kit);
                 let text = format!(
                     "{name}, {} {} on pad {}",
                     duration_text(frames, rate),
@@ -5999,7 +5950,7 @@ impl SamplePage {
                 }
                 self.refresh(ui);
             }
-            Err(e) => self.lines.push(format!("sample: {what} not kept ({e:?})")),
+            Err(e) => self.lines.push(format!("sample: {what} not kept ({e})")),
         }
     }
 
@@ -6468,17 +6419,18 @@ impl SamplePage {
             self.lines.push(format!("sample: {}: {n}", l.sidecar_name));
         }
         let at = self.pad_text(kit, pad);
-        let Some(project) = self.projects.get_mut(kit) else {
+        if self.projects.get(kit).is_none() {
             return;
-        };
+        }
         let (name, chops) = (o.pad.name.clone(), o.chops.len());
-        match project.put_pad_with(pad, o.sources, o.pad, o.chops) {
-            Ok(()) => {
-                self.edits += 1;
-                if let Some(d) = self.dirty.get_mut(kit) {
-                    *d = true;
-                }
-                self.mark_renamed(kit);
+        let load = Change::LoadPad {
+            pad,
+            sounds: o.sources.into_iter().map(Recorded).collect(),
+            to: Box::new(o.pad),
+            chops: o.chops,
+        };
+        match self.command(&Command::to_kit(kit, load)) {
+            Ok(_) => {
                 let chops = match chops {
                     0 => String::new(),
                     1 => " and its slices".to_string(),
@@ -6498,7 +6450,7 @@ impl SamplePage {
             }
             Err(e) => {
                 self.lines.push(format!(
-                    "sample: {}: its settings ({}) not used ({e:?}); the sound alone is loaded",
+                    "sample: {}: its settings ({}) not used ({e}); the sound alone is loaded",
                     l.src.name, l.sidecar_name
                 ));
                 self.keep(ui, kit, pad, l.src, "loaded");
@@ -6663,24 +6615,18 @@ impl SamplePage {
         match t.rec.finish(&name, t.pick) {
             Some(Ok(src)) => {
                 let (frames, rate) = (src.frames(), src.rate());
-                let put = self.projects.get_mut(kit).map(|p| {
-                    p.put_source_as(pad, src, |name, layer, old| {
-                        let mut new = crate::sampler::kit_pad_with(name, layer);
-                        if let Some(old) = old {
-                            new.mute_group = old.mute_group;
-                            new.chokes = old.chokes.clone();
-                            new.polyphony = old.polyphony;
-                        }
-                        new
-                    })
-                });
+                let keep = Change::Keep {
+                    sound: Recorded(src),
+                    onto: Landing::Pad(pad),
+                    lands: Lands {
+                        flattened: true,
+                        ..Lands::default()
+                    },
+                };
+                let put =
+                    (kit < self.projects.len()).then(|| self.command(&Command::to_kit(kit, keep)));
                 match put {
                     Some(Ok(_)) => {
-                        self.edits += 1;
-                        if let Some(d) = self.dirty.get_mut(kit) {
-                            *d = true;
-                        }
-                        self.mark_renamed(kit);
                         let text = format!(
                             "{name}, {} on pad {}",
                             duration_text(frames, rate),
@@ -6695,7 +6641,7 @@ impl SamplePage {
                         }
                         self.refresh(ui);
                     }
-                    Some(Err(e)) => self.end_flatten(ui, &format!("not kept ({e:?})")),
+                    Some(Err(e)) => self.end_flatten(ui, &format!("not kept ({e})")),
                     None => self.end_flatten(ui, "not kept (the kit is gone)"),
                 }
             }
@@ -7046,7 +6992,7 @@ impl SamplePage {
             }
         };
         let n = inst.pads.len();
-        let Some(project) = self.projects.get_mut(kit) else {
+        let Some(project) = self.projects.get(kit) else {
             self.auto_last = "Not kept: the kit is gone".to_string();
             self.lines
                 .push("sample: auto-sample not kept (the kit is gone)".to_string());
@@ -7072,13 +7018,12 @@ impl SamplePage {
             inst.bytes() as f64 / 1e6,
         );
         let cancelled = f.state == mpfree_sampler::autosample::State::Cancelled;
-        match inst.put(project, to) {
-            Ok(()) => {
-                self.edits += 1;
-                if let Some(d) = self.dirty.get_mut(kit) {
-                    *d = true;
-                }
-                self.mark_renamed(kit);
+        let land = Change::AutoSampled {
+            inst: Box::new(mpfree_sampler_ui::command::AutoSampled(inst)),
+            to,
+        };
+        match self.command(&Command::to_kit(kit, land)) {
+            Ok(_) => {
                 let pads = if n == 1 {
                     self.pad_text(kit, to)
                 } else {
@@ -7114,9 +7059,9 @@ impl SamplePage {
                 self.refresh(ui);
             }
             Err(e) => {
-                self.auto_last = format!("Not kept: {e:?}");
+                self.auto_last = format!("Not kept: {e}");
                 self.lines
-                    .push(format!("sample: auto-sample not kept ({e:?})"));
+                    .push(format!("sample: auto-sample not kept ({e})"));
                 self.refresh_auto_state(ui);
             }
         }
@@ -7523,25 +7468,19 @@ impl SamplePage {
         let edits = self.edits;
         let bpm = r.warps().then(|| self.tempo());
         let (warp, warped) = warp_at(bpm);
-        let set = |layer: &mut Layer| {
-            layer.region.warp = warp;
-            if fade > 0 {
-                layer.region.fade_in = Fade {
-                    frames: fade,
-                    ..Fade::NONE
-                };
-                layer.region.fade_out = layer.region.fade_in;
-            }
+        // Named in the undo history as a Recall.
+        let lands = Lands {
+            warp,
+            fade,
+            tag: TAG_RECALL,
+            ..Lands::default()
         };
         match onto {
-            Some(pad) => self.keep_as(ui, kit, pad, src, &what, &warped, set),
-            None => self.keep_take_as(ui, kit, src, &what, &warped, set),
+            Some(pad) => self.keep_as(ui, kit, pad, src, &what, &warped, lands),
+            None => self.keep_take_as(ui, kit, src, &what, &warped, lands),
         }
         if self.edits == edits {
             return Err("not kept: the log says why".to_string());
-        }
-        if let Some(p) = self.projects.get_mut(kit) {
-            p.tag_last(TAG_RECALL);
         }
         Ok(onto.map_or_else(|| "the page".to_string(), |pad| self.pad_text(kit, pad)))
     }
@@ -7767,29 +7706,31 @@ impl SamplePage {
         self.lift();
         let kit = self.kit;
         let name = self.kit_text_of(kit);
-        let Some(project) = self.projects.get_mut(kit) else {
+        let Some(project) = self.projects.get(kit) else {
             return;
         };
         match a {
             SceneAction::Store(k) if k < 2 => {
-                let stored = scene::Scene::of(project);
-                let n = stored.sounds();
-                project.scenes[k] = Some(stored);
-                self.edits += 1;
+                let slot = [SceneSlot::A, SceneSlot::B][k];
                 // Saved with the kit; the new view puts the crossfader's
                 // values back (take_view).
-                if let Some(d) = self.dirty.get_mut(kit) {
-                    *d = true;
+                if self
+                    .command(&Command::to_kit(kit, Change::SceneStore(slot)))
+                    .is_ok()
+                {
+                    let n = self.projects[kit].scenes[k]
+                        .as_ref()
+                        .map_or(0, scene::Scene::sounds);
+                    let what = format!(
+                        "{} stored ({n} pad{})",
+                        ["A", "B"][k],
+                        if n == 1 { "" } else { "s" }
+                    );
+                    // On the hint line too: storing again changes nothing
+                    // else on the screen.
+                    self.told.push(format!("Scene {what}"));
+                    self.lines.push(format!("sample: {name}: scene {what}"));
                 }
-                let what = format!(
-                    "{} stored ({n} pad{})",
-                    ["A", "B"][k],
-                    if n == 1 { "" } else { "s" }
-                );
-                // On the hint line too: storing again changes nothing else
-                // on the screen.
-                self.told.push(format!("Scene {what}"));
-                self.lines.push(format!("sample: {name}: scene {what}"));
             }
             SceneAction::Store(_) => {}
             SceneAction::Fade(x) => {
@@ -7802,24 +7743,20 @@ impl SamplePage {
                 }
             }
             SceneAction::Return => {
-                let Some(sa) = project.scenes[0].clone() else {
+                let [Some(sa), sb] = &project.scenes else {
                     return;
                 };
-                if let Some(sb) = &project.scenes[1] {
+                if let Some(sb) = sb {
                     out.push(FromUi::SamplePadLive {
                         kit,
-                        values: scene::clear(&sa, sb),
+                        values: scene::clear(sa, sb),
                     });
                 }
                 self.morph = None;
-                let (n, left) = project.return_to(&sa);
-                if n > 0 {
-                    self.edits += 1;
-                    if let Some(d) = self.dirty.get_mut(kit) {
-                        *d = true;
-                    }
-                    self.mark_renamed(kit);
-                }
+                // A pad put back is an edit, and the Play page hears of
+                // its name; nothing changed since, no edit.
+                let back = self.command(&Command::to_kit(kit, Change::SceneReturn));
+                let (n, left) = back.ok().and_then(|d| d.put_back).unwrap_or((0, 0));
                 let left = match left {
                     0 => String::new(),
                     n => format!("; {n} left as they are (their sounds are gone)"),
@@ -8218,19 +8155,6 @@ pub fn describe(a: &Region, b: &Region, rate: u32) -> String {
         out.push(grains);
     }
     out.join(", ")
-}
-
-/// Projects `a` and `b` (not the same) of `all`, `a` to read and `b` to
-/// change.
-fn two_mut(all: &mut [Project], a: usize, b: usize) -> (&Project, &mut Project) {
-    assert_ne!(a, b);
-    if a < b {
-        let (lo, hi) = all.split_at_mut(b);
-        (&lo[a], &mut hi[0])
-    } else {
-        let (lo, hi) = all.split_at_mut(a);
-        (&hi[0], &mut lo[b])
-    }
 }
 
 /// A phrase as a clip of the time engine, at [`PPQ`]: slice `k` is a note
@@ -8719,12 +8643,15 @@ impl SamplePage {
                         });
                     }
                 }
-                let r = match self.projects.get_mut(kit) {
-                    Some(p) if p.take(i).is_some_and(|t| layer < t.layers.len()) => {
-                        p.edit_take(i, Some(gesture), move |t| t.layers[layer].region = *region)
-                    }
-                    _ => Err(ModelError::BadTake),
+                let set = Change::OnTake {
+                    take: i,
+                    change: Box::new(Change::Region {
+                        pad: self.pad,
+                        layer,
+                        region,
+                    }),
                 };
+                let r = self.command(&Command::to_kit(kit, set).in_gesture(Some(gesture)));
                 self.edited_take(kit, i, r);
                 self.refresh(ui);
                 None
@@ -8759,14 +8686,14 @@ impl SamplePage {
                         });
                     }
                 }
-                let r = match self.projects.get_mut(kit) {
-                    Some(p) => p
-                        .take(i)
-                        .ok_or(ModelError::BadTake)
-                        .and_then(|now| play_tab::with_regions_of(&after, now))
-                        .and_then(|next| p.edit_take(i, Some(gesture), move |t| *t = next)),
-                    None => Err(ModelError::BadTake),
+                let set = Change::OnTake {
+                    take: i,
+                    change: Box::new(Change::Settings {
+                        pad: self.pad,
+                        to: after,
+                    }),
                 };
+                let r = self.command(&Command::to_kit(kit, set).in_gesture(Some(gesture)));
                 self.edited_take(kit, i, r);
                 self.refresh(ui);
                 None
@@ -8813,25 +8740,23 @@ impl SamplePage {
         }
     }
 
-    /// An edit of take `i` of kit `kit` made (`Ok`) or refused.
-    fn edited_take(&mut self, kit: usize, i: usize, r: Result<(), ModelError>) {
-        match r {
-            Ok(()) => {
-                self.edits += 1;
-                if let Some(d) = self.dirty.get_mut(kit) {
-                    *d = true;
-                }
-            }
-            Err(e) => {
-                let name = self
-                    .projects
-                    .get(kit)
-                    .and_then(|p| p.take(i))
-                    .map_or_else(|| "the take".to_string(), |t| t.name.clone());
-                let line = format!("sample: edit of {name} not made ({e:?})");
-                self.told.push(line.clone());
-                self.lines.push(line);
-            }
+    /// An edit of take `i` of kit `kit` made by its command, or refused
+    /// and said.
+    fn edited_take(
+        &mut self,
+        kit: usize,
+        i: usize,
+        r: Result<sampler_commands::Done, sampler_commands::Refused>,
+    ) {
+        if let Err(e) = r {
+            let name = self
+                .projects
+                .get(kit)
+                .and_then(|p| p.take(i))
+                .map_or_else(|| "the take".to_string(), |t| t.name.clone());
+            let line = format!("sample: edit of {name} not made ({e})");
+            self.told.push(line.clone());
+            self.lines.push(line);
         }
     }
 
@@ -8902,18 +8827,13 @@ impl SamplePage {
             self.lines.push("sample: Send to pad called off".into());
             return;
         }
-        let Some(project) = self.projects.get_mut(kit) else {
+        let Some(project) = self.projects.get(kit) else {
             return;
         };
         let name = project.take(i).map(|t| t.name.clone()).unwrap_or_default();
         let had = project.pad(pad).map(|p| p.name.clone());
-        match project.put_take_on(i, pad) {
-            Ok(()) => {
-                self.edits += 1;
-                if let Some(d) = self.dirty.get_mut(kit) {
-                    *d = true;
-                }
-                self.mark_renamed(kit);
+        match self.command(&Command::to_kit(kit, Change::PutTake { take: i, pad })) {
+            Ok(_) => {
                 let at = self.pad_text(kit, pad);
                 self.lines.push(match had {
                     Some(old) => format!("sample: {name} put on pad {at}, replacing {old}"),
@@ -8929,7 +8849,7 @@ impl SamplePage {
             }
             Err(e) => self
                 .lines
-                .push(format!("sample: {name} not put on a pad ({e:?})")),
+                .push(format!("sample: {name} not put on a pad ({e})")),
         }
         self.refresh(ui);
     }
@@ -9006,13 +8926,15 @@ impl SamplePage {
     /// warped at `bpm` when given, one undo step; the Wave page shows it.
     fn keep_take(&mut self, ui: &mut Ui, kit: usize, src: Source, what: &str, bpm: Option<f64>) {
         let (warp, warped) = warp_at(bpm);
-        self.keep_take_as(ui, kit, src, what, &warped, |layer| {
-            layer.region.warp = warp
-        });
+        let lands = Lands {
+            warp,
+            ..Lands::default()
+        };
+        self.keep_take_as(ui, kit, src, what, &warped, lands);
     }
 
-    /// [`Self::keep_take`] with `set` changing the new layer first, and
-    /// `after` said after what was kept.
+    /// [`Self::keep_take`] playing as `lands` says, and `warped` said after
+    /// what was kept.
     fn keep_take_as(
         &mut self,
         ui: &mut Ui,
@@ -9020,24 +8942,23 @@ impl SamplePage {
         src: Source,
         what: &str,
         warped: &str,
-        set: impl FnOnce(&mut Layer),
+        lands: Lands,
     ) {
         let (frames, rate, ch) = (src.frames(), src.rate(), src.channels());
-        let Some(project) = self.projects.get_mut(kit) else {
+        if kit >= self.projects.len() {
             self.lines
                 .push(format!("sample: {what} not kept (the kit is gone)"));
             return;
+        }
+        let keep = Change::Keep {
+            sound: Recorded(src),
+            onto: Landing::Take,
+            lands,
         };
-        let made = project.add_take_of(src, |name, mut layer| {
-            set(&mut layer);
-            crate::sampler::kit_pad_with(name, layer)
-        });
+        let made = self.command(&Command::to_kit(kit, keep));
         match made {
-            Ok(i) => {
-                self.edits += 1;
-                if let Some(d) = self.dirty.get_mut(kit) {
-                    *d = true;
-                }
+            Ok(done) => {
+                let i = done.take.unwrap_or(0);
                 let name = self.projects[kit].take(i).map_or("", |t| t.name.as_str());
                 let text = format!(
                     "{name}, {} {} stays on the Sample page",
@@ -9054,7 +8975,7 @@ impl SamplePage {
                 }
                 self.refresh(ui);
             }
-            Err(ModelError::BadTake) => {
+            Err(sampler_commands::Refused::Model(ModelError::BadTake)) => {
                 let why = format!(
                     "The page keeps {} takes: put some on pads first",
                     mpfree_sampler::model::MAX_TAKES
@@ -9093,14 +9014,18 @@ impl SamplePage {
         self.lift();
         let kit = self.kit;
         let name = name.trim();
-        let Some(project) = self.projects.get_mut(kit) else {
+        let Some(project) = self.projects.get(kit) else {
             return;
         };
         let was = project.take(i).map(|t| t.name.clone()).unwrap_or_default();
         if name.is_empty() || name == was {
             return;
         }
-        let r = project.edit_take(i, None, |t| t.name = name.to_string());
+        let named = Change::NameTake {
+            take: i,
+            name: name.to_string(),
+        };
+        let r = self.command(&Command::to_kit(kit, named));
         if r.is_ok() {
             self.told.push(format!("{was} named {name}"));
             self.lines.push(format!("sample: {was} named {name}"));

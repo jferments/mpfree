@@ -85,8 +85,9 @@ use mpfree_ui::layout;
 use mpfree_ui::wave::{Marker, MarkerKind, WaveView, Waveform};
 use mpfree_ui::{ColorKey, EventKind, Paint, Rect, Ui, UiEvent};
 
+use crate::command::Change;
 use crate::keys_widgets::{KeyZones, Zone};
-use crate::pads_tab::{sound_region, Sound};
+use crate::pads_tab::Sound;
 use crate::panel::{self, Control, Item, Look, Panel};
 use crate::play_widgets::{EnvelopeView, FilterCurve, LayerBar, LayerMap, MotionView};
 use crate::slice_tool::pad_text;
@@ -1091,49 +1092,55 @@ pub enum SceneAction {
 }
 
 impl PlayAction {
-    /// Applies a change to the project (one undo step per gesture), keeping
-    /// the project's layer regions. Other actions change nothing here.
-    pub fn apply(&self, p: &mut Project) -> Result<(), ModelError> {
-        let (pad, after, gesture) = match self {
+    /// The change to the kit it asks for ([`crate::command`]), and the
+    /// gesture that joins it to the step before; None for an action that
+    /// changes nothing in the kit (a pick, a key, a scene, ‹ Pads).
+    pub fn change(&self) -> Option<(Change, Option<u64>)> {
+        let c = match self {
             PlayAction::Pad {
                 pad,
                 after,
                 gesture,
-            } => (pad, after, gesture),
-            PlayAction::PadsPlay(play) => return p.set_pads_play(*play),
-            PlayAction::KeyFade(fade) => return p.set_key_fade(*fade),
-            PlayAction::AddLayer { pad, after } => {
-                let now = p.pad(*pad).ok_or(ModelError::BadPad)?;
-                if now.layers.len() >= MAX_LAYERS {
-                    return Err(ModelError::TooManyLayers);
-                }
-                let next = with_layer_added(now, *after).ok_or(ModelError::BadPad)?;
-                return p.set_pad(*pad, Some(next), None);
+            } => {
+                return Some((
+                    Change::Settings {
+                        pad: *pad,
+                        to: after.clone(),
+                    },
+                    Some(*gesture),
+                ))
             }
-            PlayAction::RemoveLayer { pad, layer } => {
-                let now = p.pad(*pad).ok_or(ModelError::BadPad)?;
-                if now.layers.len() < 2 || *layer >= now.layers.len() {
-                    return Err(ModelError::BadPad);
-                }
-                let mut next = now.clone();
-                next.layers.remove(*layer);
-                return p.set_pad(*pad, Some(next), None);
-            }
-            PlayAction::LayerSound { pad, layer, source } => {
-                let frames = p.source(*source).ok_or(ModelError::UnknownSource)?.frames();
-                let mut next = p.pad(*pad).ok_or(ModelError::BadPad)?.clone();
-                let l = next.layers.get_mut(*layer).ok_or(ModelError::BadPad)?;
-                l.region = sound_region(Some(&l.region), *source, frames);
-                return p.set_pad(*pad, Some(next), None);
-            }
+            PlayAction::PadsPlay(play) => Change::PadsPlay(*play),
+            PlayAction::KeyFade(fade) => Change::KeyFade(*fade),
+            PlayAction::AddLayer { pad, after } => Change::AddLayer {
+                pad: *pad,
+                after: *after,
+            },
+            PlayAction::RemoveLayer { pad, layer } => Change::RemoveLayer {
+                pad: *pad,
+                layer: *layer,
+            },
+            PlayAction::LayerSound { pad, layer, source } => Change::LayerSound {
+                pad: *pad,
+                layer: *layer,
+                source: *source,
+            },
             PlayAction::Pads
             | PlayAction::Pick(_)
             | PlayAction::Note { .. }
-            | PlayAction::Scene(_) => return Ok(()),
+            | PlayAction::Scene(_) => return None,
         };
-        let now = p.pad(*pad).ok_or(ModelError::BadPad)?;
-        let next = with_regions_of(after, now)?;
-        p.set_pad(*pad, Some(next), Some(*gesture))
+        Some((c, None))
+    }
+
+    /// Applies a change to the project (one undo step per gesture), keeping
+    /// the project's layer regions ([`Change::apply`]). Other actions change
+    /// nothing here.
+    pub fn apply(&self, p: &mut Project) -> Result<(), ModelError> {
+        match self.change() {
+            Some((c, gesture)) => c.apply(p, gesture),
+            None => Ok(()),
+        }
     }
 }
 

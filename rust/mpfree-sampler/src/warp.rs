@@ -590,6 +590,15 @@ impl Process {
     /// and returns the new source's id. The region it was made from must
     /// still be there.
     pub fn finish(&self, project: &mut Project, audio: Vec<f32>) -> Result<SourceId, ModelError> {
+        let (new, scale) = self.sound(project, audio)?;
+        project.use_processed(self.pad, self.layer, new, scale)
+    }
+
+    /// The finished job's audio as the new sound, named for what was done
+    /// ("Break x0.77 +3st"), and how many of its frames each of the
+    /// region's became: what [`Project::use_processed`] takes. The region
+    /// it was made from must still be there.
+    pub fn sound(&self, project: &Project, audio: Vec<f32>) -> Result<(Source, f64), ModelError> {
         let r = self.region(project).map_err(|_| ModelError::BadPad)?;
         let s = project.source(r.source).ok_or(ModelError::UnknownSource)?;
         let frames_in = r.frames() as f64;
@@ -602,7 +611,7 @@ impl Process {
         }
         let new = Source::new(&name, s.rate(), s.channels(), audio)?;
         let scale = new.frames() as f64 / frames_in;
-        project.use_processed(self.pad, self.layer, new, scale)
+        Ok((new, scale))
     }
 }
 

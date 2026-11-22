@@ -3758,8 +3758,9 @@ impl PlayPage {
     }
 }
 
-/// The decay's longest time on the card: past it the sound plays out.
-pub const DECAY_MAX_MS: f32 = 4000.0;
+/// The decay's longest time on the card: past it the sound plays out (the
+/// Q-Link's top, [`mpfree_sampler_ui::command::DECAY_OPEN_MS`]).
+pub const DECAY_MAX_MS: f32 = mpfree_sampler_ui::command::DECAY_OPEN_MS;
 
 #[cfg(test)]
 mod tests {

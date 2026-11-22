@@ -156,6 +156,7 @@ mod remote;
 mod rt_safety;
 mod sample_page;
 mod sampler;
+mod sampler_commands;
 mod screen_cost;
 mod screen_picture;
 mod script;
