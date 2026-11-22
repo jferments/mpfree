@@ -853,6 +853,22 @@ impl Grid {
         edit
     }
 
+    /// Change several steps of sound `pitch`, each its own way (a lane's
+    /// stroke on the Sequencer's Steps, step sequencer refactor D3), as
+    /// one edit: each as [`Grid::change`] does. A step listed twice takes
+    /// its first change; empty steps are left out.
+    pub fn change_each(self, clip: &Clip, pitch: u8, changes: &[(usize, Change)]) -> Edit {
+        let mut edit = Edit::default();
+        let mut done: Vec<usize> = Vec::new();
+        for &(i, change) in changes {
+            if !done.contains(&i) {
+                done.push(i);
+                edit.join(self.change(clip, pitch, i, change));
+            }
+        }
+        edit
+    }
+
     /// Change step `i` of sound `pitch`. Values are kept in range; an
     /// empty step, or one already so, gives an empty edit.
     pub fn change(self, clip: &Clip, pitch: u8, i: usize, change: Change) -> Edit {
@@ -2018,6 +2034,45 @@ mod tests {
         for (i, a) in keys.iter().enumerate() {
             assert!(keys[i + 1..].iter().all(|b| a != b));
         }
+    }
+
+    #[test]
+    fn a_lanes_stroke_changes_each_step_its_own_way_in_one_edit() {
+        let g = Grid::new(240).unwrap();
+        let mut c = clip(BAR, &[(0, 36), (480, 36), (960, 36), (480, 38)]);
+        let before = c.clone();
+        let e = g.change_each(
+            &c,
+            36,
+            &[
+                (0, Change::Velocity(30)),
+                (2, Change::Velocity(90)),
+                (4, Change::Velocity(127)),
+                // An empty step, and a step listed twice: its first wins.
+                (5, Change::Velocity(10)),
+                (0, Change::Velocity(50)),
+            ],
+        );
+        c.apply(&e).unwrap();
+        let row: Vec<Option<u8>> = g
+            .row(&c, 36)
+            .iter()
+            .map(|s| s.map(|s| s.velocity))
+            .collect();
+        assert_eq!(&row[..6], [Some(30), None, Some(90), None, Some(127), None]);
+        assert_eq!(
+            g.row(&c, 38)[2].map(|s| s.velocity),
+            Some(100),
+            "other rows stay"
+        );
+        c.apply(&e.inverse()).unwrap();
+        let sorted = |c: &Clip| {
+            let mut n = c.notes.clone();
+            n.sort_by_key(|n| (n.tick, n.note));
+            n
+        };
+        assert_eq!(sorted(&c), sorted(&before), "one edit takes it all back");
+        assert!(g.change_each(&c, 36, &[(1, Change::Chance(5))]).is_empty());
     }
 
     #[test]

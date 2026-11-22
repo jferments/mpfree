@@ -45,7 +45,7 @@ use crate::play_widgets::{
 use crate::sample_page::{self, SamplePage};
 use crate::sampler::{Cloud, Playheads, ViewSwap};
 use crate::skin_page;
-use crate::time::{HitInfo, StepAction, StepsData};
+use crate::time::{HitInfo, NoteValue, StepAction, StepsData};
 use crate::touch_bell::Doorbell;
 use crate::touch_dev::{self, TouchTest, TuneList};
 use crate::touchlab_page::{TouchLabView, TouchPage};
@@ -161,6 +161,14 @@ fn guarded(widget: &str, t: &mpfree_ui::Target) -> bool {
         _ => false,
     }
 }
+/// A row of the Sequencer's Lanes list: a setting's lock lane, or a
+/// sound's Velocity or Chance (step sequencer refactor D3).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum LaneChoice {
+    Lock(play_page::LockLane),
+    Value(u8, NoteValue),
+}
+
 /// The undo history (Jay after live test 3: hold UNDO to see the page's
 /// history and jump back several steps at once), over the page it was
 /// opened from.
@@ -193,6 +201,8 @@ const LANES_HINT: &str = "Tap a setting, or turn the wheel and push: its lock la
 /// that plays outside gear (with its Another CC button).
 const LANES_PAD_LINE: &str = "Hit a pad first to list its sound's settings.";
 const LANES_GEAR_LINE: &str = "Another CC: any control of the gear, by number.";
+const LANES_VALUE_LINE: &str = "Velocity and Chance: drag a finger across the hits.";
+const LANES_NO_VALUE_LINE: &str = "Velocity and Chance lanes: on a kit's sounds.";
 /// The Sequencer's clip chip (refactor C2): the selected track's clips,
 /// over the page, to pick the one the Sequencer edits without starting it.
 pub const EDIT_CLIPS_PAGE: &str = "Edit clip";
@@ -2096,8 +2106,9 @@ pub struct Player {
     /// The Sequencer's step size chip's list is over the page (refactor
     /// D1); its rows are `mpfree_seq::steps::SIZES`, in order.
     size_list: bool,
-    /// The Lanes list's rows: each a setting, its name, and what it is on.
-    lane_rows: Vec<(play_page::LockLane, String, String)>,
+    /// The Lanes list's rows: each a setting (or the pad's Velocity or
+    /// Chance, refactor D3), its name, and what it is on.
+    lane_rows: Vec<(LaneChoice, String, String)>,
     /// A track asked of the time engine for a kit ("+ Kit track", or a
     /// chop to a new kit): once the new track is armed it gets its kit.
     kit_track: Option<KitTrackAsk>,
@@ -2273,7 +2284,7 @@ impl Player {
         kits_card.buttons = vec!["Back".to_string()];
         ui.add("kits-card", kits_card);
         ui.add("lanes", ListView::new("Lanes"));
-        let mut lanes_card = Card::new("Add a lock lane");
+        let mut lanes_card = Card::new("Add a lane");
         lanes_card.heading = "Lanes".to_string();
         lanes_card.lines = vec![
             (
@@ -2289,6 +2300,7 @@ impl Player {
                 Tone::Dim,
             ),
             (LANES_PAD_LINE.to_string(), Tone::Dim),
+            (LANES_VALUE_LINE.to_string(), Tone::Dim),
             ("Back adds nothing.".to_string(), Tone::Dim),
         ];
         lanes_card.buttons = vec!["Back".to_string()];
@@ -3079,23 +3091,40 @@ impl Player {
     fn refresh_lane_list(&mut self) {
         // The knobs as they are now (a kit edited or sliced since).
         self.refresh_lock_knobs();
-        let choices = self.play.lane_choices();
+        // The pad's Velocity and Chance first (refactor D3), then the
+        // settings to lock.
+        let choices: Vec<(LaneChoice, String, String, bool)> = self
+            .play
+            .value_choices()
+            .into_iter()
+            .map(|(row, k, on, shown)| (LaneChoice::Value(row, k), k.name().to_string(), on, shown))
+            .chain(
+                self.play
+                    .lane_choices()
+                    .into_iter()
+                    .map(|(l, name, on, shown)| (LaneChoice::Lock(l), name, on, shown)),
+            )
+            .collect();
         let items = choices
             .iter()
-            .map(|(_, name, on, shown)| ListItem {
+            .map(|(c, name, on, shown)| ListItem {
                 text: name.clone(),
                 detail: if *shown {
                     format!("{on} · showing")
                 } else {
                     on.clone()
                 },
-                color: Some(play_page::LOCKED),
+                color: Some(match c {
+                    LaneChoice::Lock(_) => play_page::LOCKED,
+                    LaneChoice::Value(row, _) => self.play.sound_color(*row),
+                }),
             })
             .collect();
         if let Some(l) = self.ui.get_mut::<ListView>("lanes") {
             l.items = items;
             l.selected = choices.iter().position(|c| !c.3).unwrap_or(0);
         }
+        let values = choices.iter().any(|c| matches!(c.0, LaneChoice::Value(..)));
         self.lane_rows = choices
             .into_iter()
             .map(|(l, name, on, _)| (l, name, on))
@@ -3115,6 +3144,16 @@ impl Player {
             };
             if let Some(l) = c.lines.get_mut(3) {
                 l.0 = line.to_string();
+            }
+            // Velocity and Chance only where the list has them (a
+            // sound's; a synth's scale rows have none).
+            if let Some(l) = c.lines.get_mut(4) {
+                l.0 = if values {
+                    LANES_VALUE_LINE
+                } else {
+                    LANES_NO_VALUE_LINE
+                }
+                .to_string();
             }
         }
     }
@@ -3317,7 +3356,49 @@ impl Player {
         let Some((l, name, _)) = self.lane_rows.get(row).cloned() else {
             return;
         };
-        self.add_lane_of(l, &name);
+        match l {
+            LaneChoice::Lock(l) => self.add_lane_of(l, &name),
+            LaneChoice::Value(pad, kind) => self.add_value_lane_of(pad, kind),
+        }
+    }
+
+    /// Pad `pad`'s Velocity or Chance picked on the Lanes list (refactor
+    /// D3): its lane shows under the sound and the Steps swipe to it.
+    fn add_value_lane_of(&mut self, pad: u8, kind: NoteValue) {
+        let shown = self.play.value_lanes().contains(&(pad, kind));
+        let Some(id) = self.play.add_value_lane(pad, kind) else {
+            self.tell("+ Lane: tap a step to start a pattern first");
+            return;
+        };
+        self.refresh_play();
+        self.swipe_to_lane(play_widgets::LOCK_LANE + id);
+        let sound = self.play.pad_name(usize::from(pad));
+        let line = if shown {
+            format!(
+                "steps: the {} lane under {sound} is there already",
+                kind.name()
+            )
+        } else {
+            format!(
+                "steps: {} lane under {sound}: drag a finger across its steps to set them",
+                kind.name()
+            )
+        };
+        println!("{line}");
+        self.tell(&line);
+    }
+
+    /// The Steps swiped so lane `lane` shows, if it doesn't.
+    fn swipe_to_lane(&mut self, lane: usize) {
+        let top = self
+            .ui
+            .rect_of(play_page::STEPS)
+            .zip(self.ui.get::<StepGrid>(play_page::STEPS))
+            .and_then(|(r, g)| g.top_showing(r, lane));
+        if let Some(top) = top.filter(|&t| t != self.play.steps_top) {
+            self.play.steps_top = top;
+            self.refresh_play();
+        }
     }
 
     /// The Lanes card's Another CC (a track that plays outside gear): the
@@ -3365,16 +3446,7 @@ impl Player {
             return;
         };
         self.refresh_play();
-        let lane = play_widgets::LOCK_LANE + id;
-        let top = self
-            .ui
-            .rect_of(play_page::STEPS)
-            .zip(self.ui.get::<StepGrid>(play_page::STEPS))
-            .and_then(|(r, g)| g.top_showing(r, lane));
-        if let Some(top) = top.filter(|&t| t != self.play.steps_top) {
-            self.play.steps_top = top;
-            self.refresh_play();
-        }
+        self.swipe_to_lane(play_widgets::LOCK_LANE + id);
         let under = if l.row == crate::time::LINE {
             "on the track".to_string()
         } else {
@@ -12472,10 +12544,46 @@ impl Player {
                 if index >= play_widgets::LOCK_LANE =>
             {
                 let fine = self.status.shift;
+                let cell = index - play_widgets::LOCK_LANE;
+                let r = if self
+                    .play
+                    .value_lane_at(cell / mpfree_seq::steps::PAGE)
+                    .is_some()
+                {
+                    self.play.turn_value(cell, delta, fine)
+                } else {
+                    self.play.turn_lock(cell, delta, fine)
+                };
+                self.lock_done(r)
+            }
+            // A finger's stroke over a Velocity or Chance lane lifted
+            // (refactor D3): the steps it crossed, one edit.
+            (play_page::STEPS, EventKind::Tab(play_widgets::VALUE_DONE)) => {
+                let (pad, changed) = self
+                    .ui
+                    .get_mut::<StepGrid>(play_page::STEPS)?
+                    .stroke_done
+                    .take()?;
                 let r = self
                     .play
-                    .turn_lock(index - play_widgets::LOCK_LANE, delta, fine);
+                    .value_stroke(pad.checked_sub(play_widgets::LOCK_LANE)?, &changed);
                 self.lock_done(r)
+            }
+            (play_page::STEPS, EventKind::Toggle(lane))
+                if lane >= play_widgets::LOCK_LANE
+                    && self
+                        .play
+                        .value_lane_at(lane - play_widgets::LOCK_LANE)
+                        .is_some() =>
+            {
+                let line = self.play.clear_value_lane(lane - play_widgets::LOCK_LANE);
+                if let Some(line) = line {
+                    println!("{line}");
+                    self.tell(&line);
+                }
+                self.refresh_play();
+                self.refresh_qlinks();
+                None
             }
             (play_page::STEPS, EventKind::Toggle(lane)) if lane >= play_widgets::LOCK_LANE => {
                 let id = lane - play_widgets::LOCK_LANE;
@@ -16333,6 +16441,27 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     roll.refresh_play();
     roll.refresh_qlinks();
     out.push(("sequencer-step-ratchet", roll));
+    // A Velocity lane (refactor D3) under the busiest sound, its steps
+    // accented every beat, on the Lanes list's first row.
+    let mut vel = sample_play(fonts(), PlayView::Beats);
+    let busiest = vel.play.steps.clip.as_mut().and_then(|c| {
+        let (pad, row) = c
+            .rows
+            .iter_mut()
+            .filter(|(p, _)| *p != crate::time::LINE)
+            .max_by_key(|(_, r)| r.iter().flatten().count())?;
+        for (i, s) in row.iter_mut().enumerate() {
+            if let Some(s) = s {
+                s.velocity = [118, 52, 84, 60][i % 4];
+            }
+        }
+        Some(*pad)
+    });
+    if let Some(pad) = busiest {
+        vel.play.last_pad = usize::from(pad);
+        vel.add_value_lane_of(pad, NoteValue::Velocity);
+    }
+    out.push(("sequencer-value-lanes", vel));
     // A track that plays outside gear (step 5b, board 4): its notes as
     // scale rows, its CC lanes under them (the gear's Cutoff opening over
     // the bar, a bend on step 7); then its Lanes list, the gear's CCs.
@@ -23110,8 +23239,10 @@ mod tests {
                 .map(|i| format!("{} · {}", i.text, i.detail))
                 .collect();
         assert_eq!(
-            items[..4],
+            items[..6],
             [
+                "Velocity · Kick · the pad hit last · drawn with a finger",
+                "Chance · Kick · the pad hit last · drawn with a finger",
                 "Tune · Kick · the pad hit last · showing",
                 "Decay · Kick · the pad hit last",
                 "Filter · Kick · the pad hit last",
@@ -23130,7 +23261,7 @@ mod tests {
         assert_eq!(
             p.on_event(UiEvent {
                 widget: "lanes".into(),
-                kind: EventKind::Select(1),
+                kind: EventKind::Select(3),
             }),
             None
         );
@@ -23256,6 +23387,135 @@ mod tests {
             kind: EventKind::Tab(0),
         });
         assert!(p.page().starts_with("Play"));
+    }
+
+    /// A Velocity lane (step sequencer refactor D3): first on the Lanes
+    /// list for the pad hit last; it hangs under Kick with a bar on each
+    /// of Kick's steps; a finger dragged across sets each step it crosses
+    /// and its lift sends them all as one step action (one UNDO); a
+    /// second finger calls the stroke off; the wheel sets one step; the ×
+    /// takes the lane away and the steps keep their values.
+    #[test]
+    fn a_velocity_lane_is_drawn_with_a_finger_in_one_edit() {
+        use mpfree_ui::Rect;
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.take_actions();
+        let b = steps_target(&p, "head", play_widgets::HEAD_LANE);
+        assert_eq!(steps_tap(&mut p, b), None);
+        let items = lane_items(&p);
+        assert_eq!(
+            items[..2],
+            [
+                "Velocity · Kick · the pad hit last · drawn with a finger",
+                "Chance · Kick · the pad hit last · drawn with a finger"
+            ]
+        );
+        assert_eq!(
+            p.on_event(UiEvent {
+                widget: "lanes".into(),
+                kind: EventKind::Select(0),
+            }),
+            None
+        );
+        assert!(p.page().starts_with("Play"));
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains("drag a finger across its steps"), "{hint}");
+        // Under Kick, after the pattern's lock lanes: lane id 3.
+        let id = p.play.lock_lanes().len();
+        assert_eq!(p.play.value_lane_at(id), Some((0, NoteValue::Velocity)));
+        let names = lock_lane_names(&p);
+        assert_eq!(names.last().map(String::as_str), Some("Velocity Kick"));
+        let kick: Vec<usize> = {
+            let c = p.play.steps.clip.as_ref().unwrap();
+            (0..16).filter(|&i| c.row(0)[i].is_some()).collect()
+        };
+        assert!(kick.len() >= 2, "{kick:?}");
+        let (a, b) = (kick[0], kick[1]);
+        let cell = |p: &Player, st: usize| steps_target(p, "value", id * 16 + st);
+        let (ca, cb) = (cell(&p, a), cell(&p, b));
+        // Low on Kick's first step, up to the top over its second.
+        let low = |c: Rect| (c.x + c.w / 2, c.bottom() - 3);
+        let high = |c: Rect| (c.x + c.w / 2, c.y + 2);
+        p.take_actions();
+        assert_eq!(p.touch(7, Touch::Down, low(ca).0, low(ca).1), None);
+        p.touch(7, Touch::Move, high(cb).0, high(cb).1);
+        let sent = p.take_actions();
+        assert!(
+            !sent.iter().any(|a| matches!(a, FromUi::Steps(_))),
+            "nothing sent while it draws: {sent:?}"
+        );
+        let up = p.touch(7, Touch::Up, high(cb).0, high(cb).1);
+        let Some(FromUi::Steps(StepAction::Values {
+            pad: 0,
+            from: 0,
+            kind: NoteValue::Velocity,
+            values,
+        })) = up
+        else {
+            panic!("{up:?}");
+        };
+        assert!(values[a] > 0 && values[a] < 30, "{values:?}");
+        assert_eq!(values[b], 127, "{values:?}");
+        assert!(
+            values
+                .iter()
+                .enumerate()
+                .all(|(i, v)| *v == 0 || kick.contains(&i)),
+            "only Kick's steps: {values:?}"
+        );
+        // The Steps show it at once.
+        let c = p.play.steps.clip.as_ref().unwrap();
+        assert_eq!(c.row(0)[b].unwrap().velocity, values[b]);
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains("Velocity of Kick on"), "{hint}");
+        // A second finger on the Steps calls a stroke off: nothing sent.
+        p.take_actions();
+        p.touch(8, Touch::Down, low(ca).0, low(ca).1);
+        p.touch(8, Touch::Move, high(cb).0, low(cb).1);
+        p.touch(9, Touch::Down, high(ca).0, high(ca).1);
+        assert_eq!(p.touch(8, Touch::Up, high(cb).0, low(cb).1), None);
+        p.touch(9, Touch::Up, high(ca).0, high(ca).1);
+        assert!(
+            !p.take_actions()
+                .iter()
+                .any(|a| matches!(a, FromUi::Steps(StepAction::Values { .. }))),
+            "called off"
+        );
+        // A finger held on Kick's first step and the wheel: five up a
+        // detent, and the lift sets nothing more.
+        let was = p.play.steps.clip.as_ref().unwrap().row(0)[a]
+            .unwrap()
+            .velocity;
+        p.take_actions();
+        let (x, y) = low(ca);
+        p.touch(10, Touch::Down, x, y);
+        assert!(p.take_actions().contains(&FromUi::Held(true)));
+        p.apply(ToUi::Held {
+            delta: 1,
+            fine: false,
+        });
+        let turned = p.take_actions();
+        assert!(
+            turned.iter().any(|t| matches!(t, FromUi::Steps(StepAction::Values { values, .. }) if values[a] == was + 5)),
+            "{turned:?}"
+        );
+        assert_eq!(p.touch(10, Touch::Up, x, y), None);
+        assert!(
+            !p.take_actions()
+                .iter()
+                .any(|a| matches!(a, FromUi::Steps(_))),
+            "the lift sets nothing"
+        );
+        // The ×: the lane goes, the steps keep their values.
+        let off = steps_target(&p, "lock-lane-off", id);
+        assert_eq!(steps_tap(&mut p, off), None);
+        assert!(p.play.value_lanes().is_empty());
+        assert_ne!(
+            lock_lane_names(&p).last().map(String::as_str),
+            Some("Velocity Kick")
+        );
+        let c = p.play.steps.clip.as_ref().unwrap();
+        assert_eq!(c.row(0)[a].unwrap().velocity, was + 5);
     }
 
     /// The Steps' target `id`, `index` (a lane's head, a lock cell).
@@ -23393,12 +23653,15 @@ mod tests {
         p.apply(ToUi::IoModel(io.clone()));
         p.take_actions();
         // No profile: the CCs most gear agrees on, the bend and pressure;
-        // nothing of the kit (the gear plays the track instead).
+        // nothing of the kit (the gear plays the track instead), after
+        // the hit pad's Velocity and Chance (the notes the gear gets).
         let b = steps_target(&p, "head", play_widgets::HEAD_LANE);
         steps_tap(&mut p, b);
         assert_eq!(p.page(), LANES_PAGE);
         let gear = io.lock().unwrap().setup.tracks[0].clone().unwrap().label();
-        let items = lane_items(&p);
+        let all = lane_items(&p);
+        assert!(all[0].starts_with("Velocity ") && all[1].starts_with("Chance "));
+        let items = all[2..].to_vec();
         assert_eq!(items[0], format!("Mod wheel · {gear} · CC 1"));
         for want in ["Cutoff", "Bend", "Pressure"] {
             assert!(
@@ -23416,11 +23679,11 @@ mod tests {
         assert_eq!(card.buttons, ["Back", "Another CC"]);
         // The wheel moves down the list past what a finger reaches; the
         // push adds the row picked (Pressure, the last).
-        let last = items.len() as i32 - 1;
+        let last = all.len() as i32 - 1;
         p.apply(ToUi::Nav(Nav::Turn(last + 3)));
         assert_eq!(
             p.ui.get::<ListView>("lanes").unwrap().selected,
-            items.len() - 1
+            all.len() - 1
         );
         p.apply(ToUi::Nav(Nav::Push));
         assert!(p.page().starts_with("Play"));
@@ -23477,7 +23740,7 @@ mod tests {
         let b = steps_target(&p, "head", play_widgets::HEAD_LANE);
         steps_tap(&mut p, b);
         assert_eq!(
-            lane_items(&p)[..4],
+            lane_items(&p)[2..6],
             [
                 "Cutoff · Mono synth · CC 43",
                 "Resonance · Mono synth · CC 44",

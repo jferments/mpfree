@@ -1901,6 +1901,33 @@ impl TimeControl {
             StepAction::Length { steps, copy } => {
                 (grid.resize(clip, steps, copy), None, clip.name.clone())
             }
+            // A lane's stroke (refactor D3): each step its own value, one
+            // edit.
+            StepAction::Values {
+                pad,
+                from,
+                kind,
+                values,
+            } => {
+                let changes: Vec<(usize, mpfree_seq::steps::Change)> = values
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, v)| **v > 0)
+                    .map(|(k, &v)| (from + k, kind.change(v)))
+                    .filter(|(i, _)| !grid.notes(clip, pad, *i).is_empty())
+                    .collect();
+                let n = changes.len();
+                (
+                    grid.change_each(clip, pad, &changes),
+                    None,
+                    format!(
+                        "{} of {} on {n} step{}",
+                        kind.name(),
+                        row_name(pad),
+                        if n == 1 { "" } else { "s" }
+                    ),
+                )
+            }
             // A step at a time, from the clip's own length (refactor D2),
             // so detents that come before the screen hears back all count.
             StepAction::LengthBy { steps: by } => {
@@ -1995,6 +2022,7 @@ impl TimeControl {
                 format!("steps: {what} erased")
             }
             (None, StepAction::CopySteps { .. }) => format!("steps: {what} copied"),
+            (None, StepAction::Values { .. }) => format!("steps: {what}"),
             // One line a turn, at its first detent.
             (None, StepAction::Lock { .. }) if joined => String::new(),
             (None, StepAction::Lock { .. }) => format!("steps: {what}"),

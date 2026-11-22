@@ -112,6 +112,20 @@ While a step is picked, the bottom of the Steps view (where the throws are) show
 
 {{shot: sequencer-step-ratchet | The step inspector on a hi-hat step of four hits, its ramp at +45: the bars in the Ratchet card rise from the first hit to the last.}}
 
+### Draw velocity and chance
+
+How hard each hit plays, and how often, can be drawn with a finger, like accents on a drum machine's velocity lane.
+
+1. Hit the pad, then tap **+ Lane** at the top of the pattern (it also adds [lock lanes](#lock-lanes)). The list starts with that pad's **Velocity** and **Chance**.
+2. Tap one. A lane opens under the sound with a bar on every step it hits, as tall as the hit is loud (1 to 127) or as likely to play (1 to 100 %), the number over it.
+3. Drag a finger along the lane. Each step you pass goes to the height under your finger, so a slow wave gives soft and loud hits in one go. Nothing changes in the sound until you lift your finger, and then one **UNDO** takes the whole stroke back.
+
+Tap a bar to set just that step. To set one exactly, keep your finger on its bar and turn the data wheel: 5 a click, or 1 with **SHIFT** held. A second finger on the pattern while you draw calls the stroke off. Steps without a hit have no bar, and a step you switched off draws faint.
+
+The **×** takes the lane away; the hits keep the velocity or chance you drew. These lanes are on drum tracks; on a synth track, set a note's velocity in the step inspector or the note editor.
+
+{{shot: sequencer-value-lanes | A Velocity lane under the hi-hat: every beat's hit at 118, the ones between at 52 to 84, each a bar with its number.}}
+
 ## Locks: a step that changes the sound
 
 A **lock** makes one step play its sound differently: tuned up, shorter, darker or quieter, while every other step plays the sound as it is. This is how one hi-hat sample becomes an open and closed hat, or a snare gets a pitched-up flam.
@@ -129,7 +143,7 @@ When two tracks play the same instrument (the synth, or one track's instrument t
 
 A **lock lane** shows one setting step by step, under its sound, like a row of its own: the sound's tune, decay, filter, level or slice (on a sliced pad), or the track's volume, pan or sends. Every setting the pattern already locks has a lane, so locks you recorded live show up.
 
-1. Hit the pad whose sound you want to lock, then tap **+ Lane** at the top of the pattern. The list shows that pad's settings first, then the track's.
+1. Hit the pad whose sound you want to lock, then tap **+ Lane** at the top of the pattern. The list shows that pad's settings first (after its [Velocity and Chance](#draw-velocity-and-chance)), then the track's.
 2. Tap a setting (or turn the wheel to it and push). It gets an empty lane under its sound, and the rows scroll to it.
 3. Tap a square on the lane to lock that step at the sound's own setting.
 4. Drag it up or down (hold **SHIFT** for fine steps), or keep your finger on it and turn the data wheel. Each locked step shows a purple bar as high as its value, with the value over it.
@@ -138,7 +152,7 @@ Tap a locked square again to take its lock off (the lane stays), or hold **ERASE
 
 A send's lane throws on chosen steps: lock **Delay send** high on the last two steps of a bar and only they echo. A sound's lock plays when the sound hits on that step, so a lock on a step without a hit waits for one there.
 
-{{shot: sequencer-lanes-list | The list + Lane opens: the kick's settings (the pad hit last) first, then the track's volume, pan and sends.}}
+{{shot: sequencer-lanes-list | The list + Lane opens: the kick's Velocity and Chance (the pad hit last), then its settings to lock, then the track's volume, pan and sends.}}
 
 {{shot: sequencer-lock-lanes | Lock lanes on the Steps: Tune and Decay under the kick, a Tune lane under the snare, each locked step a purple bar with its value.}}
 

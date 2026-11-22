@@ -37,7 +37,7 @@ use crate::play_widgets::{
     BankHead, Lane, Marks, RecChip, RecState, StepGrid, Throw, Throws, TimedHit, TransportLook,
     XyPad, YourTiming,
 };
-use crate::time::{HitInfo, StepAction, StepsData, LINE, STEP_TICKS};
+use crate::time::{HitInfo, NoteValue, StepAction, StepsData, LINE, STEP_TICKS};
 use mpfree_arp::scale::pads::PadLayout;
 use mpfree_arp_ui::view as arp_view;
 use mpfree_fx::ids::mixer as mixer_ids;
@@ -896,6 +896,9 @@ pub struct PlayPage {
     /// Lock lanes + Lane added, or whose last lock a tap took off, on
     /// (track, clip slot): they stay with no locks.
     added_lanes: Vec<(usize, usize, LockLane)>,
+    /// Velocity and Chance lanes + Lane added under a sound (refactor
+    /// D3), on (track, clip slot): (track, slot, the sound's row, which).
+    value_lanes: Vec<(usize, usize, u8, NoteValue)>,
     /// The Sequencer's Steps with lock lanes: the first row shown.
     pub steps_top: usize,
     /// The outside gear the Sequencer's track plays on (its MIDI out
@@ -1079,6 +1082,7 @@ impl Default for PlayPage {
             follow: false,
             lock_knobs: Vec::new(),
             added_lanes: Vec::new(),
+            value_lanes: Vec::new(),
             steps_top: 0,
             gear: None,
             gear_moved: Vec::new(),
@@ -2373,6 +2377,7 @@ impl PlayPage {
                 .into_iter()
                 .map(|p| self.lane(p))
                 .chain(self.lock_lanes_shown())
+                .chain(self.value_lanes_shown())
                 .collect();
         }
         // Any of a kit's 128 pads (the synth's 16); the empty ones of the
@@ -2396,7 +2401,235 @@ impl PlayPage {
         // The Sequencer's lock lanes, after the sounds (the grid puts each
         // under its sound).
         lanes.extend(self.lock_lanes_shown());
+        lanes.extend(self.value_lanes_shown());
         lanes
+    }
+
+    /// The Velocity and Chance lanes on the clip shown (refactor D3), by
+    /// sound. Their numbers among the lanes come after the lock lanes'.
+    pub fn value_lanes(&self) -> Vec<(u8, NoteValue)> {
+        if !self.sequencer {
+            return Vec::new();
+        }
+        let Some(slot) = self.steps.clip.as_ref().map(|c| c.slot) else {
+            return Vec::new();
+        };
+        let mut v: Vec<(u8, NoteValue)> = self
+            .value_lanes
+            .iter()
+            .filter(|(t, s, ..)| (*t, *s) == (self.steps.track, slot))
+            .map(|&(_, _, row, kind)| (row, kind))
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// Lane number `id` (as the grid numbers lock lanes) when it is a
+    /// Velocity or Chance lane: its sound and which.
+    pub fn value_lane_at(&self, id: usize) -> Option<(u8, NoteValue)> {
+        let n = self.lock_lanes().len();
+        self.value_lanes().get(id.checked_sub(n)?).copied()
+    }
+
+    /// The Velocity and Chance lanes as the Steps show them, numbered on
+    /// from the lock lanes.
+    fn value_lanes_shown(&self) -> impl Iterator<Item = Lane> + '_ {
+        let n = self.lock_lanes().len();
+        self.value_lanes()
+            .into_iter()
+            .enumerate()
+            .map(move |(j, (row, kind))| self.value_lane(n + j, row, kind))
+    }
+
+    /// Lane `id`: sound `row`'s velocity or chance on the page, a bar a
+    /// step, in the sound's colour (refactor D3).
+    fn value_lane(&self, id: usize, row: u8, kind: NoteValue) -> Lane {
+        let from = self.page * PAGE;
+        let r = self.steps.clip.as_ref().map_or(&[][..], |c| c.row(row));
+        let (min, max) = kind.range();
+        let picked = self
+            .group()
+            .filter(|(sound, _)| *sound == row)
+            .map(|(_, steps)| steps.clone())
+            .into_iter()
+            .flatten()
+            .chain(
+                self.selected
+                    .filter(|(p, _)| *p == usize::from(row))
+                    .map(|(_, i)| i),
+            )
+            .filter(|i| i / PAGE == self.page)
+            .map(|i| i % PAGE)
+            .collect();
+        Lane {
+            pad: crate::play_widgets::LOCK_LANE + id,
+            name: kind.name().to_string(),
+            color: self.lane(usize::from(row)).color,
+            muted: false,
+            steps: Vec::new(),
+            marks: Vec::new(),
+            note: None,
+            root: false,
+            label: None,
+            empty: false,
+            tag: None,
+            lock: Some(crate::play_widgets::LockCells {
+                sub: self.pad_name(usize::from(row)),
+                owner: Some(usize::from(row)),
+                cells: Vec::new(),
+                opens_rows: false,
+                moved: false,
+                values: Some(crate::play_widgets::ValueCells {
+                    min,
+                    max,
+                    cells: (from..from + PAGE)
+                        .map(|i| r.get(i).copied().flatten().map(|s| (kind.of(&s), s.on)))
+                        .collect(),
+                    picked,
+                    percent: kind == NoteValue::Chance,
+                }),
+            }),
+        }
+    }
+
+    /// A Velocity or Chance lane picked on the Lanes list, under sound
+    /// `row`: it shows on the clip's Steps. Its number among the lanes;
+    /// None with no clip.
+    pub fn add_value_lane(&mut self, row: u8, kind: NoteValue) -> Option<usize> {
+        let slot = self.steps.clip.as_ref()?.slot;
+        let at = (self.steps.track, slot, row, kind);
+        if !self.value_lanes.contains(&at) {
+            self.value_lanes.push(at);
+        }
+        let n = self.lock_lanes().len();
+        self.value_lanes()
+            .iter()
+            .position(|l| *l == (row, kind))
+            .map(|j| n + j)
+    }
+
+    /// A Velocity or Chance lane's ×: it goes (the steps keep their
+    /// values). Its name and sound, for the hint line.
+    pub fn clear_value_lane(&mut self, id: usize) -> Option<String> {
+        let (row, kind) = self.value_lane_at(id)?;
+        let slot = self.steps.clip.as_ref()?.slot;
+        let track = self.steps.track;
+        self.value_lanes.retain(|l| *l != (track, slot, row, kind));
+        Some(format!(
+            "steps: the {} lane under {} is off (the steps keep their values)",
+            kind.name(),
+            self.pad_name(usize::from(row))
+        ))
+    }
+
+    /// A stroke on Velocity or Chance lane `id` lifted (refactor D3):
+    /// each step on the page with its new value. The steps change on the
+    /// screen at once, and the step action makes them one edit, so one
+    /// UNDO. What to say, or why nothing.
+    pub fn value_stroke(
+        &mut self,
+        id: usize,
+        changed: &[(usize, u8)],
+    ) -> Result<(StepAction, String), String> {
+        let (row, kind) = self.value_lane_at(id).ok_or("steps: that lane is gone")?;
+        let from = self.page * PAGE;
+        let mut values = [0u8; 16];
+        for &(col, v) in changed.iter().filter(|(c, _)| *c < PAGE) {
+            values[col] = v;
+        }
+        let c = self
+            .steps
+            .clip
+            .as_mut()
+            .ok_or("steps: tap a step to start a pattern first")?;
+        if let Some((_, r)) = c.rows.iter_mut().find(|(p, _)| *p == row) {
+            for (col, &v) in values.iter().enumerate().filter(|(_, v)| **v > 0) {
+                if let Some(Some(s)) = r.get_mut(from + col) {
+                    match kind {
+                        NoteValue::Velocity => s.velocity = v,
+                        NoteValue::Chance => s.chance = v,
+                    }
+                }
+            }
+        }
+        let n = values.iter().filter(|v| **v > 0).count();
+        let line = format!(
+            "steps: {} of {} on {n} step{} (UNDO takes it back)",
+            kind.name(),
+            self.pad_name(usize::from(row)),
+            if n == 1 { "" } else { "s" }
+        );
+        Ok((
+            StepAction::Values {
+                pad: row,
+                from,
+                kind,
+                values,
+            },
+            line,
+        ))
+    }
+
+    /// The wheel on a Velocity or Chance lane's step (`cell` is the lane
+    /// id × 16 + the step on the page): its value up or down five a
+    /// detent, one with SHIFT, as one edit.
+    pub fn turn_value(
+        &mut self,
+        cell: usize,
+        delta: i32,
+        fine: bool,
+    ) -> Result<(StepAction, String), String> {
+        let (id, col) = (cell / PAGE, cell % PAGE);
+        let (row, kind) = self.value_lane_at(id).ok_or("steps: that lane is gone")?;
+        let i = self.page * PAGE + col;
+        let c = self
+            .steps
+            .clip
+            .as_ref()
+            .ok_or("steps: tap a step to start a pattern first")?;
+        let s = c
+            .rows
+            .iter()
+            .find(|(p, _)| *p == row)
+            .and_then(|(_, r)| r.get(i).copied().flatten())
+            .ok_or_else(|| format!("steps: no note on step {} to set", i + 1))?;
+        let (min, max) = kind.range();
+        let by = delta * if fine { 1 } else { 5 };
+        let to = (i32::from(kind.of(&s)) + by).clamp(i32::from(min), i32::from(max));
+        let to = u8::try_from(to).unwrap_or(max);
+        let (a, _) = self.value_stroke(id, &[(col, to)])?;
+        Ok((
+            a,
+            format!("steps: {} {} on step {}", kind.name(), kind.text(to), i + 1),
+        ))
+    }
+
+    /// Sound `row`'s colour on the Steps (a Velocity or Chance lane's
+    /// row on the Lanes list).
+    pub fn sound_color(&self, row: u8) -> Color {
+        self.lane(usize::from(row)).color
+    }
+
+    /// What + Lane offers before the locks: the pad hit last's Velocity
+    /// and Chance (refactor D3), each with what it is on and whether its
+    /// lane shows already. None on the track's line or a synth's rows.
+    pub fn value_choices(&self) -> Vec<(u8, NoteValue, String, bool)> {
+        let Ok(row) = u8::try_from(self.last_pad) else {
+            return Vec::new();
+        };
+        // A kit's sounds (a synth's scale rows share their lanes).
+        if row == LINE || self.steps.clip.is_none() || self.pitched() {
+            return Vec::new();
+        }
+        let shown = self.value_lanes();
+        let on = format!(
+            "{} · the pad hit last · drawn with a finger",
+            self.pad_name(self.last_pad)
+        );
+        NoteValue::ALL
+            .into_iter()
+            .map(|k| (row, k, on.clone(), shown.contains(&(row, k))))
+            .collect()
     }
 
     /// The Sequencer's lock lanes as the Steps show them.
@@ -2518,6 +2751,7 @@ impl PlayPage {
                     .collect(),
                 opens_rows: gear,
                 moved,
+                values: None,
             }),
         }
     }

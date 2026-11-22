@@ -279,6 +279,67 @@ pub enum StepAction {
     /// New steps are empty; steps that go take their notes along. One take
     /// each, so UNDO puts the old length and notes back.
     LengthBy { steps: i32 },
+    /// A Velocity or Chance lane's stroke under sound `pad` (refactor
+    /// D3): step `from + k` takes `values[k]`, 0 leaving it as it is. One
+    /// edit, so one UNDO takes the whole stroke back. Empty steps are left
+    /// out.
+    Values {
+        pad: u8,
+        from: usize,
+        kind: NoteValue,
+        values: [u8; 16],
+    },
+}
+
+/// A note setting a lane under a sound shows and sets, step by step (the
+/// Sequencer's Velocity and Chance lanes, refactor D3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NoteValue {
+    Velocity,
+    Chance,
+}
+
+impl NoteValue {
+    pub const ALL: [NoteValue; 2] = [NoteValue::Velocity, NoteValue::Chance];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            NoteValue::Velocity => "Velocity",
+            NoteValue::Chance => "Chance",
+        }
+    }
+
+    /// Its least and most.
+    pub fn range(self) -> (u8, u8) {
+        match self {
+            NoteValue::Velocity => (1, 127),
+            NoteValue::Chance => (1, 100),
+        }
+    }
+
+    /// A step's value.
+    pub fn of(self, s: &Step) -> u8 {
+        match self {
+            NoteValue::Velocity => s.velocity,
+            NoteValue::Chance => s.chance,
+        }
+    }
+
+    /// The change that sets it to `v`.
+    pub fn change(self, v: u8) -> Change {
+        match self {
+            NoteValue::Velocity => Change::Velocity(v),
+            NoteValue::Chance => Change::Chance(v),
+        }
+    }
+
+    /// `v` as the lane writes it: "96", "50 %".
+    pub fn text(self, v: u8) -> String {
+        match self {
+            NoteValue::Velocity => v.to_string(),
+            NoteValue::Chance => format!("{v} %"),
+        }
+    }
 }
 
 /// The most steps the Sequencer's head makes a pattern, doubling or a
@@ -2551,6 +2612,60 @@ mod tests {
         // No clip: nothing.
         h.act(TimeAction::Arm(Some(1))).unwrap();
         assert_eq!(by(&mut h, 1), Ok(String::new()));
+    }
+
+    /// A Velocity or Chance lane's stroke (refactor D3): each step it
+    /// crossed gets its own value in one edit, so one UNDO takes the
+    /// whole stroke back; steps it left alone and steps with no note stay
+    /// as they were.
+    #[test]
+    fn a_lanes_stroke_sets_each_step_its_own_value_in_one_undo() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        for step in [0, 4, 8] {
+            h.step_action(StepAction::Tap {
+                pad: 0,
+                step,
+                velocity: 100,
+            })
+            .unwrap();
+        }
+        let before = h.steps().clip.unwrap();
+        let mut values = [0u8; 16];
+        values[0] = 40;
+        values[1] = 90; // no note there: nothing
+        values[4] = 127;
+        let said = h
+            .step_action(StepAction::Values {
+                pad: 0,
+                from: 0,
+                kind: NoteValue::Velocity,
+                values,
+            })
+            .unwrap();
+        assert_eq!(said, "steps: Velocity of pad 1 on 2 steps");
+        let vel = |h: &TimeHost| {
+            let c = h.steps().clip.unwrap();
+            [0, 4, 8].map(|i| c.row(0)[i].map(|s| s.velocity))
+        };
+        assert_eq!(vel(&h), [Some(40), Some(127), Some(100)]);
+        assert!(h.steps().clip.unwrap().row(0)[1].is_none());
+        // Chance the same way, its own edit.
+        let mut chance = [0u8; 16];
+        chance[8] = 25;
+        h.step_action(StepAction::Values {
+            pad: 0,
+            from: 0,
+            kind: NoteValue::Chance,
+            values: chance,
+        })
+        .unwrap();
+        assert_eq!(h.steps().clip.unwrap().row(0)[8].unwrap().chance, 25);
+        // UNDO twice: the chance, then the whole stroke.
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.steps().clip.unwrap().row(0)[8].unwrap().chance, 100);
+        assert_eq!(vel(&h), [Some(40), Some(127), Some(100)]);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.steps().clip.unwrap(), before);
     }
 
     /// A play direction moves by 1/16s whatever the step size (refactor
