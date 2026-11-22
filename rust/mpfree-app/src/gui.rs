@@ -26971,7 +26971,7 @@ mod tests {
         let synth = crate::synth::Synth::new(44_100);
         let good = project::new_snapshot(&Defaults {
             tempo: 120.0,
-            mixer: project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0, 0),
+            mixer: project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0),
             modu: String::new(),
             synth: project::synth_text(&Default::default(), &synth.sounds()),
         });
