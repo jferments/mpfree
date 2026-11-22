@@ -1875,6 +1875,77 @@ mod looper {
         });
     }
 
+    /// Smart loop end step 2d, hands-free: a footswitch learned on Snap
+    /// takes the snap on the downbeat and one learned on Use my tap puts
+    /// the loop back on your tap, both hands on the instrument; pressed
+    /// again where the loop already is, it stays. While the hint line
+    /// asks, Use my tap is Not now and Snap is Snap anyway. With nothing
+    /// to choose, it says so.
+    #[test]
+    fn a_footswitch_snaps_and_puts_the_loop_back_on_your_tap() {
+        use mpfree_play::mpfree_param::looper;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let (by, tap, _, _) = closed_late(&mut s);
+            let press = |s: &mut Session, id: u16| {
+                s.footswitch(id, 1.0).footswitch(id, 0.0);
+            };
+            press(&mut s, looper::SNAP);
+            assert!(
+                s.said().iter().any(|l| l
+                    == "looper: Snap: Loop 1 goes there on its next downbeat, if it isn't there, \
+                        from a footswitch"),
+                "{:?}",
+                s.said()
+            );
+            until_moved(&mut s, Some(by));
+            assert_eq!(status(&s).frames as i64, tap as i64 + by.longer());
+            press(&mut s, looper::SNAP);
+            s.run_for(2.5);
+            assert_eq!(status(&s).moved, Some(by), "already snapped, it stays");
+            press(&mut s, looper::USE_MY_TAP);
+            until_moved(&mut s, None);
+            assert_eq!(status(&s).frames, tap);
+            assert_eq!(status(&s).offer, Some(by));
+            // Over the audio tracks' recordings the hint line asks: Use my
+            // tap is Not now, Snap is Snap anyway.
+            s.recorded_audio = Some(true);
+            s.run_for(0.1);
+            press(&mut s, looper::SNAP);
+            s.run_for(0.1);
+            assert!(s.looper.snap_asking().is_some(), "{:?}", s.said());
+            press(&mut s, looper::USE_MY_TAP);
+            assert_eq!(s.looper.snap_asking(), None);
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l == "looper: Loop 1: not now: it stays as it is, from a footswitch"),
+                "{:?}",
+                s.said()
+            );
+            s.run_for(2.5);
+            assert_eq!(status(&s).frames, tap);
+            press(&mut s, looper::SNAP);
+            s.run_for(0.1);
+            assert!(s.looper.snap_asking().is_some());
+            press(&mut s, looper::SNAP);
+            assert_eq!(s.looper.snap_asking(), None);
+            until_moved(&mut s, Some(by));
+            // Loop 2 has nothing to choose.
+            s.footswitch(looper::NEXT_LOOP, 1.0)
+                .footswitch(looper::NEXT_LOOP, 0.0);
+            press(&mut s, looper::USE_MY_TAP);
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l
+                        == "looper: Use my tap from a footswitch: Loop 2 has no snap to choose"),
+                "{:?}",
+                s.said()
+            );
+        });
+    }
+
     /// Smart loop end plan, step 0B: with Tempo from the first loop on,
     /// Length 2 bars means 2 bars at the tempo you play (it records free
     /// from REC, and nothing is read). On Free, a loop near the old 80 BPM

@@ -447,6 +447,8 @@ pub enum LoopAction {
     /// The loop point view opened or closed
     /// ([`LoopHost::set_point_open`]).
     PointView(bool),
+    /// A footswitch's Snap or Use my tap ([`LoopHost::choose`]).
+    Choose(Side),
 }
 
 /// The loop point view's windows: how many slices each draws.
@@ -3953,6 +3955,33 @@ impl LoopHost {
             "looper: {what}: Loop {} goes there on its next downbeat, if it isn't there",
             n + 1
         )
+    }
+
+    /// A footswitch's Snap or Use my tap (the Learn section's Looper
+    /// card), with your hands on your instrument: while the hint line
+    /// asks, Snap anyway or Not now; else the picked loop goes to that
+    /// side ([`LoopHost::side`]), the chip staying. The line for the log,
+    /// also when there is nothing to choose.
+    pub fn choose(&mut self, side: Side) -> String {
+        let what = match side {
+            Side::Snap => "Snap",
+            Side::Tap => "Use my tap",
+        };
+        let asked = match side {
+            Side::Snap => self.snap_anyway(),
+            Side::Tap => self.snap_not_now(),
+        };
+        if let Some(line) = asked {
+            return format!("{line}, from a footswitch");
+        }
+        let n = self.looper.selected();
+        if self.side_of(n).is_none() {
+            return format!(
+                "looper: {what} from a footswitch: Loop {} has no snap to choose",
+                n + 1
+            );
+        }
+        format!("{}, from a footswitch", self.side(side, false))
     }
 
     /// A/B on the picked loop: it swaps between your tap and the snap on

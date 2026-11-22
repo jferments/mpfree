@@ -194,6 +194,8 @@ Smart loop end listens to the pads and MIDI notes, so it is off while the Looper
 
 The chip lasts until you keep a side (below), or the loop changes in another way: an overdub, an edit, a trim.
 
+With your hands on an instrument, a footswitch can do the chip's job: learn one on **Snap** and one on **Use my tap** in the mixer's Learn section (see [A footswitch](#a-footswitch)).
+
 ##### The loop point view
 
 Tap the chip's words (not its button) and the loop point view opens in the lanes' place; tap them again, or **×**, to close it. Nothing else on the tab moves.
@@ -274,7 +276,7 @@ You set up what each pad of the set does on the Pads tab: see [The Perform set o
 
 ### A footswitch
 
-A MIDI footswitch or pedalboard can play the looper while your hands stay on your instrument: a loop's key and mute, the picked loop's key, **Next loop**, **Undo**, **Redo**, **Capture** and **Clear**, on every page. A key held for a second clears its loop, as a pad does. The MPC One has no footswitch jack, so the footswitch goes into a MIDI controller or pedal. Teach it in the mixer's Learn section: see [Playing the looper from a footswitch](midi-and-cv.md#playing-the-looper-from-a-footswitch).
+A MIDI footswitch or pedalboard can play the looper while your hands stay on your instrument: a loop's key and mute, the picked loop's key, **Next loop**, **Undo**, **Redo**, **Capture**, **Clear**, and smart loop end's **Snap** and **Use my tap**, on every page. A key held for a second clears its loop, as a pad does. The MPC One has no footswitch jack, so the footswitch goes into a MIDI controller or pedal. Teach it in the mixer's Learn section: see [Playing the looper from a footswitch](midi-and-cv.md#playing-the-looper-from-a-footswitch).
 
 ### Moving a layer to another loop
 
