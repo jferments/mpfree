@@ -41,7 +41,10 @@ started by you pressing Enter:
      again, each followed by the same read-only look. The tool itself only
      reads; the pad player opens and closes the device when you ask it to.
   4. inventory: the program lists sound cards, MIDI and input devices, the
-     framebuffer and real-time limits (read-only).
+     framebuffer and real-time limits, and asks the audio driver which
+     sample rates, formats and channel counts it would accept (HW_REFINE
+     only: nothing is set, started, played or recorded; a device the pad
+     player holds is reported busy). Read-only.
   5. screen: stops the test build's own log display (mpfree-test-screen, our
      service; started again at the end) and draws the mpfree card.
   6. touch: shows your touches on the screen for 10 s (reads only, no grab).
@@ -1089,7 +1092,7 @@ def main(argv):
             elif name == "line":
                 line_check(mpc, out, i, total)
             elif name == "inventory":
-                if step(i, "Inventory (read-only)", "Lists the sound, MIDI, input and screen devices."):
+                if step(i, "Inventory (read-only)", "Lists the sound, MIDI, input and screen devices, and asks which sample rates the audio driver allows."):
                     run_phase(mpc, out, "inventory")
             elif name == "screen":
                 if step(i, "Screen: our log display stops (it starts again at the end), then the mpfree card",
