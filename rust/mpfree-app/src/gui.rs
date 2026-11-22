@@ -2333,6 +2333,10 @@ pub struct Player {
     debug: DebugPages,
     /// The audio loop's CPU by engine numbers (None until the loop starts).
     engines: Option<Arc<crate::engines::EngineShared>>,
+    /// The memory promised to loads and sample jobs under way, for Memory
+    /// by engine ([`crate::memory::promised`]; the screen previews pin it,
+    /// since the other screens' jobs run in the same process).
+    memory_promised: fn() -> u64,
     /// Every problem reported this session (System status; phase 0 shows it
     /// on Dev > Status only), and its clock: made with the Player and moved
     /// on by [`Player::tick`], so tests drive it.
@@ -2880,6 +2884,7 @@ impl Player {
             time: TimeState::default(),
             debug,
             engines: None,
+            memory_promised: crate::memory::promised,
             status_board: mpfree_status::Board::new(),
             status_clock: now,
             status_start: now,
@@ -12355,7 +12360,7 @@ impl Player {
                 rss_kb,
                 total_kb,
                 free_kb,
-                promised: crate::memory::promised(),
+                promised: (self.memory_promised)(),
             });
             let fell = self.sample.recall_fallbacks();
             if fell > 0 {
@@ -18300,6 +18305,9 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     });
     // One Sample Recall fallback, so the picture shows its row.
     let _ = eng.sample.recall_fell_back();
+    // Nothing promised: the other screens' sample jobs, running in this
+    // process, would otherwise show here or not by chance.
+    eng.memory_promised = || 0;
     eng.apply(ToUi::Engines(probes.shared()));
     eng.apply(ToUi::Show(View::Engines));
     eng.refresh_engines();
