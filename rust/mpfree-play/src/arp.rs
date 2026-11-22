@@ -41,8 +41,14 @@ pub const CLIPS: usize = 0;
 pub const PADS: usize = 1;
 /// What a track's MIDI effects above the arp make of its notes.
 pub const EFFECTS: usize = 2;
-/// Sources an arp keeps apart: [`CLIPS`], [`PADS`] and [`EFFECTS`].
-pub const SOURCES: usize = 3;
+/// The player's notes from a clip of notes (pitches, not pads:
+/// [`crate::Out::notes`], the instrument redesign's step 5c), kept apart
+/// from [`CLIPS`] so a pad and a pitch of the same number never end each
+/// other. The player's panic ends both.
+pub const CLIP_NOTES: usize = 3;
+/// Sources an arp keeps apart: [`CLIPS`], [`PADS`], [`EFFECTS`] and
+/// [`CLIP_NOTES`].
+pub const SOURCES: usize = 4;
 /// Places an arp's table keeps for panics: one for each STOP a period
 /// can carry (the transport takes at most [`MAX_COMMANDS_PER_PERIOD`]
 /// commands a period, and the player sends one panic for each), and one
@@ -160,9 +166,18 @@ impl ArpHost {
             // do: the pads when they let go, the effects when the panic
             // cuts them (a stray note-off after a panic presses nothing).
             Event::AllOff => {
-                for n in self.owed[source].iter_mut() {
-                    self.n_owed -= usize::from(*n);
-                    *n = 0;
+                // The player's panic ends its notes of both kinds.
+                let player = [CLIPS, CLIP_NOTES];
+                let sources = if source == CLIPS {
+                    &player[..]
+                } else {
+                    std::slice::from_ref(&source)
+                };
+                for &src in sources {
+                    for n in self.owed[src].iter_mut() {
+                        self.n_owed -= usize::from(*n);
+                        *n = 0;
+                    }
                 }
             }
             Event::Pressure { .. }

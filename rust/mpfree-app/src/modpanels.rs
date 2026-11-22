@@ -828,7 +828,7 @@ fn strip_list(h: &MixHost, g: usize) -> mpfree_chain_ui::StripList {
         .filter_map(|&id| {
             Some(mpfree_chain_ui::StripPick {
                 strip: strip_of(id)?,
-                name: mixing::name(id),
+                name: h.strip_name(id),
                 sub: holds(h, id),
                 refused: None,
             })
@@ -865,7 +865,7 @@ fn sidechain_list(
         .filter_map(|&id| {
             Some(mpfree_chain_ui::StripPick {
                 strip: strip_of(id)?,
-                name: mixing::name(id),
+                name: h.strip_name(id),
                 // It is heard before its fader and mute.
                 sub: if muted(h, id) {
                     "muted · still works".to_string()

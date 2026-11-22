@@ -147,6 +147,7 @@ impl Ahead {
             track: 0,
             dest: 0,
             event: Event::AllOff,
+            notes: false,
         };
         Ahead {
             transport: Box::new(*transport),

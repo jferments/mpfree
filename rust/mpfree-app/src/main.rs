@@ -49,7 +49,9 @@
 //!   --display-lists DIR
 //!                      host only: records each sample page's first two frames
 //!                      as display lists, new NAME.mpdl files in DIR (for
-//!                      mpfree-gpu-bench, which times them on the MPC's GPU)
+//!                      mpfree-gpu-bench, which times them on the MPC's GPU);
+//!                      with --theme all, once per built-in theme, in
+//!                      DIR/THEME/NAME.mpdl (for the contrast check)
 //!
 //! `--sound-cores shared|core3|two|three` (play and app) picks where the
 //! sound runs for this run, in place of Prefs' saved "Sound cores" (shared
@@ -4081,6 +4083,7 @@ fn play_routed(
         track: u16::from(track),
         dest: Default::default(),
         event,
+        notes: false,
     };
     // A key's pressure reached the CV outputs above, as the hardest key's.
     if !matches!(event, Event::Pressure { .. }) {
@@ -4207,6 +4210,7 @@ fn play_routed_pad(
                 track,
                 dest: Default::default(),
                 event,
+                notes: false,
             };
             midi.pad_to(&o, port, *channel, *note);
         }
@@ -4924,6 +4928,18 @@ fn instrument_job(
 const MAX_LIVE_HITS: usize = 64;
 
 impl time::Pads for SeqPads<'_> {
+    /// Where track `track` is heard while it plays an instrument (its own,
+    /// or another track's, step 4a): a clip's "this track's strip" goes
+    /// there (time/strips.rs). A track on MIDI out sounds outside mpfree,
+    /// and one on the pads (a kit, the synth) on its own strip, as before.
+    fn sounds_on(&self, track: u16) -> Option<u8> {
+        if self.midi.takes(track) {
+            return None;
+        }
+        self.own
+            .heard_on(usize::from(track))
+            .and_then(|s| u8::try_from(s).ok())
+    }
     fn hit_at(&mut self, track: u16, pad: usize, velocity: u8, offset: u32) -> bool {
         let kit = self.kit_of(track);
         // A clip's note on the synth's pads moves by its track's live
@@ -4936,7 +4952,7 @@ impl time::Pads for SeqPads<'_> {
         };
         let sounded = if let Some(s) = self.synth_of(track) {
             if pad < 16 {
-                let by = synth::Player::Track(usize::from(track));
+                let by = synth::Player::Clip(usize::from(track));
                 s.note_on_shifted(by, pad, velocity, offset, &shift);
             }
             pad < 16
@@ -4961,7 +4977,7 @@ impl time::Pads for SeqPads<'_> {
             note: pad.min(127) as u8,
         };
         if let Some(s) = self.synth_of(track) {
-            s.note_off_by(synth::Player::Track(usize::from(track)), pad, offset);
+            s.note_off_by(synth::Player::Clip(usize::from(track)), pad, offset);
         } else if !self.routed(track, pad, off, offset) {
             self.player.release_kit_at(kit, pad, offset);
         }
@@ -4978,29 +4994,26 @@ impl time::Pads for SeqPads<'_> {
         }
     }
     fn pressure_at(&mut self, track: u16, pad: usize, value: u8, offset: u32) {
-        let kit = self.kit_of(track);
-        let press = mpfree_play::Event::Pressure {
-            note: pad.min(127) as u8,
-            value,
-        };
-        if let Some(s) = self.synth_of(track) {
-            s.pressure_at(synth::Player::Track(usize::from(track)), pad, value, offset);
-        } else if !self.routed(track, pad, press, offset) {
-            self.player.pressure_kit_at(kit, pad, value, offset);
-        }
+        let by = synth::Player::Clip(usize::from(track));
+        self.pressure_by(by, track, pad, value, offset);
     }
 
     /// An arp's note: the pads played live (through the armed track's arp,
     /// a latched arp, or a clip through its arp). It gets the velocity
     /// curve; with a synth pad layout it is a MIDI note for the synth and
     /// its pad (if any) is what shows and records; otherwise it is a pad.
-    /// Returns what the armed track records as heard.
-    fn live(&mut self, o: &mpfree_play::Out) -> Option<mpfree_play::Event> {
+    /// Returns what the armed track records as heard: the pad, and the
+    /// notes as written for a take of notes (step 5c).
+    fn live(&mut self, o: &mpfree_play::Out) -> time::Heard {
         use mpfree_play::Event;
+        use time::Heard;
         if self.quiet(o) {
-            return None;
+            return Heard::NONE;
         }
-        let notes = self.kits.plays_synth(usize::from(o.track)) && self.live.plays_notes();
+        // An arp that works in notes says so (step 5d); the synth's
+        // layout on the pads presses notes too.
+        let notes =
+            o.notes || (self.kits.plays_synth(usize::from(o.track)) && self.live.plays_notes());
         let shift = self.shift(o.track);
         // By note number, a note sounds where its track's shift took it
         // when it started (`sound`), and shows and records as written
@@ -5023,18 +5036,25 @@ impl time::Pads for SeqPads<'_> {
         match (o.event, sound.event) {
             (Event::NoteOn { note, velocity }, Event::NoteOn { note: heard, .. }) => {
                 let v = self.live.velocity(velocity);
-                let pad = if notes {
+                let on = Event::NoteOn { note, velocity: v };
+                if notes {
                     // A note no pad has (an arp octave up, a scale run)
-                    // still plays; only a pad's own note shows and records.
+                    // still plays, and a take of notes records it; only a
+                    // pad's own note shows, and records as a pad.
                     self.synth.note_on_note(heard, v, o.offset);
                     self.hits += 1;
-                    self.live.pad_of_note(note)?
-                } else {
+                    let pad = self.live.pad_of_note(note);
+                    if let Some(pad) = pad {
+                        self.live_hit(pad, v);
+                    }
+                    return Heard::of(pad.map(|p| pad_on(p, v)), on, &[note]);
+                }
+                let pad = {
                     // A kit's pad, 1 to 128 (the page's, as the pads
                     // pressed it), or the synth's slot.
                     let pad = usize::from(note);
                     if pad >= 128 {
-                        return None;
+                        return Heard::NONE;
                     }
                     let kit = self.kit_of(o.track);
                     let on = Event::NoteOn {
@@ -5042,7 +5062,7 @@ impl time::Pads for SeqPads<'_> {
                         velocity: v,
                     };
                     if let Some(s) = self.synth_of(o.track) {
-                        let by = synth::Player::Track(usize::from(o.track));
+                        let by = synth::Player::Arp(usize::from(o.track));
                         s.note_on_shifted(by, pad, v, o.offset, &shift);
                         self.hits += 1;
                     } else if self.routed(o.track, pad, on, o.offset) {
@@ -5056,41 +5076,38 @@ impl time::Pads for SeqPads<'_> {
                     }
                     pad
                 };
-                if self.n_live < MAX_LIVE_HITS {
-                    self.live_hits[self.n_live] = (pad as u8, v);
-                    self.n_live += 1;
-                }
-                Some(Event::NoteOn {
-                    note: pad as u8,
-                    velocity: v,
-                })
+                self.live_hit(pad, v);
+                let (written, n) = self.pad_notes(o.track, pad);
+                Heard::of(Some(pad_on(pad, v)), on, &written[..n])
             }
             (Event::NoteOff { note }, Event::NoteOff { note: heard }) if notes => {
                 self.synth.note_off_note(heard, o.offset);
-                let pad = self.live.pad_of_note(note)?;
-                Some(Event::NoteOff { note: pad as u8 })
+                let pad = self.live.pad_of_note(note);
+                Heard::of(pad.map(pad_off), o.event, &[note])
             }
             (Event::NoteOff { note }, _) => {
                 // The synth's note ends; a Grains pad stops when let go;
                 // one-shot sounds ignore it.
                 let kit = self.kit_of(o.track);
                 if let Some(s) = self.synth_of(o.track) {
-                    let by = synth::Player::Track(usize::from(o.track));
+                    let by = synth::Player::Arp(usize::from(o.track));
                     s.note_off_by(by, usize::from(note), o.offset);
                 } else if !self.routed(o.track, usize::from(note), o.event, o.offset) {
                     self.player
                         .live_release_at(kit, usize::from(note), o.offset);
                 }
-                Some(o.event)
+                let (written, n) = self.pad_notes(o.track, usize::from(note));
+                Heard::of(Some(o.event), o.event, &written[..n])
             }
             (Event::AllOff, _) => {
                 self.midi.all_off(o.offset);
                 self.stop_all();
-                None
+                Heard::NONE
             }
             (Event::Pressure { note, value }, _) => {
-                self.pressure_at(o.track, usize::from(note), value, o.offset);
-                None
+                let by = synth::Player::Arp(usize::from(o.track));
+                self.pressure_by(by, o.track, usize::from(note), value, o.offset);
+                Heard::NONE
             }
             (Event::NoteOn { .. }, _)
             | (
@@ -5099,7 +5116,7 @@ impl time::Pads for SeqPads<'_> {
                 | Event::Unlock { .. }
                 | Event::Program { .. },
                 _,
-            ) => None,
+            ) => Heard::NONE,
         }
     }
 
@@ -5147,6 +5164,10 @@ impl time::Pads for SeqPads<'_> {
         if self.quiet(o) {
             return true;
         }
+        // A clip of notes (step 5c): its notes are never pads.
+        if o.notes && is_note(o.event) {
+            return self.out_note(o);
+        }
         let pad = event_pad(o.event);
         // A track that plays notes plays its pad's notes moved by its live
         // transpose (S4); a note-off goes to what its note-on sent.
@@ -5176,6 +5197,20 @@ impl time::Pads for SeqPads<'_> {
         if mpfree_play::is_gear_control(o) {
             return self.control_ahead(o);
         }
+        // A clip's note by number goes where its track's shift takes it
+        // as it starts, remembered for its end (`sounding`). Only once
+        // MIDI out will take it, so a note left for the real pass isn't
+        // counted twice.
+        if o.notes && is_note(o.event) {
+            if !self.midi.takes(o.track) {
+                return false;
+            }
+            let shift = self.note_shift(o.track);
+            return match self.sounding(o, &shift) {
+                Some(sound) => self.midi.send(&sound, midi_out::NoteIs::Note),
+                None => false,
+            };
+        }
         let shift = self.shift(o.track);
         let mut buf = [0; MAX_PAD_NOTES];
         let is = shifted_is(
@@ -5194,6 +5229,14 @@ impl time::Pads for SeqPads<'_> {
     /// pad's flash).
     fn out_sent(&mut self, o: &mpfree_play::Out) {
         if self.quiet(o) {
+            return;
+        }
+        // A clip's note by number: where it went when it went ahead.
+        if o.notes && is_note(o.event) {
+            let sound = self.went(o);
+            self.cv.send(&sound, midi_out::NoteIs::Note);
+            self.tap.send(&sound, midi_out::NoteIs::Note);
+            self.flash_note(o);
             return;
         }
         let shift = self.shift(o.track);
@@ -5219,6 +5262,28 @@ impl time::Pads for SeqPads<'_> {
     }
 }
 
+/// Pad `pad`'s hit at velocity `v`, as a take of pad hits records it.
+fn pad_on(pad: usize, v: u8) -> mpfree_play::Event {
+    mpfree_play::Event::NoteOn {
+        note: pad as u8,
+        velocity: v,
+    }
+}
+
+/// Pad `pad`'s let-go, as a take of pad hits records it.
+fn pad_off(pad: usize) -> mpfree_play::Event {
+    mpfree_play::Event::NoteOff { note: pad as u8 }
+}
+
+/// A note's start, end or pressure (not a panic, lock or program).
+fn is_note(e: mpfree_play::Event) -> bool {
+    use mpfree_play::Event;
+    matches!(
+        e,
+        Event::NoteOn { .. } | Event::NoteOff { .. } | Event::Pressure { .. }
+    )
+}
+
 /// The pad a clip's note event is on (0 for the rest).
 fn event_pad(e: mpfree_play::Event) -> usize {
     use mpfree_play::Event;
@@ -5240,6 +5305,22 @@ fn synth_seen<'s>(
 }
 
 impl SeqPads<'_> {
+    /// Pressure on `pad`'s sounding note of `track`, from `by` (its clip,
+    /// or its arp): the synth's notes that source started, else the pad's
+    /// kind (an Instrument or MIDI out pad), else the kit's pad.
+    fn pressure_by(&mut self, by: synth::Player, track: u16, pad: usize, value: u8, offset: u32) {
+        let kit = self.kit_of(track);
+        let press = mpfree_play::Event::Pressure {
+            note: pad.min(127) as u8,
+            value,
+        };
+        if let Some(s) = self.synth_of(track) {
+            s.pressure_at(by, pad, value, offset);
+        } else if !self.routed(track, pad, press, offset) {
+            self.player.pressure_kit_at(kit, pad, value, offset);
+        }
+    }
+
     /// A clip's lock or lane on the track's own MIDI out control, from a
     /// track that plays ahead: MIDI out sends it, ahead or (missed by the
     /// forecast) on its frame, unless something else moves the control
@@ -5267,6 +5348,161 @@ impl SeqPads<'_> {
         let v = value.unwrap_or_else(|| e.base(addr).unwrap_or(default));
         self.midi
             .control_ahead(o.offset, addr, v, value.is_some(), lane)
+    }
+
+    /// A clip's note by number (a clip of notes, step 5c), wherever its
+    /// track plays. MIDI out, CV and an export's file get the note as a
+    /// note. A track's own instrument or the synth plays it by number,
+    /// moved by the track's live transpose as it started (`sounding`, so
+    /// its end and pressure reach that note). A kit's pads answer it as
+    /// they answer MIDI in: each note is on one pad
+    /// (`mpfree_midi::profile::kit_pad_of_note`). Always taken: the pads
+    /// never read a note as a pad number.
+    fn out_note(&mut self, o: &mpfree_play::Out) -> bool {
+        use mpfree_play::Event;
+        let track = usize::from(o.track);
+        if self.plays_kit(o.track) {
+            let pad = |note| mpfree_midi::profile::kit_pad_of_note(note);
+            let event = match o.event {
+                Event::NoteOn { note, velocity } => Event::NoteOn {
+                    note: pad(note) as u8,
+                    velocity,
+                },
+                Event::NoteOff { note } => Event::NoteOff {
+                    note: pad(note) as u8,
+                },
+                Event::Pressure { note, value } => Event::Pressure {
+                    note: pad(note) as u8,
+                    value,
+                },
+                e => e,
+            };
+            let hit = mpfree_play::Out {
+                event,
+                notes: false,
+                ..*o
+            };
+            self.cv.send(&hit, midi_out::NoteIs::Kit);
+            self.tap.send(&hit, midi_out::NoteIs::Kit);
+            match event {
+                Event::NoteOn { note, velocity } => {
+                    time::Pads::hit_at(self, o.track, usize::from(note), velocity, o.offset);
+                }
+                Event::NoteOff { note } => {
+                    time::Pads::release_at(self, o.track, usize::from(note), o.offset)
+                }
+                Event::Pressure { note, value } => {
+                    time::Pads::pressure_at(self, o.track, usize::from(note), value, o.offset)
+                }
+                _ => {}
+            }
+            return true;
+        }
+        let shift = self.note_shift(o.track);
+        // Nothing sounds: it fell off the keyboard, or ended already.
+        let Some(sound) = self.sounding(o, &shift) else {
+            return true;
+        };
+        self.cv.send(&sound, midi_out::NoteIs::Note);
+        self.tap.send(&sound, midi_out::NoteIs::Note);
+        if self.midi.send(&sound, midi_out::NoteIs::Note) {
+            self.flash_note(o);
+            return true;
+        }
+        let own = self.own.plays(track);
+        match sound.event {
+            Event::NoteOn { note, velocity } => {
+                if own {
+                    self.own.note_on(track, note, velocity, o.offset);
+                } else {
+                    self.synth.note_on_note(note, velocity, o.offset);
+                }
+                self.hits += 1;
+                self.flash_note(o);
+            }
+            Event::NoteOff { note } if own => {
+                self.own.note_off(track, note, o.offset);
+            }
+            Event::NoteOff { note } => self.synth.note_off_note(note, o.offset),
+            Event::Pressure { note, value } if own => {
+                self.own.note_pressure_at(track, note, value, o.offset);
+            }
+            Event::Pressure { note, value } => self.synth.pressure_note_at(note, value, o.offset),
+            _ => {}
+        }
+        true
+    }
+
+    /// Track `track` plays a kit's sounds on the pads: not MIDI out, its
+    /// own instrument or another track's, or the synth.
+    fn plays_kit(&self, track: u16) -> bool {
+        let t = usize::from(track);
+        !self.midi.takes(track) && !self.own.plays(t) && !self.kits.plays_synth(t)
+    }
+
+    /// Track `track`'s live transpose (S4) for a clip of notes: its notes
+    /// are notes whatever the pads show, so they move, unless they go to
+    /// the Drums engine (or a kit, which never gets here).
+    fn note_shift(&self, track: u16) -> Shift {
+        let t = usize::from(track);
+        let Some(&to) = self.shifts.get(t) else {
+            return Shift::NONE;
+        };
+        let drums = if self.midi.takes(track) {
+            false
+        } else if self.own.plays(t) {
+            !self.own.plays_notes(t)
+        } else {
+            !self.synth.plays_notes()
+        };
+        if to.is_none() || drums {
+            return Shift::NONE;
+        }
+        Shift {
+            by: to.by,
+            key: self.key.filter(|_| to.in_key),
+        }
+    }
+
+    /// A clip's note by number that went out ahead (S5): where its track's
+    /// shift took it then, for the rest of what it does in its own period.
+    fn went(&self, o: &mpfree_play::Out) -> mpfree_play::Out {
+        use mpfree_play::Event;
+        let Some(held) = self.by_note.get(usize::from(o.track)) else {
+            return *o;
+        };
+        let event = match o.event {
+            Event::NoteOn { note, velocity } => Event::NoteOn {
+                note: held.went(note),
+                velocity,
+            },
+            Event::NoteOff { note } => Event::NoteOff {
+                note: held.went(note),
+            },
+            Event::Pressure { note, value } => Event::Pressure {
+                note: held.went(note),
+                value,
+            },
+            e => e,
+        };
+        mpfree_play::Out { event, ..*o }
+    }
+
+    /// A clip's note-on by number flashes the pad that plays the note in
+    /// the pads' layout, while its track's pads are the ones shown.
+    fn flash_note(&mut self, o: &mpfree_play::Out) {
+        if let mpfree_play::Event::NoteOn { note, velocity } = o.event {
+            if self.kits.entry(usize::from(o.track)) != self.shown {
+                return;
+            }
+            if let Some(f) = self
+                .live
+                .pad_of_note(note)
+                .and_then(|p| self.flashes.get_mut(p))
+            {
+                *f = velocity.max(1);
+            }
+        }
     }
 
     /// A note-on that went out elsewhere (MIDI out, a track's own
@@ -5318,6 +5554,7 @@ impl SeqPads<'_> {
                     track,
                     dest: Default::default(),
                     event,
+                    notes: false,
                 };
                 self.midi.pad_to(&o, port, *channel, *note);
             }
@@ -5403,27 +5640,56 @@ impl SeqPads<'_> {
 
     /// An arp's note by number that sounds nowhere (its shift took it off
     /// the keyboard): its pad still shows, and it records as written.
-    fn live_unheard(&mut self, o: &mpfree_play::Out) -> Option<mpfree_play::Event> {
+    fn live_unheard(&mut self, o: &mpfree_play::Out) -> time::Heard {
         use mpfree_play::Event;
+        use time::Heard;
         match o.event {
             Event::NoteOn { note, velocity } => {
                 let v = self.live.velocity(velocity);
-                let pad = self.live.pad_of_note(note)?;
-                if self.n_live < MAX_LIVE_HITS {
-                    self.live_hits[self.n_live] = (pad as u8, v);
-                    self.n_live += 1;
+                let pad = self.live.pad_of_note(note);
+                if let Some(pad) = pad {
+                    self.live_hit(pad, v);
                 }
-                Some(Event::NoteOn {
-                    note: pad as u8,
-                    velocity: v,
-                })
+                let on = Event::NoteOn { note, velocity: v };
+                Heard::of(pad.map(|p| pad_on(p, v)), on, &[note])
             }
             Event::NoteOff { note } => {
-                let pad = self.live.pad_of_note(note)?;
-                Some(Event::NoteOff { note: pad as u8 })
+                let pad = self.live.pad_of_note(note);
+                Heard::of(pad.map(pad_off), o.event, &[note])
             }
-            _ => None,
+            _ => Heard::NONE,
         }
+    }
+
+    /// A live hit on `pad` at velocity `v`, for the pads' flashes and the
+    /// Play page.
+    fn live_hit(&mut self, pad: usize, v: u8) {
+        if self.n_live < MAX_LIVE_HITS {
+            self.live_hits[self.n_live] = (pad as u8, v);
+            self.n_live += 1;
+        }
+    }
+
+    /// The notes pad `pad` of track `track` plays as written (before its
+    /// live transpose), for a take of notes (step 5c): its own instrument's
+    /// pad map (or the one it plays of another track's), the synth's pad
+    /// layout while the track plays the synth, else the kit pad's note as
+    /// MIDI out and MIDI in read it (`mpfree_midi::profile::kit_note`).
+    fn pad_notes(&self, track: u16, pad: usize) -> ([u8; time::HEARD_NOTES], usize) {
+        let t = usize::from(track);
+        let mut out = [0; time::HEARD_NOTES];
+        let kit;
+        let notes: &[u8] = if self.own.plays(t) {
+            self.own.pad_notes(t, pad)
+        } else if self.kits.plays_synth(t) {
+            self.synth.notes(pad)
+        } else {
+            kit = mpfree_midi::profile::kit_note(pad);
+            kit.as_slice()
+        };
+        let n = notes.len().min(out.len());
+        out[..n].copy_from_slice(&notes[..n]);
+        (out, n)
     }
 
     /// A clip's event on a track with its own instrument, or another
@@ -5474,53 +5740,53 @@ impl SeqPads<'_> {
         o: &mpfree_play::Out,
         notes: bool,
         shift: &Shift,
-    ) -> Option<mpfree_play::Event> {
+    ) -> time::Heard {
         use mpfree_play::Event;
+        use time::Heard;
         let track = usize::from(o.track);
         match (o.event, sound.event) {
             (Event::NoteOn { note, velocity }, Event::NoteOn { note: heard, .. }) => {
                 let v = self.live.velocity(velocity);
-                let pad = if notes {
+                let on = Event::NoteOn { note, velocity: v };
+                if notes {
                     self.own.note_on(track, heard, v, o.offset);
                     self.hits += 1;
-                    self.live.pad_of_note(note)?
-                } else {
-                    let pad = usize::from(note);
-                    if pad >= 16 {
-                        return None;
+                    let pad = self.live.pad_of_note(note);
+                    if let Some(pad) = pad {
+                        self.live_hit(pad, v);
                     }
-                    self.own.pad_on_shifted(track, pad, v, o.offset, shift);
-                    self.hits += 1;
-                    pad
-                };
-                if self.n_live < MAX_LIVE_HITS {
-                    self.live_hits[self.n_live] = (pad as u8, v);
-                    self.n_live += 1;
+                    return Heard::of(pad.map(|p| pad_on(p, v)), on, &[note]);
                 }
-                Some(Event::NoteOn {
-                    note: pad as u8,
-                    velocity: v,
-                })
+                let pad = usize::from(note);
+                if pad >= 16 {
+                    return Heard::NONE;
+                }
+                self.own.pad_on_shifted(track, pad, v, o.offset, shift);
+                self.hits += 1;
+                self.live_hit(pad, v);
+                let (written, n) = self.pad_notes(o.track, pad);
+                Heard::of(Some(pad_on(pad, v)), on, &written[..n])
             }
             (Event::NoteOff { note }, Event::NoteOff { note: heard }) if notes => {
                 self.own.note_off(track, heard, o.offset);
-                let pad = self.live.pad_of_note(note)?;
-                Some(Event::NoteOff { note: pad as u8 })
+                let pad = self.live.pad_of_note(note);
+                Heard::of(pad.map(pad_off), o.event, &[note])
             }
             (Event::NoteOff { note }, _) => {
                 self.own.pad_off(track, usize::from(note), o.offset);
-                Some(o.event)
+                let (written, n) = self.pad_notes(o.track, usize::from(note));
+                Heard::of(Some(o.event), o.event, &written[..n])
             }
             (Event::AllOff, _) => {
                 self.midi.all_off(o.offset);
                 self.own.all_off(track);
                 time::Pads::stop_all(self);
-                None
+                Heard::NONE
             }
             (Event::Pressure { note, value }, _) if !notes => {
                 self.own
                     .pad_pressure(track, usize::from(note), value, o.offset);
-                None
+                Heard::NONE
             }
             (Event::NoteOn { .. }, _)
             | (
@@ -5530,7 +5796,7 @@ impl SeqPads<'_> {
                 | Event::Unlock { .. }
                 | Event::Program { .. },
                 _,
-            ) => None,
+            ) => Heard::NONE,
         }
     }
 
@@ -5579,13 +5845,15 @@ impl SeqPads<'_> {
         o: &mpfree_play::Out,
         notes: bool,
         shift: &Shift,
-    ) -> Option<mpfree_play::Event> {
+    ) -> time::Heard {
         use midi_out::NoteIs;
         use mpfree_play::Event;
+        use time::Heard;
         match (o.event, sound.event) {
             (Event::NoteOn { note, velocity }, Event::NoteOn { note: heard, .. }) => {
                 let v = self.live.velocity(velocity);
-                let pad = if notes {
+                let on = Event::NoteOn { note, velocity: v };
+                if notes {
                     let played = mpfree_play::Out {
                         event: Event::NoteOn {
                             note: heard,
@@ -5594,11 +5862,16 @@ impl SeqPads<'_> {
                         ..*o
                     };
                     self.midi.send(&played, NoteIs::Note);
-                    self.live.pad_of_note(note)?
-                } else {
+                    let pad = self.live.pad_of_note(note);
+                    if let Some(pad) = pad {
+                        self.live_hit(pad, v);
+                    }
+                    return Heard::of(pad.map(|p| pad_on(p, v)), on, &[note]);
+                }
+                let pad = {
                     let pad = usize::from(note);
                     if pad >= KIT_PADS {
-                        return None;
+                        return Heard::NONE;
                     }
                     let played = mpfree_play::Out {
                         event: Event::NoteOn { note, velocity: v },
@@ -5613,23 +5886,19 @@ impl SeqPads<'_> {
                     self.midi.send(&played, is);
                     pad
                 };
-                if self.n_live < MAX_LIVE_HITS {
-                    self.live_hits[self.n_live] = (pad as u8, v);
-                    self.n_live += 1;
-                }
-                Some(Event::NoteOn {
-                    note: pad as u8,
-                    velocity: v,
-                })
+                self.live_hit(pad, v);
+                let (written, n) = self.pad_notes(o.track, pad);
+                Heard::of(Some(pad_on(pad, v)), on, &written[..n])
             }
             (Event::NoteOff { note }, _) if notes => {
                 self.midi.send(sound, NoteIs::Note);
-                let pad = self.live.pad_of_note(note)?;
-                Some(Event::NoteOff { note: pad as u8 })
+                let pad = self.live.pad_of_note(note);
+                Heard::of(pad.map(pad_off), o.event, &[note])
             }
-            (Event::NoteOff { .. }, _) => {
+            (Event::NoteOff { note }, _) => {
                 self.midi.send(o, NoteIs::Pad(&[]));
-                Some(o.event)
+                let (written, n) = self.pad_notes(o.track, usize::from(note));
+                Heard::of(Some(o.event), o.event, &written[..n])
             }
             (Event::Pressure { .. }, _) => {
                 if notes {
@@ -5637,12 +5906,12 @@ impl SeqPads<'_> {
                 } else {
                     self.midi.send(o, NoteIs::Pad(&[]));
                 }
-                None
+                Heard::NONE
             }
             (Event::AllOff, _) => {
                 self.midi.all_off(o.offset);
                 time::Pads::stop_all(self);
-                None
+                Heard::NONE
             }
             (Event::NoteOn { .. }, _)
             | (
@@ -5651,7 +5920,7 @@ impl SeqPads<'_> {
                 | Event::Unlock { .. }
                 | Event::Program { .. },
                 _,
-            ) => None,
+            ) => Heard::NONE,
         }
     }
 }
@@ -6008,7 +6277,7 @@ fn time_state(time: &time::TimeHost, tracks: &audiotracks::TrackHost) -> mpfree_
 /// The synth's part of the status line.
 fn synth_status(synth: &synth::Synth, time: &RenderTime) -> String {
     let c = synth.counters();
-    format!(
+    let mut line = format!(
         "synth: {} ({}), {}, {} notes, at most {} voices ({} set), {} notes dropped, \
          {} new notes or locks left out of moments too busy, {} endings lost, {} resets",
         synth.engine().name(),
@@ -6021,12 +6290,63 @@ fn synth_status(synth: &synth::Synth, time: &RenderTime) -> String {
         c.busy,
         c.ends_lost,
         c.resets
-    )
+    );
+    // Knob owners (step 4b): locks another track or the hand kept waiting,
+    // and any a full table lost.
+    if let Some(locks) = synth.locks_line() {
+        line.push_str(", ");
+        line.push_str(&locks);
+    }
+    line
 }
 
 /// The log line for the pads moving to the synth, by an octave or to
 /// another layout: "pads: Poly synth, C3 to D#4 (pad 1 = C3; …)", with the
 /// scale and layout when a scale is on.
+/// The notes each of track `track`'s 16 pads plays, as a clip of notes on
+/// the track reads them (step 5c): what the pad plays on the track's own
+/// synth (or the one it plays) or on the shared synth, a chord's root
+/// last, or a kit pad's note in bank A. A pad that plays nothing keeps its
+/// own number. Never allocates.
+fn pad_rows(
+    own: &instruments::Instruments,
+    synth: &synth::Synth,
+    kits: &sampler::TrackKits,
+    track: usize,
+) -> time::PadRows {
+    let mut rows = time::PadRows::PADS;
+    for p in 0..16 {
+        if own.plays(track) {
+            rows.set(p, own.pad_notes(track, p));
+        } else if kits.plays_synth(track) {
+            rows.set(p, synth.notes(p));
+        } else if let Some(n) = mpfree_midi::profile::kit_note(p) {
+            rows.set(p, &[n]);
+        }
+    }
+    rows
+}
+
+/// Whether track `track`'s arp works in notes (step 5d): its own synth
+/// (or the one it plays) plays notes, not the Drums engine's sounds, or it
+/// plays the shared synth, whose pads press notes; not while its notes go
+/// to MIDI out, which plays the pads as its profile says. Never allocates.
+fn arp_on_notes(
+    own: &instruments::Instruments,
+    kits: &sampler::TrackKits,
+    midi: &midi_out::MidiOut,
+    track: usize,
+) -> bool {
+    if midi.takes(track as u16) {
+        return false;
+    }
+    if own.plays(track) {
+        own.plays_notes(track)
+    } else {
+        kits.plays_synth(track)
+    }
+}
+
 /// The hint the Synth tab shows while the armed track (`track`, from 0)
 /// plays a kit: opening the tab leaves what the track plays alone.
 fn synth_tab_hint(track: usize) -> String {
@@ -6246,6 +6566,9 @@ fn player_session(
     // its name on Arrange).
     let mut sounds_shown: gui::TrackSounds = [None; instruments::TRACKS];
     let mut sends_shown: gui::TrackSends = [None; instruments::TRACKS];
+    // Where REC would record the pads' synth, as the REC chip last named it
+    // (the recording plan, `desk::rec_plan`).
+    let mut plan_shown: Option<app::RecPlan> = None;
     let mut kits_shown = sampler::TrackKits::default();
     // Each sounding voice's pressure, for the Synth tab's Pressure page.
     let mut synth_pressures = [0f32; 16];
@@ -6977,7 +7300,9 @@ fn player_session(
                     if !waits_for_line(&mut time, &player, &app, synth_on, w, &mut waits_full, out)
                     {
                         if let Some(ev) = app.pressed_event(pad, v, true) {
-                            time.pad_pressed(0, ev);
+                            // With the notes it plays, for a take of notes (step 5d).
+                            let rows = pad_rows(&mix.instruments, &synth, &track_kits, app.track());
+                            time.pad_pressed_notes(0, ev, rows.notes(pad));
                         }
                         fx.extend(app.pad_down(pad, v));
                         awaiting[pad] = true;
@@ -6997,7 +7322,9 @@ fn player_session(
                     if !waits_for_line(&mut time, &player, &app, synth_on, w, &mut waits_full, out)
                     {
                         if let Some(ev) = app.pressed_event(pad, 0, false) {
-                            time.pad_pressed(0, ev);
+                            // With the notes it plays, for a take of notes (step 5d).
+                            let rows = pad_rows(&mix.instruments, &synth, &track_kits, app.track());
+                            time.pad_pressed_notes(0, ev, rows.notes(pad));
                         }
                         fx.extend(app.pad_up(pad));
                         awaiting[pad] = false;
@@ -7549,6 +7876,20 @@ fn player_session(
                     }
                     let track = instrument_track(&mix.instruments, app.track());
                     track_presets.act(ask, track, &mut synth, &mut mix, out);
+                }
+                // The preset picker's New track (step 4c): the new track's
+                // own synth, made as a preset's sound; it goes in once made.
+                gui::FromUi::NewTrackSound {
+                    track,
+                    engine,
+                    give,
+                } => {
+                    if let Some(held) =
+                        track_presets.give(track, &engine, give, &synth, &mut mix, out)
+                    {
+                        app.set_track_sound(track, Some(held));
+                        app.mark_project_edit();
+                    }
                 }
                 // A plugin synth's own preset: loaded into the running
                 // plugin on the builder thread (the plugin's own code
@@ -8678,7 +9019,9 @@ fn player_session(
                     if !waits_for_line(&mut time, &player, &app, synth_on, w, &mut waits_full, out)
                     {
                         if let Some(ev) = app.pressed_event(pad, velocity, true) {
-                            time.pad_pressed(0, ev);
+                            // With the notes it plays, for a take of notes (step 5d).
+                            let rows = pad_rows(&mix.instruments, &synth, &track_kits, app.track());
+                            time.pad_pressed_notes(0, ev, rows.notes(pad));
                         }
                         fx.extend(app.pad_down(pad, velocity));
                         awaiting[pad] = true;
@@ -8699,7 +9042,9 @@ fn player_session(
                     if !waits_for_line(&mut time, &player, &app, synth_on, w, &mut waits_full, out)
                     {
                         if let Some(ev) = app.pressed_event(pad, 0, false) {
-                            time.pad_pressed(0, ev);
+                            // With the notes it plays, for a take of notes (step 5d).
+                            let rows = pad_rows(&mix.instruments, &synth, &track_kits, app.track());
+                            time.pad_pressed_notes(0, ev, rows.notes(pad));
                         }
                         fx.extend(app.pad_up(pad));
                         awaiting[pad] = false;
@@ -9282,8 +9627,8 @@ fn player_session(
                         synth.note_off_note(note, 0);
                     }
                 } else {
-                    // The pads play the synth through the track.
-                    synth.note_off_by(synth::Player::Track(app.track()), pad, 0);
+                    // The pads play the synth through the track's arp.
+                    synth.note_off_by(synth::Player::Arp(app.track()), pad, 0);
                 }
             }
             if k == synth_kit {
@@ -9519,6 +9864,22 @@ fn player_session(
         // The tracks on gear slower than the sound's lead play their clips
         // that much ahead (sequencer S5).
         time.set_ahead(&midi_out.ahead());
+        // A take on a track whose instrument plays notes records notes
+        // (instrument redesign step 5c).
+        time.set_notes_tracks(mix.instruments.note_tracks());
+        // A clip of notes shows each pad's note on the step grid's pad
+        // rows: the root of what the pad plays on the track's own synth or
+        // the shared synth, or a kit pad's note (step 5c).
+        // A track whose synth plays notes has its arp work in notes, so
+        // the live pads, a clip of notes and an old clip of pad hits meet
+        // in it as notes (step 5d).
+        for t in 0..time.track_count().min(mpfree_seq::MAX_TRACKS) {
+            let rows = pad_rows(&mix.instruments, &synth, &track_kits, t);
+            time.set_pad_rows(t, rows);
+            let on = arp_on_notes(&mix.instruments, &track_kits, &midi_out, t);
+            app.arps.set_on_notes(t, on);
+            app.arps.set_pads(t, &rows);
+        }
         // CV out takes the outputs' jobs; run, reset and clock follow the
         // transport.
         cv_out.sync(&io_model);
@@ -9541,6 +9902,16 @@ fn player_session(
                 )));
             }
         }
+        // The pads press the notes of the selected track's own synth into
+        // its arp while that plays notes (step 5d).
+        let own_notes = !app.pads_chose_synth()
+            && arp_on_notes(&mix.instruments, &track_kits, &midi_out, app.track())
+            && mix.instruments.plays(app.track());
+        app.set_arp_layout(
+            own_notes
+                .then(|| mix.instruments.pad_map(app.track()))
+                .flatten(),
+        );
         if let Some(app::Effect::Arp(v)) = app.arp_poll() {
             out.show(gui::ToUi::Arp(Box::new(v)));
         }
@@ -10862,6 +11233,11 @@ fn player_session(
                 sends_shown = sends;
                 out.show(gui::ToUi::TrackSends(Box::new(sends)));
             }
+            let plan = desk::rec_plan(&app, &time, &mix);
+            if plan != plan_shown {
+                plan_shown = plan;
+                out.show(gui::ToUi::RecPlan(plan));
+            }
             if track_kits != kits_shown {
                 kits_shown = track_kits.clone();
                 out.show(gui::ToUi::TrackKits(Box::new(track_kits.clone())));
@@ -11447,11 +11823,12 @@ fn preview(o: &Options) -> Result<(), String> {
 /// Each sample page's first two frames as display lists (mpfree_ui::record's
 /// wire format), one new NAME.mpdl file per page: the page as first drawn,
 /// then what it redraws a tick (33 ms) later. mpfree-gpu-bench plays them on
-/// the MPC's GPU and in software. No devices are opened; it writes only new
-/// files.
+/// the MPC's GPU and in software. With `--theme all` each page is drawn in
+/// every built-in theme in turn, into DIR/THEME/NAME.mpdl, building the
+/// screens once (tests/theme_contrast.rs). No devices are opened; it writes
+/// only new files.
 fn display_lists(o: &Options) -> Result<(), String> {
     let dir = o.display_lists.as_ref().unwrap();
-    fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let fonts = || {
         Fonts::with_files(
             o.font.as_deref(),
@@ -11459,28 +11836,40 @@ fn display_lists(o: &Options) -> Result<(), String> {
             o.mono_font.as_deref(),
         )
     };
-    let theme = load_theme(o)?;
+    let themes: Vec<(PathBuf, Theme)> = if o.theme.as_deref() == Some("all") {
+        mpfree_ui::theme::BUILTIN
+            .iter()
+            .filter_map(|&n| Some((dir.join(n), Theme::builtin(n)?)))
+            .collect()
+    } else {
+        vec![(dir.clone(), load_theme(o)?)]
+    };
+    for (d, _) in &themes {
+        fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+    }
     fonts()?;
     let mut pages = 0;
     for (name, mut p) in gui::sample_screens(|| fonts().unwrap_or_else(|_| Fonts::embedded())) {
-        p.ui.set_theme(theme.clone());
-        let (w, h) = p.ui.size();
-        let mut rec = mpfree_ui::record::Recorder::new(w, h);
-        let mut bytes = Vec::new();
-        rec.begin_frame();
-        p.ui.paint(&mut rec);
-        rec.encode_frame(&mut bytes);
-        p.tick(0.033);
-        rec.begin_frame();
-        p.ui.paint(&mut rec);
-        rec.encode_frame(&mut bytes);
-        let path = dir.join(format!("{name}.mpdl"));
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .and_then(|mut f| f.write_all(&bytes))
-            .map_err(|e| format!("{}: {e}", path.display()))?;
+        for (d, theme) in &themes {
+            p.ui.set_theme(theme.clone());
+            let (w, h) = p.ui.size();
+            let mut rec = mpfree_ui::record::Recorder::new(w, h);
+            let mut bytes = Vec::new();
+            rec.begin_frame();
+            p.ui.paint(&mut rec);
+            rec.encode_frame(&mut bytes);
+            p.tick(0.033);
+            rec.begin_frame();
+            p.ui.paint(&mut rec);
+            rec.encode_frame(&mut bytes);
+            let path = d.join(format!("{name}.mpdl"));
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .and_then(|mut f| f.write_all(&bytes))
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+        }
         pages += 1;
     }
     println!("display lists written: {pages} pages in {}", dir.display());
@@ -11578,6 +11967,16 @@ mod tests {
     /// ([`SeqPads`]) with `tracks` on the Synth kit, and gives back what
     /// the synth was asked to start and end, in order.
     fn on_the_synth(tracks: &[usize], f: impl FnOnce(&mut SeqPads)) -> Vec<mpfree_node::NodeEvent> {
+        on_the_pads(tracks, &[], f)
+    }
+
+    /// [`on_the_synth`], with the tracks `own` playing their own Poly
+    /// synth (a copy of the synth's sound, as the builder thread makes).
+    fn on_the_pads(
+        tracks: &[usize],
+        own: &[usize],
+        f: impl FnOnce(&mut SeqPads),
+    ) -> Vec<mpfree_node::NodeEvent> {
         let tone: Vec<i16> = (0..2_000)
             .flat_map(|i| [((i as f32 * 0.03).sin() * 12_000.0) as i16; 2])
             .collect();
@@ -11590,6 +11989,15 @@ mod tests {
             assert!(kits.set(t, kits.synth()));
         }
         let mut mix = mixing::MixHost::new(RATE, 0.0, 6.0);
+        for &t in own {
+            let engine = synth::Engine::Poly;
+            let (id, extras, values) = synth.sound_of(engine);
+            let plugins = plugins::Plugins::none();
+            let made = instruments::make(&plugins, id, &extras, &values, RATE, PERIOD).unwrap();
+            let pads = synth.pads_for(engine);
+            let tuning = synth.tuning_now();
+            assert!(mix.instruments.put(t, made, pads, &tuning).is_ok());
+        }
         let mut midi = midi_out::MidiOut::new(RATE, MIDI_OUT_LEAD);
         let mut cv = cv_out::CvOut::new(RATE, MIDI_OUT_LEAD);
         let mut tap = export::Tap::new();
@@ -11688,6 +12096,7 @@ mod tests {
             track: 0,
             dest: 0,
             event,
+            notes: false,
         };
         let ev = on_the_synth(&[0, 1], |seq| {
             assert!(seq.hit_at(1, 3, 100, 0));
@@ -11708,6 +12117,281 @@ mod tests {
             !ev.iter().any(|e| matches!(e, NoteOff { .. })),
             "the clip's note still sounds: {ev:?}"
         );
+    }
+
+    /// Instrument redesign step 5a, the gap left after finding 9: a clip
+    /// on track 1 plays pad 3 while you play pad 3 through the same
+    /// track's arp. The clip's note and yours end by their own source
+    /// (`synth::Player::Clip`, `synth::Player::Arp`): the clip letting go
+    /// leaves your note, and yours letting go ends it once both have.
+    #[test]
+    fn a_clip_and_the_live_pads_on_one_track_keep_their_own_notes() {
+        use mpfree_node::NodeEvent::{NoteOff, NoteOn};
+        use mpfree_play::{Event, Out};
+        use time::Pads;
+        let live = |offset: u32, event| Out {
+            offset,
+            frame: u64::from(offset),
+            track: 0,
+            dest: 0,
+            event,
+            notes: false,
+        };
+        let on = Event::NoteOn {
+            note: 3,
+            velocity: 100,
+        };
+        let ev = on_the_synth(&[0], |seq| {
+            assert!(seq.hit_at(0, 3, 100, 0));
+            seq.live(&live(10, on));
+            seq.release_at(0, 3, 20);
+        });
+        let ons = ev.iter().filter(|e| matches!(e, NoteOn { .. })).count();
+        assert!(ons >= 2 && ons % 2 == 0, "both started pad 3: {ev:?}");
+        assert!(
+            !ev.iter().any(|e| matches!(e, NoteOff { .. })),
+            "your note still sounds: {ev:?}"
+        );
+        // The other way round: your let-go leaves the clip's note.
+        let ev = on_the_synth(&[0], |seq| {
+            seq.live(&live(0, on));
+            assert!(seq.hit_at(0, 3, 100, 10));
+            seq.live(&live(20, Event::NoteOff { note: 3 }));
+        });
+        assert!(
+            !ev.iter().any(|e| matches!(e, NoteOff { .. })),
+            "the clip's note still sounds: {ev:?}"
+        );
+        // Both let go: each note ends once.
+        let ev = on_the_synth(&[0], |seq| {
+            seq.live(&live(0, on));
+            seq.hit_at(0, 3, 100, 10);
+            seq.live(&live(20, Event::NoteOff { note: 3 }));
+            seq.release_at(0, 3, 30);
+        });
+        let offs = ev.iter().filter(|e| matches!(e, NoteOff { .. })).count();
+        assert_eq!(2 * offs, ons, "{ev:?}");
+        assert!(matches!(ev.last(), Some(NoteOff { .. })), "{ev:?}");
+    }
+
+    /// A clip's event of the kind `notes` on track `track` (step 5c).
+    fn clip_out(
+        track: u16,
+        offset: u32,
+        event: mpfree_play::Event,
+        notes: bool,
+    ) -> mpfree_play::Out {
+        mpfree_play::Out {
+            offset,
+            frame: u64::from(offset),
+            track,
+            dest: 0,
+            event,
+            notes,
+        }
+    }
+
+    /// Instrument redesign step 5c: a clip of notes plays its notes by
+    /// number on the synth, moved by its track's live transpose as each
+    /// starts, and ends the note it started though the transpose moved
+    /// in between. The same number from a clip of pad hits is a pad (pad
+    /// 61 is no pad of the synth's, so it plays nothing).
+    #[test]
+    fn a_clip_of_notes_plays_the_synth_by_note() {
+        use mpfree_node::NodeEvent::{NoteOff, NoteOn};
+        use mpfree_play::Event;
+        use time::Pads;
+        let on = Event::NoteOn {
+            note: 61,
+            velocity: 100,
+        };
+        let off = Event::NoteOff { note: 61 };
+        let ev = on_the_synth(&[0], |seq| {
+            assert!(seq.out(&clip_out(0, 0, on, true)), "taken: never a pad");
+            assert_eq!(seq.hits, 1);
+            seq.shifts[0] = mpfree_seq::Transpose::default();
+            assert!(seq.out(&clip_out(0, 10, off, true)));
+        });
+        assert_eq!(
+            ev,
+            vec![
+                NoteOn {
+                    note: 61,
+                    velocity: 100
+                },
+                NoteOff { note: 61 }
+            ]
+        );
+        let ev = on_the_synth(&[0], |seq| {
+            seq.shifts[0] = mpfree_seq::Transpose::semitones(2);
+            seq.out(&clip_out(0, 0, on, true));
+            // The transpose goes back while the note sounds.
+            seq.shifts[0] = mpfree_seq::Transpose::default();
+            seq.out(&clip_out(0, 10, off, true));
+        });
+        assert_eq!(
+            ev,
+            vec![
+                NoteOn {
+                    note: 63,
+                    velocity: 100
+                },
+                NoteOff { note: 63 }
+            ]
+        );
+        // A clip of pad hits: not taken, and pad 61 plays nothing.
+        let ev = on_the_synth(&[0], |seq| {
+            assert!(!seq.out(&clip_out(0, 0, on, false)));
+            assert!(!seq.hit_at(0, 61, 100, 0));
+        });
+        assert!(ev.is_empty(), "{ev:?}");
+    }
+
+    /// Step 5c on a track's own instrument: a clip of notes starts and
+    /// ends the note itself, not the note of the pad with its number.
+    #[test]
+    fn a_clip_of_notes_plays_a_tracks_own_instrument_by_note() {
+        use mpfree_play::Event;
+        use time::Pads;
+        on_the_pads(&[], &[1], |seq| {
+            let on = Event::NoteOn {
+                note: 50,
+                velocity: 100,
+            };
+            assert!(seq.out(&clip_out(1, 0, on, true)));
+            assert!(seq.own.holds_note(1, 50));
+            assert_eq!(seq.hits, 1);
+            let press = Event::Pressure {
+                note: 50,
+                value: 70,
+            };
+            assert!(seq.out(&clip_out(1, 5, press, true)));
+            assert!(seq.out(&clip_out(1, 10, Event::NoteOff { note: 50 }, true)));
+            assert!(!seq.own.holds_note(1, 50));
+            // Pad 3 of a clip of hits plays the pad's own note.
+            let pad = Event::NoteOn {
+                note: 3,
+                velocity: 100,
+            };
+            assert!(seq.out(&clip_out(1, 20, pad, false)));
+            assert!(!seq.own.holds_note(1, 3));
+        });
+    }
+
+    /// Step 5c: the step grid's pad rows on a clip of notes are the notes
+    /// the track's pads play: a track's own synth's pads (a chord's
+    /// root), the shared synth's, or a kit's pads' notes, as a clip of
+    /// notes plays them back.
+    #[test]
+    fn the_grids_pad_rows_are_the_notes_the_pads_play() {
+        on_the_pads(&[2], &[1], |seq| {
+            let rows = |seq: &SeqPads, t| pad_rows(seq.own, seq.synth, seq.kits, t);
+            let own = rows(seq, 1);
+            for p in 0..16 {
+                assert_eq!(own.notes(p), seq.own.pad_notes(1, p));
+            }
+            assert!(own.roots()[0] >= 16, "notes, not pads: {own:?}");
+            let shared = rows(seq, 2);
+            for p in 0..16 {
+                assert_eq!(shared.notes(p), seq.synth.notes(p));
+            }
+            assert_eq!(
+                rows(seq, 0).roots(),
+                mpc_one::PAD_NOTES,
+                "a kit's pads' notes"
+            );
+        });
+    }
+
+    /// Step 5d: what an arp that works in notes plays on a track with its
+    /// own synth sounds by note on that synth and records as notes, though
+    /// the pads show a kit; a track's arp works in notes while its synth
+    /// plays notes, not while its notes go to MIDI out or it plays a kit.
+    #[test]
+    fn an_arp_of_notes_plays_a_tracks_own_synth_by_note() {
+        use mpfree_play::Event;
+        use time::Pads;
+        on_the_pads(&[2], &[1], |seq| {
+            assert!(!seq.live.plays_notes(), "the pads show a kit");
+            let on = Event::NoteOn {
+                note: 52,
+                velocity: 100,
+            };
+            let heard = seq.live(&clip_out(1, 0, on, true));
+            assert!(seq.own.holds_note(1, 52));
+            assert_eq!(heard.pad, None, "no pad of the kit's");
+            assert_eq!(heard.notes().len(), 1);
+            seq.live(&clip_out(1, 10, Event::NoteOff { note: 52 }, true));
+            assert!(!seq.own.holds_note(1, 52));
+            assert!(arp_on_notes(seq.own, seq.kits, seq.midi, 1), "own synth");
+            assert!(arp_on_notes(seq.own, seq.kits, seq.midi, 2), "shared synth");
+            assert!(!arp_on_notes(seq.own, seq.kits, seq.midi, 0), "a kit");
+        });
+    }
+
+    /// Step 5c on a kit: a clip's note plays the pad MIDI in would play    /// Step 5c on a kit: a clip's note plays the pad MIDI in would play
+    /// for it (the kick on pad A5 is note `PAD_NOTES[4]`); a note on an
+    /// empty pad plays nothing.
+    #[test]
+    fn a_clip_of_notes_plays_a_kits_pad_by_its_note() {
+        use mpfree_play::Event;
+        use time::Pads;
+        on_the_pads(&[], &[], |seq| {
+            let kick = Event::NoteOn {
+                note: mpc_one::PAD_NOTES[4],
+                velocity: 100,
+            };
+            assert!(seq.out(&clip_out(0, 0, kick, true)));
+            assert_eq!(seq.hits, 1, "the kick");
+            assert_eq!(seq.flashes[4], 100);
+            let empty = Event::NoteOn {
+                note: mpc_one::PAD_NOTES[5],
+                velocity: 100,
+            };
+            assert!(seq.out(&clip_out(0, 10, empty, true)));
+            assert_eq!(seq.hits, 1, "an empty pad");
+        });
+    }
+
+    /// Step 5c, recording: a live pad says what a take records of it both
+    /// ways. On a track's own instrument the notes are its pad map's as
+    /// written; on a kit, the pad's note as MIDI in and out read it.
+    #[test]
+    fn a_live_pad_records_as_its_pad_or_as_its_notes() {
+        use mpfree_play::Event;
+        use time::Pads;
+        let live = |track: u16, event| clip_out(track, 0, event, false);
+        let on = Event::NoteOn {
+            note: 3,
+            velocity: 100,
+        };
+        on_the_pads(&[], &[1], |seq| {
+            let written = seq.own.pad_notes(1, 3).to_vec();
+            assert!(!written.is_empty());
+            let h = seq.live(&live(1, on));
+            assert!(matches!(h.pad, Some(Event::NoteOn { note: 3, .. })));
+            let notes: Vec<u8> = h
+                .notes()
+                .iter()
+                .map(|e| match *e {
+                    Event::NoteOn { note, .. } => note,
+                    _ => 255,
+                })
+                .collect();
+            assert_eq!(notes, written, "the pad map's notes");
+            let h = seq.live(&live(1, Event::NoteOff { note: 3 }));
+            assert_eq!(h.pad, Some(Event::NoteOff { note: 3 }));
+            assert_eq!(h.notes().len(), written.len());
+            // A kit: the pad's note.
+            let h = seq.live(&live(0, on));
+            assert_eq!(
+                h.notes(),
+                [Event::NoteOn {
+                    note: mpfree_midi::profile::kit_note(3).unwrap(),
+                    velocity: seq.live.velocity(100),
+                }]
+            );
+        });
     }
 
     fn args(s: &str) -> Vec<String> {

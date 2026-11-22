@@ -158,6 +158,17 @@ impl Under {
         self.rank = *ids;
     }
 
+    /// The status line's words for the locks that waited or were lost,
+    /// when any were. Allocates (for the log, not the sound).
+    pub fn describe(&self) -> Option<String> {
+        (self.waited + self.full > 0).then(|| {
+            format!(
+                "knob locks: {} waited for another track or the hand, {} lost to a full table",
+                self.waited, self.full
+            )
+        })
+    }
+
     fn find(&self, key: u32) -> Option<usize> {
         self.e[..self.n].iter().position(|e| e.key == key)
     }
@@ -533,6 +544,10 @@ mod tests {
             "kept, not played"
         );
         assert_eq!(u.waited, 1);
+        assert_eq!(
+            u.describe().as_deref(),
+            Some("knob locks: 1 waited for another track or the hand, 0 lost to a full table")
+        );
         // Track 3 stops: track 1's last value, at once.
         assert_eq!(u.unlock(1, 2), Some(4.0));
         assert_eq!(u.owner(1), Some(0));
