@@ -215,6 +215,11 @@ with `--quick`) at 128 frames and 44.1 kHz:
   take 65,000. On the workstation 64 band-limited voices are 18 % of a
   period, so on the MPC fewer fit in the sampler's 25 %: the device round
   measures it, and the sampler sets the limit.
+  Each sampler case's engine is checked as the case ends, through a status
+  board (`Board::unexpected`): dropped events or given-up voices fail the
+  run, and so do steals, thinned grains or a late lane unless the case
+  allows them (sampler plan step 10;
+  [sampler architecture](sampler-architecture.md#showing-the-trade-step-10)).
 - **fx:** every effect, Grains FX and a 4-slot insert chain, on a tone under
   noise bursts, and the mixer with a song's inserts.
 - **time:** the transport looping 4 bars at 128 BPM with 8 clips playing

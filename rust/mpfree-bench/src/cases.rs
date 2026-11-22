@@ -25,7 +25,8 @@ use mpfree_play::{Ahead, Launch, Out, PlayView, Player, Sink, TrackArps};
 use mpfree_prof::alloc;
 use mpfree_prof::budget::MPC;
 use mpfree_sampler::dsp::{Filter, FilterKind};
-use mpfree_sampler::engine::{Engine, EngineView, Event};
+use mpfree_sampler::engine::{Engine, EngineView, Event, GRAIN_BUDGET};
+use mpfree_sampler::grain_share::RESERVE;
 use mpfree_sampler::model::*;
 use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
 use mpfree_seq::{Clip, Lock, Note, Project as Song, Quantise, Speed, Track};
@@ -623,6 +624,123 @@ fn pluck(preset: &str, rate: u32, voices: usize) -> Case {
     }
 }
 
+/// What a sampler case may trade away to keep going (sampler plan step
+/// 10). Anything else it trades fails the bench run, as the case ends.
+#[derive(Clone, Copy, Default)]
+struct Allow {
+    /// Voices taken over for new hits (a pad past its polyphony, a full
+    /// pool): normal playing, which the status board never hears of.
+    steals: bool,
+    /// Grains thinned, faded or held back for the grain budget.
+    grains: bool,
+    /// A core late with its voices (lane cases on real threads).
+    late: bool,
+}
+
+/// A bench case's sampler engine, checked as its case ends against what
+/// it may trade ([`Allow`]). Its counts go to a status board as the app
+/// sends them, and [`Board::unexpected`](mpfree_status::Board::unexpected)
+/// names what was shown that the case doesn't allow: notes dropped and
+/// voices given up always fail, grains thinned and a skipped part of the
+/// sound unless allowed, and steals unless allowed. The check runs when
+/// the case is dropped, after it is counted, so it costs the counts
+/// nothing.
+struct Watched {
+    e: Engine,
+    name: String,
+    allow: Allow,
+}
+
+impl Watched {
+    fn new(e: Engine, name: &str, allow: Allow) -> Self {
+        Self {
+            e,
+            name: name.to_string(),
+            allow,
+        }
+    }
+
+    /// The trades the case made that it may not, with how many.
+    fn unexpected(&self) -> Vec<String> {
+        use mpfree_status::{kinds, Board, Report, SETTLE_ON};
+        let st = self.e.stats();
+        let a = self.allow;
+        let mut board = Board::new();
+        let t0 = std::time::Instant::now();
+        for (kind, n) in [
+            (&kinds::NOTES_DROPPED, st.dropped_events),
+            (&kinds::VOICES_GIVEN_UP, st.culls),
+            (&kinds::SOUND_SKIPPED, st.lane_late),
+        ] {
+            if n > 0 {
+                let times = u32::try_from(n).unwrap_or(u32::MAX);
+                board.apply(Report::happened(kind, times), t0);
+            }
+        }
+        let thinned = [
+            st.skipped_grains,
+            st.crowded_frames,
+            st.faded_grains,
+            st.held_back_clouds,
+        ];
+        if thinned.iter().any(|&n| n > 0) {
+            board.apply(Report::began(&kinds::GRAINS_THINNED), t0);
+            board.tick(t0 + SETTLE_ON);
+        }
+        let mut allowed = Vec::new();
+        if a.grains {
+            allowed.push(&kinds::GRAINS_THINNED);
+        }
+        if a.late {
+            allowed.push(&kinds::SOUND_SKIPPED);
+        }
+        let mut bad: Vec<String> = board
+            .unexpected(&allowed)
+            .into_iter()
+            .map(|k| match k.id {
+                "sound/grains-thinned" => format!("{} {thinned:?}", k.title),
+                _ => {
+                    let n = board
+                        .raw()
+                        .iter()
+                        .find(|v| v.kind == k)
+                        .map_or(0, |v| v.times);
+                    format!("{}: {n}", k.title)
+                }
+            })
+            .collect();
+        if st.steals > 0 && !a.steals {
+            bad.push(format!("Voices stolen: {}", st.steals));
+        }
+        bad
+    }
+}
+
+impl std::ops::Deref for Watched {
+    type Target = Engine;
+    fn deref(&self) -> &Engine {
+        &self.e
+    }
+}
+
+impl std::ops::DerefMut for Watched {
+    fn deref_mut(&mut self) -> &mut Engine {
+        &mut self.e
+    }
+}
+
+impl Drop for Watched {
+    fn drop(&mut self) {
+        let bad = self.unexpected();
+        if !bad.is_empty() && !std::thread::panicking() {
+            panic!(
+                "{}: the sampler traded away what this case may not: {bad:?}",
+                self.name
+            );
+        }
+    }
+}
+
 /// Which of the sampler case's pads are set. The hits are the same in
 /// every case (a hit on an unset pad does nothing), so the two parts add
 /// up to the whole.
@@ -642,7 +760,16 @@ enum SamplerPads {
 /// every 4 blocks (about 11 a second), and optionally the master grain
 /// effect.
 fn sampler(name: &str, rate: u32, master: bool, which: SamplerPads) -> Case {
-    let mut e = sampler_engine(rate, master, which, 24, |_| true);
+    let allow = Allow {
+        steals: true,
+        grains: true,
+        ..Allow::default()
+    };
+    let mut e = Watched::new(
+        sampler_engine(rate, master, which, 24, |_| true),
+        name,
+        allow,
+    );
     let mut hits = SamplerHits::new();
     Case {
         name: name.to_string(),
@@ -765,6 +892,12 @@ fn drum_kit(name: &str, rate: u32, voices: usize, sixteen: bool) -> Case {
     }
     let mut e = Engine::new(rate, voices);
     e.set_view(EngineView::build(&p, rate));
+    // Each hit pushes out the oldest voice of its pad.
+    let allow = Allow {
+        steals: true,
+        ..Allow::default()
+    };
+    let mut e = Watched::new(e, name, allow);
     let mut b0 = 0u64;
     Case {
         name: name.to_string(),
@@ -802,6 +935,11 @@ fn drum_kits(name: &str, rate: u32, voices: usize, kits: usize) -> Case {
     for k in 0..kits {
         e.set_kit_view(k, EngineView::build(&p, rate));
     }
+    let allow = Allow {
+        steals: true,
+        ..Allow::default()
+    };
+    let mut e = Watched::new(e, name, allow);
     let mut b0 = 0u64;
     Case {
         name: name.to_string(),
@@ -2426,9 +2564,16 @@ pub fn scaling(rate: u32) -> Vec<Scaling> {
 /// cost. The other settings are the round 7 granular pads' (pitch spray,
 /// spread, scan).
 fn held_grains(rate: u32, grains: usize) -> Case {
-    let mut e = grain_engine(rate, grains);
+    let name = format!("Sampler grains x{grains}");
+    // The top point asks for the whole budget, past the room sharing keeps
+    // for a new hit, so it thins.
+    let allow = Allow {
+        grains: grains + RESERVE > GRAIN_BUDGET,
+        ..Allow::default()
+    };
+    let mut e = Watched::new(grain_engine(rate, grains), &name, allow);
     Case {
-        name: format!("Sampler grains x{grains}"),
+        name,
         module: "sampler",
         what: "4 granular pads held, grains alive in all",
         block: Box::new(move |b, l, r| {
@@ -2523,12 +2668,14 @@ fn held_pads(rate: u32, n: usize, up: bool, sixteen: bool) -> Case {
     }
     let mut e = Engine::new(rate, n.max(1));
     e.set_view(EngineView::build(&p, rate));
+    let name = format!(
+        "Sampler x{n} held{}{}",
+        if up { " up" } else { "" },
+        if sixteen { ", 16-bit sound" } else { "" }
+    );
+    let mut e = Watched::new(e, &name, Allow::default());
     Case {
-        name: format!(
-            "Sampler x{n} held{}{}",
-            if up { " up" } else { "" },
-            if sixteen { ", 16-bit sound" } else { "" }
-        ),
+        name,
         module: "sampler",
         what: if up {
             "looping pads held down, pitched up"
@@ -2600,8 +2747,10 @@ fn moving_pads(rate: u32, n: usize) -> Case {
     }
     let mut e = Engine::new(rate, n.max(1));
     e.set_view(EngineView::build(&p, rate));
+    let name = format!("Sampler x{n} held, LFO and pitch envelope");
+    let mut e = Watched::new(e, &name, Allow::default());
     Case {
-        name: format!("Sampler x{n} held, LFO and pitch envelope"),
+        name,
         module: "sampler",
         what: "looping pads held down, each with an LFO and a pitch envelope",
         block: Box::new(move |b, l, r| {
@@ -2670,6 +2819,7 @@ fn new_filter_pads(rate: u32, n: usize, kind: FilterKind, drive_db: f32) -> Case
             "looping pads held down through a vowel filter, its envelope moving",
         ),
     };
+    let mut e = Watched::new(e, &name, Allow::default());
     Case {
         name,
         module: "sampler",
@@ -2732,11 +2882,13 @@ fn filtered_pads(rate: u32, n: usize, ringing: bool) -> Case {
     }
     let mut e = Engine::new(rate, n.max(1));
     e.set_view(EngineView::build(&p, rate));
+    let name = format!(
+        "Sampler x{n} {}",
+        if ringing { "ringing" } else { "filtered" }
+    );
+    let mut e = Watched::new(e, &name, Allow::default());
     Case {
-        name: format!(
-            "Sampler x{n} {}",
-            if ringing { "ringing" } else { "filtered" }
-        ),
+        name,
         module: "sampler",
         what: if ringing {
             "filtered pads held, ringing out on silence"
@@ -4818,7 +4970,7 @@ impl<E> Part<E> {
 
 /// Half the sampler's pads, with this block's hits.
 struct SamplerPart {
-    e: Engine,
+    e: Watched,
     hits: Option<[Event; 2]>,
 }
 
@@ -4845,9 +4997,19 @@ impl Job for Part<Chords> {
 /// on this thread, which is the same work on one core. Each block waits up
 /// to `wait` for the lane.
 fn split_sampler(name: &str, rate: u32, lane: Option<LaneConfig>, wait: Duration) -> Case {
-    let mut here = sampler_engine(rate, false, SamplerPads::All, 12, |p| p % 2 == 0);
+    // As the sampler case, and a lane on its own core may be late.
+    let allow = Allow {
+        steals: true,
+        grains: true,
+        late: lane.is_some(),
+    };
+    let half = |even: bool| {
+        let e = sampler_engine(rate, false, SamplerPads::All, 12, |p| (p % 2 == 0) == even);
+        Watched::new(e, name, allow)
+    };
+    let mut here = half(true);
     let there = Part::new(SamplerPart {
-        e: sampler_engine(rate, false, SamplerPads::All, 12, |p| p % 2 == 1),
+        e: half(false),
         hits: None,
     });
     let mut lane = match lane {
@@ -4889,7 +5051,16 @@ fn split_sampler(name: &str, rate: u32, lane: Option<LaneConfig>, wait: Duration
 /// choke and steal still seeing all 24. `lane` None: the lane runs on this
 /// thread, which is the same work on one core.
 fn native_split(name: &str, rate: u32, lane: Option<LaneConfig>) -> Case {
-    let mut e = sampler_engine(rate, false, SamplerPads::All, 24, |_| true);
+    let allow = Allow {
+        steals: true,
+        grains: true,
+        late: lane.is_some(),
+    };
+    let mut e = Watched::new(
+        sampler_engine(rate, false, SamplerPads::All, 24, |_| true),
+        name,
+        allow,
+    );
     let config = lane.unwrap_or(LaneConfig {
         name: "mpfree-bench-ln".into(),
         threaded: false,
@@ -4915,7 +5086,16 @@ fn native_split(name: &str, rate: u32, lane: Option<LaneConfig>) -> Case {
 /// (`lane` None), or Poly on a lane beside the sampler. Each block waits up
 /// to `wait` for the lane.
 fn beside(name: &str, rate: u32, lane: Option<LaneConfig>, wait: Duration) -> Case {
-    let mut here = sampler_engine(rate, false, SamplerPads::All, 24, |_| true);
+    let allow = Allow {
+        steals: true,
+        grains: true,
+        ..Allow::default()
+    };
+    let mut here = Watched::new(
+        sampler_engine(rate, false, SamplerPads::All, 24, |_| true),
+        name,
+        allow,
+    );
     let poly = Part::new(Chords::new(
         rate,
         Box::new(Poly::new(rate)),
@@ -5218,6 +5398,39 @@ mod tests {
         }
         let st = g.lp.stats();
         assert_eq!((st.refused, st.aborted, st.dropped_commands), (0, 0, 0));
+    }
+
+    #[test]
+    fn a_sampler_case_fails_on_a_trade_it_may_not_make() {
+        // Sampler plan step 10: the whole-budget grain point thins its
+        // grains; allowed, it ends quietly, and not allowed, it fails.
+        let run = |allow| {
+            let mut e = Watched::new(grain_engine(44_100, 256), "test", allow);
+            for pad in 0..4 {
+                e.apply(Event::NoteOn { pad, velocity: 100 });
+            }
+            let (mut l, mut r) = ([0.0f32; 128], [0.0f32; 128]);
+            for _ in 0..200 {
+                e.render(&mut l, &mut r);
+            }
+            e
+        };
+        let allowed = run(Allow {
+            grains: true,
+            ..Allow::default()
+        });
+        assert!(allowed.unexpected().is_empty());
+        drop(allowed);
+        let e = run(Allow::default());
+        assert!(
+            e.unexpected()
+                .iter()
+                .any(|what| what.starts_with("Grains thinned")),
+            "{:?}",
+            e.unexpected()
+        );
+        let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(e)));
+        assert!(ended.is_err(), "it ended without failing");
     }
 
     #[test]
