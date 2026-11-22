@@ -1006,6 +1006,11 @@ pub enum ModelError {
     /// A song's tempo point is before the start, out of range, too near
     /// another (a 1/16 at least) or one too many.
     BadTempo,
+    /// A clip or a song block on an audio track: until audio clips come
+    /// (the audio tracks rethink's phase 2), an audio track's cells are
+    /// empty and its song material is its regions, in the audio tracks
+    /// part.
+    AudioTrack,
 }
 
 impl Clip {
@@ -1385,8 +1390,9 @@ pub struct Track {
     /// clips with [`Track::through_arp`] on) and what it plays, by the same
     /// rule: a part is never put through them twice.
     pub note_fx: mpfree_notefx::TrackFx,
-    /// A note track (the pads play it and its clips hold notes), or a Loop
-    /// track, whose cells launch the looper's loops ([`loops`]).
+    /// A note track (the pads play it and its clips hold notes), a Loop
+    /// track, whose cells launch the looper's loops ([`loops`]), or an
+    /// audio track ([`TrackKind::Audio`]).
     pub kind: TrackKind,
     /// Its live transpose (sequencer S4): every note it plays shifted, as
     /// played on the pads' Transpose or its row; 0 plays as written. Only
@@ -1580,6 +1586,13 @@ pub enum TrackKind {
     Notes,
     /// A Loop track and what its new loops record.
     Loops(LoopInput),
+    /// An audio track (the audio tracks rethink, phase 1): it records the
+    /// line input or the mix and plays what it recorded on its own mixer
+    /// channel. Its recordings, regions and settings (input, monitor) are
+    /// the audio tracks part's (`mpfree-audiotracks`), found by the
+    /// track's id. It holds no note clip and no song block: until audio
+    /// clips come (phase 2) its cells stay empty ([`ModelError::AudioTrack`]).
+    Audio,
 }
 
 /// What a Loop track's new loops record (recording from the grid, Loop
@@ -1661,6 +1674,15 @@ impl Track {
         }
     }
 
+    /// An empty audio track. Its `dest` is unused: nothing plays notes
+    /// into it.
+    pub fn new_audio(name: &str, dest: DestId) -> Track {
+        Track {
+            kind: TrackKind::Audio,
+            ..Track::new(name, dest)
+        }
+    }
+
     /// Whether `self` and `other` have the same settings and clips, their
     /// ids and names aside (a track nobody set up has a new track's).
     /// Never allocates. Every field is named, so a new one must be
@@ -1712,16 +1734,26 @@ impl Track {
         self.pad_mutes | solo
     }
 
-    /// A Loop track's input; None for a note track.
+    /// A Loop track's input; None for a note track or an audio track.
     pub fn loops(&self) -> Option<LoopInput> {
         match self.kind {
-            TrackKind::Notes => None,
+            TrackKind::Notes | TrackKind::Audio => None,
             TrackKind::Loops(i) => Some(i),
         }
     }
 
     pub fn is_loops(&self) -> bool {
         self.loops().is_some()
+    }
+
+    pub fn is_audio(&self) -> bool {
+        self.kind == TrackKind::Audio
+    }
+
+    /// A note track: the pads play it and its clips hold notes. Neither a
+    /// Loop track nor an audio track is.
+    pub fn plays_notes(&self) -> bool {
+        self.kind == TrackKind::Notes
     }
 }
 
@@ -1910,6 +1942,9 @@ impl Project {
     pub fn check(&self) -> Result<(), ModelError> {
         self.check_tracks()?;
         for t in &self.tracks {
+            if t.is_audio() && t.slots.clips().next().is_some() {
+                return Err(ModelError::AudioTrack);
+            }
             for c in t.slots.clips() {
                 c.check()?;
                 if c.looped.is_some() != t.is_loops() {

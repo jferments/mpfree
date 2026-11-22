@@ -126,15 +126,22 @@ pub const FORMAT: u32 = 2;
 /// hasn't got, by feature, space-separated (`needs = audio-tracks`). A
 /// build that lacks one doesn't open the project, and says which
 /// ([`check`]; docs/dev/design/project-safety.md). Written while the
-/// project has a synth that no track has ([`SYNTHS_WITHOUT_TRACKS`]).
+/// project has a synth that no track has ([`SYNTHS_WITHOUT_TRACKS`]), or
+/// an audio track ([`AUDIO_TRACKS`]).
 pub const NEEDS_KEY: &str = "needs";
 /// A project with a synth in a free place (the instrument redesign's step
 /// 6: one picked for the pads, no track's): an older build would read the
 /// instruments part's `free` block's settings as the last track's
 /// instrument's, so it must not open it.
 pub const SYNTHS_WITHOUT_TRACKS: &str = "synths-without-tracks";
+/// A project with an audio track in its track list (the audio tracks
+/// rethink, phase 1a): an older build would open it as an empty note
+/// track, and its recordings as its own 8 audio tracks' under the song.
+/// The clips part is `mpfree-clips 3` too, which such a build doesn't
+/// read; the line says it in words before anything is read.
+pub const AUDIO_TRACKS: &str = "audio-tracks";
 /// The features this build has, of those a project can need.
-pub const KNOWN_NEEDS: &[&str] = &[SYNTHS_WITHOUT_TRACKS];
+pub const KNOWN_NEEDS: &[&str] = &[SYNTHS_WITHOUT_TRACKS, AUDIO_TRACKS];
 
 // ------------------------------------------------------------ the loop's side
 
@@ -234,6 +241,9 @@ pub struct Opening {
     /// The audio tracks are emptied (always, as the loops). Its tracks and
     /// takes, read on a thread of their own, follow (`FromUi::OpenAudio`).
     pub clear_audio: bool,
+    /// Which project track each of the audio engine's tracks plays
+    /// ([`audio_slots`]): set as the tracks are emptied.
+    pub audio_slots: crate::audiotracks::Slots,
 }
 
 impl std::fmt::Debug for Opening {
@@ -307,8 +317,15 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
         (FORMAT_KEY.to_string(), FORMAT.to_string()),
         (SWING.to_string(), swing_text(c.swing)),
     ];
+    let mut needs: Vec<&str> = Vec::new();
     if c.instruments.lines().any(|l| l.starts_with("free ")) {
-        extra.push((NEEDS_KEY.to_string(), SYNTHS_WITHOUT_TRACKS.to_string()));
+        needs.push(SYNTHS_WITHOUT_TRACKS);
+    }
+    if c.clips.tracks.iter().any(mpfree_seq::Track::is_audio) {
+        needs.push(AUDIO_TRACKS);
+    }
+    if !needs.is_empty() {
+        extra.push((NEEDS_KEY.to_string(), needs.join(" ")));
     }
     Snapshot {
         meta: mpfree_library::Meta {
@@ -603,6 +620,7 @@ pub fn opening(
         .find(|(k, _)| k == SWING)
         .and_then(|(_, v)| parse_swing(v));
     let mut note_fx = None;
+    let mut audio = crate::audiotracks::Slots::default();
     let format = check(snap)?;
     let since_4b = saved_since_4b(snap);
     let cant = |part: &str, e: String| format!("{} can't be read ({e})", part_words(part));
@@ -635,6 +653,8 @@ pub fn opening(
                     "project: {given} of its clips had no lasting id, or shared one; they have new ones"
                 ));
             }
+            // The audio tracks in the track list (phase 1a).
+            audio = audio_slots(&p, snap.part(AUDIOTRACKS))?;
             let mut fx = Box::new([mpfree_notefx::TrackFx::default(); mpfree_seq::MAX_TRACKS]);
             for (t, tr) in p.tracks.iter().enumerate().take(mpfree_seq::MAX_TRACKS) {
                 fx[t] = tr.note_fx;
@@ -718,6 +738,7 @@ pub fn opening(
         // the last project's.
         clear_loops: true,
         clear_audio: true,
+        audio_slots: audio,
     })
 }
 
@@ -928,6 +949,59 @@ pub fn audio_open(
         }
     }
     Ok((saved, notes, left))
+}
+
+/// The audio tracks' places in the track list as a project opens (the
+/// audio tracks rethink, phase 1a): which project track each of the audio
+/// engine's tracks plays ([`crate::audiotracks::Slots`]), from the clips
+/// part's project `p` and the audio tracks part (`part`, None without
+/// one). Checked before anything changes, so a refusal changes nothing.
+///
+/// - The part names its tracks by id: each must be an audio track of `p`,
+///   and each keeps its engine track.
+/// - An audio track of `p` that the part doesn't name gets a free engine
+///   track.
+///
+/// Refused when the part can't be read (a part an older mpfree saved,
+/// before audio tracks were tracks, among them), or when the audio tracks
+/// are more than the engine's [`mpfree_audiotracks::MAX_TRACKS`].
+pub fn audio_slots(
+    p: &mpfree_seq::Project,
+    part: Option<&str>,
+) -> Result<crate::audiotracks::Slots, String> {
+    use mpfree_audiotracks::save::{from_text, OLDER};
+    use mpfree_seq::TrackId;
+    let mut slots = crate::audiotracks::Slots::default();
+    if let Some(text) = part {
+        let saved = from_text(text).map_err(|e| match e.as_str() {
+            OLDER => format!("its audio tracks were {OLDER}"),
+            _ => format!("its audio tracks can't be read ({e})"),
+        })?;
+        for t in &saved.tracks {
+            let id = TrackId(t.id);
+            let ok = p.track_with(id).is_some_and(|i| p.tracks[i].is_audio());
+            if !ok {
+                return Err(format!(
+                    "its audio tracks part names audio {} for a track it hasn't got",
+                    t.index + 1
+                ));
+            }
+            slots.0[t.index] = id;
+        }
+    }
+    for t in &p.tracks {
+        if !t.is_audio() || slots.slot_of(t.id).is_some() {
+            continue;
+        }
+        let Some(s) = slots.free() else {
+            return Err(format!(
+                "it has more audio tracks than the {} this MPFree plays",
+                mpfree_audiotracks::MAX_TRACKS
+            ));
+        };
+        slots.0[s] = t.id;
+    }
+    Ok(slots)
 }
 
 /// New project: the parts the app started with, and an empty song.
@@ -2887,6 +2961,96 @@ mod tests {
         assert!(instrument_notes(&o).is_empty(), "{:?}", o.notes);
     }
 
+    /// Phase 1a: the audio tracks part names its tracks by id, each an
+    /// audio track of the project; every audio track gets an engine
+    /// track; a part an older mpfree saved, before audio tracks were
+    /// tracks, is refused and changes nothing.
+    #[test]
+    fn audio_tracks_find_their_tracks_by_id_and_an_older_part_is_refused() {
+        use mpfree_audiotracks::save::{to_text, Saved, TrackFile, FORMAT, FORMAT_1, OLDER};
+        use mpfree_seq::{Project, Track};
+        let mut p = Project::new();
+        for i in 0..8 {
+            p.tracks.push(Track::new(&format!("Track {}", i + 1), i));
+        }
+        p.tracks.push(Track::new_audio("Vocal", 0));
+        p.tracks.push(Track::new_audio("Guitar", 0));
+        p.give_track_ids();
+        let track = |index, id| TrackFile {
+            index,
+            id,
+            input: mpfree_audiotracks::Input::Left,
+            monitor: mpfree_audiotracks::Monitor::Auto,
+            from: String::new(),
+            regions: Vec::new(),
+        };
+        // Vocal plays engine track 5, Guitar engine track 0.
+        let part = Saved {
+            rate: 44_100,
+            tracks: vec![track(0, p.tracks[9].id.0), track(5, p.tracks[8].id.0)],
+            takes: Vec::new(),
+        };
+        let text = to_text(&part);
+        let slots = audio_slots(&p, Some(&text)).unwrap();
+        assert_eq!(slots.slot_of(p.tracks[8].id), Some(5));
+        assert_eq!(slots.slot_of(p.tracks[9].id), Some(0));
+        // A part naming a track the project hasn't got, or a note track,
+        // is refused.
+        let mut bad = part.clone();
+        bad.tracks[0].id = 99;
+        let e = audio_slots(&p, Some(&to_text(&bad))).unwrap_err();
+        assert!(e.contains("names audio 1 for a track it hasn't got"), "{e}");
+        bad.tracks[0].id = p.tracks[0].id.0;
+        assert!(audio_slots(&p, Some(&to_text(&bad))).is_err());
+        // No part: each audio track gets a free engine track, in order.
+        let free = audio_slots(&p, None).unwrap();
+        assert_eq!(free.slot_of(p.tracks[8].id), Some(0));
+        assert_eq!(free.slot_of(p.tracks[9].id), Some(1));
+        // A part an older mpfree saved: refused, saying why.
+        let older = text.replace(FORMAT, FORMAT_1);
+        let e = audio_slots(&p, Some(&older)).unwrap_err();
+        assert_eq!(e, format!("its audio tracks were {OLDER}"));
+        // More audio tracks than engine tracks.
+        let mut many = p.clone();
+        for k in 0..mpfree_audiotracks::MAX_TRACKS {
+            let mut t = Track::new_audio(&format!("Audio {k}"), 0);
+            many.give_track_id(&mut t);
+            many.tracks.push(t);
+        }
+        let e = audio_slots(&many, None).unwrap_err();
+        assert!(e.contains("more audio tracks than the 8"), "{e}");
+    }
+
+    /// Phase 1a: a project with an audio track says it needs audio
+    /// tracks, so an older build doesn't open it as an empty note track;
+    /// with a synth in a free place too, the line names both, and this
+    /// build opens it.
+    #[test]
+    fn a_project_with_an_audio_track_says_it_needs_audio_tracks() {
+        let needs = |c: &Collected| {
+            let snap = snapshot(c, Vec::new());
+            let line = snap
+                .meta
+                .extra
+                .iter()
+                .find(|(k, _)| k == NEEDS_KEY)
+                .map(|(_, v)| v.clone());
+            (snap, line)
+        };
+        let mut c = collected(String::new(), InstrumentList::new().text());
+        assert_eq!(needs(&c).1, None, "a plain project needs nothing");
+        let mut t = mpfree_seq::Track::new_audio("Audio 1", 0);
+        c.clips.give_track_id(&mut t);
+        c.clips.tracks.push(t);
+        let (snap, line) = needs(&c);
+        assert_eq!(line.as_deref(), Some(AUDIO_TRACKS));
+        assert_eq!(check(&snap), Ok(FORMAT));
+        c.instruments = format!("{INSTRUMENTS_FORMAT}\nfree 1 mpfree.fm\n");
+        let (snap, line) = needs(&c);
+        assert_eq!(line.as_deref(), Some("synths-without-tracks audio-tracks"));
+        assert_eq!(check(&snap), Ok(FORMAT));
+    }
+
     /// Phase 0's gate (docs/dev/design/project-safety.md): a project that
     /// needs something this build hasn't got, or has a part this build
     /// can't read (clips saved as `mpfree-clips 9` here, as an
@@ -2926,7 +3090,7 @@ mod tests {
             (LOOPER, "mpfree-looper 2\n", "its loops can't be read ("),
             (
                 AUDIOTRACKS,
-                "mpfree-audiotracks 2\n",
+                "mpfree-audiotracks 9\n",
                 "its audio tracks can't be read (",
             ),
             (ARP, "mpfree-arp 2\n", "its arps can't be read ("),
@@ -3503,6 +3667,7 @@ mod tests {
         use mpfree_audiotracks::{Input, Monitor, Region};
         let take = |id: u16, channels: usize, audio: Vec<f32>| TakeFile {
             id,
+            rec: mpfree_audiotracks::RecordingId(0x100 + u128::from(id)),
             track: 0,
             group: 1,
             pass: id,
@@ -3527,12 +3692,9 @@ mod tests {
             rate: 44_100,
             tracks: vec![TrackFile {
                 index: 0,
+                id: 3,
                 input: Input::Stereo,
                 monitor: Monitor::In,
-                level: 0.8,
-                pan: 0.25,
-                muted: false,
-                solo: false,
                 from: String::new(),
                 regions: vec![region(0, 960, 0), region(960, 1920, 2)],
             }],
@@ -3571,6 +3733,9 @@ mod tests {
         assert_eq!(back.takes[2].audio, a);
         assert_eq!(back.tracks[0].input, Input::Stereo);
         assert_eq!(back.tracks[0].regions.len(), 2);
+        // Each recording keeps its lasting id, though two share a file.
+        let recs: Vec<u128> = back.takes.iter().map(|k| k.rec.0).collect();
+        assert_eq!(recs, vec![0x100, 0x101, 0x102]);
         // Take 2's file gone: it is left out with its region, and said;
         // another rate is said too (not left out: the takes are there).
         let (back, notes, left) = audio_open(&text, 48_000, |f| {

@@ -1516,6 +1516,19 @@ impl Mixer {
         self.queue(s, Timed::new(0, NodeEvent::Param { id, value }))
     }
 
+    /// A strip parameter as the next block will have it: the last value
+    /// queued for it ([`Mixer::set`], [`Mixer::queue`]), else as it stands
+    /// ([`Mixer::param`]). So steps given between two blocks add up.
+    pub fn wanted(&self, s: StripId, id: u16) -> f32 {
+        let queued = self.plan.topo.order(s).and_then(|k| {
+            self.strips[k].events.iter().rev().find_map(|e| match e.ev {
+                NodeEvent::Param { id: i, value } if i == id => Some(value),
+                _ => None,
+            })
+        });
+        queued.unwrap_or_else(|| self.param(s, id))
+    }
+
     /// A strip parameter as it stands after the last block.
     pub fn param(&self, s: StripId, id: u16) -> f32 {
         let Some(k) = self.plan.topo.order(s) else {

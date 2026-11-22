@@ -135,6 +135,10 @@ pub enum View {
     /// Debug mode: test, measure and tune the touchscreen (on the Debug tab;
     /// `touch_dev.rs`).
     Touch,
+    /// Debug mode: the status board raw (on the Debug tab): every problem
+    /// MPFree noted this session with its state, count and times, and the
+    /// last reports (`mpfree-status`; System status phase 0).
+    StatusBoard,
     /// Prefs > System info: the program's version, the system and the
     /// hardware (on the Prefs tab).
     System,
@@ -225,13 +229,14 @@ pub fn bank_letter(kit: usize) -> char {
 }
 
 /// The Debug tab's pages, in the order of its strip.
-pub const DEBUG_PAGES: [View; 7] = [
+pub const DEBUG_PAGES: [View; 8] = [
     View::Debug,
     View::Perf,
     View::Engines,
     View::Procs,
     View::Map,
     View::Touch,
+    View::StatusBoard,
     View::Console,
 ];
 
@@ -241,9 +246,13 @@ impl View {
     pub fn tab_view(self) -> Option<View> {
         match self {
             View::Arp | View::Pattern => Some(View::Play),
-            View::Perf | View::Engines | View::Procs | View::Map | View::Touch | View::Console => {
-                Some(View::Debug)
-            }
+            View::Perf
+            | View::Engines
+            | View::Procs
+            | View::Map
+            | View::Touch
+            | View::StatusBoard
+            | View::Console => Some(View::Debug),
             // The chain editor is the Mix tab's (Jay's card, 14 Nov 07:15Z).
             View::Chain => Some(View::Mixer),
             View::Options
@@ -289,6 +298,7 @@ impl View {
             View::Procs => "Processes",
             View::Map => "Map controls",
             View::Touch => "Touch",
+            View::StatusBoard => "Status",
             View::System => "System info",
             View::Mixer => "Mix",
             View::Chain => "FX chain",
@@ -3480,6 +3490,7 @@ impl App {
                     | View::Procs
                     | View::Map
                     | View::Touch
+                    | View::StatusBoard
                     | View::Console
             ) {
                 fx.extend(self.debug_step(d));
@@ -3925,6 +3936,7 @@ impl App {
             | View::Procs
             | View::Map
             | View::Touch
+            | View::StatusBoard
             | View::Console
                 if self.shift =>
             {
@@ -4002,6 +4014,7 @@ impl App {
                     | View::Procs
                     | View::Map
                     | View::Touch
+                    | View::StatusBoard
             )
         {
             self.back = self.view;
@@ -4287,6 +4300,7 @@ impl App {
                     | View::Procs
                     | View::Map
                     | View::Touch
+                    | View::StatusBoard
                     | View::Console
             )
         {
@@ -4558,7 +4572,15 @@ impl App {
                 Item::LoopTempo,
                 Item::LoopMemory,
             ],
-            (_, View::Debug | View::Perf | View::Engines | View::Procs | View::Map) => {
+            (
+                _,
+                View::Debug
+                | View::Perf
+                | View::Engines
+                | View::Procs
+                | View::Map
+                | View::StatusBoard,
+            ) => {
                 // The MIDI page's monitor has its own Hold.
                 &[Item::ShowPressure, Item::ClearLogs]
             }
@@ -5033,6 +5055,7 @@ impl App {
                 | View::Procs
                 | View::Map
                 | View::Touch
+                | View::StatusBoard
                 | View::Console),
             ) => {
                 format!("{} options", b.name())
