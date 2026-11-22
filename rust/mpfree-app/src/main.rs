@@ -3,8 +3,10 @@
 //! One program, one step per run, paced from the workstation by
 //! tools/mpc-one/host_app_mpc.py:
 //!
-//!   inventory          read-only: sound cards, PCM and MIDI devices, input
-//!                      devices, framebuffer, panel rotation, RT limits
+//!   inventory          read-only: sound cards, PCM and MIDI devices, the
+//!                      sample rates the audio driver would accept (asked,
+//!                      never set), input devices, framebuffer, panel
+//!                      rotation, RT limits
 //!   screen             draws the mpfree card on /dev/fb0
 //!   touch --seconds N  reads the touchscreen (no grab) and shows the contacts
 //!   pads --seconds N [--keepalive]
@@ -146,6 +148,7 @@ mod presets;
 mod preview;
 mod project;
 mod qlink_touch;
+mod rate_probe;
 mod rec_arm;
 mod rec_list;
 mod remote;
@@ -161,6 +164,7 @@ mod shed;
 mod skin_page;
 #[cfg(test)]
 mod smoke;
+mod status_watch;
 mod step_keys;
 mod synth;
 mod sys;
@@ -730,10 +734,12 @@ const MAX_THEME_FILES: usize = 32;
 /// The themes folder's `NAME.theme` files that parse, in name order (at
 /// most [`MAX_THEME_FILES`]), each with its theme. A theme without its own
 /// `name`, or named like a built-in one, is shown by its file name. A file
-/// that doesn't parse is left out with a line saying why (the second list,
-/// lines for the log). Only reads.
-fn load_theme_files(store: &mpfree_store::Store) -> (Vec<(String, Theme)>, Vec<String>) {
-    let (mut found, mut notes) = (Vec::new(), Vec::new());
+/// that doesn't parse, or whose text no one could read
+/// ([`Theme::unusable`]), is left out with a line saying why (the second
+/// list, lines for the log), and counted (the third, for the Debug page).
+/// Only reads.
+fn load_theme_files(store: &mpfree_store::Store) -> (Vec<(String, Theme)>, Vec<String>, u64) {
+    let (mut found, mut notes, mut left_out) = (Vec::new(), Vec::new(), 0);
     for file in store.list(app::THEMES_FOLDER) {
         let Some(stem) = file.strip_suffix(".theme").filter(|s| !s.is_empty()) else {
             continue;
@@ -758,15 +764,21 @@ fn load_theme_files(store: &mpfree_store::Store) -> (Vec<(String, Theme)>, Vec<S
                 }
                 found.push((file, t));
             }
-            Some(Err(e)) => notes.push(format!("themes: {file} left out: {e}")),
-            None => notes.push(format!("themes: {file} left out: not readable text")),
+            Some(Err(e)) => {
+                notes.push(format!("themes: {file} left out: {e}"));
+                left_out += 1;
+            }
+            None => {
+                notes.push(format!("themes: {file} left out: not readable text"));
+                left_out += 1;
+            }
         }
     }
     if !found.is_empty() {
         let names: Vec<&str> = found.iter().map(|(_, t)| t.name.as_str()).collect();
         notes.push(format!("themes: found {}", names.join(", ")));
     }
-    (found, notes)
+    (found, notes, left_out)
 }
 
 /// The built-in fonts, or files given with --font, --bold-font, --mono-font.
@@ -906,7 +918,16 @@ fn inventory(o: &Options) -> Result<(), String> {
         }
     }
     match audio_card() {
-        Ok(n) => out.say(&format!("audio card for the click: {n} ({AUDIO_CARD_ID})")),
+        Ok(n) => {
+            out.say(&format!("audio card for the click: {n} ({AUDIO_CARD_ID})"));
+            // DSP quality step 0.3: which rates the driver would accept,
+            // asked with HW_REFINE only (rate_probe.rs keeps the rules).
+            for dir in ['p', 'c'] {
+                for line in rate_probe::probe_path(&format!("/dev/snd/pcmC{n}D0{dir}")) {
+                    out.say(&line);
+                }
+            }
+        }
         Err(e) => out.say(&format!("audio card: {e}")),
     }
     match midi_card() {
@@ -2534,54 +2555,39 @@ fn transpose_colours(by: Option<i8>) -> [[u8; 3]; 16] {
     })
 }
 
-/// What SHIFT + TRACK MUTE's key for the kit's pad `p` shows: muted or
-/// silent by a solo, soloed, or waiting in the mute queue. Nothing while
-/// the armed track plays another kit (`other`), whose pads have no mutes
-/// of their own.
-fn pad_light(
-    mix: &mixing::MixHost,
-    time: &time::TimeHost,
-    p: usize,
-    other: bool,
-) -> time::MuteLight {
-    let bit = |b: u16| !other && b & (1 << p) != 0;
+/// What SHIFT + TRACK MUTE's key for pad `p` of track `track`'s kit
+/// shows (the instrument redesign's step 10: a pad mute is the track's):
+/// muted or silent by a solo, soloed, or waiting in the mute queue.
+/// Nothing while the track plays notes (`off`), which have no pad mutes.
+fn pad_light(time: &time::TimeHost, track: usize, p: usize, off: bool) -> time::MuteLight {
+    let (mutes, solos) = time.pad_mutes(track).unwrap_or((0, 0));
+    let silent = mutes | if solos == 0 { 0 } else { !solos };
+    let bit = |b: u128| !off && p < 128 && b >> p & 1 == 1;
     time::MuteLight {
-        silent: bit(mix.pad_mutes() | mix.solo_silent()),
-        solo: bit(mix.pad_solos()),
-        waiting: !other && time.pad_waiting(p),
+        silent: bit(silent),
+        solo: bit(solos),
+        waiting: !off && time.pad_waiting(track, p),
         launched: false,
-    }
-}
-
-/// The kit's pads whose change in the mute queue came due ([`mute_key`]):
-/// the mixer takes their mutes and solos, from its next period, which
-/// holds their line.
-fn land_pads(time: &mut time::TimeHost, mix: &mut mixing::MixHost) {
-    for (pad, l) in time.take_pad_landings().into_iter().enumerate() {
-        if let Some((mute, solo)) = l {
-            mix.play(mixing::PlayFx::PadMute { pad, mute });
-            mix.play(mixing::PlayFx::PadSolo { pad, solo });
-        }
     }
 }
 
 /// TRACK MUTE's key `pad` pressed (`tap` from [`app::App::mute_tap`]):
 /// its track in the tap's bank (A = 0: tracks 1-16, B 17-32 ...) muted or
 /// let play, or soloed with TRACK MUTE held, at once or on the launch
-/// line ([`time::TimeHost::mute_or_solo`]); or the pad itself in the kit,
+/// line ([`time::TimeHost::mute_or_solo`]); or, with SHIFT + TRACK MUTE,
+/// the pad itself on track `track`, on the kit's page `page` (PAD BANK),
 /// muted or let play, or soloed with TRACK MUTE held, at once or on the
-/// line with the tracks ([`time::TimeHost::pad_mute_or_solo`]; the mixer
-/// takes a pad's landing before the period that holds its line, in
-/// [`land_pads`]). `no_mutes`: why the pads have no mutes of their own
-/// ([`no_mutes`]: another kit than kit 1, or a bank past A; only kit 1's
-/// pads A1-A16 have channels of their own), so a pad's key mutes nothing
-/// and says so. The line for the log.
+/// line with the tracks ([`time::TimeHost::pad_mute_or_solo`]; step 10:
+/// on that track alone, every bank and kit). `no_mutes`: why the pads
+/// have no mutes ([`no_mutes`]: the track plays notes), so a pad's key
+/// mutes nothing and says so. The line for the log.
 fn mute_key(
     tap: app::MuteTap,
     pad: usize,
+    track: usize,
+    page: usize,
     no_mutes: Option<String>,
     time: &mut time::TimeHost,
-    mix: &mut mixing::MixHost,
 ) -> String {
     match (tap.keys, no_mutes) {
         (app::MuteKeys::Off, _) => String::new(),
@@ -2598,21 +2604,9 @@ fn mute_key(
         }
         (app::MuteKeys::Pads, Some(why)) => why,
         (app::MuteKeys::Pads, None) => {
-            let bit = |b: u16| b & (1 << pad) != 0;
-            let now = (bit(mix.pad_mutes()), bit(mix.pad_solos()));
-            match time.pad_mute_or_solo(pad, now, tap.wait, tap.solo) {
-                time::PadTap::Waits(line) => line,
-                time::PadTap::Now { mute, solo } => {
-                    mix.play(mixing::PlayFx::PadMute { pad, mute });
-                    mix.play(mixing::PlayFx::PadSolo { pad, solo });
-                    let what = match (tap.solo, mute, solo) {
-                        (true, _, true) => "solo",
-                        (true, _, false) => "solo off",
-                        (false, true, _) => "muted",
-                        (false, false, _) => "plays",
-                    };
-                    format!("pad mute: pad {} {what}", pad + 1)
-                }
+            match time.pad_mute_or_solo(track, page * 16 + pad, tap.wait, tap.solo) {
+                Ok(time::PadTap::Waits(line) | time::PadTap::Now(line)) => line,
+                Err(e) => e,
             }
         }
     }
@@ -2629,17 +2623,50 @@ fn kit_drums(kits: &[kit::Kit], k: usize) -> u16 {
     })
 }
 
-/// The kit the armed track `track` plays when it isn't kit 1 (whose pads
-/// alone have the mixer's pad strips): see [`mute_key`].
-fn other_kit(kits: &sampler::TrackKits, track: usize) -> Option<usize> {
-    kits.kit_of(track).filter(|&k| k > 0)
+/// Why SHIFT + TRACK MUTE's pads mute nothing on track `track`: it plays
+/// notes (the synth, or an instrument: `notes`, a bit each by track, as
+/// [`instruments::Instruments::note_tracks`]), whose pads are no kit's
+/// ([`gui::no_pad_mutes`]). None on a kit, any kit and bank (step 10).
+fn no_mutes(kits: &sampler::TrackKits, notes: u128, track: usize) -> Option<String> {
+    let plays_notes = notes.checked_shr(track as u32).is_some_and(|b| b & 1 == 1);
+    gui::no_pad_mutes("pad mute", kits.kit_of(track).filter(|_| !plays_notes))
 }
 
-/// Why SHIFT + TRACK MUTE's pads mute nothing on the armed track `track`
-/// with the kit's page `page` on the pads: another kit than kit 1, or a
-/// page past A ([`gui::no_pad_mutes`]).
-fn no_mutes(kits: &sampler::TrackKits, track: usize, page: usize) -> Option<String> {
-    gui::no_pad_mutes("pad mute", kits.kit_of(track), page)
+/// A project saved before pad mutes were a track's (step 10) muted and
+/// soloed kit 1's A1-A16 in the mixer: each track that plays kit 1 (not
+/// notes) takes them as its own. What it says, or None for nothing to
+/// carry.
+fn carry_pad_mutes(
+    mix: &mut mixing::MixHost,
+    kits: &sampler::TrackKits,
+    time: &mut time::TimeHost,
+) -> Option<String> {
+    let (mutes, solos) = mix.take_old_pad_mutes()?;
+    let notes = mix.instruments.note_tracks();
+    let tracks = (0..time.track_count().min(128))
+        .filter(|&t| kits.kit_of(t) == Some(0) && notes >> t & 1 == 0)
+        .fold(0u128, |bits, t| bits | 1 << t);
+    let n = time.carry_pad_mutes(tracks, mutes.into(), solos.into());
+    let names = |bits: u16| {
+        (0..16)
+            .filter(|p| bits >> p & 1 == 1)
+            .map(mpfree_time_ui::view::pad_name)
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let mut what = Vec::new();
+    if mutes != 0 {
+        what.push(format!("muted {}", names(mutes)));
+    }
+    if solos != 0 {
+        what.push(format!("soloed {}", names(solos)));
+    }
+    let what = what.join(", ");
+    Some(match n {
+        0 => format!("project: kit 1's pads ({what}) play again: no track plays kit 1"),
+        1 => format!("project: kit 1's pads ({what}) are now its track's own"),
+        n => format!("project: kit 1's pads ({what}) are now each of its {n} tracks' own"),
+    })
 }
 
 /// STEP SEQ: pad `pad` pressed as a step, `velocity` loud as it plays
@@ -3764,7 +3791,13 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
     }
     match load_theme(o) {
         Ok(t) => player.ui.set_theme(t),
-        Err(e) => out.say(&format!("{e}; using the default theme")),
+        Err(e) => {
+            out.say(&format!("{e}; using the default theme"));
+            player.apply(gui::ToUi::ThemeFallbacks {
+                left_out: 0,
+                default_shown: 1,
+            });
+        }
     }
     let (to_ui, from_audio) = sync_channel::<gui::ToUi>(4096);
     let (to_audio, from_ui) = sync_channel::<gui::FromUi>(256);
@@ -3971,7 +4004,7 @@ fn sampler_status(player: &sampler::Player, time: &RenderTime) -> String {
     let c = player.counters();
     format!(
         "sampler: {}, {} steals, {} events dropped ({} hits), {} let-gos kept aside, {} values merged, \
-         at most {} grains ({} skipped)",
+         at most {} grains ({} skipped, {} faded to make room, {} clouds held back)",
         time.describe(),
         c.steals,
         c.dropped_events,
@@ -3979,7 +4012,9 @@ fn sampler_status(player: &sampler::Player, time: &RenderTime) -> String {
         c.late_let_gos,
         c.merged_values,
         c.peak_grains,
-        c.skipped_grains
+        c.skipped_grains,
+        c.faded_grains,
+        c.held_back_clouds
     )
 }
 
@@ -4637,18 +4672,21 @@ fn who_plays(
     names: &[mpfree_seq::Track],
     synth_name: &str,
 ) -> Option<String> {
+    use app::PadFocus;
     let shown = instrument_track(own, tab_who(app, own));
-    let (name, tracks, pads) = match own.held(shown) {
+    let (name, tracks, (every, banks)) = match own.held(shown) {
         // An instrument the host holds: its own track's, then those that
-        // send to it; the pads by their player or by following the track.
+        // send to it; the pads by their choice (a bank's own too) or by
+        // following the track.
         Some(h) => {
             let mut bits = own.senders(shown);
             if shown < instruments::TRACKS {
                 bits |= 1 << shown;
             }
-            let pads = own.pads_play_at() == Some(shown)
-                || (app.pads_focus() == app::PadFocus::Track
-                    && own.owner(app.track()) == Some(shown));
+            let pads = app.pads_who(|f| match f {
+                PadFocus::Instrument(id) => app.instrument_holder(id) == Some(shown),
+                PadFocus::Track => own.owner(app.track()) == Some(shown),
+            });
             (h.name, bits, pads)
         }
         // The shared synth: the tracks on the Synth kit; the pads while
@@ -4657,13 +4695,14 @@ fn who_plays(
             let bits = (0..instruments::TRACKS)
                 .filter(|&t| !own.plays(t) && kits.plays_synth(t))
                 .fold(0u128, |b, t| b | 1 << t);
-            let pads = app.pads_chose_synth()
-                || (app.pads_focus() == app::PadFocus::Track
-                    && !own.plays(app.track())
-                    && kits.plays_synth(app.track()));
+            let pads = app.pads_who(|f| match f {
+                PadFocus::Instrument(_) => f == PadFocus::SYNTH,
+                PadFocus::Track => !own.plays(app.track()) && kits.plays_synth(app.track()),
+            });
             (synth_name, bits, pads)
         }
     };
+    let pads = every || banks != 0;
     let count = tracks.count_ones() as usize + usize::from(pads);
     if count < 2 {
         return None;
@@ -4676,8 +4715,20 @@ fn who_plays(
             .map_or_else(|| format!("Track {}", t + 1), str::to_string)
     };
     let mut who: Vec<String> = Vec::new();
-    if pads {
+    if every {
         who.push("the pads".to_string());
+    } else if banks != 0 {
+        // Only banks with one of their own (step 6c): "pads bank B",
+        // "pads banks B and D", "pads banks A, B and D".
+        let letters: Vec<String> = (0..8)
+            .filter(|&b| banks >> b & 1 == 1)
+            .map(|b| app::bank_letter(b).to_string())
+            .collect();
+        who.push(match letters.split_last() {
+            Some((last, [])) => format!("pads bank {last}"),
+            Some((last, rest)) => format!("pads banks {} and {last}", rest.join(", ")),
+            None => String::new(),
+        });
     }
     let listed: Vec<usize> = (0..instruments::TRACKS)
         .filter(|&t| tracks >> t & 1 == 1)
@@ -7163,7 +7214,7 @@ fn player_session(
     // The themes folder: theme files the user put in files/themes/ (read
     // only), offered in Prefs > Appearance after the built-in themes. Listed
     // before restore so a saved theme file comes back.
-    let (theme_files, notes) = load_theme_files(&store);
+    let (theme_files, notes, themes_left_out) = load_theme_files(&store);
     for line in notes {
         out.say(&line);
     }
@@ -7246,6 +7297,14 @@ fn player_session(
         app.settings.theme = t.clone();
     }
     out.show(gui::ToUi::Settings(app.settings.clone()));
+    // Theme files left out, and a saved theme that couldn't be used (the
+    // default shows): counted on the Debug page.
+    if themes_left_out > 0 || app.theme_fallbacks > 0 {
+        out.show(gui::ToUi::ThemeFallbacks {
+            left_out: themes_left_out,
+            default_shown: app.theme_fallbacks,
+        });
+    }
     // A new project's Perform set, for the Pads tab's Perform view (a
     // project opened brings its own).
     out.show(gui::ToUi::PerformSet {
@@ -7774,8 +7833,9 @@ fn player_session(
                     mute_pressed[pad] = true;
                     let (tap, more) = app.mute_tap();
                     fx.extend(more);
-                    let why = no_mutes(&track_kits, app.track(), app.pad_page());
-                    out.note(&mute_key(tap, pad, why, &mut time, &mut mix));
+                    let why = no_mutes(&track_kits, mix.instruments.note_tracks(), app.track());
+                    let (t, page) = (app.track(), app.pad_page());
+                    out.note(&mute_key(tap, pad, t, page, why, &mut time));
                 }
                 gui::FromUi::Pad { pad, down: true } if pad < 16 && app.pads_transpose() => {
                     mute_pressed[pad] = true;
@@ -8249,6 +8309,12 @@ fn player_session(
                         }
                     }
                     kit_to = Some(track_kits.entry(app.track()));
+                    // A project saved before pad mutes were a track's had
+                    // kit 1's A1-A16 muted in the mixer: each track that
+                    // plays kit 1 takes them (step 10).
+                    if let Some(line) = carry_pad_mutes(&mut mix, &track_kits, &mut time) {
+                        out.note(&line);
+                    }
                     // The project's list of instruments; the old one goes
                     // back in the box, to be freed on the screen thread.
                     std::mem::swap(&mut listed, &mut o.instrument_list);
@@ -9481,8 +9547,9 @@ fn player_session(
                     mute_pressed[pad as usize] = true;
                     let (tap, more) = app.mute_tap();
                     fx.extend(more);
-                    let why = no_mutes(&track_kits, app.track(), app.pad_page());
-                    out.note(&mute_key(tap, pad as usize, why, &mut time, &mut mix));
+                    let why = no_mutes(&track_kits, mix.instruments.note_tracks(), app.track());
+                    let (t, page) = (app.track(), app.pad_page());
+                    out.note(&mute_key(tap, pad as usize, t, page, why, &mut time));
                 }
                 Some(ControlEvent::PadDown { pad, .. })
                     if (pad as usize) < 16 && app.pads_transpose() =>
@@ -11095,8 +11162,9 @@ fn player_session(
             let track = |t: usize| time.mute_light(first + t);
             let blink = ((t * 4.0) as u64).is_multiple_of(2);
             // Only kit 1's pads 1-16 have strips, so mutes.
-            let other = other_kit(&track_kits, app.track()).is_some() || app.pad_page() != 0;
-            let pad = |p: usize| pad_light(&mix, &time, p, other);
+            let off = no_mutes(&track_kits, mix.instruments.note_tracks(), app.track()).is_some();
+            let (t, page) = (app.track(), app.pad_page());
+            let pad = |p: usize| pad_light(&time, t, page * 16 + p, off);
             let want = mute_colours(
                 keys,
                 sound_colours(player.page_sounds(kit, app.pad_page()), kit),
@@ -11373,7 +11441,7 @@ fn player_session(
         if !defaults_sent && mix.mixer.edits_pending() == 0 && mix.inserts_building() == 0 {
             let defaults = project::Defaults {
                 tempo: app.settings.bpm,
-                mixer: project::mixer_text(&mix.mixer, mix.pad_mutes(), mix.pad_solos()),
+                mixer: project::mixer_text(&mix.mixer, mix.pad_mutes()),
                 modu: mix.modu.save(),
                 synth: project::synth_text(&app.synth_settings(), &synth.sounds()),
             };
@@ -11496,7 +11564,6 @@ fn player_session(
         }
         // The kit's pads whose mute or solo came due land from the next
         // period, which holds their line.
-        land_pads(&mut time, &mut mix);
         // MIDI out's period: the tracks' controllers, bend and pressure the
         // mod engine moved in the mixer's (a step's lock, a lane, a macro,
         // a learned knob) join this period's notes on their frames, a
@@ -11891,6 +11958,9 @@ fn player_session(
                         peak_grains: c.peak_grains,
                         window_waits: c.window_waits,
                         track_files: tracks.stream_numbers(),
+                        faded_grains: c.faded_grains,
+                        held_back_clouds: c.held_back_clouds,
+                        crowded_s: c.crowded_ms as f32 / 1000.0,
                     }
                 },
             }));
@@ -12222,6 +12292,12 @@ fn open_acva(out: &mut Out, periods: u32) -> Result<alsa::Pcm, String> {
     let path = format!("/dev/snd/pcmC{card}D0p");
     out.say(&format!("opening {path} ({AUDIO_CARD_ID})"));
     let pcm = alsa::Pcm::open_playback(&path).map_err(|e| format!("{path}: {e}"))?;
+    // DSP quality step 0.3: on a stick that starts the pad player at power-on
+    // it holds this device, so inventory sees it busy; ask the same read-only
+    // questions here, on the device just opened, before the stream is set up.
+    for line in rate_probe::probe(&pcm) {
+        out.say(&format!("rate probe {path}: {line}"));
+    }
     let mut hw = alsa::HwParams::stock_playback(periods);
     if let Err(e) = pcm.hw_params(&mut hw) {
         out.say(&format!("the stock stream settings were refused: {e}"));
@@ -13751,7 +13827,43 @@ mod tests {
         );
     }
 
-    /// TRACK MUTE's keys mute a track, or a pad in the kit, and the pads
+    /// A project saved before step 10 kept kit 1's pad mutes and solos in
+    /// the mixer: as it opens, each track playing kit 1 takes them as its
+    /// own, a track on another kit or playing notes doesn't, and the log
+    /// says so. Taken once; a new project has none to carry.
+    #[test]
+    fn an_old_projects_kit_1_pad_mutes_go_to_each_track_on_kit_1() {
+        let mut time = time::TimeHost::new(RATE, 120.0).unwrap();
+        let mut mix = mixing::MixHost::new(RATE, -6.0, 0.0);
+        let text = project::mixer_text(&mix.mixer, 0).replace(
+            &format!("{}\n", project::MIXER_FORMAT),
+            &format!("{}\npadmutes 5\npadsolos 16\n", project::MIXER_FORMAT),
+        );
+        let load = project::mixer_load(&text, None, RATE, &plugins::Plugins::none()).unwrap();
+        mix.open(Box::new(load));
+        // Tracks 1 and 3 on kit 1, track 2 on kit 2, track 4 the synth.
+        let mut kits = sampler::TrackKits::new(2);
+        kits.set(1, 1);
+        kits.set(3, kits.synth());
+        let tracks = time.track_count();
+        let line = carry_pad_mutes(&mut mix, &kits, &mut time).unwrap();
+        let kit_1 = (0..tracks).filter(|&t| t != 1 && t != 3).count();
+        assert_eq!(
+            line,
+            format!("project: kit 1's pads (muted A1 A3, soloed A5) are now each of its {kit_1} tracks' own")
+        );
+        for t in [0, 2] {
+            assert_eq!(time.pad_mutes(t), Some((5, 16)), "track {}", t + 1);
+        }
+        for t in [1, 3] {
+            assert_eq!(time.pad_mutes(t), Some((0, 0)), "track {}", t + 1);
+        }
+        assert_eq!(mix.pad_mutes(), 0, "no channel muted");
+        assert_eq!(carry_pad_mutes(&mut mix, &kits, &mut time), None, "once");
+    }
+
+    /// TRACK MUTE's keys mute a track, or a pad of the track's kit on any
+    /// bank (step 10: the track's alone), and the pads
     /// show it: green playing (dim with nothing launched), red muted or
     /// silent by solo, blue soloed, amber blinking while waiting, dark
     /// where there is nothing.
@@ -13759,7 +13871,6 @@ mod tests {
     fn the_mute_keys_mute_tracks_or_pads_and_light_what_plays() {
         use app::{MuteKeys, MuteTap};
         let mut time = time::TimeHost::new(RATE, 120.0).unwrap();
-        let mut mix = mixing::MixHost::new(RATE, -6.0, -6.0);
         let tap = |keys, bank| MuteTap {
             keys,
             bank,
@@ -13767,24 +13878,24 @@ mod tests {
             solo: false,
         };
         assert_eq!(
-            mute_key(tap(MuteKeys::Tracks, 0), 2, None, &mut time, &mut mix),
+            mute_key(tap(MuteKeys::Tracks, 0), 2, 0, 0, None, &mut time),
             "track mute: Track 3 muted"
         );
         assert_eq!(time.muted(2), Some(true));
         assert_eq!(
-            mute_key(tap(MuteKeys::Tracks, 0), 9, None, &mut time, &mut mix),
+            mute_key(tap(MuteKeys::Tracks, 0), 9, 0, 0, None, &mut time),
             "track mute: no track 10"
         );
         // Bank B: pad 3 is track 19, once there is one.
         assert_eq!(
-            mute_key(tap(MuteKeys::Tracks, 1), 2, None, &mut time, &mut mix),
+            mute_key(tap(MuteKeys::Tracks, 1), 2, 0, 0, None, &mut time),
             "track mute: no track 19"
         );
         while time.track_count() < 24 {
             time.act(TimeAction::AddTrack).unwrap();
         }
         assert_eq!(
-            mute_key(tap(MuteKeys::Tracks, 1), 2, None, &mut time, &mut mix),
+            mute_key(tap(MuteKeys::Tracks, 1), 2, 0, 0, None, &mut time),
             "track mute: Track 19 muted"
         );
         assert_eq!(time.muted(18), Some(true));
@@ -13795,14 +13906,14 @@ mod tests {
             ..tap(MuteKeys::Tracks, 0)
         };
         assert_eq!(
-            mute_key(solo, 0, None, &mut time, &mut mix),
+            mute_key(solo, 0, 0, 0, None, &mut time),
             "track mute: Track 1 solo"
         );
         let l = time.mute_light(1).unwrap();
         assert!(l.silent && !l.solo && !l.waiting);
         assert!(time.mute_light(0).unwrap().solo);
         assert_eq!(
-            mute_key(solo, 0, None, &mut time, &mut mix),
+            mute_key(solo, 0, 0, 0, None, &mut time),
             "track mute: Track 1 solo off"
         );
         assert!(!time.mute_light(1).unwrap().silent);
@@ -13812,65 +13923,58 @@ mod tests {
             ..tap(MuteKeys::Tracks, 0)
         };
         assert_eq!(
-            mute_key(wait, 2, None, &mut time, &mut mix),
+            mute_key(wait, 2, 0, 0, None, &mut time),
             "track mute: Track 3 plays"
         );
+        // SHIFT + TRACK MUTE: the pads mute the selected track's pads, on
+        // the bank PAD BANK shows (page 1 is bank B: pad 5 is B5).
         assert_eq!(
-            mute_key(tap(MuteKeys::Pads, 0), 4, None, &mut time, &mut mix),
-            "pad mute: pad 5 muted"
+            mute_key(tap(MuteKeys::Pads, 0), 4, 1, 1, None, &mut time),
+            "pad mute: Track 2 B5 muted"
         );
-        assert_eq!(mix.pad_mutes(), 1 << 4);
-        assert_eq!(mix.play_levels().pad_mutes, 1 << 4, "the speakers show it");
+        assert_eq!(time.pad_mutes(1), Some((1 << 20, 0)));
+        assert_eq!(time.pad_mutes(0), Some((0, 0)), "track 1's B5 plays");
+        assert!(pad_light(&time, 1, 20, false).silent, "its light");
+        assert!(!pad_light(&time, 0, 20, false).silent);
         assert_eq!(
-            mute_key(tap(MuteKeys::Pads, 0), 4, None, &mut time, &mut mix),
-            "pad mute: pad 5 plays"
+            mute_key(tap(MuteKeys::Pads, 0), 4, 1, 1, None, &mut time),
+            "pad mute: Track 2 B5 plays"
         );
-        assert_eq!(mix.pad_mutes(), 0);
-        // TRACK MUTE held over the kit's pads: a pad solos (at once, as
-        // the transport is stopped), and again lets go of it.
+        assert_eq!(time.pad_mutes(1), Some((0, 0)));
+        // TRACK MUTE held over the pads: a pad solos (at once, as the
+        // transport is stopped), and again lets go of it.
         let solo = MuteTap {
             solo: true,
             ..tap(MuteKeys::Pads, 0)
         };
         assert_eq!(
-            mute_key(solo, 2, None, &mut time, &mut mix),
-            "pad mute: pad 3 solo"
+            mute_key(solo, 2, 0, 7, None, &mut time),
+            "pad mute: Track 1 H3 solo"
         );
-        assert_eq!((mix.pad_solos(), mix.solo_silent()), (1 << 2, !(1 << 2)));
+        assert_eq!(time.pad_mutes(0), Some((0, 1 << 114)));
+        assert!(pad_light(&time, 0, 0, false).silent, "silent by the solo");
         assert_eq!(
-            mute_key(solo, 2, None, &mut time, &mut mix),
-            "pad mute: pad 3 solo off"
+            mute_key(solo, 2, 0, 7, None, &mut time),
+            "pad mute: Track 1 H3 solo off"
         );
-        assert_eq!(mix.pad_solos(), 0);
-        // A track on kit 2: its pads share the track's channel, so a pad's
-        // key mutes nothing of kit 1's.
+        assert_eq!(time.pad_mutes(0), Some((0, 0)));
+        // Any kit's pads mute (kit 2 here); a track playing notes has no
+        // pads of a kit to mute, and says so.
         let mut kits = sampler::TrackKits::new(2);
         kits.set(0, 1);
-        assert_eq!(
-            mute_key(
-                tap(MuteKeys::Pads, 0),
-                4,
-                no_mutes(&kits, 0, 0),
-                &mut time,
-                &mut mix
-            ),
-            "pad mute: Kit 2's pads play through their track's channel: mute the track"
+        assert_eq!(no_mutes(&kits, 0, 0), None, "kit 2");
+        assert!(
+            no_mutes(&kits, 1, 0).is_some(),
+            "its instrument plays notes"
         );
-        assert_eq!(mix.pad_mutes(), 0);
-        // Kit 1 on PAD BANK B: pads B1-B16 have no strips yet.
-        kits.set(0, 0);
-        assert_eq!(no_mutes(&kits, 0, 0), None);
+        kits.set(0, kits.synth());
+        let why = no_mutes(&kits, 0, 0);
+        assert!(why.is_some(), "the synth plays notes");
         assert_eq!(
-            mute_key(
-                tap(MuteKeys::Pads, 0),
-                4,
-                no_mutes(&kits, 0, 1),
-                &mut time,
-                &mut mix
-            ),
-            "pad mute: pads B1-B16 have no mixer strips of their own yet (A1-A16 have): mute the track"
+            mute_key(tap(MuteKeys::Pads, 0), 4, 0, 0, why.clone(), &mut time),
+            why.unwrap()
         );
-        assert_eq!(mix.pad_mutes(), 0);
+        assert_eq!(time.pad_mutes(0), Some((0, 0)));
 
         // MAIN held: the picked track white, a track playing bright green,
         // the others dim green, no track dark.
@@ -14015,9 +14119,12 @@ mod tests {
         .unwrap();
         fs::write(t.join("plain.theme"), "base = console\n").unwrap();
         fs::write(t.join("broken.theme"), "accent = blue\n").unwrap();
+        // Text the colour of the panels: no one could read it.
+        fs::write(t.join("fog.theme"), "text = #151922\n").unwrap();
         fs::write(t.join("notes.txt"), "not a theme\n").unwrap();
         let store = mpfree_store::Store::at(&d, |_| {});
-        let (found, notes) = load_theme_files(&store);
+        let (found, notes, left_out) = load_theme_files(&store);
+        assert_eq!(left_out, 2);
         let names: Vec<(&str, &str)> = found
             .iter()
             .map(|(f, t)| (f.as_str(), t.name.as_str()))
@@ -14031,6 +14138,12 @@ mod tests {
             notes
                 .iter()
                 .any(|n| n.starts_with("themes: broken.theme left out")),
+            "{notes:?}"
+        );
+        assert!(
+            notes.iter().any(
+                |n| n.starts_with("themes: fog.theme left out: nothing could be read: text on")
+            ),
             "{notes:?}"
         );
         assert!(

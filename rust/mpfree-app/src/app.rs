@@ -789,10 +789,6 @@ pub struct Settings {
     pub export_rate: u32,
 }
 
-/// The note editor's Timing Correct button (`TC sel.` / `TC all`), which
-/// TC presses while the editor shows.
-pub const TC_BUTTON: usize = 7;
-
 /// Half Level's velocity until FULL LEVEL held and a pad hit set another.
 pub const HALF_LEVEL: u8 = 64;
 
@@ -859,8 +855,9 @@ impl Default for Settings {
 
 /// The themes Prefs > Appearance offers: the built-in name and its row.
 /// The same names, in the same order, as `mpfree_ui::theme::BUILTIN`.
-pub const THEMES: [(&str, &str); 4] = [
+pub const THEMES: [(&str, &str); 5] = [
     ("default", "Default"),
+    ("light", "Light"),
     ("console", "Console"),
     ("synthwave", "Synthwave"),
     ("spaceship", "Spaceship"),
@@ -1316,6 +1313,10 @@ pub enum Effect {
         delta: i32,
         scroll: bool,
     },
+    /// TC with the note editor open: the screen opens its Edit options'
+    /// drawer on Timing Correct's settings, or corrects the notes when the
+    /// drawer shows already (piano roll plan 1A.1).
+    EditTc,
     /// Keep this library text in the store as arp/patterns.txt (the store's
     /// own thread writes it).
     SavePatterns(String),
@@ -1557,6 +1558,10 @@ pub struct App {
     /// `--data`): the file name, which is what `settings.theme` holds, and
     /// the theme's own name for the Appearance row. After [`THEMES`].
     pub theme_files: Vec<(String, String)>,
+    /// Starts where the saved theme couldn't be used (its file gone, or
+    /// left out) and the default theme showed: a fallback, logged by
+    /// [`App::restore`] and counted on the Debug page.
+    pub theme_fallbacks: u64,
     /// Tuning files found in the tunings folder at start (`files/tunings/`
     /// in `--data`), in the synth's order ([`crate::synth::Synth::tuning_files`]):
     /// each one's name and whether its keyboard map sets the root and
@@ -1880,6 +1885,7 @@ impl App {
             menu_editing: false,
             page_editing: false,
             theme_files: Vec::new(),
+            theme_fallbacks: 0,
             tuning_files: Vec::new(),
             sound_cores_now: SoundCores::Shared,
             loop_memory_now: LoopMemory::default(),
@@ -2871,9 +2877,10 @@ impl App {
     }
 
     /// TC (the MPC's Timing Correct): the note editor on the armed track's
-    /// clip, on the Sequencer tab, whose first rows are Timing Correct's
-    /// settings; pressed again with the editor showing, it corrects (TC
-    /// sel. or TC all), one take that UNDO takes back. SHIFT + TC (the
+    /// clip, on the Sequencer tab, with its Edit options' drawer open on
+    /// Timing Correct's settings; pressed again with the drawer showing, it
+    /// corrects (the picked notes, or all), one take that UNDO takes back
+    /// (the screen knows the drawer: `Effect::EditTc`). SHIFT + TC (the
     /// MPC's TC On/Off): the armed track's Quantise while recording, off
     /// or back on.
     fn tc_button(&mut self, shift: bool) -> Vec<Effect> {
@@ -2882,14 +2889,13 @@ impl App {
             return vec![Effect::RecordQuantiseToggle];
         }
         if self.view == View::Sequencer && self.notes_open {
-            return vec![Effect::Time(TimeAction::Edit(EditAction::Button(
-                TC_BUTTON,
-            )))];
+            return vec![Effect::EditTc];
         }
         let mut fx = self.go(View::Sequencer);
         if !self.notes_open {
             fx.push(Effect::Time(TimeAction::Edit(EditAction::Open)));
         }
+        fx.push(Effect::EditTc);
         fx.push(Effect::Note(
             "TC: the note editor, Timing Correct's settings first   ·   TC again: correct the notes"
                 .to_string(),
@@ -3665,7 +3671,7 @@ impl App {
                     MuteKeys::Off => "TRACK MUTE: the pads play again".to_string(),
                     MuteKeys::Tracks => self.mute_bank_line(),
                     MuteKeys::Pads => {
-                        "SHIFT + TRACK MUTE: each pad mutes itself in the kit".to_string()
+                        "SHIFT + TRACK MUTE: each pad mutes itself on this track".to_string()
                     }
                 }),
                 // The PAD BANK lights show the mute bank, or the kit's again.
@@ -4847,9 +4853,9 @@ impl App {
             Item::Appearance => vec![
                 "The theme: the colours and the panels' style.",
                 "The arrows, - / + or SHIFT + wheel step through",
-                "Default, Console, Synthwave and Spaceship; the",
-                "screen changes at once. The layout and the font",
-                "stay the same. It is kept for the next start.",
+                "Default, Light, Console, Synthwave and Spaceship;",
+                "the screen changes at once. The layout and the",
+                "font stay the same. It is kept for the next start.",
             ],
             Item::TouchSection => vec![
                 "The touch screen's settings: screen pad",
@@ -6077,13 +6083,12 @@ mod tests {
         let fx = press(&mut app, button::TC);
         assert!(fx.contains(&Effect::Show(View::Sequencer)), "{fx:?}");
         assert!(fx.contains(&Effect::Time(TimeAction::Edit(EditAction::Open))));
-        app.set_notes_open(true);
-        assert_eq!(
-            press(&mut app, button::TC),
-            [Effect::Time(TimeAction::Edit(EditAction::Button(
-                TC_BUTTON
-            )))]
+        assert!(
+            fx.contains(&Effect::EditTc),
+            "the drawer opens on TC's settings"
         );
+        app.set_notes_open(true);
+        assert_eq!(press(&mut app, button::TC), [Effect::EditTc]);
         assert_eq!(
             held(&mut app, button::SHIFT, |a| press(a, button::TC)),
             [Effect::RecordQuantiseToggle]
@@ -6449,10 +6454,11 @@ mod tests {
         let fx = app.step_item(at, 1);
         assert!(
             fx.iter()
-                .any(|e| matches!(e, Effect::Settings(s) if s.theme == "console")),
+                .any(|e| matches!(e, Effect::Settings(s) if s.theme == "light")),
             "{fx:?}"
         );
-        assert_eq!(value(&fx), "Console");
+        assert_eq!(value(&fx), "Light");
+        assert_eq!(value(&app.step_item(at, 1)), "Console");
         app.step_item(at, 1);
         assert_eq!(value(&app.step_item(at, 1)), "Spaceship");
         // It stops at the ends.
@@ -6569,14 +6575,14 @@ mod tests {
         let fx = press(&mut app, PUSH);
         assert_eq!((menu(&fx).selected, menu(&fx).editing), (at, true));
         let fx = app.wheel(1);
-        assert_eq!(menu(&fx).rows[at].1, "Console");
+        assert_eq!(menu(&fx).rows[at].1, "Light");
         assert_eq!(menu(&fx).selected, at, "the row stays picked");
         let fx = app.wheel(1);
-        assert_eq!(menu(&fx).rows[at].1, "Synthwave");
+        assert_eq!(menu(&fx).rows[at].1, "Console");
         // Push again: set, and the wheel moves between rows again.
         let fx = press(&mut app, PUSH);
         assert!(!menu(&fx).editing);
-        assert_eq!(app.settings.theme, "synthwave");
+        assert_eq!(app.settings.theme, "console");
         let fx = app.wheel(-1);
         assert_eq!((menu(&fx).selected, menu(&fx).editing), (at - 1, false));
         // A tap on a row, or leaving Prefs, closes an open row.
@@ -6614,7 +6620,7 @@ mod tests {
             Some(Effect::Menu(m)) => m.rows[at].1.clone(),
             _ => panic!("{fx:?}"),
         };
-        for _ in 0..3 {
+        for _ in 0..4 {
             app.step_item(at, 1);
         }
         // Past Spaceship: the theme file, by its own name, then the end.
@@ -6628,14 +6634,19 @@ mod tests {
         next.theme_files = app.theme_files.clone();
         next.restore(&kept, &mpfree_store::Settings::default());
         assert_eq!(next.settings.theme, "sunrise.theme");
-        // Gone from the folder: the default theme, and the log says so.
+        assert_eq!(next.theme_fallbacks, 0);
+        // Gone from the folder (or left out as unreadable): the default
+        // theme, the log says so, and the fallback is counted.
         let mut gone = App::new(44_100, false);
         let notes = gone.restore(&kept, &mpfree_store::Settings::default());
         assert_eq!(gone.settings.theme, "default");
         assert!(
-            notes.iter().any(|n| n.contains("theme = sunrise.theme")),
+            notes.iter().any(|n| n
+                .starts_with("theme: the saved theme sunrise.theme can't be used now")
+                && n.ends_with("so the default theme shows")),
             "{notes:?}"
         );
+        assert_eq!(gone.theme_fallbacks, 1);
     }
 
     #[test]

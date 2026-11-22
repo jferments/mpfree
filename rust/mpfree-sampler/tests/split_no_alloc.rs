@@ -304,8 +304,8 @@ fn a_split_engine_allocates_nothing_on_either_core() {
     );
     assert!(st.lane_parts > 1000, "{st:?}");
     assert!(
-        st.skipped_grains > 0,
-        "the grain budget never filled: {st:?}"
+        st.skipped_grains + st.crowded_frames > 0,
+        "the grain budget never filled or crowded: {st:?}"
     );
     assert!(st.steals > 0, "no voice was stolen: {st:?}");
     assert!(l.iter().chain(&r).all(|x| x.is_finite()));

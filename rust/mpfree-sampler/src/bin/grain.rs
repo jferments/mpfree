@@ -21,6 +21,13 @@
 //!   while the input carries on; at 60 % the input stops and the frozen
 //!   cloud plays on alone; at 85 % freeze is let go and the cloud fades as
 //!   the silence reaches it.
+//! - `crowded.wav`: 64 held grain pads over the input, one starting every
+//!   20 ms, under the master granular effect, far more grains than the
+//!   256 the sampler shares out; at 40 %, 60 % and 80 % a new hit (a short
+//!   cloud) over them. The report says how long each new hit took to make
+//!   its first grain and the longest any held cloud went with no grain
+//!   playing (the sampler plan's step 9, grains shared by musical
+//!   priority).
 #![forbid(unsafe_code)]
 
 use std::error::Error;
@@ -32,7 +39,7 @@ use std::time::Instant;
 use mpfree_grain::{Budget, Clip, GrainVoice, LiveBuffer, Params, TempoSync, Window};
 use mpfree_sampler::chop::demo_beat;
 use mpfree_sampler::dsp::Ahdsr;
-use mpfree_sampler::engine::{Engine, EngineView, Event};
+use mpfree_sampler::engine::{Engine, EngineView, Event, GrainView};
 use mpfree_sampler::model::{
     GrainParams, Layer, MasterFx, Pad, PlayMode, PressureRoute, PressureTarget, Project, Region,
     Source,
@@ -145,6 +152,8 @@ struct Rendered {
     skipped: u64,
     peak_grains: usize,
     millis: f64,
+    /// Lines for the report after the table.
+    notes: Vec<String>,
 }
 
 fn render(
@@ -184,6 +193,7 @@ fn render(
         skipped: s.skipped,
         peak_grains: s.peak_active,
         millis,
+        notes: Vec::new(),
     }
 }
 
@@ -241,6 +251,7 @@ fn render_live(data: &[f32], rate: u32, frames: usize, seed: u64) -> Rendered {
         skipped: s.skipped,
         peak_grains: s.peak_active,
         millis,
+        notes: Vec::new(),
     }
 }
 
@@ -317,6 +328,7 @@ fn render_pressure(data: &[f32], rate: u32, frames: usize) -> Result<Rendered, B
         skipped: e.stats().skipped_grains,
         peak_grains,
         millis,
+        notes: Vec::new(),
     })
 }
 
@@ -385,6 +397,165 @@ fn render_master(data: &[f32], rate: u32, frames: usize) -> Result<Rendered, Box
         skipped: e.stats().skipped_grains,
         peak_grains,
         millis,
+        notes: Vec::new(),
+    })
+}
+
+/// Held clouds in [`render_crowded`].
+const CROWD: usize = 64;
+/// The block [`render_crowded`] renders and measures in: 32 frames, under
+/// a millisecond.
+const CROWD_BLOCK: usize = 32;
+
+/// 64 held grain pads over the input and a new hit over them three times,
+/// under the master granular effect (see the list at the top), measuring
+/// each hit's attack and the held clouds' gaps.
+fn render_crowded(data: &[f32], rate: u32, frames: usize) -> Result<Rendered, Box<dyn Error>> {
+    let source = Source::new("input", rate, 2, data.to_vec())?;
+    let mut project = Project::new();
+    project.add_source(source.clone());
+    for i in 0..CROWD {
+        let mut r = Region::whole(&source);
+        r.mode = PlayMode::Granular;
+        r.grain = GrainParams {
+            position: i as f32 / CROWD as f32,
+            spray: 0.1,
+            size_ms: 400.0,
+            density: 60.0,
+            spread: 1.0,
+            ..GrainParams::default()
+        };
+        let mut pad = Pad::new("cloud", Layer::new(r));
+        // Together about as loud as one pad.
+        pad.level_db = -18.0;
+        project.set_pad(i, Some(pad), None)?;
+    }
+    let mut r = Region::whole(&source);
+    r.mode = PlayMode::Granular;
+    r.grain = GrainParams {
+        position: 0.9,
+        spray: 0.02,
+        size_ms: 60.0,
+        density: 60.0,
+        ..GrainParams::default()
+    };
+    let mut hit = Pad::new("hit", Layer::new(r));
+    hit.amp = Ahdsr {
+        release_ms: 120.0,
+        ..Ahdsr::OPEN
+    };
+    project.set_pad(CROWD, Some(hit), None)?;
+    project.set_master(
+        MasterFx {
+            mix: 0.3,
+            grain: GrainParams {
+                position: 0.8,
+                spray: 0.15,
+                size_ms: 200.0,
+                density: 40.0,
+                spread: 0.8,
+                ..GrainParams::default()
+            },
+        },
+        None,
+    )?;
+    let mut e = Engine::new(rate, CROWD + 8);
+    e.set_view(EngineView::build(&project, rate));
+    e.set_master_fx(Engine::make_master_fx(rate));
+    let stagger = rate as usize / 50;
+    let hits = [frames * 4 / 10, frames * 6 / 10, frames * 8 / 10];
+    let hit_len = rate as usize / 4;
+    let mut views = [GrainView::default(); 64];
+    // Each hit's frames to its first grain; each held cloud's current and
+    // longest run with no grain, once it has made one.
+    let mut attack: [Option<usize>; 3] = [None; 3];
+    let mut quiet = [0usize; CROWD];
+    let mut longest = [0usize; CROWD];
+    let mut sounded = [false; CROWD];
+    let (mut left, mut right) = (vec![0.0; frames], vec![0.0; frames]);
+    let mut peak_grains = 0;
+    let t = Instant::now();
+    let mut at = 0;
+    while at < frames {
+        let n = CROWD_BLOCK.min(frames - at);
+        let span = at..at + n;
+        for i in (0..CROWD).filter(|i| span.contains(&(i * stagger))) {
+            e.schedule(
+                (i * stagger - at) as u32,
+                Event::NoteOn {
+                    pad: i as u8,
+                    velocity: 100,
+                },
+            );
+        }
+        for &h in &hits {
+            let pad = CROWD as u8;
+            if span.contains(&h) {
+                e.schedule((h - at) as u32, Event::NoteOn { pad, velocity: 120 });
+            }
+            if span.contains(&(h + hit_len)) {
+                e.schedule((h + hit_len - at) as u32, Event::NoteOff { pad });
+            }
+        }
+        e.render(&mut left[at..at + n], &mut right[at..at + n]);
+        peak_grains = peak_grains.max(e.live_grains());
+        at += n;
+        for (k, &h) in hits.iter().enumerate() {
+            if at > h && attack[k].is_none() && e.grains_of(CROWD as u8, 0, &mut views) > 0 {
+                attack[k] = Some(at - h);
+            }
+        }
+        for i in 0..CROWD {
+            if e.grains_of(i as u8, 0, &mut views) > 0 {
+                sounded[i] = true;
+                quiet[i] = 0;
+            } else if sounded[i] {
+                quiet[i] += n;
+                longest[i] = longest[i].max(quiet[i]);
+            }
+        }
+    }
+    let millis = t.elapsed().as_secs_f64() * 1000.0;
+    let ms = |f: usize| 1000.0 * f as f64 / f64::from(rate);
+    let st = e.stats();
+    let mut notes = Vec::new();
+    for (k, a) in attack.iter().enumerate() {
+        notes.push(match a {
+            Some(f) => format!(
+                "crowded: new hit {} made its first grain within {:.1} ms",
+                k + 1,
+                ms(*f)
+            ),
+            None => format!("crowded: new hit {} made no grain", k + 1),
+        });
+    }
+    // Clouds silent at the end for over a second were held back for good:
+    // past the protected shares, as meant. The others should not gap.
+    let stopped = |i: usize| ms(quiet[i]) > 1000.0;
+    let held_back = (0..CROWD).filter(|&i| stopped(i)).count();
+    let playing = (0..CROWD).filter(|&i| !stopped(i));
+    let worst = playing.clone().map(|i| longest[i]).max().unwrap_or(0);
+    let gapped = playing.filter(|&i| ms(longest[i]) > 50.0).count();
+    notes.push(format!(
+        "crowded: {held_back} of {CROWD} clouds held back (no grain for the last second or more); \
+         the others' longest gap with no grain playing: {:.1} ms, {gapped} of them over 50 ms",
+        ms(worst)
+    ));
+    notes.push(format!(
+        "crowded: {} grains faded to make room, {} times a cloud was held back, shared out for {:.2} s",
+        st.faded_grains,
+        st.held_back_clouds,
+        st.crowded_frames as f64 / f64::from(rate)
+    ));
+    Ok(Rendered {
+        name: "crowded",
+        left,
+        right,
+        spawned: None,
+        skipped: st.skipped_grains,
+        peak_grains,
+        millis,
+        notes,
     })
 }
 
@@ -492,6 +663,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     outs.push(render_live(&data, rate, frames, o.seed));
     outs.push(render_pressure(&data, rate, frames)?);
     outs.push(render_master(&data, rate, frames)?);
+    outs.push(render_crowded(&data, rate, frames)?);
 
     let mut rep = String::new();
     writeln!(rep, "mpfree-grain report")?;
@@ -543,11 +715,14 @@ fn run() -> Result<(), Box<dyn Error>> {
         )?;
     }
     writeln!(rep)?;
+    for line in outs.iter().flat_map(|r| &r.notes) {
+        writeln!(rep, "{line}")?;
+    }
     writeln!(rep, "level is the peak before any gain change; renders over -1 dBFS were turned down to -1 dBFS.")?;
     writeln!(rep, "x realtime is how many times faster than real time this workstation rendered it (one voice).")?;
     writeln!(
         rep,
-        "pressure-pad plays through the sampler engine, which does not count grains started (-)."
+        "pressure-pad and crowded play through the sampler engine, which does not count grains started (-)."
     )?;
     writeln!(
         rep,

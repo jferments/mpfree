@@ -5,7 +5,7 @@ checked: 2026-11-22 d9a2b851
 
 # The composer and the Musical Context
 
-**Status:** phase 0A (the musical model), 2026-11-22. The code is [`rust/mpfree-context`](../../../rust/mpfree-context) and [`rust/mpfree-compose`](../../../rust/mpfree-compose). Nothing is on screen, nothing runs on the MPC, and nothing else in mpfree uses these crates yet. The owner approved the design on 2026-11-22 with Continue as the first tool.
+**Status:** phases 0A (the musical model) and 0B (the check through real playback), and phase 0C's listener, 2026-11-22. The code is [`rust/mpfree-context`](../../../rust/mpfree-context) and [`rust/mpfree-compose`](../../../rust/mpfree-compose). Nothing is on screen, nothing runs on the MPC, and nothing else in mpfree uses these crates yet. The owner approved the design on 2026-11-22 with Continue as the first tool.
 
 ## What it is for
 
@@ -23,8 +23,8 @@ There is no trained model: the engine is procedural. It reads what was played (k
 | Phase | What | State |
 |---|---|---|
 | 0A | The musical model: the Musical Context, phrases of events with roles and sources, decisions kept apart from notes, stable dice, the re-fit table, the timing contract, rule kinds, style components, instrument profiles | Built (this page) |
-| 0B | An integration check, developer only: one simple phrase played in place of a clip through the real play view, kept and undone; the preview states tried against the real app | Next |
-| 0C | The full engine: listening, plan, harmony, phrase, playing, groove; three styles; two-sided Try again; the reading budget; listening tests against simpler baselines; MPC timings | |
+| 0B | An integration check, developer only: one simple phrase played in place of a clip through the real play view, kept and undone; clip revisions; the preview states tried against the real play view, player and take undo | Built (this page) |
+| 0C | The full engine: listening, plan, harmony, phrase, playing, groove; three styles; two-sided Try again; the reading budget; listening tests against simpler baselines; MPC timings | Listening built; the rest next |
 | 1 | Continue, with the preview states and an all-or-nothing Keep | |
 | 2 | Add a part, with one harmony answer for rows and the song | |
 | 3 | Improvise and Answer, with record sources, chord settle and note owners | |
@@ -43,13 +43,16 @@ Both are plain data and functions. Nothing here runs on the audio thread; from p
 - **Chords** (`chord.rs`): 12 qualities on 12 roots. A `ChordTimeline` is spans with their own start and length from tick 0, with no gaps; a span may last a beat or the whole clip (drones), and may say "no clear chord". Each span says whether it was heard, suggested (shown dashed) or set by the musician.
 - **The harmony question** (`harmony.rs`): every part asks "what is the harmony here?" through the `Harmony` trait. A `Resolver` answers from the first source that applies: the chord held (live tools), then in song mode the song section's chords, on the clip grid the row's Harmony line, then suggested chords, else no clear chord. A row's chords run for the row's length (as `mpfree_seq::scene_length` defines it) and a line shorter than the row repeats; `row_tick` places a shorter clip's notes on each pass, so a two-bar bass in an eight-bar row meets four stretches of chords.
 - **Groove** (`groove.rs`): played drums as residual timing. See the timing contract below.
-- **The context** (`context.rs`): the key, chords, groove, the pitch classes played, motifs (their place only, until 0C), and every clip read with its `Revision`, so a stale reading is never used (`is_stale`). `ReadBudget` caps what a reading reads. How a revision is made (a hash of what the clip plays, or a counter kept with the clip) is phase 0B's call; the context only compares them.
+- **The listener** (`listen.rs`, phase 0C): notes read as a key and a chord timeline, with the second prototype's numbers. Every note is weighted by how long it sounds and where it starts (half as much again on a bar line, a fifth more on a beat) and compared with the six modes in all 12 keys; the home note is picked by the cues a player uses (the last note, the first strong note, the lowest and longest, each bar's first note, a note held at a bar's end), the evidence is capped at 24 weighted notes, and a mode prior favours major and minor. Chords are a semi-Markov search over beats: every span from one beat to the whole of what was read, against 144 chord shapes and a 145th, no chord, scored by the notes that fit, the notes that don't, the chord notes missing and the lowest note on the root, plus how long chords usually last. A beat's rest stays inside its chord; a bar of silence, or notes that fit no chord (`NO_CLEAR_CHORD`), is no clear chord. `chord_of` names the one chord a handful of notes make. The tests hear the prototype's examples as it did: D F A is "Dm" and "Likely D minor, also possible A minor, not sure yet", the riff "C minor, fairly sure", the Dorian tune "D Dorian, fairly sure", and Cm7 F7 | Bbmaj7 Ebmaj7 | Am7b5 D7 | Gm6 exactly. A full reading (16 bars, 2,048 notes) takes about 6.5 ms on one desktop core; MPC timings come with the rest of 0C.
+- **The context** (`context.rs`): the key, chords, groove, the pitch classes played, motifs (their place only, until 0C), and every clip read with its `Revision`, so a stale reading is never used (`is_stale`). `ReadBudget` caps what a reading reads. The context only compares revisions; the composer makes them (see "Previews and Keep" below).
 
 ## The model
 
 A part keeps its **decisions** apart from its **notes** (`event.rs`). A `NoteDecision` is everything about a note except its pitch: when, how long, how loud, its `Role` over the chord (a chord tone, colour, scale note, approach, passing, neighbour, ghost or drum hit), its `Motion`, the motif it comes from, a pitch that must not change (a locked note, a note held into a selection, a drum pad), the drum lane whose groove it follows, its timing offsets and its `Source` (you, mpfree, or an arp pattern). Only `Source::You` notes are ever learned from.
 
 `realize` turns decisions into notes under a harmony, a key (or none) and an instrument, with no dice: the same input always makes the same notes. Anchors (chord tones, colour and scale notes) are placed first, each following its motion from the anchor before it; approach notes then take a half step into the next note, and passing, neighbour and ghost notes lean on the notes either side. With no clear chord, chord-tone roles keep to the pitch classes played, so nothing is invented. Lengths follow the instrument.
+
+`read` (`read.rs`, phase 0C) reads clips into a Musical Context as they play: notes after quantise and speed, a shorter clip looping over the longest as a row plays them; clips of notes give the key and chords, drum clips the groove (heard with playback's swing, which the template then takes out); every clip goes in with its revision, and a pitched part made of pad hits is left out and said so, since a pad's pitch depends on the kit.
 
 `decisions_of` reads decisions back out of plain notes: each note's role over the chord it was heard on, and its motion. Realising them under the same harmony gives the same notes for diatonic material, so "Fit to the new chords" works on any clip, including one written by hand.
 
@@ -65,12 +68,12 @@ A design review set four must-haves before the code that needs them, and six mor
 | 4. One harmony question for every place | Before phase 2 | Built: `harmony.rs` |
 | 5. Saying how sure it is | Phase 0 | Built: `key.rs` (words), `chord.rs` (no clear chord, long chords) |
 | 6. Three kinds of rule | Phase 0 | Built as data: `rules.rs` |
-| 7. Preview states and Keep | Before phase 1 | Keep's notes (`keep.rs`); the states are phase 0B's |
+| 7. Preview states and Keep | Before phase 1 | Built in 0B: `bind.rs`, `preview.rs`, `keep.rs`; checked through the real engine (`tests/playback.rs`) |
 | 8. Recording and where notes came from | Before phase 3 | `Source` on every event; recording is phase 3's |
 | 9. Live: chord settle, note owners, release | Before phase 3 | Phase 3 |
 | 10. Instrument profiles | Data in phase 0 | Built: `profile.rs` |
 | 11. Styles made of parts | Phase 0 data model | Built: `style.rs` |
-| 12. Reading costs and memory | Phase 0 | `ReadBudget` and stale checks; the reader is phase 0C's |
+| 12. Reading costs and memory | Phase 0 | `ReadBudget`, revisions and stale checks; the listener reads inside the budget and says when it was cut short (0C) |
 
 ### What a change re-fits (contract 2)
 
@@ -93,7 +96,25 @@ Swing is a playback setting (the clip's, the track's or the transport's), so a `
 
 A clip whose quantise has a strength above 0 pulls grooved notes back towards its grid; `check` says so before Keep, in words. A style's slow drift is used only where the style asks for it (0 in Minimal) and never over a played groove (`drift_on`).
 
-Keep writes `clip_notes`: the written ticks, all or nothing inside `MAX_NOTES` and `MAX_CLIP_TICKS`. The preview plays the same written notes through playback, so the preview and the kept clip play every note at the same time; a test compares them note by note. Phase 0B repeats that check through the real play view.
+Keep writes `clip_notes`: the written ticks, all or nothing inside `MAX_NOTES` and `MAX_CLIP_TICKS`. The preview plays the same written notes through playback, so the preview and the kept clip play every note at the same time; a test compares them note by note, and phase 0B's tests repeat it through the real play view and player: `heard` lands on the player's frame for every note, with quantise, half, double and 3:4 speed, the clip's swing or the transport's, and a clip started off the bar line.
+
+### Previews and Keep (contract 7)
+
+A preview is bound to one clip at one revision (`Binding` in `bind.rs`): its track and slot, its lasting id and its `Revision`. A revision is a hash of what the clip plays and what the composer reads (every field of every note, the length, speed, swing, quantise, direction, what the notes stand for), worked out from the clip when asked; its name, locks, moves and launch settings are left out, and every field of `Clip` and `Note` is named so a new one must say whether it is in. It is a sum of one hash per note, so notes stored in another order, as UNDO puts them back, are the same revision. A counter kept with the clip was the other way, but every path that edits a clip (step edits, recording in place, undo, captures, Mutate, loading) would have to move it on, and one that forgot would let a stale result be kept; a hash can't forget.
+
+`Preview` (`preview.rs`) is the state machine the app's control thread will drive:
+
+| State | What the host does |
+|---|---|
+| Idle | Nothing |
+| Preparing | A request is out, numbered; a result for an older request is dropped. A result that was playing (Try again while listening) plays on until the new one arrives |
+| Ready | A result is in, not playing yet: auditions it at the next bar line |
+| Auditioning | Compiles the play view from `audition`'s project: the result's edit applied to a copy of the clip with the same `Clip::apply` Keep's take uses |
+| Committing | Writes the edit as one take (`mpfree_play::Takes::edit`, the transaction step edits use) and compiles; a refused Keep writes nothing and leaves no preview running (Ready again, with the refusal in words) |
+| Cancelling | After Back while it played: compiles the clip's own view, then says it is in |
+| Invalidated | The clip, or a clip the reading listened to, changed or went: nothing can be kept, and Try again asks afresh |
+
+The last 8 results for the clip are kept, and ‹ › steps through them (`step`); Keep writes the one shown. Try again while a result plays keeps it playing until the new one arrives, so the music doesn't drop out (the design's table had the clip come back while preparing; this is the one change, made because a gap on every Try again would be heard). The binding is checked when a result arrives, after every edit (`clip_changed`) and once more at Keep, against the bound clip and every clip the reading listened to. Continue's edit (`keep::continuation`) makes the clip longer and adds the new notes as one `Edit`, so one UNDO takes back the length and the notes together. The audition copies the whole project, a stand-in for phase 1, where results play through the shared audition layer the piano roll's previews build (its step 2B.3).
 
 ### Rules, styles and instruments (contracts 6, 10, 11)
 
@@ -120,8 +141,15 @@ Trying again on a bar is filling a gap: each try is scored on its inside, its wa
 - trying one bar again changes only that bar, in any order;
 - the same request makes the same notes.
 
-## What phase 0B decides
+`rust/mpfree-compose/tests/playback.rs` is phase 0B's, through the real play view, player and take undo (`mpfree-play` is a test-only dependency):
 
-- How a clip's `Revision` is made, and where a preview is bound to a clip id and revision.
-- The preview states (idle, preparing, ready, auditioning, committing, cancelling, invalidated) against the real play view and the transaction step edits use (`step_action`).
-- That `heard` matches the player, by playing written notes through a real `PlayView`.
+- `heard` lands on the player's frame for every note, in eight playback set-ups;
+- a one-bar phrase, realised from decisions under the chord, is heard in place of a one-bar riff, kept as one take that plays the same notes on the same frames, undone back to the riff (length, notes and revision), and redone;
+- a step tapped on the clip while its result plays invalidates the result, and the tap's UNDO doesn't bring it back;
+- a step tapped on a clip the reading listened to invalidates it too.
+
+## What phase 1 decides
+
+- Where the app keeps the `Preview` and drives it: the control thread's step edit path (`TimeControl::step_action`) already compiles after a take and takes the edit back if the view can't be built, and Keep should go the same way.
+- Playing results through the shared audition layer (piano roll step 2B.3) in place of the project copy, from the next bar line.
+- What Keep says when the clip plays in more than one place, or when a longer clip makes its row play longer.

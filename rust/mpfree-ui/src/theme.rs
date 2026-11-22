@@ -13,7 +13,8 @@
 //! as a small text file that starts from any of them; see [`Theme::parse`].
 
 use crate::color::Color;
-use crate::roles::{hex, ColorKey, Expr, Mode, Role, ROLES, ROLE_COUNT};
+use crate::roles::{hex, over, ColorKey, Expr, Mode, Role, ROLES, ROLE_COUNT};
+use crate::sizes;
 use crate::text::FontId;
 use std::collections::HashMap;
 
@@ -100,14 +101,20 @@ pub struct Theme {
     pub track: [Color; 8],
     /// Corner radius of panels; controls use a little less.
     pub radius: i32,
-    /// Space between panels and around the page.
+    /// Space between panels and around the page: [`sizes::GAP`] in every
+    /// theme (sizes, spacing and faces are the layout's, not a theme's).
     pub gap: i32,
-    /// Space inside a panel, from its edge to its content.
+    /// Space inside a panel, from its edge to its content: [`sizes::PAD`].
     pub pad: i32,
+    /// [`sizes::SIZE_BRAND`].
     pub size_brand: f32,
+    /// [`sizes::SIZE_TITLE`].
     pub size_title: f32,
+    /// [`sizes::SIZE_BODY`].
     pub size_body: f32,
+    /// [`sizes::SIZE_SMALL`].
     pub size_small: f32,
+    /// [`sizes::SIZE_MONO`].
     pub size_mono: f32,
     pub corners: Corners,
     /// Glow around outlines, 0 (none) to 255.
@@ -118,9 +125,11 @@ pub struct Theme {
     pub backdrop_to: Color,
     pub backdrop_line: Color,
     pub backdrop_step: i32,
-    /// The face drawn wherever a widget asks for the regular face.
+    /// The face drawn wherever a widget asks for the regular face:
+    /// [`sizes::FACE_BODY`] in every theme.
     pub face_body: FontId,
-    /// The face drawn wherever a widget asks for the bold face.
+    /// The face drawn wherever a widget asks for the bold face:
+    /// [`sizes::FACE_TITLE`].
     pub face_title: FontId,
     pub startup: Startup,
     /// How far colours that come from content (kit and pad colours) are
@@ -138,7 +147,13 @@ pub struct Theme {
 }
 
 /// The built-in themes, by the name a theme file's `base` uses.
-pub const BUILTIN: [&str; 4] = ["default", "console", "synthwave", "spaceship"];
+pub const BUILTIN: [&str; 5] = ["default", "light", "console", "synthwave", "spaceship"];
+
+/// The least a theme's text and dim text must reach on the page, a panel
+/// and a button for MPFree to be usable in it at all: the line the
+/// contrast check calls unreadable. Below it, Prefs > Appearance itself
+/// couldn't be read to pick another theme ([`Theme::unusable`]).
+pub const FLOOR: f32 = 3.0;
 
 impl Theme {
     /// The default: dark, for a studio, with one blue accent and status colours.
@@ -163,13 +178,13 @@ impl Theme {
             ]
             .map(Color::rgb),
             radius: 14,
-            gap: 12,
-            pad: 14,
-            size_brand: 28.0,
-            size_title: 19.0,
-            size_body: 17.0,
-            size_small: 14.0,
-            size_mono: 14.0,
+            gap: sizes::GAP,
+            pad: sizes::PAD,
+            size_brand: sizes::SIZE_BRAND,
+            size_title: sizes::SIZE_TITLE,
+            size_body: sizes::SIZE_BODY,
+            size_small: sizes::SIZE_SMALL,
+            size_mono: sizes::SIZE_MONO,
             corners: Corners::Round,
             glow: 0,
             text_glow: 0,
@@ -178,8 +193,8 @@ impl Theme {
             backdrop_to: Color::rgb(0x1B2340),
             backdrop_line: Color::rgb(0x151922),
             backdrop_step: 40,
-            face_body: FontId::Sans,
-            face_title: FontId::Bold,
+            face_body: sizes::FACE_BODY,
+            face_title: sizes::FACE_TITLE,
             startup: Startup::Synthwave,
             tint: 0,
             mode: Mode::Auto,
@@ -190,6 +205,56 @@ impl Theme {
     }
 
     /// Green on black, glowing like a phosphor screen.
+    /// Light: the default's layout and blue accent on pale grey, for a
+    /// bright room or daylight. Every role is on its table rule, turned
+    /// for a light theme; status and track colours are darkened so they
+    /// read as text and lines on the pale panels.
+    pub fn light() -> Theme {
+        Theme {
+            name: "Light".into(),
+            bg: Color::rgb(0xE4E7EB),
+            surface: Color::rgb(0xF4F5F7),
+            raised: Color::rgb(0xDCE1E8),
+            outline: Color::rgb(0xBFC6D1),
+            text: Color::rgb(0x161A21),
+            text_dim: Color::rgb(0x474F5E),
+            text_faint: Color::rgb(0x5E6777),
+            accent: Color::rgb(0x2A63D4),
+            accent2: Color::rgb(0x8B3CC6),
+            on_accent: Color::rgb(0xFFFFFF),
+            good: Color::rgb(0x17784C),
+            warn: Color::rgb(0x965700),
+            bad: Color::rgb(0xC42B2B),
+            track: [
+                0x2A63D4, 0x17784C, 0xA96700, 0x8B45D0, 0xC24E22, 0x0D7A8A, 0xBC3374, 0x56820F,
+            ]
+            .map(Color::rgb),
+            radius: 14,
+            gap: sizes::GAP,
+            pad: sizes::PAD,
+            size_brand: sizes::SIZE_BRAND,
+            size_title: sizes::SIZE_TITLE,
+            size_body: sizes::SIZE_BODY,
+            size_small: sizes::SIZE_SMALL,
+            size_mono: sizes::SIZE_MONO,
+            corners: Corners::Round,
+            glow: 0,
+            text_glow: 0,
+            backdrop: Backdrop::Solid,
+            backdrop_to: Color::rgb(0xD3D8E0),
+            backdrop_line: Color::rgb(0xF4F5F7),
+            backdrop_step: 40,
+            face_body: sizes::FACE_BODY,
+            face_title: sizes::FACE_TITLE,
+            startup: Startup::Synthwave,
+            tint: 0,
+            mode: Mode::Light,
+            roles: [Color::rgb(0); ROLE_COUNT],
+            sources: Vec::new(),
+        }
+        .with_roles(&[])
+    }
+
     pub fn console() -> Theme {
         Theme {
             name: "Console".into(),
@@ -211,13 +276,13 @@ impl Theme {
             ]
             .map(Color::rgb),
             radius: 4,
-            gap: 10,
-            pad: 12,
-            size_brand: 26.0,
-            size_title: 17.0,
-            size_body: 16.0,
-            size_small: 13.0,
-            size_mono: 14.0,
+            gap: sizes::GAP,
+            pad: sizes::PAD,
+            size_brand: sizes::SIZE_BRAND,
+            size_title: sizes::SIZE_TITLE,
+            size_body: sizes::SIZE_BODY,
+            size_small: sizes::SIZE_SMALL,
+            size_mono: sizes::SIZE_MONO,
             corners: Corners::Chamfer,
             glow: 150,
             text_glow: 150,
@@ -225,8 +290,8 @@ impl Theme {
             backdrop_to: Color::rgb(0x031208),
             backdrop_line: Color::rgb(0x000000),
             backdrop_step: 3,
-            face_body: FontId::Sans,
-            face_title: FontId::Bold,
+            face_body: sizes::FACE_BODY,
+            face_title: sizes::FACE_TITLE,
             startup: Startup::Console,
             tint: 170,
             mode: Mode::Auto,
@@ -259,13 +324,13 @@ impl Theme {
             ]
             .map(Color::rgb),
             radius: 10,
-            gap: 12,
-            pad: 14,
-            size_brand: 28.0,
-            size_title: 19.0,
-            size_body: 17.0,
-            size_small: 14.0,
-            size_mono: 14.0,
+            gap: sizes::GAP,
+            pad: sizes::PAD,
+            size_brand: sizes::SIZE_BRAND,
+            size_title: sizes::SIZE_TITLE,
+            size_body: sizes::SIZE_BODY,
+            size_small: sizes::SIZE_SMALL,
+            size_mono: sizes::SIZE_MONO,
             corners: Corners::Round,
             glow: 190,
             text_glow: 0,
@@ -273,8 +338,8 @@ impl Theme {
             backdrop_to: Color::rgb(0x2B0B4A),
             backdrop_line: Color::rgb(0xFF2E97).with_alpha(46),
             backdrop_step: 40,
-            face_body: FontId::Sans,
-            face_title: FontId::Bold,
+            face_body: sizes::FACE_BODY,
+            face_title: sizes::FACE_TITLE,
             startup: Startup::Synthwave,
             tint: 70,
             mode: Mode::Auto,
@@ -307,13 +372,13 @@ impl Theme {
             ]
             .map(Color::rgb),
             radius: 10,
-            gap: 12,
-            pad: 14,
-            size_brand: 28.0,
-            size_title: 19.0,
-            size_body: 17.0,
-            size_small: 14.0,
-            size_mono: 14.0,
+            gap: sizes::GAP,
+            pad: sizes::PAD,
+            size_brand: sizes::SIZE_BRAND,
+            size_title: sizes::SIZE_TITLE,
+            size_body: sizes::SIZE_BODY,
+            size_small: sizes::SIZE_SMALL,
+            size_mono: sizes::SIZE_MONO,
             corners: Corners::Chamfer,
             glow: 90,
             text_glow: 0,
@@ -321,8 +386,8 @@ impl Theme {
             backdrop_to: Color::rgb(0x0E0A1C),
             backdrop_line: Color::rgb(0x2E2552),
             backdrop_step: 24,
-            face_body: FontId::Sans,
-            face_title: FontId::Bold,
+            face_body: sizes::FACE_BODY,
+            face_title: sizes::FACE_TITLE,
             startup: Startup::Spaceship,
             tint: 110,
             mode: Mode::Auto,
@@ -336,6 +401,7 @@ impl Theme {
     pub fn builtin(name: &str) -> Option<Theme> {
         match name.trim().to_ascii_lowercase().as_str() {
             "default" | "dark" => Some(Theme::dark()),
+            "light" => Some(Theme::light()),
             "console" => Some(Theme::console()),
             "synthwave" => Some(Theme::synthwave()),
             "spaceship" => Some(Theme::spaceship()),
@@ -507,13 +573,14 @@ impl Theme {
     /// Colours are `#RRGGBB` or `#RRGGBBAA`, or follow and mix others
     /// (see [`crate::roles`]); `track` takes up to eight, and `track.N`
     /// sets one. This is the strict reading for the app's themes folder:
-    /// any mistake or unknown key is an error that names the line (see
-    /// [`Theme::load`] for the forgiving one).
+    /// any mistake or unknown key is an error that names the line, and so
+    /// is a theme no one could read ([`Theme::unusable`]); see
+    /// [`Theme::load`] for the forgiving one.
     pub fn parse(text: &str) -> Result<Theme, String> {
         let (theme, problems) = Theme::load(text);
         match problems
             .into_iter()
-            .find(|p| p.kind != ProblemKind::HardToRead)
+            .find(|p| !matches!(p.kind, ProblemKind::HardToRead | ProblemKind::Ignored))
         {
             Some(p) => Err(match p.line {
                 Some(n) => format!("theme line {n}: {}", p.text),
@@ -526,8 +593,9 @@ impl Theme {
     /// A theme from a theme file, never failing: a line with a mistake
     /// leaves what it would have changed as the base theme has it, an
     /// unknown key (from a newer MPFree, say) is skipped, and each is
-    /// listed by line with what was used instead, followed by the theme's
-    /// readability warnings ([`Theme::check`]).
+    /// listed by line with what was used instead, followed by whether the
+    /// theme is [`Theme::unusable`] and its readability warnings
+    /// ([`Theme::check`]).
     pub fn load(text: &str) -> (Theme, Vec<Problem>) {
         let mut problems = Vec::new();
         let mistake = |line: usize, text: String, used: Option<String>| Problem {
@@ -627,6 +695,15 @@ impl Theme {
                     text: format!("unknown key {k:?}"),
                     used: Some("skipped the line".into()),
                 }),
+                Err(SetError::Retired) => problems.push(Problem {
+                    line: Some(n),
+                    kind: ProblemKind::Ignored,
+                    text: format!(
+                        "{k}: text sizes, spacing and faces are the same in every theme, \
+                         so no theme can move a control"
+                    ),
+                    used: Some("ignored the line".into()),
+                }),
                 Err(SetError::Bad(e)) => {
                     theme = before;
                     problems.push(mistake(n, e, Some(format!("kept {base_name}'s value"))));
@@ -671,6 +748,14 @@ impl Theme {
         }
         theme.resolve_roles();
         problems.sort_by_key(|p| p.line);
+        if let Some(why) = theme.unusable() {
+            problems.push(Problem {
+                line: None,
+                kind: ProblemKind::Unusable,
+                text: why,
+                used: None,
+            });
+        }
         for w in theme.check() {
             problems.push(Problem {
                 line: None,
@@ -715,6 +800,9 @@ impl Theme {
         match self.set_plain(key, v) {
             Ok(()) => Ok(()),
             Err(SetError::Unknown) => Err(format!("unknown key {key:?}")),
+            Err(SetError::Retired) => Err(format!(
+                "{key}: text sizes, spacing and faces are the same in every theme"
+            )),
             Err(SetError::Bad(e)) => Err(e),
         }
     }
@@ -731,34 +819,14 @@ impl Theme {
             v.parse::<i32>()
                 .map_err(|_| bad(format!("{key}: expected a whole number, got {v:?}")))
         };
-        let size = |v: &str| match v.parse::<f32>() {
-            Ok(x) if (6.0..=200.0).contains(&x) => Ok(x),
-            _ => Err(bad(format!(
-                "{key}: expected a size from 6 to 200, got {v:?}"
-            ))),
-        };
         let byte = |v: &str| {
             v.parse::<u8>()
                 .map_err(|_| bad(format!("{key}: expected 0 to 255, got {v:?}")))
         };
-        let face = |v: &str| match v {
-            "sans" => Ok(FontId::Sans),
-            "bold" => Ok(FontId::Bold),
-            "mono" => Ok(FontId::Mono),
-            _ => Err(bad(format!(
-                "{key}: expected sans, bold or mono, got {v:?}"
-            ))),
-        };
         match key {
             "name" => self.name = v.to_string(),
             "radius" => self.radius = num(v)?.clamp(0, 40),
-            "gap" => self.gap = num(v)?.clamp(0, 40),
-            "pad" => self.pad = num(v)?.clamp(0, 40),
-            "size_brand" => self.size_brand = size(v)?,
-            "size_title" => self.size_title = size(v)?,
-            "size_body" => self.size_body = size(v)?,
-            "size_small" => self.size_small = size(v)?,
-            "size_mono" => self.size_mono = size(v)?,
+            k if sizes::RETIRED_KEYS.contains(&k) => return Err(SetError::Retired),
             "corners" => {
                 self.corners = match v {
                     "round" => Corners::Round,
@@ -789,8 +857,6 @@ impl Theme {
                 }
             }
             "backdrop_step" => self.backdrop_step = num(v)?.clamp(2, 400),
-            "face_body" => self.face_body = face(v)?,
-            "face_title" => self.face_title = face(v)?,
             "startup" => {
                 self.startup = match v {
                     "galaxy" => Startup::Galaxy,
@@ -825,11 +891,6 @@ impl Theme {
     /// The whole theme as a theme file, every key written out: a starting
     /// point for a user's own theme. [`Theme::parse`] reads it back exactly.
     pub fn to_text(&self) -> String {
-        let face = |f: FontId| match f {
-            FontId::Sans => "sans",
-            FontId::Bold => "bold",
-            FontId::Mono => "mono",
-        };
         let mut s = String::new();
         let mut kv = |k: &str, v: String| {
             s.push_str(&format!("{k:<13} = {v}\n"));
@@ -860,22 +921,7 @@ impl Theme {
                 .collect::<Vec<_>>()
                 .join(" "),
         );
-        for (k, v) in [
-            ("radius", self.radius),
-            ("gap", self.gap),
-            ("pad", self.pad),
-        ] {
-            kv(k, v.to_string());
-        }
-        for (k, v) in [
-            ("size_brand", self.size_brand),
-            ("size_title", self.size_title),
-            ("size_body", self.size_body),
-            ("size_small", self.size_small),
-            ("size_mono", self.size_mono),
-        ] {
-            kv(k, format!("{v}"));
-        }
+        kv("radius", self.radius.to_string());
         kv("corners", format!("{:?}", self.corners).to_lowercase());
         kv("glow", self.glow.to_string());
         kv("tint", self.tint.to_string());
@@ -884,8 +930,6 @@ impl Theme {
         kv("backdrop_to", hex(self.backdrop_to));
         kv("backdrop_line", hex(self.backdrop_line));
         kv("backdrop_step", self.backdrop_step.to_string());
-        kv("face_body", face(self.face_body).into());
-        kv("face_title", face(self.face_title).into());
         kv("startup", format!("{:?}", self.startup).to_lowercase());
         kv("mode", format!("{:?}", self.mode).to_lowercase());
         for (d, e) in ROLES.iter().zip(&self.sources) {
@@ -904,6 +948,37 @@ impl Theme {
         } else {
             self.text_dim
         }
+    }
+
+    /// Why MPFree can't be used in this theme, if it can't: its text or dim
+    /// text under [`FLOOR`] on the page (`bg`), a panel (`surface`, as it
+    /// shows over `bg`) or a button (`raised`, over the panel), so nothing
+    /// could be read, Prefs > Appearance included. The app leaves such a
+    /// theme file out and shows the default theme instead. [`Theme::check`]
+    /// is stricter (4.5:1 for text); a theme between the two still loads,
+    /// with its warnings.
+    pub fn unusable(&self) -> Option<String> {
+        let panel = self.panel();
+        let button = over(self.raised, panel);
+        let mut short = Vec::new();
+        for (what, ink) in [("text", self.text), ("text_dim", self.text_dim)] {
+            for (name, under) in [
+                ("the page (bg)", self.bg),
+                ("panels (surface)", panel),
+                ("buttons (raised)", button),
+            ] {
+                let r = contrast(over(ink, under), under);
+                if r < FLOOR {
+                    short.push(format!("{what} on {name} {r:.1}:1"));
+                }
+            }
+        }
+        (!short.is_empty()).then(|| {
+            format!(
+                "nothing could be read: {}, under the {FLOOR}:1 every theme must reach",
+                short.join(", ")
+            )
+        })
     }
 
     /// Readability problems: text that is too close to what it sits on
@@ -1000,6 +1075,12 @@ pub enum ProblemKind {
     Unknown,
     /// Text or lines too close to what they sit on ([`Theme::check`]).
     HardToRead,
+    /// A key themes no longer set (text sizes, `gap`, `pad`, faces): the
+    /// line is ignored, and an older theme file still loads.
+    Ignored,
+    /// Text or dim text under [`FLOOR`] on the page, panels or buttons
+    /// ([`Theme::unusable`]): the app won't use the theme.
+    Unusable,
 }
 
 impl std::fmt::Display for Problem {
@@ -1017,6 +1098,8 @@ impl std::fmt::Display for Problem {
 
 enum SetError {
     Unknown,
+    /// A key themes no longer set ([`sizes::RETIRED_KEYS`]).
+    Retired,
     Bad(String),
 }
 
@@ -1286,7 +1369,7 @@ mod tests {
 
     #[test]
     fn low_contrast_is_reported() {
-        let t = Theme::parse("text = #151922").unwrap();
+        let t = Theme::parse("text = #787878").unwrap();
         assert!(
             t.check().iter().any(|w| w.starts_with("text on surface")),
             "{:?}",
@@ -1297,8 +1380,9 @@ mod tests {
     #[test]
     fn every_built_in_theme_keeps_the_colours_its_screens_drew() {
         // Phase 0 of the theme plan changes no pixel: each role is the
-        // colour the screens it replaces drew before.
-        for name in BUILTIN {
+        // colour the screens it replaces drew before. Light came later and
+        // has every role on its rule.
+        for name in BUILTIN.into_iter().filter(|&n| n != "light") {
             let t = Theme::builtin(name).unwrap();
             assert_eq!(t.record(), Color::rgb(0xFF4D5E), "{name}");
             assert_eq!(
@@ -1448,8 +1532,8 @@ mod tests {
             .unwrap_err()
             .starts_with("theme line 3: accent:"));
         // Hard-to-read colours are listed after, as warnings, and don't
-        // stop the strict reading.
-        let (_, problems) = Theme::load("text = #151922\nqlink.3 = #1A1F2A\n");
+        // stop the strict reading (text at 3.1:1 to 4.2:1: over the floor).
+        let (_, problems) = Theme::load("text = #787878\nqlink.3 = #1A1F2A\n");
         assert!(problems
             .iter()
             .all(|p| p.kind == ProblemKind::HardToRead && p.line.is_none()));
@@ -1465,7 +1549,7 @@ mod tests {
                 .any(|p| p.text.starts_with("qlink.3 on surface")),
             "{problems:?}"
         );
-        assert!(Theme::parse("text = #151922\nqlink.3 = #1A1F2A\n").is_ok());
+        assert!(Theme::parse("text = #787878\nqlink.3 = #1A1F2A\n").is_ok());
     }
 
     #[test]
@@ -1479,5 +1563,107 @@ mod tests {
         assert!(text.contains("qlink.2       = {track.2}\n"), "{text}");
         assert!(text.contains("mode          = auto\n"), "{text}");
         assert_eq!(Theme::parse(&text).unwrap(), t);
+    }
+
+    /// Text sizes, spacing and faces are the layout's (owner, 22 Nov): every
+    /// theme has them, and a theme file that sets them, as files from before
+    /// did, still loads with each line noted and ignored.
+    #[test]
+    fn every_built_in_theme_is_over_the_floor() {
+        for name in BUILTIN {
+            let t = Theme::builtin(name).unwrap();
+            assert_eq!(t.unusable(), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_theme_no_one_could_read_is_refused() {
+        // Text the colour of the panels: Prefs > Appearance couldn't be
+        // read to pick another theme.
+        let text = "name = Fog\ntext = #151922\n";
+        let (t, problems) = Theme::load(text);
+        assert_eq!(t.name, "Fog");
+        let p = problems
+            .iter()
+            .find(|p| p.kind == ProblemKind::Unusable)
+            .expect("unusable");
+        assert_eq!(p.line, None);
+        assert!(
+            p.text.contains("text on panels (surface) 1.0:1"),
+            "{}",
+            p.text
+        );
+        assert!(
+            p.text.ends_with("under the 3:1 every theme must reach"),
+            "{}",
+            p.text
+        );
+        let e = Theme::parse(text).unwrap_err();
+        assert!(
+            e.starts_with("nothing could be read: text on the page (bg)"),
+            "{e}"
+        );
+        // Dim text counts too, and so do see-through panels, measured as
+        // they show over the page.
+        assert!(Theme::parse("text_dim = #2A3040\n").is_err());
+        assert!(Theme::parse("surface = #E9ECF2F0\n").is_err());
+        // Hard to read but over the floor: it loads, with its warnings.
+        let t = Theme::parse("text = #787878\n").unwrap();
+        assert_eq!(t.unusable(), None);
+        assert!(!t.check().is_empty());
+    }
+
+    #[test]
+    fn sizes_spacing_and_faces_are_the_same_in_every_theme() {
+        for name in BUILTIN {
+            let t = Theme::builtin(name).unwrap();
+            assert_eq!((t.gap, t.pad), (sizes::GAP, sizes::PAD), "{name}");
+            assert_eq!(
+                [
+                    t.size_brand,
+                    t.size_title,
+                    t.size_body,
+                    t.size_small,
+                    t.size_mono
+                ],
+                [
+                    sizes::SIZE_BRAND,
+                    sizes::SIZE_TITLE,
+                    sizes::SIZE_BODY,
+                    sizes::SIZE_SMALL,
+                    sizes::SIZE_MONO
+                ],
+                "{name}"
+            );
+            assert_eq!(
+                (t.face_body, t.face_title),
+                (sizes::FACE_BODY, sizes::FACE_TITLE)
+            );
+            for key in sizes::RETIRED_KEYS {
+                assert!(
+                    !t.to_text().contains(&format!("\n{key} ")),
+                    "{name} writes {key}"
+                );
+            }
+        }
+        let old = "base = console\naccent = #FF6C11\ngap = 10\npad = 12\nsize_body = 16\n\
+                   size_small = 13\nface_body = mono\n";
+        let (t, problems) = Theme::load(old);
+        assert_eq!(t.accent, Color::rgb(0xFF6C11));
+        assert_eq!(
+            (t.gap, t.pad, t.size_body, t.size_small),
+            (12, 14, 17.0, 14.0)
+        );
+        assert_eq!(t.face_body, FontId::Sans);
+        let ignored: Vec<usize> = problems
+            .iter()
+            .filter(|p| p.kind == ProblemKind::Ignored)
+            .filter_map(|p| p.line)
+            .collect();
+        assert_eq!(ignored, vec![3, 4, 5, 6, 7], "{problems:?}");
+        assert!(problems[0]
+            .to_string()
+            .contains("no theme can move a control"));
+        assert_eq!(Theme::parse(old).unwrap(), t, "an old file still loads");
     }
 }

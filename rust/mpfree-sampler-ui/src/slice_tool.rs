@@ -68,7 +68,8 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use mpfree_analysis::{
-    nearest_zero_crossing, note_name, previous_zero_crossing, sound_spans, SilenceSettings,
+    nearest_zero_crossing, next_zero_crossing, note_name, previous_zero_crossing, sound_spans,
+    Samples, SilenceSettings,
 };
 use mpfree_sampler::model::{
     ChopMode, ChopSet, ModelError, Pad, Project, Region, SourceId, KEPT_CHOP, MAX_SLICES, PADS,
@@ -80,7 +81,7 @@ use mpfree_ui::wave::{Marker, MarkerKind};
 use crate::panel::{Control, Item, Look, PadCell, Panel, Section};
 use crate::source::SourceView;
 use crate::warp_tool::Card;
-use crate::wave_tab::{self, next_zero_crossing, pad_label, position_text, TAKE};
+use crate::wave_tab::{self, pad_label, position_text, TAKE};
 use crate::widgets::Setting;
 
 /// Pads in a bank: PAD BANK A to H each play 16 of a kit's pads.
@@ -1295,7 +1296,10 @@ impl SliceTool {
                     threshold_db: self.threshold_db as f32,
                     ..SilenceSettings::default()
                 };
-                sound_spans(&st.source.mono, 1, st.rate, settings)
+                let Some(mono) = &st.source.mono else {
+                    return Vec::new();
+                };
+                sound_spans(mono, 1, st.rate, settings)
                     .map_or_else(|_| Vec::new(), |s| s.iter().map(|s| s.0).collect())
             }
             Method::Pitch => {
@@ -1329,7 +1333,7 @@ impl SliceTool {
     /// app then follows it off the screen thread
     /// ([`SourceView::follow_pitch`]) and shows the page the view with it.
     pub fn wants_pitch(&self, st: &ChopState) -> bool {
-        self.method == Method::Pitch && st.source.pitch.is_none() && !st.source.mono.is_empty()
+        self.method == Method::Pitch && st.source.pitch.is_none() && st.source.mono.is_some()
     }
 
     /// The cuts as tabs on the wave: one at the start of every slice,
@@ -2084,7 +2088,9 @@ impl SliceTool {
     /// direction of `dir`.
     fn snapped(&self, st: &ChopState, to: u64, dir: i32, px: f64) -> u64 {
         let to = to.min(st.frames);
-        let x = &st.source.mono;
+        let Some(x) = &st.source.mono else {
+            return to;
+        };
         if !self.snap || x.len() < 2 || to >= x.len() as u64 {
             return to;
         }

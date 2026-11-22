@@ -1,5 +1,5 @@
-//! The Sample tab's views of its sounds ([`SourceView`]: peaks, mono mix,
-//! hits, tempo and root note), worked out on the sampler's job service
+//! The Sample tab's views of its sounds ([`SourceView`]: peaks, hits, tempo
+//! and root note), worked out on the sampler's job service
 //! ([`mpfree_sampler::jobs`], its sound lane) so a long sound never holds
 //! up the screen.
 //!
@@ -14,8 +14,9 @@
 //! only when asked for ([`Views::follow_pitch`]), on the same lane, and
 //! lands in the sound's view the same way.
 //!
-//! Each job says the memory it holds: a view, its mono mix twice over for
-//! a moment and its peaks; a pitch, its sound brought down to 8 kHz. One
+//! Each job says the memory it holds: a view, its peaks and its sound mixed
+//! to mono for a moment; a pitch, its sound mixed to mono and brought down
+//! to 8 kHz. A view keeps no mono copy (the sampler plan's step 8c). One
 //! the floor can't spare is refused: the sound keeps its flat line, the
 //! log says why once, and it is asked for again every [`RETRY`] while it
 //! is loaded. Nothing is ever worked out on the screen instead, not even
@@ -51,20 +52,21 @@ pub const RETRY: Duration = Duration::from_secs(5);
 /// Memory a job holds beyond what is worked out from the sound's length.
 const SLACK: u64 = 1_000_000;
 
-/// What working out a sound's view holds, in bytes: its mono mix as floats
-/// twice over (made, then moved into the view), and its peaks (three
-/// 16-bit numbers a channel every 64 frames, and the coarser levels).
+/// What working out a sound's view holds, in bytes: its peaks (three
+/// 16-bit numbers a channel every 64 frames, and the coarser levels), kept,
+/// and its mono mix as floats, made to find its hits and note and gone
+/// after.
 pub fn view_need(frames: u64, channels: u8) -> u64 {
     frames
-        .saturating_mul(8)
+        .saturating_mul(4)
         .saturating_add(frames.saturating_mul(u64::from(channels)) / 8)
         .saturating_add(SLACK)
 }
 
-/// What following a sound's pitch holds: its mono mix brought down to about
-/// 8 kHz, as floats.
+/// What following a sound's pitch holds: its mono mix as floats, and that
+/// brought down to about 8 kHz.
 pub fn pitch_need(frames: u64) -> u64 {
-    frames.saturating_add(SLACK)
+    frames.saturating_mul(5).saturating_add(SLACK)
 }
 
 fn view_key(id: SourceId) -> Key {
@@ -192,24 +194,24 @@ impl Inner {
         self.made.get(&id).filter(|v| v.ready).cloned()
     }
 
-    /// Follows the pitch of `s` (rate and mono mix) on the service, once,
-    /// for the Slice tool's Pitch method: the view with it lands on a later
-    /// [`Views::take_done`]. Nothing while the sound has no mono mix yet
-    /// (asked again when it has), or once it is followed or asked for.
+    /// Follows the pitch of `s` on the service, once, for the Slice tool's
+    /// Pitch method: the view with it lands on a later
+    /// [`Views::take_done`]. Nothing before its peaks are worked out (asked
+    /// again when they are), or once it is followed or asked for.
     pub fn follow_pitch(&mut self, s: &Source) {
         let Some(v) = self.made.get(&s.id()).cloned() else {
             return;
         };
-        if v.pitch.is_some() || v.mono.is_empty() || self.pitch_asked.contains(&s.id()) {
+        if v.pitch.is_some() || v.mono.is_none() || self.pitch_asked.contains(&s.id()) {
             return;
         }
         self.pitch_asked.insert(s.id());
-        let (id, rate, name) = (s.id(), s.rate(), s.name.clone());
+        let (id, name, sound) = (s.id(), s.name.clone(), s.clone());
         let (tx, why) = (self.tx.clone(), self.tx.clone());
         // After the sound's own view, if that is waiting: else first.
         self.jobs.submit(
             Job::new(Lane::Sound, pitch_key(id), move |_| {
-                let _ = tx.send(Done::Pitch(id, v.follow_pitch(rate)));
+                let _ = tx.send(Done::Pitch(id, v.follow_pitch(&sound)));
             })
             .order(Order::After(view_key(id)))
             .needs(pitch_need(s.frames()), move |w| {
@@ -439,7 +441,7 @@ mod tests {
         let first = v.get(&s);
         assert!(!first.ready);
         assert_eq!(first.peaks.frames(), s.frames());
-        assert!(first.mono.is_empty() && first.onsets.is_none());
+        assert!(first.mono.is_none() && first.onsets.is_none());
         let mut steps = Vec::new();
         let end = Instant::now() + Duration::from_secs(20);
         while v.busy() {
@@ -447,12 +449,12 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
             if v.take_done() {
                 let now = v.get(&s);
-                steps.push((now.ready, now.mono.len()));
+                steps.push((now.ready, now.pyramid.is_some()));
             }
         }
-        // The peaks and mono mix first, the hits and tempo after (the two
-        // may land together).
-        assert_eq!(steps.last(), Some(&(true, s.frames() as usize)));
+        // The peaks first, the hits and tempo after (the two may land
+        // together).
+        assert_eq!(steps.last(), Some(&(true, true)));
         let done = v.get(&s);
         let whole = SourceView::analyse(&s);
         assert_eq!(done.tempo, whole.tempo);
@@ -482,7 +484,7 @@ mod tests {
         // Asked while the view is worked out: followed after it, and kept
         // when the view's last step lands.
         let end = Instant::now() + Duration::from_secs(20);
-        while v.get(&s).mono.is_empty() {
+        while v.get(&s).mono.is_none() {
             assert!(Instant::now() < end);
             std::thread::sleep(Duration::from_millis(1));
             v.take_done();
@@ -667,13 +669,14 @@ mod tests {
     }
 
     #[test]
-    fn a_views_need_is_its_mono_mix_twice_and_its_peaks() {
-        // 25 minutes of stereo at 44.1 kHz: 529 MB of floats twice, 16.5 MB
+    fn a_views_need_is_its_mono_mix_once_and_its_peaks() {
+        // 25 minutes of stereo at 44.1 kHz: 265 MB of floats for a moment
+        // (twice that before step 8c, which kept one in the view), 16.5 MB
         // of peaks.
         let frames = 66_150_000;
-        assert_eq!(view_need(frames, 2), 529_200_000 + 16_537_500 + SLACK);
-        assert_eq!(view_need(frames, 1), 529_200_000 + 8_268_750 + SLACK);
-        assert_eq!(pitch_need(frames), 66_150_000 + SLACK);
+        assert_eq!(view_need(frames, 2), 264_600_000 + 16_537_500 + SLACK);
+        assert_eq!(view_need(frames, 1), 264_600_000 + 8_268_750 + SLACK);
+        assert_eq!(pitch_need(frames), 264_600_000 + 66_150_000 + SLACK);
     }
 
     #[test]

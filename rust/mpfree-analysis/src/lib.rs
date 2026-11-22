@@ -26,7 +26,7 @@ pub use peaks::{Column, PeakError, PeakPyramid, Samples, BASE_BLOCK, LEVELS};
 pub use pitch::{note_name, pitch_track, root_pitch, yin, Pitch, PitchSettings, PitchTrack};
 pub use silence::{sound_spans, SilenceSettings};
 pub use tempo::{estimate_tempo, loop_tempo, Tempo};
-pub use zero::{nearest_zero_crossing, previous_zero_crossing};
+pub use zero::{nearest_zero_crossing, next_zero_crossing, previous_zero_crossing};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnalysisError {
