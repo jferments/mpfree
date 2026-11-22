@@ -6617,9 +6617,14 @@ fn time_action(
         a,
         TimeAction::AddAudioTrack | TimeAction::Undo | TimeAction::Redo
     );
+    let convert = matches!(
+        a,
+        TimeAction::ScenesToSong | TimeAction::ListToSong | TimeAction::SongToScenes
+    );
     let say = match waiting {
         Some(leader) => time::Say::Waiting(leader),
         None if erase => time::Say::Tell,
+        None if convert => time::Say::Convert,
         None if undo => time::Say::Undo,
         None => time::Say::Note {
             ok: "time: ",
@@ -6697,6 +6702,21 @@ fn time_said(out: &mut Out, say: time::Say, r: Result<String, String>) -> Vec<ap
             Vec::new()
         }
         (time::Say::NoteOrTell { err }, Err(e)) => vec![app::Effect::Tell(format!("{err}{e}"))],
+        // An exact conversion opens nothing: its line shows in place of the
+        // hint. One with differences opens the report card (the time
+        // engine's `TimeState::report`), whose own hint shows.
+        (time::Say::Convert, Ok(line)) => {
+            out.note(&format!("time: {line}"));
+            if line.ends_with(time::EXACT) {
+                vec![app::Effect::Tell(line)]
+            } else {
+                Vec::new()
+            }
+        }
+        (time::Say::Convert, Err(e)) => {
+            out.note(&format!("time: {e}"));
+            vec![app::Effect::Tell(e)]
+        }
     }
 }
 

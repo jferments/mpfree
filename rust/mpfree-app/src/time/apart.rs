@@ -78,6 +78,11 @@ pub enum Say {
     /// The line into the log, or `err` and why on the screen (a step
     /// pad's tap).
     NoteOrTell { err: &'static str },
+    /// A conversion (Scenes → song, List → song, Song → scenes; layout
+    /// spec 4n): the line into the log, and on the screen too when it is
+    /// exact (it ends in [`super::EXACT`]) or couldn't be made. One with
+    /// differences opens the report card instead.
+    Convert,
 }
 
 /// What comes back from the thread, besides the copy.

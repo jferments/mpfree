@@ -35,6 +35,7 @@ use crate::list::{
     ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LOOP, LIST_PLAY, LIST_REMOVE, LIST_SONG,
     LIST_TO_SONG, SCENE_STEP,
 };
+use crate::report::{ReportCard, REPORT_DONE, REPORT_UNDO};
 use crate::song::{
     AudioLane, SongBlocks, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, BARS_BACK, BARS_ON, INPUTS,
     MONITORS, NONE, PANEL, PANEL_CLOSE, PANEL_INPUT, PANEL_MONITOR, PANEL_MUTE, PANEL_SOLO,
@@ -154,6 +155,26 @@ pub const SONG_SECTION_HINT: &str =
 /// The hint line under the Song view with a tempo point picked.
 pub const SONG_TEMPO_HINT: &str =
     "Drag the point: move it a bar at a time   ·   push the wheel: change its tempo   ·   Ramp: glide to the next point   ·   SHIFT + wheel: bars";
+
+/// The hint line while the conversion report card is open (layout spec
+/// 4n): what Done keeps (the rows Song → scenes made, or the song), and
+/// the wheel when its rows scroll.
+pub fn report_hint(r: &Report) -> String {
+    let kept = if r.title == "SONG → SCENES" {
+        "the rows"
+    } else {
+        "the song"
+    };
+    if r.rows.len() > crate::report::SHOWN {
+        format!(
+            "Done: close it and keep {kept}   ·   UNDO: take it all back   ·   drag the list or turn the wheel: the rest   ·   a tap outside keeps it"
+        )
+    } else {
+        format!(
+            "Done: close it and keep {kept}   ·   UNDO, here or on the MPC: take it all back   ·   a tap outside or a page change keeps it"
+        )
+    }
+}
 
 /// The hint line under the Song view for what is picked.
 pub fn song_hint(st: &TimeState) -> &'static str {
@@ -1905,6 +1926,10 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             }))
         }
         (EDIT_OPTIONS, EventKind::Select(i)) => Some(TimeAction::Edit(EditAction::PickRow(*i))),
+        // The conversion report card over the Song view or the song list
+        // (layout spec 4n): Done closes it, UNDO takes the conversion back.
+        (SONG | SONG_LIST, EventKind::Toggle(REPORT_DONE)) => Some(TimeAction::CloseReport),
+        (SONG | SONG_LIST, EventKind::Toggle(REPORT_UNDO)) => Some(TimeAction::Undo),
         // The tempo lane: a tap adds a point, a tap on one picks it (again:
         // lets go), a drag moves it.
         (
@@ -4229,8 +4254,21 @@ fn song_lanes_with(st: &TimeState, first_bar: i64, blocks: Option<SongBlocks>) -
         tempo: st.tempo_points.clone(),
         tempo_base: st.tempo_base,
         tempo_pick: st.tempo_pick.filter(|&k| k < st.tempo_points.len()),
+        report: st
+            .report
+            .clone()
+            .map(|r| ReportCard::new(r, &report_tracks(st))),
         ..SongLanes::default()
     }
+}
+
+/// Each track's name and colour, for the conversion report card's rows.
+fn report_tracks(st: &TimeState) -> Vec<(String, Color)> {
+    st.tracks
+        .iter()
+        .enumerate()
+        .map(|(i, tr)| (tr.name.clone(), track_color(i)))
+        .collect()
 }
 
 /// Where the note editor's clip plays now, in its own ticks, if it is
@@ -4506,7 +4544,23 @@ impl TimePage {
     /// Scroll the grid `delta` rows down (up if negative), or on the Song
     /// view the timeline `delta` bars on. In the note editor the editor
     /// scrolls: the action for the app.
-    pub fn scroll(&mut self, ui: &Ui, delta: i32) -> Option<TimeAction> {
+    pub fn scroll(&mut self, ui: &mut Ui, delta: i32) -> Option<TimeAction> {
+        // The conversion report card's rows, while it is open; nothing
+        // under it moves.
+        if let Some(name) = self.report_on(ui) {
+            let card = match name {
+                SONG => ui
+                    .get_mut::<SongLanes>(SONG)
+                    .and_then(|l| l.report.as_mut()),
+                _ => ui
+                    .get_mut::<SongListView>(SONG_LIST)
+                    .and_then(|l| l.report.as_mut()),
+            };
+            if let Some(c) = card {
+                c.scroll(delta);
+            }
+            return None;
+        }
         if ui.layout_of(CLIPS_PAGE) == Some(EDIT_LAYOUT) {
             return Some(TimeAction::Edit(EditAction::Scroll(delta)));
         }
@@ -4528,6 +4582,39 @@ impl TimePage {
         let last = SLOTS.saturating_sub(rows) as i64;
         self.first_row = (self.first_row as i64 + i64::from(delta)).clamp(0, last) as usize;
         None
+    }
+
+    /// The widget the conversion report card is open over (the Song view
+    /// or the song list), when the page shows it: None when there is no
+    /// card or neither shows (the grid, the note editor).
+    pub fn report_on(&self, ui: &Ui) -> Option<&'static str> {
+        match ui.layout_of(CLIPS_PAGE)? {
+            SONG_LAYOUT | SONG_CARD_LAYOUT | SONG_SCENE_LAYOUT => ui
+                .get::<SongLanes>(SONG)
+                .is_some_and(|l| l.report.is_some())
+                .then_some(SONG),
+            LIST_LAYOUT | LIST_CARD_LAYOUT | LIST_SCENE_LAYOUT => ui
+                .get::<SongListView>(SONG_LIST)
+                .is_some_and(|l| l.report.is_some())
+                .then_some(SONG_LIST),
+            _ => None,
+        }
+    }
+
+    /// Where the conversion report card is on the screen, while it shows:
+    /// a touch outside it only closes it (the app's).
+    pub fn report_rect(&self, ui: &Ui) -> Option<mpfree_ui::Rect> {
+        let name = self.report_on(ui)?;
+        let r = ui.rect_of(name)?;
+        let card = match name {
+            SONG => ui.get::<SongLanes>(SONG)?.report.as_ref()?.card_rect(r),
+            _ => ui
+                .get::<SongListView>(SONG_LIST)?
+                .report
+                .as_ref()?
+                .card_rect(r),
+        };
+        Some(card)
     }
 
     /// The options list the wheel steps: the Edit options in the note
@@ -4688,6 +4775,19 @@ impl TimePage {
                 l.picked = st.list_pick;
                 l.looped = st.list_looped;
                 l.can_add = can_add;
+            }
+        }
+        // The conversion report card, over the list too (a new report
+        // starts at its first row).
+        let same_card = ui
+            .get::<SongListView>(SONG_LIST)
+            .is_some_and(|l| l.report.as_ref().map(|c| &c.report) == st.report.as_ref());
+        if !same_card {
+            if let Some(l) = ui.get_mut::<SongListView>(SONG_LIST) {
+                l.report = st
+                    .report
+                    .clone()
+                    .map(|r| ReportCard::new(r, &report_tracks(st)));
             }
         }
         // The blocks shown, while the placements are the same list: a frame
@@ -5485,7 +5585,7 @@ mod tests {
         for k in 0..4 {
             st.transport.position += 960;
             page.update(&mut ui, &st);
-            page.scroll(&ui, k);
+            page.scroll(&mut ui, k);
             page.update(&mut ui, &st);
             let l = ui.get::<SongLanes>(SONG).unwrap();
             assert_eq!(l.first_bar, (0..=k).sum::<i32>() as i64);
@@ -5544,7 +5644,7 @@ mod tests {
             (lanes.blocks.len(), lanes.legend.as_str()),
             (1, "3 bars · from bar 1")
         );
-        page.scroll(&ui, 4);
+        page.scroll(&mut ui, 4);
         assert_eq!(page.first_bar, 4, "the wheel scrolls bars");
         let song = |k: EventKind, st: &TimeState| action(&ev(SONG, k), st);
         assert_eq!(
@@ -7196,7 +7296,7 @@ mod tests {
         st.song_view = true;
         page.update(&mut ui, &st);
         assert_eq!(ui.layout_of(CLIPS_PAGE), Some(SONG_CARD_LAYOUT));
-        assert_eq!(page.scroll(&ui, 2), None);
+        assert_eq!(page.scroll(&mut ui, 2), None);
         assert_eq!(page.first_bar, 2);
         // Another clip focused: the card follows.
         st.armed = Some(1);

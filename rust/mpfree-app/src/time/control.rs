@@ -4490,7 +4490,7 @@ impl TimeControl {
                     .map_err(|e| format!("scenes → song: {e}"))?;
                 Ok((
                     format!(
-                        "scenes → song: {} rows from bar {}, {how}",
+                        "scenes → song: {} rows from bar {}{how}",
                         rows.len(),
                         at / bar.max(1) + 1
                     ),
@@ -4498,11 +4498,10 @@ impl TimeControl {
                 ))
             }
             TimeAction::SongToScenes => match song_to_scenes(&mut self.project, bar) {
-                Ok(done) if done.rows.is_empty() => {
-                    Ok(("song → scenes: the song is empty".into(), None))
-                }
+                // Nothing to make: said on the screen as a refusal is.
+                Ok(done) if done.rows.is_empty() => Err("song → scenes: the song is empty".into()),
                 Ok(done) => {
-                    let (how, which) = differences_said(&self.project, &done.differences, bar);
+                    let how = conversion_said(&self.project, &done.differences, bar);
                     let rows = &done.rows;
                     let made = rows_named(rows[0], rows[rows.len() - 1]);
                     self.report = report(
@@ -4515,10 +4514,7 @@ impl TimeControl {
                         &done.differences,
                         bar,
                     );
-                    Ok((
-                        format!("song → scenes: {made}, {how} (UNDO takes it back){which}"),
-                        None,
-                    ))
+                    Ok((format!("song → scenes: {made}{how}"), None))
                 }
                 Err(ModelError::NoRoom) => {
                     Err("song → scenes: not enough empty rows in a run".into())
@@ -4654,7 +4650,7 @@ impl TimeControl {
                     .map_err(|e| format!("list → song: {e}"))?;
                 Ok((
                     format!(
-                        "list → song: {n} steps from bar {}, {how}",
+                        "list → song: {n} steps from bar {}{how}",
                         at / bar.max(1) + 1
                     ),
                     Some(SongChange::ListToSong { steps: n }),
@@ -4668,8 +4664,9 @@ impl TimeControl {
     /// song ([`super::offline`], plan D7) from the first bar line after the
     /// song's end, and what Rec song recorded put in the song, with each
     /// step's scene's name above where it started. Where they start, and
-    /// how the song plays differently from the rows ("exact", or the
-    /// differences and what each is), or why nothing changed.
+    /// how the song plays differently from the rows (the end of the log
+    /// line: [`conversion_said`]), or why nothing changed; the report card
+    /// opens when it differs.
     fn rows_to_song(
         &mut self,
         steps: &[ListStep],
@@ -4712,9 +4709,8 @@ impl TimeControl {
         // New placements shift the indices.
         self.selected = None;
         self.section = None;
-        let (how, which) = differences_said(&self.project, &differences, bar);
         self.report = report(title, made, lead.into(), &differences, bar);
-        Ok((at, format!("{how}{which}")))
+        Ok((at, conversion_said(&self.project, &differences, bar)))
     }
 
     /// The morph bar on the mixer's mod engine (`modu`): the rows, the
@@ -6460,18 +6456,23 @@ fn report(
     }))
 }
 
-/// How a conversion played out, for its log line (plan D7): "exact", or
-/// how many differences and each in words ("2 differences" and ": Bass,
-/// bar 9: a note held over the row change is cut there; …").
-fn differences_said(project: &Project, d: &[Difference], bar: Tick) -> (String, String) {
+/// How an exact conversion's line ends: nothing opens, and the line shows
+/// in place of the hint as it is (layout spec 4n, main.rs `time_said`).
+pub const EXACT: &str = ", exact. UNDO takes it back.";
+
+/// How a conversion played out, the end of its log line (plan D7):
+/// [`EXACT`], or how many differences and each in words (", 2 differences
+/// (UNDO takes it back): Bass, bar 9: a note held over the row change is
+/// cut there; …"), which the report card shows too.
+fn conversion_said(project: &Project, d: &[Difference], bar: Tick) -> String {
     match d.len() {
-        0 => ("exact".into(), String::new()),
+        0 => EXACT.into(),
         n => {
             let each: Vec<String> = d.iter().map(|d| d.said(project, bar)).collect();
             let s = if n == 1 { "" } else { "s" };
-            (
-                format!("{n} difference{s}"),
-                format!(": {}", each.join("; ")),
+            format!(
+                ", {n} difference{s} (UNDO takes it back): {}",
+                each.join("; ")
             )
         }
     }

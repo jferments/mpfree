@@ -87,6 +87,7 @@ use std::f32::consts::TAU;
 pub use apart::Say;
 use apart::{Apart, Told};
 pub use audio::TimeAudio;
+pub use control::EXACT;
 pub use control::{MuteLight, PadTap, SongAudio, TimeControl};
 pub use follow::Follow;
 use link::Tracks;
@@ -7400,7 +7401,7 @@ mod tests {
             let said = h.act(TimeAction::SongToScenes).unwrap();
             assert_eq!(
                 said,
-                "song → scenes: rows 4 to 6, exact (UNDO takes it back)"
+                "song → scenes: rows 4 to 6, exact. UNDO takes it back."
             );
             // The rows alone, from the first, in a fresh host.
             let mut r = TimeHost::new(RATE, 120.0).unwrap();
@@ -7461,7 +7462,10 @@ mod tests {
         );
         // The song they make.
         let said = song.act(TimeAction::ScenesToSong).unwrap();
-        assert_eq!(said, "scenes → song: 3 rows from bar 1, exact");
+        assert_eq!(
+            said,
+            "scenes → song: 3 rows from bar 1, exact. UNDO takes it back."
+        );
         song.act(TimeAction::SongMode(true)).unwrap();
         let mut played = Fake::default();
         song.command(Command::Play);
@@ -7568,7 +7572,7 @@ mod tests {
         );
         h.control.project.arrangement.list.steps = vec![ListStep { row: 2, times: 1 }];
         let said = h.act(TimeAction::ListToSong).unwrap();
-        assert!(said.ends_with(", exact"), "{said}");
+        assert!(said.ends_with(EXACT), "{said}");
         assert_eq!(h.state().report, None);
     }
 
@@ -7646,7 +7650,10 @@ mod tests {
             by(&mut live, &mut heard, to);
             let mut song = TimeHost::with_project(RATE, 120.0, p.clone()).unwrap();
             let said = song.act(TimeAction::ListToSong).unwrap();
-            assert_eq!(said, "list → song: 4 steps from bar 1, exact");
+            assert_eq!(
+                said,
+                "list → song: 4 steps from bar 1, exact. UNDO takes it back."
+            );
             song.act(TimeAction::SongMode(true)).unwrap();
             let mut played = Fake::default();
             song.command(Command::Play);
@@ -7746,7 +7753,7 @@ mod tests {
         // Row 6 has a clip too: three rows, bars 1, 2 and 3.
         assert_eq!(
             h.act(TimeAction::ScenesToSong).unwrap(),
-            "scenes → song: 3 rows from bar 1, exact"
+            "scenes → song: 3 rows from bar 1, exact. UNDO takes it back."
         );
         let st = h.state();
         assert_eq!(st.placements.len(), 5);
@@ -7774,7 +7781,7 @@ mod tests {
         let takes = h.state().done.len();
         assert_eq!(
             h.act(TimeAction::SongToScenes).unwrap(),
-            "song → scenes: rows 3 to 5, exact (UNDO takes it back)"
+            "song → scenes: rows 3 to 5, exact. UNDO takes it back."
         );
         let p = &h.control.project;
         // Copies of the clips the song played, each with an id of its own.
@@ -8236,7 +8243,10 @@ mod tests {
         h.command(Command::Stop);
         run(&mut h, &mut pads, 6 * BAR, &[]);
         let said = h.act(TimeAction::ListToSong).unwrap();
-        assert_eq!(said, "list → song: 2 steps from bar 1, exact");
+        assert_eq!(
+            said,
+            "list → song: 2 steps from bar 1, exact. UNDO takes it back."
+        );
         let song = &h.control.project.arrangement;
         assert_eq!(song.markers.len(), 2);
         assert_eq!(song.end(), 3 * 3840);

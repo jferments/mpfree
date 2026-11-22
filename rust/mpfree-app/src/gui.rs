@@ -2351,6 +2351,10 @@ pub struct Player {
     /// The finger whose SHIFT + touch armed MIDI Learn: it does nothing
     /// else until it lifts.
     learn_finger: Option<u64>,
+    /// A finger that went down outside the conversion report card: it
+    /// closed the card, and nothing else hears it until it lifts (layout
+    /// spec 4n).
+    report_finger: Option<u64>,
     /// What MIDI Learn waits to give a control, from the app
     /// ([`ToUi::Learning`]): the hint line says so.
     learning: Option<String>,
@@ -2690,6 +2694,7 @@ impl Player {
             step_hold: None,
             guard_done: None,
             learn_finger: None,
+            report_finger: None,
             learning: None,
             history: None,
             recall: None,
@@ -6904,6 +6909,12 @@ impl Player {
                 View::Sequencer => format!("Tap a step: in or out   ·   hold a step: edit it   ·   Notes: the clip's notes   ·   \
                                             + Lane: a lock lane   ·   STEP SEQ: steps on the pads   ·   PAD BANK: bank   ·   \
                                             MENU: options   ·   {stop}"),
+                // The conversion report card (layout spec 4n).
+                View::Arrange if self.time_page.report_on(&self.ui).is_some() => self
+                    .time
+                    .report
+                    .as_deref()
+                    .map_or_else(String::new, time_view::report_hint),
                 View::Arrange if self.time_page.adding => mpfree_time_ui::song::ADD_HINT.to_string(),
                 View::Arrange if self.time.list_view => time_view::LIST_HINT.to_string(),
                 View::Arrange if self.time.song_view => time_view::song_hint(&self.time).to_string(),
@@ -9760,7 +9771,7 @@ impl Player {
                 delta,
                 scroll: true,
             } => {
-                if let Some(a) = self.time_page.scroll(&self.ui, delta) {
+                if let Some(a) = self.time_page.scroll(&mut self.ui, delta) {
                     self.outbox.push(FromUi::Time(a));
                 }
                 self.time_page.update(&mut self.ui, &self.time);
@@ -9821,7 +9832,9 @@ impl Player {
             let picked = self.time.selected.is_some()
                 || self.time.section.is_some()
                 || self.time.tempo_pick.is_some();
-            let song = self.view == View::Arrange && self.time.song_view;
+            let song = self.view == View::Arrange
+                && self.time.song_view
+                && self.time_page.report_on(&self.ui).is_none();
             if song && ((on && picked) || (!on && self.song_grab)) {
                 self.song_grab = on;
                 let name = self.song_picked_name();
@@ -9871,6 +9884,14 @@ impl Player {
                 if let Some(l) = self.ui.get_mut::<OptionList>(list) {
                     l.editing = on;
                 }
+            }
+            return;
+        }
+        // The conversion report card: the wheel scrolls its rows (when
+        // there are more than five) and nothing under it.
+        if self.view == View::Arrange && self.time_page.report_on(&self.ui).is_some() {
+            if let RowKey::Pick(d) | RowKey::Step(d) = k {
+                let _ = self.time_page.scroll(&mut self.ui, d);
             }
             return;
         }
@@ -12025,6 +12046,11 @@ impl Player {
                 c.open = false;
             }
         }
+        // Another page (MENU's options too) closes the conversion report
+        // card and keeps what the conversion did (layout spec 4n).
+        if self.view == View::Arrange && v != View::Arrange && self.time.report.is_some() {
+            self.outbox.push(FromUi::Time(TimeAction::CloseReport));
+        }
         if v == View::Pads && self.view != View::Pads && self.perform.shown {
             // Back on the Perform view: the app sends its throws' settings
             // again (the Mix tab may have turned them).
@@ -12447,6 +12473,10 @@ impl Player {
         if self.watch_guard(finger, phase, x, y) {
             return None;
         }
+        // The conversion report card: a touch outside it only closes it.
+        if let Some(a) = self.report_guard(finger, phase, x, y) {
+            return a;
+        }
         // SHIFT + a touch on a value: MIDI Learn waits for a control to
         // move it (layout spec 4d). That finger does nothing else until it
         // lifts.
@@ -12699,6 +12729,35 @@ impl Player {
             Touch::Move => self.chain_page.moved(finger, y),
             Touch::Up | Touch::Cancel => self.chain_page.lifted(finger),
         }
+    }
+
+    /// The conversion report card (layout spec 4n) while it shows: a finger
+    /// that goes down outside it closes it and keeps what the conversion
+    /// did, and does nothing else until it lifts. Some(the action) for a
+    /// finger it took; None for one that goes on as usual (on the card, or
+    /// no card).
+    fn report_guard(
+        &mut self,
+        finger: u64,
+        phase: Touch,
+        x: i32,
+        y: i32,
+    ) -> Option<Option<FromUi>> {
+        if self.report_finger == Some(finger) {
+            if matches!(phase, Touch::Up | Touch::Cancel) {
+                self.report_finger = None;
+            }
+            return Some(None);
+        }
+        if phase != Touch::Down || finger == WHEEL_FINGER || self.view != View::Arrange {
+            return None;
+        }
+        let card = self.time_page.report_rect(&self.ui)?;
+        if card.contains(x, y) {
+            return None;
+        }
+        self.report_finger = Some(finger);
+        Some(Some(FromUi::Time(TimeAction::CloseReport)))
     }
 
     /// Perform's guard (sequencer decision 5): in Perform, a finger down
@@ -17253,6 +17312,68 @@ fn io_section_screen(
     p
 }
 
+/// The song list sample (sequencer S4, mockup D), in Perform: seven
+/// steps, the fourth playing its third pass of four, the fifth picked.
+fn sample_list_state() -> Result<TimeState, String> {
+    use mpfree_time_ui::list::ListRow;
+    let mut st = mpfree_time_ui::sample::playing()?.state();
+    st.perform = true;
+    st.list_view = true;
+    st.song_view = false;
+    let steps = [
+        ("Intro", 0, 2, 4),
+        ("Verse", 1, 4, 4),
+        ("Verse B", 2, 2, 4),
+        ("Drop", 3, 4, 4),
+        ("Break", 4, 1, 8),
+        ("Drop", 3, 4, 4),
+        ("Outro", 5, 1, 4),
+    ];
+    let mut starts = 1;
+    st.list = steps
+        .iter()
+        .enumerate()
+        .map(|(k, &(name, row, times, len))| {
+            let r = ListRow {
+                name: name.to_string(),
+                row,
+                times,
+                bars: i64::from(times) * len,
+                starts,
+                playing: (k == 3).then_some((3, 0.62)),
+                waiting: false,
+            };
+            starts += r.bars;
+            r
+        })
+        .collect();
+    st.list_pick = Some(4);
+    Ok(st)
+}
+
+/// A conversion report (the Arrange refactor's 4.3) for the sample
+/// screens: each row's track (None: the song's), bar and words.
+fn sample_report(
+    title: &str,
+    made: &str,
+    lead: &str,
+    rows: &[(Option<usize>, i64, &str)],
+) -> std::sync::Arc<mpfree_time_ui::view::Report> {
+    std::sync::Arc::new(mpfree_time_ui::view::Report {
+        title: title.into(),
+        made: made.into(),
+        lead: lead.into(),
+        rows: rows
+            .iter()
+            .map(|&(track, bar, what)| mpfree_time_ui::view::ReportRow {
+                track,
+                bar,
+                what: what.into(),
+            })
+            .collect(),
+    })
+}
+
 pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> {
     let mut out = Vec::new();
     let mut loading = Player::new(fonts(), SCREEN, false, None);
@@ -18444,42 +18565,9 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }
     // The song list (sequencer S4, mockup D), in Perform: seven steps, the
     // fourth playing its third pass of four, the fifth picked.
-    match mpfree_time_ui::sample::playing() {
-        Ok(s) => {
-            use mpfree_time_ui::list::ListRow;
+    match sample_list_state() {
+        Ok(st) => {
             let mut p = quiet_player(fonts());
-            let mut st = s.state();
-            st.perform = true;
-            st.list_view = true;
-            st.song_view = false;
-            let steps = [
-                ("Intro", 0, 2, 4),
-                ("Verse", 1, 4, 4),
-                ("Verse B", 2, 2, 4),
-                ("Drop", 3, 4, 4),
-                ("Break", 4, 1, 8),
-                ("Drop", 3, 4, 4),
-                ("Outro", 5, 1, 4),
-            ];
-            let mut starts = 1;
-            st.list = steps
-                .iter()
-                .enumerate()
-                .map(|(k, &(name, row, times, len))| {
-                    let r = ListRow {
-                        name: name.to_string(),
-                        row,
-                        times,
-                        bars: i64::from(times) * len,
-                        starts,
-                        playing: (k == 3).then_some((3, 0.62)),
-                        waiting: false,
-                    };
-                    starts += r.bars;
-                    r
-                })
-                .collect();
-            st.list_pick = Some(4);
             p.apply(ToUi::Time(Box::new(st)));
             p.apply(ToUi::Show(View::Arrange));
             out.push(("arrange-list", p));
@@ -18684,6 +18772,87 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("arrange-song-panel-mix", p));
         }
         Err(e) => eprintln!("arrange-song-panel-mix sample: {e}"),
+    }
+    // The conversion report card (the Arrange refactor's 4.3, layout spec
+    // 4n), its four boards: Song → scenes with four differences over the
+    // Song view; List → song with its one over the song list; an exact
+    // one, said in place of the hint; nine, the rows scrolling.
+    let random = "plays in Random order; the copy rolls its own order";
+    let chance = "notes with a chance; the copy rolls them its own way";
+    let held = "a note held over the row change is cut there";
+    let tempo = "the song's tempo changes; the rows play at the project's tempo";
+    let lead = "Launch row 9 and the rows play the song, except:";
+    let four = [
+        (None, 1, tempo),
+        (Some(1), 5, held),
+        (Some(2), 9, random),
+        (Some(3), 9, chance),
+    ];
+    let nine = [
+        (None, 1, tempo),
+        (None, 1, "the song's morph moves; the rows don't play them"),
+        (
+            Some(0),
+            5,
+            "its A:B, 1ST, PRE and NEI conditions count again from here",
+        ),
+        (Some(1), 5, held),
+        (Some(2), 9, random),
+        (Some(3), 9, chance),
+        (Some(0), 13, "its play direction starts again here"),
+        (Some(1), 13, held),
+        (Some(2), 17, random),
+    ];
+    for (name, rows) in [
+        ("arrange-report", &four[..]),
+        ("arrange-report-scrolls", &nine[..]),
+    ] {
+        match mpfree_time_ui::sample::busy_song_state() {
+            Ok(mut state) => {
+                state.selected = None;
+                let made = if rows.len() > 5 {
+                    "rows 9 to 14"
+                } else {
+                    "rows 9 to 11"
+                };
+                state.report = Some(sample_report("SONG → SCENES", made, lead, rows));
+                let mut p = quiet_player(fonts());
+                busy_sounds(&mut p);
+                p.apply(ToUi::Time(Box::new(state)));
+                p.apply(ToUi::Show(View::Arrange));
+                out.push((name, p));
+            }
+            Err(e) => eprintln!("{name} sample: {e}"),
+        }
+    }
+    match sample_list_state() {
+        Ok(mut st) => {
+            st.report = Some(sample_report(
+                "LIST → SONG",
+                "bars 1 to 76",
+                "The song plays the list, except:",
+                &[(None, 33, "the scene's program changes aren't in the song")],
+            ));
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-report-list", p));
+        }
+        Err(e) => eprintln!("arrange-report-list sample: {e}"),
+    }
+    match mpfree_time_ui::sample::busy_song_state() {
+        Ok(state) => {
+            let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            p.tell(&format!(
+                "song → scenes: rows 9 to 11{}",
+                crate::time::EXACT
+            ));
+            out.push(("arrange-report-exact", p));
+        }
+        Err(e) => eprintln!("arrange-report-exact sample: {e}"),
     }
     // The vocal's take lanes open under its lane (layout spec 4c): take 2
     // plays over bars 5-8, take 1 everywhere else.
@@ -20611,6 +20780,124 @@ mod tests {
         assert_eq!(p.take_actions(), deleted);
         p.touch(1, Touch::Up, x, y);
         assert!(p.take_actions().is_empty());
+    }
+
+    /// The conversion report card (the Arrange refactor's 4.3, layout spec
+    /// 4n) over the Song view: its own hint; Done closes it and UNDO takes
+    /// the conversion back; the wheel scrolls its rows and nothing under
+    /// it; a tap outside it only closes it (that finger does nothing else
+    /// until it lifts), and a tap on the card between its controls does
+    /// nothing; another page closes it. Over the song list the same, and
+    /// with the report gone the Song view is as it was.
+    #[test]
+    fn the_conversion_report_card_closes_on_done_a_tap_outside_or_a_page_change() {
+        use crate::app::RowKey;
+        use mpfree_time_ui::song::SongLanes;
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        let tap = |p: &mut Player, (x, y): (i32, i32)| -> Vec<FromUi> {
+            let down = p.touch(1, Touch::Down, x, y);
+            let up = down.or(p.touch(1, Touch::Up, x, y));
+            up.into_iter().chain(p.take_actions()).collect()
+        };
+        let at = |p: &Player, id: &str| {
+            p.ui.targets()
+                .into_iter()
+                .find(|t| t.target.id == id)
+                .unwrap_or_else(|| panic!("{id}"))
+                .target
+                .centre()
+        };
+        let held = "a note held over the row change is cut there";
+        let rows: Vec<(Option<usize>, i64, &str)> = (0..9)
+            .map(|k| (Some(k % 3), 1 + 4 * k as i64, held))
+            .collect();
+        let mut st = mpfree_time_ui::sample::busy_song_state().unwrap();
+        st.selected = None;
+        let song = st.clone();
+        st.report = Some(sample_report(
+            "SONG → SCENES",
+            "rows 9 to 14",
+            "Launch row 9 and the rows play the song, except:",
+            &rows,
+        ));
+        let mut p = quiet_player(Fonts::embedded());
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        p.apply(ToUi::Show(View::Arrange));
+        let _ = p.take_actions();
+        assert!(
+            hint(&p).starts_with(
+                "Done: close it and keep the rows   ·   UNDO: take it all back   ·   drag the list"
+            ),
+            "{}",
+            hint(&p)
+        );
+        // Only the card's controls on the Song view.
+        let ids: Vec<&str> =
+            p.ui.targets()
+                .into_iter()
+                .filter(|t| t.widget == time_view::SONG)
+                .map(|t| t.target.id)
+                .collect();
+        assert_eq!(ids, ["report-undo", "report-done", "report-rows"]);
+        let done = at(&p, "report-done");
+        assert_eq!(tap(&mut p, done), [FromUi::Time(TimeAction::CloseReport)]);
+        let undo = at(&p, "report-undo");
+        assert_eq!(tap(&mut p, undo), [FromUi::Time(TimeAction::Undo)]);
+        // The wheel: the rows, to the last five; nothing else moves.
+        let top = |p: &Player| {
+            p.ui.get::<SongLanes>(time_view::SONG)
+                .and_then(|l| l.report.as_ref())
+                .map(|c| c.top)
+        };
+        p.apply(ToUi::Rows(RowKey::Pick(2)));
+        p.apply(ToUi::Rows(RowKey::Pick(9)));
+        assert_eq!(top(&p), Some(4));
+        assert!(p.take_actions().is_empty());
+        // A tap between the card's controls: nothing. Outside it (the
+        // Record panel's Mode row): the card closes, and that's all.
+        let card = p.time_page.report_rect(&p.ui).unwrap();
+        assert!(tap(&mut p, (card.x + 30, card.y + 30)).is_empty());
+        let outside = (1000, 271);
+        assert!(!card.contains(outside.0, outside.1));
+        assert_eq!(
+            p.touch(2, Touch::Down, outside.0, outside.1),
+            Some(FromUi::Time(TimeAction::CloseReport))
+        );
+        assert_eq!(p.touch(2, Touch::Move, outside.0 + 80, outside.1), None);
+        assert_eq!(p.touch(2, Touch::Up, outside.0 + 80, outside.1), None);
+        assert!(p.take_actions().is_empty());
+        // Another page closes it.
+        p.apply(ToUi::Show(View::Play));
+        assert!(p
+            .take_actions()
+            .contains(&FromUi::Time(TimeAction::CloseReport)));
+        // Over the song list: List → song's card keeps the song.
+        st.song_view = false;
+        st.list_view = true;
+        st.report = Some(sample_report(
+            "LIST → SONG",
+            "bars 1 to 8",
+            "The song plays the list, except:",
+            &[(None, 5, "the scene's program changes aren't in the song")],
+        ));
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        p.apply(ToUi::Show(View::Arrange));
+        let _ = p.take_actions();
+        assert_eq!(
+            hint(&p),
+            "Done: close it and keep the song   ·   UNDO, here or on the MPC: take it all back   ·   a tap outside or a page change keeps it"
+        );
+        let done = at(&p, "report-done");
+        assert_eq!(tap(&mut p, done), [FromUi::Time(TimeAction::CloseReport)]);
+        // Closed: the Song view as it was, and a tap outside is its own.
+        p.apply(ToUi::Time(Box::new(song)));
+        assert_eq!(p.time_page.report_rect(&p.ui), None);
+        assert_eq!(hint(&p), time_view::song_hint(&p.time));
+        assert!(p
+            .ui
+            .targets()
+            .into_iter()
+            .any(|t| t.widget == time_view::SONG && t.target.id == "block"));
     }
 
     /// The song list on Arrange (sequencer S4): MAIN in Perform goes
