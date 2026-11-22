@@ -2,7 +2,8 @@
 //! `--preview DIR` draws the console and every sample screen into new PNG
 //! files and opens no device. (Its other modes need the MPC.)
 //!
-//! Each screen is also compared with a stored fingerprint, golden/screens.txt:
+//! Each screen is also compared with a stored fingerprint, golden/screens.txt
+//! (and in the Light theme, golden/screens-light.txt):
 //! the mean brightness of every 20x20 cell, within 1 level. A screen that
 //! changes on purpose gets new references in the same PR, with the reason in
 //! the commit:
@@ -154,13 +155,20 @@ fn screen_differs(want: &str, got: &str) -> Option<String> {
     None
 }
 
-fn golden_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("golden/screens.txt")
+/// The golden screens of a theme: golden/screens.txt for the default,
+/// golden/screens-NAME.txt for another built-in theme.
+fn golden_path(theme: &str) -> PathBuf {
+    let file = match theme {
+        "default" => "golden/screens.txt".to_string(),
+        t => format!("golden/screens-{t}.txt"),
+    };
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(file)
 }
 
-/// Compares every PNG in `dir` with golden/screens.txt, or rewrites it when
-/// MPFREE_GOLDEN_BLESS is set.
-fn check_screens(dir: &Path, names: &[String]) {
+/// Compares every PNG in `dir` with `theme`'s golden screens, or rewrites
+/// them when MPFREE_GOLDEN_BLESS is set.
+fn check_screens(dir: &Path, names: &[String], theme: &str) {
+    let golden = golden_path(theme);
     let got: Vec<(String, String)> = names
         .iter()
         .map(|n| {
@@ -179,19 +187,19 @@ fn check_screens(dir: &Path, names: &[String]) {
         for (n, p) in &got {
             text.push_str(&format!("{n} {p}\n"));
         }
-        std::fs::create_dir_all(golden_path().parent().unwrap()).unwrap();
-        std::fs::write(golden_path(), text).unwrap();
+        std::fs::create_dir_all(golden.parent().unwrap()).unwrap();
+        std::fs::write(&golden, text).unwrap();
         eprintln!(
             "wrote {} screen fingerprints to {}",
             got.len(),
-            golden_path().display()
+            golden.display()
         );
         return;
     }
-    let text = std::fs::read_to_string(golden_path()).unwrap_or_else(|e| {
+    let text = std::fs::read_to_string(&golden).unwrap_or_else(|e| {
         panic!(
             "{}: {e} (bless with MPFREE_GOLDEN_BLESS=1)",
-            golden_path().display()
+            golden.display()
         )
     });
     let want: Vec<(String, String)> = text
@@ -220,10 +228,11 @@ fn check_screens(dir: &Path, names: &[String]) {
     }
     assert!(
         problems.is_empty(),
-        "{} of {} screens look different from golden/screens.txt (pictures in {}):\n{}\n\
+        "{} of {} screens look different from {} (pictures in {}):\n{}\n\
          If the change is meant, bless the new screens: MPFREE_GOLDEN_BLESS=1 cargo test -p mpfree-app --test cli",
         problems.len(),
         got.len(),
+        golden.display(),
         dir.display(),
         problems.join("\n")
     );
@@ -296,8 +305,33 @@ fn preview_draws_every_screen_as_a_new_png() {
     // PNGs of the right size (above); its floating point may round a few
     // edge pixels differently, so it is not held to x86-64's fingerprints.
     if cfg!(target_arch = "x86_64") {
-        check_screens(&dir, &names);
+        check_screens(&dir, &names, "default");
     }
+}
+
+/// Every screen in Light, against its own golden screens (x86-64 only, as
+/// above; the ARMv7 run under qemu skips it, to keep its memory for the
+/// default's).
+#[test]
+fn preview_draws_every_screen_in_light() {
+    if !cfg!(target_arch = "x86_64") {
+        return;
+    }
+    let dir = folder("light");
+    let out = hello(&["--preview", dir.to_str().unwrap(), "--theme", "light"]);
+    assert!(
+        out.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert!(names.len() > 100, "{} screens", names.len());
+    check_screens(&dir, &names, "light");
 }
 
 #[test]

@@ -1,10 +1,10 @@
 <!--
-covers: rust/mpfree-synth/src/table_osc.rs rust/mpfree-synth/src/analog.rs rust/mpfree-synth/src/squelch.rs rust/mpfree-synth/src/dsp.rs rust/mpfree-sampler/src/engine.rs rust/mpfree-sampler/src/bandlimit.rs rust/mpfree-fx/src/oversample.rs rust/mpfree-fx/src/adaa.rs rust/mpfree-fx/src/resample.rs rust/mpfree-fxlab/src/synth.rs rust/mpfree-fxlab/src/sampler.rs
+covers: rust/mpfree-app/src/rate_probe.rs rust/mpfree-synth/src/table_osc.rs rust/mpfree-synth/src/analog.rs rust/mpfree-synth/src/squelch.rs rust/mpfree-synth/src/dsp.rs rust/mpfree-sampler/src/engine.rs rust/mpfree-sampler/src/bandlimit.rs rust/mpfree-fx/src/oversample.rs rust/mpfree-fx/src/adaa.rs rust/mpfree-fx/src/resample.rs rust/mpfree-fxlab/src/synth.rs rust/mpfree-fxlab/src/sampler.rs
 checked: 2026-11-22 0df0743b
 -->
 # DSP quality: fizz, filters near the top and the sample rate
 
-**Status:** plan approved by the owner on 2026-11-22; phase 0 (measures, the rate probe, reference renders, the full-project check) is being built. **No sound has changed yet.** Design doc with both outside reviews and the answers to them: "DSP quality" (https://claude.ai/artifact/5jsLgS5ZaRoHzpvVbEUgZ5). Related pages: [FX quality](fx-quality.md), [Synth quality](synth-quality.md), [Drive and Character](fx-drive.md), [Synth library: architecture and roadmap](synth-architecture.md), [Disk streaming](disk-streaming.md), [Profiling](profiling.md).
+**Status:** plan approved by the owner on 2026-11-22; phase 0 (measures, the rate probe, reference renders, the full-project check) is being built; the rate probe's code is written and has not run on the MPC. **No sound has changed yet.** Design doc with both outside reviews and the answers to them: "DSP quality" (https://claude.ai/artifact/5jsLgS5ZaRoHzpvVbEUgZ5). Related pages: [FX quality](fx-quality.md), [Synth quality](synth-quality.md), [Drive and Character](fx-drive.md), [Synth library: architecture and roadmap](synth-architecture.md), [Disk streaming](disk-streaming.md), [Profiling](profiling.md).
 
 ## Why
 
@@ -142,7 +142,7 @@ NEON kernels stay bit-exact with their plain loops (no fused multiply-add on ARM
 The supported sample rates of the MPC One's converters are not known ([Audio runtime](../hardware/audio-runtime.md) records only 44.1 kHz). The codec is `inmusic,acva-audio-codec`, configured by pins with no control bus, behind the RK3288's I2S block. Step 0.3 asks the driver, read-only:
 
 - For each of 44.1, 48, 88.2, 96, 176.4 and 192 kHz, on card 1's playback and capture devices (`pcmC1D0p`, `pcmC1D0c`), it asks whether the driver would accept that rate (the HW_REFINE question, `Pcm::refine` in `alsa.rs`), and prints the formats and channel counts it allows.
-- It runs in `mpfree inventory` (step 4 of `host_app_mpc.py`, on a stick whose Akai app is not running) and also in the pad player, which logs the same answers just before it sets up its usual stream, because on a stick that starts the pad player at power-on the player holds the device and inventory would only see "busy".
+- It runs in `mpfree inventory` (step 4 of `host_app_mpc.py`, on a stick whose Akai app is not running), which opens each device itself. On a stick that starts the pad player at power-on the player holds the playback device and inventory sees it busy, so the pad player asks the same questions of the playback device it has just opened and logs the answers before it sets up its usual stream (`open_acva` in `main.rs`). The code is `rust/mpfree-app/src/rate_probe.rs`; its tests check each rule below that a workstation can check.
 
 **Rules the probe's code keeps:**
 
