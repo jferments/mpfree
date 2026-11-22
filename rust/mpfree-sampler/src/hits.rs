@@ -6,22 +6,22 @@
 //! attacks ([`mpfree_stretch::hits`], at [`SENSITIVITY`]). They are found
 //! once a sound, the first time such a pad is built into the engine's view,
 //! and shared by every clone of the sound, like its octave copies
-//! ([`crate::bandlimit::OctaveCell`]): at once for a short sound, on their
-//! own thread for a longer one. A voice takes them if they are found by the
+//! ([`crate::bandlimit::OctaveCell`]): at once for a short sound, on the
+//! sampler's job service ([`crate::jobs`], its sound lane) for a longer one. A voice takes them if they are found by the
 //! time it starts, else plays without them for its life, so what it plays
 //! never hangs on a thread's timing.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Sender};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
+use crate::jobs::{Job, Jobs, Key, Lane, Order};
 use crate::model::Pcm;
 
 /// How readily a change counts as a hit: the stretch's own default.
 pub const SENSITIVITY: f32 = 0.6;
 
 /// Sounds up to this many frames (1.5 s at 44.1 kHz) are searched at once
-/// when a view is built; longer ones on the hits' own thread.
+/// when a view is built; longer ones on the job service.
 pub const SYNC_FRAMES: usize = 1 << 16;
 
 /// Sounds longer than this (6.3 minutes at 44.1 kHz) are not searched.
@@ -57,39 +57,33 @@ fn find(data: &Pcm, channels: usize, rate: u32) -> Vec<u64> {
     mpfree_stretch::hits(&data.all_f32(), channels, rate, SENSITIVITY)
 }
 
-struct Job {
-    cell: Arc<HitCell>,
-    data: Pcm,
-    channels: usize,
-    rate: u32,
+/// What searching a sound of `frames` frames and `channels` channels holds:
+/// its samples as floats, and their mono mix for the hit finder.
+pub fn need(frames: usize, channels: usize) -> u64 {
+    let f = frames as u64;
+    f.saturating_mul(4 * channels as u64)
+        .saturating_add(f.saturating_mul(4))
+        .saturating_add(1_000_000)
 }
 
-static FINDER: OnceLock<Option<Mutex<Sender<Job>>>> = OnceLock::new();
-
-fn finder() -> Option<&'static Mutex<Sender<Job>>> {
-    FINDER
-        .get_or_init(|| {
-            let (tx, rx) = channel::<Job>();
-            std::thread::Builder::new()
-                .name("mpfree-hits".into())
-                .spawn(move || {
-                    for job in rx {
-                        let h = find(&job.data, job.channels, job.rate);
-                        let _ = job.cell.found.set(h);
-                    }
-                })
-                .ok()
-                .map(|_| Mutex::new(tx))
-        })
-        .as_ref()
+/// The service's key for a sound's hits: its cell, which the job holds.
+fn key(cell: &Arc<HitCell>) -> Key {
+    Key::new("hits", Arc::as_ptr(cell) as usize as u64)
 }
 
 /// Makes sure a sound's hits are found or on their way: at once for a
-/// sound of up to [`SYNC_FRAMES`] frames, on the hits' own thread for a
-/// longer one, never for one longer than [`MAX_FRAMES`]. Does nothing if
-/// they are found or asked for already. Off the audio thread only (it may
-/// allocate, and briefly wait for the queue).
+/// sound of up to [`SYNC_FRAMES`] frames, on the process's job service
+/// ([`Jobs::shared`]) for a longer one, never for one longer than
+/// [`MAX_FRAMES`]. Does nothing if they are found or asked for already. A
+/// search the memory floor can't spare is refused (and counted by the
+/// service), and a later call asks again. Off the audio thread only (it may
+/// allocate, and briefly wait for the service's lock).
 pub fn prepare(cell: &Arc<HitCell>, data: &Pcm, channels: u8, rate: u32) {
+    prepare_on(&Jobs::shared(), cell, data, channels, rate);
+}
+
+/// [`prepare`] on `jobs`.
+fn prepare_on(jobs: &Jobs, cell: &Arc<HitCell>, data: &Pcm, channels: u8, rate: u32) {
     if cell.found.get().is_some() {
         return;
     }
@@ -105,18 +99,18 @@ pub fn prepare(cell: &Arc<HitCell>, data: &Pcm, channels: u8, rate: u32) {
     if cell.asked.swap(true, Ordering::AcqRel) {
         return;
     }
-    let job = Job {
-        cell: cell.clone(),
-        data: data.clone(),
-        channels,
-        rate,
-    };
-    let sent = finder().is_some_and(|f| f.lock().map(|tx| tx.send(job).is_ok()).unwrap_or(false));
-    if !sent {
-        // No thread for it: leave the sound without hits, and let a later
-        // call try again.
-        cell.asked.store(false, Ordering::Release);
-    }
+    let (found, refused) = (cell.clone(), cell.clone());
+    let data = data.clone();
+    jobs.submit(
+        Job::new(Lane::Sound, key(cell), move |_| {
+            let _ = found.found.set(find(&data, channels, rate));
+        })
+        .order(Order::First)
+        .needs(need(frames, channels), move |_| {
+            // Left without hits for now: the next view built asks again.
+            refused.asked.store(false, Ordering::Release);
+        }),
+    );
 }
 
 /// Finds a sound's hits here and now (any length up to [`MAX_FRAMES`]), if
@@ -157,7 +151,7 @@ mod tests {
         let (data, at) = bursts(44_100, 2.0);
         let cell = Arc::new(HitCell::default());
         prepare(&cell, &Pcm::F32(data.into()), 1, 44_100);
-        // 2 s is more than SYNC_FRAMES: wait for the thread.
+        // 2 s is more than SYNC_FRAMES: wait for the job service.
         let t = std::time::Instant::now();
         while cell.get().is_none() && t.elapsed().as_secs() < 30 {
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -171,6 +165,53 @@ mod tests {
             );
         }
         assert!(hits.len() <= at.len(), "{hits:?}");
+    }
+
+    /// A service with 1 MB more than the floor free.
+    fn short() -> Jobs {
+        Jobs::new(crate::jobs::Config {
+            free: || Some(257_000_000),
+            room: |free, need| match free {
+                Some(f) if f.saturating_sub(need) >= 256_000_000 => Ok(()),
+                _ => Err("not enough memory".into()),
+            },
+            ..crate::jobs::Config::default()
+        })
+    }
+
+    #[test]
+    fn a_long_sounds_search_runs_on_the_job_service_and_a_refused_one_is_asked_again() {
+        let (data, _) = bursts(44_100, 2.0);
+        let data = Pcm::F32(data.into());
+        // 2 s of mono needs about 1.7 MB: refused, and asked for again.
+        assert!(need(88_200, 1) > 1_000_000);
+        let jobs = short();
+        let cell = Arc::new(HitCell::default());
+        prepare_on(&jobs, &cell, &data, 1, 44_100);
+        let t = std::time::Instant::now();
+        while jobs.counts().refused == 0 {
+            assert!(t.elapsed().as_secs() < 30, "never refused");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(cell.get().is_none());
+        assert!(
+            !cell.asked.load(Ordering::Acquire),
+            "a later call asks again"
+        );
+        // With room, it is found on the service.
+        let jobs = Jobs::new(crate::jobs::Config::default());
+        prepare_on(&jobs, &cell, &data, 1, 44_100);
+        assert!(jobs.has(key(&cell)) || cell.get().is_some());
+        let t = std::time::Instant::now();
+        while cell.get().is_none() {
+            assert!(t.elapsed().as_secs() < 30, "never found");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(jobs.counts().done, 1);
+        // Found: never asked for again.
+        prepare_on(&jobs, &cell, &data, 1, 44_100);
+        assert!(!jobs.busy());
+        assert_eq!(jobs.counts().done, 1);
     }
 
     #[test]

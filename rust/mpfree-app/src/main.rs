@@ -3016,23 +3016,31 @@ fn loop_sets_tempo(
     take: Option<bool>,
     exporting: bool,
 ) -> (LoopStart, Option<f64>) {
-    let Some((n, bars, bpm, at)) = looper.take_tempo() else {
+    let Some((n, r, at)) = looper.take_tempo() else {
         return (None, None);
     };
-    match start_song_on_note(time, at, Some(bpm), take, exporting) {
-        Ok(more) => (
-            Some((
-                format!(
-                    "looper: Loop {} is {} at {bpm:.2} BPM: the song starts at that tempo{}",
-                    n + 1,
-                    looping::bars_words_n(bars),
-                    more.map(|m| format!("; {m}")).unwrap_or_default()
-                ),
-                false,
-            )),
-            Some(bpm),
+    match start_song_on_note(time, at, Some(r.bpm), take, exporting) {
+        Ok(more) => {
+            // A close call, or a Length it couldn't keep: on the screen too.
+            let note = looping::reading_note(&r);
+            (
+                Some((
+                    format!(
+                        "looper: Loop {} is {}: the song starts at that tempo{}{}",
+                        n + 1,
+                        looping::reading_words(&r),
+                        more.map(|m| format!("; {m}")).unwrap_or_default(),
+                        note.as_ref().map(|w| format!(" ({w})")).unwrap_or_default()
+                    ),
+                    note.is_some(),
+                )),
+                Some(r.bpm),
+            )
+        }
+        Err(why) => (
+            Some((looper.tempo_refused(n, r.bars, r.bpm, &why), true)),
+            None,
         ),
-        Err(why) => (Some((looper.tempo_refused(n, bars, bpm, &why), true)), None),
     }
 }
 
@@ -6173,9 +6181,10 @@ fn time_action(
     // the project's tempo stays; otherwise it is the project's.
     let a = match a {
         TimeAction::Transport(Command::SetTempo(bpm)) if time.song_tempo_plays() => {
+            app.tempo_by_hand = true;
             TimeAction::SongTempo(TempoEdit::AtPlayhead(bpm))
         }
-        TimeAction::Transport(Command::SetTempo(bpm)) => return app.set_tempo(bpm),
+        TimeAction::Transport(Command::SetTempo(bpm)) => return app.set_tempo_by_hand(bpm),
         // A track picked while REC's arm is pinned is selected alone: the
         // Sequencer edits it and the pads follow it, and REC stays where
         // it was pinned (refactor C1). Only a tap on Arm or a row of REC's
@@ -6186,6 +6195,15 @@ fn time_action(
     // The audio lanes' touches go to the audio tracks; a pick stays with
     // the time engine, which keeps the selection.
     if let TimeAction::Audio(aa) = a {
+        // The audio tracks' own Undo and Redo at a song edit's step the
+        // song no longer reaches: the step is forgotten (Arrange 3.4).
+        if matches!(aa, AudioAction::Undo | AudioAction::Redo) {
+            let undo = matches!(aa, AudioAction::Undo);
+            if let Some(line) = tracks.forget_song_step(undo, |n| time.song_reaches(n, undo)) {
+                out.note(&format!("audio tracks: {line}"));
+                return Vec::new();
+            }
+        }
         if !matches!(aa, AudioAction::Pick(_)) {
             match tracks.action(aa, &time.info(), looper.line.is_open()) {
                 Ok(line) if !line.is_empty() => out.note(&line),
@@ -6249,6 +6267,18 @@ fn time_action(
         | TimeAction::SnapBack
         | TimeAction::KeepMorph
         | TimeAction::SaveScene(_) => Some(time.morph(a, &mut mix.modu, &mix.mixer)),
+        // A song time edit, UNDO and REDO with audio regions (or a song
+        // edit's step on their history): the regions move with the song
+        // in the same period, or nothing moves (Arrange 3.4). Apart too,
+        // the control half borrowed back for it.
+        TimeAction::MoveSection { .. }
+        | TimeAction::SongBars(_)
+        | TimeAction::Undo
+        | TimeAction::Redo
+            if tracks.host.tracks.has_regions() || tracks.host.tracks.has_song_steps() =>
+        {
+            Some(time.act_with_audio(a, tracks))
+        }
         // Apart (--time-thread), the action goes to the editing side's
         // thread and what it says comes back later ([`time_said`]).
         _ => time.act_then(a, say.clone()),
@@ -7715,6 +7745,8 @@ fn player_session(
                     if let Some(bpm) = o.tempo {
                         fx.extend(app.set_tempo(bpm));
                     }
+                    // The project's tempo is left from before, not set now.
+                    app.tempo_by_hand = false;
                     if let Some(mut t) = o.time.take() {
                         // The metronome is the system's: it stays as it is.
                         (t.metronome, t.click_gain) = (time.metronome, time.click_gain);
@@ -8361,7 +8393,7 @@ fn player_session(
                             // Without set_tempo's log line: a knob would
                             // fill the log.
                             fx.extend(
-                                app.set_tempo(bpm)
+                                app.set_tempo_by_hand(bpm)
                                     .into_iter()
                                     .filter(|e| !matches!(e, app::Effect::Note(_))),
                             );
@@ -9343,6 +9375,8 @@ fn player_session(
         // as it is.
         if let Some(bpm) = loop_tempo.take() {
             fx.extend(app.set_tempo(bpm));
+            // The loop's, not set by hand.
+            app.tempo_by_hand = false;
         }
         // The time engine's editing side on its own thread
         // (--time-thread): what its answers say, as each caller asked,
@@ -10702,6 +10736,7 @@ fn player_session(
             &time,
             export.running(),
         ));
+        looper.set_tempo_meant(app.tempo_by_hand);
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);
         // A loop that heard the line input with the song stopped starts it.
         let take = app.rec.ready.map(|take| take == rec_arm::Take::Add);
@@ -12039,6 +12074,8 @@ fn main() {
         Path::new(REPORT_DIR).join("report.txt"),
         Path::new(REPORT_DIR).join(crash::RUNNING),
     );
+    // The sampler's job service, before anything asks it for work.
+    mpfree_sampler::jobs::configure(sample_page::jobs_config());
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = parse_args(&args).and_then(read_script).and_then(|o| {
         // Both draw every sample screen, whose one frame needs more stack
@@ -12735,6 +12772,330 @@ mod tests {
                     && u.ends_with("Track 1 / 1")),
             "{said:?}"
         );
+    }
+
+    /// The Song view with audio regions (Arrange 3.4): the pad loop's
+    /// engines, a period at a time.
+    struct SongRig {
+        out: Out,
+        time: time::TimeHost,
+        app: app::App,
+        mix: mixing::MixHost,
+        tracks: audiotracks::TrackHost,
+        looper: looping::LoopHost,
+    }
+
+    impl SongRig {
+        const BAR: mpfree_transport::Tick = 3840;
+
+        /// Markers A, B and C at bars 1, 3 and 4 and a bar of audio on
+        /// audio 1 in B (a take put back from a save), apart (the editing
+        /// side on its own thread) or together.
+        fn new(apart: bool) -> SongRig {
+            let mut out = Out {
+                console: None,
+                sink: None,
+                dropped: 0,
+                report: None,
+                queued: None,
+                last_draw: Instant::now(),
+            };
+            let time = time::TimeHost::new(RATE, 120.0).unwrap();
+            let time = if apart {
+                time_apart(&mut out, time)
+            } else {
+                time
+            };
+            assert_eq!(time.apart(), apart);
+            let mut r = SongRig {
+                out,
+                time,
+                app: app::App::new(RATE, false),
+                mix: mixing::MixHost::new(RATE, -6.0, -6.0),
+                tracks: audiotracks::TrackHost::new(RATE, 10),
+                looper: looping::LoopHost::new(RATE, 1),
+            };
+            let frames = 2 * RATE as usize;
+            let take = mpfree_audiotracks::save::TakeFile {
+                id: 0,
+                track: 0,
+                group: 0,
+                pass: 0,
+                bpm: 120.0,
+                anchor: (2 * Self::BAR) as f64,
+                frames,
+                channels: 1,
+                file: String::new(),
+                audio: vec![0.25; frames],
+            };
+            assert!(r.tracks.host.tracks.load_take(take).is_ok());
+            while r.tracks.host.tracks.loading() > 0 {
+                r.period();
+            }
+            let map = *r.time.tempo_map();
+            assert!(r.tracks.host.tracks.place(0, &[], &map));
+            for bar in [0, 2, 3] {
+                let add = mpfree_time_ui::view::MarkerEdit::Add(bar * Self::BAR);
+                r.act(TimeAction::SongMarker(add));
+            }
+            r.settle(|r| r.markers() == "A B C");
+            assert_eq!(r.audio(), 2 * Self::BAR);
+            r
+        }
+
+        /// A period as the pad loop runs one: the transport, the clips,
+        /// then the audio tracks.
+        fn period(&mut self) {
+            struct Quiet;
+            impl time::Pads for Quiet {
+                fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
+                    true
+                }
+                fn release_at(&mut self, _: u16, _: usize, _: u32) {}
+                fn stop_all(&mut self) {}
+                fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
+            }
+            let z = [0f32; PERIOD];
+            let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
+            self.time.advance(PERIOD as u32);
+            self.time.period(PERIOD as u32, &mut Quiet);
+            let (block, map) = (self.time.block(), self.time.tempo_map());
+            let song_on = self.time.song_on();
+            self.tracks
+                .period(block, map, song_on, (&z, &z), (&mut l, &mut r));
+        }
+
+        /// The action as the screen sends it, and what it said (apart, the
+        /// answer comes later: [`SongRig::settle`] collects it).
+        fn act(&mut self, a: TimeAction) -> Vec<app::Effect> {
+            let r = self;
+            time_action(
+                &mut r.out,
+                &mut r.time,
+                &mut r.tracks,
+                &r.looper,
+                &mut r.app,
+                &mut r.mix,
+                a,
+            )
+        }
+
+        /// Periods until `done` holds (apart, the answers come back).
+        fn settle(&mut self, done: impl Fn(&SongRig) -> bool) {
+            let t0 = Instant::now();
+            while !done(self) {
+                assert!(t0.elapsed() < Duration::from_secs(10), "{}", self.markers());
+                for (say, r) in self.time.take_said() {
+                    time_said(&mut self.out, say, r);
+                }
+                self.period();
+                std::thread::sleep(Duration::from_micros(200));
+            }
+        }
+
+        /// The song's markers, in order.
+        fn markers(&self) -> String {
+            let m = &self.time.project().arrangement.markers;
+            m.iter()
+                .map(|m| m.name.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+
+        /// Where audio 1's first region starts.
+        fn audio(&self) -> mpfree_transport::Tick {
+            self.tracks.host.tracks.regions(0)[0].start
+        }
+
+        /// What an action told the screen.
+        fn told(fx: &[app::Effect]) -> String {
+            match fx {
+                [app::Effect::Tell(l)] => l.clone(),
+                fx => panic!("{fx:?}"),
+            }
+        }
+    }
+
+    /// Arrange 3.4: a section moved or + Bar moves the audio regions in it
+    /// in the first period after, with the song; UNDO and REDO move them
+    /// back and on with it; the audio row's own Undo stops at the song's
+    /// edit; a recording, or an audio change waiting for the period,
+    /// refuses the edit and nothing moves anywhere; UNDO with the audio
+    /// tracks' step gone leaves the regions, says so and counts it.
+    #[test]
+    fn song_edits_move_the_audio_regions_with_the_song() {
+        let bar = SongRig::BAR;
+        let mut r = SongRig::new(false);
+        // B moved to the start: the audio in it goes with it, in the first
+        // period after.
+        let fx = r.act(TimeAction::MoveSection {
+            marker: 1,
+            gap: 0,
+            copy: false,
+        });
+        assert!(SongRig::told(&fx).contains("moved"), "{fx:?}");
+        assert_eq!(r.markers(), "B A C");
+        r.period();
+        assert_eq!(r.audio(), 0);
+        // The audio row's Undo stops at it; the song's UNDO takes both back.
+        let info = r.time.info();
+        let e = r.tracks.action(AudioAction::Undo, &info, true).unwrap_err();
+        assert!(e.contains("UNDO takes it back, with the song"), "{e}");
+        let fx = r.act(TimeAction::Undo);
+        assert!(SongRig::told(&fx).starts_with("Undid "), "{fx:?}");
+        assert_eq!(r.markers(), "A B C");
+        r.period();
+        assert_eq!(r.audio(), 2 * bar);
+        let e = r.tracks.action(AudioAction::Redo, &info, true).unwrap_err();
+        assert!(e.contains("SHIFT + UNDO brings it back"), "{e}");
+        r.act(TimeAction::Redo);
+        r.period();
+        assert_eq!((r.markers().as_str(), r.audio()), ("B A C", 0));
+        // + Bar before B, twice: one UNDO takes both bars back, from the
+        // song and the audio.
+        for _ in 0..2 {
+            r.act(TimeAction::SongBars(
+                mpfree_time_ui::view::BarsEdit::RoomBefore(0),
+            ));
+            r.period();
+        }
+        assert_eq!(r.audio(), 2 * bar);
+        r.act(TimeAction::Undo);
+        r.period();
+        assert_eq!(r.audio(), 0);
+        r.act(TimeAction::Redo);
+        r.period();
+        assert_eq!(r.audio(), 2 * bar);
+        // An audio change waiting for the period: the edit waits, nothing
+        // moves anywhere.
+        let edits = r.time.project().arrangement.clone();
+        assert!(r.tracks.host.command(mpfree_audiotracks::Command::SetGain {
+            track: 0,
+            at: 2 * bar + 10,
+            gain: 0.5,
+        }));
+        let fx = r.act(TimeAction::MoveSection {
+            marker: 1,
+            gap: 3,
+            copy: false,
+        });
+        assert!(
+            SongRig::told(&fx).contains("taking the last change"),
+            "{fx:?}"
+        );
+        let fx = r.act(TimeAction::Undo);
+        assert!(SongRig::told(&fx).starts_with("UNDO waits: "), "{fx:?}");
+        r.period();
+        assert!(r.time.project().arrangement == edits);
+        assert_eq!(r.audio(), 2 * bar);
+        // Edited since: UNDO waits for the audio's own Undo.
+        let fx = r.act(TimeAction::Undo);
+        assert!(
+            SongRig::told(&fx).contains("pick a region, then Undo"),
+            "{fx:?}"
+        );
+        r.tracks.action(AudioAction::Undo, &info, true).unwrap();
+        r.period();
+        // The tracks' history cleared: UNDO takes the song back, the
+        // regions stay, and it is said and counted.
+        r.tracks
+            .host
+            .command(mpfree_audiotracks::Command::ClearHistory);
+        r.period();
+        let fx = r.act(TimeAction::Undo);
+        let said = SongRig::told(&fx);
+        assert!(
+            said.starts_with("Undid ") && said.contains("stay where they are"),
+            "{said}"
+        );
+        r.period();
+        assert_eq!((r.markers().as_str(), r.audio()), ("B A C", 2 * bar));
+        assert!(
+            r.time
+                .describe()
+                .contains("1 song edits undone with the audio regions left where they were"),
+            "{}",
+            r.time.describe()
+        );
+        // REDO makes the same edit again on the regions as they are.
+        r.act(TimeAction::Redo);
+        r.period();
+        assert_eq!(r.audio(), 4 * bar);
+        // While audio 1 records, a section move is refused, and nothing
+        // moves anywhere.
+        r.act(TimeAction::SongMode(true));
+        r.tracks
+            .action(AudioAction::Arm { track: 0, on: true }, &info, true)
+            .unwrap();
+        r.period();
+        assert!(r.time.command(mpfree_transport::Command::Record));
+        r.settle(|r| r.tracks.host.tracks.recording(0).is_some());
+        let before = r.time.project().arrangement.clone();
+        let fx = r.act(TimeAction::MoveSection {
+            marker: 0,
+            gap: 3,
+            copy: false,
+        });
+        assert_eq!(
+            SongRig::told(&fx),
+            "song: nothing moved: audio 1 is recording (stop it first)"
+        );
+        r.period();
+        assert!(r.time.project().arrangement == before);
+        assert_eq!(r.audio(), 4 * bar);
+    }
+
+    /// A bar put in before a section, an audio change, then another bar
+    /// there: two UNDOs, each taking back its own bar from the song and
+    /// the audio (one couldn't take both back from the regions past the
+    /// change).
+    #[test]
+    fn a_bar_put_in_after_an_audio_change_is_an_undo_of_its_own() {
+        let bar = SongRig::BAR;
+        let mut r = SongRig::new(false);
+        let b_at = |r: &SongRig| r.time.project().arrangement.markers[1].at;
+        let room = TimeAction::SongBars(mpfree_time_ui::view::BarsEdit::RoomBefore(1));
+        r.act(room.clone());
+        r.period();
+        assert!(r.tracks.host.command(mpfree_audiotracks::Command::SetGain {
+            track: 0,
+            at: 3 * bar + 10,
+            gain: 0.8,
+        }));
+        r.period();
+        r.act(room);
+        r.period();
+        assert_eq!((b_at(&r), r.audio()), (4 * bar, 4 * bar));
+        r.act(TimeAction::Undo);
+        r.period();
+        assert_eq!((b_at(&r), r.audio()), (3 * bar, 3 * bar));
+        let info = r.time.info();
+        r.tracks.action(AudioAction::Undo, &info, true).unwrap();
+        r.period();
+        r.act(TimeAction::Undo);
+        r.period();
+        assert_eq!((b_at(&r), r.audio()), (2 * bar, 2 * bar));
+    }
+
+    /// The same apart (--time-thread): the control half is lent for the
+    /// edit, so the song and the audio still move in the same period.
+    #[test]
+    fn apart_song_edits_move_the_audio_regions_with_the_song() {
+        let bar = SongRig::BAR;
+        let mut r = SongRig::new(true);
+        let fx = r.act(TimeAction::MoveSection {
+            marker: 1,
+            gap: 0,
+            copy: false,
+        });
+        assert!(SongRig::told(&fx).contains("moved"), "said at once: {fx:?}");
+        r.period();
+        assert_eq!(r.audio(), 0);
+        r.settle(|r| r.markers() == "B A C");
+        r.act(TimeAction::Undo);
+        r.period();
+        assert_eq!(r.audio(), 2 * bar);
+        r.settle(|r| r.markers() == "A B C");
     }
 
     #[test]
