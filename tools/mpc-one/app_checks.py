@@ -397,7 +397,7 @@ CHECKS = (
          "2. Press TRACK MUTE: it lights. Pad colours: bright green plays a clip, dim green has nothing launched,",
          "   red is muted, dark has no track. Hit pads 1 and 2 to mute them, then again to unmute.",
          "3. Press PAD BANK B: the pads show tracks 17-32, or stay dark if there are none. PAD BANK A goes back.",
-         "4. Press SHIFT + TRACK MUTE: each pad mutes itself in the kit (red while muted). Press it again,",
+         "4. Press SHIFT + TRACK MUTE: each pad mutes itself on the selected track (red while muted). Press it again,",
          "   then TRACK MUTE to put the pads back. STOP."],
         [("TRACK MUTE muted and unmuted tracks", seen(r"^track mute: .* muted", r"^track mute: .* plays")),
          ("PAD BANK picked another 16 tracks", seen(r"^TRACK MUTE \S+ bank [B-H]: "))],
@@ -406,7 +406,7 @@ CHECKS = (
          "track_mute_banks_pick_which_16_tracks_the_pads_mute",
          "track_mute_turns_the_pads_into_track_mutes_and_back",
          "track_mute_takes_the_perc_out_of_the_hook_and_back",
-         "track_mute_banks_reach_past_16_tracks_and_shift_mutes_the_kits_pads",
+         "track_mute_banks_reach_past_16_tracks_and_shift_mutes_the_tracks_pads",
          "track_mute_writes_its_mutes_and_its_bank"],
         needs=['TRACK MUTE', 'PAD BANK A/E', 'PAD BANK B/F']),
     Check(
