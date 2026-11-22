@@ -1,16 +1,24 @@
-//! Shared by the stream tests: sound files whose every sample says which
-//! file and which frame it is, and a rig that runs a player and its
-//! coordinator period by period in one thread.
-
-#![allow(dead_code)]
+//! The stream tests' kit, for this crate's tests and for any engine built
+//! on the layer (behind the `testkit` feature): sound files and memory
+//! sounds whose every sample says which sound and which frame it is, a
+//! checker that tells whether a period played exactly what it should, and
+//! a rig that runs a player and its coordinator period by period in one
+//! thread.
+//!
+//! The checker is the unload and replace test's: every frame played must
+//! be silence, or exactly the frame it should be of the generation the
+//! sound thread has now. An engine's own test makes its cursors play
+//! marked sounds, captures [`Expect::of`] each cursor before its period
+//! and checks after.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
-use mpfree_stream::coord::{Coordinator, Inline, Plan};
-use mpfree_stream::cursor::Cursor;
-use mpfree_stream::player::{Config, Player};
+use crate::coord::{Coordinator, Inline, Plan};
+use crate::cursor::Cursor;
+use crate::player::{Config, Player};
 
 /// A fresh folder for one test's files.
 pub fn folder(name: &str) -> PathBuf {
@@ -159,5 +167,102 @@ impl Rig {
                 quiet = 0;
             }
         }
+    }
+}
+
+/// A memory sound of `frames` frames marked like [`wav`]'s 24-bit and
+/// float files.
+pub fn memory(channels: u16, frames: u64, marker: u32) -> Arc<[f32]> {
+    let ch = usize::from(channels);
+    (0..frames as usize * ch)
+        .map(|i| played(marker, (i / ch) as u64, i % ch))
+        .collect()
+}
+
+/// `count` marked files of `frames` stereo frames, 24-bit and float in
+/// turn: the k-th open of a run (generation k, when every open goes
+/// through one coordinator) gets file [`marker`]`(k, count)`.
+pub fn files(dir: &Path, frames: u64, count: u32) -> Vec<PathBuf> {
+    (1..=count)
+        .map(|m| {
+            let p = dir.join(format!("{m}.wav"));
+            let store = if m % 2 == 0 {
+                Store::Float
+            } else {
+                Store::Pcm24
+            };
+            wav(&p, store, 2, frames, m);
+            p
+        })
+        .collect()
+}
+
+/// The marker of the file opened as generation `gen` from [`files`].
+pub fn marker(gen: u32, count: u32) -> u32 {
+    (gen - 1) % count + 1
+}
+
+/// What a cursor should play this period, taken just before it plays (at
+/// speed 1 from a whole frame).
+#[derive(Clone, Copy, Debug)]
+pub struct Expect {
+    pub source: u16,
+    pub from: u64,
+    pub looping: Option<(u64, u64)>,
+    pub end: Option<u64>,
+}
+
+impl Expect {
+    pub fn of(k: &Cursor) -> Expect {
+        Expect {
+            source: k.source(),
+            from: k.frame(),
+            looping: k.looping(),
+            end: k.end(),
+        }
+    }
+
+    /// Check a period's output (stereo) against the source as the sound
+    /// thread has it now: each frame silent, or exactly the frame it
+    /// should be of the sound of `marker_of(generation)`, which is
+    /// `frames` long. Panics on the first frame that isn't. Gives the
+    /// frames that played sound.
+    pub fn check(
+        &self,
+        p: &Player,
+        out: &[f32],
+        frames: u64,
+        marker_of: impl Fn(u32) -> u32,
+    ) -> u64 {
+        let (gen, open) = p.source(self.source).expect("a source");
+        let mut sounding = 0;
+        for (j, f) in out.chunks_exact(2).enumerate() {
+            if f == [0.0, 0.0] {
+                continue;
+            }
+            assert!(open, "a closed source played (source {})", self.source);
+            let at = self.from + j as u64;
+            let file = match self.looping {
+                Some((s, e)) if self.from < e && at >= e => s + (at - e) % (e - s),
+                _ => at,
+            };
+            assert!(file < frames, "played past the end");
+            assert!(
+                self.end.is_none_or(|e| file < e),
+                "played past the cursor's end"
+            );
+            let v = unplay(f[0]);
+            let (m, lo) = (v >> 16, v & 0xFFFF);
+            assert_eq!(
+                m,
+                marker_of(gen),
+                "audio of another generation (source {})",
+                self.source
+            );
+            assert_eq!(u64::from(lo), file & 0xFFFF, "audio of another frame");
+            assert_eq!(unplay(f[1]), (file >> 16) as u32 + 1, "half a frame");
+            sounding += 1;
+        }
+        sounding
     }
 }

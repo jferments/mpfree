@@ -12,8 +12,9 @@
 
 use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
+use std::sync::Arc;
 
-use crate::msg::{FromPlayer, Tag, ToPlayer, Where, MAX_CURSORS, MAX_SOURCES};
+use crate::msg::{FromPlayer, Place, Tag, ToPlayer, Where, MAX_CURSORS, MAX_SOURCES};
 
 /// Samples (floats) in one cache unit: 64 KiB of float.
 pub const UNIT: usize = 16_384;
@@ -101,6 +102,12 @@ struct Copying {
 
 const EMPTY: u64 = u64::MAX;
 
+/// The most messages that can wait to go back at once: every buffer, a
+/// refusal for each, every memory source, and a place for every cursor.
+fn back(cfg: &Config) -> usize {
+    2 * cfg.buffers + MAX_SOURCES + MAX_CURSORS
+}
+
 fn key(source: u16, unit: u32) -> u64 {
     (u64::from(source) << 32) | u64::from(unit)
 }
@@ -115,6 +122,8 @@ pub struct Player {
     tx: SyncSender<FromPlayer>,
     project: u32,
     sources: Vec<Source>,
+    /// Memory sources' frames, by source.
+    resident: Vec<Option<Arc<[f32]>>>,
     data: Vec<f32>,
     slots: Vec<Slot>,
     keys: Vec<u64>,
@@ -137,8 +146,7 @@ impl Player {
     /// the coordinator). Allocates everything it will ever use.
     pub fn new(cfg: Config) -> (Player, Receiver<FromPlayer>, SyncSender<ToPlayer>) {
         let (to_tx, to_rx) = std::sync::mpsc::sync_channel(cfg.messages.max(1) * 4);
-        let (from_tx, from_rx) =
-            std::sync::mpsc::sync_channel(cfg.buffers + MAX_CURSORS + cfg.messages.max(1));
+        let (from_tx, from_rx) = std::sync::mpsc::sync_channel(back(&cfg) + cfg.messages.max(1));
         let size = (cfg.slots * 2).next_power_of_two().max(16);
         let p = Player {
             cfg,
@@ -154,6 +162,7 @@ impl Player {
                 };
                 MAX_SOURCES
             ],
+            resident: vec![None; MAX_SOURCES],
             data: vec![0.0; cfg.slots * UNIT],
             slots: vec![
                 Slot {
@@ -167,7 +176,7 @@ impl Player {
             vals: vec![0; size],
             mask: size - 1,
             copying: None,
-            held: VecDeque::with_capacity(2 * cfg.buffers + MAX_CURSORS),
+            held: VecDeque::with_capacity(back(&cfg) + cfg.buffers),
             wants: vec![None; MAX_CURSORS],
             noted: Vec::with_capacity(MAX_CURSORS),
             since_plan: 0,
@@ -198,6 +207,30 @@ impl Player {
             .get(usize::from(source))
             .filter(|s| s.open)
             .map(|s| (s.channels, s.frames))
+    }
+
+    /// Whether frames `from..from + frames` of `source` would all play
+    /// now (a launch's check at its boundary): open, and every unit Ready
+    /// (a memory source always is). Frames past the end don't count.
+    pub fn covers(&self, source: u16, from: u64, frames: u64) -> bool {
+        let Some(src) = self.sources.get(usize::from(source)).copied() else {
+            return false;
+        };
+        if !src.open {
+            return false;
+        }
+        if self.resident[usize::from(source)].is_some() {
+            return true;
+        }
+        let end = (from + frames).min(src.frames);
+        if from >= end {
+            return true;
+        }
+        let uf = unit_frames(src.channels);
+        ((from / uf) as u32..end.div_ceil(uf) as u32).all(|u| {
+            self.find(source, u)
+                .is_some_and(|s| self.slots[s].state == State::Ready)
+        })
     }
 
     /// Units ready to play.
@@ -339,12 +372,40 @@ impl Player {
         match m {
             ToPlayer::Project(p) => {
                 self.project = p;
-                for s in &mut self.sources {
-                    s.open = false;
+                for s in 0..MAX_SOURCES {
+                    self.sources[s].open = false;
+                    self.give_back(s);
+                }
+                if let Some(c) = self.copying.take() {
+                    self.send(FromPlayer::Back(c.buf));
                 }
                 for s in 0..self.slots.len() {
                     self.free(s);
                 }
+            }
+            ToPlayer::Resident {
+                tag,
+                channels,
+                data,
+            } => {
+                let Some(old) = self.sources.get(usize::from(tag.source)).copied() else {
+                    self.send(FromPlayer::Resident(data));
+                    return;
+                };
+                let ch = channels.clamp(1, 2);
+                if tag.project != self.project || tag.gen <= old.gen || channels != ch {
+                    self.stats.stale += 1;
+                    self.send(FromPlayer::Resident(data));
+                    return;
+                }
+                self.drop_source(tag.source);
+                self.sources[usize::from(tag.source)] = Source {
+                    gen: tag.gen,
+                    open: true,
+                    channels: ch,
+                    frames: (data.len() / usize::from(ch)) as u64,
+                };
+                self.resident[usize::from(tag.source)] = Some(data);
             }
             ToPlayer::Open {
                 tag,
@@ -422,7 +483,15 @@ impl Player {
         }
     }
 
+    /// A memory source's frames go back to the coordinator.
+    fn give_back(&mut self, s: usize) {
+        if let Some(d) = self.resident[s].take() {
+            self.send(FromPlayer::Resident(d));
+        }
+    }
+
     fn drop_source(&mut self, source: u16) {
+        self.give_back(usize::from(source));
         if let Some(c) = &self.copying {
             if c.tag.source == source {
                 let c = self.copying.take().expect("checked");
@@ -495,6 +564,15 @@ impl Player {
             out.fill(0.0);
             return 0;
         }
+        if let Some(d) = &self.resident[usize::from(source)] {
+            let first = usize::try_from(from)
+                .unwrap_or(usize::MAX)
+                .min(d.len() / ch);
+            let n = (d.len() / ch - first).min(frames as usize) * ch;
+            out[..n].copy_from_slice(&d[first * ch..first * ch + n]);
+            out[n..].fill(0.0);
+            return 0;
+        }
         let uf = unit_frames(src.channels);
         let mut missed = 0;
         let mut f = from;
@@ -524,17 +602,10 @@ impl Player {
         missed
     }
 
-    /// Note that cursor `cursor` plays `source` at `frame` this period
+    /// Note that cursor `cursor` plays `source` at `place` this period
     /// (the last note of a round is posted). A cursor id at or past
     /// [`MAX_CURSORS`] is ignored.
-    pub fn playing(
-        &mut self,
-        source: u16,
-        cursor: u16,
-        frame: u64,
-        speed: f64,
-        looping: Option<(u64, u64)>,
-    ) {
+    pub fn playing(&mut self, source: u16, cursor: u16, place: Place) {
         let c = usize::from(cursor);
         if c >= MAX_CURSORS {
             return;
@@ -553,9 +624,7 @@ impl Player {
             },
             cursor,
             round: self.round,
-            frame,
-            speed,
-            looping,
+            place,
         };
         if self.wants[c].replace(w).is_none() {
             self.noted.push(cursor);

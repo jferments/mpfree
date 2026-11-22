@@ -10,3 +10,10 @@ name = "mpfree_stream"
 path = "src/lib.rs"
 
 [dependencies]
+
+[features]
+# Marked sounds and the frame checker, for tests built on the layer.
+testkit = []
+
+[dev-dependencies]
+mpfree-stream = { path = ".", features = ["testkit"] }

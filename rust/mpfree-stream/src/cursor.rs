@@ -9,12 +9,18 @@
 //! from a whole frame that gives the file's own samples, bit for bit.
 //! (A band-limited read for rate changes comes with stems, phase P3.)
 //!
+//! A cursor can stop at an end frame (a region that is part of a take):
+//! frames from there on are silent, not counted and not read ahead. A
+//! start is a seek, and a start partway into a period is a call with the
+//! rest of the period's buffer.
+//!
 //! Output is always stereo, interleaved; a mono source plays in both.
 //! Frames whose unit isn't cached play silence and are counted as missed;
 //! the neighbours the interpolation looks at are not counted.
 //!
 //! Nothing here allocates once the cursor is made.
 
+use crate::msg::Place;
 use crate::player::Player;
 
 /// The fastest a cursor moves: four file frames an output frame.
@@ -35,6 +41,7 @@ pub struct Cursor {
     frac: f64,
     speed: f64,
     looping: Option<(u64, u64)>,
+    end: Option<u64>,
     /// Gathered frames, interleaved in the source's channels.
     gathered: Box<[f32]>,
 }
@@ -53,6 +60,7 @@ impl Cursor {
             frac: 0.0,
             speed: 1.0,
             looping: None,
+            end: None,
             gathered: vec![0.0; GATHER * 2].into_boxed_slice(),
         }
     }
@@ -112,6 +120,26 @@ impl Cursor {
         self.looping = looping.filter(|&(s, e)| e > s);
     }
 
+    pub fn end(&self) -> Option<u64> {
+        self.end
+    }
+
+    /// Stop at file frame `end`: from there on it plays silence, not
+    /// counted as missed, and nothing past it is read ahead.
+    pub fn set_end(&mut self, end: Option<u64>) {
+        self.end = end;
+    }
+
+    /// Where it plays and how it moves, as posted to the coordinator.
+    pub fn place(&self) -> Place {
+        Place {
+            frame: self.pos,
+            speed: self.speed,
+            looping: self.looping,
+            end: self.end,
+        }
+    }
+
     /// The file frame that `frame` (counted on from the cursor without
     /// wrapping) lands on, round the loop if the cursor is inside it.
     fn wrap(&self, frame: u64) -> u64 {
@@ -138,7 +166,15 @@ impl Cursor {
                 Some((_, e)) if self.pos < e && f < e => e - f,
                 _ => u64::MAX,
             };
-            let run = (n - k).min(usize::try_from(run_end).unwrap_or(usize::MAX));
+            let mut run = (n - k).min(usize::try_from(run_end).unwrap_or(usize::MAX));
+            let stop = self.end.unwrap_or(u64::MAX);
+            if f >= stop {
+                // Past the end: silence, the rest of this run too.
+                self.gathered[(at + k) * ch..(at + k + run) * ch].fill(0.0);
+                k += run;
+                continue;
+            }
+            run = run.min(usize::try_from(stop - f).unwrap_or(usize::MAX));
             let out = &mut self.gathered[(at + k) * ch..(at + k + run) * ch];
             missed += if count {
                 p.read(self.source, f, out)
@@ -158,7 +194,7 @@ impl Cursor {
             out.fill(0.0);
             return 0;
         };
-        p.playing(self.source, self.id, self.pos, self.speed, self.looping);
+        p.playing(self.source, self.id, self.place());
         if out.len() % 2 == 1 {
             out[out.len() - 1] = 0.0;
         }
@@ -178,7 +214,11 @@ impl Cursor {
                     Some((s, e)) if self.pos == s && self.pos < e => e - 1,
                     _ => self.pos - 1,
                 };
-                self.gather_one(p, before, 0);
+                if self.end.is_some_and(|e| before >= e) {
+                    self.gathered[..ch].fill(0.0);
+                } else {
+                    self.gather_one(p, before, 0);
+                }
             }
             missed += self.gather(p, self.pos, span, 1, true);
             self.gather(p, self.pos + span as u64, 2, 1 + span, false);

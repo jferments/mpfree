@@ -9,6 +9,8 @@
 //!   who owns a chunk.
 //! - [`player`]: the sound thread's side: the cache it owns and reads.
 //! - [`cursor`]: one voice's place in a source: seeks, speed, loops.
+//! - `testkit` (feature `testkit`): marked sounds and the frame checker,
+//!   for this crate's tests and engines built on the layer.
 //! - [`coord`]: the coordinator: sources and their files, read planning
 //!   by deadline, and the I/O thread that only reads.
 
@@ -19,3 +21,5 @@ pub mod cursor;
 pub mod format;
 pub mod msg;
 pub mod player;
+#[cfg(feature = "testkit")]
+pub mod testkit;

@@ -12,15 +12,14 @@
 //! coordinator's work (which may allocate) and other tests aren't
 //! counted.
 
-mod common;
-
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
-use common::{folder, wav, Rig, Store};
 use mpfree_stream::coord::Plan;
 use mpfree_stream::cursor::Cursor;
+use mpfree_stream::msg::Place;
 use mpfree_stream::player::Config;
+use mpfree_stream::testkit::{folder, wav, Rig, Store};
 
 struct Counting;
 thread_local! {
@@ -84,6 +83,7 @@ fn the_sound_threads_calls_never_allocate() {
     let plan = Plan {
         window_s: 1.0,
         in_flight: 6,
+        ..Plan::default()
     };
     let mut rig = Rig::new(cfg, plan);
     rig.c.new_project();
@@ -137,7 +137,16 @@ fn the_sound_threads_calls_never_allocate() {
         }
         rig.p.read(0, next(frames), &mut raw[..n]);
         rig.p.peek(1, next(frames), &mut raw[..n]);
-        rig.p.playing(2, 400, next(frames), 1.0, None);
+        rig.p.playing(
+            2,
+            400,
+            Place {
+                frame: next(frames),
+                speed: 1.0,
+                looping: None,
+                end: None,
+            },
+        );
         rig.p.end(n as u32);
         let _ = (
             rig.p.ready(),

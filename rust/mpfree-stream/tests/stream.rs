@@ -4,15 +4,14 @@
 //! replace test: a source closed, replaced or invalidated mid-play never
 //! plays old or half-written audio.
 
-mod common;
-
 use std::collections::HashMap;
-use std::path::PathBuf;
 
-use common::{folder, played, played16, unplay, wav, Rig, Store};
 use mpfree_stream::coord::{Coordinator, Device, IoThread, Plan, ReadReply, ReadReq};
 use mpfree_stream::cursor::Cursor;
 use mpfree_stream::player::{unit_frames, Config, Player};
+use mpfree_stream::testkit::{
+    files, folder, marker, memory, played, played16, wav, Expect, Rig, Store,
+};
 
 fn small() -> Config {
     Config {
@@ -265,28 +264,6 @@ fn failed_and_short_reads_are_counted_and_never_played() {
     );
 }
 
-/// Sixty-four files: the k-th open (generation k) gets file
-/// `(k - 1) % 64 + 1`, so the sound thread can tell which generation a
-/// sample came from.
-fn files(dir: &std::path::Path, frames: u64) -> Vec<PathBuf> {
-    (1..=64u32)
-        .map(|m| {
-            let p = dir.join(format!("{m}.wav"));
-            let store = if m % 2 == 0 {
-                Store::Float
-            } else {
-                Store::Pcm24
-            };
-            wav(&p, store, 2, frames, m);
-            p
-        })
-        .collect()
-}
-
-fn marker(gen: u32) -> u32 {
-    (gen - 1) % 64 + 1
-}
-
 /// A small generator, so the test is the same every run.
 struct Lcg(u64);
 impl Lcg {
@@ -299,39 +276,11 @@ impl Lcg {
     }
 }
 
-/// Check one cursor's period: every frame silent, or exactly the frame it
-/// should be of the generation the sound thread has now.
-fn check(p: &Player, k: &Cursor, from: u64, looping: Option<(u64, u64)>, out: &[f32], frames: u64) {
-    let (gen, open) = p.source(k.source()).expect("a source");
-    for (j, f) in out.chunks_exact(2).enumerate() {
-        if f == [0.0, 0.0] {
-            continue;
-        }
-        assert!(open, "a closed source played");
-        let at = from + j as u64;
-        let file = match looping {
-            Some((s, e)) if from < e && at >= e => s + (at - e) % (e - s),
-            _ => at,
-        };
-        assert!(file < frames, "played past the end");
-        let v = unplay(f[0]);
-        let (m, lo) = (v >> 16, v & 0xFFFF);
-        assert_eq!(
-            m,
-            marker(gen),
-            "audio of another generation (source {})",
-            k.source()
-        );
-        assert_eq!(u64::from(lo), file & 0xFFFF, "audio of another frame");
-        assert_eq!(unplay(f[1]), (file >> 16) as u32 + 1, "half a frame");
-    }
-}
-
 #[test]
 fn unload_and_replace_mid_play_never_play_old_audio() {
     let dir = folder("unload");
     let frames = 40_000u64;
-    let paths = files(&dir, frames);
+    let paths = files(&dir, frames, 64);
     // A cache too small for everything: slots are reused all the time.
     let cfg = Config {
         slots: 12,
@@ -341,16 +290,21 @@ fn unload_and_replace_mid_play_never_play_old_audio() {
     let plan = Plan {
         window_s: 0.5,
         in_flight: 4,
+        ..Plan::default()
     };
     let mut rig = Rig::new(cfg, plan);
     rig.c.new_project();
     let mut gen = 0u32;
+    // Every fourth open is a sound held in memory instead of a file.
     let open = |rig: &mut Rig, s: u16, gen: &mut u32| {
         *gen += 1;
-        let tag = rig
-            .c
-            .open(s, &paths[(marker(*gen) - 1) as usize])
-            .expect("opens");
+        let m = marker(*gen, 64);
+        let tag = if gen.is_multiple_of(4) {
+            rig.c.open_memory(s, 2, memory(2, frames, m))
+        } else {
+            rig.c.open(s, &paths[(m - 1) as usize])
+        }
+        .expect("opens");
         assert_eq!(tag.gen, *gen);
     };
     for s in 0..4 {
@@ -360,6 +314,7 @@ fn unload_and_replace_mid_play_never_play_old_audio() {
     let mut r = Lcg(7);
     let mut played_frames = 0u64;
     let mut ops: HashMap<&str, u32> = HashMap::new();
+    let mut holds = Vec::new();
     for _ in 0..6_000 {
         match r.next(40) {
             0 => {
@@ -395,16 +350,33 @@ fn unload_and_replace_mid_play_never_play_old_audio() {
                 }
                 *ops.entry("project").or_default() += 1;
             }
+            6 => {
+                let k = &mut ks[r.next(6) as usize];
+                let e = r.next(frames + 5_000);
+                k.set_end((r.next(2) == 0).then_some(e));
+                *ops.entry("end").or_default() += 1;
+            }
+            7 => {
+                let s = r.next(4) as u16;
+                let from = r.next(frames);
+                if let Ok(h) = rig.c.hold(s, from, from + 1 + r.next(10_000), None) {
+                    holds.push(h);
+                    *ops.entry("hold").or_default() += 1;
+                }
+            }
+            8 if !holds.is_empty() => {
+                let h = holds.swap_remove(r.next(holds.len() as u64) as usize);
+                rig.c.release_hold(h);
+            }
             _ => {}
         }
         let n = 1 + r.next(300) as usize;
         rig.p.begin();
         for k in ks.iter_mut() {
-            let from = k.frame();
-            let looping = k.looping();
+            let e = Expect::of(k);
             let mut out = vec![0.0; n * 2];
             k.play(&mut rig.p, &mut out);
-            check(&rig.p, k, from, looping, &out, frames);
+            e.check(&rig.p, &out, frames, |g| marker(g, 64));
             played_frames += out.chunks_exact(2).filter(|f| f != &[0.0, 0.0]).count() as u64;
         }
         rig.p.end(n as u32);
@@ -414,7 +386,9 @@ fn unload_and_replace_mid_play_never_play_old_audio() {
     }
     // It did play, and did all of it.
     assert!(played_frames > 1_000_000, "played {played_frames}");
-    for op in ["replace", "close", "seek", "loop", "move", "project"] {
+    for op in [
+        "replace", "close", "seek", "loop", "move", "project", "end", "hold",
+    ] {
         assert!(ops.get(op).copied().unwrap_or(0) > 3, "{op}: {ops:?}");
     }
     let ps = rig.p.stats();
@@ -429,7 +403,7 @@ fn threads_unload_and_replace_while_playing() {
 
     let dir = folder("threads");
     let frames = 40_000u64;
-    let paths = files(&dir, frames);
+    let paths = files(&dir, frames, 64);
     let cfg = Config {
         slots: 12,
         copy: 4_096,
@@ -438,6 +412,7 @@ fn threads_unload_and_replace_while_playing() {
     let plan = Plan {
         window_s: 0.5,
         in_flight: 4,
+        ..Plan::default()
     };
     let (mut p, rx, tx) = Player::new(cfg);
     let dev = IoThread::start("stream-test-io").expect("io thread");
@@ -452,8 +427,13 @@ fn threads_unload_and_replace_while_playing() {
         let mut r = Lcg(11);
         let open = |c: &mut Coordinator, s: u16, gen: &mut u32| {
             *gen += 1;
-            c.open(s, &paths[(marker(*gen) - 1) as usize])
-                .expect("opens");
+            let m = marker(*gen, 64);
+            if gen.is_multiple_of(4) {
+                c.open_memory(s, 2, memory(2, frames, m))
+            } else {
+                c.open(s, &paths[(m - 1) as usize])
+            }
+            .expect("opens");
         };
         for s in 0..4 {
             open(&mut c, s, &mut gen);
@@ -494,11 +474,10 @@ fn threads_unload_and_replace_while_playing() {
         }
         p.begin();
         for k in ks.iter_mut() {
-            let from = k.frame();
-            let looping = k.looping();
+            let e = Expect::of(k);
             let mut out = [0.0f32; 256 * 2];
             k.play(&mut p, &mut out);
-            check(&p, k, from, looping, &out, frames);
+            e.check(&p, &out, frames, |g| marker(g, 64));
             played_frames += out.chunks_exact(2).filter(|f| f != &[0.0, 0.0]).count() as u64;
         }
         p.end(256);

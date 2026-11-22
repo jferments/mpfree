@@ -1354,6 +1354,9 @@ version = "0.1.0"
 [[package]]
 name = "mpfree-stream"
 version = "0.1.0"
+dependencies = [
+ "mpfree-stream",
+]
 
 [[package]]
 name = "mpfree-stretch"
