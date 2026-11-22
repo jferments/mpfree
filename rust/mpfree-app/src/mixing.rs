@@ -4563,6 +4563,85 @@ mod tests {
         PlayFx::Xy { x, y, down }
     }
 
+    /// The ten ready-made XY layouts (Filter + echo and the nine XY FX)
+    /// send what they sent before the XY engine (`mpfree-xy`) took them
+    /// over, frame by frame: a scripted touch on the Play page's pad (a
+    /// press, moves, off the edge, a lift, the glide home), each frame's
+    /// action from the screen and the settings' values after its period,
+    /// against golden/xy-ready-made.txt, recorded from the code before.
+    /// MPFREE_GOLDEN_BLESS=1 writes it again.
+    #[test]
+    fn the_ten_ready_made_xy_layouts_send_what_they_sent_before() {
+        use crate::play_page::PlayPage;
+        use mpfree_fx::ids::perform as pf;
+        use mpfree_fx::xyfx::ids as xy;
+        enum S {
+            Down(f32, f32),
+            Up,
+            Tick(f32),
+        }
+        let mut script = vec![S::Down(0.2, 0.7)];
+        for k in 1..=10 {
+            let t = k as f32 / 10.0;
+            script.push(S::Down(0.2 + 0.6 * t, 0.7 - 0.4 * t));
+            script.push(S::Tick(16.667));
+        }
+        script.extend([S::Down(0.95, 0.99), S::Down(1.3, -0.2), S::Up]);
+        script.extend((0..40).map(|_| S::Tick(16.667)));
+        script.extend([S::Down(0.5, 0.5), S::Up, S::Tick(5.0), S::Tick(100.0)]);
+        let mut out = String::new();
+        for pick in std::iter::once(None).chain((0..9).map(Some)) {
+            let mut p = PlayPage::default();
+            p.set_xy_effect(pick);
+            let mut h = MixHost::new(RATE, 0.0, 0.0);
+            h.play(PlayFx::XyEffect(pick));
+            run(&mut h, 10, 0.0, 0.0);
+            let read = |h: &MixHost| -> Vec<f32> {
+                let c = h.mixer.chain(StripId::Master).unwrap();
+                match pick {
+                    Some(_) => {
+                        let n = c.node(h.xy_slot().unwrap()).unwrap();
+                        vec![n.param(xy::X), n.param(xy::Y), n.param(xy::ACTIVE)]
+                    }
+                    None => {
+                        let n = c.node(PERFORM_SLOT).unwrap();
+                        vec![n.param(pf::DJ_FILTER), n.param(pf::ECHO)]
+                    }
+                }
+            };
+            out.push_str(&format!("# {pick:?}\n"));
+            let mut at = (0.0, 0.0);
+            for (i, step) in script.iter().enumerate() {
+                let fx = match *step {
+                    S::Down(x, y) => {
+                        at = (x, y);
+                        Some(p.xy(x, y, true))
+                    }
+                    S::Up => Some(p.xy(at.0, at.1, false)),
+                    S::Tick(ms) => p.tick_xy(ms),
+                };
+                if let Some(fx) = fx {
+                    h.play_screen(fx);
+                }
+                run(&mut h, 1, 0.0, 0.0);
+                out.push_str(&format!("{i} {fx:?} {:?}\n", read(&h)));
+            }
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("golden/xy-ready-made.txt");
+        if std::env::var_os("MPFREE_GOLDEN_BLESS").is_some() {
+            std::fs::write(&path, &out).unwrap();
+        }
+        let want = std::fs::read_to_string(&path).expect("golden/xy-ready-made.txt");
+        let first = want.lines().zip(out.lines()).position(|(a, b)| a != b);
+        assert!(
+            want == out,
+            "differs from line {:?}: want {:?}, got {:?}",
+            first.map(|i| i + 1),
+            first.and_then(|i| want.lines().nth(i)),
+            first.and_then(|i| out.lines().nth(i))
+        );
+    }
+
     #[test]
     fn a_tap_on_the_xy_pad_quicker_than_a_period_plays_for_one() {
         let mut h = MixHost::new(RATE, 0.0, 0.0);
