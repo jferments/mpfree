@@ -24,10 +24,23 @@ MPFree reads the whole project before anything of the open one changes. If any p
 
 **Tests:** `project::tests::a_project_this_build_cant_read_whole_doesnt_open_and_says_why` (each part, the needs line, the missing parts), `the_project_format_and_the_list_are_written_and_a_problem_is_said`, and in the screen `gui::tests::a_project_this_build_cant_read_doesnt_open_and_the_open_one_stays`, which opens a project whose clips are `mpfree-clips 9` (as an `mpfree-clips 2` project is to a build from before it) and one of a newer format, and checks that nothing reaches the engines and the browser still saves to the project that was open.
 
-## Saving (0.2 and 0.3, planned)
+## Saving
 
-- The audio tracks' save waits until every take has settled (no recording and no tail) before it copies anything, and builds its copy off the sound thread.
-- Every save commits in order: the media (samples, takes, loops) written and synced first, then the project file through the library's temporary file, sync, rename and directory sync, so a cut-off save never leaves a project naming a file that isn't there.
+### The audio tracks' save waits and never allocates on the sound thread (0.2, as built)
+
+`AudioHost::save` used to build the save on the audio thread: `AudioTracks::save_file` (a list of takes, a list of tracks, each track's regions copied) and, streaming, each take's file name cloned. Streaming, it even built it every period before checking whether the takes had settled, and threw it away until they had.
+
+Now (`rust/mpfree-audiotracks/src/host.rs`, `tend_save`):
+
+1. `save` asks the worker for a room (`ToWorker::Room`: `Saved::room`, every track with room for all its regions and every take with room for a file name, about 120 KB) and waits for it (`Saving::Asking`).
+2. With the room in hand (`Saving::Waiting`), each period checks first that everything has settled: no track records or has a recording's tail still coming, no take is loading and, streaming, the disk has nothing waiting, under way or still to write (`AudioTracks::settled`, `unwritten`, `loading`). Only then does `AudioTracks::save_into` fill the room, without allocating; streaming, each take's file name is copied into its room.
+3. The filled room goes back to the worker (`ToWorker::Size`), which trims it to what it holds and, unless streaming, makes room for every take's audio. The audio is then read a piece a period, as before; streaming, the audio is in the take files already and the save is done.
+
+A save cancelled while the worker has the room (an open arriving) has the worker's answer dropped when it comes (`cancelled`), as before. `tests/no_alloc.rs` (`a_save_fills_its_room_without_allocating`) checks that filling a room, settled or not, allocates nothing and gives what `save_file` gives.
+
+### Saves committed in order (0.3, planned)
+
+Every save commits in order: the media (samples, takes, loops) written and synced first, then the project file through the library's temporary file, sync, rename and directory sync, so a cut-off save never leaves a project naming a file that isn't there.
 
 ## Tests under pressure (0.4, planned)
 

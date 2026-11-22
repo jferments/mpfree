@@ -119,8 +119,16 @@ pub struct TakeWave {
 }
 
 enum ToWorker {
-    /// Room for every take's audio in a save.
-    Size(Saved),
+    /// Room for a save (`Saved::room`), for the audio thread to fill.
+    Room,
+    /// A filled room: trimmed to its first `tracks` and `takes`, and, with
+    /// `audio`, given room for every take's audio.
+    Size {
+        saved: Saved,
+        tracks: usize,
+        takes: usize,
+        audio: bool,
+    },
     /// A zeroed buffer of this many samples (a take to fit).
     Buffer(usize),
     Stretch {
@@ -138,6 +146,7 @@ enum ToWorker {
 }
 
 enum FromWorker {
+    Room(Saved),
     Sized(Saved),
     Buffer(Vec<f32>),
     Stretched(Option<(crate::save::TakeFile, Command)>),
@@ -154,8 +163,12 @@ enum Waving {
 }
 
 enum Saving {
-    /// Until nothing records or loads.
-    Waiting,
+    /// Waiting for the worker's room.
+    Asking,
+    /// The room, until every take has settled (nothing records, loads or
+    /// is still being written): then it is filled without allocating.
+    Waiting(Saved),
+    /// The filled room with the worker.
     Sizing,
     /// Reading take `i` of `saved.takes` from `frame`.
     Reading {
@@ -246,9 +259,19 @@ impl AudioHost {
             .spawn(move || {
                 for m in jobs {
                     let reply = match m {
-                        ToWorker::Size(mut saved) => {
-                            for k in &mut saved.takes {
-                                k.audio = vec![0.0; k.frames * k.channels];
+                        ToWorker::Room => FromWorker::Room(Saved::room(rate)),
+                        ToWorker::Size {
+                            mut saved,
+                            tracks,
+                            takes,
+                            audio,
+                        } => {
+                            saved.tracks.truncate(tracks);
+                            saved.takes.truncate(takes);
+                            if audio {
+                                for k in &mut saved.takes {
+                                    k.audio = vec![0.0; k.frames * k.channels];
+                                }
                             }
                             FromWorker::Sized(saved)
                         }
@@ -388,7 +411,8 @@ impl AudioHost {
         if self.saving.is_some() || self.tx.is_none() {
             return false;
         }
-        self.saving = Some(Saving::Waiting);
+        self.send(ToWorker::Room);
+        self.saving = Some(Saving::Asking);
         true
     }
 
@@ -396,7 +420,7 @@ impl AudioHost {
     pub fn saving(&self) -> Option<f32> {
         match &self.saving {
             None => None,
-            Some(Saving::Waiting | Saving::Sizing) => Some(0.0),
+            Some(Saving::Asking | Saving::Waiting(_) | Saving::Sizing) => Some(0.0),
             Some(Saving::Reading { saved, i, .. }) => {
                 Some(*i as f32 / saved.takes.len().max(1) as f32)
             }
@@ -413,9 +437,14 @@ impl AudioHost {
     /// to the worker to drop. Does not allocate.
     pub fn cancel_save(&mut self) {
         match self.saving.take() {
-            Some(Saving::Reading { saved, .. }) => self.send(ToWorker::DropSaved(saved)),
-            Some(Saving::Sizing) => self.cancelled = self.cancelled.saturating_add(1),
-            Some(Saving::Waiting) | None => {}
+            Some(Saving::Reading { saved, .. } | Saving::Waiting(saved)) => {
+                self.send(ToWorker::DropSaved(saved))
+            }
+            // The worker's answer is dropped when it comes.
+            Some(Saving::Asking | Saving::Sizing) => {
+                self.cancelled = self.cancelled.saturating_add(1)
+            }
+            None => {}
         }
         if let Some(old) = self.saved.take() {
             self.send(ToWorker::DropSaved(old));
@@ -673,9 +702,24 @@ impl AudioHost {
         self.tend_disk();
         while let Some(m) = self.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
             match m {
-                FromWorker::Sized(saved) if self.cancelled > 0 => {
+                FromWorker::Room(saved) | FromWorker::Sized(saved) if self.cancelled > 0 => {
                     self.cancelled -= 1;
                     self.send(ToWorker::DropSaved(saved));
+                }
+                FromWorker::Room(room) => match self.saving.take() {
+                    Some(Saving::Asking) => self.saving = Some(Saving::Waiting(room)),
+                    other => {
+                        self.saving = other;
+                        self.send(ToWorker::DropSaved(room));
+                    }
+                },
+                // Streaming: the audio is in the take files already, and
+                // the save is done.
+                FromWorker::Sized(saved) if self.stream.is_some() => {
+                    self.saving = None;
+                    if let Some(old) = self.saved.replace(saved) {
+                        self.send(ToWorker::DropSaved(old));
+                    }
                 }
                 FromWorker::Sized(saved) => {
                     self.saving = Some(Saving::Reading {
@@ -1064,34 +1108,45 @@ impl AudioHost {
     fn tend_save(&mut self, budget: usize) {
         match self.saving.take() {
             None => {}
-            Some(Saving::Waiting) if self.stream.is_some() => {
-                let st = self.stream.as_ref().expect("streaming");
-                let settled = st.waiting.is_empty()
-                    && st.job.is_none()
-                    && st.in_flight == 0
-                    && st.opening == 0
-                    && self.tracks.unwritten() == 0
-                    && self.tracks.loading() == 0;
-                match self.tracks.save_file().filter(|_| settled) {
-                    Some(mut s) => {
-                        // The audio is in the take files already.
-                        for k in &mut s.takes {
-                            k.file = st.names[k.id as usize].clone().unwrap_or_default();
+            Some(Saving::Asking) => self.saving = Some(Saving::Asking),
+            Some(Saving::Waiting(mut room)) => {
+                // Settled first, and only then filled, into the worker's
+                // room: nothing is made here, nor while a take records,
+                // loads or is still being written to its file.
+                let written = self.stream.as_ref().is_none_or(|st| {
+                    st.waiting.is_empty()
+                        && st.job.is_none()
+                        && st.in_flight == 0
+                        && st.opening == 0
+                        && self.tracks.unwritten() == 0
+                        && self.tracks.loading() == 0
+                });
+                let filled = if written {
+                    self.tracks.save_into(&mut room)
+                } else {
+                    None
+                };
+                match filled {
+                    None => self.saving = Some(Saving::Waiting(room)),
+                    Some((tracks, takes)) => {
+                        // Streaming: each take's file, into its room.
+                        if let Some(st) = &self.stream {
+                            for k in &mut room.takes[..takes] {
+                                if let Some(Some(name)) = st.names.get(k.id as usize) {
+                                    k.file.push_str(name);
+                                }
+                            }
                         }
-                        if let Some(old) = self.saved.replace(s) {
-                            self.send(ToWorker::DropSaved(old));
-                        }
+                        self.send(ToWorker::Size {
+                            saved: room,
+                            tracks,
+                            takes,
+                            audio: self.stream.is_none(),
+                        });
+                        self.saving = Some(Saving::Sizing);
                     }
-                    None => self.saving = Some(Saving::Waiting),
                 }
             }
-            Some(Saving::Waiting) => match self.tracks.save_file() {
-                Some(s) => {
-                    self.send(ToWorker::Size(s));
-                    self.saving = Some(Saving::Sizing);
-                }
-                None => self.saving = Some(Saving::Waiting),
-            },
             Some(Saving::Sizing) => self.saving = Some(Saving::Sizing),
             Some(Saving::Reading {
                 mut saved,
