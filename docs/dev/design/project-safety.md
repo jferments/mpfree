@@ -24,6 +24,18 @@ MPFree reads the whole project before anything of the open one changes. If any p
 
 **Tests:** `project::tests::a_project_this_build_cant_read_whole_doesnt_open_and_says_why` (each part, the needs line, the missing parts), `a_project_with_an_audio_track_says_it_needs_audio_tracks`, `the_project_format_and_the_list_are_written_and_a_problem_is_said`, and in the screen `gui::tests::a_project_this_build_cant_read_doesnt_open_and_the_open_one_stays`, which opens a project whose clips are `mpfree-clips 9` (as an `mpfree-clips 2` project is to a build from before it) and one of a newer format, and checks that nothing reaches the engines and the browser still saves to the project that was open.
 
+## The engines an open replaced go back (live shows A2, as built)
+
+An open swaps the new project's engines in on the audio loop and sends the ones it replaced back to the screen thread in the same box, to be freed there: freeing a time engine or a mixer can take far longer than an audio period. Before, the audio loop kept one box at a time (`project_back`) while the screen's channel was full, and a second open arriving then freed the older box on the audio thread.
+
+- The audio loop keeps **two slots** (`gui::OPENS_ON_THEIR_WAY`) and sends each box on as soon as the screen's channel has room.
+- The screen counts the opens it has sent whose box hasn't come back (`Player::opens_out`, down by one on each `ToUi::ProjectBack`). With two on their way, an open or New project is refused before anything changes, through the usual refusal (`open_refused`): "Didn't open Song: the last two projects are still going in; try again in a moment. The project you had open is unchanged". It can only happen with opens a few milliseconds apart while the screen is busy.
+- So a box always finds a slot. If one ever didn't (a bug), a debug build stops on an assertion and a release build frees it as before, with a line in the Events log saying it wasn't expected.
+
+This is the first step of stage A of the [live shows plan](live-shows.md): a prepared next song will go back the same way, with its slot reserved before it can go.
+
+**Test:** `gui::tests::opens_wait_for_the_engines_they_replaced_to_come_back` (two opens go, a third and New project wait and say so, the next goes once a box is back).
+
 ## Saving
 
 ### A project that opened with things left out is never saved over (as built)

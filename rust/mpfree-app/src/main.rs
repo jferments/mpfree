@@ -7249,7 +7249,10 @@ fn player_session(
     // screen thread to be freed there.
     let mut defaults_sent = false;
     let mut save_asked = false;
-    let mut project_back: Option<gui::ToUi> = None;
+    // The engines an open replaced wait here, two at most: the screen keeps
+    // at most two opens on their way (gui::OPENS_ON_THEIR_WAY), so a box
+    // always finds a slot and none is ever freed on this thread.
+    let mut project_back: [Option<gui::ToUi>; gui::OPENS_ON_THEIR_WAY] = Default::default();
     // A save: the Looper's loops and the audio tracks' takes being read,
     // what of them is read already, whether the parts are to be collected
     // (once both are), and the parts waiting for room on the way to the
@@ -8190,11 +8193,17 @@ fn player_session(
                         out.note(&line);
                     }
                     out.note(&format!("project: {} is in", o.what));
-                    if let Some(old) = project_back.replace(gui::ToUi::ProjectBack(o)) {
-                        // Only one open travels at a time; an older one is
-                        // freed here (not expected).
-                        drop(old);
-                        out.note("project: two opens going back; one freed on the audio thread");
+                    // The replaced engines go back to the screen thread to
+                    // be freed there (live shows A2). The screen never has
+                    // more opens on their way than there are slots, so one
+                    // is always free.
+                    match project_back.iter_mut().find(|b| b.is_none()) {
+                        Some(slot) => *slot = Some(gui::ToUi::ProjectBack(o)),
+                        None => {
+                            debug_assert!(false, "more opens on their way than slots");
+                            drop(o);
+                            out.note("project: more opens going back than slots; one freed on the audio thread (not expected)");
+                        }
                     }
                 }
                 // A plugin installed from BROWSE's Plugins place: the Synth
@@ -8402,8 +8411,10 @@ fn player_session(
         if let Some(m) = view_back.take() {
             view_back = out.try_show(m).err();
         }
-        if let Some(m) = project_back.take() {
-            project_back = out.try_show(m).err();
+        for b in project_back.iter_mut() {
+            if let Some(m) = b.take() {
+                *b = out.try_show(m).err();
+            }
         }
         parts.lap(parts::SCREEN_ACTIONS);
         ports.show_pressure = app.settings.show_pressure;

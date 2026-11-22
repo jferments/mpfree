@@ -808,7 +808,10 @@ pub enum Pick {
 #[derive(Clone, Debug, PartialEq)]
 pub struct EditInfo {
     pub editor: Editor,
-    pub clip: Clip,
+    /// The clip, shared: the time engine sends the same one until the clip
+    /// changes, so the screen tells an unchanged clip at no cost
+    /// ([`Arc::ptr_eq`]) and rebuilds the roll only when it did.
+    pub clip: Arc<Clip>,
     /// The clip's revision: it moves whenever the clip changes (an edit,
     /// a recorded note, UNDO, an edit from Steps), and a tap on a note
     /// carries the one it was made on ([`EditAction::Note`]).
@@ -4042,20 +4045,38 @@ fn song_lanes_with(st: &TimeState, first_bar: i64, blocks: Option<SongBlocks>) -
     }
 }
 
-/// The note editor's roll or list for `e`, with the playhead where the
-/// clip plays now (if it is launched).
-pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
+/// Where the note editor's clip plays now, in its own ticks, if it is
+/// launched and the transport has started.
+pub fn note_playhead(e: &EditInfo, st: &TimeState) -> Option<Tick> {
     let ed = &e.editor;
     let c = &e.clip;
-    let playhead = st
-        .launches
+    st.launches
         .iter()
         .find(|l| (l.track, l.slot) == (ed.track, ed.slot))
         .filter(|_| c.length > 0 && st.transport.position >= 0)
         .map(|l| {
             let at = c.speed.to_clip((st.transport.position - l.origin) as f64);
             (at.floor() as Tick).rem_euclid(c.length)
-        });
+        })
+}
+
+/// The screen built the note editor from `a` and is asked to show `b`:
+/// nothing but the playhead can have changed. The same clip (one shared
+/// copy, not compared note by note), revision and editor.
+fn same_edit(a: &EditInfo, b: &EditInfo) -> bool {
+    Arc::ptr_eq(&a.clip, &b.clip)
+        && a.rev == b.rev
+        && a.editor == b.editor
+        && a.bar == b.bar
+        && a.track_name == b.track_name
+}
+
+/// The note editor's roll or list for `e`, with the playhead where the
+/// clip plays now (if it is launched).
+pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
+    let ed = &e.editor;
+    let c = &e.clip;
+    let playhead = note_playhead(e, st);
     let selected = |i: usize| ed.sel.contains(&i);
     let n_sel = ed.sel.iter().filter(|&&i| i < c.notes.len()).count();
     let mut g = NoteGrid::new();
@@ -4151,6 +4172,11 @@ pub struct TimePage {
     /// A kind of track was picked in the chooser with this many tracks:
     /// once there are more, the new one is brought into view.
     reveal: Option<usize>,
+    /// What the note editor's roll and options were last built from: an
+    /// update with the same clip and editor moves only the playhead
+    /// (piano roll plan 0C.1), so the playing transport costs the screen
+    /// no rebuild of 8,192 notes a frame.
+    edit_built: Option<Box<EditInfo>>,
 }
 
 impl TimePage {
@@ -4528,21 +4554,37 @@ impl TimePage {
                 *b = bar;
             }
         }
-        if let Some(e) = &st.edit {
-            let grid = note_grid(e, st);
-            if ui.get::<NoteGrid>(NOTES).is_some_and(|g| !g.same(&grid)) {
-                if let Some(g) = ui.get_mut::<NoteGrid>(NOTES) {
-                    g.show(grid);
+        match &st.edit {
+            Some(e) if self.edit_built.as_ref().is_some_and(|b| same_edit(b, e)) => {
+                // Only the playhead can have moved.
+                let at = note_playhead(e, st);
+                if ui.get::<NoteGrid>(NOTES).is_some_and(|g| g.playhead != at) {
+                    if let Some(g) = ui.get_mut::<NoteGrid>(NOTES) {
+                        g.playhead = at;
+                    }
                 }
             }
-            let rows = edit_rows(&e.editor, &e.clip);
-            if let Some(l) = ui.get_mut::<OptionList>(EDIT_OPTIONS) {
-                if l.rows != rows || l.selected != e.editor.row {
-                    l.rows = rows;
-                    l.selected = e.editor.row;
-                    l.right = "wheel or arrows".to_string();
+            Some(e) => {
+                let grid = note_grid(e, st);
+                if ui.get::<NoteGrid>(NOTES).is_some_and(|g| !g.same(&grid)) {
+                    if let Some(g) = ui.get_mut::<NoteGrid>(NOTES) {
+                        g.show(grid);
+                    }
                 }
+                let rows = edit_rows(&e.editor, &e.clip);
+                if ui
+                    .get::<OptionList>(EDIT_OPTIONS)
+                    .is_some_and(|l| l.rows != rows || l.selected != e.editor.row)
+                {
+                    if let Some(l) = ui.get_mut::<OptionList>(EDIT_OPTIONS) {
+                        l.rows = rows;
+                        l.selected = e.editor.row;
+                        l.right = "wheel or arrows".to_string();
+                    }
+                }
+                self.edit_built = Some(e.clone());
             }
+            None => self.edit_built = None,
         }
         let rows = record_rows(st);
         let tabs = panel_tabs(st);
@@ -4867,7 +4909,7 @@ mod tests {
         .unwrap();
         let e = EditInfo {
             editor: crate::editor::Editor::new(0, 0, &c),
-            clip: c,
+            clip: c.into(),
             rev: 0,
             track_name: "Drums".into(),
             bar: BAR,
@@ -4876,6 +4918,58 @@ mod tests {
         assert_eq!(g.touch, [point(0, 90), point(40, 30)]);
         assert!(g.touch_of(0).is_empty());
         assert_eq!(g.touch_of(1), &g.touch[..]);
+    }
+
+    /// Piano roll plan 0C.1: while the note editor's clip (one shared
+    /// copy) and the editor stay the same, an update moves only the roll's
+    /// playhead and builds none of its notes again; a new copy builds it.
+    #[test]
+    fn the_note_editor_moves_only_its_playhead_while_its_clip_is_the_same() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Clips"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = state();
+        let mut c = Clip::new("A", 2 * BAR);
+        c.add_note(Note::new(0, 240, 1, 100)).unwrap();
+        st.edit = Some(Box::new(EditInfo {
+            editor: crate::editor::Editor::new(0, 0, &c),
+            clip: c.into(),
+            rev: 1,
+            track_name: "Drums".into(),
+            bar: BAR,
+        }));
+        page.update(&mut ui, &st);
+        let e = st.edit.clone().unwrap();
+        let head = note_playhead(&e, &st);
+        assert!(head.is_some(), "track 1's clip plays");
+        assert_eq!(ui.get::<NoteGrid>(NOTES).unwrap().playhead, head);
+        // Marked, to see whether the roll is built again.
+        ui.get_mut::<NoteGrid>(NOTES).unwrap().title = "kept".into();
+        st.transport.position += 120;
+        page.update(&mut ui, &st);
+        let g = ui.get::<NoteGrid>(NOTES).unwrap();
+        assert_eq!(g.title, "kept", "not built again");
+        assert_eq!(g.playhead, note_playhead(&e, &st));
+        assert_ne!(g.playhead, head, "the playhead moved");
+        // The same notes in a new copy (the clip changed and changed
+        // back): built again.
+        let e = st.edit.as_mut().unwrap();
+        e.clip = Arc::new((*e.clip).clone());
+        page.update(&mut ui, &st);
+        assert!(ui
+            .get::<NoteGrid>(NOTES)
+            .unwrap()
+            .title
+            .starts_with("Edit · A"));
+        // Closed and opened again: built again too.
+        let open = st.edit.take();
+        page.update(&mut ui, &st);
+        ui.get_mut::<NoteGrid>(NOTES).unwrap().title = "kept".into();
+        st.edit = open;
+        page.update(&mut ui, &st);
+        assert_ne!(ui.get::<NoteGrid>(NOTES).unwrap().title, "kept");
     }
 
     #[test]
