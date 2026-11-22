@@ -15,6 +15,9 @@
 128021	Bass Reese, a line
 9679	Arps: 16 latched arps at 32nds
 3183	Arps: 4 latched arps at 32nds
+128876	Arrange: a step tap in song mode, 512 blocks of 32 clips: until it plays
+151691614	Arrange: the big song saved and opened, 512 blocks of 32 clips
+6918010	Arrange: the big song's view, 512 blocks of 32 clips: compiled and swapped
 44291	Audio tracks: 6 playing comped takes, 2 recording
 44270	Audio tracks: 8 playing comped takes
 54516	Audio tracks: 8 streaming comped takes
@@ -174,6 +177,7 @@
 79457	Sampler, drum kit, 64 voices
 823688	Sampler, the 16 sample pads alone
 630801	Sampler, the 4 granular pads alone
+5519410	Song view: 4,096 blocks, a frame while the song plays
 4085464	Song: sampler, 2 synths, mixer+FX, time, looper
 261927	Sound Keys Init with Ensemble, 8 voices
 137967	Spring reverb

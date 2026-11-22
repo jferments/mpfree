@@ -283,8 +283,8 @@ with `--quick`) at 128 frames and 44.1 kHz:
   it plays, 129 thousand instructions (the case now makes the edit in place
   with `PlayView::edit_in_place`, as the audio half does). From 2.1 to
   here: the view 15 times smaller, its compile 500 times cheaper, a tap
-  27,000 times. Their counts go into `instructions.txt` from CI's first
-  run, as the step cases' did.
+  27,000 times. Their counts are in `instructions.txt`, from CI's first
+  run (train 135), as the step cases' were.
 - **screen, the Song view (Arrange refactor 2.4):** "Song view: 4,096
   blocks, a frame while the song plays" is the screen thread's frame with
   the longest song (`MAX_PLACEMENTS`: 16 tracks of 256 four-bar blocks):
@@ -305,8 +305,10 @@ with `--quick`) at 128 frames and 44.1 kHz:
   song of 16 blocks costs 3.8 million, so the longest song now costs only
   for the extra blocks it shows (about 60 in view, against 16). Most of
   what is left is the whole page painted again for a playhead that moved;
-  drawing the playhead alone is a later step. The count goes into
-  `instructions.txt` from CI's first run.
+  drawing the playhead alone is a later step. Its count in
+  `instructions.txt` was taken with CI's pinned toolchain on the build
+  container, which gave the three Arrange cases' counts to within 0.05 %
+  of CI's.
 - **looper:** 60 s of looper memory, recording a 2-bar first pass from the
   input, then overdubbing layer after layer with an undo every 30 s.
 - **mix:** the mixer (from the FX thread) idle, and routing 12 tracks and 8
