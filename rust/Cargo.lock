@@ -928,6 +928,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-compose"
+version = "0.1.0"
+dependencies = [
+ "mpfree-context",
+ "mpfree-seq",
+ "mpfree-transport",
+]
+
+[[package]]
+name = "mpfree-context"
+version = "0.1.0"
+dependencies = [
+ "mpfree-scale",
+ "mpfree-transport",
+]
+
+[[package]]
 name = "mpfree-controller"
 version = "0.1.0"
 
