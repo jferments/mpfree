@@ -17896,6 +17896,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             p.time_page.first_track = mpfree_time_ui::widgets::GRID_COLS;
             p.time_page.adding = true;
             p.time_page.update(&mut p.ui, &p.time);
+            p.refresh_hint();
             out.push(("arrange-clips-audio", p));
         }
         Err(e) => eprintln!("arrange-clips-audio sample: {e}"),
@@ -17910,6 +17911,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             p.apply(ToUi::Show(View::Arrange));
             p.time_page.adding = true;
             p.time_page.update(&mut p.ui, &p.time);
+            p.refresh_hint();
             out.push(("arrange-song-add", p));
         }
         Err(e) => eprintln!("arrange-song-add sample: {e}"),

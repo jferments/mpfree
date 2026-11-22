@@ -314,7 +314,7 @@ impl TrackHost {
     /// (UNDO took it away) lets go of its engine track if nothing is on
     /// it, or keeps it, silent, for a REDO. Does not allocate.
     pub fn sync(&mut self, project: &mpfree_seq::Project, silenced: u128, now: bool) {
-        let look = now || self.periods % CHECK_EVERY == 0;
+        let look = now || self.periods.is_multiple_of(CHECK_EVERY);
         if look && !self.clearing && self.pending.is_none() {
             self.place = [None; MAX_TRACKS];
             for (i, t) in project.tracks.iter().enumerate() {

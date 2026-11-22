@@ -566,7 +566,7 @@ const TAKE_H: i32 = 28;
 /// The "+ Track" chooser (the Clips grid's too): the card's width, a
 /// row's height, the card's padding, the gap between rows and the title
 /// line's height.
-pub const CHOOSER_W: i32 = 330;
+pub const CHOOSER_W: i32 = 360;
 pub const CHOOSER_ROW: i32 = 52;
 const CHOOSER_PAD: i32 = 12;
 const CHOOSER_GAP: i32 = 8;
@@ -3500,6 +3500,7 @@ mod tests {
         s.first_lane = usize::MAX;
         let b = s.add_track_rect(r).unwrap();
         let rows = s.chooser_rects(r).unwrap();
+        assert!(rows[0].x > b.right(), "beside it still");
         assert!(rows[2].bottom() < r.bottom() - 8, "inside the view");
         assert!(rows[0].y - 36 >= r.y, "its title too");
     }
