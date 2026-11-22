@@ -2486,10 +2486,12 @@ fn paint_lock_lane(
     let t = cx.theme.clone();
     let y = g.row_y(k);
     let lane_ink = t.readable(LOCKED.mix(t.role(Role::Highlight), 0.45), t.surface);
-    // Locks that don't play now (F1): the lane's name is faint too, its
-    // outline as any lock lane's (fainter, it would not show).
+    // Locks that don't play now (F1): the lane's name is faint too, but
+    // never under 3:1 (the floor for readable text; a light theme's
+    // faint purple would be), its outline as any lock lane's (fainter,
+    // it would not show).
     let ink = if lk.silent.is_some() {
-        lane_ink.mix(t.surface, 0.45)
+        mpfree_ui::roles::reach(lane_ink.mix(t.surface, 0.45), lane_ink, t.surface, 3.0)
     } else {
         lane_ink
     };
