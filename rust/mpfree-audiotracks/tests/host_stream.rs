@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use mpfree_audiotracks::host::AudioHost;
 use mpfree_audiotracks::save::{from_text, from_wav, to_text};
-use mpfree_audiotracks::{Command as A, Input};
+use mpfree_audiotracks::{Command as A, Input, SaveState};
 use mpfree_transport::{Block, Command as T, Transport};
 
 const RATE: u32 = 22_050;
@@ -296,7 +296,7 @@ fn a_fit_read_from_before_a_project_opened_is_dropped() {
     r.run_to(at + 2 * BAR + 500);
     r.h.command(A::Arm(0, false));
     r.live = false;
-    r.run_until(|r| r.h.stale == 1 && r.h.tracks.unwritten() == 0);
+    r.run_until(|r| r.h.stale == 1 && r.h.tracks.save_state(0) == Some(SaveState::Saved));
     let takes: Vec<_> = r.h.tracks.takes().collect();
     assert_eq!(takes.len(), 1, "{takes:?}");
     assert_eq!((takes[0].id, takes[0].bpm), (0, 120.0));

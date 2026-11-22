@@ -29,7 +29,7 @@
 use crate::looper_deck::{LoopDeck, DECK};
 use crate::looping::LoopWave;
 use mpfree_looper::LayerCommand;
-use mpfree_ui::draw::speaker;
+use mpfree_ui::draw::speaker_on;
 use mpfree_ui::{
     Align, Color, EventKind, FontId, PaintCx, Rect, Shape, Target, Theme, Touch, Ui, Widget,
 };
@@ -225,8 +225,9 @@ pub struct LayerDrag {
 pub(crate) fn paint_card(cx: &mut PaintCx, d: &LayerDrag) {
     let t = cx.theme.clone();
     let r = d.card;
-    cx.canvas.fill_round_rect(r.inset(-2), 12, t.accent);
-    cx.canvas.fill_round_rect(r, 10, t.raised);
+    cx.canvas
+        .fill_round_rect(r.inset(-2), t.round(12), t.accent);
+    cx.canvas.fill_round_rect(r, t.round(10), t.raised);
     let line = Rect::new(r.x + 12, r.y + 8, r.w - 24, 20);
     cx.canvas
         .fill_round_rect(Rect::new(line.x, line.y + 5, 10, 10), 2, d.row.colour);
@@ -271,9 +272,9 @@ pub(crate) fn paint_spots(cx: &mut PaintCx, d: &LayerDrag, spots: &[(DropTo, Rec
         match d.landing {
             Some((at, ok)) if at == to => {
                 cx.canvas
-                    .stroke_round_rect(rr, 12, 3, if ok { t.accent } else { t.bad });
+                    .stroke_round_rect(rr, t.round(12), 3, if ok { t.accent } else { t.bad });
             }
-            _ if d.lit.contains(&to) => cx.canvas.stroke_round_rect(rr, 12, 2, t.accent),
+            _ if d.lit.contains(&to) => cx.canvas.stroke_round_rect(rr, t.round(12), 2, t.accent),
             _ => {}
         }
     }
@@ -989,7 +990,7 @@ impl LoopEditor {
     fn paint_sources(&self, cx: &mut PaintCx, lanes: Rect, now: usize) {
         let t = cx.theme.clone();
         cx.canvas
-            .fill_round_rect(lanes, 10, t.bg.mix(t.surface, 0.45));
+            .fill_round_rect(lanes, t.round(10), t.bg.mix(t.surface, 0.45));
         group_label(cx, lanes.x + 24, lanes.y + 4, "RECORDS FROM");
         let rects = LoopEditor::source_rects(lanes, self.mixes.len());
         let fixed = SOURCE_CHOICES.len();
@@ -1006,7 +1007,7 @@ impl LoopEditor {
         for (i, (b, name)) in rects.iter().skip(fixed).zip(&self.mixes).enumerate() {
             let lit = fixed + i == now;
             cx.canvas
-                .fill_round_rect(*b, 10, if lit { t.accent } else { t.raised });
+                .fill_round_rect(*b, t.round(10), if lit { t.accent } else { t.raised });
             cx.text(
                 FontId::Bold,
                 15.0,
@@ -1019,7 +1020,7 @@ impl LoopEditor {
         for (i, (b, (title, what))) in rects.into_iter().zip(SOURCE_CHOICES).enumerate() {
             let lit = i == now;
             cx.canvas
-                .fill_round_rect(b, 12, if lit { t.accent } else { t.raised });
+                .fill_round_rect(b, t.round(12), if lit { t.accent } else { t.raised });
             let (ink, dim) = if lit {
                 (t.on_accent, t.on_accent)
             } else {
@@ -1434,7 +1435,7 @@ pub(crate) fn play_icon(cx: &mut PaintCx, x: f32, y: f32, h: f32, c: Color) {
 fn listen_button(cx: &mut PaintCx, b: Rect, works: bool, on: bool) {
     let t = cx.theme.clone();
     cx.canvas
-        .fill_round_rect(b, 10, if on { t.accent } else { t.raised });
+        .fill_round_rect(b, t.round(10), if on { t.accent } else { t.raised });
     let ink = if on { t.on_accent } else { t.button_ink(works) };
     let label = if on { "Stop" } else { "Listen" };
     let lw = cx.measure(FontId::Bold, 14.0, label);
@@ -1460,7 +1461,7 @@ fn listen_button(cx: &mut PaintCx, b: Rect, works: bool, on: bool) {
 fn button(cx: &mut PaintCx, b: Rect, label: &str, on: bool, lit: bool, px: f32) {
     let t = cx.theme.clone();
     cx.canvas
-        .fill_round_rect(b, 10, if lit { t.accent } else { t.raised });
+        .fill_round_rect(b, t.round(10), if lit { t.accent } else { t.raised });
     let ink = if lit { t.on_accent } else { t.button_ink(on) };
     cx.text(FontId::Bold, px, b, Align::Center, ink, label);
 }
@@ -1480,7 +1481,7 @@ fn segments(cx: &mut PaintCx, items: &[(Rect, &str, bool)]) {
     }
     for (r, label, chosen) in items {
         if *chosen {
-            cx.canvas.fill_round_rect(*r, 8, t.accent);
+            cx.canvas.fill_round_rect(*r, t.round(8), t.accent);
         }
         let ink = if *chosen { t.on_accent } else { t.text };
         cx.text(FontId::Bold, 14.0, *r, Align::Center, ink, label);
@@ -1502,7 +1503,7 @@ fn faint_segments(cx: &mut PaintCx, items: &[(Rect, &str, bool)]) {
     }
     for (r, label, chosen) in items {
         if *chosen {
-            cx.canvas.stroke_round_rect(*r, 8, 1, t.text_dim);
+            cx.canvas.stroke_round_rect(*r, t.round(8), 1, t.text_dim);
         }
         cx.text(FontId::Bold, 14.0, *r, Align::Center, t.text_dim, label);
     }
@@ -1586,7 +1587,7 @@ impl LoopEditor {
         let t = cx.theme.clone();
         let h = p.head;
         cx.canvas
-            .fill_round_rect(Rect::new(h.x, h.y + 6, 22, 22), 6, self.colour);
+            .fill_round_rect(Rect::new(h.x, h.y + 6, 22, 22), t.round(6), self.colour);
         let nw = cx.measure(FontId::Bold, 19.0, &self.title);
         cx.text(
             FontId::Bold,
@@ -1614,7 +1615,7 @@ impl LoopEditor {
         } else {
             t.bad.mix(t.surface, 0.55)
         };
-        cx.canvas.stroke_round_rect(p.clear, 10, 2, ink);
+        cx.canvas.stroke_round_rect(p.clear, t.round(10), 2, ink);
         cx.text(FontId::Bold, 14.0, p.clear, Align::Center, ink, "Clear");
     }
 
@@ -1683,14 +1684,16 @@ impl LoopEditor {
         let l = &self.layers[k];
         let p = LoopEditor::lane_parts(rr);
         let picked = k == self.picked;
-        cx.canvas.fill_round_rect(rr, 10, t.bg.mix(t.surface, 0.45));
+        cx.canvas
+            .fill_round_rect(rr, t.round(10), t.bg.mix(t.surface, 0.45));
         // The head: a tap mutes, S solos.
         let hb = if l.muted {
             t.bad.mix(t.bg, 0.82)
         } else {
             t.surface.mix(t.raised, 0.4)
         };
-        cx.canvas.fill_round_rect(p.head.inset_xy(2, 2), 9, hb);
+        cx.canvas
+            .fill_round_rect(p.head.inset_xy(2, 2), t.round(9), hb);
         let strip_c = if l.heard { l.colour } else { t.text_faint };
         cx.canvas.fill_round_rect(
             Rect::new(p.head.x + 3, p.head.y + 8, 4, p.head.h - 16),
@@ -1698,12 +1701,13 @@ impl LoopEditor {
             strip_c,
         );
         let top = rr.y + (rr.h - 46) / 2;
-        speaker(
+        speaker_on(
             cx,
             p.head.x + 24,
             top + 11,
             if l.muted { t.bad } else { t.text_dim },
             l.muted,
+            hb,
         );
         let name_w = p.listen.x - (p.head.x + 40) - 4;
         cx.text(
@@ -1724,8 +1728,11 @@ impl LoopEditor {
         );
         // ▶: this layer alone while the music is stopped (lit while it
         // plays; faint while the music plays).
-        cx.canvas
-            .fill_round_rect(p.listen, 8, if l.listening { t.accent } else { t.raised });
+        cx.canvas.fill_round_rect(
+            p.listen,
+            t.round(8),
+            if l.listening { t.accent } else { t.raised },
+        );
         let ink = if l.listening {
             t.on_accent
         } else {
@@ -1746,7 +1753,7 @@ impl LoopEditor {
             );
         }
         cx.canvas
-            .fill_round_rect(p.solo, 8, if l.solo { t.accent } else { t.raised });
+            .fill_round_rect(p.solo, t.round(8), if l.solo { t.accent } else { t.raised });
         cx.text(
             FontId::Bold,
             14.0,
@@ -1789,21 +1796,24 @@ impl LoopEditor {
                 .fill_rect(Rect::new(px - 1, rr.y + 2, 2, rr.h - 4), t.text);
         }
         if l.recording {
-            cx.canvas.stroke_round_rect(rr, 10, 2, t.warn);
+            cx.canvas.stroke_round_rect(rr, t.round(10), 2, t.warn);
         } else if picked {
-            cx.canvas.stroke_round_rect(rr, 10, 2, t.accent);
+            cx.canvas.stroke_round_rect(rr, t.round(10), 2, t.accent);
             cx.canvas
-                .fill_round_rect(p.delete, 8, t.raised.with_alpha(235));
+                .fill_round_rect(p.delete, t.round(8), t.raised.with_alpha(235));
             cx.text(FontId::Bold, 18.0, p.delete, Align::Center, t.text, "×");
         }
         // Held long enough to lift: raised, ready to drag.
         if self.press.is_some_and(|q| q.k == k && q.ready && !q.lifted) {
-            cx.canvas.stroke_round_rect(rr.inset(-2), 12, 3, t.accent);
+            cx.canvas
+                .stroke_round_rect(rr.inset(-2), t.round(12), 3, t.accent);
         }
         // A lifted layer's old place.
         if self.drag().is_some_and(|(dk, _)| dk == k) {
-            cx.canvas.fill_round_rect(rr, 10, t.bg.mix(t.surface, 0.3));
-            cx.canvas.stroke_round_rect(rr, 10, 2, t.text_faint);
+            cx.canvas
+                .fill_round_rect(rr, t.round(10), t.bg.mix(t.surface, 0.3));
+            cx.canvas
+                .stroke_round_rect(rr, t.round(10), 2, t.text_faint);
         }
     }
 
@@ -1833,7 +1843,7 @@ impl LoopEditor {
         let y = m.y + 2 + (self.top as f32 * tick) as i32;
         let h = (fit as f32 * tick) as i32 + 4;
         cx.canvas
-            .stroke_round_rect(Rect::new(m.x - 1, y, 16, h), 6, 2, t.text);
+            .stroke_round_rect(Rect::new(m.x - 1, y, 16, h), t.round(6), 2, t.text);
         // The older layers continue below.
         let older = n.saturating_sub(self.top + fit);
         if older > 0 {
@@ -1845,7 +1855,7 @@ impl LoopEditor {
             let w = cx.measure(FontId::Bold, 12.0, &label);
             cx.canvas.fill_round_rect(
                 Rect::new(r.x - 6, r.y - 1, w + 12, r.h + 2),
-                6,
+                t.round(6),
                 t.bg.with_alpha(220),
             );
             cx.text(FontId::Bold, 12.0, r, Align::Left, t.text, &label);
@@ -1904,7 +1914,7 @@ impl LoopEditor {
     fn paint_empty(&self, cx: &mut PaintCx, lanes: Rect, e: &EmptyLook) {
         let t = cx.theme.clone();
         cx.canvas
-            .fill_round_rect(lanes, 10, t.bg.mix(t.surface, 0.45));
+            .fill_round_rect(lanes, t.round(10), t.bg.mix(t.surface, 0.45));
         let inner = lanes.inset_xy(14, 10);
         cx.text(
             FontId::Bold,
@@ -1957,7 +1967,7 @@ impl LoopEditor {
         if let Some((a, b, label)) = &shown {
             let b = capture_button(lanes, *a, *b, label);
             let label = label.as_str();
-            cx.canvas.fill_round_rect(b, 10, t.accent);
+            cx.canvas.fill_round_rect(b, t.round(10), t.accent);
             let tw = cx.measure(FontId::Bold, 15.0, label);
             let icon_x = b.x + (b.w - tw - 26) / 2;
             let icon = Rect::new(icon_x, b.y + b.h / 2 - 9, 18, 18);
@@ -1998,7 +2008,7 @@ impl LoopEditor {
             let after = k > h.now;
             cx.canvas.fill_round_rect(
                 sr,
-                8,
+                t.round(8),
                 if now {
                     t.raised
                 } else {
@@ -2006,7 +2016,7 @@ impl LoopEditor {
                 },
             );
             if now {
-                cx.canvas.stroke_round_rect(sr, 8, 2, t.accent);
+                cx.canvas.stroke_round_rect(sr, t.round(8), 2, t.accent);
             }
             let ink = if after { t.text_faint } else { t.text };
             let label = Rect::new(sr.x + 14, sr.y, sr.w - 120, sr.h);
@@ -2045,14 +2055,14 @@ impl LoopEditor {
     fn paint_send(&self, cx: &mut PaintCx, lanes: Rect) {
         let t = cx.theme.clone();
         cx.canvas
-            .fill_round_rect(lanes, 10, t.bg.mix(t.surface, 0.45));
+            .fill_round_rect(lanes, t.round(10), t.bg.mix(t.surface, 0.45));
         for (i, (b, (title, what))) in LoopEditor::send_rects(lanes)
             .into_iter()
             .zip(SEND_CHOICES)
             .enumerate()
         {
             let on = self.send_built[i];
-            cx.canvas.fill_round_rect(b, 12, t.raised);
+            cx.canvas.fill_round_rect(b, t.round(12), t.raised);
             cx.text(
                 FontId::Bold,
                 18.0,
@@ -2119,13 +2129,13 @@ impl LoopEditor {
                         &format!("{:.0} %", 100.0 * feedback),
                     );
                     if self.feedback.is_some() {
-                        cx.canvas.stroke_round_rect(k, 10, 2, t.accent);
+                        cx.canvas.stroke_round_rect(k, t.round(10), 2, t.accent);
                     }
                 }
                 let on = |c: Ctl| ctls.iter().find(|x| x.0 == c).is_some_and(|x| x.3);
                 if let Some(b) = rect(Ctl::Reverse) {
                     group_label(cx, b.x, s.y, "PLAY IT");
-                    cx.canvas.fill_round_rect(b, 10, t.raised);
+                    cx.canvas.fill_round_rect(b, t.round(10), t.raised);
                     let mut d = Shape::new(Rect::new(b.x + 12, b.y + 16, 16, 16));
                     d.disc(b.x as f32 + 20.0, b.y as f32 + b.h as f32 / 2.0, 4.5);
                     d.draw(cx.canvas, if *reversed { t.accent } else { t.outline });
@@ -2188,7 +2198,7 @@ impl LoopEditor {
                         cx.text(FontId::Sans, 12.0, hi, Align::Center, t.text_faint, "–");
                     }
                     if self.history.is_some() {
-                        cx.canvas.stroke_round_rect(hi, 8, 2, t.accent);
+                        cx.canvas.stroke_round_rect(hi, t.round(8), 2, t.accent);
                     }
                 }
                 if let Some(m) = rect(Ctl::Merge) {

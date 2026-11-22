@@ -199,7 +199,11 @@ fn pin_hits_remove_and_clear() {
     let st = s.state.clone();
     assert!(s.tab.qlink(&mut s.ui, &st, 0, 2, false).is_none());
     assert_eq!(s.tab.warp().selected(), Some(1));
-    assert_eq!(pin_marks(&s)[1].color, Some(s.ui.theme.text), "lit");
+    assert_eq!(
+        pin_marks(&s)[1].color,
+        Some(mpfree_ui::Paint::Key(mpfree_ui::ColorKey::Text)),
+        "lit"
+    );
     go(&mut s, REGION, EventKind::Tab(Row::RemovePin.index()));
     let q = pins(&s);
     assert_eq!(q.len(), p.len() - 1);

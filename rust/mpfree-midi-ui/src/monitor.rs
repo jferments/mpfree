@@ -1009,7 +1009,7 @@ impl MonitorSection {
         } else {
             (t.surface, t.text_dim)
         };
-        cx.canvas.fill_round_rect(r, 10, fill);
+        cx.canvas.fill_round_rect(r, t.round(10), fill);
         cx.text(FontId::Bold, t.size_small, r, Align::Center, ink, text);
     }
 
@@ -1196,7 +1196,7 @@ impl MonitorSection {
             let y = l.list.y + i as i32 * LINE_H;
             let row = Rect::new(l.list.x, y, l.list.w, LINE_H - 2);
             if i % 2 == 0 {
-                cx.canvas.fill_round_rect(row, 6, t.surface);
+                cx.canvas.fill_round_rect(row, t.round(6), t.surface);
             }
             let x = row.x + 8;
             let x = col(
@@ -1388,7 +1388,7 @@ impl IoSection for MonitorSection {
         let m = self.model.lock().unwrap_or_else(|e| e.into_inner());
         let l = self.layout(&m, r);
         if let Some(b) = l.banner {
-            cx.canvas.fill_round_rect(b, 10, t.surface);
+            cx.canvas.fill_round_rect(b, t.round(10), t.surface);
             cx.canvas
                 .fill_round_rect(Rect::new(b.x, b.y + 8, 4, b.h - 16), 2, t.warn);
             cx.text(
@@ -1412,11 +1412,11 @@ impl IoSection for MonitorSection {
                 Hit::View(now) => {
                     if !now {
                         let seg = Rect::new(cr.x, cr.y, 2 * SEG_W, CHIP_H);
-                        cx.canvas.fill_round_rect(seg, 10, t.surface);
+                        cx.canvas.fill_round_rect(seg, t.round(10), t.surface);
                     }
                     let on = now == self.now_view;
                     if on {
-                        cx.canvas.fill_round_rect(cr.inset(3), 8, t.accent);
+                        cx.canvas.fill_round_rect(cr.inset(3), t.round(8), t.accent);
                     }
                     cx.text(
                         FontId::Bold,
@@ -1429,8 +1429,11 @@ impl IoSection for MonitorSection {
                 }
                 Hit::Save => {
                     let on = m.live.saves_logs;
-                    cx.canvas
-                        .fill_round_rect(cr, 10, if on { t.raised } else { t.surface });
+                    cx.canvas.fill_round_rect(
+                        cr,
+                        t.round(10),
+                        if on { t.raised } else { t.surface },
+                    );
                     cx.text(
                         FontId::Bold,
                         t.size_small,
@@ -1447,7 +1450,7 @@ impl IoSection for MonitorSection {
                     }
                 }
                 Hit::Channel(d) => {
-                    cx.canvas.fill_round_rect(cr, 10, t.raised);
+                    cx.canvas.fill_round_rect(cr, t.round(10), t.raised);
                     cx.text(
                         FontId::Bold,
                         t.size_body,
@@ -1460,25 +1463,25 @@ impl IoSection for MonitorSection {
                 Hit::Hold if self.now_shows() => {
                     let on = self.frozen.is_some();
                     let (fill, ink) = if on {
-                        (t.warn, t.bg)
+                        (t.warn, t.ink_on(t.warn))
                     } else {
                         (t.raised, t.text)
                     };
-                    cx.canvas.fill_round_rect(cr, 10, fill);
+                    cx.canvas.fill_round_rect(cr, t.round(10), fill);
                     cx.text(FontId::Bold, t.size_small, cr, Align::Center, ink, "Hold");
                 }
                 Hit::Hold => {
                     let on = self.anchor.is_some();
                     let (fill, ink) = if on {
-                        (t.warn, t.bg)
+                        (t.warn, t.ink_on(t.warn))
                     } else {
                         (t.raised, t.text)
                     };
-                    cx.canvas.fill_round_rect(cr, 10, fill);
+                    cx.canvas.fill_round_rect(cr, t.round(10), fill);
                     cx.text(FontId::Bold, t.size_small, cr, Align::Center, ink, "Hold");
                 }
                 Hit::Clear => {
-                    cx.canvas.fill_round_rect(cr, 10, t.raised);
+                    cx.canvas.fill_round_rect(cr, t.round(10), t.raised);
                     cx.text(
                         FontId::Bold,
                         t.size_small,

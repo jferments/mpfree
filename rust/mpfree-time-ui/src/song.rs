@@ -1028,12 +1028,13 @@ impl SongLanes {
         };
         // A shadow under it, so it lifts off the lanes.
         let shadow = Rect::new(p.panel.x + 2, p.panel.y + 4, p.panel.w, p.panel.h);
-        cx.canvas.fill_round_rect(shadow, 12, t.bg);
+        cx.canvas.fill_round_rect(shadow, t.round(12), t.bg);
         let old = cx.canvas.clip();
         cx.canvas.set_clip(old.intersect(p.panel));
+        let fill = t.surface.mix(t.raised, 0.35);
+        cx.canvas.fill_round_rect(p.panel, t.round(12), fill);
         cx.canvas
-            .fill_round_rect(p.panel, 12, t.surface.mix(t.raised, 0.35));
-        cx.canvas.stroke_round_rect(p.panel, 12, 1, t.outline);
+            .stroke_round_rect(p.panel, t.round(12), 1, t.outline);
         let inner = p.panel.inset(12);
         cx.canvas
             .fill_round_rect(Rect::new(inner.x, inner.y + 4, 4, 18), 2, lane.color);
@@ -1049,13 +1050,13 @@ impl SongLanes {
             t.size_small,
             Rect::new(inner.x + 12, inner.y - 2, p.close.x - inner.x - 16, 28),
             Align::Left,
-            lane.color.mix(t.text, 0.25),
+            t.readable(lane.color.mix(t.text, 0.25), fill),
             &format!("{}{state}", lane.name),
         );
         let button = |cx: &mut PaintCx, b: Rect, word: &str, on: bool, tone: Color| {
             cx.canvas
-                .fill_round_rect(b, 8, if on { tone } else { t.raised });
-            let ink = if on { t.bg } else { t.text };
+                .fill_round_rect(b, t.round(8), if on { tone } else { t.raised });
+            let ink = if on { t.ink_on(tone) } else { t.text };
             cx.text(
                 FontId::Bold,
                 t.size_small - 1.0,
@@ -1611,7 +1612,7 @@ impl SongLanes {
             t.size_small - 2.0,
             tag,
             Align::Center,
-            t.bg,
+            t.ink_on(t.accent),
             text,
         );
     }
@@ -1630,8 +1631,8 @@ impl SongLanes {
                 };
                 let home = self.block_rect(r, b);
                 if let Some(h) = home {
-                    cx.canvas.fill_round_rect(h, 6, t.surface);
-                    cx.canvas.stroke_round_rect(h, 6, 2, t.outline);
+                    cx.canvas.fill_round_rect(h, t.round(6), t.surface);
+                    cx.canvas.stroke_round_rect(h, t.round(6), 2, t.outline);
                 }
                 let land = self.block_landing(r, gr);
                 let at = land.and_then(|(k, s)| Some((self.span_rect(&g, k, s, s + b.length)?, s)));
@@ -1641,7 +1642,7 @@ impl SongLanes {
                     let end = start + b.length;
                     let clash = self.blocks.between(k, start, end).any(|o| o.index != index);
                     let ink = if clash { t.bad } else { t.accent };
-                    cx.canvas.stroke_round_rect(l.inset(-2), 8, 3, ink);
+                    cx.canvas.stroke_round_rect(l.inset(-2), t.round(8), 3, ink);
                 }
                 let w =
                     (self.x_of(g.lanes, b.start + b.length) - self.x_of(g.lanes, b.start)).max(24);
@@ -1650,8 +1651,9 @@ impl SongLanes {
                     None => Rect::new(gr.at.0 - 12, gr.at.1 - g.lane_h / 2, w, g.lane_h - 4),
                 };
                 let color = self.tracks.get(b.track).map_or(t.accent, |c| c.1);
-                cx.canvas.fill_round_rect(card, 6, t.raised.mix(color, 0.5));
-                cx.canvas.stroke_round_rect(card, 6, 2, t.accent);
+                cx.canvas
+                    .fill_round_rect(card, t.round(6), t.raised.mix(color, 0.5));
+                cx.canvas.stroke_round_rect(card, t.round(6), 2, t.accent);
                 if card.w > 30 {
                     cx.text(
                         FontId::Sans,
@@ -1674,8 +1676,10 @@ impl SongLanes {
                 };
                 if let Some(l) = self.span_rect(&g, b.track, b.start, b.start + length) {
                     let color = self.tracks.get(b.track).map_or(t.accent, |c| c.1);
-                    cx.canvas.fill_round_rect(l, 6, t.raised.mix(color, 0.3));
-                    cx.canvas.stroke_round_rect(l.inset(-2), 8, 3, t.accent);
+                    cx.canvas
+                        .fill_round_rect(l, t.round(6), t.raised.mix(color, 0.3));
+                    cx.canvas
+                        .stroke_round_rect(l.inset(-2), t.round(8), 3, t.accent);
                     if l.w > 30 {
                         cx.text(
                             FontId::Sans,
@@ -1714,7 +1718,7 @@ impl SongLanes {
                 let x1 = self.x_of(g.lanes, b).min(g.lanes.right());
                 if x1 > x0 {
                     let home = Rect::new(x0, top, x1 - x0, g.lanes.bottom() - top);
-                    cx.canvas.stroke_round_rect(home, 6, 2, t.outline);
+                    cx.canvas.stroke_round_rect(home, t.round(6), 2, t.outline);
                 }
                 let gap = self.section_gap(r, gr).and_then(|j| self.edge_tick(j));
                 if let Some(e) = gap {
@@ -1747,8 +1751,8 @@ impl SongLanes {
                 }
                 let y = (g.ruler.y + dy).clamp(g.ruler.y, g.lanes.bottom() - 28);
                 let chip = Rect::new(x, y, w, 28);
-                cx.canvas.fill_round_rect(chip, 8, t.raised);
-                cx.canvas.stroke_round_rect(chip, 8, 2, t.accent);
+                cx.canvas.fill_round_rect(chip, t.round(8), t.raised);
+                cx.canvas.stroke_round_rect(chip, t.round(8), 2, t.accent);
                 cx.text(
                     FontId::Bold,
                     t.size_small - 1.0,
@@ -1786,7 +1790,7 @@ impl SongLanes {
     ) {
         let t = cx.theme.clone();
         cx.canvas
-            .fill_round_rect(br, 6, t.raised.mix(lane.color, 0.42));
+            .fill_round_rect(br, t.round(6), t.raised.mix(lane.color, 0.42));
         // The block's full stretch on screen, unclipped, so the waveform
         // and the fades line up when it runs off an edge.
         let x0 = self.x_of(g.lanes, b.start);
@@ -1832,7 +1836,7 @@ impl SongLanes {
             );
         }
         if picked {
-            cx.canvas.stroke_round_rect(br, 6, 2, t.accent);
+            cx.canvas.stroke_round_rect(br, t.round(6), 2, t.accent);
         }
     }
 
@@ -1860,14 +1864,14 @@ impl SongLanes {
         if self.panel == Some(lane.track) {
             // Its panel is open.
             cx.canvas
-                .stroke_round_rect(h.inset_xy(-2, 1), 6, 1, t.accent);
+                .stroke_round_rect(h.inset_xy(-2, 1), t.round(6), 1, t.accent);
         }
         cx.text(
             FontId::Bold,
             t.size_small - 1.0,
             Rect::new(h.x + 20, h.y, (chip.x - h.x - 24).max(0), h.h),
             Align::Left,
-            lane.color.mix(t.text, 0.25),
+            t.readable(lane.color.mix(t.text, 0.25), t.surface),
             &lane.name,
         );
         let bar = Rect::new(h.x + 2, h.bottom() - 6, h.w - 4, 3);
@@ -1896,7 +1900,7 @@ impl Widget for SongLanes {
             if self.alert { t.warn } else { t.text_dim },
             &self.legend,
         );
-        cx.canvas.fill_round_rect(list, 10, t.raised);
+        cx.canvas.fill_round_rect(list, t.round(10), t.raised);
         cx.text(
             FontId::Bold,
             t.size_small,
@@ -1945,7 +1949,7 @@ impl Widget for SongLanes {
                 let w = cx.measure(FontId::Bold, t.size_small - 2.0, name) + 10;
                 cx.canvas
                     .fill_round_rect(Rect::new(x, g.ruler.y + 11, w, 16), 8, t.warn);
-                ink = t.bg;
+                ink = t.ink_on(t.warn);
             }
             cx.text(
                 FontId::Bold,
@@ -1998,7 +2002,7 @@ impl Widget for SongLanes {
                         t.size_small,
                         at,
                         Align::Left,
-                        color.mix(t.text, 0.25),
+                        t.readable(color.mix(t.text, 0.25), t.surface),
                         name,
                     );
                     if let Some(s) = sound {
@@ -2026,7 +2030,7 @@ impl Widget for SongLanes {
                         Rect::new(row.x + 20, row.y, NAME_W - 28, row.h),
                         Align::Left,
                         if used {
-                            lane.color.mix(t.text, 0.4)
+                            t.readable(lane.color.mix(t.text, 0.4), t.surface)
                         } else {
                             t.text_faint
                         },
@@ -2044,7 +2048,7 @@ impl Widget for SongLanes {
                 }
                 Some(Lane::AddTrack) => {
                     if let Some(b) = self.add_track_rect(r) {
-                        cx.canvas.stroke_round_rect(b, 8, 1, t.outline);
+                        cx.canvas.stroke_round_rect(b, t.round(8), 1, t.outline);
                         cx.text(
                             FontId::Bold,
                             t.size_small - 1.0,
@@ -2057,7 +2061,7 @@ impl Widget for SongLanes {
                 }
                 Some(Lane::Add) => {
                     if let Some(b) = self.add_rect(r) {
-                        cx.canvas.stroke_round_rect(b, 8, 1, t.outline);
+                        cx.canvas.stroke_round_rect(b, t.round(8), 1, t.outline);
                         cx.text(
                             FontId::Bold,
                             t.size_small - 1.0,
@@ -2073,14 +2077,15 @@ impl Widget for SongLanes {
         }
         for (b, br) in self.blocks_in_view(&g) {
             let color = self.tracks.get(b.track).map_or(t.accent, |c| c.1);
-            cx.canvas.fill_round_rect(br, 6, t.raised.mix(color, 0.42));
+            cx.canvas
+                .fill_round_rect(br, t.round(6), t.raised.mix(color, 0.42));
             if b.unique {
                 // Its own copy: a corner mark.
                 cx.canvas
                     .fill_round_rect(Rect::new(br.right() - 10, br.y + 4, 6, 6), 3, t.text);
             }
             if self.selected == Some(b.index) {
-                cx.canvas.stroke_round_rect(br, 6, 2, t.accent);
+                cx.canvas.stroke_round_rect(br, t.round(6), 2, t.accent);
                 // Its end grip: two bars inside its right end.
                 if self.end_rect(r).is_some() && br.w > 24 {
                     for k in 0..2 {
@@ -2117,7 +2122,7 @@ impl Widget for SongLanes {
                 if ma == a && (x1 - x0).abs() >= DRAG_SLOP {
                     if let Some(br) = self.region_rect(r, a, mi) {
                         let ghost = Rect::new(br.x + x1 - x0, br.y, br.w, br.h);
-                        cx.canvas.stroke_round_rect(ghost, 6, 2, t.accent);
+                        cx.canvas.stroke_round_rect(ghost, t.round(6), 2, t.accent);
                     }
                 }
             }
@@ -2125,8 +2130,9 @@ impl Widget for SongLanes {
             if let (Some(from), Some(now)) = (lane.recording, self.playhead) {
                 let lane_k = self.audio_k(a);
                 if let Some(br) = self.span_rect(&g, lane_k, from, now.max(from + 1)) {
-                    cx.canvas.fill_round_rect(br, 6, t.bad.mix(t.surface, 0.35));
-                    cx.canvas.stroke_round_rect(br, 6, 1, t.bad);
+                    cx.canvas
+                        .fill_round_rect(br, t.round(6), t.bad.mix(t.surface, 0.35));
+                    cx.canvas.stroke_round_rect(br, t.round(6), 1, t.bad);
                     if br.w > 34 && br.h >= 30 {
                         cx.text(
                             FontId::Bold,
@@ -2168,9 +2174,9 @@ impl Widget for SongLanes {
             } else {
                 t.surface
             };
-            cx.canvas.fill_round_rect(*br, 10, fill);
+            cx.canvas.fill_round_rect(*br, t.round(10), fill);
             let ink = if lit {
-                t.bg
+                t.ink_on(fill)
             } else if live {
                 t.text
             } else {

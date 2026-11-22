@@ -123,6 +123,17 @@ pub const STEP_HOLD: f32 = 0.4;
 /// What the hint line says when such a button is touched in Perform.
 pub const GUARD_HINT: &str = "Hold to delete";
 
+/// Opens on their way to the audio loop and back at once, at most (live
+/// shows A2). The audio loop holds the engines each one replaced until
+/// the screen takes them, in as many slots, so none is ever freed on the
+/// audio thread; a third open while two are still on their way is
+/// refused and said (it can only come from opens a few milliseconds
+/// apart).
+pub const OPENS_ON_THEIR_WAY: usize = 2;
+
+/// Why an open waits for the last ones ([`OPENS_ON_THEIR_WAY`]).
+const OPENS_BUSY: &str = "the last two projects are still going in; try again in a moment";
+
 /// A finger holding a button that deletes or clears, in Perform (the
 /// guard): which finger, how long it has held (s), where it landed, and
 /// the button (its widget and rectangle) the red fill crosses.
@@ -2073,6 +2084,9 @@ pub struct Player {
     project_rate: u32,
     /// When the last open landed ([`OPEN_SETTLE`]).
     opened_at: Option<Instant>,
+    /// Opens sent to the audio loop whose replaced engines haven't come
+    /// back yet ([`OPENS_ON_THEIR_WAY`] at most).
+    opens_out: usize,
     /// How many of the actions in the outbox an open or New project put
     /// there (with any before them): the open's own, never an edit,
     /// however long its own work (the kits, say) took on a slow machine.
@@ -2651,6 +2665,7 @@ impl Player {
             export_job: None,
             project_rate: 44_100,
             opened_at: None,
+            opens_out: 0,
             open_actions: 0,
             sample_edits: 0,
             loops_load: None,
@@ -3991,7 +4006,8 @@ impl Player {
             }
         });
         let wrap: fn(&str) -> String = match loaded {
-            Some(w) => {
+            Some(mut w) => {
+                w.set_theme(&self.ui.theme);
                 let tabs = skin_page::SkinTabs::new(&w.view.tabs());
                 // For the device round's log: the skin is drawn.
                 println!(
@@ -6901,6 +6917,10 @@ impl Player {
                     .map(|(_, t)| t.clone())
             };
             if let Some(t) = Theme::builtin(&s.theme).or_else(file) {
+                // A plugin's skin: MPFree's pop-ups over it follow too.
+                if let Some(w) = self.ui.get_mut::<skin_page::SkinWidget>(skin_page::SKIN) {
+                    w.set_theme(&t);
+                }
                 self.ui.set_theme(t);
             }
         }
@@ -8795,6 +8815,7 @@ impl Player {
             // an edit).
             ToUi::ProjectBack(old) => {
                 drop(old);
+                self.opens_out = self.opens_out.saturating_sub(1);
                 self.opened_at = Some(Instant::now());
                 if let Some(b) = self.browser.as_mut() {
                     b.open_landed();
@@ -10497,6 +10518,9 @@ impl Player {
     /// changes, so the project open stays as it was. A part the project
     /// hasn't got opens as New has it, never as the last project left it.
     fn open_project(&mut self, loc: &mpfree_library::Loc, snap: &mpfree_library::Snapshot) {
+        if self.opens_out >= OPENS_ON_THEIR_WAY {
+            return self.open_refused(loc.name(), OPENS_BUSY);
+        }
         let mut o = match self.project_opening(snap, loc.name()) {
             Ok(o) => o,
             Err(why) => return self.open_refused(loc.name(), &why),
@@ -10517,6 +10541,7 @@ impl Player {
             );
         }
         self.open_midi(snap.part(crate::project::MIDI));
+        self.opens_out += 1;
         self.outbox.push(FromUi::OpenProject(Box::new(o)));
         // No kits saved: the factory kits, as New has them.
         if snap.part(crate::project::SAMPLER).is_none() {
@@ -10653,6 +10678,12 @@ impl Player {
 
     /// New project: the parts the app started with, the factory kits.
     fn new_project(&mut self) {
+        if self.opens_out >= OPENS_ON_THEIR_WAY {
+            let line = format!("a new project wasn't made: {OPENS_BUSY}");
+            self.say(format!("project: {line}"));
+            self.tell(&line);
+            return;
+        }
         let Some(d) = self.project_defaults.as_ref() else {
             self.say(
                 "project: not ready for a new project yet (the sound is still starting)"
@@ -10678,6 +10709,7 @@ impl Player {
             }
         };
         self.open_midi(None);
+        self.opens_out += 1;
         self.outbox.push(FromUi::OpenProject(Box::new(o)));
         (self.loops_load, self.audio_load) = (None, None);
         self.opened_at = Some(Instant::now());
@@ -11800,6 +11832,17 @@ impl Player {
                 memory.push((
                     "Sampler: Normalize read every frame (no summary)".to_string(),
                     format!("{read}×"),
+                    Tone::Warn,
+                ));
+            }
+            let moved = self
+                .ui
+                .get::<skin_page::SkinWidget>(skin_page::SKIN)
+                .map_or(0, |w| w.view.rescue_count());
+            if moved > 0 {
+                memory.push((
+                    "Skin pop-ups: colours moved so they read".to_string(),
+                    format!("{moved}×"),
                     Tone::Warn,
                 ));
             }
@@ -20005,7 +20048,7 @@ mod tests {
         ];
         p.time.edit = Some(Box::new(time_view::EditInfo {
             editor: Editor::new(0, 0, &clip),
-            clip,
+            clip: clip.into(),
             rev: 0,
             track_name: "Track 1".into(),
             bar: 3840,
@@ -27347,6 +27390,83 @@ mod tests {
     /// before it, or a newer project format) doesn't open. Nothing goes to
     /// the engines, the browser still saves to the project that was open,
     /// and the screen says why in plain words.
+    #[test]
+    fn opens_wait_for_the_engines_they_replaced_to_come_back() {
+        // Live shows A2: the audio loop keeps the engines an open replaced
+        // in OPENS_ON_THEIR_WAY slots until the screen takes them, so the
+        // screen never has more opens on their way than that, and none is
+        // freed on the audio thread.
+        use crate::project::{self, Defaults};
+        use mpfree_browser_ui::sample::{select, source};
+        use mpfree_library::{Loc, Place};
+        let dir = std::env::temp_dir().join(format!("mpfree-on-their-way-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = mpfree_library::Library::at(&dir).unwrap();
+        let mut p = sample_sampler(Fonts::embedded());
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), "");
+        p.take_actions();
+        let synth = crate::synth::Synth::new(44_100);
+        let good = project::new_snapshot(&Defaults {
+            tempo: 120.0,
+            mixer: project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0, 0),
+            modu: String::new(),
+            synth: project::synth_text(&Default::default(), &synth.sounds()),
+        });
+        for name in ["One", "Two", "Three"] {
+            let loc = Loc::top(Place::Projects).join(name).unwrap();
+            lib.save_project(&loc, &good, 0).unwrap();
+        }
+        p.apply(ToUi::Show(View::Browser));
+        let open = |p: &mut Player, name: &str| {
+            let b = p.browser.as_mut().unwrap();
+            b.go_source(source("Projects"));
+            select(b, name);
+            b.push();
+            p.step_browser();
+            p.take_actions().into_iter().find_map(|a| match a {
+                FromUi::OpenProject(o) => Some(o),
+                _ => None,
+            })
+        };
+        let one = open(&mut p, "One").expect("One opens");
+        let two = open(&mut p, "Two").expect("Two opens while One's engines are on their way");
+        assert_eq!(OPENS_ON_THEIR_WAY, 2);
+        assert!(
+            open(&mut p, "Three").is_none(),
+            "a third open went while two were on their way"
+        );
+        let (line, problem) = p.browser.as_ref().unwrap().status_line().unwrap();
+        assert!(
+            problem && line.starts_with(&format!("Didn't open Three: {OPENS_BUSY}")),
+            "{line}"
+        );
+        let two_loc = Loc::top(Place::Projects).join("Two").unwrap();
+        assert_eq!(p.browser.as_ref().unwrap().project(), Some(&two_loc));
+        // New project waits the same way.
+        p.new_project();
+        assert!(
+            !p.take_actions()
+                .iter()
+                .any(|a| matches!(a, FromUi::OpenProject(_))),
+            "New went while two opens were on their way"
+        );
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l == &format!("project: a new project wasn't made: {OPENS_BUSY}")),
+            "{:?}",
+            events_log(&p)
+        );
+        // Once one comes back, the next open goes.
+        p.apply(ToUi::ProjectBack(one));
+        let three = open(&mut p, "Three").expect("Three opens once One's engines are back");
+        p.apply(ToUi::ProjectBack(two));
+        p.apply(ToUi::ProjectBack(three));
+        assert_eq!(p.opens_out, 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn a_project_this_build_cant_read_doesnt_open_and_the_open_one_stays() {
         use crate::project::{self, Defaults};

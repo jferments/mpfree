@@ -419,7 +419,7 @@ fn a_held_step_locks_turns_and_leaves_the_effect_alone() {
     assert_eq!(p.locks().unwrap().get(filter::CUTOFF), Some(value));
     let t = tile(&ui);
     assert_ne!(t.value, base_tile.value, "the tile shows the lock");
-    assert_eq!(t.color, ui.theme.warn, "locked tiles are marked");
+    assert_eq!(t.color, mpfree_ui::Paint::WARN, "locked tiles are marked");
     assert!(
         dot(&ui) > base_dot + 0.05,
         "the drawing shows the locked cutoff"
@@ -536,13 +536,12 @@ fn a_held_step_locks_perform_pads_turns_and_the_xy_pad() {
 #[test]
 fn a_watched_effect_gets_a_levels_card() {
     use mpfree_fx::ids::compressor as comp;
-    let theme = mpfree_ui::Theme::dark();
     let mut st = state("mpfree.fx.compressor", &[]);
     let r = st.index(comp::REDUCTION).unwrap();
     st.values[r] = -6.0;
     let cards = |st: &FxState| {
         let scratch = mpfree_fx_ui::Scratch::new(st);
-        mpfree_fx_ui::visual::strip(st, "Compressor", None, &scratch, &theme).cards
+        mpfree_fx_ui::visual::strip(st, "Compressor", None, &scratch).cards
     };
     let plain = cards(&st).len();
     assert!(cards(&st).iter().all(|c| c.title != "Levels"));
@@ -577,10 +576,9 @@ fn a_watched_effect_gets_a_levels_card() {
 #[test]
 fn the_new_effects_draw_what_they_play() {
     use mpfree_fx::ids::{ducker, pitch, transient};
-    let theme = mpfree_ui::Theme::dark();
     let card = |st: &FxState, page: &str| {
         let scratch = mpfree_fx_ui::Scratch::new(st);
-        mpfree_fx_ui::visual::strip(st, page, None, &scratch, &theme)
+        mpfree_fx_ui::visual::strip(st, page, None, &scratch)
             .cards
             .remove(0)
     };
@@ -663,10 +661,9 @@ fn the_new_effects_draw_what_they_play() {
 #[test]
 fn the_vocal_effects_draw_their_key() {
     use mpfree_fx::ids::{harmonizer as harm, pitch_correct as tune};
-    let theme = mpfree_ui::Theme::dark();
     let card = |st: &FxState, page: &str| {
         let scratch = mpfree_fx_ui::Scratch::new(st);
-        mpfree_fx_ui::visual::strip(st, page, None, &scratch, &theme)
+        mpfree_fx_ui::visual::strip(st, page, None, &scratch)
             .cards
             .remove(0)
     };
@@ -712,10 +709,9 @@ fn the_vocal_effects_draw_their_key() {
 #[test]
 fn the_tuner_needle_sits_on_the_cents() {
     use mpfree_fx::ids::tuner;
-    let theme = mpfree_ui::Theme::dark();
     let card = |st: &FxState| {
         let scratch = mpfree_fx_ui::Scratch::new(st);
-        mpfree_fx_ui::visual::strip(st, "Tuner", None, &scratch, &theme)
+        mpfree_fx_ui::visual::strip(st, "Tuner", None, &scratch)
             .cards
             .remove(0)
     };
@@ -741,15 +737,14 @@ fn the_tuner_needle_sits_on_the_cents() {
     let c = card(&st);
     let needle = &c.traces[1];
     assert!((needle.pts[0].0 - 0.43).abs() < 1e-5);
-    assert_eq!(needle.color, theme.warn);
+    assert_eq!(needle.color, mpfree_ui::Paint::WARN);
     assert!(c.caption.starts_with("A2 · -7.0 c"), "{}", c.caption);
 }
 
 /// Every card the effect draws for state `st`, by title.
 fn drawn(st: &FxState, title: &str) -> mpfree_synth_ui::widgets::Card {
-    let theme = mpfree_ui::Theme::dark();
     let scratch = mpfree_fx_ui::Scratch::new(st);
-    mpfree_fx_ui::visual::strip(st, "", None, &scratch, &theme)
+    mpfree_fx_ui::visual::strip(st, "", None, &scratch)
         .cards
         .into_iter()
         .find(|c| c.title == title)

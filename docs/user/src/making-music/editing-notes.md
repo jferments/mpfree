@@ -31,7 +31,7 @@ Notes are drawn as they will play. A note whose step is off (tapped off on Steps
 
 - **Pick notes.** Tap a note to pick it. **All** picks every note, and **None** lets them go.
 - **Move them.** Drag a picked note and every picked note moves with it, along time and up or down in pitch. Moves land on the snap's lines (**Snap**, 1/16 to begin with).
-- **Velocity.** Slide a finger along the velocity lane to set the picked notes' velocity.
+- **Velocity.** Slide a finger along the velocity lane to set the picked notes' velocity. Their bars follow your finger, and the new velocity goes in when you lift it, so **UNDO** takes back the whole slide.
 - **One finger at a time.** A drag belongs to the finger that started it. If another finger touches the screen while you drag, the drag stops, the notes stay where they were, and that touch does nothing.
 - **Draw and erase.** The tool button switches between Select, Draw and Erase. With Draw, tap an empty spot to add a note there. With Erase, tap a note to take it out.
 - **Duplicate** copies the picked notes to just after them. **Delete** takes them out (in Perform, hold it for half a second).

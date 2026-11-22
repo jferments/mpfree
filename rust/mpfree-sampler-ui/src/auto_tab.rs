@@ -33,7 +33,7 @@
 use mpfree_analysis::note_name;
 use mpfree_sampler::autosample::{zones, Plan, VelocityCurve, MAX_ROUND_ROBINS};
 use mpfree_sampler::model::{LoopMode, MAX_LAYERS, PADS};
-use mpfree_ui::{EventKind, Ui, UiEvent};
+use mpfree_ui::{EventKind, Paint, Ui, UiEvent};
 
 use crate::auto_widgets::{KeyMapView, LayerBand};
 use crate::slice_tool::pad_text;
@@ -517,7 +517,7 @@ impl AutoTab {
             None => st.synth.clone(),
         };
         if let Some(bar) = ui.get_mut::<PadBar>(BAR) {
-            bar.color = pad_color(st.target.unwrap_or(st.pad));
+            bar.color = Paint::Content(pad_color(st.target.unwrap_or(st.pad)));
             bar.title = match (&source, &pads) {
                 (None, _) if s.gear.is_some() => {
                     "Auto-sample: no MIDI out for the gear".to_string()

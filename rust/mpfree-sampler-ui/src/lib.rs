@@ -62,7 +62,6 @@ pub mod auto_tab;
 pub mod auto_widgets;
 pub mod grain_tab;
 pub mod grain_tool;
-pub mod grain_widgets;
 pub mod keys_widgets;
 pub mod levels_panel;
 pub mod live_take;

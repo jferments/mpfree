@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-store rust/mpfree-library rust/mpfree-browser-ui rust/mpfree-app/src/app/saved.rs rust/mpfree-app/src/project.rs rust/mpfree-app/src/app/arp/part.rs
-checked: 2026-11-19 f0b39161
+checked: 2026-11-22 f8d9d6fe
 -->
 
 # Saving your work
@@ -86,7 +86,7 @@ Press **BROWSE**, pick **Projects** on the left, pick a project and push the dat
 
 **A project that opened with something left out is never saved over.** If anything of the project couldn't come in (a plugin that isn't on this stick, a sound, take or loop whose file is missing, a take that doesn't fit in Audio track memory), saving over it would leave that out, and only an earlier save would still have it. So **SHIFT + BROWSE** (or Save, or saving before switching off) saves your work into a new project beside it, named like it with a number (Night drive 2), and says why, for example *Saving as Night drive 2: Night drive opened without the effect clap:org.example.reverb on Master, so it stays as it was*. Night drive keeps everything it had, ready for when the plugin or file is back; you go on working in Night drive 2, and later saves go there. To save over the original anyway, use **Save as** and type its name (Save as offers the new name first).
 
-If MPFree can't read the whole project (it was saved by a newer version of MPFree, or one of its files is damaged), it doesn't open it at all: the project you had open stays exactly as it was, still saved where it was, and the screen says why, for example *Didn't open Song: it was saved by a newer MPFree (project format 3; this one opens up to 2). Update MPFree to open it. The project you had open is unchanged*. A project saved by an older MPFree, before something existed, opens with that thing as a new project has it.
+If MPFree can't read the whole project (it was saved by a newer version of MPFree, or one of its files is damaged), it doesn't open it at all: the project you had open stays exactly as it was, still saved where it was, and the screen says why, for example *Didn't open Song: it was saved by a newer MPFree (project format 3; this one opens up to 2). Update MPFree to open it. The project you had open is unchanged*. A project saved by an older MPFree, before something existed, opens with that thing as a new project has it. If you open projects one after another faster than MPFree can put them in (a few milliseconds apart), the third waits: *the last two projects are still going in; try again in a moment*.
 
 ### Starting a new project
 

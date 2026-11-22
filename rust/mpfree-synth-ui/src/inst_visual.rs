@@ -42,7 +42,7 @@ use mpfree_synth::squelch_params as sq;
 use mpfree_synth::strings_params as stp;
 use mpfree_synth::wind_params as wnp;
 use mpfree_synth::{analog, bass, choir, drawbar, keys, squelch, strings, wind};
-use mpfree_ui::Color;
+use mpfree_ui::Paint;
 use std::f32::consts::{PI, TAU};
 
 type Pts = Vec<(f32, f32)>;
@@ -818,9 +818,9 @@ pub fn analog_cards_caption(v: &impl Values) -> String {
 
 /// Below the note, the note and its octaves, the other harmonics: amber,
 /// white and grey, as an organ's drawbars are brown, white and black.
-const BAR_FAMILY: [Color; 3] = [QLINK_COLORS[2], TEXT, TEXT_DIM];
+const BAR_FAMILY: [Paint; 3] = [QLINK_COLORS[2], TEXT, TEXT_DIM];
 
-fn trace(pts: Pts, color: Color, width: f32, fill: bool, dashed: bool) -> Trace {
+fn trace(pts: Pts, color: Paint, width: f32, fill: bool, dashed: bool) -> Trace {
     Trace {
         pts,
         color,
@@ -831,7 +831,7 @@ fn trace(pts: Pts, color: Color, width: f32, fill: bool, dashed: bool) -> Trace 
 }
 
 /// Bright curves at 2.5 px, dashed ones at 1.5.
-fn bright(pts: Pts, color: Color) -> Trace {
+fn bright(pts: Pts, color: Paint) -> Trace {
     trace(pts, color, 2.5, false, false)
 }
 

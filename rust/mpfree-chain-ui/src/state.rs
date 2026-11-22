@@ -1046,7 +1046,7 @@ pub fn picture(
     }
     let st = FxState::from_node(n, "", t.accent, bpm, rate);
     let scratch = Scratch::new(&st);
-    visual::strip(&st, page, None, &scratch, t).cards
+    visual::strip(&st, page, None, &scratch).cards
 }
 
 /// One effect the picker offers: its id (for `mpfree_fx_ui::make`, or a
