@@ -1,0 +1,115 @@
+name: USB creator build on Linux, macOS and Windows
+
+# `cargo usb-creator`, typed as a musician types it, on GitHub's own Linux,
+# macOS and Windows machines: from a fresh clone it builds the USB creator with
+# MPFree inside it, and the creator then lists the machine's USB disks (none
+# here). Run twice, the second run (after a `git pull`) has little to do.
+# On Linux it also builds MPFree's programs the release's way (Ubuntu's cross
+# compiler and its linker) and checks both builds draw the same screens and
+# frames under an ARM emulator. See docs/dev/guides/build-usb-creator.md.
+#
+# GitHub's machines cost nothing for a public repository. Nothing is uploaded
+# (no artifact storage): each machine's SHA-256s go in the run's summary.
+
+on:
+  pull_request:
+    paths:
+      - "rust/mpfree-creator-build/**"
+      - "rust/mpfree-creator/**"
+      - "rust/mpfree-stick/src/stick.rs"
+      - "rust/mpfree-factory/**"
+      - ".cargo/config.toml"
+      - ".gitattributes"
+      - "tools/build-usb-creator.sh"
+      - ".github/workflows/usb-creator-build.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usb-creator-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  build:
+    name: cargo usb-creator on ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-24.04
+          - name: macOS (Apple silicon)
+            os: macos-15
+          - name: Windows
+            os: windows-2025
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      # On Windows, GitHub's git converts line endings unless .gitattributes says
+      # not to, as Git for Windows does on a musician's PC.
+      - uses: actions/checkout@v4
+      - name: Rust, as rustup.rs installs it (today's stable)
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+      - name: The build command's own tests
+        run: cargo test --manifest-path rust/mpfree-creator-build/Cargo.toml --locked
+      - name: cargo usb-creator
+        run: cargo usb-creator
+      - name: The creator runs, and lists this machine's USB disks (none here)
+        shell: bash
+        run: |
+          exe=rust/target/usb-creator/mpfree-creator
+          if [ "$RUNNER_OS" = Windows ]; then exe=$exe.exe; fi
+          ls -l "$exe"
+          "$exe" --cli disks
+      - name: The programs' SHA-256, in the run's summary
+        shell: bash
+        run: |
+          cd rust/target/usb-creator/stick-programs
+          if command -v sha256sum >/dev/null; then sums=$(sha256sum *); else sums=$(shasum -a 256 *); fi
+          echo "$sums"
+          { echo "### ${{ matrix.name }}"; echo '```'; echo "$sums"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: cargo usb-creator again, as after a git pull with nothing new
+        run: cargo usb-creator
+      - name: The release's way to link (Ubuntu's cross compiler) draws the same screens under an ARM emulator
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends gcc-arm-linux-gnueabihf libc6-dev-armhf-cross qemu-user
+          arm=armv7-unknown-linux-gnueabihf
+          gnu="$RUNNER_TEMP/gnu"
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc \
+            RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static" \
+            cargo build --manifest-path rust/Cargo.toml --release --locked --target "$arm" \
+            --target-dir "$gnu" -p mpfree-app -p mpfree-startup
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc \
+            cargo build --manifest-path rust/Cargo.toml --release --locked --target "$arm" \
+            --target-dir "$gnu-dynamic" -p mpfree-mpcstore --bin mpfree-fetch
+          new=rust/target/usb-creator/stick-programs
+          old="$gnu/$arm/release"
+          cd "$RUNNER_TEMP"
+          # The startup screen: every frame of a second of it.
+          qemu-arm "$GITHUB_WORKSPACE/$new/mpfree-startup" --preview startup-new --theme synthwave --seconds 1
+          qemu-arm "$old/mpfree-startup" --preview startup-old --theme synthwave --seconds 1
+          diff -r startup-old startup-new
+          # The pad player: every sample screen it draws.
+          qemu-arm "$GITHUB_WORKSPACE/$new/mpfree" --preview app-new > app-new.log
+          qemu-arm "$old/mpfree" --preview app-old > app-old.log
+          diff -r app-old app-new
+          echo "The same $(ls startup-new | wc -l) startup frames and $(ls app-new | wc -l) app screens from both builds"
+          # The download helper starts against Ubuntu's C library and says what it wants.
+          qemu-arm -L /usr/arm-linux-gnueabihf "$GITHUB_WORKSPACE/$new/mpfree-fetch" > fetch-new.txt 2>&1 || true
+          qemu-arm -L /usr/arm-linux-gnueabihf "$gnu-dynamic/$arm/release/mpfree-fetch" > fetch-old.txt 2>&1 || true
+          cat fetch-new.txt
+          diff fetch-old.txt fetch-new.txt
+          grep -q 'usage: mpfree-fetch' fetch-new.txt

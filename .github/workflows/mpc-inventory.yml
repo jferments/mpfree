@@ -148,8 +148,6 @@ jobs:
           python3 tools/mpc-import/tests/test_inspect_xpj.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_read_stick_logs.py
           python3 tools/ci/test_store.py
-      - name: The one-command USB creator build, against stand-in tools
-        run: python3 tools/tests/test_build_usb_creator.py
       - name: The USB creator release's file hand-over, tested against a fake GitHub (node)
         # tools/ci/release_assets.js runs inside actions/github-script; any node 18 or newer
         # runs its tests: the machine's own, else the newest of the runner's bundled ones that
@@ -628,6 +626,7 @@ jobs:
           cargo "+$MPFREE_CLIPPY_TOOLCHAIN" fmt --manifest-path rust/mpfree-splash-gl/Cargo.toml --all --check
           cargo "+$MPFREE_CLIPPY_TOOLCHAIN" fmt --manifest-path rust/mpfree-gpu/Cargo.toml --all --check
           cargo "+$MPFREE_CLIPPY_TOOLCHAIN" fmt --manifest-path rust/mpfree-creator/Cargo.toml --all --check
+          cargo "+$MPFREE_CLIPPY_TOOLCHAIN" fmt --manifest-path rust/mpfree-creator-build/Cargo.toml --all --check
       - name: Clippy on the whole workspace, every target
         run: |
           # Index loops are the clearest way to write much of our DSP, and
@@ -648,6 +647,15 @@ jobs:
             cargo "+$MPFREE_CLIPPY_TOOLCHAIN" clippy --manifest-path rust/mpfree-creator/Cargo.toml \
               --all-targets --locked --target "$target" -- -D warnings \
               -A clippy::needless_range_loop -A clippy::should_implement_trait
+          done
+      - name: The USB creator's build command, cargo usb-creator (its tests and clippy; it runs whole in usb-creator-build.yml)
+        # rust/mpfree-creator-build, its own small workspace: the steps, the pinned Ubuntu
+        # libraries it links MPFree's programs against, and the checks each program gets.
+        run: |
+          cargo "+$MPFREE_CLIPPY_TOOLCHAIN" test --manifest-path rust/mpfree-creator-build/Cargo.toml --locked
+          for target in x86_64-unknown-linux-gnu x86_64-pc-windows-gnu x86_64-apple-darwin; do
+            cargo "+$MPFREE_CLIPPY_TOOLCHAIN" clippy --manifest-path rust/mpfree-creator-build/Cargo.toml \
+              --all-targets --locked --target "$target" -- -D warnings
           done
 
   instructions:

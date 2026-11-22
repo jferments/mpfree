@@ -16,28 +16,41 @@ Most of what is described below is built and checked on a computer by MPFree's o
 
 ## Make an MPFree USB stick
 
-Until there is a release to download, you make the stick from this repository on a Linux computer. One command builds the MPFree USB creator with the latest MPFree inside it, and the creator writes the stick. It takes about 20 minutes the first time, most of it waiting.
+Until there is a release to download, you make the stick from this repository on your own computer: Linux, macOS or Windows. One command builds the MPFree USB creator with the latest MPFree inside it, and the creator writes the stick. It takes about 20 minutes the first time, most of it waiting.
 
 > [!WARNING]
-> MPFree has only been tested on the **MPC One (Gen 1)**, the original MPC One. Everything on the USB stick is erased. The MPC's own system and software are not changed: switch it on without the stick and the factory software starts as before.
+> MPFree has only been tested on the **MPC One (Gen 1)**, the original MPC One. Everything on the USB stick is erased. The MPC's own system and software are not changed: switch it on without the stick and the factory software starts as before. Building the creator on macOS and Windows is new: it works on GitHub's test machines, but hasn't yet been tried on a real Mac or PC.
 
 ### What you need
 
 - An **MPC One (Gen 1)** updated to **MPC 3.10.1**, with Akai's own instructions.
 - Akai's **USB update file for MPC 3.10.1**: a single `.img` file from Akai's download page. When the page asks how you want to update, choose **USB**, not PC or Mac. MPFree never comes with any of Akai's files: the creator uses your copy.
 - A **USB stick of 16 GB or more**. 32 GB is better: MPFree keeps your work and a backup of your MPC (about 8 GB) on it.
-- A **Linux computer** (a 64-bit PC) with an internet connection. The creator itself also runs on Windows and macOS, but building it needs Linux.
+- A **computer** with Linux (a 64-bit PC), macOS 11 or newer, or Windows 10 or 11 (64-bit), with an internet connection and a few GB of free space.
 
 ### 1. Install the tools (once)
 
-On Debian or Ubuntu, in a terminal:
+You need Git, which fetches the code, and Rust, which builds it.
 
-```sh
-sudo apt install git curl build-essential python3 gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
+- **Linux** (Debian or Ubuntu), in a terminal:
 
-The second line installs Rust. Accept its defaults, then close the terminal and open a new one. On another Linux, install the same tools with its package manager.
+  ```sh
+  sudo apt install git curl build-essential
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+  ```
+
+  On another Linux, install Git, curl and a C compiler with its package manager, then run the second line.
+- **macOS**, in Terminal (Applications > Utilities):
+
+  ```sh
+  xcode-select --install
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+  ```
+
+  The first line installs Apple's command line tools: click **Install** in the box that opens, and wait for it to finish before the second line.
+- **Windows:** install [Git for Windows](https://git-scm.com/download/win), then download and open `rustup-init.exe` from [rustup.rs](https://rustup.rs). If it says the Visual Studio C++ build tools are missing, choose **1** and let it install them. Use **PowerShell** for the steps below.
+
+Rust's installer asks a question: accept its defaults. Then close the terminal (or PowerShell) and open a new one.
 
 ### 2. Get the code
 
@@ -49,22 +62,28 @@ cd mpfree
 ### 3. Build the USB creator
 
 ```sh
-tools/build-usb-creator.sh
+cargo usb-creator
 ```
 
-The first build takes about 10 minutes. It ends with `DONE: the USB creator is ready` and the line that opens it. If a tool is missing, it stops with `STOP:` and says what to install. If your Linux is newer than the MPC's, it asks you to run one more line once, then to run it again.
+The first build takes 10 to 20 minutes. It ends with `DONE: the USB creator is ready` and the line that opens it. If something is missing, it stops with `STOP:` and says what to do.
 
 ### 4. Make the stick
 
-Put the USB stick into the computer, then open the creator:
+Put the USB stick into the computer, then open the creator. On Linux and macOS:
 
 ```sh
 rust/target/usb-creator/mpfree-creator
 ```
 
+On Windows:
+
+```powershell
+rust\target\usb-creator\mpfree-creator.exe
+```
+
 1. **Akai's update file:** the creator looks in your Downloads, Desktop and Documents folders and shows the file it found, with a green tick and **MPC 3.10.1 (MPC One, Gen 1)**. If your file is somewhere else, drag it onto the window, or type the full path of the file or its folder and press Enter.
 2. **Your USB stick:** choose your stick. The creator lists only USB sticks, never your computer's own disks.
-3. **Make the stick:** leave the two boxes under **On the first start** ticked. Click **Make the stick**, tick **Yes, erase this stick**, click **Erase and make the stick**, and give your password.
+3. **Make the stick:** leave the two boxes under **On the first start** ticked. Click **Make the stick**, tick **Yes, erase this stick**, click **Erase and make the stick**, and give your password (on Windows, click **Yes** when it asks to make changes).
 
 After a few minutes the creator says **The stick is ready**. Eject the stick and take it out.
 
@@ -83,11 +102,10 @@ From then on, switch the MPC on with the stick in to play MPFree, and without it
 ```sh
 cd mpfree
 git pull
-tools/build-usb-creator.sh
-rust/target/usb-creator/mpfree-creator
+cargo usb-creator
 ```
 
-In the creator, choose the same stick. It sees MPFree on it, and step 3 becomes **Update MPFree on this stick**. Leave **Keep my backup, settings and files** chosen, click **Update MPFree**, and give your password. Your settings, work and backup stay on the stick, so there is no long first start, and you don't need developer mode again.
+Then open the creator as in step 4, and choose the same stick. It sees MPFree on it, and step 3 becomes **Update MPFree on this stick**. Leave **Keep my backup, settings and files** chosen, click **Update MPFree**, and give your password. Your settings, work and backup stay on the stick, so there is no long first start, and you don't need developer mode again.
 
 ## What you can do with it
 
@@ -138,7 +156,7 @@ MPFree is written mainly in Rust. On a Linux computer with stable Rust installed
 cargo test --manifest-path rust/Cargo.toml --workspace --locked
 ~~~
 
-`tools/build-usb-creator.sh` builds the USB creator ([Make an MPFree USB stick](#make-an-mpfree-usb-stick) above; [Building the USB creator](docs/dev/guides/build-usb-creator.md) has what it does and how it differs from a release). [Testing and CI](docs/dev/guides/testing-and-ci.md) covers the rest of the tests, and [mpfree on the test build](docs/dev/guides/mpfree-app.md) covers running it on an MPC One.
+`cargo usb-creator` builds the USB creator on Linux, macOS or Windows (on Linux, `tools/build-usb-creator.sh` does the same) ([Make an MPFree USB stick](#make-an-mpfree-usb-stick) above; [Building the USB creator](docs/dev/guides/build-usb-creator.md) has what it does, why it needs no cross compiler, and how it differs from a release). [Testing and CI](docs/dev/guides/testing-and-ci.md) covers the rest of the tests, and [mpfree on the test build](docs/dev/guides/mpfree-app.md) covers running it on an MPC One.
 
 ## License
 

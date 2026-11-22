@@ -14,7 +14,8 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 - [Architecture](project/architecture.md): the proposed system design.
 - [Roadmap](project/roadmap.md): milestones, phase gates and open decisions.
 - [Testing and CI](guides/testing-and-ci.md): the test tiers, what each CI job checks, the self-hosted runners, rules for tests, coverage by crate, and the plan for the regression suite.
-- [Building the USB creator](guides/build-usb-creator.md): one command, `tools/build-usb-creator.sh`, builds the creator for Linux with your clone's MPFree inside it, as a release does; what it needs, what it does and how it differs from a release (2026-11-21).
+- [Building the USB creator](guides/build-usb-creator.md): one command, `cargo usb-creator`, builds the creator on Linux, macOS or Windows with your clone's MPFree inside it; the three steps, what it does, why no cross compiler is needed, and how it differs from a release (2026-11-22).
+- [Testing the USB creator build on macOS and Windows](guides/test-usb-creator-macos-windows.md): the steps and checks for the first runs of `cargo usb-creator` on a real Mac and Windows PC, and of a stick from each on the MPC (2026-11-22).
 - [Controls catalogue](guides/controls.md): every control on the screen by its `widget/id`: what it is for, how to use it, an example and the test that runs it; the GUI smoke tests fail on a control it doesn't list (2026-11-13).
 - [Development log](project/development-log.md): dated history of how the project got here.
 - [Factory content policy](project/factory-content-policy.md): what MPFree will and won't do with Akai/AIR content and plugins.
