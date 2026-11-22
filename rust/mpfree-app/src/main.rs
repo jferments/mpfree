@@ -4671,6 +4671,54 @@ fn who_plays(
     Some(format!("{name}: {}", who.join(", ")))
 }
 
+/// A track's line (the instrument redesign's step 11d, the plan's "a
+/// track's line"): what track `t` plays and where it is heard, shown over
+/// the Instrument row's help in the Synth tab's options: ["Track 2 plays
+/// Track 1's Poly", "In the mixer: Poly · Track 1"]. The mixer names the
+/// channel (`MixHost::instrument_strip`, `MixHost::strip_name`), so it
+/// reads as the Mix tab does. `homes` say where each kit plays
+/// (`TrackKits::homes`); `midi_out`: the track sends MIDI out. Allocates;
+/// the loop asks a few times a second while the options show.
+fn track_line(
+    t: usize,
+    mix: &mixing::MixHost,
+    kits: &sampler::TrackKits,
+    homes: &[u8],
+    synth_name: &str,
+    midi_out: bool,
+) -> Vec<String> {
+    use looping::Instrument;
+    let own = &mix.instruments;
+    let who = format!("Track {}", t + 1);
+    let i = if midi_out {
+        Instrument::MidiOut
+    } else if let Some(o) = own.owner(t) {
+        Instrument::Own(o)
+    } else {
+        kits.kit_of(t).map_or(Instrument::Synth, Instrument::Kit)
+    };
+    let plays = match i {
+        Instrument::Own(o) => {
+            let name = own.held(o).map_or("an instrument", |h| h.name);
+            if o == t {
+                format!("{who} plays its own {name}")
+            } else if o < instruments::TRACKS {
+                format!("{who} plays Track {}'s {name}", o + 1)
+            } else {
+                format!("{who} plays {name}, from the list of synths")
+            }
+        }
+        Instrument::Kit(k) => format!("{who} plays Kit {}", k + 1),
+        Instrument::Synth => format!("{who} plays the shared {synth_name}"),
+        Instrument::MidiOut => format!("{who} plays gear on MIDI out"),
+    };
+    let heard = match mix.instrument_strip(i, homes) {
+        Some(s) => format!("In the mixer: {}", mix.strip_name(s)),
+        None => "In the mixer: nothing, it sounds outside mpfree".to_string(),
+    };
+    vec![plays, heard]
+}
+
 /// What the pads play on their own, before the arp and the recorder,
 /// while the armed track plays something else (app/pads_focus.rs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -7135,6 +7183,8 @@ fn player_session(
     // Who plays the Synth tab's instrument, as last shown (step 8b), and
     // when to look again.
     let mut who_shown: Option<String> = None;
+    // When the selected track's line was last asked for (step 11d).
+    let mut line_at = 0.0;
     let mut who_at = 0.0f64;
     let mut preview_held: [Option<PadsPreview>; 16] = [None; 16];
     // The list of instruments changed since the app last had it (step 6).
@@ -10421,6 +10471,17 @@ fn player_session(
                 who_shown.clone_from(&who);
                 out.show(gui::ToUi::WhoPlays(who));
             }
+        }
+        // The selected track's line over the Instrument row (step 11d),
+        // as often, while the options show.
+        if app.view() == app::View::Options && mt >= line_at {
+            line_at = mt + 0.25;
+            let t = app.track();
+            let to_gear = |t: usize| midi_out.takes(t as u16);
+            let homes = track_kits.homes(|t| !mix.instruments.plays(t) && !to_gear(t));
+            let name = synth.engine_name();
+            let line = track_line(t, &mix, &track_kits, &homes, name, to_gear(t));
+            fx.extend(app.set_track_line(line));
         }
         let playing_kit = if synth_on { synth_kit } else { player.kit() };
         let mut kit_switched = false;

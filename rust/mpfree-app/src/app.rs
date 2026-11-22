@@ -963,6 +963,9 @@ pub struct MenuView {
     /// value until the next push.
     pub editing: bool,
     pub help_heading: String,
+    /// What the selected row's choice means now, over its help, brighter
+    /// (the Instrument row: the track's line, step 11d). Mostly empty.
+    pub facts: Vec<String>,
     pub help: Vec<String>,
 }
 
@@ -1564,6 +1567,11 @@ pub struct App {
     /// its own (step 4), as the audio loop last said
     /// ([`App::set_track_sends`]).
     track_sends: [Option<u8>; mpfree_seq::MAX_TRACKS],
+    /// The selected track's line (the instrument redesign's step 11d), as
+    /// the audio loop says it: what it plays and where it is heard,
+    /// ["Track 2 plays Track 1's Poly", "In the mixer: Poly · Track 1"].
+    /// Shown over the Instrument row's help.
+    track_line: Vec<String>,
     /// The track each track's own instrument was copied from on the
     /// Instrument row (step 4c), while both play the same engine, so the
     /// row stays on "Copy of Track 3's FM" ([`App::copied_from`]). Not
@@ -1811,6 +1819,7 @@ impl App {
             synth_pads: Default::default(),
             track_sounds: [None; crate::instruments::HOLDERS],
             track_sends: [None; mpfree_seq::MAX_TRACKS],
+            track_line: Vec::new(),
             track_copied: [None; mpfree_seq::MAX_TRACKS],
             plugin_synths: Vec::new(),
             pad_scale_pick: 0,
@@ -5048,6 +5057,10 @@ impl App {
             selected,
             editing: self.menu_editing,
             help_heading: name.to_string(),
+            facts: match items[selected] {
+                Item::Synth(synth_pads::SynthItem::Engine) => self.track_line.clone(),
+                _ => Vec::new(),
+            },
             help: self
                 .item_help(items[selected])
                 .into_iter()

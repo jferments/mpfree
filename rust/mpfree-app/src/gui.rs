@@ -8854,7 +8854,16 @@ impl Player {
                 }
                 if let Some(c) = self.ui.get_mut::<Card>("help") {
                     c.heading = m.help_heading;
-                    c.lines = m.help.into_iter().map(|l| (l, Tone::Dim)).collect();
+                    // The row's facts first, brighter, then a gap (the
+                    // Instrument row's track line, step 11d).
+                    let gap = (!m.facts.is_empty()).then(String::new);
+                    c.lines = m
+                        .facts
+                        .into_iter()
+                        .chain(gap)
+                        .map(|l| (l, Tone::Normal))
+                        .chain(m.help.into_iter().map(|l| (l, Tone::Dim)))
+                        .collect();
                 }
             }
             ToUi::Guide(g) => {
@@ -16880,6 +16889,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         port: mpfree_midi::setup::DIN_NAME.to_string(),
         channel: Some(9),
         track: 0,
+        synth: None,
         blocks: mpfree_midi::blocks::Blocks::NONE,
     });
     rig.setup.thru.push(mpfree_midi::setup::ThruRoute {
@@ -18197,6 +18207,12 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     for _ in 0..crate::synth::Engine::ALL.len() + 2 {
         fx.extend(a.step_item(0, 1));
     }
+    // The track's line over the help, as the audio loop says it (step
+    // 11d).
+    fx.extend(a.set_track_line(vec![
+        "Track 2 plays its own Surge XT".to_string(),
+        "In the mixer: Surge XT · Track 2".to_string(),
+    ]));
     fx.extend(a.select(0));
     apply_effects(&mut inst, fx);
     out.push(("synth-instrument", inst));

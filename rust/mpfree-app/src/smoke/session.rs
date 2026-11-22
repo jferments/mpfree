@@ -1369,6 +1369,17 @@ impl Session {
                 self.out.show(ToUi::WhoPlays(who));
             }
         }
+        // The selected track's line over the Instrument row (step 11d), as
+        // main.rs.
+        if self.app.view() == crate::app::View::Options {
+            let t = self.app.track();
+            let homes = self.track_kits.homes(|t| !self.mix.instruments.plays(t));
+            let name = self.synth.engine_name();
+            let kits = &self.track_kits;
+            let line = crate::track_line(t, &self.mix, kits, &homes, name, false);
+            let fx = self.app.set_track_line(line);
+            self.fx.extend(fx);
+        }
         let t = self.t();
         // A loop key held for a second clears its loop, as player_session.
         for pad in self.keys_held.holds(t) {

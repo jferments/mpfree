@@ -2298,6 +2298,59 @@ mod tests {
         });
     }
 
+    /// A track's line (the instrument redesign's step 11d): over the
+    /// Instrument row's help, the Synth tab's options say what the selected
+    /// track plays and where it is heard, the channel named as the Mix tab
+    /// names it. Track 1 on its kit, then Track 3 playing Track 2's Poly,
+    /// then Track 2 itself.
+    #[test]
+    fn the_instrument_row_says_what_the_track_plays_and_where_it_is_heard() {
+        use crate::gui::FromUi;
+        use mpfree_time_ui::TimeAction;
+        fn facts(s: &Session) -> Vec<String> {
+            let card = s.screen.ui.get::<mpfree_ui::widgets::Card>("help");
+            card.map(|c| {
+                c.lines
+                    .iter()
+                    .take_while(|(l, _)| !l.is_empty())
+                    .filter(|(_, tone)| *tone == mpfree_ui::Tone::Normal)
+                    .map(|(l, _)| l.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+        }
+        fn options(s: &mut Session, track: usize) {
+            s.route(FromUi::Time(TimeAction::Arm(Some(track))));
+            s.run_for(0.05);
+            s.press("header", "tab", "Synth").settle();
+            s.button("MENU").settle();
+            assert_eq!(s.view(), crate::app::View::Options);
+            s.run_periods(2).settle();
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            options(&mut s, 0);
+            assert_eq!(facts(&s), ["Track 1 plays Kit 1", "In the mixer: Drums"]);
+            s.button("MENU").settle();
+            // Track 2's own Poly, then Track 3 playing it.
+            s.give_own(1, crate::synth::Engine::Poly);
+            options(&mut s, 2);
+            s.route(FromUi::MenuStep(0, 1));
+            s.run_periods(2).settle();
+            assert_eq!(s.mix.instruments.owner(2), Some(1), "{:?}", s.said());
+            assert_eq!(
+                facts(&s),
+                ["Track 3 plays Track 2's Poly", "In the mixer: Poly · Track 2"]
+            );
+            s.button("MENU").settle();
+            options(&mut s, 1);
+            assert_eq!(
+                facts(&s),
+                ["Track 2 plays its own Poly", "In the mixer: Poly · Track 2"]
+            );
+        });
+    }
+
     /// A keyboard plays what the pads play (the instrument redesign's step
     /// 7b): a synth picked in the list, then the shared synth chosen for
     /// them, each key its own note, while Track 1's kit hears none of it. A

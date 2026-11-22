@@ -104,7 +104,9 @@ Every track can play its own instrument: Poly on one, FM on another, a plugin sy
 2. Open the Synth tab's options: press **MENU**, or tap the gear at the right end of the title bar. The top row is named after the track: **Track 2 instrument**.
 3. Change it. It steps through **Kit** (the pads' kit, as every track starts), the other tracks' instruments (**Track 3's FM**: see below), **Poly**, **FM**, **Drums**, **Pluck**, **Keys**, **Drawbar**, **Squelch**, **Analog**, **Strings**, **Bass**, **Wind** and **Choir**, then any plugin synths you have put in `files/plugins/` on the stick: CLAP synths and MPC plugin instruments (see [Effects](effects.md#plugins) for where to put them).
 
-{{shot: synth-instrument | Track 2's instrument set to a plugin synth, with the row's help on the right.}}
+{{shot: synth-instrument | Track 2's instrument set to a plugin synth, with what it plays, where it is heard and the row's help on the right.}}
+
+- **What the track plays, and where you hear it.** Over the row's help, two lines say what the selected track plays and which mixer channel its sound comes out of, as the Mix tab names it: **Track 3 plays Track 2's Poly** and **In the mixer: Poly · Track 2**. A track on its kit reads **Track 1 plays Kit 1** and **In the mixer: Drums**; on the shared synth, **Track 2 plays the shared Poly** and **In the mixer: Synth**; with a synth REC pointed it at from the list of synths, **Track 2 plays FM, from the list of synths** and **In the mixer: FM · Pads**; sending MIDI out, **In the mixer: nothing, it sounds outside mpfree**.
 
 - **It starts as a copy** of the synth's sound on the Synth tab, edits included. From then on it is the track's own: the Synth tab edits the selected track's instrument, and its title says whose it is ("Track 2"). Loading a preset gives the track a fresh copy with that preset.
 - **The pads play the selected track.** Select another track and the pads play its instrument, or its kit if it has none. The track's clips play its instrument too, whichever track is selected.

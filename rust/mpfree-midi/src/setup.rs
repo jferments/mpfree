@@ -442,15 +442,24 @@ pub const ROUTE_TRACKS: usize = 128;
 
 /// A port and channel that play one track, whichever track is armed: a
 /// route to "Tracks by channel" in the I/O view's Routing. Saved with the
-/// project, as `route = track 1 < MIDI · ch 10` (or `· all channels`).
+/// project, as `route = track 1 < MIDI · ch 10` (or `· all channels`); one
+/// that plays a synth no track has (the instrument redesign's step 11e) as
+/// `route = instrument 4 < MIDI · ch 10`, which a build from before reads
+/// as a line it can't, said and left out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackRoute {
     /// The port, by name, as [`PortSetup::name`].
     pub port: String,
     /// None: every channel.
     pub channel: Option<Channel>,
-    /// The track, from 0, below [`ROUTE_TRACKS`].
+    /// The track, from 0, below [`ROUTE_TRACKS`]. 0 (and not used) while
+    /// it plays a synth (`synth`).
     pub track: u8,
+    /// The synth it plays instead of a track (step 11e): the number of one
+    /// of the project's instruments (the app's `InstrumentId`), a synth no
+    /// track has, such as one picked in the list of synths. None: it plays
+    /// `track`.
+    pub synth: Option<u32>,
     /// What it does to what it takes, in order (board 5), saved on the
     /// line after it as `route.blocks = transpose -12; velocity soft 20 127`.
     pub blocks: Blocks,
@@ -476,19 +485,31 @@ impl TrackRoute {
     }
 
     fn text(&self) -> String {
-        format!("track {} < {}", u16::from(self.track) + 1, self.source())
+        match self.synth {
+            Some(n) => format!("instrument {n} < {}", self.source()),
+            None => format!("track {} < {}", u16::from(self.track) + 1, self.source()),
+        }
     }
 
-    /// The same port, channel and track (whatever its blocks).
+    /// The same port, channel and track or synth (whatever its blocks).
     pub fn same_route(&self, other: &TrackRoute) -> bool {
-        self.port == other.port && self.channel == other.channel && self.track == other.track
+        self.port == other.port
+            && self.channel == other.channel
+            && self.track == other.track
+            && self.synth == other.synth
     }
 
     fn parse(v: &str) -> Result<TrackRoute, String> {
         let shape = || "not \"track N < port · ch N\"".to_string();
         let (t, from) = v.split_once(" < ").ok_or_else(shape)?;
-        let t = t.trim().strip_prefix("track ").ok_or_else(shape)?;
-        let track = (number(t.trim(), 1, ROUTE_TRACKS as u32)? - 1) as u8;
+        let t = t.trim();
+        let (track, synth) = match t.strip_prefix("instrument ") {
+            Some(n) => (0, Some(number(n.trim(), 1, u32::MAX)?)),
+            None => {
+                let t = t.strip_prefix("track ").ok_or_else(shape)?;
+                ((number(t.trim(), 1, ROUTE_TRACKS as u32)? - 1) as u8, None)
+            }
+        };
         let (port, ch) = from.rsplit_once(" · ").ok_or_else(shape)?;
         let channel = match ch.trim() {
             "all channels" => None,
@@ -504,6 +525,7 @@ impl TrackRoute {
             port: port.to_string(),
             channel,
             track,
+            synth,
             blocks: Blocks::NONE,
         })
     }
@@ -1892,12 +1914,14 @@ mod tests {
                     port: DIN_NAME.to_string(),
                     channel: Some(9),
                     track: 0,
+                    synth: None,
                     blocks: Blocks::parse("transpose -12; velocity soft 20 127").unwrap(),
                 },
                 TrackRoute {
                     port: "Keystep 37".to_string(),
                     channel: None,
                     track: 127,
+                    synth: None,
                     blocks: Blocks::NONE,
                 },
             ],

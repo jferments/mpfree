@@ -2063,6 +2063,7 @@ mod tests {
             port: "Keystep 37".into(),
             channel: Some(1),
             track: 1,
+            synth: None,
             blocks: mpfree_midi::blocks::Blocks::NONE,
         }];
         let v = view(&m.lock().unwrap(), "Keystep 37", 0.0);

@@ -1051,6 +1051,7 @@ impl Routing {
                             port: name.clone(),
                             channel: Some(channel),
                             track,
+                            synth: None,
                             blocks: Blocks::NONE,
                         });
                         added = Some(mine.len());
@@ -3274,6 +3275,7 @@ mod tests {
                     port: DIN_NAME.to_string(),
                     channel: Some(0),
                     track: 0,
+                    synth: None,
                     blocks: mpfree_midi::blocks::Blocks::NONE,
                 }]
             );

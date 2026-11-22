@@ -2314,6 +2314,7 @@ mod tests {
                 port: DIN_NAME.to_string(),
                 channel: Some(9),
                 track: 40,
+                synth: None,
                 blocks: Blocks::parse("split 36 47; transpose 12").unwrap(),
             }];
             v.setup.set_port(DIN_NAME, |p| {
@@ -2377,12 +2378,14 @@ mod tests {
                     port: DIN_NAME.to_string(),
                     channel: Some(9),
                     track: 40,
+                    synth: None,
                     blocks: mpfree_midi::blocks::Blocks::NONE,
                 },
                 TrackRoute {
                     port: "Keystep 37".to_string(),
                     channel: None,
                     track: 2,
+                    synth: None,
                     blocks: mpfree_midi::blocks::Blocks::NONE,
                 },
             ];
@@ -2537,6 +2540,7 @@ mod tests {
                 port: "Keystep 37".to_string(),
                 channel: None,
                 track: 2,
+                synth: None,
                 blocks: mpfree_midi::blocks::Blocks::NONE,
             }];
             v.gen += 1;
@@ -2939,6 +2943,7 @@ mod tests {
                 port: mpfree_midi::setup::DIN_NAME.to_string(),
                 channel: Some(3),
                 track: 5,
+                synth: None,
                 blocks: Default::default(),
             }];
             v.gen += 1;
@@ -2987,6 +2992,7 @@ mod tests {
                 port: "Keystep 37".to_string(),
                 channel: Some(3),
                 track: 5,
+                synth: None,
                 blocks: Default::default(),
             }];
             v.gen += 1;
