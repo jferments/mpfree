@@ -629,7 +629,7 @@ fn pluck(preset: &str, rate: u32, voices: usize) -> Case {
 #[derive(Clone, Copy, Default)]
 struct Allow {
     /// Voices taken over for new hits (a pad past its polyphony, a full
-    /// pool).
+    /// pool): normal playing, which the status board never hears of.
     steals: bool,
     /// Grains thinned, faded or held back for the grain budget.
     grains: bool,
@@ -638,9 +638,12 @@ struct Allow {
 }
 
 /// A bench case's sampler engine, checked as its case ends against what
-/// it may trade ([`Allow`]): dropped notes and given-up voices always fail,
-/// steals, thinned grains and a late core unless allowed. The check runs
-/// when the case is dropped, after it is counted, so it costs the counts
+/// it may trade ([`Allow`]). Its counts go to a status board as the app
+/// sends them, and [`Board::unexpected`](mpfree_status::Board::unexpected)
+/// names what was shown that the case doesn't allow: notes dropped and
+/// voices given up always fail, grains thinned and a skipped part of the
+/// sound unless allowed, and steals unless allowed. The check runs when
+/// the case is dropped, after it is counted, so it costs the counts
 /// nothing.
 struct Watched {
     e: Engine,
@@ -657,24 +660,59 @@ impl Watched {
         }
     }
 
-    /// The trades the case made that it may not, by name and count.
-    fn unexpected(&self) -> Vec<(&'static str, u64)> {
+    /// The trades the case made that it may not, with how many.
+    fn unexpected(&self) -> Vec<String> {
+        use mpfree_status::{kinds, Board, Report, SETTLE_ON};
         let st = self.e.stats();
         let a = self.allow;
-        [
-            ("dropped events", st.dropped_events, false),
-            ("voices given up", st.culls, false),
-            ("steals", st.steals, a.steals),
-            ("skipped grains", st.skipped_grains, a.grains),
-            ("crowded frames", st.crowded_frames, a.grains),
-            ("faded grains", st.faded_grains, a.grains),
-            ("held-back clouds", st.held_back_clouds, a.grains),
-            ("late parts", st.lane_late, a.late),
-        ]
-        .into_iter()
-        .filter(|&(_, n, ok)| n > 0 && !ok)
-        .map(|(what, n, _)| (what, n))
-        .collect()
+        let mut board = Board::new();
+        let t0 = std::time::Instant::now();
+        for (kind, n) in [
+            (&kinds::NOTES_DROPPED, st.dropped_events),
+            (&kinds::VOICES_GIVEN_UP, st.culls),
+            (&kinds::SOUND_SKIPPED, st.lane_late),
+        ] {
+            if n > 0 {
+                let times = u32::try_from(n).unwrap_or(u32::MAX);
+                board.apply(Report::happened(kind, times), t0);
+            }
+        }
+        let thinned = [
+            st.skipped_grains,
+            st.crowded_frames,
+            st.faded_grains,
+            st.held_back_clouds,
+        ];
+        if thinned.iter().any(|&n| n > 0) {
+            board.apply(Report::began(&kinds::GRAINS_THINNED), t0);
+            board.tick(t0 + SETTLE_ON);
+        }
+        let mut allowed = Vec::new();
+        if a.grains {
+            allowed.push(&kinds::GRAINS_THINNED);
+        }
+        if a.late {
+            allowed.push(&kinds::SOUND_SKIPPED);
+        }
+        let mut bad: Vec<String> = board
+            .unexpected(&allowed)
+            .into_iter()
+            .map(|k| match k.id {
+                "sound/grains-thinned" => format!("{} {thinned:?}", k.title),
+                _ => {
+                    let n = board
+                        .raw()
+                        .iter()
+                        .find(|v| v.kind == k)
+                        .map_or(0, |v| v.times);
+                    format!("{}: {n}", k.title)
+                }
+            })
+            .collect();
+        if st.steals > 0 && !a.steals {
+            bad.push(format!("Voices stolen: {}", st.steals));
+        }
+        bad
     }
 }
 
@@ -5401,7 +5439,7 @@ mod tests {
         assert!(
             e.unexpected()
                 .iter()
-                .any(|&(what, _)| what == "crowded frames"),
+                .any(|what| what.starts_with("Grains thinned")),
             "{:?}",
             e.unexpected()
         );
