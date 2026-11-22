@@ -1254,6 +1254,7 @@ pub fn notes_state(lens: crate::editor::Lens) -> Result<TimeState, String> {
         rev: 0,
         track_name: "Chords".into(),
         bar: BAR,
+        answer: Default::default(),
     }));
     Ok(state)
 }
@@ -1324,6 +1325,7 @@ pub fn tracker_state() -> Result<TimeState, String> {
         rev: 0,
         track_name: "Drums".into(),
         bar: BAR,
+        answer: Default::default(),
     }));
     Ok(state)
 }

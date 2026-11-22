@@ -101,6 +101,11 @@ pub struct Where {
 #[derive(Debug)]
 pub enum FromPlayer {
     Where(Where),
+    /// A plan round in which no cursor played: the round number, so the
+    /// coordinator stops counting on cursors last heard of before it
+    /// (with nothing playing there is no [`Where`] to carry it). Sent
+    /// only when there is room, never held.
+    Round(u32),
     /// A buffer back, done with.
     Back(Vec<f32>),
     /// A memory source's frames back: closed, replaced or refused.

@@ -70,6 +70,8 @@ In the browser's **Projects** place you also have:
 - **Save as**, which asks for a name and saves the work as a new project;
 - **Export**, which makes a mixdown, stems and a MIDI file of the song (see [Exporting your music](exporting.md)).
 
+Each project also carries a hidden id that stays with it when you rename it, so a set list will find the song wherever it is. **Save as** gives the new project an id of its own. If you copy a project's folder on a computer, the copy still carries the original's id at first; the first time you save the copy, MPFree tells them apart and says so: *Saved Night drive copy. It was a copy of Night drive, so from now on it counts as a song of its own*. The original keeps its id.
+
 A save is all or nothing. The project's new files are written to the side first and only then swapped in, so if the power goes off during a save, the project opens as it was at the save before. A save that can't finish (a full stick, say) says so and leaves the last save as it was.
 
 The last ten saves of each project are kept. Pick a project and press **Earlier saves** to see them by when they were saved, and open one to go back. Saving it then makes it the newest, and nothing is lost.

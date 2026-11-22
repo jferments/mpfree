@@ -366,7 +366,8 @@ impl StepKeys {
         {
             if step > lead.step && !lit {
                 self.hold(pad, s.sound, step, Kind::Done, Pen::default());
-                let len = (step - lead.step + 1) as i64 * STEP_TICKS - note.nudge;
+                let size = clip.map_or(STEP_TICKS, |c| c.step);
+                let len = (step - lead.step + 1) as i64 * size - note.nudge;
                 let r = time.step_action(StepAction::Change {
                     pad: s.sound,
                     step: lead.step,
@@ -637,7 +638,7 @@ pub fn colours(
         let Some(st) = st else { continue };
         let reach = st.nudge + st.len;
         let mut k = 1;
-        while (k as i64) * crate::time::STEP_TICKS < reach && i + k < c.steps {
+        while (k as i64) * c.step < reach && i + k < c.steps {
             held_over[i + k] = true;
             k += 1;
         }
@@ -738,6 +739,7 @@ mod tests {
             slot: 0,
             name: "Pattern 1".into(),
             steps,
+            step: STEP_TICKS,
             song_length: steps as f64 * 240.0,
             song_step: 240.0,
             origin: None,
