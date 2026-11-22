@@ -14,7 +14,7 @@ MPFree runs from a USB stick that you make on your computer with the **MPFree US
 4. Wait while MPFree's first start backs up your MPC and brings in its drum kits and samples. You can leave either out, to play sooner, and do it later.
 
 > [!WARNING]
-> MPFree has only been tested on the **MPC One (Gen 1)**, the original MPC One. The creator is new: it has been tested on Linux, and once on Windows 11; the macOS version has not yet been tried on a real stick. There are no downloads for musicians yet; this page describes how installing works, and will say where to get the creator when there is a release.
+> MPFree has only been tested on the **MPC One (Gen 1)**, the original MPC One. The creator is new: it has been tested on Linux, and once on Windows 11; the macOS version has not yet been tried on a real stick. There are no downloads for musicians yet; this page describes how installing works, and will say where to get the creator when there is a release. Until then, you can build the creator yourself on a Linux computer: [MPFree's README](https://github.com/jferments/mpfree#make-an-mpfree-usb-stick) walks you through it.
 
 The creator comes as one file for your computer: **Linux** (64-bit PCs, Ubuntu 22.04, Debian 12 or newer), **Windows** (64-bit) or **macOS** (11 or newer, Apple silicon or Intel).
 
