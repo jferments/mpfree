@@ -256,12 +256,14 @@ fn left_out(left: &[Lock], track: &str) -> String {
         OnTrack::Inst => 0,
         OnTrack::Pad(_) => 1,
         OnTrack::Insert(_) => 2,
-        _ => 3,
+        OnTrack::Midi => 3,
+        _ => 4,
     };
-    const ON: [(&str, &str); 4] = [
+    const ON: [(&str, &str); 5] = [
         ("the instrument", "the instrument"),
         ("a kit pad", "kit pads"),
         ("an insert", "inserts"),
+        ("MIDI out", "MIDI out"),
         ("a MIDI effect", "MIDI effects"),
     ];
     let on: Vec<String> = (0..ON.len())
@@ -2723,21 +2725,25 @@ impl TimeControl {
         let Some(mut ed) = self.editor.take() else {
             return Ok(String::new());
         };
+        // COPY + empty space: the paste is made here, where the copy is
+        // kept (plan 1B.4).
+        let pasted = match a {
+            EditAction::Paste { tick } => Some(self.paste_notes(&ed, tick)),
+            _ => None,
+        };
         let Some(clip) = self.project.clip(ed.track, ed.slot) else {
             self.changed = true;
             return Err("edit: the clip is gone".into());
         };
         let before = ed.clone();
-        let done = match a {
-            EditAction::Paste { tick } => match self.paste_notes(&ed, clip, tick) {
-                Ok(done) => done,
-                Err(why) => {
-                    self.editor = Some(ed);
-                    self.changed = true;
-                    return Err(why);
-                }
-            },
-            a => ed.act(a, clip),
+        let done = match pasted {
+            Some(Ok(done)) => done,
+            Some(Err(why)) => {
+                self.editor = Some(ed);
+                self.changed = true;
+                return Err(why);
+            }
+            None => ed.act(a, clip),
         };
         // COPY + a note: the editor picked what goes, and the copy is
         // kept here, apart from the clip (plan 1B.4).
@@ -2831,22 +2837,46 @@ impl TimeControl {
     /// last into the editor's clip, the first at `tick`, as one take, with
     /// their pressure and the locks the clip's track has the setting of
     /// (the rest left out and said). Refused, with why, when nothing was
-    /// copied or the clip has no room.
-    fn paste_notes(&self, ed: &Editor, clip: &Clip, tick: Tick) -> Result<Done, String> {
+    /// copied, the clip holds the other kind (pad hits or notes) or it has
+    /// no room. Short of room for the pressure, the room no take still
+    /// needs is taken back first (`Takes::reclaim_touch`) and it tries
+    /// once more.
+    fn paste_notes(&mut self, ed: &Editor, tick: Tick) -> Result<Done, String> {
+        let (track, slot) = (ed.track, ed.slot);
+        let mut carried = self.carry_notes(track, slot, tick)?;
+        if matches!(carried, Err(CarryError::Pressure))
+            && self.takes.reclaim_touch(&mut self.project, track, slot) > 0
+        {
+            // The notes are where they were, naming renumbered runs: the
+            // editor's picks stay, and its picture moves on.
+            self.edit_seen = self.project.clip(track, slot).cloned().map(Arc::new);
+            self.edit_rev += 1;
+            carried = self.carry_notes(track, slot, tick)?;
+        }
         let c = self
             .notes_copy
             .as_ref()
-            .ok_or("paste: nothing copied yet: COPY + a note copies the picked notes")?;
-        let to = self
-            .project
-            .tracks
-            .get(ed.track)
-            .ok_or("paste: no such track")?;
-        let same = to.id == c.from;
-        let keep = |l: &Lock| notes::same_setting(same, &c.fx, &to.note_fx, l.addr);
-        let carried = notes::carry(clip, &c.copied, tick, keep).map_err(|e| {
+            .ok_or("paste: nothing copied yet")?;
+        let (clip, to) = (
+            self.project.clip(track, slot),
+            self.project.tracks.get(track),
+        );
+        let (Some(clip), Some(to)) = (clip, to) else {
+            return Err("edit: the clip is gone".into());
+        };
+        let carried = carried.map_err(|e| {
             let room = match e {
                 CarryError::Nothing => return "paste: nothing copied yet".to_string(),
+                CarryError::Holds => {
+                    let (has, copy) = match clip.holds {
+                        mpfree_seq::Holds::Hits => ("pad hits", "notes"),
+                        mpfree_seq::Holds::Notes => ("notes", "pad hits"),
+                    };
+                    return format!(
+                        "paste: {} holds {has} and the copy is {copy}, so nothing went in",
+                        clip.name
+                    );
+                }
                 CarryError::Notes => "notes",
                 CarryError::Locks => "locks",
                 CarryError::Pressure => "pad pressure",
@@ -2861,6 +2891,33 @@ impl TimeControl {
             line += &left_out(&carried.left, &to.name);
         }
         Ok(Editor::pasted(carried.edit, line))
+    }
+
+    /// [`notes::carry`] of the notes copied last into clip `slot` of
+    /// `track` as it is now (Err when nothing was copied or the clip is
+    /// gone).
+    fn carry_notes(
+        &self,
+        track: usize,
+        slot: usize,
+        tick: Tick,
+    ) -> Result<Result<notes::Carried, CarryError>, String> {
+        let c = self
+            .notes_copy
+            .as_ref()
+            .ok_or("paste: nothing copied yet: COPY + a note copies the picked notes")?;
+        let to = self
+            .project
+            .tracks
+            .get(track)
+            .ok_or("paste: no such track")?;
+        let clip = self
+            .project
+            .clip(track, slot)
+            .ok_or("edit: the clip is gone")?;
+        let same = to.id == c.from;
+        let keep = |l: &Lock| notes::same_setting(same, &c.fx, &to.note_fx, l.addr);
+        Ok(notes::carry(clip, &c.copied, tick, keep))
     }
 
     /// The note editor's clip changed since the editor last knew it, by

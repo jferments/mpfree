@@ -50,17 +50,19 @@
 //! their locks come where the clip's track has the same setting
 //! ([`same_setting`]); the rest are left out and named ([`Carried::left`]).
 //! A copied lock takes the place of a lock already in its place, as a
-//! clip keeps one lock in each.
+//! clip keeps one lock in each. Pad hits go only into a clip of pad hits,
+//! and notes into a clip of notes ([`Holds`]): a kit's pad 3 is no MIDI
+//! note 3.
 
 use crate::steps::{moves_edit, Edit};
 use crate::{
-    touch_room, Clip, Lock, Note, Touch, TouchPoint, MAX_CLIP_TICKS, MAX_LOCKS, MAX_NOTES,
+    touch_room, Clip, Holds, Lock, Note, Touch, TouchPoint, MAX_CLIP_TICKS, MAX_LOCKS, MAX_NOTES,
     MIN_CLIP_TICKS,
 };
 use mpfree_notefx::TrackFx;
 use mpfree_param::{OnTrack, RelAddr};
 use mpfree_transport::time::{Tick, PPQ};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// The Timing Correct divisions, in ticks (960 to a beat), with their
 /// names: a bar of 4/4 down to a 1/64 note, triplets too.
@@ -586,6 +588,8 @@ pub struct Copied {
     pub touch: Vec<TouchPoint>,
     /// The locks the notes own, their ticks from the first note's start.
     pub locks: Vec<Lock>,
+    /// Whether the notes are pad hits or MIDI notes, as their clip held.
+    pub holds: Holds,
 }
 
 /// A copy of the `sel` notes of `clip`, with their pressure and the
@@ -595,18 +599,26 @@ pub fn copy(clip: &Clip, sel: &[usize]) -> Copied {
     let Some(first) = notes.iter().map(|n| n.tick).min() else {
         return Copied::default();
     };
-    let mut c = Copied::default();
+    let mut c = Copied {
+        holds: clip.holds,
+        ..Copied::default()
+    };
+    // A run several notes share (a chord's) is copied once.
+    let mut runs: HashMap<Touch, Touch> = HashMap::new();
     for n in &notes {
         let points = clip.touch_of(n);
         let touch = if points.is_empty() {
             Touch::NONE
         } else {
-            Touch {
-                first: c.touch.len() as u32,
-                len: points.len() as u32,
-            }
+            *runs.entry(n.touch).or_insert_with(|| {
+                let t = Touch {
+                    first: c.touch.len() as u32,
+                    len: points.len() as u32,
+                };
+                c.touch.extend_from_slice(points);
+                t
+            })
         };
-        c.touch.extend_from_slice(points);
         c.notes.push(Note {
             tick: n.tick - first,
             touch,
@@ -633,6 +645,8 @@ pub fn copy(clip: &Clip, sel: &[usize]) -> Copied {
 pub enum CarryError {
     /// Nothing was copied.
     Nothing,
+    /// Pad hits into a clip of notes, or notes into a clip of pad hits.
+    Holds,
     /// The clip has no room for that many more notes ([`MAX_NOTES`]).
     Notes,
     /// Nor for their locks ([`MAX_LOCKS`]).
@@ -652,10 +666,12 @@ pub struct Carried {
 
 /// Put `copied` into `clip` with its first note at `at`, each note keeping
 /// its place from it (starts wrap round the clip). The pressure comes in
-/// as new runs at the end of the clip's pressure; a lock comes when
-/// `keep` says the clip's track has its setting ([`same_setting`]), in
-/// place of a lock already in its place, and is left out otherwise.
-/// Refused, with nothing put in, when the clip has no room.
+/// as new runs at the end of the clip's pressure (made now, so the edit
+/// is for the clip as it is); a lock comes when `keep` says the clip's
+/// track has its setting ([`same_setting`]), in place of a lock already
+/// in its place, and is left out otherwise, as a pad's own lock is in a
+/// clip of notes, where it would not play. Refused, with nothing put in,
+/// when the clip holds the other kind ([`Holds`]) or has no room.
 pub fn carry(
     clip: &Clip,
     copied: &Copied,
@@ -665,23 +681,30 @@ pub fn carry(
     if copied.notes.is_empty() {
         return Err(CarryError::Nothing);
     }
+    if copied.holds != clip.holds {
+        return Err(CarryError::Holds);
+    }
     if clip.notes.len() + copied.notes.len() > MAX_NOTES {
         return Err(CarryError::Notes);
     }
     let touch_at = clip.touch.len() as u32;
     let mut touch: Vec<TouchPoint> = Vec::new();
+    let mut runs: HashMap<Touch, Touch> = HashMap::new();
     let mut add = Vec::with_capacity(copied.notes.len());
     for n in &copied.notes {
         let points = copied.touch.get(n.touch.range()).unwrap_or(&[]);
         let run = if points.is_empty() {
             Touch::NONE
         } else {
-            Touch {
-                first: touch_at + touch.len() as u32,
-                len: points.len() as u32,
-            }
+            *runs.entry(n.touch).or_insert_with(|| {
+                let t = Touch {
+                    first: touch_at + touch.len() as u32,
+                    len: points.len() as u32,
+                };
+                touch.extend_from_slice(points);
+                t
+            })
         };
-        touch.extend_from_slice(points);
         add.push(Note {
             tick: wrap(at + n.tick, clip.length),
             touch: run,
@@ -701,7 +724,8 @@ pub fn carry(
             tick: wrap(at + l.tick, clip.length),
             ..*l
         };
-        if !keep(&l) {
+        let pad_in_notes = clip.holds == Holds::Notes && matches!(l.addr.on, OnTrack::Pad(_));
+        if pad_in_notes || !keep(&l) {
             left.push(l);
         } else if places.insert((l.tick, l.sound, l.addr)) {
             add_locks.push(l);
@@ -735,18 +759,19 @@ pub fn carry(
 /// effects were `from`, sets the same thing on the track that gets it,
 /// whose MIDI effects are `to` (`same_track` when it is the same track).
 /// On the same track it always does. On another, a lock on what every
-/// track has alike does: its mixer strip's level, pan and sends, its
-/// sequencer settings, its arp and its MIDI out's controllers; and one on
-/// a MIDI effect when that track has an effect of the same kind under the
-/// same id. A lock on the instrument, a kit pad or an insert on the strip
-/// does only on the same track: another track may play another
-/// instrument, and its strip holds its own inserts.
+/// track has alike does: its mixer strip's own settings, its sequencer
+/// settings and its arp (fixed id tables); and one on a MIDI effect when
+/// that track has an effect of the same kind under the same id. A lock on
+/// the instrument, a kit pad, an insert or MIDI out does only on the same
+/// track: another track may play another instrument, its strip holds its
+/// own inserts, and its MIDI out may go to another device's port and
+/// channel, where the same controller turns something else.
 pub fn same_setting(same_track: bool, from: &TrackFx, to: &TrackFx, addr: RelAddr) -> bool {
     if same_track {
         return true;
     }
     match addr.on {
-        OnTrack::Strip | OnTrack::Seq | OnTrack::Arp | OnTrack::Midi => true,
+        OnTrack::Strip | OnTrack::Seq | OnTrack::Arp => true,
         OnTrack::NoteFx(id) => {
             let kind = |fx: &TrackFx| {
                 fx.place_of(id)
@@ -755,7 +780,7 @@ pub fn same_setting(same_track: bool, from: &TrackFx, to: &TrackFx, addr: RelAdd
             };
             kind(from).is_some() && kind(from) == kind(to)
         }
-        OnTrack::Inst | OnTrack::Pad(_) | OnTrack::Insert(_) => false,
+        OnTrack::Inst | OnTrack::Pad(_) | OnTrack::Insert(_) | OnTrack::Midi => false,
     }
 }
 
@@ -1469,6 +1494,35 @@ mod tests {
             "only the locks the notes own"
         );
         assert_eq!(copy(&a, &[9]), Copied::default());
+        // A chord's shared run is copied once, and goes in once.
+        let mut chord = clip(&[(0, 480, 60), (0, 480, 64)]);
+        let run = chord.add_touch(&[p(0, 70)]).unwrap();
+        chord.notes[0].touch = run;
+        chord.notes[1].touch = run;
+        let both = copy(&chord, &[0, 1]);
+        assert_eq!(
+            (both.touch.len(), both.notes[0].touch),
+            (1, both.notes[1].touch)
+        );
+        let into = carry(&chord, &both, 960, |_| true).unwrap();
+        assert_eq!(into.edit.touch, [p(0, 70)]);
+        // Pad hits go only into pad hits, notes into notes; a pad's own
+        // lock stays out of a clip of notes.
+        let mut notes = clip(&[]);
+        notes.holds = Holds::Notes;
+        assert_eq!(carry(&notes, &both, 0, |_| true), Err(CarryError::Holds));
+        let mut tune = chord.clone();
+        tune.add_lock(Lock::new(
+            0,
+            Some(60),
+            RelAddr::new(OnTrack::Pad(2), 0),
+            3.0,
+        ))
+        .unwrap();
+        let mut held = copy(&tune, &[0]);
+        held.holds = Holds::Notes;
+        let into = carry(&notes, &held, 0, |_| true).unwrap();
+        assert_eq!((into.edit.add_locks.len(), into.left.len()), (0, 1));
 
         // Into another track's clip, near its end: the second note wraps.
         let mut b = clip(&[(480, 240, 50)]);
@@ -1529,10 +1583,15 @@ mod tests {
         assert_eq!(carry(&full, &copied, 0, other), Err(CarryError::Notes));
 
         // What another track has alike, and its MIDI effects by id.
-        for on in [OnTrack::Strip, OnTrack::Seq, OnTrack::Arp, OnTrack::Midi] {
+        for on in [OnTrack::Strip, OnTrack::Seq, OnTrack::Arp] {
             assert!(same_setting(false, &fx, &fx, RelAddr::new(on, 3)), "{on:?}");
         }
-        for on in [OnTrack::Inst, OnTrack::Pad(2), OnTrack::Insert(1)] {
+        for on in [
+            OnTrack::Inst,
+            OnTrack::Pad(2),
+            OnTrack::Insert(1),
+            OnTrack::Midi,
+        ] {
             assert!(
                 !same_setting(false, &fx, &fx, RelAddr::new(on, 3)),
                 "{on:?}"

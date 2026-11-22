@@ -9515,6 +9515,19 @@ mod tests {
         // Into track 2's clip: the pressure comes, the synth's lock not.
         h.act(TimeAction::Arm(Some(1))).unwrap();
         h.act(TimeAction::Edit(E::Open)).unwrap();
+        // Not pad hits into a clip of notes.
+        h.control.project.tracks[1].slots[0].as_mut().unwrap().holds = mpfree_seq::Holds::Notes;
+        let why = h.act(TimeAction::Edit(E::Paste { tick: 480 })).unwrap_err();
+        assert!(
+            why.contains("Chorus holds notes and the copy is pad hits"),
+            "{why}"
+        );
+        // Its pressure nearly full of runs nothing names: taken back first.
+        {
+            let c = h.control.project.tracks[1].slots[0].as_mut().unwrap();
+            c.holds = mpfree_seq::Holds::Hits;
+            c.touch = vec![p(0, 1); mpfree_seq::MAX_TOUCH_POINTS - 1];
+        }
         let takes = h.state().done.len();
         let said = h.act(TimeAction::Edit(E::Paste { tick: 480 })).unwrap();
         let track = h.control.project.tracks[1].name.clone();
@@ -9532,6 +9545,7 @@ mod tests {
         assert_eq!(c.notes.len(), 1);
         assert_eq!(c.notes[0].tick, 480);
         assert_eq!(c.touch_of(&c.notes[0]), [p(0, 30), p(60, 90)]);
+        assert_eq!(c.touch.len(), 2, "the room nothing named was taken back");
         assert_eq!(
             c.locks,
             [Lock::new(480, Some(c.notes[0].note), level, 0.25)]
