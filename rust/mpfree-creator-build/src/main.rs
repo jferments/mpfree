@@ -668,6 +668,14 @@ mod tests {
         }
     }
 
+    /// The start file a `-Clink-arg=` names in the folder `lib`, by its name
+    /// alone (on Windows, `Path::join` puts a backslash before it).
+    fn start_file<'a>(flag: &'a str, lib: &str) -> Option<&'a str> {
+        let path = flag.strip_prefix("-Clink-arg=")?;
+        let name = path.rsplit(['/', '\\']).next()?;
+        (Path::new(lib).join(name).display().to_string() == path).then_some(name)
+    }
+
     #[test]
     fn the_names_come_from_the_creators_own_source() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -718,7 +726,7 @@ mod tests {
         assert!(flags.contains(&"-Crelocation-model=static"));
         let files: Vec<&str> = flags
             .iter()
-            .filter_map(|f| f.strip_prefix("-Clink-arg=/libs/"))
+            .filter_map(|f| start_file(f, "/libs"))
             .collect();
         assert_eq!(
             files,
@@ -735,7 +743,7 @@ mod tests {
         assert!(flags.contains(&"-Clink-arg=--dynamic-linker=/lib/ld-linux-armhf.so.3".to_string()));
         let files: Vec<&str> = flags
             .iter()
-            .filter_map(|f| f.strip_prefix("-Clink-arg=/libs/"))
+            .filter_map(|f| start_file(f, "/libs"))
             .collect();
         assert_eq!(
             files,
