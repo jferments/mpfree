@@ -135,6 +135,7 @@ use mpfree_seq::{
 use mpfree_transport::time::{Swing, Tick};
 use mpfree_transport::{Block, Mark, Marker, Span, State};
 
+use crate::audio::{AudioAnswer, Marks, Source, What};
 use crate::steps::{first_pass, Steps, HALF, STEP};
 use crate::view::{ClipView, Due, MuteLanded, NowPlaying, PlayView, Started, Switches};
 
@@ -322,6 +323,10 @@ pub struct Stats {
     pub late_cues: u64,
     pub stale_cues: u64,
     pub lost_switches: u64,
+    /// Changes on an audio track dropped as more than
+    /// [`crate::MAX_AUDIO_CHANGES`] in one period ([`Player::audio`]):
+    /// only with Launch at Now or a tiny grid, or across a loop jump.
+    pub audio_superseded: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -635,6 +640,9 @@ pub struct Player {
     /// The tracks it plays, a bit each (all, but in the look-ahead's
     /// copy: [`Player::only`]).
     only: u128,
+    /// What each audio track played in the last period, for the audio
+    /// engine ([`Player::audio`]).
+    audio: Marks,
 }
 
 const NO_ERASED_LOCK: ErasedLock = ErasedLock {
@@ -800,6 +808,7 @@ impl Player {
             touching: [NO_TOUCHING; MAX_TOUCHING],
             n_touching: 0,
             only: u128::MAX,
+            audio: Marks::new(),
         }
     }
 
@@ -882,6 +891,8 @@ impl Player {
             touching,
             n_touching,
             only,
+            // A period's answer: each process makes its own.
+            audio: _,
         } = src;
         fn used<T: Copy>(to: &mut [T], from: &[T], n: usize) -> usize {
             let n = n.min(from.len());
@@ -1059,6 +1070,90 @@ impl Player {
         })
     }
 
+    /// What audio track `track` played in the last [`Player::process`]
+    /// call, for the audio engine (the audio tracks rethink's phase 2,
+    /// [`crate::audio`]): what played at the period's start, and each
+    /// change on its frame, the clips' regions lent from `view`, which must
+    /// be the view that call played. A track that isn't an audio track
+    /// plays nothing. Never allocates.
+    pub fn audio<'a>(&self, view: &'a PlayView, track: usize) -> AudioAnswer<'a> {
+        if track >= MAX_TRACKS || (view.audio >> track) & 1 == 0 {
+            return AudioAnswer::default();
+        }
+        self.audio.answer(view, track)
+    }
+
+    /// What audio track `i` plays at song tick `tick`: its clip (launched,
+    /// or cued and started), else in song mode the block there or the
+    /// song, else nothing.
+    fn audio_what(&self, view: &PlayView, i: usize, tick: Tick) -> What {
+        match self.switches.playing_where(view, i) {
+            Some((cued, origin, from)) => What::Clip {
+                at: if cued { Source::Cued } else { Source::Launched },
+                origin,
+                from,
+            },
+            None if view.song => match view.tracks.get(i).and_then(|t| t.region_at(tick)) {
+                Some(r) => What::Clip {
+                    at: Source::Placed(r.clip),
+                    origin: r.origin,
+                    from: r.start,
+                },
+                None => What::Song,
+            },
+            None => What::Nothing,
+        }
+    }
+
+    /// Audio track `i` at song tick `tick` in `span`: a change, if what it
+    /// plays or its mute differs from its last. A stop from a once clip on
+    /// `line`, the end of its pass, rings. Out of line, so a session with
+    /// no audio track plays the code it did.
+    #[inline(never)]
+    fn audio_note(&mut self, view: &PlayView, span: &Span, i: usize, tick: Tick, line: Tick) {
+        let what = self.audio_what(view, i, tick);
+        let muted = self.muted(view, i);
+        let last = self.audio.last(i);
+        if last.what == what && last.muted == muted {
+            return;
+        }
+        let ring = matches!(what, What::Nothing | What::Song)
+            && crate::audio::rings(view, i, last.what, line);
+        let (offset, _) = place(span, tick);
+        let m = crate::audio::Mark {
+            offset,
+            tick,
+            what,
+            muted,
+            ring,
+        };
+        if self.audio.push(i, m) {
+            self.stats.audio_superseded += 1;
+        }
+    }
+
+    /// Each edge of a block on audio track `i` (song mode, no clip) after
+    /// `ticks.start` and before `ticks.end`, in order: a change where what
+    /// it plays differs. A block ending on its once clip's end rings.
+    #[inline(never)]
+    fn audio_edges(&mut self, view: &PlayView, span: &Span, i: usize, ticks: Range<Tick>) {
+        let Some(t) = view.tracks.get(i) else {
+            return;
+        };
+        let mut k = t.regions.partition_point(|r| r.end <= ticks.start);
+        while let Some(r) = view.tracks[i].regions.get(k).copied() {
+            if r.start >= ticks.end {
+                break;
+            }
+            for e in [r.start, r.end] {
+                if e > ticks.start && e < ticks.end {
+                    self.audio_note(view, span, i, e, e);
+                }
+            }
+            k += 1;
+        }
+    }
+
     /// Play one period: the transport's `block` for it, the clips in `view`.
     pub fn process(&mut self, view: &PlayView, block: &Block, out: &mut impl Sink) {
         self.n_erased = 0;
@@ -1066,6 +1161,25 @@ impl Player {
         self.n_started = 0;
         self.n_landed = 0;
         self.switches.follow(view);
+        // What each audio track played just before the period's first
+        // tick: a block edge on that tick is a change on the period's
+        // first frame (a ring too), as anywhere else.
+        if view.audio != 0 {
+            let spans = block.spans();
+            let first = spans
+                .iter()
+                .find(|s| matches!(s.state, State::Playing | State::Recording))
+                .or(spans.first())
+                .map_or(0, |s| s.ticks().start);
+            let mut bits = view.audio;
+            while bits != 0 {
+                let i = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let what = self.audio_what(view, i, first - 1);
+                let muted = self.muted(view, i);
+                self.audio.begin(i, first, what, muted);
+            }
+        }
         let markers = block.markers();
         let mut m = 0;
         for span in block.spans() {
@@ -1379,6 +1493,12 @@ impl Player {
     fn play_track(&mut self, view: &PlayView, span: &Span, i: usize, ticks: Range<Tick>) {
         let track = &view.tracks[i];
         let bar = span.meter.bar_ticks();
+        // An audio track: what it plays here (after a loop jump, a locate
+        // or a mute cue that landed on this tick, it may differ).
+        let audio = view.audio != 0 && (view.audio >> i) & 1 == 1;
+        if audio {
+            self.audio_note(view, span, i, ticks.start, ticks.start);
+        }
         // A scene's mute switches with its cue, before the view shows it.
         let muted = self.muted(view, i);
         // What it erases, if armed (worked out apart: most tracks aren't).
@@ -1463,6 +1583,9 @@ impl Player {
         } else if song && !muted {
             self.collect_song(view, i, &before, switch, span.swing);
         }
+        if audio && song {
+            self.audio_edges(view, span, i, before.clone());
+        }
         let Some(due) = due else { return };
         let at = due.at;
         // A track starts one cue a call at most, and there are at most
@@ -1473,6 +1596,14 @@ impl Player {
         ) {
             *slot = s;
             self.n_started += 1;
+        }
+        if audio {
+            // The switch, on its frame: a stop on a once clip's own end
+            // rings. Stopped in song mode, the song's blocks after it.
+            self.audio_note(view, span, i, at, due.line);
+            if view.song && self.switches.playing_where(view, i).is_none() {
+                self.audio_edges(view, span, i, at..ticks.end);
+            }
         }
         for s in &mut self.sounding[..self.n_sounding] {
             if usize::from(s.track) == i {
