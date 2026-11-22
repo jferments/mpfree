@@ -9604,6 +9604,109 @@ mod tests {
         assert_eq!(at(&e, 48), Some(960));
     }
 
+    /// Piano roll plan 3A.1: pressure drawn on the Pressure lane is one
+    /// take a stroke, and UNDO brings the old pressure back. Once the
+    /// clip's pressure is past half its room, the next period tidies it
+    /// (refactor B4b): the picks stay, and UNDO and REDO still find each
+    /// stroke's pressure.
+    #[test]
+    fn pressure_drawn_is_one_take_a_stroke_and_survives_a_tidy() {
+        use mpfree_seq::TouchPoint;
+        use mpfree_time_ui::editor::EditAction as E;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.step_action(StepAction::Tap {
+            pad: 0,
+            step: 0,
+            velocity: 100,
+        })
+        .unwrap();
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        h.act(TimeAction::Edit(E::Draw {
+            tick: 960,
+            note: 48,
+            len: 960,
+        }))
+        .unwrap();
+        let edit = |h: &mut TimeHost| {
+            h.take_changed();
+            h.state().edit.unwrap()
+        };
+        // The pressure of the note at 960, and whether it is picked.
+        let run_of = |e: &mpfree_time_ui::view::EditInfo| -> (Vec<(u32, u8)>, bool) {
+            let i = e.clip.notes.iter().position(|n| n.tick == 960).unwrap();
+            let run = e.clip.touch_of(&e.clip.notes[i]);
+            (
+                run.iter().map(|p| (p.at, p.value)).collect(),
+                e.editor.sel.contains(&i),
+            )
+        };
+        let stroke = |h: &mut TimeHost, points: Vec<(i64, u8)>, end: i64| {
+            let rev = edit(h).rev;
+            h.act(TimeAction::Edit(E::Pressure { rev, points, end }))
+        };
+        let one = stroke(&mut h, vec![(960, 30), (1200, 90)], 1920).unwrap();
+        assert_eq!(one, "edit: pressure drawn on 1 note");
+        assert_eq!(run_of(&edit(&mut h)), (vec![(0, 30), (240, 90)], true));
+        stroke(&mut h, vec![(1440, 10)], 1920).unwrap();
+        assert_eq!(
+            run_of(&edit(&mut h)),
+            (vec![(0, 30), (240, 90), (480, 10)], true)
+        );
+        // UNDO: the old pressure.
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(run_of(&edit(&mut h)).0, [(0, 30), (240, 90)]);
+        // A stale picture: refused, nothing drawn.
+        let rev = edit(&mut h).rev;
+        assert!(h
+            .act(TimeAction::Edit(E::Pressure {
+                rev: rev - 1,
+                points: vec![(960, 1)],
+                end: 1000,
+            }))
+            .is_err());
+        // Past half the room with pressure nothing names (as old strokes
+        // whose takes are gone leave); a stroke, then a period, tidies.
+        let chunk: Vec<TouchPoint> = (0..1000).map(|k| TouchPoint { at: k, value: 1 }).collect();
+        let clip = h.control.project.tracks[0].slots[0].as_mut().unwrap();
+        for _ in 0..33 {
+            clip.add_touch(&chunk).unwrap();
+        }
+        // UNDO left nothing picked (the picked note went): pick it.
+        let e = edit(&mut h);
+        if !run_of(&e).1 {
+            let i = e.clip.notes.iter().position(|n| n.tick == 960).unwrap();
+            h.act(TimeAction::Edit(E::Note {
+                index: i,
+                rev: e.rev,
+            }))
+            .unwrap();
+        }
+        let three = stroke(&mut h, vec![(1680, 64)], 1920).unwrap();
+        assert_eq!(three, "edit: pressure drawn on 1 note");
+        let rev = edit(&mut h).rev;
+        run(&mut h, &mut pads, u64::from(PERIOD), &[]);
+        let (freed, times) = h.control.touch_freed();
+        assert!(freed >= 33_000 && times == 1, "{freed} {times}");
+        let e = edit(&mut h);
+        assert!(e.clip.touch.len() < 100, "{}", e.clip.touch.len());
+        assert!(e.rev > rev, "the picture moved on");
+        assert_eq!(
+            run_of(&e),
+            (vec![(0, 30), (240, 90), (720, 64)], true),
+            "the picks stay"
+        );
+        // UNDO and REDO find each stroke's pressure.
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(run_of(&edit(&mut h)).0, [(0, 30), (240, 90)]);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(run_of(&edit(&mut h)).0, []);
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(run_of(&edit(&mut h)).0, [(0, 30), (240, 90)]);
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(run_of(&edit(&mut h)).0, [(0, 30), (240, 90), (720, 64)]);
+    }
+
     /// Piano roll plan 0C.2: the copy of the clip the screen reads carries
     /// the answer to the editor's last touch, numbered: taken with the new
     /// revision and where its notes landed, refused with why, or nothing

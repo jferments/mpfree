@@ -1337,6 +1337,18 @@ pub fn notes_tool_state() -> Result<TimeState, String> {
     Ok(state)
 }
 
+/// The note editor on "Keys" with the two melody notes that carry
+/// pressure picked (piano roll plan 3A.1): with the Pressure lane on,
+/// it draws their swells as lines under them.
+pub fn notes_pressure_state() -> Result<TimeState, String> {
+    let mut state = notes_state(crate::editor::Lens::Grid)?;
+    let e = state.edit.as_mut().ok_or("no editor")?;
+    e.editor.sel = (0..e.clip.notes.len())
+        .filter(|&i| !e.clip.notes[i].touch.is_none())
+        .collect();
+    Ok(state)
+}
+
 /// A bar of drums with a step's every setting in use: a nudged hat, a
 /// ghost snare at 50 %, a 1:2 hat, a ratchet, a FILL open hat and a lock
 /// on the second snare (what the tracker shows).

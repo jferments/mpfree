@@ -1590,14 +1590,17 @@ impl TimeControl {
             .is_some_and(|c| c.inst_refuses(param, plays).is_some())
     }
 
-    /// Out of recording, each clip played into whose pressure is past
+    /// Out of recording, each clip played into (or given new pressure
+    /// runs by an edit: a chop, pressure drawn) whose pressure is past
     /// half its room frees the values no note can play again, its own,
     /// its Restore's or one an undo or redo would bring back
     /// (`Takes::reclaim_touch`, refactor B4b), so long sessions of
-    /// recording and undoing never fill it. Never while recording: a
-    /// replace pass names the notes it erases by value, pressure run and
-    /// all, as the playing view holds them. True when anything was freed:
-    /// the view is compiled again with the new numbering.
+    /// recording, drawing and undoing never fill it. The note editor on
+    /// that clip keeps its picks: its notes stay where they were. Never
+    /// while recording: a replace pass names the notes it erases by
+    /// value, pressure run and all, as the playing view holds them. True
+    /// when anything was freed: the view is compiled again with the new
+    /// numbering.
     fn reclaim_touch(&mut self) -> bool {
         if matches!(self.info.state, State::Recording | State::CountIn) {
             return false;
@@ -1611,11 +1614,26 @@ impl TimeControl {
             if !full {
                 continue;
             }
+            let editing = self
+                .editor
+                .as_ref()
+                .is_some_and(|e| (e.track, e.slot) == (track, slot));
+            if editing {
+                // Whatever else changed the clip is followed first.
+                self.edit_follow();
+            }
             let n = self.takes.reclaim_touch(&mut self.project, track, slot);
             if n > 0 {
                 self.touch_freed.0 += n as u64;
                 self.touch_freed.1 += 1;
                 freed = true;
+                if editing {
+                    // Its notes name renumbered runs: the picks stay, and
+                    // the picture moves on (as a paste's retry does).
+                    self.edit_seen = self.project.clip(track, slot).cloned().map(Arc::new);
+                    self.edit_rev += 1;
+                    self.changed = true;
+                }
             }
         }
         freed
@@ -2874,6 +2892,11 @@ impl TimeControl {
                 ed.applied(clip, &done);
             }
             self.editor = Some(ed);
+            // New pressure runs: the clip frees the ones nothing names
+            // once it is past half its room (B4b).
+            if !done.edit.touch.is_empty() && !self.touch_grew.contains(&(track, slot)) {
+                self.touch_grew.push((track, slot));
+            }
             // Into the playing clip in place when it fits, as a step edit
             // goes (plan 0C.1); else one compile.
             let in_place = self.in_place(track, slot, &done.edit);

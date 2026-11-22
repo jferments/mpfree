@@ -34,8 +34,9 @@ use crate::editor::{
     box_of, chord_name, drop_of, edit_rows, knob_name, length_name, lit_scale, note_name, pads,
     position_name, step_name, ChordShape, EditAction, Editor, Fold, LaneShow, Lens, LockMark,
     NoteBox, NoteGrid, NoteTool, Tool, ToolAct, ToolBar, ToolKind, ADD, CHORD_MAJOR, CHORD_MENU,
-    CHORD_MINOR, EDIT_BUTTON, FIELDS, MENU, PEN, ROOT_MENU, SCALE_MENU, SNAP_AUTO_T, START_HANDLE,
-    STEP_FALLBACK, TOOL_BUTTONS, TOOL_CANCEL, TOOL_DONE, TOOL_OPTION,
+    CHORD_MINOR, EDIT_BUTTON, FIELDS, MENU, PEN, PRESSURE_END, PRESSURE_LANE, ROOT_MENU,
+    SCALE_MENU, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK, TOOL_BUTTONS, TOOL_CANCEL, TOOL_DONE,
+    TOOL_OPTION,
 };
 use crate::list::{
     ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LOOP, LIST_PLAY, LIST_REMOVE, LIST_SONG,
@@ -2204,6 +2205,21 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                         ticks,
                         notes,
                         scale,
+                    }
+                }
+                // The Pressure lane (plan 3A.1): its columns' (tick,
+                // value), then the stroke's end.
+                EventKind::Values { index, ref set } if index == PRESSURE_LANE => {
+                    let (&(end, PRESSURE_END), points) = set.split_last()? else {
+                        return None;
+                    };
+                    EditAction::Pressure {
+                        rev,
+                        points: points
+                            .iter()
+                            .map(|&(t, v)| (t as Tick, v.clamp(0, 127) as u8))
+                            .collect(),
+                        end: end as Tick,
                     }
                 }
                 EventKind::Values { index, ref set } => EditAction::Lane {

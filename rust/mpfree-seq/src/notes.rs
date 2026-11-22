@@ -40,7 +40,9 @@
 //! part only. Half and double speed stretch it with its note: each note's
 //! run comes again with its times doubled or halved, added to the clip's
 //! pressure (`Edit::touch`); they are refused for a clip with no room
-//! left for that.
+//! left for that. Pressure drawn on the lane under the roll
+//! ([`draw_touch`], piano roll plan 3A.1) gives each note it crosses a
+//! new run the same way; the note's old one stays behind for undo.
 //!
 //! **Copying between clips** ([`copy`], [`carry`]; piano roll plan 1B.4)
 //! takes the notes out as a [`Copied`] of their own, with their pressure
@@ -1690,6 +1692,107 @@ pub fn legato(clip: &Clip, sel: &[usize], fill: u8) -> Edit {
     })
 }
 
+/// Pressure drawn over the `sel` notes (piano roll plan 3A.1), as the
+/// lane under the roll draws it: `points` are (clip tick, value), each
+/// value held until the next point's tick, the last until `end`. Each
+/// picked note the stroke crosses gets a new run: its own points before
+/// the stroke, the drawn ones inside it (from the value over its start,
+/// when the stroke began before it), then the value it had at `end` and
+/// its own points after. A value equal to the one before it is left out,
+/// and a run left all 0 is none. The note's old run stays in the clip,
+/// since a clip's pressure only grows (undo puts the note back with it),
+/// until the clip frees what nothing names (`Takes::reclaim_touch`).
+/// Empty when nothing changes or no picked note is under the stroke;
+/// None when the clip has no room for the new runs.
+pub fn draw_touch(clip: &Clip, sel: &[usize], points: &[(Tick, u8)], end: Tick) -> Option<Edit> {
+    let mut drawn: Vec<(Tick, u8)> = points.to_vec();
+    drawn.sort_by_key(|p| p.0);
+    // Two values at one tick: the later one drawn.
+    drawn.reverse();
+    drawn.dedup_by_key(|p| p.0);
+    drawn.reverse();
+    let Some(&(from, _)) = drawn.first() else {
+        return Some(Edit::default());
+    };
+    if end <= from {
+        return Some(Edit::default());
+    }
+    let touch_at = clip.touch.len() as u32;
+    let mut e = Edit {
+        touch_at,
+        ..Edit::default()
+    };
+    for (_, n) in picked(clip, sel) {
+        let (a, b) = (from - n.tick, end - n.tick);
+        if b <= 0 || a >= n.len {
+            continue;
+        }
+        let old = clip.touch_of(&n);
+        let held = |at: Tick| {
+            old.iter()
+                .rev()
+                .find(|p| Tick::from(p.at) <= at)
+                .map_or(0, |p| p.value)
+        };
+        let mut run: Vec<TouchPoint> = Vec::with_capacity(old.len() + drawn.len() + 1);
+        for p in old.iter().filter(|p| Tick::from(p.at) < a) {
+            push_point(&mut run, p.at, p.value);
+        }
+        for (k, &(t, v)) in drawn.iter().enumerate() {
+            let next = drawn.get(k + 1).map_or(end, |q| q.0);
+            if next <= n.tick || t >= n.tick + n.len {
+                continue;
+            }
+            push_point(&mut run, (t - n.tick).max(0) as u32, v.min(127));
+        }
+        if b < n.len {
+            push_point(&mut run, b as u32, held(b));
+            for p in old.iter().filter(|p| Tick::from(p.at) > b) {
+                push_point(&mut run, p.at, p.value);
+            }
+        }
+        if run.iter().all(|p| p.value == 0) {
+            run.clear();
+        }
+        let mut was = Vec::with_capacity(old.len());
+        for p in old {
+            push_point(&mut was, p.at, p.value);
+        }
+        if was.iter().all(|p| p.value == 0) {
+            was.clear();
+        }
+        // The same pressure, as it plays: nothing to change.
+        if run == was {
+            continue;
+        }
+        let touch = if run.is_empty() {
+            Touch::NONE
+        } else {
+            Touch {
+                first: touch_at + e.touch.len() as u32,
+                len: run.len() as u32,
+            }
+        };
+        e.touch.extend(run);
+        e.erase.push(n);
+        e.add.push(Note { touch, ..n });
+    }
+    touch_room(clip.touch.len(), &e.touch).then_some(e)
+}
+
+/// Point (`at`, `value`) onto the end of a pressure run: in place of a
+/// point at the same tick, and left out when the value held already is
+/// the same.
+fn push_point(run: &mut Vec<TouchPoint>, at: u32, value: u8) {
+    if run.last().is_some_and(|p| p.at == at) {
+        run.pop();
+    }
+    if run.last().is_some_and(|p| p.value == value) {
+        return;
+    }
+    run.push(TouchPoint { at, value });
+}
+
 /// The `sel` notes that are in the clip, with their indexes.
 fn picked<'a>(clip: &'a Clip, sel: &'a [usize]) -> impl Iterator<Item = (usize, Note)> + 'a {
     let mut s: Vec<usize> = sel
@@ -2844,5 +2947,84 @@ mod tests {
         }
         let d = applied(&hits, &chop(&hits, &[0, 1, 2], 2, false));
         assert!(d.notes.iter().all(|n| n.group == 0));
+    }
+
+    /// Pressure drawn on the lane (plan 3A.1): each picked note under
+    /// the stroke gets a new run, its own points either side kept, the
+    /// value it had at the stroke's end coming back after it; undo puts
+    /// the old run back.
+    #[test]
+    fn pressure_drawn_over_notes_is_a_new_run_and_undo_brings_the_old_back() {
+        let p = |at, value| TouchPoint { at, value };
+        // The run of the note at pitch `note` (an edit puts its notes in
+        // at the end).
+        let pts = |d: &Clip, note: u8| -> Vec<(u32, u8)> {
+            let n = d.notes.iter().find(|n| n.note == note).unwrap();
+            d.touch_of(n).iter().map(|q| (q.at, q.value)).collect()
+        };
+        // C (0, 960) with pressure; E (960, 480) with none; G unpicked.
+        let mut c = clip(&[(0, 960, 60), (960, 480, 64), (0, 1920, 67)]);
+        c.notes[0].touch = c
+            .add_touch(&[p(0, 10), p(200, 50), p(600, 90), p(800, 30)])
+            .unwrap();
+        let had = c.touch.len();
+        // From 100 to 400 on C: 70 then 80 from 250.
+        let e = draw_touch(&c, &[0, 1], &[(100, 70), (250, 80)], 400).unwrap();
+        assert_eq!(e.erase.len(), 1, "only C is under the stroke");
+        let d = applied(&c, &e);
+        assert_eq!(
+            pts(&d, 60),
+            [
+                (0, 10),
+                (100, 70),
+                (250, 80),
+                (400, 50),
+                (600, 90),
+                (800, 30)
+            ],
+            "50 (since 200) comes back at the stroke's end"
+        );
+        assert_eq!(d.touch.len(), had + 6, "a new run, the old one kept");
+        let mut back = d.clone();
+        back.apply(&e.inverse()).unwrap();
+        assert_eq!(pts(&back, 60), pts(&c, 60), "UNDO: the old pressure");
+        // Across both notes, from before C's end into E: E had none, so
+        // it gets the drawn values and 0 after; a value equal to the one
+        // before is left out.
+        let e = draw_touch(&c, &[0, 1], &[(900, 40), (1000, 40), (1100, 20)], 1200).unwrap();
+        let d = applied(&c, &e);
+        assert_eq!(
+            pts(&d, 60),
+            [(0, 10), (200, 50), (600, 90), (800, 30), (900, 40)]
+        );
+        // E starts in the first value's span: from 0 into it.
+        assert_eq!(pts(&d, 64), [(0, 40), (140, 20), (240, 0)]);
+        // The stroke over the whole of E: nothing comes back after it.
+        let e = draw_touch(&c, &[1], &[(900, 64)], 1500).unwrap();
+        let d = applied(&c, &e);
+        assert_eq!(pts(&d, 64), [(0, 64)]);
+        // Drawn all 0 over E: no pressure, as it was, so no change; over
+        // all of C, its run goes.
+        assert!(draw_touch(&c, &[1], &[(960, 0)], 1440).unwrap().is_empty());
+        let e = draw_touch(&c, &[0], &[(0, 0)], 960).unwrap();
+        let d = applied(&c, &e);
+        assert!(d
+            .notes
+            .iter()
+            .find(|n| n.note == 60)
+            .unwrap()
+            .touch
+            .is_none());
+        // The same line again changes nothing; no picks, a stroke ending
+        // where it starts, or off every note: nothing.
+        let e = draw_touch(&c, &[0], &[(200, 50), (600, 90)], 800).unwrap();
+        assert!(e.is_empty(), "{e:?}");
+        assert!(draw_touch(&c, &[], &[(0, 99)], 960).unwrap().is_empty());
+        assert!(draw_touch(&c, &[0], &[(100, 99)], 100).unwrap().is_empty());
+        assert!(draw_touch(&c, &[1], &[(0, 99)], 960).unwrap().is_empty());
+        // No room for the new runs: refused.
+        let mut full = c.clone();
+        full.touch.resize(crate::MAX_TOUCH_POINTS, p(0, 0));
+        assert_eq!(draw_touch(&full, &[0], &[(100, 99)], 200), None);
     }
 }

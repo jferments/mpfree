@@ -31,6 +31,11 @@
 //!   [`FIELDS`] and `set` each note the stroke changed with its new value
 //!   (piano roll plan 2A.1); the chip, its fold and the lane's top edge
 //!   are the screen's own (`View`);
+//! - the Pressure lane (plan 3A.1, [`LaneKind::Pressure`]): the picked
+//!   notes' pressure as a line along them, a narrow column each few
+//!   pixels; a stroke sends `Values { index: `[`PRESSURE_LANE`]`, set }`
+//!   once, `set` each column it drew as (its first tick, its value) in
+//!   time order, then (the stroke's end tick, [`PRESSURE_END`]);
 //! - the buttons along the bottom: `Tab(k)` for [`EDIT_BUTTONS`]`[k]`
 //!   (the last, Edit, opens the Edit options' drawer: the page's own);
 //!   while a tool is open (piano roll plan 2B.3, [`NoteTool`]), its bar
@@ -367,6 +372,16 @@ pub enum EditAction {
         rev: u64,
         set: Vec<(usize, i32)>,
     },
+    /// A stroke along the Pressure lane, as its finger lifted (plan
+    /// 3A.1): the line it drew on the picture of revision `rev`, as
+    /// (clip tick, value) points in time order, each held to the next and
+    /// the last to `end`. One take: each picked note it crossed gets a
+    /// new pressure run ([`notes::draw_touch`]); the picks stay.
+    Pressure {
+        rev: u64,
+        points: Vec<(Tick, u8)>,
+        end: Tick,
+    },
     /// An Edit option stepped.
     Row { row: usize, delta: i32 },
     /// An Edit option picked (the wheel steps it).
@@ -699,6 +714,7 @@ impl EditAction {
             | EditAction::Resize { rev, .. }
             | EditAction::Copy { rev, .. }
             | EditAction::Lane { rev, .. }
+            | EditAction::Pressure { rev, .. }
             | EditAction::Drop { rev, .. } => Some(rev),
             _ => None,
         }
@@ -1631,6 +1647,34 @@ impl Editor {
                     ..Done::default()
                 };
             }
+            // A stroke along the Pressure lane: one take, a new run on
+            // each picked note it crossed (plan 3A.1). The picks stay.
+            EditAction::Pressure { points, end, .. } => {
+                let Some(edit) = notes::draw_touch(clip, &sel, &points, end) else {
+                    return Done {
+                        line: "edit: the clip's pressure is full, so the line was not drawn".into(),
+                        ..Done::default()
+                    };
+                };
+                let kept = kept
+                    .iter()
+                    .map(|n| match edit.erase.iter().position(|e| e == n) {
+                        Some(j) => edit.add[j],
+                        None => *n,
+                    })
+                    .collect();
+                let line = match edit.erase.len() {
+                    0 => String::new(),
+                    1 => "edit: pressure drawn on 1 note".into(),
+                    n => format!("edit: pressure drawn on {n} notes"),
+                };
+                return Done {
+                    edit,
+                    line,
+                    kept,
+                    ..Done::default()
+                };
+            }
             EditAction::Choose(k) => return self.choose(k, clip, sel),
             // The app keeps the copy and makes the paste.
             EditAction::Copy { index, .. } => {
@@ -2471,8 +2515,56 @@ fn refind(old: &[NoteBox], new: &[NoteBox], i: usize) -> Option<usize> {
 }
 
 /// The lanes as [`EventKind::Values`] numbers them: its `index` is a
-/// field's place here (the ramp is the Repeats lane with SHIFT).
+/// field's place here (the ramp is the Repeats lane with SHIFT), or
+/// [`PRESSURE_LANE`] after them.
 pub const FIELDS: [Field; 4] = [Field::Velocity, Field::Chance, Field::Repeats, Field::Ramp];
+
+/// The Pressure lane's `index` in [`EventKind::Values`] (plan 3A.1): its
+/// `set` is (tick, value) for each column the stroke drew, in time
+/// order, then (the stroke's end, [`PRESSURE_END`]).
+pub const PRESSURE_LANE: usize = FIELDS.len();
+
+/// The value that marks the end of a pressure stroke ([`PRESSURE_LANE`]).
+pub const PRESSURE_END: i32 = -1;
+
+/// How wide each column of the Pressure lane is, in pixels: the line is
+/// drawn and set column by column.
+const PRESSURE_COL: i32 = 4;
+
+/// What the lane under the roll shows and draws (plan 2A.1, 3A.1): a
+/// value on each note, or the picked notes' pressure along them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LaneKind {
+    Value(Field),
+    Pressure,
+}
+
+impl LaneKind {
+    /// The lanes in the order the chip steps through them (the ramp is
+    /// the Repeats lane with SHIFT).
+    pub const ALL: [LaneKind; 4] = [
+        LaneKind::Value(Field::Velocity),
+        LaneKind::Value(Field::Chance),
+        LaneKind::Value(Field::Repeats),
+        LaneKind::Pressure,
+    ];
+
+    /// Its name.
+    pub fn name(self) -> &'static str {
+        match self {
+            LaneKind::Value(f) => f.name(),
+            LaneKind::Pressure => "Pressure",
+        }
+    }
+
+    /// Its name as the chip says it, short where it must be.
+    fn chip(self) -> &'static str {
+        match self {
+            LaneKind::Value(Field::Velocity) => "Vel",
+            k => k.name(),
+        }
+    }
+}
 
 /// A caret 9 px wide centred on (`x`, `y`), pointing up or down (the ▾ of
 /// a chip, drawn as the step size chip draws its own).
@@ -2524,7 +2616,7 @@ fn lane_label(field: Field, v: i32, ramp: i8) -> String {
 /// folded it away. The screen's own, kept by the page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LaneShow {
-    pub field: Field,
+    pub kind: LaneKind,
     pub h: i32,
     pub folded: bool,
 }
@@ -2532,7 +2624,7 @@ pub struct LaneShow {
 impl Default for LaneShow {
     fn default() -> LaneShow {
         LaneShow {
-            field: Field::Velocity,
+            kind: LaneKind::Value(Field::Velocity),
             h: VEL_H,
             folded: false,
         }
@@ -2651,12 +2743,13 @@ impl Rows {
 
 /// A finger drawing along the lane: the lane as it was when it went down
 /// (its bars, one for each place where notes start), and the notes each
-/// bar sets.
+/// bar sets; on the Pressure lane, each column's ticks instead.
 #[derive(Clone, Debug, PartialEq)]
 struct Stroke {
-    field: Field,
+    kind: LaneKind,
     lane: Lane,
     notes: Vec<Vec<usize>>,
+    cols: Vec<(Tick, Tick)>,
 }
 
 /// A box pick's lowest and highest rows, from its `Span`'s index
@@ -4396,11 +4489,8 @@ impl NoteGrid {
 
     fn paint_lane(&self, cx: &mut PaintCx, g: &Geo) {
         let t = cx.theme.clone();
-        let field = self.stroke.as_ref().map_or(self.lane.field, |s| s.field);
-        let name = match field {
-            Field::Velocity => "Vel",
-            f => f.name(),
-        };
+        let kind = self.stroke.as_ref().map_or(self.lane.kind, |s| s.kind);
+        let name = kind.chip();
         if !g.chip.is_empty() {
             // Folded, a caret up after the name says a tap opens it.
             let ink = t.ink_on(t.raised);
@@ -4435,12 +4525,23 @@ impl NoteGrid {
             cx.canvas.fill_round_rect(grip, 1, t.text_faint);
         }
         let body = lane_body(g);
-        let lane = match &self.stroke {
-            Some(st) => st.lane.clone(),
-            None => self.lane_of(g, field).0,
+        let lane = match (&self.stroke, kind) {
+            (Some(st), _) => st.lane.clone(),
+            (None, LaneKind::Pressure) => self.pressure_lane(g).0,
+            (None, LaneKind::Value(f)) => self.lane_of(g, f).0,
         };
         lane.paint(cx, body, self.color);
-        if field != Field::Velocity {
+        if kind == LaneKind::Pressure && lane.bars.is_empty() {
+            cx.text(
+                FontId::Sans,
+                t.size_small - 2.0,
+                body,
+                Align::Center,
+                t.text_dim,
+                "Pick notes to draw their pressure",
+            );
+        }
+        if kind != LaneKind::Value(Field::Velocity) {
             return;
         }
         for &i in &self.in_view(g) {
@@ -4524,6 +4625,58 @@ impl NoteGrid {
         }
         lane.set_bars(bars);
         (lane, notes)
+    }
+
+    /// The Pressure lane as the roll shows it now (plan 3A.1): a column
+    /// every [`PRESSURE_COL`] px across the roll wherever a picked note
+    /// sounds, as high as the highest of their pressures at its first
+    /// tick (0 where it has none), faint where none of them has any;
+    /// and each column's ticks, from its first to the next column's.
+    /// No columns while nothing picked is in view.
+    fn pressure_lane(&self, g: &Geo) -> (Lane, Vec<(Tick, Tick)>) {
+        let mut lane = Lane::new(0, 127, 1);
+        lane.style = LaneStyle::Line;
+        let picked: Vec<usize> = self
+            .in_view(g)
+            .into_iter()
+            .filter(|&i| self.notes.get(i).is_some_and(|n| n.selected))
+            .collect();
+        let (mut bars, mut cols) = (Vec::new(), Vec::new());
+        let mut x = g.roll.x;
+        while !picked.is_empty() && x < g.roll.right() {
+            let w = PRESSURE_COL.min(g.roll.right() - x);
+            let from = g.v.tick_at(g.roll, x).max(0);
+            let to = g.v.tick_at(g.roll, x + w);
+            let (mut value, mut any) = (None::<i32>, false);
+            for &i in &picked {
+                let n = &self.notes[i];
+                if to <= from || n.tick >= to || n.tick + n.len <= from {
+                    continue;
+                }
+                let at = (from.max(n.tick) - n.tick) as u32;
+                let run = self.touch_of(i);
+                any |= !run.is_empty();
+                let v = run
+                    .iter()
+                    .rev()
+                    .find(|p| p.at <= at)
+                    .map_or(0, |p| i32::from(p.value));
+                value = Some(value.map_or(v, |was| was.max(v)));
+            }
+            if let Some(value) = value {
+                bars.push(Bar {
+                    x,
+                    w,
+                    value,
+                    dim: !any,
+                    ..Bar::default()
+                });
+                cols.push((from, to));
+            }
+            x += w;
+        }
+        lane.set_bars(bars);
+        (lane, cols)
     }
 
     /// While a note moves or a handle drags (plan 1B.2), what it will be,
@@ -5091,10 +5244,25 @@ impl Widget for NoteGrid {
             // From near the foot to near the top, so the bars it crosses
             // change.
             let body = lane_body(&g);
-            let foot = Rect::new(body.x, body.bottom() - 8, body.w, 6);
-            if !tool {
+            let mut foot = Some(Rect::new(body.x, body.bottom() - 8, body.w, 6));
+            if self.lane.kind == LaneKind::Pressure {
+                // Along the first run of the picked notes' columns, side
+                // by side; with none, none.
+                let lane = self.pressure_lane(&g).0;
+                foot = lane.bars.first().map(|a| {
+                    let mut end = a.x + a.w;
+                    for b in lane.bars.iter().skip(1) {
+                        if b.x != end {
+                            break;
+                        }
+                        end = b.x + b.w;
+                    }
+                    Rect::new(a.x, body.bottom() - 8, end - a.x, 6)
+                });
+            }
+            if let (false, Some(foot)) = (tool, foot) {
                 out.push(
-                    Target::drag("lane", 0, self.lane.field.name(), foot).towards(0, 10 - body.h),
+                    Target::drag("lane", 0, self.lane.kind.name(), foot).towards(0, 10 - body.h),
                 );
             }
             out.push(Target::drag("lane-edge", 0, "lane's top edge", g.edge).towards(0, -24));
@@ -5174,11 +5342,29 @@ impl Widget for NoteGrid {
                 return None;
             };
             let st = self.stroke.take()?;
+            let field = match st.kind {
+                LaneKind::Value(field) => field,
+                // Each column drawn by its first tick, then where the
+                // stroke ends (plan 3A.1).
+                LaneKind::Pressure => {
+                    let &(last, _) = changed.last()?;
+                    let end = st.cols.get(last)?.1;
+                    let mut set: Vec<(usize, i32)> = changed
+                        .into_iter()
+                        .filter_map(|(b, v)| Some((st.cols.get(b)?.0 as usize, v)))
+                        .collect();
+                    set.push((end as usize, PRESSURE_END));
+                    return Some(EventKind::Values {
+                        index: PRESSURE_LANE,
+                        set,
+                    });
+                }
+            };
             let set: Vec<(usize, i32)> = changed
                 .into_iter()
                 .flat_map(|(b, v)| st.notes.get(b).into_iter().flatten().map(move |&i| (i, v)))
                 .collect();
-            let index = FIELDS.iter().position(|&f| f == st.field)?;
+            let index = FIELDS.iter().position(|&f| f == field)?;
             return (!set.is_empty()).then_some(EventKind::Values { index, set });
         }
         // A finger on the lane's top edge: other fingers do nothing.
@@ -6043,8 +6229,8 @@ impl NoteGrid {
             if self.lane.folded {
                 self.lane.folded = false;
             } else {
-                let k = Field::LANES.iter().position(|&l| l == self.lane.field);
-                self.lane.field = Field::LANES[k.map_or(0, |k| (k + 1) % Field::LANES.len())];
+                let k = LaneKind::ALL.iter().position(|&l| l == self.lane.kind);
+                self.lane.kind = LaneKind::ALL[k.map_or(0, |k| (k + 1) % LaneKind::ALL.len())];
             }
             return Some(self.view_event());
         }
@@ -6072,18 +6258,33 @@ impl NoteGrid {
         }
         if g.vel.contains(x, y) {
             // Drawn along as the finger moves, sent once when it lifts:
-            // one edit, one UNDO. SHIFT on Repeats draws the ramp.
+            // one edit, one UNDO. SHIFT on Repeats draws the ramp; the
+            // Pressure lane draws only along picked notes.
             if self.lane.folded {
                 return None;
             }
-            let field = match self.lane.field {
-                Field::Repeats if self.fine => Field::Ramp,
-                l => l,
+            let kind = match self.lane.kind {
+                LaneKind::Value(Field::Repeats) if self.fine => LaneKind::Value(Field::Ramp),
+                k => k,
             };
-            let (mut lane, notes) = self.lane_of(g, field);
+            let (mut lane, notes, cols) = match kind {
+                LaneKind::Value(field) => {
+                    let (lane, notes) = self.lane_of(g, field);
+                    (lane, notes, Vec::new())
+                }
+                LaneKind::Pressure => {
+                    let (lane, cols) = self.pressure_lane(g);
+                    (lane, Vec::new(), cols)
+                }
+            };
             if !lane.bars.is_empty() {
                 lane.touch(f, Touch::Down, x, y, lane_body(g));
-                self.stroke = Some(Stroke { field, lane, notes });
+                self.stroke = Some(Stroke {
+                    kind,
+                    lane,
+                    notes,
+                    cols,
+                });
             }
             return None;
         }
@@ -7791,9 +7992,9 @@ mod tests {
     /// The lane under the roll (plan 2A.1): a bar for each place where
     /// notes start, a stroke drawn along it and sent once, as the finger
     /// lifts, with each note's own value; of notes that start together a
-    /// picked one is set alone; the chip steps through Velocity, Chance
-    /// and Repeats, SHIFT on Repeats draws the ramp, the ▾ folds it and
-    /// the top edge makes it taller. Then the list.
+    /// picked one is set alone; the chip steps through Velocity, Chance,
+    /// Repeats and Pressure, SHIFT on Repeats draws the ramp, the ▾ folds
+    /// it and the top edge makes it taller. Then the list.
     #[test]
     fn the_lane_sets_each_note_along_a_stroke() {
         let mut g = grid();
@@ -7834,21 +8035,21 @@ mod tests {
             panic!();
         };
         assert_eq!(set, vec![(2, 127)]);
-        // The chip: Chance, then Repeats, then back to Velocity; the
-        // screen's own (a View).
+        // The chip: Chance, then Repeats, Pressure and back to Velocity;
+        // the screen's own (a View).
         let chip = mid(geo.chip);
         assert!(matches!(
             g.touch(3, Touch::Down, chip.0, chip.1, R),
             Some(EventKind::View { .. })
         ));
         g.touch(3, Touch::Up, chip.0, chip.1, R);
-        assert_eq!(g.lane.field, Field::Chance);
+        assert_eq!(g.lane.kind, LaneKind::Value(Field::Chance));
         let (lane, _) = g.lane_of(&geo, Field::Chance);
         assert_eq!(
             (lane.min, lane.max, lane.bars[1].label.as_str()),
             (1, 100, "100%")
         );
-        g.lane.field = Field::Repeats;
+        g.lane.kind = LaneKind::Value(Field::Repeats);
         g.notes[1].ratchet = 3;
         g.notes[1].ramp = -20;
         let (lane, _) = g.lane_of(&geo, Field::Repeats);
@@ -7857,7 +8058,10 @@ mod tests {
         // only on a note that repeats.
         g.fine = true;
         g.touch(4, Touch::Down, x1, body.y + 14, R);
-        assert_eq!(g.stroke.as_ref().map(|s| s.field), Some(Field::Ramp));
+        assert_eq!(
+            g.stroke.as_ref().map(|s| s.kind),
+            Some(LaneKind::Value(Field::Ramp))
+        );
         assert_eq!(
             g.stroke.as_ref().map(|s| s.lane.style),
             Some(LaneStyle::Centred)
@@ -7904,6 +8108,82 @@ mod tests {
             Some(EventKind::Select(_))
         ));
         assert_eq!(g.button_label(1), "List", "the lens showing");
+    }
+
+    /// The Pressure lane (plan 3A.1): the picked notes' pressure as a
+    /// line of narrow columns along them, the highest where picked notes
+    /// sound together; a stroke sends each column it drew by its first
+    /// tick, then its end, once, as the finger lifts. Nothing picked:
+    /// no columns, nothing to draw, a hint in their place.
+    #[test]
+    fn the_pressure_lane_draws_a_line_along_the_picked_notes() {
+        use mpfree_seq::TouchPoint;
+        let mut g = grid();
+        g.lane.kind = LaneKind::Pressure;
+        // Note 1 (960, 480) picked, its pressure 40 then 100 from 240.
+        g.touch = vec![
+            TouchPoint { at: 0, value: 40 },
+            TouchPoint {
+                at: 240,
+                value: 100,
+            },
+        ];
+        g.notes[1].touch = mpfree_seq::Touch { first: 0, len: 2 };
+        let geo = g.geo(R);
+        let body = lane_body(&geo);
+        let (lane, cols) = g.pressure_lane(&geo);
+        assert_eq!(lane.style, LaneStyle::Line);
+        assert_eq!(lane.bars.len(), cols.len());
+        let (x0, x1) = (g.x_of(&geo, 960), g.x_of(&geo, 1440));
+        assert!(
+            lane.bars.iter().all(|b| b.x + b.w > x0 && b.x < x1),
+            "along it"
+        );
+        assert!((lane.bars[0].x - x0).abs() <= PRESSURE_COL);
+        assert_eq!(lane.bars[0].value, 40);
+        assert_eq!(lane.bars.last().unwrap().value, 100);
+        assert!(cols.windows(2).all(|w| w[0].1 == w[1].0), "end to end");
+        // A stroke along the first part at the top: each column it
+        // drew, then where it ends.
+        let (a, b) = (lane.bars[1].x + 1, lane.bars[4].x + 1);
+        let top = body.y + 14;
+        assert_eq!(g.touch(1, Touch::Down, a, top, R), None);
+        g.touch(1, Touch::Move, b, top, R);
+        let Some(EventKind::Values { index, set }) = g.touch(1, Touch::Up, b, top, R) else {
+            panic!("a stroke sends its line");
+        };
+        assert_eq!(index, PRESSURE_LANE);
+        let ticks: Vec<usize> = cols[1..=4].iter().map(|c| c.0 as usize).collect();
+        let sent: Vec<usize> = set[..4].iter().map(|s| s.0).collect();
+        assert_eq!(sent, ticks);
+        assert!(set[..4].iter().all(|s| s.1 == 127), "{set:?}");
+        assert_eq!(set[4], (cols[4].1 as usize, PRESSURE_END));
+        // Two picked notes sounding together: the higher pressure.
+        g.notes[0].selected = true;
+        g.notes[0].tick = 960;
+        g.touch.push(TouchPoint { at: 0, value: 90 });
+        g.notes[0].touch = mpfree_seq::Touch { first: 2, len: 1 };
+        let (lane, _) = g.pressure_lane(&g.geo(R));
+        assert_eq!(lane.bars[0].value, 90);
+        // Nothing picked: no columns and no stroke, a hint to pick.
+        g.notes.iter_mut().for_each(|n| n.selected = false);
+        assert!(g.pressure_lane(&g.geo(R)).0.bars.is_empty());
+        g.touch(2, Touch::Down, a, top, R);
+        assert_eq!(g.stroke, None);
+        g.touch(2, Touch::Up, a, top, R);
+        // The hint: ink across the middle of the empty lane.
+        let c = painted(&g);
+        let (cx, cy) = (body.x + body.w / 2, body.y + body.h / 2);
+        let empty = c.pixel(body.x + 2, cy);
+        assert!(
+            (cx - 60..cx + 60).any(|x| (cy - 4..cy + 4).any(|y| c.pixel(x, y) != empty)),
+            "the hint to pick notes"
+        );
+        // The chip steps on from Pressure to Velocity.
+        let chip = mid(geo.chip);
+        g.touch(3, Touch::Down, chip.0, chip.1, R);
+        g.touch(3, Touch::Up, chip.0, chip.1, R);
+        assert_eq!(g.lane.kind, LaneKind::Value(Field::Velocity));
     }
 
     #[test]
