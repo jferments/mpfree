@@ -983,7 +983,9 @@ pub fn audio_slots(
     if let Some(text) = part {
         let saved = mpfree_audiotracks::save::from_text(text)
             .map_err(|e| format!("its audio tracks can't be read ({e})"))?;
-        let old = text.trim_start().starts_with(mpfree_audiotracks::save::FORMAT_1);
+        let old = text
+            .trim_start()
+            .starts_with(mpfree_audiotracks::save::FORMAT_1);
         if old {
             let used: Vec<&mpfree_audiotracks::save::TrackFile> = saved
                 .tracks
@@ -1000,8 +1002,7 @@ pub fn audio_slots(
             }
             let first = p.tracks.len();
             for t in &used {
-                let mut track =
-                    mpfree_seq::Track::new_audio(&format!("Audio {}", t.index + 1), 0);
+                let mut track = mpfree_seq::Track::new_audio(&format!("Audio {}", t.index + 1), 0);
                 track.mute = t.muted;
                 track.solo = t.solo;
                 p.give_track_id(&mut track);
@@ -1021,9 +1022,7 @@ pub fn audio_slots(
         } else {
             for t in &saved.tracks {
                 let id = TrackId(t.id);
-                let ok = p
-                    .track_with(id)
-                    .is_some_and(|i| p.tracks[i].is_audio());
+                let ok = p.track_with(id).is_some_and(|i| p.tracks[i].is_audio());
                 if !ok {
                     return Err(format!(
                         "its audio tracks part names audio {} for a track it hasn't got",
@@ -3145,10 +3144,7 @@ mod tests {
         assert_eq!(check(&snap), Ok(FORMAT));
         c.instruments = format!("{INSTRUMENTS_FORMAT}\nfree 1 mpfree.fm\n");
         let (snap, line) = needs(&c);
-        assert_eq!(
-            line.as_deref(),
-            Some("synths-without-tracks audio-tracks")
-        );
+        assert_eq!(line.as_deref(), Some("synths-without-tracks audio-tracks"));
         assert_eq!(check(&snap), Ok(FORMAT));
     }
 

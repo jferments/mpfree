@@ -6421,10 +6421,17 @@ fn time_action(
         | TimeAction::Audio(AudioAction::Solo { track, on }) => {
             let solo = matches!(a, TimeAction::Audio(AudioAction::Solo { .. }));
             let Some(t) = tracks.place(track) else {
-                out.note(&format!("audio tracks: there is no audio track {}", track + 1));
+                out.note(&format!(
+                    "audio tracks: there is no audio track {}",
+                    track + 1
+                ));
                 return Vec::new();
             };
-            let now = time.project().tracks.get(t).map(|tr| if solo { tr.solo } else { tr.mute });
+            let now = time
+                .project()
+                .tracks
+                .get(t)
+                .map(|tr| if solo { tr.solo } else { tr.mute });
             if now != Some(on) {
                 match time.mute_or_solo(t, false, solo) {
                     Ok(line) => out.note(&line),

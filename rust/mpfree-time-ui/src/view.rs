@@ -1560,6 +1560,15 @@ pub fn cue_tick(t: &TransportInfo, line: LaunchGrid) -> Tick {
 }
 
 impl TimeState {
+    /// The lane of the audio track in place `track` of the track list, if
+    /// it is one.
+    pub fn audio_lane_at(&self, track: usize) -> Option<&AudioLane> {
+        if !self.tracks.get(track).is_some_and(|t| t.audio) {
+            return None;
+        }
+        self.audio.iter().find(|l| l.row == track)
+    }
+
     /// The line the cue on `track` lands on: as the time engine set it
     /// ([`TimeState::cue_lines`]), else the cued clip's own launch
     /// quantise, else the project's.
@@ -1602,6 +1611,14 @@ pub fn launches_after(launches: &[Launch], action: &TimeAction, t: &TransportInf
 /// A tap on a track's name on the Clips grid: it picks the track
 /// ([`TimeAction::Pick`]), or lets go of the arm when it has it.
 pub fn name_tap(st: &TimeState, track: usize) -> TimeAction {
+    // An audio track's name arms it to record (layout spec 4f), as its
+    // arm dot on the Song view does.
+    if let Some(l) = st.audio_lane_at(track) {
+        return TimeAction::Audio(AudioAction::Arm {
+            track: l.track,
+            on: !l.armed,
+        });
+    }
     if st.armed == Some(track) {
         TimeAction::Arm(None)
     } else {
@@ -1614,7 +1631,8 @@ pub fn name_tap(st: &TimeState, track: usize) -> TimeAction {
 /// clip in an empty slot, or arm an empty Loop cell. None past the
 /// tracks.
 pub fn cell_tap(st: &TimeState, track: usize, slot: usize) -> Option<TimeAction> {
-    if track >= st.tracks.len() || slot >= SLOTS {
+    if track >= st.tracks.len() || slot >= SLOTS || st.tracks[track].audio {
+        // No audio clips in the grid yet ([`why_not`] says so).
         None
     } else if st.clip(track, slot).is_none() && st.tracks[track].loops.is_some() {
         // An empty Loop cell arms (again: lets go of) a loop there.
@@ -2088,6 +2106,9 @@ pub fn why_not(ev: &UiEvent, st: &TimeState) -> Option<String> {
         }
     };
     match (ev.widget.as_str(), &ev.kind) {
+        (CLIPS, EventKind::Select(i)) if st.tracks.get(i / SLOTS).is_some_and(|t| t.audio) => Some(
+            "Audio clips aren't in the grid yet. Record this track in the Song view.".to_string(),
+        ),
         (MORPH, EventKind::Tab(0 | 1)) if !st.morph.on => {
             Some("Move the crossfader first: Snap back and Keep work on a morph".to_string())
         }
@@ -3797,7 +3818,11 @@ pub fn grid_tracks(st: &TimeState) -> Vec<GridTrack> {
             name: tr.name.clone(),
             sound: tr.sound.clone(),
             color: track_color(i),
-            armed: st.armed == Some(i),
+            // An audio track's own arm (its arm dot on the Song view).
+            armed: match st.audio_lane_at(i) {
+                Some(l) => l.armed,
+                None => !tr.audio && st.armed == Some(i),
+            },
             mute: tr.silent,
             solo: tr.solo,
             waiting: st.mute_waiting(i),
@@ -4313,7 +4338,6 @@ impl TimePage {
         match self.reveal {
             Some(n) if st.tracks.len() > n => {
                 self.reveal = None;
-                self.first_track = (st.tracks.len() - 1) / GRID_COLS * GRID_COLS;
                 reveal = true;
             }
             Some(n) if st.tracks.len() < n => self.reveal = None,
@@ -4326,6 +4350,9 @@ impl TimePage {
                     self.first_track = a / GRID_COLS * GRID_COLS;
                 }
             }
+        }
+        if reveal {
+            self.first_track = (st.tracks.len() - 1) / GRID_COLS * GRID_COLS;
         }
         let last = st.tracks.len().saturating_sub(1) / GRID_COLS * GRID_COLS;
         self.first_track = self.first_track.min(last);
@@ -5598,6 +5625,98 @@ mod tests {
 
     /// Layout spec 4c: the audio lanes' taps, the selection's kind, and
     /// the bottom row with a region picked.
+    /// Layout spec 4f: an audio track is a column of the grid, its name
+    /// arming it to record (its own arm, as the Song view's dot), its
+    /// cells empty with a line saying where to record it.
+    #[test]
+    fn an_audio_track_is_a_column_its_name_arms_it() {
+        use crate::song::AudioLane;
+        let mut st = state();
+        st.tracks[1].audio = true;
+        st.tracks[1].sound = "L".into();
+        st.audio = vec![AudioLane {
+            track: 4,
+            row: 1,
+            name: st.tracks[1].name.clone(),
+            color: track_color(1),
+            armed: false,
+            input: Input::Left,
+            mix: None,
+            level: 0.0,
+            volume: 1.0,
+            pan: 0.0,
+            monitor: Monitor::Auto,
+            mute: false,
+            solo: false,
+            blocks: Vec::new(),
+            takes: Vec::new(),
+            recording: None,
+        }];
+        let cols = grid_tracks(&st);
+        assert!(cols[1].audio && !cols[0].audio);
+        assert!(!cols[1].armed);
+        assert_eq!(
+            action(&ev(CLIPS, EventKind::Tab(1)), &st),
+            Some(TimeAction::Audio(AudioAction::Arm { track: 4, on: true }))
+        );
+        st.audio[0].armed = true;
+        assert!(grid_tracks(&st)[1].armed);
+        assert_eq!(
+            action(&ev(CLIPS, EventKind::Tab(1)), &st),
+            Some(TimeAction::Audio(AudioAction::Arm {
+                track: 4,
+                on: false
+            }))
+        );
+        let cell = ev(CLIPS, EventKind::Select(SLOTS + 2));
+        assert_eq!(action(&cell, &st), None);
+        assert_eq!(
+            why_not(&cell, &st).as_deref(),
+            Some("Audio clips aren't in the grid yet. Record this track in the Song view.")
+        );
+        // The chooser's rows on the grid.
+        let row = |k| action(&ev(CLIPS, EventKind::Toggle(SLOTS + ADD_KIND + k)), &st);
+        assert_eq!(row(0), Some(TimeAction::AddTrack));
+        assert_eq!(row(1), Some(TimeAction::AddAudioTrack));
+        assert_eq!(row(2), Some(TimeAction::AddLoopTrack));
+        assert_eq!(
+            action(&ev(CLIPS, EventKind::Toggle(SLOTS + ADD_DISMISS)), &st),
+            None
+        );
+    }
+
+    /// The "+ Track" chooser is the page's: a tap on "+ Track" opens it
+    /// (not with SHIFT), a touch off it closes it, a row picked closes it
+    /// and goes to the app, and the new track comes into view.
+    #[test]
+    fn plus_track_opens_the_chooser_and_the_new_track_comes_into_view() {
+        let mut st = state();
+        let mut page = TimePage::default();
+        let plus = ev(CLIPS, EventKind::Toggle(SLOTS + ADD_TRACK));
+        assert!(page.chooser(&plus, &st, false));
+        assert!(page.adding);
+        let off = ev(SONG, EventKind::Tab(crate::song::ADD_CLOSE));
+        assert!(page.chooser(&off, &st, false));
+        assert!(!page.adding);
+        assert!(
+            !page.chooser(&plus, &st, true),
+            "SHIFT: the app's Loop track"
+        );
+        assert!(!page.adding);
+        assert!(page.chooser(&plus, &st, false));
+        let audio = ev(CLIPS, EventKind::Toggle(SLOTS + ADD_KIND + 1));
+        assert!(!page.chooser(&audio, &st, false), "the app adds it");
+        assert!(!page.adding);
+        // Once it is there, past the first page: its page shows.
+        while st.tracks.len() <= GRID_COLS {
+            let t = st.tracks[0].clone();
+            st.tracks.push(t);
+        }
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        page.update(&mut ui, &st);
+        assert_eq!(page.first_track, GRID_COLS);
+    }
+
     #[test]
     fn the_audio_lanes_ask_for_audio_actions() {
         use crate::song::{AudioBlock, AudioLane};

@@ -171,6 +171,17 @@ pub const ADD_KINDS: [(&str, usize); 3] = [
     ("Audio track", ADD_AUDIO),
     ("Loop track", ADD_LOOP),
 ];
+/// The line under each row's name, as drawn on the approved screens.
+/// (An audio track's own mixer strip comes with phase 1b, and its line
+/// says so then.)
+pub const ADD_ABOUT: [&str; 3] = [
+    "Plays a kit or an instrument; records notes",
+    "Records sound from an input",
+    "Loops in the Clips grid (they join audio tracks later)",
+];
+/// The hint line while the "+ Track" chooser is open.
+pub const ADD_HINT: &str =
+    "Pick the kind of track to add: Note, Audio or Loop   ·   it goes at the end of the track list   ·   UNDO takes it away   ·   tap anywhere else: nothing is added";
 /// What Tab reports for List, left of Rec song: the song list.
 pub const LIST: usize = 0x310;
 /// The List button's width.
@@ -552,10 +563,30 @@ const GAP: i32 = 6;
 const DRAG_SLOP: i32 = 8;
 /// A take lane's height.
 const TAKE_H: i32 = 28;
-/// The "+ Track" chooser: its width and a row's height (the Clips grid's
-/// too).
-pub const CHOOSER_W: i32 = 168;
-pub const CHOOSER_ROW: i32 = 40;
+/// The "+ Track" chooser (the Clips grid's too): the card's width, a
+/// row's height, the card's padding, the gap between rows and the title
+/// line's height.
+pub const CHOOSER_W: i32 = 330;
+pub const CHOOSER_ROW: i32 = 52;
+const CHOOSER_PAD: i32 = 12;
+const CHOOSER_GAP: i32 = 8;
+const CHOOSER_HEAD: i32 = 16;
+/// The chooser card's height.
+pub const CHOOSER_H: i32 =
+    CHOOSER_PAD + CHOOSER_HEAD + CHOOSER_GAP + 3 * CHOOSER_ROW + 2 * CHOOSER_GAP + CHOOSER_PAD;
+
+/// The chooser's rows for a card whose top left corner is `(x, y)`.
+pub fn chooser_rows(x: i32, y: i32) -> [Rect; 3] {
+    let row = |k: i32| {
+        Rect::new(
+            x + CHOOSER_PAD,
+            y + CHOOSER_PAD + CHOOSER_HEAD + CHOOSER_GAP + k * (CHOOSER_ROW + CHOOSER_GAP),
+            CHOOSER_W - 2 * CHOOSER_PAD,
+            CHOOSER_ROW,
+        )
+    };
+    [row(0), row(1), row(2)]
+}
 /// The track panel's size at most, its rows' height and its labels'
 /// width.
 const PANEL_W: i32 = 560;
@@ -646,44 +677,56 @@ enum Lane {
     AddTrack,
 }
 
-/// The "+ Track" chooser (layout spec 4c): a raised card round `rows`,
-/// a row a kind of track ([`ADD_KINDS`]), Audio track and Loop track with
-/// a wave mark. The Clips grid draws the same under its "+ Track".
+/// The "+ Track" chooser (layout spec 4c, as drawn on the approved
+/// screens): a raised card titled "ADD A TRACK" round `rows`, each row a
+/// kind of track ([`ADD_KINDS`]) with a line on what it is
+/// ([`ADD_ABOUT`]). The Clips grid draws the same under its "+ Track".
 pub fn paint_chooser(cx: &mut PaintCx, rows: &[Rect; 3]) {
     let t = cx.theme.clone();
     let card = Rect::new(
-        rows[0].x - 4,
-        rows[0].y - 4,
-        rows[0].w + 8,
-        rows[2].bottom() - rows[0].y + 8,
+        rows[0].x - CHOOSER_PAD,
+        rows[0].y - CHOOSER_PAD - CHOOSER_HEAD - CHOOSER_GAP,
+        CHOOSER_W,
+        CHOOSER_H,
     );
-    cx.canvas.fill_round_rect(card, t.round(10), t.raised);
-    cx.canvas.stroke_round_rect(card, t.round(10), 1, t.outline);
+    // A shadow under it, so it lifts off the lanes, as the panel does.
+    let shadow = Rect::new(card.x + 2, card.y + 4, card.w, card.h);
+    cx.canvas.fill_round_rect(shadow, t.round(12), t.bg);
+    cx.canvas.fill_round_rect(card, t.round(12), t.raised);
+    cx.canvas.stroke_round_rect(card, t.round(12), 1, t.outline);
+    cx.text(
+        FontId::Bold,
+        t.size_small - 2.0,
+        Rect::new(
+            card.x + CHOOSER_PAD,
+            card.y + CHOOSER_PAD,
+            card.w - 2 * CHOOSER_PAD,
+            CHOOSER_HEAD,
+        ),
+        Align::Left,
+        t.text_dim,
+        "ADD A TRACK",
+    );
+    let row_fill = t.raised.mix(t.text, 0.08);
     for (k, b) in rows.iter().enumerate() {
-        if k > 0 {
-            cx.canvas
-                .fill_rect(Rect::new(b.x + 8, b.y, b.w - 16, 1), t.outline);
-        }
-        let mark = Rect::new(b.x + 10, b.y + b.h / 2 - 7, 14, 14);
-        if k == 0 {
-            // A note track: a note head.
-            cx.canvas.fill_round_rect(
-                Rect::new(mark.x + 2, mark.y + 6, 9, 7),
-                3,
-                t.text_dim,
-            );
-            cx.canvas
-                .fill_rect(Rect::new(mark.x + 9, mark.y, 2, 10), t.text_dim);
-        } else {
-            wave_mark(cx, mark, t.text_dim);
-        }
+        cx.canvas.fill_round_rect(*b, t.round(8), row_fill);
+        let inner = Rect::new(b.x + 12, b.y + 7, b.w - 24, b.h - 14);
+        let (name, about) = inner.take_top(inner.h / 2 + 1);
         cx.text(
             FontId::Bold,
-            t.size_small - 1.0,
-            Rect::new(mark.right() + 10, b.y, b.right() - mark.right() - 14, b.h),
+            t.size_small + 1.0,
+            name,
             Align::Left,
             t.text,
             ADD_KINDS[k].0,
+        );
+        cx.text(
+            FontId::Sans,
+            t.size_small - 2.0,
+            about,
+            Align::Left,
+            t.text_dim,
+            ADD_ABOUT[k],
         );
     }
 }
@@ -1003,7 +1046,12 @@ impl SongLanes {
         if b.track >= self.tracks.len() {
             return None;
         }
-        self.span_rect(&self.geo(r), self.track_k(b.track), b.start, b.start + b.length)
+        self.span_rect(
+            &self.geo(r),
+            self.track_k(b.track),
+            b.start,
+            b.start + b.length,
+        )
     }
 
     /// Where region `i` of audio lane `a` (an index into `audio`) is drawn,
@@ -1045,22 +1093,18 @@ impl SongLanes {
     }
 
     /// The "+ Track" chooser's rows ([`ADD_KINDS`]), while it is open
-    /// and "+ Track" shows: under it, or over it where there is no room
-    /// below.
+    /// and "+ Track" shows: the card beside it, right of the names,
+    /// level with it where it fits (as drawn), kept inside the view.
     pub fn chooser_rects(&self, r: Rect) -> Option<[Rect; 3]> {
         if !self.adding {
             return None;
         }
         let b = self.add_track_rect(r)?;
-        let (w, h) = (CHOOSER_W, CHOOSER_ROW);
-        let all = 3 * h + 8;
-        let y = if b.bottom() + 4 + all <= r.bottom() - 4 {
-            b.bottom() + 4
-        } else {
-            b.y - 4 - all
-        };
-        let row = |k: i32| Rect::new(b.x + 4, y + 4 + k * h, w - 8, h);
-        Some([row(0), row(1), row(2)])
+        let x = b.right() + 12;
+        let y = (b.y + b.h / 2 - CHOOSER_H / 2)
+            .min(r.bottom() - 8 - CHOOSER_H)
+            .max(r.y + 8);
+        Some(chooser_rows(x, y))
     }
 
     /// Where Rec song is: the right end of the title line.
@@ -3111,10 +3155,13 @@ mod tests {
     #[test]
     fn audio_lanes_sit_in_their_tracks_places() {
         let mut s = lanes();
-        put_audio(&mut s, vec![
-            audio_lane(0, "Vocal", vec![block(0, 4 * 3840, 0)]),
-            audio_lane(3, "Guitar", vec![block(3840, 2 * 3840, 1)]),
-        ]);
+        put_audio(
+            &mut s,
+            vec![
+                audio_lane(0, "Vocal", vec![block(0, 4 * 3840, 0)]),
+                audio_lane(3, "Guitar", vec![block(3840, 2 * 3840, 1)]),
+            ],
+        );
         let r = Rect::new(12, 140, 814, 534);
         let midi = s.block_rect(r, &s.blocks[0].clone()).unwrap();
         let vocal = s.region_rect(r, 0, 0).unwrap();
@@ -3173,7 +3220,11 @@ mod tests {
         }];
         assert_eq!(
             (0..3).map(|k| s.lane(k)).collect::<Vec<_>>(),
-            [Some(Lane::Midi(0)), Some(Lane::Audio(0)), Some(Lane::Midi(2))]
+            [
+                Some(Lane::Midi(0)),
+                Some(Lane::Audio(0)),
+                Some(Lane::Midi(2))
+            ]
         );
         let vocal = s.region_rect(r, 0, 0).unwrap();
         let bass = s.block_rect(r, &s.blocks[0].clone()).unwrap();
@@ -3187,7 +3238,10 @@ mod tests {
     #[test]
     fn a_picked_region_swaps_the_bottom_row() {
         let mut s = lanes();
-        put_audio(&mut s, vec![audio_lane(0, "Vocal", vec![block(0, 3840, 0)])]);
+        put_audio(
+            &mut s,
+            vec![audio_lane(0, "Vocal", vec![block(0, 3840, 0)])],
+        );
         let r = Rect::new(12, 140, 814, 534);
         s.region = Some((0, 0));
         for (k, br) in s.button_rects(r).iter().enumerate() {
@@ -3216,7 +3270,10 @@ mod tests {
     #[test]
     fn the_track_panel_sits_over_the_lanes_and_reports_its_controls() {
         let mut s = lanes();
-        put_audio(&mut s, vec![audio_lane(1, "Vocal", vec![block(0, 3840, 0)])]);
+        put_audio(
+            &mut s,
+            vec![audio_lane(1, "Vocal", vec![block(0, 3840, 0)])],
+        );
         let r = Rect::new(12, 140, 814, 534);
         assert_eq!(s.panel_parts(r), None, "no panel open");
         s.panel = Some(4);
@@ -3324,7 +3381,10 @@ mod tests {
     #[test]
     fn mix_gives_the_panel_from_and_effects_and_the_monitors_give_way() {
         let mut s = lanes();
-        put_audio(&mut s, vec![audio_lane(1, "Vocal", vec![block(0, 3840, 0)])]);
+        put_audio(
+            &mut s,
+            vec![audio_lane(1, "Vocal", vec![block(0, 3840, 0)])],
+        );
         s.panel = Some(1);
         let r = Rect::new(12, 140, 814, 534);
         let line = s.panel_parts(r).unwrap();
@@ -3384,8 +3444,8 @@ mod tests {
         assert!(!ui.paint(&mut c).is_empty());
     }
 
-    /// "+ Track" comes after the MIDI lanes (up to 128 tracks, Jay 14
-    /// Nov), before the audio lanes, and asks for a track.
+    /// "+ Track" is the last lane, after every track's (up to 128
+    /// tracks, Jay 14 Nov; layout spec 4c), and opens the chooser.
     #[test]
     fn plus_track_is_the_last_lane_and_opens_the_chooser() {
         let mut s = lanes();
@@ -3407,11 +3467,16 @@ mod tests {
             s.touch(1, Touch::Down, b.x + 4, b.y + 4, r),
             Some(EventKind::Tab(ADD_TRACK))
         );
-        // The app opens the chooser: a row a kind, under "+ Track"; a
-        // touch anywhere else closes it and does nothing more.
+        // The app opens the chooser: a card beside "+ Track", right of
+        // the names, a row a kind; a touch anywhere else closes it and
+        // does nothing more.
         s.adding = true;
         let rows = s.chooser_rects(r).unwrap();
-        assert!(rows[0].y > b.bottom());
+        assert!(rows[0].x > b.right(), "right of the names");
+        assert!(
+            rows[0].y < b.bottom() && rows[2].bottom() > b.y,
+            "level with it"
+        );
         for (k, row) in rows.iter().enumerate() {
             assert_eq!(
                 s.touch(2, Touch::Down, row.x + 8, row.y + 8, r),
@@ -3426,8 +3491,8 @@ mod tests {
         assert_eq!(s.touch(3, Touch::Up, vocal.x + 4, vocal.y + 4, r), None);
         let targets = s.targets(r);
         assert_eq!(targets.len(), 4, "the rows and the rest");
-        // With "+ Track" at the foot of the lanes, the chooser opens over
-        // it.
+        // With "+ Track" at the foot of the lanes, the card stays inside
+        // the view.
         put_audio(
             &mut s,
             (0..10).map(|k| audio_lane(k, "A", Vec::new())).collect(),
@@ -3435,7 +3500,8 @@ mod tests {
         s.first_lane = usize::MAX;
         let b = s.add_track_rect(r).unwrap();
         let rows = s.chooser_rects(r).unwrap();
-        assert!(rows[2].bottom() < b.y, "over it");
+        assert!(rows[2].bottom() < r.bottom() - 8, "inside the view");
+        assert!(rows[0].y - 36 >= r.y, "its title too");
     }
 
     fn take(id: u16, name: &str, start: Tick, end: Tick, used: Vec<(Tick, Tick)>) -> TakeLane {
@@ -3561,10 +3627,13 @@ mod tests {
     #[test]
     fn a_dragged_region_asks_for_its_new_start() {
         let mut s = lanes();
-        put_audio(&mut s, vec![
-            audio_lane(0, "Vocal", Vec::new()),
-            audio_lane(3, "Bass", vec![block(0, 3840, 0), block(7680, 11520, 1)]),
-        ]);
+        put_audio(
+            &mut s,
+            vec![
+                audio_lane(0, "Vocal", Vec::new()),
+                audio_lane(3, "Bass", vec![block(0, 3840, 0), block(7680, 11520, 1)]),
+            ],
+        );
         let r = Rect::new(12, 140, 814, 534);
         let g = s.geo(r);
         let br = s.region_rect(r, 1, 1).unwrap();
@@ -3793,9 +3862,12 @@ mod tests {
         s.tracks = (0..8)
             .map(|k| (format!("T{k}"), Color::rgb(0xE8A33D)))
             .collect();
-        put_audio(&mut s, (0..6)
-            .map(|k| audio_lane(k, "A", vec![block(0, 3840, 0)]))
-            .collect());
+        put_audio(
+            &mut s,
+            (0..6)
+                .map(|k| audio_lane(k, "A", vec![block(0, 3840, 0)]))
+                .collect(),
+        );
         s.can_add_track = true;
         let r = Rect::new(12, 140, 814, 534);
         let g = s.geo(r);

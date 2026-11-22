@@ -874,7 +874,7 @@ pub fn no_pad_mutes(what: &str, kit: Option<usize>, page: usize) -> Option<Strin
 /// name, or another track's ("Track 3's FM", `sends`), else what it plays
 /// of the list of kits (`kits`): "Kit" (kit 1), "Kit 2" and on, or
 /// "Synth"; a Loop track's input ("Pads", for the pads and the synth);
-/// an audio track's input chip ("L", "ST", "Mix": layout spec 4f).
+/// an audio track's input ("In L", "In ST", "From Mix": layout spec 4f).
 /// And which tracks play notes, so transpose moves them
 /// (`TrackInfo::melodic`): one with an instrument (not the drum engine),
 /// or one that plays the synth while it plays notes (`synth_notes`).
@@ -893,8 +893,10 @@ fn fill_sounds(
         let lane = audio.iter().find(|l| l.row == i).filter(|_| t.audio);
         let name: Cow<str> = match (t.loops, played) {
             _ if t.audio => match lane {
-                Some(l) if l.mix.is_some() => "Mix".into(),
-                Some(l) => mpfree_time_ui::song::input_chip(l.input).into(),
+                // Its input under the name, as drawn: "In L", or "From
+                // Mix" while it records from inside the mix.
+                Some(l) if l.mix.is_some() => "From Mix".into(),
+                Some(l) => format!("In {}", mpfree_time_ui::song::input_chip(l.input)).into(),
                 None => "".into(),
             },
             (Some(input), _) => input.short().into(),
@@ -6647,6 +6649,7 @@ impl Player {
                 View::Sequencer => format!("Tap a step: in or out   ·   hold a step: edit it   ·   Notes: the clip's notes   ·   \
                                             + Lane: a lock lane   ·   STEP SEQ: steps on the pads   ·   PAD BANK: bank   ·   \
                                             MENU: options   ·   {stop}"),
+                View::Arrange if self.time_page.adding => mpfree_time_ui::song::ADD_HINT.to_string(),
                 View::Arrange if self.time.list_view => time_view::LIST_HINT.to_string(),
                 View::Arrange if self.time.song_view => time_view::song_hint(&self.time).to_string(),
                 View::Arrange if self.time_page.clip_card => time_view::CLIPS_CARD_HINT.to_string(),
@@ -13277,7 +13280,15 @@ impl Player {
             // track's input steps to the next (Pads, Line in, Resample).
             (time_view::CLIPS, EventKind::Tab(k)) if k >= mpfree_time_ui::widgets::SOUND_TAP => {
                 let t = k - mpfree_time_ui::widgets::SOUND_TAP;
-                if self.time.tracks.get(t).is_some_and(|tr| tr.loops.is_some()) {
+                if let Some(tr) = self.time.tracks.get(t).filter(|tr| tr.audio) {
+                    // An audio track's input: its panel on the Song view.
+                    let line = format!(
+                        "{}'s input: tap its name on the Song view (Song ›) to open its panel",
+                        tr.name
+                    );
+                    self.tell(&line);
+                    None
+                } else if self.time.tracks.get(t).is_some_and(|tr| tr.loops.is_some()) {
                     Some(FromUi::Time(TimeAction::LoopInput(t)))
                 } else {
                     Some(FromUi::TrackInstrument(t))
@@ -13318,9 +13329,7 @@ impl Player {
             // track; layout spec 4c), and a touch off it closes it: the
             // page's own. SHIFT + "+ Track" still adds a Loop track.
             (time_view::CLIPS, EventKind::Toggle(_)) | (time_view::SONG, EventKind::Tab(_))
-                if self
-                    .time_page
-                    .chooser(&ev, &self.time, self.status.shift) =>
+                if self.time_page.chooser(&ev, &self.time, self.status.shift) =>
             {
                 self.time_page.update(&mut self.ui, &self.time);
                 self.refresh_hint();
@@ -13394,9 +13403,7 @@ impl Player {
                 if matches!(
                     a,
                     Some(
-                        TimeAction::AddTrack
-                            | TimeAction::AddAudioTrack
-                            | TimeAction::AddLoopTrack
+                        TimeAction::AddTrack | TimeAction::AddAudioTrack | TimeAction::AddLoopTrack
                     )
                 ) {
                     self.time_page.update(&mut self.ui, &self.time);
@@ -17847,6 +17854,38 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("arrange-song-audio", p));
         }
         Err(e) => eprintln!("arrange-song-audio sample: {e}"),
+    }
+    // The same project on the Clips grid (layout spec 4f): the vocal and
+    // the guitar are columns after the note tracks, a wave mark and their
+    // input under their names, their cells dashed, the guitar armed; the
+    // "+ Track" chooser open (4c).
+    match mpfree_time_ui::sample::song_audio_state() {
+        Ok(mut state) => {
+            state.song_view = false;
+            state.region = None;
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            p.time_page.first_track = mpfree_time_ui::widgets::GRID_COLS;
+            p.time_page.adding = true;
+            p.time_page.update(&mut p.ui, &p.time);
+            out.push(("arrange-clips-audio", p));
+        }
+        Err(e) => eprintln!("arrange-clips-audio sample: {e}"),
+    }
+    // The Song view with "+ Track"'s chooser open beside it (4c, as
+    // drawn): Note track, Audio track, Loop track.
+    match mpfree_time_ui::sample::song_audio_state() {
+        Ok(mut state) => {
+            state.region = None;
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            p.time_page.adding = true;
+            p.time_page.update(&mut p.ui, &p.time);
+            out.push(("arrange-song-add", p));
+        }
+        Err(e) => eprintln!("arrange-song-add sample: {e}"),
     }
     // The same with the guitar's track panel open (layout spec 4c), its
     // input on ST, soloed, and nothing picked: the Q-Links are its level

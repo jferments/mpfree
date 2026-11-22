@@ -650,7 +650,10 @@ impl TimeControl {
             return Err(format!("edit: {} plays loops, it has no steps", t.name));
         }
         if t.is_audio() {
-            return Err(format!("edit: {} is an audio track, it has no steps", t.name));
+            return Err(format!(
+                "edit: {} is an audio track, it has no steps",
+                t.name
+            ));
         }
         let (id, name) = (t.id, t.name.clone());
         let playing = self
@@ -2483,7 +2486,10 @@ impl TimeControl {
                     return Err(format!("paste: {} plays loops, not clips", t.name));
                 }
                 if t.is_audio() {
-                    return Err(format!("paste: {} is an audio track: it takes no clips yet", t.name));
+                    return Err(format!(
+                        "paste: {} is an audio track: it takes no clips yet",
+                        t.name
+                    ));
                 }
                 let place = format!("{} / {}", t.name, slot + 1);
                 self.takes
@@ -3707,6 +3713,12 @@ impl TimeControl {
                         // (loop-tracks.md part 5).
                         ModelError::BadLoop => format!(
                             "song: {name} stays on its own lane: a loop's block can't go to another track, nor a clip's onto a Loop track"
+                        ),
+                        // An audio track plays its recordings, not clips
+                        // (audio-tracks.md, phase 1).
+                        ModelError::AudioTrack => format!(
+                            "song: {name} stays where it was: {} is an audio track, and it plays its recordings, not clips",
+                            track_name(track)
                         ),
                         _ => format!(
                             "song: {name} doesn't fit on {} at {}: it would run into another block",

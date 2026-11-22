@@ -926,10 +926,8 @@ impl ClipGrid {
             return None;
         }
         let add = self.add_rect(r);
-        let (w, h) = (crate::song::CHOOSER_W, crate::song::CHOOSER_ROW);
-        let x = (add.right() - w).max(r.x);
-        let row = |k: i32| Rect::new(x + 4, add.bottom() + 8 + k * h, w - 8, h);
-        Some([row(0), row(1), row(2)])
+        let x = (add.right() - crate::song::CHOOSER_W).max(r.x);
+        Some(crate::song::chooser_rows(x, add.bottom() + 6))
     }
 
     /// Where the pager's ‹ and › are, left of "+ Track" with its label
@@ -1799,14 +1797,16 @@ fn dashed_rect(cx: &mut PaintCx, r: Rect, color: Color) {
     while x < r.right() - inset {
         let w = on.min(r.right() - inset - x);
         cx.canvas.fill_rect(Rect::new(x, r.y, w, 1), color);
-        cx.canvas.fill_rect(Rect::new(x, r.bottom() - 1, w, 1), color);
+        cx.canvas
+            .fill_rect(Rect::new(x, r.bottom() - 1, w, 1), color);
         x += on + off;
     }
     let mut y = r.y + inset;
     while y < r.bottom() - inset {
         let h = on.min(r.bottom() - inset - y);
         cx.canvas.fill_rect(Rect::new(r.x, y, 1, h), color);
-        cx.canvas.fill_rect(Rect::new(r.right() - 1, y, 1, h), color);
+        cx.canvas
+            .fill_rect(Rect::new(r.right() - 1, y, 1, h), color);
         y += on + off;
     }
 }

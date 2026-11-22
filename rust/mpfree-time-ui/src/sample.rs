@@ -1129,7 +1129,7 @@ pub fn song_audio_state() -> Result<TimeState, String> {
     for l in &mut lanes {
         let mut t = state.tracks[0].clone();
         t.name = l.name.clone();
-        t.sound = crate::song::input_chip(l.input).to_string();
+        t.sound = format!("In {}", crate::song::input_chip(l.input));
         t.audio = true;
         t.loops = None;
         t.melodic = false;

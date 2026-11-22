@@ -52,7 +52,9 @@ use mpfree_audiotracks::save::{Saved, TrackFile};
 use mpfree_audiotracks::{Command, Input, Monitor, TakeInfo, MAX_TRACKS, PEAK_BLOCK};
 use mpfree_seq::TrackId;
 use mpfree_time_ui::song::{audio_blocks, take_lanes, AudioLane, MixFrom, MONITORS};
-use mpfree_time_ui::view::{audio_color, track_color, AudioAction, RegionId, TimeState, TransportInfo};
+use mpfree_time_ui::view::{
+    audio_color, track_color, AudioAction, RegionId, TimeState, TransportInfo,
+};
 use mpfree_transport::{Block, TempoMap, Tick};
 use mpfree_ui::qlink::QLinkCard;
 
@@ -156,7 +158,6 @@ impl Slots {
     pub fn free(&self) -> Option<usize> {
         self.0.iter().position(|s| !s.is_given())
     }
-
 }
 
 /// Where an audio track records from inside the mix (the instrument
@@ -503,8 +504,11 @@ impl TrackHost {
         let mut saved = self.host.take_saved()?;
         let ids = self.slots;
         let alive = |s: usize| {
-            ids.id_of(s)
-                .is_some_and(|id| project.track_with(id).is_some_and(|i| project.tracks[i].is_audio()))
+            ids.id_of(s).is_some_and(|id| {
+                project
+                    .track_with(id)
+                    .is_some_and(|i| project.tracks[i].is_audio())
+            })
         };
         for t in 0..MAX_TRACKS {
             let Some(f) = self.inside[t] else { continue };
@@ -974,8 +978,14 @@ impl TrackHost {
                 pan: self.pan[t],
                 monitor: self.monitor[t],
                 // The project track's (phase 1a).
-                mute: self.place(t).and_then(|i| st.tracks.get(i)).is_some_and(|i| i.mute),
-                solo: self.place(t).and_then(|i| st.tracks.get(i)).is_some_and(|i| i.solo),
+                mute: self
+                    .place(t)
+                    .and_then(|i| st.tracks.get(i))
+                    .is_some_and(|i| i.mute),
+                solo: self
+                    .place(t)
+                    .and_then(|i| st.tracks.get(i))
+                    .is_some_and(|i| i.solo),
                 blocks: audio_blocks(t, tr.regions(t), &takes, map, self.rate),
                 takes: take_lanes(t, tr.regions(t), &takes, map, self.rate),
                 recording: tr
@@ -1952,7 +1962,10 @@ mod tests {
         let mut r = Rig::with(2);
         r.periods(2);
         let (a, b) = (r.project.tracks[2].clone(), r.project.tracks[3].clone());
-        assert_eq!((r.h.slots.slot_of(a.id), r.h.slots.slot_of(b.id)), (Some(0), Some(1)));
+        assert_eq!(
+            (r.h.slots.slot_of(a.id), r.h.slots.slot_of(b.id)),
+            (Some(0), Some(1))
+        );
         // Audio 2 holds a sound; Audio 1 is armed and turned down.
         r.h.action(AudioAction::Arm { track: 0, on: true }, &r.info(), true)
             .unwrap();
@@ -1964,6 +1977,7 @@ mod tests {
             fine: false,
         };
         r.h.action(turn, &r.info(), true).unwrap();
+        r.periods(2);
         r.h.bring(
             Sound {
                 name: "Hit".into(),
@@ -2333,7 +2347,10 @@ mod tests {
         act(&mut r, AudioAction::Panel(2)).unwrap();
         let st = r.state();
         assert_eq!(st.audio_panel, Some(2));
-        assert_eq!(st.audio.iter().map(|l| l.track).collect::<Vec<_>>(), [0, 1, 2]);
+        assert_eq!(
+            st.audio.iter().map(|l| l.track).collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
         assert!(r.h.take_changed());
         let knobs = audio_knobs(&st).unwrap();
         assert_eq!((knobs.track, knobs.region), (2, None));

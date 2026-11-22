@@ -8,7 +8,7 @@ checked: 2026-11-22 9d8bc53c
 
 **Audio tracks** record what comes into the MPC's INPUTS (a vocal, a guitar, a synth) onto the song's timeline, next to your clips. Record a part a few times, then keep the best bits of each. Use them when a part is too long or too free to loop: a verse, a solo, a whole take of a song.
 
-An audio track is a track of your project like any other: it sits in the track list with your other tracks, and **Mute** and **Solo** work on it as on any track. You record and edit it on the Arrange tab's **Song** view, under the clip lanes. Audio tracks play when the song plays (song mode on); with song mode off they stay silent, though an armed track still lets you hear its input.
+An audio track is a track of your project like any other: it sits in the track list with your other tracks, and **Mute** and **Solo** work on it as on any track. On the Arrange tab's **Song** view its lane sits in its place among your tracks, and that is where you record and edit it; the **Clips** grid shows it as a column too. Audio tracks play when the song plays (song mode on); with song mode off they stay silent, though an armed track still lets you hear its input.
 
 {{shot: arrange-song-audio | The Song view with two audio lanes: a vocal recorded twice, its newer take picked, and a guitar armed.}}
 
@@ -17,7 +17,7 @@ An audio track is a track of your project like any other: it sits in the track l
 1. Plug the instrument or microphone preamp into the **INPUTS** and set **REC VOL**.
 2. Turn on **Prefs > Line input** (**SHIFT + MENU**). The input is off every time MPFree starts.
 3. On Arrange, open the Song view (**Song ›**) and turn song mode on.
-4. Tap **+ Audio** at the bottom of the lanes to add an audio track (it joins the end of the track list as **Audio 1**; **Undo** takes it away again), then tap its **arm dot** so it turns red.
+4. Tap **+ Track** after the last lane and pick **Audio track**. It joins the end of the track list as **Audio 1**, armed (its arm dot is red), and its lane comes into view. **Undo** takes it away again.
 5. Play a little and watch the track's level bar: it should move well up but not turn red.
 6. Press **REC**, then **PLAY**, and play. Press **STOP** when you're done.
 
@@ -33,7 +33,13 @@ On the left of each audio lane are:
 - the track's **name**, and its **input** (**L** to begin with);
 - a thin **level bar** along the bottom, showing what the track plays and, while it is armed, the input it records. It turns red near full scale.
 
-Every audio track in the track list has a lane. **+ Audio** adds another, up to 8. When there are more lanes than fit, drag up or down on the names to scroll.
+Every audio track has a lane, in its place in the track list. To add another, tap **+ Track** after the last lane and pick **Audio track** (a project can have 8). **SHIFT + + Track** still adds a Loop track at once. When there are more lanes than fit, drag up or down on the names to scroll.
+
+## In the Clips grid
+
+On the Clips grid an audio track is a column like the others, with a wave mark and its input (**In L**) under its name. Tap its name to arm it, as for any track. Its cells are drawn dashed: audio clips aren't in the grid yet, so a tap on one tells you to record the track on the Song view. **+ Track** on the grid opens the same choice of Note track, Audio track or Loop track.
+
+{{shot: arrange-clips-audio | The Clips grid with two audio tracks, Vocal and Guitar (armed), and + Track's choice of a kind of track open.}}
 
 ## The track panel
 
@@ -99,4 +105,4 @@ When an older take plays, its region on the track says which one ("take 1"). Tap
 The audio tracks are saved with the project (**SHIFT + BROWSE**): every take, the regions you comped from them, and each track's input, monitor, level, pan, mute and solo. If a track is recording when you save, the save waits until it stops. Opening a project ends any recording and brings in the project's audio tracks; **New project** empties them. See [Saving your work](saving.md).
 
 > [!MPC]
-> On the MPC, audio tracks sit in the same sequence as MIDI tracks and each has its own mixer channel. In MPFree they are in the same track list as your other tracks too, and you record them on the Song view's timeline, under the clip lanes; they share one Audio strip in the mixer for now.
+> On the MPC, audio tracks sit in the same sequence as MIDI tracks and each has its own mixer channel. In MPFree they are in the same track list as your other tracks too, and you record them on the Song view's timeline, each in its own lane among your tracks; they share one Audio strip in the mixer for now.
