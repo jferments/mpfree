@@ -1364,6 +1364,9 @@ class StaticTests(unittest.TestCase):
             "let file = OpenOptions::new().read(true).write(true).custom_flags(sys::O_NONBLOCK).open(path)?;",
             # the ACVA capture device (the line input), opened only when the owner turns Line input on
             "let file = OpenOptions::new().read(true).write(true).custom_flags(sys::O_NONBLOCK).open(path)?;",
+            # the rate probe (rate_probe.rs, DSP quality step 0.3): inventory opens the ACVA playback and capture
+            # devices non-blocking, asks HW_REFINE only (never HW_PARAMS, PREPARE, START, read or write), closes them
+            "let file = OpenOptions::new().read(true).write(true).custom_flags(sys::O_NONBLOCK).open(path)?;",
             # the controller's MIDI ports, output side: keep-alive, pad colours, button lights, Akai's setup
             "Direction::Output => opts.write(true),",
             # mpfree-store's NAME.part, made new (never through a link) under the --data folder
