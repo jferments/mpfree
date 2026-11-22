@@ -49,9 +49,6 @@ pub struct CueKey(u32);
 
 /// Audio a waiting cue needs held before it can go: frames `from..to` of
 /// recording `rec`, the first second of a region from where it starts.
-// The app's streaming reads it (the audio tracks rethink's phase 2); until
-// then only tests do.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioNeed {
     pub cue: CueKey,

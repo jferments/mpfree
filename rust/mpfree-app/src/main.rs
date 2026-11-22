@@ -179,6 +179,7 @@ mod views;
 mod xy_list;
 
 use mpfree_arp::scale::{pads::MAX_PAD_NOTES, Shift};
+use mpfree_audiotracks::host::CueAudio;
 use mpfree_controller::midi::{Message, Parser};
 use mpfree_controller::mpc_one::{self, ControlEvent, OBSERVED_KEEPALIVE_TOKEN};
 use mpfree_core::{float_to_s32, ClickConfig, ClickEngine};
@@ -7341,6 +7342,11 @@ fn player_session(
         app.settings.audio_streams = tracks.streams();
         out.show(gui::ToUi::Settings(app.settings.clone()));
     }
+    // With takes streaming, a cue that launches audio waits until the
+    // start of its audio is in memory (the audio tracks rethink's phase
+    // 2): the needs go to the tracks whenever they change.
+    time.set_audio_waits(tracks.streams());
+    let mut needs_rev = 0u64;
     out.show(gui::ToUi::Time(Box::new(time_state(&time, &tracks))));
     let (mut shown_transport, mut transport_shown_at) = (time.info(), Instant::now());
     let mut periods = app.settings.periods;
@@ -8173,6 +8179,11 @@ fn player_session(
                             *t = time_apart(out, *t);
                         }
                         std::mem::swap(&mut time, &mut *t);
+                        // Its cues wait for their audio as the last one's
+                        // did; none of the last one's waits any more.
+                        time.set_audio_waits(tracks.streams());
+                        tracks.forget_waits();
+                        needs_rev = 0;
                         // The old engine goes back in the box, to be freed
                         // on the screen thread.
                         o.time = Some(t);
@@ -10957,6 +10968,16 @@ fn player_session(
         if let Some(line) = time.take_later_note() {
             out.note(&format!("time: {line}"));
         }
+        // What the stream thread says about the waiting cues' audio.
+        tracks.wait_answers(|key, a| match a {
+            CueAudio::Held => {
+                time.audio_held(key, true);
+            }
+            CueAudio::Short => {}
+            CueAudio::GivenBack => {
+                time.audio_given_back(key);
+            }
+        });
         // A region just moved is picked again where it went.
         if let Some(r) = tracks.take_repick() {
             let _ = time.act(TimeAction::Audio(AudioAction::Pick(Some(r))));
@@ -10966,7 +10987,13 @@ fn player_session(
             // The takes the clips name stay (the audio tracks rethink,
             // phase 2); the next look tells the tracks.
             tracks.keep_named(time.recordings());
-            out.show(gui::ToUi::Time(Box::new(time_state(&time, &tracks))));
+            tracks.clip_starts(time.project());
+            let st = time_state(&time, &tracks);
+            if st.audio_waits.needs_rev != needs_rev {
+                needs_rev = st.audio_waits.needs_rev;
+                tracks.hold_waits(&time.audio_needs());
+            }
+            out.show(gui::ToUi::Time(Box::new(st)));
             (shown_transport, transport_shown_at) = (time.info(), Instant::now());
         } else {
             let now = time.info();
@@ -13605,6 +13632,22 @@ mod tests {
     /// project track to its engine track.
     #[test]
     fn an_audio_clip_launched_in_its_cell_plays_from_its_line() {
+        clip_launch(false);
+    }
+
+    /// The same with takes streaming (the time engine's audio waits on):
+    /// the launch waits for its audio, the tracks hold it (here it is all
+    /// in memory, so at once) and say so, and it lands on its line all the
+    /// same, as the app's loop does it (`TrackHost::hold_waits`,
+    /// `TrackHost::wait_answers`).
+    #[test]
+    fn a_clip_launch_that_waits_for_its_audio_lands_on_its_line_once_held() {
+        clip_launch(true);
+    }
+
+    /// [`an_audio_clip_launched_in_its_cell_plays_from_its_line`], with the
+    /// cues waiting for their audio if `waits`.
+    fn clip_launch(waits: bool) {
         use mpfree_seq::{AudioClip, Clip, Project, RecId, Track};
         struct Quiet;
         impl time::Pads for Quiet {
@@ -13647,7 +13690,9 @@ mod tests {
             assert!(tracks.host.tracks.load_take(take).is_ok());
         }
         /// Runs `periods` periods, keeping engine track `s`'s left
-        /// channel in `out` and the frame bar 2's line lands on in `line`.
+        /// channel in `out` and the frame bar 2's line lands on in `line`;
+        /// what waiting cues need goes to the tracks when it changes, and
+        /// what they say back to the time engine.
         fn run(
             time: &mut time::TimeHost,
             tracks: &mut audiotracks::TrackHost,
@@ -13656,6 +13701,7 @@ mod tests {
             out: &mut Vec<f32>,
             line: &mut Option<usize>,
         ) {
+            let mut needs_rev = 0;
             let z = [0f32; PERIOD];
             for _ in 0..periods {
                 time.advance(PERIOD as u32);
@@ -13676,6 +13722,16 @@ mod tests {
                 }
                 let o = tracks.host.tracks.track_out(s, PERIOD);
                 out.extend(o.chunks_exact(2).map(|f| f[0]));
+                let rev = time.state().audio_waits.needs_rev;
+                if rev != needs_rev {
+                    needs_rev = rev;
+                    tracks.hold_waits(&time.audio_needs());
+                }
+                tracks.wait_answers(|key, a| {
+                    if a == CueAudio::Held {
+                        assert!(time.audio_held(key, true));
+                    }
+                });
             }
         }
         let (mut out, mut line) = (Vec::new(), None);
@@ -13694,6 +13750,7 @@ mod tests {
             .expect("an engine track for it");
         out.clear();
         line = None;
+        time.set_audio_waits(waits);
         let said = time
             .act(TimeAction::Transport(mpfree_transport::Command::Play))
             .unwrap();
@@ -13727,6 +13784,12 @@ mod tests {
         );
         assert!(out[line + 1] > 0.25, "fading over from its line");
         assert!((out[line + 200] - 0.5).abs() < 1e-6, "{}", out[line + 200]);
+        let w = time.state().audio_waits;
+        assert_eq!(
+            (w.waiting, w.kept, w.held, w.moved),
+            if waits { (0, 1, 1, 0) } else { (0, 0, 0, 0) },
+            "{w:?}"
+        );
     }
 
     /// Arrange 3.4: a section moved or + Bar moves the audio regions in it

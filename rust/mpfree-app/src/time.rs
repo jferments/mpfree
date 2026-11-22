@@ -1050,9 +1050,6 @@ impl TimeHost {
     /// Cues that launch audio wait until the start of their audio is held
     /// in memory (`on`: takes stream from their files), or go as they are
     /// (see `TimeControl::set_audio_waits`).
-    // The app's streaming calls it (the audio tracks rethink's phase 2);
-    // until then only tests do.
-    #[allow(dead_code)]
     pub fn set_audio_waits(&mut self, on: bool) {
         self.with(|c| c.set_audio_waits(on));
         self.sent(());
@@ -1061,18 +1058,12 @@ impl TimeHost {
     /// What the cues waiting for their audio need held (see
     /// `TimeControl::audio_needs`). Ask again when the state's
     /// `audio_waits.needs_rev` rises.
-    // The app's streaming calls it (the audio tracks rethink's phase 2);
-    // until then only tests do.
-    #[allow(dead_code)]
     pub fn audio_needs(&mut self) -> Vec<AudioNeed> {
         self.with(|c| c.audio_needs().to_vec())
     }
 
     /// The audio `key`'s cues need is held (`ok`), or not yet (see
     /// `TimeControl::audio_held`). False when nothing waits under `key`.
-    // The app's streaming calls it (the audio tracks rethink's phase 2);
-    // until then only tests do.
-    #[allow(dead_code)]
     pub fn audio_held(&mut self, key: CueKey, ok: bool) -> bool {
         let r = self.with(|c| c.audio_held(key, ok));
         self.sent(r)
@@ -1080,9 +1071,6 @@ impl TimeHost {
 
     /// The audio held for `key` was given back before its cues landed (see
     /// `TimeControl::audio_given_back`).
-    // The app's streaming calls it (the audio tracks rethink's phase 2);
-    // until then only tests do.
-    #[allow(dead_code)]
     pub fn audio_given_back(&mut self, key: CueKey) -> bool {
         let r = self.with(|c| c.audio_given_back(key));
         self.sent(r)

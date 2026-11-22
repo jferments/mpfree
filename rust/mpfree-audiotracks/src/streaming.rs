@@ -30,6 +30,12 @@
 //!   so when the cache runs short the last are given back first; the
 //!   answer says how many are held, and so does a later give-back (what
 //!   plays always comes first).
+//! - **Cues**: hold what a cue that launches audio needs from the takes
+//!   on their files ([`Coordinator::hold_all`], tier Cued: the first
+//!   second of each region from where it starts), all together; the
+//!   answer comes once it is all in the cache, or at once if it can't be
+//!   held, and again if it is given back for room before the cue lets it
+//!   go (the audio tracks rethink's phase 2, "Cues wait for their audio").
 //! - **System status**: every [`LOOK`] the coordinator's admission (Streaming
 //!   at limit, while not even the least safe read-ahead fits) and the
 //!   sources whose card went (Card removed) go through a [`Watch`] to the
@@ -166,6 +172,16 @@ pub(crate) enum ToStream {
     /// Hold these starts of regions in the cache from now on, in the
     /// order given (the ones that matter most first), instead of the last.
     Heads(Vec<Head>),
+    /// Hold frames `from..to` of each take's source for cue `cue` (the
+    /// host's number), all or none, until [`ToStream::LetCueGo`].
+    Cue {
+        cue: u32,
+        parts: Vec<(u16, u64, u64)>,
+    },
+    /// Cue `cue` landed, or was cancelled: its hold goes.
+    LetCueGo {
+        cue: u32,
+    },
 }
 
 /// The start of a region of a take on its file, to hold in the cache:
@@ -213,6 +229,22 @@ pub(crate) enum FromStream {
     /// Heads were given back for room (what plays needed it): `held` are
     /// still held.
     HeadsGivenBack { held: usize },
+    /// What cue `cue` needs is all in the cache, and held there.
+    CueHeld { cue: u32 },
+    /// It can't be held: a source isn't open, or it doesn't fit beside
+    /// what plays; or it was given back for room before it was all in.
+    CueShort { cue: u32 },
+    /// It was held, and has been given back for room.
+    CueGivenBack { cue: u32 },
+}
+
+/// A cue's hold on the stream thread: the parts it needs, and whether the
+/// host has heard they are all in the cache.
+struct CueHold {
+    cue: u32,
+    ids: Vec<HoldId>,
+    parts: Vec<(u16, u64, u64)>,
+    ready: bool,
 }
 
 /// What the stream thread gives back for a [`ToStream::Read`].
@@ -264,6 +296,7 @@ fn run(
         recs: vec![RecordingId::NONE; MAX_SOURCES],
         reading: Vec::new(),
         heads: Vec::new(),
+        cues: Vec::new(),
         watch: Watch::new(),
         looked: Instant::now(),
     };
@@ -282,7 +315,11 @@ fn run(
             }
         }
         busy |= s.c.step();
-        if !s.finish_reads(&read) || !s.heads_given_back(&answer) || !s.look(&answer) {
+        if !s.finish_reads(&read)
+            || !s.heads_given_back(&answer)
+            || !s.cues_ready(&answer)
+            || !s.look(&answer)
+        {
             return;
         }
         if !busy {
@@ -311,6 +348,8 @@ struct Side {
     reading: Vec<(u32, JobId)>,
     /// The holds on regions' starts.
     heads: Vec<HoldId>,
+    /// The holds for cues waiting for their audio.
+    cues: Vec<CueHold>,
     /// What System status was last told, and when.
     watch: Watch,
     looked: Instant,
@@ -402,11 +441,17 @@ impl Side {
                 self.c.new_project();
                 self.gens.fill(0);
                 self.heads.clear();
+                self.cues.clear();
                 true
             }
             ToStream::Heads(heads) => {
-                let held = self.hold_heads(&heads);
+                let held = self.hold_heads(&heads, answer);
                 answer(FromStream::Heads { heads, held })
+            }
+            ToStream::Cue { cue, parts } => self.hold_cue(cue, parts, answer),
+            ToStream::LetCueGo { cue } => {
+                self.let_cue_go(cue);
+                true
             }
             ToStream::Read { job, path } => match self.c.read_file(&path, JobTier::Background) {
                 Ok(id) => {
@@ -429,11 +474,89 @@ impl Side {
             .then(|| self.c.grow(take, frames))
     }
 
+    /// Hold `parts` for cue `cue`, all or none, in place of any hold it
+    /// had: short at once if a source isn't open or they don't fit.
+    fn hold_cue(
+        &mut self,
+        cue: u32,
+        parts: Vec<(u16, u64, u64)>,
+        answer: &impl Fn(FromStream) -> bool,
+    ) -> bool {
+        self.let_cue_go(cue);
+        let open = |&(take, ..): &(u16, u64, u64)| {
+            self.gens.get(usize::from(take)).is_some_and(|&g| g > 0)
+        };
+        if !parts.iter().all(open) {
+            return answer(FromStream::CueShort { cue });
+        }
+        match self.c.hold_all(&parts, None, HoldTier::Cued) {
+            Ok(ids) => {
+                self.cues.push(CueHold {
+                    cue,
+                    ids,
+                    parts,
+                    ready: false,
+                });
+                true
+            }
+            Err(_) => answer(FromStream::CueShort { cue }),
+        }
+    }
+
+    /// Cue `cue`'s hold goes, if it has one.
+    fn let_cue_go(&mut self, cue: u32) {
+        if let Some(i) = self.cues.iter().position(|h| h.cue == cue) {
+            let h = self.cues.remove(i);
+            for id in h.ids {
+                self.c.release_hold(id);
+            }
+        }
+    }
+
+    /// Cues whose parts are all in the cache now: the host hears it once.
+    /// False once the answer can't go.
+    fn cues_ready(&mut self, answer: &impl Fn(FromStream) -> bool) -> bool {
+        for h in self.cues.iter_mut().filter(|h| !h.ready) {
+            if h.parts
+                .iter()
+                .all(|&(take, from, to)| self.c.is_ready(take, from, to))
+            {
+                h.ready = true;
+                if !answer(FromStream::CueHeld { cue: h.cue }) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// A hold the coordinator gave back for room: a cue's goes, and the
+    /// host hears it. False once the answer can't go.
+    fn cue_given_back(&mut self, id: HoldId, answer: &impl Fn(FromStream) -> bool) -> bool {
+        let Some(i) = self.cues.iter().position(|h| h.ids.contains(&id)) else {
+            return true;
+        };
+        let h = self.cues.remove(i);
+        for other in h.ids.into_iter().filter(|&o| o != id) {
+            self.c.release_hold(other);
+        }
+        answer(if h.ready {
+            FromStream::CueGivenBack { cue: h.cue }
+        } else {
+            FromStream::CueShort { cue: h.cue }
+        })
+    }
+
     /// Hold `heads` instead of the heads held before, a few to a hold, in
     /// order, until one doesn't fit: how many are held.
-    fn hold_heads(&mut self, heads: &[Head]) -> usize {
-        // Holds given back before now were the old heads'.
-        while self.c.given_back().is_some() {}
+    fn hold_heads(&mut self, heads: &[Head], answer: &impl Fn(FromStream) -> bool) -> usize {
+        // Holds given back before now were the old heads' (or a cue's,
+        // whose host hears it).
+        while let Some(id) = self.c.given_back() {
+            if !self.heads.contains(&id) {
+                self.cue_given_back(id, answer);
+            }
+        }
         for id in self.heads.drain(..) {
             self.c.release_hold(id);
         }
@@ -460,8 +583,12 @@ impl Side {
     fn heads_given_back(&mut self, answer: &impl Fn(FromStream) -> bool) -> bool {
         let mut gone = false;
         while let Some(id) = self.c.given_back() {
-            gone = true;
-            self.heads.retain(|&h| h != id);
+            if self.heads.contains(&id) {
+                gone = true;
+                self.heads.retain(|&h| h != id);
+            } else if !self.cue_given_back(id, answer) {
+                return false;
+            }
         }
         !gone
             || answer(FromStream::HeadsGivenBack {

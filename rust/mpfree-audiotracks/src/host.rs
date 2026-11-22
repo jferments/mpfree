@@ -75,6 +75,9 @@ use crate::{
 /// The most starts held in the cache: every region of every track, and
 /// each track's frame at the loop's start.
 pub const MAX_HEADS: usize = MAX_TRACKS * (MAX_REGIONS + 1);
+/// The most audio clip region starts held with them
+/// ([`AudioHost::clip_starts`]).
+pub const MAX_CLIP_STARTS: usize = 512;
 /// Periods between looks at whether the regions' starts to hold have
 /// changed (about 93 ms at 128 frames).
 const HEADS_EVERY: u64 = 32;
@@ -105,6 +108,21 @@ const EVENTS: usize = 64;
 const PROBLEMS: usize = 64;
 /// The player's counters go to System status every this many periods.
 const PLAYER_LOOK_EVERY: u64 = 64;
+/// Answers about cues' audio waiting to be taken, at most (made at start).
+const CUE_ANSWERS: usize = 64;
+
+/// What the host says about the audio a cue waits for
+/// ([`AudioHost::hold_cue`], [`AudioHost::cue_audio`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CueAudio {
+    /// It is all in memory or in the cache, and held there.
+    Held,
+    /// It can't be held now: a recording isn't here (yet), a file isn't
+    /// open, or the cache has no room. Ask again later.
+    Short,
+    /// It was held, and the cache gave it back for room.
+    GivenBack,
+}
 
 /// A take recording to its file: how far it has been copied out, and the
 /// buffer filling for the worker.
@@ -240,6 +258,15 @@ enum ToWorker {
     Stream(Box<StreamConfig>),
     /// Hold these regions' starts in the cache (the room comes back).
     Heads(Vec<Head>),
+    /// Hold what cue `cue` needs from takes on their files.
+    Cue {
+        cue: u32,
+        parts: Vec<(u16, u64, u64)>,
+    },
+    /// Cue `cue`'s hold goes.
+    LetCueGo {
+        cue: u32,
+    },
     /// Write a sound brought in, or a stretched copy, as recording
     /// `rec`'s take file in the work folder, for the tracks of generation
     /// `gen` (the audio is dropped once written, or comes back).
@@ -419,6 +446,13 @@ pub struct AudioHost {
     heads_said: (usize, usize),
     periods: u64,
     heads_sent: u64,
+    /// Where each audio clip's regions start in their recordings, to
+    /// hold with the regions' starts ([`AudioHost::clip_starts`]).
+    clip_starts: Vec<(RecordingId, u64)>,
+    /// Answers about cues' audio not taken yet, oldest first; ones that
+    /// found no room are counted.
+    cue_answers: Vec<(u32, CueAudio)>,
+    pub cue_answers_lost: u64,
     /// The transport's loop, as its blocks last said.
     loop_range: Option<(Tick, Tick)>,
     /// That project's tracks (its takes taken out), waiting until every
@@ -497,6 +531,9 @@ impl AudioHost {
             heads_said: (0, 0),
             periods: 0,
             heads_sent: 0,
+            clip_starts: Vec::new(),
+            cue_answers: Vec::with_capacity(CUE_ANSWERS),
+            cue_answers_lost: 0,
             loop_range: None,
         }
     }
@@ -515,7 +552,7 @@ impl AudioHost {
             return false;
         }
         self.streaming = true;
-        self.heads = Some(Vec::with_capacity(MAX_HEADS));
+        self.heads = Some(Vec::with_capacity(MAX_HEADS + MAX_CLIP_STARTS));
         let head_s = (2.0 * cfg.plan.stall_s).max(MIN_HEAD_S);
         self.head_frames = (head_s * f64::from(self.tracks.rate())) as u64;
         self.send(ToWorker::Stream(Box::new(cfg)));
@@ -526,6 +563,70 @@ impl AudioHost {
     /// on its way).
     pub fn streams(&self) -> bool {
         self.streaming
+    }
+
+    /// Hold what a cue that launches audio needs (the time engine's
+    /// `AudioNeed`s: frames `from..to` of each recording), under the
+    /// host's number `cue`, in place of anything held for it before; the
+    /// answer comes from [`AudioHost::cue_audio`]. What is in memory needs
+    /// nothing; frames of takes on their files go to the stream thread,
+    /// which answers once they are all in the cache. A recording not here
+    /// (still loading) is [`CueAudio::Short`].
+    pub fn hold_cue(&mut self, cue: u32, needs: &[(RecordingId, i64, i64)]) {
+        let mut parts = Vec::new();
+        for &(rec, from, to) in needs {
+            let Some(take) = self.tracks.take_of(rec) else {
+                self.cue_said(cue, CueAudio::Short);
+                return;
+            };
+            let frames = self.tracks.take(take).map_or(0, |k| k.frames) as i64;
+            // Frames on the file only: all of a take there, the start of a
+            // take partly there.
+            let on_file = if self.streaming {
+                self.tracks.file_frames(take).unwrap_or(0) as i64
+            } else {
+                0
+            };
+            let (from, to) = (from.clamp(0, frames), to.clamp(0, frames).min(on_file));
+            if from < to {
+                parts.push((take, from as u64, to as u64));
+            }
+        }
+        if parts.is_empty() {
+            self.cue_said(cue, CueAudio::Held);
+        } else {
+            self.send(ToWorker::Cue { cue, parts });
+        }
+    }
+
+    /// Cue `cue` landed or was cancelled: what was held for it goes.
+    pub fn let_cue_go(&mut self, cue: u32) {
+        if self.streaming {
+            self.send(ToWorker::LetCueGo { cue });
+        }
+    }
+
+    /// The next answer about a cue's audio, oldest first.
+    pub fn cue_audio(&mut self) -> Option<(u32, CueAudio)> {
+        (!self.cue_answers.is_empty()).then(|| self.cue_answers.remove(0))
+    }
+
+    fn cue_said(&mut self, cue: u32, a: CueAudio) {
+        if self.cue_answers.len() < CUE_ANSWERS {
+            self.cue_answers.push((cue, a));
+        } else {
+            self.cue_answers_lost += 1;
+        }
+    }
+
+    /// Where each audio clip's regions start in their recordings: held in
+    /// the cache with the song regions' starts while takes stream, so a
+    /// clip launched with the transport stopped starts from memory at
+    /// PLAY, and a cue's audio is mostly held already.
+    /// The first [`MAX_CLIP_STARTS`] count.
+    pub fn clip_starts(&mut self, mut starts: Vec<(RecordingId, u64)>) {
+        starts.truncate(MAX_CLIP_STARTS);
+        self.clip_starts = starts;
     }
 
     /// Takes still on their way: a project's waiting for their files to
@@ -734,6 +835,11 @@ impl AudioHost {
                 from = mix(mix(from, u64::from(take)), at);
             }
         }
+        for &(rec, at) in &self.clip_starts {
+            if let Some(take) = tr.take_of(rec).filter(|&k| plays_from_file(tr, k)) {
+                from = mix(mix(from, u64::from(take)), at);
+            }
+        }
         let retry =
             self.heads_held < self.heads_wanted && self.periods - self.heads_sent >= HEADS_RETRY;
         if from == self.heads_from && !retry {
@@ -769,6 +875,15 @@ impl AudioHost {
             }
             if let (Some((take, at)), Some((_, end))) = (self.loop_head(t, map), self.loop_range) {
                 if let Some(h) = head(take, at, order(end, end > now)) {
+                    heads.push(h);
+                }
+            }
+        }
+        // A clip may launch at any time: after what plays ahead, before
+        // what played.
+        for &(rec, at) in &self.clip_starts {
+            if let Some(take) = tr.take_of(rec).filter(|&k| plays_from_file(tr, k)) {
+                if let Some(h) = head(take, at, Tick::MAX / 4) {
                     heads.push(h);
                 }
             }
@@ -1414,6 +1529,9 @@ impl AudioHost {
                 self.heads_held = held;
                 self.heads_short();
             }
+            FromStream::CueHeld { cue } => self.cue_said(cue, CueAudio::Held),
+            FromStream::CueShort { cue } => self.cue_said(cue, CueAudio::Short),
+            FromStream::CueGivenBack { cue } => self.cue_said(cue, CueAudio::GivenBack),
             FromStream::Open {
                 take,
                 rec,
@@ -2367,6 +2485,14 @@ impl Worker {
             }
             ToWorker::Heads(heads) => {
                 self.to_stream(ToStream::Heads(heads));
+                return None;
+            }
+            ToWorker::Cue { cue, parts } => {
+                self.to_stream(ToStream::Cue { cue, parts });
+                return None;
+            }
+            ToWorker::LetCueGo { cue } => {
+                self.to_stream(ToStream::LetCueGo { cue });
                 return None;
             }
             ToWorker::WriteTake {

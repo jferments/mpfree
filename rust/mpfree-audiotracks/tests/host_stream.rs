@@ -13,7 +13,8 @@
 //! round never waits either; a cache too small for them all holds the
 //! soonest and the log says so, once. A sound brought in and a stretched
 //! copy are written to files of their own and play from them, or come
-//! into memory if they can't be written.
+//! into memory if they can't be written. Phase 2: a cue's audio is held
+//! and answered for, and audio clips' region starts are held too.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -613,6 +614,59 @@ fn the_loop_s_start_is_held_too_so_going_round_never_waits() {
     // No loop: only the regions' starts.
     r.t.command(r.frame, T::SetLoop(None));
     r.run_until(|r| r.h.heads_wanted == 4 && r.h.heads_held == 4);
+    assert!(r.events().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Phase 2, step 2b: what a cue that launches audio needs (the time
+/// engine's needs) is held on the stream thread, and the host answers once
+/// it is all in the cache; a recording not here is short at once, and so
+/// is more than the cache holds; an audio clip's region starts are held
+/// with the song regions' starts, so a clip launched while stopped starts
+/// from memory at PLAY.
+#[test]
+fn a_cue_s_audio_is_held_and_answered_once_it_is_in_the_cache() {
+    use mpfree_audiotracks::host::CueAudio;
+    use mpfree_audiotracks::RecordingId;
+    let dir = scratch("cues");
+    let mut r = Rig::with(Some(&dir), Some(cache(24)));
+    r.record_long(24);
+    r.run_until(|r| r.h.heads_wanted == 1 && r.h.heads_held == 1);
+    let k = r.h.tracks.takes().next().unwrap();
+    // Bar 13 of the take: no region starts there.
+    let from = 12 * BAR as i64;
+    assert!(!r.cached(k.id, from, P));
+    r.h.hold_cue(7, &[(k.rec, from, from + BAR as i64)]);
+    let mut said = None;
+    r.run_until(|r| {
+        said = r.h.cue_audio();
+        said.is_some()
+    });
+    assert_eq!(said, Some((7, CueAudio::Held)));
+    // The audio thread has it within a period or two of the answer.
+    let f = r.frame;
+    r.run_until(|r| r.cached(k.id, from, BAR));
+    assert!(r.frame - f <= 2 * P, "{}", r.frame - f);
+    // A recording not here (still loading, say): short, at once.
+    r.h.hold_cue(8, &[(RecordingId(9999), 0, 100)]);
+    assert_eq!(r.h.cue_audio(), Some((8, CueAudio::Short)));
+    // Twenty seconds don't fit in the cache beside what is held.
+    r.h.hold_cue(9, &[(k.rec, 0, 20 * BAR as i64)]);
+    r.run_until(|r| {
+        said = r.h.cue_audio();
+        said.is_some()
+    });
+    assert_eq!(said, Some((9, CueAudio::Short)));
+    // The cue landed: its hold goes, and nothing more is said.
+    r.h.let_cue_go(7);
+    // A clip's region start, bar 6 of the take, is held with the song's.
+    r.h.clip_starts(vec![(k.rec, 5 * BAR)]);
+    r.run_until(|r| r.h.heads_wanted == 2 && r.h.heads_held == 2);
+    r.run_until(|r| r.cached(k.id, 5 * BAR as i64, BAR));
+    for _ in 0..50 {
+        r.period();
+    }
+    assert_eq!(r.h.cue_audio(), None);
     assert!(r.events().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }

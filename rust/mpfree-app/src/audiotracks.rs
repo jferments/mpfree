@@ -55,7 +55,7 @@
 //! takes also stay in RAM until streaming plays them from their files
 //! (phase 3b).
 
-use mpfree_audiotracks::host::{AudioHost, ImportRefused, TakeWave, MAX_COLUMNS};
+use mpfree_audiotracks::host::{AudioHost, CueAudio, ImportRefused, TakeWave, MAX_COLUMNS};
 use mpfree_audiotracks::save::{Saved, TrackFile};
 use mpfree_audiotracks::streaming::StreamConfig;
 use mpfree_audiotracks::{
@@ -73,6 +73,7 @@ use mpfree_transport::{Block, TempoMap, Tick};
 use mpfree_ui::qlink::QLinkCard;
 
 use crate::mixing::MixHost;
+use crate::time::{AudioNeed, CueKey};
 use crate::PERIOD;
 use mpfree_fx::ids::mixer as mx;
 
@@ -274,6 +275,20 @@ fn plays_in<'r>(p: &AudioPlays, room: &'r mut [ClipRegion; MAX_CLIP_REGIONS]) ->
     }
 }
 
+/// Looks between asking again for a waiting cue's audio that couldn't be
+/// held (about a quarter of a second).
+pub const WAIT_RETRY: u32 = 64;
+
+/// A cue waiting for its audio, as the host holds it: the time engine's
+/// key, the host's number, what it needs, and what the host last said
+/// (None: asked, no answer yet).
+struct Waiting {
+    key: CueKey,
+    cue: u32,
+    needs: Vec<(RecordingId, i64, i64)>,
+    held: Option<bool>,
+}
+
 pub struct TrackHost {
     pub host: AudioHost,
     rate: u32,
@@ -366,6 +381,12 @@ pub struct TrackHost {
     /// The recordings the project's audio clips, and the clips its undo
     /// steps could bring back, name, sorted ([`TrackHost::keep_named`]).
     named: Vec<RecId>,
+    /// Cues waiting for their audio ([`TrackHost::hold_waits`]), the
+    /// host's number for the next, and looks since short ones were last
+    /// asked again.
+    waits: Vec<Waiting>,
+    next_cue: u32,
+    waits_looked: u32,
     /// The song's meter, for the bar a dropout was at.
     time_sig: mpfree_transport::time::Meter,
 }
@@ -436,6 +457,9 @@ impl TrackHost {
             files_dir: None,
             silent_seen: [0; MAX_TAKES],
             named: Vec::new(),
+            waits: Vec::new(),
+            next_cue: 0,
+            waits_looked: 0,
             time_sig: mpfree_transport::time::Meter::default(),
         }
     }
@@ -641,6 +665,104 @@ impl TrackHost {
     pub fn keep_named(&mut self, names: Vec<RecId>) {
         debug_assert!(names.windows(2).all(|w| w[0] < w[1]));
         self.named = names;
+    }
+
+    /// Where the project's audio clips' regions start in their
+    /// recordings, for the host to hold in the cache while takes stream
+    /// ([`AudioHost::clip_starts`]): so a clip launched with the transport
+    /// stopped starts from memory at PLAY (no cue waits for it).
+    pub fn clip_starts(&mut self, project: &mpfree_seq::Project) {
+        let mut starts: Vec<(RecordingId, u64)> = project
+            .tracks
+            .iter()
+            .filter(|t| t.is_audio())
+            .flat_map(|t| t.slots.iter().map(|(_, c)| c))
+            .filter_map(|c| c.audio.as_ref())
+            .flat_map(|a| a.regions.iter())
+            .map(|r| (RecordingId(r.rec.0), r.src.max(0) as u64))
+            .collect();
+        starts.sort_unstable();
+        starts.dedup();
+        self.host.clip_starts(starts);
+    }
+
+    /// The cues waiting for their audio, as the time engine lists them
+    /// (`TimeHost::audio_needs`, asked again when its `needs_rev` rises):
+    /// each new key's audio goes to the host to hold, a key whose needs
+    /// changed is asked again, and a key gone (its cues landed or were
+    /// cancelled) lets its hold go. The answers come through
+    /// [`TrackHost::wait_answers`].
+    pub fn hold_waits(&mut self, needs: &[AudioNeed]) {
+        let mut keys: Vec<CueKey> = Vec::new();
+        for n in needs {
+            if !keys.contains(&n.cue) {
+                keys.push(n.cue);
+            }
+        }
+        let host = &mut self.host;
+        self.waits.retain(|w| {
+            let stays = keys.contains(&w.key);
+            if !stays {
+                host.let_cue_go(w.cue);
+            }
+            stays
+        });
+        for key in keys {
+            let wanted: Vec<(RecordingId, i64, i64)> = needs
+                .iter()
+                .filter(|n| n.cue == key)
+                .map(|n| (RecordingId(n.rec.0), n.from, n.to))
+                .collect();
+            match self.waits.iter_mut().find(|w| w.key == key) {
+                Some(w) if w.needs == wanted => {}
+                Some(w) => {
+                    w.needs = wanted;
+                    w.held = None;
+                    self.host.hold_cue(w.cue, &w.needs);
+                }
+                None => {
+                    let cue = self.next_cue;
+                    self.next_cue = self.next_cue.wrapping_add(1);
+                    self.host.hold_cue(cue, &wanted);
+                    self.waits.push(Waiting {
+                        key,
+                        cue,
+                        needs: wanted,
+                        held: None,
+                    });
+                }
+            }
+        }
+    }
+
+    /// A new time engine (a project opened): no cue of the last one waits
+    /// any more, and what was held for them goes.
+    pub fn forget_waits(&mut self) {
+        for w in self.waits.drain(..) {
+            self.host.let_cue_go(w.cue);
+        }
+    }
+
+    /// What the host says about the waiting cues' audio, for the time
+    /// engine (`TimeHost::audio_held`, `TimeHost::audio_given_back`):
+    /// call it every look. A cue whose audio couldn't be held is asked
+    /// again every [`WAIT_RETRY`] looks, until its cues land or are
+    /// cancelled.
+    pub fn wait_answers(&mut self, mut f: impl FnMut(CueKey, CueAudio)) {
+        while let Some((cue, a)) = self.host.cue_audio() {
+            if let Some(w) = self.waits.iter_mut().find(|w| w.cue == cue) {
+                w.held = Some(a == CueAudio::Held);
+                f(w.key, a);
+            }
+        }
+        self.waits_looked += 1;
+        if self.waits_looked >= WAIT_RETRY {
+            self.waits_looked = 0;
+            for w in self.waits.iter_mut().filter(|w| w.held == Some(false)) {
+                w.held = None;
+                self.host.hold_cue(w.cue, &w.needs);
+            }
+        }
     }
 
     /// Each take kept while [`TrackHost::keep_named`]'s recordings name
