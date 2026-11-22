@@ -49,9 +49,9 @@ use mpfree_seq::{
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::list::ListRow;
 use mpfree_time_ui::view::{
-    bars_label, card_rows, clips_after, grid_name, rows_named, scene_rows, AudioAction, EditInfo,
-    FollowNext, MorphInfo, MuteWait, RegionId, TakeRow, TempoEdit, TimeAction, TimeState,
-    TransportInfo, SCENE_NAME,
+    bars_label, card_rows, clips_after, grid_name, rows_named, scene_rows, AudioAction, EditAnswer,
+    EditInfo, EditOutcome, FollowNext, MorphInfo, MuteWait, RegionId, TakeRow, TempoEdit,
+    TimeAction, TimeState, TransportInfo, SCENE_NAME,
 };
 use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_transport::{Block, Command, State};
@@ -293,6 +293,9 @@ pub struct TimeControl {
     /// (plan 0C.1).
     edit_seen: Option<Arc<Clip>>,
     edit_rev: u64,
+    /// What became of the editor's last touch, and how many touches it
+    /// has had (plan 0C.2): sent with the clip ([`EditInfo::answer`]).
+    edit_answer: EditAnswer,
     /// The armed track: REC records it, and the audio half's recorder
     /// takes live notes only for it. Kept by its lasting id
     /// (`armed_id`), so a track added, taken away by UNDO or brought back
@@ -501,6 +504,7 @@ impl TimeControl {
             editor: None,
             edit_seen: None,
             edit_rev: 0,
+            edit_answer: EditAnswer::default(),
             armed: None,
             armed_id: TrackId::NONE,
             track_pick: None,
@@ -2150,6 +2154,35 @@ impl TimeControl {
     /// note made on an older picture of the clip is refused, and an edit
     /// what plays can't follow is taken back (piano roll plan 0A.1).
     fn edit(&mut self, a: EditAction) -> Result<String, String> {
+        // Its answer, for the screen (plan 0C.2): numbered, with the
+        // revision it was carried out on and what became of it.
+        self.edit_follow();
+        let from = self.edit_rev;
+        let r = self.edit_touch(a);
+        // The revision moves on Open, and on an edit that went in.
+        let took = r.is_ok() && a != EditAction::Open && self.edit_rev != from;
+        let outcome = match &r {
+            Err(why) => EditOutcome::Refused(why.clone()),
+            Ok(_) if took => EditOutcome::Taken {
+                rev: self.edit_rev,
+                landed: self
+                    .editor
+                    .as_ref()
+                    .map_or_else(Vec::new, |e| e.sel.clone()),
+            },
+            Ok(_) => EditOutcome::Unchanged,
+        };
+        self.edit_answer = EditAnswer {
+            n: self.edit_answer.n + 1,
+            from,
+            outcome,
+        };
+        self.changed = true;
+        r
+    }
+
+    /// [`TimeControl::edit`]'s touch itself.
+    fn edit_touch(&mut self, a: EditAction) -> Result<String, String> {
         if a == EditAction::Open {
             let (track, slot) = self.step_focus();
             let name = self
@@ -2166,8 +2199,8 @@ impl TimeControl {
             self.changed = true;
             return Ok(line);
         }
+        // `edit` has followed the clip.
         let at = Instant::now();
-        self.edit_follow();
         if let EditAction::Note { rev, .. } = a {
             if rev != self.edit_rev {
                 // The screen still shows the clip as it was: it gets the
@@ -5220,6 +5253,7 @@ impl TimeControl {
                 rev: self.edit_rev,
                 track_name: self.project.tracks[ed.track].name.clone(),
                 bar: bar.round() as Tick,
+                answer: self.edit_answer.clone(),
             }))
         });
         st

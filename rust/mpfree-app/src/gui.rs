@@ -19719,6 +19719,7 @@ mod tests {
             rev: 0,
             track_name: "Track 1".into(),
             bar: 3840,
+            answer: Default::default(),
         }));
         p.time_page.update(&mut p.ui, &p.time);
         assert_eq!(
