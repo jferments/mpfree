@@ -54,6 +54,7 @@
 use crate::mpfree_moves::{Kind, Map, Moves, Point, Target};
 use crate::mpfree_param::ParamAddr;
 use crate::scenes::SongList;
+use crate::time_edit::{Refused, TimeEdit};
 use crate::{
     Clip, ClipId, Cond, Direction, Follow, FollowAction, Join, ModelError, Project, Scene, Track,
     MAX_TRACKS, SCENES, SLOTS,
@@ -658,6 +659,70 @@ impl Arrangement {
         Ok(())
     }
 
+    /// A name for a new marker: the first letter, A to Z, no marker has
+    /// as its name, else "Section N" for the markers' count plus one.
+    pub fn new_marker_name(&self) -> String {
+        ('A'..='Z')
+            .map(String::from)
+            .find(|n| self.markers.iter().all(|m| &m.name != n))
+            .unwrap_or_else(|| format!("Section {}", self.markers.len() + 1))
+    }
+
+    /// A marker named `name` added on song tick `at` (the Arrange
+    /// refactor's 3.3), and its index. Refused (`BadPlacement`), changing
+    /// nothing: before the start, one too many, an empty name, or a tick
+    /// a marker has already (a section is never empty).
+    pub fn add_marker(&mut self, at: Tick, name: &str) -> Result<usize, ModelError> {
+        if name.trim().is_empty() || self.markers.iter().any(|m| m.at == at) {
+            return Err(ModelError::BadPlacement);
+        }
+        self.mark(at, name)?;
+        Ok(self.markers.partition_point(|m| m.at < at))
+    }
+
+    /// Marker `k` named `name`. Refused (`BadPlacement`) for no such
+    /// marker or an empty name.
+    pub fn rename_marker(&mut self, k: usize, name: &str) -> Result<(), ModelError> {
+        if name.trim().is_empty() {
+            return Err(ModelError::BadPlacement);
+        }
+        let m = self.markers.get_mut(k).ok_or(ModelError::BadPlacement)?;
+        m.name = name.to_string();
+        Ok(())
+    }
+
+    /// Marker `k` moved to song tick `at`, keeping its name, and its index
+    /// now (past another marker it changes places with it). Only the
+    /// marker moves: its section's edge, not what plays (to move what
+    /// plays, move the section). Refused (`BadPlacement`), changing
+    /// nothing: no such marker, before the start, or onto another marker.
+    pub fn move_marker(&mut self, k: usize, at: Tick) -> Result<usize, ModelError> {
+        if k >= self.markers.len()
+            || at < 0
+            || self
+                .markers
+                .iter()
+                .enumerate()
+                .any(|(j, m)| j != k && m.at == at)
+        {
+            return Err(ModelError::BadPlacement);
+        }
+        let mut m = self.markers.remove(k);
+        m.at = at;
+        let i = self.markers.partition_point(|n| n.at < at);
+        self.markers.insert(i, m);
+        Ok(i)
+    }
+
+    /// Marker `k` taken away, and returned: its bars join the section
+    /// before. `BadPlacement` for no such marker.
+    pub fn remove_marker(&mut self, k: usize) -> Result<Marker, ModelError> {
+        if k >= self.markers.len() {
+            return Err(ModelError::BadPlacement);
+        }
+        Ok(self.markers.remove(k))
+    }
+
     /// Placement `i` moved to `track` from `start`, or with `copy` a copy
     /// of it put there and the placement left as it is (Jay, 14 Nov: drag
     /// and drop on the Song view). Either way it stays linked to its clip,
@@ -724,17 +789,38 @@ impl Arrangement {
         Some((m.at, end))
     }
 
+    /// The edit that moves section `k` ([`Arrangement::section`]) to
+    /// before section `gap` (after the last for `gap` = the markers'
+    /// count), or with `copy` puts a copy of it there. None for no such
+    /// section or gap.
+    pub fn section_edit(&self, k: usize, gap: usize, copy: bool, bar: Tick) -> Option<TimeEdit> {
+        let n = self.markers.len();
+        if k >= n || gap > n {
+            return None;
+        }
+        let (from, to) = self.section(k, bar)?;
+        let at = match self.markers.get(gap) {
+            Some(m) => m.at,
+            None => self.section(n - 1, bar)?.1,
+        };
+        Some(if copy {
+            TimeEdit::Copy { from, to, at }
+        } else {
+            TimeEdit::Move { from, to, at }
+        })
+    }
+
     /// Section `k` ([`Arrangement::section`]) moved, on every track, to
     /// before section `gap` (after the last for `gap` = the markers'
     /// count), or with `copy` a copy of it put there (a second verse).
     /// The sections close up behind it and make room for it, so nothing is
-    /// written over; what comes before the first marker stays. A placement
-    /// across a section's edge is cut there first, each part playing as
-    /// before (as [`Arrangement::clear`] cuts). Moved to where it is, it
-    /// stays. Refused, changing nothing: `BadPlacement` for no such
-    /// section or gap or past [`MAX_PLACEMENTS`] or [`MAX_MARKERS`];
-    /// `BadMoves` while the song has morph moves or tempo points, which
-    /// would not move with it.
+    /// written over; what comes before the first marker stays. It is one
+    /// [`TimeEdit`] ([`Arrangement::edited`], the project's tempo `bpm`
+    /// before the first tempo point): the blocks, markers, tempo points,
+    /// song lanes and morph rows all go with their section, a block
+    /// across an edge cut there in phase and joined again where it meets
+    /// itself. Moved to where it is, it stays. Refused, changing nothing:
+    /// `BadRange` for no such section or gap, else what the edit says.
     pub fn move_section(
         &mut self,
         tracks: &[Track],
@@ -742,84 +828,14 @@ impl Arrangement {
         gap: usize,
         copy: bool,
         bar: Tick,
-    ) -> Result<(), ModelError> {
-        let n = self.markers.len();
-        if k >= n || gap > n {
-            return Err(ModelError::BadPlacement);
+        bpm: f64,
+    ) -> Result<(), Refused> {
+        let edit = self
+            .section_edit(k, gap, copy, bar)
+            .ok_or(Refused::BadRange)?;
+        if !edit.moves_nothing() {
+            *self = self.edited(tracks, edit, bpm)?;
         }
-        if !self.lanes.is_empty() || !self.morphs.is_empty() || !self.tempo.is_empty() {
-            return Err(ModelError::BadMoves);
-        }
-        let mut order: Vec<usize> = (0..n).collect();
-        if copy {
-            order.insert(gap, k);
-        } else if gap == k || gap == k + 1 {
-            return Ok(());
-        } else {
-            order.remove(k);
-            order.insert(if gap > k { gap - 1 } else { gap }, k);
-        }
-        let spans: Vec<(Tick, Tick)> = (0..n)
-            .map(|s| self.section(s, bar))
-            .collect::<Option<_>>()
-            .ok_or(ModelError::BadPlacement)?;
-        let mut cut = self.placements.clone();
-        for &(at, _) in &spans {
-            cut = cut
-                .into_iter()
-                .flat_map(|p| {
-                    if p.start < at && at < p.end() {
-                        let rest = p.from(p.clip(tracks, &self.clips), at);
-                        vec![
-                            Placement {
-                                length: at - p.start,
-                                ..p
-                            },
-                            rest,
-                        ]
-                    } else {
-                        vec![p]
-                    }
-                })
-                .collect();
-        }
-        let first = spans[0].0;
-        // Everything but the placements and markers stays as it was: the
-        // song list names rows, not ticks.
-        let mut song = Arrangement {
-            placements: Vec::new(),
-            clips: self.clips.clone(),
-            markers: Vec::new(),
-            lanes: self.lanes.clone(),
-            morphs: self.morphs.clone(),
-            list: self.list.clone(),
-            tempo: self.tempo.clone(),
-        };
-        song.placements = cut.iter().filter(|p| p.start < first).cloned().collect();
-        let mut t = first;
-        for &s in &order {
-            let (a, b) = spans[s];
-            song.placements
-                .extend(
-                    cut.iter()
-                        .filter(|p| (a..b).contains(&p.start))
-                        .map(|p| Placement {
-                            start: p.start - a + t,
-                            ..p.clone()
-                        }),
-                );
-            if song.markers.len() >= MAX_MARKERS {
-                return Err(ModelError::BadPlacement);
-            }
-            song.markers.push(Marker {
-                at: t,
-                name: self.markers[s].name.clone(),
-            });
-            t += b - a;
-        }
-        song.placements.sort_by_key(|p| (p.track, p.start));
-        song.check(tracks)?;
-        *self = song;
         Ok(())
     }
 }
@@ -2259,7 +2275,7 @@ mod tests {
         assert_eq!(p.arrangement.section(3, BAR), None);
         // B before A.
         p.arrangement
-            .move_section(&p.tracks, 1, 0, false, BAR)
+            .move_section(&p.tracks, 1, 0, false, BAR, 120.0)
             .unwrap();
         let s = &p.arrangement;
         assert_eq!(names(s), [(0, "B"), (2 * BAR, "A"), (4 * BAR, "C")]);
@@ -2273,26 +2289,20 @@ mod tests {
             ]
         );
         assert_eq!(row(&p, &s.on_track(1)[0]), Some(1));
-        // The drums' long block is cut at the edges, each part in phase
-        // (its clip is one bar, so every part starts at its top).
-        assert_eq!(
-            lane(s, 0),
-            [
-                (0, 2 * BAR, 0),
-                (2 * BAR, 2 * BAR, 0),
-                (4 * BAR, 4 * BAR, 0)
-            ]
-        );
+        // The drums' long block is cut at the edges, each part in phase,
+        // and joined again where it meets itself: its clip is one bar, so
+        // every part starts at its top and it stays one block.
+        assert_eq!(lane(s, 0), [(0, 8 * BAR, 0)]);
         assert_eq!(s.check(&p.tracks), Ok(()));
         // Moved to where it is: nothing changes.
         let before = p.arrangement.clone();
         p.arrangement
-            .move_section(&p.tracks, 1, 2, false, BAR)
+            .move_section(&p.tracks, 1, 2, false, BAR, 120.0)
             .unwrap();
         assert_eq!(p.arrangement, before);
         // The first after the last.
         p.arrangement
-            .move_section(&p.tracks, 0, 3, false, BAR)
+            .move_section(&p.tracks, 0, 3, false, BAR, 120.0)
             .unwrap();
         assert_eq!(
             names(&p.arrangement),
@@ -2307,26 +2317,106 @@ mod tests {
         p.arrangement.markers[0].at = BAR;
         p.arrangement.markers[0].name = "A".into();
         p.arrangement
-            .move_section(&p.tracks, 1, 3, true, BAR)
+            .move_section(&p.tracks, 1, 3, true, BAR, 120.0)
             .unwrap();
         let s = &p.arrangement;
         assert_eq!(
             names(s),
             [(BAR, "A"), (2 * BAR, "B"), (4 * BAR, "C"), (8 * BAR, "B")]
         );
-        // The bass: bar 1 (before A), A's last bar, B, C, and B again.
+        // The bass: its first block (across A's marker, not cut: nothing
+        // moves there), B, C, and B again.
         assert_eq!(
             lane(s, 1),
             [
-                (0, BAR, 0),
-                (BAR, BAR, 0),
+                (0, 2 * BAR, 0),
                 (2 * BAR, 2 * BAR, 0),
                 (4 * BAR, 3 * BAR, 0),
                 (8 * BAR, 2 * BAR, 0)
             ]
         );
-        assert_eq!(row(&p, &s.on_track(1)[4]), Some(1), "linked like the first");
+        assert_eq!(row(&p, &s.on_track(1)[3]), Some(1), "linked like the first");
+        // The drums play on into the copy: one block.
+        assert_eq!(lane(s, 0), [(0, 10 * BAR, 0)]);
         assert_eq!(s.check(&p.tracks), Ok(()));
+    }
+
+    /// Markers added, renamed, moved and taken away (Arrange 3.3): only
+    /// the markers change, each keeps its name, and a refusal changes
+    /// nothing.
+    #[test]
+    fn markers_are_added_renamed_moved_and_taken_away() {
+        let mut p = sections_song();
+        let s = &mut p.arrangement;
+        let blocks = s.placements.clone();
+        // A, B and C are taken: the next is D.
+        assert_eq!(s.new_marker_name(), "D");
+        assert_eq!(s.add_marker(6 * BAR, "D"), Ok(3));
+        assert_eq!(s.add_marker(BAR, "Pickup"), Ok(1));
+        assert_eq!(
+            names(s),
+            [
+                (0, "A"),
+                (BAR, "Pickup"),
+                (2 * BAR, "B"),
+                (4 * BAR, "C"),
+                (6 * BAR, "D")
+            ]
+        );
+        let before = s.clone();
+        for refused in [
+            s.add_marker(2 * BAR, "E"),
+            s.add_marker(-1, "E"),
+            s.add_marker(3 * BAR, " "),
+        ] {
+            assert_eq!(refused, Err(ModelError::BadPlacement));
+        }
+        assert_eq!(s.rename_marker(9, "X"), Err(ModelError::BadPlacement));
+        assert_eq!(s.rename_marker(1, ""), Err(ModelError::BadPlacement));
+        assert_eq!(s.move_marker(1, 2 * BAR), Err(ModelError::BadPlacement));
+        assert_eq!(s.move_marker(1, -BAR), Err(ModelError::BadPlacement));
+        assert_eq!(
+            s.remove_marker(5).map(|m| m.at),
+            Err(ModelError::BadPlacement)
+        );
+        assert_eq!(*s, before);
+        s.rename_marker(1, "Fill").unwrap();
+        // Past B and C: it changes places with them, its name kept.
+        assert_eq!(s.move_marker(1, 5 * BAR), Ok(3));
+        assert_eq!(
+            names(s),
+            [
+                (0, "A"),
+                (2 * BAR, "B"),
+                (4 * BAR, "C"),
+                (5 * BAR, "Fill"),
+                (6 * BAR, "D")
+            ]
+        );
+        assert_eq!(
+            s.section(2, BAR),
+            Some((4 * BAR, 5 * BAR)),
+            "C ends at Fill"
+        );
+        assert_eq!(s.remove_marker(3).unwrap().name, "Fill");
+        assert_eq!(s.section(2, BAR), Some((4 * BAR, 6 * BAR)), "C runs to D");
+        assert_eq!(s.placements, blocks, "only the markers changed");
+        assert_eq!(s.check(&p.tracks), Ok(()));
+    }
+
+    /// Past Z, a new marker is Section N.
+    #[test]
+    fn a_new_marker_is_named_by_the_next_free_letter() {
+        let mut s = Arrangement::default();
+        assert_eq!(s.new_marker_name(), "A");
+        for (i, c) in ('A'..='Z').enumerate() {
+            if c != 'C' {
+                s.mark(i as Tick * BAR, &c.to_string()).unwrap();
+            }
+        }
+        assert_eq!(s.new_marker_name(), "C");
+        s.mark(30 * BAR, "C").unwrap();
+        assert_eq!(s.new_marker_name(), "Section 27");
     }
 
     /// A section move keeps the song list (it names rows, not ticks).
@@ -2340,40 +2430,94 @@ mod tests {
         p.arrangement.list.looped = true;
         let list = p.arrangement.list.clone();
         p.arrangement
-            .move_section(&p.tracks, 1, 0, false, BAR)
+            .move_section(&p.tracks, 1, 0, false, BAR, 120.0)
             .unwrap();
         assert_eq!(p.arrangement.list, list);
     }
 
-    /// Tempo points don't move with a section yet: a song with them
-    /// keeps its sections where they are.
+    /// A section's tempo goes with it: the tempo in effect at its start
+    /// and its points, and the place it left keeps the tempo before it.
     #[test]
-    fn sections_with_tempo_points_stay_put() {
+    fn a_moved_section_takes_its_tempo_with_it() {
         let mut p = sections_song();
         p.arrangement.set_tempo(BAR, 100.0, None).unwrap();
-        let before = p.arrangement.clone();
+        p.arrangement
+            .set_tempo(4 * BAR + BAR / 4, 90.0, Some(true))
+            .unwrap();
+        p.arrangement.set_tempo(6 * BAR, 140.0, None).unwrap();
+        // B (100 BPM throughout, from A's point) before A.
+        p.arrangement
+            .move_section(&p.tracks, 1, 0, false, BAR, 120.0)
+            .unwrap();
+        let tempo: Vec<_> = p
+            .arrangement
+            .tempo
+            .iter()
+            .map(|t| (t.at, t.bpm, t.ramp))
+            .collect();
+        // B at 100 from the start; A at the project's 120 until its point,
+        // now a bar later; C's points where they were (C hasn't moved), C
+        // starting at the 100 it started at.
         assert_eq!(
-            p.arrangement.move_section(&p.tracks, 1, 0, false, BAR),
-            Err(ModelError::BadMoves)
+            tempo,
+            [
+                (0, 100.0, false),
+                (2 * BAR, 120.0, false),
+                (3 * BAR, 100.0, false),
+                (4 * BAR + BAR / 4, 90.0, true),
+                (6 * BAR, 140.0, false)
+            ]
         );
-        assert_eq!(p.arrangement, before);
     }
 
+    /// The morph's moves and rows go with their section.
     #[test]
-    fn sections_with_morph_moves_stay_put() {
+    fn a_moved_section_takes_its_morph_moves_with_it() {
         let mut p = sections_song();
+        let rows = |at, a| MorphRows { at, a, b: 3 };
         p.arrangement
-            .put_morph(&[(0.0, 0.5, Kind::Step)], &[], 0, BAR)
+            .put_morph(
+                &[
+                    (0.0, 0.0, Kind::Step),
+                    ((2 * BAR) as f64, 0.25, Kind::Ramp),
+                    ((3 * BAR) as f64, 0.75, Kind::Step),
+                    ((4 * BAR) as f64, 1.0, Kind::Step),
+                ],
+                &[rows(0, 0), rows(2 * BAR, 1), rows(4 * BAR, 2)],
+                0,
+                8 * BAR,
+            )
             .unwrap();
         let before = p.arrangement.clone();
+        // B before A.
+        p.arrangement
+            .move_section(&p.tracks, 1, 0, false, BAR, 120.0)
+            .unwrap();
+        let morph = |s: &Arrangement, t: Tick| {
+            let v = s.lanes.lane(MORPH_LANE).and_then(|l| l.state_at(t as f64));
+            (v, s.morph_rows_at(t).map(|m| (m.a, m.b)))
+        };
+        // B's ticks, now from 0, then A's, then C's where they were.
+        for t in (0..8 * BAR).step_by(BAR as usize / 8) {
+            let was = if t < 2 * BAR {
+                t + 2 * BAR
+            } else if t < 4 * BAR {
+                t - 2 * BAR
+            } else {
+                t
+            };
+            let (now, then) = (morph(&p.arrangement, t), morph(&before, was));
+            assert_eq!(now.1, then.1, "rows at tick {t}");
+            let (a, b) = (now.0.unwrap(), then.0.unwrap());
+            assert!((a - b).abs() < 1e-5, "tick {t}: {a} for {b}");
+        }
+        // Refused, nothing changes.
+        let moved = p.arrangement.clone();
         assert_eq!(
-            p.arrangement.move_section(&p.tracks, 1, 0, false, BAR),
-            Err(ModelError::BadMoves)
+            p.arrangement
+                .move_section(&p.tracks, 5, 0, false, BAR, 120.0),
+            Err(Refused::BadRange)
         );
-        assert_eq!(p.arrangement, before);
-        assert_eq!(
-            p.arrangement.move_section(&p.tracks, 5, 0, false, BAR),
-            Err(ModelError::BadPlacement)
-        );
+        assert_eq!(p.arrangement, moved);
     }
 }

@@ -34,6 +34,9 @@
 //! [`edit_rows`] fills the Edit options list; its `Step` and `Select`
 //! become [`EditAction::Row`] and [`EditAction::PickRow`].
 
+use std::cell::RefCell;
+use std::sync::Arc;
+
 use mpfree_seq::notes::{self, Snap, Tc, TcKind, Which, DIVISIONS};
 use mpfree_seq::steps::{Edit, Euclid, Grid, MAX_EUCLID_STEPS};
 use mpfree_seq::{Clip, Cond, Join, Lock, Note, TouchPoint};
@@ -1023,6 +1026,102 @@ impl LockMark {
     }
 }
 
+/// The roll's notes in buckets a bar long, each note in every bar it
+/// sounds in (cut at the clip's end), so a roll that shows part of the
+/// clip looks only at the notes near it (piano roll plan 0C.2).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NoteIndex {
+    bar: Tick,
+    buckets: Vec<Vec<u32>>,
+}
+
+impl NoteIndex {
+    /// The index of `notes` in a clip `length` long, in buckets `bar`
+    /// long.
+    pub fn new(notes: &[NoteBox], length: Tick, bar: Tick) -> NoteIndex {
+        let bar = bar.max(1);
+        let length = length.max(1);
+        let count = ((length + bar - 1) / bar) as usize;
+        let mut buckets = vec![Vec::new(); count];
+        for (i, n) in notes.iter().enumerate() {
+            let start = n.tick.clamp(0, length - 1);
+            let end = (n.tick + n.len.max(1)).clamp(start + 1, length);
+            let (first, last) = ((start / bar) as usize, ((end - 1) / bar) as usize);
+            for b in &mut buckets[first..=last.min(count - 1)] {
+                b.push(i as u32);
+            }
+        }
+        NoteIndex { bar, buckets }
+    }
+
+    /// The notes in the bars that ticks `from..to` touch, each once, in
+    /// index order (the roll's drawing order, the last on top). It may
+    /// name notes just outside the ticks: the caller checks each place.
+    pub fn near(&self, from: Tick, to: Tick) -> Vec<usize> {
+        let Some(last) = self.buckets.len().checked_sub(1) else {
+            return Vec::new();
+        };
+        if to <= from {
+            return Vec::new();
+        }
+        let first = (from.max(0) / self.bar) as usize;
+        let end = ((to - 1).max(0) / self.bar) as usize;
+        let mut out: Vec<usize> = self
+            .buckets
+            .get(first..=end.min(last))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|&i| i as usize)
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+}
+
+/// What the grid works out from its notes once and keeps while they stay
+/// the same (piano roll plan 0C.2): the tracker's rows, the list's order
+/// and the roll's note index, each worked out when first wanted. A grid
+/// built again ([`NoteGrid::show`]) starts without them, and each is
+/// checked against what it was worked out from (the notes' count and
+/// where they are kept, the clip's length, the bar and the tracker's
+/// step), so a grid given other notes works them out again. Change a
+/// grid's notes in place and call [`NoteGrid::forget`].
+#[derive(Clone, Debug, Default)]
+struct Kept {
+    rows: RefCell<Option<(Stamp, Arc<[TrackRow]>)>>,
+    order: RefCell<Option<(Stamp, Arc<[usize]>)>>,
+    index: RefCell<Option<(Stamp, Arc<NoteIndex>)>>,
+}
+
+/// What [`Kept`]'s answers were worked out from.
+type Stamp = (usize, usize, Tick, Tick, Tick);
+
+/// A cache: never part of what a grid shows.
+impl PartialEq for Kept {
+    fn eq(&self, _: &Kept) -> bool {
+        true
+    }
+}
+
+/// `cell`'s answer if it was worked out from `stamp`, else `make`'s, kept.
+fn kept<T: ?Sized>(
+    cell: &RefCell<Option<(Stamp, Arc<T>)>>,
+    stamp: Stamp,
+    make: impl FnOnce() -> Arc<T>,
+) -> Arc<T> {
+    let mut c = cell.borrow_mut();
+    match &*c {
+        Some((s, v)) if *s == stamp => Arc::clone(v),
+        _ => {
+            let v = make();
+            *c = Some((stamp, Arc::clone(&v)));
+            v
+        }
+    }
+}
+
 /// The roll or the list (see the module notes).
 #[derive(Clone, Debug, PartialEq)]
 pub struct NoteGrid {
@@ -1053,6 +1152,7 @@ pub struct NoteGrid {
     /// in clip ticks from its note's start (as `Clip::touch`).
     pub touch: Vec<TouchPoint>,
     drag: Option<Drag>,
+    kept: Kept,
 }
 
 /// A note being dragged: by which finger, which note, where the finger
@@ -1126,6 +1226,7 @@ impl Default for NoteGrid {
             locks: Vec::new(),
             touch: Vec::new(),
             drag: None,
+            kept: Kept::default(),
         }
     }
 }
@@ -1245,18 +1346,23 @@ impl NoteGrid {
     /// Where note `i` is drawn on the roll, if it shows (moved by a drag
     /// in progress when it is selected).
     pub fn note_rect(&self, r: Rect, i: usize) -> Option<Rect> {
-        let g = self.geo(r);
+        self.note_rect_in(&self.geo(r), i)
+    }
+
+    /// [`NoteGrid::note_rect`] in the roll's places `g`, worked out once
+    /// for every note drawn or touched.
+    fn note_rect_in(&self, g: &Geo, i: usize) -> Option<Rect> {
         let n = self.notes.get(i)?;
         let (dt, dn) = match self.drag {
             Some(d) if n.selected && d.lane.is_none() => (d.ticks, d.notes),
             _ => (0, 0),
         };
         let note = u8::try_from(i32::from(n.note) + dn).ok()?;
-        let y = self.y_of(&g, note)?;
+        let y = self.y_of(g, note)?;
         let tick = (n.tick + dt).rem_euclid(self.length.max(1));
-        let x0 = self.x_of(&g, tick);
-        let x1 = self.x_of(&g, (tick + n.len).min(self.length)).max(x0 + 3);
-        Some(Rect::new(x0, y + 1, x1 - x0, self.row_h(&g) - 2))
+        let x0 = self.x_of(g, tick);
+        let x1 = self.x_of(g, (tick + n.len).min(self.length)).max(x0 + 3);
+        Some(Rect::new(x0, y + 1, x1 - x0, self.row_h(g) - 2))
     }
 
     /// Where row `k` of the list or the tracker is (0 is the heading), if
@@ -1283,9 +1389,51 @@ impl NoteGrid {
         step_grid(self.step)
     }
 
-    /// The tracker's rows.
-    pub fn track_rows(&self) -> Vec<TrackRow> {
-        track_rows(&self.notes, self.length, self.grid())
+    /// What the kept answers are worked out from ([`Kept`]).
+    fn stamp(&self) -> Stamp {
+        (
+            self.notes.len(),
+            self.notes.as_ptr() as usize,
+            self.length,
+            self.bar,
+            self.step,
+        )
+    }
+
+    /// Drop what was worked out from the notes ([`Kept`]), after changing
+    /// them in place.
+    pub fn forget(&mut self) {
+        self.kept = Kept::default();
+    }
+
+    /// The tracker's rows, worked out once for these notes.
+    pub fn track_rows(&self) -> Arc<[TrackRow]> {
+        kept(&self.kept.rows, self.stamp(), || {
+            track_rows(&self.notes, self.length, self.grid()).into()
+        })
+    }
+
+    /// The roll's note index, worked out once for these notes.
+    pub fn index(&self) -> Arc<NoteIndex> {
+        kept(&self.kept.index, self.stamp(), || {
+            Arc::new(NoteIndex::new(&self.notes, self.length, self.bar))
+        })
+    }
+
+    /// The notes the roll may show in `g`, in drawing order: every note
+    /// while the whole clip is in view or a note is being dragged (it may
+    /// be dragged into view), else the index's notes near the ticks in
+    /// view.
+    fn in_view(&self, g: &Geo) -> Vec<usize> {
+        let (from, to) = (
+            self.tick_at(g, g.roll.x),
+            self.tick_at(g, g.roll.right()) + 1,
+        );
+        let dragging = self.drag.is_some_and(|d| d.lane.is_none());
+        if dragging || (from <= 0 && to >= self.length) {
+            return (0..self.notes.len()).collect();
+        }
+        self.index().near(from, to)
     }
 
     /// The buttons along the bottom.
@@ -1324,7 +1472,7 @@ impl NoteGrid {
         }
     }
 
-    fn paint_roll(&self, cx: &mut PaintCx, r: Rect, g: &Geo) {
+    fn paint_roll(&self, cx: &mut PaintCx, g: &Geo) {
         let t = cx.theme.clone();
         let rh = self.row_h(g);
         // Rows: the black keys darker, C lines brighter.
@@ -1396,11 +1544,12 @@ impl NoteGrid {
             Some(v) if n.selected => NoteBox { velocity: v, ..*n },
             _ => *n,
         };
-        for (i, n) in self.notes.iter().enumerate() {
-            let Some(nr) = self.note_rect(r, i) else {
+        let shown = self.in_view(g);
+        for &i in &shown {
+            let Some(nr) = self.note_rect_in(g, i) else {
                 continue;
             };
-            let n = &vel_of(n);
+            let n = &vel_of(&self.notes[i]);
             let fill = shade(n.velocity);
             if !n.on {
                 // Off: its place and settings kept, nothing played.
@@ -1418,8 +1567,8 @@ impl NoteGrid {
         }
         cx.canvas.fill_round_rect(g.vel, 6, t.surface);
         let lane = |v: u8| (f32::from(v) / 127.0 * (g.vel.h - 6) as f32).round() as i32;
-        for n in &self.notes {
-            let n = &vel_of(n);
+        for &i in &shown {
+            let n = &vel_of(&self.notes[i]);
             let x = self.x_of(g, n.tick);
             let h = lane(n.velocity);
             let c = if n.selected {
@@ -1758,11 +1907,13 @@ impl NoteGrid {
     }
 
     /// The notes' indexes in time order (then by note), as the list
-    /// shows them.
-    pub fn list_order(&self) -> Vec<usize> {
-        let mut order: Vec<usize> = (0..self.notes.len()).collect();
-        order.sort_by_key(|&i| (self.notes[i].tick, self.notes[i].note));
-        order
+    /// shows them, worked out once for these notes.
+    pub fn list_order(&self) -> Arc<[usize]> {
+        kept(&self.kept.order, self.stamp(), || {
+            let mut order: Vec<usize> = (0..self.notes.len()).collect();
+            order.sort_by_key(|&i| (self.notes[i].tick, self.notes[i].note));
+            order.into()
+        })
     }
 }
 
@@ -1772,7 +1923,7 @@ impl Widget for NoteGrid {
         cx.titled_panel(r, &self.title, &self.legend);
         let g = self.geo(r);
         match self.lens {
-            Lens::Grid => self.paint_roll(cx, r, &g),
+            Lens::Grid => self.paint_roll(cx, &g),
             Lens::List => self.paint_list(cx, r),
             Lens::Tracker => self.paint_tracker(cx, r),
         }
@@ -1819,16 +1970,17 @@ impl Widget for NoteGrid {
         if !g.vel.is_empty() {
             out.push(Target::drag("velocity", 0, "velocity lane", g.vel).towards(0, -g.vel.h / 3));
         }
-        for i in 0..self.notes.len() {
-            if let Some(nr) = self.note_rect(r, i) {
+        let shown = self.in_view(&g);
+        for &i in &shown {
+            if let Some(nr) = self.note_rect_in(&g, i) {
                 out.push(Target::tap("note", i, format!("note {}", i + 1), nr));
             }
         }
         // An empty place on the roll adds a note: its top left corner,
         // where the sample clips leave room.
         let spot = Rect::new(g.roll.x + 2, g.roll.y + 2, 12, 12);
-        let free = (0..self.notes.len()).all(|i| {
-            self.note_rect(r, i)
+        let free = shown.iter().all(|&i| {
+            self.note_rect_in(&g, i)
                 .is_none_or(|nr| nr.intersect(spot).is_empty())
         });
         if free && !g.roll.is_empty() {
@@ -1895,9 +2047,11 @@ impl Widget for NoteGrid {
                     return None;
                 }
                 // The topmost note under the finger (drawn last).
-                if let Some(i) = (0..self.notes.len())
+                if let Some(i) = self
+                    .in_view(&g)
+                    .into_iter()
                     .rev()
-                    .find(|&i| self.note_rect(r, i).is_some_and(|nr| nr.contains(x, y)))
+                    .find(|&i| self.note_rect_in(&g, i).is_some_and(|nr| nr.contains(x, y)))
                 {
                     self.drag = Some(Drag {
                         finger: f,
@@ -2513,6 +2667,56 @@ mod tests {
         assert!(faint, "an off note's row");
         let row = rows.iter().find(|r| r.note == Some(0)).unwrap();
         assert!(!words.track_cells(row).1, "an on note's row");
+    }
+
+    /// Piano roll plan 0C.2: the note index finds the notes near a span
+    /// of ticks, each once and in drawing order, a long note in every bar
+    /// it sounds in and cut at the clip's end; the tracker's rows, the
+    /// list's order and the index are worked out once for a grid's notes
+    /// and again for other notes.
+    #[test]
+    fn the_note_index_and_what_the_grid_keeps() {
+        let bar = 960;
+        let boxes = |notes: &[(Tick, Tick)]| -> Vec<NoteBox> {
+            notes
+                .iter()
+                .map(|&(t, l)| NoteBox::of(&Note::new(t, l, 60, 100), false))
+                .collect()
+        };
+        // Bar 1; bars 1 to 3; bar 3; bar 4, running past the end.
+        let notes = boxes(&[
+            (0, 240),
+            (480, 2 * bar),
+            (2 * bar + 10, 10),
+            (3 * bar, 5 * bar),
+        ]);
+        let ix = NoteIndex::new(&notes, 4 * bar, bar);
+        assert_eq!(ix.near(0, 4 * bar), vec![0, 1, 2, 3]);
+        assert_eq!(ix.near(bar, bar + 1), vec![1], "the long note");
+        assert_eq!(ix.near(2 * bar, 3 * bar), vec![1, 2]);
+        assert_eq!(ix.near(3 * bar, 9 * bar), vec![3], "cut at the end");
+        assert!(ix.near(bar, bar).is_empty());
+        assert!(NoteIndex::new(&[], 4 * bar, bar).near(0, bar).is_empty());
+        // Kept: the same answer while the notes are the same.
+        let g = grid();
+        assert!(Arc::ptr_eq(&g.track_rows(), &g.track_rows()));
+        assert!(Arc::ptr_eq(&g.list_order(), &g.list_order()));
+        assert!(Arc::ptr_eq(&g.index(), &g.index()));
+        let rows = g.track_rows();
+        // Another step: other rows.
+        let mut finer = g.clone();
+        finer.step /= 2;
+        assert!(finer.track_rows().len() > rows.len());
+        // Notes changed in place, then forgotten: worked out again.
+        let mut moved = g.clone();
+        moved.notes[0].tick = 2000;
+        moved.forget();
+        assert_eq!(moved.list_order().to_vec(), vec![1, 0]);
+        assert_eq!(g.list_order().to_vec(), vec![0, 1]);
+        // A grid shown again starts afresh.
+        let mut shown = g.clone();
+        shown.show(moved.clone());
+        assert_eq!(shown.list_order().to_vec(), vec![1, 0]);
     }
 
     /// Touches are followed finger by finger: a drag is its own finger's,

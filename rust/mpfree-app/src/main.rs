@@ -6452,6 +6452,8 @@ fn time_action(
             | TimeAction::MovePlacement { .. }
             | TimeAction::StretchPlacement { .. }
             | TimeAction::MoveSection { .. }
+            | TimeAction::SongBars(_)
+            | TimeAction::SongMarker(_)
             | TimeAction::DeletePlacement(_)
             | TimeAction::Perform(_)
     ) || matches!(a, TimeAction::SongTempo(e) if !matches!(e, TempoEdit::Pick(_)));
